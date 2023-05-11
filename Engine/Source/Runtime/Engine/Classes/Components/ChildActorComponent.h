@@ -3,11 +3,10 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "Templates/SubclassOf.h"
-#include "UObject/CoreNet.h"
 #include "Components/SceneComponent.h"
+
 #include "ChildActorComponent.generated.h"
 
 class AActor;
@@ -221,3 +220,7 @@ struct FActorParentComponentSetter
 private:
 	friend UChildActorComponent;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

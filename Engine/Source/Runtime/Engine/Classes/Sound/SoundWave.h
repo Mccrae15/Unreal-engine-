@@ -8,6 +8,8 @@
 
 #include "CoreMinimal.h"
 #include "Containers/IndirectArray.h"
+#include "Sound/AudioSettings.h"
+#include "Sound/SoundModulationDestination.h"
 #include "UObject/ObjectMacros.h"
 #include "Misc/Guid.h"
 #include "Async/AsyncWork.h"
@@ -26,16 +28,18 @@
 #include "ContentStreaming.h"
 #include "IAudioProxyInitializer.h"
 #include "IWaveformTransformation.h"
+#include "Templates/DontCopy.h"
 #include "SoundWave.generated.h"
 
 class FSoundWaveData;
 class ITargetPlatform;
+enum EAudioSpeakers : int;
 struct FActiveSound;
 struct FSoundParseParameters;
 struct FPlatformAudioCookOverrides;
 
 UENUM()
-enum EDecompressionType
+enum EDecompressionType : int
 {
 	DTYPE_Setup,
 	DTYPE_Invalid,
@@ -56,7 +60,7 @@ enum class ESoundWavePrecacheState
 	Done
 };
 
-constexpr uint64 InvalidAudioStreamCacheLookupID = TNumericLimits<uint64>::Max();
+inline constexpr uint64 InvalidAudioStreamCacheLookupID = TNumericLimits<uint64>::Max();
 
 /**
  * A chunk of streamed audio.
@@ -468,7 +472,7 @@ public:
 
 private:
 	// cached proxy
-	FSoundWaveProxyPtr InternalProxy{ nullptr };
+	FSoundWaveProxyPtr Proxy{ nullptr };
 
 public:
 
@@ -902,7 +906,7 @@ public:
 	FSoundWaveProxyPtr CreateSoundWaveProxy();
 
 	//~Begin IAudioProxyDataFactory Interface.
-	virtual TUniquePtr<Audio::IProxyData> CreateNewProxyData(const Audio::FProxyDataInitParams& InitParams) override;
+	virtual TSharedPtr<Audio::IProxyData> CreateProxyData(const Audio::FProxyDataInitParams& InitParams) override;
 	//~ End IAudioProxyDataFactory Interface.
 
 	// Called  when the procedural sound wave begins on the render thread. Only used in the audio mixer and when bProcedural is true.
@@ -910,6 +914,7 @@ public:
 
 	// Called when the procedural sound wave is done generating on the render thread. Only used in the audio mixer and when bProcedural is true..
 	virtual void OnEndGenerate() {};
+	virtual void OnEndGenerate(ISoundGeneratorPtr Generator) {};
 
 	void AddPlayingSource(const FSoundWaveClientPtr& Source);
 	void RemovePlayingSource(const FSoundWaveClientPtr& Source);
@@ -1040,6 +1045,9 @@ private:
 #if WITH_EDITOR
 	// Removes any in-progress async loading data formats. 
 	void FlushAsyncLoadingDataFormats();
+
+	// Waits for audio rendering commands to execute
+	void FlushAudioRenderingCommands() const;
 
 	void BakeFFTAnalysis();
 	void BakeEnvelopeAnalysis();
@@ -1380,12 +1388,6 @@ public:
 	FSoundWaveProxy(const FSoundWaveProxy& Other) = default;
 
 	~FSoundWaveProxy();
-
-	Audio::IProxyDataPtr Clone() const override
-	{
-		LLM_SCOPE(ELLMTag::AudioSoundWaveProxies);
-		return MakeUnique<FSoundWaveProxy>(*this);
-	}
 
 	// USoundWave Interface
 	void ReleaseCompressedAudio();

@@ -4,10 +4,9 @@
 
 #include "StateTree.h"
 #include "StateTreeDelegates.h"
-#include "PropertyHandle.h"
 #include "IDetailChildrenBuilder.h"
-#include "DetailWidgetRow.h"
 #include "PropertyCustomizationHelpers.h"
+#include "StateTreeReference.h"
 
 #define LOCTEXT_NAMESPACE "StateTreeEditor"
 

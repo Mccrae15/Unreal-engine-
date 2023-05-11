@@ -17,6 +17,7 @@
 #include "RHI.h"
 #include "RenderCore.h"
 #include "RenderCommandFence.h"
+#include "RenderDeferredCleanup.h"
 #include "TickableObjectRenderThread.h"
 #include "Stats/StatsData.h"
 #include "HAL/ThreadHeartBeat.h"
@@ -992,11 +993,8 @@ void StartRenderCommandFenceBundler()
 	STAT_FNullGraphTask_FenceRenderCommandBundled,
 		STATGROUP_TaskGraphTasks);
 
-	FGraphEventRef Task = TGraphTask<FNullGraphTask>::CreateTask(&Prereqs, ENamedThreads::GameThread).ConstructAndDispatchWhenReady(
+	BundledCompletionEvent = TGraphTask<FNullGraphTask>::CreateTask(&Prereqs, ENamedThreads::GameThread).ConstructAndDispatchWhenReady(
 		GET_STATID(STAT_FNullGraphTask_FenceRenderCommandBundled), ENamedThreads::GetRenderThread());
-	// this reference can live long, store completion handle instead of a reference to the task to reduce peak mem usage 
-	BundledCompletionEvent = Task->CreateCompletionHandle();
-	
 
 	StartBatchedRelease();
 }
@@ -1060,6 +1058,9 @@ FRHICOMMAND_MACRO(FRHISyncFrameCommand)
 		}
 	}
 };
+
+FRenderCommandFence::FRenderCommandFence() = default;
+FRenderCommandFence::~FRenderCommandFence() = default;
 
 void FRenderCommandFence::BeginFence(bool bSyncToRHIAndGPU)
 {

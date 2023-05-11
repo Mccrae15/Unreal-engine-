@@ -415,10 +415,11 @@ private:
 		AddPathPair(ContentPathToRoot, GameRootPath,   GameContentPath);
 		AddPathPair(ContentPathToRoot, ScriptRootPath, GameScriptPath);
 		AddPathPair(ContentPathToRoot, TempRootPath,   GameSavedPath);
+		AddPathPair(ContentPathToRoot, ConfigRootPath, GameConfigPath);
 		AddPathPair(ContentPathToRoot, GameRootPath,   GameContentPathRebased);
 		AddPathPair(ContentPathToRoot, ScriptRootPath, GameScriptPathRebased);
 		AddPathPair(ContentPathToRoot, TempRootPath,   GameSavedPathRebased);
-		AddPathPair(ContentPathToRoot, ConfigRootPath, GameConfigPath);
+		AddPathPair(ContentPathToRoot, ConfigRootPath, GameConfigPathRebased);
 
 		ContentRootToPath.Empty(11);
 		AddPathPair(ContentRootToPath, EngineRootPath, EngineContentPath);
@@ -426,6 +427,7 @@ private:
 		AddPathPair(ContentRootToPath, GameRootPath,   GameContentPath);
 		AddPathPair(ContentRootToPath, ScriptRootPath, GameScriptPath);
 		AddPathPair(ContentRootToPath, TempRootPath,   GameSavedPath);
+		AddPathPair(ContentRootToPath, ConfigRootPath, GameConfigPath);
 		AddPathPair(ContentRootToPath, GameRootPath,   GameContentPathRebased);
 		AddPathPair(ContentRootToPath, ScriptRootPath, GameScriptPathRebased);
 		AddPathPair(ContentRootToPath, TempRootPath,   GameSavedPathRebased);
@@ -1239,6 +1241,22 @@ FName FPackageName::GetPackageMountPoint(const FString& InPackagePath, bool InWi
 	}
 
 	return FName();
+}
+
+FString FPackageName::GetContentPathForPackageRoot(FStringView InMountPoint)
+{
+	FLongPackagePathsSingleton& Paths = FLongPackagePathsSingleton::Get();
+
+	FReadScopeLock ScopeLock(Paths.MountLock);
+	for (const FPathPair& RootToPathEntry : Paths.ContentRootToPath)
+	{
+		if (RootToPathEntry.RootPath == InMountPoint)
+		{
+			return RootToPathEntry.AbsolutePath;
+		}
+	}
+
+	return FString();
 }
 
 bool FPackageName::TryConvertToMountedPathComponents(FStringView InFilePathOrPackageName,

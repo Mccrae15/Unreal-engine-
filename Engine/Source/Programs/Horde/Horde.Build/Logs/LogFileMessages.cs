@@ -1,7 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using System;
 using System.Collections.Generic;
-using Horde.Build.Logs;
+using EpicGames.Horde.Logs;
 using Horde.Build.Logs.Data;
 
 namespace Horde.Build.Logs
@@ -20,6 +21,28 @@ namespace Horde.Build.Logs
 		/// Structured json objects, output as one object per line (without trailing commas)
 		/// </summary>
 		Json
+	}
+
+	/// <summary>
+	/// Creates a new log file
+	/// </summary>
+	public class CreateLogFileRequest
+	{
+		/// <summary>
+		/// Type of the log file
+		/// </summary>
+		public LogType Type { get; set; } = LogType.Json;
+	}
+
+	/// <summary>
+	/// Response from creating a log file
+	/// </summary>
+	public class CreateLogFileResponse
+	{
+		/// <summary>
+		/// Identifier for the created log file
+		/// </summary>
+		public string Id { get; set; } = String.Empty;
 	}
 
 	/// <summary>
@@ -43,11 +66,6 @@ namespace Horde.Build.Logs
 		public LogType Type { get; set; }
 
 		/// <summary>
-        /// Length of the log, in bytes
-        /// </summary>
-        public long Length { get; set; }
-
-		/// <summary>
         /// Number of lines in the file
         /// </summary>
         public int LineCount { get; set; }
@@ -62,7 +80,6 @@ namespace Horde.Build.Logs
             Id = logFile.Id.ToString();
             JobId = logFile.JobId.ToString();
 			Type = logFile.Type;
-            Length = metadata.Length;
             LineCount = metadata.MaxLineIndex;
 		}
 	}
@@ -80,7 +97,7 @@ namespace Horde.Build.Logs
 		/// <summary>
 		/// Stats for the search
 		/// </summary>
-		public LogSearchStats? Stats { get; set; }
+		public SearchStats? Stats { get; set; }
 	}
 }
 

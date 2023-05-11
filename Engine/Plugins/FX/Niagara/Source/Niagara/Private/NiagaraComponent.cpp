@@ -2,6 +2,7 @@
 
 #include "NiagaraComponent.h"
 #include "Engine/CollisionProfile.h"
+#include "Engine/TextureRenderTarget.h"
 #include "EngineUtils.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "NiagaraCommon.h"
@@ -12,14 +13,17 @@
 #include "NiagaraFunctionLibrary.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraRenderer.h"
+#include "NiagaraSceneProxy.h"
 #include "NiagaraStats.h"
 #include "NiagaraSystem.h"
+#include "NiagaraSystemInstanceController.h"
 #include "NiagaraWorldManager.h"
 #include "PrimitiveSceneInfo.h"
 #include "ProfilingDebugging/CsvProfiler.h"
 #include "UObject/NameTypes.h"
 #include "Engine/StaticMesh.h"
 #include "NiagaraCullProxyComponent.h"
+#include "SceneInterface.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraComponent)
 
@@ -185,6 +189,7 @@ FNiagaraSceneProxy::FNiagaraSceneProxy(UNiagaraComponent* InComponent)
 		ComputeDispatchInterface = SystemInstanceController->GetComputeDispatchInterface();
 
 		bAlwaysHasVelocity = RenderData->HasAnyMotionBlurEnabled();
+		bIsHeterogeneousVolume = RenderData->HasAnyHeterogeneousVolumesEnabled();
 
 		SystemStatID = InComponent->GetAsset()->GetStatID(false, false);
 	}
@@ -287,10 +292,15 @@ void FNiagaraSceneProxy::ReleaseUniformBuffers(bool bEmpty)
 	CustomUniformBuffers.Empty(bEmpty ? 0 : FMath::Min(ExpectedRendererCount, CurrentUBCount));
 }
 
+const FVector3f& FNiagaraSceneProxy::GetLWCRenderTile() const
+{
+	return RenderData ? RenderData->LWCRenderTile : FVector3f::ZeroVector;
+}
+
 TUniformBuffer<FPrimitiveUniformShaderParameters>* FNiagaraSceneProxy::GetCustomUniformBufferResource(bool bHasVelocity, const FBox& InstanceBounds) const
 {
 	// Use a hash to determine if we can re-use any uniform buffer
-	uint64 KeyHash = HashCombine(bHasVelocity, InstanceBounds.IsValid);
+	uint32 KeyHash = HashCombine(bHasVelocity, InstanceBounds.IsValid);
 
 	bool bHasPrecomputedVolumetricLightmap;
 	FMatrix PreviousLocalToWorld;
@@ -336,6 +346,8 @@ TUniformBuffer<FPrimitiveUniformShaderParameters>* FNiagaraSceneProxy::GetCustom
 				.OutputVelocity(bOutputVelocity)
 				.CastContactShadow(CastsContactShadow())
 				.CastShadow(CastsDynamicShadow())
+				.Holdout(Holdout())
+				.HasDistanceFieldRepresentation(HasDistanceFieldRepresentation())
 				.HasCapsuleRepresentation(HasDynamicIndirectShadowCasterRepresentation())
 				.UseVolumetricLightmap(bHasPrecomputedVolumetricLightmap)
 				.UseSingleSampleShadowFromStationaryLights(UseSingleSampleShadowFromStationaryLights());
@@ -373,7 +385,7 @@ uint32 FNiagaraSceneProxy::GetMemoryFootprint() const
 
 uint32 FNiagaraSceneProxy::GetAllocatedSize() const
 { 
-	uint32 Size = FPrimitiveSceneProxy::GetAllocatedSize();
+	uint32 Size = uint32(FPrimitiveSceneProxy::GetAllocatedSize());
 	if (RenderData)
 	{
 		Size += RenderData->GetDynamicDataSize();
@@ -450,6 +462,8 @@ void FNiagaraSceneProxy::GatherSimpleLights(const FSceneViewFamily& ViewFamily, 
 UNiagaraComponent::UNiagaraComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, bForceSolo(false)
+	, bOverrideWarmupSettings(false)
+	, WarmupTickDelta(1.0f / 15.0f)
 	, AgeUpdateMode(ENiagaraAgeUpdateMode::TickDeltaTime)
 	, DesiredAge(0.0f)
 	, LastHandledDesiredAge(0.0f)
@@ -542,6 +556,14 @@ void UNiagaraComponent::InitForPerformanceBaseline()
 	bNeverDistanceCull = true;
 	SetAllowScalability(false);
 	SetPreviewLODDistance(true, 1.0f, 10000.0f);
+}
+
+void UNiagaraComponent::SetLODDistance(float InLODDistance, float InMaxLODDistance)
+{
+	if (!bEnablePreviewLODDistance && SystemInstanceController)
+	{
+		SystemInstanceController->SetLODDistance(InLODDistance, InMaxLODDistance, false);
+	}
 }
 
 void UNiagaraComponent::SetEmitterEnable(FName EmitterName, bool bNewEnableState)
@@ -713,6 +735,17 @@ void UNiagaraComponent::TickComponent(float DeltaSeconds, enum ELevelTick TickTy
 		INC_DWORD_STAT_BY(STAT_TotalNiagaraSystemInstances, 1);
 		INC_DWORD_STAT_BY(STAT_TotalNiagaraSystemInstancesSolo, 1);
 
+		// Support for pausing / playback rate from the debugger
+		if (FNiagaraWorldManager* WorldManager = FNiagaraWorldManager::Get(GetWorld()))
+		{
+			if (WorldManager->GetDebugPlaybackMode() == ENiagaraDebugPlaybackMode::Paused)
+			{
+				return;
+			}
+
+			DeltaSeconds *= WorldManager->GetDebugPlaybackRate();
+		}
+
 		// If we have a sim cache attached then use that
 		if ( SimCache != nullptr )
 		{
@@ -742,57 +775,51 @@ void UNiagaraComponent::TickComponent(float DeltaSeconds, enum ELevelTick TickTy
 		{
 			float AgeDiff = FMath::Max(DesiredAge, 0.0f) - SystemInstanceController->GetAge();
 			int32 TicksToProcess = 0;
-			if (bLockDesiredAgeDeltaTimeToSeekDelta && FMath::Abs(AgeDiff) < KINDA_SMALL_NUMBER)
+
+			if (AgeDiff < 0.0f)
 			{
-				AgeDiff = 0.0f;
+				SystemInstanceController->Reset(FNiagaraSystemInstance::EResetMode::ResetAll);
+				AgeDiff = DesiredAge - SystemInstanceController->GetAge();
 			}
-			else
+
+			if (FMath::Abs(AgeDiff) >= UE_KINDA_SMALL_NUMBER)
 			{
-				if (AgeDiff < 0.0f)
+				FNiagaraSystemSimulation* SystemSim = SystemInstanceController->GetSoloSystemSimulation().Get();
+				if (SystemSim)
 				{
-					SystemInstanceController->Reset(FNiagaraSystemInstance::EResetMode::ResetAll);
-					AgeDiff = DesiredAge - SystemInstanceController->GetAge();
-				}
-				
-				if (AgeDiff > 0.0f)
-				{
-					FNiagaraSystemSimulation* SystemSim = SystemInstanceController->GetSoloSystemSimulation().Get();
-					if (SystemSim)
+					const bool bFixedTickDelta = Asset->HasFixedTickDelta();
+					const float TickDelta = bFixedTickDelta ? Asset->GetFixedTickDeltaTime() : SeekDelta;
+					if (bLockDesiredAgeDeltaTimeToSeekDelta || AgeDiff > TickDelta)
 					{
-						const bool bFixedTickDelta = Asset->HasFixedTickDelta();
-						const float TickDelta = bFixedTickDelta ? Asset->GetFixedTickDeltaTime() : SeekDelta;
-						if (bLockDesiredAgeDeltaTimeToSeekDelta || AgeDiff > TickDelta)
+						// If we're locking the delta time to the seek delta, or we need to seek more than a frame, tick the simulation by the seek delta.
+						const bool bUseMaxSimTime = MaxSimTime > 0.0f;
+						const double EndMaxSimTime = bUseMaxSimTime ? FPlatformTime::Seconds() + MaxSimTime : 0.0f;
+
+						TicksToProcess = FMath::FloorToInt(AgeDiff / TickDelta);
+						while ( TicksToProcess > 0 )
 						{
-							// If we're locking the delta time to the seek delta, or we need to seek more than a frame, tick the simulation by the seek delta.
-							const bool bUseMaxSimTime = MaxSimTime > 0.0f;
-							const double EndMaxSimTime = bUseMaxSimTime ? FPlatformTime::Seconds() + MaxSimTime : 0.0f;
+							// Cannot do multiple tick off the game thread here without additional work. So we pass in null for the completion event which will force GT execution.
+							// If this becomes a perf problem I can add a new path for the tick code to handle multiple ticks.
+							SystemInstanceController->ManualTick(TickDelta, nullptr);
+							--TicksToProcess;
 
-							TicksToProcess = FMath::FloorToInt(AgeDiff / TickDelta);
-							while ( TicksToProcess > 0 )
+							// This limits the amount of time we will consume seeking forward
+							if ( bUseMaxSimTime )
 							{
-								// Cannot do multiple tick off the game thread here without additional work. So we pass in null for the completion event which will force GT execution.
-								// If this becomes a perf problem I can add a new path for the tick code to handle multiple ticks.
-								SystemInstanceController->ManualTick(TickDelta, nullptr);
-								--TicksToProcess;
-
-								// This limits the amount of time we will consume seeking forward
-								if ( bUseMaxSimTime )
+								const double CurrentTime = FPlatformTime::Seconds();
+								if ( CurrentTime >= EndMaxSimTime )
 								{
-									const double CurrentTime = FPlatformTime::Seconds();
-									if ( CurrentTime >= EndMaxSimTime )
-									{
-										break;
-									}
+									break;
 								}
 							}
 						}
-						else
+					}
+					else
+					{
+						// Otherwise just tick by the age difference.
+						if (!bFixedTickDelta || AgeDiff >= TickDelta)
 						{
-							// Otherwise just tick by the age difference.
-							if (!bFixedTickDelta || AgeDiff >= TickDelta)
-							{
-								SystemInstanceController->ManualTick(AgeDiff, nullptr);
-							}
+							SystemInstanceController->ManualTick(AgeDiff, nullptr);
 						}
 					}
 				}
@@ -852,11 +879,7 @@ void UNiagaraComponent::ResetSystem()
 
 void UNiagaraComponent::ReinitializeSystem()
 {
-	const bool bCachedAutoDestroy = bAutoDestroy;
-	bAutoDestroy = false;
-	DestroyInstance();
-	bAutoDestroy = bCachedAutoDestroy;
-
+	DestroyInstanceNotComponent();
 	Activate(true);
 }
 
@@ -882,7 +905,7 @@ void UNiagaraComponent::AdvanceSimulationByTime(float SimulateTime, float TickDe
 {
 	if (SystemInstanceController.IsValid() && TickDeltaSeconds > SMALL_NUMBER)
 	{
-		int32 TickCount = SimulateTime / TickDeltaSeconds;
+		const int32 TickCount = FMath::FloorToInt(SimulateTime / TickDeltaSeconds);
 		SystemInstanceController->AdvanceSimulation(TickCount, TickDeltaSeconds);
 	}
 }
@@ -907,6 +930,11 @@ bool UNiagaraComponent::IsPaused()const
 UNiagaraDataInterface* UNiagaraComponent::GetDataInterface(const FString& Name)
 {
 	return UNiagaraFunctionLibrary::GetDataInterface(UNiagaraDataInterface::StaticClass(), this, *Name);
+}
+
+void UNiagaraComponent::SetSystemSignificanceIndex(int32 InIndex)
+{
+	if(SystemInstanceController) SystemInstanceController->SetSystemSignificanceIndex(InIndex);
 }
 
 bool UNiagaraComponent::IsWorldReadyToRun() const
@@ -944,8 +972,8 @@ bool UNiagaraComponent::InitializeSystem()
 		const bool bPooled = PoolingMethod != ENCPoolMethod::None;
 		OverrideParameters.MarkParametersDirty(); // new system instance means new lwc tile, so any position user params need to be re-evaluated
 
-		SystemInstanceController = MakeShared<FNiagaraSystemInstanceController, ESPMode::ThreadSafe>();
-		SystemInstanceController->Initialize(*World, *Asset, &OverrideParameters, this, TickBehavior, bPooled, RandomSeedOffset, RequiresSoloMode());
+		SystemInstanceController = MakeShared<FNiagaraSystemInstanceController, ESPMode::ThreadSafe>();		
+		SystemInstanceController->Initialize(*World, *Asset, &OverrideParameters, this, TickBehavior, bPooled, RandomSeedOffset, RequiresSoloMode(), bOverrideWarmupSettings ? WarmupTickCount : -1, WarmupTickDelta);
 		SystemInstanceController->SetOnPostTick(FNiagaraSystemInstance::FOnPostTick::CreateUObject(this, &UNiagaraComponent::PostSystemTick_GameThread));
 		SystemInstanceController->SetOnComplete(FNiagaraSystemInstance::FOnComplete::CreateUObject(this, &UNiagaraComponent::OnSystemComplete));
 
@@ -956,7 +984,7 @@ bool UNiagaraComponent::InitializeSystem()
 		{
 			SystemInstanceController->SetGpuComputeDebug(bEnableGpuComputeDebug != 0);
 		}
-
+		
 		if (bEnablePreviewLODDistance)
 		{
 			SystemInstanceController->SetLODDistance(PreviewLODDistance, PreviewMaxDistance, true);
@@ -1050,8 +1078,8 @@ void UNiagaraComponent::ActivateInternal(bool bReset /* = false */, bool bIsScal
 		return;
 	}
 
-	// Should we force activation to fail?
-	if (UNiagaraComponentSettings::ShouldSuppressActivation(Asset))
+	// Is the system allowed to run or not?
+	if (FNiagaraComponentSettings::IsSystemAllowedToRun(Asset) == false)
 	{
 		return;
 	}
@@ -1292,6 +1320,21 @@ void UNiagaraComponent::DeactivateInternal(bool bIsScalabilityCull /* = false */
 void UNiagaraComponent::DeactivateImmediate()
 {
 	DeactivateImmediateInternal(false);
+}
+
+ENiagaraExecutionState UNiagaraComponent::GetRequestedExecutionState() const
+{
+	return SystemInstanceController ? SystemInstanceController->GetRequestedExecutionState() : ENiagaraExecutionState::Complete;
+}
+
+ENiagaraExecutionState UNiagaraComponent::GetExecutionState() const
+{
+	return SystemInstanceController ? SystemInstanceController->GetActualExecutionState() : ENiagaraExecutionState::Complete;
+}
+
+bool UNiagaraComponent::IsComplete() const
+{
+	return SystemInstanceController ? SystemInstanceController->IsComplete() : true;
 }
 
 void UNiagaraComponent::DeactivateImmediateInternal(bool bIsScalabilityCull)
@@ -1551,6 +1594,7 @@ void UNiagaraComponent::DestroyInstance()
 {
 	//UE_LOG(LogNiagara, Log, TEXT("UNiagaraComponent::DestroyInstance: %p - %p  %s\n"), this, SystemInstance.Get(), *GetAsset()->GetFullName());
 	//UE_LOG(LogNiagara, Log, TEXT("DestroyInstance: %p - %s"), this, *Asset->GetName());
+
 	SetActiveFlag(false);
 	UnregisterWithScalabilityManager();
 
@@ -1569,6 +1613,19 @@ void UNiagaraComponent::DestroyInstance()
 	OnSystemInstanceChangedDelegate.Broadcast();
 #endif
 	MarkRenderStateDirty();
+}
+
+void UNiagaraComponent::DestroyInstanceNotComponent()
+{
+	const bool bCachedAutoDestroy = bAutoDestroy;
+	const ENCPoolMethod CachedPoolMethod = PoolingMethod;
+	bAutoDestroy = false;
+	PoolingMethod = ENCPoolMethod::None;
+
+	DestroyInstance();
+
+	bAutoDestroy = bCachedAutoDestroy;
+	PoolingMethod = CachedPoolMethod;
 }
 
 void UNiagaraComponent::OnPooledReuse(UWorld* NewWorld)
@@ -1850,6 +1907,11 @@ void UNiagaraComponent::DestroyCullProxy()
 	}
 }
 
+FParticlePerfStatsContext UNiagaraComponent::GetPerfStatsContext()
+{
+	return FParticlePerfStatsContext(GetWorld(), Asset, this);
+}
+
 TSharedPtr<FNiagaraSystemSimulation, ESPMode::ThreadSafe> UNiagaraComponent::GetSystemSimulation()
 {
 	if (SystemInstanceController)
@@ -2005,6 +2067,21 @@ FPrimitiveSceneProxy* UNiagaraComponent::CreateSceneProxy()
 	LLM_SCOPE(ELLMTag::Niagara);
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraCreateSceneProxy);
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraOverview_GT);
+    
+	if (Asset != nullptr)
+	{
+		// PSO request should have been handled by the Asset itself, so here we just ensure the request gets boosted
+		if (!bPSOPrecacheCalled)
+		{
+			PrecacheAssetPSOs(Asset);
+		}
+
+		if (IsPSOPrecaching())
+		{
+			UE_LOG(LogNiagara, Verbose, TEXT("Skipping CreateSceneProxy for UNiagaraComponent %s (UNiagaraSystem PSOs are still compiling)"), *GetFullName());
+			return nullptr;
+		}
+	}
 
 	// The constructor will set up the System renderers from the component.
 	FNiagaraSceneProxy* Proxy = new FNiagaraSceneProxy(this);
@@ -3111,7 +3188,7 @@ void UNiagaraComponent::SynchronizeWithSourceSystem()
 	// Synchronizing parameters will create new data interface objects and if the old data
 	// interface objects are currently being used by a simulation they may be destroyed due to garbage
 	// collection, so preemptively kill the instance here.
-	DestroyInstance();
+	DestroyInstanceNotComponent();
 
 	//TODO: Look through params in system in "Owner" namespace and add to our parameters.
 	if (Asset == nullptr)
@@ -3146,10 +3223,29 @@ void FixInvalidDataInterfaceOverrides(TMap<FNiagaraVariableBase, FNiagaraVariant
 		FNiagaraVariant& Value = VariableValuePair.Value;
 		if (Variable.IsDataInterface())
 		{
-			if (Value.GetDataInterface() == nullptr)
+			UNiagaraDataInterface* DataInterface = Value.GetDataInterface();
+			if (DataInterface == nullptr)
 			{
-				UE_LOG(LogNiagara, Warning, TEXT("Replaced invalid user parameter data interface with it's default.  Component: %s Override Source: %s Parameter Name: %s."), *OwningComponent->GetPathName(), *OverrideSource, *Variable.GetName().ToString());
-				Value.SetDataInterface(NewObject<UNiagaraDataInterface>(OwningComponent, Variable.GetType().GetClass(), NAME_None, RF_Transactional | RF_Public));
+				UE_LOG(LogNiagara, Warning, TEXT("Replaced null user parameter data interface with it's default.  Component: %s Override Source: %s Parameter Name: %s."), *OwningComponent->GetPathName(), *OverrideSource, *Variable.GetName().ToString());
+			}
+			else if (DataInterface->GetClass() != Variable.GetType().GetClass())
+			{
+				UE_LOG(LogNiagara, Warning, TEXT("Replaced invalid class '%s' user parameter data interface '%s' with it's default.  Component: %s Override Source: %s Parameter Name: %s."), *DataInterface->GetClass()->GetName(), *Variable.GetType().GetClass()->GetName(), *OwningComponent->GetPathName(), *OverrideSource, *Variable.GetName().ToString());
+				DataInterface = nullptr;
+			}
+			if (DataInterface == nullptr)
+			{
+				DataInterface = NewObject<UNiagaraDataInterface>(OwningComponent, Variable.GetType().GetClass(), NAME_None, RF_Transactional | RF_Public);
+				if (UNiagaraSystem* NiagaraSystem = OwningComponent->GetAsset())
+				{
+					const int32* DataInterfaceOffset = NiagaraSystem->GetExposedParameters().FindParameterOffset(Variable);
+					UNiagaraDataInterface* SourceDataInterface = DataInterfaceOffset ? NiagaraSystem->GetExposedParameters().GetDataInterface(*DataInterfaceOffset) : nullptr;
+					if (DataInterfaceOffset != nullptr)
+					{
+						SourceDataInterface->CopyTo(DataInterface);
+					}
+				}
+				Value.SetDataInterface(DataInterface);
 			}
 		}
 	}
@@ -3193,6 +3289,33 @@ void UNiagaraComponent::FixInvalidUserParameterOverrideData()
 				ConvertOverrideToPosition(TemplateParameterOverrides);
 				
 				ExistingVar = PositionVar;
+			}
+		}
+		// Check for invalid or missing data interfaces
+		else if (ExistingVar.IsDataInterface())
+		{
+			UNiagaraDataInterface* DataInterface = OverrideParameters.GetDataInterface(ExistingVar);
+			if (DataInterface == nullptr)
+			{
+				UE_LOG(LogNiagara, Log, TEXT("ParameterStore has null data interface '%s' for variable '%s', making a default."), *ExistingVar.GetType().GetClass()->GetName(), *ExistingVar.GetName().ToString());
+			}
+			else if (DataInterface->GetClass() != ExistingVar.GetType().GetClass())
+			{
+				UE_LOG(LogNiagara, Log, TEXT("ParameterStore has invalid type '%s' data interface '%s' for variable '%s', making a default."), *DataInterface->GetClass()->GetName(), *ExistingVar.GetType().GetClass()->GetName(), *ExistingVar.GetName().ToString());
+				DataInterface = nullptr;
+			}
+
+			if (DataInterface == nullptr)
+			{
+				DataInterface = NewObject<UNiagaraDataInterface>(this, ExistingVar.GetType().GetClass(), NAME_None, RF_Transactional | RF_Public);
+				if ( SourceVars.Contains(ExistingVar) )
+				{
+					if ( UNiagaraDataInterface* SourceDataInterface = Asset->GetExposedParameters().GetDataInterface(ExistingVar) )
+					{
+						SourceDataInterface->CopyTo(DataInterface);
+					}
+				}
+				OverrideParameters.SetDataInterface(DataInterface, ExistingVar);
 			}
 		}
 	}
@@ -3526,6 +3649,11 @@ void UNiagaraComponent::SetAutoDestroy(bool bInAutoDestroy)
 	}
 }
 
+FNiagaraSystemInstance* UNiagaraComponent::GetSystemInstance() const
+{
+	return SystemInstanceController ? SystemInstanceController->GetSystemInstance_Unsafe() : nullptr;
+}
+
 void UNiagaraComponent::SetPreviewLODDistance(bool bInEnablePreviewLODDistance, float InPreviewLODDistance, float InPreviewMaxDistance)
 {
 	bEnablePreviewLODDistance = bInEnablePreviewLODDistance;
@@ -3643,7 +3771,7 @@ void UNiagaraComponent::SetAsset(UNiagaraSystem* InAsset, bool bResetExistingOve
 
 	const bool bWasActive = SystemInstanceController && SystemInstanceController->GetRequestedExecutionState() == ENiagaraExecutionState::Active;
 
-	DestroyInstance();
+	DestroyInstanceNotComponent();
 
 	// Set new asset, update parameters and reactivate it it was already active
 	Asset = InAsset;

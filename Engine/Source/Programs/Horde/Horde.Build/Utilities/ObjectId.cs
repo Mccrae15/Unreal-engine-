@@ -7,7 +7,6 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using EpicGames.Core;
-using EpicGames.Serialization;
 using MongoDB.Bson;
 using MongoDB.Bson.Serialization;
 using MongoDB.Bson.Serialization.Serializers;
@@ -51,6 +50,10 @@ namespace Horde.Build.Utilities
 		/// <inheritdoc cref="ObjectId.GenerateNewId()"/>
 		[SuppressMessage("Design", "CA1000:Do not declare static members on generic types", Justification = "<Pending>")]
 		public static ObjectId<T> GenerateNewId() => new ObjectId<T>(ObjectId.GenerateNewId());
+
+		/// <inheritdoc cref="ObjectId.GenerateNewId(DateTime)"/>
+		[SuppressMessage("Design", "CA1000:Do not declare static members on generic types", Justification = "<Pending>")]
+		public static ObjectId<T> GenerateNewId(DateTime timestamp) => new ObjectId<T>(ObjectId.GenerateNewId(timestamp));
 
 		/// <inheritdoc cref="ObjectId.Parse(String)"/>
 		[SuppressMessage("Design", "CA1000:Do not declare static members on generic types", Justification = "<Pending>")]

@@ -22,6 +22,24 @@
 namespace UE::CADKernel
 {
 
+namespace SewOption
+{
+static bool IsForceJoining(ESewOption SewOptions)
+{
+	return (SewOptions & ESewOption::ForceJoining) == ESewOption::ForceJoining;
+}
+
+static bool IsRemoveThinFaces(ESewOption SewOptions)
+{
+	return (SewOptions & ESewOption::RemoveThinFaces) == ESewOption::RemoveThinFaces;
+}
+
+static bool IsRemoveDuplicatedFaces(ESewOption SewOptions)
+{
+	return (SewOptions & ESewOption::RemoveDuplicatedFaces) == ESewOption::RemoveDuplicatedFaces;
+}
+} // namespace
+
 namespace TopomakerTools
 {
 
@@ -199,7 +217,7 @@ void StitchParallelEdges(TArray<TSharedPtr<FTopologicalVertex>>& VerticesToProce
 
 	for (int32 VertexI = 0; VertexI < VerticesToProcess.Num(); ++VertexI)
 	{
-		TSharedPtr<FTopologicalVertex>& Vertex = VerticesToProcess[VertexI];
+		TSharedPtr<FTopologicalVertex> Vertex = VerticesToProcess[VertexI];
 
 		if (!Vertex.IsValid() || Vertex->IsDeleted() || !Vertex->IsBorderVertex())
 		{
@@ -289,6 +307,11 @@ void StitchParallelEdges(TArray<TSharedPtr<FTopologicalVertex>>& VerticesToProce
 						VerticesToProcess.Add(NewVertex);
 					}
 				}
+
+				if (!Vertex.IsValid() || Vertex->IsDeleted() || !Vertex->IsBorderVertex())
+				{
+					break;
+				}
 			}
 		}
 	}
@@ -315,9 +338,8 @@ void MergeCoincidentEdges(FTopologicalEdge* Edge, double MinEdgeLength)
 
 	const bool bFirstEdgeBorder = Edge->IsBorder();
 
-	for (int32 Index = 0; Index < ConnectedEdgeCount; ++Index)
+	for (FTopologicalEdge* SecondEdge : ConnectedEdges)
 	{
-		FTopologicalEdge* SecondEdge = ConnectedEdges[Index];
 		if (SecondEdge == Edge || !SecondEdge->IsActiveEntity() || SecondEdge->IsDegenerated())
 		{
 			continue;
@@ -398,10 +420,10 @@ void MergeCoincidentEdges(TArray<TSharedPtr<FTopologicalVertex>>& VerticesToProc
 
 } // namespace TopomakerTools
 
-FTopomaker::FTopomaker(FSession& InSession, double InTolerance, double InForceFactor)
+FTopomaker::FTopomaker(FSession& InSession, const FTopomakerOptions& InOptions)
 	: Session(InSession)
 {
-	SetTolerance(InTolerance, InForceFactor);
+	SetTolerance(InOptions);
 
 	int32 ShellCount = 0;
 	for (const TSharedPtr<FBody>& Body : Session.GetModel().GetBodies())
@@ -421,17 +443,17 @@ FTopomaker::FTopomaker(FSession& InSession, double InTolerance, double InForceFa
 	InitFaces();
 }
 
-FTopomaker::FTopomaker(FSession& InSession, const TArray<TSharedPtr<FTopologicalFace>>& InFaces, double InTolerance, double InForceFactor)
+FTopomaker::FTopomaker(FSession& InSession, const TArray<TSharedPtr<FTopologicalFace>>& InFaces, const FTopomakerOptions& InOptions)
 	: Session(InSession)
 	, Faces(InFaces)
 {
-	SetTolerance(InTolerance, InForceFactor);
+	SetTolerance(InOptions);
 }
 
-FTopomaker::FTopomaker(FSession& InSession, const TArray<TSharedPtr<FShell>>& InShells, double InTolerance, double InForceFactor)
+FTopomaker::FTopomaker(FSession& InSession, const TArray<TSharedPtr<FShell>>& InShells, const FTopomakerOptions& InOptions)
 	: Session(InSession)
 {
-	SetTolerance(InTolerance, InForceFactor);
+	SetTolerance(InOptions);
 
 	Shells.Reserve(InShells.Num());
 	for (const TSharedPtr<FShell>& Shell : InShells)
@@ -511,11 +533,11 @@ void FTopomaker::EmptyShells()
 {
 	for (FShell* Shell : Shells)
 	{
-		Shell->Empty();
+		Shell->RemoveFaces();
 	}
 }
 
-void FTopomaker::Sew(bool bForceJoining, bool bRemoveThinFaces)
+void FTopomaker::Sew()
 {
 	FTimePoint StartJoinTime = FChrono::Now();
 
@@ -528,7 +550,7 @@ void FTopomaker::Sew(bool bForceJoining, bool bRemoveThinFaces)
 	// basic case: merge pair of edges connected together at both extremities i.e. pair of edges with same extremity active vertices.
 	TopomakerTools::MergeCoincidentEdges(BorderVertices, EdgeLengthTolerance);
 
-	if (bRemoveThinFaces)
+	if (SewOption::IsRemoveThinFaces(SewOptions))
 	{
 		TArray<FTopologicalEdge*> NewBorderEdges;
 		RemoveThinFaces(NewBorderEdges);
@@ -536,7 +558,7 @@ void FTopomaker::Sew(bool bForceJoining, bool bRemoveThinFaces)
 
 	MergeUnconnectedSuccessiveEdges();
 
-	if (bForceJoining)
+	if (SewOption::IsForceJoining(SewOptions))
 	{
 		BorderVertices.Empty(BorderVertices.Num());
 		GetBorderVertices(BorderVertices);
@@ -545,11 +567,18 @@ void FTopomaker::Sew(bool bForceJoining, bool bRemoveThinFaces)
 		CheckSelfConnectedEdge(LargeEdgeLengthTolerance, BorderVertices);
 	}
 
+	const bool bForceJoining = SewOption::IsForceJoining(SewOptions);
+
 	// re process with new edges from MergeUnconnectedSuccessiveEdges and new merged vertices (if bForceJoining)
 	TopomakerTools::MergeCoincidentEdges(BorderVertices, bForceJoining ? LargeEdgeLengthTolerance : EdgeLengthTolerance);
 
 	// advance case: two partially coincident edges connected at one extremity i.e. coincident along the shortest edge
 	TopomakerTools::StitchParallelEdges(BorderVertices, bForceJoining ? SewToleranceToForceJoin : SewTolerance, bForceJoining ? LargeEdgeLengthTolerance : EdgeLengthTolerance);
+
+	if (SewOption::IsRemoveDuplicatedFaces(SewOptions))
+	{
+		RemoveDuplicatedFaces();
+	}
 
 #ifdef CADKERNEL_DEV
 	Report.SewDuration = FChrono::Elapse(StartJoinTime);
@@ -628,7 +657,6 @@ void FTopomaker::MergeUnconnectedSuccessiveEdges()
 		{
 			TArray<FOrientedEdge>& Edges = Loop->GetEdges();
 			int32 EdgeCount = Edges.Num();
-
 
 			// Find the starting edge i.e. the next edge of the first edge that its ending vertex is connecting to 3 or more edges 
 			// The algorithm start to the last edge of the loop, if it verifies the criteria then the first edge is the edges[0]
@@ -845,10 +873,8 @@ void FTopomaker::RemoveThinFaces(TArray<FTopologicalEdge*>& NewBorderEdges)
 		double GapSize = 0;
 		if (Analyer.IsThinFace(GapSize))
 		{
-			Face->Disjoin(NewBorderEdges);
+			Face->Remove(&NewBorderEdges);
 			DeletedFaces.Add(Face.Get());
-			Face->Delete();
-			Face->RemoveOfHost();
 #ifdef CADKERNEL_DEV
 			Report.AddThinFace();
 #endif
@@ -1110,7 +1136,6 @@ void FTopomaker::SplitIntoConnectedShells()
 		if (FaceSubset.MainShell != nullptr)
 		{
 			FShell* Shell = (FShell*)FaceSubset.MainShell;
-			Shell->Empty(FaceSubset.Faces.Num());
 			Shell->Add(FaceSubset.Faces);
 		}
 		else
@@ -1199,6 +1224,114 @@ void FTopomaker::OrientShells()
 	Report.OrientationDuration = FChrono::Elapse(StartTime);
 	FChrono::PrintClockElapse(EVerboseLevel::Log, TEXT(""), TEXT("Orient"), Report.OrientationDuration);
 #endif
+}
+
+void FTopomaker::RemoveDuplicatedFaces()
+{
+	FTimePoint StartTime = FChrono::Now();
+
+#ifdef DEBUG_REMOVE_DUPLICATED_FACES
+	F3DDebugSession _(TEXT("DOUBLE FACE"));
+#endif
+
+	TArray<FTopologicalFace*> NonManifoldFaces;
+	NonManifoldFaces.Reserve(Faces.Num() / 10);
+	for (TSharedPtr<FTopologicalFace>& FacePtr : Faces)
+	{
+		FTopologicalFace& Face = *FacePtr;
+		if (Face.IsDeleted())
+		{
+			continue;
+		}
+
+		if (Face.IsANonManifoldFace())
+		{
+			if (Face.IsAFullyNonManifoldFace())
+			{
+				if (Face.IsADuplicatedFace())
+				{
+#ifdef DEBUG_REMOVE_DUPLICATED_FACES
+					F3DDebugSession A(*FString::Printf(TEXT("Duplicated 1 %d"), Face.GetId()));
+					Display(Face);
+#endif
+					Face.Delete();
+#ifdef CADKERNEL_DEV
+					Report.AddDuplicatedFace();
+#endif
+				}
+			}
+			else
+			{
+				NonManifoldFaces.Add(&Face);
+			}
+		}
+	}
+
+
+	// Step 2: Process of Face with NonManifold and without border edges
+	for (FTopologicalFace* Face : NonManifoldFaces)
+	{
+		if (Face->IsDeleted() || !Face->IsANonManifoldFace())
+		{
+			continue;
+		}
+
+		if (!Face->IsABorderFace())
+		{
+			if (Face->IsADuplicatedFace())
+			{
+#ifdef DEBUG_REMOVE_DUPLICATED_FACES
+				F3DDebugSession A(*FString::Printf(TEXT("Duplicated 2 %d"), Face->GetId()));
+				Display(*Face);
+#endif
+				Face->Delete();
+#ifdef CADKERNEL_DEV
+				Report.AddDuplicatedFace();
+#endif
+			}
+		}
+	}
+
+	// Step 3: Process of the remaining non manifold Face
+	for (FTopologicalFace* Face : NonManifoldFaces)
+	{
+		if (Face->IsDeleted() || !Face->IsANonManifoldFace())
+		{
+			continue;
+		}
+
+		if (Face->IsADuplicatedFace())
+		{
+#ifdef DEBUG_REMOVE_DUPLICATED_FACES
+			F3DDebugSession A(*FString::Printf(TEXT("Border %d"), Face->GetId()));
+			Display(*Face);
+#endif
+			Face->Delete();
+#ifdef CADKERNEL_DEV
+			Report.AddNearlyDuplicatedFace();
+#endif
+		}
+	}
+
+#ifdef DEBUG_REMOVE_DUPLICATED_FACES
+	// Step 4: display the remaining Face
+	for (FTopologicalFace* Face : NonManifoldFaces)
+	{
+		if (Face->IsDeleted() || !Face->IsANonManifoldFace())
+		{
+			continue;
+		}
+
+		F3DDebugSession A(*FString::Printf(TEXT("Remaining %d"), Face->GetId()));
+		Display(*Face);
+	}
+#endif
+
+#ifdef CADKERNEL_DEV
+	Report.OrientationDuration = FChrono::Elapse(StartTime);
+	FChrono::PrintClockElapse(EVerboseLevel::Log, TEXT(""), TEXT("RemoveDuplicatedFaces"), Report.RemoveDuplicatedFacesDuration);
+#endif
+
 }
 
 }

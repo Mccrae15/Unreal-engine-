@@ -7,6 +7,8 @@
 #include "MovieSceneSequence.h"
 #include "MovieSceneSequenceTickManager.h"
 #include "Engine/Engine.h"
+#include "UObject/Stack.h"
+#include "Internationalization/Text.h"
 #include "GameFramework/WorldSettings.h"
 #include "Misc/RuntimeErrors.h"
 #include "Net/UnrealNetwork.h"
@@ -14,9 +16,12 @@
 #include "Engine/NetConnection.h"
 #include "EntitySystem/MovieSceneEntitySystemLinker.h"
 #include "EntitySystem/MovieSceneEntitySystemRunner.h"
+#include "Compilation/MovieSceneCompiledDataManager.h"
+#include "Evaluation/MovieSceneSequenceWeights.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/PlayerState.h"
 #include "Algo/BinarySearch.h"
+
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneSequencePlayer)
 
@@ -889,6 +894,16 @@ void UMovieSceneSequencePlayer::Initialize(UMovieSceneSequence* InSequence)
 	check(RunnerToUse);
 	RootTemplateInstance.Initialize(*Sequence, *this, nullptr, RunnerToUse);
 
+	if (!PlaybackSettings.bDynamicWeighting)
+	{
+		UMovieSceneCompiledDataManager* CompiledDataManager = RootTemplateInstance.GetCompiledDataManager();
+		FMovieSceneCompiledDataID       CompiledDataID      = RootTemplateInstance.GetCompiledDataID();
+		if (CompiledDataManager && CompiledDataID.IsValid())
+		{
+			PlaybackSettings.bDynamicWeighting = EnumHasAnyFlags(CompiledDataManager->GetEntryRef(CompiledDataID).AccumulatedFlags, EMovieSceneSequenceFlags::DynamicWeighting);
+		}
+	}
+
 	LatentActionManager.ClearLatentActions();
 
 	// Set up playback position (with offset) after Stop(), which will reset the starting time to StartTime
@@ -1087,12 +1102,15 @@ void UMovieSceneSequencePlayer::UpdateTimeCursorPosition_Internal(FFrameTime New
 			FMovieSceneEvaluationRange Range = UpdatePlayPosition(PlayPosition, NewPosition, Method);
 			UpdateMovieSceneInstance(Range, StatusOverride);
 
-			// If we are using replicated playback and are not an authoritative sequence player, we need to wait 
-			// for the server to tell us to finish.
+			// We have authority to finish playback if:
+			// 1. There's no playback replication (standalone sequence)
+			// 2. We are the server side of a replicated sequence
+			// 3. We are the client side of a replicated sequence, but playing is only happening on our side (i.e. the Play() method was
+			//    called only on the client, and the server sequence is stopped)
 			const bool bHasAuthorityToFinish = (
-					HasAuthority() || 
-					PlaybackClient == nullptr ||
-					!PlaybackClient->GetIsReplicatedPlayback());
+				(PlaybackClient == nullptr || !PlaybackClient->GetIsReplicatedPlayback()) ||
+				HasAuthority() ||
+				NetSyncProps.LastKnownStatus == EMovieScenePlayerStatus::Stopped);
 			if (bHasAuthorityToFinish)
 			{
 				FinishPlaybackInternal(NewPosition);
@@ -1221,6 +1239,11 @@ bool UMovieSceneSequencePlayer::IsDisablingEventTriggers(FFrameTime& DisabledUnt
 		return true;
 	}
 	return false;
+}
+
+bool UMovieSceneSequencePlayer::HasDynamicWeighting() const
+{
+	return PlaybackSettings.bDynamicWeighting;
 }
 
 void UMovieSceneSequencePlayer::PreEvaluation(const FMovieSceneContext& Context)
@@ -1781,18 +1804,54 @@ void UMovieSceneSequencePlayer::RunLatentActions()
 		return;
 	}
 
-	if (ensure(TickManager) && !EnumHasAnyFlags(Sequence->GetFlags(), EMovieSceneSequenceFlags::BlockingEvaluation))
+	if (SynchronousRunner)
 	{
-		TickManager->RunLatentActions();
-	}
-	else
-	{
-		check(SynchronousRunner);
 		LatentActionManager.RunLatentActions([this]
 		{
 			this->SynchronousRunner->Flush();
 		});
 	}
+	else if (ensure(TickManager) && !EnumHasAnyFlags(Sequence->GetFlags(), EMovieSceneSequenceFlags::BlockingEvaluation))
+	{
+		TickManager->RunLatentActions();
+	}
 }
 
+void UMovieSceneSequencePlayer::SetWeight(double InWeight)
+{
+	SetWeight(InWeight, MovieSceneSequenceID::Root);
+}
 
+void UMovieSceneSequencePlayer::SetWeight(double InWeight, FMovieSceneSequenceID SequenceID)
+{
+	UMovieSceneEntitySystemLinker* Linker = RootTemplateInstance.GetEntitySystemLinker();
+	if (Linker)
+	{
+		if (!SequenceWeights)
+		{
+			SequenceWeights = MakeUnique<UE::MovieScene::FSequenceWeights>(Linker, RootTemplateInstance.GetRootInstanceHandle());
+
+			if (!PlaybackSettings.bDynamicWeighting && Sequence)
+			{
+				FText Text = NSLOCTEXT("UMovieSceneSequencePlayer", "SetWeightWarning", "Attempting to set a weight on sequence {0} with PlaybackSettings.bDynamicWeighting disabled. This may lead to undesireable blending artifacts or broken in/out blends.");
+				FFrame::KismetExecutionMessage(*FText::Format(Text, FText::FromString(Sequence->GetName())).ToString(), ELogVerbosity::Warning);
+			}
+		}
+
+		SequenceWeights->SetWeight(SequenceID, InWeight);
+	}
+}
+
+void UMovieSceneSequencePlayer::RemoveWeight()
+{
+	RemoveWeight(MovieSceneSequenceID::Root);
+}
+
+void UMovieSceneSequencePlayer::RemoveWeight(FMovieSceneSequenceID SequenceID)
+{
+	UMovieSceneEntitySystemLinker* Linker = RootTemplateInstance.GetEntitySystemLinker();
+	if (Linker && SequenceWeights)
+	{
+		SequenceWeights->RemoveWeight(SequenceID);
+	}
+}

@@ -2,34 +2,27 @@
 
 #include "Engine/Texture.h"
 
-#include "Misc/App.h"
+#include "EngineLogs.h"
 #include "Modules/ModuleManager.h"
-#include "Materials/MaterialInterface.h"
 #include "Materials/Material.h"
+#include "MaterialShared.h"
+#include "Math/ColorList.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/FeedbackContext.h"
-#include "Misc/ScopeExit.h"
-#include "HAL/LowLevelMemTracker.h"
 #include "UObject/UObjectIterator.h"
 #include "UObject/ObjectSaveContext.h"
-#include "TextureResource.h"
 #include "Engine/Texture2D.h"
-#include "Engine/VolumeTexture.h"
-#include "Streaming/TextureMipDataProvider.h"
 #include "Engine/TextureMipDataProviderFactory.h"
 #include "ContentStreaming.h"
 #include "EngineUtils.h"
-#include "Engine/AssetUserData.h"
-#include "EditorSupportDelegates.h"
 #include "IImageWrapper.h"
 #include "IImageWrapperModule.h"
-#include "EngineGlobals.h"
 #include "Engine/Engine.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Engine/TextureLODSettings.h"
 #include "RenderUtils.h"
 #include "Rendering/StreamableTextureResource.h"
-#include "TextureDerivedDataTask.h"
+#include "RenderingThread.h"
 #include "Interfaces/ITextureFormat.h"
 #include "Interfaces/ITextureFormatModule.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
@@ -40,12 +33,17 @@
 #include "ImageCoreUtils.h"
 #include "ImageUtils.h"
 #include "Algo/Unique.h"
+#include "DeviceProfiles/DeviceProfile.h"
+#include "DeviceProfiles/DeviceProfileManager.h"
 
 #if WITH_EDITOR
 #include "DerivedDataBuildVersion.h"
+#include "GuardedInt.h"
 #include "TextureCompiler.h"
 #include "Misc/ScopeRWLock.h"
 #endif
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(Texture)
 
 #if WITH_EDITORONLY_DATA
 	#include "EditorFramework/AssetImportData.h"
@@ -69,6 +67,16 @@ static TAutoConsoleVariable<int32> CVarVirtualTexturesAutoImport(
 	1,
 	TEXT("Enable virtual texture on texture import"),
 	ECVF_Default);
+
+// GSkipInvalidDXTDimensions prevents crash with non-4x4 aligned DXT
+// if the Texture code is working correctly, this should not be necessary
+// turn this bool off when possible ; FORT-515901
+int32 GSkipInvalidDXTDimensions = 1;
+static FAutoConsoleVariableRef CVarSkipInvalidDXTDimensions(
+	TEXT("r.SkipInvalidDXTDimensions"),
+	GSkipInvalidDXTDimensions,
+	TEXT("If set will skip over creating DXT textures that are smaller than 4x4 or other invalid dimensions.")
+);
 
 DEFINE_LOG_CATEGORY(LogTexture);
 DEFINE_LOG_CATEGORY(LogTextureUpload);
@@ -108,6 +116,7 @@ UTexture::UTexture(const FObjectInitializer& ObjectInitializer)
 		[this]()-> FTextureResource* { return GetResource(); },
 		[this](FTextureResource* InTextureResource) { SetResource(InTextureResource); })
 #endif
+	, TextureReference(*new FTextureReference())
 {
 	SRGB = true;
 	Filter = TF_Default;
@@ -137,6 +146,7 @@ UTexture::UTexture(const FObjectInitializer& ObjectInitializer)
 	//	but it's hard to change now because of UPROPERTY writing deltas to default
 	CompositePower = 1.0f;
 	bUseLegacyGamma = false;
+	bNormalizeNormals = false;
 	bIsImporting = false;
 	bCustomPropertiesImported = false;
 	bDoScaleMipsForAlphaCoverage = false;
@@ -149,6 +159,7 @@ UTexture::UTexture(const FObjectInitializer& ObjectInitializer)
 	CompressionYCoCg = 0;
 	Downscale = 0.f;
 	DownscaleOptions = ETextureDownscaleOptions::Default;
+	CookPlatformTilingSettings = TextureCookPlatformTilingSettings::TCPTS_FromTextureGroup;
 	Source.SetOwner(this);
 #endif // #if WITH_EDITORONLY_DATA
 
@@ -187,6 +198,18 @@ FTextureResource* UTexture::GetResource()
 	ensureMsgf(false, TEXT("Attempted to access a texture resource from an unkown thread."));
 	return nullptr;
 }
+
+UTexture::UTexture(FVTableHelper& Helper)
+	: TextureReference(*new FTextureReference())
+{
+}
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+UTexture::~UTexture()
+{
+	delete& TextureReference;
+}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 void UTexture::SetResource(FTextureResource* InResource)
 {
@@ -239,6 +262,65 @@ void UTexture::UpdateResource()
 	{
 		// Create a new texture resource.
 		FTextureResource* NewResource = CreateResource();
+
+		if (GSkipInvalidDXTDimensions != 0)
+		{
+			if (FStreamableTextureResource* StreamableResource = NewResource ? NewResource->GetStreamableTextureResource() : nullptr)
+			{
+				uint32 SizeX = StreamableResource->GetSizeX();
+				uint32 SizeY = StreamableResource->GetSizeY();
+				uint32 SizeZ = StreamableResource->GetSizeZ();
+
+				bool bIsBCN = false;
+				switch (StreamableResource->GetPixelFormat())
+				{
+				case PF_DXT1:
+				case PF_DXT3:
+				case PF_DXT5:
+				case PF_BC4:
+				case PF_BC5:
+				case PF_BC6H:
+				case PF_BC7:
+				{
+					bIsBCN = true;
+					break;
+				}
+				default:
+					break;
+				}
+
+				if (bIsBCN && (SizeX < 4 || (SizeX % 4) != 0 || SizeY < 4 || (SizeY % 4) != 0))
+				{
+					FTexturePlatformData** PtrPlatformData = GetRunningPlatformData();
+					const FTexturePlatformData* PlatformData = PtrPlatformData ? *PtrPlatformData : nullptr;
+			
+					int32 MipsNum=0;
+					int32 NumNonStreamingMips=0;
+					int32 NumNonOptionalMips=0;
+					int32 PDSizeX=0;
+					int32 PDSizeY=0;
+					if ( PlatformData )
+					{
+						MipsNum = PlatformData->Mips.Num();
+						bool bIsStreamingPossible = IsPossibleToStream();
+						NumNonStreamingMips = PlatformData->GetNumNonStreamingMips(bIsStreamingPossible);
+						NumNonOptionalMips = PlatformData->GetNumNonOptionalMips();
+						PDSizeX = PlatformData->SizeX;
+						PDSizeY = PlatformData->SizeY;
+					}
+
+					ensureMsgf( (SizeX%4)==0 && (SizeY%4) == 0, TEXT("Skipping init of %s texture %s with non 4x4-aligned size. Resource Size=%ix%ix%i. "
+						"Texture PD Size=%dx%d, mips=%d, nonstreaming=%d, nonopt=%d, LODBias=%d,cinematic=%d."), 
+						GPixelFormats[StreamableResource->GetPixelFormat()].Name, *GetName(), SizeX, SizeY, SizeZ,
+						PDSizeX,PDSizeY,MipsNum,NumNonStreamingMips,NumNonOptionalMips,
+						LODBias,NumCinematicMipLevels);
+
+					delete NewResource;
+					return;
+				}
+			}
+		}
+
 		SetResource(NewResource);
 		if (NewResource)
 		{
@@ -259,6 +341,8 @@ void UTexture::UpdateResource()
 			{
 				NewResource->SetTextureReference(TextureReference.TextureReferenceRHI);
 			});
+
+			NewResource->SetOwnerName(FName(GetPathName()));
 			BeginInitResource(NewResource);
 			// Now that the resource is ready for streaming, bind it to the streamer.
 			LinkStreaming();
@@ -364,6 +448,14 @@ bool UTexture::CanEditChange(const FProperty* InProperty) const
 	return true;
 }
 
+void UTexture::UpdateOodleTextureSdkVersionToLatest(void)
+{
+	// OodleTextureSdkVersion = get latest sdk version
+	//	this needs to get the actual version number so it will be IO'd frozen (not just "latest")
+	OodleTextureSdkVersion = CachedGetLatestOodleSdkVersion();
+}
+
+
 // we're in WITH_EDITOR but not sure that's right, maybe move out?
 // Beware: while ValidateSettingsAfterImportOrEdit should have been called on all Textures,
 //	 it is not called on load at runtime
@@ -461,7 +553,7 @@ void UTexture::ValidateSettingsAfterImportOrEdit(bool * pRequiresNotifyMaterials
 					// VT nonpow2 will fail to build
 					// force it into a state that will succeed? or just let it fail?
 					// you can either pad to pow2 or set MaxTextureSize and turn off VT
-				PowerOfTwoMode = ETexturePowerOfTwoSetting::PadToPowerOfTwo;
+					PowerOfTwoMode = ETexturePowerOfTwoSetting::PadToPowerOfTwo;
 				}
 				else
 				{
@@ -563,6 +655,7 @@ void UTexture::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEven
 		static const FName DeferCompressionName = GET_MEMBER_NAME_CHECKED(UTexture, DeferCompression);
 		static const FName SrgbName = GET_MEMBER_NAME_CHECKED(UTexture, SRGB);
 		static const FName VirtualTextureStreamingName = GET_MEMBER_NAME_CHECKED(UTexture, VirtualTextureStreaming);
+		static const FName FilterName = GET_MEMBER_NAME_CHECKED(UTexture, Filter);
 #if WITH_EDITORONLY_DATA
 		static const FName SourceColorSpaceName = GET_MEMBER_NAME_CHECKED(FTextureSourceColorSettings, ColorSpace);
 		static const FName CompressionQualityName = GET_MEMBER_NAME_CHECKED(UTexture, CompressionQuality);
@@ -572,6 +665,7 @@ void UTexture::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEven
 		const FName PropertyName = PropertyThatChanged->GetFName();
 
 		if ((PropertyName == CompressionSettingsName) ||
+			(PropertyName == FilterName) ||
 			(PropertyName == LODGroupName) ||
 			(PropertyName == SrgbName))
 		{
@@ -671,12 +765,9 @@ void UTexture::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEven
 		}
 	}
 
-	// Don't update the texture resource if we've turned "DeferCompression" on, as this would cause
-	// it to immediately update as an uncompressed texture.  If it's a render target, we always need
-	// to update the resource, to avoid an assert when rendering to it, due to a mismatch between the
-	// render target and scene render.
-	if( !DeferCompressionWasEnabled &&
-		((PropertyChangedEvent.ChangeType & EPropertyChangeType::Interactive) == 0 || GetTextureClass() == ETextureClass::RenderTarget))
+	// If it's a render target, we always need to update the resource, to avoid an assert when rendering to it,
+	// due to a mismatch between the render target and scene render.
+	if ( (PropertyChangedEvent.ChangeType & EPropertyChangeType::Interactive) == 0 || GetTextureClass() == ETextureClass::RenderTarget )
 	{
 		// Update the texture resource. This will recache derived data if necessary
 		// which may involve recompressing the texture.
@@ -920,13 +1011,20 @@ void UTexture::AppendToClassSchema(FAppendToClassSchemaContext& Context)
 void UTexture::PostInitProperties()
 {
 #if WITH_EDITORONLY_DATA
+	// this was set in the constructor :
+	// but it can be stomped from the archetype in duplication
+	// re-set it now :
+	//check( Source.Owner == this );
+	Source.SetOwner(this);
+
 	if (!HasAnyFlags(RF_ClassDefaultObject | RF_NeedLoad))
 	{
 		AssetImportData = NewObject<UAssetImportData>(this, TEXT("AssetImportData"));
 
-		// OodleTextureSdkVersion = get latest sdk version
-		//	this needs to get the actual version number so it will be IO'd frozen (not just "latest")
-		OodleTextureSdkVersion = CachedGetLatestOodleSdkVersion();
+		// this is for textures that are not being loaded
+		// eg. created from code, eg. lightmaps
+		// we want them to go ahead and use the latest oodle sdk, since their content is new anyway
+		UpdateOodleTextureSdkVersionToLatest();
 	}
 #endif
 	Super::PostInitProperties();
@@ -951,11 +1049,14 @@ void UTexture::PostLoad()
 
 #endif
 
+	if (IsCookPlatformTilingDisabled(nullptr)) // nullptr TargetPlatform means it will use UDeviceProfileManager::Get().GetActiveProfile() to get the tiling settings
+	{
+		// The texture was not processed/tiled during cook, so it has to be tiled when uploaded to the GPU if necessary
+		bNotOfflineProcessed = true;
+	}
+
 	if( !IsTemplate() )
 	{
-		// Update cached LOD bias.
-		UpdateCachedLODBias();
-
 		// The texture will be cached by the cubemap it is contained within on consoles.
 		UTextureCube* CubeMap = Cast<UTextureCube>(GetOuter());
 		if (CubeMap == NULL)
@@ -1086,6 +1187,10 @@ void UTexture::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
 
 	OutTags.Add(FAssetRegistryTag("SourceCompression", Source.GetSourceCompressionAsString(), FAssetRegistryTag::TT_Alphabetical));
 
+	OutTags.Add(FAssetRegistryTag("SourceFormat", 
+		StaticEnum<ETextureSourceFormat>()->GetDisplayNameTextByValue(Source.GetFormat()).ToString(),
+		FAssetRegistryTag::TT_Alphabetical));
+	
 	Super::GetAssetRegistryTags(OutTags);
 }
 #endif
@@ -1214,6 +1319,38 @@ TextureMipGenSettings UTexture::GetMipGenSettingsFromString(const TCHAR* InStr, 
 	return bTextureGroup ? TMGS_SimpleAverage : TMGS_FromTextureGroup;
 }
 
+bool UTexture::IsCookPlatformTilingDisabled(const ITargetPlatform* TargetPlatform) const
+{
+	if (CookPlatformTilingSettings.GetValue() == TextureCookPlatformTilingSettings::TCPTS_FromTextureGroup)
+	{
+		const UTextureLODSettings* TextureLODSettings = nullptr;
+
+		if (TargetPlatform)
+		{
+			TextureLODSettings = &TargetPlatform->GetTextureLODSettings();
+		}
+		else
+		{
+			TextureLODSettings = UDeviceProfileManager::Get().GetActiveProfile()->GetTextureLODSettings();
+
+			if (!TextureLODSettings)
+			{
+				return false;
+			}
+		}
+
+		check(TextureLODSettings);
+
+		checkf(LODGroup < TextureLODSettings->TextureLODGroups.Num(), 
+			TEXT("A texture had passed a bad LODGroup to UTexture::IsCookPlatformTilingDisabled (%d, out of %d groups). The texture name is '%s'."), 
+			LODGroup, TextureLODSettings->TextureLODGroups.Num(), *GetPathName());
+
+		return TextureLODSettings->TextureLODGroups[LODGroup].CookPlatformTilingDisabled;
+	}
+
+	return CookPlatformTilingSettings.GetValue() == TextureCookPlatformTilingSettings::TCPTS_DoNotTile;
+}
+
 void UTexture::SetDeterministicLightingGuid()
 {
 #if WITH_EDITORONLY_DATA
@@ -1259,15 +1396,24 @@ bool UTexture::ForceUpdateTextureStreaming()
 {
 	if (!IStreamingManager::HasShutdown())
 	{
+/*
+		// I'm not sure what the scope of this "ForceUpdate" is supposed to be
+		// but if you are trying to account for config changes that can change LODBias in Editor
+		// then that means the NumMips in the cached FStreamableRenderResourceState may have changed
+		// and they all need to be reset
+
 #if WITH_EDITOR
 		for( TObjectIterator<UTexture2D> It; It; ++It )
 		{
 			UTexture* Texture = *It;
 
-			// Update cached LOD bias.
-			Texture->UpdateCachedLODBias();
+			fill the 
+			FStreamableTextureResource::State
+			by re-calling
+			Texture->GetResourcePostInitState();
 		}
 #endif // #if WITH_EDITOR
+*/
 
 		// Make sure we iterate over all textures by setting it to high value.
 		IStreamingManager::Get().SetNumIterationsForNextFrame( 100 );
@@ -1371,9 +1517,7 @@ bool UTexture::IsPossibleToStream() const
 }
 
 #if WITH_EDITOR
-// Based on target platform, returns wether texture is candidate to be streamed.
-// This method is used to decide if PrimitiveComponent's bHasNoStreamableTextures flag can be set to true.
-// See ULevel::MarkNoStreamableTexturesPrimitiveComponents for details.
+// Based on target platform, returns whether texture is candidate to be streamed.
 bool UTexture::IsCandidateForTextureStreamingOnPlatformDuringCook(const ITargetPlatform* InTargetPlatform) const
 {
 	const bool bIsVirtualTextureStreaming = InTargetPlatform->SupportsFeature(ETargetPlatformFeatures::VirtualTextureStreaming) ? VirtualTextureStreaming : false;
@@ -1382,15 +1526,6 @@ bool UTexture::IsCandidateForTextureStreamingOnPlatformDuringCook(const ITargetP
 	if (bIsCandidateForTextureStreaming &&
 		IsPossibleToStream())
 	{
-		// If bCookedIsStreamable flag was previously computed, use it.
-		// This is computed _after_ the derived data is cached. It's only Reset() and used in the SerializeCookedPlatformData
-		// path.. but not the BeginCacheForCookedPlatformData path. Need to know what happens if you do
-		// one, then the other, as the flag will be set. Also note that this is an OR when multiple platforms
-		// are cooked... so this can be true for a non-streaming platform if it gets cooked with a streaming platform!
-		if (bCookedIsStreamable.IsSet())
-		{
-			return *bCookedIsStreamable;
-		}
 		return true;
 	}
 	return false;
@@ -1399,35 +1534,92 @@ bool UTexture::IsCandidateForTextureStreamingOnPlatformDuringCook(const ITargetP
 
 FStreamableRenderResourceState UTexture::GetResourcePostInitState(const FTexturePlatformData* PlatformData, bool bAllowStreaming, int32 MinRequestMipCount, int32 MaxMipCount, bool bSkipCanBeLoaded) const
 {
-	// Create the resource with a mip count limit taking in consideration the asset LODBias.
-	// This ensures that the mip count stays constant when toggling asset streaming at runtime.
-	const int32 NumMips = [&]() -> int32 
-	{
-		const int32 ExpectedAssetLODBias = FMath::Clamp<int32>(GetCachedLODBias() - NumCinematicMipLevels, 0, PlatformData->Mips.Num() - 1);
-		const int32 MaxRuntimeMipCount = FMath::Min<int32>(GMaxTextureMipCount, FStreamableRenderResourceState::MAX_LOD_COUNT);
-		if (MaxMipCount > 0)
-		{
-			return FMath::Min3<int32>(PlatformData->Mips.Num() - ExpectedAssetLODBias, MaxMipCount, MaxRuntimeMipCount);
-		}
-		else
-		{
-			return FMath::Min<int32>(PlatformData->Mips.Num() - ExpectedAssetLODBias, MaxRuntimeMipCount);
-		}
-	}();
-	
+	// Async caching of PlatformData must be done before calling this
+	//	if you call while async CachePlatformData is in progress, you get garbage out
+
+	// "FullLODBias" is == NumCincematicMipLevels + also maybe drop mip LODBias
+	//  the LODBias to drop mips is not added in cooked runs, because those mips have been already dropped
+	//  it is added in non-cooked runs because they are still present but we are trying to pretend they are not there
+	// "CinematicLODBias" is typically zero in cooked runs, = drop mip count in non-cooked runs
+
+	int32 FullLODBias = CalculateLODBias(true);
+	int32 CinematicLODBias = CalculateLODBias(false);
+	check( FullLODBias >= CinematicLODBias );
+
 	bool bTextureIsStreamable = IsPossibleToStream();
 
-	const int32 NumOfNonOptionalMips = FMath::Min<int32>(NumMips, PlatformData->GetNumNonOptionalMips());
-	const int32 NumOfNonStreamingMips = FMath::Min<int32>(NumMips, PlatformData->GetNumNonStreamingMips(bTextureIsStreamable));
+	int32 FullMipCount = PlatformData->Mips.Num();
+	int32 NumOfNonOptionalMips = PlatformData->GetNumNonOptionalMips();
+	int32 NumOfNonStreamingMips = PlatformData->GetNumNonStreamingMips(bTextureIsStreamable);
+	int32 NumMipsInTail = PlatformData->GetNumMipsInTail();
+
 	// Optional mips must be streaming mips :
 	check( NumOfNonOptionalMips >= NumOfNonStreamingMips );
+	// Mips in tail must be nonstreaming :
+	check( NumOfNonStreamingMips >= NumMipsInTail );
 
+	// Create the resource with a mip count limit taking in consideration the asset LODBias.
+	// This ensures that the mip count stays constant when toggling asset streaming at runtime.
+	
+	const int32 ExpectedAssetLODBias = FMath::Clamp<int32>(CinematicLODBias, 0, FullMipCount - 1);
+	// "ExpectedAssetLODBias" is the number of mips that would be dropped in cook
+	//		in a cooked run, it is zero
+
+	// in Editor the mips that will be dropped in cook are still present
+	//	dropping them is simulated by treating them as streamable
+	if ( ExpectedAssetLODBias > 0 && ! bTextureIsStreamable )
+	{
+		check( ! FPlatformProperties::RequiresCookedData() ); // ExpectedAssetLODBias should have been zero
+		NumOfNonStreamingMips = FullMipCount - ExpectedAssetLODBias;
+	}
+
+	// GMaxTextureMipCount is for the current running RHI
+	//  it may be lower than the number of mips we cooked (eg. on mobile)
+	//	we must limit the number of mips to this count.
+	const int32 MaxRuntimeMipCount = FMath::Min<int32>(GMaxTextureMipCount, FStreamableRenderResourceState::MAX_LOD_COUNT);
+
+	int32 NumMips = FMath::Min<int32>( FullMipCount - ExpectedAssetLODBias, MaxRuntimeMipCount );
+	// "NumMips" is the number of mips after drop LOD Bias
+	//	 it should be the same in Editor and Runtime
+
+	if (MaxMipCount > 0 && NumMips > MaxMipCount)
+	{
+		// MaxMipCount is almost always either 0 or == MaxRuntimeMipCount
+		// one exception is :
+		//	MobileReduceLoadedMips(NumMips);
+		// which can cause an additional reduction of NumMips
+		NumMips = MaxMipCount;
+	}
+	
+	// don't allow less than NumOfNonStreamingMips :
+	if ( NumMips < NumOfNonStreamingMips )
+	{
+		// if NumMips went under NumOfNonStreamingMips due to ExpectedAssetLODBias
+		//  then force it back up
+		// but if it went under due to MaxRuntimeMipCount
+		// then that's a problem
+
+		if ( NumOfNonStreamingMips > MaxRuntimeMipCount )
+		{
+			// this should never happen on a PC platform, only on mobile
+			// in that case streaming in the "nonstreaming" may actually be okay
+			// in the old code, this was expected behavior, let the MaxRuntimeMipCount trump the NonStreaming constraint
+			// in new code (with RequiredBlock4Alignment) we do not expect to see this any more, so warn :
+			UE_LOG(LogTexture, Warning, TEXT("NumOfNonStreamingMips > MaxRuntimeMipCount. (%s)"), *GetName());
+			NumOfNonStreamingMips = MaxRuntimeMipCount;
+		}
+
+		NumMips = NumOfNonStreamingMips;
+	}
+
+	check( NumMips >= NumMipsInTail );
+	
 	if ( NumOfNonStreamingMips == NumMips )
 	{
 		bTextureIsStreamable = false;
 	}
 
-	const int32 AssetMipIdxForResourceFirstMip = FMath::Max<int32>(0, PlatformData->Mips.Num() - NumMips);
+	const int32 AssetMipIdxForResourceFirstMip = FullMipCount - NumMips;
 
 	bool bMakeStreamable = false;
 	int32 NumRequestedMips = 0;
@@ -1479,40 +1671,38 @@ FStreamableRenderResourceState UTexture::GetResourcePostInitState(const FTexture
 		// but only if the texture itself is streamable
 
 		// Adjust CachedLODBias so that it takes into account FStreamableRenderResourceState::AssetLODBias.
-		const int32 ResourceLODBias = FMath::Max<int32>(0, GetCachedLODBias() - AssetMipIdxForResourceFirstMip);
-		//  ResourceLODBias almost always = NumCinematicMipLevels
-		//check( ResourceLODBias == NumCinematicMipLevels ); // this will be true unless you hit the MaxRuntimeMipCount clamp in NumMips
-		// if ResourceLODBias == 0 , this always selects NumRequestedMips = NumMips
+		const int32 ResourceLODBias = FMath::Max<int32>(0, FullLODBias - AssetMipIdxForResourceFirstMip);
+		//  ResourceLODBias almost always == NumCinematicMipLevels, unless you hit the MaxRuntimeMipCount clamp in NumMips
 
-		// Ensure NumMipsInTail is within valid range to safeguard on the above expressions. 
-		const int32 NumMipsInTail = FMath::Clamp<int32>(PlatformData->GetNumMipsInTail(), 1, NumMips);
-
-		// Bias is not allowed to shrink the mip count below NumMipsInTail.
-		NumRequestedMips = FMath::Max<int32>(NumMips - ResourceLODBias, NumMipsInTail);
+		// Bias is not allowed to shrink the mip count below NumOfNonStreamingMips.
+		NumRequestedMips = FMath::Max<int32>(NumMips - ResourceLODBias, NumOfNonStreamingMips);
 
 		// If trying to load optional mips, check if the first resource mip is available.
 		if (NumRequestedMips > NumOfNonOptionalMips && !DoesMipDataExist(AssetMipIdxForResourceFirstMip))
 		{
 			NumRequestedMips = NumOfNonOptionalMips;
 		}
-
-		// Ensure we don't request a top mip in the NonStreamingMips
-		NumRequestedMips = FMath::Max(NumRequestedMips,NumOfNonStreamingMips);
 	}
 
-	// @todo Oodle : this looks like a bug; did it mean to be MinRequestMipCount <= NumMips
+	// @todo Oodle : this looks like a bug; did it mean to be MinRequestMipCount <= NumMips ?
 	// typically MinRequestMipCount == 0
-	// the only place it's not zero is from UTexture2D::CreateResource from existing resource mem, where it is == NumMips
-	// but in that case it is ignored here because it is == NumMips, not <
-	if (NumRequestedMips < MinRequestMipCount && MinRequestMipCount < NumMips)
+	// the only place it's not zero is from UTexture2D::CreateResource from existing resource mem, where MinRequestMipCount is == NumMips
+	// but in that case it is ignored here because this branches on < instead of <=
+	if ( NumRequestedMips < MinRequestMipCount && MinRequestMipCount < NumMips )
 	{
+		// as written with < instead of <= this branch is not used
+
 		NumRequestedMips = MinRequestMipCount;
 	}
+
+	check( NumOfNonStreamingMips <= NumMips );
+	check( NumRequestedMips <= NumMips );
+	check( NumRequestedMips >= NumOfNonStreamingMips );
 
 	FStreamableRenderResourceState PostInitState;
 	PostInitState.bSupportsStreaming = bMakeStreamable;
 	PostInitState.NumNonStreamingLODs = (uint8)NumOfNonStreamingMips;
-	PostInitState.NumNonOptionalLODs = (uint8)NumOfNonOptionalMips;
+	PostInitState.NumNonOptionalLODs = (uint8) FMath::Min<int32>(NumOfNonOptionalMips,NumMips);
 	PostInitState.MaxNumLODs = (uint8)NumMips;
 	PostInitState.AssetLODBias = (uint8)AssetMipIdxForResourceFirstMip;
 	PostInitState.NumResidentLODs = (uint8)NumRequestedMips;
@@ -1879,6 +2069,7 @@ FTextureSource FTextureSource::CopyTornOff() const
 	Result.Owner = nullptr; // TornOffs don't count as belonging to the same owner
 	// Result can't talk to Owner any more, so save info we need :
 	check( Owner != nullptr );
+	check( &(Owner->Source) == this );
 	Result.TornOffGammaSpace = Owner->GetGammaSpace();
 	Result.TornOffTextureClass = Owner->GetTextureClass();
 	return Result;
@@ -2392,7 +2583,14 @@ EGammaSpace FTextureSource::GetGammaSpace(int LayerIndex) const
 	// TextureSource does not know its own gamma, but its owning Texture does :
 	if ( Owner != nullptr )
 	{
-		return Owner->GetGammaSpace();
+		check( &(Owner->Source) == this );
+
+		// same as Owner->GetGammaSpace , but uses LayerFormatSettings for SRGB flag
+		FTextureFormatSettings FormatSettings;
+		Owner->GetLayerFormatSettings(LayerIndex, FormatSettings);
+
+		EGammaSpace GammaSpace = FormatSettings.SRGB ? ( Owner->bUseLegacyGamma ? EGammaSpace::Pow22 : EGammaSpace::sRGB ) : EGammaSpace::Linear;
+		return GammaSpace;
 	}
 	else
 	{
@@ -2655,16 +2853,19 @@ int64 FTextureSource::CalcLayerSize(const FTextureSourceBlock& Block, int32 Laye
 {
 	int64 BytesPerPixel = GetBytesPerPixel(LayerIndex);
 
-	int64 TotalSize = 0;
+	// This is used for memory allocation, so use FCheckedInt to rigorously check against overflow issues.
+	FGuardedInt64 TotalSize(0);
 	for (int32 MipIndex = 0; MipIndex < Block.NumMips; ++MipIndex)
 	{
 		int32 MipSizeX = FMath::Max<int32>(Block.SizeX >> MipIndex, 1);
 		int32 MipSizeY = FMath::Max<int32>(Block.SizeY >> MipIndex, 1);
 		int32 MipSizeZ = GetMippedNumSlices(Block.NumSlices,MipIndex);
 
-		TotalSize += MipSizeX * MipSizeY * MipSizeZ * BytesPerPixel;
+		TotalSize += FGuardedInt64(MipSizeX) * MipSizeY * MipSizeZ * BytesPerPixel;
 	}
-	return TotalSize;
+
+	checkf(TotalSize.IsValid(), TEXT("Invalid (overflowing) mip sizes made it in to FTextureSource::CalcLayerSize! Check import locations for mip size validation"));
+	return TotalSize.Get(0);
 }
 
 int64 FTextureSource::CalcMipOffset(int32 BlockIndex, int32 LayerIndex, int32 OffsetToMipIndex) const
@@ -2673,7 +2874,8 @@ int64 FTextureSource::CalcMipOffset(int32 BlockIndex, int32 LayerIndex, int32 Of
 	GetBlock(BlockIndex, Block);
 	check(OffsetToMipIndex < Block.NumMips);
 
-	int64 MipOffset = BlockDataOffsets[BlockIndex];
+	// This is used for memory indexing, so use FCheckedInt to rigorously check against overflow issues.
+	FGuardedInt64 MipOffset(BlockDataOffsets[BlockIndex]);
 
 	// Skip over the initial layers within the tile
 	for (int i = 0; i < LayerIndex; ++i)
@@ -2689,10 +2891,11 @@ int64 FTextureSource::CalcMipOffset(int32 BlockIndex, int32 LayerIndex, int32 Of
 		int32 MipSizeY = FMath::Max<int32>(Block.SizeY >> MipIndex, 1);
 		int32 MipSizeZ = GetMippedNumSlices(Block.NumSlices,MipIndex);
 
-		MipOffset += MipSizeX * MipSizeY * MipSizeZ * BytesPerPixel;
+		MipOffset += FGuardedInt64(MipSizeX) * MipSizeY * MipSizeZ * BytesPerPixel;
 	}
 
-	return MipOffset;
+	checkf(MipOffset.IsValid(), TEXT("Invalid (overflowing) mip sizes made it in to FTextureSource::CalcMipOffset! Check import locations for mip size validation"));
+	return MipOffset.Get(0);
 }
 
 void FTextureSource::UseHashAsGuid()
@@ -2816,6 +3019,10 @@ void UTexture::GetDefaultFormatSettings(FTextureFormatSettings& OutSettings) con
 
 void UTexture::GetLayerFormatSettings(int32 LayerIndex, FTextureFormatSettings& OutSettings) const
 {
+#if WITH_EDITORONLY_DATA
+	check( Source.Owner == this );
+#endif
+
 	check(LayerIndex >= 0);
 	if (LayerIndex < LayerFormatSettings.Num())
 	{
@@ -2853,6 +3060,12 @@ void UTexture::SetLayerFormatSettings(int32 LayerIndex, const FTextureFormatSett
 			}
 		}
 		LayerFormatSettings[LayerIndex] = InSettings;
+
+		// @todo Oodle : inconsistency in SetLayerFormatSettings(0) and possible bug?
+		// should SetLayerFormatSettings(0,Settings) always set the base Texture properties?
+		// if you call this when you have a LayerFormatSettings[] array, it does not
+		// if you query via GetLayerFormatSettings(0) then these settings are seen
+		//	but you just get them directly from the texture they are not!
 	}
 }
 
@@ -3035,10 +3248,7 @@ FName GetDefaultTextureFormatName( const ITargetPlatform* TargetPlatform, const 
 
 	const ETextureSourceFormat SourceFormat = Texture->Source.GetFormat(LayerIndex);
 
-	// Determine the pixel format of the (un/)compressed texture
-	
-	// Identify TC groups that will map to uncompressed :		
-	bool bIsTCThatMapsToUncompressed = UE::TextureDefines::IsUncompressed(FormatSettings.CompressionSettings);
+	// output format is primarily determined from the CompressionSettings (TC)
 
 	// see if compression needs to be forced off even if requested :
 	bool bNoCompression = FormatSettings.CompressionNone				// Code wants the texture uncompressed.
@@ -3049,11 +3259,6 @@ FName GetDefaultTextureFormatName( const ITargetPlatform* TargetPlatform, const 
 		|| (Texture->LODGroup == TEXTUREGROUP_IESLightProfile)
 		|| ((Texture->GetMaterialType() == MCT_VolumeTexture) && !bSupportCompressedVolumeTexture)
 		|| FormatSettings.CompressionSettings == TC_EncodedReflectionCapture;
-
-	// note that bNoCompression is not the same as bIsTCThatMapsToUncompressed
-	// bIsTCThatMapsToUncompressed is a TC_ that will map to an uncompressed format
-	//	 but does not set bNoCompression
-	// bNoCompression does different mappings than bIsTCThatMapsToUncompressed
 
 	if (!bNoCompression)
 	{
@@ -3096,7 +3301,7 @@ FName GetDefaultTextureFormatName( const ITargetPlatform* TargetPlatform, const 
 
 #if WITH_EDITORONLY_DATA
 		const UTextureLODSettings& LODSettings = TargetPlatform->GetTextureLODSettings();
- 		const uint32 LODBiasNoCinematics = FMath::Max<uint32>(LODSettings.CalculateLODBias(SizeX, SizeY, Texture->MaxTextureSize, Texture->LODGroup, Texture->LODBias, 0, Texture->MipGenSettings, bVirtualTextureStreaming), 0);
+ 		const uint32 LODBiasNoCinematics = FMath::Max<int32>(LODSettings.CalculateLODBias(SizeX, SizeY, Texture->MaxTextureSize, Texture->LODGroup, Texture->LODBias, 0, Texture->MipGenSettings, bVirtualTextureStreaming), 0);
 		SizeX = FMath::Max<int32>(SizeX >> LODBiasNoCinematics, 1);
 		SizeY = FMath::Max<int32>(SizeY >> LODBiasNoCinematics, 1);
 #endif
@@ -3105,30 +3310,11 @@ FName GetDefaultTextureFormatName( const ITargetPlatform* TargetPlatform, const 
 		// note that even if top mip is a multiple of 4, lower may not be
 		// we can only choose compression if it's supported by all platforms/RHI's (else check TargetPlatform->SupportsFeature)
 		// note: does not use the passed-in "BlockSize" parameter, hard coded to 4
+		//	 that is correct because ASTC does not require block alignment, only DXTC does which is always a 4-size block
 		if ( (SizeX < 4) || (SizeY < 4) || (SizeX % 4 != 0) || (SizeY % 4 != 0) )
 		{
-			// don't log if TC was going to map to uncompressed anyway
-			if ( ! bIsTCThatMapsToUncompressed )
-			{
-				// this means TC_ or TEXTUREGROUP_ was set wrong
-				// usually it means UI textures that were just left with TC_Default
-				// they should be TEXTUREGROUP_ColorLookupTable or TC_EditorIcon "UserInterface2D"
-
-				// NOTE: this function is called like 10 times for each texture
-				//	it makes any log here a bit annoying
-
-				UE_LOG(LogTexture, Verbose, TEXT("Texture forced to uncompressed because size is not a multiple of 4 : %dx%d: was %s : %s"), SizeX,SizeY, 
-					*(StaticEnum<TextureCompressionSettings>()->GetNameStringByValue(FormatSettings.CompressionSettings)),
-					*Texture->GetPathName());
-			}
-
-			// note if bIsTCThatMapsToUncompressed , this might change the mapping :
-			// @todo Oodle : should not do this if bIsTCThatMapsToUncompressed already
 			bNoCompression = true;
 		}
-
-		// @todo Oodle : the conditions that trigger bNoCompression should be detected earlier
-		//   and shown in the GUI so the artist can see it
 	}
 
 	bool bUseDXT5NormalMap = false;
@@ -3142,75 +3328,7 @@ FName GetDefaultTextureFormatName( const ITargetPlatform* TargetPlatform, const 
 
 	// Determine the pixel format of the (un/)compressed texture
 
-	// bNoCompression overrides TC format mapping
-	// even if bIsTCThatMapsToUncompressed would map us to uncompressed anyway
-	if (bNoCompression)
-	{
-		// TC_EditorIcon & TC_EncodedReflectionCapture set bNoCompression
-
-		// NOTE: strange change in behavior from bNoCompression vs bIsTCThatMapsToUncompressed
-		// does not look for TC_HDR , goes to HasHDRSource
-		// others go straight to SourceFormat, ignore TC_
-		// eg. if you were in bIsTCThatMapsToUncompressed , and for some reason you get bNoCompression set
-		//	 then your output format can change from one uncompressed format to another
-
-		// someday: if this was redone, I would make two changes
-		// 1. first of all detect if you already have a TC that maps to uncompressed with a specific format,
-		//		and if so, stick to that
-		//		eg. currently if you choose TC_HDR and your source image is G8 you will get RGBA16F output
-		//		but if the source image is not a multiple of 4, bNoCompression turns on, and you get G8 output
-		//		this can be fixed by putting the bNoCompression check after the standard TC maps
-		// 2. second if you do the bNoCompression, fix TSF formats not mapping to the closest possible
-		//		uncompressed renderable format
-
-		if (Texture->HasHDRSource(LayerIndex))
-		{
-			// if CompressionSettings was already an uncompressed HDR format, use it
-			//  this is a conservative/partial fix of the more general problem of bIsTCThatMapsToUncompressed (see 1. above)
-			if (FormatSettings.CompressionSettings == TC_HDR)
-			{
-				TextureFormatName = NameRGBA16F;
-			}
-			else if (FormatSettings.CompressionSettings == TC_HDR_F32)
-			{
-				TextureFormatName = NameRGBA32F;
-			}
-			else if (FormatSettings.CompressionSettings == TC_HalfFloat)
-			{
-				TextureFormatName = NameR16F;
-			}
-			else if (FormatSettings.CompressionSettings == TC_SingleFloat)
-			{
-				TextureFormatName = NameR32F;
-			}
-			else
-			{
-				// @todo Oodle : this is not the best possible selection of output format from SourceFormat
-			// R16F and R32F is available but not used here even if their TC_ would have chosen them!
-			TextureFormatName = NameRGBA16F;
-		}
-		}
-		else if (SourceFormat == TSF_G16)
-		{
-			// maps G16 but not RGBA16, it will go to BGRA8
-			TextureFormatName = NameG16;
-		}
-		else if (SourceFormat == TSF_G8 || FormatSettings.CompressionSettings == TC_Grayscale)
-		{
-			TextureFormatName = NameG8;
-		}
-		else if (FormatSettings.CompressionSettings == TC_Normalmap && bUseDXT5NormalMap)
-		{
-			// move R to A like we do for DXT5 normal maps :
-			TextureFormatName = NameXGXR8;
-		}
-		else
-		{
-			// note CompressionNoAlpha no longer kills alpha if it's forced to uncompressed (eg. because size is not multiple of 4)
-			TextureFormatName = NameBGRA8;
-		}
-	}
-	else if (FormatSettings.CompressionSettings == TC_LQ)
+	if (FormatSettings.CompressionSettings == TC_LQ)
 	{
 		bool bLQCompressionSupported = TargetPlatform->SupportsLQCompressionTextureFormat();
 		if(bLQCompressionSupported)
@@ -3241,8 +3359,8 @@ FName GetDefaultTextureFormatName( const ITargetPlatform* TargetPlatform, const 
 	else if (FormatSettings.CompressionSettings == TC_Grayscale || 
 		FormatSettings.CompressionSettings == TC_Displacementmap)
 	{
-		// @todo Oodle : this is not the best possible selection of output format from SourceFormat
-		// eg. doesn't use G16 if source is RGBA16 or float
+		// Grayscale is G8 output, unless source is specifically G16
+		//	(eg. RGBA16 source still uses G8 output, not G16)
 		if (SourceFormat == TSF_G16)
 		{
 			TextureFormatName = NameG16;
@@ -3251,6 +3369,19 @@ FName GetDefaultTextureFormatName( const ITargetPlatform* TargetPlatform, const 
 		{
 			TextureFormatName = NameG8;
 		}
+
+		/*
+		// @todo Oodle: consider alternatively, use G16 for all 16-bit and floating point sources
+		if (SourceFormat == TSF_G8 || SourceFormat == TSF_BGRA8)
+		{
+			TextureFormatName = NameG8;
+		}
+		else
+		{
+			// 16 bit or float sources
+			TextureFormatName = NameG16;
+		}
+		*/
 	}
 	else if ( FormatSettings.CompressionSettings == TC_Alpha)
 	{
@@ -3276,11 +3407,9 @@ FName GetDefaultTextureFormatName( const ITargetPlatform* TargetPlatform, const 
 	{
 		TextureFormatName = NameR32F;
 	}
-	else
+	else if ( FormatSettings.CompressionSettings == TC_Default ||
+			FormatSettings.CompressionSettings == TC_Masks )
 	{
-		check( FormatSettings.CompressionSettings == TC_Default ||
-			FormatSettings.CompressionSettings == TC_Masks ); 
-
 		if (FormatSettings.CompressionNoAlpha)
 		{
 			// CompressionNoAlpha changes AutoDXT to DXT1 early
@@ -3296,6 +3425,60 @@ FName GetDefaultTextureFormatName( const ITargetPlatform* TargetPlatform, const 
 			TextureFormatName = NameAutoDXT;
 		}
 	}
+	else
+	{
+		// un-handled CompressionSettings cases will have TextureFormatName == none and go into the bNoCompression branch below
+		// alternatively, should TC_EditorIcon be an explicit branch rather than relying on bNoCompression?
+		check( TextureFormatName == NAME_None );
+	}
+
+	bool bTextureFormatNameIsCompressed =
+		(TextureFormatName == NameDXT1) ||
+		(TextureFormatName == NameAutoDXT) ||
+		(TextureFormatName == NameDXT5) ||
+		(TextureFormatName == NameDXT5n) ||
+		(TextureFormatName == NameBC4) ||
+		(TextureFormatName == NameBC5) ||
+		(TextureFormatName == NameBC6H) ||
+		(TextureFormatName == NameBC7);
+	
+	// if !bTextureFormatNameIsCompressed , we already picked an uncompressed format from TC, leave it alone
+	if ( (bNoCompression && bTextureFormatNameIsCompressed) || TextureFormatName == NAME_None )
+	{
+		// TC_EditorIcon & TC_EncodedReflectionCapture weren't handled in the CompressionSettings branches above
+		//	so will have FormatName == None and come in here
+		
+		if (FormatSettings.CompressionSettings == TC_Normalmap && bUseDXT5NormalMap)
+		{
+			// move R to A like we do for DXT5 normal maps : (NameDXT5n)
+			TextureFormatName = NameXGXR8;
+		}
+		else if (FormatSettings.CompressionSettings == TC_HDR_Compressed )
+		{
+			TextureFormatName = NameRGBA16F;
+		}
+		else if (Texture->HasHDRSource(LayerIndex))
+		{
+			// note that if user actually selected an HDR TC we do not come in here
+			// @todo Oodle : consider removing HasHDRSource ; user did not pick an HDR TC output format
+			TextureFormatName = NameRGBA16F;
+		}
+		else if (SourceFormat == TSF_G16)
+		{
+			TextureFormatName = NameG16;
+		}
+		else if (SourceFormat == TSF_G8)
+		{
+			TextureFormatName = NameG8;
+		}
+		else
+		{
+			// note CompressionNoAlpha no longer kills alpha if it's forced to uncompressed (eg. because size is not multiple of 4)
+			TextureFormatName = NameBGRA8;
+		}
+	}
+
+	// fix up stage :
 
 	// Some PC GPUs don't support sRGB read from G8 textures (e.g. AMD DX10 cards on ShaderModel3.0)
 	// This solution requires 4x more memory but a lot of PC HW emulate the format anyway
@@ -3338,7 +3521,9 @@ FName GetDefaultTextureFormatName( const ITargetPlatform* TargetPlatform, const 
 	bOodleTextureSdkVersionIsNone = Texture->OodleTextureSdkVersion.IsNone();
 #endif //WITH_EDITOR
 
-	return ConditionalGetPrefixedFormat(TextureFormatName, TargetPlatform, bOodleTextureSdkVersionIsNone);
+	FName Result = ConditionalGetPrefixedFormat(TextureFormatName, TargetPlatform, bOodleTextureSdkVersionIsNone);
+
+	return Result;
 }
 
 void GetDefaultTextureFormatNamePerLayer(TArray<FName>& OutFormatNames, const class ITargetPlatform* TargetPlatform, const class UTexture* Texture, 
@@ -3460,6 +3645,39 @@ void UTexture::NotifyMaterials(const ENotifyMaterialsEffectOnShaders EffectOnSha
 int64 UTexture::Blueprint_GetMemorySize() const
 {
 	return CalcTextureMemorySizeEnum(TMC_ResidentMips);
+}
+
+void UTexture::Blueprint_GetTextureSourceDiskAndMemorySize(int64 & OutDiskSize,int64 & OutMemorySize) const
+{
+#if WITH_EDITORONLY_DATA
+	OutMemorySize = Source.CalcMipSize(0);
+	OutDiskSize = Source.GetSizeOnDisk();
+#else
+	OutDiskSize = OutMemorySize = 0;
+	UE_LOG(LogTexture, Error, TEXT("Blueprint_GetTextureSourceDiskAndMemorySize can only be called WITH_EDITORONLY_DATA. (%s)"), *GetName());
+#endif
+}
+
+bool UTexture::ComputeTextureSourceChannelMinMax(FLinearColor & OutColorMin, FLinearColor & OutColorMax) const
+{
+	// make sure we fill the outputs if we return failure :
+	OutColorMin = FLinearColor(ForceInit);
+	OutColorMax = FLinearColor(ForceInit);
+
+#if WITH_EDITORONLY_DATA
+	FImage Image;
+	if ( ! const_cast<UTexture *>(this)->Source.GetMipImage(Image,0) )
+	{
+		UE_LOG(LogTexture, Error, TEXT("ComputeTextureSourceChannelMinMax failed to GetMipImage. (%s)"), *GetName());
+		return false;
+	}
+
+	FImageCore::ComputeChannelLinearMinMax(Image,OutColorMin,OutColorMax);
+	return true;
+#else
+	UE_LOG(LogTexture, Error, TEXT("ComputeTextureSourceChannelMinMax can only be called WITH_EDITORONLY_DATA. (%s)"), *GetName());
+	return false;
+#endif
 }
 
 #if WITH_EDITOR

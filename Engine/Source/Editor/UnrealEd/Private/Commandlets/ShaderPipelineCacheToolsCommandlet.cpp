@@ -38,6 +38,7 @@
 #include "PipelineFileCache.h"
 #include "RHI.h"
 #include "RHIDefinitions.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "Serialization/Archive.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
@@ -1830,6 +1831,11 @@ void FilterInvalidPSOs(TSet<FPipelineCacheFileFormatPSO>& InOutPSOs, const TMult
 	for (const FPipelineCacheFileFormatPSO& CurPSO : InOutPSOs)
 	{
 		if (CurPSO.Type != FPipelineCacheFileFormatPSO::DescriptorType::Graphics)
+		{
+			continue;
+		}
+
+		if (CurPSO.GraphicsDesc.MeshShader != FSHAHash())
 		{
 			continue;
 		}

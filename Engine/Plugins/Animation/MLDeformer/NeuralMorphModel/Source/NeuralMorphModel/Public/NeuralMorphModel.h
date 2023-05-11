@@ -4,49 +4,35 @@
 #include "CoreMinimal.h"
 #include "MLDeformerMorphModel.h"
 #include "GeometryCache.h"
+#include "NeuralMorphTypes.h"
 #include "NeuralMorphModel.generated.h"
 
 class USkeletalMesh;
 class UGeometryCache;
 class UAnimSequence;
-class UNeuralNetwork;
+class UNeuralMorphNetwork;
 class UMLDeformerAsset;
 class UMLDeformerModelInstance;
 class USkeleton;
 struct FExternalMorphSet;
 
-NEURALMORPHMODEL_API DECLARE_LOG_CATEGORY_EXTERN(LogNeuralMorphModel, Log, All);
-
 /** 
- * The mode of the model, either local or global. 
- * In local mode the network contains a super simple neural network for each bone, while in 
- * global mode all bones and curves are input to one larger fully connected network.
- * The local mode has faster performance, while global mode can result in higher quality deformation.
- * This model runs its neural network on the CPU, but uses comrpessed GPU based morph targets, which require shader model 5.
+ * Specify whether we want to use ISPC if available.
+ * You can comment out this line, to force disable the use of ISPC in this plugin.
  */
-UENUM()
-enum class ENeuralMorphMode : uint8
-{
-	/**
-	 * Each bone creates a set of morph targets and has its own small neural network.
-	 * The local mode can also create more localized morph targets and tends to use slightly less memory.
-	 * This mode is faster to process on the CPU side.
-	 */
-	Local,
+#define NEURALMORPHMODEL_USE_ISPC INTEL_ISPC
+#if !defined(NEURALMORPHMODEL_USE_ISPC)
+	#define NEURALMORPHMODEL_USE_ISPC 0
+#endif
 
-	/** 
-	 * There is one fully connected neural network that generates a set of morph targets.
-	 * This has a slightly higher CPU overhead, but could result in higher quality.
-	 * The Global mode is basically the same as the Vertex Delta Model, but runs the neural network on the CPU
-	 * and uses GPU compressed morph targets.
-	 */
-	Global
-};
+// Declare our log category.
+NEURALMORPHMODEL_API DECLARE_LOG_CATEGORY_EXTERN(LogNeuralMorphModel, Log, All);
 
 /**
  * The neural morph model.
  * This generates a set of highly compressed morph targets to approximate a target deformation based on bone rotations and/or curve inputs.
- * The neural network inside this model runs on the CPU and outputs the morph target weights.
+ * During inference, the neural network inside this model runs on the CPU and outputs the morph target weights for the morph targets it generated during training.
+ * Groups of bones and curves can also be defined. Those groups will generate a set of morph targets together as well. This can help when shapes depend on multiple inputs.
  * An external morph target set is generated during training and serialized inside the ML Deformer asset that contains this model.
  * When the ML Deformer component initializes the morph target set is registered. Most of the heavy lifting is done by the UMLDeformerMorphModel class.
  * The neural morph model has two modes: local and global. See the ENeuralMorphMode for a description of the two.
@@ -61,22 +47,48 @@ class NEURALMORPHMODEL_API UNeuralMorphModel
 public:
 	UNeuralMorphModel(const FObjectInitializer& ObjectInitializer);
 
+	// UObject overrides.
+	virtual void Serialize(FArchive& Archive) override;
+	// ~END UObject overrides.
+
 	// UMLDeformerModel overrides.
-	virtual FString GetDisplayName() const override		{ return "Neural Morph Model"; }
+	virtual FString GetDisplayName() const override			{ return "Neural Morph Model"; }
+	virtual UMLDeformerModelInstance* CreateModelInstance(UMLDeformerComponent* Component) override;
+	virtual UMLDeformerInputInfo* CreateInputInfo();
 	// ~END UMLDeformerModel overrides.
 
-#if WITH_EDITORONLY_DATA
-	int32 GetLocalNumHiddenLayers() const				{ return LocalNumHiddenLayers; }
-	int32 GetLocalNumNeuronsPerLayer() const			{ return LocalNumNeuronsPerLayer; }
-	int32 GetGlobalNumHiddenLayers() const				{ return GlobalNumHiddenLayers; }
-	int32 GetGlobalNumNeuronsPerLayer() const			{ return GlobalNumNeuronsPerLayer; }
-	int32 GetNumIterations() const						{ return NumIterations; }
-	int32 GetBatchSize() const							{ return BatchSize; }
-	float GetLearningRate() const						{ return LearningRate; }
-	float GetLearningRateDecay() const					{ return LearningRateDecay; }
-	float GetRegularizationFactor() const				{ return RegularizationFactor;  }
+	const TArray<FNeuralMorphBoneGroup>& GetBoneGroups() const		{ return BoneGroups; }
+	const TArray<FNeuralMorphCurveGroup>& GetCurveGroups() const	{ return CurveGroups; }
+	UNeuralMorphNetwork* GetNeuralMorphNetwork() const		{ return NeuralMorphNetwork.Get(); }
+	void SetNeuralMorphNetwork(UNeuralMorphNetwork* Net)	{ NeuralMorphNetwork = Net; }
+	ENeuralMorphMode GetModelMode() const					{ return Mode; }
+	int32 GetLocalNumHiddenLayers() const					{ return LocalNumHiddenLayers; }
+	int32 GetLocalNumNeuronsPerLayer() const				{ return LocalNumNeuronsPerLayer; }
+	int32 GetGlobalNumHiddenLayers() const					{ return GlobalNumHiddenLayers; }
+	int32 GetGlobalNumNeuronsPerLayer() const				{ return GlobalNumNeuronsPerLayer; }
+	int32 GetNumIterations() const							{ return NumIterations; }
+	int32 GetBatchSize() const								{ return BatchSize; }
+	float GetLearningRate() const							{ return LearningRate; }
+	float GetLearningRateDecay() const						{ return LearningRateDecay; }
+	float GetRegularizationFactor() const					{ return RegularizationFactor; }
 
 public:
+	/**
+	 * The set of bones that are grouped together and generate morph targets together as a whole.
+	 * This can be used in case multiple bones are correlated to each other and work together to produce given shapes.
+	 * Groups are only used when the model is in Local mode.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Inputs and Output")
+	TArray<FNeuralMorphBoneGroup> BoneGroups;
+
+	/**
+	 * The set of curves that are grouped together and generate morph targets together as a whole.
+	 * This can be used in case multiple curves are correlated to each other and work together to produce given shapes.
+	 * Groups are only used when the model is in Local mode.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Inputs and Output")
+	TArray<FNeuralMorphCurveGroup> CurveGroups;
+
 	/**
 	 * The mode that the neural network will operate in. 
 	 * Local mode means there is one tiny network per bone, while global mode has one network for all bones together.
@@ -86,10 +98,10 @@ public:
 	ENeuralMorphMode Mode = ENeuralMorphMode::Local;
 
 	/** 
-	 * The number of morph targets to generate per bone.
+	 * The number of morph targets to generate per bone, curve or group.
 	 * Higher numbers result in better approximation of the target deformation, but also result in a higher memory footprint and slower performance.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, DisplayName = "Num Morph Targets Per Bone", Category = "Training Settings", meta = (ClampMin = "1", ClampMax = "1000"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, DisplayName = "Num Morphs Per Bone/Curve/Group", Category = "Training Settings", meta = (ClampMin = "1", ClampMax = "1000"))
 	int32 LocalNumMorphTargetsPerBone = 6;
 
 	/** 
@@ -113,7 +125,7 @@ public:
 	 * Higher numbers will slow down performance but can deal with more complex deformations. 
 	 * For the local model you most likely want to stick with a value of one or two.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, DisplayName = "Num Hidden Layers", Category = "Training Settings", meta = (ClampMin = "1", ClampMax = "5"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, DisplayName = "Num Hidden Layers", Category = "Training Settings", meta = (ClampMin = "0", ClampMax = "5"))
 	int32 LocalNumHiddenLayers = 1;
 
 	/** 
@@ -121,11 +133,11 @@ public:
 	 * Higher numbers will slow down performance but allow for more complex mesh deformations. 
 	 * For the local mode you probably want to keep this around the same value as the number of morph targets per bone.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, DisplayName = "Num Neurons Per Layer", Category = "Training Settings", meta = (ClampMin = "1", ClampMax = "100"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, DisplayName = "Num Neurons Per Layer", Category = "Training Settings", meta = (ClampMin = "1", ClampMax = "4096"))
 	int32 LocalNumNeuronsPerLayer = 6;
 
 	/** The number of hidden layers that the neural network model will have.\nHigher numbers will slow down performance but can deal with more complex deformations. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, DisplayName = "Num Hidden Layers", Category = "Training Settings", meta = (ClampMin = "1", ClampMax = "5"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, DisplayName = "Num Hidden Layers", Category = "Training Settings", meta = (ClampMin = "0", ClampMax = "6"))
 	int32 GlobalNumHiddenLayers = 2;
 
 	/** The number of units/neurons per hidden layer. Higher numbers will slow down performance but allow for more complex mesh deformations. */
@@ -155,5 +167,11 @@ public:
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Training Settings", meta = (ClampMin = "0.0", ClampMax = "10.0"))
 	float RegularizationFactor = 1.0f;
-#endif // WITH_EDITORONLY_DATA
+
+	/**
+	 * The neural morph model network.
+	 * This is a specialized network used for inference, for performance reasons.
+	 */
+	UPROPERTY()
+	TObjectPtr<UNeuralMorphNetwork> NeuralMorphNetwork;
 };

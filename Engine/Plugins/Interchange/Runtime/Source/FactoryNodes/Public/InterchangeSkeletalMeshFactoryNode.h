@@ -88,6 +88,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalMesh")
 	bool SetCustomImportContentType(const EInterchangeSkeletalMeshContentType& AttributeValue);
 
+	/** Query the skeletal mesh UseHighPrecisionSkinWeights. */
+	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalMesh")
+	bool GetCustomUseHighPrecisionSkinWeights(bool& AttributeValue) const;
+
+	/** Set the skeletal mesh UseHighPrecisionSkinWeights. */
+	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalMesh")
+	bool SetCustomUseHighPrecisionSkinWeights(const bool& AttributeValue, bool bAddApplyDelegate = true);
+		
 	/** Query the skeletal mesh threshold use to decide if two vertex position are equal. */
 	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalMesh")
 	bool GetCustomThresholdPosition(float& AttributeValue) const;
@@ -121,6 +129,22 @@ public:
 	bool SetCustomMorphThresholdPosition(const float& AttributeValue, bool bAddApplyDelegate = true);
 
 	/**
+	 * Query The maximum number of bone influences to allow each vertex in this mesh to use.
+	 * If set higher than the limit determined by the project settings, it has no effect.
+	 * If set to 0, the value is taken from the DefaultBoneInfluenceLimit project setting.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalMesh")
+	bool GetCustomBoneInfluenceLimit(int32& AttributeValue) const;
+
+	/**
+	 * Set The maximum number of bone influences to allow each vertex in this mesh to use.
+	 * If set higher than the limit determined by the project settings, it has no effect.
+	 * If set to 0, the value is taken from the DefaultBoneInfluenceLimit project setting.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Interchange | Node | SkeletalMesh")
+	bool SetCustomBoneInfluenceLimit(const int32& AttributeValue, bool bAddApplyDelegate = true);
+
+	/**
 	 * The skeletal mesh thumbnail can have an overlay if the last re-import was geometry only. This thumbnail overlay feature use the metadata to find out if the last import was geometry only.
 	 */
 	virtual void AppendAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
@@ -135,11 +159,15 @@ private:
 	const UE::Interchange::FAttributeKey Macro_CustomCreatePhysicsAssetKey = UE::Interchange::FAttributeKey(TEXT("CreatePhysicsAsset"));
 	const UE::Interchange::FAttributeKey Macro_CustomPhysicAssetSoftObjectPathKey = UE::Interchange::FAttributeKey(TEXT("PhysicAssetSoftObjectPath"));
 	const UE::Interchange::FAttributeKey Macro_CustomImportContentTypeKey = UE::Interchange::FAttributeKey(TEXT("ImportContentType"));
+	const UE::Interchange::FAttributeKey Macro_CustomUseHighPrecisionSkinWeightsKey = UE::Interchange::FAttributeKey(TEXT("UseHighPrecisionSkinWeights"));
 	const UE::Interchange::FAttributeKey Macro_CustomThresholdPositionKey = UE::Interchange::FAttributeKey(TEXT("ThresholdPosition"));
 	const UE::Interchange::FAttributeKey Macro_CustomThresholdTangentNormalKey = UE::Interchange::FAttributeKey(TEXT("ThresholdTangentNormal"));
 	const UE::Interchange::FAttributeKey Macro_CustomThresholdUVKey = UE::Interchange::FAttributeKey(TEXT("ThresholdUV"));
 	const UE::Interchange::FAttributeKey Macro_CustomMorphThresholdPositionKey = UE::Interchange::FAttributeKey(TEXT("MorphThresholdPosition"));
+	const UE::Interchange::FAttributeKey Macro_CustomBoneInfluenceLimitKey = UE::Interchange::FAttributeKey(TEXT("BoneInfluenceLimit"));
 
+	bool ApplyCustomUseHighPrecisionSkinWeightsToAsset(UObject* Asset) const;
+	bool FillCustomUseHighPrecisionSkinWeightsFromAsset(UObject* Asset);
 	bool ApplyCustomThresholdPositionToAsset(UObject* Asset) const;
 	bool FillCustomThresholdPositionFromAsset(UObject* Asset);
 	bool ApplyCustomThresholdTangentNormalToAsset(UObject* Asset) const;
@@ -148,6 +176,8 @@ private:
 	bool FillCustomThresholdUVFromAsset(UObject* Asset);
 	bool ApplyCustomMorphThresholdPositionToAsset(UObject* Asset) const;
 	bool FillCustomMorphThresholdPositionFromAsset(UObject* Asset);
+	bool ApplyCustomBoneInfluenceLimitToAsset(UObject* Asset) const;
+	bool FillCustomBoneInfluenceLimitFromAsset(UObject* Asset);
 protected:
 	TSubclassOf<USkeletalMesh> AssetClass = nullptr;
 };

@@ -20,6 +20,9 @@ class RasterizationGrid3DRWInstanceData
 {
 public:
 	void ResizeBuffers();
+	
+	bool ClearBeforeNonIterationStage = true;
+
 	int32 TotalNumAttributes = 0;
 	FIntVector NumCells = FIntVector::ZeroValue;
 	FIntVector NumTiles = FIntVector::ZeroValue;
@@ -35,6 +38,7 @@ public:
 
 struct FNiagaraDataInterfaceProxyRasterizationGrid3D : public FNiagaraDataInterfaceProxyRW
 {	
+	virtual void ResetData(const FNDIGpuComputeResetContext& Context) override;
 	virtual void PreStage(const FNDIGpuComputePreStageContext& Context) override;
 	virtual void PostSimulate(const FNDIGpuComputePostSimulateContext& Context) override;
 
@@ -94,7 +98,6 @@ public:
 	virtual void GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL) override;
 	virtual bool GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL) override;
 #endif
-	virtual bool UseLegacyShaderBindings() const  override { return false; }
 	virtual void BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const override;
 	virtual void SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const override;
 #if WITH_EDITOR
@@ -113,6 +116,7 @@ public:
 
 	void VMGetNumCells(FVectorVMExternalFunctionContext& Context);
 	void VMSetNumCells(FVectorVMExternalFunctionContext& Context);
+	void VMSetNumAttributes(FVectorVMExternalFunctionContext& Context);
 	void VMSetFloatResetValue(FVectorVMExternalFunctionContext& Context);
 
 protected:

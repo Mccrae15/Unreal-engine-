@@ -2,6 +2,7 @@
 
 #include "Elements/Framework/TypedElementRegistry.h"
 
+#include "HAL/IConsoleManager.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/ScopeLock.h"
 #include "UObject/StrongObjectPtr.h"
@@ -60,6 +61,59 @@ UTypedElementRegistry* UTypedElementRegistry::GetInstance()
 {
 	TStrongObjectPtr<UTypedElementRegistry>& Instance = GetTypedElementRegistryInstance();
 	return Instance.Get();
+}
+
+ITypedElementDataStorageInterface* UTypedElementRegistry::GetMutableDataStorage()
+{
+	return DataStorage;
+}
+
+const ITypedElementDataStorageInterface* UTypedElementRegistry::GetDataStorage() const
+{
+	return DataStorage;
+}
+
+void UTypedElementRegistry::SetDataStorage(ITypedElementDataStorageInterface* Storage)
+{
+	DataStorage = Storage;
+	CallDataStorageInterfacesSetDelegateIfNeeded();
+}
+
+ITypedElementDataStorageCompatibilityInterface* UTypedElementRegistry::GetMutableDataStorageCompatibility()
+{
+	return DataStorageCompatibility;
+}
+
+const ITypedElementDataStorageCompatibilityInterface* UTypedElementRegistry::GetDataStorageCompatibility() const
+{
+	return DataStorageCompatibility;
+}
+
+void UTypedElementRegistry::SetDataStorageCompatibility(ITypedElementDataStorageCompatibilityInterface* Storage)
+{
+	DataStorageCompatibility = Storage;
+	CallDataStorageInterfacesSetDelegateIfNeeded();
+}
+
+ITypedElementDataStorageUiInterface* UTypedElementRegistry::GetMutableDataStorageUi()
+{
+	return DataStorageUi;
+}
+
+const ITypedElementDataStorageUiInterface* UTypedElementRegistry::GetDataStorageUi() const
+{
+	return DataStorageUi;
+}
+
+void UTypedElementRegistry::SetDataStorageUi(ITypedElementDataStorageUiInterface* Storage)
+{
+	DataStorageUi = Storage;
+	CallDataStorageInterfacesSetDelegateIfNeeded();
+}
+
+bool UTypedElementRegistry::AreDataStorageInterfacesSet() const
+{
+	return DataStorage && DataStorageCompatibility && DataStorageUi;
 }
 
 void UTypedElementRegistry::FinishDestroy()
@@ -349,3 +403,10 @@ void UTypedElementRegistry::OnPostGarbageCollect()
 	}
 }
 
+void UTypedElementRegistry::CallDataStorageInterfacesSetDelegateIfNeeded()
+{
+	if (OnDataStorageInterfacesSetDelegate.IsBound() && AreDataStorageInterfacesSet())
+	{
+		OnDataStorageInterfacesSetDelegate.Broadcast();
+	}
+}

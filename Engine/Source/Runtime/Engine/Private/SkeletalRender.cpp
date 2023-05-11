@@ -5,8 +5,11 @@
 =============================================================================*/
 
 #include "SkeletalRender.h"
+#include "Engine/SkinnedAsset.h"
+#include "Engine/SkinnedAssetCommon.h"
 #include "SkeletalRenderPublic.h"
 #include "SceneManagement.h"
+#include "SceneView.h"
 #include "GPUSkinCache.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 
@@ -63,6 +66,10 @@ FSkeletalMeshObject::FSkeletalMeshObject(USkinnedMeshComponent* InMeshComponent,
 ,	StatId(InMeshComponent->GetSkinnedAsset()->GetStatID(true))
 ,	FeatureLevel(InFeatureLevel)
 ,	ComponentId(InMeshComponent->ComponentId.PrimIDValue)
+,	WorldScale(InMeshComponent->GetComponentScale())
+#if RHI_ENABLE_RESOURCE_INFO
+,	AssetPathName(InMeshComponent->GetSkinnedAsset()->GetPathName())
+#endif
 {
 	check(SkeletalMeshRenderData);
 
@@ -91,7 +98,7 @@ FSkeletalMeshObject::~FSkeletalMeshObject()
 void FSkeletalMeshObject::UpdateMinDesiredLODLevel(const FSceneView* View, const FBoxSphereBounds& Bounds, int32 FrameNumber, uint8 CurFirstLODIdx)
 {
 	// Thumbnail rendering doesn't contribute to MinDesiredLODLevel calculation
-	if (View->Family && View->Family->bThumbnailRendering)
+	if (View->Family && (View->Family->bThumbnailRendering || !View->Family->GetIsInFocus()))
 	{
 		return;
 	}
@@ -116,7 +123,7 @@ void FSkeletalMeshObject::UpdateMinDesiredLODLevel(const FSceneView* View, const
 		for(int32 LODLevel = SkeletalMeshRenderData->LODRenderData.Num()-1; LODLevel > 0; LODLevel--)
 		{
 			// Get ScreenSize for this LOD
-			float ScreenSize = SkeletalMeshLODInfo[LODLevel].ScreenSize.Default;
+			float ScreenSize = SkeletalMeshLODInfo[LODLevel].ScreenSize.GetValue();
 
 			// If we are considering shifting to a better (lower) LOD, bias with hysteresis.
 			if(LODLevel  <= CurrentLODLevel)
@@ -227,9 +234,60 @@ float FSkeletalMeshObject::GetScreenSize(int32 LODIndex) const
 {
 	if (SkeletalMeshLODInfo.IsValidIndex(LODIndex))
 	{
-		return SkeletalMeshLODInfo[LODIndex].ScreenSize.Default;
+		return SkeletalMeshLODInfo[LODIndex].ScreenSize.GetValue();
 	}
 	return 0.f;
+}
+
+FName FSkeletalMeshObject::GetAssetPathName(int32 LODIndex) const
+{
+#if RHI_ENABLE_RESOURCE_INFO
+	if (LODIndex > -1)
+	{
+		return FName(FString::Printf(TEXT("%s [LOD%d]"), *AssetPathName.ToString(), LODIndex));
+	}
+	else
+	{
+		return AssetPathName;
+	}
+#else
+	return NAME_None;
+#endif
+}
+
+FSkinWeightVertexBuffer* FSkeletalMeshObject::GetSkinWeightVertexBuffer(FSkeletalMeshLODRenderData& LODData, FSkelMeshComponentLODInfo* CompLODInfo)
+{
+	// If we have a skin weight override buffer (and it's the right size) use it
+	if (CompLODInfo && CompLODInfo->OverrideSkinWeights &&
+		CompLODInfo->OverrideSkinWeights->GetNumVertices() == LODData.StaticVertexBuffers.PositionVertexBuffer.GetNumVertices())
+	{
+		check(LODData.SkinWeightVertexBuffer.GetMaxBoneInfluences() == CompLODInfo->OverrideSkinWeights->GetMaxBoneInfluences());
+		return CompLODInfo->OverrideSkinWeights;
+	}
+	else if (CompLODInfo && CompLODInfo->OverrideProfileSkinWeights &&
+		CompLODInfo->OverrideProfileSkinWeights->GetNumVertices() == LODData.StaticVertexBuffers.PositionVertexBuffer.GetNumVertices())
+	{
+		check(LODData.SkinWeightVertexBuffer.GetMaxBoneInfluences() == CompLODInfo->OverrideProfileSkinWeights->GetMaxBoneInfluences());
+		return CompLODInfo->OverrideProfileSkinWeights;
+	}
+	else
+	{
+		return LODData.GetSkinWeightVertexBuffer();
+	}
+}
+
+FColorVertexBuffer* FSkeletalMeshObject::GetColorVertexBuffer(FSkeletalMeshLODRenderData& LODData, FSkelMeshComponentLODInfo* CompLODInfo)
+{
+	// If we have a vertex color override buffer (and it's the right size) use it
+	if (CompLODInfo && CompLODInfo->OverrideVertexColors &&
+		CompLODInfo->OverrideVertexColors->GetNumVertices() == LODData.StaticVertexBuffers.PositionVertexBuffer.GetNumVertices())
+	{
+		return CompLODInfo->OverrideVertexColors;
+	}
+	else
+	{
+		return &LODData.StaticVertexBuffers.ColorVertexBuffer;
+	}
 }
 
 /*-----------------------------------------------------------------------------

@@ -29,8 +29,7 @@ struct FPreInitContext
 	bool bIsPossiblyUnrecognizedCommandlet = false;
 
 	FString Token;
-	const TCHAR* CommandletCommandLine = nullptr;
-	TCHAR* CommandLineCopy = nullptr;
+	FString CommandletCommandLine;
 
 	FScopedSlowTask* SlowTaskPtr = nullptr;
 
@@ -178,6 +177,7 @@ protected:
 #endif //WITH_ENGINE
 
 private:
+
 
 #if WITH_ENGINE
 

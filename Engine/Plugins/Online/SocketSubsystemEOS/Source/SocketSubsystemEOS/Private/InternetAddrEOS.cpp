@@ -1,9 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "InternetAddrEOS.h"
-#include "Online/CoreOnline.h"
 #include "EOSSharedTypes.h"
-#include "Containers/StringView.h"
 
 DEFINE_LOG_CATEGORY(LogSocketSubsystemEOS);
 
@@ -166,7 +164,7 @@ FString FInternetAddrEOS::ToString(bool bAppendPort) const
 
 uint32 FInternetAddrEOS::GetTypeHash() const
 {
-	return HashCombine(HashCombine(HashCombine(::GetTypeHash((void*)LocalUserId), ::GetTypeHash((void*)RemoteUserId)), ::GetTypeHash(FAnsiStringView(SocketName, EOS_SOCKET_NAME_SIZE))), Channel);
+	return HashCombine(HashCombine(HashCombine(GetTypeHashHelper((void*)LocalUserId), GetTypeHashHelper((void*)RemoteUserId)), GetTypeHashHelper(FAnsiStringView(SocketName, EOS_SOCKET_NAME_SIZE))), Channel);
 }
 
 bool FInternetAddrEOS::IsValid() const

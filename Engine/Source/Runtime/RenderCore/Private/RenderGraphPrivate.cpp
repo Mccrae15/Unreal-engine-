@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RenderGraphPrivate.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 #if RDG_ENABLE_DEBUG
 
@@ -11,6 +12,15 @@ FAutoConsoleVariableRef CVarImmediateMode(
 	TEXT("r.RDG.ImmediateMode"),
 	GRDGImmediateMode,
 	TEXT("Executes passes as they get created. Useful to have a callstack of the wiring code when crashing in the pass' lambda."),
+	ECVF_RenderThreadSafe);
+
+int32 GRDGValidation = 1;
+FAutoConsoleVariableRef CVarRDGValidation(
+	TEXT("r.RDG.Validation"),
+	GRDGValidation,
+	TEXT("Enables validation of correctness in API calls and pass parameter dependencies.\n")
+	TEXT(" 0: disabled;\n")
+	TEXT(" 1: enabled (default);\n"),
 	ECVF_RenderThreadSafe);
 
 int32 GRDGDebug = 0;
@@ -54,24 +64,6 @@ FAutoConsoleVariableRef CVarRDGDebugDisableTransientResource(
 	TEXT("r.RDG.Debug.DisableTransientResources"),
 	GRDGDebugDisableTransientResources,
 	TEXT("Filters out transient resources from the transient allocator. Use r.rdg.debug.resourcefilter to specify the filter. Defaults to all resources if enabled."),
-	ECVF_RenderThreadSafe);
-
-int32 GRDGDumpGraph = 0;
-FAutoConsoleVariableRef CVarDumpGraph(
-	TEXT("r.RDG.DumpGraph"),
-	GRDGDumpGraph,
-	TEXT("Dumps several visualization logs to disk.\n")
-	TEXT(" 0: disabled;\n")
-	TEXT(" 1: visualizes producer / consumer pass dependencies;\n")
-	TEXT(" 2: visualizes resource states and transitions;\n")
-	TEXT(" 3: visualizes graphics / async compute overlap;\n"),
-	FConsoleVariableDelegate::CreateLambda([](IConsoleVariable*)
-	{
-		if (GRDGDumpGraph)
-		{
-			GRDGDebug = 1;
-		}
-	}),
 	ECVF_RenderThreadSafe);
 
 int32 GRDGBreakpoint = 0;
@@ -328,7 +320,27 @@ FAutoConsoleVariableRef CVarRDGTransientExtractedResource(
 	TEXT(" 2: force enables all external transient resources (not recommended);"),
 	ECVF_RenderThreadSafe);
 
+#if RDG_GPU_DEBUG_SCOPES
+int32 GRDGEvents = 1;
+FAutoConsoleVariableRef CVarRDGEvents(
+	TEXT("r.RDG.Events"),
+	GRDGEvents,
+	TEXT("Controls how RDG events are emitted.\n")
+	TEXT(" 0: off;\n")
+	TEXT(" 1: events are enabled and RDG_EVENT_SCOPE_FINAL is respected; (default)\n")
+	TEXT(" 2: all events are enabled (RDG_EVENT_SCOPE_FINAL is ignored);"),
+	ECVF_RenderThreadSafe);
+#endif
+
 #if RDG_ENABLE_PARALLEL_TASKS
+
+int32 GRDGParallelDestruction = 1;
+FAutoConsoleVariableRef CVarRDGParallelDestruction(
+	TEXT("r.RDG.ParallelDestruction"), GRDGParallelDestruction,
+	TEXT("RDG will destruct the graph using an async task.")
+	TEXT(" 0: graph destruction is done synchronously;")
+	TEXT(" 1: graph destruction may be done asynchronously (default);"),
+	ECVF_RenderThreadSafe);
 
 int32 GRDGParallelSetup = 1;
 FAutoConsoleVariableRef CVarRDGParallelSetup(
@@ -430,7 +442,7 @@ FAutoConsoleVariableRef CVarRDGVerboseCSVStats(
 	ECVF_RenderThreadSafe);
 #endif
 
-#if STATS
+#if RDG_STATS
 int32 GRDGStatPassCount = 0;
 int32 GRDGStatPassWithParameterCount = 0;
 int32 GRDGStatPassCullCount = 0;
@@ -447,6 +459,28 @@ int32 GRDGStatTransitionCount = 0;
 int32 GRDGStatAliasingCount = 0;
 int32 GRDGStatTransitionBatchCount = 0;
 int32 GRDGStatMemoryWatermark = 0;
+#endif
+
+CSV_DEFINE_CATEGORY(RDGCount, true);
+
+TRACE_DECLARE_INT_COUNTER(COUNTER_RDG_PassCount, TEXT("RDG/PassCount"));
+TRACE_DECLARE_INT_COUNTER(COUNTER_RDG_PassWithParameterCount, TEXT("RDG/PassWithParameterCount"));
+TRACE_DECLARE_INT_COUNTER(COUNTER_RDG_PassCullCount, TEXT("RDG/PassCullCount"));
+TRACE_DECLARE_INT_COUNTER(COUNTER_RDG_RenderPassMergeCount, TEXT("RDG/RenderPassMergeCount"));
+TRACE_DECLARE_INT_COUNTER(COUNTER_RDG_PassDependencyCount, TEXT("RDG/PassDependencyCount"));
+TRACE_DECLARE_INT_COUNTER(COUNTER_RDG_TextureCount, TEXT("RDG/TextureCount"));
+TRACE_DECLARE_INT_COUNTER(COUNTER_RDG_TextureReferenceCount, TEXT("RDG/TextureReferenceCount"));
+TRACE_DECLARE_FLOAT_COUNTER(COUNTER_RDG_TextureReferenceAverage, TEXT("RDG/TextureReferenceAverage"));
+TRACE_DECLARE_INT_COUNTER(COUNTER_RDG_BufferCount, TEXT("RDG/BufferCount"));
+TRACE_DECLARE_INT_COUNTER(COUNTER_RDG_BufferReferenceCount, TEXT("RDG/BufferReferenceCount"));
+TRACE_DECLARE_FLOAT_COUNTER(COUNTER_RDG_BufferReferenceAverage, TEXT("RDG/BufferReferenceAverage"));
+TRACE_DECLARE_INT_COUNTER(COUNTER_RDG_ViewCount, TEXT("RDG/ViewCount"));
+TRACE_DECLARE_INT_COUNTER(COUNTER_RDG_TransientTextureCount, TEXT("RDG/TransientTextureCount"));
+TRACE_DECLARE_INT_COUNTER(COUNTER_RDG_TransientBufferCount, TEXT("RDG/TransientBufferCount"));
+TRACE_DECLARE_INT_COUNTER(COUNTER_RDG_TransitionCount, TEXT("RDG/TransitionCount"));
+TRACE_DECLARE_INT_COUNTER(COUNTER_RDG_AliasingCount, TEXT("RDG/AliasingCount"));
+TRACE_DECLARE_INT_COUNTER(COUNTER_RDG_TransitionBatchCount, TEXT("RDG/TransitionBatchCount"));
+TRACE_DECLARE_MEMORY_COUNTER(COUNTER_RDG_MemoryWatermark, TEXT("RDG/MemoryWatermark"));
 
 DEFINE_STAT(STAT_RDG_PassCount);
 DEFINE_STAT(STAT_RDG_PassWithParameterCount);
@@ -473,10 +507,9 @@ DEFINE_STAT(STAT_RDG_CollectBarriersTime);
 DEFINE_STAT(STAT_RDG_ClearTime);
 DEFINE_STAT(STAT_RDG_FlushRHIResources);
 DEFINE_STAT(STAT_RDG_MemoryWatermark);
-#endif
 
 #if RDG_EVENTS != RDG_EVENTS_NONE
-int32 GRDGEmitEvents = 0;
+int32 GRDGEmitDrawEvents_RenderThread = 0;
 #endif
 
 void InitRenderGraph()
@@ -485,6 +518,12 @@ void InitRenderGraph()
 	if (FParse::Param(FCommandLine::Get(), TEXT("rdgimmediate")))
 	{
 		GRDGImmediateMode = 1;
+	}
+
+	int32 ValidationValue = 0;
+	if (FParse::Value(FCommandLine::Get(), TEXT("rdgvalidation="), ValidationValue))
+	{
+		GRDGValidation = ValidationValue;
 	}
 
 	if (FParse::Param(FCommandLine::Get(), TEXT("rdgdebug")))
@@ -513,6 +552,31 @@ void InitRenderGraph()
 	{
 		GRDGClobberResources = 1;
 	}
+
+	int32 OverlapUAVsValue = 0;
+	if (FParse::Value(FCommandLine::Get(), TEXT("rdgoverlapuavs="), OverlapUAVsValue))
+	{
+		GRDGOverlapUAVs = OverlapUAVsValue;
+	}
+
+	FString GraphFilter;
+	if (FParse::Value(FCommandLine::Get(), TEXT("rdgdebuggraphfilter="), GraphFilter))
+	{
+		CVarRDGDebugGraphFilter->Set(*GraphFilter);
+	}
+
+	FString PassFilter;
+	if (FParse::Value(FCommandLine::Get(), TEXT("rdgdebugpassfilter="), PassFilter))
+	{
+		CVarRDGDebugPassFilter->Set(*PassFilter);
+	}
+
+	FString ResourceFilter;
+	if (FParse::Value(FCommandLine::Get(), TEXT("rdgdebugresourcefilter="), ResourceFilter))
+	{
+		CVarRDGDebugResourceFilter->Set(*ResourceFilter);
+	}
+#endif
 
 	int32 TransientAllocatorValue = 0;
 	if (FParse::Value(FCommandLine::Get(), TEXT("rdgtransientallocator="), TransientAllocatorValue))
@@ -546,40 +610,51 @@ void InitRenderGraph()
 		GRDGMergeRenderPasses = MergeRenderPassesValue;
 	}
 
-	int32 OverlapUAVsValue = 0;
-	if (FParse::Value(FCommandLine::Get(), TEXT("rdgoverlapuavs="), OverlapUAVsValue))
-	{
-		GRDGOverlapUAVs = OverlapUAVsValue;
-	}
-
-	int32 DumpGraphValue = 0;
-	if (FParse::Value(FCommandLine::Get(), TEXT("rdgdumpgraph="), DumpGraphValue))
-	{
-		CVarDumpGraph->Set(DumpGraphValue);
-	}
-
 	int32 AsyncComputeValue = 0;
 	if (FParse::Value(FCommandLine::Get(), TEXT("rdgasynccompute="), AsyncComputeValue))
 	{
 		CVarRDGAsyncCompute->Set(AsyncComputeValue);
 	}
 
-	FString GraphFilter;
-	if (FParse::Value(FCommandLine::Get(), TEXT("rdgdebuggraphfilter="), GraphFilter))
+#if RDG_GPU_DEBUG_SCOPES
+	int32 RDGEventValue = 0;
+	if (FParse::Value(FCommandLine::Get(), TEXT("rdgevents="), RDGEventValue))
 	{
-		CVarRDGDebugGraphFilter->Set(*GraphFilter);
-	}
-
-	FString PassFilter;
-	if (FParse::Value(FCommandLine::Get(), TEXT("rdgdebugpassfilter="), PassFilter))
-	{
-		CVarRDGDebugPassFilter->Set(*PassFilter);
-	}
-
-	FString ResourceFilter;
-	if (FParse::Value(FCommandLine::Get(), TEXT("rdgdebugresourcefilter="), ResourceFilter))
-	{
-		CVarRDGDebugResourceFilter->Set(*ResourceFilter);
+		CVarRDGEvents->Set(RDGEventValue);
 	}
 #endif
+}
+
+bool IsParallelExecuteEnabled()
+{
+	return GRDGParallelExecute > 0
+		&& !GRHICommandList.Bypass()
+		&& !IsImmediateMode()
+		&& !GRDGDebug
+		&& !GRDGTransitionLog
+		&& !IsMobilePlatform(GMaxRHIShaderPlatform)
+		&& GRHISupportsMultithreadedShaderCreation
+#if WITH_DUMPGPU
+		&& !IsDumpingRDGResources()
+#endif
+		// Only run parallel RDG if we have a rendering thread.
+		&& IsInActualRenderingThread()
+		;
+}
+
+bool IsParallelSetupEnabled()
+{
+	return GRDGParallelSetup > 0
+		&& !GRHICommandList.Bypass()
+		&& !IsImmediateMode()
+		&& !GRDGDebug
+		&& !GRDGTransitionLog
+		&& !IsMobilePlatform(GMaxRHIShaderPlatform)
+		&& GRHISupportsMultithreadedShaderCreation
+#if WITH_DUMPGPU
+		&& !IsDumpingRDGResources()
+#endif
+		// Only run parallel RDG if we have a rendering thread.
+		&& IsInActualRenderingThread()
+		;
 }

@@ -3,6 +3,7 @@
 
 #include "CoreMinimal.h"
 #include "Misc/FeedbackContext.h"
+#include "Model.h"
 #include "Modules/ModuleManager.h"
 #include "Components/ActorComponent.h"
 #include "Components/SceneComponent.h"
@@ -253,8 +254,8 @@ void UUnrealEdEngine::SetPivot( FVector NewPivot, bool bSnapPivotToGrid, bool bI
 	//if there are multiple elements selected, just use the x-axis for the "translate/rotate" or 2D widgets
 	if (NumElements == 1)
 	{
-		EditorModeTools.TranslateRotateXAxisAngle = TranslateRotateWidgetWorldXAxis.Rotation().Yaw;
-		EditorModeTools.TranslateRotate2DAngle = FMath::RadiansToDegrees(FMath::Atan2(Widget2DWorldXAxis.Z, Widget2DWorldXAxis.X));
+		EditorModeTools.TranslateRotateXAxisAngle = static_cast<float>(TranslateRotateWidgetWorldXAxis.Rotation().Yaw);
+		EditorModeTools.TranslateRotate2DAngle = static_cast<float>(FMath::RadiansToDegrees(FMath::Atan2(Widget2DWorldXAxis.Z, Widget2DWorldXAxis.X)));
 	}
 
 	// Update showing.

@@ -2,8 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Modules/ModuleInterface.h"
 #include "BlendSpaceAnalysis.h"
 #include "RootMotionAnalysis.generated.h"
 
@@ -67,10 +65,19 @@ public:
 	float EndTimeFraction = 1.0f;
 };
 
-//======================================================================================================================
+/**
+ * Calculates the root motion movement speed from the animation (which may be playrate scaled), 
+ * according to the analysis properties.
+ */
 bool CalculateRootMotion(
 	float&                               Result,
 	const UBlendSpace&                   BlendSpace,
 	const URootMotionAnalysisProperties* AnalysisProperties,
 	const UAnimSequence&                 Animation,
 	const float                          RateScale);
+
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "Modules/ModuleInterface.h"
+#endif

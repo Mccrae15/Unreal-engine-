@@ -29,6 +29,7 @@
 #include "Factories/MaterialInstanceConstantFactoryNew.h"
 #include "Factories/TextureFactory.h"
 
+#include "MaterialDomain.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionAdd.h"
 #include "Materials/MaterialExpressionConstant.h"
@@ -3236,6 +3237,7 @@ UMaterialInterface* FDatasmithMaterialExpressions::CreateUEPbrMaterial(UPackage*
 
 	UnrealMaterial->bUseMaterialAttributes = MaterialElement->GetUseMaterialAttributes();
 	UnrealMaterial->TwoSided = MaterialElement->GetTwoSided();
+	UnrealMaterial->bIsThinSurface = MaterialElement->GetIsThinSurface();
 	UnrealMaterial->BlendMode = GetUEPbrImportBlendMode(MaterialElement, AssetsContext);
 	UnrealMaterial->OpacityMaskClipValue = MaterialElement->GetOpacityMaskClipValue();
 	UnrealMaterial->TranslucencyLightingMode = static_cast<ETranslucencyLightingMode>(MaterialElement->GetTranslucencyLightingMode());

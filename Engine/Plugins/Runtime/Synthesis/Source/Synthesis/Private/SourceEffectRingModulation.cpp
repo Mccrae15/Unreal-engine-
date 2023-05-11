@@ -1,10 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SourceEffects/SourceEffectRingModulation.h"
-#include "AudioDevice.h"
+#include "AudioBusSubsystem.h"
 #include "AudioMixerDevice.h"
-#include "AudioMixerBus.h"
-#include "DSP/MultithreadedPatching.h"
+#include "Sound/AudioBus.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SourceEffectRingModulation)
 
@@ -51,7 +50,9 @@ void FSourceEffectRingModulation::OnPresetChanged()
 	{
 		Audio::FMixerDevice* MixerDevice = (Audio::FMixerDevice*)AudioDeviceManager->GetAudioDeviceRaw(AudioDeviceId);
 		uint32 AudioBusId = Settings.AudioBusModulator->GetUniqueID();
-		Audio::FPatchOutputStrongPtr AudioBusPatchOutputPtr = MixerDevice->AddPatchForAudioBus(AudioBusId, 1.0f);
+		UAudioBusSubsystem* AudioBusSubsystem = MixerDevice->GetSubsystem<UAudioBusSubsystem>();
+		check(AudioBusSubsystem);
+		Audio::FPatchOutputStrongPtr AudioBusPatchOutputPtr = AudioBusSubsystem->AddPatchOutputForAudioBus(Audio::FAudioBusKey(AudioBusId), MixerDevice->GetNumOutputFrames(), Settings.AudioBusModulator->GetNumChannels());
 		RingModulation.SetExternalPatchSource(AudioBusPatchOutputPtr);
 	}
 	else

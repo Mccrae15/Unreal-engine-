@@ -17,8 +17,10 @@
 #include "NiagaraStats.h"
 #include "NiagaraSystem.h"
 #include "NiagaraTrace.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Modules/ModuleManager.h"
+#include "UObject/LinkerLoad.h"
 #include "UObject/ObjectSaveContext.h"
 #include "UObject/Package.h"
 #include "UObject/UObjectIterator.h"
@@ -63,6 +65,18 @@ static FAutoConsoleVariableRef CVarEnableEmitterChangeIdMergeLogging(
 	GbEnableEmitterChangeIdMergeLogging,
 	TEXT("If > 0 verbose change id information will be logged to help with debuggin merge issues. \n"),
 	ECVF_Default
+);
+
+static int32 GNiagaraEmitterComputePSOPrecacheMode = 1;
+static FAutoConsoleVariableRef CVarNiagaraEmitterComputePSOPrecacheMode(
+	TEXT("fx.Niagara.Emitter.ComputePSOPrecacheMode"),
+	GNiagaraEmitterComputePSOPrecacheMode,
+	TEXT("Controlls how PSO precaching should be done for Niagara compute shaders\n")
+	TEXT("0 = Disabled (Default).\n")
+	TEXT("1 = Enabled if r.PSOPrecaching is also enabled. Emitters are not allowed to run until they complete if r.PSOPrecache.ProxyCreationWhenPSOReady=1\n")
+	TEXT("2 = Force Enabled.\n")
+	TEXT("3 = Force Enabled, emitters are not allowed to run until they complete."),
+	ECVF_Scalability
 );
 
 static int32 GNiagaraEmitterMaxGPUBufferElements = 0;
@@ -164,9 +178,6 @@ UNiagaraEmitter::UNiagaraEmitter(const FObjectInitializer& Initializer)
 , MaxGPUParticlesSpawnPerFrame_DEPRECATED(0)
 #endif
 {
-#if WITH_EDITORONLY_DATA
-	IsCooked = false;
-#endif
 }
 
 void UNiagaraEmitter::PostInitProperties()
@@ -507,14 +518,25 @@ void UNiagaraEmitter::Serialize(FArchive& Ar)
 			}
 		}
 	}
+
+	// When cooking an emitter that's not an asset, clear out the thumbnail image to prevent issues
+	// with cooked editor data.
+	bool bCookingNonAssetEmitter = Ar.IsCooking() && this->IsAsset() == false;
+	UTexture2D* CachedThumbnail = nullptr;
+	if (bCookingNonAssetEmitter)
+	{
+		CachedThumbnail = ThumbnailImage;
+		ThumbnailImage = nullptr;
+	}
 	
 #endif
 	Super::Serialize(Ar);
 
 #if WITH_EDITORONLY_DATA
-	if (Ar.IsLoading())
+	// Restore the thumbnail image that was cleared before serialize.
+	if (bCookingNonAssetEmitter)
 	{
-		IsCooked = Ar.IsFilterEditorOnly();
+		ThumbnailImage = CachedThumbnail;
 	}
 #endif
 
@@ -546,6 +568,21 @@ void FVersionedNiagaraEmitterData::EnsureScriptsPostLoaded()
 void UNiagaraEmitter::PostLoad()
 {
 	Super::PostLoad();
+
+#if WITH_EDITOR
+	// It is unclear in what conditions we can have our PostLoad() invoked without the package having been fully serialized.  Failure to
+	// have the data loaded results in the emitter (and potentially all other objects that reference it) being left in an indeterminate
+	// state.  While investigation continues into hwo this happens, this call to Preload() seems to resolve the somewhat reproducible case
+	// that we have.  There's some evidence that UNiagaraScript having instanced properties is leading to an edge case in object serialization
+	// but more investigation is required.
+	if (HasAnyFlags(RF_NeedLoad))
+	{
+		if (FLinkerLoad* LinkerLoad = GetLinker())
+		{
+			LinkerLoad->Preload(this);
+		}
+	}
+#endif
 
 #if WITH_EDITORONLY_DATA
 	CheckVersionDataAvailable();
@@ -618,6 +655,12 @@ void UNiagaraEmitter::PostLoad()
 	{
 		LibraryVisibility = ENiagaraScriptLibraryVisibility::Library;
 	}
+
+	if (this->GetOuter()->IsA<UNiagaraSystem>() || this->GetOuter()->IsA<UNiagaraEmitter>())
+	{
+		// Remove thunbnails for non-asset emitters to prevent problems with cooked for editor emitters being referenced by uncooked emitters and systems.
+		ThumbnailImage = nullptr;
+	}
 #endif
 
 	const int32 UE5MainVer = GetLinkerCustomVersion(FUE5MainStreamObjectVersion::GUID);
@@ -625,7 +668,7 @@ void UNiagaraEmitter::PostLoad()
 	for (FVersionedNiagaraEmitterData& Data : VersionData)
 	{
 #if WITH_EDITORONLY_DATA
-		Data.PostLoad(*this, IsCooked, NiagaraVer);
+		Data.PostLoad(*this, NiagaraVer);
 		Data.GPUComputeScript->OnGPUScriptCompiled().RemoveAll(this);
 		Data.GPUComputeScript->OnGPUScriptCompiled().AddUObject(this, &UNiagaraEmitter::RaiseOnEmitterGPUCompiled);
 		if (UE5MainVer < FUE5MainStreamObjectVersion::FixGpuAlwaysRunningUpdateScriptNoneInterpolated)
@@ -640,7 +683,7 @@ void UNiagaraEmitter::PostLoad()
 			}
 		}
 #else
-		Data.PostLoad(*this, true, NiagaraVer);
+		Data.PostLoad(*this, NiagaraVer);
 #endif
 	}
 
@@ -660,7 +703,7 @@ void UNiagaraEmitter::DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutCon
 }
 #endif
 
-void FVersionedNiagaraEmitterData::PostLoad(UNiagaraEmitter& Emitter, bool bIsCooked, int32 NiagaraVer)
+void FVersionedNiagaraEmitterData::PostLoad(UNiagaraEmitter& Emitter, int32 NiagaraVer)
 {
 #if STATS
 	StatDatabase.Init();
@@ -693,6 +736,7 @@ void FVersionedNiagaraEmitterData::PostLoad(UNiagaraEmitter& Emitter, bool bIsCo
 		{
 #if WITH_EDITORONLY_DATA
 			//In cooked builds these can be cooked out and null on purpose.
+			bool bIsCooked = Emitter.GetPackage()->bIsCookedForEditor;
 			ensureMsgf(bIsCooked, TEXT("Null renderer found in %s at index %i, removing it to prevent crashes."), *Emitter.GetPathName(), RendererIndex);
 #endif
 			RendererProperties.RemoveAt(RendererIndex);
@@ -754,9 +798,14 @@ void FVersionedNiagaraEmitterData::PostLoad(UNiagaraEmitter& Emitter, bool bIsCo
 
 	if (!Emitter.GetOutermost()->bIsCookedForEditor)
 	{
-		GraphSource->ConditionalPostLoad();
-		GraphSource->PostLoadFromEmitter(FVersionedNiagaraEmitter(&Emitter, Version.VersionGuid));
-		
+		if (ensureMsgf(GraphSource != nullptr, TEXT("Niagara emitter %s [Flags: %x] - Version (%d.%d - %s) - Missing GraphSource"),
+			*Emitter.GetPathName(), Emitter.GetFlags(),
+			Version.MajorVersion, Version.MinorVersion, *Version.VersionGuid.ToString()))
+		{
+			GraphSource->ConditionalPostLoad();
+			GraphSource->PostLoadFromEmitter(FVersionedNiagaraEmitter(&Emitter, Version.VersionGuid));
+		}
+
 		// Prepare for emitter inheritance.
 		if (GetParent().Emitter != nullptr)
 		{
@@ -860,12 +909,14 @@ bool UNiagaraEmitter::IsEditorOnly() const
 void UNiagaraEmitter::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
 {
 #if WITH_EDITOR
+	OutTags.Add(FAssetRegistryTag("VersioningEnabled", bVersioningEnabled ? TEXT("True") : TEXT("False"), FAssetRegistryTag::TT_Alphabetical));
+
 	const FVersionedNiagaraEmitterData* AssetData = GetLatestEmitterData();
 	FVersionedNiagaraEmitterData DefaultData;
 	const FVersionedNiagaraEmitterData& EmitterData = AssetData ? *AssetData : DefaultData; // the CDO does not have any version data, so just use the default struct values in that case 
 	OutTags.Add(FAssetRegistryTag("HasGPUEmitter", ( EmitterData.SimTarget == ENiagaraSimTarget::GPUComputeSim) ? TEXT("True") : TEXT("False"), FAssetRegistryTag::TT_Alphabetical));
 
-	const float BoundsSize =  EmitterData.FixedBounds.GetSize().GetMax();
+	const float BoundsSize =  float(EmitterData.FixedBounds.GetSize().GetMax());
 	OutTags.Add(FAssetRegistryTag("FixedBoundsSize",  EmitterData.CalculateBoundsMode == ENiagaraEmitterCalculateBoundMode::Fixed ? FString::Printf(TEXT("%.2f"), BoundsSize) : FString(TEXT("None")), FAssetRegistryTag::TT_Numerical));
 
 
@@ -983,6 +1034,8 @@ void UNiagaraEmitter::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) c
 	FText TemplateSpecializationValueString = StaticEnum<ENiagaraScriptTemplateSpecification>()->GetDisplayNameTextByValue((int64) TemplateSpecification);
 	OutTags.Add(FAssetRegistryTag(TemplateSpecificationName, TemplateSpecializationValueString.ToString(), FAssetRegistryTag::TT_Alphabetical));
 	
+	INiagaraModule& NiagaraModule = FModuleManager::GetModuleChecked<INiagaraModule>("Niagara");
+	OutTags.Add(NiagaraModule.GetEditorOnlyDataUtilities().CreateClassUsageAssetRegistryTag(this));
 #endif
 	Super::GetAssetRegistryTags(OutTags);
 }
@@ -1218,7 +1271,6 @@ void UNiagaraEmitter::PostEditChangeVersionedProperty(FPropertyChangedEvent& Pro
 	ResolveScalabilitySettings();
 
 	UpdateChangeId(TEXT("PostEditChangeProperty"));
-	OnPropertiesChangedDelegate.Broadcast();
 
 #if WITH_EDITORONLY_DATA
 	if (bNeedsRecompile)
@@ -1230,6 +1282,11 @@ void UNiagaraEmitter::PostEditChangeVersionedProperty(FPropertyChangedEvent& Pro
 		UNiagaraSystem::RecomputeExecutionOrderForEmitter(FVersionedNiagaraEmitter(this, Version));
 	}
 #endif
+
+	// make sure to call this after the request for compilation is performed above (if necessary).  This broadcast
+	// will result in emitters being reset, which could involve activation (when warmup is involved) and we may be
+	// in an invalid state where a recompile is required.
+	OnPropertiesChangedDelegate.Broadcast();
 }
 
 void UNiagaraEmitter::PreSave(FObjectPreSaveContext ObjectSaveContext)
@@ -1333,7 +1390,7 @@ TArray<UNiagaraEditorParametersAdapterBase*> UNiagaraEmitter::GetEditorOnlyParam
 const TSharedPtr<FNiagaraGraphCachedDataBase, ESPMode::ThreadSafe>& UNiagaraEmitter::GetCachedTraversalData(const FGuid& EmitterVersion) const
 {
 	const FVersionedNiagaraEmitterData* EmitterData = GetEmitterData(EmitterVersion);
-	if (EmitterData->CachedTraversalData.IsValid())
+	if (EmitterData->CachedTraversalData.IsValid() && EmitterData->CachedTraversalData->IsValidForEmitter(EmitterData))
 	{
 		return EmitterData->CachedTraversalData;
 	}
@@ -1599,31 +1656,28 @@ void FVersionedNiagaraEmitterData::CacheFromCompiledData(const FNiagaraDataSetCo
 		MaxInstanceCount = 0;
 	}
 	UpdateDebugName(Emitter, CompiledData);
-
 }
 
 void FVersionedNiagaraEmitterData::UpdateDebugName(const UNiagaraEmitter& Emitter, const FNiagaraDataSetCompiledData* CompiledData)
 {
 #if WITH_NIAGARA_DEBUG_EMITTER_NAME
 	// Ensure our debug simulation name is up to date
-	// Only required on uncooked as it can change due to compilation
-	if (!FPlatformProperties::RequiresCookedData())
+	DebugSimName.Empty();
+	if (const UNiagaraSystem* SystemOwner = Emitter.GetTypedOuter<class UNiagaraSystem>())
 	{
-		DebugSimName.Empty();
-		if (const UNiagaraSystem* SystemOwner = Emitter.GetTypedOuter<class UNiagaraSystem>())
-		{
-			DebugSimName = SystemOwner->GetName();
-			DebugSimName.AppendChar(':');
-		}
-		DebugSimName.Append(Emitter.GetName());
-		if (Emitter.IsVersioningEnabled())
-		{
-			DebugSimName.AppendChar(':');
-			DebugSimName.AppendInt(Version.MajorVersion);
-			DebugSimName.AppendChar('.');
-			DebugSimName.AppendInt(Version.MinorVersion);
-		}
+		DebugSimName = SystemOwner->GetName();
+		DebugSimName.AppendChar(':');
 	}
+#if WITH_EDITORONLY_DATA
+	DebugSimName.Append(Emitter.GetName());
+	if (Emitter.IsVersioningEnabled())
+	{
+		DebugSimName.AppendChar(':');
+		DebugSimName.AppendInt(Version.MajorVersion);
+		DebugSimName.AppendChar('.');
+		DebugSimName.AppendInt(Version.MinorVersion);
+	}
+#endif
 #endif
 
 	RebuildRendererBindings(Emitter);
@@ -1662,7 +1716,7 @@ bool FVersionedNiagaraEmitterData::BuildParameterStoreRendererBindings(FNiagaraP
 			{
 				bAnyBindingsAdded |= ParameterStore.AddParameter(FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), SimStageMetaData.EnabledBinding), false);
 			}
-			if (SimStageMetaData.bOverrideElementCount)
+			if (SimStageMetaData.IterationSourceType == ENiagaraIterationSource::DirectSet)
 			{
 				if (!SimStageMetaData.ElementCountXBinding.IsNone())
 				{
@@ -1759,6 +1813,7 @@ void UNiagaraEmitter::UpdateEmitterAfterLoad()
 		return;
 	}
 	bFullyLoaded = true;
+	LLM_SCOPE(ELLMTag::Niagara);
 	
 #if WITH_EDITORONLY_DATA
 	check(IsInGameThread());
@@ -2917,6 +2972,32 @@ void UNiagaraEmitter::RemoveRenderer(UNiagaraRendererProperties* Renderer, FGuid
 	EmitterData->RebuildRendererBindings(*this);
 }
 
+void UNiagaraEmitter::MoveRenderer(UNiagaraRendererProperties* Renderer, int32 NewIndex, FGuid EmitterVersion)
+{
+	FVersionedNiagaraEmitterData* EmitterData = GetEmitterData(EmitterVersion);
+	int32 CurrentIndex = EmitterData->RendererProperties.IndexOfByKey(Renderer);
+	if (CurrentIndex == INDEX_NONE || CurrentIndex == NewIndex || !EmitterData->RendererProperties.IsValidIndex(NewIndex))
+	{
+		return;
+	}
+	
+	FNiagaraSystemUpdateContext UpdateContext;
+	UpdateContext.SetDestroyOnAdd(true);
+	if (UNiagaraSystem* Owner = GetTypedOuter<UNiagaraSystem>())
+	{
+		UpdateContext.Add(Owner, true);
+	}
+
+	Modify();
+	EmitterData->RendererProperties.RemoveAt(CurrentIndex);
+	EmitterData->RendererProperties.Insert(Renderer, NewIndex);
+#if WITH_EDITOR
+	UpdateChangeId(TEXT("Renderer moved"));
+	OnRenderersChangedDelegate.Broadcast();
+#endif
+	EmitterData->RebuildRendererBindings(*this);
+}
+
 FNiagaraEventScriptProperties* FVersionedNiagaraEmitterData::GetEventHandlerByIdUnsafe(FGuid ScriptUsageId)
 {
 	for (FNiagaraEventScriptProperties& EventScriptProperties : EventHandlerScriptProps)
@@ -3218,6 +3299,118 @@ void UNiagaraEmitter::GenerateStatID()const
 	StatID_RT = FDynamicStats::CreateStatId<FStatGroup_STATGROUP_NiagaraEmitters>(Name + TEXT("[RT]"));
 	StatID_RT_CNC = FDynamicStats::CreateStatId<FStatGroup_STATGROUP_NiagaraEmitters>(Name + TEXT("[RT_CNC]"));
 #endif
+}
+
+FGraphEventArray FVersionedNiagaraEmitterData::PrecacheComputePSOs(const UNiagaraEmitter& NiagaraEmitter)
+{
+	FGraphEventArray PSOReadyGraphTasks;
+	PSOPrecacheResult = EPSOPrecacheResult::Complete;
+	if (GNiagaraEmitterComputePSOPrecacheMode == 0 || !FApp::CanEverRender() || SimTarget != ENiagaraSimTarget::GPUComputeSim)
+	{
+		return PSOReadyGraphTasks;
+	}
+	
+	FNiagaraShaderScript* ShaderScript = GPUComputeScript->GetRenderThreadScript();
+	if (ShaderScript == nullptr || GPUComputeScript->DidScriptCompilationSucceed(true) == false)
+	{
+		return PSOReadyGraphTasks;
+	}
+
+	// Compute PSO can fail on some platforms even though the shader compiled successfully this path will wait for the PSO precache to complete before the emitter is allowed to run
+	if (GNiagaraEmitterComputePSOPrecacheMode == 3)
+	{
+		FGraphEventArray PSOPrecacheEvents;
+		for (int32 i = 0; i < ShaderScript->GetNumPermutations(); ++i)
+		{
+			FRHIComputeShader* ComputeShader = ShaderScript->GetShaderGameThread(i).GetComputeShader();
+			FPSOPrecacheRequestResult PSOPrecacheRequestResult = PipelineStateCache::PrecacheComputePipelineState(ComputeShader, true);
+			if (PSOPrecacheRequestResult.AsyncCompileEvent.IsValid())
+			{
+				PSOPrecacheEvents.Add(PSOPrecacheRequestResult.AsyncCompileEvent);
+				continue;
+			}
+
+			const EPSOPrecacheResult ShaderResult = PipelineStateCache::CheckPipelineStateInCache(ComputeShader);
+			if (ShaderResult != EPSOPrecacheResult::Complete)
+			{
+				PSOPrecacheResult = EPSOPrecacheResult::NotSupported;
+				return PSOReadyGraphTasks;
+			}
+		}
+
+		const FNiagaraVMExecutableDataId VMid = GPUComputeScript->GetComputedVMCompilationId();	//-TODO:
+		struct FNiagaraEmitterPSOPrecacheReadyTask
+		{
+			explicit FNiagaraEmitterPSOPrecacheReadyTask(FVersionedNiagaraEmitterWeakPtr InVersionedEmitter)
+				: WeakVersionedEmitter(InVersionedEmitter)
+			{
+			}
+
+			FORCEINLINE TStatId GetStatId() const { RETURN_QUICK_DECLARE_CYCLE_STAT(FNiagaraEmitterPSOPrecacheReadyTask, STATGROUP_TaskGraphTasks); }
+			ENamedThreads::Type GetDesiredThread() { return ENamedThreads::GameThread; }
+			static ESubsequentsMode::Type GetSubsequentsMode() { return ESubsequentsMode::TrackSubsequents; }
+			void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
+			{
+				FVersionedNiagaraEmitter VersionedEmitter = WeakVersionedEmitter.ResolveWeakPtr();
+				FVersionedNiagaraEmitterData* EmitterData = VersionedEmitter.GetEmitterData();
+				if (EmitterData == nullptr)
+				{
+					return;
+				}
+
+				FNiagaraShaderScript* ShaderScript = EmitterData->GPUComputeScript->GetRenderThreadScript();
+				if (ShaderScript == nullptr)
+				{
+					return;
+				}
+
+				for (int32 i = 0; i < ShaderScript->GetNumPermutations(); ++i)
+				{
+					FRHIComputeShader* ComputeShader = ShaderScript->GetShaderGameThread(i).GetComputeShader();
+					const EPSOPrecacheResult ShaderResult = PipelineStateCache::CheckPipelineStateInCache(ComputeShader);
+					if (ShaderResult != EPSOPrecacheResult::Complete)
+					{
+						EmitterData->PSOPrecacheResult = EPSOPrecacheResult::NotSupported;
+
+						UNiagaraSystem* NiagaraSystem = VersionedEmitter.Emitter ? VersionedEmitter.Emitter->GetTypedOuter<UNiagaraSystem>() : nullptr;
+						UE_LOG(LogNiagara, Warning, TEXT("Niagara ComputePSOPrecache Failed for Emitter(%s) System(%s), emitter will not run."), *GetNameSafe(VersionedEmitter.Emitter), *GetNameSafe(NiagaraSystem));
+						return;
+					}
+				}
+				EmitterData->PSOPrecacheResult = EPSOPrecacheResult::Complete;
+			}
+
+			FVersionedNiagaraEmitterWeakPtr WeakVersionedEmitter;
+		};
+
+		if (PSOPrecacheEvents.Num() > 0)
+		{
+			PSOPrecacheResult = EPSOPrecacheResult::Active;
+
+			FVersionedNiagaraEmitterWeakPtr EmitterWeakPtr((UNiagaraEmitter*)(&NiagaraEmitter), Version.VersionGuid);
+			PSOReadyGraphTasks.Add( TGraphTask<FNiagaraEmitterPSOPrecacheReadyTask>::CreateTask(&PSOPrecacheEvents, ENamedThreads::GameThread).ConstructAndDispatchWhenReady(EmitterWeakPtr));
+		}
+		else
+		{
+			PSOPrecacheResult = EPSOPrecacheResult::Complete;
+		}
+	}
+	// In this mode we either force them to cache or respect that precaching is enabled
+	else if (GNiagaraEmitterComputePSOPrecacheMode == 2 || PipelineStateCache::IsPSOPrecachingEnabled() )
+	{
+		static IConsoleVariable* CVarPSOProxyCreationWhenPSOReady = IConsoleManager::Get().FindConsoleVariable(TEXT("r.PSOPrecache.ProxyCreationWhenPSOReady"));
+		bool bAddToPSOReadyGraphTasks = GNiagaraEmitterComputePSOPrecacheMode == 1 && CVarPSOProxyCreationWhenPSOReady && CVarPSOProxyCreationWhenPSOReady->GetInt() != 0;
+		for (int32 i=0; i < ShaderScript->GetNumPermutations(); ++i)
+		{
+			FRHIComputeShader* ComputeShader = ShaderScript->GetShaderGameThread(i).GetComputeShader();
+			FPSOPrecacheRequestResult PSOPrecacheRequestResult = PipelineStateCache::PrecacheComputePipelineState(ComputeShader, true);
+			if (PSOPrecacheRequestResult.AsyncCompileEvent != nullptr && bAddToPSOReadyGraphTasks)
+			{
+				PSOReadyGraphTasks.Add(PSOPrecacheRequestResult.AsyncCompileEvent);
+			}
+		}
+	}
+	return PSOReadyGraphTasks;
 }
 
 #if WITH_EDITORONLY_DATA

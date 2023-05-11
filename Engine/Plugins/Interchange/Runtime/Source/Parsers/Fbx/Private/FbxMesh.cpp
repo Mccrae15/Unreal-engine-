@@ -295,7 +295,8 @@ bool FMeshDescriptionImporter::FillMeshDescriptionFromFbxMesh(FbxMesh* Mesh, TAr
 	}
 
 	FStaticMeshAttributes Attributes(*MeshDescription);
-	Attributes.Register();
+	constexpr bool bKeepExistingAttribute = true;
+	Attributes.Register(bKeepExistingAttribute);
 
 	bool bStaticMeshUseSmoothEdgesIfSmoothingInformationIsMissing = true;
 
@@ -330,12 +331,18 @@ bool FMeshDescriptionImporter::FillMeshDescriptionFromFbxMesh(FbxMesh* Mesh, TAr
 		for (int32 MaterialIndex = 0; MaterialIndex < MaterialCount; ++MaterialIndex)
 		{
 			FbxSurfaceMaterial* FbxMaterial = MeshNode->GetMaterial(MaterialIndex);
-			MaterialNames.Add(*FFbxHelper::GetFbxObjectName(FbxMaterial));
+			MaterialNames.Add(*Parser.GetFbxHelper()->GetFbxObjectName(FbxMaterial));
 		}
 	}
 
 	// Must do this before triangulating the mesh due to an FBX bug in TriangulateMeshAdvance
 	int32 LayerSmoothingCount = Mesh->GetLayerCount(FbxLayerElement::eSmoothing);
+	if (LayerSmoothingCount == 0)
+	{
+		UInterchangeResultMeshWarning_Generic* Message = AddMessage<UInterchangeResultMeshWarning_Generic>(Mesh);
+		Message->Text = LOCTEXT("MissingSmoothGroup", "No smoothing group information was found for this mesh '{MeshName}' in the FBX file. Please make sure to enable the 'Export Smoothing Groups' option in the FBX Exporter before exporting the file.");
+	}
+
 	for (int32 i = 0; i < LayerSmoothingCount; i++)
 	{
 		FbxLayerElementSmoothing const* SmoothingInfo = Mesh->GetLayer(0)->GetSmoothing();
@@ -1008,7 +1015,7 @@ bool FMeshDescriptionImporter::FillMeshDescriptionFromFbxMesh(FbxMesh* Mesh, TAr
 		if (MeshType == EMeshType::Skinned)
 		{
 			FSkeletalMeshAttributes SkeletalMeshAttributes(*MeshDescription);
-			SkeletalMeshAttributes.Register();
+			SkeletalMeshAttributes.Register(true);
 
 			using namespace UE::AnimationCore;
 			TMap<FVertexID, TArray<FBoneWeight>> RawBoneWeights;
@@ -1044,7 +1051,7 @@ bool FMeshDescriptionImporter::FillMeshDescriptionFromFbxMesh(FbxMesh* Mesh, TAr
 				if (!SortedJoints.Find(Link, BoneIndex))
 				{
 					BoneIndex = SortedJoints.Add(Link);
-					FString JointNodeUniqueID = FFbxHelper::GetFbxObjectName(Link);
+					FString JointNodeUniqueID = Parser.GetFbxHelper()->GetFbxObjectName(Link);
 					OutJointUniqueNames.Add(JointNodeUniqueID);
 				}
 
@@ -1134,7 +1141,7 @@ bool FMeshPayloadContext::FetchPayloadToFile(FFbxParser& Parser, const FString& 
 	if (!ensure(SDKScene != nullptr))
 	{
 		UInterchangeResultError_Generic* Message = Parser.AddMessage<UInterchangeResultError_Generic>();
-		Message->InterchangeKey = FFbxHelper::GetMeshUniqueID(Mesh);
+		Message->InterchangeKey = Parser.GetFbxHelper()->GetMeshUniqueID(Mesh);
 		Message->Text = LOCTEXT("FBXSceneNull_Mesh", "Cannot fetch FBX mesh payload because the FBX scene is null.");
 		return false;
 	}
@@ -1142,7 +1149,7 @@ bool FMeshPayloadContext::FetchPayloadToFile(FFbxParser& Parser, const FString& 
 	if (!ensure(Mesh != nullptr))
 	{
 		UInterchangeResultError_Generic* Message = Parser.AddMessage<UInterchangeResultError_Generic>();
-		Message->InterchangeKey = FFbxHelper::GetMeshUniqueID(Mesh);
+		Message->InterchangeKey = Parser.GetFbxHelper()->GetMeshUniqueID(Mesh);
 		Message->Text = LOCTEXT("FBXMeshNull", "Cannot fetch FBX mesh payload because the FBX mesh is null.");
 		return false;
 	}
@@ -1150,7 +1157,7 @@ bool FMeshPayloadContext::FetchPayloadToFile(FFbxParser& Parser, const FString& 
 	if (!ensure(SDKGeometryConverter != nullptr))
 	{
 		UInterchangeResultError_Generic* Message = Parser.AddMessage<UInterchangeResultError_Generic>();
-		Message->InterchangeKey = FFbxHelper::GetMeshUniqueID(Mesh);
+		Message->InterchangeKey = Parser.GetFbxHelper()->GetMeshUniqueID(Mesh);
 		Message->Text = LOCTEXT("FBXConverterNull", "Cannot fetch FBX mesh payload because the FBX geometry converter is null.");
 		return false;
 	}
@@ -1165,7 +1172,7 @@ bool FMeshPayloadContext::FetchPayloadToFile(FFbxParser& Parser, const FString& 
 		if (!MeshDescriptionImporter.FillSkinnedMeshDescriptionFromFbxMesh(Mesh, JointUniqueNames))
 		{
 			UInterchangeResultError_Generic* Message = Parser.AddMessage<UInterchangeResultError_Generic>();
-			Message->InterchangeKey = FFbxHelper::GetMeshUniqueID(Mesh);
+			Message->InterchangeKey = Parser.GetFbxHelper()->GetMeshUniqueID(Mesh);
 			Message->Text = LOCTEXT("SkinnedMeshDescriptionError", "Cannot fetch skinned mesh payload because there was an error when creating the MeshDescription.");
 			return false;
 		}
@@ -1178,7 +1185,7 @@ bool FMeshPayloadContext::FetchPayloadToFile(FFbxParser& Parser, const FString& 
 		if (!MeshDescriptionImporter.FillStaticMeshDescriptionFromFbxMesh(Mesh))
 		{
 			UInterchangeResultError_Generic* Message = Parser.AddMessage<UInterchangeResultError_Generic>();
-			Message->InterchangeKey = FFbxHelper::GetMeshUniqueID(Mesh);
+			Message->InterchangeKey = Parser.GetFbxHelper()->GetMeshUniqueID(Mesh);
 			Message->Text = LOCTEXT("StaticMeshDescriptionError", "Cannot fetch static mesh payload because there was an error when creating the MeshDescription.");
 			return false;
 		}
@@ -1221,7 +1228,7 @@ bool FMorphTargetPayloadContext::FetchPayloadToFile(FFbxParser& Parser, const FS
 	if (!MeshDescriptionImporter.FillMeshDescriptionFromFbxShape(Shape))
 	{
 		UInterchangeResultError_Generic* Message = Parser.AddMessage<UInterchangeResultError_Generic>();
-		Message->InterchangeKey = FFbxHelper::GetMeshUniqueID(Shape);
+		Message->InterchangeKey = Parser.GetFbxHelper()->GetMeshUniqueID(Shape);
 		Message->Text = LOCTEXT("MeshDescriptionMorphTargetError", "Unable to create MeshDescription from FBX morph target.");
 
 		return false;
@@ -1286,8 +1293,8 @@ void FFbxMesh::AddAllMeshes(FbxScene* SDKScene, FbxGeometryConverter* SDKGeometr
 		{
 			continue;
 		}
-		FString MeshName = FFbxHelper::GetMeshName(Mesh);
-		FString MeshUniqueID = FFbxHelper::GetMeshUniqueID(Mesh);
+		FString MeshName = Parser.GetFbxHelper()->GetMeshName(Mesh);
+		FString MeshUniqueID = Parser.GetFbxHelper()->GetMeshUniqueID(Mesh);
 		const UInterchangeMeshNode* ExistingMeshNode = Cast<UInterchangeMeshNode>(NodeContainer.GetNode(MeshUniqueID));
 		UInterchangeMeshNode* MeshNode = nullptr;
 		if (ExistingMeshNode)
@@ -1365,7 +1372,7 @@ void FFbxMesh::AddAllMeshes(FbxScene* SDKScene, FbxGeometryConverter* SDKGeometr
 				for (int32 MaterialIndex = 0; MaterialIndex < MaterialCount; ++MaterialIndex)
 				{
 					FbxSurfaceMaterial* FbxMaterial = FbxMeshNode->GetMaterial(MaterialIndex);
-					FString MaterialName = FFbxHelper::GetFbxObjectName(FbxMaterial);
+					FString MaterialName = Parser.GetFbxHelper()->GetFbxObjectName(FbxMaterial);
 					FString MaterialUid = TEXT("\\Material\\") + MaterialName;
 					if (bAddAllNodeMaterials || MaterialIndexes.Contains(MaterialIndex))
 					{
@@ -1402,7 +1409,7 @@ void FFbxMesh::AddAllMeshes(FbxScene* SDKScene, FbxGeometryConverter* SDKGeometr
 		{
 			FbxBlendShape* MorphTarget = (FbxBlendShape*)Geometry->GetDeformer(MorphTargetIndex, FbxDeformer::eBlendShape);
 			const int32 MorphTargetChannelCount = MorphTarget->GetBlendShapeChannelCount();
-			FString MorphTargetName = FFbxHelper::GetFbxObjectName(MorphTarget);
+			FString MorphTargetName = Parser.GetFbxHelper()->GetFbxObjectName(MorphTarget);
 			// see below where this is used for explanation...
 			const bool bMightBeBadMAXFile = (MorphTargetName == FString("Morpher"));
 			for (int32 ChannelIndex = 0; ChannelIndex < MorphTargetChannelCount; ++ChannelIndex)
@@ -1414,7 +1421,7 @@ void FFbxMesh::AddAllMeshes(FbxScene* SDKScene, FbxGeometryConverter* SDKGeometr
 				}
 				//Find which morph target should we use according to the weight.
 				const int32 CurrentChannelMorphTargetCount = Channel->GetTargetShapeCount();
-				FString ChannelName = FFbxHelper::GetFbxObjectName(Channel);
+				FString ChannelName = Parser.GetFbxHelper()->GetFbxObjectName(Channel);
 				// Maya adds the name of the MorphTarget and an underscore to the front of the channel name, so remove it
 				if (ChannelName.StartsWith(MorphTargetName))
 				{
@@ -1426,13 +1433,13 @@ void FFbxMesh::AddAllMeshes(FbxScene* SDKScene, FbxGeometryConverter* SDKGeometr
 					FString ShapeName;
 					if (CurrentChannelMorphTargetCount > 1)
 					{
-						ShapeName = FFbxHelper::GetFbxObjectName(Shape);
+						ShapeName = Parser.GetFbxHelper()->GetFbxObjectName(Shape);
 					}
 					else
 					{
 						if (bMightBeBadMAXFile)
 						{
-							ShapeName = FFbxHelper::GetFbxObjectName(Shape);
+							ShapeName = Parser.GetFbxHelper()->GetFbxObjectName(Shape);
 						}
 						else
 						{
@@ -1442,8 +1449,8 @@ void FFbxMesh::AddAllMeshes(FbxScene* SDKScene, FbxGeometryConverter* SDKGeometr
 					}
 					ensure(!ShapeNameToFbxShape.Contains(ShapeName));
 					ShapeNameToFbxShape.Add(ShapeName, Shape);
-					FString MorphTargetAttributeName = FFbxHelper::GetMeshName(Shape);
-					FString MorphTargetUniqueID = FFbxHelper::GetMeshUniqueID(Shape);
+					FString MorphTargetAttributeName = Parser.GetFbxHelper()->GetMeshName(Shape);
+					FString MorphTargetUniqueID = Parser.GetFbxHelper()->GetMeshUniqueID(Shape);
 					const UInterchangeMeshNode* ExistingMorphTargetNode = Cast<const UInterchangeMeshNode>(NodeContainer.GetNode(MorphTargetUniqueID));
 					if (!ExistingMorphTargetNode)
 					{
@@ -1556,7 +1563,7 @@ bool FFbxMesh::ExtractSkinnedMeshNodeJoints(FbxScene* SDKScene, UInterchangeBase
 			{
 				bFoundValidJoint = true;
 
-				FString JointNodeUniqueID = FFbxHelper::GetFbxNodeHierarchyName(Link);
+				FString JointNodeUniqueID = Parser.GetFbxHelper()->GetFbxNodeHierarchyName(Link);
 
 				// find the bone index
 				if (!JointNodeUniqueIDs.Contains(JointNodeUniqueID))

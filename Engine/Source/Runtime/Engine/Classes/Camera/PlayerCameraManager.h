@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "Templates/SubclassOf.h"
 #include "Engine/EngineTypes.h"
@@ -26,7 +25,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnAudioFadeChangeSignature, bool, 
  * @see FViewTargetTransitionParams, SetViewTarget 
  */
 UENUM()
-enum EViewTargetBlendFunction
+enum EViewTargetBlendFunction : int
 {
 	/** Camera does a simple linear interpolation. */
 	VTBlend_Linear,
@@ -912,3 +911,7 @@ public:
 	/** Returns TransformComponent subobject */
 	class USceneComponent* GetTransformComponent() const { return TransformComponent; }
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

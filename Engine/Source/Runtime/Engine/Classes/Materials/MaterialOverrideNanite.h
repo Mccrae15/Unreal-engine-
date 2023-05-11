@@ -3,11 +3,15 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "RHIDefinitions.h"
+#endif
+
 #include "MaterialOverrideNanite.generated.h"
 
 class ITargetPlatform;
 class UMaterialInterface;
+enum EShaderPlatform : uint16;
 
 /**
  * Storage for nanite material override.
@@ -62,6 +66,12 @@ struct FMaterialOverrideNanite
 	/** Clear the cached override material pointer. Call this from the owning object's ClearAllCachedCookedPlatformData() */
 	void ClearOverride();
 #endif
+
+	/** 
+	 * Setup the object directly.
+	 * Beware that this avoids all the protections around keeping the hard pointer unresolved on non-nanite platforms.
+	 */
+	void InitUnsafe(UMaterialInterface* InMaterial);
 
 protected:
 	/** Cached hard reference to override material which is only created if necessary. */

@@ -2,6 +2,7 @@
 #pragma once
 
 #include "Chaos/ChaosPerfTest.h"
+#include "Chaos/Character/CharacterGroundConstraintContainer.h"
 #include "Chaos/Collision/SpatialAccelerationBroadPhase.h"
 #include "Chaos/Collision/SpatialAccelerationCollisionDetector.h"
 #include "Chaos/Evolution/SolverBodyContainer.h"
@@ -22,7 +23,6 @@
 
 namespace Chaos
 {
-	class FCollisionConstraintAllocator;
 	class FChaosArchive;
 	class IResimCacheBase;
 	class FEvolutionResimCache;
@@ -66,7 +66,7 @@ namespace Chaos
 		static constexpr FRealSingle DefaultCollisionMaxPushOutVelocity = 1000.0f;
 		static constexpr int32 DefaultRestitutionThreshold = 1000;
 
-		CHAOS_API FPBDRigidsEvolutionGBF(FPBDRigidsSOAs& InParticles, THandleArray<FChaosPhysicsMaterial>& SolverPhysicsMaterials, const TArray<ISimCallbackObject*>* InCollisionModifiers = nullptr, bool InIsSingleThreaded = false);
+		CHAOS_API FPBDRigidsEvolutionGBF(FPBDRigidsSOAs& InParticles, THandleArray<FChaosPhysicsMaterial>& SolverPhysicsMaterials, const TArray<ISimCallbackObject*>* InMidPhaseModifiers = nullptr, const TArray<ISimCallbackObject*>* InCollisionModifiers = nullptr, bool InIsSingleThreaded = false);
 		CHAOS_API ~FPBDRigidsEvolutionGBF();
 
 		FORCEINLINE void SetPostIntegrateCallback(const FPBDRigidsEvolutionCallback& Cb)
@@ -119,6 +119,9 @@ namespace Chaos
 
 		FORCEINLINE FPBDSuspensionConstraints& GetSuspensionConstraints() { return SuspensionConstraints; }
 		FORCEINLINE const FPBDSuspensionConstraints& GetSuspensionConstraints() const { return SuspensionConstraints; }
+
+		FORCEINLINE FCharacterGroundConstraintContainer& GetCharacterGroundConstraints() { return CharacterGroundConstraints; }
+		FORCEINLINE const FCharacterGroundConstraintContainer& GetCharacterGroundConstraints() const { return CharacterGroundConstraints; }
 
 
 		//
@@ -175,7 +178,7 @@ namespace Chaos
 			//SCOPE_CYCLE_COUNTER(STAT_Integrate);
 			CHAOS_SCOPED_TIMER(Integrate);
 
-			const FReal BoundsThickness = GetCollisionDetector().GetSettings().BoundsExpansion;
+			const FReal BoundsThickness = GetCollisionConstraints().GetDetectorSettings().BoundsExpansion;
 			const FReal MaxAngularSpeedSq = CVars::HackMaxAngularVelocity * CVars::HackMaxAngularVelocity;
 			const FReal MaxSpeedSq = CVars::HackMaxVelocity * CVars::HackMaxVelocity;
 			InParticles.ParallelFor([&](auto& GeomParticle, int32 Index) 
@@ -252,14 +255,13 @@ namespace Chaos
 						}
 					}
 
-					//EulerStepRule.Apply(Particle, Dt);
-					FVec3 PCoM = FParticleUtilitiesXR::GetCoMWorldPosition(&Particle);
-					FRotation3 QCoM = FParticleUtilitiesXR::GetCoMWorldRotation(&Particle);
+					FVec3 PCoM = Particle.XCom();
+					FRotation3 QCoM = Particle.RCom();
 
 					PCoM = PCoM + Particle.V() * Dt;
 					QCoM = FRotation3::IntegrateRotationWithAngularVelocity(QCoM, Particle.W(), Dt);
 
-					FParticleUtilitiesPQ::SetCoMWorldTransform(&Particle, PCoM, QCoM);
+					Particle.SetTransformPQCom(PCoM, QCoM);
 
 					if (!Particle.CCDEnabled())
 					{
@@ -345,10 +347,13 @@ namespace Chaos
 			return CurrentStepResimCacheImp;
 		}
 
+		void UpdateCollisionSolverType();
+
 		FRigidClustering Clustering;
 
 		FPBDJointConstraints JointConstraints;
 		FPBDSuspensionConstraints SuspensionConstraints;
+		FCharacterGroundConstraintContainer CharacterGroundConstraints;
 
 		FGravityForces GravityForces;
 		FCollisionConstraints CollisionConstraints;
@@ -360,6 +365,7 @@ namespace Chaos
 		FPBDRigidsEvolutionCallback PreApplyCallback;
 		FPBDRigidsEvolutionInternalHandleCallback InternalParticleInitilization;
 		FEvolutionResimCache* CurrentStepResimCacheImp;
+		const TArray<ISimCallbackObject*>* MidPhaseModifiers;
 		const TArray<ISimCallbackObject*>* CollisionModifiers;
 
 		FCCDManager CCDManager;

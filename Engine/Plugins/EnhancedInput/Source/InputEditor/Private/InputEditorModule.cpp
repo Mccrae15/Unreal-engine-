@@ -2,43 +2,43 @@
 
 #include "InputEditorModule.h"
 
-#include "AssetTypeActions_Base.h"
-#include "EnhancedInputModule.h"
-#include "DetailCategoryBuilder.h"
-#include "DetailLayoutBuilder.h"
+#include "AssetBlueprintGraphActions.h"
+#include "BlueprintEditorModule.h"
+#include "BlueprintGraphModule.h"
+#include "BlueprintNodeTemplateCache.h"
+#include "Brushes/SlateImageBrush.h"
 #include "Framework/Notifications/NotificationManager.h"
-#include "GameFramework/PlayerController.h"
-#include "HAL/PlatformFileManager.h"
-#include "InputAction.h"
+#include "Engine/Blueprint.h"
 #include "InputMappingContext.h"
+#include "Misc/PackageName.h"
 #include "PlayerMappableInputConfig.h"
 #include "InputCustomizations.h"
-#include "InputModifiers.h"
 #include "ISettingsModule.h"
 #include "ToolMenuSection.h"
 #include "K2Node_EnhancedInputAction.h"
 #include "K2Node_GetInputActionValue.h"
-#include "Modules/ModuleInterface.h"
-#include "Modules/ModuleManager.h"
-#include "PropertyEditorDelegates.h"
 #include "PropertyEditorModule.h"
-#include "SSettingsEditorCheckoutNotice.h"
-#include "Widgets/Layout/SScrollBox.h"
+#include "UObject/UObjectIterator.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "AssetTypeActions/AssetTypeActions_DataAsset.h"
 #include "EnhancedInputDeveloperSettings.h"
 #include "Styling/SlateStyle.h"
-#include "Styling/StyleColors.h"
 #include "Styling/SlateStyleMacros.h"
 #include "Styling/SlateStyleRegistry.h"
 #include "ContentBrowserModule.h"
+#include "EdGraphSchema_K2_Actions.h"
 #include "IContentBrowserSingleton.h"
+#include "ClassViewerModule.h"
+#include "ClassViewerFilter.h"
+#include "Kismet2/KismetEditorUtilities.h"
+#include "Kismet2/SClassPickerDialog.h"
 #include "GameFramework/InputSettings.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedPlayerInput.h"
 #include "Interfaces/IMainFrameModule.h"
 #include "SourceControlHelpers.h"
 #include "HAL/FileManager.h"
+#include "Kismet2/KismetEditorUtilities.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(InputEditorModule)
 
@@ -60,6 +60,31 @@ namespace UE::Input
 
 IMPLEMENT_MODULE(FInputEditorModule, InputEditor)
 
+class FInputClassParentFilter : public IClassViewerFilter
+{
+public:
+	FInputClassParentFilter()
+		: DisallowedClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists | CLASS_HideDropDown) {}
+
+	/** All children of these classes will be included unless filtered out by another setting. */
+	TSet<const UClass*> AllowedChildrenOfClasses;
+
+	/** Disallowed class flags. */
+	EClassFlags DisallowedClassFlags;
+
+	virtual bool IsClassAllowed(const FClassViewerInitializationOptions& InInitOptions, const UClass* InClass, TSharedRef<FClassViewerFilterFuncs> InFilterFuncs) override
+	{
+		return !InClass->HasAnyClassFlags(DisallowedClassFlags)
+			&& InFilterFuncs->IfInChildOfClassesSet(AllowedChildrenOfClasses, InClass) != EFilterReturn::Failed;
+	}
+
+	virtual bool IsUnloadedClassAllowed(const FClassViewerInitializationOptions& InInitOptions, const TSharedRef<const IUnloadedBlueprintData> InUnloadedClassData, TSharedRef<FClassViewerFilterFuncs> InFilterFuncs) override
+	{
+		return !InUnloadedClassData->HasAnyClassFlags(DisallowedClassFlags)
+			&& InFilterFuncs->IfInChildOfClassesSet(AllowedChildrenOfClasses, InUnloadedClassData) != EFilterReturn::Failed;
+	}
+};
+
 // Asset factories
 
 // InputContext
@@ -69,10 +94,55 @@ UInputMappingContext_Factory::UInputMappingContext_Factory(const class FObjectIn
 	bCreateNew = true;
 }
 
+bool UInputMappingContext_Factory::ConfigureProperties()
+{
+	if (!FEnhancedInputDeveloperSettingsCustomization::DoesClassHaveSubtypes(UInputMappingContext::StaticClass()))
+	{
+		return true;
+	}
+	
+	// nullptr the InputMappingContextClass so we can check for selection
+	InputMappingContextClass = nullptr;
+
+	// Load the classviewer module to display a class picker
+	FClassViewerModule& ClassViewerModule = FModuleManager::LoadModuleChecked<FClassViewerModule>("ClassViewer");
+
+	// Fill in options
+	FClassViewerInitializationOptions Options;
+	Options.Mode = EClassViewerMode::ClassPicker;
+
+	TSharedPtr<FInputClassParentFilter> Filter = MakeShareable(new FInputClassParentFilter);
+	Filter->AllowedChildrenOfClasses.Add(UInputMappingContext::StaticClass());
+
+	Options.ClassFilters.Add(Filter.ToSharedRef());
+
+	const FText TitleText = LOCTEXT("CreateInputMappingContextOptions", "Pick Class For Input Mapping Context Instance");
+	UClass* ChosenClass = nullptr;
+	const bool bPressedOk = SClassPickerDialog::PickClass(TitleText, Options, ChosenClass, UInputMappingContext::StaticClass());
+
+	if (bPressedOk)
+	{
+		InputMappingContextClass = ChosenClass;
+	}
+
+	return bPressedOk;
+}
+
 UObject* UInputMappingContext_Factory::FactoryCreateNew(UClass* Class, UObject* InParent, FName Name, EObjectFlags Flags, UObject* Context, FFeedbackContext* Warn)
 {
-	check(Class->IsChildOf(UInputMappingContext::StaticClass()));
-	UInputMappingContext* IMC = NewObject<UInputMappingContext>(InParent, Class, Name, Flags | RF_Transactional, Context);
+	UInputMappingContext* IMC = nullptr;
+
+	if (InputMappingContextClass != nullptr)
+	{
+		IMC = NewObject<UInputMappingContext>(InParent, InputMappingContextClass, Name, Flags | RF_Transactional, Context);
+	}
+	else
+	{
+		check(Class->IsChildOf(UInputMappingContext::StaticClass()));
+		IMC = NewObject<UInputMappingContext>(InParent, Class, Name, Flags | RF_Transactional, Context);
+	}
+
+	check(IMC);
 
 	// Populate the IMC with some initial input actions if they were specified. This will be the case if the IMC is being created from the FAssetTypeActions_InputAction
 	for (TWeakObjectPtr<UInputAction> WeakIA : InitialActions)
@@ -101,10 +171,51 @@ UInputAction_Factory::UInputAction_Factory(const class FObjectInitializer& OBJ)
 	bCreateNew = true;
 }
 
-UObject* UInputAction_Factory::FactoryCreateNew(UClass* Class, UObject* InParent, FName Name, EObjectFlags Flags, UObject* Context, FFeedbackContext* Warn)
+bool UInputAction_Factory::ConfigureProperties()
 {
-	check(Class->IsChildOf(UInputAction::StaticClass()));
-	return NewObject<UInputAction>(InParent, Class, Name, Flags | RF_Transactional, Context);
+	if (!FEnhancedInputDeveloperSettingsCustomization::DoesClassHaveSubtypes(UInputAction::StaticClass()))
+	{
+		return true;
+	}
+	
+	// nullptr the InputActionClass so we can check for selection
+	InputActionClass = nullptr;
+
+	// Load the classviewer module to display a class picker
+	FClassViewerModule& ClassViewerModule = FModuleManager::LoadModuleChecked<FClassViewerModule>("ClassViewer");
+
+	// Fill in options
+	FClassViewerInitializationOptions Options;
+	Options.Mode = EClassViewerMode::ClassPicker;
+
+	TSharedPtr<FInputClassParentFilter> Filter = MakeShareable(new FInputClassParentFilter);
+	Filter->AllowedChildrenOfClasses.Add(UInputAction::StaticClass());
+
+	Options.ClassFilters.Add(Filter.ToSharedRef());
+
+	const FText TitleText = LOCTEXT("CreateInputActionOptions", "Pick Class For Input Action Instance");
+	UClass* ChosenClass = nullptr;
+	const bool bPressedOk = SClassPickerDialog::PickClass(TitleText, Options, ChosenClass, UInputAction::StaticClass());
+
+	if (bPressedOk)
+	{
+		InputActionClass = ChosenClass;
+	}
+
+	return bPressedOk;
+}
+
+UObject* UInputAction_Factory::FactoryCreateNew(UClass* Class, UObject* InParent, FName Name, EObjectFlags Flags, UObject* Context, FFeedbackContext* Warn)
+{	
+	if (InputActionClass != nullptr)
+	{
+		return NewObject<UInputAction>(InParent, InputActionClass, Name, Flags | RF_Transactional, Context);
+	}
+	else
+	{
+		check(Class->IsChildOf(UInputAction::StaticClass()));
+		return NewObject<UInputAction>(InParent, Class, Name, Flags | RF_Transactional, Context);
+	}
 }
 
 // UPlayerMappableInputConfig_Factory
@@ -211,6 +322,55 @@ public:
 	virtual UClass* GetSupportedClass() const override { return UPlayerMappableInputConfig::StaticClass(); }
 };
 
+struct FInputActionGraphActions : public FAssetBlueprintGraphActions
+{
+	virtual FText GetGraphHoverMessage(const FAssetData& AssetData, const UEdGraph* HoverGraph) const override;
+	virtual bool TryCreatingAssetNode(const FAssetData& AssetData, UEdGraph* ParentGraph, const FVector2D Location, EK2NewNodeFlags Options) const override;
+};
+
+FText FInputActionGraphActions::GetGraphHoverMessage(const FAssetData& AssetData, const UEdGraph* HoverGraph) const
+{
+	return FText::Format(LOCTEXT("InputActionHoverMessage", "{0}"), FText::FromName(AssetData.AssetName));
+}
+
+bool FInputActionGraphActions::TryCreatingAssetNode(const FAssetData& AssetData, UEdGraph* ParentGraph, const FVector2D Location, EK2NewNodeFlags Options) const
+{
+	if (AssetData.IsValid())
+	{
+		if (const UInputAction* Action = Cast<const UInputAction>(AssetData.GetAsset()))
+		{
+			for (TObjectPtr<UEdGraphNode> Node : ParentGraph->Nodes)
+			{
+				if(const UK2Node_EnhancedInputAction* InputActionNode = Cast<UK2Node_EnhancedInputAction>(Node))
+				{
+					if (InputActionNode->InputAction.GetFName() == AssetData.AssetName)
+					{
+						if (const TSharedPtr<IBlueprintEditor> BlueprintEditor = FKismetEditorUtilities::GetIBlueprintEditorForObject(ParentGraph, false))
+						{
+							BlueprintEditor.Get()->JumpToPin(InputActionNode->GetPinAt(0));
+						}
+						
+						return false;
+					}
+				}
+			}
+
+			UK2Node_EnhancedInputAction* NewNode = FEdGraphSchemaAction_K2NewNode::SpawnNode<UK2Node_EnhancedInputAction>(
+				ParentGraph,
+				Location,
+				Options,
+				[Action](UK2Node_EnhancedInputAction* NewInstance)
+				{
+					NewInstance->InputAction = Action;
+				}
+
+			);
+			return true;
+		}
+	}
+	return false;
+}
+
 /** Custom style set for Enhanced Input */
 class FEnhancedInputSlateStyle final : public FSlateStyleSet
 {
@@ -263,6 +423,12 @@ void FInputEditorModule::StartupModule()
 		//RegisterAssetTypeActions(AssetTools, MakeShareable(new FAssetTypeActions_InputModifier));
 	}
 
+	// Register graph actions:
+	FBlueprintGraphModule& GraphModule = FModuleManager::LoadModuleChecked<FBlueprintGraphModule>("BlueprintGraph");
+	{
+		GraphModule.RegisterGraphAction(UInputAction::StaticClass(), MakeUnique<FInputActionGraphActions>());
+	}
+
 	// Make a new style set for Enhanced Input, which will register any custom icons for the types in this plugin
 	StyleSet = MakeShared<FEnhancedInputSlateStyle>();
 	FSlateStyleRegistry::RegisterSlateStyle(*StyleSet.Get());
@@ -311,9 +477,12 @@ void FInputEditorModule::ShutdownModule()
 	}
 }
 
-void FInputEditorModule::OnMainFrameCreationFinished(TSharedPtr<SWindow> InRootWindow, bool bIsNewProjectWindow)
+void FInputEditorModule::OnMainFrameCreationFinished(TSharedPtr<SWindow> InRootWindow, bool bIsRunningStartupDialog)
 {
-	AutoUpgradeDefaultInputClasses();
+	if (FApp::HasProjectName())
+	{
+		AutoUpgradeDefaultInputClasses();
+	}	
 }
 
 namespace UE::Input
@@ -386,34 +555,59 @@ void FInputEditorModule::AutoUpgradeDefaultInputClasses()
 void FInputEditorModule::Tick(float DeltaTime)
 {
 	// Update any blueprints that are referencing an input action with a modified value type
-	if (UInputAction::ActionsWithModifiedValueTypes.Num())
+	if (UInputAction::ActionsWithModifiedValueTypes.Num() || UInputAction::ActionsWithModifiedTriggers.Num())
 	{
-		TSet<UBlueprint*> BPsModified;
+		TSet<UBlueprint*> BPsModifiedFromValueTypeChange;
+		TSet<UBlueprint*> BPsModifiedFromTriggerChange;
+		
 		for (TObjectIterator<UK2Node_EnhancedInputAction> NodeIt; NodeIt; ++NodeIt)
 		{
-			if (UInputAction::ActionsWithModifiedValueTypes.Contains(NodeIt->InputAction))
+			if (!FBlueprintNodeTemplateCache::IsTemplateOuter(NodeIt->GetGraph()))
 			{
-				NodeIt->ReconstructNode();
-				BPsModified.Emplace(NodeIt->GetBlueprint());
+				if (UInputAction::ActionsWithModifiedValueTypes.Contains(NodeIt->InputAction))
+				{
+					NodeIt->ReconstructNode();
+					BPsModifiedFromValueTypeChange.Emplace(NodeIt->GetBlueprint());
+				}
+				if (UInputAction::ActionsWithModifiedTriggers.Contains(NodeIt->InputAction))
+				{
+					NodeIt->ReconstructNode();
+					BPsModifiedFromTriggerChange.Emplace(NodeIt->GetBlueprint());
+				}
 			}
 		}
 		for (TObjectIterator<UK2Node_GetInputActionValue> NodeIt; NodeIt; ++NodeIt)
 		{
-			if (UInputAction::ActionsWithModifiedValueTypes.Contains(NodeIt->InputAction))
+			if (!FBlueprintNodeTemplateCache::IsTemplateOuter(NodeIt->GetGraph()))
 			{
-				NodeIt->ReconstructNode();
-				BPsModified.Emplace(NodeIt->GetBlueprint());
+				if (UInputAction::ActionsWithModifiedValueTypes.Contains(NodeIt->InputAction))
+				{
+					NodeIt->ReconstructNode();
+					BPsModifiedFromValueTypeChange.Emplace(NodeIt->GetBlueprint());
+				}
+				if (UInputAction::ActionsWithModifiedTriggers.Contains(NodeIt->InputAction))
+				{
+					NodeIt->ReconstructNode();
+					BPsModifiedFromTriggerChange.Emplace(NodeIt->GetBlueprint());
+				}
 			}
 		}
 
-		if (BPsModified.Num())
+		if (BPsModifiedFromValueTypeChange.Num())
 		{
-			FNotificationInfo Info(FText::Format(LOCTEXT("ActionValueTypeChange", "Changing action value type affected {0} blueprint(s)!"), BPsModified.Num()));
+			FNotificationInfo Info(FText::Format(LOCTEXT("ActionValueTypeChange", "Changing action value type affected {0} blueprint(s)!"), BPsModifiedFromValueTypeChange.Num()));
+			Info.ExpireDuration = 5.0f;
+			FSlateNotificationManager::Get().AddNotification(Info);
+		}
+		if (BPsModifiedFromTriggerChange.Num())
+		{
+			FNotificationInfo Info(FText::Format(LOCTEXT("ActionTriggerChange", "Changing action triggers affected {0} blueprint(s)!"), BPsModifiedFromTriggerChange.Num()));
 			Info.ExpireDuration = 5.0f;
 			FSlateNotificationManager::Get().AddNotification(Info);
 		}
 
 		UInputAction::ActionsWithModifiedValueTypes.Reset();
+		UInputAction::ActionsWithModifiedTriggers.Reset();
 	}
 }
 

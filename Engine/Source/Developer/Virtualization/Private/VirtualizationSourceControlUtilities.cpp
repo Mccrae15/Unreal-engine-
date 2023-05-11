@@ -10,6 +10,8 @@
 #include "Misc/PackageSegment.h"
 #include "SourceControlOperations.h"
 
+#define LOCTEXT_NAMESPACE "Virtualization"
+
 // When enabled we push the source control work to the main thread via the task graph system.
 // Note that when enabled this can potentially cause thread locks so is no a production ready 
 // fix. Realistically we need to fix the SourceControl API to accept requests from any thread 
@@ -30,7 +32,7 @@ bool FVirtualizationSourceControlUtilities::SyncPayloadSidecarFile(const FPackag
 
 	if (!ISourceControlModule::Get().IsEnabled())
 	{
-		UE_LOG(LogVirtualization, Error, TEXT("Attempting to sync a .upayload for '%s' but source control is disabled!"), *PackagePath.GetDebugName());
+		UE_LOG(LogVirtualization, Error, TEXT("Attempting to sync a .upayload for '%s' but revision control is disabled!"), *PackagePath.GetDebugName());
 		return false;
 	}
 
@@ -38,7 +40,7 @@ bool FVirtualizationSourceControlUtilities::SyncPayloadSidecarFile(const FPackag
 	const FName SourceControlName = ISourceControlModule::Get().GetProvider().GetName();
 	if (SourceControlName != TEXT("Perforce"))
 	{
-		UE_LOG(LogVirtualization, Error, TEXT("Attempting to sync a .upayload for '%s' but source control is '%s' and only Perforce is currently supported!"), *PackagePath.GetDebugName(), *SourceControlName.ToString());
+		UE_LOG(LogVirtualization, Error, TEXT("Attempting to sync a .upayload for '%s' but revision control is '%s' and only Perforce is currently supported!"), *PackagePath.GetDebugName(), *SourceControlName.ToString());
 		return false;
 	}
 
@@ -75,7 +77,7 @@ bool FVirtualizationSourceControlUtilities::SyncPayloadSidecarFileInternal(const
 		UpdateStatusOperation->SetUpdateHistory(true);
 		if (SCCProvider.Execute(UpdateStatusOperation, AssetFilePath) != ECommandResult::Succeeded)
 		{
-			UE_LOG(LogVirtualization, Error, TEXT("Failed to update source control state for '%s'"), *PackagePath.GetDebugName());
+			UE_LOG(LogVirtualization, Error, TEXT("Failed to update revision control state for '%s'"), *PackagePath.GetDebugName());
 			return false;
 		}
 	}
@@ -87,7 +89,7 @@ bool FVirtualizationSourceControlUtilities::SyncPayloadSidecarFileInternal(const
 		State = SCCProvider.GetState(AssetFilePath, EStateCacheUsage::Use);
 		if (!State)
 		{
-			UE_LOG(LogVirtualization, Error, TEXT("Failed to find source control state for '%s'"), *PackagePath.GetDebugName());
+			UE_LOG(LogVirtualization, Error, TEXT("Failed to find revision control state for '%s'"), *PackagePath.GetDebugName());
 			return false;
 		}
 	}
@@ -102,7 +104,7 @@ bool FVirtualizationSourceControlUtilities::SyncPayloadSidecarFileInternal(const
 
 	if (LocalRevision == INDEX_NONE)
 	{
-		UE_LOG(LogVirtualization, Error, TEXT("Failed to find source control revision for '%s'"), *PackagePath.GetDebugName());
+		UE_LOG(LogVirtualization, Error, TEXT("Failed to find revision control revision for '%s'"), *PackagePath.GetDebugName());
 		return false;
 	}
 
@@ -147,3 +149,65 @@ bool FVirtualizationSourceControlUtilities::SyncPayloadSidecarFileInternal(const
 }
 
 } // namespace UE::Virtualization::Experimental
+
+namespace UE::Virtualization
+{
+
+bool TryCheckoutFiles(const TArray<FString>& FilesToCheckState, TArray<FText>& OutErrors, TArray<FString>* OutFilesCheckedOut)
+{
+	TArray<FSourceControlStateRef> PathStates;
+	PathStates.Reserve(FilesToCheckState.Num());
+
+	ISourceControlProvider& SCCProvider = ISourceControlModule::Get().GetProvider();
+
+	// Early out if revision control is disabled
+	if (!SCCProvider.IsEnabled())
+	{
+		return true;
+	}
+
+	ECommandResult::Type UpdateResult = SCCProvider.GetState(FilesToCheckState, PathStates, EStateCacheUsage::ForceUpdate);
+	if (UpdateResult != ECommandResult::Type::Succeeded)
+	{
+		FText Message = LOCTEXT("VA_FileState", "Failed to find the state of package files in revision control when trying to check them out");
+		OutErrors.Add(MoveTemp(Message));
+
+		return false;
+	}
+
+	TArray<FString> FilesToCheckout;
+	FilesToCheckout.Reserve(PathStates.Num());
+
+	for (const FSourceControlStateRef& State : PathStates)
+	{
+		if (State->IsSourceControlled() && !State->CanEdit() && State->CanCheckout())
+		{
+			FilesToCheckout.Add(State->GetFilename());
+		}
+	}
+
+	if (!FilesToCheckout.IsEmpty())
+	{
+		ECommandResult::Type CheckoutResult = SCCProvider.Execute(ISourceControlOperation::Create<FCheckOut>(), FilesToCheckout);
+		if (CheckoutResult == ECommandResult::Type::Succeeded)
+		{
+			if (OutFilesCheckedOut != nullptr)
+			{
+				*OutFilesCheckedOut = MoveTemp(FilesToCheckout);
+			}	
+		}
+		else
+		{
+			FText Message = LOCTEXT("VA_Checkout", "Failed to checkout packages from revision control");
+			OutErrors.Add(MoveTemp(Message));
+
+			return false;
+		}
+	}
+
+	return true;
+}
+
+} //namespace UE::Virtualization
+
+#undef LOCTEXT_NAMESPACE

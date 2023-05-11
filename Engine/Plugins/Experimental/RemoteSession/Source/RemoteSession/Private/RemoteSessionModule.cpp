@@ -1,29 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RemoteSessionModule.h"
-#include "Framework/Application/SlateApplication.h"
-#include "BackChannel/Transport/IBackChannelTransport.h"
+#include "Channels/RemoteSessionChannel.h"
 #include "RemoteSessionHost.h"
-#include "RemoteSessionClient.h"
-
-#include "Channels/RemoteSessionARCameraChannel.h"
-#include "Channels/RemoteSessionARSystemChannel.h"
-#include "Channels/RemoteSessionInputChannel.h"
-#include "Channels/RemoteSessionFrameBufferChannel.h"
-#include "Channels/RemoteSessionXRTrackingChannel.h"
-
-#include "CoreGlobals.h"
-#include "Misc/ConfigCacheIni.h"
 #include "Misc/CommandLine.h"
+#include "Misc/CoreDelegates.h"
+#include "Modules/ModuleManager.h"
+#include "RemoteSessionClient.h"
 
 #if WITH_EDITOR
 	#include "Editor.h"
 	#include "ISettingsModule.h"
 	#include "ISettingsSection.h"
+#else
+	#include "HAL/IConsoleManager.h"
 #endif
-#include "Modules/ModuleManager.h"
-
-#include "Modules/ModuleManager.h"
 
 
 #define LOCTEXT_NAMESPACE "FRemoteSessionModule"

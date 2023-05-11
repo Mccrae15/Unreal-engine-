@@ -9,6 +9,7 @@
 #include "ISourceControlWindowsModule.h"
 #include "UncontrolledChangelistsModule.h"
 #include "AssetViewUtils.h"
+#include "RevisionControlStyle/RevisionControlStyle.h"
 
 #define LOCTEXT_NAMESPACE "FSceneOutlinerSCCHandler"
 
@@ -18,6 +19,7 @@ TSharedPtr<FSceneOutlinerTreeItemSCC> FSceneOutlinerSCCHandler::GetItemSourceCon
 	if (!Result)
 	{
 		Result = &ItemSourceControls.Add(InItem, MakeShared<FSceneOutlinerTreeItemSCC>(InItem));
+		(*Result)->Initialize();
 	}
 	
 	check(Result);
@@ -39,8 +41,8 @@ bool FSceneOutlinerSCCHandler::AddSourceControlMenuOptions(UToolMenu* Menu, TArr
 			// SCC sub menu
 			Section.AddSubMenu(
 				"SourceControlSubMenu",
-				LOCTEXT("SourceControlSubMenuLabel", "Source Control"),
-				LOCTEXT("SourceControlSubMenuToolTip", "Source control actions."),
+				LOCTEXT("SourceControlSubMenuLabel", "Revision Control"),
+				LOCTEXT("SourceControlSubMenuToolTip", "Revision control actions."),
 				FNewToolMenuDelegate::CreateSP(this, &FSceneOutlinerSCCHandler::FillSourceControlSubMenu),
 				FUIAction(
 					FExecuteAction(),
@@ -48,7 +50,7 @@ bool FSceneOutlinerSCCHandler::AddSourceControlMenuOptions(UToolMenu* Menu, TArr
 					),
 				EUserInterfaceActionType::Button,
 				false,
-				FSlateIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.StatusIcon.On")
+				FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.Icon", FRevisionControlStyleManager::GetStyleSetName() , "RevisionControl.Icon.ConnectedBadge")
 				);
 		}
 		else
@@ -56,9 +58,9 @@ bool FSceneOutlinerSCCHandler::AddSourceControlMenuOptions(UToolMenu* Menu, TArr
 			// SCC sub menu
 			Section.AddMenuEntry(
 				"SourceControlSubMenu",
-				LOCTEXT("SourceControlSubMenuLabel", "Source Control"),
+				LOCTEXT("SourceControlSubMenuLabel", "Revision Control"),
 				LOCTEXT("SourceControlSubMenuDisabledToolTip", "Disabled because one or more selected items are not external packages."),
-				FSlateIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.StatusIcon.Off"),
+				FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.Icon"),
 				FUIAction(
 					FExecuteAction(),
 					FCanExecuteAction::CreateSP( this, &FSceneOutlinerSCCHandler::CanExecuteSCC )
@@ -83,7 +85,10 @@ void FSceneOutlinerSCCHandler::CacheCanExecuteVars()
 	bCanExecuteSCC = true;
 	bCanExecuteSCCCheckOut = false;
 	bCanExecuteSCCCheckIn = false;
+	bCanExecuteSCCRevert = false;
 	bCanExecuteSCCHistory = false;
+	bUsesSnapshots = false;
+	bUsesChangelists = false;
 
 	if ( ISourceControlModule::Get().IsEnabled() || FUncontrolledChangelistsModule::Get().IsEnabled())
 	{
@@ -109,7 +114,7 @@ void FSceneOutlinerSCCHandler::CacheCanExecuteVars()
 
 			// Check the SCC state for each package in the selected paths
 			FSourceControlStatePtr SourceControlState = SourceControl->GetSourceControlState();
-			if(SourceControlState.IsValid())
+			if (SourceControlState.IsValid())
 			{
 				if ( SourceControlState->CanCheckout() )
 				{
@@ -125,7 +130,30 @@ void FSceneOutlinerSCCHandler::CacheCanExecuteVars()
 				{
 					bCanExecuteSCCCheckIn = true;
 				}
+
+				if (SourceControlState->CanRevert())
+				{
+					bCanExecuteSCCRevert = true;
+				}
+				else
+				{
+					// If the package is dirty, allow a revert of the in-memory changes that have not yet been saved to disk.
+					if (UPackage* Package = SourceControl->GetPackage())
+					{
+						if (Package->IsDirty())
+						{
+							bCanExecuteSCCRevert = true;
+						}
+					}
+				}
 			}
+		}
+
+		if (ISourceControlModule::Get().GetProvider().IsAvailable())
+		{
+			ISourceControlProvider& Provider = ISourceControlModule::Get().GetProvider();
+			bUsesSnapshots = Provider.UsesSnapshots();
+			bUsesChangelists = Provider.UsesChangelists();
 		}
 	}
 }
@@ -142,15 +170,12 @@ bool FSceneOutlinerSCCHandler::CanExecuteSCCCheckOut() const
 
 bool FSceneOutlinerSCCHandler::CanExecuteSCCCheckIn() const
 {
-	bool bUsesFileRevisions = true;
+	return bCanExecuteSCCCheckIn && !bUsesSnapshots;
+}
 
-	ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
-	if (ISourceControlModule::Get().IsEnabled())
-	{
-		bUsesFileRevisions = SourceControlProvider.UsesFileRevisions();
-	}
-
-	return bCanExecuteSCCCheckIn && bUsesFileRevisions;
+bool FSceneOutlinerSCCHandler::CanExecuteSCCRevert() const
+{
+	return bCanExecuteSCCRevert;
 }
 
 bool FSceneOutlinerSCCHandler::CanExecuteSCCHistory() const
@@ -163,17 +188,22 @@ bool FSceneOutlinerSCCHandler::CanExecuteSCCRefresh() const
 	return ISourceControlModule::Get().IsEnabled();
 }
 
+bool FSceneOutlinerSCCHandler::CanExecuteSCCShowInChangelist() const
+{
+	return bUsesChangelists;
+}
+
 void FSceneOutlinerSCCHandler::FillSourceControlSubMenu(UToolMenu* Menu)
 {
-	FToolMenuSection& Section = Menu->AddSection("AssetSourceControlActions", LOCTEXT("AssetSourceControlActionsMenuHeading", "Source Control"));
+	FToolMenuSection& Section = Menu->AddSection("AssetSourceControlActions", LOCTEXT("AssetSourceControlActionsMenuHeading", "Revision Control"));
 
 	if ( CanExecuteSCCCheckOut() )
 	{
 		Section.AddMenuEntry(
 			"SCCCheckOut",
 			LOCTEXT("SCCCheckOut", "Check Out"),
-			LOCTEXT("SCCCheckOutTooltip", "Checks out the selected asset from source control."),
-			FSlateIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.Actions.CheckOut"),
+			LOCTEXT("SCCCheckOutTooltip", "Checks out the selected asset from revision control."),
+			FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.Actions.CheckOut"),
 			FUIAction(
 				FExecuteAction::CreateSP( this, &FSceneOutlinerSCCHandler::ExecuteSCCCheckOut ),
 				FCanExecuteAction::CreateSP( this, &FSceneOutlinerSCCHandler::CanExecuteSCCCheckOut )
@@ -186,8 +216,8 @@ void FSceneOutlinerSCCHandler::FillSourceControlSubMenu(UToolMenu* Menu)
 		Section.AddMenuEntry(
 			"SCCCheckIn",
 			LOCTEXT("SCCCheckIn", "Check In"),
-			LOCTEXT("SCCCheckInTooltip", "Checks in the selected asset to source control."),
-			FSlateIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.Actions.Submit"),
+			LOCTEXT("SCCCheckInTooltip", "Checks in the selected asset to revision control."),
+			FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.Actions.Submit"),
 			FUIAction(
 				FExecuteAction::CreateSP( this, &FSceneOutlinerSCCHandler::ExecuteSCCCheckIn ),
 				FCanExecuteAction::CreateSP( this, &FSceneOutlinerSCCHandler::CanExecuteSCCCheckIn )
@@ -198,8 +228,8 @@ void FSceneOutlinerSCCHandler::FillSourceControlSubMenu(UToolMenu* Menu)
 	Section.AddMenuEntry(
 		"SCCRefresh",
 		LOCTEXT("SCCRefresh", "Refresh"),
-		LOCTEXT("SCCRefreshTooltip", "Updates the source control status of the asset."),
-		FSlateIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.Actions.Refresh"),
+		LOCTEXT("SCCRefreshTooltip", "Updates the revision control status of the asset."),
+		FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.Actions.Refresh"),
 		FUIAction(
 			FExecuteAction::CreateSP( this, &FSceneOutlinerSCCHandler::ExecuteSCCRefresh ),
 			FCanExecuteAction::CreateSP( this, &FSceneOutlinerSCCHandler::CanExecuteSCCRefresh )
@@ -211,8 +241,8 @@ void FSceneOutlinerSCCHandler::FillSourceControlSubMenu(UToolMenu* Menu)
 		Section.AddMenuEntry(
 			"SCCHistory",
 			LOCTEXT("SCCHistory", "History"),
-			LOCTEXT("SCCHistoryTooltip", "Displays the source control revision history of the selected asset."),
-			FSlateIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.Actions.History"),
+			LOCTEXT("SCCHistoryTooltip", "Displays the revision control revision history of the selected asset."),
+			FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.Actions.History"),
 			FUIAction(
 				FExecuteAction::CreateSP( this, &FSceneOutlinerSCCHandler::ExecuteSCCHistory ),
 				FCanExecuteAction::CreateSP( this, &FSceneOutlinerSCCHandler::CanExecuteSCCHistory )
@@ -220,16 +250,34 @@ void FSceneOutlinerSCCHandler::FillSourceControlSubMenu(UToolMenu* Menu)
 		);
 	}
 
-	Section.AddSeparator(NAME_None);
-	Section.AddMenuEntry(
-		"SCCFindInChangelist",
-		LOCTEXT("SCCShowInChangelist", "Show in Changelist"),
-		LOCTEXT("SCCShowInChangelistTooltip", "Show the selected assets in the Changelist window."),
-		FSlateIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.ChangelistsTab"),
-		FUIAction(
-			FExecuteAction::CreateSP(this, &FSceneOutlinerSCCHandler::ExecuteSCCShowInChangelist)
-		)
-	);
+	if (CanExecuteSCCRevert())
+	{
+		Section.AddMenuEntry(
+			"SCCRevert",
+			LOCTEXT("SCCRevert", "Revert"),
+			LOCTEXT("SCCRevertTooltip", "Reverts the item to the state it was before it was checked out."),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.Actions.Revert"),
+			FUIAction(
+				FExecuteAction::CreateSP(this, &FSceneOutlinerSCCHandler::ExecuteSCCRevert),
+				FCanExecuteAction::CreateSP(this, &FSceneOutlinerSCCHandler::CanExecuteSCCRevert)
+			)
+		);
+	}
+
+	if (CanExecuteSCCShowInChangelist())
+	{
+		Section.AddSeparator(NAME_None);
+		Section.AddMenuEntry(
+			"SCCFindInChangelist",
+			LOCTEXT("SCCShowInChangelist", "Show in Changelist"),
+			LOCTEXT("SCCShowInChangelistTooltip", "Show the selected assets in the Changelist window."),
+			FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.ChangelistsTab"),
+			FUIAction(
+				FExecuteAction::CreateSP(this, &FSceneOutlinerSCCHandler::ExecuteSCCShowInChangelist),
+				FCanExecuteAction::CreateSP(this, &FSceneOutlinerSCCHandler::CanExecuteSCCShowInChangelist)
+			)
+		);
+	}
 }
 
 void FSceneOutlinerSCCHandler::GetSelectedPackageNames(TArray<FString>& OutPackageNames) const
@@ -243,7 +291,8 @@ void FSceneOutlinerSCCHandler::GetSelectedPackageNames(TArray<FString>& OutPacka
 		}
 
 		FString PackageName = SourceControl->GetPackageName();
-		if (!PackageName.IsEmpty()) {
+		if (!PackageName.IsEmpty())
+		{
 			OutPackageNames.Add(PackageName);
 		}
 	}
@@ -260,7 +309,8 @@ void FSceneOutlinerSCCHandler::GetSelectedPackages(TArray<UPackage*>& OutPackage
 		}
 
 		UPackage* Package = SourceControl->GetPackage();
-		if (Package != nullptr) {
+		if (Package != nullptr)
+		{
 			OutPackages.Add(Package);
 		}
 	}
@@ -328,11 +378,33 @@ void FSceneOutlinerSCCHandler::ExecuteSCCCheckIn()
 	}
 }
 
+void FSceneOutlinerSCCHandler::ExecuteSCCRevert()
+{
+	TArray<UPackage*> PackagesToSave;
+	GetSelectedPackages(PackagesToSave);
+
+	if (PackagesToSave.Num() > 0)
+	{
+		// To prevent a 'Save Dialog' from popping up during RevertAndReloadPackages we save the dirty packages here,
+		// as the 'Save Dialog' is confusing during a revert operation, unlike the check in operation.
+		UEditorLoadingAndSavingUtils::SavePackages(PackagesToSave, /*bOnlyDirty=*/true);
+	}
+
+	TArray<FString> PackagesToRevert;
+	GetSelectedPackageNames(PackagesToRevert);
+
+	if (PackagesToRevert.Num() > 0)
+	{
+		SourceControlHelpers::RevertAndReloadPackages(PackagesToRevert, /*bRevertAll=*/false, /*bReloadWorld=*/true);
+	}
+}
+
 void FSceneOutlinerSCCHandler::ExecuteSCCHistory()
 {
 	TArray<FString> PackageNames;
 	GetSelectedPackageNames(PackageNames);
-	FSourceControlWindows::DisplayRevisionHistory(SourceControlHelpers::PackageFilenames(PackageNames));
+
+	FSourceControlWindows::DisplayRevisionHistory(PackageNames);
 }
 
 #undef LOCTEXT_NAMESPACE

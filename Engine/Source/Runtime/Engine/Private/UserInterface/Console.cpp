@@ -5,18 +5,17 @@
 =============================================================================*/
 
 #include "Engine/Console.h"
+#include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "Engine/GameInstance.h"
+#include "Engine/GameViewportClient.h"
 #include "Misc/Paths.h"
-#include "GenericPlatform/GenericApplication.h"
+#include "Modules/ModuleManager.h"
 #include "UObject/UnrealType.h"
 #include "Misc/PackageName.h"
 #include "UObject/ConstructorHelpers.h"
-#include "EngineGlobals.h"
-#include "ShowFlags.h"
-#include "Input/Events.h"
 #include "Engine/Engine.h"
-#include "CanvasItem.h"
 #include "Engine/Canvas.h"
-#include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 #include "GameFramework/PlayerController.h"
 #include "Engine/Texture2D.h"
@@ -29,9 +28,7 @@
 #include "Stats/StatsData.h"
 #include "Misc/TextFilter.h"
 #include "HAL/PlatformApplicationMisc.h"
-#include "ProfilingDebugging/CsvProfiler.h"
-#include "Engine/AssetManager.h"
-#include "IO/IoDispatcher.h"
+#include "TextureResource.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(Console)
 
@@ -86,7 +83,7 @@ class FConsoleVariableAutoCompleteVisitor
 public:
 	// @param Name must not be 0
 	// @param CVar must not be 0
-	static void OnConsoleVariable(const TCHAR* Name, IConsoleObject* CVar, TArray<struct FAutoCompleteCommand>& Sink)
+	static void OnConsoleVariable(const TCHAR* Name, IConsoleObject* CVar, TArray<struct FAutoCompleteCommand>* Sink)
 	{
 #if DISABLE_CHEAT_CVARS
 		if (CVar->TestFlags(ECVF_Cheat))
@@ -102,8 +99,8 @@ public:
 		const UConsoleSettings* ConsoleSettings = GetDefault<UConsoleSettings>();
 
 		// can be optimized
-		int32 NewIdx = Sink.AddDefaulted();
-		FAutoCompleteCommand& Cmd = Sink[NewIdx];
+		int32 NewIdx = Sink->AddDefaulted();
+		FAutoCompleteCommand& Cmd = (*Sink)[NewIdx];
 		Cmd.Command = Name;
 
 		if (ConsoleSettings->bDisplayHelpInAutoComplete)
@@ -225,9 +222,9 @@ void UConsole::BuildRuntimeAutoCompleteList(bool bForce)
 	// console variables
 	{
 		IConsoleManager::Get().ForEachConsoleObjectThatStartsWith(
-			FConsoleObjectVisitor::CreateStatic< TArray<struct FAutoCompleteCommand>& >(
+			FConsoleObjectVisitor::CreateStatic(
 				&FConsoleVariableAutoCompleteVisitor::OnConsoleVariable,
-				AutoCompleteList));
+				&AutoCompleteList));
 	}
 
 	// iterate through script exec functions and append to the list
@@ -910,6 +907,23 @@ bool UConsole::InputKey_InputLine(FInputDeviceId DeviceId, FKey Key, EInputEvent
 		}
 	};
 
+	auto FindWordBreak = [](const FString& Str, uint32 StartPos, ESearchDir::Type Direction)
+	{
+		// find the nearest '.' or ' '
+		int32 SpacePos = Str.Find(TEXT(" "), ESearchCase::CaseSensitive, Direction, StartPos);
+		int32 PeriodPos = Str.Find(TEXT("."), ESearchCase::CaseSensitive, Direction, StartPos);
+		if (Direction == ESearchDir::FromEnd)
+		{
+			return FMath::Max(SpacePos, PeriodPos);
+		}
+		else
+		{ 
+			int32 Result = SpacePos < 0 ? PeriodPos : (PeriodPos < 0 ? SpacePos : FMath::Min(SpacePos, PeriodPos));
+			Result = Result == INDEX_NONE ? Str.Len() : Result;
+			return Result;
+		}
+	};
+
 	// if user input is open
 	if (ConsoleState != NAME_None)
 	{
@@ -1062,11 +1076,23 @@ bool UConsole::InputKey_InputLine(FInputDeviceId DeviceId, FKey Key, EInputEvent
 		{
 			if (TypedStrPos > 0)
 			{
-				SetInputText(FString::Printf(TEXT("%s%s"), *TypedStr.Left(TypedStrPos - 1), *TypedStr.Right(TypedStr.Len() - TypedStrPos)));
-				SetCursorPos(TypedStrPos - 1);
+				int32 NewPos;
+				if (bCtrl)
+				{
+					NewPos = FMath::Max(0, FindWordBreak(TypedStr, TypedStrPos, ESearchDir::FromEnd));
+				}
+				else
+				{
+					NewPos = TypedStrPos - 1;
+				}
+
+				SetInputText(FString::Printf(TEXT("%s%s"), *TypedStr.Left(NewPos), *TypedStr.Right(TypedStr.Len() - TypedStrPos)));
+				SetCursorPos(NewPos);
+
 				// unlock auto-complete (@todo - track the lock position so we don't bother unlocking under bogus cases)
 				bAutoCompleteLocked = false;
 			}
+			bCaptureKeyInput = true;
 
 			return true;
 		}
@@ -1074,44 +1100,46 @@ bool UConsole::InputKey_InputLine(FInputDeviceId DeviceId, FKey Key, EInputEvent
 		{
 			if (TypedStrPos < TypedStr.Len())
 			{
-				SetInputText(FString::Printf(TEXT("%s%s"), *TypedStr.Left(TypedStrPos), *TypedStr.Right(TypedStr.Len() - TypedStrPos - 1)));
+				int32 RightStart;
+				if (bCtrl)
+				{
+					RightStart = FindWordBreak(TypedStr, TypedStrPos + 1, ESearchDir::FromStart);
+				}
+				else
+				{
+					RightStart = TypedStrPos + 1;
+				}
+
+				SetInputText(FString::Printf(TEXT("%s%s"), *TypedStr.Left(TypedStrPos), *TypedStr.Right(TypedStr.Len() - RightStart)));
 			}
 			return true;
 		}
 		else if (Key == EKeys::Left)
 		{
+			int32 NewPos;
 			if (bCtrl)
 			{
-				// find the nearest '.' or ' '
-				int32 NewPos = FMath::Max(TypedStr.Find(TEXT("."), ESearchCase::CaseSensitive, ESearchDir::FromEnd, TypedStrPos), TypedStr.Find(TEXT(" "), ESearchCase::CaseSensitive, ESearchDir::FromEnd, TypedStrPos));
-				SetCursorPos(FMath::Max(0, NewPos));
+				NewPos = FMath::Min(FindWordBreak(TypedStr, FMath::Max(0, TypedStrPos - 1), ESearchDir::FromEnd) + 1, TypedStr.Len());
 			}
 			else
 			{
-				SetCursorPos(FMath::Max(0, TypedStrPos - 1));
+				NewPos = FMath::Max(0, TypedStrPos - 1);
 			}
+			SetCursorPos(NewPos);
 			return true;
 		}
 		else if (Key == EKeys::Right)
 		{
+			int32 NewPos;
 			if (bCtrl)
 			{
-				// find the nearest '.' or ' '
-				int32 SpacePos = TypedStr.Find(TEXT(" "));
-				int32 PeriodPos = TypedStr.Find(TEXT("."));
-				// pick the closest valid index
-				int32 NewPos = SpacePos < 0 ? PeriodPos : (PeriodPos < 0 ? SpacePos : FMath::Min(SpacePos, PeriodPos));
-				// jump to end if nothing in between
-				if (NewPos == INDEX_NONE)
-				{
-					NewPos = TypedStr.Len();
-				}
-				SetCursorPos(FMath::Min(TypedStr.Len(), FMath::Max(TypedStrPos, NewPos)));
+				NewPos = FindWordBreak(TypedStr, FMath::Min(TypedStrPos + 1, TypedStr.Len()), ESearchDir::FromStart);
 			}
 			else
 			{
-				SetCursorPos(FMath::Min(TypedStr.Len(), TypedStrPos + 1));
+				NewPos = FMath::Min(TypedStr.Len(), TypedStrPos + 1);
 			}
+			SetCursorPos(NewPos);
 			return true;
 		}
 		else if (Key == EKeys::Home)

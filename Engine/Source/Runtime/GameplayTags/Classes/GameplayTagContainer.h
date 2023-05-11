@@ -161,7 +161,7 @@ struct GAMEPLAYTAGS_API FGameplayTag
 	/** Used so we can have a TMap of this struct */
 	FORCEINLINE friend uint32 GetTypeHash(const FGameplayTag& Tag)
 	{
-		return ::GetTypeHash(Tag.TagName);
+		return GetTypeHash(Tag.TagName);
 	}
 
 	/** Displays gameplay tag as a string for blueprint graph usage */
@@ -748,7 +748,7 @@ struct FGameplayTagCreationWidgetHelper
 UENUM()
 namespace EGameplayTagQueryExprType
 {
-	enum Type
+	enum Type : int
 	{
 		Undefined = 0,
 		AnyTagsMatch,
@@ -874,6 +874,9 @@ public:
 	/** Builds a FGameplayTagQueryExpression from this query. */
 	void GetQueryExpr(struct FGameplayTagQueryExpression& OutExpr) const;
 
+	/** Serialize the tag query */
+	void Serialize(FArchive& Ar);
+	
 	/** Returns description string. */
 	const FString& GetDescription() const { return UserDescription.IsEmpty() ? AutoDescription : UserDescription; };
 

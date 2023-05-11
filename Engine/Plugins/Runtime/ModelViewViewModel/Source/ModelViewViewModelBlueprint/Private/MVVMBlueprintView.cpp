@@ -2,10 +2,9 @@
 
 #include "MVVMBlueprintView.h"
 
-#include "MVVMWidgetBlueprintExtension_View.h"
-#include "Blueprint/WidgetTree.h"
+#include "Components/Widget.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "UObject/UnrealType.h"
+#include "MVVMWidgetBlueprintExtension_View.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MVVMBlueprintView)
 
@@ -176,6 +175,16 @@ const FMVVMBlueprintViewBinding* UMVVMBlueprintView::GetBindingAt(int32 Index) c
 	return nullptr;
 }
 
+FMVVMBlueprintViewBinding* UMVVMBlueprintView::GetBinding(FGuid Id)
+{
+	return Bindings.FindByPredicate([Id](const FMVVMBlueprintViewBinding& Binding){ return Id == Binding.BindingId; });
+}
+
+const FMVVMBlueprintViewBinding* UMVVMBlueprintView::GetBinding(FGuid Id) const
+{
+	return Bindings.FindByPredicate([Id](const FMVVMBlueprintViewBinding& Binding) { return Id == Binding.BindingId; });
+}
+
 void UMVVMBlueprintView::PostLoad()
 {
 	Super::PostLoad();
@@ -221,6 +230,30 @@ void UMVVMBlueprintView::PostEditChangeChainProperty(FPropertyChangedChainEvent&
 	if (PropertyChainEvent.PropertyChain.Contains(UMVVMBlueprintView::StaticClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UMVVMBlueprintView, AvailableViewModels))))
 	{
 		OnViewModelsUpdated.Broadcast();
+	}
+}
+
+void UMVVMBlueprintView::AddAssetTags(TArray<FAssetRegistryTag>& OutTags)
+{
+	if (AvailableViewModels.Num() > 0)
+	{
+		TStringBuilder<512> Builder;
+		for (const FMVVMBlueprintViewModelContext& Context : AvailableViewModels)
+		{
+			if (Context.IsValid())
+			{
+				if (Builder.Len() > 0)
+				{
+					Builder << TEXT(',');
+				}
+				Builder << Context.GetViewModelClass()->GetPathName();
+			}
+		}
+
+		if (Builder.Len() > 0)
+		{
+			OutTags.Emplace(TEXT("Viewmodels"), Builder.ToString(), FAssetRegistryTag::TT_Hidden);
+		}
 	}
 }
 

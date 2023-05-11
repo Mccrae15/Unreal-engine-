@@ -24,7 +24,7 @@ public class AssetTools : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
-                "CurveAssetEditor",
+				"AssetDefinition",
 				"Engine",
                 "InputCore",
 				"ApplicationCore",
@@ -45,7 +45,7 @@ public class AssetTools : ModuleRules
 				"InterchangeCore",
 				"InterchangeEngine",
 				"PhysicsUtilities",
-				"AssetRegistry",
+				"AssetRegistry"
 			}
 		);
 
@@ -80,7 +80,8 @@ public class AssetTools : ModuleRules
 				"Cascade",
 				"PhysicsAssetEditor",
 				"CurveTableEditor",
-				"StaticMeshEditor"
+				"StaticMeshEditor",
+				"VirtualTexturingEditor"
 			}
 		);
 
@@ -104,7 +105,8 @@ public class AssetTools : ModuleRules
                 "SkeletalMeshEditor",
                 "AnimationEditor",
                 "AnimationBlueprintEditor",
-                "AnimationModifiers"
+                "AnimationModifiers",
+                "VirtualTexturingEditor"
             }
 		);
 	}

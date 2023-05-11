@@ -2,6 +2,7 @@
 
 #include "HeterogeneousVolumes.h"
 
+#include "LocalVertexFactory.h"
 #include "PixelShaderUtils.h"
 #include "RayTracingDefinitions.h"
 #include "RayTracingInstance.h"
@@ -63,9 +64,7 @@ class FHeterogeneousVolumesBakeMaterialCS : public FMeshMaterialShader
 	)
 	{
 		return DoesPlatformSupportHeterogeneousVolumes(Parameters.Platform)
-			&& (Parameters.MaterialParameters.MaterialDomain == MD_Volume)
-			// Restricting compilation to materials bound to Niagara meshes
-			&& Parameters.MaterialParameters.bIsUsedWithNiagaraMeshParticles;
+			&& DoesMaterialShaderSupportHeterogeneousVolumes(Parameters.MaterialParameters);
 	}
 
 	static FPermutationDomain RemapPermutation(FPermutationDomain PermutationVector)
@@ -200,6 +199,7 @@ void ComputeHeterogeneousVolumeBakeMaterial(
 
 					ShaderBindings.Finalize(&PassShaders);
 				}
+				SetComputePipelineState(RHICmdList, ComputeShader.GetComputeShader());
 				ShaderBindings.SetOnCommandList(RHICmdList, ComputeShader.GetComputeShader());
 
 				FComputeShaderUtils::Dispatch(RHICmdList, ComputeShader, *PassParameters, GroupCount);

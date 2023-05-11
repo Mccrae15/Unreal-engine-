@@ -11,12 +11,16 @@
 
 #include "RenderGraphBuilder.h"
 
+#include "UObject/UObjectGlobals.h"
+#include "UObject/Package.h"
+
 
 FDisplayClusterMediaCaptureBase::FDisplayClusterMediaCaptureBase(const FString& InMediaId, const FString& InClusterNodeId, UMediaOutput* InMediaOutput)
 	: FDisplayClusterMediaBase(InMediaId, InClusterNodeId)
-	, MediaOutput(InMediaOutput)
 {
-	check(InMediaOutput);
+	checkSlow(InMediaOutput);
+	MediaOutput = DuplicateObject(InMediaOutput, GetTransientPackage());
+	checkSlow(MediaOutput);
 
 	IDisplayCluster::Get().GetCallbacks().OnDisplayClusterPostTick().AddRaw(this, &FDisplayClusterMediaCaptureBase::OnPostClusterTick);
 }
@@ -72,7 +76,7 @@ void FDisplayClusterMediaCaptureBase::ExportMediaData(FRDGBuilder& GraphBuilder,
 	{
 		MediaCapture->SetValidSourceGPUMask(GraphBuilder.RHICmdList.GetGPUMask());
 
-		const FIntPoint SrcRegionSize = TextureInfo.Region.Size();
+		LastSrcRegionSize = FIntSize(TextureInfo.Region.Size());
 		MediaCapture->CaptureImmediate_RenderThread(GraphBuilder, SrcTexture);
 	}
 }
@@ -81,13 +85,17 @@ void FDisplayClusterMediaCaptureBase::OnPostClusterTick()
 {
 	if (MediaCapture && bWasCaptureStarted)
 	{
-		if (MediaCapture->GetState() == EMediaCaptureState::Error)
+		const EMediaCaptureState MediaCaptureState = MediaCapture->GetState();
+		const bool bMediaCaptureNeedsRestart = (MediaCaptureState == EMediaCaptureState::Error) || (MediaCaptureState == EMediaCaptureState::Stopped);
+
+		if (bMediaCaptureNeedsRestart)
 		{
 			constexpr double Interval = 1.0;
 			const double CurrentTime = FPlatformTime::Seconds();
+
 			if (CurrentTime - LastRestartTimestamp > Interval)
 			{
-				UE_LOG(LogDisplayClusterMedia, Log, TEXT("MediaCapture '%s' is in error, restarting it."), *GetMediaId());
+				UE_LOG(LogDisplayClusterMedia, Log, TEXT("MediaCapture '%s' is in error or stopped, restarting it."), *GetMediaId());
 
 				StartMediaCapture();
 				LastRestartTimestamp = CurrentTime;
@@ -99,12 +107,21 @@ void FDisplayClusterMediaCaptureBase::OnPostClusterTick()
 bool FDisplayClusterMediaCaptureBase::StartMediaCapture()
 {
 	FRHICaptureResourceDescription Descriptor;
-	Descriptor.ResourceSize = GetCaptureSize();
+
+	if (LastSrcRegionSize.load().ToIntPoint() == FIntPoint::ZeroValue)
+	{
+		Descriptor.ResourceSize = GetCaptureSize();
+	}
+	else
+	{
+		Descriptor.ResourceSize = LastSrcRegionSize.load().ToIntPoint();
+	}
 	
 	FMediaCaptureOptions MediaCaptureOptions;
 	MediaCaptureOptions.NumberOfFramesToCapture = -1;
+	MediaCaptureOptions.bAutoRestartOnSourceSizeChange = true;
 	MediaCaptureOptions.bSkipFrameWhenRunningExpensiveTasks = false;
-	MediaCaptureOptions.OverrunAction = EMediaCaptureOverrunAction::Skip;
+	MediaCaptureOptions.OverrunAction = EMediaCaptureOverrunAction::Flush;
 
 	const bool bCaptureStarted = MediaCapture->CaptureRHITexture(Descriptor, MediaCaptureOptions);
 	if (bCaptureStarted)

@@ -9,22 +9,22 @@
 #include "Components/SceneComponent.h"
 #include "EngineDefines.h"
 #include "CollisionQueryParams.h"
-#include "SkeletalMeshTypes.h"
 #include "Interfaces/Interface_CollisionDataProvider.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "SkeletalMeshTypes.h"
 #include "Engine/SkeletalMesh.h"
+#include "ClothCollisionPrim.h"
+#include "PhysicsEngine/PhysicsAsset.h"
+#endif
 #include "Animation/AnimationAsset.h"
 #include "Animation/AnimCurveTypes.h"
 #include "Components/SkinnedMeshComponent.h"
 #include "ClothSimData.h"
 #include "SingleAnimationPlayData.h"
 #include "Animation/PoseSnapshot.h"
-#include "SkeletalMeshTypes.h"
-
 #include "ClothingSystemRuntimeTypes.h"
 #include "ClothingSimulationInterface.h"
 #include "ClothingSimulationFactory.h"
-#include "ClothCollisionPrim.h"
-#include "PhysicsEngine/PhysicsAsset.h"
 #include "Animation/AttributesRuntime.h"
 #if WITH_ENGINE
 #include "Engine/PoseWatchRenderData.h"
@@ -39,8 +39,11 @@ class FCanvas;
 class FSceneView;
 class UAnimInstance;
 class UPhysicalMaterial;
+class USkeletalMesh;
 class USkeletalMeshComponent;
+struct FClothCollisionSource;
 struct FConstraintInstance;
+struct FConstraintProfileProperties;
 struct FNavigableGeometryExport;
 struct FCompactPose;
 
@@ -61,18 +64,6 @@ typedef FOnSkelMeshTeleportedMultiCast::FDelegate FOnSkelMeshTeleported;
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnBoneTransformsFinalized);  // Deprecated, use FOnBoneTransformsFinalizedMultiCast instead
 
 DECLARE_MULTICAST_DELEGATE(FOnBoneTransformsFinalizedMultiCast);
-
-UENUM()
-enum class EAnimCurveType : uint8 
-{
-	AttributeCurve,
-	MaterialCurve, 
-	MorphTargetCurve, 
-	// make sure to update MaxCurve 
-	MaxAnimCurveType UMETA(Hidden)
-};
-
-ENUM_RANGE_BY_COUNT(EAnimCurveType, EAnimCurveType::MaxAnimCurveType);
 
 /** Method used when retrieving a attribute value*/
 UENUM()
@@ -173,7 +164,7 @@ struct FAnimationEvaluationContext
 UENUM()
 namespace EKinematicBonesUpdateToPhysics
 {
-	enum Type
+	enum Type : int
 	{
 		/** Update any bones that are not simulating. */
 		SkipSimulatingBones,
@@ -185,7 +176,7 @@ namespace EKinematicBonesUpdateToPhysics
 UENUM()
 namespace EAnimationMode
 {
-	enum Type
+	enum Type : int
 	{
 		AnimationBlueprint UMETA(DisplayName="Use Animation Blueprint"), 
 		AnimationSingleNode UMETA(DisplayName="Use Animation Asset"), 
@@ -197,7 +188,7 @@ namespace EAnimationMode
 UENUM()
 namespace EPhysicsTransformUpdateMode
 {
-	enum Type
+	enum Type : int
 	{
 		SimulationUpatesComponentTransform,
 		ComponentTransformIsKinematic
@@ -302,35 +293,6 @@ struct ENGINE_API FClosestPointOnPhysicsAsset
 	}
 };
 
-/** Helper struct used to store info about a cloth collision source */
-struct FClothCollisionSource
-{
-	FClothCollisionSource(USkeletalMeshComponent* InSourceComponent, UPhysicsAsset* InSourcePhysicsAsset, const FOnBoneTransformsFinalizedMultiCast::FDelegate& InOnBoneTransformsFinalizedDelegate);
-	ENGINE_API ~FClothCollisionSource();
-
-	/** Component that collision data will be copied from */
-	TWeakObjectPtr<USkeletalMeshComponent> SourceComponent;
-
-	/** Physics asset to use to generate collision against the source component */
-	TWeakObjectPtr<UPhysicsAsset> SourcePhysicsAsset;
-
-	/** Callback used to remove the cloth transform updates delegate */
-	FDelegateHandle OnBoneTransformsFinalizedHandle;
-
-	/** Cached skeletal mesh used to invalidate the cache if the skeletal mesh has changed */
-	TWeakObjectPtr<USkeletalMesh> CachedSkeletalMesh;
-
-	/** Cached spheres from physics asset */
-	TArray<FClothCollisionPrim_Sphere> CachedSpheres;
-
-	/** Cached sphere connections from physics asset */
-	TArray<FClothCollisionPrim_SphereConnection> CachedSphereConnections;
-
-	/** Flag whether the cache is valid */
-	bool bCached;
-};
-
-
 /**
  * SkeletalMeshComponent is used to create an instance of an animated SkeletalMesh asset.
  *
@@ -350,26 +312,26 @@ class ENGINE_API USkeletalMeshComponent : public USkinnedMeshComponent, public I
 	friend struct FAnimNode_LinkedAnimLayer;
 	friend struct FLinkedInstancesAdapter;
 
-#if WITH_EDITORONLY_DATA
+//#if WITH_EDITORONLY_DATA  // TODO: Re-add these guards once the MovieScene getters/setters are working, so that we can get rid of this redundant pointer in all cooked builds
 private:
 	/** The skeletal mesh used by this component. */
 	UE_DEPRECATED(5.1, "This property isn't deprecated, but getter and setter must be used at all times to preserve correct operations.")
-	UPROPERTY(EditAnywhere, Transient, BlueprintSetter = SetSkeletalMeshAsset, BlueprintGetter = GetSkeletalMeshAsset, Category = Mesh)
-	TObjectPtr<class USkeletalMesh> SkeletalMeshAsset;
-#endif
+	UPROPERTY(EditAnywhere, Transient, Setter = SetSkeletalMeshAsset, BlueprintSetter = SetSkeletalMeshAsset, Getter = GetSkeletalMeshAsset, BlueprintGetter = GetSkeletalMeshAsset, Category = Mesh)
+	TObjectPtr<USkeletalMesh> SkeletalMeshAsset;
+//#endif
 
 public:
 	/**
 	 * Set the SkeletalMesh rendered for this mesh.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Components|SkeletalMesh")
-	void SetSkeletalMeshAsset(class USkeletalMesh* NewMesh) { SetSkeletalMesh(NewMesh, false); }
+	void SetSkeletalMeshAsset(USkeletalMesh* NewMesh) { SetSkeletalMesh(NewMesh, false); }
 
 	/**
 	 * Get the SkeletalMesh rendered for this mesh.
 	 */
 	UFUNCTION(BlueprintPure, Category = "Components|SkeletalMesh")
-	class USkeletalMesh* GetSkeletalMeshAsset() const;
+	USkeletalMesh* GetSkeletalMeshAsset() const;
 
 #if WITH_EDITORONLY_DATA
 	/** The blueprint for creating an AnimationScript. */
@@ -424,6 +386,9 @@ public:
 	// this is explicit copy because this buffer is reused during evaluation
 	// we want to have reference and emptied during evaluation
 	TArray<FTransform> GetBoneSpaceTransforms();
+
+	/** Get the bone space transforms as array view. */
+	TArrayView<const FTransform> GetBoneSpaceTransformsView();
 
 	/** 
 	 * Temporary array of local-space (relative to parent bone) rotation/translation for each bone. 
@@ -670,10 +635,12 @@ private:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = SkeletalMesh)
 	uint8 bAllowAnimCurveEvaluation : 1;
 
+#if WITH_EDITORONLY_DATA
 	/** DEPRECATED. Use bAllowAnimCurveEvaluation instead */
 	UE_DEPRECATED(4.18, "This property is deprecated. Please use bAllowAnimCurveEvaluatiuon instead. Note that the meaning is reversed.")	
 	UPROPERTY()
 	uint8 bDisableAnimCurves_DEPRECATED : 1;
+#endif
 
 	/** Whether or not we're taking cloth sim information from our leader component */
 	uint8 bBindClothToLeaderComponent:1;
@@ -699,14 +666,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Clothing)
 	uint8 bForceCollisionUpdate : 1;
 
-	/**
-	 * It's worth trying this option when you feel that the current cloth simulation is unstable.
-	 * The scale of the actor is maintained during the simulation. 
-	 * It is possible to add the inertia effects to the simulation, through the inertiaScale parameter of the clothing material. 
-	 * So with an inertiaScale of 1.0 there should be no visible difference between local space and global space simulation. 
-	 * Known issues: - Currently there's simulation issues when this feature is used in 3.x (DE4076) So if localSpaceSim is enabled there's no inertia effect when the global pose of the clothing actor changes.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Clothing)
+	/** Deprecated. */
+	UE_DEPRECATED(5.2, "Cloth simulation always happens in local space.")
+	UPROPERTY(BlueprintReadWrite, Category = Clothing, meta = (DeprecationMessage = "This property is deprecated. Cloth simulation always happens in local space."))
 	uint8 bLocalSpaceSimulation : 1;
 
 	/** reset the clothing after moving the clothing position (called teleport) */
@@ -1594,7 +1556,11 @@ public:
 	void TickClothing(float DeltaTime, FTickFunction& ThisTickFunction);
 
 	/** Store cloth simulation data into OutClothSimData */
+	UE_DEPRECATED(5.2, "Use GetUpdateClothSimulationData_AnyThread instead.")
 	void GetUpdateClothSimulationData(TMap<int32, FClothSimulData>& OutClothSimData, USkeletalMeshComponent* OverrideLocalRootComponent = nullptr);
+
+	/** Store cloth simulation data into OutClothSimulData. Override USkinnedMeshComponent. */
+	virtual void GetUpdateClothSimulationData_AnyThread(TMap<int32, FClothSimulData>& OutClothSimulData, FMatrix& OutLocalToWorld, float& OutClothBlendWeight) override;
 
 	/** Remove clothing actors from their simulation */
 	void RemoveAllClothingActors();
@@ -1697,6 +1663,7 @@ public:
 	virtual void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction) override;
 	virtual void BeginPlay() override;
 	virtual void SetComponentTickEnabled(bool bEnabled) override;
+	virtual void OnComponentDestroyed(bool bDestroyingHierarchy) override;
 
 	//Handle registering our end physics tick function
 	virtual void RegisterEndPhysicsTick(bool bRegister);
@@ -1930,8 +1897,6 @@ public:
 
 	UE_DEPRECATED(4.27, "Use RegisterOnBoneTransformsFinalizedDelegate/UnregisterOnBoneTransformsFinalizedDelegate instead")
 	FOnBoneTransformsFinalized OnBoneTransformsFinalized;
-
-	void GetCurrentRefToLocalMatrices(TArray<FMatrix44f>& OutRefToLocals, int32 InLodIdx) const;
 
 	// Conditions used to gate when post process events happen
 	bool ShouldUpdatePostProcessInstance() const;
@@ -2619,6 +2584,12 @@ public:
 
 	// Are we currently within PostAnimEvaluation
 	bool IsPostEvaluatingAnimation() const { return bPostEvaluatingAnimation; }
+
+	//~ Begin IPhysicsComponent Interface.
+	virtual Chaos::FPhysicsObject* GetPhysicsObjectById(int32 Id) const override;
+	virtual Chaos::FPhysicsObject* GetPhysicsObjectByName(const FName& Name) const override;
+	virtual TArray<Chaos::FPhysicsObject*> GetAllPhysicsObjects() const override;
+	//~ End IPhysicsComponent Interface.
 };
 
 #if WITH_EDITOR

@@ -7,6 +7,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Editor.h"
 #include "Editor/UnrealEdEngine.h"
+#include "Framework/Application/SlateApplication.h"
 #include "UnrealEdGlobals.h"
 #include "ISequencer.h"
 #include "ControlRigEditorModule.h"
@@ -39,6 +40,13 @@
 #include "LevelSequenceEditorBlueprintLibrary.h"
 #include "Tools/ConstraintBaker.h"
 #include "TransformConstraint.h"
+#include "Rigs/FKControlRig.h"
+#include "Subsystems/UnrealEditorSubsystem.h"
+#include "EditorScriptingHelpers.h"
+#include "ConstraintsScripting.h"
+#include "Constraints/ControlRigTransformableHandle.h"
+#include "Constraints/MovieSceneConstraintChannelHelper.h"
+#include "Sections/MovieSceneConstrainedSection.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigSequencerEditorLibrary)
 
@@ -400,6 +408,354 @@ bool UControlRigSequencerEditorLibrary::TweenControlRig(ULevelSequence* LevelSeq
 		return true;
 	}
 	return false;
+}
+
+bool UControlRigSequencerEditorLibrary::BlendValuesOnSelected(ULevelSequence* LevelSequence, EAnimToolBlendOperation BlendOperation, float BlendValue)
+{
+	TWeakPtr<ISequencer> WeakSequencer = GetSequencerFromAsset();
+	if (WeakSequencer.IsValid() && WeakSequencer.Pin()->GetFocusedMovieSceneSequence() == LevelSequence
+		&& LevelSequence->GetMovieScene())
+	{
+		FControlsToTween ControlsToTween;
+		LevelSequence->GetMovieScene()->Modify();
+		switch(BlendOperation)
+		{ 
+			case EAnimToolBlendOperation::Tween:
+			{
+				FControlsToTween BlendTool;
+				BlendTool.Setup(WeakSequencer);
+				BlendTool.Blend(WeakSequencer, BlendValue);
+				return true;
+			}
+			case EAnimToolBlendOperation::BlendToNeighbor:
+			{
+				FBlendNeighborSlider BlendTool;
+				BlendTool.Setup(WeakSequencer);
+				BlendTool.Blend(WeakSequencer, BlendValue);
+				return true;
+			}
+			case EAnimToolBlendOperation::PushPull:
+			{
+				FPushPullSlider BlendTool;
+				BlendTool.Setup(WeakSequencer);
+				BlendTool.Blend(WeakSequencer, BlendValue);
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+UTickableConstraint* UControlRigSequencerEditorLibrary::AddConstraint(UWorld* World, ETransformConstraintType InType, UTransformableHandle* InChildHandle, UTransformableHandle* InParentHandle, const bool bMaintainOffset)
+{
+	if (!World)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("AddConstraint: Need Valid World"));
+		return nullptr;
+	}
+
+	UTickableTransformConstraint* Constraint = FTransformConstraintUtils::CreateFromType(World, InType);
+	if (!Constraint)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("AddConstraint: Can not create constraint from type"));
+		return nullptr;
+	}
+
+	if(FTransformConstraintUtils::AddConstraint(World, InParentHandle, InChildHandle, Constraint, bMaintainOffset) == false)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("AddConstraint: Constraint not added"));
+		Constraint->MarkAsGarbage();
+		return nullptr;
+	}
+	
+	//add key
+	const TWeakPtr<ISequencer> WeakSequencer = GetSequencerFromAsset();
+	if (WeakSequencer.IsValid())
+	{
+		FMovieSceneConstraintChannelHelper::SmartConstraintKey(WeakSequencer.Pin(), Constraint, TOptional<bool>(), TOptional<FFrameNumber>());
+	}
+	return Constraint;
+}
+
+TArray <UTickableConstraint*> UControlRigSequencerEditorLibrary::GetConstraintsForHandle(UWorld* InWorld, const UTransformableHandle* InChild)
+{
+	TArray <UTickableConstraint*> Constraints;
+	const FConstraintsManagerController& Controller = FConstraintsManagerController::Get(InWorld);
+	const TArray<TObjectPtr<UTickableConstraint>>& AllConstraints = Controller.GetAllConstraints(false);
+	for (const TObjectPtr<UTickableConstraint>& TickConstraint : AllConstraints)
+	{
+		if (TObjectPtr<UTickableTransformConstraint> Constraint = Cast<UTickableTransformConstraint>(TickConstraint))
+		{
+			if (Constraint->ChildTRSHandle == InChild)
+			{
+				Constraints.Add(Constraint.Get());
+			}
+		}
+	}
+	return Constraints;
+}
+
+bool UControlRigSequencerEditorLibrary::Compensate(UTickableConstraint* InConstraint, FFrameNumber InTime, ESequenceTimeUnit TimeUnit)
+{
+	TWeakPtr<ISequencer> WeakSequencer = GetSequencerFromAsset();
+	if (WeakSequencer.IsValid() == false)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("Compensate: Need open Sequencer"));
+		return false;
+	}
+	if (UTickableTransformConstraint* Constraint = Cast<UTickableTransformConstraint>(InConstraint))
+	{
+		TSharedPtr<ISequencer>  Sequencer = WeakSequencer.Pin();
+		FFrameRate TickResolution = Sequencer->GetFocusedTickResolution();
+		FFrameRate DisplayRate = Sequencer->GetFocusedDisplayRate();
+		if (TimeUnit == ESequenceTimeUnit::DisplayRate)
+		{
+			InTime = FFrameRate::TransformTime(FFrameTime(InTime, 0), DisplayRate, TickResolution).RoundToFrame();
+		}
+		TOptional<FFrameNumber> OptTime(InTime);
+		FMovieSceneConstraintChannelHelper::Compensate(Sequencer, Constraint, OptTime);
+		return true;
+	}
+	else
+	{
+		UE_LOG(LogControlRig, Error, TEXT("Compensate: Not Transform Constraint"));
+	}
+	return false;
+}
+
+bool UControlRigSequencerEditorLibrary::CompensateAll(UTickableConstraint* InConstraint)
+{
+	TWeakPtr<ISequencer> WeakSequencer = GetSequencerFromAsset();
+	if (WeakSequencer.IsValid() == false)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("CompensateAll: Need open Sequencer"));
+		return false;
+	}
+	if (UTickableTransformConstraint* Constraint = Cast<UTickableTransformConstraint>(InConstraint))
+	{
+		FMovieSceneConstraintChannelHelper::Compensate(WeakSequencer.Pin(), Constraint, TOptional<FFrameNumber>());
+		return true;
+	}
+	else
+	{
+		UE_LOG(LogControlRig, Error, TEXT("CompensateAll: Not Transform Constraint"));
+	}
+	return false;
+}
+
+bool UControlRigSequencerEditorLibrary::SetConstraintActiveKey(UTickableConstraint* InConstraint, bool bActive, FFrameNumber InTime, ESequenceTimeUnit TimeUnit)
+{
+	TWeakPtr<ISequencer> WeakSequencer = GetSequencerFromAsset();
+	if (WeakSequencer.IsValid() == false)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("SetConstraintActiveKey: Need open Sequencer"));
+		return false;
+	}
+
+	if (UTickableTransformConstraint* Constraint = Cast<UTickableTransformConstraint>(InConstraint))
+	{
+		TSharedPtr<ISequencer>  Sequencer = WeakSequencer.Pin();
+		FFrameRate TickResolution = Sequencer->GetFocusedTickResolution();
+		FFrameRate DisplayRate = Sequencer->GetFocusedDisplayRate();
+
+		if (TimeUnit == ESequenceTimeUnit::DisplayRate)
+		{
+			InTime = FFrameRate::TransformTime(FFrameTime(InTime, 0), DisplayRate, TickResolution).RoundToFrame();
+		}
+		return FMovieSceneConstraintChannelHelper::SmartConstraintKey(Sequencer, Constraint, TOptional<bool>(bActive), TOptional<FFrameNumber>(InTime));
+	}
+	else
+	{
+		UE_LOG(LogControlRig, Error, TEXT("SetConstraintActiveKey: Not Transform Constraint"));
+	}
+	return false;
+}
+
+bool UControlRigSequencerEditorLibrary::GetConstraintKeys(UTickableConstraint* InConstraint, UMovieSceneSection* ConstraintSection, TArray<bool>& OutBools, TArray<FFrameNumber>& OutFrames, ESequenceTimeUnit TimeUnit)
+{
+	if (InConstraint == nullptr)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("GetConstraintKeys: Constraint not valid"));
+		return false;
+	}
+	TWeakPtr<ISequencer> WeakSequencer = GetSequencerFromAsset();
+	if (WeakSequencer.IsValid() == false)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("GetConstraintKeys: Need open Sequencer"));
+		return false;
+	}
+
+	IMovieSceneConstrainedSection* ConstrainedSection = Cast<IMovieSceneConstrainedSection>(ConstraintSection);
+	if (ConstrainedSection == nullptr)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("GetConstraintKeys: Section doesn't support constraints"));
+		return false;
+	}
+	FConstraintAndActiveChannel* ConstraintAndChannel = ConstrainedSection->GetConstraintChannel(InConstraint->GetFName());
+	if (ConstraintAndChannel == nullptr)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("GetConstraintKeys: Constraint not found in section"));
+		return false;
+	}
+
+	if (UTickableTransformConstraint* Constraint = Cast<UTickableTransformConstraint>(InConstraint))
+	{
+		TSharedPtr<ISequencer>  Sequencer = WeakSequencer.Pin();
+		FFrameRate TickResolution = Sequencer->GetFocusedTickResolution();
+		FFrameRate DisplayRate = Sequencer->GetFocusedDisplayRate();
+
+
+		TArray<FFrameNumber> OurKeyTimes;
+		TArray<FKeyHandle> OurKeyHandles;
+		TRange<FFrameNumber> CurrentFrameRange;
+		CurrentFrameRange.SetLowerBound(TRangeBound<FFrameNumber>());
+		CurrentFrameRange.SetUpperBound(TRangeBound<FFrameNumber>());
+
+		TMovieSceneChannelData<bool> ChannelInterface = ConstraintAndChannel->ActiveChannel.GetData();
+		ChannelInterface.GetKeys(CurrentFrameRange, &OurKeyTimes, &OurKeyHandles);
+		
+		if (OurKeyTimes.Num() > 0)
+		{
+			OutBools.SetNum(OurKeyTimes.Num());
+			OutFrames.SetNum(OurKeyTimes.Num());
+			int32 Index = 0;
+			for (FFrameNumber Frame : OurKeyTimes)
+			{
+				ConstraintAndChannel->ActiveChannel.Evaluate(FFrameTime(Frame, 0.0f), OutBools[Index]);
+				if (TimeUnit == ESequenceTimeUnit::DisplayRate)
+				{
+					Frame = FFrameRate::TransformTime(FFrameTime(Frame, 0), TickResolution,DisplayRate).RoundToFrame();
+				}
+				OutFrames[Index] = Frame;
+				++Index;
+			}
+		}
+		else
+		{
+			OutBools.SetNum(0);
+			OutFrames.SetNum(0);
+		}
+	}
+	else
+	{
+		UE_LOG(LogControlRig, Error, TEXT("GetConstraintKeys: Not Transform Constraint"));
+		return false;
+	}
+	return true;
+}
+
+
+bool UControlRigSequencerEditorLibrary::MoveConstraintKey(UTickableConstraint* Constraint, UMovieSceneSection* ConstraintSection, FFrameNumber InTime, FFrameNumber InNewTime, ESequenceTimeUnit TimeUnit)
+{
+	TWeakPtr<ISequencer> WeakSequencer = GetSequencerFromAsset();
+	if (WeakSequencer.IsValid() == false)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("MoveConstraintKey: Need open Sequencer"));
+		return false;
+	}
+	IMovieSceneConstrainedSection* ConstrainedSection = Cast<IMovieSceneConstrainedSection>(ConstraintSection);
+	if (ConstrainedSection == nullptr)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("MoveConstraintKey: Section doesn't support constraints"));
+		return false;
+	}
+	if (Constraint == nullptr)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("MoveConstraintKey: Constraint not valid"));
+		return false;
+	}
+	FConstraintAndActiveChannel* ConstraintAndChannel = ConstrainedSection->GetConstraintChannel(Constraint->GetFName());
+	if (ConstraintAndChannel == nullptr)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("MoveConstraintKey: Constraint not found in section"));
+		return false;
+	}
+	TSharedPtr<ISequencer>  Sequencer = WeakSequencer.Pin();
+	FFrameRate TickResolution = Sequencer->GetFocusedTickResolution();
+	FFrameRate DisplayRate = Sequencer->GetFocusedDisplayRate();
+
+	if (TimeUnit == ESequenceTimeUnit::DisplayRate)
+	{
+		InTime = FFrameRate::TransformTime(FFrameTime(InTime, 0), DisplayRate, TickResolution).RoundToFrame();
+		InNewTime = FFrameRate::TransformTime(FFrameTime(InNewTime, 0), DisplayRate, TickResolution).RoundToFrame();
+	}
+
+	TArray<FFrameNumber> OurKeyTimes;
+	TArray<FKeyHandle> OurKeyHandles;
+	TRange<FFrameNumber> CurrentFrameRange;
+	CurrentFrameRange.SetLowerBound(TRangeBound<FFrameNumber>(InTime));
+	CurrentFrameRange.SetUpperBound(TRangeBound<FFrameNumber>(InTime));
+	TMovieSceneChannelData<bool> ChannelInterface = ConstraintAndChannel->ActiveChannel.GetData();
+	ChannelInterface.GetKeys(CurrentFrameRange, &OurKeyTimes, &OurKeyHandles);
+	if (OurKeyHandles.Num() > 0)
+	{
+		ConstraintSection->TryModify();
+		TArray<FFrameNumber> NewKeyTimes;
+		NewKeyTimes.Add(InNewTime);
+		ConstraintAndChannel->ActiveChannel.SetKeyTimes(OurKeyHandles, NewKeyTimes);
+		WeakSequencer.Pin()->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::TrackValueChanged);
+	}
+	else
+	{
+		UE_LOG(LogControlRig, Error, TEXT("MoveConstraintKey: No Key To Move At that Time"));
+		return false;
+	}
+	return true;
+}
+
+bool UControlRigSequencerEditorLibrary::DeleteConstraintKey(UTickableConstraint* Constraint, UMovieSceneSection* ConstraintSection, FFrameNumber InTime, ESequenceTimeUnit TimeUnit)
+{
+	TWeakPtr<ISequencer> WeakSequencer = GetSequencerFromAsset();
+	if (WeakSequencer.IsValid() == false)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("DeleteConstraintKey: Need open Sequencer"));
+		return false;
+	}
+	IMovieSceneConstrainedSection* ConstrainedSection = Cast<IMovieSceneConstrainedSection>(ConstraintSection);
+	if (ConstrainedSection == nullptr)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("DeleteConstraintKey: Section doesn't support constraints"));
+		return false;
+	}
+	if (Constraint == nullptr)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("DeleteConstraintKey: Constraint not valid"));
+		return false;
+	}
+	FConstraintAndActiveChannel* ConstraintAndChannel = ConstrainedSection->GetConstraintChannel(Constraint->GetFName());
+	if (ConstraintAndChannel == nullptr)
+	{
+		UE_LOG(LogControlRig, Error, TEXT("DeleteConstraintKey: Constraint not found in section"));
+		return false;
+	}
+	TSharedPtr<ISequencer>  Sequencer = WeakSequencer.Pin();
+	FFrameRate TickResolution = Sequencer->GetFocusedTickResolution();
+	FFrameRate DisplayRate = Sequencer->GetFocusedDisplayRate();
+
+	if (TimeUnit == ESequenceTimeUnit::DisplayRate)
+	{
+		InTime = FFrameRate::TransformTime(FFrameTime(InTime, 0), DisplayRate, TickResolution).RoundToFrame();
+	}
+
+	TArray<FFrameNumber> OurKeyTimes;
+	TArray<FKeyHandle> OurKeyHandles;
+	TRange<FFrameNumber> CurrentFrameRange;
+	CurrentFrameRange.SetLowerBound(TRangeBound<FFrameNumber>(InTime));
+	CurrentFrameRange.SetUpperBound(TRangeBound<FFrameNumber>(InTime));
+	TMovieSceneChannelData<bool> ChannelInterface = ConstraintAndChannel->ActiveChannel.GetData();
+	ChannelInterface.GetKeys(CurrentFrameRange, &OurKeyTimes, &OurKeyHandles);
+	if (OurKeyHandles.Num() > 0)
+	{
+		ConstraintSection->TryModify();
+		ConstraintAndChannel->ActiveChannel.DeleteKeys(OurKeyHandles);
+		WeakSequencer.Pin()->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::TrackValueChanged);
+	}
+	else
+	{
+		UE_LOG(LogControlRig, Error, TEXT("DeleteConstraintKey: No Key To Delete At that Time"));
+		return false;
+	}
+	return true;
 }
 
 bool UControlRigSequencerEditorLibrary::BakeConstraint(UWorld* World, UTickableConstraint* Constraint, const TArray<FFrameNumber>& Frames, ESequenceTimeUnit TimeUnit)
@@ -2544,6 +2900,31 @@ void UControlRigSequencerEditorLibrary::HideAllControls(UMovieSceneSection* InSe
 
 	ParameterSection->Modify();
 	ParameterSection->FillControlsMask(false);
+}
+
+bool UControlRigSequencerEditorLibrary::IsFKControlRig(UControlRig* InControlRig)
+{
+	return (InControlRig && InControlRig->IsA<UFKControlRig>());
+}
+
+EControlRigFKRigExecuteMode UControlRigSequencerEditorLibrary::GetFKControlRigApplyMode(UControlRig* InControlRig)
+{
+	EControlRigFKRigExecuteMode ApplyMode = EControlRigFKRigExecuteMode::Direct;
+	if (UFKControlRig* FKRig = Cast<UFKControlRig>(InControlRig))
+	{
+		ApplyMode = FKRig->GetApplyMode();
+	}
+	return ApplyMode;
+}
+
+bool UControlRigSequencerEditorLibrary::SetControlRigApplyMode(UControlRig* InControlRig, EControlRigFKRigExecuteMode InApplyMode)
+{
+	if (UFKControlRig* FKRig = Cast<UFKControlRig>(InControlRig))
+	{
+		FKRig->SetApplyMode(InApplyMode);
+		return true;
+	}
+	return false;
 }
 
 #undef LOCTEXT_NAMESPACE

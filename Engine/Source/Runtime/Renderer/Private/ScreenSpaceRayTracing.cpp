@@ -1,13 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ScreenSpaceRayTracing.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "RenderGraph.h"
 #include "PixelShaderUtils.h"
 #include "ScreenPass.h"
 #include "ScenePrivate.h"
 #include "SceneTextureParameters.h"
 #include "Strata/Strata.h"
-
+#include "SystemTextures.h"
+#include "VariableRateShadingImageManager.h"
 
 static TAutoConsoleVariable<int32> CVarSSRQuality(
 	TEXT("r.SSR.Quality"),
@@ -168,7 +170,7 @@ bool IsScreenSpaceDiffuseIndirectSupported(const FViewInfo& View)
 
 bool IsSSRTemporalPassRequired(const FViewInfo& View)
 {
-	check(ShouldRenderScreenSpaceReflections(View));
+	check(ShouldRenderScreenSpaceReflections(View) || ShouldRenderScreenSpaceReflectionsWater(View));
 
 	if (!View.State)
 	{
@@ -642,7 +644,7 @@ namespace ScreenSpaceRayTracing
 
 void GetSSRQualityForView(const FViewInfo& View, ESSRQuality* OutQuality, IScreenSpaceDenoiser::FReflectionsRayTracingConfig* OutRayTracingConfigs)
 {
-	check(ShouldRenderScreenSpaceReflections(View));
+	check(ShouldRenderScreenSpaceReflections(View) || ShouldRenderScreenSpaceReflectionsWater(View));
 	
 	int32 SSRQualityCVar = FMath::Clamp(CVarSSRQuality.GetValueOnRenderThread(), 0, int32(ESSRQuality::MAX) - 1);
 	
@@ -962,7 +964,7 @@ void RenderScreenSpaceReflections(
 		FRDGTextureDesc Desc = FRDGTextureDesc::Create2D(
 			View.GetSceneTexturesConfig().Extent,
 			PF_FloatRGBA, FClearValueBinding(FLinearColor(0, 0, 0, 0)),
-			TexCreate_RenderTargetable | TexCreate_ShaderResource | TexCreate_UAV);
+			TexCreate_RenderTargetable | TexCreate_ShaderResource | TexCreate_UAV | TexCreate_NoFastClear);
 
 		Desc.Flags |= GFastVRamConfig.SSR;
 
@@ -1104,6 +1106,7 @@ void RenderScreenSpaceReflections(
 	SetSSRParameters(&PassParameters->SSRPassCommonParameter);
 	PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
 	PassParameters->RenderTargets = RenderTargets;
+	PassParameters->RenderTargets.ShadingRateTexture = GVRSImageManager.GetVariableRateShadingImage(GraphBuilder, View, FVariableRateShadingImageManager::EVRSPassType::SSR, nullptr);
 
 	TShaderMapRef<FScreenSpaceReflectionsPS> PixelShader(View.ShaderMap, PermutationVector);
 

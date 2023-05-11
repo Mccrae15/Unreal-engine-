@@ -3,10 +3,10 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Horde.Build.Acls;
 using Horde.Build.Auditing;
-using Horde.Build.Server;
 using Horde.Build.Utilities;
 using HordeCommon;
 using Microsoft.AspNetCore.Authorization;
@@ -19,6 +19,8 @@ using Horde.Build.Streams;
 using Horde.Build.Issues.External;
 using Horde.Build.Users;
 using Horde.Build.Jobs.Graphs;
+using Microsoft.Extensions.Options;
+using Horde.Build.Server;
 
 namespace Horde.Build.Issues
 {
@@ -41,24 +43,26 @@ namespace Horde.Build.Issues
 		private readonly IssueService _issueService;
 		private readonly IExternalIssueService _externalIssueService;
 		private readonly JobService _jobService;
-		private readonly StreamService _streamService;
+		private readonly IStreamCollection _streamCollection;
 		private readonly IUserCollection _userCollection;
 		private readonly ILogFileService _logFileService;
+		private readonly IOptionsSnapshot<GlobalConfig> _globalConfig;
 		private readonly ILogger<IssuesController> _logger;
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		public IssuesController(AclService aclService, ILogger<IssuesController> logger, IIssueCollection issueCollection, IssueService issueService, JobService jobService, StreamService streamService, IUserCollection userCollection, ILogFileService logFileService, IExternalIssueService externalIssueService)
+		public IssuesController(AclService aclService, IIssueCollection issueCollection, IssueService issueService, JobService jobService, IStreamCollection streamCollection, IUserCollection userCollection, ILogFileService logFileService, IExternalIssueService externalIssueService, IOptionsSnapshot<GlobalConfig> globalConfig, ILogger<IssuesController> logger)
 		{
 			_aclService = aclService;
 			_issueCollection = issueCollection;
 			_issueService = issueService;
 			_jobService = jobService;
-			_streamService = streamService;
+			_streamCollection = streamCollection;
 			_userCollection = userCollection;
 			_logFileService = logFileService;
 			_externalIssueService = externalIssueService;
+			_globalConfig = globalConfig;
 			_logger = logger;
 		}
 
@@ -87,15 +91,16 @@ namespace Horde.Build.Issues
 			List<object> responses = new List<object>();
 			if (streamId != null)
 			{
-				if (!await _streamService.AuthorizeAsync(streamId.Value, AclAction.ViewStream, User, new StreamPermissionsCache()))
-				{
-					return Forbid();
-				}
+				GlobalConfig globalConfig = _globalConfig.Value;
 
-				IStream? stream = await _streamService.GetStreamAsync(streamId.Value);
-				if (stream == null)
+				StreamConfig? streamConfig;
+				if (!globalConfig.TryGetStream(streamId.Value, out streamConfig))
 				{
 					return NotFound(streamId.Value);
+				}
+				if (!streamConfig.Authorize(AclAction.ViewStream, User))
+				{
+					return Forbid(AclAction.ViewStream, streamId.Value);
 				}
 
 				List<IIssueSpan> spans = await _issueCollection.FindSpansAsync(null, ids, streamId.Value, minChange, maxChange, resolved);
@@ -180,7 +185,6 @@ namespace Horde.Build.Issues
 							quarantinedBy = await _userCollection.GetCachedUserAsync(issue.QuarantinedByUserId.Value);
 						}
 
-
 						FindIssueResponse response = new FindIssueResponse(issue, owner, nominatedBy, resolvedBy, quarantinedBy, streamSeverity, spanResponses, openWorkflowIds.ToList());
 						responses.Add(PropertyFilter.Apply(response, filter));
 					}
@@ -247,7 +251,7 @@ namespace Horde.Build.Issues
 				{
 					return NotFound(jobId.Value);
 				}
-				if(!await _jobService.AuthorizeAsync(job, AclAction.ViewJob, User, null))
+				if(!_globalConfig.Value.Authorize(job, AclAction.ViewJob, User))
 				{
 					return Forbid(AclAction.ViewJob, jobId.Value);
 				}
@@ -256,16 +260,14 @@ namespace Horde.Build.Issues
 				issues = await _issueService.Collection.FindIssuesForJobAsync(job, graph, stepId?.ToSubResourceId(), batchId?.ToSubResourceId(), labelIdx, ownerIdValue, resolved, promoted, index, count);
 			}
 
-			StreamPermissionsCache permissionsCache = new StreamPermissionsCache();
-
 			List<object> responses = new List<object>();
 			foreach (IIssue issue in issues)
 			{
 				IIssueDetails details = await _issueService.GetIssueDetailsAsync(issue);
-				if (await AuthorizeIssue(details, permissionsCache))
+				if (AuthorizeIssue(details))
 				{
-					bool bShowDesktopAlerts = _issueService.ShowDesktopAlertsForIssue(issue, details.Spans);
-					GetIssueResponse response = await CreateIssueResponseAsync(details, bShowDesktopAlerts);
+					bool showDesktopAlerts = _issueService.ShowDesktopAlertsForIssue(issue, details.Spans);
+					GetIssueResponse response = CreateIssueResponse(details, showDesktopAlerts);
 					responses.Add(PropertyFilter.Apply(response, filter));
 				}
 			}
@@ -288,13 +290,13 @@ namespace Horde.Build.Issues
 			{
 				return NotFound();
 			}
-			if (!await AuthorizeIssue(details, null))
+			if (!AuthorizeIssue(details))
 			{
 				return Forbid();
 			}
 
-			bool bShowDesktopAlerts = _issueService.ShowDesktopAlertsForIssue(details.Issue, details.Spans);
-			return PropertyFilter.Apply(await CreateIssueResponseAsync(details, bShowDesktopAlerts), filter);
+			bool showDesktopAlerts = _issueService.ShowDesktopAlertsForIssue(details.Issue, details.Spans);
+			return PropertyFilter.Apply(CreateIssueResponse(details, showDesktopAlerts), filter);
 		}
 
 		/// <summary>
@@ -317,51 +319,24 @@ namespace Horde.Build.Issues
 		}
 
 		/// <summary>
-		/// Hook to allow a Perforce trigger to mark an issue as fixed, via a tag in the changelist description.
-		/// </summary>
-		/// <param name="issueId">Id of the agent to get information about</param>
-		/// <param name="request">Request body</param>
-		/// <returns>Information about the requested agent</returns>
-		[HttpPost]
-		[Route("/api/v1/issues/{issueId}/p4fix")]
-		public async Task<ActionResult> MarkIssueAsFixedViaPerforceAsync(int issueId, [FromBody] MarkFixedViaPerforceRequest request)
-		{
-			if (!await _aclService.AuthorizeAsync(AclAction.IssueFixViaPerforce, User))
-			{
-				return Forbid();
-			}
-
-			IIssueDetails? issue = await _issueService.GetIssueDetailsAsync(issueId);
-			if (issue == null)
-			{
-				return NotFound();
-			}
-
-			IUser user = await _userCollection.FindOrAddUserByLoginAsync(request.UserName);
-			await _issueService.UpdateIssueAsync(issueId, fixChange: request.FixChange, resolvedById: user.Id);
-
-			return Ok();
-		}
-
-		/// <summary>
 		/// Create an issue response object
 		/// </summary>
 		/// <param name="details"></param>
 		/// <param name="showDesktopAlerts"></param>
 		/// <returns></returns>
-		async Task<GetIssueResponse> CreateIssueResponseAsync(IIssueDetails details, bool showDesktopAlerts)
+		GetIssueResponse CreateIssueResponse(IIssueDetails details, bool showDesktopAlerts)
 		{
 			List<GetIssueAffectedStreamResponse> affectedStreams = new List<GetIssueAffectedStreamResponse>();
 			foreach (IGrouping<StreamId, IIssueSpan> streamSpans in details.Spans.GroupBy(x => x.StreamId))
 			{
 				try
 				{
-					IStream? stream = await _streamService.GetCachedStream(streamSpans.Key);
-					affectedStreams.Add(new GetIssueAffectedStreamResponse(details, stream, streamSpans));
+					_globalConfig.Value.TryGetStream(streamSpans.Key, out StreamConfig? streamConfig);
+					affectedStreams.Add(new GetIssueAffectedStreamResponse(details, streamConfig, streamSpans));
 				}
-				catch 
+				catch (Exception ex)
 				{
-					_logger.LogError("Unable to get {StreamId} for span key", streamSpans.Key);
+					_logger.LogError(ex, "Unable to get {StreamId} for span key on issue {IssueId}", streamSpans.Key, details.Issue.Id);
 				}
 			}
 			return new GetIssueResponse(details, affectedStreams, showDesktopAlerts);
@@ -383,9 +358,7 @@ namespace Horde.Build.Issues
 			{
 				return NotFound();
 			}
-
-			StreamPermissionsCache cache = new StreamPermissionsCache();
-			if (!await AuthorizeIssue(issue, cache))
+			if (!AuthorizeIssue(issue))
 			{
 				return Forbid();
 			}
@@ -393,15 +366,11 @@ namespace Horde.Build.Issues
 			List<object> responses = new List<object>();
 			foreach (IGrouping<StreamId, IIssueSpan> spanGroup in issue.Spans.GroupBy(x => x.StreamId))
 			{
-				if (await _streamService.AuthorizeAsync(spanGroup.Key, AclAction.ViewStream, User, cache))
+				if (_globalConfig.Value.TryGetStream(spanGroup.Key, out StreamConfig? streamConfig) && streamConfig.Authorize(AclAction.ViewStream, User))
 				{
-					IStream? stream = await _streamService.GetCachedStream(spanGroup.Key);
-					if (stream != null)
-					{
-						HashSet<ObjectId> spanIds = new HashSet<ObjectId>(spanGroup.Select(x => x.Id));
-						List<IIssueStep> steps = issue.Steps.Where(x => spanIds.Contains(x.SpanId)).ToList();
-						responses.Add(PropertyFilter.Apply(new GetIssueStreamResponse(stream, spanGroup.ToList(), steps), filter));
-					}
+					HashSet<ObjectId> spanIds = new HashSet<ObjectId>(spanGroup.Select(x => x.Id));
+					List<IIssueStep> steps = issue.Steps.Where(x => spanIds.Contains(x.SpanId)).ToList();
+					responses.Add(PropertyFilter.Apply(new GetIssueStreamResponse(spanGroup.Key, spanGroup.ToList(), steps), filter));
 				}
 			}
 			return responses;
@@ -417,27 +386,23 @@ namespace Horde.Build.Issues
 		[HttpGet]
 		[Route("/api/v1/issues/{issueId}/streams/{streamId}")]
 		[ProducesResponseType(typeof(List<GetIssueStreamResponse>), 200)]
-		public async Task<ActionResult<object>> GetIssueStreamAsync(int issueId, string streamId, [FromQuery] PropertyFilter? filter = null)
+		public async Task<ActionResult<object>> GetIssueStreamAsync(int issueId, StreamId streamId, [FromQuery] PropertyFilter? filter = null)
 		{
 			IIssueDetails? details = await _issueService.GetIssueDetailsAsync(issueId);
 			if (details == null)
 			{
 				return NotFound();
 			}
-
-			StreamId streamIdValue = new StreamId(streamId);
-			if (!await _streamService.AuthorizeAsync(streamIdValue, AclAction.ViewStream, User, null))
+			if (!_globalConfig.Value.TryGetStream(streamId, out StreamConfig? streamConfig))
 			{
-				return Forbid();
+				return NotFound(streamId);
+			}
+			if (!streamConfig.Authorize(AclAction.ViewStream, User))
+			{
+				return Forbid(AclAction.ViewStream, streamId);
 			}
 
-			IStream? stream = await _streamService.GetCachedStream(streamIdValue);
-			if (stream == null)
-			{
-				return NotFound();
-			}
-
-			List<IIssueSpan> spans = details.Spans.Where(x => x.StreamId == streamIdValue).ToList();
+			List<IIssueSpan> spans = details.Spans.Where(x => x.StreamId == streamId).ToList();
 			if(spans.Count == 0)
 			{
 				return NotFound();
@@ -446,7 +411,7 @@ namespace Horde.Build.Issues
 			HashSet<ObjectId> spanIds = new HashSet<ObjectId>(spans.Select(x => x.Id));
 			List<IIssueStep> steps = details.Steps.Where(x => spanIds.Contains(x.SpanId)).ToList();
 
-			return PropertyFilter.Apply(new GetIssueStreamResponse(stream, spans, steps), filter);
+			return PropertyFilter.Apply(new GetIssueStreamResponse(streamId, spans, steps), filter);
 		}
 
 		/// <summary>
@@ -461,11 +426,22 @@ namespace Horde.Build.Issues
 		/// <param name="index">Index of the first event</param>
 		/// <param name="count">Number of events to return</param>
 		/// <param name="filter">Filter for the properties to return</param>
+		/// <param name="cancellationToken">Cancellation token for the request</param>
 		/// <returns>List of matching agents</returns>
 		[HttpGet]
 		[Route("/api/v1/issues/{issueId}/events")]
 		[ProducesResponseType(typeof(List<GetLogEventResponse>), 200)]
-		public async Task<ActionResult<List<object>>> GetIssueEventsAsync(int issueId, [FromQuery] JobId? jobId = null, [FromQuery] string? batchId = null, [FromQuery] string? stepId = null, [FromQuery(Name = "label")] int? labelIdx = null, [FromQuery] string[]? logIds = null, [FromQuery] int index = 0, [FromQuery] int count = 10, [FromQuery] PropertyFilter? filter = null)
+		public async Task<ActionResult<List<object>>> GetIssueEventsAsync(
+			int issueId,
+			[FromQuery] JobId? jobId = null,
+			[FromQuery] string? batchId = null,
+			[FromQuery] string? stepId = null,
+			[FromQuery(Name = "label")] int? labelIdx = null,
+			[FromQuery] string[]? logIds = null,
+			[FromQuery] int index = 0, 
+			[FromQuery] int count = 10,
+			[FromQuery] PropertyFilter? filter = null,
+			CancellationToken cancellationToken = default)
 		{
 			HashSet<LogId> logIdValues = new HashSet<LogId>();
 			if(jobId != null)
@@ -521,7 +497,7 @@ namespace Horde.Build.Issues
 			}
 
 			List<IIssueSpan> spans = await _issueCollection.FindSpansAsync(issueId);
-			List<ILogEvent> events = await _logFileService.FindEventsForSpansAsync(spans.Select(x => x.Id), logIdValues.ToArray(), index, count);
+			List<ILogEvent> events = await _logFileService.FindEventsForSpansAsync(spans.Select(x => x.Id), logIdValues.ToArray(), index, count, cancellationToken);
 
 			JobPermissionsCache permissionsCache = new JobPermissionsCache();
 			Dictionary<LogId, ILogFile?> logFiles = new Dictionary<LogId, ILogFile?>();
@@ -532,12 +508,12 @@ namespace Horde.Build.Issues
 				ILogFile? logFile;
 				if (!logFiles.TryGetValue(logEvent.LogId, out logFile))
 				{
-					logFile = await _logFileService.GetLogFileAsync(logEvent.LogId);
+					logFile = await _logFileService.GetLogFileAsync(logEvent.LogId, cancellationToken);
 					logFiles[logEvent.LogId] = logFile;
 				}
-				if (logFile != null && await _jobService.AuthorizeAsync(logFile.JobId, AclAction.ViewLog, User, permissionsCache))
+				if (logFile != null && await _jobService.AuthorizeAsync(logFile.JobId, AclAction.ViewLog, User, _globalConfig.Value))
 				{
-					ILogEventData data = await _logFileService.GetEventDataAsync(logFile, logEvent.LineIndex, logEvent.LineCount);
+					ILogEventData data = await _logFileService.GetEventDataAsync(logFile, logEvent.LineIndex, logEvent.LineCount, cancellationToken);
 					GetLogEventResponse response = new GetLogEventResponse(logEvent, data, issueId);
 					responses.Add(PropertyFilter.Apply(response, filter));
 				}
@@ -549,13 +525,12 @@ namespace Horde.Build.Issues
 		/// Authorize the current user to see an issue
 		/// </summary>
 		/// <param name="issue">The issue to authorize</param>
-		/// <param name="permissionsCache">Cache of permissions</param>
 		/// <returns>True if the user is authorized to see the issue</returns>
-		private async Task<bool> AuthorizeIssue(IIssueDetails issue, StreamPermissionsCache? permissionsCache)
+		private bool AuthorizeIssue(IIssueDetails issue)
 		{
 			foreach (StreamId streamId in issue.Spans.Select(x => x.StreamId).Distinct())
 			{
-				if (await _streamService.AuthorizeAsync(streamId, AclAction.ViewStream, User, permissionsCache))
+				if (_globalConfig.Value.TryGetStream(streamId, out StreamConfig? streamConfig) && streamConfig.Authorize(AclAction.ViewStream, User))
 				{
 					return true;
 				}
@@ -607,6 +582,12 @@ namespace Horde.Build.Issues
 				newQuarantinedById = request.QuarantinedById.Length > 0 ? new UserId(request.QuarantinedById) : UserId.Empty;
 			}
 
+			UserId? newForceClosedById = null;
+			if (request.ForceClosedById != null)
+			{
+				newForceClosedById = request.ForceClosedById.Length > 0 ? new UserId(request.ForceClosedById) : UserId.Empty;
+			}
+
 
 			List<ObjectId>? addSpans = null;
 			if (request.AddSpans != null && request.AddSpans.Count > 0)
@@ -620,12 +601,9 @@ namespace Horde.Build.Issues
 				removeSpans = request.RemoveSpans.ConvertAll(x => ObjectId.Parse(x));
 			}
 
-			using (IDisposable scope = _issueCollection.GetLogger(issueId).BeginScope("User {UserId}", User.GetUserId() ?? UserId.Empty))
+			if (!await _issueService.UpdateIssueAsync(issueId, request.Summary, request.Description, request.Promoted, newOwnerId, newNominatedById, request.Acknowledged, newDeclinedById, request.FixChange, newResolvedById, addSpans, removeSpans, request.ExternalIssueKey, newQuarantinedById, newForceClosedById, initiatedById: User.GetUserId()))
 			{
-				if (!await _issueService.UpdateIssueAsync(issueId, request.Summary, request.Description, request.Promoted, newOwnerId, newNominatedById, request.Acknowledged, newDeclinedById, request.FixChange, newResolvedById, addSpans, removeSpans, request.ExternalIssueKey, newQuarantinedById))
-				{
-					return NotFound();
-				}
+				return NotFound();
 			}
 			return Ok();
 		}
@@ -638,19 +616,19 @@ namespace Horde.Build.Issues
 		[HttpGet]
 		[Authorize]
 		[Route("/api/v1/issues/external")]
-		public async Task<ActionResult<List<GetExternalIssueResponse>>> GetExternalIssuesAsync([FromQuery] string streamId, [FromQuery] string[] keys)
+		public async Task<ActionResult<List<GetExternalIssueResponse>>> GetExternalIssuesAsync([FromQuery] StreamId streamId, [FromQuery] string[] keys)
 		{
 			if (_externalIssueService == null)
 			{
 				return NotFound();
 			}
-
-			StreamId streamIdValue = new StreamId(streamId);
-			StreamPermissionsCache cache = new StreamPermissionsCache();
-
-			if (!await _streamService.AuthorizeAsync(streamIdValue, AclAction.ViewStream, User, cache))
+			if (!_globalConfig.Value.TryGetStream(streamId, out StreamConfig? streamConfig))
 			{
-				return Forbid();
+				return NotFound(streamId);
+			}
+			if (!streamConfig.Authorize(AclAction.ViewStream, User))
+			{
+				return Forbid(AclAction.ViewStream, streamId);
 			}
 
 			List<GetExternalIssueResponse> response = new List<GetExternalIssueResponse>();
@@ -682,11 +660,9 @@ namespace Horde.Build.Issues
 			}
 
 			StreamId streamIdValue = new StreamId(issueRequest.StreamId);
-			StreamPermissionsCache cache = new StreamPermissionsCache();
-
-			if (!await _streamService.AuthorizeAsync(streamIdValue, AclAction.ViewStream, User, cache))
+			if (!_globalConfig.Value.Authorize(AclAction.ViewStream, User))
 			{
-				return Forbid();
+				return Forbid(AclAction.ViewStream, streamIdValue);
 			}
 
 			IUser? user = await _userCollection.GetUserAsync(User);
@@ -722,16 +698,16 @@ namespace Horde.Build.Issues
 			}
 
 			StreamId streamIdValue = new StreamId(streamId);
-			StreamPermissionsCache cache = new StreamPermissionsCache();
-
-			if (!await _streamService.AuthorizeAsync(streamIdValue, AclAction.ViewStream, User, cache))
+			if (!_globalConfig.Value.TryGetStream(streamIdValue, out StreamConfig? streamConfig))
 			{
-				return Forbid();
+				return NotFound(streamIdValue);
+			}
+			if (!streamConfig.Authorize(AclAction.ViewStream, User))
+			{
+				return Forbid(AclAction.ViewStream, streamIdValue);
 			}
 
-			IStream? stream = await _streamService.GetStreamAsync(streamIdValue);
-
-			List<IExternalIssueProject> projects = await _externalIssueService.GetProjects(stream!);
+			List<IExternalIssueProject> projects = await _externalIssueService.GetProjects(streamConfig);
 			List<GetExternalIssueProjectResponse> response = new List<GetExternalIssueProjectResponse>();
 
 			projects.ForEach(project =>
@@ -741,7 +717,5 @@ namespace Horde.Build.Issues
 
 			return response;
 		}
-
-
 	}
 }

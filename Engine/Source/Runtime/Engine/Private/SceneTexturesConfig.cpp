@@ -1,11 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SceneTexturesConfig.h"
-#include "RenderGraphResources.h"
 #include "ShaderCompiler.h"
-#include "SceneInterface.h"
 #include "Engine/Engine.h"
-#include "StereoRendering.h"
+#include "SceneInterface.h"
+#include "ShadowRendering.h" // IWYU pragma: keep
 #include "StereoRenderTargetManager.h"
 
 FSceneTexturesConfig FSceneTexturesConfig::GlobalInstance;

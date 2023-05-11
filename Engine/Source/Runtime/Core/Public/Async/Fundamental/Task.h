@@ -164,12 +164,6 @@ namespace LowLevelTasks
 			Other.Value = nullptr;
 		}
 
-		UE_DEPRECATED(5.1, "TDeleter::GetValue() has been deprecated. Please update to TDeleter::operator->().")
-		inline Type* GetValue() const
-		{
-			return Value;
-		}
-
 		inline Type* operator->() const
 		{
 			return Value;
@@ -348,6 +342,15 @@ namespace LowLevelTasks
 			return EnumHasAnyFlags(State, ETaskState::ExpeditedFlag | ETaskState::CompletedFlag);
 		}
 
+	private:
+		//Scheduler internal interface to speed things up
+		inline bool WasCanceledOrIsExpediting() const
+		{
+			ETaskState State = PackedData.load(std::memory_order_relaxed).GetState();
+			return EnumHasAnyFlags(State, ETaskState::CanceledFlag | ETaskState::RunningFlag);
+		}
+
+	public:
 		/*
 		* means the task is ready to be launched but might already been canceled 
 		*/
@@ -401,14 +404,6 @@ namespace LowLevelTasks
 
 		template<typename TRunnable>
 		inline void Init(const TCHAR* InDebugName, TRunnable&& InRunnable, ETaskFlags Flags = ETaskFlags::DefaultFlags);
-
-		template<typename TRunnable, typename TContinuation>
-		UE_DEPRECATED(5.1, "FTask::Init() has been deprecated. Please update to using a TDeleter.")
-		inline void Init(const TCHAR* InDebugName, ETaskPriority InPriority, TRunnable&& InRunnable, TContinuation&& InContinuation, ETaskFlags Flags = ETaskFlags::DefaultFlags);
-
-		template<typename TRunnable, typename TContinuation>
-		UE_DEPRECATED(5.1, "FTask::Init() has been deprecated. Please update to using a TDeleter.")
-		inline void Init(const TCHAR* InDebugName, TRunnable&& InRunnable, TContinuation&& InContinuation, ETaskFlags Flags = ETaskFlags::DefaultFlags);
 
 		inline const TCHAR* GetDebugName() const;
 		inline ETaskPriority GetPriority() const;
@@ -483,7 +478,7 @@ namespace LowLevelTasks
 		checkSlow(!Runnable.IsSet());
 		
 		//if the Runnable returns an FTask* than enable symetric switching
-		if constexpr (TIsSame<FTask*, decltype(UE::Core::Private::IsInvocable::DeclVal<TRunnable>()())>::Value)
+		if constexpr (std::is_same_v<FTask*, decltype(UE::Core::Private::IsInvocable::DeclVal<TRunnable>()())>)
 		{
 			Runnable = [LocalRunnable = Forward<TRunnable>(InRunnable)](const bool bNotCanceled) -> FTask*
 			{
@@ -508,30 +503,6 @@ namespace LowLevelTasks
 		}
 		InheritParentData(InPriority);
 		PackedData.store(FPackedData(InDebugName, InPriority, ETaskState::Ready, Flags), std::memory_order_release);
-	}
-
-	template<typename TRunnable, typename TContinuation>
-	inline void FTask::Init(const TCHAR* InDebugName, ETaskPriority InPriority, TRunnable&& InRunnable, TContinuation&& InContinuation, ETaskFlags Flags)
-	{
-		checkf(IsCompleted(), TEXT("State: %d"), PackedData.load(std::memory_order_relaxed).GetState());
-		checkSlow(!Runnable.IsSet());
-		Runnable = [LocalRunnable = Forward<TRunnable>(InRunnable), LocalContinuation = Forward<TContinuation>(InContinuation)](const bool NotCanceled)
-		{
-			if (NotCanceled)
-			{
-				LocalRunnable();
-			}
-			LocalContinuation();
-			return nullptr;
-		};
-		InheritParentData(InPriority);
-		PackedData.store(FPackedData(InDebugName, InPriority, ETaskState::Ready, Flags), std::memory_order_release);
-	}
-
-	template<typename TRunnable, typename TContinuation>
-	inline void FTask::Init(const TCHAR* InDebugName, TRunnable&& InRunnable, TContinuation&& InContinuation, ETaskFlags Flags)
-	{
-		Init(InDebugName, ETaskPriority::Default, Forward<TRunnable>(InRunnable), Forward<TContinuation>(InContinuation), Flags);
 	}
 
 	template<typename TRunnable>
@@ -710,6 +681,6 @@ namespace LowLevelTasks
 	{
 		FEventRef SleepEvent;
 		std::atomic<ESleepState> SleepState { ESleepState::Running };
-		FSleepEvent* Next = nullptr;
+		std::atomic<FSleepEvent*> Next { nullptr };
 	};
 }

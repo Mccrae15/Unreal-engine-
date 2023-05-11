@@ -1,8 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "StateTree.h"
+#include "Misc/PackageName.h"
 #include "StateTreeLinker.h"
-#include "StateTreeNodeBase.h"
 #include "StateTreeTaskBase.h"
 #include "StateTreeEvaluatorBase.h"
 #include "AssetRegistry/AssetData.h"
@@ -79,6 +79,10 @@ void UStateTree::ResetCompiled()
 	EvaluatorsBegin = 0;
 	EvaluatorsNum = 0;
 
+	GlobalTasksBegin = 0;
+	GlobalTasksNum = 0;
+	bHasGlobalTransitionTasks = false;
+	
 	ResetLinked();
 }
 
@@ -121,9 +125,7 @@ void UStateTree::AddReferencedObjects(UObject* InThis, FReferenceCollector& Coll
 	{
 		if (InstanceData.IsValid())
 		{
-			uint8* StructMemory = (uint8*)InstanceData.Get();
-			const UScriptStruct* ScriptStruct = FStateTreeInstanceData::StaticStruct();
-			Collector.AddReferencedObjects(ScriptStruct, StructMemory);
+			Collector.AddPropertyReferencesWithStructARO(FStateTreeInstanceData::StaticStruct(), InstanceData.Get(), StateTree);
 		}
 	}
 }
@@ -160,6 +162,22 @@ void UStateTree::PostLoad()
 		UE_LOG(LogStateTree, Error, TEXT("%s failed to link. Asset will not be usable at runtime."), *GetFullName());	
 	}
 }
+
+#if WITH_EDITORONLY_DATA
+void UStateTree::DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass)
+{
+	Super::DeclareConstructClasses(OutConstructClasses, SpecificSubclass);
+	TArray<UClass*> SchemaClasses;
+	GetDerivedClasses(UStateTreeSchema::StaticClass(), SchemaClasses);
+	for (UClass* SchemaClass : SchemaClasses)
+	{
+		if (!SchemaClass->HasAnyClassFlags(CLASS_Abstract | CLASS_Transient))
+		{
+			OutConstructClasses.Add(FTopLevelAssetPath(SchemaClass));
+		}
+	}
+}
+#endif
 
 void UStateTree::Serialize(FStructuredArchiveRecord Record)
 {
@@ -202,10 +220,34 @@ bool UStateTree::Link()
 			UE_LOG(LogStateTree, Error, TEXT("%s: StartTree does not have instance data. Please recompile the StateTree asset."), *GetName());
 			return false;
 		}
-		
+
 		// Update property bag structs before resolving binding.
 		const TArrayView<FStateTreeBindableStructDesc> SourceStructs = PropertyBindings.GetSourceStructs();
 		const TArrayView<FStateTreePropCopyBatch> CopyBatches = PropertyBindings.GetCopyBatches();
+
+		
+		// Reconcile out of date classes.
+		for (FStateTreeBindableStructDesc& SourceStruct : SourceStructs)
+		{
+			if (const UClass* SourceClass = Cast<UClass>(SourceStruct.Struct))
+			{
+				if (SourceClass->HasAnyClassFlags(CLASS_NewerVersionExists))
+				{
+					SourceStruct.Struct = SourceClass->GetAuthoritativeClass();
+				}
+			}
+		}
+		for (FStateTreePropCopyBatch& CopyBatch : CopyBatches)
+		{
+			if (const UClass* TargetClass = Cast<UClass>(CopyBatch.TargetStruct.Struct))
+			{
+				if (TargetClass->HasAnyClassFlags(CLASS_NewerVersionExists))
+				{
+					CopyBatch.TargetStruct.Struct = TargetClass->GetAuthoritativeClass();
+				}
+			}
+		}
+
 
 		if (ParametersDataViewIndex.IsValid() && SourceStructs.IsValidIndex(ParametersDataViewIndex.Get()))
 		{
@@ -273,7 +315,7 @@ bool UStateTree::Link()
 	
 	for (int32 Index = 0; Index < Nodes.Num(); Index++)
 	{
-		const FStructView Node = Nodes[Index];
+		FStructView Node = Nodes[Index];
 		if (FStateTreeNodeBase* NodePtr = Node.GetMutablePtr<FStateTreeNodeBase>())
 		{
 			Linker.SetCurrentInstanceDataType(NodePtr->GetInstanceDataType(), NodePtr->DataViewIndex.Get());
@@ -329,6 +371,7 @@ TArray<FStateTreeMemoryUsage> UStateTree::CalculateEstimatedMemoryUsage() const
 	const int32 TreeMemUsageIndex = MemoryUsages.Emplace(TEXT("State Tree Max"));
 	const int32 InstanceMemUsageIndex = MemoryUsages.Emplace(TEXT("Instance Overhead"));
 	const int32 EvalMemUsageIndex = MemoryUsages.Emplace(TEXT("Evaluators"));
+	const int32 GlobalTaskMemUsageIndex = MemoryUsages.Emplace(TEXT("GlobalTask"));
 	const int32 SharedMemUsageIndex = MemoryUsages.Emplace(TEXT("Shared Data"));
 
 	auto GetRootStateHandle = [this](const FStateTreeStateHandle InState) -> FStateTreeStateHandle
@@ -391,7 +434,7 @@ TArray<FStateTreeMemoryUsage> UStateTree::CalculateEstimatedMemoryUsage() const
 			else
 			{
 				MemUsage.NodeCount++;
-				MemUsage.AddUsage(DefaultInstanceData.GetMutableObject(Task.InstanceIndex.Get()));
+				MemUsage.AddUsage(DefaultInstanceData.GetObject(Task.InstanceIndex.Get()));
 			}
 		}
 	}
@@ -441,13 +484,29 @@ TArray<FStateTreeMemoryUsage> UStateTree::CalculateEstimatedMemoryUsage() const
 		const FStateTreeEvaluatorBase& Eval = Nodes[EvalIndex].Get<FStateTreeEvaluatorBase>();
 		if (Eval.bInstanceIsObject == false)
 		{
-			EvalMemUsage.AddUsage(DefaultInstanceData.GetMutableStruct(Eval.InstanceIndex.Get()));
+			EvalMemUsage.AddUsage(DefaultInstanceData.GetStruct(Eval.InstanceIndex.Get()));
 		}
 		else
 		{
-			EvalMemUsage.AddUsage(DefaultInstanceData.GetMutableObject(Eval.InstanceIndex.Get()));
+			EvalMemUsage.AddUsage(DefaultInstanceData.GetObject(Eval.InstanceIndex.Get()));
 		}
 		EvalMemUsage.NodeCount++;
+	}
+
+	// Global Tasks
+	FStateTreeMemoryUsage& GlobalTaskMemUsage = MemoryUsages[GlobalTaskMemUsageIndex];
+	for (int32 TaskIndex = GlobalTasksBegin; TaskIndex < (GlobalTasksBegin + GlobalTasksNum); TaskIndex++)
+	{
+		const FStateTreeTaskBase& Task = Nodes[TaskIndex].Get<FStateTreeTaskBase>();
+		if (Task.bInstanceIsObject == false)
+		{
+			GlobalTaskMemUsage.AddUsage(DefaultInstanceData.GetStruct(Task.InstanceIndex.Get()));
+		}
+		else
+		{
+			GlobalTaskMemUsage.AddUsage(DefaultInstanceData.GetObject(Task.InstanceIndex.Get()));
+		}
+		GlobalTaskMemUsage.NodeCount++;
 	}
 
 	// Estimate highest combined usage.
@@ -460,12 +519,14 @@ TArray<FStateTreeMemoryUsage> UStateTree::CalculateEstimatedMemoryUsage() const
 	TreeMemUsage.EstimatedMemoryUsage += EvalMemUsage.EstimatedMemoryUsage;
 	TreeMemUsage.NodeCount += EvalMemUsage.NodeCount;
 
+	TreeMemUsage.EstimatedMemoryUsage += GlobalTaskMemUsage.EstimatedMemoryUsage;
+	TreeMemUsage.NodeCount += GlobalTaskMemUsage.NodeCount;
+
 	FStateTreeMemoryUsage& InstanceMemUsage = MemoryUsages[InstanceMemUsageIndex];
 	// FStateTreeInstanceData overhead.
 	InstanceMemUsage.EstimatedMemoryUsage += sizeof(FStateTreeInstanceData);
-	// FInstancedStructArray overhead.
-	constexpr int32 ItemSize = 16; // sizeof(FInstancedStructArray::FItem);
-	InstanceMemUsage.EstimatedMemoryUsage += TreeMemUsage.NodeCount * ItemSize;
+	// FInstancedStructContainer overhead.
+	InstanceMemUsage.EstimatedMemoryUsage += TreeMemUsage.NodeCount * FInstancedStructContainer::OverheadPerItem;
 
 	TreeMemUsage.EstimatedMemoryUsage += InstanceMemUsage.EstimatedMemoryUsage;
 	

@@ -2,19 +2,45 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Toolkits/BaseToolkit.h"
-#include "ModelingToolsEditorMode.h"
-#include "Widgets/Input/STextComboBox.h"
-#include "Widgets/Input/SEditableTextBox.h"
 #include "StatusBarSubsystem.h"
+#include "UObject/GCObject.h"
 
+#include "ModelingToolsEditorModeToolkit.generated.h"
 
+class IAssetViewport;
+class SEditableTextBox;
+class STextComboBox;
+namespace ETextCommit { enum Type : int; }
+
+#define LOCTEXT_NAMESPACE "ModelingToolsEditorModeToolkit"
+
+class STransformGizmoNumericalUIOverlay;
 class IDetailsView;
 class SButton;
 class STextBlock;
+class UInteractiveToolsPresetCollectionAsset;
 
-class FModelingToolsEditorModeToolkit : public FModeToolkit
+UCLASS()
+class UPresetSettingsProperties : public UObject
+{
+	GENERATED_BODY()
+public:
+
+	UPROPERTY(EditAnywhere, Category = "Presets", meta=(MetaClass = "InteractiveToolsPresetCollectionAsset"))
+	TArray< FSoftObjectPath > ActivePresetCollectionsPaths;
+};
+
+struct FToolPresetOption
+{
+	FString PresetLabel;
+	FString PresetTooltip;
+	FSlateIcon PresetIcon;
+	FString PresetName;
+	FSoftObjectPath PresetCollection;
+};
+
+class FModelingToolsEditorModeToolkit : public FModeToolkit, public FGCObject
 {
 public:
 
@@ -68,6 +94,18 @@ public:
 
 	virtual void ForceToolPaletteRebuild();
 
+	// The mode is expected to call this after setting up the gizmo context object so that any subsequently
+	// created gizmos are bound to the numerical UI.
+	void BindGizmoNumericalUI();
+
+	// This is exposed only for the convenience of being able to create the numerical UI submenu
+	// in a non-member function in ModelingModeToolkit_Toolbars.cpp
+	TSharedPtr<STransformGizmoNumericalUIOverlay> GetGizmoNumericalUIOverlayWidget() { return GizmoNumericalUIOverlayWidget; }
+
+	/** GCObject interface */
+	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override;
+
 private:
 	const static TArray<FName> PaletteNames_Standard;
 
@@ -80,7 +118,16 @@ private:
 	void UpdateActiveToolProperties();
 	void InvalidateCachedDetailPanelState(UObject* ChangedObject);
 
-	TSharedPtr<SWidget> ViewportOverlayWidget;
+	TSharedPtr<SWidget> ToolShutdownViewportOverlayWidget;
+	void MakeToolShutdownOverlayWidget();
+
+	TSharedPtr<SWidget> SelectionPaletteOverlayWidget;
+	void MakeSelectionPaletteOverlayWidget();
+
+	void MakeGizmoNumericalUIOverlayWidget();
+	TSharedPtr<STransformGizmoNumericalUIOverlay> GizmoNumericalUIOverlayWidget;
+
+	TSharedRef<SWidget> MakeMenu_ModelingModeConfigSettings();
 
 	TSharedPtr<STextBlock> ModeWarningArea;
 	TSharedPtr<STextBlock> ModeHeaderArea;
@@ -107,15 +154,47 @@ private:
 	void OnShowAssetSettings();
 	void SelectNewAssetPath() const;
 
+	// Presets
+	TObjectPtr<UPresetSettingsProperties> PresetSettings;
+	TSharedPtr<SWidget> MakePresetPanel();
+	FSoftObjectPath CurrentPreset;
+	FString NewPresetLabel;
+	FString NewPresetTooltip;
+	FSlateIcon NewPresetIcon;
+
+	TArray<TSharedPtr<FToolPresetOption>> AvailablePresetsForTool;
+	TSharedPtr<SEditableComboBox<TSharedPtr<FString>>> PresetComboBox;
+
+	TSharedRef<SWidget> GetPresetSettingsButtonContent();
+	TSharedRef<SWidget> GetPresetCreateButtonContent();
+
+	void CreateNewPresetInCollection(const FString& PresetLabel, FSoftObjectPath CollectionPath, const FString& ToolTip, FSlateIcon Icon);
+	void LoadPresetFromCollection(const FString& PresetName, FSoftObjectPath CollectionPath);
+
+	FString GetCurrentPresetPath() { return CurrentPreset.GetAssetPathString(); }
+	void HandlePresetAssetChanged(const FAssetData& InAssetData);
+	bool HandleFilterPresetAsset(const FAssetData& InAssetData);
+	void SaveActivePreset();
+	
+	void RebuildPresetListForTool(bool bSettingsOpened);
+	TSharedRef<SWidget> MakePresetComboWidget(TSharedPtr<FString> InItem);
+	bool IsPresetEnabled() const;
+	void ClearPresetComboList();
+
+
 	TArray<TSharedPtr<FString>> AssetLODModes;
 	TSharedPtr<STextBlock> AssetLODModeLabel;
 	TSharedPtr<STextComboBox> AssetLODMode;
 
 	bool bFirstInitializeAfterModeSetup = true;
-
-
-	bool bShowActiveSelectionActions = false;
-
-
-	// custom accept/cancel/complete handlers
+	bool bShowActiveSelectionActions = true;
 };
+
+#undef LOCTEXT_NAMESPACE
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "ModelingToolsEditorMode.h"
+#include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Input/STextComboBox.h"
+#endif

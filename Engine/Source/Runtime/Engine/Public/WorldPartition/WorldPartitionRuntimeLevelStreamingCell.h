@@ -1,7 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "WorldPartition/WorldPartitionRuntimeSpatialHashCell.h"
+#include "WorldPartition/WorldPartitionRuntimeCell.h"
+#include "WorldPartition/WorldPartitionRuntimeCellData.h"
 #include "ProfilingDebugging/ProfilingHelpers.h"
 #if WITH_EDITOR
 #include "WorldPartition/WorldPartitionLevelHelper.h"
@@ -9,7 +10,7 @@
 #include "WorldPartitionRuntimeLevelStreamingCell.generated.h"
 
 UCLASS()
-class UWorldPartitionRuntimeLevelStreamingCell : public UWorldPartitionRuntimeSpatialHashCell
+class ENGINE_API UWorldPartitionRuntimeLevelStreamingCell : public UWorldPartitionRuntimeCell
 {
 	GENERATED_UCLASS_BODY()
 
@@ -29,10 +30,15 @@ class UWorldPartitionRuntimeLevelStreamingCell : public UWorldPartitionRuntimeSp
 	virtual bool IsLoading() const override;
 	//~End UWorldPartitionRuntimeCell Interface
 
+	//~Begin IWorldPartitionCell Interface
+	FName GetLevelPackageName() const override;
+	//~End IWorldPartitionCell Interface
+
 	virtual void SetStreamingPriority(int32 InStreamingPriority) const override;
 	class UWorldPartitionLevelStreamingDynamic* GetLevelStreaming() const;
 
 	bool HasActors() const;
+	virtual TArray<FName> GetActors() const override;
 
 	void CreateAndSetLevelStreaming(const FString& InPackageName);
 	class UWorldPartitionLevelStreamingDynamic* CreateLevelStreaming(const FString& InPackageName = FString()) const;
@@ -49,6 +55,10 @@ class UWorldPartitionRuntimeLevelStreamingCell : public UWorldPartitionRuntimeSp
 	virtual bool PopulateGeneratedPackageForCook(UPackage* InPackage, TArray<UPackage*>& OutModifiedPackages) override;
 	virtual FString GetPackageNameToCreate() const override;
 	//~End UWorldPartitionRuntimeCell Interface
+
+	//~Begin IWorldPartitionCell Interface
+	virtual TSet<FName> GetActorPackageNames() const override;
+	//~End IWorldPartitionCell Interface
 
 	const TArray<FWorldPartitionRuntimeCellObjectMapping>& GetPackages() const { return Packages; }
 #endif

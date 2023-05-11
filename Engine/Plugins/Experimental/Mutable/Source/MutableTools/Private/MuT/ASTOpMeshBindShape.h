@@ -4,7 +4,6 @@
 
 #include "Containers/Array.h"
 #include "HAL/Platform.h"
-#include "MuR/MemoryPrivate.h"
 #include "MuR/Operations.h"
 #include "MuR/Ptr.h"
 #include "MuT/AST.h"
@@ -12,7 +11,7 @@
 
 namespace mu
 {
-struct PROGRAM;
+struct FProgram;
 
 
 	//---------------------------------------------------------------------------------------------
@@ -25,19 +24,15 @@ struct PROGRAM;
 		ASTChild Mesh;
 		ASTChild Shape;
 
-		TArray<string> m_bonesToDeform;
-		TArray<string> m_physicsToDeform;
+		TArray<string> BonesToDeform;
+		TArray<string> PhysicsToDeform;
 
-		bool m_reshapeSkeleton = false;
-		bool m_discardInvalidBindings = true;
-		bool m_enableRigidParts = false;
-		bool m_deformAllBones = false;
-		bool m_deformAllPhysics = false;
-		bool m_reshapePhysicsVolumes = false;
-		bool m_reshapeVertices = true;
-
-		uint32 m_bindingMethod = 0;
-
+		uint32 BindingMethod = 0;
+		
+		uint32 bReshapeSkeleton	      : 1;
+		uint32 bEnableRigidParts      : 1;
+		uint32 bReshapePhysicsVolumes : 1;
+		uint32 bReshapeVertices       : 1;
 
 	public:
 
@@ -50,8 +45,8 @@ struct PROGRAM;
 		bool IsEqual(const ASTOp& otherUntyped) const override;
 		Ptr<ASTOp> Clone(MapChildFuncRef mapChild) const override;
 		void ForEachChild(const TFunctionRef<void(ASTChild&)>) override;
-		void Link(PROGRAM& program, const FLinkerOptions* Options) override;
-		Ptr<ASTOp> OptimiseSink(const MODEL_OPTIMIZATION_OPTIONS&, OPTIMIZE_SINK_CONTEXT&) const override;
+		void Link(FProgram& program, const FLinkerOptions* Options) override;
+		Ptr<ASTOp> OptimiseSink(const FModelOptimizationOptions&, FOptimizeSinkContext&) const override;
 
 	};
 

@@ -2,16 +2,11 @@
 
 #pragma once
 
-#include "Containers/UnrealString.h"
-#include "EdGraph/EdGraphNode.h"
-#include "Internationalization/Text.h"
-#include "Math/Color.h"
-#include "MuCO/CustomizableObjectUIData.h"
 #include "MuCOE/Nodes/CustomizableObjectNode.h"
-#include "UObject/ObjectPtr.h"
-#include "UObject/UObjectGlobals.h"
 
 #include "CustomizableObjectNodeTextureParameter.generated.h"
+
+namespace ENodeTitleType { enum Type : int; }
 
 class UCustomizableObjectNodeRemapPins;
 class UObject;
@@ -32,6 +27,14 @@ public:
 
 	UPROPERTY(EditAnywhere, Category = UI, meta = (DisplayName = "Parameter UI Metadata"))
 	FMutableParamUIMetadata ParamUIMetadata;
+
+	/** Set the width of the Texture when there is no texture reference.*/
+	UPROPERTY(EditAnywhere, Category = CustomizableObject)
+	int32 TextureSizeX = 0;
+
+	/** Set the height of the Texture when there is no texture reference.*/
+	UPROPERTY(EditAnywhere, Category = CustomizableObject)
+	int32 TextureSizeY = 0;
 
 	// Begin EdGraphNode interface
 	FText GetNodeTitle(ENodeTitleType::Type TitleType) const override;

@@ -10,6 +10,12 @@
 #include "Misc/CompressionFlags.h"
 #include "Misc/EnumClassFlags.h"
 
+#if PLATFORM_CPU_X86_FAMILY
+#include <xmmintrin.h> // _mm_prefetch
+#elif PLATFORM_CPU_ARM_FAMILY && defined(_MSC_VER)
+#include <intrin.h> // __prefetch
+#endif
+
 class Error;
 class FOutputDevice;
 class FString;
@@ -335,6 +341,20 @@ enum class EMobileHapticsType : uint8
 	ImpactMedium,
 	ImpactHeavy,
 };
+
+/** Possible connection states */
+enum class ENetworkConnectionStatus : uint8
+{
+	/** Default state */
+	Unknown = 0,
+	/** No network connection or network device disabled */
+	Disabled,
+	/** Ad-hoc Wifi network or LAN with no external connection */
+	Local,
+	/** Connected to the network */
+	Connected
+};
+CORE_API const TCHAR* LexToString(ENetworkConnectionStatus EnumVal);
 
 enum class ENetworkConnectionType : uint8
 {
@@ -770,6 +790,16 @@ struct CORE_API FGenericPlatformMisc
 		return true;
 	}
 
+	/**
+	 * For platforms that support cache storage functionality, setting a directory for it when it's not available can result in errors.
+	 * This method's purpose is to be overridden in such platforms, with logic that checks if said cache is available.
+	 * In all other platforms without this constraint, it should return true by default.
+	 */
+	static bool IsCacheStorageAvailable()
+	{
+		return true;
+	}
+
 	static bool SupportsLocalCaching()
 	{
 		return true;
@@ -944,6 +974,9 @@ public:
 	/** Sends a message to a remote tool, and debugger consoles */
 	static void LowLevelOutputDebugString(const TCHAR *Message);
 	static void VARARGS LowLevelOutputDebugStringf(const TCHAR *Format, ... );
+
+	/** Whether LowLevelOutputDebugString[f] can receive structured output as lines of JSON. */
+	static bool IsLowLevelOutputDebugStringStructured();
 
 	/** Sets the default output to UTF8 */
 	static void SetUTF8Output();
@@ -1349,13 +1382,39 @@ public:
 	{
 	}
 
-	FORCEINLINE static void PrefetchBlock(const void* InPtr, int32 NumBytes = 1)
+	FORCEINLINE static void Prefetch(const void* Ptr)
 	{
+#if PLATFORM_CPU_X86_FAMILY
+		_mm_prefetch(static_cast<const char*>(Ptr), _MM_HINT_T0);
+#elif PLATFORM_CPU_ARM_FAMILY
+#	if defined(_MSC_VER)
+		__prefetch(Ptr);
+#	else
+		__asm__ __volatile__("prfm pldl1keep, [%[ptr]]\n" ::[ptr] "r"(Ptr) : );
+#	endif
+#else
+#	error Unknown architecture
+#endif
 	}
 
-	/** Platform-specific instruction prefetch */
-	FORCEINLINE static void Prefetch(void const* x, int32 offset = 0)
+	FORCEINLINE static void Prefetch(const void* Ptr, int32 Offset)
 	{
+		Prefetch(reinterpret_cast<const void*>(reinterpret_cast<UPTRINT>(Ptr) + Offset));
+	}
+
+	UE_DEPRECATED(5.2, "Must supply size when prefetching a block of data")
+	FORCEINLINE static void PrefetchBlock(const void* Ptr)
+	{
+		Prefetch(Ptr);
+	}
+
+	FORCEINLINE static void PrefetchBlock(const void* Ptr, int32 NumBytes)
+	{
+		// Use compile-time PLATFORM_CACHE_LINE_SIZE to avoid having to load a value before issuing prefetch instructions
+		for (int32 Line = 0, NumLines = (NumBytes + PLATFORM_CACHE_LINE_SIZE - 1) / PLATFORM_CACHE_LINE_SIZE; Line < NumLines; ++Line)
+		{
+			Prefetch(Ptr, Line * PLATFORM_CACHE_LINE_SIZE);
+		}
 	}
 
 	/**
@@ -1483,6 +1542,16 @@ public:
 	{
 		return false;
 	}
+
+	/**
+	 * Returns the current status for the network connection
+	 */
+	static ENetworkConnectionStatus GetNetworkConnectionStatus();
+
+	/**
+	 * Updates the current status for the network connection
+	 */
+	static void SetNetworkConnectionStatus(ENetworkConnectionStatus NewNetworkConnectionStatus);
 
 	/**
 	 * Returns whether WiFi connection is currently active
@@ -1812,6 +1881,14 @@ public:
 	{
 	}
 
+	/*
+	 * Unix only function, but put a stub so we can call this for higher level code when we want to setup the Syscall Filters
+	 */
+	static bool SetupSyscallFilters()
+	{
+		return false;
+	}
+
 #if !UE_BUILD_SHIPPING
 	/**
 	 * Returns any platform specific warning messages we want printed on screen
@@ -1829,6 +1906,8 @@ protected:
 #endif	//#if !UE_BUILD_SHIPPING
 
 	static EDeviceScreenOrientation AllowedDeviceOrientation;
+
+	static ENetworkConnectionStatus CurrentNetworkConnectionStatus;
 
 protected:
 	/**

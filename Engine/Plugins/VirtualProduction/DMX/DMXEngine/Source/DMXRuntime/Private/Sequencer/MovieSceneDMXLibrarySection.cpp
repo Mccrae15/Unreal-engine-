@@ -353,9 +353,14 @@ void UMovieSceneDMXLibrarySection::Serialize(FArchive& Ar)
 				}
 			}
 		}
-
-		UpdateChannelProxy();
 	}
+}
+
+void UMovieSceneDMXLibrarySection::PostLoad()
+{
+	Super::PostLoad();
+
+	UpdateChannelProxy();
 }
 
 void UMovieSceneDMXLibrarySection::PostEditImport()
@@ -364,6 +369,15 @@ void UMovieSceneDMXLibrarySection::PostEditImport()
 
 	UpdateChannelProxy();
 }
+
+#if WITH_EDITOR
+void UMovieSceneDMXLibrarySection::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	UpdateChannelProxy();
+}
+#endif // WITH_EDITOR
 
 void UMovieSceneDMXLibrarySection::RefreshChannels()
 {

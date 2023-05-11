@@ -511,7 +511,7 @@ RENDERCORE_API bool GetEmitRDGEvents()
 #if RDG_ENABLE_TRACE
 	bRDGChannelEnabled = UE_TRACE_CHANNELEXPR_IS_ENABLED(RDGChannel);
 #endif // RDG_ENABLE_TRACE
-	return GRDGEmitEvents != 0 || GRDGDebug != 0 || bRDGChannelEnabled != 0;
+	return GRDGEvents != 0 && (GRDGEmitDrawEvents_RenderThread != 0 || GRDGDebug != 0 || bRDGChannelEnabled != 0);
 #else
 	return false;
 #endif
@@ -524,6 +524,7 @@ FRDGEventName::FRDGEventName(const TCHAR* InEventFormat, ...)
 {
 	check(InEventFormat);
 
+	if (GRDGValidation != 0)
 	{
 		va_list VAList;
 		va_start(VAList, InEventFormat);
@@ -564,13 +565,19 @@ FString FRDGEventScope::GetPath(const FRDGEventName& Event) const
 	return MoveTemp(Path);
 }
 
-FRDGEventScopeGuard::FRDGEventScopeGuard(FRDGBuilder& InGraphBuilder, FRDGEventName&& ScopeName, bool InbCondition)
+FRDGEventScopeGuard::FRDGEventScopeGuard(FRDGBuilder& InGraphBuilder, FRDGEventName&& ScopeName, bool InbCondition, ERDGEventScopeFlags InFlags)
 	: GraphBuilder(InGraphBuilder)
-	, bCondition(InbCondition)
+	, bCondition(InbCondition && !GraphBuilder.bFinalEventScopeActive)
 {
 	if (bCondition)
 	{
-		GraphBuilder.GPUScopeStacks.BeginEventScope(MoveTemp(ScopeName), GraphBuilder.RHICmdList.GetGPUMask());
+		if (GRDGEvents == 2)
+		{
+			EnumRemoveFlags(InFlags, ERDGEventScopeFlags::Final);
+		}
+
+		GraphBuilder.bFinalEventScopeActive = EnumHasAnyFlags(InFlags, ERDGEventScopeFlags::Final);
+		GraphBuilder.GPUScopeStacks.BeginEventScope(MoveTemp(ScopeName), GraphBuilder.RHICmdList.GetGPUMask(), InFlags);
 	}
 }
 
@@ -579,6 +586,7 @@ FRDGEventScopeGuard::~FRDGEventScopeGuard()
 	if (bCondition)
 	{
 		GraphBuilder.GPUScopeStacks.EndEventScope();
+		GraphBuilder.bFinalEventScopeActive = false;
 	}
 }
 
@@ -670,7 +678,10 @@ FRDGEventScopeOpArray FRDGEventScopeStack::CompilePassPrologue(const FRDGPass* P
 	FRDGEventScopeOpArray Ops(bRDGEvents);
 	if (IsEnabled())
 	{
-		Ops.Ops = ScopeStack.CompilePassPrologue(Pass->GetGPUScopes().Event, GetEmitRDGEvents() ? Pass->GetEventName().GetTCHAR() : nullptr);
+		const FRDGEventScope* Scope = Pass->GetGPUScopes().Event;
+		const bool bEmitPassName = GetEmitRDGEvents() && (!Scope || !EnumHasAnyFlags(Scope->Flags, ERDGEventScopeFlags::Final));
+
+		Ops.Ops = ScopeStack.CompilePassPrologue(Scope, bEmitPassName ? Pass->GetEventName().GetTCHAR() : nullptr);
 	}
 	return MoveTemp(Ops);
 }
@@ -685,10 +696,10 @@ FRDGEventScopeOpArray FRDGEventScopeStack::CompilePassEpilogue()
 	return MoveTemp(Ops);
 }
 
-FRDGGPUStatScopeGuard::FRDGGPUStatScopeGuard(FRDGBuilder& InGraphBuilder, const FName& Name, const FName& StatName, const TCHAR* Description, FRHIDrawCallsStatPtr InNumDrawCallsPtr)
+FRDGGPUStatScopeGuard::FRDGGPUStatScopeGuard(FRDGBuilder& InGraphBuilder, const FName& Name, const FName& StatName, const TCHAR* Description, FDrawCallCategoryName& Category)
 	: GraphBuilder(InGraphBuilder)
 {
-	GraphBuilder.GPUScopeStacks.BeginStatScope(Name, StatName, Description, InNumDrawCallsPtr);
+	GraphBuilder.GPUScopeStacks.BeginStatScope(Name, StatName, Description, Category);
 }
 
 FRDGGPUStatScopeGuard::~FRDGGPUStatScopeGuard()
@@ -749,14 +760,12 @@ void FRDGGPUStatScopeOpArray::Execute(FRHIComputeCommandList& RHICmdListCompute)
 		const FRDGGPUStatScopeOp Op = Ops[Index];
 		const FRDGGPUStatScope* Scope = Op.Scope;
 
-		if (Scope->DrawCallCounter != nullptr && (**Scope->DrawCallCounter) != -1)
+		if (Scope->Category.ShouldCountDraws())
 		{
-			RHICmdList.EnqueueLambda(
-				[DrawCallCounter = Scope->DrawCallCounter, bPush = Op.IsPush()](auto&)
-			{
-				RHISetCurrentNumDrawCallPtr(bPush ? DrawCallCounter : &GCurrentNumDrawCallsRHI);
-			});
-			break;
+		    RHICmdList.SetStatsCategory(Op.IsPush()
+			    ? &Scope->Category
+			    : nullptr
+		    );
 		}
 	}
 #endif

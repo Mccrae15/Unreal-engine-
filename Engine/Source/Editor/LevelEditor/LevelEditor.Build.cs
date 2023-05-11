@@ -95,6 +95,8 @@ public class LevelEditor : ModuleRules
 				"EditorWidgets",
 				"ToolWidgets",
 				"VirtualizationEditor",
+				"UnsavedAssetsTracker",
+				"UncontrolledChangelists"
 			}
 		);
 
@@ -117,7 +119,6 @@ public class LevelEditor : ModuleRules
 				"HeadMountedDisplay",
 				"VREditor",
                 "Persona",
-				"LevelAssetEditor",
 				"MergeActors"
 			}
 		);

@@ -8,6 +8,7 @@
 
 TArray<UObject*> FRemoteControlEntity::GetBoundObjects() const
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FRemoteControlEntity::GetBoundObjects);
 	TArray<UObject*> ResolvedObjects;
 	ResolvedObjects.Reserve(Bindings.Num());
 	Algo::TransformIf(Bindings, ResolvedObjects,
@@ -86,6 +87,21 @@ void FRemoteControlEntity::BindObject(UObject* InObjectToBind)
 bool FRemoteControlEntity::IsBound() const
 {
 	return GetBoundObjects().Num() > 0;
+}
+
+FSoftObjectPath FRemoteControlEntity::GetLastBindingPath() const
+{
+	FSoftObjectPath Path;
+	for (const TWeakObjectPtr<URemoteControlBinding>& Binding : Bindings)
+	{
+		if (Binding.IsValid())
+		{
+			Path = Binding->GetLastBoundObjectPath();
+			break;
+		}
+	}
+
+	return Path;
 }
 
 bool FRemoteControlEntity::operator==(const FRemoteControlEntity& InEntity) const

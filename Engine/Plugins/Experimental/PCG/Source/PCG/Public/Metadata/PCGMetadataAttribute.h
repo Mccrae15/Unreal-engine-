@@ -2,11 +2,9 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "PCGMetadataCommon.h"
 
-#include "Misc/ScopeRWLock.h"
-#include "Templates/EnableIf.h"
+#include "UObject/ObjectPtr.h" // IWYU pragma: keep
 
 class UPCGMetadata;
 
@@ -18,6 +16,8 @@ public:
 
 	virtual ~FPCGMetadataAttributeBase() = default;
 	virtual void Serialize(UPCGMetadata* InMetadata, FArchive& InArchive);
+
+	virtual void Flatten() = 0;
 
 	const UPCGMetadata* GetMetadata() const { return Metadata; }
 	int16 GetTypeId() const { return TypeId; }
@@ -32,7 +32,12 @@ public:
 	virtual void SetValue(PCGMetadataEntryKey ItemKey, const FPCGMetadataAttributeBase* InAttributeA, PCGMetadataEntryKey InEntryKeyA, const FPCGMetadataAttributeBase* InAttributeB, PCGMetadataEntryKey InEntryKeyB, EPCGMetadataOp Op) = 0;
 	virtual bool IsEqualToDefaultValue(PCGMetadataValueKey ValueKey) const = 0;
 
+	virtual bool UsesValueKeys() const = 0;
+	virtual bool AreValuesEqualForEntryKeys(PCGMetadataEntryKey EntryKey1, PCGMetadataEntryKey EntryKey2) const = 0;
+	virtual bool AreValuesEqual(PCGMetadataValueKey ValueKey1, PCGMetadataValueKey ValueKey2) const = 0;
+
 	void SetValueFromValueKey(PCGMetadataEntryKey EntryKey, PCGMetadataValueKey ValueKey);
+	void SetValuesFromValueKeys(const TArray<TTuple<PCGMetadataEntryKey, PCGMetadataValueKey>>& EntryValuePairs, bool bResetValueOnDefaultValueKey = true);
 	PCGMetadataValueKey GetValueKey(PCGMetadataEntryKey EntryKey) const;
 	bool HasNonDefaultValue(PCGMetadataEntryKey EntryKey) const;
 	void ClearEntries();
@@ -47,6 +52,9 @@ public:
 
 	const FPCGMetadataAttributeBase* GetParent() const { return Parent; }
 
+	static bool IsValidName(const FString& Name);
+	static bool IsValidName(const FName& Name);
+
 protected:
 	TMap<PCGMetadataEntryKey, PCGMetadataValueKey> EntryToValueKeyMap;
 	mutable FRWLock EntryMapLock;
@@ -60,3 +68,8 @@ public:
 	FName Name = NAME_None;
 	PCGMetadataAttributeKey AttributeId = -1;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "Misc/ScopeRWLock.h"
+#endif

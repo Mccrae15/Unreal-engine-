@@ -3,17 +3,20 @@
 #include "InputCustomizations.h"
 
 #include "ActionMappingDetails.h"
-#include "DetailCategoryBuilder.h"
+#include "AssetRegistry/ARFilter.h"
 #include "DetailLayoutBuilder.h"
-#include "EnhancedActionKeyMapping.h"
+#include "Engine/Blueprint.h"
 #include "IDetailChildrenBuilder.h"
 #include "InputMappingContext.h"
+#include "KeyStructCustomization.h"
 #include "PropertyCustomizationHelpers.h"
 #include "EnhancedInputDeveloperSettings.h"
-#include "InputEditorModule.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Blueprint/BlueprintSupport.h"
+#include "Misc/PackageName.h"
 #include "UObject/UObjectIterator.h"
+#include "Modules/ModuleManager.h"
+#include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "InputCustomization"
 
@@ -39,6 +42,20 @@ void FInputContextDetails::CustomizeDetails(class IDetailLayoutBuilder& DetailBu
 //////////////////////////////////////////////////////////
 // FEnhancedActionMappingCustomization
 
+const FEnhancedActionKeyMapping* GetActionKeyMapping(TSharedPtr<IPropertyHandle> MappingPropertyHandle)
+{
+	if (MappingPropertyHandle->IsValidHandle())
+	{
+		void* Data = nullptr;
+		if (MappingPropertyHandle->GetValueData(Data) != FPropertyAccess::Fail)
+		{
+			return static_cast<FEnhancedActionKeyMapping*>(Data);
+		}
+	}
+
+	return nullptr;
+}
+
 void FEnhancedActionMappingCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> PropertyHandle, FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils)
 {
 	MappingPropertyHandle = PropertyHandle;
@@ -48,7 +65,7 @@ void FEnhancedActionMappingCustomization::CustomizeHeader(TSharedRef<IPropertyHa
 	TSharedPtr<IPropertyHandle> TriggersHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FEnhancedActionKeyMapping, Triggers));
 
 	TriggersHandle->SetOnPropertyValueChanged(FSimpleDelegate::CreateSP(this, &FEnhancedActionMappingCustomization::OnTriggersChanged));
-
+	TriggersHandle->SetOnChildPropertyValueChanged(FSimpleDelegate::CreateSP(this, &FEnhancedActionMappingCustomization::OnTriggersChanged));
 	TSharedRef<SWidget> RemoveButton = PropertyCustomizationHelpers::MakeDeleteButton(FSimpleDelegate::CreateSP(this, &FEnhancedActionMappingCustomization::RemoveMappingButton_OnClick),
 		LOCTEXT("RemoveMappingToolTip", "Remove Mapping"));
 
@@ -57,12 +74,65 @@ void FEnhancedActionMappingCustomization::CustomizeHeader(TSharedRef<IPropertyHa
 
 	// TODO: Use FDetailArrayBuilder?
 
+	const bool bContainsComboTrigger = DoesTriggerArrayContainCombo();
 	// Pass our header row into the key struct customizeheader method so it populates our row with the key struct header
 	KeyStructCustomization = StaticCastSharedPtr<FKeyStructCustomization>(KeyStructInstance);
-	const bool bContainsComboTrigger = DoesTriggerArrayContainCombo();
-	KeyStructCustomization->SetDisplayIcon(bContainsComboTrigger);
+	KeyStructCustomization->SetDefaultKeyName("ComboKey");
+	KeyStructCustomization->SetDisabledKeySelectorToolTip(LOCTEXT("DisabledSelectorComboToolTip", "A Combo Trigger isn't triggered through a key so Key Selection has been disabled."));
 	KeyStructCustomization->SetEnableKeySelector(!bContainsComboTrigger);
 	KeyStructCustomization->CustomizeHeaderOnlyWithButton(KeyHandle.ToSharedRef(), HeaderRow, CustomizationUtils, RemoveButton);
+}
+
+void FEnhancedActionMappingCustomization::AddInputActionProperties(TSharedRef<IPropertyHandle> PropertyHandle, IDetailChildrenBuilder& ChildBuilder)
+{
+    if (const FEnhancedActionKeyMapping* ActionKeyMapping = GetActionKeyMapping(PropertyHandle))
+    {
+    	// Make sure ActionKeyMapping action is valid. If triggers and modifiers are empty we can just back out - nothing to add
+    	if (ActionKeyMapping->Action)
+    	{
+    		// Convert InputAction to non const so we can properly use it in the UObject Array for AddExternalObjectProperty
+    		const UInputAction* InputActionPtr = ActionKeyMapping->Action;
+    		UInputAction* InputAction = const_cast<UInputAction*>(InputActionPtr);
+    		TArray<UObject*> ActionsAsUObjects { InputAction };
+
+    		if (IDetailPropertyRow* InputActionTriggersRow = ChildBuilder.AddExternalObjectProperty(ActionsAsUObjects, GET_MEMBER_NAME_CHECKED(UInputAction, Triggers)))
+    		{
+    			InputActionTriggersPropertyRow = InputActionTriggersRow;
+    			InputActionTriggersRow->DisplayName(LOCTEXT("InputActionTriggersDisplayName", "Triggers From Input Action"));
+    			InputActionTriggersRow->ToolTip(FText::Format(LOCTEXT("InputActionTriggersToolTip", "Triggers from the {0} Input Action"), FText::FromName(ActionKeyMapping->Action.GetFName())));
+    			InputActionTriggersRow->IsEnabled(false);
+    			InputAction->OnTriggersChanged.AddSP(this, &FEnhancedActionMappingCustomization::OnInputActionTriggersChanged);
+    			
+    			// hide it if the trigger array is empty
+    			if (ActionKeyMapping->Action->Triggers.IsEmpty())
+    			{
+					InputActionTriggersRow->Visibility(EVisibility::Hidden);
+    			}
+    			else
+    			{
+    				InputActionTriggersRow->Visibility(EVisibility::Visible);
+    			}
+    		}
+    		if (IDetailPropertyRow* InputActionModifiersRow = ChildBuilder.AddExternalObjectProperty(ActionsAsUObjects, GET_MEMBER_NAME_CHECKED(UInputAction, Modifiers)))
+    		{
+    			InputActionModifiersPropertyRow = InputActionModifiersRow;
+    			InputActionModifiersRow->DisplayName(LOCTEXT("InputActionModifiersDisplayName", "Modifiers From Input Action"));
+    			InputActionModifiersRow->ToolTip(FText::Format(LOCTEXT("InputActionModifiersToolTip", "Modifiers from the {0} Input Action"), FText::FromName(ActionKeyMapping->Action.GetFName())));
+    			InputActionModifiersRow->IsEnabled(false);
+    			InputAction->OnModifiersChanged.AddSP(this, &FEnhancedActionMappingCustomization::OnInputActionModifiersChanged);
+    			
+    			// hide it if the modifier array is empty
+    			if (ActionKeyMapping->Action->Modifiers.IsEmpty())
+    			{
+    				InputActionModifiersRow->Visibility(EVisibility::Hidden);
+    			}
+    			else
+    			{
+    				InputActionModifiersRow->Visibility(EVisibility::Visible);	
+    			}
+    		}
+    	}
+    }
 }
 
 void FEnhancedActionMappingCustomization::CustomizeChildren(TSharedRef<IPropertyHandle> PropertyHandle, IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils)
@@ -71,12 +141,17 @@ void FEnhancedActionMappingCustomization::CustomizeChildren(TSharedRef<IProperty
 	TSharedPtr<IPropertyHandle> ModifiersHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FEnhancedActionKeyMapping, Modifiers));
 	TSharedPtr<IPropertyHandle> IsPlayerMappableHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FEnhancedActionKeyMapping, bIsPlayerMappable));
 	TSharedPtr<IPropertyHandle> PlayerBindingOptions = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FEnhancedActionKeyMapping, PlayerMappableOptions));
+	TSharedPtr<IPropertyHandle> SettingBehavior = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FEnhancedActionKeyMapping, SettingBehavior));
+	TSharedPtr<IPropertyHandle> PlayerMappableKeySettings = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FEnhancedActionKeyMapping, PlayerMappableKeySettings));
 
 	// TODO: ResetToDefault needs to be disabled for arrays
 	ChildBuilder.AddProperty(TriggersHandle.ToSharedRef());
 	ChildBuilder.AddProperty(ModifiersHandle.ToSharedRef());
+	AddInputActionProperties(PropertyHandle, ChildBuilder);
 	ChildBuilder.AddProperty(IsPlayerMappableHandle.ToSharedRef());
 	ChildBuilder.AddProperty(PlayerBindingOptions.ToSharedRef());
+	ChildBuilder.AddProperty(SettingBehavior.ToSharedRef());
+	ChildBuilder.AddProperty(PlayerMappableKeySettings.ToSharedRef());
 }
 
 void FEnhancedActionMappingCustomization::RemoveMappingButton_OnClick() const
@@ -93,35 +168,79 @@ void FEnhancedActionMappingCustomization::RemoveMappingButton_OnClick() const
 void FEnhancedActionMappingCustomization::OnTriggersChanged() const
 {
 	const bool bContainsComboTrigger = DoesTriggerArrayContainCombo();
-	KeyStructCustomization->SetDisplayIcon(bContainsComboTrigger);
+	
+	// if it is currently disabled and doesn't contain a combo now we should set the key to something other than ComboKey
+	if (!KeyStructCustomization->GetEnableKeySelector() && !bContainsComboTrigger)
+	{
+		// setting KeySelector to none key
+		KeyStructCustomization->SetKey(TEXT("None"));
+	}
+	
     KeyStructCustomization->SetEnableKeySelector(!bContainsComboTrigger);
+	// updating the default key when the KeySelector is disabled
+	KeyStructCustomization->SetDefaultKeyName(bContainsComboTrigger ? TEXT("ComboKey") : TEXT("None"));
+}
+
+void FEnhancedActionMappingCustomization::OnInputActionTriggersChanged() const
+{
+	if (const FEnhancedActionKeyMapping* ActionKeyMapping = GetActionKeyMapping(MappingPropertyHandle))
+	{
+		// Make sure ActionKeyMapping action and the property row are valid
+		if (ActionKeyMapping->Action && InputActionTriggersPropertyRow)
+		{
+			// if so we want to hide the row or show it based off contents of the array (whether it's empty or not)
+			if (!ActionKeyMapping->Action->Triggers.IsEmpty())
+			{
+				InputActionTriggersPropertyRow->Visibility(EVisibility::Visible);
+			}
+			else
+			{
+				InputActionTriggersPropertyRow->Visibility(EVisibility::Hidden);
+			}
+		}
+	}
+}
+
+void FEnhancedActionMappingCustomization::OnInputActionModifiersChanged() const
+{
+    if (const FEnhancedActionKeyMapping* ActionKeyMapping = GetActionKeyMapping(MappingPropertyHandle))
+    {
+    	// Make sure ActionKeyMapping action and the property row are valid
+    	if (ActionKeyMapping->Action && InputActionModifiersPropertyRow)
+    	{
+    		// if so we want to hide the row or show it based off contents of the array (whether it's empty or not)
+    		if (!ActionKeyMapping->Action->Modifiers.IsEmpty())
+    		{
+    			InputActionModifiersPropertyRow->Visibility(EVisibility::Visible);
+    		}
+    		else
+    		{
+    			InputActionModifiersPropertyRow->Visibility(EVisibility::Hidden);
+    		}
+    	}
+    }
 }
 
 bool FEnhancedActionMappingCustomization::DoesTriggerArrayContainCombo() const
 {
-	if (MappingPropertyHandle)
+	if (const FEnhancedActionKeyMapping* ActionKeyMapping = GetActionKeyMapping(MappingPropertyHandle))
 	{
-		if (TSharedPtr<IPropertyHandle> TriggersHandle = MappingPropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FEnhancedActionKeyMapping, Triggers)))
+		// checking context triggers for combo triggers
+		for (TObjectPtr<UInputTrigger> Trigger : ActionKeyMapping->Triggers)
 		{
-			// getting data for the trigger array
-			void* Data = nullptr;
-			TriggersHandle->GetValueData(Data);
-			if (Data)
+			if (Trigger.IsA(UInputTriggerCombo::StaticClass()))
 			{
-				FProperty* TriggersProperty = TriggersHandle->GetProperty();
-				FArrayProperty* TriggersArrayProperty = CastField<FArrayProperty>(TriggersProperty);
-				FScriptArrayHelper ArrayHelper(TriggersArrayProperty, Data);
-	
-				for (int32 i = 0; i < ArrayHelper.Num(); i++)
+				return true;
+			}
+		}
+		// checking input action triggers for combo triggers
+		if (ActionKeyMapping->Action)
+		{
+			for (TObjectPtr<UInputTrigger> Trigger : ActionKeyMapping->Action->Triggers)
+			{
+				if (Trigger.IsA(UInputTriggerCombo::StaticClass()))
 				{
-					// Make sure we can cast this to a input trigger and if it's a combo we can return true
-					if (UInputTrigger** InputComboTrigger = reinterpret_cast<UInputTrigger**>(ArrayHelper.GetRawPtr(i)))
-					{
-						if ((*InputComboTrigger) && (*InputComboTrigger)->IsA(UInputTriggerCombo::StaticClass()))
-						{
-							return true;
-						}
-					}
+					return true;
 				}
 			}
 		}
@@ -161,8 +280,46 @@ void FEnhancedInputDeveloperSettingsCustomization::CustomizeDetails(IDetailLayou
 	static const FName TriggerCategoryName = TEXT("Trigger Default Values");
 	static const FName ModifierCategoryName = TEXT("Modifier Default Values");
 
-	TArray<UObject*> ModifierCDOs = GatherClassDetailsCDOs(UInputModifier::StaticClass());
-	TArray<UObject*> TriggerCDOs = GatherClassDetailsCDOs(UInputTrigger::StaticClass());
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(FName("AssetRegistry"));
+	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+	TArray<UObject*> ModifierCDOs;
+	TArray<UObject*> TriggerCDOs;
+	// Search BPs via asset registry
+	{
+		FARFilter Filter;
+		Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
+		Filter.bRecursiveClasses = true;
+		TArray<FAssetData> BlueprintAssetData;
+		AssetRegistry.GetAssets(Filter, BlueprintAssetData);
+
+		FName NativeParentClass(TEXT("NativeParentClass"));
+		for (FAssetData& Asset : BlueprintAssetData)
+		{
+			FAssetDataTagMapSharedView::FFindTagResult Result = Asset.TagsAndValues.FindTag(NativeParentClass);
+			if (Result.IsSet() && !ExcludedAssetNames.Contains(Asset.AssetName))
+			{
+				const FString ClassObjectPath = FPackageName::ExportTextPathToObjectPath(Result.GetValue());
+				if (UClass* ParentClass = FindObjectSafe<UClass>(nullptr, *ClassObjectPath, true))
+				{
+					// TODO: Forcibly loading these assets could cause problems on projects with a large number of them.
+					if(ParentClass->IsChildOf(UInputModifier::StaticClass()))
+					{
+						UBlueprint* BP = CastChecked<UBlueprint>(Asset.GetAsset());
+						ModifierCDOs.AddUnique(BP->GeneratedClass->GetDefaultObject());
+					}
+					if (ParentClass->IsChildOf(UInputTrigger::StaticClass()))
+					{
+						UBlueprint* BP = CastChecked<UBlueprint>(Asset.GetAsset());
+						TriggerCDOs.AddUnique(BP->GeneratedClass->GetDefaultObject());
+					}
+				}
+			}
+		}
+	}
+
+	GatherNativeClassDetailsCDOs(UInputModifier::StaticClass(), ModifierCDOs);
+	GatherNativeClassDetailsCDOs(UInputTrigger::StaticClass(), TriggerCDOs);
 	ExcludedAssetNames.Reset();
 	
 	// Add The modifier/trigger defaults that are generated via CDO to the details builder
@@ -170,8 +327,6 @@ void FEnhancedInputDeveloperSettingsCustomization::CustomizeDetails(IDetailLayou
 	CustomizeCDOValues(DetailBuilder, TriggerCategoryName, TriggerCDOs);
 	
 	// Support for updating blueprint based triggers and modifiers in the settings panel
-	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(FName("AssetRegistry"));
-	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
 	if (!AssetRegistry.OnAssetAdded().IsBoundToObject(this))
 	{
 		AssetRegistry.OnAssetAdded().AddRaw(this, &FEnhancedInputDeveloperSettingsCustomization::OnAssetAdded);
@@ -214,10 +369,8 @@ void FEnhancedInputDeveloperSettingsCustomization::CustomizeDetails(const TShare
 	CustomizeDetails(*DetailBuilder);
 }
 
-TArray<UObject*> FEnhancedInputDeveloperSettingsCustomization::GatherClassDetailsCDOs(UClass* Class)
+void FEnhancedInputDeveloperSettingsCustomization::GatherNativeClassDetailsCDOs(UClass* Class, TArray<UObject*>& CDOs)
 {
-	TArray<UObject*> CDOs;
-
 	// Search native classes
 	for (TObjectIterator<UClass> ClassIt; ClassIt; ++ClassIt)
 	{
@@ -233,34 +386,6 @@ TArray<UObject*> FEnhancedInputDeveloperSettingsCustomization::GatherClassDetail
 		}
 
 		CDOs.AddUnique(ClassIt->GetDefaultObject());
-	}
-
-	// Search BPs via asset registry
-	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(FName("AssetRegistry"));
-	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
-
-	FARFilter Filter;
-	Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
-	Filter.bRecursiveClasses = true;
-	TArray<FAssetData> BlueprintAssetData;
-	AssetRegistry.GetAssets(Filter, BlueprintAssetData);
-
-	for (FAssetData& Asset : BlueprintAssetData)
-	{
-		FAssetDataTagMapSharedView::FFindTagResult Result = Asset.TagsAndValues.FindTag(TEXT("NativeParentClass"));
-		if (Result.IsSet() && !ExcludedAssetNames.Contains(Asset.AssetName))
-		{
-			const FString ClassObjectPath = FPackageName::ExportTextPathToObjectPath(Result.GetValue());
-			if (UClass* ParentClass = FindObjectSafe<UClass>(nullptr, *ClassObjectPath, true))
-			{
-				if (ParentClass->IsChildOf(Class))
-				{
-					// TODO: Forcibly loading these assets could cause problems on projects with a large number of them.
-					UBlueprint* BP = CastChecked<UBlueprint>(Asset.GetAsset());
-					CDOs.AddUnique(BP->GeneratedClass->GetDefaultObject());
-				}
-			}
-		}
 	}
 
 	// Strip objects with no config stored properties
@@ -285,8 +410,57 @@ TArray<UObject*> FEnhancedInputDeveloperSettingsCustomization::GatherClassDetail
 		}
 		return true;
 	});
+}
 
-	return CDOs;
+bool FEnhancedInputDeveloperSettingsCustomization::DoesClassHaveSubtypes(UClass* Class)
+{
+	// Search native classes
+	for (TObjectIterator<UClass> ClassIt; ClassIt; ++ClassIt)
+	{
+		// Make sure it's a native class and a child of Class passed in
+		if (ClassIt->IsNative() && ClassIt->IsChildOf(Class))
+		{
+			// Make sure it doesn't have any flags that would disqualify it from being used
+			if (!ClassIt->HasAnyClassFlags(CLASS_Abstract | CLASS_HideDropDown | CLASS_Deprecated | CLASS_NewerVersionExists))
+			{
+				UObject* CDO = ClassIt->GetDefaultObject();
+		
+				// Make Sure it isn't the Class itself
+				if (CDO && CDO->GetClass() != Class)
+				{
+					return true;
+				}
+			}
+		}
+	}
+
+	// Search BPs via asset registry
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(FName("AssetRegistry"));
+	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+	FARFilter Filter;
+	Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
+	Filter.bRecursiveClasses = true;
+	TArray<FAssetData> BlueprintAssetData;
+	AssetRegistry.GetAssets(Filter, BlueprintAssetData);
+
+	for (FAssetData& Asset : BlueprintAssetData)
+	{
+		FAssetDataTagMapSharedView::FFindTagResult Result = Asset.TagsAndValues.FindTag(TEXT("NativeParentClass"));
+		if (Result.IsSet() && !ExcludedAssetNames.Contains(Asset.AssetName))
+		{
+			const FString ClassObjectPath = FPackageName::ExportTextPathToObjectPath(Result.GetValue());
+			if (UClass* ParentClass = FindObjectSafe<UClass>(nullptr, *ClassObjectPath, true))
+			{
+				if (ParentClass->IsChildOf(Class))
+				{
+					return true;
+				}
+			}
+		}
+	}
+
+	return false;
 }
 
 void FEnhancedInputDeveloperSettingsCustomization::RebuildDetailsViewForAsset(const FAssetData& AssetData, const bool bIsAssetBeingRemoved)

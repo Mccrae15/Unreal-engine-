@@ -3,18 +3,19 @@
 #include "Tests/PCGTestsCommon.h"
 
 #include "PCGComponent.h"
+#include "PCGContext.h"
+#include "PCGElement.h"
 #include "PCGGraph.h"
 #include "PCGParamData.h"
-#include "PCGSettings.h"
 #include "Data/PCGPointData.h"
-#include "Data/PCGPolyLineData.h"
-#include "Data/PCGPrimitiveData.h"
-#include "Data/PCGSurfaceData.h"
+#include "Data/PCGPolyLineData.h" // IWYU pragma: keep
+#include "Data/PCGPrimitiveData.h" // IWYU pragma: keep
+#include "Data/PCGSurfaceData.h" // IWYU pragma: keep
 #include "Data/PCGVolumeData.h"
+#include "PCGPin.h"
 
 #if WITH_EDITOR
 #include "Editor.h"
-#include "Engine/World.h"
 #endif
 
 namespace PCGTestsCommon
@@ -40,7 +41,7 @@ namespace PCGTestsCommon
 		TestPCGComponent = NewObject<UPCGComponent>(TestActor, FName(TEXT("Test PCG Component")), RF_Transient);
 		check(TestPCGComponent);
 		// By default PCG components for tests will be non-partitioned
-		TestPCGComponent->bIsPartitioned = false;
+		TestPCGComponent->SetIsPartitioned(false);
 		TestActor->AddInstanceComponent(TestPCGComponent);
 		TestPCGComponent->RegisterComponent();
 
@@ -77,6 +78,20 @@ namespace PCGTestsCommon
 		InputData.TaggedData.Empty();
 		OutputData.TaggedData.Empty();
 		Settings = InSettings;
+	}
+
+	TUniquePtr<FPCGContext> InitializeTestContext(IPCGElement* InElement, const FPCGDataCollection& InputData, UPCGComponent* InSourceComponent, const UPCGNode* InNode)
+	{
+		check(InElement);
+		TUniquePtr<FPCGContext> Context{ InElement->Initialize(InputData, InSourceComponent, InNode) };
+		Context->AsyncState.NumAvailableTasks = 1;
+		return Context;
+	}
+
+	TUniquePtr<FPCGContext> FTestData::InitializeTestContext(const UPCGNode* InNode) const
+	{
+		check(Settings)
+		return PCGTestsCommon::InitializeTestContext(Settings->GetElement().Get(), InputData, TestPCGComponent, InNode);
 	}
 
 	AActor* CreateTemporaryActor()
@@ -253,7 +268,7 @@ bool FPCGTestBaseClass::SmokeTestAnyValidInput(UPCGSettings* InSettings, TFuncti
 		return false;
 	}
 
-	TArray<FPCGPinProperties> InputProperties = InSettings->InputPinProperties();
+	TArray<FPCGPinProperties> InputProperties = InSettings->AllInputPinProperties();
 	// For each pin: take nothing, take 1 of any supported type, take 2 of any supported types (if enabled)
 	TArray<TArray<FPCGDataCollection>> InputsPerProperties;
 	TArray<uint32> InputIndices;
@@ -285,8 +300,7 @@ bool FPCGTestBaseClass::SmokeTestAnyValidInput(UPCGSettings* InSettings, TFuncti
 			InputData.TaggedData.Append(InputsPerProperties[PinIndex][InputIndices[PinIndex]].TaggedData);
 		}
 
-		TUniquePtr<FPCGContext> Context(Element->Initialize(InputData, nullptr, nullptr));
-		Context->NumAvailableTasks = 1;
+		TUniquePtr<FPCGContext> Context = PCGTestsCommon::InitializeTestContext(Element.Get(), InputData, nullptr, nullptr);
 		
 		// Execute element until done
 		while (!Element->Execute(Context.Get()))

@@ -332,7 +332,7 @@ export class IPC {
 		let edge: EdgeBotInterface | null = null
 		if (edgeName) {
 			edge = bot.getImmediateEdge(edgeName)
-			const edgeIPC = edge && edge.ipcControls
+			const edgeIPC = edge && edge.getIPCControls()
 			if (!edgeIPC) {
 				return {statusCode: 400, message: `Node ${nodeName} does not have edge ${edgeName}`}
 			}
@@ -463,7 +463,6 @@ export class IPC {
 						message: stompVerification.message,
 						nonBinaryFilesResolved: stompVerification.nonBinaryFilesResolved,
 						remainingAllBinary: stompVerification.remainingAllBinary,
-						branchOrDeleteResolveRequired: stompVerification.branchOrDeleteResolveRequired,
 						files: stompVerification.svFiles,
 						validRequest: stompVerification.validRequest
 					} )

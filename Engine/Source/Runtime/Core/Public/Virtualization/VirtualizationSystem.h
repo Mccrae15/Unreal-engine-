@@ -23,6 +23,7 @@
 class FPackagePath;
 class FText;
 class UObject;
+struct FAnalyticsEventAttribute;
 
 namespace UE::Virtualization
 {
@@ -43,63 +44,6 @@ struct FPayloadActivityInfo
 	FActivity Pull;
 	FActivity Push;
 	FActivity Cache;
-};
-
-/** Describes the type of storage to use for a given action */
-enum class EStorageType : int8
-{
-	/** Deprecated value, replaced by EStorageType::Cache */
-	Local UE_DEPRECATED(5.1, "Use EStorageType::Cache instead")  = -1,
-	/** Store in the local cache backends, this can be called from any thread */
-	Cache = 0,
-	/** Store in the persistent backends, this can only be called from the game thread due to limitations with ISourceControlModule. */
-	Persistent
-};
-
-/** 
- * The result of a query.
- * Success indicates that the query worked and that the results are valid and can be used.
- * Any other value indicates that the query failed in some manner and that the results cannot be trusted and should be discarded.
- */
-enum class EQueryResult : int8
-{
-	/** The query succeeded and the results are valid */
-	Success = 0,
-	/** The query failed with an unspecified error */
-	Failure_Unknown,
-	/** The query failed because the current virtualization system has not implemented it */
-	Failure_NotImplemented
-};
-
-/** Describes the status of a payload in regards to a backend storage system */
-enum class EPayloadStatus : int8
-{
-	/** The payload id was not value */
-	Invalid = -1,
-	/** The payload was not found in any backend for the given storage type */
-	NotFound = 0,
-	/** The payload was found in at least one backend but was not found in all backends available for the given storage type */
-	FoundPartial,
-	/** The payload was found in all of the backends available for the given storage type */
-	FoundAll
-};
-
-/** The result of the virtualization process */
-enum class EVirtualizationResult : uint8
-{
-	/** The virtualization process ran with no problems to completion. */
-	Success = 0,
-	/** The process failed before completion and nothing was virtualized */
-	Failed
-};
-
-/** The result of the re-hydration process */
-enum class ERehydrationResult : uint8
-{
-	/** The re-hydration process ran with no problems to completion. */
-	Success = 0,
-	/** The process failed before completion and nothing was re-hydrate */
-	Failed,
 };
 
 /** Info about a rehydration operation */
@@ -142,7 +86,7 @@ public:
 	virtual uint64 GetPayloadSize(const FIoHash& Identifier) = 0;
 };
 
-/** The result opf a push operation on a single payload */
+/** The result of a push operation on a single payload */
 struct FPushResult
 {
 	/** 
@@ -153,7 +97,11 @@ struct FPushResult
 	enum class EStatus : int8
 	{
 		/** The push operation caused an error */
-		Error			= -3,
+		Error			= -5,
+		/** The push operation storage type is disabled */
+		ProcessDisabled	= -4,
+		/** There were no backends that supported the push operation */
+		NoBackend		= -3,
 		/** The push operation was run on an invalid payload id */
 		Invalid			= -2,
 		/** The payload was rejected by the filtering system */
@@ -172,6 +120,16 @@ struct FPushResult
 	static FPushResult GetAsError()
 	{
 		return FPushResult(EStatus::Error);
+	}
+
+	static FPushResult GetAsProcessDisabled()
+	{
+		return FPushResult(EStatus::ProcessDisabled);
+	}
+
+	static FPushResult GetAsNoBackend()
+	{
+		return FPushResult(EStatus::NoBackend);
 	}
 
 	static FPushResult GetAsInvalid()
@@ -429,6 +387,88 @@ private:
 	EStatus Status = EStatus::Pending;
 };
 
+/** Contains the results of the package virtualization process */
+struct FVirtualizationResult
+{
+	/** A list of errors encountered during the process */
+	TArray<FText> Errors;
+
+	/** A list of tags associated with the group of packages that were virtualized */
+	TArray<FText> DescriptionTags;
+
+	/** A list of packages that were actually virtualized and had locally stored payloads removed */
+	TArray<FString> VirtualizedPackages;
+	/** A list of packages that were checked out of revision control during the process */
+	TArray<FString> CheckedOutPackages;
+
+	/** The length of time that the process took in seconds */
+	double TimeTaken = 0.0;
+
+	/* Returns if the virtualization process succeeded or not */
+	bool WasSuccessful() const
+	{
+		return Errors.IsEmpty();
+	}
+
+	/** Add an error message to the result */
+	void AddError(const FText& ErrorMsg)
+	{
+		Errors.Add(ErrorMsg);
+	}
+
+	/** Add an error message to the result */
+	void AddError(FText&& ErrorMsg)
+	{
+		Errors.Add(MoveTemp(ErrorMsg));
+	}
+
+	/** Returns how many errors the process has currently encountered */
+	int32 GetNumErrors() const
+	{
+		return Errors.Num();
+	}
+
+};
+
+/** Contains the results of the package virtualization process */
+struct FRehydrationResult
+{
+	/** A list of errors encountered during the process */
+	TArray<FText> Errors;
+
+	/** A list of packages that were actually rehydrated and had payloads added to local storage */
+	TArray<FString> RehydratedPackages;
+	/** A list of packages that were checked out of revision control during the process */
+	TArray<FString> CheckedOutPackages;
+
+	/** The length of time that the process took in seconds */
+	double TimeTaken = 0.0;
+
+	/* Returns if the rehydration process succeeded or not */
+	bool WasSuccessful() const
+	{
+		return Errors.IsEmpty();
+	}
+
+	/** Add an error message to the result */
+	void AddError(const FText& ErrorMsg)
+	{
+		Errors.Add(ErrorMsg);
+	}
+
+	/** Add an error message to the result */
+	void AddError(FText&& ErrorMsg)
+	{
+		Errors.Add(MoveTemp(ErrorMsg));
+	}
+
+	/** Returns how many errors the process has currently encountered */
+	int32 GetNumErrors() const
+	{
+		return Errors.Num();
+	}
+};
+
 /** 
  * The set of parameters to be used when initializing the virtualization system. The 
  * members must remain valid for the duration of the call to ::Initialize. It is not
@@ -450,17 +490,6 @@ struct FInitParams
 	/** The config file to load the settings from (will default to GEngineIni) */
 	const FConfigFile& ConfigFile;
 };
-
-/** Optional flags that change how the VA system is initialized */
-enum class EInitializationFlags : uint32
-{
-	/** No flags are set */
-	None			= 0,
-	/** Forces the initialization to occur, ignoring and of the lazy initialization flags */
-	ForceInitialize = 1 << 0
-};
-
-ENUM_CLASS_FLAGS(EInitializationFlags);
 
 /**
  * Creates the global IVirtualizationSystem if it has not already been set up. This can be called explicitly
@@ -677,39 +706,53 @@ public:
 		return QueryPayloadStatuses(Ids, StorageType, OutStatuses) != EQueryResult::Success;
 	}
 
+	UE_DEPRECATED(5.2, "Use The other overload that takes a EVirtualizationOptions parameter")
+	virtual EVirtualizationResult TryVirtualizePackages(TConstArrayView<FString> PackagePaths, TArray<FText>& OutDescriptionTags, TArray<FText>& OutErrors)
+	{
+		FVirtualizationResult Result = TryVirtualizePackages(PackagePaths, EVirtualizationOptions::None);
+
+		OutDescriptionTags = MoveTemp(Result.DescriptionTags);
+		OutErrors = MoveTemp(Result.Errors);
+
+		return Result.WasSuccessful() ? EVirtualizationResult::Success : EVirtualizationResult::Failed;
+	}
+	
 	/**
 	 * Runs the virtualization process on a set of packages. All of the packages will be parsed and any found to be containing locally stored
 	 * payloads will have them removed but before they are removed they will be pushed to persistent storage.
-	 * 
-	 * @param PackagePaths			An array of file paths to packages that should be virtualized. If a path resolves to a file that is not 
+	 *
+	 * @param PackagePaths			An array of file paths to packages that should be virtualized. If a path resolves to a file that is not
 	 *								a valid package then it will be silently skipped and will not be considered an error.
-	 * @param OutDescriptionTags	The process may produce description tags associated with the packages which will be placed in this array.
-	 *								These tags can be used to improve logging, or be appended to change list descriptions etc. Note that the 
-	 *								array will be emptied before the process.
-	 *								is run and will not contain any pre-existing entries.
-	 * @param OutErrors				Any error encountered during the process will be added here. If any error is added to the array then it
-	 *								can be assumed that the process will return false. Note that the array will be emptied before the process
-	 *								is run and will not contain any pre-existing entries.
-	 * 
+	 * @param Options				An enum bitfield containing various options for the process. @see EVirtualizationOptions
+	 * @param OutResultInfo			A struct that will contain info about the process. @see FVirtualizationResult
+	 *
 	 * @return						A EVirtualizationResult enum with the status of the process. If the status is not EVirtualizationResult::Success
 	 *								then the parameter OutErrors should contain at least one entry.
 	 */
-	virtual EVirtualizationResult TryVirtualizePackages(TConstArrayView<FString> PackagePaths, TArray<FText>& OutDescriptionTags, TArray<FText>& OutErrors) = 0;
-	
+	virtual FVirtualizationResult TryVirtualizePackages(TConstArrayView<FString> PackagePaths, EVirtualizationOptions Options) = 0;
+
+	UE_DEPRECATED(5.2, "Use The other overload that takes a EVirtualizationOptions parameter")
+	virtual ERehydrationResult TryRehydratePackages(TConstArrayView<FString> PackagePaths, TArray<FText>& OutErrors)
+	{
+		FRehydrationResult Result = TryRehydratePackages(PackagePaths, ERehydrationOptions::None);
+
+		OutErrors = MoveTemp(Result.Errors);
+
+		return Result.WasSuccessful() ? ERehydrationResult::Success : ERehydrationResult::Failed;
+	}
+
 	/**
 	 * Runs the rehydration process on a set of packages. This involves downloading virtualized payloads and placing them back in the trailer of
 	 * the given packages.
 	 * 
-	 * @param PackagePaths	An array containing the absolute file paths of packages. It is assumed that the packages have already been checked out
-	 *						of source control (if applicable) and will be writable.
-	 * @param OutErrors		Any error encountered during the process will be added here. If any error is added to the array then it
-	 *						can be assumed that the process will return false. Note that the array will be emptied before the process
-	 *						is run and will not contain any pre-existing entries.
+	 * @param PackagePaths		An array containing the absolute file paths of packages
+	 * @param Options			An enum bitfield containing various options for the process. @see EVirtualizationOptions
+	 * @param OutResultInfo		A struct that will contain info about the process. @see FVirtualizationResult
 	 * 
-	 * @return	A ERehydrationResult enum with the status of the process. If the status indicates any sort of failure then OutErrors should
+	 * @return	A ERehydrationResult enum with the status of the process. If the status indicates any sort of failure then OutResultInfo.Errors should
 	 *			contain at least one entry.
 	 */
-	virtual ERehydrationResult TryRehydratePackages(TConstArrayView<FString> PackagePaths, TArray<FText>& OutErrors) = 0;
+	virtual FRehydrationResult TryRehydratePackages(TConstArrayView<FString> PackagePaths, ERehydrationOptions Options) = 0;
 
 	/**
 	 * Rehydrates a number of packages into memory buffers.
@@ -721,7 +764,7 @@ public:
 	 * @param OutErrors			Any errors encountered while rehydration will be added here
 	 * @param OutPackages		The rehydrated packages as memory buffers. Each entry should match the corresponding entry in PackagePaths. This array is
 	 *							only guaranteed to be correct if the method returns ERehydrationResult::Success.
-	 * @param OutInfo			Information about thge rehydration process, each entry should match the corresponding entry in PackagePaths assuming that
+	 * @param OutInfo			Information about the rehydration process, each entry should match the corresponding entry in PackagePaths assuming that
 	 *							the method returns ERehydrationResult::Success. This parameter is optional, if the information is not required then
 	 *							pass in nullptr to skip.
 	 * @return					ERehydrationResult::Success if the rehydration suceeeds and OutPackages/OutInfocan be trued, otherwise it will return an
@@ -739,6 +782,9 @@ public:
 
 	/** Access profiling info relating to accumulated payload activity. Stats will only be collected if ENABLE_COOK_STATS is enabled.*/
 	virtual FPayloadActivityInfo GetAccumualtedPayloadActivityInfo() const = 0;
+
+	/** Gather analytics data. Stats will only be collected if ENABLE_COOK_STATS is enabled.*/
+	virtual void GatherAnalytics(TArray<FAnalyticsEventAttribute>& Attributes) const =0;
 
 	//* Notification messages
 	enum ENotification

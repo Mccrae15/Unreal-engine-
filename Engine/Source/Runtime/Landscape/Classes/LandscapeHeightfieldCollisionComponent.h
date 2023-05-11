@@ -30,9 +30,10 @@ namespace Chaos
 
 enum class EHeightfieldSource
 {
-	Simple = 0,
-	Complex = 1,
-	Editor = 2
+	None,
+	Simple,
+	Complex,
+	Editor
 };
 
 UCLASS(MinimalAPI, Within=LandscapeProxy)
@@ -80,13 +81,21 @@ class ULandscapeHeightfieldCollisionComponent : public UPrimitiveComponent
 	UPROPERTY()
 	FBox CachedLocalBox;
 
+#if WITH_EDITORONLY_DATA
 	/** Reference to render component */
 	UPROPERTY()
-	TLazyObjectPtr<ULandscapeComponent> RenderComponent;
+	TLazyObjectPtr<ULandscapeComponent> RenderComponent_DEPRECATED;
+#endif // !WITH_EDITORONLY_DATA
 
+private:
+	/** Reference to render component */
+	UPROPERTY()
+	TObjectPtr<ULandscapeComponent> RenderComponentRef;
+
+public:
 	/** Returns associated landscape component */
 	UFUNCTION(BlueprintCallable, Category = "Landscape")
-	ULandscapeComponent* GetRenderComponent() const;
+	LANDSCAPE_API ULandscapeComponent* GetRenderComponent() const;
 
 	struct FHeightfieldGeometryRef : public FRefCountedObject
 	{
@@ -229,7 +238,7 @@ public:
 	/** 
 	 * Cooks raw height data into collision object binary stream
 	 */
-	virtual bool CookCollisionData(const FName& Format, bool bUseOnlyDefMaterial, bool bCheckDDC, TArray<uint8>& OutCookedData, TArray<UPhysicalMaterial*>& InOutMaterials) const;
+	virtual bool CookCollisionData(const FName& Format, bool bUseDefaultMaterialOnly, bool bCheckDDC, TArray<uint8>& OutCookedData, TArray<UPhysicalMaterial*>& InOutMaterials) const;
 
 	/** Modify a sub-region of the physics heightfield. Note that this does not update the physical material */
 	void UpdateHeightfieldRegion(int32 ComponentX1, int32 ComponentY1, int32 ComponentX2, int32 ComponentY2);
@@ -237,6 +246,23 @@ public:
 	/** Computes a hash of all the data that will impact final collision */
 	virtual uint32 ComputeCollisionHash() const;
 #endif
+
+	struct FWriteRuntimeDataParams
+	{
+		bool bUseDefaultMaterialOnly = false;
+		TArrayView<const uint16> Heights;
+		TArrayView<const uint16> SimpleHeights;
+		TArrayView<const uint8> DominantLayers;
+		TArrayView<const uint8> SimpleDominantLayers;
+		TArrayView<const uint8> RenderPhysicalMaterialIds;
+		TArrayView<const uint8> SimpleRenderPhysicalMaterialIds;
+	};
+
+	void GetCollisionSampleInfo(int32& OutCollisionSizeVerts, int32& OutSimpleCollisionSizeVerts, int32& OutNumSamples, int32& OutNumSimpleSamples) const;
+
+	// Writes to a cooked data buffer using raw heightfield data
+	LANDSCAPE_API bool WriteRuntimeData(const FWriteRuntimeDataParams& Params, TArray<uint8>& OutHeightfieldData, TArray<UPhysicalMaterial*>& InOutMaterials) const;
+
 	/** Gets the landscape info object for this landscape */
 	ULandscapeInfo* GetLandscapeInfo() const;
 
@@ -266,6 +292,8 @@ public:
 
 	LANDSCAPE_API void SnapFoliageInstances();
 #endif
+
+	LANDSCAPE_API void SetRenderComponent(ULandscapeComponent* InRenderComponent) { RenderComponentRef = InRenderComponent; }
 
 public:
 	TOptional<float> GetHeight(float X, float Y, EHeightfieldSource HeightFieldSource);

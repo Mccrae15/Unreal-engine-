@@ -2,65 +2,65 @@
 
 #pragma once
 
+#include "PCGModule.h"
 #include "PCGParamData.h"
-#include "Metadata/PCGMetadataAttributeTraits.h"
+#include "PCGSettings.h"
 #include "Metadata/PCGMetadataAttributeTpl.h"
-
-#include <type_traits>
+#include "Metadata/PCGMetadataAttributeTraits.h"
+#include "Metadata/Accessors/PCGAttributeAccessorHelpers.h"
+#include "Metadata/Accessors/IPCGAttributeAccessor.h"
+#include "Metadata/Accessors/PCGAttributeAccessorKeys.h"
 
 class UPCGComponent;
-class UPCGSettings;
+class UPCGNode;
+class UPCGPin;
+struct FPCGDataCollection;
 
 namespace PCGSettingsHelpers
 {
-	// Utility function to return a value from an attribute that doesn't match the type
-	// Use if constexpr to remove un-necessary checks.
-	// Returns true if the conversion worked
-	template <typename T>
-	inline bool GetValueWithImplicitConversion(const FPCGMetadataAttributeBase* InAttribute, PCGMetadataEntryKey InKey, T& OutValue)
-	{
-#define ImplicitConversion(InType, OutType) if constexpr (std::is_same_v<T, OutType>) { if (InAttribute->GetTypeId() == PCG::Private::MetadataTypes<InType>::Id) { OutValue = static_cast<T>(static_cast<const FPCGMetadataAttribute<InType>*>(InAttribute)->GetValueFromItemKey(InKey)); return true; } }
-
-		ImplicitConversion(float, double);
-		ImplicitConversion(double, float);
-		ImplicitConversion(int32, int64);
-		ImplicitConversion(int64, int32);
-
-#undef ImplicitConversion
-
-		return false;
-	}
-
+	/** Utility function to get the value of type T from a param data or a default value
+	* @param InName - Attribute to get from the param
+	* @param InValue - Default value to return if the param doesn't have the given attribute
+	* @param InParams - ParamData to get the value from.
+	* @param InKey - Metadata Entry Key to get the value from.
+	*/
 	template<typename T, typename TEnableIf<!TIsEnumClass<T>::Value>::Type* = nullptr>
-	T GetValue(const FName& InName, const T& InValue, UPCGParamData* InParams, PCGMetadataEntryKey InKey, bool bAllowImplicitConversion = true)
+	UE_DEPRECATED(5.2, "GetValue is deprecated as overrides are now automatically applied on the settings. You should just query the settings value.")
+	T GetValue(const FName& InName, const T& InValue, const UPCGParamData* InParams, PCGMetadataEntryKey InKey)
 	{
-		if (InParams)
+
+		if (InParams && InParams->Metadata)
 		{
-			const FPCGMetadataAttributeBase* MatchingAttribute = InParams->Metadata ? InParams->Metadata->GetConstAttribute(InName) : nullptr;
-			if (MatchingAttribute)
-			{
-				if (MatchingAttribute->GetTypeId() == PCG::Private::MetadataTypes<T>::Id)
-				{
-					return static_cast<const FPCGMetadataAttribute<T>*>(MatchingAttribute)->GetValueFromItemKey(InKey);
-				}
+			const FPCGMetadataAttributeBase* MatchingAttribute = InParams->Metadata->GetConstAttribute(InName);
 
-				if (bAllowImplicitConversion)
-				{
-					T OutValue{};
-					if (GetValueWithImplicitConversion<T>(MatchingAttribute, InKey, OutValue))
-					{
-						UE_LOG(LogPCG, Warning, TEXT("[GetAttributeValue] Matching attribute was found, but not the right type. Implicit conversion done (%d vs %d)"), MatchingAttribute->GetTypeId(), PCG::Private::MetadataTypes<T>::Id);
-						return OutValue;
-					}
-				}
-
-				UE_LOG(LogPCG, Error, TEXT("[GetAttributeValue] Matching attribute was found, but not the right type. %d vs %d"), MatchingAttribute->GetTypeId(), PCG::Private::MetadataTypes<T>::Id);
-				return InValue;
-			}
-			else
+			if (!MatchingAttribute)
 			{
 				return InValue;
 			}
+
+			auto GetTypedValue = [MatchingAttribute, &InValue, InKey](auto DummyValue) -> T
+			{
+				using AttributeType = decltype(DummyValue);
+
+				const FPCGMetadataAttribute<AttributeType>* ParamAttribute = static_cast<const FPCGMetadataAttribute<AttributeType>*>(MatchingAttribute);
+
+				if constexpr (std::is_same_v<T, AttributeType>)
+				{
+					return ParamAttribute->GetValueFromItemKey(InKey);
+				}
+				else if constexpr (std::is_constructible_v<T, AttributeType>)
+				{
+					UE_LOG(LogPCG, Verbose, TEXT("[GetAttributeValue] Matching attribute was found, but not the right type. Implicit conversion done (%d vs %d)"), MatchingAttribute->GetTypeId(), PCG::Private::MetadataTypes<T>::Id);
+					return T(ParamAttribute->GetValueFromItemKey(InKey));
+				}
+				else
+				{
+					UE_LOG(LogPCG, Error, TEXT("[GetAttributeValue] Matching attribute was found, but not the right type. %d vs %d"), MatchingAttribute->GetTypeId(), PCG::Private::MetadataTypes<T>::Id);
+					return InValue;
+				}
+			};
+
+			return PCGMetadataAttribute::CallbackWithRightType(MatchingAttribute->GetTypeId(), GetTypedValue);
 		}
 		else
 		{
@@ -68,18 +68,22 @@ namespace PCGSettingsHelpers
 		}
 	}
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 	template<typename T, typename TEnableIf<!TIsEnumClass<T>::Value>::Type* = nullptr>
-	T GetValue(const FName& InName, const T& InValue, UPCGParamData* InParams, bool bAllowImplicitConversion = true)
+	UE_DEPRECATED(5.2, "GetValue is deprecated as overrides are now automatically applied on the settings. You should just query the settings value.")
+	T GetValue(const FName& InName, const T& InValue, const UPCGParamData* InParams)
 	{
-		return GetValue(InName, InValue, InParams, 0, bAllowImplicitConversion);
+		return GetValue(InName, InValue, InParams, 0);
 	}
 
 	template<typename T, typename TEnableIf<!TIsEnumClass<T>::Value>::Type* = nullptr>
-	T GetValue(const FName& InName, const T& InValue, UPCGParamData* InParams, const FName& InParamName, bool bAllowImplicitConversion = true)
+	UE_DEPRECATED(5.2, "GetValue is deprecated as overrides are now automatically applied on the settings. You should just query the settings value.")
+	T GetValue(const FName& InName, const T& InValue, const UPCGParamData* InParams, const FName& InParamName)
 	{
 		if (InParams && InParamName != NAME_None)
 		{
-			return GetValue(InName, InValue, InParams, InParams->FindMetadataKey(InParamName), bAllowImplicitConversion);
+			return GetValue(InName, InValue, InParams, InParams->FindMetadataKey(InParamName));
 		}
 		else
 		{
@@ -89,142 +93,138 @@ namespace PCGSettingsHelpers
 
 	/** Specialized versions for enums */
 	template<typename T, typename TEnableIf<TIsEnumClass<T>::Value>::Type* = nullptr>
-	T GetValue(const FName& InName, const T& InValue, UPCGParamData* InParams, PCGMetadataEntryKey InKey, bool bAllowImplicitConversion = true)
+	UE_DEPRECATED(5.2, "GetValue is deprecated as overrides are now automatically applied on the settings. You should just query the settings value.")
+	T GetValue(const FName& InName, const T& InValue, const UPCGParamData* InParams, PCGMetadataEntryKey InKey)
 	{
-		return static_cast<T>(GetValue(InName, static_cast<__underlying_type(T)>(InValue), InParams, InKey, bAllowImplicitConversion));
+		return static_cast<T>(GetValue(InName, static_cast<__underlying_type(T)>(InValue), InParams, InKey));
 	}
 
 	template<typename T, typename TEnableIf<TIsEnumClass<T>::Value>::Type* = nullptr>
-	T GetValue(const FName& InName, const T& InValue, UPCGParamData* InParams, bool bAllowImplicitConversion = true)
+	UE_DEPRECATED(5.2, "GetValue is deprecated as overrides are now automatically applied on the settings. You should just query the settings value.")
+	T GetValue(const FName& InName, const T& InValue, const UPCGParamData* InParams)
 	{
-		return static_cast<T>(GetValue(InName, static_cast<__underlying_type(T)>(InValue), InParams, bAllowImplicitConversion));
+		return static_cast<T>(GetValue(InName, static_cast<__underlying_type(T)>(InValue), InParams));
 	}
 
 	template<typename T, typename TEnableIf<TIsEnumClass<T>::Value>::Type* = nullptr>
-	T GetValue(const FName& InName, const T& InValue, UPCGParamData* InParams, const FName& InParamName, bool bAllowImplicitConversion = true)
+	UE_DEPRECATED(5.2, "GetValue is deprecated as overrides are now automatically applied on the settings. You should just query the settings value.")
+	T GetValue(const FName& InName, const T& InValue, const UPCGParamData* InParams, const FName& InParamName)
 	{
-		return static_cast<T>(GetValue(InName, static_cast<__underlying_type(T)>(InValue), InParams, InParamName, bAllowImplicitConversion));
+		return static_cast<T>(GetValue(InName, static_cast<__underlying_type(T)>(InValue), InParams, InParamName));
 	}
 
 	/** Specialized version for names */
 	template<>
-	FORCEINLINE FName GetValue(const FName& InName, const FName& InValue, UPCGParamData* InParams, PCGMetadataEntryKey InKey, bool bAllowImplicitConversion)
+	UE_DEPRECATED(5.2, "GetValue is deprecated as overrides are now automatically applied on the settings. You should just query the settings value.")
+	FORCEINLINE FName GetValue(const FName& InName, const FName& InValue, const UPCGParamData* InParams, PCGMetadataEntryKey InKey)
 	{
-		return FName(GetValue(InName, InValue.ToString(), InParams, InKey, bAllowImplicitConversion));
+		return FName(GetValue(InName, InValue.ToString(), InParams, InKey));
 	}
 
 	template<>
-	FORCEINLINE FName GetValue(const FName& InName, const FName& InValue, UPCGParamData* InParams, bool bAllowImplicitConversion)
+	UE_DEPRECATED(5.2, "GetValue is deprecated as overrides are now automatically applied on the settings. You should just query the settings value.")
+	FORCEINLINE FName GetValue(const FName& InName, const FName& InValue, const UPCGParamData* InParams)
 	{
-		return FName(GetValue(InName, InValue.ToString(), InParams, bAllowImplicitConversion));
+		return FName(GetValue(InName, InValue.ToString(), InParams));
 	}
 
 	template<>
-	FORCEINLINE FName GetValue(const FName& InName, const FName& InValue, UPCGParamData* InParams, const FName& InParamName, bool bAllowImplicitConversion)
+	UE_DEPRECATED(5.2, "GetValue is deprecated as overrides are now automatically applied on the settings. You should just query the settings value.")
+	FORCEINLINE FName GetValue(const FName& InName, const FName& InValue, const UPCGParamData* InParams, const FName& InParamName)
 	{
-		return FName(GetValue(InName, InValue.ToString(), InParams, InParamName, bAllowImplicitConversion));
+		return FName(GetValue(InName, InValue.ToString(), InParams, InParamName));
 	}
 
 	/** Sets data from the params to a given property, matched on a name basis */
 	void SetValue(UPCGParamData* Params, UObject* Object, FProperty* Property);
 
-	/**
-	* Validate that the InProperty is a PCGData supported type and call InFunc with the value of this property (with the right type).
-	* The function returns the result of InFunc (or default value of the return type of InFunc if it failed).
-	*/
-	template <typename Func>
-	inline decltype(auto) GetPropertyValueWithCallback(const UObject* InObject, const FProperty* InProperty, Func InFunc)
-	{
-		// Double property is supported by PCG, we use a dummy double to deduce the return type of InFunc.
-		using ReturnType = decltype(InFunc(0.0));
-
-		if (!InObject || !InProperty)
-		{
-			return ReturnType();
-		}
-
-		const void* PropertyAddressData = InProperty->ContainerPtrToValuePtr<void>(InObject);
-
-		if (const FNumericProperty* NumericProperty = CastField<FNumericProperty>(InProperty))
-		{
-			if (NumericProperty->IsFloatingPoint())
-			{
-				return InFunc(NumericProperty->GetFloatingPointPropertyValue(PropertyAddressData));
-			}
-			else if (NumericProperty->IsInteger())
-			{
-				return InFunc(NumericProperty->GetSignedIntPropertyValue(PropertyAddressData));
-			}
-		}
-		else if (const FBoolProperty* BoolProperty = CastField<FBoolProperty>(InProperty))
-		{
-			return InFunc(BoolProperty->GetPropertyValue(PropertyAddressData));
-		}
-		else if (const FStrProperty* StringProperty = CastField<FStrProperty>(InProperty))
-		{
-			return InFunc(StringProperty->GetPropertyValue(PropertyAddressData));
-		}
-		else if (const FNameProperty* NameProperty = CastField<FNameProperty>(InProperty))
-		{
-			return InFunc(NameProperty->GetPropertyValue(PropertyAddressData));
-		}
-		else if (const FEnumProperty* EnumProperty = CastField<FEnumProperty>(InProperty))
-		{
-			return InFunc(EnumProperty->GetUnderlyingProperty()->GetSignedIntPropertyValue(PropertyAddressData));
-		}
-		else if (const FStructProperty* StructProperty = CastField<FStructProperty>(InProperty))
-		{
-			if (StructProperty->Struct == TBaseStructure<FVector>::Get())
-			{
-				return InFunc(*reinterpret_cast<const FVector*>(PropertyAddressData));
-			}
-			else if (StructProperty->Struct == TBaseStructure<FVector4>::Get())
-			{
-				return InFunc(*reinterpret_cast<const FVector4*>(PropertyAddressData));
-			}
-			else if (StructProperty->Struct == TBaseStructure<FQuat>::Get())
-			{
-				return InFunc(*reinterpret_cast<const FQuat*>(PropertyAddressData));
-			}
-			else if (StructProperty->Struct == TBaseStructure<FTransform>::Get())
-			{
-				return InFunc(*reinterpret_cast<const FTransform*>(PropertyAddressData));
-			}
-			else if (StructProperty->Struct == TBaseStructure<FRotator>::Get())
-			{
-				return InFunc(*reinterpret_cast<const FRotator*>(PropertyAddressData));
-			}
-			else if (StructProperty->Struct == TBaseStructure<FSoftObjectPath>::Get())
-			{
-				// Soft object path are transformed to strings
-				return InFunc(reinterpret_cast<const FSoftObjectPath*>(PropertyAddressData)->ToString());
-			}
-			else if (StructProperty->Struct == TBaseStructure<FSoftClassPath>::Get())
-			{
-				// Soft class path are transformed to strings
-				return InFunc(reinterpret_cast<const FSoftClassPath*>(PropertyAddressData)->ToString());
-			}
-			//else if (StructProperty->Struct == TBaseStructure<FColor>::Get())
-			//else if (StructProperty->Struct == TBaseStructure<FLinearColor>::Get())
-		}
-		else if (const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(InProperty))
-		{
-			if (const UObject* Object = ObjectProperty->GetObjectPropertyValue(PropertyAddressData))
-			{
-				// Object are transformed into their soft path name (as a string attribute)
-				return InFunc(Object->GetPathName());
-			}
-		}
-
-		return ReturnType();
-	}
-
+	UE_DEPRECATED(5.2, "ComputeSeedWithOverride is deprecated as overrides are now automatically applied on the settings. You should just query the settings value.")
 	int ComputeSeedWithOverride(const UPCGSettings* InSettings, const UPCGComponent* InComponent, UPCGParamData* InParams);
 
+	UE_DEPRECATED(5.2, "ComputeSeedWithOverride is deprecated as overrides are now automatically applied on the settings. You should just query the settings value.")
 	FORCEINLINE int ComputeSeedWithOverride(const UPCGSettings* InSettings, TWeakObjectPtr<UPCGComponent> InComponent, UPCGParamData* InParams)
 	{
 		return ComputeSeedWithOverride(InSettings, InComponent.Get(), InParams);
 	}
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	/** Utility to call from before-node-update deprecation. A dedicated pin for params will be added when the pins are updated. Here we detect any params
+	*   connections to the In pin and disconnect them, and move the first params connection to a new params pin.
+	*/
+	void DeprecationBreakOutParamsToNewPin(UPCGNode* InOutNode, TArray<TObjectPtr<UPCGPin>>& InputPins, TArray<TObjectPtr<UPCGPin>>& OutputPins);
+
+	/**
+	* Advanced method to gather override params when you don't have access to FPCGContext (and therefore don't have access to automatic
+	* param override).
+	* Limitation: Only support metadata types for T.
+	*/
+	template <typename T>
+	bool GetOverrideValue(const FPCGDataCollection& InInputData, const UPCGSettings* InSettings, const FName InPropertyName, const T& InDefaultValue, T& OutValue)
+	{
+		check(InSettings);
+
+		// Limitation: Only support metadata types
+		static_assert(PCG::Private::IsPCGType<T>());
+
+		// Try to find the override param associated with the property.
+		const FPCGSettingsOverridableParam* Param = InSettings->OverridableParams().FindByPredicate([InPropertyName](const FPCGSettingsOverridableParam& InParam) { return !InParam.PropertiesNames.IsEmpty() && (InParam.PropertiesNames.Last() == InPropertyName);});
+
+		OutValue = InDefaultValue;
+
+		if (!Param)
+		{
+			return false;
+		}
+
+		FName AttributeName = NAME_None;
+		TUniquePtr<const IPCGAttributeAccessor> AttributeAccessor = PCGAttributeAccessorHelpers::CreateConstAccessorForOverrideParam(InInputData, *Param, &AttributeName);
+
+		if (!AttributeAccessor)
+		{
+			return false;
+		}
+
+		return PCGMetadataAttribute::CallbackWithRightType(PCG::Private::MetadataTypes<T>::Id, [&AttributeAccessor, &Param, &AttributeName, &InDefaultValue, &OutValue](auto Dummy) -> bool
+		{
+			using PropertyType = decltype(Dummy);
+
+			// Override were using the first entry (0) by default.
+			FPCGAttributeAccessorKeysEntries FirstEntry(PCGMetadataEntryKey(0));
+
+			if (!AttributeAccessor->Get<T>(OutValue, FirstEntry, EPCGAttributeAccessorFlags::AllowBroadcast | EPCGAttributeAccessorFlags::AllowConstructible))
+			{
+				UE_LOG(LogPCG, Warning, TEXT("[PCGSettingsHelpers::GetOverrideValue] '%s' parameter cannot be converted from '%s' attribute, incompatible types."), *Param->Label.ToString(), *AttributeName.ToString());
+				return false;
+			}
+
+			return true;
+		});
+	}
+
+	struct FPCGGetAllOverridableParamsConfig
+	{
+		// If we don't use the seed, don't add it as override.
+		bool bUseSeed = false;
+
+		// Don't look for properties from parents
+		bool bExcludeSuperProperties = false;
+
+#if WITH_EDITOR
+		// List of metadata values to find in property metadata. Only works in editor builds as metadata on property is not available elsewise.
+		TArray<FName> MetadataValues{};
+#endif // WITH_EDITOR
+
+		// Flags to exclude in property flags
+		uint64 ExcludePropertyFlags = 0;
+
+		// Max depth for structs of structs. -1 = no limit
+		int32 MaxStructDepth = -1;
+	};
+
+	TArray<FPCGSettingsOverridableParam> GetAllOverridableParams(const UClass* InClass, const FPCGGetAllOverridableParamsConfig& InConfig);
+	TArray<FPCGSettingsOverridableParam> GetAllOverridableParams(const UScriptStruct* InStruct, const FPCGGetAllOverridableParamsConfig& InConfig);
 }
 
-#define PCG_GET_OVERRIDEN_VALUE(Settings, Variable, Params) PCGSettingsHelpers::GetValue(GET_MEMBER_NAME_CHECKED(TRemovePointer<TRemoveConst<decltype(Settings)>::Type>::Type, Variable), (Settings)->Variable, Params)
+// Deprecated macro, not necessary anymore. Cf. GetValue
+#define PCG_GET_OVERRIDEN_VALUE(Settings, Variable, Params) PCGSettingsHelpers::GetValue(GET_MEMBER_NAME_CHECKED(std::remove_pointer_t<std::remove_const_t<decltype(Settings)>>, Variable), (Settings)->Variable, Params)

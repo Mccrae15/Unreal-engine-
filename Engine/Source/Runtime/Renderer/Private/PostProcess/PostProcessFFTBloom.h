@@ -2,11 +2,17 @@
 
 #pragma once
 
-#include "RenderGraph.h"
-#include "ScenePrivate.h"
+#include "Math/MathFwd.h"
 #include "ScreenPass.h"
 
 class FEyeAdaptationParameters;
+class FRDGBuffer;
+class FRDGBuilder;
+class FRDGTexture;
+class FViewInfo;
+
+using FRDGBufferRef = FRDGBuffer*;
+using FRDGTextureRef = FRDGTexture*;
 
 // Returns whether FFT bloom is enabled for the view.
 bool IsFFTBloomEnabled(const FViewInfo& View);
@@ -25,6 +31,6 @@ FFFTBloomOutput AddFFTBloomPass(
 	const FScreenPassTexture& InputSceneColor,
 	float InputResolutionFraction,
 	const FEyeAdaptationParameters& EyeAdaptationParameters,
-	FRDGTextureRef EyeAdaptationTexture,
+	FRDGBufferRef EyeAdaptationBuffer,
 	FRDGTextureRef LocalExposureTexture,
 	FRDGTextureRef BlurredLogLuminanceTexture);

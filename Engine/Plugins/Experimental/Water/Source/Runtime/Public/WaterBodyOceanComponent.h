@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "WaterBodyComponent.h"
 #include "WaterBodyOceanComponent.generated.h"
 
@@ -24,6 +23,10 @@ public:
 	virtual FVector GetCollisionExtents() const override { return CollisionExtents; }
 	virtual void SetHeightOffset(float InHeightOffset) override;
 	virtual float GetHeightOffset() const override { return HeightOffset; }
+	
+#if WITH_EDITOR
+	void SetCollisionExtents(const FVector& NewExtents);
+#endif // WITH_EDITOR
 
 	UE_DEPRECATED(5.1, "Oceans no longer rely on the visual extent parameter making this obsolete. Instead they will be guaranteed to fill the entire water zone to which they belong.")
 	void SetVisualExtents(FVector2D) {}
@@ -61,3 +64,7 @@ protected:
 	UPROPERTY(Transient)
 	float HeightOffset = 0.0f;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

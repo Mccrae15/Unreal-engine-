@@ -51,6 +51,7 @@ struct FLandscapeDirtyOnlyInModeScope
 {
 	FLandscapeDirtyOnlyInModeScope() = delete;
 	FLandscapeDirtyOnlyInModeScope(ULandscapeInfo* InLandscapeInfo);
+	FLandscapeDirtyOnlyInModeScope(ULandscapeInfo* InLandscapeInfo, bool bInOverrideDirtyMode); /* Override the dirtying in Landscape mode behaviour*/
 	~FLandscapeDirtyOnlyInModeScope();
 
 private:
@@ -123,7 +124,7 @@ class ULandscapeInfo : public UObject
 	GENERATED_UCLASS_BODY()
 
 	UPROPERTY()
-	TLazyObjectPtr<ALandscape> LandscapeActor;
+	TWeakObjectPtr<ALandscape> LandscapeActor;
 
 	UPROPERTY()
 	FGuid LandscapeGuid;
@@ -165,6 +166,9 @@ public:
 
 private:
 #if WITH_EDITORONLY_DATA
+	TSet<TWeakObjectPtr<UObject>> PackagesToDeprecate;
+
+	// SORTED list of all actors implementing the spline interface that are registered with this landscape info
 	UPROPERTY()
 	TArray<TScriptInterface<ILandscapeSplineInterface>> SplineActors;
 
@@ -366,6 +370,9 @@ public:
 	/** Deassociates passed actor with this info object*/
 	LANDSCAPE_API void UnregisterActor(ALandscapeProxy* Proxy);
 
+	/** Returns true if the Proxy is currently registered with this ULandscapeInfo */
+	bool IsRegistered(const ALandscapeProxy* Proxy) const;
+
 	/** Associates passed landscape component with this info object
 	 *  @param	Component	Landscape component to register
 	 *  @param  bMapCheck	Whether to warn about landscape errors
@@ -400,12 +407,18 @@ public:
 	LANDSCAPE_API void RegisterSplineActor(TScriptInterface<ILandscapeSplineInterface> SplineActor);
 	LANDSCAPE_API void UnregisterSplineActor(TScriptInterface<ILandscapeSplineInterface> SplineActor);
 
+	/** Updates the spline registrations (with ALL landscape infos) when a spline has changed the landscape it is targeting
+	 */
+	LANDSCAPE_API static void UpdateRegistrationForSplineActor(UWorld* InWorld, TScriptInterface<ILandscapeSplineInterface> InSplineActor);
+
 	LANDSCAPE_API void RequestSplineLayerUpdate();
 	LANDSCAPE_API void ForceLayersFullUpdate();
-#endif
 
-#if WITH_EDITOR
+	static void SetForceNonSpatiallyLoadedByDefault(bool bInForceNonSpatiallyLoadedByDefault) { bForceNonSpatiallyLoadedByDefault = bInForceNonSpatiallyLoadedByDefault; }
+
 private:
+	inline static bool bForceNonSpatiallyLoadedByDefault = false;
+
 	bool ApplySplinesInternal(bool bOnlySelected, TScriptInterface<ILandscapeSplineInterface> SplineOwner, TSet<TObjectPtr<ULandscapeComponent>>* OutModifiedComponents, bool bMarkPackageDirty, int32 LandscapeMinX, int32 LandscapeMinY, int32 LandscapeMaxX, int32 LandscapeMaxY, TFunctionRef<TSharedPtr<FModulateAlpha>(ULandscapeLayerInfoObject*)> GetOrCreateModulate);
 	void MoveSegment(ULandscapeSplineSegment* InSegment, TScriptInterface<ILandscapeSplineInterface> From, TScriptInterface<ILandscapeSplineInterface> To);
 	void MoveControlPoint(ULandscapeSplineControlPoint* InControlPoint, TScriptInterface<ILandscapeSplineInterface> From, TScriptInterface<ILandscapeSplineInterface> To);

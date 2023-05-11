@@ -4,9 +4,11 @@
 #include "PostProcess/PostProcessTonemap.h"
 #include "PostProcess/PostProcessLocalExposure.h"
 #include "PostProcess/PostProcessDownsample.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "GPUFastFourierTransform.h"
 #include "RendererModule.h"
 #include "Rendering/Texture2DResource.h"
+#include "ScenePrivate.h"
 
 namespace
 {
@@ -637,7 +639,7 @@ FFFTBloomOutput AddFFTBloomPass(
 	const FScreenPassTexture& InputSceneColor,
 	float InputResolutionFraction,
 	const FEyeAdaptationParameters& EyeAdaptationParameters,
-	FRDGTextureRef EyeAdaptationTexture,
+	FRDGBufferRef EyeAdaptationBuffer,
 	FRDGTextureRef LocalExposureTexture,
 	FRDGTextureRef BlurredLogLuminanceTexture)
 {
@@ -748,7 +750,7 @@ FFFTBloomOutput AddFFTBloomPass(
 
 		FFTInputSceneColor.Texture = GraphBuilder.CreateTexture(Desc, TEXT("Bloom.FFT.Input"));
 
-		AddApplyLocalExposurePass(GraphBuilder, View, EyeAdaptationParameters, EyeAdaptationTexture, LocalExposureTexture, BlurredLogLuminanceTexture, Temp, FFTInputSceneColor, Intermediates.ComputePassFlags);
+		AddApplyLocalExposurePass(GraphBuilder, View, EyeAdaptationParameters, EyeAdaptationBuffer, LocalExposureTexture, BlurredLogLuminanceTexture, Temp, FFTInputSceneColor, Intermediates.ComputePassFlags);
 	}
 
 	// Init the domain data update the cached kernel if needed.

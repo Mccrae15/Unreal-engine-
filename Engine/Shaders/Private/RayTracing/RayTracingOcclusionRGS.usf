@@ -60,13 +60,12 @@ uint				bUseHairVoxel;
 float				HairOcclusionThreshold;
 Texture2D<uint>		HairLightChannelMaskTexture;
 
-void NeedTraceHair(
+bool NeedTraceHair(
 	in uint2 PixelCoord,
-	inout bool bTraceHairRay,
 	inout float HairDeviceZ)
 {
 	const float HairSampleDepth = HairStrands.HairOnlyDepthTexture.Load(uint3(PixelCoord, 0)).x;
-	bTraceHairRay = false;
+	bool bTraceHairRay = false;
 	HairDeviceZ = 0;
 	if (HairSampleDepth > 0)
 	{
@@ -74,6 +73,8 @@ void NeedTraceHair(
 		HairDeviceZ = HairSampleDepth;
 		bTraceHairRay = (HairLightChannel & LightingChannelMask) != 0;
 	}
+
+	return bTraceHairRay;
 }
 #endif
 
@@ -187,7 +188,6 @@ float ComputeDiffuseTransmission(
 			TLAS,
 			RayFlags,
 			InstanceInclusionMask,
-			PixelCoord,
 			RejectionTestRay);
 		TMax = (RejectionTestPayload.IsHit() ? RejectionTestPayload.HitT : RejectionTestRay.TMax);
 		if (RejectionTestPayload.IsMiss())
@@ -229,7 +229,12 @@ float ComputeDiffuseTransmission(
 	// Build sub-surface scattering ray
 	FRayDesc SSSRay;
 	SSSRay.Origin = P + Tr * ScatterDistance;
-	GenerateOcclusionRay(LightParameters, SSSRay.Origin, N, LightSample, SSSRay.Origin, SSSRay.Direction, SSSRay.TMin, SSSRay.TMax);
+	bool bIsValidRay = GenerateOcclusionRay(LightParameters, SSSRay.Origin, N, LightSample, SSSRay.Origin, SSSRay.Direction, SSSRay.TMin, SSSRay.TMax);
+
+	if (!bIsValidRay)
+	{
+		return TransmissionDistance;
+	}
 
 	// Clip the ray length by the maximum transmission distance
 	float LightTMax = SSSRay.TMax;
@@ -239,7 +244,6 @@ float ComputeDiffuseTransmission(
 		TLAS,
 		RayFlags,
 		InstanceInclusionMask,
-		PixelCoord,
 		SSSRay);
 
 	if (SSSPayload.IsHit())
@@ -251,7 +255,6 @@ float ComputeDiffuseTransmission(
 			TLAS,
 			RayFlags,
 			InstanceInclusionMask,
-			PixelCoord,
 			SSSRay);
 		if (VisibilityPayload.IsMiss())
 		{
@@ -310,6 +313,7 @@ struct FOcclusionShadingParameters
 	bool bIsValid;
 	bool bBackfaceCulling;
 	bool bIsHair;
+	bool bIsHairStrands;
 	bool bIsSubsurface;
 	bool bHasSubsurfaceProfile;
 };
@@ -340,7 +344,7 @@ FOcclusionResult ComputeOcclusion(
 	// toward the view point (this create issue for transmitted light)
 	// It seems having proper transmission is more important, thus the light 
 	// version is enabled by default
-	if (ShadingDesc.bIsHair)
+	if (ShadingDesc.bIsHair || ShadingDesc.bIsHairStrands)
 	{
 	#if LIGHT_TYPE == LIGHT_TYPE_DIRECTIONAL
 		const float3 LightDirection = LightParameters.Direction;
@@ -376,7 +380,7 @@ FOcclusionResult ComputeOcclusion(
 
 		float2 RandSample = RandomSequence_GenerateSample2D(RandSequence);
 
-		FRayDesc Ray;
+		FRayDesc Ray = (FRayDesc)0;
 		bool bIsValidRay = GenerateOcclusionRay(
 			LightParameters,
 			TranslatedWorldPosition, WorldNormal,
@@ -434,7 +438,7 @@ FOcclusionResult ComputeOcclusion(
 		}
 
 	#if USE_HAIR_LIGHTING
-		if (ShadingDesc.bIsHair)
+		if (ShadingDesc.bIsHairStrands)
 		{
 			// Denoiser mode 0 doesn't use depth, so take first hit
 			RayFlags |= RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
@@ -456,7 +460,6 @@ FOcclusionResult ComputeOcclusion(
 					TLAS,
 					RayFlags | RayFlagsForOpaque | RAY_FLAG_CULL_BACK_FACING_TRIANGLES,
 					RaytracingMask,
-					PixelCoord,
 					EpsilonRay);
 			}
 		}
@@ -469,7 +472,6 @@ FOcclusionResult ComputeOcclusion(
 				TLAS,
 				RayFlags | RayFlagsForOpaque,
 				RaytracingMask,
-				PixelCoord,
 				Ray);
 		}
 #else
@@ -477,12 +479,11 @@ FOcclusionResult ComputeOcclusion(
 			TLAS,
 			RayFlags | RayFlagsForOpaque,
 			RaytracingMask,
-			PixelCoord,
 			Ray);
 #endif
 
 		#if USE_HAIR_LIGHTING
-		if (!ShadingDesc.bIsHair && bUseHairVoxel)
+		if (!ShadingDesc.bIsHairStrands && bUseHairVoxel)
 		{
 			MinimalPayload.HitT = TraverseHair(PixelCoord, RandSequence, Ray.Origin, Ray.Direction, MinimalPayload.HitT, VirtualVoxel.Raytracing_ShadowOcclusionThreshold);
 		}
@@ -507,7 +508,6 @@ FOcclusionResult ComputeOcclusion(
 					TLAS,
 					RayFlags,
 					RaytracingMask,
-					PixelCoord,
 					InvertedRay);
 
 				if (SubsurfacePayload.IsHit())
@@ -623,7 +623,7 @@ RAY_TRACING_ENTRY_RAYGEN(OcclusionRGS)
 			const bool bSSSIsValid = StrataSubSurfaceHeaderGetUseDiffusion(SSSHeader);
 			const bool bSSSIsProfile = StrataSubSurfaceHeaderGetIsProfile(SSSHeader);
 
-			ShadingParameters.bIsValid = IsStrataMaterial(TopLayerData);
+			ShadingParameters.bIsValid = IsStrataMaterial(StrataPixelHeader);
 			ShadingParameters.bIsHair = StrataGetBSDFType(StrataPixelHeader) == STRATA_BSDF_TYPE_HAIR;
 			ShadingParameters.bIsSubsurface = bSSSIsValid && !bSSSIsProfile;
 			ShadingParameters.bHasSubsurfaceProfile = bSSSIsValid && bSSSIsProfile;
@@ -678,12 +678,6 @@ RAY_TRACING_ENTRY_RAYGEN(OcclusionRGS)
 			LocalSamplesPerPixel = 0;
 		}
 
-	#if USE_HAIR_LIGHTING
-		bool bTraceHairRay = false;
-		float HairDeviceZ = 0;
-		NeedTraceHair(PixelCoord, bTraceHairRay, HairDeviceZ);
-	#endif
-
 		Occlusion = ComputeOcclusion(
 			PixelCoord,
 			RAY_TRACING_MASK_SHADOW | RAY_TRACING_MASK_THIN_SHADOW,
@@ -695,17 +689,22 @@ RAY_TRACING_ENTRY_RAYGEN(OcclusionRGS)
 			LocalSamplesPerPixel);
 
 		#if USE_HAIR_LIGHTING
-		if (bTraceHairRay)
+		float HairDeviceZ = 0;
+		if (NeedTraceHair(PixelCoord, HairDeviceZ))
 		{
-			ShadingParameters.bIsHair = true;
+			FTransmissionProfileParams HairTransmissionParameters = (FTransmissionProfileParams)0;
+			FOcclusionShadingParameters HairOcclusionShadingParameters = (FOcclusionShadingParameters)0;
+			HairOcclusionShadingParameters.bIsValid = true;
+			HairOcclusionShadingParameters.bIsHairStrands = true;
+
 			HairOcclusion = ComputeOcclusion(
 				PixelCoord,
 				RAY_TRACING_MASK_SHADOW,
 				HairDeviceZ,
 				float3(1,0,0),
-				ShadingParameters,
+				HairOcclusionShadingParameters,
 				LightParameters,
-				TransmissionParameters,
+				HairTransmissionParameters,
 				RequestedSamplePerPixel);
 		}
 		#endif
@@ -716,7 +715,7 @@ RAY_TRACING_ENTRY_RAYGEN(OcclusionRGS)
 	{
 		// the channel assignment is documented in ShadowRendering.cpp (look for Light Attenuation channel assignment)
 		const float HairShadow = OcclusionToShadow(HairOcclusion, RequestedSamplePerPixel);
-		const float FadedShadow = Square(HairShadow);
+		const float FadedShadow = HairShadow;
 		const float4 OutColor = EncodeLightAttenuation(FadedShadow.xxxx);
 		RWSubPixelOcclusionMaskUAV[PixelCoord] = OutColor;
 	}
@@ -756,8 +755,8 @@ RAY_TRACING_ENTRY_RAYGEN(OcclusionRGS)
 
 		// 0 is shadowed, 1 is unshadowed
 		// RETURN_COLOR not needed unless writing to SceneColor;
-		float FadedShadow = lerp(1.0f, Square(Shadow), ShadowFadeFraction);
-		float FadedSSSShadow = lerp(1.0f, Square(SSSTransmission), ShadowFadeFraction);
+		float FadedShadow = lerp(1.0f, Shadow, ShadowFadeFraction);
+		float FadedSSSShadow = lerp(1.0f, SSSTransmission, ShadowFadeFraction);
 
 		// the channel assignment is documented in ShadowRendering.cpp (look for Light Attenuation channel assignment)
 		float4 OutColor;

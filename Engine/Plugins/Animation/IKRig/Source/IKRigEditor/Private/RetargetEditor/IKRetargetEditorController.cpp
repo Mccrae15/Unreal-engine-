@@ -4,6 +4,7 @@
 
 #include "AnimPose.h"
 #include "AssetToolsModule.h"
+#include "ContentBrowserModule.h"
 #include "EditorModeManager.h"
 #include "IContentBrowserSingleton.h"
 #include "SkeletalDebugRendering.h"
@@ -31,7 +32,7 @@ FBoundIKRig::FBoundIKRig(UIKRigDefinition* InIKRig, const FIKRetargetEditorContr
 {
 	check(InIKRig);
 	IKRig = InIKRig;
-	UIKRigController* IKRigController = UIKRigController::GetIKRigController(InIKRig);
+	UIKRigController* IKRigController = UIKRigController::GetController(InIKRig);
 	ReInitIKDelegateHandle = IKRigController->OnIKRigNeedsInitialized().AddSP(&InController, &FIKRetargetEditorController::HandleIKRigNeedsInitialized);
 	AddedChainDelegateHandle = IKRigController->OnRetargetChainAdded().AddSP(&InController, &FIKRetargetEditorController::HandleRetargetChainAdded);
 	RemoveChainDelegateHandle = IKRigController->OnRetargetChainRemoved().AddSP(&InController, &FIKRetargetEditorController::HandleRetargetChainRemoved);
@@ -41,11 +42,96 @@ FBoundIKRig::FBoundIKRig(UIKRigDefinition* InIKRig, const FIKRetargetEditorContr
 void FBoundIKRig::UnBind() const
 {
 	check(IKRig);
-	UIKRigController* IKRigController = UIKRigController::GetIKRigController(IKRig);
+	UIKRigController* IKRigController = UIKRigController::GetController(IKRig);
 	IKRigController->OnIKRigNeedsInitialized().Remove(ReInitIKDelegateHandle);
 	IKRigController->OnRetargetChainAdded().Remove(AddedChainDelegateHandle);
 	IKRigController->OnRetargetChainRemoved().Remove(RemoveChainDelegateHandle);
 	IKRigController->OnRetargetChainRenamed().Remove(RenameChainDelegateHandle);
+}
+
+FRetargetPlaybackManager::FRetargetPlaybackManager(TWeakPtr<FIKRetargetEditorController> InEditorController)
+{
+	check(InEditorController.Pin())
+	EditorController = InEditorController;
+}
+
+void FRetargetPlaybackManager::PlayAnimationAsset(UAnimationAsset* AssetToPlay)
+{
+	UIKRetargetAnimInstance* AnimInstance = EditorController.Pin()->SourceAnimInstance.Get();
+	if (!AnimInstance)
+	{
+		return;
+	}
+	
+	if (AssetToPlay)
+	{
+		AnimInstance->SetAnimationAsset(AssetToPlay);
+		AnimInstance->SetPlaying(true);
+		AnimThatWasPlaying = AssetToPlay;
+		// ensure we are running the retargeter so you can see the animation
+		if (FIKRetargetEditorController* Controller = EditorController.Pin().Get())
+		{
+			Controller->SetRetargeterMode(ERetargeterOutputMode::RunRetarget);
+		}
+	}
+}
+
+void FRetargetPlaybackManager::StopPlayback() const
+{
+	UIKRetargetAnimInstance* AnimInstance = EditorController.Pin()->SourceAnimInstance.Get();
+	if (!AnimInstance)
+	{
+		return;
+	}
+	
+	AnimInstance->SetPlaying(false);
+	AnimInstance->SetAnimationAsset(nullptr);
+}
+
+void FRetargetPlaybackManager::PausePlayback()
+{
+	UIKRetargetAnimInstance* AnimInstance = EditorController.Pin()->SourceAnimInstance.Get();
+	if (!AnimInstance)
+	{
+		return;
+	}
+	
+	AnimThatWasPlaying = AnimInstance->GetAnimationAsset();
+	
+	if (AnimThatWasPlaying)
+	{
+		TimeWhenPaused = AnimInstance->GetCurrentTime();
+	}
+	
+	AnimInstance->SetPlaying(false);
+	AnimInstance->SetAnimationAsset(nullptr);
+}
+
+void FRetargetPlaybackManager::ResumePlayback() const
+{
+	UIKRetargetAnimInstance* AnimInstance = EditorController.Pin()->SourceAnimInstance.Get();
+	if (!AnimInstance)
+	{
+		return;
+	}
+	
+	if (AnimThatWasPlaying)
+	{
+		AnimInstance->SetAnimationAsset(AnimThatWasPlaying);
+		AnimInstance->SetPlaying(true);
+		AnimInstance->SetPosition(TimeWhenPaused);	
+	}
+}
+
+bool FRetargetPlaybackManager::IsStopped() const
+{
+	UIKRetargetAnimInstance* AnimInstance = EditorController.Pin()->SourceAnimInstance.Get();
+	if (!AnimInstance)
+	{
+		return true;
+	}
+	
+	return !AnimInstance->GetAnimationAsset();
 }
 
 void FIKRetargetEditorController::Initialize(TSharedPtr<FIKRetargetEditor> InEditor, UIKRetargeter* InAsset)
@@ -58,25 +144,30 @@ void FIKRetargetEditorController::Initialize(TSharedPtr<FIKRetargetEditor> InEdi
 	PoseExporter = MakeShared<FIKRetargetPoseExporter>();
 	PoseExporter->Initialize(SharedThis(this));
 
+	PlaybackManager = MakeUnique<FRetargetPlaybackManager>(SharedThis(this));
+
 	SelectedBoneNames.Add(ERetargetSourceOrTarget::Source);
 	SelectedBoneNames.Add(ERetargetSourceOrTarget::Target);
 	LastSelectedItem = ERetargetSelectionType::NONE;
 
 	// clean the asset before editing
-	const bool bForceReinitialization = false;
-	AssetController->CleanChainMapping(bForceReinitialization);
-	AssetController->CleanPoseLists(bForceReinitialization);
+	AssetController->CleanAsset();
 
 	// bind callbacks when SOURCE or TARGET IK Rigs are modified
-	BindToIKRigAssets(AssetController->GetAsset());
+	BindToIKRigAssets();
 
 	// bind callback when retargeter needs reinitialized
 	RetargeterReInitDelegateHandle = AssetController->OnRetargeterNeedsInitialized().AddSP(this, &FIKRetargetEditorController::HandleRetargeterNeedsInitialized);
+	// bind callback when IK Rig asset is replaced with a different asset
+	IKRigReplacedDelegateHandle = AssetController->OnIKRigReplaced().AddSP(this, &FIKRetargetEditorController::HandleIKRigReplaced);
+	// bind callback when Preview Mesh asset is replaced with a different asset
+	PreviewMeshReplacedDelegateHandle = AssetController->OnPreviewMeshReplaced().AddSP(this, &FIKRetargetEditorController::HandlePreviewMeshReplaced);
 }
 
 void FIKRetargetEditorController::Close()
 {
 	AssetController->OnRetargeterNeedsInitialized().Remove(RetargeterReInitDelegateHandle);
+	AssetController->OnIKRigReplaced().Remove(IKRigReplacedDelegateHandle);
 
 	for (const FBoundIKRig& BoundIKRig : BoundIKRigs)
 	{
@@ -84,8 +175,72 @@ void FIKRetargetEditorController::Close()
 	}
 }
 
-void FIKRetargetEditorController::BindToIKRigAssets(UIKRetargeter* InAsset)
+void FIKRetargetEditorController::PromptUserToAssignIKRig(const ERetargetSourceOrTarget SourceOrTarget)
 {
+	// early out if we already have an IK Rig assigned or is unattended
+	if (AssetController->GetIKRig(SourceOrTarget) || FApp::IsUnattended())
+	{
+		return;
+	}
+	
+	// Load the content browser module to display an asset picker
+	FContentBrowserModule& ContentBrowserModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
+	FAssetPickerConfig AssetPickerConfig;
+	// must set the parent UObject so that the resulting list filters correctly in multi-project environments
+	AssetPickerConfig.AdditionalReferencingAssets.Add(AssetController->GetAsset());
+	/** The asset picker will only show skeletal meshes */
+	AssetPickerConfig.Filter.ClassPaths.Add(UIKRigDefinition::StaticClass()->GetClassPathName());
+	AssetPickerConfig.Filter.bRecursiveClasses = true;
+	/** The delegate that fires when an asset was selected */
+	AssetPickerConfig.OnAssetSelected =  FOnAssetSelected::CreateLambda([this, &SourceOrTarget](const FAssetData& AssetData)
+	{
+		IKRigPickerWindow->RequestDestroyWindow();
+
+		// set the IK Rig
+		if (const TObjectPtr<UIKRigDefinition> IKRigAsset = Cast<UIKRigDefinition>(AssetData.GetAsset()))
+		{
+			AssetController->SetIKRig(SourceOrTarget, IKRigAsset.Get());
+		}
+	});
+	/** The default view mode should be a list view */
+	AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
+
+	// change title depending on if we're picking a source or target IK Rig
+	FText TitleText;
+	if (SourceOrTarget == ERetargetSourceOrTarget::Source)
+	{
+		TitleText = LOCTEXT("SelectSourceIKRig", "Select Source IK Rig (To Copy Animation From)");
+	}
+	else
+	{
+		TitleText = LOCTEXT("SelectTargetIKRig", "Select Target IK Rig (To Copy Animation To)");
+	}
+
+	// show an asset browser in a pop-up modal dialog
+	IKRigPickerWindow = SNew(SWindow)
+	.Title(TitleText)
+	.ClientSize(FVector2D(500, 600))
+	.SupportsMinimize(false).SupportsMaximize(false)
+	[
+		SNew(SBorder)
+		.BorderImage( FAppStyle::GetBrush("Menu.Background") )
+		[
+			ContentBrowserModule.Get().CreateAssetPicker(AssetPickerConfig)
+		]
+	];
+
+	GEditor->EditorAddModalWindow(IKRigPickerWindow.ToSharedRef());
+	IKRigPickerWindow.Reset();
+}
+
+void FIKRetargetEditorController::BindToIKRigAssets()
+{
+	const UIKRetargeter* Asset = AssetController->GetAsset();
+	if (!Asset)
+	{
+		return;
+	}
+	
 	// unbind previously bound IK Rigs
 	for (const FBoundIKRig& BoundIKRig : BoundIKRigs)
 	{
@@ -93,15 +248,15 @@ void FIKRetargetEditorController::BindToIKRigAssets(UIKRetargeter* InAsset)
 	}
 
 	BoundIKRigs.Empty();
-
-	if (InAsset->GetSourceIKRigWriteable())
+	
+	if (Asset->GetSourceIKRigWriteable())
 	{
-		BoundIKRigs.Emplace(FBoundIKRig(InAsset->GetSourceIKRigWriteable(), *this));
+		BoundIKRigs.Emplace(FBoundIKRig(Asset->GetSourceIKRigWriteable(), *this));
 	}
 
-	if (InAsset->GetTargetIKRigWriteable())
+	if (Asset->GetTargetIKRigWriteable())
 	{
-		BoundIKRigs.Emplace(FBoundIKRig(InAsset->GetTargetIKRigWriteable(), *this));
+		BoundIKRigs.Emplace(FBoundIKRig(Asset->GetTargetIKRigWriteable(), *this));
 	}
 }
 
@@ -115,30 +270,30 @@ void FIKRetargetEditorController::HandleIKRigNeedsInitialized(UIKRigDefinition* 
 	check(bIsSource || bIsTarget);
 
 	// the target anim instance has the RetargetPoseFromMesh node which needs reinitialized with new asset version
-	HandleRetargeterNeedsInitialized(Retargeter);
+	HandleRetargeterNeedsInitialized();
 }
 
 void FIKRetargetEditorController::HandleRetargetChainAdded(UIKRigDefinition* ModifiedIKRig) const
 {
 	check(ModifiedIKRig)
-	AssetController->OnRetargetChainAdded(ModifiedIKRig);
+	AssetController->HandleRetargetChainAdded(ModifiedIKRig);
 	RefreshAllViews();
 }
 
 void FIKRetargetEditorController::HandleRetargetChainRenamed(UIKRigDefinition* ModifiedIKRig, FName OldName, FName NewName) const
 {
 	check(ModifiedIKRig)
-	AssetController->OnRetargetChainRenamed(ModifiedIKRig, OldName, NewName);
+	AssetController->HandleRetargetChainRenamed(ModifiedIKRig, OldName, NewName);
 }
 
-void FIKRetargetEditorController::HandleRetargetChainRemoved(UIKRigDefinition* ModifiedIKRig, const FName& InChainRemoved) const
+void FIKRetargetEditorController::HandleRetargetChainRemoved(UIKRigDefinition* ModifiedIKRig, const FName InChainRemoved) const
 {
 	check(ModifiedIKRig)
-	AssetController->OnRetargetChainRemoved(ModifiedIKRig, InChainRemoved);
+	AssetController->HandleRetargetChainRemoved(ModifiedIKRig, InChainRemoved);
 	RefreshAllViews();
 }
 
-void FIKRetargetEditorController::HandleRetargeterNeedsInitialized(UIKRetargeter* Retargeter) const
+void FIKRetargetEditorController::HandleRetargeterNeedsInitialized() const
 {
 	// clear the output log
 	ClearOutputLog();
@@ -154,7 +309,7 @@ void FIKRetargetEditorController::HandleRetargeterNeedsInitialized(UIKRetargeter
 		Processor->Initialize(
 			GetSkeletalMesh(ERetargetSourceOrTarget::Source),
 			GetSkeletalMesh(ERetargetSourceOrTarget::Target),
-			Retargeter,
+			AssetController->GetAsset(),
 			bSuppressWarnings);
 	}
 	
@@ -162,14 +317,54 @@ void FIKRetargetEditorController::HandleRetargeterNeedsInitialized(UIKRetargeter
 	RefreshAllViews();
 }
 
+void FIKRetargetEditorController::HandleIKRigReplaced(ERetargetSourceOrTarget SourceOrTarget)
+{
+	BindToIKRigAssets();
+}
+
+void FIKRetargetEditorController::HandlePreviewMeshReplaced(ERetargetSourceOrTarget SourceOrTarget)
+{
+	// pause playback so we can resume after mesh swapped out
+	PlaybackManager->PausePlayback();
+	
+	// set the source and target skeletal meshes on the component
+	// NOTE: this must be done AFTER setting the AnimInstance so that the correct root anim node is loaded
+	USkeletalMesh* SourceMesh = GetSkeletalMesh(ERetargetSourceOrTarget::Source);
+	USkeletalMesh* TargetMesh = GetSkeletalMesh(ERetargetSourceOrTarget::Target);
+	SourceSkelMeshComponent->SetSkeletalMesh(SourceMesh);
+	TargetSkelMeshComponent->SetSkeletalMesh(TargetMesh);
+
+	// clean bone selections in case of incompatible indices
+	CleanSelection(ERetargetSourceOrTarget::Source);
+	CleanSelection(ERetargetSourceOrTarget::Target);
+
+	// apply mesh to the preview scene
+	TSharedRef<IPersonaPreviewScene> PreviewScene = Editor.Pin()->GetPersonaToolkit()->GetPreviewScene();
+	if (PreviewScene->GetPreviewMesh() != SourceMesh)
+	{
+		PreviewScene->SetPreviewMeshComponent(SourceSkelMeshComponent);
+		PreviewScene->SetPreviewMesh(SourceMesh);
+		SourceSkelMeshComponent->bCanHighlightSelectedSections = false;
+	}
+
+	// re-initializes the anim instances running in the viewport
+	if (SourceAnimInstance)
+	{
+		Editor.Pin()->SetupAnimInstance();	
+	}
+
+	// continue playing where we left off
+	PlaybackManager->ResumePlayback();
+}
+
 UDebugSkelMeshComponent* FIKRetargetEditorController::GetSkeletalMeshComponent(
-	const ERetargetSourceOrTarget& SourceOrTarget) const
+	const ERetargetSourceOrTarget SourceOrTarget) const
 {
 	return SourceOrTarget == ERetargetSourceOrTarget::Source ? SourceSkelMeshComponent : TargetSkelMeshComponent;
 }
 
 UIKRetargetAnimInstance* FIKRetargetEditorController::GetAnimInstance(
-	const ERetargetSourceOrTarget& SourceOrTarget) const
+	const ERetargetSourceOrTarget SourceOrTarget) const
 {
 	return SourceOrTarget == ERetargetSourceOrTarget::Source ? SourceAnimInstance.Get() : TargetAnimInstance.Get();
 }
@@ -197,6 +392,122 @@ void FIKRetargetEditorController::AddOffsetToMeshComponent(const FVector& Offset
 	constexpr ETeleportType Teleport = ETeleportType::ResetPhysics;
 	MeshComponent->SetWorldLocation(Position, bSweep, OutSweepHitResult, Teleport);
 	MeshComponent->SetWorldScale3D(FVector(Scale,Scale,Scale));
+}
+
+bool FIKRetargetEditorController::GetCameraTargetForSelection(FSphere& OutTarget) const
+{
+	// center the view on the last selected item
+	switch (GetLastSelectedItemType())
+	{
+	case ERetargetSelectionType::BONE:
+		{
+			// target the selected bones
+			const TArray<FName>& SelectedBones = GetSelectedBones();
+			if (SelectedBones.IsEmpty())
+			{
+				return false;
+			}
+
+			TArray<FVector> TargetPoints;
+			const UDebugSkelMeshComponent* SkeletalMeshComponent = GetSkeletalMeshComponent(GetSourceOrTarget());
+			const FReferenceSkeleton& RefSkeleton = SkeletalMeshComponent->GetReferenceSkeleton();
+			TArray<int32> ChildrenIndices;
+			for (const FName& SelectedBoneName : SelectedBones)
+			{
+				const int32 BoneIndex = RefSkeleton.FindBoneIndex(SelectedBoneName);
+				if (BoneIndex == INDEX_NONE)
+				{
+					continue;
+				}
+
+				TargetPoints.Add(SkeletalMeshComponent->GetBoneTransform(BoneIndex).GetLocation());
+				ChildrenIndices.Reset();
+				RefSkeleton.GetDirectChildBones(BoneIndex, ChildrenIndices);
+				for (const int32 ChildIndex : ChildrenIndices)
+				{
+					TargetPoints.Add(SkeletalMeshComponent->GetBoneTransform(ChildIndex).GetLocation());
+				}
+			}
+	
+			// create a sphere that contains all the target points
+			if (TargetPoints.Num() == 0)
+			{
+				TargetPoints.Add(FVector::ZeroVector);
+			}
+			OutTarget = FSphere(&TargetPoints[0], TargetPoints.Num());
+			return true;
+		}
+		
+	case ERetargetSelectionType::CHAIN:
+		{
+			const ERetargetSourceOrTarget SourceOrTarget = GetSourceOrTarget();
+			const UIKRigDefinition* IKRig = AssetController->GetIKRig(SourceOrTarget);
+			if (!IKRig)
+			{
+				return false;
+			}
+
+			const UDebugSkelMeshComponent* SkeletalMeshComponent = GetSkeletalMeshComponent(GetSourceOrTarget());
+			const FReferenceSkeleton& RefSkeleton = SkeletalMeshComponent->GetReferenceSkeleton();
+
+			// get target points from start/end bone of all selected chains on the currently active skeleton (source or target)
+			TArray<FVector> TargetPoints;
+			const TArray<FName>& SelectedChainNames = GetSelectedChains();
+			for (const FName SelectedChainName : SelectedChainNames)
+			{
+				const FName SourceChain = AssetController->GetSourceChain(SelectedChainName);
+				if (SourceChain == NAME_None)
+				{
+					continue;
+				}
+
+				const FName& ChainName = SourceOrTarget == ERetargetSourceOrTarget::Target ? SelectedChainName : SourceChain;
+				if (ChainName == NAME_None)
+				{
+					continue;
+				}
+
+				const UIKRigController* RigController = UIKRigController::GetController(IKRig);
+				const FBoneChain* BoneChain = RigController->GetRetargetChainByName(ChainName);
+				if (!BoneChain)
+				{
+					continue;
+				}
+
+				const int32 StartBoneIndex = RefSkeleton.FindBoneIndex(BoneChain->StartBone.BoneName);
+				if (StartBoneIndex != INDEX_NONE)
+				{
+					TargetPoints.Add(SkeletalMeshComponent->GetBoneTransform(StartBoneIndex).GetLocation());
+				}
+
+				const int32 EndBoneIndex = RefSkeleton.FindBoneIndex(BoneChain->EndBone.BoneName);
+				if (EndBoneIndex != INDEX_NONE)
+				{
+					TargetPoints.Add(SkeletalMeshComponent->GetBoneTransform(EndBoneIndex).GetLocation());
+				}
+			}
+
+			// create a sphere that contains all the target points
+			if (TargetPoints.Num() == 0)
+			{
+				TargetPoints.Add(FVector::ZeroVector);
+			}
+			OutTarget = FSphere(&TargetPoints[0], TargetPoints.Num());
+			return true;	
+		}
+	case ERetargetSelectionType::ROOT:
+	case ERetargetSelectionType::MESH:
+	case ERetargetSelectionType::NONE:
+	default:
+		// target the current mesh
+		if (const UPrimitiveComponent* CurrentMesh = GetSkeletalMeshComponent(GetSourceOrTarget()))
+		{
+			OutTarget = CurrentMesh->Bounds.GetSphere();
+			return true;
+		}
+	}
+
+	return false;
 }
 
 bool FIKRetargetEditorController::IsBoneRetargeted(const FName& BoneName, ERetargetSourceOrTarget SourceOrTarget) const
@@ -442,43 +753,6 @@ void FIKRetargetEditorController::SetDetailsObjects(const TArray<UObject*>& Deta
 	}
 }
 
-void FIKRetargetEditorController::PlayAnimationAsset(UAnimationAsset* AssetToPlay)
-{
-	if (AssetToPlay && SourceAnimInstance.IsValid())
-	{
-		SourceAnimInstance->SetAnimationAsset(AssetToPlay);
-		SourceAnimInstance->SetPlaying(true);
-		AnimThatWasPlaying = AssetToPlay;
-		// ensure we are running the retargeter so you can see the animation
-		SetRetargeterMode(ERetargeterOutputMode::RunRetarget);
-	}
-}
-
-void FIKRetargetEditorController::StopPlayback()
-{
-	SourceAnimInstance->SetPlaying(false);
-	SourceAnimInstance->SetAnimationAsset(nullptr);
-}
-
-void FIKRetargetEditorController::PausePlayback()
-{
-	if (UAnimationAsset* CurrentAnim = SourceAnimInstance->GetAnimationAsset())
-	{
-		AnimThatWasPlaying = CurrentAnim;
-		TimeWhenPaused = SourceAnimInstance->GetCurrentTime();
-	}
-	
-	SourceAnimInstance->SetPlaying(false);
-	SourceAnimInstance->SetAnimationAsset(nullptr);
-}
-
-void FIKRetargetEditorController::ResumePlayback()
-{
-	SourceAnimInstance->SetAnimationAsset(AnimThatWasPlaying);
-	SourceAnimInstance->SetPlaying(true);
-	SourceAnimInstance->SetPosition(TimeWhenPaused);
-}
-
 float FIKRetargetEditorController::GetRetargetPoseAmount() const
 {
 	return RetargetPosePreviewBlend;
@@ -595,6 +869,12 @@ void FIKRetargetEditorController::EditBoneSelection(
 	{
 		RefreshHierarchyView();
 	}
+	else
+	{
+		// If selection was made from the hierarchy view, the viewport must be invalidated for the
+		// new widget hit proxies to be activated. Otherwise user has to click in the viewport first to gain focus.
+		Editor.Pin()->GetPersonaToolkit()->GetPreviewScene()->InvalidateViews();
+	}
 
 	// update details
 	if (SelectedBoneNames[CurrentlyEditingSourceOrTarget].IsEmpty())
@@ -701,6 +981,28 @@ void FIKRetargetEditorController::SetRootSelected(const bool bIsSelected)
 	LastSelectedItem = ERetargetSelectionType::ROOT;
 }
 
+void FIKRetargetEditorController::CleanSelection(ERetargetSourceOrTarget SourceOrTarget)
+{
+	USkeletalMesh* SkeletalMesh = GetSkeletalMesh(SourceOrTarget);
+	if (!SkeletalMesh)
+	{
+		SelectedBoneNames[SourceOrTarget].Empty();
+		return;
+	}
+
+	TArray<FName> CleanedSelection;
+	const FReferenceSkeleton& RefSkeleton = SkeletalMesh->GetRefSkeleton();
+	for (const FName& SelectedBone : SelectedBoneNames[SourceOrTarget])
+	{
+		if (RefSkeleton.FindBoneIndex(SelectedBone))
+		{
+			CleanedSelection.Add(SelectedBone);
+		}
+	}
+
+	SelectedBoneNames[SourceOrTarget] = CleanedSelection;
+}
+
 void FIKRetargetEditorController::ClearSelection(const bool bKeepBoneSelection)
 {
 	// clear root and mesh selection
@@ -751,7 +1053,7 @@ void FIKRetargetEditorController::SetRetargeterMode(ERetargeterOutputMode Mode)
 			OutputMode = ERetargeterOutputMode::EditRetargetPose;
 			SourceAnimInstance->SetRetargetMode(ERetargeterOutputMode::EditRetargetPose);
 			TargetAnimInstance->SetRetargetMode(ERetargeterOutputMode::EditRetargetPose);
-			PausePlayback();
+			PlaybackManager->PausePlayback();
 			SetRetargetPoseAmount(1.0f);
 			break;
 		
@@ -761,9 +1063,7 @@ void FIKRetargetEditorController::SetRetargeterMode(ERetargeterOutputMode Mode)
 			OutputMode = ERetargeterOutputMode::RunRetarget;
 			SourceAnimInstance->SetRetargetMode(ERetargeterOutputMode::RunRetarget);
 			TargetAnimInstance->SetRetargetMode(ERetargeterOutputMode::RunRetarget);
-			// force a reinitialization in case retarget pose was edited
-			AssetController->BroadcastNeedsReinitialized();
-			ResumePlayback();
+			PlaybackManager->ResumePlayback();
 			break;
 
 		case ERetargeterOutputMode::ShowRetargetPose:
@@ -773,7 +1073,7 @@ void FIKRetargetEditorController::SetRetargeterMode(ERetargeterOutputMode Mode)
 			// show retarget pose
 			SourceAnimInstance->SetRetargetMode(ERetargeterOutputMode::ShowRetargetPose);
 			TargetAnimInstance->SetRetargetMode(ERetargeterOutputMode::ShowRetargetPose);
-			PausePlayback();
+			PlaybackManager->PausePlayback();
 			SetRetargetPoseAmount(1.0f);
 			break;
 
@@ -910,7 +1210,7 @@ bool FIKRetargetEditorController::CanCreatePose() const
 FReply FIKRetargetEditorController::CreateNewPose() const
 {
 	const FName NewPoseName = FName(NewPoseEditableText.Get()->GetText().ToString());
-	AssetController->AddRetargetPose(NewPoseName, nullptr, GetSourceOrTarget());
+	AssetController->CreateRetargetPose(NewPoseName, GetSourceOrTarget());
 	NewPoseWindow->RequestDestroyWindow();
 	RefreshPoseList();
 	return FReply::Handled();
@@ -989,9 +1289,9 @@ void FIKRetargetEditorController::HandleDuplicatePose()
 
 FReply FIKRetargetEditorController::CreateDuplicatePose() const
 {
-	const FIKRetargetPose& PoseToDuplicate = AssetController->GetCurrentRetargetPose(CurrentlyEditingSourceOrTarget);
+	const FName PoseToDuplicate = AssetController->GetCurrentRetargetPoseName(CurrentlyEditingSourceOrTarget);
 	const FName NewPoseName = FName(NewPoseEditableText.Get()->GetText().ToString());
-	AssetController->AddRetargetPose(NewPoseName, &PoseToDuplicate, GetSourceOrTarget());
+	AssetController->DuplicateRetargetPose(PoseToDuplicate, NewPoseName, GetSourceOrTarget());
 	NewPoseWindow->RequestDestroyWindow();
 	RefreshPoseList();
 	return FReply::Handled();
@@ -1139,8 +1439,9 @@ FReply FIKRetargetEditorController::RenamePose() const
 {
 	const FName NewPoseName = FName(NewNameEditableText.Get()->GetText().ToString());
 	RenamePoseWindow->RequestDestroyWindow();
-	
-	AssetController->RenameCurrentRetargetPose(NewPoseName, GetSourceOrTarget());
+
+	const FName CurrentPoseName = AssetController->GetCurrentRetargetPoseName(GetSourceOrTarget());
+	AssetController->RenameRetargetPose(CurrentPoseName, NewPoseName, GetSourceOrTarget());
 	RefreshPoseList();
 	return FReply::Handled();
 }
@@ -1159,6 +1460,9 @@ void FIKRetargetEditorController::AddReferencedObjects(FReferenceCollector& Coll
 	{
 		Collector.AddReferencedObject(Pair.Value);
 	}
+
+	Collector.AddReferencedObject(SourceAnimInstance);
+	Collector.AddReferencedObject(TargetAnimInstance);
 }
 
 void FIKRetargetEditorController::RenderSkeleton(FPrimitiveDrawInterface* PDI, ERetargetSourceOrTarget InSourceOrTarget) const

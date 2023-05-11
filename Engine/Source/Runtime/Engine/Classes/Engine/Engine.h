@@ -12,12 +12,18 @@
 #include "Engine/EngineBaseTypes.h"
 #include "UObject/SoftObjectPath.h"
 #include "Engine/World.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "Misc/BufferedOutputDevice.h"
+#endif
 #include "Misc/FrameRate.h"
 #include "Subsystems/SubsystemCollection.h"
 #include "Subsystems/EngineSubsystem.h"
+#include "RHIDefinitions.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "RHI.h"
 #include "AudioDeviceManager.h"
+#endif
+#include "Templates/PimplPtr.h"
 #include "Templates/UniqueObj.h"
 #include "Containers/Ticker.h"
 #include "DynamicRenderScaling.h"
@@ -27,6 +33,7 @@
 
 class APlayerController;
 class Error;
+class FAudioDeviceManager;
 class FCanvas;
 class FCommonViewportClient;
 class FFineGrainedPerformanceTracker;
@@ -73,7 +80,7 @@ enum class EGetWorldErrorMode
  * Enumerates types of fully loaded packages.
  */
 UENUM()
-enum EFullyLoadPackageType
+enum EFullyLoadPackageType : int
 {
 	/** Load the packages when the map in Tag is loaded. */
 	FULLYLOAD_Map,
@@ -943,6 +950,14 @@ public:
 	UPROPERTY(globalconfig)
 	FSoftObjectPath DebugMeshMaterialName;
 
+	/** Material used for removing Nanite mesh sections from rasterization. */
+	UPROPERTY()
+	TObjectPtr<class UMaterial> NaniteHiddenSectionMaterial;
+
+	/** Path of the material used for removing Nanite mesh sections from rasterization. */
+	UPROPERTY(globalconfig)
+	FString NaniteHiddenSectionMaterialName;
+
 	/** A material used to render emissive meshes (e.g. light source surface). */
 	UPROPERTY()
 	TObjectPtr<class UMaterial> EmissiveMeshMaterial;
@@ -1482,7 +1497,7 @@ public:
 	/** 
 	 * Whether we should check for more than N pawns spawning in a single frame.
 	 * Basically, spawning pawns and all of their attachments can be slow.  And on consoles it
-	 * can be really slow.  If this bool is true we will display a 
+	 * can be really slow.  If enabled, we will display an on-screen warning whenever this multi-spawn occurs.
 	 **/
 	UPROPERTY(config)
 	uint32 bCheckForMultiplePawnsSpawnedInAFrame:1;
@@ -1538,8 +1553,8 @@ public:
 	UPROPERTY()
 	FColor C_BrushShape;
 
-	/** Fudge factor for tweaking the distance based miplevel determination */
-	UPROPERTY(EditAnywhere, Category=LevelStreaming, AdvancedDisplay)
+	/** Fudge factor for tweaking the distance based miplevel determination. No longer used. */
+	UE_DEPRECATED(5.2, "This setting is no longer used.")
 	float StreamingDistanceFactor;
 
 	/** The save directory for newly created screenshots */
@@ -1551,6 +1566,9 @@ public:
 
 	UPROPERTY(config, EditAnywhere, Category = PerQualityLevelProperty, AdvancedDisplay)
 	bool UseSkeletalMeshMinLODPerQualityLevels;
+
+	UPROPERTY(config, EditAnywhere, Category = PerQualityLevelProperty, AdvancedDisplay)
+	bool UseGrassVarityPerQualityLevels;
 
 	/** The state of the current map transition.  */
 	UPROPERTY()
@@ -2147,9 +2165,17 @@ public:
 	void ParseCommandline();
 
 	//~ Begin FExec Interface
+public:
+#if UE_ALLOW_EXEC_COMMANDS
 	virtual bool Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Out=*GLog ) override;
+#endif
+
+protected:
+	virtual bool Exec_Dev( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Out=*GLog ) override;
+	virtual bool Exec_Editor(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Out = *GLog) override;
 	//~ End FExec Interface
 
+public:
 	/** 
 	 * Exec command handlers
 	 */
@@ -2857,6 +2883,7 @@ public:
 
 		// In cases where the SourceObject will no longer be able to look up its correct Archetype, it can be supplied
 		UObject* SourceObjectArchetype;
+		TMap<UObject*, UObject*>* OptionalReplacementMappings;
 
 		ENGINE_API FCopyPropertiesForUnrelatedObjectsParams();
 		ENGINE_API FCopyPropertiesForUnrelatedObjectsParams(const FCopyPropertiesForUnrelatedObjectsParams&);
@@ -3664,20 +3691,8 @@ private:
 
 	// Helper struct that registers itself with the output redirector and copies off warnings
 	// and errors that we'll overlay on the client viewport
-	struct FErrorsAndWarningsCollector : public FBufferedOutputDevice
-	{
-		FErrorsAndWarningsCollector();
-		~FErrorsAndWarningsCollector();
-
-		void Initialize();
-		bool Tick(float Seconds);
-
-		TMap<uint32, uint32>	MessagesToCountMap;
-		FTSTicker::FDelegateHandle			TickerHandle;
-		float					DisplayTime;
-	};
-
-	FErrorsAndWarningsCollector	ErrorsAndWarningsCollector;
+	struct FErrorsAndWarningsCollector;
+	TPimplPtr<FErrorsAndWarningsCollector> ErrorsAndWarningsCollector;
 
 private:
 
@@ -3701,6 +3716,7 @@ private:
 	bool ToggleStatUnitTime(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
 	bool ToggleStatRaw(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
 	bool ToggleStatParticlePerf(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
+	bool ToggleStatTSR(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
 #endif
 
 	/**

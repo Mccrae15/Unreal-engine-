@@ -590,11 +590,11 @@ bool SMultiRigHierarchyTreeView::AddElement(UControlRig* InControlRig, const FRi
 						if(ControlElement->Settings.AnimationType == ERigControlAnimationType::AnimationControl)
 						{
 							const FRigElementKey& ElementKey = InElement->GetKey();
-							const FName BoneName = FKControlRig->GetControlTargetName(ElementKey.Name, ElementKey.Type);
+							const FName BoneName = FKControlRig->GetControlTargetName(ElementKey.Name, ParentKey.Type);
 							const FRigElementKey ParentBoneKey = Hierarchy->GetFirstParent(FRigElementKey(BoneName, ERigElementType::Bone));
 							if(ParentBoneKey.IsValid())
 							{
-								ParentKey = FRigElementKey(FKControlRig->GetControlName(ParentBoneKey.Name, ElementKey.Type), ElementKey.Type);
+								ParentKey = FRigElementKey(FKControlRig->GetControlName(ParentBoneKey.Name, ParentKey.Type), ElementKey.Type);
 							}
 						}
 					}
@@ -856,16 +856,16 @@ TArray<FMultiRigData> SMultiRigHierarchyTreeView::GetSelectedData() const
 
 TSharedPtr<FMultiRigTreeElement> SMultiRigHierarchyTreeView::FindItemAtPosition(FVector2D InScreenSpacePosition) const
 {
-	if (ItemsPanel.IsValid() && ItemsSource != nullptr)
+	if (ItemsPanel.IsValid() && HasValidItemsSource())
 	{
 		const FGeometry MyGeometry = ItemsPanel->GetCachedGeometry();
 		FArrangedChildren ArrangedChildren(EVisibility::Visible);
 		ItemsPanel->ArrangeChildren(MyGeometry, ArrangedChildren, true);
 
 		const int32 Index = ItemsPanel->FindChildUnderPosition(ArrangedChildren, InScreenSpacePosition);
-		if (ItemsSource->IsValidIndex(Index))
+		if (GetItems().IsValidIndex(Index))
 		{
-			return ItemsSource->operator[](Index);
+			return GetItems()[Index];
 		}
 	}
 	return TSharedPtr<FMultiRigTreeElement>();

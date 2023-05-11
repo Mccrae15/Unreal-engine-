@@ -46,9 +46,14 @@ struct FRootInstanceHandle;
  * to skip saving pre-animated state for some entities.
  */
 template<typename... InputTypes>
-struct TSavePreAnimatedStateParams
+struct TPreAnimatedStateTaskParams
 {
 	FEntityComponentFilter AdditionalFilter;
+
+	TPreAnimatedStateTaskParams()
+	{
+		AdditionalFilter.All({ FBuiltInComponentTypes::Get()->Tags.NeedsLink });
+	}
 
 	static constexpr bool ShouldSavePreAnimatedState(typename TCallTraits<InputTypes>::ParamType... Inputs)
 	{
@@ -56,63 +61,38 @@ struct TSavePreAnimatedStateParams
 	}
 };
 
-struct FDefaultPreAnimatedStateTraits
-{
-	void Initialize(FPreAnimatedStorageID InStorageID, FPreAnimatedStateExtension* InParentExtension)
-	{}
-
-	/* Defined as a template rather than a variadic function to prevent error C4840 */
-	template<typename... T>
-	FPreAnimatedStorageGroupHandle MakeGroup(T&&... Unused)
-	{
-		return FPreAnimatedStorageGroupHandle();
-	}
-
-	template<typename KeyType>
-	void ReplaceObject(KeyType& InOutKey, const FObjectKey& NewObject)
-	{}
-};
-
 /**
- * Group state class that groups pre-animated storage together by bound object
+ * Base class for all pre-animated state traits.
+ *
+ * Inherit from this class to get the default flag values. The sub-class must/might implement
+ * the following members:
+ *
+ * (mandatory)
+ *   typedef or alias KeyType, must be constructible from (InputTypes...)
+ *   typedef or alias StorageType
+ *   void RestorePreAnimatedValue(const KeyType&, const StorageValue&, const FRestoreStateParams&);
+ *
+ * (optional, if using the ECS-wide tasks for tracking and caching state)
+ *   StorageType CachePreAnimatedValue(InputTypes...);
+ *
+ * (optional, if NeedsInitialize is true)
+ *   void Initialize(FPreAnimatedStorageID, FPreAnimatedStateExtension*);
+ *
+ * (optional, if SupportsGrouping is true)
+ *   FPreAnimatedStorageGroupHandle MakeGroup(InputTypes...);
+ *
+ * (optional, if SupportsReplaceObject is true)
+ *   void ReplaceObject(KeyType&, const FObjectKey&);
  */
-struct MOVIESCENE_API FBoundObjectPreAnimatedStateTraits
+struct MOVIESCENE_API FPreAnimatedStateTraits
 {
-	void Initialize(FPreAnimatedStorageID InStorageID, FPreAnimatedStateExtension* InParentExtension);
-
-	/* Defined as a template rather than a variadic function to prevent error C4840 */
-	template<typename... T>
-	FPreAnimatedStorageGroupHandle MakeGroup(UObject* BoundObject, T&&... Unused)
+	enum
 	{
-		return MakeGroupImpl(BoundObject);
-	}
-	FPreAnimatedStorageGroupHandle MakeGroupImpl(UObject* BoundObject);
-
-	template<typename ...T>
-	void ReplaceObject(TTuple<FObjectKey, T...>& InOutKey, const FObjectKey& NewObject)
-	{
-		InOutKey.template Get<0>() = NewObject;
-	}
-	template<typename KeyType>
-	void ReplaceObject(KeyType& InOutKey, const FObjectKey& NewObject)
-	{
-		InOutKey.Object = NewObject;
-	}
-	template<typename ObjectType>
-	void ReplaceObject(TObjectKey<ObjectType>& InOutKey, const FObjectKey& NewObject)
-	{
-		if (ObjectType* CastResult = Cast<ObjectType>(NewObject.ResolveObjectPtr()))
-		{
-			InOutKey = CastResult;
-		}
-	}
-	void ReplaceObject(FObjectKey& InOutKey, const FObjectKey& NewObject)
-	{
-		InOutKey = NewObject;
-	}
-	TSharedPtr<FPreAnimatedObjectGroupManager> ObjectGroupManager;
+		NeedsInitialize = false,
+		SupportsGrouping = false,
+		SupportsReplaceObject = false,
+	};
 };
-
 
 /**
  * Storage container for a specific type of pre-animated state as defined by the specified traits.
@@ -187,7 +167,10 @@ public:
 		ParentExtension = InParentExtension;
 		StorageID = InStorageID;
 
-		this->Traits.Initialize(InStorageID, InParentExtension);
+		if constexpr (StorageTraits::NeedsInitialize)
+		{
+			this->Traits.Initialize(InStorageID, InParentExtension);
+		}
 	}
 
 	/** Retrieve the ID that uniquely identifies this storage container */
@@ -382,31 +365,6 @@ public:
 	}
 
 	/**
-	 * Save pre-aniamted state for the specified group and key using a callback.
-	 * Callback will only be invoked if state has not already been saved.
-	 */
-	template<typename OnCacheValue /* StorageType(const KeyType&) */>
-	void SavePreAnimatedState(FPreAnimatedStorageGroupHandle GroupHandle, const KeyType& InKey, OnCacheValue&& CacheCallback)
-	{
-		// Find the storage index for the specific key we're animating
-		FPreAnimatedStorageIndex StorageIndex = GetOrCreateStorageIndex(InKey);
-
-		FPreAnimatedStateEntry Entry{ GroupHandle, FPreAnimatedStateCachedValueHandle{ StorageID, StorageIndex } };
-
-		// Begin tracking the entry from its capture source
-		ParentExtension->AddSourceMetaData(Entry);
-
-		EPreAnimatedStorageRequirement Requirement = ParentExtension->HasActiveCaptureSource()
-			? EPreAnimatedStorageRequirement::Transient
-			: EPreAnimatedStorageRequirement::Persistent;
-
-		if (!IsStorageRequirementSatisfied(Entry.ValueHandle.StorageIndex, Requirement))
-		{
-			AssignPreAnimatedValue(StorageIndex, Requirement, CacheCallback(InKey));
-		}
-	}
-
-	/**
 	 * Attempt to find a storage index for the specified key, creating a new one if it doesn't exist
 	 */
 	FPreAnimatedStorageIndex GetOrCreateStorageIndex(const KeyType& InKey)
@@ -540,16 +498,18 @@ public:
 
 	/**
 	 * Look at any entity with the specified component types, and set up new associations with storage indices for those entities
+	 * The provided component values are put together to make up the storage key
 	 * WARNING: Does not cache actual pre-animated values
 	 */
 	template<typename... ContributorTypes>
 	void BeginTrackingEntities(UMovieSceneEntitySystemLinker* Linker, TComponentTypeID<ContributorTypes>... InComponentTypes)
 	{
-		BeginTrackingEntitiesTask(Linker, TSavePreAnimatedStateParams<ContributorTypes...>(), InComponentTypes...);
+		BeginTrackingEntitiesTask(Linker, TPreAnimatedStateTaskParams<ContributorTypes...>(), InComponentTypes...);
 	}
 
 	/**
 	 * Look at any entity with the specified component types, and set up new associations with storage indices for those entities
+	 * The provided component values are put together to make up the storage key
 	 * WARNING: Does not cache actual pre-animated values
 	 */
 	template<typename TaskType, typename... ContributorTypes>
@@ -577,8 +537,13 @@ public:
 
 				KeyType Key{ Inputs[Index]... };
 
-				FPreAnimatedStorageGroupHandle GroupHandle  = this->Traits.MakeGroup(Inputs[Index]...);
-				FPreAnimatedStorageIndex       StorageIndex = this->GetOrCreateStorageIndex(Key);
+				FPreAnimatedStorageGroupHandle GroupHandle;
+				if constexpr(StorageTraits::SupportsGrouping)
+				{
+					GroupHandle = this->Traits.MakeGroup(Inputs[Index]...);
+				}
+
+				FPreAnimatedStorageIndex StorageIndex = this->GetOrCreateStorageIndex(Key);
 
 				FPreAnimatedStateEntry Entry{ GroupHandle, FPreAnimatedStateCachedValueHandle{ this->StorageID, StorageIndex } };
 				EntityMetaData->BeginTrackingEntity(Entry, EntityIDs[Index], RootInstanceHandles[Index], bWantsRestore);
@@ -592,28 +557,62 @@ public:
 		.Read(BuiltInComponents->RootInstanceHandle)
 		.ReadAllOf(InComponentTypes...)
 		.CombineFilter(InParams.AdditionalFilter)
-		.FilterAll({ BuiltInComponents->Tags.NeedsLink })
 		.Iterate_PerAllocation(&Linker->EntityManager, VisitAllocation);
 	}
 
 	/**
-	 * Cache pre-animated values for entities with the specified component types
+	 * Set up a new associations with a storage index for the given entity
+	 * The provided component values are put together to make up the storage key
+	 * WARNING: Does not cache actual pre-animated values
 	 */
-	template<typename... CacheValueInputs>
-	void CachePreAnimatedValues(UMovieSceneEntitySystemLinker* Linker, TComponentTypeID<CacheValueInputs>... InComponentTypes)
+	template<typename... ContributorTypes>
+	void BeginTrackingEntity(FMovieSceneEntityID EntityID, const bool bWantsRestoreState, FRootInstanceHandle RootInstanceHandle, ContributorTypes... InComponents)
 	{
-		CachePreAnimatedValuesTask(Linker, TSavePreAnimatedStateParams<CacheValueInputs...>(), InComponentTypes...);
+		if (!this->ParentExtension->IsCapturingGlobalState() && !bWantsRestoreState)
+		{
+			return;
+		}
+
+		TPreAnimatedStateTaskParams<ContributorTypes...> Params;
+
+		if (!Params.ShouldSavePreAnimatedState(InComponents...))
+		{
+			return;
+		}
+
+		KeyType Key{ InComponents... };
+
+		FPreAnimatedStorageGroupHandle GroupHandle;
+		if constexpr(StorageTraits::SupportsGrouping)
+		{
+			GroupHandle = this->Traits.MakeGroup(InComponents...);
+		}
+
+		FPreAnimatedStorageIndex StorageIndex = this->GetOrCreateStorageIndex(Key);
+
+		FPreAnimatedStateEntry Entry{ GroupHandle, FPreAnimatedStateCachedValueHandle{ this->StorageID, StorageIndex } };
+		FPreAnimatedEntityCaptureSource* EntityMetaData = this->ParentExtension->GetOrCreateEntityMetaData();
+		EntityMetaData->BeginTrackingEntity(Entry, EntityID, RootInstanceHandle, bWantsRestoreState);
 	}
 
 	/**
 	 * Cache pre-animated values for entities with the specified component types
 	 */
-	template<typename TaskType, typename... CacheValueInputs>
-	void CachePreAnimatedValuesTask(UMovieSceneEntitySystemLinker* Linker, const TaskType& InParams, TComponentTypeID<CacheValueInputs>... InComponentTypes)
+	template<typename... ContributorTypes>
+	void CachePreAnimatedValues(UMovieSceneEntitySystemLinker* Linker, TComponentTypeID<ContributorTypes>... InComponentTypes)
+	{
+		CachePreAnimatedValuesTask(Linker, TPreAnimatedStateTaskParams<ContributorTypes...>(), InComponentTypes...);
+	}
+
+	/**
+	 * Cache pre-animated values for entities with the specified component types
+	 */
+	template<typename TaskType, typename... ContributorTypes>
+	void CachePreAnimatedValuesTask(UMovieSceneEntitySystemLinker* Linker, const TaskType& InParams, TComponentTypeID<ContributorTypes>... InComponentTypes)
 	{
 		FBuiltInComponentTypes* BuiltInComponents = FBuiltInComponentTypes::Get();
 
-		auto VisitAllocation = [this, &InParams](FEntityAllocationIteratorItem Item, TRead<CacheValueInputs>... Values)
+		auto VisitAllocation = [this, &InParams](FEntityAllocationIteratorItem Item, TRead<ContributorTypes>... Values)
 		{
 			const int32 Num = Item.GetAllocation()->Num();
 			for (int32 Index = 0; Index < Num; ++Index)
@@ -625,17 +624,30 @@ public:
 
 				KeyType Key{ Values[Index]... };
 
-				FPreAnimatedStorageGroupHandle GroupHandle  = this->Traits.MakeGroup(Values[Index]...);
-				FPreAnimatedStorageIndex       StorageIndex = this->GetOrCreateStorageIndex(Key);
+				FPreAnimatedStorageGroupHandle GroupHandle;
+				if constexpr(StorageTraits::SupportsGrouping)
+				{
+					GroupHandle = this->Traits.MakeGroup(Values[Index]...);
+				}
+		
+				FPreAnimatedStorageIndex StorageIndex = this->GetOrCreateStorageIndex(Key);
 
 				FPreAnimatedStateEntry Entry{ GroupHandle, FPreAnimatedStateCachedValueHandle{ this->StorageID, StorageIndex } };
 
-				this->ParentExtension->EnsureMetaData(Entry);
+				if (this->ParentExtension->IsCapturingGlobalState())
+				{
+					this->ParentExtension->EnsureMetaData(Entry);
+				}
+				else if (!this->ParentExtension->MetaDataExists(Entry))
+				{
+					continue;
+				}
 
 				EPreAnimatedStorageRequirement StorageRequirement = this->ParentExtension->GetStorageRequirement(Entry);
 				if (!this->IsStorageRequirementSatisfied(StorageIndex, StorageRequirement))
 				{
-					this->AssignPreAnimatedValue(StorageIndex, StorageRequirement, this->Traits.CachePreAnimatedValue(Values[Index]...));
+					StorageType NewValue = this->Traits.CachePreAnimatedValue(Values[Index]...);
+					this->AssignPreAnimatedValue(StorageIndex, StorageRequirement, MoveTemp(NewValue));
 				}
 			}
 		};
@@ -643,10 +655,98 @@ public:
 		FEntityTaskBuilder()
 		.ReadAllOf(InComponentTypes...)
 		.CombineFilter(InParams.AdditionalFilter)
-		.FilterAll({ BuiltInComponents->Tags.NeedsLink })
 		.Iterate_PerAllocation(&Linker->EntityManager, VisitAllocation);
 	}
 
+	/**
+	 * Save pre-animated state for the specified values
+	 * Requires that the traits class implements CachePreAnimatedValue(ContributorTypes...)
+	 */
+	template<typename... ContributorTypes>
+	void CachePreAnimatedValue(ContributorTypes... Values)
+	{
+		KeyType Key{ Values... };
+
+		FPreAnimatedStorageGroupHandle GroupHandle;
+		if constexpr(StorageTraits::SupportsGrouping)
+		{
+			GroupHandle = this->Traits.MakeGroup(Values...);
+		}
+
+		FPreAnimatedStorageIndex StorageIndex = this->GetOrCreateStorageIndex(Key);
+
+		FPreAnimatedStateEntry Entry{ GroupHandle, FPreAnimatedStateCachedValueHandle{ this->StorageID, StorageIndex } };
+
+		if (this->ParentExtension->IsCapturingGlobalState())
+		{
+			this->ParentExtension->EnsureMetaData(Entry);
+		}
+		else if (!this->ParentExtension->MetaDataExists(Entry))
+		{
+			return;
+		}
+
+		// Begin tracking the entry from its capture source
+		ParentExtension->AddSourceMetaData(Entry);
+
+		EPreAnimatedStorageRequirement Requirement = ParentExtension->HasActiveCaptureSource()
+			? EPreAnimatedStorageRequirement::Transient
+			: EPreAnimatedStorageRequirement::Persistent;
+
+		if (!IsStorageRequirementSatisfied(Entry.ValueHandle.StorageIndex, Requirement))
+		{
+			StorageType NewValue = this->Traits.CachePreAnimatedValue(Values...);
+			this->AssignPreAnimatedValue(StorageIndex, Requirement, MoveTemp(NewValue));
+		}
+	}
+
+	/**
+	 * Save pre-animated state for the specified group and key using a callback.
+	 * Callback will only be invoked if state has not already been saved.
+	 */
+	template<typename OnCacheValue /* StorageType(const KeyType&) */>
+	void CachePreAnimatedValue(const KeyType& InKey, OnCacheValue&& CacheCallback)
+	{
+		static_assert(StorageTraits::SupportsGrouping == false, "Grouped pre-animated state requires passing a group handle");
+		CachePreAnimatedValue(FPreAnimatedStorageGroupHandle(), InKey, Forward<OnCacheValue>(CacheCallback));
+	}
+
+	/**
+	 * Save pre-animated state for the specified group and key using a callback.
+	 * Callback will only be invoked if state has not already been saved.
+	 */
+	template<typename OnCacheValue /* StorageType(const KeyType&) */>
+	void CachePreAnimatedValue(FPreAnimatedStorageGroupHandle GroupHandle, const KeyType& InKey, OnCacheValue&& CacheCallback)
+	{
+		ensureMsgf(GroupHandle.IsValid() || !StorageTraits::SupportsGrouping, TEXT("The group handle must be valid for pre-animated state that supports grouping, and invalid if not"));
+
+		// Find the storage index for the specific key we're animating
+		FPreAnimatedStorageIndex StorageIndex = GetOrCreateStorageIndex(InKey);
+
+		FPreAnimatedStateEntry Entry{ GroupHandle, FPreAnimatedStateCachedValueHandle{ this->StorageID, StorageIndex } };
+
+		if (this->ParentExtension->IsCapturingGlobalState())
+		{
+			this->ParentExtension->EnsureMetaData(Entry);
+		}
+		else if (!this->ParentExtension->MetaDataExists(Entry))
+		{
+			return;
+		}
+
+		// Begin tracking the entry from its capture source
+		ParentExtension->AddSourceMetaData(Entry);
+
+		EPreAnimatedStorageRequirement Requirement = ParentExtension->HasActiveCaptureSource()
+			? EPreAnimatedStorageRequirement::Transient
+			: EPreAnimatedStorageRequirement::Persistent;
+
+		if (!IsStorageRequirementSatisfied(Entry.ValueHandle.StorageIndex, Requirement))
+		{
+			StorageType NewValue = CacheCallback(InKey);
+			AssignPreAnimatedValue(StorageIndex, Requirement, MoveTemp(NewValue));
+		}
+	}
 
 	/**
 	 * Look at any entity with the specified component types, and set up new associations with storage indices for those entities, whilst also caching pre-animated values at the same time.
@@ -654,7 +754,7 @@ public:
 	template<typename... ContributorTypes>
 	void BeginTrackingAndCachePreAnimatedValues(UMovieSceneEntitySystemLinker* Linker, TComponentTypeID<ContributorTypes>... InComponentTypes)
 	{
-		BeginTrackingAndCachePreAnimatedValues(Linker, TSavePreAnimatedStateParams<ContributorTypes...>(), InComponentTypes...);
+		BeginTrackingAndCachePreAnimatedValuesTask(Linker, TPreAnimatedStateTaskParams<ContributorTypes...>(), InComponentTypes...);
 	}
 
 	/**
@@ -685,8 +785,13 @@ public:
 
 				KeyType Key{ Inputs[Index]... };
 
-				FPreAnimatedStorageGroupHandle GroupHandle  = this->Traits.MakeGroup(Inputs[Index]...);
-				FPreAnimatedStorageIndex       StorageIndex = this->GetOrCreateStorageIndex(Key);
+				FPreAnimatedStorageGroupHandle GroupHandle;
+				if constexpr(StorageTraits::SupportsGrouping)
+				{
+					GroupHandle = this->Traits.MakeGroup(Inputs[Index]...);
+				}
+
+				FPreAnimatedStorageIndex StorageIndex = this->GetOrCreateStorageIndex(Key);
 
 				FPreAnimatedStateEntry Entry{ GroupHandle, FPreAnimatedStateCachedValueHandle{ this->StorageID, StorageIndex } };
 				EntityMetaData->BeginTrackingEntity(Entry, EntityIDs[Index], RootInstanceHandles[Index], bWantsRestore);
@@ -694,7 +799,8 @@ public:
 				EPreAnimatedStorageRequirement StorageRequirement = this->ParentExtension->GetStorageRequirement(Entry);
 				if (!this->IsStorageRequirementSatisfied(StorageIndex, StorageRequirement))
 				{
-					this->AssignPreAnimatedValue(StorageIndex, StorageRequirement, this->Traits.CachePreAnimatedValue(Inputs[Index]...));
+					StorageType NewValue = this->Traits.CachePreAnimatedValue(Inputs[Index]...);
+					this->AssignPreAnimatedValue(StorageIndex, StorageRequirement, MoveTemp(NewValue));
 				}
 
 			}
@@ -707,14 +813,16 @@ public:
 		.Read(BuiltInComponents->RootInstanceHandle)
 		.ReadAllOf(InComponentTypes...)
 		.CombineFilter(InParams.AdditionalFilter)
-		.FilterAll({ BuiltInComponents->Tags.NeedsLink })
 		.Iterate_PerAllocation(&Linker->EntityManager, VisitAllocation);
 	}
 
 	void OnObjectReplaced(FPreAnimatedStorageIndex StorageIndex, const FObjectKey& OldObject, const FObjectKey& NewObject) override
 	{
 		KeyType ExistingKey = this->GetKey(StorageIndex);
-		this->Traits.ReplaceObject(ExistingKey, NewObject);
+		if constexpr(StorageTraits::SupportsReplaceObject)
+		{
+			this->Traits.ReplaceObject(ExistingKey, NewObject);
+		}
 		this->ReplaceKey(StorageIndex, ExistingKey);
 	}
 
@@ -776,7 +884,32 @@ protected:
 };
 
 
+/**
+ * Simple traits class that works with the simple storage below.
+ * The only thing that is needed is a `void RestoreState(KeyType, Params)` method on the state
+ * class.
+ */
+template<typename InKeyType, typename InStorageType>
+struct TSimplePreAnimatedStateTraits : FPreAnimatedStateTraits
+{
+	using KeyType = InKeyType;
+	using StorageType = InStorageType;
+
+	void RestorePreAnimatedValue(const KeyType& Key, StorageType& SavedValue, const FRestoreStateParams& Params)
+	{
+		SavedValue.RestoreState(Key, Params);
+	}
+};
+
+
+/**
+ * Simple pre-animated state storage that doesn't support any grouping, and lets people simply implement
+ * a `void RestoreState(KeyType, Params)` method on their state class.
+ */
+template<typename KeyType, typename StorageType>
+struct TSimplePreAnimatedStateStorage : TPreAnimatedStateStorage<TSimplePreAnimatedStateTraits<KeyType, StorageType>>
+{
+};
+
 } // namespace MovieScene
 } // namespace UE
-
-

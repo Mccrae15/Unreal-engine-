@@ -4,6 +4,8 @@
 #pragma once
 
 #include "BinkMediaPlayer.h"
+#include "RenderingThread.h"
+#include "Slate/SlateTextures.h"
 
 struct FBinkMediaPlayerEditorTexture : public FTickableGameObject 
 {

@@ -37,6 +37,30 @@ UPackage::FOnPackageDirtyStateChanged UPackage::PackageDirtyStateChangedEvent;
  */
 UPackage::FOnPackageMarkedDirty UPackage::PackageMarkedDirtyEvent;
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS // Silence deprecation warnings for deprecated CookedHash member
+FSavePackageResultStruct::FSavePackageResultStruct()
+	: Result(ESavePackageResult::Error), TotalFileSize(0), SerializedPackageFlags(0)
+{
+}
+FSavePackageResultStruct::FSavePackageResultStruct(ESavePackageResult InResult)
+	: Result(InResult), TotalFileSize(0), SerializedPackageFlags(0)
+{
+}
+FSavePackageResultStruct::FSavePackageResultStruct(ESavePackageResult InResult, int64 InTotalFileSize)
+	: Result(InResult), TotalFileSize(InTotalFileSize), SerializedPackageFlags(0)
+{
+}
+FSavePackageResultStruct::FSavePackageResultStruct(ESavePackageResult InResult, int64 InTotalFileSize,
+	uint32 InSerializedPackageFlags, TPimplPtr<FLinkerSave> Linker)
+	: Result(InResult), TotalFileSize(InTotalFileSize), SerializedPackageFlags(InSerializedPackageFlags),
+	LinkerSave(MoveTemp(Linker))
+{
+}
+FSavePackageResultStruct::FSavePackageResultStruct(FSavePackageResultStruct&& Other) = default;
+FSavePackageResultStruct& FSavePackageResultStruct::operator=(FSavePackageResultStruct&& Other) = default;
+FSavePackageResultStruct::~FSavePackageResultStruct() = default;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+
 void UPackage::PostInitProperties()
 {
 	Super::PostInitProperties();
@@ -108,12 +132,6 @@ void UPackage::Serialize( FArchive& Ar )
 {
 	Super::Serialize(Ar);
 
-	if ( Ar.IsTransacting() )
-	{
-		bool bTempDirty = bDirty;
-		Ar << bTempDirty;
-		bDirty = bTempDirty;
-	}
 	if (Ar.IsCountingMemory())
 	{		
 		if (FLinker* Loader = GetLinker())
@@ -367,7 +385,8 @@ void UPackage::SetLoadedByEditorPropertiesOnly(bool bIsEditorOnly, bool bRecursi
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 IMPLEMENT_CORE_INTRINSIC_CLASS(UPackage, UObject,
 	{
-		Class->EmitObjectReference(STRUCT_OFFSET(UPackage, MetaData), TEXT("MetaData"));
+		UE::GC::FTokenStreamBuilder& Builder = UE::GC::FIntrinsicClassTokens::AllocateBuilder(Class);
+		Builder.EmitObjectReference(STRUCT_OFFSET(UPackage, MetaData), TEXT("MetaData"));
 	}
 );
 PRAGMA_ENABLE_DEPRECATION_WARNINGS

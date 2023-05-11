@@ -185,7 +185,7 @@ public:
 		ColorGradingCategoryBuilder.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationData, StageSettings.EntireClusterColorGrading), ConfigDataClass));
 		ColorGradingCategoryBuilder.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationData, StageSettings.PerViewportColorGrading), ConfigDataClass));
 		ColorGradingCategoryBuilder.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationData, StageSettings.bEnableInnerFrustums), ConfigDataClass));
-		ColorGradingCategoryBuilder.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationData, StageSettings.bUseOverallClusterOCIOConfiguration), ConfigDataClass));
+		ColorGradingCategoryBuilder.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationData, StageSettings.ViewportOCIO.AllViewportsOCIOConfiguration.bIsEnabled), ConfigDataClass));
 
 		AddColorGradingDetailProperties(DetailBuilder);
 		AddDetailsPanelProperties(DetailBuilder);
@@ -243,7 +243,7 @@ private:
 		check(ArrayPropertyHandle->AsArray());
 		ArrayPropertyHandle->AsArray()->GetNumElements(ArraySize);
 
-		if (GroupIndex > 0 && GroupIndex < (int32)ArraySize)
+		if (GroupIndex > 0 && GroupIndex <= (int32)ArraySize)
 		{
 			const int32 Index = GroupIndex - 1;
 			IDetailCategoryBuilder& PerNodeSettingsCategoryBuilder = DetailBuilder.EditCategory(TEXT("DetailView_PerViewport"), LOCTEXT("DetailView_PerViewportDisplayName", "Per-Viewport Settings"));
@@ -267,7 +267,7 @@ private:
 		InnerFrustumCategoryBuilder.AddProperty(GET_MEMBER_NAME_CHECKED(ADisplayClusterRootActor, InnerFrustumPriority), ADisplayClusterRootActor::StaticClass());
 
 		IDetailCategoryBuilder& AllViewportsOCIOCategoryBuilder = DetailBuilder.EditCategory(TEXT("CustomAllViewportsOCIOCategory"), LOCTEXT("CustomAllViewportsOCIOCategoryLabel", "All Viewports"));
-		AllViewportsOCIOCategoryBuilder.AddProperty(TEXT("ClusterOCIOColorConfigurationRef"), ADisplayClusterRootActor::StaticClass());
+		AllViewportsOCIOCategoryBuilder.AddProperty(TEXT("AllViewportColorConfigurationRef"), ADisplayClusterRootActor::StaticClass());
 
 		IDetailCategoryBuilder& PerViewportOCIOCategoryBuilder = DetailBuilder.EditCategory(TEXT("CustomPerViewportOCIOCategory"), LOCTEXT("CustomPerViewportOCIOCategoryLabel", "Per-Viewport"));
 		PerViewportOCIOCategoryBuilder.AddProperty(TEXT("PerViewportOCIOProfilesRef"), ADisplayClusterRootActor::StaticClass());
@@ -422,6 +422,8 @@ void FDisplayClusterColorGradingGenerator_RootActor::GenerateDataModel(IProperty
 				TSharedRef<IPropertyHandle> PerViewportElementHandle = PerViewportColorGradingHandle->AsArray()->GetElement(Index);
 
 				FDisplayClusterColorGradingDataModel::FColorGradingGroup PerViewportGroup = CreateColorGradingGroup(PerViewportElementHandle);
+				PerViewportGroup.bCanBeDeleted = true;
+				PerViewportGroup.bCanBeRenamed = true;
 				PerViewportGroup.EditConditionPropertyHandle = PerViewportElementHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FDisplayClusterConfigurationViewport_PerViewportColorGrading, bIsEnabled));
 
 				PerViewportGroup.DetailsViewCategories.Add(TEXT("DetailView_PerViewport"));
@@ -439,7 +441,23 @@ void FDisplayClusterColorGradingGenerator_RootActor::GenerateDataModel(IProperty
 					.VAlign(VAlign_Center)
 					[
 						SNew(SInlineEditableTextBlock)
-						.Font(FAppStyle::Get().GetFontStyle("NormalFontBold"))
+						.Cursor(EMouseCursor::TextEditBeam)
+						.Font_Lambda([NamePropertyHandle]
+						{
+							FText Name = FText::GetEmpty();
+
+							if (NamePropertyHandle.IsValid() && NamePropertyHandle->IsValidHandle())
+							{
+								NamePropertyHandle->GetValue(Name);
+							}
+
+							if (Name.IsEmpty())
+							{
+								return FAppStyle::Get().GetFontStyle("NormalFontBoldItalic");
+							}
+
+							return FAppStyle::Get().GetFontStyle("NormalFontBold");
+						})
 						.OnTextCommitted_Lambda([NamePropertyHandle](const FText& InText, ETextCommit::Type TextCommitType)
 						{
 							if (NamePropertyHandle.IsValid() && NamePropertyHandle->IsValidHandle())
@@ -455,6 +473,11 @@ void FDisplayClusterColorGradingGenerator_RootActor::GenerateDataModel(IProperty
 							if (NamePropertyHandle.IsValid() && NamePropertyHandle->IsValidHandle())
 							{
 								NamePropertyHandle->GetValue(Name);
+							}
+
+							if (Name.IsEmpty())
+							{
+								return LOCTEXT("UnnamedPerViewportLabel", "Unnamed");
 							}
 
 							return Name;
@@ -485,6 +508,8 @@ void FDisplayClusterColorGradingGenerator_RootActor::GenerateDataModel(IProperty
 			.ColorAndOpacity(FSlateColor::UseForeground())
 		];
 
+	OutColorGradingDataModel.OnColorGradingGroupDeleted().AddSP(this, &FDisplayClusterColorGradingGenerator_RootActor::DeleteColorGradingGroup);
+	OutColorGradingDataModel.OnColorGradingGroupRenamed().AddSP(this, &FDisplayClusterColorGradingGenerator_RootActor::RenameColorGradingGroup);
 
 	FDisplayClusterColorGradingDataModel::FDetailsSection ViewportsDetailsSection;
 	ViewportsDetailsSection.DisplayName = LOCTEXT("ViewportsDetailsSectionLabel", "Viewports");
@@ -501,7 +526,7 @@ void FDisplayClusterColorGradingGenerator_RootActor::GenerateDataModel(IProperty
 
 	FDisplayClusterColorGradingDataModel::FDetailsSection OCIODetailsSection;
 	OCIODetailsSection.DisplayName = LOCTEXT("OCIODetailsSectionLabel", "OCIO");
-	OCIODetailsSection.EditConditionPropertyHandle = FindPropertyHandle(PropertyRowGenerator, CREATE_PROPERTY_PATH(UDisplayClusterConfigurationData, StageSettings.bUseOverallClusterOCIOConfiguration));
+	OCIODetailsSection.EditConditionPropertyHandle = FindPropertyHandle(PropertyRowGenerator, CREATE_PROPERTY_PATH(UDisplayClusterConfigurationData, StageSettings.ViewportOCIO.AllViewportsOCIOConfiguration.bIsEnabled));
 
 	FDisplayClusterColorGradingDataModel::FDetailsSubsection AllViewportsOCIODetailsSubsection;
 	AllViewportsOCIODetailsSubsection.DisplayName = LOCTEXT("AllViewportsOCIOSubsectionLabel", "All Viewports");
@@ -542,6 +567,56 @@ FReply FDisplayClusterColorGradingGenerator_RootActor::AddColorGradingGroup()
 	}
 
 	return FReply::Handled();
+}
+
+void FDisplayClusterColorGradingGenerator_RootActor::DeleteColorGradingGroup(int32 GroupIndex)
+{
+	for (const TWeakObjectPtr<ADisplayClusterRootActor>& RootActor : RootActors)
+	{
+		if (RootActor.IsValid())
+		{
+			if (UDisplayClusterConfigurationData* ConfigData = RootActor->GetConfigData())
+			{
+				// Use GroupIndex - 1 since the entire cluster color grading is group 0
+				if (ConfigData->StageSettings.PerViewportColorGrading.IsValidIndex(GroupIndex - 1))
+				{
+					FScopedTransaction Transaction(LOCTEXT("DeleteViewportColorGradingGroupTransaction", "Delete Viewport Group"));
+
+					RootActor->Modify();
+					ConfigData->Modify();
+
+					ConfigData->StageSettings.PerViewportColorGrading.RemoveAt(GroupIndex - 1);
+
+					IDisplayClusterColorGrading::Get().GetColorGradingDrawerSingleton().RefreshColorGradingDrawers(true);
+				}
+			}
+		}
+	}
+}
+
+void FDisplayClusterColorGradingGenerator_RootActor::RenameColorGradingGroup(int32 GroupIndex, const FText& NewName)
+{
+	for (const TWeakObjectPtr<ADisplayClusterRootActor>& RootActor : RootActors)
+	{
+		if (RootActor.IsValid())
+		{
+			if (UDisplayClusterConfigurationData* ConfigData = RootActor->GetConfigData())
+			{
+				// Use GroupIndex - 1 since the entire cluster color grading is group 0
+				if (ConfigData->StageSettings.PerViewportColorGrading.IsValidIndex(GroupIndex - 1))
+				{
+					FScopedTransaction Transaction(LOCTEXT("RenameViewportColorGradingGroupTransaction", "Rename Viewport Group"));
+
+					RootActor->Modify();
+					ConfigData->Modify();
+
+					ConfigData->StageSettings.PerViewportColorGrading[GroupIndex - 1].Name = NewName;
+
+					IDisplayClusterColorGrading::Get().GetColorGradingDrawerSingleton().RefreshColorGradingDrawers(true);
+				}
+			}
+		}
+	}
 }
 
 TSharedRef<SWidget> FDisplayClusterColorGradingGenerator_RootActor::CreateViewportComboBox(int32 PerViewportColorGradingIndex) const
@@ -735,7 +810,7 @@ public:
 
 		CategoryBuilder.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UDisplayClusterICVFXCameraComponent, CameraSettings.bEnable)));
 		CategoryBuilder.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UDisplayClusterICVFXCameraComponent, CameraSettings.Chromakey.bEnable)));
-		CategoryBuilder.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UDisplayClusterICVFXCameraComponent, CameraSettings.AllNodesOCIOConfiguration.bIsEnabled)));
+		CategoryBuilder.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UDisplayClusterICVFXCameraComponent, CameraSettings.CameraOCIO.AllNodesOCIOConfiguration.bIsEnabled)));
 		CategoryBuilder.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UDisplayClusterICVFXCameraComponent, CameraSettings.AllNodesColorGrading)));
 		CategoryBuilder.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UDisplayClusterICVFXCameraComponent, CameraSettings.PerNodeColorGrading)));
 
@@ -794,7 +869,7 @@ private:
 		check(ArrayPropertyHandle->AsArray());
 		ArrayPropertyHandle->AsArray()->GetNumElements(ArraySize);
 
-		if (GroupIndex > 0 && GroupIndex < (int32)ArraySize)
+		if (GroupIndex > 0 && GroupIndex <= (int32)ArraySize)
 		{
 			const int32 Index = GroupIndex - 1;
 			IDetailCategoryBuilder& PerNodeSettingsCategoryBuilder = DetailBuilder.EditCategory(TEXT("DetailView_PerNode"), LOCTEXT("DetailView_PerNodeDisplayName", "Per-Node Settings"));
@@ -847,7 +922,7 @@ private:
 		AddProperty(ChromakeyCustomCategoryBuilder, TEXT("ChromakeyRenderTextureRef"), true);
 
 		IDetailCategoryBuilder& OCIOAllNodesCategoryBuilder = DetailBuilder.EditCategory(TEXT("CustomAllNodesOCIOCategory"), LOCTEXT("CustomAllNodesOCIOCategoryLabel", "All Nodes"));
-		AddProperty(OCIOAllNodesCategoryBuilder, TEXT("OCIOColorConfiguratonRef"));
+		AddProperty(OCIOAllNodesCategoryBuilder, TEXT("AllNodesOCIOConfigurationRef"));
 
 		IDetailCategoryBuilder& OCIOPerNodeCategoryBuilder = DetailBuilder.EditCategory(TEXT("CustomPerNodeOCIOCategory"), LOCTEXT("CustomPerNodeOCIOCategoryLabel", "Per-Node"));
 		AddProperty(OCIOPerNodeCategoryBuilder, TEXT("PerNodeOCIOProfilesRef"));
@@ -1002,6 +1077,8 @@ void FDisplayClusterColorGradingGenerator_ICVFXCamera::GenerateDataModel(IProper
 				TSharedRef<IPropertyHandle> PerNodeElementHandle = PerNodeColorGradingHandle->AsArray()->GetElement(Index);
 
 				FDisplayClusterColorGradingDataModel::FColorGradingGroup PerNodeGroup = CreateColorGradingGroup(PerNodeElementHandle);
+				PerNodeGroup.bCanBeDeleted = true;
+				PerNodeGroup.bCanBeRenamed = true;
 				PerNodeGroup.EditConditionPropertyHandle = PerNodeElementHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FDisplayClusterConfigurationViewport_PerNodeColorGrading, bIsEnabled));
 
 				PerNodeGroup.DetailsViewCategories.Add(TEXT("DetailView_PerNode"));
@@ -1019,7 +1096,23 @@ void FDisplayClusterColorGradingGenerator_ICVFXCamera::GenerateDataModel(IProper
 					.VAlign(VAlign_Center)
 					[
 						SNew(SInlineEditableTextBlock)
-						.Font(FAppStyle::Get().GetFontStyle("NormalFontBold"))
+						.Cursor(EMouseCursor::TextEditBeam)
+						.Font_Lambda([NamePropertyHandle]
+						{
+							FText Name = FText::GetEmpty();
+
+							if (NamePropertyHandle.IsValid() && NamePropertyHandle->IsValidHandle())
+							{
+								NamePropertyHandle->GetValue(Name);
+							}
+
+							if (Name.IsEmpty())
+							{
+								return FAppStyle::Get().GetFontStyle("NormalFontBoldItalic");
+							}
+
+							return FAppStyle::Get().GetFontStyle("NormalFontBold");
+						})
 						.OnTextCommitted_Lambda([NamePropertyHandle](const FText& InText, ETextCommit::Type TextCommitType)
 						{
 							if (NamePropertyHandle.IsValid() && NamePropertyHandle->IsValidHandle())
@@ -1035,6 +1128,11 @@ void FDisplayClusterColorGradingGenerator_ICVFXCamera::GenerateDataModel(IProper
 							if (NamePropertyHandle.IsValid() && NamePropertyHandle->IsValidHandle())
 							{
 								NamePropertyHandle->GetValue(Name);
+							}
+
+							if (Name.IsEmpty())
+							{
+								return LOCTEXT("UnnamedPerNodeLabel", "Unnamed");
 							}
 
 							return Name;
@@ -1064,6 +1162,9 @@ void FDisplayClusterColorGradingGenerator_ICVFXCamera::GenerateDataModel(IProper
 			.Image(FAppStyle::GetBrush("Icons.PlusCircle"))
 			.ColorAndOpacity(FSlateColor::UseForeground())
 		];
+
+	OutColorGradingDataModel.OnColorGradingGroupDeleted().AddSP(this, &FDisplayClusterColorGradingGenerator_ICVFXCamera::DeleteColorGradingGroup);
+	OutColorGradingDataModel.OnColorGradingGroupRenamed().AddSP(this, &FDisplayClusterColorGradingGenerator_ICVFXCamera::RenameColorGradingGroup);
 
 	{
 		FDisplayClusterColorGradingDataModel::FDetailsSection InnerFrustumDetailsSection;
@@ -1108,7 +1209,8 @@ void FDisplayClusterColorGradingGenerator_ICVFXCamera::GenerateDataModel(IProper
 	{
 		FDisplayClusterColorGradingDataModel::FDetailsSection OCIODetailsSection;
 		OCIODetailsSection.DisplayName = LOCTEXT("OCIODetailsSectionLabel", "OCIO");
-		OCIODetailsSection.EditConditionPropertyHandle = FindPropertyHandle(PropertyRowGenerator, CREATE_PROPERTY_PATH(UDisplayClusterICVFXCameraComponent, CameraSettings.AllNodesOCIOConfiguration.bIsEnabled));
+		OCIODetailsSection.EditConditionPropertyHandle = FindPropertyHandle(PropertyRowGenerator,
+			CREATE_PROPERTY_PATH(UDisplayClusterICVFXCameraComponent, CameraSettings.CameraOCIO.AllNodesOCIOConfiguration.bIsEnabled));
 
 		FDisplayClusterColorGradingDataModel::FDetailsSubsection AllNodesOCIODetailsSubsection;
 		AllNodesOCIODetailsSubsection.DisplayName = LOCTEXT("AllNodesOCIODetailsSubsectionLabel", "All Nodes");
@@ -1145,6 +1247,46 @@ FReply FDisplayClusterColorGradingGenerator_ICVFXCamera::AddColorGradingGroup()
 	}
 
 	return FReply::Handled();
+}
+
+void FDisplayClusterColorGradingGenerator_ICVFXCamera::DeleteColorGradingGroup(int32 GroupIndex)
+{
+	for (const TWeakObjectPtr<UDisplayClusterICVFXCameraComponent>& CameraComponent : CameraComponents)
+	{
+		if (CameraComponent.IsValid())
+		{
+			// Use GroupIndex - 1 since the entire cluster color grading is group 0
+			if (CameraComponent->CameraSettings.PerNodeColorGrading.IsValidIndex(GroupIndex - 1))
+			{
+				FScopedTransaction Transaction(LOCTEXT("DeleteNodeColorGradingGroupTransaction", "Delete Node Group"));
+				CameraComponent->Modify();
+
+				CameraComponent->CameraSettings.PerNodeColorGrading.RemoveAt(GroupIndex - 1);
+
+				IDisplayClusterColorGrading::Get().GetColorGradingDrawerSingleton().RefreshColorGradingDrawers(true);
+			}
+		}
+	}
+}
+
+void FDisplayClusterColorGradingGenerator_ICVFXCamera::RenameColorGradingGroup(int32 GroupIndex, const FText& NewName)
+{
+	for (const TWeakObjectPtr<UDisplayClusterICVFXCameraComponent>& CameraComponent : CameraComponents)
+	{
+		if (CameraComponent.IsValid())
+		{
+			// Use GroupIndex - 1 since the entire cluster color grading is group 0
+			if (CameraComponent->CameraSettings.PerNodeColorGrading.IsValidIndex(GroupIndex - 1))
+			{
+				FScopedTransaction Transaction(LOCTEXT("RenameNodeColorGradingGroupTransaction", "Rename Node Group"));
+				CameraComponent->Modify();
+
+				CameraComponent->CameraSettings.PerNodeColorGrading[GroupIndex - 1].Name = NewName;
+
+				IDisplayClusterColorGrading::Get().GetColorGradingDrawerSingleton().RefreshColorGradingDrawers(true);
+			}
+		}
+	}
 }
 
 TSharedRef<SWidget> FDisplayClusterColorGradingGenerator_ICVFXCamera::CreateNodeComboBox(int32 PerNodeColorGradingIndex) const

@@ -30,6 +30,7 @@ public:
 	FTopLevelAssetPath GetBaseClass() const;
 	FTopLevelAssetPath GetNativeClass() const;
 	UClass* GetActorNativeClass() const;
+	UE_DEPRECATED(5.2, "GetOrigin is deprecated.")
 	FVector GetOrigin() const;
 	FName GetRuntimeGrid() const;
 	bool GetIsSpatiallyLoaded() const;
@@ -49,7 +50,13 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	FSoftObjectPath GetActorSoftPath() const;
 	FName GetActorLabel() const;
+
+	UE_DEPRECATED(5.2, "GetBounds is deprecated, GetEditorBounds or GetRuntimeBounds should be used instead.")
 	FBox GetBounds() const;
+
+	FBox GetEditorBounds() const;
+	FBox GetRuntimeBounds() const;
+
 	const TArray<FGuid>& GetReferences() const;
 	FString ToString() const;
 	const FGuid& GetParentActor() const;
@@ -59,14 +66,18 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	FGuid GetContentBundleGuid() const;
 
 	bool IsContainerInstance() const;
+	FName GetLevelPackage() const;
 	bool GetContainerInstance(const UActorDescContainer*& OutLevelContainer, FTransform& OutLevelTransform, EContainerClusterMode& OutClusterMode) const;
 
 	void CheckForErrors(IStreamingGenerationErrorHandler* ErrorHandler) const;
 
 	FName GetActorLabelOrName() const;
 
+	UE_DEPRECATED(5.2, "ShouldValidateRuntimeGrid is deprecated and should not be used.")
+	bool ShouldValidateRuntimeGrid() const;
+
 	void SetForcedNonSpatiallyLoaded();
-	void SetInvalidRuntimeGrid();
+	void SetForcedNoRuntimeGrid();
 	void SetInvalidDataLayers();
 	void SetRuntimeDataLayers(TArray<FName>& InRuntimeDataLayers);
 	void SetRuntimeReferences(TArray<FGuid>& InRuntimeReferences);
@@ -88,8 +99,8 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 protected:
 	const FWorldPartitionActorDesc* ActorDesc;
 	bool bIsForcedNonSpatiallyLoaded;
-	bool bInvalidDataLayers;
-	bool bInvalidRuntimeGrid;
+	bool bIsForcedNoRuntimeGrid;
+	bool bInvalidDataLayers;	
 	TOptional<TArray<FName>> RuntimeDataLayers;
 	TOptional<TArray<FGuid>> RuntimeReferences;
 };

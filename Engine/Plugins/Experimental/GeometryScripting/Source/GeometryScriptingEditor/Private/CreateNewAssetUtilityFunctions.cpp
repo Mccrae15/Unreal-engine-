@@ -21,13 +21,14 @@
 #include "Editor.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Misc/Paths.h"
+#include "PackageTools.h"
 
-#include "MeshDescriptionToDynamicMesh.h"
-#include "DynamicMeshToMeshDescription.h"
 #include "ConversionUtils/DynamicMeshToVolume.h"
 #include "AssetUtils/CreateStaticMeshUtil.h"
+#include "AssetUtils/CreateSkeletalMeshUtil.h"
 #include "AssetUtils/CreateTexture2DUtil.h"
 #include "ModelingObjectsCreationAPI.h"
+#include "Engine/SkinnedAssetCommon.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(CreateNewAssetUtilityFunctions)
 
@@ -46,7 +47,7 @@ void UGeometryScriptLibrary_CreateNewAssetFunctions::CreateUniqueNewAssetPathNam
 	FString& UniqueAssetPathAndName,
 	FString& UniqueAssetName,
 	FGeometryScriptUniqueAssetNameOptions Options,
-	TEnumAsByte<EGeometryScriptOutcomePins>& Outcome,
+	EGeometryScriptOutcomePins& Outcome,
 	UGeometryScriptDebug* Debug)
 {
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
@@ -57,7 +58,7 @@ void UGeometryScriptLibrary_CreateNewAssetFunctions::CreateUniqueNewAssetPathNam
 	{
 		FString UUID = UE::Modeling::GenerateRandomShortHexString(Options.UniqueIDDigits);
 		UniqueAssetName = FString::Printf(TEXT("%s_%s"), *BaseAssetName, *UUID);
-		UniqueAssetPathAndName = FPaths::Combine(AssetFolderPath, UniqueAssetName);
+		UniqueAssetPathAndName = UPackageTools::SanitizePackageName(FPaths::Combine(AssetFolderPath, UniqueAssetName));
 
 		// if asset does not exist at this path, we can use it
 		FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(UniqueAssetPathAndName));
@@ -78,7 +79,7 @@ AVolume* UGeometryScriptLibrary_CreateNewAssetFunctions::CreateNewVolumeFromMesh
 	FTransform ActorTransform,
 	FString BaseActorName,
 	FGeometryScriptCreateNewVolumeFromMeshOptions Options,
-	TEnumAsByte<EGeometryScriptOutcomePins>& Outcome,
+	EGeometryScriptOutcomePins& Outcome,
 	UGeometryScriptDebug* Debug)
 {
 	Outcome = EGeometryScriptOutcomePins::Failure;
@@ -148,7 +149,7 @@ UStaticMesh* UGeometryScriptLibrary_CreateNewAssetFunctions::CreateNewStaticMesh
 	UDynamicMesh* FromDynamicMesh, 
 	FString AssetPathAndName,
 	FGeometryScriptCreateNewStaticMeshAssetOptions Options,
-	TEnumAsByte<EGeometryScriptOutcomePins>& Outcome,
+	EGeometryScriptOutcomePins& Outcome,
 	UGeometryScriptDebug* Debug)
 {
 	Outcome = EGeometryScriptOutcomePins::Failure;
@@ -167,6 +168,7 @@ UStaticMesh* UGeometryScriptLibrary_CreateNewAssetFunctions::CreateNewStaticMesh
 	GEditor->BeginTransaction(LOCTEXT("CreateNewStaticMeshAssetFromMesh_Transaction", "Create StaticMesh"));
 
 	UE::AssetUtils::FStaticMeshAssetOptions AssetOptions;
+	AssetPathAndName = UPackageTools::SanitizePackageName(AssetPathAndName);
 	AssetOptions.NewAssetPath = AssetPathAndName;
 
 	AssetOptions.NumSourceModels = 1;
@@ -213,11 +215,99 @@ UStaticMesh* UGeometryScriptLibrary_CreateNewAssetFunctions::CreateNewStaticMesh
 }
 
 
+USkeletalMesh* UGeometryScriptLibrary_CreateNewAssetFunctions::CreateNewSkeletalMeshAssetFromMesh(
+	UDynamicMesh* FromDynamicMesh,
+	USkeleton* InSkeleton,
+	FString AssetPathAndName, 
+	FGeometryScriptCreateNewSkeletalMeshAssetOptions Options,
+	EGeometryScriptOutcomePins& Outcome, 
+	UGeometryScriptDebug* Debug)
+{
+	using namespace UE::AssetUtils;
+
+	Outcome = EGeometryScriptOutcomePins::Failure;
+	if (FromDynamicMesh == nullptr)
+	{
+		AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("CreateNewSkeletalMeshAssetFromMesh_InvalidInput1", "CreateNewSkeletalMeshAssetFromMesh: FromDynamicMesh is Null"));
+		return nullptr;
+	}
+	if (FromDynamicMesh->GetTriangleCount() == 0)
+	{
+		AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("CreateNewSkeletalMeshAssetFromMesh_InvalidInput2", "CreateNewSkeletalMeshAssetFromMesh: FromDynamicMesh has zero triangles"));
+		return nullptr;
+	}
+	if (FromDynamicMesh->GetMeshRef().Attributes()->GetSkinWeightsAttributes().Num() == 0)
+	{
+		AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("CreateNewSkeletalMeshAssetFromMesh_InvalidInput3", "CreateNewSkeletalMeshAssetFromMesh: FromDynamicMesh has no skin weight attributes"));
+		return nullptr;
+	}
+	if (InSkeleton == nullptr)
+	{
+		AppendError(Debug, EGeometryScriptErrorType::InvalidInputs, LOCTEXT("CreateNewSkeletalMeshAssetFromMesh_InvalidSkeleton", "CreateNewSkeletalMeshAssetFromMesh: Skeleton is Null"));
+		return nullptr;
+	}
+	
+	// todo: other safety checks
+
+	GEditor->BeginTransaction(LOCTEXT("CreateNewSkeletalMeshAssetFromMesh_Transaction", "Create SkeletalMesh"));
+
+	FSkeletalMeshAssetOptions AssetOptions;
+	AssetPathAndName = UPackageTools::SanitizePackageName(AssetPathAndName);
+	AssetOptions.NewAssetPath = AssetPathAndName;
+	AssetOptions.Skeleton = InSkeleton;
+
+	AssetOptions.NumSourceModels = 1;
+
+	if (!Options.Materials.IsEmpty())
+	{
+		TArray<FSkeletalMaterial> Materials;
+
+		for (const TPair<FName, TObjectPtr<UMaterialInterface>>& Item : Options.Materials)
+		{
+			Materials.Add(FSkeletalMaterial{Item.Value, Item.Key});
+		}
+		AssetOptions.SkeletalMaterials = MoveTemp(Materials);
+		AssetOptions.NumMaterialSlots = AssetOptions.SkeletalMaterials.Num(); 
+	}
+	else
+	{
+		AssetOptions.NumMaterialSlots = 1;
+	}
+	
+	AssetOptions.bEnableRecomputeNormals = Options.bEnableRecomputeNormals;
+	AssetOptions.bEnableRecomputeTangents = Options.bEnableRecomputeTangents;
+
+	FDynamicMesh3 LODMesh;
+	FromDynamicMesh->ProcessMesh([&](const FDynamicMesh3& ReadMesh)
+	{
+		LODMesh = ReadMesh;
+	});
+	AssetOptions.SourceMeshes.DynamicMeshes.Add(&LODMesh);
+
+	FSkeletalMeshResults ResultData;
+	const ECreateSkeletalMeshResult AssetResult = CreateSkeletalMeshAsset(AssetOptions, ResultData);
+
+	if (AssetResult != ECreateSkeletalMeshResult::Ok)
+	{
+		AppendError(Debug, EGeometryScriptErrorType::OperationFailed, LOCTEXT("CreateNewSkeletalMeshAssetFromMesh_Failed", "CreateNewSkeletalMeshAssetFromMesh: Failed to create new Asset"));
+		return nullptr;
+	}
+
+	GEditor->EndTransaction();
+
+	// publish new asset so that asset editor updates
+	FAssetRegistryModule::AssetCreated(ResultData.SkeletalMesh);
+
+	Outcome = EGeometryScriptOutcomePins::Success;
+	return ResultData.SkeletalMesh;
+}
+
+
 UTexture2D* UGeometryScriptLibrary_CreateNewAssetFunctions::CreateNewTexture2DAsset(
 		UTexture2D* FromTexture, 
 		FString AssetPathAndName,
 		FGeometryScriptCreateNewTexture2DAssetOptions Options,
-		TEnumAsByte<EGeometryScriptOutcomePins>& Outcome,
+		EGeometryScriptOutcomePins& Outcome,
 		UGeometryScriptDebug* Debug)
 {
 	Outcome = EGeometryScriptOutcomePins::Failure;
@@ -228,6 +318,7 @@ UTexture2D* UGeometryScriptLibrary_CreateNewAssetFunctions::CreateNewTexture2DAs
 	}
 
 	UE::AssetUtils::FTexture2DAssetOptions AssetOptions;
+	AssetPathAndName = UPackageTools::SanitizePackageName(AssetPathAndName);
 	AssetOptions.NewAssetPath = AssetPathAndName;
 	AssetOptions.bOverwriteIfExists = Options.bOverwriteIfExists;
 

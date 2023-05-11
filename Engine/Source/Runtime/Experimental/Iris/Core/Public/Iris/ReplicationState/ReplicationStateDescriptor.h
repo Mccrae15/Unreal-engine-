@@ -4,7 +4,6 @@
 
 #include "CoreTypes.h"
 #include "Misc/EnumClassFlags.h"
-#include "Net/Core/Trace/NetDebugName.h"
 #include "Templates/TypeHash.h"
 #include <atomic>
 
@@ -13,6 +12,7 @@ class FProperty;
 class FString;
 namespace UE::Net
 {
+	struct FNetDebugName;
 	struct FNetSerializer;
 	typedef uint64 FRepTag;
 	struct FReplicationStateDescriptor;
@@ -46,6 +46,8 @@ enum class EReplicationStateMemberTraits : uint16
 	HasDynamicState = 1U << 0U,
 	HasObjectReference = HasDynamicState << 1U,
 	HasConnectionSpecificSerialization = HasObjectReference << 1U,
+	HasRepNotifyAlways = HasConnectionSpecificSerialization << 1U,
+	UseSerializerIsEqual = HasRepNotifyAlways << 1U,
 };
 ENUM_CLASS_FLAGS(EReplicationStateMemberTraits);
 
@@ -176,6 +178,7 @@ enum class EReplicationStateTraits : uint32
 	HasPushBasedDirtiness				= HasConnectionSpecificSerialization << 1U,
 	// Whether delta compression is supported or not
 	SupportsDeltaCompression			= HasPushBasedDirtiness << 1U,
+	UseSerializerIsEqual				= SupportsDeltaCompression << 1U,	
 };
 ENUM_CLASS_FLAGS(EReplicationStateTraits);
 
@@ -257,7 +260,7 @@ struct FReplicationStateDescriptor
 	// Function to destruct external state representation
 	DestructReplicationStateFunc DestructReplicationState;
 
-	// Function used to construct FastArrays
+	// Function used to construct custom replication fragments
 	CreateAndRegisterReplicationFragmentFunc CreateAndRegisterReplicationFragmentFunction;
 
 	EReplicationStateTraits Traits;

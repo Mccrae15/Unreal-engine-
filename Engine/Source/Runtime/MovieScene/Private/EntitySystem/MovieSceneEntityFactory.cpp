@@ -241,15 +241,6 @@ void FEntityFactories::DefineMutuallyInclusiveComponent(FComponentTypeID InCompo
 	Masks.AllMutualFirsts.Set(InComponentA);
 }
 
-void FEntityFactories::DefineMutuallyInclusiveComponent(TInlineValue<FMutualEntityInitializer>&& InInitializer)
-{
-	check(InInitializer.IsValid());
-
-	DefineChildComponent(InInitializer->GetComponentA(), InInitializer->GetComponentB());
-	// Note: after this line, InInitializer is reset
-	MutualInitializers.Add(MoveTemp(InInitializer));
-}
-
 void FEntityFactories::DefineComplexInclusiveComponents(const FComplexInclusivityFilter& InFilter, FComponentTypeID InComponent)
 {
 	FComponentMask ComponentsToInclude { InComponent };
@@ -383,15 +374,6 @@ void FEntityFactories::RunInitializers(const FComponentMask& ParentType, const F
 		if (ChildInit->IsRelevant(ParentType, ChildType))
 		{
 			ChildInit->Run(InChildEntityRange, ParentAllocation, ParentAllocationOffsets);
-		}
-	}
-
-	// First off, run child initializers
-	for (TInlineValue<FMutualEntityInitializer>& MutualInit : MutualInitializers)
-	{
-		if (MutualInit->IsRelevant(ChildType))
-		{
-			MutualInit->Run(InChildEntityRange);
 		}
 	}
 }

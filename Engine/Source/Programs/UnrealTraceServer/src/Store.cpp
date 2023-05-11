@@ -31,6 +31,8 @@ class FStore::FDirWatcher
 public:
 	using asio::windows::object_handle::object_handle;
 };
+
+////////////////////////////////////////////////////////////////////////////////
 #elif TS_USING(TS_PLATFORM_LINUX)
 class FStore::FDirWatcher
 	: public asio::posix::stream_descriptor
@@ -43,6 +45,8 @@ public:
 		asio::posix::stream_descriptor::async_wait(asio::posix::stream_descriptor::wait_read, InHandler);
 	}
 };
+
+////////////////////////////////////////////////////////////////////////////////
 #elif TS_USING(TS_PLATFORM_MAC)
 class FStore::FDirWatcher
 {
@@ -83,7 +87,8 @@ private:
 	FPath StoreDir;
 };
 
-void MacCallback(ConstFSEventStreamRef StreamRef,
+////////////////////////////////////////////////////////////////////////////////
+static void MacCallback(ConstFSEventStreamRef StreamRef,
 					void* InDirWatcherPtr,
 					size_t EventCount,
 					void* EventPaths,
@@ -97,6 +102,7 @@ void MacCallback(ConstFSEventStreamRef StreamRef,
 	DirWatcherPtr->ProcessChanges(EventCount, EventPaths, EventFlags);
 }
 
+////////////////////////////////////////////////////////////////////////////////
 void FStore::FDirWatcher::async_wait(HandlerType InHandler)
 {
 	if (bIsRunning)
@@ -302,7 +308,8 @@ FStore::FStore(asio::io_context& InIoContext, const FPath& InStoreDir)
 
 #if TS_USING(TS_PLATFORM_WINDOWS)
 	std::wstring StoreDirW = StoreDir;
-	HANDLE DirWatchHandle = FindFirstChangeNotificationW(StoreDirW.c_str(), false, FILE_NOTIFY_CHANGE_FILE_NAME);
+	HANDLE DirWatchHandle = FindFirstChangeNotificationW(StoreDirW.c_str(), false,
+		FILE_NOTIFY_CHANGE_FILE_NAME|FILE_NOTIFY_CHANGE_DIR_NAME);
 	if (DirWatchHandle == INVALID_HANDLE_VALUE)
 	{
 		DirWatchHandle = 0;

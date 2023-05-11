@@ -6,6 +6,10 @@ using System.Reflection;
 
 #pragma warning disable IDE1006 // Naming Styles
 #pragma warning disable CS1591 // Missing documentation
+#pragma warning disable CA1028 // Enum Storage should be Int32
+#pragma warning disable CA2217 // Do not mark enums with FlagsAttribute
+#pragma warning disable CA1069 // Enums values should not be duplicated
+#pragma warning disable CA1008 // Enums should have zero value
 
 namespace EpicGames.Core
 {
@@ -654,11 +658,6 @@ namespace EpicGames.Core
 		Garbage = 1 << 21,
 
 		/// <summary>
-		/// Same as above but referenced through a persistent reference so it can't be GC'd
-		/// </summary>
-		PersistentGarbage = 1 << 22,
-
-		/// <summary>
 		/// External reference to object in cluster exists
 		/// </summary>
 		ReachableInCluster = 1 << 23,
@@ -706,7 +705,7 @@ namespace EpicGames.Core
 		GarbageCollectionKeepFlags = Native | Async | AsyncLoading | LoaderImport,
 
 		//~ Make sure this is up to date!
-		AllFlags = LoaderImport | Garbage | PersistentGarbage | ReachableInCluster | ClusterRoot | Native | Async | AsyncLoading | Unreachable | PendingKill | RootSet | PendingConstruction
+		AllFlags = LoaderImport | Garbage | ReachableInCluster | ClusterRoot | Native | Async | AsyncLoading | Unreachable | PendingKill | RootSet | PendingConstruction
 	};
 
 	/// <summary>
@@ -992,7 +991,10 @@ namespace EpicGames.Core
 		/// </summary>
 		Config = 0x0000000000004000,
 
-		// Unused = 0x0000000000008000,
+		/// <summary>
+		/// Parameter is required in blueprint. Not linking the parameter with a node will result in a compile error.
+		/// </summary>
+		RequiredParm = 0x0000000000008000,
 
 		/// <summary>
 		/// Disable editing on an instance of this class
@@ -1186,7 +1188,7 @@ namespace EpicGames.Core
 		/// <summary>
 		/// All parameter flags
 		/// </summary>
-		ParmFlags = Parm | OutParm | ReturnParm | ReferenceParm | ConstParm,
+		ParmFlags = Parm | OutParm | ReturnParm | ReferenceParm | ConstParm | RequiredParm,
 
 		/// <summary>
 		/// Flags that are propagated to properties inside array container

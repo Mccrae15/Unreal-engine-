@@ -54,6 +54,27 @@ void FMassActorFragment::ResetNoHandleMapUpdate()
 	bIsOwnedByMass = false;
 }
 
+AActor* FMassActorFragment::GetMutable(EActorAccess Access)
+{
+	switch (Access)
+	{
+	case EActorAccess::OnlyWhenAlive:
+		return Actor.Get();
+	case EActorAccess::IncludePendingKill:
+		return Actor.Get(true);
+	case EActorAccess::IncludeUnreachable:
+		return Actor.GetEvenIfUnreachable();
+	default:
+		checkf(false, TEXT("Invalid ActorAccess value: %i."), static_cast<int32>(Access));
+		return nullptr;
+	}
+}
+
+const AActor* FMassActorFragment::Get(EActorAccess Access) const
+{
+	return const_cast<FMassActorFragment*>(this)->GetMutable(Access);
+}
+
 //----------------------------------------------------------------------//
 //  UMassActorSubsystem 
 //----------------------------------------------------------------------//
@@ -65,16 +86,26 @@ void UMassActorSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	
 	if (UMassEntitySubsystem* EntitySubsystem = UWorld::GetSubsystem<UMassEntitySubsystem>(GetWorld()))
 	{
-		EntityManager = EntitySubsystem->GetMutableEntityManager().AsShared();
+		ActorManager = MakeShareable(new FMassActorManager(EntitySubsystem->GetMutableEntityManager().AsShared()));
 	}
 }
 
 void UMassActorSubsystem::Deinitialize()
 {
-	EntityManager.Reset();
+	ActorManager.Reset();
 }
 
-FMassEntityHandle UMassActorSubsystem::GetEntityHandleFromActor(const TObjectKey<const AActor> Actor)
+//----------------------------------------------------------------------//
+//  FMassActorManager
+//----------------------------------------------------------------------//
+FMassActorManager::FMassActorManager(const TSharedPtr<FMassEntityManager>& InEntityManager, UObject* InOwner)
+	: EntityManager(InEntityManager)
+	, Owner(InOwner)
+{
+
+}
+
+FMassEntityHandle FMassActorManager::GetEntityHandleFromActor(const TObjectKey<const AActor> Actor)
 {
 	UE_MT_SCOPED_READ_ACCESS(ActorHandleMapDetector);
 	FMassEntityHandle* Entity = ActorHandleMap.Find(Actor);
@@ -83,30 +114,30 @@ FMassEntityHandle UMassActorSubsystem::GetEntityHandleFromActor(const TObjectKey
 		return FMassEntityManager::InvalidEntity;
 	}
 
-	check(TObjectKey<const AActor>(GetActorFromHandle(*Entity)) == Actor);
+	check(TObjectKey<const AActor>(GetActorFromHandle(*Entity, FMassActorFragment::EActorAccess::IncludeUnreachable)) == Actor);
 	return *Entity;
 }
 
-AActor* UMassActorSubsystem::GetActorFromHandle(const FMassEntityHandle Handle) const
+AActor* FMassActorManager::GetActorFromHandle(const FMassEntityHandle Handle, FMassActorFragment::EActorAccess Access) const
 {
 	check(EntityManager);
 	FMassActorFragment* Data = EntityManager->GetFragmentDataPtr<FMassActorFragment>(Handle);
-	return Data != nullptr ? Data->GetMutable() : nullptr;
+	return Data != nullptr ? Data->GetMutable(Access) : nullptr;
 }
 
-void UMassActorSubsystem::SetHandleForActor(const TObjectKey<const AActor> Actor, const FMassEntityHandle Handle)
+void FMassActorManager::SetHandleForActor(const TObjectKey<const AActor> Actor, const FMassEntityHandle Handle)
 {
 	UE_MT_SCOPED_WRITE_ACCESS(ActorHandleMapDetector);
 	ActorHandleMap.Add(Actor, Handle);
 }
 
-void UMassActorSubsystem::RemoveHandleForActor(const TObjectKey<const AActor> Actor)
+void FMassActorManager::RemoveHandleForActor(const TObjectKey<const AActor> Actor)
 {
 	UE_MT_SCOPED_WRITE_ACCESS(ActorHandleMapDetector);
 	ActorHandleMap.Remove(Actor);
 }
 
-void UMassActorSubsystem::DisconnectActor(const TObjectKey<const AActor> Actor, const FMassEntityHandle Handle)
+void FMassActorManager::DisconnectActor(const TObjectKey<const AActor> Actor, const FMassEntityHandle Handle)
 {
 	if (Handle.IsValid() == false)
 	{
@@ -136,7 +167,7 @@ void UMassActorSubsystem::DisconnectActor(const TObjectKey<const AActor> Actor, 
 	else
 	{
 		// unexpected mismatch. Add back and notify.
-		UE_VLOG_UELOG(this, LogMass, Warning, TEXT("%s: Trying to disconnect actor %s while the Handle given doesn't match the system\'s records")
+		UE_VLOG_UELOG(Owner.Get(), LogMass, Warning, TEXT("%s: Trying to disconnect actor %s while the Handle given doesn't match the system\'s records")
 			, ANSI_TO_TCHAR(__FUNCTION__), *AActor::GetDebugName(Actor.ResolveObjectPtr()));
 		SetHandleForActor(Actor, Handle);
 	}

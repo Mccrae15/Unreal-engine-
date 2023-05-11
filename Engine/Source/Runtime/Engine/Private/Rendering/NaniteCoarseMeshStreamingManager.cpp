@@ -1,8 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Rendering/NaniteCoarseMeshStreamingManager.h"
-#include "Engine/StreamableRenderAsset.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/Level.h"
 #include "Engine/StaticMesh.h"
+#include "PrimitiveSceneProxy.h"
+#include "SceneInterface.h"
+#include "Stats/StatsTrace.h"
 
 DECLARE_STATS_GROUP(TEXT("Nanite Coarse Mesh Streaming"), STATGROUP_NaniteCoarseMeshStreaming, STATCAT_Advanced);
 

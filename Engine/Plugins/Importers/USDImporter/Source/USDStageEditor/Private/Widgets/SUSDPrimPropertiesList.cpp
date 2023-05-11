@@ -15,6 +15,7 @@
 #include "Modules/ModuleManager.h"
 #include "ScopedTransaction.h"
 #include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SComboBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SNumericEntryBox.h"
 
@@ -689,6 +690,45 @@ void SUsdPrimPropertiesList::SetPrimPath( const UE::FUsdStageWeak& UsdStage, con
 {
 	GeneratePropertiesList( UsdStage, InPrimPath );
 	RequestListRefresh();
+}
+
+TArray<FString> SUsdPrimPropertiesList::GetSelectedPropertyNames() const
+{
+	TArray<FString> SelectedProperties;
+
+	TArray< TSharedPtr< FUsdPrimAttributeViewModel > > SelectedViewModels = GetSelectedItems();
+	SelectedProperties.Reserve( SelectedViewModels.Num() );
+
+	for ( const TSharedPtr< FUsdPrimAttributeViewModel >& SelectedItem : SelectedViewModels )
+	{
+		if ( SelectedItem )
+		{
+			SelectedProperties.Add( SelectedItem->Label );
+		}
+	}
+
+	return SelectedProperties;
+}
+
+void SUsdPrimPropertiesList::SetSelectedPropertyNames( const TArray<FString>& NewSelection )
+{
+	TSet<FString> NewSelectionSet{ NewSelection };
+
+	Private_ClearSelection();
+
+	TArray< TSharedPtr< FUsdPrimAttributeViewModel > > NewItemSelection;
+	NewItemSelection.Reserve( NewSelection.Num() );
+
+	for ( const TSharedPtr< FUsdPrimAttributeViewModel >& Item : ViewModel.PrimAttributes )
+	{
+		if ( Item && NewSelectionSet.Contains( Item->Label ) )
+		{
+			NewItemSelection.Add( Item );
+		}
+	}
+
+	const bool bSelected = true;
+	SetItemSelection( NewItemSelection, bSelected );
 }
 
 #undef LOCTEXT_NAMESPACE

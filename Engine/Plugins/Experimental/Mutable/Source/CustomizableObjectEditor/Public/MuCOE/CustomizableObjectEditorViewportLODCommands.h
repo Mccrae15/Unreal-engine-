@@ -3,12 +3,7 @@
 #pragma once
 
 #include "Framework/Commands/Commands.h"
-#include "HAL/Platform.h"
-#include "Internationalization/Internationalization.h"
 #include "MuCOE/CustomizableObjectEditorStyle.h"
-#include "Templates/SharedPointer.h"
-#include "UObject/NameTypes.h"
-#include "UObject/UnrealNames.h"
 
 class FUICommandInfo;
 
@@ -55,6 +50,9 @@ public:
 
 	/** Sets the camera mode to free camera */
 	TSharedPtr< FUICommandInfo > FreeCamera;
+
+	/** Shows/Hide the bones of the skeletal mesh */
+	TSharedPtr< FUICommandInfo > ShowBones;
 
 public:
 	/** Registers our commands with the binding system */

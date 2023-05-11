@@ -111,6 +111,7 @@ public:
 		, _ComboBoxStyle(&FAppStyle::Get().GetWidgetStyle< FComboBoxStyle >("ComboBox"))
 		, _ButtonStyle(nullptr)
 		, _ItemStyle(&FAppStyle::Get().GetWidgetStyle< FTableRowStyle >("ComboBox.Row"))
+		, _ScrollBarStyle(&FAppStyle::Get().GetWidgetStyle<FScrollBarStyle>("ScrollBar"))
 		, _ContentPadding(_ComboBoxStyle->ContentPadding)
 		, _ForegroundColor(FSlateColor::UseStyle())
 		, _OptionsSource()
@@ -133,6 +134,8 @@ public:
 		SLATE_STYLE_ARGUMENT( FButtonStyle, ButtonStyle )
 
 		SLATE_STYLE_ARGUMENT(FTableRowStyle, ItemStyle)
+		
+		SLATE_STYLE_ARGUMENT( FScrollBarStyle, ScrollBarStyle )
 
 		SLATE_ATTRIBUTE( FMargin, ContentPadding )
 		SLATE_ATTRIBUTE( FSlateColor, ForegroundColor )
@@ -191,13 +194,14 @@ public:
 		check(InArgs._ComboBoxStyle);
 
 		ItemStyle = InArgs._ItemStyle;
-		MenuRowPadding = InArgs._ComboBoxStyle->MenuRowPadding;
+		ComboBoxStyle = InArgs._ComboBoxStyle;
+		MenuRowPadding = ComboBoxStyle->MenuRowPadding;
 
 		// Work out which values we should use based on whether we were given an override, or should use the style's version
-		const FComboButtonStyle& OurComboButtonStyle = InArgs._ComboBoxStyle->ComboButtonStyle;
+		const FComboButtonStyle& OurComboButtonStyle = ComboBoxStyle->ComboButtonStyle;
 		const FButtonStyle* const OurButtonStyle = InArgs._ButtonStyle ? InArgs._ButtonStyle : &OurComboButtonStyle.ButtonStyle;
-		PressedSound = InArgs._PressedSoundOverride.Get(InArgs._ComboBoxStyle->PressedSlateSound);
-		SelectionChangeSound = InArgs._SelectionChangeSoundOverride.Get(InArgs._ComboBoxStyle->SelectionChangeSlateSound);
+		PressedSound = InArgs._PressedSoundOverride.Get(ComboBoxStyle->PressedSlateSound);
+		SelectionChangeSound = InArgs._SelectionChangeSoundOverride.Get(ComboBoxStyle->SelectionChangeSlateSound);
 
 		this->OnComboBoxOpening = InArgs._OnComboBoxOpening;
 		this->OnSelectionChanged = InArgs._OnSelectionChanged;
@@ -208,7 +212,7 @@ public:
 		OptionsSource = InArgs._OptionsSource;
 		CustomScrollbar = InArgs._CustomScrollbar;
 
-		TSharedRef<SWidget> ComboBoxMenuContent =
+		ComboBoxMenuContent =
 			SNew(SBox)
 			.MaxDesiredHeight(InArgs._MaxListHeight)
 			[
@@ -218,7 +222,9 @@ public:
 				.OnSelectionChanged(this, &SComboBox< OptionType >::OnSelectionChanged_Internal)
 				.OnKeyDownHandler(this, &SComboBox< OptionType >::OnKeyDownHandler)
 				.SelectionMode(ESelectionMode::Single)
+				.ScrollBarStyle(InArgs._ScrollBarStyle)
 				.ExternalScrollbar(InArgs._CustomScrollbar)
+				
 			];
 
 		// Set up content
@@ -241,7 +247,7 @@ public:
 			]
 			.MenuContent()
 			[
-				ComboBoxMenuContent
+				ComboBoxMenuContent.ToSharedRef()
 			]
 			.HasDownArrow( InArgs._HasDownArrow )
 			.ContentPadding( InArgs._ContentPadding )
@@ -356,6 +362,44 @@ public:
 		{
 			ComboListView->ClearSelection();
 		}
+	}
+
+	void SetEnableGamepadNavigationMode(bool InEnableGamepadNavigationMode)
+	{
+		this->EnableGamepadNavigationMode = InEnableGamepadNavigationMode;
+	}
+
+	void SetMaxHeight(float InMaxHeight)
+	{
+		ComboBoxMenuContent->SetMaxDesiredHeight(InMaxHeight);
+	}
+
+	void SetStyle(const FComboBoxStyle* InStyle) 
+	{ 
+		if (ComboBoxStyle != InStyle)
+		{
+			ComboBoxStyle = InStyle;
+			InvalidateStyle();
+		}
+	}
+
+	void InvalidateStyle() 
+	{ 
+		Invalidate(EInvalidateWidgetReason::Layout); 
+	}
+
+	void SetItemStyle(const FTableRowStyle* InItemStyle) 
+	{ 
+		if (ItemStyle != InItemStyle)
+		{
+			ItemStyle = InItemStyle;
+			InvalidateItemStyle();
+		}
+	}
+
+	void InvalidateItemStyle() 
+	{ 
+		Invalidate(EInvalidateWidgetReason::Layout); 
 	}
 
 	/** @return the item currently selected by the combo box. */
@@ -615,6 +659,9 @@ private:
 	/** The item style to use. */
 	const FTableRowStyle* ItemStyle;
 
+	/** The combo box style to use. */
+	const FComboBoxStyle* ComboBoxStyle;
+	
 	/** The padding around each menu row */
 	FMargin MenuRowPadding;
 
@@ -637,7 +684,7 @@ private:
 	// When true, navigation away from the widget is prevented until a new value has been accepted or canceled. 
 	bool bControllerInputCaptured;
 
-		
+	TSharedPtr<SBox> ComboBoxMenuContent;
 
 	const TArray< OptionType >* OptionsSource;
 };

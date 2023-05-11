@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include "HAL/Platform.h"
+
 #if !PLATFORM_DESKTOP // need this to fix compile issues with Win configuration.
 
 #define OPENGL_ES	1
@@ -120,6 +122,9 @@ typedef GLfloat GLdouble;
 #define GL_DEBUG_SEVERITY_NOTIFICATION GL_DEBUG_SEVERITY_NOTIFICATION_KHR
 #endif
 
+// FIXME: include gl32.h
+typedef void (GL_APIENTRYP PFNGLFRAMEBUFFERTEXTUREPROC) (GLenum target, GLenum attachment, GLuint texture, GLint level);
+
 namespace GLFuncPointers
 {
 	// GL_EXT_multisampled_render_to_texture
@@ -151,7 +156,7 @@ namespace GLFuncPointers
 	// ES 3.2
 	extern PFNGLTEXBUFFEREXTPROC				glTexBufferEXT;
 	extern PFNGLTEXBUFFERRANGEEXTPROC			glTexBufferRangeEXT;
-	extern PFNGLCOPYIMAGESUBDATAEXTPROC			glCopyImageSubDataEXT;
+	extern PFNGLCOPYIMAGESUBDATAEXTPROC			glCopyImageSubData;
 	extern PFNGLENABLEIEXTPROC					glEnableiEXT;
 	extern PFNGLDISABLEIEXTPROC					glDisableiEXT;
 	extern PFNGLBLENDEQUATIONIEXTPROC			glBlendEquationiEXT;
@@ -159,6 +164,7 @@ namespace GLFuncPointers
 	extern PFNGLBLENDFUNCIEXTPROC				glBlendFunciEXT;
 	extern PFNGLBLENDFUNCSEPARATEIEXTPROC		glBlendFuncSeparateiEXT;
 	extern PFNGLCOLORMASKIEXTPROC				glColorMaskiEXT;
+	extern PFNGLFRAMEBUFFERTEXTUREPROC			glFramebufferTexture;
 
 	// Mobile multi-view
 	extern PFNGLFRAMEBUFFERTEXTUREMULTIVIEWOVRPROC glFramebufferTextureMultiviewOVR;
@@ -373,8 +379,7 @@ struct FOpenGLES : public FOpenGLBase
 
 	static FORCEINLINE void CopyImageSubData(GLuint SrcName, GLenum SrcTarget, GLint SrcLevel, GLint SrcX, GLint SrcY, GLint SrcZ, GLuint DstName, GLenum DstTarget, GLint DstLevel, GLint DstX, GLint DstY, GLint DstZ, GLsizei Width, GLsizei Height, GLsizei Depth)
 	{
-		check(bSupportsCopyImage);
-		glCopyImageSubDataEXT(SrcName, SrcTarget, SrcLevel, SrcX, SrcY, SrcZ, DstName, DstTarget, DstLevel, DstX, DstY, DstZ, Width, Height, Depth);
+		glCopyImageSubData(SrcName, SrcTarget, SrcLevel, SrcX, SrcY, SrcZ, DstName, DstTarget, DstLevel, DstX, DstY, DstZ, Width, Height, Depth);
 	}
 
 	static FORCEINLINE bool TexStorage2DMultisample(GLenum Target, GLsizei Samples, GLint InternalFormat, GLsizei Width, GLsizei Height, GLboolean FixedSampleLocations)
@@ -638,12 +643,14 @@ struct FOpenGLES : public FOpenGLBase
 
 	static FORCEINLINE void FramebufferTexture(GLenum Target, GLenum Attachment, GLuint Texture, GLint Level)
 	{
-		check(0);
+		// ES 3.2
+		glFramebufferTexture(Target, Attachment, Texture, Level);
 	}
 
 	static FORCEINLINE void FramebufferTexture3D(GLenum Target, GLenum Attachment, GLenum TexTarget, GLuint Texture, GLint Level, GLint ZOffset)
 	{
-		check(0);
+		// glFramebufferTexture3D is not supported on GLES
+		glFramebufferTextureLayer(Target, Attachment, Texture, Level, ZOffset);
 	}
 
 	static FORCEINLINE void FramebufferTextureLayer(GLenum Target, GLenum Attachment, GLuint Texture, GLint Level, GLint Layer)

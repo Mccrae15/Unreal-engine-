@@ -2,21 +2,20 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Input/Reply.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SCompoundWidget.h"
-#include "Widgets/Input/SComboBox.h"
-#include "Widgets/Input/SSearchBox.h"
 #include "GraphEditor.h"
 #include "AssetRegistry/AssetData.h"
 #include "HistoryManager.h"
 #include "CollectionManagerTypes.h"
-#include "AssetManagerEditorModule.h"
-#include "Containers/ArrayView.h"
-#include "ReferenceViewer/ReferenceViewerSettings.h"
-#include "ReferenceViewer/EdGraph_ReferenceViewer.h"
-#include "ReferenceViewer/SReferenceViewerFilterBar.h"
+
+class FUICommandList;
+class SComboButton;
+class SReferenceViewerFilterBar;
+class SSearchBox;
+class UEdGraph_ReferenceViewer;
+class UReferenceViewerSettings;
+namespace ESelectInfo { enum Type : int; }
+struct FAssetManagerEditorRegistrySource;
+template <typename OptionType> class SComboBox;
 
 class UEdGraph;
 
@@ -174,6 +173,14 @@ private:
 	void ZoomToFit();
 	bool CanZoomToFit() const;
 	void OnFind();
+
+	/** Find Path */
+	void OnFindPathAssetSelected();
+	TSharedRef<SWidget> GenerateFindPathAssetPickerMenu();
+	void OnFindPathAssetSelected( const FAssetData& AssetData );
+	void OnFindPathAssetEnterPressed( const TArray<FAssetData>& AssetData );
+	TSharedPtr<SComboButton> FindPathAssetPicker;
+	FAssetIdentifier FindPathAssetId;
 
 	/** Handlers for searching */
 	void HandleOnSearchTextChanged(const FText& SearchText);

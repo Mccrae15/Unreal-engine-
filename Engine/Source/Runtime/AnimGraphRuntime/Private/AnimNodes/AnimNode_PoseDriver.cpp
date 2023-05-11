@@ -51,14 +51,14 @@ void FAnimNode_PoseDriver::RebuildPoseList(const FBoneContainer& InBoneContainer
 			}
 			else
 			{
-				PoseTarget.DrivenUID = INDEX_NONE;
+				PoseTarget.DrivenUID = SmartName::MaxUID;
 			}
 
 			const int32 PoseIndex = InPoseAsset->GetPoseIndexByName(PoseTarget.DrivenName);
 			if (PoseIndex != INDEX_NONE)
 			{
 				TArray<uint16> const& LUTIndex = InBoneContainer.GetUIDToArrayLookupTable();
-				if (ensure(LUTIndex.IsValidIndex(PoseNames[PoseIndex].UID)) && LUTIndex[PoseNames[PoseIndex].UID] != MAX_uint16)
+				if (LUTIndex.IsValidIndex(PoseNames[PoseIndex].UID) && LUTIndex[PoseNames[PoseIndex].UID] != MAX_uint16)
 				{
 					// we keep pose index as that is the fastest way to search when extracting pose asset
 					PoseTarget.PoseCurveIndex = PoseExtractContext.PoseCurves.Add(FPoseCurve(PoseIndex, PoseNames[PoseIndex].UID, 0.f));
@@ -204,10 +204,14 @@ void FAnimNode_PoseDriver::GetRBFTargets(TArray<FRBFTarget>& OutTargets, const F
 				FTransform RefBoneTransform = FTransform::Identity;
 				if (bEvalFromRefPose && BoneContainer)
 				{
-					const FCompactPoseBoneIndex CompactPoseIndex = SourceBones[SourceIdx].CachedCompactPoseIndex;
-					if (CompactPoseIndex < BoneContainer->GetCompactPoseNumBones())
+					const FBoneReference& BoneReference = SourceBones[SourceIdx];
+					if (BoneReference.HasValidSetup())
 					{
-						RefBoneTransform = BoneContainer->GetRefPoseTransform(CompactPoseIndex);
+						const FCompactPoseBoneIndex CompactPoseIndex = BoneReference.CachedCompactPoseIndex;
+						if (CompactPoseIndex < BoneContainer->GetCompactPoseNumBones())
+						{
+							RefBoneTransform = BoneContainer->GetRefPoseTransform(CompactPoseIndex);
+						}
 					}
 				}
 
@@ -374,9 +378,10 @@ void FAnimNode_PoseDriver::Evaluate_AnyThread(FPoseContext& Output)
 		if (OutputWeights.Num() > 0)
 		{
 			// If we want to drive poses, and PoseAsset is assigned and compatible
+			const UPoseAsset* CachedPoseAsset = CurrentPoseAsset.Get();
 			if (DriveOutput == EPoseDriverOutput::DrivePoses &&
-				CurrentPoseAsset.IsValid() &&
-				Output.AnimInstanceProxy->IsSkeletonCompatible(CurrentPoseAsset->GetSkeleton()))
+				CachedPoseAsset &&
+				CachedPoseAsset->GetSkeleton() != nullptr)
 			{
 				FPoseContext CurrentPose(Output);
 

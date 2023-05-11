@@ -5,8 +5,8 @@
 =============================================================================*/
  
 #include "Engine/Player.h"
-#include "EngineGlobals.h"
 #include "Engine/Engine.h"
+#include "Engine/GameViewportClient.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/NetConnection.h"
 #include "EngineUtils.h"
@@ -93,6 +93,12 @@ APlayerController* UPlayer::GetPlayerController(const UWorld* const InWorld) con
 
 bool UPlayer::Exec( UWorld* InWorld, const TCHAR* Cmd,FOutputDevice& Ar)
 {
+	// Route through Exec_Dev and Exec_Editor first
+	if (FExec::Exec(InWorld, Cmd, Ar))
+	{
+		return true;
+	}
+
 	AActor* ExecActor = PlayerController;
 	if (!ExecActor)
 	{

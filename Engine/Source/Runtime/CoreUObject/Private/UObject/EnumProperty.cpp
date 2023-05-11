@@ -9,7 +9,7 @@
 #include "Templates/IsSigned.h"
 #include "Algo/Find.h"
 #include "UObject/LinkerLoad.h"
-#include "Misc/NetworkVersion.h"
+#include "Misc/EngineNetworkCustomVersion.h"
 #include "Hash/Blake3.h"
 
 namespace UEEnumProperty_Private
@@ -198,7 +198,9 @@ void FEnumProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, v
 
 bool FEnumProperty::NetSerializeItem(FArchive& Ar, UPackageMap* Map, void* Data, TArray<uint8>* MetaData) const
 {
-	if (Ar.EngineNetVer() < HISTORY_FIX_ENUM_SERIALIZATION)
+	Ar.UsingCustomVersion(FEngineNetworkCustomVersion::Guid);
+
+	if (Ar.EngineNetVer() < FEngineNetworkCustomVersion::FixEnumSerialization)
 	{
 		Ar.SerializeBits(Data, FMath::CeilLogTwo64(Enum->GetMaxEnumValue()));
 	}
@@ -280,28 +282,6 @@ void FEnumProperty::ExportText_Internal(FString& ValueStr, const void* PropertyV
 	else
 	{
 		PropertyValue = PointerToValuePtr(PropertyValueOrContainer, PropertyPointerType);
-	}
-
-	if (PortFlags & PPF_ExportCpp)
-	{
-		const int64 ActualValue = LocalUnderlyingProp->GetSignedIntPropertyValue(PropertyValue);
-		const int64 MaxValue = Enum->GetMaxEnumValue();
-		const int64 GoodValue = Enum->IsValidEnumValue(ActualValue) ? ActualValue : MaxValue;
-		const bool bNonNativeEnum = Enum->GetClass() != UEnum::StaticClass();
-		ensure(!bNonNativeEnum || Enum->CppType.IsEmpty());
-		const FString FullyQualifiedEnumName = bNonNativeEnum ? ::UnicodeToCPPIdentifier(Enum->GetName(), false, TEXT("E__"))
-			: (Enum->CppType.IsEmpty() ? Enum->GetName() : Enum->CppType);
-		if (GoodValue == MaxValue)
-		{
-			// not all native enums have Max value declared
-			ValueStr += FString::Printf(TEXT("(%s)(%llu)"), *FullyQualifiedEnumName, ActualValue);
-		}
-		else
-		{
-			ValueStr += FString::Printf(TEXT("%s::%s"), *FullyQualifiedEnumName,
-				*Enum->GetNameStringByValue(GoodValue));
-		}
-		return;
 	}
 
 	if (PortFlags & PPF_ConsoleVariable)

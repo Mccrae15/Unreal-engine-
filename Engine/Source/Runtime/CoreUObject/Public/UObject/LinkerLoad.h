@@ -8,6 +8,7 @@
 #include "Containers/UnrealString.h"
 #include "CoreGlobals.h"
 #include "CoreMinimal.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "HAL/PlatformMath.h"
 #include "HAL/ThreadSafeCounter.h"
 #include "Misc/AssertionMacros.h"
@@ -44,12 +45,15 @@ class UObject;
 class UPackage;
 class UStruct;
 namespace UE::Serialization{ class FEditorBulkData; }
+namespace UE::BulkData::Private{ class FBulkMetaData; }
 namespace UE{ class FPackageTrailer; }
 struct FObjectPtr;
 struct FOpenPackageResult;
 struct FScopedSlowTask;
 struct FUObjectSerializeContext;
 template <typename FuncType> class TFunction;
+
+LLM_DECLARE_TAG(UObject_Linker);
 
 /*----------------------------------------------------------------------------
 	FLinkerLoad.
@@ -264,7 +268,7 @@ public:
 	}
 
 	/** The async package associated with this linker */
-	struct FAsyncPackage* AsyncRoot;
+	void* AsyncRoot;
 #if WITH_EDITOR
 	/** Bulk data that does not need to be loaded when the linker is loaded.												*/
 	TSet<FBulkData*> BulkDataLoaders;
@@ -380,7 +384,11 @@ public:
 	 */
 	COREUOBJECT_API static void AddGameNameRedirect(const FName OldName, const FName NewName);
 
+	virtual bool SerializeBulkData(FBulkData& BulkData, const FBulkDataSerializationParams& Params) override;
+
 private:
+
+	void SerializeBulkMeta(UE::BulkData::Private::FBulkMetaData& Meta, int64& DuplicateSerialOffset, int32 ElementSize);
 
 	// Variables used during async linker creation.
 
@@ -922,6 +930,12 @@ public:
 	 */
 	COREUOBJECT_API void DetachExports();
 
+	/** Should bulkdata identifiers should be regenerated as they are loaded or not */
+	bool ShouldRegenerateGuids() const
+	{
+		return (LoadFlags & LOAD_RegenerateBulkDataGuids) != 0;
+	}
+
 private:
 
 	FORCEINLINE virtual void Seek(int64 InPos) override
@@ -1134,6 +1148,11 @@ private:
 	 * Serializes the preload dependencies.
 	 */
 	ELinkerStatus SerializePreloadDependencies();
+	
+	/**
+	 * Serializes the data resource map.
+	 */
+	ELinkerStatus SerializeDataResourceMap();
 
 	/** Sets the basic linker archive info */
 	void ResetStatusInfo();

@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MVVM/ViewModels/TrackRowModel.h"
+
+#include "MVVM/Extensions/ITrackExtension.h"
 #include "MVVM/ViewModels/SectionModel.h"
 #include "MVVM/ViewModels/SequenceModel.h"
 #include "MVVM/ViewModels/ViewModelIterators.h"
@@ -24,6 +26,7 @@
 #include "MovieSceneTrack.h"
 #include "Tracks/MovieScene3DTransformTrack.h"
 #include "Tracks/MovieScenePrimitiveMaterialTrack.h"
+#include "EntitySystem/IMovieSceneBlenderSystemSupport.h"
 
 #include "ScopedTransaction.h"
 #include "Styling/AppStyle.h"
@@ -295,6 +298,8 @@ void FTrackRowModel::BuildContextMenu(FMenuBuilder& MenuBuilder)
 		return;
 	}
 
+	TSharedPtr<ISequencer> WeakSequencer = GetEditor()->GetSequencer();
+
 	const int32 TrackRowIndex = GetRowIndex();
 
 	TSharedPtr<ISequencerTrackEditor> TrackEditorPtr = GetTrackEditor();
@@ -302,8 +307,6 @@ void FTrackRowModel::BuildContextMenu(FMenuBuilder& MenuBuilder)
 
 	if (Track && Track->GetSupportedBlendTypes().Num() > 0)
 	{
-		TSharedPtr<ISequencer> WeakSequencer = GetEditor()->GetSequencer();
-
 		MenuBuilder.AddSubMenu(
 			LOCTEXT("AddSection", "Add Section"),
 			FText(),
@@ -313,8 +316,39 @@ void FTrackRowModel::BuildContextMenu(FMenuBuilder& MenuBuilder)
 		);	
 	}
 
+	// Add menu items for selecting a blender
+	IMovieSceneBlenderSystemSupport* BlenderSystemSupport = Cast<IMovieSceneBlenderSystemSupport>(Track);
+	if (BlenderSystemSupport)
+	{
+		TArray<TSubclassOf<UMovieSceneBlenderSystem>> BlenderTypes;
+		BlenderSystemSupport->GetSupportedBlenderSystems(BlenderTypes);
+
+		if (BlenderTypes.Num() > 1)
+		{
+			MenuBuilder.AddSubMenu(
+				LOCTEXT("BlendingAlgorithmSubMenu", "Blending Algorithm"),
+				FText(),
+				FNewMenuDelegate::CreateLambda([=](FMenuBuilder& SubMenuBuilder){
+					FSequencerUtilities::PopulateMenu_BlenderSubMenu(SubMenuBuilder, Track, WeakSequencer);
+				})
+			);
+		}
+	}
+
 	// Find sections in the track to add batch properties for
 	TArray<TWeakObjectPtr<UObject>> TrackSections;
+	
+	for (TWeakPtr<FViewModel> Node : GetEditor()->GetSequencer()->GetSelection().GetSelectedOutlinerItems())
+	{
+		if (ITrackExtension* TrackExtension = ICastable::CastWeakPtr<ITrackExtension>(Node))
+		{
+			for (UMovieSceneSection* Section : TrackExtension->GetSections())
+			{
+				TrackSections.Add(Section);
+			}
+		}
+	}
+	
 	for (TSharedPtr<FViewModel> TrackAreaModel : GetTrackAreaModelList())
 	{
 		constexpr bool bIncludeThis = true;
@@ -322,7 +356,7 @@ void FTrackRowModel::BuildContextMenu(FMenuBuilder& MenuBuilder)
 		{
 			if (UMovieSceneSection* SectionObject = Section->GetSection())
 			{
-				TrackSections.Add(SectionObject);
+				TrackSections.AddUnique(SectionObject);
 			}
 		}
 	}
@@ -365,7 +399,7 @@ void FTrackRowModel::Delete()
 	if (TViewModelPtr<FFolderModel> ParentFolder = CastParent<FFolderModel>())
 	{
 		ParentFolder->GetFolder()->Modify();
-		ParentFolder->GetFolder()->RemoveChildMasterTrack(Track);
+		ParentFolder->GetFolder()->RemoveChildTrack(Track);
 	}
 
 	// Remove sub tracks belonging to this row only

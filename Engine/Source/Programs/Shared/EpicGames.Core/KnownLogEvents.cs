@@ -86,6 +86,11 @@ namespace EpicGames.Core
 		public static EventId Engine_AppError { get; } = new EventId(305);
 
 		/// <summary>
+		/// Engine: Assertion failed
+		/// </summary>
+		public static EventId Engine_AssertionFailed { get; } = new EventId(306);
+
+		/// <summary>
 		/// Engine: Shader compiler output
 		/// </summary>
 		public static EventId Engine_ShaderCompiler { get; } = new EventId(310);
@@ -146,14 +151,29 @@ namespace EpicGames.Core
 		public static EventId Gauntlet { get; } = new EventId(600);
 
 		/// <summary>
-		/// Error message from Gauntlet engine tests
+		/// Error message from Gauntlet test events
 		/// </summary>
-		public static EventId Gauntlet_UnitTest { get; } = new EventId(601);
+		public static EventId Gauntlet_TestEvent { get; } = new EventId(601);
 
 		/// <summary>
-		/// Error message from Gauntlet screenshot tests
+		/// Error message from Gauntlet device events
 		/// </summary>
-		public static EventId Gauntlet_ScreenshotTest { get; } = new EventId(602);
+		public static EventId Gauntlet_DeviceEvent { get; } = new EventId(602);
+
+		/// <summary>
+		/// Error message from Gauntlet Unreal Engine test events
+		/// </summary>
+		public static EventId Gauntlet_UnrealEngineTestEvent { get; } = new EventId(603);
+
+		/// <summary>
+		/// Error message from Gauntlet build drop events
+		/// </summary>
+		public static EventId Gauntlet_BuildDropEvent { get; } = new EventId(604);
+
+		/// <summary>
+		/// Fatal Error message from Gauntlet events
+		/// </summary>
+		public static EventId Gauntlet_FatalEvent { get; } = new EventId(605);
 
 		/// <summary>
 		/// A systemic event, relating to the health of the farm
@@ -189,6 +209,16 @@ namespace EpicGames.Core
 		/// Cache size reached
 		/// </summary>
 		public static EventId Systemic_Xge_CacheLimit { get; } = new EventId(714);
+		
+		/// <summary>
+		/// Current logging level may impact performance
+		/// </summary>
+		public static EventId Systemic_Xge_DetailedLogging { get; } = new EventId(715);
+		
+		/// <summary>
+		/// Metadata about an XGE task (local or remote execution, start/end time etc)
+		/// </summary>
+		public static EventId Systemic_Xge_TaskMetadata { get; } = new EventId(716);
 
 		/// <summary>
 		/// DDC is slow
@@ -258,6 +288,13 @@ namespace EpicGames.Core
 		/// Usually preceded by another type of error.
 		/// </summary>
 		public static EventId Systemic_SignTool { get; } = new EventId(766);
+
+		/// <summary>
+		/// Missing file list error
+		/// 
+		/// Usually due to a volume that is not mounted or some of other IO error
+		/// </summary>
+		public static EventId Systemic_MissingFileList { get; } = new EventId(767);
 
 		/// <summary>
 		/// Maximum code for systemic events. Add new events in the 700-799 range.

@@ -6,7 +6,8 @@
 #include "Containers/Array.h"
 #include "Iris/ReplicationState/ReplicationStateStorage.h"
 #include "Iris/ReplicationSystem/DirtyNetObjectTracker.h"
-#include "Iris/ReplicationSystem/NetHandleManager.h"
+#include "Iris/ReplicationSystem/NetCullDistanceOverrides.h"
+#include "Iris/ReplicationSystem/NetRefHandleManager.h"
 #include "Iris/ReplicationSystem/ChangeMaskCache.h"
 #include "Iris/ReplicationSystem/Conditionals/ReplicationConditionals.h"
 #include "Iris/ReplicationSystem/DeltaCompression/DeltaCompressionBaselineManager.h"
@@ -38,7 +39,7 @@ class FReplicationSystemInternal
 {
 public:
 	explicit FReplicationSystemInternal(const FReplicationSystemInternalInitParams& Params)
-	: NetHandleManager(ReplicationProtocolManager, Params.ReplicationSystemId, Params.MaxReplicatedObjectCount)
+	: NetRefHandleManager(ReplicationProtocolManager, Params.ReplicationSystemId, Params.MaxReplicatedObjectCount)
 	, DirtyNetObjectTracker()
 	, StringTokenStore(NetTokenStore)
 	, Id(Params.ReplicationSystemId)
@@ -46,8 +47,8 @@ public:
 
 	FReplicationProtocolManager& GetReplicationProtocolManager() { return ReplicationProtocolManager; }
 
-	FNetHandleManager& GetNetHandleManager() { return NetHandleManager; }
-	const FNetHandleManager& GetNetHandleManager() const { return NetHandleManager; }
+	FNetRefHandleManager& GetNetRefHandleManager() { return NetRefHandleManager; }
+	const FNetRefHandleManager& GetNetRefHandleManager() const { return NetRefHandleManager; }
 
 	FDirtyNetObjectTracker& GetDirtyNetObjectTracker() { return DirtyNetObjectTracker; }
 
@@ -59,7 +60,7 @@ public:
 
 	void SetReplicationBridge(UReplicationBridge* InReplicationBridge) { ReplicationBridge = InReplicationBridge; }
 	UReplicationBridge* GetReplicationBridge() const { return ReplicationBridge; }
-	UReplicationBridge* GetReplicationBridge(FNetHandle Handle) const { return ReplicationBridge; }
+	UReplicationBridge* GetReplicationBridge(FNetRefHandle Handle) const { return ReplicationBridge; }
 
 	FChangeMaskCache& GetChangeMaskCache() { return ChangeMaskCache; }
 
@@ -83,6 +84,8 @@ public:
 
 	FNetTokenStore& GetNetTokenStore() { return NetTokenStore; }
 
+	FNetCullDistanceOverrides& GetNetCullDistanceOverrides() { return NetCullDistanceOverrides; }
+
 	FWorldLocations& GetWorldLocations() { return WorldLocations; }
 
 	FDeltaCompressionBaselineManager& GetDeltaCompressionBaselineManager() { return DeltaCompressionBaselineManager; }
@@ -95,7 +98,7 @@ public:
 
 private:
 	FReplicationProtocolManager ReplicationProtocolManager;
-	FNetHandleManager NetHandleManager;
+	FNetRefHandleManager NetRefHandleManager;
 	FDirtyNetObjectTracker DirtyNetObjectTracker;
 	FReplicationStateStorage ReplicationStateStorage;
 	FReplicationStateDescriptorRegistry ReplicationStateDescriptorRegistry;
@@ -110,6 +113,7 @@ private:
 	FNetBlobManager NetBlobManager;
 	FNetTokenStore NetTokenStore;
 	FStringTokenStore StringTokenStore;
+	FNetCullDistanceOverrides NetCullDistanceOverrides;
 	FWorldLocations WorldLocations;
 	FDeltaCompressionBaselineManager DeltaCompressionBaselineManager;
 	FDeltaCompressionBaselineInvalidationTracker DeltaCompressionBaselineInvalidationTracker;

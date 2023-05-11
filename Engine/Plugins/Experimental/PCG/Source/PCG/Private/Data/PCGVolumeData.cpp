@@ -2,11 +2,13 @@
 
 #include "Data/PCGVolumeData.h"
 #include "Data/PCGPointData.h"
-#include "PCGHelpers.h"
+#include "Data/PCGSpatialData.h"
 #include "Elements/PCGVolumeSampler.h"
+#include "Helpers/PCGHelpers.h"
 
-#include "Components/BrushComponent.h"
 #include "GameFramework/Volume.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGVolumeData)
 
 void UPCGVolumeData::Initialize(AVolume* InVolume, AActor* InTargetActor)
 {
@@ -60,12 +62,15 @@ bool UPCGVolumeData::SamplePoint(const FTransform& InTransform, const FBox& InBo
 	//TRACE_CPUPROFILER_EVENT_SCOPE(UPCGVolumeData::SamplePoint);
 	// TODO: add metadata
 	// TODO: consider bounds
+
+	// This is a pure implementation
+
 	const FVector InPosition = InTransform.GetLocation();
 	if (PCGHelpers::IsInsideBounds(GetBounds(), InPosition))
 	{
 		float PointDensity = 0.0f;
 
-		if (!Volume || PCGHelpers::IsInsideBounds(GetStrictBounds(), InPosition))
+		if (!Volume.IsValid() || PCGHelpers::IsInsideBounds(GetStrictBounds(), InPosition))
 		{
 			PointDensity = 1.0f;
 		}
@@ -84,4 +89,21 @@ bool UPCGVolumeData::SamplePoint(const FTransform& InTransform, const FBox& InBo
 	{
 		return false;
 	}
+}
+
+void UPCGVolumeData::CopyBaseVolumeData(UPCGVolumeData* NewVolumeData) const
+{
+	NewVolumeData->VoxelSize = VoxelSize;
+	NewVolumeData->Volume = Volume;
+	NewVolumeData->Bounds = Bounds;
+	NewVolumeData->StrictBounds = StrictBounds;
+}
+
+UPCGSpatialData* UPCGVolumeData::CopyInternal() const
+{
+	UPCGVolumeData* NewVolumeData = NewObject<UPCGVolumeData>();
+
+	CopyBaseVolumeData(NewVolumeData);
+
+	return NewVolumeData;
 }

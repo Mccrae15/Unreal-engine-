@@ -22,6 +22,8 @@ class FSceneView;
 /** A vertex factory that can be used to visualize vector fields. */
 class FVectorFieldVisualizationVertexFactory;
 
+class FRHICommandListImmediate;
+
 /*------------------------------------------------------------------------------
 	Vector field delcarations.
 ------------------------------------------------------------------------------*/
@@ -50,7 +52,7 @@ public:
 	FBox LocalBounds;
 
 	/** Default constructor. */
-	FVectorFieldResource() {}
+	FVectorFieldResource();
 
 	/**
 	 * Release RHI resources.
@@ -87,7 +89,7 @@ public:
 
 protected:
 
-	virtual ~FVectorFieldResource(){}
+	virtual ~FVectorFieldResource();
 
 	/** Ref couting. Required becauce of how resources are shared between FVectorFieldInstance and UVectorField... **/
 	mutable FThreadSafeCounter NumRefs;

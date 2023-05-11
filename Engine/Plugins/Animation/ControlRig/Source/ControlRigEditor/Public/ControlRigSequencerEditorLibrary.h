@@ -21,6 +21,8 @@
 
 class ULevelSequence;
 class UTickableConstraint;
+class UTickableTransformConstraint;
+class UTransformableHandle;
 
 USTRUCT(BlueprintType)
 struct FControlRigSequencerBindingProxy
@@ -46,6 +48,14 @@ struct FControlRigSequencerBindingProxy
 
 	UPROPERTY(BlueprintReadOnly, Category = ControlRig)
 	TObjectPtr<UMovieSceneControlRigParameterTrack> Track;
+};
+
+UENUM(BlueprintType)
+enum class EAnimToolBlendOperation : uint8
+{
+	Tween,
+	BlendToNeighbor,
+	PushPull
 };
 
 /**
@@ -134,10 +144,91 @@ public:
 	* @param Constraint The Constraint to bake. After baking it will be keyed to be inactive of the range of frames that are baked
 	* @param Frames The frames to bake, if the array is empty it will use the active time ranges of the constraint to deteremine where it should bake
 	* @param TimeUnit Unit for all frame and time values, either in display rate or tick resolution
-	* @return returns True if successful, False otherwise
+	* @return Returns True if successful, False otherwise
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
 	static bool BakeConstraint(UWorld* World, UTickableConstraint* Constraint, const TArray<FFrameNumber>& Frames, ESequenceTimeUnit TimeUnit = ESequenceTimeUnit::DisplayRate);
+
+	/**
+	* Add a constraint possibly adding to sequencer also if one is open.
+	* @param World The active world
+	* @param InType Type of constraint to create
+	* @param InChild The handle to the transormable to be constrainted
+	* @param InParent The handle to the parent of the constraint
+	* @param bMaintainOffset Whether to maintain offset between child and parent when setting the constraint
+	* @return Returns the constraint if created all nullptr if not
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
+	static UTickableConstraint* AddConstraint(UWorld* World, ETransformConstraintType InType, UTransformableHandle* InChild, UTransformableHandle* InParent, const bool bMaintainOffset);
+	
+	/**
+	* Get the constraint keys for the specified constraint
+	* @param InConstraint The constraint to get
+	* @param ConstraintSection Section containing Cosntraint Key
+	* @param OutBools Array of whether or not it's active at the specified times
+	* @param OutFrames The Times for the keys
+	* @param TimeUnit Unit for the time params, either in display rate or tick resolution
+	* @return Returns true if we got the keys from this constraint
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
+	static bool GetConstraintKeys(UTickableConstraint* InConstraint, UMovieSceneSection* ConstraintSection,TArray<bool>& OutBools, TArray<FFrameNumber>& OutFrames, ESequenceTimeUnit TimeUnit = ESequenceTimeUnit::DisplayRate);
+	
+	/**
+	* Set the constraint active key in the current open Sequencer
+	* @param InConstraint The constraint to set the key
+	* @param bActive Whether or not it's active
+	* @param FrameTime Time to set the value
+	* @param TimeUnit Unit for the time params, either in display rate or tick resolution
+	* @return Returns true if we set the constraint to be the passed in value, false if not. We may not do so if the value is the same.
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
+	static bool SetConstraintActiveKey(UTickableConstraint* InConstraint, bool bActive, FFrameNumber InFrame, ESequenceTimeUnit TimeUnit = ESequenceTimeUnit::DisplayRate);
+
+	/**
+	* Get all constraints for this object, which is described by a transformable handle
+	* @param InChild The handle to look for constraints controlling it
+	* @return Returns array of Constraints this handle is constrained to.
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
+	static TArray <UTickableConstraint*> GetConstraintsForHandle(UWorld* InWorld, const UTransformableHandle* InChild);
+
+	/** Move the constraint active key in the current open Sequencer
+	* @param InConstraint The constraint whose key to move
+	* @param ConstraintSection Section containing Cosntraint Key
+	* @param InTime Original time of the constraint key
+	* @param InNewTime New time for the constraint key
+	* @param TimeUnit Unit for the time params, either in display rate or tick resolution
+	* @return Will return false if function fails, for example if there is no key at this time it will fail, or if the new time is invalid it could fail also
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
+	static bool MoveConstraintKey(UTickableConstraint* Constraint, UMovieSceneSection* ConstraintSection, FFrameNumber InTime, FFrameNumber InNewTime, ESequenceTimeUnit TimeUnit = ESequenceTimeUnit::DisplayRate);
+
+	/** Delete the Key for the Constraint at the specified time. 
+	* @param InConstraint The constraint whose key to move
+	* @param ConstraintSection Section containing Cosntraint Key
+	* @param InTime Time to delete the constraint.
+	* @param TimeUnit Unit for the InTime, either in display rate or tick resolution
+	* @return Will return false if function fails,  for example if there is no key at this time it will fail.
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
+	static bool DeleteConstraintKey(UTickableConstraint* Constraint, UMovieSceneSection* ConstraintSection, FFrameNumber InTime, ESequenceTimeUnit TimeUnit = ESequenceTimeUnit::DisplayRate);
+	/**
+	* Compensate constraint at the specfied time 
+	* @param InConstraint The constraint to compensate
+	* @param InTime Time to compensate
+	* @param TimeUnit Unit for the InTime, either in display rate or tick resolution
+	* @return Returns true if it can compensate
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
+	static bool Compensate(UTickableConstraint* InConstraint,  FFrameNumber InTime, ESequenceTimeUnit TimeUnit = ESequenceTimeUnit::DisplayRate);
+
+	/**
+	* Compensate constraint at all keys
+	* @param InConstraint The constraint to compensate
+	* @return Returns true if it can compensate
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
+	static bool CompensateAll(UTickableConstraint* InConstraint);
 
 	/**
 	* Peform a Tween operation on the current active sequencer time(must be visible).
@@ -147,6 +238,16 @@ public:
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
 	static bool TweenControlRig(ULevelSequence* LevelSequence, UControlRig* ControlRig, float TweenValue);
+	
+	/**
+	* Peform specified blend operation based upon selected keys in the curve editor or selected control rig controls
+	* @param LevelSequence The LevelSequence that's loaded in the editor
+	* @param EAnimToolBlendOperation The operation to perform
+	* @param BlendValue The blend value to use, range from -1(blend to previous) to 1(blend to next)
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
+	static bool BlendValuesOnSelected(ULevelSequence* LevelSequence, EAnimToolBlendOperation BlendOperation, 
+		float BlendValue);
 
 	/**
 	* Peform a Snap operation to snap the children to the parent. 
@@ -157,7 +258,7 @@ public:
 	* @param ParentToSnap The parent object to snap relative to. If animated, it needs to live in an active Sequencer in the level editor
 	* @param SnapSettings Settings to use
 	* @param TimeUnit Unit for frame values, either in display rate or tick resolution
-	* @param Returns True if successful, 
+	* @param Returns True if successful
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
 	static bool SnapControlRig(ULevelSequence* LevelSequence, FFrameNumber StartFrame, FFrameNumber EndFrame, const FControlRigSnapperSelection& ChildrenToSnap,
@@ -243,7 +344,7 @@ public:
 	* @param ControlRig The ControlRig
 	* @param ControlName Name of the Control
 	* @param Frame Time to set the transform
-	* @oaram WorldTransform World Transform to set
+	* @param WorldTransform World Transform to set
 	* @param TimeUnit Unit for frame values, either in display rate or tick resolution
 	* @param bSetKey Whether or not to set a key.
 	*/
@@ -257,7 +358,7 @@ public:
 	* @param ControlRig The ControlRig
 	* @param ControlName Name of the Control
 	* @param Frames Times to set the transform
-	* @oaram WorldTransform World Transform to set
+	* @param WorldTransform World Transform to set
 	* @param TimeUnit Unit for frame values, either in display rate or tick resolution
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
@@ -296,7 +397,7 @@ public:
 	* @param ControlRig The ControlRig
 	* @param ControlName Name of the Control, should be a float control
 	* @param Frame Time to set the value
-	* @param Value to set
+	* @param Value The value to set
 	* @param TimeUnit Unit for frame values, either in display rate or tick resolution
 	* @param bSetKey If True set a key, if not just set the value
 	*/
@@ -310,7 +411,7 @@ public:
 	* @param ControlRig The ControlRig
 	* @param ControlName Name of the Control, should be a float control
 	* @param Frames Times to set the values
-	* @param Values to set at those times
+	* @param Values The values to set at those times
 	* @param TimeUnit Unit for frame values, either in display rate or tick resolution
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
@@ -349,7 +450,7 @@ public:
 	* @param ControlRig The ControlRig
 	* @param ControlName Name of the Control, should be a bool control
 	* @param Frame Time to set the value
-	* @param Value to set
+	* @param Value The value to set
 	* @param TimeUnit Unit for frame values, either in display rate or tick resolution
 	* @param bSetKey If True set a key, if not just set the value
 	*/
@@ -363,7 +464,7 @@ public:
 	* @param ControlRig The ControlRig
 	* @param ControlName Name of the Control, should be a bool control
 	* @param Frames Times to set the values
-	* @param Values to set at those times
+	* @param Values The values to set at those times
 	* @param TimeUnit Unit for frame values, either in display rate or tick resolution
 */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
@@ -402,7 +503,7 @@ public:
 	* @param ControlRig The ControlRig
 	* @param ControlName Name of the Control, should be a int control
 	* @param Frame Time to set the value
-	* @param Value to set
+	* @param Value The value to set
 	* @param TimeUnit Unit for frame values, either in display rate or tick resolution
 	* @param bSetKey If True set a key, if not just set the value
 	*/
@@ -417,7 +518,7 @@ public:
 	* @param ControlRig The ControlRig
 	* @param ControlName Name of the Control, should be a int control
 	* @param Frames Times to set the values
-	* @param Values to set at those times
+	* @param Values The values to set at those times
 	* @param TimeUnit Unit for frame values, either in display rate or tick resolution
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
@@ -456,7 +557,7 @@ public:
 	* @param ControlRig The ControlRig
 	* @param ControlName Name of the Control, should be a Vector2D control
 	* @param Frame Time to set the value
-	* @param Value to set
+	* @param Value The value to set
 	* @param TimeUnit Unit for frame values, either in display rate or tick resolution
 	* @param bSetKey If True set a key, if not just set the value
 	*/
@@ -471,7 +572,7 @@ public:
 	* @param ControlRig The ControlRig
 	* @param ControlName Name of the Control, should be a Vector2D control
 	* @param Frames Times to set the values
-	* @param Values to set at those times
+	* @param Values The values to set at those times
 	* @param TimeUnit Unit for frame values, either in display rate or tick resolution
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
@@ -510,7 +611,7 @@ public:
 	* @param ControlRig The ControlRig
 	* @param ControlName Name of the Control, should be a Position control
 	* @param Frame Time to set the value
-	* @param Value to set
+	* @param Value The value to set
 	* @param TimeUnit Unit for frame values, either in display rate or tick resolution
 	* @param bSetKey If True set a key, if not just set the value
 	*/
@@ -524,7 +625,7 @@ public:
 	* @param ControlRig The ControlRig
 	* @param ControlName Name of the Control, should be a Position control
 	* @param Frames Times to set the values
-	* @param Values to set at those times
+	* @param Values The values to set at those times
 	* @param TimeUnit Unit for frame values, either in display rate or tick resolution
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
@@ -563,7 +664,7 @@ public:
 	* @param ControlRig The ControlRig
 	* @param ControlName Name of the Control, should be a Rotator control
 	* @param Frame Time to set the value
-	* @param Value to set
+	* @param Value The value to set
 	* @param TimeUnit Unit for frame values, either in display rate or tick resolution
 	* @param bSetKey If True set a key, if not just set the value
 	*/
@@ -577,7 +678,7 @@ public:
 	* @param ControlRig The ControlRig
 	* @param ControlName Name of the Control, should be a Rotator control
 	* @param Frames Times to set the values
-	* @param Values to set at those times
+	* @param Values The values to set at those times
 	* @param TimeUnit Unit for frame values, either in display rate or tick resolution
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
@@ -616,7 +717,7 @@ public:
 	* @param ControlRig The ControlRig
 	* @param ControlName Name of the Control, should be a Scale control
 	* @param Frame Time to set the value
-	* @param Value to set
+	* @param Value The value to set
 	* @param TimeUnit Unit for frame values, either in display rate or tick resolution
 	* @param bSetKey If True set a key, if not just set the value
 */
@@ -630,7 +731,7 @@ public:
 	* @param ControlRig The ControlRig
 	* @param ControlName Name of the Control, should be a Scale control
 	* @param Frames Times to set the values
-	* @param Values to set at those times
+	* @param Values The values to set at those times
 	* @param TimeUnit Unit for frame values, either in display rate or tick resolution
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
@@ -670,7 +771,7 @@ public:
 	* @param ControlRig The ControlRig
 	* @param ControlName Name of the Control, should be a EulerTransform control
 	* @param Frame Time to set the value
-	* @param Value to set
+	* @param Value The value to set
 	* @param TimeUnit Unit for frame values, either in display rate or tick resolution
 	* @param bSetKey If True set a key, if not just set the value
 	*/
@@ -684,7 +785,7 @@ public:
 	* @param ControlRig The ControlRig
 	* @param ControlName Name of the Control, should be a EulerTransform control
 	* @param Frames Times to set the values
-	* @param Values to set at those times
+	* @param Values The values to set at those times
 	* @param TimeUnit Unit for frame values, either in display rate or tick resolution
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
@@ -723,7 +824,7 @@ public:
 	* @param ControlRig The ControlRig
 	* @param ControlName Name of the Control, should be a TransformNoScale control
 	* @param Frame Time to set the value
-	* @param Value to set
+	* @param Value The value to set
 	* @param TimeUnit Unit for frame values, either in display rate or tick resolution
 	* @param bSetKey If True set a key, if not just set the value
 	*/
@@ -737,7 +838,7 @@ public:
 	* @param ControlRig The ControlRig
 	* @param ControlName Name of the Control, should be a TransformNoScale control
 	* @param Frames Times to set the values
-	* @param Values to set at those times
+	* @param Values The values to set at those times
 	* @param TimeUnit Unit for frame values, either in display rate or tick resolution
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
@@ -776,7 +877,7 @@ public:
 	* @param ControlRig The ControlRig
 	* @param ControlName Name of the Control, should be a Transform control
 	* @param Frame Time to set the value
-	* @param Value to set 
+	* @param Value The value to set 
 	* @param TimeUnit Unit for frame values, either in display rate or tick resolution
 	* @param bSetKey If True set a key, if not just set the value
 	*/
@@ -790,7 +891,7 @@ public:
 	* @param ControlRig The ControlRig
 	* @param ControlName Name of the Control, should be a Transform control
 	* @param Frames Times to set the values
-	* @param Values to set at those times
+	* @param Values The values to set at those times
 	* @param TimeUnit Unit for frame values, either in display rate or tick resolution
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
@@ -887,8 +988,6 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
 	static bool MoveControlRigSpace(ULevelSequence* InSequence, UControlRig* InControlRig, FName InControlName, FFrameNumber InTime, FFrameNumber InNewTime, ESequenceTimeUnit TimeUnit = ESequenceTimeUnit::DisplayRate);
 
-
-
 	/** Rename the Control Rig Channels in Sequencer to the specified new control names, which should be present on the Control Rig
 	* @param InSequence Sequence to rename controls
 	* @param InControlRig ControlRig to rename controls
@@ -897,7 +996,7 @@ public:
 	* @return Return true if the function succeeds, false if it doesn't which can happen if the name arrays don't match in size or any of the new Control Names aren't valid
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
-	bool RenameControlRigControlChannels(ULevelSequence* InSequence, UControlRig* InControlRig, const TArray<FName>& InOldControlNames, const TArray<FName>& InNewControlNames);
+	static bool RenameControlRigControlChannels(ULevelSequence* InSequence, UControlRig* InControlRig, const TArray<FName>& InOldControlNames, const TArray<FName>& InNewControlNames);
 
 	/** Get the controls mask for the given ControlName */
 	UFUNCTION(BlueprintPure, Category = "Editor Scripting | Sequencer Tools | Control Rig")
@@ -914,4 +1013,25 @@ public:
 	/** Hides all of the controls for the given section */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
 	static void HideAllControls(UMovieSceneSection* InSection);
+
+	/**	Whether or not the control rig is an FK Control Rig.
+	@param InControlRig Rig to test to see if FK Control Rig
+	**/
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
+	static bool IsFKControlRig(UControlRig* InControlRig);
+
+	/**	Get FKControlRig Apply Mode.
+	@param InControlRig Rig to test
+	@return The EControlRigFKRigExecuteMode mode it is in, either Replace,Additive or Direct
+	**/
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
+	static EControlRigFKRigExecuteMode  GetFKControlRigApplyMode(UControlRig* InControlRig);
+
+	/**	Set the FK Control Rig to apply mode
+	@param InControlRig Rig to set 
+	@param InApplyMode Set the EControlRigFKRigExecuteMode mode (Replace,Addtiive or Direct)
+	@return returns True if the mode was set, may not be set if the Control Rig doesn't support these modes currently only FKControlRig's do.
+	**/
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig")
+	static bool SetControlRigApplyMode(UControlRig* InControlRig, EControlRigFKRigExecuteMode InApplyMode);
 };

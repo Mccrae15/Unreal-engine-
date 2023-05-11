@@ -2,7 +2,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Text.Json;
 using EpicGames.Core;
@@ -42,7 +41,10 @@ namespace Horde.Build.Issues.Handlers
 		/// <returns>True if the given event id matches</returns>
 		public static bool IsMatchingEventId(EventId eventId)
 		{
-			return eventId == KnownLogEvents.Gauntlet_UnitTest || eventId == KnownLogEvents.Gauntlet_ScreenshotTest;
+			return eventId == KnownLogEvents.Gauntlet_TestEvent ||
+			       eventId == KnownLogEvents.Gauntlet_DeviceEvent ||
+			       eventId == KnownLogEvents.Gauntlet_UnrealEngineTestEvent ||
+			       eventId == KnownLogEvents.Gauntlet_BuildDropEvent;
 		}
 
 		/// <summary>
@@ -108,11 +110,7 @@ namespace Horde.Build.Issues.Handlers
 					GetUnitTestNames(stepEvent.EventData, keys);
 					GetScreenshotTestNames(stepEvent.EventData, keys);
 
-					if (keys.Count == 0)
-					{
-						stepEvent.Ignored = true;
-					}
-					else
+					if (keys.Count > 0)
 					{
 						stepEvent.Fingerprint = new NewIssueFingerprint(Type, keys, null, null);
 					}

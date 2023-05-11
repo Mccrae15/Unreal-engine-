@@ -5,8 +5,8 @@
 #include "SwitchActor.h"
 #include "VariantObjectBinding.h"
 
-#include "CoreMinimal.h"
-#include "HAL/UnrealMemory.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PropertyValueOption)
 
 #define LOCTEXT_NAMESPACE "PropertyValueOption"
 

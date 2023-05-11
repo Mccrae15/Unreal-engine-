@@ -8,6 +8,7 @@
 #include "DisplayClusterLightCardActor.h"
 #include "DisplayClusterLightCardEditorHelper.h"
 #include "DisplayClusterRootActor.h"
+#include "Engine/Canvas.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "IDisplayClusterScenePreview.h"
 #include "IImageWrapperModule.h"
@@ -16,6 +17,7 @@
 #include "Modules/ModuleManager.h"
 #include "RemoteControlWebsocketRoute.h"
 #include "StageAppResponse.h"
+#include "TextureResource.h"
 #include "WebRemoteControlUtils.h"
 #include "StageActor/DisplayClusterStageActorTemplate.h"
 #include "StageActor/DisplayClusterWeakStageActorPtr.h"
@@ -856,6 +858,8 @@ void FStageAppRouteHandler::HandleWebSocketNDisplayPreviewActorCreate(const FRem
 		{
 			LightCard->Color = Body.Color;
 		}
+
+		LightCard->SetIsLightCardFlag(Body.bIsLightCardFlag);
 	}
 
 	// Override the location
@@ -945,7 +949,7 @@ void FStageAppRouteHandler::HandleWebSocketStageAppActorsDuplicate(const FRemote
 			// Add it to the root actor
 			if (ADisplayClusterRootActor* RootActor = StageAppRouteHandlerUtils::GetRootActorForLightCard(Actor))
 			{
-				NewLightCard->AddToLightCardLayer(RootActor);
+				NewLightCard->AddToRootActor(RootActor);
 
 #if WITH_EDITOR
 				// Required so operator panel updates

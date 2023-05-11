@@ -2,6 +2,7 @@
 
 #include "DetailCategoryBuilderImpl.h"
 
+#include "Components/ActorComponent.h"
 #include "DetailAdvancedDropdownNode.h"
 #include "DetailBuilderTypes.h"
 #include "DetailCategoryGroupNode.h"
@@ -690,6 +691,11 @@ bool FDetailCategoryImpl::GetSavedExpansionState(FDetailTreeNode& InTreeNode) co
 bool FDetailCategoryImpl::ContainsOnlyAdvanced() const
 {
 	return !bFavoriteCategory && SimpleChildNodes.Num() == 0 && AdvancedChildNodes.Num() > 0;
+}
+
+void FDetailCategoryImpl::SetDisplayName(const FText& InDisplayName)
+{
+	SetDisplayName(CategoryName, InDisplayName);
 }
 
 void FDetailCategoryImpl::SetDisplayName(FName InCategoryName, const FText& LocalizedNameOverride)

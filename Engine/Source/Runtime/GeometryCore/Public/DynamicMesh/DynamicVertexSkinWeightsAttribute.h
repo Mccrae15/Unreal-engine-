@@ -429,7 +429,8 @@ public:
 
 				// Set buffer size to hold number of vertex bone weight arrays, size for vertex each bone weight array, and all individual bone weights.
 				// We also serialize out size of uncompressed buffer to allow for allocation to correct size during loading.
-				uint32 BufferSize = 1 + VertexBoneWeights.Num() + NumBoneWeights;
+				const uint32 NumVertexBoneWeightArrays = bUseVertexCompactMap ? Parent->VertexCount() : VertexBoneWeights.Num();
+				uint32 BufferSize = 1 + NumVertexBoneWeightArrays + IntCastChecked<uint32>(NumBoneWeights);
 				Buffer.SetNumUninitialized(BufferSize);
 				Ar << BufferSize;
 
@@ -447,9 +448,9 @@ public:
 				};
 
 				int32* BufferPtr = Buffer.GetData();
+				*BufferPtr++ = NumVertexBoneWeightArrays;
 				if (!bUseVertexCompactMap)
 				{
-					*BufferPtr++ = VertexBoneWeights.Num();
 					for (const FBoneWeights& BoneWeights : VertexBoneWeights)
 					{
 						WriteBoneWeights(BoneWeights, BufferPtr);
@@ -457,7 +458,6 @@ public:
 				}
 				else
 				{
-					*BufferPtr++ = Parent->VertexCount();
 					for (int32 Vid = 0, Num = VertexBoneWeights.Num(); Vid < Num; ++Vid)
 					{
 						const int32 VidCompact = CompactMaps->GetVertexMapping(Vid);
@@ -486,21 +486,45 @@ protected:
 		VertexBoneWeights[SetAttribute] = FBoneWeights::Blend(VertexBoneWeights[AttributeA], VertexBoneWeights[AttributeB], (float)Alpha);
 	}
 
-	/** Set the value at an Attribute to be a barycentric interpolation of three other Attributes */
+	/** Set the value at an Attribute to be a barycentric interpolation of three other Attributes. If one of the 
+	 *  barycentric coordinates is nearly one (within UE_SMALL_NUMBER tolerance) then simply copy over the value of the 
+	 *  corresponding Attribute.
+	 */
 	void SetBoneWeightsFromBary(int SetAttribute, int AttributeA, int AttributeB, int AttributeC, const FVector3d& BaryCoords)
 	{
-		// Since FBoneWeights only defines Blend for two inputs, we need to split the barycentric coordinate interpolation 
-		// into two blends.
-		if (!FMath::IsNearlyZero(BaryCoords.Y + BaryCoords.Z))
-		{
-			const double BCW = BaryCoords.Y / (BaryCoords.Y + BaryCoords.Z);
-			const FBoneWeights BC = FBoneWeights::Blend(VertexBoneWeights[AttributeB], VertexBoneWeights[AttributeC], (float)BCW);
+		const float BaryX = static_cast<float>(BaryCoords.X);
+		const float BaryY  = static_cast<float>(BaryCoords.Y);
+		const float BaryZ = static_cast<float>(BaryCoords.Z);
 
-			VertexBoneWeights[SetAttribute] = FBoneWeights::Blend(VertexBoneWeights[AttributeA], BC, (float)BaryCoords.X);
-		}
-		else if (SetAttribute != AttributeA)
+		if (FMath::IsNearlyEqual(BaryX, 1.0f))
 		{
-			VertexBoneWeights[SetAttribute] = VertexBoneWeights[AttributeA];
+			if (SetAttribute != AttributeA) // avoid unnecessary copy
+			{
+				VertexBoneWeights[SetAttribute] = VertexBoneWeights[AttributeA];
+			}
+		}
+		else if (FMath::IsNearlyEqual(BaryY, 1.0f)) 
+		{
+			if (SetAttribute != AttributeB) 
+			{
+				VertexBoneWeights[SetAttribute] = VertexBoneWeights[AttributeB];
+			}
+		}
+		else if (FMath::IsNearlyEqual(BaryZ, 1.0f)) 
+		{
+			if (SetAttribute != AttributeC) 
+			{
+				VertexBoneWeights[SetAttribute] = VertexBoneWeights[AttributeC];
+			}
+		}
+		else 
+		{
+			VertexBoneWeights[SetAttribute] = FBoneWeights::Blend(VertexBoneWeights[AttributeA], 
+																  VertexBoneWeights[AttributeB], 
+																  VertexBoneWeights[AttributeC], 
+																  BaryX,
+																  BaryY,
+																  BaryZ);
 		}
 	}
 };

@@ -10,6 +10,9 @@
 #include "Serialization/Archive.h"
 #include "Trace/Detail/Channel.h"
 
+/** CVar specifying the maximum serialization size for strings sent/received by the netcode */
+extern CORE_API TAutoConsoleVariable<int32> CVarMaxNetStringSize;
+
 PRAGMA_DISABLE_UNSAFE_TYPECAST_WARNINGS
 
 extern const uint8 GShift[8];
@@ -133,7 +136,7 @@ void FBitWriter::SerializeInt(uint32& Value, uint32 ValueMax)
 
 	if (WriteValue >= ValueMax)
 	{
-		const auto& Msg = TEXT("FBitWriter::SerializeInt(): Value out of bounds (Value: %u, ValueMax: %u)");
+		constexpr static const auto& Msg = TEXT("FBitWriter::SerializeInt(): Value out of bounds (Value: %u, ValueMax: %u)");
 
 		UE_LOG(LogSerialization, Error, Msg, WriteValue, ValueMax);
 		ensureMsgf(false, Msg, WriteValue, ValueMax);

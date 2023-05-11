@@ -32,7 +32,7 @@ struct FNavTestTickHelper : FTickableGameObject
 UENUM()
 namespace ENavCostDisplay
 {
-	enum Type
+	enum Type : int
 	{
 		TotalCost,
 		HeuristicOnly,
@@ -84,7 +84,7 @@ public:
 	uint32 bSearchStart : 1;
 
 	/** this multiplier is used to compute a max node cost allowed to the open list
-	 *	(cost limit = CostLimitFacotr*InitialHeuristicEstimate) */
+	 *	(cost limit = CostLimitFactor*InitialHeuristicEstimate) */
 	UPROPERTY(EditAnywhere, Category=Pathfinding, meta = (ClampMin = "0", UIMin = "0"))
 	float CostLimitFactor;
 
@@ -106,6 +106,10 @@ public:
 	/** if set, all steps of A* algorithm will be accessible for debugging */
 	UPROPERTY(EditAnywhere, Category=Pathfinding)
 	uint32 bGatherDetailedInfo : 1;
+
+	/** if set, require the end location to be close to the navigation data. The tolerance is controlled by QueryingExtent */
+	UPROPERTY(EditAnywhere, Category=Pathfinding)
+	uint32 bRequireNavigableEndLocation : 1;
 
 	UPROPERTY(EditAnywhere, Category=Query)
 	uint32 bDrawDistanceToWall : 1;
@@ -147,7 +151,7 @@ public:
 	float PathfindingTime;
 
 	UPROPERTY(transient, VisibleAnywhere, BlueprintReadOnly, Category=PathfindingStatus)
-	float PathCost;
+	double PathCost;
 
 	UPROPERTY(transient, VisibleAnywhere, BlueprintReadOnly, Category=PathfindingStatus)
 	int32 PathfindingSteps;

@@ -51,6 +51,11 @@ public:
 			return;
 		}
 
+		if (SubdivisionLevel == 0)
+		{
+			return;
+		}
+
 		constexpr bool bAutoCompute = true;
 		FGroupTopology Topo(&Mesh, bAutoCompute);
 		FSubdividePoly Subd(Topo, Mesh, SubdivisionLevel);
@@ -215,7 +220,7 @@ void USubdividePolyTool::Setup()
 		return;
 	}
 
-	if (!ensure(Properties->SubdivisionLevel >= 1)) // Should be enforced by UPROPERTY meta tags
+	if (Properties->SubdivisionLevel < 1)
 	{
 		Properties->SubdivisionLevel = 1;
 	}

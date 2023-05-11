@@ -1,6 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "Engine/World.h"
 #include "MassEntityManager.h"
 #include "MassProcessingTypes.h"
 #include "MassEntityTestTypes.h"
@@ -12,7 +11,7 @@
 
 #define LOCTEXT_NAMESPACE "MassTest"
 
-PRAGMA_DISABLE_OPTIMIZATION
+UE_DISABLE_OPTIMIZATION_SHIP
 
 //----------------------------------------------------------------------//
 // tests 
@@ -33,8 +32,8 @@ struct FCommands_FragmentInstanceList : FEntityTestBase
 
 		for (int i = 0; i < Count; ++i)
 		{
-			EntityManager->Defer().PushCommand<FMassCommandAddFragmentInstances>(IntEntities[i], FTestFragment_Int(i), FTestFragment_Float(i));
-			EntityManager->Defer().PushCommand<FMassCommandAddFragmentInstances>(FloatEntities[i], FTestFragment_Int(i), FTestFragment_Float(i));
+			EntityManager->Defer().PushCommand<FMassCommandAddFragmentInstances>(IntEntities[i], FTestFragment_Int(i), FTestFragment_Float((float)i));
+			EntityManager->Defer().PushCommand<FMassCommandAddFragmentInstances>(FloatEntities[i], FTestFragment_Int(i), FTestFragment_Float((float)i));
 		}
 
 		EntityManager->FlushCommands();
@@ -75,7 +74,7 @@ struct FCommands_FragmentMemoryCleanup : FEntityTestBase
 		const FMassArchetypeHandle ArrayArchetype = EntityManager->CreateArchetype(MakeArrayView(ArrayFragmentTypes, 1));
 		const FMassArchetypeHandle ArrayIntArchetype = EntityManager->CreateArchetype(MakeArrayView(ArrayFragmentTypes, 2));
 		const int32 EntitiesPerChunk = EntityManager->DebugGetArchetypeEntitiesCountPerChunk(ArrayArchetype);
-		const int32 Count = EntitiesPerChunk * 2.5f;
+		const int32 Count = (int32)(EntitiesPerChunk * 2.5f);
 		
 		TArray<FMassEntityHandle> Entities;
 		EntityManager->BatchCreateEntities(ArrayArchetype, Count, Entities);
@@ -115,13 +114,13 @@ struct FCommands_BuildEntitiesWithFragments : FEntityTestBase
 	virtual bool InstantTest() override
 	{
 		const int32 EntitiesPerChunk = EntityManager->DebugGetArchetypeEntitiesCountPerChunk(FloatsIntsArchetype);
-		const int32 Count = EntitiesPerChunk * 2.5f;
+		const int32 Count = (int32)(EntitiesPerChunk * 2.5f);
 
 		TArray<FMassEntityHandle> Entities;
 		for (int i = 0; i < Count; ++i)
 		{
 			Entities.Add(EntityManager->ReserveEntity());
-			EntityManager->Defer().PushCommand<FMassCommandAddFragmentInstances>(Entities.Last(), FTestFragment_Int(i), FTestFragment_Float(i));
+			EntityManager->Defer().PushCommand<FMassCommandAddFragmentInstances>(Entities.Last(), FTestFragment_Int(i), FTestFragment_Float((float)i));
 		}
 
 		AITEST_EQUAL(TEXT("All entities created should be in ArrayArchetype"), EntityManager->DebugGetArchetypeEntitiesCount(FloatsIntsArchetype), 0);
@@ -157,7 +156,7 @@ struct FCommands_BuildEntitiesInHoles : FEntityTestBase
 		for (int i = 0; i < EntitiesPerChunk; ++i)
 		{
 			Entities.Add(EntityManager->ReserveEntity());
-			EntityManager->Defer().PushCommand<FMassCommandAddFragmentInstances>(Entities.Last(), FTestFragment_Int(i), FTestFragment_Float(i));
+			EntityManager->Defer().PushCommand<FMassCommandAddFragmentInstances>(Entities.Last(), FTestFragment_Int(i), FTestFragment_Float((float)i));
 		}
 
 		AITEST_EQUAL(TEXT("All entities created should be in ArrayArchetype"), EntityManager->DebugGetArchetypeEntitiesCount(FloatsIntsArchetype), Count / 2);
@@ -181,13 +180,13 @@ struct FCommands_BuildEntitiesWithFragmentInstances : FEntityTestBase
 	virtual bool InstantTest() override
 	{
 		const int32 EntitiesPerChunk = EntityManager->DebugGetArchetypeEntitiesCountPerChunk(FloatsIntsArchetype);
-		const int32 Count = EntitiesPerChunk * 2.5f;
+		const int32 Count = (int32)(EntitiesPerChunk * 2.5f);
 
 		TArray<FMassEntityHandle> Entities;
 		for (int i = 0; i < Count; ++i)
 		{
 			Entities.Add(EntityManager->ReserveEntity());
-			EntityManager->Defer().PushCommand<FMassCommandBuildEntity>(Entities.Last(), FTestFragment_Int(i), FTestFragment_Float(i));
+			EntityManager->Defer().PushCommand<FMassCommandBuildEntity>(Entities.Last(), FTestFragment_Int(i), FTestFragment_Float((float)i));
 		}
 
 		AITEST_EQUAL(TEXT("All entities created should be in ArrayArchetype"), EntityManager->DebugGetArchetypeEntitiesCount(FloatsIntsArchetype), 0);
@@ -245,6 +244,6 @@ IMPLEMENT_AI_INSTANT_TEST(FCommands_DeferredFunction, "System.Mass.Commands.Defe
 #endif // WITH_MASSENTITY_DEBUG
 } // FMassCommandsTest
 
-PRAGMA_ENABLE_OPTIMIZATION
+UE_ENABLE_OPTIMIZATION_SHIP
 
 #undef LOCTEXT_NAMESPACE

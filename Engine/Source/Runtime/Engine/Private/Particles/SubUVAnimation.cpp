@@ -1,13 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Particles/SubUVAnimation.h"
-#include "Misc/Guid.h"
+#include "Containers/ClosableMpscQueue.h"
+#include "Engine/Texture2D.h"
+#include "Experimental/Containers/HazardPointer.h"
 #include "Math/RandomStream.h"
-#include "UObject/UObjectHash.h"
+#include "Math/ConvexHull2d.h"
 #include "ParticleHelper.h"
 #include "Particles/ParticleSystemComponent.h"
 #include "DerivedDataCacheInterface.h"
 #include "ComponentReregisterContext.h"
+#include "RHI.h"
 
 #define LOCTEXT_NAMESPACE "FSubUVDerivedData"
 
@@ -40,6 +43,15 @@ void FSubUVDerivedData::Serialize(FStructuredArchive::FSlot Slot)
 	Slot << BoundingGeometry;
 }
 
+FSubUVBoundingGeometryBuffer::FSubUVBoundingGeometryBuffer() = default;
+
+FSubUVBoundingGeometryBuffer::FSubUVBoundingGeometryBuffer(TArray<FVector2f>* InVertices)
+{
+	Vertices = InVertices;
+}
+
+FSubUVBoundingGeometryBuffer::~FSubUVBoundingGeometryBuffer() = default;
+
 void FSubUVBoundingGeometryBuffer::InitRHI()
 {
 	const uint32 SizeInBytes = Vertices->Num() * Vertices->GetTypeSize();
@@ -51,6 +63,12 @@ void FSubUVBoundingGeometryBuffer::InitRHI()
 		VertexBufferRHI = RHICreateVertexBuffer(SizeInBytes, BUF_ShaderResource | BUF_Static, CreateInfo);
 		ShaderResourceView = RHICreateShaderResourceView(VertexBufferRHI, sizeof(FVector2f), PF_G32R32F);
 	}
+}
+
+void FSubUVBoundingGeometryBuffer::ReleaseRHI()
+{
+	FVertexBuffer::ReleaseRHI();
+	ShaderResourceView.SafeRelease();
 }
 
 USubUVAnimation::USubUVAnimation(const FObjectInitializer& ObjectInitializer)

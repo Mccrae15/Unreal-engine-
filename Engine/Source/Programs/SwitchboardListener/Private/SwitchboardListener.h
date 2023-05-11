@@ -25,9 +25,11 @@ struct FSwitchboardRedeployListenerTask;
 struct FSwitchboardFixExeFlagsTask;
 struct FSwitchboardMinimizeWindowsTask;
 struct FSwitchboardSetInactiveTimeoutTask;
+struct FSwitchboardFreeListenerBinaryTask;
 
 class FInternetAddr;
 class FSocket;
+class FSBLHelperClient;
 class FTcpListener;
 
 
@@ -128,14 +130,15 @@ private:
 	bool Task_FixExeFlags(const FSwitchboardFixExeFlagsTask& InFixExeFlagsTask);
 	bool Task_MinimizeWindows(const FSwitchboardMinimizeWindowsTask& InRefreshMosaicsTask);
 	bool Task_SetInactiveTimeout(const FSwitchboardSetInactiveTimeoutTask& InTimeoutTask);
+	bool Task_FreeListenerBinary(const FSwitchboardFreeListenerBinaryTask& InRenameProcessTask);
 
 	bool KillProcessNow(FRunningProcess* InProcess, float SoftKillTimeout = 0.0f);
 	FRunningProcess* FindOrStartFlipModeMonitorForUUID(const FGuid& UUID);
 
 	void CleanUpDisconnectedSockets();
 	void DisconnectClient(const FIPv4Endpoint& InClientEndpoint);
-	void HandleStdout(const TSharedPtr<FRunningProcess, ESPMode::ThreadSafe>& Process);
-	void HandleRunningProcesses(TArray<TSharedPtr<FRunningProcess, ESPMode::ThreadSafe>>& Processes, bool bNotifyThatProgramEnded);
+	void HandleStdout(const TSharedPtr<FRunningProcess>& Process);
+	void HandleRunningProcesses(TArray<TSharedPtr<FRunningProcess>>& Processes, bool bNotifyThatProgramEnded);
 
 	bool SendMessage(const FString& InMessage, const FIPv4Endpoint& InEndpoint);
 	void SendMessageFutures();
@@ -157,15 +160,18 @@ private:
 
 	TQueue<TUniquePtr<FSwitchboardTask>, EQueueMode::Spsc> ScheduledTasks;
 	TQueue<TUniquePtr<FSwitchboardTask>, EQueueMode::Spsc> DisconnectTasks;
-	TArray<TSharedPtr<FRunningProcess, ESPMode::ThreadSafe>> RunningProcesses;
-	TArray<TSharedPtr<FRunningProcess, ESPMode::ThreadSafe>> FlipModeMonitors;
+	TArray<TSharedPtr<FRunningProcess>> RunningProcesses;
+	TArray<TSharedPtr<FRunningProcess>> FlipModeMonitors;
 	TArray<FSwitchboardMessageFuture> MessagesFutures;
-	TSharedPtr<FCpuUtilizationMonitor, ESPMode::ThreadSafe> CpuMonitor;
+	TSharedPtr<FCpuUtilizationMonitor> CpuMonitor;
+
+	/** Client interface to the Switchboard Listener Helper external process */
+	TSharedPtr<FSBLHelperClient> SBLHelper;
 
 	bool bIsNvAPIInitialized;
 
-	TSharedPtr<FRWLock, ESPMode::ThreadSafe> CachedMosaicToposLock;
-	TSharedPtr<TArray<FMosaicTopo>, ESPMode::ThreadSafe> CachedMosaicTopos;
+	TSharedPtr<FRWLock> CachedMosaicToposLock;
+	TSharedPtr<TArray<FMosaicTopo>> CachedMosaicTopos;
 
 	FRedeployStatus RedeployStatus;
 };

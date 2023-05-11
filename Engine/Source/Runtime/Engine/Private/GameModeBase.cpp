@@ -1,22 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameFramework/GameModeBase.h"
+#include "Blueprint/BlueprintSupport.h"
+#include "Engine/GameInstance.h"
+#include "Engine/ServerStatReplicator.h"
 #include "GameFramework/GameNetworkManager.h"
+#include "Engine/GameViewportClient.h"
 #include "Engine/LevelScriptActor.h"
-#include "Engine/World.h"
 #include "Misc/CommandLine.h"
-#include "UObject/Package.h"
 #include "Misc/PackageName.h"
 #include "Net/OnlineEngineInterface.h"
 #include "GameFramework/GameStateBase.h"
-#include "PhysicsEngine/BodyInstance.h"
-#include "GameFramework/DefaultPawn.h"
 #include "GameFramework/SpectatorPawn.h"
 #include "GameFramework/HUD.h"
 #include "GameFramework/PlayerState.h"
 #include "GameFramework/GameSession.h"
-#include "GameFramework/PlayerStart.h"
-#include "GameFramework/WorldSettings.h"
 #include "Engine/NetConnection.h"
 #include "Engine/ChildConnection.h"
 #include "Engine/PlayerStartPIE.h"
@@ -414,17 +412,6 @@ bool AGameModeBase::CanServerTravel(const FString& FURL, bool bAbsolute)
 
 	check(World);
 
-	// NOTE - This is a temp check while we work on a long term fix
-	// There are a few issues with seamless travel using single process PIE, so we're disabling that for now while working on a fix
-	if (World->WorldType == EWorldType::PIE && bUseSeamlessTravel && !FParse::Param(FCommandLine::Get(), TEXT("MultiprocessOSS")))
-	{
-		if (!UE::GameModeBase::Private::bAllowPIESeamlessTravel)
-		{
-			UE_LOG(LogGameMode, Warning, TEXT("CanServerTravel: Seamless travel is not supported by default in PIE, set net.AllowPIESeamlessTravel=1 to enable experimental support."));
-			return false;
-		}
-	}
-
 	if (FURL.Contains(TEXT("%")))
 	{
 		UE_LOG(LogGameMode, Error, TEXT("CanServerTravel: FURL %s Contains illegal character '%%'."), *FURL);
@@ -469,11 +456,31 @@ void AGameModeBase::ProcessServerTravel(const FString& URL, bool bAbsolute)
 	check(World);
 	FWorldContext& WorldContext = GEngine->GetWorldContextFromWorldChecked(World);
 
-	// Force an old style load screen if the server has been up for a long time so that TimeSeconds doesn't overflow and break everything
+	// Use game mode setting but default to full load screen if the server has been up for a long time so that TimeSeconds doesn't overflow and break everything
 	bool bSeamless = (bUseSeamlessTravel && GetWorld()->TimeSeconds < 172800.0f); // 172800 seconds == 48 hours
 
 	// Compute the next URL, and pull the map out of it. This handles short->long package name conversion
 	FURL NextURL = FURL(&WorldContext.LastURL, *URL, bAbsolute ? TRAVEL_Absolute : TRAVEL_Relative);
+
+	// Override based on URL parameters
+	if (NextURL.HasOption(TEXT("SeamlessTravel")))
+	{
+		bSeamless = true;
+	}
+	else if (NextURL.HasOption(TEXT("NoSeamlessTravel")))
+	{
+		bSeamless = false;
+	}
+
+	// There are some issues with seamless travel in PIE, so fall back to hard travel unless it is supported
+	if (World->WorldType == EWorldType::PIE && bSeamless && !FParse::Param(FCommandLine::Get(), TEXT("MultiprocessOSS")))
+	{
+		if (!UE::GameModeBase::Private::bAllowPIESeamlessTravel)
+		{
+			UE_LOG(LogGameMode, Warning, TEXT("ProcessServerTravel: Seamless travel is disabled in PIE, set net.AllowPIESeamlessTravel=1 to enable."));
+			bSeamless = false;
+		}
+	}
 
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	FGuid NextMapGuid = UEngine::GetPackageGuid(FName(*NextURL.Map), GetWorld()->IsPlayInEditor());
@@ -909,7 +916,7 @@ void AGameModeBase::ReplicateStreamingStatus(APlayerController* PC)
 			TArray<FUpdateLevelStreamingLevelStatus> LevelStatuses;
 			for (ULevelStreaming* TheLevel : MyWorld->GetStreamingLevels())
 			{
-				if (TheLevel != nullptr)
+				if (TheLevel && TheLevel->CanReplicateStreamingStatus())
 				{
 					const ULevel* LoadedLevel = TheLevel->GetLoadedLevel();
 
@@ -929,6 +936,7 @@ void AGameModeBase::ReplicateStreamingStatus(APlayerController* PC)
 					LevelStatus.bNewShouldBeLoaded = bTheLevelShouldBeLoaded;
 					LevelStatus.bNewShouldBeVisible = bTheLevelShouldBeVisible;
 					LevelStatus.bNewShouldBlockOnLoad = TheLevel->bShouldBlockOnLoad;
+					LevelStatus.bNewShouldBlockOnUnload = TheLevel->bShouldBlockOnUnload;
 					LevelStatus.LODIndex = TheLevel->GetLevelLODIndex();
 				}
 			}

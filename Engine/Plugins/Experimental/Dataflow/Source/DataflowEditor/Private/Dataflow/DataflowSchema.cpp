@@ -3,7 +3,7 @@
 #include "Dataflow/DataflowSchema.h"
 
 #include "Dataflow/DataflowEdNode.h"
-#include "Dataflow/DataflowEditorActions.h"
+#include "Dataflow/DataflowEditorCommands.h"
 #include "Dataflow/DataflowEdNode.h"
 #include "Dataflow/DataflowSNode.h"
 #include "Dataflow/DataflowNodeFactory.h"
@@ -177,6 +177,10 @@ FLinearColor UDataflowSchema::GetTypeColor(const FName& Type)
 	else if (Type == FName("FBox"))
 	{
 		return DataflowSettings->BoxPinTypeColor;
+	}
+	else if (Type == FName("FSphere"))
+	{
+		return DataflowSettings->SpherePinTypeColor;
 	}
 
 	return Settings->DefaultPinTypeColor;

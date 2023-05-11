@@ -2,15 +2,18 @@
 
 #pragma once
 
+#include "RigVMCore/RigVMFunction.h"
 #include "Units/Highlevel/RigUnit_HighlevelBase.h"
-#include "Drawing/ControlRigDrawInterface.h"
 
 #include "Core/PBIKSolver.h"
 #include "Core/PBIKDebug.h"
 
 #include "PBIK_Shared.h"
 
+#include "RigVMCore/RigVMMemoryStorage.h"
 #include "RigUnit_PBIK.generated.h"
+
+struct FControlRigExecuteContext;
 
 using PBIK::FDebugLine;
 
@@ -27,7 +30,7 @@ struct FPBIKDebug
 	UPROPERTY(EditAnywhere, Category = Debug)
 	bool bDrawDebug = false;
 
-	void Draw(FControlRigDrawInterface* DrawInterface, FPBIKSolver* Solver) const
+	void Draw(FRigVMDrawInterface* DrawInterface, FPBIKSolver* Solver) const
 	{
 		if (!(DrawInterface && Solver && bDrawDebug))
 		{
@@ -100,7 +103,7 @@ struct FRigUnit_PBIK : public FRigUnit_HighlevelBaseMutable
 	GENERATED_BODY()
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	FRigUnit_PBIK() :
 		Root(NAME_None),

@@ -303,41 +303,6 @@ mtlpp::PrimitiveTopologyClass TranslatePrimitiveTopology(uint32 PrimitiveType)
 			return mtlpp::PrimitiveTopologyClass::Line;
 		case PT_PointList:
 			return mtlpp::PrimitiveTopologyClass::Point;
-		case PT_1_ControlPointPatchList:
-		case PT_2_ControlPointPatchList:
-		case PT_3_ControlPointPatchList:
-		case PT_4_ControlPointPatchList:
-		case PT_5_ControlPointPatchList:
-		case PT_6_ControlPointPatchList:
-		case PT_7_ControlPointPatchList:
-		case PT_8_ControlPointPatchList:
-		case PT_9_ControlPointPatchList:
-		case PT_10_ControlPointPatchList:
-		case PT_11_ControlPointPatchList:
-		case PT_12_ControlPointPatchList:
-		case PT_13_ControlPointPatchList:
-		case PT_14_ControlPointPatchList:
-		case PT_15_ControlPointPatchList:
-		case PT_16_ControlPointPatchList:
-		case PT_17_ControlPointPatchList:
-		case PT_18_ControlPointPatchList:
-		case PT_19_ControlPointPatchList:
-		case PT_20_ControlPointPatchList:
-		case PT_21_ControlPointPatchList:
-		case PT_22_ControlPointPatchList:
-		case PT_23_ControlPointPatchList:
-		case PT_24_ControlPointPatchList:
-		case PT_25_ControlPointPatchList:
-		case PT_26_ControlPointPatchList:
-		case PT_27_ControlPointPatchList:
-		case PT_28_ControlPointPatchList:
-		case PT_29_ControlPointPatchList:
-		case PT_30_ControlPointPatchList:
-		case PT_31_ControlPointPatchList:
-		case PT_32_ControlPointPatchList:
-		{
-			return mtlpp::PrimitiveTopologyClass::Triangle;
-		}
 		default:
 			UE_LOG(LogMetal, Fatal, TEXT("Unsupported primitive topology %d"), (int32)PrimitiveType);
 			return mtlpp::PrimitiveTopologyClass::Triangle;
@@ -436,6 +401,10 @@ FMetalDeviceContext::FMetalDeviceContext(mtlpp::Device MetalDevice, uint32 InDev
 	
 	PSOManager = new FMetalPipelineStateCacheManager();
 	
+#if METAL_RHI_RAYTRACING
+	InitializeRayTracing();
+#endif
+
 	METAL_GPUPROFILE(FMetalProfiler::CreateProfiler(this));
 	
 	InitFrame(true, 0, 0);
@@ -449,6 +418,10 @@ FMetalDeviceContext::~FMetalDeviceContext()
 	delete PSOManager;
     
     delete UniformBufferAllocator;
+
+#if METAL_RHI_RAYTRACING
+	CleanUpRayTracing();
+#endif
 	
 #if PLATFORM_MAC
     mtlpp::Device::RemoveDeviceObserver(GMetalDeviceObserver);
@@ -468,6 +441,10 @@ void FMetalDeviceContext::BeginFrame()
 	
 	// Wait for the frame semaphore on the immediate context.
 	dispatch_semaphore_wait(CommandBufferSemaphore, DISPATCH_TIME_FOREVER);
+
+#if METAL_RHI_RAYTRACING
+	UpdateRayTracing();
+#endif // METAL_RHI_RAYTRACING
 }
 
 #if METAL_DEBUG_OPTIONS
@@ -1408,7 +1385,6 @@ void FMetalContext::SetRenderPassInfo(const FRHIRenderPassInfo& RenderTargetsInf
 #endif
 	
 	bool bSet = false;
-	if (IsFeatureLevelSupported( GMaxRHIShaderPlatform, ERHIFeatureLevel::ES3_1 ))
 	{
 		// @todo Improve the way we handle binding a dummy depth/stencil so we can get pure UAV raster operations...
 		const bool bNeedsDepthStencilForUAVRaster = RenderTargetsInfo.GetNumColorRenderTargets() == 0 && !RenderTargetsInfo.DepthStencilRenderTarget.DepthStencilTarget;
@@ -1443,14 +1419,6 @@ void FMetalContext::SetRenderPassInfo(const FRHIRenderPassInfo& RenderTargetsInf
 			}
 			bSet = StateCache.SetRenderPassInfo(RenderTargetsInfo, QueryBuffer->GetCurrentQueryBuffer(), bRestart);
 		}
-	}
-	else
-	{
-		if (NULL != StateCache.GetVisibilityResultsBuffer())
-		{
-			RenderPass.EndRenderPass();
-		}
-		bSet = StateCache.SetRenderPassInfo(RenderTargetsInfo, NULL, bRestart);
 	}
 	
 	if (bSet && StateCache.GetHasValidRenderTarget())

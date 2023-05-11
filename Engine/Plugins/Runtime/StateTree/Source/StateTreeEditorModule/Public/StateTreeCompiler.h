@@ -2,16 +2,21 @@
 
 #pragma once
 
-#include "StateTreeTypes.h"
-#include "InstancedStruct.h"
 #include "StateTreePropertyBindingCompiler.h"
-#include "StateTreeCompilerLog.h"
+
+struct FStructView;
+
+enum class EStateTreeConditionOperand : uint8;
+enum class EStateTreePropertyUsage : uint8;
+struct FStateTreeDataView;
+struct FStateTreeStateHandle;
 
 class UStateTree;
 class UStateTreeState;
 class UStateTreeEditorData;
 struct FStateTreeEditorNode;
 struct FStateTreeStateLink;
+struct FStateTreeNodeBase;
 
 /**
  * Helper class to convert StateTree editor representation into a compact data.
@@ -30,7 +35,8 @@ public:
 	
 private:
 
-	bool ResolveTransitionState(const UStateTreeState& SourceState, const FStateTreeStateLink& Link, FStateTreeStateHandle& OutTransitionHandle) const;
+	/** Resolves the state a transition points to. SourceState is nullptr for global tasks. */
+	bool ResolveTransitionState(const UStateTreeState* SourceState, const FStateTreeStateLink& Link, FStateTreeStateHandle& OutTransitionHandle) const;
 	FStateTreeStateHandle GetStateHandle(const FGuid& StateID) const;
 	UStateTreeState* GetState(const FGuid& StateID);
 
@@ -38,17 +44,19 @@ private:
 	bool CreateStateRecursive(UStateTreeState& State, const FStateTreeStateHandle Parent);
 	
 	bool CreateEvaluators();
+	bool CreateGlobalTasks();
 	bool CreateStateTasksAndParameters();
 	bool CreateStateTransitions();
 	
 	bool CreateConditions(UStateTreeState& State, TConstArrayView<FStateTreeEditorNode> Conditions);
 	bool CreateCondition(UStateTreeState& State, const FStateTreeEditorNode& CondNode, const EStateTreeConditionOperand Operand, const int8 DeltaIndent);
-	bool CreateTask(UStateTreeState& State, const FStateTreeEditorNode& TaskNode);
+	bool CreateTask(UStateTreeState* State, const FStateTreeEditorNode& TaskNode, bool& bOutHasTransitionTasks);
 	bool CreateEvaluator(const FStateTreeEditorNode& EvalNode);
 	bool GetAndValidateBindings(const FStateTreeBindableStructDesc& TargetStruct, TArray<FStateTreeEditorPropertyBinding>& OutBindings) const;
 	bool IsPropertyAnyEnum(const FStateTreeBindableStructDesc& Struct, FStateTreeEditorPropertyPath Path) const;
 	bool ValidateStructRef(const FStateTreeBindableStructDesc& SourceStruct, FStateTreeEditorPropertyPath SourcePath,
 							const FStateTreeBindableStructDesc& TargetStruct, FStateTreeEditorPropertyPath TargetPath) const;
+	bool CompileAndValidateNode(const UStateTreeState* SourceState, const FStateTreeBindableStructDesc& NodeDesc, FStructView NodeView, const FStateTreeDataView InstanceData) const;
 
 	FStateTreeCompilerLog& Log;
 	UStateTree* StateTree = nullptr;
@@ -149,3 +157,7 @@ namespace UE::StateTree::Compiler
 
 
 }; // UE::StateTree::Compiler
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "StateTreeCompilerLog.h"
+#endif

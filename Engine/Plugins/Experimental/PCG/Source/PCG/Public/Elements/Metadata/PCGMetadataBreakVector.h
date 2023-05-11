@@ -2,8 +2,6 @@
 
 #pragma once
 
-#include "PCGElement.h"
-#include "PCGSettings.h"
 
 #include "Elements/Metadata/PCGMetadataOpElementBase.h"
 
@@ -23,12 +21,17 @@ class PCG_API UPCGMetadataBreakVectorSettings : public UPCGMetadataSettingsBase
 	GENERATED_BODY()
 
 public:
+	// ~Begin UObject interface
+	virtual void PostLoad() override;
+	// ~End UObject interface
+
 	//~Begin UPCGSettings interface
 #if WITH_EDITOR
 	virtual FName GetDefaultNodeName() const override;
+	virtual FText GetDefaultNodeTitle() const override;
 #endif
 
-	virtual FName GetInputAttributeNameWithOverride(uint32 Index, UPCGParamData* Params) const override;
+	FPCGAttributePropertySelector GetInputSource(uint32 Index) const override;
 
 	virtual FName GetOutputPinLabel(uint32 Index) const override;
 	virtual uint32 GetOutputPinNum() const override;
@@ -42,8 +45,13 @@ protected:
 	//~End UPCGSettings interface
 
 public:
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings)
-	FName InputAttributeName = NAME_None;
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Input)
+	FPCGAttributePropertySelector InputSource;
+
+#if WITH_EDITORONLY_DATA
+	UPROPERTY()
+	FName InputAttributeName_DEPRECATED = NAME_None;
+#endif
 };
 
 class FPCGMetadataBreakVectorElement : public FPCGMetadataElementBase

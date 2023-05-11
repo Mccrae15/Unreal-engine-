@@ -2,17 +2,15 @@
 
 #include "TraceWorldFiltering.h"
 #include "SourceFilterTrace.h"
-#include "Misc/ScopeLock.h"
 #include "TraceFilters.h"
-#include "TraceFilter.h"
-#include "Engine/World.h"
-#include "Engine/Level.h"
 
 #include "ObjectTrace.h"
 #include "SourceFilterManager.h"
 
 #if WITH_EDITOR
 #include "Editor.h"
+#else
+#include "UObject/Package.h"
 #endif // WITH_EDITOR
 
 FDelegateHandle FTraceWorldFiltering::WorldInitHandle;

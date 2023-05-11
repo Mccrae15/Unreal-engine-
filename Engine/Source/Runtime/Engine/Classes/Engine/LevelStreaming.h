@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "UObject/ScriptMacros.h"
@@ -105,6 +104,28 @@ public:
 DECLARE_DYNAMIC_MULTICAST_DELEGATE( FLevelStreamingLoadedStatus );
 DECLARE_DYNAMIC_MULTICAST_DELEGATE( FLevelStreamingVisibilityStatus );
 
+enum class ELevelStreamingState : uint8
+{
+	Removed,
+	Unloaded,
+	FailedToLoad,
+	Loading,
+	LoadedNotVisible,
+	MakingVisible,
+	LoadedVisible,
+	MakingInvisible
+};
+ENGINE_API const TCHAR* EnumToString(ELevelStreamingState InState);
+
+enum class ELevelStreamingTargetState : uint8
+{
+	Unloaded,
+	UnloadedAndRemoved,
+	LoadedNotVisible,
+	LoadedVisible,
+};
+ENGINE_API const TCHAR* EnumToString(ELevelStreamingTargetState InTargetState);
+
 /**
  * Abstract base class of container object encapsulating data required for streaming and providing 
  * interface for when a level should be streamed in and out of memory.
@@ -115,32 +136,38 @@ class ENGINE_API ULevelStreaming : public UObject
 {
 	GENERATED_UCLASS_BODY()
 
-	enum class ECurrentState : uint8
+	enum class UE_DEPRECATED(5.2, "ULevelStreaming::ECurrentState has been replaced by ELevelStreamingState")
+	ECurrentState : uint8
 	{
-		Removed,
-		Unloaded,
-		FailedToLoad,
-		Loading,
-		LoadedNotVisible,
-		MakingVisible,
-		LoadedVisible,
-		MakingInvisible
+	 	Removed = (uint8)ELevelStreamingState::Removed,
+		Unloaded = (uint8)ELevelStreamingState::Unloaded,
+		FailedToLoad = (uint8)ELevelStreamingState::FailedToLoad,
+		Loading = (uint8)ELevelStreamingState::Loading,
+		LoadedNotVisible = (uint8)ELevelStreamingState::LoadedNotVisible,
+		MakingVisible = (uint8)ELevelStreamingState::MakingVisible,
+		LoadedVisible = (uint8)ELevelStreamingState::LoadedVisible,
+		MakingInvisible = (uint8)ELevelStreamingState::MakingInvisible
 	};
-
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	static const TCHAR* EnumToString(ECurrentState InCurrentState);
-
-private:
-	enum class ETargetState : uint8
+	friend bool operator==(ELevelStreamingState A, ECurrentState B)
 	{
-		Unloaded,
-		UnloadedAndRemoved,
-		LoadedNotVisible,
-		LoadedVisible,
-	};
+		return A == (ELevelStreamingState)B;
+	}
+	friend bool operator==(ECurrentState A, ELevelStreamingState B)
+	{
+		return (ELevelStreamingState)A == (ELevelStreamingState)B;
+	}
+	friend bool operator!=(ELevelStreamingState A, ECurrentState B)
+	{
+		return A != (ELevelStreamingState)B;
+	}
+	friend bool operator!=(ECurrentState A, ELevelStreamingState B)
+	{
+		return (ELevelStreamingState)A != (ELevelStreamingState)B;
+	}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
-	static const TCHAR* EnumToString(ETargetState InTargetState);
-
-public:
 	static ULevelStreaming* FindStreamingLevel(const ULevel* Level);
 	static void RemoveLevelAnnotation(const ULevel* Level);
 
@@ -233,11 +260,12 @@ protected:
 	/** Whether the streaming level can safely skip making visible transaction request from the client to the server */
 	uint8 bSkipClientUseMakingVisibleTransactionRequest:1;
 
+private:
 	/** What the current streamed state of the streaming level is */
-	ECurrentState CurrentState;
+	ELevelStreamingState CurrentState;
 
 	/** What streamed state the streaming level is transitioning towards */
-	ETargetState TargetState;
+	ELevelStreamingTargetState TargetState;
 
 public:
 
@@ -310,7 +338,21 @@ public:
 	//~ End UObject Interface
 
 	/** Returns the current loaded/visible state of the streaming level. */
-	ECurrentState GetCurrentState() const { return CurrentState; }
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	UE_DEPRECATED(5.2, "ULevelStreaming::ECurrentState has been replaced by ELevelStreamingState. Use GetLevelStreamingState instead.")
+	ECurrentState GetCurrentState() const { return (ECurrentState)CurrentState; }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	ELevelStreamingState GetLevelStreamingState() const { return CurrentState; }
+
+protected:	
+	/** Updates the current state of the streaming level and notifies any observers. */
+	void SetCurrentState(ELevelStreamingState NewState);
+
+	/** Returns whether the streaming level can make visible (can call AddToWorld). */
+	virtual bool CanMakeVisible();
+	/** Returns whether the streaming level can make invisible (can call RemoveFromWorld). */
+	virtual bool CanMakeInvisible();
 
 private:
 
@@ -322,13 +364,12 @@ private:
 	bool ShouldWaitForServerAckBeforeChangingVisibilityState(ENetLevelVisibilityRequest InRequestType, bool bInShouldBeVisible);
 	/** Ack a client instigated visibility/streaming transaction */
 	void AckNetVisibilityTransaction(FNetLevelVisibilityTransactionId AckedClientTransactionId, bool bClientAckCanMakeVisible);
-	/** Returns whether the streaming level can make visible (can call AddToWorld). */
-	bool CanMakeVisible();
-	/** Returns whether the streaming level can make invisible (can call RemoveFromWorld). */
-	bool CanMakeInvisible();
 
-	/** Determine what the streaming levels target state should be. Returns whether the streaming level should be in the consider list. */
-	bool DetermineTargetState();
+	/** Determine what the streaming level's target state should be. */
+	ELevelStreamingTargetState DetermineTargetState() const;
+
+	/** Determines a new target state, fires delegates, returns true if the level should continue to be considered for streaming. */
+	bool UpdateTargetState();
 
 	/** Update the load process of the streaming level. Out parameters instruct calling code how to proceed. */
 	void UpdateStreamingState(bool& bOutUpdateAgain, bool& bOutRedetermineTarget);
@@ -363,8 +404,11 @@ public:
 	/** Returns whether level should start to render only when it will be fully added to the world or not. */
 	virtual bool ShouldRequireFullVisibilityToRender() const { return LODPackageNames.Num() > 0; }
 
+	/** Returns whether level status can be replicated from the server to the client */
+	virtual bool CanReplicateStreamingStatus() const { return true; }
+
 	/** 
-	 * Virtual that can be overriden to change whether a streaming level should be loaded.
+	 * Virtual that can be overridden to change whether a streaming level should be loaded.
 	 * Doesn't do anything at the base level as should be loaded defaults to true 
 	 */
 	UFUNCTION(BlueprintSetter)
@@ -385,7 +429,7 @@ public:
 	void SetPriority(int32 NewPriority);
 
 	/** Returns whether the streaming level is in the loading state. */
-	bool HasLoadRequestPending() const { return GetCurrentState() == ECurrentState::Loading; }
+	bool HasLoadRequestPending() const { return CurrentState == ELevelStreamingState::Loading; }
 
 	/** Returns whether the streaming level has loaded a level. */
 	bool HasLoadedLevel() const
@@ -452,6 +496,8 @@ public:
 	 */
 	virtual bool ShouldBeVisible() const;
 
+	virtual bool ShouldBlockOnUnload() const { return bShouldBlockOnUnload; }
+
 	virtual bool ShouldBeAlwaysLoaded() const { return false; }
 
 	/** Get a bounding box around the streaming volumes associated with this LevelStreaming object */
@@ -486,6 +532,9 @@ public:
 	};
 
 	virtual UWorld* GetWorld() const override final;
+
+	/** Returns the UWorld that triggered the streaming of this streaming level. */
+	virtual UWorld* GetStreamingWorld() const;
 
 	/** Returns whether streaming level is visible */
 	UFUNCTION(BlueprintCallable, Category="Game")
@@ -695,7 +744,7 @@ private:
 	/** Update internal variables when the level is removed from the streaming levels array */
 	static void OnLevelRemoved(ULevelStreaming* StreamingLevel) { StreamingLevel->OnLevelRemoved(); }
 	/** Determine what the streaming levels target state should be. Returns whether the streaming level should be in the consider list. */
-	static bool DetermineTargetState(ULevelStreaming* StreamingLevel) { return StreamingLevel->DetermineTargetState(); }
+	static bool UpdateTargetState(ULevelStreaming* StreamingLevel) { return StreamingLevel->UpdateTargetState(); }
 	/** Update the load process of the streaming level. Out parameters instruct calling code how to proceed. */
 	static void UpdateStreamingState(ULevelStreaming* StreamingLevel, bool& bOutUpdateAgain, bool& bOutRedetermineTarget) { StreamingLevel->UpdateStreamingState(bOutUpdateAgain, bOutRedetermineTarget); }
 
@@ -703,3 +752,7 @@ private:
 	friend class UEngine;
 	friend class UWorld;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

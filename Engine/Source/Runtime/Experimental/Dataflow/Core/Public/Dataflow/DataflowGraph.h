@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Chaos/ChaosArchive.h"
 #include "Dataflow/DataflowNode.h"
+#include "Dataflow/DataflowTerminalNode.h"
 #include "Serialization/Archive.h"
 
 struct FDataflowConnection;
@@ -20,7 +21,7 @@ namespace Dataflow
 
 		FLink() {}
 
-		FLink(FGuid InInputNode, FGuid InInput, FGuid InOutputNode, FGuid InOutput)
+		FLink(FGuid InOutputNode, FGuid InOutput, FGuid InInputNode, FGuid InInput)
 			: InputNode(InInputNode), Input(InInput)
 			, OutputNode(InOutputNode), Output(InOutput) {}
 
@@ -49,13 +50,15 @@ namespace Dataflow
 
 		FGuid  Guid;
 		TArray< TSharedPtr<FDataflowNode> > Nodes;
+		TArray< TSharedPtr<FDataflowNode> > TerminalNodes;
 		TArray< FLink > Connections;
 		TSet< FName > DisabledNodes;
 	public:
 		FGraph(FGuid InGuid = FGuid::NewGuid());
 		virtual ~FGraph() {}
 
-		const TArray< TSharedPtr<FDataflowNode> >& GetNodes() const {return Nodes;}
+		const TArray< TSharedPtr<FDataflowNode> >& GetTerminalNodes() const { return TerminalNodes; }
+		const TArray< TSharedPtr<FDataflowNode> >& GetNodes() const { return Nodes; }
 		TArray< TSharedPtr<FDataflowNode> >& GetNodes() { return Nodes; }
 		int NumNodes() { return Nodes.Num(); }
 
@@ -63,6 +66,10 @@ namespace Dataflow
 		{
 			TSharedPtr<T> NewNode(InNode);
 			Nodes.AddUnique(NewNode);
+			if (NewNode->IsA(FDataflowTerminalNode::StaticType()))
+			{
+				TerminalNodes.AddUnique(NewNode);
+			}
 			return NewNode;
 		}
 
@@ -70,6 +77,10 @@ namespace Dataflow
 		{
 			TSharedPtr<T> NewNode(InNode.Release());
 			Nodes.AddUnique(NewNode);
+			if (NewNode->IsA(FDataflowTerminalNode::StaticType()))
+			{
+				TerminalNodes.AddUnique(NewNode);
+			}
 			return NewNode;
 		}
 
@@ -78,6 +89,54 @@ namespace Dataflow
 			for (TSharedPtr<FDataflowNode> Node : Nodes)
 			{
 				if (Node->GetGuid() == InGuid)
+				{
+					return Node;
+				}
+			}
+			return TSharedPtr<FDataflowNode>(nullptr);
+		}
+
+		TSharedPtr<const FDataflowNode> FindBaseNode(FGuid InGuid) const
+		{
+			for (TSharedPtr<FDataflowNode> Node : Nodes)
+			{
+				if (Node->GetGuid() == InGuid)
+				{
+					return Node;
+				}
+			}
+			return TSharedPtr<FDataflowNode>(nullptr);
+		}
+
+		TSharedPtr<FDataflowNode> FindBaseNode(FName InName)
+		{
+			for (TSharedPtr<FDataflowNode> Node : Nodes)
+			{
+				if (Node->GetName().IsEqual(InName))
+				{
+					return Node;
+				}
+			}
+			return TSharedPtr<FDataflowNode>(nullptr);
+		}
+
+		TSharedPtr<const FDataflowNode> FindBaseNode(FName InName) const
+		{
+			for (TSharedPtr<FDataflowNode> Node : Nodes)
+			{
+				if (Node->GetName().IsEqual(InName))
+				{
+					return Node;
+				}
+			}
+			return TSharedPtr<const FDataflowNode>(nullptr);
+		}
+
+		TSharedPtr<FDataflowNode> FindTerminalNode(FName InName)
+		{
+			for (TSharedPtr<FDataflowNode> Node : TerminalNodes)
+			{
+				if (Node->GetName().IsEqual(InName))
 				{
 					return Node;
 				}

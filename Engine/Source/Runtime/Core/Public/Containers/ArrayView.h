@@ -44,8 +44,9 @@ namespace ArrayViewPrivate
 		auto NaturalPtr = GetData(Forward<T>(Arg));
 		using NaturalElementType = typename TRemovePointer<decltype(NaturalPtr)>::Type;
 
-		auto EndPtr = NaturalPtr + GetNum(Arg);
-		TContainerElementTypeCompatibility<NaturalElementType>::ReinterpretRange(NaturalPtr, EndPtr);
+		auto Size = GetNum(Arg);
+		auto EndPtr = NaturalPtr + Size;
+		TContainerElementTypeCompatibility<NaturalElementType>::ReinterpretRangeContiguous(NaturalPtr, EndPtr, Size);
 
 		return reinterpret_cast<typename TContainerElementTypeCompatibility<NaturalElementType>::ReinterpretType*>(NaturalPtr);
 	}
@@ -76,7 +77,7 @@ namespace ArrayViewPrivate
 
 	public:
 		static constexpr bool Value = 
-			!TIsSame<typename TContainerElementTypeCompatibility<NaturalElementType>::ReinterpretType, NaturalElementType>::Value
+			!std::is_same_v<typename TContainerElementTypeCompatibility<NaturalElementType>::ReinterpretType, NaturalElementType>
 			&&
 			TIsCompatibleElementType<typename TContainerElementTypeCompatibility<NaturalElementType>::ReinterpretType, ElementType>::Value;
 
@@ -87,6 +88,12 @@ namespace ArrayViewPrivate
 		}
 	};
 }
+
+template <typename T>                                  struct TIsTArrayView                                                       { static constexpr bool Value = false; };
+template <typename InElementType, typename InSizeType> struct TIsTArrayView<               TArrayView<InElementType, InSizeType>> { static constexpr bool Value = true;  };
+template <typename InElementType, typename InSizeType> struct TIsTArrayView<      volatile TArrayView<InElementType, InSizeType>> { static constexpr bool Value = true;  };
+template <typename InElementType, typename InSizeType> struct TIsTArrayView<const          TArrayView<InElementType, InSizeType>> { static constexpr bool Value = true;  };
+template <typename InElementType, typename InSizeType> struct TIsTArrayView<const volatile TArrayView<InElementType, InSizeType>> { static constexpr bool Value = true;  };
 
 /**
  * Templated fixed-size view of another array
@@ -163,7 +170,8 @@ public:
 					TIsReinterpretableRangeType<OtherRangeType>
 				>
 			>::Value
-		>::Type
+		>::Type,
+		std::enable_if_t<TIsTArrayView<std::decay_t<OtherRangeType>>::Value>* = nullptr
 	>
 	FORCEINLINE TArrayView(OtherRangeType&& Other)
 		: DataPtr(TChooseClass<
@@ -171,6 +179,31 @@ public:
 						TIsCompatibleRangeType<OtherRangeType>,
 						TIsReinterpretableRangeType<OtherRangeType>
 					>::Result::GetData(Forward<OtherRangeType>(Other)))
+	{
+		const auto InCount = GetNum(Forward<OtherRangeType>(Other));
+		check((InCount >= 0) && ((sizeof(InCount) < sizeof(SizeType)) || (InCount <= static_cast<decltype(InCount)>(TNumericLimits<SizeType>::Max()))));
+		ArrayNum = (SizeType)InCount;
+	}
+	template <
+		typename OtherRangeType,
+		typename CVUnqualifiedOtherRangeType = typename TRemoveCV<typename TRemoveReference<OtherRangeType>::Type>::Type,
+		typename = typename TEnableIf<
+		TAnd<
+		TIsContiguousContainer<CVUnqualifiedOtherRangeType>,
+		TOr<
+		TIsCompatibleRangeType<OtherRangeType>,
+		TIsReinterpretableRangeType<OtherRangeType>
+		>
+		>::Value
+		>::Type,
+		std::enable_if_t<!TIsTArrayView<std::decay_t<OtherRangeType>>::Value>* = nullptr
+	>
+	FORCEINLINE TArrayView(OtherRangeType&& Other UE_LIFETIMEBOUND)
+		: DataPtr(TChooseClass<
+			TIsCompatibleRangeType<OtherRangeType>::Value,
+			TIsCompatibleRangeType<OtherRangeType>,
+			TIsReinterpretableRangeType<OtherRangeType>
+		>::Result::GetData(Forward<OtherRangeType>(Other)))
 	{
 		const auto InCount = GetNum(Forward<OtherRangeType>(Other));
 		check((InCount >= 0) && ((sizeof(InCount) < sizeof(SizeType)) || (InCount <= static_cast<decltype(InCount)>(TNumericLimits<SizeType>::Max()))));
@@ -185,7 +218,7 @@ public:
 	 */
 	template <typename OtherElementType,
 		typename = typename TEnableIf<TIsCompatibleElementType<OtherElementType>::Value>::Type>
-	FORCEINLINE TArrayView(OtherElementType* InData, SizeType InCount)
+	FORCEINLINE TArrayView(OtherElementType* InData UE_LIFETIMEBOUND, SizeType InCount)
 		: DataPtr(InData)
 		, ArrayNum(InCount)
 	{
@@ -197,10 +230,11 @@ public:
 	 *
 	 * The caller is responsible for ensuring that the view does not outlive the initializer list.
 	 */
-	FORCEINLINE TArrayView(std::initializer_list<ElementType> List)
+	FORCEINLINE TArrayView(std::initializer_list<ElementType> List UE_LIFETIMEBOUND)
 		: DataPtr(ArrayViewPrivate::GetDataHelper(List))
 		, ArrayNum(GetNum(List))
 	{
+		static_assert(std::is_const_v<ElementType>, "Only views of const elements can bind to initializer lists");
 	}
 
 public:
@@ -717,23 +751,34 @@ struct TIsContiguousContainer<TArrayView<T, SizeType>>
 template <
 	typename OtherRangeType,
 	typename CVUnqualifiedOtherRangeType = typename TRemoveCV<typename TRemoveReference<OtherRangeType>::Type>::Type,
-	typename = typename TEnableIf<TIsContiguousContainer<CVUnqualifiedOtherRangeType>::Value>::Type
+	typename = typename TEnableIf<TIsContiguousContainer<CVUnqualifiedOtherRangeType>::Value>::Type,
+	std::enable_if_t<TIsTArrayView<std::decay_t<OtherRangeType>>::Value>* = nullptr
 >
 auto MakeArrayView(OtherRangeType&& Other)
 {
 	return TArrayView<typename TRemovePointer<decltype(GetData(DeclVal<OtherRangeType&>()))>::Type>(Forward<OtherRangeType>(Other));
 }
+template <
+	typename OtherRangeType,
+	typename CVUnqualifiedOtherRangeType = typename TRemoveCV<typename TRemoveReference<OtherRangeType>::Type>::Type,
+	typename = typename TEnableIf<TIsContiguousContainer<CVUnqualifiedOtherRangeType>::Value>::Type,
+	std::enable_if_t<!TIsTArrayView<std::decay_t<OtherRangeType>>::Value>* = nullptr
+>
+auto MakeArrayView(OtherRangeType&& Other UE_LIFETIMEBOUND)
+{
+	return TArrayView<typename TRemovePointer<decltype(GetData(DeclVal<OtherRangeType&>()))>::Type>(Forward<OtherRangeType>(Other));
+}
 
 template<typename ElementType>
-auto MakeArrayView(ElementType* Pointer, int32 Size)
+auto MakeArrayView(ElementType* Pointer UE_LIFETIMEBOUND, int32 Size)
 {
 	return TArrayView<ElementType>(Pointer, Size);
 }
 
 template <typename T>
-TArrayView<const T> MakeArrayView(std::initializer_list<T> List)
+TArrayView<const T> MakeArrayView(std::initializer_list<T> List UE_LIFETIMEBOUND)
 {
-	return TArrayView<const T>(List);
+	return TArrayView<const T>(List.begin(), List.size());
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -773,6 +818,7 @@ bool operator==(TArrayView<ElementType> Lhs, RangeType&& Rhs)
 	return (Rhs == Lhs);
 }
 
+#if !PLATFORM_COMPILER_HAS_GENERATED_COMPARISON_OPERATORS
 /**
  * Inequality operator.
  *
@@ -798,6 +844,7 @@ bool operator!=(TArrayView<ElementType> Lhs, RangeType&& Rhs)
 {
 	return !(Rhs == Lhs);
 }
+#endif
 
 template<typename InElementType, typename InAllocatorType>
 template<typename OtherElementType, typename OtherSizeType>

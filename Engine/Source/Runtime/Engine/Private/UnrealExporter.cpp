@@ -6,29 +6,23 @@
 
 // Engine includes.
 #include "UnrealExporter.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/Object.h"
 #include "UObject/UnrealType.h"
-#include "Components/ActorComponent.h"
 #include "Exporters/Exporter.h"
-#include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Misc/OutputDeviceFile.h"
 #include "Serialization/BufferArchive.h"
-#include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
-#include "UObject/Package.h"
-#include "UObject/PropertyPortFlags.h"
-#include "GameFramework/Actor.h"
 #include "Model.h"
 #include "Misc/FeedbackContext.h"
 #include "AssetExportTask.h"
 #include "UObject/GCObjectScopeGuard.h"
-#include "Engine/Selection.h"
 
 #if WITH_EDITOR
 #include "Editor.h"
+#include "Selection.h"
+#else
+#include "UObject/Package.h"
 #endif
 
 DEFINE_LOG_CATEGORY_STATIC(LogExporter, Log, All);
@@ -169,7 +163,7 @@ bool UExporter::ExportToArchive( UObject* Object, UExporter* InExporter, FArchiv
 }
 
 
-void UExporter::ExportToOutputDevice(const FExportObjectInnerContext* Context, UObject* Object, UExporter* InExporter, FOutputDevice& Out, const TCHAR* FileType, int32 Indent, uint32 PortFlags, bool bInSelectedOnly, UObject* ExportRootScope)
+bool UExporter::ExportToOutputDevice(const FExportObjectInnerContext* Context, UObject* Object, UExporter* InExporter, FOutputDevice& Out, const TCHAR* FileType, int32 Indent, uint32 PortFlags, bool bInSelectedOnly, UObject* ExportRootScope)
 {
 	check(Object);
 	UExporter* Exporter = InExporter;
@@ -180,7 +174,7 @@ void UExporter::ExportToOutputDevice(const FExportObjectInnerContext* Context, U
 	if( !Exporter )
 	{
 		UE_LOG(LogExporter, Warning, TEXT("No %s exporter found for %s"), FileType, *Object->GetFullName() );
-		return;
+		return false;
 	}
 	check(Object->IsA(Exporter->SupportedClass));
 	int32 SavedIndent = Exporter->TextIndent;
@@ -202,14 +196,15 @@ void UExporter::ExportToOutputDevice(const FExportObjectInnerContext* Context, U
 		PortFlags |= PPF_Copy;
 	}
 
-	Exporter->ExportText( Context, Object, FileType, Out, GWarn, PortFlags );
+	const bool bSuccess = Exporter->ExportText( Context, Object, FileType, Out, GWarn, PortFlags );
 	Exporter->TextIndent = SavedIndent;
+
+	return bSuccess;
 }
 
 
 int32 UExporter::ExportToFile( UObject* Object, UExporter* InExporter, const TCHAR* Filename, bool InSelectedOnly, bool NoReplaceIdentical, bool Prompt )
 {
-#if WITH_EDITOR
 	UAssetExportTask* ExportTask = NewObject<UAssetExportTask>();
 	FGCObjectScopeGuard ExportTaskGuard(ExportTask);
 	ExportTask->Object = Object;
@@ -222,15 +217,11 @@ int32 UExporter::ExportToFile( UObject* Object, UExporter* InExporter, const TCH
 	ExportTask->bWriteEmptyFiles = false;
 	ExportTask->bAutomated = false;
 	return RunAssetExportTask(ExportTask) ? 1 : 0;
-#else
-	return 0;
-#endif
 }
 
 
 bool UExporter::RunAssetExportTask(class UAssetExportTask* Task)
 {
-#if WITH_EDITOR
 	check(Task);
 
 	CurrentFilename = Task->Filename;
@@ -415,14 +406,10 @@ bool UExporter::RunAssetExportTask(class UAssetExportTask* Task)
 		return true;
 	}
 	return false;
-#else
-	return false;
-#endif
 }
 
 bool UExporter::RunAssetExportTasks(const TArray<UAssetExportTask*>& ExportTasks)
 {
-#if WITH_EDITOR
 	bool bSuccess = true;
 	for (UAssetExportTask* Task : ExportTasks)
 	{
@@ -432,14 +419,10 @@ bool UExporter::RunAssetExportTasks(const TArray<UAssetExportTask*>& ExportTasks
 		}
 	}
 	return bSuccess;
-#else
-	return false;
-#endif
 }
 
 int32 UExporter::ExportToFileEx( FExportToFileParams& ExportParams )
 {
-#if WITH_EDITOR
 	check(ExportParams.Object);
 	UAssetExportTask* ExportTask = NewObject<UAssetExportTask>();
 	FGCObjectScopeGuard ExportTaskGuard(ExportTask);
@@ -454,9 +437,6 @@ int32 UExporter::ExportToFileEx( FExportToFileParams& ExportParams )
 	ExportTask->IgnoreObjectList = ExportParams.IgnoreObjectList;
 	ExportTask->bAutomated = false;
 	return RunAssetExportTask(ExportTask) ? 1 : 0;
-#else
-	return 0;
-#endif
 }
 
 const bool UExporter::bEnableDebugBrackets = false;
@@ -491,6 +471,9 @@ void UExporter::EmitBeginObject( FOutputDevice& Ar, UObject* Obj, uint32 PortFla
 			Ar.Logf(TEXT(" Archetype=%s"), *FObjectPropertyBase::GetExportPath(Archetype, Archetype->GetOutermost(), /*ExportRootScope =*/nullptr, PortFlags & ~PPF_ExportsNotFullyQualified));
 		}
 	}
+
+	// Emit the object path
+	Ar.Logf(TEXT(" ExportPath=%s"), *FObjectPropertyBase::GetExportPath(Obj, nullptr, nullptr, PortFlags | (PPF_Delimited  & ~PPF_ExportsNotFullyQualified)));
 
 	// end in a return
 	Ar.Logf(TEXT("\r\n"));
@@ -651,6 +634,7 @@ void UExporter::ExportObjectInner(const FExportObjectInnerContext* Context, UObj
 
 		if (AActor* Actor = Cast<AActor>(Object))
 		{
+			// Todo PlacementMode consider removing that code when we it will replace the foliage
 			// Export anything extra for the components. Used for instanced foliage.
 			// This is done after the actor properties so these are set when regenerating the extra data objects.
 			TArray<UActorComponent*> Components;

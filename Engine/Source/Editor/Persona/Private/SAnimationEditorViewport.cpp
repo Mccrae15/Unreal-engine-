@@ -41,6 +41,7 @@
 #include "IPersonaToolkit.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "SNameComboBox.h"
+#include "Viewports.h"
 
 #define LOCTEXT_NAMESPACE "PersonaViewportToolbar"
 
@@ -121,6 +122,9 @@ TSharedRef<FEditorViewportClient> SAnimationEditorViewport::MakeEditorViewportCl
 {
 	// Create an animation viewport client
 	LevelViewportClient = MakeShareable(new FAnimationViewportClient(PreviewScenePtr.Pin().ToSharedRef(), SharedThis(this), AssetEditorToolkitPtr.Pin().ToSharedRef(), ViewportIndex, bShowStats));
+
+	// Done after constructor, as the delegates require the shared pointer to be assigned
+	LevelViewportClient->Initialize();
 
 	LevelViewportClient->ViewportType = LVT_Perspective;
 	LevelViewportClient->bSetListenerPosition = false;
@@ -1837,7 +1841,7 @@ float SAnimationEditorViewportTabBody::GetViewMaxInput() const
 		}
 		else if (PreviewComponent->GetAnimInstance() != NULL)
 		{
-			return PreviewComponent->GetAnimInstance()->LifeTimer;
+			return static_cast<float>(PreviewComponent->GetAnimInstance()->LifeTimer);
 		}
 	}
 

@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "Templates/SubclassOf.h"
 #include "Templates/Casts.h"
@@ -26,12 +25,12 @@ class IInterface_AssetUserData
 
 	virtual UAssetUserData* GetAssetUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataClass)
 	{
-		return NULL;
+		return nullptr;
 	}
 
 	virtual const TArray<UAssetUserData*>* GetAssetUserDataArray() const
 	{
-		return NULL;
+		return nullptr;
 	}
 
 	template<typename T>
@@ -50,3 +49,6 @@ class IInterface_AssetUserData
 
 };
 
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

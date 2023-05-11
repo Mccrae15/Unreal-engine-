@@ -5,6 +5,7 @@
 #include "HAL/FileManager.h"
 #include "Modules/ModuleManager.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Widgets/Input/SComboButton.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Layout/SBox.h"
@@ -61,6 +62,87 @@
 #include "ISourceControlModule.h"
 #include "Styling/ToolBarStyle.h"
 #include "PlatformInfo.h"
+#include "DataDrivenShaderPlatformInfo.h"
+
+namespace PreviewModeFunctionality
+{
+	FText GetPreviewModeText()
+	{
+		const FPreviewPlatformMenuItem* Item = FDataDrivenPlatformInfoRegistry::GetAllPreviewPlatformMenuItems().FindByPredicate([](const FPreviewPlatformMenuItem& TestItem)
+			{
+				return GEditor->PreviewPlatform.PreviewPlatformName == TestItem.PlatformName && GEditor->PreviewPlatform.PreviewShaderFormatName == TestItem.ShaderFormat && GEditor->PreviewPlatform.PreviewShaderPlatformName == TestItem.PreviewShaderPlatformName;
+			});
+		return Item ? Item->IconText : FText();
+	}
+
+	FText GetPreviewModeTooltip()
+	{
+#define LOCTEXT_NAMESPACE "LevelEditorToolBar"
+		EShaderPlatform PreviewShaderPlatform = GEditor->PreviewPlatform.PreviewShaderPlatformName != NAME_None ?
+			FDataDrivenShaderPlatformInfo::GetShaderPlatformFromName(GEditor->PreviewPlatform.PreviewShaderPlatformName) :
+			GetFeatureLevelShaderPlatform(GEditor->PreviewPlatform.PreviewFeatureLevel);
+
+		EShaderPlatform MaxRHIFeatureLevelPlatform = GetFeatureLevelShaderPlatform(GMaxRHIFeatureLevel);
+
+		{
+			const FText& RenderingAsPlatformName = FDataDrivenShaderPlatformInfo::GetFriendlyName(GEditor->PreviewPlatform.bPreviewFeatureLevelActive ? PreviewShaderPlatform : MaxRHIFeatureLevelPlatform);
+			const FText& SwitchToPlatformName = FDataDrivenShaderPlatformInfo::GetFriendlyName(GEditor->PreviewPlatform.bPreviewFeatureLevelActive ? MaxRHIFeatureLevelPlatform : PreviewShaderPlatform);
+			if (PreviewShaderPlatform == MaxRHIFeatureLevelPlatform)
+			{
+				return FText::Format(LOCTEXT("PreviewModeViewingAs", "Viewing {0}."), RenderingAsPlatformName);
+			}
+			else if (GWorld->FeatureLevel == GMaxRHIFeatureLevel)
+			{
+				return FText::Format(LOCTEXT("PreviewModeViewingAsSwitchTo", "Viewing {0}. Click to preview {1}."), RenderingAsPlatformName, SwitchToPlatformName);
+			}
+			else
+			{
+				return FText::Format(LOCTEXT("PreviewModePreviewingAsSwitchTo", "Previewing {0}. Click to view {1}."), RenderingAsPlatformName, SwitchToPlatformName);
+			}
+		}
+#undef LOCTEXT_NAMESPACE
+	}
+
+	FSlateIcon  GetPreviewModeIcon()
+	{
+		const FPreviewPlatformMenuItem* Item = FDataDrivenPlatformInfoRegistry::GetAllPreviewPlatformMenuItems().FindByPredicate([](const FPreviewPlatformMenuItem& TestItem)
+			{
+				return GEditor->PreviewPlatform.PreviewPlatformName == TestItem.PlatformName && GEditor->PreviewPlatform.PreviewShaderFormatName == TestItem.ShaderFormat && GEditor->PreviewPlatform.PreviewShaderPlatformName == TestItem.PreviewShaderPlatformName;
+			});
+		if (Item)
+		{
+			return FSlateIcon(FAppStyle::GetAppStyleSetName(), GEditor->IsFeatureLevelPreviewActive() ? Item->ActiveIconName : Item->InactiveIconName);
+		}
+
+		EShaderPlatform ShaderPlatform = FDataDrivenShaderPlatformInfo::GetShaderPlatformFromName(GEditor->PreviewPlatform.PreviewShaderPlatformName);
+
+		if (ShaderPlatform == SP_NumPlatforms)
+		{
+			ShaderPlatform = GetFeatureLevelShaderPlatform(GEditor->PreviewPlatform.PreviewFeatureLevel);
+		}
+		switch (GEditor->PreviewPlatform.PreviewFeatureLevel)
+		{
+		case ERHIFeatureLevel::ES3_1:
+		{
+			return FSlateIcon(FAppStyle::GetAppStyleSetName(), GEditor->IsFeatureLevelPreviewActive() ? "LevelEditor.PreviewMode.Enabled" : "LevelEditor.PreviewMode.Disabled");
+		}
+		default:
+		{
+			return FSlateIcon(FAppStyle::GetAppStyleSetName(), GEditor->IsFeatureLevelPreviewActive() ? "LevelEditor.PreviewMode.Enabled" : "LevelEditor.PreviewMode.Disabled");
+		}
+		}
+	}
+
+	LEVELEDITOR_API void AddPreviewToggleButton(FToolMenuSection& Section)
+	{
+		Section.AddEntry(FToolMenuEntry::InitToolBarButton(
+			FLevelEditorCommands::Get().ToggleFeatureLevelPreview,
+			TAttribute<FText>::Create(&GetPreviewModeText),
+			TAttribute<FText>::Create(&GetPreviewModeTooltip),
+			TAttribute<FSlateIcon>::Create(&GetPreviewModeIcon)
+		));
+	}
+}
 
 namespace LevelEditorActionHelpers
 {
@@ -527,7 +609,7 @@ namespace LevelEditorActionHelpers
 				LevelEditorActionHelpers::FBlueprintMenuSettings GameModeMenuSettings;
 				GameModeMenuSettings.EditCommand =
 					FUIAction(
-						FExecuteAction::CreateStatic< TWeakPtr< SLevelEditor > >(&OpenGameModeBlueprint, Context->LevelEditor, bInProjectSettings)
+						FExecuteAction::CreateStatic(&OpenGameModeBlueprint, Context->LevelEditor, bInProjectSettings)
 					);
 				GameModeMenuSettings.OnCreateClassPicked = FOnClassPicked::CreateStatic(&LevelEditorActionHelpers::OnCreateGameModeClassPicked, Context->LevelEditor, bInProjectSettings);
 				GameModeMenuSettings.OnSelectClassPicked = FOnClassPicked::CreateStatic(&LevelEditorActionHelpers::OnSelectGameModeClassPicked, Context->LevelEditor, bInProjectSettings);
@@ -570,7 +652,7 @@ namespace LevelEditorActionHelpers
 		LevelEditorActionHelpers::FBlueprintMenuSettings GameStateMenuSettings;
 		GameStateMenuSettings.EditCommand = 
 			FUIAction(
-				FExecuteAction::CreateStatic< TWeakPtr< SLevelEditor > >( &OpenGameStateBlueprint, InSettingsData.LevelEditor, InSettingsData.bIsProjectSettings )
+				FExecuteAction::CreateStatic( &OpenGameStateBlueprint, InSettingsData.LevelEditor, InSettingsData.bIsProjectSettings )
 			);
 		GameStateMenuSettings.OnCreateClassPicked = FOnClassPicked::CreateStatic( &LevelEditorActionHelpers::OnCreateGameStateClassPicked, InSettingsData.LevelEditor, InSettingsData.bIsProjectSettings );
 		GameStateMenuSettings.OnSelectClassPicked = FOnClassPicked::CreateStatic( &LevelEditorActionHelpers::OnSelectGameStateClassPicked, InSettingsData.LevelEditor, InSettingsData.bIsProjectSettings );
@@ -588,7 +670,7 @@ namespace LevelEditorActionHelpers
 		LevelEditorActionHelpers::FBlueprintMenuSettings PawnMenuSettings;
 		PawnMenuSettings.EditCommand = 
 			FUIAction(
-				FExecuteAction::CreateStatic< TWeakPtr< SLevelEditor > >( &OpenDefaultPawnBlueprint, InSettingsData.LevelEditor, InSettingsData.bIsProjectSettings )
+				FExecuteAction::CreateStatic( &OpenDefaultPawnBlueprint, InSettingsData.LevelEditor, InSettingsData.bIsProjectSettings )
 			);
 		PawnMenuSettings.OnCreateClassPicked = FOnClassPicked::CreateStatic( &LevelEditorActionHelpers::OnCreatePawnClassPicked, InSettingsData.LevelEditor, InSettingsData.bIsProjectSettings );
 		PawnMenuSettings.OnSelectClassPicked = FOnClassPicked::CreateStatic( &LevelEditorActionHelpers::OnSelectPawnClassPicked, InSettingsData.LevelEditor, InSettingsData.bIsProjectSettings );
@@ -606,7 +688,7 @@ namespace LevelEditorActionHelpers
 		LevelEditorActionHelpers::FBlueprintMenuSettings HUDMenuSettings;
 		HUDMenuSettings.EditCommand = 
 			FUIAction(
-				FExecuteAction::CreateStatic< TWeakPtr< SLevelEditor > >( &OpenHUDBlueprint, InSettingsData.LevelEditor, InSettingsData.bIsProjectSettings )
+				FExecuteAction::CreateStatic( &OpenHUDBlueprint, InSettingsData.LevelEditor, InSettingsData.bIsProjectSettings )
 			);
 		HUDMenuSettings.OnCreateClassPicked = FOnClassPicked::CreateStatic( &LevelEditorActionHelpers::OnCreateHUDClassPicked, InSettingsData.LevelEditor, InSettingsData.bIsProjectSettings );
 		HUDMenuSettings.OnSelectClassPicked = FOnClassPicked::CreateStatic( &LevelEditorActionHelpers::OnSelectHUDClassPicked, InSettingsData.LevelEditor, InSettingsData.bIsProjectSettings );
@@ -624,7 +706,7 @@ namespace LevelEditorActionHelpers
 		LevelEditorActionHelpers::FBlueprintMenuSettings PlayerControllerMenuSettings;
 		PlayerControllerMenuSettings.EditCommand = 
 			FUIAction(
-				FExecuteAction::CreateStatic< TWeakPtr< SLevelEditor > >( &OpenPlayerControllerBlueprint, InSettingsData.LevelEditor, InSettingsData.bIsProjectSettings )
+				FExecuteAction::CreateStatic( &OpenPlayerControllerBlueprint, InSettingsData.LevelEditor, InSettingsData.bIsProjectSettings )
 			);
 		PlayerControllerMenuSettings.OnCreateClassPicked = FOnClassPicked::CreateStatic( &LevelEditorActionHelpers::OnCreatePlayerControllerClassPicked, InSettingsData.LevelEditor, InSettingsData.bIsProjectSettings );
 		PlayerControllerMenuSettings.OnSelectClassPicked = FOnClassPicked::CreateStatic( &LevelEditorActionHelpers::OnSelectPlayerControllerClassPicked, InSettingsData.LevelEditor, InSettingsData.bIsProjectSettings );
@@ -1395,82 +1477,8 @@ void FLevelEditorToolBar::RegisterLevelEditorToolBar( const TSharedRef<FUIComman
 
 		PlaySection.AddSeparator(NAME_None);
 
-		struct FPreviewModeFunctionality
-		{
-			static FText GetPreviewModeText()
-			{
-				const FPreviewPlatformMenuItem* Item = FDataDrivenPlatformInfoRegistry::GetAllPreviewPlatformMenuItems().FindByPredicate([](const FPreviewPlatformMenuItem& TestItem)
-					{
-						return GEditor->PreviewPlatform.PreviewPlatformName == TestItem.PlatformName && GEditor->PreviewPlatform.PreviewShaderFormatName == TestItem.ShaderFormat && GEditor->PreviewPlatform.PreviewShaderPlatformName == TestItem.PreviewShaderPlatformName;
-					});
-				return Item ? Item->IconText : FText();
-			}
+		PreviewModeFunctionality::AddPreviewToggleButton(PlaySection);
 
-			static FText GetPreviewModeTooltip()
-			{
-				EShaderPlatform PreviewShaderPlatform = GEditor->PreviewPlatform.PreviewShaderPlatformName != NAME_None ?
-					FDataDrivenShaderPlatformInfo::GetShaderPlatformFromName(GEditor->PreviewPlatform.PreviewShaderPlatformName) :
-					GetFeatureLevelShaderPlatform(GEditor->PreviewPlatform.PreviewFeatureLevel);
-
-				EShaderPlatform MaxRHIFeatureLevelPlatform = GetFeatureLevelShaderPlatform(GMaxRHIFeatureLevel);
-
-				{
-					const FText& RenderingAsPlatformName = FDataDrivenShaderPlatformInfo::GetFriendlyName(GEditor->PreviewPlatform.bPreviewFeatureLevelActive ? PreviewShaderPlatform : MaxRHIFeatureLevelPlatform);
-                    const FText& SwitchToPlatformName = FDataDrivenShaderPlatformInfo::GetFriendlyName(GEditor->PreviewPlatform.bPreviewFeatureLevelActive ? MaxRHIFeatureLevelPlatform : PreviewShaderPlatform);
-					if (PreviewShaderPlatform == MaxRHIFeatureLevelPlatform)
-					{
-						return FText::Format(LOCTEXT("PreviewModeViewingAs", "Viewing {0}."), RenderingAsPlatformName);
-					}
-                    else if (GWorld->FeatureLevel == GMaxRHIFeatureLevel)
-                    {
-                        return FText::Format(LOCTEXT("PreviewModeViewingAsSwitchTo", "Viewing {0}. Click to preview {1}."), RenderingAsPlatformName, SwitchToPlatformName);
-                    }
-                    else
-                    {
-                        return FText::Format(LOCTEXT("PreviewModePreviewingAsSwitchTo", "Previewing {0}. Click to view {1}."), RenderingAsPlatformName, SwitchToPlatformName);
-                    }
-				}
-			}
-
-			static FSlateIcon GetPreviewModeIcon()
-			{
-				const FPreviewPlatformMenuItem* Item = FDataDrivenPlatformInfoRegistry::GetAllPreviewPlatformMenuItems().FindByPredicate([](const FPreviewPlatformMenuItem& TestItem)
-					{
-						return GEditor->PreviewPlatform.PreviewPlatformName == TestItem.PlatformName && GEditor->PreviewPlatform.PreviewShaderFormatName == TestItem.ShaderFormat && GEditor->PreviewPlatform.PreviewShaderPlatformName == TestItem.PreviewShaderPlatformName;
-					});
-				if(Item)
-				{
-					return FSlateIcon(FAppStyle::GetAppStyleSetName(), GEditor->IsFeatureLevelPreviewActive() ? Item->ActiveIconName : Item->InactiveIconName);
-				}
-
-				EShaderPlatform ShaderPlatform = FDataDrivenShaderPlatformInfo::GetShaderPlatformFromName(GEditor->PreviewPlatform.PreviewShaderPlatformName);
-
-				if (ShaderPlatform == SP_NumPlatforms)
-				{
-					ShaderPlatform = GetFeatureLevelShaderPlatform(GEditor->PreviewPlatform.PreviewFeatureLevel);
-				}
-				switch (GEditor->PreviewPlatform.PreviewFeatureLevel)
-				{
-					case ERHIFeatureLevel::ES3_1:
-					{
-						return FSlateIcon(FAppStyle::GetAppStyleSetName(), GEditor->IsFeatureLevelPreviewActive() ? "LevelEditor.PreviewMode.Enabled" : "LevelEditor.PreviewMode.Disabled");
-					}
-					default:
-					{
-						return FSlateIcon(FAppStyle::GetAppStyleSetName(), GEditor->IsFeatureLevelPreviewActive() ? "LevelEditor.PreviewMode.Enabled" : "LevelEditor.PreviewMode.Disabled");
-					}
-				}
-			}
-		};
-
-		PlaySection.AddEntry(FToolMenuEntry::InitToolBarButton(
-			FLevelEditorCommands::Get().ToggleFeatureLevelPreview,
-			TAttribute<FText>::Create(&FPreviewModeFunctionality::GetPreviewModeText),
-        	TAttribute<FText>::Create(&FPreviewModeFunctionality::GetPreviewModeTooltip),
-        	TAttribute<FSlateIcon>::Create(&FPreviewModeFunctionality::GetPreviewModeIcon)
-			));
-
-	
 		// Add the shared play-world commands that will be shown on the Kismet toolbar as well
 		FPlayWorldCommands::BuildToolbar(PlaySection, true);
 
@@ -1697,6 +1705,7 @@ void FLevelEditorToolBar::RegisterQuickSettingsMenu()
 		Section.AddMenuEntry( FLevelEditorCommands::Get().StrictBoxSelect );
 		Section.AddMenuEntry( FLevelEditorCommands::Get().TransparentBoxSelect );
 		Section.AddMenuEntry( FLevelEditorCommands::Get().ShowTransformWidget );
+		Section.AddMenuEntry( FLevelEditorCommands::Get().ShowSelectionSubcomponents );
 	}
 
 	{

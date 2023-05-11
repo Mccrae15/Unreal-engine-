@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "MLDeformerMorphModelEditorModel.h"
+#include "NeuralMorphModel.h"
 
 class UNeuralMorphModel;
 
@@ -23,10 +24,15 @@ namespace UE::NeuralMorphModel
 
 		// FGCObject overrides.
 		virtual FString GetReferencerName() const override		{ return TEXT("FNeuralMorphEditorModel"); }
+		virtual bool LoadTrainedNetwork() const override;
+		virtual void UpdateIsReadyForTrainingState() override;
 		// ~END FGCObject overrides.
 	
 		// FMLDeformerEditorModel overrides.
 		virtual ETrainingResult Train() override;
+		virtual bool IsTrained() const override;
+		virtual void InitInputInfo(UMLDeformerInputInfo* InputInfo) override;
+		virtual FText GetOverlayText() const override;
 		virtual void OnPropertyChanged(FPropertyChangedEvent& PropertyChangedEvent) override;
 		// ~END FMLDeformerEditorModel overrides.
 

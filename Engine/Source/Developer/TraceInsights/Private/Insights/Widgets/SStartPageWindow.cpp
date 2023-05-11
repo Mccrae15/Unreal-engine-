@@ -44,6 +44,7 @@
 #include "Insights/StoreService/StoreBrowser.h"
 #include "Insights/InsightsStyle.h"
 #include "Insights/Version.h"
+#include "Insights/ImportTool/TableImportTool.h"
 #include "Insights/Widgets/SInsightsSettings.h"
 #include "Insights/Widgets/SLazyToolTip.h"
 
@@ -189,6 +190,7 @@ public:
 					SNew(STextBlock)
 					.Text(this, &STraceListRow::GetTraceStatus)
 					.ToolTip(STraceListRow::GetTraceTooltip())
+					.ColorAndOpacity(FStyleColors::AccentRed)
 				];
 		}
 		else
@@ -293,7 +295,7 @@ public:
 			}
 		}
 
-		FText Message = FText::Format(LOCTEXT("RenameSuccessFmt", "Renamed \"{0}\" to \"{1}\"."), Trace.Name, FText::FromString(NewTraceName));
+		FText Message = FText::Format(LOCTEXT("RenameSuccessFmt", "Renamed \"{0}\" to \"{1}\"."), FText::FromString(TraceName), FText::FromString(NewTraceName));
 		WeakParentWidget.Pin()->ShowSuccessMessage(Message);
 	}
 
@@ -1954,6 +1956,10 @@ FReply STraceStoreWindow::OnDragOver(const FGeometry& MyGeometry, const FDragDro
 				{
 					return FReply::Handled();
 				}
+				if (DraggedFileExtension == TEXT(".csv") || DraggedFileExtension == TEXT(".tsv"))
+				{
+					return FReply::Handled();
+				}
 			}
 		}
 	}
@@ -1978,6 +1984,11 @@ FReply STraceStoreWindow::OnDrop(const FGeometry& MyGeometry, const FDragDropEve
 				if (DraggedFileExtension == TEXT(".utrace"))
 				{
 					OpenTraceFile(Files[0]);
+					return FReply::Handled();
+				}
+				if (DraggedFileExtension == TEXT(".csv") || DraggedFileExtension == TEXT(".tsv"))
+				{
+					Insights::FTableImportTool::Get()->ImportFile(Files[0]);
 					return FReply::Handled();
 				}
 			}
@@ -2095,7 +2106,24 @@ TSharedRef<SWidget> STraceStoreWindow::MakeTraceListMenu()
 			NAME_None,
 			EUserInterfaceActionType::Button
 		);
+		MenuBuilder.AddMenuEntry(
+			LOCTEXT("ImportTableButtonLabel", "Import table..."),
+			LOCTEXT("ImportTableButtonTooltip", "Open .csv or .tsv file."),
+			FSlateIcon(FAppStyle::Get().GetStyleSetName(), "Icons.FolderOpen"),
+			FUIAction(FExecuteAction::CreateLambda([]{ Insights::FTableImportTool::Get()->StartImportProcess(); })),
+			NAME_None,
+			EUserInterfaceActionType::Button
+		);
+		MenuBuilder.AddMenuEntry(
+			LOCTEXT("DiffTablesButtonLabel", "Diff tables..."),
+			LOCTEXT("DiffTablesButtonTooltip", "Open 2 table files in diff mode."),
+			FSlateIcon(FAppStyle::Get().GetStyleSetName(), "Icons.FolderOpen"),
+			FUIAction(FExecuteAction::CreateLambda([]{ Insights::FTableImportTool::Get()->StartDiffProcess(); })),
+			NAME_None,
+			EUserInterfaceActionType::Button
+		);
 	}
+
 	MenuBuilder.EndSection();
 
 	MenuBuilder.BeginSection("AvailableTraces", LOCTEXT("TraceListMenu_Section_AvailableTraces", "Top Most Recently Created Traces"));
@@ -3093,7 +3121,36 @@ TSharedRef<SWidget> SConnectionWindow::ConstructConnectPanel()
 		.Padding(198.0f, 4.0f, 12.0f, 0.0f)
 		[
 			SNew(STextBlock)
-			.Text(LOCTEXT("InitialChannelsNoteText", "Comma-separated list of channel names (or \"default\"=cpu,gpu,frame,log,bookmark) to enable when connected."))
+			.Text(LOCTEXT("InitialChannelsNoteText", "Comma-separated list of channels/presets to enable when connected."))
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.HAlign(HAlign_Fill)
+		.Padding(198.0f, 2.0f, 12.0f, 0.0f)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Top)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("InitialChannelsExamplesTitle", "Examples"))
+			]
+			+ SHorizontalBox::Slot()
+			.Padding(6.0f, 0.0f, 0.0f, 0.0f)
+			[
+				SNew(SEditableTextBox)
+				.IsReadOnly(true)
+				.Text(FText::FromString(TEXT("default,counter,stats,file,loadtime,assetloadtime,task\ndefault=cpu,gpu,frame,log,bookmark,screenshot")))
+			]
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.HAlign(HAlign_Fill)
+		.Padding(198.0f, 2.0f, 12.0f, 0.0f)
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("InitialChannelsNote2Text", "Same channels/presets (like \"memory\") cannot be enabled on late connections."))
 		]
 
 		+ SVerticalBox::Slot()
@@ -3107,7 +3164,7 @@ TSharedRef<SWidget> SConnectionWindow::ConstructConnectPanel()
 				SNew(SButton)
 				.ButtonStyle(&FAppStyle::Get().GetWidgetStyle<FButtonStyle>("PrimaryButton"))
 				.Text(LOCTEXT("Connect", "Connect"))
-				.ToolTipText(LOCTEXT("ConnectToolTip", "Connect the running instance at specified address with the trace recorder."))
+				.ToolTipText(LOCTEXT("ConnectToolTip", "Late connect the running instance at specified address with the trace recorder."))
 				.OnClicked(this, &SConnectionWindow::Connect_OnClicked)
 				.IsEnabled_Lambda([this]() { return !bIsConnecting; })
 			]

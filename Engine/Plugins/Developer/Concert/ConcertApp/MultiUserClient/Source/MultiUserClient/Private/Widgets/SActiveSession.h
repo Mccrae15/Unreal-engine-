@@ -7,13 +7,20 @@
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/Views/SListView.h"
+#include "Widgets/Input/SComboBox.h"
 #include "ConcertMessages.h"
 
 class IConcertClientSession;
 class IConcertSyncClient;
+
+class FAsyncTaskNotification;
+struct FConcertConflictDescriptionBase;
 struct FConcertSessionClientInfo;
+
+class SCustomDialog;
 class SDockTab;
 class SExpandableArea;
+
 
 /**
  * Displays the multi-users active session clients and activity, enables the client
@@ -23,6 +30,16 @@ class SExpandableArea;
 class SActiveSession : public SCompoundWidget
 {
 public:
+	/** Struct to store the current send / receive state. */
+	struct FSendReceiveComboItem
+	{
+		FSendReceiveComboItem(FText InName, FText InToolTip, EConcertSendReceiveState InState) :
+			Name(MoveTemp(InName)), ToolTip(MoveTemp(InToolTip)), State(InState) {};
+
+		FText Name;
+		FText ToolTip;
+		EConcertSendReceiveState State;
+	};
 
 	SLATE_BEGIN_ARGS(SActiveSession) { }
 	SLATE_END_ARGS();
@@ -33,6 +50,8 @@ public:
 	* @param InArgs The Slate argument list.
 	*/
 	void Construct(const FArguments& InArgs, TSharedPtr<IConcertSyncClient> InConcertSyncClient);
+
+	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 
 private:
 
@@ -59,19 +78,15 @@ private:
 
 	/** Find a client with its endpoint id */
 	TSharedPtr<FConcertSessionClientInfo> FindAvailableClient(const FGuid& InClientEndpointId) const;
-	
+
 	/** Handling for the status icon and text */
 	const FButtonStyle& GetConnectionIconStyle() const;
 	FSlateColor GetConnectionIconColor() const;
 	FSlateFontInfo GetConnectionIconFontInfo() const;
 	FText GetConnectionStatusText() const;
 
-	/** Handling for the suspend, resume and leave session buttons */
-	bool IsStatusBarSuspendSessionVisible() const;
-	bool IsStatusBarResumeSessionVisible() const;
+	/** Handling for leave session button */
 	bool IsStatusBarLeaveSessionVisible() const;
-	FReply OnClickSuspendSession();
-	FReply OnClickResumeSession();
 	FReply OnClickLeaveSession();
 
 	/** Handles how much space the 'Clients' area uses with respect to its expansion state. */
@@ -82,8 +97,32 @@ private:
 	SSplitter::ESizeRule GetHistoryAreaSizeRule() const { return bHistoryAreaExpanded ? SSplitter::ESizeRule::FractionOfParent : SSplitter::ESizeRule::SizeToContent; }
 	void OnHistoryAreaExpansionChanged(bool bExpanded) { bHistoryAreaExpanded = bExpanded; }
 
+	/** Delegate handler when a conflict between inbound transaction and those stored pending outbound transactions. */
+	void OnSendConflict(const FConcertConflictDescriptionBase& ConflictMsg);
+
+	/** Delegate handler on inbound transactions that focus specifically on packages. */
+	void OnPackageChangeActivity();
+
+	/** Delegate handler to indicate if we can hot reload an inbound package. */
+	bool CanProcessPendingPackages() const;
+
+	/** Delegate handler invoked when an activity has been received by multi-user. */
+	void ActivityUpdated(const FConcertClientInfo& InClientInfo, const FConcertSyncActivity& InActivity, const FStructOnScope& /*unused*/);
+
 private:
-	
+
+	/** Get the text object for the send/receive combo box. */
+	FText GetRequestedSendReceiveComboText() const;
+
+	/** Generate the SWidget for the given item. */
+	TSharedRef<SWidget> GenerateSendReceiveComboItem(TSharedPtr<FSendReceiveComboItem> InItem);
+
+	/** Return the initially selected combo item. */
+	int32 GetInitialSendReceiveComboIndex();
+
+	/** Handle a send receiver state change from the combo box. */
+	void HandleSendReceiveChanged(TSharedPtr<FSendReceiveComboItem> Item, ESelectInfo::Type SelectInfo);
+
 	/** Pointer on the client sync. */
 	TWeakPtr<IConcertSyncClient> WeakConcertSyncClient;
 
@@ -107,6 +146,18 @@ private:
 
 	/** The 'History' expandable area. */
 	TSharedPtr<SExpandableArea> HistoryArea;
+
+	/** Holds a pointer to the preset combo box widget. */
+	TSharedPtr< SComboBox< TSharedPtr<FSendReceiveComboItem> > > SendReceiveComboBox;
+
+	/** Available states for the SendReceiveComboBox */
+	TArray< TSharedPtr< FSendReceiveComboItem > > SendReceiveComboList;
+
+	/** Notification handler for hot reload. */
+	TSharedPtr<SCustomDialog> CanReloadDialog;
+
+	/** Flag to indicate if it is OK to hotreload the packages. */
+	bool bCanHotReload = true;
 
 	/** Keeps the status of 'Clients' area expansion. */
 	bool bClientAreaExpanded = true;

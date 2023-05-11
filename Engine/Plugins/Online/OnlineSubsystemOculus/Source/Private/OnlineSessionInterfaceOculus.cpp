@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OnlineSessionInterfaceOculus.h"
+#include "Online/OnlineSessionNames.h"
 #include "OnlineSubsystemOculusPrivate.h"
 #include "Interfaces/OnlineIdentityInterface.h"
 #include "OnlineFriendsInterfaceOculus.h"
@@ -15,7 +16,7 @@ FOnlineSessionInfoOculus::FOnlineSessionInfoOculus(ovrID RoomId) :
 /**
 * FOnlineSessionOculus
 */
-
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 FOnlineSessionOculus::FOnlineSessionOculus(FOnlineSubsystemOculus& InSubsystem) :
 	OculusSubsystem(InSubsystem)
 {
@@ -31,9 +32,11 @@ FOnlineSessionOculus::FOnlineSessionOculus(FOnlineSubsystemOculus& InSubsystem) 
 		OculusSubsystem.GetNotifDelegate(ovrMessage_Notification_Matchmaking_MatchFound)
 		.AddRaw(this, &FOnlineSessionOculus::OnMatchmakingNotificationMatchFound);
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 FOnlineSessionOculus::~FOnlineSessionOculus()
 {
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	if (OnRoomNotificationUpdateHandle.IsValid())
 	{
 		OculusSubsystem.RemoveNotifDelegate(ovrMessage_Notification_Room_RoomUpdate, OnRoomNotificationUpdateHandle);
@@ -51,7 +54,7 @@ FOnlineSessionOculus::~FOnlineSessionOculus()
 		OculusSubsystem.RemoveNotifDelegate(ovrMessage_Notification_Matchmaking_MatchFound, OnMatchmakingNotificationMatchFoundHandle);
 		OnMatchmakingNotificationMatchFoundHandle.Reset();
 	}
-
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	PendingInviteAcceptedSessions.Empty();
 
 	// Make sure the player leaves all the sessions they were in before destroying this
@@ -100,7 +103,9 @@ bool FOnlineSessionOculus::CreateSession(int32 HostingPlayerNum, FName SessionNa
 		return false;
 	}
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	IOnlineIdentityPtr Identity = OculusSubsystem.GetIdentityInterface();
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	if (!Identity.IsValid())
 	{
 		UE_LOG_ONLINE_SESSION(Warning, TEXT("No valid oculus identity interface."));
@@ -122,7 +127,9 @@ bool FOnlineSessionOculus::CreateSession(int32 HostingPlayerNum, FName SessionNa
 	Session->NumOpenPublicConnections = NewSessionSettings.NumPublicConnections;
 
 	Session->HostingPlayerNum = HostingPlayerNum;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	Session->LocalOwnerId = OculusSubsystem.GetIdentityInterface()->GetUniquePlayerId(HostingPlayerNum);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	// Setup the join policy
 	ovrRoomJoinPolicy JoinPolicy = ovrRoom_JoinPolicyInvitedUsers;
@@ -193,10 +200,11 @@ bool FOnlineSessionOculus::CreateMatchmakingSession(FNamedOnlineSession& Session
 	auto RequestId = (Session.SessionSettings.bShouldAdvertise)
 		? ovr_Matchmaking_CreateAndEnqueueRoom2(TCHAR_TO_ANSI(*Pool), MatchmakingOptions)
 		: ovr_Matchmaking_CreateRoom2(TCHAR_TO_ANSI(*Pool), MatchmakingOptions);
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	OculusSubsystem.AddRequestDelegate(
 		RequestId,
 		FOculusMessageOnCompleteDelegate::CreateRaw(this, &FOnlineSessionOculus::OnCreateRoomComplete, Session.SessionName));
-
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	ovr_MatchmakingOptions_Destroy(MatchmakingOptions);
 
 	return true;
@@ -225,12 +233,12 @@ bool FOnlineSessionOculus::CreateRoomSession(FNamedOnlineSession& Session, ovrRo
 	);
 
 	unsigned int MaxUsers = Session.SessionSettings.NumPublicConnections + Session.SessionSettings.NumPrivateConnections;
-
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	OculusSubsystem.AddRequestDelegate(
 		ovr_Room_CreateAndJoinPrivate2(JoinPolicy, MaxUsers, RoomOptions),
 		FOculusMessageOnCompleteDelegate::CreateRaw(this, &FOnlineSessionOculus::OnCreateRoomComplete, Session.SessionName));
 	ovr_RoomOptions_Destroy(RoomOptions);
-
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	return true;
 }
 
@@ -327,7 +335,9 @@ bool FOnlineSessionOculus::UpdateSession(FName SessionName, FOnlineSessionSettin
 		return false;
 	}
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	auto LoggedInPlayerId = OculusSubsystem.GetIdentityInterface()->GetUniquePlayerId(0);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	if (!LoggedInPlayerId.IsValid() || *Session->OwningUserId != *LoggedInPlayerId)
 	{
 		UE_LOG_ONLINE_SESSION(Warning, TEXT("Need to own session (%s) before updating.  Current Owner: %s"), *SessionName.ToString(), *Session->OwningUserName);
@@ -368,7 +378,7 @@ bool FOnlineSessionOculus::UpdateMatchmakingRoom(FName SessionName, FOnlineSessi
 		auto RequestId = (UpdatedSessionSettings.bShouldAdvertise)
 			? ovr_Matchmaking_EnqueueRoom(GetOvrIDFromSession(*Session), nullptr)
 			: ovr_Matchmaking_Cancel2();
-
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		OculusSubsystem.AddRequestDelegate(
 			RequestId,
 			FOculusMessageOnCompleteDelegate::CreateLambda([this, SessionName, UpdatedSettingsRef](ovrMessageHandle Message, bool bIsError)
@@ -398,6 +408,7 @@ bool FOnlineSessionOculus::UpdateMatchmakingRoom(FName SessionName, FOnlineSessi
 
 			UpdateRoomDataStore(SessionName, *SessionSettings);
 		}));
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 	else
 	{
@@ -467,6 +478,7 @@ bool FOnlineSessionOculus::UpdateRoomDataStore(FName SessionName, FOnlineSession
 	// If there is a delta, then fire off the request
 	if (DataStore.Num() > 0)
 	{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		OculusSubsystem.AddRequestDelegate(
 			ovr_Room_UpdateDataStore(GetOvrIDFromSession(*Session), DataStore.GetData(), DataStore.Num()),
 			FOculusMessageOnCompleteDelegate::CreateLambda([this, SessionName](ovrMessageHandle Message, bool bIsError)
@@ -494,6 +506,7 @@ bool FOnlineSessionOculus::UpdateRoomDataStore(FName SessionName, FOnlineSession
 
 			TriggerOnUpdateSessionCompleteDelegates(SessionName, true);
 		}));
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 	else
 	{
@@ -541,7 +554,7 @@ bool FOnlineSessionOculus::DestroySession(FName SessionName, const FOnDestroySes
 	auto RoomId = GetOvrIDFromSession(*Session);
 
 	Session->SessionState = EOnlineSessionState::Destroying;
-
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	OculusSubsystem.AddRequestDelegate(
 		ovr_Room_Leave(RoomId),
 		FOculusMessageOnCompleteDelegate::CreateLambda([this, SessionName, Session, CompletionDelegate](ovrMessageHandle Message, bool bIsError)
@@ -561,7 +574,7 @@ bool FOnlineSessionOculus::DestroySession(FName SessionName, const FOnDestroySes
 		CompletionDelegate.ExecuteIfBound(SessionName, true);
 		TriggerOnDestroySessionCompleteDelegates(SessionName, true);
 	}));
-
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	return true;
 }
 
@@ -618,7 +631,7 @@ bool FOnlineSessionOculus::StartMatchmaking(const TArray< FUniqueNetIdRef >& Loc
 	SearchSettings->SearchState = EOnlineAsyncTaskState::InProgress;
 	InProgressMatchmakingSearch = SearchSettings;
 	InProgressMatchmakingSearchName = SessionName;
-
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	OculusSubsystem.AddRequestDelegate(
 		ovr_Matchmaking_Enqueue2(TCHAR_TO_UTF8(*Pool), nullptr),
 		FOculusMessageOnCompleteDelegate::CreateLambda([this, SessionName, SearchSettings](ovrMessageHandle Message, bool bIsError)
@@ -635,12 +648,13 @@ bool FOnlineSessionOculus::StartMatchmaking(const TArray< FUniqueNetIdRef >& Loc
 		// Nothing to trigger here.  
 		// If a match is found, TriggerOnMatchmakingCompleteDelegates() from the notification
 	}));
-
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	return true;
 }
 
 bool FOnlineSessionOculus::CancelMatchmaking(int32 SearchingPlayerNum, FName SessionName)
 {
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	OculusSubsystem.AddRequestDelegate(
 		ovr_Matchmaking_Cancel2(),
 		FOculusMessageOnCompleteDelegate::CreateLambda([this, SessionName](ovrMessageHandle Message, bool bIsError)
@@ -659,7 +673,7 @@ bool FOnlineSessionOculus::CancelMatchmaking(int32 SearchingPlayerNum, FName Ses
 		}
 		TriggerOnCancelMatchmakingCompleteDelegates(SessionName, true);
 	}));
-
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	return true;
 }
 
@@ -705,6 +719,7 @@ bool FOnlineSessionOculus::FindSessions(const FUniqueNetId& SearchingPlayerId, c
 bool FOnlineSessionOculus::FindModeratedRoomSessions(const TSharedRef<FOnlineSessionSearch>& SearchSettings)
 {
 	SearchSettings->SearchState = EOnlineAsyncTaskState::InProgress;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	OculusSubsystem.AddRequestDelegate(
 		ovr_Room_GetModeratedRooms(),
 		FOculusMessageOnCompleteDelegate::CreateLambda([this, SearchSettings](ovrMessageHandle Message, bool bIsError)
@@ -760,7 +775,7 @@ bool FOnlineSessionOculus::FindModeratedRoomSessions(const TSharedRef<FOnlineSes
 		SearchSettings->SearchState = EOnlineAsyncTaskState::Done;
 		TriggerOnFindSessionsCompleteDelegates(true);
 	}));
-
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	return true;
 }
 
@@ -774,6 +789,7 @@ bool FOnlineSessionOculus::FindMatchmakingSessions(const FString Pool, const TSh
 	SearchSettings->SearchState = EOnlineAsyncTaskState::InProgress;
 	InProgressMatchmakingSearch = SearchSettings;
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	OculusSubsystem.AddRequestDelegate(
 		ovr_Matchmaking_Browse2(TCHAR_TO_UTF8(*Pool), nullptr),
 		FOculusMessageOnCompleteDelegate::CreateLambda([this, SearchSettings](ovrMessageHandle Message, bool bIsError)
@@ -827,13 +843,15 @@ bool FOnlineSessionOculus::FindMatchmakingSessions(const FString Pool, const TSh
 		SearchSettings->SearchState = EOnlineAsyncTaskState::Done;
 		TriggerOnFindSessionsCompleteDelegates(true);
 	}));
-
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	return true;
 }
 
 bool FOnlineSessionOculus::FindSessionById(const FUniqueNetId& SearchingUserId, const FUniqueNetId& SessionId, const FUniqueNetId& FriendId, const FOnSingleSessionResultCompleteDelegate& CompletionDelegate)
 {
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	auto LoggedInPlayerId = OculusSubsystem.GetIdentityInterface()->GetUniquePlayerId(0);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	if (!LoggedInPlayerId.IsValid() || SearchingUserId != *LoggedInPlayerId)
 	{
 		UE_LOG_ONLINE_SESSION(Warning, TEXT("Can only search session with logged in player"));
@@ -847,6 +865,7 @@ bool FOnlineSessionOculus::FindSessionById(const FUniqueNetId& SearchingUserId, 
 	}
 
 	auto RoomId = static_cast<const FUniqueNetIdOculus&>(SessionId);
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	OculusSubsystem.AddRequestDelegate(
 		ovr_Room_Get(RoomId.GetID()),
 		FOculusMessageOnCompleteDelegate::CreateLambda([this, CompletionDelegate](ovrMessageHandle Message, bool bIsError)
@@ -887,7 +906,7 @@ bool FOnlineSessionOculus::FindSessionById(const FUniqueNetId& SearchingUserId, 
 		auto RoomJoinability = ovr_Room_GetJoinability(Room);
 		CompletionDelegate.ExecuteIfBound(0, RoomJoinability == ovrRoom_JoinabilityCanJoin, SearchResult);
 	}));
-	
+PRAGMA_ENABLE_DEPRECATION_WARNINGS	
 	return true;
 }
 
@@ -922,11 +941,13 @@ bool FOnlineSessionOculus::JoinSession(int32 PlayerNum, FName SessionName, const
 	check(Session);
 	Session->SessionState = EOnlineSessionState::Creating;
 	Session->HostingPlayerNum = PlayerNum;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	Session->LocalOwnerId = OculusSubsystem.GetIdentityInterface()->GetUniquePlayerId(PlayerNum);
-
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	auto SearchSessionInfo = static_cast<const FOnlineSessionInfoOculus*>(DesiredSession.Session.SessionInfo.Get());
 	auto RoomId = FUniqueNetIdOculus::Cast(SearchSessionInfo->GetSessionId()).GetID();
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	OculusSubsystem.AddRequestDelegate(
 		ovr_Room_Join(RoomId, /* subscribeToUpdates */ true),
 		FOculusMessageOnCompleteDelegate::CreateLambda([this, SessionName, Session](ovrMessageHandle Message, bool bIsError)
@@ -958,7 +979,7 @@ bool FOnlineSessionOculus::JoinSession(int32 PlayerNum, FName SessionName, const
 
 		TriggerOnJoinSessionCompleteDelegates(SessionName, EOnJoinSessionCompleteResult::Success);
 	}));
-
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	return true;
 }
 
@@ -970,7 +991,7 @@ bool FOnlineSessionOculus::JoinSession(const FUniqueNetId& PlayerId, FName Sessi
 bool FOnlineSessionOculus::FindFriendSession(int32 LocalUserNum, const FUniqueNetId& Friend)
 {
 	auto OculusId = static_cast<const FUniqueNetIdOculus&>(Friend);
-
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	OculusSubsystem.AddRequestDelegate(
 		ovr_Room_GetCurrentForUser(OculusId.GetID()),
 		FOculusMessageOnCompleteDelegate::CreateLambda([this, LocalUserNum](ovrMessageHandle Message, bool bIsError)
@@ -1013,7 +1034,7 @@ bool FOnlineSessionOculus::FindFriendSession(int32 LocalUserNum, const FUniqueNe
 		auto RoomJoinability = ovr_Room_GetJoinability(Room);
 		TriggerOnFindFriendSessionCompleteDelegates(LocalUserNum, RoomJoinability == ovrRoom_JoinabilityCanJoin, SearchResult);
 	}));
-
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	return true;
 };
 
@@ -1052,8 +1073,9 @@ bool FOnlineSessionOculus::SendSessionInviteToFriends(int32 LocalUserNum, FName 
 		UE_LOG_ONLINE_SESSION(Warning, TEXT("Session (%s) doesn't exist"), *SessionName.ToString());
 		return false;
 	}
-
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	IOnlineFriendsPtr FriendsInterface = OculusSubsystem.GetFriendsInterface();
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	if (!FriendsInterface.IsValid())
 	{
 		UE_LOG_ONLINE_SESSION(Warning, TEXT("Cannot get invite tokens for friends"));
@@ -1283,9 +1305,10 @@ void FOnlineSessionOculus::OnRoomNotificationUpdate(ovrMessageHandle Message, bo
 
 void FOnlineSessionOculus::OnRoomInviteAccepted(ovrMessageHandle Message, bool bIsError)
 {
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	IOnlineIdentityPtr Identity = OculusSubsystem.GetIdentityInterface();
 	auto PlayerId = Identity->GetUniquePlayerId(0);
-
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	FOnlineSessionSearchResult SearchResult;
 	if (bIsError)
 	{
@@ -1308,7 +1331,7 @@ void FOnlineSessionOculus::OnRoomInviteAccepted(ovrMessageHandle Message, bool b
 	// Fetch the room details to create the SessionResult
 
 	ovr_Room_Get(RoomId);
-
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	OculusSubsystem.AddRequestDelegate(
 		ovr_Room_Get(RoomId),
 		FOculusMessageOnCompleteDelegate::CreateLambda([this, PlayerId](ovrMessageHandle InMessage, bool bInIsError)
@@ -1338,6 +1361,7 @@ void FOnlineSessionOculus::OnRoomInviteAccepted(ovrMessageHandle Message, bool b
 		LocalSearchResult.Session = Session.Get();
 		TriggerOnSessionUserInviteAcceptedDelegates(true, 0, PlayerId, LocalSearchResult);
 	}));
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void FOnlineSessionOculus::OnMatchmakingNotificationMatchFound(ovrMessageHandle Message, bool bIsError)
@@ -1477,7 +1501,9 @@ void FOnlineSessionOculus::TickPendingInvites(float DeltaTime)
 {
 	if (PendingInviteAcceptedSessions.Num() > 0 && OnSessionUserInviteAcceptedDelegates.IsBound())
 	{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		IOnlineIdentityPtr Identity = OculusSubsystem.GetIdentityInterface();
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		auto PlayerId = Identity->GetUniquePlayerId(0);
 		for (auto PendingInviteAcceptedSession : PendingInviteAcceptedSessions)
 		{

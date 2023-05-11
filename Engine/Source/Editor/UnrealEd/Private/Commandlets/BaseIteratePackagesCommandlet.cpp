@@ -7,12 +7,14 @@
 
 #include "CoreMinimal.h"
 #include "HAL/FileManager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Misc/CommandLine.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Modules/ModuleManager.h"
 #include "UObject/Class.h"
+#include "UObject/LinkerLoad.h"
 #include "UObject/MetaData.h"
 #include "UObject/Object.h"
 #include "UObject/ObjectMacros.h"
@@ -30,13 +32,9 @@
 #include "SourceControlHelpers.h"
 #include "ISourceControlModule.h"
 #include "Engine/MapBuildDataRegistry.h"
-//#include "Particles/ParticleSystem.h"
 #include "EngineGlobals.h"
-//#include "Particles/ParticleEmitter.h"
 #include "GameFramework/WorldSettings.h"
-//#include "Engine/StaticMesh.h"
 #include "AssetRegistry/AssetData.h"
-//#include "Engine/Brush.h"
 #include "Editor.h"
 #include "EditorWorldUtils.h"
 #include "FileHelpers.h"
@@ -44,9 +42,6 @@
 #include "CollectionManagerModule.h"
 #include "ICollectionManager.h"
 #include "CommandletSourceControlUtils.h"
-//#include "WorldPartition/WorldPartition.h"
-//#include "WorldPartition/WorldPartitionHelpers.h"
-//#include "LevelInstance/LevelInstanceInterface.h"
 #include "AssetCompilingManager.h"
 #include "PackageHelperFunctions.h"
 #include "PackageTools.h"
@@ -60,39 +55,19 @@ DEFINE_LOG_CATEGORY(LogIteratePackagesCommandlet);
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "IDirectoryWatcher.h"
 #include "DirectoryWatcherModule.h"
-//#include "Particles/Material/ParticleModuleMeshMaterial.h"
-//#include "Particles/ParticleLODLevel.h"
-//#include "Particles/ParticleModuleRequired.h"
-//#include "Particles/TypeData/ParticleModuleTypeDataMesh.h"
 #include "Engine/LevelStreaming.h"
 #include "EditorBuildUtils.h"
-
-// for UBaseIteratePackagesCommandlet::PerformAdditionalOperations building lighting code
-//#include "LightingBuildOptions.h"
-
-// for UBaseIteratePackagesCommandlet::PerformAdditionalOperations building navigation data
-//#include "EngineUtils.h"
-//#include "NavigationData.h"
-//#include "AI/NavigationSystemBase.h"
 
 // For preloading FFindInBlueprintSearchManager
 #include "FindInBlueprintManager.h"
 
 #include "ShaderCompiler.h"
-//#include "IHierarchicalLODUtilities.h"
-//#include "HierarchicalLODUtilitiesModule.h"
-//#include "HierarchicalLOD.h"
-//#include "HierarchicalLODProxyProcessor.h"
-//#include "HLOD/HLODEngineSubsystem.h"
-//#include "GenericPlatform/GenericPlatformProcess.h"
-//#include "HAL/ThreadManager.h"
 
-//#include "ICollectionManager.h"
-//#include "CollectionManagerModule.h"
-//#include "UObject/UObjectThreadContext.h"
-//#include "Engine/LODActor.h"
-//#include "PerQualityLevelProperties.h"
-//#include "Misc/RedirectCollector.h"
+// world partition includes
+#include "WorldPartition/WorldPartitionHelpers.h"
+#include "WorldPartition/WorldPartitionActorDesc.h"
+#include "WorldPartition/LoaderAdapter/LoaderAdapterShape.h"
+#include "UObject/GCObjectScopeGuard.h"
 
 /**-----------------------------------------------------------------------------
  *	UBaseIteratePackagesCommandlet commandlet.
@@ -419,13 +394,13 @@ void UBaseIteratePackagesCommandlet::ParseSourceControlOptions(const TArray<FStr
 		{
 			if (QueuedPackageFlushLimit >= 0)
 			{
-				UE_LOG(LogIteratePackagesCommandlet, Display, TEXT("Setting source control batches to be limited to %d package(s) at a time."), QueuedPackageFlushLimit);
+				UE_LOG(LogIteratePackagesCommandlet, Display, TEXT("Setting revision control batches to be limited to %d package(s) at a time."), QueuedPackageFlushLimit);
 				SourceControlQueue->SetMaxNumQueuedPackages(QueuedPackageFlushLimit);
 			}
 			else
 			{
 				// Negative values mean we will not flush the source control batch based on the number of packages
-				UE_LOG(LogIteratePackagesCommandlet, Display, TEXT("Setting source control batches to have no package limit!"));
+				UE_LOG(LogIteratePackagesCommandlet, Display, TEXT("Setting revision control batches to have no package limit!"));
 			}
 		}
 		else  if (FParse::Value(*CurrentSwitch, TEXT("BatchFileSizeLimit="), QueueFileSizeFlushLimit))
@@ -439,14 +414,14 @@ void UBaseIteratePackagesCommandlet::ParseSourceControlOptions(const TArray<FStr
 
 			if (QueueFileSizeFlushLimit >= 0)
 			{
-				UE_LOG(LogIteratePackagesCommandlet, Display, TEXT("Setting source control batches to be limited to %lld MB."), QueueFileSizeFlushLimit);
+				UE_LOG(LogIteratePackagesCommandlet, Display, TEXT("Setting revision control batches to be limited to %lld MB."), QueueFileSizeFlushLimit);
 
 				SourceControlQueue->SetMaxTemporaryFileTotalSize(QueueFileSizeFlushLimit);
 			}
 			else
 			{
 				// Negative values mean we will not flush the source control batch based on the disk space taken by temp files
-				UE_LOG(LogIteratePackagesCommandlet, Display, TEXT("Setting source control batches to have no disk space limit!"));
+				UE_LOG(LogIteratePackagesCommandlet, Display, TEXT("Setting revision control batches to have no disk space limit!"));
 			}
 		}
 	}
@@ -461,6 +436,28 @@ void UBaseIteratePackagesCommandlet::OnAddResaveOnDemandPackage(FName SystemName
 	}
 }
 
+void UBaseIteratePackagesCommandlet::SavePackages(const TArray<UPackage*>& PackagesToSave)
+{
+	for (UPackage* PackageToSave : PackagesToSave)
+	{
+		const FString LongPackageName = PackageToSave->GetName();
+		FString Extension = FPackageName::GetAssetPackageExtension();
+		if (PackageToSave->ContainsMap())
+		{
+			Extension = FPackageName::GetMapPackageExtension();
+		}
+		FString FileName;
+		if (FPackageName::TryConvertLongPackageNameToFilename(LongPackageName, FileName, Extension))
+		{
+			ESaveFlags SaveFlags = bKeepPackageGUIDOnSave ? SAVE_KeepGUID : SAVE_None;
+			SavePackageHelper(PackageToSave, FileName, RF_Standalone, GWarn, SaveFlags);
+		}
+		else
+		{
+			UE_LOG(LogIteratePackagesCommandlet, Error, TEXT("Unable to save package %s, couldn't convert package name to filename"), *LongPackageName);
+		}
+	}
+}
 
 TSet<FName> UBaseIteratePackagesCommandlet::ParseResaveOnDemandSystems()
 {
@@ -579,8 +576,9 @@ void UBaseIteratePackagesCommandlet::LoadAndSaveOnePackage(const FString& Filena
 
 		// Get the package linker.
 		VerboseMessage(TEXT("Pre GetPackageLinker"));
-
-		FLinkerLoad* Linker = LoadPackageLinker(nullptr, PackagePath, LOAD_NoVerify);
+#define USE_OLD_LOADLINKERPATH 0
+#if USE_OLD_LOADLINKERPATH
+		FLinkerLoad* Linker = LoadPackageLinker(nullptr, PackagePath, LOAD_NoVerify | LOAD_SkipLoadImportedPackages);
 	
 		// Bail early if we don't have a valid linker (package was out of date, etc)
 		if( !Linker )
@@ -593,9 +591,14 @@ void UBaseIteratePackagesCommandlet::LoadAndSaveOnePackage(const FString& Filena
 		VerboseMessage(TEXT("Post GetPackageLinker"));
 
 		bool bSavePackage = true;
-		PerformPreloadOperations(Linker, bSavePackage);
-
+		{
+			TRACE_CPUPROFILER_EVENT_SCOPE(UBaseIteratePackagesCommandlet::LoadAndSaveOnePackage::PerformPreloadOperations);
+			PerformPreloadOperations(Linker, bSavePackage);
+		}
 		VerboseMessage(FString::Printf(TEXT("Post PerformPreloadOperations, Resave? %d"), bSavePackage));
+#else
+		bool bSavePackage = true;
+#endif
 		
 		if (bSavePackage)
 		{
@@ -611,7 +614,9 @@ void UBaseIteratePackagesCommandlet::LoadAndSaveOnePackage(const FString& Filena
 			UPackage* Package = nullptr;
 			{
 				TRACE_CPUPROFILER_EVENT_SCOPE(UBaseIteratePackagesCommandlet::LoadAndSaveOnePackage::LoadPackage);
-				Package = LoadPackage(NULL, *Filename, 0);
+				Package = LoadWorldPackageForEditor(PackagePath.GetPackageName());
+
+				// Package = LoadPackage(NULL, *Filename, 0);
 			}
 
 			if (Package == NULL)
@@ -625,7 +630,11 @@ void UBaseIteratePackagesCommandlet::LoadAndSaveOnePackage(const FString& Filena
 					check(Package);
 				}
 			}
-
+#if !USE_OLD_LOADLINKERPATH
+			FLinkerLoad* Linker = Package->GetLinker();
+			PerformPreloadOperations(Linker, bSavePackage); 
+			VerboseMessage(FString::Printf(TEXT("Post PerformPreloadOperations, Resave? %d"), bSavePackage));
+#endif
 			VerboseMessage(TEXT("Post LoadPackage"));
 
 			// if we are only saving dirty packages and the package is not dirty, then we do not want to save the package (remember the default behavior is to ALWAYS save the package)
@@ -646,25 +655,122 @@ void UBaseIteratePackagesCommandlet::LoadAndSaveOnePackage(const FString& Filena
 				}
 			}
 
+			UWorld* World = UWorld::FindWorldInPackage(Package);
+			if (World)
 			{
-				UWorld* World = UWorld::FindWorldInPackage(Package);
-				if (World)
+				TRACE_CPUPROFILER_EVENT_SCOPE(UBaseIteratePackagesCommandlet::LoadAndSaveOnePackage::PerformAdditionalOperations::World);
+				PerformAdditionalOperations(World, bSavePackage);
+			}
+			
+			// hook to allow performing additional checks without lumping everything into this one function
+			{
+				TRACE_CPUPROFILER_EVENT_SCOPE(UBaseIteratePackagesCommandlet::LoadAndSaveOnePackage::PerformAdditionalOperations::Package);
+				PerformAdditionalOperations(Package,bSavePackage);
+			}
+			if (bUseWorldPartitionBuilder && World && UWorld::IsPartitionedWorld(World))
+			{
+				TRACE_CPUPROFILER_EVENT_SCOPE(UBaseIteratePackagesCommandlet::LoadAndSaveOnePackage::ProcessWorldPartition);
+				// Load configuration file
+				FString WorldConfigFilename = FPackageName::LongPackageNameToFilename(World->GetPackage()->GetName(), TEXT(".ini"));
+				if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*WorldConfigFilename))
 				{
-					PerformAdditionalOperations(World, bSavePackage);
+					LoadConfig(GetClass(), *WorldConfigFilename);
 				}
+
+
+				// process all the objects loaded with the base package.
+				ForEachObjectWithOuter(Package, [this, &bSavePackage](UObject* Object)
+					{
+						PerformAdditionalOperations(Object, bSavePackage);
+					});
+
+				UWorld::InitializationValues IVS;
+				IVS.RequiresHitProxies(false);
+				IVS.ShouldSimulatePhysics(false);
+				IVS.EnableTraceCollision(false);
+				IVS.CreateNavigation(false);
+				IVS.CreateAISystem(false);
+				IVS.AllowAudioPlayback(false);
+				IVS.CreatePhysicsScene(true);
+
+				FScopedEditorWorld ScopeEditorWorld(World, IVS);
+
+				/*TUniquePtr<FLoaderAdapterShape> LoaderAdapterShape;
+				FBox Bounds = FBox(FVector(-HALF_WORLD_MAX, -HALF_WORLD_MAX, -HALF_WORLD_MAX), FVector(HALF_WORLD_MAX, HALF_WORLD_MAX, HALF_WORLD_MAX));
+				LoaderAdapterShape = MakeUnique<FLoaderAdapterShape>(World, Bounds, TEXT("Loaded Region"));
+				LoaderAdapterShape->Load();*/
+
+				TArray<UPackage*> PackagesToSave;
+
+				FWorldPartitionHelpers::FForEachActorWithLoadingParams ForEachActorWithLoadingParams;
+
+				ForEachActorWithLoadingParams.ActorClasses = { AActor::StaticClass()};
+
+				ForEachActorWithLoadingParams.OnPreGarbageCollect = [&PackagesToSave, this]()
+					{
+						SavePackages(PackagesToSave);
+						//UWorldPartitionBuilder::SavePackages(PackagesToSave, PackageHelper, true);
+						PackagesToSave.Empty();
+					};
+
+				UWorldPartition* WorldPartition = World->GetWorldPartition();
+
+				FWorldPartitionHelpers::ForEachActorWithLoading(WorldPartition, [&PackagesToSave, this](const FWorldPartitionActorDesc* ActorDesc)
+					{
+						AActor* Actor = ActorDesc->GetActor();
+
+						if (!Actor)
+						{
+							WorldBuilderFailedLoadingActor(ActorDesc);
+							return true;
+						}
+
+						bool bSavePackage = false;
+						PerformWorldBuilderAdditionalOperations(Actor, bSavePackage);
+
+						UPackage* Package = Actor->GetExternalPackage();
+						check(Package);
+
+						TArray<UObject*> DependantObjects;
+						ForEachObjectWithPackage(Package, [this, &bSavePackage](UObject* Object)
+							{
+								if (!IsValid(Object))
+								{
+									return true;
+								}
+								if (!Cast<UMetaData>(Object))
+								{
+									PerformWorldBuilderAdditionalOperations(Object, bSavePackage);
+								}
+								return true;
+							}, true);
+
+						if (bSavePackage)
+						{
+							PackagesToSave.Add(Package);
+							return true;
+						}
+						return true;
+					}, ForEachActorWithLoadingParams);
+
+				SavePackages(PackagesToSave);
+				PackagesToSave.Empty();
+			}
+			else
+			{
+				VerboseMessage(TEXT("Post PerformAdditionalOperations"));
+
+				// Check for any special per object operations
+				ForEachObjectWithOuter(Package, [this, &bSavePackage](UObject* Object)
+					{
+						if (!IsValid(Object))
+						{
+							return;
+						}
+						PerformAdditionalOperations(Object, bSavePackage);
+					});
 			}
 
-			// hook to allow performing additional checks without lumping everything into this one function
-			PerformAdditionalOperations(Package,bSavePackage);
-
-			VerboseMessage(TEXT("Post PerformAdditionalOperations"));
-
-			// Check for any special per object operations
-			ForEachObjectWithOuter(Package, [this, &bSavePackage](UObject* Object)
-			{
-				PerformAdditionalOperations(Object, bSavePackage);
-			});
-			
 			PostPerformAdditionalOperations(Package);
 
 			VerboseMessage(TEXT("Post PerformAdditionalOperations Loop"));
@@ -717,6 +823,7 @@ void UBaseIteratePackagesCommandlet::LoadAndSaveOnePackage(const FString& Filena
 			// to save this package
 			if (bSavePackage == true)
 			{
+				TRACE_CPUPROFILER_EVENT_SCOPE(UBaseIteratePackagesCommandlet::LoadAndSaveOnePackage::SavePackage);
 				if( bIsReadOnly == true && bVerifyContent == true && bAutoCheckOut == false )
 				{
 					UE_LOG(LogIteratePackagesCommandlet, Warning, TEXT("Package [%s] is read-only but needs to be resaved (UE Version: %i, Licensee Version: %i  Current UE Version: %i, Current Licensee Version: %i)"),
@@ -789,7 +896,6 @@ void UBaseIteratePackagesCommandlet::LoadAndSaveOnePackage(const FString& Filena
 							*Filename,Linker->Summary.GetFileVersionUE().ToValue(), Linker->Summary.GetFileVersionLicenseeUE(), GPackageFileUEVersion.ToValue(), VER_LATEST_ENGINE_LICENSEEUE4 );
 					}
 
-					const static bool bKeepPackageGUIDOnSave = FParse::Param(FCommandLine::Get(), TEXT("KeepPackageGUIDOnSave"));
 					ESaveFlags SaveFlags = bKeepPackageGUIDOnSave ? SAVE_KeepGUID : SAVE_None;
 					
 					if (bIsReadOnly == false || SourceControlQueue == nullptr)
@@ -819,7 +925,6 @@ void UBaseIteratePackagesCommandlet::LoadAndSaveOnePackage(const FString& Filena
 				}
 			}
 		}
-
 		static int32 Counter = 0;
 
 		if (!GarbageCollectionFrequency || Counter++ % GarbageCollectionFrequency == 0)
@@ -841,6 +946,7 @@ void UBaseIteratePackagesCommandlet::LoadAndSaveOnePackage(const FString& Filena
 		}
 	}
 }
+
 
 void UBaseIteratePackagesCommandlet::DeleteOnePackage(const FString& Filename)
 {
@@ -891,10 +997,10 @@ void UBaseIteratePackagesCommandlet::DeleteOnePackage(const FString& Filename)
 
 	if (SourceControlState.IsValid() && (SourceControlState->IsCheckedOut() || SourceControlState->IsAdded()))
 	{
-		UE_LOG(LogIteratePackagesCommandlet, Display, TEXT("Revert '%s' from source control..."), *Filename);
+		UE_LOG(LogIteratePackagesCommandlet, Display, TEXT("Revert '%s' from revision control..."), *Filename);
 		SourceControlProvider.Execute(ISourceControlOperation::Create<FRevert>(), PackageFilename);
 
-		UE_LOG(LogIteratePackagesCommandlet, Display, TEXT("Deleting '%s' from source control..."), *Filename);
+		UE_LOG(LogIteratePackagesCommandlet, Display, TEXT("Deleting '%s' from revision control..."), *Filename);
 		SourceControlProvider.Execute(ISourceControlOperation::Create<FDelete>(), PackageFilename);
 
 		PackagesDeleted++;
@@ -903,7 +1009,7 @@ void UBaseIteratePackagesCommandlet::DeleteOnePackage(const FString& Filename)
 	}
 	else if (SourceControlState.IsValid() && SourceControlState->CanCheckout())
 	{
-		UE_LOG(LogIteratePackagesCommandlet, Display, TEXT("Deleting '%s' from source control..."), *Filename);
+		UE_LOG(LogIteratePackagesCommandlet, Display, TEXT("Deleting '%s' from revision control..."), *Filename);
 		SourceControlProvider.Execute(ISourceControlOperation::Create<FDelete>(), PackageFilename);
 
 		PackagesDeleted++;
@@ -912,11 +1018,11 @@ void UBaseIteratePackagesCommandlet::DeleteOnePackage(const FString& Filename)
 	}
 	else if (SourceControlState.IsValid() && SourceControlState->IsCheckedOutOther())
 	{
-		UE_LOG(LogIteratePackagesCommandlet, Warning, TEXT("Couldn't delete '%s' from source control, someone has it checked out, skipping..."), *Filename);
+		UE_LOG(LogIteratePackagesCommandlet, Warning, TEXT("Couldn't delete '%s' from revision control, someone has it checked out, skipping..."), *Filename);
 	}
 	else if (SourceControlState.IsValid() && !SourceControlState->IsSourceControlled())
 	{
-		UE_LOG(LogIteratePackagesCommandlet, Warning, TEXT("'%s' is not in source control, attempting to delete from disk..."), *Filename);
+		UE_LOG(LogIteratePackagesCommandlet, Warning, TEXT("'%s' is not in revision control, attempting to delete from disk..."), *Filename);
 		if (IFileManager::Get().Delete(*Filename, false, true) == true)
 		{
 			PackagesDeleted++;
@@ -928,7 +1034,7 @@ void UBaseIteratePackagesCommandlet::DeleteOnePackage(const FString& Filename)
 	}
 	else
 	{
-		UE_LOG(LogIteratePackagesCommandlet, Warning, TEXT("'%s' is in an unknown source control state, attempting to delete from disk..."), *Filename);
+		UE_LOG(LogIteratePackagesCommandlet, Warning, TEXT("'%s' is in an unknown revision control state, attempting to delete from disk..."), *Filename);
 		if (IFileManager::Get().Delete(*Filename, false, true)== true)
 		{
 			PackagesDeleted++;
@@ -977,6 +1083,10 @@ int32 UBaseIteratePackagesCommandlet::Main( const FString& Params )
 	bOnlyPayloadTrailers = Switches.Contains(TEXT("OnlyPayloadTrailers"));
 	/** only process packages containing materials */
 	bOnlyMaterials = Switches.Contains(TEXT("onlymaterials"));
+
+	bUseWorldPartitionBuilder = false;
+
+	bKeepPackageGUIDOnSave = Switches.Contains(TEXT("KeepPackageGUIDOnSave"));
 	
 	/** check for filtering packages by collection. **/
 	FString FilterByCollection;

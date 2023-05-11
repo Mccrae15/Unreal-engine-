@@ -2,20 +2,26 @@
 
 #include "NiagaraSpriteRendererProperties.h"
 #include "NiagaraRenderer.h"
-#include "Internationalization/Internationalization.h"
 #include "NiagaraConstants.h"
 #include "NiagaraRendererSprites.h"
 #include "NiagaraBoundsCalculatorHelper.h"
 #include "NiagaraCustomVersion.h"
 #include "NiagaraEmitterInstance.h"
-#include "Modules/ModuleManager.h"
 #include "NiagaraEmitter.h"
 #include "NiagaraScriptSourceBase.h"
+#include "NiagaraSystem.h"
+
+#include "Engine/Texture2D.h"
+#include "Internationalization/Internationalization.h"
+#include "Materials/MaterialInstanceConstant.h"
+#include "Modules/ModuleManager.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraSpriteRendererProperties)
 
-#if WITH_EDITOR
+#if WITH_EDITORONLY_DATA
 #include "DerivedDataCacheInterface.h"
+#include "Materials/MaterialExpressionTextureSample.h"
+#include "Materials/MaterialExpressionTextureSampleParameter.h"
 #include "Widgets/Images/SImage.h"
 #include "Styling/SlateIconFinder.h"
 #include "Widgets/SWidget.h"
@@ -122,6 +128,10 @@ void UNiagaraSpriteRendererProperties::GetUsedMaterials(const FNiagaraEmitterIns
 		MaterialInterface = Cast<UMaterialInterface>(InEmitter->FindBinding(MaterialUserParamBinding.Parameter));
 	}
 
+#if WITH_EDITORONLY_DATA
+	MaterialInterface = MaterialInterface ? MaterialInterface : ToRawPtr(MICMaterial);
+#endif
+
 	OutMaterials.Add(MaterialInterface ? MaterialInterface : ToRawPtr(Material));
 }
 
@@ -196,15 +206,26 @@ void UNiagaraSpriteRendererProperties::Serialize(FStructuredArchive::FRecord Rec
 		SortMode = ENiagaraSortMode::ViewDistance;
 	}
 
-	Super::Serialize(Record);
+	// MIC will replace the main material during serialize
+	// Be careful if adding code that looks at the material to make sure you get the correct one
+	{
+	#if WITH_EDITORONLY_DATA
+		TOptional<TGuardValue<TObjectPtr<UMaterialInterface>>> MICGuard;
+		if (Ar.IsSaving() && Ar.IsCooking() && MICMaterial)
+		{
+			MICGuard.Emplace(Material, MICMaterial);
+		}
+	#endif
+
+		Super::Serialize(Record);
+	}
 
 	bool bIsCookedForEditor = false;
 #if WITH_EDITORONLY_DATA
 	bIsCookedForEditor = ((Ar.GetPortFlags() & PPF_Duplicate) == 0) && GetPackage()->HasAnyPackageFlags(PKG_Cooked);
 #endif // WITH_EDITORONLY_DATA
 
-	FArchive& UnderlyingArchive = Record.GetUnderlyingArchive();
-	if (UnderlyingArchive.IsCooking() || (FPlatformProperties::RequiresCookedData() && UnderlyingArchive.IsLoading()) || bIsCookedForEditor)
+	if (Ar.IsCooking() || (FPlatformProperties::RequiresCookedData() && Ar.IsLoading()) || bIsCookedForEditor)
 	{
 		DerivedData.Serialize(Record.EnterField(TEXT("DerivedData")));
 	}
@@ -270,6 +291,7 @@ void UNiagaraSpriteRendererProperties::SetPreviousBindings(const FVersionedNiaga
 void UNiagaraSpriteRendererProperties::CacheFromCompiledData(const FNiagaraDataSetCompiledData* CompiledData)
 {
 	UpdateSourceModeDerivates(SourceMode);
+	UpdateMICs();
 
 	const int32 NumLayoutVars = NeedsPreciseMotionVectors() ? ENiagaraSpriteVFLayout::Num_Max : ENiagaraSpriteVFLayout::Num_Default;
 	RendererLayoutWithCustomSort.Initialize(NumLayoutVars);
@@ -334,7 +356,6 @@ void UNiagaraSpriteRendererProperties::CacheFromCompiledData(const FNiagaraDataS
 		RendererLayoutWithoutCustomSort.SetVariableFromBinding(CompiledData, PrevPivotOffsetBinding, ENiagaraSpriteVFLayout::PrevPivotOffset);
 	}
 	RendererLayoutWithoutCustomSort.Finalize();
-
 }
 
 #if WITH_EDITORONLY_DATA
@@ -389,56 +410,46 @@ void UNiagaraSpriteRendererProperties::UpdateSourceModeDerivates(ENiagaraRendere
 	}
 }
 
-#if WITH_EDITORONLY_DATA
-
-bool UNiagaraSpriteRendererProperties::IsSupportedVariableForBinding(const FNiagaraVariableBase& InSourceForBinding, const FName& InTargetBindingName) const
+void UNiagaraSpriteRendererProperties::UpdateMICs()
 {
-	if ((SourceMode == ENiagaraRendererSourceDataMode::Particles && InSourceForBinding.IsInNameSpace(FNiagaraConstants::ParticleAttributeNamespaceString)) ||
-		InSourceForBinding.IsInNameSpace(FNiagaraConstants::UserNamespaceString) ||
-		InSourceForBinding.IsInNameSpace(FNiagaraConstants::SystemNamespaceString) ||
-		InSourceForBinding.IsInNameSpace(FNiagaraConstants::EmitterNamespaceString))
-	{
-		return true;
-	}
-	return false;
+#if WITH_EDITORONLY_DATA
+	UpdateMaterialParametersMIC(MaterialParameters, Material, MICMaterial);
+#endif
 }
 
-
-//#if WITH_EDITOR
-//void UNiagaraSpriteRendererProperties::PostEditUndo()
-//{
-//	Super::PostEditUndo();
-//	UpdateSourceModeDerivates(SourceMode);
-//}
-//
-//void UNiagaraSpriteRendererProperties::PostEditUndo(TSharedPtr<ITransactionObjectAnnotation> TransactionAnnotation)
-//{
-//	Super::PostEditUndo(TransactionAnnotation);
-//	UpdateSourceModeDerivates(SourceMode);
-//}
-//#endif
-
+#if WITH_EDITORONLY_DATA
 void UNiagaraSpriteRendererProperties::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
 {
-	SubImageSize.X = FMath::Max<float>(SubImageSize.X, 1.f);
-	SubImageSize.Y = FMath::Max<float>(SubImageSize.Y, 1.f);
+	const FName PropertyName = PropertyChangedEvent.GetPropertyName();
+	const FName MemberPropertyName = PropertyChangedEvent.GetMemberPropertyName();
+
+	SubImageSize.X = FMath::Max(SubImageSize.X, 1.0);
+	SubImageSize.Y = FMath::Max(SubImageSize.Y, 1.0);
 
 	// DerivedData.BoundingGeometry in case we cleared the CutoutTexture
 	if (bUseMaterialCutoutTexture || CutoutTexture || DerivedData.BoundingGeometry.Num())
 	{
 		const bool bUpdateCutoutDDC =
-			PropertyChangedEvent.GetPropertyName() == TEXT("bUseMaterialCutoutTexture") ||
-			PropertyChangedEvent.GetPropertyName() == TEXT("CutoutTexture") ||
-			PropertyChangedEvent.GetPropertyName() == TEXT("BoundingMode") ||
-			PropertyChangedEvent.GetPropertyName() == TEXT("OpacitySourceMode") ||
-			PropertyChangedEvent.GetPropertyName() == TEXT("AlphaThreshold") ||
-			(bUseMaterialCutoutTexture && PropertyChangedEvent.GetPropertyName() == TEXT("Material"));
+			PropertyName == TEXT("bUseMaterialCutoutTexture") ||
+			PropertyName == TEXT("CutoutTexture") ||
+			PropertyName == TEXT("BoundingMode") ||
+			PropertyName == TEXT("OpacitySourceMode") ||
+			PropertyName == TEXT("AlphaThreshold") ||
+			(bUseMaterialCutoutTexture && PropertyName == TEXT("Material"));
 
 		if (bUpdateCutoutDDC)
 		{
 			UpdateCutoutTexture();
 			CacheDerivedData();
 		}
+	}
+
+	// Update our MICs if we change material / material bindings
+	//-OPT: Could narrow down further to only static materials
+	if ((PropertyName == GET_MEMBER_NAME_CHECKED(UNiagaraSpriteRendererProperties, Material)) ||
+		(MemberPropertyName == GET_MEMBER_NAME_CHECKED(UNiagaraSpriteRendererProperties, MaterialParameters)) )
+	{
+		UpdateMICs();
 	}
 
 	// If changing the source mode, we may need to update many of our values.
@@ -466,34 +477,22 @@ void UNiagaraSpriteRendererProperties::PostEditChangeProperty(struct FPropertyCh
 	}
 
 	Super::PostEditChangeProperty(PropertyChangedEvent);
-
 }
-
 
 void UNiagaraSpriteRendererProperties::RenameVariable(const FNiagaraVariableBase& OldVariable, const FNiagaraVariableBase& NewVariable, const FVersionedNiagaraEmitter& InEmitter)
 {
 	Super::RenameVariable(OldVariable, NewVariable, InEmitter);
-
-	// Handle renaming material bindings
-	for (FNiagaraMaterialAttributeBinding& Binding : MaterialParameters.AttributeBindings)
-	{
-		Binding.RenameVariableIfMatching(OldVariable, NewVariable, InEmitter.Emitter, GetCurrentSourceMode());
-	}
+#if WITH_EDITORONLY_DATA
+	MaterialParameters.RenameVariable(OldVariable, NewVariable, InEmitter, GetCurrentSourceMode());
+#endif
 }
 
 void UNiagaraSpriteRendererProperties::RemoveVariable(const FNiagaraVariableBase& OldVariable, const FVersionedNiagaraEmitter& InEmitter)
 {
 	Super::RemoveVariable(OldVariable, InEmitter);
-
-	// Handle resetting material bindings to defaults
-	for (FNiagaraMaterialAttributeBinding& Binding : MaterialParameters.AttributeBindings)
-	{
-		if (Binding.Matches(OldVariable, InEmitter.Emitter, GetCurrentSourceMode()))
-		{
-			Binding.NiagaraVariable = FNiagaraVariable();
-			Binding.CacheValues(InEmitter.Emitter);
-		}
-	}
+#if WITH_EDITORONLY_DATA
+	MaterialParameters.RemoveVariable(OldVariable, InEmitter, GetCurrentSourceMode());
+#endif
 }
 
 const TArray<FNiagaraVariable>& UNiagaraSpriteRendererProperties::GetOptionalAttributes()
@@ -615,29 +614,42 @@ void UNiagaraSpriteRendererProperties::GetRendererTooltipWidgets(const FNiagaraE
 
 void UNiagaraSpriteRendererProperties::UpdateCutoutTexture()
 {
-	if (bUseMaterialCutoutTexture)
+	if (bUseMaterialCutoutTexture == false)
 	{
-		CutoutTexture = nullptr;
-		if (Material)
+		return;
+	}
+
+	CutoutTexture = nullptr;
+	if (Material == nullptr || Material->GetMaterial() == nullptr)
+	{
+		return;
+	}
+
+	// The property should probably come from the blend mode, but keeping consistency with how this has always been
+	for (const EMaterialProperty MaterialProperty : {MP_OpacityMask, MP_Opacity})
+	{
+		TArray<UMaterialExpression*> MaterialExpressions;
+		Material->GetMaterial()->GetExpressionsInPropertyChain(MaterialProperty, MaterialExpressions, nullptr);
+		for (UMaterialExpression* MaterialExpression : MaterialExpressions)
 		{
-			// Try to find an opacity mask texture to default to, if not try to find an opacity texture
-			TArray<UTexture*> OpacityMaskTextures;
-			Material->GetTexturesInPropertyChain(MP_OpacityMask, OpacityMaskTextures, nullptr, nullptr);
-			if (OpacityMaskTextures.Num())
+			UMaterialExpressionTextureSample* TextureExpression = MaterialExpression ? Cast<UMaterialExpressionTextureSample>(MaterialExpression) : nullptr;
+			if (TextureExpression == nullptr)
 			{
-				CutoutTexture = (UTexture2D*)OpacityMaskTextures[0];
+				continue;
 			}
-			else
+
+			UTexture* ExpressionTexture = TextureExpression->Texture;
+			if (UMaterialExpressionTextureSampleParameter* TextureParameterExpression = Cast<UMaterialExpressionTextureSampleParameter>(TextureExpression))
 			{
-				TArray<UTexture*> OpacityTextures;
-				Material->GetTexturesInPropertyChain(MP_Opacity, OpacityTextures, nullptr, nullptr);
-				if (OpacityTextures.Num())
-				{
-					CutoutTexture = (UTexture2D*)OpacityTextures[0];
-				}
+				Material->GetTextureParameterValue(TextureExpression->GetParameterName(), ExpressionTexture);
 			}
+
+			// We bail on the first texture found, which isn't accurate but good enough
+			CutoutTexture = Cast<UTexture2D>(ExpressionTexture);
+			return;
 		}
 	}
+	// Note we do not get here unless we failed to find a cutout texture
 }
 
 void UNiagaraSpriteRendererProperties::CacheDerivedData()

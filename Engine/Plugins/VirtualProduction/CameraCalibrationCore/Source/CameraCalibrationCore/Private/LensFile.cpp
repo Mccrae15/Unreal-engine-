@@ -18,6 +18,9 @@
 #include "Models/SphericalLensModel.h"
 #include "Tables/BaseLensTable.h"
 #include "Tables/LensTableUtils.h"
+#include "TextureResource.h"
+#include "UObject/Package.h"
+#include "RenderingThread.h"
 
 namespace LensFileUtils
 {
@@ -28,6 +31,7 @@ namespace LensFileUtils
 		UTextureRenderTarget2D* NewRenderTarget2D = NewObject<UTextureRenderTarget2D>(Outer, MakeUniqueObjectName(Outer, UTextureRenderTarget2D::StaticClass(), TEXT("LensDisplacementMap")), RF_Public);
 		NewRenderTarget2D->RenderTargetFormat = ETextureRenderTargetFormat::RTF_RG16f;
 		NewRenderTarget2D->ClearColor = FLinearColor(0.5f, 0.5f, 0.5f, 0.5f);
+		NewRenderTarget2D->Filter = TF_Bilinear;
 		NewRenderTarget2D->AddressX = TA_Clamp;
 		NewRenderTarget2D->AddressY = TA_Clamp;
 		NewRenderTarget2D->bAutoGenerateMips = false;
@@ -213,6 +217,8 @@ void ULensFile::PostEditChangeChainProperty(struct FPropertyChangedChainEvent& P
 		}
 		else if (PropertyName == GET_MEMBER_NAME_CHECKED(FLensInfo, LensModel))
 		{
+			OnLensFileModelChangedDelegate.Broadcast(LensInfo.LensModel);
+
 			//LensModel has changed, clear distortion and focal length tables
 			LensDataTableUtils::EmptyTable(DistortionTable);
 			LensDataTableUtils::EmptyTable(FocalLengthTable);
@@ -470,13 +476,17 @@ bool ULensFile::EvaluateDistortionForParameters(float InFocus, float InZoom, FVe
 	FImageCenterInfo ImageCenter;
 	EvaluateImageCenterParameters(InFocus, InZoom, ImageCenter);
 
+	FCameraFilmbackSettings CameraFilmback;
+	CameraFilmback.SensorWidth = InFilmback.X;
+	CameraFilmback.SensorHeight = InFilmback.Y;
+
 	//No distortion parameters case. Still process to have center shift
 	if (DistortionTable.GetFocusPoints().Num() <= 0)
 	{
-		//Initialize all distortion parameters with 0
+		// Initialize all distortion parameters with their default values
 		FDistortionInfo DistortionPoint;
-		DistortionPoint.Parameters.SetNumZeroed(LensInfo.LensModel.GetDefaultObject()->GetNumParameters());
-		
+		LensInfo.LensModel->GetDefaultObject<ULensModel>()->GetDefaultParameterArray(DistortionPoint.Parameters);
+
 		//Setup handler state based on evaluated parameters. If none were found, no distortion will be returned
 		FLensDistortionState State;
 		State.DistortionInfo.Parameters = MoveTemp(DistortionPoint.Parameters);
@@ -490,6 +500,7 @@ bool ULensFile::EvaluateDistortionForParameters(float InFocus, float InZoom, FVe
 
 		//Updates handler state
 		InLensHandler->SetDistortionState(State);
+		InLensHandler->SetCameraFilmback(CameraFilmback);
 
 		InLensHandler->SetOverscanFactor(1.0f);
 
@@ -505,14 +516,15 @@ bool ULensFile::EvaluateDistortionForParameters(float InFocus, float InZoom, FVe
 		float InterpolatedOverscanFactor = 1.0f;
 
 		//Helper function to compute the current distortion state
-		const auto ProcessDistortionState = [this, &State, InFilmback, InLensHandler](const FDistortionInfo& DistortionInfo, const FFocalLengthInfo& FocalLength, UTextureRenderTarget2D* UndistortionRenderTarget, UTextureRenderTarget2D* DistortionRenderTarget, float& OverscanFactor)
+		const auto ProcessDistortionState = [this, &State, CameraFilmback, InLensHandler](const FDistortionInfo& DistortionInfo, const FFocalLengthInfo& FocalLength, UTextureRenderTarget2D* UndistortionRenderTarget, UTextureRenderTarget2D* DistortionRenderTarget, float& OverscanFactor)
 		{
 			State.DistortionInfo.Parameters = DistortionInfo.Parameters;
 
-			const FVector2D FxFyScale = FVector2D(LensInfo.SensorDimensions.X / InFilmback.X, LensInfo.SensorDimensions.Y / InFilmback.Y);
+			const FVector2D FxFyScale = FVector2D(LensInfo.SensorDimensions.X / CameraFilmback.SensorWidth, LensInfo.SensorDimensions.Y / CameraFilmback.SensorHeight);
 			State.FocalLengthInfo.FxFy = FocalLength.FxFy * FxFyScale;
 
 			InLensHandler->SetDistortionState(State);
+			InLensHandler->SetCameraFilmback(CameraFilmback);
 			InLensHandler->DrawUndistortionDisplacementMap(UndistortionRenderTarget);
 			InLensHandler->DrawDistortionDisplacementMap(DistortionRenderTarget);
 
@@ -670,6 +682,7 @@ bool ULensFile::EvaluateDistortionForParameters(float InFocus, float InZoom, FVe
 		
 		//Sets final blended distortion state
 		InLensHandler->SetDistortionState(State);
+		InLensHandler->SetCameraFilmback(CameraFilmback);
 
 		//Draw resulting undistortion displacement map for evaluation point
 		LensFileRendering::DrawBlendedDisplacementMap(InLensHandler->GetUndistortionDisplacementMap()
@@ -720,6 +733,10 @@ bool ULensFile::EvaluateDistortionForSTMaps(float InFocus, float InZoom, FVector
 		SetupNoDistortionOutput(InLensHandler);
 		return false;
 	}
+
+	FCameraFilmbackSettings CameraFilmback;
+	CameraFilmback.SensorWidth = InFilmback.X;
+	CameraFilmback.SensorHeight = InFilmback.Y;
 
 	FDisplacementMapBlendingParams Params;
 
@@ -891,6 +908,8 @@ bool ULensFile::EvaluateDistortionForSTMaps(float InFocus, float InZoom, FVector
 			
 	//Sets final blended distortion state
 	InLensHandler->SetDistortionState(MoveTemp(State));
+	InLensHandler->SetCameraFilmback(CameraFilmback);
+
 	InLensHandler->SetOverscanFactor(InterpolatedOverscanFactor);
 
 	return true;

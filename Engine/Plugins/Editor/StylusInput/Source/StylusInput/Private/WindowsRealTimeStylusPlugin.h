@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "Containers/UnrealString.h" // IWYU pragma: keep
 
 #if PLATFORM_WINDOWS
 #include "Windows/WindowsHWrapper.h"

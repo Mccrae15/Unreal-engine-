@@ -2,12 +2,12 @@
 
 #pragma once
 
-#include "CoreTypes.h"
+#include "HAL/Platform.h"
 #include "Net/Core/NetBitArray.h"
-#include "Iris/Core/NetObjectReference.h"
+#include "Net/Core/NetHandle/NetHandle.h"
 #include "Iris/ReplicationSystem/ReplicationBridge.h"
-#include "Iris/ReplicationState/ReplicationStateDescriptor.h"
-#include "Iris/ReplicationSystem/ReplicationFragment.h"
+#include "Delegates/IDelegateInstance.h"
+#include "Iris/ReplicationSystem/ReplicationSystemTypes.h"
 
 #include "ObjectReplicationBridge.generated.h"
 
@@ -20,10 +20,16 @@ namespace UE::Net
 	class FNetObjectReference;
 	namespace Private
 	{
-		typedef uint32 FInternalNetHandle;
+		typedef uint32 FInternalNetRefIndex;
 		class FObjectPollFrequencyLimiter;
 	}
 }
+
+struct FObjectReplicationBridgeInstantiateResult
+{
+	UObject* Object = nullptr;
+	EReplicationBridgeCreateNetRefHandleResultFlags Flags = EReplicationBridgeCreateNetRefHandleResultFlags::None;
+};
 
 /*
 * Partial implementation of ReplicationBridge that can be used as a foundation for 
@@ -37,7 +43,7 @@ class UObjectReplicationBridge : public UReplicationBridge
 public:
 	using UReplicationBridge::EndReplication;
 
-	struct FCreateNetHandleParams
+	struct FCreateNetRefHandleParams
 	{
 		uint32 bCanReceive : 1;
 		uint32 bNeedsPreUpdate : 1;
@@ -56,17 +62,20 @@ public:
 		  */
 		uint8 PollFramePeriod;
 	};
-	IRISCORE_API static FCreateNetHandleParams DefaultCreateNetHandleParams;
+	IRISCORE_API static FCreateNetRefHandleParams DefaultCreateNetRefHandleParams;
 
 	IRISCORE_API UObjectReplicationBridge();
 
 	/** Get the Object from a replicated handle, if the handle is invalid or not is a replicated handle the function will return nullptr */
-	IRISCORE_API UObject* GetReplicatedObject(FNetHandle Handle) const;
+	IRISCORE_API UObject* GetReplicatedObject(FNetRefHandle Handle) const;
 
-	/** Get NetHandle from a Replicated UObject */
-	IRISCORE_API FNetHandle GetReplicatedHandle(const UObject* Object) const;
+	/** Get NetRefHandle from a replicated UObject. */
+	IRISCORE_API FNetRefHandle GetReplicatedRefHandle(const UObject* Object) const;
 
-	/** Try to resolve UObject from NetObjectReference, this function tries to resolve the object by loading if necessary.*/
+	/** Get NetRefHandle from a NetHandle. */
+	IRISCORE_API FNetRefHandle GetReplicatedRefHandle(FNetHandle Handle) const;
+
+	/** Try to resolve UObject from NetObjectReference, this function tries to resolve the object by loading if necessary. */
 	IRISCORE_API UObject* ResolveObjectReference(const UE::Net::FNetObjectReference& ObjectRef, const UE::Net::FNetObjectResolveContext& ResolveContext);
 
 	/** Get or create NetObjectReference for object instance. */
@@ -75,25 +84,26 @@ public:
 	/** Get or create NetObjectReference for object identified by path relative to outer. */
 	IRISCORE_API UE::Net::FNetObjectReference GetOrCreateObjectReference(const FString& Path, const UObject* Outer) const;
 
-	/** Create NetHandle and start replicating the Instance */
-	IRISCORE_API FNetHandle BeginReplication(UObject* Instance, const FCreateNetHandleParams& Params = DefaultCreateNetHandleParams);
+	/** Begin replicating the Instance and return a valid NetRefHandle for the Instance if successful. */
+	IRISCORE_API FNetRefHandle BeginReplication(UObject* Instance, const FCreateNetRefHandleParams& Params = DefaultCreateNetRefHandleParams);
 
 	/**
-	 * Create NetHandle and start replicating the Instance as a SubObject of the OwnerHandle. If InsertRelativeSubObjectHandle is valid
+	 * Begin replicating the Instance as a subobject of the OwnerHandle. If InsertRelativeSubObjectHandle is valid
 	 * the new subobject will be inserted in the subobject replication list next to the specified handle and the wanted insertion order.
-	 * Default behavior is to always add new subobjects at the end of the list.
+	 * Default behavior is to always add new subobjects at the end of the list. Returns a valid NetRefHandle for the Instance if successful.
 	 */
-	IRISCORE_API FNetHandle BeginReplication(FNetHandle OwnerHandle, UObject* Instance, FNetHandle InsertRelativeToSubObjectHandle, ESubObjectInsertionOrder InsertionOrder = UReplicationBridge::ESubObjectInsertionOrder::None, const FCreateNetHandleParams& Params = DefaultCreateNetHandleParams);
+	IRISCORE_API FNetRefHandle BeginReplication(FNetRefHandle OwnerHandle, UObject* Instance, FNetRefHandle InsertRelativeToSubObjectHandle, ESubObjectInsertionOrder InsertionOrder = UReplicationBridge::ESubObjectInsertionOrder::None, const FCreateNetRefHandleParams& Params = DefaultCreateNetRefHandleParams);
 
-	/** Create NetHandle and start replicating the Instance as a SubObject of the OwnerHandle */
-	FNetHandle BeginReplication(FNetHandle OwnerHandle, UObject* Instance, const FCreateNetHandleParams& Params = DefaultCreateNetHandleParams) { return BeginReplication(OwnerHandle, Instance, FNetHandle(), ESubObjectInsertionOrder::None, Params); };
+	/** Create handle and start replicating the Instance as a SubObject of the OwnerHandle. */
+	/** Begin replicating the Instance as a subobject of the OwnerHandle and return a valid NetRefHandle for the Instance if successful. */
+	FNetRefHandle BeginReplication(FNetRefHandle OwnerHandle, UObject* Instance, const FCreateNetRefHandleParams& Params = DefaultCreateNetRefHandleParams);
 
 	/** 
-	 * Set NetCondition for a subobject, the condition is used to determine if the SubObject should replicated or not.
-	 * @note: As the filtering is done at the serialization level it is typically more efficient to use a separate NetObject for connection 
+	 * Set NetCondition for a subobject, the condition is used to determine if the SubObject should replicate or not.
+	 * @note As the filtering is done at the serialization level it is typically more efficient to use a separate NetObject for connection 
 	 * specific data as filtering can then be done at a higher level.
 	 */
-	IRISCORE_API void SetSubObjectNetCondition(FNetHandle SubObjectHandle, ELifetimeCondition Condition);
+	IRISCORE_API void SetSubObjectNetCondition(FNetRefHandle SubObjectHandle, ELifetimeCondition Condition);
 
 	/** Stop replicating the object. */
 	IRISCORE_API void EndReplication(UObject* Instance, EEndReplicationFlags EndReplicationFlags = EEndReplicationFlags::Destroy, FEndReplicationParameters* Parameters = nullptr);
@@ -111,35 +121,27 @@ public:
 	{
 		virtual ~FCreationHeader() {};
 	};
-
-	// Dependent objects supprt 
-
-	enum class EDependentWarnFlags : uint32
-	{
-		None = 1 << 0U,
-		WarnAlreadyDependent = 1 << None, 
-	};
 	
 	/**
 	 * Adds a dependent object. A dependent object can replicate separately or if a parent replicates.
 	 * Dependent objects cannot be filtered out by dynamic filtering unless the parent is also filtered out.
 	 * @note: There is no guarantee that the data will end up in the same packet so it is a very loose form of dependency.
 	 */
-	IRISCORE_API void AddDependentObject(FNetHandle Parent, FNetHandle DependentObject, EDependentWarnFlags WarnFlags = EDependentWarnFlags::WarnAlreadyDependent);
+	IRISCORE_API void AddDependentObject(FNetRefHandle Parent, FNetRefHandle DependentObject, UE::Net::EDependentObjectSchedulingHint SchedulingHint = UE::Net::EDependentObjectSchedulingHint::Default);
 
 	/** Remove dependent object from parent. The dependent object will function as a standard standalone replicated object. */
-	IRISCORE_API void RemoveDependentObject(FNetHandle Parent, FNetHandle DependentObject);
+	IRISCORE_API void RemoveDependentObject(FNetRefHandle Parent, FNetRefHandle DependentObject);
 
 	// Dormancy support
 
 	/** Set whether object should go dormant. If dormancy is enabled any dirty state will be replicated first. */
-	IRISCORE_API void SetObjectWantsToBeDormant(FNetHandle Handle, bool bWantsToBeDormant);
+	IRISCORE_API void SetObjectWantsToBeDormant(FNetRefHandle Handle, bool bWantsToBeDormant);
 
 	/** Returns whether the object wants to be dormant. */
-	IRISCORE_API bool GetObjectWantsToBeDormant(FNetHandle Handle) const;
+	IRISCORE_API bool GetObjectWantsToBeDormant(FNetRefHandle Handle) const;
 
 	/** Trigger replication of dirty state for object wanting to be dormant. */
-	IRISCORE_API void ForceUpdateWantsToBeDormantObject(FNetHandle Handle);	
+	IRISCORE_API void ForceUpdateWantsToBeDormantObject(FNetRefHandle Handle);	
 
 protected:
 	IRISCORE_API virtual ~UObjectReplicationBridge();
@@ -148,15 +150,15 @@ protected:
 
 	IRISCORE_API virtual void Initialize(UReplicationSystem* InReplicationSystem) override;
 	IRISCORE_API virtual void Deinitialize() override;
-	IRISCORE_API virtual void PreSendUpdateSingleHandle(FNetHandle Handle) override;	
+	IRISCORE_API virtual void PreSendUpdateSingleHandle(FNetRefHandle RefHandle) override;	
 	IRISCORE_API virtual void PreSendUpdate() override;	
 	IRISCORE_API virtual void UpdateInstancesWorldLocation() override;
 	IRISCORE_API virtual void PruneStaleObjects() override;	
-	IRISCORE_API virtual bool WriteNetHandleCreationInfo(FReplicationBridgeSerializationContext& Context, FNetHandle Handle) override;
-	IRISCORE_API virtual FNetHandle CreateNetHandleFromRemote(FNetHandle SubObjectOwnerNetHandle, FNetHandle WantedNetHandle, FReplicationBridgeSerializationContext& Context) override;
-	IRISCORE_API virtual void PostApplyInitialState(FNetHandle Handle) override;
-	IRISCORE_API virtual void DetachInstanceFromRemote(FNetHandle Handle, bool bTearOff, bool bShouldDestroyInstance) override;
-	IRISCORE_API virtual void DetachInstance(FNetHandle Handle) override;
+	IRISCORE_API virtual bool WriteNetRefHandleCreationInfo(FReplicationBridgeSerializationContext& Context, FNetRefHandle Handle) override;
+	IRISCORE_API virtual FReplicationBridgeCreateNetRefHandleResult CreateNetRefHandleFromRemote(FNetRefHandle SubObjectOwnerNetHandle, FNetRefHandle WantedNetHandle, FReplicationBridgeSerializationContext& Context) override;
+	IRISCORE_API virtual void PostApplyInitialState(FNetRefHandle Handle) override;
+	IRISCORE_API virtual void DetachInstanceFromRemote(FNetRefHandle Handle, EReplicationBridgeDestroyInstanceReason DestroyReason, EReplicationBridgeDestroyInstanceFlags DestroyFlags) override;
+	IRISCORE_API virtual void DetachInstance(FNetRefHandle Handle) override;
 
 protected:
 	/**
@@ -167,35 +169,35 @@ protected:
 	*/
 
 	/** Write data required to instantiate the Handle. */
-	virtual bool WriteCreationHeader(UE::Net::FNetSerializationContext& Context, FNetHandle Handle) { return false; };
+	virtual bool WriteCreationHeader(UE::Net::FNetSerializationContext& Context, FNetRefHandle Handle) { return false; };
 
 	/** Create Header and read data required to instantiate the Handle. */
 	virtual FCreationHeader* ReadCreationHeader(UE::Net::FNetSerializationContext& Context) { return nullptr; };
 
 	/** Called when we instantiate/find object instance requested by remote. */
-	virtual UObject* BeginInstantiateFromRemote(FNetHandle SubObjectOwnerHandle, const UE::Net::FNetObjectResolveContext& ResolveContext, const FCreationHeader* Header) { return nullptr; };
+	virtual FObjectReplicationBridgeInstantiateResult BeginInstantiateFromRemote(FNetRefHandle SubObjectOwnerHandle, const UE::Net::FNetObjectResolveContext& ResolveContext, const FCreationHeader* Header) { return FObjectReplicationBridgeInstantiateResult(); };
 
 	/** Invoked before we start applying state data to instance on remote end. */
 	virtual bool OnInstantiatedFromRemote(UObject* Instance, const FCreationHeader* InHeader, uint32 ConnectionId) const { return true; }
 
 	/** Invoked after remote NetHandle has been created and initial state is applied. */
-	virtual void EndInstantiateFromRemote(FNetHandle Handle) {};
+	virtual void EndInstantiateFromRemote(FNetRefHandle Handle) {};
 
 	/** Destroy or tear-off the game instance on request from remote. */
-	virtual void DestroyInstanceFromRemote(UObject* Instance, bool bTearOff) {};
+	virtual void DestroyInstanceFromRemote(UObject* Instance, EReplicationBridgeDestroyInstanceReason DestroyReason, EReplicationBridgeDestroyInstanceFlags DestroyFlags) {}
 
 protected:
 	/** Lookup the UObject associated with the provided Handle. This function will not try to resolve the reference. */
-	IRISCORE_API UObject* GetObjectFromReferenceHandle(FNetHandle NetHandle) const;
+	IRISCORE_API UObject* GetObjectFromReferenceHandle(FNetRefHandle RefHandle) const;
 
 	/** Helper method that calls provided PreUpdateFunction and polls state data for all replicated instances with the NeedsPoll trait. */
-	using FInstancePreUpdateFunction = void(*)(FNetHandle, UObject*, const UReplicationBridge*);
+	using FInstancePreUpdateFunction = void(*)(FNetRefHandle, UObject*, const UReplicationBridge*);
 
 	/** Set the function that we should call before copying state data. */
 	IRISCORE_API void SetInstancePreUpdateFunction(FInstancePreUpdateFunction InPreUpdateFunction);
 	
 	/** Helper method to get the world location for replicated instances with the HasWorldLocation trait. */
-	using FInstanceGetWorldLocationFunction = FVector(*)(FNetHandle, const UObject*);
+	using FInstanceGetWorldLocationFunction = FVector(*)(FNetRefHandle, const UObject*);
 
 	/** Set the function that we should call to get the world location of an object. */
 	IRISCORE_API void SetInstanceGetWorldLocationFunction(FInstanceGetWorldLocationFunction InGetWorldLocationFunction);
@@ -203,10 +205,10 @@ protected:
 	// Poll frequency support
 
 	/** Set poll frame period for a specific object. Zero based period where 0 means every frame and 255 means every 256th frame. */
-	IRISCORE_API void SetPollFramePeriod(UE::Net::Private::FInternalNetHandle InternalReplicationIndex, uint8 FramePeriod);
+	IRISCORE_API void SetPollFramePeriod(UE::Net::Private::FInternalNetRefIndex InternalReplicationIndex, uint8 FramePeriod);
 
-	/** Force polling of Object when ObjectToPoll is polled. */
-	IRISCORE_API void SetPollWithObject(FNetHandle ObjectToPollWith, FNetHandle Object);
+	/** Force polling of Object when ObjectToPollWith is polled. */
+	IRISCORE_API void SetPollWithObject(FNetRefHandle ObjectToPollWith, FNetRefHandle Object);
 
 	/** Re-initialize config-driven parameters found in ObjectReplicationBridgeConfig. */
 	IRISCORE_API void LoadConfig();
@@ -222,11 +224,14 @@ protected:
 
 private:
 
-	void PreUpdateAndPollImpl(FNetHandle Handle);
+	void PreUpdateAndPollImpl(FNetRefHandle RefHandle);
 
-	void RegisterRemoteInstance(FNetHandle Handle, UObject* InstancePtr, const UE::Net::FReplicationProtocol* Protocol, UE::Net::FReplicationInstanceProtocol* InstanceProtocol, const FCreationHeader* Header, uint32 ConnectionId);
+	/** Remove mapping between handle and object instance. */
+	void UnregisterInstance(FNetRefHandle RefHandle);
 
-	void UnregisterRemoteInstance(FNetHandle Handle, bool bTearOff, bool bShouldDestroyInstance);
+	void RegisterRemoteInstance(FNetRefHandle RefHandle, UObject* InstancePtr, const UE::Net::FReplicationProtocol* Protocol, UE::Net::FReplicationInstanceProtocol* InstanceProtocol, const FCreationHeader* Header, uint32 ConnectionId);
+
+	void SetNetPushIdOnInstance(UE::Net::FReplicationInstanceProtocol* InstanceProtocol, FNetHandle NetHandle);
 
 	/** Finds a poll period override if it exists. OutPollPeriod will only be modified if this method returns true. */
 	bool FindPollInfo(const UClass* Class, uint8& OutPollPeriod);
@@ -279,7 +284,7 @@ private:
 	TMap<FName, bool> ClassesWithDeltaCompression;
 
 	// Array of dormant objects that has requested a flush
-	TArray<FNetHandle> DormantHandlesPendingFlush;
+	TArray<FNetRefHandle> DormantHandlesPendingFlush;
 
 	// Objects which has object references and could be affected by garbage collection.
 	UE::Net::FNetBitArray ObjectsWithObjectReferences;
@@ -288,6 +293,14 @@ private:
 
 	UE::Net::FNetObjectFilterHandle DefaultSpatialFilterHandle;
 
+	FDelegateHandle OnCustomConditionChangedHandle;
+
 	bool bHasPollOverrides = false;
 	bool bHasDirtyClassesInPollPeriodOverrides = false;
 };
+
+
+inline UE::Net::FNetRefHandle UObjectReplicationBridge::BeginReplication(UE::Net::FNetRefHandle OwnerHandle, UObject* Instance, const FCreateNetRefHandleParams& Params)
+{
+	return BeginReplication(OwnerHandle, Instance, FNetRefHandle(), ESubObjectInsertionOrder::None, Params);
+}

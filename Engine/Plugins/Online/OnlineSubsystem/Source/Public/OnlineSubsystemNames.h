@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "UObject/NameTypes.h"
 
 
 #define OSS_PLATFORM_NAME_PS4		TEXT("PSN")
@@ -85,9 +85,7 @@ UE_DEPRECATED(4.27, "OnlineSubsystemLiveServer has been deprecated and will be r
 #define SWITCH_SUBSYSTEM FName(TEXT("SWITCH"))
 #endif
 
-#ifndef OCULUS_SUBSYSTEM
-#define OCULUS_SUBSYSTEM FName(TEXT("Oculus"))
-#endif
+UE_DEPRECATED(5.2, "OnlineSubsystemOculus has been deprecated and will be removed") ONLINESUBSYSTEM_API extern FName OCULUS_SUBSYSTEM;
 
 #ifndef SAMSUNG_SUBSYSTEM
 #define SAMSUNG_SUBSYSTEM FName(TEXT("SAMSUNG"))
@@ -99,4 +97,8 @@ UE_DEPRECATED(4.27, "OnlineSubsystemLiveServer has been deprecated and will be r
 
 #ifndef EOS_SUBSYSTEM
 #define EOS_SUBSYSTEM FName(TEXT("EOS"))
+#endif
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
 #endif

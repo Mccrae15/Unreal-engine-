@@ -2,19 +2,13 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Templates/SubclassOf.h"
-#include "UObject/Object.h"
 
-#include "Blueprint/UserWidget.h"
 #include "Bindings/MVVMCompiledBindingLibrary.h"
 #include "Extensions/WidgetBlueprintGeneratedClassExtension.h"
-#include "FieldNotification/FieldId.h"
-#include "Types/MVVMBindingMode.h"
-#include "Types/MVVMBindingName.h"
+#include "Types/MVVMExecutionMode.h"
 #include "Types/MVVMViewModelContext.h"
-#include "View/MVVMView.h"
 
+#include "UObject/Package.h"
 #include "MVVMViewClass.generated.h"
 
 
@@ -111,6 +105,12 @@ public:
 		return SourcePropertyName;
 	}
 
+	/** @return true if SourceFieldId is not from a property but on the object itserf (UserWidget). */
+	bool IsSourceObjectItself() const
+	{
+		return (Flags & EBindingFlags::SourceObjectIsSelf) != 0;
+	}
+
 	/** @return the binding. From source to destination (if forward) or from destination to source (if backward). */
 	const FMVVMVCompiledBinding& GetBinding() const
 	{
@@ -146,6 +146,9 @@ public:
 	{
 		return (Flags & EBindingFlags::ConversionFunctionIsComplex) != 0;
 	}
+	
+	/** How the binding should be executed. */
+	EMVVMExecutionMode GetExecuteMode() const;
 
 	/** @return a human readable version of the binding that can be use for debugging purposes. */
 	FString ToString() const;
@@ -160,21 +163,26 @@ private:
 	UPROPERTY()
 	FMVVMVCompiledBinding Binding;
 
-	/** How the binding should be executed. */
 	UPROPERTY()
-	EMVVMViewBindingUpdateMode UpdateMode = EMVVMViewBindingUpdateMode::Immediate;
+	EMVVMExecutionMode ExecutionMode = EMVVMExecutionMode::Immediate;
 
 	enum EBindingFlags
 	{
 		None = 0,
-		ForwardBinding = 1 << 0, // True when the binding goes from Source to Destination.
-		TwoWayBinding = 1 << 1, // The binding is one part of a 2 ways binding.
+		/** True when the binding goes from Source to Destination. */
+		ForwardBinding = 1 << 0,
+		/** The binding is one part of a 2 ways binding. */
+		TwoWayBinding = 1 << 1,
 		OneTime = 1 << 2,
 		EnabledByDefault = 1 << 3,
-		ViewModelOptional = 1 << 4,	// The source (viewmodel) can be nullptr and the binding could failed and should not log a warning.
-		ConversionFunctionIsComplex = 1 << 5,	// The conversion function is complex, there is no input. The inputs are calculated in the BP function.
-		Unused01 = 1 << 6,
-		Unused02 = 1 << 7,
+		/** The source (viewmodel) can be nullptr and the binding could failed and should not log a warning. */
+		ViewModelOptional = 1 << 4,
+		/** The conversion function is complex, there is no input. The inputs are calculated in the BP function. */
+		ConversionFunctionIsComplex = 1 << 5,
+		/** In development, (when the Blueprint maybe not be compiled with the latest data), the ExecutionMode may not reflect the default project setting value. */
+		OverrideExecuteMode = 1 << 6,
+		/** When the source object is the object itself. */
+		SourceObjectIsSelf = 1 << 7,
 	};
 
 	UPROPERTY()
@@ -245,3 +253,12 @@ private:
 	/** */
 	bool bLoaded = false;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Blueprint/UserWidget.h"
+#include "CoreMinimal.h"
+#include "FieldNotification/FieldId.h"
+#include "Types/MVVMBindingMode.h"
+#include "Types/MVVMBindingName.h"
+#include "View/MVVMView.h"
+#endif

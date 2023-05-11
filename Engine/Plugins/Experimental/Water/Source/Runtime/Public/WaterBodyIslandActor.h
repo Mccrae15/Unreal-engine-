@@ -2,9 +2,7 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
-#include "Engine/Scene.h"
 #include "WaterBrushActorInterface.h"
 #include "WaterBodyHeightmapSettings.h"
 #include "WaterBodyWeightmapSettings.h"
@@ -33,6 +31,9 @@ struct FOnWaterBodyIslandChangedParams
 
 	/** Indicates that a property affecting the terrain weightmaps has changed */
 	bool bWeightmapSettingsChanged = false;
+
+	/** Indicates user initiated change*/
+	bool bUserTriggered = false;
 };
 
 
@@ -116,3 +117,8 @@ protected:
 	UPROPERTY(VisibleAnywhere, Category = Water, BlueprintReadOnly, meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<UWaterSplineComponent> SplineComp;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "Engine/Scene.h"
+#endif

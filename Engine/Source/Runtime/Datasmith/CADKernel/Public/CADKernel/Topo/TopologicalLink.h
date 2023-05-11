@@ -3,6 +3,7 @@
 
 #include "CADKernel/Core/Entity.h" 
 #include "CADKernel/Math/Point.h"
+#include "CADKernel/Topo/TopologicalEntity.h"
 #include "CADKernel/UI/Message.h"
 
 namespace UE::CADKernel
@@ -34,6 +35,10 @@ protected:
 	}
 
 public:
+	virtual ~TTopologicalLink() override
+	{
+		TTopologicalLink::Empty();
+	}
 
 	virtual void Serialize(FCADKernelArchive& Ar) override
 	{
@@ -49,11 +54,10 @@ public:
 		SerializeIdents(Ar, TwinEntities, false);
 	}
 
-	virtual void Delete()
+	virtual void Empty() override
 	{
 		TwinEntities.Empty();
 		ActiveEntity = nullptr;
-		SetDeleted();
 	}
 
 	const EntityType* GetActiveEntity() const
@@ -70,7 +74,7 @@ public:
 
 	int32 GetTwinEntityNum() const
 	{
-		return (int32)TwinEntities.Num();
+		return TwinEntities.Num();
 	}
 
 	const TArray<EntityType*>& GetTwinEntities() const

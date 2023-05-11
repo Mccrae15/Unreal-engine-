@@ -6,9 +6,11 @@
 #include "LocalVertexFactory.h"
 #include "Containers/ResourceArray.h"
 #include "SceneManagement.h"
+#include "MaterialDomain.h"
 #include "MaterialShared.h"
 #include "Materials/Material.h"
 #include "RenderingThread.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "BaseMeshReconstructorModule.h"
 #include "MeshReconstructorBase.h"
 #include "AI/NavigationSystemHelpers.h"
@@ -26,6 +28,7 @@
 #include "Materials/MaterialInstanceDynamic.h"
 
 #include "PhysicsEngine/Experimental/ChaosDerivedData.h"
+#include "SceneInterface.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MRMeshComponent)
 

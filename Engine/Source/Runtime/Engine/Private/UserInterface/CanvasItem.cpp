@@ -7,19 +7,23 @@
 #include "CanvasItem.h"
 #include "BatchedElements.h"
 #include "EngineStats.h"
-#include "EngineGlobals.h"
-#include "HitProxies.h"
 #include "Materials/Material.h"
-#include "CanvasTypes.h"
+#include "CanvasRendererItem.h"
 #include "Engine/Canvas.h"
-#include "Engine/Texture.h"
 #include "Engine/Texture2D.h"
-#include "Engine/Engine.h"
 #include "Fonts/FontCache.h"
 #include "Fonts/FontMeasure.h"
 #include "Framework/Application/SlateApplication.h"
 #include "EngineFontServices.h"
+#include "Math/RotationMatrix.h"
 #include "TextureResource.h"
+
+#if WITH_EDITOR
+#include "Editor.h"
+#include "Selection.h"
+#else
+#include "Engine/Engine.h"
+#endif
 
 DECLARE_CYCLE_STAT(TEXT("CanvasTileTextureItem Time"),STAT_Canvas_TileTextureItemTime,STATGROUP_Canvas);
 DECLARE_CYCLE_STAT(TEXT("CanvasTileMaterialItem Time"),STAT_Canvas_TileMaterialItemTime,STATGROUP_Canvas);
@@ -32,8 +36,6 @@ DECLARE_CYCLE_STAT(TEXT("CanvasBorderItem Time"),STAT_Canvas_BorderItemTime,STAT
 
 
 #if WITH_EDITOR
-#include "Engine/Selection.h"
-#include "Editor.h"
 
 FCanvasItemTestbed::LineVars FCanvasItemTestbed::TestLine;
 bool FCanvasItemTestbed::bTestState = false;
@@ -1014,7 +1016,7 @@ void FCanvasTextItem::DrawStringInternal_OfflineCache(FCanvas* InCanvas, const F
 	FVector2D CurrentPos = FVector2D(ForceInitToZero);
 	FHitProxyId HitProxyId = InCanvas->GetHitProxyId();
 	FTexture* LastTexture = nullptr;
-	UTexture* Tex = nullptr;
+	UTexture* Texture = nullptr;
 	FVector2D InvTextureSize(1.0f,1.0f);
 
 	const float CharIncrement = ( (float)Font->Kerning + HorizSpacingAdjust ) * Scale.X;
@@ -1054,25 +1056,29 @@ void FCanvasTextItem::DrawStringInternal_OfflineCache(FCanvas* InCanvas, const F
 		}
 
 		if( Font->Textures.IsValidIndex(Char.TextureIndex) && 
-			(Tex=Font->Textures[Char.TextureIndex])!=nullptr && 
-			Tex->GetResource() != nullptr )
+			(Texture=Font->Textures[Char.TextureIndex])!=nullptr && 
+			Texture->GetResource() != nullptr
+#if WITH_EDITOR
+			&& !Texture->IsCompiling()
+#endif
+			)
 		{
-			if( LastTexture != Tex->GetResource() || BatchedElements == nullptr )
+			if( LastTexture != Texture->GetResource() || BatchedElements == nullptr )
 			{
 				FBatchedElementParameters* BatchedElementParams = nullptr;
-				BatchedElements = InCanvas->GetBatchedElements(FCanvas::ET_Triangle, BatchedElementParams, Tex->GetResource(), BlendMode, FontRenderInfo.GlowInfo, false);
+				BatchedElements = InCanvas->GetBatchedElements(FCanvas::ET_Triangle, BatchedElementParams, Texture->GetResource(), BlendMode, FontRenderInfo.GlowInfo, false);
 				check(BatchedElements != nullptr);
 				// Trade-off to use memory for performance by pre-allocating more reserved space 
 				// for the triangles/vertices of the batched elements used to render the text tiles
 				// Only reserve initial batch, allow growth afterwards in case there are multiple repeated calls.
 				// Reserving exactly the added amount each time would essentially force an alloc each time on subsequent calls.
-				BatchedElements->ReserveTriangles(TextLen*2,Tex->GetResource(),BlendMode);
+				BatchedElements->ReserveTriangles(TextLen*2,Texture->GetResource(),BlendMode);
 				BatchedElements->ReserveVertices(TextLen*4);
 
-				InvTextureSize.X = 1.0f / Tex->GetSurfaceWidth();
-				InvTextureSize.Y = 1.0f / Tex->GetSurfaceHeight();
+				InvTextureSize.X = 1.0f / Texture->GetSurfaceWidth();
+				InvTextureSize.Y = 1.0f / Texture->GetSurfaceHeight();
 			}
-			LastTexture = Tex->GetResource();
+			LastTexture = Texture->GetResource();
 
 			float SizeX			= Char.USize * Scale.X;
 			const float SizeY	= Char.VSize * Scale.Y;
@@ -1112,8 +1118,8 @@ void FCanvasTextItem::DrawStringInternal_OfflineCache(FCanvas* InCanvas, const F
 					InColor,
 					HitProxyId);
 
-				BatchedElements->AddTriangle(V00, V10, V11, Tex->GetResource(), BlendMode, FontRenderInfo.GlowInfo);
-				BatchedElements->AddTriangle(V00, V11, V01, Tex->GetResource(), BlendMode, FontRenderInfo.GlowInfo);
+				BatchedElements->AddTriangle(V00, V10, V11, Texture->GetResource(), BlendMode, FontRenderInfo.GlowInfo);
+				BatchedElements->AddTriangle(V00, V11, V01, Texture->GetResource(), BlendMode, FontRenderInfo.GlowInfo);
 			};
 
 			// Render all the effects first that appear under the text

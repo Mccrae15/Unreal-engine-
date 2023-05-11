@@ -22,7 +22,41 @@ class IDisplayClusterShaders;
 class IDisplayClusterProjectionPolicy;
 class IDisplayClusterRender_MeshComponent;
 class FDisplayClusterViewportReadPixelsData;
+class FDisplayClusterViewport_OpenColorIO;
 
+class FRDGBuilder;
+class FSceneView;
+struct FPostProcessMaterialInputs;
+struct FScreenPassTexture;
+struct FSceneTextures;
+
+/**
+ * Copy mode for texture channels.
+ */
+enum class EDisplayClusterTextureCopyMode : uint8
+{
+	RGBA = 0,
+	RGB,
+	Alpha,
+};
+
+/**
+ * OCIO is applied in different ways. It depends on the rendering workflow
+ */
+enum class EDisplayClusterViewportOpenColorIOMode : uint8
+{
+	None = 0,
+
+	// When the viewport renders with a postprocess, OCIO must be done in between
+	PostProcess,
+
+	// When the viewport is rendered without postprocessing, OCIO is applied last, to the RTT texture of the viewport
+	Resolved
+};
+
+/**
+ * nDisplay viewport proxy implementation.
+ */
 class FDisplayClusterViewportProxy
 	: public IDisplayClusterViewportProxy
 	, public TSharedFromThis<FDisplayClusterViewportProxy, ESPMode::ThreadSafe>
@@ -90,9 +124,6 @@ public:
 		Contexts.Append(InContexts);
 	}
 
-	// Apply postprocess, generate mips, etc from settings in FDisplayClusterViewporDeferredUpdateSettings
-	void UpdateDeferredResources(FRHICommandListImmediate& RHICmdList) const;
-
 	//  Return viewport scene proxy resources by type
 	virtual bool GetResources_RenderThread(const EDisplayClusterViewportResourceType InResourceType, TArray<FRHITexture2D*>& OutResources) const override;
 	virtual bool GetResourcesWithRects_RenderThread(const EDisplayClusterViewportResourceType InResourceType, TArray<FRHITexture2D*>& OutResources, TArray<FIntRect>& OutRects) const override;
@@ -103,17 +134,93 @@ public:
 	virtual EDisplayClusterViewportResourceType GetOutputResourceType_RenderThread() const override;
 
 	virtual const IDisplayClusterViewportManagerProxy& GetOwner_RenderThread() const override;
-
-	virtual void OnResolvedSceneColor_RenderThread(FRDGBuilder& GraphBuilder, const FSceneTextures& SceneTextures, const FDisplayClusterViewportProxy_Context& InProxyContext) override;
-	virtual void PostRenderViewFamily_RenderThread(FRDGBuilder& InGraphBuilder, class FSceneViewFamily& InViewFamily, const class FSceneView& InSceneView, const FDisplayClusterViewportProxy_Context& InProxyContext) override;
-
 	///////////////////////////////
 	// ~IDisplayClusterViewportProxy
 	///////////////////////////////
 
-	// Release internal resource refs
+	/** Release internal resource refs. */
 	void HandleResourceDelete_RenderThread(class FDisplayClusterViewportResource* InDeletedResourcePtr);
 
+	/** Resolve viewport RTT: render OCIO, PP, generate MIPS, etc.
+	 *
+	 * @param RHICmdList - RHI interface
+	 *
+	 * @return - none
+	 */
+	void UpdateDeferredResources(FRHICommandListImmediate& RHICmdList) const;
+
+	/** nDisplay VE Callback [subscribed to Renderer:ResolvedSceneColorCallbacks].
+	 *
+	 * @param GraphBuilder   - RDG interface
+	 * @param SceneTextures  - Scene textures (SceneColor, Depth, etc)
+	 * @param InProxyContext - Saved from game thread context for this proxy
+	 *
+	 * @return - none
+	 */
+	void OnResolvedSceneColor_RenderThread(FRDGBuilder& GraphBuilder, const FSceneTextures& SceneTextures, const FDisplayClusterViewportProxy_Context& InProxyContext);
+
+	/** nDisplay VE Callback [PostRenderViewFamily_RenderThread()].
+	 *
+	 * @param GraphBuilder   - RDG interface
+	 * @param InViewFamily   - Scene View Family
+	 * @param InSceneView    - Scene View
+	 * @param InProxyContext - Saved from game thread context for this proxy
+	 *
+	 * @return - none
+	 */
+	void OnPostRenderViewFamily_RenderThread(FRDGBuilder& InGraphBuilder, FSceneViewFamily& InViewFamily, const FSceneView& InSceneView, const FDisplayClusterViewportProxy_Context& InProxyContext);
+
+	/** Allow callback OnPostProcessPassAfterFXAA.  */
+	bool ShouldUsePostProcessPassAfterFXAA() const;
+
+	/** Callback OnPostProcessPassAfterFXAA.
+	 *
+	 * @param GraphBuilder - RDG interface
+	 * @param View         - Scene View
+	 * @param Inputs       - PP Input resources
+	 * @param ContextNum   - viewport context index
+	 *
+	 * @return - Screen pass texture
+	 */
+	FScreenPassTexture OnPostProcessPassAfterFXAA_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs, const uint32 ContextNum);
+
+	/** Allow callback OnPostProcessPassAfterSSRInput. */
+	bool ShouldUsePostProcessPassAfterSSRInput() const;
+
+	/** Callback OnPostProcessPassAfterSSRInput.
+	 *
+	 * @param GraphBuilder - RDG interface
+	 * @param View         - Scene View
+	 * @param Inputs       - PP Input resources
+	 * @param ContextNum   - viewport context index
+	 *
+	 * @return - Screen pass texture
+	 */
+	FScreenPassTexture OnPostProcessPassAfterSSRInput_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs, const uint32 ContextNum);
+
+	/** Allow callback OnPostProcessPassAfterTonemap. */
+	bool ShouldUsePostProcessPassTonemap() const;
+
+	/** Callback OnPostProcessPassAfterTonemap.
+	 *
+	 * @param GraphBuilder - RDG interface
+	 * @param View         - Scene View
+	 * @param Inputs       - PP Input resources
+	 * @param ContextNum   - viewport context index
+	 *
+	 * @return - Screen pass texture
+	 */
+	FScreenPassTexture OnPostProcessPassAfterTonemap_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs, const uint32 ContextNum);
+
+	/** Enable alpha channel for this viewport (useful for overlays with alpha channel: ChromaKey, LightCard). */
+	bool ShouldUseAlphaChannel_RenderThread() const;
+
+	/** AfterWarp resolve viewport resources: ViewportRemap, etc
+	 *
+	 * @param RHICmdList - RHI interface
+	 *
+	 * @return - none
+	 */
 	void PostResolveViewport_RenderThread(FRHICommandListImmediate& RHICmdList) const;
 
 #if WITH_EDITOR
@@ -152,14 +259,67 @@ private:
 	bool ImplResolveResources_RenderThread(FRHICommandListImmediate& RHICmdList, FDisplayClusterViewportProxy const* SourceProxy, const EDisplayClusterViewportResourceType InputResourceType, const EDisplayClusterViewportResourceType OutputResourceType, const int32 InContextNum) const;
 	bool IsShouldOverrideViewportResource(const EDisplayClusterViewportResourceType InResourceType) const;
 
+	/** Copy pixel channels between resources.
+	 *
+	 * @param GraphBuilder       - RDG interface
+	 * @param InCopyMode         - channels copy mode
+	 * @param InContextNum       - viewport context
+	 * @param InSrcTextureRef    - Input resource
+	 * @param InSrcRect          - Input resource rect
+	 * @param InDestResourceType - Dest viewport resource type
+	 *
+	 * @return - true, if success
+	 */
+	bool CopyResource_RenderThread(FRDGBuilder& GraphBuilder, const EDisplayClusterTextureCopyMode InCopyMode, const int32 InContextNum, FRDGTextureRef InSrcTextureRef, const FIntRect& InSrcRect, const EDisplayClusterViewportResourceType InDestResourceType);
+
+	/** Copy pixel channels between resources.
+	 *
+	 * @param GraphBuilder      - RDG interface
+	 * @param InCopyMode        - channels copy mode
+	 * @param InContextNum      - viewport context
+	 * @param InDestTextureRef  - Dest resource
+	 * @param InDestRect        - Dest resource rect
+	 *
+	 * @return - true, if success
+	 */
+	bool CopyResource_RenderThread(FRDGBuilder& GraphBuilder, const EDisplayClusterTextureCopyMode InCopyMode, const int32 InContextNum, const EDisplayClusterViewportResourceType InSrcResourceType, FRDGTextureRef InDestTextureRef, const FIntRect& InDestRect);
+
+	/** Copy pixel channels between resources.
+	 *
+	 * @param GraphBuilder       - RDG interface
+	 * @param InCopyMode         - channels copy mode
+	 * @param InContextNum       - viewport context
+	 * @param InSrcResourceType  - Input viewport resource type
+	 * @param InDestResourceType - Dest viewport resource type
+	 *
+	 * @return - true, if success
+	 */
+	bool CopyResource_RenderThread(FRDGBuilder& GraphBuilder, const EDisplayClusterTextureCopyMode InCopyMode, const int32 InContextNum, const EDisplayClusterViewportResourceType InSrcResourceType, const EDisplayClusterViewportResourceType InDestResourceType);
+
+	/** Return viewport used to render RTT (support ViewportOverride)
+	 *
+	 * @return - viewport proxy with valid render resources
+	 */
+	const FDisplayClusterViewportProxy& GetRenderingViewportProxy() const;
+
+	/** Check if there is an RTT source (internal or external) in this viewport proxy. */
+	bool IsInputRenderTargetResourceExists() const;
+
+	/** Returns the OCIO rendering type for the given viewport. */
+	EDisplayClusterViewportOpenColorIOMode GetOpenColorIOMode() const;
+
 protected:
 	friend FDisplayClusterViewportProxyData;
 	friend FDisplayClusterViewportManagerProxy;
 
-	// Unique viewport name
+	/** Unique viewport name. */
 	const FString ViewportId;
 
+	/** Cluster node name. */
 	const FString ClusterNodeId;
+
+	/** OpenColorIO nDisplay interface ref. */
+	TSharedPtr<FDisplayClusterViewport_OpenColorIO, ESPMode::ThreadSafe> OpenColorIO;
 
 	// Viewport render params
 	mutable FDisplayClusterViewport_RenderSettings       RenderSettings;
@@ -177,9 +337,6 @@ protected:
 	// Viewport contexts (left/center/right eyes)
 	mutable TArray<FDisplayClusterViewport_Context> Contexts;
 
-	/** The GPU nodes on which to render this view. */
-	TArray<FRHIGPUMask> GPUMask;
-
 	// View family render to this resources
 	TArray<FDisplayClusterViewportRenderTargetResource*> RenderTargets;
 
@@ -189,6 +346,7 @@ protected:
 
 #if WITH_EDITOR
 	FTextureRHIRef OutputPreviewTargetableResource;
+	TArray<TSharedPtr<FSceneViewStateReference, ESPMode::ThreadSafe>> ViewStates;
 	
 	mutable bool bPreviewReadPixels = false;
 	mutable FCriticalSection PreviewPixelsCSGuard;

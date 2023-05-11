@@ -7,6 +7,7 @@
 #include "VertexFactory.h"
 #include "MaterialShared.h"
 #include "Engine/CollisionProfile.h"
+#include "MaterialDomain.h"
 #include "Materials/Material.h"
 #include "LocalVertexFactory.h"
 #include "SceneManagement.h"
@@ -14,6 +15,7 @@
 #include "StaticMeshResources.h"
 #include "Algo/Accumulate.h"
 #include "Async/ParallelFor.h"
+#include "SceneInterface.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(PointSetComponent)
 

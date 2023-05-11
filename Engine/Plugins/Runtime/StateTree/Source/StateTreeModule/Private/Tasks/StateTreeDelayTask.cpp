@@ -2,13 +2,12 @@
 
 #include "StateTreeDelayTask.h"
 #include "StateTreeExecutionContext.h"
-#include "StateTreeLinker.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(StateTreeDelayTask)
 
 EStateTreeRunStatus FStateTreeDelayTask::EnterState(FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
 {
-	InstanceDataType& InstanceData = Context.GetInstanceData<InstanceDataType>(*this);
+	FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
 
 	if (!InstanceData.bRunForever)
 	{
@@ -21,7 +20,7 @@ EStateTreeRunStatus FStateTreeDelayTask::EnterState(FStateTreeExecutionContext& 
 
 EStateTreeRunStatus FStateTreeDelayTask::Tick(FStateTreeExecutionContext& Context, const float DeltaTime) const
 {
-	InstanceDataType& InstanceData = Context.GetInstanceData<InstanceDataType>(*this);
+	FInstanceDataType& InstanceData = Context.GetInstanceData(*this);
 
 	if (!InstanceData.bRunForever)
 	{

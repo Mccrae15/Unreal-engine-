@@ -2,11 +2,9 @@
 
 #include "AI/NavigationSystemBase.h"
 #include "Engine/Engine.h"
-#include "Engine/World.h"
+#include "Engine/Level.h"
 #include "GameFramework/WorldSettings.h"
-#include "AI/Navigation/NavigationTypes.h"
 #include "AI/Navigation/NavAreaBase.h"
-#include "AI/Navigation/NavAgentInterface.h"
 #include "AI/Navigation/PathFollowingAgentInterface.h"
 #include "AI/NavigationSystemConfig.h"
 #include "AI/Navigation/NavigationDataChunk.h"
@@ -19,8 +17,6 @@ DEFINE_LOG_CATEGORY(LogNavLink);
 DEFINE_LOG_CATEGORY(LogAStar);
 
 #if !UE_BUILD_SHIPPING
-#include "CoreGlobals.h"
-#include "Misc/ConfigCacheIni.h"
 #endif // !UE_BUILD_SHIPPING
 
 namespace FNavigationSystem
@@ -155,6 +151,8 @@ namespace FNavigationSystem
 		FWorldBasedSignature Build;
 		FOnNavigationInitSignature OnNavigationInitStart;
 		FOnNavigationInitSignature OnNavigationInitDone;
+		FOnNavAreaGenericEvent OnNavAreaRegistered;
+		FOnNavAreaGenericEvent OnNavAreaUnregistered;
 #if WITH_EDITOR
 		FWorldBasedSignature OnPIEStart;
 		FWorldBasedSignature OnPIEEnd;
@@ -431,6 +429,8 @@ FNavigationSystem::FWorldBoolBasedSignature& UNavigationSystemBase::VerifyNaviga
 FNavigationSystem::FWorldBasedSignature& UNavigationSystemBase::BuildDelegate() { return FNavigationSystem::Delegates.Build; }
 FNavigationSystem::FOnNavigationInitSignature& UNavigationSystemBase::OnNavigationInitStartStaticDelegate() { return FNavigationSystem::Delegates.OnNavigationInitStart; }
 FNavigationSystem::FOnNavigationInitSignature& UNavigationSystemBase::OnNavigationInitDoneStaticDelegate() { return FNavigationSystem::Delegates.OnNavigationInitDone; }
+FNavigationSystem::FOnNavAreaGenericEvent& UNavigationSystemBase::OnNavAreaRegisteredDelegate() { return FNavigationSystem::Delegates.OnNavAreaRegistered; }
+FNavigationSystem::FOnNavAreaGenericEvent& UNavigationSystemBase::OnNavAreaUnregisteredDelegate() { return FNavigationSystem::Delegates.OnNavAreaUnregistered; }
 #if WITH_EDITOR
 FNavigationSystem::FWorldBasedSignature& UNavigationSystemBase::OnPIEStartDelegate() { return FNavigationSystem::Delegates.OnPIEStart; }
 FNavigationSystem::FWorldBasedSignature& UNavigationSystemBase::OnPIEEndDelegate() { return FNavigationSystem::Delegates.OnPIEEnd; }

@@ -127,10 +127,9 @@ enum class ELandscapeConvertMode : int8
 	Resample = 2,
 };
 
-UENUM()
 namespace EColorChannel
 {
-	enum Type
+	enum UE_DEPRECATED(5.2, "Use ELandscapeTextureColorChannel") Type : int
 	{
 		Red,
 		Green,
@@ -138,6 +137,15 @@ namespace EColorChannel
 		Alpha,
 	};
 }
+
+UENUM()
+enum class ELandscapeTextureColorChannel : int32
+{
+	Red,
+	Green,
+	Blue,
+	Alpha,
+};
 
 UENUM()
 enum class ELandscapeMirrorOperation : uint8
@@ -444,9 +452,8 @@ class ULandscapeEditorObject : public UObject
 	UPROPERTY(Category="Tool Settings", EditAnywhere, NonTransactional, meta=(DisplayName="Gizmo copy/paste all layers", ShowForTools="CopyPaste"))
 	bool bApplyToAllTargets;
 
-	// Makes sure the gizmo is snapped perfectly to the landscape so that the sample points line up, which makes copy/paste less blurry. Irrelevant if gizmo is scaled
-	UPROPERTY(Category="Tool Settings", EditAnywhere, NonTransactional, meta=(DisplayName="Snap Gizmo to Landscape grid", ShowForTools="CopyPaste"))
-	bool bSnapGizmo;
+	UPROPERTY(Category="Tool Settings", EditAnywhere, NonTransactional, meta=(DisplayName="Snap Gizmo to Landscape grid", ShowForTools="CopyPaste,ImportExport"))
+	ELandscapeGizmoSnapType SnapMode;
 
 	// Smooths the edges of the gizmo data into the landscape. Without this, the edges of the pasted data will be sharp
 	UPROPERTY(Category="Tool Settings", EditAnywhere, NonTransactional, meta=(DisplayName="Use Smooth Gizmo Brush", ShowForTools="CopyPaste"))
@@ -595,7 +602,7 @@ public:
 	// Common Brush Settings:
 
 	// The radius of the sculpt brush, in unreal units
-	UPROPERTY(Category="Brush Settings", EditAnywhere, NonTransactional, meta=(DisplayName="Brush Size", ShowForBrushes="BrushSet_Circle,BrushSet_Alpha,BrushSet_Pattern", ShowForTargetTypes = "Heightmap,Visibility", ClampMin="1", ClampMax="65536", UIMin="1", UIMax="8192", SliderExponent="3"))
+	UPROPERTY(Category="Brush Settings", EditAnywhere, NonTransactional, meta=(DisplayName="Brush Size", ShowForBrushes="BrushSet_Circle,BrushSet_Alpha,BrushSet_Pattern", ShowForTargetTypes = "Heightmap,Visibility", ClampMin="1", ClampMax="65536", UIMin="1", UIMax="8192", SliderExponent="3", MaxFractionalDigits="2"))
 	float BrushRadius;
 
 	// The radius of the paint brush, in unreal units
@@ -648,7 +655,7 @@ public:
 
 	// Channel of Mask Texture to use
 	UPROPERTY(Category="Brush Settings", EditAnywhere, NonTransactional, meta=(DisplayName="Texture Channel", ShowForBrushes="BrushSet_Alpha,BrushSet_Pattern"))
-	TEnumAsByte<EColorChannel::Type> AlphaTextureChannel;
+	ELandscapeTextureColorChannel AlphaTextureChannel;
 
 	UPROPERTY(NonTransactional)
 	int32 AlphaTextureSizeX;
@@ -697,7 +704,8 @@ public:
 	void SetPasteMode(ELandscapeToolPasteMode InPasteMode);
 
 	// Alpha/Pattern Brush
-	void SetAlphaTexture(UTexture2D* InTexture, EColorChannel::Type InTextureChannel);
+	void SetAlphaTexture(UTexture2D* InTexture, ELandscapeTextureColorChannel InTextureChannel);
+	bool HasValidAlphaTextureData() const;
 
 	// New Landscape
 	FString LastImportPath;
@@ -765,7 +773,7 @@ public:
 		}
 	}
 
-	void SetbSnapGizmo(bool InbSnapGizmo);
+	void SetGizmoSnapMode(ELandscapeGizmoSnapType SnapMode);
 
 	void SetParent(FEdModeLandscape* LandscapeParent)
 	{
@@ -791,4 +799,6 @@ private:
 		check(ParentMode);
 		return !(ParentMode->CurrentToolTarget.TargetType == ELandscapeToolTargetType::Heightmap || ParentMode->CurrentToolTarget.TargetType == ELandscapeToolTargetType::Visibility);
 	}
+
+	static bool LoadAlphaTextureSourceData(UTexture2D* InTexture, TArray<uint8>& OutSourceData, int32& OutSourceDataSizeX, int32& OutSourceDataSizeY, ELandscapeTextureColorChannel& InOutTextureChannel);
 };

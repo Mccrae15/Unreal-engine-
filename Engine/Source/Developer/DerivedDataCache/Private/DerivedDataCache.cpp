@@ -4,7 +4,9 @@
 #include "DerivedDataCacheInterface.h"
 
 #include "Algo/AllOf.h"
+#include "AnalyticsEventAttribute.h"
 #include "Async/AsyncWork.h"
+#include "Async/InheritedContext.h"
 #include "Async/TaskGraphInterfaces.h"
 #include "Containers/Map.h"
 #include "DDCCleanup.h"
@@ -17,9 +19,10 @@
 #include "DerivedDataPrivate.h"
 #include "DerivedDataRequest.h"
 #include "DerivedDataRequestOwner.h"
+#include "DerivedDataThreadPoolTask.h"
 #include "Experimental/Async/LazyEvent.h"
+#include "Experimental/ZenServerInterface.h"
 #include "Features/IModularFeatures.h"
-#include "HAL/LowLevelMemTracker.h"
 #include "HAL/ThreadSafeCounter.h"
 #include "Misc/CommandLine.h"
 #include "Misc/CoreMisc.h"
@@ -30,7 +33,6 @@
 #include "Serialization/CompactBinaryWriter.h"
 #include "Stats/Stats.h"
 #include "Stats/StatsMisc.h"
-#include "ZenServerInterface.h"
 #include <atomic>
 
 DEFINE_STAT(STAT_DDC_NumGets);
@@ -94,51 +96,65 @@ namespace UE::DerivedData::CookStats
 			const TSharedRef<const FDerivedDataCacheStatsNode>* ZenRemoteNode = Nodes.FindByPredicate([](TSharedRef<const FDerivedDataCacheStatsNode> Node) { return (Node->GetCacheType() == TEXT("Zen") || Node->GetCacheType() == TEXT("Horde")) && !Node->IsLocal(); });
 
 			const FDerivedDataCacheUsageStats& RootStats = RootNode->UsageStats.CreateConstIterator().Value();
-			const int64 TotalGetHits = RootStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Counter);
-			const int64 TotalGetMisses = RootStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Miss, FCookStats::CallStats::EStatType::Counter);
-			const int64 TotalGets = TotalGetHits + TotalGetMisses;
-
-			int64 LocalHits = 0;
+			
+			int64 LocalGetHits = 0;
+			int64 LocalGetMisses = 0;
 			FDerivedDataCacheSpeedStats LocalSpeedStats;
 			if (LocalNode)
 			{
 				const FDerivedDataCacheUsageStats& UsageStats = (*LocalNode)->UsageStats.CreateConstIterator().Value();
-				LocalHits += UsageStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Counter);
+				LocalGetHits += UsageStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Counter);
+				LocalGetMisses += UsageStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Miss, FCookStats::CallStats::EStatType::Counter);
 				LocalSpeedStats = (*LocalNode)->SpeedStats;
 			}
 			if (ZenLocalNode)
 			{
 				const FDerivedDataCacheUsageStats& UsageStats = (*ZenLocalNode)->UsageStats.CreateConstIterator().Value();
-				LocalHits += UsageStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Counter);
+				LocalGetHits += UsageStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Counter);
+				LocalGetMisses += UsageStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Miss, FCookStats::CallStats::EStatType::Counter);
 				LocalSpeedStats = (*ZenLocalNode)->SpeedStats;
 			}
-			int64 SharedHits = 0;
+			const int64 LocalGetTotal = LocalGetHits + LocalGetMisses;
+
+			int64 SharedGetHits = 0;
+			int64 SharedGetMisses = 0;
 			FDerivedDataCacheSpeedStats SharedSpeedStats;
 			if (SharedNode)
 			{
 				// The shared DDC is only queried if the local one misses (or there isn't one). So it's hit rate is technically 
 				const FDerivedDataCacheUsageStats& UsageStats = (*SharedNode)->UsageStats.CreateConstIterator().Value();
-				SharedHits += UsageStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Counter);
+				SharedGetHits += UsageStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Counter);
+				SharedGetMisses += UsageStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Miss, FCookStats::CallStats::EStatType::Counter);
 				SharedSpeedStats = (*SharedNode)->SpeedStats;
 			}
 			if (ZenRemoteNode)
 			{
 				const FDerivedDataCacheUsageStats& UsageStats = (*ZenRemoteNode)->UsageStats.CreateConstIterator().Value();
-				SharedHits += UsageStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Counter);
+				SharedGetHits += UsageStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Counter);
+				SharedGetMisses += UsageStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Miss, FCookStats::CallStats::EStatType::Counter);
 				SharedSpeedStats = (*ZenRemoteNode)->SpeedStats;
 			}
-			int64 CloudHits = 0;
+			const int64 SharedGetTotal = SharedGetHits + SharedGetMisses;
+
+			int64 CloudGetHits = 0;
+			int64 CloudGetMisses = 0;
 			FDerivedDataCacheSpeedStats CloudSpeedStats;
 			if (CloudNode)
 			{
 				const FDerivedDataCacheUsageStats& UsageStats = (*CloudNode)->UsageStats.CreateConstIterator().Value();
-				CloudHits += UsageStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Counter);
+				CloudGetHits += UsageStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Counter);
+				CloudGetMisses += UsageStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Miss, FCookStats::CallStats::EStatType::Counter);
 				CloudSpeedStats = (*CloudNode)->SpeedStats;
 			}
+			const int64 CloudGetTotal = CloudGetHits + CloudGetMisses;
 
-			const int64 TotalPutHits = RootStats.PutStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Counter);
-			const int64 TotalPutMisses = RootStats.PutStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Miss, FCookStats::CallStats::EStatType::Counter);
-			const int64 TotalPuts = TotalPutHits + TotalPutMisses;
+			const int64 RootGetHits = RootStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Counter);
+			const int64 RootGetMisses = RootStats.GetStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Miss, FCookStats::CallStats::EStatType::Counter);
+			const int64 RootGetTotal = RootGetHits + RootGetMisses;
+
+			const int64 RootPutHits = RootStats.PutStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Hit, FCookStats::CallStats::EStatType::Counter);
+			const int64 RootPutMisses = RootStats.PutStats.GetAccumulatedValueAnyThread(FCookStats::CallStats::EHitOrMiss::Miss, FCookStats::CallStats::EStatType::Counter);
+			const int64 RootPutTotal = RootPutHits + RootPutMisses;
 
 			AddStat(TEXT("DDC.Summary"), FCookStatsManager::CreateKeyValueArray(
 				TEXT("BackEnd"), FDerivedDataBackend::Get().GetGraphName(),
@@ -146,18 +162,25 @@ namespace UE::DerivedData::CookStats
 				TEXT("HasSharedCache"), SharedNode || ZenRemoteNode,
 				TEXT("HasCloudCache"), !!CloudNode,
 				TEXT("HasZenCache"), ZenLocalNode || ZenRemoteNode,
-				TEXT("TotalGetHits"), TotalGetHits,
-				TEXT("TotalGets"), TotalGets,
-				TEXT("TotalGetHitPct"), SafeDivide(TotalGetHits, TotalGets),
-				TEXT("LocalGetHitPct"), SafeDivide(LocalHits, TotalGets),
-				TEXT("SharedGetHitPct"), SafeDivide(SharedHits, TotalGets),
-				TEXT("CloudGetHitPct"), SafeDivide(CloudHits, TotalGets),
-				TEXT("OtherGetHitPct"), SafeDivide((TotalGetHits - LocalHits - SharedHits - CloudHits), TotalGets),
-				TEXT("GetMissPct"), SafeDivide(TotalGetMisses, TotalGets),
-				TEXT("TotalPutHits"), TotalPutHits,
-				TEXT("TotalPuts"), TotalPuts,
-				TEXT("TotalPutHitPct"), SafeDivide(TotalPutHits, TotalPuts),
-				TEXT("PutMissPct"), SafeDivide(TotalPutMisses, TotalPuts),
+				TEXT("TotalGetHits"), RootGetHits,
+				TEXT("TotalGetMisses"), RootGetMisses,
+				TEXT("TotalGets"), RootGetTotal,
+				TEXT("TotalGetHitPct"), SafeDivide(RootGetHits, RootGetTotal),
+				TEXT("GetMissPct"), SafeDivide(RootGetMisses, RootGetTotal),
+				TEXT("TotalPutHits"), RootPutHits,
+				TEXT("TotalPutMisses"), RootPutMisses,
+				TEXT("TotalPuts"), RootPutTotal,	
+				TEXT("TotalPutHitPct"), SafeDivide(RootPutHits, RootPutTotal),	
+				TEXT("PutMissPct"), SafeDivide(RootPutMisses, RootPutTotal),
+				TEXT("LocalGetHits"), LocalGetHits,
+				TEXT("LocalGetTotal"), LocalGetTotal,
+				TEXT("LocalGetHitPct"), SafeDivide(LocalGetHits, LocalGetTotal),
+				TEXT("SharedGetHits"), SharedGetHits,
+				TEXT("SharedGetTotal"), SharedGetTotal,
+				TEXT("SharedGetHitPct"), SafeDivide(SharedGetHits, SharedGetTotal),
+				TEXT("CloudGetHits"), CloudGetHits,
+				TEXT("CloudGetTotal"), CloudGetTotal,
+				TEXT("CloudGetHitPct"), SafeDivide(CloudGetHits, CloudGetTotal),
 				TEXT("LocalLatency"), LocalSpeedStats.LatencyMS,
 				TEXT("LocalReadSpeed"), LocalSpeedStats.ReadSpeedMBs,
 				TEXT("LocalWriteSpeed"), LocalSpeedStats.WriteSpeedMBs,
@@ -326,101 +349,9 @@ namespace UE::DerivedData::Private
 
 FQueuedThreadPool* GCacheThreadPool;
 
-class FCacheThreadPoolTaskRequest final : public FRequestBase, private IQueuedWork
-{
-public:
-	inline FCacheThreadPoolTaskRequest(IRequestOwner& InOwner, TUniqueFunction<void ()>&& InTaskBody)
-		: Owner(InOwner)
-		, TaskBody(MoveTemp(InTaskBody))
-	{
-		LLM_IF_ENABLED(MemTag = FLowLevelMemTracker::Get().GetActiveTagData(ELLMTracker::Default));
-		Owner.Begin(this);
-		DoneEvent.Reset();
-		GCacheThreadPool->AddQueuedWork(this, ConvertToQueuedWorkPriority(Owner.GetPriority()));
-	}
-
-private:
-	inline void Execute()
-	{
-		LLM_SCOPE(MemTag);
-		FScopeCycleCounter Scope(GetStatId(), /*bAlways*/ true);
-		Owner.End(this, [this]
-		{
-			TaskBody();
-			DoneEvent.Trigger();
-		});
-		// DO NOT ACCESS ANY MEMBERS PAST THIS POINT!
-	}
-
-	// IRequest Interface
-
-	inline void SetPriority(EPriority Priority) final
-	{
-		if (GCacheThreadPool->RetractQueuedWork(this))
-		{
-			GCacheThreadPool->AddQueuedWork(this, ConvertToQueuedWorkPriority(Priority));
-		}
-	}
-
-	inline void Cancel() final
-	{
-		if (!DoneEvent.Wait(0))
-		{
-			if (GCacheThreadPool->RetractQueuedWork(this))
-			{
-				Abandon();
-			}
-			else
-			{
-				FScopeCycleCounter Scope(GetStatId());
-				DoneEvent.Wait();
-			}
-		}
-	}
-
-	inline void Wait() final
-	{
-		if (!DoneEvent.Wait(0))
-		{
-			if (GCacheThreadPool->RetractQueuedWork(this))
-			{
-				DoThreadedWork();
-			}
-			else
-			{
-				FScopeCycleCounter Scope(GetStatId());
-				DoneEvent.Wait();
-			}
-		}
-	}
-
-	// IQueuedWork Interface
-
-	inline void DoThreadedWork() final { Execute(); }
-	inline void Abandon() final { Execute(); }
-
-	inline TStatId GetStatId() const
-	{
-		RETURN_QUICK_DECLARE_CYCLE_STAT(FCacheThreadPoolTaskRequest, STATGROUP_ThreadPoolAsyncTasks);
-	}
-
-private:
-	IRequestOwner& Owner;
-	TUniqueFunction<void ()> TaskBody;
-	FLazyEvent DoneEvent{EEventMode::ManualReset};
-	LLM(const UE::LLMPrivate::FTagData* MemTag = nullptr);
-};
-
 void LaunchTaskInCacheThreadPool(IRequestOwner& Owner, TUniqueFunction<void ()>&& TaskBody)
 {
-	if (GCacheThreadPool)
-	{
-		new FCacheThreadPoolTaskRequest(Owner, MoveTemp(TaskBody));
-	}
-	else
-	{
-		TaskBody();
-	}
+	LaunchTaskInThreadPool(Owner, GCacheThreadPool, MoveTemp(TaskBody));
 }
 
 /**
@@ -1033,6 +964,86 @@ public:
 	virtual void GatherSummaryStats(FDerivedDataCacheSummaryStats& DDCSummaryStats) const override
 	{
 		GatherDerivedDataCacheSummaryStats(DDCSummaryStats);
+	}
+
+	virtual void GatherAnalytics(TArray<FAnalyticsEventAttribute>& Attributes) const override
+	{
+#if ENABLE_COOK_STATS
+
+		// Gather the latest resource stats
+		TArray<FDerivedDataCacheResourceStat> ResourceStats;
+
+		GatherDerivedDataCacheResourceStats(ResourceStats);
+
+		FDerivedDataCacheResourceStat ResourceStatsTotal(TEXT("Total"));
+
+		// Accumulate Totals
+		for (const FDerivedDataCacheResourceStat& Stat : ResourceStats)
+		{
+			ResourceStatsTotal += Stat;
+		}
+
+		ResourceStats.Emplace(ResourceStatsTotal);
+
+		// Append to the attributes
+		for (const FDerivedDataCacheResourceStat& Stat : ResourceStats)
+		{
+			FString BaseName = TEXT("DDC.Resource.") + Stat.AssetType;
+
+			BaseName = BaseName.Replace(TEXT("("), TEXT("")).Replace(TEXT(")"), TEXT(""));
+
+			{
+				FString AttrName = BaseName + TEXT(".BuildCount");
+				Attributes.Emplace(MoveTemp(AttrName), Stat.BuildCount);
+			}
+
+			{
+				FString AttrName = BaseName + TEXT(".BuildTimeSec");
+				Attributes.Emplace(MoveTemp(AttrName), Stat.BuildTimeSec);
+			}
+
+			{
+				FString AttrName = BaseName + TEXT(".BuildSizeMB");
+				Attributes.Emplace(MoveTemp(AttrName), Stat.BuildSizeMB);
+			}
+
+			{
+				FString AttrName = BaseName + TEXT(".LoadCount");
+				Attributes.Emplace(MoveTemp(AttrName), Stat.LoadCount);
+			}
+
+			{
+				FString AttrName = BaseName + TEXT(".LoadTimeSecLoadTimeSec");
+				Attributes.Emplace(MoveTemp(AttrName), Stat.LoadTimeSec);
+			}
+
+			{
+				FString AttrName = BaseName + TEXT(".LoadSizeMB");
+				Attributes.Emplace(MoveTemp(AttrName), Stat.LoadSizeMB);
+			}
+		}
+
+		// Gather the summary stats
+		FDerivedDataCacheSummaryStats SummaryStats;
+
+		GatherDerivedDataCacheSummaryStats(SummaryStats);
+
+		// Append to the attributes
+		for (const FDerivedDataCacheSummaryStat& Stat : SummaryStats.Stats)
+		{
+			FString FormattedAttrName = "DDC.Summary." + Stat.Key;
+			Attributes.Emplace(FormattedAttrName, Stat.Value);
+		}
+
+		TSharedRef<FDerivedDataCacheStatsNode> RootNode = Backend->GatherUsageStats();
+		RootNode->ForEachDescendant([&Attributes](TSharedRef<const FDerivedDataCacheStatsNode> Node)
+			{
+				for (const FCookStatsManager::StringKeyValue& Stat : Node->CustomStats)
+				{
+					Attributes.Emplace(Stat.Key, Stat.Value);
+				}
+			});
+#endif
 	}
 
 	/** Get event delegate for data cache notifications */

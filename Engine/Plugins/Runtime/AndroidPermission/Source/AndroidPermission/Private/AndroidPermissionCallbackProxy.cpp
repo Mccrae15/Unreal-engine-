@@ -3,12 +3,13 @@
 #include "AndroidPermissionCallbackProxy.h"
 #include "AndroidPermission.h"
 
-#include "Async/TaskGraphInterfaces.h"
+#include "Trace/Trace.inl"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AndroidPermissionCallbackProxy)
 
 #if PLATFORM_ANDROID
 #include "Android/AndroidApplication.h"
+#include "Async/TaskGraphInterfaces.h"
 #endif
 
 static UAndroidPermissionCallbackProxy *pProxy = NULL;

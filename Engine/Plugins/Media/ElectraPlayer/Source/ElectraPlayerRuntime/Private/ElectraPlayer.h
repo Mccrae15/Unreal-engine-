@@ -12,6 +12,7 @@
 #include "IElectraPlayerInterface.h"
 
 #include "Player/AdaptiveStreamingPlayer.h"
+#include "MediaStreamMetadata.h"
 #include "PlayerRuntimeGlobal.h"
 
 class FVideoDecoderOutput;
@@ -87,7 +88,7 @@ public:
 
 	// -------- PlayerAdapter (Plugin/Native) API
 
-	bool OpenInternal(const FString& Url, const FParamDict& PlayerOptions, const FPlaystartOptions& InPlaystartOptions) override;
+	bool OpenInternal(const FString& Url, const FParamDict& PlayerOptions, const FPlaystartOptions& InPlaystartOptions, EOpenType InOpenType) override;
 	void CloseInternal(bool bKillAfterClose) override;
 
 	void Tick(FTimespan DeltaTime, FTimespan Timecode) override;
@@ -134,6 +135,7 @@ public:
 	int32 GetNumVideoStreams(int32 TrackIndex) const override;
 	bool GetVideoStreamFormat(FVideoStreamFormat& OutFormat, int32 InTrackIndex, int32 InStreamIndex) const override;
 	bool GetActiveVideoStreamFormat(FVideoStreamFormat& OutFormat) const override;
+	TSharedPtr<TMap<FString, TArray<TSharedPtr<Electra::IMediaStreamMetadata::IItem, ESPMode::ThreadSafe>>>, ESPMode::ThreadSafe> GetMediaMetadata() const override;
 
 	void NotifyOfOptionChange() override;
 
@@ -202,6 +204,7 @@ private:
 			JumpInPlayPosition,
 			PlaybackStopped,
 			SeekCompleted,
+			MediaMetadataChanged,
 			Error,
 			LogMessage,
 			DroppedVideoFrame,
@@ -282,6 +285,11 @@ private:
 		FTimeValue FromTime;
 		Metrics::ETimeJumpReason TimejumpReason;
 	};
+	struct FPlayerMetricEvent_MediaMetadataChange : public FPlayerMetricEventBase
+	{
+		FPlayerMetricEvent_MediaMetadataChange(const TSharedPtrTS<Electra::UtilsMP4::FMetadataParser>& InMetadata) : FPlayerMetricEventBase(EType::MediaMetadataChanged), NewMetadata(InMetadata) {}
+		TSharedPtrTS<Electra::UtilsMP4::FMetadataParser> NewMetadata;
+	};
 	struct FPlayerMetricEvent_Error : public FPlayerMetricEventBase
 	{
 		FPlayerMetricEvent_Error(const FString& InErrorReason) : FPlayerMetricEventBase(EType::Error), ErrorReason(InErrorReason) {}
@@ -358,6 +366,8 @@ private:
 	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEventBase>(FPlayerMetricEventBase::EType::PlaybackStopped)); }
 	virtual void ReportSeekCompleted() override
 	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEventBase>(FPlayerMetricEventBase::EType::SeekCompleted)); }
+	virtual void ReportMediaMetadataChanged(TSharedPtrTS<Electra::UtilsMP4::FMetadataParser> Metadata) override
+	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEvent_MediaMetadataChange>(Metadata)); }
 	virtual void ReportError(const FString& ErrorReason) override
 	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEvent_Error>(ErrorReason)); }
 	virtual void ReportLogMessage(IInfoLog::ELevel InLogLevel, const FString& InLogMessage, int64 InPlayerWallclockMilliseconds) override
@@ -402,6 +412,8 @@ private:
 	TOptional<bool>									bFrameAccurateSeeking;
 	TOptional<bool>									bEnableLooping;
 
+	TSharedPtr<TMap<FString, TArray<TSharedPtr<Electra::IMediaStreamMetadata::IItem, ESPMode::ThreadSafe>>>, ESPMode::ThreadSafe> CurrentStreamMetadata;
+
 	TOptional<FVideoStreamFormat>					CurrentlyActiveVideoStreamFormat;
 
 	FIntPoint										LastPresentedFrameDimension;
@@ -439,7 +451,7 @@ private:
 	/** Metric delegates */
 	FElectraPlayerSendAnalyticMetricsDelegate&			SendAnalyticMetricsDelegate;
 	FElectraPlayerSendAnalyticMetricsPerMinuteDelegate&	SendAnalyticMetricsPerMinuteDelegate;
-	FElectraPlayerReportVideoStreamingErrorDelegate&		ReportVideoStreamingErrorDelegate;
+	FElectraPlayerReportVideoStreamingErrorDelegate&	ReportVideoStreamingErrorDelegate;
 	FElectraPlayerReportSubtitlesMetricsDelegate&		ReportSubtitlesMetricsDelegate;
 
 	/** Option interface **/
@@ -504,6 +516,21 @@ private:
 
 	TSharedPtr<FAdaptiveStreamingPlayerResourceProvider, ESPMode::ThreadSafe> StaticResourceProvider;
 	TSharedPtr<IVideoDecoderResourceDelegate, ESPMode::ThreadSafe> VideoDecoderResourceDelegate;
+
+	class FBlobRequest
+	{
+	public:
+		FBlobRequest() : Request(MakeShared<Electra::FHTTPResourceRequest, ESPMode::ThreadSafe>())
+		{ }
+		void OnBlobRequestComplete(TSharedPtrTS<Electra::FHTTPResourceRequest> InRequest)
+		{
+			bIsComplete = true;
+		}
+		TSharedPtr<Electra::FHTTPResourceRequest, ESPMode::ThreadSafe> Request;
+		bool bIsComplete = false;
+		bool bDispatched = false;
+	};
+	TSharedPtr<FBlobRequest, ESPMode::ThreadSafe> PendingBlobRequest;
 
 
 	class FAverageValue
@@ -627,6 +654,11 @@ private:
 			FAverageValue	Bandwidth;
 			FAverageValue	Latency;
 		};
+		struct FHistoryEntry
+		{
+			double TimeSinceStart = 0.0;
+			FString Message;
+		};
 		FStatistics()
 		{
 			DroppedVideoFrames.SetFrameType(FDroppedFrameStats::EFrameType::VideoFrame);
@@ -677,14 +709,7 @@ private:
 			MediaDuration = 0.0;
 			MessageHistoryBuffer.Empty();
 		}
-		void AddMessageToHistory(FString InMessage)
-		{
-			if (MessageHistoryBuffer.Num() >= 20)
-			{
-				MessageHistoryBuffer.RemoveAt(0);
-			}
-			MessageHistoryBuffer.Emplace(MoveTemp(InMessage));
-		}
+		void AddMessageToHistory(FString InMessage);
 
 		FString					InitialURL;
 		FString					CurrentlyActivePlaylistURL;
@@ -726,7 +751,7 @@ private:
 		FTimeRange				MediaTimelineAtStart;
 		FTimeRange				MediaTimelineAtEnd;
 		double					MediaDuration;
-		TArray<FString>			MessageHistoryBuffer;
+		TArray<FHistoryEntry>	MessageHistoryBuffer;
 	};
 
 	struct FAnalyticsEvent
@@ -740,6 +765,7 @@ private:
 	void AddCommonAnalyticsAttributes(TArray<FAnalyticsEventAttribute>& InOutParamArray);
 	TSharedPtr<FAnalyticsEvent> CreateAnalyticsEvent(FString InEventName);
 	void EnqueueAnalyticsEvent(TSharedPtr<FAnalyticsEvent> InAnalyticEvent);
+	void UpdateAnalyticsCustomValues();
 
 	FCriticalSection						StatisticsLock;
 	FStatistics								Statistics;
@@ -754,6 +780,10 @@ private:
 	/** Sequential analytics event number. Helps sorting events. **/
 	uint32									AnalyticsInstanceEventCount;
 
+	/** Custom analytics constants. **/
+	FString									AnalyticsCustomValues[8];
+
+	void HandleBlobDownload();
 
 	void HandleDeferredPlayerEvents();
 	void HandlePlayerEventOpenSource(const FString& URL);
@@ -779,6 +809,7 @@ private:
 	void HandlePlayerEventJumpInPlayPosition(const FTimeValue& ToNewTime, const FTimeValue& FromTime, Metrics::ETimeJumpReason TimejumpReason);
 	void HandlePlayerEventPlaybackStopped();
 	void HandlePlayerEventSeekCompleted();
+	void HandlePlayerMediaMetadataChanged(const TSharedPtrTS<Electra::UtilsMP4::FMetadataParser>& InMetadata);
 	void HandlePlayerEventError(const FString& ErrorReason);
 	void HandlePlayerEventLogMessage(IInfoLog::ELevel InLogLevel, const FString& InLogMessage, int64 InPlayerWallclockMilliseconds);
 	void HandlePlayerEventDroppedVideoFrame();

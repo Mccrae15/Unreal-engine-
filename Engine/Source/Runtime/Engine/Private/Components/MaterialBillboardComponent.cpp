@@ -1,23 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/MaterialBillboardComponent.h"
-#include "EngineGlobals.h"
-#include "RHI.h"
-#include "RenderResource.h"
-#include "VertexFactory.h"
-#include "PackedNormal.h"
-#include "LocalVertexFactory.h"
 #include "PrimitiveViewRelevance.h"
 #include "Materials/MaterialInterface.h"
 #include "PrimitiveSceneProxy.h"
 #include "Engine/CollisionProfile.h"
 #include "Curves/CurveFloat.h"
+#include "SceneInterface.h"
 #include "SceneManagement.h"
 #include "Engine/Engine.h"
 #include "Engine/LevelStreaming.h"
 #include "LevelUtils.h"
 #include "PrimitiveSceneProxy.h"
 #include "StaticMeshResources.h"
+#include "PSOPrecache.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MaterialBillboardComponent)
 

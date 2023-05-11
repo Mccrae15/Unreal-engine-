@@ -1,7 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GitSourceControlState.h"
-#include "Styling/AppStyle.h"
+#include "RevisionControlStyle/RevisionControlStyle.h"
+#include "Textures/SlateIcon.h"
 
 #define LOCTEXT_NAMESPACE "GitSourceControl.State"
 
@@ -56,24 +57,29 @@ TSharedPtr<class ISourceControlRevision, ESPMode::ThreadSafe> FGitSourceControlS
 	return nullptr;
 }
 
+TSharedPtr<class ISourceControlRevision, ESPMode::ThreadSafe> FGitSourceControlState::GetCurrentRevision() const
+{
+	return nullptr;
+}
+
 FSlateIcon FGitSourceControlState::GetIcon() const
 {
 	switch (WorkingCopyState)
 	{
 	case EWorkingCopyState::Modified:
-		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Subversion.CheckedOut");
+		return FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.CheckedOut");
 	case EWorkingCopyState::Added:
-		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Subversion.OpenForAdd");
+		return FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.OpenForAdd");
 	case EWorkingCopyState::Renamed:
 	case EWorkingCopyState::Copied:
-		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Subversion.Branched");
+		return FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.Branched");
 	case EWorkingCopyState::Deleted: // Deleted & Missing files does not show in Content Browser
 	case EWorkingCopyState::Missing:
-		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Subversion.MarkedForDelete");
+		return FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.MarkedForDelete");
 	case EWorkingCopyState::Conflicted:
-		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Subversion.NotAtHeadRevision");
+		return FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.Conflicted");
 	case EWorkingCopyState::NotControlled:
-		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Subversion.NotInDepot");
+		return FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.NotInDepot");
 	case EWorkingCopyState::Unknown:
 	case EWorkingCopyState::Unchanged: // Unchanged is the same as "Pristine" (not checked out) for Perforce, ie no icon
 	case EWorkingCopyState::Ignored:
@@ -108,7 +114,7 @@ FText FGitSourceControlState::GetDisplayName() const
 	case EWorkingCopyState::Ignored:
 		return LOCTEXT("Ignored", "Ignored");
 	case EWorkingCopyState::NotControlled:
-		return LOCTEXT("NotControlled", "Not Under Source Control");
+		return LOCTEXT("NotControlled", "Not Under Revision Control");
 	case EWorkingCopyState::Missing:
 		return LOCTEXT("Missing", "Missing");
 	}
@@ -121,7 +127,7 @@ FText FGitSourceControlState::GetDisplayTooltip() const
 	switch(WorkingCopyState)
 	{
 	case EWorkingCopyState::Unknown:
-		return LOCTEXT("Unknown_Tooltip", "Unknown source control state");
+		return LOCTEXT("Unknown_Tooltip", "Unknown revision control state");
 	case EWorkingCopyState::Unchanged:
 		return LOCTEXT("Pristine_Tooltip", "There are no modifications");
 	case EWorkingCopyState::Added:

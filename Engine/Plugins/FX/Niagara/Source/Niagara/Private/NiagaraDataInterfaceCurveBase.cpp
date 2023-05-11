@@ -156,7 +156,7 @@ void UNiagaraDataInterfaceCurveBase::UpdateLUT(bool bFromSerialize)
 	{
 		ShaderLUT = BuildLUT(CurveLUTDefaultWidth);
 		OptimizeLUT();
-		LUTNumSamplesMinusOne = (ShaderLUT.Num() / GetCurveNumElems()) - 1;
+		LUTNumSamplesMinusOne = float((ShaderLUT.Num() / GetCurveNumElems()) - 1);
 	}
 
 	if (!bUseLUT || (ShaderLUT.Num() == 0))
@@ -345,8 +345,7 @@ void UNiagaraDataInterfaceCurveBase::SetShaderParameters(const FNiagaraDataInter
 bool UNiagaraDataInterfaceCurveBase::AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const
 {
 	bool bSuccess = Super::AppendCompileHash(InVisitor);
-	FSHAHash Hash = GetShaderFileHash(NDICurve_TemplateShaderFile, EShaderPlatform::SP_PCD3D_SM5);
-	InVisitor->UpdateString(TEXT("UNiagaraDataInterfaceCurveTemplateHLSLSource"), Hash.ToString());
+	InVisitor->UpdateShaderFile(NDICurve_TemplateShaderFile);
 	InVisitor->UpdateShaderParameters<FNiagaraDataInterfaceCurveParameters>();
 	return bSuccess;
 }
@@ -356,17 +355,14 @@ void UNiagaraDataInterfaceCurveBase::GetParameterDefinitionHLSL(const FNiagaraDa
 	const int32 NumElements = GetCurveNumElems();
 	check(NumElements > 0 && NumElements <= 4);
 
-	TMap<FString, FStringFormatArg> TemplateArgs =
+	const TMap<FString, FStringFormatArg> TemplateArgs =
 	{
 		{TEXT("ParameterName"),				ParamInfo.DataInterfaceHLSLSymbol},
 		{TEXT("UseStaticBuffer"),			ParamInfo.IsUserParameter() ? TEXT("1") : TEXT("0")},
 		{TEXT("NumElements"),				FString::FromInt(NumElements)},
 		{TEXT("CurveSampleFunctionName"),	GetCurveSampleFunctionName().ToString()},
 	};
-
-	FString TemplateFile;
-	LoadShaderSourceFile(NDICurve_TemplateShaderFile, EShaderPlatform::SP_PCD3D_SM5, &TemplateFile, nullptr);
-	OutHLSL += FString::Format(*TemplateFile, TemplateArgs);
+	AppendTemplateHLSL(OutHLSL, NDICurve_TemplateShaderFile, TemplateArgs);
 }
 #endif
 
@@ -405,7 +401,7 @@ void UNiagaraDataInterfaceCurveBase::PushToRenderThreadImpl()
 			RT_Proxy->LUTMinTime = RT_LUTMinTime;
 			RT_Proxy->LUTMaxTime = RT_LUTMaxTime;
 			RT_Proxy->LUTInvTimeRange = RT_LUTInvTimeRange;
-			RT_Proxy->CurveLUTNumMinusOne = RT_CurveLUTNumMinusOne;
+			RT_Proxy->CurveLUTNumMinusOne = uint32(RT_CurveLUTNumMinusOne);
 			RT_Proxy->LUTOffset = RT_LUTOffset;
 
 			DEC_MEMORY_STAT_BY(STAT_NiagaraGPUDataInterfaceMemory, RT_Proxy->CurveLUT.NumBytes);

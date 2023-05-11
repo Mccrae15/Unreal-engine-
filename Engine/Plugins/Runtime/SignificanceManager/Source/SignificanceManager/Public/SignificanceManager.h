@@ -2,14 +2,10 @@
 
 #pragma once
 
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "CoreMinimal.h"
-#include "Stats/Stats.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/Object.h"
-#include "Templates/SubclassOf.h"
 #include "Modules/ModuleManager.h"
-#include "UObject/GCObject.h"
-#include "UObject/SoftObjectPath.h"
+#endif
 #include "Engine/World.h"
 #include "SignificanceManager.generated.h"
 
@@ -21,51 +17,6 @@ struct FAutoCompleteCommand;
 
 DECLARE_STATS_GROUP(TEXT("Significance Manager"), STATGROUP_SignificanceManager, STATCAT_Advanced);
 DECLARE_LOG_CATEGORY_EXTERN(LogSignificance, Log, All);
-
-/* Module definition for significance manager. Owns the references to created significance managers*/
-class SIGNIFICANCEMANAGER_API FSignificanceManagerModule : public FDefaultModuleImpl, public FGCObject
-{
-public:
-	// Begin IModuleInterface overrides
-	virtual void StartupModule() override;
-	// End IModuleInterface overrides
-
-	// Begin FGCObject overrides
-	virtual void AddReferencedObjects( FReferenceCollector& Collector ) override;
-	virtual FString GetReferencerName() const override
-	{
-		return TEXT("FSignificanceManagerModule");
-	}
-	// End FGCObject overrides
-
-	// Returns the significance manager for the specified World
-	FORCEINLINE static USignificanceManager* Get(const UWorld* World)
-	{
-		return WorldSignificanceManagers.FindRef(World);
-	}
-
-private:
-
-	// Callback function registered with global world delegates to instantiate significance manager when a game world is created
-	static void OnWorldInit(UWorld* World, const UWorld::InitializationValues IVS);
-
-	// Callback function registered with global world delegates to cleanup significance manager when a game world is destroyed
-	static void OnWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources);
-
-	// Callback function registered with HUD to supply debug info when ShowDebug SignificanceManager has been entered on the console
-	static void OnShowDebugInfo(AHUD* HUD, UCanvas* Canvas, const FDebugDisplayInfo& DisplayInfo, float& YL, float& YPos);
-
-#if ALLOW_CONSOLE
-	// Callback function registered with Console to inject show debug auto complete command
-	static void PopulateAutoCompleteEntries(TArray<FAutoCompleteCommand>& AutoCompleteList);
-#endif // ALLOW_CONSOLE
-
-	// Map of worlds to their significance manager
-	static TMap<const UWorld*, USignificanceManager*> WorldSignificanceManagers;
-
-	// Cached class for instantiating significance manager
-	static TSubclassOf<USignificanceManager>  SignificanceManagerClass;
-};
 
 /* The significance manager provides a framework for registering objects by tag to each have a significance
  * value calculated from which a game specific subclass and game logic can make decisions about what level
@@ -192,10 +143,7 @@ public:
 	bool QuerySignificance(const UObject* Object, float& OutSignificance) const;
 
 	// Returns the significance manager for the specified World
-	FORCEINLINE static USignificanceManager* Get(const UWorld* World)
-	{
-		return FSignificanceManagerModule::Get(World);
-	}
+	static USignificanceManager* Get(const UWorld* World);
 
 	// Templated convenience function to return a significance manager cast to a known type
 	template<class T>
@@ -256,5 +204,5 @@ private:
 	void OnShowDebugInfo(AHUD* HUD, UCanvas* Canvas, const FDebugDisplayInfo& DisplayInfo, float& YL, float& YPos);
 
 	// Friend FSignificanceManagerModule so it can call OnShowDebugInfo and check 
-	friend FSignificanceManagerModule;
+	friend class FSignificanceManagerModule;
 };

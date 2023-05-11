@@ -14,11 +14,13 @@
 #include "PerQualityLevelProperties.h"
 
 struct FMeshDescription;
+class FPoly;
 class UStaticMeshSocket;
 class UAssetImportData;
 class UThumbnailInfo;
 class UModel;
 class UBodySetup;
+struct FKAggregateGeom;
 
 namespace UnFbx
 {
@@ -30,6 +32,8 @@ struct FExistingLODMeshData
 {
 	FMeshBuildSettings				ExistingBuildSettings;
 	FMeshReductionSettings			ExistingReductionSettings;
+	uint32							ExisitingMeshTrianglesCount;
+	uint32							ExisitingMeshVerticesCount;
 	TUniquePtr<FMeshDescription>	ExistingMeshDescription;
 	TArray<FStaticMaterial>			ExistingMaterials;
 	FPerPlatformFloat				ExistingScreenSize;

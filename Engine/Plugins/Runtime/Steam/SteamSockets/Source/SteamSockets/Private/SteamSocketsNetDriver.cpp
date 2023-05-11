@@ -1,17 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SteamSocketsNetDriver.h"
-#include "SteamSocketsPrivate.h"
-#include "SocketSubsystem.h"
-#include "SteamSocketsTypes.h"
 #include "SteamSocketsModule.h"
 #include "SteamSocket.h"
 #include "SteamSocketsNetConnection.h"
 #include "SteamSocketsSubsystem.h"
-#include "IPAddressSteamSockets.h"
-#include "Engine/NetworkDelegates.h"
 #include "Engine/World.h"
 #include "Misc/CommandLine.h"
+#include "PacketHandler.h"
+#include <steam/isteamnetworkingsockets.h>
+#include <steam/steamclientpublic.h>
 
 void USteamSocketsNetDriver::PostInitProperties()
 {
@@ -307,7 +305,7 @@ void USteamSocketsNetDriver::TickDispatch(float DeltaTime)
 				// Process the message for this connection.
 				if (ConnectionToHandleMessage != nullptr)
 				{
-					UE_LOG(LogNet, VeryVerbose, TEXT("SteamSockets: Recieved packet from %s with size %d"), *MessageSender.ToString(true), Message->GetSize());
+					UE_LOG(LogNet, VeryVerbose, TEXT("SteamSockets: Received packet from %s with size %d"), *MessageSender.ToString(true), Message->GetSize());
 					ConnectionToHandleMessage->HandleRecvMessage(Message->m_pData, Message->GetSize(), &MessageSender);
 					Message->Release();
 					continue;

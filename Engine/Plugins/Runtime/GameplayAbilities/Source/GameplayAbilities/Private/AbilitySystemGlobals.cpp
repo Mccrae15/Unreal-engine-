@@ -3,10 +3,12 @@
 #include "AbilitySystemGlobals.h"
 #include "Abilities/GameplayAbilityTypes.h"
 #include "AbilitySystemStats.h"
+#include "GameFramework/Pawn.h"
 #include "GameplayCueInterface.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemInterface.h"
 #include "AbilitySystemLog.h"
+#include "HAL/LowLevelMemTracker.h"
 #include "GameFramework/PlayerController.h"
 #include "GameplayCueManager.h"
 #include "GameplayTagResponseTable.h"
@@ -52,6 +54,7 @@ UAbilitySystemGlobals::UAbilitySystemGlobals(const FObjectInitializer& ObjectIni
 
 void UAbilitySystemGlobals::InitGlobalData()
 {
+	LLM_SCOPE(TEXT("AbilitySystem"));
 	GetGlobalCurveTable();
 	GetGlobalAttributeMetaDataTable();
 	

@@ -5,11 +5,11 @@
 #include "MassEntityManager.h"
 #include "InstancedStruct.h"
 #include "Subsystems/WorldSubsystem.h"
+#include "MassEntityTemplateRegistry.h"
 #include "MassSpawnerSubsystem.generated.h"
 
 struct FMassEntityManager;
 struct FMassEntityTemplate;
-class UMassEntityTemplateRegistry;
 struct FInstancedStruct;
 struct FStructView;
 struct FMassEntityTemplateID;
@@ -21,6 +21,8 @@ class MASSSPAWNER_API UMassSpawnerSubsystem : public UWorldSubsystem
 	GENERATED_BODY()
 
 public:
+	UMassSpawnerSubsystem();
+
 	/** Spawns entities of the kind described by the given EntityTemplate. The spawned entities are fully initialized
 	 *  meaning the EntityTemplate.InitializationPipeline gets run for all spawned entities.
 	 *  @param EntityTemplate template to use for spawning entities
@@ -31,20 +33,16 @@ public:
 
 	void SpawnEntities(FMassEntityTemplateID TemplateID, const uint32 NumberToSpawn, FConstStructView SpawnData, TSubclassOf<UMassProcessor> InitializerClass, TArray<FMassEntityHandle>& OutEntities);
 
-	void SpawnFromConfig(FStructView Config, const int32 NumToSpawn, FConstStructView SpawnData, TSubclassOf<UMassProcessor> InitializerClass);
-
 	void DestroyEntities(const FMassEntityTemplateID TemplateID, TConstArrayView<FMassEntityHandle> Entities);
 
-	UMassEntityTemplateRegistry& GetTemplateRegistryInstance() const { check(TemplateRegistryInstance); return *TemplateRegistryInstance; }
-
-	void RegisterCollection(TArrayView<FInstancedStruct> Collection);
+	const FMassEntityTemplateRegistry& GetTemplateRegistryInstance() const { return TemplateRegistryInstance; }
+	FMassEntityTemplateRegistry& GetMutableTemplateRegistryInstance() { return TemplateRegistryInstance; }
 
 	const FMassEntityTemplate* GetMassEntityTemplate(FMassEntityTemplateID TemplateID) const;
 
 protected:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
-	virtual void PostInitialize() override;
 
 	void DoSpawning(const FMassEntityTemplate& EntityTemplate, const int32 NumToSpawn, FConstStructView SpawnData, TSubclassOf<UMassProcessor> InitializerClass, TArray<FMassEntityHandle>& OutEntities);
 
@@ -55,10 +53,6 @@ protected:
 
 	TSharedPtr<FMassEntityManager> EntityManager;
 
-	UPROPERTY()
-	TObjectPtr<UMassEntityTemplateRegistry> TemplateRegistryInstance;
-
-	UPROPERTY()
-	TObjectPtr<UMassSimulationSubsystem> SimulationSystem;
+	FMassEntityTemplateRegistry TemplateRegistryInstance;
 };
 

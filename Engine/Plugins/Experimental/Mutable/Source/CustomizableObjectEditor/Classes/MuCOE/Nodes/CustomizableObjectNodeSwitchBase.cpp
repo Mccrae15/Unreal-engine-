@@ -2,16 +2,9 @@
 
 #include "MuCOE/Nodes/CustomizableObjectNodeSwitchBase.h"
 
-#include "Delegates/Delegate.h"
-#include "HAL/PlatformCrt.h"
-#include "Internationalization/Internationalization.h"
-#include "MuCO/CustomizableObjectCustomVersion.h"
 #include "MuCOE/EdGraphSchema_CustomizableObject.h"
 #include "MuCOE/GraphTraversal.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeEnumParameter.h"
-#include "Serialization/Archive.h"
-#include "Templates/Casts.h"
-#include "UObject/WeakObjectPtr.h"
 
 class UCustomizableObjectNodeRemapPins;
 
@@ -129,7 +122,7 @@ void UCustomizableObjectNodeSwitchBase::EnumParameterPostEditChangeProperty(FPos
 {
 	if (const UEdGraphPin* SwitchPin = SwitchParameter())
 	{
-		if (const UEdGraphPin* ConnectedPin = FollowInputPin(*SwitchPin); ConnectedPin->GetOwningNode() == Parameters.Node)
+		if (const UEdGraphPin* ConnectedPin = FollowInputPin(*SwitchPin); ConnectedPin && ConnectedPin->GetOwningNode() == Parameters.Node)
 		{
 			// Using MarkForReconstruct instead of Super::ReconstructNode because when we Copy Paste this node, it crashes sometimes due to reconctructing the node while constructing it.
 			MarkForReconstruct();

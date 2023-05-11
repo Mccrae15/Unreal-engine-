@@ -1,18 +1,23 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WorldPartitionHLODUtilities.h"
+#include "WorldPartition/WorldPartitionActorDescView.h"
+#include "WorldPartition/WorldPartitionStreamingGeneration.h"
 
 #if WITH_EDITOR
 
-#include "WorldPartition/ActorDescContainer.h"
+#include "BodySetupEnums.h"
 #include "WorldPartition/WorldPartition.h"
-#include "WorldPartition/WorldPartitionHandle.h"
+#include "Components/InstancedStaticMeshComponent.h"
 #include "WorldPartition/DataLayer/DataLayerInstance.h"
+#include "Engine/CollisionProfile.h"
 #include "WorldPartition/HLOD/HLODActor.h"
+#include "Engine/Texture.h"
 #include "WorldPartition/HLOD/HLODSubActor.h"
-#include "WorldPartition/HLOD/HLODActorDesc.h"
-#include "WorldPartition/HLOD/HLODBuilder.h"
+#include "StaticMeshResources.h"
 #include "WorldPartition/HLOD/HLODLayer.h"
+#include "WorldPartition/HLOD/HLODModifier.h"
+#include "WorldPartition/HLOD/HLODStats.h"
 #include "WorldPartition/WorldPartitionLevelStreamingDynamic.h"
 
 #include "HLODBuilderInstancing.h"
@@ -20,18 +25,15 @@
 #include "HLODBuilderMeshSimplify.h"
 #include "HLODBuilderMeshApproximate.h"
 
-#include "Algo/Transform.h"
-#include "Components/StaticMeshComponent.h"
-#include "Engine/InstancedStaticMesh.h"
+#include "Engine/Level.h"
 #include "Engine/StaticMesh.h"
-#include "HAL/FileManager.h"
 #include "Materials/MaterialInstance.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "ProfilingDebugging/ScopedTimers.h"
 #include "Serialization/ArchiveCrc32.h"
 #include "StaticMeshCompiler.h"
-#include "Templates/UniquePtr.h"
 #include "TextureCompiler.h"
+#include "UObject/MetaData.h"
 #include "UObject/GCObjectScopeGuard.h"
 
 
@@ -53,7 +55,15 @@ static UWorldPartitionLevelStreamingDynamic* CreateLevelStreamingFromHLODActor(A
 	UWorldPartitionLevelStreamingDynamic* LevelStreaming = UWorldPartitionLevelStreamingDynamic::LoadInEditor(World, LevelStreamingName, Mappings);
 	check(LevelStreaming);
 
-	if (!LevelStreaming->GetLoadSucceeded())
+	if (LevelStreaming->GetLoadSucceeded())
+	{
+		// Finish assets compilation
+		FAssetCompilingManager::Get().FinishAllCompilation();
+
+		// Ensure all deferred construction scripts are executed
+		FAssetCompilingManager::Get().ProcessAsyncTasks();
+	}
+	else
 	{
 		bOutDirty = true;
 		UE_LOG(LogHLODBuilder, Warning, TEXT("HLOD actor \"%s\" needs to be rebuilt as it didn't succeed in loading all actors."), *InHLODActor->GetActorLabel());
@@ -80,13 +90,30 @@ static uint32 GetCRC(const UHLODLayer* InHLODLayer)
 	return CRC;
 }
 
+static uint32 GetCRC(const TArray<FHLODSubActor>& InSubActors)
+{
+	uint32 CRC = 0;
+
+	for (const FHLODSubActor& HLODSubActor : InSubActors)
+	{
+		CRC = HashCombine(GetTypeHash(HLODSubActor), CRC);
+	}
+
+	return CRC;
+}
+
 static uint32 ComputeHLODHash(AWorldPartitionHLOD* InHLODActor, const TArray<AActor*>& InActors)
 {
 	FArchiveCrc32 Ar;
 
 	// Base key, changing this will force a rebuild of all HLODs
-	FString HLODBaseKey = "5052091956924DB3BD9ACE00B71944AC";
+	FString HLODBaseKey = "A6C1517FC49B478E833A540E2C06289F";
 	Ar << HLODBaseKey;
+
+	// Sub Actors
+	uint32 SubActorsHash = GetCRC(InHLODActor->GetSubActors());
+	UE_LOG(LogHLODBuilder, VeryVerbose, TEXT(" - Sub Actors (%d actors) = %x"), InHLODActor->GetSubActors().Num(), SubActorsHash);
+	Ar << SubActorsHash;
 
 	// HLOD Layer
 	uint32 HLODLayerHash = GetCRC(InHLODActor->GetSubActorsHLODLayer());
@@ -106,52 +133,70 @@ static uint32 ComputeHLODHash(AWorldPartitionHLOD* InHLODActor, const TArray<AAc
 	return Ar.GetCrc();
 }
 
+void AddSubActor(const FWorldPartitionActorDescView& ActorDescView, const IStreamingGenerationContext::FActorInstance& ActorInstance, TSet<FHLODSubActor>& SubActors)
+{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	// Leaving this as deprecated for now until we fix up the serialization format for SubActorsInfo and do proper upgrade/deprecation 
+	FName ActorPath = ActorDescView.GetActorPath();
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	// Add the actor
+	bool bIsAlreadyInSet = false;
+	FHLODSubActor SubActor(ActorDescView.GetGuid(), ActorDescView.GetActorPackage(), ActorPath, ActorInstance.GetContainerID(), ActorInstance.GetActorDescContainer()->GetContainerPackage(), ActorInstance.GetTransform());
+	SubActors.Add(SubActor, &bIsAlreadyInSet);
+
+	if (!bIsAlreadyInSet)
+	{
+		// Add its references
+		const FActorDescViewMap* ActorDescViewMap = ActorInstance.ActorSetInstance->ContainerInstance->ActorDescViewMap;
+		for (const FGuid& ReferenceGuid : ActorDescView.GetReferences())
+		{
+			const FWorldPartitionActorDescView& RefActorDescView = ActorDescViewMap->FindByGuidChecked(ReferenceGuid);
+			AddSubActor(RefActorDescView, ActorInstance, SubActors);
+		}
+	}
+}
+
 TArray<AWorldPartitionHLOD*> FWorldPartitionHLODUtilities::CreateHLODActors(FHLODCreationContext& InCreationContext, const FHLODCreationParams& InCreationParams, const TArray<IStreamingGenerationContext::FActorInstance>& InActors, const TArray<const UDataLayerInstance*>& InDataLayersInstances)
 {
-	struct FSubActorsInfo
-	{
-		TArray<FHLODSubActor>	SubActors;
-		bool					bIsSpatiallyLoaded;
-	};
-	TMap<UHLODLayer*, FSubActorsInfo> SubActorsInfos;
+	TMap<UHLODLayer*, TSet<FHLODSubActor>> SubActorsPerHLODLayer;
 
 	for (const IStreamingGenerationContext::FActorInstance& ActorInstance : InActors)
 	{
 		const FWorldPartitionActorDescView& ActorDescView = ActorInstance.GetActorDescView();
+
 		if (ActorDescView.GetActorIsHLODRelevant())
 		{
+			if (!ActorInstance.ActorSetInstance->bIsSpatiallyLoaded)
+			{
+				UE_LOG(LogHLODBuilder, Warning, TEXT("Tried to included non-spatially loaded actor %s into HLOD"), *ActorDescView.GetActorName().ToString());
+				continue;
+			}
+
 			UHLODLayer* HLODLayer = UHLODLayer::GetHLODLayer(ActorDescView, InCreationParams.WorldPartition);
 			if (HLODLayer)
 			{
-				FSubActorsInfo& SubActorsInfo = SubActorsInfos.FindOrAdd(HLODLayer);
-
-				// Leaving this as deprecated for now until we fix up the serialization format for SubActorsInfo and do proper upgrade/deprecation 
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-				SubActorsInfo.SubActors.Emplace(ActorDescView.GetGuid(), ActorDescView.GetActorPackage(), ActorDescView.GetActorPath(), ActorInstance.GetContainerID(), ActorInstance.GetActorDescContainer()->GetContainerPackage(), ActorInstance.GetTransform());
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-				if (ActorDescView.GetIsSpatiallyLoaded())
-				{
-					SubActorsInfo.bIsSpatiallyLoaded = true;
-				}
+				TSet<FHLODSubActor>& SubActors = SubActorsPerHLODLayer.FindOrAdd(HLODLayer);
+				AddSubActor(ActorDescView, ActorInstance, SubActors);
 			}
 		}
 	}
 
 	TArray<AWorldPartitionHLOD*> HLODActors;
-	for (const auto& Pair : SubActorsInfos)
+	for (const auto& Pair : SubActorsPerHLODLayer)
 	{
 		const UHLODLayer* HLODLayer = Pair.Key;
-		const FSubActorsInfo& SubActorsInfo = Pair.Value;
-		check(!SubActorsInfo.SubActors.IsEmpty());
+		const TSet<FHLODSubActor>& SubActors = Pair.Value;
+		check(!SubActors.IsEmpty());
 
-		auto ComputeCellHash = [](const FString& HLODLayerName, const FName CellName)
+		auto ComputeCellHash = [](const FString& HLODLayerName, const FGuid CellGuid)
 		{
-			uint64 HLODLayerNameHash = FCrc::StrCrc32(*HLODLayerName);
-			uint32 CellNameHash = FCrc::StrCrc32(*CellName.ToString());
-			return HashCombine(HLODLayerNameHash, CellNameHash);
+			uint32 HLODLayerNameHash = FCrc::StrCrc32(*HLODLayerName);
+			uint32 CellGuidHash = GetTypeHash(CellGuid);
+			return HashCombine(HLODLayerNameHash, CellGuidHash);
 		};
 
-		uint64 CellHash = ComputeCellHash(HLODLayer->GetName(), InCreationParams.CellName);
+		uint64 CellHash = ComputeCellHash(HLODLayer->GetName(), InCreationParams.CellGuid);
 		FName HLODActorName = *FString::Printf(TEXT("%s_%016llx"), *HLODLayer->GetName(), CellHash);		
 
 		AWorldPartitionHLOD* HLODActor = nullptr;
@@ -170,7 +215,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			SpawnParams.NameMode = FActorSpawnParameters::ESpawnActorNameMode::Required_Fatal;
 			HLODActor = InCreationParams.WorldPartition->GetWorld()->SpawnActor<AWorldPartitionHLOD>(SpawnParams);
 
-			HLODActor->SetSourceCellName(InCreationParams.CellName);
+			HLODActor->SetSourceCellGuid(InCreationParams.CellGuid);
 			HLODActor->SetSubActorsHLODLayer(HLODLayer);
 
 			// Make sure the generated HLOD actor has the same data layers as the source actors
@@ -182,7 +227,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		else
 		{
 #if DO_CHECK
-			check(HLODActor->GetSourceCellName() == InCreationParams.CellName);
+			check(HLODActor->GetSourceCellGuid() == InCreationParams.CellGuid);
 			check(HLODActor->GetSubActorsHLODLayer() == HLODLayer);
 #endif
 		}
@@ -191,11 +236,11 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 		// Sub actors
 		{
-			bool bSubActorsChanged = HLODActor->GetSubActors().Num() != SubActorsInfo.SubActors.Num();
+			bool bSubActorsChanged = HLODActor->GetSubActors().Num() != SubActors.Num();
 			if (!bSubActorsChanged)
 			{
 				TArray<FHLODSubActor> A = HLODActor->GetSubActors();
-				TArray<FHLODSubActor> B = SubActorsInfo.SubActors;
+				TArray<FHLODSubActor> B = SubActors.Array();
 				A.Sort();
 				B.Sort();
 				bSubActorsChanged = A != B;
@@ -203,7 +248,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 			if (bSubActorsChanged)
 			{
-				HLODActor->SetSubActors(SubActorsInfo.SubActors);
+				HLODActor->SetSubActors(SubActors.Array());
 				bIsDirty = true;
 			}
 		}
@@ -217,11 +262,9 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		}
 
 		// Spatially loaded
-		// HLOD that are always loaded will not take the SubActorsInfo.GridPlacement into account
-		bool bExpectedIsSpatiallyLoaded = !HLODLayer->IsSpatiallyLoaded() ? false : SubActorsInfo.bIsSpatiallyLoaded;
-		if (HLODActor->GetIsSpatiallyLoaded() != bExpectedIsSpatiallyLoaded)
+		if (HLODActor->GetIsSpatiallyLoaded() != HLODLayer->IsSpatiallyLoaded())
 		{
-			HLODActor->SetIsSpatiallyLoaded(bExpectedIsSpatiallyLoaded);
+			HLODActor->SetIsSpatiallyLoaded(HLODLayer->IsSpatiallyLoaded());
 			bIsDirty = true;
 		}
 
@@ -248,7 +291,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		}
 
 		// Actor label
-		const FString ActorLabel = FString::Printf(TEXT("%s/%s"), *HLODLayer->GetName(), *InCreationParams.CellName.ToString());
+		const FString ActorLabel = FString::Printf(TEXT("%s/%s"), *HLODLayer->GetName(), *InCreationParams.CellGuid.ToString());
 		if (HLODActor->GetActorLabel() != ActorLabel)
 		{
 			HLODActor->SetActorLabel(ActorLabel);
@@ -499,7 +542,7 @@ void GatherOutputStats(AWorldPartitionHLOD* InHLODActor)
 					if (Texture && Texture->GetPackage() == HLODPackage)
 					{
 						TexturesResourceSize += Texture->GetResourceSizeBytes(EResourceSizeMode::Exclusive);
-						return Texture->GetSurfaceWidth();
+						return FMath::RoundToInt64(Texture->GetSurfaceWidth());
 					}
 				}
 
@@ -557,7 +600,7 @@ uint32 FWorldPartitionHLODUtilities::BuildHLOD(AWorldPartitionHLOD* InHLODActor)
 	{
 		FAutoScopedDurationTimer LoadTimeScope;
 		LevelStreaming = CreateLevelStreamingFromHLODActor(InHLODActor, bIsDirty);
-		LoadTimeMS = LoadTimeScope.GetTime() * 1000;
+		LoadTimeMS = FMath::RoundToInt(LoadTimeScope.GetTime() * 1000);
 	}
 
 	ON_SCOPE_EXIT
@@ -576,7 +619,29 @@ uint32 FWorldPartitionHLODUtilities::BuildHLOD(AWorldPartitionHLOD* InHLODActor)
 
 	// Clear stats as we're about to refresh them
 	InHLODActor->ResetStats();
-	
+
+	// Rename previous assets found in the HLOD actor package.
+	// Move the previous asset(s) to the transient package, to avoid any object reuse during the build
+	{
+	    TArray<UObject*> ObjectsToRename;
+	    ForEachObjectWithOuter(InHLODActor->GetPackage(), [&ObjectsToRename](UObject* Obj)
+	    {
+		    if (!Obj->IsA<AActor>() && !Obj->IsA<UMetaData>())
+		    {
+			    ObjectsToRename.Add(Obj);
+		    }
+	    }, false);
+    
+	    
+	    for (UObject* Obj : ObjectsToRename)
+	    {
+		    // Make sure the old object is not used by anything
+		    Obj->ClearFlags(RF_Standalone | RF_Public);
+		    const FName OldRenamed = MakeUniqueObjectName(GetTransientPackage(), Obj->GetClass(), *FString::Printf(TEXT("OLD_%s"), *Obj->GetName()));
+		    Obj->Rename(*OldRenamed.ToString(), GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional | REN_ForceNoResetLoaders);
+	    }
+	}
+
 	// Gather stats from the input to our HLOD build
 	GatherInputStats(InHLODActor, LevelStreaming->GetLoadedLevel()->Actors);
 	
@@ -588,22 +653,38 @@ uint32 FWorldPartitionHLODUtilities::BuildHLOD(AWorldPartitionHLOD* InHLODActor)
 		UHLODBuilder* HLODBuilder = NewObject<UHLODBuilder>(GetTransientPackage(), HLODBuilderClass);
 		if (ensure(HLODBuilder))
 		{
-			FGCObjectScopeGuard BuilderGCScopeGuard(HLODBuilder);
+			FGCObjectScopeGuard HLODBuilderGCScopeGuard(HLODBuilder);
 
 			HLODBuilder->SetHLODBuilderSettings(HLODLayer->GetHLODBuilderSettings());
 
 			FHLODBuildContext HLODBuildContext;
 			HLODBuildContext.World = InHLODActor->GetWorld();
+			HLODBuildContext.SourceActors = LevelStreaming->GetLoadedLevel()->Actors;
 			HLODBuildContext.AssetsOuter = InHLODActor->GetPackage();
 			HLODBuildContext.AssetsBaseName = InHLODActor->GetActorLabel();
 			HLODBuildContext.MinVisibleDistance = InHLODActor->GetMinVisibleDistance();
+			HLODBuildContext.WorldPosition = InHLODActor->GetHLODBounds().GetCenter();
+
+			const TSubclassOf<UWorldPartitionHLODModifier> HLODModifierClass = HLODLayer->GetHLODModifierClass();
+			UWorldPartitionHLODModifier* HLODModifier = HLODModifierClass.Get() ? NewObject<UWorldPartitionHLODModifier>(GetTransientPackage(), HLODModifierClass) : nullptr;
+			FGCObjectScopeGuard HLODModifierGCScopeGuard(HLODModifier);
+
+			if (HLODModifier)
+			{
+				HLODModifier->BeginHLODBuild(HLODBuildContext);
+			}
 
 			// Build
 			TArray<UActorComponent*> HLODComponents;
 			{
 				FAutoScopedDurationTimer BuildTimeScope;
-				HLODComponents = HLODBuilder->Build(HLODBuildContext, LevelStreaming->GetLoadedLevel()->Actors);
-				BuildTimeMS = BuildTimeScope.GetTime() * 1000;
+				HLODComponents = HLODBuilder->Build(HLODBuildContext);
+				BuildTimeMS = FMath::RoundToInt(BuildTimeScope.GetTime() * 1000);
+			}
+
+			if (HLODModifier)
+			{
+				HLODModifier->EndHLODBuild(HLODComponents);
 			}
 
 			if (HLODComponents.IsEmpty())
@@ -633,6 +714,9 @@ uint32 FWorldPartitionHLODUtilities::BuildHLOD(AWorldPartitionHLOD* InHLODActor)
 					PrimitiveComponent->SetGenerateOverlapEvents(false);
 					PrimitiveComponent->CanCharacterStepUpOn = ECanBeCharacterBase::ECB_No;
 					PrimitiveComponent->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+
+					// HLOD visual components aren't needed on servers
+					PrimitiveComponent->AlwaysLoadOnServer = false;
 				}
 
 				if (UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(HLODComponent))
@@ -670,7 +754,7 @@ uint32 FWorldPartitionHLODUtilities::BuildHLOD(AWorldPartitionHLOD* InHLODActor)
 	// Gather stats pertaining to the assets generated during this build
 	GatherOutputStats(InHLODActor);
 
-	TotalTimeMS = TotalTimeScope.GetTime() * 1000;
+	TotalTimeMS = FMath::RoundToInt(TotalTimeScope.GetTime() * 1000);
 
 	// Build timings stats
 	InHLODActor->SetStat(FWorldPartitionHLODStats::BuildTimeLoadMilliseconds, LoadTimeMS);

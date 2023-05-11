@@ -26,9 +26,9 @@ struct FNiagaraComputeInstanceData
 		FPerStageInfo(int32 InNumIterations, FIntVector InElementCountXYZ) : NumIterations(InNumIterations), ElementCountXYZ(InElementCountXYZ) {}
 
 		int32 NumIterations = 0;
-		FIntVector ElementCountXYZ = FIntVector::NoneValue;
+		FIntVector ElementCountXYZ = FIntVector::ZeroValue;
 
-		bool ShouldRunStage() const { return NumIterations > 0 && (ElementCountXYZ != FIntVector::ZeroValue); }
+		bool ShouldRunStage() const { return NumIterations > 0; }
 	};
 
 	FNiagaraComputeInstanceData()
@@ -112,7 +112,7 @@ public:
 
 	FORCEINLINE FRHIUniformBuffer* GetExternalUniformBuffer(const FNiagaraComputeInstanceData& InstanceData, bool bPrevious) const
 	{
-		const int32 InstanceIndex = &InstanceData - GetInstances().GetData();
+		const int32 InstanceIndex = UE_PTRDIFF_TO_INT32(&InstanceData - GetInstances().GetData());
 		const int32 BufferIndex = InstanceIndex + (bPrevious ? InstanceCount : 0);
 		return ExternalUnformBuffers_RT[BufferIndex];
 	}

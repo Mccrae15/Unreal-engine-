@@ -22,6 +22,13 @@ struct MASSACTORS_API FMassActorFragment : public FObjectWrapperFragment
 {
 	GENERATED_BODY()
 
+	enum class EActorAccess
+	{
+		OnlyWhenAlive, // Only return an actor pointer if the actor is alive. This is the default.
+		IncludePendingKill, // Return an actor pointer even if the actor is marked for destruction.
+		IncludeUnreachable // Return an actor pointer even if the actor is unreachable. This implies it's being destroyed.
+	};
+
 	/**
 	 * Set the actor associated to a mass agent, will also keep the map back in MassActorSubsystem up to date.
 	 * @param MassAgent to associated with the actor
@@ -52,12 +59,14 @@ struct MASSACTORS_API FMassActorFragment : public FObjectWrapperFragment
 
 	/** @return none const pointer to the actor	*/
 	FORCEINLINE AActor* GetMutable() { return Actor.Get(); }
+	AActor* GetMutable(EActorAccess Access);
 
 	/** @return none const pointer to the actor	only if owned by mass */
 	FORCEINLINE AActor* GetOwnedByMassMutable() { return bIsOwnedByMass ? Actor.Get() : nullptr; }
 
 	/** @return none const pointer to the actor	only if owned by mass */
 	FORCEINLINE const AActor* Get() const { return Actor.Get(); }
+	const AActor* Get(EActorAccess Access) const;
 
 	/** @return if the actor is owned by mass */
 	FORCEINLINE bool IsOwnedByMass() const { return bIsOwnedByMass; }
@@ -72,15 +81,11 @@ private:
 	bool bIsOwnedByMass = false;
 };
 
-/**
- * A subsystem managing communication between Actors and Mass
- */
-UCLASS()
-class MASSACTORS_API UMassActorSubsystem : public UWorldSubsystem
+struct MASSACTORS_API FMassActorManager : public TSharedFromThis<FMassActorManager>
 {
-	GENERATED_BODY()
-
 public:
+	explicit FMassActorManager(const TSharedPtr<FMassEntityManager>& EntityManager, UObject* InOwner = nullptr);
+
 	/** Get mass handle from an actor */
 	FMassEntityHandle GetEntityHandleFromActor(const TObjectKey<const AActor> Actor);
 
@@ -91,7 +96,8 @@ public:
 	void RemoveHandleForActor(const TObjectKey<const AActor> Actor);
 
 	/** Get an actor pointer from a mass handle */
-	AActor* GetActorFromHandle(const FMassEntityHandle Handle) const;
+	AActor* GetActorFromHandle(const FMassEntityHandle Handle, 
+		FMassActorFragment::EActorAccess Access = FMassActorFragment::EActorAccess::OnlyWhenAlive) const;
 
 	/** 
 	 *  Removes the connection between Actor and the given entity. Does all the required book keeping 
@@ -100,15 +106,51 @@ public:
 	void DisconnectActor(const TObjectKey<const AActor> Actor, const FMassEntityHandle Handle);
 
 protected:
+
+	TMap<TObjectKey<const AActor>, FMassEntityHandle> ActorHandleMap;
+	UE_MT_DECLARE_RW_ACCESS_DETECTOR(ActorHandleMapDetector);
+	
+	TSharedPtr<FMassEntityManager> EntityManager;
+
+	/** Points at an UObject hosting this instance of the FMassActorManager. It's fine for this to be null. */
+	TWeakObjectPtr<UObject> Owner;
+};
+
+/**
+ * A subsystem managing communication between Actors and Mass
+ */
+UCLASS()
+class MASSACTORS_API UMassActorSubsystem : public UWorldSubsystem
+{
+	GENERATED_BODY()
+
+public:
+	/** Get mass handle from an actor */
+	inline FMassEntityHandle GetEntityHandleFromActor(const TObjectKey<const AActor> Actor);
+
+	/** Set the mass handle associated to an actor */
+	inline void SetHandleForActor(const TObjectKey<const AActor> Actor, const FMassEntityHandle Handle);
+
+	/** Remove entry associated to an actor */
+	inline void RemoveHandleForActor(const TObjectKey<const AActor> Actor);
+
+	/** Get an actor pointer from a mass handle */
+	inline AActor* GetActorFromHandle(const FMassEntityHandle Handle,
+		FMassActorFragment::EActorAccess Access = FMassActorFragment::EActorAccess::OnlyWhenAlive) const;
+
+	/** 
+	 *  Removes the connection between Actor and the given entity. Does all the required book keeping 
+	 *  (as opposed to straight up RemoveHandleForActor call). If the Handle doesn't match Actor no action is taken.
+	 */
+	inline void DisconnectActor(const TObjectKey<const AActor> Actor, const FMassEntityHandle Handle);
+
+protected:
 	// USubsystem BEGIN
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 	// USubsystem END
 	
-	TMap<TObjectKey<const AActor>, FMassEntityHandle> ActorHandleMap;
-	UE_MT_DECLARE_RW_ACCESS_DETECTOR(ActorHandleMapDetector);
-	
-	TSharedPtr<FMassEntityManager> EntityManager;
+	TSharedPtr<FMassActorManager> ActorManager;
 };
 
 template<>
@@ -119,3 +161,33 @@ struct TMassExternalSubsystemTraits<UMassActorSubsystem> final
 		GameThreadOnly = false
 	};
 };
+
+/**
+ * UMassActorSubsystem's inlines
+ */
+FMassEntityHandle UMassActorSubsystem::GetEntityHandleFromActor(const TObjectKey<const AActor> Actor)
+{
+	return ActorManager->GetEntityHandleFromActor(Actor);
+}
+
+void UMassActorSubsystem::SetHandleForActor(const TObjectKey<const AActor> Actor, const FMassEntityHandle Handle)
+{
+	ActorManager->SetHandleForActor(Actor, Handle);
+}
+
+void UMassActorSubsystem::RemoveHandleForActor(const TObjectKey<const AActor> Actor)
+{
+	ActorManager->RemoveHandleForActor(Actor);
+}
+
+AActor* UMassActorSubsystem::GetActorFromHandle(const FMassEntityHandle Handle,
+	FMassActorFragment::EActorAccess Access) const
+{
+	return ActorManager->GetActorFromHandle(Handle, Access);
+}
+
+void UMassActorSubsystem::DisconnectActor(const TObjectKey<const AActor> Actor, const FMassEntityHandle Handle) 
+{ 
+	return ActorManager->DisconnectActor(Actor, Handle); 
+}
+

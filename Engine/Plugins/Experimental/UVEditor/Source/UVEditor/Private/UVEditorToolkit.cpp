@@ -515,6 +515,29 @@ void FUVEditorToolkit::PostInitAssetEditor()
 			
 			TSharedRef<SVerticalBox> Container = SNew(SVerticalBox);
 
+			FMenuBuilder MenuBuilder(true, TSharedPtr<FUICommandList>());
+			MenuBuilder.BeginSection("Section_Gizmo", LOCTEXT("Section_Gizmo", "Gizmo"));
+
+			MenuBuilder.AddSubMenu(
+				LOCTEXT("GizmoTransformPanelSubMenu", "Gizmo Transform Panel"), LOCTEXT("GizmoTransformPanelSubMenu_ToolTip", "Configure the Gizmo Transform Panel."),
+				FNewMenuDelegate::CreateLambda([UVModeToolkit](FMenuBuilder& SubMenuBuilder) {
+					UVModeToolkit->MakeGizmoNumericalUISubMenu(SubMenuBuilder);
+				}));
+
+			MenuBuilder.EndSection();
+
+
+			Container->AddSlot()
+			.AutoHeight()
+			.Padding(FMargin(0.f, 0.f, 8.f, 0.f))
+			[
+				SNew(SBox)
+				.MinDesiredWidth(500)
+				[
+					MenuBuilder.MakeWidget()
+				]
+			];
+
 			Container->AddSlot()
 				.AutoHeight()
 				.Padding(FMargin(0.f, 0.f, 8.f, 0.f))
@@ -599,7 +622,20 @@ void FUVEditorToolkit::PostInitAssetEditor()
 	};
 	SetCommonViewportClientOptions(ViewportClient.Get());
 
-	// Ortho has too many problems with rendering things, unfortunately, so we should use perspective.
+	// Note about using perspective instead of ortho projection for a 2d viewport:
+	// Originally, we had various issues with the materials that we were using in ortho mode. Most of
+	// those issues seem to have been resolved since then, and an example of using a proper 2d viewport
+	// can be seen in ClothEditorRestSpaceViewportClient.cpp and ClothEditorToolkit.cpp. The benefits of
+	// doing so are viewport controls out of the box, and ability to switch the viewport type at will.
+	// 
+	// At this point, however, the UV editor would not get much benefit from converting to a true ortho
+	// viewport, and the conversion carries with it some amount of risk. At time of last experimentation 
+	// with the conversion (1/3/2023), the materials seemed to all work, but the gizmo failed to draw
+	// (unknown reason), and the grid number labels needed fixing.
+	// 
+	// Until we run into issues, we will continue to use perspective projection to avoid the conversion
+	// cost/risks and to keep the advantages of more trustworthy rendering, but if you use the editor as
+	// a model, consider using an ortho viewport for the potential simplicity.
 	ViewportClient->SetViewportType(ELevelViewportType::LVT_Perspective);
 
 	// Lit gives us the most options in terms of the materials we can use.
@@ -608,14 +644,18 @@ void FUVEditorToolkit::PostInitAssetEditor()
 	// scale [0,1] to [0,ScaleFactor].
 	// We set our camera to look downward, centered, far enough to be able to see the edges
 	// with a 90 degree FOV
-	double ScaleFactor = 1;
-	UUVEditorSubsystem* UVSubsystem = GEditor->GetEditorSubsystem<UUVEditorSubsystem>();
-	if (UVSubsystem)
-	{
-		ScaleFactor = FUVEditorUXSettings::UVMeshScalingFactor;
-	}
-	ViewportClient->SetViewLocation(FVector(ScaleFactor / 2, ScaleFactor / 2, ScaleFactor));
-	ViewportClient->SetViewRotation(FRotator(-90, 0, 0));
+	FVector3d ViewLocation = FUVEditorUXSettings::ExternalUVToUnwrapWorldPosition(FVector2f(0.5, 0.5));
+	ViewLocation.Z = FUVEditorUXSettings::UVMeshScalingFactor;
+	ViewportClient->SetViewLocation(ViewLocation);
+	
+	// Note that the orientation at which we look at the world should match to the transformations
+	// we set in FUVEditorUXSettings::ExternalUVToUnwrapWorldPosition, etc.
+	// Currently we choose to view the unwrap world with Z pointing at us, X pointing right, and 
+	// Y pointing down, which matches the view given by LVT_OrthoXY, which we may someday decide to use.
+	// Also, we want the U and V axes to lie along the X and Y axes, respectively, even if they are
+	// flipped, because that makes the colors used in the gizmo and its numerical UI panel match up 
+	// with what the user expects.
+	ViewportClient->SetViewRotation(FRotator(-90, 0, -90));
 
 	// If exposure isn't set to fixed, it will flash as we stare into the void
 	ViewportClient->ExposureSettings.bFixed = true;

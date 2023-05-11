@@ -22,6 +22,8 @@
 #include "DetourTileCache/DetourTileCacheBuilder.h"
 #include "Detour/DetourCommon.h"
 #include "Detour/DetourAssert.h"
+#include "Stats/Stats.h"
+#include <limits>
 
 static const int MAX_VERTS_PER_POLY = 6;	// TODO: use the DT_VERTS_PER_POLYGON
 static const int MAX_REM_EDGES = 48;		// TODO: make this an expression.
@@ -38,6 +40,8 @@ dtTileCacheContourSet* dtAllocTileCacheContourSet(dtTileCacheAlloc* alloc)
 
 void dtFreeTileCacheContourSet(dtTileCacheAlloc* alloc, dtTileCacheContourSet* cset)
 {
+	QUICK_SCOPE_CYCLE_COUNTER(dtFreeTileCacheContourSet);
+	
 	dtAssert(alloc);
 
 	if (!cset) return;
@@ -60,6 +64,8 @@ dtTileCacheClusterSet* dtAllocTileCacheClusterSet(dtTileCacheAlloc* alloc)
 
 void dtFreeTileCacheClusterSet(dtTileCacheAlloc* alloc, dtTileCacheClusterSet* clusters)
 {
+	QUICK_SCOPE_CYCLE_COUNTER(dtFreeTileCacheClusterSet);
+	
 	dtAssert(alloc);
 
 	if (!clusters) return;
@@ -81,6 +87,8 @@ dtTileCachePolyMesh* dtAllocTileCachePolyMesh(dtTileCacheAlloc* alloc)
 
 void dtFreeTileCachePolyMesh(dtTileCacheAlloc* alloc, dtTileCachePolyMesh* lmesh)
 {
+	QUICK_SCOPE_CYCLE_COUNTER(dtFreeTileCachePolyMesh);
+	
 	dtAssert(alloc);
 	
 	if (!lmesh) return;
@@ -103,6 +111,8 @@ dtTileCachePolyMeshDetail* dtAllocTileCachePolyMeshDetail(dtTileCacheAlloc* allo
 
 void dtFreeTileCachePolyMeshDetail(dtTileCacheAlloc* alloc, dtTileCachePolyMeshDetail* dmesh)
 {
+	QUICK_SCOPE_CYCLE_COUNTER(dtFreeTileCachePolyMeshDetail);
+	
 	dtAssert(alloc);
 
 	if (!dmesh) return;
@@ -123,6 +133,8 @@ dtTileCacheDistanceField* dtAllocTileCacheDistanceField(dtTileCacheAlloc* alloc)
 
 void dtFreeTileCacheDistanceField(dtTileCacheAlloc* alloc, dtTileCacheDistanceField* dfield)
 {
+	QUICK_SCOPE_CYCLE_COUNTER(dtFreeTileCacheDistanceField);
+
 	dtAssert(alloc);
 
 	if (!dfield) return;
@@ -988,7 +1000,8 @@ dtStatus dtBuildTileCacheContours(dtTileCacheAlloc* alloc, dtTileCacheLayer& lay
 
 			if (bCanAddCluster)
 			{
-				clusters.regMap[i] = newClusterId;
+				dtAssert(newClusterId < std::numeric_limits<unsigned short>::max());
+				clusters.regMap[i] = (unsigned short)newClusterId;
 				clusters.nclusters++;
 				bCanAddCluster = false;
 			}
@@ -1019,7 +1032,8 @@ dtStatus dtBuildTileCacheContours(dtTileCacheAlloc* alloc, dtTileCacheLayer& lay
 						continue;
 					}
 
-					clusters.regMap[cont.reg] = newClusterId;
+					dtAssert(newClusterId < std::numeric_limits<unsigned short>::max());
+					clusters.regMap[cont.reg] = (unsigned short)newClusterId;
 					for (int j = 0; j < nlinks[ic]; j++)
 					{
 						unsigned short neiReg = (unsigned short)(links[linksBase[ic] + j]);
@@ -2658,6 +2672,8 @@ dtStatus dtBuildTileCacheLayer(dtTileCacheCompressor* comp,
 
 void dtFreeTileCacheLayer(dtTileCacheAlloc* alloc, dtTileCacheLayer* layer)
 {
+	QUICK_SCOPE_CYCLE_COUNTER(dtFreeTileCacheLayer);
+	
 	dtAssert(alloc);
 	// The layer is allocated as one contiguous blob of data.
 	alloc->free(layer);

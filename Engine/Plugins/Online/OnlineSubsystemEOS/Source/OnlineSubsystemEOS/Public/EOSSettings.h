@@ -17,8 +17,6 @@ struct FEOSArtifactSettings
 	FString SandboxId;
 	FString DeploymentId;
 	FString EncryptionKey;
-
-	void ParseRawArrayEntry(const FString& RawLine);
 };
 
 UCLASS(Deprecated)
@@ -59,7 +57,8 @@ public:
 	FString DeploymentId;
 
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category="EOS Artifact Settings")
-	FString EncryptionKey;
+	// Config key renamed to ClientEncryptionKey as EncryptionKey gets removed from packaged builds due to IniKeyDenylist=EncryptionKey entry in BaseGame.ini.
+	FString ClientEncryptionKey;
 
 	FEOSArtifactSettings ToNative() const;
 };
@@ -83,6 +82,7 @@ struct FEOSSettings
 	bool bMirrorPresenceToEAS;
 	TArray<FEOSArtifactSettings> Artifacts;
 	TArray<FString> TitleStorageTags;
+	TArray<FString> AuthScopeFlags;
 };
 
 UCLASS(Config=Engine, DefaultConfig)
@@ -136,12 +136,16 @@ public:
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category="EOS Settings")
 	TArray<FArtifactSettings> Artifacts;
 
+	/** Auth scopes to request during login */
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category = "EOS Settings")
+	TArray<FString> AuthScopeFlags;
+
 	/** Set to true to have Epic Accounts used (friends list will be unified with the default platform) */
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category="EOSPlus Login Settings", DisplayName="Use Epic Account for EOS login (requires account linking)")
 	bool bUseEAS = false;
 
 	/** Set to true to have EOS Connect APIs used to link accounts for crossplay */
-	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category="EOSPlus Login Settings", DisplayName="Use Crossplatform User IDs for EOS Login (doesn't use Epic Account)")
+	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category="EOSPlus Login Settings", DisplayName="Use EOS Connect APIs to create and link Product User IDs (PUIDs), and use EOS Game Services")
 	bool bUseEOSConnect = false;
 
 	/** Set to true to write stats to EOS as well as the default platform */
@@ -160,8 +164,8 @@ public:
 	UPROPERTY(Config, EditAnywhere, BlueprintReadOnly, Category="Crossplay Settings")
 	bool bMirrorPresenceToEAS = false;
 
-	/** Find the Settings for an artifact by name */
-	static bool GetSettingsForArtifact(const FString& ArtifactName, FEOSArtifactSettings& OutSettings);
+	/** Get the settings for the selected artifact */
+	static bool GetSelectedArtifactSettings(FEOSArtifactSettings& OutSettings);
 
 	static FEOSSettings GetSettings();
 	FEOSSettings ToNative() const;
@@ -170,8 +174,14 @@ private:
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
-	static bool AutoGetSettingsForArtifact(const FString& ArtifactName, FEOSArtifactSettings& OutSettings);
-	static bool ManualGetSettingsForArtifact(const FString& ArtifactName, FEOSArtifactSettings& OutSettings);
+
+	static FString GetDefaultArtifactName();
+
+	static bool GetArtifactSettings(const FString& ArtifactName, FEOSArtifactSettings& OutSettings);
+	static bool GetArtifactSettings(const FString& ArtifactName, const FString& SandboxId, FEOSArtifactSettings& OutSettings);
+	static bool GetArtifactSettingsImpl(const FString& ArtifactName, const TOptional<FString>& SandboxId, FEOSArtifactSettings& OutSettings);
+
+	static const TArray<FEOSArtifactSettings>& GetCachedArtifactSettings();
 
 	static FEOSSettings AutoGetSettings();
 	static const FEOSSettings& ManualGetSettings();

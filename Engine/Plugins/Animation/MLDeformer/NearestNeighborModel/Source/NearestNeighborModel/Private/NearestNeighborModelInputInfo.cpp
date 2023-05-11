@@ -2,6 +2,9 @@
 
 #include "NearestNeighborModelInputInfo.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Engine/SkeletalMesh.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NearestNeighborModelInputInfo)
 
 
 void UNearestNeighborModelInputInfo::ComputeNetworkInput(const TArray<FQuat>& BoneRotations, float* OutputBuffer, int64 StartIndex) const
@@ -58,8 +61,8 @@ void UNearestNeighborModelInputInfo::ExtractBoneRotations(USkeletalMeshComponent
 int32 UNearestNeighborModelInputInfo::CalcNumNeuralNetInputs() const
 {
     return 
-        BoneNameStrings.Num() * 3 + // Three floats per bone.
-        CurveNameStrings.Num();     // One float per curve.
+        BoneNames.Num() * 3 + // Three floats per bone.
+        CurveNames.Num();     // One float per curve.
 }
 
 void UNearestNeighborModelInputInfo::InitRefBoneRotations(USkeletalMesh* SkelMesh)

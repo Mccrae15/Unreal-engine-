@@ -2,29 +2,21 @@
 
 #pragma once
 
-#include "Algo/RemoveIf.h"
-#include "CoreTypes.h"
-#include "Common/UdpSocketReceiver.h"
-#include "Containers/Map.h"
 #include "Containers/Queue.h"
 
-#include "GenericPlatform/GenericPlatformMisc.h"
 #include "HAL/Runnable.h"
-#include "IMessageContext.h"
-#include "IMessageTransport.h"
 
 #include "INetworkMessagingExtension.h"
 #include "Interfaces/IPv4/IPv4Endpoint.h"
-#include "Misc/DateTime.h"
-#include "Misc/Guid.h"
 #include "Misc/SingleThreadRunnable.h"
-#include "Misc/Timespan.h"
-#include "Templates/SharedPointer.h"
 
 #include "UdpMessageSegmenter.h"
 #include "UdpMessagingPrivate.h"
-#include "Shared/UdpMessageSegment.h"
 #include "Transport/UdpCircularQueue.h"
+
+class IMessageContext;
+namespace FUdpMessageSegment { struct FDataChunk; }
+namespace FUdpMessageSegment { struct FHeader; }
 
 class FArrayReader;
 class FEvent;
@@ -81,18 +73,26 @@ struct FSentData
 /** Returned by the segment processor. It provides details on what was sent and how it was sent. */
 struct FSentSegmentInfo
 {
+	FSentSegmentInfo() = delete;
+	FSentSegmentInfo(int32 InMessageId)
+		: MessageId(InMessageId)
+	{
+	}
+
+	int32 MessageId;
 	uint64 SequenceNumber = 0;
 	uint32 BytesSent = 0;
 
 	bool bIsReliable = false;
 	bool bRequiresRequeue = false;
 	bool bSendSocketError = false;
+	bool bFullySent = false;
 
 	/** Converts FSentSegmentInfo into a FSentData struct. */
-	FSentData AsSentData(int32 MessageId, uint32 SegmentNumber, const FDateTime& CurrentTime)
+	FSentData AsSentData(int32 InMessageId, uint32 SegmentNumber, const FDateTime& CurrentTime)
 	{
 		return {
-			MessageId,
+			InMessageId,
 			SegmentNumber,
 			SequenceNumber,
 			bIsReliable,
@@ -150,6 +150,9 @@ class FUdpMessageProcessor
 
 		/** Holds of queue of MessageIds to send. They are processed in round-robin fashion. */
 		TUdpCircularQueue<int32> WorkQueue;
+
+		/* Holds the list of messages that are still pending acknowledgement or overflow if overcommitted on work queue. */
+		TArray<int32> OverflowForPendingAck;
 
 		/** Last time we issued a warning about work queues. */
 		FDateTime LastWorkQueueFullMessage;

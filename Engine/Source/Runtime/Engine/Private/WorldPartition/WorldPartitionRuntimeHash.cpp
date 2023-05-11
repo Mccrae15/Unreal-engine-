@@ -1,21 +1,29 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WorldPartition/WorldPartitionRuntimeHash.h"
-#include "WorldPartition/HLOD/HLODActor.h"
-#include "WorldPartition/HLOD/HLODActorDesc.h"
-#include "Engine/World.h"
-#include "Engine/LevelScriptBlueprint.h"
-#include "ActorReferencesUtils.h"
+#include "Engine/Level.h"
+#include "Misc/HierarchicalLogArchive.h"
+#include "WorldPartition/WorldPartition.h"
+#include "WorldPartition/WorldPartitionActorDescView.h"
+#include "WorldPartition/WorldPartitionStreamingSource.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(WorldPartitionRuntimeHash)
 
-#if WITH_EDITOR
-#include "WorldPartition/WorldPartitionHandle.h"
-#include "WorldPartition/DataLayer/WorldDataLayers.h"
-#include "WorldPartition/WorldPartitionStreamingGenerationContext.h"
-#endif
-
 #define LOCTEXT_NAMESPACE "WorldPartition"
+
+void URuntimeHashExternalStreamingObjectBase::ForEachStreamingCells(TFunctionRef<void(UWorldPartitionRuntimeCell&)> Func)
+{
+	TArray<UObject*> Objects;
+	GetObjectsWithOuter(this, Objects);
+
+	for (UObject* Object : Objects)
+	{
+		if (UWorldPartitionRuntimeCell* Cell = Cast<UWorldPartitionRuntimeCell>(Object))
+		{
+			Func(*Cell);
+		}
+	}
+}
 
 UWorldPartitionRuntimeHash::UWorldPartitionRuntimeHash(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -55,15 +63,6 @@ bool UWorldPartitionRuntimeHash::ConditionalRegisterAlwaysLoadedActorsForPIE(con
 		if (AActor* AlwaysLoadedActor = FindObject<AActor>(nullptr, *ActorDescView.GetActorSoftPath().ToString()))
 		{
 			AlwaysLoadedActorsForPIE.Emplace(Reference, AlwaysLoadedActor);
-
-			// Handle child actors
-			AlwaysLoadedActor->ForEachComponent<UChildActorComponent>(true, [this, &Reference](UChildActorComponent* ChildActorComponent)
-			{
-				if (AActor* ChildActor = ChildActorComponent->GetChildActor())
-				{
-					AlwaysLoadedActorsForPIE.Emplace(Reference, ChildActor);
-				}
-			});
 		}
 
 		return true;
@@ -202,6 +201,25 @@ void UWorldPartitionRuntimeHash::FStreamingSourceCells::AddCell(const UWorldPart
 
 	Cell->AppendStreamingSourceInfo(Source, SourceShape);
 	Cells.Add(Cell);
+}
+
+void FWorldPartitionQueryCache::AddCellInfo(const UWorldPartitionRuntimeCell* Cell, const FSphericalSector& SourceShape)
+{
+	const double SquareDistance = FVector::DistSquared2D(SourceShape.GetCenter(), Cell->GetContentBounds().GetCenter());
+	if (double* ExistingSquareDistance = CellToSourceMinSqrDistances.Find(Cell))
+	{
+		*ExistingSquareDistance = FMath::Min(*ExistingSquareDistance, SquareDistance);
+	}
+	else
+	{
+		CellToSourceMinSqrDistances.Add(Cell, SquareDistance);
+	}
+}
+
+double FWorldPartitionQueryCache::GetCellMinSquareDist(const UWorldPartitionRuntimeCell* Cell) const
+{
+	const double* Dist = CellToSourceMinSqrDistances.Find(Cell);
+	return Dist ? *Dist : MAX_dbl;
 }
 
 #undef LOCTEXT_NAMESPACE

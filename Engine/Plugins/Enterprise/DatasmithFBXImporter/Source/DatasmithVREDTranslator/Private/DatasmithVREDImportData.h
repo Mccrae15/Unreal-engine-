@@ -1,8 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "Curves/CurveVector.h"
-#include "Engine/Classes/EditorFramework/AssetImportData.h"
 #include "Engine/DataTable.h"
 
 #include "DatasmithVREDImportData.generated.h"

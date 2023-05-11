@@ -11,6 +11,8 @@
 #include "NiagaraScriptSource.h"
 #include "NiagaraSimulationStageCompileData.h"
 
+#include "NiagaraHlslTranslator.generated.h"
+
 class Error;
 class UNiagaraGraph;
 class UNiagaraNode;
@@ -367,7 +369,9 @@ public:
 	bool bInterpolatePreviousParams = false;
 	bool bCopyPreviousParams = true;
 	ENiagaraCodeChunkMode ChunkModeIndex = (ENiagaraCodeChunkMode)-1;
-	FName IterationSource;
+	ENiagaraIterationSource IterationSourceType = ENiagaraIterationSource::Particles;
+	FName IterationDataInterface;
+	FName IterationDirectBinding;
 	int32 SimulationStageIndex = -1;
 	FName EnabledBinding;
 	FName ElementCountXBinding;
@@ -384,8 +388,8 @@ public:
 	bool bWritesParticles = false;
 	bool bPartialParticleUpdate = false;
 	bool bGpuDispatchForceLinear = false;
-	bool bOverrideGpuDispatchType = false;
-	ENiagaraGpuDispatchType OverrideGpuDispatchType = ENiagaraGpuDispatchType::OneD;
+	ENiagaraGpuDispatchType DirectDispatchType = ENiagaraGpuDispatchType::OneD;
+	ENiagaraDirectDispatchElementType DirectDispatchElementType = ENiagaraDirectDispatchElementType::NumThreads;
 	bool bOverrideGpuDispatchNumThreads = false;
 	bool bShouldUpdateInitialAttributeValues = false;
 	FIntVector OverrideGpuDispatchNumThreads = FIntVector(1, 1, 1);
@@ -398,6 +402,9 @@ public:
 	bool IsRelevantToSpawnForStage(const FNiagaraParameterMapHistory& InHistory, const FNiagaraVariable& InAliasedVar, const FNiagaraVariable& InVar) const;
 
 	bool IsExternalConstantNamespace(const FNiagaraVariable& InVar, ENiagaraScriptUsage InTargetUsage, uint32 InTargetBitmask);
+
+	FName GetIterationDataInterface() const { return IterationSourceType == ENiagaraIterationSource::DataInterface ? IterationDataInterface : NAME_None; }
+
 	int32 CurrentCallID = 0;
 	bool bCallIDInitialized = false;
 };
@@ -549,7 +556,7 @@ protected:
 	FString GetUniqueEmitterName() const;
 
 	void HandleDataInterfaceCall(FNiagaraScriptDataInterfaceCompileInfo& Info, const FNiagaraFunctionSignature& InMatchingSignature);
-	void ConvertCompileInfoToParamInfo(const FNiagaraScriptDataInterfaceCompileInfo& InCompileInfo, FNiagaraDataInterfaceGPUParamInfo& OutGPUParamInfo);
+	void ConvertCompileInfoToParamInfo(const FNiagaraScriptDataInterfaceCompileInfo& InCompileInfo, FNiagaraDataInterfaceGPUParamInfo& OutGPUParamInfo, TArray<FNiagaraFunctionSignature>& GeneratedFunctionSignatures);
 public:
 
 	FHlslNiagaraTranslator();

@@ -119,7 +119,6 @@ namespace UE
 			string LocalReason = "";
 
 			TestResult FinalResult = TestResult.Invalid;
-
 			if (ErrorType == ErrorTypes.Ensure)
 			{
 				// for an ensure we should have an entry and a callstack

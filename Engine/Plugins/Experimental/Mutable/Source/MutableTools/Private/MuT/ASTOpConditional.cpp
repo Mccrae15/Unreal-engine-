@@ -5,7 +5,6 @@
 #include "Containers/Map.h"
 #include "HAL/PlatformMath.h"
 #include "Misc/AssertionMacros.h"
-#include "MuR/MemoryPrivate.h"
 #include "MuR/ModelPrivate.h"
 #include "MuR/MutableMath.h"
 #include "MuR/RefCounted.h"
@@ -104,7 +103,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	void ASTOpConditional::Link(PROGRAM& program, const FLinkerOptions*)
+	void ASTOpConditional::Link(FProgram& program, const FLinkerOptions*)
 	{
 		// Already linked?
 		if (!linkedAddress)
@@ -127,12 +126,12 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	FImageDesc ASTOpConditional::GetImageDesc(bool returnBestOption, class GetImageDescContext* context)
+	FImageDesc ASTOpConditional::GetImageDesc(bool returnBestOption, class FGetImageDescContext* context) const
 	{
 		FImageDesc res;
 
 		// Local context in case it is necessary
-		GetImageDescContext localContext;
+		FGetImageDescContext localContext;
 		if (!context)
 		{
 			context = &localContext;
@@ -214,7 +213,7 @@ namespace mu
 
 	//-------------------------------------------------------------------------------------------------
 	void ASTOpConditional::GetBlockLayoutSize(int blockIndex, int* pBlockX, int* pBlockY,
-		BLOCK_LAYOUT_SIZE_CACHE* cache)
+		FBlockLayoutSizeCache* cache)
 	{
 		if (type == OP_TYPE::LA_CONDITIONAL)
 		{
@@ -282,7 +281,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	mu::Ptr<ASTOp> ASTOpConditional::OptimiseSemantic(const MODEL_OPTIMIZATION_OPTIONS&) const
+	mu::Ptr<ASTOp> ASTOpConditional::OptimiseSemantic(const FModelOptimizationOptions&) const
 	{
 		if (!condition)
 		{

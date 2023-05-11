@@ -2,19 +2,17 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "TraceServices/Model/AnalysisSession.h"
 
-#include "FastUpdate/WidgetUpdateFlags.h"
 
-#include "Common/PagedArray.h"
-#include "Containers/ArrayView.h"
 #include "Model/IntervalTimeline.h"
 #include "Model/PointTimeline.h"
 #include "Model/IntervalTimeline.h"
-#include "Templates/EnableIf.h"
 #include "Trace/Analyzer.h"
-#include "Trace/SlateTrace.h"
+#include "Widgets/InvalidateWidgetReason.h"
+
+enum class ESlateTraceApplicationFlags : uint8;
+enum class EWidgetUpdateFlags : uint8;
 
 namespace TraceServices { class IAnalysisSession; }
 
@@ -33,7 +31,7 @@ private:
 
 public:
 	constexpr FWidgetId() : Value(0) {}
-	template<typename T, typename U = typename TEnableIf<TIsSame<T, uint64>::Value>::Type>
+	template<typename T, typename U = typename TEnableIf<std::is_same_v<T, uint64>>::Type>
 	constexpr FWidgetId(T InValue) : Value(InValue) {}
 	explicit operator bool() const { return Value != 0; }
 	uint64 GetValue() const { return Value; }

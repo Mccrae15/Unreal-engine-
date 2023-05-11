@@ -2,30 +2,32 @@
 
 #include "AssetCompilingManager.h"
 
-#include "HAL/LowLevelMemStats.h"
-#include "HAL/LowLevelMemTracker.h"
+#include "HAL/LowLevelMemStats.h" // IWYU pragma: keep
+#include "HAL/LowLevelMemTracker.h" // IWYU pragma: keep
 
 DECLARE_LLM_MEMORY_STAT(TEXT("AssetCompilation"), STAT_AssetCompilationLLM, STATGROUP_LLMFULL);
 DECLARE_LLM_MEMORY_STAT(TEXT("AssetCompilation"), STAT_AssetCompilationSummaryLLM, STATGROUP_LLM);
 LLM_DEFINE_TAG(AssetCompilation, NAME_None, NAME_None, GET_STATFNAME(STAT_AssetCompilationLLM), GET_STATFNAME(STAT_AssetCompilationSummaryLLM));
 
+#include "Misc/QueuedThreadPool.h"
 #include "Misc/QueuedThreadPoolWrapper.h"
 #include "Misc/CommandLine.h"
-#include "UObject/UObjectIterator.h"
-#include "HAL/IConsoleManager.h"
 #include "ActorDeferredScriptManager.h"
 #include "StaticMeshCompiler.h"
 #include "TextureCompiler.h"
 #include "SoundWaveCompiler.h"
-#include "Components/StaticMeshComponent.h"
-#include "Materials/MaterialInstance.h"
 #include "ObjectCacheContext.h"
-#include "AsyncCompilationHelpers.h"
-#include "Experimental/Misc/ExecutionResource.h"
 #include "SkinnedAssetCompiler.h"
 #include "Algo/TopologicalSort.h"
 #include "Algo/Find.h"
 #include "ProfilingDebugging/CountersTrace.h"
+#include "Animation/AnimationSequenceCompiler.h"
+
+#if WITH_EDITOR
+#include "DerivedDataBuildSchedulerQueue.h"
+#include "DerivedDataThreadPoolTask.h"
+#include "Features/IModularFeatures.h"
+#endif
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AssetCompilingManager)
 
@@ -88,7 +90,21 @@ namespace AssetCompilingManagerImpl
 		}
 #endif
 	}
-}
+
+#if WITH_EDITOR
+	using namespace UE::DerivedData;
+
+	class FAssetCompilingManagerMemoryQueue final : public IBuildSchedulerMemoryQueue
+	{
+		void Reserve(uint64 Memory, IRequestOwner& Owner, TUniqueFunction<void ()>&& OnComplete) final
+		{
+			LaunchTaskInThreadPool(Memory, Owner, FAssetCompilingManager::Get().GetThreadPool(), MoveTemp(OnComplete));
+		}
+	};
+
+	static FAssetCompilingManagerMemoryQueue GMemoryQueue;
+#endif
+} // AssetCompilingManagerImpl
 
 #if WITH_EDITOR
 
@@ -100,8 +116,10 @@ public:
 	 * InMaxConcurrency           Maximum number of concurrent tasks allowed, -1 will limit concurrency to number of threads available in the underlying thread pool.
 	 * InPriorityMapper           Thread-safe function used to map any priority from this Queue to the priority that should be used when scheduling the task on the underlying thread pool.
 	 */
-	FMemoryBoundQueuedThreadPoolWrapper(FQueuedThreadPool* InWrappedQueuedThreadPool, int32 InMaxConcurrency = -1, TFunction<EQueuedWorkPriority(EQueuedWorkPriority)> InPriorityMapper = [](EQueuedWorkPriority InPriority) { return InPriority; })
-		: FQueuedThreadPoolWrapper(InWrappedQueuedThreadPool, InMaxConcurrency, InPriorityMapper)
+	FMemoryBoundQueuedThreadPoolWrapper(FQueuedThreadPool* InWrappedQueuedThreadPool, TFunction<int32 ()> InMaxForegroundConcurrency, TFunction<int32()> InMaxBackgroundConcurrency, TFunction<EQueuedWorkPriority(EQueuedWorkPriority)> InPriorityMapper = [](EQueuedWorkPriority InPriority) { return InPriority; })
+		: FQueuedThreadPoolWrapper(InWrappedQueuedThreadPool, -1, InPriorityMapper)
+		, MaxForegroundConcurrency(InMaxForegroundConcurrency)
+		, MaxBackgroundConcurrency(InMaxBackgroundConcurrency)
 	{
 	}
 
@@ -204,12 +222,28 @@ public:
 		UpdateCounters();
 	}
 
+	int32 GetAdjustedMaxConcurrency(EQueuedWorkPriority Priority) const
+	{
+		// Only unlocks foreground concurrency when priority is highest or blocking. This improves
+		// editor responsiveness under heavy load when GT is blocking on something and
+		// max concurrency has already been reached by background work.
+		if (Priority <= EQueuedWorkPriority::Highest)
+		{
+			return MaxBackgroundConcurrency() + MaxForegroundConcurrency();
+		}
+		else
+		{
+			return MaxBackgroundConcurrency();
+		}
+	}
+
 	int32 GetMaxConcurrency() const override
 	{
 		int64 NewRequiredMemory = 0;
 		
 		// Add next work memory requirement to see if it still fits in available memory
-		if (IQueuedWork* NextWork = QueuedWork.Peek())
+		EQueuedWorkPriority Priority;
+		if (IQueuedWork* NextWork = QueuedWork.Peek(&Priority))
 		{
 			NewRequiredMemory += GetRequiredMemory(NextWork);
 		}
@@ -217,7 +251,7 @@ public:
 		// TotalEstimatedMemory is the sum of all "RequiredMemory" for currently scheduled tasks
 		int64 TotalRequiredMemory = TotalEstimatedMemory.load() + NewRequiredMemory;
 
-		int32 DynamicMaxConcurrency = FQueuedThreadPoolWrapper::GetMaxConcurrency();
+		int32 DynamicMaxConcurrency = GetAdjustedMaxConcurrency(Priority);
 		int32 Concurrency = FQueuedThreadPoolWrapper::GetCurrentConcurrency();
 
 		// Never limit below a concurrency of 1 or else we'll starve the asset processing and never be scheduled again
@@ -248,11 +282,13 @@ public:
 
 		TRACE_COUNTER_SET(AsyncCompilationMaxConcurrency, DynamicMaxConcurrency);
 
-		check(DynamicMaxConcurrency > 0);
 		return DynamicMaxConcurrency;
 	}
 
 private:
+	TFunction<int32()> MaxForegroundConcurrency;
+	TFunction<int32()> MaxBackgroundConcurrency;
+
 	std::atomic<int64> TotalEstimatedMemory {0};
 };
 
@@ -273,8 +309,25 @@ FAssetCompilingManager::FAssetCompilingManager()
 	RegisterManager(&FTextureCompilingManager::Get());
 	RegisterManager(&FActorDeferredScriptManager::Get());
 	RegisterManager(&FSoundWaveCompilingManager::Get());
+	RegisterManager(&UE::Anim::FAnimSequenceCompilingManager::Get());
+
+	// Ensure that the thread pool is constructed before the memory queue is registered because
+	// the memory queue can call GetThreadPool() from a worker thread, and could lead to a race
+	// to create the thread pool.
+	GetThreadPool();
+
+	IModularFeatures::Get().RegisterModularFeature(UE::DerivedData::IBuildSchedulerMemoryQueue::FeatureName, &AssetCompilingManagerImpl::GMemoryQueue);
 #endif
 }
+
+FAssetCompilingManager::~FAssetCompilingManager()
+{
+#if WITH_EDITOR
+	IModularFeatures::Get().UnregisterModularFeature(UE::DerivedData::IBuildSchedulerMemoryQueue::FeatureName, &AssetCompilingManagerImpl::GMemoryQueue);
+#endif
+}
+
+extern CORE_API int32 GNumForegroundWorkers; // TaskGraph.cpp
 
 FQueuedThreadPool* FAssetCompilingManager::GetThreadPool() const
 {
@@ -287,12 +340,15 @@ FQueuedThreadPool* FAssetCompilingManager::GetThreadPool() const
 		// Recently found out that GThreadPool and GLargeThreadPool have the same amount of workers, so can't rely on GThreadPool to be our limiter here.
 		// FPlatformMisc::NumberOfCores() and FPlatformMisc::NumberOfCoresIncludingHyperthreads() also return the same value when -corelimit is used so we can't use FPlatformMisc::NumberOfCores()
 		// if we want to keep the same 1:2 relationship with worker count.
-		const int32 MaxConcurrency = FMath::Max(GLargeThreadPool->GetNumThreads() / 2, 1);
+		auto MaxBackgroundConcurrency = []() { return FMath::Max(1, GLargeThreadPool->GetNumThreads() / 2); };
+
+		// Additional concurrency to unlock at highest priority
+		auto MaxForegroundConcurrency = []() { return FMath::Max(0, GNumForegroundWorkers); };
 
 		// All asset priorities will resolve to a Low priority once being scheduled.
 		// Any asset supporting being built async should be scheduled lower than Normal to let non-async stuff go first
 		// However, we let Highest and Blocking priority pass-through as it to benefit from going to foreground threads when required (i.e. Game-thread is waiting on some assets)
-		GAssetThreadPool = new FMemoryBoundQueuedThreadPoolWrapper(GLargeThreadPool, MaxConcurrency, [](EQueuedWorkPriority Priority) { return Priority <= EQueuedWorkPriority::Highest ? Priority : EQueuedWorkPriority::Low; });
+		GAssetThreadPool = new FMemoryBoundQueuedThreadPoolWrapper(GLargeThreadPool, MaxForegroundConcurrency, MaxBackgroundConcurrency, [](EQueuedWorkPriority Priority) { return Priority <= EQueuedWorkPriority::Highest ? Priority : EQueuedWorkPriority::Low; });
 
 		AsyncCompilationHelpers::BindThreadPoolToCVar(
 			GAssetThreadPool,
@@ -388,6 +444,47 @@ void FAssetCompilingManager::FinishAllCompilation()
 }
 
 /**
+ * Finish compilation of the requested objects.
+ */
+void FAssetCompilingManager::FinishCompilationForObjects(TArrayView<UObject* const> InObjects)
+{
+#if WITH_EDITOR
+	if (InObjects.Num())
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FAssetCompilingManager::FinishCompilationForObjects);
+
+		for (IAssetCompilingManager* AssetCompilingManager : AssetCompilingManagers)
+		{
+			AssetCompilingManager->FinishCompilationForObjects(InObjects);
+		}
+
+		bool bAreObjectsStillCompiling = false;
+		for (const UObject* Object : InObjects)
+		{
+			if (const IInterface_AsyncCompilation* AsyncCompilationInterface = Cast<IInterface_AsyncCompilation>(Object))
+			{
+				if (AsyncCompilationInterface->IsCompiling())
+				{
+					bAreObjectsStillCompiling = true;
+
+					ensureMsgf(false,
+						TEXT("A finish compilation has been requested on %s but it is still being compiled, this might indicate a missing implementation of IAssetCompilingManager::FinishCompilationForObjects"),
+						*Object->GetFullName());
+
+					break;
+				}
+			}
+		}
+
+		if (bAreObjectsStillCompiling)
+		{
+			FinishAllCompilation();
+		}
+	}
+#endif
+}
+
+/**
  * Cancel any pending work and blocks until it is safe to shut down.
  */
 void FAssetCompilingManager::Shutdown()
@@ -419,6 +516,19 @@ void FAssetCompilingManager::ProcessAsyncTasks(bool bLimitExecutionTime)
 	for (IAssetCompilingManager* AssetCompilingManager : AssetCompilingManagers)
 	{
 		AssetCompilingManager->ProcessAsyncTasks(bLimitExecutionTime);
+	}
+
+	UpdateNumRemainingAssets();
+}
+
+void FAssetCompilingManager::ProcessAsyncTasks(const AssetCompilation::FProcessAsyncTaskParams& Params)
+{
+	// Reuse ObjectIterator Caching and Reverse lookups for the duration of all asset updates
+	FObjectCacheContextScope ObjectCacheScope;
+
+	for (IAssetCompilingManager* AssetCompilingManager : AssetCompilingManagers)
+	{
+		AssetCompilingManager->ProcessAsyncTasks(Params);
 	}
 
 	UpdateNumRemainingAssets();

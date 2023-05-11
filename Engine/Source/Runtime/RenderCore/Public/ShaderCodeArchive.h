@@ -319,6 +319,11 @@ public:
 		return SerializedShaders.FindShader(Hash);
 	}
 
+	virtual FSHAHash GetShaderHash(int32 ShaderMapIndex, int32 ShaderIndex) override
+	{
+		return SerializedShaders.ShaderHashes[GetShaderIndex(ShaderMapIndex, ShaderIndex)];
+	};
+
 	virtual bool PreloadShader(int32 ShaderIndex, FGraphEventArray& OutCompletionEvents) override;
 
 	virtual bool PreloadShaderMap(int32 ShaderMapIndex, FGraphEventArray& OutCompletionEvents) override;
@@ -568,6 +573,11 @@ public:
 
 	virtual int32 FindShaderMapIndex(const FSHAHash& Hash) override;
 	virtual int32 FindShaderIndex(const FSHAHash& Hash) override;
+	virtual FSHAHash GetShaderHash(int32 ShaderMapIndex, int32 ShaderIndex) override
+	{
+		return Header.ShaderHashes[GetShaderIndex(ShaderMapIndex, ShaderIndex)];
+	}
+
 	virtual bool PreloadShader(int32 ShaderIndex, FGraphEventArray& OutCompletionEvents) override;
 	virtual bool PreloadShaderMap(int32 ShaderMapIndex, FGraphEventArray& OutCompletionEvents) override;
 	virtual bool PreloadShaderMap(int32 ShaderMapIndex, FCoreDelegates::FAttachShaderReadRequestFunc AttachShaderReadRequestFunc) override;
@@ -624,6 +634,14 @@ private:
 			Ptr = new FShaderGroupPreloadEntry;
 		}
 		return Ptr;
+	}
+
+	/** Finds existing preload info for a shader group. Assumes lock guarding access to the info is taken */
+	inline FShaderGroupPreloadEntry* FindExistingPreloadEntry(int32 ShaderGroupIndex)
+	{
+		FShaderGroupPreloadEntry** PtrPtr = PreloadedShaderGroups.Find(ShaderGroupIndex);
+		checkf(PtrPtr != nullptr, TEXT("The preload entry for a shader group we assumed to exist does not exist!"));
+		return *PtrPtr;
 	}
 
 	/** Returns true if the group contains only RTX shaders. We can avoid preloading it when running with RTX off. */

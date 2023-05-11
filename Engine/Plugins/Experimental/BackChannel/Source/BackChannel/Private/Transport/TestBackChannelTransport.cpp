@@ -1,12 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "BackChannel/Transport/IBackChannelTransport.h"
-#include "BackChannel/Utils/BackChannelThreadedConnection.h"
-#include "BackChannelCommon.h"
-#include "HAL/PlatformProcess.h"
-#include "Misc/AutomationTest.h"
-
-PRAGMA_DISABLE_OPTIMIZATION
+#include "CoreTypes.h"
 
 #if WITH_DEV_AUTOMATION_TESTS && 0
 
@@ -132,5 +126,3 @@ bool FBackChannelTestSendReceive::RunTest(const FString& Parameters)
 }
 
 #endif // WITH_DEV_AUTOMATION_TESTS
-
-PRAGMA_ENABLE_OPTIMIZATION

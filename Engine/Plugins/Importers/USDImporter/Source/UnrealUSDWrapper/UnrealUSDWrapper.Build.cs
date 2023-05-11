@@ -32,6 +32,7 @@ namespace UnrealBuildTool.Rules
 				PublicDependencyModuleNames.Add("Python3");
 
 				PublicDefinitions.Add("USE_USD_SDK=1");
+				PublicDefinitions.Add("ENABLE_USD_DEBUG_PATH=0");
 
 				var EngineDir = Path.GetFullPath(Target.RelativeEnginePath);
 				var PythonSourceTPSDir = Path.Combine(EngineDir, "Source", "ThirdParty", "Python3", Target.Platform.ToString());
@@ -86,7 +87,7 @@ namespace UnrealBuildTool.Rules
 
 					// USD
 					PublicIncludePaths.Add(Path.Combine(ModuleDirectory, "..", "ThirdParty", "USD", "include"));
-					var USDBinDir = Path.Combine(ModuleDirectory, "..", "ThirdParty", "Linux", "bin", Target.Architecture);
+					var USDBinDir = Path.Combine(ModuleDirectory, "..", "ThirdParty", "Linux", "bin", Target.Architecture.LinuxName);
 					PrivateRuntimeLibraryPaths.Add(USDBinDir);
 					foreach (string LibPath in Directory.EnumerateFiles(USDBinDir, "*.so", SearchOption.AllDirectories))
 					{

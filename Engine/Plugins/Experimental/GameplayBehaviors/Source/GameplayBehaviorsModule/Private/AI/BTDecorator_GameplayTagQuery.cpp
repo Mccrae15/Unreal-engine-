@@ -3,14 +3,18 @@
 #include "AI/BTDecorator_GameplayTagQuery.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemGlobals.h"
-#include "BehaviorTree/BehaviorTreeComponent.h"
 #include "BehaviorTree/BlackboardComponent.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Object.h"
-#include "GameFramework/Actor.h"
-#include "GameplayTagAssetInterface.h"
-#include "UObject/Object.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(BTDecorator_GameplayTagQuery)
+
+struct FBTDecorator_GameplayTagQueryMemory
+{
+	TWeakObjectPtr<UAbilitySystemComponent> CachedAbilitySystemComponent;
+
+	/** Array of handles for our gameplay tag query delegates */
+	TArray<TTuple<FGameplayTag, FDelegateHandle>> GameplayTagEventHandles;
+};
 
 UBTDecorator_GameplayTagQuery::UBTDecorator_GameplayTagQuery(const FObjectInitializer& ObjectInitializer) : Super(ObjectInitializer)
 {

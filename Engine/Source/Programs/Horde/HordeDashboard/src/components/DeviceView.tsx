@@ -1,4 +1,4 @@
-import { DetailsList, DetailsListLayoutMode, DetailsRow, Dropdown, FocusZone, FocusZoneDirection, getTheme, IColumn, Icon, IconButton, IDetailsListProps, IGroup, Label, Link as FluentLink, mergeStyleSets, Modal, Pivot, PivotItem, PrimaryButton, ScrollablePane, ScrollbarVisibility, SelectionMode, Spinner, SpinnerSize, Stack, Text } from "@fluentui/react";
+import { DefaultButton, DetailsList, DetailsListLayoutMode, Dropdown, FocusZone, FocusZoneDirection, getTheme, IColumn, Icon, IconButton, IGroup, Label, Link as FluentLink, mergeStyleSets, Modal, Pivot, PivotItem, PrimaryButton, ScrollablePane, ScrollbarVisibility, SelectionMode, Spinner, SpinnerSize, Stack, Text } from "@fluentui/react";
 import { observer } from "mobx-react-lite";
 import moment from "moment";
 import React, { useEffect, useState } from "react";
@@ -12,6 +12,7 @@ import { hordeClasses, modeColors } from "../styles/Styles";
 import { Breadcrumbs } from "./Breadcrumbs";
 import { DeviceEditor, DeviceHandler, DeviceStatus } from "./DeviceEditor";
 import { DeviceInfoModal } from "./DeviceInfoView";
+import { DevicePoolTelemetryModal } from "./DevicePoolTelemetry";
 import { TopNav } from "./TopNav";
 
 const handler = new DeviceHandler();
@@ -52,7 +53,7 @@ const dropDownStyle: any = () => {
             }
          }
       },
-      dropdownItemHeader: { fontSize: 12, color: modeColors.text},
+      dropdownItemHeader: { fontSize: 12, color: modeColors.text },
       dropdownOptionText: { fontSize: 12 },
       dropdownItem: {
          minHeight: 28, lineHeight: 28
@@ -78,7 +79,6 @@ const customStyles = mergeStyleSets({
             cursor: "default"
          },
          '.ms-GroupHeader-expand,.ms-GroupHeader-expand:hover': {
-            cursor: "pointer",
             background: "#DFDEDD"
          },
          '.ms-DetailsRow': {
@@ -86,7 +86,6 @@ const customStyles = mergeStyleSets({
             background: "unset"
          },
          '.ms-DetailsRow:hover': {
-            cursor: "pointer",
             background: "#F3F2F1"
          }
       },
@@ -96,13 +95,13 @@ const customStyles = mergeStyleSets({
 
 const pivotKeyAutomation = "pivot-key-automation";
 const pivotKeyShared = "pivot-key-shared";
-const checkoutDays = 7;
 
 const DevicePanel: React.FC = observer(() => {
 
    const [editState, setEditState] = useState<{ shown?: boolean, infoShown?: boolean, editNote?: boolean, device?: DeviceItem | undefined }>({});
    const [pivotState, setPivotState] = useState<{ key: string, poolFilter: Set<string> }>({ key: pivotKeyShared, poolFilter: new Set() });
    const [checkoutState, setCheckoutState] = useState<{ checkoutId?: string, checkinId?: string, showConfirm?: "in" | "out" | "error" }>({});
+   const [telemState, setTelemState] = useState(false);
 
    useEffect(() => {
 
@@ -302,25 +301,36 @@ const DevicePanel: React.FC = observer(() => {
       // Automation Kit
 
       const r = handler.getReservation(device);
-
-      if (!r) {
-         return null;
-      }
-
+      
       let url = "";
 
-      if (r.jobId) {
+      if (r?.jobId) {
          url = `/job/${r.jobId}`;
          if (r.stepId) {
             url += `?step=${r.stepId}`;
          }
       }
       return <Stack verticalFill={true} verticalAlign="center">
-         <Stack>
-            {!!url && <Link to={url}><Text variant="small">Job Details</Text></Link>}
-            {!url && !!r.reservationDetails && r.reservationDetails.startsWith("https://horde") && <FluentLink href={r.reservationDetails} target="_blank" underline={false}><Text variant="small" onClick={(ev) => { ev.stopPropagation(); }}>Job Details</Text></FluentLink>}
-            <Text variant="tiny">Host: {r.hostname}</Text>
-            <Text variant="tiny">Duration: {Math.floor(moment.duration(moment.utc().diff(moment(r.createTimeUtc))).asMinutes())}m</Text>
+         <Stack horizontal tokens={{childrenGap: 12}}>
+            {automationTab && <Stack verticalFill={true} verticalAlign="center">
+               <div style={{ cursor: "pointer" }} onClick={(ev) => {
+                  ev.stopPropagation(); ev.preventDefault();
+                  setEditState({
+                     infoShown: true, device: item
+                  })
+               }}>
+                  <Stack horizontal tokens={{ childrenGap: 18 }}>
+                     <Icon style={{ paddingTop: 2 }} iconName="History" />
+                  </Stack>
+               </div>
+
+            </Stack>}
+            {!!r && <Stack>
+               {!!url && <Link to={url}><Text variant="small">Job Details</Text></Link>}
+               {!url && !!r.reservationDetails && r.reservationDetails.startsWith("https://horde") && <FluentLink href={r.reservationDetails} target="_blank" underline={false}><Text variant="small" onClick={(ev) => { ev.stopPropagation(); }}>Job Details</Text></FluentLink>}
+               <Text variant="tiny">Host: {r.hostname}</Text>
+               <Text variant="tiny">Duration: {Math.floor(moment.duration(moment.utc().diff(moment(r.createTimeUtc))).asMinutes())}m</Text>
+            </Stack>}
          </Stack>
       </Stack>
 
@@ -332,8 +342,8 @@ const DevicePanel: React.FC = observer(() => {
       const device = item.device;
       let notes = device.notes ?? "";
 
-      if (device.checkOutTime && device.checkedOutByUserId) {
-         notes = `Checked out until ${getNiceTime(moment(new Date(device.checkOutTime)).add(checkoutDays, 'd').toDate())}.  ` + notes;
+      if (device.checkOutExpirationTime && device.checkedOutByUserId) {
+         notes = `Checked out until ${getNiceTime(device.checkOutExpirationTime)}.  ` + notes;
       }
 
       return <Stack verticalFill={true} verticalAlign="center">
@@ -434,21 +444,6 @@ const DevicePanel: React.FC = observer(() => {
 
    groups = newGroups;
 
-   const onRenderRow: IDetailsListProps['onRenderRow'] = (props) => {
-
-      if (props) {
-
-         return <div style={{ cursor: "pointer" }} onClick={(ev) => {
-            ev.stopPropagation(); ev.preventDefault();
-            setEditState({ infoShown: true, device: props.item })
-         }}>
-            <DetailsRow {...props} />
-         </div>
-      }
-
-      return null;
-   };
-
    const pivotItems: JSX.Element[] = [];
 
    pivotItems.push(<PivotItem headerText="Shared" itemKey={pivotKeyShared} key={pivotKeyShared} />);
@@ -480,6 +475,7 @@ const DevicePanel: React.FC = observer(() => {
    const checkedOut = handler.getUserDeviceCheckouts(dashboard.userId);
 
    return (<Stack>
+      {!!telemState && <DevicePoolTelemetryModal onClose={() => setTelemState(false)} />}
       {(!!checkoutState.checkinId || !!checkoutState.checkoutId) && <InfoModal />}
       {!!checkoutState.showConfirm && checkedOut.length > 0 && <CheckoutConfirmModal check={checkoutState.showConfirm} devices={checkedOut} onClose={() => setCheckoutState({})} />}
       {editState.infoShown && <DeviceInfoModal handler={handler} deviceIn={editState.device?.device} onEdit={(device) => { setEditState({ infoShown: true, shown: true, device: { device: device } }) }} onClose={() => { setEditState({}) }} />}
@@ -487,7 +483,7 @@ const DevicePanel: React.FC = observer(() => {
       <Stack styles={{ root: { paddingLeft: 12, paddingRight: 12, width: "100%" } }} >
          <Stack>
 
-            <Stack horizontal>
+            <Stack horizontal verticalAlign="center" style={{ paddingBottom: 12 }} tokens={{ childrenGap: 32 }}>
                <Stack>
                   <Pivot className={hordeClasses.pivot}
                      selectedKey={pivotState.key}
@@ -499,7 +495,7 @@ const DevicePanel: React.FC = observer(() => {
                      {pivotItems}
                   </Pivot>
                </Stack>
-               {poolItems.length > 1 && <Stack style={{ paddingTop: 8, paddingLeft: 48 }}>
+               {poolItems.length > 1 && <Stack style={{ paddingLeft: 48 }}>
                   <Dropdown
                      placeholder="Filter Pools"
                      style={{ width: 200 }}
@@ -524,6 +520,10 @@ const DevicePanel: React.FC = observer(() => {
                   />
                </Stack>}
 
+               {automationTab && <Stack>
+                  <DefaultButton text="Pool Telemetry" onClick={() => { setTelemState(true) }} />
+               </Stack>}
+
                <Stack grow />
                <Stack>
                   <PrimaryButton text="Add Device"
@@ -540,17 +540,17 @@ const DevicePanel: React.FC = observer(() => {
 
          <Stack tokens={{ childrenGap: 12 }}>
             <FocusZone direction={FocusZoneDirection.vertical}>
-               <div className={customStyles.details} style={{ height: "calc(100vh - 270px)", position: 'relative' }} data-is-scrollable>
+               <div className={customStyles.details} style={{ height: "calc(100vh - 280px)", position: 'relative' }} data-is-scrollable>
                   <ScrollablePane scrollbarVisibility={ScrollbarVisibility.always} onScroll={() => { }}>
                      <DetailsList
-                        styles={{ root: { overflowX: "hidden" } }}
+                        styles={{ root: { overflowX: "hidden", width: 1676 } }}
                         items={devices}
                         groups={groups}
                         columns={columns}
                         selectionMode={SelectionMode.none}
                         layoutMode={DetailsListLayoutMode.justified}
                         compact={true}
-                        onRenderRow={onRenderRow}
+                        onShouldVirtualize={() => false}
                      />
                   </ScrollablePane>
                </div>
@@ -590,10 +590,10 @@ export const CheckoutConfirmModal: React.FC<{ check: "in" | "out" | "error", dev
       // simple cases
       switch (column.name) {
          case 'Name':
-            return <Text variant="medium" styles={{ root: { fontFamily: "Horde Open Sans SemiBold" } }}>{platform} : {device.name}</Text>
+            return <Text variant="medium" styles={{ root: { fontFamily: "Horde Open Sans SemiBold" } }}>{platform} : {device.name} : {device.address ?? ""} </Text>
          case 'Date':
-            if (device.checkOutTime) {
-               return <Text variant="medium">{`Checked out until ${getNiceTime(moment(new Date(device.checkOutTime!)).add(checkoutDays, 'd').toDate())}`}</Text>
+            if (device.checkOutExpirationTime) {
+               return <Text variant="medium">{`Checked out until ${getNiceTime(device.checkOutExpirationTime)}`}</Text>
             }
             return null;
       }
@@ -665,8 +665,8 @@ export const DeviceView: React.FC = () => {
       <TopNav />
       <Breadcrumbs items={[{ text: 'Devices' }]} />
       <Stack horizontal>
-         <div key={`windowsize_streamview_${windowSize.width}_${windowSize.height}`} style={{ width: vw / 2 - 900, flexShrink: 0, backgroundColor: 'rgb(250, 249, 249)' }} />
-         <Stack tokens={{ childrenGap: 0 }} styles={{ root: { backgroundColor: 'rgb(250, 249, 249)', width: "100%" } }}>
+         <div key={`windowsize_streamview_${windowSize.width}_${windowSize.height}`} style={{ width: vw / 2 - 900, flexShrink: 0, backgroundColor: modeColors.background }} />
+         <Stack tokens={{ childrenGap: 0 }} styles={{ root: { backgroundColor: modeColors.background, width: "100%" } }}>
             <Stack style={{ maxWidth: 1800, paddingTop: 6, marginLeft: 4, height: 'calc(100vh - 8px)' }}>
                <Stack horizontal className={hordeClasses.raised}>
                   <Stack style={{ width: "100%", height: 'calc(100vh - 228px)' }} tokens={{ childrenGap: 18 }}>
@@ -677,6 +677,7 @@ export const DeviceView: React.FC = () => {
          </Stack>
       </Stack>
    </Stack>
+
 };
 
 

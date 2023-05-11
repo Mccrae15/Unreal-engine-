@@ -52,7 +52,7 @@ template<typename T, EPimplPtrMode Mode = EPimplPtrMode::NoCopy> struct TPimplPt
 
 namespace UE::Core::Private::PimplPtr
 {
-	constexpr SIZE_T RequiredAlignment = 16;
+	inline constexpr SIZE_T RequiredAlignment = 16;
 
 	template <typename T>
 	struct TPimplHeapObjectImpl;
@@ -233,6 +233,9 @@ public:
 		}
 	}
 
+	FORCEINLINE bool operator==(TYPE_OF_NULLPTR) { return !IsValid(); }
+	FORCEINLINE bool operator!=(TYPE_OF_NULLPTR) { return  IsValid(); }
+
 private:
 	T* Ptr = nullptr;
 };
@@ -300,12 +303,10 @@ public:
 	using Super::Reset;
 };
 
-
-template <typename T, EPimplPtrMode Mode> FORCEINLINE bool operator==(const TPimplPtr<T, Mode>& Ptr, TYPE_OF_NULLPTR) { return !Ptr.IsValid(); }
+#if !PLATFORM_COMPILER_HAS_GENERATED_COMPARISON_OPERATORS
 template <typename T, EPimplPtrMode Mode> FORCEINLINE bool operator==(TYPE_OF_NULLPTR, const TPimplPtr<T, Mode>& Ptr) { return !Ptr.IsValid(); }
-template <typename T, EPimplPtrMode Mode> FORCEINLINE bool operator!=(const TPimplPtr<T, Mode>& Ptr, TYPE_OF_NULLPTR) { return  Ptr.IsValid(); }
 template <typename T, EPimplPtrMode Mode> FORCEINLINE bool operator!=(TYPE_OF_NULLPTR, const TPimplPtr<T, Mode>& Ptr) { return  Ptr.IsValid(); }
-
+#endif
 
 /**
  * Heap-allocates an instance of T with the given arguments and returns it as a TPimplPtr.

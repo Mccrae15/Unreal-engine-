@@ -100,7 +100,6 @@ void FIKRetargetAnimInstanceProxy::ConfigureAnimInstance(
 		RetargetNode->IKRetargeterAsset = InIKRetargetAsset;
 		RetargetNode->bUseAttachedParent = false;
 		RetargetNode->SourceMeshComponent = InSourceMeshComponent;
-		RetargetNode->bDriveWithAsset = true;
 		if (UIKRetargetProcessor* Processor = RetargetNode->GetRetargetProcessor())
 		{
 			Processor->SetNeedsInitialized();
@@ -111,6 +110,11 @@ void FIKRetargetAnimInstanceProxy::ConfigureAnimInstance(
 void FIKRetargetAnimInstanceProxy::SetRetargetMode(const ERetargeterOutputMode& InOutputMode)
 {
 	OutputMode = InOutputMode;
+	
+	if (UIKRetargetProcessor* Processor = RetargetNode->GetRetargetProcessor())
+	{
+		Processor->SetNeedsInitialized();
+	}
 }
 
 void FIKRetargetAnimInstanceProxy::SetRetargetPoseBlend(const float& InRetargetPoseBlend) const

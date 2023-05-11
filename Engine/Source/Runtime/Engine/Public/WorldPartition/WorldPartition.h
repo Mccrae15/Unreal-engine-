@@ -31,6 +31,7 @@ class UWorldPartitionEditorHash;
 class UWorldPartitionRuntimeCell;
 class UWorldPartitionRuntimeHash;
 class UWorldPartitionStreamingPolicy;
+class IWorldPartitionCell;
 class IStreamingGenerationErrorHandler;
 class FLoaderAdapterAlwaysLoadedActors;
 class FLoaderAdapterActorList;
@@ -61,6 +62,7 @@ struct ENGINE_API IWorldPartitionEditor
 {
 	virtual void Refresh() {}
 	virtual void Reconstruct() {}
+	virtual void FocusBox(const FBox& Box) const {}
 };
 
 class ENGINE_API ISourceControlHelper
@@ -92,6 +94,7 @@ class ENGINE_API UWorldPartition final : public UObject, public FActorDescContai
 public:
 #if WITH_EDITOR
 	static UWorldPartition* CreateOrRepairWorldPartition(AWorldSettings* WorldSettings, TSubclassOf<UWorldPartitionEditorHash> EditorHashClass = nullptr, TSubclassOf<UWorldPartitionRuntimeHash> RuntimeHashClass = nullptr);
+	static bool RemoveWorldPartition(AWorldSettings* WorldSettings);
 #endif
 
 	DECLARE_MULTICAST_DELEGATE_OneParam(FWorldPartitionInitializeDelegate, UWorldPartition*);
@@ -148,9 +151,11 @@ public:
 	//~ End UObject Interface
 
 #if WITH_EDITOR
+	void SetInstanceTransform(const FTransform& InInstanceTransform) { InstanceTransform = InInstanceTransform; }
 	FName GetWorldPartitionEditorName() const;
 
 	// Streaming generation
+	bool CanGenerateStreaming() const { return !StreamingPolicy; }
 	bool GenerateStreaming(TArray<FString>* OutPackagesToGenerate = nullptr);
 	bool GenerateContainerStreaming(const UActorDescContainer* ActorDescContainer, TArray<FString>* OutPackagesToGenerate = nullptr);
 	void FlushStreaming();
@@ -160,6 +165,9 @@ public:
 
 	void RemapSoftObjectPath(FSoftObjectPath& ObjectPath);
 	bool IsValidPackageName(const FString& InPackageName);
+
+	// Editor/Runtime conversions
+	bool ConvertEditorPathToRuntimePath(const FSoftObjectPath& InPath, FSoftObjectPath& OutPath) const;
 
 	// Begin Cooking
 	void BeginCook(IWorldPartitionCookPackageContext& CookContext);
@@ -171,8 +179,8 @@ public:
 	virtual bool PrepareGeneratorPackageForCook(IWorldPartitionCookPackageContext& CookContext, TArray<UPackage*>& OutModifiedPackages) override;
 	virtual bool PopulateGeneratorPackageForCook(IWorldPartitionCookPackageContext& CookContext, const TArray<FWorldPartitionCookPackage*>& InPackagesToCook, TArray<UPackage*>& OutModifiedPackages) override;
 	virtual bool PopulateGeneratedPackageForCook(IWorldPartitionCookPackageContext& CookContext, const FWorldPartitionCookPackage& InPackagesToCool, TArray<UPackage*>& OutModifiedPackages) override;
+	virtual UWorldPartitionRuntimeCell* GetCellForPackage(const FWorldPartitionCookPackage& PackageToCook) const override;
 	//~ End IWorldPartitionCookPackageGenerator Interface 
-
 	// End Cooking
 
 	UE_DEPRECATED(5.1, "GetWorldBounds is deprecated, use GetEditorWorldBounds or GetRuntimeWorldBounds instead.")
@@ -190,7 +198,22 @@ public:
 	void DumpActorDescs(const FString& Path);
 
 	void CheckForErrors(IStreamingGenerationErrorHandler* ErrorHandler) const;
+
+	/* Struct of optional parameters passed to check for errors function. */
+	struct ENGINE_API FCheckForErrorsParams
+	{
+		FCheckForErrorsParams();
+
+		IStreamingGenerationErrorHandler* ErrorHandler;
+		const UActorDescContainer* ActorDescContainer;
+		bool bEnableStreaming;
+		TMap<FGuid, const UActorDescContainer*> ActorGuidsToContainerMap;
+	};
+
+	UE_DEPRECATED(5.2, "CheckForErrors is deprecated, CheckForErrors with FCheckForErrorsParams should be used instead.")
 	static void CheckForErrors(IStreamingGenerationErrorHandler* ErrorHandler, const UActorDescContainer* ActorDescContainer, bool bEnableStreaming, bool bIsChangelistValidation);
+
+	static void CheckForErrors(const FCheckForErrorsParams& Params);
 
 	void AppendAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const;
 
@@ -214,6 +237,8 @@ public:
 	void OnUserCreatedRegionUnloaded() { check(HasLoadedUserCreatedRegions()); NumUserCreatedLoadedRegions--; }
 
 	bool IsEnablingStreamingJustified() const { return bEnablingStreamingJustified; }
+
+	const TMap<FWorldPartitionReference, AActor*>& GetDirtyActors() const { return DirtyActors; }
 #endif
 
 public:
@@ -221,6 +246,7 @@ public:
 
 	void Initialize(UWorld* World, const FTransform& InTransform);
 	bool IsInitialized() const;
+	void Update();
 	void Uninitialize();
 
 	bool SupportsStreaming() const;
@@ -237,8 +263,9 @@ public:
 	void Tick(float DeltaSeconds);
 	void UpdateStreamingState();
 	bool CanAddLoadedLevelToWorld(ULevel* InLevel) const;
-	bool IsStreamingCompleted(const FWorldPartitionStreamingSource* InStreamingSource) const;
+	bool IsStreamingCompleted(const TArray<FWorldPartitionStreamingSource>* InStreamingSources) const;
 	bool IsStreamingCompleted(EWorldPartitionRuntimeCellState QueryState, const TArray<FWorldPartitionStreamingQuerySource>& QuerySources, bool bExactState) const;
+	bool GetIntersectingCells(const TArray<FWorldPartitionStreamingQuerySource>& InSources, TArray<const IWorldPartitionCell*>& OutCells) const;
 
 	const TArray<FWorldPartitionStreamingSource>& GetStreamingSources() const;
 
@@ -249,13 +276,21 @@ public:
 	void DrawRuntimeCellsDetails(UCanvas* Canvas, FVector2D& Offset);
 	void DrawStreamingStatusLegend(UCanvas* Canvas, FVector2D& Offset);
 
+	void OnCellShown(const UWorldPartitionRuntimeCell* InCell);
+	void OnCellHidden(const UWorldPartitionRuntimeCell* InCell);
+
 	EWorldPartitionStreamingPerformance GetStreamingPerformance() const;
+
+	bool IsStreamingInEnabled() const;
+	void DisableStreamingIn();
+	void EnableStreamingIn();
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY(DuplicateTransient)
 	TObjectPtr<UWorldPartitionEditorHash> EditorHash;
 
 	FLoaderAdapterAlwaysLoadedActors* AlwaysLoadedActors;
+	FLoaderAdapterActorList* ForceLoadedActors;
 	FLoaderAdapterActorList* PinnedActors;
 
 	IWorldPartitionEditor* WorldPartitionEditor;
@@ -280,7 +315,7 @@ private:
 public:
 	UActorDescContainer* GetActorDescContainer() const { return ActorDescContainer; }
 
-	UPROPERTY()
+	UPROPERTY(Transient)
 	TObjectPtr<UActorDescContainer> ActorDescContainer;
 
 	UPROPERTY()
@@ -304,7 +339,7 @@ private:
 
 #if WITH_EDITORONLY_DATA
 	// Default HLOD layer
-	UPROPERTY(EditAnywhere, Category=WorldPartitionSetup, meta = (DisplayName = "Default HLOD Layer", EditCondition="bEnableStreaming", EditConditionHides, HideEditConditionToggle))
+	UPROPERTY(EditAnywhere, Category = WorldPartitionSetup, meta = (DisplayName = "Default HLOD Layer", EditCondition="bEnableStreaming", EditConditionHides, HideEditConditionToggle))
 	TObjectPtr<class UHLODLayer> DefaultHLODLayer;
 
 	TArray<FWorldPartitionReference> LoadedSubobjects;
@@ -316,6 +351,9 @@ private:
 
 	EWorldPartitionInitState InitState;
 	TOptional<FTransform> InstanceTransform;
+
+	// Defaults to true, can be set to false to temporarly disable Streaming in of new cells.
+	bool bStreamingInEnabled;
 
 	mutable TOptional<bool> bCachedUseMakingInvisibleTransactionRequests;
 	mutable TOptional<bool> bCachedUseMakingVisibleTransactionRequests;

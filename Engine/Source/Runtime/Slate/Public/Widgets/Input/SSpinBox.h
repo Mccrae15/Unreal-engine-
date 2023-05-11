@@ -367,7 +367,7 @@ public:
 				FSlateDrawElement::MakeBox(
 					OutDrawElements,
 					FilledLayer,
-					AllottedGeometry.ToPaintGeometry(Style->InsetPadding.GetTopLeft(), FillSize - FVector2D(Style->InsetPadding.GetTotalSpaceAlong<Orient_Horizontal>(), Style->InsetPadding.GetTotalSpaceAlong<Orient_Vertical>())),
+					AllottedGeometry.ToPaintGeometry(FillSize - FVector2D(Style->InsetPadding.GetTotalSpaceAlong<Orient_Horizontal>(), Style->InsetPadding.GetTotalSpaceAlong<Orient_Vertical>()), FSlateLayoutTransform(Style->InsetPadding.GetTopLeft())),
 					FillImage,
 					DrawEffects,
 					FillImage->GetTint(InWidgetStyle) * InWidgetStyle.GetColorAndOpacityTint()
@@ -868,6 +868,15 @@ public:
 	/** See the MinDesiredWidth attribute */
 	float GetMinDesiredWidth() const { return SliderExponent.Get(); }
 	void SetMinDesiredWidth(const TAttribute<float>& InMinDesiredWidth) { MinDesiredWidth = InMinDesiredWidth; }
+
+	const FSpinBoxStyle* GetWidgetStyle() const { return Style; }
+	void SetWidgetStyle(const FSpinBoxStyle* InStyle) { Style = InStyle; }
+	void InvalidateStyle() { Invalidate(EInvalidateWidgetReason::Layout); }
+
+	void SetTextBlockFont(FSlateFontInfo InFont) { EditableText->SetFont(InFont); TextBlock->SetFont(InFont); }
+	void SetTextJustification(ETextJustify::Type InJustification) { EditableText->SetJustification(InJustification); TextBlock->SetJustification(InJustification);  }
+	void SetTextClearKeyboardFocusOnCommit(bool bNewValue) { EditableText->SetClearKeyboardFocusOnCommit(bNewValue); }
+	void SetTextSelectAllTextOnCommit(bool bNewValue) { EditableText->SetSelectAllTextOnCommit(bNewValue); }
 
 protected:
 	/** Make the spinbox switch to keyboard-based input mode. */

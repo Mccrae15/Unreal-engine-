@@ -6,6 +6,7 @@
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "Templates/SubclassOf.h"
+#include "Engine/World.h"
 #include "GameFramework/Actor.h"
 #include "FoliageType_InstancedStaticMesh.h"
 #include "FoliageInstanceBase.h"
@@ -51,6 +52,10 @@ public:
 	//~ Begin UObject Interface.
 	virtual void Serialize(FArchive& Ar) override;
 	virtual void PostLoad() override;
+#if WITH_EDITORONLY_DATA
+	FOLIAGE_API static void DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass);
+#endif
+
 	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
 	//~ End UObject Interface. 
 
@@ -80,6 +85,9 @@ public:
 
 protected:
 #if WITH_EDITOR
+	void RegisterDelegates();
+	void UnregisterDelegates();
+
 	void HandleFoliageInstancePreMove(const FFoliageInstanceId& InstanceId);
 	void HandleFoliageInstancePostMove(const FFoliageInstanceId& InstanceId);
 #endif
@@ -179,8 +187,7 @@ public:
 	virtual void PostEditUndo() override;
 	virtual void PostDuplicate(bool bDuplicateForPIE) override;
 	virtual bool ShouldExport() override;
-	virtual bool ShouldImport(FString* ActorPropString, bool IsMovingLevel) override;
-	virtual FBox GetStreamingBounds() const override;
+	virtual bool ShouldImport(FStringView ActorPropString, bool IsMovingLevel) override;
 
 	// Called in response to BSP rebuilds to migrate foliage from obsolete to new components.
 	FOLIAGE_API void MapRebuild();

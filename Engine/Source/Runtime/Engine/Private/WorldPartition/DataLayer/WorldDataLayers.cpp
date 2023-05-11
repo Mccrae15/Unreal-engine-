@@ -5,14 +5,15 @@
 =============================================================================*/
 
 #include "WorldPartition/DataLayer/WorldDataLayers.h"
+#include "Engine/Level.h"
+#include "ProfilingDebugging/CsvProfiler.h"
 #include "WorldPartition/DataLayer/DataLayerSubsystem.h"
+#include "WorldPartition/DataLayer/DataLayer.h"
 #include "WorldPartition/DataLayer/DataLayerInstanceWithAsset.h"
 #include "WorldPartition/DataLayer/DeprecatedDataLayerInstance.h"
 #include "WorldPartition/DataLayer/DataLayerUtils.h"
-#include "EngineUtils.h"
-#include "Engine/CoreSettings.h"
 #include "Net/UnrealNetwork.h"
-#include "WorldPartition/WorldPartition.h"
+#include "WorldPartition/WorldPartitionLog.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(WorldDataLayers)
 
@@ -183,10 +184,6 @@ void AWorldDataLayers::SetDataLayerRuntimeState(const UDataLayerInstance* InData
 			{
 				ActiveDataLayerNames.Add(InDataLayerInstance->GetDataLayerFName());
 			}
-			else if (InState == EDataLayerRuntimeState::Unloaded)
-			{
-				GLevelStreamingContinuouslyIncrementalGCWhileLevelsPendingPurgeOverride = 1;
-			}
 
 			// Update Replicated Properties
 			RepActiveDataLayerNames = ActiveDataLayerNames.Array();
@@ -225,12 +222,14 @@ void AWorldDataLayers::OnDataLayerRuntimeStateChanged_Implementation(const UData
 
 void AWorldDataLayers::OnRep_ActiveDataLayerNames()
 {
+	++DataLayersStateEpoch;
 	ActiveDataLayerNames.Reset();
 	ActiveDataLayerNames.Append(RepActiveDataLayerNames);
 }
 
 void AWorldDataLayers::OnRep_LoadedDataLayerNames()
 {
+	++DataLayersStateEpoch;
 	LoadedDataLayerNames.Reset();
 	LoadedDataLayerNames.Append(RepLoadedDataLayerNames);
 }
@@ -253,14 +252,24 @@ EDataLayerRuntimeState AWorldDataLayers::GetDataLayerRuntimeStateByName(FName In
 
 void AWorldDataLayers::OnRep_EffectiveActiveDataLayerNames()
 {
+	++DataLayersStateEpoch;
 	EffectiveActiveDataLayerNames.Reset();
 	EffectiveActiveDataLayerNames.Append(RepEffectiveActiveDataLayerNames);
+	if (UDataLayerSubsystem* DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(GetWorld()))
+	{
+		DataLayerSubsystem->OnEffectiveRuntimeDataLayerStatesChanged(this);
+	}
 }
 
 void AWorldDataLayers::OnRep_EffectiveLoadedDataLayerNames()
 {
+	++DataLayersStateEpoch;
 	EffectiveLoadedDataLayerNames.Reset();
 	EffectiveLoadedDataLayerNames.Append(RepEffectiveLoadedDataLayerNames);
+	if (UDataLayerSubsystem* DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(GetWorld()))
+	{
+		DataLayerSubsystem->OnEffectiveRuntimeDataLayerStatesChanged(this);
+	}
 }
 
 EDataLayerRuntimeState AWorldDataLayers::GetDataLayerEffectiveRuntimeStateByName(FName InDataLayerName) const
@@ -313,6 +322,11 @@ void AWorldDataLayers::ResolveEffectiveRuntimeState(const UDataLayerInstance* In
 		// Update Replicated Properties
 		RepEffectiveActiveDataLayerNames = EffectiveActiveDataLayerNames.Array();
 		RepEffectiveLoadedDataLayerNames = EffectiveLoadedDataLayerNames.Array();
+
+		if (UDataLayerSubsystem* DataLayerSubsystem = UWorld::GetSubsystem<UDataLayerSubsystem>(GetWorld()))
+		{
+			DataLayerSubsystem->OnEffectiveRuntimeDataLayerStatesChanged(this);
+		}
 
 		++DataLayersStateEpoch;
 
@@ -514,6 +528,8 @@ int32 AWorldDataLayers::RemoveDataLayers(const TArray<UDataLayerInstance*>& InDa
 	if (RemovedCount > 0)
 	{
 		UpdateContainsDeprecatedDataLayers();
+
+		ResolveActorDescContainers();
 	}
 
 	return RemovedCount;
@@ -532,6 +548,8 @@ bool AWorldDataLayers::RemoveDataLayer(const UDataLayerInstance* InDataLayerInst
 			UpdateContainsDeprecatedDataLayers();
 		}
 
+		ResolveActorDescContainers();
+		
 		return true;
 	}
 	return false;
@@ -919,6 +937,43 @@ void AWorldDataLayers::UpdateContainsDeprecatedDataLayers()
 			}
 		}
 	}
+}
+
+void AWorldDataLayers::ResolveActorDescContainers()
+{
+	if (UDataLayerSubsystem* DataLayerSubsystem = GetWorld()->GetSubsystem<UDataLayerSubsystem>())
+	{
+		DataLayerSubsystem->ResolveActorDescContainers();
+	}
+}
+
+void AWorldDataLayers::PreEditUndo()
+{
+	Super::PreEditUndo();
+	CachedDataLayerInstances = DataLayerInstances;
+}
+
+void AWorldDataLayers::PostEditUndo()
+{
+	Super::PostEditUndo();
+
+	bool bNeedResolve = CachedDataLayerInstances.Num() != DataLayerInstances.Num();
+	if (!bNeedResolve)
+	{
+		for (UDataLayerInstance* DataLayerInstance : DataLayerInstances)
+		{
+			if (!CachedDataLayerInstances.Contains(DataLayerInstance))
+			{
+				bNeedResolve = true;
+				break;
+			}
+		}
+	}
+	if (bNeedResolve)
+	{
+		ResolveActorDescContainers();
+	}
+	CachedDataLayerInstances.Empty();
 }
 
 #endif

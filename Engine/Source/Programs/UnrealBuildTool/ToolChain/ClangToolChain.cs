@@ -95,19 +95,14 @@ namespace UnrealBuildTool
 		GenerateSymbols = 1 << 13,
 
 		/// <summary>
-		/// Enables live code editing
-		/// </summary>
-		EnableLiveCodeEditing = 1 << 14,
-
-		/// <summary>
 		/// Enables dead code/data stripping and common code folding.
 		/// </summary>
-		EnableDeadStripping = 1 << 15,
+		EnableDeadStripping = 1 << 14,
 
 		/// <summary>
 		/// Indicates that the target is a moduler build i.e. Target.LinkType == TargetLinkType.Modular
 		/// </summary>
-		ModularBuild = 1 << 16,
+		ModularBuild = 1 << 15,
 	}
 
 	abstract class ClangToolChain : ISPCToolChain
@@ -200,7 +195,7 @@ namespace UnrealBuildTool
 		{
 			Options = InOptions;
 
-			LazyInfo = new Lazy<ClangToolChainInfo>(() => GetToolChainInfo());
+			LazyInfo = new Lazy<ClangToolChainInfo>(() => { return GetToolChainInfo(); }); // Don't change to => GetToolChainInfo().. it doesnt produce correct code
 		}
 
 		protected abstract ClangToolChainInfo GetToolChainInfo();
@@ -248,7 +243,7 @@ namespace UnrealBuildTool
 					AggregateTimingInfoAction.StatusDescription = $"Aggregating {TimingJsonFiles.Count} Timing File(s)";
 					AggregateTimingInfoAction.bCanExecuteRemotely = false;
 					AggregateTimingInfoAction.bCanExecuteRemotelyWithSNDBS = false;
-					AggregateTimingInfoAction.PrerequisiteItems.AddRange(TimingJsonFiles);
+					AggregateTimingInfoAction.PrerequisiteItems.UnionWith(TimingJsonFiles);
 
 					AggregateTimingInfoAction.ProducedItems.Add(AggregateOutputFile);
 					AggregateTimingInfoAction.ProducedItems.Add(HeadersOutputFile);
@@ -266,7 +261,7 @@ namespace UnrealBuildTool
 					ArchiveTimingInfoAction.StatusDescription = $"Archiving {TimingJsonFiles.Count} Timing File(s)";
 					ArchiveTimingInfoAction.bCanExecuteRemotely = false;
 					ArchiveTimingInfoAction.bCanExecuteRemotelyWithSNDBS = false;
-					ArchiveTimingInfoAction.PrerequisiteItems.AddRange(TimingJsonFiles);
+					ArchiveTimingInfoAction.PrerequisiteItems.UnionWith(TimingJsonFiles);
 
 					ArchiveTimingInfoAction.ProducedItems.Add(ArchiveOutputFile);
 					Makefile.OutputItems.AddRange(ArchiveTimingInfoAction.ProducedItems);
@@ -282,7 +277,7 @@ namespace UnrealBuildTool
 						CompileScoreExtractorAction.StatusDescription = $"Extracting CompileScore";
 						CompileScoreExtractorAction.bCanExecuteRemotely = false;
 						CompileScoreExtractorAction.bCanExecuteRemotelyWithSNDBS = false;
-						CompileScoreExtractorAction.PrerequisiteItems.AddRange(TimingJsonFiles);
+						CompileScoreExtractorAction.PrerequisiteItems.UnionWith(TimingJsonFiles);
 						CompileScoreExtractorAction.CommandPath = ScoreDataExtractor;
 						CompileScoreExtractorAction.CommandArguments = $"-clang -verbosity 0 -timelinepack 1000000 -extract -i \"{NormalizeCommandLinePath(Makefile.ProjectIntermediateDirectory)}\" -o \"{NormalizeCommandLinePath(CompileScoreOutput)}\"";
 
@@ -320,7 +315,6 @@ namespace UnrealBuildTool
 		protected bool IsAnalyzing(CppCompileEnvironment CompileEnvironment) => 
 				StaticAnalyzer == StaticAnalyzer.Default 
 			&&	CompileEnvironment.PrecompiledHeaderAction != PrecompiledHeaderAction.Create 
-			&& !CompileEnvironment.StaticAnalyzerDisabledCheckers.Contains("all") 
 			&& !CompileEnvironment.bDisableStaticAnalysis;
 
 		protected virtual void GetCppStandardCompileArgument(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
@@ -411,7 +405,7 @@ namespace UnrealBuildTool
 			Arguments.Add("-x objective-c");
 			Arguments.Add("-fobjc-abi-version=2");
 			Arguments.Add("-fobjc-legacy-dispatch");
-			GetCppStandardCompileArgument(CompileEnvironment, Arguments);
+			GetCStandardCompileArgument(CompileEnvironment, Arguments);
 		}
 
 		protected virtual void GetCompileArguments_PCH(CppCompileEnvironment CompileEnvironment, List<string> Arguments)
@@ -537,6 +531,11 @@ namespace UnrealBuildTool
 
 			Arguments.Add("-Wno-enum-enum-conversion");                 // https://clang.llvm.org/docs/DiagnosticsReference.html#wenum-enum-conversion					// ?? no reason given
 			Arguments.Add("-Wno-enum-float-conversion");                // https://clang.llvm.org/docs/DiagnosticsReference.html#wenum-float-conversion					// ?? no reason given
+
+			if (CompileEnvironment.CppStandard >= CppStandardVersion.Cpp20)
+			{
+				Arguments.Add("-Wno-deprecated-anon-enum-enum-conversion"); // https://clang.llvm.org/docs/DiagnosticsReference.html#wdeprecated-anon-enum-enum-conversion // new warning for C++20
+			}
 
 			if (CompilerVersionGreaterOrEqual(13, 0, 0))
 			{
@@ -776,8 +775,12 @@ namespace UnrealBuildTool
 			// Enable the static analyzer with default checks.
 			Arguments.Add("--analyze");
 
-			// Make sure we check inside nested blocks (e.g. 'if ((foo = getchar()) == 0) {}')
-			Arguments.Add("-Xclang -analyzer-opt-analyze-nested-blocks");
+			// Deprecated in LLVM 15
+			if (CompilerVersionLessThan(15, 0, 0))
+			{
+				// Make sure we check inside nested blocks (e.g. 'if ((foo = getchar()) == 0) {}')
+				Arguments.Add("-Xclang -analyzer-opt-analyze-nested-blocks");
+			}
 
 			// Write out a pretty web page with navigation to understand how the analysis was derived if HTML is enabled.
 			Arguments.Add($"-Xclang -analyzer-output={StaticAnalyzerOutputType.ToString().ToLowerInvariant()}");
@@ -832,6 +835,12 @@ namespace UnrealBuildTool
 			Arguments.Add("-c");
 			Arguments.Add("-pipe");
 
+			if (CompileEnvironment.Architecture.bIsX64)
+			{		
+				// UE5 minspec is 4.2
+				Arguments.Add("-msse4.2");
+			}
+
 			// Add include paths to the argument list.
 			GetCompileArguments_IncludePaths(CompileEnvironment, Arguments);
 
@@ -863,6 +872,11 @@ namespace UnrealBuildTool
 			GetCompileArguments_AdditionalArgs(CompileEnvironment, Arguments);
 		}
 
+		protected virtual string GetFileNameFromExtension(string AbsolutePath, string Extension)
+		{
+			return Path.GetFileName(AbsolutePath) + Extension;
+		}
+
 		/// <summary>
 		/// Compile arguments for specific files in a module. Also updates Action and CPPOutput results.
 		/// </summary>
@@ -875,14 +889,14 @@ namespace UnrealBuildTool
 		protected virtual void GetCompileArguments_FileType(CppCompileEnvironment CompileEnvironment, FileItem SourceFile, DirectoryReference OutputDir, List<string> Arguments, Action CompileAction, CPPOutput CompileResult)
 		{
 			// Add the C++ source file and its included files to the prerequisite item list.
-			CompileAction.PrerequisiteItems.AddRange(CompileEnvironment.ForceIncludeFiles);
-			CompileAction.PrerequisiteItems.AddRange(CompileEnvironment.AdditionalPrerequisites);
+			CompileAction.PrerequisiteItems.UnionWith(CompileEnvironment.ForceIncludeFiles);
+			CompileAction.PrerequisiteItems.UnionWith(CompileEnvironment.AdditionalPrerequisites);
 			CompileAction.PrerequisiteItems.Add(SourceFile);
 
 			List<FileItem>? InlinedFiles;
 			if (CompileEnvironment.FileInlineGenCPPMap.TryGetValue(SourceFile, out InlinedFiles))
 			{
-				CompileAction.PrerequisiteItems.AddRange(InlinedFiles);
+				CompileAction.PrerequisiteItems.UnionWith(InlinedFiles);
 			}
 
 			string Extension = Path.GetExtension(SourceFile.AbsolutePath).ToUpperInvariant();
@@ -920,12 +934,12 @@ namespace UnrealBuildTool
 			FileItem OutputFile;
 			if (CompileEnvironment.PrecompiledHeaderAction == PrecompiledHeaderAction.Create)
 			{
-				OutputFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, Path.GetFileName(SourceFile.AbsolutePath) + ".gch"));
+				OutputFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, GetFileNameFromExtension(SourceFile.AbsolutePath, ".gch")));
 				CompileResult.PrecompiledHeaderFile = OutputFile;
 			}
 			else if (CompileEnvironment.bPreprocessOnly)
 			{
-				OutputFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, Path.GetFileName(SourceFile.AbsolutePath) + ".i"));
+				OutputFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, GetFileNameFromExtension(SourceFile.AbsolutePath, ".i")));
 				CompileResult.ObjectFiles.Add(OutputFile);
 
 				// Clang does EITHER pre-process or object file.
@@ -938,7 +952,7 @@ namespace UnrealBuildTool
 			else
 			{
 				string ObjectFileExtension = (CompileEnvironment.AdditionalArguments != null && CompileEnvironment.AdditionalArguments.Contains("-emit-llvm")) ? ".bc" : ".o";
-				OutputFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, $"{Path.GetFileName(SourceFile.AbsolutePath)}{ObjectFileExtension}"));
+				OutputFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, GetFileNameFromExtension(SourceFile.AbsolutePath, ObjectFileExtension)));
 				CompileResult.ObjectFiles.Add(OutputFile);
 			}
 
@@ -953,15 +967,15 @@ namespace UnrealBuildTool
 				// Generate the timing info
 				if (CompileEnvironment.bPrintTimingInfo)
 				{
-					FileItem TraceFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, Path.GetFileName(SourceFile.AbsolutePath) + ".json"));
+					FileItem TraceFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, GetFileNameFromExtension(SourceFile.AbsolutePath, ".json")));
 					Arguments.Add("-ftime-trace");
 					CompileAction.ProducedItems.Add(TraceFile);
 				}
 
 				// Generate the included header dependency list
-				if (!PreprocessDepends && CompileEnvironment.bGenerateDependenciesFile)
+				if (!PreprocessDepends)
 				{
-					FileItem DependencyListFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, Path.GetFileName(SourceFile.AbsolutePath) + ".d"));
+					FileItem DependencyListFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, GetFileNameFromExtension(SourceFile.AbsolutePath, ".d")));
 					Arguments.Add(GetDepencenciesListFileArgument(DependencyListFile));
 					CompileAction.DependencyListFile = DependencyListFile;
 					CompileAction.ProducedItems.Add(DependencyListFile);
@@ -969,18 +983,24 @@ namespace UnrealBuildTool
 			}
 			else
 			{
-				OutputFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, Path.GetFileName(SourceFile.AbsolutePath) + ".analysis"));
+				OutputFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, GetFileNameFromExtension(SourceFile.AbsolutePath, ".analysis")));
 			}
 
 			// Add the parameters needed to compile the output file to the command-line.
 			Arguments.Add(GetOutputFileArgument(OutputFile));
 		}
 
+		protected virtual List<string> ExpandResponseFileContents(List<string> ResponseFileContents)
+        {
+			return ResponseFileContents.Select(x => Utils.ExpandVariables(x)).ToList();
+		}
+
 		protected virtual Action CompileCPPFile(CppCompileEnvironment CompileEnvironment, FileItem SourceFile, DirectoryReference OutputDir, string ModuleName, IActionGraphBuilder Graph, IReadOnlyCollection<string> GlobalArguments, CPPOutput Result)
 		{
 			Action CompileAction = Graph.CreateAction(ActionType.Compile);
 
-			List<string> FileArguments = new();
+			// copy the global arguments into the file arguments, so GetCompileArguments_FileType can remove entries if needed (special case but can be important)
+			List<string> FileArguments = new(GlobalArguments);
 
 			// Add C or C++ specific compiler arguments.
 			GetCompileArguments_FileType(CompileEnvironment, SourceFile, OutputDir, FileArguments, CompileAction, Result);
@@ -990,10 +1010,7 @@ namespace UnrealBuildTool
 
 			// Creates the path to the response file using the name of the output file and creates its contents.
 			FileReference ResponseFileName = new FileReference(TargetFile.AbsolutePath + ".response");
-			List<string> ResponseFileContents = new();
-			ResponseFileContents.AddRange(GlobalArguments);
-			ResponseFileContents.AddRange(FileArguments);
-			ResponseFileContents = ResponseFileContents.Select(x => Utils.ExpandVariables(x)).ToList();
+			List<string> ResponseFileContents = ExpandResponseFileContents(FileArguments);
 
 			if (RuntimePlatform.IsWindows)
 			{
@@ -1021,6 +1038,12 @@ namespace UnrealBuildTool
 			CompileAction.CommandPath = Info.Clang;
 			CompileAction.CommandVersion = Info.ClangVersionString;
 			CompileAction.CommandDescription = IsAnalyzing(CompileEnvironment) ? "Analyze" : "Compile";
+			UnrealArchitectureConfig ArchConfig = UnrealArchitectureConfig.ForPlatform(CompileEnvironment.Platform);
+			if (ArchConfig.Mode != UnrealArchitectureMode.SingleArchitecture)
+			{
+				string ReadableArch = ArchConfig.ConvertToReadableArchitecture(CompileEnvironment.Architecture);
+				CompileAction.CommandDescription += $" [{ReadableArch}]";
+			}
 			CompileAction.StatusDescription = Path.GetFileName(SourceFile.AbsolutePath);
 			CompileAction.bIsGCCCompiler = true;
 
@@ -1030,10 +1053,10 @@ namespace UnrealBuildTool
 				CompileEnvironment.bAllowRemotelyCompiledPCHs;
 
 			// Two-pass compile where the preprocessor is run first to output the dependency list
-			if (PreprocessDepends && CompileEnvironment.bGenerateDependenciesFile)
+			if (PreprocessDepends)
 			{
 				Action PrepassAction = Graph.CreateAction(ActionType.Compile);
-				PrepassAction.PrerequisiteItems.AddRange(CompileAction.PrerequisiteItems);
+				PrepassAction.PrerequisiteItems.UnionWith(CompileAction.PrerequisiteItems);
 				PrepassAction.PrerequisiteItems.Remove(CompilerResponseFileItem);
 				PrepassAction.CommandDescription = "Preprocess Depends";
 				PrepassAction.StatusDescription = CompileAction.StatusDescription;
@@ -1056,10 +1079,10 @@ namespace UnrealBuildTool
 				PreprocessFileArguments.Remove("-ftime-trace");
 				PreprocessFileArguments.Remove(GetOutputFileArgument(CompileAction.ProducedItems.First()));
 
-				PrepassAction.DeleteItems.AddRange(PrepassAction.ProducedItems);
+				PrepassAction.DeleteItems.UnionWith(PrepassAction.ProducedItems);
 
 				// Gets the target file so we can get the correct output path.
-				FileItem PreprocessTargetFile = PrepassAction.ProducedItems[0];
+				FileItem PreprocessTargetFile = PrepassAction.ProducedItems.First();
 
 				// Creates the path to the response file using the name of the output file and creates its contents.
 				FileReference PreprocessResponseFileName = new FileReference(PreprocessTargetFile.AbsolutePath + ".response");
@@ -1089,7 +1112,7 @@ namespace UnrealBuildTool
 			return CompileAction;
 		}
 
-		public override CPPOutput CompileCPPFiles(CppCompileEnvironment CompileEnvironment, List<FileItem> InputFiles, DirectoryReference OutputDir, string ModuleName, IActionGraphBuilder Graph)
+		protected override CPPOutput CompileCPPFiles(CppCompileEnvironment CompileEnvironment, List<FileItem> InputFiles, DirectoryReference OutputDir, string ModuleName, IActionGraphBuilder Graph)
 		{
 			List<string> GlobalArguments = new();
 			GetCompileArguments_Global(CompileEnvironment, GlobalArguments);

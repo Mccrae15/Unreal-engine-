@@ -1,27 +1,23 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TextureCompiler.h"
+#include "UObject/UnrealType.h"
 
 #if WITH_EDITOR
 
-#include "Engine/Texture.h"
+#include "Editor.h"
 #include "ObjectCacheContext.h"
+#include "EngineLogs.h"
 #include "Settings/EditorExperimentalSettings.h"
 #include "Misc/QueuedThreadPoolWrapper.h"
-#include "RendererInterface.h"
-#include "EngineModule.h"
-#include "Misc/ScopedSlowTask.h"
+#include "RenderingThread.h"
 #include "UObject/StrongObjectPtr.h"
 #include "Materials/MaterialInterface.h"
-#include "Materials/MaterialInstance.h"
-#include "Materials/Material.h"
+#include "Materials/MaterialRenderProxy.h"
 #include "TextureDerivedDataTask.h"
 #include "ProfilingDebugging/CountersTrace.h"
-#include "Misc/IQueuedWork.h"
 #include "Components/PrimitiveComponent.h"
-#include "AsyncCompilationHelpers.h"
-#include "AssetCompilingManager.h"
-#include "LevelEditor.h"
+#include "TextureResource.h"
 
 #define LOCTEXT_NAMESPACE "TextureCompiler"
 
@@ -199,6 +195,8 @@ void FTextureCompilingManager::UpdateCompilationNotification()
 
 void FTextureCompilingManager::PostCompilation(UTexture* Texture)
 {
+	TGuardValue PostCompilationGuard(bIsRoutingPostCompilation, true);
+
 	check(IsInGameThread());
 	TRACE_CPUPROFILER_EVENT_SCOPE(FTextureCompilingManager::PostCompilation);
 
@@ -206,9 +204,6 @@ void FTextureCompilingManager::PostCompilation(UTexture* Texture)
 
 	Texture->FinishCachePlatformData();
 	Texture->UpdateResource();
-
-	// Needs to be called after the placeholder resource has been replaced by the real one
-	Texture->UpdateCachedLODBias();
 
 	// Generate an empty property changed event, to force the asset registry tag
 	// to be refreshed now that pixel format and alpha channels are available.
@@ -245,8 +240,11 @@ int32 FTextureCompilingManager::GetNumRemainingAssets() const
 
 void FTextureCompilingManager::AddTextures(TArrayView<UTexture* const> InTextures)
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE(FTextureCompilingManager::AddTextures)
 	check(IsInGameThread());
+	checkf(bIsRoutingPostCompilation == false,
+		TEXT("Registering a texture to the compile manager from inside a texture postcompilation is not supported and usually indicate that the previous async operation wasn't completed (i.e. missing call to PreEditChange) before modifying a texture property."));
+
+	TRACE_CPUPROFILER_EVENT_SCOPE(FTextureCompilingManager::AddTextures)
 
 	// Register new textures after ProcessTextures to avoid
 	// potential reentrant calls to CreateResource on the
@@ -275,6 +273,25 @@ void FTextureCompilingManager::AddTextures(TArrayView<UTexture* const> InTexture
 	}
 
 	TRACE_COUNTER_SET(QueuedTextureCompilation, GetNumRemainingTextures());
+}
+
+void FTextureCompilingManager::FinishCompilationForObjects(TArrayView<UObject* const> InObjects)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(FTextureCompilingManager::FinishCompilationForObjects);
+
+	TSet<UTexture*> Textures;
+	for (UObject* Object : InObjects)
+	{
+		if (UTexture* Texture = Cast<UTexture>(Object))
+		{
+			Textures.Add(Texture);
+		}
+	}
+
+	if (Textures.Num())
+	{
+		FinishCompilation(Textures.Array());
+	}
 }
 
 void FTextureCompilingManager::FinishCompilation(TArrayView<UTexture* const> InTextures)

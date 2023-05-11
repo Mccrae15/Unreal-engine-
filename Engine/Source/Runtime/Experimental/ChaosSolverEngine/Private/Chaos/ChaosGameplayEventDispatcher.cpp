@@ -23,10 +23,23 @@ FChaosBreakEvent::FChaosBreakEvent()
 	, Location(FVector::ZeroVector)
 	, Velocity(FVector::ZeroVector)
 	, AngularVelocity(FVector::ZeroVector)
+	, Extents(FVector::ZeroVector)
 	, Mass(0.0f)
 	, Index(INDEX_NONE)
+	, bFromCrumble(false)
 {
+}
 
+FChaosBreakEvent::FChaosBreakEvent(const Chaos::FBreakingData& BreakingData)
+	: Component(nullptr)
+	, Location(BreakingData.Location)
+	, Velocity(BreakingData.Velocity)
+	, AngularVelocity(BreakingData.AngularVelocity)
+	, Extents(BreakingData.BoundingBox.Extents())
+	, Mass(BreakingData.Mass)
+	, Index(BreakingData.TransformGroupIndex)
+	, bFromCrumble(BreakingData.bFromCrumble)
+{
 }
 
 FChaosRemovalEvent::FChaosRemovalEvent()
@@ -482,29 +495,24 @@ void UChaosGameplayEventDispatcher::HandleBreakingEvents(const Chaos::FBreakingE
 	{
 		LastBreakingDataTime = BreakingDataTimestamp;
 
-		Chaos::FBreakingDataArray const& BreakingData = Event.BreakingData.AllBreakingsArray;
+		const Chaos::FBreakingDataArray& BreakingDataArray = Event.BreakingData.AllBreakingsArray;
 
 		// let's assume breaks are very rare, so we will iterate breaks instead of registered components for now
-		const int32 NumBreaks = BreakingData.Num();
+		const int32 NumBreaks = BreakingDataArray.Num();
 		if (NumBreaks > 0)
 		{
-			FPhysScene& Scene = *(GetWorld()->GetPhysicsScene());
+			const FPhysScene& Scene = *(GetWorld()->GetPhysicsScene());
 
-			for (Chaos::FBreakingData const& BreakingDataItem : BreakingData)
+			for (const Chaos::FBreakingData& BreakingData : BreakingDataArray)
 			{	
-				if (BreakingDataItem.Proxy)
+				if (BreakingData.Proxy)
 				{
-					UPrimitiveComponent* const PrimComp = Scene.GetOwningComponent<UPrimitiveComponent>(BreakingDataItem.Proxy);
+					UPrimitiveComponent* const PrimComp = Scene.GetOwningComponent<UPrimitiveComponent>(BreakingData.Proxy);
 					if (PrimComp && BreakEventRegistrations.Contains(PrimComp))
 					{
 						// queue them up so we can release the physics data before trigging BP events
-						FChaosBreakEvent& BreakEvent = PendingBreakEvents.AddZeroed_GetRef();
+						FChaosBreakEvent& BreakEvent = PendingBreakEvents.Emplace_GetRef(BreakingData);
 						BreakEvent.Component = PrimComp;
-						BreakEvent.Location = BreakingDataItem.Location;
-						BreakEvent.Velocity = BreakingDataItem.Velocity;
-						BreakEvent.AngularVelocity = BreakingDataItem.AngularVelocity;
-						BreakEvent.Mass = BreakingDataItem.Mass;
-						BreakEvent.Index = BreakingDataItem.TransformGroupIndex;
 					}
 				}
 			}
@@ -517,7 +525,7 @@ void UChaosGameplayEventDispatcher::HandleBreakingEvents(const Chaos::FBreakingE
 
 void UChaosGameplayEventDispatcher::HandleSleepingEvents(const Chaos::FSleepingEventData& SleepingData)
 {
-	FPhysScene& Scene = *(GetWorld()->GetPhysicsScene());
+	const FPhysScene& Scene = *(GetWorld()->GetPhysicsScene());
 
 	const Chaos::FSleepingDataArray& SleepingArray = SleepingData.SleepingData;
 
@@ -560,7 +568,7 @@ void UChaosGameplayEventDispatcher::HandleRemovalEvents(const Chaos::FRemovalEve
 		const int32 NumRemovals = RemovalData.Num();
 		if (NumRemovals > 0)
 		{
-			FPhysScene& Scene = *(GetWorld()->GetPhysicsScene());
+			const FPhysScene& Scene = *(GetWorld()->GetPhysicsScene());
 
 			for (Chaos::FRemovalData const& RemovalDataItem : RemovalData)
 			{
@@ -597,11 +605,10 @@ void UChaosGameplayEventDispatcher::HandleCrumblingEvents(const Chaos::FCrumblin
 
 		Chaos::FCrumblingDataArray const& BreakingData = Event.CrumblingData.AllCrumblingsArray;
 
+		const FPhysScene& Scene = *(GetWorld()->GetPhysicsScene());
+
 		// let's assume crumbles are rare, so we will iterate breaks instead of registered components for now
 		TArray<FChaosCrumblingEvent> PendingCrumblingEvent;
-
-		FPhysScene& Scene = *(GetWorld()->GetPhysicsScene());
-
 		for (const Chaos::FCrumblingData& CrumblingDataItem : Event.CrumblingData.AllCrumblingsArray)
 		{	
 			if (CrumblingDataItem.Proxy)

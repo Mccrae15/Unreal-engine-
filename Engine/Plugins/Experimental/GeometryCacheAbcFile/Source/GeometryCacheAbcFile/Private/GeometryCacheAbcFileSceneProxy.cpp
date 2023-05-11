@@ -1,9 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GeometryCacheAbcFileSceneProxy.h"
+#include "AbcFile.h"
 #include "GeometryCacheAbcFileComponent.h"
 #include "GeometryCacheHelpers.h"
 #include "GeometryCacheTrackAbcFile.h"
+#include "SceneInterface.h"
 
 FGeometryCacheAbcFileSceneProxy::FGeometryCacheAbcFileSceneProxy(UGeometryCacheAbcFileComponent* Component)
 : FGeometryCacheSceneProxy(Component, [this]() { return new FGeomCacheTrackAbcFileProxy(GetScene().GetFeatureLevel()); })

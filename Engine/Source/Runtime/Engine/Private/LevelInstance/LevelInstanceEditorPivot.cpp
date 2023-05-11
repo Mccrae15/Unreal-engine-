@@ -1,17 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LevelInstance/LevelInstanceEditorPivot.h"
+#include "Engine/Level.h"
 #include "LevelInstance/LevelInstanceEditorPivotInterface.h"
 
 #if WITH_EDITOR
 
 #include "LevelInstance/LevelInstanceInterface.h"
 #include "LevelInstance/LevelInstanceSubsystem.h"
-#include "Engine/World.h"
 #include "Engine/LevelStreaming.h"
 #include "GameFramework/WorldSettings.h"
 #include "LevelUtils.h"
 #include "Editor.h"
+#include "UnrealEdGlobals.h"
+#include "Editor/UnrealEdEngine.h"
 
 #endif
 
@@ -72,17 +74,40 @@ ILevelInstanceEditorPivotInterface* FLevelInstanceEditorPivotHelper::Create(ILev
 	return PivotInterface;
 }
 
+void FLevelInstanceEditorPivotHelper::ShowPivotLocation(const FVector& PivotLocation)
+{
+	if (GEditor)
+	{
+		// Show in viewport where the Pivot would be located
+		GEditor->SetPivot(PivotLocation, false, true);
+		GUnrealEd->SetPivotMovedIndependently(true);
+		GEditor->RedrawLevelEditingViewports(false);
+	}
+}
+
 void FLevelInstanceEditorPivotHelper::SetPivot(ILevelInstanceEditorPivotInterface* PivotInterface, ELevelInstancePivotType PivotType, AActor* PivotToActor)
+{
+	FVector Location = GetPivot(PivotInterface, PivotType, PivotToActor);
+	AActor* PivotActor = CastChecked<AActor>(PivotInterface);
+		
+	PivotActor->Modify();
+	PivotActor->SetActorLocation(Location);
+
+	PivotInterface->UpdateOffset();
+
+	ShowPivotLocation(Location);
+}
+
+FVector FLevelInstanceEditorPivotHelper::GetPivot(ILevelInstanceEditorPivotInterface* PivotInterface, ELevelInstancePivotType PivotType, AActor* PivotToActor)
 {
 	check(PivotType != ELevelInstancePivotType::Actor || PivotToActor != nullptr);
 	AActor* PivotActor = CastChecked<AActor>(PivotInterface);
 
-	PivotActor->Modify();
 	if (PivotType == ELevelInstancePivotType::Actor)
 	{
-		PivotActor->SetActorLocation(PivotToActor->GetActorLocation());
+		return PivotToActor->GetActorLocation();
 	}
-	else if(PivotType == ELevelInstancePivotType::Center || PivotType == ELevelInstancePivotType::CenterMinZ)
+	else if (PivotType == ELevelInstancePivotType::Center || PivotType == ELevelInstancePivotType::CenterMinZ)
 	{
 		ULevelInstanceSubsystem* LevelInstanceSubsystem = UWorld::GetSubsystem<ULevelInstanceSubsystem>(PivotActor->GetWorld());
 		ILevelInstanceInterface* LevelInstance = LevelInstanceSubsystem->GetLevelInstance(PivotInterface->GetLevelInstanceID());
@@ -93,24 +118,13 @@ void FLevelInstanceEditorPivotHelper::SetPivot(ILevelInstanceEditorPivotInterfac
 		{
 			Location.Z = OutBounds.Min.Z;
 		}
-		PivotActor->SetActorLocation(Location);
+		return Location;
 	}
-	else if (PivotType == ELevelInstancePivotType::WorldOrigin)
+	else
 	{
-		PivotActor->SetActorLocation(FVector(0.f, 0.f, 0.f));
+		check(PivotType == ELevelInstancePivotType::WorldOrigin);
+		return FVector::ZeroVector;
 	}
-	else // unsupported
-	{
-		check(0);
-	}
-
-	// Update gizmo
-	if (GEditor)
-	{
-		GEditor->NoteSelectionChange();
-	}
-
-	PivotInterface->UpdateOffset();
 }
 
 #endif

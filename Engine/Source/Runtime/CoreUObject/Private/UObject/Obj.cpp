@@ -65,6 +65,7 @@
 #include "Misc/PackageAccessTrackingOps.h"
 #include "ProfilingDebugging/AssetMetadataTrace.h"
 #include "Containers/VersePath.h"
+#include "Serialization/LoadTimeTracePrivate.h"
 
 DEFINE_LOG_CATEGORY(LogObj);
 
@@ -311,7 +312,9 @@ bool UObject::Rename( const TCHAR* InName, UObject* NewOuter, ERenameFlags Flags
 				NewOuter->MarkPackageDirty();
 			}
 		}
-
+#if UE_WITH_OBJECT_HANDLE_LATE_RESOLVE
+		UE::CoreUObject::Private::UpdateRenamedObject(*this, NewName, NewOuter);
+#endif
 		LowLevelRename(NewName, NewOuter);
 	}
 
@@ -1113,7 +1116,8 @@ void UObject::ConditionalPostLoad()
 				LLM_SCOPED_TAG_WITH_OBJECT_IN_SET(Package, ELLMTagSet::Assets);
 				LLM_SCOPED_TAG_WITH_OBJECT_IN_SET(GetClass(), ELLMTagSet::AssetClasses);
 				UE_TRACE_METADATA_SCOPE_ASSET(Package, GetClass());
-
+				TRACE_LOADTIME_POSTLOAD_OBJECT_SCOPE(this);
+				
 				PostLoad();
 
 				LLM_PUSH_STATS_FOR_ASSET_TAGS();
@@ -1265,25 +1269,29 @@ bool UObject::Modify( bool bAlwaysMarkDirty/*=true*/ )
 
 	if (CanModify())
 	{
-		// Do not consider script packages, as they should never end up in the
-		// transaction buffer and we don't want to mark them dirty here either.
-		// We do want to consider PIE objects however
-		if ((GetOutermost()->HasAnyPackageFlags(PKG_ContainsScript | PKG_CompiledIn) == false || GetClass()->HasAnyClassFlags(CLASS_DefaultConfig | CLASS_Config)) &&
-			!HasAnyInternalFlags(EInternalObjectFlags::Async | EInternalObjectFlags::AsyncLoading))
+		// Only the game-thread should be allowed to touch the transaction buffer at all
+		if (!HasAnyInternalFlags(EInternalObjectFlags::Async | EInternalObjectFlags::AsyncLoading) && IsInGameThread())
 		{
-			// Attempt to mark the package dirty and save a copy of the object to the transaction
-			// buffer. The save will fail if there isn't a valid transactor, the object isn't
-			// transactional, etc.
-			bSavedToTransactionBuffer = SaveToTransactionBuffer(this, bAlwaysMarkDirty);
-
-			// If we failed to save to the transaction buffer, but the user requested the package
-			// marked dirty anyway, do so
-			if (!bSavedToTransactionBuffer && bAlwaysMarkDirty)
+			// Do not consider script packages, as they should never end up in the
+			// transaction buffer and we don't want to mark them dirty here either.
+			// We do want to consider PIE objects however
+			if (GetOutermost()->HasAnyPackageFlags(PKG_ContainsScript | PKG_CompiledIn) == false || GetClass()->HasAnyClassFlags(CLASS_DefaultConfig | CLASS_Config))
 			{
-				MarkPackageDirty();
+				// Attempt to mark the package dirty and save a copy of the object to the transaction
+				// buffer. The save will fail if there isn't a valid transactor, the object isn't
+				// transactional, etc.
+				bSavedToTransactionBuffer = SaveToTransactionBuffer(this, bAlwaysMarkDirty);
+
+				// If we failed to save to the transaction buffer, but the user requested the package
+				// marked dirty anyway, do so
+				if (!bSavedToTransactionBuffer && bAlwaysMarkDirty)
+				{
+					MarkPackageDirty();
+				}
 			}
+
+			FCoreUObjectDelegates::BroadcastOnObjectModified(this);
 		}
-		FCoreUObjectDelegates::BroadcastOnObjectModified(this);
 	}
 
 	return bSavedToTransactionBuffer;
@@ -1469,6 +1477,28 @@ void UObject::Serialize(FStructuredArchive::FRecord Record)
 			else if (UnderlyingArchive.IsSaving())
 			{
 				Record << SA_VALUE(TEXT("WasKill"), WasKill);
+			}
+		}
+
+		// Keep track of transient
+		if (UnderlyingArchive.IsTransacting())
+		{
+			bool WasTransient = HasAnyFlags(RF_Transient);
+			if (UnderlyingArchive.IsLoading())
+			{
+				Record << SA_VALUE(TEXT("WasTransient"), WasTransient);
+				if (WasTransient)
+				{
+					SetFlags(RF_Transient);
+				}
+				else
+				{
+					ClearFlags(RF_Transient);
+				}
+			}
+			else if (UnderlyingArchive.IsSaving())
+			{
+				Record << SA_VALUE(TEXT("WasTransient"), WasTransient);
 			}
 		}
 
@@ -1737,6 +1767,12 @@ public:
 	{
 		if( !ReferencingObject->GetClass()->IsChildOf(UClass::StaticClass()) )
 		{
+			// Didn't dare switching from SerializeScriptProperties to new and faster AddPropertyReferencers.
+			// This collector IsIgnoringTransient and SerializeScriptProperties will skip
+			// transient default objects but AddPropertyReferencers / SerializeBin will skip all transient 
+			// properties, including default ones. Not sure if this matters.
+			// 
+			// See FReferenceFinder::FindReferences whose collector doesn't ignore transient
 			FVerySlowReferenceCollectorArchiveScope CollectorScope(GetVerySlowReferenceCollectorArchive(), ReferencingObject);
 			ReferencingObject->SerializeScriptProperties(CollectorScope.GetArchive());
 		}
@@ -2470,13 +2506,12 @@ void UObject::LoadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilename/
 	// and if the name isn't the current running platform (no need to load extra files if already in GConfig)
 	bool bUseConfigOverride = InFilename == nullptr && GetConfigOverridePlatform() != nullptr &&
 		FCString::Stricmp(GetConfigOverridePlatform(), ANSI_TO_TCHAR(FPlatformProperties::IniPlatformName())) != 0;
-	FConfigFile OverrideConfig;
+	FConfigFile* OverrideConfigFile = nullptr;
+	FConfigFile LocalOverrideConfig;
 	if (bUseConfigOverride)
 	{
-		// load into a local ini file
-		FConfigCacheIni::LoadLocalIniFile(OverrideConfig, *GetClass()->ClassConfigName.ToString(), true, GetConfigOverridePlatform());
+		OverrideConfigFile = FConfigCacheIni::FindOrLoadPlatformConfig(LocalOverrideConfig, *GetClass()->ClassConfigName.ToString(), GetConfigOverridePlatform());
 	}
-
 
 	FString ClassSection;
 	FString ClassPathSection;
@@ -2529,11 +2564,11 @@ void UObject::LoadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilename/
 		UE_LOG(LogConfig, Verbose, TEXT("(%s) '%s' loading configuration for property %s from %s"), *ConfigClass->GetName(), *GetName(), *PropertyToLoad->GetName(), *Filename);
 	}
 
-	auto GetConfigValue = [&OverrideConfig, &bUseConfigOverride](const TCHAR* ClassSection, const TCHAR* Key, const TCHAR* ConfigName, FString& OutValue)
+	auto GetConfigValue = [&OverrideConfigFile, &bUseConfigOverride](const TCHAR* ClassSection, const TCHAR* Key, const TCHAR* ConfigName, FString& OutValue)
 	{
 		if (bUseConfigOverride)
 		{
-			return OverrideConfig.GetString(ClassSection, Key, OutValue);
+			return OverrideConfigFile->GetString(ClassSection, Key, OutValue);
 		}
 		else
 		{
@@ -2541,11 +2576,11 @@ void UObject::LoadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilename/
 		}
 	};
 
-	auto GetConfigSection = [&bUseConfigOverride, &OverrideConfig](const TCHAR* SectionName, const TCHAR* ConfigFilename)
+	auto GetConfigSection = [&OverrideConfigFile, &bUseConfigOverride](const TCHAR* SectionName, const TCHAR* ConfigFilename)
 	{
 		if (bUseConfigOverride)
 		{
-			return OverrideConfig.Find(SectionName);
+			return OverrideConfigFile->Find(SectionName);
 		}
 		else
 		{
@@ -2878,7 +2913,7 @@ void UObject::SaveConfig( uint64 Flags, const TCHAR* InFilename, FConfigCacheIni
 	// only write out the config file if this is GConfig
 	if (Config == GConfig)
 	{
-		Config->Flush( 0 );
+		Config->Flush( 0, Filename );
 	}
 }
 
@@ -2947,15 +2982,27 @@ void UObject::UpdateSingleSectionOfConfigFile(const FString& ConfigIniName)
 
 	// do we need to use a special platform hierarchy?
 	FString OverridePlatform = GetFinalOverridePlatform(this);
+	bool bUpdateGConfig = OverridePlatform.Len() == 0;
+
+	// if we are going to reload GConfig, we need to flush any pending writes to disk because we are going to
+	// blow away the contents of GConfig's in memory version with what it on disk, but we don't want to lose the
+	// local modifications
+	if (bUpdateGConfig)
+	{
+		GConfig->Flush(false, *GetClass()->ClassConfigName.ToString());
+	}
 
 	// make sure SaveConfig wrote only to the file we expected
 	NewFile.UpdateSections(*ConfigIniName, *GetClass()->ClassConfigName.ToString(), OverridePlatform.Len() ? *OverridePlatform : nullptr);
 
 	// reload the file, so that it refresh the cache internally, unless a non-standard platform was used,
 	// then we don't want to touch GConfig
-	if (OverridePlatform.Len() == 0)
+	if (bUpdateGConfig)
 	{
-		FConfigContext::ForceReloadIntoGConfig().Load(*GetClass()->ClassConfigName.ToString());
+		FConfigContext Context = FConfigContext::ForceReloadIntoGConfig();
+		// don't write the Saved out, as we just finished writing what we needed
+		Context.bWriteDestIni = false;
+		Context.Load(*GetClass()->ClassConfigName.ToString());
 	}
 }
 
@@ -3013,7 +3060,7 @@ void UObject::UpdateSinglePropertyInConfigFile(const FProperty* InProperty, cons
 
 		const FString SectionName = Keys[0];
 		FString PropertyKey = InProperty->GetFName().ToString();
-		
+
 #if WITH_EDITOR
 		static FName ConsoleVariableFName(TEXT("ConsoleVariable"));
 		const FString& CVarName = InProperty->GetMetaData(ConsoleVariableFName);
@@ -3024,15 +3071,26 @@ void UObject::UpdateSinglePropertyInConfigFile(const FProperty* InProperty, cons
 #endif // #if WITH_EDITOR
 
 		// do we need to use a special platform hierarchy?
-		FString OverridePlatform = GetFinalOverridePlatform(this);
+		bool bUpdateGConfig = GetFinalOverridePlatform(this).Len() == 0;
+
+		// if we are going to reload GConfig, we need to flush any pending writes to disk because we are going to
+		// blow away the contents of GConfig's in memory version with what it on disk, but we don't want to lose the
+		// local modifications
+		if (bUpdateGConfig)
+		{
+			GConfig->Flush(false, *GetClass()->ClassConfigName.ToString());
+		}
 
 		NewFile.UpdateSinglePropertyInSection(*InConfigIniName, *PropertyKey, *SectionName);
 
 		// reload the file, so that it refresh the cache internally, unless a non-standard platform was used,
 		// then we don't want to touch GConfig
-		if (OverridePlatform.Len() == 0)
+		if (bUpdateGConfig)
 		{
-			FConfigContext::ForceReloadIntoGConfig().Load(*GetClass()->ClassConfigName.ToString());
+			FConfigContext Context = FConfigContext::ForceReloadIntoGConfig();
+			// don't write the Saved out, as we just finished writing what we needed
+			Context.bWriteDestIni = false;
+			Context.Load(*GetClass()->ClassConfigName.ToString());
 		}
 	}
 	else

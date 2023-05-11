@@ -2,13 +2,10 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Layout/Visibility.h"
-#include "Styling/SlateColor.h"
-#include "SEnvQueryLoadGraph.h"
-#include "Widgets/SCompoundWidget.h"
-#include "Widgets/Views/SListView.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/Views/SListView.h" // IWYU pragma: keep
+
+class SEnvQueryLoadGraph;
+class STableViewBase;
 
 class SEnvQueryProfiler : public SCompoundWidget
 {
@@ -21,8 +18,8 @@ public:
 	struct FStatData : public TSharedFromThis<FStatData, ESPMode::ThreadSafe>
 	{
 		FName QueryName;
-		float WorstTime;
-		float AverageTime;
+		double WorstTime;
+		double AverageTime;
 		float AverageLoad;
 		int32 NumRuns;
 		bool bIsHighlighted;

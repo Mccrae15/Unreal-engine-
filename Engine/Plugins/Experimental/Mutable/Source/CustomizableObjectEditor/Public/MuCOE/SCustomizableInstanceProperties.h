@@ -2,21 +2,9 @@
 
 #pragma once
 
-#include "Containers/Array.h"
-#include "Containers/Map.h"
-#include "Containers/UnrealString.h"
-#include "HAL/PlatformMath.h"
-#include "Input/Reply.h"
-#include "Internationalization/Text.h"
-#include "Math/Color.h"
-#include "Styling/SlateTypes.h"
-#include "Templates/SharedPointer.h"
-#include "Types/SlateEnums.h"
-#include "UObject/WeakObjectPtr.h"
-#include "UObject/WeakObjectPtrTemplates.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Input/SSpinBox.h"
-#include "Widgets/SCompoundWidget.h"
+
+enum class ECheckBoxState : uint8;
 
 class FCustomizableInstanceDetails;
 class SButton;
@@ -110,7 +98,7 @@ private:
 	// These arrays store the textures available for texture parameters of the model.
 	// These come from the texture generators registered in the CustomizableObjectSystem
 	TArray< TSharedPtr<FString> > TextureParameterValueNames;
-	TArray< int64_t > TextureParameterValues;
+	TArray< uint64_t > TextureParameterValues;
 
 	struct FSliderData
 	{

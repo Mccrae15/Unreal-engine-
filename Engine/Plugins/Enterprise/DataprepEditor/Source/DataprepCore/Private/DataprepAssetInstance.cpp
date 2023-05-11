@@ -3,11 +3,11 @@
 #include "DataprepAssetInstance.h"
 
 #include "DataprepAsset.h"
-#include "DataprepAssetProducers.h"
 #include "DataprepContentConsumer.h"
 #include "DataprepCoreLogCategory.h"
 #include "Shared/DataprepCorePrivateUtils.h"
 #include "Parameterization/DataprepParameterization.h"
+#include "UObject/Package.h"
 
 void UDataprepAssetInstance::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {

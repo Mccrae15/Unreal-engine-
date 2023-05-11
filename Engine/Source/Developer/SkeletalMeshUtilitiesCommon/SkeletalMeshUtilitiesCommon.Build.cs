@@ -13,14 +13,17 @@ namespace UnrealBuildTool.Rules
             PrivateDependencyModuleNames.AddRange(
                 new string[]
                 {
-                    "Core",
-					"CoreUObject",
-					"RenderCore",
-					"MeshUtilitiesCommon",
-					"ImageCore",
-					"Engine",
 					"ClothingSystemRuntimeCommon",
+					"Core",
+					"CoreUObject",
+					"Engine",
+					"ImageCore",
+					"MeshDescription",
+					"MeshUtilitiesCommon",
+					"RenderCore",
+					"SkeletalMeshDescription",
 					"Slate",
+					"StaticMeshDescription",
                 }
             );
         }

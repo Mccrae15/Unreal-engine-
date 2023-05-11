@@ -5,10 +5,12 @@ MeshDrawCommandSetup.cpp: Mesh draw command setup.
 =============================================================================*/
 
 #include "MeshDrawCommands.h"
+#include "BasePassRendering.h"
 #include "RendererModule.h"
 #include "ScenePrivate.h"
 #include "TranslucentRendering.h"
 #include "InstanceCulling/InstanceCullingManager.h"
+#include "StaticMeshBatch.h"
 
 TGlobalResource<FPrimitiveIdVertexBufferPool> GPrimitiveIdVertexBufferPool;
 
@@ -807,6 +809,32 @@ FAutoConsoleTaskPriority CPrio_FMeshDrawCommandPassSetupTask(
 	ENamedThreads::HighTaskPriority
 );
 
+FMeshDrawCommandPassSetupTaskContext::FMeshDrawCommandPassSetupTaskContext()
+	: View(nullptr)
+	, Scene(nullptr)
+	, ShadingPath(EShadingPath::Num)
+	, PassType(EMeshPass::Num)
+	, bUseGPUScene(false)
+	, bDynamicInstancing(false)
+	, bReverseCulling(false)
+	, bRenderSceneTwoSided(false)
+	, BasePassDepthStencilAccess(FExclusiveDepthStencil::DepthNop_StencilNop)
+	, MeshPassProcessor(nullptr)
+	, MobileBasePassCSMMeshPassProcessor(nullptr)
+	, DynamicMeshElements(nullptr)
+	, InstanceFactor(1)
+	, NumDynamicMeshElements(0)
+	, NumDynamicMeshCommandBuildRequestElements(0)
+	, NeedsShaderInitialisation(false)
+	, PrimitiveIdBufferData(nullptr)
+	, PrimitiveIdBufferDataSize(0)
+	, PrimitiveBounds(nullptr)
+	, VisibleMeshDrawCommandsNum(0)
+	, NewPassVisibleMeshDrawCommandsNum(0)
+	, MaxInstances(1)
+{
+}
+
 /**
  * Task for a parallel setup of mesh draw commands. Includes generation of dynamic mesh draw commands, sorting, merging etc.
  */
@@ -1195,11 +1223,12 @@ void FParallelMeshDrawCommandPass::DispatchPassSetup(
 
 	switch (PassType)
 	{
-		case EMeshPass::TranslucencyStandard: TaskContext.TranslucencyPass = ETranslucencyPass::TPT_StandardTranslucency; break;
-		case EMeshPass::TranslucencyAfterDOF: TaskContext.TranslucencyPass = ETranslucencyPass::TPT_TranslucencyAfterDOF; break;
-		case EMeshPass::TranslucencyAfterDOFModulate: TaskContext.TranslucencyPass = ETranslucencyPass::TPT_TranslucencyAfterDOFModulate; break;
-		case EMeshPass::TranslucencyAfterMotionBlur: TaskContext.TranslucencyPass = ETranslucencyPass::TPT_TranslucencyAfterMotionBlur; break;
-		case EMeshPass::TranslucencyAll: TaskContext.TranslucencyPass = ETranslucencyPass::TPT_AllTranslucency; break;
+		case EMeshPass::TranslucencyStandard: TaskContext.TranslucencyPass			= ETranslucencyPass::TPT_TranslucencyStandard; break;
+		case EMeshPass::TranslucencyStandardModulate: TaskContext.TranslucencyPass	= ETranslucencyPass::TPT_TranslucencyStandardModulate; break;
+		case EMeshPass::TranslucencyAfterDOF: TaskContext.TranslucencyPass			= ETranslucencyPass::TPT_TranslucencyAfterDOF; break;
+		case EMeshPass::TranslucencyAfterDOFModulate: TaskContext.TranslucencyPass	= ETranslucencyPass::TPT_TranslucencyAfterDOFModulate; break;
+		case EMeshPass::TranslucencyAfterMotionBlur: TaskContext.TranslucencyPass	= ETranslucencyPass::TPT_TranslucencyAfterMotionBlur; break;
+		case EMeshPass::TranslucencyAll: TaskContext.TranslucencyPass				= ETranslucencyPass::TPT_AllTranslucency; break;
 	}
 
 	FMemory::Memswap(&TaskContext.MeshDrawCommands, &InOutMeshDrawCommands, sizeof(InOutMeshDrawCommands));
@@ -1400,9 +1429,7 @@ void FParallelMeshDrawCommandPass::BuildRenderingCommands(
 			if (VisibleMeshDrawCommand.PrimitiveIdInfo.bIsDynamicPrimitive)
 			{
 				uint32 PrimitiveIndex = VisibleMeshDrawCommand.PrimitiveIdInfo.DrawPrimitiveId & ~GPrimIDDynamicFlag;
-				checkf(TaskContext.View->DynamicPrimitiveCollector.IsPrimitiveProcessed(PrimitiveIndex, GPUScene),
-					TEXT("Dynamic Primitive index %u has not been fully processed. It may be an invalid index for the collector or it has a pending GPU write."),
-					PrimitiveIndex);
+				TaskContext.View->DynamicPrimitiveCollector.CheckPrimitiveProcessed(PrimitiveIndex, GPUScene);
 			}
 		}
 #endif
@@ -1520,4 +1547,14 @@ void FParallelMeshDrawCommandPass::DumpInstancingStats() const
 void FParallelMeshDrawCommandPass::SetDumpInstancingStats(const FString& InPassNameForStats)
 {
 	PassNameForStats = InPassNameForStats;
+}
+
+void FParallelMeshDrawCommandPass::InitCreateSnapshot()
+{
+	new (&TaskContext.MinimalPipelineStatePassSet) FGraphicsMinimalPipelineStateSet();
+}
+
+void FParallelMeshDrawCommandPass::FreeCreateSnapshot()
+{
+	TaskContext.MinimalPipelineStatePassSet.~FGraphicsMinimalPipelineStateSet();
 }

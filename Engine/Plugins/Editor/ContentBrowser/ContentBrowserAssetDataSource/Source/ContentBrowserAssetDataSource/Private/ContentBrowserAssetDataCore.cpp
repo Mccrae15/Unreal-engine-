@@ -1,26 +1,32 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ContentBrowserAssetDataCore.h"
+
+#include "AssetDefinition.h"
 #include "ContentBrowserDataSource.h"
+#include "ContentBrowserAssetDataPayload.h"
 #include "IAssetTools.h"
+#include "ContentBrowserDataSubsystem.h"
+#include "IContentBrowserDataModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "AssetViewUtils.h"
 #include "AssetPropertyTagCache.h"
+#include "Editor/UnrealEdTypes.h"
 #include "ObjectTools.h"
-#include "Misc/NamePermissionList.h"
-#include "Misc/ScopedSlowTask.h"
 #include "HAL/FileManager.h"
 #include "FileHelpers.h"
 #include "Editor.h"
+#include "IAssetTypeActions.h"
 #include "Subsystems/AssetEditorSubsystem.h"
-#include "ToolMenus.h"
 #include "AssetFolderContextMenu.h"
 #include "AssetFileContextMenu.h"
 #include "ContentBrowserDataUtils.h"
-#include "Settings/ContentBrowserSettings.h"
+#include "ContentBrowserDataMenuContexts.h"
 #include "Engine/Level.h"
-#include "Framework/Notifications/NotificationManager.h"
-#include "Widgets/Notifications/SNotificationList.h"
+#include "Misc/PackageName.h"
+#include "Misc/WarnIfAssetsLoadedInScope.h"
+#include "Misc/Paths.h"
+#include "ToolMenu.h"
 
 #define LOCTEXT_NAMESPACE "ContentBrowserAssetDataSource"
 
@@ -197,12 +203,43 @@ bool CanEditItem(IAssetTools* InAssetTools, const UContentBrowserDataSource* InO
 
 bool CanEditAssetFileItem(IAssetTools* InAssetTools, const FContentBrowserAssetFileItemDataPayload& InAssetPayload, FText* OutErrorMsg)
 {
+	if (UContentBrowserDataSubsystem* ContentBrowserDataSubsystem = IContentBrowserDataModule::Get().GetSubsystem())
+	{
+		const TSharedRef<FPathPermissionList>& EditableFolderFilter = ContentBrowserDataSubsystem->GetEditableFolderPermissionList();
+		FName FolderPath = InAssetPayload.GetAssetData().PackageName;
+		if (!EditableFolderFilter->PassesStartsWithFilter(FolderPath))
+		{
+			SetOptionalErrorMessage(OutErrorMsg, FText::Format(LOCTEXT("Error_FolderIsNotEditable", "Content in folder '{0}' is not editable"), FText::FromName(FolderPath)));
+			return false;
+		}
+	}
+
 	if (!CanModifyAssetFileItem(InAssetTools, InAssetPayload, OutErrorMsg))
 	{
 		return false;
 	}
 
 	return true;
+}
+
+bool CanViewItem(IAssetTools* InAssetTools, const UContentBrowserDataSource* InOwnerDataSource, const FContentBrowserItemData& InItem, FText* OutErrorMsg)
+{
+	if (TSharedPtr<const FContentBrowserAssetFileItemDataPayload> AssetPayload = GetAssetFileItemPayload(InOwnerDataSource, InItem))
+	{
+		return CanViewAssetFileItem(InAssetTools, *AssetPayload, OutErrorMsg);
+	}
+
+	return false;
+}
+
+bool CanViewAssetFileItem(IAssetTools* InAssetTools, const FContentBrowserAssetFileItemDataPayload& InAssetPayload, FText* OutErrorMsg)
+{
+	const TWeakPtr<IAssetTypeActions> AssetTypeActions = InAssetTools->GetAssetTypeActionsForClass(InAssetPayload.GetAssetData().GetClass());
+	if (AssetTypeActions.IsValid())
+	{
+		return AssetTypeActions.Pin()->SupportsOpenedMethod(EAssetTypeActivationOpenedMethod::View);
+	}
+	return false;
 }
 
 bool CanPreviewItem(IAssetTools* InAssetTools, const UContentBrowserDataSource* InOwnerDataSource, const FContentBrowserItemData& InItem, FText* OutErrorMsg)
@@ -220,14 +257,15 @@ bool CanPreviewAssetFileItem(IAssetTools* InAssetTools, const FContentBrowserAss
 	return true;
 }
 
-bool EditOrPreviewAssetFileItems(TArrayView<const TSharedRef<const FContentBrowserAssetFileItemDataPayload>> InAssetPayloads, const bool bIsPreview)
+bool EditOrPreviewAssetFileItems(TArrayView<const TSharedRef<const FContentBrowserAssetFileItemDataPayload>> InAssetPayloads, EAssetTypeActivationMethod::Type ActivationMethod, const EAssetTypeActivationOpenedMethod OpenedMethod)
 {
 	if (InAssetPayloads.Num() == 0)
 	{
 		return false;
 	}
 
-	const EAssetTypeActivationMethod::Type ActivationMethod = bIsPreview ? EAssetTypeActivationMethod::Previewed : EAssetTypeActivationMethod::Opened;
+	ensure(ActivationMethod != EAssetTypeActivationMethod::Type::DoubleClicked);
+
 	UAssetEditorSubsystem* AssetEditorSubsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
 
 	TMap<TSharedPtr<IAssetTypeActions>, TArray<FAssetData>> TypeActionsToAssetData;
@@ -259,7 +297,7 @@ bool EditOrPreviewAssetFileItems(TArrayView<const TSharedRef<const FContentBrows
 		TArray<FAssetData>& AssetsToLoad = TypeActionToObjectsPair.Value;
 		if (TypeActions.IsValid())
 		{
-			AssetsToLoad = TypeActions->GetValidAssetsForPreviewOrEdit(AssetsToLoad, bIsPreview);
+			AssetsToLoad = TypeActions->GetValidAssetsForPreviewOrEdit(AssetsToLoad, ActivationMethod == EAssetTypeActivationMethod::Type::Previewed);
 		}
 
 		TArray<UObject*> ObjList;
@@ -285,47 +323,84 @@ bool EditOrPreviewAssetFileItems(TArrayView<const TSharedRef<const FContentBrows
 
 		if (bOpenEditorForAssets)
 		{
-			bSuccessfulEditorOpen &= AssetEditorSubsystem->OpenEditorForAssets(ObjList);
+			bSuccessfulEditorOpen &= AssetEditorSubsystem->OpenEditorForAssets(ObjList, OpenedMethod);
 		}
 	}
 
 	return bSuccessfulEditorOpen;
 }
 
-bool EditOrPreviewItems(IAssetTools* InAssetTools, const UContentBrowserDataSource* InOwnerDataSource, TArrayView<const FContentBrowserItemData> InItems, const bool bIsPreview)
+bool EditOrPreviewItems(IAssetTools* InAssetTools, const UContentBrowserDataSource* InOwnerDataSource, TArrayView<const FContentBrowserItemData> InItems, EAssetTypeActivationMethod::Type ActivationMethod, EAssetTypeActivationOpenedMethod OpenedMethod)
 {
-	TArray<TSharedRef<const FContentBrowserAssetFileItemDataPayload>, TInlineAllocator<16>> AssetPayloads;
+	TArray<TSharedRef<const FContentBrowserAssetFileItemDataPayload>, TInlineAllocator<16>> EditOrPreviewPayloads;
+	TArray<TSharedRef<const FContentBrowserAssetFileItemDataPayload>, TInlineAllocator<16>> ViewPayloads;
 
-	EnumerateAssetFileItemPayloads(InOwnerDataSource, InItems, [InAssetTools, bIsPreview , &AssetPayloads](const TSharedRef<const FContentBrowserAssetFileItemDataPayload>& InAssetPayload)
+	ensure(ActivationMethod != EAssetTypeActivationMethod::Type::DoubleClicked);
+
+	const bool bIsPreview = ActivationMethod == EAssetTypeActivationMethod::Type::Previewed;
+	EnumerateAssetFileItemPayloads(InOwnerDataSource, InItems, [InAssetTools, bIsPreview, OpenedMethod, &EditOrPreviewPayloads, &ViewPayloads](const TSharedRef<const FContentBrowserAssetFileItemDataPayload>& InAssetPayload)
 	{
-		if ((bIsPreview ? CanPreviewAssetFileItem(InAssetTools, *InAssetPayload, nullptr) : CanEditAssetFileItem(InAssetTools, *InAssetPayload, nullptr)))
+		if (bIsPreview)
 		{
-			AssetPayloads.Add(InAssetPayload);
+			if (CanPreviewAssetFileItem(InAssetTools, *InAssetPayload, nullptr))
+			{
+				EditOrPreviewPayloads.Add(InAssetPayload);
+			}
+		}
+		else if (OpenedMethod == EAssetTypeActivationOpenedMethod::Edit)
+		{
+			if (CanEditAssetFileItem(InAssetTools, *InAssetPayload, nullptr))
+			{
+				EditOrPreviewPayloads.Add(InAssetPayload);
+			}
+			else if (CanViewAssetFileItem(InAssetTools, *InAssetPayload, nullptr))
+			{
+				ViewPayloads.Add(InAssetPayload);
+			}
+		}
+		else if (OpenedMethod == EAssetTypeActivationOpenedMethod::View)
+		{
+			if (CanViewAssetFileItem(InAssetTools, *InAssetPayload, nullptr))
+			{
+				ViewPayloads.Add(InAssetPayload);
+			}
 		}
 		return true;
 	});
 
-	return EditOrPreviewAssetFileItems(AssetPayloads, bIsPreview);
+	const bool bEditItems = EditOrPreviewAssetFileItems(EditOrPreviewPayloads, ActivationMethod, EAssetTypeActivationOpenedMethod::Edit);
+	const bool bViewItems = EditOrPreviewAssetFileItems(ViewPayloads, ActivationMethod, EAssetTypeActivationOpenedMethod::View);
+	return bEditItems || bViewItems;
 }
 
 bool EditItems(IAssetTools* InAssetTools, const UContentBrowserDataSource* InOwnerDataSource, TArrayView<const FContentBrowserItemData> InItems)
 {
-	return EditOrPreviewItems(InAssetTools, InOwnerDataSource, InItems, /*bIsPreview*/false);
+	return EditOrPreviewItems(InAssetTools, InOwnerDataSource, InItems, EAssetTypeActivationMethod::Type::Opened, EAssetTypeActivationOpenedMethod::Edit);
 }
 
 bool EditAssetFileItems(TArrayView<const TSharedRef<const FContentBrowserAssetFileItemDataPayload>> InAssetPayloads)
 {
-	return EditOrPreviewAssetFileItems(InAssetPayloads, /*bIsPreview*/false);
+	return EditOrPreviewAssetFileItems(InAssetPayloads, EAssetTypeActivationMethod::Type::Opened, EAssetTypeActivationOpenedMethod::Edit);
+}
+
+bool ViewItems(IAssetTools* InAssetTools, const UContentBrowserDataSource* InOwnerDataSource, TArrayView<const FContentBrowserItemData> InItems)
+{
+	return EditOrPreviewItems(InAssetTools, InOwnerDataSource, InItems, EAssetTypeActivationMethod::Type::Opened, EAssetTypeActivationOpenedMethod::View);
+}
+
+bool ViewAssetFileItems(TArrayView<const TSharedRef<const FContentBrowserAssetFileItemDataPayload>> InAssetPayloads)
+{
+	return EditOrPreviewAssetFileItems(InAssetPayloads, EAssetTypeActivationMethod::Type::Opened, EAssetTypeActivationOpenedMethod::View);
 }
 
 bool PreviewItems(IAssetTools* InAssetTools, const UContentBrowserDataSource* InOwnerDataSource, TArrayView<const FContentBrowserItemData> InItems)
 {
-	return EditOrPreviewItems(InAssetTools, InOwnerDataSource, InItems, /*bIsPreview*/true);
+	return EditOrPreviewItems(InAssetTools, InOwnerDataSource, InItems, EAssetTypeActivationMethod::Type::Previewed, EAssetTypeActivationOpenedMethod::Edit);
 }
 
 bool PreviewAssetFileItems(TArrayView<const TSharedRef<const FContentBrowserAssetFileItemDataPayload>> InAssetPayloads)
 {
-	return EditOrPreviewAssetFileItems(InAssetPayloads, /*bIsPreview*/true);
+	return EditOrPreviewAssetFileItems(InAssetPayloads, EAssetTypeActivationMethod::Type::Previewed, EAssetTypeActivationOpenedMethod::Edit);
 }
 
 bool CanDuplicateItem(IAssetTools* InAssetTools, const UContentBrowserDataSource* InOwnerDataSource, const FContentBrowserItemData& InItem, FText* OutErrorMsg)
@@ -857,11 +932,11 @@ bool RenameAssetFileItem(IAssetTools* InAssetTools, const FContentBrowserAssetFi
 	if (UObject* Asset = InAssetPayload.LoadAsset({ ULevel::LoadAllExternalObjectsTag }))
 	{
 		FResultMessage Result;
-		Result.bSucceeded = true;
+		Result.bSuccess = true;
 		FEditorDelegates::OnPreDestructiveAssetAction.Broadcast({Asset}, EDestructiveAssetActions::AssetRename, Result);
-		if (!Result.WasSuccesful())
+		if (!Result.bSuccess)
 		{
-			UE_LOG(LogContentBrowserAssetDataSource, Warning, TEXT("%s"), *Result.GetErrorMessage());
+			UE_LOG(LogContentBrowserAssetDataSource, Warning, TEXT("%s"), *Result.ErrorMessage);
 			return false;
 		}
 
@@ -1028,11 +1103,11 @@ bool MoveAssetFileItems(TArrayView<const TSharedRef<const FContentBrowserAssetFi
 	}
 
 	FResultMessage Result;
-	Result.bSucceeded = true;
+	Result.bSuccess = true;
 	FEditorDelegates::OnPreDestructiveAssetAction.Broadcast(AssetsToMove, EDestructiveAssetActions::AssetMove, Result);
-	if (!Result.WasSuccesful())
+	if (!Result.bSuccess)
 	{
-		UE_LOG(LogContentBrowserAssetDataSource, Warning, TEXT("%s"), *Result.GetErrorMessage());
+		UE_LOG(LogContentBrowserAssetDataSource, Warning, TEXT("%s"), *Result.ErrorMessage);
 		return false;
 	}
 
@@ -1370,9 +1445,11 @@ bool GetAssetFileItemAttribute(const FContentBrowserAssetFileItemDataPayload& In
 
 		if (InAttributeKey == ContentBrowserItemAttributes::ItemDescription)
 		{
-			if (TSharedPtr<IAssetTypeActions> AssetTypeActions = InAssetPayload.GetAssetTypeActions())
+			if (const UAssetDefinition* AssetDefinition = InAssetPayload.GetAssetDefinition())
 			{
-				const FText AssetDescription = AssetTypeActions->GetAssetDescription(InAssetPayload.GetAssetData());
+				FWarnIfAssetsLoadedInScope WarnIfAssetLoadedInScope({ InAssetPayload.GetAssetData() });
+				
+				const FText AssetDescription = AssetDefinition->GetAssetDescription(InAssetPayload.GetAssetData());
 				if (!AssetDescription.IsEmpty())
 				{
 					OutAttributeValue.SetValue(AssetDescription);

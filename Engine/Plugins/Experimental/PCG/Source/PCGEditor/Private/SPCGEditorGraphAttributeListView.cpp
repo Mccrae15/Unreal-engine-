@@ -2,28 +2,33 @@
 
 #include "SPCGEditorGraphAttributeListView.h"
 
+#include "PCGComponent.h"
+#include "PCGEditor.h"
+#include "PCGEditorGraphNodeBase.h"
+#include "PCGParamData.h"
+#include "PCGSubsystem.h"
 #include "Data/PCGPointData.h"
 #include "Data/PCGSpatialData.h"
-#include "Metadata/PCGMetadataAttribute.h"
-#include "Metadata/PCGMetadataAttributeTpl.h"
-#include "PCGComponent.h"
-#include "PCGData.h"
-#include "PCGEditor.h"
-#include "PCGNode.h"
-#include "PCGParamData.h"
 
-#include "Styling/AppStyle.h"
-#include "Widgets/Input/SSearchBox.h"
+#include "Fonts/FontMeasure.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Widgets/Images/SLayeredImage.h"
+#include "Widgets/Input/SComboBox.h"
 #include "Widgets/Layout/SScrollBox.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/SWidget.h"
 
 #define LOCTEXT_NAMESPACE "SPCGEditorGraphAttributeListView"
+
+static TAutoConsoleVariable<bool> CVarShowAdvancedAttributesFields(
+	TEXT("pcg.graph.ShowAdvancedAttributes"),
+	false,
+	TEXT("Control whether advanced attributes/properties are shown in the PCG graph editor"));
 
 namespace PCGEditorGraphAttributeListView
 {
 	const FText NoDataAvailableText = LOCTEXT("NoDataAvailableText", "No data available");
-
+	const FText NoNodeInspectedText = LOCTEXT("NoNodeInspectedText", "No node being inspected");
+	const FText NoNodeInspectedToolTip = LOCTEXT("NoNodeInspectedToolTip", "Inspect a node using the right click menu");
+	
 	/** Names of the columns in the attribute list */
 	const FName NAME_IndexColumn = FName(TEXT("IndexColumn"));
 	const FName NAME_PointPositionX = FName(TEXT("PointPositionX"));
@@ -48,6 +53,8 @@ namespace PCGEditorGraphAttributeListView
 	const FName NAME_PointDensity = FName(TEXT("PointDensity"));
 	const FName NAME_PointSteepness = FName(TEXT("PointSteepness"));
 	const FName NAME_PointSeed = FName(TEXT("PointSeed"));
+	const FName NAME_PointMetadataEntry = FName(TEXT("PointMetadataEntry"));
+	const FName NAME_PointMetadataEntryParent = FName(TEXT("PointMetadataEntryParent"));
 
 	/** Labels of the columns */
 	const FText TEXT_IndexLabel = LOCTEXT("IndexLabel", "Index");
@@ -73,6 +80,29 @@ namespace PCGEditorGraphAttributeListView
 	const FText TEXT_PointDensityLabel = LOCTEXT("PointDensityLabel", "Density");
 	const FText TEXT_PointSteepnessLabel = LOCTEXT("PointSteepnessLabel", "Steepness");
 	const FText TEXT_PointSeedLabel = LOCTEXT("PointSeedLabel", "Seed");
+	const FText TEXT_PointMetadataEntryLabel = LOCTEXT("PointMetadataEntryLabel", "Entry Key");
+	const FText TEXT_PointMetadataEntryParentLabel = LOCTEXT("PointMetadataEntryParentLabel", "Parent Key");
+
+	constexpr float MaxColumnWidth = 200.0f;
+
+	bool IsGraphCacheDebuggingEnabled()
+	{
+		UWorld* World = GEditor ? (GEditor->PlayWorld ? GEditor->PlayWorld.Get() : GEditor->GetEditorWorldContext().World()) : nullptr;
+		UPCGSubsystem* Subsystem = UPCGSubsystem::GetInstance(World);
+		return Subsystem && Subsystem->IsGraphCacheDebuggingEnabled();
+	}
+
+	float CalculateColumnWidth(const FText& InText)
+	{
+		check(FSlateApplication::Get().GetRenderer());
+		const TSharedRef<FSlateFontMeasure> FontMeasure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
+		const FSlateFontInfo FontInfo = FAppStyle::GetFontStyle(TEXT("NormalText"));
+		
+		const float TextWidth = FontMeasure->Measure(InText, FontInfo).X;
+		constexpr float ColumnPadding = 12.0f; // TODO: Grab padding from header style
+		const float ColumnWidth = TextWidth + ColumnPadding;
+		return FMath::Min(ColumnWidth, MaxColumnWidth);
+	}
 }
 
 void SPCGListViewItemRow::Construct(const FArguments& InArgs, const TSharedRef<STableViewBase>& InOwnerTableView, const PCGListviewItemPtr& Item)
@@ -110,7 +140,10 @@ TSharedRef<SWidget> SPCGListViewItemRow::GenerateWidgetForColumn(const FName& Co
 		}
 	}
 
-	return SNew(STextBlock).Text(ColumnData);
+	return SNew(STextBlock)
+		.Text(ColumnData)
+		.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+		.Margin(FMargin(2.0f, 0.0f));
 }
 
 FText SPCGListViewItemRow::ConvertPointDataToText(const FPCGPoint* PCGPoint, const FName& ColumnId) const
@@ -217,6 +250,22 @@ FText SPCGListViewItemRow::ConvertPointDataToText(const FPCGPoint* PCGPoint, con
 	{
 		const int32 Seed = PCGPoint->Seed;
 		return FText::AsNumber(Seed);
+	}
+	else if (ColumnId == PCGEditorGraphAttributeListView::NAME_PointMetadataEntry)
+	{
+		const int64 MetadataEntryKey = PCGPoint->MetadataEntry;
+		return FText::AsNumber(MetadataEntryKey);
+	}
+	else if (ColumnId == PCGEditorGraphAttributeListView::NAME_PointMetadataEntryParent)
+	{
+		if(InternalItem->PCGMetadata)
+		{
+			return FText::AsNumber(InternalItem->PCGMetadata->GetParentKey(PCGPoint->MetadataEntry));
+		}
+		else
+		{
+			return FText::AsNumber(PCGInvalidEntryKey);
+		}
 	}
 	// None of the default point columns were caught, see if its metadata
 	else if (const UPCGMetadata* PCGMetadata = InternalItem->PCGMetadata)
@@ -393,12 +442,19 @@ void SPCGEditorGraphAttributeListView::Construct(const FArguments& InArgs, TShar
 		.Orientation(Orient_Vertical)
 		.Thickness(FVector2D(12.0f, 12.0f));
 
+	auto VisibilityTest = [this]()
+	{
+		return (ListViewItems.IsEmpty() && ListViewHeader->GetColumns().IsEmpty()) ? EVisibility::Hidden : EVisibility::Visible;
+	};
+
 	SAssignNew(ListView, SListView<PCGListviewItemPtr>)
 		.ListItemsSource(&ListViewItems)
 		.HeaderRow(ListViewHeader)
 		.OnGenerateRow(this, &SPCGEditorGraphAttributeListView::OnGenerateRow)
+		.OnMouseButtonDoubleClick(this, &SPCGEditorGraphAttributeListView::OnItemDoubleClicked)
 		.AllowOverscroll(EAllowOverscroll::No)
 		.ExternalScrollbar(VerticalScrollBar)
+		.Visibility_Lambda(VisibilityTest)
 		.ConsumeMouseWheel(EConsumeMouseWheel::Always);
 
 	SAssignNew(DataComboBox, SComboBox<TSharedPtr<FName>>)
@@ -410,13 +466,59 @@ void SPCGEditorGraphAttributeListView::Construct(const FArguments& InArgs, TShar
 			.Text(this, &SPCGEditorGraphAttributeListView::OnGenerateSelectedDataText)
 		];
 
+	TSharedPtr<SLayeredImage> FilterImage = SNew(SLayeredImage)
+		.Image(FAppStyle::Get().GetBrush("Icons.Filter"))
+		.ColorAndOpacity(FSlateColor::UseForeground());
+
+	FilterImage->AddLayer(TAttribute<const FSlateBrush*>(this, &SPCGEditorGraphAttributeListView::GetFilterBadgeIcon));
+	
+	SAssignNew(FilterButton, SComboButton)
+		.ForegroundColor(FSlateColor::UseStyle())
+		.HasDownArrow(false)
+		.OnGetMenuContent(this, &SPCGEditorGraphAttributeListView::OnGenerateFilterMenu)
+		.ContentPadding(1)
+		.ButtonContent()
+		[
+			FilterImage.ToSharedRef()
+		];
+
 	this->ChildSlot
 	[
 		SNew(SVerticalBox)
 		+SVerticalBox::Slot()
 		.AutoHeight()
+		.Padding(1.0f)
 		[
-			DataComboBox->AsShared()
+			SNew(SHorizontalBox)
+			+SHorizontalBox::Slot()
+			.AutoWidth()
+			[
+				FilterButton->AsShared()
+			]
+			+SHorizontalBox::Slot()
+			.AutoWidth()
+			[
+				DataComboBox->AsShared()
+			]
+			+SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(EVerticalAlignment::VAlign_Center)
+			.Padding(4.0f, 0.0f)
+			[
+				SAssignNew(NodeNameTextBlock, STextBlock)
+				.Text(PCGEditorGraphAttributeListView::NoNodeInspectedText)
+				.ToolTipText(PCGEditorGraphAttributeListView::NoNodeInspectedToolTip)
+			]
+			+ SHorizontalBox::Slot()
+			.FillWidth(1.0f)
+			+SHorizontalBox::Slot()
+			.AutoWidth()
+			.HAlign(EHorizontalAlignment::HAlign_Right)
+			.VAlign(EVerticalAlignment::VAlign_Center)
+			.Padding(4.0f, 0.0f)
+			[
+				SAssignNew(InfoTextBlock, STextBlock)
+			]
 		]
 		+SVerticalBox::Slot()
 		.FillHeight(1.0f)
@@ -453,14 +555,12 @@ void SPCGEditorGraphAttributeListView::Construct(const FArguments& InArgs, TShar
 
 TSharedRef<SHeaderRow> SPCGEditorGraphAttributeListView::CreateHeaderRowWidget() const
 {
-	return SNew(SHeaderRow)
-			.ResizeMode(ESplitterResizeMode::FixedPosition)
-			.CanSelectGeneratedColumn(true);
+	return SNew(SHeaderRow);
 }
 
 void SPCGEditorGraphAttributeListView::OnDebugObjectChanged(UPCGComponent* InPCGComponent)
 {
-	if (PCGComponent)
+	if (PCGComponent.IsValid())
 	{
 		PCGComponent->OnPCGGraphGeneratedDelegate.RemoveAll(this);
 		PCGComponent->OnPCGGraphCleanedDelegate.RemoveAll(this);
@@ -469,7 +569,7 @@ void SPCGEditorGraphAttributeListView::OnDebugObjectChanged(UPCGComponent* InPCG
 
 	PCGComponent = InPCGComponent;
 
-	if (PCGComponent)
+	if (PCGComponent.IsValid())
 	{
 		PCGComponent->EnableInspection();
 		PCGComponent->OnPCGGraphGeneratedDelegate.AddSP(this, &SPCGEditorGraphAttributeListView::OnGenerateUpdated);
@@ -482,8 +582,26 @@ void SPCGEditorGraphAttributeListView::OnDebugObjectChanged(UPCGComponent* InPCG
 	}
 }
 
-void SPCGEditorGraphAttributeListView::OnInspectedNodeChanged(UPCGNode* /*InPCGNode*/)
+void SPCGEditorGraphAttributeListView::OnInspectedNodeChanged(UPCGEditorGraphNodeBase* InPCGEditorGraphNode)
 {
+	if (PCGEditorGraphNode == InPCGEditorGraphNode)
+	{
+		return;
+	}
+	
+	PCGEditorGraphNode = InPCGEditorGraphNode;
+	
+	if (PCGEditorGraphNode.IsValid())
+	{
+		NodeNameTextBlock->SetText(PCGEditorGraphNode->GetNodeTitle(ENodeTitleType::FullTitle));
+		NodeNameTextBlock->SetToolTipText(PCGEditorGraphNode->GetTooltipText());
+	}
+	else
+	{
+		NodeNameTextBlock->SetText(PCGEditorGraphAttributeListView::NoNodeInspectedText);
+		NodeNameTextBlock->SetToolTipText(PCGEditorGraphAttributeListView::NoNodeInspectedToolTip);
+	}
+	
 	RefreshDataComboBox();
 	RefreshAttributeList();
 }
@@ -496,26 +614,28 @@ void SPCGEditorGraphAttributeListView::OnGenerateUpdated(UPCGComponent* /*InPCGC
 
 void SPCGEditorGraphAttributeListView::RefreshAttributeList()
 {
+	HiddenAttributes = ListViewHeader->GetHiddenColumnIds();
+	
 	// Swapping to an empty item list to force a widget clear, otherwise the widgets will try to update during add column and access invalid data
 	static const TArray<PCGListviewItemPtr> EmptyList;
-	ListView->SetListItemsSource(EmptyList);
+	ListView->SetItemsSource(&EmptyList);
 	
 	ListViewItems.Empty();
 	ListViewHeader->ClearColumns();
 	MetadataInfos.Empty();
-
-	const TSharedPtr<FPCGEditor> PCGEditor = PCGEditorPtr.Pin();
-	if (!PCGEditor.IsValid())
+	InfoTextBlock->SetText(FText::GetEmpty());
+	
+	if (!PCGComponent.IsValid())
 	{
 		return;
 	}
 
-	if (!PCGComponent)
+	if (!PCGEditorGraphNode.IsValid())
 	{
 		return;
 	}
 
-	const UPCGNode* PCGNode = PCGEditor->GetPCGNodeBeingInspected();
+	const UPCGNode* PCGNode = PCGEditorGraphNode->GetPCGNode();
 	if (!PCGNode)
 	{
 		return;
@@ -555,6 +675,16 @@ void SPCGEditorGraphAttributeListView::RefreshAttributeList()
 				ListViewItem->MetadataInfos = &MetadataInfos;
 				ListViewItems.Add(ListViewItem);
 			}
+
+			if (!PCGEditorGraphAttributeListView::IsGraphCacheDebuggingEnabled())
+			{
+				InfoTextBlock->SetText(FText::Format(LOCTEXT("MetadataInfoTextBlockFmt", "Number of metadata: {0}"), ItemKeyUpperBound - ItemKeyLowerBound));
+			}
+			else
+			{
+				// If cache debugging enabled, write CRC to help diagnose missed-dependency issues
+				InfoTextBlock->SetText(FText::Format(LOCTEXT("MetadataInfoTextBlockWithCrcFmt", "Number of metadata: {0}  CRC: {1}"), ItemKeyUpperBound - ItemKeyLowerBound, InspectionData->Crc.GetValue()));
+			}
 		}
 	}
 	else if (const UPCGSpatialData* PCGSpatialData = Cast<const UPCGSpatialData>(PCGData))
@@ -567,8 +697,9 @@ void SPCGEditorGraphAttributeListView::RefreshAttributeList()
 			GenerateColumnsFromMetadata(PCGMetadata);
 
 			const TArray<FPCGPoint>& PCGPoints = PCGPointData->GetPoints();
-			ListViewItems.Reserve(PCGPoints.Num());
-			for (int32 PointIndex = 0; PointIndex < PCGPoints.Num(); PointIndex++)
+			const int32 NumPoints = PCGPoints.Num();
+			ListViewItems.Reserve(NumPoints);
+			for (int32 PointIndex = 0; PointIndex < NumPoints; PointIndex++)
 			{
 				const FPCGPoint& PCGPoint = PCGPoints[PointIndex];
 				// TODO: Investigate swapping out the shared ptr's for better performance on huge data sets
@@ -580,10 +711,20 @@ void SPCGEditorGraphAttributeListView::RefreshAttributeList()
 				ListViewItem->MetadataInfos = &MetadataInfos;
 				ListViewItems.Add(ListViewItem);
 			}
+			
+			if (!PCGEditorGraphAttributeListView::IsGraphCacheDebuggingEnabled())
+			{
+				InfoTextBlock->SetText(FText::Format(LOCTEXT("PointInfoTextBlockFmt", "Number of points: {0}"), NumPoints));
+			}
+			else
+			{
+				// If cache debugging enabled, write CRC to help diagnose missed-dependency issues
+				InfoTextBlock->SetText(FText::Format(LOCTEXT("PointInfoTextBlockWithCrcFmt", "Number of points: {0}, CRC: {1}"), NumPoints, InspectionData->Crc.GetValue()));
+			}
 		}
 	}
 
-	ListView->SetListItemsSource(ListViewItems);
+	ListView->SetItemsSource(&ListViewItems);
 }
 
 void SPCGEditorGraphAttributeListView::RefreshDataComboBox()
@@ -592,18 +733,17 @@ void SPCGEditorGraphAttributeListView::RefreshDataComboBox()
 	DataComboBox->ClearSelection();
 	DataComboBox->RefreshOptions();
 
-	if (!PCGComponent)
+	if (!PCGComponent.IsValid())
 	{
 		return;
 	}
 
-	const TSharedPtr<FPCGEditor> PCGEditor = PCGEditorPtr.Pin();
-	if (!PCGEditor.IsValid())
+	if (!PCGEditorGraphNode.IsValid())
 	{
 		return;
 	}
 
-	const UPCGNode* PCGNode = PCGEditor->GetPCGNodeBeingInspected();
+	const UPCGNode* PCGNode = PCGEditorGraphNode->GetPCGNode();
 	if (!PCGNode)
 	{
 		return;
@@ -615,15 +755,77 @@ void SPCGEditorGraphAttributeListView::RefreshDataComboBox()
 		return;
 	}
 
-	for (const FPCGTaggedData& TaggedData : InspectionData->TaggedData)
+	for(int32 TaggedDataIndex = 0; TaggedDataIndex < InspectionData->TaggedData.Num(); ++TaggedDataIndex)
 	{
-		DataComboBoxItems.Add(MakeShared<FName>(TaggedData.Pin));
+		const FPCGTaggedData& TaggedData = InspectionData->TaggedData[TaggedDataIndex];
+		FString ItemName = FString::Format(TEXT("[{0}] {1} - {2}"),
+			{ FText::AsNumber(TaggedDataIndex).ToString(), TaggedData.Pin.ToString(), (TaggedData.Data ? TaggedData.Data->GetClass()->GetDisplayNameText().ToString(): TEXT("No Data")) });
+
+		if (!TaggedData.Tags.IsEmpty())
+		{
+			ItemName.Append(FString::Format(TEXT(": ({0})"), { FString::Join(TaggedData.Tags, TEXT(", ")) }));
+		}
+
+		DataComboBoxItems.Add(MakeShared<FName>(ItemName));
 	}
 
 	if (DataComboBoxItems.Num() > 0)
 	{
 		DataComboBox->SetSelectedItem(DataComboBoxItems[0]);
 	}
+}
+
+const FSlateBrush* SPCGEditorGraphAttributeListView::GetFilterBadgeIcon() const
+{
+	for (const SHeaderRow::FColumn& Column : ListViewHeader->GetColumns())
+	{
+		if (!Column.bIsVisible)
+		{
+			return FAppStyle::Get().GetBrush("Icons.BadgeModified"); 
+		}
+	}
+
+	return nullptr;
+}
+
+TSharedRef<SWidget> SPCGEditorGraphAttributeListView::OnGenerateFilterMenu()
+{
+	FMenuBuilder MenuBuilder(false, nullptr);
+
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("ToggleAllAttributes", "Toggle All"),
+		LOCTEXT("ToggleAllAttributesTooltip", "Toggle visibility for all attributes"),
+		FSlateIcon(),
+		FUIAction(FExecuteAction::CreateSP(this, &SPCGEditorGraphAttributeListView::ToggleAllAttributes),
+			FCanExecuteAction(),
+			FGetActionCheckState::CreateSP(this, &SPCGEditorGraphAttributeListView::GetAnyAttributeEnabledState)),
+		NAME_None,
+		EUserInterfaceActionType::ToggleButton);
+
+	MenuBuilder.AddSeparator();
+	
+	const TIndirectArray<SHeaderRow::FColumn>& Columns = ListViewHeader->GetColumns();
+	TArray<FName> HiddenColumns = ListViewHeader->GetHiddenColumnIds();
+
+	for (const SHeaderRow::FColumn& Column : Columns)
+	{
+		if (Column.ColumnId == PCGEditorGraphAttributeListView::NAME_IndexColumn)
+		{
+			continue;
+		}
+
+		MenuBuilder.AddMenuEntry(
+			Column.DefaultText,
+			Column.DefaultTooltip,
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateSP(this, &SPCGEditorGraphAttributeListView::ToggleAttribute, Column.ColumnId),
+				FCanExecuteAction(),
+				FIsActionChecked::CreateSP(this, &SPCGEditorGraphAttributeListView::IsAttributeEnabled, Column.ColumnId)),
+			NAME_None,
+			EUserInterfaceActionType::ToggleButton);
+	}
+	
+	return MenuBuilder.MakeWidget();
 }
 
 TSharedRef<SWidget> SPCGEditorGraphAttributeListView::OnGenerateDataWidget(TSharedPtr<FName> InItem) const
@@ -671,15 +873,16 @@ void SPCGEditorGraphAttributeListView::GenerateColumnsFromMetadata(const UPCGMet
 	for (int32 I = 0; I < AttributeNames.Num(); I++)
 	{
 		const FName& AttributeName = AttributeNames[I];
+		const EPCGMetadataTypes AttributeType = AttributeTypes[I];
 		FName ColumnName = AttributeName;
 
 		if (ColumnName == NAME_None)
 		{
-			const FString TypeString = UEnum::GetDisplayValueAsText(AttributeTypes[I]).ToString();
+			const FString TypeString = UEnum::GetDisplayValueAsText(AttributeType).ToString();
 			ColumnName = *TypeString;
 		}
 
-		switch (AttributeTypes[I])
+		switch (AttributeType)
 		{
 		case EPCGMetadataTypes::Float:
 		case EPCGMetadataTypes::Double:
@@ -689,42 +892,42 @@ void SPCGEditorGraphAttributeListView::GenerateColumnsFromMetadata(const UPCGMet
 		case EPCGMetadataTypes::String:
 		case EPCGMetadataTypes::Name:
 			{
-				AddMetadataColumn(ColumnName, AttributeName);
+				AddMetadataColumn(ColumnName, AttributeName, AttributeType);
 				break;
 			}
 		case EPCGMetadataTypes::Vector2:
 		{
-			AddMetadataColumn(ColumnName, AttributeName, 0, TEXT("_X"));
-			AddMetadataColumn(ColumnName, AttributeName, 1, TEXT("_Y"));
+			AddMetadataColumn(ColumnName, AttributeName, AttributeType, 0, TEXT("_X"));
+			AddMetadataColumn(ColumnName, AttributeName, AttributeType, 1, TEXT("_Y"));
 			break;
 		}
 		case EPCGMetadataTypes::Vector:
 			{
-				AddMetadataColumn(ColumnName, AttributeName, 0, TEXT("_X"));
-				AddMetadataColumn(ColumnName, AttributeName, 1, TEXT("_Y"));
-				AddMetadataColumn(ColumnName, AttributeName, 2, TEXT("_Z"));
+				AddMetadataColumn(ColumnName, AttributeName, AttributeType, 0, TEXT("_X"));
+				AddMetadataColumn(ColumnName, AttributeName, AttributeType, 1, TEXT("_Y"));
+				AddMetadataColumn(ColumnName, AttributeName, AttributeType, 2, TEXT("_Z"));
 				break;
 			}
 		case EPCGMetadataTypes::Vector4:
 		case EPCGMetadataTypes::Quaternion:
 			{
-				AddMetadataColumn(ColumnName, AttributeName, 0, TEXT("_X"));
-				AddMetadataColumn(ColumnName, AttributeName, 1, TEXT("_Y"));
-				AddMetadataColumn(ColumnName, AttributeName, 2, TEXT("_Z"));
-				AddMetadataColumn(ColumnName, AttributeName, 3, TEXT("_W"));
+				AddMetadataColumn(ColumnName, AttributeName, AttributeType, 0, TEXT("_X"));
+				AddMetadataColumn(ColumnName, AttributeName, AttributeType, 1, TEXT("_Y"));
+				AddMetadataColumn(ColumnName, AttributeName, AttributeType, 2, TEXT("_Z"));
+				AddMetadataColumn(ColumnName, AttributeName, AttributeType, 3, TEXT("_W"));
 				break;
 			}
 		case EPCGMetadataTypes::Transform:
 			{
-				AddMetadataColumn(ColumnName, AttributeName, 0, TEXT("_tX"));
-				AddMetadataColumn(ColumnName, AttributeName, 1, TEXT("_tY"));
-				AddMetadataColumn(ColumnName, AttributeName, 2, TEXT("_tZ"));
-				AddMetadataColumn(ColumnName, AttributeName, 3, TEXT("_rX"));
-				AddMetadataColumn(ColumnName, AttributeName, 4, TEXT("_rY"));
-				AddMetadataColumn(ColumnName, AttributeName, 5, TEXT("_rZ"));
-				AddMetadataColumn(ColumnName, AttributeName, 6, TEXT("_sX"));
-				AddMetadataColumn(ColumnName, AttributeName, 7, TEXT("_sY"));
-				AddMetadataColumn(ColumnName, AttributeName, 8, TEXT("_sZ"));
+				AddMetadataColumn(ColumnName, AttributeName, AttributeType, 0, TEXT("_tX"));
+				AddMetadataColumn(ColumnName, AttributeName, AttributeType, 1, TEXT("_tY"));
+				AddMetadataColumn(ColumnName, AttributeName, AttributeType, 2, TEXT("_tZ"));
+				AddMetadataColumn(ColumnName, AttributeName, AttributeType, 3, TEXT("_rX"));
+				AddMetadataColumn(ColumnName, AttributeName, AttributeType, 4, TEXT("_rY"));
+				AddMetadataColumn(ColumnName, AttributeName, AttributeType, 5, TEXT("_rZ"));
+				AddMetadataColumn(ColumnName, AttributeName, AttributeType, 6, TEXT("_sX"));
+				AddMetadataColumn(ColumnName, AttributeName, AttributeType, 7, TEXT("_sY"));
+				AddMetadataColumn(ColumnName, AttributeName, AttributeType, 8, TEXT("_sZ"));
 				break;
 			}
 		default:
@@ -733,30 +936,109 @@ void SPCGEditorGraphAttributeListView::GenerateColumnsFromMetadata(const UPCGMet
 	}
 }
 
+void SPCGEditorGraphAttributeListView::ToggleAllAttributes()
+{
+	const TArray<FName> HiddenColumns = ListViewHeader->GetHiddenColumnIds();
+	if (HiddenColumns.Num() > 0)
+	{
+		for (const FName& HiddenColumn : HiddenColumns)
+		{
+			ListViewHeader->SetShowGeneratedColumn(HiddenColumn, /*InShow=*/true);
+		}
+	}
+	else
+	{
+		const TIndirectArray<SHeaderRow::FColumn>& Columns = ListViewHeader->GetColumns();
+		for (const SHeaderRow::FColumn& Column : Columns)
+		{
+			if (Column.ColumnId != PCGEditorGraphAttributeListView::NAME_IndexColumn)
+			{
+				ListViewHeader->SetShowGeneratedColumn(Column.ColumnId, /*InShow=*/false);
+			}
+		}
+	}
+}
+
+void SPCGEditorGraphAttributeListView::ToggleAttribute(FName InAttributeName)
+{
+	ListViewHeader->SetShowGeneratedColumn(InAttributeName, !ListViewHeader->IsColumnVisible(InAttributeName));
+}
+
+ECheckBoxState SPCGEditorGraphAttributeListView::GetAnyAttributeEnabledState() const
+{
+	bool bAllEnabled = true;
+	bool bAnyEnabled = false;
+	
+	for (const SHeaderRow::FColumn& Column : ListViewHeader->GetColumns())
+	{
+		if (Column.ColumnId == PCGEditorGraphAttributeListView::NAME_IndexColumn)
+		{
+			continue;
+		}
+
+		bAllEnabled &= Column.bIsVisible;
+		bAnyEnabled |= Column.bIsVisible;
+	}
+
+	if (bAllEnabled)
+	{
+		return ECheckBoxState::Checked;
+	}
+	else if (bAnyEnabled)
+	{
+		return ECheckBoxState::Undetermined; 
+	}
+	else
+	{
+		return ECheckBoxState::Unchecked;
+	}
+}
+
+bool SPCGEditorGraphAttributeListView::IsAttributeEnabled(FName InAttributeName) const
+{
+	return ListViewHeader->IsColumnVisible(InAttributeName);
+}
+
 TSharedRef<ITableRow> SPCGEditorGraphAttributeListView::OnGenerateRow(PCGListviewItemPtr Item, const TSharedRef<STableViewBase>& OwnerTable) const
 {
 	return SNew(SPCGListViewItemRow, OwnerTable, Item);
 }
 
-void SPCGEditorGraphAttributeListView::AddColumn(const FName& InColumnID, const FText& ColumnLabel, float ColumnWidth, EHorizontalAlignment HeaderHAlign, EHorizontalAlignment CellHAlign)
+void SPCGEditorGraphAttributeListView::OnItemDoubleClicked(PCGListviewItemPtr Item) const
 {
+	check(Item);
+
+	if (const FPCGPoint* Point = Item->PCGPoint)
+	{
+		const FBox BoundingBox = Point->GetLocalBounds().TransformBy(Point->Transform.ToMatrixWithScale());
+		GEditor->MoveViewportCamerasToBox(BoundingBox, true, 2.5f);	
+	}
+}
+
+void SPCGEditorGraphAttributeListView::AddColumn(const FName& InColumnId, const FText& ColumnLabel, EHorizontalAlignment HeaderHAlign, EHorizontalAlignment CellHAlign)
+{
+	const float ColumnWidth = PCGEditorGraphAttributeListView::CalculateColumnWidth(ColumnLabel);
+
 	SHeaderRow::FColumn::FArguments Arguments;
-	Arguments.ColumnId(InColumnID);
+	Arguments.ColumnId(InColumnId);
 	Arguments.DefaultLabel(ColumnLabel);
 	Arguments.ManualWidth(ColumnWidth);
 	Arguments.HAlignHeader(HeaderHAlign);
 	Arguments.HAlignCell(CellHAlign);
-	ListViewHeader->AddColumn(Arguments);
+
+	SHeaderRow::FColumn* NewColumn = new SHeaderRow::FColumn(Arguments);
+	NewColumn->bIsVisible = !HiddenAttributes.Contains(InColumnId); 
+	ListViewHeader->AddColumn(*NewColumn);
 }
 
-void SPCGEditorGraphAttributeListView::RemoveColumn(const FName& InColumnID)
+void SPCGEditorGraphAttributeListView::RemoveColumn(const FName& InColumnId)
 {
-	ListViewHeader->RemoveColumn(InColumnID);
+	ListViewHeader->RemoveColumn(InColumnId);
 }
 
 void SPCGEditorGraphAttributeListView::AddIndexColumn()
 {
-	AddColumn(PCGEditorGraphAttributeListView::NAME_IndexColumn, PCGEditorGraphAttributeListView::TEXT_IndexLabel, 44);
+	AddColumn(PCGEditorGraphAttributeListView::NAME_IndexColumn, PCGEditorGraphAttributeListView::TEXT_IndexLabel);
 }
 
 void SPCGEditorGraphAttributeListView::RemoveIndexColumn()
@@ -767,28 +1049,34 @@ void SPCGEditorGraphAttributeListView::RemoveIndexColumn()
 void SPCGEditorGraphAttributeListView::AddPointDataColumns()
 {
 	AddIndexColumn();
-	AddColumn(PCGEditorGraphAttributeListView::NAME_PointPositionX, PCGEditorGraphAttributeListView::TEXT_PointPositionLabelX, 94);
-	AddColumn(PCGEditorGraphAttributeListView::NAME_PointPositionY, PCGEditorGraphAttributeListView::TEXT_PointPositionLabelY, 94);
-	AddColumn(PCGEditorGraphAttributeListView::NAME_PointPositionZ, PCGEditorGraphAttributeListView::TEXT_PointPositionLabelZ, 94);
-	AddColumn(PCGEditorGraphAttributeListView::NAME_PointRotationX, PCGEditorGraphAttributeListView::TEXT_PointRotationLabelX, 68);
-	AddColumn(PCGEditorGraphAttributeListView::NAME_PointRotationY, PCGEditorGraphAttributeListView::TEXT_PointRotationLabelY, 68);
-	AddColumn(PCGEditorGraphAttributeListView::NAME_PointRotationZ, PCGEditorGraphAttributeListView::TEXT_PointRotationLabelZ, 68);
-	AddColumn(PCGEditorGraphAttributeListView::NAME_PointScaleX, PCGEditorGraphAttributeListView::TEXT_PointScaleLabelX, 50);
-	AddColumn(PCGEditorGraphAttributeListView::NAME_PointScaleY, PCGEditorGraphAttributeListView::TEXT_PointScaleLabelY, 50);
-	AddColumn(PCGEditorGraphAttributeListView::NAME_PointScaleZ, PCGEditorGraphAttributeListView::TEXT_PointScaleLabelZ, 50);
-	AddColumn(PCGEditorGraphAttributeListView::NAME_PointBoundsMinX, PCGEditorGraphAttributeListView::TEXT_PointBoundsLabelMinX, 80);
-	AddColumn(PCGEditorGraphAttributeListView::NAME_PointBoundsMinY, PCGEditorGraphAttributeListView::TEXT_PointBoundsLabelMinY, 80);
-	AddColumn(PCGEditorGraphAttributeListView::NAME_PointBoundsMinZ, PCGEditorGraphAttributeListView::TEXT_PointBoundsLabelMinZ, 80);
-	AddColumn(PCGEditorGraphAttributeListView::NAME_PointBoundsMaxX, PCGEditorGraphAttributeListView::TEXT_PointBoundsLabelMaxX, 88);
-	AddColumn(PCGEditorGraphAttributeListView::NAME_PointBoundsMaxY, PCGEditorGraphAttributeListView::TEXT_PointBoundsLabelMaxY, 88);
-	AddColumn(PCGEditorGraphAttributeListView::NAME_PointBoundsMaxZ, PCGEditorGraphAttributeListView::TEXT_PointBoundsLabelMaxZ, 88);
-	AddColumn(PCGEditorGraphAttributeListView::NAME_PointColorR, PCGEditorGraphAttributeListView::TEXT_PointColorLabelR, 50);
-	AddColumn(PCGEditorGraphAttributeListView::NAME_PointColorG, PCGEditorGraphAttributeListView::TEXT_PointColorLabelG, 50);
-	AddColumn(PCGEditorGraphAttributeListView::NAME_PointColorB, PCGEditorGraphAttributeListView::TEXT_PointColorLabelB, 50);
-	AddColumn(PCGEditorGraphAttributeListView::NAME_PointColorA, PCGEditorGraphAttributeListView::TEXT_PointColorLabelA, 50);
-	AddColumn(PCGEditorGraphAttributeListView::NAME_PointDensity, PCGEditorGraphAttributeListView::TEXT_PointDensityLabel, 54);
-	AddColumn(PCGEditorGraphAttributeListView::NAME_PointSteepness, PCGEditorGraphAttributeListView::TEXT_PointSteepnessLabel, 73);
-	AddColumn(PCGEditorGraphAttributeListView::NAME_PointSeed, PCGEditorGraphAttributeListView::TEXT_PointSeedLabel, 88);
+	AddColumn(PCGEditorGraphAttributeListView::NAME_PointPositionX, PCGEditorGraphAttributeListView::TEXT_PointPositionLabelX);
+	AddColumn(PCGEditorGraphAttributeListView::NAME_PointPositionY, PCGEditorGraphAttributeListView::TEXT_PointPositionLabelY);
+	AddColumn(PCGEditorGraphAttributeListView::NAME_PointPositionZ, PCGEditorGraphAttributeListView::TEXT_PointPositionLabelZ);
+	AddColumn(PCGEditorGraphAttributeListView::NAME_PointRotationX, PCGEditorGraphAttributeListView::TEXT_PointRotationLabelX);
+	AddColumn(PCGEditorGraphAttributeListView::NAME_PointRotationY, PCGEditorGraphAttributeListView::TEXT_PointRotationLabelY);
+	AddColumn(PCGEditorGraphAttributeListView::NAME_PointRotationZ, PCGEditorGraphAttributeListView::TEXT_PointRotationLabelZ);
+	AddColumn(PCGEditorGraphAttributeListView::NAME_PointScaleX, PCGEditorGraphAttributeListView::TEXT_PointScaleLabelX);
+	AddColumn(PCGEditorGraphAttributeListView::NAME_PointScaleY, PCGEditorGraphAttributeListView::TEXT_PointScaleLabelY);
+	AddColumn(PCGEditorGraphAttributeListView::NAME_PointScaleZ, PCGEditorGraphAttributeListView::TEXT_PointScaleLabelZ);
+	AddColumn(PCGEditorGraphAttributeListView::NAME_PointBoundsMinX, PCGEditorGraphAttributeListView::TEXT_PointBoundsLabelMinX);
+	AddColumn(PCGEditorGraphAttributeListView::NAME_PointBoundsMinY, PCGEditorGraphAttributeListView::TEXT_PointBoundsLabelMinY);
+	AddColumn(PCGEditorGraphAttributeListView::NAME_PointBoundsMinZ, PCGEditorGraphAttributeListView::TEXT_PointBoundsLabelMinZ);
+	AddColumn(PCGEditorGraphAttributeListView::NAME_PointBoundsMaxX, PCGEditorGraphAttributeListView::TEXT_PointBoundsLabelMaxX);
+	AddColumn(PCGEditorGraphAttributeListView::NAME_PointBoundsMaxY, PCGEditorGraphAttributeListView::TEXT_PointBoundsLabelMaxY);
+	AddColumn(PCGEditorGraphAttributeListView::NAME_PointBoundsMaxZ, PCGEditorGraphAttributeListView::TEXT_PointBoundsLabelMaxZ);
+	AddColumn(PCGEditorGraphAttributeListView::NAME_PointColorR, PCGEditorGraphAttributeListView::TEXT_PointColorLabelR);
+	AddColumn(PCGEditorGraphAttributeListView::NAME_PointColorG, PCGEditorGraphAttributeListView::TEXT_PointColorLabelG);
+	AddColumn(PCGEditorGraphAttributeListView::NAME_PointColorB, PCGEditorGraphAttributeListView::TEXT_PointColorLabelB);
+	AddColumn(PCGEditorGraphAttributeListView::NAME_PointColorA, PCGEditorGraphAttributeListView::TEXT_PointColorLabelA);
+	AddColumn(PCGEditorGraphAttributeListView::NAME_PointDensity, PCGEditorGraphAttributeListView::TEXT_PointDensityLabel);
+	AddColumn(PCGEditorGraphAttributeListView::NAME_PointSteepness, PCGEditorGraphAttributeListView::TEXT_PointSteepnessLabel);
+	AddColumn(PCGEditorGraphAttributeListView::NAME_PointSeed, PCGEditorGraphAttributeListView::TEXT_PointSeedLabel);
+
+	if (CVarShowAdvancedAttributesFields.GetValueOnAnyThread())
+	{
+		AddColumn(PCGEditorGraphAttributeListView::NAME_PointMetadataEntry, PCGEditorGraphAttributeListView::TEXT_PointMetadataEntryLabel);
+		AddColumn(PCGEditorGraphAttributeListView::NAME_PointMetadataEntryParent, PCGEditorGraphAttributeListView::TEXT_PointMetadataEntryParentLabel);
+	}	
 }
 
 void SPCGEditorGraphAttributeListView::RemovePointDataColumns()
@@ -816,9 +1104,12 @@ void SPCGEditorGraphAttributeListView::RemovePointDataColumns()
 	RemoveColumn(PCGEditorGraphAttributeListView::NAME_PointDensity);
 	RemoveColumn(PCGEditorGraphAttributeListView::NAME_PointSteepness);
 	RemoveColumn(PCGEditorGraphAttributeListView::NAME_PointSeed);
+
+	RemoveColumn(PCGEditorGraphAttributeListView::NAME_PointMetadataEntry);
+	RemoveColumn(PCGEditorGraphAttributeListView::NAME_PointMetadataEntryParent);
 }
 
-void SPCGEditorGraphAttributeListView::AddMetadataColumn(const FName& InColumnId, const FName& InMetadataId, const int8 InValueIndex, const TCHAR* PostFix)
+void SPCGEditorGraphAttributeListView::AddMetadataColumn(const FName& InColumnId, const FName& InMetadataId, EPCGMetadataTypes InMetadataType, const int8 InValueIndex, const TCHAR* PostFix)
 {
 	FString ColumnIdString = InColumnId.ToString();
 
@@ -834,13 +1125,31 @@ void SPCGEditorGraphAttributeListView::AddMetadataColumn(const FName& InColumnId
 	MetadataInfo.Index = InValueIndex;
 	MetadataInfos.Add(ColumnId, MetadataInfo);
 
+	const FText ColumnLabel = FText::FromName(ColumnId);
+	float ColumnWidth = 0.0f;
+
+	EHorizontalAlignment CellAlignment = EHorizontalAlignment::HAlign_Right;
+
+	if (InMetadataType == EPCGMetadataTypes::String)
+	{
+		ColumnWidth = PCGEditorGraphAttributeListView::MaxColumnWidth;
+		CellAlignment = EHorizontalAlignment::HAlign_Left;
+	}
+	else
+	{
+		ColumnWidth = PCGEditorGraphAttributeListView::CalculateColumnWidth(ColumnLabel);
+	}
+
 	SHeaderRow::FColumn::FArguments ColumnArguments;
 	ColumnArguments.ColumnId(ColumnId);
-	ColumnArguments.DefaultLabel(FText::FromName(ColumnId));
+	ColumnArguments.DefaultLabel(ColumnLabel);
 	ColumnArguments.HAlignHeader(EHorizontalAlignment::HAlign_Center);
-	ColumnArguments.HAlignCell(EHorizontalAlignment::HAlign_Right);
-	ColumnArguments.FillWidth(1.0f);
-	ListViewHeader->AddColumn(ColumnArguments);
+	ColumnArguments.HAlignCell(CellAlignment);
+	ColumnArguments.ManualWidth(ColumnWidth);
+
+	SHeaderRow::FColumn* NewColumn = new SHeaderRow::FColumn(ColumnArguments);
+	NewColumn->bIsVisible = !HiddenAttributes.Contains(InColumnId);
+	ListViewHeader->AddColumn(*NewColumn);
 }
 
 void SPCGEditorGraphAttributeListView::RemoveMetadataColumns()

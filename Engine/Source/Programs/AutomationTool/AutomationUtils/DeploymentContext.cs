@@ -496,7 +496,7 @@ public class DeploymentContext //: ProjectParams
 
 		RelativeProjectRootForStage = new StagedDirectoryReference(ShortProjectName);
 
-		ProjectArgForCommandLines = CommandUtils.MakePathSafeToUseWithCommandLine(RawProjectPath.FullName);
+		ProjectArgForCommandLines = string.Format("-project={0}", CommandUtils.MakePathSafeToUseWithCommandLine(RawProjectPath.FullName));
 		CookSourceRuntimeRootDir = RuntimeRootDir = LocalRoot;
 		RuntimeProjectRootDir = ProjectRoot;
 
@@ -529,7 +529,7 @@ public class DeploymentContext //: ProjectParams
 			RuntimeRootDir = StageDirectory;
 			CookSourceRuntimeRootDir = DirectoryReference.Combine(BaseStageDirectory, CookPlatform);
 			RuntimeProjectRootDir = DirectoryReference.Combine(StageDirectory, RelativeProjectRootForStage.Name);
-			ProjectArgForCommandLines = CommandUtils.MakePathSafeToUseWithCommandLine(UProjectCommandLineArgInternalRoot + RelativeProjectRootForStage.Name + "/" + ShortProjectName + ".uproject");
+			ProjectArgForCommandLines = string.Format("-project={0}", CommandUtils.MakePathSafeToUseWithCommandLine(UProjectCommandLineArgInternalRoot + RelativeProjectRootForStage.Name + "/" + ShortProjectName + ".uproject"));
 		}
 		if (Archive)
 		{
@@ -714,6 +714,12 @@ public class DeploymentContext //: ProjectParams
 	/// <param name="Files">List to receive the enumerated files</param>
 	private void FindFilesToStageInternal(DirectoryReference BaseDir, string Pattern, StageFilesSearch Option, List<FileReference> Files)
 	{
+		// if the directory doesn't exist, this will crash in EnumerateFiles
+		if (!DirectoryReference.Exists(BaseDir))
+		{
+			return;
+		}	
+
 		// Enumerate all the files in this directory
 		Files.AddRange(DirectoryReference.EnumerateFiles(BaseDir, Pattern));
 

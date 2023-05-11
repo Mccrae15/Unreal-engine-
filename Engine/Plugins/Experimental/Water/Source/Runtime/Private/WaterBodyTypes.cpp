@@ -1,12 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WaterBodyTypes.h"
-#include "LandscapeHeightfieldCollisionComponent.h"
+#include "Engine/World.h"
 #include "LandscapeInfo.h"
 #include "LandscapeProxy.h"
-#include "WaterBodyActor.h"
+#include "WaterBodyComponent.h"
 #include "WaterSplineComponent.h"
-#include "WaterSubsystem.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(WaterBodyTypes)
 

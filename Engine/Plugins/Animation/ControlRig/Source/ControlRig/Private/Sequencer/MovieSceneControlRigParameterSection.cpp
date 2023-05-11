@@ -4,6 +4,7 @@
 
 #include "ConstraintsManager.h"
 #include "Animation/AnimSequence.h"
+#include "Engine/SkeletalMesh.h"
 #include "Logging/MessageLog.h"
 #include "Compilation/MovieSceneTemplateInterrogation.h"
 #include "MovieScene.h"
@@ -974,9 +975,28 @@ void UMovieSceneControlRigParameterSection::SetBlendType(EMovieSceneBlendType In
 void UMovieSceneControlRigParameterSection::Serialize(FArchive& Ar)
 {
 	Super::Serialize(Ar);
-
 }
- 
+#if WITH_EDITOR
+void UMovieSceneControlRigParameterSection::PostDuplicate(bool bDuplicateForPIE)
+{
+	Super::PostDuplicate(bDuplicateForPIE);
+	//if not duplicating for PIE clear out the soft object ptrs to the constraints we dont' want to hold pointers to the old constraints.
+	//also make the copy to spawn so we can duplicate it if it doesn't exist in the level
+	//to the old ones but make new duplicates
+	if (bDuplicateForPIE == false)
+	{
+		for (FConstraintAndActiveChannel& ConstraintChannel : ConstraintsChannels)
+		{
+			if (ConstraintChannel.Constraint.IsValid() && !ConstraintChannel.ConstraintCopyToSpawn)
+			{
+				ConstraintChannel.ConstraintCopyToSpawn = ConstraintChannel.Constraint->Duplicate(this);
+			}
+			ConstraintChannel.Constraint.Reset();
+		}
+	}
+}
+#endif
+
 void UMovieSceneControlRigParameterSection::PostEditImport()
 {
 	Super::PostEditImport();
@@ -1416,9 +1436,10 @@ bool UMovieSceneControlRigParameterSection::HasConstraintChannel(const FName& In
 FConstraintAndActiveChannel* UMovieSceneControlRigParameterSection::GetConstraintChannel(const FName& InConstraintName)
 {
 	const int32 Index = ConstraintsChannels.IndexOfByPredicate([InConstraintName](const FConstraintAndActiveChannel& InChannel)
-	{
-		return InChannel.Constraint.IsValid() ? InChannel.Constraint->GetFName() == InConstraintName : false;
-	});
+		{
+			return InChannel.Constraint.IsValid() ? InChannel.Constraint->GetFName() == InConstraintName : (InChannel.ConstraintCopyToSpawn ?
+			InChannel.ConstraintCopyToSpawn->GetFName() == InConstraintName : false);
+		});
 	return (Index != INDEX_NONE) ? &ConstraintsChannels[Index] : nullptr;	
 }
 
@@ -1466,11 +1487,15 @@ void UMovieSceneControlRigParameterSection::AddConstraintChannel(UTickableConstr
 	}
 }
 
-void UMovieSceneControlRigParameterSection::RemoveConstraintChannel(const FName& InConstraintName)
+void UMovieSceneControlRigParameterSection::RemoveConstraintChannel(const UTickableConstraint* InConstraint)
 {
-	const int32 Index = ConstraintsChannels.IndexOfByPredicate([InConstraintName](const FConstraintAndActiveChannel& InChannel)
+	if (bDoNotRemoveChannel == true)
 	{
-		return InChannel.Constraint.IsValid() ? InChannel.Constraint->GetFName() == InConstraintName : false;
+		return;
+	}
+	const int32 Index = ConstraintsChannels.IndexOfByPredicate([InConstraint](const FConstraintAndActiveChannel& InChannel)
+	{
+		return InChannel.Constraint.IsValid() ? InChannel.Constraint == InConstraint : false;
 	});
 
 	if (ConstraintsChannels.IsValidIndex(Index))
@@ -1644,6 +1669,23 @@ void UMovieSceneControlRigParameterSection::ReconstructChannelProxy()
 			}
 		};
 		// end constraints
+
+#if WITH_EDITOR
+		// masking for per control channels based on control filters
+		auto MaybeApplyChannelMask = [](FMovieSceneChannelMetaData& OutMetadata, const FRigControlElement* ControlElement, ERigControlTransformChannel InChannel)
+		{
+			if(!OutMetadata.bEnabled)
+			{
+				return;
+			}
+			
+			const TArray<ERigControlTransformChannel>& FilteredChannels = ControlElement->Settings.FilteredChannels;
+			if(!FilteredChannels.IsEmpty())
+			{
+				OutMetadata.bEnabled = FilteredChannels.Contains(InChannel);
+			}
+		};
+#endif
 		
 		for (FRigControlElement* ControlElement : SortedControls)
 		{
@@ -1832,6 +1874,8 @@ void UMovieSceneControlRigParameterSection::ReconstructChannelProxy()
 								ControlChannelMap.Add(Vector2D.ParameterName, FChannelMapInfo(ControlIndex, TotalIndex, FloatChannelIndex, ParentControlIndex, NAME_None, MaskIndex, CategoryIndex));
 							}
 							FParameterVectorChannelEditorData EditorData(ControlRig, Vector2D.ParameterName, bEnabled, Group, TotalIndex, 2);
+							MaybeApplyChannelMask(EditorData.MetaData[0], ControlElement, ERigControlTransformChannel::TranslationX);
+							MaybeApplyChannelMask(EditorData.MetaData[1], ControlElement, ERigControlTransformChannel::TranslationY);
 							Channels.Add(Vector2D.XCurve, EditorData.MetaData[0], EditorData.ExternalValues[0]);
 							Channels.Add(Vector2D.YCurve, EditorData.MetaData[1], EditorData.ExternalValues[1]);
 							FloatChannelIndex += 2;
@@ -1889,6 +1933,26 @@ void UMovieSceneControlRigParameterSection::ReconstructChannelProxy()
 						
 
 							FParameterVectorChannelEditorData EditorData(ControlRig, Vector.ParameterName, bEnabled, Group, TotalIndex, 3);
+
+							if(ControlElement->Settings.ControlType == ERigControlType::Position)
+							{
+								MaybeApplyChannelMask(EditorData.MetaData[0], ControlElement, ERigControlTransformChannel::TranslationX);
+								MaybeApplyChannelMask(EditorData.MetaData[1], ControlElement, ERigControlTransformChannel::TranslationY);
+								MaybeApplyChannelMask(EditorData.MetaData[2], ControlElement, ERigControlTransformChannel::TranslationZ);
+							}
+							else if(ControlElement->Settings.ControlType == ERigControlType::Rotator)
+							{
+								MaybeApplyChannelMask(EditorData.MetaData[0], ControlElement, ERigControlTransformChannel::Pitch);
+								MaybeApplyChannelMask(EditorData.MetaData[1], ControlElement, ERigControlTransformChannel::Yaw);
+								MaybeApplyChannelMask(EditorData.MetaData[2], ControlElement, ERigControlTransformChannel::Roll);
+							}
+							else if(ControlElement->Settings.ControlType == ERigControlType::Scale)
+							{
+								MaybeApplyChannelMask(EditorData.MetaData[0], ControlElement, ERigControlTransformChannel::ScaleX);
+								MaybeApplyChannelMask(EditorData.MetaData[1], ControlElement, ERigControlTransformChannel::ScaleY);
+								MaybeApplyChannelMask(EditorData.MetaData[2], ControlElement, ERigControlTransformChannel::ScaleZ);
+							}
+							
 							Channels.Add(Vector.XCurve, EditorData.MetaData[0], EditorData.ExternalValues[0]);
 							Channels.Add(Vector.YCurve, EditorData.MetaData[1], EditorData.ExternalValues[1]);
 							Channels.Add(Vector.ZCurve, EditorData.MetaData[2], EditorData.ExternalValues[2]);
@@ -1956,9 +2020,18 @@ void UMovieSceneControlRigParameterSection::ReconstructChannelProxy()
 							FParameterTransformChannelEditorData EditorData(ControlRig, Transform.ParameterName, bEnabled, TransformMask.GetChannels(), Group, 
 								TotalIndex);
 
+							MaybeApplyChannelMask(EditorData.MetaData[0], ControlElement, ERigControlTransformChannel::TranslationX);
+							MaybeApplyChannelMask(EditorData.MetaData[1], ControlElement, ERigControlTransformChannel::TranslationY);
+							MaybeApplyChannelMask(EditorData.MetaData[2], ControlElement, ERigControlTransformChannel::TranslationZ);
+							
 							Channels.Add(Transform.Translation[0], EditorData.MetaData[0], EditorData.ExternalValues[0]);
 							Channels.Add(Transform.Translation[1], EditorData.MetaData[1], EditorData.ExternalValues[1]);
 							Channels.Add(Transform.Translation[2], EditorData.MetaData[2], EditorData.ExternalValues[2]);
+
+							// note the order here is different from the rotator
+							MaybeApplyChannelMask(EditorData.MetaData[3], ControlElement, ERigControlTransformChannel::Roll);
+							MaybeApplyChannelMask(EditorData.MetaData[4], ControlElement, ERigControlTransformChannel::Pitch);
+							MaybeApplyChannelMask(EditorData.MetaData[5], ControlElement, ERigControlTransformChannel::Yaw);
 
 							Channels.Add(Transform.Rotation[0], EditorData.MetaData[3], EditorData.ExternalValues[3]);
 							Channels.Add(Transform.Rotation[1], EditorData.MetaData[4], EditorData.ExternalValues[4]);
@@ -1967,6 +2040,9 @@ void UMovieSceneControlRigParameterSection::ReconstructChannelProxy()
 							if (ControlElement->Settings.ControlType == ERigControlType::Transform ||
 								ControlElement->Settings.ControlType == ERigControlType::EulerTransform)
 							{
+								MaybeApplyChannelMask(EditorData.MetaData[6], ControlElement, ERigControlTransformChannel::ScaleX);
+								MaybeApplyChannelMask(EditorData.MetaData[7], ControlElement, ERigControlTransformChannel::ScaleY);
+								MaybeApplyChannelMask(EditorData.MetaData[8], ControlElement, ERigControlTransformChannel::ScaleZ);
 								
 								Channels.Add(Transform.Scale[0], EditorData.MetaData[6], EditorData.ExternalValues[6]);
 								Channels.Add(Transform.Scale[1], EditorData.MetaData[7], EditorData.ExternalValues[7]);
@@ -2843,11 +2919,11 @@ bool UMovieSceneControlRigParameterSection::LoadAnimSequenceIntoThisSection(UAni
 	}
 	ControlRig->Modify();
 
-	const int32 NumberOfFrames = FrameRate.AsFrameTime(Length).CeilToFrame().Value + 1;
+	const int32 NumberOfKeys = AnimSequence->GetDataModel()->GetNumberOfKeys();
 	FFrameNumber FrameRateInFrameNumber = TickResolution.AsFrameNumber(FrameRate.AsInterval());
 	int32 ExtraProgress = bKeyReduce ? FloatChannels.Num() : 0;
 	
-	FScopedSlowTask Progress(NumberOfFrames + ExtraProgress, LOCTEXT("BakingToControlRig_SlowTask", "Baking To Control Rig..."));	
+	FScopedSlowTask Progress(NumberOfKeys + ExtraProgress, LOCTEXT("BakingToControlRig_SlowTask", "Baking To Control Rig..."));	
 	Progress.MakeDialog(true);
 
 	//Make sure we are reset and run construction event  before evaluating
@@ -2867,11 +2943,10 @@ bool UMovieSceneControlRigParameterSection::LoadAnimSequenceIntoThisSection(UAni
 	}
 	SourceBones.ResetTransforms();
 	SourceCurves.ResetValues();
-	ControlRig->Execute(EControlRigState::Update, TEXT("Setup"));
+	ControlRig->Execute(TEXT("Setup"));
 	*/
-	const UAnimDataModel* DataModel = AnimSequence->GetDataModel();
+	const IAnimationDataModel* DataModel = AnimSequence->GetDataModel();
 	const FAnimationCurveData& CurveData = DataModel->GetCurveData();
-	const TArray<FBoneAnimationTrack>& BoneAnimationTracks = DataModel->GetBoneAnimationTracks();
 
 	// copy the hierarchy from the CDO into the target control rig.
 	// this ensures that the topology version matches in case of a dynamic hierarchy
@@ -2895,10 +2970,10 @@ bool UMovieSceneControlRigParameterSection::LoadAnimSequenceIntoThisSection(UAni
 	ControlRig->RequestConstruction();
 	ControlRig->Evaluate_AnyThread();
 
-	for (int32 Index = 0; Index < NumberOfFrames; ++Index)
+	for (int32 Index = 0; Index < NumberOfKeys; ++Index)
 	{
 		const float SequenceSecond = AnimSequence->GetTimeAtFrame(Index);
-		FFrameNumber FrameNumber = StartFrame + (FrameRateInFrameNumber * Index);
+		const FFrameNumber FrameNumber = StartFrame + (FMath::Max(FrameRateInFrameNumber.Value, 1) * Index);
 
 		ControlRig->GetHierarchy()->ResetPoseToInitial();
 		ControlRig->GetHierarchy()->ResetCurveValues();
@@ -2933,9 +3008,9 @@ bool UMovieSceneControlRigParameterSection::LoadAnimSequenceIntoThisSection(UAni
 		if (Index == 0)
 		{
 			//to make sure the first frame looks good we need to do this first. UE-100069
-			ControlRig->Execute(EControlRigState::Update, FRigUnit_InverseExecution::EventName);
+			ControlRig->Execute(FRigUnit_InverseExecution::EventName);
 		}
-		ControlRig->Execute(EControlRigState::Update, FRigUnit_InverseExecution::EventName);
+		ControlRig->Execute(FRigUnit_InverseExecution::EventName);
 
 		const ERichCurveInterpMode InterpMode = bKeyReduce ? RCIM_Cubic : RCIM_Linear;
 		RecordControlRigKey(FrameNumber, Index == 0, InterpMode);

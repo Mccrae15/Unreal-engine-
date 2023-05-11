@@ -2,11 +2,10 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Camera/CameraShakeBase.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
-#include "UObject/Object.h"
-#include "GameFramework/Actor.h"
+
+class UCameraShakeSourceComponent;
 
 #if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
 	#include "Evaluation/MovieSceneCameraShakeTemplate.h"
@@ -33,7 +32,7 @@ enum class EOscillatorWaveform : uint8
 
 /** Shake start offset parameter */
 UENUM()
-enum EInitialOscillatorOffset
+enum EInitialOscillatorOffset : int
 {
 	/** Start with random offset (default). */
 	EOO_OffsetRandom UMETA(DisplayName = "Random"),
@@ -339,3 +338,8 @@ public:
 		return CastChecked<ULegacyCameraShake>(CameraShake, ECastCheckedType::NullAllowed);
 	}
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "GameFramework/Actor.h"
+#endif

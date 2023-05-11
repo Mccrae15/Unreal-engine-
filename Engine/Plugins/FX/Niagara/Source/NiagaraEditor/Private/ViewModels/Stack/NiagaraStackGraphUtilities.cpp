@@ -42,8 +42,9 @@
 #include "INiagaraEditorTypeUtilities.h"
 #include "NiagaraEditorData.h"
 #include "NiagaraGraphDataCache.h"
+#include "NiagaraScriptGraphViewModel.h"
 #include "NiagaraSettings.h"
-
+#include "ViewModels/HierarchyEditor/NiagaraHierarchyViewModelBase.h"
 
 DECLARE_CYCLE_STAT(TEXT("Niagara - StackGraphUtilities - RelayoutGraph"), STAT_NiagaraEditor_StackGraphUtilities_RelayoutGraph, STATGROUP_NiagaraEditor);
 
@@ -52,12 +53,12 @@ DECLARE_CYCLE_STAT(TEXT("Niagara - StackGraphUtilities - RelayoutGraph"), STAT_N
 namespace FNiagaraStackGraphUtilitiesImpl
 {
 
-static FVersionedNiagaraEmitter GetOuterEmitter(UNiagaraNode* Node)
+static FVersionedNiagaraEmitter GetOuterEmitter(const UNiagaraNode* Node)
 {
 	FVersionedNiagaraEmitter Result;
 	if (Node)
 	{
-		if (UNiagaraGraph* NiagaraGraph = Node->GetNiagaraGraph())
+		if (const UNiagaraGraph* NiagaraGraph = Node->GetNiagaraGraph())
 		{
 			Result = NiagaraGraph->GetOwningEmitter();
 		}
@@ -71,7 +72,7 @@ static FVersionedNiagaraEmitter GetOuterEmitter(UNiagaraNode* Node)
 	return Result;
 }
 
-static void GetFunctionStaticVariables(UNiagaraNodeFunctionCall& FunctionCallNode, TArray<FNiagaraVariable>& StaticVars)
+static void GetFunctionStaticVariables(const UNiagaraNodeFunctionCall& FunctionCallNode, TArray<FNiagaraVariable>& StaticVars)
 {
 	FVersionedNiagaraEmitter Emitter = GetOuterEmitter(&FunctionCallNode);
 	UNiagaraSystem* System = FunctionCallNode.GetTypedOuter<UNiagaraSystem>();
@@ -274,6 +275,46 @@ void FNiagaraStackGraphUtilities::GetOrderedModuleNodes(UNiagaraNodeOutput& Outp
 	}
 }
 
+TArray<UNiagaraNodeFunctionCall*> FNiagaraStackGraphUtilities::GetAllModuleNodes(TSharedRef<FNiagaraEmitterViewModel> EmitterViewModel)
+{
+	TArray<UNiagaraNodeFunctionCall*> ModuleNodes;
+	TArray<UNiagaraNodeOutput*> OutputNodes = GetAllOutputNodes(EmitterViewModel);
+
+	for(UNiagaraNodeOutput* OutputNode : OutputNodes)
+	{
+		TArray<UNiagaraNodeFunctionCall*> FunctionCalls;
+		FNiagaraStackGraphUtilities::GetOrderedModuleNodes(*OutputNode, FunctionCalls);
+		
+		for(UNiagaraNodeFunctionCall* FunctionCall : FunctionCalls)
+		{
+			ModuleNodes.Add(FunctionCall);
+		}
+	}
+
+	return ModuleNodes;
+}
+
+TArray<UNiagaraNodeFunctionCall*> FNiagaraStackGraphUtilities::GetAllModuleNodes(UNiagaraGraph* Graph)
+{
+	TArray<UNiagaraNodeFunctionCall*> ModuleNodes;
+
+	TArray<UNiagaraNodeOutput*> OutputNodes;
+	Graph->GetNodesOfClass<UNiagaraNodeOutput>(OutputNodes);
+
+	for(UNiagaraNodeOutput* OutputNode : OutputNodes)
+	{
+		TArray<UNiagaraNodeFunctionCall*> FunctionCalls;
+		FNiagaraStackGraphUtilities::GetOrderedModuleNodes(*OutputNode, FunctionCalls);
+		
+		for(UNiagaraNodeFunctionCall* FunctionCall : FunctionCalls)
+		{
+			ModuleNodes.Add(FunctionCall);
+		}
+	}
+
+	return ModuleNodes;
+}
+
 UNiagaraNodeFunctionCall* FNiagaraStackGraphUtilities::GetPreviousModuleNode(UNiagaraNodeFunctionCall& CurrentNode)
 {
 	UNiagaraNodeOutput* OutputNode = GetEmitterOutputNodeForStackNode(CurrentNode);
@@ -345,9 +386,9 @@ UNiagaraNodeOutput* FNiagaraStackGraphUtilities::GetEmitterOutputNodeForStackNod
 	return GetEmitterOutputNodeForStackNodeInternal<UNiagaraNodeOutput, UNiagaraNode>(StackNode);
 }
 
-ENiagaraScriptUsage FNiagaraStackGraphUtilities::GetOutputNodeUsage(UNiagaraNode& StackNode)
+ENiagaraScriptUsage FNiagaraStackGraphUtilities::GetOutputNodeUsage(const UNiagaraNode& StackNode)
 {
-	UNiagaraNodeOutput* OutputNode = GetEmitterOutputNodeForStackNode(StackNode);
+	const UNiagaraNodeOutput* OutputNode = GetEmitterOutputNodeForStackNode(StackNode);
 	return OutputNode ? OutputNode->GetUsage() : ENiagaraScriptUsage::Function;
 }
 
@@ -906,30 +947,30 @@ void ExtractInputPinsFromHistory(FNiagaraParameterMapHistory& History, UEdGraph*
 	}
 }
 
-void FNiagaraStackGraphUtilities::GetStackFunctionInputPins(UNiagaraNodeFunctionCall& FunctionCallNode, TArray<const UEdGraphPin*>& OutInputPins, TSet<const UEdGraphPin*>& OutHiddenPins, FCompileConstantResolver ConstantResolver, ENiagaraGetStackFunctionInputPinsOptions Options, bool bIgnoreDisabled)
+void FNiagaraStackGraphUtilities::GetStackFunctionInputs(const UNiagaraNodeFunctionCall& FunctionCallNode, TArray<FNiagaraVariable>& OutInputVariables, TSet<FNiagaraVariable>& OutHiddenVariables, FCompileConstantResolver ConstantResolver, ENiagaraGetStackFunctionInputPinsOptions Options, bool bIgnoreDisabled)
 {
 	TArray<FNiagaraVariable> StaticVars;
 	FNiagaraStackGraphUtilitiesImpl::GetFunctionStaticVariables(FunctionCallNode, StaticVars);
 
-	FNiagaraEditorModule::Get().GetGraphDataCache().GetStackFunctionInputPins(FunctionCallNode, StaticVars, OutInputPins, OutHiddenPins, ConstantResolver, Options, bIgnoreDisabled);
+	FNiagaraEditorModule::Get().GetGraphDataCache().GetStackFunctionInputs(FunctionCallNode, StaticVars, OutInputVariables, OutHiddenVariables, ConstantResolver, Options, bIgnoreDisabled);
 }
 
-void FNiagaraStackGraphUtilities::GetStackFunctionInputPins(UNiagaraNodeFunctionCall& FunctionCallNode, TArray<const UEdGraphPin*>& OutInputPins, FCompileConstantResolver ConstantResolver, ENiagaraGetStackFunctionInputPinsOptions Options, bool bIgnoreDisabled)
+void FNiagaraStackGraphUtilities::GetStackFunctionInputs(const UNiagaraNodeFunctionCall& FunctionCallNode, TArray<FNiagaraVariable>& OutInputVariables, FCompileConstantResolver ConstantResolver, ENiagaraGetStackFunctionInputPinsOptions Options, bool bIgnoreDisabled)
 {
 	TArray<FNiagaraVariable> StaticVars;
 	FNiagaraStackGraphUtilitiesImpl::GetFunctionStaticVariables(FunctionCallNode, StaticVars);
 
-	FNiagaraEditorModule::Get().GetGraphDataCache().GetStackFunctionInputPins(FunctionCallNode, StaticVars, OutInputPins, ConstantResolver, Options, bIgnoreDisabled);
+	FNiagaraEditorModule::Get().GetGraphDataCache().GetStackFunctionInputs(FunctionCallNode, StaticVars, OutInputVariables, ConstantResolver, Options, bIgnoreDisabled);
 }
 
-void FNiagaraStackGraphUtilities::GetStackFunctionInputPins(UNiagaraNodeFunctionCall& FunctionCallNode, TArray<const UEdGraphPin*>& OutInputPins, ENiagaraGetStackFunctionInputPinsOptions Options /*= ENiagaraGetStackFunctionInputPinsOptions::AllInputs*/, bool bIgnoreDisabled /*= false*/)
+void FNiagaraStackGraphUtilities::GetStackFunctionInputs(const UNiagaraNodeFunctionCall& FunctionCallNode, TArray<FNiagaraVariable>& OutInputVariables, ENiagaraGetStackFunctionInputPinsOptions Options /*= ENiagaraGetStackFunctionInputPinsOptions::AllInputs*/, bool bIgnoreDisabled /*= false*/)
 {
 	FCompileConstantResolver EmptyResolver;
-	GetStackFunctionInputPins(FunctionCallNode, OutInputPins, EmptyResolver, Options, bIgnoreDisabled);
+	GetStackFunctionInputs(FunctionCallNode, OutInputVariables, EmptyResolver, Options, bIgnoreDisabled);
 }
 
 void FNiagaraStackGraphUtilities::GetStackFunctionInputPinsWithoutCache(
-	UNiagaraNodeFunctionCall& FunctionCallNode,
+	const UNiagaraNodeFunctionCall& FunctionCallNode,
 	TConstArrayView<FNiagaraVariable> StaticVars,
 	TArray<const UEdGraphPin*>& OutInputPins,
 	const FCompileConstantResolver& ConstantResolver,
@@ -941,6 +982,29 @@ void FNiagaraStackGraphUtilities::GetStackFunctionInputPinsWithoutCache(
 	Builder.SetIgnoreDisabled(bIgnoreDisabled);
 	Builder.ConstantResolver = ConstantResolver;
 	Builder.RegisterExternalStaticVariables(StaticVars);
+	
+	/* The line below represents a compromise. It basically says don't look up the static variable from the 
+	static variables list set in RegisterExternalStaticVariables as a rapid iteration parameter. Why? Rapid Iteration Parameters
+	may be stale and linger around from prior changes that have been abandoned. We keep them around so that when you toggle back
+	in the UI, you haven't also lost your last set values for that version. So therefore, we can't officially remove them.
+	
+	The issue comes in when a static variable is set via some other means, linking to another variable for example. When generating
+	the UI, it *should* show anything that would match up to the linked variable, but because this is a parameter map history
+	traversal that is in isolation on the node and doesn't include upstream set nodes, it will fail and just look up the rapid iteration
+	version if left to its' own devices. 
+	
+	Trial 1 at a fix was to cache all the values at the root of the graph and look them up when we build the static variables list
+	we use above. That isn't good because that version skips all disabled modules and we want the UI to be consistent regardless 
+	of disabled module status.
+	
+	Trial 2 was to back up and include the precursor gets/sets. This fails for the same reason, ultimately something will
+	be bound to a variable that will assume that it needs to look up a bogus rapid iteration value and we end up back here.
+	
+	Trial 3 just says, we know the static variables list above includes basically all relevant intermediate static values. So if 
+	we just circumvent the logic in the parameter map history traversal that looks up by rapid iteration parameter, it will
+	find the right "cached" value. So we just do that below.
+	 */
+	Builder.SetIgnoreStaticRapidIterationParameters(true);
 
 	// if we are only dealing with the module input pins then we don't need to delve deep into the graph
 	if (Options == ENiagaraGetStackFunctionInputPinsOptions::ModuleInputsOnly)
@@ -956,6 +1020,171 @@ void FNiagaraStackGraphUtilities::GetStackFunctionInputPinsWithoutCache(
 	{
 		ExtractInputPinsFromHistory(Builder.Histories[0], FunctionCallNode.GetCalledGraph(), Options, OutInputPins);
 	}
+}
+
+TArray<UNiagaraNodeOutput*> FNiagaraStackGraphUtilities::GetAllOutputNodes(TSharedRef<FNiagaraEmitterViewModel> EmitterViewModel)
+{
+	TSharedRef<FNiagaraScriptGraphViewModel> GraphViewModel = EmitterViewModel->GetSharedScriptViewModel()->GetGraphViewModel();
+
+	TArray<UNiagaraNodeOutput*> OutputNodes;
+	GraphViewModel->GetGraph()->GetNodesOfClass<UNiagaraNodeOutput>(OutputNodes);
+	
+	return OutputNodes;
+}
+
+UNiagaraNodeFunctionCall* FNiagaraStackGraphUtilities::FindModuleNode(FGuid ModuleNodeGuid, TSharedRef<FNiagaraEmitterViewModel> EmitterViewModel)
+{
+	TArray<UNiagaraNodeOutput*> OutputNodes = GetAllOutputNodes(EmitterViewModel);
+	
+	for(UNiagaraNodeOutput* OutputNode : OutputNodes)
+	{
+		TArray<UNiagaraNodeFunctionCall*> FunctionCalls;
+		FNiagaraStackGraphUtilities::GetOrderedModuleNodes(*OutputNode, FunctionCalls);
+		
+		for(UNiagaraNodeFunctionCall* FunctionCall : FunctionCalls)
+		{
+			if(FunctionCall->NodeGuid == ModuleNodeGuid)
+			{
+				return FunctionCall;
+			}
+		}
+	}
+
+	return nullptr;
+}
+
+TOptional<FNiagaraStackGraphUtilities::FMatchingFunctionInputData> FNiagaraStackGraphUtilities::FindInputData(FNiagaraHierarchyIdentity ModuleInputIdentity, TSharedRef<FNiagaraEmitterViewModel> EmitterViewModel)
+{
+	FMatchingFunctionInputData Result;
+	
+	TArray<UNiagaraNodeOutput*> OutputNodes = GetAllOutputNodes(EmitterViewModel);
+	
+	UNiagaraNodeFunctionCall* MatchingFunctionCall = FindModuleNode(ModuleInputIdentity.Guids[0], EmitterViewModel);
+	if(MatchingFunctionCall)
+	{
+		Result.FunctionCallNode = MatchingFunctionCall;
+	}
+					
+	if(MatchingFunctionCall)
+	{
+		TOptional<FMatchingFunctionInputData> InputData = FindInputData(*MatchingFunctionCall, ModuleInputIdentity.Guids[1], EmitterViewModel);
+
+		if(InputData.IsSet())
+		{
+			Result.InputName = InputData->InputName;
+			Result.Type = InputData->Type;
+			Result.MetaData = InputData->MetaData;
+			Result.ChildrenInputGuids = InputData->ChildrenInputGuids;
+
+			return Result;
+		}
+	}
+	
+	return TOptional<FMatchingFunctionInputData>();
+}
+
+TOptional<FNiagaraStackGraphUtilities::FMatchingFunctionInputData> FNiagaraStackGraphUtilities::FindInputData(const UNiagaraNodeFunctionCall& FunctionCallNode, FGuid InputGuid, TSharedRef<FNiagaraEmitterViewModel> EmitterViewModel, bool bIncludeChildrenInputs)
+{
+	FMatchingFunctionInputData Result;
+	Result.FunctionCallNode = const_cast<UNiagaraNodeFunctionCall*>(&FunctionCallNode);
+	
+	FCompileConstantResolver ConstantResolver(EmitterViewModel->GetEmitter(), GetOutputNodeUsage(FunctionCallNode));
+
+	// our goal is to find the correct variable's metadata from the graph
+	TOptional<FNiagaraVariableMetaData> MetaData;
+				
+	// first, we check the normal module inputs
+	TArray<FNiagaraVariable> InputVariables;
+	FNiagaraStackGraphUtilities::ENiagaraGetStackFunctionInputPinsOptions Options = FNiagaraStackGraphUtilities::ENiagaraGetStackFunctionInputPinsOptions::AllInputs;
+	FNiagaraStackGraphUtilities::GetStackFunctionInputs(FunctionCallNode, InputVariables, ConstantResolver, Options, true);
+				
+	for(const FNiagaraVariable& InputVariable : InputVariables)
+	{
+		if (InputVariable.GetType().IsValid() == false)
+		{
+			continue;
+		}
+
+		MetaData = FunctionCallNode.GetCalledGraph()->GetMetaData(InputVariable);
+		if(MetaData.IsSet() && MetaData.GetValue().GetVariableGuid() == InputGuid)
+		{
+			Result.InputName = InputVariable.GetName();
+			Result.Type = InputVariable.GetType();
+			Result.MetaData = MetaData.GetValue();
+
+			if(bIncludeChildrenInputs)
+			{
+				Result.ChildrenInputGuids = GetChildrenInputGuids(FunctionCallNode, Result.InputName);				
+			}
+			
+			return Result;
+		}
+	}
+
+	// then if we didn't find the input under module inputs, we check the static switch inputs
+	TSet<UEdGraphPin*> HiddenSwitchPins;
+	TArray<UEdGraphPin*> SwitchPins;
+				
+	FNiagaraStackGraphUtilities::GetStackFunctionStaticSwitchPins(FunctionCallNode, SwitchPins, HiddenSwitchPins, ConstantResolver);
+	for (UEdGraphPin* InputPin : SwitchPins)
+	{
+		// The static switch pin names to not contain the module namespace, as they are not part of the parameter maps.
+		// We add it here only to check for name clashes with actual module parameters.
+		FString ModuleName = PARAM_MAP_MODULE_STR;
+		InputPin->PinName.AppendString(ModuleName);
+		FName SwitchPinName(*ModuleName);
+
+		FNiagaraVariable InputVariable = UEdGraphSchema_Niagara::PinToNiagaraVariable(InputPin);
+		if (InputVariable.GetType().IsValid() == false)
+		{
+			continue;
+		}
+					
+		if (FunctionCallNode.GetCalledGraph() != nullptr)
+		{
+			MetaData = FunctionCallNode.GetCalledGraph()->GetMetaData(InputVariable);
+			// if metadata is set and the 2nd guid matches the variable, we found the input that our HierarchyModuleInput represents
+			if(MetaData.IsSet() && MetaData.GetValue().GetVariableGuid() == InputGuid)
+			{
+				Result.InputName = SwitchPinName;
+				Result.Type = InputVariable.GetType();
+				Result.MetaData = MetaData.GetValue();
+
+				if(bIncludeChildrenInputs)
+				{
+					Result.ChildrenInputGuids = GetChildrenInputGuids(FunctionCallNode, Result.InputName);				
+				}
+				
+				return Result;
+			}
+		}
+	}
+	
+	return TOptional<FMatchingFunctionInputData>();
+}
+
+TArray<FGuid> FNiagaraStackGraphUtilities::GetChildrenInputGuids(const UNiagaraNodeFunctionCall& FunctionCallNode, FName ParentInputName)
+{
+	TArray<FGuid> Result;
+	
+	TArray<FNiagaraVariable> Variables;
+	FunctionCallNode.GetCalledGraph()->GetAllVariables(Variables);
+	
+	for(FNiagaraVariable& Variable : Variables)
+	{
+		TOptional<FNiagaraVariableMetaData> MetaData = FunctionCallNode.GetCalledGraph()->GetMetaData(Variable);
+
+		if(MetaData.IsSet())
+		{
+			FNiagaraParameterHandle ParentInputHandle(ParentInputName);
+			if(MetaData->ParentAttribute == ParentInputHandle.GetName())
+			{
+				Result.Add(MetaData->GetVariableGuid());
+			}
+		}
+	}
+
+	return Result;
 }
 
 TArray<UEdGraphPin*> FNiagaraStackGraphUtilities::GetUnusedFunctionInputPins(UNiagaraNodeFunctionCall& FunctionCallNode, FCompileConstantResolver ConstantResolver)
@@ -1040,7 +1269,7 @@ TArray<UEdGraphPin*> FNiagaraStackGraphUtilities::GetUnusedFunctionInputPins(UNi
 	return ResultPins;
 }
 
-void FNiagaraStackGraphUtilities::GetStackFunctionStaticSwitchPins(UNiagaraNodeFunctionCall& FunctionCallNode, TArray<UEdGraphPin*>& OutInputPins, TSet<UEdGraphPin*>& OutHiddenPins,
+void FNiagaraStackGraphUtilities::GetStackFunctionStaticSwitchPins(const UNiagaraNodeFunctionCall& FunctionCallNode, TArray<UEdGraphPin*>& OutInputPins, TSet<UEdGraphPin*>& OutHiddenPins,
 	FCompileConstantResolver& ConstantResolver)
 {
 	const UEdGraphSchema_Niagara* Schema = CastChecked<UEdGraphSchema_Niagara>(FunctionCallNode.GetSchema());
@@ -3495,7 +3724,7 @@ void FNiagaraStackGraphUtilities::SynchronizeReferencingMapPinsWithFunctionCall(
 		return;
 	}
 
-	TSharedPtr<TMap<FGuid, FNiagaraVariable>> VariableIdToVariableMap;
+	TSharedPtr<TMap<FGuid, FNiagaraVariable>> AssetVariableIdToVariableMap;
 	const UEdGraphSchema_Niagara* NiagaraSchema = GetDefault<UEdGraphSchema_Niagara>();
 	
 	// Update the override parameter map set nodes which are used to set the function inputs.
@@ -3507,29 +3736,37 @@ void FNiagaraStackGraphUtilities::SynchronizeReferencingMapPinsWithFunctionCall(
 	}
 	if (OverridePins.Num() > 0)
 	{
-		VariableIdToVariableMap = GetVariableIdToVariableMap(InFunctionCallNode);
+		// this contains the current up to date metadata of the asset graph this function call points to
+		AssetVariableIdToVariableMap = GetVariableIdToVariableMap(InFunctionCallNode);
 		for (UEdGraphPin* OverridePin : OverridePins)
 		{
-			FNiagaraVariable OverrideVariable = NiagaraSchema->PinToNiagaraVariable(OverridePin);
-			FNiagaraParameterHandle OverrideHandle(OverrideVariable.GetName());
-			TArray<FGuid> BoundGuids = InFunctionCallNode.GetBoundPinGuidsByName(OverrideHandle.GetParameterHandleString());
+			FNiagaraVariable CurrentPinOverrideVariable = NiagaraSchema->PinToNiagaraVariable(OverridePin);
+			FNiagaraParameterHandle AliasedOverridePinHandle(CurrentPinOverrideVariable.GetName());
+			// we look up the guids associated with the override pin whose name may be out of date
+			TArray<FGuid> BoundGuids = InFunctionCallNode.GetBoundPinGuidsByName(AliasedOverridePinHandle.GetParameterHandleString());
 			for (FGuid BoundGuid : BoundGuids)
 			{
-				FNiagaraVariable* BoundVariable = VariableIdToVariableMap->Find(BoundGuid);
-				if (BoundVariable != nullptr)
+				// since the guid stayed the same, we can now look up the current parameter that might have a different name
+				FNiagaraVariable* CurrentAssetParameter = AssetVariableIdToVariableMap->Find(BoundGuid);
+				if (CurrentAssetParameter != nullptr)
 				{
-					FNiagaraParameterHandle BoundVariableHandle(BoundVariable->GetName());
-					if (BoundVariableHandle.IsModuleHandle())
+					FNiagaraParameterHandle CurrentAssetParameterHandle(CurrentAssetParameter->GetName());
+					if (CurrentAssetParameterHandle.IsModuleHandle())
 					{
-						if (OverrideHandle.GetName() != BoundVariableHandle.GetName())
+						FNiagaraVariable UnaliasedCurrentPinOverrideVariable = FNiagaraUtilities::ResolveAliases(CurrentPinOverrideVariable, FNiagaraAliasContext().ChangeModuleNameToModule(AliasedOverridePinHandle.GetName().ToString()));
+						FNiagaraParameterHandle UnaliasedCurrentPinOverrideVariableHandle = FNiagaraParameterHandle(UnaliasedCurrentPinOverrideVariable.GetName());
+						
+						// update the override pin if the parameter has changed
+						if (UnaliasedCurrentPinOverrideVariableHandle.GetName() != CurrentAssetParameterHandle.GetName())
 						{
-							FNiagaraParameterHandle UpdatedOverrideHandle = FNiagaraParameterHandle::CreateAliasedModuleParameterHandle(BoundVariable->GetName(), &InFunctionCallNode);
+							FNiagaraVariable UpdatedAliasedOverride = FNiagaraUtilities::ResolveAliases(*CurrentAssetParameter, FNiagaraAliasContext().ChangeModuleToModuleName(InFunctionCallNode.GetFunctionName()));
+							FNiagaraParameterHandle UpdatedOverrideHandle = FNiagaraParameterHandle(UpdatedAliasedOverride.GetName());
 							OverridePin->PinName = UpdatedOverrideHandle.GetParameterHandleString();
-							InFunctionCallNode.UpdateInputNameBinding(BoundGuid, BoundVariableHandle.GetParameterHandleString());
+							InFunctionCallNode.UpdateInputNameBinding(BoundGuid, UpdatedOverrideHandle.GetParameterHandleString());
 						}
-						if (OverrideVariable.GetType() != BoundVariable->GetType())
+						if (CurrentPinOverrideVariable.GetType() != CurrentAssetParameter->GetType())
 						{
-							FEdGraphPinType NewPinType = NiagaraSchema->TypeDefinitionToPinType(BoundVariable->GetType());
+							FEdGraphPinType NewPinType = NiagaraSchema->TypeDefinitionToPinType(CurrentAssetParameter->GetType());
 							OverridePin->PinType = NewPinType;
 							if (OverridePin->LinkedTo.Num() == 1 &&
 								OverridePin->LinkedTo[0]->GetOwningNode() != nullptr &&
@@ -3548,11 +3785,11 @@ void FNiagaraStackGraphUtilities::SynchronizeReferencingMapPinsWithFunctionCall(
 	}
 
 	// Update linked module outputs or module attributes referenced by downstream parameter map gets.
-	auto SynchronizeForStackLinkedModuleParameterPins = [&NiagaraSchema, &InFunctionCallNode, &VariableIdToVariableMap](const TArray<UEdGraphPin*>& StackLinkedModuleParameterPins)
+	auto SynchronizeForStackLinkedModuleParameterPins = [&NiagaraSchema, &InFunctionCallNode, &AssetVariableIdToVariableMap](const TArray<UEdGraphPin*>& StackLinkedModuleParameterPins)
 	{
-		if (VariableIdToVariableMap.IsValid() == false)
+		if (AssetVariableIdToVariableMap.IsValid() == false)
 		{
-			VariableIdToVariableMap = GetVariableIdToVariableMap(InFunctionCallNode);
+			AssetVariableIdToVariableMap = GetVariableIdToVariableMap(InFunctionCallNode);
 		}
 		for (UEdGraphPin* StackLinkedModuleParameterPin : StackLinkedModuleParameterPins)
 		{
@@ -3564,7 +3801,7 @@ void FNiagaraStackGraphUtilities::SynchronizeReferencingMapPinsWithFunctionCall(
 				TArray<FGuid> BoundGuids = TargetFunctionCallNode->GetBoundPinGuidsByName(LinkedModuleParameterHandle.GetParameterHandleString());
 				for (const FGuid& BoundGuid : BoundGuids)
 				{
-					FNiagaraVariable* BoundVariable = VariableIdToVariableMap->Find(BoundGuid);
+					FNiagaraVariable* BoundVariable = AssetVariableIdToVariableMap->Find(BoundGuid);
 					if (BoundVariable != nullptr)
 					{
 						FNiagaraVariable BoundVariableResolvedName = FNiagaraUtilities::ResolveAliases(*BoundVariable,FNiagaraAliasContext().ChangeModuleToModuleName(InFunctionCallNode.GetFunctionName()));
@@ -3680,6 +3917,69 @@ void FNiagaraStackGraphUtilities::DependencyUtilities::GetModuleScriptAssetsByDe
 				{
 					OutAssets.Add(ModuleAsset);
 					break;
+				}
+			}
+		}
+	}
+}
+
+void FNiagaraStackGraphUtilities::FixDynamicInputNodeOutputPinsFromExternalChanges(UNiagaraNodeFunctionCall& InFunctionCallNode)
+{
+	if (InFunctionCallNode.FunctionScript == nullptr || InFunctionCallNode.FunctionScript->GetUsage() != ENiagaraScriptUsage::DynamicInput)
+	{
+		return;
+	}
+
+	FPinCollectorArray OutputPins;
+	InFunctionCallNode.GetOutputPins(OutputPins);
+	if (OutputPins.Num() > 1)
+	{
+		// Try to find an orphaned pin which is still linked, and any non-orphaned unlinked pins.
+		UEdGraphPin* LinkedOrphanedPin = nullptr;
+		TArray<UEdGraphPin*> UnlinkedValidPins;
+		for (UEdGraphPin* OutputPin : OutputPins)
+		{
+			if (OutputPin->bOrphanedPin)
+			{
+				if (OutputPin->LinkedTo.Num() == 1 && ensureMsgf(LinkedOrphanedPin == nullptr, TEXT("Dynamic inputs should only ever have one linked pin.")))
+				{
+					LinkedOrphanedPin = OutputPin;
+				}
+			}
+			else
+			{
+				if (OutputPin->LinkedTo.Num() == 0)
+				{
+					UnlinkedValidPins.Add(OutputPin);
+				}
+			}
+		}
+
+		UEdGraphPin* LinkedValidPin = nullptr;
+		if (LinkedOrphanedPin != nullptr && UnlinkedValidPins.Num() > 0)
+		{
+			// Try to match the first available valid pin to the orphaned pin by type and then fix up the pin links.
+			for (UEdGraphPin* UnlinkedValidPin : UnlinkedValidPins)
+			{
+				if (UnlinkedValidPin->PinType == LinkedOrphanedPin->PinType)
+				{
+					// A valid unlinked pin was found, so move the link from the orphaned pin to the valid pin.
+					UnlinkedValidPin->MakeLinkTo(LinkedOrphanedPin->LinkedTo[0]);
+					LinkedOrphanedPin->BreakAllPinLinks(false);
+					LinkedValidPin = UnlinkedValidPin;
+					break;
+				}
+			}
+		}
+
+		if (LinkedValidPin != nullptr)
+		{
+			// If a valid pin was linked, remove all of the other output pins since they're not valid for a dynamic input node.
+			for (UEdGraphPin* OutputPin : OutputPins)
+			{
+				if (OutputPin != LinkedValidPin)
+				{
+					InFunctionCallNode.RemovePin(OutputPin);
 				}
 			}
 		}

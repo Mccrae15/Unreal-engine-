@@ -152,7 +152,8 @@ public:
 	struct MeshBuildOptions
 	{
 		MeshBuildOptions()
-		: bRemoveDegenerateTriangles(false)
+		: BoneInfluenceLimit(0)
+		, bRemoveDegenerateTriangles(false)
 		, bComputeNormals(true)
 		, bComputeTangents(true)
 		, bUseMikkTSpace(false)
@@ -161,6 +162,7 @@ public:
 		{
 		}
 
+		int32 BoneInfluenceLimit;
 		bool bRemoveDegenerateTriangles;
 		bool bComputeNormals;
 		bool bComputeTangents;
@@ -175,6 +177,7 @@ public:
 			OverlappingThresholds.ThresholdTangentNormal = SkeletalMeshBuildSettings.ThresholdTangentNormal;
 			OverlappingThresholds.ThresholdUV = SkeletalMeshBuildSettings.ThresholdUV;
 			OverlappingThresholds.MorphThresholdPosition = SkeletalMeshBuildSettings.MorphThresholdPosition;
+			BoneInfluenceLimit = SkeletalMeshBuildSettings.BoneInfluenceLimit;
 			bComputeNormals = SkeletalMeshBuildSettings.bRecomputeNormals;
 			bComputeTangents = SkeletalMeshBuildSettings.bRecomputeTangents;
 			bUseMikkTSpace = SkeletalMeshBuildSettings.bUseMikkTSpace;
@@ -330,7 +333,11 @@ public:
 	virtual void FindOverlappingCorners(FOverlappingCorners& OutOverlappingCorners, const TArray<FVector3f>& InVertices, const TArray<uint32>& InIndices, float ComparisonThreshold) const = 0;
 
 	/** Used to generate runtime skin weight data from Editor-only data */
-	virtual void GenerateRuntimeSkinWeightData(const FSkeletalMeshLODModel* ImportedModel, const TArray<FRawSkinWeight>& InRawSkinWeights, struct FRuntimeSkinWeightProfileData& InOutSkinWeightOverrideData) const = 0;
+	virtual void GenerateRuntimeSkinWeightData(
+		const FSkeletalMeshLODModel* ImportedModel,
+		const TArray<FRawSkinWeight>& InRawSkinWeights,
+		bool bInUseHighPrecisionWeights,
+		struct FRuntimeSkinWeightProfileData& InOutSkinWeightOverrideData) const = 0;
 
 	/*
 	 * This function create the import data using the LODModel. You can call this function if you load an asset that was not re-import since the build refactor and the chunking is more agressive than the bake data in the LODModel.

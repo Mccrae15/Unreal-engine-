@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LightShaftRendering.h"
+#include "DataDrivenShaderPlatformInfo.h"
+#include "LightSceneProxy.h"
 #include "ScreenPass.h"
 #include "PipelineStateCache.h"
 #include "PostProcess/SceneRenderTargets.h"
@@ -9,6 +11,7 @@
 #include "SceneTextureParameters.h"
 #include "ScenePrivate.h"
 #include "DeferredShadingRenderer.h"
+#include "RenderCore.h"
 
 int32 GLightShafts = 1;
 static FAutoConsoleVariableRef CVarLightShaftQuality(

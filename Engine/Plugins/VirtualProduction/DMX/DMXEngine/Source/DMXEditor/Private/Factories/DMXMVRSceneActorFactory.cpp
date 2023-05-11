@@ -2,12 +2,16 @@
 
 #include "Factories/DMXMVRSceneActorFactory.h"
 
+#include "Engine/Level.h"
 #include "Engine/StaticMeshActor.h"
 #include "Library/DMXLibrary.h"
 #include "MVR/DMXMVRSceneActor.h"
 
+#include "EngineUtils.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "Widgets/Notifications/SNotificationList.h"
 
 
 UDMXMVRSceneActorFactory::UDMXMVRSceneActorFactory()
@@ -64,6 +68,13 @@ AActor* UDMXMVRSceneActorFactory::SpawnActor(UObject* Asset, ULevel* InLevel, co
 			return nullptr;
 		}
 
+		if(IsDMXLibraryAlreadySpawned(World, DMXLibrary))
+		{ 
+			NotifyDMXLibraryAlreadySpawned();
+
+			return nullptr;
+		}
+
 		ADMXMVRSceneActor* MVRSceneActor = World->SpawnActor<ADMXMVRSceneActor>(ADMXMVRSceneActor::StaticClass());
 		if (MVRSceneActor)
 		{
@@ -74,4 +85,30 @@ AActor* UDMXMVRSceneActorFactory::SpawnActor(UObject* Asset, ULevel* InLevel, co
 	}
 
 	return nullptr;
+}
+
+bool UDMXMVRSceneActorFactory::IsDMXLibraryAlreadySpawned(UWorld* World, UDMXLibrary* DMXLibrary) const
+{
+	if (World && DMXLibrary)
+	{
+		for (TActorIterator<ADMXMVRSceneActor> It(World, ADMXMVRSceneActor::StaticClass()); It; ++It)
+		{
+			ADMXMVRSceneActor* MVRSceneActor = *It;
+			if (MVRSceneActor && MVRSceneActor->GetDMXLibrary() == DMXLibrary)
+			{
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+void UDMXMVRSceneActorFactory::NotifyDMXLibraryAlreadySpawned()
+{
+	if (!DMXLibraryAlreadySpawnedNotification.IsValid())
+	{
+		FNotificationInfo NotificationInfo(NSLOCTEXT("DMXMVRSceneActorFactory", "DMXLibraryAlreadySpawnedInSceneNotification", "DMX Library is already spawned in this scene."));
+		NotificationInfo.ExpireDuration = 5.f;
+		DMXLibraryAlreadySpawnedNotification = FSlateNotificationManager::Get().AddNotification(NotificationInfo);
+	}
 }

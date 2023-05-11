@@ -8,8 +8,9 @@
 #include "D3D12RHIPrivate.h"
 #include "Misc/ScopeRWLock.h"
 #include "Stats/StatsMisc.h"
-#if PLATFORM_WINDOWS
-#include "nvapi.h"
+
+#if WITH_NVAPI
+	#include "nvapi.h"
 #endif
 
 #include "d3dcompiler.h"
@@ -798,14 +799,13 @@ static void CreatePipelineStateWrapper(ID3D12PipelineState** PSO, FD3D12Adapter*
 		HRESULT hr = CreatePipelineStateFromStream(*PSO, pDevice2, &StreamDesc, static_cast<ID3D12PipelineLibrary1*>(CreationArgs->Library), Name);	// Static cast to ID3D12PipelineLibrary1 since we already checked for ID3D12Device2.
 		if (FAILED(hr))
 		{
+			// Always dump the graphics PSO state - internal driver compiler error can still return DXGI_ERROR_DEVICE_REMOVED
+			DumpGraphicsPSO(CreationArgs->Desc.Desc, Name);
+
 			// First check if D3D device removed, hung or out of memory and handle that separately 
 			if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_HUNG || hr == E_OUTOFMEMORY)
 			{
 				VERIFYD3D12RESULT_EX(hr, pDevice2);
-			}
-			else
-			{
-				DumpGraphicsPSO(CreationArgs->Desc.Desc, Name);
 			}
 		}
 	}
@@ -817,14 +817,13 @@ static void CreatePipelineStateWrapper(ID3D12PipelineState** PSO, FD3D12Adapter*
 		HRESULT hr = CreatePipelineStateFromStream(*PSO, pDevice2, &StreamDesc, static_cast<ID3D12PipelineLibrary1*>(CreationArgs->Library), Name);	// Static cast to ID3D12PipelineLibrary1 since we already checked for ID3D12Device2.
 		if (FAILED(hr))
 		{
+			// Always dump the graphics PSO state - internal driver compiler error can still return DXGI_ERROR_DEVICE_REMOVED
+			DumpGraphicsPSO(CreationArgs->Desc.Desc, Name);
+
 			// First check if D3D device removed, hung or out of memory and handle that separately 
 			if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_HUNG || hr == E_OUTOFMEMORY)
 			{
 				VERIFYD3D12RESULT_EX(hr, pDevice2);
-			}
-			else
-			{
-				DumpGraphicsPSO(CreationArgs->Desc.Desc, Name);
 			}
 		}
 	}
@@ -863,6 +862,8 @@ static void CreatePipelineStateWrapper(ID3D12PipelineState** PSO, FD3D12Adapter*
 }
 
 #if D3D12RHI_NEEDS_VENDOR_EXTENSIONS
+
+#if WITH_NVAPI
 static FORCEINLINE NVAPI_D3D12_PSO_SET_SHADER_EXTENSION_SLOT_DESC GetNVShaderExtensionDesc(uint32 UavSlot)
 {
 	// https://developer.nvidia.com/unlocking-gpu-intrinsics-hlsl
@@ -879,12 +880,14 @@ static FORCEINLINE NVAPI_D3D12_PSO_SET_SHADER_EXTENSION_SLOT_DESC GetNVShaderExt
 #endif
 	return ShdExtensionDesc;
 }
+#endif
 
 template<typename TCreationArgs>
 static void CreatePipelineStateWithExtensions(ID3D12PipelineState** PSO, FD3D12Adapter* Adapter, const TCreationArgs* CreationArgs, TArrayView<const FShaderCodeVendorExtension> VendorExtensions)
 {
 	for (const FShaderCodeVendorExtension& Extension : VendorExtensions)
 	{
+#if WITH_NVAPI
 		if (Extension.VendorId == 0x10DE) // NVIDIA
 		{
 			if (Extension.Parameter.Type == EShaderParameterType::UAV)
@@ -911,7 +914,8 @@ static void CreatePipelineStateWithExtensions(ID3D12PipelineState** PSO, FD3D12A
 				return;
 			}
 		}
-		else if (Extension.VendorId == 0x1002) // AMD
+#endif //  WITH_NVAPI
+		if (Extension.VendorId == 0x1002) // AMD
 		{
 			// https://github.com/GPUOpen-LibrariesAndSDKs/AGS_SDK/blob/master/ags_lib/hlsl/ags_shader_intrinsics_dx12.hlsl
 			// No special create override needed, pass through to default:
@@ -933,7 +937,7 @@ static void CreatePipelineStateWithExtensions(ID3D12PipelineState** PSO, FD3D12A
 
 static void CreateGraphicsPipelineState(ID3D12PipelineState** PSO, FD3D12Adapter* Adapter, const GraphicsPipelineCreationArgs_POD* CreationArgs)
 {
-#if D3D12RHI_NEEDS_VENDOR_EXTENSIONS
+#if D3D12RHI_NEEDS_VENDOR_EXTENSIONS 
 	if (CreationArgs->Desc.HasVendorExtensions())
 	{
 		// Need to merge extensions across all stages for a single PSO

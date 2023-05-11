@@ -54,6 +54,11 @@ TSharedPtr<ISourceControlRevision, ESPMode::ThreadSafe> FConcertSourceControlSta
 	return ActualState.IsValid() ? ActualState->GetBaseRevForMerge() : TSharedPtr<ISourceControlRevision, ESPMode::ThreadSafe>();
 }
 
+TSharedPtr<ISourceControlRevision, ESPMode::ThreadSafe> FConcertSourceControlStateProxy::GetCurrentRevision() const
+{
+	return ActualState.IsValid() ? ActualState->GetCurrentRevision() : TSharedPtr<ISourceControlRevision, ESPMode::ThreadSafe>();
+}
+
 FSlateIcon FConcertSourceControlStateProxy::GetIcon() const
 {
 	return ActualState.IsValid() ? ActualState->GetIcon() : FSlateIcon();
@@ -484,11 +489,29 @@ bool FConcertSourceControlProxy::UsesChangelists() const
 	return false;
 }
 
+bool FConcertSourceControlProxy::UsesUncontrolledChangelists() const
+{
+	if (ActualProvider)
+	{
+		return ActualProvider->UsesUncontrolledChangelists();
+	}
+	return true;
+}
+
 bool FConcertSourceControlProxy::UsesCheckout() const
 {
 	if (ActualProvider)
 	{
 		return ActualProvider->UsesCheckout();
+	}
+	return false;
+}
+
+bool FConcertSourceControlProxy::UsesSnapshots() const
+{
+	if (ActualProvider)
+	{
+		return ActualProvider->UsesSnapshots();
 	}
 	return false;
 }
@@ -502,13 +525,30 @@ bool FConcertSourceControlProxy::UsesFileRevisions() const
 	return false;
 }
 
+bool FConcertSourceControlProxy::AllowsDiffAgainstDepot() const
+{
+	if (ActualProvider)
+	{
+		return ActualProvider->AllowsDiffAgainstDepot();
+	}
+	return true;
+}
+
 TOptional<bool> FConcertSourceControlProxy::IsAtLatestRevision() const
 {
+	if (ActualProvider)
+	{
+		return ActualProvider->IsAtLatestRevision();
+	}
 	return TOptional<bool>();
 }
 
 TOptional<int> FConcertSourceControlProxy::GetNumLocalChanges() const
 {
+	if (ActualProvider)
+	{
+		return ActualProvider->GetNumLocalChanges();
+	}
 	return TOptional<int>();
 }
 

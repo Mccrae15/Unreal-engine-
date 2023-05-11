@@ -12,35 +12,55 @@ class PCG_API UPCGMeshSelectorByAttribute : public UPCGMeshSelectorBase
 	GENERATED_BODY()
 
 public:
-	virtual void SelectInstances_Implementation(
-		UPARAM(ref) FPCGContext& Context,
+	// ~Begin UObject interface
+	void PostLoad() override;
+	// ~End UObject interface
+
+	virtual bool SelectInstances(
+		FPCGStaticMeshSpawnerContext& Context,
 		const UPCGStaticMeshSpawnerSettings* Settings,
-		const UPCGSpatialData* InSpatialData,
+		const UPCGPointData* InPointData,
 		TArray<FPCGMeshInstanceList>& OutMeshInstances,
 		UPCGPointData* OutPointData) const override;
 
 public:
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings)
-	FName AttributeName; 
+	FName AttributeName;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings)
-	bool bOverrideCollisionProfile = false;
+	UPROPERTY(EditAnywhere, Category = Settings)
+	FSoftISMComponentDescriptor TemplateDescriptor;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings)
-	FCollisionProfileName CollisionProfile;
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings, meta = (InlineEditConditionToggle))
+	bool bUseAttributeMaterialOverrides = false;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings)
-	bool bOverrideMaterials = false;
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, DisplayName = "By Attribute Material Overrides", Category = Settings, meta = (EditCondition = "bUseAttributeMaterialOverrides"))
+	TArray<FName> MaterialOverrideAttributes;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings)
-	TArray<TObjectPtr<UMaterialInterface>> MaterialOverrides;
+#if WITH_EDITORONLY_DATA
+	UPROPERTY()
+	bool bOverrideCollisionProfile_DEPRECATED = false;
+
+	UPROPERTY()
+	FCollisionProfileName CollisionProfile_DEPRECATED = UCollisionProfile::NoCollision_ProfileName;
+
+	UPROPERTY()
+	EPCGMeshSelectorMaterialOverrideMode MaterialOverrideMode_DEPRECATED = EPCGMeshSelectorMaterialOverrideMode::NoOverride;
+
+	UPROPERTY()
+	bool bOverrideMaterials_DEPRECATED = false;
+
+	UPROPERTY()
+	TArray<TSoftObjectPtr<UMaterialInterface>> MaterialOverrides_DEPRECATED;
 
 	/** Distance at which instances begin to fade. */
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings)
-	float CullStartDistance = 0;
+	UPROPERTY()
+	float CullStartDistance_DEPRECATED = 0;
 	
 	/** Distance at which instances are culled. Use 0 to disable. */
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings)
-	float CullEndDistance = 0;
-};
+	UPROPERTY()
+	float CullEndDistance_DEPRECATED = 0;
 
+	UPROPERTY()
+	int32 WorldPositionOffsetDisableDistance_DEPRECATED = 0;
+#endif // WITH_EDITORONLY_DATA
+};

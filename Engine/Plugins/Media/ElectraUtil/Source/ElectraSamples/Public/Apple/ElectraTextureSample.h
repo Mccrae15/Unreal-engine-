@@ -5,9 +5,8 @@
 #include "HAL/Platform.h"
 
 #include "MediaSamples.h"
+#include "IElectraTextureSample.h"
 #include "IMediaTextureSampleConverter.h"
-#include "Misc/Timespan.h"
-#include "MediaObjectPool.h"
 #include "MediaVideoDecoderOutputApple.h"
 
 #import <AVFoundation/AVFoundation.h>
@@ -17,9 +16,8 @@ class FElectraMediaTexConvApple;
 
 
 class ELECTRASAMPLES_API FElectraTextureSample final
-	: public IMediaTextureSample
+	: public IElectraTextureSampleBase
     , public IMediaTextureSampleConverter
-	, public IMediaPoolable
 {
 public:
 	FElectraTextureSample(const TWeakPtr<FElectraMediaTexConvApple, ESPMode::ThreadSafe> & InTexConv)
@@ -33,10 +31,7 @@ public:
 	}
 
 public:
-	void Initialize(FVideoDecoderOutput* InVideoDecoderOutput)
-	{
-		VideoDecoderOutput = StaticCastSharedPtr<FVideoDecoderOutputApple, IDecoderOutputPoolable, ESPMode::ThreadSafe>(InVideoDecoderOutput->AsShared());
-	}
+	void Initialize(FVideoDecoderOutput* InVideoDecoderOutput);
 
 	//~ IMediaTextureSample interface
 
@@ -45,26 +40,8 @@ public:
 		return nullptr;
 	}
 
-	virtual FIntPoint GetDim() const override;
+	virtual EMediaTextureSampleFormat GetFormat() const override;
 
-	virtual FTimespan GetDuration() const override;
-
-	virtual double GetAspectRatio() const override
-	{
-		return VideoDecoderOutput->GetAspectRatio();
-	}
-
-	virtual EMediaOrientation GetOrientation() const override
-	{
-		return (EMediaOrientation)VideoDecoderOutput->GetOrientation();
-	}
-
-	virtual EMediaTextureSampleFormat GetFormat() const override
-	{
-		return EMediaTextureSampleFormat::CharBGRA;
-	}
-
-	virtual FIntPoint GetOutputDim() const override;
 	virtual uint32 GetStride() const override;
 
 	virtual FRHITexture* GetTexture() const override
@@ -72,32 +49,17 @@ public:
 		return Texture;
 	}
 
-	virtual FMediaTimeStamp GetTime() const override;
-
-	virtual bool IsCacheable() const override
-	{
-		return true;
-	}
-
-	virtual bool IsOutputSrgb() const override
-	{
-		return true;
-	}
-
     virtual IMediaTextureSampleConverter* GetMediaTextureSampleConverter() override
     {
         return this;
     }
-
-	virtual void InitializePoolable() override;
-	virtual void ShutdownPoolable() override;
 
 private:
 	/** The sample's texture resource. */
 	TRefCountPtr<FRHITexture2D> Texture;
 
 	/** Output data from video decoder. */
-	TSharedPtr<FVideoDecoderOutputApple, ESPMode::ThreadSafe> VideoDecoderOutput;
+	FVideoDecoderOutputApple* VideoDecoderOutputApple;
 
 	TWeakPtr<FElectraMediaTexConvApple, ESPMode::ThreadSafe> TexConv;
 
@@ -117,7 +79,7 @@ public:
     ~FElectraMediaTexConvApple();
 
 #if WITH_ENGINE
-    void ConvertTexture(FTexture2DRHIRef & InDstTexture, CVImageBufferRef InImageBufferRef);
+    void ConvertTexture(FTexture2DRHIRef & InDstTexture, CVImageBufferRef InImageBufferRef, bool bFullRange, EMediaTextureSampleFormat Format, const FMatrix44f& YUVMtx, const FMatrix44f& GamutToXYZMtx, UE::Color::EEncoding EncodingType);
 #endif
 
 private:

@@ -1,8 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RigVMModel/RigVMNode.h"
+#include "RigVMStringUtils.h"
 #include "RigVMModel/Nodes/RigVMUnitNode.h"
 #include "RigVMModel/RigVMGraph.h"
+#include "RigVMModel/Nodes/RigVMLibraryNode.h"
+#include "RigVMModel/RigVMFunctionLibrary.h"
 #include "RigVMCore/RigVMExecuteContext.h"
 #include "RigVMCore/RigVMStruct.h"
 #include "RigVMUserWorkflowRegistry.h"
@@ -51,56 +54,27 @@ FString URigVMNode::GetNodePath(bool bRecursive) const
 
 bool URigVMNode::SplitNodePathAtStart(const FString& InNodePath, FString& LeftMost, FString& Right)
 {
-	return InNodePath.Split(TEXT("|"), &LeftMost, &Right, ESearchCase::IgnoreCase, ESearchDir::FromStart);
+	return RigVMStringUtils::SplitNodePathAtStart(InNodePath, LeftMost, Right);
 }
 
 bool URigVMNode::SplitNodePathAtEnd(const FString& InNodePath, FString& Left, FString& RightMost)
 {
-	return InNodePath.Split(TEXT("|"), &Left, &RightMost, ESearchCase::IgnoreCase, ESearchDir::FromEnd);
+	return RigVMStringUtils::SplitNodePathAtEnd(InNodePath, Left, RightMost);
 }
 
 bool URigVMNode::SplitNodePath(const FString& InNodePath, TArray<FString>& Parts)
 {
-	int32 OriginalPartsCount = Parts.Num();
-	FString NodePathRemaining = InNodePath;
-	FString Left, Right;
-	Right = NodePathRemaining;
-
-	while (SplitNodePathAtStart(NodePathRemaining, Left, Right))
-	{
-		Parts.Add(Left);
-		Left.Empty();
-		NodePathRemaining = Right;
-	}
-
-	if (!Right.IsEmpty())
-	{
-		Parts.Add(Right);
-	}
-
-	return Parts.Num() > OriginalPartsCount;
+	return RigVMStringUtils::SplitNodePath(InNodePath, Parts);
 }
 
 FString URigVMNode::JoinNodePath(const FString& Left, const FString& Right)
 {
-	ensure(!Left.IsEmpty() && !Right.IsEmpty());
-	return Left + TEXT("|") + Right;
+	return RigVMStringUtils::JoinNodePath(Left, Right);
 }
 
 FString URigVMNode::JoinNodePath(const TArray<FString>& InParts)
 {
-	if (InParts.Num() == 0)
-	{
-		return FString();
-	}
-
-	FString Result = InParts[0];
-	for (int32 PartIndex = 1; PartIndex < InParts.Num(); PartIndex++)
-	{
-		Result += TEXT("|") + InParts[PartIndex];
-	}
-
-	return Result;
+	return RigVMStringUtils::JoinNodePath(InParts);
 }
 
 int32 URigVMNode::GetNodeIndex() const
@@ -285,9 +259,9 @@ bool URigVMNode::IsPure() const
 
 bool URigVMNode::IsMutable() const
 {
-	if (const URigVMPin* ExecutePin = FindPin(FRigVMStruct::ExecuteContextName.ToString()))
+	for (const URigVMPin* Pin : GetPins())
 	{
-		if(const UScriptStruct* ScriptStruct = ExecutePin->GetScriptStruct())
+		if(const UScriptStruct* ScriptStruct = Pin->GetScriptStruct())
 		{
 			return ScriptStruct->IsChildOf(FRigVMExecuteContext::StaticStruct());
 		}
@@ -341,6 +315,22 @@ bool URigVMNode::HasIOPin() const
 	return HasPinOfDirection(ERigVMPinDirection::IO);
 }
 
+bool URigVMNode::HasLazyPin(bool bOnlyConsiderPinsWithLinks) const
+{
+	return Pins.ContainsByPredicate([bOnlyConsiderPinsWithLinks](const URigVMPin* Pin) -> bool
+	{
+		if(Pin->IsLazy())
+		{
+			if(bOnlyConsiderPinsWithLinks)
+			{
+				return Pin->GetLinkedSourcePins(true).Num() > 0;
+			}
+			return true;
+		}
+		return false;
+	});
+}
+
 bool URigVMNode::HasOutputPin(bool bIncludeIO) const
 {
 	if (HasPinOfDirection(ERigVMPinDirection::Output))
@@ -388,6 +378,21 @@ bool URigVMNode::IsLinkedTo(URigVMNode* InNode) const
 		}
 	}
 	return false;
+}
+
+URigVMLibraryNode* URigVMNode::FindFunctionForNode() 
+{
+	UObject* Subject = this;
+	while (Subject->GetOuter() && !Subject->GetOuter()->IsA<URigVMFunctionLibrary>())
+	{
+		Subject = Subject->GetOuter();
+		if(Subject == nullptr)
+		{
+			return nullptr;
+		}
+	}
+
+	return Cast<URigVMLibraryNode>(Subject);
 }
 
 bool URigVMNode::IsLinkedToRecursive(URigVMPin* InPin, URigVMNode* InNode) const
@@ -534,6 +539,37 @@ double URigVMNode::GetInstructionMicroSeconds(URigVM* InVM, const FRigVMASTProxy
 	}
 #endif
 	return -1.0;
+}
+
+bool URigVMNode::IsLoopNode() const
+{
+	if(IsControlFlowNode())
+	{
+		static const TArray<FName> ExpectedLoopBlocks = {FRigVMStruct::ExecuteContextName, FRigVMStruct::ForLoopCompletedPinName};
+		const TArray<FName>& Blocks = GetControlFlowBlocks();
+		if(Blocks.Num() == ExpectedLoopBlocks.Num())
+		{
+			return Blocks[0] == ExpectedLoopBlocks[0] && Blocks[1] == ExpectedLoopBlocks[1];
+		}
+	}
+
+	return false;
+}
+
+bool URigVMNode::IsControlFlowNode() const
+{
+	return !GetControlFlowBlocks().IsEmpty();
+}
+
+const TArray<FName>& URigVMNode::GetControlFlowBlocks() const
+{
+	static const TArray<FName> EmptyArray;
+	return EmptyArray;
+}
+
+const bool URigVMNode::IsControlFlowBlockSliced(const FName& InBlockName) const
+{
+	return false;
 }
 
 TArray<FRigVMUserWorkflow> URigVMNode::GetSupportedWorkflows(ERigVMUserWorkflowType InType, const UObject* InSubject) const

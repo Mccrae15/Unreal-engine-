@@ -3,38 +3,12 @@
 
 #include "CoreMinimal.h"
 #include "NiagaraCommon.h"
+#include "NiagaraCompileHashVisitor.h"
+#include "NiagaraDataSetCompiledData.h"
 #include "Containers/DynamicRHIResourceArray.h"
 #include "RHI.h"
 #include "VectorVM.h"
 #include "RenderingThread.h"
-#include "NiagaraDataSet.generated.h"
-
-/** Helper class defining the layout and location of an FNiagaraVariable in an FNiagaraDataBuffer-> */
-USTRUCT()
-struct FNiagaraVariableLayoutInfo
-{
-	GENERATED_BODY()
-
-	/** Start index for the float components in the main buffer. */
-	UPROPERTY()
-	uint32 FloatComponentStart = 0;
-
-	/** Start index for the int32 components in the main buffer. */
-	UPROPERTY()
-	uint32 Int32ComponentStart = 0;
-
-	/** Start index for the half components in the main buffer. */
-	UPROPERTY()
-	uint32 HalfComponentStart = 0;
-
-	uint32 GetNumFloatComponents()const { return LayoutInfo.FloatComponentByteOffsets.Num(); }
-	uint32 GetNumInt32Components()const { return LayoutInfo.Int32ComponentByteOffsets.Num(); }
-	uint32 GetNumHalfComponents()const { return LayoutInfo.HalfComponentByteOffsets.Num(); }
-
-	/** This variable's type layout info. */
-	UPROPERTY()
-	FNiagaraTypeLayoutInfo LayoutInfo;
-};
 
 class FNiagaraDataSet;
 class FNiagaraShader;
@@ -120,7 +94,9 @@ public:
 	void SwapInstances(uint32 OldIndex, uint32 NewIndex);
 	void KillInstance(uint32 InstanceIdx);
 	void CopyTo(FNiagaraDataBuffer& DestBuffer, int32 SrcStartIdx, int32 DestStartIdx, int32 NumInstances)const;
+	void CopyToUnrelated(FNiagaraDataBuffer& DestBuffer, int32 SrcStartIdx, int32 DestStartIdx, int32 NumInstances)const;
 	void GPUCopyFrom(const float* GPUReadBackFloat, const int* GPUReadBackInt, const FFloat16* GPUReadBackHalf, int32 StartIdx, int32 NumInstances, uint32 InSrcFloatStride, uint32 InSrcIntStride, uint32 InSrcHalfStride);
+	void PushCPUBuffersToGPU(const TArray<FNiagaraDataBuffer*>& SourceBuffers, bool bReleaseRef, FRHICommandList& RHICmdList, ERHIFeatureLevel::Type FeatureLevel, const TCHAR* DebugSimName);
 	void Dump(int32 StartIndex, int32 NumInstances, const FString& Label, const FName& SortParameterKey = FName())const;
 
 	FORCEINLINE TArrayView<uint8 const* RESTRICT const> GetRegisterTable() const { return TArrayView<uint8 const* RESTRICT const>(RegisterTable); }
@@ -260,52 +236,6 @@ private:
 
 //////////////////////////////////////////////////////////////////////////
 
-USTRUCT()
-struct NIAGARA_API FNiagaraDataSetCompiledData
-{
-	GENERATED_BODY()
-
-	/** Variables in the data set. */
-	UPROPERTY()
-	TArray<FNiagaraVariable> Variables;
-
-	/** Data describing the layout of variable data. */
-	UPROPERTY()
-	TArray<FNiagaraVariableLayoutInfo> VariableLayouts;
-
-	/** Unique ID for this DataSet. Used to allow referencing from other emitters and Systems. */
-	UPROPERTY()
-	FNiagaraDataSetID ID;
-
-	/** Total number of components of each type in the data set. */
-	UPROPERTY()
-	uint32 TotalFloatComponents;
-
-	UPROPERTY()
-	uint32 TotalInt32Components;
-
-	UPROPERTY()
-	uint32 TotalHalfComponents;
-
-	/** Whether or not this dataset require persistent IDs. */
-	UPROPERTY()
-	uint32 bRequiresPersistentIDs : 1;
-
-	/** Sim target this DataSet is targeting (CPU/GPU). */
-	UPROPERTY()
-	ENiagaraSimTarget SimTarget;
-
-	FNiagaraDataSetCompiledData();
-	const FNiagaraVariableLayoutInfo* FindVariableLayoutInfo(const FNiagaraVariableBase& VariableDef) const;
-	void BuildLayout();
-	void Empty();
-
-	static FNiagaraDataSetCompiledData DummyCompiledData;
-};
-
-
-//////////////////////////////////////////////////////////////////////////
-
 /**
 General storage class for all per instance simulation data in Niagara.
 */
@@ -406,8 +336,6 @@ public:
 private:
 
 	void Reset();
-
-	void BuildLayout();
 
 	void ResetBuffersInternal();
 
@@ -579,3 +507,55 @@ FORCEINLINE void FNiagaraDataBuffer::CheckUsage(bool bReadOnly)const
 	);
 }
 
+namespace NiagaraDataSetPrivate
+{
+	inline const FNiagaraDataSetCompiledData& GetCompiledData(const FNiagaraDataSet& DataSet)
+	{
+		return DataSet.GetCompiledData();
+	}
+
+	inline FNiagaraDataBuffer* GetCurrentData(const FNiagaraDataSet& DataSet)
+	{
+		return DataSet.GetCurrentData();
+	}
+
+	inline FNiagaraDataBuffer* GetDestinationData(const FNiagaraDataSet& DataSet)
+	{
+		return DataSet.GetDestinationData();
+	}
+
+	inline uint8* GetComponentPtrFloat(FNiagaraDataBuffer* DataBuffer, uint32 ComponentIdx)
+	{
+		return DataBuffer->GetComponentPtrFloat(ComponentIdx);
+	}
+
+	inline uint8* GetComponentPtrHalf(FNiagaraDataBuffer* DataBuffer, uint32 ComponentIdx)
+	{
+		return DataBuffer->GetComponentPtrHalf(ComponentIdx);
+	}
+
+	inline uint8* GetComponentPtrInt32(FNiagaraDataBuffer* DataBuffer, uint32 ComponentIdx)
+	{
+		return DataBuffer->GetComponentPtrInt32(ComponentIdx);
+	}
+
+	inline const uint8* GetComponentPtrFloat(const FNiagaraDataBuffer* DataBuffer, uint32 ComponentIdx)
+	{
+		return DataBuffer->GetComponentPtrFloat(ComponentIdx);
+	}
+
+	inline const uint8* GetComponentPtrHalf(const FNiagaraDataBuffer* DataBuffer, uint32 ComponentIdx)
+	{
+		return DataBuffer->GetComponentPtrHalf(ComponentIdx);
+	}
+
+	inline const uint8* GetComponentPtrInt32(const FNiagaraDataBuffer* DataBuffer, uint32 ComponentIdx)
+	{
+		return DataBuffer->GetComponentPtrInt32(ComponentIdx);
+	}
+
+	inline uint32 GetNumInstances(const FNiagaraDataBuffer* DataBuffer)
+	{
+		return DataBuffer->GetNumInstances();
+	}
+}

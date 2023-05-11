@@ -7,6 +7,8 @@ public class Engine : ModuleRules
 {
 	public Engine(ReadOnlyTargetRules Target) : base(Target)
 	{
+		NumIncludedBytesPerUnityCPPOverride = 589824; // best unity size found from using UBT ProfileUnitySizes mode
+
 		PublicIncludePaths.Add("../Shaders/Shared");
 		
 		PrivatePCHHeaderFile = "Private/EnginePrivatePCH.h";
@@ -55,7 +57,6 @@ public class Engine : ModuleRules
 		{
 			PrivateIncludePathModuleNames.AddRange(
 				new string[] {
-					"TaskGraph",
 					"SlateReflector",
 				}
 			);
@@ -118,6 +119,16 @@ public class Engine : ModuleRules
 			new string[] {
 				"TypedElementFramework",
 				"TypedElementRuntime",
+				"NetCore",
+				"RenderCore",
+				"CoreUObject",
+				"CoreOnline",
+				"PhysicsCore",
+				"ChaosCore",
+				"DeveloperSettings",
+				"NetCommon",
+				"Sockets",
+				"MeshDescription"
 			}
 		);
 
@@ -143,9 +154,16 @@ public class Engine : ModuleRules
 				"TraceLog",
 				"ColorManagement",
 				"Icmp",
-				"XmlParser"
+				"XmlParser",
+				"AudioExtensions"
 			}
 		);
+
+		if (Target.bBuildWithEditorOnlyData && Target.bBuildEditor)
+		{
+			// The SparseVolumeTexture module containing the importer is only loaded and used in the editor.
+			DynamicallyLoadedModuleNames.Add("SparseVolumeTexture");
+		}
 
 		// Cross platform Audio Codecs:
 		AddEngineThirdPartyPrivateStaticDependencies(Target,

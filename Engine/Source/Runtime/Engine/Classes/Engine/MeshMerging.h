@@ -14,7 +14,7 @@ class UInstancedStaticMeshComponent;
 UENUM()
 namespace EMeshFeatureImportance
 {
-	enum Type
+	enum Type : int
 	{
 		Off,
 		Lowest,
@@ -30,9 +30,9 @@ namespace EMeshFeatureImportance
 UENUM()
 enum class EStaticMeshReductionTerimationCriterion : uint8
 {
-	Triangles,
-	Vertices,
-	Any
+	Triangles UMETA(DisplayName = "Triangles", ToolTip = "Triangle percent criterion will be used for simplification."),
+	Vertices UMETA(DisplayName = "Vertice", ToolTip = "Vertice percent criterion will be used for simplification."),
+	Any UMETA(DisplayName = "First Percent Satisfied", ToolTip = "Simplification will continue until either Triangle or Vertex count criteria is met."),
 };
 
 /** Settings used to reduce a mesh. */
@@ -41,13 +41,21 @@ struct FMeshReductionSettings
 {
 	GENERATED_USTRUCT_BODY()
 
-	/** Percentage of triangles to keep. 1.0 = no reduction, 0.0 = no triangles. */
+	/** Percentage of triangles to keep. 1.0 = no reduction, 0.0 = no triangles. (Triangles criterion properties) */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = ReductionSettings)
 	float PercentTriangles;
 
-	/** Percentage of vertices to keep. 1.0 = no reduction, 0.0 = no vertices. */
+	/** The maximum number of triangles to retain when using percentage termination criterion. (Triangles criterion properties) */
+	UPROPERTY(EditAnywhere, Category = ReductionMethod, meta = (DisplayName = "Max Triangle Count", ClampMin = 2, UIMin = "2"))
+	uint32 MaxNumOfTriangles;
+
+	/** Percentage of vertices to keep. 1.0 = no reduction, 0.0 = no vertices. (Vertices criterion properties) */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = ReductionSettings)
 	float PercentVertices;
+
+	/** The maximum number of vertices to retain when using percentage termination criterion. (Vertices criterion properties) */
+	UPROPERTY(EditAnywhere, Category = ReductionMethod, meta = (DisplayName = "Max Vertex Count", ClampMin = 4, UIMin = "4"))
+	uint32 MaxNumOfVerts;
 
 	/** The maximum distance in object space by which the reduced mesh may deviate from the original mesh. */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = ReductionSettings)
@@ -110,7 +118,9 @@ struct FMeshReductionSettings
 	/** Default settings. */
 	FMeshReductionSettings()
 		: PercentTriangles(1.0f)
+		, MaxNumOfTriangles(MAX_uint32)
 		, PercentVertices(1.0f)
+		, MaxNumOfVerts(MAX_uint32)
 		, MaxDeviation(0.0f)
 		, PixelError(8.0f)
 		, WeldingThreshold(0.0f)
@@ -132,7 +142,9 @@ struct FMeshReductionSettings
 
 	FMeshReductionSettings(const FMeshReductionSettings& Other)
 		: PercentTriangles(Other.PercentTriangles)
+		, MaxNumOfTriangles(Other.MaxNumOfTriangles)
 		, PercentVertices(Other.PercentVertices)
+		, MaxNumOfVerts(Other.MaxNumOfVerts)
 		, MaxDeviation(Other.MaxDeviation)
 		, PixelError(Other.PixelError)
 		, WeldingThreshold(Other.WeldingThreshold)
@@ -159,6 +171,8 @@ struct FMeshReductionSettings
 			TerminationCriterion == Other.TerminationCriterion
 			&& PercentVertices == Other.PercentVertices
 			&& PercentTriangles == Other.PercentTriangles
+			&& MaxNumOfTriangles == Other.MaxNumOfTriangles
+			&& MaxNumOfVerts == Other.MaxNumOfVerts
 			&& MaxDeviation == Other.MaxDeviation
 			&& PixelError == Other.PixelError
 			&& WeldingThreshold == Other.WeldingThreshold
@@ -186,7 +200,7 @@ struct FMeshReductionSettings
 UENUM()
 namespace ELandscapeCullingPrecision
 {
-	enum Type
+	enum Type : int
 	{
 		High = 0 UMETA(DisplayName = "High memory intensity and computation time"),
 		Medium = 1 UMETA(DisplayName = "Medium memory intensity and computation time"),
@@ -197,7 +211,7 @@ namespace ELandscapeCullingPrecision
 UENUM()
 namespace EProxyNormalComputationMethod
 {
-	enum Type
+	enum Type : int
 	{
 		AngleWeighted = 0 UMETA(DisplayName = "Angle Weighted"),
 		AreaWeighted = 1 UMETA(DisplayName = "Area  Weighted"),
@@ -508,6 +522,10 @@ struct FMeshMergingSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = MeshSettings)
 	uint8 bMergePhysicsData:1;
 
+	/** Whether to merge sockets */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = MeshSettings)
+	uint8 bMergeMeshSockets : 1;
+
 	/** Whether to merge source materials into one flat material, ONLY available when LOD Selection Type is set to LowestDetailLOD */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = MaterialSettings, meta=(EditCondition="LODSelectionType == EMeshLODSelectionType::LowestDetailLOD"))
 	uint8 bMergeMaterials:1;
@@ -600,6 +618,7 @@ struct FMeshMergingSettings
 		, bComputedLightMapResolution(false)
 		, bPivotPointAtZero(false)
 		, bMergePhysicsData(false)
+		, bMergeMeshSockets(false)
 		, bMergeMaterials(false)
 		, bCreateMergedMaterial(false)
 		, bBakeVertexDataToMesh(false)
@@ -778,7 +797,7 @@ struct FMeshApproximationSettings
 
 	/** Approximation Accuracy in Meters, will determine (eg) voxel resolution */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = ShapeSettings, meta = (DisplayName = "Approximation Accuracy (meters)", ClampMin = "0.001"))
-	float ApproximationAccuracy = 1.0;
+	float ApproximationAccuracy = 1.0f;
 
 	/** Maximum allowable voxel count along main directions. This is a limit on ApproximationAccuracy. Max of 1290 (1290^3 is the last integer < 2^31, using a bigger number results in failures in TArray code & probably elsewhere) */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, AdvancedDisplay, Category = ShapeSettings, meta = (ClampMin = "64", ClampMax = "1290"))
@@ -790,7 +809,7 @@ struct FMeshApproximationSettings
 
 	/** Multiplier on Approximation Accuracy used for auto-thickening */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = ShapeSettings, meta = (ClampMin = "0.001", EditCondition = "bAttemptAutoThickening"))
-	float TargetMinThicknessMultiplier = 1.5;
+	float TargetMinThicknessMultiplier = 1.5f;
 
 	/** If enabled, tiny parts will be excluded from the mesh merging, which can improve performance */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = ShapeSettings)
@@ -798,7 +817,7 @@ struct FMeshApproximationSettings
 
 	/** Multiplier on Approximation Accuracy used to define tiny-part threshold, using maximum bounding-box dimension */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = ShapeSettings, meta = (ClampMin = "0.001", EditCondition = "bIgnoreTinyParts"))
-	float TinyPartSizeMultiplier = 0.05;
+	float TinyPartSizeMultiplier = 0.05f;
 
 
 	/** Optional methods to attempt to close off the bottom of open meshes */
@@ -808,7 +827,7 @@ struct FMeshApproximationSettings
 
 	/** Winding Threshold controls hole filling at open mesh borders. Smaller value means "more/rounder" filling */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, AdvancedDisplay, Category = ShapeSettings, meta = (ClampMin = "0.01", ClampMax = "0.99"))
-	float WindingThreshold = 0.5;
+	float WindingThreshold = 0.5f;
 
 	/** If true, topological expand/contract is used to try to fill small gaps between objects. */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = ShapeSettings)
@@ -816,7 +835,7 @@ struct FMeshApproximationSettings
 
 	/** Distance in Meters to expand/contract to fill gaps */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = ShapeSettings, meta = (DisplayName = "Gap Filling Distance (meters)", ClampMin = "0.001", EditCondition = "bFillGaps"))
-	float GapDistance = 0.1;
+	float GapDistance = 0.1f;
 
 
 	//

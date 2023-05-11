@@ -2,11 +2,30 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
 #include "Components/SplineComponent.h"
 
 #include "WaterSplineMetadata.generated.h"
+
+
+#if WITH_EDITOR
+
+class UWaterSplineMetadata;
+
+struct FOnWaterSplineMetadataChangedParams
+{
+	FOnWaterSplineMetadataChangedParams(const FPropertyChangedEvent& InPropertyChangedEvent = FPropertyChangedEvent(/*InProperty = */nullptr)) 
+		: PropertyChangedEvent(InPropertyChangedEvent)
+	{}
+
+	/** Provides some additional context about how the water brush actor data has changed (property, type of change...) */
+	FPropertyChangedEvent PropertyChangedEvent;
+
+	UWaterSplineMetadata* WaterSplineMetadata = nullptr;
+		
+	/** Indicates user initiated change*/
+	bool bUserTriggered = false;
+};
+#endif // WITH_EDITOR
 
 USTRUCT()
 struct FWaterSplineCurveDefaults
@@ -25,7 +44,7 @@ struct FWaterSplineCurveDefaults
 
 	UPROPERTY(EditDefaultsOnly, Category = WaterCurveDefaults)
 	float DefaultWidth;
-
+	
 	UPROPERTY(EditDefaultsOnly, Category = WaterCurveDefaults)
 	float DefaultVelocity;
 
@@ -87,8 +106,13 @@ public:
 	bool bShouldVisualizeDepth;
 
 	// Delegate called whenever the metadata is updated
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnWaterSplineMetadataChanged, const FOnWaterSplineMetadataChangedParams&);
+	FOnWaterSplineMetadataChanged OnChangeMetadata;
+	
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnChangeData, UWaterSplineMetadata* /*WaterSplineMetadata*/, FPropertyChangedEvent& /*PropertyChangedEvent*/);
-	FOnChangeData OnChangeData;
+	UE_DEPRECATED(5.2, "Use OnChangeMetadata")
+    FOnChangeData OnChangeData;
+    	
 #endif // WITH_EDITORONLY_DATA
 
 private:
@@ -96,3 +120,7 @@ private:
 	UPROPERTY()
 	FInterpCurveVector WaterVelocity_DEPRECATED;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

@@ -1,14 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Tests/Determinism/PCGDeterminismTestsCommon.h"
-#include "Tests/PCGTestsCommon.h"
 
+#include "Data/PCGSpatialData.h"
 #include "PCGComponent.h"
-#include "PCGData.h"
-#include "PCGHelpers.h"
 
 #include "Data/PCGPointData.h"
 #include "Elements/PCGDensityRemapElement.h"
+#include "PCGContext.h"
 
 IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(FPCGDensityRemapTest, FPCGTestBaseClass, "pcg.tests.DensityRemap.Basic", PCGTestsCommon::TestFlags)
 
@@ -35,8 +34,7 @@ bool FPCGDensityRemapTest::RunTest(const FString& Parameters)
 
 	auto ValidateDensityRemap = [this, &TestData, DensityRemapElement, Settings](TArray<float> CorrectDensities) -> bool
 	{
-		TUniquePtr<FPCGContext> Context = MakeUnique<FPCGContext>(*DensityRemapElement->Initialize(TestData.InputData, TestData.TestPCGComponent, nullptr));
-		Context->NumAvailableTasks = 1;
+		TUniquePtr<FPCGContext> Context = TestData.InitializeTestContext();
 
 		while (!DensityRemapElement->Execute(Context.Get()))
 		{}

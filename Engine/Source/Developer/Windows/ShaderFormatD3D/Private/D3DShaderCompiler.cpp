@@ -5,7 +5,6 @@
 #include "ShaderCompilerCommon.h"
 #include "ShaderMinifier.h"
 #include "ShaderParameterParser.h"
-#include "D3D11ShaderResources.h"
 #include "D3D12RHI.h"
 #include "Misc/Paths.h"
 #include "Misc/FileHelper.h"
@@ -38,7 +37,6 @@ DEFINE_LOG_CATEGORY_STATIC(LogD3D11ShaderCompiler, Log, All);
 
 static const uint32 GD3DMaximumNumUAVs = 8; // Limit for feature level 11.0
 
-int32 GD3DAllowRemoveUnused = 0;
 static int32 GD3DCheckForDoubles = 1;
 static int32 GD3DDumpAMDCodeXLFile = 0;
 
@@ -303,7 +301,7 @@ static FString D3D11CreateShaderCompileCommandLine(
 
 
 // Validate that we are not going over to maximum amount of resource bindings support by the default root signature on DX12
-// Currently limited for hard-coded root signature setup (see: FD3D12RootSignatureDesc::GetStaticGraphicsRootSignatureDesc)
+// Currently limited for hard-coded root signature setup (see: FD3D12Adapter::StaticGraphicsRootSignature)
 // In theory this limitation is only required for DX12, but we don't want a shader to compile on DX11 while not working on DX12.
 // (DX11 has an API limit on 128 SRVs, 16 Samplers, 8 UAVs and 14 CBs but if you go over these values then the shader won't compile)
 bool ValidateResourceCounts(uint32 NumSRVs, uint32 NumSamplers, uint32 NumUAVs, uint32 NumCBs, TArray<FString>& OutFilteredErrors)
@@ -442,54 +440,9 @@ static bool GetD3DCompilerFuncs(const FString& NewCompilerPath, pD3DCompile* Out
 	return false;
 }
 
-static const char* Win32SehExceptionToString(DWORD Code)
+static int D3DExceptionFilter(bool bCatchException)
 {
-#define CASE_TO_STRING(IDENT) case IDENT: return #IDENT
-
-	switch (Code)
-	{
-		CASE_TO_STRING(EXCEPTION_ACCESS_VIOLATION);
-		CASE_TO_STRING(EXCEPTION_ARRAY_BOUNDS_EXCEEDED);
-		CASE_TO_STRING(EXCEPTION_BREAKPOINT);
-		CASE_TO_STRING(EXCEPTION_DATATYPE_MISALIGNMENT);
-		CASE_TO_STRING(EXCEPTION_FLT_DENORMAL_OPERAND);
-		CASE_TO_STRING(EXCEPTION_FLT_DIVIDE_BY_ZERO);
-		CASE_TO_STRING(EXCEPTION_FLT_INEXACT_RESULT);
-		CASE_TO_STRING(EXCEPTION_FLT_INVALID_OPERATION);
-		CASE_TO_STRING(EXCEPTION_FLT_OVERFLOW);
-		CASE_TO_STRING(EXCEPTION_FLT_STACK_CHECK);
-		CASE_TO_STRING(EXCEPTION_FLT_UNDERFLOW);
-		CASE_TO_STRING(EXCEPTION_GUARD_PAGE);
-		CASE_TO_STRING(EXCEPTION_ILLEGAL_INSTRUCTION);
-		CASE_TO_STRING(EXCEPTION_IN_PAGE_ERROR);
-		CASE_TO_STRING(EXCEPTION_INT_DIVIDE_BY_ZERO);
-		CASE_TO_STRING(EXCEPTION_INT_OVERFLOW);
-		CASE_TO_STRING(EXCEPTION_INVALID_DISPOSITION);
-		CASE_TO_STRING(EXCEPTION_INVALID_HANDLE);
-		CASE_TO_STRING(EXCEPTION_NONCONTINUABLE_EXCEPTION);
-		CASE_TO_STRING(EXCEPTION_PRIV_INSTRUCTION);
-		CASE_TO_STRING(EXCEPTION_SINGLE_STEP);
-		CASE_TO_STRING(EXCEPTION_STACK_OVERFLOW);
-		CASE_TO_STRING(STATUS_UNWIND_CONSOLIDATE);
-		default: return nullptr;
-	}
-
-#undef CASE_TO_STRING
-}
-
-struct FD3DExceptionInfo
-{
-	uint32 Code;
-	uint64 Base;
-	uint64 Address;
-};
-
-static int D3DExceptionFilter(DWORD Code, LPEXCEPTION_POINTERS InInfo, FD3DExceptionInfo& OutInfo)
-{
-	OutInfo.Code = InInfo->ExceptionRecord->ExceptionCode;
-	OutInfo.Base = (uint64)GetModuleHandle(NULL);
-	OutInfo.Address = (uint64)InInfo->ExceptionRecord->ExceptionAddress;
-	return EXCEPTION_EXECUTE_HANDLER;
+	return bCatchException ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH;
 }
 
 static HRESULT D3DCompileWrapper(
@@ -505,8 +458,7 @@ static HRESULT D3DCompileWrapper(
 	uint32					Flags2,
 	ID3DBlob**				ppCode,
 	ID3DBlob**				ppErrorMsgs,
-	bool&					bOutException,
-	FD3DExceptionInfo&		OutExceptionInfo
+	bool					bCatchException = false
 	)
 {
 #if !PLATFORM_SEH_EXCEPTIONS_DISABLED
@@ -528,56 +480,18 @@ static HRESULT D3DCompileWrapper(
 		);
 	}
 #if !PLATFORM_SEH_EXCEPTIONS_DISABLED
-	__except(D3DExceptionFilter(GetExceptionCode(), GetExceptionInformation(), OutExceptionInfo))
+	__except(D3DExceptionFilter(bCatchException))
 	{
-		GSCWErrorCode = ESCWErrorCode::CrashInsidePlatformCompiler;
-		bOutException = true;
+		FSCWErrorCode::Report(FSCWErrorCode::CrashInsidePlatformCompiler);
 		return E_FAIL;
 	}
 #endif
 }
 
-// Utility variable so we can place a breakpoint while debugging
-static int32 GBreakpoint = 0;
-
 inline bool IsCompatibleBinding(const D3D11_SHADER_INPUT_BIND_DESC& BindDesc, uint32 BindingSpace)
 {
 	return true;
 }
-
-bool DumpDebugShaderUSF(FString& PreprocessedShaderSource, const FShaderCompilerInput& Input)
-{
-	bool bDumpDebugInfo = false;
-
-	// Write out the preprocessed file and a batch file to compile it if requested (DumpDebugInfoPath is valid)
-	if (Input.DumpDebugInfoPath.Len() > 0 && IFileManager::Get().DirectoryExists(*Input.DumpDebugInfoPath))
-	{
-		bDumpDebugInfo = true;
-		FString Filename = Input.GetSourceFilename();
-		FArchive* FileWriter = IFileManager::Get().CreateFileWriter(*(Input.DumpDebugInfoPath / Filename));
-		if (FileWriter)
-		{
-			auto AnsiSourceFile = StringCast<ANSICHAR>(*PreprocessedShaderSource);
-			FileWriter->Serialize((ANSICHAR*)AnsiSourceFile.Get(), AnsiSourceFile.Length());
-			{
-				FString Line = CrossCompiler::CreateResourceTableFromEnvironment(Input.Environment);
-
-				Line += TEXT("#if 0 /*DIRECT COMPILE*/\n");
-				Line += CreateShaderCompilerWorkerDirectCommandLine(Input);
-				Line += TEXT("\n#endif /*DIRECT COMPILE*/\n");
-				Line += TEXT("//");
-				Line += Input.DebugDescription;
-				Line += TEXT("\n");
-				FileWriter->Serialize(TCHAR_TO_ANSI(*Line), Line.Len());
-			}
-			FileWriter->Close();
-			delete FileWriter;
-		}
-	}
-
-	return bDumpDebugInfo;
-}
-
 
 static void PatchSpirvForPrecompilation(FSpirv& Spirv)
 {
@@ -645,18 +559,20 @@ static bool CompileErrorsContainInternalError(ID3DBlob* Errors)
 {
 	if (Errors)
 	{
-		void* ErrorBuffer = Errors->GetBufferPointer();
-		if (ErrorBuffer)
+		if (void* ErrorBuffer = Errors->GetBufferPointer())
 		{
-			const FStringView ErrorString = ANSI_TO_TCHAR(ErrorBuffer);
-			return ErrorString.Contains(TEXT("internal error:")) || ErrorString.Contains(TEXT("Internal Compiler Error:"));
+			const ANSICHAR* ErrorString = reinterpret_cast<const ANSICHAR*>(ErrorBuffer);
+			return
+				FCStringAnsi::Strstr(ErrorString, "internal error:") != nullptr ||
+				FCStringAnsi::Strstr(ErrorString, "Internal Compiler Error:") != nullptr;
 		}
 	}
 	return false;
 }
 
 // Generate the dumped usf file; call the D3D compiler, gather reflection information and generate the output data
-bool CompileAndProcessD3DShaderFXC(FString& PreprocessedShaderSource, const FString& CompilerPath,
+static bool CompileAndProcessD3DShaderFXCExt(
+	FString& PreprocessedShaderSource, const FString& CompilerPath,
 	uint32 CompileFlags,
 	const FShaderCompilerInput& Input,
 	const FShaderParameterParser& ShaderParameterParser,
@@ -664,12 +580,13 @@ bool CompileAndProcessD3DShaderFXC(FString& PreprocessedShaderSource, const FStr
 	const TCHAR* ShaderProfile, bool bSecondPassAferUnusedInputRemoval,
 	TArray<FString>& FilteredErrors, FShaderCompilerOutput& Output)
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE(CompileAndProcessD3DShaderFXC);
+	TRACE_CPUPROFILER_EVENT_SCOPE(CompileAndProcessD3DShaderFXCExt);
 
 	auto AnsiSourceFile = StringCast<ANSICHAR>(*PreprocessedShaderSource);
 
 	// Write out the preprocessed file and a batch file to compile it if requested (DumpDebugInfoPath is valid)
-	bool bDumpDebugInfo = DumpDebugShaderUSF(PreprocessedShaderSource, Input);
+	UE::ShaderCompilerCommon::DumpDebugShaderData(Input, PreprocessedShaderSource);
+	bool bDumpDebugInfo = Input.DumpDebugInfoEnabled();
 	FString DisasmFilename;
 	if (bDumpDebugInfo)
 	{
@@ -684,12 +601,6 @@ bool CompileAndProcessD3DShaderFXC(FString& PreprocessedShaderSource, const FStr
 		}
 
 		FFileHelper::SaveStringToFile(BatchFileContents, *(Input.DumpDebugInfoPath / TEXT("CompileFXC.bat")));
-
-		if (Input.bGenerateDirectCompileFile)
-		{
-			FFileHelper::SaveStringToFile(CreateShaderCompilerWorkerDirectCommandLine(Input), *(Input.DumpDebugInfoPath / TEXT("DirectCompile.txt")));
-			FFileHelper::SaveStringToFile(Input.DebugDescription, *(Input.DumpDebugInfoPath / TEXT("permutation_info.txt")));
-		}
 
 		DisasmFilename = *(Input.DumpDebugInfoPath / TEXT("Output.d3dasm"));
 	}
@@ -706,9 +617,6 @@ bool CompileAndProcessD3DShaderFXC(FString& PreprocessedShaderSource, const FStr
 
 	if (D3DCompileFunc)
 	{
-		bool bException = false;
-		FD3DExceptionInfo ExceptionInfo{};
-
 		const bool bHlslVersion2021 = Input.Environment.CompilerFlags.Contains(CFLAG_HLSL2021);
 		const bool bPrecompileWithDXC = bHlslVersion2021 || Input.Environment.CompilerFlags.Contains(CFLAG_PrecompileWithDXC);
 		if (!bPrecompileWithDXC)
@@ -726,20 +634,16 @@ bool CompileAndProcessD3DShaderFXC(FString& PreprocessedShaderSource, const FStr
 				0,
 				Shader.GetInitReference(),
 				Errors.GetInitReference(),
-				bException,
-				ExceptionInfo
+				// We only want to catch the exception on initial FXC compiles so we can retry with a 
+				// DXC precompilation step. If it fails again on the second attempt then we let
+				// ShaderCompileWorker handle the exception and log an error.
+				/* bCatchException */ true
 			);
 		}
 
 		// Some materials give FXC a hard time to optimize and the compiler fails with an internal error.
-		if (bPrecompileWithDXC || Result == HRESULT_FROM_WIN32(ERROR_ARITHMETIC_OVERFLOW) || Result == E_OUTOFMEMORY || bException || (Result != S_OK && CompileErrorsContainInternalError(Errors.GetReference())))
+		if (bPrecompileWithDXC || Result == HRESULT_FROM_WIN32(ERROR_ARITHMETIC_OVERFLOW) || Result == E_OUTOFMEMORY || Result == E_FAIL || (Result != S_OK && CompileErrorsContainInternalError(Errors.GetReference())))
 		{
-			if (bPrecompileWithDXC)
-			{
-				// Let the user know this shader had to be cross-compiled due to a crash in FXC. Only shows up if CVar 'r.ShaderDevelopmentMode' is enabled.
-				Output.Errors.Add(FShaderCompilerError(FString::Printf(TEXT("Cross-compiled shader to intermediate HLSL as pre-compile step for FXC: %s"), *Input.GenerateShaderName())));
-			}
-
 			CrossCompiler::FShaderConductorContext CompilerContext;
 
 			// Load shader source into compiler context
@@ -804,9 +708,7 @@ bool CompileAndProcessD3DShaderFXC(FString& PreprocessedShaderSource, const FStr
 				CompileFlags & (~D3DCOMPILE_WARNINGS_ARE_ERRORS),
 				0,
 				Shader.GetInitReference(),
-				Errors.GetInitReference(),
-				bException,
-				ExceptionInfo
+				Errors.GetInitReference()
 			);
 
 			if (!bPrecompileWithDXC && SUCCEEDED(Result))
@@ -814,30 +716,6 @@ bool CompileAndProcessD3DShaderFXC(FString& PreprocessedShaderSource, const FStr
 				// Let the user know this shader had to be cross-compiled due to a crash in FXC. Only shows up if CVar 'r.ShaderDevelopmentMode' is enabled.
 				Output.Errors.Add(FShaderCompilerError(FString::Printf(TEXT("Cross-compiled shader to intermediate HLSL after first attempt crashed FXC: %s"), *Input.GenerateShaderName())));
 			}
-		}
-
-		if (bException)
-		{
-			const char* CodeName = Win32SehExceptionToString(ExceptionInfo.Code);
-			const FString CodeNameStr = (CodeName != nullptr ? ANSI_TO_TCHAR(CodeName) : TEXT("Unknown"));
-			FilteredErrors.Add(
-				FString::Printf(
-					TEXT("D3DCompile exception: Code = 0x%08X (%s), Address = 0x%016llX, Offset = 0x%016llX, Codebase = 0x%016llX"),
-					ExceptionInfo.Code,
-					*CodeNameStr,
-					ExceptionInfo.Address,
-					(ExceptionInfo.Address - ExceptionInfo.Base),
-					ExceptionInfo.Base
-				)
-			);
-
-			// Dump input shader source on exception to be able to investigate issue through logs on CIS servers
-			FString DumpedSource;
-			DumpedSource = PreprocessedShaderSource;
-			DumpedSource += TEXT("\n#if 0 /*DIRECT COMPILE*/\n");
-			DumpedSource += CreateShaderCompilerWorkerDirectCommandLine(Input);
-			DumpedSource += TEXT("\n#endif /*DIRECT COMPILE*/\n");
-			Output.OptionalPreprocessedShaderSource = MoveTemp(DumpedSource);
 		}
 	}
 	else
@@ -939,12 +817,6 @@ bool CompileAndProcessD3DShaderFXC(FString& PreprocessedShaderSource, const FStr
 
 			if (Input.Target.Frequency == SF_Pixel)
 			{
-				if (GD3DAllowRemoveUnused != 0 && Input.bCompilingForShaderPipeline)
-				{
-					// Handy place for a breakpoint for debugging...
-					++GBreakpoint;
-				}
-
 				bool bFoundUnused = false;
 				for (uint32 Index = 0; Index < ShaderDesc.InputParameters; ++Index)
 				{
@@ -984,7 +856,7 @@ bool CompileAndProcessD3DShaderFXC(FString& PreprocessedShaderSource, const FStr
 					}
 				}
 
-				if (GD3DAllowRemoveUnused && Input.bCompilingForShaderPipeline && bFoundUnused && !bSecondPassAferUnusedInputRemoval)
+				if (Input.Environment.CompilerFlags.Contains(CFLAG_ForceRemoveUnusedInterpolators) && Input.bCompilingForShaderPipeline && bFoundUnused && !bSecondPassAferUnusedInputRemoval)
 				{
 					// Rewrite the source removing the unused inputs so the bindings will match.
 					// We may need to do this more than once if unused inputs change after the removal. Ie. for complex shaders, what can happen is:
@@ -1005,7 +877,7 @@ bool CompileAndProcessD3DShaderFXC(FString& PreprocessedShaderSource, const FStr
 						if (RemoveUnusedInputs(PreprocessedShaderSource, ShaderInputs, EntryPointName, RemoveErrors))
 						{
 							Output = OriginalOutput;
-							if (!CompileAndProcessD3DShaderFXC(PreprocessedShaderSource, CompilerPath, CompileFlags, Input, ShaderParameterParser, EntryPointName, ShaderProfile, true, FilteredErrors, Output))
+							if (!CompileAndProcessD3DShaderFXCExt(PreprocessedShaderSource, CompilerPath, CompileFlags, Input, ShaderParameterParser, EntryPointName, ShaderProfile, true, FilteredErrors, Output))
 							{
 								// if we failed to compile the shader, propagate the error up
 								return false;
@@ -1177,12 +1049,51 @@ bool CompileAndProcessD3DShaderFXC(FString& PreprocessedShaderSource, const FStr
 		}
 	}
 
-	if (FAILED(Result))
+	return SUCCEEDED(Result);
+}
+
+bool CompileAndProcessD3DShaderFXC(FString& PreprocessedShaderSource,
+	uint32 CompileFlags,
+	const FShaderCompilerInput& Input,
+	const FShaderParameterParser& ShaderParameterParser,
+	FString& EntryPointName,
+	const TCHAR* ShaderProfile, bool bSecondPassAferUnusedInputRemoval,
+	FShaderCompilerOutput& Output)
+{
+	// Override default compiler path to newer dll
+	FString CompilerPath = FPaths::EngineDir();
+	CompilerPath.Append(TEXT("Binaries/ThirdParty/Windows/DirectX/x64/d3dcompiler_47.dll"));
+
+	TArray<FString> FilteredErrors;
+	const bool bSuccess = CompileAndProcessD3DShaderFXCExt(PreprocessedShaderSource, CompilerPath, CompileFlags, Input, ShaderParameterParser, EntryPointName, ShaderProfile, false, FilteredErrors, Output);
+
+	// Process errors
+	for (int32 ErrorIndex = 0; ErrorIndex < FilteredErrors.Num(); ErrorIndex++)
 	{
-		++GBreakpoint;
+		const FString& CurrentError = FilteredErrors[ErrorIndex];
+		FShaderCompilerError NewError;
+
+		// Extract filename and line number from FXC output with format:
+		// "d:\Project\Binaries\BasePassPixelShader(30,7): error X3000: invalid target or usage string"
+		int32 FirstParenIndex = CurrentError.Find(TEXT("("));
+		int32 LastParenIndex = CurrentError.Find(TEXT("):"));
+		if (FirstParenIndex != INDEX_NONE &&
+			LastParenIndex != INDEX_NONE &&
+			LastParenIndex > FirstParenIndex)
+		{
+			// Extract and store error message with source filename
+			NewError.ErrorVirtualFilePath = CurrentError.Left(FirstParenIndex);
+			NewError.ErrorLineString = CurrentError.Mid(FirstParenIndex + 1, LastParenIndex - FirstParenIndex - FCString::Strlen(TEXT("(")));
+			NewError.StrippedErrorMessage = CurrentError.Right(CurrentError.Len() - LastParenIndex - FCString::Strlen(TEXT("):")));
+		}
+		else
+		{
+			NewError.StrippedErrorMessage = CurrentError;
+		}
+		Output.Errors.Add(NewError);
 	}
 
-	return SUCCEEDED(Result);
+	return bSuccess;
 }
 
 void CompileD3DShader(const FShaderCompilerInput& Input, FShaderCompilerOutput& Output, FShaderCompilerDefinitions& AdditionalDefines, const FString& WorkingDirectory, ELanguage Language)
@@ -1248,12 +1159,10 @@ void CompileD3DShader(const FShaderCompilerInput& Input, FShaderCompilerOutput& 
 		}
 	}
 
-	GD3DAllowRemoveUnused = Input.Environment.CompilerFlags.Contains(CFLAG_ForceRemoveUnusedInterpolators) ? 1 : 0;
-
 	FString EntryPointName = Input.EntryPointName;
 
 	Output.bFailedRemovingUnused = false;
-	if (GD3DAllowRemoveUnused == 1 && Input.Target.Frequency == SF_Vertex && Input.bCompilingForShaderPipeline)
+	if (Input.Environment.CompilerFlags.Contains(CFLAG_ForceRemoveUnusedInterpolators) && Input.Target.Frequency == SF_Vertex && Input.bCompilingForShaderPipeline)
 	{
 		// Always add SV_Position
 		TArray<FString> UsedOutputs = Input.UsedOutputs;
@@ -1284,7 +1193,7 @@ void CompileD3DShader(const FShaderCompilerInput& Input, FShaderCompilerOutput& 
 		Exceptions.AddUnique(TEXT("SV_CullDistance7"));
 		
 		// Write the preprocessed file out in case so we can debug issues on HlslParser
-		DumpDebugShaderUSF(PreprocessedShaderSource, Input);
+		UE::ShaderCompilerCommon::DumpDebugShaderData(Input, PreprocessedShaderSource);
 
 		TArray<FString> Errors;
 		if (!RemoveUnusedOutputs(PreprocessedShaderSource, UsedOutputs, Exceptions, EntryPointName, Errors))
@@ -1302,10 +1211,8 @@ void CompileD3DShader(const FShaderCompilerInput& Input, FShaderCompilerOutput& 
 		}
 	}
 
-	FShaderParameterParser ShaderParameterParser;
-	if (!ShaderParameterParser.ParseAndModify(
-		Input, Output, PreprocessedShaderSource,
-		(Input.IsRayTracingShader() || ShouldUseStableConstantBuffer(Input)) ? TEXT("cbuffer") : nullptr))
+	FShaderParameterParser ShaderParameterParser(TEXT("cbuffer"));
+	if (!ShaderParameterParser.ParseAndModify(Input, Output, PreprocessedShaderSource))
 	{
 		// The FShaderParameterParser will add any relevant errors.
 		return;
@@ -1325,40 +1232,12 @@ void CompileD3DShader(const FShaderCompilerInput& Input, FShaderCompilerOutput& 
 	TArray<FString> FilteredErrors;
 
 	// Run the experimental shader minifier
-
+	#if UE_D3D_SHADER_COMPILER_ALLOW_DEAD_CODE_REMOVAL
 	if (Input.Environment.CompilerFlags.Contains(CFLAG_RemoveDeadCode))
 	{
-		FString EntryMain;
-		FString EntryAnyHit;
-		FString EntryIntersection;
-		UE::ShaderCompilerCommon::ParseRayTracingEntryPoint(EntryPointName, EntryMain, EntryAnyHit, EntryIntersection);
-
-		if (!EntryAnyHit.IsEmpty())
-		{
-			EntryMain += TEXT(";");
-			EntryMain += EntryAnyHit;
-		}
-
-		if (!EntryIntersection.IsEmpty())
-		{
-			EntryMain += TEXT(";");
-			EntryMain += EntryIntersection;
-		}
-
-		UE::ShaderMinifier::FMinifiedShader Minified  = UE::ShaderMinifier::Minify(PreprocessedShaderSource, EntryMain, 
-			UE::ShaderMinifier::EMinifyShaderFlags::OutputReasons
-			| UE::ShaderMinifier::EMinifyShaderFlags::OutputStats
-			| UE::ShaderMinifier::EMinifyShaderFlags::OutputLines);
-
-		if (Minified.Success())
-		{
-			Swap(PreprocessedShaderSource, Minified.Code);
-		}
-		else
-		{
-			FilteredErrors.Add(TEXT("Shader minification failed."));
-		}
+		UE::ShaderCompilerCommon::RemoveDeadCode(PreprocessedShaderSource, EntryPointName, Output.Errors);
 	}
+	#endif // UE_D3D_SHADER_COMPILER_ALLOW_DEAD_CODE_REMOVAL
 
 	// @TODO - implement different material path to allow us to remove backwards compat flag on sm5 shaders
 	uint32 CompileFlags = D3DCOMPILE_ENABLE_BACKWARDS_COMPATIBILITY
@@ -1391,56 +1270,13 @@ void CompileD3DShader(const FShaderCompilerInput& Input, FShaderCompilerOutput& 
 			CompileFlags |= TranslateCompilerFlagD3D11((ECompilerFlags)Flag);
 		});
 
-	if (bUseDXC)
+	const bool bSuccess = bUseDXC
+		? CompileAndProcessD3DShaderDXC(PreprocessedShaderSource, CompileFlags, Input, ShaderParameterParser, EntryPointName, ShaderProfile, Language, false, Output)
+		: CompileAndProcessD3DShaderFXC(PreprocessedShaderSource, CompileFlags, Input, ShaderParameterParser, EntryPointName, ShaderProfile, false, Output);
+
+	if (!bSuccess && !Output.Errors.Num())
 	{
-		if (!CompileAndProcessD3DShaderDXC(PreprocessedShaderSource, CompileFlags, Input, ShaderParameterParser, EntryPointName, ShaderProfile, Language, false, FilteredErrors, Output))
-		{
-			if (!FilteredErrors.Num())
-			{
-				FilteredErrors.Add(TEXT("Compile Failed without errors!"));
-			}
-		}
-		CrossCompiler::FShaderConductorContext::ConvertCompileErrors(MoveTemp(FilteredErrors), Output.Errors);
-	}
-	else
-	{
-		// Override default compiler path to newer dll
-		FString CompilerPath = FPaths::EngineDir();
-		CompilerPath.Append(TEXT("Binaries/ThirdParty/Windows/DirectX/x64/d3dcompiler_47.dll"));
-
-		if (!CompileAndProcessD3DShaderFXC(PreprocessedShaderSource, CompilerPath, CompileFlags, Input, ShaderParameterParser, EntryPointName, ShaderProfile, false, FilteredErrors, Output))
-		{
-			if (!FilteredErrors.Num())
-			{
-				FilteredErrors.Add(TEXT("Compile Failed without errors!"));
-			}
-		}
-
-		// Process errors
-		for (int32 ErrorIndex = 0; ErrorIndex < FilteredErrors.Num(); ErrorIndex++)
-		{
-			const FString& CurrentError = FilteredErrors[ErrorIndex];
-			FShaderCompilerError NewError;
-
-			// Extract filename and line number from FXC output with format:
-			// "d:\Project\Binaries\BasePassPixelShader(30,7): error X3000: invalid target or usage string"
-			int32 FirstParenIndex = CurrentError.Find(TEXT("("));
-			int32 LastParenIndex = CurrentError.Find(TEXT("):"));
-			if (FirstParenIndex != INDEX_NONE &&
-				LastParenIndex != INDEX_NONE &&
-				LastParenIndex > FirstParenIndex)
-			{
-				// Extract and store error message with source filename
-				NewError.ErrorVirtualFilePath = CurrentError.Left(FirstParenIndex);
-				NewError.ErrorLineString = CurrentError.Mid(FirstParenIndex + 1, LastParenIndex - FirstParenIndex - FCString::Strlen(TEXT("(")));
-				NewError.StrippedErrorMessage = CurrentError.Right(CurrentError.Len() - LastParenIndex - FCString::Strlen(TEXT("):")));
-			}
-			else
-			{
-				NewError.StrippedErrorMessage = CurrentError;
-			}
-			Output.Errors.Add(NewError);
-		}
+		Output.Errors.Add(TEXT("Compile failed without errors!"));
 	}
 
 	const bool bDirectCompile = FParse::Param(FCommandLine::Get(), TEXT("directcompile"));

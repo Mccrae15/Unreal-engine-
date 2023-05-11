@@ -3,13 +3,9 @@
 #pragma once
 
 #include "Engine/DataAsset.h"
-#include "StateTreeTypes.h"
 #include "StateTreeSchema.h"
-#include "InstancedStruct.h"
-#include "InstancedStructArray.h"
 #include "StateTreePropertyBindings.h"
 #include "StateTreeInstanceData.h"
-#include "Misc/ScopeRWLock.h"
 #include "StateTree.generated.h"
 
 
@@ -30,8 +26,12 @@ struct STATETREEMODULE_API FStateTreeCustomVersion
 		IndexTypes,
 		// Added events.
 		AddedEvents,
-		// Added events.
+		// Testing mishap
 		AddedFoo,
+		// Changed transition delay
+		TransitionDelay,
+		// Added external transitions
+		AddedExternalTransitions,
 
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,
@@ -128,6 +128,9 @@ protected:
 	[[nodiscard]] bool Link();
 
 	virtual void PostLoad() override;
+#if WITH_EDITORONLY_DATA
+	static void DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass);
+#endif
 	virtual void Serialize(FStructuredArchiveRecord Record) override;
 	
 #if WITH_EDITOR
@@ -161,7 +164,7 @@ private:
 
 	/** Evaluators, Tasks, and Condition nodes. */
 	UPROPERTY()
-	FInstancedStructArray Nodes;
+	FInstancedStructContainer Nodes;
 
 	/** Default node instance data (e.g. evaluators, tasks). */
 	UPROPERTY()
@@ -201,6 +204,18 @@ private:
 	UPROPERTY()
 	uint16 EvaluatorsNum = 0;
 
+	/** Index of first global task in Nodes. */
+	UPROPERTY()
+	uint16 GlobalTasksBegin = 0;
+
+	/** Number of global tasks. */
+	UPROPERTY()
+	uint16 GlobalTasksNum = 0;
+
+	/** True if any global task is a transition task. */
+	UPROPERTY()
+	bool bHasGlobalTransitionTasks = false;
+	
 	// Data created during linking.
 	
 	/** List of external data required by the state tree, created during linking. */
@@ -225,3 +240,7 @@ private:
 #endif
 };
 
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Misc/ScopeRWLock.h"
+#endif

@@ -6,7 +6,8 @@
 #include "HAL/ThreadSafeBool.h"
 
 #include "IMessageContext.h"
-#include "MessageEndpoint.h"
+
+class FMessageEndpoint;
 
 class  FEvent;
 class  FRunnableThread;
@@ -22,6 +23,7 @@ class FLiveLinkHeartbeatEmitter : public FRunnable
 {
 public:
 	FLiveLinkHeartbeatEmitter();
+	~FLiveLinkHeartbeatEmitter();
 
 	/**
 	 * Start sending a heartbeat to the specified Recipient by using the given MessageEndpoint.

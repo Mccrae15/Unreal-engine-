@@ -24,7 +24,9 @@ enum class EProcessorExecutionFlags : uint8
 	Standalone = 1 << 0,
 	Server = 1 << 1,
 	Client = 1 << 2,
-	All = Standalone | Server | Client UMETA(Hidden)
+	Editor = 1 << 3,
+	AllNetModes = Standalone | Server | Client UMETA(Hidden),
+	All = Standalone | Server | Client | Editor UMETA(Hidden)
 };
 ENUM_CLASS_FLAGS(EProcessorExecutionFlags);
 
@@ -70,9 +72,11 @@ struct MASSENTITY_API FMassRuntimePipeline
 {
 	GENERATED_BODY()
 
+private:
 	UPROPERTY()
 	TArray<TObjectPtr<UMassProcessor>> Processors;
 
+public:
 	void Reset();
 	void Initialize(UObject& Owner);
 	
@@ -105,11 +109,17 @@ struct MASSENTITY_API FMassRuntimePipeline
 	/** Creates an instance of ProcessorClass and adds it to Processors without any additional checks */
 	void AppendProcessor(TSubclassOf<UMassProcessor> ProcessorClass, UObject& InOwner);
 
+	void RemoveProcessor(UMassProcessor& InProcessor);
+
 	/** goes through Processor looking for a UMassCompositeProcessor instance which GroupName matches the one given as the parameter */
 	UMassCompositeProcessor* FindTopLevelGroupByName(const FName GroupName);
 
 	bool HasProcessorOfExactClass(TSubclassOf<UMassProcessor> InClass) const;
 	bool IsEmpty() const { return Processors.IsEmpty();}
+
+	int32 Num() const { return Processors.Num(); }
+	TConstArrayView<TObjectPtr<UMassProcessor>> GetProcessors() const { return Processors; }
+	TArrayView<TObjectPtr<UMassProcessor>> GetMutableProcessors() { return Processors; }
 
 	MASSENTITY_API friend uint32 GetTypeHash(const FMassRuntimePipeline& Instance);
 };
@@ -124,4 +134,21 @@ enum class EMassProcessingPhase : uint8
 	PostPhysics,
 	FrameEnd,
 	MAX,
+};
+
+struct FMassProcessorOrderInfo
+{
+	enum class EDependencyNodeType : uint8
+	{
+		Invalid,
+		Processor,
+		GroupStart,
+		GroupEnd
+	};
+
+	FName Name = TEXT("");
+	UMassProcessor* Processor = nullptr;
+	EDependencyNodeType NodeType = EDependencyNodeType::Invalid;
+	TArray<FName> Dependencies;
+	int32 SequenceIndex = INDEX_NONE;
 };

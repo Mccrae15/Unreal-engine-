@@ -17,8 +17,11 @@
 
 namespace Chaos
 {
+	namespace Private
+	{
+		class FCollisionConstraintAllocator;
+	}
 	class FCollisionContext;
-	class FCollisionConstraintAllocator;
 	class FParticlePairMidPhase;
 	class FPBDCollisionConstraints;
 	class FPerShapeData;
@@ -369,6 +372,11 @@ namespace Chaos
 		void Reset();
 
 		/**
+		 *
+		 */
+		void ResetModifications();
+
+		/**
 		 * @brief Create collision constraints for all colliding shape pairs
 		*/
 		void GenerateCollisions(
@@ -430,6 +438,24 @@ namespace Chaos
 			}
 		}
 
+		/**
+		 * @brief By default midphases are active. If IsActive is set to false,
+		 * this midphase will not generate a narrow phase.
+		 */
+		void SetIsActive(bool bIsActive)
+		{
+			Flags.bIsActive = bIsActive;
+		}
+
+		/**
+		 * @brief Override the CCD condition for this mid-phase. Used by the MidPhase modifier and gets reset every frame.
+		 */
+		void SetCCDIsActive(bool bCCDIsActive)
+		{
+			Flags.bIsModified = true;
+			Flags.bIsCCDActive = bCCDIsActive;
+		}
+
 	private:
 		/**
 		 * @brief Build the list of potentially colliding shape pairs.
@@ -463,9 +489,11 @@ namespace Chaos
 			FFlags() : Bits(0) {}
 			struct
 			{
-				uint32 bIsCCD : 1;
-				uint32 bIsInitialized : 1;
+				uint32 bIsActive : 1;    // True if this midphase should generate a narrow phase at all
+				uint32 bIsCCD : 1;       // True if CCD is supported by either particle
+				uint32 bIsCCDActive : 1; // True if CCD is active for this midphase on this frame. This can be changes by modifiers and resets to bIsCCD each frame.
 				uint32 bIsSleeping : 1;
+				uint32 bIsModified : 1;  // True if a modifier applied any changes to this midphase
 			};
 			uint32 Bits;
 		} Flags; // 4 bytes

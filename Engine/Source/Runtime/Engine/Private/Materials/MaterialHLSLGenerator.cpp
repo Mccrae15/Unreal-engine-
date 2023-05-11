@@ -3,21 +3,16 @@
 
 #if WITH_EDITOR
 
-#include "Materials/MaterialExpression.h"
-#include "Materials/MaterialExpressionTextureBase.h"
+#include "Materials/MaterialAttributeDefinitionMap.h"
 #include "Materials/MaterialExpressionMaterialFunctionCall.h"
 #include "Materials/MaterialExpressionFunctionInput.h"
 #include "Materials/MaterialExpressionFunctionOutput.h"
 #include "Materials/MaterialExpressionCustomOutput.h"
-#include "Materials/MaterialExpressionVertexInterpolator.h"
 #include "Materials/MaterialExpressionExecBegin.h"
+#include "Materials/MaterialFunction.h"
 #include "MaterialHLSLTree.h"
 #include "Materials/Material.h"
 #include "MaterialCachedHLSLTree.h"
-#include "ShaderCore.h"
-#include "HLSLTree/HLSLTree.h"
-#include "HLSLTree/HLSLTreeCommon.h"
-#include "Containers/LazyPrintf.h"
 #include "Misc/MemStackUtility.h"
 
 FMaterialHLSLGenerator::FMaterialHLSLGenerator(UMaterial* Material,
@@ -499,6 +494,7 @@ const UE::HLSLTree::FExpression* FMaterialHLSLGenerator::AcquireFunctionInputExp
 			case FunctionInput_Texture2DArray:
 			case FunctionInput_VolumeTexture:
 			case FunctionInput_StaticBool:
+			case FunctionInput_Bool:
 			case FunctionInput_TextureExternal:
 				Errorf(TEXT("Missing Preview connection for function input '%s'"), *MaterialExpression->InputName.ToString());
 				return nullptr;

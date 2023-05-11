@@ -10,7 +10,7 @@
 FRigUnit_TwoBoneIKSimple_Execute()
 {
 	FRigUnit_TwoBoneIKSimplePerItem::StaticExecute(
-		RigVMExecuteContext, 
+		ExecuteContext, 
 		FRigElementKey(BoneA, ERigElementType::Bone),
 		FRigElementKey(BoneB, ERigElementType::Bone),
 		FRigElementKey(EffectorBone, ERigElementType::Bone),
@@ -32,9 +32,7 @@ FRigUnit_TwoBoneIKSimple_Execute()
 		CachedBoneAIndex,
 		CachedBoneBIndex,
 		CachedEffectorBoneIndex,
-		CachedPoleVectorSpaceIndex,
-		ExecuteContext, 
-		Context);
+		CachedPoleVectorSpaceIndex);
 }
 
 FRigVMStructUpgradeInfo FRigUnit_TwoBoneIKSimple::GetUpgradeInfo() const
@@ -74,15 +72,6 @@ FRigUnit_TwoBoneIKSimplePerItem_Execute()
 	URigHierarchy* Hierarchy = ExecuteContext.Hierarchy;
 	if (Hierarchy == nullptr)
 	{
-		return;
-	}
-
-	if (Context.State == EControlRigState::Init)
-	{
-		CachedItemAIndex.Reset();
-		CachedItemBIndex.Reset();
-		CachedEffectorItemIndex.Reset();
-		CachedPoleVectorSpaceIndex.Reset();
 		return;
 	}
 
@@ -156,14 +145,14 @@ FRigUnit_TwoBoneIKSimplePerItem_Execute()
 
 	FControlRigMathLibrary::SolveBasicTwoBoneIK(TransformA, TransformB, TransformC, PoleTarget, PrimaryAxis, SecondaryAxis, SecondaryAxisWeight, LengthA, LengthB, bEnableStretch, StretchStartRatio, StretchMaximumRatio);
 
-	if (Context.DrawInterface != nullptr && DebugSettings.bEnabled)
+	if (ExecuteContext.GetDrawInterface() != nullptr && DebugSettings.bEnabled)
 	{
 		const FLinearColor Dark = FLinearColor(0.f, 0.2f, 1.f, 1.f);
 		const FLinearColor Bright = FLinearColor(0.f, 1.f, 1.f, 1.f);
-		Context.DrawInterface->DrawLine(DebugSettings.WorldOffset, TransformA.GetLocation(), TransformB.GetLocation(), Dark);
-		Context.DrawInterface->DrawLine(DebugSettings.WorldOffset, TransformB.GetLocation(), TransformC.GetLocation(), Dark);
-		Context.DrawInterface->DrawLine(DebugSettings.WorldOffset, TransformB.GetLocation(), PoleTarget, Bright);
-		Context.DrawInterface->DrawBox(DebugSettings.WorldOffset, FTransform(FQuat::Identity, PoleTarget, FVector(1.f, 1.f, 1.f) * DebugSettings.Scale * 0.1f), Bright);
+		ExecuteContext.GetDrawInterface()->DrawLine(DebugSettings.WorldOffset, TransformA.GetLocation(), TransformB.GetLocation(), Dark);
+		ExecuteContext.GetDrawInterface()->DrawLine(DebugSettings.WorldOffset, TransformB.GetLocation(), TransformC.GetLocation(), Dark);
+		ExecuteContext.GetDrawInterface()->DrawLine(DebugSettings.WorldOffset, TransformB.GetLocation(), PoleTarget, Bright);
+		ExecuteContext.GetDrawInterface()->DrawBox(DebugSettings.WorldOffset, FTransform(FQuat::Identity, PoleTarget, FVector(1.f, 1.f, 1.f) * DebugSettings.Scale * 0.1f), Bright);
 	}
 
 	if (Weight < 1.0f - SMALL_NUMBER)

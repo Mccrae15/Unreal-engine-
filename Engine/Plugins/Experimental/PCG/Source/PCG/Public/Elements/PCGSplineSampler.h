@@ -2,12 +2,14 @@
 
 #pragma once
 
+#include "PCGPin.h"
 #include "PCGSettings.h"
-#include "PCGElement.h"
+
 #include "Curves/CurveFloat.h"
 
 #include "PCGSplineSampler.generated.h"
 
+struct FPCGProjectionParams;
 class UPCGPolyLineData;
 class UPCGSpatialData;
 class UPCGPointData;
@@ -69,6 +71,20 @@ struct PCG_API FPCGSplineSamplerParams
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings, meta = (ClampMin = "0", EditCondition = "Dimension==EPCGSplineSamplingDimension::OnVertical||Dimension==EPCGSplineSamplingDimension::OnVolume"))
 	int32 NumHeightSubdivisions = 8;
 
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings, meta = (InlineEditConditionToggle))
+	bool bComputeDirectionDelta = false;
+
+	/** Attribute that wil contain the delta angle to the next point on the spline w.r.t to the current's point Up vector. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings, meta = (EditCondition = "bComputeDirectionDelta"))
+	FName NextDirectionDeltaAttribute = "NextDirectionDelta";
+
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings, meta = (InlineEditConditionToggle))
+	bool bComputeCurvature = false;
+
+	/** Attribute that will contain the curvature. Note that the radius of curvature is defined as 1/Curvature, and might need you to scale to world units */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings, meta = (EditCondition = "bComputeCurvature"))
+	FName CurvatureAttribute = "Curvature";
+
 	/** The space between each sample point */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings, meta = (ClampMin = "0.1", EditCondition = "Dimension==EPCGSplineSamplingDimension::OnInterior"))
 	float InteriorSampleSpacing = 100.0f;
@@ -90,9 +106,17 @@ struct PCG_API FPCGSplineSamplerParams
 	bool bProjectOntoSurface = false;
 
 	// TODO: DirtyCache for OnDependencyChanged when this float curve is an external asset
-	/** Defines the density for each sample based on its distance from the spline */
+	/** Defines the density for each sample based on its distance from the spline. X axis is normalized distance to boundary (0-1), Y axis is density value. */
 	UPROPERTY(EditAnywhere, Category = Settings, meta = (EditCondition = "Dimension==EPCGSplineSamplingDimension::OnInterior"))
 	FRuntimeFloatCurve InteriorDensityFalloffCurve;
+
+	/** Controls whether we will seed the sampled points using the final world position or the local position */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Settings|Seeding")
+	bool bSeedFromLocalPosition = false;
+
+	/** Controls whether we will seed the sampled points using the 3D position or the 2D (XY) position */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Settings|Seeding")
+	bool bSeedFrom2DPosition = false;
 };
 
 namespace PCGSplineSamplerHelpers
@@ -103,8 +127,9 @@ namespace PCGSplineSamplerHelpers
 
 namespace PCGSplineSampler
 {
-	void SampleLineData(const UPCGPolyLineData* LineData, const UPCGSpatialData* SpatialData, const FPCGSplineSamplerParams& Params, UPCGPointData* OutPointData);
-	void SampleInteriorData(const UPCGPolyLineData* LineData, const UPCGSpatialData* SpatialData, const FPCGSplineSamplerParams& Params, UPCGPointData* OutPointData);
+	void SampleLineData(const UPCGPolyLineData* LineData, const UPCGSpatialData* InBoundingShape, const UPCGSpatialData* InProjectionTarget, const FPCGProjectionParams& InProjectionParams, const FPCGSplineSamplerParams& Params, UPCGPointData* OutPointData);
+
+	void SampleInteriorData(const UPCGPolyLineData* LineData, const UPCGSpatialData* InBoundingShape, const UPCGSpatialData* InProjectionTarget, const FPCGProjectionParams& InProjectionParams, const FPCGSplineSamplerParams& Params, UPCGPointData* OutPointData);
 	const UPCGPolyLineData* GetPolyLineData(const UPCGSpatialData* InSpatialData);
 }
 
@@ -116,24 +141,33 @@ class PCG_API UPCGSplineSamplerSettings : public UPCGSettings
 public:
 	// ~Begin UPCGSettings interface
 #if WITH_EDITOR
-	virtual FName GetDefaultNodeName() const override { return FName(TEXT("SplineSamplerNode")); }
+	virtual FName GetDefaultNodeName() const override { return FName(TEXT("SplineSampler")); }
+	virtual FText GetDefaultNodeTitle() const override { return NSLOCTEXT("PCGSplineSamplerSettings", "NodeTitle", "Spline Sampler"); }
+	virtual FText GetNodeTooltipText() const override;
 	virtual EPCGSettingsType GetType() const override { return EPCGSettingsType::Sampler; }
 #endif
 
-	virtual TArray<FPCGPinProperties> InputPinProperties() const override;
-	virtual TArray<FPCGPinProperties> OutputPinProperties() const override { return Super::DefaultPointOutputPinProperties(); }
+#if WITH_EDITOR
+	virtual void ApplyDeprecationBeforeUpdatePins(UPCGNode* InOutNode, TArray<TObjectPtr<UPCGPin>>& InputPins, TArray<TObjectPtr<UPCGPin>>& OutputPins) override;
+#endif
 
 protected:
+	virtual TArray<FPCGPinProperties> InputPinProperties() const override;
+	virtual TArray<FPCGPinProperties> OutputPinProperties() const override { return Super::DefaultPointOutputPinProperties(); }
 	virtual FPCGElementPtr CreateElement() const override;
 	// ~End UPCGSettings interface
 
 public:
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings, meta = (ShowOnlyInnerProperties))
-	FPCGSplineSamplerParams Params;
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings, meta = (ShowOnlyInnerProperties, PCG_Overridable))
+	FPCGSplineSamplerParams SamplerParams;
 };
 
 class FPCGSplineSamplerElement : public FSimplePCGElement
 {
+public:
+	// Worth computing a full CRC in case we can halt change propagation/re-executions
+	virtual bool ShouldComputeFullOutputDataCrc() const override { return true; }
+
 protected:
 	virtual bool ExecuteInternal(FPCGContext* Context) const override;
 };

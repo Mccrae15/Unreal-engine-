@@ -3,7 +3,6 @@
 #pragma once
 
 #include "ImportTestFunctionsBase.h"
-#include "InterchangeTestFunction.h"
 #include "SkeletalMeshImportTestFunctions.generated.h"
 
 struct FInterchangeTestFunctionResult;
@@ -27,6 +26,10 @@ public:
 	/** Check whether the vertex count in the built render data for the given LOD is as expected */
 	UFUNCTION(Exec)
 	static FInterchangeTestFunctionResult CheckRenderVertexCount(USkeletalMesh* Mesh, int32 LodIndex, int32 ExpectedNumberOfRenderVertices);
+
+	/** Check whether the triangle count in the built render data for the given LOD is as expected */
+	UFUNCTION(Exec)
+	static FInterchangeTestFunctionResult CheckRenderTriangleCount(USkeletalMesh* Mesh, int32 LodIndex, int32 ExpectedNumberOfRenderTriangles);
 
 	/** Check whether the mesh has the expected number of LODs */
 	UFUNCTION(Exec)
@@ -52,9 +55,17 @@ public:
 	UFUNCTION(Exec)
 	static FInterchangeTestFunctionResult CheckSectionMaterialName(USkeletalMesh* Mesh, int32 LodIndex, int32 SectionIndex, const FString& ExpectedMaterialName);
 
+	/** Check whether the imported material slot name for the given section in the render data for the given LOD is as expected */
+	UFUNCTION(Exec)
+	static FInterchangeTestFunctionResult CheckSectionImportedMaterialSlotName(USkeletalMesh* Mesh, int32 LodIndex, int32 SectionIndex, const FString& ExpectedImportedMaterialSlotName);
+
 	/** Check whether the vertex of the given index is at the expected position */
 	UFUNCTION(Exec)
 	static FInterchangeTestFunctionResult CheckVertexIndexPosition(USkeletalMesh* Mesh, int32 LodIndex, int32 VertexIndex, const FVector& ExpectedVertexPosition);
+
+	/** Check whether the vertex of the given index is at the expected normal */
+	UFUNCTION(Exec)
+	static FInterchangeTestFunctionResult CheckVertexIndexNormal(USkeletalMesh* Mesh, int32 LodIndex, int32 VertexIndex, const FVector& ExpectedVertexNormal);
 
 	/** Check whether the mesh has the expected number of bones */
 	UFUNCTION(Exec)
@@ -68,3 +79,7 @@ public:
 	UFUNCTION(Exec)
 	static FInterchangeTestFunctionResult CheckSkinnedVertexCountForBone(USkeletalMesh* Mesh, const FString& BoneName, bool bTestFirstAlternateProfile, int32 ExpectedSkinnedVertexCount);
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "InterchangeTestFunction.h"
+#endif

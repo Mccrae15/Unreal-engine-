@@ -9,7 +9,9 @@
 #include "AudioModulationSystem.h"
 #include "DSP/BufferVectorOperations.h"
 #include "Engine/World.h"
+#include "SoundControlBusMix.h"
 #include "SoundControlBusProxy.h"
+#include "UObject/UObjectIterator.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SoundControlBus)
 
@@ -136,10 +138,10 @@ const Audio::FModulationMixFunction USoundControlBus::GetMixFunction() const
 	return Audio::FModulationParameter::GetDefaultMixFunction();
 }
 
-TUniquePtr<Audio::IProxyData> USoundControlBus::CreateNewProxyData(const Audio::FProxyDataInitParams& InitParams)
+TSharedPtr<Audio::IProxyData> USoundControlBus::CreateProxyData(const Audio::FProxyDataInitParams& InitParams)
 {
 	using namespace AudioModulation;
-	return MakeUnique<FSoundModulatorAssetProxy>(*this);
+	return MakeShared<FSoundModulatorAssetProxy>(*this);
 }
 
 const Audio::FModulationParameter& USoundControlBus::GetOutputParameter() const

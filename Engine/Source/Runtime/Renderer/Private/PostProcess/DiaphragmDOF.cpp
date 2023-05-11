@@ -20,6 +20,7 @@
 #include "PostProcess/TemporalAA.h"
 #include "SceneTextureParameters.h"
 #include "TranslucentRendering.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 // ---------------------------------------------------- Cvars
 
@@ -137,6 +138,12 @@ TAutoConsoleVariable<float> CVarScatterNeighborCompareMaxColor(
 
 
 // ---------------------------------------------------- COMMON
+
+bool DiaphragmDOF::IsSupported(const FStaticShaderPlatform ShaderPlatform)
+{
+	// Only compile diaphragm DOF on platform it has been tested to ensure this is not blocking anyone else.
+	return FDataDrivenShaderPlatformInfo::GetSupportsDiaphragmDOF(ShaderPlatform);
+}
 
 namespace
 {
@@ -399,7 +406,6 @@ FVector2f GenerateSaturatedAffineTransformation(float LowM, float HighM)
 // Affine transformtations that always return 0 or 1.
 const FVector2f kContantlyPassingAffineTransformation(0, 1);
 const FVector2f kContantlyBlockingAffineTransformation(0, 0);
-
 
 /** Base shader class for diaphragm DOF. */
 class FDiaphragmDOFShader : public FGlobalShader
@@ -870,7 +876,7 @@ class FDiaphragmDOFReduceCS : public FDiaphragmDOFShader
 		SHADER_PARAMETER(float, NeighborCompareMaxColor)
 		SHADER_PARAMETER(float, CocSqueeze)
 		
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, EyeAdaptationTexture)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, EyeAdaptationBuffer)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FDOFCommonShaderParameters, CommonParameters)
 
 		SHADER_PARAMETER(FVector4f, GatherInputSize)
@@ -1315,7 +1321,7 @@ bool DiaphragmDOF::IsEnabled(const FViewInfo& View)
 	static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.DepthOfFieldQuality"));
 	check(CVar);
 
-	const bool bDepthOfFieldRequestedByCVar = CVar->GetValueOnRenderThread() > 0;
+	const bool bDepthOfFieldRequestedByCVar = CVar->GetValueOnAnyThread() > 0;
 
 	return
 		DiaphragmDOF::IsSupported(View.GetShaderPlatform()) &&
@@ -1964,7 +1970,7 @@ FRDGTextureRef DiaphragmDOF::AddPasses(
 			PassParameters->NeighborCompareMaxColor = CVarScatterNeighborCompareMaxColor.GetValueOnRenderThread();
 			PassParameters->CocSqueeze = CocModel.Squeeze;
 			
-			PassParameters->EyeAdaptationTexture = GetEyeAdaptationTexture(GraphBuilder, View);
+			PassParameters->EyeAdaptationBuffer = GraphBuilder.CreateSRV(GetEyeAdaptationBuffer(GraphBuilder, View));
 			PassParameters->CommonParameters = CommonParameters;
 
 			PassParameters->GatherInputSize = FVector4f(SrcSize.X, SrcSize.Y, 1.0f / SrcSize.X, 1.0f / SrcSize.Y);
@@ -2025,7 +2031,7 @@ FRDGTextureRef DiaphragmDOF::AddPasses(
 				(PreprocessViewSize.X - 0.5f) / GatherInputExtent.X,
 				(PreprocessViewSize.Y - 0.5f) / GatherInputExtent.Y);
 
-			PassParameters->EyeAdaptationTexture = GetEyeAdaptationTexture(GraphBuilder, View);
+			PassParameters->EyeAdaptationBuffer = GraphBuilder.CreateSRV(GetEyeAdaptationBuffer(GraphBuilder, View));
 			PassParameters->CommonParameters = CommonParameters;
 
 			float InputMipLevelPow2 = 1 << InputMipLevel;

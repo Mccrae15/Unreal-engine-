@@ -5,18 +5,24 @@
 =============================================================================*/
 
 #include "Engine/Brush.h"
-#include "EngineGlobals.h"
 #include "Engine/Polys.h"
-#include "Engine/Engine.h"
+#include "Engine/Level.h"
+#include "EngineLogs.h"
 #include "Model.h"
 #include "Materials/Material.h"
+#include "MaterialDomain.h"
 #include "Engine/BrushBuilder.h"
 #include "Components/BrushComponent.h"
 #include "ActorEditorUtils.h"
+#include "UObject/UnrealType.h"
 
 #if WITH_EDITOR
 #include "Editor.h"
+#else
+#include "Engine/Engine.h"
+#endif
 
+#if WITH_EDITOR
 /** Define static delegate */
 ABrush::FOnBrushRegistered ABrush::OnBrushRegistered;
 
@@ -141,6 +147,26 @@ void ABrush::CopyPosRotScaleFrom( ABrush* Other )
 	}
 
 	ReregisterAllComponents();
+}
+
+bool ABrush::NeedsRebuild(TArray< TWeakObjectPtr< ULevel > >* OutLevels)
+{
+	LevelsToRebuild.RemoveAllSwap([](const TWeakObjectPtr<ULevel>& Level) { return !Level.IsValid(); });
+
+	if (OutLevels)
+	{
+		*OutLevels = LevelsToRebuild;
+	}
+
+	return(LevelsToRebuild.Num() > 0);
+}
+
+void ABrush::SetNeedRebuild(ULevel* InLevel)
+{
+	if (InLevel)
+	{
+		LevelsToRebuild.AddUnique(InLevel);
+	}
 }
 
 void ABrush::InitPosRotScale()

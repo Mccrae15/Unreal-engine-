@@ -84,7 +84,9 @@ enum EConsoleVariableFlags
 	 */
 	ECVF_RenderThreadSafe = 0x20,
 
-	/* ApplyCVarSettingsGroupFromIni will complain if this wasn't set, should not be combined with ECVF_Cheat */
+	/* ApplyCVarSettingsGroupFromIni will complain if this wasn't set, should not be combined with ECVF_Cheat and ECVF_ExcludeFromPreview. 
+	 * They are automatically added as  ECVF_Preview unless ECVF_ExcludeFromPreview is used
+	 */
 	ECVF_Scalability = 0x40,
 
 	/* those cvars control other cvars with the flag ECVF_Scalability, names should start with "sg." */
@@ -101,6 +103,9 @@ enum EConsoleVariableFlags
 
 	/* Cvars with this flag will modify the Shader Keystring for Desktop Platforms*/
 	ECVF_DesktopShaderChange = 0x800,
+
+	/* CVars with this flag will be excluded from the device profile previews. */
+	ECVF_ExcludeFromPreview = 0x1000,
 
 	// ------------------------------------------------
 
@@ -917,6 +922,18 @@ struct CORE_API IConsoleManager
 	 * @param Name must not be 0
 	 * @return 0 if the object wasn't found
 	 */
+	TConsoleVariableData<bool>* FindTConsoleVariableDataBool(const TCHAR* Name) const
+	{
+		IConsoleVariable* P = FindConsoleVariable(Name);
+
+		return P ? P->AsVariableBool() : 0;
+	}
+
+	/**
+	 * Find a typed console variable (faster access to the value, no virtual function call)
+	 * @param Name must not be 0
+	 * @return 0 if the object wasn't found
+	 */
 	TConsoleVariableData<int32>* FindTConsoleVariableDataInt(const TCHAR* Name) const 
 	{ 
 		IConsoleVariable* P = FindConsoleVariable(Name); 
@@ -1611,7 +1628,7 @@ public:
 	virtual class TConsoleVariableData<float>*		AsVariableFloat()	override { return AsImpl<float>(); }
 	virtual class TConsoleVariableData<FString>*	AsVariableString()	override { return AsImpl<FString>(); }
 
-	virtual bool		IsVariableInt() const override	{ return TIsSame<int32, T>::Value; }
+	virtual bool		IsVariableInt() const override	{ return std::is_same_v<int32, T>; }
 	virtual int32		GetInt()		const override	{ return GetImpl<int32>(); }
 	virtual float		GetFloat()		const override	{ return GetImpl<float>(); }
 	virtual FString		GetString()		const override	{ return GetImpl<FString>(); }
@@ -1665,27 +1682,27 @@ private:
 	EConsoleVariableFlags Flags = EConsoleVariableFlags::ECVF_Default;
 
 	template<class Y>
-	typename TEnableIf<!TIsSame<T, Y>::Value, Y>::Type GetImpl() const
+	typename TEnableIf<!std::is_same_v<T, Y>, Y>::Type GetImpl() const
 	{
 		check(false);
 		return Y();
 	}
 
 	template<class Y>
-	typename TEnableIf<TIsSame<T, Y>::Value, Y>::Type GetImpl() const
+	typename TEnableIf<std::is_same_v<T, Y>, Y>::Type GetImpl() const
 	{
 		return GetValueOnAnyThread();
 	}
 
 	template<class Y>
-	typename TEnableIf<!TIsSame<T, Y>::Value, TConsoleVariableData<Y>*>::Type AsImpl()
+	typename TEnableIf<!std::is_same_v<T, Y>, TConsoleVariableData<Y>*>::Type AsImpl()
 	{
 		check(false);
 		return nullptr;
 	}
 
 	template<class Y>
-	typename TEnableIf<TIsSame<T, Y>::Value, TConsoleVariableData<T>*>::Type AsImpl()
+	typename TEnableIf<std::is_same_v<T, Y>, TConsoleVariableData<T>*>::Type AsImpl()
 	{
 		return &Value;
 	}

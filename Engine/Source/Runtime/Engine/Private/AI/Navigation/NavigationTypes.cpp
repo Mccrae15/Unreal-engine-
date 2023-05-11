@@ -1,9 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AI/Navigation/NavigationTypes.h"
-#include "AI/Navigation/NavRelevantInterface.h"
 #include "AI/NavigationSystemBase.h"
 #include "AI/Navigation/NavQueryFilter.h"
+#include "Engine/Level.h"
 #include "EngineStats.h"
 #include "Components/ShapeComponent.h"
 #include "AI/Navigation/NavAreaBase.h"
@@ -302,6 +302,12 @@ void FNavHeightfieldSamples::GetResourceSizeEx(FResourceSizeEx& CumulativeResour
 	CumulativeResourceSize.AddDedicatedSystemMemoryBytes(sizeof(*this) + Heights.GetAllocatedSize() + Holes.GetAllocatedSize());
 }
 
+void FNavHeightfieldSamples::Empty()
+{
+	Heights.Empty();
+	Holes.Empty();
+}
+
 //----------------------------------------------------------------------//
 // FNavAgentProperties
 //----------------------------------------------------------------------//
@@ -321,7 +327,7 @@ FNavAgentProperties::FNavAgentProperties(const FNavAgentProperties& Other)
 void FNavAgentProperties::UpdateWithCollisionComponent(UShapeComponent* CollisionComponent)
 {
 	check(CollisionComponent != NULL);
-	AgentRadius = CollisionComponent->Bounds.SphereRadius;
+	AgentRadius = FloatCastChecked<float>(CollisionComponent->Bounds.SphereRadius, UE::LWC::DefaultFloatPrecision);
 }
 
 bool FNavAgentProperties::IsNavDataMatching(const FNavAgentProperties& Other) const

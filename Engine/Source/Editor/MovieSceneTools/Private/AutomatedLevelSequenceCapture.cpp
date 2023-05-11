@@ -22,6 +22,7 @@
 #include "Protocols/AudioCaptureProtocol.h"
 #include "ShaderCompiler.h"
 #include "DistanceFieldAtlas.h"
+#include "MeshCardBuild.h"
 #include "MeshCardRepresentation.h"
 #include "EntitySystem/MovieSceneEntitySystemLinker.h"
 #include "Systems/MovieSceneMotionVectorSimulationSystem.h"
@@ -100,7 +101,7 @@ UMovieSceneCinematicShotTrack* GetCinematicShotTrack(TWeakObjectPtr<ALevelSequen
 		return nullptr;
 	}
 
-	return MovieScene->FindMasterTrack<UMovieSceneCinematicShotTrack>();
+	return MovieScene->FindTrack<UMovieSceneCinematicShotTrack>();
 }
 
 UMovieSceneMotionVectorSimulationSystem* FindMotionVectorSimulation(ALevelSequenceActor* LevelSequenceActor)
@@ -140,7 +141,7 @@ UAutomatedLevelSequenceCapture::UAutomatedLevelSequenceCapture(const FObjectInit
 #if WITH_EDITORONLY_DATA
 void UAutomatedLevelSequenceCapture::AddFormatMappings(TMap<FString, FStringFormatArg>& OutFormatMappings, const FFrameMetrics& FrameMetrics) const
 {
-	OutFormatMappings.Add(TEXT("sequence"), CachedState.MasterName);
+	OutFormatMappings.Add(TEXT("sequence"), CachedState.RootName);
 
 	OutFormatMappings.Add(TEXT("shot"), CachedState.CurrentShotName);
 	OutFormatMappings.Add(TEXT("shot_frame"), FString::Printf(TEXT("%0*d"), Settings.ZeroPadFrameNumbers, CachedState.CurrentShotLocalTime.Time.FrameNumber.Value));
@@ -522,7 +523,7 @@ bool UAutomatedLevelSequenceCapture::SetupShot(FFrameNumber& StartTime, FFrameNu
 		if (SectionIndex == ShotIndex)
 		{
 			// We intersect with the CachedPlaybackRange instead of copying the playback range from the shot to handle the case where
-			// the playback range intersected the middle of the shot before we started manipulating ranges. We manually expand the master
+			// the playback range intersected the middle of the shot before we started manipulating ranges. We manually expand the root
 			// Movie Sequence's playback range by the number of handle frames to allow handle frames to work as expected on first/last shot.
 			FFrameNumber HandleFramesResolutionSpace = ConvertFrameTime(Settings.HandleFrames, Settings.GetFrameRate(), MovieScene->GetTickResolution()).FloorToFrame();
 			TRange<FFrameNumber> ExtendedCachedPlaybackRange = UE::MovieScene::ExpandRange(CachedPlaybackRange, HandleFramesResolutionSpace);
@@ -830,7 +831,7 @@ void UAutomatedLevelSequenceCapture::SequenceUpdated(const UMovieSceneSequencePl
 		if (Actor && Actor->SequencePlayer)
 		{
 			// If this is a new shot, set the state to shot warm up and pause on this frame until warmed up			
-			const bool bHasMultipleShots = PreviousState.CurrentShotName != PreviousState.MasterName;
+			const bool bHasMultipleShots = PreviousState.CurrentShotName != PreviousState.RootName;
 			const bool bNewShot = bHasMultipleShots && PreviousState.ShotID != CachedState.ShotID;
 			const bool bNewFrame = PreviousTime != CurrentTime;
 
@@ -1069,7 +1070,7 @@ void UAutomatedLevelSequenceCapture::ExportEDL()
 		return;
 	}
 
-	UMovieSceneCinematicShotTrack* ShotTrack = MovieScene->FindMasterTrack<UMovieSceneCinematicShotTrack>();
+	UMovieSceneCinematicShotTrack* ShotTrack = MovieScene->FindTrack<UMovieSceneCinematicShotTrack>();
 	if (!ShotTrack)
 	{
 		return;
@@ -1110,7 +1111,7 @@ void UAutomatedLevelSequenceCapture::ExportFCPXML()
 		return;
 	}
 
-	UMovieSceneCinematicShotTrack* ShotTrack = MovieScene->FindMasterTrack<UMovieSceneCinematicShotTrack>();
+	UMovieSceneCinematicShotTrack* ShotTrack = MovieScene->FindTrack<UMovieSceneCinematicShotTrack>();
 	if (!ShotTrack)
 	{
 		return;

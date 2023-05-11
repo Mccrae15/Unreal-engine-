@@ -54,7 +54,7 @@ struct FObjectPtr
 {
 public:
 	FObjectPtr()
-		: Handle(MakeObjectHandle(nullptr))
+		: Handle(UE::CoreUObject::Private::MakeObjectHandle(nullptr))
 	{
 	}
 
@@ -63,39 +63,37 @@ public:
 	}
 
 	FORCEINLINE FObjectPtr(TYPE_OF_NULLPTR)
-		: Handle(MakeObjectHandle(nullptr))
+		: Handle(UE::CoreUObject::Private::MakeObjectHandle(nullptr))
 	{
 	}
 
 	explicit FORCEINLINE FObjectPtr(UObject* Object)
-		: Handle(MakeObjectHandle(Object))
+		: Handle(UE::CoreUObject::Private::MakeObjectHandle(Object))
 	{
 	}
 
 	UE_OBJPTR_DEPRECATED(5.0, "Construction with incomplete type pointer is deprecated.  Please update this code to use MakeObjectPtrUnsafe.")
 	explicit FORCEINLINE FObjectPtr(void* IncompleteObject)
-		: Handle(MakeObjectHandle(reinterpret_cast<UObject*>(IncompleteObject)))
+		: Handle(UE::CoreUObject::Private::MakeObjectHandle(reinterpret_cast<UObject*>(IncompleteObject)))
 	{
 	}
 
-	explicit FORCEINLINE FObjectPtr(const FObjectRef& ObjectRef)
-		: Handle(MakeObjectHandle(ObjectRef))
+#if UE_WITH_OBJECT_HANDLE_LATE_RESOLVE
+	explicit FORCEINLINE FObjectPtr(FObjectHandle Handle)
+		: Handle(Handle)
 	{
 	}
-
-	explicit FORCEINLINE FObjectPtr(const FPackedObjectRef& PackedObjectRef)
-		: Handle(MakeObjectHandle(PackedObjectRef))
-	{
-	}
+#endif
+	
 
 	FORCEINLINE UObject* Get() const
 	{
-		return ResolveObjectHandle(Handle);
+		return UE::CoreUObject::Private::ResolveObjectHandle(Handle);
 	}
 
 	FORCEINLINE UClass* GetClass() const
 	{
-		return ResolveObjectHandleClass(Handle);
+		return UE::CoreUObject::Private::ResolveObjectHandleClass(Handle);
 	}
 
 	FObjectPtr(FObjectPtr&&) = default;
@@ -105,20 +103,20 @@ public:
 
 	FObjectPtr& operator=(UObject* Other)
 	{
-		Handle = MakeObjectHandle(Other);
+		Handle = UE::CoreUObject::Private::MakeObjectHandle(Other);
 		return *this;
 	}
 
 	UE_OBJPTR_DEPRECATED(5.0, "Assignment with incomplete type pointer is deprecated.  Please update this code to use MakeObjectPtrUnsafe.")
 	FObjectPtr& operator=(void* IncompleteOther)
 	{
-		Handle = MakeObjectHandle(reinterpret_cast<UObject*>(IncompleteOther));
+		Handle = UE::CoreUObject::Private::MakeObjectHandle(reinterpret_cast<UObject*>(IncompleteOther));
 		return *this;
 	}
 
 	FObjectPtr& operator=(TYPE_OF_NULLPTR)
 	{
-		Handle = MakeObjectHandle(nullptr);
+		Handle = UE::CoreUObject::Private::MakeObjectHandle(nullptr);
 		return *this;
 	}
 
@@ -134,7 +132,7 @@ public:
 	FORCEINLINE UObject& operator*() const { return *Get(); }
 
 	UE_DEPRECATED(5.1, "IsNull is deprecated, please use operator bool instead.")
-	FORCEINLINE bool IsNull() const { return ResolveObjectHandleNoRead(Handle) == nullptr; }
+	FORCEINLINE bool IsNull() const { return UE::CoreUObject::Private::ResolveObjectHandleNoRead(Handle) == nullptr; }
 	
 	UE_DEPRECATED(5.1, "IsNullNoResolve is deprecated, please use operator bool instead.")
 	FORCEINLINE bool IsNullNoResolve() const { return IsObjectHandleNull(Handle); }
@@ -166,7 +164,8 @@ public:
 #else
 	FString GetPathName() const
 	{
-		return Get()->GetPathName();
+		const UObject* ResolvedObject = Get();
+		return ResolvedObject ? ResolvedObject->GetPathName() : TEXT("None");
 	}
 
 	FName GetFName() const
@@ -215,7 +214,6 @@ public:
 private:
 	friend FORCEINLINE uint32 GetTypeHash(const FObjectPtr& Object)
 	{
-		Object.Get();
 		return GetTypeHash(Object.Handle);
 	}
 
@@ -239,255 +237,6 @@ struct TIsTObjectPtr
 
 namespace ObjectPtr_Private
 {
-	template <typename T, typename U>
-	FORCEINLINE bool IsObjectPtrEqualToRawPtrOfRelatedType(const TObjectPtr<T>& Ptr, const U* Other);
-};
-
-/**
- * TObjectPtr is a type of pointer to a UObject that is meant to function as a drop-in replacement for raw pointer
- * member properties. It is size equivalent to a 64-bit pointer and supports access tracking and optional lazy load
- * behavior in editor builds. It stores either the address to the referenced object or (in editor builds) an index in
- * the object handle table that describes a referenced object that hasn't been loaded yet. It is serialized
- * identically to a raw pointer to a UObject. When resolved, its participation in garbage collection is identical to a
- * raw pointer to a UObject.
- *
- * This is useful for automatic replacement of raw pointers to support advanced cook-time dependency tracking and
- * editor-time lazy load use cases. See UnrealObjectPtrTool for tooling to automatically replace raw pointer members
- * with FObjectPtr/TObjectPtr members instead.
- */
-template <typename T>
-struct TObjectPtr
-{
-public:
-	using ElementType = T;
-
-	TObjectPtr()
-		: ObjectPtr()
-	{
-	}
-
-	TObjectPtr(TObjectPtr<T>&& Other) = default;
-	TObjectPtr(const TObjectPtr<T>& Other) = default;
-
-	explicit FORCEINLINE TObjectPtr(ENoInit)
-		: ObjectPtr(NoInit)
-	{
-	}
-
-	FORCEINLINE TObjectPtr(TYPE_OF_NULLPTR)
-		: ObjectPtr(nullptr)
-	{
-	}
-
-	template <
-		typename U,
-		decltype(ImplicitConv<T*>(std::declval<U*>()))* = nullptr
-	>
-	FORCEINLINE TObjectPtr(const TObjectPtr<U>& Other)
-		: ObjectPtr(Other.ObjectPtr)
-	{
-	}
-
-	template <
-		typename U,
-		std::enable_if_t<
-			!TIsTObjectPtr<std::decay_t<U>>::Value,
-			decltype(ImplicitConv<T*>(std::declval<U>()))
-		>* = nullptr
-	>
-	FORCEINLINE TObjectPtr(U&& Object)
-		: ObjectPtr(const_cast<std::remove_const_t<T>*>(ImplicitConv<T*>(Object)))
-	{
-	}
-
-	explicit FORCEINLINE TObjectPtr(TPrivateObjectPtr<T>&& PrivatePtr)
-		: ObjectPtr(const_cast<UObject*>(PrivatePtr.Pointer))
-	{
-	}
-
-	TObjectPtr<T>& operator=(TObjectPtr<T>&&) = default;
-	TObjectPtr<T>& operator=(const TObjectPtr<T>&) = default;
-
-	FORCEINLINE TObjectPtr<T>& operator=(TYPE_OF_NULLPTR)
-	{
-		ObjectPtr = nullptr;
-		return *this;
-	}
-
-	template <
-		typename U,
-		decltype(ImplicitConv<T*>(std::declval<U*>()))* = nullptr
-	>
-	FORCEINLINE TObjectPtr<T>& operator=(const TObjectPtr<U>& Other)
-	{
-		ObjectPtr = Other.ObjectPtr;
-		return *this;
-	}
-
-	template <
-		typename U,
-		std::enable_if_t<
-			!TIsTObjectPtr<std::decay_t<U>>::Value,
-			decltype(ImplicitConv<T*>(std::declval<U>()))
-		>* = nullptr
-	>
-	FORCEINLINE TObjectPtr<T>& operator=(U&& Object)
-	{
-		ObjectPtr = const_cast<std::remove_const_t<T>*>(ImplicitConv<T*>(Object));
-		return *this;
-	}
-
-	FORCEINLINE TObjectPtr<T>& operator=(TPrivateObjectPtr<T>&& PrivatePtr)
-	{
-		ObjectPtr = const_cast<UObject*>(PrivatePtr.Pointer);
-		return *this;
-	}
-
-	template <
-		typename U,
-		typename Base = std::decay_t<decltype(false ? std::declval<std::decay_t<T*>>() : std::declval<std::decay_t<U*>>())>
-	>
-	FORCEINLINE bool operator==(const TObjectPtr<U>& Other) const
-	{
-		return ObjectPtr == Other.ObjectPtr;
-	}
-
-	bool operator==(TYPE_OF_NULLPTR) const
-	{
-		return !ObjectPtr.operator bool();
-	}
-
-	bool operator!=(TYPE_OF_NULLPTR) const
-	{
-		return ObjectPtr.operator bool();
-	}
-
-	template <
-		typename U,
-		typename Base = std::decay_t<decltype(false ? std::declval<std::decay_t<T*>>() : std::declval<std::decay_t<U*>>())>
-	>
-	FORCEINLINE bool operator!=(const TObjectPtr<U>& Other) const
-	{
-		return ObjectPtr != Other.ObjectPtr;
-	}
-
-	// @TODO: OBJPTR: There is a risk that the FObjectPtr is storing a reference to the wrong type.  This could
-	//			happen if data was serialized at a time when a pointer field was declared to be of type A, but then the declaration
-	//			changed and the pointer field is now of type B.  Upon deserialization of pre-existing data, we'll be holding
-	//			a reference to the wrong type of object which we'll just send back static_casted as the wrong type.  Doing
-	//			a check or checkSlow here could catch this, but it would be better if the check could happen elsewhere that
-	//			isn't called as frequently.
-	FORCEINLINE T* Get() const { return (T*)(ObjectPtr.Get()); }
-	FORCEINLINE UClass* GetClass() const { return ObjectPtr.GetClass(); }
-	
-	FORCEINLINE operator T* () const { return Get(); }
-	template <typename U>
-	UE_OBJPTR_DEPRECATED(5.0, "Explicit cast to other raw pointer types is deprecated.  Please use the Cast API or get the raw pointer with ToRawPtr and cast that instead.")
-	explicit FORCEINLINE operator U* () const { return (U*)Get(); }
-	explicit FORCEINLINE operator UPTRINT() const { return (UPTRINT)Get(); }
-	FORCEINLINE T* operator->() const { return Get(); }
-	FORCEINLINE T& operator*() const { return *Get(); }
-
-	UE_OBJPTR_DEPRECATED(5.0, "Conversion to a mutable pointer is deprecated.  Please pass a TObjectPtr<T>& instead so that assignment can be tracked accurately.")
-	explicit FORCEINLINE operator T*& () { return GetInternalRef(); }
-
-	UE_DEPRECATED(5.1, "IsNull is deprecated, please use operator bool instead.  if (!MyObjectPtr) { ... }")
-	FORCEINLINE bool IsNull() const { return !ObjectPtr.operator bool(); }
-
-	UE_DEPRECATED(5.1, "IsNullNoResolve is deprecated, please use operator bool instead.  if (!MyObjectPtr) { ... }")
-	FORCEINLINE bool IsNullNoResolve() const { return !ObjectPtr.operator bool(); }
-
-	FORCEINLINE bool operator!() const { return ObjectPtr.operator!(); }
-	explicit FORCEINLINE operator bool() const { return ObjectPtr.operator bool(); }
-	FORCEINLINE bool IsResolved() const { return ObjectPtr.IsResolved(); }
-	FORCEINLINE FString GetPath() const { return ObjectPtr.GetPath(); }
-	FORCEINLINE FString GetPathName() const { return ObjectPtr.GetPathName(); }
-	FORCEINLINE FName GetFName() const { return ObjectPtr.GetFName(); }
-	FORCEINLINE FString GetName() const { return ObjectPtr.GetName(); }
-	FORCEINLINE FString GetFullName(EObjectFullNameFlags Flags = EObjectFullNameFlags::None) const { return ObjectPtr.GetFullName(Flags); }
-	FORCEINLINE FObjectHandle GetHandle() const { return ObjectPtr.GetHandle(); }
-	FORCEINLINE bool IsA(const UClass* SomeBase) const { return ObjectPtr.IsA(SomeBase); }
-	template <typename U> FORCEINLINE bool IsA() const { return ObjectPtr.IsA<U>(); }
-
-	friend FORCEINLINE uint32 GetTypeHash(const TObjectPtr<T>& InObjectPtr)
-	{
-		return GetTypeHash(InObjectPtr.ObjectPtr);
-	}
-
-	friend FORCEINLINE FArchive& operator<<(FArchive& Ar, TObjectPtr<T>& InObjectPtr)
-	{
-		Ar << InObjectPtr.ObjectPtr;
-		return Ar;
-	}
-
-	friend FORCEINLINE void operator<<(FStructuredArchiveSlot Slot, TObjectPtr<T>& InObjectPtr)
-	{
-		Slot << InObjectPtr.ObjectPtr;
-	}
-
-	friend struct FObjectPtr;
-	template <typename U> friend struct TObjectPtr;
-	template <typename U, typename V> friend bool ObjectPtr_Private::IsObjectPtrEqualToRawPtrOfRelatedType(const TObjectPtr<U>& Ptr, const V* Other);
-
-private:
-	FORCEINLINE T* GetNoReadNoCheck() const { return (T*)(ResolveObjectHandleNoReadNoCheck(ObjectPtr.GetHandleRef())); }
-	FORCEINLINE T* GetNoResolveNoCheck() const { return (T*)(ReadObjectHandlePointerNoCheck(ObjectPtr.GetHandleRef())); }
-
-	// @TODO: OBJPTR: There is a risk of a gap in access tracking here.  The caller may get a mutable pointer, write to it, then
-	//			read from it.  That last read would happen without an access being recorded.  Not sure if there is a good way
-	//			to handle this case without forcing the calling code to be modified.
-	FORCEINLINE T*& GetInternalRef()
-	{
-		ObjectPtr.Get();
-		return (T*&)ObjectPtr.GetHandleRef();
-	}
-
-	union
-	{
-		FObjectPtr ObjectPtr;
-		// DebugPtr allows for easier dereferencing of a resolved TObjectPtr in watch windows of debuggers.  If the address in the pointer
-		// is an odd/uneven number, that means the object reference is unresolved and you will not be able to dereference it successfully.
-		T* DebugPtr;
-	};
-};
-
-// Equals against nullptr to optimize comparing against nullptr as it avoids resolving
-template <typename U>
-bool operator==(TYPE_OF_NULLPTR, const TObjectPtr<U>& Rhs)
-{
-	return Rhs == nullptr;
-}
-
-template <typename U>
-bool operator!=(TYPE_OF_NULLPTR, const TObjectPtr<U>& Rhs)
-{
-	return Rhs != nullptr;
-}
-
-template <typename T> struct TIsTObjectPtr<               TObjectPtr<T>> { enum { Value = true }; };
-template <typename T> struct TIsTObjectPtr<const          TObjectPtr<T>> { enum { Value = true }; };
-template <typename T> struct TIsTObjectPtr<      volatile TObjectPtr<T>> { enum { Value = true }; };
-template <typename T> struct TIsTObjectPtr<const volatile TObjectPtr<T>> { enum { Value = true }; };
-
-template <typename T>
-struct TRemoveObjectPointer
-{
-	typedef T Type;
-};
-template <typename T>
-struct TRemoveObjectPointer<TObjectPtr<T>>
-{
-	typedef T Type;
-};
-
-namespace ObjectPtr_Private
-{
-	template <typename T> struct TRawPointerType                               { using Type = T;  };
-	template <typename T> struct TRawPointerType<               TObjectPtr<T>> { using Type = T*; };
-	template <typename T> struct TRawPointerType<const          TObjectPtr<T>> { using Type = T*; };
-	template <typename T> struct TRawPointerType<      volatile TObjectPtr<T>> { using Type = T*; };
-	template <typename T> struct TRawPointerType<const volatile TObjectPtr<T>> { using Type = T*; };
-
 	/** Coerce to pointer through implicit conversion to const T* (overload through less specific "const T*" parameter to avoid ambiguity with other coercion options that may also exist. */
 	template <typename T>
 	FORCEINLINE const T* CoerceToPointer(const T* Other)
@@ -568,18 +317,322 @@ namespace ObjectPtr_Private
 		// a shallow pointer comparison.
 		return IsObjectPtrEqualToRawPtrOfRelatedType<T>(Ptr, ObjectPtr_Private::CoerceToPointer<T>(Other));
 	}
+
+	template <typename T, int = sizeof(T)>
+	char (&ResolveTypeIsComplete(int))[2];
+
+	template <typename T>
+	char (&ResolveTypeIsComplete(...))[1];
+
+	struct Friend;
+};
+
+/**
+ * TObjectPtr is a type of pointer to a UObject that is meant to function as a drop-in replacement for raw pointer
+ * member properties. It is size equivalent to a 64-bit pointer and supports access tracking and optional lazy load
+ * behavior in editor builds. It stores either the address to the referenced object or (in editor builds) an index in
+ * the object handle table that describes a referenced object that hasn't been loaded yet. It is serialized
+ * identically to a raw pointer to a UObject. When resolved, its participation in garbage collection is identical to a
+ * raw pointer to a UObject.
+ *
+ * This is useful for automatic replacement of raw pointers to support advanced cook-time dependency tracking and
+ * editor-time lazy load use cases. See UnrealObjectPtrTool for tooling to automatically replace raw pointer members
+ * with FObjectPtr/TObjectPtr members instead.
+ */
+template <typename T>
+struct TObjectPtr
+{
+#ifndef PLATFORM_COMPILER_IWYU
+	// TObjectPtr should only be used on types T that are EITHER:
+	// - incomplete (ie: forward declared and we have not seen their definition yet)
+	// - complete and derived from UObject
+	// This means that the following are invalid and must fail to compile:
+	// - TObjectPtr<int>
+	// - TObjectPtr<IInterface>
+	static_assert(std::disjunction<std::negation<std::bool_constant<sizeof(ObjectPtr_Private::ResolveTypeIsComplete<T>(1)) == 2>>, std::is_base_of<UObject, T>>::value, "TObjectPtr<T> can only be used with types derived from UObject");
+#endif
+
+public:
+	using ElementType = T;
+
+	TObjectPtr()
+		: ObjectPtr()
+	{
+	}
+
+	TObjectPtr(TObjectPtr<T>&& Other) = default;
+	TObjectPtr(const TObjectPtr<T>& Other) = default;
+
+	explicit FORCEINLINE TObjectPtr(ENoInit)
+		: ObjectPtr(NoInit)
+	{
+	}
+
+	FORCEINLINE TObjectPtr(TYPE_OF_NULLPTR)
+		: ObjectPtr(nullptr)
+	{
+	}
+
+	template <
+		typename U,
+		decltype(ImplicitConv<T*>(std::declval<U*>()))* = nullptr
+	>
+	FORCEINLINE TObjectPtr(const TObjectPtr<U>& Other)
+		: ObjectPtr(Other.ObjectPtr)
+	{
+		IWYU_MARKUP_IMPLICIT_CAST(U, T);
+	}
+
+	template <
+		typename U,
+		std::enable_if_t<
+			!TIsTObjectPtr<std::decay_t<U>>::Value,
+			decltype(ImplicitConv<T*>(std::declval<U>()))
+		>* = nullptr
+	>
+	FORCEINLINE TObjectPtr(U&& Object)
+		: ObjectPtr(const_cast<std::remove_const_t<T>*>(ImplicitConv<T*>(Object)))
+	{
+	}
+
+	explicit FORCEINLINE TObjectPtr(TPrivateObjectPtr<T>&& PrivatePtr)
+		: ObjectPtr(const_cast<UObject*>(PrivatePtr.Pointer))
+	{
+	}
+
+	TObjectPtr<T>& operator=(TObjectPtr<T>&&) = default;
+	TObjectPtr<T>& operator=(const TObjectPtr<T>&) = default;
+
+	FORCEINLINE TObjectPtr<T>& operator=(TYPE_OF_NULLPTR)
+	{
+		ObjectPtr = nullptr;
+		return *this;
+	}
+
+	template <
+		typename U,
+		decltype(ImplicitConv<T*>(std::declval<U*>()))* = nullptr
+	>
+	FORCEINLINE TObjectPtr<T>& operator=(const TObjectPtr<U>& Other)
+	{
+		IWYU_MARKUP_IMPLICIT_CAST(U, T);
+		ObjectPtr = Other.ObjectPtr;
+		return *this;
+	}
+
+	template <
+		typename U,
+		std::enable_if_t<
+			!TIsTObjectPtr<std::decay_t<U>>::Value,
+			decltype(ImplicitConv<T*>(std::declval<U>()))
+		>* = nullptr
+	>
+	FORCEINLINE TObjectPtr<T>& operator=(U&& Object)
+	{
+		ObjectPtr = const_cast<std::remove_const_t<T>*>(ImplicitConv<T*>(Object));
+		return *this;
+	}
+
+	FORCEINLINE TObjectPtr<T>& operator=(TPrivateObjectPtr<T>&& PrivatePtr)
+	{
+		ObjectPtr = const_cast<UObject*>(PrivatePtr.Pointer);
+		return *this;
+	}
+
+	// Equality/Inequality comparisons against other TObjectPtr
+	template <
+		typename U,
+		typename Base = std::decay_t<decltype(false ? std::declval<std::decay_t<T*>>() : std::declval<std::decay_t<U*>>())>
+	>
+	FORCEINLINE bool operator==(const TObjectPtr<U>& Other) const
+	{
+		return ObjectPtr == Other.ObjectPtr;
+	}
+
+	// Equality/Inequality comparisons against nullptr
+	FORCEINLINE bool operator==(TYPE_OF_NULLPTR) const
+	{
+		return !ObjectPtr.operator bool();
+	}
+
+	// Equality/Inequality comparisons against another type that can be implicitly converted to the pointer type kept in a TObjectPtr
+	template <
+		typename U,
+		typename = decltype(ObjectPtr_Private::IsObjectPtrEqual(std::declval<const TObjectPtr<T>&>(), std::declval<U&&>()))
+	>
+	FORCEINLINE bool operator==(U&& Other) const
+	{
+		return ObjectPtr_Private::IsObjectPtrEqual(*this, Other);
+	}
+
+#if __cplusplus < 202002L
+	template <
+		typename U,
+		typename Base = std::decay_t<decltype(false ? std::declval<std::decay_t<T*>>() : std::declval<std::decay_t<U*>>())>
+	>
+	FORCEINLINE bool operator!=(const TObjectPtr<U>& Other) const
+	{
+		return ObjectPtr != Other.ObjectPtr;
+	}
+
+	FORCEINLINE bool operator!=(TYPE_OF_NULLPTR) const
+	{
+		return ObjectPtr.operator bool();
+	}
+
+	template <
+		typename U,
+		typename = decltype(ObjectPtr_Private::IsObjectPtrEqual(std::declval<const TObjectPtr<T>&>(), std::declval<U&&>()))
+	>
+	FORCEINLINE bool operator!=(U&& Other) const
+	{
+		return !ObjectPtr_Private::IsObjectPtrEqual(*this, Other);
+	}
+#endif
+
+	// @TODO: OBJPTR: There is a risk that the FObjectPtr is storing a reference to the wrong type.  This could
+	//			happen if data was serialized at a time when a pointer field was declared to be of type A, but then the declaration
+	//			changed and the pointer field is now of type B.  Upon deserialization of pre-existing data, we'll be holding
+	//			a reference to the wrong type of object which we'll just send back static_casted as the wrong type.  Doing
+	//			a check or checkSlow here could catch this, but it would be better if the check could happen elsewhere that
+	//			isn't called as frequently.
+	FORCEINLINE T* Get() const { return (T*)(ObjectPtr.Get()); }
+	FORCEINLINE UClass* GetClass() const { return ObjectPtr.GetClass(); }
+	
+	FORCEINLINE operator T* () const { return Get(); }
+	template <typename U>
+	UE_OBJPTR_DEPRECATED(5.0, "Explicit cast to other raw pointer types is deprecated.  Please use the Cast API or get the raw pointer with ToRawPtr and cast that instead.")
+	explicit FORCEINLINE operator U* () const { return (U*)Get(); }
+	explicit FORCEINLINE operator UPTRINT() const { return (UPTRINT)Get(); }
+	FORCEINLINE T* operator->() const { return Get(); }
+	FORCEINLINE T& operator*() const { return *Get(); }
+
+	UE_OBJPTR_DEPRECATED(5.0, "Conversion to a mutable pointer is deprecated.  Please pass a TObjectPtr<T>& instead so that assignment can be tracked accurately.")
+	explicit FORCEINLINE operator T*& () { return GetInternalRef(); }
+
+	UE_DEPRECATED(5.1, "IsNull is deprecated, please use operator bool instead.  if (!MyObjectPtr) { ... }")
+	FORCEINLINE bool IsNull() const { return !ObjectPtr.operator bool(); }
+
+	UE_DEPRECATED(5.1, "IsNullNoResolve is deprecated, please use operator bool instead.  if (!MyObjectPtr) { ... }")
+	FORCEINLINE bool IsNullNoResolve() const { return !ObjectPtr.operator bool(); }
+
+	FORCEINLINE bool operator!() const { return ObjectPtr.operator!(); }
+	explicit FORCEINLINE operator bool() const { return ObjectPtr.operator bool(); }
+	FORCEINLINE bool IsResolved() const { return ObjectPtr.IsResolved(); }
+	FORCEINLINE FString GetPath() const { return ObjectPtr.GetPath(); }
+	FORCEINLINE FString GetPathName() const { return ObjectPtr.GetPathName(); }
+	FORCEINLINE FName GetFName() const { return ObjectPtr.GetFName(); }
+	FORCEINLINE FString GetName() const { return ObjectPtr.GetName(); }
+	FORCEINLINE FString GetFullName(EObjectFullNameFlags Flags = EObjectFullNameFlags::None) const { return ObjectPtr.GetFullName(Flags); }
+	FORCEINLINE FObjectHandle GetHandle() const { return ObjectPtr.GetHandle(); }
+	FORCEINLINE bool IsA(const UClass* SomeBase) const { return ObjectPtr.IsA(SomeBase); }
+	template <typename U> FORCEINLINE bool IsA() const { return ObjectPtr.IsA<U>(); }
+
+	FORCEINLINE uint32 GetPtrTypeHash() const
+	{
+		return GetTypeHash(ObjectPtr);
+	}
+
+	FORCEINLINE void SerializePtrStructured(FStructuredArchiveSlot Slot)
+	{
+		Slot << ObjectPtr;
+	}
+
+	friend ObjectPtr_Private::Friend;
+	friend struct FObjectPtr;
+	template <typename U> friend struct TObjectPtr;
+	template <typename U, typename V> friend bool ObjectPtr_Private::IsObjectPtrEqualToRawPtrOfRelatedType(const TObjectPtr<U>& Ptr, const V* Other);
+
+private:
+	FORCEINLINE T* GetNoReadNoCheck() const { return (T*)(UE::CoreUObject::Private::ResolveObjectHandleNoReadNoCheck(ObjectPtr.GetHandleRef())); }
+	FORCEINLINE T* GetNoResolveNoCheck() const { return (T*)(UE::CoreUObject::Private::ReadObjectHandlePointerNoCheck(ObjectPtr.GetHandleRef())); }
+
+	// @TODO: OBJPTR: There is a risk of a gap in access tracking here.  The caller may get a mutable pointer, write to it, then
+	//			read from it.  That last read would happen without an access being recorded.  Not sure if there is a good way
+	//			to handle this case without forcing the calling code to be modified.
+	FORCEINLINE T*& GetInternalRef()
+	{
+		ObjectPtr.Get();
+		return (T*&)ObjectPtr.GetHandleRef();
+	}
+
+	union
+	{
+		FObjectPtr ObjectPtr;
+		// DebugPtr allows for easier dereferencing of a resolved TObjectPtr in watch windows of debuggers.  If the address in the pointer
+		// is an odd/uneven number, that means the object reference is unresolved and you will not be able to dereference it successfully.
+		T* DebugPtr;
+	};
+};
+
+// Equals against nullptr to optimize comparing against nullptr as it avoids resolving
+
+template <typename T> struct TIsTObjectPtr<               TObjectPtr<T>> { enum { Value = true }; };
+template <typename T> struct TIsTObjectPtr<const          TObjectPtr<T>> { enum { Value = true }; };
+template <typename T> struct TIsTObjectPtr<      volatile TObjectPtr<T>> { enum { Value = true }; };
+template <typename T> struct TIsTObjectPtr<const volatile TObjectPtr<T>> { enum { Value = true }; };
+
+template <typename T>
+struct TRemoveObjectPointer
+{
+	typedef T Type;
+};
+template <typename T>
+struct TRemoveObjectPointer<TObjectPtr<T>>
+{
+	typedef T Type;
+};
+
+namespace ObjectPtr_Private
+{
+	template <typename T> struct TRawPointerType                               { using Type = T;  };
+	template <typename T> struct TRawPointerType<               TObjectPtr<T>> { using Type = T*; };
+	template <typename T> struct TRawPointerType<const          TObjectPtr<T>> { using Type = T*; };
+	template <typename T> struct TRawPointerType<      volatile TObjectPtr<T>> { using Type = T*; };
+	template <typename T> struct TRawPointerType<const volatile TObjectPtr<T>> { using Type = T*; };
+	struct Friend
+	{
+		template <typename T>
+		FORCEINLINE static uint32 GetPtrTypeHash(const TObjectPtr<T>& InObjectPtr)
+		{
+			return GetTypeHash(InObjectPtr.ObjectPtr);
+		}
+
+		template <typename T>
+		FORCEINLINE static FArchive& Serialize(FArchive& Ar, TObjectPtr<T>& InObjectPtr)
+		{
+			Ar << InObjectPtr.ObjectPtr;
+			return Ar;
+		}
+
+		template <typename T>
+		FORCEINLINE static void SerializePtrStructured(FStructuredArchiveSlot Slot, TObjectPtr<T>& InObjectPtr)
+		{
+			Slot << InObjectPtr.ObjectPtr;
+		}
+	};
 }
 
-// Equality/Inequality comparisons against another type that can be implicitly converted to the pointer type kept in a TObjectPtr
-template <
-	typename T,
-	typename U,
-	decltype(ObjectPtr_Private::IsObjectPtrEqual(std::declval<const TObjectPtr<T>&>(), std::declval<U&&>()))* = nullptr
->
-FORCEINLINE bool operator==(const TObjectPtr<T>& Ptr, U&& Other)
+template <typename T>
+FORCEINLINE uint32 GetTypeHash(const TObjectPtr<T>& InObjectPtr)
 {
-	return ObjectPtr_Private::IsObjectPtrEqual(Ptr, Other);
+	return ObjectPtr_Private::Friend::GetPtrTypeHash(InObjectPtr);
 }
+
+template <typename T>
+FORCEINLINE FArchive& operator<<(FArchive& Ar, TObjectPtr<T>& InObjectPtr)
+{
+	return ObjectPtr_Private::Friend::Serialize(Ar, InObjectPtr);
+}
+
+template <typename T>
+FORCEINLINE void operator<<(FStructuredArchiveSlot Slot, TObjectPtr<T>& InObjectPtr)
+{
+	ObjectPtr_Private::Friend::SerializePtrStructured(Slot, InObjectPtr);
+}
+
+#if !PLATFORM_COMPILER_HAS_GENERATED_COMPARISON_OPERATORS
+// Equality/Inequality comparisons against another type that can be implicitly converted to the pointer type kept in a TObjectPtr
 template <
 	typename T,
 	typename U,
@@ -594,19 +647,11 @@ template <
 	typename U,
 	decltype(ObjectPtr_Private::IsObjectPtrEqual(std::declval<const TObjectPtr<T>&>(), std::declval<U&&>()))* = nullptr
 >
-FORCEINLINE bool operator!=(const TObjectPtr<T>& Ptr, U&& Other)
-{
-	return !ObjectPtr_Private::IsObjectPtrEqual(Ptr, Other);
-}
-template <
-	typename T,
-	typename U,
-	decltype(ObjectPtr_Private::IsObjectPtrEqual(std::declval<const TObjectPtr<T>&>(), std::declval<U&&>()))* = nullptr
->
 FORCEINLINE bool operator!=(U&& Other, const TObjectPtr<T>& Ptr)
 {
 	return !ObjectPtr_Private::IsObjectPtrEqual(Ptr, Other);
 }
+#endif
 
 template <typename T>
 TPrivateObjectPtr<T> MakeObjectPtrUnsafe(const UObject* Obj);
@@ -697,7 +742,8 @@ template <typename T>
 struct TContainerElementTypeCompatibility<TObjectPtr<T>>
 {
 	typedef T* ReinterpretType;
-	
+	typedef T* CopyFromOtherType;
+
 	template <typename IterBeginType, typename IterEndType, typename OperatorType = std::remove_reference_t<decltype(*std::declval<IterBeginType>())>& (*)(IterBeginType&)>
 	UE_OBJPTR_DEPRECATED(5.0, "Reinterpretation between ranges of one type to another type is deprecated.")
 	static void ReinterpretRange(IterBeginType Iter, IterEndType IterEnd, OperatorType Operator = [](IterBeginType& InIt) -> decltype(auto) { return *InIt; })
@@ -711,8 +757,24 @@ struct TContainerElementTypeCompatibility<TObjectPtr<T>>
 #endif
 	}
 
-	typedef T* CopyFromOtherType;
-
+	template <typename IterBeginType, typename IterEndType, typename SizeType, typename OperatorType = std::remove_reference_t<decltype(*std::declval<IterBeginType>())>& (*)(IterBeginType&)>
+	UE_OBJPTR_DEPRECATED(5.0, "Reinterpretation between ranges of one type to another type is deprecated.")
+	static void ReinterpretRangeContiguous(IterBeginType Iter, IterEndType IterEnd, SizeType Size, OperatorType Operator = [](IterBeginType& InIt) -> decltype(auto) { return *InIt; })
+	{
+#if UE_WITH_OBJECT_HANDLE_LATE_RESOLVE || UE_WITH_OBJECT_HANDLE_TRACKING
+		const TObjectPtr<T>* Begin = &*Iter;
+		while (Iter != IterEnd)
+		{
+			auto& Ptr = Operator(Iter);
+			const FObjectPtr& ObjPtr = reinterpret_cast<const FObjectPtr&>(Ptr);
+			UE::CoreUObject::Private::ResolveObjectHandleNoRead(ObjPtr.GetHandleRef());
+			++Iter;
+		}
+		const UObject* const* ObjPtr = reinterpret_cast<const UObject* const*>(Begin);
+		UE::CoreUObject::Private::OnHandleRead(TArrayView<const UObject* const>(ObjPtr, Size));
+#endif
+	}
+	
 	UE_OBJPTR_DEPRECATED(5.0, "Copying ranges of one type to another type is deprecated.")
 	static constexpr void CopyingFromOtherType() {}
 };
@@ -721,6 +783,7 @@ template <typename T>
 struct TContainerElementTypeCompatibility<const TObjectPtr<T>>
 {
 	typedef T* const ReinterpretType;
+	typedef T* const CopyFromOtherType;
 
 	template <typename IterBeginType, typename IterEndType, typename OperatorType = const std::remove_cv_t<std::remove_reference_t<decltype(*std::declval<IterBeginType>())>>&(*)(IterBeginType&)>
 	UE_OBJPTR_DEPRECATED(5.0, "Reinterpretation between ranges of one type to another type is deprecated.")
@@ -735,12 +798,27 @@ struct TContainerElementTypeCompatibility<const TObjectPtr<T>>
 #endif
 	}
 
-	typedef T* const CopyFromOtherType;
+	template <typename IterBeginType, typename IterEndType, typename SizeType, typename OperatorType = std::remove_reference_t<decltype(*std::declval<IterBeginType>())>& (*)(IterBeginType&)>
+	UE_OBJPTR_DEPRECATED(5.0, "Reinterpretation between ranges of one type to another type is deprecated.")
+	static void ReinterpretRangeContiguous(IterBeginType Iter, IterEndType IterEnd, SizeType Size, OperatorType Operator = [](IterBeginType& InIt) -> decltype(auto) { return *InIt; })
+	{
+#if UE_WITH_OBJECT_HANDLE_LATE_RESOLVE || UE_WITH_OBJECT_HANDLE_TRACKING
+		const TObjectPtr<T>* Begin = &*Iter;
+		while (Iter != IterEnd)
+		{
+			auto& Ptr = Operator(Iter);
+			const FObjectPtr& ObjPtr = reinterpret_cast<const FObjectPtr&>(Ptr);
+			UE::CoreUObject::Private::ResolveObjectHandleNoRead(ObjPtr.GetHandleRef());
+			++Iter;
+		}
+		const UObject* const* ObjPtr = reinterpret_cast<const UObject* const*>(Begin);
+		UE::CoreUObject::Private::OnHandleRead(TArrayView<const UObject* const>(ObjPtr, Size));
+#endif
+	}
 
 	UE_OBJPTR_DEPRECATED(5.0, "Copying ranges of one type to another type is deprecated.")
 	static constexpr void CopyingFromOtherType() {}
 };
-
 
 // Trait which allows TObjectPtr to be default constructed by memsetting to zero.
 template <typename T>

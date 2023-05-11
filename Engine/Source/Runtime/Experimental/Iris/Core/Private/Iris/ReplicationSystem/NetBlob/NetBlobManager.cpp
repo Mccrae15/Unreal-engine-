@@ -11,6 +11,7 @@
 #include "Iris/ReplicationSystem/ReplicationWriter.h"
 #include "Iris/Core/NetObjectReference.h"
 #include "Iris/Core/IrisLog.h"
+#include "Net/Core/Trace/NetDebugName.h"
 
 namespace UE::Net::Private
 {
@@ -22,7 +23,7 @@ FNetBlobManager::FNetBlobManager()
 , ObjectReferenceCache(nullptr)
 , Connections(nullptr)
 , PartialNetObjectAttachmentHandlerConfig(nullptr)
-, NetHandleManager(nullptr)
+, NetRefHandleManager(nullptr)
 , bIsServer(false)
 , bSendAttachmentsWithObject(false)
 {
@@ -34,7 +35,7 @@ void FNetBlobManager::Init(FNetBlobManagerInitParams& InitParams)
 
 	ReplicationSystem = InitParams.ReplicationSystem;
 	Connections = &InitParams.ReplicationSystem->GetReplicationSystemInternal()->GetConnections();
-	NetHandleManager = &InitParams.ReplicationSystem->GetReplicationSystemInternal()->GetNetHandleManager();
+	NetRefHandleManager = &InitParams.ReplicationSystem->GetReplicationSystemInternal()->GetNetRefHandleManager();
 	ObjectReferenceCache = &InitParams.ReplicationSystem->GetReplicationSystemInternal()->GetObjectReferenceCache();
 	bIsServer = ReplicationSystem->IsServer();
 	bSendAttachmentsWithObject = InitParams.bSendAttachmentsWithObject; 
@@ -62,8 +63,8 @@ bool FNetBlobManager::QueueNetObjectAttachment(uint32 ConnectionId, const FNetOb
 		return true;
 	}
 
-	FInternalNetHandle OwnerIndex = 0;
-	FInternalNetHandle SubObjectIndex = 0;
+	FInternalNetRefIndex OwnerIndex = 0;
+	FInternalNetRefIndex SubObjectIndex = 0;
 	const FNetObjectReference& NetObjectReference = Attachment->GetNetObjectReference();
 
 	const FNetObjectReference OwnerOrSubObjectReference = TargetRef;	
@@ -119,8 +120,8 @@ bool FNetBlobManager::SendRPC(const UObject* Object, const UObject* SubObject, c
 		return true;
 	}
 
-	FInternalNetHandle OwnerIndex = 0;
-	FInternalNetHandle SubObjectIndex = 0;
+	FInternalNetRefIndex OwnerIndex = 0;
+	FInternalNetRefIndex SubObjectIndex = 0;
 
 	const FNetObjectReference OwnerOrSubObjectReference = ObjectReferenceCache->GetOrCreateObjectReference(SubObject ? SubObject : Object);	
 	FNetObjectReference OwnerReference = OwnerOrSubObjectReference;
@@ -178,8 +179,8 @@ bool FNetBlobManager::SendRPC(uint32 ConnectionId, const UObject* Object, const 
 		return true;
 	}
 
-	FInternalNetHandle OwnerIndex = 0;
-	FInternalNetHandle SubObjectIndex = 0;
+	FInternalNetRefIndex OwnerIndex = 0;
+	FInternalNetRefIndex SubObjectIndex = 0;
 
 	const FNetObjectReference OwnerOrSubObjectReference = ObjectReferenceCache->GetOrCreateObjectReference(SubObject ? SubObject : Object);	
 	FNetObjectReference OwnerReference = OwnerOrSubObjectReference;
@@ -213,21 +214,21 @@ bool FNetBlobManager::SendRPC(uint32 ConnectionId, const UObject* Object, const 
 	return true;
 }
 
-bool FNetBlobManager::GetOwnerAndSubObjectIndicesFromHandle(FNetHandle NetHandle, FInternalNetHandle& OutOwnerIndex, FInternalNetHandle& OutSubObjectIndex)
+bool FNetBlobManager::GetOwnerAndSubObjectIndicesFromHandle(FNetRefHandle RefHandle, FInternalNetRefIndex& OutOwnerIndex, FInternalNetRefIndex& OutSubObjectIndex)
 {
-	if (!NetHandle.IsValid())
+	if (!RefHandle.IsValid())
 	{
 		return false;
 	}
 
-	const FInternalNetHandle ObjectIndex = NetHandleManager->GetInternalIndex(NetHandle);
-	if (ObjectIndex == FNetHandleManager::InvalidInternalIndex)
+	const FInternalNetRefIndex ObjectIndex = NetRefHandleManager->GetInternalIndex(RefHandle);
+	if (ObjectIndex == FNetRefHandleManager::InvalidInternalIndex)
 	{
 		return false;
 	}
 
-	const FNetHandleManager::FReplicatedObjectData& ObjectData = NetHandleManager->GetReplicatedObjectDataNoCheck(ObjectIndex);
-	if (ObjectData.SubObjectRootIndex != FNetHandleManager::InvalidInternalIndex)
+	const FNetRefHandleManager::FReplicatedObjectData& ObjectData = NetRefHandleManager->GetReplicatedObjectDataNoCheck(ObjectIndex);
+	if (ObjectData.SubObjectRootIndex != FNetRefHandleManager::InvalidInternalIndex)
 	{
 		OutOwnerIndex = ObjectData.SubObjectRootIndex;
 		OutSubObjectIndex = ObjectIndex;
@@ -235,15 +236,21 @@ bool FNetBlobManager::GetOwnerAndSubObjectIndicesFromHandle(FNetHandle NetHandle
 	else
 	{
 		OutOwnerIndex = ObjectIndex;
-		OutSubObjectIndex = FNetHandleManager::InvalidInternalIndex;
+		OutSubObjectIndex = FNetRefHandleManager::InvalidInternalIndex;
 	}
 
 	return true;
 }
 
-void FNetBlobManager::ProcessNetObjectAttachmentSendQueue()
+void FNetBlobManager::ProcessNetObjectAttachmentSendQueue(EProcessMode ProcessMode)
 {
-	AttachmentSendQueue.ProcessQueue(Connections);
+	AttachmentSendQueue.PrepareProcessQueue(Connections, NetRefHandleManager);
+	AttachmentSendQueue.ProcessQueue(ProcessMode);
+}
+
+void FNetBlobManager::ResetNetObjectAttachmentSendQueue()
+{
+	AttachmentSendQueue.ResetProcessQueue();
 }
 
 void FNetBlobManager::AddConnection(uint32 ConnectionId)
@@ -313,7 +320,7 @@ void FNetBlobManager::FNetObjectAttachmentSendQueue::Init(FNetBlobManager* InMan
 	Manager = InManager;
 }
 
-void FNetBlobManager::FNetObjectAttachmentSendQueue::Enqueue(uint32 ConnectionId, FInternalNetHandle OwnerIndex, FInternalNetHandle SubObjectIndex, const TRefCountPtr<FNetObjectAttachment>& Attachment)
+void FNetBlobManager::FNetObjectAttachmentSendQueue::Enqueue(uint32 ConnectionId, FInternalNetRefIndex OwnerIndex, FInternalNetRefIndex SubObjectIndex, const TRefCountPtr<FNetObjectAttachment>& Attachment)
 {
 	FNetObjectAttachmentQueueEntry& QueueEntry = AttachmentQueue.AddDefaulted_GetRef();
 	QueueEntry.ConnectionId = ConnectionId;
@@ -322,7 +329,7 @@ void FNetBlobManager::FNetObjectAttachmentSendQueue::Enqueue(uint32 ConnectionId
 	QueueEntry.Attachment = Attachment;
 }
 
-void FNetBlobManager::FNetObjectAttachmentSendQueue::Enqueue(FInternalNetHandle OwnerIndex, FInternalNetHandle SubObjectIndex, const TRefCountPtr<FNetObjectAttachment>& Attachment)
+void FNetBlobManager::FNetObjectAttachmentSendQueue::Enqueue(FInternalNetRefIndex OwnerIndex, FInternalNetRefIndex SubObjectIndex, const TRefCountPtr<FNetObjectAttachment>& Attachment)
 {
 	FNetObjectAttachmentQueueEntry& QueueEntry = AttachmentQueue.AddDefaulted_GetRef();
 	QueueEntry.ConnectionId = 0;
@@ -333,29 +340,77 @@ void FNetBlobManager::FNetObjectAttachmentSendQueue::Enqueue(FInternalNetHandle 
 	bHasMulticastAttachments = true;
 }
 
-void FNetBlobManager::FNetObjectAttachmentSendQueue::ProcessQueue(FReplicationConnections* InConnections)
+void FNetBlobManager::FNetObjectAttachmentSendQueue::PrepareProcessQueue(FReplicationConnections* InConnections, const FNetRefHandleManager* InNetRefHandleManager)
 {
+	if (ProcessContext.IsValid())
+	{
+		return;
+	}
+
+	ProcessContext.Connections = InConnections;
+	ProcessContext.NetRefHandleManager = InNetRefHandleManager;
+
+	ProcessContext.AttachmentsToObjectsGoingOutOfScope.Init(AttachmentQueue.Num());
+	ProcessContext.AttachmentsToObjectsInScope.Init(AttachmentQueue.Num());
+
 	if (AttachmentQueue.Num() <= 0)
 	{
 		return;
 	}
 
-	const FNetBitArray& ValidConnections = InConnections->GetValidConnections();
-	const FNetBitArrayView ReplicatingConnections = MakeNetBitArrayView(ValidConnections);
-
-	uint32* ConnectionIds = nullptr;
-	uint32 ConnectionCount = 0;
-
 	if (bHasMulticastAttachments)
 	{
-		ConnectionIds = static_cast<uint32*>(FMemory_Alloca(ReplicatingConnections.GetNumBits() * 4));
-		CA_ASSUME(ConnectionIds != nullptr);
-		ReplicatingConnections.ForAllSetBits([ConnectionIds, &ConnectionCount](uint32 Bit) { ConnectionIds[ConnectionCount++] = Bit; });
+		const FNetBitArray& ValidConnections = InConnections->GetValidConnections();
+		const FNetBitArrayView ReplicatingConnections = MakeNetBitArrayView(ValidConnections);
+
+		ProcessContext.ConnectionIds.SetNum(ReplicatingConnections.CountSetBits());
+		ReplicatingConnections.GetSetBitIndices(0, ~0, ProcessContext.ConnectionIds.GetData(), ProcessContext.ConnectionIds.Num());
 	}
 
-	TArray<TRefCountPtr<FNetBlob>> PartialNetBlobs;
+	// Figure out if we have any attachments to objects going out of scope.
+	const FNetBitArray& ScopableObjects = InNetRefHandleManager->GetScopableInternalIndices();
+	const FNetBitArray& PrevScopableObjects = InNetRefHandleManager->GetPrevFrameScopableInternalIndices();
+	
+	uint32 CurrentEntryIndex = 0U;
 	for (const FNetObjectAttachmentQueueEntry& Entry : MakeArrayView(AttachmentQueue))
 	{
+		const uint32 TargetInternalObjectIndex = Entry.SubObjectIndex != FNetRefHandleManager::InvalidInternalIndex ? Entry.SubObjectIndex : Entry.OwnerIndex;
+
+		const bool bIsAttachmentToObjectGoingOutOfScope = !ScopableObjects.GetBit(TargetInternalObjectIndex) && PrevScopableObjects.GetBit(TargetInternalObjectIndex);
+		if (bIsAttachmentToObjectGoingOutOfScope)
+		{
+			ProcessContext.AttachmentsToObjectsGoingOutOfScope.SetBit(CurrentEntryIndex);
+		}
+		else
+		{
+			ProcessContext.AttachmentsToObjectsInScope.SetBit(CurrentEntryIndex);
+		}
+		++CurrentEntryIndex;
+	}
+}
+
+void FNetBlobManager::FNetObjectAttachmentSendQueue::ResetProcessQueue()
+{
+	// Clear queue
+	AttachmentQueue.Reset();
+	bHasMulticastAttachments = false;	
+	ProcessContext.Reset();
+}
+
+void FNetBlobManager::FNetObjectAttachmentSendQueue::ProcessQueue(EProcessMode ProcessMode)
+{
+	const FNetBitArray& IndicesToProcess = (ProcessMode == EProcessMode::ProcessObjectsGoingOutOfScope) ? ProcessContext.AttachmentsToObjectsGoingOutOfScope : ProcessContext.AttachmentsToObjectsInScope;
+
+	TArray<TRefCountPtr<FNetBlob>> PartialNetBlobs;
+	const FNetObjectAttachmentQueueEntry* Entries = AttachmentQueue.GetData();
+
+	// Verify that we have not missed to prepare the process context
+	check(ProcessContext.IsValid() && IndicesToProcess.GetNumBits() == AttachmentQueue.Num());
+
+	IndicesToProcess.ForAllSetBits([this, Entries, &PartialNetBlobs](uint32 Index)
+	{
+		const FNetObjectAttachmentQueueEntry& Entry = Entries[Index];
+
 		PartialNetBlobs.Reset();
 
 		const TRefCountPtr<FNetObjectAttachment>& Attachment = Entry.Attachment;
@@ -367,7 +422,7 @@ void FNetBlobManager::FNetObjectAttachmentSendQueue::ProcessQueue(FReplicationCo
 		if (!(bMulticast && bHasConnectionSpecificSerialization) && !PreSerializeAndSplitNetBlob(Entry.ConnectionId, Attachment, PartialNetBlobs))
 		{
 			checkf(false, TEXT("Unable to split %s NetObjectAttachment."), (EnumHasAnyFlags(Attachment->GetCreationInfo().Flags, ENetBlobFlags::Reliable) ? TEXT("reliable") : TEXT("unreliable")));
-			continue;
+			return;
 		}
 
 		const bool bIsMultiPartAttachment = (PartialNetBlobs.Num() > 1);
@@ -381,10 +436,10 @@ void FNetBlobManager::FNetObjectAttachmentSendQueue::ProcessQueue(FReplicationCo
 
 			const FNetBlobCreationInfo& BlobCreationInfo = Attachment->GetCreationInfo();
 			const bool bIsReliableRPC = EnumHasAnyFlags(BlobCreationInfo.Flags, ENetBlobFlags::Reliable);
-			for (uint32 ConnectionId : MakeArrayView(ConnectionIds, ConnectionCount))
+			for (uint32 ConnectionId : MakeArrayView(ProcessContext.ConnectionIds))
 			{
 				// Objects won't be prioritized until there's a view so let's avoid queuing multicast attachments.
-				if (!bIsReliableRPC && InConnections->GetReplicationView(ConnectionId).Views.Num() <= 0)
+				if (!bIsReliableRPC && ProcessContext.Connections->GetReplicationView(ConnectionId).Views.Num() <= 0)
 				{
 					continue;
 				}
@@ -401,23 +456,19 @@ void FNetBlobManager::FNetObjectAttachmentSendQueue::ProcessQueue(FReplicationCo
 					AttachmentsView = MakeArrayView(PartialNetBlobs);
 				}
 
-				FReplicationConnection* Connection = InConnections->GetConnection(ConnectionId);
+				FReplicationConnection* Connection = ProcessContext.Connections->GetConnection(ConnectionId);
 				// We're only iterating over valid connections so the Connection pointer must be valid.
 				Connection->ReplicationWriter->QueueNetObjectAttachments(Entry.OwnerIndex, Entry.SubObjectIndex, AttachmentsView);
 			}
 		}
 		else
 		{
-			if (FReplicationConnection* Connection = InConnections->GetConnection(Entry.ConnectionId))
+			if (FReplicationConnection* Connection = ProcessContext.Connections->GetConnection(Entry.ConnectionId))
 			{
 				Connection->ReplicationWriter->QueueNetObjectAttachments(Entry.OwnerIndex, Entry.SubObjectIndex, AttachmentsView);
 			}
 		}
-	}
-
-	// Clear queue
-	AttachmentQueue.Reset();
-	bHasMulticastAttachments = false;
+	});
 }
 
 bool FNetBlobManager::FNetObjectAttachmentSendQueue::PreSerializeAndSplitNetBlob(uint32 ConnectionId, const TRefCountPtr<FNetObjectAttachment>& Attachment, TArray<TRefCountPtr<FNetBlob>>& OutPartialNetBlobs) const

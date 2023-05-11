@@ -59,7 +59,7 @@ struct FNiagaraGenerationInputDataCPUAccessors
 struct FNiagaraIndexGenerationInput
 {
 	float ViewDistance = 0.0f;
-	int32 LODDistanceFactor = 0;
+	float LODDistanceFactor = 0.0f;
 	
 	uint32 MaxSegmentCount = 0;
 	uint32 SubSegmentCount = 0;
@@ -161,8 +161,8 @@ struct FRibbonMultiRibbonInfo
 
 	FORCEINLINE bool UseInvertOrder(const FVector& ViewDirection, const FVector& ViewOriginForDistanceCulling, ENiagaraRibbonDrawDirection DrawDirection) const
 	{
-		const float StartDist = FVector::DotProduct(ViewDirection, StartPos - ViewOriginForDistanceCulling);
-		const float EndDist = FVector::DotProduct(ViewDirection, EndPos - ViewOriginForDistanceCulling);
+		const double StartDist = FVector::DotProduct(ViewDirection, StartPos - ViewOriginForDistanceCulling);
+		const double EndDist = FVector::DotProduct(ViewDirection, EndPos - ViewOriginForDistanceCulling);
 		return ((StartDist >= EndDist) && DrawDirection == ENiagaraRibbonDrawDirection::BackToFront)
 			|| ((StartDist < EndDist) && DrawDirection == ENiagaraRibbonDrawDirection::FrontToBack);
 	}
@@ -192,30 +192,22 @@ struct FNiagaraRibbonCPUGeneratedVertexData
 	TArray<uint32> MultiRibbonIndices;
 	
 	/** Ribbon perperties required for sorting. */
-	TArray<FRibbonMultiRibbonInfo> RibbonInfoLookup;
+	TArray<FRibbonMultiRibbonInfo, TInlineAllocator<1>> RibbonInfoLookup;
 
-	double TotalSegmentLength;
-	double AverageSegmentLength;
-	double AverageSegmentAngle;
-	double AverageTwistAngle;
-	double AverageWidth;
-
-	FNiagaraRibbonCPUGeneratedVertexData()
-		: TotalSegmentLength(0.0)
-		, AverageSegmentLength(0.0)
-		, AverageSegmentAngle(0.0)
-		, AverageTwistAngle(0.0)
-		, AverageWidth(0.0)
-	{ }
+	float TotalSegmentLength = 0.0f;
+	float AverageSegmentLength = 0.0f;
+	float AverageSegmentAngle = 0.0f;
+	float AverageTwistAngle = 0.0f;
+	float AverageWidth = 0.0f;
 
 	int32 GetAllocatedSize()const
 	{
 		int32 Size = 0;
-		Size += SegmentData.GetAllocatedSize();
-		Size += SortedIndices.GetAllocatedSize();
-		Size += TangentAndDistances.GetAllocatedSize();
-		Size += MultiRibbonIndices.GetAllocatedSize();
-		Size += RibbonInfoLookup.GetAllocatedSize();
+		Size += int32(SegmentData.GetAllocatedSize());
+		Size += int32(SortedIndices.GetAllocatedSize());
+		Size += int32(TangentAndDistances.GetAllocatedSize());
+		Size += int32(MultiRibbonIndices.GetAllocatedSize());
+		Size += int32(RibbonInfoLookup.GetAllocatedSize());
 
 		return Size;
 	}
@@ -371,7 +363,7 @@ protected:
 		int32 StartIndex, int32 EndIndex, int32 NumSegments, float TotalLength, float& OutUScale, float& OutUOffset, float& OutUDistributionScaler);
 
 	template<bool bWantsTessellation, bool bHasTwist, bool bWantsMultiRibbon>
-	void GenerateVertexBufferForRibbonPart(const FNiagaraGenerationInputDataCPUAccessors& CPUData, const TArray<uint32>& RibbonIndices, uint32 RibbonIndex, FNiagaraRibbonCPUGeneratedVertexData& OutputData) const;
+	void GenerateVertexBufferForRibbonPart(const FNiagaraGenerationInputDataCPUAccessors& CPUData, TConstArrayView<uint32> RibbonIndices, uint32 RibbonIndex, FNiagaraRibbonCPUGeneratedVertexData& OutputData) const;
 
 	template<typename IDType, typename ReaderType, bool bWantsTessellation, bool bHasTwist>
 	void GenerateVertexBufferForMultiRibbonInternal(const FNiagaraGenerationInputDataCPUAccessors& CPUData, const ReaderType& IDReader, FNiagaraRibbonCPUGeneratedVertexData& OutputData) const;

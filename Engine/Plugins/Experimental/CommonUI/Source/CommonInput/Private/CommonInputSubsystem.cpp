@@ -2,27 +2,37 @@
 
 #include "CommonInputSubsystem.h"
 #include "CommonInputPrivate.h"
-#include "Misc/ConfigCacheIni.h"
+#include "CommonInputTypeEnum.h"
 
-#include "Framework/Application/IInputProcessor.h"
-#include "Framework/Application/SlateUser.h"
-#include "Engine/World.h"
-#include "Engine/GameViewportClient.h"
-#include "Widgets/SViewport.h"
-#include "HAL/IConsoleManager.h"
-#include "CommonInputSettings.h"
-#include "Containers/Ticker.h"
-#include "GenericPlatform/GenericPlatformTime.h"
-#include "ICommonInputModule.h"
-#include "Engine/LocalPlayer.h"
 #include "Engine/Engine.h"
-#include "Stats/Stats.h"
+#include "Engine/GameViewportClient.h"
+#include "Engine/LocalPlayer.h"
+#include "Engine/PlatformSettingsManager.h"
+#include "Engine/World.h"
+#include "EnhancedInputSubsystems.h"
+#include "Framework/Application/IInputProcessor.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Application/SlateUser.h"
+#include "Misc/ConfigCacheIni.h"
+#include "HAL/PlatformStackWalk.h"
+#include "Widgets/SViewport.h"
+#include "CommonInputSettings.h"
+#include "ICommonInputModule.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(CommonInputSubsystem)
 
 #if WITH_EDITOR
 #include "Settings/LevelEditorPlaySettings.h"
 #endif
+
+#if !UE_BUILD_SHIPPING
+static int32 bDumpInputTypeChangeCallstack = 0;
+static FAutoConsoleVariableRef CVarDumpInputTypeChangeCallstack(
+	TEXT("CommonUI.bDumpInputTypeChangeCallstack"),
+	bDumpInputTypeChangeCallstack,
+	TEXT("Dump callstack when input type changes."));
+#endif // !UE_BUILD_SHIPPING
+
 
 FPlatformInputSupportOverrideDelegate UCommonInputSubsystem::OnPlatformInputSupportOverride;
 
@@ -146,6 +156,17 @@ public:
 private:
 	bool IsRelevantInput(FSlateApplication& SlateApp, const FInputEvent& InputEvent, const ECommonInputType DesiredInputType)
 	{
+#if WITH_EDITOR
+		// If we're stopped at a breakpoint we need for this input preprocessor to just ignore all incoming input
+		// because we're now doing stuff outside the game loop in the editor and it needs to not block all that.
+		// This can happen if you suspend input while spawning a dialog and then hit another breakpoint and then
+		// try and use the editor, you can suddenly be unable to do anything.
+		if (GIntraFrameDebuggingGameThread)
+		{
+			return false;
+		}
+#endif
+		
 		if (SlateApp.IsActive() 
 			|| SlateApp.GetHandleDeviceInputWhenApplicationNotActive() 
 			|| (ICommonInputModule::GetSettings().GetAllowOutOfFocusDeviceInput() && DesiredInputType == ECommonInputType::Gamepad))
@@ -161,6 +182,7 @@ private:
 #endif
 			return ControllerId == InputEvent.GetUserIndex();
 		}
+		
 		return false;
 	}
 
@@ -287,6 +309,14 @@ static FAutoConsoleVariableRef CVarInputKeysVisible
 	ECVF_Default
 );
 
+bool bEnableGamepadPlatformCursor = false;
+static const FAutoConsoleVariableRef CVarInputEnableGamepadPlatformCursor
+(
+	TEXT("CommonInput.EnableGamepadPlatformCursor"),
+	bEnableGamepadPlatformCursor,
+	TEXT("Should the cursor be allowed to be used during gamepad input")
+);
+
 UCommonInputSubsystem* UCommonInputSubsystem::Get(const ULocalPlayer* LocalPlayer)
 {
 	return LocalPlayer ? LocalPlayer->GetSubsystem<UCommonInputSubsystem>() : nullptr;
@@ -325,6 +355,18 @@ void UCommonInputSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 	CVarInputKeysVisible->SetOnChangedCallback(FConsoleVariableDelegate::CreateUObject(this, &UCommonInputSubsystem::ShouldShowInputKeysChanged));
 
+	if (ICommonInputModule::Get().GetSettings().GetEnableEnhancedInputSupport())
+	{
+		if (ULocalPlayer* LocalPlayer = GetLocalPlayerChecked())
+		{
+			if (UEnhancedInputLocalPlayerSubsystem* EnhancedInputLocalPlayerSubsystem = LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>())
+			{
+				BroadcastInputMethodChangedEvent.BindUFunction(this, GET_FUNCTION_NAME_CHECKED(UCommonInputSubsystem, BroadcastInputMethodChanged));
+				EnhancedInputLocalPlayerSubsystem->ControlMappingsRebuiltDelegate.AddUnique(BroadcastInputMethodChangedEvent);
+			}
+		}
+	}
+
 	SetActionDomainTable(FCommonInputBase::GetInputSettings()->GetActionDomainTable());
 }
 
@@ -336,6 +378,18 @@ void UCommonInputSubsystem::Deinitialize()
 		FSlateApplication::Get().UnregisterInputPreProcessor(CommonInputPreprocessor);
 	}
 	CommonInputPreprocessor.Reset();
+
+	if (ICommonInputModule::Get().GetSettings().GetEnableEnhancedInputSupport())
+	{
+		if (ULocalPlayer* LocalPlayer = GetLocalPlayerChecked())
+		{
+			if (UEnhancedInputLocalPlayerSubsystem* EnhancedInputLocalPlayerSubsystem = LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>())
+			{
+				EnhancedInputLocalPlayerSubsystem->ControlMappingsRebuiltDelegate.Remove(BroadcastInputMethodChangedEvent);
+				BroadcastInputMethodChangedEvent.Unbind();
+			}
+		}
+	}
 
 	FTSTicker::GetCoreTicker().RemoveTicker(TickHandle);
 }
@@ -498,6 +552,19 @@ void UCommonInputSubsystem::SetCurrentInputType(ECommonInputType NewInputType)
 
 			if (LockedInput != CurrentInputType)
 			{
+#if !UE_BUILD_SHIPPING
+				if (bDumpInputTypeChangeCallstack)
+				{
+					const uint32 DumpCallstackSize = 65535;
+					ANSICHAR DumpCallstack[DumpCallstackSize] = { 0 };
+					FString ScriptStack = FFrame::GetScriptCallstack(true /* bReturnEmpty */);
+					FPlatformStackWalk::StackWalkAndDump(DumpCallstack, DumpCallstackSize, 0);
+					UE_LOG(LogCommonInput, Log, TEXT("--- Input Changing Callstack ---"));
+					UE_LOG(LogCommonInput, Log, TEXT("Script Stack:\n%s"), *ScriptStack);
+					UE_LOG(LogCommonInput, Log, TEXT("Callstack:\n%s"), ANSI_TO_TCHAR(DumpCallstack));
+				}
+#endif // !UE_BUILD_SHIPPING
+				
 				CurrentInputType = LockedInput;
 
 				FSlateApplication& SlateApplication = FSlateApplication::Get();
@@ -510,7 +577,7 @@ void UCommonInputSubsystem::SetCurrentInputType(ECommonInputType NewInputType)
 					UE_LOG(LogCommonInput, Log, TEXT("UCommonInputSubsystem::SetCurrentInputType(): Using Gamepad"));
 					if (bCursorUser)
 					{
-						SlateApplication.UsePlatformCursorForCursorUser(false);
+						SlateApplication.UsePlatformCursorForCursorUser(bEnableGamepadPlatformCursor);
 					}
 					break;
 				case ECommonInputType::Touch:

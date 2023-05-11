@@ -5,6 +5,8 @@
 
 namespace GeometryCollectionTest
 {	
+	void  CheckClassTypes();
+
 	void  CheckIncrementMask();
 
 	void  Creation();
@@ -36,5 +38,11 @@ namespace GeometryCollectionTest
 	void  AttributeDependencyTest();
 
 	void IntListReindexOnDeletionTest();
+
+	void AppendManagedArrayCollectionTest();
+
+	void AppendTransformCollectionTest();
+
+	void CollectionCycleTest();
 
 }

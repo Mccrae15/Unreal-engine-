@@ -2,7 +2,7 @@
 
 using System.Threading;
 using System.Threading.Tasks;
-using Horde.Build.Compute;
+using Horde.Build.Compute.V1;
 using Horde.Build.Server;
 using Microsoft.Extensions.Logging;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
@@ -20,6 +20,16 @@ namespace Horde.Build.Tests.Compute
 			using ILoggerFactory loggerFactory = LoggerFactory.Create(builder => { builder.AddConsole(); });
 			RedisService redisService = GetRedisServiceSingleton();
 			_scheduler = new RedisTaskScheduler<string, string>(redisService.ConnectionPool, new RedisKey("myBaseKey"), loggerFactory.CreateLogger<RedisTaskScheduler<string, string>>());
+		}
+
+		protected override void Dispose(bool disposing)
+		{
+			base.Dispose(disposing);
+
+			if (disposing)
+			{
+				_scheduler.Dispose();
+			}
 		}
 
 		[TestMethod]

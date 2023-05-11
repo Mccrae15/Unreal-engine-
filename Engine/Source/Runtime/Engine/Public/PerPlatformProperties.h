@@ -6,19 +6,23 @@ PerPlatformProperties.h: Property types that can be overridden on a per-platform
 
 #pragma once
 
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "Engine/Engine.h"
+#endif
 #include "Serialization/Archive.h"
 #include "RHIDefinitions.h"
 #include "Containers/Map.h"
 #include "Algo/Find.h"
 #include "Serialization/MemoryLayout.h"
 #include "Misc/DataDrivenPlatformInfoRegistry.h"
-
-#if WITH_EDITORONLY_DATA && WITH_EDITOR
-#include "Engine/Engine.h"
-#endif
+#include "Misc/FrameRate.h"
 
 #include "PerPlatformProperties.generated.h"
+
+/** Helper function to avoid including Engine.h in this header */
+#if WITH_EDITORONLY_DATA && WITH_EDITOR
+ENGINE_API bool GEngine_GetPreviewPlatformName(FName& PlatformName);
+#endif
 
 namespace PerPlatformProperty::Private
 {
@@ -140,45 +144,6 @@ struct ENGINE_API TPerPlatformProperty
 
 		return Ptr ? *Ptr : This->Default;
 	}
-
-	/* Return the value */
-	UE_DEPRECATED(5.0, "GetValueForPlatform should now be used, with a single platform name")
-		_ValueType GetValueForPlatformIdentifiers(FName PlatformGroupName, FName VanillaPlatformName = NAME_None) const
-	{
-		const _StructType* This = StaticCast<const _StructType*>(this);
-
-		using MapType = decltype(This->PerPlatform);
-		using KeyFuncs = typename PerPlatformProperty::Private::KeyFuncs<MapType>;
-		
-		const _ValueType* ValuePtr = [This, VanillaPlatformName, PlatformGroupName]() -> const _ValueType*
-		{
-			const _ValueType* Ptr = nullptr;
-			if (VanillaPlatformName != NAME_None)
-			{
-				TArray<FName> Keys;
-				This->PerPlatform.GetKeys(Keys);
-				const FName* MatchedName = Keys.FindByPredicate([VanillaPlatformName](FName& Name)
-				{
-					return VanillaPlatformName.ToString().Contains(Name.ToString());
-				});
-				Ptr = MatchedName ? This->PerPlatform.Find(KeyFuncs::NameToKey(*MatchedName)) : nullptr;
-			}			
-			if (Ptr == nullptr && PlatformGroupName != NAME_None)
-			{				
-				Ptr = This->PerPlatform.Find(KeyFuncs::NameToKey(PlatformGroupName));
-			}
-			return Ptr;			
-		}();
-
-		return ValuePtr != nullptr ? *ValuePtr : This->Default;
-	}
-
-	UE_DEPRECATED(4.22, "GetValueForPlatformGroup renamed GetValueForPlatformIdentifiers")
-	_ValueType GetValueForPlatformGroup(FName PlatformGroupName) const
-	{
-		return GetValueForPlatformIdentifiers(PlatformGroupName);
-	}
-
 #endif
 
 	_ValueType GetDefault() const
@@ -193,7 +158,7 @@ struct ENGINE_API TPerPlatformProperty
 		FName PlatformName;
 		// Lookup the override preview platform info, if any
 		// @todo this doesn't set PlatformName, just a group, but GetValueForPlatform() will technically work being given a Group name instead of a platform name, so we just use it
-		if (GEngine && GEngine->GetPreviewPlatformName(PlatformName))
+		if (GEngine_GetPreviewPlatformName(PlatformName))
 		{
 			return GetValueForPlatform(PlatformName);
 		}
@@ -203,29 +168,6 @@ struct ENGINE_API TPerPlatformProperty
 			const _StructType* This = StaticCast<const _StructType*>(this);
 			return This->Default;
 		}
-	}
-
-	UE_DEPRECATED(4.26, "GetValueForFeatureLevel is not needed for platform previewing and GetValue() should be used instead.")
-	_ValueType GetValueForFeatureLevel(ERHIFeatureLevel::Type FeatureLevel) const
-	{
-#if WITH_EDITORONLY_DATA
-		FName PlatformGroupName;
-		switch (FeatureLevel)
-		{
-		    case ERHIFeatureLevel::ES3_1:
-		    {
-			    PlatformGroupName = NAME_Mobile;
-			    break;
-		    }
-		    default:
-			    PlatformGroupName = NAME_None;
-			    break;
-		}
-		return GetValueForPlatformIdentifiers(PlatformGroupName);
-#else
-		const _StructType* This = StaticCast<const _StructType*>(this);
-		return This->Default;
-#endif
 	}
 
 	/* Load old properties that have been converted to FPerPlatformX */
@@ -472,6 +414,62 @@ struct TStructOpsTypeTraits<FPerPlatformBool>
 	enum
 	{
 		WithSerializeFromMismatchedTag = true,
+		WithSerializer = true
+	};
+};
+
+/** FPerPlatformFrameRate - FFrameRate property with per-platform overrides */
+USTRUCT(BlueprintType)
+struct ENGINE_API FPerPlatformFrameRate
+#if CPP
+:	public TPerPlatformProperty<FPerPlatformFrameRate, FFrameRate, NAME_FrameRate>
+#endif
+{
+	GENERATED_USTRUCT_BODY()
+
+	UPROPERTY(EditAnywhere, Category = PerPlatform)
+	FFrameRate Default;
+
+#if WITH_EDITORONLY_DATA
+	UPROPERTY(EditAnywhere, Category = PerPlatform)
+	TMap<FName, FFrameRate> PerPlatform;
+#endif
+
+	FPerPlatformFrameRate()
+	:	Default(30, 1)
+	{
+	}
+
+	FPerPlatformFrameRate(FFrameRate InDefaultValue)
+	:	Default(InDefaultValue)
+	{
+	}
+	
+	bool SerializeFromMismatchedTag(const FPropertyTag& Tag, FArchive& Ar)
+	{
+		if(const UStruct* FrameRateStruct = FindObject<UStruct>(FTopLevelAssetPath("/Script/CoreUObject.FrameRate")))
+		{
+			FFrameRate Value;
+			Ar << Value.Denominator;
+			Ar << Value.Numerator;
+			Default = Value;
+
+			return true;
+		}
+		
+		return false;
+	}
+};
+
+extern template ENGINE_API FArchive& operator<<(FArchive&, TPerPlatformProperty<FPerPlatformFrameRate, FFrameRate, NAME_FrameRate>&);
+
+template<>
+struct TStructOpsTypeTraits<FPerPlatformFrameRate>
+	: public TStructOpsTypeTraitsBase2<FPerPlatformFrameRate>
+{
+	enum
+	{
+		WithSerializeFromMismatchedTag = false,
 		WithSerializer = true
 	};
 };

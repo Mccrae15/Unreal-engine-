@@ -2,6 +2,7 @@
 
 #include "MassArchetypeData.h"
 #include "MassEntityTypes.h"
+#include "MassExecutionContext.h"
 #include "Misc/StringBuilder.h"
 
 //////////////////////////////////////////////////////////////////////
@@ -398,7 +399,7 @@ void FMassArchetypeData::ExecuteFunction(FMassExecutionContext& RunContext, cons
 			{
 				PrevSharedFragmentValuesHash = SharedFragmentValuesHash;
 				BindConstSharedFragmentRequirements(RunContext, Chunk.GetSharedFragmentValues(), RequirementMapping.ConstSharedFragments);
-				BindSharedFragmentRequirements(RunContext, Chunk.GetSharedFragmentValues(), RequirementMapping.SharedFragments);
+				BindSharedFragmentRequirements(RunContext, Chunk.GetMutableSharedFragmentValues(), RequirementMapping.SharedFragments);
 			}
 
 			checkf((ChunkIterator->SubchunkStart + ChunkLength) <= Chunk.GetNumInstances() && ChunkLength > 0, TEXT("Invalid subchunk, it is going over the number of instances in the chunk or it is empty."));
@@ -432,7 +433,7 @@ void FMassArchetypeData::ExecuteFunction(FMassExecutionContext& RunContext, cons
 			{
 				PrevSharedFragmentValuesHash = SharedFragmentValuesHash;
 				BindConstSharedFragmentRequirements(RunContext, Chunk.GetSharedFragmentValues(), RequirementMapping.ConstSharedFragments);
-				BindSharedFragmentRequirements(RunContext, Chunk.GetSharedFragmentValues(), RequirementMapping.SharedFragments);
+				BindSharedFragmentRequirements(RunContext, Chunk.GetMutableSharedFragmentValues(), RequirementMapping.SharedFragments);
 			}
 
 			RunContext.SetCurrentChunkSerialModificationNumber(Chunk.GetSerialModificationNumber());
@@ -454,8 +455,8 @@ void FMassArchetypeData::ExecutionFunctionForChunk(FMassExecutionContext RunCont
 
 	if (ChunkLength)
 	{
-		BindConstSharedFragmentRequirements(RunContext, Chunk.GetSharedFragmentValues(), RequirementMapping.ChunkFragments);
-		BindSharedFragmentRequirements(RunContext, Chunk.GetSharedFragmentValues(), RequirementMapping.ChunkFragments);
+		BindConstSharedFragmentRequirements(RunContext, Chunk.GetSharedFragmentValues(), RequirementMapping.ConstSharedFragments);
+		BindSharedFragmentRequirements(RunContext, Chunk.GetMutableSharedFragmentValues(), RequirementMapping.SharedFragments);
 
 		RunContext.SetCurrentArchetypesTagBitSet(GetTagBitSet());
 		RunContext.SetCurrentChunkSerialModificationNumber(Chunk.GetSerialModificationNumber());
@@ -720,7 +721,7 @@ void FMassArchetypeData::BindConstSharedFragmentRequirements(FMassExecutionConte
 			const int32 FragmentIndex = FragmentsMapping[i];
 
 			check(FragmentIndex != INDEX_NONE || Requirement.Requirement.IsOptional());
-			Requirement.FragmentView = FragmentIndex != INDEX_NONE ? SharedFragmentValues.GetConstSharedFragments()[FragmentIndex] : FConstSharedStruct();
+			Requirement.FragmentView = FragmentIndex != INDEX_NONE ? FConstStructView(SharedFragmentValues.GetConstSharedFragments()[FragmentIndex]) : FConstStructView();
 		}
 	}
 	else
@@ -729,12 +730,12 @@ void FMassArchetypeData::BindConstSharedFragmentRequirements(FMassExecutionConte
 		{
 			const FConstSharedStruct* SharedFragment = SharedFragmentValues.GetConstSharedFragments().FindByPredicate(FStructTypeEqualOperator(Requirement.Requirement.StructType) );
 			check(SharedFragment != nullptr || Requirement.Requirement.IsOptional());
-			Requirement.FragmentView = SharedFragment ? *SharedFragment : FConstSharedStruct();
+			Requirement.FragmentView = SharedFragment ? FConstStructView(*SharedFragment) : FConstStructView();
 		}
 	}
 }
 
-void FMassArchetypeData::BindSharedFragmentRequirements(FMassExecutionContext& RunContext, const FMassArchetypeSharedFragmentValues& SharedFragmentValues, const FMassFragmentIndicesMapping& FragmentsMapping)
+void FMassArchetypeData::BindSharedFragmentRequirements(FMassExecutionContext& RunContext, FMassArchetypeSharedFragmentValues& SharedFragmentValues, const FMassFragmentIndicesMapping& FragmentsMapping)
 {
 	if (FragmentsMapping.Num() > 0)
 	{
@@ -746,16 +747,16 @@ void FMassArchetypeData::BindSharedFragmentRequirements(FMassExecutionContext& R
 			const int32 FragmentIndex = FragmentsMapping[i];
 
 			check(FragmentIndex != INDEX_NONE || Requirement.Requirement.IsOptional());
-			Requirement.FragmentView = FragmentIndex != INDEX_NONE ? SharedFragmentValues.GetSharedFragments()[FragmentIndex] : FSharedStruct();
+			Requirement.FragmentView = FragmentIndex != INDEX_NONE ? FStructView(SharedFragmentValues.GetMutableSharedFragments()[FragmentIndex]) : FStructView();
 		}
 	}
 	else
 	{
 		for (FMassExecutionContext::FSharedFragmentView& Requirement : RunContext.GetMutableSharedRequirements())
 		{
-			const FSharedStruct* SharedFragment = SharedFragmentValues.GetSharedFragments().FindByPredicate(FStructTypeEqualOperator(Requirement.Requirement.StructType));
+			FSharedStruct* SharedFragment = SharedFragmentValues.GetMutableSharedFragments().FindByPredicate(FStructTypeEqualOperator(Requirement.Requirement.StructType));
 			check(SharedFragment != nullptr || Requirement.Requirement.IsOptional());
-			Requirement.FragmentView = SharedFragment ? *SharedFragment : FSharedStruct();
+			Requirement.FragmentView = SharedFragment ? FStructView(*SharedFragment) : FStructView();
 		}
 	}
 }
@@ -943,13 +944,8 @@ void FMassArchetypeData::BatchMoveEntitiesToAnotherArchetype(const FMassArchetyp
 {
 	check(&NewArchetype != this);
 
-	// Sorting the subchunks info so that subchunks of a given chunk are processed "from the back". Otherwise removing 
-	// a subchunk from the front of the chunk would inevitably invalidate following subchunks' information.
+
 	TArray<FMassArchetypeEntityCollection::FArchetypeEntityRange> Subchunks(EntityCollection.GetRanges());
-	Subchunks.Sort([](const FMassArchetypeEntityCollection::FArchetypeEntityRange& A, const FMassArchetypeEntityCollection::FArchetypeEntityRange& B)
-		{
-			return A.ChunkIndex < B.ChunkIndex || (A.ChunkIndex == B.ChunkIndex && A.SubchunkStart > B.SubchunkStart);
-		});
 
 	const int32 InitialOutEntitiesCount = OutEntitesBeingMoved.Num();
 
@@ -984,16 +980,35 @@ void FMassArchetypeData::BatchMoveEntitiesToAnotherArchetype(const FMassArchetyp
 
 			NumberMoved += ResultSubChunk.Length;
 
-			// @todo consider adding a 'merge sequences' pass at the end of the function since we can end up with 
-			// ranges being right next to each other
 			if (OutNewRanges)
 			{
-				OutNewRanges->Add(ResultSubChunk);
+				// if the new ResultSubChunk is right next to the last stored one then merge them both
+				if (OutNewRanges->Num() && OutNewRanges->Last().IsAdjacentAfter(ResultSubChunk))
+				{
+					OutNewRanges->Last().Length += ResultSubChunk.Length;
+				}
+				else // just add
+				{
+					OutNewRanges->Add(ResultSubChunk);
+				}
 			}
 
 		} while (NumberMoved < EntityRange.Length);
 
-		BatchRemoveEntitiesInternal(EntityRange.ChunkIndex, EntityRange.SubchunkStart, EntityRange.Length);
+	}
+
+	// Sorting the subchunks info so that subchunks of a given chunk are processed "from the back". Otherwise removing 
+	// a subchunk from the front of the chunk would inevitably invalidate following subchunks' information.
+	// Note that we do this after already having added the entities to the new archetype to preserve the order of entites 
+	// as given by the input data.
+	Subchunks.Sort([](const FMassArchetypeEntityCollection::FArchetypeEntityRange& A, const FMassArchetypeEntityCollection::FArchetypeEntityRange& B)
+	{
+		return A.ChunkIndex < B.ChunkIndex || (A.ChunkIndex == B.ChunkIndex && A.SubchunkStart > B.SubchunkStart);
+	});
+
+	for (const FMassArchetypeEntityCollection::FArchetypeEntityRange& Subchunk : Subchunks)
+	{
+		BatchRemoveEntitiesInternal(Subchunk.ChunkIndex, Subchunk.SubchunkStart, Subchunk.Length);
 	}
 
 	for (int i = InitialOutEntitiesCount; i < OutEntitesBeingMoved.Num(); ++i)

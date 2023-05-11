@@ -3,21 +3,18 @@
 #include "Toolkits/DMXPixelMappingToolkit.h"
 
 #include "DMXEditorUtils.h"
-#include "DMXPixelMappingLayoutSettings.h"
 #include "DMXPixelMapping.h"
 #include "DMXPixelMappingEditorCommands.h"
 #include "DMXPixelMappingEditorModule.h"
 #include "DMXPixelMappingEditorStyle.h"
 #include "DMXPixelMappingEditorUtils.h"
+#include "DMXPixelMappingLayoutSettings.h"
 #include "DMXPixelMappingToolbar.h"
 #include "K2Node_PixelMappingBaseComponent.h"
-#include "DMXPixelMappingComponentWidget.h"
 #include "Components/DMXPixelMappingFixtureGroupComponent.h"
 #include "Components/DMXPixelMappingRendererComponent.h"
-#include "Components/DMXPixelMappingOutputComponent.h"
 #include "Components/DMXPixelMappingRootComponent.h"
 #include "Components/DMXPixelMappingMatrixComponent.h"
-#include "Components/DMXPixelMappingMatrixCellComponent.h"
 #include "Components/DMXPixelMappingScreenComponent.h"
 #include "Templates/DMXPixelMappingComponentTemplate.h"
 #include "ViewModels/DMXPixelMappingPaletteViewModel.h"
@@ -31,8 +28,9 @@
 #include "ScopedTransaction.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Framework/Commands/GenericCommands.h"
-#include "Misc/ScopedSlowTask.h"
-#include "Styling/AppStyle.h"
+#include "Framework/MultiBox/MultiBoxExtender.h"
+#include "Modules/ModuleManager.h"
+#include "UObject/UObjectIterator.h"
 #include "Widgets/Docking/SDockTab.h"
 
 
@@ -45,13 +43,9 @@ const FName FDMXPixelMappingToolkit::PreviewViewTabID(TEXT("DMXPixelMappingEdito
 const FName FDMXPixelMappingToolkit::DetailsViewTabID(TEXT("DMXPixelMappingEditor_DetailsViewTabID"));
 const FName FDMXPixelMappingToolkit::LayoutViewTabID(TEXT("DMXPixelMappingEditor_LayoutViewTabID"));
 
-const uint8 FDMXPixelMappingToolkit::RequestStopSendingMaxTicks = 5;
 
 FDMXPixelMappingToolkit::FDMXPixelMappingToolkit()
 	: DMXPixelMapping(nullptr)
-	, bIsPlayingDMX(false)
-	, bTogglePlayDMXAll(true)
-	, bRequestStopSendingDMX(false)
 {}
 
 FDMXPixelMappingToolkit::~FDMXPixelMappingToolkit()
@@ -106,7 +100,8 @@ void FDMXPixelMappingToolkit::RegisterTabSpawners(const TSharedRef<class FTabMan
 
 	InTabManager->RegisterTabSpawner(LayoutViewTabID, FOnSpawnTab::CreateSP(this, &FDMXPixelMappingToolkit::SpawnTab_LayoutView))
 		.SetDisplayName(LOCTEXT("Tab_LayoutView", "Layout"))
-		.SetGroup(WorkspaceMenuCategoryRef);
+		.SetGroup(WorkspaceMenuCategoryRef)
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Layout"));
 }
 
 void FDMXPixelMappingToolkit::UnregisterTabSpawners(const TSharedRef<class FTabManager>& InTabManager)
@@ -149,82 +144,63 @@ void FDMXPixelMappingToolkit::Tick(float DeltaTime)
 		return;
 	}
 
-	// render selected component
-	if (!bIsPlayingDMX)
+	TSet<UDMXPixelMappingRendererComponent*> RenderedRendererComponents;
+
+	// Render preview if required
+	for (const FDMXPixelMappingComponentReference& SelectedComponentRef : SelectedComponents)
 	{
-		for (const FDMXPixelMappingComponentReference& SelectedComponentRef : SelectedComponents)
+		UDMXPixelMappingBaseComponent* SelectedComponent = SelectedComponentRef.Component.Get();
+		if (IsValid(SelectedComponent))
 		{
-			UDMXPixelMappingBaseComponent* SelectedComponent = SelectedComponentRef.Component.Get();
-			if (IsValid(SelectedComponent))
+			// User select root component
+			if (Cast<UDMXPixelMappingRootComponent>(SelectedComponent))
 			{
-				// User select root component
-				if (Cast<UDMXPixelMappingRootComponent>(SelectedComponent))
-				{
-					break;
-				}
-
-				// Try to get renderer component from selected component
-				UDMXPixelMappingRendererComponent* RendererComponent = SelectedComponent->GetRendererComponent();
-				if (!ensureMsgf(RendererComponent, TEXT("Component %s resides in pixelmapping but has no valid renderer."), *SelectedComponent->GetUserFriendlyName()))
-				{
-					break;
-				}
-
-				// Render
-				RendererComponent->Render();
-
-				// Render preview
-				RendererComponent->RenderEditorPreviewTexture();
-
-				// Render only once for all selected components
 				break;
 			}
+
+			// Try to get renderer component from selected component
+			UDMXPixelMappingRendererComponent* RendererComponent = SelectedComponent->GetRendererComponent();
+			if (!ensureMsgf(RendererComponent, TEXT("Component %s resides in pixelmapping but has no valid renderer."), *SelectedComponent->GetUserFriendlyName()))
+			{
+				break;
+			}
+
+			// Render preview depends on the render component being 'rendered'
+			if (!RenderedRendererComponents.Contains(RendererComponent))
+			{
+				RendererComponent->Render();
+				RenderedRendererComponents.Add(RendererComponent);
+			}
+
+			// Render preview
+			RendererComponent->RenderEditorPreviewTexture();
+
+
+			// Render only once for all selected components
+			break;
 		}
 	}
 
-	if (bIsPlayingDMX)
+	// Render Output and Send DMX if required
+	if (bIsPlayingDMX && !bRequestStopSendingDMX)
 	{
 		if (bTogglePlayDMXAll) // Send to all
 		{
 			// Render all components
 			RootComponent->RenderAndSendDMX();
-
+		}
+		else // Send to selected component
+		{
 			for (FDMXPixelMappingComponentReference& SelectedComponentRef : SelectedComponents)
 			{
 				if (UDMXPixelMappingBaseComponent* SelectedComponent = SelectedComponentRef.Component.Get())
 				{
 					// Try to get renderer component from selected component
 					UDMXPixelMappingRendererComponent* RendererComponent = SelectedComponent->GetRendererComponent();
-					if (RendererComponent)
+					if (RendererComponent && !RenderedRendererComponents.Contains(RendererComponent))
 					{
-						RendererComponent->RenderEditorPreviewTexture();
-					}
-
-					// Render only once for all selected components
-					break;
-				}
-			}
-		}
-		else // Send to selected component
-		{
-			bool bRenderedOnce = false;
-
-			for (FDMXPixelMappingComponentReference& SelectedComponentRef : SelectedComponents)
-			{
-				if (UDMXPixelMappingBaseComponent* SelectedComponent = SelectedComponentRef.Component.Get())
-				{
-					if (!bRenderedOnce)
-					{
-						// Try to get renderer component from selected component
-						UDMXPixelMappingRendererComponent* RendererComponent = SelectedComponent->GetRendererComponent();
-						if (RendererComponent)
-						{
-							RendererComponent->Render();
-
-							RendererComponent->RenderEditorPreviewTexture();
-						}
-
-						bRenderedOnce = true;
+						RendererComponent->Render();
+						RenderedRendererComponents.Add(RendererComponent);
 					}
 
 					SelectedComponent->SendDMX();
@@ -232,35 +208,12 @@ void FDMXPixelMappingToolkit::Tick(float DeltaTime)
 			}
 		}
 	}
-	else
+	else if (bRequestStopSendingDMX)
 	{
-		if (bRequestStopSendingDMX)
-		{
-			if (RequestStopSendingTicks < RequestStopSendingMaxTicks)
-			{
-				if (bTogglePlayDMXAll) // Send to all
-				{
-					RootComponent->ResetDMX();
-				}
-				else // Send to selected component
-				{
-					for (FDMXPixelMappingComponentReference& SelectedComponentRef : SelectedComponents)
-					{
-						if (UDMXPixelMappingBaseComponent* SelectedComponent = SelectedComponentRef.Component.Get())
-						{
-							SelectedComponent->ResetDMX();
-						}
-					}
-				}
-
-				RequestStopSendingTicks++;
-			}
-			else
-			{
-				RequestStopSendingTicks = 0;
-				bRequestStopSendingDMX = false;
-			}
-		}
+		RootComponent->ResetDMX();
+			
+		bIsPlayingDMX = false;
+		bRequestStopSendingDMX = false; 
 	}
 }
 
@@ -356,13 +309,7 @@ void FDMXPixelMappingToolkit::PlayDMX()
 
 void FDMXPixelMappingToolkit::StopPlayingDMX()
 {
-	bIsPlayingDMX = false;
-
-	RequestStopSendingTicks = 0;
 	bRequestStopSendingDMX = true;
-
-	FDMXEditorUtils::ClearFixturePatchCachedData();
-	FDMXEditorUtils::ClearAllDMXPortBuffers();
 }
 
 void FDMXPixelMappingToolkit::ExecutebTogglePlayDMXAll()

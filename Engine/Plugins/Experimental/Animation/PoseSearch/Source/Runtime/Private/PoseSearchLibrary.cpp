@@ -2,14 +2,20 @@
 
 #include "PoseSearch/PoseSearchLibrary.h"
 
+#include "Animation/AnimInstanceProxy.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/AnimNode_Inertialization.h"
 #include "Animation/AnimNode_SequencePlayer.h"
 #include "Animation/AnimRootMotionProvider.h"
 #include "Animation/BlendSpace.h"
+#include "InstancedStruct.h"
 #include "PoseSearch/AnimNode_MotionMatching.h"
+#include "PoseSearch/PoseSearchDatabase.h"
+#include "PoseSearch/PoseSearchSchema.h"
+#include "PoseSearchFeatureChannel_Trajectory.h"
 #include "Trace/PoseSearchTraceLogger.h"
-#include "MotionTrajectoryLibrary.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PoseSearchLibrary)
 
 #define LOCTEXT_NAMESPACE "PoseSearchLibrary"
 
@@ -22,6 +28,7 @@ void FMotionMatchingState::Reset()
 	// Set the elapsed time to INFINITY to trigger a search right away
 	ElapsedPoseJumpTime = INFINITY;
 	PoseIndicesHistory.Reset();
+	WantedPlayRate = 1.f;
 }
 
 void FMotionMatchingState::AdjustAssetTime(float AssetTime)
@@ -29,27 +36,23 @@ void FMotionMatchingState::AdjustAssetTime(float AssetTime)
 	CurrentSearchResult.Update(AssetTime);
 }
 
-bool FMotionMatchingState::CanAdvance(float DeltaTime, bool& bOutAdvanceToFollowUpAsset, UE::PoseSearch::FSearchResult& OutFollowUpAsset) const
+bool FMotionMatchingState::CanAdvance(float DeltaTime) const
 {
-	bOutAdvanceToFollowUpAsset = false;
-	OutFollowUpAsset = UE::PoseSearch::FSearchResult();
-
 	if (!CurrentSearchResult.IsValid())
 	{
 		return false;
 	}
 
-	const FPoseSearchIndexAsset* SearchIndexAsset = GetCurrentSearchIndexAsset();
+	const FPoseSearchIndexAsset* SearchIndexAsset = CurrentSearchResult.GetSearchIndexAsset(true);
 
-	if (SearchIndexAsset->Type == ESearchIndexAssetType::Sequence)
+	const FInstancedStruct& DatabaseAsset = CurrentSearchResult.Database->GetAnimationAssetStruct(*SearchIndexAsset);
+	if (const FPoseSearchDatabaseSequence* DatabaseSequence = DatabaseAsset.GetPtr<FPoseSearchDatabaseSequence>())
 	{
-		const FPoseSearchDatabaseSequence& DbSequence = 
-			CurrentSearchResult.Database->GetSequenceSourceAsset(SearchIndexAsset);
-		const float AssetLength = DbSequence.Sequence->GetPlayLength();
+		const float AssetLength = DatabaseSequence->Sequence->GetPlayLength();
 
 		float SteppedTime = CurrentSearchResult.AssetTime;
 		ETypeAdvanceAnim AdvanceType = FAnimationRuntime::AdvanceTime(
-			DbSequence.Sequence->bLoop,
+			DatabaseSequence->Sequence->bLoop,
 			DeltaTime,
 			SteppedTime,
 			AssetLength);
@@ -58,64 +61,37 @@ bool FMotionMatchingState::CanAdvance(float DeltaTime, bool& bOutAdvanceToFollow
 		{
 			return SearchIndexAsset->SamplingInterval.Contains(SteppedTime);
 		}
-		else
+	}
+	else if (const FPoseSearchDatabaseAnimComposite* DatabaseAnimComposite = DatabaseAsset.GetPtr<FPoseSearchDatabaseAnimComposite>())
+	{
+		const float AssetLength = DatabaseAnimComposite->GetAnimationAsset()->GetPlayLength();
+
+		float SteppedTime = CurrentSearchResult.AssetTime;
+		ETypeAdvanceAnim AdvanceType = FAnimationRuntime::AdvanceTime(
+			DatabaseAnimComposite->IsLooping(),
+			DeltaTime,
+			SteppedTime,
+			AssetLength);
+
+		if (AdvanceType != ETAA_Finished)
 		{
-			// check if there's a follow-up that can be used
-			int32 FollowUpDbSequenceIdx = CurrentSearchResult.Database->Sequences.IndexOfByPredicate(
-				[&](const FPoseSearchDatabaseSequence& Entry)
-				{
-					return Entry.Sequence == DbSequence.FollowUpSequence;
-				});
-
-			int32 FollowUpSearchIndexAssetIdx = CurrentSearchResult.Database->GetSearchIndex()->Assets.IndexOfByPredicate(
-				[&](const FPoseSearchIndexAsset& Entry)
-				{
-					const bool bIsMatch =
-						Entry.SourceAssetIdx == FollowUpDbSequenceIdx &&
-						Entry.bMirrored == SearchIndexAsset->bMirrored &&
-						Entry.SamplingInterval.Contains(0.0f);
-					return bIsMatch;
-				});
-
-			if (FollowUpSearchIndexAssetIdx != INDEX_NONE)
-			{
-				bOutAdvanceToFollowUpAsset = true;
-
-				const FPoseSearchIndexAsset* FollowUpSearchIndexAsset =
-					&CurrentSearchResult.Database->GetSearchIndex()->Assets[FollowUpSearchIndexAssetIdx];
-
-				// Follow up asset time will start slightly before the beginning of the sequence as 
-				// this is essentially what the matching time in the corresponding main sequence is.
-				// Here we are assuming that the tick will advance the asset player timer into the 
-				// valid region
-				const float FollowUpAssetTime = CurrentSearchResult.AssetTime - AssetLength;
-
-				// There is no correspoding pose index when we switch due to what is mentioned above
-				// so for now we just take whatever pose index is associated with the first frame.
-				OutFollowUpAsset.PoseIdx = CurrentSearchResult.Database->GetPoseIndexFromTime(FollowUpSearchIndexAsset->SamplingInterval.Min, FollowUpSearchIndexAsset);
-				OutFollowUpAsset.SearchIndexAsset = FollowUpSearchIndexAsset;
-				OutFollowUpAsset.AssetTime = FollowUpAssetTime;
-				return true;
-			}
+			return SearchIndexAsset->SamplingInterval.Contains(SteppedTime);
 		}
 	}
-	else if (SearchIndexAsset->Type == ESearchIndexAssetType::BlendSpace)
+	else if (const FPoseSearchDatabaseBlendSpace* DatabaseBlendSpace = DatabaseAsset.GetPtr<FPoseSearchDatabaseBlendSpace>())
 	{
-		const FPoseSearchDatabaseBlendSpace& DbBlendSpace = 
-			CurrentSearchResult.Database->GetBlendSpaceSourceAsset(SearchIndexAsset);
-
 		TArray<FBlendSampleData> BlendSamples;
 		int32 TriangulationIndex = 0;
-		DbBlendSpace.BlendSpace->GetSamplesFromBlendInput(SearchIndexAsset->BlendParameters, BlendSamples, TriangulationIndex, true);
+		DatabaseBlendSpace->BlendSpace->GetSamplesFromBlendInput(SearchIndexAsset->BlendParameters, BlendSamples, TriangulationIndex, true);
 
-		float PlayLength = DbBlendSpace.BlendSpace->GetAnimationLengthFromSampleData(BlendSamples);
+		float PlayLength = DatabaseBlendSpace->BlendSpace->GetAnimationLengthFromSampleData(BlendSamples);
 
 		// Asset player time for blendspaces is normalized [0, 1] so we need to convert 
 		// to a real time before we advance it
 		float RealTime = CurrentSearchResult.AssetTime * PlayLength;
 		float SteppedTime = RealTime;
 		ETypeAdvanceAnim AdvanceType = FAnimationRuntime::AdvanceTime(
-			DbBlendSpace.BlendSpace->bLoop,
+			DatabaseBlendSpace->BlendSpace->bLoop,
 			DeltaTime,
 			SteppedTime,
 			PlayLength);
@@ -149,17 +125,17 @@ static void RequestInertialBlend(const FAnimationUpdateContext& Context, float B
 
 void FMotionMatchingState::JumpToPose(const FAnimationUpdateContext& Context, const FMotionMatchingSettings& Settings, const UE::PoseSearch::FSearchResult& Result)
 {
-	// Remember which pose and sequence we're playing from the database
-	CurrentSearchResult = Result;
-
-	ElapsedPoseJumpTime = 0.0f;
-	
 	// requesting inertial blending only if blendstack is disabled
 	if (Settings.MaxActiveBlends <= 0)
 	{
 		const float JumpBlendTime = ComputeJumpBlendTime(Result, Settings);
 		RequestInertialBlend(Context, JumpBlendTime);
 	}
+
+	// Remember which pose and sequence we're playing from the database
+	CurrentSearchResult = Result;
+
+	ElapsedPoseJumpTime = 0.0f;
 
 	Flags |= EMotionMatchingFlags::JumpedToPose;
 }
@@ -180,18 +156,13 @@ static void TraceMotionMatchingState(
 		return;
 	}
 
-	if (!MotionMatchingState.CurrentSearchResult.IsValid())
-	{
-		return;
-	}
-
 	const float DeltaTime = UpdateContext.GetDeltaTime();
 
-	auto AddUniqueDatabase = [](TArray<FTraceMotionMatchingStateDatabaseEntry>& DatabaseEntries, const UPoseSearchDatabase* Database, const UE::PoseSearch::FSearchContext& SearchContext) -> int32
+	auto AddUniqueDatabase = [](TArray<FTraceMotionMatchingStateDatabaseEntry>& DatabaseEntries, const UPoseSearchDatabase* Database, UE::PoseSearch::FSearchContext& SearchContext) -> int32
 	{
 		const uint64 DatabaseId = FTraceMotionMatchingState::GetIdFromObject(Database);
 
-		int32 DbEntryIdx = -1;
+		int32 DbEntryIdx = INDEX_NONE;
 		for (int32 i = 0; i < DatabaseEntries.Num(); ++i)
 		{
 			if (DatabaseEntries[i].DatabaseId == DatabaseId)
@@ -204,10 +175,11 @@ static void TraceMotionMatchingState(
 		{
 			DbEntryIdx = DatabaseEntries.Add({ DatabaseId });
 
-			const FPoseSearchFeatureVectorBuilder* CachedQuery = SearchContext.GetCachedQuery(Database);
-			check(CachedQuery);
-
-			DatabaseEntries[DbEntryIdx].QueryVector = CachedQuery->GetValues();
+			// if throttling is on, the continuing pose can be valid, but no actual search occurred, so the query will not be cached, and we need to build it
+			FPoseSearchFeatureVectorBuilder FeatureVectorBuilder;
+			FeatureVectorBuilder.Init(Database->Schema);
+			SearchContext.GetOrBuildQuery(Database, FeatureVectorBuilder);
+			DatabaseEntries[DbEntryIdx].QueryVector = FeatureVectorBuilder.GetValues();
 		}
 
 		return DbEntryIdx;
@@ -262,16 +234,8 @@ static void TraceMotionMatchingState(
 	if (DeltaTime > SMALL_NUMBER)
 	{
 		// simulation
-		int32 FirstIdx = 0;
-		const FTrajectorySample PrevSample = FTrajectorySampleRange::IterSampleTrajectory(
-			Trajectory.Samples,
-			ETrajectorySampleDomain::Time,
-			-DeltaTime, FirstIdx);
-
-		const FTrajectorySample CurrSample = FTrajectorySampleRange::IterSampleTrajectory(
-			Trajectory.Samples,
-			ETrajectorySampleDomain::Time,
-			0.0f, FirstIdx);
+		const FTrajectorySample PrevSample = Trajectory.GetSampleAtTime(-DeltaTime);
+		const FTrajectorySample CurrSample = Trajectory.GetSampleAtTime(0.f);
 
 		const FTransform SimDelta = CurrSample.Transform.GetRelativeTransform(PrevSample.Transform);
 
@@ -283,11 +247,6 @@ static void TraceMotionMatchingState(
 
 		TraceState.AnimLinearVelocity = AnimDelta.GetTranslation().Size() / DeltaTime;
 		TraceState.AnimAngularVelocity = FMath::RadiansToDegrees(AnimDelta.GetRotation().GetAngle()) / DeltaTime;
-	}
-
-	if (EnumHasAnyFlags(MotionMatchingState.Flags, EMotionMatchingFlags::JumpedToFollowUp))
-	{
-		TraceState.Flags |= FTraceMotionMatchingState::EFlags::FollowupAnimation;
 	}
 
 	TraceState.SearchableAssetId = FTraceMotionMatchingState::GetIdFromObject(Searchable);
@@ -331,10 +290,8 @@ void UpdateMotionMatchingState(
 	const FSearchResult LastResult = InOutMotionMatchingState.CurrentSearchResult;
 #endif
 
-	// Check if we can advance. Includes the case where we can advance but only by switching to a follow up asset.
-	bool bAdvanceToFollowUpAsset = false;
-	FSearchResult FollowUpAssetResult;
-	const bool bCanAdvance = InOutMotionMatchingState.CanAdvance(DeltaTime, bAdvanceToFollowUpAsset, FollowUpAssetResult);
+	// Check if we can advance.
+	const bool bCanAdvance = InOutMotionMatchingState.CanAdvance(DeltaTime);
 
 	// If we can't advance or enough time has elapsed since the last pose jump then search
 	FSearchContext SearchContext;
@@ -358,7 +315,7 @@ void UpdateMotionMatchingState(
 			SearchContext.History = &PoseHistoryProvider->GetPoseHistory();
 		}
 
-		if (const FPoseSearchIndexAsset* CurrentIndexAsset = InOutMotionMatchingState.GetCurrentSearchIndexAsset())
+		if (const FPoseSearchIndexAsset* CurrentIndexAsset = InOutMotionMatchingState.CurrentSearchResult.GetSearchIndexAsset())
 		{
 			SearchContext.QueryMirrorRequest =
 				CurrentIndexAsset->bMirrored ?
@@ -388,25 +345,15 @@ void UpdateMotionMatchingState(
 		}
 	}
 
-	// If we didn't search or it didn't find a pose to jump to, and we can 
-	// advance but only with the follow up asset, jump to that. Otherwise we 
-	// are advancing as normal, and nothing needs to be done.
-	if (!(InOutMotionMatchingState.Flags & EMotionMatchingFlags::JumpedToPose)
-		&& bCanAdvance
-		&& bAdvanceToFollowUpAsset)
-	{
-		InOutMotionMatchingState.JumpToPose(Context, Settings, FollowUpAssetResult);
-		InOutMotionMatchingState.Flags |= EMotionMatchingFlags::JumpedToFollowUp;
-	}
-
 	// Tick elapsed pose jump timer
 	if (!(InOutMotionMatchingState.Flags & EMotionMatchingFlags::JumpedToPose))
 	{
 		InOutMotionMatchingState.ElapsedPoseJumpTime += DeltaTime;
 	}
 
+	InOutMotionMatchingState.UpdateWantedPlayRate(SearchContext, Settings);
 	InOutMotionMatchingState.PoseIndicesHistory.Update(InOutMotionMatchingState.CurrentSearchResult, DeltaTime, Settings.PoseReselectHistory);
-	
+
 #if UE_POSE_SEARCH_TRACE_ENABLED
 	// Record debugger details
 	TraceMotionMatchingState(
@@ -419,28 +366,42 @@ void UpdateMotionMatchingState(
 #endif
 }
 
-const FPoseSearchIndexAsset* FMotionMatchingState::GetCurrentSearchIndexAsset() const
+void FMotionMatchingState::UpdateWantedPlayRate(const UE::PoseSearch::FSearchContext& SearchContext, const FMotionMatchingSettings& Settings)
 {
 	if (CurrentSearchResult.IsValid())
 	{
-		return CurrentSearchResult.SearchIndexAsset;
+		if (!FMath::IsNearlyEqual(Settings.PlayRateMin, 1.f, UE_KINDA_SMALL_NUMBER) || !FMath::IsNearlyEqual(Settings.PlayRateMax, 1.f, UE_KINDA_SMALL_NUMBER))
+		{
+			if (const FPoseSearchFeatureVectorBuilder* PoseSearchFeatureVectorBuilder = SearchContext.GetCachedQuery(CurrentSearchResult.Database.Get()))
+			{
+				if (const UPoseSearchFeatureChannel_Trajectory* TrajectoryChannel = CurrentSearchResult.Database->Schema->FindFirstChannelOfType<UPoseSearchFeatureChannel_Trajectory>())
+				{
+					TConstArrayView<float> QueryData = PoseSearchFeatureVectorBuilder->GetValues();
+					TConstArrayView<float> ResultData = CurrentSearchResult.Database->GetSearchIndex().GetPoseValues(CurrentSearchResult.PoseIdx);
+					const float EstimatedSpeedRatio = TrajectoryChannel->GetEstimatedSpeedRatio(QueryData, ResultData);
+					check(Settings.PlayRateMin <= Settings.PlayRateMax);
+					WantedPlayRate = FMath::Clamp(EstimatedSpeedRatio, Settings.PlayRateMin, Settings.PlayRateMax);
+				}
+				else
+				{
+					UE_LOG(LogPoseSearch, Warning,
+						TEXT("Couldn't update the WantedPlayRate in FMotionMatchingState::UpdateWantedPlayRate, because Schema '%s' couldn't find a UPoseSearchFeatureChannel_Trajectory channel"),
+						*GetNameSafe(CurrentSearchResult.Database->Schema));
+				}
+			}
+		}
 	}
-
-	return nullptr;
 }
 
-float FMotionMatchingState::ComputeJumpBlendTime(
-	const UE::PoseSearch::FSearchResult& Result, 
-	const FMotionMatchingSettings& Settings
-) const
+float FMotionMatchingState::ComputeJumpBlendTime(const UE::PoseSearch::FSearchResult& Result, const FMotionMatchingSettings& Settings) const
 {
-	const FPoseSearchIndexAsset* SearchIndexAsset = GetCurrentSearchIndexAsset();
+	const FPoseSearchIndexAsset* SearchIndexAsset = CurrentSearchResult.GetSearchIndexAsset();
 
 	// Use alternate blend time when changing between mirrored and unmirrored
 	float JumpBlendTime = Settings.BlendTime;
-	if ((SearchIndexAsset != nullptr) && (Settings.MirrorChangeBlendTime > 0.0f))
+	if (SearchIndexAsset && Settings.MirrorChangeBlendTime > 0.0f)
 	{
-		if (Result.SearchIndexAsset->bMirrored != SearchIndexAsset->bMirrored)
+		if (Result.GetSearchIndexAsset(true)->bMirrored != SearchIndexAsset->bMirrored)
 		{
 			JumpBlendTime = Settings.MirrorChangeBlendTime;
 		}

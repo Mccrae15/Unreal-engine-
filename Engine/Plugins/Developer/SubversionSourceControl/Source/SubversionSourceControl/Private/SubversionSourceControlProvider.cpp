@@ -1,25 +1,23 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SubversionSourceControlProvider.h"
-#include "HAL/PlatformProcess.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Paths.h"
 #include "Misc/QueuedThreadPool.h"
-#include "Modules/ModuleManager.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "ISourceControlModule.h"
 #include "SubversionSourceControlCommand.h"
 #include "SubversionSourceControlModule.h"
-#include "ISourceControlLabel.h"
 #include "SourceControlHelpers.h"
 #include "SourceControlOperations.h"
 #include "SubversionSourceControlLabel.h"
+#include "SubversionSourceControlState.h"
 #include "SubversionSourceControlUtils.h"
 #include "SSubversionSourceControlSettings.h"
 #include "Logging/MessageLog.h"
 #include "XmlFile.h"
 #include "ScopedSourceControlProgress.h"
+#include "XmlNode.h"
 
 #define LOCTEXT_NAMESPACE "SubversionSourceControl"
 
@@ -173,7 +171,7 @@ ECommandResult::Type FSubversionSourceControlProvider::Execute( const FSourceCon
 		FFormatNamedArguments Arguments;
 		Arguments.Add( TEXT("OperationName"), FText::FromName(InOperation->GetName()) );
 		Arguments.Add( TEXT("ProviderName"), FText::FromName(GetName()) );
-		FText Message(FText::Format(LOCTEXT("UnsupportedOperation", "Operation '{OperationName}' not supported by source control provider '{ProviderName}'"), Arguments));
+		FText Message(FText::Format(LOCTEXT("UnsupportedOperation", "Operation '{OperationName}' not supported by revision control provider '{ProviderName}'"), Arguments));
 		FMessageLog("SourceControl").Error(Message);
 		InOperation->AddErrorMessge(Message);
 		InOperationCompleteDelegate.ExecuteIfBound(InOperation, ECommandResult::Failed);
@@ -218,12 +216,27 @@ bool FSubversionSourceControlProvider::UsesChangelists() const
 	return false;
 }
 
+bool FSubversionSourceControlProvider::UsesUncontrolledChangelists() const
+{
+	return true;
+}
+
 bool FSubversionSourceControlProvider::UsesCheckout() const
 {
 	return true;
 }
 
 bool FSubversionSourceControlProvider::UsesFileRevisions() const
+{
+	return true;
+}
+
+bool FSubversionSourceControlProvider::UsesSnapshots() const
+{
+	return false;
+}
+
+bool FSubversionSourceControlProvider::AllowsDiffAgainstDepot() const
 {
 	return true;
 }

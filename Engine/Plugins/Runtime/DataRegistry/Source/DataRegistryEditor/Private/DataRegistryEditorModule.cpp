@@ -1,19 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DataRegistryEditorModule.h"
-#include "DataRegistryEditorToolkit.h"
 #include "DataRegistryIdCustomization.h"
 #include "DataRegistryTypeCustomization.h"
 #include "DataRegistrySubsystem.h"
 #include "AssetTypeActions_DataRegistry.h"
 #include "EdGraphSchema_K2.h"
-#include "AssetToolsModule.h"
 #include "PropertyCustomizationHelpers.h"
-#include "PropertyEditorModule.h"
 #include "EdGraphUtilities.h"
-#include "Widgets/Input/SComboButton.h"
 #include "Widgets/SToolTip.h"
-#include "Framework/Application/SlateApplication.h"
 
 #define LOCTEXT_NAMESPACE "DataRegistryEditor"
 

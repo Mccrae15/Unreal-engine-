@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MoviePipelineUtils.h"
+#include "Engine/Blueprint.h"
 #include "Modules/ModuleManager.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "MoviePipelineAntiAliasingSetting.h"
@@ -204,7 +205,7 @@ namespace MoviePipeline
 		// The evaluation tree only contains the active bits of the hierarchy (which is what we want). However we disable non-active sections while
 		// soloing, and we can't restore them because they weren't part of the shot hierarchy. To resolve this, we build a complete copy of the
 		// original for restoration at the end. We'll build our own tree, kept separate from the per-shot ones.
-		for (UMovieSceneTrack* Track : InSequence->GetMovieScene()->GetMasterTracks())
+		for (UMovieSceneTrack* Track : InSequence->GetMovieScene()->GetTracks())
 		{
 			UMovieSceneSubTrack* SubTrack = Cast<UMovieSceneSubTrack>(Track);
 			if (!SubTrack)
@@ -382,7 +383,7 @@ namespace MoviePipeline
 		}
 	}
 
-	void CheckPartialSectionEvaluationAndWarn(const FFrameNumber& LeftDeltaTicks, TSharedPtr<FCameraCutSubSectionHierarchyNode> Node, UMoviePipelineExecutorShot* InShot, const FFrameRate& InMasterDisplayRate)
+	void CheckPartialSectionEvaluationAndWarn(const FFrameNumber& LeftDeltaTicks, TSharedPtr<FCameraCutSubSectionHierarchyNode> Node, UMoviePipelineExecutorShot* InShot, const FFrameRate& InRootDisplayRate)
 	{
 		// For the given movie scene, we want to produce a warning if there is no data to evaluate once we've expanded for 
 		// handle frames or temporal sub-sampling. To do our best guess at which tracks are relevant, we can look at the
@@ -393,8 +394,8 @@ namespace MoviePipeline
 		// and offsets the output frame number (when rounded back to whole numbers) for output
 		if (LeftDeltaTicks > 0 && Node->MovieScene.IsValid())
 		{
-			FFrameNumber LowerCheckBound = InShot->ShotInfo.TotalOutputRangeMaster.GetLowerBoundValue() - LeftDeltaTicks;
-			FFrameNumber UpperCheckBound = InShot->ShotInfo.TotalOutputRangeMaster.GetLowerBoundValue();
+			FFrameNumber LowerCheckBound = InShot->ShotInfo.TotalOutputRangeRoot.GetLowerBoundValue() - LeftDeltaTicks;
+			FFrameNumber UpperCheckBound = InShot->ShotInfo.TotalOutputRangeRoot.GetLowerBoundValue();
 
 			TRange<FFrameNumber> CheckRange = TRange<FFrameNumber>(TRangeBound<FFrameNumber>::Exclusive(LowerCheckBound), TRangeBound<FFrameNumber>::Inclusive(UpperCheckBound));
 
@@ -439,10 +440,10 @@ namespace MoviePipeline
 						}
 
 						// Convert ticks back to frames for human consumption
-						FFrameNumber LowerCheckBoundFrame = FFrameRate::TransformTime(LowerCheckBound, InShot->ShotInfo.CachedTickResolution, InMasterDisplayRate).FloorToFrame();
-						FFrameNumber UpperCheckBoundFrame = FFrameRate::TransformTime(UpperCheckBound, InShot->ShotInfo.CachedTickResolution, InMasterDisplayRate).FloorToFrame();
+						FFrameNumber LowerCheckBoundFrame = FFrameRate::TransformTime(LowerCheckBound, InShot->ShotInfo.CachedTickResolution, InRootDisplayRate).FloorToFrame();
+						FFrameNumber UpperCheckBoundFrame = FFrameRate::TransformTime(UpperCheckBound, InShot->ShotInfo.CachedTickResolution, InRootDisplayRate).FloorToFrame();
 
-						UE_LOG(LogMovieRenderPipeline, Warning, TEXT("[%s %s] Due to Temporal sub-sampling or handle frames, evaluation will occur outside of shot boundaries (from frame %d to %d). Section %s (Binding: %s) starts during this time period and cannot be auto-expanded. Please extend this section to start on frame %d. (All times listed are relative to the master sequence)"),
+						UE_LOG(LogMovieRenderPipeline, Warning, TEXT("[%s %s] Due to Temporal sub-sampling or handle frames, evaluation will occur outside of shot boundaries (from frame %d to %d). Section %s (Binding: %s) starts during this time period and cannot be auto-expanded. Please extend this section to start on frame %d. (All times listed are relative to the root sequence)"),
 							*InShot->OuterName, *InShot->InnerName, LowerCheckBoundFrame.Value, UpperCheckBoundFrame.Value,
 							*SectionName, *BindingName, LowerCheckBoundFrame.Value);
 					}
@@ -591,8 +592,8 @@ namespace MoviePipeline
 
 		if (ChildSubSectionData)
 		{
-			const TArray<UMovieSceneTrack*> MasterTracks = Sequence->GetMovieScene()->GetMasterTracks();
-			for (const UMovieSceneTrack* Track : MasterTracks)
+			const TArray<UMovieSceneTrack*> Tracks = Sequence->GetMovieScene()->GetTracks();
+			for (const UMovieSceneTrack* Track : Tracks)
 			{
 				// SubTracks encompass both Cinematic Shot sections and Sub-Sequences
 				if (Track && Track->IsA<UMovieSceneSubTrack>())
@@ -742,6 +743,35 @@ namespace UE
 			if (!InOutFilenameFormatString.Contains(TEXT("{file_dup}"), ESearchCase::IgnoreCase))
 			{
 				InOutFilenameFormatString.Append(TEXT("{file_dup}"));
+			}
+		}
+
+		void DeduplicateNameArray(TArray<FString>& InOutNames)
+		{
+			TMap<FString, int32> NameUseCount;
+			for (FString& Name : InOutNames)
+			{
+				int32& Count = NameUseCount.FindOrAdd(Name, 0);
+				if (++Count > 1)
+				{
+					Name.Append(FString::Format(TEXT("({0})"), { NameUseCount[Name] }));
+				}
+			}
+
+			// For any names we found duplicates of, append (1) to the first to keep naming consistent
+			for (TPair<FString, int32>& Pair : NameUseCount)
+			{
+				if (Pair.Value > 1)
+				{
+					for (FString& Name : InOutNames)
+					{
+						if (Name.Equals(Pair.Key))
+						{
+							Name.Append(TEXT("(1)"));
+							break;
+						}
+					}
+				}
 			}
 		}
 
@@ -906,13 +936,13 @@ namespace UE
 {
 	namespace MoviePipeline
 	{
-		FMoviePipelineRenderPassMetrics GetRenderPassMetrics(UMoviePipelineMasterConfig* InMasterConfig, UMoviePipelineExecutorShot* InPipelineExecutorShot, const FMoviePipelineRenderPassMetrics& InRenderPassMetrics, const FIntPoint& InEffectiveOutputResolution)
+		FMoviePipelineRenderPassMetrics GetRenderPassMetrics(UMoviePipelinePrimaryConfig* InPrimaryConfig, UMoviePipelineExecutorShot* InPipelineExecutorShot, const FMoviePipelineRenderPassMetrics& InRenderPassMetrics, const FIntPoint& InEffectiveOutputResolution)
 		{
 			FMoviePipelineRenderPassMetrics OutRenderPassMetrics = InRenderPassMetrics;
 
-			if (InMasterConfig && InPipelineExecutorShot)
+			if (InPrimaryConfig && InPipelineExecutorShot)
 			{
-				const UMoviePipelineHighResSetting* HighResSettings = Cast<const UMoviePipelineHighResSetting>(UMoviePipelineBlueprintLibrary::FindOrGetDefaultSettingForShot(UMoviePipelineHighResSetting::StaticClass(), InMasterConfig, InPipelineExecutorShot));
+				const UMoviePipelineHighResSetting* HighResSettings = Cast<const UMoviePipelineHighResSetting>(UMoviePipelineBlueprintLibrary::FindOrGetDefaultSettingForShot(UMoviePipelineHighResSetting::StaticClass(), InPrimaryConfig, InPipelineExecutorShot));
 				check(HighResSettings);
 
 				FIntPoint BackbufferResolution = FIntPoint(FMath::CeilToInt((float)InEffectiveOutputResolution.X / (float)OutRenderPassMetrics.OriginalTileCounts.X), FMath::CeilToInt((float)InEffectiveOutputResolution.Y / (float)OutRenderPassMetrics.OriginalTileCounts.Y));

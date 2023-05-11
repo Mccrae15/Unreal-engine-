@@ -4,9 +4,11 @@
 #include "RHIStaticStates.h"
 #include "EngineGlobals.h"
 #include "Engine/Engine.h"
+#include "MaterialDomain.h"
 #include "Materials/Material.h"
 #include "MeshMaterialShader.h"
 #include "WaterInstanceDataBuffer.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 
 // ----------------------------------------------------------------------------------

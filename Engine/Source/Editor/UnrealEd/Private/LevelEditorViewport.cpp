@@ -2,6 +2,7 @@
 
 
 #include "LevelEditorViewport.h"
+#include "Animation/Skeleton.h"
 #include "Materials/MaterialInterface.h"
 #include "Modules/ModuleManager.h"
 #include "Misc/PackageName.h"
@@ -15,6 +16,7 @@
 #include "Animation/AnimSequenceBase.h"
 #include "CanvasItem.h"
 #include "Engine/BrushBuilder.h"
+#include "Engine/SkeletalMesh.h"
 #include "Settings/LevelEditorViewportSettings.h"
 #include "Engine/Brush.h"
 #include "AI/NavigationSystemBase.h"
@@ -102,6 +104,7 @@
 #include "EdModeInteractiveToolsContext.h"
 #include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 #include "Rendering/StaticLightingSystemInterface.h"
+#include "TextureResource.h"
 
 DEFINE_LOG_CATEGORY(LogEditorViewport);
 
@@ -571,8 +574,7 @@ UObject* FLevelEditorViewportClient::GetOrCreateMaterialFromTexture(UTexture* Un
 
 	const FString MaterialFullName = bCreateMaterialInstance ? (TEXT("MI_") + TextureShortName) : (TextureShortName + TEXT("_Mat"));
 	FString NewPackageName = FPaths::Combine(NewPackageFolder, MaterialFullName);
-	NewPackageName = UPackageTools::SanitizePackageName(NewPackageName);
-	UPackage* Package = CreatePackage(*NewPackageName);
+	NewPackageName = UPackageTools::SanitizePackageName(NewPackageName);	
 
 	// See if the material asset already exists with the expected name, if it does, just return
 	// an instance of it.
@@ -580,13 +582,16 @@ UObject* FLevelEditorViewportClient::GetOrCreateMaterialFromTexture(UTexture* Un
 	if (AssetRegistry.GetAssetsByPackageName(*NewPackageName, OutAssetData) && (OutAssetData.Num() > 0))
 	{
 		UObject* FoundAsset = OutAssetData[0].GetAsset();
-		if (FoundAsset->IsA(UMaterialInterface::StaticClass()))
+		if (FoundAsset != nullptr && // Due to redirects we might have an asset by this name that actually doesn't exist under that name anymore.
+			FoundAsset->IsA(UMaterialInterface::StaticClass()))
 		{
 			return FoundAsset;
 		}
 		UE_LOG(LogEditorViewport, Warning, TEXT("Failed to create material %s from texture because a non-material asset already exists with that name"), *NewPackageName);
 		return nullptr;
 	}
+
+	UPackage* Package = CreatePackage(*NewPackageName);
 
 	// Variations for Base Maps.
 	TArray<FString> BaseSuffixes;
@@ -815,20 +820,16 @@ static bool AttemptApplyObjToComponent(UObject* ObjToUse, USceneComponent* Compo
 						const FScopedTransaction Transaction(LOCTEXT("DropAnimBlueprintOnObject", "Drop Anim Blueprint On Object"));
 						SkeletalMeshComponent->Modify();
 
-						// If the component doesn't have a mesh or the anim blueprint's skeleton isn't compatible with the existing mesh's skeleton, the mesh should change
-						const bool bShouldChangeMesh = !SkeletalMeshComponent->GetSkeletalMeshAsset() || !SkeletalMeshComponent->GetSkeletalMeshAsset()->GetSkeleton()->IsCompatible(AnimBPSkeleton);
+						// If the component doesn't have a mesh, the mesh should change
+						const bool bShouldChangeMesh = !SkeletalMeshComponent->GetSkeletalMeshAsset();
 
 						if (bShouldChangeMesh)
 						{
 							SkeletalMeshComponent->SetSkeletalMesh(AnimBPSkeleton->GetPreviewMesh(true));
 						}
 
-						// Verify that the skeletons are compatible before changing the anim BP
-						if (SkeletalMeshComponent->GetSkeletalMeshAsset() && SkeletalMeshComponent->GetSkeletalMeshAsset()->GetSkeleton()->IsCompatible(AnimBPSkeleton))
-						{
-							SkeletalMeshComponent->SetAnimInstanceClass(DroppedObjAsAnimBlueprint->GeneratedClass);
-							bResult = true;
-						}
+						SkeletalMeshComponent->SetAnimInstanceClass(DroppedObjAsAnimBlueprint->GeneratedClass);
+						bResult = true;
 					}
 				}
 			}
@@ -850,8 +851,8 @@ static bool AttemptApplyObjToComponent(UObject* ObjToUse, USceneComponent* Compo
 						const FScopedTransaction Transaction(LOCTEXT("DropAnimationOnObject", "Drop Animation On Object"));
 						SkeletalMeshComponent->Modify();
 
-						// If the component doesn't have a mesh or the anim blueprint's skeleton isn't compatible with the existing mesh's skeleton, the mesh should change
-						const bool bShouldChangeMesh = !SkeletalMeshComponent->GetSkeletalMeshAsset() || !SkeletalMeshComponent->GetSkeletalMeshAsset()->GetSkeleton()->IsCompatible(AnimSkeleton);
+						// If the component doesn't have a mesh, the mesh should change
+						const bool bShouldChangeMesh = !SkeletalMeshComponent->GetSkeletalMeshAsset();
 
 						if (bShouldChangeMesh)
 						{
@@ -1477,10 +1478,10 @@ bool FLevelEditorViewportClient::DropObjectsAtCoordinates(int32 MouseX, int32 Mo
 	bool bResult = false;
 
 	// Allow the drag drop handler to do anything pre-drop.
+	ULevelEditorDragDropHandler* DragDropHandler = GEditor->GetLevelEditorDragDropHandler();
 	if (!bCreateDropPreview)
 	{
-		ULevelEditorDragDropHandler* DragDrop = GEditor->GetLevelEditorDragDropHandler();
-		if (!DragDrop->PreDropObjectsAtCoordinates(MouseX, MouseY, GetWorld(), Viewport, DroppedObjects, OutNewActors))
+		if (!DragDropHandler->PreDropObjectsAtCoordinates(MouseX, MouseY, GetWorld(), Viewport, DroppedObjects, OutNewActors))
 		{
 			return bResult;
 		}
@@ -1690,6 +1691,11 @@ bool FLevelEditorViewportClient::DropObjectsAtCoordinates(int32 MouseX, int32 Mo
 		{
 			FEditorDelegates::OnNewActorsDropped.Broadcast(DroppedObjects, OutNewActors);
 		}
+	}
+
+	if (!bCreateDropPreview)
+	{
+		DragDropHandler->PostDropObjectsAtCoordinates(MouseX, MouseX, World, Viewport, DroppedObjects);
 	}
 
 	// Reset if creating a preview actor.
@@ -2130,12 +2136,12 @@ bool FLevelEditorViewportClient::ShouldLockPitch() const
 {
 	// If we have somehow gotten out of the locked rotation
 	if ((GetViewRotation().Pitch < -90.f + KINDA_SMALL_NUMBER || GetViewRotation().Pitch > 90.f - KINDA_SMALL_NUMBER)
-		|| FMath::Abs(GetViewRotation().Roll) > (90.f - KINDA_SMALL_NUMBER))
+		&& FMath::Abs(GetViewRotation().Roll) > (90.f - KINDA_SMALL_NUMBER))
 	{
 		return false;
 	}
 	// Else use the standard rules
-	return FEditorViewportClient::ShouldLockPitch() ;
+	return FEditorViewportClient::ShouldLockPitch();
 }
 
 void FLevelEditorViewportClient::BeginCameraMovement(bool bHasMovement)
@@ -2655,7 +2661,7 @@ void FLevelEditorViewportClient::ProjectActorsIntoWorld(const TArray<AActor*>& A
 			// We only snap things that are on screen
 			FVector2D ScreenPos;
 			FIntPoint ViewportSize = InViewport->GetSizeXY();
-			if (SceneView->WorldToPixel(NewActorPosition, ScreenPos) && FMath::IsWithin<float>(ScreenPos.X, 0, ViewportSize.X) && FMath::IsWithin<float>(ScreenPos.Y, 0, ViewportSize.Y))
+			if (SceneView->WorldToPixel(NewActorPosition, ScreenPos) && FMath::IsWithin(ScreenPos.X, 0, ViewportSize.X) && FMath::IsWithin(ScreenPos.Y, 0, ViewportSize.Y))
 			{
 				bIsOnScreen = true;
 				Cursor = FViewportCursorLocation(SceneView, this, static_cast<int32>(ScreenPos.X), static_cast<int32>(ScreenPos.Y));

@@ -11,6 +11,8 @@
 
 struct FPerInstanceRenderData;
 class UStaticMeshComponent;
+enum ECollisionTraceFlag : int;
+enum EMaterialDomain : int;
 struct FStaticMeshVertexFactories;
 using FStaticMeshVertexFactoriesArray = TArray<FStaticMeshVertexFactories>;
 
@@ -75,6 +77,9 @@ struct FMaterialAudit
 ENGINE_API void AuditMaterials(const UStaticMeshComponent* Component, FMaterialAudit& Audit);
 ENGINE_API void FixupMaterials(FMaterialAudit& Audit);
 ENGINE_API bool IsSupportedBlendMode(EBlendMode Mode);
+ENGINE_API bool IsSupportedBlendMode(const FMaterial& In);
+ENGINE_API bool IsSupportedBlendMode(const FMaterialShaderParameters& In);
+ENGINE_API bool IsSupportedBlendMode(const UMaterialInterface& In);
 ENGINE_API bool IsSupportedMaterialDomain(EMaterialDomain Domain);
 ENGINE_API bool IsWorldPositionOffsetSupported();
 
@@ -125,11 +130,16 @@ public:
 		HHitProxy* HitProxy = nullptr;
 	#endif
 		int32 MaterialIndex = INDEX_NONE;
+		float MaxWPODisplacement = 0.0f;
 
 		FMaterialRelevance MaterialRelevance;
 
 		uint8 bHasPerInstanceRandomID : 1;
 		uint8 bHasPerInstanceCustomData : 1;
+		uint8 bHidden : 1;
+	#if WITH_EDITORONLY_DATA
+		uint8 bSelected : 1;
+	#endif
 	};
 
 public:
@@ -138,6 +148,7 @@ public:
 	{
 		bIsNaniteMesh  = true;
 		bHasProgrammableRaster = false;
+		bReverseCulling = false;
 	}
 
 	ENGINE_API virtual ~FSceneProxyBase() = default;
@@ -175,6 +186,11 @@ public:
 	inline EFilterFlags GetFilterFlags() const
 	{
 		return FilterFlags;
+	}
+
+	inline bool IsCullingReversedByComponent() const
+	{
+		return bReverseCulling;
 	}
 
 	virtual FResourceMeshInfo GetResourceMeshInfo() const = 0;
@@ -220,9 +236,15 @@ public:
 
 protected:
 	ENGINE_API void DrawStaticElementsInternal(FStaticPrimitiveDrawInterface* PDI, const FLightCacheInterface* LCI);
+	ENGINE_API void CalculateMaxWPODisplacement();
 
 protected:
 	TArray<FMaterialSection> MaterialSections;
+
+#if RHI_RAYTRACING
+	TArray<TArray<FMaterialRenderProxy*>> RayTracingMaterialProxiesPerLOD;
+#endif
+
 #if WITH_EDITOR
 	TArray<FHitProxyId> HitProxyIds;
 	EHitProxyMode HitProxyMode = EHitProxyMode::MaterialSection;
@@ -231,6 +253,7 @@ protected:
 	uint32 InstanceWPODisableDistance = 0;
 	EFilterFlags FilterFlags = EFilterFlags::None;
 	uint8 bHasProgrammableRaster : 1;
+	uint8 bReverseCulling : 1;
 
 private:
 
@@ -306,6 +329,11 @@ public:
 		OutImposterIndex = Resources->ImposterIndex;
 	}
 
+	virtual void GetNaniteMaterialMask(FUint32Vector2& OutMaterialMask) const override
+	{
+		OutMaterialMask = NaniteMaterialMask;
+	}
+
 	virtual FResourceMeshInfo GetResourceMeshInfo() const override;
 
 	virtual bool GetInstanceDrawDistanceMinMax(FVector2f& OutCullRange) const override;
@@ -318,6 +346,8 @@ public:
 
 protected:
 	virtual void CreateRenderThreadResources() override;
+
+	virtual void OnEvaluateWorldPositionOffsetChanged_RenderThread() override;
 
 	class FMeshInfo : public FLightCacheInterface
 	{
@@ -360,9 +390,10 @@ protected:
 	const FDistanceFieldVolumeData* DistanceFieldData;
 	const FCardRepresentationData* CardRepresentationData;
 
+	FUint32Vector2 NaniteMaterialMask = FUint32Vector2(~uint32(0), ~uint32(0));
+
 	FMaterialRelevance CombinedMaterialRelevance;
 
-	uint32 bReverseCulling : 1;
 	uint32 bHasMaterialErrors : 1;
 
 	const UStaticMesh* StaticMesh = nullptr;

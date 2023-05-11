@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "HairStrandsCore.h"
+#include "Engine/Texture2D.h"
 #include "HairStrandsInterface.h"
 #include "Interfaces/IPluginManager.h"
 #include "GeometryCache.h"
@@ -8,6 +9,7 @@
 #include "Engine/StaticMesh.h"
 #include "GroomAsset.h"
 #include "GroomCreateBindingOptions.h"
+#include "UObject/Package.h"
 
 IMPLEMENT_MODULE(FHairStrandsCore, HairStrandsCore);
 DEFINE_LOG_CATEGORY(LogHairStrands);
@@ -24,12 +26,12 @@ void FHairStrandsCore::StartupModule()
 	// Maps virtual shader source directory /Plugin/FX/Niagara to the plugin's actual Shaders directory.
 	FString PluginShaderDir = FPaths::Combine(IPluginManager::Get().FindPlugin(TEXT("HairStrands"))->GetBaseDir(), TEXT("Shaders"));
 	AddShaderSourceDirectoryMapping(TEXT("/Plugin/Runtime/HairStrands"), PluginShaderDir);
-	SetHairStrandsEnabled(true);
+	SetGroomEnabled(true);
 }
 
 void FHairStrandsCore::ShutdownModule()
 {
-	SetHairStrandsEnabled(false);
+	SetGroomEnabled(false);
 }
 
 void FHairStrandsCore::RegisterAssetHelper(const FHairAssetHelper& Helper)

@@ -8,6 +8,8 @@
 			"showNames": true,
 			"templates":
 			[
+				"test-executor",
+				"local-executor",
 				"custom"
 			],
 			"columns":
@@ -32,6 +34,9 @@
 	],
 	"agentTypes":
 	{
+		"AnyAgent": {
+			"pool": "any"
+		},
 		"Win-UE5":
 		{
 			"pool": "win-ue5",
@@ -45,6 +50,25 @@
 	},
 	"templates":
 	[
+		{
+			"id": "test-executor",
+			"name": "Run Test Executor",
+			"executor": "Test",
+			"initialAgentType": "AnyAgent",
+			"arguments": [
+				"-Target=Full Build"
+			]
+		},
+		{
+			"id": "local-executor",
+			"name": "Run Local Executor",
+			"executor": "Local",
+			"initialAgentType": "AnyAgent",
+			"arguments": [
+				"-Script=Engine/Build/Graph/Examples/TagsAndFiles.xml",
+				"-Target=Tag and File Examples"
+			]
+		},
 		{
 			"id": "custom",
 			"name": "Custom...",

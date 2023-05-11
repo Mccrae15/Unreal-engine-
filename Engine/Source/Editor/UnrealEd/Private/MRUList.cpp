@@ -38,6 +38,12 @@ void FMRUList::Cull()
 	}
 }
 
+void FMRUList::ClearMRUItems()
+{
+	Items.Empty();
+
+	WriteToINI();
+}
 
 void FMRUList::ReadFromINI()
 {
@@ -143,11 +149,18 @@ void FMRUList::InternalReadINI( TArray<FString>& OutItems, const FString& INISec
 				FString NewItem;
 				if (FPackageName::TryConvertFilenameToLongPackageName(CurItem, NewItem))
 				{
-					CurItem = NewItem;
+					if (NewItem != CurItem)
+					{
+						CurItem = NewItem;
+						bConvertedToNewFormat = true;
+					}
+					
 					OutItems.AddUnique(CurItem);
 				}
-
-				bConvertedToNewFormat = true;
+				else
+				{
+					bConvertedToNewFormat = true;
+				}
 			}
 			else
 			{
@@ -165,14 +178,17 @@ void FMRUList::InternalReadINI( TArray<FString>& OutItems, const FString& INISec
 
 void FMRUList::InternalWriteINI( const TArray<FString>& InItems, const FString& INISection, const FString& INIKeyBase )
 {
-	GConfig->EmptySection( *INISection, GEditorPerProjectIni );
-
-	for ( int32 ItemIdx = 0; ItemIdx < InItems.Num(); ++ItemIdx )
+	if (FConfigFile* ConfigFile = GConfig->Find(GEditorPerProjectIni))
 	{
-		GConfig->SetString( *INISection, *FString::Printf( TEXT("%s%d"), *INIKeyBase, ItemIdx ), *InItems[ ItemIdx ], GEditorPerProjectIni );
-	}
+		ConfigFile->Remove(*INISection);
 
-	GConfig->Flush( false, GEditorPerProjectIni );
+		for (int32 ItemIdx = 0; ItemIdx < InItems.Num(); ++ItemIdx)
+		{
+			ConfigFile->SetString(*INISection, *FString::Printf(TEXT("%s%d"), *INIKeyBase, ItemIdx), *InItems[ItemIdx]);
+		}
+
+		GConfig->Flush(false, GEditorPerProjectIni);
+	}
 }
 
 

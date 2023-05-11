@@ -2,6 +2,7 @@
 
 #include "BlueprintTypePromotion.h"
 
+#include "Async/ParallelFor.h"
 #include "Containers/EnumAsByte.h"
 #include "Containers/UnrealString.h"
 #include "Delegates/Delegate.h"
@@ -11,6 +12,7 @@
 #include "Internationalization/Text.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "Misc/AssertionMacros.h"
+#include "Misc/MTAccessDetector.h"
 #include "Modules/ModuleManager.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "UObject/Class.h"
@@ -24,6 +26,11 @@
 
 class UBlueprintFunctionNodeSpawner;
 class UK2Node;
+
+namespace TypePromotionImpl
+{
+	UE_MT_DECLARE_RW_ACCESS_DETECTOR(InstanceAccessProtector);
+}
 
 FTypePromotion* FTypePromotion::Instance = nullptr;
 
@@ -50,6 +57,7 @@ FTypePromotion& FTypePromotion::Get()
 {
 	if (Instance == nullptr)
 	{
+		UE_MT_SCOPED_WRITE_ACCESS(TypePromotionImpl::InstanceAccessProtector);
 		Instance = new FTypePromotion();
 	}
 	return *Instance;
@@ -59,14 +67,15 @@ void FTypePromotion::Shutdown()
 {
 	if (Instance)
 	{
+		UE_MT_SCOPED_WRITE_ACCESS(TypePromotionImpl::InstanceAccessProtector);
 		delete Instance;
 		Instance = nullptr;
 	}
 }
 
 FTypePromotion::FTypePromotion()
+	: PromotionTable(CreatePromotionTable())
 {
-	CreatePromotionTable();
 	CreateOpTable();
 	OnModulesChangedDelegateHandle = FModuleManager::Get().OnModulesChanged().AddStatic(&FTypePromotion::OnModulesChanged);
 	OnReloadCompleteDelegateHandle = FCoreUObjectDelegates::ReloadCompleteDelegate.AddStatic(&FTypePromotion::RefreshPromotionTables);
@@ -83,14 +92,16 @@ void FTypePromotion::OnModulesChanged(FName ModuleThatChanged, EModuleChangeReas
 	// Any time a module is changed, there could possibly be new UFunctions that we 
 	// need to process, so we need to recreate the op table and clear the node spawners
 	// that we are using in order to avoid invalid duplicates in the graph action menu
-	FTypePromotion::RefreshPromotionTables();
+	if (ReasonForChange == EModuleChangeReason::ModuleLoaded || ReasonForChange == EModuleChangeReason::ModuleUnloaded)
+	{
+		FTypePromotion::RefreshPromotionTables();
+	}
 }
 
-void FTypePromotion::CreatePromotionTable()
+TMap<FName, TArray<FName>> FTypePromotion::CreatePromotionTable()
 {
-	PromotionTable =
+	return
 	{
-
 		// Type_X...						Can be promoted to...
 		{ UEdGraphSchema_K2::PC_Int,		{ UEdGraphSchema_K2::PC_Real, UEdGraphSchema_K2::PC_Int64 } },
 		{ UEdGraphSchema_K2::PC_Byte,		{ UEdGraphSchema_K2::PC_Real, UEdGraphSchema_K2::PC_Int, UEdGraphSchema_K2::PC_Int64 } },
@@ -124,11 +135,7 @@ bool FTypePromotion::IsValidPromotion(const FEdGraphPinType& A, const FEdGraphPi
 	{
 		const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
 
-		FName DummyName;
-		UClass* DummyClass = nullptr;
-		UK2Node* DummyNode = nullptr;
-
-		return K2Schema->SearchForAutocastFunction(A, B, /*out*/ DummyName, DummyClass);
+		return K2Schema->SearchForAutocastFunction(A, B).IsSet();
 	}
 	else
 	{
@@ -138,14 +145,13 @@ bool FTypePromotion::IsValidPromotion(const FEdGraphPinType& A, const FEdGraphPi
 
 bool FTypePromotion::HasStructConversion(const UEdGraphPin* InputPin, const UEdGraphPin* OutputPin)
 {
+	check(InputPin);
+	check(OutputPin);
+
 	const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
 
-	FName DummyName;
-	UClass* DummyClass = nullptr;
-	UK2Node* DummyNode = nullptr;
-
-	const bool bCanAutocast = K2Schema->SearchForAutocastFunction(OutputPin->PinType, InputPin->PinType, /*out*/ DummyName, DummyClass);
-	const bool bCanAutoConvert = K2Schema->FindSpecializedConversionNode(OutputPin, InputPin, false, /* out */ DummyNode);
+	const bool bCanAutocast = K2Schema->SearchForAutocastFunction(OutputPin->PinType, InputPin->PinType).IsSet();
+	const bool bCanAutoConvert = K2Schema->FindSpecializedConversionNode(OutputPin->PinType, *InputPin, false).IsSet();
 	
 	return bCanAutocast || bCanAutoConvert;
 }
@@ -203,7 +209,8 @@ bool FTypePromotion::IsFunctionPromotionReady(const UFunction* const FuncToConsi
 bool FTypePromotion::IsFunctionPromotionReady_Internal(const UFunction* const FuncToConsider) const
 {
 	const FName FuncOpName = GetOpNameFromFunction(FuncToConsider);
-	
+
+	FScopeLock ScopeLock(&Lock);
 	if(const FFunctionsList* FuncList = OperatorTable.Find(FuncOpName))
 	{
 		return FuncList->Contains(FuncToConsider);
@@ -266,6 +273,8 @@ static bool PropertyCompatibleWithPin(const FProperty* Param, FEdGraphPinType co
 UFunction* FTypePromotion::FindBestMatchingFunc_Internal(FName Operation, const TArray<UEdGraphPin*>& PinsToConsider)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FTypePromotionTable::FindBestMatchingFunc_Internal);
+
+	FScopeLock ScopeLock(&Lock);
 
 	const FFunctionsList* FuncList = OperatorTable.Find(Operation);
 	if (!FuncList)
@@ -472,6 +481,7 @@ void FTypePromotion::GetAllFuncsForOp_Internal(FName Operation, TArray<UFunction
 {
 	OutFuncs.Empty();
 
+	FScopeLock ScopeLock(&Lock);
 	OutFuncs.Append(OperatorTable[Operation]);
 }
 
@@ -483,11 +493,13 @@ FName FTypePromotion::GetOpNameFromFunction(UFunction const* const Func)
 		return OperatorNames::NoOp;
 	}
 
-	FString FuncName = Func->GetName();
+	TStringBuilder<256> FuncName;
+	Func->GetFName().ToString(FuncName);
+	TStringView FuncNameView = FuncName.ToView();
 	// Get everything before the "_"
-	int32 Index = FuncName.Find(TEXT("_"));
+	int32 Index = FuncNameView.Find(TEXT("_"));
 	
-	FName FuncNameChopped(FuncName.Mid(0, Index));
+	FName FuncNameChopped(FuncNameView.Mid(0, Index));
 	if (GetAllOpNames().Contains(FuncNameChopped))
 	{
 		return FuncNameChopped;
@@ -501,38 +513,46 @@ void FTypePromotion::CreateOpTable()
 	TRACE_CPUPROFILER_EVENT_SCOPE(FTypePromotion::CreateOpTable);
 	const UEdGraphSchema_K2* Schema = GetDefault<UEdGraphSchema_K2>();
 
-	OperatorTable.Empty();
+	FCriticalSection NewOperatorTableLock;
+	TMap<FName, FFunctionsList> NewOperatorTable;
 
 	TArray<UClass*> Libraries;
 	GetDerivedClasses(UBlueprintFunctionLibrary::StaticClass(), Libraries);
-	for (UClass* Library : Libraries)
-	{
-		// Ignore abstract libraries/classes
-		if (!Library || Library->HasAnyClassFlags(CLASS_Abstract))
+	ParallelFor(Libraries.Num(), 
+		[this, &Schema, &NewOperatorTable, &NewOperatorTableLock, &Libraries](int32 Index)
 		{
-			continue;
-		}
-
-		for (UFunction* Function : TFieldRange<UFunction>(Library, EFieldIteratorFlags::ExcludeSuper, EFieldIteratorFlags::ExcludeDeprecated))
-		{
-			if(!IsPromotableFunction(Function))
+			UClass* Library = Libraries[Index];
+			// Ignore abstract libraries/classes
+			if (!Library || Library->HasAnyClassFlags(CLASS_Abstract))
 			{
-				continue;
+				return;
 			}
 
-			FEdGraphPinType FuncPinType;
-			FName OpName = GetOpNameFromFunction(Function);
-
-			if (OpName != OperatorNames::NoOp && Schema->ConvertPropertyToPinType(Function->GetReturnProperty(), /* out */ FuncPinType))
+			for (UFunction* Function : TFieldRange<UFunction>(Library, EFieldIteratorFlags::ExcludeSuper, EFieldIteratorFlags::ExcludeDeprecated))
 			{
-				AddOpFunction(OpName, Function);
+				if (!IsPromotableFunction(Function))
+				{
+					continue;
+				}
+
+				FEdGraphPinType FuncPinType;
+				FName OpName = GetOpNameFromFunction(Function);
+
+				if (OpName != OperatorNames::NoOp && Schema->ConvertPropertyToPinType(Function->GetReturnProperty(), /* out */ FuncPinType))
+				{
+					FScopeLock ScopeLock(&NewOperatorTableLock);
+					NewOperatorTable.FindOrAdd(OpName).Add(Function);
+				}
 			}
-		}
-	}
+		});
+
+	FScopeLock ScopeLock(&Lock);
+	OperatorTable = MoveTemp(NewOperatorTable);
 }
 
 void FTypePromotion::AddOpFunction(FName OpName, UFunction* Function)
 {
+	FScopeLock ScopeLock(&Lock);
 	OperatorTable.FindOrAdd(OpName).Add(Function);
 }
 
@@ -583,17 +603,25 @@ bool FTypePromotion::IsOperatorSpawnerRegistered(UFunction const* const Func)
 
 void FTypePromotion::RegisterOperatorSpawner(FName OpName, UBlueprintFunctionNodeSpawner* Spawner)
 {
-	if(Instance && !Instance->OperatorNodeSpawnerMap.Contains(OpName) && OpName != OperatorNames::NoOp)
+	if(Instance)
 	{
-		Instance->OperatorNodeSpawnerMap.Add(OpName, Spawner);
+		FScopeLock ScopeLock(&Instance->Lock);
+		if (OpName != OperatorNames::NoOp && !Instance->OperatorNodeSpawnerMap.Contains(OpName))
+		{
+			Instance->OperatorNodeSpawnerMap.Add(OpName, Spawner);
+		}
 	}
 }
 
 UBlueprintFunctionNodeSpawner* FTypePromotion::GetOperatorSpawner(FName OpName)
 {
-	if(Instance && Instance->OperatorNodeSpawnerMap.Contains(OpName))
+	if(Instance)
 	{
-		return Instance->OperatorNodeSpawnerMap[OpName];
+		FScopeLock ScopeLock(&Instance->Lock);
+		if (Instance->OperatorNodeSpawnerMap.Contains(OpName))
+		{
+			return Instance->OperatorNodeSpawnerMap[OpName];
+		}
 	}
 
 	return nullptr;
@@ -603,6 +631,7 @@ void FTypePromotion::ClearNodeSpawners()
 {
 	if (Instance)
 	{
+		FScopeLock ScopeLock(&Instance->Lock);
 		Instance->OperatorNodeSpawnerMap.Empty();
 	}
 }
@@ -610,10 +639,15 @@ void FTypePromotion::ClearNodeSpawners()
 void FTypePromotion::RefreshPromotionTables(EReloadCompleteReason Reason /* = EReloadCompleteReason::None */)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FTypePromotionTable::RefreshPromotionTables);
-	
-	FTypePromotion::ClearNodeSpawners();
+
 	if(Instance)
 	{
+		// Hold the lock during the whole operation since we don't want readers to see
+		// any intermediate state.
+		FScopeLock ScopeLock(&Instance->Lock);
+
+		FTypePromotion::ClearNodeSpawners();
+
 		Instance->OperatorTable.Empty();
 		Instance->CreateOpTable();
 	}

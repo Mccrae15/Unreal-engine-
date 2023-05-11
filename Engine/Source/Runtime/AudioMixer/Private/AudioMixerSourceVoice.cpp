@@ -196,6 +196,13 @@ namespace Audio
 		}
 	}
 
+	void FMixerSourceVoice::SetModulationRouting(FSoundModulationDefaultRoutingSettings& RoutingSettings)
+	{
+		AUDIO_MIXER_CHECK_GAME_THREAD(MixerDevice);
+
+		SourceManager->SetModulationRouting(SourceId, RoutingSettings);
+	}
+
 	void FMixerSourceVoice::SetSourceBufferListener(FSharedISourceBufferListenerPtr& InSourceBufferListener, bool InShouldSourceBufferListenerZeroBuffer)
 	{
 		AUDIO_MIXER_CHECK_GAME_THREAD(MixerDevice);
@@ -246,6 +253,21 @@ namespace Audio
 
 		bIsPaused = false;
 		SourceManager->StopFade(SourceId, NumFrames);
+	}
+
+	int32 FMixerSourceVoice::GetSourceId() const
+	{
+		return SourceId;
+	}
+
+	float FMixerSourceVoice::GetDistanceAttenuation() const
+	{
+		return DistanceAttenuation;
+	}
+
+	float FMixerSourceVoice::GetDistance() const
+	{
+		return Distance;
 	}
 
 	void FMixerSourceVoice::Pause()

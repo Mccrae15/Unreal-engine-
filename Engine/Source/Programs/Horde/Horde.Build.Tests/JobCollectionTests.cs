@@ -27,7 +27,7 @@ namespace Horde.Build.Tests
 	using LogId = ObjectId<ILogFile>;
 	using PoolId = StringId<IPool>;
 	using StreamId = StringId<IStream>;
-	using TemplateRefId = StringId<TemplateRef>;
+	using TemplateId = StringId<ITemplateRef>;
 
 	[TestClass]
 	public class JobCollectionTests : TestSetup
@@ -41,7 +41,7 @@ namespace Horde.Build.Tests
 
 		static NewNode AddNode(NewGroup @group, string name, string[]? inputDependencies, Action<NewNode>? action = null)
 		{
-			NewNode node = new NewNode(name, inputDependencies?.ToList(), inputDependencies?.ToList(), null, null, null, null, null, null);
+			NewNode node = new NewNode(name, inputDependencies: inputDependencies?.ToList(), orderDependencies: inputDependencies?.ToList());
 			if (action != null)
 			{
 				action.Invoke(node);
@@ -75,13 +75,13 @@ namespace Horde.Build.Tests
 			Mock<ITemplate> templateMock = new Mock<ITemplate>(MockBehavior.Strict);
 			templateMock.SetupGet(x => x.InitialAgentType).Returns((string?)null);
 
-			IGraph baseGraph = await GraphCollection.AddAsync(templateMock.Object);
+			IGraph baseGraph = await GraphCollection.AddAsync(templateMock.Object, null);
 
-			List<string> arguments = new List<string>();
-			arguments.Add("-Target=Publish Client");
-			arguments.Add("-Target=Post-Publish Client");
+			CreateJobOptions options = new CreateJobOptions();
+			options.Arguments.Add("-Target=Publish Client");
+			options.Arguments.Add("-Target=Post-Publish Client");
 
-			IJob job = await JobCollection.AddAsync(JobId.GenerateNewId(), new StreamId("ue4-main"), new TemplateRefId("test-build"), ContentHash.SHA1("hello"), baseGraph, "Test job", 123, 123, null, null, null, null, null, null, null, null, null, false, false, null, null, arguments);
+			IJob job = await JobCollection.AddAsync(JobId.GenerateNewId(), new StreamId("ue4-main"), new TemplateId("test-build"), ContentHash.SHA1("hello"), baseGraph, "Test job", 123, 123, options);
 
 			job = await StartBatch(job, baseGraph, 0);
 			job = await RunStep(job, baseGraph, 0, 0, JobStepOutcome.Success); // Setup Build
@@ -150,13 +150,13 @@ namespace Horde.Build.Tests
 			Mock<ITemplate> templateMock = new Mock<ITemplate>(MockBehavior.Strict);
 			templateMock.SetupGet(x => x.InitialAgentType).Returns((string?)null);
 
-			IGraph baseGraph = await GraphCollection.AddAsync(templateMock.Object);
+			IGraph baseGraph = await GraphCollection.AddAsync(templateMock.Object, null);
 
-			List<string> arguments = new List<string>();
-			arguments.Add("-Target=Step 1");
-			arguments.Add("-Target=Step 3");
+			CreateJobOptions options = new CreateJobOptions();
+			options.Arguments.Add("-Target=Step 1");
+			options.Arguments.Add("-Target=Step 3");
 
-			IJob job = await JobCollection.AddAsync(JobId.GenerateNewId(), new StreamId("ue4-main"), new TemplateRefId("test-build"), ContentHash.SHA1("hello"), baseGraph, "Test job", 123, 123, null, null, null, null, null, null, null, null, null, false, false, null, null, arguments);
+			IJob job = await JobCollection.AddAsync(JobId.GenerateNewId(), new StreamId("ue4-main"), new TemplateId("test-build"), ContentHash.SHA1("hello"), baseGraph, "Test job", 123, 123, options);
 
 			job = await StartBatch(job, baseGraph, 0);
 			job = await RunStep(job, baseGraph, 0, 0, JobStepOutcome.Success); // Setup Build
@@ -206,13 +206,13 @@ namespace Horde.Build.Tests
 			Mock<ITemplate> templateMock = new Mock<ITemplate>(MockBehavior.Strict);
 			templateMock.SetupGet(x => x.InitialAgentType).Returns((string?)null);
 
-			IGraph baseGraph = await GraphCollection.AddAsync(templateMock.Object);
+			IGraph baseGraph = await GraphCollection.AddAsync(templateMock.Object, null);
 
-			List<string> arguments = new List<string>();
-			arguments.Add("-Target=Step 1");
-			arguments.Add("-Target=Step 3");
+			CreateJobOptions options = new CreateJobOptions();
+			options.Arguments.Add("-Target=Step 1");
+			options.Arguments.Add("-Target=Step 3");
 
-			IJob job = await JobCollection.AddAsync(JobId.GenerateNewId(), new StreamId("ue4-main"), new TemplateRefId("test-build"), ContentHash.SHA1("hello"), baseGraph, "Test job", 123, 123, null, null, null, null, null, null, null, null, null, false, false, null, null, arguments);
+			IJob job = await JobCollection.AddAsync(JobId.GenerateNewId(), new StreamId("ue4-main"), new TemplateId("test-build"), ContentHash.SHA1("hello"), baseGraph, "Test job", 123, 123, options);
 			Assert.AreEqual(1, job.Batches.Count);
 
 			job = await StartBatch(job, baseGraph, 0);
@@ -257,13 +257,13 @@ namespace Horde.Build.Tests
 			Mock<ITemplate> templateMock = new Mock<ITemplate>(MockBehavior.Strict);
 			templateMock.SetupGet(x => x.InitialAgentType).Returns((string?)null);
 
-			IGraph baseGraph = await GraphCollection.AddAsync(templateMock.Object);
+			IGraph baseGraph = await GraphCollection.AddAsync(templateMock.Object, null);
 
-			List<string> arguments = new List<string>();
-			arguments.Add("-Target=Step 1");
-			arguments.Add("-Target=Step 3");
+			CreateJobOptions options = new CreateJobOptions();
+			options.Arguments.Add("-Target=Step 1");
+			options.Arguments.Add("-Target=Step 3");
 
-			IJob job = await JobCollection.AddAsync(JobId.GenerateNewId(), new StreamId("ue4-main"), new TemplateRefId("test-build"), ContentHash.SHA1("hello"), baseGraph, "Test job", 123, 123, null, null, null, null, null, null, null, null, null, false, false, null, null, arguments);
+			IJob job = await JobCollection.AddAsync(JobId.GenerateNewId(), new StreamId("ue4-main"), new TemplateId("test-build"), ContentHash.SHA1("hello"), baseGraph, "Test job", 123, 123, options);
 			Assert.AreEqual(1, job.Batches.Count);
 
 			// First retry
@@ -326,6 +326,27 @@ namespace Horde.Build.Tests
 			Assert.AreEqual(1, job.Batches[2].Steps.Count);
 			Assert.AreEqual(JobStepState.Completed, job.Batches[2].Steps[0].State);
 			Assert.AreEqual(JobStepError.Incomplete, job.Batches[2].Steps[0].Error);
+		}
+
+		[TestMethod]
+		public async Task UnknownShelfAsync()
+		{
+			Mock<ITemplate> templateMock = new Mock<ITemplate>(MockBehavior.Strict);
+			templateMock.SetupGet(x => x.InitialAgentType).Returns((string?)null);
+
+			IGraph baseGraph = await GraphCollection.AddAsync(templateMock.Object, null);
+
+			CreateJobOptions options = new CreateJobOptions();
+			options.Arguments.Add("-Target=Step 1");
+			options.Arguments.Add("-Target=Step 3");
+
+			IJob job = await JobCollection.AddAsync(JobId.GenerateNewId(), new StreamId("ue4-main"), new TemplateId("test-build"), ContentHash.SHA1("hello"), baseGraph, "Test job", 123, 123, options);
+			Assert.AreEqual(1, job.Batches.Count);
+
+			job = await StartBatch(job, baseGraph, 0);
+			job = Deref(await JobCollection.TryUpdateBatchAsync(job, baseGraph, job.Batches[0].Id, null, JobStepBatchState.Complete, JobStepBatchError.UnknownShelf));
+
+			Assert.AreEqual(1, job.Batches.Count);
 		}
 	}
 }

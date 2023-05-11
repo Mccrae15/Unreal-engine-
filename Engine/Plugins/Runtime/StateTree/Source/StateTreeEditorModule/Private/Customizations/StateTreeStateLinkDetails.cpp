@@ -1,11 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "StateTreeStateLinkDetails.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "DetailWidgetRow.h"
 #include "DetailLayoutBuilder.h"
 #include "StateTree.h"
-#include "StateTreeState.h"
 #include "StateTreeEditorData.h"
 #include "StateTreeDelegates.h"
 #include "Widgets/Input/SComboButton.h"
@@ -27,7 +25,7 @@ void FStateTreeStateLinkDetails::CustomizeHeader(TSharedRef<class IPropertyHandl
 
 	NameProperty = StructProperty->GetChildHandle(TEXT("Name"));
 	IDProperty = StructProperty->GetChildHandle(TEXT("ID"));
-	TypeProperty = StructProperty->GetChildHandle(TEXT("Type"));
+	LinkTypeProperty = StructProperty->GetChildHandle(TEXT("LinkType"));
 
 	if (const FProperty* MetaDataProperty = StructProperty->GetMetaDataProperty())
 	{
@@ -50,7 +48,6 @@ void FStateTreeStateLinkDetails::CustomizeHeader(TSharedRef<class IPropertyHandl
 		[
 			SNew(SComboButton)
 			.OnGetMenuContent(this, &FStateTreeStateLinkDetails::OnGetStateContent)
-			.ContentPadding(FMargin(6.f, 0.f))
 			.ButtonContent()
 			[
 				SNew(STextBlock)
@@ -128,7 +125,7 @@ void FStateTreeStateLinkDetails::OnStateComboChange(int Idx)
 		FScopedTransaction Transaction(FText::Format(LOCTEXT("SetPropertyValue", "Set {0}"), StructProperty->GetPropertyDisplayName()));
 		if (Idx >= 0)
 		{
-			TypeProperty->SetValue((uint8)EStateTreeTransitionType::GotoState);
+			LinkTypeProperty->SetValue((uint8)EStateTreeTransitionType::GotoState);
 			NameProperty->SetValue(CachedNames[Idx], EPropertyValueSetFlags::NotTransactable);
 			UE::StateTree::PropertyHelpers::SetStructValue<FGuid>(IDProperty, CachedIDs[Idx], EPropertyValueSetFlags::NotTransactable);
 		}
@@ -137,17 +134,17 @@ void FStateTreeStateLinkDetails::OnStateComboChange(int Idx)
 			switch (Idx)
 			{
 			case ComboSucceeded:
-				TypeProperty->SetValue((uint8)EStateTreeTransitionType::Succeeded);
+				LinkTypeProperty->SetValue((uint8)EStateTreeTransitionType::Succeeded);
 				break;
 			case ComboFailed:
-				TypeProperty->SetValue((uint8)EStateTreeTransitionType::Failed);
+				LinkTypeProperty->SetValue((uint8)EStateTreeTransitionType::Failed);
 				break;
 			case ComboNextState:
-				TypeProperty->SetValue((uint8)EStateTreeTransitionType::NextState);
+				LinkTypeProperty->SetValue((uint8)EStateTreeTransitionType::NextState);
 				break;
 			case ComboNotSet:
 			default:
-				TypeProperty->SetValue((uint8)EStateTreeTransitionType::NotSet);
+				LinkTypeProperty->SetValue((uint8)EStateTreeTransitionType::None);
 				break;
 			}
 			// Clear name and id.
@@ -163,30 +160,27 @@ TSharedRef<SWidget> FStateTreeStateLinkDetails::OnGetStateContent() const
 
 	if (!bDirectStatesOnly)
 	{
-		FUIAction NextItemAction(FExecuteAction::CreateSP(const_cast<FStateTreeStateLinkDetails*>(this), &FStateTreeStateLinkDetails::OnStateComboChange, ComboNextState));
+		const FUIAction NotSetItemAction(FExecuteAction::CreateSP(const_cast<FStateTreeStateLinkDetails*>(this), &FStateTreeStateLinkDetails::OnStateComboChange, ComboNotSet));
+		MenuBuilder.AddMenuEntry(LOCTEXT("TransitionNone", "None"), LOCTEXT("TransitionNoneTooltip", "No transition."), FSlateIcon(), NotSetItemAction);
+
+		const FUIAction NextItemAction(FExecuteAction::CreateSP(const_cast<FStateTreeStateLinkDetails*>(this), &FStateTreeStateLinkDetails::OnStateComboChange, ComboNextState));
 		MenuBuilder.AddMenuEntry(LOCTEXT("TransitionNextState", "Next State"), LOCTEXT("TransitionNextTooltip", "Goto next sibling State."), FSlateIcon(), NextItemAction);
 
-		FUIAction NotSetItemAction(FExecuteAction::CreateSP(const_cast<FStateTreeStateLinkDetails*>(this), &FStateTreeStateLinkDetails::OnStateComboChange, ComboNotSet));
-		MenuBuilder.AddMenuEntry(LOCTEXT("TransitionBlock", "Block Transition"), LOCTEXT("TransitionBlockTooltip", "Will not transition to any state, but will block other transitions to trigger if the condition passes."), FSlateIcon(), NotSetItemAction);
-
-		FUIAction SucceededItemAction(FExecuteAction::CreateSP(const_cast<FStateTreeStateLinkDetails*>(this), &FStateTreeStateLinkDetails::OnStateComboChange, ComboSucceeded));
+		const FUIAction SucceededItemAction(FExecuteAction::CreateSP(const_cast<FStateTreeStateLinkDetails*>(this), &FStateTreeStateLinkDetails::OnStateComboChange, ComboSucceeded));
 		MenuBuilder.AddMenuEntry(LOCTEXT("TransitionTreeSucceeded", "Tree Succeeded"), LOCTEXT("TransitionTreeSuccessTooltip", "Complete tree with success."), FSlateIcon(), SucceededItemAction);
 
-		FUIAction FailedItemAction(FExecuteAction::CreateSP(const_cast<FStateTreeStateLinkDetails*>(this), &FStateTreeStateLinkDetails::OnStateComboChange, ComboFailed));
+		const FUIAction FailedItemAction(FExecuteAction::CreateSP(const_cast<FStateTreeStateLinkDetails*>(this), &FStateTreeStateLinkDetails::OnStateComboChange, ComboFailed));
 		MenuBuilder.AddMenuEntry(LOCTEXT("TransitionTreeFailed", "Tree Failed"), LOCTEXT("TransitionTreeFailedTooltip", "Complete tree with failure."), FSlateIcon(), FailedItemAction);
 	}
 
 	if (CachedNames.Num() > 0)
 	{
-		MenuBuilder.BeginSection(FName(), LOCTEXT("TransitionGotoState", "Goto State"));
+		MenuBuilder.BeginSection(FName(), LOCTEXT("TransitionGotoStateSection", "Go to State"));
 
 		for (int32 Idx = 0; Idx < CachedNames.Num(); Idx++)
 		{
-			FFormatNamedArguments Args;
-			Args.Add(TEXT("StateName"), FText::FromName(CachedNames[Idx]));
-
 			FUIAction ItemAction(FExecuteAction::CreateSP(const_cast<FStateTreeStateLinkDetails*>(this), &FStateTreeStateLinkDetails::OnStateComboChange, Idx));
-			MenuBuilder.AddMenuEntry(FText::FromName(CachedNames[Idx]), FText::Format(LOCTEXT("TransitionGotoStateTooltip", "Goto State {StateName}."), Args), FSlateIcon(), ItemAction);
+			MenuBuilder.AddMenuEntry(FText::FromName(CachedNames[Idx]), FText::Format(LOCTEXT("TransitionGotoStateTooltip", "Go to State {0}."), FText::FromName(CachedNames[Idx])), FSlateIcon(), ItemAction);
 		}
 
 		MenuBuilder.EndSection();
@@ -199,63 +193,68 @@ FText FStateTreeStateLinkDetails::GetCurrentStateDesc() const
 {
 	const EStateTreeTransitionType TransitionType = GetTransitionType().Get(EStateTreeTransitionType::Failed);
 
-	if (TransitionType == EStateTreeTransitionType::NotSet)
+	FText Result;
+	switch (TransitionType)
 	{
-		return LOCTEXT("TransitionNotSet", "None");
-	}
-	else if (TransitionType == EStateTreeTransitionType::NextState)
-	{
-		return LOCTEXT("TransitionNextState", "Next State");
-	}
-	else if (TransitionType == EStateTreeTransitionType::Succeeded)
-	{
-		return LOCTEXT("TransitionTreeSucceeded", "Tree Succeeded");
-	}
-	else if (TransitionType == EStateTreeTransitionType::Failed)
-	{
-		return LOCTEXT("TransitionTreeFailed", "Tree Failed");
-	}
-	else if (TransitionType == EStateTreeTransitionType::GotoState)
-	{
-		FName OldName;
-		if (NameProperty && IDProperty)
+	case EStateTreeTransitionType::None:
+		Result = LOCTEXT("TransitionNone", "None");
+		break;
+	case EStateTreeTransitionType::NextState:
+		Result = LOCTEXT("TransitionNextState", "Next State");
+		break;
+	case EStateTreeTransitionType::Succeeded:
+		Result = LOCTEXT("TransitionTreeSucceeded", "Tree Succeeded");
+		break;
+	case EStateTreeTransitionType::Failed:
+		Result = LOCTEXT("TransitionTreeFailed", "Tree Failed");
+		break;
+	case EStateTreeTransitionType::GotoState:
 		{
-			NameProperty->GetValue(OldName);
-
-			FGuid StateID;
-			if (UE::StateTree::PropertyHelpers::GetStructValue<FGuid>(IDProperty, StateID) == FPropertyAccess::Success)
+			FName OldName;
+			if (NameProperty && IDProperty)
 			{
-				if (!StateID.IsValid())
+				NameProperty->GetValue(OldName);
+
+				FGuid StateID;
+				if (UE::StateTree::PropertyHelpers::GetStructValue<FGuid>(IDProperty, StateID) == FPropertyAccess::Success)
 				{
-					return LOCTEXT("None", "None");
-				}
-				else
-				{
-					for (int32 Idx = 0; Idx < CachedIDs.Num(); Idx++)
+					if (!StateID.IsValid())
 					{
-						if (CachedIDs[Idx] == StateID)
+						return LOCTEXT("None", "None");
+					}
+					else
+					{
+						for (int32 Idx = 0; Idx < CachedIDs.Num(); Idx++)
 						{
-							return FText::FromName(CachedNames[Idx]);
+							if (CachedIDs[Idx] == StateID)
+							{
+								return FText::FromName(CachedNames[Idx]);
+							}
 						}
 					}
 				}
 			}
-		}
 
-		FFormatNamedArguments Args;
-		Args.Add(TEXT("Identifier"), FText::FromName(OldName));
-		return FText::Format(LOCTEXT("InvalidReference", "Invalid Reference {Identifier}"), Args);
+			FFormatNamedArguments Args;
+			Args.Add(TEXT("Identifier"), FText::FromName(OldName));
+			Result = FText::Format(LOCTEXT("InvalidReference", "Invalid Reference {Identifier}"), Args);
+		}
+		break;
+	default:
+		ensureMsgf(false, TEXT("FStateTreeStateLinkDetails: Unhnandled enum %s"), *UEnum::GetValueAsString(TransitionType));
+		Result = LOCTEXT("TransitionInvalid", "Invalid");
+		break;
 	}
 
-	return LOCTEXT("TransitionInvalid", "Invalid");
+	return Result;
 }
 
 TOptional<EStateTreeTransitionType> FStateTreeStateLinkDetails::GetTransitionType() const
 {
-	if (TypeProperty)
+	if (LinkTypeProperty)
 	{
 		uint8 Value;
-		if (TypeProperty->GetValue(Value) == FPropertyAccess::Success)
+		if (LinkTypeProperty->GetValue(Value) == FPropertyAccess::Success)
 		{
 			return EStateTreeTransitionType(Value);
 		}

@@ -17,6 +17,9 @@
 #include "Elements/Framework/TypedElementLimits.h"
 #include "Elements/Framework/TypedElementList.h"
 #include "Elements/Framework/TypedElementListFwd.h"
+#include "Elements/Interfaces/TypedElementDataStorageInterface.h"
+#include "Elements/Interfaces/TypedElementDataStorageCompatibilityInterface.h"
+#include "Elements/Interfaces/TypedElementDataStorageUiInterface.h"
 #include "HAL/CriticalSection.h"
 #include "HAL/PlatformCrt.h"
 #include "Logging/LogVerbosity.h"
@@ -74,6 +77,29 @@ public:
 	 */
 	UFUNCTION(BlueprintPure, DisplayName="Get Default Typed Element Registry", Category = "TypedElementFramework|Registry", meta=(ScriptName="GetDefaultTypedElementRegistry"))
 	static UTypedElementRegistry* GetInstance();
+
+	ITypedElementDataStorageInterface* GetMutableDataStorage();
+	const ITypedElementDataStorageInterface* GetDataStorage() const;
+	void SetDataStorage(ITypedElementDataStorageInterface* Storage);
+
+	ITypedElementDataStorageCompatibilityInterface* GetMutableDataStorageCompatibility();
+	const ITypedElementDataStorageCompatibilityInterface* GetDataStorageCompatibility() const;
+	void SetDataStorageCompatibility(ITypedElementDataStorageCompatibilityInterface* Storage);
+
+	ITypedElementDataStorageUiInterface* GetMutableDataStorageUi();
+	const ITypedElementDataStorageUiInterface* GetDataStorageUi() const;
+	void SetDataStorageUi(ITypedElementDataStorageUiInterface* Storage);
+
+	bool AreDataStorageInterfacesSet() const;
+
+	/**
+	 * Event fired when all Data Storage Interfaces have been set. 
+	 */
+	DECLARE_MULTICAST_DELEGATE(FOnDataStorageInterfacesSet);
+	FOnDataStorageInterfacesSet& OnDataStorageInterfacesSet()
+	{
+		return OnDataStorageInterfacesSetDelegate;
+	}
 
 	/**
 	 * Event fired when references to one element should be replaced with a reference to a different element.
@@ -656,6 +682,8 @@ private:
 		--DisableElementDestructionOnGCCount;
 	}
 
+	void CallDataStorageInterfacesSetDelegateIfNeeded();
+
 	mutable FRWLock RegisteredElementTypesRW;
 	TUniquePtr<FRegisteredElementType> RegisteredElementTypes[TypedHandleMaxTypeId - 1];
 	TSortedMap<FName, FTypedHandleTypeId, FDefaultAllocator, FNameFastLess> RegisteredElementTypesNameToId;
@@ -671,4 +699,9 @@ private:
 	FOnElementReplaced OnElementReplacedDelegate;
 	FOnElementUpdated OnElementUpdatedDelegate;
 	FSimpleMulticastDelegate OnProcessingDeferredElementsToDestroyDelegate;
+	
+	FOnDataStorageInterfacesSet OnDataStorageInterfacesSetDelegate;
+	ITypedElementDataStorageInterface* DataStorage = nullptr;
+	ITypedElementDataStorageCompatibilityInterface* DataStorageCompatibility = nullptr;
+	ITypedElementDataStorageUiInterface* DataStorageUi = nullptr;
 };

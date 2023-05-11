@@ -73,12 +73,7 @@ namespace UnrealBuildTool
 			DirectoryReference ProjectRootFolder = RootPath;
 			List<TargetEntry> FileToTarget = new List<TargetEntry>();
 			foreach (UnrealTargetPlatform Platform in InPlatforms)
-			{
-				if (!IsPlatformInHostGroup(Platform))
-				{
-					continue;
-				}
-				
+			{				
 				foreach (UnrealTargetConfiguration Configuration in InConfigurations)
 				{
 					foreach (ProjectTarget ProjectTarget in ProjectTargets.OfType<ProjectTarget>())
@@ -106,11 +101,11 @@ namespace UnrealBuildTool
 						DirectoryReference TargetFolder =
 							DirectoryReference.Combine(ConfigurationFolder, ProjectTarget.TargetRules.Type.ToString());
 
-						string DefaultArchitecture = UEBuildPlatform
+						UnrealArchitectures ProjectArchitectures = UEBuildPlatform
 							.GetBuildPlatform(Platform)
-							.GetDefaultArchitecture(ProjectTarget.UnrealProjectFilePath);
+							.ArchitectureConfig.ActiveArchitectures(ProjectTarget.UnrealProjectFilePath, ProjectTarget.Name);
 						TargetDescriptor TargetDesc = new TargetDescriptor(ProjectTarget.UnrealProjectFilePath, ProjectTarget.Name,
-							Platform, Configuration, DefaultArchitecture, Arguments);
+							Platform, Configuration, ProjectArchitectures, Arguments);
 						try
 						{
 							UEBuildTarget BuildTarget = UEBuildTarget.Create(TargetDesc, false, false, false, Logger);
@@ -315,7 +310,8 @@ namespace UnrealBuildTool
 			ExportJsonStringArray(Writer, "InternalIncludePaths", Module.InternalIncludePaths.Select(x => x.FullName));
 
 			ExportJsonStringArray(Writer, "LegacyPublicIncludePaths", Module.LegacyPublicIncludePaths.Select(x => x.FullName ));
-			
+			ExportJsonStringArray(Writer, "LegacyParentIncludePaths", Module.LegacyParentIncludePaths.Select(x => x.FullName));
+
 			ExportJsonStringArray(Writer, "PrivateIncludePaths", Module.PrivateIncludePaths.Select(x => x.FullName));
 			ExportJsonStringArray(Writer, "PublicLibraryPaths", Module.PublicSystemLibraryPaths.Select(x => x.FullName));
 			ExportJsonStringArray(Writer, "PublicAdditionalLibraries", Module.PublicSystemLibraries.Concat(Module.PublicLibraries.Select(x => x.FullName)));
@@ -327,8 +323,9 @@ namespace UnrealBuildTool
 			ExportJsonStringArray(Writer, "ProjectDefinitions", /* TODO: Add method ShouldAddProjectDefinitions */ !Module.Rules.bTreatAsEngineModule ? Module.Rules.Target.ProjectDefinitions : new string[0]);
 			ExportJsonStringArray(Writer, "ApiDefinitions", Module.GetEmptyApiMacros());
 			Writer.WriteValue("ShouldAddLegacyPublicIncludePaths", Module.Rules.bLegacyPublicIncludePaths);
+			Writer.WriteValue("ShouldAddLegacyParentIncludePaths", Module.Rules.bLegacyParentIncludePaths);
 
-			if(Module.Rules.CircularlyReferencedDependentModules.Any())
+			if (Module.Rules.CircularlyReferencedDependentModules.Any())
 			{
 				Writer.WriteArrayStart("CircularlyReferencedModules");
 				foreach (string ModuleName in Module.Rules.CircularlyReferencedDependentModules)
@@ -531,10 +528,12 @@ namespace UnrealBuildTool
 				var EngineDirectory = Unreal.EngineDirectory.ToString();
 
 				string? UseLibcxxEnvVarOverride = Environment.GetEnvironmentVariable("UE_LINUX_USE_LIBCXX");
+				// assumes a single architecture
+				UnrealArch TargetArchitecture = Target.Architectures.SingleArchitecture;
 				if (string.IsNullOrEmpty(UseLibcxxEnvVarOverride) || UseLibcxxEnvVarOverride == "1")
 				{
-					if (Target.Architecture.StartsWith("x86_64") ||
-					    Target.Architecture.StartsWith("aarch64"))
+					if (TargetArchitecture == UnrealArch.X64 ||
+					    TargetArchitecture == UnrealArch.Arm64)
 					{
 						// libc++ include directories
 						Writer.WriteValue(Path.Combine(EngineDirectory, "Source/ThirdParty/Unix/LibCxx/include/"));
@@ -544,17 +543,17 @@ namespace UnrealBuildTool
 
 				UEBuildPlatform BuildPlatform;
 
-				if (Target.Architecture.StartsWith("x86_64"))
+				if (TargetArchitecture == UnrealArch.X64)
 				{
 					BuildPlatform = UEBuildPlatform.GetBuildPlatform(UnrealTargetPlatform.Linux);
 				}
-				else if (Target.Architecture.StartsWith("aarch64"))
+				else if (TargetArchitecture == UnrealArch.Arm64)
 				{
 					BuildPlatform = UEBuildPlatform.GetBuildPlatform(UnrealTargetPlatform.LinuxArm64);
 				}
 				else
 				{
-					throw new ArgumentException("Wrong Target.Architecture: {0}", Target.Architecture);
+					throw new ArgumentException($"Wrong Target.Architecture: {TargetArchitecture}");
 				}
 
 				string PlatformSdkVersionString = UEBuildPlatformSDK.GetSDKForPlatform(BuildPlatform.GetPlatformName())!.GetInstalledVersion()!;
@@ -762,12 +761,13 @@ namespace UnrealBuildTool
 				bUseStaticCRT = CompileEnvironment.bUseStaticCRT,
 				PrecompiledHeaderAction = CompileEnvironment.PrecompiledHeaderAction.ToString(),
 				PrecompiledHeaderFile = CompileEnvironment.PrecompiledHeaderFile?.ToString(),
-				ForceIncludeFiles = CompileEnvironment.ForceIncludeFiles.Select(Item => Item.ToString()).ToList()
+				ForceIncludeFiles = CompileEnvironment.ForceIncludeFiles.Select(Item => Item.ToString()).ToList(),
+				bEnableCoroutines = CompileEnvironment.bEnableCoroutines
 			};
 
 			if (CurrentTarget!.Platform.IsInGroup(UnrealPlatformGroup.Windows))
 			{
-				ToolchainInfo.Architecture = WindowsExports.GetArchitectureSubpath(CurrentTarget.Rules.WindowsPlatform.Architecture);
+				ToolchainInfo.Architecture = CurrentTarget.Rules.WindowsPlatform.Architecture.WindowsName;
 				
 				WindowsCompiler WindowsPlatformCompiler = CurrentTarget.Rules.WindowsPlatform.Compiler;
 				ToolchainInfo.bStrictConformanceMode = WindowsPlatformCompiler.IsMSVC() && CurrentTarget.Rules.WindowsPlatform.bStrictConformanceMode;
@@ -820,7 +820,7 @@ namespace UnrealBuildTool
 			private Process? XcrunProcess;
 			private bool IsReadingIncludesSection;
 
-			public IList<string> GetAppleSystemIncludePaths(string Architecture, UnrealTargetPlatform Platform, ILogger Logger)
+			public IList<string> GetAppleSystemIncludePaths(UnrealArch Architecture, UnrealTargetPlatform Platform, ILogger Logger)
 			{
 				if (!UEBuildPlatform.IsPlatformInGroup(Platform, UnrealPlatformGroup.Apple))
 				{
@@ -898,7 +898,7 @@ namespace UnrealBuildTool
 				}
 			}
 
-			private string GetSDKPath(string Architecture, UnrealTargetPlatform Platform, ILogger Logger)
+			private string GetSDKPath(UnrealArch Architecture, UnrealTargetPlatform Platform, ILogger Logger)
 			{
 				if (Platform == UnrealTargetPlatform.Mac)
 				{

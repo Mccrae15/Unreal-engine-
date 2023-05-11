@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Math/ControlRigMathLibrary.h"
-#include "CRSimPoint.h"
+#include "RigVMFunctions/Math/RigVMMathLibrary.h"
 #include "CRSimSoftCollision.generated.h"
 
 UENUM()
@@ -26,7 +26,7 @@ struct FCRSimSoftCollision
 		ShapeType = ECRSimSoftCollisionType::Sphere;
 		MinimumDistance = 10.f;
 		MaximumDistance = 20.f;
-		FalloffType = EControlRigAnimEasingType::CubicEaseIn;
+		FalloffType = ERigVMAnimEasingType::CubicEaseIn;
 		Coefficient = 64.f;
 		bInverted = false;
 	}
@@ -63,7 +63,7 @@ struct FCRSimSoftCollision
 	 * The type of falloff to use
 	 */
 	UPROPERTY(EditAnywhere, Category=Simulation)
-	EControlRigAnimEasingType FalloffType;
+	ERigVMAnimEasingType FalloffType;
 
 	/**
 	 * The strength of the collision force
@@ -78,5 +78,5 @@ struct FCRSimSoftCollision
 	bool bInverted;
 
 	static float CalculateFalloff(const FCRSimSoftCollision& InCollision, const FVector& InPosition, float InSize, FVector& OutDirection);
-	FVector CalculateForPoint(const FCRSimPoint& InPoint, float InDeltaTime) const;
+	FVector CalculateForPoint(const FRigVMSimPoint& InPoint, float InDeltaTime) const;
 };

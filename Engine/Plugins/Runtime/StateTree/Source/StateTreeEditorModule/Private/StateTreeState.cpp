@@ -4,28 +4,11 @@
 #include "StateTree.h"
 #include "StateTreeEditorData.h"
 #include "StateTreeConditionBase.h"
-#include "StateTreeEvaluatorBase.h"
 #include "StateTreeTaskBase.h"
 #include "StateTreeDelegates.h"
-#include "CoreMinimal.h"
-#include "UObject/Field.h"
+#include "StateTreePropertyHelpers.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(StateTreeState)
-
-//////////////////////////////////////////////////////////////////////////
-// FStateTreeStateLink
-
-void FStateTreeStateLink::Set(const EStateTreeTransitionType InType, const UStateTreeState* InState)
-{
-	Type = InType;
-	if (Type == EStateTreeTransitionType::GotoState)
-	{
-		check(InState);
-		Name = InState->Name;
-		ID = InState->ID;
-	}
-}
-
 
 //////////////////////////////////////////////////////////////////////////
 // FStateTreeTransition
@@ -33,14 +16,14 @@ void FStateTreeStateLink::Set(const EStateTreeTransitionType InType, const UStat
 FStateTreeTransition::FStateTreeTransition(const EStateTreeTransitionTrigger InTrigger, const EStateTreeTransitionType InType, const UStateTreeState* InState)
 	: Trigger(InTrigger)
 {
-	State.Set(InType, InState);
+	State = InState ? InState->GetLinkToState() : FStateTreeStateLink(InType);
 }
 
 FStateTreeTransition::FStateTreeTransition(const EStateTreeTransitionTrigger InTrigger, const FGameplayTag InEventTag, const EStateTreeTransitionType InType, const UStateTreeState* InState)
 	: Trigger(InTrigger)
 	, EventTag(InEventTag)
 {
-	State.Set(InType, InState);
+	State = InState ? InState->GetLinkToState() : FStateTreeStateLink(InType);
 }
 
 
@@ -55,147 +38,210 @@ UStateTreeState::UStateTreeState(const FObjectInitializer& ObjectInitializer)
 }
 
 #if WITH_EDITOR
+
 void UStateTreeState::PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent)
 {
 	Super::PostEditChangeChainProperty(PropertyChangedEvent);
 
-	FProperty* Property = PropertyChangedEvent.Property;
-	FProperty* MemberProperty = nullptr;
-	if (PropertyChangedEvent.PropertyChain.GetActiveMemberNode())
+	const FStateTreeEditPropertyPath ChangePropertyPath(PropertyChangedEvent);
+	
+	auto CopyBindings = [this](const FGuid FromStructID, const FGuid ToStructID)
 	{
-		MemberProperty = PropertyChangedEvent.PropertyChain.GetActiveMemberNode()->GetValue();
+		if (UStateTreeEditorData* EditorData = GetTypedOuter<UStateTreeEditorData>())
+		{
+		    if (FromStructID.IsValid())
+            {
+                if (FStateTreeEditorPropertyBindings* Bindings = EditorData->GetPropertyEditorBindings())
+                {
+                	Bindings->CopyBindings(FromStructID, ToStructID);
+                }
+            }
+		}
+	};
+
+	
+	static const FStateTreeEditPropertyPath StateNamePath(UStateTreeState::StaticClass(), TEXT("Name"));
+	static const FStateTreeEditPropertyPath StateTypePath(UStateTreeState::StaticClass(), TEXT("Type"));
+	static const FStateTreeEditPropertyPath StateLinkedSubtreePath(UStateTreeState::StaticClass(), TEXT("LinkedSubtree"));
+	static const FStateTreeEditPropertyPath StateParametersPath(UStateTreeState::StaticClass(), TEXT("Parameters"));
+	static const FStateTreeEditPropertyPath StateTasksPath(UStateTreeState::StaticClass(), TEXT("Tasks"));
+	static const FStateTreeEditPropertyPath StateEnterConditionsPath(UStateTreeState::StaticClass(), TEXT("EnterConditions"));
+	static const FStateTreeEditPropertyPath StateTransitionsPath(UStateTreeState::StaticClass(), TEXT("Transitions"));
+	static const FStateTreeEditPropertyPath StateTransitionsConditionsPath(UStateTreeState::StaticClass(), TEXT("Transitions.Conditions"));
+
+
+	// Broadcast name changes so that the UI can update.
+	if (ChangePropertyPath.IsPathExact(StateNamePath))
+	{
+		const UStateTree* StateTree = GetTypedOuter<UStateTree>();
+		if (ensure(StateTree))
+		{
+			UE::StateTree::Delegates::OnIdentifierChanged.Broadcast(*StateTree);
+		}
 	}
 
-	auto TryGetConditionIndex = [&PropertyChangedEvent]() -> int32
+	if (ChangePropertyPath.IsPathExact(StateTypePath))
 	{
-		check (PropertyChangedEvent.PropertyChain.GetActiveMemberNode());
-		FEditPropertyChain::TDoubleLinkedListNode* ConditionPropertyNode = PropertyChangedEvent.PropertyChain.GetActiveMemberNode()->GetNextNode();
-		FProperty* ConditionsProperty = ConditionPropertyNode ? ConditionPropertyNode->GetValue() : nullptr;
-		if (ConditionsProperty && ConditionsProperty->GetFName() == GET_MEMBER_NAME_CHECKED(FStateTreeTransition, Conditions))
+		// Remove any tasks and evaluators when they are not used.
+		if (Type == EStateTreeStateType::Group || Type == EStateTreeStateType::Linked)
 		{
-			return PropertyChangedEvent.GetArrayIndex(ConditionsProperty->GetFName().ToString());
+			Tasks.Reset();
 		}
-		return INDEX_NONE;
-	};
-	
-	if (Property)
-	{
-		if (Property->GetOwnerClass() == UStateTreeState::StaticClass()
-			&& Property->GetFName() == GET_MEMBER_NAME_CHECKED(UStateTreeState, Name))
+
+		// If transitioning from linked state, reset the linked state.
+		if (Type != EStateTreeStateType::Linked)
 		{
-			UStateTree* StateTree = GetTypedOuter<UStateTree>();
+			LinkedSubtree = FStateTreeStateLink();
+		}
+
+		if (Type == EStateTreeStateType::Linked)
+		{
+			// Linked parameter layout is fixed, and copied from the linked target state.
+			Parameters.bFixedLayout = true;
+			UpdateParametersFromLinkedSubtree();
+		}
+		else if (Type == EStateTreeStateType::Subtree)
+		{
+			// Subtree parameter layout can be edited
+			Parameters.bFixedLayout = false;
+		}
+		else
+		{
+			Parameters.Reset();
+		}
+	}
+
+	// When switching to new state, update the parameters.
+	if (ChangePropertyPath.IsPathExact(StateLinkedSubtreePath))
+	{
+		if (Type == EStateTreeStateType::Linked)
+		{
+			UpdateParametersFromLinkedSubtree();
+		}
+	}
+
+	// Broadcast subtree parameter layout edits so that the linked states can adapt.
+	if (ChangePropertyPath.IsPathExact(StateParametersPath))
+	{
+		if (Type == EStateTreeStateType::Subtree)
+		{
+			const UStateTree* StateTree = GetTypedOuter<UStateTree>();
 			if (ensure(StateTree))
 			{
-				UE::StateTree::Delegates::OnIdentifierChanged.Broadcast(*StateTree);
+				UE::StateTree::Delegates::OnStateParametersChanged.Broadcast(*StateTree, ID);
 			}
 		}
+	}
 
-		if (Property->GetOwnerClass() == UStateTreeState::StaticClass()
-			&& Property->GetFName() == GET_MEMBER_NAME_CHECKED(UStateTreeState, Type))
+	// Reset delay on completion transitions
+	if (ChangePropertyPath.ContainsPath(StateTransitionsPath))
+	{
+		const int32 TransitionsIndex = ChangePropertyPath.GetPropertyArrayIndex(StateTransitionsPath);
+		if (Transitions.IsValidIndex(TransitionsIndex))
 		{
-			// Remove any tasks and evaluators when they are not used.
-			if (Type == EStateTreeStateType::Group || Type == EStateTreeStateType::Linked)
-			{
-				Tasks.Reset();
-			}
+			FStateTreeTransition& Transition = Transitions[TransitionsIndex];
 
-			// If transitioning from linked state, reset the linked state.
-			if (Type != EStateTreeStateType::Linked)
+			if (EnumHasAnyFlags(Transition.Trigger, EStateTreeTransitionTrigger::OnStateCompleted))
 			{
-				LinkedSubtree = FStateTreeStateLink();
-			}
-
-			if (Type == EStateTreeStateType::Linked)
-			{
-				// Linked parameter layout is fixed, and copied from the linked target state.
-				Parameters.bFixedLayout = true;
-				UpdateParametersFromLinkedSubtree();
-			}
-			else if (Type == EStateTreeStateType::Subtree)
-			{
-				// Subtree parameter layout can be edited
-				Parameters.bFixedLayout = false;
-			}
-			else
-			{
-				Parameters.Reset();
+				Transition.bDelayTransition = false;
 			}
 		}
+	}
 
-		if (Property->GetOwnerClass() == UStateTreeState::StaticClass()
-			&& Property->GetFName() == GET_MEMBER_NAME_CHECKED(UStateTreeState, LinkedSubtree))
+	// Ensure unique ID on duplicated items.
+	if (PropertyChangedEvent.ChangeType == EPropertyChangeType::Duplicate)
+	{
+		
+		// Tasks
+		if (ChangePropertyPath.IsPathExact(StateTasksPath))
 		{
-			// When switching to new state, update the parameters.
-			if (Type == EStateTreeStateType::Linked)
+			const int32 ArrayIndex = ChangePropertyPath.GetPropertyArrayIndex(StateTasksPath);
+			if (Tasks.IsValidIndex(ArrayIndex))
 			{
-				UpdateParametersFromLinkedSubtree();
-			}
-		}
-
-		if (Property->GetOwnerClass() == UStateTreeState::StaticClass()
-			&& Property->GetFName() == GET_MEMBER_NAME_CHECKED(UStateTreeState, Parameters))
-		{
-			if (Type == EStateTreeStateType::Subtree)
-			{
-				// Broadcast subtree parameter edits so that the linked states can adapt.
-				const UStateTree* StateTree = GetTypedOuter<UStateTree>();
-				if (ensure(StateTree))
+ 				if (FStateTreeTaskBase* Task = Tasks[ArrayIndex].Node.GetMutablePtr<FStateTreeTaskBase>())
 				{
-					UE::StateTree::Delegates::OnStateParametersChanged.Broadcast(*StateTree, ID);
+					Task->Name = FName(Task->Name.ToString() + TEXT(" Duplicate"));
 				}
+				const FGuid OldStructID = Tasks[ArrayIndex].ID; 
+				Tasks[ArrayIndex].ID = FGuid::NewGuid();
+				CopyBindings(OldStructID, Tasks[ArrayIndex].ID);
 			}
 		}
 
-		if (MemberProperty)
+		// Enter conditions
+		if (ChangePropertyPath.IsPathExact(StateEnterConditionsPath))
 		{
-			// Ensure unique ID on duplicated items.
-			if (PropertyChangedEvent.ChangeType == EPropertyChangeType::Duplicate)
+			const int32 ArrayIndex = ChangePropertyPath.GetPropertyArrayIndex(StateEnterConditionsPath);
+			if (EnterConditions.IsValidIndex(ArrayIndex))
 			{
-				if (MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UStateTreeState, Tasks))
+				if (FStateTreeConditionBase* Condition = EnterConditions[ArrayIndex].Node.GetMutablePtr<FStateTreeConditionBase>())
 				{
-					const int32 ArrayIndex = PropertyChangedEvent.GetArrayIndex(MemberProperty->GetFName().ToString());
-					if (Tasks.IsValidIndex(ArrayIndex))
-					{
-						if (FStateTreeTaskBase* Task = Tasks[ArrayIndex].Node.GetMutablePtr<FStateTreeTaskBase>())
-						{
-							Task->Name = FName(Task->Name.ToString() + TEXT(" Duplicate"));
-						}
-						Tasks[ArrayIndex].ID = FGuid::NewGuid();
-					}
+					Condition->Name = FName(Condition->Name.ToString() + TEXT(" Duplicate"));
 				}
-				if (MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UStateTreeState, EnterConditions))
-				{
-					const int32 ArrayIndex = PropertyChangedEvent.GetArrayIndex(MemberProperty->GetFName().ToString());
-					if (EnterConditions.IsValidIndex(ArrayIndex))
-					{
-						if (FStateTreeConditionBase* Condition = EnterConditions[ArrayIndex].Node.GetMutablePtr<FStateTreeConditionBase>())
-						{
-							Condition->Name = FName(Condition->Name.ToString() + TEXT(" Duplicate"));
-						}
-						EnterConditions[ArrayIndex].ID = FGuid::NewGuid();
-					}
-				}
-				if (MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UStateTreeState, Transitions))
-				{
-					const int32 TransitionsIndex = PropertyChangedEvent.GetArrayIndex(MemberProperty->GetFName().ToString());
-					const int32 ConditionsIndex = TryGetConditionIndex();
+				const FGuid OldStructID = EnterConditions[ArrayIndex].ID; 
+				EnterConditions[ArrayIndex].ID = FGuid::NewGuid();
+				CopyBindings(OldStructID, EnterConditions[ArrayIndex].ID);
+			}
+		}
 
-					if (Transitions.IsValidIndex(TransitionsIndex))
+		// Transition conditions
+		if (ChangePropertyPath.IsPathExact(StateTransitionsConditionsPath))
+		{
+			const int32 TransitionsIndex = ChangePropertyPath.GetPropertyArrayIndex(StateTransitionsPath);
+			const int32 ConditionsIndex = ChangePropertyPath.GetPropertyArrayIndex(StateTransitionsConditionsPath);
+
+			if (Transitions.IsValidIndex(TransitionsIndex))
+			{
+				FStateTreeTransition& Transition = Transitions[TransitionsIndex];
+				if (Transition.Conditions.IsValidIndex(ConditionsIndex))
+				{
+					if (FStateTreeConditionBase* Condition = Transition.Conditions[ConditionsIndex].Node.GetMutablePtr<FStateTreeConditionBase>())
 					{
-						FStateTreeTransition& Transition = Transitions[TransitionsIndex];
-						if (Transition.Conditions.IsValidIndex(ConditionsIndex))
-						{
-							if (FStateTreeConditionBase* Condition = Transition.Conditions[ConditionsIndex].Node.GetMutablePtr<FStateTreeConditionBase>())
-							{
-								Condition->Name = FName(Condition->Name.ToString() + TEXT(" Duplicate"));
-							}
-							Transition.Conditions[ConditionsIndex].ID = FGuid::NewGuid();
-						}
+						Condition->Name = FName(Condition->Name.ToString() + TEXT(" Duplicate"));
 					}
+					const FGuid OldStructID = Transition.Conditions[ConditionsIndex].ID;
+					Transition.Conditions[ConditionsIndex].ID = FGuid::NewGuid();
+					CopyBindings(OldStructID, Transition.Conditions[ConditionsIndex].ID);
 				}
 			}
 		}
 	}
+	
+	// Set default state to root on new transitions.
+	if (PropertyChangedEvent.ChangeType == EPropertyChangeType::ArrayAdd)
+	{
+		if (ChangePropertyPath.IsPathExact(StateTransitionsPath))
+		{
+			const int32 TransitionsIndex = ChangePropertyPath.GetPropertyArrayIndex(StateTransitionsPath);
+			if (Transitions.IsValidIndex(TransitionsIndex))
+			{
+				FStateTreeTransition& Transition = Transitions[TransitionsIndex];
+				Transition.Trigger = EStateTreeTransitionTrigger::OnStateCompleted;
+				const UStateTreeState* RootState = GetRootState();
+				Transition.State = RootState->GetLinkToState();
+			}
+		}
+	}
+
+	// Remove bindings when bindable nodes are removed.
+	if (PropertyChangedEvent.ChangeType == EPropertyChangeType::ArrayRemove)
+	{
+		if (ChangePropertyPath.IsPathExact(StateTasksPath)
+			|| ChangePropertyPath.IsPathExact(StateEnterConditionsPath)
+			|| ChangePropertyPath.IsPathExact(StateTransitionsConditionsPath))
+		{
+			if (UStateTreeEditorData* TreeData = GetTypedOuter<UStateTreeEditorData>())
+			{
+				TreeData->Modify();
+				FStateTreeEditorPropertyBindings* Bindings = TreeData->GetPropertyEditorBindings();
+				check(Bindings);
+				TMap<FGuid, const UStruct*> AllStructIDs;
+				TreeData->GetAllStructIDs(AllStructIDs);
+				Bindings->RemoveUnusedBindings(AllStructIDs);
+			}
+		}
+	}
+
 }
 
 void UStateTreeState::PostLoad()
@@ -236,7 +282,17 @@ void UStateTreeState::UpdateParametersFromLinkedSubtree()
 
 #endif
 
-UStateTreeState* UStateTreeState::GetNextSiblingState() const
+const UStateTreeState* UStateTreeState::GetRootState() const
+{
+	const UStateTreeState* RootState = this;
+	while (RootState->Parent != nullptr)
+	{
+		RootState = RootState->Parent;
+	}
+	return RootState;
+}
+
+const UStateTreeState* UStateTreeState::GetNextSiblingState() const
 {
 	if (!Parent)
 	{
@@ -257,3 +313,10 @@ UStateTreeState* UStateTreeState::GetNextSiblingState() const
 	return nullptr;
 }
 
+FStateTreeStateLink UStateTreeState::GetLinkToState() const
+{
+	FStateTreeStateLink Link(EStateTreeTransitionType::GotoState);
+	Link.Name = Name;
+	Link.ID = ID;
+	return Link;
+}

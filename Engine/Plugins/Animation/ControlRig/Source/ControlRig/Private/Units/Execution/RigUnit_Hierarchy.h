@@ -33,7 +33,7 @@ struct CONTROLRIG_API FRigUnit_HierarchyGetParent : public FRigUnit_HierarchyBas
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input, ExpandByDefault))
 	FRigElementKey Child;
@@ -41,11 +41,11 @@ struct CONTROLRIG_API FRigUnit_HierarchyGetParent : public FRigUnit_HierarchyBas
 	UPROPERTY(meta = (Output))
 	FRigElementKey Parent;
 
-	// Used to cache the internally
+	// Used to cache the internally used child
 	UPROPERTY()
 	FCachedRigElement CachedChild;
 
-	// Used to cache the internally
+	// Used to cache the internally used parent
 	UPROPERTY()
 	FCachedRigElement CachedParent;
 };
@@ -68,7 +68,7 @@ struct CONTROLRIG_API FRigUnit_HierarchyGetParents : public FRigUnit_HierarchyBa
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input, ExpandByDefault))
 	FRigElementKey Child;
@@ -82,11 +82,11 @@ struct CONTROLRIG_API FRigUnit_HierarchyGetParents : public FRigUnit_HierarchyBa
 	UPROPERTY(meta = (Output))
 	FRigElementKeyCollection Parents;
 
-	// Used to cache the internally
+	// Used to cache the internally used child
 	UPROPERTY()
 	FCachedRigElement CachedChild;
 
-	// Used to cache the internally
+	// Used to cache the internally used parents
 	UPROPERTY()
 	FRigElementKeyCollection CachedParents;
 
@@ -112,7 +112,7 @@ struct CONTROLRIG_API FRigUnit_HierarchyGetParentsItemArray : public FRigUnit_Hi
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input, ExpandByDefault))
 	FRigElementKey Child;
@@ -126,11 +126,11 @@ struct CONTROLRIG_API FRigUnit_HierarchyGetParentsItemArray : public FRigUnit_Hi
 	UPROPERTY(meta = (Output))
 	TArray<FRigElementKey> Parents;
 
-	// Used to cache the internally
+	// Used to cache the internally used child
 	UPROPERTY()
 	FCachedRigElement CachedChild;
 
-	// Used to cache the internally
+	// Used to cache the internally used parents
 	UPROPERTY()
 	FRigElementKeyCollection CachedParents;
 };
@@ -154,7 +154,7 @@ struct CONTROLRIG_API FRigUnit_HierarchyGetChildren : public FRigUnit_HierarchyB
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input, ExpandByDefault))
 	FRigElementKey Parent;
@@ -168,11 +168,11 @@ struct CONTROLRIG_API FRigUnit_HierarchyGetChildren : public FRigUnit_HierarchyB
 	UPROPERTY(meta = (Output))
 	FRigElementKeyCollection Children;
 
-	// Used to cache the internally
+	// Used to cache the internally used parent
 	UPROPERTY()
 	FCachedRigElement CachedParent;
 
-	// Used to cache the internally
+	// Used to cache the internally used children
 	UPROPERTY()
 	FRigElementKeyCollection CachedChildren;
 
@@ -197,7 +197,7 @@ struct CONTROLRIG_API FRigUnit_HierarchyGetSiblings : public FRigUnit_HierarchyB
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input, ExpandByDefault))
 	FRigElementKey Item;
@@ -208,11 +208,11 @@ struct CONTROLRIG_API FRigUnit_HierarchyGetSiblings : public FRigUnit_HierarchyB
 	UPROPERTY(meta = (Output))
 	FRigElementKeyCollection Siblings;
 
-	// Used to cache the internally
+	// Used to cache the internally used item
 	UPROPERTY()
 	FCachedRigElement CachedItem;
 
-	// Used to cache the internally
+	// Used to cache the internally used siblings
 	UPROPERTY()
 	FRigElementKeyCollection CachedSiblings;
 
@@ -237,7 +237,7 @@ struct CONTROLRIG_API FRigUnit_HierarchyGetSiblingsItemArray : public FRigUnit_H
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input, ExpandByDefault))
 	FRigElementKey Item;
@@ -248,11 +248,11 @@ struct CONTROLRIG_API FRigUnit_HierarchyGetSiblingsItemArray : public FRigUnit_H
 	UPROPERTY(meta = (Output))
 	TArray<FRigElementKey> Siblings;
 
-	// Used to cache the internally
+	// Used to cache the internally used item
 	UPROPERTY()
 	FCachedRigElement CachedItem;
 
-	// Used to cache the internally
+	// Used to cache the internally used siblings
 	UPROPERTY()
 	FRigElementKeyCollection CachedSiblings;
 };
@@ -274,7 +274,7 @@ struct CONTROLRIG_API FRigUnit_HierarchyGetPose : public FRigUnit_HierarchyBase
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	bool Initial;
@@ -309,7 +309,7 @@ struct CONTROLRIG_API FRigUnit_HierarchyGetPoseItemArray : public FRigUnit_Hiera
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	bool Initial;
@@ -338,13 +338,13 @@ struct CONTROLRIG_API FRigUnit_HierarchySetPose : public FRigUnit_HierarchyBaseM
 	{
 		Pose = FRigPose();
 		ElementType = ERigElementType::All;
-		Space = EBoneGetterSetterMode::LocalSpace;
+		Space = ERigVMTransformSpace::LocalSpace;
 		ItemsToSet = FRigElementKeyCollection();
 		Weight = 1.f;
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	FRigPose Pose;
@@ -353,7 +353,7 @@ struct CONTROLRIG_API FRigUnit_HierarchySetPose : public FRigUnit_HierarchyBaseM
 	ERigElementType ElementType;
 
 	UPROPERTY(meta = (Input))
-	EBoneGetterSetterMode Space;
+	ERigVMTransformSpace Space;
 
 	// An optional collection to filter against
 	UPROPERTY(meta = (Input))
@@ -378,12 +378,12 @@ struct CONTROLRIG_API FRigUnit_HierarchySetPoseItemArray : public FRigUnit_Hiera
 	{
 		Pose = FRigPose();
 		ElementType = ERigElementType::All;
-		Space = EBoneGetterSetterMode::LocalSpace;
+		Space = ERigVMTransformSpace::LocalSpace;
 		Weight = 1.f;
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	FRigPose Pose;
@@ -392,7 +392,7 @@ struct CONTROLRIG_API FRigUnit_HierarchySetPoseItemArray : public FRigUnit_Hiera
 	ERigElementType ElementType;
 
 	UPROPERTY(meta = (Input))
-	EBoneGetterSetterMode Space;
+	ERigVMTransformSpace Space;
 
 	// An optional collection to filter against
 	UPROPERTY(meta = (Input))
@@ -417,7 +417,7 @@ struct CONTROLRIG_API FRigUnit_PoseIsEmpty : public FRigUnit_HierarchyBase
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	FRigPose Pose;
@@ -442,7 +442,7 @@ struct CONTROLRIG_API FRigUnit_PoseGetItems : public FRigUnit_HierarchyBase
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	FRigPose Pose;
@@ -472,7 +472,7 @@ struct CONTROLRIG_API FRigUnit_PoseGetItemsItemArray : public FRigUnit_Hierarchy
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	FRigPose Pose;
@@ -496,7 +496,7 @@ struct CONTROLRIG_API FRigUnit_PoseGetDelta : public FRigUnit_HierarchyBase
 	{
 		PoseA = PoseB = FRigPose();
 		ElementType = ERigElementType::All;
-		Space = EBoneGetterSetterMode::LocalSpace;
+		Space = ERigVMTransformSpace::LocalSpace;
 		ItemsToCompare = ItemsWithDelta = FRigElementKeyCollection();
 		PositionThreshold = 0.1f;
 		RotationThreshold = ScaleThreshold = CurveThreshold = 0.f;
@@ -504,7 +504,7 @@ struct CONTROLRIG_API FRigUnit_PoseGetDelta : public FRigUnit_HierarchyBase
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	FRigPose PoseA;
@@ -533,7 +533,7 @@ struct CONTROLRIG_API FRigUnit_PoseGetDelta : public FRigUnit_HierarchyBase
 	
 	// Defines in which space transform deltas should be computed
 	UPROPERTY(meta = (Input))
-	EBoneGetterSetterMode Space;
+	ERigVMTransformSpace Space;
 
 	// An optional list of items to compare
 	UPROPERTY(meta = (Input))
@@ -548,7 +548,7 @@ struct CONTROLRIG_API FRigUnit_PoseGetDelta : public FRigUnit_HierarchyBase
 	static bool ArePoseElementsEqual(
 		const FRigPoseElement& A,
 		const FRigPoseElement& B,
-		EBoneGetterSetterMode Space,
+		ERigVMTransformSpace Space,
 		float PositionU,
 		float RotationU,
 		float ScaleU,
@@ -579,7 +579,7 @@ struct CONTROLRIG_API FRigUnit_PoseGetTransform : public FRigUnit_HierarchyBase
 	{
 		Pose = FRigPose();
 		Item = FRigElementKey();
-		Space = EBoneGetterSetterMode::GlobalSpace;
+		Space = ERigVMTransformSpace::GlobalSpace;
 		Valid = false;
 		Transform = FTransform::Identity;
 		CurveValue = 0.f;
@@ -587,7 +587,7 @@ struct CONTROLRIG_API FRigUnit_PoseGetTransform : public FRigUnit_HierarchyBase
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	FRigPose Pose;
@@ -599,7 +599,7 @@ struct CONTROLRIG_API FRigUnit_PoseGetTransform : public FRigUnit_HierarchyBase
 	* Defines if the transform should be retrieved in local or global space
 	*/ 
 	UPROPERTY(meta = (Input))
-	EBoneGetterSetterMode Space;
+	ERigVMTransformSpace Space;
 
 	UPROPERTY(meta = (Output))
 	bool Valid;
@@ -628,13 +628,13 @@ struct CONTROLRIG_API FRigUnit_PoseGetTransformArray : public FRigUnit_Hierarchy
 	FRigUnit_PoseGetTransformArray()
 	{
 		Pose = FRigPose();
-		Space = EBoneGetterSetterMode::GlobalSpace;
+		Space = ERigVMTransformSpace::GlobalSpace;
 		Valid = false;
 		Transforms.Reset();
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	FRigPose Pose;
@@ -643,7 +643,7 @@ struct CONTROLRIG_API FRigUnit_PoseGetTransformArray : public FRigUnit_Hierarchy
 	* Defines if the transform should be retrieved in local or global space
 	*/ 
 	UPROPERTY(meta = (Input))
-	EBoneGetterSetterMode Space;
+	ERigVMTransformSpace Space;
 
 	UPROPERTY(meta = (Output))
 	bool Valid;
@@ -670,7 +670,7 @@ struct CONTROLRIG_API FRigUnit_PoseGetCurve : public FRigUnit_HierarchyBase
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	UPROPERTY(meta = (Input))
 	FRigPose Pose;
@@ -701,6 +701,7 @@ struct CONTROLRIG_API FRigUnit_PoseLoop : public FRigUnit_HierarchyBaseMutable
 
 	FRigUnit_PoseLoop()
 	{
+		BlockToRun = NAME_None;
 		Pose = FRigPose();
 		Item = FRigElementKey();
 		GlobalTransform = LocalTransform = FTransform::Identity;
@@ -708,15 +709,22 @@ struct CONTROLRIG_API FRigUnit_PoseLoop : public FRigUnit_HierarchyBaseMutable
 		Count = 0;
 		Index = 0;
 		Ratio = 0.f;
-		Continue = false;
 	}
 
 	// FRigVMStruct overrides
-	FORCEINLINE virtual bool IsForLoop() const override { return true; }
-	FORCEINLINE virtual int32 GetNumSlices() const override { return Count; }
+	virtual const TArray<FName>& GetControlFlowBlocks_Impl() const override
+	{
+		static const TArray<FName> Blocks = {ExecuteContextName, ForLoopCompletedPinName};
+		return Blocks;
+	}
+	virtual const bool IsControlFlowBlockSliced(const FName& InBlockName) const { return InBlockName == ExecuteContextName; }
+	virtual int32 GetNumSlices() const override { return Count; }
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
+
+	UPROPERTY(meta = (Singleton))
+	FName BlockToRun;
 
 	UPROPERTY(meta = (Input))
 	FRigPose Pose;
@@ -746,9 +754,6 @@ struct CONTROLRIG_API FRigUnit_PoseLoop : public FRigUnit_HierarchyBaseMutable
 	*/
 	UPROPERTY(meta = (Singleton, Output))
 	float Ratio;
-
-	UPROPERTY(meta = (Singleton))
-	bool Continue;
 
 	UPROPERTY(meta = (Output))
 	FControlRigExecuteContext Completed;

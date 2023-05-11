@@ -1,12 +1,8 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "StateTreeStateParametersDetails.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "DetailWidgetRow.h"
-#include "DetailLayoutBuilder.h"
-#include "IDetailPropertyRow.h"
 #include "IDetailChildrenBuilder.h"
-#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Layout/SBox.h"
 #include "PropertyBagDetails.h"
 #include "StateTree.h"
 #include "StateTreeEditorData.h"
@@ -23,7 +19,7 @@
 class FStateTreeStateParametersInstanceDataDetails : public FPropertyBagInstanceDataDetails
 {
 public:
-	FStateTreeStateParametersInstanceDataDetails(TSharedPtr<IPropertyHandle> InStructProperty, IPropertyUtilities* InPropUtils, const bool bInFixedLayout, FGuid InID, UStateTreeEditorData* InEditorData)
+	FStateTreeStateParametersInstanceDataDetails(TSharedPtr<IPropertyHandle> InStructProperty, TSharedPtr<IPropertyUtilities> InPropUtils, const bool bInFixedLayout, FGuid InID, UStateTreeEditorData* InEditorData)
 		: FPropertyBagInstanceDataDetails(InStructProperty, InPropUtils, bInFixedLayout)
 		, EditorData(InEditorData)
 	{
@@ -98,7 +94,7 @@ TSharedRef<IPropertyTypeCustomization> FStateTreeStateParametersDetails::MakeIns
 void FStateTreeStateParametersDetails::CustomizeHeader(TSharedRef<class IPropertyHandle> StructPropertyHandle, class FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& StructCustomizationUtils)
 {
 	StructProperty = StructPropertyHandle;
-	PropUtils = StructCustomizationUtils.GetPropertyUtilities().Get();
+	PropUtils = StructCustomizationUtils.GetPropertyUtilities();
 
 	ParametersProperty = StructProperty->GetChildHandle(TEXT("Parameters"));
 	FixedLayoutProperty = StructProperty->GetChildHandle(TEXT("bFixedLayout"));

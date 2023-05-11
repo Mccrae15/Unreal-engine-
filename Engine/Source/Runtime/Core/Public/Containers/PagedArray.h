@@ -194,6 +194,23 @@ public:
 		return Pages[GetPageIndex(Index)][GetPageOffset(Index)];
 	}
 
+	/**
+	 * Helper function to return the amount of memory allocated by this container.
+	 * Only returns the size of allocations made directly by the container, not the elements themselves.
+	 *
+	 * @returns Number of bytes allocated by this container.
+	 */
+	FORCEINLINE SIZE_T GetAllocatedSize() const
+	{
+		SIZE_T Size = 0;
+		Size += Pages.GetAllocatedSize();
+		for (const PageType& Page : Pages)
+		{
+			Size += Page.GetAllocatedSize();
+		}
+		return Size;
+	}
+
 	FORCEINLINE SizeType Max() const
 	{
 		return Pages.Num() * PageTraits::Capacity;
@@ -248,7 +265,7 @@ public:
 			if (PendingCount)
 			{
 				Pages[PageIndex].Reserve(PageTraits::Capacity);
-				Pages[PageIndex].SetNum(PendingCount);
+				Pages[PageIndex].SetNum(PendingCount, false);
 			}
 		}
 		else if (NewNum < Num())
@@ -257,7 +274,7 @@ public:
 			Pages.SetNum(RequiredPageCount, bAllowShrinking);
 			if (const SizeType Mod = NewNum % PageTraits::Capacity)
 			{
-				Pages.Last().SetNum(Mod);
+				Pages.Last().SetNum(Mod, false);
 			}
 		}
 		Count = NewNum;
@@ -526,16 +543,16 @@ public:
 	}
 
 	// Friend operators
-	friend bool operator==(const TPagedArray& Left, const TPagedArray& Right)
+	bool operator==(const TPagedArray& Right) const
 	{
-		if (Left.Num() != Right.Num())
+		if (Num() != Right.Num())
 		{
 			return false;
 		}
-		const SizeType MinPageCount = NumRequiredPages(Left.Count);
+		const SizeType MinPageCount = NumRequiredPages(Count);
 		for (SizeType PageIndex = 0; PageIndex < MinPageCount; ++PageIndex)
 		{
-			if (Left.Pages[PageIndex] != Right.Pages[PageIndex])
+			if (Pages[PageIndex] != Right.Pages[PageIndex])
 			{
 				return false;
 			}
@@ -543,9 +560,9 @@ public:
 		return true;
 	}
 
-	FORCEINLINE friend bool operator!=(const TPagedArray& Left, const TPagedArray& Right)
+	FORCEINLINE bool operator!=(const TPagedArray& Right) const
 	{
-		return !(Left == Right);
+		return !(*this == Right);
 	}
 
 private:

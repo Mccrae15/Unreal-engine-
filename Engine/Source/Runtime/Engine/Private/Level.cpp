@@ -6,36 +6,27 @@ Level.cpp: Level-related functions
 
 #include "Engine/Level.h"
 
+#include "EngineLogs.h"
 #include "Misc/ScopedSlowTask.h"
-#include "UObject/RenderingObjectVersion.h"
+#include "HAL/PlatformFile.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
-#include "UObject/UE5ReleaseStreamObjectVersion.h"
-#include "Templates/UnrealTemplate.h"
-#include "UObject/Package.h"
+#include "Physics/Experimental/PhysScene_Chaos.h"
+#include "UObject/FortniteMainBranchObjectVersion.h"
+#include "UObject/ReleaseObjectVersion.h"
 #include "EngineStats.h"
-#include "Engine/Blueprint.h"
-#include "GameFramework/Actor.h"
 #include "RenderingThread.h"
-#include "RawIndexBuffer.h"
 #include "GameFramework/Pawn.h"
-#include "Engine/World.h"
 #include "SceneInterface.h"
 #include "PrecomputedLightVolume.h"
 #include "PrecomputedVolumetricLightmap.h"
 #include "Engine/MapBuildDataRegistry.h"
 #include "Components/LightComponent.h"
 #include "Model.h"
-#include "Engine/Brush.h"
-#include "Engine/Engine.h"
 #include "Containers/TransArray.h"
 #include "UObject/MetaData.h"
 #include "UObject/ObjectSaveContext.h"
-#include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
-#include "UObject/PropertyPortFlags.h"
-#include "Misc/PackageName.h"
 #include "GameFramework/PlayerController.h"
-#include "Engine/NavigationObjectBase.h"
 #include "GameFramework/WorldSettings.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/Texture2D.h"
@@ -46,55 +37,37 @@ Level.cpp: Level-related functions
 #include "Engine/WorldComposition.h"
 #include "StaticLighting.h"
 #include "TickTaskManagerInterface.h"
-#include "UObject/ReleaseObjectVersion.h"
 #include "PhysicsEngine/BodySetup.h"
-#include "EngineGlobals.h"
 #include "Engine/LevelBounds.h"
 #include "Async/ParallelFor.h"
-#include "UnrealEngine.h"
 #include "Misc/ArchiveMD5.h"
 #if WITH_EDITOR
-#include "AssetCompilingManager.h"
 #include "StaticMeshCompiler.h"
 #include "ActorDeferredScriptManager.h"
-#include "Components/InstancedStaticMeshComponent.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "Algo/AnyOf.h"
-#include "AssetRegistry/AssetRegistryModule.h"
-#include "AssetRegistry/IAssetRegistry.h"
-#include "AssetRegistry/AssetData.h"
 #include "PieFixupSerializer.h"
 #include "Editor.h"
 #include "Subsystems/EditorActorSubsystem.h"
 #include "Widgets/Notifications/SNotificationList.h"
-#include "Framework/Notifications/NotificationManager.h"
 #include "Settings/LevelEditorMiscSettings.h"
 #include "ExternalPackageHelper.h"
-#include "Folder.h"
 #include "ActorFolder.h"
 #include "Misc/MessageDialog.h"
-#include "ScopedTransaction.h"
 #include "EditorActorFolders.h"
 #include "UObject/MetaData.h"
-#include "UObject/LinkerLoad.h"
 #include "WorldPartition/WorldPartitionHelpers.h"
 #include "HAL/PlatformFileManager.h"
 #include "Misc/PathViews.h"
 #endif
 #include "WorldPartition/WorldPartition.h"
+#include "WorldPartition/WorldPartitionLog.h"
 #include "WorldPartition/WorldPartitionSubsystem.h"
 #include "Engine/LevelStreaming.h"
 #include "LevelUtils.h"
 #include "Components/ModelComponent.h"
 #include "Engine/LevelActorContainer.h"
-#include "Engine/StaticMeshActor.h"
-#include "ComponentRecreateRenderStateContext.h"
-#include "HAL/FileManager.h"
-#include "Algo/Copy.h"
-#include "HAL/LowLevelMemTracker.h"
 #include "ObjectTrace.h"
-#include "ProfilingDebugging/TagTrace.h"
 #include "UObject/MetaData.h"
 #include "WorldPartition/WorldPartitionRuntimeCell.h"
 
@@ -271,6 +244,18 @@ void FActorFolderSet::Add(UActorFolder* InActorFolder)
 }
 
 /*-----------------------------------------------------------------------------
+FPendingAutoReceiveInputActor implementation.
+-----------------------------------------------------------------------------*/
+
+FPendingAutoReceiveInputActor::FPendingAutoReceiveInputActor(AActor* InActor, const int32 InPlayerIndex)
+	: Actor(InActor)
+	, PlayerIndex(InPlayerIndex)
+{
+}
+
+FPendingAutoReceiveInputActor::~FPendingAutoReceiveInputActor() = default;
+
+/*-----------------------------------------------------------------------------
 ULevel implementation.
 -----------------------------------------------------------------------------*/
 
@@ -423,7 +408,7 @@ bool FLevelSimplificationDetails::operator == (const FLevelSimplificationDetails
 static bool IsActorFolderObjectsFeatureAvailable()
 {
 #if WITH_EDITOR
-	return !IsRunningCookCommandlet() && !IsRunningGame();
+	return !IsRunningCookCommandlet() && !IsRunningGame() && GIsEditor;
 #else
 	return false;
 #endif
@@ -483,11 +468,11 @@ void ULevel::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collecto
 	// Let GC know that we're referencing some AActor objects
 	if (FPlatformProperties::RequiresCookedData() && GActorClusteringEnabled && This->bActorClusterCreated)
 	{
-		Collector.AddReferencedObjects(This->ActorsForGC, This);
+		Collector.AddStableReferenceArray(&This->ActorsForGC);
 	}
 	else
 	{
-		Collector.AddReferencedObjects(This->Actors, This);
+		Collector.AddStableReferenceArray(&This->Actors);
 	}
 
 	Super::AddReferencedObjects( This, Collector );
@@ -825,7 +810,11 @@ void ULevel::CreateReplicatedDestructionInfo(AActor* const Actor)
 	// mimic the checks the package map will do before assigning a guid
 	const bool bIsActorStatic = Actor->IsFullNameStableForNetworking() && Actor->IsSupportedForNetworking();
 	const bool bActorHasRole = Actor->GetRemoteRole() != ROLE_None;
-	const bool bShouldCreateDestructionInfo = bIsActorStatic && bActorHasRole;
+	const bool bShouldCreateDestructionInfo = bIsActorStatic && bActorHasRole
+#if WITH_EDITOR
+		&& !GIsReinstancing
+#endif
+		;
 
 	if (bShouldCreateDestructionInfo)
 	{
@@ -907,6 +896,12 @@ void ULevel::AddLoadedActors(const TArray<AActor*>& ActorList, const FTransform*
 	// Register all components
 	for (AActor* Actor : ActorsQueue)
 	{
+		// RegisterAllComponents can destroy child actors
+		if (!IsValid(Actor))
+		{
+			continue;
+		}
+
 		if (TransformToApply)
 		{
 			FLevelUtils::FApplyLevelTransformParams TransformParams(this, *TransformToApply);
@@ -926,6 +921,12 @@ void ULevel::AddLoadedActors(const TArray<AActor*>& ActorList, const FTransform*
 	// Rerun construction scripts
 	for (AActor* Actor : ActorsQueue)
 	{
+		// RegisterAllComponents/RerunConstructionScripts can destroy child actors
+		if (!IsValid(Actor))
+		{
+			continue;
+		}
+
 		if (bAreComponentsCurrentlyRegistered)
 		{
 			Actor->RerunConstructionScripts();
@@ -937,6 +938,12 @@ void ULevel::AddLoadedActors(const TArray<AActor*>& ActorList, const FTransform*
 	// Finalize actors
 	for (AActor* Actor : ActorsQueue)
 	{
+		// RegisterAllComponents/RerunConstructionScripts can destroy child actors
+		if (!IsValid(Actor))
+		{
+			continue;
+		}
+
 		if (bAreComponentsCurrentlyRegistered)
 		{
 			GetWorld()->UpdateCullDistanceVolumes(Actor);
@@ -980,12 +987,14 @@ void ULevel::RemoveLoadedActors(const TArray<AActor*>& ActorList, const FTransfo
 		});
 
 		int32 ActorIndex;
-		verify(Actors.Find(Actor, ActorIndex));
+		// temporarily downgraded to ensure while an issue is fixed
+		if (ensure(Actors.Find(Actor, ActorIndex))) 
+		{
+			Actors[ActorIndex] = nullptr;
+			ActorsForGC.Remove(Actor);
 
-		Actors[ActorIndex] = nullptr;
-		ActorsForGC.Remove(Actor);
-
-		ActorsQueue.Add(Actor);
+			ActorsQueue.Add(Actor);
+		}
 	};
 
 	for (AActor* Actor : ActorList)
@@ -998,6 +1007,12 @@ void ULevel::RemoveLoadedActors(const TArray<AActor*>& ActorList, const FTransfo
 
 	for (AActor* Actor : ActorsQueue)
 	{
+		// UnregisterAllComponents can destroy child actors
+		if (!IsValid(Actor))
+		{
+			continue;
+		}
+
 		Actor->UnregisterAllComponents();
 		Actor->RegisterAllActorTickFunctions(false, true);
 
@@ -1105,6 +1120,21 @@ void ULevel::PostLoad()
 {
 	Super::PostLoad();
 
+	// Ensure that the level is pointed to the owning world.  For streamed levels, this will be the world of the P map
+	// they are streamed in to which we cached when the package loading was invoked
+	// We also need to do this before doing additional loading to avoid reinstantiation of BP actors
+	// assigned to this level to be without a World.
+	OwningWorld = ULevel::StreamedLevelsOwningWorld.FindRef(GetOutermost()->GetFName()).Get();
+	if (OwningWorld == nullptr)
+	{
+		OwningWorld = CastChecked<UWorld>(GetOuter());
+	}
+	else
+	{
+		// This entry will not be used anymore, remove it
+		ULevel::StreamedLevelsOwningWorld.Remove(GetOutermost()->GetFName());
+	}
+
 #if WITH_EDITOR
 	if (IsUsingActorFolders() && IsUsingExternalObjects() && IsActorFolderObjectsFeatureAvailable())
 	{
@@ -1197,19 +1227,6 @@ void ULevel::PostLoad()
 		}
 	}
 #endif
-
-	// Ensure that the level is pointed to the owning world.  For streamed levels, this will be the world of the P map
-	// they are streamed in to which we cached when the package loading was invoked
-	OwningWorld = ULevel::StreamedLevelsOwningWorld.FindRef(GetOutermost()->GetFName()).Get();
-	if (OwningWorld == NULL)
-	{
-		OwningWorld = CastChecked<UWorld>(GetOuter());
-	}
-	else
-	{
-		// This entry will not be used anymore, remove it
-		ULevel::StreamedLevelsOwningWorld.Remove(GetOutermost()->GetFName());
-	}
 
 	UWorldComposition::OnLevelPostLoad(this);
 		
@@ -1766,6 +1783,8 @@ bool ULevel::IncrementalRunConstructionScripts(bool bProcessAllActors)
 	if (CurrentActorIndexForIncrementalUpdate >= Actors.Num())
 	{
 		CurrentActorIndexForIncrementalUpdate = 0;
+		bCachedHasStaticMeshCompilationPending.Reset();
+		bHasRerunConstructionScripts = true;
 		return true;
 	}
 	return false;
@@ -1828,6 +1847,31 @@ void ULevel::MarkLevelComponentsRenderStateDirty()
 
 #if WITH_EDITOR
 
+bool ULevel::HasStaticMeshCompilationPending()
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(ULevel::HasStaticMeshCompilationPending);
+
+	bool bHasStaticMeshCompilationPending = false;
+	ForEachObjectWithOuterBreakable(
+		this,
+		[&bHasStaticMeshCompilationPending](UObject* InObject)
+		{
+			if (UStaticMeshComponent* Component = Cast<UStaticMeshComponent>(InObject))
+			{
+				if (Component->IsCompiling())
+				{
+					bHasStaticMeshCompilationPending = false;
+					return false;
+				}
+			}
+
+			return true;
+		}
+	);
+
+	return bHasStaticMeshCompilationPending;
+}
+
 bool ULevel::DeferRunningConstructionScripts(AActor* InActor)
 {
 	// if there are outstanding asset (static meshes) compilation when loading actors
@@ -1837,8 +1881,16 @@ bool ULevel::DeferRunningConstructionScripts(AActor* InActor)
 	if (FStaticMeshCompilingManager::Get().GetNumRemainingMeshes() &&
 		InActor->HasNonTrivialUserConstructionScript())
 	{
-		FActorDeferredScriptManager::Get().AddActor(InActor);
-		return true;
+		if (!bCachedHasStaticMeshCompilationPending.IsSet())
+		{
+			bCachedHasStaticMeshCompilationPending = HasStaticMeshCompilationPending();
+		}
+
+		if (bCachedHasStaticMeshCompilationPending)
+		{
+			FActorDeferredScriptManager::Get().AddActor(InActor);
+			return true;
+		}
 	}
 	return false;
 }
@@ -2963,7 +3015,7 @@ void ULevel::OnLevelLoaded()
 			const bool bIsValidLevelInstance = IsValidLevelInstanceWorldPartition(WorldPartition);
 			const bool bIsMainWorldLevel = OwningWorld->PersistentLevel == this;
 			const bool bInitializeForEditor = !bIsOwningWorldGameWorld && bIsValidLevelInstance;
-			const bool bInitializeForGame = bIsOwningWorldGameWorld && !bIsOwningWorldPartitioned;
+			const bool bInitializeForGame = bIsOwningWorldGameWorld;
 
 			UE_LOG(LogWorldPartition, Log, TEXT("ULevel::OnLevelLoaded(%s)(bIsOwningWorldGameWorld=%d, bIsOwningWorldPartitioned=%d, bIsValidLevelInstance=%d, InitializeForMainWorld=%d, InitializeForEditor=%d, InitializeForGame=%d)"), 
 				*GetTypedOuter<UWorld>()->GetName(), bIsOwningWorldGameWorld ? 1 : 0, bIsOwningWorldPartitioned ? 1 : 0, bIsValidLevelInstance ? 1 : 0, bIsMainWorldLevel ? 1 : 0, bInitializeForEditor ? 1 : 0, bInitializeForGame ? 1 : 0);
@@ -3423,9 +3475,7 @@ FString ULevel::GetActorPackageName(const FString& InBaseDir, EActorPackagingSch
 	FMD5Hash MD5Hash;
 	ArMD5.GetHash(MD5Hash);
 
-	FGuid PackageGuid;
-	check(MD5Hash.GetSize() == sizeof(FGuid));
-	FMemory::Memcpy(&PackageGuid, MD5Hash.GetBytes(), sizeof(FGuid));
+	FGuid PackageGuid = MD5HashToGuid(MD5Hash);
 	check(PackageGuid.IsValid());
 
 	FString GuidBase36 = PackageGuid.ToString(EGuidFormats::Base36Encoded);
@@ -4146,6 +4196,11 @@ void ULevel::FixupForPIE(int32 InPIEInstanceID, TFunctionRef<void(int32, FSoftOb
 {
 	FPIEFixupSerializer FixupSerializer(this, InPIEInstanceID, InCustomFixupFunction);
 	Serialize(FixupSerializer);
+}
+
+void ULevel::FixupForPIE(int32 InPIEInstanceID)
+{
+	FixupForPIE(InPIEInstanceID, [](int32, FSoftObjectPath&) {});
 }
 
 #endif	//WITH_EDITOR

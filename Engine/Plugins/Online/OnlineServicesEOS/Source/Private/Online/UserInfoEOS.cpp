@@ -1,10 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Online/UserInfoEOS.h"
-#include "Online/OnlineAsyncOp.h"
+#include "EOSShared.h"
 #include "Online/OnlineIdEOS.h"
 #include "Online/OnlineServicesEOS.h"
-#include "Online/OnlineServicesEOSTypes.h"
 #include "Online/AuthEOS.h"
 #include "Online/OnlineErrorEOSGS.h"
 
@@ -60,8 +59,8 @@ TOnlineAsyncOpHandle<FQueryUserInfo> FUserInfoEOS::QueryUserInfo(FQueryUserInfo:
 				}
 
 				EOS_UserInfo_QueryUserInfoOptions QueryUserInfoOptions = {};
-				QueryUserInfoOptions.ApiVersion = EOS_USERINFO_QUERYUSERINFO_API_LATEST;
-				static_assert(EOS_USERINFO_QUERYUSERINFO_API_LATEST == 1, "EOS_UserInfo_QueryUserInfoOptions updated, check new fields");
+				QueryUserInfoOptions.ApiVersion = 1;
+				UE_EOS_CHECK_API_MISMATCH(EOS_USERINFO_QUERYUSERINFO_API_LATEST, 1);
 				QueryUserInfoOptions.LocalUserId = GetEpicAccountIdChecked(Params.LocalAccountId);
 				QueryUserInfoOptions.TargetUserId = TargetUserEasId;
 
@@ -101,8 +100,8 @@ TOnlineResult<FGetUserInfo> FUserInfoEOS::GetUserInfo(FGetUserInfo::Params&& Par
 	}
 
 	EOS_UserInfo_CopyUserInfoOptions Options;
-	Options.ApiVersion = EOS_USERINFO_COPYUSERINFO_API_LATEST;
-	static_assert(EOS_USERINFO_COPYUSERINFO_API_LATEST == 3, "EOS_UserInfo_CopyUserInfoOptions updated, check new fields");
+	Options.ApiVersion = 3;
+	UE_EOS_CHECK_API_MISMATCH(EOS_USERINFO_COPYUSERINFO_API_LATEST, 3);
 	Options.LocalUserId = GetEpicAccountIdChecked(Params.LocalAccountId);
 	Options.TargetUserId = TargetUserEasId;
 

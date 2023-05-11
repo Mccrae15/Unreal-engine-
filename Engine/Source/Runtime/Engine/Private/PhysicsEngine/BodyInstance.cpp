@@ -1,56 +1,43 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PhysicsEngine/BodyInstance.h"
-#include "EngineGlobals.h"
-#include "HAL/IConsoleManager.h"
-#include "Components/SceneComponent.h"
-#include "Components/PrimitiveComponent.h"
-#include "Components/MeshComponent.h"
+#include "BodySetupEnums.h"
 #include "Components/StaticMeshComponent.h"
+#include "Chaos/CollisionConvexMesh.h"
 #include "Engine/Engine.h"
-#include "GameFramework/Volume.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/ShapeComponent.h"
 #include "Engine/CollisionProfile.h"
+#include "Engine/World.h"
 #include "SceneManagement.h"
 #include "Collision.h"
-#include "Physics/PhysicsInterfaceCore.h"
+#include "Materials/MaterialInterface.h"
 #include "Physics/PhysicsFiltering.h"
+#include "Physics/Experimental/PhysScene_Chaos.h"
 #include "PhysicsEngine/ConstraintInstance.h"
-#include "PhysicsEngine/ShapeElem.h"
+#include "Physics/PhysicsInterfaceTypes.h"
 #include "PhysicsEngine/ConvexElem.h"
 #include "PhysicsEngine/BoxElem.h"
+#include "PhysicsEngine/LevelSetElem.h"
 #include "PhysicsEngine/SphereElem.h"
 #include "PhysicsEngine/SphylElem.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "PhysicsEngine/BodyUtils.h"
-#include "HAL/LowLevelMemTracker.h"
-#include "HAL/IConsoleManager.h"
-#include "Logging/TokenizedMessage.h"
 #include "Logging/MessageLog.h"
-#include "Misc/UObjectToken.h"
 
-#include "ChaosCheck.h"
 #include "Chaos/Capsule.h"
 #include "Chaos/Convex.h"
-#include "Chaos/ImplicitObject.h"
-#include "Chaos/ImplicitObjectScaled.h"
-#include "Chaos/ImplicitObjectTransformed.h"
-#include "Chaos/ParticleHandle.h"
 #include "Chaos/TriangleMeshImplicitObject.h"
-#include "Chaos/MassProperties.h"
-#include "Chaos/Utilities.h"
 #include "Physics/Experimental/ChaosInterfaceUtils.h"
 
-#include "Chaos/ParticleHandle.h"
+#include "PhysicsEngine/TaperedCapsuleElem.h"
 #include "PhysicsProxy/SingleParticlePhysicsProxy.h"
 
-#define LOCTEXT_NAMESPACE "BodyInstance"
-
-#include "Components/ModelComponent.h"
 #include "Components/BrushComponent.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
 #include "PhysicsEngine/PhysicsSettings.h"
+
+#define LOCTEXT_NAMESPACE "BodyInstance"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(BodyInstance)
 
@@ -1450,7 +1437,9 @@ void FInitBodiesHelperBase::InitBodies()
 
 FInitBodySpawnParams::FInitBodySpawnParams(const UPrimitiveComponent* PrimComp)
 {
-	bStaticPhysics = PrimComp == nullptr || PrimComp->Mobility != EComponentMobility::Movable;
+	bStaticPhysics = PrimComp == nullptr || (
+		PrimComp->Mobility != EComponentMobility::Movable &&
+		PrimComp->GetStaticWhenNotMoveable());
 
 	if(const USkeletalMeshComponent* SKOwner = Cast<USkeletalMeshComponent>(PrimComp))
 	{
@@ -1461,6 +1450,13 @@ FInitBodySpawnParams::FInitBodySpawnParams(const UPrimitiveComponent* PrimComp)
 		bPhysicsTypeDeterminesSimulation = false;
 	}
 }
+
+FInitBodySpawnParams::FInitBodySpawnParams(bool bInStaticPhysics, bool bInPhysicsTypeDeterminesSimulation)
+	: bStaticPhysics(bInStaticPhysics)
+	, bPhysicsTypeDeterminesSimulation(bInPhysicsTypeDeterminesSimulation)
+{
+}
+
 
 // Chaos addition
 static TAutoConsoleVariable<int32> CVarAllowCreatePhysxBodies(
@@ -1851,8 +1847,6 @@ bool FBodyInstance::UpdateBodyScale(const FVector& InScale3D, bool bForceUpdate)
 {
 	using namespace Chaos;
 
-	SCOPE_CYCLE_COUNTER(STAT_BodyInstanceUpdateBodyScale);
-
 	if (!IsValidBodyInstance())
 	{
 		//UE_LOG(LogPhysics, Log, TEXT("Body hasn't been initialized. Call InitBody to initialize."));
@@ -1864,6 +1858,8 @@ bool FBodyInstance::UpdateBodyScale(const FVector& InScale3D, bool bForceUpdate)
 	{
 		return false;
 	}
+
+	SCOPE_CYCLE_COUNTER(STAT_BodyInstanceUpdateBodyScale);
 
 	bool bSuccess = false;
 

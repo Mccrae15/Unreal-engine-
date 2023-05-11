@@ -2,9 +2,14 @@
 
 #include "ComputeFramework/ComputeFramework.h"
 
+#include "ComputeFramework/ComputeFrameworkModule.h"
 #include "ComputeFramework/ComputeGraph.h"
+#include "ComputeFramework/ComputeGraphWorker.h"
 #include "ComputeFramework/ComputeKernelFromText.h"
 #include "ComputeFramework/ComputeKernelShaderCompilationManager.h"
+#include "ComputeFramework/ComputeSystem.h"
+#include "DataDrivenShaderPlatformInfo.h"
+#include "RenderGraphBuilder.h"
 #include "ShaderCore.h"
 #include "UObject/UObjectIterator.h"
 
@@ -17,6 +22,14 @@ static FAutoConsoleVariableRef CVarComputeFrameworkEnable(
 	TEXT("Enable the Compute Framework.\n"),
 	ECVF_Scalability | ECVF_RenderThreadSafe
 	);
+
+static int32 GComputeFrameworkDeferredCompilation = 1;
+static FAutoConsoleVariableRef CVarComputeFrameworkDeferredCompilation(
+	TEXT("r.ComputeFramework.DeferredCompilation"),
+	GComputeFrameworkDeferredCompilation,
+	TEXT("Compile compute graphs on first usage instead of on PostLoad().\n"),
+	ECVF_Default
+);
 
 FAutoConsoleCommand CmdRebuildComputeGraphs(
 	TEXT("r.ComputeFramework.RebuildComputeGraphs"),
@@ -33,7 +46,16 @@ namespace ComputeFramework
 
 	bool IsEnabled()
 	{
-		return GComputeFrameworkEnable > 0;
+		return GComputeFrameworkEnable > 0 && FComputeFrameworkModule::GetComputeSystem() != nullptr;
+	}
+
+	bool IsDeferredCompilation()
+	{
+#if WITH_EDITOR
+		return GComputeFrameworkDeferredCompilation != 0;
+#else
+		return false;
+#endif
 	}
 
 	void RebuildComputeGraphs()
@@ -57,5 +79,21 @@ namespace ComputeFramework
 #if WITH_EDITOR
 		GComputeKernelShaderCompilationManager.Tick(DeltaSeconds);
 #endif // WITH_EDITOR
+	}
+
+	void FlushWork(FSceneInterface const* InScene, FName InExecutionGroupName)
+	{
+		FComputeFrameworkSystem* ComputeSystem = FComputeFrameworkModule::GetComputeSystem();
+		FComputeGraphTaskWorker* ComputeGraphWorker = ComputeSystem != nullptr ? ComputeSystem->GetComputeWorker(InScene) : nullptr;
+		if (ensure(ComputeGraphWorker))
+		{
+			ENQUEUE_RENDER_COMMAND(ComputeFrameworkFlushCommand)(
+				[ComputeGraphWorker, InExecutionGroupName](FRHICommandListImmediate& RHICmdList)
+				{
+					FRDGBuilder GraphBuilder(RHICmdList);
+					ComputeGraphWorker->SubmitWork(GraphBuilder, InExecutionGroupName, GMaxRHIFeatureLevel);
+					GraphBuilder.Execute();
+				});
+		}
 	}
 }

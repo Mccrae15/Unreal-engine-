@@ -7,7 +7,6 @@
 #include "AssetRegistry/AssetData.h"
 #include "AssetThumbnail.h"
 #include "AssetViewSortManager.h"
-#include "AssetViewTypes.h"
 #include "Containers/Array.h"
 #include "Containers/ArrayView.h"
 #include "Containers/Map.h"
@@ -45,6 +44,7 @@
 #include "Widgets/Views/STableRow.h"
 #include "Widgets/Views/STableViewBase.h"
 
+class FAssetThumbnail;
 class FAssetViewItem;
 class FContentBrowserItemDataTemporaryContext;
 class FContentBrowserItemDataUpdate;
@@ -66,8 +66,11 @@ class STableViewBase;
 class SWidget;
 class UClass;
 class UFactory;
+class UToolMenu;
+struct FAssetViewInstanceConfig;
 struct FCharacterEvent;
 struct FCollectionNameType;
+struct FContentBrowserInstanceConfig;
 struct FFocusEvent;
 struct FGeometry;
 struct FKeyEvent;
@@ -107,7 +110,6 @@ public:
 		, _CanShowRealTimeThumbnails(false)
 		, _CanShowDevelopersFolder(false)
 		, _CanShowFavorites(false)
-		, _CanDockCollections(false)
 		, _SelectionMode( ESelectionMode::Multi )
 		, _AllowDragging(true)
 		, _AllowFocusOnSync(true)
@@ -118,6 +120,7 @@ public:
 		, _ShowTypeInTileView(true)
 		, _ForceShowEngineContent(false)
 		, _ForceShowPluginContent(false)
+		, _ForceHideScrollbar(false)
 		{}
 
 		/** Called to check if an asset should be filtered out by external code */
@@ -226,7 +229,7 @@ public:
 		SLATE_ARGUMENT(bool, CanShowFavorites)
 
 		/** Indicates if the 'Dock Collections' option should be enabled or disabled */
-		SLATE_ARGUMENT(bool, CanDockCollections)
+		SLATE_ARGUMENT_DEPRECATED(bool, CanDockCollections, 5.2, "CanDockCollections is no longer supported (now defaults to true).")
 
 		/** The selection mode the asset view should use */
 		SLATE_ARGUMENT( ESelectionMode::Type, SelectionMode )
@@ -257,6 +260,9 @@ public:
 
 		/** Should always show plugin content */
 		SLATE_ARGUMENT(bool, ForceShowPluginContent)
+
+		/** Should always hide scrollbar (Removes scrollbar) */
+		SLATE_ARGUMENT(bool, ForceHideScrollbar)
 
 		/** Called to check if an asset tag should be display in details view. */
 		SLATE_EVENT( FOnShouldDisplayAssetTag, OnAssetTagWantsToBeDisplayed )
@@ -294,6 +300,9 @@ public:
 	/** Notifies the asset view that the filter-list filter has changed */
 	void SetBackendFilter(const FARFilter& InBackendFilter);
 
+	/** Get the current backend filter */
+	const FARFilter& GetBackendFilter() const { return BackendFilter; }
+	
 	/** Handler for when a data source requests folder item creation */
 	void NewFolderItemRequested(const FContentBrowserItemTemporaryContext& NewItemContext);
 
@@ -389,6 +398,18 @@ public:
 	 */
 	void ForceShowPluginFolder( bool bEnginePlugin );
 
+	/** Enables the Show Engine Content setting for the active Content Browser. The user can still toggle the setting manually. */
+	void OverrideShowEngineContent();
+
+	/** Enables the Show Developer Content setting for the active Content Browser. The user can still toggle the setting manually. */
+	void OverrideShowDeveloperContent();
+
+	/** Enables the Show Plugin Content setting for the active Content Browser. The user can still toggle the setting manually. */
+	void OverrideShowPluginContent();
+
+	/** Enables the Show Localized Content setting for the active Content Browser. The user can still toggle the setting manually. */
+	void OverrideShowLocalizedContent();
+
 	/** @return true when we are including class names in search criteria */
 	bool IsIncludingClassNames() const;
 
@@ -440,13 +461,15 @@ private:
 	void ProcessItemsPendingFilter(const double TickStartTime);
 
 	/** Creates a new tile view */
-	TSharedRef<class SAssetTileView> CreateTileView();
+	TSharedRef<SAssetTileView> CreateTileView();
 
 	/** Creates a new list view */
-	TSharedRef<class SAssetListView> CreateListView();
+	TSharedRef<SAssetListView> CreateListView();
 
 	/** Creates a new column view */
-	TSharedRef<class SAssetColumnView> CreateColumnView();
+	TSharedRef<SAssetColumnView> CreateColumnView();
+
+	const FSlateBrush* GetRevisionControlColumnIconBadge() const;
 
 	/** Returns true if the specified search token is allowed */
 	bool IsValidSearchToken(const FString& Token) const;
@@ -494,7 +517,7 @@ private:
 	static void RegisterGetViewButtonMenu();
 
 	/** Fill in menu content for when the view combo button is clicked */
-	void PopulateViewButtonMenu(class UToolMenu* Menu);
+	void PopulateViewButtonMenu(UToolMenu* Menu);
 
 	/** Toggle whether folders should be shown or not */
 	void ToggleShowFolders();
@@ -570,15 +593,6 @@ private:
 
 	/** @return true when we are showing favorites */
 	bool IsShowingFavorites() const;
-
-	/** Toggle whether the collections view should be docked under the paths view */
-	void ToggleDockCollections();
-
-	/** Whether or not it's possible to dock the collections view */
-	bool IsToggleDockCollectionsAllowed() const;
-
-	/** @return true when the collections view is docked */
-	bool HasDockedCollections() const;
 
 	/** Toggle whether C++ content should be shown or not */
 	void ToggleShowCppContent();
@@ -673,7 +687,7 @@ private:
 	void UpdateThumbnails();
 
 	/**  Helper function for UpdateThumbnails. Adds the specified item to the new thumbnail relevancy map and creates any thumbnails for new items. Returns the thumbnail. */
-	TSharedPtr<class FAssetThumbnail> AddItemToNewThumbnailRelevancyMap(const TSharedPtr<FAssetViewItem>& Item, TMap< TSharedPtr<FAssetViewItem>, TSharedPtr<class FAssetThumbnail> >& NewRelevantThumbnails);
+	TSharedPtr<FAssetThumbnail> AddItemToNewThumbnailRelevancyMap(const TSharedPtr<FAssetViewItem>& Item, TMap< TSharedPtr<FAssetViewItem>, TSharedPtr<FAssetThumbnail> >& NewRelevantThumbnails);
 
 	/** Handler for tree view selection changes */
 	void AssetSelectionChanged( TSharedPtr<FAssetViewItem > AssetItem, ESelectInfo::Type SelectInfo );
@@ -841,6 +855,12 @@ private:
 	/** Notification for when the content browser has completed it's initial search */
 	void HandleItemDataDiscoveryComplete();
 
+	/** Get the config struct for the owning Content Browser, if one exists. */
+	FContentBrowserInstanceConfig* GetContentBrowserConfig() const;
+
+	/** Get the config struct for this asset view, if one exists. */
+	FAssetViewInstanceConfig* GetAssetViewConfig() const;
+
 private:
 	friend class FAssetViewFrontendFilterHelper;
 
@@ -867,9 +887,9 @@ private:
 
 	/** The list view that is displaying the assets */
 	EAssetViewType::Type CurrentViewType;
-	TSharedPtr<class SAssetListView> ListView;
-	TSharedPtr<class SAssetTileView> TileView;
-	TSharedPtr<class SAssetColumnView> ColumnView;
+	TSharedPtr<SAssetListView> ListView;
+	TSharedPtr<SAssetTileView> TileView;
+	TSharedPtr<SAssetColumnView> ColumnView;
 	TSharedPtr<SBox> ViewContainer;
 
 	/** The content browser that created this asset view if any */
@@ -962,10 +982,10 @@ private:
 	TWeakPtr<FAssetViewItem> RenamingAsset;
 
 	/** Pool for maintaining and rendering thumbnails */
-	TSharedPtr<class FAssetThumbnailPool> AssetThumbnailPool;
+	TSharedPtr<FAssetThumbnailPool> AssetThumbnailPool;
 
 	/** A map of FAssetViewAsset to the thumbnail that represents it. Only items that are currently visible or within half of the FilteredAssetItems array index distance described by NumOffscreenThumbnails are in this list */
-	TMap< TSharedPtr<FAssetViewItem>, TSharedPtr<class FAssetThumbnail> > RelevantThumbnails;
+	TMap< TSharedPtr<FAssetViewItem>, TSharedPtr<FAssetThumbnail> > RelevantThumbnails;
 
 	/** The set of FAssetItems that currently have widgets displaying them. */
 	TArray< TSharedPtr<FAssetViewItem> > VisibleItems;
@@ -998,9 +1018,6 @@ private:
 	/** Current thumbnail size */
 	EThumbnailSize ThumbnailSize;
 
-	/** Flag indicating if we will be filling the empty space in the tile view. */
-	bool bFillEmptySpaceInTileView;
-
 	/** The amount to scale each thumbnail so that the empty space is filled. */
 	float FillScale;
 
@@ -1010,56 +1027,71 @@ private:
 	/** The manager responsible for sorting assets in the view */
 	FAssetViewSortManager SortManager;
 
+	/** Flag indicating if we will be filling the empty space in the tile view. */
+	bool bFillEmptySpaceInTileView;
+
 	/** When true, selection change notifications will not be sent */
 	bool bBulkSelecting;
 
 	/** When true, the user may edit thumbnails */
-	bool bAllowThumbnailEditMode;
+	bool bAllowThumbnailEditMode : 1;
 
 	/** True when the asset view is currently allowing the user to edit thumbnails */
-	bool bThumbnailEditMode;
+	bool bThumbnailEditMode : 1;
 
 	/** Indicates if this view is allowed to show classes */
-	bool bCanShowClasses;
+	bool bCanShowClasses : 1;
 
 	/** Indicates if the 'Show Folders' option should be enabled or disabled */
-	bool bCanShowFolders;
+	bool bCanShowFolders : 1;
 
 	/** Indicates if this view is allowed to show folders that cannot be written to */
-	bool bCanShowReadOnlyFolders;
+	bool bCanShowReadOnlyFolders : 1;
 
 	/** If true, recursive filtering will be caused by applying a backend filter */
-	bool bFilterRecursivelyWithBackendFilter;
+	bool bFilterRecursivelyWithBackendFilter : 1;
 
 	/** Indicates if the 'Real-Time Thumbnails' option should be enabled or disabled */
-	bool bCanShowRealTimeThumbnails;
+	bool bCanShowRealTimeThumbnails : 1;
 
 	/** Indicates if the 'Show Developers' option should be enabled or disabled */
-	bool bCanShowDevelopersFolder;
+	bool bCanShowDevelopersFolder : 1;
 
 	/** Indicates if the 'Show Favorites' option should be enabled or disabled */
-	bool bCanShowFavorites;
-
-	/** Indicates if the 'Dock Collections' option should be enabled or disabled */
-	bool bCanDockCollections;
+	bool bCanShowFavorites : 1;
 
 	/** If true, it will show path column in the asset view */
-	bool bShowPathInColumnView;
+	bool bShowPathInColumnView : 1;
 
 	/** If true, it will show type in the asset view */
-	bool bShowTypeInColumnView;
+	bool bShowTypeInColumnView : 1;
 
 	/** If true, it sorts by path and then name */
-	bool bSortByPathInColumnView;
+	bool bSortByPathInColumnView : 1;
 
 	/** If true, it will show type in the tile view */
-	bool bShowTypeInTileView;
+	bool bShowTypeInTileView : 1;
 
 	/** If true, engine content is always shown */
-	bool bForceShowEngineContent;
+	bool bForceShowEngineContent : 1;
 
 	/** If true, plugin content is always shown */
-	bool bForceShowPluginContent;
+	bool bForceShowPluginContent : 1;
+
+	/** If true, scrollbar is never shown, removes scroll border entirely */
+	bool bForceHideScrollbar : 1;
+
+	/** Whether to allow dragging of items */
+	bool bAllowDragging : 1;
+
+	/** Whether this asset view should allow focus on sync or not */
+	bool bAllowFocusOnSync : 1;
+
+	/** Flag set if the user is currently searching */
+	bool bUserSearching : 1;
+	
+	/** Whether or not to notify about newly selected items on on the next asset sync */
+	bool bShouldNotifyNextAssetSync : 1;
 
 	/** The current selection mode used by the asset view */
 	ESelectionMode::Type SelectionMode;
@@ -1096,18 +1128,6 @@ private:
 
 	/** Initial set of item categories that this view should show - may be adjusted further by things like CanShowClasses or legacy delegate bindings */
 	EContentBrowserItemCategoryFilter InitialCategoryFilter;
-
-	/** Whether to allow dragging of items */
-	bool bAllowDragging;
-
-	/** Whether this asset view should allow focus on sync or not */
-	bool bAllowFocusOnSync;
-
-	/** Flag set if the user is currently searching */
-	bool bUserSearching;
-	
-	/** Whether or not to notify about newly selected items on on the next asset sync */
-	bool bShouldNotifyNextAssetSync;
 
 	/** A struct to hold data for the deferred creation of a file or folder item */
 	struct FCreateDeferredItemData

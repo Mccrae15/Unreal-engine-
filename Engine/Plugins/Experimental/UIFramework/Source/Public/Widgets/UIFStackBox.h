@@ -2,16 +2,15 @@
 
 #pragma once
 
-#include "Components/SlateWrapperTypes.h"
-#include "Layout/Margin.h"
-#include "Types/SlateEnums.h"
 #include "Types/UIFSlotBase.h"
 #include "UIFWidget.h"
-#include "Widgets/Layout/Anchors.h"
 
 #include "UIFStackBox.generated.h"
 
+struct FUIFrameworkWidgetId;
+
 class UUIFrameworkStackBox;
+struct FUIFrameworkStackBoxSlotList;
 
 /**
  *
@@ -20,6 +19,9 @@ USTRUCT(BlueprintType)
 struct FUIFrameworkStackBoxSlot : public FUIFrameworkSlotBase
 {
 	GENERATED_BODY()
+
+	friend UUIFrameworkStackBox;
+	friend FUIFrameworkStackBoxSlotList;
 
 	/** Horizontal alignment of the widget inside the slot. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI Framework")
@@ -36,6 +38,11 @@ struct FUIFrameworkStackBoxSlot : public FUIFrameworkSlotBase
 	/** How much space this slot should occupy in the direction of the panel. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "UI Framework")
 	FSlateChildSize Size = FSlateChildSize(ESlateSizeRule::Automatic);
+
+private:
+	/** Index in the array the Slot is. The position in the array can change when replicated. */
+	UPROPERTY()
+	int32 Index;
 };
 
 
@@ -127,3 +134,7 @@ private:
 	UPROPERTY(Replicated)
 	FUIFrameworkStackBoxSlotList ReplicatedSlotList;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Widgets/Layout/Anchors.h"
+#endif

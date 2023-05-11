@@ -6,12 +6,8 @@
 
 
 #include "Components/SceneComponent.h"
+#include "Engine/Level.h"
 #include "EngineStats.h"
-#include "Engine/Blueprint.h"
-#include "GameFramework/Actor.h"
-#include "CollisionQueryParams.h"
-#include "WorldCollision.h"
-#include "Components/PrimitiveComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "AI/NavigationSystemBase.h"
 #include "Engine/MapBuildDataRegistry.h"
@@ -19,23 +15,21 @@
 #include "Components/BillboardComponent.h"
 #include "Engine/Texture2D.h"
 #include "ComponentReregisterContext.h"
+#include "Physics/Experimental/PhysScene_Chaos.h"
 #include "UnrealEngine.h"
-#include "Physics/PhysicsInterfaceCore.h"
 #include "Logging/MessageLog.h"
 #include "Net/UnrealNetwork.h"
 #include "ComponentUtils.h"
 #include "Framework/Notifications/NotificationManager.h"
+#include "UObject/UObjectAnnotation.h"
 #include "Widgets/Notifications/SNotificationList.h"
-#include "Components/ChildActorComponent.h"
 #include "UObject/UObjectThreadContext.h"
 #include "UObject/UE5PrivateFrostyStreamObjectVersion.h"
 #include "Engine/SCS_Node.h"
-#include "EngineGlobals.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "DeviceProfiles/DeviceProfile.h"
 #include "Net/Core/PushModel/PushModel.h"
-#include "Engine/ScopedMovementUpdate.h"
 
 #define LOCTEXT_NAMESPACE "SceneComponent"
 
@@ -2424,7 +2418,8 @@ void FSceneComponentInstanceData::ApplyToComponent(UActorComponent* Component, c
 		USceneComponent* ChildComponent = ChildComponentPair.Key;
 		// If the ChildComponent now has a "good" attach parent it was set by the transaction and it means we are undoing/redoing attachment
 		// and so the rebuilt component should not take back attachment ownership
-		if (ChildComponent && !IsValid(ChildComponent->GetAttachParent()))
+		// We don't want to do this for garbage components
+		if (IsValid(ChildComponent) && !IsValid(ChildComponent->GetAttachParent()))
 		{
 			ChildComponent->SetRelativeTransform_Direct(ChildComponentPair.Value);
 			ChildComponent->AttachToComponent(SceneComponent, FAttachmentTransformRules::KeepRelativeTransform);
@@ -3366,6 +3361,19 @@ void USceneComponent::OnRep_AttachChildren()
 			}
 		}
 	}
+
+	// It's possible AttachChildren are spawned before the AttachParent. This results in the AttachParent never being set.
+	for (USceneComponent* ChildComponent : AttachChildren)
+	{
+		if (ChildComponent)
+		{
+			if (ChildComponent->GetAttachParent() != this)
+			{
+				ChildComponent->SetAttachParent(this);
+				ChildComponent->UpdateComponentToWorld();
+			}
+		}
+	}
 }
 
 void USceneComponent::OnRep_Visibility(bool OldValue)
@@ -3482,6 +3490,11 @@ void USceneComponent::GetLifetimeReplicatedProps(TArray< FLifetimeProperty > & O
 	FDoRepLifetimeParams SharedParams;
 	SharedParams.bIsPushBased = true;
 
+	// There's an issue where the RelativeLocation might not receive a rep notify if the server is modified just after level streaming.
+	// FORT-543236
+	FDoRepLifetimeParams RelativeLocationParams = SharedParams;
+	RelativeLocationParams.RepNotifyCondition = REPNOTIFY_Always;
+
 	DOREPLIFETIME_WITH_PARAMS_FAST(USceneComponent, bAbsoluteLocation, SharedParams);
 	DOREPLIFETIME_WITH_PARAMS_FAST(USceneComponent, bAbsoluteRotation, SharedParams);
 	DOREPLIFETIME_WITH_PARAMS_FAST(USceneComponent, bAbsoluteScale, SharedParams);
@@ -3493,7 +3506,7 @@ void USceneComponent::GetLifetimeReplicatedProps(TArray< FLifetimeProperty > & O
 	DOREPLIFETIME_WITH_PARAMS_FAST(USceneComponent, AttachParent, SharedParams);
 	DOREPLIFETIME_WITH_PARAMS_FAST(USceneComponent, AttachChildren, SharedParams);
 	DOREPLIFETIME_WITH_PARAMS_FAST(USceneComponent, AttachSocketName, SharedParams);
-	DOREPLIFETIME_WITH_PARAMS_FAST(USceneComponent, RelativeLocation, SharedParams);
+	DOREPLIFETIME_WITH_PARAMS_FAST(USceneComponent, RelativeLocation, RelativeLocationParams);
 	DOREPLIFETIME_WITH_PARAMS_FAST(USceneComponent, RelativeRotation, SharedParams);
 	DOREPLIFETIME_WITH_PARAMS_FAST(USceneComponent, RelativeScale3D, SharedParams);
 	DOREPLIFETIME_WITH_PARAMS_FAST(USceneComponent, Mobility, SharedParams);

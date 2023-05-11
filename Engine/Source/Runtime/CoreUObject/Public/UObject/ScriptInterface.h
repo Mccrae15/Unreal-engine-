@@ -6,7 +6,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "UObject/UObjectGlobals.h"
 #include "Templates/Casts.h"
 #include "Templates/UnrealTemplate.h"
@@ -239,6 +238,18 @@ public:
 	}
 
 	/**
+	 * Comparison operator, taking a nullptr
+	 */
+	FORCEINLINE bool operator==(TYPE_OF_NULLPTR) const
+	{
+		return GetInterface() == nullptr;
+	}
+	FORCEINLINE bool operator!=(TYPE_OF_NULLPTR) const
+	{
+		return GetInterface() != nullptr;
+	}
+
+	/**
 	 * Member access operator.  Provides transparent access to the interface pointer contained by this TScriptInterface
 	 */
 	FORCEINLINE InterfaceType* operator->() const
@@ -287,3 +298,7 @@ public:
 		return Interface.Serialize(Ar, InterfaceType::UClassType::StaticClass());
 	}
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

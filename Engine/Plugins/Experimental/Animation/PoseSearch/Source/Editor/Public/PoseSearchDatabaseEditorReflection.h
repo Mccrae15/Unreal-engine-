@@ -3,9 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-
-#include "PoseSearch/PoseSearch.h"
-
+#include "PoseSearch/PoseSearchDatabase.h"
 #include "PoseSearchDatabaseEditorReflection.generated.h"
 
 
@@ -59,6 +57,20 @@ public:
 #endif
 };
 
+UCLASS()
+class UPoseSearchDatabaseAnimCompositeReflection : public UPoseSearchDatabaseReflectionBase
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(EditAnywhere, Category = "Selected Anim Composite")
+	FPoseSearchDatabaseAnimComposite AnimComposite;
+
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
+};
+
 USTRUCT()
 struct FPoseSearchDatabaseMemoryStats
 {
@@ -87,16 +99,68 @@ struct FPoseSearchDatabaseMemoryStats
 };
 
 UCLASS()
-class UPoseSearchDatabaseReflection : public UPoseSearchDatabaseReflectionBase
+class UPoseSearchDatabaseStatistics : public UObject
 {
 	GENERATED_BODY()
 
 public:
+	
+	// General information
+
+	UPROPERTY(VisibleAnywhere, Category = "General Information")
+	uint32 AnimationSequences;
+
+	UPROPERTY(VisibleAnywhere, Category = "General Information")
+	uint32 TotalAnimationPosesInFrames;
+
+	UPROPERTY(VisibleAnywhere, Category = "General Information")
+	FText TotalAnimationPosesInTime;
+
+	UPROPERTY(VisibleAnywhere, Category = "General Information")
+	uint32 SearchableFrames;
+
+	UPROPERTY(VisibleAnywhere, Category = "General Information")
+	FText SearchableTime;
+
+	// Velocity Information
+
+	UPROPERTY(VisibleAnywhere, Category = "Velocity Information")
+	double AverageVelocity;
+
+	UPROPERTY(VisibleAnywhere, Category = "Velocity Information")
+	double MaxVelocity;
+
+	UPROPERTY(VisibleAnywhere, Category = "Velocity Information")
+	double AverageAcceleration;
+
+	UPROPERTY(VisibleAnywhere, Category = "Velocity Information")
+	double MaxAcceleration;
+
+	// Principal Component Analysis (PCA) Information
+
+	UPROPERTY(VisibleAnywhere, Category = "Principal Component Analysis (PCA) Information")
+	float ExplainedVariance;
+
+	// Memory information
+	
+	UPROPERTY(VisibleAnywhere, Category = "Memory Information")
+	FText EstimatedDatabaseSize;
+
+	UPROPERTY(VisibleAnywhere, Category = "Memory Information")
+	FText ValuesSize;
+
+	UPROPERTY(VisibleAnywhere, Category = "Memory Information")
+	FText PCAValuesSize;
+
+	UPROPERTY(VisibleAnywhere, Category = "Memory Information")
+	FText KDTreeSize;
+
+	UPROPERTY(VisibleAnywhere, Category = "Memory Information")
+	FText PoseMetadataSize;
+	
+	UPROPERTY(VisibleAnywhere, Category = "Memory Information")
+	FText AssetsSize;
+
+	/** Initialize statistics given a database */
 	void Initialize(const UPoseSearchDatabase* PoseSearchDatabase);
-
-	UPROPERTY(VisibleAnywhere, Category = "Selected Database Search Index")
-	FPoseSearchDatabaseMemoryStats MemoryStats;
-
-	UPROPERTY(VisibleAnywhere, Category = "Selected Database Search Index")
-	FPoseSearchIndex SearchIndex;
 };

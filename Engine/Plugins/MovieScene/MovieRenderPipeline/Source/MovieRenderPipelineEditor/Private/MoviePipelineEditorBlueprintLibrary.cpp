@@ -25,7 +25,7 @@
 
 #define LOCTEXT_NAMESPACE "MoviePipelineEditorBlueprintLibrary"
 
-bool UMoviePipelineEditorBlueprintLibrary::ExportConfigToAsset(const UMoviePipelineMasterConfig* InConfig, const FString& InPackagePath, const FString& InFileName, const bool bInSaveAsset, UMoviePipelineMasterConfig*& OutAsset, FText& OutErrorReason)
+bool UMoviePipelineEditorBlueprintLibrary::ExportConfigToAsset(const UMoviePipelinePrimaryConfig* InConfig, const FString& InPackagePath, const FString& InFileName, const bool bInSaveAsset, UMoviePipelinePrimaryConfig*& OutAsset, FText& OutErrorReason)
 {
 	if(!InConfig)
 	{
@@ -46,7 +46,7 @@ bool UMoviePipelineEditorBlueprintLibrary::ExportConfigToAsset(const UMoviePipel
 	NewPackage->AddToRoot();
 	
 	// Duplicate the provided config into this package.
-	UMoviePipelineMasterConfig* NewConfig = Cast<UMoviePipelineMasterConfig>(StaticDuplicateObject(InConfig, NewPackage, FName(*InFileName), RF_NoFlags));
+	UMoviePipelinePrimaryConfig* NewConfig = Cast<UMoviePipelinePrimaryConfig>(StaticDuplicateObject(InConfig, NewPackage, FName(*InFileName), RF_NoFlags));
 	NewConfig->SetFlags(RF_Public | RF_Transactional | RF_Standalone);
 	NewConfig->MarkPackageDirty();
 
@@ -158,7 +158,7 @@ UMoviePipelineExecutorJob* UMoviePipelineEditorBlueprintLibrary::CreateJobFromSe
 
 	NewJob->Modify();
 
-	TArray<FString> AssociatedMaps = FSequencerUtilities::GetAssociatedMapPackages(InSequence);
+	TArray<FString> AssociatedMaps = FSequencerUtilities::GetAssociatedLevelSequenceMapPackages(InSequence);
 	FSoftObjectPath CurrentWorld;
 
 	UWorld* EditorWorld = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
@@ -233,11 +233,13 @@ FString UMoviePipelineEditorBlueprintLibrary::ResolveOutputDirectoryFromJob(UMov
 	// By having it swap {camera_name} and {shot_name} with an unresolvable tag, it will
 	// stay in the resolved path and can be removed using the code below.
 	static const FString DummyTag = TEXT("{dontresolvethis}");
+	const bool bGetNextVersion = false;
 	FMoviePipelineFilenameResolveParams Params;
 	Params.Job = InJob;
 	Params.ShotNameOverride = DummyTag;
 	Params.CameraNameOverride = DummyTag;
 	Params.InitializationTime = FDateTime::UtcNow();
+	Params.InitializationVersion = UMoviePipelineBlueprintLibrary::ResolveVersionNumber(Params, bGetNextVersion);
 
 	FString OutResolvedPath;
 	FMoviePipelineFormatArgs Dummy;

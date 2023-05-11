@@ -1,9 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/UserDefinedEnum.h"
+#include "Templates/SubclassOf.h"
 #include "UObject/EditorObjectVersion.h"
 #include "UObject/ObjectSaveContext.h"
 #include "CookedMetaData.h"
+#include "UObject/Package.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(UserDefinedEnum)
 
@@ -81,15 +83,6 @@ void UUserDefinedEnum::PostDuplicate(bool bDuplicateForPIE)
 void UUserDefinedEnum::PostLoad()
 {
 	Super::PostLoad();
-
-	if (GetPackage()->HasAnyPackageFlags(PKG_Cooked))
-	{
-		if (const UEnumCookedMetaData* CookedMetaData = FindCookedMetaData())
-		{
-			CookedMetaData->ApplyMetaData(this);
-			PurgeCookedMetaData();
-		}
-	}
 
 	FEnumEditorUtils::UpdateAfterPathChanged(this);
 	if (NumEnums() > 1 && DisplayNameMap.Num() == 0) // >1 because User Defined Enums always have a "MAX" entry

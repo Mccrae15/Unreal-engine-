@@ -12,6 +12,7 @@ class UNiagaraScript;
 
 namespace NiagaraValidation
 {
+	NIAGARAEDITOR_API bool HasValidationRules(UNiagaraSystem* NiagaraSystem);
 	NIAGARAEDITOR_API void ValidateAllRulesInSystem(TSharedPtr<FNiagaraSystemViewModel> ViewModel, TFunction<void(const FNiagaraValidationResult& Result)> ResultCallback);
 }
 
@@ -65,6 +66,31 @@ public:
 
 	UPROPERTY(EditAnywhere, Category = Validation)
 	TArray<TObjectPtr<UNiagaraScript>> BannedModules;
+
+	virtual void CheckValidity(const FNiagaraValidationContext& Context, TArray<FNiagaraValidationResult>& OutResults) const override;
+};
+
+/** This validation rule can ban the use of certain datainterfaces on all or a subset of platforms. */
+UCLASS(Category = "Validation", DisplayName = "Banned DataInterfaces")
+class UNiagaraValidationRule_BannedDataInterfaces : public UNiagaraValidationRule
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(EditAnywhere, Category = Validation)
+	ENiagaraValidationSeverity Severity = ENiagaraValidationSeverity::Warning;
+
+	UPROPERTY(EditAnywhere, Category = Validation)
+	bool bBanOnGpu = true;
+
+	UPROPERTY(EditAnywhere, Category = Validation)
+	bool bBanOnCpu = true;
+
+	UPROPERTY(EditAnywhere, Category = Validation)
+	FNiagaraPlatformSet Platforms;
+
+	UPROPERTY(EditAnywhere, Category = Validation)
+	TArray<TSubclassOf<UNiagaraDataInterface>> BannedDataInterfaces;
 
 	virtual void CheckValidity(const FNiagaraValidationContext& Context, TArray<FNiagaraValidationResult>& OutResults) const override;
 };
@@ -123,6 +149,10 @@ public:
 	UPROPERTY(EditAnywhere, Category = Validation)
 	bool bMaxTotalIterationsEnabled = false;
 
+	/** How do we want to repro the error in the stack */
+	UPROPERTY(EditAnywhere, Category = Validation)
+	ENiagaraValidationSeverity Severity = ENiagaraValidationSeverity::Warning;
+
 	/** Maximum number of simulation stages allowed, where 0 means no simulation stages. */
 	UPROPERTY(EditAnywhere, Category = Validation, meta=(EditCondition="bMaxSimulationStagesEnabled"))
 	int32 MaxSimulationStages = 0;
@@ -140,4 +170,30 @@ public:
 	*/
 	UPROPERTY(EditAnywhere, Category = Validation, meta = (EditCondition = "bMaxTotalIterationsEnabled"))
 	int32 MaxTotalIterations = 1;
+};
+
+/** Validation rule to check that we don't have a tick dependency we don't want.  */
+UCLASS(Category = "Validation", DisplayName = "Tick Dependency Check")
+class UNiagaraValidationRule_TickDependencyCheck : public UNiagaraValidationRule
+{
+	GENERATED_BODY()
+
+public:
+	virtual void CheckValidity(const FNiagaraValidationContext& Context, TArray<FNiagaraValidationResult>& OutResults) const override;
+
+	/** How do we want to repro the error in the stack */
+	UPROPERTY(EditAnywhere, Category = Validation)
+	ENiagaraValidationSeverity Severity = ENiagaraValidationSeverity::Info;
+
+	/** Check that the actor component interface isn't adding a tick dependency on the CPU. */
+	UPROPERTY(EditAnywhere, Category = Validation)
+	bool bCheckActorComponentInterface = true;
+
+	/** Check that the camera data interface isn't adding a tick dependency on the CPU. */
+	UPROPERTY(EditAnywhere, Category = Validation)
+	bool bCheckCameraDataInterface = true;
+
+	/** Check that the skeletal mesh interface isn't adding a tick dependency on the CPU. */
+	UPROPERTY(EditAnywhere, Category = Validation)
+	bool bCheckSkeletalMeshInterface = true;
 };

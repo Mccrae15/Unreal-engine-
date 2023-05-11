@@ -10,6 +10,7 @@
 #include "PipelineStateCache.h"
 #include "ShaderCompilerCore.h"
 #include "RenderUtils.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 IMPLEMENT_TYPE_LAYOUT(FVertexFactoryShaderParameters);
 
@@ -52,8 +53,17 @@ FVertexFactoryType* FVertexFactoryType::GetVFByName(const FHashedName& VFName)
 	return Type ? *Type : nullptr;
 }
 
+#if WITH_EDITOR
+void FVertexFactoryType::UpdateReferencedUniformBufferNames(const TMap<FString, TArray<const TCHAR*>>& ShaderFileToUniformBufferVariables)
+{
+	ReferencedUniformBufferNames.Empty();
+	GenerateReferencedUniformBufferNames(ShaderFilename, Name, ShaderFileToUniformBufferVariables, ReferencedUniformBufferNames);
+}
+#endif
+
 void FVertexFactoryType::Initialize(const TMap<FString, TArray<const TCHAR*> >& ShaderFileToUniformBufferVariables)
 {
+#if WITH_EDITOR
 	if (!FPlatformProperties::RequiresCookedData())
 	{
 		// Cache serialization history for each VF type
@@ -61,9 +71,10 @@ void FVertexFactoryType::Initialize(const TMap<FString, TArray<const TCHAR*> >& 
 		for(TLinkedList<FVertexFactoryType*>::TIterator It(FVertexFactoryType::GetTypeList()); It; It.Next())
 		{
 			FVertexFactoryType* Type = *It;
-			GenerateReferencedUniformBuffers(Type->ShaderFilename, Type->Name, ShaderFileToUniformBufferVariables, Type->ReferencedUniformBufferStructsCache);
+			Type->UpdateReferencedUniformBufferNames(ShaderFileToUniformBufferVariables);
 		}
 	}
+#endif // WITH_EDITOR
 
 	bInitializedSerializationHistory = true;
 }
@@ -81,9 +92,11 @@ FVertexFactoryType::FVertexFactoryType(
 	GetParameterTypeLayoutType InGetParameterTypeLayout,
 	GetParameterTypeElementShaderBindingsType InGetParameterTypeElementShaderBindings,
 	GetPSOPrecacheVertexFetchElementsType InGetPSOPrecacheVertexFetchElements,
-	ShouldCacheType InShouldCache,
-	ModifyCompilationEnvironmentType InModifyCompilationEnvironment,
-	ValidateCompiledResultType InValidateCompiledResult
+	ShouldCacheType InShouldCache
+#if WITH_EDITOR
+	, ModifyCompilationEnvironmentType InModifyCompilationEnvironment
+	, ValidateCompiledResultType InValidateCompiledResult
+#endif // WITH_EDITOR
 	):
 	Name(InName),
 	ShaderFilename(InShaderFilename),
@@ -95,8 +108,10 @@ FVertexFactoryType::FVertexFactoryType(
 	GetParameterTypeElementShaderBindings(InGetParameterTypeElementShaderBindings),
 	GetPSOPrecacheVertexFetchElements(InGetPSOPrecacheVertexFetchElements),
 	ShouldCacheRef(InShouldCache),
+#if WITH_EDITOR
 	ModifyCompilationEnvironmentRef(InModifyCompilationEnvironment),
 	ValidateCompiledResultRef(InValidateCompiledResult),
+#endif // WITH_EDITOR
 	GlobalListLink(this)
 {
 	// Make sure the format of the source file path is right.
@@ -105,8 +120,6 @@ FVertexFactoryType::FVertexFactoryType(
 	checkf(FPaths::GetExtension(InShaderFilename) == TEXT("ush"),
 		TEXT("Incorrect virtual shader path extension for vertex factory shader header '%s': Only .ush files should be included."),
 		InShaderFilename);
-
-	CachedUniformBufferPlatform = SP_NumPlatforms;
 
 	// This will trigger if an IMPLEMENT_VERTEX_FACTORY_TYPE was in a module not loaded before InitializeShaderTypes
 	// Vertex factory types need to be implemented in modules that are loaded before that
@@ -141,6 +154,12 @@ FVertexFactoryType::~FVertexFactoryType()
 
 	check(NumVertexFactories > 0u);
 	--NumVertexFactories;
+}
+
+bool FVertexFactoryType::CheckManualVertexFetchSupport(ERHIFeatureLevel::Type InFeatureLevel)
+{
+	check(InFeatureLevel != ERHIFeatureLevel::Num);
+	return (InFeatureLevel > ERHIFeatureLevel::ES3_1) && RHISupportsManualVertexFetch(GShaderPlatformForFeatureLevel[InFeatureLevel]);
 }
 
 /** Calculates a Hash based on this vertex factory type's source code and includes */
@@ -292,31 +311,20 @@ bool FVertexFactory::AddPrimitiveIdStreamElement(EVertexInputStreamType InputStr
 	return false;
 }
 
-FVertexElement FVertexFactory::AccessStreamComponent(const FVertexStreamComponent& Component, uint8 AttributeIndex)
+FVertexElement FVertexFactory::AccessStreamComponent(const FVertexStreamComponent& Component, uint8 AttributeIndex, EVertexInputStreamType InputStreamType)
 {
-	FVertexStream VertexStream;
-	VertexStream.VertexBuffer = Component.VertexBuffer;
-	VertexStream.Stride = Component.Stride;
-	VertexStream.Offset = Component.StreamOffset;
-	VertexStream.VertexStreamUsage = Component.VertexStreamUsage;
-
-	return FVertexElement((uint8)Streams.AddUnique(VertexStream),Component.Offset,Component.Type,AttributeIndex,VertexStream.Stride, EnumHasAnyFlags(EVertexStreamUsage::Instancing, VertexStream.VertexStreamUsage));
-}
-
-FVertexElement FVertexFactory::AccessStreamComponent(const FVertexStreamComponent& Component,uint8 AttributeIndex, EVertexInputStreamType InputStreamType)
-{
-	FVertexStream VertexStream;
-	VertexStream.VertexBuffer = Component.VertexBuffer;
-	VertexStream.Stride = Component.Stride;
-	VertexStream.Offset = Component.StreamOffset;
-	VertexStream.VertexStreamUsage = Component.VertexStreamUsage;
-
 	if (InputStreamType == EVertexInputStreamType::PositionOnly)
-		return FVertexElement((uint8)PositionStream.AddUnique(VertexStream), Component.Offset, Component.Type, AttributeIndex, VertexStream.Stride, EnumHasAnyFlags(EVertexStreamUsage::Instancing, VertexStream.VertexStreamUsage));
+	{
+		return AccessStreamComponent(Component, AttributeIndex, PositionStream);
+	}
 	else if (InputStreamType == EVertexInputStreamType::PositionAndNormalOnly)
-		return FVertexElement((uint8)PositionAndNormalStream.AddUnique(VertexStream), Component.Offset, Component.Type, AttributeIndex, VertexStream.Stride, EnumHasAnyFlags(EVertexStreamUsage::Instancing, VertexStream.VertexStreamUsage));
+	{
+		return AccessStreamComponent(Component, AttributeIndex, PositionAndNormalStream);
+	}
 	else /* (InputStreamType == EVertexInputStreamType::Default) */
-		return FVertexElement((uint8)Streams.AddUnique(VertexStream), Component.Offset, Component.Type, AttributeIndex, VertexStream.Stride, EnumHasAnyFlags(EVertexStreamUsage::Instancing, VertexStream.VertexStreamUsage));
+	{
+		return AccessStreamComponent(Component, AttributeIndex, Streams);
+	}
 }
 
 void FVertexFactory::InitDeclaration(const FVertexDeclarationElementList& Elements, EVertexInputStreamType StreamType)

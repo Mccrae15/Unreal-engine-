@@ -4,6 +4,7 @@
 #include "CoreMinimal.h"
 #include "Misc/MemStack.h"
 #include "UObject/Object.h"
+#include "UObject/ObjectSaveContext.h"
 #include "UObject/Package.h"
 #include "Algo/Find.h"
 #include "Algo/Reverse.h"
@@ -11,6 +12,7 @@
 #include "Components/ActorComponent.h"
 #include "Model.h"
 #include "Misc/ITransactionObjectAnnotation.h"
+#include "Editor.h"
 #include "Editor/Transactor.h"
 #include "Editor/TransBuffer.h"
 #include "Components/ModelComponent.h"
@@ -19,6 +21,68 @@
 #include "Engine/DataTable.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogEditorTransaction, Log, All);
+
+struct FTransactionPackageDirtyFenceCounter
+{
+public:
+	static FTransactionPackageDirtyFenceCounter Get()
+	{
+		static FTransactionPackageDirtyFenceCounter Instance;
+		return Instance;
+	}
+
+	int32 GetFenceCount(const UPackage* Pkg) const
+	{
+		return PackageFenceCounts.FindRef(Pkg);
+	}
+
+	~FTransactionPackageDirtyFenceCounter()
+	{
+		UPackage::PackageSavedWithContextEvent.RemoveAll(this);
+		FEditorDelegates::OnPackageDeleted.RemoveAll(this);
+		FCoreUObjectDelegates::GetPostGarbageCollect().RemoveAll(this);
+	}
+
+private:
+	FTransactionPackageDirtyFenceCounter()
+	{
+		UPackage::PackageSavedWithContextEvent.AddRaw(this, &FTransactionPackageDirtyFenceCounter::OnPackageSaved);
+		FEditorDelegates::OnPackageDeleted.AddRaw(this, &FTransactionPackageDirtyFenceCounter::OnPackageDeleted);
+		FCoreUObjectDelegates::GetPostGarbageCollect().AddRaw(this, &FTransactionPackageDirtyFenceCounter::OnPostGarbageCollect);
+	}
+
+	void IncrementCount(UPackage* Pkg)
+	{
+		int32& PackageSaveCount = PackageFenceCounts.FindOrAdd(Pkg);
+		++PackageSaveCount;
+	}
+
+	void OnPackageSaved(const FString& Filename, UPackage* Pkg, FObjectPostSaveContext ObjectSaveContext)
+	{
+		if (!(ObjectSaveContext.GetSaveFlags() & SAVE_FromAutosave) && !ObjectSaveContext.IsProceduralSave())
+		{
+			IncrementCount(Pkg);
+		}
+	}
+
+	void OnPackageDeleted(UPackage* Pkg)
+	{
+		IncrementCount(Pkg);
+	}
+
+	void OnPostGarbageCollect()
+	{
+		for (auto It = PackageFenceCounts.CreateIterator(); It; ++It)
+		{
+			if (!It->Key.IsValid())
+			{
+				It.RemoveCurrent();
+			}
+		}
+	}
+
+	TMap<TWeakObjectPtr<const UPackage>, int32, FDefaultSetAllocator, TWeakObjectPtrMapKeyFuncs<TWeakObjectPtr<const UPackage>, int32>> PackageFenceCounts;
+};
 
 /*-----------------------------------------------------------------------------
 	A single transaction.
@@ -80,18 +144,29 @@ FTransaction::FObjectRecord::FObjectRecord(FTransaction* Owner, UObject* InObjec
 	}
 }
 
-UE::Transaction::FDiffableObject FTransaction::FObjectRecord::GetDiffableObject(TArrayView<const FProperty*> PropertiesToSerialize) const
+UE::Transaction::FDiffableObject FTransaction::FObjectRecord::GetDiffableObject(TArrayView<const FProperty*> PropertiesToSerialize, UE::Transaction::DiffUtil::EGetDiffableObjectMode ObjectSerializationMode) const
 {
 	check(!Array);
+	check(ObjectSerializationMode != UE::Transaction::DiffUtil::EGetDiffableObjectMode::Custom);
 
 	if (UObject* CurrentObject = Object.Get())
 	{
 		UE::Transaction::DiffUtil::FGetDiffableObjectOptions ObjectOptions;
 		ObjectOptions.PropertiesToSerialize = PropertiesToSerialize;
 		ObjectOptions.ObjectSerializationMode = UE::Transaction::DiffUtil::EGetDiffableObjectMode::Custom;
-		ObjectOptions.CustomSerializer = [this](UE::Transaction::FDiffableObjectDataWriter& DiffWriter)
+		ObjectOptions.CustomSerializer = [this, ObjectSerializationMode](UE::Transaction::FDiffableObjectDataWriter& DiffWriter)
 		{
-			SerializeObject(DiffWriter);
+			if (ObjectSerializationMode == UE::Transaction::DiffUtil::EGetDiffableObjectMode::SerializeProperties)
+			{
+				if (UObject* ObjectToSerialize = Object.Get())
+				{
+					ObjectToSerialize->SerializeScriptProperties(DiffWriter);
+				}
+			}
+			else
+			{
+				SerializeObject(DiffWriter);
+			}
 		};
 
 		return UE::Transaction::DiffUtil::GetDiffableObject(CurrentObject, ObjectOptions);
@@ -380,9 +455,7 @@ void FTransaction::FObjectRecord::Snapshot( FTransaction* Owner, UE::Transaction
 		}
 
 		// Serialize the object so we can diff it
-		// Note: although it would be preferable to use SerializeScriptProperties, this cause a false diff between the first snapshot and the base object
-		// since they were serialized with different algo and we don't record enough context to make the comparison appropriately
-		UE::Transaction::FDiffableObject CurrentDiffableObject = GetDiffableObject(AllPropertiesSnapshot);
+		UE::Transaction::FDiffableObject CurrentDiffableObject = GetDiffableObject(AllPropertiesSnapshot, UE::Transaction::DiffUtil::EGetDiffableObjectMode::SerializeProperties);
 
 		// Diff against the correct serialized data depending on whether we already had a snapshot
 		const UE::Transaction::FDiffableObject& InitialDiffableObject = DiffableObjectSnapshot ? *DiffableObjectSnapshot : *DiffableObject;
@@ -478,28 +551,6 @@ bool FTransaction::IsObjectTransacting(const UObject* Object) const
 	ensure(GIsTransacting);
 	ensure(ChangedObjects.Num() != 0);
 	return ChangedObjects.Contains(Object);
-}
-
-void FTransaction::RemoveRecords( int32 Count /* = 1  */ )
-{
-	if ( Count > 0 && Records.Num() >= Count )
-	{
-		// Remove anything from the ObjectRecordMap which is about to be removed from the Records array
-		for (int32 Index = 0; Index < Count; Index++)
-		{
-			FObjectRecord& Record = Records[Records.Num() - Count + Index];
-			if (FObjectRecords* ObjectRecords = ObjectRecordsMap.Find(Record.Object))
-			{
-				ObjectRecords->Records.RemoveSingle(&Record);
-				if (ObjectRecords->Records.Num() == 0)
-				{
-					ObjectRecordsMap.Remove(Record.Object);
-				}
-			}
-		}
-
-		Records.RemoveAt( Records.Num() - Count, Count );
-	}
 }
 
 /**
@@ -615,10 +666,32 @@ void FTransaction::AddReferencedObjects( FReferenceCollector& Collector )
 	}
 }
 
+void FTransaction::SavePackage(UPackage* Package)
+{
+	check(Package);
+
+	const bool bIsTransactional = Package->HasAnyFlags(RF_Transactional);
+	const bool bIsTransient = Package->HasAnyFlags(RF_Transient);
+	const bool bIsScriptPackage = Package->HasAnyPackageFlags(PKG_ContainsScript);
+
+	if (bIsTransactional && !bIsTransient && !bIsScriptPackage)
+	{
+		UE::Transaction::FPersistentObjectRef PackageRef(Package);
+		if (!PackageRecordMap.Contains(PackageRef))
+		{
+			FPackageRecord& PackageRecord = PackageRecordMap.Add(PackageRef);
+			PackageRecord.DirtyFenceCount = FTransactionPackageDirtyFenceCounter::Get().GetFenceCount(Package);
+			PackageRecord.bWasDirty = Package->IsDirty();
+		}
+	}
+}
+
 void FTransaction::SaveObject( UObject* Object )
 {
 	check(Object);
 	Object->CheckDefaultSubobjects();
+
+	SavePackage(Object->GetPackage());
 
 	FObjectRecords* ObjectRecords = &ObjectRecordsMap.FindOrAdd(UE::Transaction::FPersistentObjectRef(Object));
 	if (ObjectRecords->Records.Num() == 0)
@@ -661,6 +734,8 @@ void FTransaction::StoreUndo(UObject* Object, TUniquePtr<FChange> UndoChange)
 {
 	check(Object);
 	Object->CheckDefaultSubobjects();
+
+	SavePackage(Object->GetPackage());
 
 	// Save the undo record
 	FObjectRecords& ObjectRecords = ObjectRecordsMap.FindOrAdd(UE::Transaction::FPersistentObjectRef(Object));
@@ -734,6 +809,29 @@ void FTransaction::Apply()
 
 	UE::Transaction::DiffUtil::FDiffableObjectArchetypeCache ArchetypeCache;
 
+	// Update the package dirty states
+	// We do this prior to applying any object updates as we want to respect if an undo operation causes an object to dirty its own package
+	if (bFlip)
+	{
+		for (TTuple<UE::Transaction::FPersistentObjectRef, FPackageRecord>& PackageRecordPair : PackageRecordMap)
+		{
+			if (UPackage* Package = Cast<UPackage>(PackageRecordPair.Key.Get()))
+			{
+				const int32 CurrentDirtyFenceCount = FTransactionPackageDirtyFenceCounter::Get().GetFenceCount(Package);
+				const bool bCurrentDirtyFlag = Package->IsDirty();
+
+				// When restoring an undo, any package that has been "fenced" since this transaction was made needs to be considered dirty
+				// since the undo may restore it to a state that no longer matches the file on disk
+				const bool bNewDirtyFlag = PackageRecordPair.Value.bWasDirty || PackageRecordPair.Value.DirtyFenceCount != CurrentDirtyFenceCount;
+				Package->SetDirtyFlag(bNewDirtyFlag);
+				
+				// Store the current state for any inverse undo/redo operation
+				PackageRecordPair.Value.DirtyFenceCount = CurrentDirtyFenceCount;
+				PackageRecordPair.Value.bWasDirty = bCurrentDirtyFlag;
+			}
+		}
+	}
+
 	// Init objects.
 	for( int32 i=Start; i!=End; i+=Inc )
 	{
@@ -788,7 +886,7 @@ void FTransaction::Apply()
 	});
 
 	TArray<ULevel*> LevelsToCommitModelSurface;
-	for (auto ChangedObjectIt : ChangedObjects)
+	for (const TTuple<UObject*, FChangedObjectValue>& ChangedObjectIt : ChangedObjects)
 	{
 		UObject* ChangedObject = ChangedObjectIt.Key;
 		UModel* Model = Cast<UModel>(ChangedObject);
@@ -902,7 +1000,7 @@ void FTransaction::Finalize()
 		return Cast<UActorComponent>(&A) != nullptr;
 	});
 
-	for (auto ChangedObjectIt : ChangedObjects)
+	for (const TTuple<UObject*, FChangedObjectValue>& ChangedObjectIt : ChangedObjects)
 	{
 		const FObjectRecord& ChangedObjectRecord = Records[ChangedObjectIt.Value.RecordIndex];
 		TSharedPtr<ITransactionObjectAnnotation> ChangedObjectTransactionAnnotation = ChangedObjectIt.Value.Annotation;		
@@ -977,11 +1075,26 @@ FTransactionDiff FTransaction::GenerateDiff() const
 				if (ObjectRecord.DeltaChange.HasChanged() || ObjectRecord.SerializedObject.ObjectAnnotation)
 				{
 					// Since this transaction is not currently in an undo operation, generate a valid Guid.
-					FGuid Guid = FGuid::NewGuid();
-					TransactionDiff.DiffMap.Emplace(FName(*TransactedObject->GetPathName()), MakeShared<FTransactionObjectEvent>(
-						this->GetId(), Guid, ETransactionObjectEventType::Finalized, ETransactionObjectChangeCreatedBy::TransactionRecord, 
-						FTransactionObjectChange{ ObjectRecord.SerializedObject.ObjectId, ObjectRecord.DeltaChange }, ObjectRecord.SerializedObject.ObjectAnnotation)
-					);
+					FGuid OperationGuid = FGuid::NewGuid();
+
+					TransactionDiff.DiffMap.Emplace(
+						FName(*TransactedObject->GetPathName()), 
+						MakeShared<FTransactionObjectEvent>(this->GetId(), OperationGuid, ETransactionObjectEventType::Finalized, ETransactionObjectChangeCreatedBy::TransactionRecord, FTransactionObjectChange{ ObjectRecord.SerializedObject.ObjectId, ObjectRecord.DeltaChange }, ObjectRecord.SerializedObject.ObjectAnnotation)
+						);
+
+					if (ObjectRecord.SerializedObjectFlip.ObjectAnnotation && ObjectRecord.SerializedObject.ObjectAnnotation)
+					{
+						TMap<UObject*, FTransactionObjectChange> AdditionalObjectChanges;
+						ObjectRecord.SerializedObjectFlip.ObjectAnnotation->ComputeAdditionalObjectChanges(ObjectRecord.SerializedObject.ObjectAnnotation.Get(), AdditionalObjectChanges);
+
+						for (const TTuple<UObject*, FTransactionObjectChange>& AdditionalObjectChangePair : AdditionalObjectChanges)
+						{
+							TransactionDiff.DiffMap.Emplace(
+								FName(*AdditionalObjectChangePair.Key->GetPathName()), 
+								MakeShared<FTransactionObjectEvent>(this->GetId(), OperationGuid, ETransactionObjectEventType::Finalized, ETransactionObjectChangeCreatedBy::TransactionAnnotation, AdditionalObjectChangePair.Value, nullptr)
+								);
+						}
+					}
 				}
 			}
 		}
@@ -1077,6 +1190,9 @@ int32 UTransBuffer::End()
 {
 	CheckState();
 	const int32 Result = ActiveCount;
+	FGuid TransactionId = FGuid();
+	bool bTransactionFinalized = false;
+
 	// Don't assert as we now purge the buffer when resetting.
 	// So, the active count could be 0, but the code path may still call end.
 	if (ActiveCount >= 1)
@@ -1099,6 +1215,8 @@ int32 UTransBuffer::End()
 				// End the current transaction.
 				GUndo->Finalize();
 				TransactionStateChangedDelegate.Broadcast(GUndo->GetContext(), ETransactionStateEventType::TransactionFinalized);
+				bTransactionFinalized = true;
+				TransactionId = GUndo->GetContext().TransactionId;
 				GUndo->EndOperation();
 
 				// Once the transaction is finalized, remove it from the undo buffer if it's flagged as transient. (i.e contains PIE objects is no-op)
@@ -1106,6 +1224,22 @@ int32 UTransBuffer::End()
 				{
 					check(UndoCount == 0);
 					UndoBuffer.Pop(false);
+					UndoBuffer.Reserve(UndoBuffer.Num() + RemovedTransactions.Num());
+
+					// Restore the transactions state to what it was before that transient (i.e. ineffective) transaction (like in the Cancel case : allows to not lose the Redo stack in case 
+					//  we had inserted a transient transaction in the middle) : 
+					if (PreviousUndoCount > 0)
+					{
+						UndoBuffer.Append(RemovedTransactions);
+					}
+					else
+					{
+						UndoBuffer.Insert(RemovedTransactions, 0);
+					}
+
+					RemovedTransactions.Reset();
+					UndoCount = PreviousUndoCount;
+
 					UndoBufferChangedDelegate.Broadcast();
 				}
 			}
@@ -1114,6 +1248,12 @@ int32 UTransBuffer::End()
 			RemovedTransactions.Reset();
 		}
 		ActiveRecordCounts.Pop();
+		if (bTransactionFinalized)
+		{
+			FTransactionContext Context;
+			Context.TransactionId = TransactionId;
+			TransactionStateChangedDelegate.Broadcast(Context, ETransactionStateEventType::PostTransactionFinalized);
+		}
 		CheckState();
 	}
 	return Result;
@@ -1150,6 +1290,7 @@ void UTransBuffer::Reset( const FText& Reason )
 		ResetReason = Reason;
 		ActiveCount = 0;
 		ActiveRecordCounts.Empty();
+		ClearUndoBarriers();
 		UndoBufferChangedDelegate.Broadcast();
 
 		CheckState();
@@ -1350,6 +1491,16 @@ void UTransBuffer::ClearUndoBarriers()
 	UndoBarrierStack.Empty();
 }
 
+int32 UTransBuffer::GetCurrentUndoBarrier() const
+{
+	if (UndoBarrierStack.Num() > 0)
+	{
+		return UndoBarrierStack.Last();
+	}
+
+	return INDEX_NONE;
+}
+
 
 bool UTransBuffer::Undo(bool bCanRedo)
 {
@@ -1361,6 +1512,8 @@ bool UTransBuffer::Undo(bool bCanRedo)
 
 		return false;
 	}
+
+	TRACE_CPUPROFILER_EVENT_SCOPE(UTransBuffer::Undo);
 
 	// Apply the undo changes.
 	GIsTransacting = true;
@@ -1426,6 +1579,8 @@ bool UTransBuffer::Redo()
 
 		return false;
 	}
+
+	TRACE_CPUPROFILER_EVENT_SCOPE(UTransBuffer::Redo);
 
 	// Apply the redo changes.
 	GIsTransacting = true;

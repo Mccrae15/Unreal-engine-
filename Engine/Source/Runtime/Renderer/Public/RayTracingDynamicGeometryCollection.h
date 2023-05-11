@@ -4,6 +4,13 @@
 
 #if RHI_RAYTRACING
 
+#include "RHI.h"
+
+class FPrimitiveSceneProxy;
+class FScene;
+class FSceneView;
+struct FRayTracingDynamicGeometryUpdateParams;
+
 class RENDERER_API FRayTracingDynamicGeometryCollection
 {
 public:
@@ -14,7 +21,7 @@ public:
 		const FScene* Scene, 
 		const FSceneView* View, 
 		const FPrimitiveSceneProxy* PrimitiveSceneProxy, 
-		FRayTracingDynamicGeometryUpdateParams Params,
+		const FRayTracingDynamicGeometryUpdateParams& Params,
 		uint32 PrimitiveId 
 	);
 
@@ -22,6 +29,10 @@ public:
 	int64 BeginUpdate();
 	void DispatchUpdates(FRHICommandListImmediate& ParentCmdList, FRHIBuffer* ScratchBuffer);
 	void EndUpdate(FRHICommandListImmediate& RHICmdList);
+
+	// Clears the working arrays to not hold any references.
+	// Needs to be called every frame when ray tracing is enabled or once when ray tracing mode has changed.
+	void Clear();
 
 	uint32 ComputeScratchBufferSize();
 

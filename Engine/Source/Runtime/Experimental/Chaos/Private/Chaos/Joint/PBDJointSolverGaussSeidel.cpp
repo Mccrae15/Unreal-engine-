@@ -28,16 +28,6 @@ namespace Chaos
 	//
 	//
 
-	FPBDJointSolver::FPBDJointSolver()
-	{
-		if (bChaos_Joint_ISPC_Enabled)
-		{
-#if INTEL_ISPC
-			check(sizeof(FPBDJointSolver) == ispc::SizeofFPBDJointSolver()); 
-#endif
-		}
-	}
-
 	void FPBDJointSolver::InitDerivedState()
 	{
 		InitConnectorXs[0] = X(0) + R(0) * LocalConnectorXs[0].GetTranslation();
@@ -101,10 +91,23 @@ namespace Chaos
 		// \todo(chaos): joint should support parent/child in either order
 		SolverBodies[0].SetInvMScale(JointSettings.ParentInvMassScale);
 		SolverBodies[1].SetInvMScale(FReal(1));
+		SolverBodies[0].SetInvIScale(JointSettings.ParentInvMassScale);
+		SolverBodies[1].SetInvIScale(FReal(1));
+		SolverBodies[0].SetShockPropagationScale(FReal(1));
+		SolverBodies[1].SetShockPropagationScale(FReal(1));
 
+		// Set the mass and inertia.
+		// If enabled, adjust the mass so that we limit the maximum mass and inertia ratios
 		InvMScales[0] = FReal(1);
 		InvMScales[1] = FReal(1);
-		FPBDJointUtilities::ConditionInverseMassAndInertia(Body0().InvM(), Body1().InvM(), Body0().InvILocal(), Body1().InvILocal(), SolverSettings.MinParentMassRatio, SolverSettings.MaxInertiaRatio, ConditionedInvMs[0], ConditionedInvMs[1], ConditionedInvILs[0], ConditionedInvILs[1]);
+		ConditionedInvMs[0] = Body0().InvM();
+		ConditionedInvMs[1] = Body1().InvM();
+		ConditionedInvILs[0] = Body0().InvILocal();
+		ConditionedInvILs[1] = Body1().InvILocal();
+		if (JointSettings.bMassConditioningEnabled)
+		{
+			FPBDJointUtilities::ConditionInverseMassAndInertia(Body0().InvM(), Body1().InvM(), Body0().InvILocal(), Body1().InvILocal(), SolverSettings.MinParentMassRatio, SolverSettings.MaxInertiaRatio, ConditionedInvMs[0], ConditionedInvMs[1], ConditionedInvILs[0], ConditionedInvILs[1]);
+		}
 		UpdateMass0();
 		UpdateMass1();
 
@@ -129,6 +132,7 @@ namespace Chaos
 		AngleTolerance = ToleranceScale * SolverSettings.AngleTolerance;
 
 		SolverStiffness = 1.0f;
+		bIsBroken = false;
 
 		LinearHardLambda = FVec3(0);
 		AngularHardLambda = FVec3(0);
@@ -198,7 +202,7 @@ namespace Chaos
 		}
 	}
 
-	void FPBDJointSolver::SetShockPropagationScales(const FReal InvMScale0, const FReal InvMScale1)
+	void FPBDJointSolver::SetShockPropagationScales(const FReal InvMScale0, const FReal InvMScale1, const FReal Dt)
 	{
 		if (InvMScales[0] != InvMScale0)
 		{
@@ -365,7 +369,8 @@ namespace Chaos
 	void FPBDJointSolver::ApplyProjections(
 		const FReal Dt,
 		const FPBDJointSolverSettings& SolverSettings,
-		const FPBDJointSettings& JointSettings)
+		const FPBDJointSettings& JointSettings,
+		const bool bLastIteration)
 	{
 		// @todo(chaos): We need to handle parent/child being the other way round
 		if (!IsDynamic(1))
@@ -392,22 +397,25 @@ namespace Chaos
 		}
 
 		// Final position fixup
-		const TVec3<EJointMotionType>& LinearMotion = JointSettings.LinearMotionTypes;
-		const bool bLinearLocked = (LinearMotion[0] == EJointMotionType::Locked) && (LinearMotion[1] == EJointMotionType::Locked) && (LinearMotion[2] == EJointMotionType::Locked);
-		if (bLinearLocked)
+		if (bLastIteration)
 		{
-			const FReal LinearProjection = FPBDJointUtilities::GetLinearProjection(SolverSettings, JointSettings);
-			const bool bLinearSoft = FPBDJointUtilities::GetSoftLinearLimitEnabled(SolverSettings, JointSettings);
-			const bool bLinearProjectionEnabled = (!bLinearSoft && JointSettings.bProjectionEnabled);
-			if (bLinearProjectionEnabled && (LinearProjection > 0))
+			const TVec3<EJointMotionType>& LinearMotion = JointSettings.LinearMotionTypes;
+			const bool bLinearLocked = (LinearMotion[0] == EJointMotionType::Locked) && (LinearMotion[1] == EJointMotionType::Locked) && (LinearMotion[2] == EJointMotionType::Locked);
+			if (bLinearLocked)
 			{
-				ApplyTranslateProjection(Dt, SolverSettings, JointSettings, LinearProjection, DP1, DR1);
-			}
+				const FReal LinearProjection = FPBDJointUtilities::GetLinearProjection(SolverSettings, JointSettings);
+				const bool bLinearSoft = FPBDJointUtilities::GetSoftLinearLimitEnabled(SolverSettings, JointSettings);
+				const bool bLinearProjectionEnabled = (!bLinearSoft && JointSettings.bProjectionEnabled);
+				if (bLinearProjectionEnabled && (LinearProjection > 0))
+				{
+					ApplyTranslateProjection(Dt, SolverSettings, JointSettings, LinearProjection, DP1, DR1);
+				}
 
-			// Add velocity correction from the net projection motion
-			if (Chaos_Joint_VelProjectionAlpha > 0.0f)
-			{
-				ApplyVelocityProjection(Dt, SolverSettings, JointSettings, Chaos_Joint_VelProjectionAlpha, DP1, DR1);
+				// Add velocity correction from the net projection motion
+				if (Chaos_Joint_VelProjectionAlpha > 0.0f)
+				{
+					ApplyVelocityProjection(Dt, SolverSettings, JointSettings, Chaos_Joint_VelProjectionAlpha, DP1, DR1);
+				}
 			}
 		}
 	}
@@ -1782,7 +1790,7 @@ namespace Chaos
 		const FReal AngularTwistDriveDamping = FPBDJointUtilities::GetAngularTwistDriveDamping(SolverSettings, JointSettings);
 		const FReal AngularSwingDriveStiffness = FPBDJointUtilities::GetAngularSwingDriveStiffness(SolverSettings, JointSettings);
 		const FReal AngularSwingDriveDamping = FPBDJointUtilities::GetAngularSwingDriveDamping(SolverSettings, JointSettings);
-		const bool bAccelerationMode = FPBDJointUtilities::GetDriveAccelerationMode(SolverSettings, JointSettings);
+		const bool bAccelerationMode = FPBDJointUtilities::GetAngularDriveAccelerationMode(SolverSettings, JointSettings);
 
 		const bool bUseTwistDrive = bTwistDriveEnabled && (((FMath::Abs(DTwistAngle) > AngleTolerance) && (AngularTwistDriveStiffness > 0.0f)) || (AngularTwistDriveDamping > 0.0f));
 		if (bUseTwistDrive)
@@ -1819,7 +1827,7 @@ namespace Chaos
 	{
 		const FReal AngularDriveStiffness = FPBDJointUtilities::GetAngularSLerpDriveStiffness(SolverSettings, JointSettings);
 		const FReal AngularDriveDamping = FPBDJointUtilities::GetAngularSLerpDriveDamping(SolverSettings, JointSettings);
-		const bool bAccelerationMode = FPBDJointUtilities::GetDriveAccelerationMode(SolverSettings, JointSettings);
+		const bool bAccelerationMode = FPBDJointUtilities::GetAngularDriveAccelerationMode(SolverSettings, JointSettings);
 
 		const FRotation3 R01 = ConnectorRs[0].Inverse() * ConnectorRs[1];
 		FRotation3 TargetAngPos = JointSettings.AngularDrivePositionTarget;
@@ -2086,7 +2094,7 @@ namespace Chaos
 	{
 		const FReal JointStiffness = FPBDJointUtilities::GetLinearDriveStiffness(SolverSettings, JointSettings, AxisIndex);
 		const FReal JointDamping = FPBDJointUtilities::GetLinearDriveDamping(SolverSettings, JointSettings, AxisIndex);
-		const bool bAccelerationMode = FPBDJointUtilities::GetDriveAccelerationMode(SolverSettings, JointSettings);
+		const bool bAccelerationMode = FPBDJointUtilities::GetLinearDriveAccelerationMode(SolverSettings, JointSettings);
 
 		if ((FMath::Abs(DeltaPos) > PositionTolerance) || (JointDamping > 0.0f))
 		{

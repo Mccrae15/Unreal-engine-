@@ -191,7 +191,16 @@ FText UK2Node_Event::GetTooltipText() const
 				);
 				// FText::Format() is slow, so we cache this to save on performance
 				CachedTooltip.SetCachedText(FText::Format(LOCTEXT("Event_SubtitledTooltip", "{FunctionTooltip}\n\n{ClientString}"), Args), this);
-			}			
+			}
+			else if (Function->HasMetaData(FBlueprintMetadata::MD_Latent))
+			{
+				Args.Add(
+					TEXT("LatentString"),
+					NSLOCTEXT("K2Node", "LatentFunction", "Latent. This node will complete at a later time. Latent nodes can only be placed in event graphs.")
+				);
+				// FText::Format() is slow, so we cache this to save on performance
+				CachedTooltip.SetCachedText(FText::Format(LOCTEXT("CallFunction_SubtitledTooltip", "{DefaultTooltip}\n\n{LatentString}"), Args), this);
+			}
 		}		
 	}
 
@@ -746,6 +755,10 @@ FName UK2Node_Event::GetCornerIcon() const
 			{
 				return TEXT("Graph.Replication.AuthorityOnly");
 			}
+			else if (Function->HasMetaData(FBlueprintMetadata::MD_Latent))
+			{
+				return TEXT("Graph.Latent.LatentIcon");
+			}
 		}
 	}
 
@@ -778,6 +791,10 @@ FText UK2Node_Event::GetToolTipHeading() const
 			else if(Function->HasAllFunctionFlags(FUNC_BlueprintAuthorityOnly))
 			{
 				EventHeading = LOCTEXT("ServerOnlyEvent", "Server Only");
+			}
+			else if (Function->HasMetaData(FBlueprintMetadata::MD_Latent))
+			{
+				EventHeading = LOCTEXT("LatentEvent", "Latent");
 			}
 		}
 	}
@@ -884,14 +901,22 @@ FSlateIcon UK2Node_Event::GetIconAndTint(FLinearColor& OutColor) const
 
 FString UK2Node_Event::GetFindReferenceSearchString() const
 {
-	FString FunctionName = EventReference.GetMemberName().ToString(); // If we fail to find the function, still want to search for its expected name.
-
-	if (UFunction* Function = EventReference.ResolveMember<UFunction>(GetBlueprintClassFromNode()))
+	// Behavior modeled after UK2Node_Event::GetNodeTitle but without "Event" prepended
+	if (bOverrideFunction || (CustomFunctionName == NAME_None))
 	{
-		FunctionName = UEdGraphSchema_K2::GetFriendlySignatureName(Function).ToString();
-	}
+		FString FunctionName = EventReference.GetMemberName().ToString(); // If we fail to find the function, still want to search for its expected name.
 
-	return FunctionName;
+		if (const UFunction* Function = EventReference.ResolveMember<UFunction>(GetBlueprintClassFromNode()))
+		{
+			FunctionName = UEdGraphSchema_K2::GetFriendlySignatureName(Function).ToString();
+		}
+
+		return FunctionName;
+	}
+	else
+	{
+		return CustomFunctionName.ToString();
+	}
 }
 
 void UK2Node_Event::FindDiffs(UEdGraphNode* OtherNode, struct FDiffResults& Results)

@@ -75,9 +75,11 @@ public:
 	*/
 	FObjectInitializer& TopInitializerChecked()
 	{
-		FObjectInitializer* ObjectInitializerPtr = TopInitializer();
-		UE_CLOG(!ObjectInitializerPtr, LogUObjectThreadContext, Fatal, TEXT("Tried to get the current ObjectInitializer, but none is set. Please use NewObject to construct new UObject-derived classes."));
-		return *ObjectInitializerPtr;
+		if (FObjectInitializer* ObjectInitializerPtr = TopInitializer())
+		{
+			return *ObjectInitializerPtr;
+		}
+		return ReportNull();
 	}
 
 	/** true when we are routing ConditionalPostLoad/PostLoad to objects										*/
@@ -92,10 +94,8 @@ public:
 	UObject* ConstructedObject;
 	/** Async Package currently processing objects */
 	void* AsyncPackage;
-#if WITH_IOSTORE_IN_EDITOR
 	/** Async package loader currently processing objects */
 	IAsyncPackageLoader* AsyncPackageLoader;
-#endif
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	/** Stack to ensure that PostInitProperties is routed through Super:: calls. **/
@@ -115,6 +115,9 @@ public:
 	}
 
 private:
+	/** Report that the current ObjectInitializer is null. */
+	FObjectInitializer& ReportNull();
+
 	/** Current serialization context */
 	TRefCountPtr<FUObjectSerializeContext> SerializeContext;
 };

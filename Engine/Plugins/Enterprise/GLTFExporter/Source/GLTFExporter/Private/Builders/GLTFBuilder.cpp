@@ -1,7 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Builders/GLTFBuilder.h"
-#include "Converters/GLTFMeshUtility.h"
+#include "Converters/GLTFMeshUtilities.h"
+#include "Misc/Paths.h"
 #include "UserData/GLTFMaterialUserData.h"
 
 FGLTFBuilder::FGLTFBuilder(const FString& FileName, const UGLTFExportOptions* ExportOptions)
@@ -75,38 +76,18 @@ TextureAddress FGLTFBuilder::GetBakeTilingForMaterialProperty(const UMaterialInt
 	return UGLTFMaterialExportOptions::GetBakeTilingForPropertyGroup(Material, PropertyGroup, DefaultValue);
 }
 
-EGLTFJsonHDREncoding FGLTFBuilder::GetTextureHDREncoding() const
-{
-	switch (ExportOptions->TextureHDREncoding)
-	{
-		case EGLTFTextureHDREncoding::None: return EGLTFJsonHDREncoding::None;
-		case EGLTFTextureHDREncoding::RGBM: return EGLTFJsonHDREncoding::RGBM;
-		// TODO: add more encodings (like RGBE) when viewer supports them
-		default:
-			checkNoEntry();
-			return EGLTFJsonHDREncoding::None;
-	}
-}
-
-bool FGLTFBuilder::ShouldExportLight(EComponentMobility::Type LightMobility) const
-{
-	const EGLTFSceneMobility AllowedMobility = static_cast<EGLTFSceneMobility>(ExportOptions->ExportLights);
-	const EGLTFSceneMobility QueriedMobility = GetSceneMobility(LightMobility);
-	return EnumHasAllFlags(AllowedMobility, QueriedMobility);
-}
-
 int32 FGLTFBuilder::SanitizeLOD(const UStaticMesh* StaticMesh, const UStaticMeshComponent* StaticMeshComponent, int32 LODIndex) const
 {
 	return LODIndex > 0
-		? FMath::Min(LODIndex, FGLTFMeshUtility::GetMaximumLOD(StaticMesh))
-		: FGLTFMeshUtility::GetLOD(StaticMesh, StaticMeshComponent, ExportOptions->DefaultLevelOfDetail);
+		? FMath::Min(LODIndex, FGLTFMeshUtilities::GetMaximumLOD(StaticMesh))
+		: FGLTFMeshUtilities::GetLOD(StaticMesh, StaticMeshComponent, ExportOptions->DefaultLevelOfDetail);
 }
 
 int32 FGLTFBuilder::SanitizeLOD(const USkeletalMesh* SkeletalMesh, const USkeletalMeshComponent* SkeletalMeshComponent, int32 LODIndex) const
 {
 	return LODIndex > 0
-		? FMath::Min(LODIndex, FGLTFMeshUtility::GetMaximumLOD(SkeletalMesh))
-		: FGLTFMeshUtility::GetLOD(SkeletalMesh, SkeletalMeshComponent, ExportOptions->DefaultLevelOfDetail);
+		? FMath::Min(LODIndex, FGLTFMeshUtilities::GetMaximumLOD(SkeletalMesh))
+		: FGLTFMeshUtilities::GetLOD(SkeletalMesh, SkeletalMeshComponent, ExportOptions->DefaultLevelOfDetail);
 }
 
 const UGLTFExportOptions* FGLTFBuilder::SanitizeExportOptions(const UGLTFExportOptions* Options)
@@ -131,17 +112,4 @@ const UGLTFExportOptions* FGLTFBuilder::SanitizeExportOptions(const UGLTFExportO
 	}
 
 	return Options;
-}
-
-EGLTFSceneMobility FGLTFBuilder::GetSceneMobility(EComponentMobility::Type Mobility)
-{
-	switch (Mobility)
-	{
-		case EComponentMobility::Static:     return EGLTFSceneMobility::Static;
-		case EComponentMobility::Stationary: return EGLTFSceneMobility::Stationary;
-		case EComponentMobility::Movable:    return EGLTFSceneMobility::Movable;
-		default:
-			checkNoEntry();
-			return EGLTFSceneMobility::None;
-	}
 }

@@ -44,8 +44,7 @@ BEGIN_SHADER_PARAMETER_STRUCT(FPostProcessMaterialParameters, )
 	SHADER_PARAMETER_STRUCT(FScreenPassTextureViewportParameters, PostProcessOutput)
 	SHADER_PARAMETER_STRUCT_ARRAY(FScreenPassTextureInput, PostProcessInput, [kPostProcessMaterialInputCountMax])
 	SHADER_PARAMETER_SAMPLER(SamplerState, PostProcessInput_BilinearSampler)
-	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, EyeAdaptationTexture)
-	SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<float4>, EyeAdaptationBuffer)
+	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, EyeAdaptationBuffer)
 	SHADER_PARAMETER(uint32, bMetalMSAAHDRDecode)
 	SHADER_PARAMETER(uint32, bSceneDepthWithoutWaterTextureAvailable)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneDepthWithoutSingleLayerWaterTexture)
@@ -53,6 +52,8 @@ BEGIN_SHADER_PARAMETER_STRUCT(FPostProcessMaterialParameters, )
 	SHADER_PARAMETER(FVector4f, SceneWithoutSingleLayerWaterMinMaxUV)
 	SHADER_PARAMETER(FVector2f, SceneWithoutSingleLayerWaterTextureSize)
 	SHADER_PARAMETER(FVector2f, SceneWithoutSingleLayerWaterInvTextureSize)
+	SHADER_PARAMETER(uint32, ManualStencilReferenceValue)
+	SHADER_PARAMETER(uint32, ManualStencilTestMask)
 	RENDER_TARGET_BINDING_SLOTS()
 END_SHADER_PARAMETER_STRUCT()
 
@@ -103,7 +104,10 @@ struct FPostProcessMaterialInputs
 	/** The output texture format to use if a new texture is created. Uses the input format if left unknown. */
 	EPixelFormat OutputFormat = PF_Unknown;
 
-	/** Custom stencil texture used for stencil operations. */
+	/** Whether or not the stencil test must be done in the pixel shader rather than rasterizer state. */
+	bool bManualStencilTest = false;
+
+	/** Custom depth/stencil used for stencil operations. */
 	FRDGTextureRef CustomDepthTexture = nullptr;
 
 	/** The uniform buffer containing all scene textures. */

@@ -1,12 +1,22 @@
 @echo off
 setlocal
 
+rem Note that for OpenEXR v3.1.5, we've apply the following patch to the
+rem OpenEXR source:
+rem     openexr_v3.1.5_PR_1268_OSS_Fuzz.patch
+rem Issues in the OpenEXR source were identified by OSS Fuzz that have been
+rem addressed in the development branch but not yet incorporated into an
+rem official release, so we apply the patch in the meantime to bring in those
+rem fixes. See the OpenEXR pull request for more detail:
+rem     https://github.com/AcademySoftwareFoundation/openexr/pull/1268/files
 set OPENEXR_VERSION=3.1.5
+
+if [%1]==[] goto usage
 
 rem Set as VS2015 for backwards compatibility even though VS2019 is used
 rem when building.
 set COMPILER_VERSION_NAME=VS2015
-set ARCH_NAME=x64
+set ARCH_NAME=%1
 
 set UE_THIRD_PARTY_LOCATION=%cd%\..
 set IMATH_CMAKE_LOCATION=%UE_THIRD_PARTY_LOCATION%\Imath\Deploy\Imath-3.1.3\%COMPILER_VERSION_NAME%\%ARCH_NAME%\lib\cmake\Imath
@@ -28,7 +38,7 @@ set INSTALL_LIB_DIR=%COMPILER_VERSION_NAME%\%ARCH_NAME%\lib
 
 set INSTALL_LOCATION=%UE_MODULE_LOCATION%\Deploy\openexr-%OPENEXR_VERSION%
 set INSTALL_INCLUDE_LOCATION=%INSTALL_LOCATION%\%INSTALL_INCLUDEDIR%
-set INSTALL_WIN_LOCATION=%INSTALL_LOCATION%\%COMPILER_VERSION_NAME%
+set INSTALL_WIN_LOCATION=%INSTALL_LOCATION%\%COMPILER_VERSION_NAME%\%ARCH_NAME%
 
 if exist %BUILD_LOCATION% (
     rmdir %BUILD_LOCATION% /S /Q)
@@ -41,7 +51,8 @@ mkdir %BUILD_LOCATION%
 pushd %BUILD_LOCATION%
 
 echo Configuring build for OpenEXR version %OPENEXR_VERSION%...
-cmake -G "Visual Studio 16 2019" %SOURCE_LOCATION%^
+cmake -G "Visual Studio 17 2022" %SOURCE_LOCATION%^
+    -A %ARCH_NAME%^
     -DCMAKE_INSTALL_PREFIX="%INSTALL_LOCATION%"^
     -DCMAKE_PREFIX_PATH="%IMATH_CMAKE_LOCATION%"^
     -DZLIB_INCLUDE_DIR="%ZLIB_INCLUDE_LOCATION%"^
@@ -75,5 +86,10 @@ if %errorlevel% neq 0 exit /B %errorlevel%
 popd
 
 echo Done.
+exit /B 0
+
+:usage
+echo Arch: x64 or ARM64
+exit /B 1
 
 endlocal

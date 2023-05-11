@@ -3,7 +3,6 @@
 #pragma once
 
 #include "HAL/PlatformMath.h"
-#include "MuR/MemoryPrivate.h"
 #include "MuR/Operations.h"
 #include "MuR/Ptr.h"
 #include "MuT/AST.h"
@@ -11,7 +10,7 @@
 
 namespace mu
 {
-struct PROGRAM;
+struct FProgram;
 
 
 	//---------------------------------------------------------------------------------------------
@@ -43,7 +42,7 @@ struct PROGRAM;
 		bool IsEqual(const ASTOp& otherUntyped) const override;
 		Ptr<ASTOp> Clone(MapChildFuncRef mapChild) const override;
 		void Assert() override;
-		void Link(PROGRAM& program, const FLinkerOptions* Options) override;
+		void Link(FProgram& program, const FLinkerOptions* Options) override;
 
 	};
 

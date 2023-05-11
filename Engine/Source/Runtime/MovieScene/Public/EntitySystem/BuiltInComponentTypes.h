@@ -23,11 +23,21 @@
 #include "BuiltInComponentTypes.generated.h"
 
 class IMovieSceneEvaluationHook;
-namespace UE { namespace MovieScene { struct FCustomPropertyIndex; } }
-namespace UE { namespace MovieScene { struct FInitialValueIndex; } }
-namespace UE { namespace MovieScene { struct FInstanceHandle; } }
-namespace UE { namespace MovieScene { struct FInterrogationKey; } }
-namespace UE { namespace MovieScene { struct FRootInstanceHandle; } }
+
+namespace UE::MovieScene
+{
+	struct FCustomPropertyIndex;
+	struct FInitialValueIndex;
+	struct FInstanceHandle;
+	struct FInterrogationKey;
+	struct FInterrogationInstance;
+	struct FRootInstanceHandle;
+	namespace Interpolation
+	{
+		struct FCachedInterpolation;
+	}
+}
+
 struct FFrameTime;
 struct FMovieSceneBlendChannelID;
 struct FMovieSceneSequenceID;
@@ -172,11 +182,6 @@ struct FSourceFloatChannel
 	const FMovieSceneFloatChannel* Source;
 };
 
-struct FSourceFloatChannelFlags
-{
-	bool bNeedsEvaluate = true;
-};
-
 /**
  * The component data for evaluation a double channel
  */
@@ -191,11 +196,6 @@ struct FSourceDoubleChannel
 	{}
 
 	const FMovieSceneDoubleChannel* Source;
-};
-
-struct FSourceDoubleChannelFlags
-{
-	bool bNeedsEvaluate = true;
 };
 
 struct FEvaluationHookFlags
@@ -244,7 +244,11 @@ public:
 
 	TComponentTypeID<FRootInstanceHandle> RootInstanceHandle;
 
+	TComponentTypeID<FMovieSceneSequenceID> SequenceID;
+
 	TComponentTypeID<FFrameTime>          EvalTime;
+
+	TComponentTypeID<double>              EvalSeconds;
 
 public:
 
@@ -280,6 +284,9 @@ public:
 	// A byte representing the output of a byte or enum track or channel
 	TComponentTypeID<uint8> ByteResult;
 
+	// A byte representing the base value for the byte channel for the purposes of "additive from base" blending.
+	TComponentTypeID<uint8> BaseByte;
+
 	// An FMovieSceneIntegerChannel
 	TComponentTypeID<FSourceIntegerChannel> IntegerChannel;
 
@@ -294,15 +301,16 @@ public:
 
 	// An FMovieSceneFloatChannel considered to be at index N within the source structure (ie 0 = Location.X, Vector.X, Color.R; 1 = Location.Y, Vector.Y, Color.G)
 	TComponentTypeID<FSourceFloatChannel> FloatChannel[9];
-	TComponentTypeID<FSourceFloatChannelFlags> FloatChannelFlags[9];
 
 	// An FMovieSceneDoubleChannel considered to be at index N within the source structure (ie 0 = Location.X, Vector.X; 1 = Location.Y, Vector.Y)
 	TComponentTypeID<FSourceDoubleChannel> DoubleChannel[9];
-	TComponentTypeID<FSourceDoubleChannelFlags> DoubleChannelFlags[9];
+
+	// A cached interpolation structure relating to either float channels or double channels
+	TComponentTypeID<Interpolation::FCachedInterpolation> CachedInterpolation[9];
 
 	// An FMovieSceneFloatChannel that represents an arbitrary weight
 	TComponentTypeID<FSourceFloatChannel> WeightChannel;
-	TComponentTypeID<FSourceFloatChannelFlags> WeightChannelFlags;
+	TComponentTypeID<Interpolation::FCachedInterpolation> CachedWeightChannelInterpolation;
 
 	// FMovieSceneObjectPathChannel that represents a changing object path over time
 	TComponentTypeID<FSourceObjectPathChannel> ObjectPathChannel;
@@ -313,11 +321,13 @@ public:
 	// A double representing the base value for the double channel at index N, for the purposes of "additive from base" blending.
 	TComponentTypeID<double> BaseDouble[9];
 
-	// The time at which to evaluate a base value, such as BaseFloat[] or BaseDouble[].
+	// The time (in frames or in seconds) at which to evaluate a base value, such as BaseFloat[] or BaseDouble[].
 	TComponentTypeID<FFrameTime> BaseValueEvalTime;
+	TComponentTypeID<double> BaseValueEvalSeconds;
 
 	// A float representing the evaluated output of a weight channel
 	TComponentTypeID<double> WeightResult;
+	TComponentTypeID<double> EasingResult;
 
 	// The result of an evaluated FMovieSceneObjectPathChannel
 	TComponentTypeID<UObject*> ObjectResult;
@@ -380,7 +390,10 @@ public:
 		FComponentTypeID MigratedFromFastPath;
 
 		FComponentTypeID ImportedEntity;
-		FComponentTypeID Master;
+
+		FComponentTypeID SubInstance;
+
+		FComponentTypeID Root;
 
 		FComponentTypeID FixedTime;
 
@@ -391,11 +404,16 @@ public:
 
 		FComponentTypeID Ignored;
 
+		FComponentTypeID AlwaysCacheInitialValue;
+
+		FComponentTypeID DontOptimizeConstants;
+
 	} Tags;
 
 	struct
 	{
 		TComponentTypeID<FInterrogationKey> InputKey;
+		TComponentTypeID<FInterrogationInstance> Instance;
 		TComponentTypeID<FInterrogationKey> OutputKey;
 	} Interrogation;
 

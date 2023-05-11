@@ -10,11 +10,12 @@
 #include "MoviePipelineBlueprintLibrary.h"
 #include "Sections/MovieSceneCinematicShotSection.h"
 #include "MoviePipelineQueue.h"
-#include "MoviePipelineMasterConfig.h"
+#include "MoviePipelinePrimaryConfig.h"
 #include "MoviePipelineQueueSubsystem.h"
 
 // Slate Includes
 #include "Widgets/SBoxPanel.h"
+#include "Widgets/Input/SComboBox.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SButton.h"
@@ -38,6 +39,7 @@
 #include "Editor.h"
 #include "PropertyEditorModule.h"
 #include "IDetailsView.h"
+#include "Misc/MessageDialog.h"
 #include "Modules/ModuleManager.h"
 
 // UnrealEd Includes
@@ -51,7 +53,7 @@
 
 #define LOCTEXT_NAMESPACE "SMoviePipelineQueuePanel"
 
-PRAGMA_DISABLE_OPTIMIZATION
+UE_DISABLE_OPTIMIZATION_SHIP
 void SMoviePipelineQueuePanel::Construct(const FArguments& InArgs)
 {
 	FPropertyEditorModule& PropertyEditorModule = FModuleManager::Get().LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
@@ -156,7 +158,7 @@ void SMoviePipelineQueuePanel::Construct(const FArguments& InArgs)
 						.Padding(0, 1, 0, 0)
 						[
 							SNew(STextBlock)
-							.Text(LOCTEXT("SavedQueueToolbarButton", "Load/Save Queue"))
+							.Text(this, &SMoviePipelineQueuePanel::GetQueueMenuButtonText)
 						]
 					]
 				]
@@ -256,7 +258,7 @@ void SMoviePipelineQueuePanel::Construct(const FArguments& InArgs)
 	];
 }
 
-PRAGMA_ENABLE_OPTIMIZATION
+UE_ENABLE_OPTIMIZATION_SHIP
 
 FReply SMoviePipelineQueuePanel::OnRenderLocalRequested()
 {
@@ -371,7 +373,7 @@ void SMoviePipelineQueuePanel::OnEditJobConfigRequested(TWeakObjectPtr<UMoviePip
 	}
 	else
 	{
-		ConfigType = UMoviePipelineMasterConfig::StaticClass();
+		ConfigType = UMoviePipelinePrimaryConfig::StaticClass();
 		BasePreset = InJob->GetPresetOrigin();
 		BaseConfig = InJob->GetConfiguration();
 	}
@@ -422,9 +424,9 @@ void SMoviePipelineQueuePanel::OnConfigUpdatedForJob(TWeakObjectPtr<UMoviePipeli
 		}
 		else
 		{
-			if (UMoviePipelineMasterConfig* MasterConfig = Cast<UMoviePipelineMasterConfig>(InConfig))
+			if (UMoviePipelinePrimaryConfig* PrimaryConfig = Cast<UMoviePipelinePrimaryConfig>(InConfig))
 			{
-				InJob->SetConfiguration(MasterConfig);
+				InJob->SetConfiguration(PrimaryConfig);
 			}
 		}
 	}
@@ -445,9 +447,9 @@ void SMoviePipelineQueuePanel::OnConfigUpdatedForJobToPreset(TWeakObjectPtr<UMov
 		}
 		else
 		{
-			if (UMoviePipelineMasterConfig* MasterConfig = Cast<UMoviePipelineMasterConfig>(InConfig))
+			if (UMoviePipelinePrimaryConfig* PrimaryConfig = Cast<UMoviePipelinePrimaryConfig>(InConfig))
 			{
-				InJob->SetPresetOrigin(MasterConfig);
+				InJob->SetPresetOrigin(PrimaryConfig);
 			}
 		}
 	}
@@ -499,10 +501,39 @@ TSharedRef<SWidget> SMoviePipelineQueuePanel::OnGenerateSavedQueuesMenu()
 
 	IContentBrowserSingleton& ContentBrowser = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser").Get();
 
+	static const FText NoLoadedQueueText = LOCTEXT("NoLoadedQueue", "None");
+	static const FText LoadedQueueFormatText = LOCTEXT("CurrentQueueFormat", "Current Queue: {0}");
+	const FString QueueName = GetQueueOriginName();
+	const FText LoadedQueueName = FText::Format(
+		LoadedQueueFormatText, !QueueName.IsEmpty() ? FText::FromString(QueueName) : NoLoadedQueueText);
+
 	MenuBuilder.AddMenuEntry(
-		LOCTEXT("SaveAsQueue_Text", "Save As Asset"),
-		LOCTEXT("SaveAsQueue_Tip", "Save the current configuration as a new preset that can be shared between multiple jobs, or imported later as the base of a new configuration."),
+		LoadedQueueName,
+		LoadedQueueName,
+		FSlateIcon(),
+		FUIAction(
+			FExecuteAction(),
+			FCanExecuteAction::CreateLambda([]() { return false; })),
+		NAME_None,
+		EUserInterfaceActionType::None
+	);
+
+	MenuBuilder.AddMenuSeparator();
+	
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("SaveQueue_Text", "Save Queue"),
+		LOCTEXT("SaveQueue_Tip", "Save the current configuration in its existing preset which can be shared between multiple jobs, or imported later as the base of a new configuration."),
 		FSlateIcon(FAppStyle::Get().GetStyleSetName(), "AssetEditor.SaveAsset"),
+		FUIAction(
+			FExecuteAction::CreateSP(this, &SMoviePipelineQueuePanel::OnSaveAsset),
+			FCanExecuteAction::CreateSP(this, &SMoviePipelineQueuePanel::IsQueueDirty)
+		)
+	);
+	
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("SaveAsQueue_Text", "Save Queue As"),
+		LOCTEXT("SaveAsQueue_Tip", "Save the current configuration as a new preset that can be shared between multiple jobs, or imported later as the base of a new configuration."),
+		FSlateIcon(FAppStyle::Get().GetStyleSetName(), "AssetEditor.SaveAssetAs"),
 		FUIAction(FExecuteAction::CreateSP(this, &SMoviePipelineQueuePanel::OnSaveAsAsset))
 	);
 
@@ -523,10 +554,10 @@ TSharedRef<SWidget> SMoviePipelineQueuePanel::OnGenerateSavedQueuesMenu()
 		AssetPickerConfig.AssetShowWarningText = LOCTEXT("NoQueueAssets_Warning", "No Queues Found");
 		AssetPickerConfig.Filter.ClassPaths.Add(UMoviePipelineQueue::StaticClass()->GetClassPathName());
 		AssetPickerConfig.Filter.bRecursiveClasses = true;
-		AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateSP(this, &SMoviePipelineQueuePanel::OnImportSavedQueueAssest);
+		AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateSP(this, &SMoviePipelineQueuePanel::OnImportSavedQueueAsset);
 	}
 
-	MenuBuilder.BeginSection(NAME_None, LOCTEXT("LoadQueue_MenuSection", "Load Queue"));
+	MenuBuilder.BeginSection(NAME_None, LOCTEXT("LoadQueue_MenuSection", "Import Queue"));
 	{
 		TSharedRef<SWidget> PresetPicker = SNew(SBox)
 			.MinDesiredWidth(400.f)
@@ -540,6 +571,19 @@ TSharedRef<SWidget> SMoviePipelineQueuePanel::OnGenerateSavedQueuesMenu()
 	MenuBuilder.EndSection();
 
 	return MenuBuilder.MakeWidget();
+}
+
+FText SMoviePipelineQueuePanel::GetQueueMenuButtonText() const
+{
+	const FString QueueName = GetQueueOriginName();
+	if (!QueueName.IsEmpty())
+	{
+		return FText::Format(FText::FromString(TEXT("{0}{1}")),
+			FText::FromString(QueueName),
+			FText::FromString(IsQueueDirty() ? TEXT(" *") : TEXT("")));
+	}
+	
+	return LOCTEXT("QueueSaveMenuUnsavedConfig_Text", "Unsaved Queue *");
 }
 
 bool SMoviePipelineQueuePanel::OpenSaveDialog(const FString& InDefaultPath, const FString& InNewNameSuggestion, FString& OutPackageName)
@@ -615,6 +659,20 @@ bool SMoviePipelineQueuePanel::GetSavePresetPackageName(const FString& InExistin
 	return true;
 }
 
+void SMoviePipelineQueuePanel::OnSaveAsset()
+{
+	UMoviePipelineQueue* QueueOrigin = GetQueueOrigin();
+	
+	// If the queue origin is not known, then treat the "Save" as a "Save As"
+	if (!QueueOrigin)
+	{
+		OnSaveAsAsset();
+		return;
+	}
+	
+	SaveTransientQueueToAsset(QueueOrigin);
+}
+
 void SMoviePipelineQueuePanel::OnSaveAsAsset()
 {
 	UMoviePipelineQueueSubsystem* Subsystem = GEditor->GetEditorSubsystem<UMoviePipelineQueueSubsystem>();
@@ -633,28 +691,66 @@ void SMoviePipelineQueuePanel::OnSaveAsAsset()
 	NewPackage->MarkAsFullyLoaded();
 	UMoviePipelineQueue* DuplicateQueue = DuplicateObject<UMoviePipelineQueue>(CurrentQueue, NewPackage, *NewAssetName);
 
-	if (DuplicateQueue)
+	SaveTransientQueueToAsset(DuplicateQueue);
+}
+
+void SMoviePipelineQueuePanel::SaveTransientQueueToAsset(UMoviePipelineQueue* DestinationQueue) const
+{
+	if (!DestinationQueue)
 	{
-		DuplicateQueue->SetFlags(RF_Public | RF_Standalone | RF_Transactional);
+		return;
+	}
 
-		FAssetRegistryModule::AssetCreated(DuplicateQueue);
+	UMoviePipelineQueueSubsystem* Subsystem = GEditor->GetEditorSubsystem<UMoviePipelineQueueSubsystem>();
+	check(Subsystem);
+	UMoviePipelineQueue* CurrentQueue = Subsystem->GetQueue();
 
-		FEditorFileUtils::EPromptReturnCode PromptReturnCode = FEditorFileUtils::PromptForCheckoutAndSave({ NewPackage }, false, false);
+	DestinationQueue->CopyFrom(CurrentQueue);
+	DestinationQueue->SetQueueOrigin(nullptr);
+	DestinationQueue->MarkPackageDirty();
+	DestinationQueue->SetFlags(RF_Public | RF_Standalone | RF_Transactional);
+
+	FAssetRegistryModule::AssetCreated(DestinationQueue);
+
+	const bool bCheckDirty = false;
+	const bool bPromptToSave = false;
+	FEditorFileUtils::EPromptReturnCode PromptReturnCode = FEditorFileUtils::PromptForCheckoutAndSave({ DestinationQueue->GetPackage() }, bCheckDirty, bPromptToSave);
+	if (PromptReturnCode == FEditorFileUtils::EPromptReturnCode::PR_Success)
+	{
+		LoadQueue(DestinationQueue);
 	}
 }
 
-void SMoviePipelineQueuePanel::OnImportSavedQueueAssest(const FAssetData& InPresetAsset)
+void SMoviePipelineQueuePanel::OnImportSavedQueueAsset(const FAssetData& InPresetAsset) const
 {
 	FSlateApplication::Get().DismissAllMenus();
 
+	if (IsQueueDirty())
+	{
+		const FText TitleText = LOCTEXT("UnsavedQueueWarningTitle", "Unsaved Changes to Queue");
+		const FText MessageText = LOCTEXT("UnsavedQueueWarningMessage", "The changes made to the current queue will be lost by importing another queue. Do you want to continue with this import?");
+
+		if (FMessageDialog::Open(EAppMsgType::YesNo, MessageText, &TitleText) == EAppReturnType::No)
+		{
+			return;
+		}
+	}
+
 	UMoviePipelineQueue* SavedQueue = CastChecked<UMoviePipelineQueue>(InPresetAsset.GetAsset());
+	LoadQueue(SavedQueue);
+}
+
+void SMoviePipelineQueuePanel::LoadQueue(UMoviePipelineQueue* SavedQueue) const
+{
 	if (SavedQueue)
 	{
-		// Duplicate the queue so we don't start modifying the one in the asset.
 		UMoviePipelineQueueSubsystem* Subsystem = GEditor->GetEditorSubsystem<UMoviePipelineQueueSubsystem>();
 		check(Subsystem);
 
-		Subsystem->GetQueue()->CopyFrom(SavedQueue);
+		UMoviePipelineQueue* CurrentQueue = Subsystem->GetQueue();
+		CurrentQueue->CopyFrom(SavedQueue);
+		CurrentQueue->SetQueueOrigin(SavedQueue);
+		CurrentQueue->SetIsDirty(false);
 
 		// Update the shot list in case the stored queue being copied is out of date with the sequence
 		for (UMoviePipelineExecutorJob* Job : Subsystem->GetQueue()->GetJobs())
@@ -685,6 +781,48 @@ void SMoviePipelineQueuePanel::OnImportSavedQueueAssest(const FAssetData& InPres
 		// around to OnSelectionChanged to update ourself.
 		PipelineQueueEditorWidget->SetSelectedJobs(Jobs);
 	}
+}
+
+bool SMoviePipelineQueuePanel::IsQueueDirty() const
+{
+	UMoviePipelineQueueSubsystem* Subsystem = GEditor->GetEditorSubsystem<UMoviePipelineQueueSubsystem>();
+	check(Subsystem);
+
+	const UMoviePipelineQueue* Queue = Subsystem->GetQueue();
+
+	// The queue is considered dirty if the current queue has no origin (ie, it has never been saved) or it has been
+	// modified since it was loaded
+	return !GetQueueOrigin() || (Queue && Queue->IsDirty());
+}
+
+UMoviePipelineQueue* SMoviePipelineQueuePanel::GetQueueOrigin() const
+{
+	UMoviePipelineQueueSubsystem* Subsystem = GEditor->GetEditorSubsystem<UMoviePipelineQueueSubsystem>();
+	check(Subsystem);
+
+	const UMoviePipelineQueue* Queue = Subsystem->GetQueue();
+
+	return Queue ? Queue->GetQueueOrigin() : nullptr;
+}
+
+FString SMoviePipelineQueuePanel::GetQueueOriginName() const
+{
+	const UMoviePipelineQueue* QueueOrigin = GetQueueOrigin();
+	if (!QueueOrigin)
+	{
+		return FString();
+	}
+
+	if (const UPackage* Package = QueueOrigin->GetPackage())
+	{
+		FString OutPackageRoot, OutPackagePath, OutPackageName;
+		if (FPackageName::SplitLongPackageName(Package->GetName(), OutPackageRoot, OutPackagePath, OutPackageName))
+		{
+			return OutPackageName;
+		}
+	}
+
+	return FString();
 }
 
 #undef LOCTEXT_NAMESPACE // SMoviePipelineQueuePanel

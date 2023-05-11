@@ -2,13 +2,12 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Subsystems/EngineSubsystem.h"
-#include "GameFeaturePluginOperationResult.h"
 #include "Engine/Engine.h"
 #include "GameFeatureTypesFwd.h"
 
 #include "GameFeaturesSubsystem.generated.h"
+
+namespace UE::GameFeatures { struct FResult; }
 
 class UGameFeaturePluginStateMachine;
 class IGameFeatureStateChangeObserver;
@@ -191,6 +190,7 @@ enum class EGameFeatureTargetState : uint8
 	Count	UMETA(Hidden)
 };
 const FString GAMEFEATURES_API LexToString(const EGameFeatureTargetState GameFeatureTargetState);
+void GAMEFEATURES_API LexFromString(EGameFeatureTargetState& Value, const TCHAR* StringIn);
 
 struct FGameFeaturePluginDetails
 {
@@ -217,22 +217,24 @@ struct FGameFeaturePluginIdentifier
 {
 	GENERATED_BODY()
 
-	/** The protocol used in the URL for this GameFeaturePlugin URL */
-	EGameFeaturePluginProtocol PluginProtocol;
-
 	FGameFeaturePluginIdentifier() = default;
-	FGameFeaturePluginIdentifier(const FString& PluginURL);
+	FGameFeaturePluginIdentifier(FString PluginURL);
 
 	/** Used to determine if 2 FGameFeaturePluginIdentifiers are referencing the same GameFeaturePlugin.
 		Only matching on Identifying information instead of all the optional bundle information */
 	bool operator==(const FGameFeaturePluginIdentifier& Other) const;
 
 	/** Function that fills out IdentifyingURLSubset from the given PluginURL */
-	void FromPluginURL(const FString& PluginURL);
+	void FromPluginURL(FString PluginURL);
 
 	/** Returns true if this FGameFeaturePluginIdentifier exactly matches the given PluginURL.
 		To match exactly all information in the PluginURL has to match and not just the IdentifyingURLSubset */
 	bool ExactMatchesURL(const FString& PluginURL) const;
+
+	const EGameFeaturePluginProtocol GetPluginProtocol() const { return PluginProtocol; }
+
+	/** Returns the Identifying information used for this Plugin. It is a subset of the URL used to create it.*/
+	const FStringView GetIdentifyingString() const { return IdentifyingURLSubset; }
 
 	/** Get the Full PluginURL used to originally construct this identifier */
 	const FString& GetFullPluginURL() const { return PluginURL; }
@@ -243,8 +245,11 @@ struct FGameFeaturePluginIdentifier
 	}
 
 private:
+	/** The protocol used in the URL for this GameFeaturePlugin URL */
+	EGameFeaturePluginProtocol PluginProtocol;
+
 	/** The part of the URL that can be used to uniquely identify this plugin without any transient data */
-	FString IdentifyingURLSubset;
+	FStringView IdentifyingURLSubset;
 
 	/** Full PluginURL used to originally construct this identifier */
 	FString PluginURL;
@@ -482,7 +487,11 @@ public:
 	void FilterInactivePluginAssets(TArray<FAssetData>& AssetsToFilter) const;
 
 	/** Returns the current state of the state machine for the specified plugin URL */
-	EGameFeaturePluginState GetPluginState(const FString& PluginURL);
+	EGameFeaturePluginState GetPluginState(const FString& PluginURL) const;
+
+	/** Returns the current state of the state machine for the specified plugin PluginIdentifier */
+	EGameFeaturePluginState GetPluginState(FGameFeaturePluginIdentifier PluginIdentifier) const;
+
 
 	/** Determine the initial feature state for a built-in plugin */
 	static EBuiltInAutoState DetermineBuiltInInitialFeatureState(TSharedPtr<FJsonObject> Descriptor, const FString& ErrorContext);
@@ -542,6 +551,9 @@ private:
 	/** Gets the state machine associated with the specified URL */
 	UGameFeaturePluginStateMachine* FindGameFeaturePluginStateMachine(const FString& PluginURL) const;
 
+	/** Gets the state machine associated with the specified PluginIdentifier */
+	UGameFeaturePluginStateMachine* FindGameFeaturePluginStateMachine(FGameFeaturePluginIdentifier PluginIdentifier) const;
+
 	/** Gets the state machine associated with the specified URL, creates it if it doesnt exist */
 	UGameFeaturePluginStateMachine* FindOrCreateGameFeaturePluginStateMachine(const FString& PluginURL);
 
@@ -594,6 +606,15 @@ private:
 
 	TMap<FString, FString> GameFeaturePluginNameToPathMap;
 
+	struct FCachedGameFeaturePluginDetails
+	{
+		FGameFeaturePluginDetails Details;
+		FDateTime TimeStamp;
+		FCachedGameFeaturePluginDetails() {}
+		FCachedGameFeaturePluginDetails(const FGameFeaturePluginDetails& InDetails, const FDateTime& InTimeStamp) : Details(InDetails), TimeStamp(InTimeStamp) {}
+	};
+	mutable TMap<FString, FCachedGameFeaturePluginDetails> CachedPluginDetailsByFilename;
+
 	UPROPERTY()
 	TArray<TObjectPtr<UObject>> Observers;
 
@@ -602,3 +623,8 @@ private:
 
 	bool bInitializedPolicyManager = false;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "GameFeaturePluginOperationResult.h"
+#endif

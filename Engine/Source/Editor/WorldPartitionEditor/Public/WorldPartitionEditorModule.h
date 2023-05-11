@@ -60,6 +60,12 @@ public:
 	virtual void SetDisablePIE(bool bInDisablePIE) override;
 
 	/**
+	 * Returns if bugit command in the editor is disabled or not.
+	 */
+	virtual bool GetDisableBugIt() const override;
+	virtual void SetDisableBugIt(bool bInDisableBugIt) override;
+
+	/**
 	 * Convert the specified map to a world partition map.
 	 */
 	virtual bool ConvertMap(const FString& InLongPackageName) override;
@@ -72,17 +78,32 @@ public:
 	/** Return the world added event. */
 	virtual FWorldPartitionCreated& OnWorldPartitionCreated() override { return WorldPartitionCreatedEvent; }
 
+	/** Return the commandlet pre-execution event */
+	virtual FOnPreExecuteCommandlet& OnPreExecuteCommandlet() override { return OnPreExecuteCommandletEvent; }
+
 	/** Return the commandlet execution event */
 	virtual FOnExecuteCommandlet& OnExecuteCommandlet() override { return OnExecuteCommandletEvent; }
+
+	/** Return the commandlet post-execution event */
+	virtual FOnPostExecuteCommandlet& OnPostExecuteCommandlet() override { return OnPostExecuteCommandletEvent; }
+
 
 	/**
 	 * Creates a Content Bundle Browser widget
 	 */
 	TSharedRef<class SWidget> CreateContentBundleBrowser();
-private:
-	/** Called when the level editors map changes. We will determine if the new map is a valid world partition world and close world partition tabs if not */
-	void OnMapChanged(uint32 MapFlags);
 
+	/**
+	 * Returns if there's a content bundle in editing mode.
+	 */
+	bool IsEditingContentBundle() const;
+
+	/**
+	 * Returns if the content bundle is in editing mode.
+	 */
+	bool IsEditingContentBundle(const FGuid& ContentBundleGuid) const;
+
+private:
 	/** Register menus */
 	void RegisterMenus();
 
@@ -119,5 +140,7 @@ private:
 
 	FWorldPartitionCreated WorldPartitionCreatedEvent;
 
+	FOnPreExecuteCommandlet OnPreExecuteCommandletEvent;
 	FOnExecuteCommandlet OnExecuteCommandletEvent;
+	FOnPostExecuteCommandlet OnPostExecuteCommandletEvent;
 };

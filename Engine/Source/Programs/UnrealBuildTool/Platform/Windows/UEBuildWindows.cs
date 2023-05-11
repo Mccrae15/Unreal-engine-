@@ -14,6 +14,35 @@ using Microsoft.Extensions.Logging;
 
 namespace UnrealBuildTool
 {
+	partial struct UnrealArch
+	{
+		/// <summary>
+		/// Version of Arm64 that can interop with X64 (Emulation Compatible)
+		/// </summary>
+		public static UnrealArch Arm64ec = FindOrAddByName("arm64ec", bIsX64: false);
+
+
+		private static Dictionary<UnrealArch, string> WindowsToolchainArchitectures = new()
+		{
+			{ UnrealArch.Arm64,         "arm64" },
+			{ UnrealArch.Arm64ec,       "arm64" },
+			{ UnrealArch.X64,           "x64" },
+		};
+
+		/// <summary>
+		/// Windows-specific low level name for the generic platforms
+		/// </summary>
+		public string WindowsName
+		{
+			get
+			{
+				if (WindowsToolchainArchitectures.ContainsKey(this)) return WindowsToolchainArchitectures[this];
+				throw new BuildException($"Unknown architecture {ToString()} passed to UnrealArch.WindowsName");
+			}
+		}
+
+	}
+
 	/// <summary>
 	/// Available compiler toolchains on Windows platform
 	/// </summary>
@@ -130,21 +159,6 @@ namespace UnrealBuildTool
 	}
 
 	/// <summary>
-	/// Available architectures on Windows platform
-	/// </summary>
-	public enum WindowsArchitecture
-	{
-		/// <summary>
-		/// x64
-		/// </summary>
-		x64,
-		/// <summary>
-		/// ARM64
-		/// </summary>
-		ARM64,
-	}
-
-	/// <summary>
 	/// Windows-specific target settings
 	/// </summary>
 	public class WindowsTargetRules
@@ -172,12 +186,12 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Architecture of Target.
 		/// </summary>
-		public WindowsArchitecture Architecture
+		public UnrealArch Architecture
 		{
 			get;
 			internal set;
 		}
-		= WindowsArchitecture.x64;
+		= UnrealArch.X64;
 
 		/// <summary>
 		/// The specific toolchain version to use. This may be a specific version number (for example, "14.13.26128"), the string "Latest" to select the newest available version, or
@@ -189,6 +203,14 @@ namespace UnrealBuildTool
 		[CommandLine("-CompilerVersion")]
 		public string? CompilerVersion = null;
 
+		/// <summary>
+		/// True if we should use the Clang linker (LLD) when we are compiling with Clang, or Intel linker (xilink\xilib) when we are compiling with Intel oneAPI, otherwise we use the MSVC linker.
+		/// </summary>
+		[ConfigFile(ConfigHierarchyType.Engine, "/Script/WindowsTargetPlatform.WindowsTargetSettings", "bAllowClangLinker")]
+		[XmlConfigFile(Category = "WindowsPlatform")]
+		[CommandLine("-ClangLinker")]
+		public bool bAllowClangLinker = false;
+		
 		/// <summary>
 		/// The specific Windows SDK version to use. This may be a specific version number (for example, "8.1", "10.0" or "10.0.10150.0"), or the string "Latest", to select the newest available version.
 		/// By default, and if it is available, we use the Windows SDK version indicated by WindowsPlatform.DefaultWindowsSdkVersion (otherwise, we use the latest version).
@@ -298,7 +320,7 @@ namespace UnrealBuildTool
 		[RequiresUniqueBuildEnvironment]
 		[XmlConfigFile(Category = "WindowsPlatform")]
 		[CommandLine("-UpdatedCPPMacro")]
-		public bool bUpdatedCPPMacro = false;
+		public bool bUpdatedCPPMacro = true;
 
 		/// <summary>
 		/// Enables inline conformance (Remove unreferenced COMDAT) (/Zc:inline).
@@ -390,6 +412,14 @@ namespace UnrealBuildTool
 		/// Whether to put global symbols in their own sections (/Gw), allowing the linker to discard any that are unused.
 		/// </summary>
 		public bool bOptimizeGlobalData = true;
+
+		/// <summary>
+		/// If specified along with -PGOProfile, then /FASTGENPROFILE will be used instead of /GENPROFILE. 
+		/// This usually means that the PGO data is generated faster, but the resulting data may not yield as efficient optimizations during -PGOOptimize
+		/// </summary>
+		[XmlConfigFile(Category = "WindowsPlatform")]
+		[CommandLine("-PGOFastGen")]
+		public bool bUseFastGenProfile = false;
 
 		/// <summary>
 		/// (Experimental) Appends the -ftime-trace argument to the command line for Clang to output a JSON file containing a timeline for the compile. 
@@ -522,7 +552,12 @@ namespace UnrealBuildTool
 		{
 			this.Target = Target;
 
-			ManifestFile = FileReference.Combine(Unreal.EngineDirectory, "Build", "Windows", "Resources", String.Format("Default-{0}.manifest", Target.Platform)).FullName;
+			string Platform = Target.Platform.ToString();
+			if (Target.Platform== UnrealTargetPlatform.Win64 && !Target.Architecture.bIsX64)
+			{
+				Platform += "-arm64";
+			}
+			ManifestFile = FileReference.Combine(Unreal.EngineDirectory, "Build", "Windows", "Resources", String.Format("Default-{0}.manifest", Platform)).FullName;
 		}
 	}
 
@@ -557,7 +592,7 @@ namespace UnrealBuildTool
 			get { return Inner.Compiler; }
 		}
 		
-		public WindowsArchitecture Architecture
+		public UnrealArch Architecture
 		{
 			get { return Inner.Architecture; }
 		}
@@ -590,6 +625,11 @@ namespace UnrealBuildTool
 		public bool bUseCPPWinRT
 		{
 			get { return Inner.bUseCPPWinRT; }
+		}
+
+		public bool bAllowClangLinker
+		{
+			get { return Inner.bAllowClangLinker; }
 		}
 
 		public bool bEnableRayTracing
@@ -714,6 +754,11 @@ namespace UnrealBuildTool
 			get { return Inner.bOptimizeGlobalData; }
 		}
 
+		public bool bUseFastGenProfile
+		{
+			get { return Inner.bUseFastGenProfile; }
+		}
+
 		public bool bClangTimeTrace
 		{
 			get { return Inner.bClangTimeTrace; }
@@ -779,11 +824,6 @@ namespace UnrealBuildTool
 			get { return Inner.IDEDir; }
 		}
 
-		public string GetArchitectureSubpath()
-		{
-			return WindowsExports.GetArchitectureSubpath(Architecture);
-		}
-
 		#pragma warning restore CS1591
 		#endregion
 	}
@@ -832,18 +872,30 @@ namespace UnrealBuildTool
 		}
 	}
 
-	class WindowsPlatform : UEBuildPlatform
+	class WindowsArchitectureConfig : UnrealArchitectureConfig
 	{
-		/// <summary>
-		/// True if we should use the Clang linker (LLD) when we are compiling with Clang, otherwise we use the MSVC linker
-		/// </summary>
-		public static readonly bool bAllowClangLinker = false;
+		public WindowsArchitectureConfig()
+			: base(UnrealArchitectureMode.OneTargetPerArchitecture, new[] { UnrealArch.X64, UnrealArch.Arm64, UnrealArch.Arm64ec})
+		{
 
-		/// <summary>
-		/// True if we should use the Intel linker (xilink\xilib) when we are compiling with Intel oneAPI, otherwise we use the MSVC linker
-		/// </summary>
-		public static readonly bool bAllowIntelLinker = true;
-		
+		}
+
+		public override UnrealArchitectures ActiveArchitectures(FileReference? ProjectFile, string? TargetName)
+		{
+			// for now alwways ocmpile X64 unless overridden on commandline
+			return new UnrealArchitectures(UnrealArch.X64);
+		}
+
+		public override bool RequiresArchitectureFilenames(UnrealArchitectures Architectures)
+		{
+			return Architectures.SingleArchitecture != UnrealArch.X64;
+		}
+
+
+	}
+
+	class WindowsPlatform : UEBuildPlatform
+	{		
 		MicrosoftPlatformSDK SDK;
 
 		/// <summary>
@@ -853,11 +905,22 @@ namespace UnrealBuildTool
 		/// <param name="InSDK">The installed Windows SDK</param>
 		/// <param name="InLogger">Logger instance</param>
 		public WindowsPlatform(UnrealTargetPlatform InPlatform, MicrosoftPlatformSDK InSDK, ILogger InLogger)
-			: base(InPlatform, InSDK, InLogger)
+			: this(InPlatform, InSDK, new WindowsArchitectureConfig(), InLogger)
+		{
+		}
+
+		/// <summary>
+		/// Constructor that takes an archConfig (for use by subclasses)
+		/// </summary>
+		/// <param name="InPlatform">Creates a windows platform with the given enum value</param>
+		/// <param name="InSDK">The installed Windows SDK</param>
+		/// <param name="ArchConfig">Achitecture configuration</param>
+		/// <param name="InLogger">Logger instance</param>
+		public WindowsPlatform(UnrealTargetPlatform InPlatform, MicrosoftPlatformSDK InSDK, UnrealArchitectureConfig ArchConfig, ILogger InLogger)
+			: base(InPlatform, InSDK, ArchConfig, InLogger)
 		{
 			SDK = InSDK;
 		}
-
 		/// <summary>
 		/// Reset a target's settings to the default
 		/// </summary>
@@ -875,7 +938,7 @@ namespace UnrealBuildTool
 		[SupportedOSPlatform("windows")]
 		protected virtual VCEnvironment CreateVCEnvironment(TargetRules Target)
 		{
-			return VCEnvironment.Create(Target.WindowsPlatform.Compiler, Target.WindowsPlatform.ToolChain, Platform, Target.WindowsPlatform.Architecture, Target.WindowsPlatform.CompilerVersion, Target.WindowsPlatform.WindowsSdkVersion, null, Target.WindowsPlatform.bUseCPPWinRT, Logger);
+			return VCEnvironment.Create(Target.WindowsPlatform.Compiler, Target.WindowsPlatform.ToolChain, Platform, Target.WindowsPlatform.Architecture, Target.WindowsPlatform.CompilerVersion, Target.WindowsPlatform.WindowsSdkVersion, null, Target.WindowsPlatform.bUseCPPWinRT, Target.WindowsPlatform.bAllowClangLinker, Logger);
 		}
 
 		/// <summary>
@@ -886,12 +949,25 @@ namespace UnrealBuildTool
 		{
 			if (Platform == UnrealTargetPlatform.Win64)
 			{
-				Target.WindowsPlatform.Architecture = WindowsArchitecture.x64;
+				Target.WindowsPlatform.Architecture = Target.Architecture;// == UnrealArch.Default ? UnrealArch.X64 : Target.Architecture;
+
+				// Add names of plugins here that are incompatible with arm64
+				bool bCompilingForArm = !Target.Architecture.bIsX64;
+				if (bCompilingForArm && Target.Name != "UnrealHeaderTool")
+				{
+					Target.DisablePlugins.AddRange(new string[]
+					{
+						"OpenImageDenoise"
+					});
+					
+					// VTune does not support ARM
+					Target.GlobalDefinitions.Add("UE_EXTERNAL_PROFILING_ENABLED=0");
+				}
 			}
 
 			// Disable Simplygon support if compiling against the NULL RHI.
 			if (Target.GlobalDefinitions.Contains("USE_NULL_RHI=1"))
-			{				
+			{
 				Target.bCompileCEF3 = false;
 			}
 			
@@ -899,7 +975,10 @@ namespace UnrealBuildTool
 			// as normal.
 			if (Target.StaticAnalyzer == StaticAnalyzer.Clang)
 			{
-				Target.WindowsPlatform.Compiler = WindowsCompiler.Clang;
+				if (!Target.WindowsPlatform.Compiler.IsClang())
+				{
+					Target.WindowsPlatform.Compiler = WindowsCompiler.Clang;
+				}
 				Target.StaticAnalyzer = StaticAnalyzer.Default;
 			}
 			else if (Target.StaticAnalyzer != StaticAnalyzer.None && 
@@ -926,13 +1005,6 @@ namespace UnrealBuildTool
 			{
 				Target.bUsePCHFiles = false;
 			}
-			
-			// @todo: Override PCH settings
-			if (Target.WindowsPlatform.Compiler == WindowsCompiler.Intel)
-			{
-				Target.bUseSharedPCHs = false;
-				Target.bUsePCHFiles = false;
-			}
 
 			// E&C support.
 			if (Target.bSupportEditAndContinue || Target.bAdaptiveUnityEnablesEditAndContinue)
@@ -951,6 +1023,11 @@ namespace UnrealBuildTool
 			}
 
 			Target.bCompileISPC = true;
+
+			if (Platform == UnrealTargetPlatform.Win64 && !Target.Architecture.bIsX64)
+			{
+				Target.bCompileISPC = false; // The version of ISPC we currently use does not support Windows Aarch64
+			}
 
 			// Initialize the VC environment for the target, and set all the version numbers to the concrete values we chose
 			Target.WindowsPlatform.Environment = CreateVCEnvironment(Target);
@@ -989,20 +1066,20 @@ namespace UnrealBuildTool
 		/// Gets the default compiler which should be used, if it's not set explicitly by the target, command line, or config file.
 		/// </summary>
 		/// <returns>The default compiler version</returns>
-		internal static WindowsCompiler GetDefaultCompiler(FileReference? ProjectFile, WindowsArchitecture Architecture, ILogger Logger)
+		internal static WindowsCompiler GetDefaultCompiler(FileReference? ProjectFile, UnrealArch Architecture, ILogger Logger, bool bSkipWarning=false)
 		{
 			// If there's no specific compiler set, try to pick the matching compiler for the selected IDE
 			if (ProjectFileGeneratorSettings.Format != null)
 			{
 				foreach(ProjectFileFormat Format in ProjectFileGeneratorSettings.ParseFormatList(ProjectFileGeneratorSettings.Format, Logger))
 				{
-					if (Format == ProjectFileFormat.VisualStudio2019)
-					{
-						return WindowsCompiler.VisualStudio2019;
-					}
-					else if (Format == ProjectFileFormat.VisualStudio2022)
+					if (Format == ProjectFileFormat.VisualStudio2022)
 					{
 						return WindowsCompiler.VisualStudio2022;
+					}
+					else if (Format == ProjectFileFormat.VisualStudio2019)
+					{
+						return WindowsCompiler.VisualStudio2019;
 					}
 				} 
 			}
@@ -1012,13 +1089,13 @@ namespace UnrealBuildTool
 			if (XmlConfig.TryGetValue(typeof(VCProjectFileSettings), "ProjectFileFormat", out ProjectFormatObject))
 			{
 				VCProjectFileFormat ProjectFormat = (VCProjectFileFormat)ProjectFormatObject;
-				if (ProjectFormat == VCProjectFileFormat.VisualStudio2019)
-				{
-					return WindowsCompiler.VisualStudio2019;
-				}
-				else if (ProjectFormat == VCProjectFileFormat.VisualStudio2022)
+				if (ProjectFormat == VCProjectFileFormat.VisualStudio2022)
 				{
 					return WindowsCompiler.VisualStudio2022;
+				}
+				else if (ProjectFormat == VCProjectFileFormat.VisualStudio2019)
+				{
+					return WindowsCompiler.VisualStudio2019;
 				}
 			}
 
@@ -1026,48 +1103,51 @@ namespace UnrealBuildTool
 			ProjectFileFormat PreferredAccessor;
 			if(ProjectFileGenerator.GetPreferredSourceCodeAccessor(ProjectFile, out PreferredAccessor))
 			{
-				if(PreferredAccessor == ProjectFileFormat.VisualStudio2019)
+				if(PreferredAccessor == ProjectFileFormat.VisualStudio2022)
 			    {
-				    return WindowsCompiler.VisualStudio2019;
+				    return WindowsCompiler.VisualStudio2022;
 			    }
-				else if (PreferredAccessor == ProjectFileFormat.VisualStudio2022)
+				else if (PreferredAccessor == ProjectFileFormat.VisualStudio2019)
 				{
-					return WindowsCompiler.VisualStudio2022;
+					return WindowsCompiler.VisualStudio2019;
 				}
 			}
 
-			// Second, default based on what's installed, test for 2019 first
-			if (MicrosoftPlatformSDK.HasValidCompiler(WindowsCompiler.VisualStudio2019, Architecture, Logger))
-			{
-				return WindowsCompiler.VisualStudio2019;
-			}
-			else if (MicrosoftPlatformSDK.HasValidCompiler(WindowsCompiler.VisualStudio2022, Architecture, Logger))
+			// Second, default based on what's installed, test for 2022 first
+			if (MicrosoftPlatformSDK.HasValidCompiler(WindowsCompiler.VisualStudio2022, Architecture, Logger))
 			{
 				return WindowsCompiler.VisualStudio2022;
 			}
-
-			// If we do have a Visual Studio installation, but we're missing just the C++ parts, warn about that.
-			if (TryGetVSInstallDirs(WindowsCompiler.VisualStudio2019, Logger) != null)
+			else if (MicrosoftPlatformSDK.HasValidCompiler(WindowsCompiler.VisualStudio2019, Architecture, Logger))
 			{
-				string ToolSetWarning = Architecture == WindowsArchitecture.x64 ?
-					"MSVC v142 - VS 2019 C++ x64/x86 build tools (Latest)" :
-					"MSVC v142 - VS 2019 C++ ARM64 build tools (Latest)";
-				Logger.LogWarning("Visual Studio 2019 is installed, but is missing the C++ toolchain. Please verify that the \"{Component}\" component is selected in the Visual Studio 2019 installation options.", ToolSetWarning);
-			}
-			else if (TryGetVSInstallDirs(WindowsCompiler.VisualStudio2022, Logger) != null)
-			{
-				string ToolSetWarning = Architecture == WindowsArchitecture.x64 ?
-					"MSVC v143 - VS 2022 C++ x64/x86 build tools (Latest)" :
-					"MSVC v143 - VS 2022 C++ ARM64 build tools (Latest)";
-				Logger.LogWarning("Visual Studio 2022 is installed, but is missing the C++ toolchain. Please verify that the \"{Component}\" component is selected in the Visual Studio 2022 installation options.", ToolSetWarning);
-			}
-			else
-			{
-				Logger.LogWarning("No Visual C++ installation was found. Please download and install Visual Studio 2019 or 2022 with C++ components.");
+				return WindowsCompiler.VisualStudio2019;
 			}
 
-			// Finally, default to VS2019 anyway
-			return WindowsCompiler.VisualStudio2019;
+			if (!bSkipWarning)
+			{
+				// If we do have a Visual Studio installation, but we're missing just the C++ parts, warn about that.
+				if (TryGetVSInstallDirs(WindowsCompiler.VisualStudio2022, Logger) != null)
+				{
+					string ToolSetWarning = Architecture == UnrealArch.X64 ?
+						"MSVC v143 - VS 2022 C++ x64/x86 build tools (Latest)" :
+						"MSVC v143 - VS 2022 C++ ARM64 build tools (Latest)";
+					Logger.LogWarning("Visual Studio 2022 is installed, but is missing the C++ toolchain. Please verify that the \"{Component}\" component is selected in the Visual Studio 2022 installation options.", ToolSetWarning);
+				}
+				else if (TryGetVSInstallDirs(WindowsCompiler.VisualStudio2019, Logger) != null)
+				{
+					string ToolSetWarning = Architecture == UnrealArch.X64 ?
+						"MSVC v142 - VS 2019 C++ x64/x86 build tools (Latest)" :
+						"MSVC v142 - VS 2019 C++ ARM64 build tools (Latest)";
+					Logger.LogWarning("Visual Studio 2019 is installed, but is missing the C++ toolchain. Please verify that the \"{Component}\" component is selected in the Visual Studio 2019 installation options.", ToolSetWarning);
+				}
+				else
+				{
+					Logger.LogWarning("No Visual C++ installation was found. Please download and install Visual Studio 2022 or 2019 with C++ components.");
+				}
+			}
+
+			// Finally, default to VS2022 anyway
+			return WindowsCompiler.VisualStudio2022;
 		}
 
 		/// <summary>
@@ -1105,7 +1185,7 @@ namespace UnrealBuildTool
 		/// <param name="Architecture">Architecture the compiler must support</param>
 		/// <param name="Logger">Logger for output</param>
 		/// <returns>True if the given compiler is installed</returns>
-		public static bool HasCompiler(WindowsCompiler Compiler, WindowsArchitecture Architecture, ILogger Logger)
+		public static bool HasCompiler(WindowsCompiler Compiler, UnrealArch Architecture, ILogger Logger)
 		{
 			return MicrosoftPlatformSDK.HasCompiler(Compiler, Architecture, Logger);
 		}
@@ -1121,25 +1201,15 @@ namespace UnrealBuildTool
 		/// <param name="OutToolChainDir">Receives the directory containing the toolchain</param>
 		/// <param name="OutRedistDir">Receives the optional directory containing redistributable components</param>
 		/// <returns>True if the toolchain directory was found correctly</returns>
-		public static bool TryGetToolChainDir(WindowsCompiler Compiler, string? CompilerVersion, WindowsArchitecture Architecture, ILogger Logger, [NotNullWhen(true)] out VersionNumber? OutToolChainVersion, [NotNullWhen(true)] out DirectoryReference? OutToolChainDir, out DirectoryReference? OutRedistDir)
+		public static bool TryGetToolChainDir(WindowsCompiler Compiler, string? CompilerVersion, UnrealArch Architecture, ILogger Logger, [NotNullWhen(true)] out VersionNumber? OutToolChainVersion, [NotNullWhen(true)] out DirectoryReference? OutToolChainDir, out DirectoryReference? OutRedistDir)
 		{
 			return MicrosoftPlatformSDK.TryGetToolChainDir(Compiler, CompilerVersion, Architecture, Logger, out OutToolChainVersion, out OutToolChainDir, out OutRedistDir);
 		}
 
-		public static string GetArchitectureSubpath(WindowsArchitecture arch)
+		public static string GetArchitectureName(UnrealArch arch)
 		{
-			string archPath = "Unknown";
-			if (arch == WindowsArchitecture.x64)
-			{
-				archPath = "x64";
-			}
-			else if (arch == WindowsArchitecture.ARM64)
-			{
-				archPath = "arm64";
-			}
-			return archPath;
+			return arch.ToString();
 		}
-
 
 		/// <summary>
 		/// Determines if a directory contains a valid DIA SDK
@@ -1325,12 +1395,6 @@ namespace UnrealBuildTool
 					Rules.DynamicallyLoadedModuleNames.Remove("VulkanRHI");
 					Rules.DynamicallyLoadedModuleNames.Add("VulkanShaderFormat");
 				}
-			}
-
-			if (ModuleName == "D3D11RHI")
-			{
-				// To enable platform specific D3D11 RHI Types
-				Rules.PrivateIncludePaths.Add("Runtime/Windows/D3D11RHI/Private/Windows");
 			}
 
 			// Delay-load D3D12 so we can use the latest features and still run on downlevel versions of the OS

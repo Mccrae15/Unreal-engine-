@@ -2,18 +2,14 @@
 #if WITH_EDITOR
 
 #include "MaterialHLSLTree.h"
-#include "HLSLTree/HLSLTreeCommon.h"
+#include "Engine/Texture.h"
 #include "HLSLTree/HLSLTreeEmit.h"
-#include "Misc/StringBuilder.h"
+#include "MaterialDomain.h"
 #include "MaterialShared.h"
 #include "MaterialCachedData.h"
-#include "MaterialSceneTextureId.h"
 #include "Materials/MaterialFunctionInterface.h"
 #include "Engine/BlendableInterface.h" // BL_AfterTonemapping
-#include "VT/RuntimeVirtualTexture.h"
 #include "VT/VirtualTextureScalability.h"
-#include "Engine/Texture2D.h"
-#include "Engine/Font.h"
 
 namespace UE::HLSLTree::Material
 {
@@ -462,12 +458,13 @@ bool FExpressionParameter::PrepareValue(FEmitContext& Context, FEmitScope& Scope
 	{
 		if (!ParameterInfo.Name.IsNone())
 		{
-			EmitData.CachedExpressionData->AddParameter(ParameterInfo, ParameterMeta);
+			UObject* UnusedReferencedTexture;
+			EmitData.CachedExpressionData->AddParameter(ParameterInfo, ParameterMeta, UnusedReferencedTexture);
 		}
 
 		UObject* ReferencedTexture = ParameterMeta.Value.AsTextureObject();
 		if (ReferencedTexture)
-		{
+		{	
 			EmitData.CachedExpressionData->ReferencedTextures.AddUnique(ReferencedTexture);
 		}
 	}
@@ -515,7 +512,7 @@ void FExpressionParameter::EmitValuePreshader(FEmitContext& Context, FEmitScope&
 			switch (ParameterType)
 			{
 			case EMaterialParameterType::StaticSwitch:
-				for (const FStaticSwitchParameter& Parameter : EmitMaterialData.StaticParameters->EditorOnly.StaticSwitchParameters)
+				for (const FStaticSwitchParameter& Parameter : EmitMaterialData.StaticParameters->StaticSwitchParameters)
 				{
 					if (Parameter.ParameterInfo == ParameterInfo)
 					{

@@ -8,14 +8,10 @@
 #include "RHIStaticStates.h"
 #include "OneColorShader.h"
 
-#if PLATFORM_WINDOWS
+#if WITH_AMD_AGS
 #include "Windows/AllowWindowsPlatformTypes.h"
 #include "amd_ags.h"
 #include "Windows/HideWindowsPlatformTypes.h"
-#endif
-
-#if !UE_BUILD_SHIPPING
-#include "STaskGraph.h"
 #endif
 
 #if !defined(D3D12_PLATFORM_NEEDS_DISPLAY_MODE_ENUMERATION)
@@ -24,6 +20,12 @@
 
 DEFINE_LOG_CATEGORY(LogD3D12RHI);
 DEFINE_LOG_CATEGORY(LogD3D12GapRecorder);
+
+int32 GD3D12BindResourceLabels = 1;
+static FAutoConsoleVariableRef CVarD3D12BindResourceLabels(
+	TEXT("d3d12.BindResourceLabels"),
+	GD3D12BindResourceLabels,
+	TEXT("Whether to enable binding of debug names to D3D12 resources."));
 
 static TAutoConsoleVariable<int32> CVarD3D12UseD24(
 	TEXT("r.D3D12.Depth24Bit"),
@@ -79,6 +81,7 @@ FD3D12DynamicRHI::FD3D12DynamicRHI(const TArray<TSharedPtr<FD3D12Adapter>>& Chos
 
 	GRHISupportsMultithreading = true;
 	GRHISupportsMultithreadedResources = true;
+	GRHISupportsAsyncGetRenderQueryResult = true;
 	GRHIMultiPipelineMergeableAccessMask = GRHIMergeableAccessMask;
 	EnumRemoveFlags(GRHIMultiPipelineMergeableAccessMask, ERHIAccess::UAVMask);
 
@@ -185,6 +188,9 @@ FD3D12DynamicRHI::FD3D12DynamicRHI(const TArray<TSharedPtr<FD3D12Adapter>>& Chos
 
 	GPixelFormats[PF_R9G9B9EXP5	    ].PlatformFormat = DXGI_FORMAT_R9G9B9E5_SHAREDEXP;
 
+	GPixelFormats[PF_P010			].PlatformFormat = DXGI_FORMAT_P010;
+	GPixelFormats[PF_P010			].Supported = true;
+
 	// MS - Not doing any feature level checks. D3D12 currently supports these limits.
 	// However this may need to be revisited if new feature levels are introduced with different HW requirement
 	GSupportsSeparateRenderTargetBlendState = true;
@@ -205,7 +211,7 @@ FD3D12DynamicRHI::FD3D12DynamicRHI(const TArray<TSharedPtr<FD3D12Adapter>>& Chos
 
 	GRHISupportsRHIThread = true;
 
-	GRHISupportsParallelRHIExecute = D3D12_SUPPORTS_PARALLEL_RHI_EXECUTE;
+	GRHISupportsParallelRHIExecute = true;
 
 	GRHISupportsRawViewsForAnyBuffer = true;
 
@@ -263,12 +269,20 @@ void FD3D12DynamicRHI::Shutdown()
 	// Reset the RHI initialized flag.
 	GIsRHIInitialized = false;
 
-#if PLATFORM_WINDOWS
+#if WITH_AMD_AGS
 	if (AmdAgsContext)
 	{
 		// Clean up the AMD extensions and shut down the AMD AGS utility library
 		agsDeInitialize(AmdAgsContext);
 		AmdAgsContext = nullptr;
+	}
+#endif
+
+#if INTEL_EXTENSIONS
+	if (IntelExtensionContext)
+	{
+		DestroyIntelExtensionsContext(IntelExtensionContext);
+		IntelExtensionContext = nullptr;
 	}
 #endif
 
@@ -486,12 +500,36 @@ void FD3D12DynamicRHI::RHIPerFrameRHIFlushComplete()
 				case FD3D12DeferredDeleteObject::EType::CPUAllocation:
 					FMemory::Free(ObjectToDelete.CPUAllocation);
 					break;
+				case FD3D12DeferredDeleteObject::EType::DescriptorBlock:
+					ObjectToDelete.DescriptorBlock.Manager->Recycle(ObjectToDelete.DescriptorBlock.Block);
+					break;
+#if PLATFORM_SUPPORTS_VIRTUAL_TEXTURES	
+				case FD3D12DeferredDeleteObject::EType::VirtualAllocation:
+					FD3D12DynamicRHI::GetD3DRHI()->DestroyVirtualTexture(
+						ObjectToDelete.VirtualAllocDescriptor.Flags,
+						ObjectToDelete.VirtualAllocDescriptor.RawMemory,
+						const_cast<FPlatformMemory::FPlatformVirtualMemoryBlock&>(ObjectToDelete.VirtualAllocDescriptor.VirtualBlock),
+						ObjectToDelete.VirtualAllocDescriptor.CommittedTextureSize);
+					break;
+#endif
 				default:
 					checkf(false, TEXT("Unknown ED3D12DeferredDeleteObjectType"));
 					break;
 				}
 			}
 		});
+	}
+
+	// Clear all bound resources since we are about to flush pending deletions.
+
+	for (uint32 AdapterIndex = 0; AdapterIndex < GetNumAdapters(); ++AdapterIndex)
+	{
+		FD3D12Adapter& Adapter = GetAdapter(AdapterIndex);
+
+		for (FD3D12Device* Device : Adapter.GetDevices())
+		{
+			Device->GetDefaultCommandContext().ClearState(FD3D12ContextCommon::EClearStateMode::TransientOnly);
+		}
 	}
 }
 

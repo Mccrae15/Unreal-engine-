@@ -2,15 +2,15 @@
 
 #pragma once
 
-#include "Components/ActorComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "Types/UIFSlotBase.h"
-#include "Types/UIFWidgetId.h"
 #include "Types/UIFWidgetTree.h"
 
+#include "Types/UIFWidgetTreeOwner.h"
 #include "UIFPlayerComponent.generated.h"
 
 class UUIFrameworkPlayerComponent;
+class UUIFrameworkPresenter;
 class UUIFrameworkWidget;
 class UWidget;
 struct FStreamableHandle;
@@ -26,6 +26,18 @@ enum class EUIFrameworkGameLayerType : uint8
 	PlayerScreen,
 };
 
+/**
+ *
+ */
+UENUM(BlueprintType)
+enum class EUIFrameworkInputMode : uint8
+{
+	// Input is received by the UI.
+	UI,
+	// Input is received by the Game.
+	Game,
+};
+
 
 /**
  *
@@ -39,6 +51,9 @@ struct FUIFrameworkGameLayerSlot : public FUIFrameworkSlotBase
 
 	UPROPERTY(BlueprintReadWrite, Category = "UI Framework")
 	int32 ZOrder = 0;
+	
+	UPROPERTY(BlueprintReadWrite, Category = "UI Framework")
+	EUIFrameworkInputMode InputMode = EUIFrameworkInputMode::Game;
 
 	UPROPERTY(BlueprintReadWrite, Category = "UI Framework")
 	EUIFrameworkGameLayerType Type = EUIFrameworkGameLayerType::Viewport;
@@ -62,6 +77,7 @@ struct UIFRAMEWORK_API FUIFrameworkGameLayerSlotList : public FFastArraySerializ
 
 public:
 	//~ Begin of FFastArraySerializer
+	void PreReplicatedRemove(const TArrayView<int32>& RemovedIndices, int32 FinalSize);
 	void PostReplicatedChange(const TArrayView<int32>& ChangedIndices, int32 FinalSize);
 	//~ End of FFastArraySerializer
 
@@ -73,6 +89,7 @@ public:
 	void AddEntry(FUIFrameworkGameLayerSlot Entry);
 	bool RemoveEntry(UUIFrameworkWidget* Layer);
 	FUIFrameworkGameLayerSlot* FindEntry(FUIFrameworkWidgetId WidgetId);
+	const FUIFrameworkGameLayerSlot* FindEntry(FUIFrameworkWidgetId WidgetId) const;
 
 private:
 	UPROPERTY()
@@ -93,7 +110,7 @@ struct TStructOpsTypeTraits<FUIFrameworkGameLayerSlotList> : public TStructOpsTy
  * 
  */
 UCLASS(Blueprintable, meta = (BlueprintSpawnableComponent))
-class UIFRAMEWORK_API UUIFrameworkPlayerComponent : public UActorComponent
+class UIFRAMEWORK_API UUIFrameworkPlayerComponent : public UActorComponent, public IUIFrameworkWidgetTreeOwner
 {
 	GENERATED_BODY()
 
@@ -107,10 +124,10 @@ public:
 
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "UI Framework")
 	void RemoveWidget(UUIFrameworkWidget* Widget);
-
-	FUIFrameworkWidgetTree& GetWidgetTree()
+	
+	const FUIFrameworkGameLayerSlotList& GetRootList() const
 	{
-		return WidgetTree;
+		return RootList;
 	}
 
 	/** Gets the controller that owns the component, this will always be valid during gameplay but can return null in the editor */
@@ -129,16 +146,24 @@ public:
 	}
 
 	//~ Begin UActorComponent
+	virtual void InitializeComponent() override;
 	virtual void UninitializeComponent() override;
 	virtual bool ReplicateSubobjects(class UActorChannel* Channel, class FOutBunch* Bunch, FReplicationFlags* RepFlags) override;
 	virtual void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 	//~ End UActorComponent
 
 	void AuthorityRemoveChild(UUIFrameworkWidget* Widget);
-	void LocalWidgetWasAddedToTree(const FUIFrameworkWidgetTreeEntry& Entry);
-	void LocalWidgetRemovedFromTree(const FUIFrameworkWidgetTreeEntry& Entry);
+
+	virtual FUIFrameworkWidgetTree& GetWidgetTree() override;
+	virtual FUIFrameworkWidgetOwner GetWidgetOwner() const override;
+	virtual void LocalWidgetWasAddedToTree(const FUIFrameworkWidgetTreeEntry& Entry) override;
+	virtual void LocalWidgetRemovedFromTree(const FUIFrameworkWidgetTreeEntry& Entry) override;
+	virtual void LocalRemoveWidgetRootFromTree(const UUIFrameworkWidget* Widget) override;
 
 private:
+	UFUNCTION(Server, Reliable)
+	void ServerRemoveWidgetRootFromTree(FUIFrameworkWidgetId WidgetId);
+
 	void LocalOnClassLoaded(TSoftClassPtr<UWidget> WidgetClass);
 	void LocalAddChild(FUIFrameworkWidgetId WidgetId);
 
@@ -148,6 +173,9 @@ private:
 
 	UPROPERTY(Replicated)
 	FUIFrameworkWidgetTree WidgetTree;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UUIFrameworkPresenter> Presenter;
 
 	//~ Widget can be net replicated but not constructed yet.
 	UPROPERTY(Transient)

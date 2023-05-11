@@ -4,37 +4,26 @@
 
 #include "DataprepCoreUtils.h"
 #include "DataprepEditorLogCategory.h"
-#include "DataprepEditorUtils.h"
 
 #include "ActorEditorUtils.h"
-#include "AutoReimport/AutoReimportManager.h"
 #include "Async/Async.h"
-#include "Async/Future.h"
-#include "Async/ParallelFor.h"
-#include "Editor/UnrealEdEngine.h"
-#include "EngineUtils.h"
-#include "Engine/StaticMeshSourceData.h"
+#include "Engine/Level.h"
 #include "Engine/Texture.h"
+#include "Engine/StaticMesh.h"
 #include "Exporters/Exporter.h"
 #include "Factories/LevelFactory.h"
-#include "HAL/FileManager.h"
-#include "GenericPlatform/GenericPlatformOutputDevices.h"
-#include "GenericPlatform/GenericPlatformTime.h"
+#include "GameFramework/WorldSettings.h"
 #include "Materials/MaterialFunction.h"
+#include "Materials/Material.h"
 #include "Materials/MaterialFunctionInstance.h"
 #include "Materials/MaterialInstance.h"
-#include "MaterialShared.h"
-#include "Misc/Compression.h"
 #include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
 #include "Misc/ScopedSlowTask.h"
-#include "ObjectTools.h"
-#include "PackageTools.h"
-#include "Serialization/MemoryReader.h"
-#include "Serialization/MemoryWriter.h"
 #include "Serialization/ObjectAndNameAsStringProxyArchive.h"
 #include "Settings/LevelEditorMiscSettings.h"
 #include "UnrealExporter.h"
-#include "UObject/PropertyPortFlags.h"
+#include "UObject/UObjectIterator.h"
 
 #define LOCTEXT_NAMESPACE "DataprepEditor"
 
@@ -210,7 +199,7 @@ namespace DataprepSnapshotUtil
 	{
 		static FString FileNamePrefix( TEXT("stream_") );
 
-		FString PackageFileName = FileNamePrefix + FString::Printf( TEXT("%08x"), ::GetTypeHash( AssetPath ) );
+		FString PackageFileName = FileNamePrefix + FString::Printf( TEXT("%08x"), GetTypeHash( AssetPath ) );
 		return FPaths::ConvertRelativePathToFull( FPaths::Combine( RootPath, PackageFileName ) + SnapshotExtension );
 	}
 
@@ -538,6 +527,8 @@ public:
 		const AActor* Actor = Cast<AActor>(InObj);
 		return Actor && SelectedActors.Contains(Actor);
 	}
+
+	virtual int32 GetObjectNumber() const override { return SelectedActors.Num(); }
 
 	/** Set of actors marked as selected so they get included in the copy */
 	TSet<const AActor*> SelectedActors;

@@ -23,6 +23,7 @@ ShaderCodeLibrary.cpp: Bound shader state cache implementation.
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/FileHelper.h"
+#include "Misc/MessageDialog.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopeLock.h"
 #include "Misc/ScopeRWLock.h"
@@ -35,6 +36,7 @@ ShaderCodeLibrary.cpp: Bound shader state cache implementation.
 #include "Shader.h"
 #include "ShaderCodeArchive.h"
 #include "ShaderPipelineCache.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "String/ParseTokens.h"
 
 #if WITH_EDITORONLY_DATA
@@ -228,6 +230,8 @@ namespace UE
 TSet<UE::ShaderLibrary::Private::FMountedPakFileInfo> UE::ShaderLibrary::Private::FMountedPakFileInfo::KnownPakFiles;
 FCriticalSection UE::ShaderLibrary::Private::FMountedPakFileInfo::KnownPakFilesAccessLock;
 
+FSharedShaderMapResourceExplicitRelease OnSharedShaderMapResourceExplicitRelease;
+
 class FShaderMapResource_SharedCode final : public FShaderMapResource
 {
 public:
@@ -238,7 +242,9 @@ public:
 	virtual void ReleaseRHI() override;
 
 	// FShaderMapResource interface
-	virtual TRefCountPtr<FRHIShader> CreateRHIShader(int32 ShaderIndex) override;
+	virtual FSHAHash GetShaderHash(int32 ShaderIndex) override;
+	virtual FRHIShader* CreateRHIShaderOrCrash(int32 ShaderIndex) override;
+	virtual void ReleasePreloadedShaderCode(int32 ShaderIndex) override;
 	virtual bool TryRelease() override;
 	virtual uint32 GetSizeBytes() const override { return sizeof(*this) + GetAllocatedSize(); }
 
@@ -899,7 +905,7 @@ public:
 
 	~FShaderLibraryInstance()
 	{
-		// release RHI on all of the resources
+		// release RHI resources on all of the resources (note: this has nothing to do with their own lifetime and refcount)
 		for (FShaderMapResource_SharedCode* Resource : Resources)
 		{
 			if (Resource)
@@ -907,6 +913,10 @@ public:
 				BeginReleaseResource(Resource);
 			}
 		}
+
+		// if rendering thread is active, the actual teardown may happen later, so flush the rendering commands here
+		checkf(IsInGameThread(), TEXT("Shader library closure is expected to happen only on the game thread, at the \'top\' of the pipeline"));
+		FlushRenderingCommands();	// this will also flush pending deletes
 		
 		Library->Teardown();
 		DEC_DWORD_STAT_BY(STAT_Shaders_ShaderResourceMemory, GetSizeBytes());
@@ -1029,7 +1039,15 @@ public:
 			Shader = Library->CreateShader(ShaderIndex);
 
 			FRWScopeLock Locker(ShaderLocks[BucketIndex], SLT_Write);
-			RHIShaders[BucketIndex].Add(ShaderIndex, Shader);
+			TRefCountPtr<FRHIShader>* ShaderPtr = RHIShaders[BucketIndex].Find(ShaderIndex);
+			if (LIKELY(ShaderPtr == nullptr))
+			{
+				RHIShaders[BucketIndex].Add(ShaderIndex, Shader);
+			}
+			else
+			{
+				Shader = *ShaderPtr;
+			}
 		}
 		return Shader;
 	}
@@ -1143,45 +1161,90 @@ FShaderMapResource_SharedCode::~FShaderMapResource_SharedCode()
 	
 }
 
-TRefCountPtr<FRHIShader> FShaderMapResource_SharedCode::CreateRHIShader(int32 ShaderIndex)
+FSHAHash FShaderMapResource_SharedCode::GetShaderHash(int32 ShaderIndex)
+{
+	return LibraryInstance->Library->GetShaderHash(ShaderMapIndex, ShaderIndex);
+}
+
+FRHIShader* FShaderMapResource_SharedCode::CreateRHIShaderOrCrash(int32 ShaderIndex)
 {
 	SCOPED_LOADTIMER(FShaderMapResource_SharedCode_InitRHI);
+#if STATS
+	double TimeFunctionEntered = FPlatformTime::Seconds();
+	ON_SCOPE_EXIT
+	{
+		if (IsInRenderingThread())
+		{
+			double ShaderCreationTime = FPlatformTime::Seconds() - TimeFunctionEntered;
+			INC_FLOAT_STAT_BY(STAT_Shaders_TotalRTShaderInitForRenderingTime, ShaderCreationTime);
+		}
+	};
+#endif
 
 	const int32 LibraryShaderIndex = LibraryInstance->Library->GetShaderIndex(ShaderMapIndex, ShaderIndex);
-	TRefCountPtr<FRHIShader> ShaderRHI = LibraryInstance->GetOrCreateShader(LibraryShaderIndex);
-	if (bShaderMapPreloaded && ShaderRHI)
+	TRefCountPtr<FRHIShader> CreatedShader = LibraryInstance->GetOrCreateShader(LibraryShaderIndex);
+	if (UNLIKELY(CreatedShader == nullptr))
 	{
-		// Release our preload, once we've created the shader
+		UE_LOG(LogShaders, Fatal, TEXT("FShaderMapResource_SharedCode::InitRHI is unable to create a shader"));
+		// unreachable
+		return nullptr;
+	}
+
+	CreatedShader->AddRef();
+	return CreatedShader;
+}
+
+void FShaderMapResource_SharedCode::ReleasePreloadedShaderCode(int32 ShaderIndex)
+{
+	SCOPED_LOADTIMER(FShaderMapResource_SharedCode_InitRHI);	// part of shader initialization in a way
+
+	if (bShaderMapPreloaded)
+	{
+		const int32 LibraryShaderIndex = LibraryInstance->Library->GetShaderIndex(ShaderMapIndex, ShaderIndex);
 		LibraryInstance->Library->ReleasePreloadedShader(LibraryShaderIndex);
 	}
-	return ShaderRHI;
 }
 
 void FShaderMapResource_SharedCode::ReleaseRHI()
 {
-	const int32 NumShaders = GetNumShaders();
-	for (int32 i = 0; i < NumShaders; ++i)
+	if (LibraryInstance)
 	{
-		const int32 LibraryShaderIndex = LibraryInstance->Library->GetShaderIndex(ShaderMapIndex, i);
-		if (HasShader(i))
+		const int32 NumShaders = GetNumShaders();
+		for (int32 i = 0; i < NumShaders; ++i)
 		{
-			LibraryInstance->ReleaseShader(LibraryShaderIndex);
-		}
-		else if (bShaderMapPreloaded)
-		{
-			// Release the preloaded memory if it was preloaded, but not created yet
-			LibraryInstance->Library->ReleasePreloadedShader(LibraryShaderIndex);
+			const int32 LibraryShaderIndex = LibraryInstance->Library->GetShaderIndex(ShaderMapIndex, i);
+			if (HasShader(i))
+			{
+				LibraryInstance->ReleaseShader(LibraryShaderIndex);
+			}
+			else if (bShaderMapPreloaded)
+			{
+				// Release the preloaded memory if it was preloaded, but not created yet
+				LibraryInstance->Library->ReleasePreloadedShader(LibraryShaderIndex);
+			}
 		}
 	}
 
 	bShaderMapPreloaded = false;
 
 	FShaderMapResource::ReleaseRHI();
+
+	// on assumption that we aren't going to get resurrected
+	LibraryInstance = nullptr;
+
+	if (GetNumRefs()> 0)
+	{
+		ensureMsgf(false, TEXT("FShaderMapResource_SharedCode::ReleaseRHI is still referenced (Num of references %d). Invoking OnSharedShaderMapResourceExplicitRelease delegate."), GetNumRefs());
+		UE_LOG(LogShaderLibrary, Warning, TEXT("FShaderMapResource_SharedCode::ReleaseRHI is still referenced (Num of references %d). Invoking OnSharedShaderMapResourceExplicitRelease delegate."), GetNumRefs());
+		
+		// Invoke delegate to notify shader map resource needs to be forced released
+		OnSharedShaderMapResourceExplicitRelease.ExecuteIfBound(this);
+	}
 }
 
 bool FShaderMapResource_SharedCode::TryRelease()
 {
-	if (LibraryInstance->TryRemoveResource(this))
+	if (LibraryInstance && LibraryInstance->TryRemoveResource(this))
 	{
 		return true;
 	}
@@ -2536,9 +2599,13 @@ public:
 	{
 		if (IsLibraryInitializedForRuntime())
 		{
-			FRWScopeLock WriteLock(NamedLibrariesMutex, SLT_Write);
 			TUniquePtr<UE::ShaderLibrary::Private::FNamedShaderLibrary> RemovedLibrary = nullptr;
-			NamedLibrariesStack.RemoveAndCopyValue(Name, RemovedLibrary);
+
+			{
+				FRWScopeLock WriteLock(NamedLibrariesMutex, SLT_Write);
+				NamedLibrariesStack.RemoveAndCopyValue(Name, RemovedLibrary);
+			}
+
 			if (RemovedLibrary)
 			{
 				UE_LOG(LogShaderLibrary, Display, TEXT("Closing logical shader library '%s' with %d components"), *Name, RemovedLibrary->GetNumComponents());
@@ -2733,6 +2800,13 @@ public:
 		FShaderLibraryInstance* LibraryInstance = FindShaderLibraryForShader(Hash, ShaderIndex);
 		return LibraryInstance != nullptr;
 	}
+	
+	bool ContainsShaderCode(const FSHAHash& Hash, const FString& LogicalLibraryName)
+	{
+		int32 ShaderIndex = INDEX_NONE;
+		FShaderLibraryInstance* LibraryInstance = FindShaderLibraryForShader(Hash, ShaderIndex);
+		return LibraryInstance != nullptr && LibraryInstance->Library->GetName() == LogicalLibraryName;
+	}
 
 #if WITH_EDITOR
 	void CleanDirectories(TArray<FName> const& ShaderFormats)
@@ -2865,6 +2939,7 @@ public:
 
 	bool AppendFromCompactBinary(FCbFieldView Field)
 	{
+		LLM_SCOPE(ELLMTag::Shaders);
 		bool bOk = true;
 		for (FCbFieldView PlatformField : Field)
 		{
@@ -3227,6 +3302,7 @@ void FShaderCodeLibrary::InitForRuntime(EShaderPlatform ShaderPlatform)
 			}
 			else
 			{
+                FMessageDialog::Open(EAppMsgType::Ok, NSLOCTEXT("MessageDialog", "MissingGlobalShaderLibraryFilesClient_Body", "Game files required to initialize the global shader and cooked content are most likely missing. Refer to Engine log for details."));
 				UE_LOG(LogShaderLibrary, Fatal, TEXT("Failed to initialize ShaderCodeLibrary required by the project because part of the Global shader library is missing from %s."), *FPaths::ProjectContentDir());
 			}
 			FPlatformMisc::RequestExit(true);
@@ -3273,6 +3349,15 @@ bool FShaderCodeLibrary::ContainsShaderCode(const FSHAHash& Hash)
 	if (FShaderLibrariesCollection::Impl)
 	{
 		return FShaderLibrariesCollection::Impl->ContainsShaderCode(Hash);
+	}
+	return false;
+}
+
+bool FShaderCodeLibrary::ContainsShaderCode(const FSHAHash& Hash, const FString& LogicalLibraryName)
+{
+	if (FShaderLibrariesCollection::Impl)
+	{
+		return FShaderLibrariesCollection::Impl->ContainsShaderCode(Hash, LogicalLibraryName);
 	}
 	return false;
 }

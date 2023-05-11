@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OpenXRHMDModule.h"
+#include "Misc/EngineVersion.h"
 #include "OpenXRHMD.h"
 #include "OpenXRHMD_RenderBridge.h"
 #include "OpenXRCore.h"
@@ -24,6 +25,12 @@ static TAutoConsoleVariable<int32> CVarEnableOpenXRValidationLayer(
 	TEXT("Changes will only take effect in new game/editor instances - can't be changed at runtime.\n"),
 	ECVF_Default);		// @todo: Should we specify ECVF_Cheat here so this doesn't show up in release builds?
 
+static TAutoConsoleVariable<bool> CVarDisableOpenXROnAndroidWithoutOculus(
+	TEXT("xr.DisableOpenXROnAndroidWithoutOculus"),
+	true,
+	TEXT("If true OpenXR will not initialize on Android unless the project is packaged for Oculus (ProjectSetting->Platforms->Android->Advanced APK Packaging->PackageForOculusMobileDevices list not empty).  Currently defaulted to true because the OpenXR loader we are using hangs during intialization on some devices instead of failing, as it should."),
+	ECVF_RenderThreadSafe);
+
 //---------------------------------------------------
 // OpenXRHMD Plugin Implementation
 //---------------------------------------------------
@@ -33,7 +40,6 @@ IMPLEMENT_MODULE( FOpenXRHMDModule, OpenXRHMD )
 FOpenXRHMDModule::FOpenXRHMDModule()
 	: LoaderHandle(nullptr)
 	, Instance(XR_NULL_HANDLE)
-	, System(XR_NULL_SYSTEM_ID)
 	, RenderBridge(nullptr)
 { }
 
@@ -43,7 +49,7 @@ FOpenXRHMDModule::~FOpenXRHMDModule()
 
 TSharedPtr< class IXRTrackingSystem, ESPMode::ThreadSafe > FOpenXRHMDModule::CreateTrackingSystem()
 {
-	if (!InitInstanceAndSystem())
+	if (!InitInstance())
 	{
 		return nullptr;
 	}
@@ -58,7 +64,12 @@ TSharedPtr< class IXRTrackingSystem, ESPMode::ThreadSafe > FOpenXRHMDModule::Cre
 	auto ARModule = FModuleManager::LoadModulePtr<IOpenXRARModule>("OpenXRAR");
 	auto ARSystem = ARModule->CreateARSystem();
 
-	auto OpenXRHMD = FSceneViewExtensions::NewExtension<FOpenXRHMD>(Instance, System, RenderBridge, EnabledExtensions, ExtensionPlugins, ARSystem);
+	if (!Instance)
+	{
+		return nullptr;
+	}
+
+	auto OpenXRHMD = FSceneViewExtensions::NewExtension<FOpenXRHMD>(Instance, RenderBridge, EnabledExtensions, ExtensionPlugins, ARSystem);
 	if (OpenXRHMD->IsInitialized())
 	{
 		ARModule->SetTrackingSystem(OpenXRHMD);
@@ -73,7 +84,7 @@ void FOpenXRHMDModule::ShutdownModule()
 {
 	if (Instance)
 	{
-		DestroyInstance();
+		XR_ENSURE(xrDestroyInstance(Instance));
 	}
 
 	if (LoaderHandle)
@@ -97,14 +108,36 @@ uint64 FOpenXRHMDModule::GetGraphicsAdapterLuid()
 			return 0;
 		}
 	}
-	return RenderBridge->GetGraphicsAdapterLuid();
+
+	FConfigFile* EngineIni = GConfig->FindConfigFile(GEngineIni);
+	XrSystemId System = GetSystemId();
+	if (!System)
+	{
+		int64 AdapterLuid = 0;
+		EngineIni->GetInt64(TEXT("OpenXR.Settings"), TEXT("GraphicsAdapter"), AdapterLuid);
+		return reinterpret_cast<uint64&>(AdapterLuid);
+	}
+
+	uint64 AdapterLuid = RenderBridge->GetGraphicsAdapterLuid(System);
+	if (AdapterLuid)
+	{
+		// Remember this luid so we use the right adapter, even when we startup without an HMD connected
+		EngineIni->SetInt64(TEXT("OpenXR.Settings"), TEXT("GraphicsAdapter"), reinterpret_cast<int64&>(AdapterLuid));
+	}
+	return AdapterLuid;
 }
 
 TSharedPtr< IHeadMountedDisplayVulkanExtensions, ESPMode::ThreadSafe > FOpenXRHMDModule::GetVulkanExtensions()
 {
 #ifdef XR_USE_GRAPHICS_API_VULKAN
-	if (InitInstanceAndSystem() && IsExtensionEnabled(XR_KHR_VULKAN_ENABLE_EXTENSION_NAME))
+	if (InitInstance() && IsExtensionEnabled(XR_KHR_VULKAN_ENABLE_EXTENSION_NAME))
 	{
+		XrSystemId System = GetSystemId();
+		if (!System)
+		{
+			return nullptr;
+		}
+
 		if (!VulkanExtensions.IsValid())
 		{
 			VulkanExtensions = MakeShareable(new FOpenXRHMD::FVulkanExtensions(Instance, System));
@@ -117,21 +150,25 @@ TSharedPtr< IHeadMountedDisplayVulkanExtensions, ESPMode::ThreadSafe > FOpenXRHM
 
 FString FOpenXRHMDModule::GetDeviceSystemName()
 {
-	if (InitInstanceAndSystem())
+	if (InitInstance())
 	{
-		XrSystemProperties SystemProperties;
-		SystemProperties.type = XR_TYPE_SYSTEM_PROPERTIES;
-		SystemProperties.next = nullptr;
-		xrGetSystemProperties(Instance, System, &SystemProperties);
+		XrSystemId System = GetSystemId();
+		if (System)
+		{
+			XrSystemProperties SystemProperties;
+			SystemProperties.type = XR_TYPE_SYSTEM_PROPERTIES;
+			SystemProperties.next = nullptr;
+			XR_ENSURE(xrGetSystemProperties(Instance, System, &SystemProperties));
 
-		return FString(UTF8_TO_TCHAR(SystemProperties.systemName));
+			return FString(UTF8_TO_TCHAR(SystemProperties.systemName));
+		}
 	}
 	return FString("");
 }
 
 bool FOpenXRHMDModule::IsStandaloneStereoOnlyDevice()
 {
-	if (InitInstanceAndSystem())
+	if (InitInstance())
 	{
 		for (IOpenXRExtensionPlugin* Module : ExtensionPlugins)
 		{
@@ -250,7 +287,7 @@ bool FOpenXRHMDModule::InitRenderBridge()
 	for (IOpenXRExtensionPlugin* Plugin : ExtModules)
 	{
 		// We are taking ownership of the CustomRenderBridge instance here.
-		TRefCountPtr<FOpenXRRenderBridge> CustomRenderBridge = Plugin->GetCustomRenderBridge(Instance, System);
+		TRefCountPtr<FOpenXRRenderBridge> CustomRenderBridge = Plugin->GetCustomRenderBridge(Instance);
 		if (CustomRenderBridge)
 		{
 			// We pick the first
@@ -264,7 +301,7 @@ bool FOpenXRHMDModule::InitRenderBridge()
 		return false;
 	}
 
-	if (!InitInstanceAndSystem())
+	if (!InitInstance())
 	{
 		return false;
 	}
@@ -274,35 +311,35 @@ bool FOpenXRHMDModule::InitRenderBridge()
 #ifdef XR_USE_GRAPHICS_API_D3D11
 	if (RHIType == ERHIInterfaceType::D3D11 && IsExtensionEnabled(XR_KHR_D3D11_ENABLE_EXTENSION_NAME))
 	{
-		RenderBridge = CreateRenderBridge_D3D11(Instance, System);
+		RenderBridge = CreateRenderBridge_D3D11(Instance);
 	}
 	else
 #endif
 #ifdef XR_USE_GRAPHICS_API_D3D12
 	if (RHIType == ERHIInterfaceType::D3D12 && IsExtensionEnabled(XR_KHR_D3D12_ENABLE_EXTENSION_NAME))
 	{
-		RenderBridge = CreateRenderBridge_D3D12(Instance, System);
+		RenderBridge = CreateRenderBridge_D3D12(Instance);
 	}
 	else
 #endif
 #if defined(XR_USE_GRAPHICS_API_OPENGL_ES) && defined(XR_USE_PLATFORM_ANDROID)
 	if (RHIType == ERHIInterfaceType::OpenGL && IsExtensionEnabled(XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME))
 	{
-		RenderBridge = CreateRenderBridge_OpenGLES(Instance, System);
+		RenderBridge = CreateRenderBridge_OpenGLES(Instance);
 	}
 	else
 #endif
 #ifdef XR_USE_GRAPHICS_API_OPENGL
 	if (RHIType == ERHIInterfaceType::OpenGL && IsExtensionEnabled(XR_KHR_OPENGL_ENABLE_EXTENSION_NAME))
 	{
-		RenderBridge = CreateRenderBridge_OpenGL(Instance, System);
+		RenderBridge = CreateRenderBridge_OpenGL(Instance);
 	}
 	else
 #endif
 #ifdef XR_USE_GRAPHICS_API_VULKAN
 	if (RHIType == ERHIInterfaceType::Vulkan && IsExtensionEnabled(XR_KHR_VULKAN_ENABLE_EXTENSION_NAME))
 	{
-		RenderBridge = CreateRenderBridge_Vulkan(Instance, System);
+		RenderBridge = CreateRenderBridge_Vulkan(Instance);
 	}
 	else
 #endif
@@ -464,6 +501,7 @@ bool FOpenXRHMDModule::GetOptionalExtensions(TArray<const ANSICHAR*>& OutExtensi
 	OutExtensions.Add(XR_KHR_VISIBILITY_MASK_EXTENSION_NAME);
 	OutExtensions.Add(XR_KHR_BINDING_MODIFICATION_EXTENSION_NAME);
 	OutExtensions.Add(XR_EPIC_VIEW_CONFIGURATION_FOV_EXTENSION_NAME);
+	OutExtensions.Add(XR_EXT_PALM_POSE_EXTENSION_NAME);
 
 	// Draft extension not yet provided in headers
 	OutExtensions.Add("XR_EXT_dpad_binding");
@@ -472,36 +510,29 @@ bool FOpenXRHMDModule::GetOptionalExtensions(TArray<const ANSICHAR*>& OutExtensi
 	return true;
 }
 
-bool FOpenXRHMDModule::InitInstanceAndSystem()
-{
-	if (!Instance && !InitInstance())
-	{
-		return false;
-	}
-
-	if (!System && !InitSystem())
-	{
-		return false;
-	}
-
-	return true;
-}
-
 bool FOpenXRHMDModule::InitInstance()
 {
-	// This should only ever be called if we don't already have an instance.
-	check(!Instance);
+	if (Instance)
+	{
+		return true;
+	}
 
 #if PLATFORM_ANDROID
-	// TODO: Allow OpenXR on non-Oculus Android platforms
 	if (AndroidThunkCpp_IsOculusMobileApplication())
 	{
-		UE_LOG(LogHMD, Log, TEXT("OpenXRHMDModule: App is packaged for Oculus Mobile"));
+		UE_LOG(LogHMD, Log, TEXT("OpenXRHMDModule: App is packaged for Oculus Mobile OpenXR"));
 	}
 	else
 	{
-		UE_LOG(LogHMD, Log, TEXT("OpenXRHMDModule: App is not packaged for Oculus Mobile"));
-		return false;
+		if (CVarDisableOpenXROnAndroidWithoutOculus.GetValueOnAnyThread())
+		{
+			UE_LOG(LogHMD, Log, TEXT("OpenXRHMDModule: vr.DisableOpenXROnAndroidWithoutOculus is true and this project is not packaged for Oculus Mobile Devices.  Disabling OpenXR."));
+			return false;
+		}
+		else
+		{
+			UE_LOG(LogHMD, Log, TEXT("OpenXRHMDModule: App is packaged for Android OpenXR"));
+		}
 	}
 #endif
 
@@ -516,6 +547,7 @@ bool FOpenXRHMDModule::InitInstance()
 		if (Plugin->GetCustomLoader(&GetProcAddr))
 		{
 			// We pick the first loader we can find
+			UE_LOG(LogHMD, Log, TEXT("OpenXRHMDModule::InitInstance found and will use CustomLoader from plugin %s"), *Plugin->GetDisplayName());
 			break;
 		}
 
@@ -525,6 +557,7 @@ bool FOpenXRHMDModule::InitInstance()
 
 	if (!GetProcAddr)
 	{
+		UE_LOG(LogHMD, Log, TEXT("OpenXRHMDModule::InitInstance using DefaultLoader."));
 		GetProcAddr = GetDefaultLoader();
 	}
 
@@ -659,16 +692,10 @@ bool FOpenXRHMDModule::InitInstance()
 	auto* CVarDisableEngineAndAppRegistration = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.DisableEngineAndAppRegistration"));
 	bool bDisableEngineRegistration = (CVarDisableEngineAndAppRegistration && CVarDisableEngineAndAppRegistration->GetValueOnAnyThread() != 0);
 
-	FText ProjectName = FText();
-	GConfig->GetText(TEXT("/Script/EngineSettings.GeneralProjectSettings"), TEXT("ProjectName"), ProjectName, GGameIni);
-
-	FText ProjectVersion = FText();
-	GConfig->GetText(TEXT("/Script/EngineSettings.GeneralProjectSettings"), TEXT("ProjectVersion"), ProjectVersion, GGameIni);
-
 	// EngineName will be of the form "UnrealEngine4.21", with the minor version ("21" in this example)
 	// updated with every quarterly release
 	FString EngineName = bDisableEngineRegistration ? FString("") : FApp::GetEpicProductIdentifier() + FEngineVersion::Current().ToString(EVersionComponent::Minor);
-	FString AppName = bDisableEngineRegistration ? TEXT("") : ProjectName.ToString() + ProjectVersion.ToString();
+	FString AppName = bDisableEngineRegistration ? FString("") : FApp::GetProjectName();
 
 	XrInstanceCreateInfo Info;
 	Info.type = XR_TYPE_INSTANCE_CREATE_INFO;
@@ -730,8 +757,10 @@ bool FOpenXRHMDModule::InitInstance()
 	return true;
 }
 
-bool FOpenXRHMDModule::InitSystem()
+XrSystemId FOpenXRHMDModule::GetSystemId() const
 {
+	XrSystemId System = XR_NULL_SYSTEM_ID;
+
 	XrSystemGetInfo SystemInfo;
 	SystemInfo.type = XR_TYPE_SYSTEM_GET_INFO;
 	SystemInfo.next = nullptr;
@@ -744,9 +773,8 @@ bool FOpenXRHMDModule::InitSystem()
 	XrResult Result = xrGetSystem(Instance, &SystemInfo, &System);
 	if (XR_FAILED(Result))
 	{
-		DestroyInstance();
-		UE_LOG(LogHMD, Log, TEXT("Failed to get an OpenXR system, result is %s. Please check that your runtime supports VR headsets."), OpenXRResultToString(Result));
-		return false;
+		UE_LOG(LogHMD, VeryVerbose, TEXT("Failed to get an OpenXR system, result is %s"), OpenXRResultToString(Result));
+		return XR_NULL_SYSTEM_ID;
 	}
 
 	for (IOpenXRExtensionPlugin* Module : ExtensionPlugins)
@@ -754,11 +782,66 @@ bool FOpenXRHMDModule::InitSystem()
 		Module->PostGetSystem(Instance, System);
 	}
 
-	return true;
+	return System;
 }
 
-void FOpenXRHMDModule::DestroyInstance()
+FName FOpenXRHMDModule::ResolvePathToName(XrPath Path)
 {
-	XR_ENSURE(xrDestroyInstance(Instance));
-	Instance = XR_NULL_HANDLE;
+	{
+		FReadScopeLock Lock(NameMutex);
+		FName* FoundName = PathToName.Find(Path);
+		if (FoundName)
+		{
+			// We've already previously resolved this XrPath to an FName
+			return *FoundName;
+		}
+	}
+
+	uint32 PathCount = 0;
+	char PathChars[XR_MAX_PATH_LENGTH];
+	XrResult Result = xrPathToString(Instance, Path, XR_MAX_PATH_LENGTH, &PathCount, PathChars);
+	check(XR_SUCCEEDED(Result));
+	if (Result == XR_SUCCESS)
+	{
+		// Resolve this XrPath to an FName and store it in the name map
+		FName Name(PathCount - 1, PathChars);
+
+		FWriteScopeLock Lock(NameMutex);
+		PathToName.Add(Path, Name);
+		NameToPath.Add(Name, Path);
+		return Name;
+	}
+	else
+	{
+		return NAME_None;
+	}
+}
+
+XrPath FOpenXRHMDModule::ResolveNameToPath(FName Name)
+{
+	{
+		FReadScopeLock Lock(NameMutex);
+		XrPath* FoundPath = NameToPath.Find(Name);
+		if (FoundPath)
+		{
+			// We've already previously resolved this FName to an XrPath
+			return *FoundPath;
+		}
+	}
+
+	XrPath Path = XR_NULL_PATH;
+	FString PathString = Name.ToString();
+	XrResult Result = xrStringToPath(Instance, StringCast<ANSICHAR>(*PathString).Get(), &Path);
+	check(XR_SUCCEEDED(Result));
+	if (Result == XR_SUCCESS)
+	{
+		FWriteScopeLock Lock(NameMutex);
+		PathToName.Add(Path, Name);
+		NameToPath.Add(Name, Path);
+		return Path;
+	}
+	else
+	{
+		return XR_NULL_PATH;
+	}
 }

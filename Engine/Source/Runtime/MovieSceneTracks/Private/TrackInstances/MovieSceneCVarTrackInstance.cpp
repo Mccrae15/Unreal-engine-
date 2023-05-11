@@ -2,6 +2,7 @@
 
 #include "TrackInstances/MovieSceneCVarTrackInstance.h"
 #include "Sections/MovieSceneCVarSection.h"
+#include "Sections/MovieSceneConsoleVariableTrackInterface.h"
 #include "Tracks/MovieSceneCVarTrack.h"
 #include "EntitySystem/MovieSceneEntitySystemLinker.h"
 #include "EntitySystem/MovieSceneInstanceRegistry.h"
@@ -20,12 +21,12 @@ namespace UE
 namespace MovieScene
 {
 
-struct FPreAnimatedCVarTraits : FDefaultPreAnimatedStateTraits
+struct FPreAnimatedCVarTraits : FPreAnimatedStateTraits
 {
 	using KeyType     = FString;
 	using StorageType = FString;
 
-	static void RestorePreAnimatedValue(const FString& InKey, const FString& CachedValue, const FRestoreStateParams& Params)
+	void RestorePreAnimatedValue(const FString& InKey, const FString& CachedValue, const FRestoreStateParams& Params)
 	{
 		static IConsoleManager& ConsoleManager = IConsoleManager::Get();
 		IConsoleVariable* ConsoleVariable = ConsoleManager.FindConsoleVariable(*InKey);
@@ -77,9 +78,19 @@ void UMovieSceneCVarTrackInstance::OnInputAdded(const FMovieSceneTrackInstanceIn
 
 		TSharedPtr<FPreAnimatedCVarStorage> CVarStorage = Linker->PreAnimatedState.GetOrCreateStorage<FPreAnimatedCVarStorage>();
 
-		for (const TPair<FString, FString>& Pair : Section->ConsoleVariables.ValuesByCVar)
+		// Gather all CVars
+		TArray<TPair<FString, FString>> CommandsAndValues = Section->ConsoleVariables.ValuesByCVar.Array();
+		for (FMovieSceneConsoleVariableCollection& Collection : Section->ConsoleVariableCollections)
 		{
-			CVarStorage->SavePreAnimatedState(UngroupedHandle, Pair.Key, FPreAnimatedCVarTraits::CachePreAnimatedValue);
+			if (Collection.Interface)
+			{
+				Collection.Interface->GetConsoleVariablesForTrack(Collection.bOnlyIncludeChecked, CommandsAndValues);
+			}
+		}
+
+		for (const TPair<FString, FString>& Pair : CommandsAndValues)
+		{
+			CVarStorage->CachePreAnimatedValue(UngroupedHandle, Pair.Key, FPreAnimatedCVarTraits::CachePreAnimatedValue);
 		}
 	}
 
@@ -119,7 +130,18 @@ void UMovieSceneCVarTrackInstance::OnEndUpdateInputs()
 		const int32 HierarchicalBias = InstanceRegistry->GetInstance(Input.InstanceHandle).GetContext().GetHierarchicalBias();
 
 		UMovieSceneCVarSection* Section = CastChecked<UMovieSceneCVarSection>(Input.Section);
-		for (const TPair<FString, FString>& Pair : Section->ConsoleVariables.ValuesByCVar)
+
+		// Gather all CVars
+		TArray<TPair<FString, FString>> CommandsAndValues = Section->ConsoleVariables.ValuesByCVar.Array();
+		for (FMovieSceneConsoleVariableCollection& Collection : Section->ConsoleVariableCollections)
+		{
+			if (Collection.Interface)
+			{
+				Collection.Interface->GetConsoleVariablesForTrack(Collection.bOnlyIncludeChecked, CommandsAndValues);
+			}
+		}
+
+		for (const TPair<FString, FString>& Pair : CommandsAndValues)
 		{
 			// If CVarsNeedingUpdate is empty that implies that a section was changed so we need to reapply everything
 			if (CVarsNeedingUpdate.Num() == 0 || CVarsNeedingUpdate.Contains(Pair.Key))

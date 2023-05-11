@@ -8,6 +8,7 @@
 #include "NiagaraDataInterface.h"
 #include "IDetailPropertyRow.h"
 #include "DetailWidgetRow.h"
+#include "NiagaraSimCacheCapture.h"
 #include "Widgets/Text/SInlineEditableTextBlock.h"
 #include "PropertyCustomizationHelpers.h"
 #include "Widgets/Text/STextBlock.h"
@@ -26,10 +27,13 @@
 #include "NiagaraScriptSource.h"
 #include "NiagaraNodeInput.h"
 #include "GameDelegates.h"
+#include "IAssetTools.h"
 #include "NiagaraEditorStyle.h"
 #include "IDetailChildrenBuilder.h"
+#include "NiagaraClipboard.h"
 #include "NiagaraConstants.h"
 #include "NiagaraScriptVariable.h"
+#include "NiagaraSettings.h"
 #include "NiagaraSystemEditorData.h"
 #include "NiagaraUserRedirectionParameterStore.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
@@ -39,6 +43,7 @@
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SComboButton.h"
 #include "SNiagaraSystemUserParameters.h"
+#include "SystemToolkitModes/NiagaraSystemToolkitModeBase.h"
 #include "Widgets/Input/SEditableTextBox.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraComponentDetails"
@@ -399,7 +404,7 @@ void FNiagaraUserParameterNodeBuilder::GenerateRowForUserParameter(IDetailChildr
 			.CreateCategoryNodes(false);
 	
 		Row = ChildrenBuilder.AddExternalObjectProperty(Objects, NAME_None, Params);
-
+		
 		CustomValueWidget =
 			SNew(STextBlock)
 			.TextStyle(FNiagaraEditorStyle::Get(), "NiagaraEditor.ParameterText")
@@ -477,6 +482,36 @@ void FNiagaraUserParameterNodeBuilder::GenerateRowForUserParameter(IDetailChildr
 	Row->DisplayName(FText::FromName(ChoppedUserParameter.GetName()));
 	
 	FDetailWidgetRow& CustomWidget = Row->CustomWidget(true);
+
+	if(UserParameter.GetType().IsDataInterface())
+	{
+		FUIAction CopyAction;
+		CopyAction.ExecuteAction = FExecuteAction::CreateLambda([=]()
+		{
+			UNiagaraClipboardContent* ClipboardContent = UNiagaraClipboardContent::Create();
+			const UNiagaraClipboardFunctionInput* Input = UNiagaraClipboardFunctionInput::CreateDataValue(ClipboardContent, UserParameter.GetName(), UserParameter.GetType().GetClass(), TOptional<bool>(), ParameterProxy->Value().GetDataInterface());
+			ClipboardContent->FunctionInputs.Add(Input);
+			
+			FNiagaraEditorModule::Get().GetClipboard().SetClipboardContent(ClipboardContent);
+		});
+		CustomWidget.CopyAction(CopyAction);
+
+		FUIAction PasteAction;
+		PasteAction.ExecuteAction = FExecuteAction::CreateLambda([=]()
+		{
+			const UNiagaraClipboardContent* ClipboardContent = FNiagaraEditorModule::Get().GetClipboard().GetClipboardContent();
+
+			if(ClipboardContent->FunctionInputs.Num() == 1 && ClipboardContent->FunctionInputs[0]->InputType.IsDataInterface())
+			{
+				UNiagaraDataInterface* CopiedDI = ClipboardContent->FunctionInputs[0]->Data;
+				if(CopiedDI->IsA(ParameterProxy->Value().GetDataInterface()->GetClass()))
+				{
+					CopiedDI->CopyTo(ParameterProxy->Value().GetDataInterface());
+				}
+			}			
+		});
+		CustomWidget.PasteAction(PasteAction);
+	}
 	
 	AddCustomMenuActionsForParameter(CustomWidget, UserParameter);
 	
@@ -600,8 +635,8 @@ void FNiagaraSystemUserParameterDetails::CustomizeDetails(IDetailLayoutBuilder& 
 		ensure(SystemViewModel.IsValid());
 		TSharedRef<FNiagaraSystemUserParameterBuilder> SystemUserParameterBuilder = MakeShared<FNiagaraSystemUserParameterBuilder>(SystemViewModel, ParamCategoryName);
 		InputParamCategory.AddCustomBuilder(SystemUserParameterBuilder);
-		TSharedRef<SWidget> AddParameterButton = SystemUserParameterBuilder->GetAddParameterButton();
-		InputParamCategory.HeaderContent(AddParameterButton);
+		TSharedRef<SWidget> AdditionalHeaderWidgets = SystemUserParameterBuilder->GetAdditionalHeaderWidgets();
+		InputParamCategory.HeaderContent(AdditionalHeaderWidgets);
 	}
 }
 
@@ -997,7 +1032,8 @@ void FNiagaraSystemUserParameterBuilder::GenerateChildContent(IDetailChildrenBui
 			TSharedPtr<FNiagaraUserParameterPanelViewModel> UserParameterPanelViewModel = SystemViewModel.Pin()->GetUserParameterPanelViewModel();
 			if(ensure(UserParameterPanelViewModel.IsValid()))
 			{
-				UserParameterPanelViewModel->OnParameterAdded().BindSP(this, &FNiagaraSystemUserParameterBuilder::RequestRename);
+				UserParameterPanelViewModel->OnRefreshRequested().BindSP(this, &FNiagaraSystemUserParameterBuilder::Rebuild);
+				UserParameterPanelViewModel->OnParameterAdded().BindSP(this, &FNiagaraSystemUserParameterBuilder::OnParameterAdded);
 			}
 			
 			bDelegatesInitialized = true;
@@ -1027,35 +1063,57 @@ void FNiagaraSystemUserParameterBuilder::AddCustomMenuActionsForParameter(FDetai
 	WidgetRow.AddCustomContextMenuAction(DeleteAction, LOCTEXT("DeleteParameterAction", "Delete"), LOCTEXT("DeleteParameterActionTooltip", "Delete this user parameter"));
 }
 
-TSharedRef<SWidget> FNiagaraSystemUserParameterBuilder::GetAddParameterButton()
+TSharedRef<SWidget> FNiagaraSystemUserParameterBuilder::GetAdditionalHeaderWidgets()
 {
-	if(!AddParameterButtonContainer.IsValid())
+	if(!AdditionalHeaderWidgetsContainer.IsValid())
 	{
-		AddParameterButtonContainer = SNew(SBox)
+		AdditionalHeaderWidgetsContainer = SNew(SBox)
 		.HAlign(HAlign_Right)
 		.VAlign(VAlign_Center)
+		.Padding(2.f)
 		[
-			SAssignNew(AddParameterButton, SComboButton)
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
 			.HAlign(HAlign_Center)
 			.VAlign(VAlign_Center)
-			.ButtonStyle(FAppStyle::Get(), "RoundButton")
-			.ForegroundColor(FAppStyle::GetSlateColor("DefaultForeground"))
-			.ContentPadding(FMargin(2, 0))
-			.OnGetMenuContent(this, &FNiagaraSystemUserParameterBuilder::GetAddParameterMenu)
-			.OnComboBoxOpened_Lambda([this]
-			{
-				AddParameterButton->SetMenuContentWidgetToFocus(AddParameterMenu->GetSearchBox());
-			})
-			.HasDownArrow(false)
-			.ButtonContent()
+			.AutoWidth()
+			.Padding(2.f, 1.f)
 			[
-				SNew(SImage)
-				.Image(FAppStyle::GetBrush("Plus"))
+				SNew(SButton)
+				.OnClicked(this, &FNiagaraSystemUserParameterBuilder::SummonHierarchyEditor)
+				.Text(LOCTEXT("SummonUserParametersHierarchyButtonLabel", "Edit Hierarchy"))
+				.ButtonStyle(FAppStyle::Get(), "RoundButton")
+				.ToolTipText(LOCTEXT("SummonUserParametersHierarchyButtonTooltip", "Summon the Hierarchy Editor to add categories, sections and tooltips to User Parameters."))
+			]
+			+ SHorizontalBox::Slot()
+			.HAlign(HAlign_Center)
+			.VAlign(VAlign_Center)
+			.AutoWidth()
+			.Padding(2.f)
+			[
+				SAssignNew(AddParameterButton, SComboButton)
+				.HAlign(HAlign_Center)
+				.VAlign(VAlign_Center)
+				.ButtonStyle(FAppStyle::Get(), "RoundButton")
+				.ForegroundColor(FAppStyle::GetSlateColor("DefaultForeground"))
+				.ContentPadding(FMargin(2, 3.5))
+				.ToolTipText(LOCTEXT("AddUserParameterButtonTooltip", "Add a new User Parameter to this system.\nUser Parameters exist once for the entire system and their values can be changed at runtime from Blueprints, C++ or the sequencer, among other systems."))
+				.OnGetMenuContent(this, &FNiagaraSystemUserParameterBuilder::GetAddParameterMenu)
+				.OnComboBoxOpened_Lambda([this]
+				{
+					AddParameterButton->SetMenuContentWidgetToFocus(AddParameterMenu->GetSearchBox());
+				})
+				.HasDownArrow(false)
+				.ButtonContent()
+				[
+					SNew(SImage)
+					.Image(FAppStyle::GetBrush("Plus"))
+				]
 			]
 		];
 	}
 	
-	return AddParameterButtonContainer.ToSharedRef(); 
+	return AdditionalHeaderWidgetsContainer.ToSharedRef(); 
 }
 
 TSharedRef<SWidget> FNiagaraSystemUserParameterBuilder::GetAddParameterMenu()
@@ -1064,7 +1122,7 @@ TSharedRef<SWidget> FNiagaraSystemUserParameterBuilder::GetAddParameterMenu()
 	AddParameterMenu = SNew(SNiagaraAddParameterFromPanelMenu)
 		.Graphs(SystemViewModel.Pin()->GetParameterPanelViewModel()->GetEditableGraphsConst())
 		.OnNewParameterRequested(this, &FNiagaraSystemUserParameterBuilder::AddParameter)
-		.OnAllowMakeType(this, &FNiagaraSystemUserParameterBuilder::CanMakeNewParameterOfType)
+		.OnAllowMakeType(this, &FNiagaraSystemUserParameterBuilder::OnAllowMakeType)
 		.NamespaceId(UserCategory.NamespaceMetaData.GetGuid())
 		.ShowNamespaceCategory(false)
 		.ShowGraphParameters(false)
@@ -1080,9 +1138,11 @@ void FNiagaraSystemUserParameterBuilder::AddParameter(FNiagaraVariable NewParame
 	SystemViewModel.Pin()->GetUserParameterPanelViewModel()->OnParameterAdded().Execute(NewParameter);
 }
 
-bool FNiagaraSystemUserParameterBuilder::CanMakeNewParameterOfType(const FNiagaraTypeDefinition& InType) const
+bool FNiagaraSystemUserParameterBuilder::OnAllowMakeType(const FNiagaraTypeDefinition& InType) const
 {
-	return SystemViewModel.Pin()->GetParameterPanelViewModel()->CanMakeNewParameterOfType(InType);
+	FNiagaraNamespaceMetadata UserNameSpaceMetaData = GetDefault<UNiagaraEditorSettings>()->GetMetaDataForNamespaces({FNiagaraConstants::UserNamespace});
+	FNiagaraParameterPanelCategory Category(UserNameSpaceMetaData);
+	return SystemViewModel.Pin()->GetParameterPanelViewModel()->CanAddType(InType, Category);
 }
 
 void FNiagaraSystemUserParameterBuilder::ParameterValueChanged()
@@ -1114,6 +1174,17 @@ void FNiagaraSystemUserParameterBuilder::ParameterValueChanged()
 	}
 }
 
+FReply FNiagaraSystemUserParameterBuilder::SummonHierarchyEditor()
+{
+	if(TSharedPtr<FNiagaraSystemViewModel> SystemViewModelPinned = SystemViewModel.Pin())
+	{
+		SystemViewModelPinned->FocusTab(FNiagaraSystemToolkitModeBase::UserParametersHierarchyTabID, true);
+		return FReply::Handled();
+	}
+
+	return FReply::Unhandled();
+}
+
 void FNiagaraSystemUserParameterBuilder::DeleteParameter(FNiagaraVariable UserParameter) const
 {
 	FScopedTransaction Transaction(LOCTEXT("DeleteParameterTransaction", "Deleted user parameter"));
@@ -1128,10 +1199,26 @@ void FNiagaraSystemUserParameterBuilder::DeleteParameter(FNiagaraVariable UserPa
 	System->HandleVariableRemoved(UserParameter, true);
 }
 
+void FNiagaraSystemUserParameterBuilder::SelectAllSection()
+{
+	if(ActiveSection != nullptr)
+	{
+		ActiveSection = nullptr;
+		OnRebuildChildren.Execute();
+	}
+}
+
+void FNiagaraSystemUserParameterBuilder::OnParameterAdded(FNiagaraVariable UserParameter)
+{
+	// when adding a new parameter it defaults to the 'All' section, so we select it in order to visualize it before renaming
+	SelectAllSection();
+	RequestRename(UserParameter);
+}
+
 void FNiagaraSystemUserParameterBuilder::RequestRename(FNiagaraVariable UserParameter)
 {
 	SelectedParameter = UserParameter;
-
+	
 	// we add a timer for next frame, as requesting a rename on a parameter that has just been created will not preselect the entire text. Waiting a frame fixes that.
 	UserParamToWidgetMap[UserParameter]->RegisterActiveTimer(0.f, FWidgetActiveTimerDelegate::CreateLambda([this, UserParameter](double CurrentTime, float DeltaTime)
 	{
@@ -1189,6 +1276,11 @@ FNiagaraComponentDetails::~FNiagaraComponentDetails()
 		GEngine->OnWorldDestroyed().RemoveAll(this);
 	}
 
+	for(UNiagaraSimCache*& SimCache : CapturedCaches)
+	{
+		SimCache->ClearFlags(RF_Standalone);
+	}
+
 	FGameDelegates::Get().GetEndPlayMapDelegate().RemoveAll(this);
 }
 
@@ -1244,6 +1336,7 @@ void FNiagaraComponentDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuil
 		Section->AddCategory(TEXT("Activation"));
 		Section->AddCategory(ScriptCategoryName);
 		Section->AddCategory(TEXT("Randomness"));
+		Section->AddCategory(TEXT("Warmup"));
 		bFirstTime = false;
 	}
 
@@ -1272,6 +1365,7 @@ void FNiagaraComponentDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuil
 	DetailBuilder.EditCategory("Attachment", FText::GetEmpty(), ECategoryPriority::TypeSpecific);
 	DetailBuilder.EditCategory("Randomness", FText::GetEmpty(), ECategoryPriority::TypeSpecific);
 	DetailBuilder.EditCategory("Parameters", FText::GetEmpty(), ECategoryPriority::TypeSpecific);
+	DetailBuilder.EditCategory("Warmup", FText::GetEmpty(), ECategoryPriority::TypeSpecific);
 	DetailBuilder.EditCategory("Materials", FText::GetEmpty(), ECategoryPriority::TypeSpecific);
 	
 	if (ObjectsCustomized.Num() == 1 && ObjectsCustomized[0]->IsA<UNiagaraComponent>())
@@ -1330,6 +1424,17 @@ void FNiagaraComponentDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuil
 					[
 						SNew(STextBlock)
 						.Text(LOCTEXT("ResetEmitterButton", "Reset"))
+					]
+				]
+				+ SUniformGridPanel::Slot(2,0)
+				[
+					SNew(SButton)
+					.OnClicked(this, &FNiagaraComponentDetails::OnCaptureSelectedSystem)
+					.ToolTipText(LOCTEXT("CaptureSimCacheButtonToolTip", "Capture a temporary sim cache from the first selected particle system."))
+					.HAlign(HAlign_Center)
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("CaptureSimCacheButton", "Capture"))
 					]
 				]
 			]
@@ -1409,6 +1514,84 @@ FReply FNiagaraComponentDetails::OnDebugSelectedSystem()
 #if WITH_NIAGARA_DEBUGGER
 		SNiagaraDebugger::InvokeDebugger(NiagaraComponentToUse);
 #endif
+	}
+
+	return FReply::Handled();
+}
+
+FReply FNiagaraComponentDetails::OnCaptureSelectedSystem()
+{
+	if (!Builder)
+		return FReply::Handled();
+
+	const TArray< TWeakObjectPtr<UObject> >& SelectedObjects = Builder->GetSelectedObjects();
+
+	UNiagaraComponent* NiagaraComponentToUse = nullptr;
+	for (int32 Idx = 0; Idx < SelectedObjects.Num(); ++Idx)
+	{
+		if (SelectedObjects[Idx].IsValid())
+		{
+			if (AActor* Actor = Cast<AActor>(SelectedObjects[Idx].Get()))
+			{
+				for (UActorComponent* AC : Actor->GetComponents())
+				{
+					UNiagaraComponent* NiagaraComponent = Cast<UNiagaraComponent>(AC);
+					if (NiagaraComponent)
+					{
+						NiagaraComponentToUse = NiagaraComponent;
+						break;
+					}
+				}
+			}
+			else if (UNiagaraComponent* NiagaraComponent = Cast<UNiagaraComponent>(SelectedObjects[Idx].Get()))
+			{
+				NiagaraComponentToUse = NiagaraComponent;
+				break;
+			}
+		}
+	}
+
+	if (NiagaraComponentToUse)
+	{
+		
+		int32 CaptureIndex = ComponentCaptures.AddDefaulted();
+		UNiagaraSimCache* SimCache = NewObject<UNiagaraSimCache>(GetTransientPackage());
+		SimCache->SetFlags(RF_Standalone);
+		CapturedCaches.Add(SimCache);
+		FNiagaraSimCacheCapture& SimCacheCapture = ComponentCaptures[CaptureIndex];
+
+		FNiagaraSimCacheCreateParameters CreateParameters;
+		
+		FNiagaraSimCacheCaptureParameters CaptureParameters;
+
+		CaptureParameters.CaptureRate = 1;
+		// A value of 0 would capture until completion. Since this can apply broadly, looping systems would not finish capturing, so don't go below 1.
+		CaptureParameters.NumFrames = FMath::Max(1, GetDefault<UNiagaraSettings>()->QuickSimCacheCaptureFrameCount);
+		CaptureParameters.bManuallyAdvanceSimulation = false;
+		
+		if(NiagaraComponentToUse->GetWorld())
+		{
+			
+			SimCacheCapture.CaptureNiagaraSimCache(SimCache, CreateParameters, NiagaraComponentToUse, CaptureParameters);
+
+			SimCacheCapture.OnCaptureComplete().AddLambda(
+			[CaptureIndex, this](UNiagaraSimCache* CapturedSimCache)
+			{
+				if(CapturedSimCache)
+				{
+					GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(CapturedSimCache, EToolkitMode::Standalone);
+				}
+
+				if(ComponentCaptures.IsValidIndex(CaptureIndex))
+				{
+					ComponentCaptures.RemoveAt(CaptureIndex);
+				}
+				
+			});
+		}
+
+		
+		return FReply::Handled();
 	}
 
 	return FReply::Handled();

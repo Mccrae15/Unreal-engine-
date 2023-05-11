@@ -5,8 +5,12 @@
 #include "CoreTypes.h"
 #include "CoreMinimal.h"
 #include "Features/IModularFeature.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "RHIDefinitions.h"
+#endif
 #include "UObject/SoftObjectPtr.h"
+
+enum EShaderPlatform : uint16;
 
 /**
  * Modular feature interface for mesh deformer providers. 
@@ -21,6 +25,9 @@ public:
 	static const FName ModularFeatureName; // "MeshDeformer"
 	static bool IsAvailable();
 	static IMeshDeformerProvider* Get();
+
+	/** Returns true if the platform is supported. */
+	virtual bool IsSupported(EShaderPlatform Platform) const = 0;
 
 	/** Structure for passing to GetDefaultMeshDeformer(). */
 	struct FDefaultMeshDeformerSetup

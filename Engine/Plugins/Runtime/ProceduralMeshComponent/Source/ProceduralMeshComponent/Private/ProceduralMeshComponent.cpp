@@ -1,24 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved. 
 
 #include "ProceduralMeshComponent.h"
+#include "BodySetupEnums.h"
 #include "PrimitiveViewRelevance.h"
-#include "RenderResource.h"
-#include "RenderingThread.h"
 #include "PrimitiveSceneProxy.h"
-#include "Containers/ResourceArray.h"
-#include "EngineGlobals.h"
-#include "VertexFactory.h"
-#include "MaterialShared.h"
+#include "MaterialDomain.h"
 #include "Materials/Material.h"
-#include "LocalVertexFactory.h"
+#include "Materials/MaterialRenderProxy.h"
 #include "Engine/Engine.h"
+#include "RenderUtils.h"
 #include "SceneManagement.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "ProceduralMeshComponentPluginPrivate.h"
 #include "DynamicMeshBuilder.h"
 #include "PhysicsEngine/PhysicsSettings.h"
+#include "SceneInterface.h"
 #include "StaticMeshResources.h"
-#include "RayTracingDefinitions.h"
 #include "RayTracingInstance.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ProceduralMeshComponent)
@@ -389,7 +386,7 @@ public:
 						bOutputVelocity |= AlwaysHasVelocity();
 
 						FDynamicPrimitiveUniformBuffer& DynamicPrimitiveUniformBuffer = Collector.AllocateOneFrameResource<FDynamicPrimitiveUniformBuffer>();
-						DynamicPrimitiveUniformBuffer.Set(GetLocalToWorld(), PreviousLocalToWorld, GetBounds(), GetLocalBounds(), GetLocalBounds(), true, bHasPrecomputedVolumetricLightmap, bOutputVelocity, GetCustomPrimitiveData());
+						DynamicPrimitiveUniformBuffer.Set(GetLocalToWorld(), PreviousLocalToWorld, GetBounds(), GetLocalBounds(), GetLocalBounds(), ReceivesDecals(), bHasPrecomputedVolumetricLightmap, bOutputVelocity, GetCustomPrimitiveData());
 						BatchElement.PrimitiveUniformBufferResource = &DynamicPrimitiveUniformBuffer.UniformBuffer;
 
 						BatchElement.FirstIndex = 0;
@@ -507,7 +504,7 @@ public:
 					bOutputVelocity |= AlwaysHasVelocity();
 
 					FDynamicPrimitiveUniformBuffer& DynamicPrimitiveUniformBuffer = Context.RayTracingMeshResourceCollector.AllocateOneFrameResource<FDynamicPrimitiveUniformBuffer>();
-					DynamicPrimitiveUniformBuffer.Set(GetLocalToWorld(), PreviousLocalToWorld, GetBounds(), GetLocalBounds(), GetLocalBounds(), true, bHasPrecomputedVolumetricLightmap, bOutputVelocity, GetCustomPrimitiveData());
+					DynamicPrimitiveUniformBuffer.Set(GetLocalToWorld(), PreviousLocalToWorld, GetBounds(), GetLocalBounds(), GetLocalBounds(), ReceivesDecals(), bHasPrecomputedVolumetricLightmap, bOutputVelocity, GetCustomPrimitiveData());
 					BatchElement.PrimitiveUniformBufferResource = &DynamicPrimitiveUniformBuffer.UniformBuffer;
 
 					BatchElement.FirstIndex = 0;
@@ -516,8 +513,6 @@ public:
 					BatchElement.MaxVertexIndex = Section->VertexBuffers.PositionVertexBuffer.GetNumVertices() - 1;
 
 					RayTracingInstance.Materials.Add(MeshBatch);
-
-					RayTracingInstance.BuildInstanceMaskAndFlags(GetScene().GetFeatureLevel());
 					OutRayTracingInstances.Add(RayTracingInstance);
 				}
 			}

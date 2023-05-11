@@ -9,7 +9,7 @@
 #include "MiniFontCommon.ush"
 
 // the prior frame's eye adaptation settings
-Texture2D EyeAdaptationTexture;
+StructuredBuffer<float4> EyeAdaptationBuffer;
 
 Texture2D SceneColorTexture;
 SamplerState SceneColorSampler;
@@ -192,11 +192,11 @@ void MainPS(noperspective float4 UVAndScreenPos : TEXCOORD0, float4 SvPosition :
 	float2 ViewLocalUV = float2(UVAndScreenPos.z * 0.5f + 0.5f, 0.5f - 0.5f * UVAndScreenPos.w);
 
 	// retrieve the exposure scale and target exposure scale from the eye-adaptation buffer.
-	float EyeAdaptationResult = EyeAdaptationTexture.Load(int3(0, 0, 0)).r;
-	float EyeAdaptationTarget = EyeAdaptationTexture.Load(int3(0, 0, 0)).g;
+	float EyeAdaptationResult = EyeAdaptationBuffer[0].r;
+	float EyeAdaptationTarget = EyeAdaptationBuffer[0].g;
 
-	float EyeAdaptationAverageSceneLuminance = EyeAdaptationTexture.Load(int3(0, 0, 0)).z;
-	float EyeAdaptationExposureBiasOnly = EyeAdaptationTexture.Load(int3(0, 0, 0)).w;
+	float EyeAdaptationAverageSceneLuminance = EyeAdaptationBuffer[0].z;
+	float EyeAdaptationExposureBiasOnly = EyeAdaptationBuffer[0].w;
 	float EyeAdaptationResultWithoutExposureBias = EyeAdaptationResult / EyeAdaptationExposureBiasOnly;
 
 	int2 OutputViewportCenter = (int2)(Output_ViewportMin + Output_ViewportSize / 2);
@@ -245,7 +245,6 @@ void MainPS(noperspective float4 UVAndScreenPos : TEXCOORD0, float4 SvPosition :
 			}
 
 			float MaxLuminance = max(LuminanceAvg.r, max(LuminanceAvg.g, LuminanceAvg.b));
-			float MaxIlluminance = MaxLuminance * PI;
 
 			// Luminance
 			int2 TopLeft = OutputViewportCenter + int2(11, 11);
@@ -267,29 +266,9 @@ void MainPS(noperspective float4 UVAndScreenPos : TEXCOORD0, float4 SvPosition :
 			PrintCharacter(PixelPos, OutColor.xyz, NumberColor, TopLeft, _N_);
 			PrintCharacter(PixelPos, OutColor.xyz, NumberColor, TopLeft, _I_);
 			PrintCharacter(PixelPos, OutColor.xyz, NumberColor, TopLeft, _T_);
-			// Illuminance
-			TopLeft = OutputViewportCenter + int2(11, 22);
-			if (MaxIlluminance < 1000.0f)
-			{
-				PrintFloat(PixelPos, OutColor.xyz, NumberColor, TopLeft, MaxIlluminance);
-				TopLeft.x += 60;
-			}
-			else if(MaxIlluminance < 999999.0f)
-			{
-				PrintFloatNoFractionLarge(PixelPos, OutColor.xyz, NumberColor, TopLeft, MaxIlluminance);
-				TopLeft.x += 60;
-			}
-			else
-			{
-				PrintFloatNoFraction(PixelPos, OutColor.xyz, NumberColor, TopLeft, MaxIlluminance, 10);
-				TopLeft.x += 100;
-			}
-			PrintCharacter(PixelPos, OutColor.xyz, NumberColor, TopLeft, _L_);
-			PrintCharacter(PixelPos, OutColor.xyz, NumberColor, TopLeft, _U_);
-			PrintCharacter(PixelPos, OutColor.xyz, NumberColor, TopLeft, _X_);
 
 			// EV100
-			TopLeft = OutputViewportCenter + int2(11, 33);
+			TopLeft = OutputViewportCenter + int2(11, 22);
 
 			const float EyeAdaptationEV100 = log2((ComputeRgbLuminance(LuminanceAvg)/.18)/EyeAdaptation_LuminanceMax);
 			PrintMediumFloatWithSign(PixelPos, OutColor.xyz, NumberColor, TopLeft, EyeAdaptationEV100);
@@ -313,16 +292,14 @@ void MainPS(noperspective float4 UVAndScreenPos : TEXCOORD0, float4 SvPosition :
 		// IlluminanceMeter variables must match the one in DebugProbes.usf
 		const float  IlluminanceMeterSize = 20;
 		const float  IlluminanceMeterHalfSize = IlluminanceMeterSize / 2;
-		const float2 IlluminanceMeterCenter = View.ViewSizeAndInvSize.xy * 0.5f - uint2(0, 100);
-
-		const float2 IlluminanceMeterCenterCoord = Input_UVViewportMin + IlluminanceMeterCenter;
-		const float2 IlluminanceMeterCenterUV = IlluminanceMeterCenterCoord * Input_ExtentInverse;
+		const float2 IlluminanceMeterCenter = OutputViewportCenter - uint2(0, 100);
+		const float2 IlluminanceMeterCenterUV = IlluminanceMeterCenter * Input_ExtentInverse;
 
 		const float PixelDx = PixelPos.x - IlluminanceMeterCenter.x;
 		const float PixelDy = PixelPos.y - IlluminanceMeterCenter.y;
 		const float AbsPixelDx = abs(PixelDx);
 		const float AbsPixelDy = abs(PixelDy);
-		if (PixelDx > - 20 && PixelDx < 300 && PixelDy < 40 && PixelDy > -20)
+		if (PixelDx > -20 && PixelDx < 300 && PixelDy < 40 && PixelDy > -20)
 		{
 			float3 LuminanceAvg = 0.0f;
 			float SampleCount = 0.0f;
@@ -354,7 +331,7 @@ void MainPS(noperspective float4 UVAndScreenPos : TEXCOORD0, float4 SvPosition :
 			float3 Illuminance = LuminanceAvg * PI;
 			float MeanIlluminance = Luminance(Illuminance);
 
-			int2 TopLeft = IlluminanceMeterCenterCoord + int2(11, 11);
+			int2 TopLeft = IlluminanceMeterCenter + int2(11, 11);
 			// Mean illuminance
 			if (MeanIlluminance < 1000.0f)
 			{
@@ -376,7 +353,7 @@ void MainPS(noperspective float4 UVAndScreenPos : TEXCOORD0, float4 SvPosition :
 			PrintCharacter(PixelPos, OutColor.xyz, NumberColor, TopLeft, _X_);
 
 			// Illuminance as RGB
-			TopLeft = IlluminanceMeterCenterCoord + int2(11, 22);
+			TopLeft = IlluminanceMeterCenter + int2(11, 22);
 			if (Illuminance.r < 1000.0f)
 			{
 				PrintFloat(PixelPos, OutColor.xyz, float3(1, 0.5, 0.5), TopLeft, Illuminance.r);

@@ -4,6 +4,7 @@
 
 #include "AssetRegistry/IAssetRegistry.h"
 #include "AssetRegistry.h"
+#include "Algo/AnyOf.h"
 #include "Blueprint/BlueprintSupport.h"
 #include "Misc/PackageName.h"
 #include "Modules/ModuleManager.h"
@@ -85,6 +86,67 @@ FARFilter UAssetRegistryHelpers::SetFilterTagsAndValues(const FARFilter& InFilte
 	}
 
 	return FilterCopy;
+}
+
+UClass* UAssetRegistryHelpers::FindAssetNativeClass(const FAssetData& AssetData)
+{
+	UClass* AssetClass = AssetData.GetClass();
+	if (AssetClass == nullptr)
+	{
+		const IAssetRegistry& AssetRegistry = IAssetRegistry::GetChecked();
+		
+		TArray<FTopLevelAssetPath> AncestorClasses;
+		AssetRegistry.GetAncestorClassNames(AssetData.AssetClassPath, AncestorClasses);
+		for (const FTopLevelAssetPath& AncestorClassPath : AncestorClasses)
+		{
+			AssetClass = FindObject<UClass>(AncestorClassPath);
+			if (AssetClass)
+			{
+				break;
+			}
+		}
+	}
+	while (AssetClass && !AssetClass->HasAnyClassFlags(CLASS_Native))
+	{
+		AssetClass = AssetClass->GetSuperClass();
+	}
+
+	return AssetClass;
+}
+
+void UAssetRegistryHelpers::FindReferencersOfAssetOfClass(UObject* AssetInstance, TConstArrayView<UClass*> InMatchClasses, TArray<FAssetData>& OutAssetDatas)
+{
+	FindReferencersOfAssetOfClass(AssetInstance->GetOutermost()->GetFName(), InMatchClasses, OutAssetDatas);
+}
+
+void UAssetRegistryHelpers::FindReferencersOfAssetOfClass(const FAssetIdentifier& InAssetIdentifier, TConstArrayView<UClass*> InMatchClasses, TArray<FAssetData>& OutAssetDatas)
+{
+	// If the asset registry is still loading assets, we cant check for referencers, so we must open the rename dialog
+	const IAssetRegistry& AssetRegistry = IAssetRegistry::GetChecked();
+
+	TArray<FAssetIdentifier> Referencers;
+	AssetRegistry.GetReferencers(InAssetIdentifier, Referencers);
+
+	for (auto AssetIdentifier : Referencers)
+	{
+		TArray<FAssetData> Assets;
+		AssetRegistry.GetAssetsByPackageName(AssetIdentifier.PackageName, Assets);
+
+		for (auto AssetData : Assets)
+		{
+			if (InMatchClasses.Num() > 0)
+			{
+				if (Algo::AnyOf(InMatchClasses, [&AssetData](UClass* MatchClass){ return AssetData.IsInstanceOf(MatchClass); }))
+				{
+					OutAssetDatas.AddUnique(AssetData);
+				}
+			}
+			else
+			{
+				OutAssetDatas.AddUnique(AssetData);
+			}
+		}
+	}
 }
 
 void UAssetRegistryHelpers::GetBlueprintAssets(const FARFilter& InFilter, TArray<FAssetData>& OutAssetData)

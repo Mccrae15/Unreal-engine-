@@ -7,13 +7,12 @@
  *  The typical use case is for structs used in the renderer and also in script code.
  */
 
-#include "CoreMinimal.h"
+#include "Async/TaskGraphFwd.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "UObject/Class.h"
 #include "UObject/WeakObjectPtr.h"
 #include "Misc/CoreMisc.h"
-#include "Async/TaskGraphInterfaces.h"
 #include "Net/Core/Connection/NetEnums.h"
 
 #include "EngineBaseTypes.generated.h"
@@ -26,7 +25,7 @@ struct FTickContext;
 //	EInputEvent
 //
 UENUM( BlueprintType, meta=(ScriptName="InputEventType"))
-enum EInputEvent
+enum EInputEvent : int
 {
 	IE_Pressed              =0,
 	IE_Released             =1,
@@ -79,7 +78,7 @@ enum ELevelTick
 
 /** Determines which ticking group a tick function belongs to. */
 UENUM(BlueprintType)
-enum ETickingGroup
+enum ETickingGroup : int
 {
 	/** Any item that needs to be executed before physics simulation starts. */
 	TG_PrePhysics UMETA(DisplayName="Pre Physics"),
@@ -519,7 +518,7 @@ struct TStructOpsTypeTraits<FActorComponentTickFunction> : public TStructOpsType
 UENUM()
 namespace ENetworkLagState
 {
-	enum Type
+	enum Type : int
 	{
 		/** The net driver is operating normally or it is not possible to tell if it is lagging */
 		NotLagging,
@@ -548,7 +547,7 @@ namespace ENetworkLagState
 UENUM(BlueprintType)
 namespace ETravelFailure
 {
-	enum Type
+	enum Type : int
 	{
 		/** No level found in the loaded package */
 		NoLevel,
@@ -614,7 +613,7 @@ namespace ETravelFailure
 
 // Traveling from server to server.
 UENUM()
-enum ETravelType
+enum ETravelType : int
 {
 	/** Absolute URL. */
 	TRAVEL_Absolute,
@@ -629,7 +628,7 @@ enum ETravelType
 UENUM(BlueprintType)
 namespace EDemoPlayFailure
 {
-	enum UE_DEPRECATED(5.1, "No longer used in favor of EReplayResult") Type
+	enum UE_DEPRECATED(5.1, "No longer used in favor of EReplayResult") Type : int
 	{
 		/** A Generic failure. */
 		Generic,
@@ -850,7 +849,7 @@ enum ENetMode
  * Don't change the order, the ID is serialized with the editor
  */
 UENUM()
-enum EViewModeIndex
+enum EViewModeIndex : int
 {
 	/** Wireframe w/ brushes. */
 	VMI_BrushWireframe = 0 UMETA(DisplayName = "Wireframe"),
@@ -921,6 +920,12 @@ enum EViewModeIndex
 
 	/** Visualize Skin Cache. */
 	VMI_VisualizeGPUSkinCache = 33 UMETA(DisplayName = "GPU Skin Cache Visualization"),
+
+	/** Visualize Substrate debug views */
+	VMI_VisualizeSubstrate = 34 UMETA(DisplayName = "Substrate Visualization"),
+
+	/** Visualize Groom debug views */
+	VMI_VisualizeGroom = 35 UMETA(DisplayName = "Groom Visualization"),
 
 	VMI_Max UMETA(Hidden),
 
@@ -993,3 +998,7 @@ class UEngineBaseTypes : public UObject
 
 };
 
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Async/TaskGraphInterfaces.h"
+#include "CoreMinimal.h"
+#endif

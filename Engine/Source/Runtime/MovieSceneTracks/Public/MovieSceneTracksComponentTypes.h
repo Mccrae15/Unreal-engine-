@@ -17,9 +17,10 @@
 #include "MovieSceneTracksComponentTypes.generated.h"
 
 class UMaterialParameterCollection;
+class UMovieScene3DTransformSection;
 class UMovieSceneDataLayerSection;
 class UMovieSceneLevelVisibilitySection;
-class UMovieScene3DTransformSection;
+class UMovieSceneSkeletalAnimationSection;
 struct FMovieSceneObjectBindingID;
 
 
@@ -76,8 +77,17 @@ struct FConstraintComponentData
 
 	UPROPERTY()
 	FName ConstraintName;
-	FConstraintAndActiveChannel* ConstraintAndActiveChannel;
 	UMovieScene3DTransformSection* Section;
+};
+
+/** Component data for a skeletal mesh animation */
+USTRUCT()
+struct FMovieSceneSkeletalAnimationComponentData
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TObjectPtr<UMovieSceneSkeletalAnimationSection> Section;
 };
 
 namespace UE
@@ -117,6 +127,12 @@ struct FAttachmentComponent
 
 	FComponentAttachParams AttachParams;
 	FComponentDetachParams DetachParams;
+};
+
+struct FFadeComponentData
+{
+	FLinearColor FadeColor;
+	bool bFadeAudio;
 };
 
 struct FFloatPropertyTraits
@@ -397,6 +413,8 @@ using FTransformPropertyTraits          = TIndirectPropertyTraits<FTransform, FI
 using FEulerTransformPropertyTraits     = TIndirectPropertyTraits<FEulerTransform, FIntermediate3DTransform>;
 using FComponentTransformPropertyTraits = TDirectPropertyTraits<FIntermediate3DTransform>;
 
+using FFloatParameterTraits             = TIndirectPropertyTraits<float, double>;
+using FColorParameterTraits             = TIndirectPropertyTraits<FLinearColor, FIntermediateColor>;
 
 struct MOVIESCENETRACKS_API FMovieSceneTracksComponentTypes
 {
@@ -414,6 +432,10 @@ struct MOVIESCENETRACKS_API FMovieSceneTracksComponentTypes
 	TPropertyComponents<FTransformPropertyTraits> Transform;
 	TPropertyComponents<FEulerTransformPropertyTraits> EulerTransform;
 	TPropertyComponents<FComponentTransformPropertyTraits> ComponentTransform;
+
+	TPropertyComponents<FFloatParameterTraits> FloatParameter;
+	TPropertyComponents<FColorParameterTraits> ColorParameter;
+
 	TComponentTypeID<FSourceDoubleChannel> QuaternionRotationChannel[3];
 
 	TComponentTypeID<FConstraintComponentData> ConstraintChannel;
@@ -423,6 +445,8 @@ struct MOVIESCENETRACKS_API FMovieSceneTracksComponentTypes
 	TComponentTypeID<FMovieSceneObjectBindingID> AttachParentBinding;
 	TComponentTypeID<FPerlinNoiseParams> FloatPerlinNoiseChannel;
 	TComponentTypeID<FPerlinNoiseParams> DoublePerlinNoiseChannel;
+
+	TComponentTypeID<FMovieSceneSkeletalAnimationComponentData> SkeletalAnimation;
 
 	TComponentTypeID<int32> ComponentMaterialIndex;
 
@@ -435,6 +459,8 @@ struct MOVIESCENETRACKS_API FMovieSceneTracksComponentTypes
 
 	TComponentTypeID<UObject*> BoundMaterial;
 	TComponentTypeID<UMaterialParameterCollection*> MPC;
+
+	TComponentTypeID<FFadeComponentData> Fade;
 
 	struct
 	{
@@ -465,7 +491,6 @@ struct MOVIESCENETRACKS_API FMovieSceneTracksComponentTypes
 private:
 	FMovieSceneTracksComponentTypes();
 };
-
 
 } // namespace MovieScene
 } // namespace UE

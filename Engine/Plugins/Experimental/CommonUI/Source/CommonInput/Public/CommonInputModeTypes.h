@@ -2,6 +2,9 @@
 
 #pragma once
 
+#include "CoreTypes.h"
+#include "UObject/ObjectMacros.h"
+
 UENUM(BlueprintType)
 enum class ECommonInputMode : uint8
 {

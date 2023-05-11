@@ -28,7 +28,12 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// The architecture that is being compiled/linked (empty string by default)
 		/// </summary>
-		public readonly string Architecture;
+		public UnrealArchitectures Architectures;
+
+		/// <summary>
+		/// Gets the Architecture in the normal case where there is a single Architecture in Architectures
+		/// </summary>
+		public UnrealArch Architecture => Architectures.SingleArchitecture;
 
 		/// <summary>
 		/// On Mac, indicates the path to the target's application bundle
@@ -118,6 +123,11 @@ namespace UnrealBuildTool
 		public List<string> DelayLoadDLLs = new List<string>();
 
 		/// <summary>
+		/// Per-architecture lists of dependencies for linking to ignore (useful when building for multiple architectures, and a lib only is needed for one architecture), it's up to the Toolchain to use this
+		/// </summary>
+		public Dictionary<string, HashSet<UnrealArch>> DependenciesToSkipPerArchitecture = new();
+
+		/// <summary>
 		/// Additional arguments to pass to the linker.
 		/// </summary>
 		public string AdditionalArguments = "";
@@ -148,6 +158,11 @@ namespace UnrealBuildTool
 		/// </summary>
 		public bool bIsBuildingDLL = false;
 
+		/// <summary>
+		/// The method of linking the target uses
+		/// </summary>
+		public TargetLinkType LinkType;
+		
 		/// <summary>
 		/// Whether we should compile using the statically-linked CRT. This is not widely supported for the whole engine, but is required for programs that need to run without dependencies.
 		/// </summary>
@@ -216,30 +231,30 @@ namespace UnrealBuildTool
 		/// </summary>
 		public bool bAllowLTCG;
 
-        /// <summary>
-        /// Whether to enable Profile Guided Optimization (PGO) instrumentation in this build.
-        /// </summary>
-        public bool bPGOProfile;
+		/// <summary>
+		/// Whether to enable Profile Guided Optimization (PGO) instrumentation in this build.
+		/// </summary>
+		public bool bPGOProfile;
 
-        /// <summary>
-        /// Whether to optimize this build with Profile Guided Optimization (PGO).
-        /// </summary>
-        public bool bPGOOptimize;
+		/// <summary>
+		/// Whether to optimize this build with Profile Guided Optimization (PGO).
+		/// </summary>
+		public bool bPGOOptimize;
 
-        /// <summary>
-        /// Platform specific directory where PGO profiling data is stored.
-        /// </summary>
-        public string? PGODirectory;
+		/// <summary>
+		/// Platform specific directory where PGO profiling data is stored.
+		/// </summary>
+		public string? PGODirectory;
 
-        /// <summary>
-        /// Platform specific filename where PGO profiling data is saved.
-        /// </summary>
-        public string? PGOFilenamePrefix;
+		/// <summary>
+		/// Platform specific filename where PGO profiling data is saved.
+		/// </summary>
+		public string? PGOFilenamePrefix;
 
-        /// <summary>
-        /// Whether to request the linker create a map file as part of the build
-        /// </summary>
-        public bool bCreateMapFile;
+		/// <summary>
+		/// Whether to request the linker create a map file as part of the build
+		/// </summary>
+		public bool bCreateMapFile;
 
 		/// <summary>
 		/// Whether PDB files should be used for Visual C++ builds.
@@ -250,6 +265,11 @@ namespace UnrealBuildTool
 		/// Whether to use the :FASTLINK option when building with /DEBUG to create local PDBs
 		/// </summary>
 		public bool bUseFastPDBLinking;
+
+		/// <summary>
+		/// Use Position Independent Executable (PIE). Has an overhead cost
+		/// </summary>
+		public bool bUsePIE = false;
 
 		/// <summary>
 		/// Whether to ignore dangling (i.e. unresolved external) symbols in modules
@@ -276,6 +296,17 @@ namespace UnrealBuildTool
 		/// Directory where to put crash report files for platforms that support it
 		/// </summary>
 		public string? CrashDiagnosticDirectory;
+
+		/// <summary>
+		/// Directory where to put the ThinLTO cache for platforms that support it
+		/// </summary>
+		public string? ThinLTOCacheDirectory;
+
+		/// <summary>
+		/// Arguments that will be applied to prune the ThinLTO cache for platforms that support it.
+		/// The arguments will only be applied if ThinLTOCacheDirectory is set.
+		/// </summary>
+		public string? ThinLTOCachePruningArguments;
 
 		/// <summary>
 		/// Bundle version for Mac apps
@@ -321,11 +352,11 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Default constructor.
 		/// </summary>
-		public LinkEnvironment(UnrealTargetPlatform Platform, CppConfiguration Configuration, string Architecture)
+		public LinkEnvironment(UnrealTargetPlatform Platform, CppConfiguration Configuration, UnrealArchitectures Architectures)
 		{
 			this.Platform = Platform;
 			this.Configuration = Configuration;
-			this.Architecture = Architecture;
+			this.Architectures = new(Architectures);
 		}
 
 		/// <summary>
@@ -335,7 +366,7 @@ namespace UnrealBuildTool
 		{
 			Platform = Other.Platform;
 			Configuration = Other.Configuration;
-			Architecture = Other.Architecture;
+			Architectures = Other.Architectures;
 			BundleDirectory = Other.BundleDirectory;
 			OutputDirectory = Other.OutputDirectory;
 			IntermediateDirectory = Other.IntermediateDirectory;
@@ -355,7 +386,7 @@ namespace UnrealBuildTool
 			bCreateDebugInfo = Other.bCreateDebugInfo;
 			bGenerateRuntimeSymbolFiles = Other.bGenerateRuntimeSymbolFiles;
 			bIsBuildingLibrary = Other.bIsBuildingLibrary;
-            bDisableSymbolCache = Other.bDisableSymbolCache;
+			bDisableSymbolCache = Other.bDisableSymbolCache;
 			bIsBuildingDLL = Other.bIsBuildingDLL;
 			bUseStaticCRT = Other.bUseStaticCRT;
 			bUseDebugCRT = Other.bUseDebugCRT;
@@ -370,18 +401,21 @@ namespace UnrealBuildTool
 			bSupportEditAndContinue = Other.bSupportEditAndContinue;
 			bUseIncrementalLinking = Other.bUseIncrementalLinking;
 			bAllowLTCG = Other.bAllowLTCG;
-            bPGOOptimize = Other.bPGOOptimize;
-            bPGOProfile = Other.bPGOProfile;
-            PGODirectory = Other.PGODirectory;
-            PGOFilenamePrefix = Other.PGOFilenamePrefix;
-            bCreateMapFile = Other.bCreateMapFile;
+			bPGOOptimize = Other.bPGOOptimize;
+			bPGOProfile = Other.bPGOProfile;
+			PGODirectory = Other.PGODirectory;
+			PGOFilenamePrefix = Other.PGOFilenamePrefix;
+			bCreateMapFile = Other.bCreateMapFile;
 			bUsePDBFiles = Other.bUsePDBFiles;
 			bUseFastPDBLinking = Other.bUseFastPDBLinking;
+			bUsePIE = Other.bUsePIE;
 			bIgnoreUnresolvedSymbols = Other.bIgnoreUnresolvedSymbols;
 			bDeterministic = Other.bDeterministic;
 			bPrintTimingInfo = Other.bPrintTimingInfo;
 			PackagePath = Other.PackagePath;
 			CrashDiagnosticDirectory = Other.CrashDiagnosticDirectory;
+			ThinLTOCacheDirectory = Other.ThinLTOCacheDirectory;
+			ThinLTOCachePruningArguments = Other.ThinLTOCachePruningArguments;
 			BundleVersion = Other.BundleVersion;
 			InstallName = Other.InstallName;
 			InputFiles.AddRange(Other.InputFiles);
@@ -390,6 +424,44 @@ namespace UnrealBuildTool
 			IncludeFunctions.AddRange(Other.IncludeFunctions);
 			ModuleDefinitionFile = Other.ModuleDefinitionFile;
 			AdditionalProperties.AddRange(Other.AdditionalProperties);
+
+			foreach (KeyValuePair<string, HashSet<UnrealArch>> Pair in Other.DependenciesToSkipPerArchitecture)
+			{
+				DependenciesToSkipPerArchitecture[Pair.Key] = new HashSet<UnrealArch>(Pair.Value);
+			}
+		}
+
+		/// <summary>
+		/// Construct a LinkEnvironment from another, and filter it down to only files/dependencies that apply to the given architecture
+		/// </summary>
+		/// <param name="Other">Parent LinkEnvironment to start with that may have been created from multiple architectures (arch1+arch2)</param>
+		/// <param name="OverrideArchitecture">The single architecture to filter down to</param>
+		public LinkEnvironment(LinkEnvironment Other, UnrealArch OverrideArchitecture)
+			: this(Other)
+		{
+			Architectures = new UnrealArchitectures(OverrideArchitecture);
+
+			// filter the input files 
+			UnrealArchitectureConfig ArchConfig = UnrealArchitectureConfig.ForPlatform(Platform);
+			string IntermediateDirPart = ArchConfig.GetFolderNameForArchitectures(Architectures);
+			InputFiles = Other.InputFiles.Where(x => x.Location.ContainsName(IntermediateDirPart, 0)).ToList();
+
+			IntermediateDirectory = new DirectoryReference(Other.IntermediateDirectory!.FullName.Replace(
+				ArchConfig.GetFolderNameForArchitectures(Other.Architectures),
+				ArchConfig.GetFolderNameForArchitecture(OverrideArchitecture)));
+
+			if (DependenciesToSkipPerArchitecture.Count() > 0)
+			{
+				// add more arrays here?
+				Libraries = Libraries.Where(x => !DependenciesToSkipPerArchitecture.ContainsKey(x.FullName) || !DependenciesToSkipPerArchitecture[x.FullName].Contains(Architecture)).ToList();
+				SystemLibraries = SystemLibraries.Where(x => !DependenciesToSkipPerArchitecture.ContainsKey(x) || !DependenciesToSkipPerArchitecture[x].Contains(Architecture)).ToList();
+				Frameworks = Frameworks.Where(x => !DependenciesToSkipPerArchitecture.ContainsKey(x) || !DependenciesToSkipPerArchitecture[x].Contains(Architecture)).ToList();
+				AdditionalFrameworks = AdditionalFrameworks.Where(x => !DependenciesToSkipPerArchitecture.ContainsKey(x.Name) || !DependenciesToSkipPerArchitecture[x.Name].Contains(Architecture)).ToList();
+				WeakFrameworks = WeakFrameworks.Where(x => !DependenciesToSkipPerArchitecture.ContainsKey(x) || !DependenciesToSkipPerArchitecture[x].Contains(Architecture)).ToList();
+				AdditionalBundleResources = AdditionalBundleResources.Where(x => x.ResourcePath == null || !DependenciesToSkipPerArchitecture.ContainsKey(x.ResourcePath) || !DependenciesToSkipPerArchitecture[x.ResourcePath].Contains(Architecture)).ToList();
+				DelayLoadDLLs = DelayLoadDLLs.Where(x => !DependenciesToSkipPerArchitecture.ContainsKey(x) || !DependenciesToSkipPerArchitecture[x].Contains(Architecture)).ToList();
+			}
 		}
 	}
 }
+	

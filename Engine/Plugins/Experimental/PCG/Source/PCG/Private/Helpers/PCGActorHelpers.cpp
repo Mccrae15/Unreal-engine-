@@ -2,160 +2,129 @@
 
 #include "Helpers/PCGActorHelpers.h"
 
-#include "PCGHelpers.h"
-
 #include "PCGComponent.h"
 #include "PCGManagedResource.h"
+#include "PCGModule.h"
+#include "Helpers/PCGHelpers.h"
+
 #include "EngineUtils.h"
-#include "Components/InstancedStaticMeshComponent.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
 #include "Engine/InheritableComponentHandler.h"
-#include "Engine/Level.h"
 #include "Engine/SCS_Node.h"
-#include "Engine/SimpleConstructionScript.h"
 #include "Engine/StaticMesh.h"
-#include "Engine/World.h"
-#include "WorldPartition/WorldPartition.h"
+#include "Materials/MaterialInterface.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGActorHelpers)
 
 #if WITH_EDITOR
-#include "Editor.h"
-#include "SourceControlHelpers.h"
-#include "PackageSourceControlHelper.h"
-#include "FileHelpers.h"
-#include "ObjectTools.h"
 #endif
 
-UInstancedStaticMeshComponent* UPCGActorHelpers::GetOrCreateISMC(AActor* InTargetActor, UPCGComponent* InSourceComponent, const FPCGISMCBuilderParameters& InParams)
+UInstancedStaticMeshComponent* UPCGActorHelpers::GetOrCreateISMC(AActor* InTargetActor, UPCGComponent* InSourceComponent, uint64 SettingsUID, const FPCGISMCBuilderParameters& InParams)
 {
-	UStaticMesh* InMesh = InParams.Mesh;
-	const TArray<UMaterialInterface*>& InMaterials = InParams.MaterialOverrides;
-	const int32 InNumCustomDataFloats = InParams.NumCustomDataFloats;
+	UPCGManagedISMComponent* MISMC = GetOrCreateManagedISMC(InTargetActor, InSourceComponent, SettingsUID, InParams);
+	if (MISMC)
+	{
+		return MISMC->GetComponent();
+	}
+	else
+	{
+		return nullptr;
+	}
+}
 
-	check(InTargetActor != nullptr && InMesh != nullptr);
-	check(InSourceComponent);
+UPCGManagedISMComponent* UPCGActorHelpers::GetOrCreateManagedISMC(AActor* InTargetActor, UPCGComponent* InSourceComponent, uint64 SettingsUID, const FPCGISMCBuilderParameters& InParams)
+{
+	check(InTargetActor && InSourceComponent);
 
-	if (!InSourceComponent)
+	const UStaticMesh* StaticMesh = InParams.Descriptor.StaticMesh;
+	if (!StaticMesh)
 	{
 		return nullptr;
 	}
 
-	TArray<UPCGManagedISMComponent*> MISMCs;
-	InSourceComponent->ForEachManagedResource([&MISMCs](UPCGManagedResource* InResource)
+	TRACE_CPUPROFILER_EVENT_SCOPE(UPCGActorHelpers::GetOrCreateManagedISMC);
+
 	{
-		if (UPCGManagedISMComponent* Resource = Cast<UPCGManagedISMComponent>(InResource))
+		TRACE_CPUPROFILER_EVENT_SCOPE(UPCGActorHelpers::GetOrCreateManagedISMC::FindMatchingMISMC);
+		UPCGManagedISMComponent* MatchingResource = nullptr;
+		InSourceComponent->ForEachManagedResource([&MatchingResource, &InParams, SettingsUID](UPCGManagedResource* InResource)
 		{
-			MISMCs.Add(Resource);
-		}
-	});
-
-	for (UPCGManagedISMComponent* MISMC : MISMCs)
-	{
-		UInstancedStaticMeshComponent* ISMC = MISMC->GetComponent();
-
-		if (ISMC && 
-			ISMC->GetStaticMesh() == InMesh &&
-			ISMC->ComponentTags.Contains(InSourceComponent->GetFName()) &&
-			ISMC->NumCustomDataFloats == InNumCustomDataFloats)
-		{
-			// If materials are provided, we'll make sure they match to the already set materials.
-			// If not provided, we'll make sure that the current materials aren't overriden
-			bool bMaterialsMatched = true;
-
-			// Check basic parameters
-			if (ISMC->Mobility != InParams.Mobility ||
-				(ISMC->bUseDefaultCollision && InParams.CollisionProfile != TEXT("Default")) ||
-				(!ISMC->bUseDefaultCollision && ISMC->GetCollisionProfileName() != InParams.CollisionProfile) ||
-				ISMC->InstanceStartCullDistance != InParams.CullStartDistance ||
-				ISMC->InstanceEndCullDistance != InParams.CullEndDistance)
+			// Early out if already found a match
+			if (MatchingResource)
 			{
-				continue;
+				return;
 			}
 
-			for (int32 MaterialIndex = 0; MaterialIndex < ISMC->GetNumMaterials() && bMaterialsMatched; ++MaterialIndex)
+			if (UPCGManagedISMComponent* Resource = Cast<UPCGManagedISMComponent>(InResource))
 			{
-				if (MaterialIndex < InMaterials.Num() && InMaterials[MaterialIndex])
+				if (Resource->GetSettingsUID() != SettingsUID)
 				{
-					if (InMaterials[MaterialIndex] != ISMC->GetMaterial(MaterialIndex))
-					{
-						bMaterialsMatched = false;
-					}
+					return;
 				}
-				else
+
+				if (UInstancedStaticMeshComponent* ISMC = Resource->GetComponent())
 				{
-					// Material is currently overriden
-					if (ISMC->OverrideMaterials.IsValidIndex(MaterialIndex) && ISMC->OverrideMaterials[MaterialIndex])
+					if (ISMC->NumCustomDataFloats == InParams.NumCustomDataFloats &&
+						Resource->GetDescriptor() == InParams.Descriptor)
 					{
-						bMaterialsMatched = false;
+						MatchingResource = Resource;
 					}
 				}
 			}
+		});
 
-			if (bMaterialsMatched)
-			{
-				// In this case, we make sure to mark the managed resource as used
-				MISMC->MarkAsUsed();
-				return ISMC;
-			}
+		if (MatchingResource)
+		{
+			TRACE_CPUPROFILER_EVENT_SCOPE(UPCGActorHelpers::GetOrCreateManagedISMC::MarkAsUsed);
+			MatchingResource->MarkAsUsed();
+			return MatchingResource;
 		}
 	}
 
+	// No matching ISM component found, let's create a new one
 	InTargetActor->Modify();
-
-	// Otherwise, create a new component
-	// TODO: use static mesh component if there's only one instance
-	// TODO: add hism/ism switch or better yet, use a template component
-	UInstancedStaticMeshComponent* ISMC = nullptr;
 
 	// Done as in InstancedStaticMesh.cpp
 #if WITH_EDITOR
-	const bool bMeshHasNaniteData = InMesh->NaniteSettings.bEnabled;
+	const bool bMeshHasNaniteData = StaticMesh->NaniteSettings.bEnabled;
 #else
-	const bool bMeshHasNaniteData = InMesh->GetRenderData()->NaniteResources.PageStreamingStates.Num() > 0;
+	const bool bMeshHasNaniteData = StaticMesh->GetRenderData()->NaniteResources.PageStreamingStates.Num() > 0;
 #endif
 
+	FString ComponentName;
+	TSubclassOf<UInstancedStaticMeshComponent> ComponentClass;
 	if (bMeshHasNaniteData)
 	{
-		ISMC = NewObject<UInstancedStaticMeshComponent>(InTargetActor);
+		ComponentClass = UInstancedStaticMeshComponent::StaticClass();
+		ComponentName += TEXT("ISM");
 	}
 	else
 	{
-		ISMC = NewObject<UHierarchicalInstancedStaticMeshComponent>(InTargetActor);
+		ComponentClass = UHierarchicalInstancedStaticMeshComponent::StaticClass();
+		ComponentName += TEXT("HISM");
 	}
 
-	ISMC->SetStaticMesh(InMesh);
+	ComponentName += TEXT("_") + StaticMesh->GetName();
 
-	// TODO: improve material override mechanisms
-	const int32 NumMaterials = ISMC->GetNumMaterials();
-	for (int32 MaterialIndex = 0; MaterialIndex < NumMaterials; ++MaterialIndex)
-	{
-		ISMC->SetMaterial(MaterialIndex, (MaterialIndex < InMaterials.Num()) ? InMaterials[MaterialIndex] : nullptr);
-	}
+	UInstancedStaticMeshComponent* ISMC = NewObject<UInstancedStaticMeshComponent>(InTargetActor, ComponentClass, MakeUniqueObjectName(InTargetActor, ComponentClass, FName(ComponentName)));
+	InParams.Descriptor.InitComponent(ISMC);
+	ISMC->NumCustomDataFloats = InParams.NumCustomDataFloats;
 
 	ISMC->RegisterComponent();
 	InTargetActor->AddInstanceComponent(ISMC);
-	ISMC->SetMobility(InParams.Mobility);
-	if (InParams.CollisionProfile != TEXT("Default"))
-	{
-		ISMC->SetCollisionProfileName(InParams.CollisionProfile, /*bOverlaps=*/false);
-	}
-	else
-	{
-		ISMC->bUseDefaultCollision = true;
-	}
 
-	ISMC->InstanceStartCullDistance = InParams.CullStartDistance;
-	ISMC->InstanceEndCullDistance = InParams.CullEndDistance;
-	
-	ISMC->AttachToComponent(InTargetActor->GetRootComponent(), FAttachmentTransformRules::KeepWorldTransform);
+	ISMC->AttachToComponent(InTargetActor->GetRootComponent(), FAttachmentTransformRules(EAttachmentRule::KeepRelative, EAttachmentRule::KeepWorld, EAttachmentRule::KeepWorld, false));
 	ISMC->ComponentTags.Add(InSourceComponent->GetFName());
 	ISMC->ComponentTags.Add(PCGHelpers::DefaultPCGTag);
 
 	// Create managed resource on source component
 	UPCGManagedISMComponent* Resource = NewObject<UPCGManagedISMComponent>(InSourceComponent);
-	Resource->GeneratedComponent = ISMC;
+	Resource->SetComponent(ISMC);
+	Resource->SetDescriptor(InParams.Descriptor);
+	Resource->SetSettingsUID(SettingsUID);
 	InSourceComponent->AddToManagedResources(Resource);
 
-	return ISMC;
+	return Resource;
 }
 
 bool UPCGActorHelpers::DeleteActors(UWorld* World, const TArray<TSoftObjectPtr<AActor>>& ActorsToDelete)
@@ -237,15 +206,9 @@ bool UPCGActorHelpers::DeleteActors(UWorld* World, const TArray<TSoftObjectPtr<A
 		{
 			if (AActor* Actor = ManagedActor.Get())
 			{
-				if (Actor->GetWorld() == World)
+				if (!ensure(World->DestroyActor(Actor)))
 				{
-					World->DestroyActor(Actor);
-				}
-				else
-				{
-					// If we're here and the world is null, then the actor has either been destroyed already or it will be picked up by GC by design.
-					// Otherwise, we have bigger issues, something is very wrong.
-					check(Actor->GetWorld() == nullptr);
+					UE_LOG(LogPCG, Warning, TEXT("Actor %s failed to be destroyed."), *Actor->GetPathName());
 				}
 			}
 		}
@@ -425,3 +388,4 @@ FIntVector UPCGActorHelpers::GetCellCoord(FVector InPosition, int InGridSize, bo
 		bUse2DGrid ? 0 : FMath::FloorToInt(Temp.Z)
 	);
 }
+

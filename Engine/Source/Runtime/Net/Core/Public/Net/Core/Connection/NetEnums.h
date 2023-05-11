@@ -2,15 +2,15 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 
+#include "NetEnums.generated.h"
 
 /** Types of network failures broadcast from the engine */
 UENUM(BlueprintType)
 namespace ENetworkFailure
 {
-	enum Type
+	enum Type : int
 	{
 		/** A relevant net driver has already been created for this service */
 		NetDriverAlreadyExists,
@@ -103,4 +103,6 @@ namespace ESecurityEvent
 	}
 }
 
-
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

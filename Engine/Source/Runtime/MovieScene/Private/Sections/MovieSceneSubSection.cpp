@@ -29,6 +29,8 @@ UMovieSceneSubSection::UMovieSceneSubSection(const FObjectInitializer& ObjInitia
 	, PrerollTime_DEPRECATED(DeprecatedMagicNumber)
 {
 	NetworkMask = (uint8)(EMovieSceneServerClientMask::Server | EMovieSceneServerClientMask::Client);
+
+	SetBlendType(EMovieSceneBlendType::Absolute);
 }
 
 FMovieSceneSequenceTransform UMovieSceneSubSection::OuterToInnerTransform() const
@@ -184,6 +186,26 @@ void UMovieSceneSubSection::PostLoad()
 	Super::PostLoad();
 }
 
+bool UMovieSceneSubSection::PopulateEvaluationFieldImpl(const TRange<FFrameNumber>& EffectiveRange, const FMovieSceneEvaluationFieldEntityMetaData& InMetaData, FMovieSceneEntityComponentFieldBuilder* OutFieldBuilder)
+{
+	const int32 EntityIndex   = OutFieldBuilder->FindOrAddEntity(this, 0);
+	const int32 MetaDataIndex = OutFieldBuilder->AddMetaData(InMetaData);
+	OutFieldBuilder->AddPersistentEntity(EffectiveRange, EntityIndex, MetaDataIndex);
+
+	return true;
+}
+
+void UMovieSceneSubSection::ImportEntityImpl(UMovieSceneEntitySystemLinker* EntityLinker, const FEntityImportParams& Params, FImportedEntity* OutImportedEntity)
+{
+	using namespace UE::MovieScene;
+
+	OutImportedEntity->AddBuilder(
+		FEntityBuilder().AddTag(FBuiltInComponentTypes::Get()->Tags.Root)
+	);
+
+	BuildDefaultSubSectionComponents(EntityLinker, Params, OutImportedEntity);
+}
+
 void UMovieSceneSubSection::SetSequence(UMovieSceneSequence* Sequence)
 {
 	SubSequence = Sequence;
@@ -214,7 +236,7 @@ void UMovieSceneSubSection::PostEditChangeProperty(FPropertyChangedEvent& Proper
 {
 	if (PropertyChangedEvent.Property && PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UMovieSceneSubSection, SubSequence))
 	{
-		// Check whether the subsequence that was just set has master tracks that contain the sequence that this subsection is in.
+		// Check whether the subsequence that was just set has tracks that contain the sequence that this subsection is in.
 		UMovieScene* SubSequenceMovieScene = SubSequence ? SubSequence->GetMovieScene() : nullptr;
 
 		UMovieSceneSubTrack* TrackOuter = Cast<UMovieSceneSubTrack>(GetOuter());
@@ -225,9 +247,9 @@ void UMovieSceneSubSection::PostEditChangeProperty(FPropertyChangedEvent& Proper
 			{
 				TArray<UMovieSceneSubTrack*> SubTracks;
 
-				for (UMovieSceneTrack* MasterTrack : SubSequenceMovieScene->GetMasterTracks())
+				for (UMovieSceneTrack* Track : SubSequenceMovieScene->GetTracks())
 				{
-					if (UMovieSceneSubTrack* SubTrack = Cast<UMovieSceneSubTrack>(MasterTrack))
+					if (UMovieSceneSubTrack* SubTrack = Cast<UMovieSceneSubTrack>(Track))
 					{
 						SubTracks.Add(SubTrack);
 					}
@@ -463,17 +485,19 @@ void UMovieSceneSubSection::BuildDefaultSubSectionComponents(UMovieSceneEntitySy
 {
 	using namespace UE::MovieScene;
 
-	if (Easing.GetEaseInDuration() > 0 || Easing.GetEaseOutDuration() > 0)
-	{
-		FBuiltInComponentTypes* Components = FBuiltInComponentTypes::Get();
+	FBuiltInComponentTypes* Components = FBuiltInComponentTypes::Get();
 
-		const FSubSequencePath      PathToRoot         = EntityLinker->GetInstanceRegistry()->GetInstance(Params.Sequence.InstanceHandle).GetSubSequencePath();
-		const FMovieSceneSequenceID ResolvedSequenceID = PathToRoot.ResolveChildSequenceID(this->GetSequenceID());
+	const bool bHasEasing = Easing.GetEaseInDuration() > 0 || Easing.GetEaseOutDuration() > 0;
 
-		OutImportedEntity->AddBuilder(
-			FEntityBuilder().Add(Components->HierarchicalEasingProvider, ResolvedSequenceID)
-		);
-	}
+	const FSubSequencePath PathToRoot = EntityLinker->GetInstanceRegistry()->GetInstance(Params.Sequence.InstanceHandle).GetSubSequencePath();
+	FMovieSceneSequenceID ResolvedSequenceID = PathToRoot.ResolveChildSequenceID(this->GetSequenceID());
+
+	OutImportedEntity->AddBuilder(
+		FEntityBuilder()
+		.Add(Components->SequenceID, ResolvedSequenceID)
+		.AddTag(Components->Tags.SubInstance)
+		.AddConditional(Components->HierarchicalEasingProvider, ResolvedSequenceID, bHasEasing)
+	);
 }
 
 

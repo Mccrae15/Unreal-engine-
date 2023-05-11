@@ -6,29 +6,27 @@
 
 #pragma once
 
-// Dependencies.
-
-#include "CoreMinimal.h"
-#include "Engine/EngineTypes.h"
-#include "RHI.h"
-#include "RenderResource.h"
-#include "RenderingThread.h"
-#include "SceneTypes.h"
-#include "UniformBuffer.h"
-#include "LumenSparseSpanArray.h"
-#include "LumenUniqueList.h"
-#include "LumenSurfaceCacheFeedback.h"
+#include "CoreTypes.h"
 #include "Containers/BinaryHeap.h"
-#include "Lumen.h"
+#include "Experimental/Containers/RobinHoodHashTable.h"
+#include "Lumen/Lumen.h"
+#include "Lumen/LumenHeightfields.h"
+#include "Lumen/LumenSparseSpanArray.h"
+#include "Lumen/LumenSurfaceCacheFeedback.h"
+#include "Lumen/LumenUniqueList.h"
 #include "MeshCardRepresentation.h"
-#include "LumenHeightfields.h"
+#include "RenderTransform.h"
+#include "ShaderParameterMacros.h"
+#include "UnifiedBuffer.h"
 
-class FMeshCardsBuildData;
+class FDistanceFieldSceneData;
 class FLumenCardBuildData;
 class FLumenCardPassUniformParameters;
-class FPrimitiveSceneInfo;
-class FDistanceFieldSceneData;
 class FLumenCardRenderer;
+class FLumenMeshCards;
+class FLumenViewState;
+class FMeshCardsBuildData;
+class FPrimitiveSceneInfo;
 struct FLumenPageTableEntry;
 
 static constexpr uint32 MaxDistantCards = 8;
@@ -103,9 +101,9 @@ public:
 	FLumenCard();
 	~FLumenCard();
 
-	FLumenCardOBB LocalOBB;
-	FLumenCardOBB WorldOBB;
-	FLumenCardOBB MeshCardsOBB;
+	FLumenCardOBBf LocalOBB;
+	FLumenCardOBBd WorldOBB;
+	FLumenCardOBBf MeshCardsOBB;
 
 	bool bVisible = false;
 	bool bHeightfield = false;
@@ -139,7 +137,7 @@ public:
 		int32 InMeshCardsIndex,
 		uint8 InIndexInBuildData);
 
-	void SetTransform(const FMatrix44f& LocalToWorld, const FLumenMeshCards& MeshCards);
+	void SetTransform(const FMatrix& LocalToWorld, const FLumenMeshCards& MeshCards);
 
 	void UpdateMinMaxAllocatedLevel();
 
@@ -180,11 +178,7 @@ public:
 class FLumenPrimitiveGroupRemoveInfo
 {
 public:
-	FLumenPrimitiveGroupRemoveInfo(const FPrimitiveSceneInfo* InPrimitive, int32 InPrimitiveIndex)
-		: Primitive(InPrimitive)
-		, PrimitiveIndex(InPrimitiveIndex)
-		, LumenPrimitiveGroupIndices(InPrimitive->LumenPrimitiveGroupIndices)
-	{}
+	FLumenPrimitiveGroupRemoveInfo(const FPrimitiveSceneInfo* InPrimitive, int32 InPrimitiveIndex);
 
 	// Must not be dereferenced after creation, the primitive was removed from the scene and deleted
 	// Value of the pointer is still useful for map lookups
@@ -204,7 +198,7 @@ public:
 	int32 MeshCardsIndex = -1;
 	int32 HeightfieldIndex = -1;
 
-	FRenderBounds WorldSpaceBoundingBox;
+	FRenderBounds WorldSpaceBoundingBox; // LWC_TODO
 	Experimental::FHashElementId RayTracingGroupMapElementId;
 	float CardResolutionScale = 1.0f;
 

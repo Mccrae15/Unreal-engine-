@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RevLimiterMotorSimComponent.h"
+#include "AudioMotorSimTypes.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(RevLimiterMotorSimComponent)
 
@@ -32,6 +33,7 @@ void URevLimiterMotorSimComponent::Update(FAudioMotorSimInputContext& Input, FAu
 	{
 		TimeRemaining = LimitTime;
 		RuntimeInfo.Rpm = LimiterMaxRpm;
+		OnRevLimiterHit.Broadcast();
 	}
 
 	if (TimeRemaining > 0.0f)

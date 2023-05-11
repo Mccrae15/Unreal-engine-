@@ -2,20 +2,20 @@
 
 #include "Engine/DataTable.h"
 #include "AssetRegistry/AssetData.h"
-#include "Internationalization/TextPackageNamespaceUtil.h"
 #include "Internationalization/StabilizeLocalizationKeys.h"
+#include "Misc/PackageName.h"
 #include "Serialization/PropertyLocalizationDataGathering.h"
 #include "Serialization/ObjectWriter.h"
 #include "Serialization/ObjectReader.h"
-#include "Serialization/StructuredArchive.h"
 #include "UObject/LinkerLoad.h"
 #include "DataTableCSV.h"
-#include "Policies/PrettyJsonPrintPolicy.h"
 #include "DataTableJSON.h"
 #include "EditorFramework/AssetImportData.h"
 #include "Engine/UserDefinedStruct.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(DataTable)
+
+LLM_DEFINE_TAG(DataTable);
 
 namespace
 {
@@ -26,14 +26,19 @@ namespace
 
 		PropertyLocalizationDataGatherer.GatherLocalizationDataFromObject(DataTable, GatherTextFlags);
 
-		const FString PathToObject = DataTable->GetPathName();
-		for (const auto& Pair : DataTable->GetRowMap())
+		if (DataTable->RowStruct)
 		{
-			const FString PathToRow = PathToObject + TEXT(".") + Pair.Key.ToString();
-			PropertyLocalizationDataGatherer.GatherLocalizationDataFromStructWithCallbacks(PathToRow, DataTable->RowStruct, Pair.Value, nullptr, GatherTextFlags);
+			const FString PathToObject = DataTable->GetPathName();
+			for (const auto& Pair : DataTable->GetRowMap())
+			{
+				const FString PathToRow = PathToObject + TEXT(".") + Pair.Key.ToString();
+				PropertyLocalizationDataGatherer.GatherLocalizationDataFromStructWithCallbacks(PathToRow, DataTable->RowStruct, Pair.Value, nullptr, GatherTextFlags);
+			}
 		}
 	}
 #endif // WITH_EDITORONLY_DATA
+
+	UE_CALL_ONCE(UE::GC::RegisterSlowImplementation, &UDataTable::AddReferencedObjects, UE::GC::EAROFlags::ExtraSlow);
 }
 
 UDataTable::FScopedDataTableChange::FScopedDataTableChange(UDataTable* InTable)
@@ -227,6 +232,7 @@ void UDataTable::HandleDataTableChanged(FName ChangedRowName)
 void UDataTable::Serialize(FStructuredArchiveRecord Record)
 {
 	FArchive& BaseArchive = Record.GetUnderlyingArchive();
+	LLM_SCOPE_BYTAG(DataTable);
 
 #if WITH_EDITORONLY_DATA
 	// Make sure and update RowStructName before calling the parent Serialize (which will save the properties)
@@ -268,15 +274,11 @@ void UDataTable::AddReferencedObjects(UObject* InThis, FReferenceCollector& Coll
 	if(This->RowStruct != nullptr && This->RowStruct->RefLink != nullptr)
 	{
 		// Now iterate over rows in the map
-		for ( auto RowIt = This->RowMap.CreateIterator(); RowIt; ++RowIt )
+		for (const TPair<FName, uint8*>& Pair : This->RowMap)
 		{
-			uint8* RowData = RowIt.Value();
-
-			if (RowData)
+			if (uint8* RowData = Pair.Value)
 			{
-				FVerySlowReferenceCollectorArchiveScope CollectorScope(Collector.GetVerySlowReferenceCollectorArchive(), This);
-				// Serialize all of the properties to make sure they get in the collector
-				This->RowStruct->SerializeBin(CollectorScope.GetArchive(), RowData);
+				Collector.AddPropertyReferences(This->RowStruct, RowData, This);
 			}
 		}
 	}

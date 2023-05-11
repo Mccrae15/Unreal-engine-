@@ -2,6 +2,7 @@
 
 #include "GeometryScript/CollisionFunctions.h"
 
+#include "Async/ParallelFor.h"
 #include "DynamicMesh/DynamicMesh3.h"
 #include "DynamicMesh/MeshNormals.h"
 #include "Operations/MeshConvexHull.h"
@@ -23,6 +24,7 @@
 
 // requires ModelingComponents
 #include "Physics/PhysicsDataCollection.h"
+#include "UObject/UObjectIterator.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(CollisionFunctions)
 

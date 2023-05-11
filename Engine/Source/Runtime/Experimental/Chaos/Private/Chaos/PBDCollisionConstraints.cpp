@@ -4,10 +4,13 @@
 
 #include "Chaos/ChaosPerfTest.h"
 #include "Chaos/ContactModification.h"
+#include "Chaos/MidPhaseModification.h"
 #include "Chaos/PBDCollisionConstraintsContact.h"
 #include "Chaos/CollisionResolution.h"
 #include "Chaos/Collision/CollisionPruning.h"
-#include "Chaos/Collision/SolverCollisionContainer.h"
+#include "Chaos/Collision/PBDCollisionContainerSolver.h"
+#include "Chaos/Collision/PBDCollisionContainerSolverJacobi.h"
+#include "Chaos/Collision/PBDCollisionContainerSolverSimd.h"
 #include "Chaos/Defines.h"
 #include "Chaos/Evolution/SolverBodyContainer.h"
 #include "Chaos/GeometryQueries.h"
@@ -21,13 +24,15 @@
 #include "Algo/Sort.h"
 #include "Algo/StableSort.h"
 
-// Private includes
-#include "Collision/PBDCollisionSolver.h"
-
 //PRAGMA_DISABLE_OPTIMIZATION
 
 namespace Chaos
 {
+	namespace CVars
+	{
+		extern bool bChaos_PBDCollisionSolver_UseJacobiPairSolver2;
+	}
+
 	int32 CollisionParticlesBVHDepth = 4;
 	FAutoConsoleVariableRef CVarCollisionParticlesBVHDepth(TEXT("p.CollisionParticlesBVHDepth"), CollisionParticlesBVHDepth, TEXT("The maximum depth for collision particles bvh"));
 
@@ -83,7 +88,6 @@ namespace Chaos
 #endif
 	
 	DECLARE_CYCLE_STAT(TEXT("Collisions::Reset"), STAT_Collisions_Reset, STATGROUP_ChaosCollision);
-	DECLARE_CYCLE_STAT(TEXT("Collisions::UpdatePointConstraints"), STAT_Collisions_UpdatePointConstraints, STATGROUP_ChaosCollision);
 	DECLARE_CYCLE_STAT(TEXT("Collisions::BeginDetect"), STAT_Collisions_BeginDetect, STATGROUP_ChaosCollision);
 	DECLARE_CYCLE_STAT(TEXT("Collisions::EndDetect"), STAT_Collisions_EndDetect, STATGROUP_ChaosCollision);
 	DECLARE_CYCLE_STAT(TEXT("Collisions::DetectProbeCollisions"), STAT_Collisions_DetectProbeCollisions, STATGROUP_ChaosCollision);
@@ -115,14 +119,40 @@ namespace Chaos
 		, bEnableEdgePruning(true)
 		, bIsDeterministic(false)
 		, bCanDisableContacts(true)
+		, CollisionSolverType(Private::ECollisionSolverType::GaussSeidel)
 		, GravityDirection(FVec3(0,0,-1))
 		, GravitySize(980)
 		, SolverSettings()
 	{
+		// Unfortunately, but the collision it creates need to know what container they belong to,
+		// but otherwise the allocator doesn't really need to know about the container...
+		ConstraintAllocator.SetCollisionContainer(this);
 	}
 
 	FPBDCollisionConstraints::~FPBDCollisionConstraints()
 	{
+	}
+
+	TUniquePtr<FConstraintContainerSolver> FPBDCollisionConstraints::CreateSceneSolver(const int32 Priority)
+	{
+		// RBAN always uses Gauss Seidel solver for now
+		return MakeUnique<FPBDCollisionContainerSolver>(*this, Priority);
+	}
+
+	TUniquePtr<FConstraintContainerSolver> FPBDCollisionConstraints::CreateGroupSolver(const int32 Priority)
+	{
+		switch (CollisionSolverType)
+		{
+		case Private::ECollisionSolverType::GaussSeidel:
+			return MakeUnique<FPBDCollisionContainerSolver>(*this, Priority);
+		case Private::ECollisionSolverType::GaussSeidelSimd:
+			return MakeUnique<Private::FPBDCollisionContainerSolverSimd>(*this, Priority);
+		case Private::ECollisionSolverType::PartialJacobi:
+			return MakeUnique<Private::FPBDCollisionContainerSolverJacobi>(*this, Priority);
+		}
+
+		check(false);
+		return nullptr;
 	}
 
 	void FPBDCollisionConstraints::DisableHandles()
@@ -289,26 +319,8 @@ namespace Chaos
 		ConstraintAllocator.EndDetectCollisions();
 
 		// Disable any edge collisions that are hidden by face collisions
+		// (for bodies that have the EdgePruning option enabled)
 		PruneEdgeCollisions();
-
-		if (bIsDeterministic)
-		{
-			ConstraintAllocator.SortConstraintsHandles();
-		}
-
-		// Bind the constraints to this container and initialize other properties
-		// @todo(chaos): this could be set on creation if the midphase knew about the container
-		for (FPBDCollisionConstraint* Contact : GetConstraints())
-		{
-			if (Contact->GetContainer() == nullptr)
-			{
-				Contact->SetContainer(this);
-				UpdateConstraintMaterialProperties(*Contact);
-			}
-
-			// Reset constraint modifications and accumulators
-			Contact->Activate();
-		}
 	}
 
 	void FPBDCollisionConstraints::DetectProbeCollisions(FReal Dt)
@@ -342,6 +354,15 @@ namespace Chaos
 		}
 	}
 
+	void FPBDCollisionConstraints::ApplyMidPhaseModifier(const TArray<ISimCallbackObject*>& MidPhaseModifiers, FReal Dt)
+	{
+		FMidPhaseModifierAccessor ModifierAccessor;
+		for(ISimCallbackObject* ModifierCallback : MidPhaseModifiers)
+		{
+			ModifierCallback->MidPhaseModification_Internal(ModifierAccessor);
+		}
+	}
+
 	void FPBDCollisionConstraints::ApplyCollisionModifier(const TArray<ISimCallbackObject*>& CollisionModifiers, FReal Dt)
 	{
 		if (GetConstraints().Num() > 0)
@@ -371,7 +392,7 @@ namespace Chaos
 		}
 	}
 
-	void FPBDCollisionConstraints::AddConstraintsToGraph(FPBDIslandManager& IslandManager)
+	void FPBDCollisionConstraints::AddConstraintsToGraph(Private::FPBDIslandManager& IslandManager)
 	{
 		// Debugging/diagnosing: if we have collisions disabled, remove all collisions from the graph and don't add any more
 		if (!GetCollisionsEnabled())
@@ -413,9 +434,14 @@ namespace Chaos
 			}
 		}
 
-		// Sort new constraints into a predictable order. This isn't strictly required, but without it we
-		// can get fairly different behaviour from run to run because the collisions detection order is 
-		// effectively random on multicore machines
+		// Sort new constraints into a predictable order. This isn't strictly required unless we have
+		// deterministic mode enabled, but we do it always because we can get fairly different behaviour 
+		// from run to run because the collisions detection order is effectively random on multicore machines.
+		//
+		// @todo(chaos): this is still not good enough for some types of determinism. Specifically if we 
+		// create two set of objects in a different order but with the same physical positions and other 
+		// state, they will behave differently which is undesirable. To fix this we need a sorting 
+		// mechanism that does not rely on properties like IDs. E.g., some kind of physical state hash?
 		TempCollisions.Sort(
 			[](const FPBDCollisionConstraintHandle& L, const FPBDCollisionConstraintHandle& R)
 			{

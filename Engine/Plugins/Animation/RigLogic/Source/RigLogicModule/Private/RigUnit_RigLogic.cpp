@@ -4,6 +4,7 @@
 
 #include "ControlRig.h"
 #include "DNAReader.h"
+#include "Engine/SkeletalMesh.h"
 #include "RigInstance.h"
 #include "RigLogic.h"
 #include "SharedRigRuntimeContext.h"
@@ -84,6 +85,7 @@ void FRigUnit_RigLogic_Data::InitializeRigLogic(const URigHierarchy* InHierarchy
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_RigUnit_RigLogic_InitializeRigLogic);
+
 	if (!NewContext.IsValid())
 	{
 		UE_LOG(LogRigLogicUnit, Warning, TEXT("No valid DNA file found, abort initialization."));
@@ -114,7 +116,8 @@ void FRigUnit_RigLogic_Data::MapInputCurveIndices(const URigHierarchy* InHierarc
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_RigUnit_RigLogic_MapInputCurveIndices);
-	const IBehaviorReader* DNABehavior = LocalRigRuntimeContext->BehaviorReader.Get();
+
+	const IDNAReader* DNABehavior = LocalRigRuntimeContext->BehaviorReader.Get();
 	const uint32 ControlCount = DNABehavior->GetRawControlCount();
 	InputCurveIndices.Reset(ControlCount);
 	for (uint32_t ControlIndex = 0; ControlIndex < ControlCount; ++ControlIndex)
@@ -135,7 +138,8 @@ void FRigUnit_RigLogic_Data::MapJoints(const URigHierarchy* Hierarchy)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_RigUnit_RigLogic_MapJoints);
-	const IBehaviorReader* DNABehavior = LocalRigRuntimeContext->BehaviorReader.Get();
+
+	const IDNAReader* DNABehavior = LocalRigRuntimeContext->BehaviorReader.Get();
 	const uint16 JointCount = DNABehavior->GetJointCount();
 	HierarchyBoneIndices.Reset(JointCount);
 	for (uint16 JointIndex = 0; JointIndex < JointCount ; ++JointIndex)
@@ -151,7 +155,8 @@ void FRigUnit_RigLogic_Data::MapMorphTargets(const URigHierarchy* InHierarchy)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_RigUnit_RigLogic_MapMorphTargets);
-	const IBehaviorReader* DNABehavior = LocalRigRuntimeContext->BehaviorReader.Get();
+
+	const IDNAReader* DNABehavior = LocalRigRuntimeContext->BehaviorReader.Get();
 	const uint16 LODCount = DNABehavior->GetLODCount();
 
 	MorphTargetCurveIndices.Reset();
@@ -185,7 +190,8 @@ void FRigUnit_RigLogic_Data::MapMaskMultipliers(const URigHierarchy* InHierarchy
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_RigUnit_RigLogic_MapMaskMultipliers);
-	const IBehaviorReader* DNABehavior = LocalRigRuntimeContext->BehaviorReader.Get();
+
+	const IDNAReader* DNABehavior = LocalRigRuntimeContext->BehaviorReader.Get();
 	const uint16 LODCount = DNABehavior->GetLODCount();
 	CurveElementIndicesForAnimMaps.Reset();
 	CurveElementIndicesForAnimMaps.AddDefaulted(LODCount);
@@ -229,6 +235,7 @@ void FRigUnit_RigLogic_Data::CalculateRigLogic(const URigHierarchy* InHierarchy)
 		const float Value = InHierarchy->GetCurveValue(CurveIndex);
 		RigInstance->SetRawControl(ControlIndex, Value);
 	}
+
 	LocalRigRuntimeContext->RigLogic->Calculate(RigInstance.Get());
 }
 
@@ -264,6 +271,7 @@ void FRigUnit_RigLogic_Data::UpdateBlendShapeCurves(URigHierarchy* InHierarchy, 
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_RigUnit_RigLogic_UpdateBlendShapeCurves);
+
 	// set output blend shapes
 	if (BlendShapeIndices.IsValidIndex(CurrentLOD) && MorphTargetCurveIndices.IsValidIndex(CurrentLOD))
 	{
@@ -293,6 +301,7 @@ void FRigUnit_RigLogic_Data::UpdateAnimMapCurves(URigHierarchy* InHierarchy, TAr
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_RigUnit_RigLogic_UpdateAnimMapCurves);
+
 	// set output mask multipliers
 	// In case curves are not imported yet into CL, AnimatedMapsCurveIndices will be empty, so we need to check
 	// array bounds before trying to access it:
@@ -335,64 +344,55 @@ FRigUnit_RigLogic_Execute()
  	URigHierarchy* Hierarchy = ExecuteContext.Hierarchy;
 	if (Hierarchy)
 	{
-		switch (Context.State)
+		if(!bIsInitialized)
 		{
-			case EControlRigState::Init:
+			//const double startTime = FPlatformTime::Seconds();
+			if (!Data.SkelMeshComponent.IsValid())
 			{
-				//const double startTime = FPlatformTime::Seconds();
-				if (!Data.SkelMeshComponent.IsValid())
-				{
-					Data.SkelMeshComponent = Context.DataSourceRegistry->RequestSource<USkeletalMeshComponent>(UControlRig::OwnerComponent);
-					// In normal execution, Data.SkelMeshComponent will be nullptr at the beginning
-					// however, during unit testing we cannot fetch it from DataSourceRegistry 
-					// in that case, a mock version will be inserted into Data by unit test beforehand
-				}
-				if (!Data.SkelMeshComponent.IsValid() || Data.SkelMeshComponent->GetSkeletalMeshAsset() == nullptr)
-				{
-					return;
-				}
-				Data.CurrentLOD = Data.SkelMeshComponent->GetPredictedLODLevel();
-
-				// Fetch shared runtime context of rig from DNAAsset
-				TSharedPtr<FSharedRigRuntimeContext> RigRuntimeContext = GetSharedRigRuntimeContext(Data.SkelMeshComponent->GetSkeletalMeshAsset());
-				// Context is initialized with a BehaviorReader, which can be imported into SkeletalMesh from DNA file
-				// or overwritten by GeneSplicer when making a new character
-				Data.InitializeRigLogic(Hierarchy, RigRuntimeContext);
-				//const double delta = FPlatformTime::Seconds() - startTime;
-				//UE_LOG(LogRigLogicUnit, Warning, TEXT("RigLogic::Init execution time: %f"), delta);
-
-				break; 
+				Data.SkelMeshComponent = ExecuteContext.UnitContext.DataSourceRegistry->RequestSource<USkeletalMeshComponent>(UControlRig::OwnerComponent);
+				// In normal execution, Data.SkelMeshComponent will be nullptr at the beginning
+				// however, during unit testing we cannot fetch it from DataSourceRegistry 
+				// in that case, a mock version will be inserted into Data by unit test beforehand
 			}
-			case EControlRigState::Update:
+			if (!Data.SkelMeshComponent.IsValid() || Data.SkelMeshComponent->GetSkeletalMeshAsset() == nullptr)
 			{
-				//const double startTime = FPlatformTime::Seconds();
-				// Fetch shared runtime context of rig from DNAAsset
-				if (!Data.SkelMeshComponent.IsValid() || !Data.IsRigLogicInitialized() || Hierarchy == nullptr)
-				{
-					return;
-				}
-				Data.CurrentLOD = Data.SkelMeshComponent->GetPredictedLODLevel();
-				Data.CalculateRigLogic(Hierarchy);
-
-				//Filing a struct so we can call the same method for updating joints from tests
-				TArrayView<const float> NeutralJointValues = Data.LocalRigRuntimeContext->RigLogic->GetRawNeutralJointValues();
-				TArrayView<const float> DeltaJointValues = Data.RigInstance->GetRawJointOutputs();
-				Data.UpdateJoints(Hierarchy, NeutralJointValues, DeltaJointValues);
-
-				TArrayView<const float> BlendShapeValues = Data.RigInstance->GetBlendShapeOutputs();
-				Data.UpdateBlendShapeCurves(Hierarchy, BlendShapeValues);
-
-				TArrayView<const float> AnimMapOutputs = Data.RigInstance->GetAnimatedMapOutputs();
-				Data.UpdateAnimMapCurves(Hierarchy, AnimMapOutputs);
-
-				//const double delta = FPlatformTime::Seconds() - startTime;
-				//UE_LOG(LogRigLogicUnit, Warning, TEXT("RigLogic::Update execution time: %f"), delta);
+				return;
 			}
-			default:
-			{
-				break;
-			}
+			Data.CurrentLOD = Data.SkelMeshComponent->GetPredictedLODLevel();
+
+			// Fetch shared runtime context of rig from DNAAsset
+			TSharedPtr<FSharedRigRuntimeContext> RigRuntimeContext = GetSharedRigRuntimeContext(Data.SkelMeshComponent->GetSkeletalMeshAsset());
+			// Context is initialized with a BehaviorReader, which can be imported into SkeletalMesh from DNA file
+			// or overwritten by GeneSplicer when making a new character
+			Data.InitializeRigLogic(Hierarchy, RigRuntimeContext);
+			bIsInitialized = true;
+			//const double delta = FPlatformTime::Seconds() - startTime;
+			//UE_LOG(LogRigLogicUnit, Warning, TEXT("RigLogic::Init execution time: %f"), delta);
 		}
+		
+
+		//const double startTime = FPlatformTime::Seconds();
+		// Fetch shared runtime context of rig from DNAAsset
+		if (!Data.SkelMeshComponent.IsValid() || !Data.IsRigLogicInitialized() || Hierarchy == nullptr)
+		{
+			return;
+		}
+		Data.CurrentLOD = Data.SkelMeshComponent->GetPredictedLODLevel();
+		Data.CalculateRigLogic(Hierarchy);
+
+		//Filing a struct so we can call the same method for updating joints from tests
+		TArrayView<const float> NeutralJointValues = Data.LocalRigRuntimeContext->RigLogic->GetRawNeutralJointValues();
+		TArrayView<const float> DeltaJointValues = Data.RigInstance->GetRawJointOutputs();
+		Data.UpdateJoints(Hierarchy, NeutralJointValues, DeltaJointValues);
+
+		TArrayView<const float> BlendShapeValues = Data.RigInstance->GetBlendShapeOutputs();
+		Data.UpdateBlendShapeCurves(Hierarchy, BlendShapeValues);
+
+		TArrayView<const float> AnimMapOutputs = Data.RigInstance->GetAnimatedMapOutputs();
+		Data.UpdateAnimMapCurves(Hierarchy, AnimMapOutputs);
+
+		//const double delta = FPlatformTime::Seconds() - startTime;
+		//UE_LOG(LogRigLogicUnit, Warning, TEXT("RigLogic::Update execution time: %f"), delta);
 	}
 }
 

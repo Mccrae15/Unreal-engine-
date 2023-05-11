@@ -22,6 +22,11 @@ namespace BlackmagicDesign
 	struct FTimecode;
 }
 
+namespace UE::GPUTextureTransfer
+{
+	class ITextureTransfer;
+}
+
 /**
  * Output Media for Blackmagic streams.
  * The output format could be any of EBlackmagicMediaOutputPixelFormat.
@@ -29,8 +34,10 @@ namespace BlackmagicDesign
 UCLASS(BlueprintType)
 class BLACKMAGICMEDIAOUTPUT_API UBlackmagicMediaCapture : public UMediaCapture
 {
-	GENERATED_UCLASS_BODY()
+	GENERATED_BODY()
 
+public:
+	UBlackmagicMediaCapture();
 	//~ UMediaCapture interface
 public:
 	virtual bool HasFinishedProcessing() const override;
@@ -40,13 +47,20 @@ protected:
 	virtual bool PostInitializeCaptureViewport(TSharedPtr<FSceneViewport>& InSceneViewport) override;
 	virtual bool UpdateSceneViewportImpl(TSharedPtr<FSceneViewport>& InSceneViewport) override;
 	virtual bool UpdateRenderTargetImpl(UTextureRenderTarget2D* InRenderTarget) override;
+	virtual bool UpdateAudioDeviceImpl(const FAudioDeviceHandle& InAudioDeviceHandle) override;
 	virtual void StopCaptureImpl(bool bAllowPendingFrameToBeProcess) override;
 	virtual bool ShouldCaptureRHIResource() const override;
 
 	virtual void OnFrameCaptured_RenderingThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, void* InBuffer, int32 Width, int32 Height, int32 BytesPerRow) override;
+	virtual void OnFrameCaptured_AnyThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, const FMediaCaptureResourceData& InResourceData) override;
+	virtual void OnRHIResourceCaptured_AnyThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, FTextureRHIRef InTexture) override;
 	virtual void OnRHIResourceCaptured_RenderingThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, FTextureRHIRef InTexture) override;
 	virtual void LockDMATexture_RenderThread(FTextureRHIRef InTexture) override;
 	virtual void UnlockDMATexture_RenderThread(FTextureRHIRef InTexture) override;
+	virtual bool SupportsAnyThreadCapture() const override
+	{
+		return true;
+	}
 
 private:
 	struct FBlackmagicOutputCallback;
@@ -54,10 +68,12 @@ private:
 
 private:
 	bool InitBlackmagic(UBlackmagicMediaOutput* InMediaOutput);
-	void WaitForSync_RenderingThread();
-	void OutputAudio_RenderingThread(const FCaptureBaseData& InBaseData, const BlackmagicDesign::FTimecode& Timecode);
+	bool CreateAudioOutput(const FAudioDeviceHandle& InAudioDeviceHandle, const UBlackmagicMediaOutput* InBlackmagicMediaOutput);
+	void WaitForSync_AnyThread();
+	void OutputAudio_AnyThread(const FCaptureBaseData& InBaseData, const BlackmagicDesign::FTimecode& Timecode);
 	void ApplyViewportTextureAlpha(TSharedPtr<FSceneViewport> InSceneViewport);
 	void RestoreViewportTextureAlpha(TSharedPtr<FSceneViewport> InSceneViewport);
+	void OnFrameCapturedInternal_AnyThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, const FMediaCaptureResourceData& InResourceData);
 
 private:
 	friend BlackmagicMediaCaptureHelpers::FBlackmagicMediaCaptureEventCallback;
@@ -79,7 +95,7 @@ private:
 	FFrameRate FrameRate;
 
 	/** Critical section for synchronizing access to the OutputChannel */
-	FCriticalSection RenderThreadCriticalSection;
+	FCriticalSection CopyingCriticalSection;
 
 	/** Event to wakeup When waiting for sync */
 	FEvent* WakeUpEvent;
@@ -106,4 +122,6 @@ private:
 
 	/** The last time OutputAudio was called. Used to adjust the number of audio samples to grab on each frame depending on the frame time. */
 	double OutputAudioTimestamp;
+
+	TSharedPtr<UE::GPUTextureTransfer::ITextureTransfer> TextureTransfer;
 };

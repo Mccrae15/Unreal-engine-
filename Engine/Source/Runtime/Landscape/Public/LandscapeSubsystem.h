@@ -50,6 +50,17 @@ public:
 	virtual TStatId GetStatId() const override;
 	// End FTickableGameObject overrides
 
+	void PrioritizeGrassCreation(bool bPrioritizeGrassCreation) { bIsGrassCreationPrioritized = bPrioritizeGrassCreation; }
+	bool IsGrassCreationPrioritized() const { return bIsGrassCreationPrioritized; }
+
+	/**
+	 * Can be called at runtime : (optionally) flushes grass on all landscape components and updates them
+	 * @param bInFlushGrass : flushes all grass from landscape components prior to updating them
+	 * @param bInForceSync : synchronously updates grass on all landscape components 
+	 * @param InOptionalCameraLocations : (optional) camera locations that should be used when updating the grass. If not specified, the usual (streaming manager-based) view locations will be used
+	 */
+	LANDSCAPE_API void RegenerateGrass(bool bInFlushGrass, bool bInForceSync, TOptional<TArrayView<FVector>> InOptionalCameraLocations = TOptional<TArrayView<FVector>>());
+
 #if WITH_EDITOR
 	LANDSCAPE_API void BuildAll();
 	LANDSCAPE_API void BuildGrassMaps();
@@ -58,7 +69,12 @@ public:
 	LANDSCAPE_API int32 GetOutdatedGIBakedTextureComponentsCount();
 	LANDSCAPE_API void BuildPhysicalMaterial();
 	LANDSCAPE_API int32 GetOudatedPhysicalMaterialComponentsCount();
-	LANDSCAPE_API void BuildNanite();
+	/**
+	 * Updates the Nanite mesh on all landscape actors whose mesh is not up to date.
+	 * @param InProxiesToBuild - If specified, only the Nanite meshes of the specified landscape actors (recursively for all streaming proxies, in the case of a 1 ALandscape / N ALandscapeStreamingProxy setup) will be built
+	 * @param bForceRebuild - If true, forces the Nanite meshes to be rebuilt, no matter if they're up to date or not
+	 */
+	LANDSCAPE_API void BuildNanite(TArrayView<ALandscapeProxy*> InProxiesToBuild = TArrayView<ALandscapeProxy*>(), bool bForceRebuild = false);
 	LANDSCAPE_API bool IsGridBased() const;
 	LANDSCAPE_API void ChangeGridSize(ULandscapeInfo* LandscapeInfo, uint32 NewGridSizeInComponents);
 	LANDSCAPE_API ALandscapeProxy* FindOrAddLandscapeProxy(ULandscapeInfo* LandscapeInfo, const FIntPoint& SectionBase);
@@ -69,6 +85,7 @@ public:
 	LANDSCAPE_API static bool IsDirtyOnlyInModeEnabled();
 	FLandscapeNotificationManager* GetNotificationManager() { return NotificationManager; }
 	FOnHeightmapStreamedDelegate& GetOnHeightmapStreamedDelegate() { return OnHeightmapStreamed; }
+	LANDSCAPE_API bool AnyViewShowCollisions() const { return bAnyViewShowCollisions; }  //! Returns true if any view has view collisions enabled.
 #endif // WITH_EDITOR
 
 private:
@@ -81,6 +98,7 @@ private:
 	virtual void Deinitialize() override;
 	// End USubsystem
 
+	bool bIsGrassCreationPrioritized;
 	TArray<TWeakObjectPtr<ALandscapeProxy>> Proxies;
 
 #if WITH_EDITOR
@@ -90,5 +108,6 @@ private:
 	
 	FLandscapeNotificationManager* NotificationManager;
 	FOnHeightmapStreamedDelegate OnHeightmapStreamed;
+	bool bAnyViewShowCollisions = false;
 #endif // WITH_EDITOR
 };

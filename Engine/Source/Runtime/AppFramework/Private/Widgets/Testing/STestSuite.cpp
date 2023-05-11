@@ -24,6 +24,7 @@
 #include "Input/Events.h"
 #include "Input/Reply.h"
 #include "Rendering/RenderingCommon.h"
+#include "Rendering/DrawElementPayloads.h"
 #include "Rendering/DrawElements.h"
 #include "Widgets/SWidget.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
@@ -925,7 +926,7 @@ private:
 		FSlateDrawElement::MakeText(
 			InParams.OutDrawElements,
 			InParams.Layer,
-			InParams.Geometry.ToPaintGeometry(FVector2D(0,0), InParams.Geometry.GetLocalSize(), FontScale),
+			InParams.Geometry.ToPaintGeometry(InParams.Geometry.GetLocalSize(), FSlateLayoutTransform(FontScale)),
 			Text.ToString(),
 			FontInfo,
 			InParams.bEnabled ? ESlateDrawEffect::None : ESlateDrawEffect::DisabledEffect,
@@ -3462,7 +3463,7 @@ protected:
 		PickerArgs.bOnlyRefreshOnOk = false;
 		PickerArgs.OnColorCommitted = FOnLinearColorValueChanged::CreateSP(this, &SRichTextEditTest::SetFontColor);
 		PickerArgs.OnColorPickerCancelled = FOnColorPickerCancelled::CreateSP(this, &SRichTextEditTest::SetFontColor);
-		PickerArgs.InitialColorOverride = FontColor;
+		PickerArgs.InitialColor = FontColor;
 
 		OpenColorPicker(PickerArgs);
 

@@ -118,10 +118,16 @@ namespace UnrealBuildTool
 			// Read the XML configuration files
 			XmlConfig.ApplyTo(this);
 
+			// Apply to architecture configs that need to read commandline arguments and didn't have the Arguments passed in during construction
+			foreach (UnrealArchitectureConfig Config in UnrealArchitectureConfig.AllConfigs())
+			{
+				Arguments.ApplyTo(Config);
+			}
+
 			// Fixup the log path if it wasn't overridden by a config file
 			if (BaseLogFileName == null)
 			{
-				BaseLogFileName = FileReference.Combine(UnrealBuildTool.EngineProgramSavedDirectory, "UnrealBuildTool", "Log.txt").FullName;
+				BaseLogFileName = FileReference.Combine(Unreal.EngineProgramSavedDirectory, "UnrealBuildTool", "Log.txt").FullName;
 			}
 
 			// Create the log file, and flush the startup listener to it
@@ -256,6 +262,110 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
+		/// Creates scripts for executing the init scripts (only supported on project descriptors)
+		/// </summary>
+		/// <param name="TargetDescriptor">The current target</param>
+		/// <returns>List of created script files</returns>
+		public static FileReference[] CreateInitScripts(TargetDescriptor TargetDescriptor)
+		{
+			if (TargetDescriptor.ProjectFile == null)
+			{
+				return new FileReference[] { };
+			}
+
+			ProjectDescriptor ProjectDescriptor = ProjectDescriptor.FromFile(TargetDescriptor.ProjectFile);
+			List<string[]> InitCommandBatches = new List<string[]>();
+
+			if(ProjectDescriptor != null && ProjectDescriptor.InitSteps != null)
+			{
+				if(ProjectDescriptor.InitSteps.TryGetCommands(BuildHostPlatform.Current.Platform, out string[]? Commands))
+				{
+					InitCommandBatches.Add(Commands);
+				}
+			}
+
+			if (InitCommandBatches.Count == 0)
+			{
+				return new FileReference[] { };
+			}
+
+			DirectoryReference ProjectDirectory = DirectoryReference.FromFile(TargetDescriptor.ProjectFile);
+			string PlatformIntermediateFolder = UEBuildTarget.GetPlatformIntermediateFolder(TargetDescriptor.Platform, TargetDescriptor.Architectures, false);
+
+			DirectoryReference ProjectIntermediateDirectory = DirectoryReference.Combine(ProjectDirectory, PlatformIntermediateFolder, TargetDescriptor.Name, TargetDescriptor.Configuration.ToString());
+
+			return WriteInitScripts(TargetDescriptor, BuildHostPlatform.Current.Platform, ProjectIntermediateDirectory, "Init", InitCommandBatches);
+		}
+
+		/// <summary>
+		/// Write scripts containing the custom build steps for the given host platform
+		/// </summary>
+		/// <param name="TargetDescriptor">The current target</param>
+		/// <param name="HostPlatform">The current host platform</param>
+		/// <param name="Directory">The output directory for the scripts</param>
+		/// <param name="FilePrefix">Bare prefix for all the created script files</param>
+		/// <param name="CommandBatches">List of custom build steps</param>
+		/// <returns>List of created script files</returns>
+		private static FileReference[] WriteInitScripts(TargetDescriptor TargetDescriptor, UnrealTargetPlatform HostPlatform, DirectoryReference Directory, string FilePrefix, List<string[]> CommandBatches)
+		{
+			List<FileReference> ScriptFiles = new List<FileReference>();
+			foreach(string[] CommandBatch in CommandBatches)
+			{
+				// Find all the standard variables
+				Dictionary<string, string> Variables = GetTargetVariables(TargetDescriptor);
+
+				// Get the output path to the script
+				string ScriptExtension = RuntimePlatform.IsWindows ? ".bat" : ".sh";
+				FileReference ScriptFile = FileReference.Combine(Directory, String.Format("{0}-{1}{2}", FilePrefix, ScriptFiles.Count + 1, ScriptExtension));
+
+				// Write it to disk
+				List<string> Contents = new List<string>();
+				if(RuntimePlatform.IsWindows)
+				{
+					Contents.Insert(0, "@echo off");
+				}
+				foreach(string Command in CommandBatch)
+				{
+					Contents.Add(Utils.ExpandVariables(Command, Variables));
+				}
+				if(!DirectoryReference.Exists(ScriptFile.Directory))
+				{
+					DirectoryReference.CreateDirectory(ScriptFile.Directory);
+				}
+				FileReference.WriteAllLines(ScriptFile, Contents);
+
+				// Add the output file to the list of generated scripts
+				ScriptFiles.Add(ScriptFile);
+			}
+			return ScriptFiles.ToArray();
+		}
+
+		/// <summary>
+		/// Gets a list of variables that can be expanded in paths referenced by this target
+		/// </summary>
+		/// <param name="TargetDescriptor">The current target</param>
+		/// <returns>Map of variable names to values</returns>
+		private static Dictionary<string, string> GetTargetVariables(TargetDescriptor TargetDescriptor)
+		{
+			Dictionary<string, string> Variables = new Dictionary<string,string>();
+			Variables.Add("RootDir", Unreal.RootDirectory.FullName);
+			Variables.Add("EngineDir", Unreal.EngineDirectory.FullName);
+			Variables.Add("TargetName", TargetDescriptor.Name);
+			Variables.Add("TargetPlatform", TargetDescriptor.Platform.ToString());
+			Variables.Add("TargetConfiguration", TargetDescriptor.Configuration.ToString());
+			if(TargetDescriptor.ProjectFile != null)
+			{
+				Variables.Add("ProjectDir", TargetDescriptor.ProjectFile.Directory.FullName);
+				Variables.Add("ProjectFile", TargetDescriptor.ProjectFile.FullName);
+			}
+			if (BuildVersion.TryRead(BuildVersion.GetDefaultFileName(), out BuildVersion? Version))
+			{
+				Variables.Add("EngineVersion", String.Format("{0}.{1}.{2}", Version.MajorVersion, Version.MinorVersion, Version.PatchVersion));
+			}
+			return Variables;
+		}
+
+		/// <summary>
 		/// Build a list of targets
 		/// </summary>
 		/// <param name="TargetDescriptors">Target descriptors</param>
@@ -272,6 +382,13 @@ namespace UnrealBuildTool
 
 			for (int Idx = 0; Idx < TargetDescriptors.Count; ++Idx)
 			{
+				// Create and execute the init scripts
+				FileReference[] InitScripts = CreateInitScripts(TargetDescriptors[Idx]);
+				if (InitScripts.Length > 0)
+				{
+					Utils.ExecuteCustomBuildSteps(InitScripts, Logger);
+				}
+
 				TargetMakefile NewMakefile = CreateMakefile(BuildConfiguration, TargetDescriptors[Idx], WorkingSet, Logger);
 				TargetMakefiles.Add(NewMakefile);
 				if (!bSkipPreBuildTargets)
@@ -300,13 +417,20 @@ namespace UnrealBuildTool
 		/// <param name="WriteOutdatedActionsFile">Files to write the list of outdated actions to (rather than building them)</param>
 		/// <param name="Logger">Logger for output</param>
 		/// <returns>Result from the compilation</returns>
-		static void Build(TargetMakefile[] Makefiles, List<TargetDescriptor> TargetDescriptors, BuildConfiguration BuildConfiguration, BuildOptions Options, FileReference? WriteOutdatedActionsFile, ILogger Logger)
+		internal static void Build(TargetMakefile[] Makefiles, List<TargetDescriptor> TargetDescriptors, BuildConfiguration BuildConfiguration, BuildOptions Options, FileReference? WriteOutdatedActionsFile, ILogger Logger)
 		{
 			// Execute the build
 			if ((Options & BuildOptions.SkipBuild) == 0)
 			{
 				// Make sure that none of the actions conflict with any other (producing output files differently, etc...)
-				ActionGraph.CheckForConflicts(Makefiles.SelectMany(x => x.Actions), Logger);
+				using (GlobalTracer.Instance.BuildSpan("ActionGraph.CheckForConflicts").StartActive())
+				{
+					// TODO: Skipping conflicts for WriteMetadata is a hack to maintain parity with the BuildGraph executor which allowed
+					// exporting mulitple conflicing WriteMetadata actions.
+					// This is technically buggy behavior and should be properly fixed in UEBuildTarget.cs
+					IEnumerable<IExternalAction> CheckActions = Makefiles.SelectMany(x => x.Actions).Where(x => !x.IgnoreConflicts());
+					ActionGraph.CheckForConflicts(CheckActions, Logger);
+				}
 
 				// Check we don't exceed the nominal max path length
 				using (GlobalTracer.Instance.BuildSpan("ActionGraph.CheckPathLengths").StartActive())
@@ -373,7 +497,7 @@ namespace UnrealBuildTool
 					using (GlobalTracer.Instance.BuildSpan("Reading dependency cache").StartActive())
 					{
 						TargetDescriptor TargetDescriptor = TargetDescriptors[TargetIdx];
-						CppDependencies.Mount(TargetDescriptor.ProjectFile, TargetDescriptor.Name, TargetDescriptor.Platform, TargetDescriptor.Configuration, Makefiles[TargetIdx].TargetType, TargetDescriptor.Architecture, Logger);
+						CppDependencies.Mount(TargetDescriptor.ProjectFile, TargetDescriptor.Name, TargetDescriptor.Platform, TargetDescriptor.Configuration, Makefiles[TargetIdx].TargetType, TargetDescriptor.Architectures, Logger);
 					}
 				}
 
@@ -476,7 +600,7 @@ namespace UnrealBuildTool
 								if (PrerequisiteAction.ActionType != ActionType.GatherModuleDependencies)
 								{
 									Action NewAction = new Action(PrerequisiteAction.Inner);
-									NewAction.PrerequisiteItems.AddRange(CompiledModuleInterfaces);
+									NewAction.PrerequisiteItems.UnionWith(CompiledModuleInterfaces);
 									PrerequisiteAction.Inner = NewAction;
 								}
 							}
@@ -593,6 +717,7 @@ namespace UnrealBuildTool
 					using (GlobalTracer.Instance.BuildSpan("ActionGraph.WriteActions").StartActive())
 					{
 						ActionGraph.ExportJson(MergedActionsToExecute, WriteOutdatedActionsFile);
+						Logger.LogInformation("Exported build actions to {WriteOutdatedActionsFile}", WriteOutdatedActionsFile);
 					}
 				}
 				else
@@ -688,13 +813,13 @@ namespace UnrealBuildTool
 		/// <param name="WorkingSet">Set of source files which are part of the working set</param>
 		/// <param name="Logger">Logger for output</param>
 		/// <returns>Makefile for the given target</returns>
-		static TargetMakefile CreateMakefile(BuildConfiguration BuildConfiguration, TargetDescriptor TargetDescriptor, ISourceFileWorkingSet WorkingSet, ILogger Logger)
+		internal static TargetMakefile CreateMakefile(BuildConfiguration BuildConfiguration, TargetDescriptor TargetDescriptor, ISourceFileWorkingSet WorkingSet, ILogger Logger)
 		{
 			// Get the path to the makefile for this target
 			FileReference? MakefileLocation = null;
 			if(BuildConfiguration.bUseUBTMakefiles && TargetDescriptor.SpecificFilesToCompile.Count == 0)
 			{
-				MakefileLocation = TargetMakefile.GetLocation(TargetDescriptor.ProjectFile, TargetDescriptor.Name, TargetDescriptor.Platform, TargetDescriptor.Architecture, TargetDescriptor.Configuration);
+				MakefileLocation = TargetMakefile.GetLocation(TargetDescriptor.ProjectFile, TargetDescriptor.Name, TargetDescriptor.Platform, TargetDescriptor.Architectures, TargetDescriptor.Configuration);
 			}
 
 			// Try to load an existing makefile
@@ -856,11 +981,18 @@ namespace UnrealBuildTool
 		{
 			// Set of all output items. Knowing that there are no conflicts in produced items, we use this to eliminate duplicate actions.
 			Dictionary<FileItem, LinkedAction> OutputItemToProducingAction = new Dictionary<FileItem, LinkedAction>();
+			HashSet<LinkedAction> IgnoreConflictActions = new HashSet<LinkedAction>();
 			for(int TargetIdx = 0; TargetIdx < TargetDescriptors.Count; TargetIdx++)
 			{
 				string GroupPrefix = String.Format("{0}-{1}-{2}", TargetDescriptors[TargetIdx].Name, TargetDescriptors[TargetIdx].Platform, TargetDescriptors[TargetIdx].Configuration);
 				foreach(LinkedAction TargetAction in TargetActions[TargetIdx])
 				{
+					if (TargetAction.IgnoreConflicts())
+					{
+						IgnoreConflictActions.Add(TargetAction);
+						continue;
+					}
+
 					FileItem ProducedItem = TargetAction.ProducedItems.First();
 
 					LinkedAction? ExistingAction;
@@ -872,7 +1004,9 @@ namespace UnrealBuildTool
 					ExistingAction.GroupNames.Add(GroupPrefix);
 				}
 			}
-			return new List<LinkedAction>(OutputItemToProducingAction.Values);
+			List<LinkedAction> Results = new List<LinkedAction>(OutputItemToProducingAction.Values);
+			Results.AddRange(IgnoreConflictActions);
+			return Results;
 		}
 
 		void ProcessCoreDumps(DirectoryReference? SaveCrashDumpDirectory, ILogger Logger)

@@ -1,25 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Animation/AttributesRuntime.h"
-#include "Animation/CustomAttributes.h"
-#include "Animation/AnimTypes.h"
+#include "Animation/AnimData/AnimDataModel.h"
 #include "Animation/AnimationSettings.h"
 #include "Animation/AnimationAsset.h"
 #include "Animation/MirrorDataTable.h"
-#include "AnimationRuntime.h"
 
-#include "Containers/UnrealString.h"
-#include "Containers/Array.h"
-#include "Containers/ArrayView.h"
-#include "Containers/Map.h"
-#include "Misc/AssertionMacros.h"
 #include "Stats/Stats.h"
-#include "BoneIndices.h"
-#include "BoneContainer.h" 
 
 #include "Animation/IAttributeBlendOperator.h" 
 #include "Animation/AttributeBlendData.h"
-#include "Animation/BuiltInAttributeTypes.h"
 
 #include "Animation/AttributeTypes.h"
 
@@ -28,12 +18,17 @@ namespace UE { namespace Anim {
 #if WITH_EDITOR
 void Attributes::GetAttributeValue(FStackAttributeContainer& OutAttributes, const FCompactPoseBoneIndex& PoseBoneIndex, const FAnimatedBoneAttribute& Attribute, const FAnimExtractContext& ExtractionContext)
 {
+	GetAttributeValue(OutAttributes, PoseBoneIndex, Attribute, ExtractionContext.CurrentTime);
+}
+
+void Attributes::GetAttributeValue(FStackAttributeContainer& OutAttributes, const FCompactPoseBoneIndex& PoseBoneIndex, const FAnimatedBoneAttribute& Attribute, double CurrentTime)
+{
 	// Evaluating a single attribute into a stack-based container
 	if (Attribute.Identifier.IsValid())
 	{
 		uint8* AttributeDataPtr = OutAttributes.FindOrAdd(Attribute.Identifier.GetType(), FAttributeId(Attribute.Identifier.GetName(), PoseBoneIndex));
 		check(AttributeDataPtr)
-		Attribute.Curve.EvaluateToPtr(Attribute.Identifier.GetType(), ExtractionContext.CurrentTime, AttributeDataPtr);
+		Attribute.Curve.EvaluateToPtr(Attribute.Identifier.GetType(), CurrentTime, AttributeDataPtr);
 	}
 }
 #endif // WITH_EDITOR
@@ -445,6 +440,12 @@ void Attributes::BlendAttributesPerBoneFilter(const FStackAttributeContainer& Ba
 
 void Attributes::MirrorAttributes(FStackAttributeContainer& CustomAttributes, const UMirrorDataTable& MirrorTable)
 {
+	static const TArray<FCompactPoseBoneIndex> CompactPoseMirrorBones;
+	Attributes::MirrorAttributes(CustomAttributes, MirrorTable, CompactPoseMirrorBones);
+}
+
+void Attributes::MirrorAttributes(FStackAttributeContainer& CustomAttributes, const UMirrorDataTable& MirrorTable, const TArray<FCompactPoseBoneIndex>& CompactPoseMirrorBones)
+{
 	struct FMirrorSet
 	{
 		/** Pointers to attribute values */
@@ -486,19 +487,41 @@ void Attributes::MirrorAttributes(FStackAttributeContainer& CustomAttributes, co
 			TArray<int32> SortedBoneIndices(UniqueBoneIndices); 
 			SortedBoneIndices.Sort();
 
-			for (int32 CurBoneIndex : UniqueBoneIndices)
+			if(CompactPoseMirrorBones.Num())
 			{
-				// @FIXME: this needs addressing!
-				// Mirror tables are stored using skeleton indices, but are assumed to be used interchangeably with compact pose indices here.
-				int32 MirrorBoneIndex = MirrorTable.BoneToMirrorBoneIndex[CurBoneIndex].GetInt();
-				int32 SwapCheckBoneIndex = MirrorTable.BoneToMirrorBoneIndex[MirrorBoneIndex].GetInt();
-
-				// only handle simple swaps - both entries exist and are different
-				if (MirrorBoneIndex != INDEX_NONE && CurBoneIndex != INDEX_NONE && CurBoneIndex != MirrorBoneIndex &&
-					SwapCheckBoneIndex == CurBoneIndex && Algo::BinarySearch(SortedBoneIndices, MirrorBoneIndex))
-				{
-					AddUnique(CurBoneIndex, MirrorBoneIndex);
-				}
+			    for (int32 CurBoneIndex : UniqueBoneIndices)
+			    {
+				    // only handle simple swaps - both entries exist and are different
+				    if (CompactPoseMirrorBones.IsValidIndex(CurBoneIndex))
+				    {
+					    int32 MirrorBoneIndex = CompactPoseMirrorBones[CurBoneIndex].GetInt();
+					    if (CurBoneIndex != MirrorBoneIndex && CompactPoseMirrorBones.IsValidIndex(MirrorBoneIndex))
+					    {
+						    int32 SwapCheckBoneIndex = CompactPoseMirrorBones[MirrorBoneIndex].GetInt();
+						    if (SwapCheckBoneIndex == CurBoneIndex && Algo::BinarySearch(SortedBoneIndices, MirrorBoneIndex))
+						    {
+							    AddUnique(CurBoneIndex, MirrorBoneIndex);
+						    }
+					    }
+				    }				
+			    }
+			}
+            else
+            {
+				// Deprecated behaviour support, remove when deleting other signature
+			    for (int32 CurBoneIndex : UniqueBoneIndices)
+			    {
+				    // Mirror tables are stored using skeleton indices, but are assumed to be used interchangeably with compact pose indices here.
+				    int32 MirrorBoneIndex = MirrorTable.BoneToMirrorBoneIndex[CurBoneIndex].GetInt();
+				    int32 SwapCheckBoneIndex = MirrorTable.BoneToMirrorBoneIndex[MirrorBoneIndex].GetInt();
+    
+				    // only handle simple swaps - both entries exist and are different
+				    if (MirrorBoneIndex != INDEX_NONE && CurBoneIndex != INDEX_NONE && CurBoneIndex != MirrorBoneIndex &&
+					    SwapCheckBoneIndex == CurBoneIndex && Algo::BinarySearch(SortedBoneIndices, MirrorBoneIndex))
+				    {
+					    AddUnique(CurBoneIndex, MirrorBoneIndex);
+				    }
+			    }
 			}
 
 			TArray<TWrappedAttribute<FAnimStackAllocator>>& ValuesArray = FStackAttributeContainerAccessor::GetValues(CustomAttributes, TypeIndex);

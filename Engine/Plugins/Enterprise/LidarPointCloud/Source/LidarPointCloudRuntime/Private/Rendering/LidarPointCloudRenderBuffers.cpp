@@ -7,6 +7,8 @@
 #include "RenderCommandFence.h"
 #include "LidarPointCloudOctree.h"
 #include "LidarPointCloudSettings.h"
+#include "MaterialDomain.h"
+#include "MeshDrawShaderBindings.h"
 #include "MeshMaterialShader.h"
 
 #if WITH_EDITOR

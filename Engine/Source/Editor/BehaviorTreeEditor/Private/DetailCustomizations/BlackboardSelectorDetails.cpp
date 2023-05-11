@@ -238,8 +238,9 @@ void FBlackboardSelectorDetails::InitKeyFromProperty()
 			}
 			else
 			{
-				MyKeyClassProperty->SetValue((UObject*)NULL);
-				MyKeyIDProperty->SetValue(FBlackboard::InvalidKey);
+				// Set ID first so callbacks can properly test against InvalidKey
+				MyKeyIDProperty->SetValue((int32)FBlackboard::InvalidKey);
+				MyKeyClassProperty->SetValue((UObject*)nullptr);				
 				MyKeyNameProperty->SetValue(TEXT("None"));
 			}
 		}
@@ -275,11 +276,11 @@ void FBlackboardSelectorDetails::OnKeyComboChange(int32 Index)
 		UBlackboardData* BlackboardAsset = CachedBlackboardAsset.Get();
 		if (BlackboardAsset)
 		{
-			const uint8 KeyID = BlackboardAsset->GetKeyID(KeyValues[Index]);
+			const FBlackboard::FKey KeyID = BlackboardAsset->GetKeyID(KeyValues[Index]);
 			const UObject* KeyClass = BlackboardAsset->GetKeyType(KeyID);
 
 			MyKeyClassProperty->SetValue(KeyClass);
-			MyKeyIDProperty->SetValue(KeyID);
+			MyKeyIDProperty->SetValue((int32)KeyID);
 
 			MyKeyNameProperty->SetValue(KeyValues[Index]);
 		}

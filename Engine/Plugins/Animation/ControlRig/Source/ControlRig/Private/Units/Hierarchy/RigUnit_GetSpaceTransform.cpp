@@ -9,41 +9,27 @@
 FRigUnit_GetSpaceTransform_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
-	const URigHierarchy* Hierarchy = Context.Hierarchy;
+	const URigHierarchy* Hierarchy = ExecuteContext.Hierarchy;
 	if (Hierarchy)
 	{
-		switch (Context.State)
+		if (CachedSpaceIndex.UpdateCache(FRigElementKey(Space, ERigElementType::Null), Hierarchy))
 		{
-			case EControlRigState::Init:
+			switch (SpaceType)
 			{
-				CachedSpaceIndex.Reset();
-			}
-			case EControlRigState::Update:
-			{
-				if (CachedSpaceIndex.UpdateCache(FRigElementKey(Space, ERigElementType::Null), Hierarchy))
+				case ERigVMTransformSpace::GlobalSpace:
 				{
-					switch (SpaceType)
-					{
-						case EBoneGetterSetterMode::GlobalSpace:
-						{
-							Transform = Hierarchy->GetGlobalTransform(CachedSpaceIndex);
-							break;
-						}
-						case EBoneGetterSetterMode::LocalSpace:
-						{
-							Transform = Hierarchy->GetLocalTransform(CachedSpaceIndex);
-							break;
-						}
-						default:
-						{
-							break;
-						}
-					}
+					Transform = Hierarchy->GetGlobalTransform(CachedSpaceIndex);
+					break;
 				}
-			}
-			default:
-			{
-				break;
+				case ERigVMTransformSpace::LocalSpace:
+				{
+					Transform = Hierarchy->GetLocalTransform(CachedSpaceIndex);
+					break;
+				}
+				default:
+				{
+					break;
+				}
 			}
 		}
 	}

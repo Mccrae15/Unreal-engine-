@@ -786,6 +786,7 @@ bool FCurlHttpRequest::SetupRequest()
 	bCurlRequestCompleted = false;
 	bCanceled = false;
 	CurlAddToMultiResult = CURLM_OK;
+	LastReportedBytesSent = 0;
 
 	// default no verb to a GET
 	if (Verb.IsEmpty())
@@ -992,6 +993,7 @@ bool FCurlHttpRequest::ProcessRequest()
 
 	// Clear out response. If this is a re-used request, Response could point to a stale response until SetupRequestHttpThread is called
 	Response = nullptr;
+	LastReportedBytesRead = 0;
 
 	bool bStarted = false;
 	if (!FHttpModule::Get().GetHttpManager().IsDomainAllowed(URL))
@@ -1175,7 +1177,7 @@ void FCurlHttpRequest::BroadcastNewlyReceivedHeaders()
 	check(IsInGameThread());
 	if (Response.IsValid())
 	{
-		// Process the headers received on the HTTP thread and merge them into our master list and then broadcast the new headers
+		// Process the headers received on the HTTP thread and merge them into the response's list of headers and then broadcast the new headers
 		TPair<FString, FString> NewHeader;
 		while (Response->NewlyReceivedHeaders.Dequeue(NewHeader))
 		{

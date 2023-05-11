@@ -2,9 +2,7 @@
 
 #pragma once
 
-#include "mdl/MapDistilHandler.h"
 
-#include "Containers/UnrealString.h"
 #include "Math/IntPoint.h"
 
 #ifdef USE_MDLSDK
@@ -18,6 +16,7 @@ namespace Mdl
 {
 	class FApiContext;
 	class FMaterialCollection;
+	class IMapDistilHandler;
 	struct FBakeParam;
 	struct FMaterial;
 

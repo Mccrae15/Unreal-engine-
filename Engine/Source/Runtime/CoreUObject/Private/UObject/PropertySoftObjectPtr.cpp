@@ -124,12 +124,6 @@ void FSoftObjectProperty::ExportText_Internal( FString& ValueStr, const void* Pr
 		SoftObjectPath = SoftObjectPtr.GetUniqueID();
 	}
 
-	if (0 != (PortFlags & PPF_ExportCpp))
-	{
-		ValueStr += FString::Printf(TEXT("FSoftObjectPath(TEXT(\"%s\"))"), *SoftObjectPath.ToString().ReplaceCharWithEscapedChar());
-		return;
-	}
-
 	SoftObjectPath.ExportTextItem(ValueStr, SoftObjectPath, Parent, PortFlags, ExportRootScope);
 }
 
@@ -249,7 +243,9 @@ UObject* FSoftObjectProperty::GetObjectPropertyValue(const void* PropertyValueAd
 
 UObject* FSoftObjectProperty::GetObjectPropertyValue_InContainer(const void* ContainerAddress, int32 ArrayIndex) const
 {
-	return GetWrappedObjectPropertyValue_InContainer<FSoftObjectPtr>(ContainerAddress, ArrayIndex);
+	UObject* Result = nullptr;
+	GetWrappedUObjectPtrValues_InContainer<FSoftObjectPtr>(&Result, ContainerAddress, ArrayIndex, 1);
+	return Result;
 }
 
 void FSoftObjectProperty::SetObjectPropertyValue(void* PropertyValueAddress, UObject* Value) const
@@ -259,7 +255,7 @@ void FSoftObjectProperty::SetObjectPropertyValue(void* PropertyValueAddress, UOb
 
 void FSoftObjectProperty::SetObjectPropertyValue_InContainer(void* ContainerAddress, UObject* Value, int32 ArrayIndex) const
 {
-	SetWrappedObjectPropertyValue_InContainer<FSoftObjectPtr>(ContainerAddress, Value, ArrayIndex);
+	SetWrappedUObjectPtrValues_InContainer<FSoftObjectPtr>(ContainerAddress, &Value, ArrayIndex, 1);
 }
 
 bool FSoftObjectProperty::AllowCrossLevel() const

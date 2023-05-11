@@ -1,9 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-/*=============================================================================
-	LumenCardPixelShader.usf
-=============================================================================*/
-
 #define LUMEN_CARD_CAPTURE 1
 
 #include "../Common.ush"
@@ -66,6 +62,7 @@ void Main(
 
   #if STRATA_OPTIMIZED_UNLIT
 	FStrataBSDF UnlitBSDF = PixelMaterialInputs.FrontMaterial.InlinedBSDF;
+	SanitizeStrataUnlit(UnlitBSDF);
 	Emissive = BSDF_GETEMISSIVE(UnlitBSDF);
 	TotalCoverage = UnlitBSDF.Coverage;
   #else // STRATA_OPTIMIZED_UNLIT
@@ -81,7 +78,7 @@ void Main(
 	FStrataTree StrataTree = StrataPixelHeader.StrataTree;
 	if (StrataTree.BSDFCount > 0)
 	{
-		const FStrataIntegrationSettings Settings = InitStrataIntegrationSettings(true /*bForceFullyRough*/, true /*bRoughDiffuseEnabled*/, 0 /*PeelLayersAboveDepth*/);
+		const FStrataIntegrationSettings Settings = InitStrataIntegrationSettings(true /*bForceFullyRough*/, true /*bRoughDiffuseEnabled*/, 0 /*PeelLayersAboveDepth*/, false/*bRoughnessTracking*/);
 		float3 TotalTransmittancePreCoverage = 0;
 		FStrataAddressing NullStrataAddressing = (FStrataAddressing)0;	// Fake unused in StrataCreateBSDFContext when using Forward inline shading
 		StrataUpdateTree(NullStrataAddressing, StrataPixelHeader, StrataTree, StrataData, V, Settings, TotalCoverage, TotalTransmittancePreCoverage);
@@ -96,7 +93,7 @@ void Main(
 				FStrataBSDFContext StrataBSDFContext = StrataCreateBSDFContext(StrataPixelHeader, CurrentBSDF, NullStrataAddressing, V, L);
 				FStrataEnvLightResult StrataEnvLight = StrataEvaluateForEnvLight(StrataBSDFContext, true /*bEnableSpecular*/, Settings);
 				const float3 Weight = CurrentBSDF.LuminanceWeightV; // Use LuminanceWeightV instead of LuminanceWeight(..) as we only need to weight these value with the view transmittance, not the light transmittance;
-				DiffuseColor  += Weight * StrataEnvLight.DiffuseWeight;
+				DiffuseColor  += Weight * (StrataEnvLight.DiffuseWeight + StrataEnvLight.DiffuseBackFaceWeight); // This is not correct, as the albedo/diffuse color can go above 1. However this is necessary to match legacy behavior.
 				SpecularColor += Weight * StrataEnvLight.SpecularWeight;
 				WorldNormal   += Weight * StrataBSDFContext.N;
 				Emissive      += Weight * CurrentBSDF.Emissive;

@@ -2,6 +2,7 @@
 
 
 #include "SEditorViewportViewMenu.h"
+#include "DebugViewModeHelpers.h"
 #include "SEditorViewportViewMenuContext.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "ToolMenus.h"
@@ -54,6 +55,14 @@ FText SEditorViewportViewMenu::GetViewMenuLabel() const
 		else if (ViewMode == VMI_VisualizeLumen)
 		{
 			Label = ViewportClient->GetCurrentLumenVisualizationModeDisplayName();
+		}
+		else if (ViewMode == VMI_VisualizeSubstrate)
+		{
+			Label = ViewportClient->GetCurrentStrataVisualizationModeDisplayName();
+		}
+		else if (ViewMode == VMI_VisualizeGroom)
+		{
+			Label = ViewportClient->GetCurrentGroomVisualizationModeDisplayName();
 		}
 		else if (ViewMode == VMI_VisualizeVirtualShadowMap)
 		{
@@ -135,7 +144,7 @@ void SEditorViewportViewMenu::FillViewMenu(UToolMenu* Menu) const
 			}
 
 #if RHI_RAYTRACING
-			if (IsRayTracingEnabled())
+			if (IsRayTracingAllowed())
 			{
 				static auto PathTracingCvar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.PathTracing"));
 				if (PathTracingCvar && PathTracingCvar->GetValueOnAnyThread() != 0)

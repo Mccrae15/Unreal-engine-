@@ -10,7 +10,7 @@
 
 namespace mu
 {
-struct PROGRAM;
+struct FProgram;
 
 	//---------------------------------------------------------------------------------------------
 	//!
@@ -21,9 +21,10 @@ struct PROGRAM;
 
 		ASTChild Mesh;
 		ASTChild Shape;
-		bool m_reshapeSkeleton = false;
-		bool m_reshapePhysicsVolumes = false;
-		bool m_reshapeVertices = true;
+
+		uint32 bReshapeSkeleton : 1;
+		uint32 bReshapePhysicsVolumes : 1;
+		uint32 bReshapeVertices : 1;
 
 	public:
 
@@ -36,7 +37,7 @@ struct PROGRAM;
 		bool IsEqual(const ASTOp& otherUntyped) const override;
 		Ptr<ASTOp> Clone(MapChildFuncRef mapChild) const override;
 		void ForEachChild(const TFunctionRef<void(ASTChild&)>) override;
-		void Link(PROGRAM& program, const FLinkerOptions* Options) override;
+		void Link(FProgram& program, const FLinkerOptions* Options) override;
 	};
 
 }

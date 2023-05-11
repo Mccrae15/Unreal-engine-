@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "Async/AsyncWork.h"
 #include "Containers/Array.h"
 #include "Containers/Map.h"
 #include "Containers/StringConv.h"
@@ -15,6 +14,7 @@
 #include "HAL/UnrealMemory.h"
 #include "Misc/AssertionMacros.h"
 #include "Misc/CString.h"
+#include "Misc/Guid.h"
 #include "Serialization/Archive.h"
 #include "Serialization/BufferReader.h"
 #include "Serialization/MemoryLayout.h"
@@ -23,6 +23,11 @@
 #include "String/BytesToHex.h"
 #include "String/HexToBytes.h"
 #include "Templates/UnrealTemplate.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Async/AsyncWork.h"
+#endif
+
 
 class FCbFieldView;
 class FCbWriter;
@@ -183,9 +188,26 @@ private:
 	/** The bytes this hash comprises */
 	uint8 Bytes[16];
 
+	friend inline FCbWriter& operator<<(FCbWriter& Writer, const FMD5Hash& Hash) // Hidden friends must be inlined to be performant
+	{
+		return Hash.WriteCompactBinary(Writer);
+	}
+	CORE_API FCbWriter& WriteCompactBinary(FCbWriter& Writer) const;
+	friend CORE_API bool LoadFromCompactBinary(FCbFieldView Field, FMD5Hash& OutHash); // inlining not available because we don't want FCbFieldView defined
 	friend CORE_API FString LexToString(const FMD5Hash&);
 	friend CORE_API void LexFromString(FMD5Hash& Hash, const TCHAR*);
 };
+
+/** 
+  * Construct a FGuid from a MD5Hash. This means that calling ToString on the resulting FGuid will not result in the 
+  * expected MD5 hash string, due to how FGuid outputs the string; LexToString should be used in that case.
+  */
+inline FGuid MD5HashToGuid(const FMD5Hash& Hash)
+{
+	FGuid Result;
+	FMemory::Memcpy(&Result, Hash.GetBytes(), sizeof(FGuid));
+	return Result;
+}
 
 /*-----------------------------------------------------------------------------
 	SHA-1 functions.
@@ -270,6 +292,10 @@ public:
 
 	friend CORE_API FString LexToString(const FSHAHash&);
 	friend CORE_API void LexFromString(FSHAHash& Hash, const TCHAR*);
+	friend inline FStringBuilderBase& operator<<(FStringBuilderBase& Builder, const FSHAHash& InHash) { UE::String::BytesToHex(InHash.Hash, Builder); return Builder; }
+	friend inline FAnsiStringBuilderBase& operator<<(FAnsiStringBuilderBase& Builder, const FSHAHash& InHash) { UE::String::BytesToHex(InHash.Hash, Builder); return Builder; }
+	CORE_API friend FCbWriter& operator<<(FCbWriter& Writer, const FSHAHash& Hash);
+	CORE_API friend bool LoadFromCompactBinary(FCbFieldView Field, FSHAHash& OutHash);
 };
 
 namespace Freeze
@@ -278,11 +304,6 @@ namespace Freeze
 }
 
 DECLARE_INTRINSIC_TYPE_LAYOUT(FSHAHash);
-
-inline FStringBuilderBase& operator<<(FStringBuilderBase& Builder, const FSHAHash& Hash) { UE::String::BytesToHex(Hash.Hash, Builder); return Builder; }
-inline FAnsiStringBuilderBase& operator<<(FAnsiStringBuilderBase& Builder, const FSHAHash& Hash) { UE::String::BytesToHex(Hash.Hash, Builder); return Builder; }
-CORE_API FCbWriter& operator<<(FCbWriter& Writer, const FSHAHash& Hash);
-CORE_API bool LoadFromCompactBinary(FCbFieldView Field, FSHAHash& OutHash);
 
 class CORE_API FSHA1
 {
@@ -521,19 +542,8 @@ public:
 		Close();
 	}
 
-	bool Close() override
-	{
-		// don't redo if we were already closed
-		if (ReaderData)
-		{
-			// kick off an SHA verification task to verify. this will handle any errors we get
-			(new FAutoDeleteAsyncTask<FAsyncSHAVerify>(ReaderData, ReaderSize, bFreeOnClose, *SourcePathname, bIsUnfoundHashAnError))->StartBackgroundTask();
-			ReaderData = NULL;
-		}
-		
-		// note that we don't allow the base class CLose to happen, as the FAsyncSHAVerify will free the buffer if needed
-		return !IsError();
-	}
+	CORE_API bool Close() override;
+
 	/**
   	 * Returns the name of the Archive.  Useful for getting the name of the package a struct or object
 	 * is in when a loading error occurs.

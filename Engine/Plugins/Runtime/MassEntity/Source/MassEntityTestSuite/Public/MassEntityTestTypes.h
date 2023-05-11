@@ -7,14 +7,22 @@
 #include "MassEntityManager.h"
 #include "AITestsCommon.h"
 #include "Math/RandomStream.h"
+#include "Subsystems/EngineSubsystem.h"
 #include "Subsystems/WorldSubsystem.h"
+#include "Subsystems/LocalPlayerSubsystem.h"
+#include "Subsystems/GameInstanceSubsystem.h"
 #include "Misc/MTAccessDetector.h"
 #include "MassExternalSubsystemTraits.h"
+#include "MassProcessingPhaseManager.h"
 #include "MassEntityTestTypes.generated.h"
 
 
-class UWorld;
 struct FMassEntityManager;
+struct FMassProcessingPhaseManager;
+namespace UE::Mass::Testing
+{
+	struct FMassTestProcessingPhaseManager;
+}
 
 USTRUCT()
 struct FTestFragment_Float : public FMassFragment
@@ -106,21 +114,28 @@ class MASSENTITYTESTSUITE_API UMassTestProcessorBase : public UMassProcessor
 public:
 	UMassTestProcessorBase();
 	FMassProcessorExecutionOrder& GetMutableExecutionOrder() { return ExecutionOrder; }
-	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override 
-	{
-		ExecutionFunction(EntityManager, Context);
-	}
-	virtual void ConfigureQueries() override
-	{
-		RequirementsFunction(EntityQuery);
-	}
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
+	virtual bool ShouldAllowQueryBasedPruning(const bool bRuntimeMode = true) const { return false; }
+	/** 
+	 * ConfigureQueries is called in PostInitProperties, so there's no point in calling anything here, 
+	 * since the EntityQuery configuration will take place after a processor instance gets created
+	 * (so after PostInitProperties has already been called). Use EntityQuery directly instead. 
+	 */
+	virtual void ConfigureQueries() override {}
 
-	TFunction<void(FMassEntityManager& EntityManager, FMassExecutionContext& Context)> ExecutionFunction;
-	TFunction<void(FMassEntityQuery& Query)> RequirementsFunction;
+	using FExecutionFunction = TFunction<void(FMassEntityManager& EntityManager, FMassExecutionContext& Context)>;
+	FExecutionFunction ExecutionFunction;
 
-	FMassEntityQuery& TestGetQuery() { return EntityQuery; }
+	/** 
+	 * By default ExecutionFunction is configured to pass this function over to EntityQuery.ForEachEntityChunk call. 
+	 * Note that this function won't be used if you override ExecutionFunction's default value.
+	 */
+	FMassExecuteFunction ForEachEntityChunkExecutionFunction;
 
-protected:
+
+	void SetShouldAllowMultipleInstances(const bool bInShouldAllowDuplicated) { bAllowMultipleInstances = bInShouldAllowDuplicated; }
+
+	/** public on purpose, this is a test processor, no worries about access*/
 	FMassEntityQuery EntityQuery;
 };
 
@@ -188,10 +203,27 @@ public:
 	UMassTestProcessor_FloatsInts();
 };
 
+UCLASS()
+class MASSENTITYTESTSUITE_API UMassTestStaticCounterProcessor : public UMassProcessor
+{
+	GENERATED_BODY()
+
+public:
+	UMassTestStaticCounterProcessor();
+	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override
+	{
+		++StaticCounter;
+	}
+	virtual void ConfigureQueries() override {}
+	virtual bool ShouldAllowQueryBasedPruning(const bool bRuntimeMode = true) const { return false; }
+
+	static int StaticCounter;
+};
+
 struct MASSENTITYTESTSUITE_API FExecutionTestBase : FAITestBase
 {
 	TSharedPtr<FMassEntityManager> EntityManager;
-	UWorld* World = nullptr;
+	bool bMakeWorldEntityManagersOwner = false;
 
 	virtual bool SetUp() override;
 };
@@ -208,6 +240,26 @@ struct MASSENTITYTESTSUITE_API FEntityTestBase : FExecutionTestBase
 	FInstancedStruct InstanceInt;
 
 	virtual bool SetUp() override;
+};
+
+
+struct MASSENTITYTESTSUITE_API FProcessingPhasesTestBase : FEntityTestBase
+{
+	using Super = FEntityTestBase;
+
+	TSharedPtr<UE::Mass::Testing::FMassTestProcessingPhaseManager> PhaseManager;
+	FMassProcessingPhaseConfig PhasesConfig[int(EMassProcessingPhase::MAX)];
+	int32 TickIndex = -1;
+	FGraphEventRef CompletionEvent;
+	float DeltaTime = 1.f / 30;
+	UWorld* World = nullptr;
+
+	FProcessingPhasesTestBase();
+	virtual bool SetUp() override;
+	virtual bool Update() override;
+	virtual void TearDown() override;
+	virtual void VerifyLatentResults() override;
+	virtual bool PopulatePhasesConfig() = 0;
 };
 
 template<typename T>
@@ -243,3 +295,105 @@ struct TMassExternalSubsystemTraits<UMassTestWorldSubsystem>
 		ThreadSafeWrite = false,
 	};
 };
+
+UCLASS()
+class UMassTestEngineSubsystem : public UEngineSubsystem
+{
+	GENERATED_BODY()
+};
+
+template<>
+struct TMassExternalSubsystemTraits<UMassTestEngineSubsystem>
+{
+	enum
+	{
+		GameThreadOnly = false,
+		ThreadSafeRead = true,
+		ThreadSafeWrite = false,
+	};
+};
+
+UCLASS()
+class UMassTestCustomSubsystem : public USubsystem
+{
+	GENERATED_BODY()
+
+public:
+	static UMassTestCustomSubsystem* Create();
+	static UMassTestCustomSubsystem* Get();
+private:
+	static TWeakObjectPtr<UMassTestCustomSubsystem> Instance;
+};
+
+template<>
+struct TMassExternalSubsystemTraits<UMassTestCustomSubsystem>
+{
+	enum
+	{
+		GameThreadOnly = false,
+		ThreadSafeRead = true,
+		ThreadSafeWrite = false,
+	};
+};
+
+UCLASS()
+class UMassTestLocalPlayerSubsystem : public ULocalPlayerSubsystem
+{
+	GENERATED_BODY()
+};
+
+template<>
+struct TMassExternalSubsystemTraits<UMassTestLocalPlayerSubsystem>
+{
+	enum
+	{
+		GameThreadOnly = false,
+		ThreadSafeRead = true,
+		ThreadSafeWrite = false,
+	};
+}; 
+
+UCLASS()
+class UMassTestGameInstanceSubsystem : public UGameInstanceSubsystem
+{
+	GENERATED_BODY()
+};
+
+template<>
+struct TMassExternalSubsystemTraits<UMassTestGameInstanceSubsystem>
+{
+	enum
+	{
+		GameThreadOnly = false,
+		ThreadSafeRead = true,
+		ThreadSafeWrite = false,
+	};
+};
+
+namespace UE::Mass::Testing
+{
+/** Test-time TaskGraph task for triggering processing phases. */
+struct FMassTestPhaseTickTask
+{
+	FMassTestPhaseTickTask(const TSharedRef<FMassProcessingPhaseManager>& InPhaseManager, const EMassProcessingPhase InPhase, const float InDeltaTime);
+
+	static TStatId GetStatId();
+	static ENamedThreads::Type GetDesiredThread();
+	static ESubsequentsMode::Type GetSubsequentsMode();
+
+	void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent);
+
+private:
+	const TSharedRef<FMassProcessingPhaseManager> PhaseManager;
+	const EMassProcessingPhase Phase = EMassProcessingPhase::MAX;
+	const float DeltaTime = 0.f;
+};
+
+/** The main point of this FMassProcessingPhaseManager extension is to disable world-based ticking, even if a world is available. */
+struct FMassTestProcessingPhaseManager : public FMassProcessingPhaseManager
+{
+	void Start(const TSharedPtr<FMassEntityManager>& InEntityManager);
+	void OnNewArchetype(const FMassArchetypeHandle& NewArchetype);
+};
+
+} // namespace UE::Mass::Testing

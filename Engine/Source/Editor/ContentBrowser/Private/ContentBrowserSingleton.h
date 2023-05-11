@@ -108,12 +108,20 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	virtual void ExecuteRename(TSharedPtr<SWidget> PickerWidget) override;
 	virtual void ExecuteAddFolder(TSharedPtr<SWidget> PathPickerWidget) override;
 	virtual void RefreshPathView(TSharedPtr<SWidget> PathPickerWidget) override;
+	virtual bool CanChangeAssetPublicState(FStringView AssetPath) override;
 	virtual bool IsShowingPrivateContent(const FStringView VirtualFolderPath) override;
 	virtual bool IsFolderShowPrivateContentToggleable(const FStringView VirtualFolderPath) override;
 	virtual const TSharedPtr<FPathPermissionList>& GetShowPrivateContentPermissionList() override;
 	virtual void SetPrivateContentPermissionListDirty() override;
+	virtual void RegisterCanChangeAssetPublicStateDelegate(FCanChangeAssetPublicStateDelegate InCanChangeAssetPublicStateDelegate) override;
+	virtual void UnregisterCanChangeAssetPublicStateDelegate() override;
 	virtual void RegisterIsFolderShowPrivateContentToggleableDelegate(FIsFolderShowPrivateContentToggleableDelegate InIsFolderShowPrivateContentToggleableDelegate) override;
 	virtual void UnregisterIsFolderShowPrivateContentToggleableDelegate() override;
+	virtual FDelegateHandle RegisterOnFavoritesChangedHandler(FSimpleDelegate OnFavoritesChanged) override;
+	virtual void UnregisterOnFavoritesChangedDelegate(FDelegateHandle Handle) override;
+
+	/** Broadcast that the favorites have changed. */
+	void BroadcastFavoritesChanged() const;
 
 	/** Gets the content browser singleton as a FContentBrowserSingleton */
 	static FContentBrowserSingleton& Get();
@@ -184,6 +192,8 @@ public:
 
 private:
 
+	FCanChangeAssetPublicStateDelegate CanChangeAssetPublicStateDelegate;
+
 	FIsFolderShowPrivateContentToggleableDelegate IsFolderShowPrivateContentToggleableDelegate;
 
 	TArray<TWeakPtr<SContentBrowser>> AllContentBrowsers;
@@ -206,4 +216,7 @@ private:
 	int32 SettingsStringID;
 
 	FShowPrivateContentState ShowPrivateContentState;
+
+	DECLARE_MULTICAST_DELEGATE(FOnFavoritesChangedDelegate);
+	FOnFavoritesChangedDelegate OnFavoritesChanged;
 };

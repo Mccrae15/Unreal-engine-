@@ -3,6 +3,8 @@
 #include "GameplayCueNotifyTypes.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Camera/CameraLensEffectInterface.h"
+#include "Engine/World.h"
+#include "GameFramework/ForceFeedbackEffect.h"
 #include "NiagaraSystem.h"
 #include "NiagaraComponent.h"
 #include "NiagaraFunctionLibrary.h"
@@ -16,6 +18,8 @@
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/PlayerState.h"
 #include "GameFramework/Character.h"
+#include "GameFramework/InputDeviceSubsystem.h"
+#include "GameFramework/InputDeviceProperties.h"
 #include "Sound/SoundWaveProcedural.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(GameplayCueNotifyTypes)
@@ -844,6 +848,52 @@ bool FGameplayCueNotify_ForceFeedbackInfo::PlayForceFeedback(const FGameplayCueN
 	return false;
 }
 
+bool FGameplayCueNotify_InputDevicePropertyInfo::SetDeviceProperties(const FGameplayCueNotify_SpawnContext& SpawnContext, FGameplayCueNotify_SpawnResult& OutSpawnResult) const
+{
+	if (DeviceProperties.IsEmpty())
+	{
+		return false;
+	}
+	
+	if (APlayerController* TargetPC = SpawnContext.FindLocalPlayerController(EGameplayCueNotify_LocallyControlledSource::TargetActor))
+	{
+		// Apply any device properties from this gameplay cue
+		if (UInputDeviceSubsystem* System = UInputDeviceSubsystem::Get())
+		{
+			FActivateDevicePropertyParams Params = {};
+			Params.UserId = TargetPC->GetPlatformUserId();
+			
+			if (ensure(Params.UserId.IsValid()))
+			{
+				for (TSubclassOf<UInputDeviceProperty> PropClass : DeviceProperties)
+				{
+					FInputDevicePropertyHandle Handle = System->ActivateDevicePropertyOfClass(PropClass, Params);
+					ensure(Handle.IsValid());
+				}
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+void FGameplayCueNotify_InputDevicePropertyInfo::ValidateBurstAssets(UObject* ContainingAsset, const FString& Context, TArray<FText>& ValidationErrors) const
+{
+#if WITH_EDITORONLY_DATA
+	for (const TSubclassOf<UInputDeviceProperty> PropClass : DeviceProperties)
+	{
+		if (!PropClass)
+		{
+			ValidationErrors.Add(FText::Format(
+				LOCTEXT("InputDeviceProperty_ShouldNotBeNull", "There is a null device property class used in slot [{0}] for asset [{1}]."),
+				FText::AsCultureInvariant(Context),
+				FText::AsCultureInvariant(ContainingAsset->GetPathName())));
+		}
+	}
+#endif
+}
+
 void FGameplayCueNotify_ForceFeedbackInfo::ValidateBurstAssets(UObject* ContainingAsset, const FString& Context, TArray<FText>& ValidationErrors) const
 {
 #if WITH_EDITORONLY_DATA
@@ -966,6 +1016,7 @@ void FGameplayCueNotify_BurstEffects::ExecuteEffects(const FGameplayCueNotify_Sp
 	BurstCameraShake.PlayCameraShake(SpawnContext, OutSpawnResult);
 	BurstCameraLensEffect.PlayCameraLensEffect(SpawnContext, OutSpawnResult);
 	BurstForceFeedback.PlayForceFeedback(SpawnContext, OutSpawnResult);
+	BurstDevicePropertyEffect.SetDeviceProperties(SpawnContext, OutSpawnResult);
 	BurstDecal.SpawnDecal(SpawnContext, OutSpawnResult);
 }
 
@@ -984,6 +1035,7 @@ void FGameplayCueNotify_BurstEffects::ValidateAssociatedAssets(UObject* Containi
 	BurstCameraShake.ValidateBurstAssets(ContainingAsset, Context + TEXT(".BurstCameraShake"), ValidationErrors);
 	BurstCameraLensEffect.ValidateBurstAssets(ContainingAsset, Context + TEXT(".BurstCameraLensEffect"), ValidationErrors);
 	BurstForceFeedback.ValidateBurstAssets(ContainingAsset, Context + TEXT(".BurstForceFeedback"), ValidationErrors);
+	BurstDevicePropertyEffect.ValidateBurstAssets(ContainingAsset, Context + TEXT(".BurstDevicePropertyEffect"), ValidationErrors);
 }
 
 
@@ -1015,6 +1067,7 @@ void FGameplayCueNotify_LoopingEffects::StartEffects(const FGameplayCueNotify_Sp
 	LoopingCameraShake.PlayCameraShake(SpawnContext, OutSpawnResult);
 	LoopingCameraLensEffect.PlayCameraLensEffect(SpawnContext, OutSpawnResult);
 	LoopingForceFeedback.PlayForceFeedback(SpawnContext, OutSpawnResult);
+	LoopingInputDevicePropertyEffect.SetDeviceProperties(SpawnContext, OutSpawnResult);
 }
 
 void FGameplayCueNotify_LoopingEffects::StopEffects(FGameplayCueNotify_SpawnResult& SpawnResult) const

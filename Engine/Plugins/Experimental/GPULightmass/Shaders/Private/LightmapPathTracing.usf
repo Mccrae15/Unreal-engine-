@@ -35,8 +35,11 @@ Texture2D<float> RayGuidingCDFY;
 #include "/Engine/Private/PathTracing/Utilities/PathTracingRandomSequence.ush"
 #include "/Engine/Private/PathTracing/Light/PathTracingLightSampling.ush"
 #include "/Engine/Private/PathTracing/Material/PathTracingMaterialSampling.ush"
+#include "/Engine/Private/PathTracing/Material/PathTracingRadianceProbe.ush"
+
 
 #include "LightmapEncoding.ush"
+#include "LightmapCommon.ush"
 
 int LastInvalidationFrame;
 int NumTotalSamples;
@@ -126,7 +129,6 @@ static const uint MISMode = 2;
 
 static const uint ApproximateCaustics = 1;
 static const uint EnableCameraBackfaceCulling = 0;
-static const uint EnableDirectLighting = 1;
 static const uint EnableEmissive = 1;
 static const float MaxNormalBias = 0.1;
 
@@ -182,16 +184,12 @@ FPathTracingPayload TraceTransparentRay(FRayDesc Ray, bool IsCameraRay, bool Las
 	}
 	for (;;)
 	{
-		// avoid double counting what was captured by the skylight
-		// also avoid noise from hot spots (they can be properly
-		// importance sampled if a capturing skylight is added)
-		const bool bIgnoreSky = !IsCameraRay;
-		FPackedPathTracingPayload PackedPayload = InitPathTracingPayload(LaunchIndex, bIgnoreSky);
+		FPackedPathTracingPayload PackedPayload = InitPathTracingPayload(IsCameraRay ? PATHTRACER_SCATTER_CAMERA : PATHTRACER_SCATTER_DIFFUSE, 1.0);
 		// Trace the ray
 		TraceRay(
 			TLAS,
 			RayFlags,
-			RAY_TRACING_MASK_ALL,
+			PATHTRACER_MASK_ALL,
 			RAY_TRACING_SHADER_SLOT_MATERIAL,
 			RAY_TRACING_NUM_SHADER_SLOTS,
 			MissShaderIndex,
@@ -289,35 +287,43 @@ FPathTracingPayload TraceTransparentRay(FRayDesc Ray, bool IsCameraRay, bool Las
 	return Payload;
 }
 
-float3 TraceTransparentVisibilityRay(FRayDesc Ray, uint2 PixelCoord, float PathRoughness)
+float3 TraceTransparentVisibilityRay(FRayDesc Ray, float PathRoughness)
 {
-	const uint RayFlags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER;
-	const uint InstanceInclusionMask = RAY_TRACING_MASK_SHADOW;
+	const uint RayFlags = 0;
+	const uint InstanceInclusionMask = PATHTRACER_MASK_SHADOW;
 	const uint RayContributionToHitGroupIndex = RAY_TRACING_SHADER_SLOT_SHADOW;
 	const uint MultiplierForGeometryContributionToShaderIndex = RAY_TRACING_NUM_SHADER_SLOTS;
 	const uint MissShaderIndex = 0;
 
-	FPackedPathTracingPayload PackedPayload = InitPathTracingVisibilityPayload(PixelCoord, PathRoughness);
+	FPackedPathTracingPayload PackedPayload = InitPathTracingVisibilityPayload(PathRoughness);
 
-	// Trace the ray
-	TraceRay(
-		TLAS,
-		RayFlags,
-		InstanceInclusionMask,
-		RayContributionToHitGroupIndex,
-		MultiplierForGeometryContributionToShaderIndex,
-		MissShaderIndex,
-		Ray.GetNativeDesc(),
-		PackedPayload);
-
-	if (PackedPayload.IsMiss())
+	for (;;)
 	{
-		// we didn't hit any geo - just return whatever throughput is left
-		return PackedPayload.GetRayThroughput();
+		// Trace the ray
+		PackedPayload.SetMiss();
+		TraceRay(
+			TLAS,
+			RayFlags,
+			InstanceInclusionMask,
+			RayContributionToHitGroupIndex,
+			MultiplierForGeometryContributionToShaderIndex,
+			MissShaderIndex,
+			Ray.GetNativeDesc(),
+			PackedPayload);
+		if (PackedPayload.IsMiss())
+		{
+			break;
+		}
+		if (!any(PackedPayload.GetRayThroughput()))
+		{
+			// accumulated to fully opacity already
+			break;
+		}
+		// one past the current hit to get the next transparent hit
+		Ray.TMin = asfloat(asuint(PackedPayload.HitT) + 1);
 	}
 
-	// we registered a hit -- assumed to be fully opaque
-	return 0;
+	return PackedPayload.GetRayThroughput();
 }
 
 void PathTracingKernel(
@@ -377,7 +383,7 @@ void PathTracingKernel(
 	{		
 		const bool bIsCameraRay = Bounce == 0;
 		const bool bIsLastBounce = Bounce == MaxBounces;
-		const bool bIncludeEmissive = (EnableDirectLighting != 0 || Bounce > 1) &&
+		const bool bIncludeEmissive = (Bounce > 1) &&
 									  (EnableEmissive       != 0 || bIsCameraRay);
 		FPathTracingPayload Payload = (FPathTracingPayload)0;
 		
@@ -396,7 +402,6 @@ void PathTracingKernel(
 			Payload.Roughness = 1;
 			Payload.Metallic = 0;
 			Payload.Ior = 1;
-			Payload.CustomData = float4(0, 0, 0, 0);
 			Payload.Opacity = 1;
 			Payload.ShadingModelID = SHADINGMODELID_DEFAULT_LIT;
 			Payload.BlendingMode = RAY_TRACING_BLEND_MODE_OPAQUE;
@@ -541,32 +546,15 @@ void PathTracingKernel(
 		}
 	#endif
 		
-		// As soon as the path is blurry enough, we can get away with diffuse sampling only
-		const bool bSimplifySSS = PathRoughness >= 0.15;
-
-		if (ApproximateCaustics)
-		{
-			// modify the payload roughness to minimize difficult caustics
-			// This is inspired by a trick used in the Arnold renderer:
-			//   https://cgg.mff.cuni.cz/~jaroslav/gicourse2010/giai2010-02-marcos_fajardo-slides.pdf (slide 39)
-			//   https://www.arnoldrenderer.com/research/Arnold_TOG2018.pdf (section 4.2)
-			AdjustMaterialRoughness(Payload, PathRoughness);
-		}
-		
 		FLightLoopCount LightLoopCount = LightGridLookup(Payload.TranslatedWorldPos);
 
 		// Choose a random number for both Light sampling and BxDF sampling
 		float4 RandSample = RandomSequence_GenerateSample4D(RandSequence);
 
-		// Does this material require NEE? (will be false if MaterialPdf is always +inf)
-		const bool bIsNeeValid = IsNeeValidMaterial(Payload);
-
-		const bool bDoLightLoop = EnableDirectLighting != 0 || Bounce > 0;
-
 		float LightPickingCdfSum = 0;
 
 		// If we are using Light sampling and the material can use it ...
-		if (MISMode != 0 && bIsNeeValid && SceneLightCount > 0 && bDoLightLoop)
+		if (MISMode != 0 && SceneLightCount > 0)
 		{
 			// Choose a light and sample it
 			float3 TranslatedWorldPos = Payload.TranslatedWorldPos;
@@ -616,7 +604,7 @@ void PathTracingKernel(
 					
 						float AvgRoughness = ApproximateCaustics ? GetAverageRoughness(Payload) : 0.0;
 
-						Visibility = TraceTransparentVisibilityRay(LightRay, LaunchIndex, AvgRoughness);
+						Visibility = TraceTransparentVisibilityRay(LightRay, AvgRoughness);
 						LightSample.RadianceOverPdf *= Visibility;
 					}
 
@@ -624,7 +612,16 @@ void PathTracingKernel(
 					if (any(LightSample.RadianceOverPdf > 0))
 					{
 						// Evaluate material
-						FMaterialEval MaterialEval = EvalMaterial(Ray.Direction, LightSample.Direction, Payload, Bounce == 0);
+						FMaterialEval MaterialEval;
+						if (Bounce == 0)
+						{
+							MaterialEval = RadianceProbe_EvalMaterial(LightSample.Direction, Payload);
+						}
+						else
+						{
+							MaterialEval = EvalMaterial(-Ray.Direction, LightSample.Direction, Payload, float2(1.0, 0.0));
+						}
+							
 
 						// Record the contribution
 						float3 LightContrib = PathThroughput * LightSample.RadianceOverPdf * MaterialEval.Weight * MaterialEval.Pdf;						
@@ -674,7 +671,15 @@ void PathTracingKernel(
 		}
 	
 		// Sample material
-		FMaterialSample MaterialSample = SampleMaterial(Ray.Direction, Payload, RandSample, Bounce == 0);
+		FMaterialSample MaterialSample;
+		if (Bounce == 0)
+		{
+			MaterialSample = RadianceProbe_SampleMaterial(Payload, RandSample.xyz);
+		}
+		else
+		{
+			MaterialSample = SampleMaterial(-Ray.Direction, Payload, RandSample.xyz);
+		}
 
 		if (MaterialSample.Pdf < 0 || asuint(MaterialSample.Pdf) > 0x7F800000)
 		{
@@ -708,7 +713,7 @@ void PathTracingKernel(
 		if (ContinuationProb < 1)
 		{
 			// If there is some chance we should terminate the ray, draw an extra random value
-			float RussianRouletteRand = RandSample.w; // SampleMaterial does not use this value at the moment
+			float RussianRouletteRand = RandSample.w;
 			//RussianRouletteRand = RandomSequence_GenerateSample1D(RandSequence);
 			if (RussianRouletteRand >= ContinuationProb)
 			{
@@ -745,7 +750,7 @@ void PathTracingKernel(
 		}
 		
 		// If we are using Material sampling for lights
-		if (MISMode != 1 && bDoLightLoop)
+		if (MISMode != 1)
 		{
 			// Check which lights can be seen by the material ray and trace a dedicated shadow ray
 			// While it would be possible to just loop around and use the indirect ray to do this, it would prevent the application
@@ -791,7 +796,7 @@ void PathTracingKernel(
 					{
 						FRayDesc LightRay = Ray;
 						LightRay.TMax = LightResult.HitT;
-						float3 Visibility = TraceTransparentVisibilityRay(LightRay, LaunchIndex, PathRoughness);
+						float3 Visibility = TraceTransparentVisibilityRay(LightRay, PathRoughness);
 						LightContrib *= Visibility;
 						
 						// Separate direct lighting (bounce 0) for GPU Lightmass
@@ -1414,11 +1419,9 @@ void VolumetricLightmapPathTracingMainRG()
 		{
 			uint RayFlags = RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
 	
-			FMinimalPayload MinimalPayload = TraceVisibilityRay(
+			FMinimalPayload MinimalPayload = TraceLightmapVisibilityRay(
 				TLAS,
 				RayFlags,
-				RAY_TRACING_MASK_SHADOW,
-				uint2(0, 0),
 				Ray);
 			
 			DirectionalLightShadowing[VoxelPos] += (MinimalPayload.IsMiss() ? 1 : 0) / 32.0f;
@@ -1501,11 +1504,9 @@ void StationaryLightShadowTracingMainRG()
 			{
 				uint RayFlags = RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
 
-				FMinimalPayload MinimalPayload = TraceVisibilityRay(
+				FMinimalPayload MinimalPayload = TraceLightmapVisibilityRay(
 					TLAS,
 					RayFlags,
-					RAY_TRACING_MASK_SHADOW,
-					uint2(0, 0),
 					Ray);
 				
 				Visibility = max(Visibility, MinimalPayload.IsMiss() ? 1 : 0);

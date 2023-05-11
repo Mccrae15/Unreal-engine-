@@ -1,30 +1,40 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OnlineSubsystemTencent.h"
-#include "OnlineSubsystemTencentPrivate.h"
-#include "RailSdkWrapper.h"
-#include "OnlineAsyncTaskManagerTencent.h"
-#include "OnlineIdentityTencent.h"
-#include "OnlineSessionTencentRail.h"
-#include "OnlineFriendsTencent.h"
-#include "OnlinePresenceTencent.h"
-#include "OnlineExternalUITencent.h"
-#include "OnlineUserTencent.h"
-#include "OnlinePurchaseTencent.h"
-#include "OnlineStoreTencent.h"
-#include "OnlineMessageSanitizerTencent.h"
-#include "Engine/Console.h"
-#include "HAL/RunnableThread.h"
-#include "Misc/CommandLine.h"
-#include "Misc/ConfigCacheIni.h"
-#include "OnlineAsyncTasksTencent.h"
-#include "PlayTimeLimitImpl.h"
-#include "OnlinePlayTimeLimitTencent.h"
-#include "OnlineIdentityTencent.h"
-#include "OnlineSubsystemTencent.h"
-
 
 #if WITH_TENCENTSDK
+#include "Interfaces/IMessageSanitizerInterface.h"
+#include "OnlineAsyncTaskManagerTencent.h"
+#include "Interfaces/OnlineEntitlementsInterface.h"
+#include "OnlineIdentityTencent.h"
+#include "HAL/RunnableThread.h"
+#include "Interfaces/OnlineExternalUIInterface.h"
+#include "OnlineIdentityTencent.h"
+#include "Interfaces/OnlineFriendsInterface.h"
+#include "OnlineSubsystemTencent.h"
+#include "Interfaces/OnlineTitleFileInterface.h"
+#include "Interfaces/OnlineUserCloudInterface.h"
+#include "Interfaces/VoiceInterface.h"
+#include "OnlineSessionTencent.h"
+#include "Trace/Trace.inl"
+
+#if WITH_TENCENT_RAIL_SDK
+#include "Features/IModularFeatures.h"
+#include "Interfaces/OnlinePlayTimeLimit.h"
+#include "Misc/CommandLine.h"
+#include "Misc/ConfigCacheIni.h"
+#include "OnlineExternalUITencent.h"
+#include "OnlineFriendsTencent.h"
+#include "OnlineMessageSanitizerTencent.h"
+#include "OnlinePlayTimeLimitTencent.h"
+#include "OnlinePresenceTencent.h"
+#include "OnlinePurchaseTencent.h"
+#include "OnlineSessionTencentRail.h"
+#include "OnlineStoreTencent.h"
+#include "OnlineSubsystemTencentPrivate.h"
+#include "OnlineUserTencent.h"
+#include "PlayTimeLimitImpl.h"
+#endif
 
 IOnlineSessionPtr FOnlineSubsystemTencent::GetSessionInterface() const
 {

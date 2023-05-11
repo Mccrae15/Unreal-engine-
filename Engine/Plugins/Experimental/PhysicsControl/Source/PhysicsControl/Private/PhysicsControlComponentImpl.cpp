@@ -1,11 +1,52 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PhysicsControlComponentImpl.h"
+#include "Engine/SkeletalMesh.h"
 #include "PhysicsControlComponentLog.h"
 #include "PhysicsControlComponent.h"
 #include "PhysicsControlComponentHelpers.h"
 
 #include "Components/SkeletalMeshComponent.h"
+#include "PhysicsEngine/ConstraintInstance.h"
+
+//======================================================================================================================
+// Helper to get a valid skeletal mesh component pointer from a record
+static USkeletalMeshComponent* GetValidSkeletalMeshComponentFromControlParent(
+	const FPhysicsControlRecord& Record)
+{
+	if (Record.PhysicsControl.ParentMeshComponent &&
+		Record.PhysicsControl.ParentMeshComponent->IsValidLowLevel())
+	{
+		return Cast<USkeletalMeshComponent>(Record.PhysicsControl.ParentMeshComponent.Get());
+	}
+	return nullptr;
+}
+
+//======================================================================================================================
+// Helper to get a valid skeletal mesh component pointer from a record
+static USkeletalMeshComponent* GetValidSkeletalMeshComponentFromControlChild(
+	const FPhysicsControlRecord& Record)
+{
+	if (Record.PhysicsControl.ChildMeshComponent &&
+		Record.PhysicsControl.ChildMeshComponent->IsValidLowLevel())
+	{
+		return Cast<USkeletalMeshComponent>(Record.PhysicsControl.ChildMeshComponent.Get());
+	}
+	return nullptr;
+}
+
+//======================================================================================================================
+// Helper to get a valid skeletal mesh component pointer from a record
+static USkeletalMeshComponent* GetValidSkeletalMeshComponentFromBodyModifier(
+	const FPhysicsBodyModifier& PhysicsBodyModifier)
+{
+	if (PhysicsBodyModifier.MeshComponent &&
+		PhysicsBodyModifier.MeshComponent->IsValidLowLevel())
+	{
+		return Cast<USkeletalMeshComponent>(PhysicsBodyModifier.MeshComponent.Get());
+	}
+	return nullptr;
+}
 
 //======================================================================================================================
 bool FPhysicsControlComponentImpl::GetBoneData(
@@ -53,9 +94,9 @@ FPhysicsControlRecord* FPhysicsControlComponentImpl::FindControlRecord(const FNa
 //======================================================================================================================
 FPhysicsControl* FPhysicsControlComponentImpl::FindControl(const FName Name)
 {
-	if (FPhysicsControlRecord* ControlRecord = FindControlRecord(Name))
+	if (FPhysicsControlRecord* Record = FindControlRecord(Name))
 	{
-		return &ControlRecord->PhysicsControl;
+		return &Record->PhysicsControl;
 	}
 	return nullptr;
 }
@@ -153,7 +194,7 @@ void FPhysicsControlComponentImpl::ResetControls(bool bKeepControlRecords)
 void FPhysicsControlComponentImpl::ApplyKinematicTarget(const FPhysicsBodyModifier& BodyModifier) const
 {
 	// Seems like static and skeletal meshes need to be handled differently
-	if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(BodyModifier.MeshComponent.Get()))
+	if (USkeletalMeshComponent* SkeletalMeshComponent = GetValidSkeletalMeshComponentFromBodyModifier(BodyModifier))
 	{
 		FBodyInstance* BodyInstance = UE::PhysicsControlComponent::GetBodyInstance(
 			BodyModifier.MeshComponent, BodyModifier.BoneName);
@@ -264,7 +305,17 @@ void FPhysicsControlComponentImpl::AddSkeletalMeshReferenceForModifier(
 	Data.bOriginalUpdateMeshWhenKinematic = InSkeletalMeshComponent->bUpdateMeshWhenKinematic;
 	Data.OriginalKinematicBonesUpdateType = InSkeletalMeshComponent->KinematicBonesUpdateType;
 	InSkeletalMeshComponent->bUpdateMeshWhenKinematic = true;
-	InSkeletalMeshComponent->KinematicBonesUpdateType = EKinematicBonesUpdateToPhysics::SkipAllBones;
+	// By default, kinematic bodies will have their blend weight set to zero. This is a problem for us since:
+	// 1. We expect there will be lots of cases where only part of the character is dynamic, and other 
+	//    parts are kinematic
+	// 2. If those parts are towards the root of the character, then if their physics blend weight is zero, 
+	//    they are unable to "move away" from the component - e.g. if the component itself is moved by the 
+	//    movement component
+	// 3. We want to support users using the physics blend weight, so we can't simply force a physics blend 
+	//    weight of 1 in the skeletal mesh component (PhysAnim.cpp).
+	// So, we set all the bodies to have a blend weight of 1, noting that any under the control of a BodyModifier
+	// will get updated each tick.
+	InSkeletalMeshComponent->SetAllBodiesPhysicsBlendWeight(1.0f);
 }
 
 //======================================================================================================================
@@ -386,15 +437,13 @@ void FPhysicsControlComponentImpl::CalculateControlTargetData(
 		bool bHaveChildBoneData = false;
 		bool bHaveParentBoneData = false;
 
-		if (USkeletalMeshComponent* ChildSkeletalMeshComponent =
-			Cast<USkeletalMeshComponent>(Record.PhysicsControl.ChildMeshComponent.Get()))
+		if (USkeletalMeshComponent* ChildSkeletalMeshComponent = GetValidSkeletalMeshComponentFromControlChild(Record))
 		{
 			bHaveChildBoneData = GetBoneData(
 				ChildBoneData, ChildSkeletalMeshComponent, Record.PhysicsControl.ChildBoneName);
 		}
 
-		if (USkeletalMeshComponent* ParentSkeletalMeshComponent =
-			Cast<USkeletalMeshComponent>(Record.PhysicsControl.ParentMeshComponent.Get()))
+		if (USkeletalMeshComponent* ParentSkeletalMeshComponent = GetValidSkeletalMeshComponentFromControlParent(Record))
 		{
 			bHaveParentBoneData = GetBoneData(
 				ParentBoneData, ParentSkeletalMeshComponent, Record.PhysicsControl.ParentBoneName);
@@ -425,7 +474,7 @@ void FPhysicsControlComponentImpl::CalculateControlTargetData(
 
 				if (bCalculateVelocity)
 				{
-					if (Record.PhysicsControl.ControlSettings.SkeletalAnimationVelocityMultiplier)
+					if (Record.PhysicsControl.ControlSettings.SkeletalAnimationVelocityMultiplier != 0)
 					{
 						// Offset of the control point from the target child bone TM, in world space.
 						FVector WorldControlPointOffset =
@@ -468,7 +517,7 @@ void FPhysicsControlComponentImpl::CalculateControlTargetData(
 					OutTargetVelocity = ChildBoneTM.GetRotation() * OutTargetVelocity;
 					OutTargetAngularVelocity = ChildBoneTM.GetRotation() * OutTargetAngularVelocity;
 
-					if (Record.PhysicsControl.ControlSettings.SkeletalAnimationVelocityMultiplier)
+					if (Record.PhysicsControl.ControlSettings.SkeletalAnimationVelocityMultiplier != 0)
 					{
 						FVector WorldControlPointOffset =
 							ChildBoneTM.GetRotation() * Record.PhysicsControl.ControlSettings.ControlPoint;
@@ -526,46 +575,46 @@ bool FPhysicsControlComponentImpl::ApplyControlStrengths(
 	FPhysicsControlRecord& Record, FConstraintInstance* ConstraintInstance)
 {
 	const FPhysicsControlData& Data = Record.PhysicsControl.ControlData;
-	const FPhysicsControlMultipliers& Multipliers = Record.PhysicsControl.ControlMultipliers;
+	const FPhysicsControlMultiplier& Multiplier = Record.PhysicsControl.ControlMultiplier;
 
-	double AngularSpring;
-	double AngularDamping;
-	double MaxTorque = Data.MaxTorque * Multipliers.MaxTorqueMultiplier;
+	float AngularSpring;
+	float AngularDamping;
+	float MaxTorque = Data.MaxTorque * Multiplier.MaxTorqueMultiplier;
 
 	FVector LinearSpring;
 	FVector LinearDamping;
-	FVector MaxForce = Data.MaxForce * Multipliers.MaxForceMultiplier;
+	FVector MaxForce = Data.MaxForce * Multiplier.MaxForceMultiplier;
 
 	UE::PhysicsControlComponent::ConvertStrengthToSpringParams(
 		AngularSpring, AngularDamping,
-		Data.AngularStrength * Multipliers.AngularStrengthMultiplier,
+		Data.AngularStrength * Multiplier.AngularStrengthMultiplier,
 		Data.AngularDampingRatio,
-		Data.AngularExtraDamping * Multipliers.AngularExtraDampingMultiplier);
+		Data.AngularExtraDamping * Multiplier.AngularExtraDampingMultiplier);
 	UE::PhysicsControlComponent::ConvertStrengthToSpringParams(
 		LinearSpring, LinearDamping,
-		Data.LinearStrength * Multipliers.LinearStrengthMultiplier,
+		Data.LinearStrength * Multiplier.LinearStrengthMultiplier,
 		Data.LinearDampingRatio,
-		Data.LinearExtraDamping * Multipliers.LinearExtraDampingMultiplier);
+		Data.LinearExtraDamping * Multiplier.LinearExtraDampingMultiplier);
 
-	if (Multipliers.MaxTorqueMultiplier <= 0.0)
+	if (Multiplier.MaxTorqueMultiplier <= 0)
 	{
-		AngularSpring = 0.0;
-		AngularDamping = 0.0;
+		AngularSpring = 0;
+		AngularDamping = 0;
 	}
-	if (Multipliers.MaxForceMultiplier.X <= 0.0)
+	if (Multiplier.MaxForceMultiplier.X <= 0)
 	{
-		LinearSpring.X = 0.0;
-		LinearDamping.X = 0.0;
+		LinearSpring.X = 0;
+		LinearDamping.X = 0;
 	}
-	if (Multipliers.MaxForceMultiplier.Y <= 0.0)
+	if (Multiplier.MaxForceMultiplier.Y <= 0)
 	{
-		LinearSpring.Y = 0.0;
-		LinearDamping.Y = 0.0;
+		LinearSpring.Y = 0;
+		LinearDamping.Y = 0;
 	}
-	if (Multipliers.MaxForceMultiplier.Z <= 0.0)
+	if (Multiplier.MaxForceMultiplier.Z <= 0)
 	{
-		LinearSpring.Z = 0.0;
-		LinearDamping.Z = 0.0;
+		LinearSpring.Z = 0;
+		LinearDamping.Z = 0;
 	}
 
 	ConstraintInstance->SetAngularDriveParams(AngularSpring, AngularDamping, MaxTorque);
@@ -577,7 +626,7 @@ bool FPhysicsControlComponentImpl::ApplyControlStrengths(
 		FMath::Max(UE_SMALL_NUMBER, MaxForce.Y),
 		FMath::Max(UE_SMALL_NUMBER, MaxForce.Z));
 	double Test = TestAngular + TestLinear.GetMax();
-	return Test > 0.0;
+	return Test > 0;
 }
 
 //======================================================================================================================
@@ -600,8 +649,6 @@ void FPhysicsControlComponentImpl::ApplyControl(FPhysicsControlRecord& Record)
 	{
 		return;
 	}
-
-	ConstraintInstance->SetDisableCollision(Record.PhysicsControl.ControlSettings.bDisableCollision);
 
 	// Set strengths etc
 	if (ApplyControlStrengths(Record, ConstraintInstance))
@@ -631,5 +678,56 @@ void FPhysicsControlComponentImpl::ApplyControl(FPhysicsControlRecord& Record)
 FPhysicsBodyModifier* FPhysicsControlComponentImpl::FindBodyModifier(const FName Name)
 {
 	return PhysicsBodyModifiers.Find(Name);
+}
+
+//======================================================================================================================
+bool FPhysicsControlComponentImpl::DestroyControl(
+	const FName            Name,
+	const EDestroyBehavior DestroyBehavior)
+{
+	FPhysicsControlRecord* Record = FindControlRecord(Name);
+	if (Record)
+	{
+		if (USkeletalMeshComponent* SkeletalMeshComponent = GetValidSkeletalMeshComponentFromControlParent(*Record))
+		{
+			RemoveSkeletalMeshReferenceForCaching(SkeletalMeshComponent);
+		}
+		if (USkeletalMeshComponent* SkeletalMeshComponent = GetValidSkeletalMeshComponentFromControlChild(*Record))
+		{
+			RemoveSkeletalMeshReferenceForCaching(SkeletalMeshComponent);
+		}
+
+		Record->PhysicsControlState.Reset();
+		NameRecords.RemoveControl(Name);
+		if (DestroyBehavior == EDestroyBehavior::RemoveRecord)
+		{
+			check(PhysicsControlRecords.Remove(Name) == 1);
+		}
+		return true;
+	}
+	return false;
+}
+
+//======================================================================================================================
+bool FPhysicsControlComponentImpl::DestroyBodyModifier(
+	const FName            Name,
+	const EDestroyBehavior DestroyBehavior)
+{
+	FPhysicsBodyModifier* BodyModifier = FindBodyModifier(Name);
+	if (BodyModifier)
+	{
+		if (USkeletalMeshComponent* SkeletalMeshComponent = GetValidSkeletalMeshComponentFromBodyModifier(*BodyModifier))
+		{
+			RemoveSkeletalMeshReferenceForCaching(SkeletalMeshComponent);
+			RemoveSkeletalMeshReferenceForModifier(SkeletalMeshComponent);
+		}
+		NameRecords.RemoveBodyModifier(Name);
+		if (DestroyBehavior == EDestroyBehavior::RemoveRecord)
+		{
+			check(PhysicsBodyModifiers.Remove(Name) == 1);
+		}
+		return true;
+	}
+	return false;
 }
 

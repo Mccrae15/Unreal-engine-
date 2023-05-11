@@ -5,13 +5,14 @@
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "MaterialExpressionIO.h"
+#include "MaterialValueType.h"
 #include "Materials/MaterialExpression.h"
 #include "MaterialExpressionBlendMaterialAttributes.generated.h"
 
 UENUM()
 namespace EMaterialAttributeBlend
 {
-	enum Type
+	enum Type : int
 	{
 		Blend,
 		UseA,

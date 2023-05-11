@@ -9,10 +9,12 @@
  */
 #define MAX_AUDIOCHANNELS				64
 
+
 /**
  * Length of sound in seconds to be considered as looping forever
  */
 #define INDEFINITELY_LOOPING_DURATION	10000.0f
+
 
 /**
  * Some defaults to help cross platform consistency
@@ -35,6 +37,7 @@
 
 #define DEFAULT_SUBTITLE_PRIORITY		10000.0f
 
+
 /**
  * Some filters don't work properly with extreme values, so these are the limits 
  */
@@ -47,10 +50,12 @@
 #define MIN_FILTER_BANDWIDTH			0.1f
 #define MAX_FILTER_BANDWIDTH			2.0f
 
+
 /**
  * Debugger is Available on non-shipping builds
  */
 #define ENABLE_AUDIO_DEBUG !UE_BUILD_SHIPPING
+
 
 /** Common Audio namespace Type Definitions/Identifiers */
 namespace Audio

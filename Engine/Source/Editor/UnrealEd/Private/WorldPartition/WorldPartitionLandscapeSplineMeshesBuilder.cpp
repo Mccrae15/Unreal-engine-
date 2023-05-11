@@ -5,6 +5,7 @@
 #include "PackageSourceControlHelper.h"
 #include "SourceControlHelpers.h"
 #include "HAL/PlatformFileManager.h"
+#include "UObject/Linker.h"
 #include "UObject/SavePackage.h"
 #include "UObject/ScriptInterface.h"
 #include "UObject/GCObjectScopeGuard.h"
@@ -23,6 +24,8 @@
 #include "LandscapeSplineActor.h"
 #include "LandscapeInfo.h"
 #include "Landscape.h"
+#include "StaticMeshComponentLODInfo.h"
+#include "StaticMeshResources.h"
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionActorDesc.h"
 #include "WorldPartition/WorldPartitionHelpers.h"
@@ -384,6 +387,11 @@ bool UWorldPartitionLandscapeSplineMeshesBuilder::RunInternal(UWorld* InWorld, c
 			TArray<UStaticMeshComponent*> Components;
 			SplineActor->GetComponents(Components);
 
+			// For components sources (USplineMeshComponent & UControlPointMeshComponent) to properly return IsEditorOnly, 
+			// we need to ensure that old LandscapeSplineActors have their LandscapeActor pointer properly setup
+			SplineActor->SetLandscapeActor(Landscape);
+			AddObjectToSaveIfDirty(SplineActor);
+
 			// Remove invalid components from the list
 			FilterStaticMeshComponents(Components);
 			if (Components.IsEmpty())
@@ -391,10 +399,6 @@ bool UWorldPartitionLandscapeSplineMeshesBuilder::RunInternal(UWorld* InWorld, c
 				continue;
 			}
 
-			// For components sources (USplineMeshComponent & UControlPointMeshComponent) to properly return IsEditorOnly, 
-			// we need to ensure that old LandscapeSplineActors have their LandscapeActor pointer properly setup
-			SplineActor->SetLandscapeActor(Landscape);
-			AddObjectToSaveIfDirty(SplineActor);
 			bLandscapeHasSplineActors = true;
 
 			// Build a list of new actors and existing actors

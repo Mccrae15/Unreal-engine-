@@ -4,22 +4,29 @@
 #include "ActorFactories/ActorFactory.h"
 #include "Brushes/SlateColorBrush.h"
 #include "Builders/CubeBuilder.h"
+#include "Editor.h"
 #include "Editor/EditorEngine.h"
 #include "Engine/Selection.h"
+#include "Engine/Texture2D.h"
 #include "EngineModule.h"
 #include "EngineUtils.h"
 #include "Fonts/FontMeasure.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Layout/WidgetPath.h"
 #include "LevelEditorViewport.h"
 #include "LocationVolume.h"
 #include "Modules/ModuleManager.h"
 #include "RendererModule.h"
 #include "Rendering/SlateRenderer.h"
 #include "SWorldPartitionViewportWidget.h"
+#include "TextureResource.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "WorldBrowserModule.h"
 #include "WorldPartition/LoaderAdapter/LoaderAdapterShape.h"
 #include "WorldPartition/WorldPartition.h"
+#include "WorldPartition/WorldPartitionLog.h"
 #include "WorldPartition/WorldPartitionActorDesc.h"
 #include "WorldPartition/WorldPartitionActorDescView.h"
 #include "WorldPartition/WorldPartitionEditorHash.h"
@@ -30,6 +37,8 @@
 #include "WorldPartition/WorldPartitionMiniMap.h"
 #include "WorldPartition/WorldPartitionMiniMapHelper.h"
 #include "WorldPartition/WorldPartitionMiniMapVolume.h"
+#include "WorldPartition/WorldPartitionSubsystem.h"
+#include "HAL/PlatformApplicationMisc.h"
 
 #include "IAssetViewport.h"
 #include "Kismet2/DebuggerCommands.h"
@@ -149,6 +158,14 @@ static bool IsBoundsEdgeHovered(const FVector2D& Point, const FBox2D& Bounds, fl
 	return DistanceToPoint > UE_KINDA_SMALL_NUMBER && DistanceToPoint < Size;
 }
 
+static bool HitTestZFromLocation(UWorld* World, const FVector2D& WorldLocation, FHitResult& OutResult)
+{
+	const FVector TraceStart(WorldLocation.X, WorldLocation.Y, HALF_WORLD_MAX);
+	const FVector TraceEnd(WorldLocation.X, WorldLocation.Y, -HALF_WORLD_MAX);
+	const FCollisionQueryParams TraceParams(SCENE_QUERY_STAT(SWorldPartitionEditorGrid2D_HitTestZFromLocation), true);
+	return World->LineTraceSingleByChannel(OutResult, TraceStart, TraceEnd, ECC_Camera, TraceParams);
+}
+
 template <class T>
 void ForEachIntersectingLoaderAdapters(UWorldPartition* WorldPartition, const FBox& SelectBox, T Func)
 {
@@ -174,7 +191,7 @@ void ForEachIntersectingLoaderAdapters(UWorldPartition* WorldPartition, const FB
 			{
 				if (IWorldPartitionActorLoaderInterface::ILoaderAdapter* LoaderAdapter = Cast<IWorldPartitionActorLoaderInterface>(Actor)->GetLoaderAdapter())
 				{
-					if (IsBoundsSelected(SelectBox, ActorDesc->GetBounds()))
+					if (IsBoundsSelected(SelectBox, ActorDesc->GetEditorBounds()))
 					{
 						if (!Func(Actor))
 						{
@@ -197,7 +214,7 @@ public:
 		, bUseActor(bInUseActor)
 	{}
 
-	FBox GetBounds() const
+	FBox GetEditorBounds() const
 	{
 		if (bUseActor)
 		{
@@ -207,7 +224,7 @@ public:
 			}
 		}
 
-		return ActorDesc->GetBounds();
+		return ActorDesc->GetEditorBounds();
 	}
 
 	AActor* GetActor() const
@@ -234,9 +251,10 @@ void SWorldPartitionEditorGrid2D::FEditorCommands::RegisterCommands()
 	UI_COMMAND(LoadSelectedRegions, "Load Selected Regions", "Load the selected regions.", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(UnloadSelectedRegions, "Unload Selected Regions", "Unload the selected regions.", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(ConvertSelectedRegionsToActors, "Convert Selected Regions To Actors", "Convert the selected regions to actors.", EUserInterfaceActionType::Button, FInputChord());
-	UI_COMMAND(MoveCameraHere, "Move Camera Here", "Move the camera to the selected position.", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(MoveCameraHere, "Move Camera Here", "Move the camera to the selected location.", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(PlayFromHere, "Play From Here", "Play from here.", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(LoadFromHere, "Load From Here", "Load from here.", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(BugItHere, "Bug It Here", "Log BugItGo command of the selected location to console (also adds it to clipboard).", EUserInterfaceActionType::Button, FInputChord());
 }
 
 SWorldPartitionEditorGrid2D::SWorldPartitionEditorGrid2D()
@@ -249,6 +267,7 @@ SWorldPartitionEditorGrid2D::SWorldPartitionEditorGrid2D()
 	, bIsPanning(false)
 	, bIsMeasuring(false)
 	, bShowActors(false)
+	, bShowGrid(true)
 	, bFollowPlayerInPIE(false)
 	, SelectBox(ForceInit)
 	, SelectBoxGridSnapped(ForceInit)
@@ -280,6 +299,119 @@ void SWorldPartitionEditorGrid2D::Construct(const FArguments& InArgs)
 	Scale = 0.00133333332;
 	TotalMouseDelta = 0;
 
+	auto MakeToolBarWidget = [this]()
+	{
+		FSlimHorizontalToolBarBuilder ToolbarBuilder(CommandList, FMultiBoxCustomization::None);
+
+		FName ToolBarStyle = "EditorViewportToolBar";
+		ToolbarBuilder.SetStyle(&FAppStyle::Get(), ToolBarStyle);
+		ToolbarBuilder.SetLabelVisibility(EVisibility::Collapsed);
+
+		const FEditableTextBoxStyle& TextBoxStyle = FCoreStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>("NormalEditableTextBox");
+
+		ToolbarBuilder.BeginSection("Toggles");
+		{
+			ToolbarBuilder.AddWidget(SNew(SCheckBox)
+				.ForegroundColor(FSlateColor::UseForeground())
+				.BorderBackgroundColor(TextBoxStyle.BackgroundColor)
+				.IsChecked(bShowActors ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+				.OnCheckStateChanged(FOnCheckStateChanged::CreateLambda([=](ECheckBoxState State) { bShowActors = !bShowActors; }))
+				[
+					SNew(SBox)
+					.VAlign(VAlign_Center)
+					.HAlign(HAlign_Center)
+					.Padding(FMargin(4.0f, 2.0f))
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("ShowActors", "Show Actors"))
+					]
+				]);
+
+			ToolbarBuilder.AddWidget(SNew(SCheckBox)
+				.ForegroundColor(FSlateColor::UseForeground())
+				.BorderBackgroundColor(TextBoxStyle.BackgroundColor)
+				.IsChecked(bShowGrid ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+				.OnCheckStateChanged(FOnCheckStateChanged::CreateLambda([=](ECheckBoxState State) { bShowGrid = !bShowGrid; }))
+				[
+					SNew(SBox)
+					.VAlign(VAlign_Center)
+					.HAlign(HAlign_Center)
+					.Padding(FMargin(4.0f, 2.0f))
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("ShowGrid", "Show Grid"))
+					]
+				]);
+
+			ToolbarBuilder.AddWidget(SNew(SCheckBox)
+				.ForegroundColor(FSlateColor::UseForeground())
+				.IsChecked(bFollowPlayerInPIE ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+				.Visibility_Lambda([this]() { return GetDefault<UWorldPartitionEditorSettings>()->bDisablePIE ? EVisibility::Hidden : EVisibility::Visible; })
+				.OnCheckStateChanged(FOnCheckStateChanged::CreateLambda([=](ECheckBoxState State) { bFollowPlayerInPIE = !bFollowPlayerInPIE; }))
+				[
+					SNew(SBox)
+					.VAlign(VAlign_Center)
+					.HAlign(HAlign_Center)
+					.Padding(FMargin(4.0f, 2.0f))
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("FollowPlayerInPIE", "Follow Player in PIE"))
+					]
+				]);
+
+			ToolbarBuilder.AddWidget(SNew(SCheckBox)
+				.ForegroundColor(FSlateColor::UseForeground())
+				.IsChecked(GetMutableDefault<UWorldPartitionEditorPerProjectUserSettings>()->GetBugItGoLoadRegion() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+				.Visibility_Lambda([this]() { return GetDefault<UWorldPartitionEditorSettings>()->bDisableLoadingInEditor ? EVisibility::Hidden : EVisibility::Visible; })
+				.OnCheckStateChanged(FOnCheckStateChanged::CreateLambda([=](ECheckBoxState State) { GetMutableDefault<UWorldPartitionEditorPerProjectUserSettings>()->SetBugItGoLoadRegion(State == ECheckBoxState::Checked); }))
+				[
+					SNew(SBox)
+					.VAlign(VAlign_Center)
+					.HAlign(HAlign_Center)
+					.Padding(FMargin(4.0f, 2.0f))
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("BugItGoLoadRegion", "BugItGo Load Region"))
+					]
+				]);
+
+			ToolbarBuilder.AddWidget(SNew(SCheckBox)
+				.ForegroundColor(FSlateColor::UseForeground())
+				.IsChecked(GetMutableDefault<UWorldPartitionEditorPerProjectUserSettings>()->GetShowCellCoords() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+				.Visibility_Lambda([this]() { return WorldPartition->IsStreamingEnabled() ? EVisibility::Visible : EVisibility::Hidden; })
+				.OnCheckStateChanged(FOnCheckStateChanged::CreateLambda([=](ECheckBoxState State) { GetMutableDefault<UWorldPartitionEditorPerProjectUserSettings>()->SetShowCellCoords(State == ECheckBoxState::Checked); }))
+				[
+					SNew(SBox)
+					.VAlign(VAlign_Center)
+					.HAlign(HAlign_Center)
+					.Padding(FMargin(4.0f, 2.0f))
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("ShowCellCoords", "Show Cell Coords"))
+					]
+				]);
+
+			ToolbarBuilder.AddWidget(SNew(SButton)
+				.ForegroundColor(FSlateColor::UseForeground())
+				.Text_Lambda([this]()
+				{
+					UWorldPartitionSubsystem* WorldPartitionSubsystem = UWorld::GetSubsystem<UWorldPartitionSubsystem>(World);
+					return (GEditor->GetSelectedActors()->Num() || WorldPartitionSubsystem->SelectedActorDescs.Num()) ? LOCTEXT("FocusSelection", "Focus Selection") : LOCTEXT("FocusWorld", "Focus World");
+				})
+				.OnClicked(this, &SWorldPartitionEditorGrid2D::FocusSelection)
+				.IsEnabled_Lambda([this]() { return IsInteractive(); }));
+
+			ToolbarBuilder.AddWidget(SNew(SButton)
+				.ForegroundColor(FSlateColor::UseForeground())
+				.Text(LOCTEXT("FocusLoadedRegions", "Focus Loaded Regions"))
+				.OnClicked(this, &SWorldPartitionEditorGrid2D::FocusLoadedRegions)
+				.IsEnabled_Lambda([this]() { return IsInteractive() && WorldPartition && WorldPartition->HasLoadedUserCreatedRegions(); })
+				.Visibility_Lambda([this]() { return GetDefault<UWorldPartitionEditorSettings>()->bDisableLoadingInEditor ? EVisibility::Hidden : EVisibility::Visible; }));
+		}
+
+		return ToolbarBuilder.MakeWidget();
+	};
+
 	// UI
 	ChildSlot
 	[
@@ -289,109 +421,7 @@ void SWorldPartitionEditorGrid2D::Construct(const FArguments& InArgs)
 		+SOverlay::Slot()
 		.VAlign(VAlign_Top)
 		[
-			SNew(SBorder)
-			.BorderImage(FAppStyle::GetBrush(TEXT("Graph.TitleBackground")))
-			[
-				SNew(SVerticalBox)
-
-				+SVerticalBox::Slot()
-				.AutoHeight()
-				[
-					SNew(SHorizontalBox)
-
-					+SHorizontalBox::Slot()
-					.AutoWidth()
-					[
-						SNew(SCheckBox)
-						.IsChecked(bShowActors ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
-						.IsEnabled(true)
-						.OnCheckStateChanged(FOnCheckStateChanged::CreateLambda([=](ECheckBoxState State) { bShowActors = !bShowActors; }))
-					]
-					+SHorizontalBox::Slot()
-					.FillWidth(1.0f)
-					.VAlign(VAlign_Center)
-					[
-						SNew(STextBlock)
-						.AutoWrapText(true)
-						.IsEnabled(true)
-						.Text(LOCTEXT("ShowActors", "Show Actors"))
-					]
-					+SHorizontalBox::Slot()
-					.AutoWidth()
-					[
-						SNew(SCheckBox)
-						.IsChecked(bFollowPlayerInPIE ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
-						.IsEnabled(true)
-						.Visibility_Lambda([this]() { return GetDefault<UWorldPartitionEditorSettings>()->bDisablePIE ? EVisibility::Hidden : EVisibility::Visible; })
-						.OnCheckStateChanged(FOnCheckStateChanged::CreateLambda([=](ECheckBoxState State) { bFollowPlayerInPIE = !bFollowPlayerInPIE; }))
-					]
-					+SHorizontalBox::Slot()
-					.FillWidth(1.0f)
-					.VAlign(VAlign_Center)
-					[
-						SNew(STextBlock)
-						.AutoWrapText(true)
-						.IsEnabled(true)
-						.Visibility_Lambda([this]() { return GetDefault<UWorldPartitionEditorSettings>()->bDisablePIE ? EVisibility::Hidden : EVisibility::Visible; })
-						.Text(LOCTEXT("FollowPlayerInPIE", "Follow Player in PIE"))
-					]
-					+SHorizontalBox::Slot()
-					.AutoWidth()
-					[
-						SNew(SCheckBox)
-						.IsChecked(GetMutableDefault<UWorldPartitionEditorPerProjectUserSettings>()->GetBugItGoLoadRegion() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
-						.IsEnabled(true)
-						.Visibility_Lambda([this]() { return GetDefault<UWorldPartitionEditorSettings>()->bDisableLoadingInEditor ? EVisibility::Hidden : EVisibility::Visible; })
-						.OnCheckStateChanged(FOnCheckStateChanged::CreateLambda([=](ECheckBoxState State) { GetMutableDefault<UWorldPartitionEditorPerProjectUserSettings>()->SetBugItGoLoadRegion(State == ECheckBoxState::Checked); }))
-					]
-					+SHorizontalBox::Slot()
-					.FillWidth(1.0f)
-					.VAlign(VAlign_Center)
-					[
-						SNew(STextBlock)
-						.AutoWrapText(true)
-						.IsEnabled(true)
-						.Visibility_Lambda([this]() { return GetDefault<UWorldPartitionEditorSettings>()->bDisableLoadingInEditor ? EVisibility::Hidden : EVisibility::Visible; })
-						.Text(LOCTEXT("BugItGoLoadRegion", "BugItGo Load Region"))
-					]
-					+SHorizontalBox::Slot()
-					.AutoWidth()
-					[
-						SNew(SCheckBox)
-						.IsChecked(GetMutableDefault<UWorldPartitionEditorPerProjectUserSettings>()->GetShowCellCoords() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
-						.IsEnabled(true)
-						.Visibility_Lambda([this]() { return WorldPartition->IsStreamingEnabled() ? EVisibility::Visible : EVisibility::Hidden; })
-						.OnCheckStateChanged(FOnCheckStateChanged::CreateLambda([=](ECheckBoxState State) { GetMutableDefault<UWorldPartitionEditorPerProjectUserSettings>()->SetShowCellCoords(State == ECheckBoxState::Checked); }))
-					]
-					+SHorizontalBox::Slot()
-					.FillWidth(1.0f)
-					.VAlign(VAlign_Center)
-					[
-						SNew(STextBlock)
-						.AutoWrapText(true)
-						.IsEnabled(true)
-						.Visibility_Lambda([this]() { return WorldPartition->IsStreamingEnabled() ? EVisibility::Visible : EVisibility::Hidden; })
-						.Text(LOCTEXT("ShowCellCoords", "Show Cell Coords"))
-					]
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					[
-						SNew(SButton)
-						.Text_Lambda([this]() { return GEditor->GetSelectedActors()->Num() ? LOCTEXT("FocusSelection", "Focus Selection") : LOCTEXT("FocusWorld", "Focus World"); })
-						.OnClicked(this, &SWorldPartitionEditorGrid2D::FocusSelection)
-						.IsEnabled_Lambda([this]() { return IsInteractive(); })
-					]
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					[
-						SNew(SButton)
-						.Text(LOCTEXT("FocusLoadedRegions", "Focus Loaded Regions"))
-						.OnClicked(this, &SWorldPartitionEditorGrid2D::FocusLoadedRegions)
-						.IsEnabled_Lambda([this]() { return IsInteractive() && WorldPartition && WorldPartition->HasLoadedUserCreatedRegions(); })
-						.Visibility_Lambda([this]() { return GetDefault<UWorldPartitionEditorSettings>()->bDisableLoadingInEditor ? EVisibility::Hidden : EVisibility::Visible; })
-					]
-				]
-			]
+			MakeToolBarWidget()
 		]
 		+SOverlay::Slot()
 		.VAlign(VAlign_Bottom)
@@ -453,6 +483,7 @@ void SWorldPartitionEditorGrid2D::Construct(const FArguments& InArgs)
 	ActionList.MapAction(Commands.MoveCameraHere, FExecuteAction::CreateSP(this, &SWorldPartitionEditorGrid2D::MoveCameraHere));
 	ActionList.MapAction(Commands.PlayFromHere, FExecuteAction::CreateSP(this, &SWorldPartitionEditorGrid2D::PlayFromHere));
 	ActionList.MapAction(Commands.LoadFromHere, FExecuteAction::CreateSP(this, &SWorldPartitionEditorGrid2D::LoadFromHere));
+	ActionList.MapAction(Commands.BugItHere, FExecuteAction::CreateSP(this, &SWorldPartitionEditorGrid2D::BugItHere));
 }
 
 void SWorldPartitionEditorGrid2D::UpdateWorldMiniMapDetails()
@@ -570,10 +601,7 @@ void SWorldPartitionEditorGrid2D::MoveCameraHere()
 	FVector WorldLocation = FVector(MouseCursorPosWorld, 0);
 
 	FHitResult HitResult;
-	const FVector TraceStart(WorldLocation.X, WorldLocation.Y, HALF_WORLD_MAX);
-	const FVector TraceEnd(WorldLocation.X, WorldLocation.Y, -HALF_WORLD_MAX);
-	const FCollisionQueryParams TraceParams(SCENE_QUERY_STAT(SWorldPartitionEditorGrid2D_MoveCameraHere), true);
-	const bool bHitResultValid = World->LineTraceSingleByChannel(HitResult, TraceStart, TraceEnd, ECC_WorldStatic, TraceParams);
+	const bool bHitResultValid = HitTestZFromLocation(World, MouseCursorPosWorld, HitResult);
 
 	for (FLevelEditorViewportClient* LevelVC : GEditor->GetLevelViewportClients())
 	{
@@ -592,10 +620,7 @@ void SWorldPartitionEditorGrid2D::PlayFromHere()
 	FRotator StartRotation;
 
 	FHitResult HitResult;
-	const FVector TraceStart(StartLocation.X, StartLocation.Y, HALF_WORLD_MAX);
-	const FVector TraceEnd(StartLocation.X, StartLocation.Y, -HALF_WORLD_MAX);
-	const FCollisionQueryParams TraceParams(SCENE_QUERY_STAT(SWorldPartitionEditorGrid2D_MoveCameraHere), true);
-	const bool bHitResultValid = World->LineTraceSingleByChannel(HitResult, TraceStart, TraceEnd, ECC_WorldStatic, TraceParams);
+	const bool bHitResultValid = HitTestZFromLocation(World, MouseCursorPosWorld, HitResult);
 
 	FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor");
 	TSharedPtr<IAssetViewport> ActiveLevelViewport = LevelEditorModule.GetFirstActiveViewport();
@@ -611,7 +636,7 @@ void SWorldPartitionEditorGrid2D::PlayFromHere()
 
 void SWorldPartitionEditorGrid2D::LoadFromHere()
 {
-	const float SelectionSnap = GetSelectionSnap();
+	const double SelectionSnap = GetSelectionSnap();
 	const FVector LoadLocation = FVector(MouseCursorPosWorld, 0);
 	const FVector LoadExtent(SelectionSnap, SelectionSnap, HALF_WORLD_MAX);
 	FBox LoadCellsBox(LoadLocation - LoadExtent, LoadLocation + LoadExtent);
@@ -636,6 +661,24 @@ void SWorldPartitionEditorGrid2D::LoadFromHere()
 	EditorLoaderAdapter->GetLoaderAdapter()->Load();
 }
 
+void SWorldPartitionEditorGrid2D::BugItHere()
+{
+	FVector WorldLocation = FVector(MouseCursorPosWorld, 0);
+
+	FHitResult HitResult;
+	const bool bHitResultValid = HitTestZFromLocation(World, MouseCursorPosWorld, HitResult);
+
+	if (bHitResultValid && GCurrentLevelEditingViewportClient)
+	{
+		const FRotator ViewRotation = GCurrentLevelEditingViewportClient->GetViewRotation();
+		const FString GoString = FString::Printf(TEXT("BugItGo %f %f %f %f %f %f"), MouseCursorPosWorld.X, MouseCursorPosWorld.Y, HitResult.Location.Z + 1000.0f, ViewRotation.Pitch, ViewRotation.Yaw, ViewRotation.Roll);
+		
+		UE_LOG(LogWorldPartition, Log, TEXT("%s"), *GoString);
+
+		FPlatformApplicationMisc::ClipboardCopy(*GoString);
+	}
+}
+
 bool SWorldPartitionEditorGrid2D::IsFollowPlayerInPIE() const
 {
 	return bFollowPlayerInPIE && (UWorldPartition::IsSimulating() || GEditor->PlayWorld);
@@ -646,7 +689,7 @@ bool SWorldPartitionEditorGrid2D::IsInteractive() const
 	return !IsFollowPlayerInPIE();
 }
 
-int32 SWorldPartitionEditorGrid2D::GetSelectionSnap() const
+int64 SWorldPartitionEditorGrid2D::GetSelectionSnap() const
 {
 	return 1;
 }
@@ -736,6 +779,11 @@ FReply SWorldPartitionEditorGrid2D::OnMouseButtonUp(const FGeometry& MyGeometry,
 
 			MenuBuilder.BeginSection(NAME_None, LOCTEXT("WorldPartitionMisc", "Misc"));
 				MenuBuilder.AddMenuEntry(Commands.MoveCameraHere);
+
+				if (!GetDefault<UWorldPartitionEditorSettings>()->bDisableBugIt)
+				{
+					MenuBuilder.AddMenuEntry(Commands.BugItHere);
+				}
 
 				if (!GetDefault<UWorldPartitionEditorSettings>()->bDisablePIE)
 				{
@@ -904,7 +952,7 @@ FReply SWorldPartitionEditorGrid2D::OnMouseWheel(const FGeometry& MyGeometry, co
 	{
 		FVector2D MousePosLocalSpace = MouseCursorPos - MyGeometry.GetLocalSize() * 0.5f;
 		FVector2D P0 = MousePosLocalSpace / Scale;
-		float Delta = 1.0f + FMath::Abs(MouseEvent.GetWheelDelta() / 4.0f);
+		float Delta = 1.0f + FMath::Abs(MouseEvent.GetWheelDelta() / 8.0f);
 		Scale = FMath::Clamp(Scale * (MouseEvent.GetWheelDelta() > 0 ? Delta : (1.0f / Delta)), 0.00000001f, 10.0f);
 		FVector2D P1 = MousePosLocalSpace / Scale;
 		Trans += (P1 - P0);
@@ -1022,23 +1070,17 @@ void SWorldPartitionEditorGrid2D::Tick(const FGeometry& AllottedGeometry, const 
 
 	// Also include transient actor loader adapters that might have been spawned by blutilities, etc. Since these actors can't be saved because they are transient,
 	// they will never get an actor descriptor so they will never appear in the world partition editor. Also include unsaved, newly created actors for convenience.
-	for (TActorIterator<AActor> ActorIt(World); ActorIt; ++ActorIt)
+	for (auto& [Reference, Actor] : WorldPartition->GetDirtyActors())
 	{
-		if (AActor* Actor = *ActorIt)
+		if (!WorldPartition->GetActorDesc(Actor->GetActorGuid()) && Actor->Implements<UWorldPartitionActorLoaderInterface>())
 		{
-			if (!WorldPartition->GetActorDesc(Actor->GetActorGuid()) && Actor->Implements<UWorldPartitionActorLoaderInterface>())
+			if (IWorldPartitionActorLoaderInterface::ILoaderAdapter* LoaderAdapter = Cast<IWorldPartitionActorLoaderInterface>(Actor)->GetLoaderAdapter())
 			{
-				if (IWorldPartitionActorLoaderInterface::ILoaderAdapter* LoaderAdapter = Cast<IWorldPartitionActorLoaderInterface>(Actor)->GetLoaderAdapter())
-				{
-					ShownLoaderInterfaces.Add(Actor);
-				}
-			}
-
-			if(Actor->IsSelected() || Actor->GetPackage()->IsDirty())
-			{
-				DirtyActorGuids.Add(Actor->GetActorGuid());
+				ShownLoaderInterfaces.Add(Actor);
 			}
 		}
+
+		DirtyActorGuids.Add(Actor->GetActorGuid());
 	}
 
 	FLoaderInterfaceSet LastHoveredLoaderInterfaces = MoveTemp(HoveredLoaderInterfaces);
@@ -1109,6 +1151,13 @@ void SWorldPartitionEditorGrid2D::Tick(const FGeometry& AllottedGeometry, const 
 			ShownActorGuids.Add(Actor->GetActorGuid());
 		}
 	}
+
+	// Include selected actor descriptors
+	UWorldPartitionSubsystem* WorldPartitionSubsystem = UWorld::GetSubsystem<UWorldPartitionSubsystem>(World);
+	for (FWorldPartitionActorDesc* SelectedActorDesc : WorldPartitionSubsystem->SelectedActorDescs)
+	{
+		ShownActorGuids.Add(SelectedActorDesc->GetGuid());
+	}
 }
 
 uint32 SWorldPartitionEditorGrid2D::PaintActors(const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, uint32 LayerId) const
@@ -1116,6 +1165,7 @@ uint32 SWorldPartitionEditorGrid2D::PaintActors(const FGeometry& AllottedGeometr
 	const FBox2D ViewRect(FVector2D(ForceInitToZero), AllottedGeometry.GetLocalSize());
 	const FBox2D WorldViewRect(ScreenToWorld.TransformPoint(ViewRect.Min), ScreenToWorld.TransformPoint(ViewRect.Max));
 	const FBox ViewRectWorld(FVector(WorldViewRect.Min.X, WorldViewRect.Min.Y, -HALF_WORLD_MAX), FVector(WorldViewRect.Max.X, WorldViewRect.Max.Y, HALF_WORLD_MAX));
+	const UWorldPartitionSubsystem* WorldPartitionSubsystem = UWorld::GetSubsystem<UWorldPartitionSubsystem>(World);
 
 	TArray<FWorldPartitionActorDescViewBoundsProxy> ActorDescList;
 	ActorDescList.Reserve(ShownActorGuids.Num());
@@ -1146,24 +1196,27 @@ uint32 SWorldPartitionEditorGrid2D::PaintActors(const FGeometry& AllottedGeometr
 			if (bShowBackground)
 			{
 				const FSlateColorBrush BackgroundBrush(FLinearColor::Black);
-				const FLinearColor LabelBackgroundColor(0, 0, 0, 0.1f);
+				const FLinearColor LabelBackgroundColor = FLinearColor::Black.CopyWithNewOpacity(Color.A * 0.1f);
 
 				FSlateDrawElement::MakeBox(
 					OutDrawElements,
 					++LayerId,
-					AllottedGeometry.ToPaintGeometry(LabelTextPos - BackgroundGrowSize, LabelTextSize + BackgroundGrowSize),
+					AllottedGeometry.ToPaintGeometry(LabelTextSize + BackgroundGrowSize, FSlateLayoutTransform(LabelTextPos - BackgroundGrowSize)),
 					&BackgroundBrush,
 					ESlateDrawEffect::None,
 					LabelBackgroundColor
 				);
 			}
 
-			const float LabelColorGradient = bShowBackground ? 1.0f : FMath::Clamp(Geometry.GetLocalSize().X / LabelTextSize.X - 1.0f, 0.0f, 1.0f);
-
-			if (LabelColorGradient > 0.0f)
-			{
-				LayerId = DrawTextLabel(OutDrawElements, LayerId, AllottedGeometry, Label, Pos, Color.CopyWithNewOpacity(Color.A * LabelColorGradient), Font);
-			}
+			LayerId = DrawTextLabel(
+				OutDrawElements, 
+				++LayerId, 
+				AllottedGeometry, 
+				Label, 
+				Pos, 
+				Color, 
+				Font
+			);
 		}
 	};
 
@@ -1211,7 +1264,7 @@ uint32 SWorldPartitionEditorGrid2D::PaintActors(const FGeometry& AllottedGeometr
 					const float AreaFadeDistance = 128.0f;
 					if ((Extent.Size2D() < KINDA_SMALL_NUMBER) || (ActorViewBox.GetArea() > MinimumAreaCull))
 					{
-						const FPaintGeometry ActorGeometry = AllottedGeometry.ToPaintGeometry(TopLeft, BottomRight - TopLeft);
+						const FPaintGeometry ActorGeometry = AllottedGeometry.ToPaintGeometry(BottomRight - TopLeft, FSlateLayoutTransform(TopLeft));
 						const float LoaderColorGradient = FMath::Min((ActorViewBox.GetArea() - MinimumAreaCull) / AreaFadeDistance, 1.0f);
 						const FLinearColor LoaderColor = LoaderAdapter->GetColor().IsSet() ? *LoaderAdapter->GetColor() : FColor::White;
 						const bool bIsLocalHovered = LocalHoveredLoaderAdapter == LoaderAdapter;
@@ -1242,8 +1295,8 @@ uint32 SWorldPartitionEditorGrid2D::PaintActors(const FGeometry& AllottedGeometr
 							for (const FBox2D& Rect : LoaderInterfaceHighlight.GetRects())
 							{
 								const FPaintGeometry RectAreaGeometry = AllottedGeometry.ToPaintGeometry(
-									Rect.Min,
-									Rect.Max - Rect.Min
+									Rect.Max - Rect.Min,
+									FSlateLayoutTransform(Rect.Min)
 								);
 
 								FSlateDrawElement::MakeBox(
@@ -1303,7 +1356,7 @@ uint32 SWorldPartitionEditorGrid2D::PaintActors(const FGeometry& AllottedGeometr
 						// Label
 						{
 							const FString ActorLabel = *LoaderAdapter->GetLabel();
-							const FLinearColor LabelColor(1.0f, 1.0f, 1.0f, LoaderColorGradient * FullScreenColorGradient);
+							const FLinearColor LabelColor = FLinearColor::White.CopyWithNewOpacity(LoaderColorGradient * FullScreenColorGradient);
 							DrawActorLabel(ActorLabel, ActorViewBox.GetCenter(), ActorGeometry, LabelColor, SmallLayoutFont, false);
 						}
 					}
@@ -1322,73 +1375,89 @@ uint32 SWorldPartitionEditorGrid2D::PaintActors(const FGeometry& AllottedGeometr
 		bool bIsBoundsEdgeHoveredFound = false;
 		for (const FWorldPartitionActorDescViewBoundsProxy& ActorDescView: ActorDescList)
 		{
-			const FBox ActorBounds = ActorDescView.GetBounds();
-			FVector Origin, Extent;
-			ActorBounds.GetCenterAndExtents(Origin, Extent);
-
-			FVector2D TopLeftW = FVector2D(Origin - Extent);
-			FVector2D BottomRightW = FVector2D(Origin + Extent);
-			FVector2D TopRightW = FVector2D(BottomRightW.X, TopLeftW.Y);
-			FVector2D BottomLeftW = FVector2D(TopLeftW.X, BottomRightW.Y);
-
-			FVector2D TopLeft = WorldToScreen.TransformPoint(TopLeftW);
-			FVector2D BottomRight = WorldToScreen.TransformPoint(BottomRightW);
-			FVector2D TopRight = WorldToScreen.TransformPoint(TopRightW);
-			FVector2D BottomLeft = WorldToScreen.TransformPoint(BottomLeftW);
-
-			FBox2D ActorViewBox(TopLeft, BottomRight);
-
-			const float MinimumAreaCull = 32.0f;
-			const float AreaFadeDistance = 128.0f;
-			if ((Extent.Size2D() < KINDA_SMALL_NUMBER) || (ActorViewBox.GetArea() > MinimumAreaCull))
+			auto ShowActorBox = [this, &AllottedGeometry, &OutDrawElements, &LayerId, &bIsBoundsEdgeHoveredFound, &DrawActorLabel](const FBox& ActorBounds, bool bIsSelected, bool bIsSpatiallyLoaded, const FName ActorLabel)
 			{
-				const UClass* ActorClass = ActorDescView.GetActorNativeClass();
-				const AActor* Actor = ActorDescView.GetActor();
-				const FPaintGeometry ActorGeometry = AllottedGeometry.ToPaintGeometry(TopLeft, BottomRight - TopLeft);
-				const FPaintGeometry ActorGeometryShadow = AllottedGeometry.ToPaintGeometry(TopLeft - FVector2D::One(), BottomRight - TopLeft + FVector2D::One() * 2.0);
-				const bool bIsSelected = Actor ? Actor->IsSelected() : false;
-				const bool bIsBoundsEdgeHovered = !bIsBoundsEdgeHoveredFound && IsBoundsEdgeHovered(MouseCursorPos, ActorViewBox, 10.0f);
-				const float ActorColorGradient = FMath::Cube(FMath::Clamp((ActorViewBox.GetArea() - MinimumAreaCull) / AreaFadeDistance, 0.0f, 1.0f));
-				const float ActorBrightness = ActorDescView.GetIsSpatiallyLoaded() ? 1.0f : 0.3f;
+				FVector Origin, Extent;
+				ActorBounds.GetCenterAndExtents(Origin, Extent);
 
-				// Only draw the first edge bounds hovered
-				bIsBoundsEdgeHoveredFound |= bIsBoundsEdgeHovered;
-				
-				FLinearColor ActorColor(ActorBrightness, ActorBrightness, ActorBrightness, bIsBoundsEdgeHovered ? 1.0f : ActorColorGradient);
+				FVector2D TopLeftW = FVector2D(Origin - Extent);
+				FVector2D BottomRightW = FVector2D(Origin + Extent);
+				FVector2D TopRightW = FVector2D(BottomRightW.X, TopLeftW.Y);
+				FVector2D BottomLeftW = FVector2D(TopLeftW.X, BottomRightW.Y);
 
-				if (bIsSelected || bIsBoundsEdgeHovered)
+				FVector2D TopLeft = WorldToScreen.TransformPoint(TopLeftW);
+				FVector2D BottomRight = WorldToScreen.TransformPoint(BottomRightW);
+				FVector2D TopRight = WorldToScreen.TransformPoint(TopRightW);
+				FVector2D BottomLeft = WorldToScreen.TransformPoint(BottomLeftW);
+
+				FBox2D ActorViewBox(TopLeft, BottomRight);
+
+				const float MinimumAreaCull = 32.0f;
+				const float AreaFadeDistance = 128.0f;
+				if ((Extent.Size2D() < KINDA_SMALL_NUMBER) || (ActorViewBox.GetArea() > MinimumAreaCull))
 				{
-					const FName ActorLabel = ActorDescView.GetActorLabel();
-					if (!ActorLabel.IsNone())
+					const FPaintGeometry ActorGeometry = AllottedGeometry.ToPaintGeometry(BottomRight - TopLeft, FSlateLayoutTransform(TopLeft));
+					const FPaintGeometry ActorGeometryShadow = AllottedGeometry.ToPaintGeometry(BottomRight - TopLeft + FVector2D::One() * 2.0, FSlateLayoutTransform(TopLeft - FVector2D::One()));
+					const bool bIsBoundsEdgeHovered = !bIsBoundsEdgeHoveredFound && IsBoundsEdgeHovered(MouseCursorPos, ActorViewBox, 10.0f);
+					const float ActorColorGradient = FMath::Cube(FMath::Clamp((ActorViewBox.GetArea() - MinimumAreaCull) / AreaFadeDistance, 0.0f, 1.0f));
+					const float ActorBrightness = bIsSpatiallyLoaded ? 1.0f : 0.3f;
+
+					// Only draw the first edge bounds hovered
+					bIsBoundsEdgeHoveredFound |= bIsBoundsEdgeHovered;
+				
+					FLinearColor ActorColor(ActorBrightness, ActorBrightness, ActorBrightness, bIsBoundsEdgeHovered ? 1.0f : ActorColorGradient);
+
+					if (bIsSelected || bIsBoundsEdgeHovered)
 					{
-						DrawActorLabel(ActorLabel.ToString(), bIsBoundsEdgeHovered ? MouseCursorPos : ActorViewBox.GetCenter(), ActorGeometry, FLinearColor::Yellow, SmallLayoutFont, true);
+						if (!ActorLabel.IsNone())
+						{
+							const FLinearColor LabelColor = FLinearColor::Yellow.CopyWithNewOpacity(ActorColorGradient);
+							DrawActorLabel(ActorLabel.ToString(), !bIsSelected ? MouseCursorPos : ActorViewBox.GetCenter(), ActorGeometry, LabelColor, SmallLayoutFont, true);
+						}
+
+						ActorColor = FLinearColor::Yellow.CopyWithNewOpacity(ActorColor.A);
+					}
+					else if ((SelectBoxGridSnapped.GetVolume() > 0) && SelectBoxGridSnapped.Intersect(ActorBounds))
+					{
+						ActorColor = FLinearColor::White.CopyWithNewOpacity(ActorColor.A);
 					}
 
-					ActorColor = FLinearColor::Yellow.CopyWithNewOpacity(ActorColor.A);
+					FSlateDrawElement::MakeBox(
+						OutDrawElements,
+						++LayerId,
+						ActorGeometryShadow,
+						FAppStyle::GetBrush(TEXT("Border")),
+						ESlateDrawEffect::None,
+						FLinearColor::Black.CopyWithNewOpacity(ActorColor.A)
+					);
+
+					FSlateDrawElement::MakeBox(
+						OutDrawElements,
+						++LayerId,
+						ActorGeometry,
+						FAppStyle::GetBrush(TEXT("Border")),
+						ESlateDrawEffect::None,
+						ActorColor
+					);
 				}
-				else if ((SelectBoxGridSnapped.GetVolume() > 0) && SelectBoxGridSnapped.Intersect(ActorDescView.GetBounds()))
+			};
+
+			const FBox ActorBounds = ActorDescView.GetEditorBounds();
+			const AActor* Actor = ActorDescView.GetActor();
+			const bool bIsSelected = Actor ? Actor->IsSelected() : WorldPartitionSubsystem->SelectedActorDescs.Contains(ActorDescView.GetActorDesc());
+			const bool bIsSpatiallyLoaded = ActorDescView.GetIsSpatiallyLoaded();
+			const FName ActorLabel = ActorDescView.GetActorLabel();
+
+			if (bIsSelected)
+			{
+				const FBox ActorDescBounds = ActorDescView.GetActorDesc()->GetEditorBounds();
+				if (!ActorDescBounds.Equals(ActorBounds, 1.0f))
 				{
-					ActorColor = FLinearColor::White.CopyWithNewOpacity(ActorColor.A);
+					ShowActorBox(ActorDescBounds, false, bIsSpatiallyLoaded, ActorLabel);
 				}
-
-				FSlateDrawElement::MakeBox(
-					OutDrawElements,
-					++LayerId,
-					ActorGeometryShadow,
-					FAppStyle::GetBrush(TEXT("Border")),
-					ESlateDrawEffect::None,
-					FLinearColor::Black.CopyWithNewOpacity(ActorColor.A)
-				);
-
-				FSlateDrawElement::MakeBox(
-					OutDrawElements,
-					++LayerId,
-					ActorGeometry,
-					FAppStyle::GetBrush(TEXT("Border")),
-					ESlateDrawEffect::None,
-					ActorColor
-				);
 			}
+
+			ShowActorBox(ActorBounds, bIsSelected, bIsSpatiallyLoaded, ActorLabel);
 		};
 	}
 
@@ -1482,8 +1551,8 @@ uint32 SWorldPartitionEditorGrid2D::PaintViewer(const FGeometry& AllottedGeometr
 	{
 		const FVector2D LocalLocation = WorldToScreen.TransformPoint(Location);
 		const FPaintGeometry PaintGeometryShadow = AllottedGeometry.ToPaintGeometry(
-			LocalLocation - (Image->ImageSize + ShadowSize) * 0.5f, 
-			Image->ImageSize + ShadowSize
+			Image->ImageSize + ShadowSize,
+			FSlateLayoutTransform(LocalLocation - (Image->ImageSize + ShadowSize) * 0.5f)
 		);
 
 		FSlateDrawElement::MakeRotatedBox(
@@ -1499,8 +1568,8 @@ uint32 SWorldPartitionEditorGrid2D::PaintViewer(const FGeometry& AllottedGeometr
 		);
 
 		const FPaintGeometry PaintGeometry = AllottedGeometry.ToPaintGeometry(
-			LocalLocation - Image->ImageSize * 0.5f, 
-			Image->ImageSize
+			Image->ImageSize,
+			FSlateLayoutTransform(LocalLocation - Image->ImageSize * 0.5f)
 		);
 
 		FSlateDrawElement::MakeRotatedBox(
@@ -1566,8 +1635,8 @@ uint32 SWorldPartitionEditorGrid2D::PaintSelection(const FGeometry& AllottedGeom
 				FLinearColor CellColor(FLinearColor(1, 1, 1, 0.1f));
 
 				FPaintGeometry CellGeometry = AllottedGeometry.ToPaintGeometry(
-					TopLeft,
-					BottomRight - TopLeft
+					BottomRight - TopLeft,
+					FSlateLayoutTransform(TopLeft)
 				);
 
 				FSlateDrawElement::MakeBox(
@@ -1671,11 +1740,12 @@ int32 SWorldPartitionEditorGrid2D::PaintSoftwareCursor(const FGeometry& Allotted
 	if (bIsPanning)
 	{
 		const FSlateBrush* Brush = FAppStyle::GetBrush(TEXT("SoftwareCursor_Grab"));
+		const FVector2D CursorSize = Brush->ImageSize / AllottedGeometry.Scale;
 
 		FSlateDrawElement::MakeBox(
 			OutDrawElements,
 			LayerId,
-			AllottedGeometry.ToPaintGeometry(MouseCursorPos - (Brush->ImageSize * 0.5f), Brush->ImageSize),
+			AllottedGeometry.ToPaintGeometry(CursorSize, FSlateLayoutTransform(MouseCursorPos - (CursorSize * 0.5f))),
 			Brush
 		);
 	}
@@ -1694,8 +1764,8 @@ int32 SWorldPartitionEditorGrid2D::PaintMinimap(const FGeometry& AllottedGeometr
 		);
 
 		const FPaintGeometry WorldImageGeometry = AllottedGeometry.ToPaintGeometry(
-			MinimapBounds.Min,
-			MinimapBounds.Max - MinimapBounds.Min
+			MinimapBounds.Max - MinimapBounds.Min,
+			FSlateLayoutTransform(MinimapBounds.Min)
 		);
 
 		FSlateDrawElement::MakeBox(
@@ -1743,8 +1813,8 @@ int32 SWorldPartitionEditorGrid2D::PaintMinimap(const FGeometry& AllottedGeometr
 			for (const FBox2D& ShadowArea : ShadowAreas.GetRects())
 			{
 				const FPaintGeometry ShadowAreaGeometry = AllottedGeometry.ToPaintGeometry(
-					ShadowArea.Min,
-					ShadowArea.Max - ShadowArea.Min
+					ShadowArea.Max - ShadowArea.Min,
+					FSlateLayoutTransform(ShadowArea.Min)
 				);
 
 				const FSlateColorBrush ShadowdBrush(FLinearColor::Gray);
@@ -1858,13 +1928,13 @@ int32 SWorldPartitionEditorGrid2D::DrawTextLabel(FSlateWindowElementList& OutDra
 	if (LabelTextSize.X > 0)
 	{
 		const FVector2D LabelTextPos = Pos - LabelTextSize * 0.5f;
-		const FLinearColor LabelForegroundColor(1.0f, 1.0f, 1.0f, Color.A);
-		const FLinearColor LabelShadowColor(0, 0, 0, Color.A);
+		const FLinearColor LabelForegroundColor = FLinearColor::White.CopyWithNewOpacity(Color.A);
+		const FLinearColor LabelShadowColor = FLinearColor::Black.CopyWithNewOpacity(Color.A);
 
 		FSlateDrawElement::MakeText(
 			OutDrawElements,
 			++LayerId,
-			AllottedGeometry.ToPaintGeometry(LabelTextPos + FVector2D(2, 2), FVector2D(1, 1)),
+			AllottedGeometry.ToPaintGeometry(FVector2D(1, 1), FSlateLayoutTransform(LabelTextPos + FVector2D(2, 2))),
 			Label,
 			Font,
 			ESlateDrawEffect::None,
@@ -1874,7 +1944,7 @@ int32 SWorldPartitionEditorGrid2D::DrawTextLabel(FSlateWindowElementList& OutDra
 		FSlateDrawElement::MakeText(
 			OutDrawElements,
 			++LayerId,
-			AllottedGeometry.ToPaintGeometry(LabelTextPos, FVector2D(1,1)),
+			AllottedGeometry.ToPaintGeometry(FVector2D(1,1), FSlateLayoutTransform(LabelTextPos)),
 			Label,
 			Font,
 			ESlateDrawEffect::None,
@@ -1889,19 +1959,21 @@ FReply SWorldPartitionEditorGrid2D::FocusSelection()
 {
 	FBox SelectionBox(ForceInit);
 
-	USelection* SelectedActors = GEditor->GetSelectedActors();
-
-	if (SelectedActors->Num())
+	for (FSelectionIterator It(*GEditor->GetSelectedActors()); It; ++It)
 	{
-		for (FSelectionIterator It(*SelectedActors); It; ++It)
+		if (AActor* Actor = Cast<AActor>(*It))
 		{
-			if (AActor* Actor = Cast<AActor>(*It))
-			{
-				SelectionBox += Actor->GetStreamingBounds();
-			}
+			SelectionBox += Actor->GetStreamingBounds();
 		}
 	}
-	else
+
+	UWorldPartitionSubsystem* WorldPartitionSubsystem = UWorld::GetSubsystem<UWorldPartitionSubsystem>(World);
+	for (FWorldPartitionActorDesc* SelectedActorDesc : WorldPartitionSubsystem->SelectedActorDescs)
+	{
+		SelectionBox += SelectedActorDesc->GetEditorBounds();
+	}
+
+	if (!SelectionBox.IsValid)
 	{
 		// Override the minimap bounds if world partition minimap volumes exists
 		for (TActorIterator<AWorldPartitionMiniMapVolume> It(World); It; ++It)
@@ -2017,7 +2089,7 @@ void SWorldPartitionEditorGrid2D::UpdateSelectionBox(bool bSnap)
 			const float MaxY = SelectBox2D.Max.Y;
 			SelectBox = FBox(FVector(MinX, MinY, -HALF_WORLD_MAX), FVector(MaxX, MaxY, HALF_WORLD_MAX));
 
-			const int32 SelectionSnap = bSnap ? GetSelectionSnap() : 1;
+			const int64 SelectionSnap = bSnap ? GetSelectionSnap() : 1;
 			const float SnapMinX = FMath::GridSnap(MinX - SelectionSnap / 2, SelectionSnap);
 			const float SnapMinY = FMath::GridSnap(MinY - SelectionSnap / 2, SelectionSnap);
 			const float SnapMaxX = FMath::GridSnap(MaxX + SelectionSnap / 2, SelectionSnap);

@@ -47,6 +47,8 @@ struct CHAOS_API FManagedArrayCollection
 	friend FSimulationProperties;
 
 public:
+
+
 	FManagedArrayCollection();
 	virtual ~FManagedArrayCollection() {}
 
@@ -57,7 +59,6 @@ public:
 
 	static int8 Invalid;
 	typedef EManagedArrayType EArrayType;
-
 	/**
 	*
 	*/
@@ -98,6 +99,22 @@ public:
 	};
 
 	/**
+	* Type name for this class.
+	*/
+	static FName StaticType() { return FName("FManagedArrayCollection"); }
+
+	virtual bool IsAType(FName InTypeName) const { return InTypeName.IsEqual(FManagedArrayCollection::StaticType()); }
+
+	template<typename T>
+	bool IsA() { return IsAType(T::StaticType()); }
+
+	template<class T>
+	T* Cast() { return IsAType(T::StaticType())?static_cast<T*>(this):nullptr; }
+
+	template<class T>
+	const T* Cast() const { return IsAType(T::StaticType())? static_cast<const T*>(this) : nullptr; }
+
+	/**
 	* Add an attribute of Type(T) to the group
 	* @param Name - The name of the attribute
 	* @param Group - The group that manages the attribute
@@ -116,7 +133,7 @@ public:
 			FValueType Value(ManagedArrayType<T>(), *(new TManagedArray<T>()));
 			Value.Value->Resize(NumElements(Group));
 			Value.Saved = Parameters.Saved;
-			if (ensure(!HasCycle(Group, Parameters.GroupIndexDependency)))
+			if (ensure(!IsConnected(Parameters.GroupIndexDependency,Group)))
 			{
 				Value.GroupIndexDependency = Parameters.GroupIndexDependency;
 			}
@@ -141,24 +158,29 @@ public:
 		return Collection;
 	}
 
-	void CopyTo(FManagedArrayCollection* Collection) const
+	void CopyTo(FManagedArrayCollection* Collection, const TArray<FName>& GroupsToSkip = TArray<FName>()) const
 	{
 		if (!Map.IsEmpty())
 		{
 			for (const TTuple<FKeyType, FValueType>& Entry : Map)
 			{
-				if (!Collection->HasGroup(Entry.Key.Get<1>()))
+				const FName& AttributeName = Entry.Key.Get<0>();
+				const FName& GroupName = Entry.Key.Get<1>();
+				if (!GroupsToSkip.Contains(GroupName))
 				{
-					Collection->AddGroup(Entry.Key.Get<1>());
-				}
+					if (!Collection->HasGroup(GroupName))
+					{
+						Collection->AddGroup(GroupName);
+					}
 
-				if (NumElements(Entry.Key.Get<1>()) != Collection->NumElements(Entry.Key.Get<1>()))
-				{
-					ensure(!Collection->NumElements(Entry.Key.Get<1>()));
-					Collection->AddElements(NumElements(Entry.Key.Get<1>()), Entry.Key.Get<1>());
-				}
+					if (NumElements(GroupName) != Collection->NumElements(GroupName))
+					{
+						ensure(!Collection->NumElements(GroupName));
+						Collection->AddElements(NumElements(GroupName), GroupName);
+					}
 
-				Collection->CopyAttribute(*this, Entry.Key.Get<0>(), Entry.Key.Get<1>());
+					Collection->CopyAttribute(*this, AttributeName, GroupName);
+				}
 			}
 		}
 	}
@@ -183,7 +205,7 @@ public:
 		FValueType Value(ManagedArrayType<T>(), ValueIn);
 		Value.Value->Resize(NumElements(Group));
 		Value.Saved = Parameters.Saved;
-		if (ensure(!HasCycle(Group, Parameters.GroupIndexDependency)))
+		if (ensure(!IsConnected(Parameters.GroupIndexDependency, Group)))
 		{
 			Value.GroupIndexDependency = Parameters.GroupIndexDependency;
 		}
@@ -201,6 +223,10 @@ public:
 	*/
 	void AddGroup(FName Group);
 
+	/**
+	* Returns the number of attributes in a group.
+	*/
+	int32 NumAttributes(FName Group) const;
 
 	/**
 	* List all the attributes in a group names.
@@ -225,6 +251,13 @@ public:
 	*/
 	int32 InsertElements(int32 NumberElements, int32 Position, FName Group);
 
+
+	/**
+	* Append Collection and reindex dependencies on this collection. 
+	* @param InCollection : Collection to add. 
+	*/
+	virtual void Append(const FManagedArrayCollection& Collection);
+
 	/**
 	* Returns attribute(Name) of Type(T) from the group
 	* @param Name - The name of the attribute
@@ -234,10 +267,10 @@ public:
 	template<typename T>
 	TManagedArray<T>* FindAttribute(FName Name, FName Group)
 	{
-		if (HasAttribute(Name, Group))
+		const FKeyType Key = FManagedArrayCollection::MakeMapKey(Name, Group);
+		if (FValueType* FoundValue = Map.Find(Key))
 		{
-			FKeyType Key = FManagedArrayCollection::MakeMapKey(Name, Group);
-			return static_cast<TManagedArray<T>*>(Map[Key].Value);
+			return static_cast<TManagedArray<T>*>(FoundValue->Value);
 		}
 		return nullptr;
 	};
@@ -245,10 +278,10 @@ public:
 	template<typename T>
 	const TManagedArray<T>* FindAttribute(FName Name, FName Group) const
 	{
-		if (HasAttribute(Name, Group))
+		const FKeyType Key = FManagedArrayCollection::MakeMapKey(Name, Group);
+		if (const FValueType* FoundValue = Map.Find(Key))
 		{
-			FKeyType Key = FManagedArrayCollection::MakeMapKey(Name, Group);
-			return static_cast<TManagedArray<T>*>(Map[Key].Value);
+			return static_cast<const TManagedArray<T>*>(FoundValue->Value);
 		}
 		return nullptr;
 	};
@@ -262,14 +295,12 @@ public:
 	template<typename T>
 	TManagedArray<T>* FindAttributeTyped(FName Name, FName Group)
 	{
-		if(HasAttribute(Name, Group))
+		const FKeyType Key = FManagedArrayCollection::MakeMapKey(Name, Group);
+		if (FValueType* FoundValue = Map.Find(Key))
 		{
-			FKeyType Key = FManagedArrayCollection::MakeMapKey(Name, Group);
-			FValueType& FoundValue = Map[Key];
-
-			if(FoundValue.ArrayType == ManagedArrayType<T>())
+			if(FoundValue->ArrayType == ManagedArrayType<T>())
 			{
-				return static_cast<TManagedArray<T>*>(Map[Key].Value);
+				return static_cast<TManagedArray<T>*>(FoundValue->Value);
 			}
 		}
 		return nullptr;
@@ -278,14 +309,12 @@ public:
 	template<typename T>
 	const TManagedArray<T>* FindAttributeTyped(FName Name, FName Group) const
 	{
-		if(HasAttribute(Name, Group))
+		const FKeyType Key = FManagedArrayCollection::MakeMapKey(Name, Group);
+		if (const FValueType* FoundValue = Map.Find(Key))
 		{
-			FKeyType Key = FManagedArrayCollection::MakeMapKey(Name, Group);
-			const FValueType& FoundValue = Map[Key];
-
-			if(FoundValue.ArrayType == ManagedArrayType<T>())
+			if(FoundValue->ArrayType == ManagedArrayType<T>())
 			{
-				return static_cast<TManagedArray<T>*>(Map[Key].Value);
+				return static_cast<const TManagedArray<T>*>(FoundValue->Value);
 			}
 		}
 		return nullptr;
@@ -366,7 +395,6 @@ public:
 	*/
 	void RemoveGroup(FName Group);
 
-
 	/**
 	* List all the group names.
 	*/
@@ -390,6 +418,13 @@ public:
 	* @param Group - The group name
 	*/
 	FORCEINLINE bool HasGroup(FName Group) const { return GroupInfo.Contains(Group); }
+
+	/**
+	* Return attribute type
+	* @param Name - The name of the attribute
+	* @param Group - The group that manages the attribute
+	*/
+	EArrayType GetAttributeType(FName Name, FName Group) const;
 
 	/**
 	* Check if an attribute is dirty
@@ -487,13 +522,25 @@ public:
 
 	/**
 	* Serialize
-		*/
+	*/
 	virtual void Serialize(Chaos::FChaosArchive& Ar);
+
+	/**
+	* Cycle Checking. 
+	* Search for TargetNode from the StartingNode. 
+	*/
+	bool IsConnected(FName StartingNode, FName TargetNode);
+
 
 	/**
 	* Dump the contents to a FString
 	*/
 	FString ToString() const;
+
+	/**
+	* Get allocated memory size 
+	*/
+	SIZE_T GetAllocatedSize() const;
 
 private:
 
@@ -607,10 +654,14 @@ private:
 	TMap< FName, FGroupInfo> GroupInfo;
 	bool bDirty;
 
-	FName GetDependency(FName SearchGroup);
-	bool HasCycle(FName Group, FName DependencyGroup);
-
 protected:
+
+	/**
+	 * Virtual helper function called by CopyMatchingAttributesFrom; adds attributes 'default, but optional' attributes that are present in InCollection
+	 * This is used by FGeometryCollection to make sure all UV layers are copied over by CopyMatchingAttributesFrom()
+	 */
+	virtual void MatchOptionalDefaultAttributes(const FManagedArrayCollection& InCollection)
+	{}
 
 	/**
 	* Size and order a group so that it matches the group found in the input collection.
@@ -656,3 +707,11 @@ protected:
 	FManagedArrayCollection* ManagedCollection;
 
 };
+
+
+#define MANAGED_ARRAY_COLLECTION_INTERNAL(TYPE_NAME)					\
+	static FName StaticType() { return FName(#TYPE_NAME); }				\
+	virtual bool IsAType(FName InTypeName) const override {				\
+		return InTypeName.IsEqual(TYPE_NAME::StaticType())				\
+				|| Super::IsAType(InTypeName);							\
+	}

@@ -1,6 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "EffectConvolutionReverb.h"
+#include "Async/AsyncWork.h"
+#include "DSP/AlignedBlockBuffer.h" // IWYU pragma: keep
+#include "SynthesisModule.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(EffectConvolutionReverb)
 
@@ -19,6 +22,18 @@ void UAudioImpulseResponse::PostEditChangeProperty(FPropertyChangedEvent& Proper
 	OnObjectPropertyChanged.Broadcast(PropertyChangedEvent);
 }
 #endif
+
+void UAudioImpulseResponse::Serialize(FArchive& Ar)
+{
+	Super::Serialize(Ar);
+
+#if WITH_EDITORONLY_DATA
+	if (Ar.IsLoading())
+	{
+		bIsEvenChannelCount = NumChannels % 2 == 0;
+	}
+#endif // WITH_EDITORONLY_DATA
+}
 
 namespace AudioConvReverbIntrinsics
 {

@@ -26,10 +26,11 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Sense")
 	float HearingRange;
 
+	UE_DEPRECATED(5.2, "LoSHearingRange is deprecated. Use HearingRange instead.")
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Sense", meta = (EditCondition = "bUseLoSHearing"))
 	float LoSHearingRange;
 
-	/** Warning: has significant runtime cost */
+	UE_DEPRECATED(5.2, "bUseLoSHearing is deprecated.")
 	UPROPERTY(EditDefaultsOnly, Category = "Sense", meta = (InlineEditConditionToggle))
 	uint32 bUseLoSHearing : 1;
 
@@ -38,7 +39,7 @@ public:
 
 	virtual TSubclassOf<UAISense> GetSenseImplementation() const override;
 
-#if WITH_GAMEPLAY_DEBUGGER
+#if WITH_GAMEPLAY_DEBUGGER_MENU
 	virtual void DescribeSelfToGameplayDebugger(const UAIPerceptionComponent* PerceptionComponent, FGameplayDebuggerCategory* DebuggerCategory) const;
-#endif // WITH_GAMEPLAY_DEBUGGER
+#endif // WITH_GAMEPLAY_DEBUGGER_MENU
 };

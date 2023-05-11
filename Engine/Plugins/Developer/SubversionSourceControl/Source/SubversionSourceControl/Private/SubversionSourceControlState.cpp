@@ -1,7 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SubversionSourceControlState.h"
-#include "Styling/AppStyle.h"
+#include "RevisionControlStyle/RevisionControlStyle.h"
+#include "SubversionSourceControlRevision.h"
+#include "Textures/SlateIcon.h"
 
 #define LOCTEXT_NAMESPACE "SubversionSourceControl.State"
 
@@ -47,19 +49,24 @@ TSharedPtr<class ISourceControlRevision, ESPMode::ThreadSafe> FSubversionSourceC
 	return FindHistoryRevision(PendingMergeBaseFileRevNumber);
 }
 
+TSharedPtr<class ISourceControlRevision, ESPMode::ThreadSafe> FSubversionSourceControlState::GetCurrentRevision() const
+{
+	return FindHistoryRevision(LocalRevNumber);
+}
+
 FSlateIcon FSubversionSourceControlState::GetIcon() const
 {
 	if (LockState == ELockState::Locked)
 	{
-		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Subversion.CheckedOut");
+		return FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.CheckedOut");
 	}
 	else if (LockState == ELockState::LockedOther)
 	{
-		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Subversion.CheckedOutByOtherUser");
+		return FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.CheckedOutByOtherUser", NAME_None, "RevisionControl.CheckedOutByOtherUserBadge");
 	}
 	else if (!IsCurrent())
 	{
-		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Subversion.NotAtHeadRevision");
+		return FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.NotAtHeadRevision");
 	}
 
 	switch (WorkingCopyState)
@@ -67,16 +74,16 @@ FSlateIcon FSubversionSourceControlState::GetIcon() const
 	case EWorkingCopyState::Added:
 		if (bCopied)
 		{
-			return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Subversion.Branched");
+		return FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.Branched");
 		}
 		else
 		{
-			return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Subversion.OpenForAdd");
+		return FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.OpenForAdd");
 		}
 	case EWorkingCopyState::NotControlled:
-		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Subversion.NotInDepot");
+		return FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.NotInDepot");
 	case EWorkingCopyState::Deleted:
-		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Subversion.MarkedForDelete");
+		return FSlateIcon(FRevisionControlStyleManager::GetStyleSetName(), "RevisionControl.MarkedForDelete");
 	}
 
 	return FSlateIcon();
@@ -125,7 +132,7 @@ FText FSubversionSourceControlState::GetDisplayName() const
 	case EWorkingCopyState::Merged:
 		return LOCTEXT("Merged", "Merged");
 	case EWorkingCopyState::NotControlled:
-		return LOCTEXT("NotControlled", "Not Under Source Control");
+		return LOCTEXT("NotControlled", "Not Under Revision Control");
 	case EWorkingCopyState::Obstructed:
 		return LOCTEXT("Obstructed", "Obstructed By Other Type");
 	case EWorkingCopyState::Missing:
@@ -149,7 +156,7 @@ FText FSubversionSourceControlState::GetDisplayTooltip() const
 	switch(WorkingCopyState) //-V719
 	{
 	case EWorkingCopyState::Unknown:
-		return LOCTEXT("Unknown_Tooltip", "Unknown source control state");
+		return LOCTEXT("Unknown_Tooltip", "Unknown revision control state");
 	case EWorkingCopyState::Pristine:
 		return LOCTEXT("Pristine_Tooltip", "There are no modifications");
 	case EWorkingCopyState::Added:

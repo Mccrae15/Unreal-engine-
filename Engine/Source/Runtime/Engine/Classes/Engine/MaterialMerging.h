@@ -10,7 +10,7 @@
 struct FMeshDescription;
 
 UENUM()
-enum ETextureSizingType
+enum ETextureSizingType : int
 {
 	TextureSizingType_UseSingleTextureSize UMETA(DisplayName = "Use TextureSize for all material properties"),
 	TextureSizingType_UseAutomaticBiasedSizes UMETA(DisplayName = "Use automatically biased texture sizes based on TextureSize"),
@@ -23,7 +23,7 @@ enum ETextureSizingType
 };
 
 UENUM()
-enum EMaterialMergeType
+enum EMaterialMergeType : int
 {
 	MaterialMergeType_Default,
 	MaterialMergeType_Simplygon
@@ -52,7 +52,7 @@ struct ENGINE_API FMaterialProxySettings
 
 	// Expected minimum distance at which the mesh will be rendered
 	UPROPERTY(Category = Material, BlueprintReadWrite, EditAnywhere, meta = (ClampMin = "0", EditConditionHides, EditCondition = "TextureSizingType == ETextureSizingType::TextureSizingType_AutomaticFromMeshDrawDistance"))
-	float MeshMinDrawDistance;
+	double MeshMinDrawDistance;
 	
 	// Gutter space to take into account 
 	UPROPERTY(Category = Material, BlueprintReadWrite, AdvancedDisplay, EditAnywhere)

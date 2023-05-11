@@ -5,6 +5,7 @@
 #include "RigVMTypeUtils.h"
 #include "UObject/Interface.h"
 #include "AssetRegistry/AssetData.h"
+#include "RigVMCore/RigVM.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(RigVMMemoryStorage)
 
@@ -53,6 +54,88 @@ static UObject* GetGeneratorClassOuter(UPackage* InPackage)
 	return AssetObject;	
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FRigVMBranchInfo::Serialize(FArchive& Ar)
+{
+	Ar << Index;
+
+	if(Ar.IsLoading())
+	{
+		FString LabelString;
+		Ar << LabelString;
+		Label = *LabelString;
+	}
+	else
+	{
+		FString LabelString = Label.ToString();
+		Ar << LabelString;
+	}
+	
+	Ar << InstructionIndex;
+	Ar << ArgumentIndex;
+	Ar << FirstInstruction;
+	Ar << LastInstruction;
+}
+
+ERigVMExecuteResult FRigVMLazyBranch::Execute()
+{
+	check(VM);
+	if(BranchInfo.IsValid())
+	{
+		return VM->ExecuteLazyBranch(BranchInfo);
+	}
+
+	check(FunctionPtr);
+	return FunctionPtr();
+}
+
+ERigVMExecuteResult FRigVMLazyBranch::ExecuteIfRequired(int32 InSliceIndex)
+{
+	check(VM);
+
+	if(InSliceIndex == INDEX_NONE)
+	{
+		InSliceIndex = 0;
+	}
+	
+	while(!LastVMNumExecutions.IsValidIndex(InSliceIndex))
+	{
+		LastVMNumExecutions.Add(INDEX_NONE);
+	}
+
+	if(VM->GetNumExecutions() != LastVMNumExecutions[InSliceIndex])
+	{
+		const ERigVMExecuteResult Result = Execute();
+		LastVMNumExecutions[InSliceIndex] = VM->GetNumExecutions();
+		return Result;
+	}
+	
+	return ERigVMExecuteResult::Succeeded;
+}
+
+const uint8* TRigVMLazyValueBase::GetData() const
+{
+	if(MemoryHandle)
+	{
+		if(MemoryHandle->IsLazy())
+		{
+			MemoryHandle->ComputeLazyValueIfNecessary(SliceIndex);
+		}
+		return MemoryHandle->GetData(bFollowPropertyPath, SliceIndex);
+	}
+	return nullptr;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+bool FRigVMMemoryHandle::ComputeLazyValueIfNecessary(int32 InSliceIndex)
+{
+	check(IsLazy());
+	return LazyBranch->ExecuteIfRequired(InSliceIndex) != ERigVMExecuteResult::Failed;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 FRigVMPropertyDescription::FRigVMPropertyDescription(const FProperty* InProperty, const FString& InDefaultValue, const FName& InName)
 	: Name(InName)
@@ -95,7 +178,7 @@ FRigVMPropertyDescription::FRigVMPropertyDescription(const FProperty* InProperty
 	if(CPPTypeObject == nullptr && Property != nullptr)
 	{
 		const FProperty* ValueProperty = Property;
-		if(const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(ValueProperty))
+		while(const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(ValueProperty))
 		{
 			ValueProperty = ArrayProperty->Inner;
 		}
@@ -174,12 +257,6 @@ FRigVMPropertyDescription::FRigVMPropertyDescription(const FName& InName, const 
 	, Containers()
 	, DefaultValue(InDefaultValue)
 {
-	// sanity check that we have a CPP Type Object for enums, structs and uobjects
-	if(RequiresCPPTypeObject(CPPType))
-	{
-		checkf(CPPTypeObject != nullptr, TEXT("CPPType '%s' requires the CPPTypeObject to be provided."), *CPPType);
-	}
-
 	if(CPPTypeObject)
 	{
 		if(CPPTypeObject->IsA<UClass>())
@@ -290,40 +367,6 @@ FString FRigVMPropertyDescription::GetTailCPPType() const
 	return TailCPPType;
 }
 
-bool FRigVMPropertyDescription::RequiresCPPTypeObject(const FString& InCPPType)
-{
-	static const TArray<FString> PrefixesRequiringCPPTypeObject = {
-		TEXT("F"), 
-		TEXT("TArray<F"), 
-		TEXT("E"), 
-		TEXT("TArray<E"), 
-		TEXT("U"), 
-		TEXT("TArray<U"),
-		TEXT("TObjectPtr<"), 
-		TEXT("TArray<TObjectPtr<"),
-		TEXT("TScriptInterface<")
-	};
-	static const TArray<FString> CPPTypesNotRequiringCPPTypeObject = {
-		TEXT("FString"), 
-		TEXT("TArray<FString>"), 
-		TEXT("FName"), 
-		TEXT("TArray<FName>") 
-	};
-
-	if(!CPPTypesNotRequiringCPPTypeObject.Contains(InCPPType))
-	{
-		for(const FString& Prefix : PrefixesRequiringCPPTypeObject)
-		{
-			if(InCPPType.StartsWith(Prefix, ESearchCase::CaseSensitive))
-			{
-				return true;
-			}
-		}
-	}
-
-	return false;
-}
-
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 class FRigVMMemoryStorageImportErrorContext : public FOutputDevice
@@ -340,7 +383,7 @@ public:
 	{
 	}
 
-	FORCEINLINE_DEBUGGABLE void Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const class FName& Category) override
+	void Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const class FName& Category) override
 	{
 		if(bLogErrors)
 		{
@@ -748,7 +791,9 @@ FProperty* URigVMMemoryStorageGeneratorClass::AddProperty(URigVMMemoryStorageGen
 			const FString BaseCPPType = InProperty.GetTailCPPType();
 			if(BaseCPPType.Equals(BoolString, ESearchCase::IgnoreCase))
 			{
-				(*ValuePropertyPtr) = new FBoolProperty(PropertyOwner, InProperty.Name, RF_Public);;
+				FBoolProperty* BoolProperty = new FBoolProperty(PropertyOwner, InProperty.Name, RF_Public); 
+				BoolProperty->SetBoolSize(sizeof(bool), true);
+				(*ValuePropertyPtr) = BoolProperty;
 			}
 			else if(BaseCPPType.Equals(Int32String, ESearchCase::IgnoreCase) ||
 				BaseCPPType.Equals(IntString, ESearchCase::IgnoreCase))

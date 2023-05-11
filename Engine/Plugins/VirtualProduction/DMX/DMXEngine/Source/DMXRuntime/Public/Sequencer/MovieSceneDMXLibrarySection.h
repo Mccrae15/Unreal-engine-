@@ -163,7 +163,11 @@ public:
 public:
 	// Begin UObject interface
 	virtual void Serialize(FArchive& Ar) override;
+	virtual void PostLoad() override;
 	virtual void PostEditImport() override;
+#if WITH_EDITOR
+	void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif // WITH_EDITOR
 	// ~End UObject interface
 
 	/** Refreshes the channels. Useful e.g. when underlying DMX Library changes */

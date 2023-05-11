@@ -7,10 +7,12 @@
 #include "Logging/LogMacros.h"
 #include "Templates/UniquePtr.h"
 
+
 #include "Virtualization/VirtualizationSystem.h"
 
 class IConsoleObject;
 class FOutputDevice;
+struct FAnalyticsEventAttribute;
 
 /**
  * Configuring the backend hierarchy
@@ -125,9 +127,9 @@ private:
 
 	virtual EQueryResult QueryPayloadStatuses(TArrayView<const FIoHash> Ids, EStorageType StorageType, TArray<EPayloadStatus>& OutStatuses) override;
 
-	virtual EVirtualizationResult TryVirtualizePackages(TConstArrayView<FString> PackagePaths, TArray<FText>& OutDescriptionTags, TArray<FText>& OutErrors) override;
+	virtual FVirtualizationResult TryVirtualizePackages(TConstArrayView<FString> PackagePaths, EVirtualizationOptions Options) override;
 
-	virtual ERehydrationResult TryRehydratePackages(TConstArrayView<FString> PackagePaths, TArray<FText>& OutErrors) override;
+	virtual FRehydrationResult TryRehydratePackages(TConstArrayView<FString> PackagePaths, ERehydrationOptions Options) override;
 	virtual ERehydrationResult TryRehydratePackages(TConstArrayView<FString> PackagePaths, uint64 PaddingAlignment, TArray<FText>& OutErrors, TArray<FSharedBuffer>& OutPackages, TArray<FRehydrationInfo>* OutInfo) override;
 
 	virtual void DumpStats() const override;
@@ -135,6 +137,8 @@ private:
 	virtual FPayloadActivityInfo GetAccumualtedPayloadActivityInfo() const override;
 
 	virtual void GetPayloadActivityInfo( GetPayloadActivityInfoFuncRef ) const override;
+
+	virtual void GatherAnalytics(TArray<FAnalyticsEventAttribute>& Attributes) const override;
 
 	virtual FOnNotification& GetNotificationEvent() override
 	{
@@ -154,7 +158,6 @@ private:
 	void OnUpdateDebugMissBackendsFromConsole(const TArray<FString>& Args, FOutputDevice& OutputDevice);
 	void OnUpdateDebugMissChanceFromConsole(const TArray<FString>& Args, FOutputDevice& OutputDevice);
 	void OnUpdateDebugMissCountFromConsole(const TArray<FString>& Args, FOutputDevice& OutputDevice);
-
 	void UpdateBackendDebugState();
 
 	bool ShouldDebugDisablePulling(FStringView BackendConfigName) const;	
@@ -175,7 +178,7 @@ private:
 
 	void PullDataFromAllBackends(TArrayView<FPullRequest> Requests);
 	void PullDataFromBackend(IVirtualizationBackend& Backend, TArrayView<FPullRequest> Requests);
-
+	
 	bool ShouldVirtualizeAsset(const UObject* Owner) const;
 
 	/** 

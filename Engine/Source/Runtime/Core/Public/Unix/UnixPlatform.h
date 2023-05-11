@@ -6,6 +6,8 @@
 
 #pragma once
 
+// HEADER_UNIT_SKIP - Not included directly
+
 #include <linux/version.h>
 #include <signal.h>
 #include "Clang/ClangPlatform.h"
@@ -32,11 +34,7 @@ typedef FUnixPlatformTypes FPlatformTypes;
 
 #define UNIX_MAX_PATH				PATH_MAX
 
-#if defined(_LINUX64) || defined(_LP64)
-	#define PLATFORM_64BITS						1
-#else
-	#define PLATFORM_64BITS						0
-#endif
+#define PLATFORM_64BITS							1
 #define PLATFORM_CAN_SUPPORT_EDITORONLY_DATA	1
 
 // Base defines, defaults are commented out
@@ -103,13 +101,6 @@ typedef FUnixPlatformTypes FPlatformTypes;
 	#define PLATFORM_ENABLE_VECTORINTRINSICS		1
 #endif
 
-// We do not currently compile with -msse4 or higher on Unix or Linux
-#ifndef PLATFORM_MAYBE_HAS_SSE4_1 // May be set from UnrealBuildTool
-	#define PLATFORM_MAYBE_HAS_SSE4_1							0
-#endif
-#ifndef PLATFORM_ALWAYS_HAS_SSE4_1 // May be set from UnrealBuildTool
-	#define PLATFORM_ALWAYS_HAS_SSE4_1							0
-#endif
 #ifndef PLATFORM_ALWAYS_HAS_FMA3
 	#define PLATFORM_ALWAYS_HAS_FMA3							0
 #endif

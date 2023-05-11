@@ -14,19 +14,13 @@
 #include "Toolkits/DMXPixelMappingToolkit.h"
 #include "Widgets/SDMXPixelMappingFixturePatchDetailRow.h"
 
-#include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
-#include "Editor.h"
-#include "PropertyHandle.h"
 #include "IPropertyUtilities.h"
 #include "ScopedTransaction.h"
-#include "Layout/Visibility.h"
+#include "Algo/Find.h"
 #include "Misc/CoreDelegates.h"
-#include "Widgets/SBoxPanel.h"
 #include "Widgets/Input/SButton.h"
-#include "Widgets/Layout/SScrollBorder.h"
-#include "Widgets/Views/SListView.h"
 
 
 #define LOCTEXT_NAMESPACE "DMXPixelMappingDetailCustomization_FixtureGroup"
@@ -90,6 +84,8 @@ void FDMXPixelMappingDetailCustomization_FixtureGroup::CreateAddAllPatchesButton
 
 void FDMXPixelMappingDetailCustomization_FixtureGroup::CreateFixturePatchDetailRows(IDetailLayoutBuilder& InDetailLayout)
 {
+	
+
 	UDMXPixelMappingFixtureGroupComponent* FixtureGroupComponent = WeakFixtureGroupComponent.Get();
 	if (!FixtureGroupComponent)
 	{
@@ -109,6 +105,7 @@ void FDMXPixelMappingDetailCustomization_FixtureGroup::CreateFixturePatchDetailR
 	EntitiesHandle->SetOnPropertyValueChanged(FSimpleDelegate::CreateSP(this, &FDMXPixelMappingDetailCustomization_FixtureGroup::ForceRefresh));
 
 	// Add fixture patches as custom rows
+	NumFixturePatchRows = 0;
 	TArray<UDMXEntityFixturePatch*> AllFixturePatches = DMXLibrary->GetEntitiesTypeCast<UDMXEntityFixturePatch>();
 	for (UDMXEntityFixturePatch* FixturePatch : AllFixturePatches)
 	{
@@ -211,27 +208,24 @@ FReply FDMXPixelMappingDetailCustomization_FixtureGroup::OnAddAllPatchesClicked(
 	}
 
 	// Layout new components inside the group
-	const int32 Columns = FMath::Sqrt((float)NewComponents.Num());
+	const int32 Columns = FMath::RoundFromZero(FMath::Sqrt((float)NewComponents.Num()));
 	const int32 Rows = FMath::RoundFromZero((float)NewComponents.Num() / Columns);
-	const float Size = FMath::Min(GroupComponent->GetSize().X / Columns, GroupComponent->GetSize().Y / Rows);
-	if (Size < 1.f)
-	{
-		GroupComponent->SetSize(FVector2D(Size * Columns, Size * Rows));
-	}
-	
+	const FVector2D Size = FVector2D(GroupComponent->GetSize().X / Columns, GroupComponent->GetSize().Y / Rows);
+		
 	const FVector2D ParentPosition = GroupComponent->GetPosition();
 	int32 Column = -1;
 	int32 Row = 0;
 	for (UDMXPixelMappingOutputComponent* NewComponent : NewComponents)
 	{
 		Column++;
-		if (Column > Columns)
+		if (Column >= Columns)
 		{
 			Column = 0;
 			Row++;
 		}
-		const FVector2D Position = ParentPosition + FVector2D(Column * Size, Row * Size);
+		const FVector2D Position = ParentPosition + FVector2D(Column * Size.X, Row * Size.Y);
 		NewComponent->SetPosition(Position);
+		NewComponent->SetSize(Size);
 	}
 
 	return FReply::Handled();

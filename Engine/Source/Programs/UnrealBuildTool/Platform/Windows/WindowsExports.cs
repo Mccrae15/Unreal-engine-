@@ -38,13 +38,13 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
-		/// Returns the common name of the current architecture
+		/// Returns the architecture name of the current architecture.
 		/// </summary>
 		/// <param name="arch">The architecture enum</param>
 		/// <returns>String with the name</returns>
-		public static string GetArchitectureSubpath(WindowsArchitecture arch)
+		public static string GetArchitectureName(UnrealArch arch)
 		{
-			return WindowsPlatform.GetArchitectureSubpath(arch);
+			return WindowsPlatform.GetArchitectureName(arch);
 		}
 
 		/// <summary>

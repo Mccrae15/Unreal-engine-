@@ -20,6 +20,7 @@ namespace Private
 {
 
 class FMountDir;
+struct FScanDirAndParentData;
 
 /** Enum to specify files and directories that should be completed earlier than others */
 enum class EPriority : uint8
@@ -29,14 +30,16 @@ enum class EPriority : uint8
 	/** Optional information (e.g. use of the ReferenceViewer) is unavailable until the file/directory is completed */
 	High,
 	/** Nothing has requested the file/directory yet */
-	Normal
+	Normal,
+
+	Highest = Blocking,
+	Lowest = Normal,
 };
-constexpr uint32 CountEPriority = static_cast<uint32>(EPriority::Normal) + 1;
 
 /** Fields being set in a call to SetProperty */
 struct FSetPathProperties
 {
-	/** The path (usually a plugin's root content path) has been requested for scanning through e.g. ScanPathsSynchronous */
+	/** The path (usually a plugin's root content path) was requested for scanning through e.g. ScanPathsSynchronous */
 	TOptional<bool> IsOnAllowList;
 	/**
 	 * Set whether the given directory matches a deny list entry.
@@ -51,17 +54,12 @@ struct FSetPathProperties
 	 * IFileManager::IterateDirectoryStat after process start or the last request to rescan it
 	 */
 	TOptional<bool> HasScanned;
-	/**
-	 * Priority that determines which directories are scanned first, for when a directory is being waited on or are
-	 * not blocking but are wanted for optional features
-	 */
-	TOptional<EPriority> Priority;
 
 	/** Used to early-exit from tree traversal when all properties have finished being handled */
 	bool IsSet() const
 	{
 		return IsOnAllowList.IsSet() | HasScanned.IsSet() | MatchesDenyList.IsSet() | //-V792
-			IgnoreDenyList.IsSet() | Priority.IsSet(); //-V792
+			IgnoreDenyList.IsSet(); //-V792
 	}
 };
 
@@ -115,10 +113,12 @@ struct FGatheredPathData
 	EGatherableFileType Type = EGatherableFileType::Invalid;
 
 	FGatheredPathData() = default;
-	FGatheredPathData(FStringView InLocalAbsPath, FStringView InLongPackageName, const FDateTime& InPackageTimestamp, EGatherableFileType InType);
+	FGatheredPathData(FStringView InLocalAbsPath, FStringView InLongPackageName, const FDateTime& InPackageTimestamp,
+		EGatherableFileType InType);
 	explicit FGatheredPathData(const FDiscoveredPathData& DiscoveredData);
 	explicit FGatheredPathData(FDiscoveredPathData&& DiscoveredData);
-	void Assign(FStringView InLocalAbsPath, FStringView InLongPackageName, const FDateTime& InPackageTimestamp, EGatherableFileType InType);
+	void Assign(FStringView InLocalAbsPath, FStringView InLongPackageName, const FDateTime& InPackageTimestamp,
+		EGatherableFileType InType);
 	void Assign(const FDiscoveredPathData& DiscoveredData);
 
 	/**
@@ -194,7 +194,7 @@ private:
 		/** Add the given FilePath as a direct file child of the Node's directory. */
 		void AddFile(FGatheredPathData&& FilePath);
 
-		/** Pop the given number of files out of this node and its children and decrement NumToPop by how many were popped. */
+		/** Pop the NumToPop files out of this node and its children and decrement NumToPop by how many were popped. */
 		template <typename RangeType>
 		void PopFiles(RangeType& Out, int32& NumToPop);
 		/** Pop all files out of this node and its children. */
@@ -229,10 +229,11 @@ private:
 	FTreeNode Root;
 	TRingBuffer<UE::AssetDataGather::Private::FGatheredPathData> BlockingFiles;
 	TRingBuffer<UE::AssetDataGather::Private::FGatheredPathData> LaterRetryFiles;
+	int32 AvailableFilesNum = 0;
 };
 
 
-/** Stores a LocalAbsPath and its existence information. A file system query is issued the first time the data is needed. */
+/** Stores a LocalAbsPath and existence information. A file system query is issued the first time the data is needed. */
 struct FPathExistence
 {
 	/** What kind of thing we found at the given path */
@@ -267,7 +268,7 @@ private:
  * referenced from the SubDirs array. Directories are removed from the tree once their scans are finished to save memory.
  * Queries take into account that deleted nodes have been completed.
  *
- * This class is not ThreadSafe; The FAssetDataDiscovery reads/writes its data only while holding the TreeLock critical section.
+ * This class is not ThreadSafe; The FAssetDataDiscovery reads/writes its data only while holding TreeLock.
  */
 class FScanDir : public FRefCountBase
 {
@@ -300,16 +301,13 @@ public:
 	 */
 	void Shutdown();
 
-	/** Check whether this ScanDir is still alive or if it has been marked for destruction and cleared on another thread. */
+	/** Check whether this ScanDir is alive; it may have been marked for destruction and cleared on another thread. */
 	bool IsValid() const;
 
 	FMountDir* GetMountDir() const;
 
 	/** Get this ScanDir's RelPath from its Parent */
 	FStringView GetRelPath() const;
-
-	/** Return this ScanDir's accumulated Priority: the maximum of its directly-set priority and its children's priority. */
-	EPriority GetPriority() const;
 
 	/** Calculate this ScanDir's full absolute path by accumulating RelPaths from parents and append it. */
 	void AppendLocalAbsPath(FStringBuilderBase& OutFullPath) const;
@@ -346,32 +344,29 @@ public:
 		FInherited& OutData, FString& OutRelPath);
 
 	/**
-	 * Set values of fields on the given directory indicated by InRelPath for all of the properties existing on InProperties.
+	 * Set values of fields on the given directory indicated by InRelPath for all properties existing on InProperties.
 	 * Returns whether the directory was found and its property was changed; returns false if InRelPath was not a
 	 * directory or the property did not need to be changed.
 	 */
-	bool TrySetDirectoryProperties(FStringView InRelPath, const FSetPathProperties& InProperties, bool bConfirmedExists);
+	bool TrySetDirectoryProperties(FStringView InRelPath, FInherited& ParentData,
+		const FSetPathProperties& InProperties, bool bConfirmedExists, FScanDirAndParentData& OutControllingDir);
 	/**
 	 * Mark that the given file has already been scanned, so that it will not be double reporting in the upcoming
 	 * directory scan, if one is upcoming.
 	 */
 	void MarkFileAlreadyScanned(FStringView BaseName);
-	/** Set the direct priority of this ScanDir and update the accumulated priority to match it. */
-	void SetDirectPriority(EPriority InPriority);
 
 	/**
 	 * Called from the Tick; handle the list of subdirs and files that were found from IterateDirectoryStat called
 	 * on this ScanDir, reporting discovered files and updating status variables.
 	 */
-	void SetScanResults(FStringView LocalAbsPath, const FInherited& ParentData, TArrayView<FDiscoveredPathData>& InOutSubDirs,
-		TArrayView<FDiscoveredPathData>& InOutFiles);
+	void SetScanResults(FStringView LocalAbsPath, const FInherited& ParentData,
+		TArrayView<FDiscoveredPathData>& InOutSubDirs, TArrayView<FDiscoveredPathData>& InOutFiles);
 	/**
-	 * Update the completion state of this ScanDir based on its scan status and its child dirs completion state.
-	 * Set OutCursor to the highest priority child dir that needs to be updated if any children need to be updated
-	 * and/or scanned first.
-	 * Set OutCursor to the parent ScanDir (or null if there is no parent) if this ScanDir is now complete.
+	 * Update the completion state of this ScanDir and all ScanDirs under it based on each dir's scan status and its
+	 * child dirs' completion state. Add any ScanDirs that need to be scanned to OutScanRequests.
 	 */
-	void Update(FScanDir*& OutCursor, FInherited& InOutParentData);
+	void Update(TArray<FScanDirAndParentData>& OutScanRequests, const FScanDir::FInherited& ParentData);
 
 	FScanDir* GetFirstIncompleteScanDir();
 
@@ -424,9 +419,6 @@ protected:
 	/** Find the index of the subdir with the given Relative path. */
 	int32 FindLowerBoundSubDir(FStringView SubDirBaseName);
 
-	/** Return the the highest-priority not-yet-complete SubDir, or null if all are complete. */
-	FScanDir* FindHighestPrioritySubDir();
-
 	/** Call the given lambda void(FScanDir&) on each existing SubDir. */
 	template <typename CallbackType> void ForEachSubDir(const CallbackType& Callback);
 	/**
@@ -436,19 +428,11 @@ protected:
 	 */
 	template <typename CallbackType> void ForEachDescendent(const CallbackType& Callback);
 
-	/** Set the AccumulatedPriority of this ScanDir to the maximum of the DirectPriorities of it and all its child dirs. */
-	void UpdateAccumulatedPriority();
-	/** Record a changed priority of a direct child ScanDir and update the accumulated priority of this ScanDir. */
-	void OnChildPriorityChanged(EPriority InPriority, int32 Delta);
-
 	TArray<TRefCountPtr<FScanDir>> SubDirs; // Sorted
 	TArray<FString> AlreadyScannedFiles; // Unsorted
 	FMountDir* MountDir = nullptr;
 	FScanDir* Parent = nullptr;
 	FString RelPath;
-	uint8 PriorityRefCounts[CountEPriority] = {}; // Initialize all elements to 0
-	EPriority DirectPriority = EPriority::Normal;
-	EPriority AccumulatedPriority = EPriority::Normal;
 	/** Whether each piece of the inherited data has been set directly on this directory */
 	FInherited DirectData;
 	bool bHasScanned = false;
@@ -458,12 +442,23 @@ protected:
 };
 
 /**
+ *  A refcounted pointer to a ScanDir, along with the ParentData found when tracing down from the root
+ * path to the ScanDir. Used to return list of directories needing scanning from Update.
+ */
+struct FScanDirAndParentData
+{
+	TRefCountPtr<FScanDir> ScanDir;
+	FScanDir::FInherited ParentData;
+};
+
+/**
  * Gather data about a MountPoint that has been registered with FPackageName
  * The FMountDir holds a FScanTree with information about each directory (that is pruned when not in use).
- * It also holds some data that is needed only per MountPoint, such as the packagename.
- * It also holds some data per subdirectory that is more performant to hold in a map rather than to require the FScanTrees to be kept.
+ * It also holds data that is needed only per MountPoint, such as the packagename.
+ * It also holds data per subdirectory that is more performant to hold in a map rather than to require the FScanTrees to
+ * be kept.
  *
- * This class is not ThreadSafe; The FAssetDataDiscovery reads/writes its data only while holding the TreeLock critical section.
+ * This class is not ThreadSafe; The FAssetDataDiscovery reads/writes its data only while holding TreeLock.
  */
 class FMountDir
 {
@@ -480,14 +475,13 @@ public:
 	FAssetDataDiscovery& GetDiscovery() const;
 
 	/** Find the direct parent of InRelPath, or the lowest fallback. See FScanDir::GetControllingDir. */
-	FScanDir* GetControllingDir(FStringView LocalAbsPath, bool bIsDirectory, FScanDir::FInherited& OutParentData, FString& OutRelPath);
+	FScanDir* GetControllingDir(FStringView LocalAbsPath, bool bIsDirectory, FScanDir::FInherited& OutParentData,
+		FString& OutRelPath);
 	/** Return the memory used by the tree under this MountDir, except that sizeof(*this) is excluded. */
 	SIZE_T GetAllocatedSize() const;
 
 	/** Report whether this MountDir is complete: all ScanDirs under it either have scanned or should not scan. */
 	bool IsComplete() const;
-	/** Return this MountDir's Priority, which is the maximum of any of its ScanDirs' priorities. */
-	EPriority GetPriority() const;
 
 	/** Report the collapsed data for the scandir - allow list, deny list, etc. Returns false data for non child paths. */
 	void GetMonitorData(FStringView InLocalAbsPath, FScanDir::FInherited& OutData) const;
@@ -502,14 +496,10 @@ public:
 	 * Returns whether the directory was foundand its property was changed; returns false if LocalAbsPath was not a
 	 * directory under this MountDir or the property did not need to be changed.
 	 */
-	bool TrySetDirectoryProperties(FStringView LocalAbsPath, const FSetPathProperties& InProperties, bool bConfirmedExists);
-	/** 
-	 * Update all ScanDirs under this MountDir in priority order until one is found that needs to be scanned.
-	 * Set OutCursor to that ScanDir, or to nullptr if all are complete.
-	 * Set OutData for the inherited parent data of the OutCursor, set to false data if 
-	 * if OutCursor is null.
-	 */
-	void Update(FScanDir*& OutCursor, FScanDir::FInherited& OutParentData);
+	bool TrySetDirectoryProperties(FStringView LocalAbsPath, const FSetPathProperties& InProperties,
+		bool bConfirmedExists, FScanDirAndParentData* OutControllingDir);
+	/** Update all incomplete ScanDirs under this MountDir and add any that need to be scanned to OutScanRequests. */
+	void Update(TArray<FScanDirAndParentData>& OutScanRequests);
 
 	FScanDir* GetFirstIncompleteScanDir();
 
@@ -538,7 +528,7 @@ public:
 	TArray<FMountDir*> GetChildMounts() const;
 
 protected:
-	/** Inspect the Discovery's deny lists and add the ones applicable to this MountDir into this MountDir's set of deny lists. */
+	/** Inspect the Discovery's DenyLists and add the ones applicable to this into this MountDir's set of DenyLists. */
 	void UpdateDenyList();
 	/** Mark that given path needs to be reconsidered by Update. */
 	void MarkDirty(FStringView MountRelPath);
@@ -605,16 +595,18 @@ public:
 	/** Gets search results from the file discovery. */
 	void GetAndTrimSearchResults(bool& bOutIsComplete, TArray<FString>& OutDiscoveredPaths,
 		FFilesToSearch& OutFilesToSearch, int32& OutNumPathsToSearch);
+	/** Get diagnostics for telemetry or logging. */
+	void GetDiagnostics(float& OutCumulativeDiscoveryTime);
 	/** Wait (joining in on the tick) until all currently monitored paths have been scanned. */
 	void WaitForIdle();
-	/** Optionally set some scan properties for the given path and then wait for the scan of it to finish. */
-	void SetPropertiesAndWait(FPathExistence& QueryPath, bool bAddToAllowList, bool bForceRescan,
+	/** Optionally set some scan properties for the given paths and then wait for their scans to finish. */
+	void SetPropertiesAndWait(TArrayView<FPathExistence> QueryPaths, bool bAddToAllowList, bool bForceRescan,
 		bool bIgnoreDenyListScanFilters);
 	/** Return whether the given path is allowed due to e.g. TrySetDirectoryProperties with IsOnAllowList. */
 	bool IsOnAllowList(FStringView LocalAbsPath) const;
 	/** Return whether the given path matches the deny list and has not been marked IgnoreDenyList. */
 	bool IsOnDenyList(FStringView LocalAbsPath) const;
-	/** Return whether the given path should or has been scanned because it is on the allow list and not on the deny list. */
+	/** Return whether the path should or has been scanned because it is on the AllowList and not on the DenyList. */
 	bool IsMonitored(FStringView LocalAbsPath) const;
 	/** Return the memory used by *this. sizeof(*this) is not included. */
 	SIZE_T GetAllocatedSize() const;
@@ -627,6 +619,8 @@ public:
 	void AddMountPoint(const FString& LocalAbsPath, FStringView LongPackageName);
 	/** Remove the mountpoint because FPackageName has removed it. */
 	void RemoveMountPoint(const FString& LocalAbsPath);
+	/** Raise the priority until completion of scans of the given path and its subdirs. */
+	void PrioritizeSearchPath(const FString& LocalAbsPath, EPriority Priority);
 	/** Set properties on the directory, called when files are requested to be on an allow/deny list or rescanned. */
 	bool TrySetDirectoryProperties(const FString& LocalAbsPath,
 		const UE::AssetDataGather::Private::FSetPathProperties& Properties, bool bConfirmedExists);
@@ -650,16 +644,16 @@ private:
 	int32 FindLowerBoundMountPoint(FStringView LocalAbsPath) const;
 
 	/** Run the tick, either called from the async Run or called on thread from a thread executing a synchronous wait. */
-	void TickInternal();
-	/** Search all of the MountDirs for a highest priority ScanDir that needs to be Updated. */
-	void FindFirstCursor(FScanDir*& OutCursor, FScanDir::FInherited& OutParentData);
-	/** Invalidate the tick's current cursor, called when we need to reconsider whether directories ShouldBeScanned. */
-	void InvalidateCursor();
+	void TickInternal(bool bTickAll);
+	/** Update all incomplete ScanDirs under all MountDirs and add any that need to be scanned to OutScanRequests. */
+	void UpdateAll(TArray<FScanDirAndParentData>& OutScanRequests);
 	/** Mark whether this discoverer has finished and is idle. Update properties dependent upon the idle state. */
 	void SetIsIdle(bool bInIdle);
+	void SetIsIdle(bool bInIdle, double& TickStartTime);
 
 	/** Store the given discovered files and directories in the results. */
-	void AddDiscovered(FStringView DirAbsPath, TConstArrayView<FDiscoveredPathData> SubDirs, TConstArrayView<FDiscoveredPathData> Files);
+	void AddDiscovered(FStringView DirAbsPath, TConstArrayView<FDiscoveredPathData> SubDirs,
+		TConstArrayView<FDiscoveredPathData> Files);
 	/** Store the given specially reported single file in the results. */
 	void AddDiscoveredFile(FDiscoveredPathData&& File);
 
@@ -668,7 +662,7 @@ private:
 
 	/**
 	 * Return whether a directory with the given LongPackageName should be reported to the AssetRegistry
-	 * We do not report some directories because they are paths that should not enter the AssetRegistry list of paths if empty,
+	 * We do not report some directories because they should not enter the AssetRegistry list of paths if empty,
 	 * and reporting a path to the AssetRegistry adds it unconditionally to the list of paths.
 	 * If ShouldDirBeReported returns false, the directory will still be added to the catalog if non-empty,
 	 * because the AssetRegistry adds the path of every added file.
@@ -699,40 +693,33 @@ private:
 
 private:
 	/**
-	 * Prevent simultaneous ticks from two different threads and protect access to Tick-specific data.
-	 * To prevent DeadLocks, TickLock can not be entered from within any of the other locks on this class.
-	 */
-	mutable FGathererCriticalSection TickLock;
-	/**
 	 * Protect access to data in the ScanDir tree which can be read/write from the tick or from SetProperties.
-	 * To prevent DeadLocks, TreeLock can be entered while holding TickLock, but can not be entered from
-	 * within any of the other locks on this class.
+	 * To prevent DeadLocks, TreeLock must not be entered while holding ResultsLock.
 	 */
 	mutable FGathererCriticalSection TreeLock;
 	/**
+	 * Prevent simultaneous ticks from two different threads and protect access to Tick-specific data.
+	 * Can only be queried or taken while holding TreeLock, but can continue to be held after exiting TreeLock.
+	 */
+	mutable FThreadOwnerSection TickOwner;
+	/**
 	 * Protect access to the data written from tick and read/written from GetAndTrimSearchResults.
-	 * ResultsLock can be entered while holding TickLock or TreeLock or both.
+	 * ResultsLock can be entered while holding TreeLock.
 	 */
 	mutable FGathererCriticalSection ResultsLock;
 
 
 	// Variable section for variables that are constant during threading.
 
-	/**
-	 * Deny list of full absolute paths. Child paths will not be scanned unless requested to ignore deny lists.
-	 * Constant during threading.
-	 */
+	/** Deny list of full absolute paths. Child paths will not be scanned unless requested to ignore DenyLists. */
 	TArray<FString> LongPackageNamesDenyList;
-	/**
-	 * Deny list of relative paths in each mount. Child paths will not be scanned unless requested to ignore deny lists.
-	 * Constant during threading.
-	 */
+	/** DenyList of relative paths in each mount. Child paths will not be scanned unless requested to ignore DenyLists. */
 	TArray<FString> MountRelativePathsDenyList;
-	/** LongPackageNames for directories that should not be reported, see ShouldDirBeReported. Constant during threading. */
+	/** LongPackageNames for directories that should not be reported, see ShouldDirBeReported. */
 	TSet<FString> DirLongPackageNamesToNotReport;
-	/** Thread to run the discovery FRunnable on. Read-only while threading is possible. Constant during threading. */
+	/** Thread to run the discovery FRunnable on. Read-only while threading is possible. */
 	FRunnableThread* Thread;
-	/** True if this gather request is synchronous (i.e, IsRunningCommandlet()). Constant during threading. */
+	/** True if this gather request is synchronous (i.e, IsRunningCommandlet()). */
 	bool bIsSynchronous;
 
 
@@ -743,26 +730,29 @@ private:
 	 * Readable anywhere. Writable only within TreeLock.
 	 */
 	std::atomic<bool> bIsIdle;
-	/** > 0 if we've been asked to abort work in progress at the next opportunity. Read/writable anywhere. */
-	std::atomic<uint32> IsStopped;
 	/**
-	 * > 0 if we've been asked to pause the worker thread so a synchronous function can take over the tick.
-	 * Read/writable anywhere.
+	 * Set to true after editing PriorityScanDirs to inform a running Tick that it should abort its
+	 * current batch to reduce latency in handling the new priorities.
 	 */
+	std::atomic<bool> bPriorityDirty;
+	/** > 0 if we've been asked to abort work in progress at the next opportunity. */
+	std::atomic<uint32> IsStopped;
+	/** > 0 if we've been asked to pause the worker thread so a synchronous function can take over the tick. */
 	mutable std::atomic<uint32> IsPaused;
 	/**
 	 * Number of directories that have been discovered and IsMonitored but have not yet been scanned.
-	 * Used for progress tracking. Read/writable anywhere.
+	 * Used for progress tracking.
 	 */
 	FThreadSafeCounter NumDirectoriesToScan;
-
+	/** Triggered after scanning PriorityDirs to inform threads waiting on a PriorityDir to recheck conditions. */
+	FEventRef PriorityDataUpdated{ EEventMode::ManualReset };
 
 	// Variable section for variables that are read/writable only within ResultsLock.
 
-	/** Directories found in the scan; may be empty. Read/writable only within ResultsLock. */
+	/** Directories found in the scan; may be empty. */
 	TArray<FString> DiscoveredDirectories;
 
-	/** Files found found in the scan. Read/writable only within ResultsLock. */
+	/** Files found found in the scan. */
 	struct FDirectoryResult
 	{
 		FDirectoryResult(FStringView InDirAbsPath, TConstArrayView<FDiscoveredPathData> InFiles);
@@ -772,39 +762,68 @@ private:
 	};
 	TArray<FDirectoryResult> DiscoveredFiles;
 	TArray<FGatheredPathData> DiscoveredSingleFiles;
-	/**
-	 * Time at which the scan was started or last resumed from idle. Used for logging.
-	 * Read/writable only within ResultsLock.
-	 */
-	double DiscoverStartTime = 0.;
-	/**
-	 * Number of files discovered during scanning since start or resumed from idle. Used for logging.
-	 * Read/writable only within ResultsLock.
-	 */
+	/** Time spent in TickInternal since the last time cook was idle. Used for logging. */
+	double CurrentDiscoveryTime = 0.;
+	/** Number of files discovered during scanning since start or resumed from idle. Used for logging. */
 	int32 NumDiscoveredFiles = 0;
-
+	/** Cumulative total of NumDiscoveredFiles across all non-idle periods. */
+	int32 CumulativeDiscoveredFiles = 0;
+	/** Cumulative total of time spent in all non-idle periods. */
+	float CumulativeDiscoveryTime = 0.f;
 
 	// Variable section for variables that are read/writable only within TreeLock.
 
 	/**
-	 * Sorted list of MountDirs, sorted by FPackagePath::Less on the absolute paths. Read/writable only within TreeLock.
+	 * Sorted list of MountDirs, sorted by FPackagePath::Less on the absolute paths.
 	 * Each MountDir contains a ScanDir tree and other data that configures the scanning within that MountPoint.
 	 * Read/writable only with TreeLock, both the list and all data owned by each MountDir.
 	 */
 	TArray<TUniquePtr<FMountDir>> MountDirs;
-	/** The next ScanDir to update in Tick. Read/writable only within TreeLock. */
-	TRefCountPtr<FScanDir> Cursor = nullptr;
-	/** The value of Parent's InheritedData for Cursor (or false if Cursor is null). Read/writable only within TreeLock. */
-	FScanDir::FInherited CursorParentData;
 
+	/** A ScanDir and referencecount for directories that have been prioritized by ScanPathsSynchronous. */
+	struct FPriorityScanDirData
+	{
+		TRefCountPtr<FScanDir> ScanDir;
+		FScanDir::FInherited ParentData;
+		int32 RequestCount = 0;
+		/**
+		 * Fire and forget prioritization increments RequestCount without ever decrementing it, and
+		 * sets bReleaseWhenComplete to have it be decremented by TickInternal.
+		 */
+		bool bReleaseWhenComplete = false;
+	};
+	TArray<FPriorityScanDirData> PriorityScanDirs;
 
-	// Variable section for variables that are read/writable only within TickLock.
+	// Variable section for variables that are read/writable only by the TickOwner thread
 
-	/** Scratch space to store discovered subdirs during the tick, to avoid allocations. Read/writable only within TickLock. */
-	TArray<FDiscoveredPathData> IteratedSubDirs;
-	/** Scratch space to store discovered files during the tick, to avoid allocations. Read/writable only within TickLock. */
-	TArray<FDiscoveredPathData> IteratedFiles;
+	/** Scratch space to store scan results during the tick to avoid allocations. */
+	struct FDirToScanData
+	{
+		TRefCountPtr<FScanDir> ScanDir;
+		FScanDir::FInherited ParentData;
+		// This type is used in a TArray, and TArray assumes elements can be memmoved. 
+		// TStringBuilder<N> cannot be memmoved, so use FStringBuilderBase without a buffer.
+		FStringBuilderBase DirLocalAbsPath;
+		FStringBuilderBase DirLongPackageName;
+		TArray<FDiscoveredPathData> IteratedSubDirs;
+		TArray<FDiscoveredPathData> IteratedFiles;
+		int32 NumIteratedDirs = 0;
+		int32 NumIteratedFiles = 0;
+		bool bScanned = false;
 
+		void Reset();
+		SIZE_T GetAllocatedSize() const;
+	};
+	TArray<FDirToScanData> DirToScanDatas;
+
+	/** Scratch space used per helper thread in the forloop to avoid allocations. */
+	struct FDirToScanBuffer
+	{
+		bool bAbort = false;
+
+		void Reset();
+	};
+	TArray<FDirToScanBuffer> DirToScanBuffers;
 
 	friend class FMountDir;
 	friend class FScanDir;

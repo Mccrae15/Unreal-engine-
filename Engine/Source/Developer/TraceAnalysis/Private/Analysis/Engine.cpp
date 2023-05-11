@@ -1,22 +1,35 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine.h"
+
 #include "Algo/BinarySearch.h"
 #include "Algo/Sort.h"
 #include "Algo/StableSort.h"
 #include "Containers/ArrayView.h"
 #include "CoreGlobals.h"
 #include "HAL/UnrealMemory.h"
+#include "Internationalization/Internationalization.h"
 #include "Logging/LogMacros.h"
+#include "Logging/MessageLog.h"
 #include "StreamReader.h"
 #include "Templates/UnrealTemplate.h"
-#include "Trace/Analysis.h"
 #include "Trace/Analyzer.h"
 #include "Trace/Detail/Protocol.h"
 #include "Trace/Detail/Transport.h"
 #include "Transport/PacketTransport.h"
-#include "Transport/Transport.h"
 #include "Transport/TidPacketTransport.h"
+#include "Transport/Transport.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogTraceAnalysis, Log, All)
+
+#if 0
+#	define TRACE_ANALYSIS_DEBUG(Format, ...) \
+		do { UE_LOG(LogTraceAnalysis, Log, TEXT(Format), __VA_ARGS__) } while (0)
+#else
+#	define TRACE_ANALYSIS_DEBUG(...)
+#endif
+
+#define LOCTEXT_NAMESPACE "TraceAnalysis"
 
 namespace UE {
 namespace Trace {
@@ -527,7 +540,7 @@ FDispatch::FField& FDispatchBuilder::AddField(const ANSICHAR* Name, int32 NameSi
 	FFnv1aHash Hash;
 	Hash.Add((const uint8*)Name, NameSize);
 	Field->Hash = Hash.Get();
-	
+
 	auto* Dispatch = (FDispatch*)(Buffer.GetData());
 	Dispatch->FieldCount++;
 	Dispatch->EventSize += Field->Size;
@@ -656,7 +669,7 @@ IAnalyzer::FEventFieldInfo::EType IAnalyzer::FEventFieldInfo::GetType() const
 			default: check(false); // Unsupported width
 		}
 	}
-	
+
 	if (Inner->Class == UE::Trace::Protocol0::Field_String)
 	{
 		return (Inner->SizeAndType == 1) ? EType::AnsiString : EType::WideString;
@@ -1038,6 +1051,7 @@ const FTypeRegistry::FTypeInfo* FTypeRegistry::Add(const void* TraceData, uint32
 	case 0: return AddVersion4(TraceData);
 	case 4: return AddVersion4(TraceData);
 	case 6: return AddVersion6(TraceData);
+	case 7: return AddVersion6(TraceData);
 	default:
 		check(false); // Unknown version
 	}
@@ -1169,7 +1183,7 @@ const FTypeRegistry::FTypeInfo* FTypeRegistry::AddVersion6(const void* TraceData
 		{
 			check((Field.DefinitionId.TypeInfo & Protocol0::Field_CategoryMask) == Protocol0::Field_Integer);
 			const int8 TypeSize = 1 << (Field.DefinitionId.TypeInfo & Protocol0::Field_Pow2SizeMask);
-			
+
 			auto DefinitionIdFieldName = ANSITEXTVIEW("DefinitionId");
 			auto& OutField = Builder.AddField(DefinitionIdFieldName.GetData(), DefinitionIdFieldName.Len(), TypeSize);
 			OutField.Offset = Field.DefinitionId.Offset;
@@ -1218,17 +1232,17 @@ void FTypeRegistry::Add(FTypeInfo* TypeInfo)
 	// but due to backwards compatibility we'll override existing types.
 	uint16 Uid = TypeInfo->Uid;
 	if (Uid < uint32(TypeInfos.Num()))
- 	{
+	{
 		if (TypeInfos[Uid] != nullptr)
- 		{
+		{
 			FMemory::Free(TypeInfos[Uid]);
 			TypeInfos[Uid] = nullptr;
- 		}
- 	}
+		}
+	}
 	else
- 	{
+	{
 		TypeInfos.SetNum(Uid + 1);
- 	}
+	}
 
 	TypeInfos[Uid] = TypeInfo;
 }
@@ -1379,9 +1393,9 @@ void FAnalyzerHub::OnNewType(const FTypeRegistry::FTypeInfo* TypeInfo)
 
 	uint16 Uid = TypeInfo->Uid;
 	if (Uid >= uint16(TypeToRoute.Num()))
- 	{
+	{
 		TypeToRoute.SetNumZeroed(Uid + 32);
- 	}
+	}
 
 	TypeToRoute[Uid] = uint16(FirstRoute + 1);
 
@@ -1486,7 +1500,7 @@ void FAnalyzerHub::BuildRoutes()
 	};
 
 	int32 AllEventsIndex = FindRoute(FFnv1aHash().Get());
-	auto FixupRoute = [this, &FindRoute, AllEventsIndex] (FRoute* Route) 
+	auto FixupRoute = [this, &FindRoute, AllEventsIndex] (FRoute* Route)
 	{
 		if (Route->ParentHash)
 		{
@@ -1680,7 +1694,8 @@ void FTraceAnalyzer::OnNewTrace(const FOnEventContext& Context)
 
 	// Later traces will have an explicit "SerialSync" trace event to indicate
 	// when there is enough data to establish the correct log serial
-	if ((EventData.GetValue<uint8>("FeatureSet") & 1) == 0)
+	const uint8 FeatureSet = EventData.GetValue<uint8>("FeatureSet");
+	if ((FeatureSet & 1) == 0)
 	{
 		OnSerialSync(Context);
 	}
@@ -1747,7 +1762,7 @@ void FTraceAnalyzer::OnThreadInfoInternal(const FOnEventContext& Context)
 
 	ThreadInfo->SystemId = EventData.GetValue<uint32>("SystemId");
 	ThreadInfo->SortHint = EventData.GetValue<int32>("SortHint");
-	
+
 	FAnsiStringView Name;
 	EventData.GetString("Name", Name);
 	ThreadInfo->Name.SetNumUninitialized(Name.Len() + 1);
@@ -1798,9 +1813,13 @@ public:
 	void				OnEvent(const FEventDataInfo& EventDataInfo);
 	virtual void		OnThreadInfo(const FThreads::FInfo& InThreadInfo) override;
 	void				EnterScope();
-	void				EnterScope(uint64 Timestamp);
+	void				EnterScope(uint64 RelativeTimestamp);
+	void				EnterScopeA(uint64 AbsoluteTimestamp);
+	void				EnterScopeB(uint64 BaseRelativeTimestamp);
 	void				LeaveScope();
-	void				LeaveScope(uint64 Timestamp);
+	void				LeaveScope(uint64 RelativeTimestamp);
+	void				LeaveScopeA(uint64 AbsoluteTimestamp);
+	void				LeaveScopeB(uint64 BaseRelativeTimestamp);
 
 private:
 	void				DispatchLeaveScope();
@@ -1908,6 +1927,19 @@ void FAnalysisBridge::EnterScope(uint64 Timestamp)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+void FAnalysisBridge::EnterScopeA(uint64 Timestamp)
+{
+	Timestamp -= State.Timing.BaseTimestamp;
+	ThreadInfo->ScopeRoutes.Push(~Timestamp);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+void FAnalysisBridge::EnterScopeB(uint64 Timestamp)
+{
+	ThreadInfo->ScopeRoutes.Push(~Timestamp);
+}
+
+////////////////////////////////////////////////////////////////////////////////
 void FAnalysisBridge::LeaveScope()
 {
 	State.Timing.EventTimestamp = 0;
@@ -1918,6 +1950,23 @@ void FAnalysisBridge::LeaveScope()
 void FAnalysisBridge::LeaveScope(uint64 Timestamp)
 {
 	Timestamp = ThreadInfo->PrevTimestamp += Timestamp;
+	State.Timing.EventTimestamp = Timestamp;
+	DispatchLeaveScope();
+	State.Timing.EventTimestamp = 0;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+void FAnalysisBridge::LeaveScopeA(uint64 Timestamp)
+{
+	Timestamp -= State.Timing.BaseTimestamp;
+	State.Timing.EventTimestamp = Timestamp;
+	DispatchLeaveScope();
+	State.Timing.EventTimestamp = 0;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+void FAnalysisBridge::LeaveScopeB(uint64 Timestamp)
+{
 	State.Timing.EventTimestamp = Timestamp;
 	DispatchLeaveScope();
 	State.Timing.EventTimestamp = 0;
@@ -1976,6 +2025,7 @@ public:
 	{
 		FAnalysisMachine&	Machine;
 		FAnalysisBridge&	Bridge;
+		FMessageLog*		Log;
 	};
 
 	class FStage
@@ -1990,7 +2040,7 @@ public:
 		virtual void		ExitStage(const FMachineContext& Context) {};
 	};
 
-							FAnalysisMachine(FAnalysisBridge& InBridge);
+							FAnalysisMachine(FAnalysisBridge& InBridge, FMessageLog* Log);
 							~FAnalysisMachine();
 	EStatus					OnData(FStreamReader& Reader);
 	void					Transition();
@@ -2003,11 +2053,13 @@ private:
 	FStage*					ActiveStage = nullptr;
 	TArray<FStage*>			StageQueue;
 	TArray<FStage*>			DeadStages;
+	FMessageLog*			Log;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
-FAnalysisMachine::FAnalysisMachine(FAnalysisBridge& InBridge)
+FAnalysisMachine::FAnalysisMachine(FAnalysisBridge& InBridge, FMessageLog* InLog)
 : Bridge(InBridge)
+, Log(InLog)
 {
 }
 
@@ -2041,7 +2093,7 @@ void FAnalysisMachine::Transition()
 {
 	if (ActiveStage != nullptr)
 	{
-		FMachineContext Context = { *this, Bridge };
+		const FMachineContext Context = { *this, Bridge, Log };
 		ActiveStage->ExitStage(Context);
 
 		DeadStages.Add(ActiveStage);
@@ -2051,7 +2103,7 @@ void FAnalysisMachine::Transition()
 
 	if (ActiveStage != nullptr)
 	{
-		FMachineContext Context = { *this, Bridge };
+		const FMachineContext Context = { *this, Bridge, Log };
 		ActiveStage->EnterStage(Context);
 	}
 }
@@ -2059,7 +2111,7 @@ void FAnalysisMachine::Transition()
 ////////////////////////////////////////////////////////////////////////////////
 FAnalysisMachine::EStatus FAnalysisMachine::OnData(FStreamReader& Reader)
 {
-	FMachineContext Context = { *this, Bridge };
+	const FMachineContext Context = { *this, Bridge, Log };
 	EStatus Ret;
 	do
 	{
@@ -2174,7 +2226,7 @@ class FProtocol2Stage
 public:
 								FProtocol2Stage(uint32 Version, FTransport* InTransport);
 								~FProtocol2Stage();
-	virtual EStatus 			OnData(FStreamReader& Reader, const FMachineContext& Context) override;
+	virtual EStatus				OnData(FStreamReader& Reader, const FMachineContext& Context) override;
 	virtual void				EnterStage(const FMachineContext& Context) override;
 
 protected:
@@ -2661,7 +2713,7 @@ int32 FProtocol4Stage::OnDataImpl(FStreamReader& Reader, FAnalysisBridge& Bridge
 		{
 			return 1;
 		}
-		
+
 		const auto* HeaderSync = (Protocol4::FEventHeaderSync*)Header;
 		uint32 EventSerial = HeaderSync->SerialLow|(uint32(HeaderSync->SerialHigh) << 16);
 		if (EventSerial != (Serial.Value & Serial.Mask))
@@ -2745,69 +2797,55 @@ int32 FProtocol4Stage::OnDataKnown(
 			const FTypeRegistry::FTypeInfo* TypeInfo = TypeRegistry.Add(Size + 1, 4);
 			Bridge.OnNewType(TypeInfo);
 			Reader.Advance(sizeof(*Size) + *Size);
-			return 1;
 		}
-		break;
+		return 1;
 
 	case Protocol4::EKnownEventUids::EnterScope:
-	case Protocol4::EKnownEventUids::EnterScope_T:
-		if (Uid > Protocol4::EKnownEventUids::EnterScope)
-		{
-			const uint8* Stamp = Reader.GetPointer(sizeof(uint64) - 1);
-			if (Stamp == nullptr)
-			{
-				break;
-			}
-
-			uint64 Timestamp = *(uint64*)(Stamp - 1) >> 8;
-			Bridge.EnterScope(Timestamp);
-
-			Reader.Advance(sizeof(uint64) - 1);
-		}
-		else
-		{
-			Bridge.EnterScope();
-		}
+		Bridge.EnterScope();
 		return 1;
 
 	case Protocol4::EKnownEventUids::LeaveScope:
-	case Protocol4::EKnownEventUids::LeaveScope_T:
-		if (Uid > Protocol4::EKnownEventUids::LeaveScope)
+		Bridge.LeaveScope();
+		return 1;
+
+	case Protocol4::EKnownEventUids::EnterScope_T:
 		{
 			const uint8* Stamp = Reader.GetPointer(sizeof(uint64) - 1);
 			if (Stamp == nullptr)
 			{
-				break;
+				return 0;
 			}
 
-			uint64 Timestamp = *(uint64*)(Stamp - 1) >> 8;
-			Bridge.LeaveScope(Timestamp);
+			const uint64 RelativeTimestamp = *(uint64*)(Stamp - 1) >> 8;
+			Bridge.EnterScope(RelativeTimestamp);
 
 			Reader.Advance(sizeof(uint64) - 1);
 		}
-		else
+		return 1;
+
+	case Protocol4::EKnownEventUids::LeaveScope_T:
 		{
-			Bridge.LeaveScope();
+			const uint8* Stamp = Reader.GetPointer(sizeof(uint64) - 1);
+			if (Stamp == nullptr)
+			{
+				return 0;
+			}
+
+			const uint64 RelativeTimestamp = *(uint64*)(Stamp - 1) >> 8;
+			Bridge.LeaveScope(RelativeTimestamp);
+
+			Reader.Advance(sizeof(uint64) - 1);
 		}
 		return 1;
-	};
 
-	return 0;
+	default:
+		return 0;
+	};
 }
 
 
 
 // {{{1 protocol-5 -------------------------------------------------------------
-
-////////////////////////////////////////////////////////////////////////////////
-DEFINE_LOG_CATEGORY_STATIC(LogTraceAnalysis, Log, All)
-
-#if 0
-#	define TRACE_ANALYSIS_DEBUG(Format, ...) \
-		do { UE_LOG(LogTraceAnalysis, Log, TEXT(Format), __VA_ARGS__) } while (0)
-#else
-#	define TRACE_ANALYSIS_DEBUG(...)
-#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 class FProtocol5Stage
@@ -2850,17 +2888,25 @@ protected:
 		};
 
 		enum { GapThreadId = ~0u };
-
-		bool operator < (const FEventDescStream& Rhs) const;
 	};
 	static_assert(sizeof(FEventDescStream) == 16, "");
 
-	enum ESerial : int32 
+	struct FSerialDistancePredicate
+	{
+		bool operator () (const FEventDescStream& Lhs, const FEventDescStream& Rhs) const
+		{
+			uint32 Ld = Lhs.EventDescs->Serial - Origin;
+			uint32 Rd = Rhs.EventDescs->Serial - Origin;
+			return Ld < Rd;
+		};
+		uint32 Origin;
+	};
+
+	enum ESerial : int32
 	{
 		Bits		= 24,
 		Mask		= (1 << Bits) - 1,
 		Range		= 1 << Bits,
-		HalfRange	= Range >> 1,
 		Ignored		= Range << 2, // far away so proper serials always compare less-than
 		Terminal,
 	};
@@ -2868,21 +2914,23 @@ protected:
 	using EventDescArray	= TArray<FEventDesc>;
 	using EKnownUids		= Protocol5::EKnownEventUids;
 
-
 	virtual EStatus			OnData(FStreamReader& Reader, const FMachineContext& Context) override;
 	EStatus					OnDataNewEvents(const FMachineContext& Context);
 	EStatus					OnDataImportant(const FMachineContext& Context);
 	EStatus					OnDataNonCachedImportant(const FMachineContext& Context);
 	EStatus					OnDataNormal(const FMachineContext& Context);
-	int32					ParseImportantEvents(FStreamReader& Reader, EventDescArray& OutEventDescs);
-	int32					ParseEvents(FStreamReader& Reader, EventDescArray& OutEventDescs);
-	int32					ParseEventsWithAux(FStreamReader& Reader, EventDescArray& OutEventDescs);
-	int32					ParseEvent(FStreamReader& Reader, FEventDesc& OutEventDesc);
-	int32					DispatchEvents(FAnalysisBridge& Bridge, const FEventDesc* EventDesc, uint32 Count);
-	int32					DispatchEvents(FAnalysisBridge& Bridge, TArray<FEventDescStream>& EventDescHeap);
+	int32					ParseImportantEvents(FStreamReader& Reader, EventDescArray& OutEventDescs, const FMachineContext& Context);
+	int32					ParseEvents(FStreamReader& Reader, EventDescArray& OutEventDescs, const FMachineContext& Context);
+	int32					ParseEventsWithAux(FStreamReader& Reader, EventDescArray& OutEventDescs, const FMachineContext& Context);
+	int32					ParseEvent(FStreamReader& Reader, FEventDesc& OutEventDesc, const FMachineContext& Context);
+	virtual void			SetSizeIfKnownEvent(uint32 Uid, uint32& InOutEventSize);
+	virtual bool			DispatchKnownEvent(const FMachineContext& Context, uint32 Uid, const FEventDesc* Cursor);
+	int32					DispatchEvents(const FMachineContext& Context, const FEventDesc* EventDesc, uint32 Count);
+	int32					DispatchEvents(const FMachineContext& Context, TArray<FEventDescStream>& EventDescHeap);
 	void					DetectSerialGaps(TArray<FEventDescStream>& EventDescHeap);
 	template <typename Callback>
 	void					ForEachSerialGap(const TArray<FEventDescStream>& EventDescHeap, Callback&& InCallback);
+
 	FTypeRegistry			TypeRegistry;
 	FTidPacketTransport&	Transport;
 	EventDescArray			EventDescs;
@@ -2891,14 +2939,6 @@ protected:
 	uint32					SyncCount;
 	uint32					EventVersion = 4; //Protocol version 5 uses the event version from protocol 4
 };
-
-////////////////////////////////////////////////////////////////////////////////
-bool FProtocol5Stage::FEventDescStream::operator < (const FEventDescStream& Rhs) const
-{
-	int32 Delta = Rhs.EventDescs->Serial - EventDescs->Serial;
-	int32 Wrapped = uint32(Delta + ESerial::HalfRange - 1) >= uint32(ESerial::Range - 2);
-	return (Wrapped ^ (Delta > 0)) != 0;
-}
 
 ////////////////////////////////////////////////////////////////////////////////
 FProtocol5Stage::FProtocol5Stage(FTransport* InTransport)
@@ -2964,7 +3004,7 @@ FProtocol5Stage::EStatus FProtocol5Stage::OnDataNewEvents(const FMachineContext&
 		return EStatus::EndOfStream;
 	}
 
-	if (ParseImportantEvents(*ThreadReader, EventDescs) < 0)
+	if (ParseImportantEvents(*ThreadReader, EventDescs, Context) < 0)
 	{
 		return EStatus::Error;
 	}
@@ -2991,7 +3031,7 @@ FProtocol5Stage::EStatus FProtocol5Stage::OnDataImportant(const FMachineContext&
 		return EStatus::EndOfStream;
 	}
 
-	if (ParseImportantEvents(*ThreadReader, EventDescs) < 0)
+	if (ParseImportantEvents(*ThreadReader, EventDescs, Context) < 0)
 	{
 		return EStatus::Error;
 	}
@@ -3009,7 +3049,7 @@ FProtocol5Stage::EStatus FProtocol5Stage::OnDataImportant(const FMachineContext&
 	EventDesc.Serial = ESerial::Terminal;
 
 	Context.Bridge.SetActiveThread(ETransportTid::Importants);
-	if (DispatchEvents(Context.Bridge, EventDescs.GetData(), EventDescs.Num() - 1) < 0)
+	if (DispatchEvents(Context, EventDescs.GetData(), EventDescs.Num() - 1) < 0)
 	{
 		return EStatus::Error;
 	}
@@ -3018,7 +3058,7 @@ FProtocol5Stage::EStatus FProtocol5Stage::OnDataImportant(const FMachineContext&
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-int32 FProtocol5Stage::ParseImportantEvents(FStreamReader& Reader, EventDescArray& OutEventDescs)
+int32 FProtocol5Stage::ParseImportantEvents(FStreamReader& Reader, EventDescArray& OutEventDescs, const FMachineContext& Context)
 {
 	using namespace Protocol5;
 
@@ -3055,7 +3095,7 @@ int32 FProtocol5Stage::ParseImportantEvents(FStreamReader& Reader, EventDescArra
 		const FTypeRegistry::FTypeInfo* TypeInfo = TypeRegistry.Get(Uid);
 		if (TypeInfo == nullptr)
 		{
-			UE_LOG(LogTraceAnalysis, Log, TEXT("Unknown event UID: %08x"), Uid);
+			Context.Log->Warning(LOCTEXT("UnknownUID","An unknown event UID was encountered."));
 			return 1;
 		}
 
@@ -3089,7 +3129,7 @@ int32 FProtocol5Stage::ParseImportantEvents(FStreamReader& Reader, EventDescArra
 
 			if (Cursor[0] != uint8(EKnownUids::AuxDataTerminal))
 			{
-				UE_LOG(LogTraceAnalysis, Warning, TEXT("Expecting AuxDataTerminal event"));
+				Context.Log->Warning(LOCTEXT("AuxDataTerminalExpected","Expected an aux data terminal in the stream."));
 				return -1;
 			}
 		}
@@ -3116,10 +3156,19 @@ FProtocol5Stage::EStatus FProtocol5Stage::OnDataNormal(const FMachineContext& Co
 		uint32 NumEventDescs = EventDescs.Num();
 
 		TRACE_ANALYSIS_DEBUG("Thread: %03d Id:%04x", i, Transport.GetThreadId(i));
-		
+
 		// Extract all the events in the stream for this thread
 		FStreamReader* ThreadReader = Transport.GetThreadStream(i);
-		if (ParseEvents(*ThreadReader, EventDescs) < 0)
+
+		// Stop analysis if this thread has accumulated too much data.
+		// This can happen on corrupted traces (ex. with serial sync events missing or out of order).
+		if (ThreadReader->GetRemaining() > 512 * 1024 * 1024)
+		{
+			Context.Log->Error(LOCTEXT("TooMuchData", "Analysis accumulated too much data before being able to continue analysing the stream."));
+			return EStatus::Error;
+		}
+
+		if (ParseEvents(*ThreadReader, EventDescs, Context) < 0)
 		{
 			return EStatus::Error;
 		}
@@ -3163,7 +3212,7 @@ FProtocol5Stage::EStatus FProtocol5Stage::OnDataNormal(const FMachineContext& Co
 		{
 			Context.Bridge.SetActiveThread(Stream.ThreadId);
 
-			if (DispatchEvents(Context.Bridge, StartDesc, DescNum) < 0)
+			if (DispatchEvents(Context, StartDesc, DescNum) < 0)
 			{
 				return EStatus::Error;
 			}
@@ -3190,7 +3239,7 @@ FProtocol5Stage::EStatus FProtocol5Stage::OnDataNormal(const FMachineContext& Co
 	// than half the serial space, they have wrapped.
 
 	// A min-heap is used to peel off groups of events by lowest serial
-	EventDescHeap.Heapify();
+	EventDescHeap.Heapify(FSerialDistancePredicate{NextSerial});
 
 	// Events must be consumed contiguously.
 	if (NextSerial == ~0u && Transport.GetSyncCount())
@@ -3201,7 +3250,7 @@ FProtocol5Stage::EStatus FProtocol5Stage::OnDataNormal(const FMachineContext& Co
 	const bool bSync = (SyncCount != Transport.GetSyncCount());
 	DetectSerialGaps(EventDescHeap);
 
-	if (DispatchEvents(Context.Bridge, EventDescHeap) < 0)
+	if (DispatchEvents(Context, EventDescHeap) < 0)
 	{
 		return EStatus::Error;
 	}
@@ -3216,7 +3265,7 @@ FProtocol5Stage::EStatus FProtocol5Stage::OnDataNormal(const FMachineContext& Co
 
 ////////////////////////////////////////////////////////////////////////////////
 int32 FProtocol5Stage::DispatchEvents(
-	FAnalysisBridge& Bridge,
+	const FMachineContext& Context,
 	TArray<FEventDescStream>& EventDescHeap)
 {
 	auto UpdateHeap = [&] (const FEventDescStream& Stream, const FEventDesc* EventDesc)
@@ -3228,7 +3277,7 @@ int32 FProtocol5Stage::DispatchEvents(
 			EventDescHeap.Add(Next);
 		}
 
-		EventDescHeap.HeapPopDiscard();
+		EventDescHeap.HeapPopDiscard(FSerialDistancePredicate{NextSerial}, false);
 	};
 
 	do
@@ -3238,7 +3287,7 @@ int32 FProtocol5Stage::DispatchEvents(
 		const FEventDesc* EndDesc = StartDesc;
 
 		// DetectSerialGaps() will add a special stream that communicates gaps
-		// in in serial numbers, gaps that will never be resolved. Thread IDs
+		// in serial numbers, gaps that will never be resolved. Thread IDs
 		// are uint16 everywhere else so they will never collide with GapThreadId.
 		if (Stream.ThreadId == FEventDescStream::GapThreadId)
 		{
@@ -3271,10 +3320,10 @@ int32 FProtocol5Stage::DispatchEvents(
 		}
 
 		// Dispatch.
-		Bridge.SetActiveThread(Stream.ThreadId);
+		Context.Bridge.SetActiveThread(Stream.ThreadId);
 		int32 DescNum = int32(UPTRINT(EndDesc - StartDesc));
 		check(DescNum > 0);
-		if (DispatchEvents(Bridge, StartDesc, DescNum) < 0)
+		if (DispatchEvents(Context, StartDesc, DescNum) < 0)
 		{
 			return -1;
 		}
@@ -3299,12 +3348,12 @@ int32 FProtocol5Stage::DispatchEvents(
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-int32 FProtocol5Stage::ParseEvents(FStreamReader& Reader, EventDescArray& OutEventDescs)
+int32 FProtocol5Stage::ParseEvents(FStreamReader& Reader, EventDescArray& OutEventDescs, const FMachineContext& Context)
 {
 	while (!Reader.IsEmpty())
 	{
 		FEventDesc EventDesc;
-		int32 Size = ParseEvent(Reader, EventDesc);
+		int32 Size = ParseEvent(Reader, EventDesc, Context);
 		if (Size <= 0)
 		{
 			return Size;
@@ -3320,7 +3369,7 @@ int32 FProtocol5Stage::ParseEvents(FStreamReader& Reader, EventDescArray& OutEve
 
 			Reader.Advance(Size);
 
-			int Ok = ParseEventsWithAux(Reader, OutEventDescs);
+			int Ok = ParseEventsWithAux(Reader, OutEventDescs, Context);
 			if (Ok < 0)
 			{
 				return Ok;
@@ -3343,7 +3392,7 @@ int32 FProtocol5Stage::ParseEvents(FStreamReader& Reader, EventDescArray& OutEve
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-int32 FProtocol5Stage::ParseEventsWithAux(FStreamReader& Reader, EventDescArray& OutEventDescs)
+int32 FProtocol5Stage::ParseEventsWithAux(FStreamReader& Reader, EventDescArray& OutEventDescs, const FMachineContext& Context)
 {
 	// We are now "in" the scope of an event with zero or more aux-data blocks.
 	// We will consume events until we leave this scope (a aux-data-terminal).
@@ -3363,7 +3412,7 @@ int32 FProtocol5Stage::ParseEventsWithAux(FStreamReader& Reader, EventDescArray&
 		FEventDesc EventDesc;
 		EventDesc.Serial = ESerial::Ignored;
 
-		int32 Size = ParseEvent(Reader, EventDesc);
+		int32 Size = ParseEvent(Reader, EventDesc, Context);
 		if (Size <= 0)
 		{
 			return Size;
@@ -3432,7 +3481,7 @@ int32 FProtocol5Stage::ParseEventsWithAux(FStreamReader& Reader, EventDescArray&
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-int32 FProtocol5Stage::ParseEvent(FStreamReader& Reader, FEventDesc& EventDesc)
+int32 FProtocol5Stage::ParseEvent(FStreamReader& Reader, FEventDesc& EventDesc, const FMachineContext& Context)
 {
 	using namespace Protocol5;
 
@@ -3475,12 +3524,7 @@ int32 FProtocol5Stage::ParseEvent(FStreamReader& Reader, FEventDesc& EventDesc)
 		}
 		else
 		{
-			switch (Uid)
-			{
-			case EKnownUids::EnterScope_T:
-			case EKnownUids::LeaveScope_T:
-				EventSize = 7;
-			};
+			SetSizeIfKnownEvent(Uid, EventSize);
 		}
 
 		EventDesc.bHasAux = 0;
@@ -3492,7 +3536,7 @@ int32 FProtocol5Stage::ParseEvent(FStreamReader& Reader, FEventDesc& EventDesc)
 		const FTypeRegistry::FTypeInfo* TypeInfo = TypeRegistry.Get(Uid);
 		if (TypeInfo == nullptr)
 		{
-			UE_LOG(LogTraceAnalysis, Log, TEXT("Unknown event UID: %08x"), Uid);
+			Context.Log->Warning(LOCTEXT("UnknownUID","An unknown event UID was encountered."));
 			return 0;
 		}
 
@@ -3571,7 +3615,7 @@ void FProtocol5Stage::ForEachSerialGap(
 			auto& Out = HeapCopy.Add_GetRef({Stream.ThreadId, Stream.TransportIndex});
 			Out.EventDescs = EventDesc;
 		}
-		HeapCopy.HeapPopDiscard();
+		HeapCopy.HeapPopDiscard(FSerialDistancePredicate{NextSerial}, false);
 	}
 	while (!HeapCopy.IsEmpty());
 }
@@ -3623,7 +3667,7 @@ void FProtocol5Stage::DetectSerialGaps(TArray<FEventDescStream>& EventDescHeap)
 			{
 				return false;
 			}
-			
+
 			const FEventDesc& SerialGap = SerialGaps[GapCount];
 
 			if (SerialGap.Serial == Lhs)
@@ -3666,56 +3710,85 @@ void FProtocol5Stage::DetectSerialGaps(TArray<FEventDescStream>& EventDescHeap)
 		FEventDescStream Out = EventDescHeap[0];
 		Out.ThreadId = FEventDescStream::GapThreadId;
 		Out.EventDescs = SerialGaps.GetData();
-		EventDescHeap.HeapPush(Out);
+		EventDescHeap.HeapPush(Out, FSerialDistancePredicate{NextSerial});
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////
+void FProtocol5Stage::SetSizeIfKnownEvent(uint32 Uid, uint32& InOutEventSize)
+{
+	switch (Uid)
+	{
+	case EKnownUids::EnterScope_T:
+	case EKnownUids::LeaveScope_T:
+		InOutEventSize = 7;
+		break;
+	};
+}
+
+////////////////////////////////////////////////////////////////////////////////
+bool FProtocol5Stage::DispatchKnownEvent(const FMachineContext& Context, uint32 Uid, const FEventDesc* Cursor)
+{
+	// Maybe this is a "well-known" event that is handled a little different?
+	switch (Uid)
+	{
+	case EKnownUids::EnterScope:
+		Context.Bridge.EnterScope();
+		return true;
+
+	case EKnownUids::LeaveScope:
+		Context.Bridge.LeaveScope();
+		return true;
+
+	case EKnownUids::EnterScope_T:
+	{
+		uint64 RelativeTimestamp = *(uint64*)(Cursor->Data - 1) >> 8;
+		Context.Bridge.EnterScope(RelativeTimestamp);
+		return true;
+	}
+
+	case EKnownUids::LeaveScope_T:
+	{
+		uint64 RelativeTimestamp = *(uint64*)(Cursor->Data - 1) >> 8;
+		Context.Bridge.LeaveScope(RelativeTimestamp);
+		return true;
+	}
+
+	case EKnownUids::AuxData:
+	case EKnownUids::AuxDataTerminal:
+		return true;
+
+	default:
+		return false;
 	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 int32 FProtocol5Stage::DispatchEvents(
-	FAnalysisBridge& Bridge,
+	const FMachineContext& Context,
 	const FEventDesc* EventDesc, uint32 Count)
 {
 	using namespace Protocol5;
 
 	FAuxDataCollector AuxCollector;
 
-	for (const FEventDesc *Cursor = EventDesc, *End = EventDesc + Count; Cursor < End; ++Cursor)
+	for (const FEventDesc* Cursor = EventDesc, *End = EventDesc + Count; Cursor < End; ++Cursor)
 	{
-		// Maybe this is a "well-known" event that is handled a little different?
-		switch (Cursor->Uid)
+		uint32 Uid = uint32(Cursor->Uid);
+
+		if (DispatchKnownEvent(Context, Uid, Cursor))
 		{
-		case EKnownUids::EnterScope_T:
-		{
-			uint64 Timestamp = *(uint64*)(Cursor->Data - 1) >> 8;
-			Bridge.EnterScope(Timestamp);
 			continue;
 		}
 
-		case EKnownUids::LeaveScope_T:
+		if (!TypeRegistry.IsUidValid(Uid))
 		{
-			uint64 Timestamp = *(uint64*)(Cursor->Data - 1) >> 8;
-			Bridge.LeaveScope(Timestamp);
-			continue;
-		}
-
-		case EKnownUids::EnterScope: Bridge.EnterScope(); continue;
-		case EKnownUids::LeaveScope: Bridge.LeaveScope(); continue;
-
-		case EKnownUids::AuxData:
-		case EKnownUids::AuxDataTerminal:
-			continue;
-
-		default:
-			if (!TypeRegistry.IsUidValid(Cursor->Uid))
-			{
-				UE_LOG(LogTraceAnalysis, Warning, TEXT("Unexpected event UID: %08x"), Cursor->Uid);
-				return -1;
-			}
-			break;
+			Context.Log->Warning(LOCTEXT("UnknownUID","An unknown event UID was encountered."));
+			return -1;
 		}
 
 		// It is a normal event.
-		const FTypeRegistry::FTypeInfo* TypeInfo = TypeRegistry.Get(Cursor->Uid);
+		const FTypeRegistry::FTypeInfo* TypeInfo = TypeRegistry.Get(Uid);
 		FEventDataInfo EventDataInfo = {
 			Cursor->Data,
 			*TypeInfo,
@@ -3747,13 +3820,14 @@ int32 FProtocol5Stage::DispatchEvents(
 			}
 		}
 
-		Bridge.OnEvent(EventDataInfo);
+		Context.Bridge.OnEvent(EventDataInfo);
 
 		AuxCollector.Reset();
 	}
 
 	return 0;
 }
+
 
 
 // {{{1 protocol-6 -------------------------------------------------------------
@@ -3763,8 +3837,6 @@ class FProtocol6Stage : public FProtocol5Stage
 {
 public:
 							FProtocol6Stage(FTransport* InTransport);
-protected:	
-	using EKnownUids		= Protocol6::EKnownEventUids;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -3772,6 +3844,98 @@ FProtocol6Stage::FProtocol6Stage(FTransport* InTransport)
 	: FProtocol5Stage(InTransport)
 {
 	EventVersion = 6;
+}
+
+
+
+// {{{1 protocol-7 -------------------------------------------------------------
+
+////////////////////////////////////////////////////////////////////////////////
+class FProtocol7Stage : public FProtocol6Stage
+{
+public:
+							FProtocol7Stage(FTransport* InTransport);
+
+	virtual void			SetSizeIfKnownEvent(uint32 Uid, uint32& InOutEventSize) override;
+	virtual bool			DispatchKnownEvent(const FMachineContext& Context, uint32 Uid, const FEventDesc* Cursor) override;
+
+protected:
+	using EKnownUids		= Protocol7::EKnownEventUids;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+FProtocol7Stage::FProtocol7Stage(FTransport* InTransport)
+	: FProtocol6Stage(InTransport)
+{
+	EventVersion = 7;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+void FProtocol7Stage::SetSizeIfKnownEvent(uint32 Uid, uint32& InOutEventSize)
+{
+	switch (Uid)
+	{
+	case EKnownUids::EnterScope_TA:
+	case EKnownUids::LeaveScope_TA:
+		InOutEventSize = 8;
+		break;
+
+	case EKnownUids::EnterScope_TB:
+	case EKnownUids::LeaveScope_TB:
+		InOutEventSize = 7;
+		break;
+	};
+}
+
+////////////////////////////////////////////////////////////////////////////////
+bool FProtocol7Stage::DispatchKnownEvent(const FMachineContext& Context, uint32 Uid, const FEventDesc* Cursor)
+{
+	// Maybe this is a "well-known" event that is handled a little different?
+	switch (Uid)
+	{
+	case EKnownUids::EnterScope:
+		Context.Bridge.EnterScope();
+		return true;
+
+	case EKnownUids::LeaveScope:
+		Context.Bridge.LeaveScope();
+		return true;
+
+	case EKnownUids::EnterScope_TA:
+	{
+		uint64 AbsoluteTimestamp = *(uint64*)Cursor->Data;
+		Context.Bridge.EnterScopeA(AbsoluteTimestamp);
+		return true;
+	}
+
+	case EKnownUids::LeaveScope_TA:
+	{
+		uint64 AbsoluteTimestamp = *(uint64*)Cursor->Data;
+		Context.Bridge.LeaveScopeA(AbsoluteTimestamp);
+		return true;
+	}
+
+	case EKnownUids::EnterScope_TB:
+	{
+		uint64 BaseRelativeTimestamp = *(uint64*)(Cursor->Data - 1) >> 8;
+		Context.Bridge.EnterScopeB(BaseRelativeTimestamp);
+		return true;
+	}
+
+	case EKnownUids::LeaveScope_TB:
+	{
+		uint64 BaseRelativeTimestamp = *(uint64*)(Cursor->Data - 1) >> 8;
+		Context.Bridge.LeaveScopeB(BaseRelativeTimestamp);
+		return true;
+	}
+
+	case EKnownUids::AuxData:
+	case EKnownUids::AuxDataTerminal:
+		return true;
+
+	default:
+		return false;
+	}
 }
 
 // {{{1 est.-transport ---------------------------------------------------------
@@ -3800,17 +3964,28 @@ FEstablishTransportStage::EStatus FEstablishTransportStage::OnData(
 		return EStatus::NotEnoughData;
 	}
 
+	uint32 TransportVersion = Header->TransportVersion;
+	TRACE_ANALYSIS_DEBUG("TransportVersion: %u", TransportVersion);
+
+	uint32 ProtocolVersion = Header->ProtocolVersion;
+	TRACE_ANALYSIS_DEBUG("ProtocolVersion: %u", ProtocolVersion);
+
 	FTransport* Transport = nullptr;
-	switch (Header->TransportVersion)
+	switch (TransportVersion)
 	{
 	case ETransport::Raw:			Transport = new FTransport(); break;
 	case ETransport::Packet:		Transport = new FPacketTransport(); break;
 	case ETransport::TidPacket:		Transport = new FTidPacketTransport(); break;
 	case ETransport::TidPacketSync:	Transport = new FTidPacketTransportSync(); break;
-	default:						return EStatus::Error;
+	default:
+		{
+			Context.Log->Error(FText::Format(
+				LOCTEXT("InvalidTransportVersion", "Unknown transport version: {0}. You may need to recompile this application"),
+				FText::AsNumber(TransportVersion)));
+			return EStatus::Error;
+		}
 	}
 
-	uint32 ProtocolVersion = Header->ProtocolVersion;
 	switch (ProtocolVersion)
 	{
 	case Protocol0::EProtocol::Id:
@@ -3840,8 +4015,18 @@ FEstablishTransportStage::EStatus FEstablishTransportStage::OnData(
 		Context.Machine.Transition();
 		break;
 
+	case Protocol7::EProtocol::Id:
+		Context.Machine.QueueStage<FProtocol7Stage>(Transport);
+		Context.Machine.Transition();
+		break;
+
 	default:
-		return EStatus::Error;
+		{
+			Context.Log->Error(FText::Format(
+					LOCTEXT("UnknownProtocolVersion", "Unknown protocol version: {0}. You may need to recompile this application."),
+					FText::AsNumber(ProtocolVersion)));
+			return EStatus::Error;
+		}
 	}
 
 	Reader.Advance(sizeof(*Header));
@@ -3912,6 +4097,7 @@ FMagicStage::EStatus FMagicStage::OnData(
 	if (Magic == 'ECRT' || Magic == '2CRT')
 	{
 		// Source is big-endian which we don't currently support
+		Context.Log->Error(LOCTEXT("BigEndian", "Big endian traces are currently not supported."));
 		return EStatus::Error;
 	}
 
@@ -3940,6 +4126,7 @@ FMagicStage::EStatus FMagicStage::OnData(
 		return EStatus::Continue;
 	}
 
+	Context.Log->Error(LOCTEXT("IncorrectMagic", "The file or stream was not recognized as trace stream."));
 	return EStatus::Error;
 }
 
@@ -3951,17 +4138,18 @@ FMagicStage::EStatus FMagicStage::OnData(
 class FAnalysisEngine::FImpl
 {
 public:
-						FImpl(TArray<IAnalyzer*>&& Analyzers);
+					FImpl(TArray<IAnalyzer*>&& Analyzers, FMessageLog* InLog);
 	void				Begin();
 	void				End();
 	bool				OnData(FStreamReader& Reader);
 	FAnalysisBridge		Bridge;
-	FAnalysisMachine	Machine = Bridge;
+	FAnalysisMachine	Machine;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
-FAnalysisEngine::FImpl::FImpl(TArray<IAnalyzer*>&& Analyzers)
+FAnalysisEngine::FImpl::FImpl(TArray<IAnalyzer*>&& Analyzers, FMessageLog* InLog)
 : Bridge(Forward<TArray<IAnalyzer*>>(Analyzers))
+, Machine(Bridge, InLog)
 {
 }
 
@@ -3990,8 +4178,8 @@ bool FAnalysisEngine::FImpl::OnData(FStreamReader& Reader)
 
 
 ////////////////////////////////////////////////////////////////////////////////
-FAnalysisEngine::FAnalysisEngine(TArray<IAnalyzer*>&& Analyzers)
-: Impl(new FImpl(Forward<TArray<IAnalyzer*>>(Analyzers)))
+FAnalysisEngine::FAnalysisEngine(TArray<IAnalyzer*>&& Analyzers, FMessageLog* InLog)
+: Impl(new FImpl(Forward<TArray<IAnalyzer*>>(Analyzers), InLog))
 {
 }
 
@@ -4022,5 +4210,8 @@ bool FAnalysisEngine::OnData(FStreamReader& Reader)
   // }}}
 } // namespace Trace
 } // namespace UE
+
+#undef TRACE_ANALYSIS_DEBUG
+#undef LOCTEXT_NAMESPACE
 
 /* vim: set foldlevel=1 : */

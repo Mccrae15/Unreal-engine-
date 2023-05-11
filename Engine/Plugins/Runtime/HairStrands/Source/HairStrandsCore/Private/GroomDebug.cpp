@@ -9,11 +9,13 @@
 #include "CachedGeometry.h"
 #include "GroomGeometryCache.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "RHIStaticStates.h"
 #include "SkeletalRenderPublic.h"
 #include "UnrealEngine.h"
 #include "SystemTextures.h"
 #include "CanvasTypes.h"
 #include "ShaderCompilerCore.h"
+#include "GroomVisualizationData.h"
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -31,7 +33,7 @@ static int32 GHairDebugMeshProjection_Render_HairRestTriangles = 0;
 static int32 GHairDebugMeshProjection_Render_HairRestFrames = 0;
 static int32 GHairDebugMeshProjection_Render_HairRestSamples = 0;
 static int32 GHairDebugMeshProjection_Render_HairDeformedTriangles = 0;
-static int32 GHairDebugMeshProjection_Render_HairDeformedFrames = 0;
+static int32 GHairDebugMeshProjection_Render_HairDeformedFrames = 1;
 static int32 GHairDebugMeshProjection_Render_HairDeformedSamples = 0;
 
 
@@ -58,18 +60,11 @@ static FAutoConsoleVariableRef CVarHairCardsAtlasDebug(TEXT("r.HairStrands.Cards
 static int32 GHairCardsVoxelDebug = 0;
 static FAutoConsoleVariableRef CVarHairCardsVoxelDebug(TEXT("r.HairStrands.Cards.DebugVoxel"), GHairCardsVoxelDebug, TEXT("Draw debug hair cards voxel datas."));
 
-static int32 GHairCardsGuidesDebug_Ren = 0;
-static int32 GHairCardsGuidesDebug_Sim = 0;
-static FAutoConsoleVariableRef CVarHairCardsGuidesDebug_Ren(TEXT("r.HairStrands.Cards.DebugGuides.Render"), GHairCardsGuidesDebug_Ren, TEXT("Draw debug hair cards guides (1: Rest, 2: Deformed)."));
-static FAutoConsoleVariableRef CVarHairCardsGuidesDebug_Sim(TEXT("r.HairStrands.Cards.DebugGuides.Sim"), GHairCardsGuidesDebug_Sim, TEXT("Draw debug hair sim guides (1: Rest, 2: Deformed)."));
-
-static int32 GHairStrandsControlPointDebug = 0;
-static FAutoConsoleVariableRef CVarHairStrandsControlPointDebug(TEXT("r.HairStrands.Strands.DebugControlPoint"), GHairStrandsControlPointDebug, TEXT("Draw debug hair strands control points)."));
-
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 FCachedGeometry GetCacheGeometryForHair(
 	FRDGBuilder& GraphBuilder,
+	FSceneInterface* Scene,
 	FHairGroupInstance* Instance,
 	FGlobalShaderMap* ShaderMap,
 	const bool bOutputTriangleData);
@@ -77,6 +72,7 @@ FCachedGeometry GetCacheGeometryForHair(
 static void GetGroomInterpolationData(
 	FRDGBuilder& GraphBuilder,
 	FGlobalShaderMap* ShaderMap,
+	FSceneInterface* Scene,
 	const FHairStrandsInstances& Instances,
 	const EHairStrandsProjectionMeshType MeshType,
 	FHairStrandsProjectionMeshData::LOD& OutGeometries)
@@ -88,7 +84,7 @@ static void GetGroomInterpolationData(
 		if (!Instance || !Instance->Debug.MeshComponent)
 			continue;
 
-		const FCachedGeometry CachedGeometry = GetCacheGeometryForHair(GraphBuilder, Instance, ShaderMap, true);
+		const FCachedGeometry CachedGeometry = GetCacheGeometryForHair(GraphBuilder, Scene, Instance, ShaderMap, true);
 		if (CachedGeometry.Sections.Num() == 0)
 			continue;
 
@@ -817,7 +813,8 @@ class FHairDebugPrintInstanceCS : public FGlobalShader
 		SHADER_PARAMETER(uint32, NameCharacterCount)
 		SHADER_PARAMETER(uint32, InstanceCount_StrandsPrimaryView)
 		SHADER_PARAMETER(uint32, InstanceCount_StrandsShadowView)
-		SHADER_PARAMETER(uint32, InstanceCount_CardsOrMeshes)
+		SHADER_PARAMETER(uint32, InstanceCount_CardsOrMeshesPrimaryView)
+		SHADER_PARAMETER(uint32, InstanceCount_CardsOrMeshesShadowView)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint2>, NameInfos)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint8>, Names)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint4>, Infos)
@@ -928,7 +925,7 @@ static void AddHairDebugPrintInstancePass(
 				Data0.Z = Instance->Strands.Data->GetNumCurves(); // Change this later on for having dynamic value
 				Data0.W = Instance->Strands.Data->GetNumPoints(); // Change this later on for having dynamic value
 				const int32 MeshLODIndex = Instance->HairGroupPublicData->MeshLODIndex;
-				if (MeshLODIndex>=0)
+				if (MeshLODIndex>=0 && Instance->Strands.RestRootResource)
 				{
 					Data1.X = Instance->Strands.RestRootResource->BulkData.MeshProjectionLODs[MeshLODIndex].UniqueSectionIndices.Num();
 					Data1.Y = Instance->Strands.RestRootResource->BulkData.MeshProjectionLODs[MeshLODIndex].UniqueTriangleCount;
@@ -937,10 +934,9 @@ static void AddHairDebugPrintInstancePass(
 				}
 
 				{
-					Data2.X = InstanceIndex < InstanceCountPerType[HairInstanceCount_StrandsPrimaryView] ? 3 : 2; // Visible in primary & shadow (3) or only in shadow (2)
-					Data2.Y = 0;
-					Data2.Z = 0;
-					Data2.W = 0;
+					Data2 = FUintVector4(0);
+					Data2.X |= InstanceIndex < InstanceCountPerType[HairInstanceCount_StrandsPrimaryView] ? 0x1u : 0u;
+					Data2.X |= InstanceIndex < InstanceCountPerType[HairInstanceCount_StrandsShadowView]  ? 0x2u : 0u;
 				}
 			}
 			break;
@@ -949,7 +945,10 @@ static void AddHairDebugPrintInstancePass(
 			{
 				Data0.Z = Instance->Cards.LODs[IntLODIndex].Guides.IsValid() ? Instance->Cards.LODs[IntLODIndex].Guides.Data->GetNumCurves() : 0;
 				Data0.W = Instance->Cards.LODs[IntLODIndex].Data->GetNumVertices();
-				Data2.X = 3; // Visible in primary & shadow
+
+				Data2 = FUintVector4(0);
+				Data2.X |= InstanceIndex < InstanceCountPerType[HairInstanceCount_CardsOrMeshesPrimaryView] ? 0x1u : 0u;
+				Data2.X |= InstanceIndex < InstanceCountPerType[HairInstanceCount_CardsOrMeshesShadowView]  ? 0x2u : 0u;
 			}
 			break;
 		case EHairGeometryType::Meshes:
@@ -957,7 +956,10 @@ static void AddHairDebugPrintInstancePass(
 			{
 				Data0.Z = 0;
 				Data0.W = Instance->Meshes.LODs[IntLODIndex].Data->GetNumVertices();
-				Data2.X = 3; // Visible in primary & shadow
+
+				Data2 = FUintVector4(0);
+				Data2.X |= InstanceIndex < InstanceCountPerType[HairInstanceCount_CardsOrMeshesPrimaryView] ? 0x1u : 0u;
+				Data2.X |= InstanceIndex < InstanceCountPerType[HairInstanceCount_CardsOrMeshesShadowView]  ? 0x2u : 0u;
 			}
 			break;
 		}
@@ -988,7 +990,8 @@ static void AddHairDebugPrintInstancePass(
 		Parameters->InstanceCount = InstanceCount;
 		Parameters->InstanceCount_StrandsPrimaryView = InstanceCountPerType[HairInstanceCount_StrandsPrimaryView];
 		Parameters->InstanceCount_StrandsShadowView = InstanceCountPerType[HairInstanceCount_StrandsShadowView];
-		Parameters->InstanceCount_CardsOrMeshes = InstanceCountPerType[HairInstanceCount_CardsOrMeshes];
+		Parameters->InstanceCount_CardsOrMeshesPrimaryView = InstanceCountPerType[HairInstanceCount_CardsOrMeshesPrimaryView];
+		Parameters->InstanceCount_CardsOrMeshesShadowView = InstanceCountPerType[HairInstanceCount_CardsOrMeshesShadowView];
 		Parameters->NameInfoCount = NameInfos.Num();
 		Parameters->NameCharacterCount = Names.Num();
 		Parameters->Names = GraphBuilder.CreateSRV(NameBuffer, PF_R8_UINT);
@@ -1038,6 +1041,7 @@ static void AddHairDebugPrintInstancePass(
 void RunHairStrandsDebug(
 	FRDGBuilder& GraphBuilder,
 	FGlobalShaderMap* ShaderMap,
+	FSceneInterface* Scene,
 	const FSceneView& View,
 	const FHairStrandsInstances& Instances,
 	const FUintVector4& InstanceCountPerType,
@@ -1047,22 +1051,22 @@ void RunHairStrandsDebug(
 	FIntRect Viewport,
 	const TUniformBufferRef<FViewUniformShaderParameters>& ViewUniformBuffer)
 {
-	const EHairDebugMode HairDebugMode = GetHairStrandsDebugMode();
+	const EGroomViewMode ViewMode = GetGroomViewMode(View);
 
-	if (HairDebugMode == EHairDebugMode::MacroGroups)
+	if (ViewMode == EGroomViewMode::MacroGroups)
 	{
 		AddHairDebugPrintInstancePass(GraphBuilder, ShaderMap, ShaderPrintData, Instances, InstanceCountPerType);
 	}
 
-	if (HairDebugMode == EHairDebugMode::MeshProjection)
+	if (ViewMode == EGroomViewMode::MeshProjection)
 	{
 		{
 			if (GHairDebugMeshProjection_SkinCacheMesh > 0)
 			{
-				auto RenderMeshProjection = [ShaderMap, ShaderPrintData, Viewport, &ViewUniformBuffer, Instances, &GraphBuilder](FRDGBuilder& LocalGraphBuilder, EHairStrandsProjectionMeshType MeshType)
+				auto RenderMeshProjection = [ShaderMap, Scene, ShaderPrintData, Viewport, &ViewUniformBuffer, Instances, &GraphBuilder](FRDGBuilder& LocalGraphBuilder, EHairStrandsProjectionMeshType MeshType)
 				{
 					FHairStrandsProjectionMeshData::LOD MeshProjectionLODData;
-					GetGroomInterpolationData(GraphBuilder, ShaderMap, Instances, MeshType, MeshProjectionLODData);
+					GetGroomInterpolationData(GraphBuilder, ShaderMap, Scene, Instances, MeshType, MeshProjectionLODData);
 					for (FHairStrandsProjectionMeshData::Section& Section : MeshProjectionLODData.Sections)
 					{
 						AddDebugProjectionMeshPass(LocalGraphBuilder, ShaderMap, ShaderPrintData, Viewport, ViewUniformBuffer, MeshType, Section);
@@ -1161,17 +1165,17 @@ void RunHairStrandsDebug(
 	{
 		FHairGroupInstance* Instance = static_cast<FHairGroupInstance*>(AbstractInstance);
 
-		if (GHairCardsGuidesDebug_Ren > 0 || Instance->Debug.bDrawCardsGuides)
+		if (ViewMode == EGroomViewMode::CardGuides)
 		{
-			AddDrawDebugCardsGuidesPass(GraphBuilder, View, ShaderMap, Instance, ShaderPrintData, Instance->Debug.bDrawCardsGuides ? false : GHairCardsGuidesDebug_Ren == 1, true);
+			AddDrawDebugCardsGuidesPass(GraphBuilder, View, ShaderMap, Instance, ShaderPrintData, true /*bDeformed*/, true);
 		}
 
-		if (GHairCardsGuidesDebug_Sim > 0)
+		if (ViewMode == EGroomViewMode::SimHairStrands)
 		{
-			AddDrawDebugCardsGuidesPass(GraphBuilder, View, ShaderMap, Instance, ShaderPrintData, GHairCardsGuidesDebug_Sim == 1, false);
+			AddDrawDebugCardsGuidesPass(GraphBuilder, View, ShaderMap, Instance, ShaderPrintData, true /*bDeformed*/, false);
 		}
 
-		if (GHairStrandsControlPointDebug || Instance->HairGroupPublicData->DebugMode == EHairStrandsDebugMode::RenderHairControlPoints)
+		if (ViewMode == EGroomViewMode::ControlPoints)
 		{
 			AddDrawDebugStrandsCVsPass(GraphBuilder, View, ShaderMap, Instance, ShaderPrintData, SceneColorTexture, SceneDepthTexture);
 		}

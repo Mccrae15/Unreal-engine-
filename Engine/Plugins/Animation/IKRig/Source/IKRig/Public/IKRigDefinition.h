@@ -10,13 +10,14 @@
 #if WITH_EDITOR
 #include "SAdvancedTransformInputBox.h"
 #endif
+
 #include "IKRigDefinition.generated.h"
 
 class IPropertyHandle;
 class UIKRigSolver;
 
 #if WITH_EDITORONLY_DATA
-UENUM()
+UENUM(BlueprintType)
 enum class EIKRigGoalPreviewMode : uint8
 {
 	Additive		UMETA(DisplayName = "Additive"),
@@ -33,7 +34,7 @@ namespace EIKRigTransformType
 }
 #endif
 
-UCLASS()
+UCLASS(BlueprintType)
 class IKRIG_API UIKRigEffectorGoal : public UObject
 {
 	GENERATED_BODY()
@@ -42,27 +43,27 @@ public:
 
 	/** The name used to refer to this goal from outside systems.
 	 * This is the name to use when referring to this Goal from Blueprint, Anim Graph, Control Rig or IK Retargeter.*/
-	UPROPERTY(VisibleAnywhere, Category = "Goal Settings")
+	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category = "Goal Settings")
 	FName GoalName;
 
 	/** The name of the bone that this Goal is located at.*/
-	UPROPERTY(VisibleAnywhere, Category = "Goal Settings")
+	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category = "Goal Settings")
 	FName BoneName;
 
 	/** Range 0-1, default is 1. Blend between the input bone position (0.0) and the current goal position (1.0).*/
-	UPROPERTY(EditAnywhere, Category = "Goal Settings", meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Goal Settings", meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
 	float PositionAlpha = 1.0f;
 	
 	/** Range 0-1, default is 1. Blend between the input bone rotation (0.0) and the current goal rotation (1.0).*/
-	UPROPERTY(EditAnywhere, Category = "Goal Settings", meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Goal Settings", meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
 	float RotationAlpha = 1.0f;
 
 	/** The current transform of this Goal, in the Global Space of the character.*/
-	UPROPERTY(EditAnywhere, Category = "Goal Settings")
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Goal Settings")
 	FTransform CurrentTransform;
 
 	/** The initial transform of this Goal, as defined by the initial transform of the Goal's bone in the retarget pose.*/
-	UPROPERTY(VisibleAnywhere, Category = "Goal Settings")
+	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category = "Goal Settings")
 	FTransform InitialTransform;
 
 	bool operator==(const UIKRigEffectorGoal& Other) const { return GoalName == Other.GoalName; }
@@ -73,23 +74,23 @@ public:
 	* "Additive" interprets the Goal transform as being relative to the input pose. Useful for previewing animations.
 	* "Absolute" pins the Goal transform to the Gizmo in the viewport.
 	*/
-	UPROPERTY(EditAnywhere, Category = "Goal Settings")
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Goal Settings")
 	EIKRigGoalPreviewMode PreviewMode = EIKRigGoalPreviewMode::Additive;
 	
 	/**The size of the Goal gizmo drawing in the editor viewport.*/
-	UPROPERTY(EditAnywhere, Category = "Viewport Goal Settings", meta = (ClampMin = "0.1", ClampMax = "1000.0", UIMin = "0.1", UIMax = "100.0"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Viewport Goal Settings", meta = (ClampMin = "0.1", ClampMax = "1000.0", UIMin = "0.1", UIMax = "100.0"))
 	float SizeMultiplier = 1.0f;
 
 	/**The thickness of the Goal gizmo drawing in the editor viewport.*/
-	UPROPERTY(EditAnywhere, Category = "Viewport Goal Settings",  meta = (ClampMin = "0.0", ClampMax = "10.0", UIMin = "0.0", UIMax = "5.0"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Viewport Goal Settings",  meta = (ClampMin = "0.0", ClampMax = "10.0", UIMin = "0.0", UIMax = "5.0"))
 	float ThicknessMultiplier = 0.7f;
 
 	/** Should position data be exposed in Blueprint */
-	UPROPERTY(EditAnywhere, Category = "Exposure")
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Exposure")
 	bool bExposePosition = false;
 
 	/** Should rotation data be exposed in Blueprint */
-	UPROPERTY(EditAnywhere, Category = "Exposure")
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Exposure")
 	bool bExposeRotation = false;
 	
 	virtual void PostLoad() override
@@ -128,21 +129,25 @@ public:
 #endif
 };
 
-USTRUCT()
+USTRUCT(BlueprintType)
 struct IKRIG_API FBoneChain
 {
 	GENERATED_BODY()
 
 	FBoneChain() = default;
 	
-	FBoneChain(FName InName, const FName& InStartBone, const FName& InEndBone)
+	FBoneChain(
+		FName InName, 
+		const FName InStartBone,
+		const FName InEndBone,
+		const FName InGoalName)
 		: ChainName(InName)
 		, StartBone(InStartBone)
 		, EndBone(InEndBone)
-		, IKGoalName(NAME_None)
+		, IKGoalName(InGoalName)
 	{}
 
-	UPROPERTY(EditAnywhere, Category = BoneChain)
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = BoneChain)
 	FName ChainName;
 
 	UPROPERTY(VisibleAnywhere, Category = BoneChain)
@@ -151,7 +156,7 @@ struct IKRIG_API FBoneChain
 	UPROPERTY(VisibleAnywhere, Category = BoneChain)
 	FBoneReference EndBone;
 	
-	UPROPERTY(VisibleAnywhere, Category = BoneChain)
+	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category = BoneChain)
 	FName IKGoalName;
 };
 
@@ -188,8 +193,39 @@ public:
 	UPROPERTY(AssetRegistrySearchable, EditAnywhere, Category = PreviewMesh)
 	TSoftObjectPtr<USkeletalMesh> PreviewSkeletalMesh;
 
-#if WITH_EDITORONLY_DATA
+	/** runtime, read-only access to skeleton data */
+	const FIKRigSkeleton& GetSkeleton() const { return Skeleton; };
 	
+	/** runtime, read-only access to array of Goals, all modifications must go through UIKRigController */
+	const TArray<UIKRigEffectorGoal*>& GetGoalArray() const { return Goals; };
+
+	/** runtime, read-only access to array of Solvers, all modifications must go through UIKRigController */
+	const TArray<UIKRigSolver*>& GetSolverArray() const { return Solvers; };
+
+	/** runtime, read-only access to Retarget Definition, all modifications must go through UIKRigController */
+	const TArray<FBoneChain>& GetRetargetChains() const { return RetargetDefinition.BoneChains; };
+
+	/** runtime, read-only access to Retarget Root, all modifications must go through UIKRigController */
+	const FName& GetRetargetRoot() const { return RetargetDefinition.RootBone; };
+
+	/** runtime, read-only access to read a bone chain, all modifications must go through UIKRigController */
+	const FBoneChain* GetRetargetChainByName(FName ChainName) const;
+
+	/** UObject */
+	virtual void Serialize(FArchive& Ar) override;
+	/** END UObject */
+	
+	/** IInterface_PreviewMeshProvider interface */
+	virtual void SetPreviewMesh(USkeletalMesh* PreviewMesh, bool bMarkAsDirty = true) override;
+	virtual USkeletalMesh* GetPreviewMesh() const override;
+	/** END IInterface_PreviewMeshProvider interface */
+
+#if WITH_EDITOR
+	/* Get name of Preview Mesh property */
+	static const FName GetPreviewMeshPropertyName();
+#endif
+
+#if WITH_EDITORONLY_DATA
 	/**The size of the Bones in the editor viewport. This is set by callbacks from the viewport Character>Bones menu*/
 	UPROPERTY()
 	float BoneSize = 2.0f;
@@ -209,43 +245,13 @@ public:
 	/** The controller responsible for managing this asset's data (all editor mutation goes through this) */
 	UPROPERTY(Transient)
 	TObjectPtr<UObject> Controller;
-
 #endif
 
-	/** UObject */
-	virtual void Serialize(FArchive& Ar) override;
-	/** END UObject */
+private:
 	
 	/** hierarchy and bone-pose transforms */
 	UPROPERTY()
 	FIKRigSkeleton Skeleton;
-	
-	/** read-only access to array of Goals, all modifications must go through UIKRigController */
-	const TArray<UIKRigEffectorGoal*>& GetGoalArray() const { return Goals; };
-
-	/** read-only access to array of Solvers, all modifications must go through UIKRigController */
-	const TArray<UIKRigSolver*>& GetSolverArray() const { return Solvers; };
-
-	/** runtime, read-only access to Retarget Definition, all modifications must go through UIKRigController */
-	const TArray<FBoneChain>& GetRetargetChains() const { return RetargetDefinition.BoneChains; };
-
-	/** runtime, read-only access to a FBoneChain by name. Returns nullptr if not found. */
-	const FBoneChain* GetRetargetChainByName(FName ChainName) const;
-
-	/** runtime, read-only access to Retarget Root */
-	const FName& GetRetargetRoot() const { return RetargetDefinition.RootBone; };
-	
-	/** IInterface_PreviewMeshProvider interface */
-	virtual void SetPreviewMesh(USkeletalMesh* PreviewMesh, bool bMarkAsDirty = true) override;
-	virtual USkeletalMesh* GetPreviewMesh() const override;
-	/** END IInterface_PreviewMeshProvider interface */
-
-#if WITH_EDITOR
-	/* Get name of Preview Mesh property */
-	static const FName GetPreviewMeshPropertyName();
-#endif
-	
-private:
 
 	/** goals, used as effectors by solvers that support them */
 	UPROPERTY()

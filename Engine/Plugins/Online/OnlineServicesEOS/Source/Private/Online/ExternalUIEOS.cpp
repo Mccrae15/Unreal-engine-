@@ -2,17 +2,12 @@
 
 #include "Online/ExternalUIEOS.h"
 
-#include "Online/AuthEOS.h"
+#include "EOSShared.h"
 #include "Online/OnlineIdEOS.h"
 #include "Online/OnlineServicesEOS.h"
-#include "Online/OnlineServicesEOSTypes.h"
-#include "Online/OnlineErrorDefinitions.h"
 
+#include "Online/OnlineServicesEOSGSTypes.h"
 #include "eos_ui.h"
-#include "eos_types.h"
-#include "eos_init.h"
-#include "eos_sdk.h"
-#include "eos_logging.h"
 
 namespace UE::Online {
 
@@ -93,7 +88,8 @@ TOnlineAsyncOpHandle<FExternalUIShowFriendsUI> FExternalUIEOS::ShowFriendsUI(FEx
 	}
 
 	EOS_UI_ShowFriendsOptions ShowFriendsOptions = {};
-	ShowFriendsOptions.ApiVersion = EOS_UI_SHOWFRIENDS_API_LATEST;
+	ShowFriendsOptions.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_UI_SHOWFRIENDS_API_LATEST, 1);
 	ShowFriendsOptions.LocalUserId = LocalUserEasId;
 
 	Op->Then([this, ShowFriendsOptions](TOnlineAsyncOp<FExternalUIShowFriendsUI>& InAsyncOp, TPromise<const EOS_UI_ShowFriendsCallbackInfo*>&& Promise) mutable

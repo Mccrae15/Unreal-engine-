@@ -209,8 +209,8 @@ EOS_EResult FEOSSDKManager::Initialize()
 		const FTCHARToUTF8 ProductVersion(*GetProductVersion());
 
 		EOS_InitializeOptions InitializeOptions = {};
-		InitializeOptions.ApiVersion = EOS_INITIALIZE_API_LATEST;
-		static_assert(EOS_INITIALIZE_API_LATEST == 4, "EOS_InitializeOptions updated, check new fields");
+		InitializeOptions.ApiVersion = 4;
+		UE_EOS_CHECK_API_MISMATCH(EOS_INITIALIZE_API_LATEST, 4);
 		InitializeOptions.AllocateMemoryFunction = &EosMalloc;
 		InitializeOptions.ReallocateMemoryFunction = &EosRealloc;
 		InitializeOptions.ReleaseMemoryFunction = &EosFree;
@@ -226,7 +226,7 @@ EOS_EResult FEOSSDKManager::Initialize()
 		{
 			bInitialized = true;
 
-			FCoreDelegates::OnConfigSectionsChanged.AddRaw(this, &FEOSSDKManager::OnConfigSectionsChanged);
+			FCoreDelegates::TSOnConfigSectionsChanged().AddRaw(this, &FEOSSDKManager::OnConfigSectionsChanged);
 			LoadConfig();
 
 #if !NO_LOGGING
@@ -244,6 +244,8 @@ EOS_EResult FEOSSDKManager::Initialize()
 				UE_LOG(LogEOSSDK, Warning, TEXT("EOS_Logging_SetLogLevel failed Verbosity=%s error=[%s]"), ToString(LogEOSSDK.GetVerbosity()), *LexToString(EosResult));
 			}
 #endif // !NO_LOGGING
+
+			FCoreDelegates::OnNetworkConnectionStatusChanged.AddRaw(this, &FEOSSDKManager::OnNetworkConnectionStatusChanged);
 		}
 		else
 		{
@@ -282,7 +284,13 @@ const FEOSSDKPlatformConfig* FEOSSDKManager::GetPlatformConfig(const FString& Pl
 	GConfig->GetString(*SectionName, TEXT("SandboxId"), PlatformConfig->SandboxId, GEngineIni);
 	GConfig->GetString(*SectionName, TEXT("ClientId"), PlatformConfig->ClientId, GEngineIni);
 	GConfig->GetString(*SectionName, TEXT("ClientSecret"), PlatformConfig->ClientSecret, GEngineIni);
-	GConfig->GetString(*SectionName, TEXT("EncryptionKey"), PlatformConfig->EncryptionKey, GEngineIni);
+	if (GConfig->GetString(*SectionName, TEXT("EncryptionKey"), PlatformConfig->EncryptionKey, GEngineIni))
+	{
+		// EncryptionKey gets removed from packaged builds due to IniKeyDenylist=EncryptionKey entry in BaseGame.ini.
+		// Normally we could just add a remap in ConfigRedirects.ini but the section name varies with the PlatformConfigName.
+		UE_LOG(LogEOSSDK, Warning, TEXT("Config section \"EOSSDK.Platform.%s\" contains deprecated key EncryptionKey, please migrate to ClientEncryptionKey."), *PlatformConfigName);
+	}
+	GConfig->GetString(*SectionName, TEXT("ClientEncryptionKey"), PlatformConfig->EncryptionKey, GEngineIni);
 	GConfig->GetString(*SectionName, TEXT("OverrideCountryCode"), PlatformConfig->OverrideCountryCode, GEngineIni);
 	GConfig->GetString(*SectionName, TEXT("OverrideLocaleCode"), PlatformConfig->OverrideLocaleCode, GEngineIni);
 	GConfig->GetString(*SectionName, TEXT("DeploymentId"), PlatformConfig->DeploymentId, GEngineIni);
@@ -390,9 +398,9 @@ IEOSPlatformHandlePtr FEOSSDKManager::CreatePlatform(const FString& PlatformConf
 	const FTCHARToUTF8 Utf8DeploymentId(*PlatformConfig->DeploymentId);
 	const FTCHARToUTF8 Utf8CacheDirectory(*PlatformConfig->CacheDirectory);
 
-	static_assert(EOS_PLATFORM_OPTIONS_API_LATEST == 12, "EOS_Platform_Options updated");
 	EOS_Platform_Options PlatformOptions = {};
-	PlatformOptions.ApiVersion = EOS_PLATFORM_OPTIONS_API_LATEST;
+	PlatformOptions.ApiVersion = 12;
+	UE_EOS_CHECK_API_MISMATCH(EOS_PLATFORM_OPTIONS_API_LATEST, 12);
 	PlatformOptions.Reserved = nullptr;
 	PlatformOptions.ProductId = Utf8ProductId.Length() ? Utf8ProductId.Get() : nullptr;
 	PlatformOptions.SandboxId = Utf8SandboxId.Length() ? Utf8SandboxId.Get() : nullptr;
@@ -409,12 +417,20 @@ IEOSPlatformHandlePtr FEOSSDKManager::CreatePlatform(const FString& PlatformConf
 	if (PlatformConfig->bDisableOverlay) PlatformOptions.Flags |= EOS_PF_DISABLE_OVERLAY;
 	if (PlatformConfig->bDisableSocialOverlay) PlatformOptions.Flags |= EOS_PF_DISABLE_SOCIAL_OVERLAY;
 
-	PlatformOptions.CacheDirectory = Utf8CacheDirectory.Length() ? Utf8DeploymentId.Get() : nullptr;
+	if (FPlatformMisc::IsCacheStorageAvailable())
+	{
+		PlatformOptions.CacheDirectory = Utf8CacheDirectory.Length() ? Utf8DeploymentId.Get() : nullptr;
+	}
+	else
+	{
+		PlatformOptions.CacheDirectory = nullptr;
+	}
+
 	PlatformOptions.TickBudgetInMilliseconds = PlatformConfig->TickBudgetInMilliseconds;
 
-	static_assert(EOS_PLATFORM_RTCOPTIONS_API_LATEST == 1, "EOS_Platform_RTCOptions updated");
 	EOS_Platform_RTCOptions PlatformRTCOptions = {};
-	PlatformRTCOptions.ApiVersion = EOS_PLATFORM_RTCOPTIONS_API_LATEST;
+	PlatformRTCOptions.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_PLATFORM_RTCOPTIONS_API_LATEST, 1);
 	PlatformRTCOptions.PlatformSpecificOptions = nullptr;
 	PlatformOptions.RTCOptions = PlatformConfig->bEnableRTC ? &PlatformRTCOptions : nullptr;
 
@@ -452,7 +468,7 @@ IEOSPlatformHandlePtr FEOSSDKManager::CreatePlatform(EOS_Platform_Options& Platf
 			SetupTicker();
 
 			EOS_Platform_SetApplicationStatus(PlatformHandle, CachedApplicationStatus);
-			EOS_Platform_SetNetworkStatus(PlatformHandle, CachedNetworkStatus);
+			EOS_Platform_SetNetworkStatus(PlatformHandle, ConvertNetworkStatus(FPlatformMisc::GetNetworkConnectionStatus()));
 
 			// Tick the platform once to work around EOSSDK error logging that occurs if you create then immediately destroy a platform.
 			SharedPlatform->Tick();
@@ -530,6 +546,33 @@ bool FEOSSDKManager::Tick(float)
 	return true;
 }
 
+EOS_ENetworkStatus FEOSSDKManager::ConvertNetworkStatus(ENetworkConnectionStatus Status)
+{
+	switch (Status)
+	{
+	case ENetworkConnectionStatus::Unknown:			return EOS_ENetworkStatus::EOS_NS_Online;
+	case ENetworkConnectionStatus::Disabled:		return EOS_ENetworkStatus::EOS_NS_Disabled;
+	case ENetworkConnectionStatus::Local:			return EOS_ENetworkStatus::EOS_NS_Offline;
+	case ENetworkConnectionStatus::Connected:		return EOS_ENetworkStatus::EOS_NS_Online;
+	}
+
+	checkNoEntry();
+	return EOS_ENetworkStatus::EOS_NS_Disabled;
+}
+
+void FEOSSDKManager::OnNetworkConnectionStatusChanged(ENetworkConnectionStatus LastConnectionState, ENetworkConnectionStatus ConnectionState)
+{
+	const EOS_ENetworkStatus OldNetworkStatus = ConvertNetworkStatus(LastConnectionState);
+	const EOS_ENetworkStatus NewNetworkStatus = ConvertNetworkStatus(ConnectionState);
+
+	UE_LOG(LogEOSSDK, Log, TEXT("OnNetworkConnectionStatusChanged [%s] -> [%s]"), LexToString(OldNetworkStatus), LexToString(NewNetworkStatus));
+
+	for (EOS_HPlatform PlatformHandle : ActivePlatforms)
+	{
+		EOS_Platform_SetNetworkStatus(PlatformHandle, NewNetworkStatus);
+	}
+}
+
 void FEOSSDKManager::OnApplicationStatusChanged(EOS_EApplicationStatus ApplicationStatus)
 {
 	UE_LOG(LogEOSSDK, Log, TEXT("OnApplicationStatusChanged [%s] -> [%s]"), LexToString(CachedApplicationStatus), LexToString(ApplicationStatus));
@@ -537,16 +580,6 @@ void FEOSSDKManager::OnApplicationStatusChanged(EOS_EApplicationStatus Applicati
 	for (EOS_HPlatform PlatformHandle : ActivePlatforms)
 	{
 		EOS_Platform_SetApplicationStatus(PlatformHandle, ApplicationStatus);
-	}
-}
-
-void FEOSSDKManager::OnNetworkStatusChanged(EOS_ENetworkStatus NetworkStatus)
-{
-	UE_LOG(LogEOSSDK, Log, TEXT("OnNetworkStatusChanged [%s] -> [%s]"), LexToString(CachedNetworkStatus), LexToString(NetworkStatus));
-	CachedNetworkStatus = NetworkStatus;
-	for (EOS_HPlatform PlatformHandle : ActivePlatforms)
-	{
-		EOS_Platform_SetNetworkStatus(PlatformHandle, NetworkStatus);
 	}
 }
 
@@ -653,7 +686,7 @@ void FEOSSDKManager::Shutdown()
 			ReleaseReleasedPlatforms();
 		}
 
-		FCoreDelegates::OnConfigSectionsChanged.RemoveAll(this);
+		FCoreDelegates::TSOnConfigSectionsChanged().RemoveAll(this);
 
 #if !NO_LOGGING
 		FCoreDelegates::OnLogVerbosityChanged.RemoveAll(this);
@@ -665,6 +698,8 @@ void FEOSSDKManager::Shutdown()
 		CallbackObjects.Empty();
 
 		bInitialized = false;
+
+		FCoreDelegates::OnNetworkConnectionStatusChanged.RemoveAll(this);
 	}
 }
 
@@ -720,9 +755,9 @@ void FEOSSDKManager::LogPlatformInfo(const EOS_HPlatform Platform, int32 Indent)
 	UE_LOG_EOSSDK_INFO("OverrideCountryCode=%s", *GetOverrideCountryCode(Platform));
 	UE_LOG_EOSSDK_INFO("OverrideLocaleCode=%s", *GetOverrideLocaleCode(Platform));
 
-	static_assert(EOS_PLATFORM_GETDESKTOPCROSSPLAYSTATUS_API_LATEST == 1, "EOS_Platform_GetDesktopCrossplayStatusOptions updated");
 	EOS_Platform_GetDesktopCrossplayStatusOptions GetDesktopCrossplayStatusOptions;
-	GetDesktopCrossplayStatusOptions.ApiVersion = EOS_PLATFORM_GETDESKTOPCROSSPLAYSTATUS_API_LATEST;
+	GetDesktopCrossplayStatusOptions.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_PLATFORM_GETDESKTOPCROSSPLAYSTATUS_API_LATEST, 1);
 
 	EOS_Platform_GetDesktopCrossplayStatusInfo GetDesktopCrossplayStatusInfo;
 	EOS_EResult Result = EOS_Platform_GetDesktopCrossplayStatus(Platform, &GetDesktopCrossplayStatusOptions, &GetDesktopCrossplayStatusInfo);
@@ -772,9 +807,9 @@ void FEOSSDKManager::LogAuthInfo(const EOS_HPlatform Platform, const EOS_EpicAcc
 	const EOS_HAuth AuthHandle = EOS_Platform_GetAuthInterface(Platform);
 	UE_LOG_EOSSDK_INFO("LoginStatus=%s", LexToString(EOS_Auth_GetLoginStatus(AuthHandle, LoggedInAccount)));
 
-	static_assert(EOS_AUTH_COPYUSERAUTHTOKEN_API_LATEST == 1, "EOS_Auth_CopyUserAuthTokenOptions updated");
 	EOS_Auth_CopyUserAuthTokenOptions CopyUserAuthTokenOptions;
-	CopyUserAuthTokenOptions.ApiVersion = EOS_AUTH_COPYUSERAUTHTOKEN_API_LATEST;
+	CopyUserAuthTokenOptions.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_AUTH_COPYUSERAUTHTOKEN_API_LATEST, 1);
 
 	EOS_Auth_Token* AuthToken;
 	EOS_EResult Result = EOS_Auth_CopyUserAuthToken(AuthHandle, &CopyUserAuthTokenOptions, LoggedInAccount, &AuthToken);
@@ -804,9 +839,9 @@ void FEOSSDKManager::LogAuthInfo(const EOS_HPlatform Platform, const EOS_EpicAcc
 	}
 
 #if !UE_BUILD_SHIPPING
-	static_assert(EOS_AUTH_COPYIDTOKEN_API_LATEST == 1, "EOS_Auth_CopyIdTokenOptions updated");
 	EOS_Auth_CopyIdTokenOptions CopyIdTokenOptions;
-	CopyIdTokenOptions.ApiVersion = EOS_AUTH_COPYIDTOKEN_API_LATEST;
+	CopyIdTokenOptions.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_AUTH_COPYIDTOKEN_API_LATEST, 1);
 	CopyIdTokenOptions.AccountId = LoggedInAccount;
 
 	EOS_Auth_IdToken* IdToken;
@@ -827,9 +862,9 @@ void FEOSSDKManager::LogUserInfo(const EOS_HPlatform Platform, const EOS_EpicAcc
 {
 	UE_LOG_EOSSDK_INFO("EpicAccountId=%s", *LexToString(TargetAccount));
 
-	static_assert(EOS_USERINFO_COPYUSERINFO_API_LATEST >=2 && EOS_USERINFO_COPYUSERINFO_API_LATEST <= 3, "EOS_UserInfo_CopyUserInfo updated");
 	EOS_UserInfo_CopyUserInfoOptions CopyUserInfoOptions;
-	CopyUserInfoOptions.ApiVersion = EOS_USERINFO_COPYUSERINFO_API_LATEST;
+	CopyUserInfoOptions.ApiVersion = 3;
+	UE_EOS_CHECK_API_MISMATCH(EOS_USERINFO_COPYUSERINFO_API_LATEST, 3);
 	CopyUserInfoOptions.LocalUserId = LoggedInAccount;
 	CopyUserInfoOptions.TargetUserId = TargetAccount;
 
@@ -857,9 +892,9 @@ void FEOSSDKManager::LogUserInfo(const EOS_HPlatform Platform, const EOS_EpicAcc
 
 void FEOSSDKManager::LogPresenceInfo(const EOS_HPlatform Platform, const EOS_EpicAccountId LoggedInAccount, const EOS_EpicAccountId TargetAccount, int32 Indent) const
 {
-	static_assert(EOS_PRESENCE_HASPRESENCE_API_LATEST == 1, "EOS_Presence_HasPresenceOptions updated");
 	EOS_Presence_HasPresenceOptions HasPresenceOptions;
-	HasPresenceOptions.ApiVersion = EOS_PRESENCE_HASPRESENCE_API_LATEST;
+	HasPresenceOptions.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_PRESENCE_HASPRESENCE_API_LATEST, 1);
 	HasPresenceOptions.LocalUserId = LoggedInAccount;
 	HasPresenceOptions.TargetUserId = TargetAccount;
 
@@ -870,9 +905,9 @@ void FEOSSDKManager::LogPresenceInfo(const EOS_HPlatform Platform, const EOS_Epi
 		return;
 	}
 
-	static_assert(EOS_PRESENCE_COPYPRESENCE_API_LATEST >=2 && EOS_PRESENCE_COPYPRESENCE_API_LATEST <= 3, "EOS_Presence_CopyPresenceOptions updated");
 	EOS_Presence_CopyPresenceOptions CopyPresenceOptions;
-	CopyPresenceOptions.ApiVersion = EOS_PRESENCE_COPYPRESENCE_API_LATEST;
+	CopyPresenceOptions.ApiVersion = 3;
+	UE_EOS_CHECK_API_MISMATCH(EOS_PRESENCE_COPYPRESENCE_API_LATEST, 3);
 	CopyPresenceOptions.LocalUserId = LoggedInAccount;
 	CopyPresenceOptions.TargetUserId = TargetAccount;
 
@@ -908,18 +943,18 @@ void FEOSSDKManager::LogPresenceInfo(const EOS_HPlatform Platform, const EOS_Epi
 
 void FEOSSDKManager::LogFriendsInfo(const EOS_HPlatform Platform, const EOS_EpicAccountId LoggedInAccount, int32 Indent) const
 {
-	static_assert(EOS_FRIENDS_GETFRIENDSCOUNT_API_LATEST == 1, "EOS_Friends_GetFriendsCountOptions updated");
 	EOS_Friends_GetFriendsCountOptions FriendsCountOptions;
-	FriendsCountOptions.ApiVersion = EOS_FRIENDS_GETFRIENDSCOUNT_API_LATEST;
+	FriendsCountOptions.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_FRIENDS_GETFRIENDSCOUNT_API_LATEST, 1);
 	FriendsCountOptions.LocalUserId = LoggedInAccount;
 
 	const EOS_HFriends FriendsHandle = EOS_Platform_GetFriendsInterface(Platform);
 	const int32_t FriendsCount = EOS_Friends_GetFriendsCount(FriendsHandle, &FriendsCountOptions);
 	UE_LOG_EOSSDK_INFO("Friends=%d", FriendsCount);
 
-	static_assert(EOS_FRIENDS_GETFRIENDATINDEX_API_LATEST == 1, "EOS_Friends_GetFriendAtIndexOptions updated");
 	EOS_Friends_GetFriendAtIndexOptions FriendAtIndexOptions;
-	FriendAtIndexOptions.ApiVersion = EOS_FRIENDS_GETFRIENDATINDEX_API_LATEST;
+	FriendAtIndexOptions.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_FRIENDS_GETFRIENDATINDEX_API_LATEST, 1);
 	FriendAtIndexOptions.LocalUserId = LoggedInAccount;
 
 	for (int32_t FriendIndex = 0; FriendIndex < FriendsCount; FriendIndex++)
@@ -929,9 +964,9 @@ void FEOSSDKManager::LogFriendsInfo(const EOS_HPlatform Platform, const EOS_Epic
 		UE_LOG_EOSSDK_INFO("Friend=%d", FriendIndex);
 		Indent++;
 
-		static_assert(EOS_FRIENDS_GETSTATUS_API_LATEST == 1, "EOS_Friends_GetStatusOptions updated");
 		EOS_Friends_GetStatusOptions GetStatusOptions;
-		GetStatusOptions.ApiVersion = EOS_FRIENDS_GETSTATUS_API_LATEST;
+		GetStatusOptions.ApiVersion = 1;
+		UE_EOS_CHECK_API_MISMATCH(EOS_FRIENDS_GETSTATUS_API_LATEST, 1);
 		GetStatusOptions.LocalUserId = LoggedInAccount;
 		GetStatusOptions.TargetUserId = FriendId;
 
@@ -954,9 +989,9 @@ void FEOSSDKManager::LogConnectInfo(const EOS_HPlatform Platform, const EOS_Prod
 	EOS_EResult Result;
 
 #if !UE_BUILD_SHIPPING
-	static_assert(EOS_CONNECT_COPYIDTOKEN_API_LATEST == 1, "EOS_Connect_CopyIdTokenOptions updated");
 	EOS_Connect_CopyIdTokenOptions CopyIdTokenOptions;
-	CopyIdTokenOptions.ApiVersion = EOS_CONNECT_COPYIDTOKEN_API_LATEST;
+	CopyIdTokenOptions.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_CONNECT_COPYIDTOKEN_API_LATEST, 1);
 	CopyIdTokenOptions.LocalUserId = LoggedInAccount;
 
 	EOS_Connect_IdToken* IdToken;
@@ -972,17 +1007,17 @@ void FEOSSDKManager::LogConnectInfo(const EOS_HPlatform Platform, const EOS_Prod
 	}
 #endif // !UE_BUILD_SHIPPING
 
-	static_assert(EOS_CONNECT_GETPRODUCTUSEREXTERNALACCOUNTCOUNT_API_LATEST == 1, "EOS_Connect_GetProductUserExternalAccountCountOptions updated");
 	EOS_Connect_GetProductUserExternalAccountCountOptions ExternalAccountCountOptions;
-	ExternalAccountCountOptions.ApiVersion = EOS_CONNECT_GETPRODUCTUSEREXTERNALACCOUNTCOUNT_API_LATEST;
+	ExternalAccountCountOptions.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_CONNECT_GETPRODUCTUSEREXTERNALACCOUNTCOUNT_API_LATEST, 1);
 	ExternalAccountCountOptions.TargetUserId = LoggedInAccount;
 
 	const uint32_t ExternalAccountCount = EOS_Connect_GetProductUserExternalAccountCount(ConnectHandle, &ExternalAccountCountOptions);
 	UE_LOG_EOSSDK_INFO("ExternalAccounts=%d", ExternalAccountCount);
 
-	static_assert(EOS_CONNECT_COPYPRODUCTUSEREXTERNALACCOUNTBYINDEX_API_LATEST == 1, "EOS_Connect_CopyProductUserExternalAccountByIndexOptions updated");
 	EOS_Connect_CopyProductUserExternalAccountByIndexOptions ExternalAccountByIndexOptions;
-	ExternalAccountByIndexOptions.ApiVersion = EOS_CONNECT_COPYPRODUCTUSEREXTERNALACCOUNTBYINDEX_API_LATEST;
+	ExternalAccountByIndexOptions.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_CONNECT_COPYPRODUCTUSEREXTERNALACCOUNTBYINDEX_API_LATEST, 1);
 	ExternalAccountByIndexOptions.TargetUserId = LoggedInAccount;
 
 	for (uint32_t ExternalAccountIndex = 0; ExternalAccountIndex < ExternalAccountCount; ExternalAccountIndex++)

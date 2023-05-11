@@ -2,12 +2,13 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "AssetRegistry/AssetData.h"
-#include "ContentBrowserDataMenuContexts.h"
-#include "Input/Reply.h"
+
+class FReply;
 
 class UToolMenu;
+class SWindow;
+class SWidget;
 
 class CONTENTBROWSERASSETDATASOURCE_API FAssetFileContextMenu : public TSharedFromThis<FAssetFileContextMenu>
 {
@@ -37,7 +38,7 @@ private:
 
 private:
 	/** Helper to load selected assets and sort them by UClass */
-	void GetSelectedAssetsByClass(TMap<UClass*, TArray<UObject*> >& OutSelectedAssetsByClass) const;
+	void GetSelectedAssetsByClass(TMap<UClass*, TArray<FAssetData> >& OutSelectedAssetsByClass) const;
 
 	/** Helper to collect resolved filepaths for all selected assets */
 	void GetSelectedAssetSourceFilePaths(TArray<FString>& OutFilePaths, TArray<FString>& OutUniqueSourceFileLabels, int32 &OutValidSelectedAssetCount) const;
@@ -61,6 +62,12 @@ private:
 
 	/** Handler for OpenInExternalEditor */
 	void ExecuteOpenInExternalEditor(const TArray<FString> ResolvedFilePaths);
+
+	/** Handler to check to see if a load command is allowed */
+	bool CanExecuteLoad() const;
+
+	/** Handler for Load */
+	void ExecuteLoad();
 
 	/** Handler to check to see if a reload command is allowed */
 	bool CanExecuteReload() const;
@@ -110,15 +117,6 @@ private:
 	/** Adds asset documentation menu options to a menu builder. Returns true if any options were added. */
 	bool AddDocumentationMenuOptions(UToolMenu* Menu);
 	
-	/** Adds source control menu options to a menu builder. */
-	bool AddSourceControlMenuOptions(UToolMenu* Menu);
-
-	/** Fills the source control sub-menu */
-	void FillSourceControlSubMenu(UToolMenu* Menu);
-
-	/** Handler to check to see if SCC actions are allowed */
-	bool CanExecuteSourceControlActions() const;
-
 	/** Creates a sub-menu of Chunk IDs that are are assigned to all selected assets */
 	void MakeChunkIDListMenu(UToolMenu* Menu);
 
@@ -157,10 +155,7 @@ private:
 
 	/** Handler for GoToAssetDocs */
 	void ExecuteGoToDocsForAsset(UClass* SelectedClass, const FString ExcerptSection);
-
-	/** Handler to copy the given text to the clipboard */
-	void ExecuteCopyTextToClipboard(FString InText);
-
+	
 	/** Handler for resetting the localization ID of the current selection */
 	void ExecuteResetLocalizationId();
 
@@ -172,36 +167,6 @@ private:
 
 	/** Handler for Bulk Export */
 	void ExecuteBulkExport();
-
-	/** Handler for when "Refresh source control" is selected */
-	void ExecuteSCCRefresh();
-
-	/** Handler for when "Merge" is selected */
-	void ExecuteSCCMerge();
-
-	/** Handler for when "Checkout from source control" is selected */
-	void ExecuteSCCCheckOut();
-
-	/** Handler for when "Open for add to source control" is selected */
-	void ExecuteSCCOpenForAdd();
-
-	/** Handler for when "Checkin to source control" is selected */
-	void ExecuteSCCCheckIn();
-
-	/** Handler for when "Source Control History" is selected */
-	void ExecuteSCCHistory();
-
-	/** Handler for when "Diff Against Depot" is selected */
-	void ExecuteSCCDiffAgainstDepot() const;
-
-	/** Handler for when "Source Control Revert" is selected */
-	void ExecuteSCCRevert();
-
-	/** Handler for when "Source Control Sync" is selected */
-	void ExecuteSCCSync();
-
-	/** Handler for when source control is disabled */
-	void ExecuteEnableSourceControl();
 
 	/** Handler to assign ChunkID to a selection of assets */
 	void ExecuteAssignChunkID();
@@ -234,39 +199,6 @@ private:
 	/** Handler to check to see if a property matrix command is allowed */
 	bool CanExecutePropertyMatrix(FText& OutErrorMessage) const;
 	bool CanExecutePropertyMatrix() const;
-
-	/** Handler to check to see if a "Show MetaData" command is allowed */
-	bool CanExecuteShowAssetMetaData() const;
-
-	/** Handler to check to see if "Refresh source control" can be executed */
-	bool CanExecuteSCCRefresh() const;
-
-	/** Handler to check to see if "Merge" can be executed */
-	bool CanExecuteSCCMerge() const;
-
-	/** Handler to check to see if "Checkout from source control" can be executed */
-	bool CanExecuteSCCCheckOut() const;
-
-	/** Handler to check to see if "Open for add to source control" can be executed */
-	bool CanExecuteSCCOpenForAdd() const;
-
-	/** Handler to check to see if "Checkin to source control" can be executed */
-	bool CanExecuteSCCCheckIn() const;
-
-	/** Handler to check to see if "Source Control History" can be executed */
-	bool CanExecuteSCCHistory() const;
-
-	/** Handler to check to see if "Source Control Revert" can be executed */
-	bool CanExecuteSCCRevert() const;
-
-	/** Handler to check to see if "Source Control Sync" can be executed */
-	bool CanExecuteSCCSync() const;
-
-	/** Handler to check to see if "Diff Against Depot" can be executed */
-	bool CanExecuteSCCDiffAgainstDepot() const;
-
-	/** Handler to check to see if "Diff Selected" can be executed */
-	bool CanExecuteDiffSelected() const;
 
 	/** Handler to check to see if "Capture Thumbnail" can be executed */
 	bool CanExecuteCaptureThumbnail() const;
@@ -301,6 +233,9 @@ private:
 	/** Generates a list of selected assets in the content browser */
 	void GetSelectedAssets(TArray<UObject*>& Assets, bool SkipRedirectors) const;
 
+	/** Generates a list of selected assets in the content browser, and returns the asset data so you do not have to load them */
+	void GetSelectedAssetData(TArray<FAssetData>& AssetDataList, bool SkipRedirectors) const;
+
 private:
 	TArray<FAssetData> SelectedAssets;
 
@@ -308,17 +243,14 @@ private:
 
 	FOnShowAssetsInPathsView OnShowAssetsInPathsView;
 
-	UContentBrowserDataMenuContext_FileMenu::FOnRefreshView OnRefreshView;
-
 	/** Cached CanExecute vars */
 	bool bAtLeastOneNonRedirectorSelected = false;
-	bool bCanExecuteSCCMerge = false;
-	bool bCanExecuteSCCCheckOut = false;
-	bool bCanExecuteSCCOpenForAdd = false;
-	bool bCanExecuteSCCCheckIn = false;
-	bool bCanExecuteSCCHistory = false;
-	bool bCanExecuteSCCRevert = false;
-	bool bCanExecuteSCCSync = false;
+
 	/** */
 	int32 ChunkIDSelected = 0;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "Input/Reply.h"
+#endif

@@ -6,6 +6,7 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/ScriptMacros.h"
 #include "Layout/Margin.h"
+#include "Components/SlateWrapperTypes.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Components/PanelSlot.h"
 
@@ -17,20 +18,26 @@ class UMG_API UScrollBoxSlot : public UPanelSlot
 {
 	GENERATED_UCLASS_BODY()
 
+private:
+
+	/** How much space this slot should occupy in the direction of the panel. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, Category = "Layout|ScrollBox Slot", meta = (AllowPrivateAccess = "true", DisplayAfter = "Padding"))
+	FSlateChildSize Size;
+
 public:
 	
-	/** The padding area between the slot and the content it contains. */
 	UE_DEPRECATED(5.1, "Direct access to Padding is deprecated. Please use the getter or setter.")
+	/** The padding area between the slot and the content it contains. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Layout|ScrollBox Slot")
 	FMargin Padding;
 
-	/** The alignment of the object horizontally. */
 	UE_DEPRECATED(5.1, "Direct access to HorizontalAlignment is deprecated. Please use the getter or setter.")
+	/** The alignment of the object horizontally. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Layout|ScrollBox Slot")
 	TEnumAsByte<EHorizontalAlignment> HorizontalAlignment;
 
-	/** The alignment of the object vertically. */
 	UE_DEPRECATED(5.1, "Direct access to VerticalAlignment is deprecated. Please use the getter or setter.")
+	/** The alignment of the object vertically. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Layout|ScrollBox Slot")
 	TEnumAsByte<EVerticalAlignment> VerticalAlignment;
 
@@ -40,6 +47,10 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category="Layout|ScrollBox Slot")
 	void SetPadding(FMargin InPadding);
+
+	FSlateChildSize GetSize() const;
+
+	void SetSize(FSlateChildSize InSize);
 
 	EHorizontalAlignment GetHorizontalAlignment() const;
 

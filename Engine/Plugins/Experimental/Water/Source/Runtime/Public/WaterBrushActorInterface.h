@@ -2,16 +2,18 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "CoreGlobals.h"
 #include "UObject/Interface.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
 #include "Engine/TextureRenderTarget2D.h"
+#endif
 #include "WaterBrushActorInterface.generated.h"
 
 struct FWaterCurveSettings;
 struct FWaterBodyHeightmapSettings;
 struct FWaterBodyWeightmapSettings;
 class UPrimitiveComponent;
+enum ETextureRenderTargetFormat : int;
 
 /** Dummy class needed to support Cast<IWaterBrushActorInterface>(Object). */
 UINTERFACE()
@@ -97,6 +99,9 @@ class WATER_API IWaterBrushActorInterface
 
 		/** Indicates that a property affecting the terrain weightmaps has changed */
 		bool bWeightmapSettingsChanged = false;
+
+		/** Indicates user initiated Parameter change */
+		bool bUserTriggered = false;
 	};
 
 	/** 

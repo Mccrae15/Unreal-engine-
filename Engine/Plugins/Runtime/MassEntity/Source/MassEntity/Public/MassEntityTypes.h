@@ -50,7 +50,7 @@ struct FMassSharedFragment
 // A handle to a lightweight entity.  An entity is used in conjunction with the FMassEntityManager
 // for the current world and can contain lightweight fragments.
 USTRUCT()
-struct FMassEntityHandle
+struct alignas(8) FMassEntityHandle
 {
 	GENERATED_BODY()
 
@@ -76,6 +76,9 @@ struct FMassEntityHandle
 		return !operator==(Other);
 	}
 
+	/** Has meaning only for sorting purposes */
+	bool operator<(const FMassEntityHandle Other) const { return Index < Other.Index; }
+
 	/** Note that this function is merely checking if Index and SerialNumber are set. There's no way to validate if 
 	 *  these indicate a valid entity in an EntitySubsystem without asking the system. */
 	bool IsSet() const
@@ -93,6 +96,16 @@ struct FMassEntityHandle
 		Index = SerialNumber = 0;
 	}
 
+	/** Allows the entity handle to be shared anonymously. */
+	uint64 AsNumber() const { return *reinterpret_cast<const uint64*>(this); } // Relying on the fact that this struct only stores 2 integers and is aligned correctly.
+	/** Reconstruct the entity handle from an anonymously shared integer. */
+	static FMassEntityHandle FromNumber(uint64 Value) 
+	{ 
+		FMassEntityHandle Result;
+		*reinterpret_cast<uint64_t*>(&Result) = Value;
+		return Result;
+	}
+
 	friend uint32 GetTypeHash(const FMassEntityHandle Entity)
 	{
 		return HashCombine(Entity.Index, Entity.SerialNumber);
@@ -104,11 +117,14 @@ struct FMassEntityHandle
 	}
 };
 
+static_assert(sizeof(FMassEntityHandle) == sizeof(uint64), "Expected FMassEntityHandle to be convertable to a 64-bit integer value, so size needs to be 8 bytes.");
+static_assert(alignof(FMassEntityHandle) == sizeof(uint64), "Expected FMassEntityHandle to be convertable to a 64-bit integer value, so alignment needs to be 8 bytes.");
+
 DECLARE_STRUCTTYPEBITSET_EXPORTED(MASSENTITY_API, FMassFragmentBitSet, FMassFragment);
 DECLARE_STRUCTTYPEBITSET_EXPORTED(MASSENTITY_API, FMassTagBitSet, FMassTag);
 DECLARE_STRUCTTYPEBITSET_EXPORTED(MASSENTITY_API, FMassChunkFragmentBitSet, FMassChunkFragment);
 DECLARE_STRUCTTYPEBITSET_EXPORTED(MASSENTITY_API, FMassSharedFragmentBitSet, FMassSharedFragment);
-DECLARE_CLASSTYPEBITSET_EXPORTED(MASSENTITY_API, FMassExternalSubsystemBitSet, UWorldSubsystem);
+DECLARE_CLASSTYPEBITSET_EXPORTED(MASSENTITY_API, FMassExternalSubsystemBitSet, USubsystem);
 
 /** The type summarily describing a composition of an entity or an archetype. It contains information on both the
  *  fragments as well as tags */
@@ -260,6 +276,11 @@ struct MASSENTITY_API FMassArchetypeSharedFragmentValues
 		return ConstSharedFragments;
 	}
 
+	FORCEINLINE TArray<FSharedStruct>& GetMutableSharedFragments()
+	{
+		return SharedFragments;
+	}
+	
 	FORCEINLINE const TArray<FSharedStruct>& GetSharedFragments() const
 	{
 		return SharedFragments;
@@ -416,7 +437,7 @@ namespace UE::Mass
 		};
 
 		template<typename TBitSetType>
-		static void PopulateBitSet(TBitSetType& OutBitSet)
+		constexpr static void PopulateBitSet(TBitSetType& OutBitSet)
 		{
 			Super::PopulateBitSet(OutBitSet);
 			OutBitSet += TBitSetType::template GetTypeBitSet<FType>();
@@ -434,14 +455,14 @@ namespace UE::Mass
 		};
 
 		template<typename TBitSetType>
-		static void PopulateBitSet(TBitSetType& OutBitSet)
+		constexpr static void PopulateBitSet(TBitSetType& OutBitSet)
 		{
 			OutBitSet += TBitSetType::template GetTypeBitSet<FType>();
 		}
 	};
 
 	/** 
-	 * The type hosts a statically-typed collection of TArrays, where each TArray is strongly types (i.e. it contains 
+	 * The type hosts a statically-typed collection of TArrays, where each TArray is strongly-typed (i.e. it contains 
 	 * instances of given structs rather than structs wrapped up in FInstancedStruct). This type lets us do batched 
 	 * fragment values setting by simply copying data rather than setting per-instance. 
 	 */

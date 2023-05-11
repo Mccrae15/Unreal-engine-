@@ -11,32 +11,45 @@
 
 ////////////////////////////////////////////////////////////////////////////////
 FAsioFile::FAsioFile(asio::io_context& IoContext, uintptr_t OsHandle)
-#if TS_USING(TS_PLATFORM_WINDOWS)
-: Handle(IoContext, HANDLE(OsHandle))
-#else
-: StreamDescriptor(IoContext, OsHandle)
-#endif
+: Handle(IoContext, HandleType::native_handle_type(OsHandle))
 {
+}
+
+////////////////////////////////////////////////////////////////////////////////
+asio::io_context& FAsioFile::GetIoContext()
+{
+	return Handle.get_executor().context();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 bool FAsioFile::IsOpen() const
 {
-#if TS_USING(TS_PLATFORM_WINDOWS)
 	return Handle.is_open();
-#else
-	return StreamDescriptor.is_open();
-#endif
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 void FAsioFile::Close()
 {
-#if TS_USING(TS_PLATFORM_WINDOWS)
 	Handle.close();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+bool FAsioFile::HasDataAvailable() const
+{
+	auto Inner = const_cast<HandleType&>(Handle).native_handle();
+
+	uint64 FileSize = 0;
+#if TS_USING(TS_PLATFORM_WINDOWS)
+	LARGE_INTEGER Out;
+	GetFileSizeEx(Inner, &Out);
+	FileSize = Out.QuadPart;
 #else
-	StreamDescriptor.close();
+	struct stat Stat;
+	fstat(Inner, &Stat);
+	FileSize = Stat.st_size;
+	static_assert(sizeof(Stat.st_size) >= sizeof(FileSize), "fstat() reports sizes that are too small");
 #endif
+	return Offset < FileSize;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -53,7 +66,7 @@ bool FAsioFile::Write(const void* Src, uint32 Size, FAsioIoSink* Sink, uint32 Id
 		Offset,
 #else
 	asio::async_write(
-		StreamDescriptor,
+		Handle,
 #endif
 		asio::buffer(Src, Size),
 		[this] (const asio::error_code& ErrorCode, size_t BytesWritten)
@@ -84,7 +97,7 @@ bool FAsioFile::ReadSome(void* Dest, uint32 DestSize, FAsioIoSink* Sink, uint32 
 	Handle.async_read_some_at(
 		Offset,
 #else
-	StreamDescriptor.async_read_some(
+	Handle.async_read_some(
 #endif
 		asio::buffer(Dest, DestSize),
 		[this] (const asio::error_code& ErrorCode, size_t BytesRead)

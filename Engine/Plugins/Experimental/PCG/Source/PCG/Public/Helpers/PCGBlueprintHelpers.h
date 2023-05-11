@@ -2,14 +2,16 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Math/RandomStream.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 
-#include "PCGPoint.h"
-#include "PCGContext.h"
 
+#include "Math/Box.h"
 #include "PCGBlueprintHelpers.generated.h"
+
+class UPCGComponent;
+struct FPCGContext;
+struct FPCGLandscapeLayerWeight;
+struct FPCGPoint;
 
 class UPCGSettings;
 class UPCGData;
@@ -30,14 +32,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "PCG|Helpers", meta = (ScriptMethod))
 	static FRandomStream GetRandomStream(const FPCGPoint& InPoint, const UPCGSettings* OptionalSettings = nullptr, const UPCGComponent* OptionalComponent = nullptr);
 
+	UFUNCTION(BlueprintCallable, Category = "PCG|Helpers", meta = (ScriptMethod))
+	static const UPCGSettings* GetSettings(UPARAM(ref) FPCGContext& Context);
+
 	UFUNCTION(BlueprintCallable, Category = "PCG|Temporary", meta = (ScriptMethod))
 	static UPCGData* GetActorData(UPARAM(ref) FPCGContext& Context);
 
 	UFUNCTION(BlueprintCallable, Category = "PCG|Temporary", meta = (ScriptMethod))
 	static UPCGData* GetInputData(UPARAM(ref) FPCGContext& Context);
-
-	UFUNCTION(BlueprintCallable, Category = "PCG|Temporary", meta = (ScriptMethod))
-	static TArray<UPCGData*> GetExclusionData(UPARAM(ref) FPCGContext& Context);
 
 	UFUNCTION(BlueprintCallable, Category = "PCG|Temporary", meta = (ScriptMethod))
 	static UPCGComponent* GetComponent(UPARAM(ref) FPCGContext& Context);
@@ -65,4 +67,20 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "PCG|Helpers", meta = (ScriptMethod))
 	static FBox GetActorLocalBoundsPCG(AActor* InActor, bool bIgnorePCGCreatedComponents = true);
+
+	UFUNCTION(BlueprintCallable, Category = "PCG|Helpers", meta = (ScriptMethod))
+	static UPCGData* CreatePCGDataFromActor(AActor* InActor, bool bParseActor = true);
+
+	UFUNCTION(BlueprintCallable, Category = "PCG|Helpers", meta = (ScriptMethod))
+	static TArray<FPCGLandscapeLayerWeight> GetInterpolatedPCGLandscapeLayerWeights(UObject* WorldContextObject, const FVector& Location);
+
+	UFUNCTION(BLueprintCallable, Category = "PCG|Helpers", meta = (ScriptMethod))
+	static int64 GetTaskId(UPARAM(ref) FPCGContext& Context);
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "Math/RandomStream.h"
+#include "PCGContext.h"
+#include "PCGPoint.h"
+#endif

@@ -2,29 +2,12 @@
 
 #include "MuCOE/GenerateMutableSource/GenerateMutableSourceColor.h"
 
-#include "Containers/Array.h"
-#include "Containers/Map.h"
-#include "Containers/Set.h"
-#include "Containers/StringConv.h"
-#include "Containers/UnrealString.h"
-#include "EdGraph/EdGraphPin.h"
-#include "Engine/DataTable.h"
-#include "HAL/Platform.h"
-#include "Internationalization/Internationalization.h"
-#include "Internationalization/Text.h"
-#include "Math/Color.h"
-#include "Misc/AssertionMacros.h"
-#include "Misc/Guid.h"
-#include "MuCO/CustomizableObjectParameterTypeDefinitions.h"
-#include "MuCO/CustomizableObjectUIData.h"
 #include "MuCOE/CustomizableObjectCompiler.h"
 #include "MuCOE/EdGraphSchema_CustomizableObject.h"
-#include "MuCOE/GenerateMutableSource/GenerateMutableSource.h"
 #include "MuCOE/GenerateMutableSource/GenerateMutableSourceFloat.h"
 #include "MuCOE/GenerateMutableSource/GenerateMutableSourceImage.h"
 #include "MuCOE/GenerateMutableSource/GenerateMutableSourceTable.h"
 #include "MuCOE/GraphTraversal.h"
-#include "MuCOE/Nodes/CustomizableObjectNode.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeColorArithmeticOp.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeColorConstant.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeColorFromFloats.h"
@@ -33,9 +16,6 @@
 #include "MuCOE/Nodes/CustomizableObjectNodeColorVariation.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTable.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTextureSample.h"
-#include "MuR/Ptr.h"
-#include "MuR/RefCounted.h"
-#include "MuT/Node.h"
 #include "MuT/NodeColourArithmeticOperation.h"
 #include "MuT/NodeColourConstant.h"
 #include "MuT/NodeColourFromScalars.h"
@@ -45,13 +25,6 @@
 #include "MuT/NodeColourTable.h"
 #include "MuT/NodeColourVariation.h"
 #include "MuT/NodeImageBinarise.h"
-#include "MuT/NodeScalar.h"
-#include "MuT/NodeScalarEnumParameter.h"
-#include "MuT/Table.h"
-#include "Templates/Casts.h"
-#include "UObject/NameTypes.h"
-#include "UObject/ObjectPtr.h"
-#include "UObject/UObjectGlobals.h"
 
 
 #define LOCTEXT_NAMESPACE "CustomizableObjectEditor"
@@ -309,7 +282,14 @@ mu::NodeColourPtr GenerateMutableSourceColor(const UEdGraphPin* Pin, FMutableGra
 				ColumnName = GenerationContext.CurrentMaterialTableParameterId;
 			}
 
+			// Generating a new data table if not exists
 			Table = GenerateMutableSourceTable(TypedNodeTable->Table->GetName(), Pin, GenerationContext);
+
+			// Generating a new Color column if not exists
+			if (Table && Table->FindColumn(TCHAR_TO_ANSI(*ColumnName)) == INDEX_NONE)
+			{
+				GenerateTableColumn(TypedNodeTable, Pin, Table, ColumnName, GenerationContext.CurrentLOD, GenerationContext);
+			}
 
 			ColorTableNode->SetTable(Table);
 			ColorTableNode->SetColumn(TCHAR_TO_ANSI(*ColumnName));
@@ -317,7 +297,7 @@ mu::NodeColourPtr GenerateMutableSourceColor(const UEdGraphPin* Pin, FMutableGra
 
 			GenerationContext.AddParameterNameUnique(Node, TypedNodeTable->ParameterName);
 
-			if (Table->FindColumn(TCHAR_TO_ANSI(*ColumnName)) == -1)
+			if (Table->FindColumn(TCHAR_TO_ANSI(*ColumnName)) == INDEX_NONE)
 			{
 				FString Msg = FString::Printf(TEXT("Couldn't find pin column with name %s"), *ColumnName);
 				GenerationContext.Compiler->CompilerLog(FText::FromString(Msg), Node);

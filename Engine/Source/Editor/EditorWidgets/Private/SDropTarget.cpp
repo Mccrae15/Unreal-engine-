@@ -25,7 +25,11 @@ void SDropTarget::Construct(const FArguments& InArgs)
 	DroppedEvent = InArgs._OnDropped;
 	AllowDropEvent = InArgs._OnAllowDrop;
 	IsRecognizedEvent = InArgs._OnIsRecognized;
-
+	OnDragEnterEvent = InArgs._OnDragEnter;
+	OnDragLeaveEvent = InArgs._OnDragLeave;
+	bOnlyRecognizeOnDragEnter = InArgs._bOnlyRecognizeOnDragEnter;
+	bUseAllowDropCache = InArgs._bUseAllowDropCache;
+	
 	bIsDragEventRecognized = false;
 	bAllowDrop = false;
 	bIsDragOver = false;
@@ -36,6 +40,9 @@ void SDropTarget::Construct(const FArguments& InArgs)
 	VerticalImage = InArgs._VerticalImage;
 	HorizontalImage = InArgs._HorizontalImage;
 
+	// if we want to use the cache, we need to detect whether to clear the cache on tick
+	SetCanTick(bUseAllowDropCache);
+	
 	ChildSlot
 	[
 		SNew(SOverlay)
@@ -64,9 +71,19 @@ EVisibility SDropTarget::GetDragOverlayVisibility() const
 {
 	if ( FSlateApplication::Get().IsDragDropping() )
 	{
-		if ( AllowDrop(FSlateApplication::Get().GetDragDroppingContent()) || (bIsDragOver && bIsDragEventRecognized) )
+		bool bCheckForAllowDrop = true;
+
+		if(bOnlyRecognizeOnDragEnter.Get() && !bIsDragOver)
 		{
-			return EVisibility::HitTestInvisible;
+			bCheckForAllowDrop = false;
+		}
+		
+		if(bCheckForAllowDrop)
+		{
+			if(AllowDrop(FSlateApplication::Get().GetDragDroppingContent()) || (bIsDragOver && bIsDragEventRecognized))
+			{
+				return EVisibility::HitTestInvisible;
+			}
 		}
 	}
 
@@ -81,9 +98,20 @@ FReply SDropTarget::OnDragOver(const FGeometry& MyGeometry, const FDragDropEvent
 
 bool SDropTarget::AllowDrop(TSharedPtr<FDragDropOperation> DragDropOperation) const
 {
-	bAllowDrop = OnAllowDrop(DragDropOperation);
-	bIsDragEventRecognized = OnIsRecognized(DragDropOperation) || bAllowDrop;
+	if(bUseAllowDropCache && AllowDropCache.IsSet())
+	{
+		bAllowDrop = AllowDropCache.GetValue();
+	}
+	else
+	{
+		bAllowDrop = OnAllowDrop(DragDropOperation);
 
+		if(bUseAllowDropCache)
+		{
+			AllowDropCache = bAllowDrop;
+		}
+	}
+	bIsDragEventRecognized = OnIsRecognized(DragDropOperation) || bAllowDrop;
 	return bAllowDrop;
 }
 
@@ -105,6 +133,20 @@ bool SDropTarget::OnIsRecognized(TSharedPtr<FDragDropOperation> DragDropOperatio
 	}
 
 	return false;
+}
+
+void SDropTarget::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
+{
+	if(bUseAllowDropCache)
+	{
+		bWasDragDroppingLastFrame = bIsDragDropping;
+		bIsDragDropping = FSlateApplication::Get().IsDragDropping();
+
+		if(bIsDragDropping && !bWasDragDroppingLastFrame)
+		{
+			ClearAllowDropCache();
+		}
+	}
 }
 
 FReply SDropTarget::OnDrop(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent)
@@ -135,6 +177,8 @@ void SDropTarget::OnDragEnter(const FGeometry& MyGeometry, const FDragDropEvent&
 	// initially we dont recognize this event
 	bIsDragEventRecognized = false;
 	bIsDragOver = true;
+
+	OnDragEnterEvent.ExecuteIfBound(DragDropEvent);
 }
 
 void SDropTarget::OnDragLeave(const FDragDropEvent& DragDropEvent)
@@ -145,6 +189,7 @@ void SDropTarget::OnDragLeave(const FDragDropEvent& DragDropEvent)
 	bAllowDrop = false;
 
 	bIsDragOver = false;
+	OnDragLeaveEvent.ExecuteIfBound(DragDropEvent);
 }
 
 int32 SDropTarget::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
@@ -165,7 +210,7 @@ int32 SDropTarget::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeom
 			FSlateDrawElement::MakeBox(
 				OutDrawElements,
 				DashLayer,
-				AllottedGeometry.ToPaintGeometry(FVector2D(Inset, 0), FVector2D(AllottedGeometry.GetLocalSize().X-Inset*2, HorizontalImage->ImageSize.Y)),
+				AllottedGeometry.ToPaintGeometry(FVector2f(AllottedGeometry.GetLocalSize().X-Inset*2, HorizontalImage->ImageSize.Y), FSlateLayoutTransform(FVector2f(Inset, 0))),
 				HorizontalImage,
 				ESlateDrawEffect::None,
 				DashColor.GetColor(InWidgetStyle));
@@ -174,7 +219,7 @@ int32 SDropTarget::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeom
 			FSlateDrawElement::MakeBox(
 				OutDrawElements,
 				DashLayer,
-				AllottedGeometry.ToPaintGeometry(FVector2D(Inset, AllottedGeometry.GetLocalSize().Y - HorizontalImage->ImageSize.Y), FVector2D(AllottedGeometry.Size.X-Inset * 2, HorizontalImage->ImageSize.Y)),
+				AllottedGeometry.ToPaintGeometry(FVector2f(AllottedGeometry.Size.X-Inset * 2, HorizontalImage->ImageSize.Y), FSlateLayoutTransform(FVector2f(Inset, AllottedGeometry.GetLocalSize().Y - HorizontalImage->ImageSize.Y))),
 				HorizontalImage,
 				ESlateDrawEffect::None,
 				DashColor.GetColor(InWidgetStyle));
@@ -183,7 +228,7 @@ int32 SDropTarget::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeom
 			FSlateDrawElement::MakeBox(
 				OutDrawElements,
 				DashLayer,
-				AllottedGeometry.ToPaintGeometry(FVector2D(0, Inset), FVector2D(VerticalImage->ImageSize.X, AllottedGeometry.GetLocalSize().Y-Inset * 2)),
+				AllottedGeometry.ToPaintGeometry(FVector2f(VerticalImage->ImageSize.X, AllottedGeometry.GetLocalSize().Y-Inset * 2), FSlateLayoutTransform(FVector2f(0, Inset))),
 				VerticalImage,
 				ESlateDrawEffect::None,
 				DashColor.GetColor(InWidgetStyle));
@@ -192,7 +237,7 @@ int32 SDropTarget::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeom
 			FSlateDrawElement::MakeBox(
 				OutDrawElements,
 				DashLayer,
-				AllottedGeometry.ToPaintGeometry(FVector2D(AllottedGeometry.GetLocalSize().X - VerticalImage->ImageSize.X, Inset), FVector2D(VerticalImage->ImageSize.X, AllottedGeometry.GetLocalSize().Y-Inset * 2)),
+				AllottedGeometry.ToPaintGeometry(FVector2f(VerticalImage->ImageSize.X, AllottedGeometry.GetLocalSize().Y-Inset * 2), FSlateLayoutTransform(FVector2f(AllottedGeometry.GetLocalSize().X - VerticalImage->ImageSize.X, Inset))),
 				VerticalImage,
 				ESlateDrawEffect::None,
 				DashColor.GetColor(InWidgetStyle));

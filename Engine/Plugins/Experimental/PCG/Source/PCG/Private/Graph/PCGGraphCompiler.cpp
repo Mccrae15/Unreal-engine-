@@ -1,10 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PCGGraphCompiler.h"
+#include "Graph/PCGGraphExecutor.h"
+#include "Misc/ScopeRWLock.h"
 #include "PCGGraph.h"
 #include "PCGEdge.h"
+#include "PCGModule.h"
 #include "PCGSubgraph.h"
-#include "PCGSettings.h" // Needed for trivial element
+#include "PCGPin.h"
 
 TArray<FPCGGraphTask> FPCGGraphCompiler::CompileGraph(UPCGGraph* InGraph, FPCGTaskId& NextId)
 {
@@ -37,7 +40,21 @@ TArray<FPCGGraphTask> FPCGGraphCompiler::CompileGraph(UPCGGraph* InGraph, FPCGTa
 		const UPCGBaseSubgraphNode* SubgraphNode = Cast<const UPCGBaseSubgraphNode>(Node);
 		UPCGGraph* Subgraph = SubgraphNode ? SubgraphNode->GetSubgraph() : nullptr;
 
-		if (SubgraphNode != nullptr && !SubgraphNode->bDynamicGraph && Subgraph)
+		// Only catch immediate infinite recursion.
+		// TODO: Add a better mecanism for detecting more complex cyclic recursions
+		// Like Graph A has subgraph node with Graph B, and Graph B has a subgraph node with Graph A (A -> B -> A)
+		// or A -> B -> C -> A, etc...
+		// NOTE (for the person that would work on it), keeping a stack of all the subgraphs is not enough, as we could already have compiled graph
+		// A, with an inclusion to graph B, but B has not yet a subgraph to A. When adding subgraph node to A in B, we will only recompile B, since A is already
+		// compiled and cached... We need to store a subgraph dependency chain to detect those more complex cases.
+		if (Subgraph == InGraph)
+		{
+			UE_LOG(LogPCG, Error, TEXT("[FPCGGraphCompiler::CompileGraph] %s cannot include itself as a subgraph, subgraph will not be executed."), *InGraph->GetName());
+			return TArray<FPCGGraphTask>();
+		}
+
+		const bool bIsNonDynamicAndNonDisabledSubgraphNode = (SubgraphNode != nullptr && !SubgraphNode->bDynamicGraph && Subgraph && SubgraphNode->GetSettings() && SubgraphNode->GetSettings()->bEnabled);
+		if (bIsNonDynamicAndNonDisabledSubgraphNode)
 		{
 			const FPCGTaskId PreId = NextId++;
 
@@ -51,7 +68,7 @@ TArray<FPCGGraphTask> FPCGGraphCompiler::CompileGraph(UPCGGraph* InGraph, FPCGTa
 			GraphDependenciesLock.Unlock();
 #endif // WITH_EDITOR
 
-			OffsetNodeIds(Subtasks, NextId);
+			OffsetNodeIds(Subtasks, NextId, PreId);
 			NextId += Subtasks.Num();
 
 			const UPCGNode* SubgraphInputNode = Subgraph->GetInputNode();
@@ -91,6 +108,22 @@ TArray<FPCGGraphTask> FPCGGraphCompiler::CompileGraph(UPCGGraph* InGraph, FPCGTa
 			if (InputNodeTask)
 			{
 				InputNodeTask->Inputs.Emplace(PreId, nullptr, nullptr);
+			}
+
+			// Hook nodes to the PreTask if they require so.
+			// Only do it for nodes that are directly under the subgraph, not in subsequent subgraphs.
+			for (FPCGGraphTask& Subtask : Subtasks)
+			{
+				if (!Subtask.Node || Subtask.Node->GetOuter() != Subgraph)
+				{
+					continue;
+				}
+
+				const UPCGSettings* Settings = Subtask.Node->GetSettings();
+				if (Settings && Settings->ShouldHookToPreTask())
+				{
+					Subtask.Inputs.Emplace(PreId, nullptr, nullptr);
+				}
 			}
 
 			// Merge subgraph tasks into current tasks.
@@ -208,13 +241,23 @@ void FPCGGraphCompiler::Compile(UPCGGraph* InGraph)
 	// Store back the results in the cache if it's valid
 	if (!CompiledTasks.IsEmpty())
 	{
-	GraphToTaskMapLock.WriteLock();
-	if (!GraphToTaskMap.Contains(InGraph))
-	{
-		GraphToTaskMap.Add(InGraph, MoveTemp(CompiledTasks));
+		GraphToTaskMapLock.WriteLock();
+		if (!GraphToTaskMap.Contains(InGraph))
+		{
+			GraphToTaskMap.Add(InGraph, MoveTemp(CompiledTasks));
+		}
+		GraphToTaskMapLock.WriteUnlock();
 	}
-	GraphToTaskMapLock.WriteUnlock();
 }
+
+TArray<FPCGGraphTask> FPCGGraphCompiler::GetPrecompiledTasks(UPCGGraph* InGraph, bool bIsTopGraph) const
+{
+	// Get compiled tasks in a threadsafe way
+	FReadScopeLock ReadLock(GraphToTaskMapLock);
+
+	const TArray<FPCGGraphTask>* ExistingTasks = (bIsTopGraph ? TopGraphToTaskMap : GraphToTaskMap).Find(InGraph);
+
+	return ExistingTasks ? *ExistingTasks : TArray<FPCGGraphTask>();
 }
 
 TArray<FPCGGraphTask> FPCGGraphCompiler::GetCompiledTasks(UPCGGraph* InGraph, bool bIsTopGraph)
@@ -251,11 +294,20 @@ TArray<FPCGGraphTask> FPCGGraphCompiler::GetCompiledTasks(UPCGGraph* InGraph, bo
 	return CompiledTasks;
 }
 
-void FPCGGraphCompiler::OffsetNodeIds(TArray<FPCGGraphTask>& Tasks, FPCGTaskId Offset)
+void FPCGGraphCompiler::OffsetNodeIds(TArray<FPCGGraphTask>& Tasks, FPCGTaskId Offset, FPCGTaskId ParentId)
 {
 	for (FPCGGraphTask& Task : Tasks)
 	{
 		Task.NodeId += Offset;
+
+		if  (Task.ParentId == InvalidPCGTaskId)
+		{
+			Task.ParentId = ParentId;
+		}
+		else
+		{
+			Task.ParentId += Offset;
+		}
 
 		for(FPCGGraphTaskInput& Input : Task.Inputs)
 		{
@@ -299,6 +351,8 @@ void FPCGGraphCompiler::CompileTopGraph(UPCGGraph* InGraph)
 		{
 			Task.Inputs.Emplace(PreExecuteTaskId, nullptr, nullptr);
 		}
+
+		Task.CompiledTaskId = Task.NodeId;
 	}
 
 	FPCGGraphTask& PostExecuteTask = CompiledTasks.Emplace_GetRef();

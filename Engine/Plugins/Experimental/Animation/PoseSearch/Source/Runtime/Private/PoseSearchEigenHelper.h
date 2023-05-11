@@ -2,6 +2,9 @@
 
 #pragma once
 
+#include "CoreTypes.h"
+#include "Containers/UnrealString.h"
+
 #if UE_BUILD_DEBUG && WITH_EDITOR
 #define UE_POSE_SEARCH_EIGEN_DEBUG 1
 #endif
@@ -62,15 +65,10 @@ namespace UE::PoseSearch
 	using ColMajorMatrixMap = Eigen::Map<ColMajorMatrix, Eigen::ColMajor>;
 	using ColMajorMatrixMapConst = Eigen::Map<const ColMajorMatrix, Eigen::ColMajor>;
 
-	struct ColMajorVectord : public Eigen::VectorXd
-	{
-		ColMajorVectord(int32 Size) : Eigen::VectorXd(Size) {}
-	};
-	struct ColMajorMatrixd : public Eigen::MatrixXd {};
-
 #if UE_POSE_SEARCH_EIGEN_DEBUG
 	template<typename EigenDenseBaseDerivedType>
-	FString EigenMatrixToString(const Eigen::DenseBase<EigenDenseBaseDerivedType>& Matrix){
+	FString EigenMatrixToString(const Eigen::DenseBase<EigenDenseBaseDerivedType>& Matrix)
+	{
 		std::stringstream StringStream;
 		StringStream << Matrix;
 		return StringStream.str().c_str();

@@ -2,7 +2,6 @@
 
 #include "Stack/SNiagaraStackModuleItem.h"
 
-#include "Editor.h"
 #include "EditorFontGlyphs.h"
 #include "NiagaraActions.h"
 #include "NiagaraConstants.h"
@@ -18,11 +17,8 @@
 #include "ScopedTransaction.h"
 #include "SDropTarget.h"
 #include "SGraphActionMenu.h"
-#include "SNiagaraGraphActionWidget.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Subsystems/AssetEditorSubsystem.h"
-#include "ViewModels/NiagaraEmitterViewModel.h"
 #include "ViewModels/NiagaraScratchPadScriptViewModel.h"
 #include "ViewModels/NiagaraScratchPadViewModel.h"
 #include "ViewModels/NiagaraSystemViewModel.h"
@@ -34,7 +30,6 @@
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SComboButton.h"
-#include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "Widgets/Layout/SBox.h"
 
@@ -394,11 +389,26 @@ bool SNiagaraStackModuleItem::GetVersionSelectionMenuEnabled() const
 
 FText SNiagaraStackModuleItem::GetVersionSelectionMenuTooltip() const
 {
+	FText BaseText;
 	if (ModuleItem->CanMoveAndDelete())
 	{
-		return LOCTEXT("VersionTooltip", "Change the version of this module script");
+		BaseText = LOCTEXT("VersionTooltip", "Change the version of this module script.");
 	}
-	return LOCTEXT("VersionTooltipDisabled", "The version of this module script can only be changed in the parent emitter.");
+	else
+	{
+		BaseText = LOCTEXT("VersionTooltipDisabled", "The version of this module script can only be changed in the parent emitter.");
+	}
+	
+	if (UNiagaraScript* Script = ModuleItem->GetModuleNode().FunctionScript; Script && Script->IsVersioningEnabled())
+	{
+		if (FVersionedNiagaraScriptData* ScriptData = Script->GetScriptData(ModuleItem->GetModuleNode().SelectedScriptVersion))
+		{
+			// add the version information if possible
+			FText VersionText = FText::Format(FText::FromString("{0}.{1}"), ScriptData->Version.MajorVersion, ScriptData->Version.MinorVersion);
+			return FText::Format(LOCTEXT("VersionTooltipFormat", "{0}\nCurrently used module version: {1}"), BaseText, VersionText);
+		}
+	}
+	return BaseText;
 }
 
 FReply SNiagaraStackModuleItem::ScratchButtonPressed() const

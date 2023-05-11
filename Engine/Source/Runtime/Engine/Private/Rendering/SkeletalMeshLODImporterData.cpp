@@ -5,15 +5,16 @@
 #include "Rendering/SkeletalMeshLODImporterData.h"
 
 #include "Engine/SkeletalMesh.h"
-#include "Factories/FbxSkeletalMeshImportData.h"
+#include "Engine/SkinnedAssetCommon.h"
 #include "ImportUtils/SkeletalMeshImportUtils.h"
-#include "Logging/LogMacros.h"
-#include "Logging/LogVerbosity.h"
+#include "Materials/MaterialInterface.h"
 #include "Misc/ScopedSlowTask.h"
+#include "Misc/ScopeRWLock.h"
 #include "Rendering/SkeletalMeshModel.h"
 #include "Serialization/BulkDataReader.h"
 #include "Serialization/BulkDataWriter.h"
 #include "Serialization/LargeMemoryWriter.h"
+#include "Serialization/MemoryReader.h"
 #include "SkeletalMeshAttributes.h"
 #include "SkeletalMeshOperations.h"
 
@@ -220,7 +221,7 @@ bool FSkeletalMeshImportData::ApplyRigToGeo(FSkeletalMeshImportData& Other)
 	Influences.Reset();
 
 	FWedgePosition OldGeoOverlappingPosition;
-	FWedgePosition::FillWedgePosition(OldGeoOverlappingPosition, Other.Points, Other.Wedges, UE_THRESH_POINTS_ARE_SAME);
+	FWedgePosition::FillWedgePosition(OldGeoOverlappingPosition, Other.Points, Other.Wedges, Points, UE_THRESH_POINTS_ARE_SAME);
 	FOctreeQueryHelper OctreeQueryHelper(OldGeoOverlappingPosition.GetOctree());
 
 	//////////////////////////////////////////////////////////////////////////
@@ -1142,6 +1143,7 @@ void FWedgePosition::FillWedgePosition(
 	FWedgePosition& OutOverlappingPosition,
 	const TArray<FVector3f>& Points,
 	const TArray<SkeletalMeshImportData::FVertex> Wedges,
+	const TArray<FVector3f>& TargetPositions,
 	float ComparisonThreshold)
 {
 	OutOverlappingPosition.Points= Points;
@@ -1159,6 +1161,8 @@ void FWedgePosition::FillWedgePosition(
 
 
 	FBox3f OldBounds(OutOverlappingPosition.Points);
+	//Make sure the bounds include the target bounds so we find a match for every target vertex
+	OldBounds += FBox3f(TargetPositions);
 	OutOverlappingPosition.WedgePosOctree = new TWedgeInfoPosOctree((FVector)OldBounds.GetCenter(), OldBounds.GetExtent().GetMax());
 
 	// Add each old vertex to the octree

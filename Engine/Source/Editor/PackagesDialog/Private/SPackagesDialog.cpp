@@ -7,6 +7,7 @@
 #include "Framework/Commands/UIAction.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/Views/ITypedTableView.h"
+#include "HAL/PlatformApplicationMisc.h"
 #include "IAssetTools.h"
 #include "IAssetTypeActions.h"
 #include "Input/Events.h"
@@ -21,6 +22,7 @@
 #include "Modules/ModuleManager.h"
 #include "SWarningOrErrorBox.h"
 #include "SlotBase.h"
+#include "Algo/AnyOf.h"
 #include "Styling/AppStyle.h"
 #include "Styling/ISlateStyle.h"
 #include "Styling/SlateColor.h"
@@ -169,8 +171,8 @@ void SPackagesDialog::Construct(const FArguments& InArgs)
 		.Padding( 2 )
 		[
 			SNew(SButton) 
-				.Text(LOCTEXT("ConnectToSourceControl", "Connect To Source Control"))
-				.ToolTipText(LOCTEXT("ConnectToSourceControl_Tooltip", "Connect to source control to allow source control operations to be performed on content and levels."))
+				.Text(LOCTEXT("ConnectToSourceControl", "Connect To Revision Control"))
+				.ToolTipText(LOCTEXT("ConnectToSourceControl_Tooltip", "Connect to a revision control system for tracking changes to your content and levels."))
 				.ContentPadding(FMargin(10, 3))
 				.HAlign(HAlign_Right)
 				.VAlign(VAlign_Center)
@@ -279,7 +281,7 @@ void SPackagesDialog::Construct(const FArguments& InArgs)
 					.OnContextMenuOpening(this, &SPackagesDialog::MakePackageListContextMenu)
 					.ItemHeight(20)
 					.HeaderRow( HeaderRowWidget )
-					.SelectionMode( ESelectionMode::None )
+					.SelectionMode( ESelectionMode::Single )
 			]
 			+ SVerticalBox::Slot()
 			.Padding(0, 16.0f, 0, 0)
@@ -616,11 +618,56 @@ TSharedPtr<SWidget> SPackagesDialog::MakePackageListContextMenu() const
 		{
 			MenuBuilder.AddMenuEntry(
 				LOCTEXT("SCCDiffAgainstDepot", "Diff Against Depot"),
-				LOCTEXT("SCCDiffAgainstDepotTooltip", "Look at differences between your version of the asset and that in source control."),
+				LOCTEXT("SCCDiffAgainstDepotTooltip", "Look at differences between your version of the asset and that in revision control."),
 				FSlateIcon(),
 				FUIAction(
 					FExecuteAction::CreateSP( this, &SPackagesDialog::ExecuteSCCDiffAgainstDepot ),
 					FCanExecuteAction::CreateSP( this, &SPackagesDialog::CanExecuteSCCDiffAgainstDepot )
+				)
+			);	
+			MenuBuilder.AddMenuEntry(
+				LOCTEXT("SCCCopyFilePathToClipboard", "Copy File Path"),
+				LOCTEXT("SCCCopyFilePathToClipboardTooltip", "Copies the file path on disk to the clipboard."),
+				FSlateIcon(),
+				FUIAction(
+					FExecuteAction::CreateLambda( [SelectedItems] ()
+					{
+						TArray<FString> Paths;
+						for (const TSharedPtr<FPackageItem>& PackageItem: SelectedItems)
+						{
+							if (!PackageItem->GetFileName().IsEmpty())
+							{
+								Paths.Add(PackageItem->GetFileName());
+							}
+						}
+						FPlatformApplicationMisc::ClipboardCopy(*FString::Join(Paths, TEXT("\n")));
+					} ),
+					FCanExecuteAction::CreateLambda( [SelectedItems] ()
+					{
+						return Algo::AnyOf(SelectedItems, [](const TSharedPtr<FPackageItem>& PackageItem)
+						{
+							return !PackageItem->GetFileName().IsEmpty();
+						});
+					} )
+				)
+			);	
+			MenuBuilder.AddMenuEntry(
+				LOCTEXT("SCCCopyPackagePathToClipboard", "Copy Package Path"),
+				LOCTEXT("SCCCopyPackagePathToClipboardTooltip", "Copies the package path to the clipboard."),
+				FSlateIcon(),
+				FUIAction(
+					FExecuteAction::CreateLambda( [SelectedItems] ()
+					{
+						TArray<FString> Paths;
+						for (const TSharedPtr<FPackageItem>& PackageItem: SelectedItems)
+						{
+							if (!PackageItem->GetFileName().IsEmpty())
+							{
+								Paths.Add(PackageItem->GetPackageName());
+							}
+						}
+						FPlatformApplicationMisc::ClipboardCopy(*FString::Join(Paths, TEXT("\n")));
+					} )
 				)
 			);	
 		}

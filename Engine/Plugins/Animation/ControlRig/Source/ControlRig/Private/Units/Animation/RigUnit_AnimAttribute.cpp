@@ -3,7 +3,7 @@
 #include "Units/Animation/RigUnit_AnimAttribute.h"
 
 #include "Animation/AttributeTypes.h"
-
+#include "Engine/SkeletalMesh.h"
 #include "Units/RigUnitContext.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/UserDefinedStruct.h"
@@ -91,7 +91,7 @@ const TArray<FRigVMTemplateArgument::ETypeCategory>& FRigDispatch_AnimAttributeB
 static uint8* GetAnimAttributeValue(
 	bool bAddIfNotFound,
 	UScriptStruct* InAttributeScriptStruct,
-	const FRigUnitContext& Context,
+	const FControlRigExecuteContext& Context,
 	const FName& Name,
 	const FName& BoneName,
 	FName& CachedBoneName,
@@ -107,12 +107,12 @@ static uint8* GetAnimAttributeValue(
 		return nullptr;
 	}
 
-	if (!Context.AnimAttributeContainer)
+	if (!Context.UnitContext.AnimAttributeContainer)
 	{
 		return nullptr;
 	}
 	
-	const USkeletalMeshComponent* OwningComponent = Cast<USkeletalMeshComponent>(Context.OwningComponent);
+	const USkeletalMeshComponent* OwningComponent = Cast<USkeletalMeshComponent>(Context.GetOwningComponent());
 
 	if (!OwningComponent ||
 		!OwningComponent->GetSkeletalMeshAsset())
@@ -140,8 +140,8 @@ static uint8* GetAnimAttributeValue(
 	{
 		const UE::Anim::FAttributeId Id = {Name, FCompactPoseBoneIndex(CachedBoneIndex)} ;
 		uint8* Attribute = bAddIfNotFound ?
-			Context.AnimAttributeContainer->FindOrAdd(InAttributeScriptStruct, Id) :
-			Context.AnimAttributeContainer->Find(InAttributeScriptStruct, Id);
+			Context.UnitContext.AnimAttributeContainer->FindOrAdd(InAttributeScriptStruct, Id) :
+			Context.UnitContext.AnimAttributeContainer->Find(InAttributeScriptStruct, Id);
 		
 		if (Attribute)
 		{
@@ -180,11 +180,11 @@ void FRigDispatch_GetAnimAttribute::GetAnimAttributeDispatch(FRigVMExtendedExecu
 	{
 		UScriptStruct* ScriptStruct = StructProperty->Struct;
 		bool Registered = true;
-		const FRigUnitContext& Context = GetRigUnitContext(InContext);
+		const FControlRigExecuteContext& Context = InContext.GetPublicDataSafe<FControlRigExecuteContext>();
 
 #if WITH_EDITOR
 		{
-			FRigVMExecuteContext& RigVMExecuteContext = InContext.PublicData;
+			FControlRigExecuteContext& ExecuteContext = InContext.GetPublicData<FControlRigExecuteContext>();
 			if (!UE::Anim::AttributeTypes::IsTypeRegistered(ScriptStruct))
 			{
 				UE_CONTROLRIG_RIGUNIT_REPORT_WARNING(
@@ -242,11 +242,11 @@ void FRigDispatch_SetAnimAttribute::SetAnimAttributeDispatch(FRigVMExtendedExecu
 	{
 		UScriptStruct* ScriptStruct = StructProperty->Struct;
 		bool Registered = true;
-		const FRigUnitContext& Context = GetRigUnitContext(InContext);
+		const FControlRigExecuteContext& Context = InContext.GetPublicDataSafe<FControlRigExecuteContext>();
 
 #if WITH_EDITOR
 		{
-			FRigVMExecuteContext& RigVMExecuteContext = InContext.PublicData;
+			FControlRigExecuteContext& ExecuteContext = InContext.GetPublicData<FControlRigExecuteContext>();
 			if (!UE::Anim::AttributeTypes::IsTypeRegistered(ScriptStruct))
 			{
 				UE_CONTROLRIG_RIGUNIT_REPORT_WARNING(
@@ -325,11 +325,6 @@ TArray<FRigVMTemplateArgument> FRigDispatch_AnimAttributeBase::GetArguments() co
 {
 	if (Arguments.IsEmpty())
 	{
-		if (IsSet())
-		{
-			ExecuteArgIndex = Arguments.Emplace(FRigVMStruct::ExecuteContextName, ERigVMPinDirection::IO, FRigVMRegistry::Get().GetTypeIndex<FControlRigExecuteContext>());
-		}
-
 		NameArgIndex = Arguments.Emplace(NameArgName, ERigVMPinDirection::Input, RigVMTypeUtils::TypeIndex::FName);
 		BoneNameArgIndex = Arguments.Emplace(BoneNameArgName, ERigVMPinDirection::Input, RigVMTypeUtils::TypeIndex::FName);
 
@@ -476,8 +471,13 @@ TArray<FRigVMTemplateArgument> FRigDispatch_SetAnimAttribute::GetArguments() con
 	return Arguments;
 }
 
+TArray<FRigVMExecuteArgument> FRigDispatch_SetAnimAttribute::GetExecuteArguments_Impl(const FRigVMDispatchContext& InContext) const
+{
+	return {{TEXT("ExecuteContext"), ERigVMPinDirection::IO}};
+}
+
 FRigVMTemplateTypeMap FRigDispatch_SetAnimAttribute::OnNewArgumentType(const FName& InArgumentName,
-	TRigVMTypeIndex InTypeIndex) const
+                                                                       TRigVMTypeIndex InTypeIndex) const
 {
 	FRigVMTemplateTypeMap Types;
 
@@ -487,7 +487,6 @@ FRigVMTemplateTypeMap FRigDispatch_SetAnimAttribute::OnNewArgumentType(const FNa
 	{
 		if (IsTypeSupported(InTypeIndex))
 		{
-			Types.Add(FRigVMStruct::ExecuteContextName, FRigVMRegistry::Get().GetTypeIndex<FControlRigExecuteContext>());
 			Types.Add(NameArgName, RigVMTypeUtils::TypeIndex::FName);
 			Types.Add(BoneNameArgName, RigVMTypeUtils::TypeIndex::FName);
 			Types.Add(ValueArgName, InTypeIndex);

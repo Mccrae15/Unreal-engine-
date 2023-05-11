@@ -1,22 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "EdGraph/EdGraphSchema.h"
+#include "HAL/IConsoleManager.h"
 #include "UObject/MetaData.h"
-#include "UObject/UnrealType.h"
 #include "UObject/TextProperty.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SBoxPanel.h"
-#include "Styling/CoreStyle.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Textures/SlateIcon.h"
-#include "Framework/Commands/UIAction.h"
-#include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "EdGraph/EdGraph.h"
 #if WITH_EDITOR
 #include "Misc/ConfigCacheIni.h"
-#include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "ScopedTransaction.h"
 #include "EditorCategoryUtils.h"
 #include "Settings/EditorStyleSettings.h"
@@ -408,31 +399,23 @@ bool UEdGraphSchema::TryCreateConnection(UEdGraphPin* PinA, UEdGraphPin* PinB) c
 	switch (Response.Response)
 	{
 	case CONNECT_RESPONSE_MAKE:
-		PinA->Modify();
-		PinB->Modify();
 		PinA->MakeLinkTo(PinB);
 		bModified = true;
 		break;
 
 	case CONNECT_RESPONSE_BREAK_OTHERS_A:
-		PinA->Modify();
-		PinB->Modify();
 		PinA->BreakAllPinLinks(true);
 		PinA->MakeLinkTo(PinB);
 		bModified = true;
 		break;
 
 	case CONNECT_RESPONSE_BREAK_OTHERS_B:
-		PinA->Modify();
-		PinB->Modify();
 		PinB->BreakAllPinLinks(true);
 		PinA->MakeLinkTo(PinB);
 		bModified = true;
 		break;
 
 	case CONNECT_RESPONSE_BREAK_OTHERS_AB:
-		PinA->Modify();
-		PinB->Modify();
 		PinA->BreakAllPinLinks(true);
 		PinB->BreakAllPinLinks(true);
 		PinA->MakeLinkTo(PinB);
@@ -461,6 +444,21 @@ bool UEdGraphSchema::TryCreateConnection(UEdGraphPin* PinA, UEdGraphPin* PinB) c
 #endif	//#if WITH_EDITOR
 
 	return bModified;
+}
+
+bool UEdGraphSchema::IsConnectionRelinkingAllowed(UEdGraphPin* InPin) const
+{
+	return false;
+}
+
+const FPinConnectionResponse UEdGraphSchema::CanRelinkConnectionToPin(const UEdGraphPin* OldSourcePin, const UEdGraphPin* TargetPinCandidate) const
+{
+	return FPinConnectionResponse(CONNECT_RESPONSE_DISALLOW, TEXT("Not implemented by this schema"));
+}
+
+bool UEdGraphSchema::TryRelinkConnectionTarget(UEdGraphPin* SourcePin, UEdGraphPin* OldTargetPin, UEdGraphPin* NewTargetPin, const TArray<UEdGraphNode*>& InSelectedGraphNodes) const
+{
+	return false;
 }
 
 bool UEdGraphSchema::CreateAutomaticConversionNodeAndConnections(UEdGraphPin* PinA, UEdGraphPin* PinB) const
@@ -665,9 +663,10 @@ FPinConnectionResponse UEdGraphSchema::MovePinLinks(UEdGraphPin& MoveFromPin, UE
 #endif
 		{
 			FPinConnectionResponse Response = CanCreateConnection(&MoveToPin, NewLink);
+			const bool bCanConnect = Response.CanSafeConnect() || (Response.Response == CONNECT_RESPONSE_MAKE_WITH_CONVERSION_NODE);
 
 #if WITH_EDITOR
-			if (!Response.CanSafeConnect() && bNotifyLinkedNodes)
+			if (!bCanConnect && bNotifyLinkedNodes)
 			{
 				// Connection failed, so notify and try again
 				if (UEdGraphNode* LinkedToNode = NewLink->GetOwningNodeUnchecked())
@@ -677,9 +676,16 @@ FPinConnectionResponse UEdGraphSchema::MovePinLinks(UEdGraphPin& MoveFromPin, UE
 				}
 			}
 #endif
-			if (Response.CanSafeConnect())
+			if (bCanConnect)
 			{
-				MoveToPin.MakeLinkTo(NewLink);
+				if (Response.Response == CONNECT_RESPONSE_MAKE_WITH_CONVERSION_NODE)
+				{
+					CreateAutomaticConversionNodeAndConnections(&MoveToPin, NewLink);
+				}
+				else
+				{
+					MoveToPin.MakeLinkTo(NewLink);
+				}
 			}	
 			else
 			{ 

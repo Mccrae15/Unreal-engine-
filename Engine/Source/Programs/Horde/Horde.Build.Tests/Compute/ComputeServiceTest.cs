@@ -24,21 +24,21 @@ namespace Horde.Build.Tests.Compute
 		private static int s_channelId;
 		private static int s_refId;
 
-		private IStorageClient StorageClient => ServiceProvider.GetRequiredService<IStorageClient>();
+		private ILegacyStorageClient StorageClient => ServiceProvider.GetRequiredService<ILegacyStorageClient>();
 
 		public ComputeServiceTest()
 		{
 			_clusterConfig = new();
 			_namespaceId = new (_clusterConfig.NamespaceId);
-			_clusterId = new (_clusterConfig.Id);
+			_clusterId = _clusterConfig.Id;
 		}
 
 		[TestInitialize]
-		public async Task Setup()
+		public void Setup()
 		{
-			Globals globals = await MongoService.GetGlobalsAsync();
-			globals.ComputeClusters.Add(_clusterConfig);
-			Assert.IsTrue(await MongoService.TryUpdateSingletonAsync(globals));
+			GlobalConfig globalConfig = new GlobalConfig();
+			globalConfig.Compute.Add(_clusterConfig);
+			SetConfig(globalConfig);
 		}
 		
 		[TestMethod]

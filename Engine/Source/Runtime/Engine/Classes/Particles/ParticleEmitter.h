@@ -18,11 +18,13 @@ class UInterpCurveEdSetup;
 class UParticleLODLevel;
 class UParticleSystemComponent;
 
+enum EDetailMode : int;
+
 //~=============================================================================
 //	Burst emissions
 //~=============================================================================
 UENUM()
-enum EParticleBurstMethod
+enum EParticleBurstMethod : int
 {
 	EPBM_Instant UMETA(DisplayName="Instant"),
 	EPBM_Interpolated UMETA(DisplayName="Interpolated"),
@@ -33,7 +35,7 @@ enum EParticleBurstMethod
 //	SubUV-related
 //~=============================================================================
 UENUM()
-enum EParticleSubUVInterpMethod
+enum EParticleSubUVInterpMethod : int
 {
 	PSUVIM_None UMETA(DisplayName="None"),
 	PSUVIM_Linear UMETA(DisplayName="Linear"),
@@ -47,7 +49,7 @@ enum EParticleSubUVInterpMethod
 //	Cascade-related
 //~=============================================================================
 UENUM()
-enum EEmitterRenderMode
+enum EEmitterRenderMode : int
 {
 	ERM_Normal UMETA(DisplayName="Normal"),
 	ERM_Point UMETA(DisplayName="Point"),
@@ -325,27 +327,7 @@ class UParticleEmitter : public UObject
 	*	@return NULL if the requested LODLevel is not valid.
 	*			The pointer to the requested UParticleLODLevel if valid.
 	*/
-	FORCEINLINE UParticleLODLevel* GetCurrentLODLevel(FParticleEmitterInstance* Instance)
-	{
-		if (!FPlatformProperties::HasEditorOnlyData())
-		{
-			return Instance->CurrentLODLevel;
-		}
-		else
-		{
-			// for the game (where we care about perf) we don't branch
-			if (Instance->GetWorld()->IsGameWorld() )
-			{
-				return Instance->CurrentLODLevel;
-			}
-			else
-			{
-				EditorUpdateCurrentLOD( Instance );
-				return Instance->CurrentLODLevel;
-			}
-		}
-	}
-
+	ENGINE_API UParticleLODLevel* GetCurrentLODLevel(FParticleEmitterInstance* Instance);
 
 	/**
 	 * This will update the LOD of the particle in the editor.

@@ -32,14 +32,18 @@
 #include "Render/Viewport/Containers/ImplDisplayClusterViewport_CustomFrustum.h"
 
 #include "Render/Viewport/RenderFrame/DisplayClusterRenderFrameSettings.h"
+#include "Render/Viewport/LightCard/DisplayClusterViewportLightCardManager.h"
 
 #include "Containers/DisplayClusterProjectionCameraPolicySettings.h"
 #include "DisplayClusterProjectionStrings.h"
 
 #include "Components/DisplayClusterICVFXCameraComponent.h"
 
-
 #include "Misc/DisplayClusterLog.h"
+#include "TextureResource.h"
+
+#include "HAL/IConsoleManager.h"
+
 
 ////////////////////////////////////////////////////////////////////////////////
 // Experimental feature: to be approved after testing
@@ -164,7 +168,7 @@ FDisplayClusterViewport* FDisplayClusterViewportConfigurationHelpers_ICVFX::Impl
 		if (NewViewport != nullptr)
 		{
 			// Mark as internal resource
-			NewViewport->RenderSettingsICVFX.RuntimeFlags |= ViewportRuntime_InternalResource;
+			EnumAddFlags(NewViewport->RenderSettingsICVFX.RuntimeFlags, EDisplayClusterViewportRuntimeICVFXFlags::InternalResource);
 
 			// Dont show ICVFX composing viewports on frame target
 			NewViewport->RenderSettings.bVisible = false;
@@ -217,12 +221,36 @@ FDisplayClusterViewport* FDisplayClusterViewportConfigurationHelpers_ICVFX::GetO
 	}
 
 	// Mark viewport as used
-	CameraViewport->RenderSettingsICVFX.RuntimeFlags &= ~(ViewportRuntime_Unused);
+	EnumRemoveFlags(CameraViewport->RenderSettingsICVFX.RuntimeFlags, EDisplayClusterViewportRuntimeICVFXFlags::Unused);
 
 	// Add viewport ICVFX usage as Incamera
-	CameraViewport->RenderSettingsICVFX.RuntimeFlags |= ViewportRuntime_ICVFXIncamera;
+	EnumAddFlags(CameraViewport->RenderSettingsICVFX.RuntimeFlags, EDisplayClusterViewportRuntimeICVFXFlags::InCamera);
 
 	return CameraViewport;
+}
+
+void FDisplayClusterViewportConfigurationHelpers_ICVFX::ReuseUVLightCardViewportWithinClusterNode(FDisplayClusterViewport& InUVLightCardViewport)
+{
+	const TArray<FDisplayClusterViewport*>& Viewports = 
+#if WITH_EDITOR
+		InUVLightCardViewport.ImplGetOwner().ImplGetWholeClusterViewports_Editor();
+#else
+		InUVLightCardViewport.ImplGetOwner().ImplGetViewports();
+#endif
+
+	for (FDisplayClusterViewport* ViewportIt : Viewports)
+	{
+		if(ViewportIt && ViewportIt != &InUVLightCardViewport && !ViewportIt->RenderSettings.IsViewportOverrided()
+		&& EnumHasAnyFlags(ViewportIt->RenderSettingsICVFX.RuntimeFlags, EDisplayClusterViewportRuntimeICVFXFlags::UVLightcard))
+		{
+			if (ViewportIt->IsOpenColorIOEquals(InUVLightCardViewport))
+			{
+				// Reuse exist viewport:
+				InUVLightCardViewport.RenderSettings.SetViewportOverride(ViewportIt->GetId(), EDisplayClusterViewportOverrideMode::All);
+				break;
+			}
+		}
+	}
 }
 
 #if WITH_EDITOR
@@ -235,15 +263,15 @@ TArray<FDisplayClusterViewport*> FDisplayClusterViewportConfigurationHelpers_ICV
 	if (ViewportManager != nullptr)
 	{
 		const FString ICVFXCameraId = InCameraComponent.GetCameraUniqueId();
-		const EDisplayClusterViewportRuntimeICVFXFlags InMask = bGetChromakey ? ViewportRuntime_ICVFXChromakey : ViewportRuntime_ICVFXIncamera;
+		const EDisplayClusterViewportRuntimeICVFXFlags InRuntimeFlagsMask = bGetChromakey ? EDisplayClusterViewportRuntimeICVFXFlags::Chromakey : EDisplayClusterViewportRuntimeICVFXFlags::InCamera;
 		const FString ViewportTypeId = bGetChromakey ? DisplayClusterViewportStrings::icvfx::chromakey : DisplayClusterViewportStrings::icvfx::camera;
 
 		for (FDisplayClusterViewport* ViewportIt : ViewportManager->ImplGetWholeClusterViewports_Editor())
 		{
 			if (ViewportIt != nullptr
-				&& (ViewportIt->RenderSettingsICVFX.RuntimeFlags & InMask) != 0
+				&& EnumHasAnyFlags(ViewportIt->RenderSettingsICVFX.RuntimeFlags, InRuntimeFlagsMask)
 				&& (ViewportIt->InputShaderResources.Num() > 0 && ViewportIt->InputShaderResources[0] != nullptr && ViewportIt->Contexts.Num() > 0)
-				&& (ViewportIt->RenderSettings.OverrideViewportId.IsEmpty()))
+				&& (!ViewportIt->RenderSettings.IsViewportOverrided()))
 			{
 				// this is incamera viewport. Check by name
 				const FString RequiredViewportId = ImplGetNameICVFX(ViewportIt->GetClusterNodeId(), ICVFXCameraId, ViewportTypeId);
@@ -277,12 +305,14 @@ void FDisplayClusterViewportConfigurationHelpers_ICVFX::PreviewReuseInnerFrustum
 
 	for (FDisplayClusterViewport* ViewportIt : PreviewGetRenderedInCameraViewports(InRootActor, InCameraComponent, false))
 	{
-		if (ViewportIt && ViewportIt->GetClusterNodeId() != InCameraViewport.GetClusterNodeId()
-			&& FDisplayClusterViewportConfigurationHelpers_OpenColorIO::IsInnerFrustumViewportSettingsEqual_Editor(*ViewportIt, InCameraViewport, InCameraComponent)
+		if (ViewportIt && ViewportIt != &InCameraViewport && ViewportIt->GetClusterNodeId() != InCameraViewport.GetClusterNodeId()
 			&& FDisplayClusterViewportConfigurationHelpers_Postprocess::IsInnerFrustumViewportSettingsEqual_Editor(*ViewportIt, InCameraViewport, InCameraComponent))
 		{
+			EDisplayClusterViewportOverrideMode ViewportOverrideMode = ViewportIt->IsOpenColorIOEquals(InCameraViewport) ?
+				EDisplayClusterViewportOverrideMode::All : EDisplayClusterViewportOverrideMode::InernalRTT;
+
 			// Reuse exist viewport:
-			InCameraViewport.RenderSettings.OverrideViewportId = ViewportIt->GetId();
+			InCameraViewport.RenderSettings.SetViewportOverride(ViewportIt->GetId(), ViewportOverrideMode);
 			return;
 		}
 	}
@@ -307,10 +337,14 @@ void FDisplayClusterViewportConfigurationHelpers_ICVFX::PreviewReuseChromakeyVie
 
 	for (FDisplayClusterViewport* ViewportIt : PreviewGetRenderedInCameraViewports(InRootActor, InCameraComponent, true))
 	{
-		if (ViewportIt && ViewportIt->GetClusterNodeId() != InChromakeyViewport.GetClusterNodeId())
+		if (ViewportIt && ViewportIt!= &InChromakeyViewport  && ViewportIt->GetClusterNodeId() != InChromakeyViewport.GetClusterNodeId())
 		{
+			// Chromakey support OCIO
+			EDisplayClusterViewportOverrideMode ViewportOverrideMode = ViewportIt->IsOpenColorIOEquals(InChromakeyViewport) ?
+				EDisplayClusterViewportOverrideMode::All : EDisplayClusterViewportOverrideMode::InernalRTT;
+
 			// Reuse exist viewport from other node
-			InChromakeyViewport.RenderSettings.OverrideViewportId = ViewportIt->GetId();
+			InChromakeyViewport.RenderSettings.SetViewportOverride(ViewportIt->GetId(), ViewportOverrideMode);
 			return;
 		}
 	}
@@ -340,10 +374,10 @@ FDisplayClusterViewport* FDisplayClusterViewportConfigurationHelpers_ICVFX::GetO
 	}
 
 	// Mark viewport as used
-	ChromakeyViewport->RenderSettingsICVFX.RuntimeFlags &= ~(ViewportRuntime_Unused);
+	EnumRemoveFlags(ChromakeyViewport->RenderSettingsICVFX.RuntimeFlags, EDisplayClusterViewportRuntimeICVFXFlags::Unused);
 
 	// Add viewport ICVFX usage as Chromakey
-	ChromakeyViewport->RenderSettingsICVFX.RuntimeFlags |= ViewportRuntime_ICVFXChromakey;
+	EnumAddFlags(ChromakeyViewport->RenderSettingsICVFX.RuntimeFlags, EDisplayClusterViewportRuntimeICVFXFlags::Chromakey);
 
 	return ChromakeyViewport;
 }
@@ -370,12 +404,42 @@ FDisplayClusterViewport* FDisplayClusterViewportConfigurationHelpers_ICVFX::GetO
 	}
 
 	// Mark viewport as used
-	LightcardViewport->RenderSettingsICVFX.RuntimeFlags &= ~(ViewportRuntime_Unused);
+	EnumRemoveFlags(LightcardViewport->RenderSettingsICVFX.RuntimeFlags, EDisplayClusterViewportRuntimeICVFXFlags::Unused);
 
 	// Add viewport ICVFX usage as Lightcard
-	LightcardViewport->RenderSettingsICVFX.RuntimeFlags |= ViewportRuntime_ICVFXLightcard;
+	EnumAddFlags(LightcardViewport->RenderSettingsICVFX.RuntimeFlags, EDisplayClusterViewportRuntimeICVFXFlags::Lightcard);
 
 	return LightcardViewport;
+}
+
+FDisplayClusterViewport* FDisplayClusterViewportConfigurationHelpers_ICVFX::GetOrCreateUVLightcardViewport(FDisplayClusterViewport& BaseViewport, ADisplayClusterRootActor& RootActor)
+{
+	// Create new lightcard viewport
+	const FString ResourceId = DisplayClusterViewportStrings::icvfx::uv_lightcard;
+
+	FDisplayClusterViewport* UVLightcardViewport = ImplFindViewport(RootActor, BaseViewport.GetId(), ResourceId);
+	if (UVLightcardViewport == nullptr)
+	{
+		TSharedPtr<IDisplayClusterProjectionPolicy, ESPMode::ThreadSafe> UVLightcardProjectionPolicy;
+		if (!ImplCreateProjectionPolicy(RootActor, BaseViewport.GetId(), ResourceId, false, UVLightcardProjectionPolicy))
+		{
+			return nullptr;
+		}
+
+		UVLightcardViewport = ImplCreateViewport(RootActor, BaseViewport.GetId(), ResourceId, UVLightcardProjectionPolicy);
+		if (UVLightcardViewport == nullptr)
+		{
+			return nullptr;
+		}
+	}
+
+	// Mark viewport as used
+	EnumRemoveFlags(UVLightcardViewport->RenderSettingsICVFX.RuntimeFlags, EDisplayClusterViewportRuntimeICVFXFlags::Unused);
+
+	// Add viewport ICVFX usage as Lightcard
+	EnumAddFlags(UVLightcardViewport->RenderSettingsICVFX.RuntimeFlags, EDisplayClusterViewportRuntimeICVFXFlags::UVLightcard);
+
+	return UVLightcardViewport;
 }
 
 bool FDisplayClusterViewportConfigurationHelpers_ICVFX::IsCameraUsed(UDisplayClusterICVFXCameraComponent& InCameraComponent)
@@ -513,8 +577,8 @@ void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateCameraViewportSett
 	// Update camera viewport projection policy settings
 	ImplUpdateCameraProjectionSettings(DstViewport.ProjectionPolicy, CameraSettings, InCameraComponent.GetCameraComponent());
 
-	// OCIO
-	FDisplayClusterViewportConfigurationHelpers_OpenColorIO::UpdateICVFXCameraViewport(DstViewport, RootActor, InCameraComponent);
+	// Update OCIO for Camera Viewport
+	FDisplayClusterViewportConfigurationHelpers_OpenColorIO::UpdateCameraViewport(DstViewport, RootActor, InCameraComponent);
 
 	// Motion blur:
 	const FDisplayClusterViewport_CameraMotionBlur CameraMotionBlurParameters = InCameraComponent.GetMotionBlurParameters();
@@ -564,20 +628,23 @@ void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateCameraViewportSett
 	// Set media related configuration (runtime only for now)
 	if (IDisplayCluster::Get().GetOperationMode() == EDisplayClusterOperationMode::Cluster)
 	{
-		const FDisplayClusterConfigurationMedia& MediaSettings = InCameraComponent.CameraSettings.RenderSettings.Media;
+		// Check if nDisplay media enabled
+		static const TConsoleVariableData<int32>* const ICVarMediaEnabled = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("nDisplay.media.Enabled"));
+		if (ICVarMediaEnabled && !!ICVarMediaEnabled->GetValueOnGameThread())
+		{
+			const FDisplayClusterConfigurationMediaICVFX& MediaICVFXSettings = InCameraComponent.CameraSettings.RenderSettings.Media;
 
-		const FString ThisClusterNodeId = DstViewport.GetClusterNodeId();
-		const bool bThisNodeSharesMedia = MediaSettings.IsMediaSharingUsed() && MediaSettings.MediaSharingNode.Equals(ThisClusterNodeId, ESearchCase::IgnoreCase);
+			if (MediaICVFXSettings.bEnable)
+			{
+				const FString ThisClusterNodeId = DstViewport.GetClusterNodeId();
 
-		// Don't render the viewport if media input assigned
-		DstViewport.RenderSettings.bSkipSceneRenderingButLeaveResourcesAvailable = MediaSettings.IsMediaSharingUsed() ?
-			!bThisNodeSharesMedia :
-			!!MediaSettings.MediaSource;
+				// Don't render the viewport if media input assigned
+				DstViewport.RenderSettings.bSkipSceneRenderingButLeaveResourcesAvailable = MediaICVFXSettings.IsMediaInputAssigned(ThisClusterNodeId);
 
-		// Mark this viewport is going to be captured by a capture device
-		DstViewport.RenderSettings.bIsBeingCaptured = MediaSettings.IsMediaSharingUsed() ?
-			bThisNodeSharesMedia :
-			!!MediaSettings.MediaOutput;
+				// Mark this viewport is going to be captured by a capture device
+				DstViewport.RenderSettings.bIsBeingCaptured = MediaICVFXSettings.IsMediaOutputAssigned(ThisClusterNodeId);
+			}
+		}
 	}
 }
 
@@ -608,13 +675,17 @@ void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateChromakeyViewportS
 		// Update visibility settings only for rendered viewports
 		if (!DstViewport.PostRenderSettings.Replace.IsEnabled())
 		{
-			check(FDisplayClusterViewportConfigurationHelpers_Visibility::IsValid(InRenderSettings.ShowOnlyList));
+			check(FDisplayClusterViewportConfigurationHelpers_Visibility::IsVisibilityListValid(InRenderSettings.ShowOnlyList));
 
 			FDisplayClusterViewportConfigurationHelpers_Visibility::UpdateShowOnlyList(DstViewport, RootActor, InRenderSettings.ShowOnlyList);
 		}
 	}
 
 	FDisplayClusterViewportConfigurationHelpers::UpdateViewportSetting_OverlayRenderSettings(DstViewport, InRenderSettings.AdvancedRenderSettings);
+
+	// Update OCIO for Chromakey Viewport
+	// Note: Chromakey OCIO is temporarily disabled
+	// FDisplayClusterViewportConfigurationHelpers_OpenColorIO::UpdateChromakeyViewport(DstViewport, RootActor, InCameraComponent);
 
 	// Support inner camera custom frustum
 	FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateCameraCustomFrustum(DstViewport, CameraSettings.CustomFrustum);
@@ -635,7 +706,7 @@ void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateChromakeyViewportS
 	// Debug: override the texture of the target viewport from this chromakeyRTT
 	if (ChromakeySettings.ChromakeyRenderTexture.bReplaceCameraViewport)
 	{
-		InCameraViewport.RenderSettings.OverrideViewportId = DstViewport.GetId();
+		InCameraViewport.RenderSettings.SetViewportOverride(DstViewport.GetId());
 	}
 }
 
@@ -711,7 +782,22 @@ bool FDisplayClusterViewportConfigurationHelpers_ICVFX::IsShouldUseLightcard(con
 	}
 
 	// Lightcard require layers for render
-	return FDisplayClusterViewportConfigurationHelpers_Visibility::IsValid(InLightcardSettings.ShowOnlyList);
+	return FDisplayClusterViewportConfigurationHelpers_Visibility::IsVisibilityListValid(InLightcardSettings.ShowOnlyList);
+}
+
+bool FDisplayClusterViewportConfigurationHelpers_ICVFX::IsShouldUseUVLightcard(FDisplayClusterViewportManager& InViewportManager, const FDisplayClusterConfigurationICVFX_LightcardSettings& InLightcardSettings)
+{
+	if (InLightcardSettings.bEnable)
+	{
+		const TSharedPtr<FDisplayClusterViewportLightCardManager, ESPMode::ThreadSafe> LightCardManager = InViewportManager.GetLightCardManager();
+		if (LightCardManager.IsValid() && LightCardManager->IsUVLightCardEnabled())
+		{
+			return FDisplayClusterViewportConfigurationHelpers_Visibility::IsVisibilityListValid(InLightcardSettings.ShowOnlyList);
+		}
+	}
+
+	// dont use lightcard if disabled
+	return false;
 }
 
 void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateLightcardViewportSetting(FDisplayClusterViewport& DstViewport, FDisplayClusterViewport& BaseViewport, ADisplayClusterRootActor& RootActor)
@@ -719,15 +805,22 @@ void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateLightcardViewportS
 	const FDisplayClusterConfigurationICVFX_StageSettings& StageSettings = RootActor.GetStageSettings();
 	const FDisplayClusterConfigurationICVFX_LightcardSettings& LightcardSettings = StageSettings.Lightcard;
 
-	check(LightcardSettings.bEnable);
-
 	// Reset runtime flags from prev frame:
 	DstViewport.ResetRuntimeParameters();
 
 	// LIghtcard texture used as overlay
 	DstViewport.RenderSettings.bVisible = false;
 
+	if (!LightcardSettings.bEnable)
+	{
+		// Disable this viewport
+		DstViewport.RenderSettings.bEnable = false;
+		return;
+	}
+
 	FDisplayClusterViewportConfigurationHelpers_Postprocess::UpdateLightcardPostProcessSettings(DstViewport, BaseViewport, RootActor);
+
+	// Update OCIO for Lightcard Viewport
 	FDisplayClusterViewportConfigurationHelpers_OpenColorIO::UpdateLightcardViewport(DstViewport, BaseViewport, RootActor);
 
 	DstViewport.RenderSettings.CaptureMode = EDisplayClusterViewportCaptureMode::Lightcard;
@@ -741,7 +834,7 @@ void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateLightcardViewportS
 		// Update visibility settings only for rendered viewports
 		if (!DstViewport.PostRenderSettings.Replace.IsEnabled())
 		{
-			check(FDisplayClusterViewportConfigurationHelpers_Visibility::IsValid(LightcardSettings.ShowOnlyList));
+			check(FDisplayClusterViewportConfigurationHelpers_Visibility::IsVisibilityListValid(LightcardSettings.ShowOnlyList));
 
 			FDisplayClusterViewportConfigurationHelpers_Visibility::UpdateShowOnlyList(DstViewport, RootActor, LightcardSettings.ShowOnlyList);
 		}
@@ -753,7 +846,7 @@ void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateLightcardViewportS
 	DstViewport.RenderSettings.AssignParentViewport(BaseViewport.GetId(), BaseViewport.RenderSettings);
 
 	// Global lighcard rendering mode
-	if ((BaseViewport.RenderSettingsICVFX.Flags & ViewportICVFX_OverrideLightcardMode) == 0)
+	if (!EnumHasAllFlags(BaseViewport.RenderSettingsICVFX.Flags, EDisplayClusterViewportICVFXFlags::OverrideLightcardMode))
 	{
 		// Use global lightcard blending mode
 		switch (LightcardSettings.Blendingmode)
@@ -767,14 +860,23 @@ void FDisplayClusterViewportConfigurationHelpers_ICVFX::UpdateLightcardViewportS
 			break;
 		};
 	}
-	// Debug: override the texture of the target viewport from this lightcard RTT
-	if (InRenderSettings.bReplaceViewport)
+
+	if (EnumHasAnyFlags(DstViewport.RenderSettingsICVFX.RuntimeFlags, EDisplayClusterViewportRuntimeICVFXFlags::Lightcard))
 	{
-		BaseViewport.RenderSettings.OverrideViewportId = DstViewport.GetId();
+		// Debug: override the texture of the target viewport from this lightcard RTT
+		if (InRenderSettings.bReplaceViewport)
+		{
+			BaseViewport.RenderSettings.SetViewportOverride(DstViewport.GetId());
+		}
+		else
+		{
+			BaseViewport.RenderSettingsICVFX.ICVFX.Lightcard.ViewportId = DstViewport.GetId();
+		}
 	}
-	else
+
+	if (EnumHasAnyFlags(DstViewport.RenderSettingsICVFX.RuntimeFlags, EDisplayClusterViewportRuntimeICVFXFlags::UVLightcard))
 	{
-		BaseViewport.RenderSettingsICVFX.ICVFX.Lightcard.ViewportId = DstViewport.GetId();
+		BaseViewport.RenderSettingsICVFX.ICVFX.UVLightcard.ViewportId = DstViewport.GetId();
 	}
 }
 

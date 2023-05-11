@@ -17,6 +17,7 @@ NiagaraRenderer.h: Base class for Niagara render modules
 #include "SceneView.h"
 #include "NiagaraCutoutVertexBuffer.h"
 #include "NiagaraBoundsCalculator.h"
+#include "RayTracingGeometry.h"
 
 class FNiagaraDataSet;
 class FNiagaraSceneProxy;
@@ -24,7 +25,7 @@ class FNiagaraGPURendererCount;
 class FNiagaraSystemInstanceController;
 
 /** Struct used to pass dynamic data from game thread to render thread */
-struct FNiagaraDynamicDataBase
+struct NIAGARA_API FNiagaraDynamicDataBase
 {
 	explicit FNiagaraDynamicDataBase(const FNiagaraEmitterInstance* InEmitter);
 	virtual ~FNiagaraDynamicDataBase();
@@ -152,6 +153,8 @@ protected:
 
 	bool IsRendererEnabled(const UNiagaraRendererProperties* InProperties, const FNiagaraEmitterInstance* Emitter) const;
 	bool UseLocalSpace(const FNiagaraSceneProxy* Proxy) const;
+
+	static bool ViewFamilySupportLowLatencyTranslucency(const FSceneViewFamily& ViewFamily);
 
 	struct FNiagaraDynamicDataBase *DynamicDataRender;
 

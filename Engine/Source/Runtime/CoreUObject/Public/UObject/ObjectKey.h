@@ -2,10 +2,16 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "UObject/WeakObjectPtr.h"
 
 #include <type_traits>
+
+struct FObjectKey;
+
+namespace UE::CoreUObject::Private
+{
+	FObjectKey MakeObjectKey(int32 ObjectIndex, int32 ObjectSerialNumber);
+}
 
 /** FObjectKey is an immutable, copyable key which can be used to uniquely identify an object for the lifetime of the application */
 struct FObjectKey
@@ -128,6 +134,12 @@ public:
 	}
 
 private:
+	FObjectKey(int32 Index, int32 Serial)
+		: ObjectIndex(Index)
+		, ObjectSerialNumber(Serial)
+	{ }
+
+	friend FObjectKey UE::CoreUObject::Private::MakeObjectKey(int32 ObjectIndex, int32 ObjectSerialNumber);
 
 	int32		ObjectIndex;
 	int32		ObjectSerialNumber;
@@ -216,3 +228,7 @@ public:
 private:
 	FObjectKey ObjectKey;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

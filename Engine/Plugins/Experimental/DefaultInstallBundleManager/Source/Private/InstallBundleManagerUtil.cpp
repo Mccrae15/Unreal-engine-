@@ -3,27 +3,19 @@
 #include "InstallBundleManagerUtil.h"
 
 #include "DefaultInstallBundleManagerPrivate.h"
-#include "Misc/App.h"
+#include "InstallBundleManagerInterface.h"
+#include "Misc/ConfigCacheIni.h"
 
-#include "JsonObjectConverter.h"
 #include "BuildPatchSettings.h"
 
-#include "InstallBundleSourceInterface.h"
-#include "InstallBundleCache.h"
 #include "InstallBundleSourceBulk.h"
 
-#include "AnalyticsEventAttribute.h"
 #include "IAnalyticsProviderET.h"
 
 #if !defined(WITH_PLATFORM_INSTALL_BUNDLE_SOURCE)
 	#define WITH_PLATFORM_INSTALL_BUNDLE_SOURCE 0
 #endif
 
-#if WITH_PLATFORM_INSTALL_BUNDLE_SOURCE
-	#include "PlatformInstallBundleSource.h"
-#endif
-
-#include "AnalyticsEventAttribute.h"
 #include "IAnalyticsProviderET.h"
 
 DEFAULTINSTALLBUNDLEMANAGER_API FString GInstallBundleManagerIni;
@@ -51,7 +43,7 @@ namespace InstallBundleManagerUtil
 			
 #if WITH_PLATFORM_INSTALL_BUNDLE_SOURCE
 		case EInstallBundleSourceType::Platform:
-			return MakeShared<FPlatformInstallBundleSource>();
+			return MakePlatformBundleSource();
 #endif
 		}
 

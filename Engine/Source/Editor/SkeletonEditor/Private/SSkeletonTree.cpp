@@ -94,7 +94,7 @@ public:
 			return;
 		}
 
-		const TArray<ItemType>& ItemsSourceRef = (*this->ItemsSource);
+		const TArrayView<const ItemType> ItemsSourceRef = this->GetItems();
 
 		int32 RangeStartIndex = 0;
 		if( TListTypeTraits<ItemType>::IsPtrValid(this->RangeSelectionStart) )
@@ -614,7 +614,7 @@ void SSkeletonTree::CreateTreeColumns()
 	.HeaderContent()
 	[
 		SNew(SBox)
-		.HeightOverride(24)
+		.HeightOverride(24.f)
 		.HAlign(HAlign_Left)
 		[
 			SAssignNew(BlendProfileHeader, SInlineEditableTextBlock)
@@ -1366,8 +1366,8 @@ void SSkeletonTree::FillAttachAssetSubmenu(FMenuBuilder& MenuBuilder, const TSha
 	AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateSP(this, &SSkeletonTree::OnAssetSelectedFromPicker, TargetItem);
 
 	TSharedRef<SWidget> MenuContent = SNew(SBox)
-	.WidthOverride(384)
-	.HeightOverride(500)
+	.WidthOverride(384.f)
+	.HeightOverride(500.f)
 	[
 		ContentBrowserModule.Get().CreateAssetPicker(AssetPickerConfig)
 		];
@@ -2421,7 +2421,7 @@ ESkeletonTreeFilterResult SSkeletonTree::HandleFilterSkeletonTreeItem(const FSke
 				UDebugSkelMeshComponent* PreviewMeshComponent = GetPreviewScene()->GetPreviewMeshComponent();
 				if (PreviewMeshComponent)
 				{
-					int32 BoneMeshIndex = PreviewMeshComponent->GetBoneIndex(BoneItem->GetRowItemName());
+					const int32 BoneMeshIndex = PreviewMeshComponent->GetBoneIndex(BoneItem->GetRowItemName());
 
 					// Remove non-mesh bones if we're filtering
 					if ((BoneFilter == EBoneFilter::Mesh || BoneFilter == EBoneFilter::Weighted || BoneFilter == EBoneFilter::LOD) &&
@@ -2431,13 +2431,13 @@ ESkeletonTreeFilterResult SSkeletonTree::HandleFilterSkeletonTreeItem(const FSke
 					}
 
 					// Remove non-vertex-weighted bones if we're filtering
-					if (BoneFilter == EBoneFilter::Weighted && !BoneItem->IsBoneWeighted(BoneMeshIndex, PreviewMeshComponent))
+					else if (BoneFilter == EBoneFilter::Weighted && !BoneItem->IsBoneWeighted(BoneMeshIndex, PreviewMeshComponent))
 					{
 						Result = ESkeletonTreeFilterResult::Hidden;
 					}
 
 					// Remove non-vertex-weighted bones if we're filtering
-					if (BoneFilter == EBoneFilter::LOD && !BoneItem->IsBoneRequired(BoneMeshIndex, PreviewMeshComponent))
+					else if (BoneFilter == EBoneFilter::LOD && !BoneItem->IsBoneRequired(BoneMeshIndex, PreviewMeshComponent))
 					{
 						Result = ESkeletonTreeFilterResult::Hidden;
 					}
@@ -2454,18 +2454,18 @@ ESkeletonTreeFilterResult SSkeletonTree::HandleFilterSkeletonTreeItem(const FSke
 			}
 
 			// Remove non-mesh sockets if we're filtering
-			if ((SocketFilter == ESocketFilter::Mesh || SocketFilter == ESocketFilter::None) && SocketItem->GetParentType() == ESocketParentType::Skeleton)
+			else if ((SocketFilter == ESocketFilter::Mesh || SocketFilter == ESocketFilter::None) && SocketItem->GetParentType() == ESocketParentType::Skeleton)
 			{
 				Result = ESkeletonTreeFilterResult::Hidden;
 			}
 
 			// Remove non-skeleton sockets if we're filtering
-			if ((SocketFilter == ESocketFilter::Skeleton || SocketFilter == ESocketFilter::None) && SocketItem->GetParentType() == ESocketParentType::Mesh)
+			else if ((SocketFilter == ESocketFilter::Skeleton || SocketFilter == ESocketFilter::None) && SocketItem->GetParentType() == ESocketParentType::Mesh)
 			{
 				Result = ESkeletonTreeFilterResult::Hidden;
 			}
 
-			if (SocketFilter == ESocketFilter::Active && SocketItem->GetParentType() == ESocketParentType::Skeleton && SocketItem->IsSocketCustomized())
+			else if (SocketFilter == ESocketFilter::Active && SocketItem->GetParentType() == ESocketParentType::Skeleton && SocketItem->IsSocketCustomized())
 			{
 				// Don't add the skeleton socket if it's already added for the mesh
 				Result = ESkeletonTreeFilterResult::Hidden;

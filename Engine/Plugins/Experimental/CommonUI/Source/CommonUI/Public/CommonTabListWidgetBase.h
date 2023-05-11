@@ -3,12 +3,15 @@
 #pragma once
 
 #include "CommonUserWidget.h"
-#include "CommonUITypes.h"
 
+#include "Engine/DataTable.h"
 #include "CommonTabListWidgetBase.generated.h"
+
+class UCommonAnimatedSwitcher;
 
 class UCommonButtonBase;
 class UCommonButtonGroupBase;
+class UInputAction;
 
 /** Information about a registered tab in the tab list */
 USTRUCT()
@@ -177,6 +180,14 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = TabList, meta = (RowType = "/Script/CommonUI.CommonInputActionDataBase"))
 	FDataTableRowHandle PreviousTabInputActionData;
 
+	/** The input action to listen for causing the next tab to be selected */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = TabList, meta = (EditCondition = "CommonInput.CommonInputSettings.IsEnhancedInputSupportEnabled", EditConditionHides))
+	TObjectPtr<UInputAction> NextTabEnhancedInputAction;
+
+	/** The input action to listen for causing the previous tab to be selected */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = TabList, meta = (EditCondition = "CommonInput.CommonInputSettings.IsEnhancedInputSupportEnabled", EditConditionHides))
+	TObjectPtr<UInputAction> PreviousTabEnhancedInputAction;
+
 	/** Whether to register to handle tab list input immediately upon construction */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = TabList, meta = (ExposeOnSpawn = "true"))
 	bool bAutoListenForInput;
@@ -218,6 +229,8 @@ private:
 	bool DeferredRebuildTabList(float DeltaTime);
 	void RebuildTabList();
 
+	void RemoveTab_Internal(const FName TabNameID, const FCommonRegisteredTabInfo& TabInfo);
+
 	/** Info about each of the currently registered tabs organized by a given registration name ID */
 	UPROPERTY(Transient)
 	TMap<FName, FCommonRegisteredTabInfo> RegisteredTabsByID;
@@ -231,3 +244,7 @@ private:
 	FUIActionBindingHandle NextTabActionHandle;
 	FUIActionBindingHandle PrevTabActionHandle;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CommonUITypes.h"
+#endif

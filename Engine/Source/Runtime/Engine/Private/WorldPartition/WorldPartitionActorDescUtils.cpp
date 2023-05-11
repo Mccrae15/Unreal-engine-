@@ -2,15 +2,29 @@
 
 #if WITH_EDITOR
 #include "WorldPartition/WorldPartitionActorDescUtils.h"
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetData.h"
+#include "Modules/ModuleManager.h"
 #include "WorldPartition/WorldPartitionLog.h"
+#include "Engine/Level.h"
 #include "GameFramework/Actor.h"
 #include "AssetRegistry/AssetRegistryModule.h"
-#include "AssetRegistry/IAssetRegistry.h"
 #include "UObject/CoreRedirects.h"
 #include "Misc/Base64.h"
+#include "WorldPartition/WorldPartitionActorDesc.h"
 
 static FName NAME_ActorMetaDataClass(TEXT("ActorMetaDataClass"));
 static FName NAME_ActorMetaData(TEXT("ActorMetaData"));
+
+FName FWorldPartitionActorDescUtils::ActorMetaDataClassTagName()
+{
+	return NAME_ActorMetaDataClass;
+}
+
+FName FWorldPartitionActorDescUtils::ActorMetaDataTagName()
+{
+	return NAME_ActorMetaData;
+}
 
 bool FWorldPartitionActorDescUtils::IsValidActorDescriptorFromAssetData(const FAssetData& InAssetData)
 {
@@ -61,8 +75,9 @@ TUniquePtr<FWorldPartitionActorDesc> FWorldPartitionActorDescUtils::GetActorDesc
 			
 		if (!ActorDescInitData.NativeClass)
 		{
-			UE_LOG(LogWorldPartition, Warning, TEXT("Invalid class for actor guid `%s` ('%s') from package '%s'"), *NewActorDesc->GetGuid().ToString(), *NewActorDesc->GetActorName().ToString(), *NewActorDesc->GetActorPackage().ToString());
-			return nullptr;
+			UE_LOG(LogWorldPartition, Log, TEXT("Invalid class for actor guid `%s` ('%s') from package '%s'"), *NewActorDesc->GetGuid().ToString(), *NewActorDesc->GetActorName().ToString(), *NewActorDesc->GetActorPackage().ToString());
+			NewActorDesc->NativeClass.Reset();
+			return NewActorDesc;
 		}
 		/*else if (UClass* Class = FindObject<UClass>(InAssetData.AssetClassPath); !Class)
 		{
@@ -75,7 +90,7 @@ TUniquePtr<FWorldPartitionActorDesc> FWorldPartitionActorDescUtils::GetActorDesc
 
 				if (!BlueprintClass.Num())
 				{
-					UE_LOG(LogWorldPartition, Warning, TEXT("Failed to find class '%s' for actor '%s"), *InAssetData.AssetClassPath.ToString(), *NewActorDesc->GetActorSoftPath().ToString());
+					UE_LOG(LogWorldPartition, Log, TEXT("Failed to find class '%s' for actor '%s"), *InAssetData.AssetClassPath.ToString(), *NewActorDesc->GetActorSoftPath().ToString());
 					return nullptr;
 				}
 			}
@@ -121,17 +136,27 @@ void FWorldPartitionActorDescUtils::AppendAssetDataTagsFromActor(const AActor* I
 	const FString ActorMetaDataClass = GetParentNativeClass(InActor->GetClass())->GetPathName();
 	OutTags.Add(UObject::FAssetRegistryTag(NAME_ActorMetaDataClass, ActorMetaDataClass, UObject::FAssetRegistryTag::TT_Hidden));
 
-	TArray<uint8> SerializedData;
-	ActorDesc->SerializeTo(SerializedData);
-	const FString ActorMetaData = FBase64::Encode(SerializedData);
+	const FString ActorMetaData = GetAssetDataFromActorDescriptor(ActorDesc);
 	OutTags.Add(UObject::FAssetRegistryTag(NAME_ActorMetaData, ActorMetaData, UObject::FAssetRegistryTag::TT_Hidden));
 }
 
-void FWorldPartitionActorDescUtils::UpdateActorDescriptorFomActor(const AActor* InActor, TUniquePtr<FWorldPartitionActorDesc>& ActorDesc)
+FString FWorldPartitionActorDescUtils::GetAssetDataFromActorDescriptor(TUniquePtr<FWorldPartitionActorDesc>& InActorDesc)
+{
+	TArray<uint8> SerializedData;
+	InActorDesc->SerializeTo(SerializedData);
+	return FBase64::Encode(SerializedData);
+}
+
+void FWorldPartitionActorDescUtils::UpdateActorDescriptorFromActor(const AActor* InActor, TUniquePtr<FWorldPartitionActorDesc>& OutActorDesc)
 {
 	TUniquePtr<FWorldPartitionActorDesc> NewActorDesc(InActor->CreateActorDesc());
-	NewActorDesc->TransferFrom(ActorDesc.Get());
-	ActorDesc = MoveTemp(NewActorDesc);
+	UpdateActorDescriptorFromActorDescriptor(NewActorDesc, OutActorDesc);
+}
+
+void FWorldPartitionActorDescUtils::UpdateActorDescriptorFromActorDescriptor(TUniquePtr<FWorldPartitionActorDesc>& InActorDesc, TUniquePtr<FWorldPartitionActorDesc>& OutActorDesc)
+{
+	InActorDesc->TransferFrom(OutActorDesc.Get());
+	OutActorDesc = MoveTemp(InActorDesc);
 }
 
 void FWorldPartitionActorDescUtils::ReplaceActorDescriptorPointerFromActor(const AActor* InOldActor, AActor* InNewActor, FWorldPartitionActorDesc* InActorDesc)

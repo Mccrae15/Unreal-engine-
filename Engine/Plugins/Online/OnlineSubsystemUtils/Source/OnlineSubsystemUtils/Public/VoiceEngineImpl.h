@@ -2,23 +2,19 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Misc/CoreMisc.h"
-#include "UObject/GCObject.h"
-#include "OnlineSubsystemTypes.h"
 #include "Interfaces/VoiceInterface.h"
 #include "Net/VoiceDataCommon.h"
 #include "Interfaces/VoiceCapture.h"
-#include "Interfaces/VoiceCodec.h"
+#include "Online/OnlineBase.h"
 #include "OnlineSubsystemUtilsPackage.h"
-#include "VoipListenerSynthComponent.h"
 #include "OnlineSubsystemUtilsPackage.h"
 #include "AudioDevice.h"
-#include "AudioMixer.h"
-#include "DSP/MultithreadedPatching.h"
 
-#include "VoicePacketImpl.h"
-#include "Online/CoreOnline.h"
+
+class USoundWaveProcedural;
+class UVOIPTalker;
+class UVoipListenerSynthComponent;
+struct FVoiceSettings;
 
 class IOnlineSubsystem;
 class IVoiceDecoder;
@@ -82,7 +78,7 @@ public:
 	/** Number of frames starved of audio */
 	int32 NumFramesStarved;
 	/** Synth component playing this buffer (only valid on remote instances) */
-	UVoipListenerSynthComponent* VoipSynthComponent;
+	TWeakObjectPtr<UVoipListenerSynthComponent> VoipSynthComponent;
 	/** Cached Talker Ptr. Is checked against map before use to ensure it has not been destroyed. */
 	UVOIPTalker* CachedTalkerPtr;
 	/** Boolean used to ensure that we only bind the VOIP talker to the SynthComponent's corresponding envelope delegate once. */
@@ -158,9 +154,9 @@ class ONLINESUBSYSTEMUTILS_API FVoiceEngineImpl : public IVoiceEngine, public FS
 			for (FRemoteTalkerData::TIterator It(VoiceEngine->RemoteTalkerBuffers); It; ++It)
 			{
 				FRemoteTalkerDataImpl& RemoteData = It.Value();
-				if (RemoteData.VoipSynthComponent)
+				if (UVoipListenerSynthComponent* VoipSynthComponent = RemoteData.VoipSynthComponent.GetEvenIfUnreachable())
 				{
-					Collector.AddReferencedObject(RemoteData.VoipSynthComponent);
+					Collector.AddReferencedObject(VoipSynthComponent);
 				}
 			}
 		}
@@ -392,3 +388,12 @@ protected:
 };
 
 typedef TSharedPtr<FVoiceEngineImpl, ESPMode::ThreadSafe> FVoiceEngineImplPtr;
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Containers/VersePathFwd.h"
+#include "CoreMinimal.h"
+#include "Interfaces/VoiceCodec.h"
+#include "OnlineSubsystemTypes.h"
+#include "VoicePacketImpl.h"
+#include "VoipListenerSynthComponent.h"
+#endif

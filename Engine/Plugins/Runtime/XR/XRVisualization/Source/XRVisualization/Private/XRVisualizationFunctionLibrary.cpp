@@ -1,12 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "XRVisualizationFunctionLibrary.h"
-#include "EngineGlobals.h"
-#include "Engine/Engine.h"
+#include "Engine/Level.h"
+#include "Engine/World.h"
 #include "Features/IModularFeatures.h"
+#include "HeadMountedDisplayTypes.h"
+#include "Materials/MaterialInterface.h"
+#include "UObject/Package.h"
 #include "XRVisualizationModule.h"
 #include "Components/StaticMeshComponent.h"
-#include "DrawDebugHelpers.h"
 #include "Engine/CollisionProfile.h"
 #include "Engine/StaticMesh.h"
 #include "TimerManager.h"

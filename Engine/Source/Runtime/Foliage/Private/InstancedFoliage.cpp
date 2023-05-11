@@ -44,6 +44,7 @@ InstancedFoliage.cpp: Instanced foliage implementation.
 #include "DrawDebugHelpers.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
 #include "UObject/FortniteMainBranchObjectVersion.h"
+#include "UObject/UObjectIterator.h"
 #include "PreviewScene.h"
 #include "FoliageActor.h"
 #include "FoliageISMActor.h"
@@ -73,6 +74,12 @@ static TAutoConsoleVariable<int32> CVarFoliageDiscardDataOnLoad(
 	TEXT("foliage.DiscardDataOnLoad"),
 	0,
 	TEXT("1: Discard foliage data on load if the foliage type has it enabled; 0: Keep foliage data regardless of whether the foliage type has it enabled or not (requires reloading level)"),
+	ECVF_Scalability);
+
+static TAutoConsoleVariable<float> CVarFoliageCullDistanceScale(
+	TEXT("foliage.CullDistanceScale"),
+	1.0,
+	TEXT("Controls the cull distance scale. Foliage must opt-in to cull distance scaling through the foliage type."),
 	ECVF_Scalability);
 
 const FGuid FFoliageCustomVersion::GUID(0x430C4D19, 0x71544970, 0x87699B69, 0xDF90B0E5);
@@ -194,13 +201,69 @@ private:
 #endif
 };
 
+namespace FoliageUtil
+{
+	FInt32Interval GetCullDistance(const UFoliageType* FoliageType, float CullDistanceScale)
+	{
+		if (!FoliageType->bEnableCullDistanceScaling)
+		{
+			return FoliageType->CullDistance;
+		}
+
+		return FInt32Interval(static_cast<int32>(FoliageType->CullDistance.Min * CullDistanceScale), static_cast<int32>(FoliageType->CullDistance.Max * CullDistanceScale));
+	}
+
+	void UpdateComponentCullDistance(const UFoliageType* FoliageType, UHierarchicalInstancedStaticMeshComponent* Component, float CullDistanceScale)
+	{
+		const FInt32Interval ScaledCullDistance = GetCullDistance(FoliageType, CullDistanceScale);
+
+		Component->SetCullDistances(ScaledCullDistance.Min, ScaledCullDistance.Max);
+	}
+
+#if WITH_EDITOR
+	static void CVarSinkFunction()
+	{
+		static float CachedCullDistanceScale = 1.0f;
+		float CullDistanceScale = CVarFoliageCullDistanceScale.GetValueOnGameThread();
+
+		if (CullDistanceScale != CachedCullDistanceScale)
+		{
+			CachedCullDistanceScale = CullDistanceScale;
+			CullDistanceScale = FMath::Clamp(CullDistanceScale, 0.0f, 1.0f);
+
+			for (const AInstancedFoliageActor* IFA : TObjectRange<AInstancedFoliageActor>(RF_ClassDefaultObject | RF_ArchetypeObject, true, EInternalObjectFlags::Garbage))
+			{
+				for (const TPair<UFoliageType*, TUniqueObj<FFoliageInfo>>& Pair : IFA->GetFoliageInfos())
+				{
+					if (Pair.Key && Pair.Key->bEnableCullDistanceScaling)
+					{
+						if (Pair.Value->Type == EFoliageImplType::StaticMesh)
+						{
+							FFoliageStaticMesh* FoliageStaticMesh = StaticCast<FFoliageStaticMesh*>(Pair.Value->Implementation.Get());
+
+							if (FoliageStaticMesh->Component != nullptr)
+							{
+								FoliageUtil::UpdateComponentCullDistance(Pair.Key, FoliageStaticMesh->Component, CullDistanceScale);
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	static FAutoConsoleVariableSink CVarSink(FConsoleCommandDelegate::CreateStatic(&CVarSinkFunction));
+
+#endif
+}
+
 struct FFoliagePlacementUtil
 {
 	static int32 GetRandomSeedForPosition(const FVector2D& Position)
 	{
 		// generate a unique random seed for a given position (precision = cm)
-		int32 Xcm = FMath::RoundToInt(Position.X);
-		int32 Ycm = FMath::RoundToInt(Position.Y);
+		int64 Xcm = FMath::RoundToInt(Position.X);
+		int64 Ycm = FMath::RoundToInt(Position.Y);
 		// use the int32 hashing function to avoid patterns by spreading out distribution : 
 		return HashCombine(GetTypeHash(Xcm), GetTypeHash(Ycm));
 	}
@@ -477,7 +540,7 @@ FFoliageDensityFalloff::FFoliageDensityFalloff()
 	FalloffRichCurve->AddKey(1.f, 0.f);
 }
 
-bool FFoliageDensityFalloff::IsInstanceFiltered(const FVector2D& InstancePosition, const FVector2D& Origin, float MaxDistance) const
+bool FFoliageDensityFalloff::IsInstanceFiltered(const FVector2D& InstancePosition, const FVector2D& Origin, FVector::FReal MaxDistance) const
 {
 	float KeepPointProbability = GetDensityFalloffValue(InstancePosition, Origin, MaxDistance);
 	check(KeepPointProbability >= 0.f && KeepPointProbability <= 1.f);
@@ -491,13 +554,13 @@ bool FFoliageDensityFalloff::IsInstanceFiltered(const FVector2D& InstancePositio
 	return false;
 }
 
-float FFoliageDensityFalloff::GetDensityFalloffValue(const FVector2D& Position, const FVector2D& Origin, float MaxDistance) const
+float FFoliageDensityFalloff::GetDensityFalloffValue(const FVector2D& Position, const FVector2D& Origin, FVector::FReal MaxDistance) const
 {
 	float KeepPointProbability = 1.f;
 	if (bUseFalloffCurve)
 	{
-		float Distance = FVector2D::Distance(Position, Origin);
-		float NormalizedDistance = MaxDistance > 0.f ? (Distance / MaxDistance) : 1.f;
+		FVector::FReal Distance = FVector2D::Distance(Position, Origin);
+		float NormalizedDistance = static_cast<float>(MaxDistance > 0.f ? (Distance / MaxDistance) : 1.f);
 		if (NormalizedDistance > 1.f)
 			NormalizedDistance = 1.f;
 		const FRichCurve* FalloffRichCurve = FalloffCurve.GetRichCurveConst();
@@ -594,6 +657,7 @@ UFoliageType::UFoliageType(const FObjectInitializer& ObjectInitializer)
 #endif
 	bEnableDensityScaling = false;
 	bEnableDiscardOnLoad = false;
+	bEnableCullDistanceScaling = false;
 
 #if WITH_EDITORONLY_DATA
 	bIncludeInHLOD = true;
@@ -742,9 +806,10 @@ bool UFoliageType::IsNotAssetOrBlueprint() const
 	return IsAsset() == false && GetClass()->IsNative();
 }
 
-FVector UFoliageType::GetRandomScale() const
+
+FVector3f UFoliageType::GetRandomScale() const
 {
-	FVector Result(1.0f);
+	FVector3f Result(1.0f);
 	float LockRand = 0.0f;
 
 	switch (Scaling)
@@ -891,7 +956,7 @@ void UFoliageType_Actor::UpdateBounds()
 	FBox LowBound = MeshBounds.GetBox();
 	LowBound.Max.Z = LowBound.Min.Z + (LowBound.Max.Z - LowBound.Min.Z) * 0.1f;
 
-	float MinX = LowBound.Min.X, MaxX = LowBound.Max.X, MinY = LowBound.Min.Y, MaxY = LowBound.Max.Y;
+	FVector::FReal MinX = LowBound.Min.X, MaxX = LowBound.Max.X, MinY = LowBound.Min.Y, MaxY = LowBound.Max.Y;
 	LowBoundOriginRadius = FVector::ZeroVector;
 
 	// TODO: Get more precise lower bound from multiple possible meshes in Actor
@@ -917,7 +982,7 @@ float UFoliageType::GetScaleForAge(const float Age) const
 
 float UFoliageType::GetInitAge(FRandomStream& RandomStream) const
 {
-	return RandomStream.FRandRange(0, MaxInitialAge);
+	return MaxInitialAge * RandomStream.GetFraction();
 }
 
 float UFoliageType::GetNextAge(const float CurrentAge, const int32 InNumSteps) const
@@ -1536,16 +1601,10 @@ void FFoliageStaticMesh::UpdateComponentSettings(const UFoliageType_InstancedSta
 			bNeedsMarkRenderStateDirty = true;
 			bNeedsInvalidateLightingCache = true;
 		}
-		if (Component->InstanceStartCullDistance != FoliageType->CullDistance.Min)
-		{
-			Component->InstanceStartCullDistance = FoliageType->CullDistance.Min;
-			bNeedsMarkRenderStateDirty = true;
-		}
-		if (Component->InstanceEndCullDistance != FoliageType->CullDistance.Max)
-		{
-			Component->InstanceEndCullDistance = FoliageType->CullDistance.Max;
-			bNeedsMarkRenderStateDirty = true;
-		}
+
+		const float FoliageCullDistanceScale = FMath::Clamp(CVarFoliageCullDistanceScale.GetValueOnGameThread(), 0.0f, 1.0f);
+		FoliageUtil::UpdateComponentCullDistance(FoliageType, Component, FoliageCullDistanceScale);
+
 		if (Component->CastShadow != FoliageType->CastShadow)
 		{
 			Component->CastShadow = FoliageType->CastShadow;
@@ -1582,7 +1641,7 @@ void FFoliageStaticMesh::UpdateComponentSettings(const UFoliageType_InstancedSta
 		}
 		if (Component->VirtualTextureCullMips != FoliageType->VirtualTextureCullMips)
 		{
-			Component->VirtualTextureCullMips = FoliageType->VirtualTextureCullMips;
+			Component->VirtualTextureCullMips = static_cast<int8>(FoliageType->VirtualTextureCullMips);
 			bNeedsMarkRenderStateDirty = true;
 		}
 		if (Component->TranslucencySortPriority != FoliageType->TranslucencySortPriority)
@@ -2564,6 +2623,10 @@ void FFoliageInfo::RecomputeHash()
 void FFoliageInfo::ReallocateClusters(UFoliageType* InSettings)
 {
 	// In case Foliage Type Changed recreate implementation
+	if (Implementation.IsValid())
+	{
+		Implementation->Uninitialize();
+	}
 	Implementation.Reset();
 	CreateImplementation(InSettings);
 	
@@ -2623,13 +2686,13 @@ void FFoliageInfo::GetInstanceAtLocation(const FVector& Location, int32& OutInst
 {
 	auto TempInstances = InstanceHash->GetInstancesOverlappingBox(FBox::BuildAABB(Location, FVector(KINDA_SMALL_NUMBER)));
 
-	float ShortestDistance = MAX_FLT;
+	FVector::FReal ShortestDistance = MAX_dbl;
 	OutInstance = -1;
 
 	for (int32 Idx : TempInstances)
 	{
 		FVector InstanceLocation = Instances[Idx].Location;
-		float DistanceSquared = FVector::DistSquared(InstanceLocation, Location);
+		FVector::FReal DistanceSquared = FVector::DistSquared(InstanceLocation, Location);
 		if (DistanceSquared < ShortestDistance)
 		{
 			ShortestDistance = DistanceSquared;
@@ -4094,20 +4157,9 @@ bool AInstancedFoliageActor::ShouldExport()
 	return false;
 }
 
-bool AInstancedFoliageActor::ShouldImport(FString* ActorPropString, bool IsMovingLevel)
+bool AInstancedFoliageActor::ShouldImport(FStringView ActorPropString, bool IsMovingLevel)
 {
 	return false;
-}
-
-FBox AInstancedFoliageActor::GetStreamingBounds() const
-{
-	if (UWorld* World = GetWorld(); World && World->IsPartitionedWorld())
-	{
-		const float HalfGridSize = GridSize * 0.5f;
-		return FBox(GetActorLocation() - HalfGridSize, GetActorLocation() + HalfGridSize);
-	}
-
-	return Super::GetStreamingBounds();
 }
 
 void AInstancedFoliageActor::ApplySelection(bool bApply)
@@ -4370,31 +4422,63 @@ void AInstancedFoliageActor::ExitEditMode()
 	}
 }
 
+void AInstancedFoliageActor::RegisterDelegates()
+{
+	ensureMsgf(IsInGameThread(), TEXT("Potential race condition in AInstancedFoliageActor registering to delegates from non game-thread"));
+
+	GEngine->OnActorMoved().Remove(OnLevelActorMovedDelegateHandle);
+	OnLevelActorMovedDelegateHandle = GEngine->OnActorMoved().AddUObject(this, &AInstancedFoliageActor::OnLevelActorMoved);
+
+	GEngine->OnLevelActorDeleted().Remove(OnLevelActorDeletedDelegateHandle);
+	OnLevelActorDeletedDelegateHandle = GEngine->OnLevelActorDeleted().AddUObject(this, &AInstancedFoliageActor::OnLevelActorDeleted);
+
+	if (GetLevel())
+	{
+		OnApplyLevelTransformDelegateHandle = GetLevel()->OnApplyLevelTransform.AddUObject(this, &AInstancedFoliageActor::OnApplyLevelTransform);
+	}
+
+	GEngine->OnLevelActorOuterChanged().Remove(OnLevelActorOuterChangedDelegateHandle);
+	OnLevelActorOuterChangedDelegateHandle = GEngine->OnLevelActorOuterChanged().AddUObject(this, &AInstancedFoliageActor::OnLevelActorOuterChanged);
+
+	FWorldDelegates::PostApplyLevelOffset.Remove(OnPostApplyLevelOffsetDelegateHandle);
+	OnPostApplyLevelOffsetDelegateHandle = FWorldDelegates::PostApplyLevelOffset.AddUObject(this, &AInstancedFoliageActor::OnPostApplyLevelOffset);
+
+	FWorldDelegates::OnPostWorldInitialization.Remove(OnPostWorldInitializationDelegateHandle);
+	OnPostWorldInitializationDelegateHandle = FWorldDelegates::OnPostWorldInitialization.AddUObject(this, &AInstancedFoliageActor::OnPostWorldInitialization);
+}
+
+void AInstancedFoliageActor::UnregisterDelegates()
+{
+	ensureMsgf(IsInGameThread(), TEXT("Potential race condition in AInstancedFoliageActor registering to delegates from non game-thread"));
+
+	GEngine->OnActorMoved().Remove(OnLevelActorMovedDelegateHandle);
+	GEngine->OnLevelActorDeleted().Remove(OnLevelActorDeletedDelegateHandle);
+	GEngine->OnLevelActorOuterChanged().Remove(OnLevelActorOuterChangedDelegateHandle);
+
+	if (GetLevel())
+	{
+		GetLevel()->OnApplyLevelTransform.Remove(OnApplyLevelTransformDelegateHandle);
+	}
+
+	FWorldDelegates::PostApplyLevelOffset.Remove(OnPostApplyLevelOffsetDelegateHandle);
+
+	FWorldDelegates::OnPostWorldInitialization.Remove(OnPostWorldInitializationDelegateHandle);
+}
+
 void AInstancedFoliageActor::PostInitProperties()
 {
 	Super::PostInitProperties();
 
 	if (!IsTemplate())
 	{
-		GEngine->OnActorMoved().Remove(OnLevelActorMovedDelegateHandle);
-		OnLevelActorMovedDelegateHandle = GEngine->OnActorMoved().AddUObject(this, &AInstancedFoliageActor::OnLevelActorMoved);
-
-		GEngine->OnLevelActorDeleted().Remove(OnLevelActorDeletedDelegateHandle);
-		OnLevelActorDeletedDelegateHandle = GEngine->OnLevelActorDeleted().AddUObject(this, &AInstancedFoliageActor::OnLevelActorDeleted);
-
-		if (GetLevel())
+		if (HasAnyFlags(RF_NeedPostLoad) || GetOuter()->HasAnyFlags(RF_NeedPostLoad))
 		{
-			OnApplyLevelTransformDelegateHandle = GetLevel()->OnApplyLevelTransform.AddUObject(this, &AInstancedFoliageActor::OnApplyLevelTransform);
+			// Delegate registration is not thread-safe, so we postpone it on PostLoad when coming from loading which could be on another thread
 		}
-
-		GEngine->OnLevelActorOuterChanged().Remove(OnLevelActorOuterChangedDelegateHandle);
-		OnLevelActorOuterChangedDelegateHandle = GEngine->OnLevelActorOuterChanged().AddUObject(this, &AInstancedFoliageActor::OnLevelActorOuterChanged);
-
-		FWorldDelegates::PostApplyLevelOffset.Remove(OnPostApplyLevelOffsetDelegateHandle);
-		OnPostApplyLevelOffsetDelegateHandle = FWorldDelegates::PostApplyLevelOffset.AddUObject(this, &AInstancedFoliageActor::OnPostApplyLevelOffset);
-
-		FWorldDelegates::OnPostWorldInitialization.Remove(OnPostWorldInitializationDelegateHandle);
-		OnPostWorldInitializationDelegateHandle = FWorldDelegates::OnPostWorldInitialization.AddUObject(this, &AInstancedFoliageActor::OnPostWorldInitialization);
+		else
+		{
+			RegisterDelegates();
+		}
 	}
 }
 
@@ -4404,18 +4488,7 @@ void AInstancedFoliageActor::BeginDestroy()
 
 	if (!IsTemplate())
 	{
-		GEngine->OnActorMoved().Remove(OnLevelActorMovedDelegateHandle);
-		GEngine->OnLevelActorDeleted().Remove(OnLevelActorDeletedDelegateHandle);
-		GEngine->OnLevelActorOuterChanged().Remove(OnLevelActorOuterChangedDelegateHandle);
-
-		if (GetLevel())
-		{
-			GetLevel()->OnApplyLevelTransform.Remove(OnApplyLevelTransformDelegateHandle);
-		}
-
-		FWorldDelegates::PostApplyLevelOffset.Remove(OnPostApplyLevelOffsetDelegateHandle);
-
-		FWorldDelegates::OnPostWorldInitialization.Remove(OnPostWorldInitializationDelegateHandle);
+		UnregisterDelegates();
 
 		FoliageInfos.Empty();
 	}
@@ -4432,6 +4505,13 @@ bool AInstancedFoliageActor::IsListedInSceneOutliner() const
 void AInstancedFoliageActor::PostLoad()
 {
 	Super::PostLoad();
+
+#if WITH_EDITOR
+	if (!IsTemplate())
+	{
+		RegisterDelegates();
+	}
+#endif
 
 	ULevel* OwningLevel = GetLevel();
 	// We can't check the ActorPartitionSubsystem here because World is not initialized yet. So we fallback on the bIsPartitioned
@@ -4737,12 +4817,15 @@ void AInstancedFoliageActor::PostLoad()
 
 #endif// WITH_EDITOR
 
-	if (!GIsEditor && CVarFoliageDiscardDataOnLoad.GetValueOnGameThread())
+	if (!GIsEditor)
 	{
+		const bool bFoliageDiscardOnLoad = !!CVarFoliageDiscardDataOnLoad.GetValueOnGameThread();
+		const float FoliageCullDistanceScale = FMath::Clamp(CVarFoliageCullDistanceScale.GetValueOnGameThread(), 0.0f, 1.0f);
+
 		bool bHasISMFoliage = false;
 		for (auto& Pair : FoliageInfos)
 		{
-			if (!Pair.Key || Pair.Key->bEnableDiscardOnLoad)
+			if (bFoliageDiscardOnLoad && (!Pair.Key || Pair.Key->bEnableDiscardOnLoad))
 			{
 				if (Pair.Value->Type == EFoliageImplType::StaticMesh)
 				{
@@ -4764,8 +4847,24 @@ void AInstancedFoliageActor::PostLoad()
 					bHasISMFoliage = true;
 				}
 			}
-				
+			else if (Pair.Key && Pair.Key->bEnableCullDistanceScaling)
+			{
+				if (Pair.Value->Type == EFoliageImplType::StaticMesh)
+				{
+					FFoliageStaticMesh* FoliageStaticMesh = StaticCast<FFoliageStaticMesh*>(Pair.Value->Implementation.Get());
+
+					if (FoliageStaticMesh->Component != nullptr)
+					{
+						FoliageStaticMesh->Component->ConditionalPostLoad();
+						FoliageUtil::UpdateComponentCullDistance(Pair.Key, FoliageStaticMesh->Component, FoliageCullDistanceScale);
+					}
+				}
+			}
+
+#if !WITH_EDITOR
+			// If we are running in -game we still need foliage info for any remote transactional events.
 			Pair.Value = FFoliageInfo();
+#endif
 		}
 
 		if (bHasISMFoliage)
@@ -4788,6 +4887,14 @@ void AInstancedFoliageActor::PostLoad()
 		Pair.Value->PostLoad();
 	}
 }
+
+#if WITH_EDITORONLY_DATA
+void AInstancedFoliageActor::DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass)
+{
+	Super::DeclareConstructClasses(OutConstructClasses, SpecificSubclass);
+	OutConstructClasses.Add(FTopLevelAssetPath(UFoliageInstancedStaticMeshComponent::StaticClass()));
+}
+#endif
 
 #if WITH_EDITOR
 
@@ -4944,7 +5051,8 @@ void AInstancedFoliageActor::OnLevelActorOuterChanged(AActor* InActor, UObject* 
 		return;
 	}
 
-	if (OldLevel)
+	UActorPartitionSubsystem* ActorPartitionSubsystem = OldLevel ? UWorld::GetSubsystem<UActorPartitionSubsystem>(OldLevel->GetWorld()) : nullptr;
+	if (ActorPartitionSubsystem && ActorPartitionSubsystem->IsLevelPartition())
 	{
 		AInstancedFoliageActor* OldIFA = AInstancedFoliageActor::GetInstancedFoliageActorForLevel(OldLevel, false);
 		check(OldIFA);
@@ -5241,7 +5349,7 @@ bool AInstancedFoliageActor::FoliageTrace(const UWorld* InWorld, FHitResult& Out
 					{
 						FBox ActorVolumeBounds = Brush->Bounds.GetBox();
 						FVector2D ActorVolumeLocation = FVector2D(ActorVolumeBounds.GetCenter());
-						const float ActorVolumeMaxExtent = FVector2D(ActorVolumeBounds.GetExtent()).GetMax();
+						const FVector::FReal ActorVolumeMaxExtent = FVector2D(ActorVolumeBounds.GetExtent()).GetMax();
 
 						const FVector2D Origin(ProceduralFoliageBlockingVolume->GetActorTransform().GetLocation());
 						if (ProceduralFoliageBlockingVolume->DensityFalloff.IsInstanceFiltered(FVector2D(Hit.ImpactPoint), ActorVolumeLocation, ActorVolumeMaxExtent))
@@ -5361,8 +5469,8 @@ bool AInstancedFoliageActor::FoliageTrace(const UWorld* InWorld, FHitResult& Out
 			bool bSingleComponent = DesiredInstance.FoliageType->AverageNormalSingleComponent;
 			for (int32 i = 0; i < DesiredInstance.FoliageType->AverageNormalSampleCount; ++i)
 			{
-				const float Angle = LocalRandomStream.FRandRange(0, PI * 2.f);
-				const float SqrtRadius = FMath::Sqrt(LocalRandomStream.FRand()) * DesiredInstance.FoliageType->LowBoundOriginRadius.Z;
+				const FVector::FReal Angle = LocalRandomStream.FRandRange(0, PI * 2.f);
+				const FVector::FReal SqrtRadius = FMath::Sqrt(LocalRandomStream.FRand()) * DesiredInstance.FoliageType->LowBoundOriginRadius.Z;
 				FVector Offset(SqrtRadius * FMath::Cos(Angle), SqrtRadius* FMath::Sin(Angle), 0.f);
 				NormalHits.Reset();
 				if (InWorld->LineTraceMultiByObjectType(NormalHits, StartTrace + Offset, DesiredInstance.EndTrace + Offset, FCollisionObjectQueryParams(ECC_WorldStatic), QueryParams))
@@ -5471,7 +5579,7 @@ bool FPotentialInstance::PlaceInstance(const UWorld* InWorld, const UFoliageType
 {
 	if (DesiredInstance.PlacementMode != EFoliagePlacementMode::Procedural)
 	{
-		Inst.DrawScale3D = (FVector3f)Settings->GetRandomScale();
+		Inst.DrawScale3D = Settings->GetRandomScale();
 		Inst.ZOffset = Settings->ZOffset.Interpolate(FMath::FRand());
 	}
 	else
@@ -5767,9 +5875,7 @@ UFoliageInstancedStaticMeshComponent::UFoliageInstancedStaticMeshComponent(const
 	// * warnings and a fixup option for components which have instances with very large coordinates.
 	bUseTranslatedInstanceSpace = true;
 
-#if WITH_EDITORONLY_DATA
 	bEnableAutoLODGeneration = false;
-#endif
 
 	ViewRelevanceType = EHISMViewRelevanceType::Foliage;
 }
@@ -5801,7 +5907,7 @@ void UFoliageInstancedStaticMeshComponent::ReceiveComponentDamage(float DamageAm
 			if (Instances.Num())
 			{
 				FVector LocalOrigin = GetComponentToWorld().Inverse().TransformPosition(RadialDamageEvent->Origin);
-				float Scale = GetComponentScale().X; // assume component (not instances) is uniformly scaled
+				FVector::FReal Scale = GetComponentScale().X; // assume component (not instances) is uniformly scaled
 
 				TArray<float> Damages;
 				Damages.Empty(Instances.Num());
@@ -5809,8 +5915,9 @@ void UFoliageInstancedStaticMeshComponent::ReceiveComponentDamage(float DamageAm
 				for (int32 InstanceIndex : Instances)
 				{
 					// Find distance in local space and then scale; quicker than transforming each instance to world space.
-					float DistanceFromOrigin = (PerInstanceSMData[InstanceIndex].Transform.GetOrigin() - LocalOrigin).Size() * Scale;
+					float DistanceFromOrigin = static_cast<float>((PerInstanceSMData[InstanceIndex].Transform.GetOrigin() - LocalOrigin).Size() * Scale);
 					Damages.Add(RadialDamageEvent->Params.GetDamageScale(DistanceFromOrigin));
+
 				}
 
 				OnInstanceTakeRadialDamage.Broadcast(Instances, Damages, EventInstigator, RadialDamageEvent->Origin, MaxRadius, DamageTypeCDO, DamageCauser);

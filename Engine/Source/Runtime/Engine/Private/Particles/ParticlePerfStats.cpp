@@ -1,18 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Particles/ParticlePerfStats.h"
+#include "Engine/World.h"
 #include "Particles/ParticlePerfStatsManager.h"
 
-#include "CoreMinimal.h"
 
 #if WITH_PARTICLE_PERF_STATS
 
 #include "CanvasTypes.h"
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
-#include "Misc/ScopeLock.h"
-#include "RenderingThread.h"
-#include "HAL/IConsoleManager.h"
 #include "HAL/FileManager.h"
 #include "Particles/ParticleSystem.h"
 #include "UObject/UObjectIterator.h"
@@ -20,13 +17,9 @@
 #include "Misc/CoreDelegates.h"
 #include "Misc/OutputDeviceArchiveWrapper.h"
 #include "Misc/Paths.h"
-#include "ProfilingDebugging/CsvProfiler.h"
-#include "ProfilingDebugging/ProfilingHelpers.h"
-#include "Containers/UnrealString.h"
 #include "Misc/Paths.h"
 #include "CanvasTypes.h"
 #include "Engine/Font.h"
-#include "FXSystem.h"
 #include "Particles/ParticleSystemComponent.h"
 
 
@@ -240,7 +233,7 @@ void FParticlePerfStatsManager::Tick()
 		TArray<FParticlePerfStatsListenerPtr, TInlineAllocator<8>> ToRemove;
 		for (FParticlePerfStatsListenerPtr& Listener : Listeners)
 		{
-			if (Listener.IsValid() == false || Listener.IsUnique() || Listener->Tick() == false)
+			if (Listener.IsValid() == false || (Listener.IsUnique() && Listener->AllowOrphaned() == false) || Listener->Tick() == false)
 			{
 				ToRemove.Add(Listener);
 			}
@@ -727,7 +720,7 @@ void FAccumulatedParticlePerfStats::Tick(FParticlePerfStats& Stats)
 
 void FAccumulatedParticlePerfStats::TickRT(FParticlePerfStats& Stats)
 {
-	check(IsInActualRenderingThread());
+	check(IsInRenderingThread());
 	RenderThreadStats.Tick(Stats);
 	GPUStats.Tick(Stats);
 }

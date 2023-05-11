@@ -6,10 +6,11 @@
 #include "Containers/ArrayView.h"
 #include "Containers/Map.h"
 #include "Containers/SparseArray.h"
+#include "Iris/ReplicationSystem/ReplicationSystemTypes.h"
 
 namespace UE::Net::Private
 {
-	typedef uint32 FInternalNetHandle;
+	typedef uint32 FInternalNetRefIndex;
 	typedef int8 FLifeTimeConditionStorage;
 }
 
@@ -18,9 +19,15 @@ namespace UE::Net::Private
 
 struct FChildSubObjectsInfo
 {
-	const FInternalNetHandle* ChildSubObjects = nullptr;
+	const FInternalNetRefIndex* ChildSubObjects = nullptr;
 	const FLifeTimeConditionStorage* SubObjectLifeTimeConditions = nullptr;
 	uint32 NumSubObjects = 0U;
+};
+
+struct FDependentObjectInfo
+{
+	FInternalNetRefIndex NetRefIndex = 0U;
+	EDependentObjectSchedulingHint SchedulingHint = EDependentObjectSchedulingHint::Default;
 };
 
 class FNetDependencyData
@@ -28,33 +35,55 @@ class FNetDependencyData
 public:
 	FNetDependencyData();
 
-	typedef TArray<FInternalNetHandle, TInlineAllocator<8>> FInternalNetHandleArray;
-
+	typedef TArray<FInternalNetRefIndex, TInlineAllocator<8>> FInternalNetRefIndexArray;
 	typedef TArray<FLifeTimeConditionStorage, TInlineAllocator<8>> FSubObjectConditionalsArray;
+	typedef TArray<FDependentObjectInfo, TInlineAllocator<8>> FDependentObjectInfoArray;
 
 	enum EArrayType
 	{
 		SubObjects = 0U,
 		ChildSubObjects,
-		DependentObjects,
-		ParentObjects,
+		DependentParentObjects,
 		Count
 	};
 
 	template<EArrayType TypeIndex>
-	FInternalNetHandleArray& GetOrCreateInternalHandleArray(FInternalNetHandle InternalHandle)
+	FInternalNetRefIndexArray& GetOrCreateInternalIndexArray(FInternalNetRefIndex InternalIndex)
 	{
 		static_assert(TypeIndex != EArrayType::Count, "Invalid array type index");
-		return GetOrCreateInternalHandleArray(InternalHandle, TypeIndex);
+		return GetOrCreateInternalIndexArray(InternalIndex, TypeIndex);
 	};
 
-	FSubObjectConditionalsArray& GetOrCreateSubObjectConditionalsArray(FInternalNetHandle InternalHandle);
-
-	FInternalNetHandleArray& GetOrCreateInternalChildSubObjectsArray(FInternalNetHandle InternalHandle, FSubObjectConditionalsArray*& OutSubObjectConditionals);
-
-	bool GetInternalChildSubObjectAndConditionalArrays(FInternalNetHandle InternalHandle, FInternalNetHandleArray*& OutChildSubObjectsArray, FSubObjectConditionalsArray*& OutSubObjectConditionals)
+	FDependentObjectInfoArray& GetOrCreateDependentObjectInfoArray(FInternalNetRefIndex InternalIndex);
+	FDependentObjectInfoArray* GetDependentObjectInfoArray(FInternalNetRefIndex InternalIndex)
 	{
-		const FDependencyInfo* Entry = DependencyInfos.Find(InternalHandle);
+		const FDependencyInfo* Entry = DependencyInfos.Find(InternalIndex);
+		const uint32 ArrayIndex = Entry ? Entry->DependentObjectsInfoArrayIndex : FDependencyInfo::InvalidCacheIndex;
+		if (ArrayIndex != FDependencyInfo::InvalidCacheIndex)
+		{
+			return &DependentObjectInfosStorage[ArrayIndex];
+		}
+		return nullptr;
+	}
+
+	TArrayView<const FDependentObjectInfo> GetDependentObjectInfoArray(FInternalNetRefIndex InternalIndex) const
+	{
+		const FDependencyInfo* Entry = DependencyInfos.Find(InternalIndex);
+		const uint32 ArrayIndex = Entry ? Entry->DependentObjectsInfoArrayIndex : FDependencyInfo::InvalidCacheIndex;
+		if (ArrayIndex != FDependencyInfo::InvalidCacheIndex)
+		{
+			return MakeArrayView(DependentObjectInfosStorage[ArrayIndex]);
+		}
+		return MakeArrayView<const FDependentObjectInfo>(nullptr, 0);
+	}
+
+	FSubObjectConditionalsArray& GetOrCreateSubObjectConditionalsArray(FInternalNetRefIndex InternalIndex);
+
+	FInternalNetRefIndexArray& GetOrCreateInternalChildSubObjectsArray(FInternalNetRefIndex InternalIndex, FSubObjectConditionalsArray*& OutSubObjectConditionals);
+
+	bool GetInternalChildSubObjectAndConditionalArrays(FInternalNetRefIndex InternalIndex, FInternalNetRefIndexArray*& OutChildSubObjectsArray, FSubObjectConditionalsArray*& OutSubObjectConditionals)
+	{
+		const FDependencyInfo* Entry = DependencyInfos.Find(InternalIndex);
 		const uint32 ArrayIndex = Entry ? Entry->ArrayIndices[ChildSubObjects] : FDependencyInfo::InvalidCacheIndex;
 
 		if (ArrayIndex == FDependencyInfo::InvalidCacheIndex)
@@ -67,9 +96,9 @@ public:
 		return true;
 	}
 
-	bool GetChildSubObjects(FInternalNetHandle InternalHandle, FChildSubObjectsInfo& OutInfo) const
+	bool GetChildSubObjects(FInternalNetRefIndex InternalIndex, FChildSubObjectsInfo& OutInfo) const
 	{
-		const FDependencyInfo* Entry = DependencyInfos.Find(InternalHandle);
+		const FDependencyInfo* Entry = DependencyInfos.Find(InternalIndex);
 		const uint32 ArrayIndex = Entry ? Entry->ArrayIndices[ChildSubObjects] : FDependencyInfo::InvalidCacheIndex;
 		if (ArrayIndex == FDependencyInfo::InvalidCacheIndex)
 		{
@@ -82,12 +111,11 @@ public:
 		return true;
 	}
 
-
 	template<EArrayType TypeIndex>
-	FInternalNetHandleArray* GetInternalHandleArray(FInternalNetHandle InternalHandle)
+	FInternalNetRefIndexArray* GetInternalIndexArray(FInternalNetRefIndex InternalIndex)
 	{
 		static_assert(TypeIndex != EArrayType::Count, "Invalid array type index");
-		const FDependencyInfo* Entry = DependencyInfos.Find(InternalHandle);
+		const FDependencyInfo* Entry = DependencyInfos.Find(InternalIndex);
 		const uint32 ArrayIndex = Entry ? Entry->ArrayIndices[TypeIndex] : FDependencyInfo::InvalidCacheIndex;
 		if (ArrayIndex != FDependencyInfo::InvalidCacheIndex)
 		{
@@ -97,40 +125,43 @@ public:
 	}
 
 	template<EArrayType TypeIndex>
-	TArrayView<const FInternalNetHandle> GetInternalHandleArray(FInternalNetHandle InternalHandle) const
+	TArrayView<const FInternalNetRefIndex> GetInternalIndexArray(FInternalNetRefIndex InternalIndex) const
 	{
 		static_assert(TypeIndex != EArrayType::Count, "Invalid array type index");
 
-		const FDependencyInfo* Entry = DependencyInfos.Find(InternalHandle);
+		const FDependencyInfo* Entry = DependencyInfos.Find(InternalIndex);
 		const uint32 ArrayIndex = Entry ? Entry->ArrayIndices[TypeIndex] : FDependencyInfo::InvalidCacheIndex;
 		if (ArrayIndex != FDependencyInfo::InvalidCacheIndex)
 		{
 			return MakeArrayView(DependentObjectsStorage[ArrayIndex]);
 		}
-		return MakeArrayView<const FInternalNetHandle>(nullptr, 0);
+		return MakeArrayView<const FInternalNetRefIndex>(nullptr, 0);
 	}
 
-	void FreeStoredDependencyDataForObject(FInternalNetHandle InternalHandle);
+	void FreeStoredDependencyDataForObject(FInternalNetRefIndex InternalIndex);
 	
 private:
 	
 	struct FDependencyInfo
 	{
 		constexpr static uint32 InvalidCacheIndex = ~(0U);
-		uint32 ArrayIndices[EArrayType::Count] = { InvalidCacheIndex, InvalidCacheIndex, InvalidCacheIndex, InvalidCacheIndex };
+		uint32 ArrayIndices[EArrayType::Count] = { InvalidCacheIndex, InvalidCacheIndex, InvalidCacheIndex };
 		uint32 SubObjectConditionalArrayIndex = InvalidCacheIndex;
+		uint32 DependentObjectsInfoArrayIndex = InvalidCacheIndex;
 	};
 
 private:
-	FInternalNetHandleArray& GetOrCreateInternalHandleArray(FInternalNetHandle InternalHandle, EArrayType Type);
-	FDependencyInfo& GetOrCreateCacheEntry(FInternalNetHandle InternalHandle);
+	FInternalNetRefIndexArray& GetOrCreateInternalIndexArray(FInternalNetRefIndex InternalIndex, EArrayType Type);
+	FDependencyInfo& GetOrCreateCacheEntry(FInternalNetRefIndex InternalIndex);
 	
 	// Map to track the replicated objects with subObjects or dependencies
-	TMap<FInternalNetHandle, FDependencyInfo> DependencyInfos;
+	TMap<FInternalNetRefIndex, FDependencyInfo> DependencyInfos;
 	// Storage for DependentObjects and SubObjects
-	TSparseArray<FInternalNetHandleArray> DependentObjectsStorage;
+	TSparseArray<FInternalNetRefIndexArray> DependentObjectsStorage;
 	// Storage for SubObject conditionals
 	TSparseArray<FSubObjectConditionalsArray> SubObjectConditionalsStorage;
+	// Storage for DependentObjects
+	TSparseArray<FDependentObjectInfoArray> DependentObjectInfosStorage;
 };
 
 }

@@ -12,12 +12,10 @@
 #include "Templates/IsPointer.h"
 #include "Misc/AssertionMacros.h"
 #include "Templates/AndOrNot.h"
-#include "Templates/AreTypesEqual.h"
 #include "Templates/EnableIf.h"
 #include "Templates/IsArithmetic.h"
 #include "Templates/IsEnum.h"
 #include "Templates/RemoveCV.h"
-#include "Traits/IsVoidType.h"
 #include "Templates/Models.h"
 
 #include "Templates/IsPODType.h"
@@ -25,11 +23,36 @@
 #include "Templates/IsTriviallyCopyConstructible.h"
 
 /*-----------------------------------------------------------------------------
-	Readability macro for enable_if in template definitions. Usage:
+	Readability macro for enable_if in template definitions, future-proofed
+	for C++ 20 concepts. Usage:
 
-	template<typename T, TEMPLATE_REQUIRES(TIsFloatingPoint<T>)>
-	void FloatingPointOnlyPlease(T In) {}
+	template <
+		typename T,
+		typename U  // note - no trailing comma before the constraints block
+		UE_CONSTRAINTS_BEGIN
+			UE_CONSTRAINT(std::is_integral_v<T>)
+			UE_CONSTRAINT(sizeof(U) <= 4)
+		UE_CONSTRAINTS_END
+	>
+	void IntegralUpTo32Bit(T Lhs, U Rhs) {}
  -----------------------------------------------------------------------------*/
+#if __cplusplus < 202000
+    #define UE_CONSTRAINTS_BEGIN , std::enable_if_t<
+    #define UE_CONSTRAINT(...) (__VA_ARGS__) &&
+    #define UE_CONSTRAINTS_END true, int> = 0
+#else
+    namespace UE::Core::Private
+    {
+        // Only needed for the UE_CONSTRAINT* macros to work
+        template <bool B>
+        concept BoolIdentityConcept = B;
+    }
+
+    #define UE_CONSTRAINTS_BEGIN > requires
+    #define UE_CONSTRAINT(...) (__VA_ARGS__) &&
+    #define UE_CONSTRAINTS_END UE::Core::Private::BoolIdentityConcept<true
+#endif
+
 #define TEMPLATE_REQUIRES(...) typename TEnableIf<__VA_ARGS__, int>::type = 0
 
 /*-----------------------------------------------------------------------------
@@ -75,8 +98,11 @@ struct TIsDerivedFrom
  *
  * Unreal implementation of std::is_same trait.
  */
-template<typename A, typename B>	struct TIsSame			{ enum { Value = false	}; };
-template<typename T>				struct TIsSame<T, T>	{ enum { Value = true	}; };
+template<typename A, typename B>
+struct UE_DEPRECATED(5.2, "TIsSame has been deprecated, please use std::is_same instead.") TIsSame
+{
+	enum { Value = std::is_same_v<A, B>	};
+};
 
 /** Gets the Nth type in a template parameter pack. N must be less than sizeof...(Types) */
 template <int32 N, typename... Types>
@@ -161,7 +187,7 @@ template<typename T> struct TIsRValueReferenceType<T&&> { enum { Value = true  }
 template<typename T> 
 struct TIsFundamentalType 
 { 
-	enum { Value = TOr<TIsArithmetic<T>, TIsVoidType<T>>::Value };
+	enum { Value = TIsArithmetic<T>::Value || std::is_void_v<T> };
 };
 
 /**
@@ -382,17 +408,6 @@ struct TTypeTraitsBase
 template<typename T> struct TTypeTraits : public TTypeTraitsBase<T> {};
 
 
-/**
- * Traits for containers.
- */
-template<typename T> struct TContainerTraitsBase
-{
-	// This should be overridden by every container that supports emptying its contents via a move operation.
-	enum { MoveWillEmptyContainer = false };
-};
-
-template<typename T> struct TContainerTraits : public TContainerTraitsBase<T> {};
-
 struct FVirtualDestructor
 {
 	virtual ~FVirtualDestructor() {}
@@ -460,8 +475,8 @@ struct TIsBitwiseConstructible
 		"TIsBitwiseConstructible is not designed to accept reference types");
 
 	static_assert(
-		TAreTypesEqual<T,   typename TRemoveCV<T  >::Type>::Value &&
-		TAreTypesEqual<Arg, typename TRemoveCV<Arg>::Type>::Value,
+		std::is_same_v<T,   typename TRemoveCV<T  >::Type> &&
+		std::is_same_v<Arg, typename TRemoveCV<Arg>::Type>,
 		"TIsBitwiseConstructible is not designed to accept qualified types");
 
 	// Assume no bitwise construction in general

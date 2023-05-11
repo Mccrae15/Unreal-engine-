@@ -2,25 +2,13 @@
 
 #include "ReplicationGraphTypes.h"
 
+#include "Engine/NetConnection.h"
 #include "ReplicationGraph.h"
-#include "Engine/World.h"
 
-#include "EngineUtils.h"
-#include "Engine/Engine.h"
-#include "Net/DataReplication.h"
-#include "Engine/ActorChannel.h"
-#include "Engine/NetworkObjectList.h"
-#include "Net/RepLayout.h"
-#include "GameFramework/SpectatorPawn.h"
-#include "GameFramework/SpectatorPawnMovement.h"
-#include "Net/UnrealNetwork.h"
-#include "Net/NetworkProfiler.h"
-#include "HAL/LowLevelMemTracker.h"
+#include "Misc/ConfigCacheIni.h"
 #include "HAL/LowLevelMemStats.h"
 #include "UObject/UObjectIterator.h"
 #include "Engine/Level.h"
-#include "Templates/UnrealTemplate.h"
-#include "Misc/CoreDelegates.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ReplicationGraphTypes)
 
@@ -312,6 +300,17 @@ void ForEachClientPIEWorld(TFunction<void(UWorld*)> Func)
 }
 #endif
 
+FReplicationGraphCSVTracker::FReplicationGraphCSVTracker()
+	: EverythingElse(TEXT("Other"))
+	, EverythingElse_FastPath(TEXT("OtherFastPath"))
+	, ActorDiscovery(TEXT("ActorDiscovery"))
+{
+	ResetTrackedClasses();
+
+	GConfig->GetBool(TEXT("ReplicationGraphCSVTracker"), TEXT("bReportUntrackedClasses"), bReportUntrackedClasses, GEngineIni);
+}
+
+
 void LogListDetails(FActorRepList& RepList, FOutputDevice& Ar)
 {
 	FString ListContentString;
@@ -433,6 +432,18 @@ void TActorListAllocator<NumListsPerBlock, MaxNumPools>::LogDetails(int32 PoolSi
 	}
 }
 
+int32 FGlobalActorReplicationInfoMap::Remove(const FActorRepListType& RemovedActor)
+{
+	// Clean the references to the removed actor from its dependent link
+	if (FGlobalActorReplicationInfo* RemovedActorInfo = Find(RemovedActor))
+	{
+		RemoveAllActorDependencies(RemovedActor, RemovedActorInfo);
+	}
+
+	return ActorMap.Remove(RemovedActor);
+}
+
+
 void FGlobalActorReplicationInfoMap::AddDependentActor(AActor* Parent, AActor* Child, FGlobalActorReplicationInfoMap::EWarnFlag WarnFlag)
 {
 	/**
@@ -455,12 +466,12 @@ void FGlobalActorReplicationInfoMap::AddDependentActor(AActor* Parent, AActor* C
 		bool bChildIsAlreadyDependant(false);
 		if (FGlobalActorReplicationInfo* ParentInfo = Find(Parent))
 		{
-			bChildIsAlreadyDependant = ParentInfo->DependentActorList.Find(Child) != INDEX_NONE;
+			bChildIsAlreadyDependant = ParentInfo->DependentActorList.Contains(Child);
 			if (bChildIsAlreadyDependant == false)
 			{
 				if (IsActorValidForReplicationGather(Child))
 				{
-					ParentInfo->DependentActorList.Add(Child);
+					ParentInfo->DependentActorList.AddNetworkActor(Child);
 				}
 			}
 		}
@@ -487,6 +498,18 @@ void FGlobalActorReplicationInfoMap::AddDependentActor(AActor* Parent, AActor* C
 			UE_LOG(LogReplicationGraph, Warning, TEXT("FGlobalActorReplicationInfoMap::AddDependentActor child %s already dependant of parent %s"), *GetNameSafe(Child), *GetNameSafe(Parent));
 		}
 	}
+}
+
+FName FNewReplicatedActorInfo::GetStreamingLevelNameOfActor(const AActor* Actor)
+{
+	ULevel* Level = Actor ? Cast<ULevel>(Actor->GetOuter()) : nullptr;
+	return (Level && Level->IsPersistentLevel() == false) ? Level->GetOutermost()->GetFName() : NAME_None;
+}
+
+FActorConnectionPair::FActorConnectionPair(AActor* InActor, UNetConnection* InConnection)
+	: Actor(InActor)
+	, Connection(InConnection)
+{
 }
 
 bool FActorRepListStatCollector::WasNodeVisited(const UReplicationGraphNode* NodeToVisit)
@@ -572,4 +595,94 @@ void FActorRepListStatCollector::VisitExplicitStreamingLevelList(FName ListOwner
 	StreamingLevelStats.NumSlack += ListSlack;
 	StreamingLevelStats.NumBytes += ListBytes;
 	StreamingLevelStats.MaxListSize = FMath::Max(StreamingLevelStats.MaxListSize, ListSize);
+}
+
+void FLevelBasedActorList::AddNetworkActor(AActor* NetActor)
+{
+	FNewReplicatedActorInfo ActorInfo(NetActor);
+
+	if (ActorInfo.StreamingLevelName == NAME_None)
+	{
+		PermanentLevelActors.Add(NetActor);
+	}
+	else
+	{
+		StreamingLevelActors.AddActor(ActorInfo);
+	}
+}
+
+bool FLevelBasedActorList::RemoveNetworkActor(const FNewReplicatedActorInfo& ActorInfo)
+{
+	if (ActorInfo.StreamingLevelName == NAME_None)
+	{
+		return PermanentLevelActors.RemoveFast(ActorInfo.Actor);
+	}
+	else
+	{
+		return StreamingLevelActors.RemoveActorFast(ActorInfo);
+	}
+}
+
+bool FLevelBasedActorList::RemoveNetworkActorOrdered(AActor* NetActor)
+{
+	FNewReplicatedActorInfo ActorInfo(NetActor);
+
+	if (ActorInfo.StreamingLevelName == NAME_None)
+	{
+		return PermanentLevelActors.RemoveSlow(NetActor);
+	}
+	else
+	{
+		return StreamingLevelActors.RemoveActor(ActorInfo, false);
+	}
+}
+
+bool FLevelBasedActorList::Contains(AActor* NetActor) const
+{
+	FNewReplicatedActorInfo ActorInfo(NetActor);
+
+	if (ActorInfo.StreamingLevelName == NAME_None)
+	{
+		return PermanentLevelActors.Contains(NetActor);
+	}
+	else
+	{
+		return StreamingLevelActors.Contains(ActorInfo);
+	}
+}
+
+void FLevelBasedActorList::Reset()
+{
+	PermanentLevelActors.Reset();
+	StreamingLevelActors.Reset();
+}
+
+void FLevelBasedActorList::Gather(const FConnectionGatherActorListParameters& Params) const
+{
+	Params.OutGatheredReplicationLists.AddReplicationActorList(PermanentLevelActors);
+	StreamingLevelActors.Gather(Params);
+}
+
+void FLevelBasedActorList::Gather(const UNetReplicationGraphConnection& ConnectionManager, FGatheredReplicationActorLists& OutGatheredList) const
+{
+	OutGatheredList.AddReplicationActorList(PermanentLevelActors);
+	StreamingLevelActors.Gather(ConnectionManager, OutGatheredList);
+}
+
+void FLevelBasedActorList::AppendAllLists(FGatheredReplicationActorLists& OutGatheredList) const
+{
+	OutGatheredList.AddReplicationActorList(PermanentLevelActors);
+	StreamingLevelActors.AppendAllLists(OutGatheredList);
+}
+
+void FLevelBasedActorList::GetAllActors(TArray<AActor*>& OutAllActors) const
+{
+	PermanentLevelActors.AppendToTArray(OutAllActors);
+	StreamingLevelActors.GetAll_Debug(OutAllActors);
+}
+
+void FLevelBasedActorList::CountBytes(FArchive& Ar) const
+{
+	PermanentLevelActors.CountBytes(Ar);
+	StreamingLevelActors.CountBytes(Ar);
 }

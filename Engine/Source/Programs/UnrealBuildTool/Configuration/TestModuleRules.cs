@@ -109,22 +109,7 @@ namespace UnrealBuildTool
 			bEnableObjCExceptions = false;
 			bEnableExceptions = false;
 
-			string SetupFile = Path.Combine("Private", "setup.cpp");
-			string TeardownFile = Path.Combine("Private", "teardown.cpp");
-			if (System.IO.File.Exists(Path.Combine(Directory.ToString(), SetupFile)))
-			{
-				BuildOrderSettings.AddBuildOrderOverride(SetupFile, SourceFileBuildOrder.First);
-			}
-			if (System.IO.File.Exists(Path.Combine(Directory.ToString(), TeardownFile)))
-			{
-				BuildOrderSettings.AddBuildOrderOverride(TeardownFile, SourceFileBuildOrder.Last);
-			}
-
-			string TestResourcesDir = Path.Combine(ModuleDirectory, "Resources");
-			if (System.IO.Directory.Exists(TestResourcesDir))
-			{
-				AdditionalPropertiesForReceipt.Add("ResourcesFolder", TestResourcesDir);
-			}
+			SetResourcesFolder("Resources");
 
 			if (!PublicDependencyModuleNames.Contains("Catch2"))
 			{
@@ -149,19 +134,12 @@ namespace UnrealBuildTool
 		/// </summary>
 		protected void SetResourcesFolder(string ResourcesRelativeFolder)
 		{
-			string TestResourcesDir = Path.Combine(ModuleDirectory, ResourcesRelativeFolder);
-			if (!System.IO.Directory.Exists(TestResourcesDir))
+			AdditionalPropertiesForReceipt.Inner.RemoveAll(Prop => Prop.Name == "ResourcesFolder");
+
+			foreach (DirectoryReference Directory in GetAllModuleDirectories())
 			{
-				throw new Exception($"Resources folder not found {TestResourcesDir}");
-			}
-			else
-			{
-				ReceiptProperty? Existing = AdditionalPropertiesForReceipt.Inner.Find(Prop => Prop.Name == "ResourcesFolder");
-				if (Existing != null)
-				{
-					Existing.Value = TestResourcesDir;
-				}
-				else
+				string TestResourcesDir = Path.Combine(Directory.FullName, ResourcesRelativeFolder);
+				if (System.IO.Directory.Exists(TestResourcesDir))
 				{
 					AdditionalPropertiesForReceipt.Add("ResourcesFolder", TestResourcesDir);
 				}

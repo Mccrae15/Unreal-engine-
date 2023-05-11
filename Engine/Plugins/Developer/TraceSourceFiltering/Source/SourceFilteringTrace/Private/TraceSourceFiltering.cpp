@@ -1,15 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TraceSourceFiltering.h"
+#include "DataSourceFilterSet.h"
 #include "PropertyPathHelpers.h"
 #include "SourceFilterCollection.h"
 #include "TraceSourceFilteringSettings.h"
 #include "SourceFilterTrace.h"
 #include "TraceWorldFiltering.h"
 #include "Misc/CommandLine.h"
-#include "HAL/LowLevelMemTracker.h"
 
 #include "TraceSourceFilteringProjectSettings.h"
+#include "UObject/Package.h"
 
 FTraceSourceFiltering::FTraceSourceFiltering()
 {

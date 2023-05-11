@@ -3,9 +3,7 @@
 #include "CommonAnimatedSwitcher.h"
 
 #include "CommonWidgetPaletteCategories.h"
-#include "Components/PanelSlot.h"
 #include "Components/WidgetSwitcherSlot.h"
-#include "Templates/UnrealTemplate.h"
 #include "Widgets/Layout/SSpacer.h"
 #include "Widgets/SOverlay.h"
 
@@ -53,7 +51,7 @@ void UCommonAnimatedSwitcher::ActivateNextWidget(bool bCanWrap)
 {
 	if (Slots.Num() > 1)
 	{
-		if (ActiveWidgetIndex == Slots.Num() - 1)
+		if (GetActiveWidgetIndex() == Slots.Num() - 1)
 		{
 			if (bCanWrap)
 			{
@@ -62,7 +60,7 @@ void UCommonAnimatedSwitcher::ActivateNextWidget(bool bCanWrap)
 		}
 		else
 		{
-			SetActiveWidgetIndex(ActiveWidgetIndex + 1);
+			SetActiveWidgetIndex(GetActiveWidgetIndex() + 1);
 		}
 	}
 }
@@ -71,7 +69,7 @@ void UCommonAnimatedSwitcher::ActivatePreviousWidget(bool bCanWrap)
 {
 	if (Slots.Num() > 1)
 	{
-		if (ActiveWidgetIndex == 0)
+		if (GetActiveWidgetIndex() == 0)
 		{
 			if (bCanWrap)
 			{
@@ -80,7 +78,7 @@ void UCommonAnimatedSwitcher::ActivatePreviousWidget(bool bCanWrap)
 		}
 		else
 		{
-			SetActiveWidgetIndex(ActiveWidgetIndex - 1);
+			SetActiveWidgetIndex(GetActiveWidgetIndex() - 1);
 		}
 	}
 }
@@ -102,16 +100,16 @@ bool UCommonAnimatedSwitcher::IsCurrentlySwitching() const
 
 void UCommonAnimatedSwitcher::HandleSlateActiveIndexChanged(int32 ActiveIndex)
 {
-	if (Slots.IsValidIndex(ActiveWidgetIndex))
+	if (Slots.IsValidIndex(GetActiveWidgetIndex()))
 	{
-		OnActiveWidgetIndexChanged.Broadcast(GetWidgetAtIndex(ActiveWidgetIndex), ActiveWidgetIndex);
+		OnActiveWidgetIndexChanged.Broadcast(GetWidgetAtIndex(GetActiveWidgetIndex()), GetActiveWidgetIndex());
 	}
 }
 
 TSharedRef<SWidget> UCommonAnimatedSwitcher::RebuildWidget()
 {
 	MyWidgetSwitcher = MyAnimatedSwitcher = SNew(SCommonAnimatedSwitcher)
-		.InitialIndex(ActiveWidgetIndex)
+		.InitialIndex(GetActiveWidgetIndex())
 		.TransitionCurveType(TransitionCurveType)
 		.TransitionDuration(TransitionDuration)
 		.TransitionType(TransitionType)
@@ -159,11 +157,17 @@ void UCommonAnimatedSwitcher::SetActiveWidgetIndex_Internal(int32 Index)
 	
 	TGuardValue<bool> bCurrentlySwitchingGuard(bCurrentlySwitching, true);
 
-	if (Index >= 0 && Index < Slots.Num() && (Index != ActiveWidgetIndex || !bSetOnce))
+	if (Index >= 0 && Index < Slots.Num() && (Index != GetActiveWidgetIndex() || !bSetOnce))
 	{
 		HandleOutgoingWidget();
 
-		ActiveWidgetIndex = Index;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		// For now we can't call setter since it calls MyWidgetSwitcher->SetActiveWidgetIndex(SafeIndex)
+		if (ActiveWidgetIndex != Index)
+		{
+			ActiveWidgetIndex = Index;
+			BroadcastFieldValueChanged(FFieldNotificationClassDescriptor::ActiveWidgetIndex);
+		}
 
 		if (MyAnimatedSwitcher.IsValid())
 		{
@@ -177,6 +181,7 @@ void UCommonAnimatedSwitcher::SetActiveWidgetIndex_Internal(int32 Index)
 		{
 			HandleSlateActiveIndexChanged(ActiveWidgetIndex);
 		}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 		bSetOnce = true;
 	}

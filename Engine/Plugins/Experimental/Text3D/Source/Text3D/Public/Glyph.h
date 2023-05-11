@@ -6,6 +6,8 @@
 #include "MeshDescription.h"
 #include "StaticMeshAttributes.h"
 
+class UStaticMesh;
+
 struct FText3DPolygonGroup
 {
 	int32 FirstVertex;
@@ -19,7 +21,7 @@ class FText3DGlyph
 public:
 	FText3DGlyph();
 
-	void Build(UStaticMesh* StaticMesh, class UMaterial* DefaultMaterial);
+	void Build(class UStaticMesh* StaticMesh, class UMaterial* DefaultMaterial);
 
 	FMeshDescription& GetMeshDescription();
 	FStaticMeshAttributes& GetStaticMeshAttributes();

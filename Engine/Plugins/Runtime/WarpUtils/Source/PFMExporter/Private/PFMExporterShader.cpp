@@ -3,6 +3,7 @@
 #include "PFMExporterShader.h"
 #include "PFMExporterMesh.h"
 
+#include "Rendering/PositionVertexBuffer.h"
 #include "Shader.h"
 #include "GlobalShader.h"
 #include "ShaderParameters.h"
@@ -10,6 +11,7 @@
 #include "PixelShaderUtils.h"
 
 #include "RHIResources.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "CommonRenderResources.h"
 
 #include "Engine/StaticMesh.h"
@@ -18,6 +20,7 @@
 
 #include "Components/StaticMeshComponent.h"
 #include "Components/SceneComponent.h"
+#include "StaticMeshResources.h"
 
 #define PFMExporterShaderFileName TEXT("/Plugin/WarpUtils/Private/PFMExporterShaders.usf")
 

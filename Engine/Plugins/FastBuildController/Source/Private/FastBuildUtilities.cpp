@@ -7,7 +7,8 @@
 #include "HAL/PlatformFileManager.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
-#include "HAL/PlatformMisc.h"
+#include "Misc/CoreMisc.h"
+#include "Misc/Paths.h"
 
 namespace FASTBuildControllerUtilitiesVariables
 {

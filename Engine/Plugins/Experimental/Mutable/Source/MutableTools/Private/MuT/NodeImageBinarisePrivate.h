@@ -6,8 +6,7 @@
 #include "MuT/NodeImagePrivate.h"
 #include "MuT/NodeImageBinarise.h"
 #include "MuT/AST.h"
-
-#include "MuR/MemoryPrivate.h"
+#include "MuT/NodeScalar.h"
 
 
 namespace mu

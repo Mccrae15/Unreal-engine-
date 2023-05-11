@@ -3,20 +3,21 @@
 #include "Android/AndroidJNI.h"
 
 #if USE_ANDROID_JNI
-#include "HAL/ExceptionHandling.h"
-#include "Android/AndroidPlatformCrashContext.h"
-#include "Runtime/Core/Public/Misc/DateTime.h"
-#include "HAL/PlatformStackWalk.h"
 #include "Android/AndroidApplication.h"
 #include "Android/AndroidInputInterface.h"
-#include "Widgets/Input/IVirtualKeyboardEntry.h"
-#include "UnrealEngine.h"
-#include "Misc/ConfigCacheIni.h"
-#include "Misc/FeedbackContext.h"
-#include "Math/Vector.h"
-#include "Misc/EmbeddedCommunication.h"
-#include "Async/TaskGraphInterfaces.h"
+#include "Android/AndroidPlatformCrashContext.h"
 #include "Android/AndroidStats.h"
+#include "Async/TaskGraphInterfaces.h"
+#include "HAL/ExceptionHandling.h"
+#include "HAL/PlatformStackWalk.h"
+#include "Math/Vector.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/CoreDelegates.h"
+#include "Misc/DateTime.h"
+#include "Misc/EmbeddedCommunication.h"
+#include "Misc/FeedbackContext.h"
+#include "UnrealEngine.h"
+#include "Widgets/Input/IVirtualKeyboardEntry.h"
 
 THIRD_PARTY_INCLUDES_START
 #include <android/asset_manager.h>
@@ -176,6 +177,10 @@ void FJavaWrapper::FindClassesAndMethods(JNIEnv* Env)
 	AndroidThunkJava_SetDesiredViewSize = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_SetDesiredViewSize", "(II)V", bIsOptional);
 
 	AndroidThunkJava_VirtualInputIgnoreClick = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_VirtualInputIgnoreClick", "(II)Z", bIsOptional);
+
+	// Multicast lock handling
+	AndroidThunkJava_AcquireWifiManagerMulticastLock = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_AcquireWifiManagerMulticastLock", "()Z", bIsOptional);
+	AndroidThunkJava_ReleaseWifiManagerMulticastLock = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_ReleaseWifiManagerMulticastLock", "()V", bIsOptional);
 
 	SetupEmbeddedCommunication(Env);
 }
@@ -468,6 +473,9 @@ jfieldID FJavaWrapper::LaunchNotificationFireDate;
 jclass FJavaWrapper::ThreadClass;
 jmethodID FJavaWrapper::CurrentThreadMethod;
 jmethodID FJavaWrapper::SetNameMethod;
+
+jmethodID FJavaWrapper::AndroidThunkJava_AcquireWifiManagerMulticastLock;
+jmethodID FJavaWrapper::AndroidThunkJava_ReleaseWifiManagerMulticastLock;
 
 //Game-specific crash reporter
 void EngineCrashHandler(const FGenericCrashContext& GenericContext)
@@ -1546,6 +1554,23 @@ int32 AndroidThunkCpp_GetNetworkConnectionType()
 	}
 
 	return result;
+}
+
+bool AndroidThunkCpp_AcquireWifiManagerMulticastLock()
+{
+	if (JNIEnv* Env = FAndroidApplication::GetJavaEnv())
+	{
+		return FJavaWrapper::CallBooleanMethod(Env, FJavaWrapper::GameActivityThis, FJavaWrapper::AndroidThunkJava_AcquireWifiManagerMulticastLock);
+	}
+	return false;
+}
+
+void AndroidThunkCpp_ReleaseWifiManagerMulticastLock()
+{
+	if (JNIEnv* Env = FAndroidApplication::GetJavaEnv())
+	{
+		FJavaWrapper::CallVoidMethod(Env, FJavaWrapper::GameActivityThis, FJavaWrapper::AndroidThunkJava_ReleaseWifiManagerMulticastLock);
+	}	
 }
 
 //The JNI_OnLoad function is triggered by loading the game library from 

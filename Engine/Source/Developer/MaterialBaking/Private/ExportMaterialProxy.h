@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "MaterialDomain.h"
 #include "MaterialShared.h"
 #include "MaterialCompiler.h"
 #include "TextureCompiler.h"
@@ -13,11 +14,14 @@
 #include "Engine/TextureCube.h"
 #include "Engine/Texture2DArray.h"
 
+#include "DataDrivenShaderPlatformInfo.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
 #include "DeviceProfiles/DeviceProfile.h"
 #include "Materials/MaterialInterface.h"
+#include "Materials/MaterialRenderProxy.h"
 #include "SceneTypes.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialAttributeDefinitionMap.h"
 #include "Materials/MaterialExpressionCustomOutput.h"
 
 struct FExportMaterialCompiler : public FProxyMaterialCompiler
@@ -45,25 +49,15 @@ struct FExportMaterialCompiler : public FProxyMaterialCompiler
 	virtual int32 WorldPosition(EWorldPositionIncludedOffsets WorldPositionIncludedOffsets) override
 	{
 #if WITH_EDITOR
-		return Compiler->MaterialBakingWorldPosition();
+		return MaterialBakingWorldPosition();
 #else
 		return Compiler->WorldPosition(WorldPositionIncludedOffsets);
 #endif
 	}
 
-	virtual int32 ObjectWorldPosition() override
-	{
-		return Compiler->ObjectWorldPosition();
-	}
-
 	virtual int32 DistanceCullFade() override
 	{
 		return Compiler->Constant(1.0f);
-	}
-
-	virtual int32 ActorWorldPosition() override
-	{
-		return Compiler->ActorWorldPosition();
 	}
 
 	virtual int32 ParticleRelativeTime() override
@@ -100,21 +94,6 @@ struct FExportMaterialCompiler : public FProxyMaterialCompiler
 	virtual int32 ParticleSize() override
 	{
 		return Compiler->Constant2(0.0f, 0.0f);
-	}
-
-	virtual int32 ObjectRadius() override
-	{
-		return Compiler->Constant(500);
-	}
-
-	virtual int32 ObjectBounds() override
-	{
-		return Compiler->ObjectBounds();
-	}
-
-	virtual int32 PreSkinnedLocalBounds(int32 OutputIndex) override
-	{
-		return Compiler->PreSkinnedLocalBounds(OutputIndex);
 	}
 
 	virtual int32 CameraVector() override
@@ -167,7 +146,9 @@ struct FExportMaterialCompiler : public FProxyMaterialCompiler
 #if WITH_EDITOR
 	virtual int32 MaterialBakingWorldPosition() override
 	{
-		return Compiler->MaterialBakingWorldPosition();
+		// Depending on how the mesh data was retrieved, baking position may only be in local-space
+		const int32 BakingPosition = Compiler->MaterialBakingWorldPosition();
+		return Compiler->TransformPosition(MCB_Local, MCB_World, BakingPosition);
 	}
 #endif
 
@@ -225,7 +206,7 @@ struct FExportMaterialCompiler : public FProxyMaterialCompiler
 class FExportMaterialProxy : public FMaterial, public FMaterialRenderProxy
 {
 public:
-	FExportMaterialProxy(UMaterialInterface* InMaterialInterface, EMaterialProperty InPropertyToCompile, const FString& InCustomOutputToCompile = TEXT(""), bool bInSynchronousCompilation = true, bool bTangentSpaceNormal = false)
+	FExportMaterialProxy(UMaterialInterface* InMaterialInterface, EMaterialProperty InPropertyToCompile, const FString& InCustomOutputToCompile = TEXT(""), bool bInSynchronousCompilation = true, bool bTangentSpaceNormal = false, EBlendMode ProxyBlendMode = BLEND_Opaque)
 		: FMaterial()
 		, FMaterialRenderProxy(GetPathNameSafe(InMaterialInterface->GetMaterial()))
 		, MaterialInterface(InMaterialInterface)
@@ -233,6 +214,7 @@ public:
 		, CustomOutputToCompile(InCustomOutputToCompile)
 		, bSynchronousCompilation(bInSynchronousCompilation)
 		, bTangentSpaceNormal(bTangentSpaceNormal)
+		, ProxyBlendMode(ProxyBlendMode)
 	{
 		SetQualityLevelProperties(GMaxRHIFeatureLevel);
 		Material = InMaterialInterface->GetMaterial();
@@ -267,8 +249,10 @@ public:
 		case MP_AmbientOcclusion: ResourceId.Usage = EMaterialShaderMapUsage::MaterialExportAO; break;
 		case MP_EmissiveColor: ResourceId.Usage = EMaterialShaderMapUsage::MaterialExportEmissive; break;
 		case MP_Opacity: ResourceId.Usage = EMaterialShaderMapUsage::MaterialExportOpacity; break;
+		case MP_Refraction: ResourceId.Usage = EMaterialShaderMapUsage::MaterialExportRefraction; break;
 		case MP_OpacityMask: ResourceId.Usage = EMaterialShaderMapUsage::MaterialExportOpacityMask; break;
 		case MP_SubsurfaceColor: ResourceId.Usage = EMaterialShaderMapUsage::MaterialExportSubSurfaceColor; break;
+		case MP_ShadingModel: ResourceId.Usage = EMaterialShaderMapUsage::MaterialExportShadingModel; break;
 		case MP_CustomData0: ResourceId.Usage = EMaterialShaderMapUsage::MaterialExportClearCoat; break;
 		case MP_CustomData1: ResourceId.Usage = EMaterialShaderMapUsage::MaterialExportClearCoatRoughness; break;
 		case MP_CustomOutput:
@@ -356,53 +340,47 @@ public:
 	{
 		if (Property == MP_EmissiveColor)
 		{
-			const EBlendMode BlendMode = MaterialInterface->GetBlendMode();
 			FExportMaterialCompiler ProxyCompiler(Compiler);
 			const uint32 ForceCast_Exact_Replicate = MFCF_ForceCast | MFCF_ExactMatch | MFCF_ReplicateValue;
 
 			switch (PropertyToCompile)
 			{
 			case MP_EmissiveColor:
-				// Emissive is ALWAYS returned...
-				return MaterialInterface->CompileProperty(&ProxyCompiler, MP_EmissiveColor, ForceCast_Exact_Replicate);
 			case MP_BaseColor:
-				return MaterialInterface->CompileProperty(&ProxyCompiler, MP_BaseColor, ForceCast_Exact_Replicate);
-				break;
 			case MP_Specular:
 			case MP_Roughness:
 			case MP_Anisotropy:
 			case MP_Metallic:
 			case MP_AmbientOcclusion:
-				// Only return for Opaque and Masked...
-				if (BlendMode == BLEND_Opaque || BlendMode == BLEND_Masked)
-				{
-					return MaterialInterface->CompileProperty(&ProxyCompiler, PropertyToCompile, ForceCast_Exact_Replicate);
-				}
-				break;
-
 			case MP_Opacity:
 			case MP_OpacityMask:
 			case MP_CustomData0:
 			case MP_CustomData1:
 			case MP_SubsurfaceColor:
-			{
 				return MaterialInterface->CompileProperty(&ProxyCompiler, PropertyToCompile, ForceCast_Exact_Replicate);
-			}
 			case MP_Normal:
 			case MP_Tangent:
-				// Only return for Opaque and Masked...
-				if (BlendMode == BLEND_Opaque || BlendMode == BLEND_Masked)
+				return CompileNormalEncoding(
+					Compiler,
+					CompileNormalTransform(&ProxyCompiler, MaterialInterface->CompileProperty(&ProxyCompiler, PropertyToCompile, ForceCast_Exact_Replicate)));
+			case MP_Refraction:
+				// Only index of refraction can be supported because other methods don't have values within a suitable range for encoding into 8-bit baked textures
+				if (Material->RefractionMethod == RM_IndexOfRefraction)
 				{
-					return CompileNormalEncoding(
+					return CompileRefractionEncoding(
 						Compiler,
-						CompileNormalTransform(&ProxyCompiler, MaterialInterface->CompileProperty(&ProxyCompiler, PropertyToCompile, ForceCast_Exact_Replicate)));
+						MaterialInterface->CompileProperty(&ProxyCompiler, MP_Refraction, ForceCast_Exact_Replicate));
 				}
 				break;
 			case MP_ShadingModel:
-				return MaterialInterface->CompileProperty(&ProxyCompiler, MP_ShadingModel);
+				return CompileShadingModelEncoding(Compiler, MaterialInterface->CompileProperty(&ProxyCompiler, MP_ShadingModel));
 			case MP_CustomOutput:
-				 // NOTE: Currently we can assume input index is always 0, which it is for all custom outputs that are registered as material attributes
-				return CompileInputForCustomOutput(&ProxyCompiler, 0, ForceCast_Exact_Replicate);
+				if (const FMaterialCustomOutputAttributeDefintion* CustomAttribute = FMaterialAttributeDefinitionMap::GetCustomAttribute(CustomOutputToCompile))
+				{
+					constexpr int32 InputIndex = 0; // Assume input index is always 0, which it is for all custom outputs that are registered as material attributes
+					return CompileInputForCustomOutput(&ProxyCompiler, CustomAttribute, InputIndex, ForceCast_Exact_Replicate);
+				}
+				break;
 			default:
 				return Compiler->Constant(1.0f);
 			}
@@ -424,10 +402,13 @@ public:
 			return MaterialInterface->CompileProperty(Compiler, MP_ShadingModel);
 
 		}
+		else if (Property == MP_SurfaceThickness)
+		{
+			return MaterialInterface->CompileProperty(Compiler, MP_SurfaceThickness);
+		}
 		else if (Property == MP_FrontMaterial)
 		{
 			return MaterialInterface->CompileProperty(Compiler, MP_FrontMaterial);
-
 		}
 		else
 		{
@@ -451,11 +432,27 @@ public:
 		// it needs to be a surface material.
 		return MD_Surface;
 	}
+	virtual bool IsTangentSpaceNormal() const override
+	{
+		if (const FMaterialResource* Resource = MaterialInterface->GetMaterialResource(GMaxRHIFeatureLevel))
+		{
+			return Resource->IsTangentSpaceNormal();
+		}
+		return false;
+	}
 	virtual bool IsTwoSided() const  override
 	{
 		if (MaterialInterface)
 		{
 			return MaterialInterface->IsTwoSided();
+		}
+		return false;
+	}
+	virtual bool IsThinSurface() const  override
+	{
+		if (MaterialInterface)
+		{
+			return MaterialInterface->IsThinSurface();
 		}
 		return false;
 	}
@@ -502,9 +499,10 @@ public:
 		}
 		return false;
 	}
-	virtual bool IsMasked() const override { return false; }
-	virtual enum EBlendMode GetBlendMode() const override { return BLEND_Opaque; }
-	virtual enum EStrataBlendMode GetStrataBlendMode() const override { return EStrataBlendMode::SBM_Opaque; }
+	virtual bool IsMasked() const override { return ProxyBlendMode == BLEND_Masked; }
+	virtual enum EBlendMode GetBlendMode() const override { return ProxyBlendMode; }
+	virtual enum ERefractionMode GetRefractionMode() const override { return Material ? (ERefractionMode)Material->RefractionMethod : RM_None; }
+	virtual bool GetRootNodeOverridesDefaultRefraction()const override { return Material ? Material->bRootNodeOverridesDefaultDistortion : false; }
 	virtual FMaterialShadingModelField GetShadingModels() const override { return MSM_DefaultLit; }
 	virtual bool IsShadingModelFromMaterialExpression() const override { return false; }
 	virtual float GetOpacityMaskClipValue() const override { return 0.5f; }
@@ -546,15 +544,19 @@ public:
 		}
 	}
 
-private:
-	int32 CompileInputForCustomOutput(FMaterialCompiler* Compiler, int32 InputIndex, uint32 ForceCastFlags) const
+	virtual bool CheckInValidStateForCompilation(FMaterialCompiler* Compiler) const override
 	{
-		FGuid AttributeID = FMaterialAttributeDefinitionMap::GetCustomAttributeID(CustomOutputToCompile);
-		check(AttributeID.IsValid());
+		return Material && Material->CheckInValidStateForCompilation(Compiler);
+	}
 
-		UMaterialExpressionCustomOutput* Expression = GetCustomOutputExpressionToCompile();
+private:
+	int32 CompileInputForCustomOutput(FMaterialCompiler* Compiler, const FMaterialCustomOutputAttributeDefintion* CustomAttribute, int32 InputIndex, uint32 ForceCastFlags) const
+	{
+		check(CustomAttribute);
+
+		UMaterialExpressionCustomOutput* Expression = GetCustomOutputExpression(CustomAttribute->FunctionName);
 		FExpressionInput* ExpressionInput = Expression ? Expression->GetInput(InputIndex) : nullptr;
-		int32 Result = INDEX_NONE;
+		int32 Result;
 
 		if (ExpressionInput)
 		{
@@ -562,7 +564,7 @@ private:
 		}
 		else
 		{
-			Result = FMaterialAttributeDefinitionMap::CompileDefaultExpression(Compiler, AttributeID);
+			Result = CustomAttribute->CompileDefaultValue(Compiler);
 		}
 
 		if (CustomOutputToCompile == TEXT("ClearCoatBottomNormal"))
@@ -572,18 +574,18 @@ private:
 
 		if (ForceCastFlags & MFCF_ForceCast)
 		{
-			Result = Compiler->ForceCast(Result, FMaterialAttributeDefinitionMap::GetValueType(AttributeID), ForceCastFlags);
+			Result = Compiler->ForceCast(Result, CustomAttribute->ValueType, ForceCastFlags);
 		}
 
 		return Result;
 	}
 
-	UMaterialExpressionCustomOutput* GetCustomOutputExpressionToCompile() const
+	UMaterialExpressionCustomOutput* GetCustomOutputExpression(const FString& FunctionName) const
 	{
 		for (UMaterialExpression* Expression : Material->GetExpressions())
 		{
 			UMaterialExpressionCustomOutput* CustomOutputExpression = Cast<UMaterialExpressionCustomOutput>(Expression);
-			if (CustomOutputExpression && CustomOutputExpression->GetDisplayName() == CustomOutputToCompile)
+			if (CustomOutputExpression && CustomOutputExpression->GetFunctionName() == FunctionName)
 			{
 				return CustomOutputExpression;
 			}
@@ -605,6 +607,22 @@ private:
 			Compiler->Constant(0.5f)); // [-0.5,0.5] + 0.5
 	}
 
+	static int32 CompileRefractionEncoding(FMaterialCompiler* Compiler, int32 RefractionInput)
+	{
+		// [1,Infinity] -> [1,0]
+		return Compiler->Div(
+			Compiler->Constant(1.0f),
+			Compiler->Max(Compiler->Constant(1.0f), RefractionInput));
+	}
+
+	static int32 CompileShadingModelEncoding(FMaterialCompiler* Compiler, int32 ShadingModelInput)
+	{
+		// [0,MSM_NUM] -> [0,1]
+		return Compiler->Div(
+			Compiler->CastShadingModelToFloat(ShadingModelInput),
+			Compiler->Constant(MSM_NUM));
+	}
+
 private:
 	/** The material interface for this proxy */
 	UMaterialInterface* MaterialInterface;
@@ -621,4 +639,6 @@ private:
 public:
 	/** Whether to transform normals from world-space to tangent-space (does nothing if material already uses tangent-space normals) */
 	bool bTangentSpaceNormal;
+	/** The blend mode used when baking the proxy material */
+	EBlendMode ProxyBlendMode;
 };

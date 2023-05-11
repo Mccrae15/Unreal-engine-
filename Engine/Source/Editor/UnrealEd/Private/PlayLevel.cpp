@@ -2,6 +2,8 @@
 
 #include "PlayLevel.h"
 #include "CoreMinimal.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Paths.h"
@@ -71,6 +73,7 @@
 #include "Slate/SceneViewport.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 
 #include "LevelEditor.h"
@@ -86,6 +89,7 @@
 #include "GameProjectGenerationModule.h"
 #include "SourceCodeNavigation.h"
 #include "Physics/PhysicsInterfaceCore.h"
+#include "Physics/PhysicsInterfaceScene.h"
 #include "AnalyticsEventAttribute.h"
 #include "Interfaces/IAnalyticsProvider.h"
 #include "EngineAnalytics.h"
@@ -118,7 +122,7 @@
 #include "IAssetViewport.h"
 #include "IPIEAuthorizer.h"
 #include "Features/IModularFeatures.h"
-#include "Containers/DepletableMpscQueue.h"
+#include "Containers/DepletableMpmcQueue.h"
 #include "TickableEditorObject.h"
 
 DEFINE_LOG_CATEGORY(LogPlayLevel);
@@ -212,7 +216,7 @@ private:
 		}
 	}
 
-	UE::TDepletableMpscQueue<FLine> QueuedLines;
+	UE::TDepletableMpmcQueue<FLine> QueuedLines;
 };
 
 void UEditorEngine::EndPlayMap()
@@ -883,6 +887,9 @@ void UEditorEngine::TeardownPlaySession(FWorldContext& PieWorldContext)
 	// Restore GWorld.
 	GWorld = EditorWorld;
 	GIsPlayInEditorWorld = false;
+
+	// Restore the previously purged scene interface for the editor world to its original glory.
+	GWorld->RestoreScene();
 
 	FWorldContext& EditorWorldContext = GEditor->GetEditorWorldContext();
 
@@ -2235,8 +2242,13 @@ int32 UEditorEngine::OnSwitchWorldForSlatePieWindow(int32 WorldID, int32 WorldPI
 	{
 		// When we have an invalid world id we always switch to the pie world in the PIE window
 		OnSwitchWorldsForPIEInstance(WorldPIEInstance);
-		// The editor world was active restore it later
-		RestoreID = EditorWorldID;
+
+		// Make sure the switch to the PIE world was successful
+		if (GIsPlayInEditorWorld)
+		{
+			// The editor world was active restore it later
+			RestoreID = EditorWorldID;
+		}
 	}
 	else if(WorldID == PieWorldID && !GIsPlayInEditorWorld)
 	{
@@ -2667,6 +2679,9 @@ void UEditorEngine::StartPlayInEditorSession(FRequestPlaySessionParams& InReques
 
 	// Make sure there's no outstanding load requests
 	FlushAsyncLoading();
+
+	// Gameplay relies on asset registry to be fully constructed, wait for completion before starting PIE
+	IAssetRegistry::GetChecked().WaitForCompletion();
 
 	// Update the Blueprint Debugger 
 	FBlueprintEditorUtils::FindAndSetDebuggableBlueprintInstances();

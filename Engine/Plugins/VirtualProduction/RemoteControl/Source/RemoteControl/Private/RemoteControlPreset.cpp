@@ -7,6 +7,10 @@
 #include "Algo/Transform.h"
 #include "Components/ActorComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/Engine.h"
+#include "Engine/Level.h"
+#include "Factories/IRCDefaultValueFactory.h"
 #include "GameFramework/Actor.h"
 #include "HAL/IConsoleManager.h"
 #include "IRemoteControlModule.h"
@@ -26,6 +30,7 @@
 
 #include "UObject/Object.h"
 #include "UObject/ObjectMacros.h"
+#include "UObject/Package.h"
 #if WITH_EDITOR
 #include "AnalyticsEventAttribute.h"
 #include "Editor.h"
@@ -105,9 +110,34 @@ namespace
 				ObjectName = FieldOwner->HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject) ? FieldOwner->GetClass()->GetName() : FieldOwner->GetName();
 			}
 
-			OutputName = *FString::Printf(TEXT("%s (%s)"), *FieldName, *ObjectName);
+			OutputName = *FString::Printf(TEXT("%s"), *FieldName);
 		}
 		return OutputName;
+	}
+
+	enum class ELaunchConfiguration : uint8
+	{
+		Editor,
+		DashGame,
+		Packaged
+	};
+
+	ELaunchConfiguration GetLaunchConfiguration()
+	{
+		ELaunchConfiguration CurrentConfiguration = ELaunchConfiguration::Packaged;
+
+#if WITH_EDITOR
+		if (GEditor)
+		{
+			CurrentConfiguration = ELaunchConfiguration::Editor;
+		}
+		else 
+		{
+			CurrentConfiguration = ELaunchConfiguration::DashGame;
+		}
+#endif
+
+		return CurrentConfiguration;
 	}
 }
 
@@ -492,15 +522,15 @@ TWeakPtr<FRemoteControlActor> URemoteControlPreset::ExposeActor(AActor* Actor, F
 	check(Actor);
 
 #if WITH_EDITOR
-	const TCHAR* DesiredName = Args.Label.IsEmpty() ? *Actor->GetActorLabel() : *Args.Label;
+	const FName UniqueLabel = Registry->GenerateUniqueLabel(Args.Label.IsEmpty() ? *Actor->GetActorLabel() : *Args.Label);
 #else
-	const TCHAR* DesiredName = Args.Label.IsEmpty() ? *Actor->GetName() : *Args.Label;
+	const FName UniqueLabel = Registry->GenerateUniqueLabel(Args.Label.IsEmpty() ? *Actor->GetName() : *Args.Label);
 #endif
 
 	FText LogText = FText::Format(LOCTEXT("ExposedActor", "Exposed actor ({0})"), FText::FromString(Actor->GetName()));
     FRemoteControlLogger::Get().Log(TEXT("RemoteControlPreset"), [Text = MoveTemp(LogText)](){ return Text; });
 
-	FRemoteControlActor RCActor{this, Registry->GenerateUniqueLabel(DesiredName), { FindOrAddBinding(Actor)} };
+	FRemoteControlActor RCActor{this, UniqueLabel, { FindOrAddBinding(Actor)} };
 	return StaticCastSharedPtr<FRemoteControlActor>(Expose(MoveTemp(RCActor), FRemoteControlActor::StaticStruct(), Args.GroupId));
 }
 
@@ -583,8 +613,8 @@ bool URemoteControlPreset::RemoveController(const FName& InPropertyName)
 
 		if (const URCVirtualPropertyBase* ControllerToDelete = ControllerContainer->GetVirtualProperty(InPropertyName))
 		{
-			ControllerContainer->RemoveProperty(ControllerToDelete->GetPropertyName());
 			OnControllerRemoved().Broadcast(this, ControllerToDelete->Id);
+			ControllerContainer->RemoveProperty(ControllerToDelete->GetPropertyName());
 			return true;
 		}
 	}
@@ -659,7 +689,14 @@ void URemoteControlPreset::OnModifyController(const FPropertyChangedEvent& Prope
 {
 	if (ensure(ControllerContainer))
 	{
-		if (URCVirtualPropertyBase* ModifiedController = ControllerContainer->GetVirtualProperty(PropertyChangedEvent.Property->GetFName()))
+		URCVirtualPropertyBase* ModifiedController = ControllerContainer->GetVirtualProperty(PropertyChangedEvent.MemberProperty->GetFName());
+
+		if (!ModifiedController)
+		{
+			ModifiedController = ControllerContainer->GetVirtualProperty(PropertyChangedEvent.Property->GetFName());
+		}
+
+		if (ModifiedController)
 		{
 			ControllerContainer->OnModifyPropertyValue(PropertyChangedEvent);
 			OnControllerModified().Broadcast(this, {ModifiedController->Id});
@@ -681,6 +718,12 @@ TWeakPtr<FRemoteControlProperty> URemoteControlPreset::ExposeProperty(UObject* O
 	{
 		return nullptr;
 	}
+	
+	if (!IRemoteControlModule::Get().CanBeAccessedRemotely(Object))
+    {
+    	UE_LOG(LogRemoteControl, Warning, TEXT("Object %s cannot be accessed remotely. Check project settings."), *Object->GetName());
+		return nullptr;
+    }
 
 	TSharedPtr<FRemoteControlProperty> RCPropertyPtr;
 	const TMap<FName, TSharedPtr<IRemoteControlPropertyFactory>>& PropertyFactories = IRemoteControlModule::Get().GetEntityFactories();
@@ -733,6 +776,12 @@ TWeakPtr<FRemoteControlFunction> URemoteControlPreset::ExposeFunction(UObject* O
 {
 	if (!Object || !Function || !Object->GetClass() || !Object->GetClass()->FindFunctionByName(Function->GetFName()))
 	{
+		return nullptr;
+	}
+
+	if (!IRemoteControlModule::Get().CanBeAccessedRemotely(Object))
+	{
+		UE_LOG(LogRemoteControl, Warning, TEXT("Object %s cannot be accessed remotely. Check project settings."), *Object->GetName());
 		return nullptr;
 	}
 
@@ -1027,28 +1076,29 @@ void URemoteControlPreset::CreatePropertyWatcher(const TSharedPtr<FRemoteControl
 
 bool URemoteControlPreset::PropertyShouldBeWatched(const TSharedPtr<FRemoteControlProperty>& RCProperty) const
 {
-#if WITH_EDITOR
-	if (GEditor && !CVarRemoteControlEnablePropertyWatchInEditor.GetValueOnAnyThread())
-	{
-		// Don't use property watchers in editor unless explicitely specified.
-		return false;
-	}
-#endif
-
-	// If we are not running in editor, we need to watch all properties as there is no object modified callback.
-	if (!GIsEditor)
-	{
-		return true;	
-	}
-	
+	// We know these properties will be redirected to their setter in -game or packaged, so we won't get the object modified callback.
 	static const TSet<FName> WatchedPropertyNames =
 		{
 			UStaticMeshComponent::GetRelativeLocationPropertyName(),
 			UStaticMeshComponent::GetRelativeRotationPropertyName(),
 			UStaticMeshComponent::GetRelativeScale3DPropertyName()
 		};
-	
-	return RCProperty && WatchedPropertyNames.Contains(RCProperty->FieldName);
+
+	static const ELaunchConfiguration LaunchConfiguration = GetLaunchConfiguration();
+
+	// In packaged, we don't have access to object modified callbacks, so we have to track them manually.
+	if (LaunchConfiguration == ELaunchConfiguration::Packaged || CVarRemoteControlEnablePropertyWatchInEditor.GetValueOnAnyThread())
+	{
+		return true;
+	}
+	else if (LaunchConfiguration == ELaunchConfiguration::DashGame)
+	{
+		return RCProperty && WatchedPropertyNames.Contains(RCProperty->FieldName);
+	}
+	else
+	{
+		return false;
+	}
 }
 
 void URemoteControlPreset::CreatePropertyWatchers()
@@ -1094,7 +1144,8 @@ void URemoteControlPreset::HandleDisplayClusterConfigChange(UObject* DisplayClus
 {
 #if WITH_EDITOR
 	AActor* OwnerActor = DisplayClusterConfigData->GetTypedOuter<AActor>();
-	GEditor->GetTimerManager()->SetTimerForNextTick(FTimerDelegate::CreateLambda([OwnerActor, PresetPtr = TWeakObjectPtr<URemoteControlPreset>{ this }]()
+	FTimerManager& TimerManager = GEditor ? *GEditor->GetTimerManager() : OwnerActor->GetWorld()->GetTimerManager();
+	TimerManager.SetTimerForNextTick(FTimerDelegate::CreateLambda([OwnerActor, PresetPtr = TWeakObjectPtr<URemoteControlPreset>{ this }]()
 	{
 		TSet<URemoteControlBinding*> ModifiedBindings;
 
@@ -1241,22 +1292,6 @@ FName URemoteControlPreset::GetEntityName(const FName InDesiredName, UObject* In
 	
 	if (DesiredName == NAME_None)
 	{
-		FString ObjectName;
-#if WITH_EDITOR
-		if (AActor* Actor = Cast<AActor>(InObject))
-		{
-			ObjectName = Actor->GetActorLabel();
-		}
-		else if(UActorComponent* Component = Cast<UActorComponent>(InObject))
-		{
-			ObjectName = Component->GetOwner()->GetActorLabel();
-		}
-		else
-#endif
-		{
-			ObjectName = InObject->GetName();
-		}
-
 		FProperty* Property = InFieldPath.GetResolvedData().Field;
 		check(Property);
 
@@ -1268,7 +1303,7 @@ FName URemoteControlPreset::GetEntityName(const FName InDesiredName, UObject* In
 		FieldPath = InFieldPath.GetFieldName().ToString();
 #endif
 			
-		DesiredName = *FString::Printf(TEXT("%s (%s)"), *FieldPath, *ObjectName);
+		DesiredName = *FString::Printf(TEXT("%s"), *FieldPath);
 	}
 
 	return DesiredName;
@@ -1586,6 +1621,8 @@ void URemoteControlPreset::OnObjectPropertyChanged(UObject* Object, struct FProp
 		HandleDisplayClusterConfigChange(Object);
 		return;
 	}
+
+	TMap<URemoteControlBinding*, UObject*> BoundObjectsCache;
  
 	if (Event.Property == nullptr)
 	{
@@ -1594,9 +1631,34 @@ void URemoteControlPreset::OnObjectPropertyChanged(UObject* Object, struct FProp
 			// When no property is passed to OnObjectPropertyChanged (such as by LevelSnapshot->Restore()), let's assume they all changed since we don't have more context.
 			for (TSharedPtr<FRemoteControlProperty> Property : Registry->GetExposedEntities<FRemoteControlProperty>())
 			{
-				if (Property->GetBoundObjects().Contains(Object))
+				bool bPropertyModified = false;
+
+				for (TWeakObjectPtr<URemoteControlBinding> Binding : Property->GetBindings())
 				{
-					PerFrameModifiedProperties.Add(Property->GetId());
+					if (!Binding.IsValid())
+					{
+						continue;
+					}
+
+					if (UObject** BoundObject = BoundObjectsCache.Find(Binding.Get()))
+					{
+						if (Object == *BoundObject)
+						{
+							PerFrameModifiedProperties.Add(Property->GetId());
+							break;
+						}
+					}
+					else
+					{
+						UObject* ResolvedObject = Binding->Resolve();
+						BoundObjectsCache.Add(Binding.Get(), ResolvedObject);
+
+						if (Object == ResolvedObject)
+						{
+							PerFrameModifiedProperties.Add(Property->GetId());
+							break;
+						}
+					}
 				}
 			}
 		}
@@ -1619,6 +1681,28 @@ void URemoteControlPreset::OnObjectPropertyChanged(UObject* Object, struct FProp
 					Iter.RemoveCurrent();
 				}
 			}
+		}
+		for (auto Iter = PreMaterialModifiedCache.CreateIterator(); Iter; ++Iter)
+		{
+			FGuid& PropertyId = Iter.Key();
+			FPreMaterialModifiedCache& CacheEntry = Iter.Value();
+			if (TSharedPtr<FRemoteControlProperty> Property = Registry->GetExposedEntity<FRemoteControlProperty>(PropertyId))
+			{
+				if (UMeshComponent* MeshComponent = Cast<UMeshComponent>(Object))
+				{
+					if (CacheEntry.bHadValue && MeshComponent->OverrideMaterials[CacheEntry.ArrayIndex] == NULL)
+					{
+						FRCResetToDefaultArgs Args;
+						Args.Property = Event.Property;
+						Args.Path = Property->FieldPathInfo.ToPathPropertyString();
+						Args.ArrayIndex = Property->FieldPathInfo.Segments[0].ArrayIndex;
+						Args.bCreateTransaction = false;
+						IRemoteControlModule& RemoteControlModule = IRemoteControlModule::Get();
+						RemoteControlModule.ResetToDefaultValue(Object, Args);
+					}
+				}
+			}
+			Iter.RemoveCurrent();
 		}
 	}
  
@@ -1712,7 +1796,17 @@ void URemoteControlPreset::OnPreObjectPropertyChanged(UObject* Object, const cla
 						if (ExposedProperty == Current->GetValue())
 						{
 							bHasFound = true;
-
+							
+							if (UMeshComponent* MeshComponent = Cast<UMeshComponent>(Object))
+							{
+								if (PropertyChain.GetActiveNode()->GetValue()->GetFName() == GET_MEMBER_NAME_CHECKED(UMeshComponent, OverrideMaterials))
+								{
+									FPreMaterialModifiedCache& NewEntry = PreMaterialModifiedCache.FindOrAdd(RCProperty->GetId());
+									NewEntry.ArrayIndex = RCProperty->FieldPathInfo.Segments[0].ArrayIndex;
+									NewEntry.bHadValue = MeshComponent->OverrideMaterials[NewEntry.ArrayIndex] != NULL;
+								}
+							}
+							
 							FPreObjectsModifiedCache& NewEntry = PreObjectsModifiedCache.FindOrAdd(RCProperty->GetId());
 							NewEntry.Objects.AddUnique(Object);
 							NewEntry.Property = PropertyChain.GetActiveNode()->GetValue();
@@ -2135,7 +2229,11 @@ void URemoteControlPreset::FRCPropertyWatcher::CheckForChange()
 	TRACE_CPUPROFILER_EVENT_SCOPE(FRCPropertyWatcher::CheckForChange);
 	if (TOptional<FRCFieldResolvedData> ResolvedData = GetWatchedPropertyResolvedData())
 	{
-		if (ensure(ResolvedData->Field && ResolvedData->ContainerAddress))
+		if (!LastFrameValue.Num())
+		{
+			SetLastFrameValue(*ResolvedData);
+		}
+		else if (ensure(ResolvedData->Field && ResolvedData->ContainerAddress))
 		{
 			const void* NewValueAddress = ResolvedData->Field->ContainerPtrToValuePtr<void>(ResolvedData->ContainerAddress);
 			if (NewValueAddress && (ResolvedData->Field->GetSize() != LastFrameValue.Num() || !ResolvedData->Field->Identical(LastFrameValue.GetData(), NewValueAddress)))

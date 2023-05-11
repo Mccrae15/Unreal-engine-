@@ -6,10 +6,13 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Shader.h"
 #include "GlobalShader.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
 #include "Engine/EngineTypes.h"
+#endif
 
 /** A macro to implement material shaders. */
 #define IMPLEMENT_MATERIAL_SHADER_TYPE(TemplatePrefix,ShaderClass,SourceFilename,FunctionName,Frequency) \
@@ -23,11 +26,15 @@
 
 class FMaterial;
 class FMaterialShaderMap;
+class FMaterialShaderMapId;
 class FShaderCommonCompileJob;
 class FShaderCompileJob;
 class FUniformExpressionSet;
 class FVertexFactoryType;
 struct FMaterialShaderParameters;
+struct FMaterialShadingModelField;
+enum EBlendMode : int;
+enum EMaterialShadingModel : int;
 enum class EShaderCompileJobPriority : uint8;
 
 DECLARE_DELEGATE_RetVal_OneParam(FString, FShadingModelToStringDelegate, EMaterialShadingModel)
@@ -98,35 +105,44 @@ public:
 		int32 InTotalPermutationCount,
 		ConstructSerializedType InConstructSerializedRef,
 		ConstructCompiledType InConstructCompiledRef,
-		ModifyCompilationEnvironmentType InModifyCompilationEnvironmentRef,
 		ShouldCompilePermutationType InShouldCompilePermutationRef,
+		GetRayTracingPayloadTypeType InGetRayTracingPayloadTypeRef,
+#if WITH_EDITOR
+		ModifyCompilationEnvironmentType InModifyCompilationEnvironmentRef,
 		ValidateCompiledResultType InValidateCompiledResultRef,
+#endif // WITH_EDITOR
 		uint32 InTypeSize,
 		const FShaderParametersMetadata* InRootParametersMetadata = nullptr
 		):
 		FShaderType(EShaderTypeForDynamicCast::Material, InTypeLayout, InName, InSourceFilename, InFunctionName, InFrequency, InTotalPermutationCount,
 			InConstructSerializedRef,
 			InConstructCompiledRef,
-			InModifyCompilationEnvironmentRef,
 			InShouldCompilePermutationRef,
+			InGetRayTracingPayloadTypeRef,
+#if WITH_EDITOR
+			InModifyCompilationEnvironmentRef,
 			InValidateCompiledResultRef,
+#endif // WITH_EDITOR
 			InTypeSize,
-			InRootParametersMetadata)
+			InRootParametersMetadata
+		)
 	{
 		checkf(FPaths::GetExtension(InSourceFilename) == TEXT("usf"),
 			TEXT("Incorrect virtual shader path extension for material shader '%s': Only .usf files should be compiled."),
 			InSourceFilename);
 	}
 
+#if WITH_EDITOR
 	/**
 	 * Enqueues a compilation for a new shader of this type.
 	 * @param Material - The material to link the shader with.
 	 */
 	void BeginCompileShader(
 		EShaderCompileJobPriority Priority,
-		uint32 ShaderMapId,
+		uint32 ShaderMapJobId,
 		int32 PermutationId,
 		const FMaterial* Material,
+		const FMaterialShaderMapId& ShaderMapId,
 		FSharedShaderCompilerEnvironment* MaterialEnvironment,
 		EShaderPlatform Platform,
 		EShaderPermutationFlags PermutationFlags,
@@ -137,10 +153,11 @@ public:
 
 	static void BeginCompileShaderPipeline(
 		EShaderCompileJobPriority Priority,
-		uint32 ShaderMapId,
+		uint32 ShaderMapJobId,
 		EShaderPlatform Platform,
 		EShaderPermutationFlags PermutationFlags,
 		const FMaterial* Material,
+		const FMaterialShaderMapId& ShaderMapId,
 		FSharedShaderCompilerEnvironment* MaterialEnvironment,
 		const FShaderPipelineType* ShaderPipeline,
 		TArray<TRefCountPtr<FShaderCommonCompileJob>>& NewJobs,
@@ -160,6 +177,7 @@ public:
 		const FShaderPipelineType* ShaderPipeline,
 		const FString& InDebugDescription
 		) const;
+#endif // WITH_EDITOR
 
 	/**
 	 * Checks if the shader type should be cached for a particular platform and material.
@@ -171,12 +189,14 @@ public:
 
 	static bool ShouldCompilePipeline(const FShaderPipelineType* ShaderPipelineType, EShaderPlatform Platform, const FMaterialShaderParameters& MaterialParameters, EShaderPermutationFlags Flags);
 
+#if WITH_EDITOR
 	/**
 	 * Sets up the environment used to compile an instance of this shader type.
 	 * @param Platform - Platform to compile for.
 	 * @param Environment - The shader compile environment that the function modifies.
 	 */
 	void SetupCompileEnvironment(EShaderPlatform Platform, const FMaterialShaderParameters& MaterialParameters, int32 PermutationId, EShaderPermutationFlags Flags, FShaderCompilerEnvironment& Environment) const;
+#endif // WITH_EDITOR
 };
 
 struct FMaterialShaderTypes

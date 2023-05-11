@@ -236,7 +236,11 @@ namespace UnrealGameSync
 			_queuedLines = new ConcurrentQueue<string>();
 			if(_logFileStream != null)
 			{
-				_logFileStream.SetLength(0);
+				try
+				{
+					_logFileStream.SetLength(0);
+				}
+				catch { }
 			}
 		}
 
@@ -913,6 +917,8 @@ namespace UnrealGameSync
 
 	public class LogControlTextWriter : ILogger
 	{
+		const LogLevel MinLogLevel = LogLevel.Information;
+
 		class NullDisposable : IDisposable
 		{
 			public void Dispose() { }
@@ -927,6 +933,11 @@ namespace UnrealGameSync
 
 		public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
 		{
+			if (logLevel < MinLogLevel)
+			{
+				return;
+			}
+
 			string message = formatter(state, exception);
 			_logControl.AppendLine(message);
 

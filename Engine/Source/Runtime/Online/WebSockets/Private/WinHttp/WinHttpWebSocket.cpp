@@ -76,7 +76,7 @@ void FWinHttpWebSocket::Connect()
 
 	// Check Domain allowedlist if enabled
 	bool bDisableDomainAllowlist = false;
-	GConfig->GetBool(TEXT("WinHttpWebSocket"), TEXT("bDisableDomainWhitelist"), bDisableDomainAllowlist, GEngineIni);
+	GConfig->GetBool(TEXT("WinHttpWebSocket"), TEXT("bDisableDomainAllowlist"), bDisableDomainAllowlist, GEngineIni);
 	if (!bDisableDomainAllowlist)
 	{
 		FHttpManager& HttpManager = FHttpModule::Get().GetHttpManager();
@@ -187,6 +187,11 @@ void FWinHttpWebSocket::Send(const void* Data, SIZE_T Size, bool bIsBinary)
 	WebSocket->SendMessage(MessageType, MoveTemp(Message));
 }
 
+void FWinHttpWebSocket::SetTextMessageMemoryLimit(uint64 TextMessageMemoryLimit)
+{
+	UE_LOG(LogWebSockets, Verbose, TEXT("SetTextMessageMemoryLimit not implemented for WinHttpWebSocket."));
+}
+
 FWinHttpWebSocket::FWebSocketConnectedEvent& FWinHttpWebSocket::OnConnected()
 {
 	return OnConnectedHandler;
@@ -205,6 +210,11 @@ FWinHttpWebSocket::FWebSocketClosedEvent& FWinHttpWebSocket::OnClosed()
 FWinHttpWebSocket::FWebSocketMessageEvent& FWinHttpWebSocket::OnMessage()
 {
 	return OnMessageHandler;
+}
+
+FWinHttpWebSocket::FWebSocketBinaryMessageEvent& FWinHttpWebSocket::OnBinaryMessage()
+{ 
+	return BinaryMessageHandler; 
 }
 
 FWinHttpWebSocket::FWebSocketRawMessageEvent& FWinHttpWebSocket::OnRawMessage()

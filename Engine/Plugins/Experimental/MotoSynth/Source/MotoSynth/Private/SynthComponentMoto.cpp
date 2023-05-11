@@ -4,7 +4,6 @@
 #include "SynthComponents/SynthComponentMoto.h"
 #include "MotoSynthSourceAsset.h"
 #include "MotoSynthEngine.h"
-#include "DSP/Granulator.h"
 #include "MotoSynthModule.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SynthComponentMoto)

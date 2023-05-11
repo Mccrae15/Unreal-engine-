@@ -120,7 +120,8 @@ public:
 	
 	//~ Begin UComputeDataInterface Interface
 	TCHAR const* GetClassName() const override { return TEXT("AnimAttribute"); }
-	virtual void GetSupportedInputs(TArray<FShaderFunctionDefinition>& OutFunctions) const override;
+	bool CanSupportUnifiedDispatch() const override { return true; }
+	void GetSupportedInputs(TArray<FShaderFunctionDefinition>& OutFunctions) const override;
 	void GetShaderParameters(TCHAR const* UID, FShaderParametersMetadataBuilder& InOutBuilder, FShaderParametersMetadataAllocations& InOutAllocations) const override;
 	void GetHLSL(FString& OutHLSL, FString const& InDataInterfaceName) const override;
 	void GetStructDeclarations(TSet<FString>& OutStructsSeen, TArray<FString>& OutStructs) const override;
@@ -165,7 +166,7 @@ struct FOptimusAnimAttributeRuntimeData
 
 	FOptimusDataTypeRegistry::PropertyValueConvertFuncT	ConvertFunc = nullptr;
 
-	const TArray<FOptimusDataTypeRegistry::FArrayMetadata>* ArrayMetadata = nullptr;
+	TArray<FOptimusDataTypeRegistry::FArrayMetadata> ArrayMetadata;
 
 	UScriptStruct* AttributeType = nullptr;
 
@@ -196,7 +197,6 @@ public:
 	int32 TotalNumArrays = 0;
 	
 	//~ Begin UComputeDataProvider Interface
-	bool IsValid() const override;
 	FComputeDataProviderRenderProxy* GetRenderProxy() override;
 	//~ End UComputeDataProvider Interface
 };
@@ -216,8 +216,9 @@ public:
 	);
 
 	//~ Begin FComputeDataProviderRenderProxy Interface
+	bool IsValid(FValidationData const& InValidationData) const override;
 	void AllocateResources(FRDGBuilder& GraphBuilder) override;
-	void GatherDispatchData(FDispatchSetup const& InDispatchSetup, FCollectedDispatchData& InOutDispatchData) override;
+	void GatherDispatchData(FDispatchData const& InDispatchData) override;
 	//~ End FComputeDataProviderRenderProxy Interface
 
 public:

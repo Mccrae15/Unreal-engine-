@@ -5,6 +5,7 @@
 #include "MassEntityManager.h"
 #include "MassArchetypeData.h"
 #include "MassCommandBuffer.h"
+#include "MassExecutionContext.h"
 #include "VisualLogger/VisualLogger.h"
 #include "Async/ParallelFor.h"
 #include "Containers/UnrealString.h"
@@ -161,14 +162,12 @@ void FMassEntityQuery::ForEachEntityChunk(FMassEntityManager& EntityManager, FMa
 		FScopedSubsystemRequirementsRestore(FMassExecutionContext& ExecutionContext)
 			: CachedExecutionContext(ExecutionContext)
 		{
-			ConstSubsystemsBitSet = ExecutionContext.ConstSubsystemsBitSet;
-			MutableSubsystemsBitSet = ExecutionContext.MutableSubsystemsBitSet;
+			CachedExecutionContext.GetSubsystemRequirementBits(ConstSubsystemsBitSet, MutableSubsystemsBitSet);
 		}
 
 		~FScopedSubsystemRequirementsRestore()
 		{
-			CachedExecutionContext.ConstSubsystemsBitSet = ConstSubsystemsBitSet;
-			CachedExecutionContext.MutableSubsystemsBitSet = MutableSubsystemsBitSet;
+			CachedExecutionContext.SetSubsystemRequirementBits(ConstSubsystemsBitSet, MutableSubsystemsBitSet);
 		}
 
 		FMassExecutionContext& CachedExecutionContext;
@@ -177,7 +176,11 @@ void FMassEntityQuery::ForEachEntityChunk(FMassEntityManager& EntityManager, FMa
 	};
 	FScopedSubsystemRequirementsRestore SubsystemRestore(ExecutionContext);
 
-	ExecutionContext.SetSubsystemRequirements(*this);
+	if (ExecutionContext.CacheSubsystemRequirements(*this) == false)
+	{
+		// required subsystems are not available, bail out.
+		return;
+	}
 
 	// if there's a chunk collection set by the external code - use that
 	if (ExecutionContext.GetEntityCollection().IsSet())
@@ -194,11 +197,17 @@ void FMassEntityQuery::ForEachEntityChunk(FMassEntityManager& EntityManager, FMa
 #endif // WITH_MASSENTITY_DEBUG
 			return;
 		}
+		
+		// note that the following function will only resort to verifying that the data is up to date by
+		// checking the version number. In rare cases when it would result in non trivial cost we actually
+		// do need those calculations.
+		CacheArchetypes(EntityManager);
+
 		ExecutionContext.SetFragmentRequirements(*this);
 		
 		FMassArchetypeData& ArchetypeData = FMassArchetypeHelper::ArchetypeDataFromHandleChecked(ArchetypeHandle);
 		ArchetypeData.ExecuteFunction(ExecutionContext, ExecuteFunction
-			, GetFragmentMappingForArchetype(ArchetypeHandle)
+			, GetRequirementsMappingForArchetype(ArchetypeHandle)
 			, ExecutionContext.GetEntityCollection().GetRanges());
 #if WITH_MASSENTITY_DEBUG
 		NumEntitiesToProcess = ExecutionContext.GetNumEntities();
@@ -263,9 +272,10 @@ bool FMassEntityQuery::HasMatchingEntities(FMassEntityManager& InEntityManager)
 	return false;
 }
 
-const FMassQueryRequirementIndicesMapping& FMassEntityQuery::GetFragmentMappingForArchetype(const FMassArchetypeHandle ArchetypeHandle) const
+const FMassQueryRequirementIndicesMapping& FMassEntityQuery::GetRequirementsMappingForArchetype(const FMassArchetypeHandle ArchetypeHandle) const
 {
 	static const FMassQueryRequirementIndicesMapping FallbackEmptyMapping;
+	checkf(IncrementalChangesCount == 0, TEXT("Fetching cached fragments mapping while the query's cached data is out of sync!"));
 	const int32 ArchetypeIndex = ValidArchetypes.Find(ArchetypeHandle);
 	return ArchetypeIndex != INDEX_NONE ? ArchetypeFragmentMapping[ArchetypeIndex] : FallbackEmptyMapping;
 }

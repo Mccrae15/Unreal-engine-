@@ -2,10 +2,8 @@
 
 #pragma once
 
-#include "SceneViewExtension.h"
 #include "UObject/GCObject.h"
-#include "CoreMinimal.h"
-#include "Engine/TextureRenderTarget2D.h" // for ETextureRenderTargetFormat
+#include "UObject/WeakObjectPtr.h"
 
 #if WITH_EDITOR
 #include "TickableEditorObject.h"
@@ -13,6 +11,7 @@
 
 class UTextureRenderTarget2D;
 class UObject;
+enum ETextureRenderTargetFormat : int;
 
 /* FCompElementRenderTargetPool
  *****************************************************************************/

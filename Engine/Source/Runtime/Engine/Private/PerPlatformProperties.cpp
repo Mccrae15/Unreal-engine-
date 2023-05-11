@@ -1,13 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PerPlatformProperties.h"
-#include "Serialization/Archive.h"
+#include "Concepts/StaticStructProvider.h"
+#include "Engine/Engine.h"
+#include "Misc/DelayedAutoRegister.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(PerPlatformProperties)
 
 #if WITH_EDITOR
 #include "Interfaces/ITargetPlatform.h"
-#include "PlatformInfo.h"
 #endif
 
 IMPLEMENT_TYPE_LAYOUT(FFreezablePerPlatformFloat);
@@ -88,6 +89,9 @@ template ENGINE_API void operator<<(FStructuredArchive::FSlot Slot, TPerPlatform
 template ENGINE_API void operator<<(FStructuredArchive::FSlot Slot, TPerPlatformProperty<FPerPlatformBool, bool, NAME_BoolProperty>&);
 template ENGINE_API void operator<<(FStructuredArchive::FSlot Slot, TPerPlatformProperty<FFreezablePerPlatformFloat, float, NAME_FloatProperty>&);
 
+template ENGINE_API FArchive& operator<<(FArchive&, TPerPlatformProperty<FPerPlatformFrameRate, FFrameRate, NAME_FrameRate>&);
+template ENGINE_API void operator<<(FStructuredArchive::FSlot Slot, TPerPlatformProperty<FPerPlatformFrameRate, FFrameRate, NAME_FrameRate>&);
+
 FString FPerPlatformInt::ToString() const
 {
 	FString Result = FString::FromInt(Default);
@@ -111,3 +115,9 @@ FString FFreezablePerPlatformInt::ToString() const
 	return FPerPlatformInt(*this).ToString();
 }
 
+#if WITH_EDITORONLY_DATA && WITH_EDITOR
+bool GEngine_GetPreviewPlatformName(FName& PlatformName)
+{
+	return GEngine && GEngine->GetPreviewPlatformName(PlatformName);
+}
+#endif

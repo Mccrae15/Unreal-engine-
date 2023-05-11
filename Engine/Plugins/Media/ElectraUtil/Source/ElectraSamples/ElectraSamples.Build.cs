@@ -23,6 +23,7 @@ namespace UnrealBuildTool.Rules
 					"RenderCore",
 					"RHI",
 					"ElectraBase",
+					"ColorManagement",
 				});
 
 			PrivateIncludePathModuleNames.AddRange(
@@ -37,20 +38,13 @@ namespace UnrealBuildTool.Rules
 
 			if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
 			{
-				string DirectXSDKDir = Target.UEThirdPartySourceDirectory + "Windows/DirectX";
-				PublicSystemIncludePaths.Add(DirectXSDKDir + "/include");
-
-				if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
-				{
-					DirectXSDKDir += "/Lib/x64/";
-				}
-
+				PublicSystemIncludePaths.Add(DirectX.GetIncludeDir(Target));
 				if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
 				{
 					AddEngineThirdPartyPrivateStaticDependencies(Target, "DX9");
 
 					PublicAdditionalLibraries.AddRange(new string[] {
-						DirectXSDKDir + "dxerr.lib",
+						DirectX.GetLibDir(Target) + "dxerr.lib",
 					});
 
 					PrivateDependencyModuleNames.Add("D3D11RHI");
@@ -67,7 +61,7 @@ namespace UnrealBuildTool.Rules
 
 				PublicIncludePaths.Add("$(ModuleDir)/Public/Windows");
 			}
-			else if (Target.Platform == UnrealTargetPlatform.Mac || Target.Platform == UnrealTargetPlatform.IOS)
+			else if (Target.Platform == UnrealTargetPlatform.Mac || Target.Platform == UnrealTargetPlatform.IOS || Target.Platform == UnrealTargetPlatform.TVOS)
 			{
 				PrivateDependencyModuleNames.Add("MetalRHI");
 				PublicIncludePaths.Add("$(ModuleDir)/Public/Apple");

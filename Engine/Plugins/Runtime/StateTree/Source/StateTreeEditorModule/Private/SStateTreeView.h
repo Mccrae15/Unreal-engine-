@@ -2,9 +2,15 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "StateTreeViewModel.h"
-#include "Widgets/Views/STreeView.h"
+#include "Widgets/SCompoundWidget.h"
+
+class FStateTreeViewModel;
+class ITableRow;
+class SScrollBar;
+class STableViewBase;
+namespace ESelectInfo { enum Type : int; }
+struct FPropertyChangedEvent;
+template <typename ItemType> class STreeView;
 
 class UStateTreeEditorData;
 class UStateTreeState;
@@ -62,6 +68,8 @@ private:
 	TSharedRef<ITableRow> HandleGenerateRow(TWeakObjectPtr<UStateTreeState> InState, const TSharedRef<STableViewBase>& InOwnerTableView);
 	void HandleGetChildren(TWeakObjectPtr<UStateTreeState> InParent, TArray<TWeakObjectPtr<UStateTreeState>>& OutChildren);
 	void HandleTreeSelectionChanged(TWeakObjectPtr<UStateTreeState> InSelectedItem, ESelectInfo::Type SelectionType);
+	void HandleTreeExpansionChanged(TWeakObjectPtr<UStateTreeState> InSelectedItem, bool bExpanded);
+	
 	TSharedPtr<SWidget> HandleContextMenuOpening();
 
 	// Action handlers

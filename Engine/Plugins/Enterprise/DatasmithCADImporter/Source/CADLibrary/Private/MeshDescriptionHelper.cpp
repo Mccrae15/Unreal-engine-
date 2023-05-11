@@ -192,15 +192,15 @@ void GetExistingPatches(FMeshDescription& MeshSource, TSet<int32>& OutExistingPa
 	{
 		int32 PatchId = ElementToGroups[TriangleID];
 		if (PatchId != LastPatchId)
-	{
+		{
 			OutExistingPatchIds.Add(PatchId);
 			LastPatchId = PatchId;
 		}
 	}
-	}
+}
 
 FMeshDescriptionDataCache::FMeshDescriptionDataCache(FMeshDescription& MeshSource)
-	{
+{
 	FStaticMeshAttributes MeshSourceAttributes(MeshSource);
 
 	TPolygonAttributesRef<FPolygonGroupID> PolygoneToPolygoneGroupId = MeshSourceAttributes.GetPolygonPolygonGroupIndices();
@@ -208,7 +208,7 @@ FMeshDescriptionDataCache::FMeshDescriptionDataCache(FMeshDescription& MeshSourc
 
 	int32 LastPatchGroupId = -1;
 	for (int32 PolygoneID = 0; PolygoneID < PolygoneToPolygoneGroupId.GetNumElements(); ++PolygoneID)
-		{
+	{
 		const FPolygonGroupID GroupID = PolygoneToPolygoneGroupId[PolygoneID];
 		int32 PatchGroupID = PatchGroup[PolygoneID];
 
@@ -244,7 +244,7 @@ void FMeshDescriptionDataCache::RestoreMaterialSlotNames(FMeshDescription& Mesh)
 
 				const FPolygonGroupID* GroupIDMeshSource = Find(PatchGroupID);
 				if (GroupIDMeshSource)
-	{
+				{
 					const FName& SlotName = GetSlotName(*GroupIDMeshSource);
 					ensure(GroupID < PolygonGroupMaterialSlotNames.GetNumElements());
 					PolygonGroupMaterialSlotNames[GroupID] = SlotName;
@@ -392,7 +392,7 @@ bool FillMesh(const FMeshConversionContext& MeshConversionContext, FBodyMesh& Bo
 					MeshVertexInstanceIDs.Add(VertexInstanceID);
 					VertexInstanceNormals[VertexInstanceID] = (FVector3f)Tessellation.NormalArray[NormalIndex];
 					if (!Tessellation.TexCoordArray.IsEmpty())
-					{
+			{
 						VertexInstanceUVs.Set(VertexInstanceID, UVChannel, FVector2f(Tessellation.TexCoordArray[UVIndex]));
 					}
 				}
@@ -401,7 +401,7 @@ bool FillMesh(const FMeshConversionContext& MeshConversionContext, FBodyMesh& Bo
 
 			TMap<FVertexID, FVertexInstanceID> VertexIDToInstanceIDForCad;
 			TFunction<FVertexInstanceID(FVertexID, int32)> FindOrAddVertexInstanceIDForCad = [&](FVertexID VertexID, int32 VertexIndex) ->FVertexInstanceID
-			{
+				{
 				FVertexInstanceID& VertexInstanceID = VertexIDToInstanceIDForCad.FindOrAdd(VertexID);
 				if (VertexInstanceID == -1)
 				{
@@ -413,7 +413,7 @@ bool FillMesh(const FMeshConversionContext& MeshConversionContext, FBodyMesh& Bo
 					MeshVertexInstanceIDs.Add(VertexInstanceID);
 					VertexInstanceNormals[VertexInstanceID] = (FVector3f)Tessellation.NormalArray[VertexIndex];
 					if (!Tessellation.TexCoordArray.IsEmpty())
-					{
+				{
 						VertexInstanceUVs.Set(VertexInstanceID, UVChannel, FVector2f(Tessellation.TexCoordArray[VertexIndex]));
 					}
 				}
@@ -432,7 +432,7 @@ bool FillMesh(const FMeshConversionContext& MeshConversionContext, FBodyMesh& Bo
 				VertexIDToInstanceIDForCad.Reserve(Tessellation.VertexIndices.Num());
 
 				if (Tessellation.TexCoordArray.IsEmpty())
-				{
+			{
 					UVIndices.Init(0, Tessellation.VertexIndices.Num());
 				}
 				else
@@ -441,20 +441,20 @@ bool FillMesh(const FMeshConversionContext& MeshConversionContext, FBodyMesh& Bo
 					for (int32 Index = 0; Index < Tessellation.VertexIndices.Num(); ++Index)
 					{
 						UVIndices[Index] = Index;
-					}
+				}
 					const FVector2f OneVector(1.f, 1.f);
 					MergeCoincidents(Tessellation.TexCoordArray, OneVector, KINDA_SMALL_NUMBER, UVIndices);
-				}
+			}
 
 				if (Tessellation.NormalArray.Num() == 1)
-				{
+			{
 					NormalIndices.Init(0, Tessellation.VertexIndices.Num());
-				}
+			}
 				else
-				{
+			{
 					NormalIndices.SetNum(Tessellation.VertexIndices.Num());
 					for (int32 Index = 0; Index < Tessellation.VertexIndices.Num(); ++Index)
-					{
+				{
 						NormalIndices[Index] = Index;
 					}
 					MergeCoincidents(Tessellation.NormalArray, FVector3f::OneVector, KINDA_SMALL_NUMBER, NormalIndices);
@@ -495,19 +495,19 @@ bool FillMesh(const FMeshConversionContext& MeshConversionContext, FBodyMesh& Bo
 				if (FaceVertexIDs[0] == FaceVertexIDs[1] || FaceVertexIDs[0] == FaceVertexIDs[2] || FaceVertexIDs[1] == FaceVertexIDs[2])
 				{
 					continue;
-				}
+			}
 
 				TriangleVertexInstanceIDs[0] = FindOrAddVertexInstanceID(FaceVertexIDs[0], FaceVertexIndices[0]);
 				TriangleVertexInstanceIDs[1] = FindOrAddVertexInstanceID(FaceVertexIDs[1], FaceVertexIndices[1]);
 				TriangleVertexInstanceIDs[2] = FindOrAddVertexInstanceID(FaceVertexIDs[2], FaceVertexIndices[2]);
 
 				if(FImportParameters::bGRemoveDuplicatedTriangle)
-				{
+			{
 					Sort(FaceVertexIDs, 3);
 					bool bIsAlreadyInSet;
 					VertexIdsToTriangle.Emplace(TTuple<FVertexInstanceID, FVertexInstanceID, FVertexInstanceID>(FaceVertexIDs[0], FaceVertexIDs[1], FaceVertexIDs[2]), &bIsAlreadyInSet);
 					if (bIsAlreadyInSet)
-					{
+				{
 						continue;
 					}
 				}

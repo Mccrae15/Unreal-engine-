@@ -81,6 +81,7 @@ public:
 	virtual void CheckForErrors() override;
 	virtual void OnRegister() override;
 #endif // WITH_EDITOR
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void OnUnregister() override;
 	virtual void InitializeComponent() override;
 	//End ActorComponent interface
@@ -361,6 +362,9 @@ protected:
 
 	/** Get the body instance that we want to constrain to */
 	FBodyInstance* GetBodyInstance(EConstraintFrame::Type Frame) const;
+
+	/** Get the physics object that we want to constrain to. */
+	Chaos::FPhysicsObject* GetPhysicsObject(EConstraintFrame::Type Frame) const;
 
 	/** Internal util to get body transform from actor/component name/bone name information */
 	FTransform GetBodyTransformInternal(EConstraintFrame::Type Frame, FName InBoneName) const;

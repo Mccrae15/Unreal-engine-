@@ -28,18 +28,18 @@ public:
 	FOpenColorIOColorSpace(const FString& InColorSpaceName, int32 InColorSpaceIndex, const FString& InFamilyName);
 
 	/** The ColorSpace name. */
-	UPROPERTY(VisibleAnywhere, Category=ColorSpace)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=ColorSpace)
 	FString ColorSpaceName;
 
 	/** The index of the ColorSpace in the config */
-	UPROPERTY(VisibleAnywhere, Category=ColorSpace)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=ColorSpace)
 	int32 ColorSpaceIndex;
 
 	/** 
 	 * The family of this ColorSpace as specified in the configuration file. 
 	 * When you have lots of colorspaces, you can regroup them by family to facilitate browsing them. 
 	 */
-	UPROPERTY(VisibleAnywhere, Category=ColorSpace)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=ColorSpace)
 	FString FamilyName;
 
 	/** Delimiter used in the OpenColorIO library to make family hierarchies */
@@ -95,10 +95,10 @@ public:
 	 */
 	FOpenColorIODisplayView(FStringView InDisplayName, FStringView InViewName);
 
-	UPROPERTY(VisibleAnywhere, Category = ColorSpace)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = ColorSpace)
 	FString Display;
 
-	UPROPERTY(VisibleAnywhere, Category = ColorSpace)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = ColorSpace)
 	FString View;
 
 	FString ToString() const;
@@ -123,6 +123,7 @@ struct OPENCOLORIO_API FOpenColorIOColorConversionSettings
 	GENERATED_BODY()
 
 public:
+	DECLARE_MULTICAST_DELEGATE(FOnConversionSettingsChange);
 
 	/** Default constructor. */
 	FOpenColorIOColorConversionSettings();
@@ -147,6 +148,8 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = ColorSpace)
 	EOpenColorIOViewTransformDirection DisplayViewDirection = EOpenColorIOViewTransformDirection::Forward;
 
+	/** Delegate triggered upon changes to the settings. */
+	FOnConversionSettingsChange& OnConversionSettingsChanged() { return ConversionSettingsChanged; }
 public:
 
 	/**
@@ -165,9 +168,25 @@ public:
 	*/
 	void ValidateColorSpaces();
 
-private:
+	bool operator==(const FOpenColorIOColorConversionSettings& Other) const { return Equals(Other); }
+	bool operator!=(const FOpenColorIOColorConversionSettings& Other) const { return !Equals(Other); }
+
+	/** Determines if this ColorConversionSettings is the same as another.*/
+	bool Equals(const FOpenColorIOColorConversionSettings& Other) const
+	{
+		return ConfigurationSource    == Other.ConfigurationSource
+			&& SourceColorSpace       == Other.SourceColorSpace
+			&& DestinationColorSpace  == Other.DestinationColorSpace
+			&& DestinationDisplayView == Other.DestinationDisplayView
+			&& DisplayViewDirection   == Other.DisplayViewDirection;
+	}
+	
 	/** Whether or not these settings are of the display-view type. */
 	bool IsDisplayView() const;
+
+private:
+
+	FOnConversionSettingsChange ConversionSettingsChanged;
 };
 
 /**
@@ -184,7 +203,7 @@ public:
 	 * dictate whether it's applied or not to it
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = ColorSpace)
-	bool bIsEnabled = false;
+	bool bIsEnabled = true;
 	
 	/** Conversion to apply when this display is enabled */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = ColorSpace)

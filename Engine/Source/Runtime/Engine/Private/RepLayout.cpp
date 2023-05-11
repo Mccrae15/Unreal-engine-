@@ -5,28 +5,26 @@
 =============================================================================*/
 
 #include "Net/RepLayout.h"
-#include "HAL/IConsoleManager.h"
-#include "UObject/UnrealType.h"
+#include "Containers/StaticBitArray.h"
+#include "Misc/MemStack.h"
+#include "Net/Core/PropertyConditions/RepChangedPropertyTracker.h"
+#include "Net/Serialization/FastArraySerializer.h"
 #include "EngineStats.h"
-#include "GameFramework/OnlineReplStructs.h"
 #include "Engine/PackageMapClient.h"
 #include "Engine/NetConnection.h"
+#include "Net/Core/PushModel/PushModelMacros.h"
 #include "Net/NetworkProfiler.h"
 #include "Engine/ActorChannel.h"
-#include "Engine/NetworkSettings.h"
-#include "HAL/LowLevelMemTracker.h"
-#include "Misc/NetworkVersion.h"
 #include "Misc/App.h"
-#include "Algo/Sort.h"
+#include "Net/Core/Trace/Private/NetTraceInternal.h"
 #include "Net/NetworkGranularMemoryLogging.h"
 #include "Serialization/ArchiveCountMem.h"
-#include "Templates/AndOrNot.h"
-#include "Math/NumericLimits.h"
 #include "Net/Core/PushModel/Types/PushModelPerNetDriverState.h"
 #include "Net/Core/Trace/NetTrace.h"
+#include "Stats/StatsTrace.h"
 #include "UObject/EnumProperty.h"
-#include "UObject/UnrealType.h"
 #if UE_WITH_IRIS
+#include "Iris/IrisConfig.h"
 #include "Net/Iris/ReplicationSystem/ReplicationSystemUtil.h"
 #endif // UE_WITH_IRIS
 
@@ -100,6 +98,14 @@ namespace UE::Net::Private
 {
 	static bool bDeltaInitialFastArrayElements = false;
 	static FAutoConsoleVariableRef CVarDeltaInitialFastArrayElements(TEXT("net.DeltaInitialFastArrayElements"), bDeltaInitialFastArrayElements, TEXT("If true, send delta struct changelists for initial fast array elements."));
+
+	/* FastArrays and other custom delta properties may have order dependencies due to callbacks being fired during serialization at which time other custom delta properties have not yet received their state.
+	 * This cvar toggles the behavior between using the RepIndex of the property or the order of appearance in the lifetime property array filled during a GetLifetimeReplicatedProps() call.
+	 * Default is false to keep the legacy behavior of using the GetLifetimeReplicatedProps() order for the custom delta properties.
+	 * The cvar is used in ReplicationStateDescriptorBuilder as well. Search for the cvar name in the code base before removing it.
+	 */
+	static bool bReplicateCustomDeltaPropertiesInRepIndexOrder = false;
+	static FAutoConsoleVariableRef CVarReplicateCustomDeltaPropertiesInRepIndexOrder(TEXT("net.ReplicateCustomDeltaPropertiesInRepIndexOrder"), bReplicateCustomDeltaPropertiesInRepIndexOrder, TEXT("If false (default) custom delta properties will replicate in the same order as they're added to the lifetime property array during the call to GetLifetimeReplicatedProps. If true custom delta properties will be replicated in the property RepIndex order, which is typically in increasing property offset order. Note that custom delta properties are always serialized after regular properties."));
 }
 
 extern int32 GNumSharedSerializationHit;
@@ -129,7 +135,7 @@ namespace UE_RepLayout_Private
 		using BaseBufferType = typename TRemovePointer<typename TDecay<BufferType>::Type>::Type;
 
 		static_assert(!TIsPointer<OutputType>::Value, "GetTypedProperty invalid OutputType!  Don't specify output as a pointer.");
-		static_assert(TOr<TAreTypesEqual<uint8, BaseBufferType>, TAreTypesEqual<void, BaseBufferType>>::Value, "GetTypedProperty invalid BufferType! Only TRepDataBufferBase, void*, and uint8* are supported!");
+		static_assert(std::is_same_v<uint8, BaseBufferType> || std::is_same_v<void, BaseBufferType>, "GetTypedProperty invalid BufferType! Only TRepDataBufferBase, void*, and uint8* are supported!");
 
 		// TODO: Conditionally compilable runtime type validation.
 		return reinterpret_cast<ConstOrNotOutputType *>(Buffer);
@@ -955,7 +961,7 @@ static uint32 GetRepLayoutCmdCompatibleChecksum(
 	
 	// Evolve by StaticArrayIndex (to make all unrolled static array elements unique)
 	if ((ServerConnection == nullptr) ||
-		(ServerConnection->EngineNetworkProtocolVersion >= EEngineNetworkVersionHistory::HISTORY_REPCMD_CHECKSUM_REMOVE_PRINTF))
+		(ServerConnection->GetNetworkCustomVersion(FEngineNetworkCustomVersion::Guid) >= FEngineNetworkCustomVersion::RepCmdChecksumRemovePrintf))
 	{
 		CompatibleChecksum = FCrc::MemCrc32(&StaticArrayIndex, sizeof(StaticArrayIndex), CompatibleChecksum);
 	}
@@ -966,7 +972,7 @@ static uint32 GetRepLayoutCmdCompatibleChecksum(
 
 	// Evolve by enum max value bits required
 	if ((ServerConnection == nullptr) ||
-		(ServerConnection->EngineNetworkProtocolVersion >= EEngineNetworkVersionHistory::HISTORY_ENUM_SERIALIZATION_COMPAT))
+		(ServerConnection->GetNetworkCustomVersion(FEngineNetworkCustomVersion::Guid) >= FEngineNetworkCustomVersion::EnumSerializationCompat))
 	{
 		if (const FEnumProperty* EnumProp = CastField<FEnumProperty>(Property))
 		{
@@ -2737,7 +2743,14 @@ void FRepLayout::SendProperties_r(
 
 		if (Cmd.Type == ERepLayoutCmdType::DynamicArray)
 		{
-			WritePropertyHandle(Writer, HandleIterator.Handle, bDoChecksum);
+			if (SerializePropertyType == ESerializePropertyType::Handle)
+			{
+				WritePropertyHandle(Writer, HandleIterator.Handle, bDoChecksum);
+			}
+			else if (SerializePropertyType == ESerializePropertyType::Name)
+			{
+				WritePropertyName(Writer, Cmd.Property->GetFName(), bDoChecksum);
+			}
 
 			UE_NET_TRACE_DYNAMIC_NAME_SCOPE(Cmd.Property->GetFName(), Writer, GetTraceCollector(Writer), ENetTraceVerbosity::Trace);
 
@@ -2944,6 +2957,8 @@ static FORCEINLINE void WritePropertyHandle_BackwardsCompatible(
 	uint32			NetFieldExportHandle,
 	bool			bDoChecksum)
 {
+	UE_NET_TRACE_SCOPE(PropertyHandle, Writer, GetTraceCollector(Writer), ENetTraceVerbosity::Trace);
+
 	const int NumStartingBits = Writer.GetNumBits();
 
 	Writer.SerializeIntPacked(NetFieldExportHandle);
@@ -3040,6 +3055,8 @@ void FRepLayout::SendProperties_BackwardsCompatible_r(
 
 	FNetBitWriter TempWriter(Writer.PackageMap, 0);
 
+	UE_NET_TRACE_SCOPE(Properties, Writer, GetTraceCollector(Writer), ENetTraceVerbosity::Trace);
+
 	while (HandleIterator.NextHandle())
 	{
 		const FRepLayoutCmd& Cmd = Cmds[HandleIterator.CmdIndex];
@@ -3065,6 +3082,8 @@ void FRepLayout::SendProperties_BackwardsCompatible_r(
 		}
 
 		WritePropertyHandle_BackwardsCompatible(Writer, HandleIterator.CmdIndex + 1, bDoChecksum);
+
+		UE_NET_TRACE_DYNAMIC_NAME_SCOPE(Cmd.Property->GetFName(), Writer, GetTraceCollector(Writer), ENetTraceVerbosity::Trace);
 
 		if (Cmd.Type == ERepLayoutCmdType::DynamicArray)
 		{
@@ -4545,7 +4564,7 @@ bool FRepLayout::ReceiveCustomDeltaProperty(
 	FNetDeltaSerializeInfo& Params,
 	FStructProperty* Property) const
 {
-	if (Params.Connection->EngineNetworkProtocolVersion >= EEngineNetworkVersionHistory::HISTORY_FAST_ARRAY_DELTA_STRUCT)
+	if (Params.Connection->GetNetworkCustomVersion(FEngineNetworkCustomVersion::Guid) >= FEngineNetworkCustomVersion::FastArrayDeltaStruct)
 	{
 		Params.bSupportsFastArrayDeltaStructSerialization = !!Params.Reader->ReadBit();
 	}
@@ -6170,10 +6189,16 @@ void FRepLayout::InitFromClass(
 	// Initialize lifetime props
 	// Properties that replicate for the lifetime of the channel
 	TArray<FLifetimeProperty> LifetimeProps;
+	LifetimeProps.Reserve(Parents.Num());
 
 	UObject* Object = InObjectClass->GetDefaultObject();
 
 	Object->GetLifetimeReplicatedProps(LifetimeProps);
+	// If there are custom delta properties we may have to change the order we traverse the replicated props.
+	if (UE::Net::Private::bReplicateCustomDeltaPropertiesInRepIndexOrder && (HighestCustomDeltaRepIndex != INDEX_NONE))
+	{
+		Algo::SortBy(LifetimeProps, [](const FLifetimeProperty& Element) { return Element.RepIndex; }, TLess<decltype(FLifetimeProperty::RepIndex)>());
+	}
 
 #if WITH_PUSH_MODEL
 	PushModelProperties.Init(false, Parents.Num());
@@ -7127,6 +7152,19 @@ TStaticBitArray<COND_Max> FSendingRepState::BuildConditionMapFromRepFlags(const 
 	ConditionMap[COND_Never] = false;
 
 	return ConditionMap;
+}
+
+bool FSendingRepState::HasAnyPendingRetirements() const
+{
+	for (const FPropertyRetirement& PropRet : Retirement)
+	{
+		if (PropRet.Next != nullptr)
+		{
+			return true;
+		}
+	}
+
+	return false;
 }
 
 void FRepLayout::RebuildConditionalProperties(

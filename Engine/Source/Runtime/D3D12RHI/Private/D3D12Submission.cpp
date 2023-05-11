@@ -3,13 +3,14 @@
 #include "D3D12RHIPrivate.h"
 #include "HAL/Runnable.h"
 #include "HAL/RunnableThread.h"
+#include "IRenderCaptureProvider.h"
 
 #ifndef D3D12_PLATFORM_SUPPORTS_BLOCKING_FENCES
 #define D3D12_PLATFORM_SUPPORTS_BLOCKING_FENCES 1
 #endif
 
 // These defines control which threads are enabled in the GPU submission pipeline.
-#define D3D12_USE_SUBMISSION_THREAD (1 && (WITH_MGPU == 0)) // @todo mgpu - fix crashes when submission thread is enabled
+#define D3D12_USE_SUBMISSION_THREAD (1)
 #define D3D12_USE_INTERRUPT_THREAD  (1 && D3D12_PLATFORM_SUPPORTS_BLOCKING_FENCES)
 
 // When enabled, GPU timestamp queries are adjusted to remove idle time caused by CPU bubbles.
@@ -22,6 +23,16 @@ static FAutoConsoleVariableRef CVarD3D12AsyncPayloadMerge(
 	TEXT("Whether to attempt to merge command lists into a single payload, saving perf.  Mainly applies to QueueAsyncCommandListSubmit.  (Default = 1)\n"),
 	ECVF_RenderThreadSafe
 );
+
+// @todo mgpu - fix crashes when submission thread is enabled)
+static TAutoConsoleVariable<int32> CVarRHIUseSubmissionThread(
+	TEXT("rhi.UseSubmissionThread"),
+	1,
+	TEXT("Whether to enable the RHI submission thread.\n")
+	TEXT("  0: No\n")
+	TEXT("  1: Yes, but not when running with multi-gpu.\n")
+	TEXT("  2: Yes, always\n"),
+	ECVF_ReadOnly);
 
 DECLARE_CYCLE_STAT(TEXT("Submit"), STAT_D3D12Submit, STATGROUP_D3D12RHI);
 
@@ -96,13 +107,29 @@ private:
 
 void FD3D12DynamicRHI::InitializeSubmissionPipe()
 {
+	if (FPlatformProcess::SupportsMultithreading())
+	{
 #if D3D12_USE_INTERRUPT_THREAD
-	InterruptThread = new FD3D12Thread(TEXT("RHIInterruptThread"), TPri_Highest, this, &FD3D12DynamicRHI::ProcessInterruptQueue);
+		InterruptThread = new FD3D12Thread(TEXT("RHIInterruptThread"), TPri_Highest, this, &FD3D12DynamicRHI::ProcessInterruptQueue);
 #endif
 
 #if D3D12_USE_SUBMISSION_THREAD
-	SubmissionThread = new FD3D12Thread(TEXT("RHISubmissionThread"), TPri_Highest, this, &FD3D12DynamicRHI::ProcessSubmissionQueue);
+		bool bUseSubmissionThread = false;
+		switch (CVarRHIUseSubmissionThread.GetValueOnAnyThread())
+		{
+		case 1: bUseSubmissionThread = FRHIGPUMask::All().HasSingleIndex(); break;
+		case 2: bUseSubmissionThread = true; break;
+		}
+
+		// Currently RenderDoc can't make programmatic captures when we use a submission thread.
+		bUseSubmissionThread &= !IRenderCaptureProvider::IsAvailable() || IRenderCaptureProvider::Get().CanSupportSubmissionThread();
+
+		if (bUseSubmissionThread)
+		{
+			SubmissionThread = new FD3D12Thread(TEXT("RHISubmissionThread"), TPri_Highest, this, &FD3D12DynamicRHI::ProcessSubmissionQueue);
+		}
 #endif
+	}
 
 	FlushTiming(true);
 }
@@ -273,22 +300,21 @@ void FD3D12DynamicRHI::SubmitPayloads(TArrayView<FD3D12Payload*> Payloads)
 		Payload->Queue.PendingSubmission.Enqueue(Payload);
 	}
 
-#if D3D12_USE_SUBMISSION_THREAD
-
-	SubmissionThread->Kick();
-
-#else
-
-	// Since we're processing directly on the calling thread, we need to take a scope lock.
-	// Multiple engine threads might be calling Submit().
+	if (SubmissionThread)
 	{
-		FScopeLock Lock(&SubmissionCS);
-
-		// Process the submission queue until no further progress is being made.
-		while (EnumHasAnyFlags(ProcessSubmissionQueue().Status, EQueueStatus::Processed)) {}
+		SubmissionThread->Kick();
 	}
+	else
+	{
+		// Since we're processing directly on the calling thread, we need to take a scope lock.
+		// Multiple engine threads might be calling Submit().
+		{
+			FScopeLock Lock(&SubmissionCS);
 
-#endif
+			// Process the submission queue until no further progress is being made.
+			while (EnumHasAnyFlags(ProcessSubmissionQueue().Status, EQueueStatus::Processed)) {}
+		}
+	}
 
 	// Use this opportunity to pump the interrupt queue
 	ProcessInterruptQueueUntil(nullptr);
@@ -561,12 +587,10 @@ FD3D12DynamicRHI::FProcessResult FD3D12DynamicRHI::ProcessSubmissionQueue()
 		Payload->Queue.PendingInterrupt.Enqueue(Payload);
 	}
 
-#if D3D12_USE_INTERRUPT_THREAD
-	if (EnumHasAnyFlags(Result.Status, EQueueStatus::Processed))
+	if (InterruptThread && EnumHasAnyFlags(Result.Status, EQueueStatus::Processed))
 	{
 		InterruptThread->Kick();
 	}
-#endif
 
 	return Result;
 }
@@ -801,6 +825,8 @@ uint64 FD3D12Queue::ExecutePayload()
 		bRequiresSignal = true;
 	}
 
+	bRequiresSignal |= PayloadToSubmit->bAlwaysSignal;
+
 	// Keep the latest fence value in the submitted payload.
 	// The interrupt thread uses this to determine when work has completed.
 	uint64 FenceValue = SignalFence();
@@ -849,46 +875,44 @@ void FD3D12SyncPoint::Wait() const
 
 void FD3D12DynamicRHI::ProcessInterruptQueueUntil(FGraphEvent* GraphEvent)
 {
-#if D3D12_USE_INTERRUPT_THREAD
-
-	if (GraphEvent && !GraphEvent->IsComplete())
+	if (InterruptThread)
 	{
-		FRenderThreadIdleScope Scope(ERenderThreadIdleTypes::WaitingForGPUQuery);
-		GraphEvent->Wait();
-	}
-
-#else
-
-	// Use the current thread to process the interrupt queue until the sync point we're waiting for is signaled.
-	// If GraphEvent is nullptr, process the queue until no further progress is made (assuming we can acquire the lock), then return.
-	if (!GraphEvent || !GraphEvent->IsComplete())
-	{
-		// If we're waiting for a sync point, accumulate the idle time
-		FRenderThreadIdleScope Scope(ERenderThreadIdleTypes::WaitingForGPUQuery, GraphEvent != nullptr);
-
-	Retry:
-		if (InterruptCS.TryLock())
+		if (GraphEvent && !GraphEvent->IsComplete())
 		{
-			FProcessResult Result;
-			do { Result = ProcessInterruptQueue(); }
-			// If we have a sync point, keep processing until the sync point is signaled.
-			// Otherwise, process until no more progress is being made.
-			while (GraphEvent
-				? !GraphEvent->IsComplete()
-				: EnumHasAllFlags(Result.Status, EQueueStatus::Processed)
-			);
-
-			InterruptCS.Unlock();
-		}
-		else if (GraphEvent && !GraphEvent->IsComplete())
-		{
-			// Failed to get the lock. Another thread is processing the interrupt queue. Try again...
-			FPlatformProcess::Sleep(0);
-			goto Retry;
+			GraphEvent->Wait();
 		}
 	}
+	else
+	{
+		// Use the current thread to process the interrupt queue until the sync point we're waiting for is signaled.
+		// If GraphEvent is nullptr, process the queue until no further progress is made (assuming we can acquire the lock), then return.
+		if (!GraphEvent || !GraphEvent->IsComplete())
+		{
+			// If we're waiting for a sync point, accumulate the idle time
+			FThreadIdleStats::FScopeIdle IdleScope(/* bIgnore = */GraphEvent == nullptr);
 
-#endif
+		Retry:
+			if (InterruptCS.TryLock())
+			{
+				FProcessResult Result;
+				do { Result = ProcessInterruptQueue(); }
+				// If we have a sync point, keep processing until the sync point is signaled.
+				// Otherwise, process until no more progress is being made.
+				while (GraphEvent
+					? !GraphEvent->IsComplete()
+					: EnumHasAllFlags(Result.Status, EQueueStatus::Processed)
+				);
+
+				InterruptCS.Unlock();
+			}
+			else if (GraphEvent && !GraphEvent->IsComplete())
+			{
+				// Failed to get the lock. Another thread is processing the interrupt queue. Try again...
+				FPlatformProcess::SleepNoStats(0);
+				goto Retry;
+			}
+		}
+	}
 }
 
 FD3D12DynamicRHI::FProcessResult FD3D12DynamicRHI::ProcessInterruptQueue()
@@ -906,22 +930,26 @@ FD3D12DynamicRHI::FProcessResult FD3D12DynamicRHI::ProcessInterruptQueue()
 
 			if (CompletedFenceValue == UINT64_MAX)
 			{
-				// If the GPU crashes or hangs, the driver will signal all fences to UINT64_MAX. Check the device is still healthy.
-				VERIFYD3D12RESULT(CurrentQueue.Device->GetDevice()->GetDeviceRemovedReason());
+				// If the GPU crashes or hangs, the driver will signal all fences to UINT64_MAX. If we get an error code here, we can't pass it directly to 
+				// VERIFYD3D12RESULT, because that expects DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET etc. and wants to obtain the reason code itself
+				// by calling GetDeviceRemovedReason (again).
+				HRESULT DeviceRemovedReason = CurrentQueue.Device->GetDevice()->GetDeviceRemovedReason();
+				if (DeviceRemovedReason != S_OK)
+				{
+					VerifyD3D12Result(DXGI_ERROR_DEVICE_REMOVED, "CurrentQueue.Fence.D3DFence->GetCompletedValue()", __FILE__, __LINE__, CurrentQueue.Device->GetDevice());
+				}
 			}
 
 			if (CompletedFenceValue < Payload->CompletionFenceValue)
 			{
-#if D3D12_USE_INTERRUPT_THREAD
 				// Command list batch has not yet completed on this queue.
 				// Ask the driver to wake this thread again when the required value is reached.
-				if (!CurrentQueue.Fence.bInterruptAwaited)
+				if (InterruptThread && !CurrentQueue.Fence.bInterruptAwaited)
 				{
 					SCOPED_NAMED_EVENT_TEXT("SetEventOnCompletion", FColor::Red);
 					VERIFYD3D12RESULT(CurrentQueue.Fence.D3DFence->SetEventOnCompletion(Payload->CompletionFenceValue, InterruptThread->Event));
 					CurrentQueue.Fence.bInterruptAwaited = true;
 				}
-#endif // D3D12_USE_INTERRUPT_THREAD
 
 				// Skip processing this queue and move on to the next.
 				Result.Status |= EQueueStatus::Pending;
@@ -1077,6 +1105,16 @@ FD3D12PayloadBase::~FD3D12PayloadBase()
 	}
 }
 
+#ifndef D3D12_PREFER_QUERIES_FOR_GPU_TIME
+#define D3D12_PREFER_QUERIES_FOR_GPU_TIME 0
+#endif
+
+static TAutoConsoleVariable<int32> CVarGPUTimeFromTimestamps(
+	TEXT("r.D3D12.GPUTimeFromTimestamps"),
+	D3D12_PREFER_QUERIES_FOR_GPU_TIME,
+	TEXT("Prefer timestamps instead of GetHardwareGPUFrameTime to compute GPU frame time"),
+	ECVF_RenderThreadSafe);
+
 void FD3D12DynamicRHI::ProcessTimestamps(TIndirectArray<FD3D12Timing>& Timing)
 {
 	// The total number of cycles where at least one GPU pipe was busy during the frame.
@@ -1127,7 +1165,7 @@ void FD3D12DynamicRHI::ProcessTimestamps(TIndirectArray<FD3D12Timing>& Timing)
 	}
 
 	check(BusyPipes == 0);
-
+	
 	// @todo mgpu - how to handle multiple devices / queues with potentially different timestamp frequencies?
 	FD3D12Device* Device = GetAdapter().GetDevice(0);
 	double Frequency = Device->GetTimestampFrequency(ED3D12QueueType::Direct);
@@ -1137,9 +1175,9 @@ void FD3D12DynamicRHI::ProcessTimestamps(TIndirectArray<FD3D12Timing>& Timing)
 
 	// Update the global GPU frame time stats
 	SET_CYCLE_COUNTER(STAT_RHI_GPUTotalTime, FPlatformMath::TruncToInt(double(UnionBusyCycles) * Scale64));
-
+	 
 	double HardwareGPUTime = 0.0;
-	if (GetHardwareGPUFrameTime(HardwareGPUTime))
+	if (GetHardwareGPUFrameTime(HardwareGPUTime) && CVarGPUTimeFromTimestamps.GetValueOnAnyThread() == 0)
 	{
 		SET_CYCLE_COUNTER(STAT_RHI_GPUTotalTimeHW, HardwareGPUTime);
 		GGPUFrameTime = HardwareGPUTime;

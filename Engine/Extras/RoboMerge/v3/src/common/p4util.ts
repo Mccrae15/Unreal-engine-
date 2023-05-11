@@ -4,7 +4,8 @@ import { ContextualLogger } from './logger';
 import { Change, coercePerforceWorkspace, OpenedFileRecord, PerforceContext, RoboWorkspace } from './perforce';
 
 const USER_WORKSPACE_EXCLUDE_PATTERNS: (RegExp | string)[] = [
-	'horde-p4bridge-'
+	'horde-p4bridge-',
+	'swarm-'
 ]
 
 ///////////////////
@@ -223,7 +224,7 @@ export async function cleanWorkspaces(p4: PerforceContext, workspaces: [string, 
 }
 
 export async function getWorkspacesForUser(p4: PerforceContext, user: string, edgeServerAddress?: string) {
-	return (await p4.find_workspaces(user, edgeServerAddress))
+	return (await p4.find_workspaces(user, {edgeServerAddress}))
 		.filter(ws => !USER_WORKSPACE_EXCLUDE_PATTERNS.some(entry => ws.client.match(entry)))
 }
 

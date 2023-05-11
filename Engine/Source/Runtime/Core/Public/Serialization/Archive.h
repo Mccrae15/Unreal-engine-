@@ -229,16 +229,10 @@ public:
 	}
 
 	/** Returns the engine-global network protocol version for this archive. */
-	FORCEINLINE uint32 EngineNetVer() const
-	{
-		return ArEngineNetVer;
-	}
+	uint32 EngineNetVer() const;
 
 	/** Returns the game-specific network protocol version for this archive. */
-	FORCEINLINE uint32 GameNetVer() const
-	{
-		return ArGameNetVer;
-	}
+	uint32 GameNetVer() const;
 
 	/**
 	 * Queries a custom version from the archive.  If the archive is being used to write, the custom version must have already been registered.
@@ -973,9 +967,11 @@ protected:
 	FEngineVersionBase ArEngineVer;
 
 	/** Holds the engine network protocol version. */
+	UE_DEPRECATED(5.2, "Engine net version moved to custom versions")
 	uint32 ArEngineNetVer;
 
 	/** Holds the game network protocol version. */
+	UE_DEPRECATED(5.2, "Game net version moved to custom versions")
 	uint32 ArGameNetVer;
 
 	/**
@@ -1334,24 +1330,6 @@ public:
 	}
 
 	/**
-	 * Serializes an enumeration value from or into an archive.
-	 *
-	 * @param Ar The archive to serialize from or to.
-	 * @param Value The value to serialize.
-	 */
-	template<class TEnum>
-	FORCEINLINE friend FArchive& operator<<(FArchive& Ar, TEnumAsByte<TEnum>& Value)
-	{
-#if DEVIRTUALIZE_FLinkerLoad_Serialize
-		if (!Ar.FastPathLoad<sizeof(Value)>(&Value))
-#endif
-		{
-			Ar.Serialize(&Value, 1);
-		}
-		return Ar;
-	}
-
-	/**
 	 * Serializes a signed 8-bit integer value from or into an archive.
 	 *
 	 * @param Ar The archive to serialize from or to.
@@ -1569,21 +1547,6 @@ public:
 	}
 
 	/**
-	 * Serializes enum classes as their underlying type.
-	 *
-	 * @param Ar The archive to serialize from or to.
-	 * @param Value The value to serialize.
-	 */
-	template <
-		typename EnumType,
-		typename = typename TEnableIf<TIsEnumClass<EnumType>::Value>::Type
-	>
-	FORCEINLINE friend FArchive& operator<<(FArchive& Ar, EnumType& Value)
-	{
-		return Ar << (__underlying_type(EnumType)&)Value;
-	}
-
-	/**
 	 * Serializes an FIntRect value from or into an archive.
 	 *
 	 * @param Ar The archive to serialize from or to.
@@ -1600,7 +1563,16 @@ public:
 	friend CORE_API FArchive& operator<<(FArchive& Ar, FString& Value);
 
 public:
-	virtual void Serialize(void* V, int64 Length) { }
+	virtual void Serialize(void* V, int64 Length)
+	{
+#if defined(__clang_analyzer__)
+		// Suppress core.uninitialized.Assign static analysis warning
+		// Base class FArchive::Serialize() does not modify the value being serialized, so the analysis
+		// assumes any data being serialized to could be uninitalized, but practically speaking any
+		// data being serialized will use a derived class that always modifies the value.
+		memset(V, 0, Length);
+#endif
+	}
 
 	virtual void SerializeBits(void* V, int64 LengthBits)
 	{
@@ -1666,6 +1638,19 @@ public:
 	 */
 	virtual void DetachBulkData(FBulkData* BulkData, bool bEnsureBulkDataIsLoaded) { }
 	virtual void DetachBulkData(UE::Serialization::FEditorBulkData* BulkData, bool bEnsureBulkDataIsLoaded) {}
+
+	/**
+	 * Serialize bulk data.
+	 *
+	 * @param	BulkData		Bulk data object to serialize
+	 * @param	Params			Serialization parameters
+	 *
+	 * @return true if the bulk data was serialized, false to fallback to default serialization (inline)
+	 */
+	virtual bool SerializeBulkData(FBulkData& BulkData, const struct FBulkDataSerializationParams& Params)
+	{ 
+		return false;
+	}
 
 	/**
 	* Determine if the given archive is a valid "child" of this archive. In general, this means "is exactly the same" but
@@ -1735,13 +1720,9 @@ public:
 
 	/**
 	 * Serializes and compresses/ uncompresses data. This is a shared helper function for compression support. 
-	 
-	 // @@ old comment ? remove me ?
-	 The data is saved in a way compatible with FIOSystem::LoadCompressedData.
-
 	 *
-	 * prefer SerializeCompressedNew instead.
-	 *
+	 * Do not use SerializeCompressed in new code, prefer SerializeCompressedNew instead.
+	 * SerializeCompressedNew can be dropped in to any existing use of SerializeCompressed.
 	 *
 	 * @param	V		Data pointer to serialize data from/ to
 	 * @param	Length	Length of source data if we're saving, unused otherwise
@@ -1756,6 +1737,10 @@ public:
 	 * Serializes and compresses/ uncompresses data. This is a shared helper function for compression support. 
 	 *
 	 * call SerializeCompressedNew instead of SerializeCompressed
+	 * Typically you should not serializing data compressed if it will be packaged or stored in the DDC.
+	 * Prefer to allow the package/iostore system to do the compression for you instead.
+	 *
+	 * SerializeCompressedNew can read existing data written by old SerializeCompressed calls.
 	 *
 	 * @param	V		Data pointer to serialize data from/ to
 	 * @param	Length	Length of source data if we're saving, unused otherwise
@@ -1769,6 +1754,17 @@ public:
 		ECompressionFlags Flags=COMPRESS_NoFlags, bool bTreatBufferAsFileReader=false,
 		int64 * OutPartialReadLength=nullptr);
 		
+	/**
+	 * Serializes and compresses/ uncompresses data with default compressor choices.
+	 *
+	 * Default compressors are Oodle for new data and Zlib when loading legacy data.
+	 *
+	 * @param	V		Data pointer to serialize data from/ to
+	 * @param	Length	Length of source data if we're saving, unused otherwise
+	 */
+	void SerializeCompressedNew(void* V, int64 Length);
+
+
 	using FArchiveState::IsByteSwapping;
 
 	/** Used to do byte swapping on small items. This does not happen usually, so we don't want it inline. */
@@ -1955,8 +1951,8 @@ public:
 	/** Resets all of the base archive members. */
 	using FArchiveState::Reset;
 
+public:
 #if DEVIRTUALIZE_FLinkerLoad_Serialize
-private:
 	template<SIZE_T Size>
 	FORCEINLINE bool FastPathLoad(void* InDest)
 	{
@@ -1992,7 +1988,6 @@ private:
 		return false;
 	}
 
-public:
 	//@todoio FArchive is really a horrible class and the way it is proxied by FLinkerLoad is double terrible. It makes the fast path really hacky and slower than it would need to be.
 	using FArchiveState::ActiveFPLB;
 	using FArchiveState::InlineFPLB;
@@ -2166,6 +2161,30 @@ public:
 	};
 #endif
 
+	/** Seeks to and restores the position of an archive. */
+	class FScopeSeekTo
+	{
+	public:
+		FScopeSeekTo(FArchive& InAr, int64 InPos)
+			: Ar(InAr)
+			, SavedPos(InAr.Tell())
+		{
+			Ar.Seek(InPos);
+		}
+		
+		~FScopeSeekTo()
+		{
+			Ar.Seek(SavedPos);
+		}
+
+		FScopeSeekTo(const FScopeSeekTo&) = delete;
+		FScopeSeekTo& operator=(const FScopeSeekTo&) = delete;
+
+	private:
+		FArchive& Ar;
+		int64 SavedPos;
+	};
+
 	/** Called whilst cooking to provide file region hints to the cooker. */
 	virtual void PushFileRegionType(EFileRegionType Type) { }
 	virtual void PopFileRegionType() { }
@@ -2205,4 +2224,37 @@ template<class T> T Arctor(FArchive& Ar)
 	Ar << Tmp;
 
 	return Tmp;
+}
+
+/**
+* Serializes an enumeration value from or into an archive.
+*
+* @param Ar The archive to serialize from or to.
+* @param Value The value to serialize.
+*/
+template<class TEnum>
+FORCEINLINE FArchive& operator<<(FArchive& Ar, TEnumAsByte<TEnum>& Value)
+{
+#if DEVIRTUALIZE_FLinkerLoad_Serialize
+	if (!Ar.FastPathLoad<sizeof(Value)>(&Value))
+#endif
+	{
+		Ar.Serialize(&Value, 1);
+	}
+	return Ar;
+}
+
+/**
+* Serializes enum classes as their underlying type.
+*
+* @param Ar The archive to serialize from or to.
+* @param Value The value to serialize.
+*/
+template <
+	typename EnumType,
+	typename = typename TEnableIf<TIsEnumClass<EnumType>::Value>::Type
+>
+FORCEINLINE FArchive& operator<<(FArchive& Ar, EnumType& Value)
+{
+	return Ar << (__underlying_type(EnumType)&)Value;
 }

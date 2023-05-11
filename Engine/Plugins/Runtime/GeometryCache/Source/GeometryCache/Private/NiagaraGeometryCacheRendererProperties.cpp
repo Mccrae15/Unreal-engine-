@@ -1,19 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraGeometryCacheRendererProperties.h"
-#include "NiagaraRenderer.h"
+#include "GeometryCache.h"
 #include "NiagaraConstants.h"
+#include "NiagaraModule.h"
 #include "NiagaraRendererGeometryCache.h"
-#include "NiagaraComponent.h"
 #include "Modules/ModuleManager.h"
+#include "NiagaraParameterStore.h"
+#include "Widgets/Text/STextBlock.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraGeometryCacheRendererProperties)
 
 #if WITH_EDITOR
 #include "Widgets/Images/SImage.h"
 #include "Styling/SlateIconFinder.h"
-#include "Widgets/SWidget.h"
-#include "Styling/SlateBrush.h"
 #include "AssetThumbnail.h"
 #endif
 
@@ -225,7 +225,7 @@ void UNiagaraGeometryCacheRendererProperties::GetUsedMaterials(const FNiagaraEmi
 
 bool UNiagaraGeometryCacheRendererProperties::PopulateRequiredBindings(FNiagaraParameterStore& InParameterStore)
 {
-	bool bAnyAdded = false;
+	bool bAnyAdded = Super::PopulateRequiredBindings(InParameterStore);
 
 	for (const FNiagaraVariableAttributeBinding* Binding : AttributeBindings)
 	{

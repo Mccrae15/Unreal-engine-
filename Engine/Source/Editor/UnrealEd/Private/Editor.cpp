@@ -59,8 +59,12 @@
 #include "Interfaces/IAnalyticsProvider.h"
 #include "EngineAnalytics.h"
 
+#include "EditorFramework/AssetImportData.h"
+
 // AIMdule
 
+#include "AssetDefinition.h"
+#include "AssetDefinitionRegistry.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "K2Node_AddComponent.h"
@@ -74,6 +78,8 @@
 #if WITH_EDITOR
 #include "Subsystems/AssetEditorSubsystem.h"
 #endif
+
+#include "Framework/Application/SlateApplication.h"
 
 #define LOCTEXT_NAMESPACE "UnrealEd.Editor"
 
@@ -736,15 +742,6 @@ void FReimportManager::GetNewReimportPath(UObject* Obj, TArray<FString>& InOutFi
 	FString FileTypes;
 	FString AllExtensions;
 	TArray<UFactory*> Factories;
-	TArray<FString> SourceFileLabels;
-	FAssetToolsModule& AssetToolsModule = FModuleManager::Get().LoadModuleChecked<FAssetToolsModule>("AssetTools");
-	const auto AssetTypeActions = AssetToolsModule.Get().GetAssetTypeActionsForClass(Obj->GetClass());
-	if (AssetTypeActions.IsValid())
-	{
-		TArray<UObject*> Objects;
-		Objects.Add(Obj);
-		AssetTypeActions.Pin()->GetSourceFileLabels(Objects, SourceFileLabels);
-	}
 
 	// Determine whether we will allow multi select and clear old filenames
 	bool bAllowMultiSelect = SourceFileIndex == INDEX_NONE && InOutFilenames.Num() > 1;
@@ -842,11 +839,20 @@ void FReimportManager::GetNewReimportPath(UObject* Obj, TArray<FString>& InOutFi
 		FString Title = FString::Printf(TEXT("%s: %s"), *NSLOCTEXT("ReimportManager", "ImportDialogTitle", "Import For").ToString(), *Obj->GetName());
 		if (SourceFileIndex != INDEX_NONE)
 		{
-			if (SourceFileLabels.IsValidIndex(SourceFileIndex))
+			FAssetData AssetData(Obj);
+			const UAssetDefinition* AssetDefinition = UAssetDefinitionRegistry::Get()->GetAssetDefinitionForAsset(AssetData);
+
+			TArray<FAssetImportInfo::FSourceFile> OutSourceAssets;
+			AssetDefinition->GetSourceFiles(AssetData, [&OutSourceAssets](const FAssetImportInfo& ImportInfo)
+			{
+				OutSourceAssets.Append(ImportInfo.SourceFiles);
+			});
+			
+			if (OutSourceAssets.IsValidIndex(SourceFileIndex))
 			{
 				Title = FString::Printf(TEXT("%s %s %s: %s"),
 					*NSLOCTEXT("ReimportManager", "ImportDialogTitleLabelPart1", "Select").ToString(),
-					*SourceFileLabels[SourceFileIndex],
+					*OutSourceAssets[SourceFileIndex].DisplayLabelName,
 					*NSLOCTEXT("ReimportManager", "ImportDialogTitleLabelPart2", "Source File For").ToString(),
 					*Obj->GetName());
 			}
@@ -926,6 +932,8 @@ FReimportManager::FReimportManager()
 FReimportManager::~FReimportManager()
 {
 	Handlers.Empty();
+
+	// you can't do much here because ~FReimportManager is called from FReimportManager::Instance at cexit shutdown time
 }
 
 int32 FReimportHandler::GetPriority() const
@@ -950,6 +958,13 @@ UWorld* SetPlayInEditorWorld( UWorld* PlayInEditorWorld )
 	UWorld* SavedWorld = GWorld;
 	GIsPlayInEditorWorld = true;
 	GWorld = PlayInEditorWorld;
+
+	// Purge the existing scene interface from the editor world to avoid 2x GPU allocations with the additional play-in-editor world
+	if (GEditor->EditorWorld != nullptr)
+	{
+		// Tear down the scene interface for the editor world
+		GEditor->EditorWorld->PurgeScene();
+	}
 
 	if (FWorldContext* WorldContext = GEngine->GetWorldContextFromWorld(PlayInEditorWorld))
 	{
@@ -1814,7 +1829,7 @@ void ExecuteInvalidateCachedShaders(const TArray< FString >& Args)
 		}
 		else if(!SourceControlState->IsSourceControlled())
 		{
-			UE_LOG(LogConsoleResponse, Display, TEXT("r.InvalidateCachedShaders failed\n\"ShaderVersion.ush\" is not under source control."));
+			UE_LOG(LogConsoleResponse, Display, TEXT("r.InvalidateCachedShaders failed\n\"ShaderVersion.ush\" is not under revision control."));
 		}
 		else if(SourceControlState->IsCheckedOutOther())
 		{

@@ -1,22 +1,23 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "CoreMinimal.h"
-#include "Modules/ModuleManager.h"
+#include "AssetRegistry/ARFilter.h"
+#include "Features/IModularFeatures.h"
 
 #include "GameFeatureData.h"
-#include "Features/IPluginsEditorFeature.h"
 #include "Features/EditorFeatures.h"
 
+#include "GameFeaturesSubsystem.h"
 #include "Interfaces/IPluginManager.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
-#include "ContentBrowserModule.h"
+#include "IAssetTools.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "GameFeatureDataDetailsCustomization.h"
 #include "GameFeaturesEditorSettings.h"
 #include "GameFeaturesSubsystemSettings.h"
 #include "GameFeaturePluginMetadataCustomization.h"
 #include "Logging/MessageLog.h"
+#include "Misc/Paths.h"
 #include "SSettingsEditorCheckoutNotice.h"
 #include "Engine/AssetManagerSettings.h"
 #include "Widgets/Notifications/SNotificationList.h"
@@ -25,6 +26,7 @@
 #include "HAL/FileManager.h"
 #include "Editor.h"
 #include "Dom/JsonValue.h"
+#include "PropertyEditorModule.h"
 
 #define LOCTEXT_NAMESPACE "GameFeatures"
 
@@ -310,7 +312,7 @@ class FGameFeaturesEditorModule : public FDefaultModuleImpl
 
 				if (bSuccess)
 				{
-					NotificationOpText = LOCTEXT("MadeWritableAssetManagerIni", "Made {0} writable (you may need to manually add to source control)");
+					NotificationOpText = LOCTEXT("MadeWritableAssetManagerIni", "Made {0} writable (you may need to manually add to revision control)");
 				}
 				else
 				{

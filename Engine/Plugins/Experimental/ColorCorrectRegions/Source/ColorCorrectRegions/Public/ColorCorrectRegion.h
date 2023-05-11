@@ -2,11 +2,11 @@
 
 #pragma once
 
+#include "Components/MeshComponent.h"
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "GameFramework/Actor.h"
-#include "Engine/Classes/Components/MeshComponent.h"
 #include "Engine/Scene.h"
+#include "GameFramework/Actor.h"
+#include "UObject/ObjectMacros.h"
 #include "ColorCorrectRegion.generated.h"
 
 
@@ -196,6 +196,10 @@ public:
 
 #endif
 
+	/** The main purpose of this component is to determine the visibility status of this Color Correction Actor. */
+	UPROPERTY()
+	TObjectPtr<UColorCorrectionInvisibleComponent> IdentityComponent;
+
 	/** To handle play in Editor, PIE and Standalone. These methods aggregate objects in play mode similarly to 
 	* Editor methods in FColorCorrectRegionsSubsystem
 	*/
@@ -206,12 +210,6 @@ public:
 
 	virtual void TickActor(float DeltaTime, enum ELevelTick TickType, FActorTickFunction& ThisTickFunction);
 	virtual bool ShouldTickIfViewportsOnly() const;
-
-	/** 
-	* We have to manage the lifetime of the region ourselves, because EndPlay is not guaranteed to be called 
-	* and BeginDestroy could be called from GC when it is too late.
-	*/
-	void Cleanup();
 
 	/**
 	* Gets a full state for rendering. 
@@ -241,7 +239,7 @@ private:
 	void TransferState();
 
 private:
-	UColorCorrectRegionsSubsystem* ColorCorrectRegionsSubsystem;
+	TWeakObjectPtr<UColorCorrectRegionsSubsystem> ColorCorrectRegionsSubsystem;
 
 	/** A copy of all properties required by render thread to process this CCR. */
 	FColorCorrectRenderProxyPtr ColorCorrectRenderProxy;
@@ -280,4 +278,15 @@ public:
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual FName GetCustomIconName() const override;
 #endif
+};
+
+
+/**
+ * This component class is used to determine if Color Correction Window/Region is hidden via HiddenPrimitives/ShowOnlyPrimitivesShowOnlyPrimitives
+ */
+UCLASS(NotBlueprintable, NotPlaceable)
+class UColorCorrectionInvisibleComponent : public UPrimitiveComponent
+{
+	GENERATED_BODY()
+
 };

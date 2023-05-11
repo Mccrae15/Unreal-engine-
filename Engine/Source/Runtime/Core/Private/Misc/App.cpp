@@ -327,6 +327,7 @@ bool FApp::HasFocus()
 
 void FApp::PrintStartupLogMessages()
 {
+	UE_LOG(LogInit, Log, TEXT("ExecutableName: %s"), FPlatformProcess::ExecutableName(false));
 	UE_LOG(LogInit, Log, TEXT("Build: %s"), FApp::GetBuildVersion());
 	UE_LOG(LogInit, Log, TEXT("Engine Version: %s"), *FEngineVersion::Current().ToString());
 	UE_LOG(LogInit, Log, TEXT("Compatible Engine Version: %s"), *FEngineVersion::CompatibleWith().ToString());
@@ -340,6 +341,14 @@ void FApp::PrintStartupLogMessages()
 #else
 	UE_LOG(LogInit, Log, TEXT("Compiled (32-bit): %s %s"), BuildSettings::GetBuildDate(), BuildSettings::GetBuildTime());
 #endif
+
+#if PLATFORM_CPU_ARM_FAMILY
+	UE_LOG(LogInit, Log, TEXT("Architecture: arm64"));
+#elif PLATFORM_CPU_X86_FAMILY
+	UE_LOG(LogInit, Log, TEXT("Architecture: x64"));
+#else
+#error No architecture defined!
+#endif // x64/arm
 
 	// Print compiler version info
 #if defined(__clang__)

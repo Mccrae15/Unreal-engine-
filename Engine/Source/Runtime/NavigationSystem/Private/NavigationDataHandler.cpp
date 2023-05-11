@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NavigationDataHandler.h"
+#include "Engine/Level.h"
 #include "NavMesh/RecastNavMeshGenerator.h"
 
 
@@ -87,6 +88,18 @@ FSetElementId FNavigationDataHandler::RegisterNavOctreeElement(UObject& ElementO
 	return SetId;
 }
 
+namespace UE::NavigationHelper::Private
+{
+	FString GetElementName(const UObject* ElementOwner)
+	{
+		if (const UActorComponent* ActorComp = Cast<UActorComponent>(ElementOwner))
+		{
+			return FString::Format(TEXT("Comp {0} of Actor {1}"), {*GetNameSafe(ElementOwner), *GetNameSafe(ActorComp->GetOwner())});
+		}
+		return *GetNameSafe(ElementOwner);
+	}
+}
+
 void FNavigationDataHandler::AddElementToNavOctree(const FNavigationDirtyElement& DirtyElement)
 {
 	check(OctreeController.NavOctree.IsValid());
@@ -136,17 +149,17 @@ void FNavigationDataHandler::AddElementToNavOctree(const FNavigationDirtyElement
 		const FOctreeElementId2* ElementId = ParentId ? ParentId : OctreeController.GetObjectsNavOctreeId(*NavigationParent);
 		if (ElementId && ensure(OctreeController.IsValidElement(*ElementId)))
 		{
-			UE_LOG(LogNavOctree, Log, TEXT("ADD %s to %s"), *GetNameSafe(ElementOwner), *GetNameSafe(NavigationParent));
+			UE_LOG(LogNavOctree, Log, TEXT("ADD %s to %s"), *UE::NavigationHelper::Private::GetElementName(ElementOwner), *GetNameSafe(NavigationParent));
 			OctreeController.NavOctree->AppendToNode(*ElementId, DirtyElement.NavInterface, ElementBounds, GeneratedData);
 		}
 		else
 		{
-			UE_LOG(LogNavOctree, Warning, TEXT("Can't add node [%s] - parent [%s] not found in octree!"), *GetNameSafe(ElementOwner), *GetNameSafe(NavigationParent));
+			UE_LOG(LogNavOctree, Warning, TEXT("Can't add node [%s] - parent [%s] not found in octree!"), *UE::NavigationHelper::Private::GetElementName(ElementOwner), *UE::NavigationHelper::Private::GetElementName(NavigationParent));
 		}
 	}
 	else
 	{
-		UE_LOG(LogNavOctree, Log, TEXT("ADD %s"), *GetNameSafe(ElementOwner));
+		UE_LOG(LogNavOctree, Log, TEXT("ADD %s"), *UE::NavigationHelper::Private::GetElementName(ElementOwner));
 		OctreeController.NavOctree->AddNode(ElementOwner, DirtyElement.NavInterface, ElementBounds, GeneratedData);
 	}
 
@@ -504,11 +517,19 @@ void FNavigationDataHandler::UpdateActorAndComponentsInNavOctree(AActor& Actor)
 
 void FNavigationDataHandler::ProcessPendingOctreeUpdates()
 {
-	if (OctreeController.PendingOctreeUpdates.Num() && OctreeController.NavOctree)
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_Navigation_ProcessPendingOctreeUpdates);
+
+	if (OctreeController.NavOctree)
 	{
-		for (TSet<FNavigationDirtyElement>::TIterator It(OctreeController.PendingOctreeUpdates); It; ++It)
+		// AddElementToNavOctree (through some of its resulting function calls) modifies PendingOctreeUpdates so invalidates the iterators,
+		// (via WaitUntilAsyncPropertyReleased() / UpdateComponentInNavOctree() / RegisterNavOctreeElement()). This means we can't iterate
+		// through this set in the normal way. Previously the code iterated through this which also left us open to other potential bugs
+		// in that we may have tried to modify elements we had already processed.
+		while (TSet<FNavigationDirtyElement>::TIterator It = OctreeController.PendingOctreeUpdates.CreateIterator())
 		{
-			AddElementToNavOctree(*It);
+			FNavigationDirtyElement Element = *It;
+			It.RemoveCurrent();
+			AddElementToNavOctree(Element);
 		}
 	}
 	OctreeController.PendingOctreeUpdates.Empty(32);

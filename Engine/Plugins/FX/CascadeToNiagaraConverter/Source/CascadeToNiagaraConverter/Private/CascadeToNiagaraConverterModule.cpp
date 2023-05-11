@@ -1,15 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CascadeToNiagaraConverterModule.h"
-#include "Modules/ModuleManager.h"
-#include "CoreMinimal.h"
 #include "ContentBrowserModule.h"
-#include "Particles/ParticleEmitter.h"
-#include "Particles/ParticleSystem.h"
 #include "IPythonScriptPlugin.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "NiagaraMessageManager.h"
 #include "NiagaraStackGraphUtilitiesAdapterLibrary.h"
+#include "PythonScriptTypes.h"
 
 IMPLEMENT_MODULE(ICascadeToNiagaraConverterModule, CascadeToNiagaraConverter);
 DEFINE_LOG_CATEGORY(LogFXConverter);
@@ -56,7 +53,7 @@ void ICascadeToNiagaraConverterModule::AddMenuExtenderConvertEntry(FMenuBuilder&
 		TArray<UParticleSystem*> CascadeSystems;
 		for (const FAssetData& SelectedAsset : SelectedAssets)
 		{
-			if (SelectedAsset.GetClass()->IsChildOf<UParticleSystem>() == false)
+			if (!SelectedAsset.IsInstanceOf(UParticleSystem::StaticClass()))
 			{
 				return;
 			}

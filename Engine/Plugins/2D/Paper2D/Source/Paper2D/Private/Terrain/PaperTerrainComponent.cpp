@@ -2,19 +2,17 @@
 
 #include "PaperTerrainComponent.h"
 #include "UObject/ConstructorHelpers.h"
+#include "MaterialDomain.h"
 #include "Materials/Material.h"
-#include "Engine/Polys.h"
-#include "Components/SplineComponent.h"
 #include "PaperCustomVersion.h"
 
 #include "PaperRenderSceneProxy.h"
 #include "GeomTools.h"
-#include "PhysicsEngine/ConvexElem.h"
-#include "PhysicsEngine/BoxElem.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "PaperTerrainSplineComponent.h"
 #include "PaperTerrainMaterial.h"
 #include "Paper2DPrivate.h"
+#include "SceneInterface.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(PaperTerrainComponent)
 

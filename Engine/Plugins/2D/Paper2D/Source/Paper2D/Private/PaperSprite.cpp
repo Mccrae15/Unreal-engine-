@@ -1,12 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PaperSprite.h"
+#include "BodySetupEnums.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Materials/MaterialInterface.h"
 #include "Engine/CollisionProfile.h"
-#include "PhysicsEngine/ConvexElem.h"
-#include "PhysicsEngine/BoxElem.h"
-#include "PhysicsEngine/SphereElem.h"
 #include "PhysicsEngine/BodySetup.h"
 
 #include "PaperCustomVersion.h"
@@ -18,12 +16,11 @@
 #include "PaperFlipbook.h"
 #include "Paper2DModule.h"
 #include "Paper2DPrivate.h"
+#include "UObject/LinkerLoad.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(PaperSprite)
 
 #if WITH_EDITOR
-#include "UObject/UObjectHash.h"
-#include "UObject/UObjectIterator.h"
 #endif
 
 #if WITH_EDITOR
@@ -65,7 +62,6 @@ static void UpdateGeometryToBeBoxPositionRelative(FSpriteGeometryCollection& Geo
 #if WITH_EDITOR
 
 #include "PaperSpriteAtlas.h"
-#include "AlphaBitmap.h"
 #include "BitmapUtils.h"
 #include "ComponentReregisterContext.h"
 #include "PaperRuntimeSettings.h"
@@ -638,6 +634,11 @@ void UPaperSprite::PostEditChangeProperty(FPropertyChangedEvent& PropertyChanged
 		bBothModified = false;
 	}
 
+	if (bBothModified)
+	{
+		RefreshBakedData();
+	}
+
 	if (bCollisionDataModified || bBothModified)
 	{
 		RebuildCollisionData();
@@ -648,10 +649,7 @@ void UPaperSprite::PostEditChangeProperty(FPropertyChangedEvent& PropertyChanged
 		RebuildRenderData();
 	}
 
-	if (bBothModified)
-	{
-		RefreshBakedData();
-	}
+	
 
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 }
@@ -1455,6 +1453,7 @@ void UPaperSprite::InitializeSprite(const FSpriteAssetInitParameters& InitParams
 	}
 
 	RefreshBakedData();
+	CustomPivotPoint = GetPivotPosition();
 }
 
 void UPaperSprite::SetTrim(bool bTrimmed, const FVector2D& OriginInSourceImage, const FVector2D& SourceImageDimension, bool bRebuildData /*= true*/)

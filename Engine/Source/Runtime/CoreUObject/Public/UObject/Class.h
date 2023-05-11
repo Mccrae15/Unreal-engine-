@@ -13,7 +13,6 @@
 #include "Containers/Set.h"
 #include "Containers/StringFwd.h"
 #include "Containers/UnrealString.h"
-#include "CoreMinimal.h"
 #include "CoreTypes.h"
 #include "HAL/CriticalSection.h"
 #include "HAL/PlatformCrt.h"
@@ -39,8 +38,6 @@
 #include "Misc/FallbackStruct.h"
 #include "Misc/Guid.h"
 #include "Misc/Optional.h"
-#include "Misc/PackageAccessTracking.h"
-#include "Misc/PackageAccessTrackingOps.h"
 #include "Misc/ScopeRWLock.h"
 #include "Serialization/StructuredArchive.h"
 #include "Serialization/StructuredArchiveAdapters.h"
@@ -65,13 +62,18 @@
 #include "UObject/NameTypes.h"
 #include "UObject/Object.h"
 #include "UObject/ObjectMacros.h"
-#include "UObject/Package.h"
 #include "UObject/PropertyTag.h"
 #include "UObject/ReflectedTypeAccessors.h"
 #include "UObject/Script.h"
 #include "UObject/TopLevelAssetPath.h"
 #include "UObject/UObjectGlobals.h"
 #include "UObject/UnrealNames.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Misc/PackageAccessTracking.h"
+#include "Misc/PackageAccessTrackingOps.h"
+#include "UObject/Package.h"
+#endif
 
 class FArchive;
 class FEditPropertyChain;
@@ -446,12 +448,7 @@ public:
 	/**
 	 * Returns struct path name as a package + struct FName pair
 	 */
-	FORCEINLINE FTopLevelAssetPath GetStructPathName() const
-	{
-		// Some day this check may actually be relevant
-		checkf(GetOuter() == GetOutermost(), TEXT("Only top level objects are supported by FTopLevelAssetPath. This object is a subobject: \"%s\""), *GetPathName());
-		return FTopLevelAssetPath(GetOuter()->GetFName(), GetFName());
-	}
+	FTopLevelAssetPath GetStructPathName() const;
 
 	/** Searches property link chain for a property with the specified name */
 	FProperty* FindPropertyByName(FName InName) const;
@@ -476,22 +473,47 @@ public:
 	/** Creates the field/property links and gets structure ready for use at runtime */
 	virtual void Link(FArchive& Ar, bool bRelinkExistingProperties);
 
-	/** Serializes struct properties, does not handle defaults*/
+	/**
+	 * Serializes struct properties, does not handle defaults.  See SerializeBinEx for handling defaults.
+	 *
+	 * @param	Ar				the archive to use for serialization
+	 * @param	Data			pointer to the location of the beginning of the property data
+	 *
+	 * @note Binary serialization will read and write unstructured data from the archive.  As deprecated
+	 *       properties are read from archives but not written, it is dangerous to call this function on
+	 *       types with deprecated properties, unless the ArWantBinarySerialization flag is set on the
+	 *       archive to force serialization to occur always.
+	 */
 	virtual void SerializeBin(FArchive& Ar, void* Data) const final 
 	{
 		SerializeBin(FStructuredArchiveFromArchive(Ar).GetSlot(), Data);
 	}
 
-	/** Serializes struct properties, does not handle defaults */
+	/**
+	 * Serializes struct properties, does not handle defaults.  See SerializeBinEx for handling defaults.
+	 *
+	 * @param	Slot			The structured archive slot we are serializing to
+	 * @param	Data			pointer to the location of the beginning of the property data
+	 *
+	 * @note Binary serialization will read and write unstructured data from the archive.  As deprecated
+	 *       properties are read from archives but not written, it is dangerous to call this function on
+	 *       types with deprecated properties, unless the ArWantBinarySerialization flag is set on the
+	 *       archive to force serialization to occur always.
+	 */
 	virtual void SerializeBin(FStructuredArchive::FSlot Slot, void* Data) const;
 
 	/**
 	 * Serializes the class properties that reside in Data if they differ from the corresponding values in DefaultData
 	 *
-	 * @param	Ar				the archive to use for serialization
+	 * @param	Slot			The structured archive slot we are serializing to
 	 * @param	Data			pointer to the location of the beginning of the property data
 	 * @param	DefaultData		pointer to the location of the beginning of the data that should be compared against
 	 * @param	DefaultStruct	the struct corresponding to the block of memory located at DefaultData 
+	 *
+	 * @note Binary serialization will read and write unstructured data from the archive.  As deprecated
+	 *       properties are read from archives but not written, it is dangerous to call this function on
+	 *       types with deprecated properties, unless the ArWantBinarySerialization flag is set on the
+	 *       archive to force serialization to occur always.
 	 */
 	void SerializeBinEx( FStructuredArchive::FSlot Slot, void* Data, void const* DefaultData, UStruct* DefaultStruct ) const;
 
@@ -633,11 +655,6 @@ public:
 		return bHasAssetRegistrySearchableProperties;
 	}
 #endif // WITH_EDITORONLY_DATA
-
-#if HACK_HEADER_GENERATOR
-	// Required by UHT makefiles for internal data serialization.
-	friend struct FStructArchiveProxy;
-#endif // HACK_HEADER_GENERATOR
 
 	/** Sets the UnresolvedScriptProperties array */
 	void SetUnresolvedScriptProperties(FUnresolvedScriptPropertiesArray& InUnresolvedProperties)
@@ -1433,7 +1450,7 @@ public:
 
 			if constexpr (TModels<CGetTypeHashable, CPPSTRUCT>::Value)
 			{
-				return GetTypeHash(*(const CPPSTRUCT*)Src);
+				return GetTypeHashHelper(*(const CPPSTRUCT*)Src);
 			}
 			else
 			{
@@ -1481,16 +1498,6 @@ public:
 public:
 	EStructFlags StructFlags;
 
-
-#if HACK_HEADER_GENERATOR
-	int32 StructMacroDeclaredLineNumber;
-
-	// Required by UHT makefiles for internal data serialization.
-	friend struct FScriptStructArchiveProxy;
-
-	static COREUOBJECT_API ICppStructOps* FindDeferredCppStructOps(FTopLevelAssetPath StructName);
-#endif
-
 protected:
 	/** true if we have performed PrepareCppStructOps **/
 	bool bPrepareCppStructOpsCompleted;
@@ -1502,10 +1509,7 @@ protected:
 	* so a struct path name /Package/Name.Object:Struct will be flattened to /Package/Name.Struct.
 	* This function is used only for generating keys for DeferredCppStructOps
 	*/
-	FTopLevelAssetPath GetFlattenedStructPathName() const
-	{
-		return FTopLevelAssetPath(GetOutermost()->GetFName(), GetFName());
-	}
+	COREUOBJECT_API FTopLevelAssetPath GetFlattenedStructPathName() const;
 
 public:
 
@@ -1930,10 +1934,10 @@ ENUM_CLASS_FLAGS(EGetByNameFlags)
 //
 // Reflection data for an enumeration.
 //
-class COREUOBJECT_API UEnum : public UField
+class UEnum : public UField
 {
-	DECLARE_CASTED_CLASS_INTRINSIC_NO_CTOR(UEnum, UField, 0, TEXT("/Script/CoreUObject"), CASTCLASS_UEnum, NO_API)
-	UEnum(const FObjectInitializer& ObjectInitialzer);
+	DECLARE_CASTED_CLASS_INTRINSIC_NO_CTOR(UEnum, UField, 0, TEXT("/Script/CoreUObject"), CASTCLASS_UEnum, COREUOBJECT_API)
+	COREUOBJECT_API UEnum(const FObjectInitializer& ObjectInitialzer);
 
 public:
 	/** How this enum is declared in C++, affects the internal naming of enum values */
@@ -1973,31 +1977,31 @@ public:
 	}
 
 	/** Gets enum name by index in Names array. Returns NAME_None if Index is not valid. */
-	FName GetNameByIndex(int32 Index) const;
+	COREUOBJECT_API FName GetNameByIndex(int32 Index) const;
 
 	/** Gets index of name in enum, returns INDEX_NONE and optionally errors when name is not found. This is faster than ByNameString if the FName is exact, but will fall back if needed */
-	int32 GetIndexByName(FName InName, EGetByNameFlags Flags = EGetByNameFlags::None) const;
+	COREUOBJECT_API int32 GetIndexByName(FName InName, EGetByNameFlags Flags = EGetByNameFlags::None) const;
 
 	/** Gets enum name by value. Returns NAME_None if value is not found. */
-	FName GetNameByValue(int64 InValue) const;
+	COREUOBJECT_API FName GetNameByValue(int64 InValue) const;
 
 	/** Gets enum value by name, returns INDEX_NONE and optionally errors when name is not found. This is faster than ByNameString if the FName is exact, but will fall back if needed */
-	int64 GetValueByName(FName InName, EGetByNameFlags Flags = EGetByNameFlags::None) const;
+	COREUOBJECT_API int64 GetValueByName(FName InName, EGetByNameFlags Flags = EGetByNameFlags::None) const;
 
 	/** Returns the short name at the enum index, returns empty string if invalid */
-	FString GetNameStringByIndex(int32 InIndex) const;
+	COREUOBJECT_API FString GetNameStringByIndex(int32 InIndex) const;
 
 	/** Gets index of name in enum, returns INDEX_NONE and optionally errors when name is not found. Handles full or short names. */
-	int32 GetIndexByNameString(const FString& SearchString, EGetByNameFlags Flags = EGetByNameFlags::None) const;
+	COREUOBJECT_API int32 GetIndexByNameString(const FString& SearchString, EGetByNameFlags Flags = EGetByNameFlags::None) const;
 
 	/** Returns the short name matching the enum Value, returns empty string if invalid */
-	FString GetNameStringByValue(int64 InValue) const;
+	COREUOBJECT_API FString GetNameStringByValue(int64 InValue) const;
 
 	/** Looks for a name with a given value and returns true and writes the name to Out if one was found */
-	bool FindNameStringByValue(FString& Out, int64 InValue) const;
+	COREUOBJECT_API bool FindNameStringByValue(FString& Out, int64 InValue) const;
 
 	/** Gets enum value by name, returns INDEX_NONE and optionally errors when name is not found. Handles full or short names */
-	int64 GetValueByNameString(const FString& SearchString, EGetByNameFlags Flags = EGetByNameFlags::None) const;
+	COREUOBJECT_API int64 GetValueByNameString(const FString& SearchString, EGetByNameFlags Flags = EGetByNameFlags::None) const;
 
 	/**
 	 * Finds the localized display name or native display name as a fallback.
@@ -2007,13 +2011,13 @@ public:
 	 *
 	 * @return The display name for this object, or an empty text if Index is invalid
 	 */
-	virtual FText GetDisplayNameTextByIndex(int32 InIndex) const;
+	COREUOBJECT_API virtual FText GetDisplayNameTextByIndex(int32 InIndex) const;
 
 	/** Version of GetDisplayNameTextByIndex that takes a value instead */
-	FText GetDisplayNameTextByValue(int64 InValue) const;
+	COREUOBJECT_API FText GetDisplayNameTextByValue(int64 InValue) const;
 
 	/** Looks for a display name with a given value and returns true and writes the name to Out if one was found */
-	bool FindDisplayNameTextByValue(FText& Out, int64 InValue) const;
+	COREUOBJECT_API bool FindDisplayNameTextByValue(FText& Out, int64 InValue) const;
 
 	/**
 	 * Returns the unlocalized logical name originally assigned to the enum at creation.
@@ -2024,22 +2028,22 @@ public:
 	 *
 	 * @return The author-specified name, or an empty string if Index is invalid
 	 */
-	virtual FString GetAuthoredNameStringByIndex(int32 InIndex) const;
+	COREUOBJECT_API virtual FString GetAuthoredNameStringByIndex(int32 InIndex) const;
 
 	/** Version of GetAuthoredNameByIndex that takes a value instead */
-	FString GetAuthoredNameStringByValue(int64 InValue) const;
+	COREUOBJECT_API FString GetAuthoredNameStringByValue(int64 InValue) const;
 
 	/** Looks for a display name with a given value and returns true and writes the unlocalized logical name to Out if one was found */
-	bool FindAuthoredNameStringByValue(FString& Out, int64 InValue) const;
+	COREUOBJECT_API bool FindAuthoredNameStringByValue(FString& Out, int64 InValue) const;
 
 	/** Gets max value of Enum. Defaults to zero if there are no entries. */
-	int64 GetMaxEnumValue() const;
+	COREUOBJECT_API int64 GetMaxEnumValue() const;
 
 	/** Checks if enum has entry with given value. Includes autogenerated _MAX entry. */
-	bool IsValidEnumValue(int64 InValue) const;
+	COREUOBJECT_API bool IsValidEnumValue(int64 InValue) const;
 
 	/** Checks if enum has entry with given name. Includes autogenerated _MAX entry. */
-	bool IsValidEnumName(FName InName) const;
+	COREUOBJECT_API bool IsValidEnumName(FName InName) const;
 
 	/** Removes the Names in this enum from the primary AllEnumNames list */
 	UE_DEPRECATED(5.1, "RemoveNamesFromMasterList is deprecated, please use RemoveNamesFromPrimaryList instead.")
@@ -2049,10 +2053,10 @@ public:
 	}
 
 	/** Removes the Names in this enum from the primary AllEnumNames list */
-	void RemoveNamesFromPrimaryList();
+	COREUOBJECT_API void RemoveNamesFromPrimaryList();
 
 	/** Try to update an out-of-date enum index after an enum changes at runtime */
-	virtual int64 ResolveEnumerator(FArchive& Ar, int64 EnumeratorIndex) const;
+	COREUOBJECT_API virtual int64 ResolveEnumerator(FArchive& Ar, int64 EnumeratorIndex) const;
 
 	/** Associate a function for looking up Enum display names by index, only intended for use by generated code */
 	void SetEnumDisplayNameFn(FEnumDisplayNameFn InEnumDisplayNameFn)
@@ -2097,7 +2101,7 @@ public:
 	 * @param InEnumName Enum name.
 	 * @return Full enum name.
 	 */
-	virtual FString GenerateFullEnumName(const TCHAR* InEnumName) const;
+	COREUOBJECT_API virtual FString GenerateFullEnumName(const TCHAR* InEnumName) const;
 
 	/**
 	 * Searches the list of all enum value names for the specified name
@@ -2107,7 +2111,7 @@ public:
 	 * @param OutFoundEnum Optional address of a variable where the resulting UEnum object should be stored
 	 * @return The value the specified name represents if found, otherwise INDEX_NONE
 	 */
-	static int64 LookupEnumName(FName PackageName, FName TestName, EFindFirstObjectOptions Options = EFindFirstObjectOptions::None, UEnum** OutFoundEnum = nullptr);
+	COREUOBJECT_API static int64 LookupEnumName(FName PackageName, FName TestName, EFindFirstObjectOptions Options = EFindFirstObjectOptions::None, UEnum** OutFoundEnum = nullptr);
 
 	/** searches the list of all enum value names for the specified name
 	 * @return the value the specified name represents if found, otherwise INDEX_NONE
@@ -2126,7 +2130,7 @@ public:
 	 * @param OutFoundEnum Optional address of a variable where the resulting UEnum object should be stored
 	 * @return The value the specified name represents if found, otherwise INDEX_NONE
 	 */
-	static int64 LookupEnumNameSlow(FName PackageName, const TCHAR* InTestShortName, EFindFirstObjectOptions Options = EFindFirstObjectOptions::None, UEnum** OutFoundEnum = nullptr);
+	COREUOBJECT_API static int64 LookupEnumNameSlow(FName PackageName, const TCHAR* InTestShortName, EFindFirstObjectOptions Options = EFindFirstObjectOptions::None, UEnum** OutFoundEnum = nullptr);
 
 	/** searches the list of all enum value names for the specified name
 	 * @return the value the specified name represents if found, otherwise INDEX_NONE
@@ -2141,14 +2145,14 @@ public:
 	 * @param Str	pointer to string to parse; if we successfully find an enum, this pointer is advanced past the name found
 	 * @return index of the value the parsed enum name matches, or INDEX_NONE if no matches
 	 */
-	static int64 ParseEnum(const TCHAR*& Str);
+	COREUOBJECT_API static int64 ParseEnum(const TCHAR*& Str);
 
 	/**
 	 * Tests if the enum contains a MAX value
 	 *
 	 * @return	true if the enum contains a MAX enum, false otherwise.
 	 */
-	bool ContainsExistingMax() const;
+	COREUOBJECT_API bool ContainsExistingMax() const;
 
 	/**
 	 * Sets the array of enums.
@@ -2158,7 +2162,7 @@ public:
 	 * @param bAddMaxKeyIfMissing Should a default Max item be added.
 	 * @return	true unless the MAX enum already exists and isn't the last enum.
 	 */
-	virtual bool SetEnums(TArray<TPair<FName, int64>>& InNames, ECppForm InCppForm, EEnumFlags InFlags = EEnumFlags::None, bool bAddMaxKeyIfMissing = true);
+	COREUOBJECT_API virtual bool SetEnums(TArray<TPair<FName, int64>>& InNames, ECppForm InCppForm, EEnumFlags InFlags = EEnumFlags::None, bool bAddMaxKeyIfMissing = true);
 
 	/**
 	 * @return	 The number of enum names.
@@ -2174,7 +2178,7 @@ public:
 	 * @return	the longest common prefix between all items in the enum.  If a common prefix
 	 *			cannot be found, returns the full name of the enum.
 	 */
-	FString GenerateEnumPrefix() const;
+	COREUOBJECT_API FString GenerateEnumPrefix() const;
 
 #if WITH_EDITOR
 	/**
@@ -2184,7 +2188,7 @@ public:
 	 *
 	 * @return The tooltip for this object.
 	 */
-	FText GetToolTipTextByIndex(int32 NameIndex) const;
+	COREUOBJECT_API FText GetToolTipTextByIndex(int32 NameIndex) const;
 #endif
 
 #if WITH_EDITORONLY_DATA
@@ -2196,7 +2200,7 @@ public:
 	 *
 	 * @return true if the specified key exists in the list of metadata for this enum, even if the value of that key is empty
 	 */
-	bool HasMetaData( const TCHAR* Key, int32 NameIndex=INDEX_NONE ) const;
+	COREUOBJECT_API bool HasMetaData( const TCHAR* Key, int32 NameIndex=INDEX_NONE ) const;
 
 	/**
 	 * Return the metadata value associated with the specified key.
@@ -2207,7 +2211,7 @@ public:
 	 *
 	 * @return	the value for the key specified, or an empty string if the key wasn't found or had no value.
 	 */
-	FString GetMetaData( const TCHAR* Key, int32 NameIndex=INDEX_NONE, bool bAllowRemap=true ) const;
+	COREUOBJECT_API FString GetMetaData( const TCHAR* Key, int32 NameIndex=INDEX_NONE, bool bAllowRemap=true ) const;
 
 	/**
 	 * Set the metadata value associated with the specified key.
@@ -2217,7 +2221,7 @@ public:
 	 * @param	InValue		Value of the metadata for the key
 	 *
 	 */
-	void SetMetaData( const TCHAR* Key, const TCHAR* InValue, int32 NameIndex=INDEX_NONE) const;
+	COREUOBJECT_API void SetMetaData( const TCHAR* Key, const TCHAR* InValue, int32 NameIndex=INDEX_NONE) const;
 	
 	/**
 	 * Remove given key meta data
@@ -2226,7 +2230,7 @@ public:
 	 * @param	NameIndex	if specified, will search the metadata linked for that enum value; otherwise, searches the metadata for the enum itself
 	 *
 	 */
-	void RemoveMetaData( const TCHAR* Key, int32 NameIndex=INDEX_NONE ) const;
+	COREUOBJECT_API void RemoveMetaData( const TCHAR* Key, int32 NameIndex=INDEX_NONE ) const;
 #endif // WITH_EDITORONLY_DATA
 	
 	/**
@@ -2362,8 +2366,8 @@ public:
 	}
 
 	// UObject interface.
-	virtual void Serialize(FArchive& Ar) override;
-	virtual void BeginDestroy() override;
+	COREUOBJECT_API virtual void Serialize(FArchive& Ar) override;
+	COREUOBJECT_API virtual void BeginDestroy() override;
 	// End of UObject interface.
 
 protected:
@@ -2396,7 +2400,7 @@ protected:
 	}
 
 	/** adds the Names in this enum to the primary AllEnumNames list */
-	void AddNamesToPrimaryList();
+	COREUOBJECT_API void AddNamesToPrimaryList();
 
 private:
 
@@ -2637,7 +2641,7 @@ public:
 	/** List of network relevant fields (functions) */
 	TArray<UField*> NetFields;
 
-#if WITH_EDITOR || HACK_HEADER_GENERATOR 
+#if WITH_EDITOR
 	// Editor only properties
 	void GetHideFunctions(TArray<FString>& OutHideFunctions) const;
 	bool IsFunctionHidden(const TCHAR* InFunction) const;
@@ -2729,6 +2733,7 @@ public:
 #if WITH_EDITOR
 	void GenerateFunctionList(TArray<FName>& OutArray) const 
 	{ 
+		FReadScopeLock ScopeLock(FuncMapLock);
 		FuncMap.GenerateKeyArray(OutArray); 
 	}
 #endif // WITH_EDITOR
@@ -2747,6 +2752,9 @@ private:
 	/** Map of all functions by name contained in this class */
 	TMap<FName, UFunction*> FuncMap;
 
+	/** Scope lock to avoid the FuncMap being read and written to simultaneously on multiple threads. */
+	mutable FRWLock FuncMapLock;
+
 	/** A cache of all functions by name that exist in a parent (superclass or interface) context */
 	mutable TMap<FName, UFunction*> SuperFuncMap;
 
@@ -2761,9 +2769,7 @@ public:
 	TArray<FImplementedInterface> Interfaces;
 
 	/** Reference token stream used by realtime garbage collector, finalized in AssembleReferenceTokenStream */
-	FGCReferenceTokenStream ReferenceTokenStream;
-	/** CS for the token stream. Token stream can assemble code can sometimes be called from two threads throuh a web of async loading calls. */
-	FCriticalSection ReferenceTokenStreamCritical;
+	UE::GC::FTokenStreamOwner ReferenceTokens;
 
 	/** This class's native functions. */
 	TArray<FNativeFunctionLookup> NativeFunctionLookupTable;
@@ -2839,6 +2845,7 @@ public:
 	/** Add a function to the function map */
 	void AddFunctionToFunctionMap(UFunction* Function, FName FuncName)
 	{
+		FWriteScopeLock ScopeLock(FuncMapLock);
 		FuncMap.Add(FuncName, Function);
 	}
 
@@ -2847,6 +2854,7 @@ public:
 	/** Remove a function from the function map */
 	void RemoveFunctionFromFunctionMap(UFunction* Function)
 	{
+		FWriteScopeLock ScopeLock(FuncMapLock);
 		FuncMap.Remove(Function->GetFName());
 	}
 
@@ -3048,8 +3056,7 @@ public:
 	{
 		if (ClassDefaultObject == nullptr && bCreateIfNeeded)
 		{
-			UE_TRACK_REFERENCING_PACKAGE_SCOPED(this, PackageAccessTrackingOps::NAME_CreateDefaultObject);
-			const_cast<UClass*>(this)->CreateDefaultObject();
+			InternalCreateDefaultObjectWrapper();
 		}
 
 		return ClassDefaultObject;
@@ -3194,68 +3201,6 @@ public:
 	FString GetDescription() const;
 
 	/**
-	 * Realtime garbage collection helper function used to emit token containing information about a 
-	 * direct UObject reference at the passed in offset.
-	 *
-	 * @param Offset	Offset into object at which object reference is stored.
-	 * @param DebugName	DebugName for this objects token. Only used in non-shipping builds.
-	 * @param Kind		Optional parameter the describe the type of the reference.
-	 */
-	void EmitObjectReference(int32 Offset, const FName& DebugName, EGCReferenceType Kind = GCRT_Object);
-
-	/**
-	 * Realtime garbage collection helper function used to emit token containing information about a 
-	 * an array of UObject references at the passed in offset. Handles both TArray and TTransArray.
-	 *
-	 * @param Offset	Offset into object at which array of objects is stored.
-	 * @param DebugName	DebugName for this objects token. Only used in non-shipping builds.
-	 */
-	void EmitObjectArrayReference(int32 Offset, const FName& DebugName);
-
-	/**
-	 * Realtime garbage collection helper function used to indicate an array of structs at the passed in 
-	 * offset.
-	 *
-	 * @param Offset	Offset into object at which array of structs is stored
-	 * @param DebugName	DebugName for this objects token. Only used in non-shipping builds.
-	 * @param Stride	Size/stride of struct
-	 * @return	Index into token stream at which later on index to next token after the array is stored
-	 *			which is used to skip over empty dynamic arrays
-	 */
-	uint32 EmitStructArrayBegin(int32 Offset, const FName& DebugName, int32 Stride);
-
-	/**
-	 * Realtime garbage collection helper function used to indicate the end of an array of structs. The
-	 * index following the current one will be written to the passed in SkipIndexIndex in order to be
-	 * able to skip tokens for empty dynamic arrays.
-	 *
-	 * @param SkipIndexIndex
-	 */
-	void EmitStructArrayEnd(uint32 SkipIndexIndex);
-
-	/**
-	 * Realtime garbage collection helper function used to indicate the beginning of a fixed array.
-	 * All tokens issues between Begin and End will be replayed Count times.
-	 *
-	 * @param Offset	Offset at which fixed array starts.
-	 * @param DebugName	DebugName for this objects token. Only used in non-shipping builds.
-	 * @param Stride	Stride of array element, e.g. sizeof(struct) or sizeof(UObject*).
-	 * @param Count		Fixed array count.
-	 */
-	void EmitFixedArrayBegin(int32 Offset, const FName& DebugName, int32 Stride, int32 Count);
-	
-	/**
-	 * Realtime garbage collection helper function used to indicated the end of a fixed array.
-	 */
-	void EmitFixedArrayEnd();
-
-	/**
-	 * Realtime garbage collection helper function used to emit token containing information about an
-	 * external package reference.
-	 */
-	void EmitExternalPackageReference();
-
-	/**
 	 * Assembles the token stream for realtime garbage collection by combining the per class only
 	 * token stream for each class in the class hierarchy. This is only done once and duplicate
 	 * work is avoided by using an object flag.
@@ -3370,10 +3315,6 @@ public:
 	 */
 	void SetUpRuntimeReplicationData();
 
-#if HACK_HEADER_GENERATOR
-	void SetUpUhtReplicationData();
-#endif  // HACK_HEADER_GENERATOR
-
 	/**
 	 * Helper function for determining if the given class is compatible with structured archive serialization
 	 */
@@ -3421,18 +3362,14 @@ private:
 	 * Tests if all properties tagged with Replicate were registered in GetLifetimeReplicatedProps
 	 */
 	void ValidateRuntimeReplicationData();
-
+	void AssembleReferenceTokenStreamInternal(bool bForce = false);
+	void InternalCreateDefaultObjectWrapper() const;
 protected:
 	/**
 	 * Get the default object from the class, creating it if missing, if requested or under a few other circumstances
 	 * @return		the CDO for this class
 	 **/
 	virtual UObject* CreateDefaultObject();
-
-#if HACK_HEADER_GENERATOR
-	// Required by UHT makefiles for internal data serialization.
-	friend struct FClassArchiveProxy;
-#endif // HACK_HEADER_GENERATOR
 };
 
 // @todo: BP2CPP_remove
@@ -3551,6 +3488,22 @@ COREUOBJECT_API void GetPrivateStaticClassBody(
 	FObjectInstancingGraph.
 -----------------------------------------------------------------------------*/
 
+enum class EInstancePropertyValueFlags
+{
+	None                   = 0x00,
+
+	// if set, then this property causes an instance to be created, otherwise this is just a pointer to a uobject that should be remapped if the object is instanced for some other property
+	CausesInstancing       = 0x01,
+
+	// if set, instance the reference to the subobjectroot, so far only delegates remap a self reference
+	AllowSelfReference     = 0x02,
+
+	// if set, then we do not create a new instance, but we will reassign one if there is already a mapping in the table
+	DoNotCreateNewInstance = 0x04
+};
+
+ENUM_CLASS_FLAGS(EInstancePropertyValueFlags)
+
 struct COREUOBJECT_API FObjectInstancingGraph
 {
 public:
@@ -3614,7 +3567,35 @@ public:
 	 *
 	 * @return	As with GetInstancedSubobject, above, but also deals with archetype creation and a few other special cases
 	 */
-	class UObject* InstancePropertyValue( class UObject* SourceComponent, class UObject* CurrentValue, class UObject* CurrentObject, bool bIsTransient, bool bCausesInstancing = false, bool bAllowSelfReference = false );
+	UE_DEPRECATED(5.2, "This overload of InstancePropertyValue has been deprecated, please call the overload that takes flags instead.")
+	class UObject* InstancePropertyValue( class UObject* SourceComponent, class UObject* CurrentValue, class UObject* CurrentObject, bool bIsTransient, bool bCausesInstancing = false, bool bAllowSelfReference = false )
+	{
+		EInstancePropertyValueFlags Flags = EInstancePropertyValueFlags::None;
+		if (bCausesInstancing)
+		{
+			Flags |= EInstancePropertyValueFlags::CausesInstancing;
+		}
+		if (bAllowSelfReference)
+		{
+			Flags |= EInstancePropertyValueFlags::AllowSelfReference;
+		}
+		return InstancePropertyValue(SourceComponent, CurrentValue, CurrentObject, Flags);
+	}
+
+	/**
+	 * Returns the component that has SourceComponent as its archetype, instancing the component as necessary.
+	 *
+	 * @param	SourceComponent		the component to find the corresponding component instance for
+	 * @param	CurrentValue		the component currently assigned as the value for the component property
+	 *								being instanced.  Used when updating archetypes to ensure that the new instanced component
+	 *								replaces the existing component instance in memory.
+	 * @param	CurrentObject		the object that owns the component property currently being instanced;  this is NOT necessarily the object
+	 *								that should be the Outer for the new component.
+	 * @param	Flags				reinstancing flags - see EInstancePropertyValueFlags
+	 *
+	 * @return	As with GetInstancedSubobject, above, but also deals with archetype creation and a few other special cases
+	 */
+	class UObject* InstancePropertyValue( class UObject* SourceComponent, class UObject* CurrentValue, class UObject* CurrentObject, EInstancePropertyValueFlags Flags = EInstancePropertyValueFlags::None );
 
 	/**
 	 * Adds a partially built object instance to the map(s) of source objects to their instances.
@@ -3725,8 +3706,7 @@ private:
 	 *								replaces the existing component instance in memory.
 	 * @param	CurrentObject		the object that owns the component property currently being instanced;  this is NOT necessarily the object
 	 *								that should be the Outer for the new component.
-	 * @param	bDoNotCreateNewInstance If true, then we do not create a new instance, but we will reassign one if there is already a mapping in the table
-	 * @param	bAllowSelfReference If true, instance the reference to the subobjectroot, so far only delegates remap a self reference
+	 * @param	Flags				reinstancing flags - see EInstancePropertyValueFlags
 	 *
 	 * @return	if SourceComponent is contained within SourceRoot, returns a pointer to a unique component instance corresponding to
 	 *			SourceComponent if SourceComponent is allowed to be instanced in this context, or NULL if the component isn't allowed to be
@@ -3734,7 +3714,7 @@ private:
 	 *			if SourceComponent is not contained by SourceRoot, return INVALID_OBJECT, indicating that the that has SourceComponent as its ObjectArchetype, or NULL if SourceComponent is not contained within
 	 *			SourceRoot.
 	 */
-	class UObject* GetInstancedSubobject( class UObject* SourceSubobject, class UObject* CurrentValue, class UObject* CurrentObject, bool bDoNotCreateNewInstance, bool bAllowSelfReference );
+	class UObject* GetInstancedSubobject( class UObject* SourceSubobject, class UObject* CurrentValue, class UObject* CurrentObject, EInstancePropertyValueFlags Flags );
 
 	/**
 	 * The root of the object tree that is the source used for instancing components;
@@ -4095,5 +4075,11 @@ UE_DECLARE_CORE_VARIANT_TYPE(Rotator3,	Rotator);
 UE_DECLARE_CORE_VARIANT_TYPE(Transform3,Transform);
 UE_DECLARE_CORE_VARIANT_TYPE(Matrix44,	Matrix);
 UE_DECLARE_CORE_VARIANT_TYPE(Box2,		Box2D);
+UE_DECLARE_CORE_VARIANT_TYPE(Ray3,		Ray);
+UE_DECLARE_CORE_VARIANT_TYPE(Sphere3, Sphere);
 
 #undef UE_DECLARE_CORE_VARIANT_TYPE
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

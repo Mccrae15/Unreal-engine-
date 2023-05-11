@@ -3,12 +3,15 @@
 #include "Commandlets/GatherTextFromAssetsCommandlet.h"
 #include "UObject/Class.h"
 #include "HAL/FileManager.h"
+#include "Logging/StructuredLog.h"
 #include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/Paths.h"
 #include "Misc/OutputDeviceHelper.h"
 #include "Misc/FeedbackContext.h"
+#include "UObject/GCObjectScopeGuard.h"
 #include "UObject/EditorObjectVersion.h"
+#include "UObject/FortniteMainBranchObjectVersion.h"
 #include "UObject/UObjectIterator.h"
 #include "Modules/ModuleManager.h"
 #include "Serialization/PropertyLocalizationDataGathering.h"
@@ -21,9 +24,16 @@
 #include "Sound/DialogueWave.h"
 #include "AssetRegistry/ARFilter.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "WorldPartition/WorldPartition.h"
+#include "WorldPartition/WorldPartitionHelpers.h"
+#include "WorldPartition/WorldPartitionActorDescUtils.h"
+#include "Engine/Level.h"
+#include "Engine/World.h"
+#include "EditorWorldUtils.h"
 #include "PackageHelperFunctions.h"
 #include "ShaderCompiler.h"
 #include "DistanceFieldAtlas.h"
+#include "MeshCardBuild.h"
 #include "MeshCardRepresentation.h"
 #include "Templates/UniquePtr.h"
 #include "CollectionManagerModule.h"
@@ -93,6 +103,11 @@ public:
 
 	virtual void Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const FName& Category) override
 	{
+		Serialize(V, Verbosity, Category, -1.0);
+	}
+
+	virtual void Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const FName& Category, double Time) override
+	{
 		if (Verbosity == ELogVerbosity::Error)
 		{
 			++ErrorCount;
@@ -108,12 +123,49 @@ public:
 		else if (Verbosity == ELogVerbosity::Display)
 		{
 			// Downgrade Display to Log while loading packages
-			OriginalWarningContext->Serialize(V, ELogVerbosity::Log, Category);
+			OriginalWarningContext->Serialize(V, ELogVerbosity::Log, Category, Time);
 		}
 		else
 		{
 			// Pass anything else on to GWarn so that it can handle them appropriately
-			OriginalWarningContext->Serialize(V, Verbosity, Category);
+			OriginalWarningContext->Serialize(V, Verbosity, Category, Time);
+		}
+	}
+
+	virtual void SerializeRecord(const UE::FLogRecord& Record) override
+	{
+		const ELogVerbosity::Type Verbosity = Record.GetVerbosity();
+		if (Verbosity == ELogVerbosity::Error)
+		{
+			++ErrorCount;
+			// Downgrade Error to Log while loading packages to avoid false positives from things searching for "Error:" tokens in the log file
+			UE::FLogRecord LocalRecord = Record;
+			LocalRecord.SetVerbosity(ELogVerbosity::Log);
+			TStringBuilder<512> Line;
+			FormatRecordLine(Line, LocalRecord);
+			FormattedErrorsAndWarningsList.Emplace(Line);
+		}
+		else if (Verbosity == ELogVerbosity::Warning)
+		{
+			++WarningCount;
+			// Downgrade Warning to Log while loading packages to avoid false positives from things searching for "Warning:" tokens in the log file
+			UE::FLogRecord LocalRecord = Record;
+			LocalRecord.SetVerbosity(ELogVerbosity::Log);
+			TStringBuilder<512> Line;
+			FormatRecordLine(Line, LocalRecord);
+			FormattedErrorsAndWarningsList.Emplace(Line);
+		}
+		else if (Verbosity == ELogVerbosity::Display)
+		{
+			// Downgrade Display to Log while loading packages
+			UE::FLogRecord LocalRecord = Record;
+			LocalRecord.SetVerbosity(ELogVerbosity::Log);
+			OriginalWarningContext->SerializeRecord(LocalRecord);
+		}
+		else
+		{
+			// Pass anything else on to GWarn so that it can handle them appropriately
+			OriginalWarningContext->SerializeRecord(Record);
 		}
 	}
 
@@ -511,9 +563,7 @@ int32 UGatherTextFromAssetsCommandlet::Main(const FString& Params)
 			ICollectionManager& CollectionManager = CollectionManagerModule.Get();
 			for (const FString& CollectionName : CollectionFilters)
 			{
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-				if (!CollectionManager.GetObjectsInCollection(FName(*CollectionName), ECollectionShareType::CST_All, FirstPassFilter.ObjectPaths, ECollectionRecursionFlags::SelfAndChildren))
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
+				if (!CollectionManager.GetObjectsInCollection(FName(*CollectionName), ECollectionShareType::CST_All, FirstPassFilter.SoftObjectPaths, ECollectionRecursionFlags::SelfAndChildren))
 				{
 					UE_LOG(LogGatherTextFromAssetsCommandlet, Error, TEXT("Failed get objects in specified collection: %s"), *CollectionName);
 					HasFailedToGetACollection = true;
@@ -548,6 +598,8 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		// Apply filter if valid to do so, get all assets otherwise.
 		if (FirstPassFilter.IsEmpty())
 		{
+			// @TODOLocalization: Logging that the first path filter is empty resulting in all assets being gathered can confuse users who generally rely on the second pass.
+			// Figure out a good way to still convey the information in a log or clog.
 			AssetRegistry.GetAllAssets(AssetDataArray);
 		}
 		else
@@ -594,13 +646,22 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	const FFuzzyPathMatcher FuzzyPathMatcher = FFuzzyPathMatcher(IncludePathFilters, ExcludePathFilters);
 	AssetDataArray.RemoveAll([&](const FAssetData& PartiallyFilteredAssetData) -> bool
 	{
-		FString PackageFilePath;
-		if (!FPackageName::FindPackageFileWithoutExtension(FPackageName::LongPackageNameToFilename(PartiallyFilteredAssetData.PackageName.ToString()), PackageFilePath))
+		FString PackageFilePathWithoutExtension;
+		if (!FPackageName::TryConvertLongPackageNameToFilename(PartiallyFilteredAssetData.PackageName.ToString(), PackageFilePathWithoutExtension))
 		{
+			// This means the asset data is for content that isn't mounted - this can happen when using a cooked asset registry
 			return true;
 		}
-		PackageFilePath = FPaths::ConvertRelativePathToFull(PackageFilePath);
-		const FString PackageFileName = FPaths::GetCleanFilename(PackageFilePath);
+
+		FString PackageFilePathWithExtension;
+		if (!FPackageName::FindPackageFileWithoutExtension(PackageFilePathWithoutExtension, PackageFilePathWithExtension))
+		{
+			// This means the package file doesn't exist on disk, which means we cannot gather it
+			return true;
+		}
+
+		PackageFilePathWithExtension = FPaths::ConvertRelativePathToFull(PackageFilePathWithExtension);
+		const FString PackageFileName = FPaths::GetCleanFilename(PackageFilePathWithExtension);
 
 		// Filter out assets whose package file names DO NOT match any of the package file name filters.
 		{
@@ -620,7 +681,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		}
 
 		// Filter out assets whose package file paths do not pass the "fuzzy path" filters.
-		if (FuzzyPathMatcher.TestPath(PackageFilePath) != FFuzzyPathMatcher::Included)
+		if (FuzzyPathMatcher.TestPath(PackageFilePathWithExtension) != FFuzzyPathMatcher::Included)
 		{
 			return true;
 		}
@@ -633,6 +694,54 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		UE_LOG(LogGatherTextFromAssetsCommandlet, Warning, TEXT("No assets matched the specified criteria."));
 		return 0;
 	}
+
+	// Discover the external actors for any worlds that are pending gather
+	{
+		UE_LOG(LogGatherTextFromAssetsCommandlet, Display, TEXT("Discovering external actors to gather..."));
+		
+		TArray<FName> ExternalActorsSearchPaths;
+		AssetDataArray.RemoveAll([&ExternalActorsSearchPaths](const FAssetData& AssetData)
+		{
+			const FNameBuilder PackageNameStr(AssetData.PackageName);
+
+			if (AssetData.AssetClassPath == UWorld::StaticClass()->GetClassPathName())
+			{
+				if (ULevel::GetIsLevelPartitionedFromAsset(AssetData))
+				{
+					FString ExternalActorsPathForWorld = ULevel::GetExternalActorsPath(*PackageNameStr);
+					ExternalActorsSearchPaths.Add(*ExternalActorsPathForWorld);
+				}
+			}
+			else if (PackageNameStr.ToView().Contains(FPackagePath::GetExternalActorsFolderName()))
+			{
+				// Remove any external actors that are already in the list, as they will be re-added providing their owner world passed the gather criteria
+				return true;
+			}
+
+			return false;
+		});
+		
+		if (ExternalActorsSearchPaths.Num() > 0)
+		{
+			AssetRegistry.GetAssetsByPaths(ExternalActorsSearchPaths, AssetDataArray, /*bRecursive*/true);
+		}
+	}
+
+	auto AppendPackagePendingGather = [this](const FName PackageNameToGather) -> FPackagePendingGather*
+	{
+		FString PackageFilename;
+		if (!FPackageName::FindPackageFileWithoutExtension(FPackageName::LongPackageNameToFilename(PackageNameToGather.ToString()), PackageFilename))
+		{
+			return nullptr;
+		}
+		PackageFilename = FPaths::ConvertRelativePathToFull(PackageFilename);
+
+		FPackagePendingGather& PackagePendingGather = PackagesPendingGather.AddDefaulted_GetRef();
+		PackagePendingGather.PackageName = PackageNameToGather;
+		PackagePendingGather.PackageFilename = MoveTemp(PackageFilename);
+		PackagePendingGather.PackageLocCacheState = EPackageLocCacheState::Cached;
+		return &PackagePendingGather;
+	};
 
 	// Collect the basic information about the packages that we're going to gather from
 	{
@@ -649,22 +758,13 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		PackagesPendingGather.Reserve(PackageNamesToGather.Num());
 		for (const FName& PackageNameToGather : PackageNamesToGather)
 		{
-			FString PackageFilename;
-			if (!FPackageName::FindPackageFileWithoutExtension(FPackageName::LongPackageNameToFilename(PackageNameToGather.ToString()), PackageFilename))
-			{
-				continue;
-			}
-			PackageFilename = FPaths::ConvertRelativePathToFull(PackageFilename);
-
-			FPackagePendingGather& PackagePendingGather = PackagesPendingGather[PackagesPendingGather.AddDefaulted()];
-			PackagePendingGather.PackageName = PackageNameToGather;
-			PackagePendingGather.PackageFilename = MoveTemp(PackageFilename);
-			PackagePendingGather.PackageLocCacheState = EPackageLocCacheState::Cached;
+			AppendPackagePendingGather(PackageNameToGather);
 		}
 	}
 
 	FAssetGatherCacheMetrics AssetGatherCacheMetrics;
 	TMap<FString, FName> AssignedPackageLocalizationIds;
+	TMap<FName, TSet<FGuid>> StaleExternalActors;
 
 	int32 NumPackagesProcessed = 0;
 	int32 PackageCount = PackagesPendingGather.Num();
@@ -683,6 +783,8 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		{
 			return false;
 		}
+
+		const bool bIsExternalActorPackage = PackageNameStr.ToView().Contains(FPackagePath::GetExternalActorsFolderName());
 
 		// Read package file summary from the file.
 		FPackageFileSummary PackageFileSummary;
@@ -714,6 +816,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		}
 
 		const FCustomVersion* const EditorVersion = PackageFileSummary.GetCustomVersionContainer().GetVersion(FEditorObjectVersion::GUID);
+		const FCustomVersion* const FNMainVersion = PackageFileSummary.GetCustomVersionContainer().GetVersion(FFortniteMainBranchObjectVersion::GUID);
 
 		// Packages not resaved since localization gathering flagging was added to packages must be loaded.
 		if (PackageFileSummary.GetFileVersionUE() < VER_UE4_PACKAGE_REQUIRES_LOCALIZATION_GATHER_FLAGGING)
@@ -741,6 +844,14 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 				}
 			}
 		}
+		else if (bIsExternalActorPackage && (!FNMainVersion || FNMainVersion->Version < FFortniteMainBranchObjectVersion::FixedLocalizationGatherForExternalActorPackage))
+		{
+			// Fallback on the old package flag check.
+			if (PackageFileSummary.GetPackageFlags() & PKG_RequiresLocalizationGather)
+			{
+				PackagePendingGather.PackageLocCacheState = EPackageLocCacheState::Uncached_TooOld;
+			}
+		}
 
 		// If this package doesn't have any cached data, then we have to load it for gather
 		if (PackageFileSummary.GetFileVersionUE() >= VER_UE4_SERIALIZE_TEXT_IN_PACKAGES && PackageFileSummary.GatherableTextDataOffset == 0 && (PackageFileSummary.GetPackageFlags() & PKG_RequiresLocalizationGather))
@@ -750,6 +861,23 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 		if (PackagePendingGather.PackageLocCacheState != EPackageLocCacheState::Cached)
 		{
+			// External actors actors must be gathered via their owner world rather than via a raw LoadPackage call
+			// Remove them from PackagesToGather as the owner world is merged back in below
+			if (bIsExternalActorPackage)
+			{
+				TArray<FAssetData> ActorsInPackage;
+				AssetRegistry.GetAssetsByPackageName(PackagePendingGather.PackageName, ActorsInPackage);
+				for (const FAssetData& ActorInPackage : ActorsInPackage)
+				{
+					if (TUniquePtr<FWorldPartitionActorDesc> ActorDesc = FWorldPartitionActorDescUtils::GetActorDescriptorFromAssetData(ActorInPackage))
+					{
+						FName WorldPackageName = *FPackageName::ObjectPathToPackageName(ActorDesc->GetActorSoftPath().ToString());
+						StaleExternalActors.FindOrAdd(WorldPackageName).Add(ActorDesc->GetGuid());
+					}
+				}
+				return true;
+			}
+
 			AssetGatherCacheMetrics.CountUncachedAsset(PackagePendingGather.PackageLocCacheState);
 			return false;
 		}
@@ -784,6 +912,30 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	});
 
 	AssetGatherCacheMetrics.LogMetrics();
+
+	// Merge any pending WP map requests back into PackagesPendingGather
+	for (TTuple<FName, TSet<FGuid>>& StaleExternalActorsPair : StaleExternalActors)
+	{
+		FPackagePendingGather* WorldPackagePendingGather = PackagesPendingGather.FindByPredicate([&StaleExternalActorsPair](const FPackagePendingGather& PotentialPackagePendingGather)
+		{
+			return PotentialPackagePendingGather.PackageName == StaleExternalActorsPair.Key;
+		});
+		if (!WorldPackagePendingGather)
+		{
+			WorldPackagePendingGather = AppendPackagePendingGather(StaleExternalActorsPair.Key);
+		}
+
+		if (WorldPackagePendingGather)
+		{
+			WorldPackagePendingGather->ExternalActors = MoveTemp(StaleExternalActorsPair.Value);
+			WorldPackagePendingGather->PackageLocCacheState = EPackageLocCacheState::Uncached_TooOld;
+		}
+		else
+		{
+			UE_LOG(LogGatherTextFromAssetsCommandlet, Warning, TEXT("Failed to queue world package '%s' for %d external actor(s)."), *StaleExternalActorsPair.Key.ToString(), StaleExternalActorsPair.Value.Num());
+		}
+	}
+	StaleExternalActors.Reset();
 
 	NumPackagesProcessed = 0;
 	PackageCount = PackagesPendingGather.Num();
@@ -827,7 +979,14 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		UPackage* Package = nullptr;
 		{
 			FLoadPackageLogOutputRedirector::FScopedCapture ScopedCapture(&LogOutputRedirector, *PackageNameStr);
-			Package = LoadPackage(nullptr, *PackageNameStr, LOAD_NoWarn | LOAD_Quiet);
+			if (PackagePendingGather.ExternalActors.Num() > 0)
+			{
+				Package = LoadWorldPackageForEditor(*PackageNameStr, EWorldType::Editor, LOAD_NoWarn | LOAD_Quiet);
+			}
+			else
+			{
+				Package = LoadPackage(nullptr, *PackageNameStr, LOAD_NoWarn | LOAD_Quiet);
+			}
 		}
 
 		if (!Package)
@@ -853,7 +1012,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 		// Because packages may not have been resaved after this flagging was implemented, we may have added packages to load that weren't flagged - potential false positives.
 		// The loading process should have reflagged said packages so that only true positives will have this flag.
-		if (Package->RequiresLocalizationGather())
+		if (Package->RequiresLocalizationGather() || PackagePendingGather.ExternalActors.Num() > 0)
 		{
 			UE_LOG(LogGatherTextFromAssetsCommandlet, Display, TEXT("[%6.2f%%] Gathering package: '%s'..."), PercentageComplete, *PackageNameStr);
 
@@ -900,6 +1059,47 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 				if (!bSavedPackage)
 				{
 					UE_LOG(LogGatherTextFromAssetsCommandlet, Warning, TEXT("Failed to resave package: '%s'."), *PackageNameStr);
+				}
+			}
+
+			// If this is a WP world then query the localization for any external actors actors that were determined to be stale
+			if (PackagePendingGather.ExternalActors.Num() > 0)
+			{
+				if (UWorld* World = UWorld::FindWorldInPackage(Package))
+				{
+					UWorld::InitializationValues IVS;
+					IVS.InitializeScenes(false);
+					IVS.AllowAudioPlayback(false);
+					IVS.RequiresHitProxies(false);
+					IVS.CreatePhysicsScene(false);
+					IVS.CreateNavigation(false);
+					IVS.CreateAISystem(false);
+					IVS.ShouldSimulatePhysics(false);
+					IVS.EnableTraceCollision(false);
+					IVS.SetTransactional(false);
+					IVS.CreateFXSystem(false);
+					IVS.CreateWorldPartition(true);
+
+					FScopedEditorWorld ScopeEditorWorld(World, IVS);
+
+					if (UWorldPartition* WorldPartition = World->GetWorldPartition())
+					{
+						// ForEachActorWithLoading may GC while running, so keep the world partition (and indirectly the world and its package) alive
+						TGCObjectScopeGuard<UWorldPartition> WorldPartitionGCGuard(WorldPartition);
+
+						FWorldPartitionHelpers::FForEachActorWithLoadingParams ForEachActorParams;
+						ForEachActorParams.ActorGuids = PackagePendingGather.ExternalActors.Array();
+
+						FWorldPartitionHelpers::ForEachActorWithLoading(WorldPartition, [&GatherableTextDataArray](const FWorldPartitionActorDesc* ActorDesc)
+						{
+							if (const AActor* Actor = ActorDesc->GetActor())
+							{
+								EPropertyLocalizationGathererResultFlags ActorGatherableTextResultFlags = EPropertyLocalizationGathererResultFlags::Empty;
+								FPropertyLocalizationDataGatherer(GatherableTextDataArray, Actor->GetExternalPackage(), ActorGatherableTextResultFlags);
+							}
+							return true;
+						}, ForEachActorParams);
+					}
 				}
 			}
 

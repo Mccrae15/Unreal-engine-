@@ -34,6 +34,7 @@
 #include "HAL/PlatformApplicationMisc.h"
 #include "Editor/EditorPerProjectUserSettings.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/SkinnedAssetCommon.h"
 #include "Engine/StaticMesh.h"
 #include "IMeshReductionInterfaces.h"
 #include "ObjectTools.h"
@@ -2789,7 +2790,7 @@ void FFbxImporter::RecursiveFindFbxSkelMesh(FbxNode* Node, TArray< TArray<FbxNod
 				AddTokenizedErrorMessage(
 					FTokenizedMessage::Create(
 						EMessageSeverity::Warning, 
-						FText::Format( LOCTEXT("FBX_NoWeightsOnDeformer", "Ignoring mesh {0} because it but no weights."), FText::FromString( UTF8_TO_TCHAR(SkelMeshNode->GetName()) ) )
+						FText::Format( LOCTEXT("FBX_NoWeightsOnDeformer", "Ignoring mesh {0} because it has no weights."), FText::FromString( UTF8_TO_TCHAR(SkelMeshNode->GetName()) ) )
 					), 
 					FFbxErrors::SkeletalMesh_NoWeightsOnDeformer
 				);

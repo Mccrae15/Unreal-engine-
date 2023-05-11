@@ -10,6 +10,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using EpicGames.Core;
+using EpicGames.Horde.Common;
 using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
 using Horde.Build.Agents;
@@ -56,11 +57,6 @@ namespace Horde.Build.Jobs
 		internal class QueueItem
 		{
 			/// <summary>
-			/// The stream for this job
-			/// </summary>
-			public IStream _stream;
-
-			/// <summary>
 			/// The job instance
 			/// </summary>
 			public IJob _job;
@@ -103,15 +99,13 @@ namespace Horde.Build.Jobs
 			/// <summary>
 			/// Constructor
 			/// </summary>
-			/// <param name="stream">The stream containing this job</param>
 			/// <param name="job">The job instance</param>
 			/// <param name="batchIdx">The batch index to execute</param>
 			/// <param name="poolId">Unique id of the pool of machines to allocate from</param>
 			/// <param name="workspace">The workspace that this job should run in</param>
 			/// <param name="useAutoSdk">Whether or not to use the AutoSDK</param>
-			public QueueItem(IStream stream, IJob job, int batchIdx, PoolId poolId, AgentWorkspace workspace, bool useAutoSdk)
+			public QueueItem(IJob job, int batchIdx, PoolId poolId, AgentWorkspace workspace, bool useAutoSdk)
 			{
-				_stream = stream;
 				_job = job;
 				_batchIdx = batchIdx;
 				_poolId = poolId;
@@ -185,8 +179,8 @@ namespace Horde.Build.Jobs
 			}
 		}
 
-		readonly MongoService _mongoService;
-		readonly StreamService _streamService;
+		readonly GlobalsService _globalsService;
+		readonly IStreamCollection _streamCollection;
 		readonly ILogFileService _logFileService;
 		readonly IAgentCollection _agentsCollection;
 		readonly IJobCollection _jobs;
@@ -195,8 +189,9 @@ namespace Horde.Build.Jobs
 		readonly IPoolCollection _poolCollection;
 		readonly IUgsMetadataCollection _ugsMetadataCollection;
 		readonly PerforceLoadBalancer _perforceLoadBalancer;
+		readonly IClock _clock;
 		readonly IOptionsMonitor<ServerSettings> _settings;
-		readonly ICommitService _commitService;
+		readonly IOptionsMonitor<GlobalConfig> _globalConfig;
 		readonly ILogger<JobTaskSource> _logger;
 		readonly ITicker _ticker;
 
@@ -215,12 +210,6 @@ namespace Horde.Build.Jobs
 		// During a background queue refresh operation, any updated batches are added to this dictionary for merging into the updated queue.
 		List<QueueItem>? _newQueueItemsDuringUpdate;
 
-		// Cache of pools
-		Dictionary<PoolId, IPool> _cachedPoolIdToInstance = new Dictionary<PoolId, IPool>();
-
-		// Cache of stream objects. Used to resolve agent types.
-		private Dictionary<StreamId, IStream> _streams = new Dictionary<StreamId, IStream>();
-
 		/// <summary>
 		/// Delegate for job schedule events
 		/// </summary>
@@ -237,21 +226,22 @@ namespace Horde.Build.Jobs
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		public JobTaskSource(MongoService mongoService, IAgentCollection agents, IJobCollection jobs, IJobStepRefCollection jobStepRefs, IGraphCollection graphs, IPoolCollection pools, IUgsMetadataCollection ugsMetadataCollection, StreamService streamService, ILogFileService logFileService, PerforceLoadBalancer perforceLoadBalancer, ICommitService commitService, IClock clock, IOptionsMonitor<ServerSettings> settings, ILogger<JobTaskSource> logger)
+		public JobTaskSource(GlobalsService globalsService, IAgentCollection agents, IJobCollection jobs, IJobStepRefCollection jobStepRefs, IGraphCollection graphs, IPoolCollection pools, IUgsMetadataCollection ugsMetadataCollection, IStreamCollection streamCollection, ILogFileService logFileService, PerforceLoadBalancer perforceLoadBalancer, IClock clock, IOptionsMonitor<ServerSettings> settings, IOptionsMonitor<GlobalConfig> globalConfig, ILogger<JobTaskSource> logger)
 		{
-			_mongoService = mongoService;
+			_globalsService = globalsService;
 			_agentsCollection = agents;
 			_jobs = jobs;
 			_jobStepRefs = jobStepRefs;
 			_graphs = graphs;
 			_poolCollection = pools;
 			_ugsMetadataCollection = ugsMetadataCollection;
-			_streamService = streamService;
+			_streamCollection = streamCollection;
 			_logFileService = logFileService;
 			_perforceLoadBalancer = perforceLoadBalancer;
+			_clock = clock;
 			_ticker = clock.AddTicker<JobTaskSource>(s_refreshInterval, TickAsync, logger);
+			_globalConfig = globalConfig;
 			_settings = settings;
-			_commitService = commitService;
 			_logger = logger;
 
 			OnLeaseStartedProperties.Add(nameof(ExecuteJobTask.JobId), x => new JobId(x.JobId)).Add(nameof(ExecuteJobTask.BatchId), x => SubResourceId.Parse(x.BatchId)).Add(nameof(ExecuteJobTask.LogId), x => new LogId(x.LogId));
@@ -307,6 +297,49 @@ namespace Horde.Build.Jobs
 			}
 		}
 
+		internal class PoolStatus
+		{
+			public readonly IPool Pool;
+			public readonly bool HasAgents;
+			public readonly bool HasEnabledAgents;
+			public readonly bool HasOnlineAgents;
+			public bool IsAutoScaled => Pool.EnableAutoscaling;
+
+			public PoolStatus(IPool pool, bool hasAgents, bool hasEnabledAgents, bool hasOnlineAgents)
+			{
+				Pool = pool;
+				HasAgents = hasAgents;
+				HasEnabledAgents = hasEnabledAgents;
+				HasOnlineAgents = hasOnlineAgents;
+			}
+		}
+
+		/// <summary>
+		/// Calculate status of agents for a pool
+		/// </summary>
+		/// <param name="utcNow">Current time</param>
+		/// <param name="pools">List of all available pools</param>
+		/// <param name="agents">List of all available agents</param>
+		/// <returns></returns>
+		internal static Dictionary<PoolId, PoolStatus> GetPoolStatus(DateTime utcNow, List<IPool> pools, List<IAgent> agents)
+		{
+			Dictionary<StringId<IPool>,PoolStatus> poolStatus = new ();
+
+			foreach (IPool pool in pools)
+			{
+				Condition poolCondition = pool.Condition ?? Condition.Parse("false");
+				List<IAgent> poolAgents = agents.Where(x => x.ExplicitPools.Contains(pool.Id) || x.SatisfiesCondition(poolCondition)).ToList();
+
+				bool hasAgents = poolAgents.Count > 0;
+				bool hasEnabledAgents = poolAgents.Any(x => x.Enabled);
+				bool hasOnlineAgents = poolAgents.Any(x => x.Enabled && x.IsSessionValid(utcNow));
+
+				poolStatus[pool.Id] = new PoolStatus(pool, hasAgents, hasEnabledAgents, hasOnlineAgents);
+			}
+
+			return poolStatus;
+		}
+		
 		/// <summary>
 		/// Background task
 		/// </summary>
@@ -321,59 +354,18 @@ namespace Horde.Build.Jobs
 			}
 
 			// Query all the current streams
-			List<IStream> streamsList = await _streamService.GetStreamsAsync();
-			_streams = streamsList.ToDictionary(x => x.Id, x => x);
+			GlobalConfig globalConfig = _globalConfig.CurrentValue;
+			List<IStream> streamsList = await _streamCollection.GetAsync(globalConfig.Streams);
+			Dictionary<StreamId, IStream> streams = streamsList.ToDictionary(x => x.Id, x => x);
 
 			// Find all the pools which are valid (ie. have at least one online agent)
-			DateTime utcNow = DateTime.UtcNow;
 			List<IAgent> agents = await _agentsCollection.FindAsync();
 			List<IPool> pools = await _poolCollection.GetAsync();
-
-			// Find all the pools which are currently online
-			HashSet<PoolId> onlinePools = new HashSet<PoolId>(agents.Where(x => x.IsSessionValid(utcNow) && x.Enabled).SelectMany(x => x.ExplicitPools));
-			foreach (IPool pool in pools)
-			{
-				if (pool.Condition != null && !onlinePools.Contains(pool.Id) && agents.Any(x => x.IsSessionValid(utcNow) && x.SatisfiesCondition(pool.Condition) && x.Enabled))
-				{
-					onlinePools.Add(pool.Id);
-				}
-			}
-
-			// Find lists of valid pools and online pools
-			HashSet<PoolId> validPools = new HashSet<PoolId>(onlinePools.Union(agents.Where(x => !x.IsSessionValid(utcNow) || !x.Enabled).SelectMany(x => x.ExplicitPools)));
-			foreach (IPool pool in pools)
-			{
-				if (pool.Condition != null && !validPools.Contains(pool.Id) && agents.Any(x => !x.IsSessionValid(utcNow) && x.SatisfiesCondition(pool.Condition) && x.Enabled))
-				{
-					validPools.Add(pool.Id);
-				}
-			}
-
-			// Query all the current pools
-			_cachedPoolIdToInstance = pools.ToDictionary(x => x.Id, x => x);
+			Dictionary<PoolId, PoolStatus> poolStatus = GetPoolStatus(_clock.UtcNow, pools, agents);
 
 			// New list of queue items
 			SortedSet<QueueItem> newQueue = new SortedSet<QueueItem>(_queue.Comparer);
 			Dictionary<(JobId, SubResourceId), QueueItem> newBatchIdToQueueItem = new Dictionary<(JobId, SubResourceId), QueueItem>();
-			
-			// Returns true if agents are online and available for scheduling for a pool
-			bool IsPoolOnline(PoolId poolId)
-			{
-				return onlinePools.Contains(poolId);
-			}
-			
-			// Returns true if a pool can be auto-scaled
-			bool IsPoolAutoScaled(PoolId poolId)
-			{
-				IPool? pool = pools.Find(p => p.Id == poolId);
-				return validPools.Contains(poolId) && pool != null && pool.EnableAutoscaling;
-			}
-			
-			bool HasAgentsOnlineOrIsAutoScaled(PoolId poolId)
-			{
-				// If pool is auto-scaled, it will be considered online even if it has no agents online
-				return IsPoolOnline(poolId) || IsPoolAutoScaled(poolId);
-			}
 
 			// Query for a new list of jobs for the queue
 			List<IJob> newJobs = await _jobs.GetDispatchQueueAsync();
@@ -399,7 +391,7 @@ namespace Horde.Build.Jobs
 
 				// Get the stream. If it fails, skip the whole job.
 				IStream? stream;
-				if (!_streams.TryGetValue(newJob.StreamId, out stream))
+				if (!streams.TryGetValue(newJob.StreamId, out stream))
 				{
 					newJob = await _jobs.SkipAllBatchesAsync(newJob, graph, JobStepBatchError.UnknownStream);
 					continue;
@@ -418,53 +410,46 @@ namespace Horde.Build.Jobs
 
 					// Validate the agent type and workspace settings
 					IJobStepBatch batch = newJob.Batches[batchIdx];
-					if (!stream.AgentTypes.TryGetValue(graph.Groups[batch.GroupIdx].AgentType, out AgentType? agentType))
+					if (!stream.Config.AgentTypes.TryGetValue(graph.Groups[batch.GroupIdx].AgentType, out AgentConfig? agentType))
 					{
 						newJob = await SkipBatchAsync(newJob, batch.Id, graph, JobStepBatchError.UnknownAgentType);
 					}
-					else if (!_cachedPoolIdToInstance.TryGetValue(agentType.Pool, out IPool? pool))
+					else if (!poolStatus.ContainsKey(agentType.Pool))
 					{
 						newJob = await SkipBatchAsync(newJob, batch.Id, graph, JobStepBatchError.UnknownPool);
 					}
-					else if (!validPools.Contains(agentType.Pool))
+					else if (!poolStatus[agentType.Pool].HasAgents)
 					{
 						newJob = await SkipBatchAsync(newJob, batch.Id, graph, JobStepBatchError.NoAgentsInPool);
 					}
-					else if (!HasAgentsOnlineOrIsAutoScaled(agentType.Pool))
-					{
-						newJob = await SkipBatchAsync(newJob, batch.Id, graph, JobStepBatchError.NoAgentsOnline);
-					}
-					else if (!stream.TryGetAgentWorkspace(agentType, out (AgentWorkspace, bool)? workspaceResult))
+					else if (!stream.Config.TryGetAgentWorkspace(agentType, out (AgentWorkspace, bool)? workspaceResult))
 					{
 						newJob = await SkipBatchAsync(newJob, batch.Id, graph, JobStepBatchError.UnknownWorkspace);
 					}
 					else
 					{
-						TemplateRef? templateRef;
+						ITemplateRef? templateRef;
 						if (stream.Templates.TryGetValue(newJob.TemplateId, out templateRef))
 						{							
 							if (templateRef.StepStates != null)
 							{
 								for (int i = 0; i < templateRef.StepStates.Count; i++)
 								{
-									TemplateStepState state = templateRef.StepStates[i];
-									if (state.PausedByUserId != null)
-									{
-										IJobStep? step = batch.Steps.FirstOrDefault(x => graph.Groups[batch.GroupIdx].Nodes[x.NodeIdx].Name.Equals(state.Name, StringComparison.Ordinal));
+									ITemplateStep state = templateRef.StepStates[i];
 
-										if (step != null)
+									IJobStep? step = batch.Steps.FirstOrDefault(x => graph.Groups[batch.GroupIdx].Nodes[x.NodeIdx].Name.Equals(state.Name, StringComparison.Ordinal));
+									if (step != null)
+									{
+										JobId jobId = newJob.Id;
+										newJob = await _jobs.TryUpdateStepAsync(newJob, graph, batch.Id, step.Id, JobStepState.Skipped, newError: JobStepError.Paused);
+										if (newJob == null)
 										{
-											JobId jobId = newJob.Id;
-											newJob = await _jobs.TryUpdateStepAsync(newJob, graph, batch.Id, step.Id, JobStepState.Skipped, newError: JobStepError.Paused);
-											if (newJob == null)
-											{
-												_logger.LogError("Job {JobId} failed to update step {StepName} pause state", jobId, state.Name);
-												break;
-											}
-											else
-											{
-												_logger.LogInformation("Job {JobId} step {StepName} has been skipped due to being paused", jobId, state.Name);
-											}
+											_logger.LogError("Job {JobId} failed to update step {StepName} pause state", jobId, state.Name);
+											break;
+										}
+										else
+										{
+											_logger.LogInformation("Job {JobId} step {StepName} has been skipped due to being paused", jobId, state.Name);
 										}
 									}
 								}
@@ -474,14 +459,14 @@ namespace Horde.Build.Jobs
 						if (newJob != null)
 						{
 							(AgentWorkspace workspace, bool useAutoSdk) = workspaceResult.Value;
-							QueueItem newQueueItem = new QueueItem(stream, newJob, batchIdx, agentType.Pool, workspace, useAutoSdk);
+							QueueItem newQueueItem = new QueueItem(newJob, batchIdx, agentType.Pool, workspace, useAutoSdk);
 							newQueue.Add(newQueueItem);
 							newBatchIdToQueueItem[(newJob.Id, batch.Id)] = newQueueItem;
 
 							IPool? newJobPool = pools.Find(p => p.Id == agentType.Pool);
 							if (newJobPool != null)
 							{
-								OnJobScheduled?.Invoke(newJobPool, IsPoolOnline(agentType.Pool), newJob, graph, batch.Id);
+								OnJobScheduled?.Invoke(newJobPool, poolStatus[agentType.Pool].HasOnlineAgents, newJob, graph, batch.Id);
 							}
 						}
 					}
@@ -553,19 +538,6 @@ namespace Horde.Build.Jobs
 			}
 		}
 
-		/// <summary>
-		/// Updates the current state of a job
-		/// </summary>
-		/// <param name="job">The job that has been updated</param>
-		/// <param name="graph">Graph for the job</param>
-		/// <returns>Async task</returns>
-		public void UpdateQueuedJob(IJob job, IGraph graph)
-		{
-			IStream? stream;
-			_streams.TryGetValue(job.StreamId, out stream);
-			UpdateQueuedJob(job, graph, stream);
-		}
-
 		void AssignAnyQueueItemToWaiter(QueueWaiter waiter)
 		{
 			lock (_waiters)
@@ -633,16 +605,18 @@ namespace Horde.Build.Jobs
 		/// </summary>
 		/// <param name="job">The job that has been updated</param>
 		/// <param name="graph">Graph for the job</param>
-		/// <param name="stream">The stream containing the job</param>
-		public void UpdateQueuedJob(IJob job, IGraph graph, IStream? stream)
+		public void UpdateQueuedJob(IJob job, IGraph graph)
 		{
+			StreamConfig? streamConfig;
+			_globalConfig.CurrentValue.TryGetStream(job.StreamId, out streamConfig);
+
 			List<TaskCompletionSource<bool>> completeWaiters = new List<TaskCompletionSource<bool>>();
 			lock (_lockObject)
 			{
 				for (int batchIdx = 0; batchIdx < job.Batches.Count; batchIdx++)
 				{
 					IJobStepBatch batch = job.Batches[batchIdx];
-					if (batch.State == JobStepBatchState.Ready && stream != null && batch.AgentId == null)
+					if (batch.State == JobStepBatchState.Ready && streamConfig != null && batch.AgentId == null)
 					{
 						// Check if this item is already in the list.
 						QueueItem? existingItem;
@@ -659,7 +633,7 @@ namespace Horde.Build.Jobs
 								else
 								{
 									RemoveQueueItem(existingItem);
-									InsertQueueItem(stream, job, batchIdx, existingItem._poolId, existingItem._workspace, existingItem._useAutoSdk);
+									InsertQueueItem(job, batchIdx, existingItem._poolId, existingItem._workspace, existingItem._useAutoSdk);
 								}
 							}
 							continue;
@@ -669,14 +643,14 @@ namespace Horde.Build.Jobs
 						INodeGroup group = graph.Groups[batch.GroupIdx];
 
 						// Get the requirements for the new queue item
-						AgentType? agentType;
-						if (stream.AgentTypes.TryGetValue(group.AgentType, out agentType))
+						AgentConfig? agentType;
+						if (streamConfig.AgentTypes.TryGetValue(group.AgentType, out agentType))
 						{
 							(AgentWorkspace, bool)? result;
-							if (stream.TryGetAgentWorkspace(agentType, out result))
+							if (streamConfig.TryGetAgentWorkspace(agentType, out result))
 							{
 								(AgentWorkspace agentWorkspace, bool useAutoSdk) = result.Value;
-								InsertQueueItem(stream, job, batchIdx, agentType.Pool, agentWorkspace, useAutoSdk);
+								InsertQueueItem(job, batchIdx, agentType.Pool, agentWorkspace, useAutoSdk);
 							}
 						}
 					}
@@ -765,15 +739,23 @@ namespace Horde.Build.Jobs
 			// The next time to try assigning to another agent
 			DateTime backOffTime = DateTime.UtcNow + TimeSpan.FromMinutes(1.0);
 
+			// Allocate a log ID but hold off creating the actual log file until the lease has been accepted
+			LogId logId = LogId.GenerateNewId();
+			
 			// Try to update the job with this agent id
-			LogId logId = (await _logFileService.CreateLogFileAsync(job.Id, agent.SessionId, LogType.Json)).Id;
 			IJob? newJob = await _jobs.TryAssignLeaseAsync(item._job, item._batchIdx, item._poolId, agent.Id, agent.SessionId!.Value, leaseId, logId);
 			if (newJob != null)
 			{
 				job = newJob;
 
+				StreamConfig? streamConfig;
+				if (!_globalConfig.CurrentValue.TryGetStream(newJob.StreamId, out streamConfig))
+				{
+					return null;
+				}
+
 				// Get the lease name
-				StringBuilder leaseName = new StringBuilder($"{item._stream.Name} - ");
+				StringBuilder leaseName = new StringBuilder($"{streamConfig.Name} - ");
 				if (job.PreflightChange > 0)
 				{
 					leaseName.Append((job.Change > 0) ? $"Preflight CL {job.PreflightChange} against CL {job.Change}" : $"Preflight CL {job.PreflightChange} against latest");
@@ -785,10 +767,10 @@ namespace Horde.Build.Jobs
 				leaseName.Append(CultureInfo.InvariantCulture, $" - {job.Name}");
 
 				// Get the global settings
-				Globals globals = await _mongoService.GetGlobalsAsync();
+				IGlobals globals = await _globalsService.GetAsync();
 
 				// Encode the payload
-				ExecuteJobTask? task = await CreateExecuteJobTaskAsync(item._stream, job, batch, agent, item._workspace, item._useAutoSdk, logId);
+				ExecuteJobTask? task = await CreateExecuteJobTaskAsync(streamConfig, job, batch, agent, item._workspace, item._useAutoSdk, logId);
 				if (task != null)
 				{
 					byte[] payload = Any.Pack(task).ToByteArray();
@@ -798,6 +780,7 @@ namespace Horde.Build.Jobs
 					if (waiter.LeaseSource.TrySetResult(lease))
 					{
 						_logger.LogDebug("Assigned lease {LeaseId} to agent {AgentId}", leaseId, agent.Id);
+						await _logFileService.CreateLogFileAsync(job.Id, agent.SessionId, LogType.Json, logId);
 						return lease;
 					}
 				}
@@ -837,10 +820,10 @@ namespace Horde.Build.Jobs
 			return null;
 		}
 
-		async Task<ExecuteJobTask?> CreateExecuteJobTaskAsync(IStream stream, IJob job, IJobStepBatch batch, IAgent agent, AgentWorkspace workspace, bool bUseAutoSdk, LogId logId)
+		async Task<ExecuteJobTask?> CreateExecuteJobTaskAsync(StreamConfig streamConfig, IJob job, IJobStepBatch batch, IAgent agent, AgentWorkspace workspace, bool useAutoSdk, LogId logId)
 		{
 			// Get the lease name
-			StringBuilder leaseName = new StringBuilder($"{stream.Name} - ");
+			StringBuilder leaseName = new StringBuilder($"{streamConfig.Name} - ");
 			if (job.PreflightChange > 0)
 			{
 				leaseName.Append((job.Change > 0) ? $"Preflight CL {job.PreflightChange} against CL {job.Change}" : $"Preflight CL {job.PreflightChange} against latest");
@@ -852,7 +835,7 @@ namespace Horde.Build.Jobs
 			leaseName.Append(CultureInfo.InvariantCulture, $" - {job.Name}");
 
 			// Get the global settings
-			Globals globals = await _mongoService.GetGlobalsAsync();
+			GlobalConfig globalConfig = _globalConfig.CurrentValue;
 
 			// Encode the payload
 			ExecuteJobTask task = new ExecuteJobTask();
@@ -860,18 +843,21 @@ namespace Horde.Build.Jobs
 			task.BatchId = batch.Id.ToString();
 			task.LogId = logId.ToString();
 			task.JobName = leaseName.ToString();
+			task.Executor = job.Executor ?? String.Empty;
 
-			List<HordeCommon.Rpc.Messages.AgentWorkspace> workspaces = new List<HordeCommon.Rpc.Messages.AgentWorkspace>();
+			List<HordeCommon.Rpc.Messages.AgentWorkspace> workspaces = new ();
 
-			PerforceCluster? cluster = globals.FindPerforceCluster(workspace.Cluster);
+			PerforceCluster? cluster = globalConfig.FindPerforceCluster(workspace.Cluster);
 			if (cluster == null)
 			{
 				return null;
 			}
 
-			AgentWorkspace? autoSdkWorkspace = bUseAutoSdk ? agent.GetAutoSdkWorkspace(cluster) : null;
+			AgentWorkspace? autoSdkWorkspace = useAutoSdk ? agent.GetAutoSdkWorkspace(cluster) : null;
 			if (autoSdkWorkspace != null)
 			{
+				autoSdkWorkspace.Method = workspace.Method;
+				
 				if (!await agent.TryAddWorkspaceMessage(autoSdkWorkspace, cluster, _perforceLoadBalancer, workspaces))
 				{
 					return null;
@@ -937,7 +923,7 @@ namespace Horde.Build.Jobs
 			}
 
 			// Cached stream for this job
-			IStream? stream = null;
+			StreamConfig? streamConfig = null;
 
 			// Send all the updates
 			Dictionary<int, IUgsMetadata> metadataCache = new Dictionary<int, IUgsMetadata>();
@@ -958,10 +944,9 @@ namespace Horde.Build.Jobs
 				}
 
 				// Get the stream
-				if (stream == null)
+				if (streamConfig == null)
 				{
-					stream = await _streamService.GetStreamAsync(job.StreamId);
-					if (stream == null)
+					if (!_globalConfig.CurrentValue.TryGetStream(job.StreamId, out streamConfig))
 					{
 						_logger.LogError("Unable to fetch definition for stream {StreamId}", job.StreamId);
 						break;
@@ -983,7 +968,7 @@ namespace Horde.Build.Jobs
 				IUgsMetadata? metadata;
 				if (!metadataCache.TryGetValue(change, out metadata))
 				{
-					metadata = await _ugsMetadataCollection.FindOrAddAsync(stream.Name, change, label.UgsProject);
+					metadata = await _ugsMetadataCollection.FindOrAddAsync(streamConfig.Name, change, label.UgsProject);
 					metadataCache[change] = metadata;
 				}
 
@@ -1038,7 +1023,7 @@ namespace Horde.Build.Jobs
 					{
 						error = JobStepBatchError.ExecutionError;
 					}
-
+					
 					IGraph graph = await _graphs.GetAsync(job.GraphHash);
 					job = await _jobs.TryFailBatchAsync(job, batchIdx, graph, error);
 
@@ -1046,11 +1031,11 @@ namespace Horde.Build.Jobs
 					{
 						if (batch.Error != JobStepBatchError.None)
 						{
-							logger.LogInformation("Failed job {JobId}, batch {BatchId} with error {Error}", job.Id, batch.Id, batch.Error);
+							logger.LogInformation("Failed lease {LeaseId}, job {JobId}, batch {BatchId} with error {Error}", leaseId, job.Id, batch.Id, batch.Error);
 						}
 						if (runningStepIdx != -1)
 						{
-							await _jobStepRefs.UpdateAsync(job, batch, batch.Steps[runningStepIdx], graph);
+							await _jobStepRefs.UpdateAsync(job, batch, batch.Steps[runningStepIdx], graph, logger);
 						}
 						break;
 					}
@@ -1101,18 +1086,17 @@ namespace Horde.Build.Jobs
 		/// <summary>
 		/// Inserts an item into the queue
 		/// </summary>
-		/// <param name="stream">The stream containing the job</param>
 		/// <param name="job"></param>
 		/// <param name="batchIdx"></param>
 		/// <param name="poolId">The pool to use</param>
 		/// <param name="workspace">The workspace for this item to run in</param>
 		/// <param name="useAutoSdk">Whether or not to use the AutoSDK</param>
 		/// <returns></returns>
-		void InsertQueueItem(IStream stream, IJob job, int batchIdx, PoolId poolId, AgentWorkspace workspace, bool useAutoSdk)
+		void InsertQueueItem(IJob job, int batchIdx, PoolId poolId, AgentWorkspace workspace, bool useAutoSdk)
 		{
 			_logger.LogDebug("Adding queued job {JobId}, batch {BatchId} [Pool: {Pool}, Workspace: {Workspace}]", job.Id, job.Batches[batchIdx].Id, poolId, workspace.Identifier);
 
-			QueueItem newItem = new QueueItem(stream, job, batchIdx, poolId, workspace, useAutoSdk);
+			QueueItem newItem = new QueueItem(job, batchIdx, poolId, workspace, useAutoSdk);
 			_batchIdToQueueItem[newItem.Id] = newItem;
 			_queue.Add(newItem);
 

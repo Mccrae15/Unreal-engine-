@@ -1,10 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MaterialCachedHLSLTree.h"
+#include "Stats/StatsTrace.h"
 
 #if WITH_EDITOR
 
 #include "Materials/Material.h"
+#include "Materials/MaterialAttributeDefinitionMap.h"
 #include "Materials/MaterialExpressionCustomOutput.h"
 #include "MaterialHLSLGenerator.h"
 

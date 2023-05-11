@@ -6,8 +6,8 @@
 #include "VectorVM.h"
 #include "StaticMeshResources.h"
 #include "Curves/RichCurve.h"
-#include "Niagara/Private/NiagaraStats.h"
 #include "NiagaraDataInterface.h"
+#include "NiagaraStats.h"
 #include "NiagaraDataInterfaceCurveBase.generated.h"
 
 /** Base class for curve data proxy data. */
@@ -185,7 +185,6 @@ public:
 	virtual bool AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const override;
 	virtual void GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL) override;
 #endif
-	virtual bool UseLegacyShaderBindings() const  override { return false; }
 	virtual void BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const override;
 	virtual void SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const override;
 

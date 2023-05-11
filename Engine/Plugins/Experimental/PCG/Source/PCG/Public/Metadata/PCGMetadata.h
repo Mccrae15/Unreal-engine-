@@ -2,14 +2,13 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "PCGModule.h"
-#include "PCGMetadataAccessor.h"
+#include "PCGMetadataCommon.h" // IWYU pragma: keep
 #include "PCGMetadataAttributeTraits.h"
-#include "PCGMetadataCommon.h"
 #include "Metadata/PCGMetadataAttributeTpl.h"
 
 #include "PCGMetadata.generated.h"
+
+struct FPCGPoint;
 
 
 UCLASS(BlueprintType)
@@ -24,16 +23,42 @@ public:
 	virtual void BeginDestroy() override;
 	//~ End UObject interface
 
-	/** Initializes the metadata from a parent metadata, if any (can be null) */
+	/** Initializes the metadata from a parent metadata, if any (can be null). Copies attributes and values. */
 	UFUNCTION(BlueprintCallable, Category = "PCG|Metadata")
-	void Initialize(const UPCGMetadata* InParent);
+	void Initialize(const UPCGMetadata* InParent) { InitializeWithAttributeFilter(InParent, TSet<FName>()); }
 
+	/** Initializes the metadata from a parent metadata, if any (can be null) with the option to not add attributes from the parent. */
+	void Initialize(const UPCGMetadata* InParent, bool bAddAttributesFromParent);
+
+	/**
+	 * Initializes the metadata from a parent metadata. Copies attributes and values.
+	 * @param InParent The parent metadata to use as a template, if any (can be null).
+	 * @param InFilteredAttributes Optional list of attributes to exclude or include when adding the attributes from the parent.
+	 * @param InFilterMode Defines attribute filter operation.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "PCG|Metadata")
+	void InitializeWithAttributeFilter(const UPCGMetadata* InParent, const TSet<FName>& InFilteredAttributes, EPCGMetadataFilterMode InFilterMode = EPCGMetadataFilterMode::ExcludeAttributes);
+
+	/** Initializes the metadata from a parent metadata by copying all attributes to it. */
 	UFUNCTION(BlueprintCallable, Category = "PCG|Metadata")
 	void InitializeAsCopy(const UPCGMetadata* InMetadataToCopy);
 
+	/** Initializes the metadata from a parent metadata by copy filtered attributes only to it */
+	UFUNCTION(BlueprintCallable, Category = "PCG|Metadata")
+	void InitializeAsCopyWithAttributeFilter(const UPCGMetadata* InMetadataToCopy, const TSet<FName>& InFilteredAttributes, EPCGMetadataFilterMode InFilterMode = EPCGMetadataFilterMode::ExcludeAttributes);
+
 	/** Creates missing attributes from another metadata if they are not currently present - note that this does not copy values */
 	UFUNCTION(BlueprintCallable, Category = "PCG|Metadata")
-	void AddAttributes(const UPCGMetadata* InOther);
+	void AddAttributes(const UPCGMetadata* InOther) { AddAttributesFiltered(InOther, TSet<FName>()); }
+
+	/**
+	 * Creates missing attributes from another metadata if they are not currently present - note that this does not copy values.
+	 * @param InOther The other metadata to obtain a list of attributes from.
+	 * @param InFilteredAttributes Optional list of attributes to exclude or include when adding the attributes.
+	 * @param InFilterMode Defines attribute filter operation.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "PCG|Metadata")
+	void AddAttributesFiltered(const UPCGMetadata* InOther, const TSet<FName>& InFilteredAttributes, EPCGMetadataFilterMode InFilterMode = EPCGMetadataFilterMode::ExcludeAttributes);
 
 	/** Creates missing attribute from another metadata if it is not currently present - note that this does not copy values */
 	UFUNCTION(BlueprintCallable, Category = "PCG|Metadata")
@@ -51,11 +76,18 @@ public:
 	FPCGMetadataAttributeBase* CopyAttribute(const FPCGMetadataAttributeBase* OriginalAttribute, FName NewAttributeName, bool bKeepParent, bool bCopyEntries, bool bCopyValues);
 
 	/** Returns this metadata's parent */
+	TWeakObjectPtr<const UPCGMetadata> GetParentPtr() const { return Parent; }
 	const UPCGMetadata* GetParent() const { return Parent.Get(); }
 	const UPCGMetadata* GetRoot() const;
 	bool HasParent(const UPCGMetadata* InTentativeParent) const;
 
+	/** Unparents current metadata by flattening the attributes (values, entries, etc.) */
+	void Flatten();
+
 	/** Create new streams */
+	UFUNCTION(BlueprintCallable, Category = "PCG|Metadata")
+	void CreateInteger32Attribute(FName AttributeName, int32 DefaultValue, bool bAllowsInterpolation, bool bOverrideParent = true);
+
 	UFUNCTION(BlueprintCallable, Category = "PCG|Metadata")
 	void CreateInteger64Attribute(FName AttributeName, int64 DefaultValue, bool bAllowsInterpolation, bool bOverrideParent = true);
 
@@ -86,6 +118,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "PCG|Metadata")
 	void CreateStringAttribute(FName AttributeName, FString DefaultValue, bool bAllowsInterpolation, bool bOverrideParent = true);
 
+	UFUNCTION(BlueprintCallable, Category = "PCG|Metadata")
+	void CreateBoolAttribute(FName AttributeName, bool DefaultValue, bool bAllowsInterpolation, bool bOverrideParent = true);
+
 	/** Set an attribute given a property and its value.
 	* @param AttributeName: Target attribute to set the property's value to
 	* @param EntryKey: Metadata entry key to set the value to
@@ -96,12 +131,34 @@ public:
 	*/
 	bool SetAttributeFromProperty(FName AttributeName, PCGMetadataEntryKey& EntryKey, const UObject* Object, const FProperty* Property, bool bCreate);
 
+	/** Set an attribute given a property and its value.
+	* @param AttributeName: Target attribute to set the property's value to
+	* @param EntryKey: Metadata entry key to set the value to
+	* @param Data: Data pointer to get the property value from
+	* @param Property: The property to set from
+	* @param bCreate: If true and the attribute doesn't exists, it will create an attribute based on the property type
+	* @returns true if the attribute creation (if required) and the value set succeeded
+	*/
+	bool SetAttributeFromDataProperty(FName AttributeName, PCGMetadataEntryKey& EntryKey, const void* Data, const FProperty* Property, bool bCreate);
+
 	/** Get attributes */
 	FPCGMetadataAttributeBase* GetMutableAttribute(FName AttributeName);
 	const FPCGMetadataAttributeBase* GetConstAttribute(FName AttributeName) const;
 	const FPCGMetadataAttributeBase* GetConstAttributeById(int32 AttributeId) const;
+
+	UFUNCTION(BlueprintCallable, Category = "PCG|Metadata")
 	bool HasAttribute(FName AttributeName) const;
+
+	UFUNCTION(BlueprintCallable, Category = "PCG|Metadata")
+	bool HasCommonAttributes(const UPCGMetadata* InMetadata) const;
+
 	int32 GetAttributeCount() const;
+
+	template <typename T>
+	FPCGMetadataAttribute<T>* GetMutableTypedAttribute(FName AttributeName);
+
+	template <typename T>
+	const FPCGMetadataAttribute<T>* GetConstTypedAttribute(FName AttributeName) const;
 
 	UFUNCTION(BlueprintCallable, Category = "PCG|Metadata")
 	void GetAttributes(TArray<FName>& AttributeNames, TArray<EPCGMetadataTypes>& AttributeTypes) const;
@@ -115,11 +172,11 @@ public:
 
 	/** Copy attribute */
 	UFUNCTION(BlueprintCallable, Category = "PCG|Metadata")
-	void CopyExistingAttribute(FName AttributeToCopy, FName NewAttributeName, bool bKeepParent = true);
+	bool CopyExistingAttribute(FName AttributeToCopy, FName NewAttributeName, bool bKeepParent = true);
 
 	/** Rename attribute */
 	UFUNCTION(BlueprintCallable, Category = "PCG|Metadata")
-	void RenameAttribute(FName AttributeToRename, FName NewAttributeName);
+	bool RenameAttribute(FName AttributeToRename, FName NewAttributeName);
 
 	/** Clear/Reinit attribute */
 	UFUNCTION(BlueprintCallable, Category = "PCG|Metadata")
@@ -195,8 +252,22 @@ public:
 	int64 GetItemKeyCountForParent() const;
 	int64 GetItemCountForChild() const;
 
+	/**
+	* Create a new attribute. If the attribute already exists, it will raise a warning (use FindOrCreateAttribute if this usecase can arise)
+	* If the attribute already exists but is of the wrong type, it will fail and return nullptr. Same if the name is invalid.
+	* Return a typed attribute pointer, of the requested type T.
+	*/
 	template<typename T>
-	FPCGMetadataAttributeBase* CreateAttribute(FName AttributeName, const T& DefaultValue, bool bAllowsInterpolation, bool bOverrideParent);
+	FPCGMetadataAttribute<T>* CreateAttribute(FName AttributeName, const T& DefaultValue, bool bAllowsInterpolation, bool bOverrideParent);
+
+	/**
+	* Find or create an attribute. Follows CreateAttribute signature.
+	* Extra boolean bOverwriteIfTypeMismatch allows to overwrite an existing attribute if the type mismatch.
+	* Same as CreateAttribute, it will return nullptr if the attribute name is invalid.
+	* Return a typed attribute pointer, of the requested type T.
+	*/
+	template<typename T>
+	FPCGMetadataAttribute<T>* FindOrCreateAttribute(FName AttributeName, const T& DefaultValue = T{}, bool bAllowsInterpolation = true, bool bOverrideParent = true, bool bOverwriteIfTypeMismatch = true);
 
 protected:
 	FPCGMetadataAttributeBase* CopyAttribute(FName AttributeToCopy, FName NewAttributeName, bool bKeepParent, bool bCopyEntries, bool bCopyValues);
@@ -207,7 +278,7 @@ protected:
 	void RemoveAttributeInternal(FName AttributeName);
 
 	UPROPERTY()
-	TWeakObjectPtr<const UPCGMetadata> Parent;
+	TObjectPtr<const UPCGMetadata> Parent;
 
 	// Set of parents kept for streams relationship and GC collection
 	// But otherwise not used directly
@@ -227,23 +298,43 @@ protected:
 };
 
 template<typename T>
-FPCGMetadataAttributeBase* UPCGMetadata::CreateAttribute(FName AttributeName, const T& DefaultValue, bool bAllowsInterpolation, bool bOverrideParent)
+FPCGMetadataAttribute<T>* UPCGMetadata::CreateAttribute(FName AttributeName, const T& DefaultValue, bool bAllowsInterpolation, bool bOverrideParent)
 {
+	if (!FPCGMetadataAttributeBase::IsValidName(AttributeName))
+	{
+		UE_LOG(LogPCG, Error, TEXT("Attribute name %s is invalid"), *AttributeName.ToString());
+		return nullptr;
+	}
+
 	const FPCGMetadataAttributeBase* ParentAttribute = nullptr;
 
-	if (bOverrideParent && Parent.IsValid())
+	if (bOverrideParent && Parent)
 	{
 		ParentAttribute = Parent->GetConstAttribute(AttributeName);
 	}
 
-	FPCGMetadataAttributeBase* NewAttribute = new FPCGMetadataAttribute<T>(this, AttributeName, ParentAttribute, DefaultValue, bAllowsInterpolation);
+	if (ParentAttribute && (ParentAttribute->GetTypeId() != PCG::Private::MetadataTypes<T>::Id))
+	{
+		// Can't parent if the types doesn't match
+		ParentAttribute = nullptr;
+	}
+
+	FPCGMetadataAttribute<T>* NewAttribute = new FPCGMetadataAttribute<T>(this, AttributeName, ParentAttribute, DefaultValue, bAllowsInterpolation);
 
 	AttributeLock.WriteLock();
 	if (FPCGMetadataAttributeBase** ExistingAttribute = Attributes.Find(AttributeName))
 	{
-		UE_LOG(LogPCG, Warning, TEXT("Attribute %s already exists"), *AttributeName.ToString());
 		delete NewAttribute;
-		NewAttribute = *ExistingAttribute;
+		if ((*ExistingAttribute)->GetTypeId() != PCG::Private::MetadataTypes<T>::Id)
+		{
+			UE_LOG(LogPCG, Error, TEXT("Attribute %s already exists but is not the right type. Abort."), *AttributeName.ToString());
+			return nullptr;
+		}
+		else
+		{
+			UE_LOG(LogPCG, Warning, TEXT("Attribute %s already exists"), *AttributeName.ToString());
+			NewAttribute = static_cast<FPCGMetadataAttribute<T>*>(*ExistingAttribute);
+		}
 	}
 	else
 	{
@@ -254,3 +345,47 @@ FPCGMetadataAttributeBase* UPCGMetadata::CreateAttribute(FName AttributeName, co
 
 	return NewAttribute;
 }
+
+template<typename T>
+FPCGMetadataAttribute<T>* UPCGMetadata::FindOrCreateAttribute(FName AttributeName, const T& DefaultValue, bool bAllowsInterpolation, bool bOverrideParent, bool bOverwriteIfTypeMismatch)
+{
+	FPCGMetadataAttribute<T>* Attribute = GetMutableTypedAttribute<T>(AttributeName);
+
+	// If Attribute is null, but we have an attribute with this name, we have a type mismatch.
+	// Will be overwrite if flag bOverwriteIfTypeMismatch is at true.
+	if (!Attribute && HasAttribute(AttributeName) && bOverwriteIfTypeMismatch)
+	{
+		DeleteAttribute(AttributeName);
+	}
+
+	if (!Attribute)
+	{
+		Attribute = CreateAttribute<T>(AttributeName, DefaultValue, bAllowsInterpolation, bOverrideParent);
+	}
+
+	return Attribute;
+}
+
+template <typename T>
+FPCGMetadataAttribute<T>* UPCGMetadata::GetMutableTypedAttribute(FName AttributeName)
+{
+	FPCGMetadataAttributeBase* BaseAttribute = GetMutableAttribute(AttributeName);
+	return (BaseAttribute && (BaseAttribute->GetTypeId() == PCG::Private::MetadataTypes<T>::Id))
+		? static_cast<FPCGMetadataAttribute<T>*>(BaseAttribute)
+		: nullptr;
+
+}
+
+template <typename T>
+const FPCGMetadataAttribute<T>* UPCGMetadata::GetConstTypedAttribute(FName AttributeName) const
+{
+	const FPCGMetadataAttributeBase* BaseAttribute = GetConstAttribute(AttributeName);
+	return (BaseAttribute && (BaseAttribute->GetTypeId() == PCG::Private::MetadataTypes<T>::Id))
+		? static_cast<const FPCGMetadataAttribute<T>*>(BaseAttribute)
+		: nullptr;
+}
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "PCGMetadataAccessor.h"
+#endif

@@ -5,6 +5,7 @@
 #include "Engine/EngineTypes.h"
 #include "HAL/IConsoleManager.h"
 #include "Components/ActorComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "GameFramework/Actor.h"
 #include "LevelSequenceDirector.h"
 #include "Engine/Engine.h"
@@ -25,6 +26,7 @@
 #include "Tracks/MovieSceneLevelVisibilityTrack.h"
 #include "Tracks/MovieSceneDataLayerTrack.h"
 #include "Tracks/MovieSceneMaterialParameterCollectionTrack.h"
+#include "Tracks/MovieSceneSkeletalAnimationTrack.h"
 #include "Tracks/MovieSceneSlomoTrack.h"
 #include "Tracks/MovieSceneSpawnTrack.h"
 #include "Tracks/MovieSceneSubTrack.h"
@@ -126,6 +128,7 @@ ETrackSupport ULevelSequence::IsTrackSupported(TSubclassOf<class UMovieSceneTrac
 		InTrackClass == UMovieSceneLevelVisibilityTrack::StaticClass() ||
 		InTrackClass == UMovieSceneDataLayerTrack::StaticClass() ||
 		InTrackClass == UMovieSceneMaterialParameterCollectionTrack::StaticClass() ||
+		InTrackClass == UMovieSceneSkeletalAnimationTrack::StaticClass() ||
 		InTrackClass == UMovieSceneSlomoTrack::StaticClass() ||
 		InTrackClass == UMovieSceneSpawnTrack::StaticClass() ||
 		InTrackClass == UMovieSceneSubTrack::StaticClass() ||
@@ -515,7 +518,7 @@ UBlueprint* ULevelSequence::GetDirectorBlueprint() const
 
 FString ULevelSequence::GetDirectorBlueprintName() const
 {
-	return GetDisplayName().ToString() + " (Director BP)";
+	return GetDisplayName().ToString() + "_DirectorBP";
 }
 
 void ULevelSequence::SetDirectorBlueprint(UBlueprint* NewDirectorBlueprint)
@@ -557,9 +560,6 @@ FGuid ULevelSequence::FindOrAddBinding(UObject* InObject)
 	}
 
 	AActor* Actor = Cast<AActor>(InObject);
-	// @todo: sequencer-python: need to figure out how we go from a spawned object to an object binding without the spawn register or any IMovieScenePlayer interface
-	// Normally this process would happen through sequencer, since it has more context than just the level sequence asset.
-	// For now we cannot possess spawnables or anything within them since we have no way of retrieving the spawnable from the object
 	if (Actor && Actor->ActorHasTag("SequencerActor"))
 	{
 		TOptional<FMovieSceneSpawnableAnnotation> Annotation = FMovieSceneSpawnableAnnotation::Find(Actor);
@@ -567,9 +567,9 @@ FGuid ULevelSequence::FindOrAddBinding(UObject* InObject)
 		{
 			return Annotation->ObjectBindingID;
 		}
-
-		UE_LOG(LogLevelSequence, Error, TEXT("Unable to possess object '%s' since it is, or is part of a spawnable that is not in this sequence."), *InObject->GetName());
-		return FGuid();
+		
+		// If this actor is a spawnable and is not in the same originating sequence, it's likely a spawnable that will be possessed. 
+		// SetSpawnableObjectBindingID will need to be called on that possessable.
 	}
 
 	UObject* ParentObject = GetParentObject(InObject);

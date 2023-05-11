@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "BaseTools/SingleSelectionMeshEditingTool.h"
+#include "BaseTools/SingleTargetWithSelectionTool.h"
 #include "MeshOpPreviewHelpers.h"
 #include "ToolDataVisualizer.h"
 #include "ParameterizationOps/UVProjectionOp.h"
@@ -28,13 +28,14 @@ class UUVProjectionTool;
  *
  */
 UCLASS()
-class MESHMODELINGTOOLS_API UUVProjectionToolBuilder : public USingleSelectionMeshEditingToolBuilder
+class MESHMODELINGTOOLS_API UUVProjectionToolBuilder : public USingleTargetWithSelectionToolBuilder
 {
 	GENERATED_BODY()
 public:
-	virtual USingleSelectionMeshEditingTool* CreateNewTool(const FToolBuilderState& SceneState) const override;
+	virtual USingleTargetWithSelectionTool* CreateNewTool(const FToolBuilderState& SceneState) const override;
 
-	virtual bool WantsInputSelectionIfAvailable() const override { return true; }
+	virtual bool RequiresInputSelection() const override { return false; }
+	virtual bool CanBuildTool(const FToolBuilderState& SceneState) const override;
 };
 
 
@@ -110,12 +111,12 @@ public:
 	EUVProjectionMethod ProjectionType = EUVProjectionMethod::Plane;
 
 	/** Width, length, and height of the projection shape before rotation */
-	UPROPERTY(EditAnywhere, Category = "UV Projection")
+	UPROPERTY(EditAnywhere, Category = "UV Projection", meta = (Delta = 0.5, LinearDeltaSensitivity = 1))
 	FVector Dimensions = FVector(100.0f, 100.0f, 100.0f);
 
-	/** Only use the Dimensions X value to uniformly define all projection shape dimensions */
+	/** If true, changes to Dimensions result in all components be changed proportionally */
 	UPROPERTY(EditAnywhere, Category = "UV Projection")
-	bool bUniformDimensions = false;
+	bool bProportionalDimensions = false;
 
 	/** Determines how projection settings will be initialized; this only takes effect if the projection shape dimensions or position are unchanged */
 	UPROPERTY(EditAnywhere, Category = "UV Projection")
@@ -154,11 +155,11 @@ public:
 	//
 
 	/** Rotation in degrees applied after computing projection */
-	UPROPERTY(EditAnywhere, Category = "UV Transform")
+	UPROPERTY(EditAnywhere, Category = "UV Transform", meta = (ClampMin = -360, ClampMax = 360))
 	float Rotation = 0.0;
 
 	/** Scaling applied after computing projection */
-	UPROPERTY(EditAnywhere, Category = "UV Transform")
+	UPROPERTY(EditAnywhere, Category = "UV Transform", meta = (Delta = 0.01, LinearDeltaSensitivity = 1))
 	FVector2D Scale = FVector2D::UnitVector;
 
 	/** Translation applied after computing projection */
@@ -173,7 +174,7 @@ public:
 	FVector SavedDimensions = FVector::ZeroVector;
 
 	UPROPERTY()
-	bool bSavedUniformDimensions = false;
+	bool bSavedProportionalDimensions = false;
 
 	UPROPERTY()
 	FTransform SavedTransform;
@@ -201,7 +202,7 @@ public:
  * UV projection tool
  */
 UCLASS()
-class MESHMODELINGTOOLS_API UUVProjectionTool : public USingleSelectionMeshEditingTool
+class MESHMODELINGTOOLS_API UUVProjectionTool : public USingleTargetWithSelectionTool
 {
 	GENERATED_BODY()
 
@@ -215,6 +216,8 @@ public:
 	virtual void OnTick(float DeltaTime) override;
 	virtual void Render(IToolsContextRenderAPI* RenderAPI) override;
 
+	virtual void OnPropertyModified(UObject* PropertySet, FProperty* Property) override;
+	
 	virtual bool HasCancel() const override { return true; }
 	virtual bool HasAccept() const override { return true; }
 	virtual bool CanAccept() const override;
@@ -262,8 +265,9 @@ protected:
 	FTransform3d WorldTransform;
 	UE::Geometry::FAxisAlignedBox3d WorldBounds;
 
+	FVector CachedDimensions;
 	FVector InitialDimensions;
-	bool bInitialUniformDimensions;
+	bool bInitialProportionalDimensions;
 	FTransform InitialTransform;
 	int32 DimensionsWatcher = -1;
 	int32 DimensionsModeWatcher = -1;

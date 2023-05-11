@@ -1,14 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RootMotionModifier_AdjustmentBlendWarp.h"
-#include "Animation/AnimSequenceBase.h"
 #include "Animation/AnimMontage.h"
 #include "Animation/AnimInstance.h"
 #include "AnimationUtils.h"
-#include "AnimationRuntime.h"
+#include "BonePose.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "DrawDebugHelpers.h"
 #include "GameFramework/Character.h"
-#include "GameFramework/CharacterMovementComponent.h"
 #include "MotionWarpingComponent.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(RootMotionModifier_AdjustmentBlendWarp)
@@ -39,7 +38,7 @@ void URootMotionModifier_AdjustmentBlendWarp::ExtractBoneTransformAtTime(FTransf
 	const float TrackLength = (EndTime - ActualStartTime);
 	const float TimePercent = (Time - ActualStartTime) / (EndTime - ActualStartTime);
 	const float RemappedTime = TimePercent * TrackLength;
-	FAnimationUtils::ExtractTransformFromTrack(RemappedTime, TotalFrames, TrackLength, Result.AnimationTracks[TrackIndex], EAnimInterpolationType::Linear, OutTransform);
+	FAnimationUtils::ExtractTransformFromTrack(Result.AnimationTracks[TrackIndex], static_cast<double>(RemappedTime), TotalFrames, TrackLength, EAnimInterpolationType::Linear, OutTransform);
 }
 
 void URootMotionModifier_AdjustmentBlendWarp::ExtractBoneTransformAtFrame(FTransform& OutTransform, int32 TrackIndex, int32 Frame) const

@@ -104,6 +104,15 @@ public:
 	 */
 	void FlushPendingData();
 
+	/** Sets the just in time render parameters for later use when JustInTimeRender() gets called */
+	void SetJustInTimeRenderParams(const FRenderParams& InJustInTimeRenderParams);
+
+	/** Clears the just in time render params, in which case calling JustInTimeRender() would have no effect */
+	void ResetJustInTimeRenderParams();
+
+	/** Render the texture using the cached FRenderParams. Call from render thread only. */
+	void JustInTimeRender();
+
 public:
 
 	//~ FRenderTarget interface
@@ -199,10 +208,10 @@ private:
 	FGuid InitialTextureGuid;
 
 	/** Input render target if the texture samples don't provide one (for conversions). */
-	TRefCountPtr<FRHITexture2D> InputTarget;
+	TRefCountPtr<FRHITexture> InputTarget;
 
 	/** Output render target if the texture samples don't provide one. */
-	TRefCountPtr<FRHITexture2D> OutputTarget;
+	TRefCountPtr<FRHITexture> OutputTarget;
 
 	/** The media texture that owns this resource. */
 	UMediaTexture& Owner;
@@ -236,4 +245,8 @@ private:
 
 	/** cached params etc. for use with mip generator */
 	TRefCountPtr<IPooledRenderTarget> MipGenerationCache;
+
+	/** Cached FRenderParams, used when JustInTimeRender() gets called. */
+	TUniquePtr<FRenderParams> JustInTimeRenderParams;
+
 };

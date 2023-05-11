@@ -1,21 +1,43 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RenderGrid/RenderGrid.h"
-#include "RenderGrid/RenderGridManager.h"
-#include "RenderGridUtils.h"
+
 #include "IRenderGridModule.h"
 #include "LevelSequence.h"
 #include "Misc/Base64.h"
-#include "MoviePipelineMasterConfig.h"
 #include "MoviePipelineOutputSetting.h"
+#include "MoviePipelinePrimaryConfig.h"
 #include "MovieScene.h"
+#include "RenderGrid/RenderGridManager.h"
+#include "RenderGrid/RenderGridQueue.h"
+#include "RenderGridUtils.h"
 #include "UObject/ObjectSaveContext.h"
+
+
+URenderGridSettings::URenderGridSettings()
+	: PropsSourceType(ERenderGridPropsSourceType::RemoteControl)
+	, PropsSourceOrigin_RemoteControl(nullptr)
+	, CachedPropsSource(nullptr)
+	, CachedPropsSourceType(ERenderGridPropsSourceType::Local)
+	, CachedPropsSourceOriginWeakPtr(nullptr)
+{
+	SetFlags(RF_Public | RF_Transactional);
+}
+
+
+URenderGridDefaults::URenderGridDefaults()
+	: LevelSequence(nullptr)
+	, RenderPreset(nullptr)
+	, OutputDirectory(UE::RenderGrid::Private::FRenderGridUtils::NormalizeJobOutputDirectory(FPaths::ProjectDir() / TEXT("Saved/MovieRenders/")))
+{
+	SetFlags(RF_Public | RF_Transactional);
+}
 
 
 URenderGridJob::URenderGridJob()
 	: Guid(FGuid::NewGuid())
 	, WaitFramesBeforeRendering(0)
-	, Sequence(nullptr)
+	, LevelSequence(nullptr)
 	, bOverrideStartFrame(false)
 	, CustomStartFrame(0)
 	, bOverrideEndFrame(false)
@@ -24,26 +46,28 @@ URenderGridJob::URenderGridJob()
 	, CustomResolution(FIntPoint(3840, 2160))
 	, bIsEnabled(true)
 	, RenderPreset(nullptr)
-{}
+{
+	SetFlags(RF_Public | RF_Transactional);
+}
 
 TOptional<int32> URenderGridJob::GetSequenceStartFrame() const
 {
-	if (!IsValid(Sequence))
+	if (!IsValid(LevelSequence))
 	{
 		return TOptional<int32>();
 	}
 
-	const UMovieScene* MovieScene = Sequence->MovieScene;
+	const UMovieScene* MovieScene = LevelSequence->MovieScene;
 	const FFrameRate TickResolution = MovieScene->GetTickResolution();
 	const FFrameRate DisplayRate = MovieScene->GetDisplayRate();
-	const UMoviePipelineOutputSetting* Settings = GetRenderPresetOutputSettings();
+	const UMoviePipelineOutputSetting* MovieOutputSettings = GetRenderPresetOutputSettings();
 
-	if (bOverrideStartFrame || (IsValid(Settings) && Settings->bUseCustomPlaybackRange))
+	if (bOverrideStartFrame || (IsValid(MovieOutputSettings) && MovieOutputSettings->bUseCustomPlaybackRange))
 	{
-		int32 Frame = (bOverrideStartFrame ? CustomStartFrame : Settings->CustomStartFrame);
-		if (IsValid(Settings) && Settings->bUseCustomFrameRate)
+		int32 Frame = (bOverrideStartFrame ? CustomStartFrame : MovieOutputSettings->CustomStartFrame);
+		if (IsValid(MovieOutputSettings) && MovieOutputSettings->bUseCustomFrameRate)
 		{
-			return FMath::FloorToInt(Frame / (Settings->OutputFrameRate / DisplayRate).AsDecimal());
+			return FMath::FloorToInt(Frame / (MovieOutputSettings->OutputFrameRate / DisplayRate).AsDecimal());
 		}
 		return Frame;
 	}
@@ -54,22 +78,22 @@ TOptional<int32> URenderGridJob::GetSequenceStartFrame() const
 
 TOptional<int32> URenderGridJob::GetSequenceEndFrame() const
 {
-	if (!IsValid(Sequence))
+	if (!IsValid(LevelSequence))
 	{
 		return TOptional<int32>();
 	}
 
-	const UMovieScene* MovieScene = Sequence->MovieScene;
+	const UMovieScene* MovieScene = LevelSequence->MovieScene;
 	const FFrameRate TickResolution = MovieScene->GetTickResolution();
 	const FFrameRate DisplayRate = MovieScene->GetDisplayRate();
-	const UMoviePipelineOutputSetting* Settings = GetRenderPresetOutputSettings();
+	const UMoviePipelineOutputSetting* MovieOutputSettings = GetRenderPresetOutputSettings();
 
-	if (bOverrideEndFrame || (IsValid(Settings) && Settings->bUseCustomPlaybackRange))
+	if (bOverrideEndFrame || (IsValid(MovieOutputSettings) && MovieOutputSettings->bUseCustomPlaybackRange))
 	{
-		int32 Frame = (bOverrideEndFrame ? CustomEndFrame : Settings->CustomEndFrame);
-		if (IsValid(Settings) && Settings->bUseCustomFrameRate)
+		int32 Frame = (bOverrideEndFrame ? CustomEndFrame : MovieOutputSettings->CustomEndFrame);
+		if (IsValid(MovieOutputSettings) && MovieOutputSettings->bUseCustomFrameRate)
 		{
-			return FMath::FloorToInt(Frame / (Settings->OutputFrameRate / DisplayRate).AsDecimal());
+			return FMath::FloorToInt(Frame / (MovieOutputSettings->OutputFrameRate / DisplayRate).AsDecimal());
 		}
 		return Frame;
 	}
@@ -145,23 +169,23 @@ TOptional<int32> URenderGridJob::GetStartFrame() const
 		return CustomStartFrame;
 	}
 
-	const UMoviePipelineOutputSetting* Settings = GetRenderPresetOutputSettings();
-	if (IsValid(Settings) && Settings->bUseCustomPlaybackRange)
+	const UMoviePipelineOutputSetting* MovieOutputSettings = GetRenderPresetOutputSettings();
+	if (IsValid(MovieOutputSettings) && MovieOutputSettings->bUseCustomPlaybackRange)
 	{
-		return Settings->CustomStartFrame;
+		return MovieOutputSettings->CustomStartFrame;
 	}
 
-	if (!IsValid(Sequence))
+	if (!IsValid(LevelSequence))
 	{
 		return TOptional<int32>();
 	}
 
-	const UMovieScene* MovieScene = Sequence->MovieScene;
+	const UMovieScene* MovieScene = LevelSequence->MovieScene;
 	const FFrameRate TickResolution = MovieScene->GetTickResolution();
 	FFrameRate DisplayRate = MovieScene->GetDisplayRate();
-	if (IsValid(Settings) && Settings->bUseCustomFrameRate)
+	if (IsValid(MovieOutputSettings) && MovieOutputSettings->bUseCustomFrameRate)
 	{
-		DisplayRate = Settings->OutputFrameRate;
+		DisplayRate = MovieOutputSettings->OutputFrameRate;
 	}
 	const int32 StartFrameNumber = MovieScene->GetPlaybackRange().GetLowerBoundValue().Value;
 	return FMath::FloorToInt(StartFrameNumber / (TickResolution / DisplayRate).AsDecimal());
@@ -174,23 +198,23 @@ TOptional<int32> URenderGridJob::GetEndFrame() const
 		return CustomEndFrame;
 	}
 
-	const UMoviePipelineOutputSetting* Settings = GetRenderPresetOutputSettings();
-	if (IsValid(Settings) && Settings->bUseCustomPlaybackRange)
+	const UMoviePipelineOutputSetting* MovieOutputSettings = GetRenderPresetOutputSettings();
+	if (IsValid(MovieOutputSettings) && MovieOutputSettings->bUseCustomPlaybackRange)
 	{
-		return Settings->CustomEndFrame;
+		return MovieOutputSettings->CustomEndFrame;
 	}
 
-	if (!IsValid(Sequence))
+	if (!IsValid(LevelSequence))
 	{
 		return TOptional<int32>();
 	}
 
-	const UMovieScene* MovieScene = Sequence->MovieScene;
+	const UMovieScene* MovieScene = LevelSequence->MovieScene;
 	const FFrameRate TickResolution = MovieScene->GetTickResolution();
 	FFrameRate DisplayRate = MovieScene->GetDisplayRate();
-	if (IsValid(Settings) && Settings->bUseCustomFrameRate)
+	if (IsValid(MovieOutputSettings) && MovieOutputSettings->bUseCustomFrameRate)
 	{
-		DisplayRate = Settings->OutputFrameRate;
+		DisplayRate = MovieOutputSettings->OutputFrameRate;
 	}
 	const int32 EndFrameNumber = MovieScene->GetPlaybackRange().GetUpperBoundValue().Value;
 	return FMath::FloorToInt(EndFrameNumber / (TickResolution / DisplayRate).AsDecimal());
@@ -198,7 +222,7 @@ TOptional<int32> URenderGridJob::GetEndFrame() const
 
 TOptional<double> URenderGridJob::GetStartTime() const
 {
-	if (!IsValid(Sequence))
+	if (!IsValid(LevelSequence))
 	{
 		return TOptional<double>();
 	}
@@ -209,20 +233,20 @@ TOptional<double> URenderGridJob::GetStartTime() const
 		return TOptional<double>();
 	}
 
-	const UMoviePipelineOutputSetting* Settings = GetRenderPresetOutputSettings();
+	const UMoviePipelineOutputSetting* MovieOutputSettings = GetRenderPresetOutputSettings();
 
-	const UMovieScene* MovieScene = Sequence->MovieScene;
+	const UMovieScene* MovieScene = LevelSequence->MovieScene;
 	FFrameRate DisplayRate = MovieScene->GetDisplayRate();
-	if (IsValid(Settings) && Settings->bUseCustomFrameRate)
+	if (IsValid(MovieOutputSettings) && MovieOutputSettings->bUseCustomFrameRate)
 	{
-		DisplayRate = Settings->OutputFrameRate;
+		DisplayRate = MovieOutputSettings->OutputFrameRate;
 	}
 	return StartFrame.Get(0) / DisplayRate.AsDecimal();
 }
 
 TOptional<double> URenderGridJob::GetEndTime() const
 {
-	if (!IsValid(Sequence))
+	if (!IsValid(LevelSequence))
 	{
 		return TOptional<double>();
 	}
@@ -233,20 +257,20 @@ TOptional<double> URenderGridJob::GetEndTime() const
 		return TOptional<double>();
 	}
 
-	const UMoviePipelineOutputSetting* Settings = GetRenderPresetOutputSettings();
+	const UMoviePipelineOutputSetting* MovieOutputSettings = GetRenderPresetOutputSettings();
 
-	const UMovieScene* MovieScene = Sequence->MovieScene;
+	const UMovieScene* MovieScene = LevelSequence->MovieScene;
 	FFrameRate DisplayRate = MovieScene->GetDisplayRate();
-	if (IsValid(Settings) && Settings->bUseCustomFrameRate)
+	if (IsValid(MovieOutputSettings) && MovieOutputSettings->bUseCustomFrameRate)
 	{
-		DisplayRate = Settings->OutputFrameRate;
+		DisplayRate = MovieOutputSettings->OutputFrameRate;
 	}
 	return EndFrame.Get(0) / DisplayRate.AsDecimal();
 }
 
 TOptional<double> URenderGridJob::GetDurationInSeconds() const
 {
-	if (!IsValid(Sequence))
+	if (!IsValid(LevelSequence))
 	{
 		return TOptional<double>();
 	}
@@ -258,13 +282,13 @@ TOptional<double> URenderGridJob::GetDurationInSeconds() const
 		return TOptional<double>();
 	}
 
-	const UMoviePipelineOutputSetting* Settings = GetRenderPresetOutputSettings();
+	const UMoviePipelineOutputSetting* MovieOutputSettings = GetRenderPresetOutputSettings();
 
-	const UMovieScene* MovieScene = Sequence->MovieScene;
+	const UMovieScene* MovieScene = LevelSequence->MovieScene;
 	FFrameRate DisplayRate = MovieScene->GetDisplayRate();
-	if (IsValid(Settings) && Settings->bUseCustomFrameRate)
+	if (IsValid(MovieOutputSettings) && MovieOutputSettings->bUseCustomFrameRate)
 	{
-		DisplayRate = Settings->OutputFrameRate;
+		DisplayRate = MovieOutputSettings->OutputFrameRate;
 	}
 	return (EndFrame.Get(0) - StartFrame.Get(0)) / DisplayRate.AsDecimal();
 }
@@ -275,19 +299,19 @@ FIntPoint URenderGridJob::GetOutputResolution() const
 	{
 		return CustomResolution;
 	}
-	if (UMoviePipelineOutputSetting* Settings = GetRenderPresetOutputSettings())
+	if (UMoviePipelineOutputSetting* MovieOutputSettings = GetRenderPresetOutputSettings())
 	{
-		return Settings->OutputResolution;
+		return MovieOutputSettings->OutputResolution;
 	}
 	return GetDefault<UMoviePipelineOutputSetting>()->OutputResolution;
 }
 
 double URenderGridJob::GetOutputAspectRatio() const
 {
-	const UMoviePipelineOutputSetting* Settings = GetRenderPresetOutputSettings();
-	if (IsValid(Settings))
+	const UMoviePipelineOutputSetting* MovieOutputSettings = GetRenderPresetOutputSettings();
+	if (IsValid(MovieOutputSettings))
 	{
-		return static_cast<double>(Settings->OutputResolution.X) / static_cast<double>(Settings->OutputResolution.Y);
+		return static_cast<double>(MovieOutputSettings->OutputResolution.X) / static_cast<double>(MovieOutputSettings->OutputResolution.Y);
 	}
 
 	const UMoviePipelineOutputSetting* DefaultSettings = GetDefault<UMoviePipelineOutputSetting>();
@@ -322,56 +346,19 @@ bool URenderGridJob::MatchesSearchTerm(const FString& SearchTerm) const
 	return true;
 }
 
-FString URenderGridJob::PurgeJobIdOrReturnEmptyString(const FString& NewJobId)
+void URenderGridJob::SetJobId(const FString& NewJobId)
 {
-	static FString ValidCharacters = TEXT("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_");
-
-	FString Result;
-	for (TCHAR NewJobIdChar : NewJobId)
-	{
-		int32 Index;
-		if (ValidCharacters.FindChar(NewJobIdChar, Index))
-		{
-			Result += NewJobIdChar;
-		}
-	}
-	return Result;
-}
-
-FString URenderGridJob::PurgeJobId(const FString& NewJobId)
-{
-	FString Result = PurgeJobIdOrReturnEmptyString(NewJobId);
-	if (Result.IsEmpty())
-	{
-		return TEXT("0");
-	}
-	return Result;
-}
-
-FString URenderGridJob::PurgeJobIdOrGenerateUniqueId(URenderGrid* Grid, const FString& NewJobId)
-{
-	FString Result = PurgeJobIdOrReturnEmptyString(NewJobId);
-	if (Result.IsEmpty())
-	{
-		return Grid->GenerateNextJobId();
-	}
-	return Result;
-}
-
-FString URenderGridJob::PurgeJobName(const FString& NewJobName)
-{
-	return NewJobName.TrimStartAndEnd();
-}
-
-FString URenderGridJob::PurgeOutputDirectory(const FString& NewOutputDirectory)
-{
-	return UE::RenderGrid::Private::FRenderGridUtils::NormalizeOutputDirectory(FPaths::ConvertRelativePathToFull(NewOutputDirectory))
-		.Replace(*UE::RenderGrid::Private::FRenderGridUtils::NormalizeOutputDirectory(FPaths::ConvertRelativePathToFull(FPaths::ProjectDir())), TEXT("{project_dir}/"));
+	JobId = UE::RenderGrid::Private::FRenderGridUtils::PurgeJobId(NewJobId);
 }
 
 FString URenderGridJob::GetOutputDirectory() const
 {
-	return UE::RenderGrid::Private::FRenderGridUtils::NormalizeOutputDirectory(FPaths::ConvertRelativePathToFull(OutputDirectory.Replace(TEXT("{project_dir}"), *FPaths::ProjectDir())));
+	return UE::RenderGrid::Private::FRenderGridUtils::DenormalizeJobOutputDirectory(OutputDirectory);
+}
+
+void URenderGridJob::SetOutputDirectory(const FString& NewOutputDirectory)
+{
+	OutputDirectory = UE::RenderGrid::Private::FRenderGridUtils::NormalizeJobOutputDirectory(NewOutputDirectory);
 }
 
 UMoviePipelineOutputSetting* URenderGridJob::GetRenderPresetOutputSettings() const
@@ -380,108 +367,284 @@ UMoviePipelineOutputSetting* URenderGridJob::GetRenderPresetOutputSettings() con
 	{
 		return nullptr;
 	}
-	for (UMoviePipelineSetting* Settings : RenderPreset->FindSettingsByClass(UMoviePipelineOutputSetting::StaticClass(), false))
+	for (UMoviePipelineSetting* MovieSettings : RenderPreset->FindSettingsByClass(UMoviePipelineOutputSetting::StaticClass(), false))
 	{
-		if (!IsValid(Settings))
+		if (!IsValid(MovieSettings))
 		{
 			continue;
 		}
-		if (UMoviePipelineOutputSetting* OutputSettings = Cast<UMoviePipelineOutputSetting>(Settings))
+		if (UMoviePipelineOutputSetting* MovieOutputSettings = Cast<UMoviePipelineOutputSetting>(MovieSettings))
 		{
-			if (!OutputSettings->IsEnabled())
+			if (!MovieOutputSettings->IsEnabled())
 			{
 				continue;
 			}
-			return OutputSettings;
+			return MovieOutputSettings;
 		}
 	}
 	return nullptr;
 }
 
-bool URenderGridJob::HasRemoteControlValue(const TSharedPtr<FRemoteControlEntity>& RemoteControlEntity) const
+TArray<URemoteControlPreset*> URenderGridJob::GetRemoteControlPresets()
 {
-	if (!RemoteControlEntity.IsValid())
+	TArray<URemoteControlPreset*> Presets;
+	if (URenderGrid* Grid = GetTypedOuter<URenderGrid>(); IsValid(Grid))
 	{
-		return false;
+		if (URenderGridPropsSourceRemoteControl* PropsSource = Grid->GetPropsSource<URenderGridPropsSourceRemoteControl>(); IsValid(PropsSource))
+		{
+			if (URemoteControlPreset* Preset = PropsSource->GetRemoteControlPreset(); IsValid(Preset))
+			{
+				Presets.Add(Preset);
+			}
+		}
 	}
-
-	const FString Key = RemoteControlEntity->GetId().ToString();
-	return !!RemoteControlValues.Find(Key);
+	/*else
+	{
+		TArray<TSoftObjectPtr<URemoteControlPreset>> RemoteControlPresets;
+		IRemoteControlModule::Get().GetPresets(RemoteControlPresets);
+		for (TSoftObjectPtr<URemoteControlPreset> RemoteControlPresetWeakPtr : RemoteControlPresets)
+		{
+			if (URemoteControlPreset* Preset = RemoteControlPresetWeakPtr.Get(); IsValid(Preset))
+			{
+				Presets.Add(Preset);
+			}
+		}
+	}*/
+	return Presets;
 }
 
-bool URenderGridJob::ConstGetRemoteControlValue(const TSharedPtr<FRemoteControlEntity>& RemoteControlEntity, TArray<uint8>& OutBinaryArray) const
+bool URenderGridJob::HasRemoteControlValueBytes(const TSharedPtr<FRemoteControlEntity>& RemoteControlEntity) const
 {
 	if (!RemoteControlEntity.IsValid())
 	{
 		return false;
 	}
 
-	const FString Key = RemoteControlEntity->GetId().ToString();
-	if (const FRenderGridRemoteControlPropertyData* DataPtr = RemoteControlValues.Find(Key))
+	return HasRemoteControlValueBytes(RemoteControlEntity->GetId());
+}
+
+bool URenderGridJob::ConstGetRemoteControlValueBytes(const TSharedPtr<FRemoteControlEntity>& RemoteControlEntity, TArray<uint8>& OutBytes) const
+{
+	if (!RemoteControlEntity.IsValid())
 	{
-		OutBinaryArray.Append((*DataPtr).Bytes);
+		OutBytes.Empty();
+		return false;
+	}
+
+	return ConstGetRemoteControlValueBytes(RemoteControlEntity->GetId(), OutBytes);
+}
+
+bool URenderGridJob::GetRemoteControlValueBytes(const TSharedPtr<FRemoteControlEntity>& RemoteControlEntity, TArray<uint8>& OutBytes)
+{
+	OutBytes.Empty();
+	if (!RemoteControlEntity.IsValid())
+	{
+		return false;
+	}
+
+	if (FRenderGridRemoteControlPropertyData* DataPtr = RemoteControlValues.Find(RemoteControlEntity->GetId()))
+	{
+		OutBytes.Append((*DataPtr).Bytes);
+		return true;
+	}
+
+	if (!URenderGridPropRemoteControl::GetValueOfEntity(RemoteControlEntity, OutBytes))
+	{
+		return false;
+	}
+	RemoteControlValues.Add(RemoteControlEntity->GetId(), FRenderGridRemoteControlPropertyData(TArray(OutBytes)));
+	return true;
+}
+
+bool URenderGridJob::SetRemoteControlValueBytes(const TSharedPtr<FRemoteControlEntity>& RemoteControlEntity, const TArray<uint8>& Bytes)
+{
+	if (!RemoteControlEntity.IsValid())
+	{
+		return false;
+	}
+
+	return SetRemoteControlValueBytes(RemoteControlEntity->GetId(), Bytes);
+}
+
+bool URenderGridJob::HasRemoteControlValueBytes(const FGuid& FieldId) const
+{
+	if (!FieldId.IsValid())
+	{
+		return false;
+	}
+
+	return !!RemoteControlValues.Find(FieldId);
+}
+
+bool URenderGridJob::ConstGetRemoteControlValueBytes(const FGuid& FieldId, TArray<uint8>& OutBytes) const
+{
+	OutBytes.Empty();
+	if (!FieldId.IsValid())
+	{
+		return false;
+	}
+
+	if (const FRenderGridRemoteControlPropertyData* DataPtr = RemoteControlValues.Find(FieldId))
+	{
+		OutBytes.Append((*DataPtr).Bytes);
 		return true;
 	}
 	return false;
 }
 
-bool URenderGridJob::GetRemoteControlValue(const TSharedPtr<FRemoteControlEntity>& RemoteControlEntity, TArray<uint8>& OutBinaryArray)
+bool URenderGridJob::GetRemoteControlValueBytes(const FGuid& FieldId, TArray<uint8>& OutBytes)
 {
-	if (!RemoteControlEntity.IsValid())
+	OutBytes.Empty();
+	if (!FieldId.IsValid())
 	{
 		return false;
 	}
 
-	const FString Key = RemoteControlEntity->GetId().ToString();
-	if (FRenderGridRemoteControlPropertyData* DataPtr = RemoteControlValues.Find(Key))
+	if (FRenderGridRemoteControlPropertyData* DataPtr = RemoteControlValues.Find(FieldId))
 	{
-		OutBinaryArray.Append((*DataPtr).Bytes);
+		OutBytes.Append((*DataPtr).Bytes);
 		return true;
 	}
 
-	if (!URenderGridPropRemoteControl::GetValueOfEntity(RemoteControlEntity, OutBinaryArray))
+	TSharedPtr<FRemoteControlEntity> RemoteControlEntity;
+	for (URemoteControlPreset* RemoteControlPreset : GetRemoteControlPresets())
+	{
+		for (const TWeakPtr<FRemoteControlEntity>& PropWeakPtr : RemoteControlPreset->GetExposedEntities<FRemoteControlEntity>())
+		{
+			if (const TSharedPtr<FRemoteControlEntity> Prop = PropWeakPtr.Pin())
+			{
+				if (Prop->GetId() == FieldId)
+				{
+					RemoteControlEntity = Prop;
+					break;
+				}
+			}
+		}
+	}
+
+	if (!RemoteControlEntity.IsValid() || !URenderGridPropRemoteControl::GetValueOfEntity(RemoteControlEntity, OutBytes))
 	{
 		return false;
 	}
-	RemoteControlValues.Add(Key, FRenderGridRemoteControlPropertyData(TArray(OutBinaryArray)));
+	RemoteControlValues.Add(FieldId, FRenderGridRemoteControlPropertyData(TArray(OutBytes)));
 	return true;
 }
 
-bool URenderGridJob::SetRemoteControlValue(const TSharedPtr<FRemoteControlEntity>& RemoteControlEntity, const TArray<uint8>& BinaryArray)
+bool URenderGridJob::SetRemoteControlValueBytes(const FGuid& FieldId, const TArray<uint8>& Bytes)
 {
-	if (!RemoteControlEntity.IsValid())
+	if (!FieldId.IsValid())
 	{
 		return false;
 	}
-	const FString Key = RemoteControlEntity->GetId().ToString();
-	RemoteControlValues.Add(Key, FRenderGridRemoteControlPropertyData(TArray(BinaryArray)));
+
+	RemoteControlValues.Add(FieldId, FRenderGridRemoteControlPropertyData(TArray(Bytes)));
 	return true;
+}
+
+bool URenderGridJob::HasRemoteControlValue(const FGuid& FieldId) const
+{
+	return HasRemoteControlValueBytes(FieldId);
+}
+
+bool URenderGridJob::ConstGetRemoteControlValue(const FGuid& FieldId, FString& OutJson) const
+{
+	OutJson.Empty();
+	TArray<uint8> Bytes;
+	if (!ConstGetRemoteControlValueBytes(FieldId, Bytes))
+	{
+		return false;
+	}
+	OutJson.Append(UE::RenderGrid::Private::FRenderGridUtils::GetRemoteControlValueJsonFromBytes(Bytes));
+	return true;
+}
+
+bool URenderGridJob::GetRemoteControlValue(const FGuid& FieldId, FString& OutJson)
+{
+	OutJson.Empty();
+	TArray<uint8> Bytes;
+	if (!GetRemoteControlValueBytes(FieldId, Bytes))
+	{
+		return false;
+	}
+	OutJson.Append(UE::RenderGrid::Private::FRenderGridUtils::GetRemoteControlValueJsonFromBytes(Bytes));
+	return true;
+}
+
+bool URenderGridJob::SetRemoteControlValue(const FGuid& FieldId, const FString& Json)
+{
+	TArray<uint8> Bytes;
+	if (!GetRemoteControlValueBytes(FieldId, Bytes))
+	{
+		return false;
+	}
+	return SetRemoteControlValueBytes(FieldId, UE::RenderGrid::Private::FRenderGridUtils::GetRemoteControlValueBytesFromJson(Bytes, Json));
+}
+
+bool URenderGridJob::GetRemoteControlFieldIdFromLabel(const FString& Label, FGuid& OutFieldId)
+{
+	OutFieldId.Invalidate();
+	const FName LabelName = FName(Label);
+	for (URemoteControlPreset* RemoteControlPreset : GetRemoteControlPresets())
+	{
+		if (const FGuid FieldId = RemoteControlPreset->GetExposedEntityId(LabelName); FieldId.IsValid())
+		{
+			OutFieldId = FieldId;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool URenderGridJob::GetRemoteControlLabelFromFieldId(const FGuid& FieldId, FString& OutLabel)
+{
+	OutLabel.Empty();
+	for (URemoteControlPreset* RemoteControlPreset : GetRemoteControlPresets())
+	{
+		for (const TWeakPtr<FRemoteControlEntity>& PropWeakPtr : RemoteControlPreset->GetExposedEntities<FRemoteControlEntity>())
+		{
+			if (const TSharedPtr<FRemoteControlEntity> Prop = PropWeakPtr.Pin())
+			{
+				if (Prop->GetId() == FieldId)
+				{
+					OutLabel = Prop->GetLabel().ToString();
+					return true;
+				}
+			}
+		}
+	}
+	return false;
+}
+
+TMap<FGuid, FString> URenderGridJob::GetRemoteControlValues()
+{
+	TMap<FGuid, FString> Result;
+	for (TTuple<FGuid, FRenderGridRemoteControlPropertyData> Entry : RemoteControlValues)
+	{
+		FString Json;
+		if (GetRemoteControlValue(Entry.Key, Json))
+		{
+			Result.Add(Entry.Key, Json);
+		}
+	}
+	return Result;
 }
 
 
 URenderGrid::URenderGrid()
 	: Guid(FGuid::NewGuid())
-	, PropsSourceType(ERenderGridPropsSourceType::RemoteControl)
-	, PropsSourceOrigin_RemoteControl(nullptr)
+	, Settings(CreateDefaultSubobject<URenderGridSettings>(TEXT("RenderGridSettings")))
+	, Defaults(CreateDefaultSubobject<URenderGridDefaults>(TEXT("RenderGridDefaults")))
 	, bExecutingBlueprintEvent(false)
-	, CachedPropsSource(nullptr)
-	, CachedPropsSourceType(ERenderGridPropsSourceType::Local)
 {
-	if (!HasAnyFlags(RF_ClassDefaultObject))
+	SetFlags(RF_Public);
+	if (!HasAnyFlags(RF_ClassDefaultObject | RF_DefaultSubObject))
 	{
-		LoadValuesFromCDO();
-		OnPreSaveCDO().AddUObject(this, &URenderGrid::SaveValuesToCDO);
+		ClearFlags(RF_Transactional);
 	}
 }
 
 UWorld* URenderGrid::GetWorld() const
 {
-	if (HasAllFlags(RF_ClassDefaultObject))
-	{
-		// If we are a CDO, we must return nullptr instead of calling Outer->GetWorld() to fool UObject::ImplementsGetWorld.
-		return nullptr;
-	}
-
 	for (const FWorldContext& Context : GEngine->GetWorldContexts())
 	{
 		if (Context.WorldType == EWorldType::PIE)
@@ -499,11 +662,15 @@ UWorld* URenderGrid::GetWorld() const
 	{
 		return CachedWorld;
 	}
-	UObject* Outer = GetOuter();// Could be a GameInstance, could be World, could also be a WidgetTree, so we're just going to follow the outer chain to find the world we're in.
-	while (Outer)
+	UObject* Outer = GetOuter(); // Could be a GameInstance, could be World, could also be a WidgetTree, so we're just going to follow the outer chain to find the world we're in.
+	while (IsValid(Outer))
 	{
-		UWorld* World = Outer->GetWorld();
-		if (IsValid(World))
+		if (UWorld* World = Cast<UWorld>(Outer); IsValid(World))
+		{
+			CachedWorldWeakPtr = World;
+			return World;
+		}
+		if (UWorld* World = Outer->GetWorld(); IsValid(World))
 		{
 			CachedWorldWeakPtr = World;
 			return World;
@@ -515,23 +682,76 @@ UWorld* URenderGrid::GetWorld() const
 
 void URenderGrid::PreSave(FObjectPreSaveContext SaveContext)
 {
-	if (HasAnyFlags(RF_ClassDefaultObject))
-	{
-		OnPreSaveCDO().Broadcast();
-	}
 	Super::PreSave(SaveContext);
-	SaveValuesToCDO();
 }
 
 void URenderGrid::PostLoad()
 {
 	Super::PostLoad();
-	LoadValuesFromCDO();
 
-	if (PropsSourceType == ERenderGridPropsSourceType::Local)
+	SetFlags(RF_Public);
+
+	if (!IsValid(Settings))
 	{
-		PropsSourceType = ERenderGridPropsSourceType::RemoteControl;
+		Settings = NewObject<URenderGridSettings>(this, TEXT("RenderGridSettings"));
 	}
+	Settings->SetFlags(RF_Public | RF_Transactional);
+	if (Settings->PropsSourceType == ERenderGridPropsSourceType::Local)
+	{
+		Settings->PropsSourceType = ERenderGridPropsSourceType::RemoteControl;
+	}
+
+	if (!IsValid(Defaults))
+	{
+		Defaults = NewObject<URenderGridDefaults>(this, TEXT("RenderGridDefaults"));
+	}
+	Defaults->SetFlags(RF_Public | RF_Transactional);
+
+	if (!HasAnyFlags(RF_ClassDefaultObject | RF_DefaultSubObject))
+	{
+		ClearFlags(RF_Transactional);
+	}
+	for (TObjectPtr<URenderGridJob> Job : RenderGridJobs)
+	{
+		if (IsValid(Job))
+		{
+			Job->SetFlags(RF_Public | RF_Transactional);
+		}
+	}
+}
+
+void URenderGrid::CopyJobs(URenderGrid* From)
+{
+	if (!IsValid(From))
+	{
+		return;
+	}
+	SetRenderGridJobs(From->GetRenderGridJobs());
+}
+
+void URenderGrid::CopyAllPropertiesExceptJobs(URenderGrid* From)
+{
+	if (!IsValid(From))
+	{
+		return;
+	}
+	for (FProperty* Property = StaticClass()->PropertyLink; Property; Property = Property->PropertyLinkNext)
+	{
+		if (!Property->HasAnyPropertyFlags(CPF_Transient | CPF_DuplicateTransient) && Property->GetName().Compare("RenderGridJobs"))// if not [Transient] and not "RenderGridJobs"
+		{
+			Property->CopyCompleteValue(Property->ContainerPtrToValuePtr<void>(this), Property->ContainerPtrToValuePtr<void>(From));
+		}
+	}
+}
+
+void URenderGrid::CopyAllProperties(URenderGrid* From)
+{
+	if (!IsValid(From))
+	{
+		return;
+	}
+	CopyJobs(From);
+	CopyAllPropertiesExceptJobs(From);
 }
 
 void URenderGrid::BeginEditor()
@@ -545,6 +765,13 @@ void URenderGrid::EndEditor()
 {
 	bExecutingBlueprintEvent = true;
 	ReceiveEndEditor();
+	bExecutingBlueprintEvent = false;
+}
+
+void URenderGrid::Tick(float DeltaTime)
+{
+	bExecutingBlueprintEvent = true;
+	ReceiveTick(DeltaTime);
 	bExecutingBlueprintEvent = false;
 }
 
@@ -590,83 +817,123 @@ void URenderGrid::EndViewportRender(URenderGridJob* Job)
 	bExecutingBlueprintEvent = false;
 }
 
-void URenderGrid::CopyValuesToOrFromCDO(const bool bToCDO)
+URenderGridQueue* URenderGrid::Render()
 {
-	if (HasAnyFlags(RF_ClassDefaultObject))
-	{
-		return;
-	}
+	return RenderJobs(GetEnabledRenderGridJobs());
+}
 
-	URenderGrid* CDO = GetCDO();
-	if (!IsValid(CDO))
+URenderGridQueue* URenderGrid::RenderJobs(const TArray<URenderGridJob*>& Jobs)
+{
+	if (!HasAnyFlags(RF_ClassDefaultObject))
 	{
-		return;
-	}
-
-	for (FProperty* Property = GetClass()->PropertyLink; Property; Property = Property->PropertyLinkNext)
-	{
-		if (!Property->HasAnyPropertyFlags(CPF_Transient | CPF_DuplicateTransient))// if not [Transient]
+		if (URenderGrid* DefaultObject = Cast<URenderGrid>(GetClass()->GetDefaultObject(true)); IsValid(DefaultObject))
 		{
-			void* Data = Property->ContainerPtrToValuePtr<void>(this);
-			void* DataCDO = Property->ContainerPtrToValuePtr<void>(CDO);
-			if (bToCDO)
-			{
-				Property->CopyCompleteValue(DataCDO, Data);
-			}
-			else
-			{
-				Property->CopyCompleteValue(Data, DataCDO);
-			}
+			CopyAllProperties(DefaultObject);
+			return DefaultObject->RenderJobs(Jobs);
+		}
+		return nullptr;
+	}
+
+	TArray<URenderGridJob*> JobsToRender;
+	for (URenderGridJob* Job : Jobs)
+	{
+		if (IsValid(Job) && HasRenderGridJob(Job))
+		{
+			JobsToRender.Add(Job);
 		}
 	}
-
-	if (bToCDO)
+	if (URenderGridQueue* RenderQueue = UE::RenderGrid::IRenderGridModule::Get().GetManager().CreateBatchRenderQueue(this, Jobs); IsValid(RenderQueue))
 	{
-		CDO->RenderGridJobs = TArray<TObjectPtr<URenderGridJob>>();
-		for (URenderGridJob* Job : RenderGridJobs)
-		{
-			if (!IsValid(Job))
-			{
-				continue;
-			}
-			if (URenderGridJob* JobCopy = DuplicateObject(Job, CDO); IsValid(JobCopy))
-			{
-				CDO->RenderGridJobs.Add(JobCopy);
-			}
-		}
+		RenderQueue->Execute();
+		return RenderQueue;
 	}
+	return nullptr;
+}
+
+URenderGridQueue* URenderGrid::RenderJob(URenderGridJob* Job)
+{
+	return RenderJobs({Job});
 }
 
 void URenderGrid::SetPropsSource(ERenderGridPropsSourceType InPropsSourceType, UObject* InPropsSourceOrigin)
 {
 	if (InPropsSourceType == ERenderGridPropsSourceType::RemoteControl)
 	{
-		PropsSourceType = InPropsSourceType;
-		PropsSourceOrigin_RemoteControl = Cast<URemoteControlPreset>(InPropsSourceOrigin);
+		Settings->PropsSourceType = InPropsSourceType;
+		Settings->PropsSourceOrigin_RemoteControl = Cast<URemoteControlPreset>(InPropsSourceOrigin);
 		return;
 	}
-	PropsSourceType = ERenderGridPropsSourceType::RemoteControl;
+	Settings->PropsSourceType = ERenderGridPropsSourceType::RemoteControl;
+	Settings->PropsSourceOrigin_RemoteControl = nullptr;
 }
 
 URenderGridPropsSourceBase* URenderGrid::GetPropsSource() const
 {
 	UObject* PropsSourceOrigin = GetPropsSourceOrigin();
-	if (!IsValid(CachedPropsSource) || (CachedPropsSourceType != PropsSourceType) || (CachedPropsSourceOriginWeakPtr.Get() != PropsSourceOrigin))
+	if (!IsValid(Settings->CachedPropsSource) || (Settings->CachedPropsSourceType != Settings->PropsSourceType) || (Settings->CachedPropsSourceOriginWeakPtr.Get() != PropsSourceOrigin))
 	{
-		CachedPropsSourceType = PropsSourceType;
-		CachedPropsSourceOriginWeakPtr = PropsSourceOrigin;
-		CachedPropsSource = UE::RenderGrid::IRenderGridModule::Get().CreatePropsSource(const_cast<URenderGrid*>(this), PropsSourceType, PropsSourceOrigin);
+		Settings->CachedPropsSourceType = Settings->PropsSourceType;
+		Settings->CachedPropsSourceOriginWeakPtr = PropsSourceOrigin;
+		Settings->CachedPropsSource = UE::RenderGrid::IRenderGridModule::Get().CreatePropsSource(const_cast<URenderGrid*>(this), Settings->PropsSourceType, PropsSourceOrigin);
 	}
-	return CachedPropsSource;
+	return Settings->CachedPropsSource;
 }
 
 UObject* URenderGrid::GetPropsSourceOrigin() const
 {
-	if (PropsSourceType == ERenderGridPropsSourceType::RemoteControl)
+	if (Settings->PropsSourceType == ERenderGridPropsSourceType::RemoteControl)
 	{
-		return PropsSourceOrigin_RemoteControl;
+		return Settings->PropsSourceOrigin_RemoteControl;
 	}
 	return nullptr;
+}
+
+UMoviePipelineOutputSetting* URenderGrid::GetDefaultRenderPresetOutputSettings() const
+{
+	if (!IsValid(Defaults->RenderPreset))
+	{
+		return nullptr;
+	}
+	for (UMoviePipelineSetting* MovieSettings : Defaults->RenderPreset->FindSettingsByClass(UMoviePipelineOutputSetting::StaticClass(), false))
+	{
+		if (!IsValid(MovieSettings))
+		{
+			continue;
+		}
+		if (UMoviePipelineOutputSetting* MovieOutputSettings = Cast<UMoviePipelineOutputSetting>(MovieSettings))
+		{
+			if (!MovieOutputSettings->IsEnabled())
+			{
+				continue;
+			}
+			return MovieOutputSettings;
+		}
+	}
+	return nullptr;
+}
+
+FString URenderGrid::GetDefaultOutputDirectory() const
+{
+	return UE::RenderGrid::Private::FRenderGridUtils::DenormalizeJobOutputDirectory(Defaults->OutputDirectory);
+}
+
+void URenderGrid::SetDefaultOutputDirectory(const FString& NewOutputDirectory)
+{
+	Defaults->OutputDirectory = UE::RenderGrid::Private::FRenderGridUtils::NormalizeJobOutputDirectory(NewOutputDirectory);
+}
+
+void URenderGrid::ClearRenderGridJobs()
+{
+	RenderGridJobs.Empty();
+}
+
+void URenderGrid::SetRenderGridJobs(const TArray<URenderGridJob*>& Jobs)
+{
+	RenderGridJobs.Empty();
+	for (URenderGridJob* Job : Jobs)
+	{
+		AddRenderGridJob(Job);
+	}
 }
 
 void URenderGrid::AddRenderGridJob(URenderGridJob* Job)
@@ -857,16 +1124,21 @@ URenderGridJob* URenderGrid::CreateTempRenderGridJob()
 	URenderGridJob* Job = NewObject<URenderGridJob>(this);
 	Job->SetJobId(GenerateUniqueRandomJobId());
 	Job->SetJobName(TEXT("New"));
-	Job->SetOutputDirectory(FPaths::ProjectDir() / TEXT("Saved/MovieRenders/"));
+	Job->SetLevelSequence(Defaults->LevelSequence);
+	Job->SetRenderPreset(Defaults->RenderPreset);
+	Job->SetOutputDirectoryRaw(Defaults->OutputDirectory);
 
 	if (URenderGridPropsSourceRemoteControl* PropsSource = GetPropsSource<URenderGridPropsSourceRemoteControl>())
 	{
-		TArray<uint8> BinaryArray;
+		TArray<uint8> Bytes;
 		for (URenderGridPropRemoteControl* Field : PropsSource->GetProps()->GetAllCasted())
 		{
-			if (Field->GetValue(BinaryArray))
+			if (Field->GetValue(Bytes))
 			{
-				Job->SetRemoteControlValue(Field->GetRemoteControlEntity(), BinaryArray);
+				if (const TSharedPtr<FRemoteControlEntity> FieldEntity = Field->GetRemoteControlEntity(); FieldEntity.IsValid())
+				{
+					Job->SetRemoteControlValueBytes(FieldEntity, Bytes);
+				}
 			}
 		}
 	}

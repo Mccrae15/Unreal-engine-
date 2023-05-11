@@ -46,8 +46,6 @@ class FOcclusionQueryVS : public FGlobalShader
 {
 	DECLARE_SHADER_TYPE(FOcclusionQueryVS,Global);
 public:
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters) { return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::ES3_1); }
-
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		static auto* MobileUseHWsRGBEncodingCVAR = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.UseHWsRGBEncoding"));
@@ -75,9 +73,9 @@ public:
 		StencilingGeometry::GStencilSphereVertexBuffer.CalcTransform(StencilingSpherePosAndScale, BoundingSphere, View.ViewMatrices.GetPreViewTranslation());
 		StencilingGeometryParameters.Set(RHICmdList, this, StencilingSpherePosAndScale);
 
-		if (GEngine && GEngine->StereoRenderingDevice)
+		if (ViewId.IsBound())
 		{
-			SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), ViewId, View.StereoViewIndex);
+			SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), ViewId, (View.StereoPass == EStereoscopicPass::eSSP_FULL) ? 0 : View.StereoViewIndex);
 		}
 	}
 
@@ -88,9 +86,9 @@ public:
 		// Don't transform if rendering frustum
 		StencilingGeometryParameters.Set(RHICmdList, this, FVector4f(0,0,0,1));
 
-		if (GEngine && GEngine->StereoRenderingDevice)
+		if (ViewId.IsBound())
 		{
-			SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), ViewId, View.StereoViewIndex);
+			SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), ViewId, (View.StereoPass == EStereoscopicPass::eSSP_FULL) ? 0 : View.StereoViewIndex);
 		}
 	}
 
@@ -106,8 +104,6 @@ class FOcclusionQueryPS : public FGlobalShader
 {
 	DECLARE_SHADER_TYPE(FOcclusionQueryPS, Global);
 public:
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters) { return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::ES3_1); }
-
 	FOcclusionQueryPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer) :
 		FGlobalShader(Initializer) {}
 	FOcclusionQueryPS() {}

@@ -3,10 +3,11 @@
 #pragma once
 
 #include "Animation/AnimSequence.h"
-#include "Templates/SubclassOf.h"
 #include "GameFramework/Actor.h"
 #include "GameplayTagContainer.h"
 #include "ContextualAnimTypes.generated.h"
+
+struct FContextualAnimSceneBindingContext;
 
 CONTEXTUALANIMATION_API DECLARE_LOG_CATEGORY_EXTERN(LogContextualAnim, Log, All);
 
@@ -75,6 +76,10 @@ struct CONTEXTUALANIMATION_API FContextualAnimTrack
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
 	bool bRequireFlyingMode = false;
 
+	/** Whether the actor that should play this animation is optional */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
+	bool bOptional = false;
+
 	/** Container for alignment tracks */
 	UPROPERTY()
 	FContextualAnimAlignmentTrackContainer AlignmentData;
@@ -89,16 +94,16 @@ struct CONTEXTUALANIMATION_API FContextualAnimTrack
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Defaults")
 	FTransform MeshToScene;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Defaults", meta = (GetOptions = "GetRoles"))
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Defaults")
 	FName Role = NAME_None;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Defaults")
+	UPROPERTY(BlueprintReadOnly, Category = "Defaults")
 	int32 SectionIdx = INDEX_NONE;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Defaults")
+	UPROPERTY(BlueprintReadOnly, Category = "Defaults")
 	int32 AnimSetIdx = INDEX_NONE;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Defaults")
+	UPROPERTY(BlueprintReadOnly, Category = "Defaults")
 	int32 AnimTrackIdx = INDEX_NONE;
 
 	// DEPRECATED: Will go away soon
@@ -365,6 +370,10 @@ private:
 	FContextualAnimSceneBindingContext Context;
 
 	int32 AnimTrackIdx = INDEX_NONE;
+
+	mutable TObjectPtr<UContextualAnimSceneActorComponent> CachedSceneActorComp = nullptr;
+	mutable TObjectPtr<UAnimInstance> CachedAnimInstance = nullptr;
+	mutable TObjectPtr<USkeletalMeshComponent> CachedSkeletalMesh = nullptr;
 };
 
 template<>
@@ -394,6 +403,7 @@ struct CONTEXTUALANIMATION_API FContextualAnimSceneBindings
 		return Role != NAME_None ? Data.FindByPredicate([this, &Role](const FContextualAnimSceneBinding& Item) { return GetAnimTrackFromBinding(Item).Role == Role; }) : nullptr;
 	}
 
+	FORCEINLINE uint8 GetID() const { return Id; }
 	FORCEINLINE const UContextualAnimSceneAsset* GetSceneAsset() const { return SceneAsset.Get(); }
 	FORCEINLINE int32 GetSectionIdx() const { return SectionIdx; }
 	FORCEINLINE int32 GetAnimSetIdx() const { return AnimSetIdx; }
@@ -407,10 +417,13 @@ struct CONTEXTUALANIMATION_API FContextualAnimSceneBindings
 	FORCEINLINE TArray<FContextualAnimSceneBinding>::RangedForIteratorType      end() { return Data.end(); }
 	FORCEINLINE TArray<FContextualAnimSceneBinding>::RangedForConstIteratorType end() const { return Data.end(); }
 
+	static bool CheckConditions(const UContextualAnimSceneAsset& SceneAsset, int32 SectionIdx, int32 AnimSetIdx, const TMap<FName, FContextualAnimSceneBindingContext>& Params);
 	static bool TryCreateBindings(const UContextualAnimSceneAsset& SceneAsset, int32 SectionIdx, int32 AnimSetIdx, const TMap<FName, FContextualAnimSceneBindingContext>& Params, FContextualAnimSceneBindings& OutBindings);
 	static bool TryCreateBindings(const UContextualAnimSceneAsset& SceneAsset, int32 SectionIdx, const TMap<FName, FContextualAnimSceneBindingContext>& Params, FContextualAnimSceneBindings& OutBindings);
 	static bool TryCreateBindings(const UContextualAnimSceneAsset& SceneAsset, int32 SectionIdx, int32 AnimSetIdx, const FContextualAnimSceneBindingContext& Primary, const FContextualAnimSceneBindingContext& Secondary, FContextualAnimSceneBindings& OutBindings);
 	static bool TryCreateBindings(const UContextualAnimSceneAsset& SceneAsset, int32 SectionIdx, const FContextualAnimSceneBindingContext& Primary, const FContextualAnimSceneBindingContext& Secondary, FContextualAnimSceneBindings& OutBindings);
+
+	bool BindActorToRole(AActor& ActorRef, FName Role);
 
 	void CalculateAnimSetPivots(TArray<FContextualAnimSetPivot>& OutScenePivots) const;
 	bool CalculateAnimSetPivot(const FContextualAnimSetPivotDefinition& AnimSetPivotDef, FContextualAnimSetPivot& OutScenePivot) const;
@@ -421,15 +434,24 @@ struct CONTEXTUALANIMATION_API FContextualAnimSceneBindings
 	const FContextualAnimIKTargetDefContainer& GetIKTargetDefContainerFromBinding(const FContextualAnimSceneBinding& Binding) const;
 	FTransform GetIKTargetTransformFromBinding(const FContextualAnimSceneBinding& Binding, const FName& TrackName, float Time) const;
 
+	const FContextualAnimSceneBinding* GetSyncLeader() const;
+
 	bool IsValid() const;
 
 	void Reset();
 
+	void Clear();
+
 	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess);
+
+	void GenerateUniqueId();
 
 private:
 
 	friend class UContextualAnimManager;
+
+	UPROPERTY()
+	uint8 Id = 0;
 
 	UPROPERTY()
 	TWeakObjectPtr<const UContextualAnimSceneAsset> SceneAsset = nullptr;

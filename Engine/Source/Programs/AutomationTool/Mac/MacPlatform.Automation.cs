@@ -1,4 +1,4 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -10,12 +10,12 @@ using UnrealBuildTool;
 using UnrealBuildBase;
 using EpicGames.Core;
 
-public class MacPlatform : Platform
+public class MacPlatform : ApplePlatform
 {
 	/// <summary>
 	/// Default architecture to build projects for. Defaults to Intel
 	/// </summary>
-	protected string[] ProjectTargetArchitectures = { MacExports.IntelArchitecture };
+	protected UnrealArchitectures ProjectTargetArchitectures = new(UnrealArch.X64);
 
 	public MacPlatform()
 		: base(UnrealTargetPlatform.Mac)
@@ -35,15 +35,15 @@ public class MacPlatform : Platform
 
 			if (ConfigTargetArchicture.ToLower().Contains("intel"))
 			{
-				ProjectTargetArchitectures = new[] { MacExports.IntelArchitecture };
+				ProjectTargetArchitectures = new UnrealArchitectures(UnrealArch.X64);
 			}
 			else if (ConfigTargetArchicture.ToLower().Contains("apple"))
 			{
-				ProjectTargetArchitectures = new[] { MacExports.AppleArchitecture};
+				ProjectTargetArchitectures = new UnrealArchitectures(UnrealArch.Arm64);
 			}
 			else if (ConfigTargetArchicture.ToLower().Contains("universal"))
 			{
-				ProjectTargetArchitectures = new[] { MacExports.IntelArchitecture, MacExports.AppleArchitecture };
+				ProjectTargetArchitectures = new UnrealArchitectures(new[] { UnrealArch.X64, UnrealArch.Arm64 });
 			}
 		}		
 	}
@@ -89,17 +89,6 @@ public class MacPlatform : Platform
 	}
 
 	/// <summary>
-	/// Returns true if UAT can build this target for all Mac architectures
-	/// </summary>
-	/// <param name="InTarget"></param>
-	/// <param name="InParams"></param>
-	/// <returns></returns>
-	protected bool CanBuildTargetForAllArchitectures(UnrealBuild.BuildTarget InTarget, ProjectParams InParams)
-	{
-		return MacExports.TargetsAllowedForAppleSilicon.Contains(InTarget.TargetName, StringComparer.OrdinalIgnoreCase);
-	}
-
-	/// <summary>
 	/// Override PreBuildAgenda so we can control the architecture that targets are built for based on
 	/// project settings and the current user environment
 	/// </summary>
@@ -110,75 +99,14 @@ public class MacPlatform : Platform
 	{
 		base.PreBuildAgenda(Build, Agenda, Params);
 
-		string LocalArchitecture = MacExports.HostArchitecture;
-
-		bool ProjectIsUniversal = ProjectTargetArchitectures.Count() > 1;
-
-		// Go through the agenda for all targets and set the architecture appropriately
+		// Go through the agenda for all targets and set the architecture if needed
 		foreach (UnrealBuild.BuildTarget Target in Agenda.Targets)
 		{
-			bool IsTarget = Params.ClientCookedTargets.Contains(Target.TargetName) || Params.ServerCookedTargets.Contains(Target.TargetName);
-
-			// Default to Intel. 
-			string UBTArchitectureParam = MacExports.IntelArchitecture;
-
-			// Targets are easy. 
-			// - If the project is set to Intel/Apple we do that
-			// - If it's universal we build the local architecture unless distributing
-			// - SpecifiedArchitecture overrides these
-			if (IsTarget)
+			// if building for Distribution, and no arch is already specified, then get the distro architectures and use that for this build
+			if (Params.Distribution && !Target.UBTArgs.ToLower().Contains("-architecture="))
 			{
-				// If an architecture was specified, use that
-				if (!string.IsNullOrEmpty(Params.SpecifiedArchitecture))
-				{
-					UBTArchitectureParam = Params.SpecifiedArchitecture;
-					Log.TraceInformation("Building {0} as {1} due to -specifiedarchitecture", Target.TargetName, UBTArchitectureParam);
-				}
-				else
-				{
-					// If the project isn't marked as universal built what it's set to
-					if (!ProjectIsUniversal)
-					{
-						UBTArchitectureParam = ProjectTargetArchitectures.First();
-						Log.TraceInformation("Building {0} as {1}", Target.TargetName, UBTArchitectureParam);
-					}
-					else
-					{
-						// if it is universal, build everything for distribution or just the local architecture otherwise
-						if (Params.Distribution)
-						{
-							UBTArchitectureParam = string.Join("+", ProjectTargetArchitectures);
-							Log.TraceInformation("Building {0} as {1} for distribution", Target.TargetName, UBTArchitectureParam);
-						}
-						else
-						{
-							UBTArchitectureParam = LocalArchitecture;
-							Log.TraceInformation("Building {0} as {1} for local non-distribution", Target.TargetName, UBTArchitectureParam);
-						}
-					}
-				}
-			}
-			else
-			{
-				// We build tools for the local architecture if possible
-				if (CanBuildTargetForAllArchitectures(Target, Params) || LocalArchitecture == MacExports.IntelArchitecture)
-				{
-					UBTArchitectureParam = LocalArchitecture;
-					Log.TraceInformation("Building {0} as {1} for host", Target.TargetName, UBTArchitectureParam);
-				}
-				else if (MacExports.IsRunningOnAppleArchitecture)
-				{
-					// Tell them why to avoid confusion
-					Log.TraceInformation("Building {0} as {1} (arm64 not currently supported)", Target.TargetName, UBTArchitectureParam);
-					UBTArchitectureParam = MacExports.IntelArchitecture;
-				}
-			}
-			
-			// TODO - This needs to be handled in a more graceful way, however for now
-			// when in an installedbuild just leave it to the default arch and don't add anything extra
-			if (!Unreal.IsEngineInstalled())
-			{
-				Target.UBTArgs += string.Format(" -architecture={0}", UBTArchitectureParam);
+				UnrealArchitectures DistroArches = UnrealArchitectureConfig.ForPlatform(UnrealTargetPlatform.Mac).DistributionArchitectures(Params.RawProjectPath, Target.TargetName);
+				Target.UBTArgs += " -architecture=" + DistroArches.ToString();
 			}
 		}
 	}
@@ -553,6 +481,11 @@ public class MacPlatform : Platform
 				InfoPlistContents = InfoPlistContents.Replace("<string>UnrealGame</string>", "<string>" + SC.ShortProjectName + "</string>");
 				DeleteFile(InfoPlistPath);
 				WriteAllText(InfoPlistPath, InfoPlistContents);
+
+				// we now need to re-sign the .app because we modified the .plist
+				// we codesign with ad-hoc, and if the Developer ID Application cert exists, attempt to use it, ignore any errors
+				Utils.RunLocalProcessAndReturnStdOut("/usr/bin/codesign", $"-f -s - \"{BundlePath}\"", null);
+				Utils.RunLocalProcessAndReturnStdOut("/usr/bin/codesign", $"-f -s \"Developer ID Application\" \"{BundlePath}\"", null);
 			}
 
 			if (!SC.bIsCombiningMultiplePlatforms)

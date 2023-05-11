@@ -129,10 +129,11 @@ uint32 FRemoteControlWebInterfaceProcess::Run()
 
 	const URemoteControlSettings* RCSettings = GetDefault<URemoteControlSettings>();
 
-	FString Args = FString::Printf(TEXT("--port %d --uews %d --uehttp %d --monitor "),
+	FString Args = FString::Printf(TEXT("--port %d --uews %d --uehttp %d --monitor --hostname %s "),
 									RCSettings->RemoteControlWebInterfacePort,
 									RCSettings->RemoteControlWebSocketServerPort,
-									RCSettings->RemoteControlHttpServerPort);
+									RCSettings->RemoteControlHttpServerPort,
+									*RCSettings->RemoteControlWebInterfaceBindAddress);
 
 	if (RCSettings->bForceWebAppBuildAtStartup)
 	{
@@ -250,7 +251,7 @@ uint32 FRemoteControlWebInterfaceProcess::Run()
 
 	UE_LOG(LogRemoteControlWebInterface, Log, TEXT("WebApp started, initial launch will take longer as it will be building the WebApp"));
 
-	while (FPlatformProcess::IsProcRunning(Process))
+	while (Status != EStatus::Stopped && FPlatformProcess::IsProcRunning(Process))
 	{
 		const int32 BytesRead = LogReadPipe(ReadPipe);
 

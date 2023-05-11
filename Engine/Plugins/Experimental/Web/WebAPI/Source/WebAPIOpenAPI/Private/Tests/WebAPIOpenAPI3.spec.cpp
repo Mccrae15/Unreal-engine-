@@ -1,17 +1,19 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Misc/AutomationTest.h"
+#include "WebAPIDefinition.h"
 
 #if WITH_EDITOR
 
-#include "WebAPIEditorSettings.h"
+#include "Dom/WebAPIEnum.h"
 #include "Dom/WebAPIParameter.h"
+#include "Dom/WebAPIOperation.h"
 #include "Misc/AutomationTest.h"
+#include "Dom/WebAPIService.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Serialization/JsonSerializer.h"
 #include "V3/WebAPIOpenAPIConverter.h"
-#include "V3/WebAPIOpenAPISchema.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -53,11 +55,11 @@ BEGIN_DEFINE_SPEC(FWebAPIOpenAPI3Spec,
 	}
 
 	template <class DestinationType, class SourceType>
-	typename TEnableIf<!TIsSame<DestinationType, SourceType>::Value, void>::Type
+	typename TEnableIf<!std::is_same_v<DestinationType, SourceType>, void>::Type
 	TryAssign(TSharedPtr<DestinationType>& InDst, const TSharedPtr<SourceType>& InSrc) { }
 
 	template <class DestinationType, class SourceType>
-	typename TEnableIf<TIsSame<DestinationType, SourceType>::Value, void>::Type
+	typename TEnableIf<std::is_same_v<DestinationType, SourceType>, void>::Type
 	TryAssign(TSharedPtr<DestinationType>& InDst, const TSharedPtr<SourceType>& InSrc)
 	{
 		InDst = InSrc;

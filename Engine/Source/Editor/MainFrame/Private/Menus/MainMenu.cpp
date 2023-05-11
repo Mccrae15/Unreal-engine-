@@ -544,7 +544,7 @@ void FMainMenu::RegisterToolsMenu()
 		}
 	}
 
-	FToolMenuSection& SourceControlSection = Menu->AddSection("Source Control", LOCTEXT("SourceControlHeading", "Source Control"));
+	FToolMenuSection& SourceControlSection = Menu->AddSection("Source Control", LOCTEXT("SourceControlHeading", "Revision Control"));
 
 	SourceControlSection.AddMenuEntry(
 		FMainFrameCommands::Get().ViewChangelists,
@@ -558,6 +558,13 @@ void FMainMenu::RegisterToolsMenu()
 		TAttribute<FText>(),
 		TAttribute<FText>(),
 		FSlateIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.Actions.Submit")
+	);
+
+	SourceControlSection.AddMenuEntry(
+		FMainFrameCommands::Get().SyncContent,
+		TAttribute<FText>(),
+		TAttribute<FText>(),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.Actions.Sync")
 	);
 
 	SourceControlSection.AddDynamicEntry("ConnectToSourceControl", FNewToolMenuSectionDelegate::CreateLambda([](FToolMenuSection& InSection)

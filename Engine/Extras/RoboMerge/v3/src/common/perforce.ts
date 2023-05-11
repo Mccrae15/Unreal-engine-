@@ -16,7 +16,7 @@ const RETRY_ERROR_MESSAGES = [
 ]
 
 const INTEGRATION_FAILURE_REGEXES: [RegExp, string][] = [
-	[/^(.*[\\\/])(.*) - can't \w+ exclusive file already opened$/, 'partial_integrate'],
+	[/^(.*[\\\/])(.*) - can't \w+ exclusive file already opened/, 'partial_integrate'],
 	[/Move\/delete\(s\) must be integrated along with matching move\/add\(s\)/, 'split_move'],
 ]
 
@@ -225,7 +225,7 @@ export interface Change {
 	isUserRequest?: boolean;
 	ignoreExcludedAuthors?: boolean
 	forceCreateAShelf?: boolean
-	sendNoShelfEmail?: boolean // Used for requesting stomps for internal RM usage, such as stomp changes
+	sendNoShelfNotification?: boolean // Used for requesting stomps for internal RM usage, such as stomp changes
 	commandOverride?: string
 	accumulateCommandOverride?: boolean
 
@@ -248,8 +248,9 @@ export interface Workspace {
 export type RoboWorkspace = Workspace | string | null;
 
 export interface ClientSpec {
-	client: string;
+	client: string
 	Stream?: string
+	IsUnloaded?: boolean
 }
 
 export type StreamSpec = {
@@ -294,7 +295,6 @@ export interface ConflictedResolveNFile {
 	resolveType: string // e.g. 'content', 'branch'
 	resolveFlag: string // 'c' ?
 	contentResolveType?: string  // e.g. '3waytext', '2wayraw' -- not applicable for delete/branch merges
-	branchOrDeleteResolveRequired?: boolean
 }
 
 export class ResolveResult {
@@ -341,7 +341,7 @@ export class ResolveResult {
 			at: branch
 			ay: ignore
 		
-		Skip that but note it in 'branchOrDeleteResolveRequired'.
+		We will allow these to be stomped
 	*/
 	private parseConflictsFromDashNOutput() {
 		this.successfullyParsedRemainingConflicts = true
@@ -349,10 +349,8 @@ export class ResolveResult {
 			for (let ztagGroup of this.dashNOutput) {
 				if (ztagGroup[0] === "Branch resolve:" || ztagGroup[0] === "Delete resolve:") {
 					if (!this.remainingConflicts[this.remainingConflicts.length - 1]) {
-						throw new Error(`Encountered branch/delete resolve information, but could not find appicable conflict file: ${ztagGroup.toString()}`)
+						throw new Error(`Encountered branch/delete resolve information, but could not find applicable conflict file: ${ztagGroup.toString()}`)
 					}
-
-					this.remainingConflicts[this.remainingConflicts.length - 1].branchOrDeleteResolveRequired = true
 					continue
 				}
 
@@ -434,6 +432,8 @@ export function getPerforceUsername() {
 	return perforceUsername
 }
 
+let perforceMultiServerEnvironment: boolean
+
 /**
  * This method must succeed before PerforceContext can be used. Otherwise retrieving the Perforce username through
  * getPerforceUsername() will error.
@@ -454,8 +454,10 @@ export async function initializePerforce(logger: ContextualLogger) {
 
 	if (resp && resp.User) {
 		perforceUsername = resp.User;
+
+		const serversOutput = await PerforceContext._execP4Ztag(logger, null, ["servers"]);
+		perforceMultiServerEnvironment = serversOutput.length > 1
 	}
-	return resp;
 }
 
 /**
@@ -485,11 +487,17 @@ export class PerforceContext {
 
 	/** get a single change in the format of changes() */
 	async getChange(path_in: string, changenum: number, status?: ChangelistStatus) {
-		const list = await this.changes(`${path_in}@${changenum},${changenum}`, -1, 1, status)
+		const list = await this.changes(`${path_in}@${changenum},${changenum}`, -1, 1, status) as Change[]
 		if (list.length <= 0) {
 			throw new Error(`Could not find changelist ${changenum} in ${path_in}`);
 		}
-		return <Change>list[0];
+		if (list.length > 1 || list[0].change !== changenum) {
+			// log for now
+			this.logger.error('p4.getChange unexpected result' +
+				list.map(change => `\n    ${change.change}: user ${change.user}, workspace ${change.client}`).join('')
+			)
+		}
+		return list[0]
 	}
 
 	/**
@@ -556,12 +564,14 @@ export class PerforceContext {
 
 	// find a workspace for the given user
 	// output format is an array of workspace names
-	async find_workspaces(user?: string, edgeServerAddress?: string) {
-		// -a to include workspaces on edge servers
+	async find_workspaces(user?: string, options?: {edgeServerAddress?: string, includeUnloaded?: boolean}) {
 
+		const edgeServerAddress = options && options.edgeServerAddress
+		const includeUnloaded = options && options.includeUnloaded
 
 		let args = ['clients', '-u', user || this.username]
 
+		// -a to include workspaces on edge servers
 		if (!edgeServerAddress) {
 			// find all
 			args.push('-a')
@@ -572,11 +582,19 @@ export class PerforceContext {
 			opts.edgeServerAddress = edgeServerAddress
 		}
 
-		let parsedClients = await this._execP4Ztag(null, args, opts);
+		let parsedLoadedClients = this._execP4Ztag(null, args, opts);
+		let parsedUnloadedClients = (includeUnloaded ? this._execP4Ztag(null, [...args, '-U'], opts) : null)
 		let workspaces = [];
-		for (let clientDef of parsedClients) {
+		for (let clientDef of await parsedLoadedClients) {
 			if (clientDef.client) {
 				workspaces.push(clientDef);
+			}
+		}
+		if (includeUnloaded) {
+			for (let clientDef of await parsedUnloadedClients!) {
+				if (clientDef.client) {
+					workspaces.push(clientDef);
+				}
 			}
 		}
 		return workspaces as ClientSpec[];
@@ -597,6 +615,10 @@ export class PerforceContext {
 			return {id: serverId, address: address.trim()}
 		}
 		return null
+	}
+
+	async reloadWorkspace(workspaceName: string) {
+		return this._execP4Ztag(null, ['reload', '-c', workspaceName]);
 	}
 
 	getEdgeServerAddress(serverId: string): Promise<string> {
@@ -705,7 +727,7 @@ export class PerforceContext {
 
 	// Create a new workspace for Robomerge GraphBot
 	async newGraphBotWorkspace(name: string, extraParams: any, edgeServer?: {id: string, address: string}) {
-		return this.newWorkspace(name, {Root: '/src/' + name, ...extraParams}, edgeServer);
+		return this.newWorkspace(name, {Root: getRootDirectoryForBranch(name), ...extraParams}, edgeServer);
 	}
 
 	// Create a new workspace for Robomerge to read branchspecs from
@@ -1055,7 +1077,7 @@ export class PerforceContext {
 	}
 
 	// run p4 'opened' command: lists files in changelist with details of edit state (e.g. if a copy, provides source path)
-	opened(roboWorkspace: RoboWorkspace | null, arg: number | string) {
+	opened(roboWorkspace: RoboWorkspace | null, arg: number | string, exclusive?: boolean) {
 		const workspace = roboWorkspace && coercePerforceWorkspace(roboWorkspace);
 		const args = ['opened']
 		if (typeof arg === 'number') {
@@ -1064,7 +1086,7 @@ export class PerforceContext {
 		}
 		else {
 			// see which workspace has a file checked out/added
-			args.push('-a', arg)
+			args.push(exclusive && perforceMultiServerEnvironment ? '-x' : '-a', arg)
 		}
 		return this._execP4Ztag(workspace, args) as Promise<OpenedFileRecord[]>
 	}
@@ -1365,7 +1387,7 @@ export class PerforceContext {
 			options.env = {};
 			for (let key in process.env)
 				options.env[key] = process.env[key];
-			options.env.PWD = path.resolve(options.cwd);
+			options.env.PWD = path.resolve(options.cwd.toString());
 		}
 
 		const doExecFile = function(retries: number): Promise<string> {

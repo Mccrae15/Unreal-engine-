@@ -20,13 +20,13 @@ DECLARE_CYCLE_STAT_EXTERN(TEXT("Overall AI Time"), STAT_AI_Overall, STATGROUP_AI
 
 namespace FAISystem
 {
-	static const FRotator InvalidRotation = FRotator(FLT_MAX);
-	static const FQuat InvalidOrientation = FQuat(FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX);
-	static const FVector InvalidLocation = FVector(FLT_MAX);
-	static const FVector InvalidDirection = FVector::ZeroVector; 
-	static const float InvalidRange = -1.f;
-	static const float InfiniteInterval = -FLT_MAX;
-	static const uint32 InvalidUnsignedID = uint32(INDEX_NONE);
+	inline static const FRotator InvalidRotation = FRotator(FLT_MAX);
+	inline static const FQuat InvalidOrientation = FQuat(FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX);
+	inline static const FVector InvalidLocation = FVector(FLT_MAX);
+	inline static const FVector InvalidDirection = FVector::ZeroVector; 
+	inline static const float InvalidRange = -1.f;
+	inline static const float InfiniteInterval = -FLT_MAX;
+	inline static const uint32 InvalidUnsignedID = uint32(INDEX_NONE);
 
 	FORCEINLINE bool IsValidLocation(const FVector& TestLocation)
 	{
@@ -54,7 +54,7 @@ namespace FAISystem
 UENUM()
 namespace EAIOptionFlag
 {
-	enum Type
+	enum Type : int
 	{
 		Default,
 		Enable UMETA(DisplayName = "Yes"),
@@ -117,7 +117,7 @@ namespace EAILogicResuming
 UENUM()
 namespace EPawnActionAbortState
 {
-	enum Type
+	enum Type : int
 	{
 		NeverStarted,
 		NotBeingAborted,
@@ -133,7 +133,7 @@ namespace EPawnActionAbortState
 UENUM()
 namespace EPawnActionResult
 {
-	enum Type
+	enum Type : int
 	{
 		NotStarted,
 		InProgress,
@@ -146,7 +146,7 @@ namespace EPawnActionResult
 UENUM()
 namespace EPawnActionEventType
 {
-	enum Type
+	enum Type : int
 	{
 		Invalid,
 		FailedToStart,
@@ -160,7 +160,7 @@ namespace EPawnActionEventType
 UENUM()
 namespace EAIRequestPriority
 {
-	enum Type
+	enum Type : int
 	{
 		/** Actions requested by Level Designers by placing AI-hinting elements on the map. */
 		SoftScript,
@@ -185,7 +185,7 @@ namespace EAIRequestPriority
 UENUM()
 namespace EAILockSource
 {
-	enum Type
+	enum Type : int
 	{
 		Animation,
 		Logic,
@@ -253,6 +253,11 @@ public:
 	{
 		static const FAINamedID<TCounter> InvalidIDInstance;
 		return InvalidIDInstance;
+	}
+
+	friend FORCEINLINE uint32 GetTypeHash(const FAINamedID& ID)
+	{
+		return GetTypeHash(ID.Index);
 	}
 };
 
@@ -400,7 +405,7 @@ struct AIMODULE_API FAIResourceLock
 		Locks |= Other.Locks;		
 	}
 
-	bool operator==(const FAIResourceLock& Other)
+	bool operator==(const FAIResourceLock& Other) const
 	{
 		return Locks == Other.Locks;
 	}
@@ -496,6 +501,13 @@ struct AIMODULE_API FAIMoveRequest
 	FAIMoveRequest& SetNavigationFilter(TSubclassOf<UNavigationQueryFilter> Filter) { FilterClass = Filter; return *this; }
 	FAIMoveRequest& SetUsePathfinding(bool bPathfinding) { bUsePathfinding = bPathfinding; return *this; }
 	FAIMoveRequest& SetAllowPartialPath(bool bAllowPartial) { bAllowPartialPath = bAllowPartial; return *this; }
+	FAIMoveRequest& SetRequireNavigableEndLocation(bool bRequire) { bRequireNavigableEndLocation = bRequire; return *this; }
+	/** Defines if the underlying pathfind query should limit its exploration based on the navigation cost
+	 * @param bApply				if set - the pathfind query cost will be limited based on the heuristic between the start and end location
+	 * @param InCostLimitFactor		this multiplier is used to compute a max node cost allowed to the open list (cost limit = CostLimitFactor*InitialHeuristicEstimate)
+	 * @param InMinimumCostLimit	minimum cost limit clamping value (in cost units) used to allow large deviation in short paths
+	 */
+	FAIMoveRequest& SetApplyCostLimitFromHeuristic(bool bApply, float InCostLimitFactor = FLT_MAX, float InMinimumCostLimit = 0.f) { bApplyCostLimitFromHeuristic = bApply; CostLimitFactor = InCostLimitFactor; MinimumCostLimit = InMinimumCostLimit; return *this; }
 	FAIMoveRequest& SetProjectGoalLocation(bool bProject) { bProjectGoalOnNavigation = bProject; return *this; }
 
 	FAIMoveRequest& SetCanStrafe(bool bStrafe) { bCanStrafe = bStrafe; return *this; }
@@ -517,7 +529,11 @@ struct AIMODULE_API FAIMoveRequest
 
 	bool IsUsingPathfinding() const { return bUsePathfinding; }
 	bool IsUsingPartialPaths() const { return bAllowPartialPath; }
+	bool IsNavigableEndLocationRequired() const { return bRequireNavigableEndLocation; }
 	bool IsProjectingGoal() const { return bProjectGoalOnNavigation; }
+	bool IsApplyingCostLimitFromHeuristic() const { return bApplyCostLimitFromHeuristic; }
+	float GetCostLimitFactor() const { return CostLimitFactor; }
+	float GetMinimumCostLimit() const { return MinimumCostLimit; }
 	TSubclassOf<UNavigationQueryFilter> GetNavigationFilter() const { return FilterClass; }
 
 	bool CanStrafe() const { return bCanStrafe; }
@@ -557,6 +573,12 @@ protected:
 	/** pathfinding: allow using incomplete path going toward goal but not reaching it */
 	uint32 bAllowPartialPath : 1;
 
+	/** pathfinding: if set - require the end location to be linked to the navigation data*/
+	uint32 bRequireNavigableEndLocation : 1;
+
+	/** pathfinding: if set - the pathfind query cost will be limited based on the heuristic between the start and end location (c.f. CostLimitFactor and MinimumCostLimit). */
+	uint32 bApplyCostLimitFromHeuristic : 1;
+
 	/** pathfinding: goal location will be projected on navigation data before use */
 	uint32 bProjectGoalOnNavigation : 1;
 
@@ -571,6 +593,12 @@ protected:
 
 	/** pathfollowing: required distance to goal to complete move */
 	float AcceptanceRadius;
+
+	/** pathfinding: this multiplier is used to compute a max node cost allowed to the open list (cost limit = CostLimitFactor*InitialHeuristicEstimate) */
+	float CostLimitFactor;
+
+	/** pathfinding: minimum cost limit clamping value (in cost units) used to allow large deviation in short paths */
+	float MinimumCostLimit;
 
 	/** custom user data: structure */
 	FCustomMoveSharedPtr UserData;

@@ -2,19 +2,17 @@
 
 #pragma once
 
-#include "PCGElement.h"
 #include "PCGSettings.h"
 
-#include "Metadata/PCGMetadataAttribute.h"
-#include "Metadata/PCGMetadataAttributeTpl.h"
-#include "Metadata/PCGMetadataEntryKeyIterator.h"
+#include "Metadata/PCGAttributePropertySelector.h"
+#include "Metadata/Accessors/IPCGAttributeAccessor.h"
+#include "Metadata/Accessors/PCGAttributeAccessorKeys.h"
 
 #include "Containers/StaticArray.h"
 
 #include "PCGMetadataOpElementBase.generated.h"
 
 class FPCGMetadataAttributeBase;
-class IPCGMetadataEntryIterator;
 
 namespace PCGMetadataSettingsBaseConstants
 {
@@ -44,15 +42,19 @@ enum class EPCGMetadataSettingsBaseTypes
 };
 
 /**
- * Base class for all Metadata operations
- * A metadata operation can work on 2 different type of inputs: ParamData and SpatialData
- * Each of those inputs can have some metadata.
- * The output will contain the metadata of the first input (all its attributes) + the result of the operation (in a separate attribute)
+ * Base class for all Metadata operations.
+ * Metadata operation can work with attributes or properties. For example you could compute the addition between all points density and a constant from
+ * a param data.
+ * The output will be the duplication of the first input, with the same metadata + the result of the operation (either in an attribute or a property)
  * The new attribute can collide with one of the attributes in the incoming metadata. In this case, the attribute value will be overridden by the result
  * of the operation. It will also override the type of the attribute if it doesn't match the original.
  * 
- * You can specify the name of the attribute for each input and for the output. If they are None, they will take the default attribute.
- * Attribute names can also be overridden by ParamData, just connect the Param pin with some param data that matches exactly the name of the property you want to override.
+ * We only support operations between points and between spatial data. They all need to match (or be a param data)
+ * For example, if input 0 is a point data and input 1 is a spatial data, we fail.
+ * 
+ * You can specify the name of the attribute for each input and for the output.
+ * If the input name is None, it will take the lastest attribute in the input metadata.
+ * If the output name is None, it will take the input name.
  * 
  * Each operation has some requirements for the input types, and can broadcast some values into others (example Vector + Float -> Vector).
  * For example, if the op only accept booleans, all other value types will throw an error.
@@ -69,6 +71,10 @@ class PCG_API UPCGMetadataSettingsBase : public UPCGSettings
 	GENERATED_BODY()
 
 public:
+	// ~Begin UObject interface
+	virtual void PostLoad() override;
+	// ~End UObject interface
+
 	//~Begin UPCGSettings interface
 #if WITH_EDITOR
 	virtual EPCGSettingsType GetType() const override { return EPCGSettingsType::Metadata; }
@@ -78,7 +84,7 @@ public:
 	virtual TArray<FPCGPinProperties> OutputPinProperties() const override;
 	//~End UPCGSettings interface
 
-	virtual FName GetInputAttributeNameWithOverride(uint32 Index, UPCGParamData* Params) const { return NAME_None; };
+	virtual FPCGAttributePropertySelector GetInputSource(uint32 Index) const { return FPCGAttributePropertySelector(); };
 
 	virtual FName GetInputPinLabel(uint32 Index) const { return PCGPinConstants::DefaultInputLabel; }
 	virtual uint32 GetInputPinNum() const { return 1; };
@@ -93,14 +99,18 @@ public:
 	virtual bool HasDifferentOutputTypes() const { return false; }
 	virtual TArray<uint16> GetAllOutputTypes() const { return TArray<uint16>(); };
 
-	bool IsMoreComplexType(uint16 FirstType, uint16 SecondType) const;
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Output")
+	FPCGAttributePropertySelector OutputTarget;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Output)
-	FName OutputAttributeName = NAME_None;
+#if WITH_EDITORONLY_DATA
+	UPROPERTY()
+	FName OutputAttributeName_DEPRECATED = NAME_None;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings)
-	EPCGMetadataSettingsBaseMode Mode = EPCGMetadataSettingsBaseMode::Inferred;
+	UPROPERTY()
+	EPCGMetadataSettingsBaseMode Mode_DEPRECATED = EPCGMetadataSettingsBaseMode::Inferred;
+#endif // WITH_EDITORONLY_DATA
 
+	static constexpr uint32 MaxNumberOfInputs = 4;
 	static constexpr uint32 MaxNumberOfOutputs = 4;
 
 #if WITH_EDITORONLY_DATA
@@ -113,352 +123,283 @@ public:
 class FPCGMetadataElementBase : public FSimplePCGElement
 {
 public:
-	// FPCGMetadataElementBase relies on StaticDuplicateObject (when we duplicate tagged data), so we cannot run outside of the main thread
-	virtual bool CanExecuteOnlyOnMainThread(FPCGContext*) const override { return true; }
-
-	virtual bool IsCacheable(const UPCGSettings* InSettings) const override { return true; }
-
 	struct FOperationData
 	{
-		TArray<const FPCGMetadataAttributeBase*> SourceAttributes;
 		int32 NumberOfElementsToProcess = -1;
 		uint16 MostComplexInputType;
 		uint16 OutputType;
-		TArray<FPCGMetadataAttributeBase*> OutputAttributes;
 		const UPCGMetadataSettingsBase* Settings = nullptr;
-		TArray<TUniquePtr<IPCGMetadataEntryIterator>> Iterators;
+
+		TArray<TUniquePtr<const IPCGAttributeAccessorKeys>> InputKeys;
+		TArray<TUniquePtr<IPCGAttributeAccessorKeys>> OutputKeys;
+
+		TArray<TUniquePtr<const IPCGAttributeAccessor>> InputAccessors;
+		TArray<TUniquePtr<IPCGAttributeAccessor>> OutputAccessors;
+
+		template <int32 NbInputs, int32 NbOutputs>
+		void Validate();
 	};
 
 protected:
 	virtual bool ExecuteInternal(FPCGContext* Context) const override;
 
-	virtual bool DoOperation(FOperationData& OperationData) const = 0;
+	virtual bool DoOperation(FOperationData& InOperationData) const = 0;
+
+	/**
+	* Generic method to factorise all the boilerplate code for a variable number of inputs/outputs
+	*/
+	template <typename... InputTypes, typename... Callbacks>
+	inline bool DoNAryOp(FOperationData& InOperationData, TTuple<Callbacks...>&& InCallbacks) const;
 
 	/* All operations can have a fixed number of inputs and a variable number of outputs.
 	* Each output need to have its own callback, all taking the exact number of "const InType&" as input
 	* and each can return a different output type.
 	*/
 	template <typename InType, typename... Callbacks>
-	bool DoUnaryOp(FOperationData& OperationData, Callbacks&& ...InCallbacks) const;
+	bool DoUnaryOp(FOperationData& InOperationData, Callbacks&& ...InCallbacks) const;
 
 	template <typename InType1, typename InType2, typename... Callbacks>
-	bool DoBinaryOp(FOperationData& OperationData, Callbacks&& ...InCallbacks) const;
+	bool DoBinaryOp(FOperationData& InOperationData, Callbacks&& ...InCallbacks) const;
 
 	template <typename InType1, typename InType2, typename InType3, typename... Callbacks>
-	bool DoTernaryOp(FOperationData& OperationData, Callbacks&& ...InCallbacks) const;
+	bool DoTernaryOp(FOperationData& InOperationData, Callbacks&& ...InCallbacks) const;
 
 	template <typename InType1, typename InType2, typename InType3, typename InType4, typename... Callbacks>
-	bool DoQuaternaryOp(FOperationData& OperationData, Callbacks&& ...InCallbacks) const;
+	bool DoQuaternaryOp(FOperationData& InOperationData, Callbacks&& ...InCallbacks) const;
 };
 
-template <typename InType, typename... Callbacks>
-inline bool FPCGMetadataElementBase::DoUnaryOp(FOperationData& OperationData, Callbacks&& ...InCallbacks) const
+template <int32 NbInputs, int32 NbOutputs>
+inline void FPCGMetadataElementBase::FOperationData::Validate()
 {
-	check(OperationData.SourceAttributes[0]);
+	check(OutputKeys.Num() == NbOutputs);
 
-	const uint32 NumOutputs = OperationData.OutputAttributes.Num();
-	constexpr uint32 NumCallbacks = (uint32)sizeof...(InCallbacks);
-	check(NumOutputs == NumCallbacks);
-
-	// All values in OperationData.Iterators are UniquePtr. Dereference them here to make the syntax less cumbersome.
-	check(OperationData.Iterators[0]);
-	IPCGMetadataEntryIterator& Iterator1 = *OperationData.Iterators[0];
-
-	InType DefaultValue = PCGMetadataAttribute::GetValueWithBroadcast<InType>(OperationData.SourceAttributes[0], PCGInvalidEntryKey);
-
-	// Fold expressions. It will un-roll the packed argument "InCallbacks", and we can use "InCallbacks" as the current unrolled argument.
-	// In this case, we have multiple callbacks that all take "const InType&" as input, but can return different outputs.
-	// We use this return value to know in which type we need to cast our attribute.
-	uint32 j = 0;
-	([&]
+	for (int32 i = 0; i < NbInputs; ++i)
 	{
-		check(j < NumOutputs);
-		auto OutValue = InCallbacks(DefaultValue);
-		typedef decltype(OutValue) OutType;
+		check(InputAccessors[i].IsValid());
+		check(InputKeys[i].IsValid());
+	}
 
-		if (FPCGMetadataAttribute<OutType>* OutputAttribute = static_cast<FPCGMetadataAttribute<OutType>*>(OperationData.OutputAttributes[j++]))
+	for (int32 j = 0; j < NbOutputs; ++j)
+	{
+		check(OutputAccessors[j].IsValid());
+		check(OutputKeys[j].IsValid());
+	}
+}
+
+/**
+* Heavy templated code to factorize the gathering of inputs, the application of callbacks and the set of outputs.
+* Note that the order of calls is from the bottom to the top: Operation -> Gather -> Apply.
+* So start at the bottom!
+*/
+namespace PCG
+{
+namespace Private
+{
+namespace NAryOperation
+{
+	/**
+	* Empty struct to pack/unpack types in templates.
+	*/
+	template <typename... T>
+	struct Signature {};
+
+	constexpr int32 DefaultChunkSize = 256;
+
+	/**
+	* Set of options to know if we need to use the default key + flags for get and set.
+	*/
+	struct Options
+	{
+		EPCGAttributeAccessorFlags GetFlags;
+		EPCGAttributeAccessorFlags SetFlags;
+		bool bUseDefaultKey = false;
+	};
+
+	/**
+	* Finally we call our callback with the packed input values from InArgs, and set the output value in its accessor.
+	* We use OutputIndex to know which callback to get (and therefore which output to set).
+	* Note that we go in reverse order, and stop when OutputIndex is negative.
+	*/
+	template<int OutputIndex, typename ...Callbacks, typename ...Args>
+	bool Apply(FPCGMetadataElementBase::FOperationData& InOperationData, int32 StartIndex, int32 Range, const Options& InOptions, const TTuple<Callbacks...>& InCallbacks, Args&& ...InArgs)
+	{
+		if constexpr (OutputIndex < 0)
 		{
-			OutputAttribute->SetDefaultValue(OutValue);
+			return true;
 		}
-	} (), ...);
-
-	for (int32 i = 0; i < OperationData.NumberOfElementsToProcess; ++i)
-	{
-		PCGMetadataEntryKey EntryKey = *Iterator1;
-
-		// If the entry key is invalid, nothing to do
-		if (EntryKey != PCGInvalidEntryKey)
+		else
 		{
-			InType Value = PCGMetadataAttribute::GetValueWithBroadcast<InType>(OperationData.SourceAttributes[0], EntryKey);
-
-			j = 0;
-			([&]
+			if (Range <= 0)
 			{
-				check(j < NumOutputs);
-				auto OutValue = InCallbacks(Value);
-				typedef decltype(OutValue) OutType;
+				return true;
+			}
 
-				if (FPCGMetadataAttribute<OutType>* OutputAttribute = static_cast<FPCGMetadataAttribute<OutType>*>(OperationData.OutputAttributes[j++]))
-				{
-					OutputAttribute->SetValue(EntryKey, OutValue);
-				}
-			} (), ...);
+			// First compute the first element to get its type.
+			// We use argument unpacking, since our InArgs contains all the arrays with our values.
+			// If in InArgs we have TArray<int>& IntValues, TArray<float>& FloatValues, the unpack will do:
+			// (IntValues[0], FloatValues[0])
+			auto OutValue = InCallbacks.template Get<OutputIndex>()(InArgs[0]...);
+			using OutType = decltype(OutValue);
+
+			TArray<OutType, TInlineAllocator<DefaultChunkSize>> OutValues;
+			OutValues.SetNum(Range);
+			OutValues[0] = OutValue;
+
+			for (int32 i = 1; i < Range; ++i)
+			{
+				OutValues[i] = InCallbacks.template Get<OutputIndex>()(InArgs[i]...);
+			}
+
+			bool bSuccess = true;
+			TArrayView<const OutType> OutValuesView(OutValues);
+
+			if (InOptions.bUseDefaultKey)
+			{
+				FPCGAttributeAccessorKeysEntries DefaultAccessorKey(PCGInvalidEntryKey);
+				bSuccess = InOperationData.OutputAccessors[OutputIndex]->SetRange(OutValuesView, /*Index=*/0, DefaultAccessorKey, InOptions.SetFlags);
+			}
+			else
+			{
+				bSuccess = InOperationData.OutputAccessors[OutputIndex]->SetRange(OutValuesView, StartIndex, *InOperationData.OutputKeys[OutputIndex], InOptions.SetFlags);
+			}
+
+			if (!bSuccess)
+			{
+				return false;
+			}
+
+			return Apply<OutputIndex - 1>(InOperationData, StartIndex, Range, InOptions, InCallbacks, std::forward<Args>(InArgs)...);
+		}
+	}
+
+	/**
+	* When Signature doesn't have any templated types anymore (Signature<>), we got all our input values packed in "InArgs", so it's time to compute our operation and set the outputs.
+	* To do so, we use Apply templated with the LastOutputIndex, and go backwards (last output to first output).
+	*/
+	template <typename... Callbacks, typename... Args>
+	bool Gather(FPCGMetadataElementBase::FOperationData& InOperationData, int32 StartIndex, int32 Range, const Options& InOptions, const TTuple<Callbacks...>& InCallbacks, int InputIndex, Signature<> S, Args&& ...InArgs)
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(PCG::Private::NAryOperation::Apply);
+
+		constexpr int LastOutputIndex = (int)sizeof...(Callbacks) - 1;
+		return Apply<LastOutputIndex>(InOperationData, StartIndex, Range, InOptions, InCallbacks, std::forward<Args>(InArgs)...);
+	}
+
+	/**
+	* The idea of gather is to pack all the input values at the end of the function call.
+	* We use InputType, from our Signature struct to extract the current InputType, get a range of values from our accessor (using the InputIndex)
+	* then call Gather recursively, with the rest of our input types in Signature, InputIndex incremented by one and our newly InputValues moved at the end and packed into InArgs.
+	* We specialize the case where Signature is empty, meaning we got all our input values.
+	* 
+	* For example, if InputTypes = <int, float>, we have 3 calls:
+	* Gather(InOperationData, StartIndex, Range, InOptions, InCallbacks, 0, Signature<int, float>);
+	* Gather(InOperationData, StartIndex, Range, InOptions, InCallbacks, 1, Signature<float>, IntValues);
+	* Gather(InOperationData, StartIndex, Range, InOptions, InCallbacks, 2, Signature<>, IntValues, FloatValues);
+	*/
+	template <typename... Callbacks, typename InputType, typename... InputTypes, typename... Args>
+	bool Gather(FPCGMetadataElementBase::FOperationData& InOperationData, int32 StartIndex, int32 Range, const Options& InOptions, const TTuple<Callbacks...>& InCallbacks, int InputIndex, Signature<InputType, InputTypes...> S, Args&& ...InArgs)
+	{
+		bool bSuccess = true;
+
+		TArray<InputType, TInlineAllocator<DefaultChunkSize>> InputValues;
+		InputValues.SetNum(Range);
+		if (InOptions.bUseDefaultKey)
+		{
+			FPCGAttributeAccessorKeysEntries DefaultAccessorKey(PCGInvalidEntryKey);
+			bSuccess = InOperationData.InputAccessors[InputIndex]->GetRange<InputType>(InputValues, /*Index=*/0, DefaultAccessorKey, InOptions.GetFlags);
+		}
+		else
+		{
+			bSuccess = InOperationData.InputAccessors[InputIndex]->GetRange<InputType>(InputValues, StartIndex, *InOperationData.InputKeys[InputIndex], InOptions.GetFlags);
 		}
 
-		++Iterator1;
+		if (!bSuccess)
+		{
+			return false;
+		}
+
+		return Gather(InOperationData, StartIndex, Range, InOptions, InCallbacks, InputIndex + 1, Signature<InputTypes...>(), std::forward<Args>(InArgs)..., std::move(InputValues));
+	}
+
+	/**
+	* First we need to gather all our input values.
+	* We use an index, starting at 0, and also use our empty struct to pack all our input types.
+	*/
+	template <typename... InputTypes, typename... Callbacks>
+	bool Operation(FPCGMetadataElementBase::FOperationData& InOperationData, int32 StartIndex, int32 Range, const Options& InOptions, const TTuple<Callbacks...>& InCallbacks)
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(PCG::Private::NAryOperation::Operation);
+		return Gather(InOperationData, StartIndex, Range, InOptions, InCallbacks, 0, Signature<InputTypes...>());
+	}
+}
+}
+}
+
+template <typename... InputTypes, typename... Callbacks>
+inline bool FPCGMetadataElementBase::DoNAryOp(FOperationData& InOperationData, TTuple<Callbacks...>&& InCallbacks) const
+{
+	// If nothing to do, exit immediatly
+	if (InOperationData.NumberOfElementsToProcess == 0)
+	{
+		return true;
+	}
+
+	// Validate that all is good
+	constexpr uint32 NbInputs = (uint32)sizeof...(InputTypes);
+	constexpr uint32 NbOutputs = (uint32)sizeof...(Callbacks);
+
+	static_assert(NbInputs <= UPCGMetadataSettingsBase::MaxNumberOfInputs);
+	static_assert(NbOutputs <= UPCGMetadataSettingsBase::MaxNumberOfOutputs);
+
+	InOperationData.Validate<NbInputs, NbOutputs>();
+
+	EPCGAttributeAccessorFlags Flags = EPCGAttributeAccessorFlags::AllowBroadcast;
+
+	// First set the default value
+	PCG::Private::NAryOperation::Options Options{ Flags, Flags | EPCGAttributeAccessorFlags::AllowSetDefaultValue, true };
+	PCG::Private::NAryOperation::Operation<InputTypes...>(InOperationData, /*StartIndex=*/0, /*Range=*/1, Options, InCallbacks);
+
+	// Then iterate over all the values
+	Options.SetFlags = Flags;
+	Options.bUseDefaultKey = false;
+
+	const int32 NumberOfIterations = (InOperationData.NumberOfElementsToProcess + PCG::Private::NAryOperation::DefaultChunkSize - 1) / PCG::Private::NAryOperation::DefaultChunkSize;
+
+	for (int32 i = 0; i < NumberOfIterations; ++i)
+	{
+		int32 StartIndex = i * PCG::Private::NAryOperation::DefaultChunkSize;
+		int32 Range = FMath::Min(InOperationData.NumberOfElementsToProcess - StartIndex, PCG::Private::NAryOperation::DefaultChunkSize);
+		PCG::Private::NAryOperation::Operation<InputTypes...>(InOperationData, StartIndex, Range, Options, InCallbacks);
 	}
 
 	return true;
+}
+
+template <typename InType, typename... Callbacks>
+inline bool FPCGMetadataElementBase::DoUnaryOp(FOperationData& InOperationData, Callbacks&& ...InCallbacks) const
+{
+	return DoNAryOp<InType>(InOperationData, ForwardAsTuple(std::forward<Callbacks>(InCallbacks)...));
 }
 
 template <typename InType1, typename InType2, typename... Callbacks>
-inline bool FPCGMetadataElementBase::DoBinaryOp(FOperationData& OperationData, Callbacks&& ...InCallbacks) const
+inline bool FPCGMetadataElementBase::DoBinaryOp(FOperationData& InOperationData, Callbacks&& ...InCallbacks) const
 {
-	check(OperationData.SourceAttributes[0]);
-	check(OperationData.SourceAttributes[1]);
-
-	const uint32 NumOutputs = OperationData.OutputAttributes.Num();
-	constexpr uint32 NumCallbacks = (uint32)sizeof...(InCallbacks);
-	check(NumOutputs == NumCallbacks);
-
-	// All values in OperationData.Iterators are UniquePtr. Dereference them here to make the syntax less cumbersome.
-	// Also some iterators can be null, it means they need to use the first iterator (that should never be null).
-	// We just need to make sure to not increment the first iterator multiple times in one loop.
-	check(OperationData.Iterators[0]);
-
-	bool bShouldIncrementIterator2 = OperationData.Iterators.Num() >= 2 && OperationData.Iterators[1];
-
-	IPCGMetadataEntryIterator& Iterator1 = *OperationData.Iterators[0];
-	IPCGMetadataEntryIterator& Iterator2 = bShouldIncrementIterator2 ? *OperationData.Iterators[1] : Iterator1;
-
-	InType1 DefaultValue1 = PCGMetadataAttribute::GetValueWithBroadcast<InType1>(OperationData.SourceAttributes[0], PCGInvalidEntryKey);
-	InType2 DefaultValue2 = PCGMetadataAttribute::GetValueWithBroadcast<InType2>(OperationData.SourceAttributes[1], PCGInvalidEntryKey);
-	
-	// Fold expression, cf. Unary op
-	uint32 j = 0;
-	([&]
-	{
-		check(j < NumOutputs);
-		auto OutValue = InCallbacks(DefaultValue1, DefaultValue2);
-		typedef decltype(OutValue) OutType;
-
-		if (FPCGMetadataAttribute<OutType>* OutputAttribute = static_cast<FPCGMetadataAttribute<OutType>*>(OperationData.OutputAttributes[j++]))
-		{
-			OutputAttribute->SetDefaultValue(OutValue);
-		}
-	} (), ...);
-
-	for (int32 i = 0; i < OperationData.NumberOfElementsToProcess; ++i)
-	{
-		PCGMetadataEntryKey EntryKey1 = *Iterator1;
-
-		// If the entry key is invalid, nothing to do
-		if (EntryKey1 != PCGInvalidEntryKey)
-		{
-			PCGMetadataEntryKey EntryKey2 = *Iterator2;
-
-			InType1 Value1 = PCGMetadataAttribute::GetValueWithBroadcast<InType1>(OperationData.SourceAttributes[0], EntryKey1);
-			InType2 Value2 = PCGMetadataAttribute::GetValueWithBroadcast<InType2>(OperationData.SourceAttributes[1], EntryKey2);
-
-			j = 0;
-			([&]
-			{
-				check(j < NumOutputs);
-				auto OutValue = InCallbacks(Value1, Value2);
-				typedef decltype(OutValue) OutType;
-
-				if (FPCGMetadataAttribute<OutType>* OutputAttribute = static_cast<FPCGMetadataAttribute<OutType>*>(OperationData.OutputAttributes[j++]))
-				{
-					OutputAttribute->SetValue(EntryKey1, OutValue);
-				}
-			} (), ...);
-		}
-
-		++Iterator1;
-		if (bShouldIncrementIterator2)
-		{
-			++Iterator2;
-		}
-	}
-
-	return true;
+	return DoNAryOp<InType1, InType2>(InOperationData, ForwardAsTuple(std::forward<Callbacks>(InCallbacks)...));
 }
 
 template <typename InType1, typename InType2, typename InType3, typename... Callbacks>
-inline bool FPCGMetadataElementBase::DoTernaryOp(FOperationData& OperationData, Callbacks&& ...InCallbacks) const
+inline bool FPCGMetadataElementBase::DoTernaryOp(FOperationData& InOperationData, Callbacks&& ...InCallbacks) const
 {
-	check(OperationData.SourceAttributes[0]);
-	check(OperationData.SourceAttributes[1]);
-	check(OperationData.SourceAttributes[2]);
-
-	const uint32 NumOutputs = OperationData.OutputAttributes.Num();
-	constexpr uint32 NumCallbacks = (uint32)sizeof...(InCallbacks);
-	check(NumOutputs == NumCallbacks);
-
-	// All values in OperationData.Iterators are UniquePtr. Dereference them here to make the syntax less cumbersome.
-	// Also some iterators can be null, it means they need to use the first iterator (that should never be null).
-	// We just need to make sure to not increment the first iterator multiple times in one loop.
-	check(OperationData.Iterators[0]);
-
-	bool bShouldIncrementIterator2 = OperationData.Iterators.Num() >= 2 && OperationData.Iterators[1];
-	bool bShouldIncrementIterator3 = OperationData.Iterators.Num() >= 3 && OperationData.Iterators[2];
-
-	IPCGMetadataEntryIterator& Iterator1 = *OperationData.Iterators[0];
-	IPCGMetadataEntryIterator& Iterator2 = bShouldIncrementIterator2 ? *OperationData.Iterators[1] : Iterator1;
-	IPCGMetadataEntryIterator& Iterator3 = bShouldIncrementIterator3 ? *OperationData.Iterators[2] : Iterator1;
-
-	InType1 DefaultValue1 = PCGMetadataAttribute::GetValueWithBroadcast<InType1>(OperationData.SourceAttributes[0], PCGInvalidEntryKey);
-	InType2 DefaultValue2 = PCGMetadataAttribute::GetValueWithBroadcast<InType2>(OperationData.SourceAttributes[1], PCGInvalidEntryKey);
-	InType3 DefaultValue3 = PCGMetadataAttribute::GetValueWithBroadcast<InType3>(OperationData.SourceAttributes[2], PCGInvalidEntryKey);
-	
-	// Fold expression, cf. Unary op
-	uint32 j = 0;
-	([&]
-	{
-		check(j < NumOutputs);
-		auto OutValue = InCallbacks(DefaultValue1, DefaultValue2, DefaultValue3);
-		typedef decltype(OutValue) OutType;
-
-		if (FPCGMetadataAttribute<OutType>* OutputAttribute = static_cast<FPCGMetadataAttribute<OutType>*>(OperationData.OutputAttributes[j++]))
-		{
-			OutputAttribute->SetDefaultValue(OutValue);
-		}
-	} (), ...);
-
-	for (int32 i = 0; i < OperationData.NumberOfElementsToProcess; ++i)
-	{
-		PCGMetadataEntryKey EntryKey1 = *Iterator1;
-
-		// If the entry key is invalid, nothing to do
-		if (EntryKey1 != PCGInvalidEntryKey)
-		{
-			PCGMetadataEntryKey EntryKey2 = *Iterator2;
-			PCGMetadataEntryKey EntryKey3 = *Iterator3;
-
-			InType1 Value1 = PCGMetadataAttribute::GetValueWithBroadcast<InType1>(OperationData.SourceAttributes[0], EntryKey1);
-			InType2 Value2 = PCGMetadataAttribute::GetValueWithBroadcast<InType2>(OperationData.SourceAttributes[1], EntryKey2);
-			InType3 Value3 = PCGMetadataAttribute::GetValueWithBroadcast<InType3>(OperationData.SourceAttributes[2], EntryKey3);
-
-			j = 0;
-			([&]
-			{
-				check(j < NumOutputs);
-				auto OutValue = InCallbacks(Value1, Value2, Value3);
-				typedef decltype(OutValue) OutType;
-
-				if (FPCGMetadataAttribute<OutType>* OutputAttribute = static_cast<FPCGMetadataAttribute<OutType>*>(OperationData.OutputAttributes[j++]))
-				{
-					OutputAttribute->SetValue(EntryKey1, OutValue);
-				}
-			} (), ...);
-		}
-
-		++Iterator1;
-		if (bShouldIncrementIterator2)
-		{
-			++Iterator2;
-		}
-
-		if (bShouldIncrementIterator3)
-		{
-			++Iterator3;
-		}
-	}
-
-	return true;
+	return DoNAryOp<InType1, InType2, InType3>(InOperationData, ForwardAsTuple(std::forward<Callbacks>(InCallbacks)...));
 }
 
 template <typename InType1, typename InType2, typename InType3, typename InType4, typename... Callbacks>
-inline bool FPCGMetadataElementBase::DoQuaternaryOp(FOperationData& OperationData, Callbacks&& ...InCallbacks) const
+inline bool FPCGMetadataElementBase::DoQuaternaryOp(FOperationData& InOperationData, Callbacks&& ...InCallbacks) const
 {
-	check(OperationData.SourceAttributes[0]);
-	check(OperationData.SourceAttributes[1]);
-	check(OperationData.SourceAttributes[2]);
-	check(OperationData.SourceAttributes[3]);
-
-	const uint32 NumOutputs = OperationData.OutputAttributes.Num();
-	constexpr uint32 NumCallbacks = (uint32)sizeof...(InCallbacks);
-	check(NumOutputs == NumCallbacks);
-
-	// All values in OperationData.Iterators are UniquePtr. Dereference them here to make the syntax less cumbersome.
-	// Also some iterators can be null, it means they need to use the first iterator (that should never be null).
-	// We just need to make sure to not increment the first iterator multiple times in one loop.
-	check(OperationData.Iterators[0]);
-
-	bool bShouldIncrementIterator2 = OperationData.Iterators.Num() >= 2 && OperationData.Iterators[1];
-	bool bShouldIncrementIterator3 = OperationData.Iterators.Num() >= 3 && OperationData.Iterators[2];
-	bool bShouldIncrementIterator4 = OperationData.Iterators.Num() >= 4 && OperationData.Iterators[3];
-
-	IPCGMetadataEntryIterator& Iterator1 = *OperationData.Iterators[0];
-	IPCGMetadataEntryIterator& Iterator2 = bShouldIncrementIterator2 ? *OperationData.Iterators[1] : Iterator1;
-	IPCGMetadataEntryIterator& Iterator3 = bShouldIncrementIterator3 ? *OperationData.Iterators[2] : Iterator1;
-	IPCGMetadataEntryIterator& Iterator4 = bShouldIncrementIterator4 ? *OperationData.Iterators[3] : Iterator1;
-
-	InType1 DefaultValue1 = PCGMetadataAttribute::GetValueWithBroadcast<InType1>(OperationData.SourceAttributes[0], PCGInvalidEntryKey);
-	InType2 DefaultValue2 = PCGMetadataAttribute::GetValueWithBroadcast<InType2>(OperationData.SourceAttributes[1], PCGInvalidEntryKey);
-	InType3 DefaultValue3 = PCGMetadataAttribute::GetValueWithBroadcast<InType3>(OperationData.SourceAttributes[2], PCGInvalidEntryKey);
-	InType3 DefaultValue4 = PCGMetadataAttribute::GetValueWithBroadcast<InType3>(OperationData.SourceAttributes[3], PCGInvalidEntryKey);
-	
-	// Fold expression, cf. Unary op
-	uint32 j = 0;
-	([&]
-	{
-		check(j < NumOutputs);
-		auto OutValue = InCallbacks(DefaultValue1, DefaultValue2, DefaultValue3, DefaultValue4);
-		typedef decltype(OutValue) OutType;
-
-		if (FPCGMetadataAttribute<OutType>* OutputAttribute = static_cast<FPCGMetadataAttribute<OutType>*>(OperationData.OutputAttributes[j++]))
-		{
-			OutputAttribute->SetDefaultValue(OutValue);
-		}
-	} (), ...);
-
-	for (int32 i = 0; i < OperationData.NumberOfElementsToProcess; ++i)
-	{
-		PCGMetadataEntryKey EntryKey1 = *Iterator1;
-
-		// If the entry key is invalid, nothing to do
-		if (EntryKey1 != PCGInvalidEntryKey)
-		{
-			PCGMetadataEntryKey EntryKey2 = *Iterator2;
-			PCGMetadataEntryKey EntryKey3 = *Iterator3;
-			PCGMetadataEntryKey EntryKey4 = *Iterator4;
-
-			InType1 Value1 = PCGMetadataAttribute::GetValueWithBroadcast<InType1>(OperationData.SourceAttributes[0], EntryKey1);
-			InType2 Value2 = PCGMetadataAttribute::GetValueWithBroadcast<InType2>(OperationData.SourceAttributes[1], EntryKey2);
-			InType3 Value3 = PCGMetadataAttribute::GetValueWithBroadcast<InType3>(OperationData.SourceAttributes[2], EntryKey3);
-			InType4 Value4 = PCGMetadataAttribute::GetValueWithBroadcast<InType4>(OperationData.SourceAttributes[3], EntryKey4);
-
-			j = 0;
-			([&]
-			{
-				check(j < NumOutputs);
-				auto OutValue = InCallbacks(Value1, Value2, Value3, Value4);
-				typedef decltype(OutValue) OutType;
-
-				if (FPCGMetadataAttribute<OutType>* OutputAttribute = static_cast<FPCGMetadataAttribute<OutType>*>(OperationData.OutputAttributes[j++]))
-				{
-					OutputAttribute->SetValue(EntryKey1, OutValue);
-				}
-			} (), ...);
-		}
-
-		++Iterator1;
-		if (bShouldIncrementIterator2)
-		{
-			++Iterator2;
-		}
-
-		if (bShouldIncrementIterator3)
-		{
-			++Iterator3;
-		}
-
-		if (bShouldIncrementIterator4)
-		{
-			++Iterator4;
-		}
-	}
-
-	return true;
+	return DoNAryOp<InType1, InType2, InType3, InType4>(InOperationData, ForwardAsTuple(std::forward<Callbacks>(InCallbacks)...));
 }
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Metadata/PCGMetadataAttribute.h"
+#include "Metadata/PCGMetadataAttributeTpl.h"
+#endif

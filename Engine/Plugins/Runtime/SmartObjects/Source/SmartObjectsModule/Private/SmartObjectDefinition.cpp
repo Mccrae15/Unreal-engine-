@@ -1,11 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SmartObjectDefinition.h"
-
 #include "SmartObjectSettings.h"
-#include "SmartObjectTypes.h"
+#if WITH_EDITOR
+#include "UObject/ObjectSaveContext.h"
+#include "WorldConditions/WorldCondition_SmartObjectActorTagQuery.h"
+#include "WorldConditions/SmartObjectWorldConditionObjectTagQuery.h"
+#endif
+
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SmartObjectDefinition)
+
+#define LOCTEXT_NAMESPACE "SmartObjectDefinition"
 
 namespace UE::SmartObject
 {
@@ -16,23 +22,49 @@ USmartObjectDefinition::USmartObjectDefinition(const FObjectInitializer& ObjectI
 {
 	UserTagsFilteringPolicy = GetDefault<USmartObjectSettings>()->DefaultUserTagsFilteringPolicy;
 	ActivityTagsMergingPolicy = GetDefault<USmartObjectSettings>()->DefaultActivityTagsMergingPolicy;
+	WorldConditionSchemaClass = GetDefault<USmartObjectSettings>()->DefaultWorldConditionSchemaClass;
 }
 
-bool USmartObjectDefinition::Validate() const
+#if WITH_EDITOR
+
+EDataValidationResult USmartObjectDefinition::IsDataValid(TArray<FText>& ValidationErrors)
+{
+	const EDataValidationResult Result = Super::IsDataValid(ValidationErrors);
+
+	Validate(&ValidationErrors);
+	
+	return CombineDataValidationResults(Result, bValid ? EDataValidationResult::Valid : EDataValidationResult::Invalid);
+}
+
+#endif // WITH_EDITOR
+
+bool USmartObjectDefinition::Validate(TArray<FText>* ErrorsToReport) const
 {
 	bValid = false;
 	if (Slots.Num() == 0)
 	{
-		UE_LOG(LogSmartObject, Error, TEXT("Need to provide at least one slot definition"));
-		return false;
+		if (ErrorsToReport)
+		{
+			ErrorsToReport->Emplace(LOCTEXT("MissingSlotError", "Need to provide at least one slot definition"));
+		}
+		else
+		{
+			return false;
+		}
 	}
 
 	// Detect null entries in default definitions
 	int32 NullEntryIndex;
 	if (DefaultBehaviorDefinitions.Find(nullptr, NullEntryIndex))
 	{
-		UE_LOG(LogSmartObject, Error, TEXT("Null entry found at index %d in default behavior definition list"), NullEntryIndex);
-		return false;
+		if (ErrorsToReport)
+		{
+			ErrorsToReport->Emplace(FText::Format(LOCTEXT("NullDefaultBehaviorEntryError", "Null entry found at index {0} in default behavior definition list"), NullEntryIndex));
+		}
+		else
+		{
+			return false;
+		}
 	}
 
 	// Detect null entries in slot definitions
@@ -41,8 +73,14 @@ bool USmartObjectDefinition::Validate() const
 		const FSmartObjectSlotDefinition& Slot = Slots[i];
 		if (Slot.BehaviorDefinitions.Find(nullptr, NullEntryIndex))
 		{
-			UE_LOG(LogSmartObject, Error, TEXT("Null definition entry found at index %d in behavior list of slot %d"), i, NullEntryIndex);
-			return false;
+			if (ErrorsToReport)
+			{
+				ErrorsToReport->Emplace(FText::Format(LOCTEXT("NullSlotBehaviorEntryError", "Null entry found at index {0} in default behavior definition list"), NullEntryIndex));
+			}
+			else
+			{
+				return false;
+			}
 		}
 	}
 
@@ -54,8 +92,14 @@ bool USmartObjectDefinition::Validate() const
 			const FSmartObjectSlotDefinition& Slot = Slots[i];
 			if (Slot.BehaviorDefinitions.Num() == 0)
 			{
-				UE_LOG(LogSmartObject, Error, TEXT("Slot at index %d needs to provide a behavior definition since there is no default one in the SmartObject definition"), i);
-				return false;
+				if (ErrorsToReport)
+				{
+					ErrorsToReport->Emplace(FText::Format(LOCTEXT("MissingSlotBehaviorError", "Slot at index {0} needs to provide a behavior definition since there is no default one in the SmartObject definition"), i));
+				}
+				else
+				{
+					return false;
+				}
 			}
 		}
 	}
@@ -132,7 +176,7 @@ const USmartObjectBehaviorDefinition* USmartObjectDefinition::GetBehaviorDefinit
 const USmartObjectBehaviorDefinition* USmartObjectDefinition::GetBehaviorDefinitionByType(const TArray<USmartObjectBehaviorDefinition*>& BehaviorDefinitions,
 																				 const TSubclassOf<USmartObjectBehaviorDefinition>& DefinitionClass)
 {
-	USmartObjectBehaviorDefinition* const* BehaviorDefinition = BehaviorDefinitions.FindByPredicate([&DefinitionClass](USmartObjectBehaviorDefinition* SlotBehaviorDefinition)
+	USmartObjectBehaviorDefinition* const* BehaviorDefinition = BehaviorDefinitions.FindByPredicate([&DefinitionClass](const USmartObjectBehaviorDefinition* SlotBehaviorDefinition)
 		{
 			return SlotBehaviorDefinition != nullptr && SlotBehaviorDefinition->GetClass()->IsChildOf(*DefinitionClass);
 		});
@@ -140,4 +184,165 @@ const USmartObjectBehaviorDefinition* USmartObjectDefinition::GetBehaviorDefinit
 	return BehaviorDefinition != nullptr ? *BehaviorDefinition : nullptr;
 }
 
+#if WITH_EDITOR
+int32 USmartObjectDefinition::FindSlotByID(const FGuid ID) const
+{
+	const int32 Slot = Slots.IndexOfByPredicate([&ID](const FSmartObjectSlotDefinition& Slot) { return Slot.ID == ID; });
+	return Slot;
+}
 
+void USmartObjectDefinition::PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeChainProperty(PropertyChangedEvent);
+
+	const FProperty* Property = PropertyChangedEvent.Property;
+	if (Property == nullptr)
+	{
+		return;
+	}
+	const FProperty* MemberProperty = nullptr;
+	if (PropertyChangedEvent.PropertyChain.GetActiveMemberNode())
+	{
+		MemberProperty = PropertyChangedEvent.PropertyChain.GetActiveMemberNode()->GetValue();
+	}
+	if (MemberProperty == nullptr)
+	{
+		return;
+	}
+
+	// Ensure unique Slot ID on added or duplicated items.
+	if (PropertyChangedEvent.ChangeType == EPropertyChangeType::ArrayAdd
+		|| PropertyChangedEvent.ChangeType == EPropertyChangeType::Duplicate)
+	{
+		if (Property->GetFName() == GET_MEMBER_NAME_CHECKED(USmartObjectDefinition, Slots))
+		{
+			const int32 ArrayIndex = PropertyChangedEvent.GetArrayIndex(MemberProperty->GetFName().ToString());
+			if (Slots.IsValidIndex(ArrayIndex))
+			{
+				FSmartObjectSlotDefinition& Slot = Slots[ArrayIndex];
+				Slot.ID = FGuid::NewGuid();
+				Slot.SelectionPreconditions.SchemaClass = WorldConditionSchemaClass;
+			}
+		}
+	}
+
+	// Anything in the slots changed, update references.
+	if (MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USmartObjectDefinition, Slots))
+	{
+		UpdateSlotReferences();
+	}
+
+	// If schema changes, update preconditions too.
+	if (MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(USmartObjectDefinition, WorldConditionSchemaClass))
+	{
+		for (FSmartObjectSlotDefinition& Slot : Slots)
+		{
+			Slot.SelectionPreconditions.SchemaClass = WorldConditionSchemaClass;
+			Slot.SelectionPreconditions.Initialize(*this);
+		}
+	}
+
+	Validate();
+}
+
+void USmartObjectDefinition::PreSave(FObjectPreSaveContext SaveContext)
+{
+	for (FSmartObjectSlotDefinition& Slot : Slots)
+	{
+		Slot.SelectionPreconditions.Initialize(*this);
+	}
+
+	UpdateSlotReferences();
+	Super::PreSave(SaveContext);
+}
+
+void USmartObjectDefinition::UpdateSlotReferences()
+{
+	for (FSmartObjectSlotDefinition& Slot : Slots)
+	{
+		for (FInstancedStruct& Data : Slot.Data)
+		{
+			if (!Data.IsValid())
+			{
+				continue;
+			}
+			const UScriptStruct* ScriptStruct = Data.GetScriptStruct();
+			uint8* Memory = Data.GetMutableMemory();
+			
+			for (TFieldIterator<FProperty> It(ScriptStruct); It; ++It)
+			{
+				if (const FStructProperty* StructProp = CastField<FStructProperty>(*It))
+				{
+					if (StructProp->Struct == TBaseStructure<FSmartObjectSlotReference>::Get())
+					{
+						FSmartObjectSlotReference& Ref = *StructProp->ContainerPtrToValuePtr<FSmartObjectSlotReference>(Memory);
+						const int32 Index = FindSlotByID(Ref.GetSlotID());
+						Ref.SetIndex(Index);
+					}
+				}
+			}
+		}
+	}
+}
+
+#endif // WITH_EDITOR
+
+void USmartObjectDefinition::PostLoad()
+{
+	Super::PostLoad();
+
+	// Fill in missing world condition schema for old data.
+	if (!WorldConditionSchemaClass)
+	{
+		WorldConditionSchemaClass = GetDefault<USmartObjectSettings>()->DefaultWorldConditionSchemaClass;
+	}
+
+	if (!Preconditions.SchemaClass)
+	{
+		Preconditions.SchemaClass = WorldConditionSchemaClass;
+	}
+
+#if WITH_EDITOR
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	if (!ObjectTagFilter.IsEmpty())
+	{
+		FWorldCondition_SmartObjectActorTagQuery NewActorTagQueryCondition;
+		NewActorTagQueryCondition.TagQuery = ObjectTagFilter;
+		Preconditions.EditableConditions.Emplace(0, EWorldConditionOperator::And, FConstStructView::Make(NewActorTagQueryCondition));
+		ObjectTagFilter.Clear();
+		UE_ASSET_LOG(LogSmartObject, Log, this, TEXT("Deprecated object tag filter has been replaced by a %s precondition to validate tags on the smart object actor."
+			" If the intent was to validate against instance runtime tags then the condition should be replaced by %s."),
+			*FWorldCondition_SmartObjectActorTagQuery::StaticStruct()->GetName(),
+			*FSmartObjectWorldConditionObjectTagQuery::StaticStruct()->GetName());
+	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+#endif	
+
+	Preconditions.Initialize(*this);
+	
+	for (FSmartObjectSlotDefinition& Slot : Slots)
+	{
+#if WITH_EDITOR
+		// Fill in missing slot ID for old data.
+		if (!Slot.ID.IsValid())
+		{
+			Slot.ID = FGuid::NewGuid();
+		}
+#endif
+		// Fill in missing world condition schema for old data.
+		if (!Slot.SelectionPreconditions.SchemaClass)
+		{
+			Slot.SelectionPreconditions.SchemaClass = WorldConditionSchemaClass;
+		}
+
+		Slot.SelectionPreconditions.Initialize(*this);
+	}
+	
+#if WITH_EDITOR
+	UpdateSlotReferences();
+
+	Validate();
+#endif	
+}
+
+#undef LOCTEXT_NAMESPACE

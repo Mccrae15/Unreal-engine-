@@ -1,35 +1,51 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PCGElement.h"
+
 #include "PCGComponent.h"
 #include "PCGContext.h"
-#include "PCGModule.h"
-#include "PCGSettings.h"
+#include "PCGGraph.h"
+#include "Data/PCGPointData.h"
 #include "Elements/PCGDebugElement.h"
 #include "Elements/PCGSelfPruning.h"
-#include "Graph/PCGGraphCache.h"
+
+#include "HAL/IConsoleManager.h"
+#include "Utils/PCGExtraCapture.h"
+
+#define LOCTEXT_NAMESPACE "PCGElement"
+
+static TAutoConsoleVariable<bool> CVarPCGValidatePointMetadata(
+	TEXT("pcg.debug.ValidatePointMetadata"),
+	true,
+	TEXT("Controls whether we validate that the metadata entry keys on the output point data are consistent"));
 
 bool IPCGElement::Execute(FPCGContext* Context) const
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE(IPCGElement::Execute);
-	check(Context && Context->NumAvailableTasks > 0 && Context->CurrentPhase < EPCGExecutionPhase::Done);
-	check(Context->bIsRunningOnMainThread || !CanExecuteOnlyOnMainThread(Context));
+	check(Context && Context->AsyncState.NumAvailableTasks > 0 && Context->CurrentPhase < EPCGExecutionPhase::Done);
+	check(Context->AsyncState.bIsRunningOnMainThread || !CanExecuteOnlyOnMainThread(Context));
 
 	while (Context->CurrentPhase != EPCGExecutionPhase::Done)
 	{
+		PCGUtils::FScopedCall ScopedCall(*this, Context);
 		bool bExecutionPostponed = false;
 
 		switch (Context->CurrentPhase)
 		{
-			case EPCGExecutionPhase::NotExecuted: // Fall-through
+			case EPCGExecutionPhase::NotExecuted:
 			{
+				TRACE_CPUPROFILER_EVENT_SCOPE(EPCGExecutionPhase::NotExecuted);
 				PreExecute(Context);
+
+				// Will override the settings if there is any override.
+				Context->OverrideSettings();
+
 				break;
 			}
 
 			case EPCGExecutionPhase::PrepareData:
 			{
-				FScopedCallTimer CallTimer(*this, Context);
+				TRACE_CPUPROFILER_EVENT_SCOPE(EPCGExecutionPhase::PrepareData);
+
 				if (PrepareDataInternal(Context))
 				{
 					Context->CurrentPhase = EPCGExecutionPhase::Execute;
@@ -43,7 +59,7 @@ bool IPCGElement::Execute(FPCGContext* Context) const
 
 			case EPCGExecutionPhase::Execute:
 			{
-				FScopedCallTimer CallTimer(*this, Context);
+				TRACE_CPUPROFILER_EVENT_SCOPE(EPCGExecutionPhase::Execute);
 				if (ExecuteInternal(Context))
 				{
 					Context->CurrentPhase = EPCGExecutionPhase::PostExecute;
@@ -57,6 +73,7 @@ bool IPCGElement::Execute(FPCGContext* Context) const
 
 			case EPCGExecutionPhase::PostExecute:
 			{
+				TRACE_CPUPROFILER_EVENT_SCOPE(EPCGExecutionPhase::PostExecute);
 				PostExecute(Context);
 				break;
 			}
@@ -69,8 +86,8 @@ bool IPCGElement::Execute(FPCGContext* Context) const
 		}
 
 		if (bExecutionPostponed || 
-			Context->ShouldStop() ||
-			(!Context->bIsRunningOnMainThread && CanExecuteOnlyOnMainThread(Context))) // phase change might require access to main thread
+			Context->AsyncState.ShouldStop() ||
+			(!Context->AsyncState.bIsRunningOnMainThread && CanExecuteOnlyOnMainThread(Context))) // phase change might require access to main thread
 		{
 			break;
 		}
@@ -98,16 +115,19 @@ void IPCGElement::PreExecute(FPCGContext* Context) const
 	// Prepare to move to prepare data phase
 	Context->CurrentPhase = EPCGExecutionPhase::PrepareData;
 
-	const UPCGSettings* Settings = Context->GetInputSettings<UPCGSettings>();
-	if (!Settings)
+	const UPCGSettingsInterface* SettingsInterface = Context->GetInputSettingsInterface();
+	const UPCGSettings* Settings = SettingsInterface ? SettingsInterface->GetSettings() : nullptr;
+
+	if (!SettingsInterface || !Settings)
 	{
 		return;
 	}
 
-	if (Settings->ExecutionMode == EPCGSettingsExecutionMode::Disabled)
+	if (!SettingsInterface->bEnabled)
 	{
 		//Pass-through - no execution
-		Context->OutputData = Context->InputData;
+		DisabledPassThroughData(Context);
+
 		Context->CurrentPhase = EPCGExecutionPhase::PostExecute;
 	}
 	else
@@ -150,11 +170,8 @@ void IPCGElement::PostExecute(FPCGContext* Context) const
 	// Cleanup and validate output
 	CleanupAndValidateOutput(Context);
 
-#if WITH_EDITOR
-	PCGE_LOG(Log, "Executed in (%f)s and (%d) call(s)", Context->ElapsedTime, Context->ExecutionCount);
-#endif
-
-	const UPCGSettings* Settings = Context->GetInputSettings<UPCGSettings>();
+	const UPCGSettingsInterface* SettingsInterface = Context->GetInputSettingsInterface();
+	const UPCGSettings* Settings = SettingsInterface ? SettingsInterface->GetSettings() : nullptr;
 
 	// Apply tags on output
 	/** TODO - Placeholder feature */
@@ -165,10 +182,23 @@ void IPCGElement::PostExecute(FPCGContext* Context) const
 			Context->OutputData.TaggedData[TaggedDataIdx].Tags.Append(Settings->TagsAppliedOnOutput);
 		}
 	}
+	
+	// Output data Crc
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(IPCGElement::PostExecute::CRC);
+
+		// Some nodes benefit from computing an actual CRC from the data. This can halt the propagation of change/executions through the graph. For
+		// data like landscapes we will never have a full accurate data crc for it so we'll tend to assume changed which triggers downstream
+		// execution. Performing a detailed CRC of output data can detect real change in the data and halt the cascade of execution.
+		const bool bShouldComputeFullOutputDataCrc = ShouldComputeFullOutputDataCrc();
+
+		// Compute Crc from output data
+		Context->OutputData.Crc = Context->OutputData.ComputeCrc(bShouldComputeFullOutputDataCrc);
+	}
 
 	// Additional debug things (check for duplicates),
 #if WITH_EDITOR
-	if (Settings && Settings->DebugSettings.bCheckForDuplicates)
+	if (SettingsInterface && SettingsInterface->DebugSettings.bCheckForDuplicates)
 	{
 		FPCGDataCollection ElementInputs = Context->InputData;
 		FPCGDataCollection ElementOutputs = Context->OutputData;
@@ -176,7 +206,7 @@ void IPCGElement::PostExecute(FPCGContext* Context) const
 		Context->InputData = ElementOutputs;
 		Context->OutputData = FPCGDataCollection();
 
-		PCGE_LOG(Verbose, "Performing remove duplicate points test (perf warning)");
+		PCGE_LOG(Verbose, LogOnly, LOCTEXT("PerformingDuplicatePointTest", "Performing remove duplicate points test (perf warning)"));
 		PCGSelfPruningElement::Execute(Context, EPCGSelfPruningType::RemoveDuplicates, 0.0f, false);
 
 		Context->InputData = ElementInputs;
@@ -187,11 +217,99 @@ void IPCGElement::PostExecute(FPCGContext* Context) const
 	Context->CurrentPhase = EPCGExecutionPhase::Done;
 }
 
+void IPCGElement::DisabledPassThroughData(FPCGContext* Context) const
+{
+	check(Context);
+
+	const UPCGSettings* Settings = Context->GetInputSettings<UPCGSettings>();
+	check(Settings);
+
+	if (!Context->Node)
+	{
+		// Full pass-through if we don't have a node
+		Context->OutputData = Context->InputData;
+		return;
+	}
+
+	if (Context->Node->GetInputPins().Num() == 0 || Context->Node->GetOutputPins().Num() == 0)
+	{
+		// No input pins or not output pins, return nothing
+		return;
+	}
+
+	const UPCGPin* PassThroughPin = Context->Node->GetPassThroughInputPin();
+	if (PassThroughPin == nullptr)
+	{
+		// No pin to grab pass through data from
+		return;
+	}
+
+	// Grab data from pass-through pin
+	Context->OutputData.TaggedData = Context->InputData.GetInputsByPin(PassThroughPin->Properties.Label);
+
+	const EPCGDataType OutputType = Context->Node->GetOutputPins()[0]->Properties.AllowedTypes;
+
+	// Pass through input data if it is not params, and if the output type supports it (e.g. if we have a incoming
+	// surface connected to an input pin of type Any, do not pass the surface through to an output pin of type Point).
+	auto InputDataShouldPassThrough = [OutputType](const FPCGTaggedData& InData)
+	{
+		EPCGDataType InputType = InData.Data ? InData.Data->GetDataType() : EPCGDataType::None;
+		const bool bInputTypeNotWiderThanOutputType = !(InputType & ~OutputType);
+
+		// Right now we allow edges from Spatial to Concrete. This can happen for example if a point processing node
+		// is receving a Spatial data, and the node is disabled, it will want to pass the Spatial data through. In the
+		// future we will force collapses/conversions. For now, allow an incoming Spatial to pass out through a Concrete.
+		// TODO remove!
+		const bool bAllowSpatialToConcrete = !!(InputType & EPCGDataType::Spatial) && !!(OutputType & EPCGDataType::Concrete);
+
+		return InputType != EPCGDataType::Param && (bInputTypeNotWiderThanOutputType || bAllowSpatialToConcrete);
+	};
+
+	// Now remove any non-params edges, and if only one edge should come through, remove the others
+	if (Settings->OnlyPassThroughOneEdgeWhenDisabled())
+	{
+		// Find first incoming non-params data that is coming through the pass through pin
+		TArray<FPCGTaggedData> InputsOnFirstPin = Context->InputData.GetInputsByPin(PassThroughPin->Properties.Label);
+		const int FirstNonParamsDataIndex = InputsOnFirstPin.IndexOfByPredicate(InputDataShouldPassThrough);
+
+		if (FirstNonParamsDataIndex != INDEX_NONE)
+		{
+			// Remove everything except the data we found above
+			for (int Index = Context->OutputData.TaggedData.Num() - 1; Index >= 0; --Index)
+			{
+				if (Index != FirstNonParamsDataIndex)
+				{
+					Context->OutputData.TaggedData.RemoveAt(Index);
+				}
+			}
+		}
+		else
+		{
+			// No data found to return
+			Context->OutputData.TaggedData.Empty();
+		}
+	}
+	else
+	{
+		// Remove any incoming non-params data that is coming through the pass through pin
+		TArray<FPCGTaggedData> InputsOnFirstPin = Context->InputData.GetInputsByPin(PassThroughPin->Properties.Label);
+		for (int Index = InputsOnFirstPin.Num() - 1; Index >= 0; --Index)
+		{
+			const FPCGTaggedData& Data = InputsOnFirstPin[Index];
+
+			if (!InputDataShouldPassThrough(Data))
+			{
+				Context->OutputData.TaggedData.RemoveAt(Index);
+			}
+		}
+	}
+}
+
 #if WITH_EDITOR
 void IPCGElement::DebugDisplay(FPCGContext* Context) const
 {
-	const UPCGSettings* Settings = Context->GetInputSettings<UPCGSettings>();
-	if (Settings && (Settings->ExecutionMode == EPCGSettingsExecutionMode::Debug || Settings->ExecutionMode == EPCGSettingsExecutionMode::Isolated))
+	const UPCGSettingsInterface* SettingsInterface = Context->GetInputSettingsInterface();
+	if (SettingsInterface && SettingsInterface->bDebug)
 	{
 		FPCGDataCollection ElementInputs = Context->InputData;
 		FPCGDataCollection ElementOutputs = Context->OutputData;
@@ -203,34 +321,24 @@ void IPCGElement::DebugDisplay(FPCGContext* Context) const
 
 		Context->InputData = ElementInputs;
 		Context->OutputData = ElementOutputs;
-
-		// Null out the output if this node is executed in isolation
-		if (Settings->ExecutionMode == EPCGSettingsExecutionMode::Isolated)
-		{
-			Context->OutputData.bCancelExecution = true;
-		}
 	}
 }
 
-void IPCGElement::ResetTimers()
-{
-	FScopeLock Lock(&TimersLock);
-	Timers.Empty();
-	CurrentTimerIndex = 0;
-
-}
 #endif // WITH_EDITOR
 
 void IPCGElement::CleanupAndValidateOutput(FPCGContext* Context) const
 {
 	check(Context);
-	const UPCGSettings* Settings = Context->GetInputSettings<UPCGSettings>();
+	const UPCGSettingsInterface* SettingsInterface = Context->GetInputSettingsInterface();
+	const UPCGSettings* Settings = SettingsInterface ? SettingsInterface->GetSettings() : nullptr;
 
-	if (!IsPassthrough() && Settings)
+	// Implementation note - disabled passthrough nodes can happen only in subgraphs/ spawn actor nodes
+	// which will behave properly when disabled. 
+	if (Settings && !IsPassthrough(Settings))
 	{
 		// Cleanup any residual labels if the node isn't supposed to produce them
 		// TODO: this is a bit of a crutch, could be refactored out if we review the way we push tagged data
-		TArray<FPCGPinProperties> OutputPinProperties = Settings->OutputPinProperties();
+		TArray<FPCGPinProperties> OutputPinProperties = Settings->AllOutputPinProperties();
 		if(OutputPinProperties.Num() == 1)
 		{
 			for (FPCGTaggedData& TaggedData : Context->OutputData.TaggedData)
@@ -241,19 +349,49 @@ void IPCGElement::CleanupAndValidateOutput(FPCGContext* Context) const
 
 		// Validate all out data for errors in labels
 #if WITH_EDITOR
-		if (Settings->ExecutionMode != EPCGSettingsExecutionMode::Disabled)
+		if (SettingsInterface->bEnabled)
 		{
 			for (FPCGTaggedData& TaggedData : Context->OutputData.TaggedData)
 			{
-				int32 MatchIndex = OutputPinProperties.IndexOfByPredicate([&TaggedData](const FPCGPinProperties& InProp) { return TaggedData.Pin == InProp.Label; });
+				const int32 MatchIndex = OutputPinProperties.IndexOfByPredicate([&TaggedData](const FPCGPinProperties& InProp) { return TaggedData.Pin == InProp.Label; });
 				if (MatchIndex == INDEX_NONE)
 				{
-					PCGE_LOG(Warning, "Output generated for pin %s but cannot be routed", *TaggedData.Pin.ToString());
+					// Only display an error if we expected this data to have a pin.
+					if (!TaggedData.bPinlessData)
+					{
+						PCGE_LOG(Error, GraphAndLog, FText::Format(LOCTEXT("OutputCannotBeRouted", "Output data generated for non-existent output pin '{0}'"), FText::FromName(TaggedData.Pin)));
+					}
 				}
-				// TODO: Temporary fix for Settings directly from InputData (ie. from elements with code and not PCG nodes)
-				else if(TaggedData.Data && !(OutputPinProperties[MatchIndex].AllowedTypes & TaggedData.Data->GetDataType()) && TaggedData.Data->GetDataType() != EPCGDataType::Settings)
+				else if (TaggedData.Data)
 				{
-					PCGE_LOG(Warning, "Output generated for pin %s does not have a compatible type: %s", *TaggedData.Pin.ToString(), *UEnum::GetValueAsString(TaggedData.Data->GetDataType()));
+					const bool bTypesOverlap = !!(OutputPinProperties[MatchIndex].AllowedTypes & TaggedData.Data->GetDataType());
+					const bool bTypeIsSubset = !(~OutputPinProperties[MatchIndex].AllowedTypes & TaggedData.Data->GetDataType());
+					// TODO: Temporary fix for Settings directly from InputData (ie. from elements with code and not PCG nodes)
+					if ((!bTypesOverlap || !bTypeIsSubset) && TaggedData.Data->GetDataType() != EPCGDataType::Settings)
+					{
+						PCGE_LOG(Warning, GraphAndLog, FText::Format(LOCTEXT("OutputIncompatibleType", "Output data generated for pin '{0}' does not have a compatible type: '{1}'. Consider using more specific/narrower input pin types, or more general/wider output pin types."), FText::FromName(TaggedData.Pin), FText::FromString(UEnum::GetValueAsString(TaggedData.Data->GetDataType()))));
+					}
+				}
+
+				if (CVarPCGValidatePointMetadata.GetValueOnAnyThread())
+				{
+					if (UPCGPointData* PointData = Cast<UPCGPointData>(TaggedData.Data))
+					{
+						const TArray<FPCGPoint>& NewPoints = PointData->GetPoints();
+						const int32 MaxMetadataEntry = PointData->Metadata ? PointData->Metadata->GetItemCountForChild() : 0;
+
+						bool bHasError = false;
+
+						for(int32 PointIndex = 0; PointIndex < NewPoints.Num() && !bHasError; ++PointIndex)
+						{
+							bHasError |= (NewPoints[PointIndex].MetadataEntry >= MaxMetadataEntry);
+						}
+
+						if (bHasError)
+						{
+							PCGE_LOG(Warning, GraphAndLog, FText::Format(LOCTEXT("OutputMissingPointMetadata", "Output generated for pin '{0}' does not have valid point metadata"), FText::FromName(TaggedData.Pin)));
+						}
+					}
 				}
 			}
 		}
@@ -261,35 +399,46 @@ void IPCGElement::CleanupAndValidateOutput(FPCGContext* Context) const
 	}
 }
 
-#if WITH_EDITOR
-IPCGElement::FScopedCallTimer::FScopedCallTimer(const IPCGElement& InOwner, FPCGContext* InContext)
-	: Owner(InOwner), Context(InContext)
+bool IPCGElement::IsCacheableInstance(const UPCGSettingsInterface* InSettingsInterface) const
 {
-	StartTime = FPlatformTime::Seconds();
-}
-
-IPCGElement::FScopedCallTimer::~FScopedCallTimer()
-{
-	const double EndTime = FPlatformTime::Seconds();
-	const double ElapsedTime = EndTime - StartTime;
-	Context->ElapsedTime += ElapsedTime;
-	Context->ExecutionCount++;
-
-	constexpr int MaxNumberOfTrackedTimers = 100;
+	if (InSettingsInterface)
 	{
-		FScopeLock Lock(&Owner.TimersLock);
-		if (Owner.Timers.Num() < MaxNumberOfTrackedTimers)
+		if (!InSettingsInterface->bEnabled)
 		{
-			Owner.Timers.Add(ElapsedTime);
+			return false;
 		}
 		else
 		{
-			Owner.Timers[Owner.CurrentTimerIndex] = ElapsedTime;
+			return IsCacheable(InSettingsInterface->GetSettings());
 		}
-		Owner.CurrentTimerIndex = (Owner.CurrentTimerIndex + 1) % MaxNumberOfTrackedTimers;
+	}
+	else
+	{
+		return false;
 	}
 }
-#endif // WITH_EDITOR
+
+void IPCGElement::GetDependenciesCrc(const FPCGDataCollection& InInput, const UPCGSettings* InSettings, UPCGComponent* InComponent, FPCGCrc& OutCrc) const
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("IPCGElement::GetDependenciesCrc (%s)"), InSettings ? *InSettings->GetFName().ToString() : TEXT("")));
+	FPCGCrc Crc = InInput.Crc;
+
+	if (InSettings)
+	{
+		const FPCGCrc& SettingsCrc = InSettings->GetCachedCrc();
+		if (ensure(SettingsCrc.IsValid()))
+		{
+			Crc.Combine(SettingsCrc);
+		}
+	}
+
+	if (InComponent)
+	{
+		Crc.Combine(InComponent->Seed);
+	}
+
+	OutCrc = Crc;
+}
 
 FPCGContext* FSimplePCGElement::Initialize(const FPCGDataCollection& InputData, TWeakObjectPtr<UPCGComponent> SourceComponent, const UPCGNode* Node)
 {
@@ -300,3 +449,5 @@ FPCGContext* FSimplePCGElement::Initialize(const FPCGDataCollection& InputData, 
 
 	return Context;
 }
+
+#undef LOCTEXT_NAMESPACE

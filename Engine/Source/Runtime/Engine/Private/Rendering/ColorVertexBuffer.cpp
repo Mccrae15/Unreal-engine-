@@ -1,11 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Rendering/ColorVertexBuffer.h"
-#include "CoreMinimal.h"
-#include "RHI.h"
 #include "Components.h"
+#include "EngineLogs.h"
 #include "EngineUtils.h"
 #include "ProfilingDebugging/LoadTimeTracker.h"
+#include "StaticMeshVertexData.h"
+#include "VertexFactory.h"
+#include "DataDrivenShaderPlatformInfo.h"
+#include "GlobalRenderResources.h"
+#include "RHIResourceUpdates.h"
 
 /*-----------------------------------------------------------------------------
 FColorVertexBuffer
@@ -150,8 +154,14 @@ void FColorVertexBuffer::Init(const FColorVertexBuffer& InVertexBuffer, bool bNe
 	}
 }
 
-void FColorVertexBuffer::AppendVertices( const FStaticMeshBuildVertex* Vertices, const uint32 NumVerticesToAppend )
+bool FColorVertexBuffer::AppendVertices( const FStaticMeshBuildVertex* Vertices, const uint32 NumVerticesToAppend )
 {
+	const uint64 TotalNumVertices = (uint64)NumVertices + (uint64)NumVerticesToAppend;
+	if (!ensureMsgf(TotalNumVertices < INT32_MAX, TEXT("FColorVertexBuffer::AppendVertices adding %u to %u vertices exceeds INT32_MAX limit"), NumVerticesToAppend, NumVertices))
+	{
+		return false;
+	}
+
 	if (VertexData == nullptr && NumVerticesToAppend > 0)
 	{
 		check( NumVertices == 0 );
@@ -184,6 +194,8 @@ void FColorVertexBuffer::AppendVertices( const FStaticMeshBuildVertex* Vertices,
 			}
 		}
 	}
+
+	return true;
 }
 
 /**
@@ -427,6 +439,30 @@ void FColorVertexBuffer::CopyRHIForStreaming(const FColorVertexBuffer& Other, bo
 	// Copy resource references.
 	VertexBufferRHI = Other.VertexBufferRHI;
 	ColorComponentsSRV = Other.ColorComponentsSRV;
+}
+
+void FColorVertexBuffer::InitRHIForStreaming(FRHIBuffer* IntermediateBuffer, FRHIResourceUpdateBatcher& Batcher)
+{
+	if (VertexBufferRHI && IntermediateBuffer)
+	{
+		Batcher.QueueUpdateRequest(VertexBufferRHI, IntermediateBuffer);
+		if (ColorComponentsSRV)
+		{
+			Batcher.QueueUpdateRequest(ColorComponentsSRV, VertexBufferRHI, 4, PF_R8G8B8A8);
+		}
+	}
+}
+
+void FColorVertexBuffer::ReleaseRHIForStreaming(FRHIResourceUpdateBatcher& Batcher)
+{
+	if (VertexBufferRHI)
+	{
+		Batcher.QueueUpdateRequest(VertexBufferRHI, nullptr);
+	}
+	if (ColorComponentsSRV)
+	{
+		Batcher.QueueUpdateRequest(ColorComponentsSRV, nullptr, 0, 0);
+	}
 }
 
 void FColorVertexBuffer::InitRHI()

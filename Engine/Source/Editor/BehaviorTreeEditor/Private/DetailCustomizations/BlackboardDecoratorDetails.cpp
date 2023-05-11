@@ -138,7 +138,7 @@ void FBlackboardDecoratorDetails::OnKeyIDChanged()
 		return;
 	}
 
-	uint8 KeyID;
+	int32 KeyID;
 	FPropertyAccess::Result Result = KeyIDProperty->GetValue(KeyID);
 	if (Result == FPropertyAccess::Success)
 	{
@@ -146,7 +146,7 @@ void FBlackboardDecoratorDetails::OnKeyIDChanged()
 		if(KeyEntry && KeyEntry->KeyType)
 		{
 			CachedKeyType = KeyEntry->KeyType->GetClass();
-			CachedOperationType = KeyEntry->KeyType->GetTestOperation();
+			CachedOperationType = IntCastChecked<uint8>((int32)KeyEntry->KeyType->GetTestOperation());
 		}
 	}
 

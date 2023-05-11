@@ -6,12 +6,14 @@
 
 #pragma once
 
+#include "MeshDrawShaderBindings.h"
 #include "MeshMaterialShader.h"
 #include "SceneUtils.h"
 #include "MeshBatch.h"
 #include "PSOPrecache.h"
 #include "Hash/CityHash.h"
 #include "Experimental/Containers/RobinHoodHashTable.h"
+#include "RHIImmutableSamplerState.h"
 #include <atomic>
 
 #define MESH_DRAW_COMMAND_DEBUG_DATA ((!UE_BUILD_SHIPPING && !UE_BUILD_TEST) || VALIDATE_MESH_COMMAND_BINDINGS || WANTS_DRAW_MESH_EVENTS)
@@ -41,6 +43,7 @@ namespace EMeshPass
 		Velocity,
 		TranslucentVelocity,
 		TranslucencyStandard,
+		TranslucencyStandardModulate,
 		TranslucencyAfterDOF,
 		TranslucencyAfterDOFModulate,
 		TranslucencyAfterMotionBlur,
@@ -66,7 +69,7 @@ namespace EMeshPass
 #endif
 
 		Num,
-		NumBits = 5,
+		NumBits = 6,
 	};
 }
 static_assert(EMeshPass::Num <= (1 << EMeshPass::NumBits), "EMeshPass::Num will not fit in EMeshPass::NumBits");
@@ -88,6 +91,7 @@ inline const TCHAR* GetMeshPassName(EMeshPass::Type MeshPass)
 	case EMeshPass::Velocity: return TEXT("Velocity");
 	case EMeshPass::TranslucentVelocity: return TEXT("TranslucentVelocity");
 	case EMeshPass::TranslucencyStandard: return TEXT("TranslucencyStandard");
+	case EMeshPass::TranslucencyStandardModulate: return TEXT("TranslucencyStandardModulate");
 	case EMeshPass::TranslucencyAfterDOF: return TEXT("TranslucencyAfterDOF");
 	case EMeshPass::TranslucencyAfterDOFModulate: return TEXT("TranslucencyAfterDOFModulate");
 	case EMeshPass::TranslucencyAfterMotionBlur: return TEXT("TranslucencyAfterMotionBlur");
@@ -113,9 +117,9 @@ inline const TCHAR* GetMeshPassName(EMeshPass::Type MeshPass)
 	}
 
 #if WITH_EDITOR
-	static_assert(EMeshPass::Num == 28 + 4, "Need to update switch(MeshPass) after changing EMeshPass");
+	static_assert(EMeshPass::Num == 29 + 4, "Need to update switch(MeshPass) after changing EMeshPass"); // GUID to prevent incorrect auto-resolves, please change when changing the expression: {A6E82589-44B3-4DAD-AC57-8AF6BD50DF43}
 #else
-	static_assert(EMeshPass::Num == 28, "Need to update switch(MeshPass) after changing EMeshPass");
+	static_assert(EMeshPass::Num == 29, "Need to update switch(MeshPass) after changing EMeshPass"); // GUID to prevent incorrect auto-resolves, please change when changing the expression: {A6E82589-44B3-4DAD-AC57-8AF6BD50DF43}
 #endif
 
 	checkf(0, TEXT("Missing case for EMeshPass %u"), (uint32)MeshPass);
@@ -133,18 +137,18 @@ public:
 
 	void Set(EMeshPass::Type Pass) 
 	{ 
-		Data |= (1 << Pass); 
+		Data |= (uint64(1) << Pass); 
 	}
 
 	bool Get(EMeshPass::Type Pass) const 
 	{ 
-		return !!(Data & (1 << Pass)); 
+		return !!(Data & (uint64(1) << Pass)); 
 	}
 
 	EMeshPass::Type SkipEmpty(EMeshPass::Type Pass) const 
 	{
-		uint32 Mask = 0xFFffFFff << Pass;
-		return EMeshPass::Type(FMath::Min<uint32>(EMeshPass::Num, FMath::CountTrailingZeros(Data & Mask)));
+		uint64 Mask = 0xFFffFFffFFffFFffULL << Pass;
+		return EMeshPass::Type(FMath::Min<uint64>(EMeshPass::Num, FMath::CountTrailingZeros64(Data & Mask)));
 	}
 
 	int GetNum() 
@@ -167,7 +171,7 @@ public:
 		return Data == 0; 
 	}
 
-	uint32 Data;
+	uint64 Data;
 };
 
 struct FMinimalBoundShaderStateInput
@@ -182,16 +186,28 @@ struct FMinimalBoundShaderStateInput
 #if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
 			CachedGeometryShader = GeometryShaderResource ? static_cast<FRHIGeometryShader*>(GeometryShaderResource->GetShader(GeometryShaderIndex)) : nullptr;
 #endif
+#if PLATFORM_SUPPORTS_MESH_SHADERS
+			CachedMeshShader = MeshShaderResource ? static_cast<FRHIMeshShader*>(MeshShaderResource->GetShader(MeshShaderIndex)) : nullptr;
+#endif
 			CachedVertexShader = VertexShaderResource ? static_cast<FRHIVertexShader*>(VertexShaderResource->GetShader(VertexShaderIndex)) : nullptr;
 		}
 
-		return FBoundShaderStateInput(VertexDeclarationRHI
-			, CachedVertexShader
-			, CachedPixelShader
-#if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
-			, CachedGeometryShader
+#if PLATFORM_SUPPORTS_MESH_SHADERS
+		if (CachedMeshShader)
+		{
+			return FBoundShaderStateInput(CachedMeshShader, nullptr, CachedPixelShader);
+		}
+		else
 #endif
-		);
+		{
+			return FBoundShaderStateInput(VertexDeclarationRHI
+				, CachedVertexShader
+				, CachedPixelShader
+#if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
+				, CachedGeometryShader
+#endif
+			);
+		}
 	}
 
 	void LazilyInitShaders() const
@@ -215,6 +231,12 @@ struct FMinimalBoundShaderStateInput
 			return true;
 		}
 #endif
+#if PLATFORM_SUPPORTS_MESH_SHADERS
+		if (MeshShaderResource && !MeshShaderResource->HasShader(MeshShaderIndex))
+		{
+			return true;
+		}
+#endif
 		return false;
 	}
 
@@ -224,15 +246,24 @@ struct FMinimalBoundShaderStateInput
 #if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
 	mutable FRHIGeometryShader* CachedGeometryShader = nullptr;
 #endif
+#if PLATFORM_SUPPORTS_MESH_SHADERS
+	mutable FRHIMeshShader* CachedMeshShader = nullptr;
+#endif
 	TRefCountPtr<FShaderMapResource> VertexShaderResource;
 	TRefCountPtr<FShaderMapResource> PixelShaderResource;
 #if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
 	TRefCountPtr<FShaderMapResource> GeometryShaderResource;
 #endif
+#if PLATFORM_SUPPORTS_MESH_SHADERS
+	TRefCountPtr<FShaderMapResource> MeshShaderResource;
+#endif
 	int32 VertexShaderIndex = INDEX_NONE;
 	int32 PixelShaderIndex = INDEX_NONE;
 #if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
 	int32 GeometryShaderIndex = INDEX_NONE;
+#endif
+#if PLATFORM_SUPPORTS_MESH_SHADERS
+	int32 MeshShaderIndex = INDEX_NONE;
 #endif
 };
 
@@ -503,7 +534,11 @@ public:
 
 		{
 			FRWScopeLock ReadLock(PersistentIdTableLock, SLT_ReadOnly);
-			return PersistentIdTable.GetByElementId(SetElementIndex).Key;
+			const auto& Result = PersistentIdTable.GetByElementId(SetElementIndex);
+#if MESH_DRAW_COMMAND_DEBUG_DATA
+			checkf(Result.Value.RefNum && Result.Value.DebugSalt == DebugSalt, TEXT("Pipeline state ID used after release.  Call 'AddRefPersistentId' to ensure pipeline state doesn't get released while in use."));
+#endif
+			return Result.Key;
 		}
 	}
 
@@ -545,6 +580,14 @@ public:
 		return PersistentIdTable.Num();
 	}
 
+	/**
+	  * When ID table is frozen, items with a zero ref count aren't actually released, so if the same item gets used again,
+	  * its ID doesn't change.  Useful when re-creating draw commands in the middle of the frame, where you want to prevent
+	  * existing pipeline state IDs from changing, which may be referenced by in flight tasks.  Unfreezing the table will
+	  * clean up anything with a zero ref count.
+	  */
+	static void FreezeIdTable(bool bEnable);
+
 private:
 	union
 	{
@@ -562,15 +605,23 @@ private:
 	{
 		FRefCountedGraphicsMinimalPipelineState() : RefNum(0)
 		{
+#if MESH_DRAW_COMMAND_DEBUG_DATA
+			DebugSalt = DebugSaltAllocationIndex++;
+#endif
 		}
 
 		FRefCountedGraphicsMinimalPipelineState(const FRefCountedGraphicsMinimalPipelineState&& Other) :
 			RefNum(Other.RefNum.load())
 		{
-
+#if MESH_DRAW_COMMAND_DEBUG_DATA
+			DebugSalt = Other.DebugSalt;
+#endif
 		}
 
 		std::atomic<uint32> RefNum;
+#if MESH_DRAW_COMMAND_DEBUG_DATA
+		int32 DebugSalt;
+#endif
 	};
 
 	static FRWLock PersistentIdTableLock;
@@ -578,7 +629,12 @@ private:
 	static PersistentTableType PersistentIdTable;
 	static bool NeedsShaderInitialisation;
 
+	static bool bIsIdTableFrozen;
+	static std::atomic<int32> ReffedItemCount;	// Number of items with a non-zero reference count
+
 #if MESH_DRAW_COMMAND_DEBUG_DATA
+	int32 DebugSalt;
+	static std::atomic<int32> DebugSaltAllocationIndex;
 	static std::atomic<int32> LocalPipelineIdTableSize;
 	static std::atomic<int32> CurrentLocalPipelineIdTableSize;
 #endif //MESH_DRAW_COMMAND_DEBUG_DATA
@@ -586,19 +642,11 @@ private:
 
 class FShaderBindingState
 {
-	enum { MAX_SRVS_PER_STAGE = 128 };
 	enum { MAX_UNIFORM_BUFFERS_PER_STAGE = 14 };
-	enum { MAX_SAMPLERS_PER_STAGE = 32 };
 
 public:
-	int32 MaxSRVUsed = -1;
-	FRHIShaderResourceView* SRVs[MAX_SRVS_PER_STAGE] = {};
 	int32 MaxUniformBufferUsed = -1;
 	FRHIUniformBuffer* UniformBuffers[MAX_UNIFORM_BUFFERS_PER_STAGE] = {};
-	int32 MaxTextureUsed = -1;
-	FRHITexture* Textures[MAX_SRVS_PER_STAGE] = {};
-	int32 MaxSamplerUsed = -1;
-	FRHISamplerState* Samplers[MAX_SAMPLERS_PER_STAGE] = {};
 };
 
 struct FMeshProcessorShaders
@@ -651,7 +699,7 @@ struct FMeshProcessorShaders
  * This is tweaked so that the bindings for BasePass shaders of an average material using a FLocalVertexFactory fit into the inline storage.
  * Overflow of the inline storage will cause a heap allocation per draw (and corresponding cache miss on traversal)
  */
-const int32 NumInlineShaderBindings = 10;
+inline const int32 NumInlineShaderBindings = 10;
 
 /**
 * Debug only data for being able to backtrack the origin of given FMeshDrawCommand.
@@ -703,33 +751,12 @@ public:
 		{
 			FShaderBindingState& RESTRICT ShaderBinding = ShaderBindings[FrequencyIndex];
 
-			for (int32 SlotIndex = 0; SlotIndex <= ShaderBinding.MaxSRVUsed; SlotIndex++)
-			{
-				ShaderBinding.SRVs[SlotIndex] = nullptr;
-			}
-
-			ShaderBinding.MaxSRVUsed = -1;
-
 			for (int32 SlotIndex = 0; SlotIndex <= ShaderBinding.MaxUniformBufferUsed; SlotIndex++)
 			{
 				ShaderBinding.UniformBuffers[SlotIndex] = nullptr;
 			}
 
 			ShaderBinding.MaxUniformBufferUsed = -1;
-			
-			for (int32 SlotIndex = 0; SlotIndex <= ShaderBinding.MaxTextureUsed; SlotIndex++)
-			{
-				ShaderBinding.Textures[SlotIndex] = nullptr;
-			}
-
-			ShaderBinding.MaxTextureUsed = -1;
-
-			for (int32 SlotIndex = 0; SlotIndex <= ShaderBinding.MaxSamplerUsed; SlotIndex++)
-			{
-				ShaderBinding.Samplers[SlotIndex] = nullptr;
-			}
-
-			ShaderBinding.MaxSamplerUsed = -1;
 		}
 	}
 
@@ -1165,7 +1192,8 @@ public:
 		int32 PrimitiveIdOffset,
 		uint32 InstanceFactor,
 		FRHICommandList& RHICmdList,
-		FMeshDrawCommandStateCache& RESTRICT StateCache);
+		FMeshDrawCommandStateCache& RESTRICT StateCache,
+		bool bAllowSkipDrawCommand);
 
 	/** Submits just the draw primitive portion of the draw command. */
 	static void SubmitDrawEnd(const FMeshDrawCommand& MeshDrawCommand, uint32 InstanceFactor, FRHICommandList& RHICmdList,
@@ -1185,7 +1213,8 @@ public:
 		int32 PrimitiveIdOffset,
 		uint32 InstanceFactor,
 		FRHICommandList& RHICmdList,
-		FMeshDrawCommandStateCache& RESTRICT StateCache);
+		FMeshDrawCommandStateCache& RESTRICT StateCache,
+		bool bAllowSkipDrawCommand);
 
 	/** Submits just the draw indirect primitive portion of the draw command. */
 	static void SubmitDrawIndirectEnd(const FMeshDrawCommand& MeshDrawCommand, uint32 InstanceFactor, FRHICommandList& RHICmdList,
@@ -1874,30 +1903,6 @@ public:
 		return ViewUniformBuffer;
 	}
 
-	UE_DEPRECATED(5.0, "SetInstancedViewUniformBuffer is deprecated. Use View.GetShaderParameters() and bind on an RDG pass instead.")
-	FORCEINLINE_DEBUGGABLE void SetInstancedViewUniformBuffer(const TUniformBufferRef<FInstancedViewUniformShaderParameters>& InViewUniformBuffer)
-	{
-		InstancedViewUniformBuffer = InViewUniformBuffer;
-	}
-
-	UE_DEPRECATED(5.0, "GetInstancedViewUniformBuffer is deprecated. Use View.GetShaderParameters() and bind on an RDG pass instead.")
-	FORCEINLINE_DEBUGGABLE const FRHIUniformBuffer* GetInstancedViewUniformBuffer() const
-	{
-		return InstancedViewUniformBuffer != nullptr ? InstancedViewUniformBuffer : ViewUniformBuffer;
-	}
-
-	UE_DEPRECATED(5.0, "SetPassUniformBuffer is deprecated. Use a static uniform buffer and bind on an RDG pass instead.")
-	FORCEINLINE_DEBUGGABLE void SetPassUniformBuffer(const FUniformBufferRHIRef& InPassUniformBuffer)
-	{
-		PassUniformBuffer = InPassUniformBuffer;
-	}
-
-	UE_DEPRECATED(5.0, "GetPassUniformBuffer is deprecated. Use a static uniform buffer and bind on an RDG pass instead.")
-	FORCEINLINE_DEBUGGABLE FRHIUniformBuffer* GetPassUniformBuffer() const
-	{
-		return PassUniformBuffer;
-	}
-
 	UE_DEPRECATED(5.1, "GetNaniteUniformBuffer is deprecated. Use a static uniform buffer and bind on an RDG pass instead.")
 	FORCEINLINE_DEBUGGABLE void SetNaniteUniformBuffer(FRHIUniformBuffer* InNaniteUniformBuffer)
 	{
@@ -1975,7 +1980,7 @@ public:
 	virtual void AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId = -1) = 0;
 		
 	// By default no PSOs collected 
-	virtual void CollectPSOInitializers(const FSceneTexturesConfig& SceneTexturesConfig, const FMaterial& Material, const FVertexFactoryType* VertexFactoryType, const FPSOPrecacheParams& PreCacheParams, TArray<FPSOPrecacheData>& PSOInitializers) override {}
+	virtual void CollectPSOInitializers(const FSceneTexturesConfig& SceneTexturesConfig, const FMaterial& Material, const FPSOPrecacheVertexFactoryData& VertexFactoryData, const FPSOPrecacheParams& PreCacheParams, TArray<FPSOPrecacheData>& PSOInitializers) override {}
 
 	static FORCEINLINE_DEBUGGABLE ERasterizerCullMode InverseCullMode(ERasterizerCullMode CullMode)
 	{
@@ -2023,7 +2028,7 @@ public:
 
 	template<typename PassShadersType>
 	void AddGraphicsPipelineStateInitializer(
-		const FVertexFactoryType* RESTRICT VertexFactoryType,
+		const FPSOPrecacheVertexFactoryData& VertexFactoryData,
 		const FMaterial& RESTRICT MaterialResource,
 		const FMeshPassProcessorRenderState& RESTRICT DrawRenderState,
 		const FGraphicsPipelineRenderTargetsInfo& RESTRICT RenderTargetsInfo,
@@ -2032,16 +2037,10 @@ public:
 		ERasterizerCullMode MeshCullMode,
 		EPrimitiveType PrimitiveType,
 		EMeshPassFeatures MeshPassFeatures, 
+		bool bRequired,
 		TArray<FPSOPrecacheData>& PSOInitializers);
 
 protected:
-	UE_DEPRECATED(5.0, "This version of GetDrawCommandPrimitiveId is deprecated. Use the below function instead.")
-	RENDERER_API void GetDrawCommandPrimitiveId(
-		const FPrimitiveSceneInfo* RESTRICT PrimitiveSceneInfo,
-		const FMeshBatchElement& BatchElement,
-		int32& DrawPrimitiveId,
-		int32& ScenePrimitiveId) const;
-
 	RENDERER_API FMeshDrawCommandPrimitiveIdInfo GetDrawCommandPrimitiveId(
 		const FPrimitiveSceneInfo* RESTRICT PrimitiveSceneInfo,
 		const FMeshBatchElement& BatchElement) const;
@@ -2249,9 +2248,17 @@ private:
 class FVisibleRayTracingMeshCommand
 {
 public:
-	const FRayTracingMeshCommand* RayTracingMeshCommand;
+	FVisibleRayTracingMeshCommand(const FRayTracingMeshCommand* InRayTracingMeshCommand, uint32 InInstanceIndex, bool bInHidden = false)
+		: RayTracingMeshCommand(InRayTracingMeshCommand)
+		, InstanceIndex(InInstanceIndex)
+		, bHidden(bInHidden)
+	{
+		check(InstanceIndex != INDEX_NONE);
+	}
 
+	const FRayTracingMeshCommand* RayTracingMeshCommand;
 	uint32 InstanceIndex;
+	bool bHidden;
 };
 
 template <>
@@ -2307,13 +2314,15 @@ public:
 	(
 		FDynamicRayTracingMeshCommandStorage& InDynamicCommandStorage,
 		FRayTracingMeshCommandOneFrameArray& InVisibleCommands,
-		uint32 InGeometrySegmentIndex = ~0u,
-		uint32 InRayTracingInstanceIndex = ~0u
+		uint32 InGeometrySegmentIndex,
+		uint32 InRayTracingInstanceIndex,
+		uint32 InRayTracingDecalInstanceIndex = INDEX_NONE
 	) :
 		DynamicCommandStorage(InDynamicCommandStorage),
 		VisibleCommands(InVisibleCommands),
 		GeometrySegmentIndex(InGeometrySegmentIndex),
-		RayTracingInstanceIndex(InRayTracingInstanceIndex)
+		RayTracingInstanceIndex(InRayTracingInstanceIndex),
+		RayTracingDecalInstanceIndex(InRayTracingDecalInstanceIndex)
 	{}
 
 	virtual FRayTracingMeshCommand& AddCommand(const FRayTracingMeshCommand& Initializer) override final
@@ -2326,10 +2335,20 @@ public:
 
 	virtual void FinalizeCommand(FRayTracingMeshCommand& RayTracingMeshCommand) override final
 	{
-		FVisibleRayTracingMeshCommand NewVisibleMeshCommand;
-		NewVisibleMeshCommand.RayTracingMeshCommand = &RayTracingMeshCommand;
-		NewVisibleMeshCommand.InstanceIndex = RayTracingInstanceIndex;
-		VisibleCommands.Add(NewVisibleMeshCommand);
+		const bool bHasDecalInstanceIndex = RayTracingDecalInstanceIndex != INDEX_NONE;
+
+		{
+			const bool bHidden = bHasDecalInstanceIndex && RayTracingMeshCommand.bDecal;
+			FVisibleRayTracingMeshCommand NewVisibleMeshCommand(&RayTracingMeshCommand, RayTracingInstanceIndex, bHidden);
+			VisibleCommands.Add(NewVisibleMeshCommand);
+		}
+
+		if (bHasDecalInstanceIndex)
+		{
+			const bool bHidden = !RayTracingMeshCommand.bDecal;
+			FVisibleRayTracingMeshCommand NewVisibleMeshCommand(&RayTracingMeshCommand, RayTracingDecalInstanceIndex, bHidden);
+			VisibleCommands.Add(NewVisibleMeshCommand);
+		}
 	}
 
 private:
@@ -2337,6 +2356,7 @@ private:
 	FRayTracingMeshCommandOneFrameArray& VisibleCommands;
 	uint32 GeometrySegmentIndex;
 	uint32 RayTracingInstanceIndex;
+	uint32 RayTracingDecalInstanceIndex;
 };
 
 class FRayTracingShaderCommand

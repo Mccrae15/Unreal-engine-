@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "OnlineSubsystemEOSTypesPublic.h"
 #include "Interfaces/OnlineIdentityInterface.h"
 #include "Interfaces/OnlinePresenceInterface.h"
 #include "Interfaces/OnlineUserInterface.h"
@@ -10,7 +11,9 @@
 #include "IPAddress.h"
 #include "OnlineSubsystem.h"
 #include "OnlineSubsystemTypes.h"
+#include "OnlineSubsystemEOSPackage.h" // IWYU pragma: keep
 
+#define EOS_OSS_BUCKET_ID_STRING_LENGTH 60
 #define EOS_OSS_STRING_BUFFER_LENGTH 256 + 1 // 256 plus null terminator
 
 class FOnlineSubsystemEOS;
@@ -26,7 +29,7 @@ typedef TSharedRef<const class FUniqueNetIdEOS> FUniqueNetIdEOSRef;
 /**
  * Unique net id wrapper for a EOS account ids.
  */
-class FUniqueNetIdEOS : public FUniqueNetId
+class FUniqueNetIdEOS : public IUniqueNetIdEOS
 {
 public:
 	static const FUniqueNetIdEOS& Cast(const FUniqueNetId& NetId);
@@ -44,12 +47,12 @@ public:
 	virtual FString ToString() const override;
 	virtual FString ToDebugString() const override;
 
-	const EOS_EpicAccountId GetEpicAccountId() const
+	virtual const EOS_EpicAccountId GetEpicAccountId() const override
 	{
 		return EpicAccountId;
 	}
 
-	const EOS_ProductUserId GetProductUserId() const
+	virtual const EOS_ProductUserId GetProductUserId() const override
 	{
 		return ProductUserId;
 	}
@@ -291,52 +294,6 @@ public:
 protected:
 	FOnlineUserPresence Presence;
 	EInviteStatus::Type InviteStatus;
-};
-
-/**
- * Implementation of FOnlineBlockedPlayer methods that adds in the online user template to complete the interface
- */
-template<class BaseClass>
-class TOnlineBlockedPlayerEOS :
-	public TOnlineUserEOS<BaseClass, IAttributeAccessInterface>
-{
-public:
-	TOnlineBlockedPlayerEOS(const FUniqueNetIdEOSRef& InNetIdRef)
-		: TOnlineUserEOS<BaseClass, IAttributeAccessInterface>(InNetIdRef)
-	{
-	}
-};
-
-/**
- * Implementation of FOnlineRecentPlayer methods that adds in the online user template to complete the interface
- */
-template<class BaseClass>
-class TOnlineRecentPlayerEOS :
-	public TOnlineUserEOS<BaseClass, IAttributeAccessInterface>
-{
-public:
-	TOnlineRecentPlayerEOS(const FUniqueNetIdEOSRef& InNetIdRef)
-		: TOnlineUserEOS<BaseClass, IAttributeAccessInterface>(InNetIdRef)
-	{
-	}
-
-// FOnlineRecentPlayer
-	/**
-	 * @return last time the player was seen by the current user
-	 */
-	virtual FDateTime GetLastSeen() const override
-	{
-		return LastSeenTime;
-	}
-//~FOnlineRecentPlayer
-
-	void SetLastSeen(const FDateTime& InLastSeenTime)
-	{
-		LastSeenTime = InLastSeenTime;
-	}
-
-protected:
-	FDateTime LastSeenTime;
 };
 
 /** Class to handle all callbacks generically using a lambda to process callback results */

@@ -4,26 +4,14 @@
 
 #include "Common.ush"
 
-#if !EYE_ADAPTATION_DISABLED
+#if !EYE_ADAPTATION_DISABLED && !EYE_ADAPTATION_PREV_FRAME_EXPOSURE
+StructuredBuffer<float4> EyeAdaptationBuffer;
 
-Texture2D EyeAdaptationTexture;
-Buffer<float4> EyeAdaptationBuffer;
-
-#if SHADING_PATH_DEFERRED
-float4 EyeAdaptationLookupTexture2D(Texture2D InEyeAdaptation)
-{
-	return InEyeAdaptation.Load(int3(0, 0, 0));
-}
-#elif SHADING_PATH_MOBILE
-float4 EyeAdaptationLookupBuffer(Buffer<float4> InEyeAdaptation)
+float4 EyeAdaptationLookupBuffer(StructuredBuffer<float4> InEyeAdaptation)
 {
 	return InEyeAdaptation[0];
 }
-#else
-	#error Unknown shading path.
-#endif
-
-#endif // !EYE_ADAPTATION_DISABLED
+#endif // !EYE_ADAPTATION_DISABLED && !EYE_ADAPTATION_PREV_FRAME_EXPOSURE
 
 #if defined (EyeAdaptationStruct)
 	#if EYE_ADAPTATION_LOOSE_PARAMETERS
@@ -44,26 +32,26 @@ float EyeAdaptationLookup()
 	return 0.0f;
 #elif defined (EyeAdaptationStruct)
 	#if SHADING_PATH_DEFERRED
-		return EyeAdaptationLookupTexture2D(EyeAdaptationStruct.EyeAdaptationTexture).x;
-	#elif SHADING_PATH_MOBILE
 		return EyeAdaptationLookupBuffer(EyeAdaptationStruct.EyeAdaptationBuffer).x;
+	#elif SHADING_PATH_MOBILE
+		// Unfortunately on older MALI GL drivers (r9p0), passing this buffer into 'log' or other functions, fails with this error: Function call discards 'readonly' access qualifier
+		// So we have to use last frame eye adaptation value as a workaround on mobile
+		// return EyeAdaptationLookupBuffer(EyeAdaptationBuffer).x;
+		return ResolvedView.PreExposure;
 	#else
 		#error Unknown shading path.
 	#endif
 #elif EYE_ADAPTATION_LOOSE_PARAMETERS
-	#if SHADING_PATH_DEFERRED
-		return EyeAdaptationLookupTexture2D(EyeAdaptationTexture).x;
-	#elif SHADING_PATH_MOBILE
-		return EyeAdaptationLookupBuffer(EyeAdaptationBuffer).x;
-	#else
-		#error Unknown shading path.
-	#endif
+	return EyeAdaptationLookupBuffer(EyeAdaptationBuffer).x;
+#elif EYE_ADAPTATION_PREV_FRAME_EXPOSURE
+	// fallback implementation if the EyeAdaptationBuffer is not available
+	return ResolvedView.PreExposure;
 #else
 	return 0.0f;
 #endif
 }
 
-float3 EyeAdaptationInverseLookup(float3 LightValue, float Alpha)
+float EyeAdaptationInverseLookup(float Alpha)
 {
 	float Adaptation = EyeAdaptationLookup();
 
@@ -76,8 +64,10 @@ float3 EyeAdaptationInverseLookup(float3 LightValue, float Alpha)
 
 	float LerpLogScale = -Alpha * log(Adaptation);
 	float Scale = exp(LerpLogScale);
-	return LightValue * Scale;
+	return Scale;
 }
 
-
-
+float3 EyeAdaptationInverseLookup(float3 LightValue, float Alpha)
+{
+	return LightValue * EyeAdaptationInverseLookup(Alpha);
+}

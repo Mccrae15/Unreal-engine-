@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/ComboBoxString.h"
+
+#include "DefaultStyleCache.h"
 #include "Widgets/SNullWidget.h"
 #include "UObject/EditorObjectVersion.h"
 #include "UObject/ConstructorHelpers.h"
@@ -14,66 +16,26 @@
 /////////////////////////////////////////////////////
 // UComboBoxString
 
-static FComboBoxStyle* DefaultComboBoxStyle = nullptr;
-static FTableRowStyle* DefaultComboBoxRowStyle = nullptr;
-
-#if WITH_EDITOR
-static FComboBoxStyle* EditorComboBoxStyle = nullptr;
-static FTableRowStyle* EditorComboBoxRowStyle = nullptr;
-#endif 
-
 UComboBoxString::UComboBoxString(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	if (DefaultComboBoxStyle == nullptr)
-	{
-		DefaultComboBoxStyle = new FComboBoxStyle(FUMGCoreStyle::Get().GetWidgetStyle<FComboBoxStyle>("ComboBox"));
-
-		// Unlink UMG default colors.
-		DefaultComboBoxStyle->UnlinkColors();
-	}
-
-	if (DefaultComboBoxRowStyle == nullptr)
-	{
-		DefaultComboBoxRowStyle = new FTableRowStyle(FUMGCoreStyle::Get().GetWidgetStyle<FTableRowStyle>("TableView.Row"));
-
-		// Unlink UMG default colors.
-		DefaultComboBoxRowStyle->UnlinkColors();
-	}
-
-	WidgetStyle = *DefaultComboBoxStyle;
-	ItemStyle = *DefaultComboBoxRowStyle;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	WidgetStyle = FDefaultStyleCache::Get().GetComboBoxStyle();
+	ItemStyle = FDefaultStyleCache::Get().GetComboBoxRowStyle();
+	ScrollBarStyle = FDefaultStyleCache::Get().GetScrollBarStyle();
 
 #if WITH_EDITOR 
-	if (EditorComboBoxStyle == nullptr)
-	{
-		EditorComboBoxStyle = new FComboBoxStyle(FCoreStyle::Get().GetWidgetStyle<FComboBoxStyle>("EditorUtilityComboBox"));
-
-		// Unlink UMG Editor colors from the editor settings colors.
-		EditorComboBoxStyle->UnlinkColors();
-	}
-
-	if (EditorComboBoxRowStyle == nullptr)
-	{
-		EditorComboBoxRowStyle = new FTableRowStyle(FCoreStyle::Get().GetWidgetStyle<FTableRowStyle>("TableView.Row"));
-
-		// Unlink UMG Editor colors from the editor settings colors.
-		EditorComboBoxRowStyle->UnlinkColors();
-	}
-
 	if (IsEditorWidget())
 	{
-		WidgetStyle = *EditorComboBoxStyle;
-		ItemStyle = *EditorComboBoxRowStyle;
+		WidgetStyle = FDefaultStyleCache::Get().GetEditorComboBoxStyle();
+		ItemStyle = FDefaultStyleCache::Get().GetEditorComboBoxRowStyle();
+		ScrollBarStyle = FDefaultStyleCache::Get().GetEditorScrollBarStyle();
 
 		// The CDO isn't an editor widget and thus won't use the editor style, call post edit change to mark difference from CDO
 		PostEditChange();
 	}
-#endif // WITH_EDITOR
-
-	WidgetStyle.UnlinkColors();
-	ItemStyle.UnlinkColors();
-
+#endif
+	
 	ForegroundColor = ItemStyle.TextColor;
 	bIsFocusable = true;
 
@@ -87,6 +49,7 @@ UComboBoxString::UComboBoxString(const FObjectInitializer& ObjectInitializer)
 		static ConstructorHelpers::FObjectFinder<UFont> RobotoFontObj(*UWidget::GetDefaultFontName());
 		Font = FSlateFontInfo(RobotoFontObj.Object, 16, FName("Bold"));
 	}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void UComboBoxString::PostInitProperties()
@@ -127,18 +90,20 @@ void UComboBoxString::PostLoad()
 
 	if (GetLinkerCustomVersion(FEditorObjectVersion::GUID) < FEditorObjectVersion::ComboBoxControllerSupportUpdate)
 	{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		EnableGamepadNavigationMode = false;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 }
 
 TSharedRef<SWidget> UComboBoxString::RebuildWidget()
 {
-	int32 InitialIndex = FindOptionIndex(SelectedOption);
+	const int32 InitialIndex = FindOptionIndex(SelectedOption);
 	if ( InitialIndex != -1 )
 	{
 		CurrentOptionPtr = Options[InitialIndex];
 	}
-
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	MyComboBox =
 		SNew(SComboBox< TSharedPtr<FString> >)
 		.ComboBoxStyle(&WidgetStyle)
@@ -153,11 +118,12 @@ TSharedRef<SWidget> UComboBoxString::RebuildWidget()
 		.OnGenerateWidget(BIND_UOBJECT_DELEGATE(SComboBox< TSharedPtr<FString> >::FOnGenerateWidget, HandleGenerateWidget))
 		.OnSelectionChanged(BIND_UOBJECT_DELEGATE(SComboBox< TSharedPtr<FString> >::FOnSelectionChanged, HandleSelectionChanged))
 		.OnComboBoxOpening(BIND_UOBJECT_DELEGATE(FOnComboBoxOpening, HandleOpening))
+	    .ScrollBarStyle(&ScrollBarStyle)
 		.IsFocusable(bIsFocusable)
 		[
 			SAssignNew(ComboBoxContent, SBox)
 		];
-
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	if ( InitialIndex != -1 )
 	{
 		// Generate the widget for the initially selected widget if needed
@@ -176,7 +142,7 @@ void UComboBoxString::AddOption(const FString& Option)
 
 bool UComboBoxString::RemoveOption(const FString& Option)
 {
-	int32 OptionIndex = FindOptionIndex(Option);
+	const int32 OptionIndex = FindOptionIndex(Option);
 
 	if ( OptionIndex != -1 )
 	{
@@ -256,7 +222,7 @@ void UComboBoxString::RefreshOptions()
 
 void UComboBoxString::SetSelectedOption(FString Option)
 {
-	int32 InitialIndex = FindOptionIndex(Option);
+	const int32 InitialIndex = FindOptionIndex(Option);
 	SetSelectedIndex(InitialIndex);
 }
 
@@ -268,6 +234,7 @@ void UComboBoxString::SetSelectedIndex(const int32 Index)
 		// Don't select item if its already selected
 		if (SelectedOption != *CurrentOptionPtr)
 		{
+			BroadcastFieldValueChanged(FFieldNotificationClassDescriptor::SelectedOption);
 			SelectedOption = *CurrentOptionPtr;
 
 			if (ComboBoxContent.IsValid())
@@ -317,6 +284,137 @@ bool UComboBoxString::IsOpen() const
 	return MyComboBox.IsValid() && MyComboBox->IsOpen();
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+void  UComboBoxString::SetContentPadding(FMargin InPadding)
+{
+	ContentPadding = InPadding;
+	if (MyComboBox.IsValid())
+	{
+		MyComboBox->SetButtonContentPadding(InPadding);
+	}
+}
+
+FMargin  UComboBoxString::GetContentPadding() const
+{
+	return ContentPadding;
+}
+
+void UComboBoxString::SetEnableGamepadNavigationMode(bool InEnableGamepadNavigationMode)
+{
+	EnableGamepadNavigationMode = InEnableGamepadNavigationMode;
+	if (MyComboBox.IsValid())
+	{
+		MyComboBox->SetEnableGamepadNavigationMode(EnableGamepadNavigationMode);
+	}
+}
+
+bool UComboBoxString::IsEnableGamepadNavigationMode() const
+{
+	return EnableGamepadNavigationMode;
+}
+
+bool UComboBoxString::IsHasDownArrow() const
+{
+	return HasDownArrow;
+}
+
+void UComboBoxString::SetHasDownArrow(bool InHasDownArrow)
+{
+	HasDownArrow = InHasDownArrow;
+	if (MyComboBox.IsValid())
+	{
+		MyComboBox->SetHasDownArrow(HasDownArrow);
+	}
+}
+
+float UComboBoxString::GetMaxListHeight() const
+{
+	return MaxListHeight;
+}
+
+void UComboBoxString::SetMaxListHeight(float InMaxHeight)
+{
+	MaxListHeight = InMaxHeight;
+	if (MyComboBox.IsValid())
+	{
+		MyComboBox->SetMaxHeight(MaxListHeight);
+	}
+}
+
+const FSlateFontInfo&  UComboBoxString::GetFont() const
+{
+	return Font;
+}
+
+const FComboBoxStyle& UComboBoxString::GetWidgetStyle() const
+{
+	return WidgetStyle;
+}
+
+const FTableRowStyle& UComboBoxString::GetItemStyle() const
+{
+	return ItemStyle;
+}
+
+const FScrollBarStyle& UComboBoxString::GetScrollBarStyle() const
+{
+	return ScrollBarStyle;
+}
+
+bool UComboBoxString::IsFocusable() const
+{
+	return bIsFocusable;
+}
+
+FSlateColor UComboBoxString::GetForegroundColor() const
+{
+	return ForegroundColor;
+}
+
+void UComboBoxString::SetWidgetStyle(const FComboBoxStyle& InWidgetStyle)
+{
+	WidgetStyle = InWidgetStyle;
+	if (MyComboBox.IsValid())
+	{
+		MyComboBox->InvalidateStyle();
+	}
+}
+
+void UComboBoxString::SetItemStyle(const FTableRowStyle& InItemStyle)
+{
+	ItemStyle = InItemStyle;
+	if (MyComboBox.IsValid())
+	{
+		MyComboBox->InvalidateItemStyle();
+	}
+}
+
+void UComboBoxString::InitScrollBarStyle(const FScrollBarStyle& InScrollBarStyle)
+{
+	ensureMsgf(!MyComboBox.IsValid(), TEXT("The widget is already created."));
+	ScrollBarStyle = InScrollBarStyle;
+}
+
+void UComboBoxString::InitFont(FSlateFontInfo InFont)
+{
+	ensureMsgf(!MyComboBox.IsValid(), TEXT("The widget is already created."));
+	Font = InFont;
+}
+
+void UComboBoxString::InitIsFocusable(bool InIsFocusable)
+{
+	ensureMsgf(!MyComboBox.IsValid(), TEXT("The widget is already created."));
+	bIsFocusable = InIsFocusable;
+}
+
+void UComboBoxString::InitForegroundColor(FSlateColor InForegroundColor)
+{
+	ensureMsgf(!MyComboBox.IsValid(), TEXT("The widget is already created."));
+	ForegroundColor = InForegroundColor;
+}
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 void UComboBoxString::UpdateOrGenerateWidget(TSharedPtr<FString> Item)
 {
 	// If no custom widget was supplied and the default STextBlock already exists,
@@ -335,7 +433,7 @@ void UComboBoxString::UpdateOrGenerateWidget(TSharedPtr<FString> Item)
 
 TSharedRef<SWidget> UComboBoxString::HandleGenerateWidget(TSharedPtr<FString> Item) const
 {
-	FString StringItem = Item.IsValid() ? *Item : FString();
+	const FString StringItem = Item.IsValid() ? *Item : FString();
 
 	// Call the user's delegate to see if they want to generate a custom widget bound to the data source.
 	if ( !IsDesignTime() && OnGenerateWidgetEvent.IsBound() )
@@ -348,14 +446,17 @@ TSharedRef<SWidget> UComboBoxString::HandleGenerateWidget(TSharedPtr<FString> It
 	}
 
 	// If a row wasn't generated just create the default one, a simple text block of the item's name.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	return SNew(STextBlock)
 		.Text(FText::FromString(StringItem))
 		.Font(Font);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void UComboBoxString::HandleSelectionChanged(TSharedPtr<FString> Item, ESelectInfo::Type SelectionType)
 {
 	CurrentOptionPtr = Item;
+	BroadcastFieldValueChanged(FFieldNotificationClassDescriptor::SelectedOption);
 	SelectedOption = CurrentOptionPtr.IsValid() ? CurrentOptionPtr.ToSharedRef().Get() : FString();
 
 	// When the selection changes we always generate another widget to represent the content area of the combobox.
@@ -387,4 +488,3 @@ const FText UComboBoxString::GetPaletteCategory()
 /////////////////////////////////////////////////////
 
 #undef LOCTEXT_NAMESPACE
-

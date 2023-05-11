@@ -16,70 +16,53 @@ FRigUnit_GetTransform_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
 
-	if (URigHierarchy* Hierarchy = Context.Hierarchy)
+	if (URigHierarchy* Hierarchy = ExecuteContext.Hierarchy)
 	{
-		switch (Context.State)
+		if (!CachedIndex.UpdateCache(Item, Hierarchy))
 		{
-			case EControlRigState::Init:
+			UE_CONTROLRIG_RIGUNIT_REPORT_WARNING(TEXT("Item '%s' is not valid."), *Item.ToString());
+		}
+		else
+		{
+			if(bInitial)
 			{
-				CachedIndex.Reset();
-				// there is no "break;" here because an old node, Transform Constrtaint,
-				// still caches data during init stage. Thus, if a it takes a GetTransform
-				// as input, that GetTransform needs to execute and output a valid transform					
-			}
-			case EControlRigState::Update:
-			{
-				if (!CachedIndex.UpdateCache(Item, Hierarchy))
+				switch (Space)
 				{
-					UE_CONTROLRIG_RIGUNIT_REPORT_WARNING(TEXT("Item '%s' is not valid."), *Item.ToString());
-				}
-				else
-				{
-					if(bInitial || Context.State == EControlRigState::Init)
+					case ERigVMTransformSpace::GlobalSpace:
 					{
-						switch (Space)
-						{
-							case EBoneGetterSetterMode::GlobalSpace:
-							{
-								Transform = Hierarchy->GetInitialGlobalTransform(CachedIndex);
-								break;
-							}
-							case EBoneGetterSetterMode::LocalSpace:
-							{
-								Transform = Hierarchy->GetInitialLocalTransform(CachedIndex);
-								break;
-							}
-							default:
-							{
-								break;
-							}
-						}
+						Transform = Hierarchy->GetInitialGlobalTransform(CachedIndex);
+						break;
 					}
-					else
+					case ERigVMTransformSpace::LocalSpace:
 					{
-						switch (Space)
-						{
-							case EBoneGetterSetterMode::GlobalSpace:
-							{
-								Transform = Hierarchy->GetGlobalTransform(CachedIndex);
-								break;
-							}
-							case EBoneGetterSetterMode::LocalSpace:
-							{
-								Transform = Hierarchy->GetLocalTransform(CachedIndex);
-								break;
-							}
-							default:
-							{
-								break;
-							}
-						}
+						Transform = Hierarchy->GetInitialLocalTransform(CachedIndex);
+						break;
+					}
+					default:
+					{
+						break;
 					}
 				}
 			}
-			default:
+			else
 			{
-				break;
+				switch (Space)
+				{
+					case ERigVMTransformSpace::GlobalSpace:
+					{
+						Transform = Hierarchy->GetGlobalTransform(CachedIndex);
+						break;
+					}
+					case ERigVMTransformSpace::LocalSpace:
+					{
+						Transform = Hierarchy->GetLocalTransform(CachedIndex);
+						break;
+					}
+					default:
+					{
+						break;
+					}
+				}
 			}
 		}
 	}
@@ -87,7 +70,7 @@ FRigUnit_GetTransform_Execute()
 
 FRigUnit_GetTransformArray_Execute()
 {
-	FRigUnit_GetTransformItemArray::StaticExecute(RigVMExecuteContext, Items.Keys, Space, bInitial, Transforms, CachedIndex, Context);
+	FRigUnit_GetTransformItemArray::StaticExecute(ExecuteContext, Items.Keys, Space, bInitial, Transforms, CachedIndex);
 }
 
 FRigVMStructUpgradeInfo FRigUnit_GetTransformArray::GetUpgradeInfo() const
@@ -112,7 +95,7 @@ FRigUnit_GetTransformItemArray_Execute()
 	Transforms.SetNum(Items.Num());
 	for(int32 Index=0;Index<Items.Num();Index++)
 	{
-		FRigUnit_GetTransform::StaticExecute(RigVMExecuteContext, Items[Index], Space, bInitial, Transforms[Index], CachedIndex[Index], Context);
+		FRigUnit_GetTransform::StaticExecute(ExecuteContext, Items[Index], Space, bInitial, Transforms[Index], CachedIndex[Index]);
 
 	}
 }

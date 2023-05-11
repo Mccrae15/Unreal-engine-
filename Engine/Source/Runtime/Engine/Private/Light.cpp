@@ -2,8 +2,9 @@
 
 
 #include "Engine/Light.h"
+#include "Engine/Level.h"
+#include "Engine/SpotLight.h"
 #include "Engine/World.h"
-#include "Components/LightComponent.h"
 #include "Components/ArrowComponent.h"
 #include "Engine/PointLight.h"
 #include "Engine/DirectionalLight.h"
@@ -187,7 +188,7 @@ void APointLight::PostLoad()
 
 	if (GetLightComponent()->Mobility == EComponentMobility::Static)
 	{
-		GetLightComponent()->LightFunctionMaterial = NULL;
+		GetLightComponent()->ClearLightFunctionMaterial();
 	}
 }
 
@@ -273,7 +274,7 @@ void ADirectionalLight::PostLoad()
 
 	if (GetLightComponent()->Mobility == EComponentMobility::Static)
 	{
-		GetLightComponent()->LightFunctionMaterial = NULL;
+		GetLightComponent()->ClearLightFunctionMaterial();
 	}
 #if WITH_EDITORONLY_DATA
 	if(ArrowComponent != nullptr)

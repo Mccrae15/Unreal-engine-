@@ -5,6 +5,7 @@
 #include "EdGraphSchema_Niagara.h"
 #include "NiagaraClipboard.h"
 #include "NiagaraDataInterface.h"
+#include "NiagaraEditorModule.h"
 #include "NiagaraEditorUtilities.h"
 #include "NiagaraGraph.h"
 #include "NiagaraNodeAssignment.h"
@@ -98,11 +99,16 @@ void UNiagaraStackFunctionInputCollection::Initialize(
 	ModuleNode = &InModuleNode;
 	InputFunctionCallNode = &InInputFunctionCallNode;
 	InputFunctionCallNode->OnInputsChanged().AddUObject(this, &UNiagaraStackFunctionInputCollection::OnFunctionInputsChanged);
+
+	FNiagaraEditorModule::Get().OnScriptApplied().AddUObject(this, &UNiagaraStackFunctionInputCollection::OnScriptApplied);
 }
 
 void UNiagaraStackFunctionInputCollection::FinalizeInternal()
 {
 	InputFunctionCallNode->OnInputsChanged().RemoveAll(this);
+	
+	FNiagaraEditorModule::Get().OnScriptApplied().RemoveAll(this);
+	
 	Super::FinalizeInternal();
 }
 
@@ -137,7 +143,7 @@ void UNiagaraStackFunctionInputCollection::SetValuesFromClipboardFunctionInputs(
 	// Set static switches first so that other inputs will be available to set.
 	for (UNiagaraStackInputCategory* ChildCategory : ChildCategories)
 	{
-		ChildCategory->SetStaticSwitchValuesFromClipboardFunctionInputs(ClipboardFunctionInputs);
+		ChildCategory->SetStaticSwitchValuesFromClipboardFunctionInputs(ClipboardFunctionInputs, *this);
 	}
 
 	RefreshChildren();
@@ -185,6 +191,14 @@ TArray<UNiagaraStackFunctionInput*> UNiagaraStackFunctionInputCollection::GetInl
 	}
 
 	return OutArray;
+}
+
+void UNiagaraStackFunctionInputCollection::OnScriptApplied(UNiagaraScript* NiagaraScript, FGuid Guid)
+{
+	if(InputFunctionCallNode->FunctionScript == NiagaraScript)
+	{
+		RefreshChildren();
+	}
 }
 
 void UNiagaraStackFunctionInputCollection::RefreshChildrenInternal(const TArray<UNiagaraStackEntry*>& CurrentChildren, TArray<UNiagaraStackEntry*>& NewChildren, TArray<FStackIssue>& NewIssues)
@@ -276,9 +290,8 @@ void UNiagaraStackFunctionInputCollectionBase::AppendInputsForFunctionCall(FFunc
 	FVersionedNiagaraEmitter Emitter = GetEmitterViewModel().IsValid() ? GetEmitterViewModel()->GetEmitter() : FVersionedNiagaraEmitter();
 	FVersionedNiagaraEmitterData* EmitterData = Emitter.GetEmitterData();
 
-	TSet<const UEdGraphPin*> HiddenPins;
-	TArray<const UEdGraphPin*> InputPins;
-	TSet<const UEdGraphPin*> SummaryViewPins;
+	TSet<FNiagaraVariable> HiddenVariables;
+	TArray<FNiagaraVariable> InputVariables;
 	FCompileConstantResolver ConstantResolver;
 	if (GetEmitterViewModel().IsValid())
 	{
@@ -289,7 +302,7 @@ void UNiagaraStackFunctionInputCollectionBase::AppendInputsForFunctionCall(FFunc
 		// if we don't have an emitter model, we must be in a system context
 		ConstantResolver = FCompileConstantResolver(&GetSystemViewModel()->GetSystem(), FNiagaraStackGraphUtilities::GetOutputNodeUsage(*InputFunctionCallNode));
 	}
-	GetStackFunctionInputPins(*InputFunctionCallNode, InputPins, HiddenPins, ConstantResolver, FNiagaraStackGraphUtilities::ENiagaraGetStackFunctionInputPinsOptions::ModuleInputsOnly);
+	GetStackFunctionInputs(*InputFunctionCallNode, InputVariables, HiddenVariables, ConstantResolver, FNiagaraStackGraphUtilities::ENiagaraGetStackFunctionInputPinsOptions::ModuleInputsOnly);
 
 	const UEdGraphSchema_Niagara* NiagaraSchema = GetDefault<UEdGraphSchema_Niagara>();
 
@@ -297,7 +310,7 @@ void UNiagaraStackFunctionInputCollectionBase::AppendInputsForFunctionCall(FFunc
 	TArray<FName> DuplicateInputNames;
 	TArray<FName> ValidAliasedInputNames;
 	TMap<FName, UEdGraphPin*> StaticSwitchInputs;
-	TArray<const UEdGraphPin*> PinsWithInvalidTypes;
+	TArray<FNiagaraVariable> InputsWithInvalidTypes;
 
 	UNiagaraGraph* InputFunctionGraph = InputFunctionCallNode->GetCalledGraph();
 	
@@ -340,23 +353,22 @@ void UNiagaraStackFunctionInputCollectionBase::AppendInputsForFunctionCall(FFunc
 
 	
 	// Gather input data
-	for (const UEdGraphPin* InputPin : InputPins)
+	for (const FNiagaraVariable& InputVariable : InputVariables)
 	{
-		if (ProcessedInputNames.Contains(InputPin->PinName))
+		if (ProcessedInputNames.Contains(InputVariable.GetName()))
 		{
-			DuplicateInputNames.AddUnique(InputPin->PinName);
+			DuplicateInputNames.AddUnique(InputVariable.GetName());
 			continue;
 		}
-		ProcessedInputNames.Add(InputPin->PinName);
+		ProcessedInputNames.Add(InputVariable.GetName());
 
-		FNiagaraVariable InputVariable = NiagaraSchema->PinToNiagaraVariable(InputPin);
 		if (InputVariable.GetType().IsValid() == false)
 		{
-			PinsWithInvalidTypes.Add(InputPin);
+			InputsWithInvalidTypes.Add(InputVariable);
 			continue;
 		}
 		ValidAliasedInputNames.Add(
-			FNiagaraParameterHandle::CreateAliasedModuleParameterHandle(FNiagaraParameterHandle(InputPin->PinName), InputFunctionCallNode).GetParameterHandleString());
+			FNiagaraParameterHandle::CreateAliasedModuleParameterHandle(FNiagaraParameterHandle(InputVariable.GetName()), InputFunctionCallNode).GetParameterHandleString());
 
 		TOptional<FNiagaraVariableMetaData> InputMetaData;
 		if (InputFunctionGraph != nullptr)
@@ -371,14 +383,16 @@ void UNiagaraStackFunctionInputCollectionBase::AppendInputsForFunctionCall(FFunc
 		int32 EditorSortPriority = InputMetaData.IsSet() ? InputMetaData->EditorSortPriority : 0;
 		TOptional<FText> DisplayName;
 
-		bool bShouldShowInSummary = GetSummaryViewState(InputFunctionCallNode, InputVariable, InputMetaData, InputCategory, DisplayName, EditorSortPriority);		
-		if (bShouldShowInSummary)
-		{
-			SummaryViewPins.Add(InputPin);
-		}		
-		bool bIsInputHidden = HiddenPins.Contains(InputPin);
-		FInputData InputData = { InputPin, InputVariable.GetType(), EditorSortPriority, DisplayName, InputCategory, false, bIsInputHidden, bShouldShowInSummary, ModuleNode, InputFunctionCallNode };
+		bool bShouldShowInSummary = GetSummaryViewState(InputFunctionCallNode, InputVariable, InputMetaData, InputCategory, DisplayName, EditorSortPriority);			
+		bool bIsInputHidden = HiddenVariables.Contains(InputVariable);
+		FInputData InputData = { InputVariable, EditorSortPriority, DisplayName, InputCategory, false, bIsInputHidden, bShouldShowInSummary, ModuleNode, InputFunctionCallNode };
 		int32 Index = State.InputDataCollection.Add(InputData);
+
+		if (InputVariable.GetType().IsStatic())
+		{
+			FNiagaraParentData& ParentData = State.ParentMapping.FindOrAdd(InputVariable.GetName());
+			ParentData.ParentVariable = InputVariable;
+		}
 
 		// set up the data for the parent-child mapping
 		if (InputMetaData && !InputMetaData->ParentAttribute.IsNone())
@@ -417,7 +431,7 @@ void UNiagaraStackFunctionInputCollectionBase::AppendInputsForFunctionCall(FFunc
 		FNiagaraVariable InputVariable = NiagaraSchema->PinToNiagaraVariable(InputPin);
 		if (InputVariable.GetType().IsValid() == false)
 		{
-			PinsWithInvalidTypes.Add(InputPin);
+			InputsWithInvalidTypes.Add(InputVariable);
 			continue;
 		}
 
@@ -438,19 +452,15 @@ void UNiagaraStackFunctionInputCollectionBase::AppendInputsForFunctionCall(FFunc
 		TOptional<FText> DisplayName;
 						
 		bool bShouldShowInSummary = GetSummaryViewState(InputFunctionCallNode, InputVariable, InputMetaData, InputCategory, DisplayName, EditorSortPriority);		
-		if (bShouldShowInSummary)
-		{
-			SummaryViewPins.Add(InputPin);
-		}		
 		bool bIsInputHidden = HiddenSwitchPins.Contains(InputPin);
-		FInputData InputData = { InputPin, InputVariable.GetType(), EditorSortPriority, DisplayName, InputCategory, true, bIsInputHidden, bShouldShowInSummary, ModuleNode, InputFunctionCallNode };
+		FInputData InputData = { InputVariable, EditorSortPriority, DisplayName, InputCategory, true, bIsInputHidden, bShouldShowInSummary, ModuleNode, InputFunctionCallNode };
 		int32 Index = State.InputDataCollection.Add(InputData);
 
 		// set up the data for the parent-child mapping
 		if (InputMetaData)
 		{
 			FNiagaraParentData& ParentData = State.ParentMapping.FindOrAdd(SwitchPinName);
-			ParentData.ParentPin = InputPin;
+			ParentData.ParentVariable = InputVariable;
 			if (!InputMetaData->ParentAttribute.IsNone())
 			{
 				if (InputMetaData->ParentAttribute.ToString().StartsWith(PARAM_MAP_MODULE_STR))
@@ -466,7 +476,7 @@ void UNiagaraStackFunctionInputCollectionBase::AppendInputsForFunctionCall(FFunc
 		}
 	}
 
-	RefreshIssues(InputFunctionCallNode, DuplicateInputNames, ValidAliasedInputNames, PinsWithInvalidTypes, StaticSwitchInputs, NewIssues);
+	RefreshIssues(InputFunctionCallNode, DuplicateInputNames, ValidAliasedInputNames, InputsWithInvalidTypes, StaticSwitchInputs, NewIssues);
 }
 
 void UNiagaraStackFunctionInputCollectionBase::ApplyAllFunctionInputsToChildren(FFunctionCallNodesState& State, const TArray<UNiagaraStackEntry*>& CurrentChildren, TArray<UNiagaraStackEntry*>& NewChildren, TArray<FStackIssue>& NewIssues, bool bShouldApplySummaryFilter)
@@ -478,17 +488,17 @@ void UNiagaraStackFunctionInputCollectionBase::ApplyAllFunctionInputsToChildren(
 		if (Data.ChildIndices.Num() == 0) { continue; }
 		for (FInputData& InputData : State.InputDataCollection)
 		{
-			if (InputData.Pin != Data.ParentPin) { continue; }
+			if (InputData.InputVariable != Data.ParentVariable) { continue; }
 			if (InputData.bIsChild)
 			{
-				AddInvalidChildStackIssue(InputData.Pin->PinName, NewIssues);
+				AddInvalidChildStackIssue(InputData.InputVariable.GetName(), NewIssues);
 				continue;
 			}
 			for (int32 ChildIndex : Data.ChildIndices)
 			{
 				if (State.InputDataCollection[ChildIndex].Children.Num() > 0)
 				{
-					AddInvalidChildStackIssue(State.InputDataCollection[ChildIndex].Pin->PinName, NewIssues);
+					AddInvalidChildStackIssue(State.InputDataCollection[ChildIndex].InputVariable.GetName(), NewIssues);
 					continue;
 				}
 				State.InputDataCollection[ChildIndex].bIsChild = true;
@@ -538,7 +548,7 @@ void UNiagaraStackFunctionInputCollectionBase::ApplyAllFunctionInputsToChildren(
 		{
 			return A.SortKey < B.SortKey;
 		}
-		return A.Pin->PinName.LexicalLess(B.Pin->PinName);
+		return A.InputVariable.GetName().LexicalLess(B.InputVariable.GetName());
 	};
 
 	// Sort child and parent data separately
@@ -573,7 +583,7 @@ void UNiagaraStackFunctionInputCollectionBase::ApplyAllFunctionInputsToChildren(
 
 
 void UNiagaraStackFunctionInputCollectionBase::RefreshIssues(UNiagaraNodeFunctionCall* InputFunctionCallNode, const TArray<FName>& DuplicateInputNames, 
-	const TArray<FName>& ValidAliasedInputNames, const TArray<const UEdGraphPin*>& PinsWithInvalidTypes, const TMap<FName, UEdGraphPin*>& StaticSwitchInputs, TArray<FStackIssue>& NewIssues)
+	const TArray<FName>& ValidAliasedInputNames, const TArray<FNiagaraVariable>& InputsWithInvalidTypes, const TMap<FName, UEdGraphPin*>& StaticSwitchInputs, TArray<FStackIssue>& NewIssues)
 {
 	if (!GetIsEnabled())
 	{
@@ -678,13 +688,13 @@ void UNiagaraStackFunctionInputCollectionBase::RefreshIssues(UNiagaraNodeFunctio
 	}
 
 	// Generate issues for invalid types.
-	for (const UEdGraphPin* PinWithInvalidType : PinsWithInvalidTypes)
+	for (const FNiagaraVariable& InputWithInvalidType : InputsWithInvalidTypes)
 	{
 		FStackIssue InputWithInvalidTypeError(
 			EStackIssueSeverity::Error,
-			FText::Format(LOCTEXT("InputWithInvalidTypeSummaryFormat", "Input has an invalid type: {0}"), FText::FromName(PinWithInvalidType->PinName)),
+			FText::Format(LOCTEXT("InputWithInvalidTypeSummaryFormat", "Input has an invalid type: {0}"), FText::FromName(InputWithInvalidType.GetName())),
 			FText::Format(LOCTEXT("InputWithInvalidTypeFormat", "The input {0} on function {1} has a type which is invalid.\nThe type of this input doesn't exist anymore.\nThe type must be brought back into the project or this input must be removed from the script."),
-				FText::FromName(PinWithInvalidType->PinName), GetUserFriendlyFunctionName(InputFunctionCallNode)),
+				FText::FromName(InputWithInvalidType.GetName()), GetUserFriendlyFunctionName(InputFunctionCallNode)),
 			GetStackEditorDataKey(),
 			false);
 		NewIssues.Add(InputWithInvalidTypeError);
@@ -770,7 +780,7 @@ void UNiagaraStackFunctionInputCollectionBase::AddInputToCategory(const FInputDa
 		}
 		NewChildren.Add(InputCategory);
 	}
-	InputCategory->AddInput(InputData.ModuleNode, InputData.InputFunctionCallNode, InputData.Pin->PinName, InputData.Type, InputData.bIsStatic ? EStackParameterBehavior::Static : EStackParameterBehavior::Dynamic, InputData.DisplayName, InputData.bIsHidden, InputData.bIsChild);
+	InputCategory->AddInput(InputData.ModuleNode, InputData.InputFunctionCallNode, InputData.InputVariable.GetName(), InputData.InputVariable.GetType(), InputData.bIsStatic ? EStackParameterBehavior::Static : EStackParameterBehavior::Dynamic, InputData.DisplayName, InputData.bIsHidden, InputData.bIsChild);
 }
 
 bool UNiagaraStackFunctionInputCollectionBase::FilterByActiveSection(const UNiagaraStackEntry& Child) const

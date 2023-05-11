@@ -18,6 +18,8 @@
 
 using namespace DatasmithDispatcher;
 
+std::atomic<bool> FDatasmithCADWorkerImpl::bProcessIsRunning = false;
+std::atomic<bool> FDatasmithCADWorkerImpl::bRequestRestart = false;
 
 FDatasmithCADWorkerImpl::FDatasmithCADWorkerImpl(int32 InServerPID, int32 InServerPort, const FString& InEnginePluginsPath, const FString& InCachePath)
 	: ServerPID(InServerPID)
@@ -25,7 +27,6 @@ FDatasmithCADWorkerImpl::FDatasmithCADWorkerImpl(int32 InServerPID, int32 InServ
 	, EnginePluginsPath(InEnginePluginsPath)
 	, CachePath(InCachePath)
 	, PingStartCycle(0)
-	, bRequestRestart(false)
 {
 }
 
@@ -162,8 +163,8 @@ void FDatasmithCADWorkerImpl::ProcessCommand(const FRunTaskCommand& RunTaskComma
 	bProcessIsRunning = true;
 	int64 MaxDuration = DefineMaximumAllowedDuration(FileToProcess);
 	TArray<UE::Tasks::FTask> Checkers;
-	Checkers.Emplace(UE::Tasks::Launch(TEXT("TimeChecker"), [&]() { CheckDuration(FileToProcess, MaxDuration); }));
-	Checkers.Emplace(UE::Tasks::Launch(TEXT("MemoryChecker"), [&]() { CheckMemory(); }));
+	Checkers.Emplace(UE::Tasks::Launch(TEXT("TimeChecker"), [&FileToProcess, &MaxDuration]() { CheckDuration(FileToProcess, MaxDuration); }));
+	Checkers.Emplace(UE::Tasks::Launch(TEXT("MemoryChecker"), []() { CheckMemory(); }));
 
 	CADLibrary::FCADFileReader FileReader(ImportParameters, FileToProcess, EnginePluginsPath, CachePath);
 	CompletedTask.ProcessResult = FileReader.ProcessFile();
@@ -182,7 +183,7 @@ void FDatasmithCADWorkerImpl::ProcessCommand(const FRunTaskCommand& RunTaskComma
 		CompletedTask.ExternalReferences = CADFileData.GetExternalRefSet();
 		CompletedTask.SceneGraphFileName = CADFileData.GetSceneGraphFileName();
 		CompletedTask.GeomFileName = CADFileData.GetMeshFileName();
-		CompletedTask.WarningMessages = CADFileData.GetWarningMessages();
+		CompletedTask.Messages = CADFileData.GetMessages();
 
 		UE_LOG(LogDatasmithCADWorker, Verbose, TEXT("=> Process %s %s saved into %s%s and %s%s."), *FileToProcess.GetFileName(), *FileToProcess.GetConfiguration(), *CompletedTask.SceneGraphFileName, TEXT(".sg"), *CompletedTask.GeomFileName, TEXT(".gm"));
 		UE_LOG(LogDatasmithCADWorker, Verbose, TEXT("     It generates %d bodies"), CADFileData.GetBodyMeshes().Num());
@@ -212,7 +213,7 @@ void FDatasmithCADWorkerImpl::ProcessCommand(const FRunTaskCommand& RunTaskComma
 
 void FDatasmithCADWorkerImpl::CheckDuration(const CADLibrary::FFileDescriptor& FileToProcess, const int64 MaxDuration)
 {
-	if (!ImportParameters.bGEnableTimeControl)
+	if (!CADLibrary::FImportParameters::bGEnableTimeControl)
 	{
 		return;
 	}

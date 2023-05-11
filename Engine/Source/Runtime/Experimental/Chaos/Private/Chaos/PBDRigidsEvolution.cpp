@@ -187,7 +187,7 @@ namespace Chaos
 	};
 
 	FPBDRigidsEvolutionBase::FPBDRigidsEvolutionBase(FPBDRigidsSOAs& InParticles, THandleArray<FChaosPhysicsMaterial>& InSolverPhysicsMaterials, bool InIsSingleThreaded)
-	    : IslandGroupManager(ConstraintGraph)
+	    : IslandGroupManager(IslandManager)
 		, Particles(InParticles)
 		, SolverPhysicsMaterials(InSolverPhysicsMaterials)
 		, InternalAcceleration(nullptr)
@@ -196,9 +196,6 @@ namespace Chaos
 		, bIsSingleThreaded(InIsSingleThreaded)
 		, bCanStartAsyncTasks(true)
 		, LatestExternalTimestampConsumed_Internal(-1)
-		, NumPositionIterations(0)
-		, NumVelocityIterations(0)
-		, NumProjectionIterations(0)
 		, SpatialCollectionFactory(new FDefaultCollectionFactory())
 	{
 		Particles.GetParticleHandles().AddArray(&PhysicsMaterials);
@@ -781,9 +778,7 @@ namespace Chaos
 			if (bCanStartAsyncTasks)
 			{
 				// we run the task for both starting a new accel structure as well as for the time-slicing
-				FGraphEventRef Task = TGraphTask<FChaosAccelerationStructureTask>::CreateTask().ConstructAndDispatchWhenReady(*SpatialCollectionFactory, SpatialAccelerationCache, AsyncInternalAcceleration, AsyncExternalAcceleration, ForceFullBuild, bIsSingleThreaded, bNeedsReset);
-				// this reference can live long, store completion handle instead of a reference to the task to reduce peak mem usage 
-				AccelerationStructureTaskComplete = Task->CreateCompletionHandle();
+				AccelerationStructureTaskComplete = TGraphTask<FChaosAccelerationStructureTask>::CreateTask().ConstructAndDispatchWhenReady(*SpatialCollectionFactory, SpatialAccelerationCache, AsyncInternalAcceleration, AsyncExternalAcceleration, ForceFullBuild, bIsSingleThreaded, bNeedsReset);
 			}
 		}
 		else
@@ -1032,7 +1027,7 @@ namespace Chaos
 		// because Kinematic particles are only in the graph if referenced by a constraint.
 		if (bIsDynamic && !bWasDynamic && !Particle->Disabled())
 		{
-			ConstraintGraph.AddParticle(Particle);
+			IslandManager.AddParticle(Particle);
 		}
 
 		// If we switched to/from dynamic the inertia conditioning may need to be refreshed
@@ -1066,7 +1061,7 @@ namespace Chaos
 			Particles.DisableParticle(Particle);
 			RemoveParticleFromAccelerationStructure(*Particle);
 			DisableConstraints(Particle);
-			ConstraintGraph.RemoveParticle(Particle);
+			IslandManager.RemoveParticle(Particle);
 		}
 	}
 

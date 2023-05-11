@@ -2,6 +2,8 @@
 
 #include "Scene/InterchangeActorHelper.h"
 
+#include "Engine/Engine.h"
+#include "Engine/Level.h"
 #include "InterchangeActorFactoryNode.h"
 #include "InterchangeMaterialFactoryNode.h"
 #include "InterchangeMeshActorFactoryNode.h"
@@ -12,6 +14,7 @@
 
 #include "Components/MeshComponent.h"
 #include "Engine/World.h"
+#include "MaterialDomain.h"
 #include "Materials/Material.h"
 
 #if WITH_EDITOR
@@ -32,7 +35,7 @@ AActor* UE::Interchange::ActorHelper::GetSpawnedParentActor(const UInterchangeBa
 	return  ParentActor;
 }
 
-AActor* UE::Interchange::ActorHelper::SpawnFactoryActor(const UInterchangeFactoryBase::FCreateSceneObjectsParams& CreateSceneObjectsParams)
+AActor* UE::Interchange::ActorHelper::SpawnFactoryActor(const UInterchangeFactoryBase::FImportSceneObjectsParams& CreateSceneObjectsParams)
 {
 	FActorSpawnParameters SpawnParameters;
 	SpawnParameters.Name = FName(*CreateSceneObjectsParams.ObjectName);

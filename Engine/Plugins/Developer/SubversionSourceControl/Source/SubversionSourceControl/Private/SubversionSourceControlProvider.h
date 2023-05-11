@@ -2,12 +2,10 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "ISourceControlState.h"
-#include "SubversionSourceControlState.h"
-#include "ISourceControlOperation.h"
 #include "ISourceControlProvider.h"
 #include "ISubversionSourceControlWorker.h"
+
+class FSubversionSourceControlState;
 
 class FSubversionSourceControlCommand;
 
@@ -42,8 +40,11 @@ public:
 	virtual void CancelOperation( const FSourceControlOperationRef& InOperation ) override;
 	virtual bool UsesLocalReadOnlyState() const override;
 	virtual bool UsesChangelists() const override;
+	virtual bool UsesUncontrolledChangelists() const override;
 	virtual bool UsesCheckout() const override;
 	virtual bool UsesFileRevisions() const override;
+	virtual bool UsesSnapshots() const override;
+	virtual bool AllowsDiffAgainstDepot() const override;
 	virtual TOptional<bool> IsAtLatestRevision() const override;
 	virtual TOptional<int> GetNumLocalChanges() const override;
 	virtual void Tick() override;

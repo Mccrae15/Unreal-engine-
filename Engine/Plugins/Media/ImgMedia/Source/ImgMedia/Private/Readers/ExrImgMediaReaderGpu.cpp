@@ -31,19 +31,13 @@
 DECLARE_GPU_STAT_NAMED(ExrImgMediaReaderGpu, TEXT("ExrImgGpu"));
 DECLARE_GPU_STAT_NAMED(ExrImgMediaReaderGpu_MipRender, TEXT("ExrImgGpu.MipRender"));
 DECLARE_GPU_STAT_NAMED(ExrImgMediaReaderGpu_MipUpscale, TEXT("ExrImgGpu.MipRender.MipUpscale"));
+DECLARE_GPU_STAT_NAMED(ExrImgMediaReaderGpu_CopyUploadBuffer, TEXT("ExrImgGpu.MipRender.UploadBufferCopy"));
 
 static TAutoConsoleVariable<bool> CVarExrReaderUseUploadHeap(
 	TEXT("r.ExrReaderGPU.UseUploadHeap"),
 	true,
 	TEXT("Utilizes upload heap and copies raw exr buffer asynchronously.\n\
 			Requires a restart of the engine."));
-
-static TAutoConsoleVariable<int32> CVarUpscaleLowQualityMip(
-	TEXT("r.ExrReaderGPU.UpscaleHigherLevelMip"),
-	-1,
-	TEXT("Upscales lower quality mips into higher quality (EX: upscaling mip 3 into mip 0, 1, 2).\n\
-			This will cover unread black regions of EXR texture with the lower quality mips.\n\
-			This will clamp to the lowest quality mip available and disabled by default (-1)"));
 
 /** This is to force user to restart after they've changed this setting. */
 static bool bUseUploadHeap = CVarExrReaderUseUploadHeap.GetValueOnAnyThread();
@@ -93,7 +87,7 @@ FExrImgMediaReaderGpu::FExrImgMediaReaderGpu(const TSharedRef<FImgMediaLoader, E
 {
 	const int32 NumMipLevels = InLoader->GetNumMipLevels();
 
-	if (NumMipLevels <= 1 && CVarUpscaleLowQualityMip.GetValueOnAnyThread() >= 0)
+	if (NumMipLevels <= 1 && InLoader->GetMinimumLevelToUpscale() >= 0)
 	{
 		UE_LOG(LogImgMedia, Display, TEXT("No upscaling for sequence without mips: %s"), *InLoader->GetImagePath(0,0));
 	}
@@ -181,32 +175,20 @@ FExrImgMediaReader::EReadResult FExrImgMediaReaderGpu::ReadMip
 		if (bHasTiles || ConverterParams->bCustomExr)
 		{
 			TArray<FIntRect> TileRegionsToRead;
-			TArray<FIntRect> TileRegionsToRender;
 			{
 				TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("ExrReaderGpu.CalculateRegions %d"), CurrentMipLevel));
 
 				if (const FImgMediaTileSelection* CachedSelection = OutFrame->MipTilesPresent.Find(CurrentMipLevel))
 				{
 					TileRegionsToRead = CachedSelection->GetVisibleRegions(&CurrentTileSelection);
-					TileRegionsToRender = CurrentTileSelection.GetVisibleRegions();
 				}
 				else
 				{
-					TileRegionsToRead = TileRegionsToRender = CurrentTileSelection.GetVisibleRegions();
+					TileRegionsToRead = CurrentTileSelection.GetVisibleRegions();
 				}
 			}
 
-			TArray<FIntRect>& Viewports = ConverterParams->Viewports.Add(CurrentMipLevel);
-			for (const FIntRect& TileRegion : TileRegionsToRender)
-			{
-				FIntRect Viewport;
-				Viewport.Min = FIntPoint(ConverterParams->TileDimWithBorders.X * TileRegion.Min.X, ConverterParams->TileDimWithBorders.Y * TileRegion.Min.Y);
-				Viewport.Max = FIntPoint(ConverterParams->TileDimWithBorders.X * TileRegion.Max.X, ConverterParams->TileDimWithBorders.Y * TileRegion.Max.Y);
-				Viewport.Clip(FIntRect(FIntPoint::ZeroValue, CurrentMipDim));
-				Viewports.Add(MoveTemp(Viewport));
-			}
-
-			if (TileRegionsToRead.IsEmpty() && !TileRegionsToRender.IsEmpty())
+			if (TileRegionsToRead.IsEmpty() && CurrentTileSelection.IsAnyVisible())
 			{
 				// If all tiles were previously read and stored in cached frame, reading can be skipped.
 				ReadResult = Skipped;
@@ -223,13 +205,6 @@ FExrImgMediaReader::EReadResult FExrImgMediaReaderGpu::ReadMip
 		}
 		else
 		{
-			TArray<FIntRect>& Viewports = ConverterParams->Viewports.Add(CurrentMipLevel);
-			FIntRect Viewport;
-
-			Viewport.Min = FIntPoint(0, 0);
-			Viewport.Max = CurrentMipDim;
-			Viewports.Add(MoveTemp(Viewport));
-
 			ReadResult = ReadInChunks(MipDataPtr, ImagePath, ConverterParams->FrameId, CurrentMipDim, BufferSize);
 			OutFrame->NumTilesRead++;
 		}
@@ -240,6 +215,8 @@ FExrImgMediaReader::EReadResult FExrImgMediaReaderGpu::ReadMip
 				{
 					SCOPED_DRAW_EVENT(RHICmdList, FExrImgMediaReaderGpu_CopyBuffers);
 					TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*FString::Printf(TEXT("ExrReaderGpu.StartCopy %d"), ConverterParams->FrameId));
+					SCOPED_GPU_STAT(RHICmdList, ExrImgMediaReaderGpu_CopyUploadBuffer);
+
 					if (BufferRegionsToCopy.IsEmpty())
 					{
 						RHICmdList.CopyBufferRegion(BufferData->ShaderAccessBufferRef, 0, BufferData->UploadBufferRef, 0, BufferData->ShaderAccessBufferRef->GetSize());
@@ -321,7 +298,7 @@ bool FExrImgMediaReaderGpu::ReadFrame(int32 FrameId, const TMap<int32, FImgMedia
 		// Force mip level to be upscaled to all higher quality mips.
 		FIntPoint CurrentMipDim = ConverterParams->FullResolution;
 		TMap<int32, FImgMediaTileSelection> InMipTilesCopy = InMipTiles;
-		const int32 MipToUpscale = FMath::Clamp(CVarUpscaleLowQualityMip.GetValueOnAnyThread(), -1, ConverterParams->NumMipLevels - 1);
+		const int32 MipToUpscale = FMath::Clamp(Loader->GetMinimumLevelToUpscale(), -1, ConverterParams->NumMipLevels - 1);
 
 		if (ConverterParams->NumMipLevels > 1 && MipToUpscale >= 0)
 		{
@@ -353,36 +330,83 @@ bool FExrImgMediaReaderGpu::ReadFrame(int32 FrameId, const TMap<int32, FImgMedia
 			FString ImagePath = Loader->GetImagePath(ConverterParams->FrameId, ConverterParams->bMipsInSeparateFiles ? CurrentMipLevel : 0);
 
 			EReadResult ReadResult = ReadMip(CurrentMipLevel, CurrentTileSelection, OutFrame, ConverterParams, SampleConverter, ImagePath, bHasTiles);
-
-			/* Error handling. */
-			if (ReadResult == Success)
+			switch (ReadResult)
 			{
-				OutFrame->MipTilesPresent.Emplace(CurrentMipLevel, CurrentTileSelection);
-			}
-			else if (ReadResult == Fail)
-			{
-				// Check if we have a compressed file.
-				FImgMediaFrameInfo Info;
-				if (GetInfo(ImagePath, Info))
+			case FExrImgMediaReader::Success:
+				if (OutFrame->MipTilesPresent.Find(CurrentMipLevel))
 				{
-					if (Info.CompressionName != "Uncompressed")
-					{
-						UE_LOG(LogImgMedia, Error, TEXT("GPU Reader cannot read compressed file %s."), *ImagePath);
-						UE_LOG(LogImgMedia, Error, TEXT("Compressed and uncompressed files should not be mixed in a single sequence."));
-					}
+					OutFrame->MipTilesPresent[CurrentMipLevel].Include(CurrentTileSelection);
 				}
+				else
+				{
+					OutFrame->MipTilesPresent.Emplace(CurrentMipLevel, CurrentTileSelection);
+				}
+				break;
+			case FExrImgMediaReader::Fail:
+				{
+					// Check if we have a compressed file.
+					FImgMediaFrameInfo Info;
+					if (GetInfo(ImagePath, Info))
+					{
+						if (Info.CompressionName != "Uncompressed")
+						{
+							UE_LOG(LogImgMedia, Error, TEXT("GPU Reader cannot read compressed file %s."), *ImagePath);
+							UE_LOG(LogImgMedia, Error, TEXT("Compressed and uncompressed files should not be mixed in a single sequence."));
+						}
+					}
 
-				// Fall back to CPU.
-				bFallBackToCPU = true;
+					// Fall back to CPU.
+					bFallBackToCPU = true;
 
-				// To make sure that Media Texture doesn't call the converter if this frame is invalid.
-				OutFrame->SampleConverter.Reset();
+					// To make sure that Media Texture doesn't call the converter if this frame is invalid.
+					OutFrame->SampleConverter.Reset();
 
-				return FExrImgMediaReader::ReadFrame(ConverterParams->FrameId, InMipTiles, OutFrame);
-			}
-			else if (ReadResult == Cancelled)
-			{
+					return FExrImgMediaReader::ReadFrame(ConverterParams->FrameId, InMipTiles, OutFrame);
+				}
+				break;
+			case FExrImgMediaReader::Cancelled:
+				// Abort further reading
 				return false;
+			case FExrImgMediaReader::Skipped:
+				// No new tiles were read, continue to the next mip level.
+				break;
+
+			default:
+				checkNoEntry();
+				break;
+			};
+		}
+		
+		// Create viewport(s) with all mip/tiles present
+		for (const TPair<int32, FImgMediaTileSelection>& TilesPerMip : OutFrame->MipTilesPresent)
+		{
+			const FImgMediaTileSelection& CurrentTileSelection = TilesPerMip.Value;
+			const int32 CurrentMipLevel = TilesPerMip.Key;
+
+			// Skip this viewport since we don't have anything to render.
+			if (!SampleConverter->GetMipLevelBuffer(CurrentMipLevel))
+			{
+				continue;
+			}
+
+			const int32 MipLevelDiv = 1 << CurrentMipLevel;
+			
+			TArray<FIntRect>& Viewports = ConverterParams->Viewports.Add(CurrentMipLevel);
+			for (const FIntRect& TileRegion : CurrentTileSelection.GetVisibleRegions())
+			{
+				FIntRect Viewport;
+				if (bHasTiles || ConverterParams->bCustomExr)
+				{
+					Viewport.Min = FIntPoint(ConverterParams->TileDimWithBorders.X * TileRegion.Min.X, ConverterParams->TileDimWithBorders.Y * TileRegion.Min.Y);
+					Viewport.Max = FIntPoint(ConverterParams->TileDimWithBorders.X * TileRegion.Max.X, ConverterParams->TileDimWithBorders.Y * TileRegion.Max.Y);
+					Viewport.Clip(FIntRect(FIntPoint::ZeroValue, CurrentMipDim));
+				}
+				else
+				{
+					Viewport.Min = FIntPoint(0, 0);
+					Viewport.Max = CurrentMipDim;
+				}
+				Viewports.Add(Viewport);
 			}
 		}
 	}
@@ -607,6 +631,12 @@ void FExrImgMediaReaderGpu::CreateSampleConverterCallback
 			{
 				SCOPED_GPU_STAT(RHICmdList, ExrImgMediaReaderGpu_MipUpscale);
 
+				// Sanity check.
+				if (!MipBuffers.Contains(MipToUpscale))
+				{
+					UE_LOG(LogImgMedia, Warning, TEXT("Requested mip could not be found %s"), MipToUpscale);
+				}
+
 				FStructuredBufferPoolItemSharedPtr BufferDataToUpscale = MipBuffers[MipToUpscale];
 				TArray<FIntRect> FakeViewport;
 				FakeViewport.Add(FIntRect(FIntPoint(0, 0), Dim));
@@ -617,6 +647,13 @@ void FExrImgMediaReaderGpu::CreateSampleConverterCallback
 		for (const TPair<int32, TArray<FIntRect>>& MipLevelViewports : ConverterParams->Viewports)
 		{
 			int32 MipLevel = MipLevelViewports.Key;
+			
+			// Sanity check.
+			if (!MipBuffers.Contains(MipLevel))
+			{
+				continue;
+			}
+
 			FStructuredBufferPoolItemSharedPtr BufferData = MipBuffers[MipLevel];
 			int MipLevelDiv = 1 << MipLevel;
 			FIntPoint Dim = ConverterParams->FullResolution / MipLevelDiv;

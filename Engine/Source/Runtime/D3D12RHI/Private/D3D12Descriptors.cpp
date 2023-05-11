@@ -179,6 +179,31 @@ FD3D12DescriptorHeap* FD3D12BindlessDescriptorManager::GetHeapForType(ERHIDescri
 	return nullptr;
 }
 
+bool FD3D12BindlessDescriptorManager::HasHeapForType(ERHIDescriptorHeapType InType) const
+{
+	for (const FD3D12DescriptorManager& Manager : Managers)
+	{
+		if (Manager.HandlesAllocation(InType))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+D3D12_GPU_DESCRIPTOR_HANDLE FD3D12BindlessDescriptorManager::GetGpuHandle(FRHIDescriptorHandle InHandle) const
+{
+	for (const FD3D12DescriptorManager& Manager : Managers)
+	{
+		if (Manager.HandlesAllocation(InHandle.GetType()))
+		{
+			return Manager.GetHeap()->GetGPUSlotHandle(InHandle.GetIndex());
+		}
+	}
+	return D3D12_GPU_DESCRIPTOR_HANDLE{};
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // FD3D12OnlineDescriptorManager
 
@@ -189,7 +214,7 @@ FD3D12OnlineDescriptorManager::FD3D12OnlineDescriptorManager(FD3D12Device* Devic
 
 FD3D12OnlineDescriptorManager::~FD3D12OnlineDescriptorManager() = default;
 
-/** Allocate and initialize the online heap */
+// Allocate and initialize the online heap
 void FD3D12OnlineDescriptorManager::Init(uint32 InTotalSize, uint32 InBlockSize)
 {
 	Heap = GetParentDevice()->GetDescriptorHeapManager().AllocateHeap(
@@ -205,7 +230,6 @@ void FD3D12OnlineDescriptorManager::Init(uint32 InTotalSize, uint32 InBlockSize)
 
 	// Compute amount of free blocks
 	uint32 BlockCount = InTotalSize / InBlockSize;
-	ReleasedBlocks.Reserve(BlockCount);
 
 	// Allocate the free blocks
 	uint32 CurrentBaseSlot = 0;
@@ -218,15 +242,12 @@ void FD3D12OnlineDescriptorManager::Init(uint32 InTotalSize, uint32 InBlockSize)
 	}
 }
 
-/** Allocate a new heap block - will also check if released blocks can be freed again */
+// Allocate a new heap block
 FD3D12OnlineDescriptorBlock* FD3D12OnlineDescriptorManager::AllocateHeapBlock()
 {
 	SCOPED_NAMED_EVENT(FD3D12OnlineViewHeap_AllocateHeapBlock, FColor::Silver);
 
 	FScopeLock Lock(&CriticalSection);
-
-	// Check if certain released blocks are free again
-	UpdateFreeBlocks();
 
 	// Free block
 	FD3D12OnlineDescriptorBlock* Result = nullptr;
@@ -243,44 +264,29 @@ FD3D12OnlineDescriptorBlock* FD3D12OnlineDescriptorManager::AllocateHeapBlock()
 	return Result;
 }
 
-/** Free given block - can still be used by the GPU (SyncPoint needs to be setup by the caller and will be used to check if the block can be reused again) */
-void FD3D12OnlineDescriptorManager::FreeHeapBlock(FD3D12OnlineDescriptorBlock * InHeapBlock)
+// Free given block - can still be used by the GPU
+void FD3D12OnlineDescriptorManager::FreeHeapBlock(FD3D12OnlineDescriptorBlock* InHeapBlock)
 {
-	FScopeLock Lock(&CriticalSection);
-
 	// Update stats
 	DEC_DWORD_STAT_BY(STAT_GlobalViewHeapReservedDescriptors, InHeapBlock->Size);
 	INC_DWORD_STAT_BY(STAT_GlobalViewHeapUsedDescriptors, InHeapBlock->SizeUsed);
 	INC_DWORD_STAT_BY(STAT_GlobalViewHeapWastedDescriptors, InHeapBlock->Size - InHeapBlock->SizeUsed);
 
-	ReleasedBlocks.Add(InHeapBlock);
+	FD3D12DynamicRHI::GetD3DRHI()->DeferredDelete(InHeapBlock, this);
 }
 
-/** Find all the blocks which are not used by the GPU anymore */
-void FD3D12OnlineDescriptorManager::UpdateFreeBlocks()
+// Called by the EOP task to recycle blocks
+void FD3D12OnlineDescriptorManager::Recycle(FD3D12OnlineDescriptorBlock* Block)
 {
-	for (int32 BlockIndex = 0; BlockIndex < ReleasedBlocks.Num(); )
-	{
-		// Check if GPU is ready consuming the block data
-		FD3D12OnlineDescriptorBlock* ReleasedBlock = ReleasedBlocks[BlockIndex];
-		if (ReleasedBlock->SyncPoint->IsComplete())
-		{
-			// Update stats
-			DEC_DWORD_STAT_BY(STAT_GlobalViewHeapUsedDescriptors, ReleasedBlock->SizeUsed);
-			DEC_DWORD_STAT_BY(STAT_GlobalViewHeapWastedDescriptors, ReleasedBlock->Size - ReleasedBlock->SizeUsed);
-			INC_DWORD_STAT_BY(STAT_GlobalViewHeapFreeDescriptors, ReleasedBlock->Size);
+	FScopeLock Lock(&CriticalSection);
 
-			ReleasedBlock->SizeUsed = 0;
-			FreeBlocks.Enqueue(ReleasedBlock);
+	// Update stats
+	DEC_DWORD_STAT_BY(STAT_GlobalViewHeapUsedDescriptors, Block->SizeUsed);
+	DEC_DWORD_STAT_BY(STAT_GlobalViewHeapWastedDescriptors, Block->Size - Block->SizeUsed);
+	INC_DWORD_STAT_BY(STAT_GlobalViewHeapFreeDescriptors, Block->Size);
 
-			// don't want to resize, but optional parameter is missing
-			ReleasedBlocks.RemoveAtSwap(BlockIndex);
-		}
-		else
-		{
-			BlockIndex++;
-		}
-	}
+	Block->SizeUsed = 0;
+	FreeBlocks.Enqueue(Block);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

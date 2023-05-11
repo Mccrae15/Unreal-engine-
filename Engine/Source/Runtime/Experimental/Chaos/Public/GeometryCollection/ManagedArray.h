@@ -77,6 +77,54 @@ inline void TryBulkSerializeManagedArray(Chaos::FChaosArchive& Ar, TArray<FIntVe
 	Array.BulkSerialize(Ar);
 }
 
+
+// --------------------------------------------------------------------------
+// utility functions to estimate the allocated size of managed arrays
+// --------------------------------------------------------------------------
+namespace ManagedArrayTypeSize
+{
+	template<typename T>
+	inline SIZE_T GetAllocatedSize(const T& Value)
+	{
+		return sizeof(T);
+	}
+
+	template<typename T>
+	inline SIZE_T GetAllocatedSize(const TArray<T>& Array)
+	{
+		return Array.GetAllocatedSize();
+	}
+
+	template<typename T>
+	inline SIZE_T GetAllocatedSize(const TSet<T>& Set)
+	{
+		return Set.GetAllocatedSize();
+	}
+
+	template<typename T>
+	inline SIZE_T GetAllocatedSize(const TUniquePtr<T>& Ptr)
+	{
+		return Ptr ? ManagedArrayTypeSize::GetAllocatedSize(*Ptr) : 0;
+	}
+
+	template<typename T, ESPMode Mode>
+	inline SIZE_T GetAllocatedSize(const TSharedPtr<T, Mode>& Ptr)
+	{
+		return Ptr ? ManagedArrayTypeSize::GetAllocatedSize(*Ptr) : 0;
+	}
+
+	inline SIZE_T GetAllocatedSize(const Chaos::FImplicitObject3* ImplicitObjectPtr)
+	{
+		return ImplicitObjectPtr ? sizeof(Chaos::FImplicitObject3) : 0;
+	}
+
+	inline SIZE_T GetAllocatedSize(const Chaos::FBVHParticlesFloat3& BVHParticles)
+	{
+		return BVHParticles.GetAllocatedSize();
+	}
+}
+
+
 /***
 *  Managed Array Base
 *
@@ -117,6 +165,17 @@ protected:
 	* Init from a predefined Array
 	*/
 	virtual void Init(const FManagedArrayBase& ) {};
+
+	/**
+	* Copy a range of values from the ConstArray into this
+	*/
+	virtual void CopyRange(const FManagedArrayBase& ConstArray, int32 Start, int32 Stop, int32 Offset = 0) {};
+
+
+	/**
+	* Get allocated memory 
+	*/
+	virtual SIZE_T GetAllocatedSize() const { return 0; }
 
 public:
 	FManagedArrayBase()
@@ -204,6 +263,10 @@ template <typename T>
 void InitHelper(TArray<T>& Array, const TManagedArrayBase<T>& NewTypedArray, int32 Size);
 template <typename T>
 void InitHelper(TArray<TUniquePtr<T>>& Array, const TManagedArrayBase<TUniquePtr<T>>& NewTypedArray, int32 Size);
+template <typename T>
+void CopyRangeHelper(TArray<T>& Target, const TManagedArrayBase<T>& Source, int32 Start, int32 Stop, int32 Offset);
+template <typename T>
+void CopyRangeHelper(TArray<TUniquePtr<T>>& Array, const TManagedArrayBase<TUniquePtr<T>>& ConstArray, int32 Start, int32 Stop, int32 Offset);
 
 /***
 *  Managed Array
@@ -297,7 +360,6 @@ public:
  		Array.Shrink();
 	}
 
-
 	/**
 	* Init from a predefined Array of matching type
 	*/
@@ -309,6 +371,24 @@ public:
 
 		Resize(Size);
 		InitHelper(Array, NewTypedArray, Size);
+	}
+
+	virtual SIZE_T GetAllocatedSize() const override
+	{
+		return ManagedArrayTypeSize::GetAllocatedSize(Array);
+	}
+
+	/**
+	* Copy from a predefined Array of matching type
+	*/
+	virtual void CopyRange(const FManagedArrayBase& ConstArray, int32 Start, int32 Stop, int32 Offset = 0) override
+	{
+		ensureMsgf(ConstArray.GetTypeSize() == GetTypeSize(), TEXT("TManagedArrayBase<T>::Init : Invalid array types."));
+		if (ensureMsgf(Stop + Offset <= Array.Num(), TEXT("Error : Index out of bounds")))
+		{
+			const TManagedArrayBase<ElementType>& TypedConstArray = static_cast<const TManagedArrayBase<ElementType>&>(ConstArray);
+			CopyRangeHelper(Array, TypedConstArray, Start, Stop, Offset);
+		}
 	}
 
 	/**
@@ -550,16 +630,39 @@ void InitHelper(TArray<TUniquePtr<T>>& Array, const TManagedArrayBase<TUniquePtr
 	}
 }
 
+template <typename T>
+void CopyRangeHelper(TArray<T>& Target, const TManagedArrayBase<T>& Source, int32 Start, int32 Stop, int32 Offset)
+{
+	for (int32 Sdx = Start, Tdx = Start + Offset; Sdx < Source.Num() && Tdx < Target.Num() && Sdx < Stop; Sdx++, Tdx++)
+	{
+		Target[Tdx] = Source[Sdx];
+	}
+}
+
+template <typename T>
+void CopyRangeHelper(TArray<TUniquePtr<T>>& Target, const TManagedArrayBase<TUniquePtr<T>>& Source, int32 Start, int32 Stop, int32 Offset)
+{
+	for (int32 Sdx = Start, Tdx = Start+Offset; Sdx<Source.Num() && Tdx<Target.Num() && Sdx<Stop; Sdx++, Tdx++)
+	{
+		Target[Tdx].Reset((T*)Source[Sdx]->Copy().Release());
+	}
+}
+
 //
 //
 //
 #define UNSUPPORTED_UNIQUE_ARRAY_COPIES(TYPE, NAME) \
 template<> inline void InitHelper(TArray<TYPE>& Array, const TManagedArrayBase<TYPE>& NewTypedArray, int32 Size) { \
-	UE_LOG(LogChaos,Warning, TEXT("Cannot make a copy of unique array of type (%s) within the managed array collection. Regenerate unique pointer attributes if needed."), NAME); \
+	UE_LOG(LogChaos,Warning, TEXT("Cannot make a copy of unique array of type (%s) within the managed array collection. Regenerate unique pointer attributes if needed."), NAME); }\
+template<> inline void CopyRangeHelper(TArray<TYPE>& Target, const TManagedArrayBase<TYPE>& Source, int32 Start, int32 Stop, int32 Offset) {\
+	UE_LOG(LogChaos, Warning, TEXT("Cannot make a range copy of unique array of type (%s) within the managed array collection. Regenerate unique pointer attributes if needed."), NAME); \
 }
 
 typedef TUniquePtr<Chaos::TGeometryParticle<Chaos::FReal, 3>> LOCAL_MA_UniqueTGeometryParticle;
 UNSUPPORTED_UNIQUE_ARRAY_COPIES(LOCAL_MA_UniqueTGeometryParticle, TEXT("Chaos::TGeometryParticle"));
+
+typedef TUniquePtr<Chaos::TPBDRigidParticle<Chaos::FReal, 3>> LOCAL_MA_UniqueTPBDRigidParticle;
+UNSUPPORTED_UNIQUE_ARRAY_COPIES(LOCAL_MA_UniqueTPBDRigidParticle, TEXT("Chaos::TPBDRigidParticle"));
 
 typedef TUniquePtr<Chaos::FBVHParticles, TDefaultDelete<Chaos::FBVHParticles>> LOCAL_MA_UniqueTBVHParticles;
 UNSUPPORTED_UNIQUE_ARRAY_COPIES(LOCAL_MA_UniqueTBVHParticles, TEXT("Chaos::FBVHParticles"));

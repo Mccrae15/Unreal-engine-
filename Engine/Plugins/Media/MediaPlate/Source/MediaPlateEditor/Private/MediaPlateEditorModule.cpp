@@ -4,9 +4,11 @@
 
 #include "AssetTools/MediaPlateActions.h"
 #include "Editor.h"
+#include "IPlacementModeModule.h"
 #include "ISequencerModule.h"
 #include "LevelEditor.h"
 #include "MaterialList.h"
+#include "MediaPlate.h"
 #include "MediaPlateComponent.h"
 #include "MediaPlateCustomization.h"
 #include "MediaPlateEditorStyle.h"
@@ -32,6 +34,8 @@ void FMediaPlateEditorModule::StartupModule()
 	FMediaPlateEditorCommands::Register();
 
 	RegisterAssetTools();
+	RegisterPlacementModeItems();
+	RegisterSectionMappings();
 
 	// Register customizations.
 	MediaPlateName = UMediaPlateComponent::StaticClass()->GetFName();
@@ -72,6 +76,7 @@ void FMediaPlateEditorModule::ShutdownModule()
 		SequencerModulePtr->UnRegisterTrackEditor(TrackEditorBindingHandle);
 	}
 
+	UnregisterPlacementModeItems();
 	UnregisterAssetTools();
 
 	// Unregister customizations.
@@ -138,6 +143,36 @@ bool FMediaPlateEditorModule::RemoveMediaSourceFromDragDropCache(UMediaSource* M
 	return bIsInCache;
 }
 
+const FPlacementCategoryInfo* FMediaPlateEditorModule::GetMediaCategoryRegisteredInfo() const
+{
+	const IPlacementModeModule& PlacementModeModule = IPlacementModeModule::Get();
+	const FName PlacementModeCategoryHandle = TEXT("MediaPlate");
+
+	if (const FPlacementCategoryInfo* RegisteredInfo = 
+		PlacementModeModule.GetRegisteredPlacementCategory(PlacementModeCategoryHandle))
+	{
+		return RegisteredInfo;
+	}
+	else if (Style != nullptr)
+	{
+		FPlacementCategoryInfo Info(
+			LOCTEXT("MediaPlateCategoryName", "Media Plate"),
+			FSlateIcon(Style->GetStyleSetName(), "ClassIcon.MediaPlate"),
+			PlacementModeCategoryHandle,
+			TEXT("MediaPlate"),
+			26 // Determines where the category shows up in the list with respect to the others.
+		);
+
+		IPlacementModeModule::Get().RegisterPlacementCategory(Info);
+
+		return PlacementModeModule.GetRegisteredPlacementCategory(PlacementModeCategoryHandle);
+	}
+	else
+	{
+		return nullptr;
+	}
+}
+
 void FMediaPlateEditorModule::RegisterAssetTools()
 {
 	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
@@ -149,6 +184,58 @@ void FMediaPlateEditorModule::RegisterAssetTypeAction(IAssetTools& AssetTools, T
 {
 	AssetTools.RegisterAssetTypeActions(Action);
 	RegisteredAssetTypeActions.Add(Action);
+}
+
+void FMediaPlateEditorModule::RegisterPlacementModeItems()
+{
+	auto RegisterPlaceActors = [this]() -> void
+	{
+		if (!GEditor)
+		{
+			return;
+		}
+
+		const FPlacementCategoryInfo* Info = GetMediaCategoryRegisteredInfo();
+
+		if (!Info)
+		{
+			UE_LOG(LogMediaPlateEditor, Warning, TEXT("Could not find or create Media Place Actor Category"));
+			return;
+		}
+
+		// Register the Checkerboard
+		PlaceActors.Add(IPlacementModeModule::Get().RegisterPlaceableItem(Info->UniqueHandle, MakeShared<FPlaceableItem>(
+			*AMediaPlate::StaticClass(),
+			FAssetData(AMediaPlate::StaticClass()),
+			NAME_None,
+			NAME_None,
+			TOptional<FLinearColor>(),
+			TOptional<int32>(),
+			LOCTEXT("PlacementMode", "MediaPlate")
+		)));
+	};
+
+	if (FApp::CanEverRender())
+	{
+		if (GEngine && GEngine->IsInitialized())
+		{
+			RegisterPlaceActors();
+		}
+		else
+		{
+			FCoreDelegates::OnPostEngineInit.AddLambda(RegisterPlaceActors);
+		}
+	}
+}
+
+void FMediaPlateEditorModule::RegisterSectionMappings()
+{
+	FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
+
+	// Media Plate.
+	TSharedRef<FPropertySection> Section = PropertyModule.FindOrCreateSection("Object", "General", LOCTEXT("General", "General"));
+	Section->AddCategory("Control");
+	Section->AddCategory("MediaPlate");
 }
 
 void FMediaPlateEditorModule::UnregisterAssetTools()
@@ -164,6 +251,25 @@ void FMediaPlateEditorModule::UnregisterAssetTools()
 			AssetTools.UnregisterAssetTypeActions(Action);
 		}
 	}
+}
+
+
+void FMediaPlateEditorModule::UnregisterPlacementModeItems()
+{
+	if (IPlacementModeModule::IsAvailable())
+	{
+		IPlacementModeModule& PlacementModeModule = IPlacementModeModule::Get();
+
+		for (TOptional<FPlacementModeID>& PlaceActor : PlaceActors)
+		{
+			if (PlaceActor.IsSet())
+			{
+				PlacementModeModule.UnregisterPlaceableItem(*PlaceActor);
+			}
+		}
+	}
+
+	PlaceActors.Empty();
 }
 
 void FMediaPlateEditorModule::OnPostEngineInit()

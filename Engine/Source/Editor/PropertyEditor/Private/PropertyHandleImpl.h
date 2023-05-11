@@ -82,6 +82,14 @@ public:
 	FPropertyAccess::Result GetValueData( void*& OutAddress ) const;
 
 	/**
+	 * Gets edit stack for this property
+	 *
+	 * @param OutStack	Edit stack
+	 * @return The result of the query
+	 */
+	FPropertyAccess::Result GetValueEditStack(FPropertyNodeEditStack& OutStack) const;
+
+	/**
 	 * Given an address and a property type, get the actual value out
 	 *
 	 * @param Address	The location of the property value
@@ -459,6 +467,7 @@ public:
 	virtual bool GetBoolMetaData(const FName& Key) const override;
 	virtual int32 GetIntMetaData(const FName& Key) const override;
 	virtual float GetFloatMetaData(const FName& Key) const override;
+	virtual double GetDoubleMetaData(const FName& Key) const override;
 	virtual UClass* GetClassMetaData(const FName& Key) const override;
 	virtual void SetInstanceMetaData(const FName& Key, const FString& Value) override;
 	virtual const FString* GetInstanceMetaData(const FName& Key) const override;

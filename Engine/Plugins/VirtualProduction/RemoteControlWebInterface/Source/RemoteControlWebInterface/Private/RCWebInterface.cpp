@@ -13,6 +13,8 @@
 #if WITH_EDITOR
 #include "Editor.h"
 #include "RCWebInterfaceCustomizations.h"
+#else
+#include "HAL/IConsoleManager.h"
 #endif
 
 #define LOCTEXT_NAMESPACE "FRemoteControlWebInterfaceModule"
@@ -26,13 +28,16 @@ namespace RCWebInterface
 {
 	bool IsWebInterfaceEnabled()
 	{
+		const bool bIsBuildMachine = FPlatformMisc::GetEnvironmentVariable(TEXT("IsBuildMachine")) == TEXT("1");
+		
 		bool bIsEditor = false;
 
 #if WITH_EDITOR
 		bIsEditor = GIsEditor;
 #endif
-		// By default, remote control web interface is disabled in -game and packaged game.
-		return (!IsRunningCommandlet() && bIsEditor) || FParse::Param(FCommandLine::Get(), TEXT("RCWebInterfaceEnable"));
+
+		// By default, remote control web interface is disabled in -game, packaged game, and on build machines.
+		return (!bIsBuildMachine && !IsRunningCommandlet() && bIsEditor) || FParse::Param(FCommandLine::Get(), TEXT("RCWebInterfaceEnable"));
 	}
 }
 
@@ -147,11 +152,18 @@ bool FRemoteControlWebInterfaceModule::Exec(UWorld* InWorld, const TCHAR* Cmd, F
 void FRemoteControlWebInterfaceModule::OnSettingsModified(UObject* Settings, FPropertyChangedEvent& PropertyChangedEvent)
 {
 	FName PropertyName = PropertyChangedEvent.GetPropertyName();
-	if (PropertyName == GET_MEMBER_NAME_CHECKED(URemoteControlSettings, RemoteControlWebInterfacePort) || PropertyName == GET_MEMBER_NAME_CHECKED(URemoteControlSettings, bForceWebAppBuildAtStartup))
+
+	if (PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
 	{
-		WebApp->Shutdown();
-		WebApp->Start();
+		if (PropertyName == GET_MEMBER_NAME_CHECKED(URemoteControlSettings, RemoteControlWebInterfacePort)
+			|| PropertyName == GET_MEMBER_NAME_CHECKED(URemoteControlSettings, bForceWebAppBuildAtStartup)
+			|| PropertyName == GET_MEMBER_NAME_CHECKED(URemoteControlSettings, RemoteControlWebInterfaceBindAddress))
+		{
+			WebApp->Shutdown();
+			WebApp->Start();
+		}
 	}
+
 
 	if (PropertyName == GET_MEMBER_NAME_CHECKED(URemoteControlSettings, bWebAppLogRequestDuration))
 	{

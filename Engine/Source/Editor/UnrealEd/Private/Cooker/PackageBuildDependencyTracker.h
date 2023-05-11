@@ -40,14 +40,14 @@ private:
 	virtual ~FPackageBuildDependencyTracker();
 
 	/** Track object reference reads */
-	static void StaticOnObjectHandleRead(UObject* ReadObject);
+	static void StaticOnObjectHandleRead(TArrayView<const UObject* const> Objects);
 
 	mutable FCriticalSection RecordsLock;
 	TMap<FName, TSet<FBuildDependencyAccessData>> Records;
 	FName LastReferencer = NAME_None;
 	FBuildDependencyAccessData LastAccessData{ NAME_None, nullptr };
 	TSet<FBuildDependencyAccessData>* LastReferencerSet = nullptr;
-	FDelegateHandle ObjectHandleReadHandle;
+	UE::CoreUObject::FObjectHandleTrackingCallbackId ObjectHandleReadHandle;
 	static FPackageBuildDependencyTracker Singleton;
 };
 

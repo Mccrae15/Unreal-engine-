@@ -1,10 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Online/StatsEOSGS.h"
+#include "EOSShared.h"
 #include "Online/AuthEOSGS.h"
+#include "Online/OnlineErrorEOSGS.h"
 #include "Online/OnlineIdEOSGS.h"
 #include "Online/OnlineServicesEOSGS.h"
-#include "Online/OnlineServicesEOSGSTypes.h"
 
 #include "eos_stats.h"
 
@@ -40,7 +41,15 @@ TOnlineAsyncOpHandle<FUpdateStats> FStatsEOSGS::UpdateStats(FUpdateStats::Params
 		return Op->GetHandle();
 	}
 
-	// TODO: Only load stats definitions on platforms which requires to upload leaderboard score separately
+	for (const FUserStats& UpdateUserStats : Op->GetParams().UpdateUsersStats)
+	{
+		if (Op->GetParams().LocalAccountId != UpdateUserStats.AccountId)
+		{
+			// Client can only update the stats of the local account itself
+			Op->SetError(Errors::InvalidParams());
+			return Op->GetHandle();
+		}
+	}
 
 	for (const FUserStats& UpdateUserStats : Op->GetParams().UpdateUsersStats)
 	{
@@ -57,8 +66,8 @@ TOnlineAsyncOpHandle<FUpdateStats> FStatsEOSGS::UpdateStats(FUpdateStats::Params
 			for (const TPair<FString, FStatValue>& StatPair : UpdateUserStats.Stats)
 			{
 				EOS_Stats_IngestData& EOSStat = EOSData[Index];
-				EOSStat.ApiVersion = EOS_STATS_INGESTDATA_API_LATEST;
-				static_assert(EOS_STATS_INGESTDATA_API_LATEST == 1, "EOS_Stats_IngestData updated, check new fields");
+				EOSStat.ApiVersion = 1;
+				UE_EOS_CHECK_API_MISMATCH(EOS_STATS_INGESTDATA_API_LATEST, 1);
 
 				EOSStat.IngestAmount = static_cast<int32>(StatPair.Value.GetInt64());
 				FCStringAnsi::Strncpy(EOSStatNames[Index].StatName, TCHAR_TO_UTF8(*StatPair.Key), STAT_NAME_MAX_LENGTH_EOS);
@@ -68,8 +77,8 @@ TOnlineAsyncOpHandle<FUpdateStats> FStatsEOSGS::UpdateStats(FUpdateStats::Params
 			}
 
 			EOS_Stats_IngestStatOptions Options = { };
-			Options.ApiVersion = EOS_STATS_INGESTSTAT_API_LATEST;
-			static_assert(EOS_STATS_INGESTSTAT_API_LATEST == 3, "EOS_Stats_IngestStat updated, check new fields");
+			Options.ApiVersion = 3;
+			UE_EOS_CHECK_API_MISMATCH(EOS_STATS_INGESTSTAT_API_LATEST, 3);
 			Options.LocalUserId = GetProductUserIdChecked(InAsyncOp.GetParams().LocalAccountId);
 			Options.TargetUserId = GetProductUserIdChecked(UpdateUserStats.AccountId);
 			Options.Stats = EOSData.GetData();
@@ -105,8 +114,8 @@ namespace Private
 void QueryStatsEOS(EOS_HStats StatsHandle, const FAccountId& LocalAccountId, const FAccountId& TargetAccountId, const TArray<FString>& StatNames, TPromise<const EOS_Stats_OnQueryStatsCompleteCallbackInfo*>&& Promise)
 {
 	EOS_Stats_QueryStatsOptions Options;
-	Options.ApiVersion = EOS_STATS_QUERYSTATS_API_LATEST;
-	static_assert(EOS_STATS_INGESTSTAT_API_LATEST == 3, "EOS_Stats_QueryStats updated, check new fields");
+	Options.ApiVersion = 3;
+	UE_EOS_CHECK_API_MISMATCH(EOS_STATS_INGESTSTAT_API_LATEST, 3);
 	Options.StartTime = EOS_STATS_TIME_UNDEFINED;
 	Options.EndTime = EOS_STATS_TIME_UNDEFINED;
 
@@ -138,8 +147,8 @@ void ReadStatsFromEOSResult(EOS_HStats StatsHandle, const EOS_Stats_OnQueryStats
 	{
 		char StatNameANSI[STAT_NAME_MAX_LENGTH_EOS];
 		EOS_Stats_CopyStatByNameOptions Options = { };
-		Options.ApiVersion = EOS_STATS_COPYSTATBYNAME_API_LATEST;
-		static_assert(EOS_STATS_COPYSTATBYNAME_API_LATEST == 1, "EOS_Stats_CopyStatByNameOptions updated, check new fields");
+		Options.ApiVersion = 1;
+		UE_EOS_CHECK_API_MISMATCH(EOS_STATS_COPYSTATBYNAME_API_LATEST, 1);
 		Options.TargetUserId = Data->TargetUserId;
 		Options.Name = StatNameANSI;
 		FCStringAnsi::Strncpy(StatNameANSI, TCHAR_TO_UTF8(*StatName), STAT_NAME_MAX_LENGTH_EOS);
@@ -229,7 +238,7 @@ TOnlineAsyncOpHandle<FBatchQueryStats> FStatsEOSGS::BatchQueryStats(FBatchQueryS
 			{
 				Private::QueryStatsEOS(StatsHandle, InAsyncOp.GetParams().LocalAccountId, TargetAccountId, InAsyncOp.GetParams().StatNames, MoveTemp(Promise));
 			})
-			.Then([this](TOnlineAsyncOp<FBatchQueryStats>& InAsyncOp, const EOS_Stats_OnQueryStatsCompleteCallbackInfo* Data)
+			.Then([this, TargetAccountId](TOnlineAsyncOp<FBatchQueryStats>& InAsyncOp, const EOS_Stats_OnQueryStatsCompleteCallbackInfo* Data)
 			{
 				if (Data->ResultCode != EOS_EResult::EOS_Success)
 				{
@@ -240,6 +249,7 @@ TOnlineAsyncOpHandle<FBatchQueryStats> FStatsEOSGS::BatchQueryStats(FBatchQueryS
 				}
 
 				FUserStats& UserStats = BatchQueriedUsersStats.Emplace_GetRef();
+				UserStats.AccountId = TargetAccountId;
 
 				Private::ReadStatsFromEOSResult(StatsHandle, Data, InAsyncOp.GetParams().StatNames, UserStats.Stats);
 				CacheUserStats(UserStats);

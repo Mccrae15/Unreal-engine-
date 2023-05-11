@@ -2,6 +2,8 @@
 
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using EpicGames.Horde.Common;
 using EpicGames.Horde.Compute;
 using Horde.Build.Agents.Fleet;
@@ -12,99 +14,111 @@ namespace Horde.Build.Agents.Pools
 	using PoolId = StringId<IPool>;
 
 	/// <summary>
-	/// A pool of machines
+	/// Metadata for configuring and picking a pool sizing strategy
 	/// </summary>
-	public interface IPool
+	public class PoolSizeStrategyInfo
 	{
 		/// <summary>
-		/// Unique id for this pool
+		/// Strategy implementation to use
 		/// </summary>
-		public PoolId Id { get; }
+		public PoolSizeStrategy Type { get; set; }
+		
+		/// <summary>
+		/// Condition if this strategy should be enabled (right now, using date/time as a distinguishing factor)
+		/// </summary>
+		public Condition? Condition { get; set; }
 
 		/// <summary>
-		/// Name of the pool
+		/// Configuration for the strategy, serialized as JSON
 		/// </summary>
-		public string Name { get; }
+		public string Config { get; set; } = "";
+		
+		/// <summary>
+		/// Integer to add after pool size has been calculated. Can also be negative.
+		/// </summary>
+		public int ExtraAgentCount { get; set; } = 0;
 
 		/// <summary>
-		/// Condition for agents to automatically be included in this pool
+		/// Empty constructor for JSON serialization
 		/// </summary>
-		public Condition? Condition { get; }
+		public PoolSizeStrategyInfo()
+		{
+		}
+		
+		/// <summary>
+		/// Constructor
+		/// </summary>
+		public PoolSizeStrategyInfo(PoolSizeStrategy type, Condition? condition, string? config, int extraAgentCount = 0)
+		{
+			config = String.IsNullOrWhiteSpace(config) ? "{}" : config;
 
+			// Try deserializing to ensure the config is valid JSON
+			// Config can be null due to JSON serializer calling the constructor
+			JsonSerializer.Deserialize<dynamic>(config);
+			
+			Type = type;
+			Condition = condition;
+			Config = config;
+			ExtraAgentCount = extraAgentCount;
+		}
+	}
+	
+	/// <summary>
+	/// Metadata for configuring and picking a fleet manager
+	/// </summary>
+	public class FleetManagerInfo
+	{
+		/// <summary>
+		/// Fleet manager type implementation to use
+		/// </summary>
+		public FleetManagerType Type { get; set; }
+		
+		/// <summary>
+		/// Condition if this strategy should be enabled (right now, using date/time as a distinguishing factor)
+		/// </summary>
+		public Condition? Condition { get; set; }
+
+		/// <summary>
+		/// Configuration for the strategy, serialized as JSON
+		/// </summary>
+		public string Config { get; set; } = "{}";
+
+		/// <summary>
+		/// Empty constructor for BSON/JSON serialization
+		/// </summary>
+		public FleetManagerInfo()
+		{
+		}
+		
+		/// <summary>
+		/// Constructor
+		/// </summary>
+		[JsonConstructor]
+		public FleetManagerInfo(FleetManagerType type, Condition? condition, string? config)
+		{
+			config = String.IsNullOrWhiteSpace(config) ? "{}" : config;
+			JsonSerializer.Deserialize<dynamic>(config);
+			
+			Type = type;
+			Condition = condition;
+			Config = config;
+		}
+	}
+
+	/// <summary>
+	/// Pool of machines
+	/// </summary>
+	public interface IPool : IPoolConfig
+	{
 		/// <summary>
 		/// List of workspaces currently assigned to this pool
 		/// </summary>
 		public IReadOnlyList<AgentWorkspace> Workspaces { get; }
 
 		/// <summary>
-		/// Whether to sync autosdk alongside the workspaces for this pool
+		/// Revision string for the config file describing this pool, or null if added manually.
 		/// </summary>
-		public bool UseAutoSdk { get; }
-
-		/// <summary>
-		/// Arbitrary properties related to this pool
-		/// </summary>
-		public IReadOnlyDictionary<string, string> Properties { get; }
-
-		/// <summary>
-		/// Whether to enable autoscaling for this pool
-		/// </summary>
-		public bool EnableAutoscaling { get; }
-
-		/// <summary>
-		/// The minimum number of agents to keep in the pool
-		/// </summary>
-		public int? MinAgents { get; }
-
-		/// <summary>
-		/// The minimum number of idle agents to hold in reserve
-		/// </summary>
-		public int? NumReserveAgents { get; }
-
-		/// <summary>
-		/// Interval between conforms. If zero, the pool will not conform on a schedule.
-		/// </summary>
-		public TimeSpan? ConformInterval { get; }
-
-		/// <summary>
-		/// Last time the pool was (auto) scaled up
-		/// </summary>
-		public DateTime? LastScaleUpTime { get; }
-		
-		/// <summary>
-		/// Last time the pool was (auto) scaled down
-		/// </summary>
-		public DateTime? LastScaleDownTime { get; }
-		
-		/// <summary>
-		/// Cooldown time between scale-out events
-		/// </summary>
-		public TimeSpan? ScaleOutCooldown { get; }
-		
-		/// <summary>
-		/// Cooldown time between scale-in events
-		/// </summary>
-		public TimeSpan? ScaleInCooldown { get; }
-		
-		/// <summary>
-		/// Pool sizing strategy to be used for this pool
-		/// </summary>
-		public PoolSizeStrategy SizeStrategy { get; }
-		
-		/// <summary>
-		/// Settings for lease utilization pool sizing strategy (if used)
-		/// </summary>
-		public LeaseUtilizationSettings? LeaseUtilizationSettings { get; }
-		
-		/// <summary>
-		/// Settings for job queue pool sizing strategy (if used)
-		/// </summary>
-		public JobQueueSettings? JobQueueSettings { get; }
-		
-		/// <summary>
-		/// Settings for job queue pool sizing strategy (if used)
-		/// </summary>
-		public ComputeQueueAwsMetricSettings? ComputeQueueAwsMetricSettings { get; }
+		public string? Revision { get; }
 
 		/// <summary>
 		/// Update index for this document

@@ -1,11 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ViewModel/MVVMViewModelBlueprintFactory.h"
+#include "MVVMViewModelBase.h"
 #include "ViewModel/MVVMViewModelBlueprint.h"
 #include "ViewModel/MVVMViewModelBlueprintGeneratedClass.h"
 
-#include "Blueprint/UserWidget.h"
-#include "ClassViewerModule.h"
 #include "ClassViewerFilter.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Kismet2/SClassPickerDialog.h"
@@ -15,6 +14,8 @@
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MVVMViewModelBlueprintFactory)
 
 #define LOCTEXT_NAMESPACE "ViewModelBlueprintFactory"
+
+#if UE_MVVM_WITH_VIEWMODEL_EDITOR
 
 /*------------------------------------------------------------------------------
 	UMVVMViewModelBlueprintFactory implementation.
@@ -47,14 +48,21 @@ public:
 
 }//namespace
 
+#endif
+
 UMVVMViewModelBlueprintFactory::UMVVMViewModelBlueprintFactory()
 {
+#if UE_MVVM_WITH_VIEWMODEL_EDITOR
 	bCreateNew = true;
+#else
+	bCreateNew = false;
+#endif
 	bEditAfterNew = true;
 	SupportedClass = UMVVMViewModelBlueprint::StaticClass();
 	ParentClass = UMVVMViewModelBase::StaticClass();
 }
 
+#if UE_MVVM_WITH_VIEWMODEL_EDITOR
 bool UMVVMViewModelBlueprintFactory::ConfigureProperties()
 {
 	FClassViewerModule& ClassViewerModule = FModuleManager::LoadModuleChecked<FClassViewerModule>("ClassViewer");
@@ -63,6 +71,7 @@ bool UMVVMViewModelBlueprintFactory::ConfigureProperties()
 	FClassViewerInitializationOptions Options;
 	Options.DisplayMode = EClassViewerDisplayMode::Type::TreeView;
 	Options.Mode = EClassViewerMode::ClassPicker;
+	Options.NameTypeToDisplay = EClassViewerNameTypeToDisplay::DisplayName;
 	Options.bShowNoneOption = false;
 	Options.bExpandAllNodes = true;
 
@@ -85,7 +94,7 @@ bool UMVVMViewModelBlueprintFactory::ConfigureProperties()
 
 bool UMVVMViewModelBlueprintFactory::ShouldShowInNewMenu() const
 {
-	return false; //Temporarily disabled until the editor is ready.
+	return true;
 }
 
 UObject* UMVVMViewModelBlueprintFactory::FactoryCreateNew(UClass* Class, UObject* InParent, FName Name, EObjectFlags Flags, UObject* Context, FFeedbackContext* Warn, FName CallingContext)
@@ -117,6 +126,8 @@ UObject* UMVVMViewModelBlueprintFactory::FactoryCreateNew(UClass* Class, UObject
 {
 	return FactoryCreateNew(Class, InParent, Name, Flags, Context, Warn, NAME_None);
 }
+
+#endif
 
 #undef LOCTEXT_NAMESPACE
 

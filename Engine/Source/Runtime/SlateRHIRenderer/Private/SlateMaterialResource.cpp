@@ -2,6 +2,8 @@
 
 #include "SlateMaterialResource.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialRenderProxy.h"
+#include "MaterialShared.h"
 #include "Styling/SlateBrush.h"
 
 namespace SlateMaterialResource

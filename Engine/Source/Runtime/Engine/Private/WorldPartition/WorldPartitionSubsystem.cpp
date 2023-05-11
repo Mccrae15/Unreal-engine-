@@ -1,16 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WorldPartition/WorldPartitionSubsystem.h"
+#include "SceneView.h"
+#include "UnrealEngine.h"
 #include "WorldPartition/WorldPartition.h"
-#include "WorldPartition/WorldPartitionStreamingPolicy.h"
 #include "WorldPartition/WorldPartitionDebugHelper.h"
 #include "WorldPartition/DataLayer/DataLayerSubsystem.h"
-#include "HAL/IConsoleManager.h"
+#include "WorldPartition/ContentBundle/ContentBundleWorldSubsystem.h"
 #include "Engine/Canvas.h"
-#include "Engine/Console.h"
 #include "Engine/CoreSettings.h"
-#include "ConsoleSettings.h"
 #include "Debug/DebugDrawService.h"
+#include "WorldPartition/WorldPartitionLog.h"
+#include "WorldPartition/WorldPartitionRuntimeHash.h"
+#include "WorldPartition/WorldPartitionStreamingSource.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(WorldPartitionSubsystem)
 
@@ -223,11 +225,31 @@ void UWorldPartitionSubsystem::RegisterStreamingSourceProvider(IWorldPartitionSt
 	UE_CLOG(bIsAlreadyInSet, LogWorldPartition, Warning, TEXT("Streaming source provider already registered."));
 }
 
+bool UWorldPartitionSubsystem::IsStreamingSourceProviderRegistered(IWorldPartitionStreamingSourceProvider* StreamingSource) const
+{
+	return StreamingSourceProviders.Contains(StreamingSource);
+}
+
 bool UWorldPartitionSubsystem::UnregisterStreamingSourceProvider(IWorldPartitionStreamingSourceProvider* StreamingSource)
 {
 	return !!StreamingSourceProviders.Remove(StreamingSource);
 }
 
+TSet<IWorldPartitionStreamingSourceProvider*> UWorldPartitionSubsystem::GetStreamingSourceProviders() const
+{
+	TSet<IWorldPartitionStreamingSourceProvider*> Result = StreamingSourceProviders;
+	if (!Result.IsEmpty() && IsStreamingSourceProviderFiltered.IsBound())
+	{
+		for (auto It = Result.CreateIterator(); It; ++It)
+		{
+			if (IsStreamingSourceProviderFiltered.Execute(*It))
+			{
+				It.RemoveCurrent();
+			}
+		}
+	}
+	return Result;
+}
 
 void UWorldPartitionSubsystem::Tick(float DeltaSeconds)
 {
@@ -270,12 +292,12 @@ bool UWorldPartitionSubsystem::IsStreamingCompleted(const IWorldPartitionStreami
 {
 	// Convert specified/optional streaming source provider to a world partition 
 	// streaming source and pass it along to each registered world partition
-	FWorldPartitionStreamingSource StreamingSource;
-	FWorldPartitionStreamingSource* StreamingSourcePtr = nullptr;
+	TArray<FWorldPartitionStreamingSource> StreamingSources;
+	TArray<FWorldPartitionStreamingSource>* StreamingSourcesPtr = nullptr;
 	if (InStreamingSourceProvider)
 	{
-		StreamingSourcePtr = &StreamingSource;
-		if (!InStreamingSourceProvider->GetStreamingSource(StreamingSource))
+		StreamingSourcesPtr = &StreamingSources;
+		if (!InStreamingSourceProvider->GetStreamingSources(StreamingSources))
 		{
 			return true;
 		}
@@ -283,7 +305,7 @@ bool UWorldPartitionSubsystem::IsStreamingCompleted(const IWorldPartitionStreami
 
 	for (UWorldPartition* RegisteredWorldPartition : RegisteredWorldPartitions)
 	{
-		if (!RegisteredWorldPartition->IsStreamingCompleted(StreamingSourcePtr))
+		if (!RegisteredWorldPartition->IsStreamingCompleted(StreamingSourcesPtr))
 		{
 			return false;
 		}
@@ -441,17 +463,22 @@ void UWorldPartitionSubsystem::Draw(UCanvas* Canvas, class APlayerController* PC
 		}
 	}
 
-	UDataLayerSubsystem* DataLayerSubsystem = WorldPartition->GetWorld()->GetSubsystem<UDataLayerSubsystem>();
-
 	if (GDrawLegends || GDrawRuntimeHash2D)
 	{
 		// Streaming Status Legend
 		WorldPartition->DrawStreamingStatusLegend(Canvas, CurrentOffset);
 	}
 
+	UDataLayerSubsystem* DataLayerSubsystem = WorldPartition->GetWorld()->GetSubsystem<UDataLayerSubsystem>();
 	if (DataLayerSubsystem && (GDrawDataLayers || GDrawDataLayersLoadTime || GDrawRuntimeHash2D))
 	{
 		DataLayerSubsystem->DrawDataLayersStatus(Canvas, CurrentOffset);
+	}
+
+	UContentBundleManager* ContentBundleManager = GetWorld()->ContentBundleManager;
+	if (ContentBundleManager && (FWorldPartitionDebugHelper::CanDrawContentBundles() && GDrawRuntimeHash2D))
+	{
+		ContentBundleManager->DrawContentBundlesStatus(GetWorld(), Canvas, CurrentOffset);
 	}
 
 	if (GDrawRuntimeCellsDetails)

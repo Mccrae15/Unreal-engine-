@@ -1,20 +1,24 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Misc/AutomationTest.h"
-#include "HAL/PlatformStackWalk.h"
-#include "HAL/FileManager.h"
-#include "Misc/CommandLine.h"
-#include "Misc/Paths.h"
-#include "Internationalization/Internationalization.h"
-#include "Misc/ConfigCacheIni.h"
-#include "Misc/ScopedSlowTask.h"
-#include "Misc/App.h"
-#include "Modules/ModuleManager.h"
-#include "Misc/OutputDeviceRedirector.h"
-#include "Internationalization/Regex.h"
+
 #include <inttypes.h>
-#include "Misc/App.h"
+
+#include "Algo/Copy.h"
+#include "HAL/FileManager.h"
+#include "HAL/PlatformStackWalk.h"
 #include "HAL/ThreadHeartBeat.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Regex.h"
+#include "Logging/StructuredLog.h"
+#include "Logging/TokenizedMessage.h"
+#include "Misc/App.h"
+#include "Misc/CommandLine.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/OutputDeviceRedirector.h"
+#include "Misc/Paths.h"
+#include "Misc/ScopedSlowTask.h"
+#include "Modules/ModuleManager.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogAutomationTest, Warning, All);
 
@@ -198,7 +202,12 @@ void FAutomationTestFramework::FAutomationTestOutputDevice::Serialize( const TCH
 	}
 }
 
-void FAutomationTestFramework::FAutomationTestMessageFilter::Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const class FName& Category)
+void FAutomationTestFramework::FAutomationTestMessageFilter::Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const FName& Category)
+{
+	Serialize(V, Verbosity, Category, -1.0);
+}
+
+void FAutomationTestFramework::FAutomationTestMessageFilter::Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const FName& Category, double Time)
 {
 	// Prevent null dereference if logging happens in async tasks while changing DestinationContext
 	FFeedbackContext* const LocalDestinationContext = DestinationContext.load(std::memory_order_relaxed);
@@ -206,14 +215,34 @@ void FAutomationTestFramework::FAutomationTestMessageFilter::Serialize(const TCH
 	if (LocalDestinationContext)
 	{
 		FScopeLock Lock(&ActionCS);
+		if (LocalCurTest && LocalCurTest->IsExpectedMessage(FString(V), Verbosity))
+		{
+			Verbosity = ELogVerbosity::Verbose;
+		}
+		LocalDestinationContext->Serialize(V, Verbosity, Category, Time);
+	}
+}
+
+void FAutomationTestFramework::FAutomationTestMessageFilter::SerializeRecord(const UE::FLogRecord& Record)
+{
+	// Prevent null dereference if logging happens in async tasks while changing DestinationContext
+	FFeedbackContext* const LocalDestinationContext = DestinationContext.load(std::memory_order_relaxed);
+	FAutomationTestBase* const LocalCurTest = CurTest.load(std::memory_order_relaxed);
+	if (LocalDestinationContext)
+	{
+		UE::FLogRecord LocalRecord = Record;
+		const ELogVerbosity::Type Verbosity = LocalRecord.GetVerbosity();
+		FScopeLock Lock(&ActionCS);
 		if ((Verbosity == ELogVerbosity::Warning) || (Verbosity == ELogVerbosity::Error))
 		{
-			if (LocalCurTest->IsExpectedError(FString(V)))
+			TStringBuilder<512> Line;
+			Record.FormatMessageTo(Line);
+			if (LocalCurTest->IsExpectedMessage(FString(Line), ELogVerbosity::Warning))
 			{
-				Verbosity = ELogVerbosity::Verbose;
+				LocalRecord.SetVerbosity(ELogVerbosity::Verbose);
 			}
 		}
-		LocalDestinationContext->Serialize(V, Verbosity, Category);
+		LocalDestinationContext->SerializeRecord(LocalRecord);
 	}
 }
 
@@ -583,10 +612,10 @@ void FAutomationTestFramework::GetValidTestNames( TArray<FAutomationTestInfo>& T
 	TestInfo.Empty();
 
 	// Determine required application type (Editor, Game, or Commandlet)
-	const bool bRunningEditor = GIsEditor && !IsRunningCommandlet();
-	const bool bRunningGame = !GIsEditor || IsRunningGame();
-	const bool bRunningServer = !GIsEditor || IsRunningDedicatedServer();
 	const bool bRunningCommandlet = IsRunningCommandlet();
+	const bool bRunningEditor = GIsEditor && !bRunningCommandlet;
+	const bool bRunningClient = !GIsEditor && !IsRunningDedicatedServer();
+	const bool bRunningServer = !GIsEditor && !IsRunningClientOnly();
 
 	//application flags
 	uint32 ApplicationSupportFlags = 0;
@@ -594,7 +623,7 @@ void FAutomationTestFramework::GetValidTestNames( TArray<FAutomationTestInfo>& T
 	{
 		ApplicationSupportFlags |= EAutomationTestFlags::EditorContext;
 	}
-	if ( bRunningGame )
+	if ( bRunningClient )
 	{
 		ApplicationSupportFlags |= EAutomationTestFlags::ClientContext;
 	}
@@ -833,11 +862,11 @@ bool FAutomationTestFramework::InternalStopTest(FAutomationTestExecutionInfo& Ou
 	// 1) Did the test itself report success?
 	// 2) Did any errors occur and were logged by the feedback context during execution?++----
 	// 3) Did we meet any errors that were expected with this test
-	bTestSuccessful = bTestSuccessful && !CurrentTest->HasAnyErrors() && CurrentTest->HasMetExpectedErrors();
+	bTestSuccessful = bTestSuccessful && !CurrentTest->HasAnyErrors() && CurrentTest->HasMetExpectedMessages();
 
 	{
 		FScopeLock Lock(&CurrentTest->ActionCS);
-		CurrentTest->ExpectedErrors.Empty();
+		CurrentTest->ExpectedMessages.Empty();
 	}
 
 	// Set the success state of the test based on the above criteria
@@ -1082,7 +1111,7 @@ void FAutomationTestBase::ClearExecutionInfo()
 
 void FAutomationTestBase::AddError(const FString& InError, int32 StackOffset)
 {
-	if( !IsExpectedError(InError))
+	if( !IsExpectedMessage(InError, ELogVerbosity::Warning))
 	{
 		FScopeLock Lock(&ActionCS);
 		ExecutionInfo.AddEvent(FAutomationEvent(EAutomationEventType::Error, InError), StackOffset + 1);
@@ -1099,7 +1128,7 @@ void FAutomationTestBase::AddErrorIfFalse(bool bCondition, const FString& InErro
 
 void FAutomationTestBase::AddErrorS(const FString& InError, const FString& InFilename, int32 InLineNumber)
 {
-	if ( !IsExpectedError(InError))
+	if ( !IsExpectedMessage(InError, ELogVerbosity::Warning))
 	{
 		FScopeLock Lock(&ActionCS);
 		//ExecutionInfo.AddEvent(FAutomationEvent(EAutomationEventType::Error, InError, ExecutionInfo.GetContext(), InFilename, InLineNumber));
@@ -1108,7 +1137,7 @@ void FAutomationTestBase::AddErrorS(const FString& InError, const FString& InFil
 
 void FAutomationTestBase::AddWarningS(const FString& InWarning, const FString& InFilename, int32 InLineNumber)
 {
-	if ( !IsExpectedError(InWarning))
+	if ( !IsExpectedMessage(InWarning, ELogVerbosity::Warning))
 	{
 		FScopeLock Lock(&ActionCS);
 		//ExecutionInfo.AddEvent(FAutomationEvent(EAutomationEventType::Warning, InWarning, ExecutionInfo.GetContext(), InFilename, InLineNumber));
@@ -1117,7 +1146,7 @@ void FAutomationTestBase::AddWarningS(const FString& InWarning, const FString& I
 
 void FAutomationTestBase::AddWarning( const FString& InWarning, int32 StackOffset )
 {
-	if ( !IsExpectedError(InWarning))
+	if ( !IsExpectedMessage(InWarning, ELogVerbosity::Warning))
 	{
 		FScopeLock Lock(&ActionCS);
 		ExecutionInfo.AddEvent(FAutomationEvent(EAutomationEventType::Warning, InWarning), StackOffset + 1);
@@ -1126,8 +1155,11 @@ void FAutomationTestBase::AddWarning( const FString& InWarning, int32 StackOffse
 
 void FAutomationTestBase::AddInfo( const FString& InLogItem, int32 StackOffset, bool bCaptureStack )
 {
-	FScopeLock Lock(&ActionCS);
-	ExecutionInfo.AddEvent(FAutomationEvent(EAutomationEventType::Info, InLogItem), StackOffset + 1, bCaptureStack);
+	if ( !IsExpectedMessage(InLogItem, ELogVerbosity::Display))
+	{
+		FScopeLock Lock(&ActionCS);
+		ExecutionInfo.AddEvent(FAutomationEvent(EAutomationEventType::Info, InLogItem), StackOffset + 1, bCaptureStack);
+	}
 }
 
 void FAutomationTestBase::AddAnalyticsItem(const FString& InAnalyticsItem)
@@ -1167,47 +1199,65 @@ bool FAutomationTestBase::HasAnyErrors() const
 	return ExecutionInfo.GetErrorTotal() > 0;
 }
 
-bool FAutomationTestBase::HasMetExpectedErrors()
+bool FAutomationTestBase::HasMetExpectedMessages(ELogVerbosity::Type VerbosityType)
 {
 	FScopeLock Lock(&ActionCS);
-	bool HasMetAllExpectedErrors = true;
+	bool bHasMetAllExpectedMessages = true;
 
-	for (auto& EError : ExpectedErrors)
+	for (FAutomationExpectedMessage& ExpectedMessage : ExpectedMessages)
 	{
-		if ((EError.ExpectedNumberOfOccurrences > 0) && (EError.ExpectedNumberOfOccurrences != EError.ActualNumberOfOccurrences))
+		if (!LogCategoryMatchesSeverityInclusive(ExpectedMessage.Verbosity, VerbosityType))
 		{
-			HasMetAllExpectedErrors = false;
+			continue;
+		}
+
+		// Avoid ambiguity of the messages below when the verbosity is "All"
+		const TCHAR* LogVerbosityString = ExpectedMessage.Verbosity == ELogVerbosity::All ? TEXT("Any") : ToString(ExpectedMessage.Verbosity);
+
+		const bool bExpectsOneOrMore = ExpectedMessage.ExpectedNumberOfOccurrences == 0;
+		if (!bExpectsOneOrMore && (ExpectedMessage.ExpectedNumberOfOccurrences != ExpectedMessage.ActualNumberOfOccurrences))
+		{
+			bHasMetAllExpectedMessages = false;
 
 			ExecutionInfo.AddEvent(FAutomationEvent(EAutomationEventType::Error,
-				FString::Printf(TEXT("Expected Error or Warning matching '%s' to occur %d times with %s match type, but it was found %d time(s).")
-					, *EError.ErrorPatternString
-					, EError.ExpectedNumberOfOccurrences
-					, EAutomationExpectedErrorFlags::ToString(EError.CompareType)
-					, EError.ActualNumberOfOccurrences)
-				, ExecutionInfo.GetContext()));			
+				FString::Printf(TEXT("Expected ('%s') log message matching '%s' to occur %d times with %s match type, but it was found %d time(s).")
+					, LogVerbosityString
+					, *ExpectedMessage.MessagePatternString
+					, ExpectedMessage.ExpectedNumberOfOccurrences
+					, EAutomationExpectedMessageFlags::ToString(ExpectedMessage.CompareType)
+					, ExpectedMessage.ActualNumberOfOccurrences)
+				, ExecutionInfo.GetContext()));
 		}
-		else if (EError.ExpectedNumberOfOccurrences == 0)
+		else if (bExpectsOneOrMore)
 		{
-			if (EError.ActualNumberOfOccurrences == 0)
+			if (ExpectedMessage.ActualNumberOfOccurrences == 0)
 			{
-				HasMetAllExpectedErrors = false;
+				bHasMetAllExpectedMessages = false;
 
 				ExecutionInfo.AddEvent(FAutomationEvent(EAutomationEventType::Error,
-					FString::Printf(TEXT("Expected suppressed Error or Warning matching '%s' did not occur."), *EError.ErrorPatternString),
-					ExecutionInfo.GetContext()));
+					FString::Printf(TEXT("Expected suppressed ('%s') log message matching '%s' did not occur.")
+						, LogVerbosityString
+						, *ExpectedMessage.MessagePatternString)
+					, ExecutionInfo.GetContext()));
 			}
 			else
 			{
 				ExecutionInfo.AddEvent(FAutomationEvent(EAutomationEventType::Info,
-					FString::Printf(TEXT("Suppressed expected Error or Warning matching '%s' %d times.")
-						, *EError.ErrorPatternString
-						, EError.ActualNumberOfOccurrences)
+					FString::Printf(TEXT("Suppressed expected ('%s') log message matching '%s' %d times.")
+						, LogVerbosityString
+						, *ExpectedMessage.MessagePatternString
+						, ExpectedMessage.ActualNumberOfOccurrences)
 					, ExecutionInfo.GetContext()));
 			}
 		}
 	}
 
-	return HasMetAllExpectedErrors;
+	return bHasMetAllExpectedMessages;
+}
+
+bool FAutomationTestBase::HasMetExpectedErrors()
+{
+	return HasMetExpectedMessages(ELogVerbosity::Warning);
 }
 
 void FAutomationTestBase::InternalSetSuccessState( bool bSuccessful )
@@ -1225,33 +1275,69 @@ void FAutomationTestBase::GetExecutionInfo( FAutomationTestExecutionInfo& OutInf
 	OutInfo = ExecutionInfo;
 }
 
-void FAutomationTestBase::AddExpectedError(FString ExpectedErrorPattern, EAutomationExpectedErrorFlags::MatchType InCompareType, int32 Occurrences)
+void FAutomationTestBase::AddExpectedMessage(
+	FString ExpectedPatternString,
+	ELogVerbosity::Type ExpectedVerbosity,
+	EAutomationExpectedMessageFlags::MatchType CompareType,
+	int32 Occurrences)
 {
 	if (Occurrences >= 0)
 	{
 		FScopeLock Lock(&ActionCS);
-		// If we already have an error matching string in our list, let's not add it again.
-		FAutomationExpectedError* FoundEntry = ExpectedErrors.FindByPredicate(
-			[ExpectedErrorPattern](const FAutomationExpectedError& InItem) 
+		// If we already have a message matching string in our list, let's not add it again.
+		FAutomationExpectedMessage* FoundEntry = ExpectedMessages.FindByPredicate(
+			[ExpectedPatternString](const FAutomationExpectedMessage& InItem) 
 				{
-					return InItem.ErrorPatternString == ExpectedErrorPattern; 
+					return InItem.MessagePatternString == ExpectedPatternString; 
 				}
 		);
 
 		if (FoundEntry)
 		{
-			UE_LOG(LogAutomationTest, Warning, TEXT("Adding expected error matching '%s' failed: cannot add duplicate entries"), *ExpectedErrorPattern)
+			UE_LOG(LogAutomationTest, Warning, TEXT("Adding expected log message matching '%s' failed: cannot add duplicate entries"), *ExpectedPatternString)
 		}
 		else
 		{
-			// ToDo: After UE-44340 is resolved, create FAutomationExpectedError and check that its ErrorPattern is valid before adding
-			ExpectedErrors.Add(FAutomationExpectedError(ExpectedErrorPattern, InCompareType, Occurrences));
+			// ToDo: Check that ExpectedPatternString is valid before adding
+			ExpectedMessages.Add(FAutomationExpectedMessage(ExpectedPatternString, ExpectedVerbosity, CompareType, Occurrences));
 		}
 	}
 	else
 	{
-		UE_LOG(LogAutomationTest, Error, TEXT("Adding expected error matching '%s' failed: number of expected occurrences must be >= 0"), *ExpectedErrorPattern);
+		UE_LOG(LogAutomationTest, Error, TEXT("Adding expected log message matching '%s' failed: number of expected occurrences must be >= 0"), *ExpectedPatternString);
 	}
+}
+
+void FAutomationTestBase::AddExpectedMessage(
+	FString ExpectedPatternString,
+	EAutomationExpectedMessageFlags::MatchType CompareType,
+	int32 Occurrences)
+{
+	AddExpectedMessage(MoveTemp(ExpectedPatternString), ELogVerbosity::All, CompareType, Occurrences);	
+}
+
+void FAutomationTestBase::GetExpectedMessages(
+	TArray<FAutomationExpectedMessage>& OutInfo,
+	ELogVerbosity::Type Verbosity) const
+{
+	if (Verbosity == ELogVerbosity::All)
+	{
+		OutInfo = ExpectedMessages;
+	}
+	else
+	{
+		OutInfo.Reserve(ExpectedMessages.Num());
+		Algo::CopyIf(ExpectedMessages, OutInfo, [Verbosity](const FAutomationExpectedMessage& Message)
+		{
+			return FAutomationTestBase::LogCategoryMatchesSeverityInclusive(Message.Verbosity, Verbosity);
+		});
+	}
+}
+
+void FAutomationTestBase::AddExpectedError(FString ExpectedErrorPattern, EAutomationExpectedErrorFlags::MatchType InCompareType, int32 Occurrences)
+{
+	// Set verbosity to Warning as it's inclusive, and so checks for both Warnings and Errors
+	AddExpectedMessage(MoveTemp(ExpectedErrorPattern), ELogVerbosity::Warning, static_cast<EAutomationExpectedMessageFlags::MatchType>(InCompareType), Occurrences);
 }
 
 uint32 FAutomationTestBase::ExtractAutomationTestFlags(FString InTagNotation)
@@ -1271,11 +1357,6 @@ uint32 FAutomationTestBase::ExtractAutomationTestFlags(FString InTagNotation)
 		}
 	}
 	return Result;
-}
-
-void FAutomationTestBase::GetExpectedErrors(TArray<FAutomationExpectedError>& OutInfo) const
-{
-	OutInfo = ExpectedErrors;
 }
 
 void FAutomationTestBase::GenerateTestNames(TArray<FAutomationTestInfo>& TestInfo) const
@@ -1317,6 +1398,14 @@ void FAutomationTestBase::GenerateTestNames(TArray<FAutomationTestInfo>& TestInf
 		
 		TestInfo.Add( NewTestInfo );
 	}
+}
+
+bool FAutomationTestBase::LogCategoryMatchesSeverityInclusive(
+	ELogVerbosity::Type Actual,
+	ELogVerbosity::Type MaximumVerbosity)
+{
+	// Special case for "all", which should always match
+	return Actual == ELogVerbosity::All || MaximumVerbosity == ELogVerbosity::All || Actual <= MaximumVerbosity;
 }
 
 // --------------------------------------------------------------------------------------
@@ -1473,16 +1562,26 @@ bool FAutomationTestBase::TestNull(const TCHAR* What, const void* Pointer)
 	return true;
 }
 
-bool FAutomationTestBase::IsExpectedError(const FString& Error)
+bool FAutomationTestBase::IsExpectedMessage(
+	const FString& Message,
+	const ELogVerbosity::Type& Verbosity)
 {
 	FScopeLock Lock(&ActionCS);
-	for (auto& EError : ExpectedErrors)
+	for (FAutomationExpectedMessage& ExpectedMessage : ExpectedMessages)
 	{
-		FRegexMatcher ErrorMatcher(EError.ErrorPattern, Error);
+		FRegexMatcher MessageMatcher(ExpectedMessage.MessagePattern, Message);
 
-		if (ErrorMatcher.FindNext())
+		// Maintains previous behavior: Adjust so that error and fatal messages are tested against when the input verbosity is "Warning"
+		// Similarly, any message above warning should be considered an "info" message
+		const ELogVerbosity::Type AdjustedMessageVerbosity =
+			ExpectedMessage.Verbosity <= ELogVerbosity::Warning 
+			? ELogVerbosity::Warning
+			: ELogVerbosity::VeryVerbose;
+
+		// Compare the incoming message verbosity with the expected verbosity,
+		if (LogCategoryMatchesSeverityInclusive(Verbosity, AdjustedMessageVerbosity) && MessageMatcher.FindNext())
 		{
-			EError.ActualNumberOfOccurrences++;
+			ExpectedMessage.ActualNumberOfOccurrences++;
 			return true;
 		}
 	}

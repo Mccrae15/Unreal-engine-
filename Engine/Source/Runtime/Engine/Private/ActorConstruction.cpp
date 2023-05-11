@@ -1,42 +1,27 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "CoreMinimal.h"
+#include "EngineLogs.h"
 #include "Math/RandomStream.h"
-#include "Stats/Stats.h"
-#include "UObject/Script.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/Object.h"
-#include "UObject/Class.h"
-#include "UObject/UnrealType.h"
+#include "Misc/ScopeExit.h"
+#include "ProfilingDebugging/CsvProfiler.h"
 #include "UObject/UObjectThreadContext.h"
 #include "Serialization/ObjectReader.h"
-#include "Engine/EngineTypes.h"
 #include "Engine/Blueprint.h"
-#include "ComponentInstanceDataCache.h"
-#include "HAL/IConsoleManager.h"
-#include "Components/ActorComponent.h"
-#include "Components/SceneComponent.h"
-#include "GameFramework/Actor.h"
 #include "ActorTransactionAnnotation.h"
-#include "Components/PrimitiveComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/BillboardComponent.h"
 #include "Misc/ConfigCacheIni.h"
-#include "Engine/World.h"
 #include "Engine/Texture2D.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/LevelScriptActor.h"
 #include "Engine/CullDistanceVolume.h"
 #include "Engine/SimpleConstructionScript.h"
-#include "Components/ChildActorComponent.h"
-#include "ProfilingDebugging/CsvProfiler.h"
-#include "Algo/Transform.h"
-#include "Misc/ScopeExit.h"
-#include "Engine/InputDelegateBinding.h"
-#include "GameFramework/InputSettings.h"
 
 #if WITH_EDITOR
 #include "Editor.h"
+#else
+#include "Engine/World.h"
+#include "UObject/Package.h"
 #endif
 
 DEFINE_LOG_CATEGORY(LogBlueprintUserMessages);
@@ -220,6 +205,13 @@ void AActor::DestroyConstructedComponents()
 	if (bMarkPackageDirty)
 	{
 		GetPackage()->MarkPackageDirty();
+	}
+
+	// When a constructed component is destroyed, it is removed from this set. We compact the set to ensure any newly-constructed components
+	// will get added back into the set contiguously, so that the iteration order remains stable after re-running actor construction scripts.
+	if (PreviouslyAttachedComponents.Num() > OwnedComponents.Num())
+	{
+		OwnedComponents.CompactStable();
 	}
 }
 
@@ -723,7 +715,7 @@ namespace
 	TMap<const AActor*, TMap<const UObject*, int32>, TInlineSetAllocator<4>> UCSBlueprintComponentArchetypeCounts;
 }
 
-bool AActor::ExecuteConstruction(const FTransform& Transform, const FRotationConversionCache* TransformRotationCache, const FComponentInstanceDataCache* InstanceDataCache, bool bIsDefaultTransform)
+bool AActor::ExecuteConstruction(const FTransform& Transform, const FRotationConversionCache* TransformRotationCache, const FComponentInstanceDataCache* InstanceDataCache, bool bIsDefaultTransform, ESpawnActorScaleMethod TransformScaleMethod)
 {
 	check(IsValid(this));
 	check(!HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed));
@@ -797,7 +789,7 @@ bool AActor::ExecuteConstruction(const FTransform& Transform, const FRotationCon
 				if (SCS)
 				{
 					SCS->CreateNameToSCSNodeMap();
-					SCS->ExecuteScriptOnActor(this, NativeSceneComponents, Transform, TransformRotationCache, bIsDefaultTransform);
+					SCS->ExecuteScriptOnActor(this, NativeSceneComponents, Transform, TransformRotationCache, bIsDefaultTransform, TransformScaleMethod);
 				}
 				// Now that the construction scripts have been run, we can create timelines and hook them up
 				UBlueprintGeneratedClass::CreateComponentsForActor(CurrentBPGClass, this);
@@ -1262,11 +1254,6 @@ void AActor::FinishAddComponent(UActorComponent* NewActorComp, bool bManualAttac
 			{
 				World->UpdateCullDistanceVolumes(this, NewPrimitiveComponent);
 			}
-		}
-		
-		if (InputComponent && GetDefault<UInputSettings>()->bEnableDynamicComponentInputBinding)
-		{
-			UInputDelegateBinding::BindInputDelegates(NewActorComp->GetClass(), InputComponent, NewActorComp);
 		}
 	}
 }

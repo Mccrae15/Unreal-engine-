@@ -16,6 +16,7 @@ using OpenTracing.Util;
 using UnrealBuildBase;
 using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
+using System.Collections.Immutable;
 
 namespace UnrealBuildTool
 {
@@ -86,11 +87,16 @@ namespace UnrealBuildTool
 			Dictionary<FileItem, IExternalAction> ItemToProducingAction = new Dictionary<FileItem, IExternalAction>();
 			foreach (IExternalAction Action in Actions)
 			{
+				HashSet<IExternalAction> Conflicted = new HashSet<IExternalAction>();
 				foreach (FileItem ProducedItem in Action.ProducedItems)
 				{
 					if (ItemToProducingAction.TryGetValue(ProducedItem, out IExternalAction? ExistingAction))
 					{
-						bResult &= CheckForConflicts(ExistingAction, Action, Logger);
+						if (!Conflicted.Contains(ExistingAction))
+						{
+							bResult &= CheckForConflicts(ExistingAction, Action, Logger);
+							Conflicted.Add(ExistingAction);
+						}
 					}
 					else
 					{
@@ -236,8 +242,8 @@ namespace UnrealBuildTool
 
 			string AJson = JsonSerializer.Serialize(A, Options);
 			string BJson = JsonSerializer.Serialize(B, Options);
-			string AJsonPath = Path.Combine(Path.GetTempPath(), "UnrealBuildTool", Path.ChangeExtension(Path.GetRandomFileName(), "json"));
-			string BJsonPath = Path.Combine(Path.GetTempPath(), "UnrealBuildTool", Path.ChangeExtension(Path.GetRandomFileName(), "json"));
+			string AJsonPath = Path.Combine(Path.GetTempPath(), "UnrealBuildTool", $"{A.StatusDescription}-{IoHash.Compute(Encoding.Default.GetBytes(AJson)).GetHashCode():X}") + ".json";
+			string BJsonPath = Path.Combine(Path.GetTempPath(), "UnrealBuildTool", $"{B.StatusDescription}-{IoHash.Compute(Encoding.Default.GetBytes(BJson)).GetHashCode():X}") + ".json";
 
 			Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "UnrealBuildTool"));
 			File.WriteAllText(AJsonPath, AJson);
@@ -298,8 +304,11 @@ namespace UnrealBuildTool
 							FailPaths.Add(ProducedItem.Location);
 						}
 
-						if (ProducedItem.Location.FullName.Length > Unreal.RootDirectory.FullName.Length +
-						    BuildConfiguration.MaxNestedPathLength && ProducedItem.Location.IsUnderDirectory(Unreal.RootDirectory))
+						// don't look in Intermediate directories - these aren't portable between machines, so don't need to be cbecked for length underneath the root
+						if (ProducedItem.Location.FullName.Length > Unreal.RootDirectory.FullName.Length + BuildConfiguration.MaxNestedPathLength && 
+							ProducedItem.Location.IsUnderDirectory(Unreal.RootDirectory) &&
+							!ProducedItem.Location.ContainsName("Intermediate", Unreal.RootDirectory)
+							)
 						{
 							WarnPaths.Add(ProducedItem.Location);
 						}
@@ -380,9 +389,12 @@ namespace UnrealBuildTool
 				// Figure out which executor to use
 				ActionExecutor Executor = SelectExecutor(BuildConfiguration, ActionsToExecute.Count, TargetDescriptors, Logger);
 
+				// Ensure actions are ordered
+				IOrderedEnumerable<LinkedAction> OrderedActionsToExecute = ActionsToExecute.OrderByDescending(x => x.NumTotalDependentActions).ThenByDescending(x => x.PrerequisiteItems.Count());
+
 				// Execute the build
 				Stopwatch Timer = Stopwatch.StartNew();
-				if (!Executor.ExecuteActions(ActionsToExecute, Logger))
+				if (!Executor.ExecuteActions(OrderedActionsToExecute, Logger))
 				{
 					throw new CompilationResultException(CompilationResult.OtherCompilationError);
 				}

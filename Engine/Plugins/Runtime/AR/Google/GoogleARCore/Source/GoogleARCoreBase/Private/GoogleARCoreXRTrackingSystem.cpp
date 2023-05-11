@@ -2,6 +2,7 @@
 
 #include "GoogleARCoreXRTrackingSystem.h"
 #include "Engine/Engine.h"
+#include "Misc/EngineVersion.h"
 #include "RHIDefinitions.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/WorldSettings.h"
@@ -11,6 +12,7 @@
 #include "ARSessionConfig.h"
 #include "GoogleARCoreBaseModule.h"
 #include "GoogleARCoreDependencyHandler.h"
+#include "TextureResource.h"
 
 
 DECLARE_CYCLE_STAT(TEXT("OnStartGameFrame"), STAT_OnStartGameFrame, STATGROUP_ARCore);

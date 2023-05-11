@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Styling/SlateBrush.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
 
@@ -37,7 +38,7 @@ public:
 	virtual void SetIDText(const FText& NewIDText);
 
 	/** Returns the local size */
-	virtual const FVector2D& GetLocalSize() const;
+	virtual FVector2f GetLocalSize() const;
 
 	/** Sets the color of the border */
 	virtual void SetBorderColor(const FLinearColor& Color);

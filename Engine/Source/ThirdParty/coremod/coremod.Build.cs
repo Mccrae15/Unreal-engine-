@@ -12,7 +12,7 @@ public class coremod: ModuleRules
 		string CoreModVersion = "4.2.6";
 		string LibraryPath = Target.UEThirdPartySourceDirectory + "coremod/coremod-" + CoreModVersion + "/";
 
-		PublicIncludePaths.Add(LibraryPath + "include/coremod");
+		PublicSystemIncludePaths.Add(LibraryPath + "include/coremod");
 
 		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
@@ -29,7 +29,7 @@ public class coremod: ModuleRules
 		}
 		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
         {
-            PublicAdditionalLibraries.Add(LibraryPath + "/lib/Linux/" + Target.Architecture + "/" + "libcoremodLinux.a");
+            PublicAdditionalLibraries.Add(LibraryPath + "/lib/Linux/" + Target.Architecture.LinuxName + "/" + "libcoremodLinux.a");
         }
 		else if (Target.Platform == UnrealTargetPlatform.Android)
 		{

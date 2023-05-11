@@ -3,6 +3,7 @@
 #pragma once 
 
 #include "CoreMinimal.h"
+#include "Misc/Timecode.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "UObject/PrimaryAssetId.h"
@@ -19,14 +20,18 @@
 
 class AActor;
 class IAnimClassInterface;
+class ITableRow;
+class STableViewBase;
+class SWidget;
 class UMaterialInterface;
 class UPrimitiveComponent;
 class UStaticMesh;
 class UStaticMeshComponent;
 class UTexture;
+template <typename ItemType> class SListView;
 
 UENUM()
-enum EPropertyEditorTestEnum
+enum EPropertyEditorTestEnum : int
 {	
 	/** This comment should appear above enum 1 */
 	PropertyEditorTest_Enum1 UMETA(Hidden),
@@ -54,7 +59,7 @@ enum class EPropertyEditorTestBitflags : uint8
 ENUM_CLASS_FLAGS(EPropertyEditorTestBitflags)
 
 UENUM()
-enum ArrayLabelEnum
+enum ArrayLabelEnum : int
 {
 	ArrayIndex0,
 	ArrayIndex1,
@@ -373,7 +378,10 @@ class UPropertyEditorTestObject : public UObject
 	TArray<FColor> ColorPropertyArray;
 
 	UPROPERTY(EditAnywhere, Category=ArraysOfProperties)
-	TArray<TEnumAsByte<enum EPropertyEditorTestEnum> > EnumPropertyArray;
+	TArray<FTimecode> TimecodePropertyArray;
+
+	UPROPERTY(EditAnywhere, Category=ArraysOfProperties)
+	TArray<TEnumAsByte<EPropertyEditorTestEnum> > EnumPropertyArray;
 
 	UPROPERTY(EditAnywhere, Category=ArraysOfProperties)
 	TArray<FPropertyEditorTestBasicStruct> StructPropertyArray;

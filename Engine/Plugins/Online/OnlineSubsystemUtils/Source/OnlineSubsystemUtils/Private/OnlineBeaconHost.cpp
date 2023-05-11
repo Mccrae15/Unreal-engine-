@@ -3,17 +3,28 @@
 #include "OnlineBeaconHost.h"
 #include "Misc/CommandLine.h"
 #include "UObject/Package.h"
-#include "GameFramework/OnlineReplStructs.h"
 #include "Engine/World.h"
 #include "OnlineBeaconHostObject.h"
 #include "OnlineError.h"
 #include "Engine/PackageMapClient.h"
 #include "Kismet/GameplayStatics.h"
-#include "Misc/NetworkVersion.h"
 #include "Net/DataChannel.h"
 #include "OnlineBeaconClient.h"
+#include "TimerManager.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(OnlineBeaconHost)
+
+#if !UE_BUILD_SHIPPING
+namespace BeaconConsoleVariables
+{
+	TAutoConsoleVariable<float> CVarDelayFinishHandshake(
+		TEXT("beacon.DelayFinishHandshake"),
+		0.0f,
+		TEXT("Delay time before finishing handshake by calling client RPC\n")
+		TEXT("Time in seconds. A value of 0 means no delay, and a negative value means never call it."),
+		ECVF_Default);
+}
+#endif
 
 const FText Error_UnableToParsePacket = NSLOCTEXT("NetworkErrors", "UnableToParsePacket", "Unable to parse expected packet structure: {0}.");
 const FText Error_ControlFlow = NSLOCTEXT("NetworkErrors", "ControlFlowError", "Control flow error: {0}.");
@@ -148,7 +159,7 @@ bool AOnlineBeaconHost::HandleControlMessage(UNetConnection* Connection, uint8 M
 		}
 
 		// make one
-		ConnState = &ConnectionState.Add(Connection, FConnectionState());
+		ConnState = &ConnectionState.Add(Connection, FConnectionState(*this));
 		Connection->OwningActor = this; // make sure we get OnNetCleanup if this dies
 	}
 	check(ConnState != nullptr);
@@ -294,7 +305,27 @@ bool AOnlineBeaconHost::HandleControlMessage(UNetConnection* Connection, uint8 M
 			Connection->SetPlayerOnlinePlatformName(FName(*OnlinePlatformName));
 
 			// Try to kick off verification for this player.
-			if (!StartVerifyAuthentication(*UniqueIdRepl, UGameplayStatics::ParseOption(OptionsURL, TEXT("AuthTicket"))))
+			const FString AuthTicket = UGameplayStatics::ParseOption(OptionsURL, TEXT("AuthTicket"));
+
+			// Try to start deprecated auth method.
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			const bool bStartedAuthDeprecated = StartVerifyAuthentication(*UniqueIdRepl, AuthTicket);
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+			// Don't start new auth method if deprecated auth is active.
+			bool bStartedNewAuth = false;
+			if (!bStartedAuthDeprecated)
+			{
+				// Create completion delegate.
+				FOnAuthenticationVerificationCompleteDelegate OnAuthComplete = FOnAuthenticationVerificationCompleteDelegate::CreateWeakLambda(this, [this, WeakConnection = TWeakObjectPtr<UNetConnection>(Connection)](const FOnlineError& OnlineError)
+				{
+					OnAuthenticationVerificationComplete(WeakConnection.Get(), OnlineError);
+				});
+
+				bStartedNewAuth = StartVerifyAuthentication(*UniqueIdRepl, AuthTicket, OnAuthComplete);
+			}
+
+			if (!bStartedAuthDeprecated && !bStartedNewAuth)
 			{
 				static const FText ErrorTxt = NSLOCTEXT("NetworkErrors", "BeaconLoginInvalidAuthHandlerError", "Login Failure. Unable to process authentication.");
 				SendFailurePacket(Connection, ENetCloseResult::BeaconLoginInvalidAuthHandlerError, ErrorTxt);
@@ -435,35 +466,27 @@ bool AOnlineBeaconHost::HandleControlMessage(UNetConnection* Connection, uint8 M
 				return false;
 			}
 
-			AOnlineBeaconClient* ClientActor = GetClientActor(Connection);
-			if (ClientActor == nullptr || BeaconType != ClientActor->GetBeaconType())
+#if UE_BUILD_SHIPPING
+			const float Delay = 0.0f;
+#else
+			const float Delay = BeaconConsoleVariables::CVarDelayFinishHandshake.GetValueOnGameThread();
+#endif
+			if (Delay == 0.0f)
 			{
-				static const FText ErrorTxt = NSLOCTEXT("NetworkErrors", "BeaconSpawnNetGUIDAckError2", "Join failure, no actor at NetGUIDAck.");
-				SendFailurePacket(Connection, ENetCloseResult::BeaconSpawnNetGUIDAckNoActor, ErrorTxt);
-				return false;
+				FinishHandshake(Connection, MoveTemp(BeaconType));
 			}
-
-			FOnBeaconConnected* OnBeaconConnectedDelegate = OnBeaconConnectedMapping.Find(BeaconType);
-			if (OnBeaconConnectedDelegate == nullptr)
+			else if (Delay > 0.0f)
 			{
-				static const FText ErrorTxt = NSLOCTEXT("NetworkErrors", "BeaconSpawnNetGUIDAckError1", "Join failure, no host object at NetGUIDAck.");
-				SendFailurePacket(Connection, ENetCloseResult::BeaconSpawnNetGUIDAckNoHost, ErrorTxt);
-				return false;
+				UE_LOG(LogBeacon, Verbose, TEXT("%s: Delay for handshake completion: %.3f"), *GetDebugName(Connection), Delay);
+				FTimerDelegate TimerDelegate = FTimerDelegate::CreateUObject(this, &AOnlineBeaconHost::FinishHandshake, Connection, MoveTemp(BeaconType));
+				GetWorldTimerManager().SetTimer(ConnState->FinishHandshakeTimerHandle, TimerDelegate, Delay, false);
 			}
-
-			// once we change the owning actor we can't clean up state anymore, but at this point we don't need to
-			ConnectionState.Remove(Connection);
-			Connection->OwningActor = ClientActor;
-
-			ClientActor->SetReplicates(true);
-			ClientActor->SetAutonomousProxy(true);
-			ClientActor->SetConnectionState(EBeaconConnectionState::Open);
-			// Send an RPC to the client to open the actor channel and guarantee RPCs will work
-			ClientActor->ClientOnConnected();
-			UE_LOG(LogBeacon, Log, TEXT("%s: Handshake complete."), *GetDebugName(Connection));
-
-			OnBeaconConnectedDelegate->ExecuteIfBound(ClientActor, Connection);
+			else
+			{
+				UE_LOG(LogBeacon, Verbose, TEXT("%s: Handshake will never complete, client will either timeout or hang if timeouts are disabled."), *GetDebugName(Connection));
+			}
 		}
+
 		break;
 
 	default:
@@ -476,6 +499,45 @@ bool AOnlineBeaconHost::HandleControlMessage(UNetConnection* Connection, uint8 M
 
 	// if we made it here, leave the connection open
 	return true;
+}
+
+void AOnlineBeaconHost::FinishHandshake(UNetConnection* Connection, FString BeaconType)
+{
+	AOnlineBeaconClient* ClientActor = GetClientActor(Connection);
+	if (ClientActor == nullptr || BeaconType != ClientActor->GetBeaconType())
+	{
+		static const FText ErrorTxt = NSLOCTEXT("NetworkErrors", "BeaconSpawnNetGUIDAckError2", "Join failure, no actor at NetGUIDAck.");
+		SendFailurePacket(Connection, ENetCloseResult::BeaconSpawnNetGUIDAckNoActor, ErrorTxt);
+		CloseHandshakeConnection(Connection);
+		return;
+	}
+
+	FOnBeaconConnected* OnBeaconConnectedDelegate = OnBeaconConnectedMapping.Find(BeaconType);
+	if (OnBeaconConnectedDelegate == nullptr)
+	{
+		static const FText ErrorTxt = NSLOCTEXT("NetworkErrors", "BeaconSpawnNetGUIDAckError1", "Join failure, no host object at NetGUIDAck.");
+		SendFailurePacket(Connection, ENetCloseResult::BeaconSpawnNetGUIDAckNoHost, ErrorTxt);
+		CloseHandshakeConnection(Connection);
+		return;
+	}
+
+	// once we change the owning actor we can't clean up state anymore, but at this point we don't need to
+	ConnectionState.Remove(Connection);
+	Connection->OwningActor = ClientActor;
+
+	ClientActor->SetReplicates(true);
+	ClientActor->SetAutonomousProxy(true);
+	ClientActor->SetConnectionState(EBeaconConnectionState::Open);
+
+	// Send an RPC to the client to open the actor channel and guarantee RPCs will work
+	ClientActor->ClientOnConnected();
+	UE_LOG(LogBeacon, Log, TEXT("%s: Handshake complete."), *GetDebugName(Connection));
+	OnBeaconConnectedDelegate->ExecuteIfBound(ClientActor, Connection);
+}
+
+AOnlineBeaconHost::FConnectionState::~FConnectionState()
+{
+	BeaconHost.GetWorldTimerManager().ClearTimer(FinishHandshakeTimerHandle);
 }
 
 void AOnlineBeaconHost::SendFailurePacket(UNetConnection* Connection, FNetCloseResult&& CloseReason, const FText& ErrorText)
@@ -580,6 +642,19 @@ void AOnlineBeaconHost::OnAuthenticationVerificationComplete(const class FUnique
 	FConnectionState* ConnState = nullptr;
 	if (GetConnectionDataForUniqueNetId(PlayerId, Connection, ConnState))
 	{
+		OnAuthenticationVerificationComplete(Connection, Error);
+	}
+}
+
+bool AOnlineBeaconHost::StartVerifyAuthentication(const FUniqueNetId& PlayerId, const FString& AuthenticationToken, const FOnAuthenticationVerificationCompleteDelegate& OnComplete)
+{
+	return false;
+}
+
+void AOnlineBeaconHost::OnAuthenticationVerificationComplete(UNetConnection* Connection, const FOnlineError& Error)
+{
+	if (FConnectionState* ConnState = ConnectionState.Find(Connection))
+	{
 		if (ConnState->bHasSentLogin && !ConnState->bHasSentWelcome)
 		{
 			// Gating login on valid authentication. Do not fail open so that users are known to have access.
@@ -589,7 +664,7 @@ void AOnlineBeaconHost::OnAuthenticationVerificationComplete(const class FUnique
 				ConnState->bHasAuthenticated = true;
 
 				// send the welcome packet
-				UE_LOG(LogBeacon, Verbose, TEXT("%s: User authenticated: %s"), *GetDebugName(Connection), *PlayerId.ToString());
+				UE_LOG(LogBeacon, Verbose, TEXT("%s: OnAuthenticationVerificationComplete: Successfully authenticated."), *GetDebugName(Connection));
 				ConnState->bHasSentWelcome = true;
 				FNetControlMessage<NMT_BeaconWelcome>::Send(Connection);
 				Connection->FlushNet();
@@ -597,11 +672,19 @@ void AOnlineBeaconHost::OnAuthenticationVerificationComplete(const class FUnique
 			else
 			{
 				// Auth failure.
-				UE_LOG(LogBeacon, Log, TEXT("%s: Failed to authenticate user: %s error: %s"), *GetDebugName(Connection), *PlayerId.ToString(), *Error.ToLogString());
+				UE_LOG(LogBeacon, Log, TEXT("%s: OnAuthenticationVerificationComplete: Failed to authenticate error: %s"), *GetDebugName(Connection), *Error.ToLogString());
 				SendFailurePacket(Connection, ENetCloseResult::BeaconAuthenticationFailure, Error_Authentication);
 				CloseHandshakeConnection(Connection);
 			}
 		}
+		else
+		{
+			UE_LOG(LogBeacon, Warning, TEXT("%s: OnAuthenticationVerificationComplete: Invalid beacon connection state for auth challenge result. error: %s"), *GetDebugName(Connection), *Error.ToLogString());
+		}
+	}
+	else
+	{
+		UE_LOG(LogBeacon, Warning, TEXT("%s: OnAuthenticationVerificationComplete: Failed to find connection state. error: %s"), *GetDebugName(Connection), *Error.ToLogString());
 	}
 }
 

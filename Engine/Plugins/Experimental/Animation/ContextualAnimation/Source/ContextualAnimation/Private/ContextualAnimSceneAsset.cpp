@@ -1,14 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ContextualAnimSceneAsset.h"
-#include "AnimationRuntime.h"
 #include "Animation/AnimMontage.h"
-#include "Animation/AnimationPoseData.h"
-#include "Animation/AnimTypes.h"
+#include "BonePose.h"
 #include "ContextualAnimUtilities.h"
 #include "ContextualAnimSelectionCriterion.h"
 #include "UObject/ObjectSaveContext.h"
-#include "Containers/ArrayView.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ContextualAnimSceneAsset)
 
@@ -34,7 +31,7 @@ static void ExtractPoseIgnoringForceRootLock(UAnimSequenceBase* AnimSequenceBase
 	{
 		if (AnimMontage->SlotAnimTracks.Num() > 0)
 		{
-			const float ClampedTime = FMath::Clamp(Time, 0.f, AnimSequenceBase->GetPlayLength());
+			const float ClampedTime = FMath::Clamp(Time, 0.f, AnimMontage->CalculateSequenceLength());
 			if (FAnimSegment* Segment = AnimMontage->SlotAnimTracks[0].AnimTrack.GetSegmentAtTime(ClampedTime))
 			{
 				AnimSequence = Cast<UAnimSequence>(Segment->GetAnimReference());
@@ -51,6 +48,22 @@ static void ExtractPoseIgnoringForceRootLock(UAnimSequenceBase* AnimSequenceBase
 		TGuardValue<bool> ForceRootLockGuard(AnimSequence->bForceRootLock, false);
 		UContextualAnimUtilities::ExtractComponentSpacePose(AnimSequenceBase, BoneContainer, Time, bExtractRootMotion, OutPose);
 	}
+}
+
+// FContextualAnimSet
+//==============================================================================================
+
+int32 FContextualAnimSet::GetNumMandatoryRoles() const
+{
+	int32 Result = 0;
+	for (const FContextualAnimTrack& AnimTrack : Tracks)
+	{
+		if (!AnimTrack.bOptional)
+		{
+			Result++;
+		}
+	}
+	return Result;
 }
 
 // FContextualAnimSceneSection
@@ -541,6 +554,12 @@ const FContextualAnimSceneSection* UContextualAnimSceneAsset::GetSection(const F
 	return Sections.FindByPredicate([&SectionName](const FContextualAnimSceneSection& Section) { return Section.Name == SectionName; });
 }
 
+const FContextualAnimSet* UContextualAnimSceneAsset::GetAnimSet(int32 SectionIdx, int32 AnimSetIdx) const
+{
+	const FContextualAnimSceneSection* Section = GetSection(SectionIdx);
+	return Section ? Section->GetAnimSet(AnimSetIdx) : nullptr;
+}
+
 int32 UContextualAnimSceneAsset::GetSectionIndex(const FName& SectionName) const
 {
 	return Sections.IndexOfByPredicate([&SectionName](const FContextualAnimSceneSection& Section) { return Section.Name == SectionName; });
@@ -586,6 +605,12 @@ TArray<FName> UContextualAnimSceneAsset::GetRoles() const
 	}
 
  	return Result;
+}
+
+int32 UContextualAnimSceneAsset::GetNumMandatoryRoles(int32 SectionIdx, int32 AnimSetIdx) const
+{
+	const FContextualAnimSet* AnimSet = GetAnimSet(SectionIdx, AnimSetIdx);
+	return AnimSet ? AnimSet->GetNumMandatoryRoles() : 0;
 }
 
 const FTransform& UContextualAnimSceneAsset::GetMeshToComponentForRole(const FName& Role) const

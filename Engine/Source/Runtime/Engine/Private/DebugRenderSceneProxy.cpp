@@ -7,11 +7,13 @@
 =============================================================================*/
 
 #include "DebugRenderSceneProxy.h"
+#include "DynamicMeshBuilder.h"
 #include "SceneManagement.h"
-#include "EngineGlobals.h"
 #include "Engine/Engine.h"
 #include "Engine/Canvas.h"
 #include "Debug/DebugDrawService.h"
+#include "Materials/Material.h"
+#include "Materials/MaterialRenderProxy.h"
 
 // FPrimitiveSceneProxy interface.
 
@@ -137,7 +139,7 @@ void FDebugRenderSceneProxy::GetDynamicMeshElements(const TArray<const FSceneVie
 		FMaterialRenderProxy* operator[](FLinearColor Color)
 		{
 			FMaterialRenderProxy* MeshColor = NULL;
-			const uint32 HashKey = ::GetTypeHash(Color);
+			const uint32 HashKey = GetTypeHashHelper(Color);
 			if (MeshColorInstances.Contains(HashKey))
 			{
 				MeshColor = *MeshColorInstances.Find(HashKey);

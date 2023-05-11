@@ -1,12 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "HLOD/HLODProxyDesc.h"
+#include "Engine/World.h"
+#include "UObject/Package.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(HLODProxyDesc)
 
 #if WITH_EDITOR
 #include "Engine/LODActor.h"
-#include "Algo/Transform.h"
+#include "Engine/Level.h"
 #include "GameFramework/WorldSettings.h"
 #include "LevelUtils.h"
 #include "Engine/LevelStreaming.h"

@@ -33,6 +33,10 @@
 #include "OpenColorIODisplayExtension.h"
 
 #include "Misc/DisplayClusterLog.h"
+#include "TextureResource.h"
+
+#include "HAL/IConsoleManager.h"
+
 
 void FDisplayClusterViewportConfigurationHelpers::UpdateViewportStereoMode(FDisplayClusterViewport& DstViewport, const EDisplayClusterConfigurationViewport_StereoMode StereoMode)
 {
@@ -173,6 +177,8 @@ void FDisplayClusterViewportConfigurationHelpers::UpdateBaseViewportSetting(FDis
 		DstViewport.RenderSettings.CameraId = InConfigurationViewport.Camera;
 		DstViewport.RenderSettings.Rect = DstViewport.GetValidRect(InConfigurationViewport.Region.ToRect(), TEXT("Configuration Region"));
 
+		DstViewport.RenderSettings.bEnableCrossGPUTransfer = InConfigurationViewport.RenderSettings.bEnableCrossGPUTransfer;
+
 		DstViewport.RenderSettings.GPUIndex = InConfigurationViewport.GPUIndex;
 		DstViewport.RenderSettings.OverlapOrder = InConfigurationViewport.OverlapOrder;
 
@@ -182,7 +188,7 @@ void FDisplayClusterViewportConfigurationHelpers::UpdateBaseViewportSetting(FDis
 
 	const FDisplayClusterConfigurationViewport_RenderSettings& InRenderSettings = InConfigurationViewport.RenderSettings;
 
-	// OCIO
+	// Update OCIO for Viewport
 	FDisplayClusterViewportConfigurationHelpers_OpenColorIO::UpdateBaseViewport(DstViewport, RootActor, InConfigurationViewport);
 
 	// Additional per-viewport PostProcess
@@ -208,20 +214,21 @@ void FDisplayClusterViewportConfigurationHelpers::UpdateBaseViewportSetting(FDis
 	// Set media related configuration (runtime only for now)
 	if (IDisplayCluster::Get().GetOperationMode() == EDisplayClusterOperationMode::Cluster)
 	{
-		const FDisplayClusterConfigurationMedia& MediaSettings = InConfigurationViewport.RenderSettings.Media;
+		// Check if nDisplay media enabled
+		static const TConsoleVariableData<int32>* const ICVarMediaEnabled = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("nDisplay.media.Enabled"));
+		if (ICVarMediaEnabled && !!ICVarMediaEnabled->GetValueOnGameThread())
+		{
+			const FDisplayClusterConfigurationMedia& MediaSettings = InConfigurationViewport.RenderSettings.Media;
 
-		const FString ThisClusterNodeId = IDisplayCluster::Get().GetClusterMgr()->GetNodeId();
-		const bool bThisNodeSharesMedia = MediaSettings.IsMediaSharingUsed() && MediaSettings.MediaSharingNode.Equals(ThisClusterNodeId, ESearchCase::IgnoreCase);
+			if (MediaSettings.bEnable)
+			{
+				// Don't render the viewport if media input assigned
+				DstViewport.RenderSettings.bSkipSceneRenderingButLeaveResourcesAvailable = !!MediaSettings.MediaSource;
 
-		// Don't render the viewport if media input assigned
-		DstViewport.RenderSettings.bSkipSceneRenderingButLeaveResourcesAvailable = MediaSettings.IsMediaSharingUsed() ?
-			!bThisNodeSharesMedia :
-			!!MediaSettings.MediaSource;
-
-		// Mark this viewport is going to be captured by a capture device
-		DstViewport.RenderSettings.bIsBeingCaptured = MediaSettings.IsMediaSharingUsed() ?
-			bThisNodeSharesMedia :
-			!!MediaSettings.MediaOutput;
+				// Mark this viewport is going to be captured by a capture device
+				DstViewport.RenderSettings.bIsBeingCaptured = !!MediaSettings.MediaOutput;
+			}
+		}
 	}
 
 	// FDisplayClusterConfigurationViewport_ICVFX property:
@@ -230,7 +237,7 @@ void FDisplayClusterViewportConfigurationHelpers::UpdateBaseViewportSetting(FDis
 
 		if (InConfigurationViewport.ICVFX.bAllowICVFX)
 		{
-			TargetFlags |= ViewportICVFX_Enable;
+			EnumAddFlags(TargetFlags, EDisplayClusterViewportICVFXFlags::Enable);
 
 			EDisplayClusterConfigurationICVFX_OverrideCameraRenderMode CameraRenderMode = InConfigurationViewport.ICVFX.CameraRenderMode;
 
@@ -244,20 +251,22 @@ void FDisplayClusterViewportConfigurationHelpers::UpdateBaseViewportSetting(FDis
 			{
 				// Disable camera frame render for this viewport
 			case EDisplayClusterConfigurationICVFX_OverrideCameraRenderMode::Disabled:
-				TargetFlags |= ViewportICVFX_DisableCamera | ViewportICVFX_DisableChromakey | ViewportICVFX_DisableChromakeyMarkers;
+				EnumAddFlags(TargetFlags, EDisplayClusterViewportICVFXFlags::DisableCamera | EDisplayClusterViewportICVFXFlags::DisableChromakey | EDisplayClusterViewportICVFXFlags::DisableChromakeyMarkers);
 				break;
 
 				// Disable chromakey render for this viewport
 			case EDisplayClusterConfigurationICVFX_OverrideCameraRenderMode::DisableChromakey:
-				TargetFlags |= ViewportICVFX_DisableChromakey | ViewportICVFX_DisableChromakeyMarkers;
+				EnumAddFlags(TargetFlags, EDisplayClusterViewportICVFXFlags::DisableChromakey | EDisplayClusterViewportICVFXFlags::DisableChromakeyMarkers);
 				break;
 
 				// Disable chromakey markers render for this viewport
 			case EDisplayClusterConfigurationICVFX_OverrideCameraRenderMode::DisableChromakeyMarkers:
-				TargetFlags |= ViewportICVFX_DisableChromakeyMarkers;
+
+				EnumAddFlags(TargetFlags, EDisplayClusterViewportICVFXFlags::DisableChromakeyMarkers);
 				break;
-				// Use default rendering rules
+
 			default:
+				// Use default rendering rules
 				break;
 			}
 
@@ -265,18 +274,21 @@ void FDisplayClusterViewportConfigurationHelpers::UpdateBaseViewportSetting(FDis
 			{
 				// Render incamera frame over lightcard for this viewport
 			case EDisplayClusterConfigurationICVFX_OverrideLightcardRenderMode::Over:
-				TargetFlags |= ViewportICVFX_OverrideLightcardMode;
+
+				EnumAddFlags(TargetFlags, EDisplayClusterViewportICVFXFlags::OverrideLightcardMode);
 				DstViewport.RenderSettingsICVFX.ICVFX.LightcardMode = EDisplayClusterShaderParametersICVFX_LightcardRenderMode::Over;
 				break;
 
 				// Over lightcard over incamera frame  for this viewport
 			case EDisplayClusterConfigurationICVFX_OverrideLightcardRenderMode::Under:
-				TargetFlags |= ViewportICVFX_OverrideLightcardMode;
+
+				EnumAddFlags(TargetFlags, EDisplayClusterViewportICVFXFlags::OverrideLightcardMode);
 				DstViewport.RenderSettingsICVFX.ICVFX.LightcardMode = EDisplayClusterShaderParametersICVFX_LightcardRenderMode::Under;
 				break;
 
 			case EDisplayClusterConfigurationICVFX_OverrideLightcardRenderMode::Disabled:
-				TargetFlags |= ViewportICVFX_DisableLightcard;
+
+				EnumAddFlags(TargetFlags, EDisplayClusterViewportICVFXFlags::DisableLightcard);
 				break;
 
 			default:

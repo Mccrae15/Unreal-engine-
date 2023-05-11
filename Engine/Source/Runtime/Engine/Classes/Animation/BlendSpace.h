@@ -41,7 +41,7 @@ public:
 
 /** Interpolation data types. */
 UENUM()
-enum EBlendSpaceAxis
+enum EBlendSpaceAxis : int
 {
 	BSA_None UMETA(DisplayName = "None"),
 	BSA_X UMETA(DisplayName = "Horizontal (X) Axis"),
@@ -56,6 +56,24 @@ enum class EPreferredTriangulationDirection : uint8
 	Radial UMETA(DisplayName = "Radial", ToolTip = "When there is ambiguity, rectangles will be split so that the inserted edge tends to point towards the origin")
 };
 
+UENUM()
+enum class EBlendSpacePerBoneBlendMode : uint8
+{
+	ManualPerBoneOverride UMETA(DisplayName = "Manual Per Bone Override", ToolTip = "Manually specify the bones and their smoothing interpolation times."),
+	BlendProfile UMETA(DisplayName = "Blend Profile", ToolTip = "Use a blend profile to specify the bone smoothing interpolation times.")
+};
+
+USTRUCT()
+struct FBlendSpaceBlendProfile
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = SampleSmoothing, meta = (DisplayName = "Blend Profile", UseAsBlendMask = true, EditConditionHides))
+	TObjectPtr<UBlendProfile> BlendProfile;
+
+	UPROPERTY(EditAnywhere, Category = SampleSmoothing, meta = (DisplayName = "Weight Speed", ClampMin = "0"))
+	float TargetWeightInterpolationSpeedPerSec = 0.0f;
+};
 
 USTRUCT()
 struct FInterpolationParameter
@@ -100,11 +118,11 @@ struct FBlendParameter
 	FString DisplayName;
 
 	/** Minimum value for this axis range. */
-	UPROPERTY(EditAnywhere, DisplayName = "Minimum Axis Value", Category=BlendParameter)
+	UPROPERTY(EditAnywhere, DisplayName = "Minimum Axis Value", Category=BlendParameter, meta=(NoResetToDefault))
 	float Min;
 
 	/** Maximum value for this axis range. */
-	UPROPERTY(EditAnywhere, DisplayName = "Maximum Axis Value", Category=BlendParameter)
+	UPROPERTY(EditAnywhere, DisplayName = "Maximum Axis Value", Category=BlendParameter, meta=(NoResetToDefault))
 	float Max;
 
 	/** The number of grid divisions along this axis. */
@@ -417,7 +435,7 @@ struct FPerBoneInterpolation
 UENUM()
 namespace ENotifyTriggerMode
 {
-	enum Type
+	enum Type : int
 	{
 		AllAnimations UMETA(DisplayName="All Animations"),
 		HighestWeightedAnimation UMETA(DisplayName="Highest Weighted Animation"),
@@ -732,7 +750,7 @@ public:
 	* value of zero disables this smoothing entirely.
 	*/
 	UPROPERTY(EditAnywhere, Category = SampleSmoothing, meta = (DisplayName = "Weight Speed", ClampMin = "0"))
-	float TargetWeightInterpolationSpeedPerSec;
+	float TargetWeightInterpolationSpeedPerSec = 0.0f;
 
 	/**
 	 * If set then this eases in/out the sample weight adjustments, using the speed to determine how much smoothing to apply.
@@ -792,13 +810,31 @@ public:
 protected:
 
 	/**
-	* Per bone sample smoothing settings, which affect the specified bone and all its descendants in the skeleton.
-	* These act as overrides to the global sample smoothing speed, which means the global sample smoothing speed does
-	* not affect these bones. Note that they also override each other - so a per-bone setting on the chest will not
-	* affect the hand if there is a per-bone setting on the arm.
-	*/
-	UPROPERTY(EditAnywhere, Category = SampleSmoothing, meta = (DisplayName="Per Bone Overrides"))
-	TArray<FPerBoneInterpolation> PerBoneBlend;
+	 * There are two ways to use per pone sample smoothing: Blend profiles and manually maintaining the per bone overrides.
+	 */
+	UPROPERTY(EditAnywhere, Category = SampleSmoothing)
+	EBlendSpacePerBoneBlendMode PerBoneBlendMode = EBlendSpacePerBoneBlendMode::ManualPerBoneOverride;
+
+	/**
+	 * Per bone sample smoothing settings, which affect the specified bone and all its descendants in the skeleton.
+	 * These act as overrides to the global sample smoothing speed, which means the global sample smoothing speed does
+	 * not affect these bones. Note that they also override each other - so a per-bone setting on the chest will not
+	 * affect the hand if there is a per-bone setting on the arm.
+	 */
+	UPROPERTY(EditAnywhere, Category = SampleSmoothing, meta = (DisplayName="Per Bone Overrides", EditCondition = "PerBoneBlendMode == EBlendSpacePerBoneBlendMode::ManualPerBoneOverride", EditConditionHides))
+	TArray<FPerBoneInterpolation> ManualPerBoneOverrides;
+
+	/**
+	 * Reference to a blend profile of the corresponding skeleton to be used for per bone smoothing in case the per bone blend mode is set to use a blend profile.
+	 **/
+	UPROPERTY(EditAnywhere, Category = SampleSmoothing, meta = (DisplayName = "Per Bone Overrides", EditCondition = "PerBoneBlendMode == EBlendSpacePerBoneBlendMode::BlendProfile", EditConditionHides))
+	FBlendSpaceBlendProfile PerBoneBlendProfile;
+
+	/**
+	 * Stores the actual bone references and their smoothing interpolation speeds used by the blend space. This will be either filled by the manual per bone overrides or
+	 * the blend profile, depending on the set per bone blend mode.
+	 **/
+	TArray<FPerBoneInterpolation> PerBoneBlendValues;
 
 	/** Track index to get marker data from. Samples are tested for the suitability of marker based sync
 	    during load and if we can use marker based sync we cache an index to a representative sample here */

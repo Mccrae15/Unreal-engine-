@@ -57,7 +57,6 @@ public:
 	void SetVertexStream(uint32 const Index, FMetalBuffer* Buffer, FMetalBufferData* Bytes, uint32 const Offset, uint32 const Length);
 	void SetGraphicsPipelineState(FMetalGraphicsPipelineState* State);
 	void BindUniformBuffer(EMetalShaderStages const Freq, uint32 const BufferIndex, FRHIUniformBuffer* BufferRHI);
-	void SetDirtyUniformBuffers(EMetalShaderStages const Freq, uint32 const Dirty);
 	
 	/*
 	 * Monitor if samples pass the depth and stencil tests.
@@ -77,8 +76,20 @@ public:
 	 * @param Index The index to modify.
 	 * @param Usage The resource usage flags.
 	 * @param Format The UAV pixel format.
+	 * @param ReferencedResources The resources indirectly used by the bound buffer.
 	 */
-	void SetShaderBuffer(EMetalShaderStages const Frequency, FMetalBuffer const& Buffer, FMetalBufferData* const Bytes, NSUInteger const Offset, NSUInteger const Length, NSUInteger const Index, mtlpp::ResourceUsage const Usage, EPixelFormat const Format = PF_Unknown, NSUInteger const ElementRowPitch = 0);
+	void SetShaderBuffer(EMetalShaderStages const Frequency, FMetalBuffer const& Buffer, FMetalBufferData* const Bytes, NSUInteger const Offset, NSUInteger const Length, NSUInteger const Index, mtlpp::ResourceUsage const Usage, EPixelFormat const Format = PF_Unknown, NSUInteger const ElementRowPitch = 0, TArray<TTuple<ns::AutoReleased<mtlpp::Resource>, mtlpp::ResourceUsage>> ReferencedResources = {});
+
+#if METAL_RHI_RAYTRACING
+	/*
+	 * Set a global acceleration structure for the specified shader frequency at the given bind point index.
+	 * @param Frequency The shader frequency to modify.
+	 * @param AccelerationStructure The acceleration structure to bind or nil to clear.
+	 * @param Index The index to modify.
+	 * @param BLAS The resources indirectly used by the bound buffer.
+	 */
+	void SetShaderBuffer(EMetalShaderStages const Frequency, mtlpp::AccelerationStructure const& AccelerationStructure, NSUInteger const Index, TArray<TTuple<ns::AutoReleased<mtlpp::Resource>, mtlpp::ResourceUsage>> BLAS);
+#endif
 	
 	/*
 	 * Set a global texture for the specified shader frequency at the given bind point index.
@@ -133,8 +144,6 @@ public:
 	const mtlpp::Viewport& GetViewport(uint32 const Index) const { check(Index < ML_MaxViewports); return Viewport[Index]; }
 	uint32 GetVertexBufferSize(uint32 const Index);
 	uint32 GetRenderTargetArraySize() const { return RenderTargetArraySize; }
-	const FRHIUniformBuffer** GetBoundUniformBuffers(EMetalShaderStages const Freq) { return (const FRHIUniformBuffer**)&BoundUniformBuffers[Freq][0]; }
-	uint32 GetDirtyUniformBuffers(EMetalShaderStages const Freq) const { return DirtyUniformBuffers[Freq]; }
 	FMetalQueryBuffer* GetVisibilityResultsBuffer() const { return VisibilityResults; }
 	bool GetScissorRectEnabled() const { return bScissorRectEnabled; }
 	bool NeedsToSetRenderTarget(const FRHIRenderPassInfo& RenderPassInfo);
@@ -162,16 +171,10 @@ private:
 	void SetDepthStencilState(FMetalDepthStencilState* InDepthStencilState);
 	void SetRasterizerState(FMetalRasterizerState* InRasterizerState);
 
-	FORCEINLINE void SetResource(uint32 ShaderStage, uint32 BindIndex, FRHITexture* RESTRICT TextureRHI, float CurrentTime);
-	
-	FORCEINLINE void SetResource(uint32 ShaderStage, uint32 BindIndex, FMetalShaderResourceView* RESTRICT SRV, float CurrentTime);
-	
-	FORCEINLINE void SetResource(uint32 ShaderStage, uint32 BindIndex, FMetalSamplerState* RESTRICT SamplerState, float CurrentTime);
-	
-	FORCEINLINE void SetResource(uint32 ShaderStage, uint32 BindIndex, FMetalUnorderedAccessView* RESTRICT UAV, float CurrentTime);
-	
-	template <typename MetalResourceType>
-	inline int32 SetShaderResourcesFromBuffer(uint32 ShaderStage, FMetalUniformBuffer* RESTRICT Buffer, const uint32* RESTRICT ResourceMap, int32 BufferIndex, float CurrentTime);
+	FORCEINLINE void SetResource(uint32 ShaderStage, uint32 BindIndex, FRHITexture* RESTRICT TextureRHI);
+	FORCEINLINE void SetResource(uint32 ShaderStage, uint32 BindIndex, FMetalShaderResourceView* RESTRICT SRV);
+	FORCEINLINE void SetResource(uint32 ShaderStage, uint32 BindIndex, FMetalSamplerState* RESTRICT SamplerState);
+	FORCEINLINE void SetResource(uint32 ShaderStage, uint32 BindIndex, FMetalUnorderedAccessView* RESTRICT UAV);
 	
 	template <class ShaderType>
 	void SetResourcesFromTables(ShaderType Shader, uint32 ShaderStage);
@@ -187,7 +190,7 @@ private:
 #pragma mark - Private Type Declarations -
 	struct FMetalBufferBinding
 	{
-		FMetalBufferBinding() : Bytes(nil), Offset(0), Length(0), Usage((mtlpp::ResourceUsage)0) {}
+		FMetalBufferBinding() : Bytes(nil), Offset(0), Length(0), Usage((mtlpp::ResourceUsage)0), ReferencedResources{} {}
 		/** The bound buffers or nil. */
 		ns::AutoReleased<FMetalBuffer> Buffer;
 		/** Optional bytes buffer used instead of an FMetalBuffer */
@@ -200,6 +203,12 @@ private:
 		NSUInteger ElementRowPitch;
 		/** The bound buffer usage or 0 */
 		mtlpp::ResourceUsage Usage;
+#if METAL_RHI_RAYTRACING
+		/** The bound acceleration structure or nil. */
+		ns::AutoReleased<mtlpp::AccelerationStructure> AccelerationStructure;
+#endif // METAL_RHI_RAYTRACING
+		/** The resources referenced by this binding (e.g. BLAS referenced by a TLAS) */
+		TArray<TTuple<ns::AutoReleased<mtlpp::Resource>, mtlpp::ResourceUsage>> ReferencedResources;
 	};
 	
 	/** A structure of arrays for the current buffer binding settings. */

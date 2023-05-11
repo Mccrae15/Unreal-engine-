@@ -5,6 +5,7 @@
 #include "NaniteShared.h"
 
 class FVirtualShadowMapArray;
+class FViewFamilyInfo;
 
 BEGIN_SHADER_PARAMETER_STRUCT(FRasterParameters,)
 	SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<uint>,			OutDepthBuffer)
@@ -127,6 +128,8 @@ struct FRasterContext
 
 	uint32				VisualizeModeBitMask;
 	bool				VisualizeActive;
+
+	bool				bCustomPass;
 };
 
 struct FRasterResults
@@ -151,6 +154,13 @@ struct FRasterResults
 	TArray<FVisualizeResult, TInlineAllocator<32>> Visualizations;
 };
 
+void CollectRasterPSOInitializers(
+	const FSceneTexturesConfig& SceneTexturesConfig,
+	const FMaterial& Material,
+	const FPSOPrecacheParams& PreCacheParams,
+	EShaderPlatform ShaderPlatform,
+	TArray<FPSOPrecacheData>& PSOInitializers);
+
 FCullingContext	InitCullingContext(
 	FRDGBuilder& GraphBuilder,
 	const FSharedContext& SharedContext,
@@ -163,13 +173,16 @@ FCullingContext	InitCullingContext(
 FRasterContext InitRasterContext(
 	FRDGBuilder& GraphBuilder,
 	const FSharedContext& SharedContext,
+	const FViewFamilyInfo& ViewFamily,
 	FIntPoint TextureSize,
+	FIntRect TextureRect,
 	bool bVisualize,
 	EOutputBufferMode RasterMode = EOutputBufferMode::VisBuffer,
 	bool bClearTarget = true,
 	FRDGBufferSRVRef RectMinMaxBufferSRV = nullptr,
 	uint32 NumRects = 0,
-	FRDGTextureRef ExternalDepthBuffer = nullptr
+	FRDGTextureRef ExternalDepthBuffer = nullptr,
+	bool bCustomPass = false
 );
 
 void CullRasterize(
@@ -182,7 +195,6 @@ void CullRasterize(
 	const FSharedContext& SharedContext,
 	FCullingContext& CullingContext,
 	const FRasterContext& RasterContext,
-	const FRasterState& RasterState = FRasterState(),
 	const TArray<FInstanceDraw, SceneRenderingAllocator>* OptionalInstanceDraws = nullptr,
 	bool bExtractStats = false
 );
@@ -203,7 +215,6 @@ void CullRasterize(
 	const FSharedContext& SharedContext,
 	FCullingContext& CullingContext,
 	const FRasterContext& RasterContext,
-	const FRasterState& RasterState = FRasterState(),
 	const TArray<FInstanceDraw, SceneRenderingAllocator>* OptionalInstanceDraws = nullptr,
 	// VirtualShadowMapArray is the supplier of virtual to physical translation, probably could abstract this a bit better,
 	FVirtualShadowMapArray* VirtualShadowMapArray = nullptr,

@@ -2,42 +2,69 @@
 
 #pragma once
 
+#include "Containers/ContainersFwd.h"
+#include "HAL/Platform.h"
+#include "Math/MathFwd.h"
+#include "Misc/EnumClassFlags.h"
+#include "RenderGraphFwd.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "CoreMinimal.h"
 #include "RHI.h"
 #include "SceneTypes.h"
 #include "SceneUtils.h"
 #include "Math/SHMath.h"
 #include "RenderGraphDefinitions.h"
+#endif
 
 class AWorldSettings;
-class FSkyAtmosphereRenderSceneInfo;
-class FSkyAtmosphereSceneProxy;
-class FVolumetricCloudRenderSceneInfo;
-class FVolumetricCloudSceneProxy;
+class FArchive;
+class FFloat16Color;
+class FInstanceCullingManager;
+class FLightSceneProxy;
 class FMaterial;
 class FMaterialShaderMap;
+class FName;
+class FOutputDevice;
+class FPrimitiveComponentId;
 class FPrimitiveSceneInfo;
+class FRDGBuilder;
+class FRDGExternalAccessQueue;
+class FRectLightSceneProxy;
 class FRenderResource;
 class FRenderTarget;
-class FRectLightSceneProxy;
+class FRHICommandListImmediate;
+class FRHIUniformBuffer;
+class FSceneRenderer;
+class FSceneViewStateInterface;
+class FSkyAtmosphereRenderSceneInfo;
+class FSkyAtmosphereSceneProxy;
 class FSkyLightSceneProxy;
+class FSparseVolumeTextureViewerSceneProxy;
 class FTexture;
 class FVertexFactory;
+class FViewInfo;
+class FVolumetricCloudRenderSceneInfo;
+class FVolumetricCloudSceneProxy;
 class UDecalComponent;
+struct FDeferredDecalUpdateParams;
+class UInstancedStaticMeshComponent;
 class ULightComponent;
 class UPlanarReflectionComponent;
 class UPrimitiveComponent;
-class UInstancedStaticMeshComponent;
 class UReflectionCaptureComponent;
 class USkyLightComponent;
 class UStaticMeshComponent;
 class UTextureCube;
-class FViewInfo;
-class FSceneRenderer;
-class FInstanceCullingManager;
-class FSceneViewStateInterface;
+enum class EPrimitiveDirtyState : uint8;
+enum class EShadingPath;
+enum EShaderPlatform : uint16;
+namespace ERHIFeatureLevel { enum Type : int; }
 struct FHairStrandsInstance;
 struct FLightRenderParameters;
+struct FPersistentPrimitiveIndex;
+template<int32 MaxSHOrder> class TSHVectorRGB;
+using FSHVectorRGB3 = TSHVectorRGB<3>;
 
 enum EBasePassDrawListType
 {
@@ -46,6 +73,20 @@ enum EBasePassDrawListType
 	EBasePass_MAX
 };
 
+enum class EUpdateAllPrimitiveSceneInfosAsyncOps
+{
+	None = 0,
+	
+	// Cached mesh draw commands are cached asynchronously.
+	CacheMeshDrawCommands = 1 << 0,
+	
+	// Light primitive interactions are created asynchronously.
+	CreateLightPrimitiveInteractions = 1 << 1,
+
+	All = CacheMeshDrawCommands | CreateLightPrimitiveInteractions
+};
+ENUM_CLASS_FLAGS(EUpdateAllPrimitiveSceneInfosAsyncOps);
+
 /**
  * An interface to the private scene manager implementation of a scene.  Use GetRendererModule().AllocateScene to create.
  * The scene
@@ -53,9 +94,7 @@ enum EBasePassDrawListType
 class FSceneInterface
 {
 public:
-	ENGINE_API FSceneInterface(ERHIFeatureLevel::Type InFeatureLevel)
-		: FeatureLevel(InFeatureLevel)
-	{}
+	ENGINE_API FSceneInterface(ERHIFeatureLevel::Type InFeatureLevel);
 
 	// FSceneInterface interface
 
@@ -76,8 +115,8 @@ public:
 	/**
 	* Updates all primitive scene info additions, remobals and translation changes
 	*/
-	virtual void UpdateAllPrimitiveSceneInfos(FRDGBuilder& GraphBuilder, bool bAsyncCreateLPIs = false) = 0;
-	virtual ENGINE_API void UpdateAllPrimitiveSceneInfos(FRHICommandListImmediate& RHICmdList, bool bAsyncCreateLPIs = false);
+	virtual void UpdateAllPrimitiveSceneInfos(FRDGBuilder& GraphBuilder, EUpdateAllPrimitiveSceneInfosAsyncOps AsyncOps = EUpdateAllPrimitiveSceneInfosAsyncOps::None) = 0;
+	ENGINE_API void UpdateAllPrimitiveSceneInfos(FRHICommandListImmediate& RHICmdList);
 
 	/** 
 	 * Updates the transform of a primitive which has already been added to the scene. 
@@ -108,6 +147,8 @@ public:
 	virtual void UpdatePrimitiveDistanceFieldSceneData_GameThread(UPrimitiveComponent* Primitive) {}
 	/** Finds the  primitive with the associated component id. */
 	virtual FPrimitiveSceneInfo* GetPrimitiveSceneInfo(int32 PrimitiveIndex) = 0;
+	virtual FPrimitiveSceneInfo* GetPrimitiveSceneInfo(const FPersistentPrimitiveIndex& PersistentPrimitiveIndex) = 0;
+
 	/** Get the primitive previous local to world (used for motion blur). Returns true if the matrix was set. */
 	virtual bool GetPreviousLocalToWorld(const FPrimitiveSceneInfo* PrimitiveSceneInfo, FMatrix& OutPreviousLocalToWorld) const { return false; }
 	/** 
@@ -154,6 +195,7 @@ public:
 	virtual void UpdateDecalTransform(UDecalComponent* Component) = 0;
 	virtual void UpdateDecalFadeOutTime(UDecalComponent* Component) = 0;
 	virtual void UpdateDecalFadeInTime(UDecalComponent* Component) = 0;
+	virtual void BatchUpdateDecals(TArray<FDeferredDecalUpdateParams>&& UpdateParams) = 0;
 
 	/** Adds a reflection capture to the scene. */
 	virtual void AddReflectionCapture(class UReflectionCaptureComponent* Component) {}
@@ -193,10 +235,15 @@ public:
 	 * Updates the contents of the given sky capture by rendering the scene. 
 	 * This must be called on the game thread.
 	 */
-	virtual void UpdateSkyCaptureContents(const USkyLightComponent* CaptureComponent, bool bCaptureEmissiveOnly, UTextureCube* SourceCubemap, FTexture* OutProcessedTexture, float& OutAverageBrightness, FSHVectorRGB3& OutIrradianceEnvironmentMap, TArray<FFloat16Color>* OutRadianceMap) {}
+	virtual void UpdateSkyCaptureContents(const USkyLightComponent* CaptureComponent, bool bCaptureEmissiveOnly, UTextureCube* SourceCubemap, FTexture* OutProcessedTexture, float& OutAverageBrightness, FSHVectorRGB3& OutIrradianceEnvironmentMap, TArray<FFloat16Color>* OutRadianceMap, FLinearColor* SpecifiedCubemapColorScale) {}
 
+	UE_DEPRECATED(5.2, "AllocateAndCaptureFrameSkyEnvMap now takes an FRDGExternalAccessQueue")
 	virtual void AllocateAndCaptureFrameSkyEnvMap(FRDGBuilder& GraphBuilder, FSceneRenderer& SceneRenderer, FViewInfo& MainView, bool bShouldRenderSkyAtmosphere, bool bShouldRenderVolumetricCloud, FInstanceCullingManager& InstanceCullingManager) {}
+
+	virtual void AllocateAndCaptureFrameSkyEnvMap(FRDGBuilder& GraphBuilder, FSceneRenderer& SceneRenderer, FViewInfo& MainView, bool bShouldRenderSkyAtmosphere, bool bShouldRenderVolumetricCloud, FInstanceCullingManager& InstanceCullingManager, FRDGExternalAccessQueue& ExternalAccessQueue) {}
 	virtual void ValidateSkyLightRealTimeCapture(FRDGBuilder& GraphBuilder, const FViewInfo& View, FRDGTextureRef SceneColorTexture) {}
+
+	ENGINE_API virtual void ProcessAndRenderIlluminanceMeter(FRDGBuilder& GraphBuilder, TArrayView<FViewInfo> Views, FRDGTextureRef SceneColorTexture);
 
 	virtual void AddPlanarReflection(class UPlanarReflectionComponent* Component) {}
 	virtual void RemovePlanarReflection(class UPlanarReflectionComponent* Component) {}
@@ -306,6 +353,9 @@ public:
 	virtual FSkyAtmosphereRenderSceneInfo* GetSkyAtmosphereSceneInfo() = 0;
 	virtual const FSkyAtmosphereRenderSceneInfo* GetSkyAtmosphereSceneInfo() const = 0;
 
+	virtual void AddSparseVolumeTextureViewer(FSparseVolumeTextureViewerSceneProxy* SVTV) = 0;
+	virtual void RemoveSparseVolumeTextureViewer(FSparseVolumeTextureViewerSceneProxy* SVTV) = 0;
+
 	/**
 	 * Adds the unique volumetric cloud component to the scene
 	 *
@@ -332,6 +382,14 @@ public:
 	 * @param Proxy - the hair strands proxy
 	 */
 	virtual void RemoveHairStrands(FHairStrandsInstance* Proxy) = 0;
+
+	/**
+	 * Return the IES profile index corresponding to the local light proxy
+	 *
+	 * @param Proxy - the local light proxy
+	 * @param Out - the light parameters which will be filled with the IES profile  index information
+	 */
+	virtual void GetLightIESAtlasSlot(const FLightSceneProxy* Proxy, FLightRenderParameters* Out) = 0;
 
 	/**
 	 * Return the rect. light atlas slot information corresponding to the rect light proxy
@@ -507,15 +565,15 @@ public:
 	 * 
 	 * @param	InOffset	Delta to shift scene by
 	 */
-	virtual void ApplyWorldOffset(FVector InOffset) {}
+	virtual void ApplyWorldOffset(const FVector& InOffset) {}
 
 	/**
 	 * Notification that level was added to a world
 	 * 
 	 * @param	InLevelName		Level name
 	 */
-	virtual void OnLevelAddedToWorld(FName InLevelName, UWorld* InWorld, bool bIsLightingScenario) {}
-	virtual void OnLevelRemovedFromWorld(FName InLevelName, UWorld* InWorld, bool bIsLightingScenario) {}
+	virtual void OnLevelAddedToWorld(const FName& InLevelName, UWorld* InWorld, bool bIsLightingScenario) {}
+	virtual void OnLevelRemovedFromWorld(const FName& InLevelName, UWorld* InWorld, bool bIsLightingScenario) {}
 
 	/**
 	 * @return True if there are any lights in the scene
@@ -526,19 +584,9 @@ public:
 
 	ERHIFeatureLevel::Type GetFeatureLevel() const { return FeatureLevel; }
 
-	EShaderPlatform GetShaderPlatform() const { return GShaderPlatformForFeatureLevel[GetFeatureLevel()]; }
+	ENGINE_API EShaderPlatform GetShaderPlatform() const;
 
-	static EShadingPath GetShadingPath(ERHIFeatureLevel::Type InFeatureLevel)
-	{
-		if (InFeatureLevel >= ERHIFeatureLevel::SM5)
-		{
-			return EShadingPath::Deferred;
-		}
-		else
-		{
-			return EShadingPath::Mobile;
-		}
-	}
+	static ENGINE_API EShadingPath GetShadingPath(ERHIFeatureLevel::Type InFeatureLevel);
 
 	EShadingPath GetShadingPath() const
 	{
@@ -568,19 +616,19 @@ public:
 	/**
 	 * Returns the FPrimitiveComponentId for all primitives in the scene
 	 */
-	virtual ENGINE_API TArray<FPrimitiveComponentId> GetScenePrimitiveComponentIds() const;
+	ENGINE_API virtual TArray<FPrimitiveComponentId> GetScenePrimitiveComponentIds() const;
 
 	virtual void StartFrame() {}
 	virtual uint32 GetFrameNumber() const { return 0; }
 	virtual void IncrementFrameNumber() {}
 
-#if RHI_RAYTRACING
 	virtual void UpdateCachedRayTracingState(class FPrimitiveSceneProxy* SceneProxy) {}
 	virtual class FRayTracingDynamicGeometryCollection* GetRayTracingDynamicGeometryCollection() { return nullptr; }
 	virtual class FRayTracingSkinnedGeometryUpdateQueue* GetRayTracingSkinnedGeometryUpdateQueue() { return nullptr; }
-#endif
 
 	virtual bool RequestGPUSceneUpdate(FPrimitiveSceneInfo& PrimitiveSceneInfo, EPrimitiveDirtyState PrimitiveDirtyState) { return false; }
+
+	virtual void RefreshNaniteRasterBins(FPrimitiveSceneInfo& PrimitiveSceneInfo) { }
 
 protected:
 	virtual ~FSceneInterface() {}

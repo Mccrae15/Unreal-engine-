@@ -12,6 +12,7 @@
 #include "USDLog.h"
 #include "USDMemory.h"
 #include "USDPrimConversion.h"
+#include "USDProjectSettings.h"
 #include "USDShadeConversion.h"
 #include "USDTypesConversion.h"
 
@@ -21,6 +22,7 @@
 #include "UsdWrappers/UsdPrim.h"
 #include "UsdWrappers/UsdStage.h"
 
+#include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/StaticMesh.h"
 #include "Materials/MaterialInstanceConstant.h"
@@ -681,21 +683,49 @@ bool UsdToUnreal::ConvertGeomMesh(
 		for ( int32 Index = 0; Index < OutMaterialAssignments.Slots.Num(); ++Index )
 		{
 			const UsdUtils::FUsdPrimMaterialSlot& Slot = OutMaterialAssignments.Slots[ Index ];
-			CombinedMaterialSlotsToIndex.Add( Slot, Index );
-		}
 
-		for ( int32 LocalIndex = 0; LocalIndex < LocalInfo.Slots.Num(); ++LocalIndex )
-		{
-			const UsdUtils::FUsdPrimMaterialSlot& LocalSlot = LocalInfo.Slots[ LocalIndex ];
-			if ( int32* ExistingCombinedIndex = CombinedMaterialSlotsToIndex.Find( LocalSlot ) )
+			// Combine entries in this way so that we can append PrimPaths
+			TMap< UsdUtils::FUsdPrimMaterialSlot, int32 >::TKeyIterator KeyIt = CombinedMaterialSlotsToIndex.CreateKeyIterator( Slot );
+			if ( KeyIt )
 			{
-				LocalToCombinedMaterialSlotIndices[ LocalIndex ] = *ExistingCombinedIndex;
+				KeyIt.Key().PrimPaths.Append( Slot.PrimPaths );
+				KeyIt.Value() = Index;
 			}
 			else
 			{
-				OutMaterialAssignments.Slots.Add( LocalSlot );
-				LocalToCombinedMaterialSlotIndices[ LocalIndex ] = OutMaterialAssignments.Slots.Num() - 1;
+				CombinedMaterialSlotsToIndex.Add( Slot, Index );
 			}
+		}
+
+		// Combine our LocalSlots into CombinedMaterialSlotsToIndex
+		for ( int32 LocalIndex = 0; LocalIndex < LocalInfo.Slots.Num(); ++LocalIndex )
+		{
+			const UsdUtils::FUsdPrimMaterialSlot& LocalSlot = LocalInfo.Slots[ LocalIndex ];
+
+			// Combine entries in this way so that we can append PrimPaths
+			TMap< UsdUtils::FUsdPrimMaterialSlot, int32 >::TKeyIterator KeyIt = CombinedMaterialSlotsToIndex.CreateKeyIterator( LocalSlot );
+			if ( KeyIt )
+			{
+				KeyIt.Key().PrimPaths.Append( LocalSlot.PrimPaths );
+
+				const int32 ExistingCombinedIndex = KeyIt.Value();
+				LocalToCombinedMaterialSlotIndices[ LocalIndex ] = ExistingCombinedIndex;
+			}
+			else
+			{
+				int32 NewIndex = OutMaterialAssignments.Slots.Add( LocalSlot );
+				CombinedMaterialSlotsToIndex.Add( LocalSlot, NewIndex );
+				LocalToCombinedMaterialSlotIndices[ LocalIndex ] = NewIndex;
+			}
+		}
+
+		// Now that we merged all prim paths into they keys of CombinedMaterialSlotsToIndex, let's copy them back into
+		// our output
+		for ( UsdUtils::FUsdPrimMaterialSlot& Slot : OutMaterialAssignments.Slots )
+		{
+			TMap< UsdUtils::FUsdPrimMaterialSlot, int32 >::TKeyIterator KeyIt = CombinedMaterialSlotsToIndex.CreateKeyIterator( Slot );
+			ensure(KeyIt);
+			Slot.PrimPaths = KeyIt.Key().PrimPaths;
 		}
 	}
 	else
@@ -722,6 +752,10 @@ bool UsdToUnreal::ConvertGeomMesh(
 		{
 			pxr::VtArray< pxr::GfVec3f > PointsArray;
 			Points.Get( &PointsArray, TimeCodeValue );
+			if (PointsArray.size() < 3)
+			{
+				return false;
+			}
 
 			OutMeshDescription.ReserveNewVertices( PointsArray.size() );
 
@@ -791,6 +825,10 @@ bool UsdToUnreal::ConvertGeomMesh(
 		{
 			FaceCountsAttribute.Get( &FaceCounts, TimeCodeValue );
 			NumPolygons = FaceCounts.size();
+			if (NumPolygons < 1)
+			{
+				return false;
+			}
 		}
 
 		// Face indices
@@ -800,6 +838,10 @@ bool UsdToUnreal::ConvertGeomMesh(
 		if ( FaceIndicesAttribute )
 		{
 			FaceIndicesAttribute.Get( &FaceIndices, TimeCodeValue );
+			if (FaceIndices.size() < 1)
+			{
+				return false;
+			}
 		}
 
 		// Normals
@@ -928,13 +970,20 @@ bool UsdToUnreal::ConvertGeomMesh(
 				const FVertexInstanceID VertexInstanceID( VertexInstanceIndex );
 				const int32 ControlPointIndex = FaceIndices[ CurrentVertexInstanceIndex ];
 				const FVertexID VertexID( VertexOffset + ControlPointIndex );
-				const FVector VertexPosition = ( FVector ) MeshDescriptionVertexPositions[ VertexID ];
+
+				// This data is read straight from USD so there's nothing guaranteeing we have as many positions as we need
+				if (VertexID.GetValue() >= MeshDescriptionVertexPositions.GetNumElements() || VertexID.GetValue() < 0)
+				{
+					continue;
+				}
 
 				// Make sure a face doesn't use the same vertex twice as MeshDescription doesn't like that
 				if ( CornerVerticesIDs.Contains( VertexID ) )
 				{
 					continue;
 				}
+
+				const FVector VertexPosition = (FVector)MeshDescriptionVertexPositions[VertexID];
 
 				CornerVerticesIDs.Add( VertexID );
 
@@ -962,9 +1011,16 @@ bool UsdToUnreal::ConvertGeomMesh(
 
 					if ( UVSet.UVIndices.IsSet() )
 					{
-						if ( ensure( UVSet.UVIndices.GetValue().size() > ValueIndex ) )
+						const pxr::VtIntArray& UVIndices = UVSet.UVIndices.GetValue();
+
+						if (ensure(ValueIndex < UVIndices.size()))
 						{
-							UV = UVSet.UVs[ UVSet.UVIndices.GetValue()[ ValueIndex ] ];
+							int UVIndex = UVIndices[ValueIndex];
+
+							if (ensure(UVIndex < UVSet.UVs.size()))
+							{
+								UV = UVSet.UVs[UVIndex];
+							}
 						}
 					}
 					else if ( ensure( UVSet.UVs.size() > ValueIndex ) )
@@ -1351,31 +1407,41 @@ bool UsdToUnreal::ConvertGeomMeshHierarchy(
 
 UMaterialInstanceDynamic* UsdUtils::CreateDisplayColorMaterialInstanceDynamic( const UsdUtils::FDisplayColorMaterial& DisplayColorDescription )
 {
-	FString ParentPath;
+	const UUsdProjectSettings* Settings = GetDefault<UUsdProjectSettings>();
+	if ( !Settings )
+	{
+		return nullptr;
+	}
+
+	const FSoftObjectPath* ParentPathPtr = nullptr;
 	if ( DisplayColorDescription.bHasOpacity )
 	{
 		if ( DisplayColorDescription.bIsDoubleSided )
 		{
-			ParentPath = TEXT( "Material'/USDImporter/Materials/DisplayColorAndOpacityDoubleSided.DisplayColorAndOpacityDoubleSided'" );
+			ParentPathPtr = &Settings->ReferenceDisplayColorAndOpacityTwoSidedMaterial;
 		}
 		else
 		{
-			ParentPath = TEXT( "Material'/USDImporter/Materials/DisplayColorAndOpacity.DisplayColorAndOpacity'" );
+			ParentPathPtr = &Settings->ReferenceDisplayColorAndOpacityMaterial;
 		}
 	}
 	else
 	{
 		if ( DisplayColorDescription.bIsDoubleSided )
 		{
-			ParentPath = TEXT( "Material'/USDImporter/Materials/DisplayColorDoubleSided.DisplayColorDoubleSided'" );
+			ParentPathPtr = &Settings->ReferenceDisplayColorTwoSidedMaterial;
 		}
 		else
 		{
-			ParentPath = TEXT( "Material'/USDImporter/Materials/DisplayColor.DisplayColor'" );
+			ParentPathPtr = &Settings->ReferenceDisplayColorMaterial;
 		}
 	}
+	if ( !ParentPathPtr )
+	{
+		return nullptr;
+	}
 
-	if ( UMaterialInterface* ParentMaterial = Cast< UMaterialInterface >( FSoftObjectPath( ParentPath ).TryLoad() ) )
+	if ( UMaterialInterface* ParentMaterial = Cast< UMaterialInterface >( ParentPathPtr->TryLoad() ) )
 	{
 		FName AssetName = MakeUniqueObjectName(
 			GetTransientPackage(),
@@ -1398,31 +1464,37 @@ UMaterialInstanceDynamic* UsdUtils::CreateDisplayColorMaterialInstanceDynamic( c
 UMaterialInstanceConstant* UsdUtils::CreateDisplayColorMaterialInstanceConstant( const FDisplayColorMaterial& DisplayColorDescription )
 {
 #if WITH_EDITOR
-	FString ParentPath;
+	const UUsdProjectSettings* Settings = GetDefault<UUsdProjectSettings>();
+	if ( !Settings )
+	{
+		return nullptr;
+	}
+
+	const FSoftObjectPath* ParentPathPtr = nullptr;
 	if ( DisplayColorDescription.bHasOpacity )
 	{
 		if ( DisplayColorDescription.bIsDoubleSided )
 		{
-			ParentPath = TEXT( "Material'/USDImporter/Materials/DisplayColorAndOpacityDoubleSided.DisplayColorAndOpacityDoubleSided'" );
+			ParentPathPtr = &Settings->ReferenceDisplayColorAndOpacityTwoSidedMaterial;
 		}
 		else
 		{
-			ParentPath = TEXT( "Material'/USDImporter/Materials/DisplayColorAndOpacity.DisplayColorAndOpacity'" );
+			ParentPathPtr = &Settings->ReferenceDisplayColorAndOpacityMaterial;
 		}
 	}
 	else
 	{
 		if ( DisplayColorDescription.bIsDoubleSided )
 		{
-			ParentPath = TEXT( "Material'/USDImporter/Materials/DisplayColorDoubleSided.DisplayColorDoubleSided'" );
+			ParentPathPtr = &Settings->ReferenceDisplayColorTwoSidedMaterial;
 		}
 		else
 		{
-			ParentPath = TEXT( "Material'/USDImporter/Materials/DisplayColor.DisplayColor'" );
+			ParentPathPtr = &Settings->ReferenceDisplayColorMaterial;
 		}
 	}
 
-	if ( UMaterialInterface* ParentMaterial = Cast< UMaterialInterface >( FSoftObjectPath( ParentPath ).TryLoad() ) )
+	if ( UMaterialInterface* ParentMaterial = Cast< UMaterialInterface >( ParentPathPtr->TryLoad() ) )
 	{
 		FName AssetName = MakeUniqueObjectName(
 			GetTransientPackage(),
@@ -1602,6 +1674,21 @@ UsdUtils::FUsdPrimMaterialAssignmentInfo UsdUtils::GetPrimMaterialAssignments(
 		}
 	}
 
+	bool bIsDoubleSided = false;
+	if ( pxr::UsdGeomMesh Mesh = pxr::UsdGeomMesh{ UsdPrim } )
+	{
+		if ( pxr::UsdAttribute Attr = Mesh.GetDoubleSidedAttr() )
+		{
+			pxr::VtValue AttrValue;
+			if ( Attr.Get( &AttrValue ) && AttrValue.IsHolding<bool>() )
+			{
+				bIsDoubleSided = AttrValue.UncheckedGet<bool>();
+			}
+		}
+	}
+
+	FString MeshPrimPath = UsdToUnreal::ConvertPath( UsdPrim.GetPath() );
+
 	// Priority 1: Material is an unreal asset
 	if ( RenderContext == UnrealIdentifiers::Unreal )
 	{
@@ -1616,6 +1703,8 @@ UsdUtils::FUsdPrimMaterialAssignmentInfo UsdUtils::GetPrimMaterialAssignments(
 					FUsdPrimMaterialSlot& Slot = Result.Slots.Emplace_GetRef();
 					Slot.MaterialSource = UnrealMaterial.GetValue();
 					Slot.AssignmentType = UsdUtils::EPrimAssignmentType::UnrealMaterial;
+					Slot.bMeshIsDoubleSided = bIsDoubleSided;
+					Slot.PrimPaths.Add( MeshPrimPath );
 
 					return Result;
 				}
@@ -1628,6 +1717,8 @@ UsdUtils::FUsdPrimMaterialAssignmentInfo UsdUtils::GetPrimMaterialAssignments(
 			FUsdPrimMaterialSlot& Slot = Result.Slots.Emplace_GetRef();
 			Slot.MaterialSource = UnrealMaterial.GetValue();
 			Slot.AssignmentType = UsdUtils::EPrimAssignmentType::UnrealMaterial;
+			Slot.bMeshIsDoubleSided = bIsDoubleSided;
+			Slot.PrimPaths.Add( MeshPrimPath );
 
 			return Result;
 		}
@@ -1639,6 +1730,8 @@ UsdUtils::FUsdPrimMaterialAssignmentInfo UsdUtils::GetPrimMaterialAssignments(
 		FUsdPrimMaterialSlot& Slot = Result.Slots.Emplace_GetRef();
 		Slot.MaterialSource = BoundMaterial.GetValue();
 		Slot.AssignmentType = UsdUtils::EPrimAssignmentType::MaterialPrim;
+		Slot.bMeshIsDoubleSided = bIsDoubleSided;
+		Slot.PrimPaths.Add( MeshPrimPath );
 
 		return Result;
 	}
@@ -1649,6 +1742,8 @@ UsdUtils::FUsdPrimMaterialAssignmentInfo UsdUtils::GetPrimMaterialAssignments(
 		FUsdPrimMaterialSlot& Slot = Result.Slots.Emplace_GetRef();
 		Slot.MaterialSource = TargetMaterial.GetValue();
 		Slot.AssignmentType = UsdUtils::EPrimAssignmentType::MaterialPrim;
+		Slot.bMeshIsDoubleSided = bIsDoubleSided;
+		Slot.PrimPaths.Add( MeshPrimPath );
 
 		return Result;
 	}
@@ -1675,13 +1770,16 @@ UsdUtils::FUsdPrimMaterialAssignmentInfo UsdUtils::GetPrimMaterialAssignments(
 			const pxr::UsdGeomSubset& GeomSubset = GeomSubsets[ GeomSubsetIndex ];
 			bool bHasAssignment = false;
 
+			pxr::UsdPrim GeomSubsetPrim = GeomSubset.GetPrim();
+			FString GeomSubsetPath = UsdToUnreal::ConvertPath( GeomSubsetPrim.GetPath() );
+
 			// Priority 4.1: Material is an unreal asset
 			if ( RenderContext == UnrealIdentifiers::Unreal )
 			{
 				// Priority 4.1.1: Partition has an unreal rendercontext material prim binding
 				if ( !bHasAssignment )
 				{
-					pxr::UsdShadeMaterialBindingAPI BindingAPI( GeomSubset.GetPrim() );
+					pxr::UsdShadeMaterialBindingAPI BindingAPI( GeomSubsetPrim );
 					if ( BindingAPI )
 					{
 						if ( pxr::UsdShadeMaterial ShadeMaterial = BindingAPI.ComputeBoundMaterial( MaterialPurpose ) )
@@ -1691,6 +1789,8 @@ UsdUtils::FUsdPrimMaterialAssignmentInfo UsdUtils::GetPrimMaterialAssignments(
 								FUsdPrimMaterialSlot& Slot = Result.Slots.Emplace_GetRef();
 								Slot.MaterialSource = UnrealMaterial.GetValue();
 								Slot.AssignmentType = UsdUtils::EPrimAssignmentType::UnrealMaterial;
+								Slot.bMeshIsDoubleSided = bIsDoubleSided;
+								Slot.PrimPaths.Add( GeomSubsetPath );
 								bHasAssignment = true;
 							}
 						}
@@ -1700,11 +1800,13 @@ UsdUtils::FUsdPrimMaterialAssignmentInfo UsdUtils::GetPrimMaterialAssignments(
 				// Priority 4.1.2: Partitition has an unrealMaterial attribute directly on it
 				if ( !bHasAssignment )
 				{
-					if ( TOptional<FString> UnrealMaterial = FetchFirstUEMaterialFromAttribute( GeomSubset.GetPrim(), TimeCode ) )
+					if ( TOptional<FString> UnrealMaterial = FetchFirstUEMaterialFromAttribute( GeomSubsetPrim, TimeCode ) )
 					{
 						FUsdPrimMaterialSlot& Slot = Result.Slots.Emplace_GetRef();
 						Slot.MaterialSource = UnrealMaterial.GetValue();
 						Slot.AssignmentType = UsdUtils::EPrimAssignmentType::UnrealMaterial;
+						Slot.bMeshIsDoubleSided = bIsDoubleSided;
+						Slot.PrimPaths.Add( GeomSubsetPath );
 						bHasAssignment = true;
 					}
 				}
@@ -1713,11 +1815,13 @@ UsdUtils::FUsdPrimMaterialAssignmentInfo UsdUtils::GetPrimMaterialAssignments(
 			// Priority 4.2: computing bound material
 			if ( !bHasAssignment )
 			{
-				if ( TOptional<FString> BoundMaterial = FetchMaterialByComputingBoundMaterial( GeomSubset.GetPrim() ) )
+				if ( TOptional<FString> BoundMaterial = FetchMaterialByComputingBoundMaterial( GeomSubsetPrim ) )
 				{
 					FUsdPrimMaterialSlot& Slot = Result.Slots.Emplace_GetRef();
 					Slot.MaterialSource = BoundMaterial.GetValue();
 					Slot.AssignmentType = UsdUtils::EPrimAssignmentType::MaterialPrim;
+					Slot.bMeshIsDoubleSided = bIsDoubleSided;
+					Slot.PrimPaths.Add( GeomSubsetPath );
 					bHasAssignment = true;
 				}
 			}
@@ -1725,11 +1829,13 @@ UsdUtils::FUsdPrimMaterialAssignmentInfo UsdUtils::GetPrimMaterialAssignments(
 			// Priority 4.3: material:binding relationship
 			if ( !bHasAssignment )
 			{
-				if ( TOptional<FString> TargetMaterial = FetchMaterialByMaterialRelationship( GeomSubset.GetPrim() ) )
+				if ( TOptional<FString> TargetMaterial = FetchMaterialByMaterialRelationship( GeomSubsetPrim ) )
 				{
 					FUsdPrimMaterialSlot& Slot = Result.Slots.Emplace_GetRef();
 					Slot.MaterialSource = TargetMaterial.GetValue();
 					Slot.AssignmentType = UsdUtils::EPrimAssignmentType::MaterialPrim;
+					Slot.bMeshIsDoubleSided = bIsDoubleSided;
+					Slot.PrimPaths.Add( GeomSubsetPath );
 					bHasAssignment = true;
 				}
 			}
@@ -1742,7 +1848,9 @@ UsdUtils::FUsdPrimMaterialAssignmentInfo UsdUtils::GetPrimMaterialAssignments(
 				{
 					Slot.MaterialSource = DisplayColor.GetValue().ToString();
 					Slot.AssignmentType = UsdUtils::EPrimAssignmentType::DisplayColor;
+					Slot.bMeshIsDoubleSided = bIsDoubleSided;
 				}
+				Slot.PrimPaths.Add( GeomSubsetPath );
 				bHasAssignment = true;
 			}
 
@@ -1767,6 +1875,7 @@ UsdUtils::FUsdPrimMaterialAssignmentInfo UsdUtils::GetPrimMaterialAssignments(
 			{
 				Slot.MaterialSource = DisplayColor.GetValue().ToString();
 				Slot.AssignmentType = UsdUtils::EPrimAssignmentType::DisplayColor;
+				Slot.bMeshIsDoubleSided = bIsDoubleSided;
 			}
 
 			if ( bProvideMaterialIndices )
@@ -1788,6 +1897,8 @@ UsdUtils::FUsdPrimMaterialAssignmentInfo UsdUtils::GetPrimMaterialAssignments(
 		FUsdPrimMaterialSlot& Slot = Result.Slots.Emplace_GetRef();
 		Slot.MaterialSource = DisplayColor.GetValue().ToString();
 		Slot.AssignmentType = UsdUtils::EPrimAssignmentType::DisplayColor;
+		Slot.bMeshIsDoubleSided = bIsDoubleSided;
+		Slot.PrimPaths.Add( MeshPrimPath );
 
 		return Result;
 	}
@@ -2326,8 +2437,7 @@ void UsdUtils::ReplaceUnrealMaterialsWithBaked(
 	const UE::FSdfLayer& LayerToAuthorIn,
 	const TMap<FString, FString>& BakedMaterials,
 	bool bIsAssetLayer,
-	bool bUsePayload,
-	bool bRemoveUnrealMaterials
+	bool bUsePayload
 )
 {
 	FScopedUsdAllocs Allocs;
@@ -2374,7 +2484,6 @@ void UsdUtils::ReplaceUnrealMaterialsWithBaked(
 			&BakedMaterials,
 			bIsAssetLayer,
 			bUsePayload,
-			bRemoveUnrealMaterials,
 			&StageMatScope
 		]
 		(
@@ -2526,25 +2635,6 @@ void UsdUtils::ReplaceUnrealMaterialsWithBaked(
 
 				pxr::UsdEditContext Context{ StageToTraverse, Layer };
 
-				if ( bRemoveUnrealMaterials )
-				{
-					TOptional<pxr::UsdEditContext> VarContext;
-					if ( bAuthorInsideVariants )
-					{
-						VarContext.Emplace( OuterVariantSet.GetValue().GetVariantEditContext() );
-					}
-
-					if ( UnrealMaterialAttrSpec )
-					{
-						Prim.RemoveProperty( UnrealIdentifiers::MaterialAssignment );
-					}
-
-					if ( UnrealMaterialPrimSpec )
-					{
-						UsdUtils::RemoveUnrealSurfaceOutput( UnrealMaterialPrim, UE::FSdfLayer{ Layer } );
-					}
-				}
-
 				// It was just an empty UE asset path, so just cancel now as our BakedFilename can't possibly be useful
 				if ( UnrealMaterialAssetPath.IsEmpty() )
 				{
@@ -2675,6 +2765,24 @@ void UsdUtils::ReplaceUnrealMaterialsWithBaked(
 	pxr::UsdPrim Root = Stage.GetPseudoRoot();
 	TOptional<FMaterialScopePrim> Empty;
 	TraverseForMaterialReplacement( UsdStage, Root, Empty, {} );
+}
+
+void UsdUtils::ReplaceUnrealMaterialsWithBaked(
+	const UE::FUsdStage& Stage,
+	const UE::FSdfLayer& LayerToAuthorIn,
+	const TMap<FString, FString>& BakedMaterials,
+	bool bIsAssetLayer,
+	bool bUsePayload,
+	bool bRemoveUnrealMaterials
+)
+{
+	ReplaceUnrealMaterialsWithBaked(
+		Stage,
+		LayerToAuthorIn,
+		BakedMaterials,
+		bIsAssetLayer,
+		bUsePayload
+	);
 }
 
 FString UsdUtils::HashGeomMeshPrim( const UE::FUsdStage& Stage, const FString& PrimPath, double TimeCode )

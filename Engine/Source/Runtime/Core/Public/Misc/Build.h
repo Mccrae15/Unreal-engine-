@@ -39,30 +39,6 @@
 	#define UE_SERVER					0
 #endif
 
-/**
- *   Whether compiling for a trusted dedicated server or not.
- */
-#ifndef UE_SERVER_TRUSTED
-	#define UE_SERVER_TRUSTED			0
-#endif
-
-/**
- *   Whether compiling for an untrusted dedicated server or not.
- */
-#ifndef UE_SERVER_UNTRUSTED
-	#define UE_SERVER_UNTRUSTED			0
-#endif
-
-#if UE_SERVER
-	#if UE_SERVER_TRUSTED + UE_SERVER_UNTRUSTED != 1
-		#error Exactly one of [UE_SERVER_TRUSTED UE_SERVER_UNTRUSTED] should be defined to be 1 when UE_SERVER=1
-	#endif
-#else
-	#if UE_SERVER_TRUSTED || UE_SERVER_UNTRUSTED
-		#error All of [UE_SERVER_TRUSTED UE_SERVER_UNTRUSTED] should be defined to be 0 when UE_SERVER=0
-	#endif
-#endif
-
 // Ensure that we have one, and only one build config coming from UBT
 #if UE_BUILD_DEBUG + UE_BUILD_DEVELOPMENT + UE_BUILD_TEST + UE_BUILD_SHIPPING != 1
 	#error Exactly one of [UE_BUILD_DEBUG UE_BUILD_DEVELOPMENT UE_BUILD_TEST UE_BUILD_SHIPPING] should be defined to be 1
@@ -139,18 +115,10 @@
 	#define ENABLE_PGO_PROFILE 0
 #endif
 
-/**
- * Unreal Header Tool requires extra data stored in the structure of a few core files. This enables some ifdef hacks to make this work. 
- * Set via UBT, do not modify directly
- */
-#ifndef HACK_HEADER_GENERATOR
-	#define HACK_HEADER_GENERATOR 0
-#endif
-
 /** Whether we are compiling with automation worker functionality.  Note that automation worker defaults to enabled in
     UE_BUILD_TEST configuration, so that it can be used for performance testing on devices */
 #ifndef WITH_AUTOMATION_WORKER
-	#define WITH_AUTOMATION_WORKER !(UE_BUILD_SHIPPING || HACK_HEADER_GENERATOR)
+	#define WITH_AUTOMATION_WORKER !UE_BUILD_SHIPPING
 #endif
 
 /**
@@ -475,6 +443,17 @@
 #ifndef WITH_IOSTORE_IN_EDITOR
 #define WITH_IOSTORE_IN_EDITOR UE_IS_COOKED_EDITOR
 #endif
+
+// Controls if iostore will be forced on
+#ifndef UE_FORCE_USE_IOSTORE
+#define UE_FORCE_USE_IOSTORE 0
+#endif
+
+// Controls if paks will be forced on unless -NoPaks argument is passed
+#ifndef UE_FORCE_USE_PAKS
+#define UE_FORCE_USE_PAKS 0
+#endif
+
 
 // Controls whether Iris networking code is compiled in or not; should normally be defined by UBT
 #ifndef UE_WITH_IRIS

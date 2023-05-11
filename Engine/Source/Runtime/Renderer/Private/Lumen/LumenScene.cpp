@@ -3,6 +3,7 @@
 #include "LumenMeshCards.h"
 #include "RendererPrivate.h"
 #include "Lumen.h"
+#include "MeshCardBuild.h"
 
 extern void BuildMeshCardsDataForMergedInstances(const FLumenPrimitiveGroup& PrimitiveGroup, FMeshCardsBuildData& MeshCardsBuildData, FMatrix& MeshCardsLocalToWorld);
 
@@ -21,10 +22,10 @@ TAutoConsoleVariable<int32> CVarLumenSceneUpdateViewOrigin(
 	ECVF_RenderThreadSafe
 );
 
-static TAutoConsoleVariable<int32> CVarLumenThreadGroupSize32(
-	TEXT("r.Lumen.ThreadGroupSize32"),
-	1,
-	TEXT("Whether to to prefer dispatches in groups of 32 threads on HW which supports it (instead of standard 64)."),
+static TAutoConsoleVariable<int32> CVarLumenSceneSurfaceCacheAtlasSize(
+	TEXT("r.LumenScene.SurfaceCache.AtlasSize"),
+	4096,
+	TEXT("Surface cache card atlas size."),
 	ECVF_Scalability | ECVF_RenderThreadSafe
 );
 
@@ -78,11 +79,6 @@ FVector Lumen::GetLumenSceneViewOrigin(const FViewInfo& View, int32 ClipmapIndex
 	return CameraOrigin;
 }
 
-bool Lumen::UseThreadGroupSize32()
-{
-	return GRHISupportsWaveOperations && GRHIMinimumWaveSize <= 32 && CVarLumenThreadGroupSize32.GetValueOnRenderThread() != 0;
-}
-
 class FLumenCardPageGPUData
 {
 public:
@@ -125,8 +121,7 @@ public:
 
 static FIntPoint GetDesiredPhysicalAtlasSizeInPages(float SurfaceCacheResolution)
 {
-	extern int32 GLumenSceneSurfaceCacheAtlasSize;
-	int32 AtlasSizeInPages = FMath::DivideAndRoundUp<uint32>(GLumenSceneSurfaceCacheAtlasSize, Lumen::PhysicalPageSize);
+	int32 AtlasSizeInPages = FMath::DivideAndRoundUp<uint32>(CVarLumenSceneSurfaceCacheAtlasSize.GetValueOnRenderThread(), Lumen::PhysicalPageSize);
 	AtlasSizeInPages = AtlasSizeInPages * SurfaceCacheResolution;
 	AtlasSizeInPages = FMath::Clamp(AtlasSizeInPages, 1, 64);
 	return FIntPoint(AtlasSizeInPages, AtlasSizeInPages);
@@ -135,6 +130,13 @@ static FIntPoint GetDesiredPhysicalAtlasSizeInPages(float SurfaceCacheResolution
 static FIntPoint GetDesiredPhysicalAtlasSize(float SurfaceCacheResolution)
 {
 	return GetDesiredPhysicalAtlasSizeInPages(SurfaceCacheResolution) * Lumen::PhysicalPageSize;
+}
+
+FLumenPrimitiveGroupRemoveInfo::FLumenPrimitiveGroupRemoveInfo(const FPrimitiveSceneInfo* InPrimitive, int32 InPrimitiveIndex)
+	: Primitive(InPrimitive)
+	, PrimitiveIndex(InPrimitiveIndex)
+	, LumenPrimitiveGroupIndices(InPrimitive->LumenPrimitiveGroupIndices)
+{
 }
 
 bool FLumenPrimitiveGroup::HasMergedInstances() const
@@ -148,7 +150,7 @@ bool FLumenPrimitiveGroup::HasMergedInstances() const
 		uint32 NumInstances = 0;
 		for (const FPrimitiveSceneInfo* PrimitiveSceneInfo : Primitives)
 		{
-			const TConstArrayView<FPrimitiveInstance> InstanceSceneData = PrimitiveSceneInfo->Proxy->GetInstanceSceneData();
+			const TConstArrayView<FInstanceSceneData> InstanceSceneData = PrimitiveSceneInfo->Proxy->GetInstanceSceneData();
 			NumInstances += FMath::Max(InstanceSceneData.Num(), 1);
 
 			if (NumInstances > 1)
@@ -582,30 +584,6 @@ FLumenSceneData::~FLumenSceneData()
 	MeshCards.Reset();
 }
 
-bool TrackPrimitiveForLumenScene(const FPrimitiveSceneProxy* Proxy)
-{
-	bool bCanBeTraced = false;
-	if (DoesProjectSupportDistanceFields() && Proxy->AffectsDistanceFieldLighting()
-		&& (Proxy->SupportsDistanceFieldRepresentation() || Proxy->SupportsHeightfieldRepresentation()))
-	{
-		bCanBeTraced = true;
-	}
-
-#if RHI_RAYTRACING
-	if (IsRayTracingEnabled() && Proxy->HasRayTracingRepresentation())
-	{
-		if ((Proxy->IsVisibleInRayTracing() && (Proxy->IsDrawnInGame() || Proxy->AffectsIndirectLightingWhileHidden())) || Proxy->IsRayTracingFarField())
-		{
-			bCanBeTraced = true;
-		}
-	}
-#endif
-
-	const bool bAffectsLumen = Proxy->AffectsDynamicIndirectLighting() && Proxy->SupportsMeshCardRepresentation();
-	const bool bVisible = Proxy->IsDrawnInGame() || Proxy->AffectsIndirectLightingWhileHidden();
-	return bAffectsLumen && bVisible && bCanBeTraced;
-}
-
 bool TrackPrimitiveInstanceForLumenScene(const FMatrix& LocalToWorld, const FBox& LocalBoundingBox, bool bEmissiveLightSource)
 {
 	const FVector LocalToWorldScale = LocalToWorld.GetScaleVector();
@@ -625,7 +603,6 @@ void FScene::LumenAddPrimitive(FPrimitiveSceneInfo* InPrimitive)
 	if (DefaultLumenSceneData->bTrackAllPrimitives)
 	{
 		const FPrimitiveSceneProxy* Proxy = InPrimitive->Proxy;
-		bool bTrackPrimitveForLumenScene = TrackPrimitiveForLumenScene(Proxy);
 
 		for (FLumenSceneDataIterator LumenSceneData = GetLumenSceneDataIterator(); LumenSceneData; ++LumenSceneData)
 		{
@@ -634,10 +611,11 @@ void FScene::LumenAddPrimitive(FPrimitiveSceneInfo* InPrimitive)
 
 			LumenSceneData->PrimitivesToUpdateMeshCards.Add(InPrimitive->GetIndex());
 
-			if (bTrackPrimitveForLumenScene)
+			if (Proxy->IsVisibleInLumenScene())
 			{
 				ensure(!LumenSceneData->PendingAddOperations.Contains(InPrimitive));
 				ensure(!LumenSceneData->PendingUpdateOperations.Contains(InPrimitive));
+				ensure(InPrimitive->LumenPrimitiveGroupIndices.Num() == 0);
 				LumenSceneData->PendingAddOperations.Add(InPrimitive);
 			}
 		}
@@ -650,7 +628,7 @@ void FScene::LumenUpdatePrimitive(FPrimitiveSceneInfo* InPrimitive)
 	LLM_SCOPE_BYTAG(Lumen);
 
 	if (DefaultLumenSceneData->bTrackAllPrimitives
-		&& TrackPrimitiveForLumenScene(InPrimitive->Proxy)
+		&& InPrimitive->Proxy->IsVisibleInLumenScene()
 		&& InPrimitive->LumenPrimitiveGroupIndices.Num() > 0)
 	{
 		for (FLumenSceneDataIterator LumenSceneData = GetLumenSceneDataIterator(); LumenSceneData; ++LumenSceneData)
@@ -670,7 +648,7 @@ void FScene::LumenInvalidateSurfaceCacheForPrimitive(FPrimitiveSceneInfo* InPrim
 	LLM_SCOPE_BYTAG(Lumen);
 
 	if (DefaultLumenSceneData->bTrackAllPrimitives
-		&& TrackPrimitiveForLumenScene(InPrimitive->Proxy)
+		&& InPrimitive->Proxy->IsVisibleInLumenScene()
 		&& InPrimitive->LumenPrimitiveGroupIndices.Num() > 0)
 	{
 		for (FLumenSceneDataIterator LumenSceneData = GetLumenSceneDataIterator(); LumenSceneData; ++LumenSceneData)
@@ -693,7 +671,7 @@ void FScene::LumenRemovePrimitive(FPrimitiveSceneInfo* InPrimitive, int32 Primit
 	const FPrimitiveSceneProxy* Proxy = InPrimitive->Proxy;
 
 	if (DefaultLumenSceneData->bTrackAllPrimitives
-		&& TrackPrimitiveForLumenScene(Proxy))
+		&& InPrimitive->Proxy->IsVisibleInLumenScene())
 	{
 		for (FLumenSceneDataIterator LumenSceneData = GetLumenSceneDataIterator(); LumenSceneData; ++LumenSceneData)
 		{
@@ -841,7 +819,7 @@ void UpdateLumenScenePrimitives(FRHIGPUMask GPUMask, FScene* Scene)
 		for (FPrimitiveSceneInfo* ScenePrimitiveInfo : LumenSceneData->PendingAddOperations)
 		{
 			FPrimitiveSceneProxy* SceneProxy = ScenePrimitiveInfo->Proxy;
-			const TConstArrayView<FPrimitiveInstance> InstanceSceneData = SceneProxy->GetInstanceSceneData();
+			const TConstArrayView<FInstanceSceneData> InstanceSceneData = SceneProxy->GetInstanceSceneData();
 			const int32 NumInstances = FMath::Max(InstanceSceneData.Num(), 1);
 			bool bAnyInstanceValid = false;
 			{
@@ -854,7 +832,7 @@ void UpdateLumenScenePrimitives(FRHIGPUMask GPUMask, FScene* Scene)
 
 					if (InstanceIndex < InstanceSceneData.Num())
 					{
-						const FPrimitiveInstance& PrimitiveInstance = InstanceSceneData[InstanceIndex];
+						const FInstanceSceneData& PrimitiveInstance = InstanceSceneData[InstanceIndex];
 						LocalToWorld = PrimitiveInstance.LocalToPrimitive.ToMatrix() * PrimitiveToWorld;
 						LocalBoundingBox = SceneProxy->GetInstanceLocalBounds(InstanceIndex).ToBox();
 					}
@@ -869,8 +847,6 @@ void UpdateLumenScenePrimitives(FRHIGPUMask GPUMask, FScene* Scene)
 
 			if (bAnyInstanceValid)
 			{
-				ensure(ScenePrimitiveInfo->LumenPrimitiveGroupIndices.Num() == 0);
-
 				// First try to merge components
 				extern int32 GLumenMeshCardsMergeComponents;
 				if (GLumenMeshCardsMergeComponents != 0 
@@ -902,7 +878,6 @@ void UpdateLumenScenePrimitives(FRHIGPUMask GPUMask, FScene* Scene)
 					else
 					{
 						PrimitiveGroupIndex = LumenSceneData->PrimitiveGroups.AddSpan(1);
-						ensure(ScenePrimitiveInfo->LumenPrimitiveGroupIndices.Num() == 0);
 						ScenePrimitiveInfo->LumenPrimitiveGroupIndices.Add(PrimitiveGroupIndex);
 
 						FLumenPrimitiveGroup& PrimitiveGroup = LumenSceneData->PrimitiveGroups[PrimitiveGroupIndex];
@@ -943,7 +918,7 @@ void UpdateLumenScenePrimitives(FRHIGPUMask GPUMask, FScene* Scene)
 
 							for (int32 InstanceIndex = 0; InstanceIndex < NumInstances; ++InstanceIndex)
 							{
-								const FPrimitiveInstance& Instance = InstanceSceneData[InstanceIndex];
+								const FInstanceSceneData& Instance = InstanceSceneData[InstanceIndex];
 								const FRenderBounds& RenderBoundingBox = SceneProxy->GetInstanceLocalBounds(InstanceIndex);
 								const FRenderBounds InstanceBounds = RenderBoundingBox.TransformBy(Instance.LocalToPrimitive);
 								LocalBounds += InstanceBounds;
@@ -993,14 +968,14 @@ void UpdateLumenScenePrimitives(FRHIGPUMask GPUMask, FScene* Scene)
 
 						if (!bMergedInstances)
 						{
-							ScenePrimitiveInfo->LumenPrimitiveGroupIndices.SetNum(NumInstances);
+							const uint32 PrimitiveGroupOffset = ScenePrimitiveInfo->LumenPrimitiveGroupIndices.AddDefaulted(NumInstances);
 
 							for (int32 InstanceIndex = 0; InstanceIndex < NumInstances; ++InstanceIndex)
 							{
 								const int32 PrimitiveGroupIndex = LumenSceneData->PrimitiveGroups.AddSpan(1);
-								ScenePrimitiveInfo->LumenPrimitiveGroupIndices[InstanceIndex] = PrimitiveGroupIndex;
+								ScenePrimitiveInfo->LumenPrimitiveGroupIndices[PrimitiveGroupOffset + InstanceIndex] = PrimitiveGroupIndex;
 
-								const FPrimitiveInstance& PrimitiveInstance = InstanceSceneData[InstanceIndex];
+								const FInstanceSceneData& PrimitiveInstance = InstanceSceneData[InstanceIndex];
 								const FRenderBounds& RenderBoundingBox = SceneProxy->GetInstanceLocalBounds(InstanceIndex);
 
 								FLumenPrimitiveGroup& PrimitiveGroup = LumenSceneData->PrimitiveGroups[PrimitiveGroupIndex];
@@ -1058,7 +1033,7 @@ void UpdateLumenScenePrimitives(FRHIGPUMask GPUMask, FScene* Scene)
 				const FCardRepresentationData* CardRepresentationData = PrimitiveSceneInfo->Proxy->GetMeshCardRepresentation();
 				const FMatrix& PrimitiveToWorld = PrimitiveSceneInfo->Proxy->GetLocalToWorld();
 
-				const TConstArrayView<FPrimitiveInstance> InstanceSceneData = PrimitiveSceneInfo->Proxy->GetInstanceSceneData();
+				const TConstArrayView<FInstanceSceneData> InstanceSceneData = PrimitiveSceneInfo->Proxy->GetInstanceSceneData();
 
 				for (int32 PrimitiveGroupIndex : PrimitiveSceneInfo->LumenPrimitiveGroupIndices)
 				{
@@ -1070,7 +1045,7 @@ void UpdateLumenScenePrimitives(FRHIGPUMask GPUMask, FScene* Scene)
 
 						if (PrimitiveGroup.PrimitiveInstanceIndex < InstanceSceneData.Num())
 						{
-							const FPrimitiveInstance& PrimitiveInstance = InstanceSceneData[PrimitiveGroup.PrimitiveInstanceIndex];
+							const FInstanceSceneData& PrimitiveInstance = InstanceSceneData[PrimitiveGroup.PrimitiveInstanceIndex];
 							const FRenderBounds& RenderBoundingBox = PrimitiveSceneInfo->Proxy->GetInstanceLocalBounds(PrimitiveGroup.PrimitiveInstanceIndex); 
 							WorldSpaceBoundingBox = RenderBoundingBox.ToBox().TransformBy(PrimitiveInstance.LocalToPrimitive.ToMatrix() * PrimitiveToWorld);
 						}
@@ -1098,7 +1073,7 @@ void UpdateLumenScenePrimitives(FRHIGPUMask GPUMask, FScene* Scene)
 				const FCardRepresentationData* CardRepresentationData = PrimitiveSceneInfo->Proxy->GetMeshCardRepresentation();
 				const FMatrix& PrimitiveToWorld = PrimitiveSceneInfo->Proxy->GetLocalToWorld();
 
-				const TConstArrayView<FPrimitiveInstance> InstanceSceneData = PrimitiveSceneInfo->Proxy->GetInstanceSceneData();
+				const TConstArrayView<FInstanceSceneData> InstanceSceneData = PrimitiveSceneInfo->Proxy->GetInstanceSceneData();
 
 				for (int32 PrimitiveGroupIndex : PrimitiveSceneInfo->LumenPrimitiveGroupIndices)
 				{
@@ -1145,8 +1120,6 @@ bool FLumenSceneData::UpdateAtlasSize()
 
 	if (PhysicalAtlasSize != GetDesiredPhysicalAtlasSize(SurfaceCacheResolution) || PhysicalAtlasCompression != NewCompression)
 	{
-		RemoveAllMeshCards();
-
 		PhysicalAtlasSize = GetDesiredPhysicalAtlasSize(SurfaceCacheResolution);
 		SurfaceCacheAllocator.Init(GetDesiredPhysicalAtlasSizeInPages(SurfaceCacheResolution));
 		UnlockedAllocationHeap.Clear();
@@ -1685,7 +1658,7 @@ void FLumenSceneData::DumpStats(const FDistanceFieldSceneData& DistanceFieldScen
 			{
 				++NumPrimitivesMerged;
 
-				const TConstArrayView<FPrimitiveInstance> InstanceSceneData = ScenePrimitive->Proxy->GetInstanceSceneData();
+				const TConstArrayView<FInstanceSceneData> InstanceSceneData = ScenePrimitive->Proxy->GetInstanceSceneData();
 				NumInstancesMerged += InstanceSceneData.Num();
 			}
 		}
@@ -1787,9 +1760,11 @@ void FLumenSceneData::DumpStats(const FDistanceFieldSceneData& DistanceFieldScen
 			{
 				if (ScenePrimitive && ScenePrimitive->Proxy)
 				{
-					UE_LOG(LogRenderer, Log, TEXT("Group:%d InstanceIndex:%d %s"), 
+					UE_LOG(LogRenderer, Log, TEXT("Group:%d InstanceIndex:%d FarField:%d Heightfield:%d %s"), 
 						PrimitiveGroup.RayTracingGroupMapElementId.GetIndex(),
 						PrimitiveGroup.PrimitiveInstanceIndex,
+						PrimitiveGroup.bFarField ? 1 : 0,
+						PrimitiveGroup.bHeightfield ? 1 : 0,
 						*ScenePrimitive->Proxy->GetStatId().GetName().ToString());
 				}
 			}

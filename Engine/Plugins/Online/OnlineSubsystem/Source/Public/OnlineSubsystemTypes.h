@@ -2,11 +2,8 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Online/CoreOnline.h"
-#include "Online/OnlineBase.h"
-#include "OnlineSubsystemNames.h"  // can be removed once we have no more temporary FUniqueNetId subtypes
-#include "OnlineSubsystemPackage.h"
+#include "OnlineSubsystemNames.h" // IWYU pragma: keep
 
 
 #if UE_GAME && UE_BUILD_SHIPPING
@@ -878,7 +875,7 @@ public:
 
 	virtual uint32 GetTypeHash() const override
 	{
-		return ::GetTypeHash(UniqueNetIdStr);
+		return GetTypeHashHelper(UniqueNetIdStr);
 	}
 
 public:
@@ -978,7 +975,7 @@ public: \
 	} \
 	friend uint32 GetTypeHash(const SUBCLASSNAME& A) \
 	{ \
-		return ::GetTypeHash(A.UniqueNetIdStr); \
+		return GetTypeHashHelper(A.UniqueNetIdStr); \
 	} \
 	static const SUBCLASSNAME##Ref& EmptyId() \
 	{ \
@@ -1580,14 +1577,14 @@ public:
 
 protected:
 	TInternalType Value;
+
+	friend inline uint32 GetTypeHash(const FOnlinePartyTypeId Id)
+	{
+		return Id.GetValue();
+	}
 };
 
 inline bool IsValid(const FOnlinePartyTypeId Id) { return Id.GetValue() != 0; }
-
-inline uint32 GetTypeHash(const FOnlinePartyTypeId Id)
-{
-	return Id.GetValue();
-}
 
 class FOnlineFriendSettingsSourceData
 {
@@ -1642,3 +1639,10 @@ inline void ParseOnlineSubsystemConfigPairs(TArrayView<const FString> InEntries,
 		OutPairs.Emplace(MoveTemp(KeyString), MoveTemp(ValueString));
 	}
 }
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "Online/OnlineBase.h"
+#include "OnlineSubsystemNames.h"  // can be removed once we have no more temporary FUniqueNetId subtypes
+#include "OnlineSubsystemPackage.h"
+#endif

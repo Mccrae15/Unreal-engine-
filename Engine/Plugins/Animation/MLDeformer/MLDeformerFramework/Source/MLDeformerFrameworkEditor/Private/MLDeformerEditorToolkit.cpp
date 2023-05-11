@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MLDeformerEditorToolkit.h"
+#include "IDetailsView.h"
 #include "MLDeformerModule.h"
 #include "MLDeformerAsset.h"
 #include "MLDeformerModel.h"
@@ -12,6 +13,7 @@
 #include "MLDeformerEditorStyle.h"
 #include "MLDeformerVizSettings.h"
 #include "MLDeformerSampler.h"
+#include "AnimationEditorViewportClient.h"
 #include "EditorModeManager.h"
 #include "EditorViewportClient.h"
 #include "Modules/ModuleManager.h"
@@ -73,9 +75,6 @@ namespace UE::MLDeformer
 		FPersonaModule& PersonaModule = FModuleManager::LoadModuleChecked<FPersonaModule>("Persona");
 		PersonaToolkit = PersonaModule.CreatePersonaToolkit(DeformerAsset, PersonaToolkitArgs);
 
-		TSharedRef<IAssetFamily> AssetFamily = PersonaModule.CreatePersonaAssetFamily(DeformerAsset);
-		AssetFamily->RecordAssetOpened(FAssetData(DeformerAsset));
-
 		const bool bCreateDefaultStandaloneMenu = true;
 		const bool bCreateDefaultToolbar = true;
 		FAssetEditorToolkit::InitAssetEditor(
@@ -88,7 +87,7 @@ namespace UE::MLDeformer
 			DeformerAsset);
 
 		// Create and set the application mode.
-		FMLDeformerApplicationMode* ApplicationMode = new FMLDeformerApplicationMode(SharedThis(this), PersonaToolkit->GetPreviewScene());
+		ApplicationMode = new FMLDeformerApplicationMode(SharedThis(this), PersonaToolkit->GetPreviewScene());
 		AddApplicationMode(MLDeformerEditorModes::Editor, MakeShareable(ApplicationMode));
 		SetCurrentMode(MLDeformerEditorModes::Editor);
 
@@ -263,7 +262,7 @@ namespace UE::MLDeformer
 		// Remove existing actors etc.
 		if (ActiveModel)
 		{
-			ActiveModel->ClearWorld();
+			ActiveModel->ClearWorldAndPersonaPreviewScene();
 		}
 
 		// Get the runtime model type based on the index, and create an instance of it.
@@ -383,14 +382,17 @@ namespace UE::MLDeformer
 						ActiveModel->OnPreTraining();
 
 						// Change the interpolation type for the training sequence to step.
-						Model->GetAnimSequence()->Interpolation = EAnimInterpolationType::Step;
+						if (UAnimSequence* AnimSequence = Model->GetAnimSequence())
+						{
+							AnimSequence->Interpolation = EAnimInterpolationType::Step;
+						}
 
 						// Initialize the training inputs.
-						ActiveModel->InitInputInfo(Model->GetInputInfo());
+						ActiveModel->UpdateEditorInputInfo();
 
 						// Make sure we have something to train on.
 						// If this triggers, the train button most likely was enabled while it shouldn't be.
-						check(!Model->GetInputInfo()->IsEmpty());
+						check(!ActiveModel->GetEditorInputInfo()->IsEmpty());
 
 						// Train the model, which executes the Python code's "train" function.
 						const double StartTime = FPlatformTime::Seconds();
@@ -490,6 +492,7 @@ namespace UE::MLDeformer
 					FFormatNamedArguments SuccessArgs;
 					SuccessArgs.Add(TEXT("Duration"), TrainingDurationText);
 					WindowMessage = FText::Format(LOCTEXT("TrainingSuccess", "Training completed successfully!\n\nTraining time: {Duration}"), SuccessArgs);
+					ActiveModel->InitInputInfo(ActiveModel->GetModel()->GetInputInfo());
 					bMarkDirty = true;
 				}
 			}
@@ -514,6 +517,7 @@ namespace UE::MLDeformer
 					else
 					{
 						ShowNotification(LOCTEXT("PartialTrainingSuccess", "Training partially completed!"), SNotificationItem::ECompletionState::CS_Success, true);
+						ActiveModel->InitInputInfo(ActiveModel->GetModel()->GetInputInfo());
 						bMarkDirty = true;
 					}
 				}
@@ -550,7 +554,8 @@ namespace UE::MLDeformer
 			break;
 
 			// Unhandled error codes.
-			default: check(false);
+			default:
+				checkf(false, TEXT("Unknown error code"));
 		}
 
 		// Show a message window.
@@ -604,7 +609,7 @@ namespace UE::MLDeformer
 	{
 		FFormatNamedArguments Args;
 		Args.Add(TEXT("AssetName"), FText::FromString(DeformerAsset->GetName()));
-		return FText::Format(LOCTEXT("DemoEditorToolkitName", "{AssetName}"), Args);
+		return FText::Format(LOCTEXT("MLDeformerEditorToolkitName", "{AssetName}"), Args);
 	}
 
 	FLinearColor FMLDeformerEditorToolkit::GetWorldCentricTabColorScale() const
@@ -634,7 +639,17 @@ namespace UE::MLDeformer
 			ActiveModel->SetDefaultDeformerGraphIfNeeded();
 			ActiveModel->CreateActors(InPersonaPreviewScene);
 			ActiveModel->UpdateActorVisibility();
-			ActiveModel->OnInputAssetsChanged();
+
+			if (GetModelDetailsView())
+			{
+				GetModelDetailsView()->SetObject(nullptr, true);
+			}
+
+			if (GetVizSettingsDetailsView())
+			{
+				GetVizSettingsDetailsView()->SetObject(nullptr, true);
+			}
+			ActiveModel->TriggerInputAssetChanged(false);
 			ActiveModel->CreateHeatMapAssets();
 			ActiveModel->SetHeatMapMaterialEnabled(ActiveModel->GetModel()->GetVizSettings()->GetShowHeatMap());
 			ActiveModel->SetResamplingInputOutputsNeeded(true);
@@ -824,9 +839,7 @@ namespace UE::MLDeformer
 		if (ActiveModel.IsValid())
 		{
 			ActiveModel->SetViewRange(ViewRange);
-
 		}
-
 	}
 }	// namespace UE::MLDeformer
 

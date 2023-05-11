@@ -2,8 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Modules/ModuleInterface.h"
 #include "BlendSpaceAnalysis.h"
 #include "LocomotionAnalysis.generated.h"
 
@@ -50,7 +48,10 @@ public:
 	EAnalysisLinearAxis CharacterUpAxis = EAnalysisLinearAxis::PlusZ;
 };
 
-//======================================================================================================================
+/**
+ * Calculates the locomotion speed from the animation (which may be playrate scaled), 
+ * according to the analysis properties.
+ */
 bool CalculateLocomotion(
 	float&                               Result,
 	const UBlendSpace&                   BlendSpace,
@@ -58,3 +59,7 @@ bool CalculateLocomotion(
 	const UAnimSequence&                 Animation,
 	const float                          RateScale);
 
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "Modules/ModuleInterface.h"
+#endif

@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "PCGSpatialData.h"
 
 #include "PCGVolumeData.generated.h"
@@ -19,7 +18,7 @@ public:
 	void Initialize(const FBox& InBounds, AActor* InTargetActor);
 
 	// ~Begin UPCGData interface
-	virtual EPCGDataType GetDataType() const override { return EPCGDataType::Volume | Super::GetDataType(); }
+	virtual EPCGDataType GetDataType() const override { return EPCGDataType::Volume; }
 	// ~End UPCGData interface
 
 	// ~Begin UPGCSpatialData interface
@@ -27,8 +26,13 @@ public:
 	virtual FBox GetBounds() const override;
 	virtual FBox GetStrictBounds() const override;
 	virtual bool SamplePoint(const FTransform& Transform, const FBox& Bounds, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const override;
-	// ~End UPGCSpatialData interface
+	// TODO what should this do - closest point on volume?
+	//virtual bool ProjectPoint(const FTransform& InTransform, const FBox& InBounds, const FPCGProjectionParams& InParams, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const;
+protected:
+	virtual UPCGSpatialData* CopyInternal() const override;
+	//~End UPCGSpatialData interface
 
+public:
 	// ~Begin UPCGSpatialDataWithPointCache interface
 	virtual const UPCGPointData* CreatePointData(FPCGContext* Context) const override;
 	// ~End UPCGSpatialDataWithPointCache interface
@@ -37,8 +41,10 @@ public:
 	FVector VoxelSize = FVector(100.0, 100.0, 100.0);
 
 protected:
+	void CopyBaseVolumeData(UPCGVolumeData* NewVolumeData) const;
+
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = SourceData)
-	TObjectPtr<AVolume> Volume = nullptr;
+	TWeakObjectPtr<AVolume> Volume = nullptr;
 
 	UPROPERTY()
 	FBox Bounds = FBox(EForceInit::ForceInit);
@@ -46,3 +52,7 @@ protected:
 	UPROPERTY()
 	FBox StrictBounds = FBox(EForceInit::ForceInit);
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

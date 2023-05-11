@@ -11,6 +11,7 @@
 #include "Misc/LazySingleton.h"
 #include "Misc/OutputDeviceError.h"
 #include "Misc/ScopeLock.h"
+#include "Misc/ScopeRWLock.h"
 #include "CoreGlobals.h"
 #include "Templates/RefCounting.h"
 
@@ -42,6 +43,15 @@ DEFINE_LOG_CATEGORY(LogCore);
 
 using FSelfRegisteredExecArray = TArray<FSelfRegisteringExec*, TInlineAllocator<8>>;
 
+// Lazy because pthread implementation doesn't like static initialization.
+FCriticalSection* GetExecRegistryLock()
+{
+	// Note: Using FCriticalSection still allows calls to addition or removal
+	// to/from Execs and FSelfRegisteringExec::StaticExec on the same thread
+	static FCriticalSection ExecRegistryLock;
+	return &ExecRegistryLock;
+}
+
 FSelfRegisteredExecArray& GetExecRegistry()
 {
 	static FSelfRegisteredExecArray Execs;
@@ -51,17 +61,20 @@ FSelfRegisteredExecArray& GetExecRegistry()
 /** Constructor, registering this instance. */
 FSelfRegisteringExec::FSelfRegisteringExec()
 {
+	FScopeLock ScopeLock(GetExecRegistryLock());
 	GetExecRegistry().Add( this );
 }
 
 /** Destructor, unregistering this instance. */
 FSelfRegisteringExec::~FSelfRegisteringExec()
 {
+	FScopeLock ScopeLock(GetExecRegistryLock());
 	verify(GetExecRegistry().Remove( this ) == 1 );
 }
 
 bool FSelfRegisteringExec::StaticExec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 {
+	FScopeLock ScopeLock(GetExecRegistryLock());
 	for (FSelfRegisteringExec* Exe : GetExecRegistry())
 	{
 		if (Exe->Exec( InWorld, Cmd,Ar ))
@@ -77,11 +90,30 @@ FStaticSelfRegisteringExec::FStaticSelfRegisteringExec(bool (*InStaticExecFunc)(
 :	StaticExecFunc(InStaticExecFunc)
 {}
 
+#if UE_ALLOW_EXEC_COMMANDS
 bool FStaticSelfRegisteringExec::Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 {
 	return (*StaticExecFunc)( InWorld, Cmd,Ar);
 }
+#endif // UE_ALLOW_EXEC_COMMANDS
 
+FStaticSelfRegisteringExec_Dev::FStaticSelfRegisteringExec_Dev(bool (*InStaticExecFunc)(UWorld* Inworld, const TCHAR* Cmd,FOutputDevice& Ar))
+	: StaticExecFunc(InStaticExecFunc)
+{}
+
+bool FStaticSelfRegisteringExec_Dev::Exec_Dev(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
+{
+	return (*StaticExecFunc)(InWorld, Cmd, Ar);
+}
+
+FStaticSelfRegisteringExec_Editor::FStaticSelfRegisteringExec_Editor(bool (*InStaticExecFunc)(UWorld* Inworld, const TCHAR* Cmd, FOutputDevice& Ar))
+	: StaticExecFunc(InStaticExecFunc)
+{}
+
+bool FStaticSelfRegisteringExec_Editor::Exec_Editor(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
+{
+	return (*StaticExecFunc)(InWorld, Cmd, Ar);
+}
 
 // Remove old crash contexts
 
@@ -501,7 +533,7 @@ namespace UEAsserts_Private
 		const int32 TempStrSize = 4096;
 		TCHAR TempStr[TempStrSize];
 		GET_VARARGS(TempStr, TempStrSize, TempStrSize - 1, FormattedMsg, FormattedMsg);
-		UE_LOG(LogCore, Error, TempStr);
+		UE_LOG(LogCore, Error, TEXT("%s"), TempStr);
 	}
 }
 #endif

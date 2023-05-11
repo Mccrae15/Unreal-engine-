@@ -78,7 +78,7 @@ void SOutlinerTrackView::Construct(
 		Params.TrackInsertRowIndex = Track->GetMaxRowIndex()+1;
 	}
 
-	TSharedPtr<SWidget> CustomWidget = TrackEditor->BuildOutlinerEditWidget(ObjectBinding ? ObjectBinding->GetObjectGuid() : FGuid(), Track, Params);
+	TSharedPtr<SWidget> CustomWidget = TrackEditor ? TrackEditor->BuildOutlinerEditWidget(ObjectBinding ? ObjectBinding->GetObjectGuid() : FGuid(), Track, Params) : nullptr;
 
 	TSharedPtr<FChannelGroupModel> TopLevelChannel = TopLevelChannels ? TopLevelChannels->FindFirstChildOfType<FChannelGroupModel>() : nullptr;
 	if (TopLevelChannel)
@@ -207,7 +207,7 @@ FReply SOutlinerTrackView::OnSetTrackColor()
 	FColorPickerArgs PickerArgs;
 	PickerArgs.bUseAlpha = false;
 	PickerArgs.DisplayGamma = TAttribute<float>::Create(TAttribute<float>::FGetter::CreateUObject(GEngine, &UEngine::GetDisplayGamma));
-	PickerArgs.InitialColorOverride = AnimationOutlinerTreeNode::InitialTrackColor;
+	PickerArgs.InitialColor = AnimationOutlinerTreeNode::InitialTrackColor;
 	PickerArgs.ParentWidget = GetParentWidget();
 	PickerArgs.OnColorCommitted = FOnLinearColorValueChanged::CreateSP(this, &SOutlinerTrackView::OnColorPickerPicked);
 	PickerArgs.OnColorPickerWindowClosed = FOnWindowClosed::CreateSP(this, &SOutlinerTrackView::OnColorPickerClosed);

@@ -132,34 +132,34 @@ enum class EOfflineBVHMode
 namespace ETargetPlatformReadyStatus
 {
 	/** Ready */
-	const int32 Ready = 0;
+	inline const int32 Ready = 0;
 
 	/** SDK Not Found*/
-	const int32 SDKNotFound = 1;
+	inline const int32 SDKNotFound = 1;
 
 	/** Code Build Not Supported */
-	const int32 CodeUnsupported = 2;
+	inline const int32 CodeUnsupported = 2;
 
 	/** Plugins Not Supported */
-	const int32 PluginsUnsupported = 4;
+	inline const int32 PluginsUnsupported = 4;
 
 	/** Signing Key Not Found */
-	const int32 SigningKeyNotFound = 8;
+	inline const int32 SigningKeyNotFound = 8;
 
 	/** Provision Not Found */
-	const int32 ProvisionNotFound = 16;
+	inline const int32 ProvisionNotFound = 16;
 
 	/** Manifest Not Found */
-	const int32 ManifestNotFound = 32;
+	inline const int32 ManifestNotFound = 32;
 
 	/** Remote Server Name Empty */
-	const int32 RemoveServerNameEmpty = 64;
+	inline const int32 RemoveServerNameEmpty = 64;
 
 	/** License Not Accepted  */
-	const int32 LicenseNotAccepted = 128;
+	inline const int32 LicenseNotAccepted = 128;
 
 	/** Code Build Required */
-	const int32 CodeBuildRequired = 256;
+	inline const int32 CodeBuildRequired = 256;
 };
 
 
@@ -283,7 +283,7 @@ public:
 	 *
 	 * @return alignment of memory mapping.
 	 */
-	virtual int32 GetMemoryMappingAlignment() const = 0;
+	virtual int64 GetMemoryMappingAlignment() const = 0;
 
 	/**
 	 * Generates a platform specific asset manifest given an array of FAssetData.
@@ -326,6 +326,14 @@ public:
 	 * @return true if this platform allows editor objects to be cooked, false otherwise.
 	 */
 	virtual bool AllowsEditorObjects() const = 0;
+
+	/**
+	 * Checks whether this platform will allow development objects to be cooked. This is separate from AllowsEditorObjects
+	 * because cooked editors can be shipped with editor objects but still need to remove development assets.
+	 * 
+	 * @return true if this platform allows development objects to be cooked, false otherwise.
+	 */
+	virtual bool AllowsDevelopmentObjects() const = 0;
 
 	/**
 	 * Checks whether this platform is only a client (and must connect to a server to run).
@@ -571,11 +579,11 @@ public:
 	virtual void GetShaderFormatModuleHints(TArray<FName>& OutModuleNames) const = 0;
 
 	/**
-	 * Gets the format to use for a particular texture.
-	 *
-	 * @param Texture The texture to get the format for.
-	 * @param LayerIndex Index of layer within Texture to get the format for
-	 * @param OutFormats Will contain the list of supported formats.
+	 * Gets the texture format to use for each layer in the given texture, for each of the platform's formats.
+	 * _Most_ platforms only supply one format for a given texture, so OutFormats.Num() is usually 1. The exception is Android_Multi,
+	 * where you can get several formats due to targeting different devices.
+	 * OutFormats.Num() == NumberOfPlatformFormats
+	 * OutFormats[0...N].Num() == Texture->Source.GetNumLayers().
 	 */
 	virtual void GetTextureFormats( const class UTexture* Texture, TArray< TArray<FName> >& OutFormats ) const = 0;
 
@@ -789,11 +797,11 @@ struct FTargetPlatform
 		return Ordinal == Other.Ordinal;
 	}
 
+	friend inline uint32 GetTypeHash(const FTargetPlatform& Key) { return Key.GetOrdinal(); }
+
 private:
 	uint32 Ordinal = 0;
 };
-
-inline uint32 GetTypeHash(const FTargetPlatform& Key) { return Key.GetOrdinal(); }
 
 /**
  * Target platform set implementation using bitmask for compactness

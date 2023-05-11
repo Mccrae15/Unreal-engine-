@@ -58,7 +58,7 @@ FDefaultStereoLayers::FDefaultStereoLayers(const FAutoRegister& AutoRegister, FH
 //=============================================================================
 
 // static
-void FDefaultStereoLayers::StereoLayerRender(FRHICommandListImmediate& RHICmdList, const TArray<FLayerDesc>& LayersToRender, const FLayerRenderParams& RenderParams)
+void FDefaultStereoLayers::StereoLayerRender(FRHICommandListImmediate& RHICmdList, const TArray<FLayerDesc>& LayersToRender, const FDefaultStereoLayers_LayerRenderParams& RenderParams)
 {
 	check(IsInRenderingThread());
 	if (!LayersToRender.Num())
@@ -130,8 +130,8 @@ void FDefaultStereoLayers::StereoLayerRender(FRHICommandListImmediate& RHICmdLis
 			const FRHITexture2D* Tex2D = Layer.Texture->GetTexture2D();
 			if (Tex2D)
 			{
-				const float SizeX = Tex2D->GetSizeX();
-				const float SizeY = Tex2D->GetSizeY();
+				const float SizeX = (float)Tex2D->GetSizeX();
+				const float SizeY = (float)Tex2D->GetSizeY();
 				if (SizeX != 0)
 				{
 					const float AspectRatio = SizeY / SizeX;
@@ -151,14 +151,15 @@ void FDefaultStereoLayers::StereoLayerRender(FRHICommandListImmediate& RHICmdLis
 		PixelShader->SetParameters(
 			RHICmdList,
 			TStaticSamplerState<SF_Trilinear>::GetRHI(),
-			Layer.Texture);
+			Layer.Texture,
+			bIsOpaque);
 
 		const FIntPoint TargetSize = RenderParams.Viewport.Size();
 		// Draw primitive
 		RendererModule.DrawRectangle(
 			RHICmdList,
 			0.0f, 0.0f,
-			TargetSize.X, TargetSize.Y,
+			(float)TargetSize.X, (float)TargetSize.Y,
 			0.0f, 0.0f,
 			1.0f, 1.0f,
 			TargetSize,
@@ -235,7 +236,7 @@ void FDefaultStereoLayers::PostRenderView_RenderThread(FRDGBuilder& GraphBuilder
 		FVector HmdLocation = HmdTransform.GetTranslation();
 		FMatrix TrackerMatrix = FTranslationMatrix(-HmdLocation) * FInverseRotationMatrix(HmdOrientation.Rotator()) * EyeMatrix;
 
-		FLayerRenderParams RenderParams{
+		FDefaultStereoLayers_LayerRenderParams RenderParams{
 			InView.UnscaledViewRect, // Viewport
 			{
 				ViewProjectionMatrix,				// WorldLocked,

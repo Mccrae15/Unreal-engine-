@@ -23,15 +23,16 @@ namespace UnrealBuildTool
 		/// <param name="Platform">Which OS platform to target.</param>
 		/// <param name="Arch">Which architecture inside an OS platform to target. Only used for Android currently.</param>
 		/// <returns>List of instruction set targets passed to ISPC compiler</returns>
-		public virtual List<string> GetISPCCompileTargets(UnrealTargetPlatform Platform, string? Arch)
+		public virtual List<string> GetISPCCompileTargets(UnrealTargetPlatform Platform, UnrealArch? Arch)
 		{
 			List<string> ISPCTargets = new List<string>();
 
+			// @todo this could be simplified for the arm case - but sse has more options
 			if (UEBuildPlatform.IsPlatformInGroup(Platform, UnrealPlatformGroup.Windows) ||
 				(UEBuildPlatform.IsPlatformInGroup(Platform, UnrealPlatformGroup.Unix) && Platform != UnrealTargetPlatform.LinuxArm64) ||
 				Platform == UnrealTargetPlatform.Mac)
 			{
-				ISPCTargets.AddRange(new string[] { "avx512skx-i32x8", "avx2", "avx", "sse4", "sse2" });
+				ISPCTargets.AddRange(new string[] { "avx512skx-i32x8", "avx2", "avx", "sse4" });
 			}
 			else if (Platform == UnrealTargetPlatform.LinuxArm64)
 			{
@@ -39,14 +40,22 @@ namespace UnrealBuildTool
 			}
 			else if (Platform == UnrealTargetPlatform.Android)
 			{
-				switch (Arch)
+				if (Arch == UnrealArch.X64)
 				{
-					case "-armv7": ISPCTargets.Add("neon"); break; // Assumes NEON is in use
-					case "-arm64": ISPCTargets.Add("neon"); break;
-					case "-x86": ISPCTargets.AddRange(new string[] { "sse4", "sse2" }); break;
-					case "-x64": ISPCTargets.AddRange(new string[] { "sse4", "sse2" }); break;
-					default: Logger.LogWarning("Invalid Android architecture for ISPC. At least one architecture (armv7, x86, etc) needs to be selected in the project settings to build"); break;
+					ISPCTargets.Add("sse4");
 				}
+				else if (Arch == UnrealArch.Arm64)
+				{
+					ISPCTargets.Add("neon");
+				}
+				else
+				{
+					Logger.LogWarning("Invalid Android architecture for ISPC. At least one architecture (arm64, x64) needs to be selected in the project settings to build");
+				}
+			}
+			else if (Platform == UnrealTargetPlatform.IOS)
+			{
+				ISPCTargets.Add("neon");
 			}
 			else
 			{
@@ -77,6 +86,10 @@ namespace UnrealBuildTool
 			{
 				ISPCOS += "android";
 			}
+			else if (Platform == UnrealTargetPlatform.IOS)
+			{
+				ISPCOS += "ios";
+			}
 			else if (Platform == UnrealTargetPlatform.Mac)
 			{
 				ISPCOS += "macos";
@@ -95,7 +108,7 @@ namespace UnrealBuildTool
 		/// <param name="Platform">Which OS platform to target.</param>
 		/// <param name="Arch">Which architecture inside an OS platform to target. Only used for Android currently.</param>
 		/// <returns>Arch string passed to ISPC compiler</returns>
-		public virtual string GetISPCArchTarget(UnrealTargetPlatform Platform, string? Arch)
+		public virtual string GetISPCArchTarget(UnrealTargetPlatform Platform, UnrealArch? Arch)
 		{
 			string ISPCArch = "";
 
@@ -111,14 +124,22 @@ namespace UnrealBuildTool
 			}
 			else if (Platform == UnrealTargetPlatform.Android)
 			{
-				switch (Arch)
+				if (Arch == UnrealArch.Arm64)
 				{
-					case "-armv7": ISPCArch += "arm"; break; // Assumes NEON is in use
-					case "-arm64": ISPCArch += "aarch64"; break;
-					case "-x86": ISPCArch += "x86"; break;
-					case "-x64": ISPCArch += "x86-64"; break;
-					default: Logger.LogWarning("Invalid Android architecture for ISPC. At least one architecture (armv7, x86, etc) needs to be selected in the project settings to build"); break;
+					ISPCArch += "aarch64";
 				}
+				else if (Arch == UnrealArch.X64)
+				{
+					ISPCArch += "x86-64";
+				}
+				else
+				{
+					Logger.LogWarning("Invalid Android architecture for ISPC. At least one architecture (arm64, x64) needs to be selected in the project settings to build");
+				}
+			}
+			else if (Platform == UnrealTargetPlatform.IOS)
+			{
+				ISPCArch += "aarch64"; 
 			}
 			else
 			{
@@ -224,6 +245,7 @@ namespace UnrealBuildTool
 			}
 			else if (UEBuildPlatform.IsPlatformInGroup(Platform, UnrealPlatformGroup.Unix) ||
 					Platform == UnrealTargetPlatform.Mac ||
+					Platform == UnrealTargetPlatform.IOS ||
 					Platform == UnrealTargetPlatform.Android)
 			{
 				Format += "obj";
@@ -251,6 +273,7 @@ namespace UnrealBuildTool
 			}
 			else if (UEBuildPlatform.IsPlatformInGroup(Platform, UnrealPlatformGroup.Unix) ||
 					Platform == UnrealTargetPlatform.Mac ||
+					Platform == UnrealTargetPlatform.IOS ||
 					Platform == UnrealTargetPlatform.Android)
 			{
 				Suffix += ".o";
@@ -340,7 +363,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="Reference">The FileSystemReference to normalize</param>
 		/// <returns>Normalized path as a string</returns>
-		protected static string NormalizeCommandLinePath(FileSystemReference Reference)
+		protected virtual string NormalizeCommandLinePath(FileSystemReference Reference)
 		{
 			// Try to use a relative path to shorten command line length.
 			if (Reference.IsUnderDirectory(Unreal.RootDirectory))
@@ -356,7 +379,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="Item">The FileItem to normalize</param>
 		/// <returns>Normalized path as a string</returns>
-		protected static string NormalizeCommandLinePath(FileItem Item)
+		protected virtual string NormalizeCommandLinePath(FileItem Item)
 		{
 			return NormalizeCommandLinePath(Item.Location);
 		}
@@ -459,13 +482,10 @@ namespace UnrealBuildTool
 				Arguments.Add($"-h \"{NormalizeCommandLinePath(ISPCIncludeHeaderFile)}\"");
 
 				// Generate the included header dependency list
-				if (CompileEnvironment.bGenerateDependenciesFile)
-				{
-					FileItem DependencyListFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, Path.GetFileName(ISPCFile.AbsolutePath) + ".txt"));
-					Arguments.Add($"-MMM \"{NormalizeCommandLinePath(DependencyListFile)}\"");
-					CompileAction.DependencyListFile = DependencyListFile;
-					CompileAction.ProducedItems.Add(DependencyListFile);
-				}
+				FileItem DependencyListFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, Path.GetFileName(ISPCFile.AbsolutePath) + ".txt"));
+				Arguments.Add($"-MMM \"{NormalizeCommandLinePath(DependencyListFile)}\"");
+				CompileAction.DependencyListFile = DependencyListFile;
+				CompileAction.ProducedItems.Add(DependencyListFile);
 
 				Arguments.AddRange(GlobalArguments);
 
@@ -487,32 +507,12 @@ namespace UnrealBuildTool
 					);
 
 				// Fix interrupted build issue by copying header after generation completes
-				FileReference SourceFile = ISPCIncludeHeaderFile.Location;
-				FileReference TargetFile = ISPCFinalHeaderFile.Location;
-
-				FileItem SourceFileItem = FileItem.GetItemByFileReference(SourceFile);
-				FileItem TargetFileItem = FileItem.GetItemByFileReference(TargetFile);
-
-				Action CopyAction = Graph.CreateAction(ActionType.BuildProject);
-				CopyAction.CommandDescription = "Copy";
-				CopyAction.CommandPath = BuildHostPlatform.Current.Shell;
-				if (BuildHostPlatform.Current.ShellType == ShellType.Cmd)
-				{
-					CopyAction.CommandArguments = $"/C \"copy /Y \"{SourceFile}\" \"{TargetFile}\" 1>nul\"";
-				}
-				else
-				{
-					CopyAction.CommandArguments = $"-c 'cp -f \"\"{SourceFile}\"\" \"\"{TargetFile}\"'";
-				}
-				CopyAction.WorkingDirectory = Unreal.EngineSourceDirectory;
+				Action CopyAction = Graph.CreateCopyAction(ISPCIncludeHeaderFile, ISPCFinalHeaderFile);
+				CopyAction.DeleteItems.Clear();
 				CopyAction.PrerequisiteItems.Add(ISPCFile);
-				CopyAction.PrerequisiteItems.Add(SourceFileItem);
-				CopyAction.ProducedItems.Add(TargetFileItem);
-				CopyAction.StatusDescription = TargetFileItem.Location.GetFileName();
-				CopyAction.bCanExecuteRemotely = false;
 				CopyAction.bShouldOutputStatusDescription = false;
 
-				Result.GeneratedHeaderFiles.Add(TargetFileItem);
+				Result.GeneratedHeaderFiles.Add(ISPCFinalHeaderFile);
 
 				Logger.LogDebug("   ISPC Generating Header {StatusDescription}: \"{CommandPath}\" {CommandArguments}", CompileAction.StatusDescription, CompileAction.CommandPath, CompileAction.CommandArguments);
 			}
@@ -691,14 +691,11 @@ namespace UnrealBuildTool
 				Arguments.AddRange(GlobalArguments);
 
 				// Consume the included header dependency list
-				if (CompileEnvironment.bGenerateDependenciesFile)
-				{
-					FileItem DependencyListFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, Path.GetFileName(ISPCFile.AbsolutePath) + ".txt"));
-					CompileAction.DependencyListFile = DependencyListFile;
-					CompileAction.PrerequisiteItems.Add(DependencyListFile);
-				}
+				FileItem DependencyListFile = FileItem.GetItemByFileReference(FileReference.Combine(OutputDir, Path.GetFileName(ISPCFile.AbsolutePath) + ".txt"));
+				CompileAction.DependencyListFile = DependencyListFile;
+				CompileAction.PrerequisiteItems.Add(DependencyListFile);
 
-				CompileAction.ProducedItems.AddRange(CompiledISPCObjFiles);
+				CompileAction.ProducedItems.UnionWith(CompiledISPCObjFiles);
 
 				FileReference ResponseFileName = new FileReference(CompiledISPCObjFileNoISA.AbsolutePath + ".response");
 				FileItem ResponseFileItem = Graph.CreateIntermediateTextFile(ResponseFileName, Arguments.Select(x => Utils.ExpandVariables(x)));

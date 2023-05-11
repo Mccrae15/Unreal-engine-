@@ -3,15 +3,20 @@
 #include "UnsavedAssetsTrackerModule.h"
 
 #include "CoreGlobals.h"
+#include "Settings/EditorLoadingSavingSettings.h"
+#include "ISourceControlModule.h"
+#include "ISourceControlProvider.h"
+#include "SourceControlOperations.h"
 #include "Misc/App.h"
 #include "UnsavedAssetsTracker.h"
 #include "SUnsavedAssetsStatusBarWidget.h"
+#include "UnsavedAssetsAutoCheckout.h"
 #include "Widgets/SNullWidget.h"
-
 
 void FUnsavedAssetsTrackerModule::StartupModule()
 {
 	UnsavedAssetTracker = MakeShared<FUnsavedAssetsTracker>();
+	UnsavedAssetAutoCheckout = MakeShared<FUnsavedAssetsAutoCheckout>(this);
 }
 
 void FUnsavedAssetsTrackerModule::ShutdownModule()
@@ -35,6 +40,15 @@ TArray<FString> FUnsavedAssetsTrackerModule::GetUnsavedAssets() const
 		return UnsavedAssetTracker->GetUnsavedAssets();
 	}
 	return TArray<FString>();
+}
+
+bool FUnsavedAssetsTrackerModule::IsAssetUnsaved(const FString& FileAbsPathname) const
+{
+	if (UnsavedAssetTracker)
+	{
+		return UnsavedAssetTracker->IsAssetUnsaved(FileAbsPathname);
+	}
+	return false;
 }
 
 TSharedRef<SWidget> FUnsavedAssetsTrackerModule::MakeUnsavedAssetsStatusBarWidget()

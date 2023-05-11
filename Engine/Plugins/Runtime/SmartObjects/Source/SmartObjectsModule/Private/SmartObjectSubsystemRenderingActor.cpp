@@ -2,9 +2,8 @@
 
 #include "SmartObjectSubsystemRenderingActor.h"
 
-#include "SmartObjectDebugSceneProxy.h"
+#include "Engine/World.h"
 #include "SmartObjectSubsystem.h"
-#include "Debug/DebugDrawService.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SmartObjectSubsystemRenderingActor)
 
@@ -15,10 +14,7 @@ FBoxSphereBounds USmartObjectSubsystemRenderingComponent::CalcBounds(const FTran
 {
 	if (const USmartObjectSubsystem* Subsystem = UWorld::GetSubsystem<USmartObjectSubsystem>(GetWorld()))
 	{
-		if (const ASmartObjectCollection* MainCollection = Subsystem->GetMainCollection())
-		{
-			return MainCollection->GetBounds();
-		}
+		return Subsystem->GetSmartObjectContainer().GetBounds();
 	}
 	return FBox(ForceInit);
 }
@@ -49,6 +45,10 @@ ASmartObjectSubsystemRenderingActor::ASmartObjectSubsystemRenderingActor()
 {
 	RenderingComponent = CreateDefaultSubobject<USmartObjectSubsystemRenderingComponent>(TEXT("RenderingComp"));
 	RootComponent = RenderingComponent;
+
+#if WITH_EDITORONLY_DATA
+	bListedInSceneOutliner = false;
+#endif
 }
 
 

@@ -4,17 +4,12 @@
 
 #include "AudioDefines.h"
 #include "AudioWidgetsSlateTypes.h"
-#include "Components/Widget.h"
-#include "Curves/CurveFloat.h"
-#include "Styling/StyleColors.h"
-#include "Styling/SlateTypes.h"
-#include "UObject/ObjectMacros.h"
-#include "Widgets/SWidget.h"
+#include "Components/Slider.h"
 #include "AudioSlider.generated.h"
 
-class SAudioSliderBase;
+class UCurveFloat;
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnFloatValueChangedEvent, float, Value);
+class SAudioSliderBase;
 
 /**
  * An audio slider widget. 
@@ -231,3 +226,9 @@ class AUDIOWIDGETS_API UAudioFrequencySlider : public UAudioSliderBase
 protected:
 	virtual TSharedRef<SWidget> RebuildWidget() override;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Curves/CurveFloat.h"
+#include "Styling/StyleColors.h"
+#include "Widgets/SWidget.h"
+#endif

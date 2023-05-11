@@ -6,13 +6,15 @@
 
 #include "D3D11RHIPrivate.h"
 
-#if !PLATFORM_HOLOLENS
 // For Depth Bounds Test interface
 #include "Windows/AllowWindowsPlatformTypes.h"
+#if WITH_NVAPI
 	#include "nvapi.h"
-	#include "amd_ags.h"
-#include "Windows/HideWindowsPlatformTypes.h"
 #endif
+#if WITH_AMD_AGS
+	#include "amd_ags.h"
+#endif
+#include "Windows/HideWindowsPlatformTypes.h"
 
 #include "HAL/LowLevelMemTracker.h"
 #include "ProfilingDebugging/MemoryTrace.h"
@@ -424,9 +426,9 @@ FD3D11Texture* FD3D11DynamicRHI::CreateD3D11Texture2D(FRHITextureCreateDesc cons
 
 	ApplyBC7SoftwareAdapterWorkaround(Adapter.bSoftwareAdapter, TextureDesc);
 
-	// NV12 doesn't support SRV in NV12 format so don't create SRV for it.
+	// NV12/P010 doesn't support SRV in NV12 format so don't create SRV for it.
 	// Todo: add support for SRVs of underneath luminance & chrominance textures.
-	if (Format == PF_NV12)
+	if (Format == PF_NV12 || Format == PF_P010)
 	{
 		// JoeG - I moved this to below the bind flags because it is valid to bind R8 or B8G8 to this
 		// And creating a SRV afterward would fail because of the missing bind flags
@@ -489,7 +491,7 @@ FD3D11Texture* FD3D11DynamicRHI::CreateD3D11Texture2D(FRHITextureCreateDesc cons
 	}
 	// NV12 doesn't support RTV in NV12 format so don't create RTV for it.
 	// Todo: add support for RTVs of underneath luminance & chrominance textures.
-	if (Format == PF_NV12)
+	if (Format == PF_NV12 || Format == PF_P010)
 	{
 		bCreateRTV = false;
 	}
@@ -766,20 +768,7 @@ FD3D11Texture* FD3D11DynamicRHI::CreateD3D11Texture2D(FRHITextureCreateDesc cons
 		RenderTargetViews,
 		DepthStencilViews
 	);
-	
-#if !PLATFORM_HOLOLENS
-	if (IsRHIDeviceNVIDIA() && EnumHasAnyFlags(Flags, TexCreate_AFRManual))
-	{
-		// get a resource handle for this texture
-		void* IHVHandle = nullptr;
-		//getobjecthandle not threadsafe
-		NvAPI_D3D_GetObjectHandleForResource(Direct3DDevice, Texture2D->GetResource(), (NVDX_ObjectHandle*)&(IHVHandle));
-		Texture2D->SetIHVResourceHandle(IHVHandle);
-		
-		NvU32 ManualAFR = 1;
-		NvAPI_D3D_SetResourceHint(Direct3DDevice, (NVDX_ObjectHandle)IHVHandle, NVAPI_D3D_SRH_CATEGORY_SLI, NVAPI_D3D_SRH_SLI_APP_CONTROLLED_INTERFRAME_CONTENT_SYNC, &ManualAFR);
-	}
-#endif
+
 	if (CreateDesc.BulkData)
 	{
 		CreateDesc.BulkData->Discard();
@@ -853,7 +842,6 @@ FD3D11Texture* FD3D11DynamicRHI::CreateD3D11Texture3D(FRHITextureCreateDesc cons
 
 	// Set up the texture bind flags.
 	check(!EnumHasAnyFlags(Flags, TexCreate_DepthStencilTargetable | TexCreate_ResolveTargetable));
-	check(EnumHasAllFlags(Flags, TexCreate_ShaderResource));
 
 	TArray<D3D11_SUBRESOURCE_DATA> SubResourceData;
 
@@ -929,19 +917,6 @@ FD3D11Texture* FD3D11DynamicRHI::CreateD3D11Texture3D(FRHITextureCreateDesc cons
 		{}
 	);
 
-#if !PLATFORM_HOLOLENS
-	if (IsRHIDeviceNVIDIA() && EnumHasAnyFlags(Flags, TexCreate_AFRManual))
-	{
-		// get a resource handle for this texture
-		void* IHVHandle = nullptr;
-		//getobjecthandle not threadsafe
-		NvAPI_D3D_GetObjectHandleForResource(Direct3DDevice, Texture3D->GetResource(), (NVDX_ObjectHandle*)&(IHVHandle));
-		Texture3D->SetIHVResourceHandle(IHVHandle);
-
-		NvU32 ManualAFR = 1;
-		NvAPI_D3D_SetResourceHint(Direct3DDevice, (NVDX_ObjectHandle)IHVHandle, NVAPI_D3D_SRH_CATEGORY_SLI, NVAPI_D3D_SRH_SLI_APP_CONTROLLED_INTERFRAME_CONTENT_SYNC, &ManualAFR);
-	}
-#endif
 	if (CreateDesc.BulkData)
 	{
 		CreateDesc.BulkData->Discard();
@@ -1020,34 +995,9 @@ FTextureRHIRef FD3D11DynamicRHI::RHIAsyncCreateTexture2D(uint32 SizeX, uint32 Si
 	return Texture;
 }
 
-void FD3D11DynamicRHI::RHICopySharedMips(FRHITexture2D* DestTexture2DRHI, FRHITexture2D* SrcTexture2DRHI)
-{
-	FD3D11Texture* DestTexture2D = ResourceCast(DestTexture2DRHI);
-	FD3D11Texture* SrcTexture2D = ResourceCast(SrcTexture2DRHI);
-
-	// Use the GPU to asynchronously copy the old mip-maps into the new texture.
-	const uint32 NumSharedMips = FMath::Min(DestTexture2D->GetNumMips(),SrcTexture2D->GetNumMips());
-	const uint32 SourceMipOffset = SrcTexture2D->GetNumMips() - NumSharedMips;
-	const uint32 DestMipOffset   = DestTexture2D->GetNumMips() - NumSharedMips;
-	for(uint32 MipIndex = 0;MipIndex < NumSharedMips;++MipIndex)
-	{
-		// Use the GPU to copy between mip-maps.
-		Direct3DDeviceIMContext->CopySubresourceRegion(
-			DestTexture2D->GetResource(),
-			D3D11CalcSubresource(MipIndex + DestMipOffset,0,DestTexture2D->GetNumMips()),
-			0,
-			0,
-			0,
-			SrcTexture2D->GetResource(),
-			D3D11CalcSubresource(MipIndex + SourceMipOffset,0,SrcTexture2D->GetNumMips()),
-			NULL
-			);
-	}
-}
-
 FShaderResourceViewRHIRef FD3D11DynamicRHI::RHICreateShaderResourceView(FRHITexture* TextureRHI, const FRHITextureSRVCreateInfo& CreateInfo)
 {
-	FD3D11Texture* Texture = GetD3D11TextureFromRHITexture(TextureRHI);
+	FD3D11Texture* Texture = ResourceCast(TextureRHI);
 
 	// Create a Shader Resource View
 	D3D11_SHADER_RESOURCE_VIEW_DESC SRVDesc;
@@ -1128,7 +1078,7 @@ FShaderResourceViewRHIRef FD3D11DynamicRHI::RHICreateShaderResourceView_RenderTh
 /** Generates mip maps for the surface. */
 void FD3D11DynamicRHI::RHIGenerateMips(FRHITexture* TextureRHI)
 {
-	FD3D11Texture* Texture = GetD3D11TextureFromRHITexture(TextureRHI);
+	FD3D11Texture* Texture = ResourceCast(TextureRHI);
 	// Surface must have been created with D3D11_BIND_RENDER_TARGET for GenerateMips to work
 	check(Texture->GetShaderResourceView() && Texture->GetRenderTargetView(0, -1));
 	Direct3DDeviceIMContext->GenerateMips(Texture->GetShaderResourceView());
@@ -1149,7 +1099,7 @@ uint32 FD3D11DynamicRHI::RHIComputeMemorySize(FRHITexture* TextureRHI)
 		return 0;
 	}
 	
-	FD3D11Texture* Texture = GetD3D11TextureFromRHITexture(TextureRHI);
+	FD3D11Texture* Texture = ResourceCast(TextureRHI);
 	return Texture->GetMemorySize();
 }
 
@@ -1514,125 +1464,72 @@ void FD3D11DynamicRHI::RHIUnlockTexture2DArray(FRHITexture2DArray* TextureRHI, u
 	Texture->Unlock(this, MipIndex, TextureIndex);
 }
 
-void FD3D11DynamicRHI::RHIUpdateTexture2D(FRHITexture2D* TextureRHI, uint32 MipIndex, const FUpdateTextureRegion2D& UpdateRegion, uint32 SourcePitch, const uint8* SourceData)
+void FD3D11DynamicRHI::RHIUpdateTexture2D(FRHICommandListBase& RHICmdList, FRHITexture2D* TextureRHI, uint32 MipIndex, const FUpdateTextureRegion2D& UpdateRegion, uint32 SourcePitch, const uint8* SourceData)
 {
-	FD3D11Texture* Texture = ResourceCast(TextureRHI);
+	const FPixelFormatInfo& FormatInfo = GPixelFormats[TextureRHI->GetFormat()];
+	const size_t UpdateHeightInTiles = FMath::DivideAndRoundUp(UpdateRegion.Height, (uint32)FormatInfo.BlockSizeY);
+	const size_t SourceDataSize = static_cast<size_t>(SourcePitch) * UpdateHeightInTiles;
+	uint8* SourceDataCopy = (uint8*)FMemory::Malloc(SourceDataSize);
+	FMemory::Memcpy(SourceDataCopy, SourceData, SourceDataSize);
+	SourceData = SourceDataCopy;
 
-	D3D11_BOX DestBox =
+	RHICmdList.EnqueueLambda([this, TextureRHI, MipIndex, UpdateRegion, SourcePitch, SourceData] (FRHICommandListBase&)
 	{
-		UpdateRegion.DestX,                      UpdateRegion.DestY,                       0,
-		UpdateRegion.DestX + UpdateRegion.Width, UpdateRegion.DestY + UpdateRegion.Height, 1
-	};
+		FD3D11Texture* Texture = ResourceCast(TextureRHI);
 
-	check(UpdateRegion.Width % GPixelFormats[Texture->GetFormat()].BlockSizeX == 0);
-	check(UpdateRegion.Height % GPixelFormats[Texture->GetFormat()].BlockSizeY == 0);
-	check(UpdateRegion.DestX % GPixelFormats[Texture->GetFormat()].BlockSizeX == 0);
-	check(UpdateRegion.DestY % GPixelFormats[Texture->GetFormat()].BlockSizeY == 0);
-	check(UpdateRegion.SrcX % GPixelFormats[Texture->GetFormat()].BlockSizeX == 0);
-	check(UpdateRegion.SrcY % GPixelFormats[Texture->GetFormat()].BlockSizeY == 0);
-
-	Direct3DDeviceIMContext->UpdateSubresource(Texture->GetResource(), MipIndex, &DestBox, SourceData, SourcePitch, 0);
-}
-
-void FD3D11DynamicRHI::UpdateTexture2D_RenderThread(
-	class FRHICommandListImmediate& RHICmdList,
-	FRHITexture2D* Texture,
-	uint32 MipIndex,
-	const struct FUpdateTextureRegion2D& UpdateRegion,
-	uint32 SourcePitch,
-	const uint8* SourceData)
-{
-	if (ShouldNotEnqueueRHICommand())
-	{
-		RHIUpdateTexture2D(Texture, MipIndex, UpdateRegion, SourcePitch, SourceData);
-	}
-	else
-	{
-		const FPixelFormatInfo& FormatInfo = GPixelFormats[Texture->GetFormat()];
-		const size_t UpdateHeightInTiles = FMath::DivideAndRoundUp(UpdateRegion.Height, (uint32)FormatInfo.BlockSizeY);
-		const size_t SourceDataSize = static_cast<size_t>(SourcePitch) * UpdateHeightInTiles;
-		uint8* SourceDataCopy = (uint8*)FMemory::Malloc(SourceDataSize);
-		FMemory::Memcpy(SourceDataCopy, SourceData, SourceDataSize);
-		RunOnRHIThread([this, Texture, MipIndex, UpdateRegion, SourcePitch, SourceDataCopy]()
+		D3D11_BOX DestBox =
 		{
-			RHIUpdateTexture2D(Texture, MipIndex, UpdateRegion, SourcePitch, SourceDataCopy);
-			FMemory::Free(SourceDataCopy);
-		});
-	}
+			UpdateRegion.DestX,                      UpdateRegion.DestY,                       0,
+			UpdateRegion.DestX + UpdateRegion.Width, UpdateRegion.DestY + UpdateRegion.Height, 1
+		};
+
+		check(UpdateRegion.Width % GPixelFormats[Texture->GetFormat()].BlockSizeX == 0);
+		check(UpdateRegion.Height % GPixelFormats[Texture->GetFormat()].BlockSizeY == 0);
+		check(UpdateRegion.DestX % GPixelFormats[Texture->GetFormat()].BlockSizeX == 0);
+		check(UpdateRegion.DestY % GPixelFormats[Texture->GetFormat()].BlockSizeY == 0);
+		check(UpdateRegion.SrcX % GPixelFormats[Texture->GetFormat()].BlockSizeX == 0);
+		check(UpdateRegion.SrcY % GPixelFormats[Texture->GetFormat()].BlockSizeY == 0);
+
+		Direct3DDeviceIMContext->UpdateSubresource(Texture->GetResource(), MipIndex, &DestBox, SourceData, SourcePitch, 0);
+
+		FMemory::Free((void*)SourceData);
+	});
 }
 
-void FD3D11DynamicRHI::RHIUpdateTexture3D(FRHITexture3D* TextureRHI,uint32 MipIndex,const FUpdateTextureRegion3D& UpdateRegion,uint32 SourceRowPitch,uint32 SourceDepthPitch,const uint8* SourceData)
+void FD3D11DynamicRHI::RHIUpdateTexture3D(FRHICommandListBase& RHICmdList, FRHITexture3D* TextureRHI,uint32 MipIndex,const FUpdateTextureRegion3D& UpdateRegion,uint32 SourceRowPitch,uint32 SourceDepthPitch,const uint8* SourceData)
 {
-	FD3D11Texture* Texture = ResourceCast(TextureRHI);
+	const SIZE_T SourceDataSize = static_cast<SIZE_T>(SourceDepthPitch) * UpdateRegion.Depth;
+	uint8* SourceDataCopy = (uint8*)FMemory::Malloc(SourceDataSize);
+	FMemory::Memcpy(SourceDataCopy, SourceData, SourceDataSize);
+	SourceData = SourceDataCopy;
 
-	// The engine calls this with the texture size in the region. 
-	// Some platforms like D3D11 needs that to be rounded up to the block size.
-	const FPixelFormatInfo& Format = GPixelFormats[Texture->GetFormat()];
-	const int32 NumBlockX = FMath::DivideAndRoundUp<int32>(UpdateRegion.Width, Format.BlockSizeX);
-	const int32 NumBlockY = FMath::DivideAndRoundUp<int32>(UpdateRegion.Height, Format.BlockSizeY);
-
-	D3D11_BOX DestBox =
+	RHICmdList.EnqueueLambda([this, TextureRHI, MipIndex, UpdateRegion, SourceRowPitch, SourceDepthPitch, SourceData] (FRHICommandListBase&)
 	{
-		UpdateRegion.DestX,                                 UpdateRegion.DestY,                                 UpdateRegion.DestZ,
-		UpdateRegion.DestX + NumBlockX * Format.BlockSizeX, UpdateRegion.DestY + NumBlockY * Format.BlockSizeY, UpdateRegion.DestZ + UpdateRegion.Depth
-	};
+		FD3D11Texture* Texture = ResourceCast(TextureRHI);
 
-	Direct3DDeviceIMContext->UpdateSubresource(Texture->GetResource(), MipIndex, &DestBox, SourceData, SourceRowPitch, SourceDepthPitch);
-}
+		// The engine calls this with the texture size in the region. 
+		// Some platforms like D3D11 needs that to be rounded up to the block size.
+		const FPixelFormatInfo& Format = GPixelFormats[Texture->GetFormat()];
+		const int32 NumBlockX = FMath::DivideAndRoundUp<int32>(UpdateRegion.Width, Format.BlockSizeX);
+		const int32 NumBlockY = FMath::DivideAndRoundUp<int32>(UpdateRegion.Height, Format.BlockSizeY);
 
-void FD3D11DynamicRHI::EndUpdateTexture3D_RenderThread(class FRHICommandListImmediate& RHICmdList, FUpdateTexture3DData& UpdateData)
-{
-	if (RHICmdList.Bypass())
-	{
-		RHIUpdateTexture3D(UpdateData.Texture, UpdateData.MipIndex, UpdateData.UpdateRegion, UpdateData.RowPitch, UpdateData.DepthPitch, UpdateData.Data);
-		FMemory::Free(UpdateData.Data);
-	}
-	else
-	{
-		UpdateData.Texture->AddRef();
-		RunOnRHIThread(
-			[UpdateData]()
+		D3D11_BOX DestBox =
 		{
-			GD3D11RHI->RHIUpdateTexture3D(
-				UpdateData.Texture,
-				UpdateData.MipIndex,
-				UpdateData.UpdateRegion,
-				UpdateData.RowPitch,
-				UpdateData.DepthPitch,
-				UpdateData.Data);
-			UpdateData.Texture->Release();
-			FMemory::Free(UpdateData.Data);
-		});
-		RHICmdList.RHIThreadFence(true);
-	}
+			UpdateRegion.DestX,                                 UpdateRegion.DestY,                                 UpdateRegion.DestZ,
+			UpdateRegion.DestX + NumBlockX * Format.BlockSizeX, UpdateRegion.DestY + NumBlockY * Format.BlockSizeY, UpdateRegion.DestZ + UpdateRegion.Depth
+		};
 
+		Direct3DDeviceIMContext->UpdateSubresource(Texture->GetResource(), MipIndex, &DestBox, SourceData, SourceRowPitch, SourceDepthPitch);
+
+		FMemory::Free((void*)SourceData);
+	});
+}
+
+void FD3D11DynamicRHI::RHIEndUpdateTexture3D(FRHICommandListBase& RHICmdList, FUpdateTexture3DData& UpdateData)
+{
+	RHIUpdateTexture3D(RHICmdList, UpdateData.Texture, UpdateData.MipIndex, UpdateData.UpdateRegion, UpdateData.RowPitch, UpdateData.DepthPitch, UpdateData.Data);
+	FMemory::Free(UpdateData.Data);
 	UpdateData.Data = nullptr;
-}
-
-void FD3D11DynamicRHI::UpdateTexture3D_RenderThread(
-	class FRHICommandListImmediate& RHICmdList,
-	FRHITexture3D* Texture,
-	uint32 MipIndex,
-	const struct FUpdateTextureRegion3D& UpdateRegion,
-	uint32 SourceRowPitch,
-	uint32 SourceDepthPitch,
-	const uint8* SourceData)
-{
-	if (ShouldNotEnqueueRHICommand())
-	{
-		RHIUpdateTexture3D(Texture, MipIndex, UpdateRegion, SourceRowPitch, SourceDepthPitch, SourceData);
-	}
-	else
-	{
-		const SIZE_T SourceDataSize = static_cast<SIZE_T>(SourceDepthPitch) * UpdateRegion.Depth;
-		uint8* SourceDataCopy = (uint8*)FMemory::Malloc(SourceDataSize);
-		FMemory::Memcpy(SourceDataCopy, SourceData, SourceDataSize);
-		RunOnRHIThread([this, Texture, MipIndex, UpdateRegion, SourceRowPitch, SourceDepthPitch, SourceDataCopy]()
-		{
-			RHIUpdateTexture3D(Texture, MipIndex, UpdateRegion, SourceRowPitch, SourceDepthPitch, SourceDataCopy);
-			FMemory::Free(SourceDataCopy);
-		});
-	}
 }
 
 /*-----------------------------------------------------------------------------
@@ -1707,7 +1604,7 @@ void FD3D11DynamicRHI::RHIUnlockTextureCubeFace_RenderThread(
 
 void FD3D11DynamicRHI::RHIBindDebugLabelName(FRHITexture* TextureRHI, const TCHAR* Name)
 {
-	FD3D11Texture* Texture = GetD3D11TextureFromRHITexture(TextureRHI);
+	FD3D11Texture* Texture = ResourceCast(TextureRHI);
 
 	//todo: require names at texture creation time.
 	FName DebugName(Name);
@@ -1752,7 +1649,7 @@ FD3D11Texture* FD3D11DynamicRHI::CreateTextureFromResource(bool bTextureArray, b
 
 	// DXGI_FORMAT_NV12 allows us to create RTV and SRV but only with other formats, so we should block creation here.
 	// @todo: Should this be a check? Seems wrong to just silently change what the caller asked for.
-	if (Format == PF_NV12)
+	if (Format == PF_NV12 || Format == PF_P010)
 	{
 		bCreateRTV = false;
 		bCreateShaderResource = false;
@@ -2057,8 +1954,8 @@ void FD3D11Texture::AliasResource(FD3D11Texture const& Other)
 
 void FD3D11DynamicRHI::RHIAliasTextureResources(FTextureRHIRef& DstTextureRHI, FTextureRHIRef& SrcTextureRHI)
 {
-	FD3D11Texture* DstTexture = GetD3D11TextureFromRHITexture(DstTextureRHI);
-	FD3D11Texture* SrcTexture = GetD3D11TextureFromRHITexture(SrcTextureRHI);
+	FD3D11Texture* DstTexture = ResourceCast(DstTextureRHI);
+	FD3D11Texture* SrcTexture = ResourceCast(SrcTextureRHI);
 	check(DstTexture && SrcTexture);
 
 	DstTexture->AliasResource(*SrcTexture);
@@ -2066,7 +1963,7 @@ void FD3D11DynamicRHI::RHIAliasTextureResources(FTextureRHIRef& DstTextureRHI, F
 
 FTextureRHIRef FD3D11DynamicRHI::RHICreateAliasedTexture(FTextureRHIRef& SrcTextureRHI)
 {
-	FD3D11Texture* SrcTexture = GetD3D11TextureFromRHITexture(SrcTextureRHI);
+	FD3D11Texture* SrcTexture = ResourceCast(SrcTextureRHI);
 	check(SrcTexture);
 	const FString Name = SrcTextureRHI->GetName().ToString() + TEXT("Alias");
 
@@ -2077,8 +1974,8 @@ void FD3D11DynamicRHI::RHICopyTexture(FRHITexture* SourceTextureRHI, FRHITexture
 {
 	FRHICommandList_RecursiveHazardous RHICmdList(this);	
 
-	FD3D11Texture* SourceTexture = GetD3D11TextureFromRHITexture(SourceTextureRHI);
-	FD3D11Texture* DestTexture = GetD3D11TextureFromRHITexture(DestTextureRHI);
+	FD3D11Texture* SourceTexture = ResourceCast(SourceTextureRHI);
+	FD3D11Texture* DestTexture = ResourceCast(DestTextureRHI);
 
 	check(SourceTexture && DestTexture);
 

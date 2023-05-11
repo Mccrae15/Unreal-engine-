@@ -1,35 +1,37 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "WorldPartition/WorldPartitionRuntimeSpatialHash.h"
+#include "WorldPartition/WorldPartitionLog.h"
+#include "WorldPartition/WorldPartitionStreamingGeneration.h"
 
 #if WITH_EDITOR
 
+#include "HAL/PlatformFile.h"
 #include "WorldPartition/RuntimeSpatialHash/RuntimeSpatialHashGridHelper.h"
 
 #include "WorldPartition/HLOD/HLODLayer.h"
 #include "WorldPartition/HLOD/HLODActor.h"
 #include "WorldPartition/HLOD/HLODActorDesc.h"
+#include "WorldPartition/HLOD/HLODModifier.h"
+#include "WorldPartition/HLOD/IWorldPartitionHLODUtilities.h"
 #include "WorldPartition/HLOD/IWorldPartitionHLODUtilitiesModule.h"
 #include "WorldPartition/DataLayer/DataLayerSubsystem.h"
+#include "WorldPartition/DataLayer/DataLayerUtils.h"
 
-#include "WorldPartition/ActorDescContainer.h"
+#include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionHelpers.h"
 
 #include "UObject/GCObjectScopeGuard.h"
 #include "Engine/Engine.h"
 #include "HAL/PlatformFileManager.h"
-#include "Misc/PackageName.h"
 #include "Misc/ScopedSlowTask.h"
 #include "Modules/ModuleManager.h"
 
-#include "Algo/ForEach.h"
 
 #include "EngineUtils.h"
 
-#include "StaticMeshCompiler.h"
 
 #include "UObject/SavePackage.h"
-
+#include <limits> // IWYU pragma: keep
 
 DEFINE_LOG_CATEGORY_STATIC(LogWorldPartitionRuntimeSpatialHashHLOD, Log, All);
 
@@ -132,6 +134,8 @@ static TArray<FGuid> GenerateHLODsForGrid(UWorldPartition* WorldPartition, const
 		return bShouldGenerateHLODs;
 	};
 
+	UWorld* OuterWorld = WorldPartition->GetTypedOuter<UWorld>();
+
 	// Quick pass to compute the number of cells we'll have to process, to provide a meaningful progress display
 	int32 NbCellsToProcess = 0;
 	PartitionedActors.ForEachCells([&](const FSquare2DGridHelper::FGridLevel::FGridCell& GridCell)
@@ -173,11 +177,12 @@ static TArray<FGuid> GenerateHLODsForGrid(UWorldPartition* WorldPartition, const
 				SlowTask.EnterProgressFrame(1);
 				// todo_ow : Generating hlods is not yet supported for content bundles. Pass an invalid UID to specified the cell is not coming from ContentBundles.
 				FGuid ContentBundleInvalidUID;
-				FString CellName = UWorldPartitionRuntimeSpatialHash::GetCellNameString(RuntimeGrid.GridName, CellGlobalCoord, GridCellDataChunk.GetDataLayersID(), ContentBundleInvalidUID);
+				const FGuid CellGuid = UWorldPartitionRuntimeSpatialHash::GetCellGuid(RuntimeGrid.GridName, CellGlobalCoord, GridCellDataChunk.GetDataLayersID(), ContentBundleInvalidUID);
+				const FString CellName = UWorldPartitionRuntimeSpatialHash::GetCellNameString(OuterWorld->GetPackage()->GetFName(), RuntimeGrid.GridName, CellGlobalCoord, GridCellDataChunk.GetDataLayersID(), ContentBundleInvalidUID);
 
 				UE_LOG(LogWorldPartitionRuntimeSpatialHashHLOD, Verbose, TEXT("Creating HLOD for cell %s at %s..."), *CellName, *CellCoord.ToString());
 
-				TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*CellName);
+				TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*CellCoord.ToString());
 
 				UE_LOG(LogWorldPartitionRuntimeSpatialHashHLOD, Display, TEXT("[%d / %d] Processing cell %s..."), (int32)SlowTask.CompletedWork + 1, (int32)SlowTask.TotalAmountOfWork, *CellName);
 
@@ -192,8 +197,8 @@ static TArray<FGuid> GenerateHLODsForGrid(UWorldPartition* WorldPartition, const
 					{
 						const IStreamingGenerationContext::FActorInstance& ActorInstance = ActorInstances.Emplace_GetRef(ActorGuid, ActorSetInstance);
 
-						const double ActorMinZ = ActorInstance.GetActorDescView().GetBounds().Min.Z;
-						const double ActorMaxZ = ActorInstance.GetActorDescView().GetBounds().Max.Z;
+						const double ActorMinZ = ActorInstance.GetActorDescView().GetRuntimeBounds().Min.Z;
+						const double ActorMaxZ = ActorInstance.GetActorDescView().GetRuntimeBounds().Max.Z;
 
 						CellBounds.Min.Z = FMath::Min(CellBounds.Min.Z, ActorMinZ);
 						CellBounds.Max.Z = FMath::Max(CellBounds.Max.Z, ActorMaxZ);
@@ -205,7 +210,7 @@ static TArray<FGuid> GenerateHLODsForGrid(UWorldPartition* WorldPartition, const
 
 				FHLODCreationParams CreationParams;
 				CreationParams.WorldPartition = WorldPartition;
-				CreationParams.CellName = FName(CellName);
+				CreationParams.CellGuid = CellGuid;
 				CreationParams.CellBounds = CellBounds;
 				CreationParams.HLODLevel = HLODLevel;
 				CreationParams.MinVisibleDistance = RuntimeGrid.LoadingRange;
@@ -313,16 +318,31 @@ static TMap<FName, FSpatialHashRuntimeGrid> CreateHLODGrids(TMap<UHLODLayer*, in
 		if (HLODLayer->IsSpatiallyLoaded())
 		{
 			int32 HLODLevel = HLODLayerLevel.Value;
+			FName GridName = HLODLayer->GetRuntimeGrid(HLODLevel);
 
-			FSpatialHashRuntimeGrid HLODGrid;
-			HLODGrid.CellSize = HLODLayer->GetCellSize();
-			HLODGrid.LoadingRange = HLODLayer->GetLoadingRange();
-			HLODGrid.DebugColor = FLinearColor::Red;
-			HLODGrid.GridName = HLODLayer->GetRuntimeGrid(HLODLevel);
-			HLODGrid.bClientOnlyVisible = true;
-			HLODGrid.HLODLayer = HLODLayer;
+			FSpatialHashRuntimeGrid& HLODGrid = HLODGrids.FindOrAdd(GridName);
+			if (HLODGrid.GridName.IsNone())
+			{
+				HLODGrid.CellSize = HLODLayer->GetCellSize();
+				HLODGrid.LoadingRange = HLODLayer->GetLoadingRange();
+				HLODGrid.GridName = GridName;
+				HLODGrid.HLODLayer = HLODLayer;
+				HLODGrid.bClientOnlyVisible = true;
 
-			HLODGrids.Emplace(HLODGrid.GridName, HLODGrid);
+				// HLOD grid have a lower priority than standard grids
+				HLODGrid.Priority = 100 + HLODLevel;
+
+				// Setup grid debug color to match HLODColorationColors
+				const int32 LastLODColorationColorIdx = GEngine->HLODColorationColors.Num() - 1;
+				const int32 HLODColorIdx = FMath::Clamp(HLODLevel + 2, 0U, (int32)LastLODColorationColorIdx);
+				HLODGrid.DebugColor = GEngine->HLODColorationColors[HLODColorIdx];
+			}
+
+			// Temp solution to have replication working for hlod layers that have a modifier
+			// Modifiers are used for example for destructible HLODs, that need to have a server side component
+			// The real solution would probably be to check if we have any actors that are
+			// returning true for NeedsLoadForServer()
+			HLODGrid.bClientOnlyVisible &= HLODLayer->GetHLODModifierClass() == nullptr;
 		}
 	}
 
@@ -358,34 +378,39 @@ static void UpdateHLODGridsActors(UWorld* World, const TMap<FName, FSpatialHashR
 		}
 	}
 
-	// Create missing HLOD grid actors 
+	// Create missing HLOD grid actors or update existing actors
 	for (const auto& HLODGridEntry : HLODGrids)
 	{
 		FName GridName = HLODGridEntry.Key;
-		if (!ExistingGridActors.Contains(GridName))
-		{
-			const FSpatialHashRuntimeGrid& GridSettings = HLODGridEntry.Value;
+		const FSpatialHashRuntimeGrid& GridSettings = HLODGridEntry.Value;
 
+		bool bDirty = false;
+
+		ASpatialHashRuntimeGridInfo* GridActor = ExistingGridActors.FindRef(GridName);
+		if (!GridActor)
+		{
 			FActorSpawnParameters SpawnParams;
 			SpawnParams.bCreateActorPackage = true;
-			ASpatialHashRuntimeGridInfo* GridActor = World->SpawnActor<ASpatialHashRuntimeGridInfo>(SpawnParams);
+			GridActor = World->SpawnActor<ASpatialHashRuntimeGridInfo>(SpawnParams);
 			GridActor->Tags.Add(HLODGridTag);
-			GridActor->SetActorLabel(GridSettings.GridName.ToString());
+			bDirty = true;
+		}
+
+		const FString ActorLabel = GridSettings.GridName.ToString();
+		if (GridActor->GetActorLabel() != ActorLabel)
+		{
+			GridActor->SetActorLabel(ActorLabel);
+			bDirty = true;
+		}
+
+		if (GridActor->GridSettings != GridSettings)
+		{
 			GridActor->GridSettings = GridSettings;
+			bDirty = true;
+		}			
 
-			// Setup grid debug color to match HLODColorationColors
-			const uint32 LastLODColorationColorIdx = GEngine->HLODColorationColors.Num() - 1;
-			uint32 HLODLevel;
-			if (!LexTryParseString(HLODLevel, *GridSettings.GridName.ToString().Mid(HLODGridTagLen, 1)))
-			{
-				HLODLevel = LastLODColorationColorIdx;
-			}
-
-			GridActor->GridSettings.Priority = 100 + HLODLevel;
-
-			HLODLevel = FMath::Clamp(HLODLevel + 2, 0U, LastLODColorationColorIdx);
-			GridActor->GridSettings.DebugColor = GEngine->HLODColorationColors[HLODLevel];
-
+		if (bDirty)
+		{
 			SavePackage(GridActor->GetPackage(), SourceControlHelper);
 		}
 	}
@@ -464,6 +489,11 @@ bool UWorldPartitionRuntimeSpatialHash::GenerateHLOD(ISourceControlHelper* Sourc
 			check(HLODActorDesc);
 
 			FWorldPartitionActorDescView* ActorDescView = ActorDescViews.Emplace_GetRef(MakeUnique<FWorldPartitionActorDescView>(HLODActorDesc)).Get();
+			TArray<FName> RuntimeDataLayerInstanceNames;
+			if (FDataLayerUtils::ResolveRuntimeDataLayerInstanceNames(*ActorDescView, *MainActorSetContainer->ActorDescViewMap, RuntimeDataLayerInstanceNames))
+			{
+				ActorDescView->SetRuntimeDataLayers(RuntimeDataLayerInstanceNames);
+			}
 			FActorDescViewMap* NonConstActorDescViewMap = const_cast<FActorDescViewMap*>(MainActorSetContainer->ActorDescViewMap);			
 			NonConstActorDescViewMap->Emplace(HLODActorGuid, *ActorDescView);
 
@@ -503,12 +533,12 @@ bool UWorldPartitionRuntimeSpatialHash::GenerateHLOD(ISourceControlHelper* Sourc
 			
 			IStreamingGenerationContext::FActorSetInstance& NewHLODActorSetInstance = HLODActorSetInstances.Emplace_GetRef();
 			
-			NewHLODActorSetInstance.Bounds = HLODActorDescView.GetBounds();
+			NewHLODActorSetInstance.Bounds = HLODActorDescView.GetRuntimeBounds();
 			NewHLODActorSetInstance.RuntimeGrid = HLODActorDescView.GetRuntimeGrid();
 			NewHLODActorSetInstance.bIsSpatiallyLoaded = HLODActorDescView.GetIsSpatiallyLoaded();
 			NewHLODActorSetInstance.DataLayers = UDataLayerSubsystem::GetRuntimeDataLayerInstances(MainActorSetContainer->ActorDescContainer->GetWorld(), HLODActorDescView.GetRuntimeDataLayers());
 			NewHLODActorSetInstance.ContainerInstance = MainActorSetContainer;
-			NewHLODActorSetInstance.ActorSet = &MainActorSetContainer->ActorSets.AddDefaulted_GetRef();
+			NewHLODActorSetInstance.ActorSet = MainActorSetContainer->ActorSets.Add_GetRef(MakeUnique<IStreamingGenerationContext::FActorSet>()).Get();
 			const_cast<IStreamingGenerationContext::FActorSet*>(NewHLODActorSetInstance.ActorSet)->Actors.Add(HLODActorDescView.GetGuid());
 
 			HLODActorSetInstancePtrs.Add(&NewHLODActorSetInstance);

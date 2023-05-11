@@ -79,7 +79,7 @@ struct FMeshTriEdgeID
 	/**
 	 * Decode an encoded FMeshTriEdgeID from a packed uint32 created by the Encoded() function
 	 */
-	FMeshTriEdgeID(uint32 EncodedEdgeKey)
+	explicit FMeshTriEdgeID(uint32 EncodedEdgeKey)
 	{
 		TriangleID = EncodedEdgeKey & 0x8FFFFFFF;
 		TriEdgeIndex = (EncodedEdgeKey & 0xC0000000) >> 30;
@@ -91,6 +91,50 @@ struct FMeshTriEdgeID
 	uint32 Encoded() const
 	{
 		return (TriEdgeIndex << 30) | TriangleID;
+	}
+};
+
+
+/**
+ * FMeshTriOrderedEdgeID identifies an oriented edge in a triangle mesh based on indices
+ * into the triangle vertices. IE if a triangle has vertices [A,B,C], then an
+ * oriented edge could be (A,B) or (B,A), or any of the other 4 permutations.
+ * So the ordered edge in the triangle can be represented as two vertex indices, 
+ * and the full encoding is (TriangleID, J, K) where J and K are in range 0/1/2.
+ * 
+ * This type of edge identifier is applicable on any indexed mesh, even if 
+ * the mesh does not store explicit edge IDs. In addition, this identifier is stable
+ * across mesh topological changes, ie if two connected triangles are unlinked (ie
+ * the shared edge becomes two edges, and the 2 vertices become 4), the FMeshTriOrderedEdgeID
+ * will still refer to the correct oriented edge, as it does not explicitly depend on
+ * the Vertex or Edge IDs, only the ordering within the triangle.
+ * 
+ * Note that cycling or permuting the vertices of a triangle will change/break these indices.
+ */
+struct FMeshTriOrderedEdgeID
+{
+	/** The index of the mesh Triangle */
+	int32 TriangleID;
+	/** The 0/1/2 index of the first vertex in the triangles tuple of vertices */
+	unsigned VertIndexA : 2;
+	/** The 0/1/2 index of the second vertex in the triangles tuple of vertices */
+	unsigned VertIndexB : 2;
+
+
+	FMeshTriOrderedEdgeID()
+	{
+		TriangleID = IndexConstants::InvalidID;
+		VertIndexA = 0;
+		VertIndexB = 0;
+	}
+
+	FMeshTriOrderedEdgeID(int32 TriangleIDIn, int32 VertexIndexA, int32 VertexIndexB)
+	{
+		checkSlow(VertexIndexA >= 0 && VertexIndexA <= 2);
+		checkSlow(VertexIndexB >= 0 && VertexIndexB <= 2);
+		TriangleID = TriangleIDIn;
+		VertIndexA = VertexIndexA;
+		VertIndexB = VertexIndexB;
 	}
 };
 

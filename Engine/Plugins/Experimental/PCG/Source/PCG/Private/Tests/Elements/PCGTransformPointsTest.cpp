@@ -1,14 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "Tests/PCGTestsCommon.h"
+#include "Data/PCGSpatialData.h"
 #include "Tests/Determinism/PCGDeterminismTestsCommon.h"
 
 #include "PCGComponent.h"
-#include "PCGData.h"
-#include "PCGHelpers.h"
-
+#include "PCGContext.h"
 #include "Data/PCGPointData.h"
 #include "Elements/PCGTransformPoints.h"
+#include "Helpers/PCGHelpers.h"
 
 #if WITH_EDITOR
 
@@ -60,8 +59,7 @@ bool FPCGTransformPointsTest::RunTest(const FString& Parameters)
 
 	auto ValidateTransformPoints = [this, &TestData, TransformPointsElement, Settings]() -> bool
 	{
-		TUniquePtr<FPCGContext> Context = MakeUnique<FPCGContext>(*TransformPointsElement->Initialize(TestData.InputData, TestData.TestPCGComponent, nullptr));
-		Context->NumAvailableTasks = 1;
+		TUniquePtr<FPCGContext> Context = TestData.InitializeTestContext();
 
 		while (!TransformPointsElement->Execute(Context.Get()))
 		{}

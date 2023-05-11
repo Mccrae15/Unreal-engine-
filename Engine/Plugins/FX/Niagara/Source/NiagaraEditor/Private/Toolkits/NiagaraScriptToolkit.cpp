@@ -2,7 +2,7 @@
 
 #include "NiagaraScriptToolkit.h"
 
-#include "AssetTypeActions/AssetTypeActions_NiagaraScript.h"
+#include "AssetDefinitions/AssetDefinition_NiagaraScript.h"
 #include "BusyCursor.h"
 #include "DetailLayoutBuilder.h"
 #include "Editor.h"
@@ -34,6 +34,7 @@
 #include "PropertyEditorModule.h"
 #include "SGraphActionMenu.h"
 #include "SNiagaraScriptVersionWidget.h"
+#include "UObject/Linker.h"
 #include "UObject/Package.h"
 #include "ViewModels/NiagaraParameterDefinitionsPanelViewModel.h"
 #include "ViewModels/NiagaraParameterPanelViewModel.h"
@@ -151,15 +152,15 @@ FText FNiagaraScriptToolkit::GetGraphEditorDisplayName() const
 	FText DisplayName = LOCTEXT("NiagaraScriptDisplayName", "Niagara Script");
 	if (EditedNiagaraScript.Script->GetUsage() == ENiagaraScriptUsage::Function)
 	{
-		DisplayName = FAssetTypeActions_NiagaraScriptFunctions::GetFormattedName();
+		DisplayName = UAssetDefinition_NiagaraScript::FunctionScriptNameText;
 	}
 	else if (EditedNiagaraScript.Script->GetUsage() == ENiagaraScriptUsage::Module)
 	{
-		DisplayName = FAssetTypeActions_NiagaraScriptModules::GetFormattedName();
+		DisplayName = UAssetDefinition_NiagaraScript::ModuleScriptNameText;
 	}
 	else if (EditedNiagaraScript.Script->GetUsage() == ENiagaraScriptUsage::DynamicInput)
 	{
-		DisplayName = FAssetTypeActions_NiagaraScriptDynamicInputs::GetFormattedName();
+		DisplayName = UAssetDefinition_NiagaraScript::DynamicInputScriptNameText;
 	}
 
 	FVersionedNiagaraScriptData* ScriptData = EditedNiagaraScript.Script->GetScriptData(EditedNiagaraScript.Version);
@@ -180,7 +181,6 @@ void FNiagaraScriptToolkit::Initialize( const EToolkitMode::Type Mode, const TSh
 	EditedNiagaraScript.Script = (UNiagaraScript*)StaticDuplicateObject(InputScript, GetTransientPackage(), NAME_None, ~RF_Standalone, UNiagaraScript::StaticClass());
 	EditedNiagaraScript.Script->OnVMScriptCompiled().AddSP(this, &FNiagaraScriptToolkit::OnVMScriptCompiled);
 	EditedNiagaraScript.Version = ScriptVersion;
-	bEditedScriptHasPendingChanges = false;
 
 	const FGuid MessageLogGuidKey = FGuid::NewGuid();
 	NiagaraMessageLogViewModel = MakeShared<FNiagaraMessageLogViewModel>(GetNiagaraScriptMessageLogName(EditedNiagaraScript), MessageLogGuidKey, NiagaraMessageLog);
@@ -221,7 +221,6 @@ void FNiagaraScriptToolkit::Initialize( const EToolkitMode::Type Mode, const TSh
 		.OnChangeToVersion(this, &FNiagaraScriptToolkit::SwitchToVersion)
 		.OnVersionDataChanged_Lambda([this]()
 		{
-			bEditedScriptHasPendingChanges = true;
 	        if (UNiagaraScriptSource* ScriptSource = Cast<UNiagaraScriptSource>(EditedNiagaraScript.Script->GetSource(EditedNiagaraScript.Version)))
 	        {
 	            ScriptSource->NodeGraph->NotifyGraphChanged();
@@ -425,7 +424,7 @@ void FNiagaraScriptToolkit::OnEditedScriptPropertyFinishedChanging(const FProper
 		}
 	}
 
-	MarkDirtyWithPendingChanges();
+	PromptVersioningWarning();
 }
 
 void FNiagaraScriptToolkit::OnVMScriptCompiled(UNiagaraScript*, const FGuid&)
@@ -711,7 +710,7 @@ FText FNiagaraScriptToolkit::GetCompileStatusTooltip() const
 
 FSlateIcon FNiagaraScriptToolkit::GetRefreshStatusImage() const
 {
-	return FSlateIcon(FNiagaraEditorStyle::Get().GetStyleSetName(), "NiagaraEditor.Refresh");
+	return FSlateIcon(FAppStyle::Get().GetStyleSetName(), "FontEditor.Update");
 }
 
 FText FNiagaraScriptToolkit::GetRefreshStatusTooltip() const
@@ -768,7 +767,7 @@ FText FNiagaraScriptToolkit::GetVersionMenuLabel(FNiagaraAssetVersion Version) c
 
 bool FNiagaraScriptToolkit::IsEditScriptDifferentFromOriginalScript() const
 {
-	return bEditedScriptHasPendingChanges;
+	return OriginalNiagaraScript.Script->GetBaseChangeID() != EditedNiagaraScript.Script->GetBaseChangeID();
 }
 
 void FNiagaraScriptToolkit::OnApply()
@@ -776,6 +775,7 @@ void FNiagaraScriptToolkit::OnApply()
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraEditor_ScriptToolkit_OnApply);
 	UE_LOG(LogNiagaraEditor, Log, TEXT("Applying Niagara Script %s"), *GetEditingObjects()[0]->GetName());
 	UpdateOriginalNiagaraScript();
+	FNiagaraEditorModule::Get().ScriptApplied(OriginalNiagaraScript.Script, OriginalNiagaraScript.Version);
 }
 
 bool FNiagaraScriptToolkit::OnApplyEnabled() const
@@ -838,7 +838,7 @@ void FNiagaraScriptToolkit::PostUndo(bool bSuccess)
 			EditedNiagaraScript.Version = FGuid();
 		}
 	}
-	MarkDirtyWithPendingChanges();
+	PromptVersioningWarning();
 }
 
 void FNiagaraScriptToolkit::GetSaveableObjects(TArray<UObject*>& OutObjects) const
@@ -851,7 +851,10 @@ void FNiagaraScriptToolkit::SaveAsset_Execute()
 {
 	UE_LOG(LogNiagaraEditor, Log, TEXT("Saving and Compiling NiagaraScript %s"), *GetEditingObjects()[0]->GetName());
 
-	UpdateOriginalNiagaraScript();
+	if(IsEditScriptDifferentFromOriginalScript())
+	{
+		UpdateOriginalNiagaraScript();
+	}
 
 	FAssetEditorToolkit::SaveAsset_Execute();
 }
@@ -860,7 +863,10 @@ void FNiagaraScriptToolkit::SaveAssetAs_Execute()
 {
 	UE_LOG(LogNiagaraEditor, Log, TEXT("Saving and Compiling NiagaraScript %s"), *GetEditingObjects()[0]->GetName());
 
-	UpdateOriginalNiagaraScript();
+	if(IsEditScriptDifferentFromOriginalScript())
+	{
+		UpdateOriginalNiagaraScript();
+	}
 
 	FAssetEditorToolkit::SaveAssetAs_Execute();
 }
@@ -898,7 +904,6 @@ void FNiagaraScriptToolkit::UpdateOriginalNiagaraScript()
 	FNiagaraEditorUtilities::RefreshAllScriptsFromExternalChanges(Args);
 
 	GWarn->EndSlowTask();
-	bEditedScriptHasPendingChanges = false;
 	FNiagaraEditorModule::Get().InvalidateCachedScriptAssetData();
 }
 
@@ -937,11 +942,11 @@ bool FNiagaraScriptToolkit::OnRequestClose()
 
 void FNiagaraScriptToolkit::OnEditedScriptGraphChanged(const FEdGraphEditAction& InAction)
 {
-	MarkDirtyWithPendingChanges();
+	PromptVersioningWarning();
 	bRefreshSelected = true;
 }
 
-void FNiagaraScriptToolkit::MarkDirtyWithPendingChanges()
+void FNiagaraScriptToolkit::PromptVersioningWarning()
 {
 	if (!bShowedEditingVersionWarning && EditedNiagaraScript.Script->IsVersioningEnabled())
 	{
@@ -953,7 +958,6 @@ void FNiagaraScriptToolkit::MarkDirtyWithPendingChanges()
 			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("EditingExposedAssetWarning", "Warning: you are editing an already exposed asset version. Saving these changes will force-push them out to existing usages!\nConsider creating a new version instead to make those changes."));	
 		}
 	}
-	bEditedScriptHasPendingChanges = true;
 }
 
 void FNiagaraScriptToolkit::FocusGraphElementIfSameScriptID(const FNiagaraScriptIDAndGraphFocusInfo* FocusInfo)

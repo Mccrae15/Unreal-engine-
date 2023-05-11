@@ -23,7 +23,7 @@ class FRDGBuilder;
 class FRHICommandListImmediate;
 class FWildcardString;
 
-#define SUPPORTS_VISUALIZE_TEXTURE (WITH_ENGINE && (!(UE_BUILD_SHIPPING || UE_BUILD_TEST) || WITH_EDITOR))
+#define SUPPORTS_VISUALIZE_TEXTURE (WITH_ENGINE && (!UE_BUILD_SHIPPING || WITH_EDITOR))
 
 class RENDERCORE_API FVisualizeTexture : public FRenderResource
 {
@@ -44,6 +44,16 @@ public:
 	inline void SetCheckPoint(FRDGBuilder& GraphBuilder, IPooledRenderTarget* PooledRenderTarget) {}
 	inline void SetCheckPoint(FRHICommandListImmediate& RHICmdList, IPooledRenderTarget* PooledRenderTarget) {}
 #endif
+
+	static FRDGTextureRef AddVisualizeTexturePass(
+		FRDGBuilder& GraphBuilder,
+		class FGlobalShaderMap* ShaderMap,
+		const FRDGTextureRef InputTexture);
+
+	static FRDGTextureRef AddVisualizeTextureAlphaPass(
+		FRDGBuilder& GraphBuilder,
+		class FGlobalShaderMap* ShaderMap,
+		const FRDGTextureRef InputTexture);
 
 private:
 	enum class EFlags
@@ -106,15 +116,6 @@ private:
 	/** Determine whether a texture should be captured for debugging purposes and return the capture id if needed. */
 	TOptional<uint32> ShouldCapture(const TCHAR* DebugName, uint32 MipIndex);
 
-	/** Create a pass capturing a texture. */
-	void CreateContentCapturePass(FRDGBuilder& GraphBuilder, FRDGTextureRef Texture, uint32 CaptureId);
-
-	void ReleaseDynamicRHI() override;
-
-	void Visualize(const FString& InName, TOptional<uint32> InVersion = {});
-
-	uint32 GetVersionCount(const TCHAR* InName) const;
-
 	struct FConfig
 	{
 		float RGBMul = 1.0f;
@@ -129,7 +130,27 @@ private:
 		EShaderOp ShaderOp = EShaderOp::Frac;
 		uint32 MipIndex = 0;
 		uint32 ArrayIndex = 0;
-	} Config;
+	};
+
+	/** Adds a pass to visualize a texture. */
+	static FRDGTextureRef AddVisualizeTexturePass(
+		FRDGBuilder& GraphBuilder,
+		class FGlobalShaderMap* ShaderMap,
+		const FRDGTextureRef InputTexture,
+		const FConfig& Config,
+		EInputValueMapping InputValueMapping,
+		uint32 CaptureId);
+
+	/** Create a pass capturing a texture. */
+	void CreateContentCapturePass(FRDGBuilder& GraphBuilder, FRDGTextureRef Texture, uint32 CaptureId);
+
+	void ReleaseDynamicRHI() override;
+
+	void Visualize(const FString& InName, TOptional<uint32> InVersion = {});
+
+	uint32 GetVersionCount(const TCHAR* InName) const;
+
+	FConfig Config;
 
 	struct FRequested
 	{

@@ -66,16 +66,19 @@ namespace EpicGames.UHT.Exporters.CodeGen
 									addedCoreNetHeader = true;
 								}
 							}
+
+							bool requireIncludeForClasses = IsRpcFunction(function) && ShouldExportFunction(function);
+
 							foreach (UhtProperty property in function.Properties)
 							{
-								AddIncludeForProperty(property, addedIncludes, includesToAdd);
+								AddIncludeForProperty(property, requireIncludeForClasses, addedIncludes, includesToAdd);
 							}
 						}
 
 						// Properties
 						foreach (UhtProperty property in structObj.Properties)
 						{
-							AddIncludeForProperty(property, addedIncludes, includesToAdd);
+							AddIncludeForProperty(property, false, addedIncludes, includesToAdd);
 						}
 					}
 
@@ -350,7 +353,7 @@ namespace EpicGames.UHT.Exporters.CodeGen
 			}
 		}
 
-		private void AddIncludeForType(UhtProperty uhtProperty, HashSet<UhtHeaderFile> addedIncludes, IList<string> includesToAdd)
+		private void AddIncludeForType(UhtProperty uhtProperty, bool requireIncludeForClasses, HashSet<UhtHeaderFile> addedIncludes, IList<string> includesToAdd)
 		{
 			if (uhtProperty is UhtStructProperty structProperty)
 			{
@@ -360,20 +363,28 @@ namespace EpicGames.UHT.Exporters.CodeGen
 					includesToAdd.Add(HeaderInfos[scriptStruct.HeaderFile.HeaderFileTypeIndex].IncludePath);
 				}
 			}
+			else if (requireIncludeForClasses && uhtProperty is UhtClassProperty classProperty)
+			{
+				UhtClass uhtClass = classProperty.Class;
+				if (!uhtClass.HeaderFile.IsNoExportTypes && addedIncludes.Add(uhtClass.HeaderFile))
+				{
+					includesToAdd.Add(HeaderInfos[uhtClass.HeaderFile.HeaderFileTypeIndex].IncludePath);
+				}
+			}
 		}
 
-		private void AddIncludeForProperty(UhtProperty property, HashSet<UhtHeaderFile> addedIncludes, IList<string> includesToAdd)
+		private void AddIncludeForProperty(UhtProperty property, bool requireIncludeForClasses, HashSet<UhtHeaderFile> addedIncludes, IList<string> includesToAdd)
 		{
-			AddIncludeForType(property, addedIncludes, includesToAdd);
+			AddIncludeForType(property, requireIncludeForClasses, addedIncludes, includesToAdd);
 
 			if (property is UhtContainerBaseProperty containerProperty)
 			{
-				AddIncludeForType(containerProperty.ValueProperty, addedIncludes, includesToAdd);
+				AddIncludeForType(containerProperty.ValueProperty, false, addedIncludes, includesToAdd);
 			}
 
 			if (property is UhtMapProperty mapProperty)
 			{
-				AddIncludeForType(mapProperty.KeyProperty, addedIncludes, includesToAdd);
+				AddIncludeForType(mapProperty.KeyProperty, false, addedIncludes, includesToAdd);
 			}
 		}
 
@@ -424,7 +435,7 @@ namespace EpicGames.UHT.Exporters.CodeGen
 
 				builder.Append("\t\tif (!").Append(registrationName).Append(".OuterSingleton)\r\n");
 				builder.Append("\t\t{\r\n");
-				builder.Append("\t\t\t").Append(registrationName).Append(".OuterSingleton = GetStaticEnum(").Append(singletonName).Append(", ")
+				builder.Append("\t\t\t").Append(registrationName).Append(".OuterSingleton = GetStaticEnum(").Append(singletonName).Append(", (UObject*)")
 					.Append(PackageSingletonName).Append("(), TEXT(\"").Append(enumObj.SourceName).Append("\"));\r\n");
 				builder.Append("\t\t}\r\n");
 				builder.Append("\t\treturn ").Append(registrationName).Append(".OuterSingleton;\r\n");
@@ -532,7 +543,7 @@ namespace EpicGames.UHT.Exporters.CodeGen
 					.Append(registrationName)
 					.Append(".OuterSingleton = GetStaticStruct(")
 					.Append(singletonName)
-					.Append(", ")
+					.Append(", (UObject*)")
 					.Append(PackageSingletonName)
 					.Append("(), TEXT(\"")
 					.Append(scriptStruct.EngineName)
@@ -546,17 +557,6 @@ namespace EpicGames.UHT.Exporters.CodeGen
 					{
 						builder.Append("\t\tTArray<FRigVMFunctionArgument> ").AppendArgumentsName(scriptStruct, methodInfo).Append(";\r\n");
 						foreach (UhtRigVMParameter parameter in scriptStruct.RigVMStructInfo.Members)
-						{
-							builder
-								.Append("\t\t")
-								.AppendArgumentsName(scriptStruct, methodInfo)
-								.Append(".Emplace(TEXT(\"")
-								.Append(parameter.NameOriginal())
-								.Append("\"), TEXT(\"")
-								.Append(parameter.TypeOriginal())
-								.Append("\"));\r\n");
-						}
-						foreach (UhtRigVMParameter parameter in methodInfo.Parameters)
 						{
 							builder
 								.Append("\t\t")
@@ -597,7 +597,13 @@ namespace EpicGames.UHT.Exporters.CodeGen
 				// Inject implementation needed to support auto bindings of fast arrays
 				if (ObjectInfos[scriptStruct.ObjectTypeIndex].FastArrayProperty != null)
 				{
-					builder.Append("UE_NET_IMPLEMENT_FASTARRAY(").Append(scriptStruct.SourceName).Append(");\r\n");
+					// The preprocessor conditional is written here instead of in FastArraySerializerImplementation.h
+					// since it may evaluate differently in different modules, triggering warnings in IncludeTool.
+					builder.Append("#if defined(UE_NET_HAS_IRIS_FASTARRAY_BINDING) && UE_NET_HAS_IRIS_FASTARRAY_BINDING\r\n");
+					builder.Append("\tUE_NET_IMPLEMENT_FASTARRAY(").Append(scriptStruct.SourceName).Append(");\r\n");
+					builder.Append("#else\r\n");
+					builder.Append("\tUE_NET_IMPLEMENT_FASTARRAY_STUB(").Append(scriptStruct.SourceName).Append(");\r\n");
+					builder.Append("#endif\r\n");
 				}
 			}
 
@@ -696,6 +702,12 @@ namespace EpicGames.UHT.Exporters.CodeGen
 			// The static method is implemented by the user using a macro.
 			if (scriptStruct.RigVMStructInfo != null)
 			{
+				string constPrefix = "";
+				if (scriptStruct.RigVMStructInfo.ExecuteContextMember == String.Empty)
+				{
+					constPrefix = "const ";
+				}
+				
 				foreach (UhtRigVMMethodInfo methodInfo in scriptStruct.RigVMStructInfo.Methods)
 				{
 					builder.Append("\r\n");
@@ -706,11 +718,39 @@ namespace EpicGames.UHT.Exporters.CodeGen
 						.Append(scriptStruct.SourceName)
 						.Append("::")
 						.Append(methodInfo.Name)
-						.Append('(')
-						.AppendParameterDecls(methodInfo.Parameters, false, ",\r\n\t\t")
-						.Append(")\r\n");
+						.Append("()\r\n");
 					builder.Append("{\r\n");
-					builder.Append("\tFRigVMExecuteContext RigVMExecuteContext;\r\n");
+					if (scriptStruct.RigVMStructInfo.ExecuteContextMember == String.Empty)
+					{
+						builder.Append("\t").Append(scriptStruct.RigVMStructInfo.ExecuteContextType).Append(" TemporaryExecuteContext;\r\n");
+					}
+					else
+					{
+						builder.Append("\t").Append(scriptStruct.RigVMStructInfo.ExecuteContextType).Append("& TemporaryExecuteContext = ").Append(scriptStruct.RigVMStructInfo.ExecuteContextMember).Append(";\r\n");
+					}
+
+					builder.Append("\tTemporaryExecuteContext.Initialize();\r\n");
+					builder.Append('\t');
+					if (methodInfo.ReturnType != "void")
+					{
+						builder.Append("return ");
+					}
+					builder
+						.Append(methodInfo.Name)
+						.Append("(TemporaryExecuteContext);\r\n")
+						.Append("}\r\n\r\n");
+
+					builder
+						.Append(methodInfo.ReturnType)
+						.Append(' ')
+						.Append(scriptStruct.SourceName)
+						.Append("::")
+						.Append(methodInfo.Name)
+						.Append('(')
+						.Append(constPrefix)
+						.Append(scriptStruct.RigVMStructInfo.ExecuteContextType)
+						.Append("& InExecuteContext)\r\n");
+					builder.Append("{\r\n");
 
 					bool wroteLine = false;
 					foreach (UhtRigVMParameter parameter in scriptStruct.RigVMStructInfo.Members)
@@ -730,9 +770,8 @@ namespace EpicGames.UHT.Exporters.CodeGen
 
 					//COMPATIBILITY-TODO - Replace spaces with \t
 					builder.Append('\t').Append(methodInfo.ReturnPrefix()).Append("Static").Append(methodInfo.Name).Append("(\r\n");
-					builder.Append("\t\tRigVMExecuteContext");
+					builder.Append("\t\tInExecuteContext");
 					builder.AppendParameterNames(scriptStruct.RigVMStructInfo.Members, true, ",\r\n\t\t", true);
-					builder.AppendParameterNames(methodInfo.Parameters, true, ",\r\n\t\t");
 					builder.Append("\r\n");
 					builder.Append("\t);\r\n");
 					builder.Append("}\r\n");
@@ -745,6 +784,24 @@ namespace EpicGames.UHT.Exporters.CodeGen
 		private StringBuilder AppendDelegate(StringBuilder builder, UhtFunction function)
 		{
 			AppendFunction(builder, function, false);
+
+			int tabs = 0;
+			string strippedFunctionName = function.StrippedFunctionName;
+			string exportFunctionName = GetDelegateFunctionExportName(function);
+			string extraParameter = GetDelegateFunctionExtraParameter(function);
+
+			AppendNativeFunctionHeader(builder, function, UhtPropertyTextType.EventFunctionArgOrRetVal, false, exportFunctionName, extraParameter, UhtFunctionExportFlags.None, "\r\n");
+			AppendEventFunctionPrologue(builder, function, strippedFunctionName, tabs, "\r\n", true);
+			builder
+				.Append('\t')
+				.Append(strippedFunctionName)
+				.Append('.')
+				.Append(function.FunctionFlags.HasAnyFlags(EFunctionFlags.MulticastDelegate) ? "ProcessMulticastDelegate" : "ProcessDelegate")
+				.Append("<UObject>(")
+				.Append(function.Children.Count > 0 ? "&Parms" : "NULL")
+				.Append(");\r\n");
+			AppendEventFunctionEpilogue(builder, function, tabs, "\r\n");
+
 			return builder;
 		}
 
@@ -1030,6 +1087,23 @@ namespace EpicGames.UHT.Exporters.CodeGen
 			}
 
 			AppendNativeGeneratedInitCode(builder, classObj);
+
+			if (!classObj.ClassExportFlags.HasAnyFlags(UhtClassExportFlags.HasConstructor))
+			{
+				if (!classObj.ClassExportFlags.HasAnyFlags(UhtClassExportFlags.UsesGeneratedBodyLegacy))
+				{
+					switch (GetConstructorType(classObj))
+					{
+						case ConstructorType.ObjectInitializer:
+							builder.Append('\t').Append(classObj.SourceName).Append("::").Append(classObj.SourceName).Append("(const FObjectInitializer& ObjectInitializer) : Super(ObjectInitializer) {}\r\n");
+							break;
+
+						case ConstructorType.Default:
+							builder.Append('\t').Append(classObj.SourceName).Append("::").Append(classObj.SourceName).Append("() {}\r\n");
+							break;
+					}
+				}
+			}
 
 			if (!classObj.ClassExportFlags.HasAnyFlags(UhtClassExportFlags.HasCustomVTableHelperConstructor))
 			{
@@ -1763,7 +1837,7 @@ namespace EpicGames.UHT.Exporters.CodeGen
 						}
 						else
 						{
-							AppendEventFunctionPrologue(builder, function, function.EngineName, 1, "\r\n");
+							AppendEventFunctionPrologue(builder, function, function.EngineName, 1, "\r\n", false);
 
 							// Cast away const just in case, because ProcessEvent isn't const
 							builder.Append("\t\t");

@@ -2,6 +2,8 @@
 
 #include "FunctionCaller.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(FunctionCaller)
+
 #if WITH_EDITORONLY_DATA
 
 #include "LevelVariantSets.h"
@@ -11,7 +13,6 @@
 #include "EdGraph/EdGraph.h"
 #include "EdGraphSchema_K2.h"
 #include "K2Node_FunctionEntry.h"
-#include "UObject/PropertyPortFlags.h"
 
 // This file is based on MovieSceneEvent.cpp
 

@@ -313,12 +313,19 @@ FORCEINLINE bool IsAllowCommandletAudio()
 #endif
 }
 
+class CORE_API FIsDuplicatingClassForReinstancing
+{
+public:
+	FIsDuplicatingClassForReinstancing& operator= (bool bOther);
+	operator bool() const;
+};
+
 extern CORE_API bool GEdSelectionLock;
 extern CORE_API bool GIsClient;
 extern CORE_API bool GIsServer;
 extern CORE_API bool GIsCriticalError;
 extern CORE_API TSAN_ATOMIC(bool) GIsRunning;
-extern CORE_API bool GIsDuplicatingClassForReinstancing;
+extern CORE_API FIsDuplicatingClassForReinstancing GIsDuplicatingClassForReinstancing;
 
 /**
 * These are set when the engine first starts up.
@@ -573,11 +580,7 @@ enum class ETaskTag : int32
 	EStaticInit					= 1 << 0,
 	EGameThread					= 1 << 1,
 	ESlateThread				= 1 << 2,
-#if UE_AUDIO_THREAD_AS_PIPE	
 	EAudioThread UE_DEPRECATED(5.0, "AudioThread was removed and ETaskTag::EAudioThread is not used anymore. Please remove it.") = 1 << 3,
-#else
-	EAudioThread = 1 << 3,
-#endif
 	ERenderingThread			= 1 << 4,
 	ERhiThread					= 1 << 5,
 	EAsyncLoadingThread			= 1 << 6,
@@ -679,14 +682,6 @@ extern CORE_API bool IsAudioThreadRunning();
 /** @return True if called from the audio thread, and not merely a thread calling audio functions. */
 extern CORE_API bool IsInAudioThread();
 
-#if !UE_AUDIO_THREAD_AS_PIPE
-
-/** Thread used for audio */
-UE_DEPRECATED(4.26, "Please use `IsAudioThreadRunning()` or `IsInAudioThread()`")
-extern CORE_API FRunnableThread* GAudioThread;
-
-#endif
-
 /** @return True if called from the slate thread, and not merely a thread calling slate functions. */
 extern CORE_API bool IsInSlateThread();
 
@@ -763,17 +758,16 @@ class FChunkedFixedUObjectArray;
 
 extern CORE_API FChunkedFixedUObjectArray* GCoreObjectArrayForDebugVisualizers;
 
-/** Array to help visualize object paths in the debugger */
-namespace UE::ObjectPath::Private
+namespace UE::CoreUObject::Private
 {
+	/** Array to help visualize object paths in the debugger */
 	struct FStoredObjectPath;
+	
+	/** Array to help visualize object handles in the debugger */
+	struct FObjectHandlePackageDebugData;
 }
-extern CORE_API UE::ObjectPath::Private::FStoredObjectPath* GCoreComplexObjectPathDebug;
-
-/** Array to help visualize object handles in the debugger */
-struct FObjectHandlePackageDebugData;
-
-extern CORE_API FObjectHandlePackageDebugData* GCoreObjectHandlePackageDebug;
+extern CORE_API UE::CoreUObject::Private::FStoredObjectPath* GCoreComplexObjectPathDebug;
+extern CORE_API UE::CoreUObject::Private::FObjectHandlePackageDebugData* GCoreObjectHandlePackageDebug;
 
 /** @return True if running cook-on-the-fly. */
 bool CORE_API IsRunningCookOnTheFly();

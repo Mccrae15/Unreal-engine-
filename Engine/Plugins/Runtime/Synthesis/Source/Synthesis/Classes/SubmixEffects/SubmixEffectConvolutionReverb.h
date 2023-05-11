@@ -1,12 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/Object.h"
-#include "DSP/Dsp.h"
-#include "EffectConvolutionReverb.h"
 #include "Sound/SoundEffectSubmix.h"
 #include "SubmixEffectConvolutionReverb.generated.h"
+
+class UAudioImpulseResponse;
+class USubmixEffectConvolutionReverbPreset;
+enum class ESubmixEffectConvolutionReverbBlockSize : uint8;
+namespace Audio { class FEffectConvolutionReverb; }
+namespace AudioConvReverbIntrinsics { struct FVersionData; }
 
 USTRUCT(BlueprintType)
 struct SYNTHESIS_API FSubmixEffectConvolutionReverbSettings
@@ -47,7 +49,7 @@ struct SYNTHESIS_API FSubmixEffectConvolutionReverbSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SubmixEffectPreset, meta = (EditCondition = "!bBypass"))
 	bool bMixReverbOutputToOutputChannelFormat;
 
-	/* Amout of audio to be sent to rear channels in quad/surround configurations */
+	/* Amount of audio to be sent to rear channels in quad/surround configurations */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "SubmixEffectPreset|Surround", meta = (DisplayName = "Surround Rear Channel Bleed (dB)", EditCondition = "bMixReverbOutputToOutputChannelFormat && !bBypass", ClampMin = "-60.0", UIMin = "-60.0", ClampMax = "15.0", UIMax = "15.0"))
 	float SurroundRearChannelBleedDb;
 
@@ -204,3 +206,9 @@ private:
 #endif
 };
 
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "DSP/Dsp.h"
+#include "EffectConvolutionReverb.h"
+#endif

@@ -29,8 +29,9 @@ void FControlFlow::ExecuteNextNodeInQueue()
 
 	CurrentNode = FlowQueue[0];
 	if (Activity)
+	{
 		Activity->Update(*CurrentNode->GetNodeName());
-
+	}
 
 	FlowQueue.RemoveAt(0);
 	CurrentNode->Execute();
@@ -45,7 +46,8 @@ void FControlFlow::ExecuteNode(TSharedRef<FControlFlowNode_SelfCompleting> SelfC
 	{
 		FlowQueue.Reset();
 
-		OnCancelled().ExecuteIfBound();
+		OnCancelledDelegate.Broadcast();
+		OnCancelledDelegate_Internal.ExecuteIfBound();		
 
 		FControlFlowStatics::HandleControlFlowFinishedNotification();
 	}
@@ -86,6 +88,7 @@ void FControlFlow::HandleControlFlowNodeCompleted(TSharedRef<const FControlFlowN
 				}
 				else
 				{
+					OnStepCompletedDelegate.Broadcast();
 					ExecuteNextNodeInQueue();
 				}
 			}
@@ -94,11 +97,13 @@ void FControlFlow::HandleControlFlowNodeCompleted(TSharedRef<const FControlFlowN
 		{
 			if (bCancelRequested)
 			{
-				OnCancelled().ExecuteIfBound();
+				OnCancelledDelegate.Broadcast();
+				OnCancelledDelegate_Internal.ExecuteIfBound();				
 			}
 			else
 			{
-				OnComplete().ExecuteIfBound();
+				OnCompleteDelegate.Broadcast();
+				OnCompleteDelegate_Internal.ExecuteIfBound();				
 			}
 
 			FControlFlowStatics::HandleControlFlowFinishedNotification();
@@ -179,8 +184,8 @@ void FControlFlow::ExecuteFlow()
 		}
 		else
 		{
-			OnExecutedWithoutAnyNodes().ExecuteIfBound();
-
+			OnExecutedWithoutAnyNodesDelegate.Broadcast();
+			OnExecutedWithoutAnyNodesDelegate_Internal.ExecuteIfBound();
 			FControlFlowStatics::HandleControlFlowFinishedNotification();
 		}
 
@@ -213,7 +218,8 @@ void FControlFlow::CancelFlow()
 	}
 	else
 	{
-		OnCancelled().ExecuteIfBound();
+		OnCancelledDelegate.Broadcast();
+		OnCancelledDelegate_Internal.ExecuteIfBound();
 		FControlFlowStatics::HandleControlFlowFinishedNotification();
 	}
 }
@@ -336,7 +342,7 @@ TSharedRef<FControlFlowTask_BranchLegacy> FControlFlow::QueueBranch(FControlFlow
 
 FControlFlowPopulator& FControlFlow::QueueLoop(FControlFlowLoopComplete& LoopCompleteDelgate, const FString& TaskName /*= TEXT("")*/, const FString& FlowNodeDebugName /*= TEXT("")*/)
 {
-	TSharedRef<FControlFlowTask_Loop> NewTask = MakeShared<FControlFlowTask_Loop>(LoopCompleteDelgate, TaskName, MakeShared<FControlFlow>(TaskName));
+	TSharedRef<FControlFlowTask_LoopDeprecated> NewTask = MakeShared<FControlFlowTask_LoopDeprecated>(LoopCompleteDelgate, TaskName, MakeShared<FControlFlow>(TaskName));
 	TSharedRef<FControlFlowNode_Task> NewNode = MakeShared<FControlFlowNode_Task>(SharedThis(this), NewTask, FormatOrGetNewNodeDebugName(FlowNodeDebugName));
 	NewTask->GetTaskFlow()->Activity = Activity;
 	NewNode->OnExecute().BindSP(SharedThis(this), &FControlFlow::HandleTaskNodeExecuted);
@@ -356,7 +362,9 @@ void FControlFlow::HandleTaskNodeExecuted(TSharedRef<FControlFlowNode_Task> Task
 		CurrentlyRunningTask = TaskNode;
 		CurrentNode = CurrentlyRunningTask;
 		if (Activity)
+		{
 			Activity->Update(*TaskNode->GetFlowTask()->DebugName);
+		}
 
 		TaskNode->GetFlowTask()->OnComplete().BindSP(SharedThis(this), &FControlFlow::HandleOnTaskComplete);
 		TaskNode->GetFlowTask()->OnCancelled().BindSP(SharedThis(this), &FControlFlow::HandleOnTaskCancelled);

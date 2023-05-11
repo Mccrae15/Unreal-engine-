@@ -2,6 +2,7 @@
 
 using UnrealBuildTool;
 using System.IO;
+using System;
 
 public class Expat : ModuleRules
 {
@@ -30,16 +31,27 @@ public class Expat : ModuleRules
 		{
 			PublicAdditionalLibraries.Add(Path.Combine(ExpatPackagePath, "IOS", ConfigName, "libexpat.a"));
 		}
+        else if (Target.Platform == UnrealTargetPlatform.TVOS)
+        {
+            PublicAdditionalLibraries.Add(Path.Combine(ExpatPackagePath, "TVOS", ConfigName, "libexpat.a"));
+        }
 		else if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
+			string LibraryPath = Path.Combine(ExpatPackagePath, Target.Platform.ToString(), "VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName());
+
+			if (!Target.Architecture.bIsX64)
+			{
+				LibraryPath = Path.Combine(LibraryPath, Target.Architecture.WindowsName);
+			}
+
 			if (Target.Configuration == UnrealTargetConfiguration.Debug && Target.bDebugBuildsActuallyUseDebugCRT)
 			{
-				string LibraryPath = Path.Combine(ExpatPackagePath, Target.Platform.ToString(), "VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName(), "Debug");
+				LibraryPath = Path.Combine(LibraryPath, "Debug");
 				PublicAdditionalLibraries.Add(Path.Combine(LibraryPath, "libexpatdMD.lib"));
 			}
 			else
 			{
-				string LibraryPath = Path.Combine(ExpatPackagePath, Target.Platform.ToString(), "VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName(), "Release");
+				LibraryPath = Path.Combine(LibraryPath, "Release");
 				PublicAdditionalLibraries.Add(Path.Combine(LibraryPath, "libexpatMD.lib"));
 			}
 		}
@@ -49,7 +61,7 @@ public class Expat : ModuleRules
 		}
 		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 		{
-			PublicAdditionalLibraries.Add(Path.Combine(ExpatPackagePath, "Unix/" + Target.Architecture, ConfigName, "libexpat.a"));
+			PublicAdditionalLibraries.Add(Path.Combine(ExpatPackagePath, "Unix/" + Target.Architecture.LinuxName, ConfigName, "libexpat.a"));
 		}
 	}
 }

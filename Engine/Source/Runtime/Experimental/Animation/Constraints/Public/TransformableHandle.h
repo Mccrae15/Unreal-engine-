@@ -45,8 +45,6 @@ public:
 	DECLARE_EVENT_TwoParams(UTransformableHandle, FHandleModifiedEvent, UTransformableHandle*, EHandleEvent);
 	
 	virtual ~UTransformableHandle();
-
-	virtual void PostLoad() override;
 	
 	/** Sanity check to ensure the handle is safe to use. */
 	virtual bool IsValid() const PURE_VIRTUAL(IsValid, return false;);
@@ -118,7 +116,7 @@ public:
 #endif
 
 	//possible bindingID
-	UPROPERTY(EditAnywhere, Category = "Binding")
+	UPROPERTY(BlueprintReadOnly, Category = "Binding")
 	FMovieSceneObjectBindingID ConstraintBindingID;
 protected:
 	FHandleModifiedEvent OnHandleModified;
@@ -205,7 +203,9 @@ public:
 	void UnregisterDelegates() const;
 	void RegisterDelegates();
 	
-	/** @todo document */
+#if WITH_EDITOR
 	void OnActorMoving(AActor* InActor);
 	void OnPostPropertyChanged(UObject* InObject, FPropertyChangedEvent& InPropertyChangedEvent);
+	void OnObjectsReplaced(const TMap<UObject*, UObject*>& InOldToNewInstances);
+#endif
 };

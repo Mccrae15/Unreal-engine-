@@ -37,6 +37,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Commands/UIAction.h"
 #include "Framework/Commands/UICommandInfo.h"
+#include "Framework/Commands/UICommandList.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "GameFramework/Actor.h"
 #include "GenericPlatform/ICursor.h"
@@ -67,6 +68,7 @@
 #include "Templates/TypeHash.h"
 #include "Templates/UnrealTemplate.h"
 #include "Textures/SlateIcon.h"
+#include "Toolkits/GlobalEditorCommonCommands.h"
 #include "ToolMenu.h"
 #include "ToolMenuContext.h"
 #include "ToolMenuDelegates.h"
@@ -115,6 +117,13 @@ FDataLayerMode::FDataLayerMode(const FDataLayerModeParams& Params)
 	, SpecifiedWorldToDisplay(Params.SpecifiedWorldToDisplay)
 	, FilteredDataLayerCount(0)
 {
+
+	Commands = MakeShareable(new FUICommandList());
+	Commands->MapAction(FGlobalEditorCommonCommands::Get().FindInContentBrowser, FUIAction(
+		FExecuteAction::CreateRaw(this, &FDataLayerMode::FindInContentBrowser),
+		FCanExecuteAction::CreateRaw(this, &FDataLayerMode::CanFindInContentBrowser)
+	));
+
 	USelection::SelectionChangedEvent.AddRaw(this, &FDataLayerMode::OnLevelSelectionChanged);
 	USelection::SelectObjectEvent.AddRaw(this, &FDataLayerMode::OnLevelSelectionChanged);
 
@@ -225,10 +234,8 @@ FDataLayerMode::FDataLayerMode(const FDataLayerModeParams& Params)
 		{
 			if (const ULevelInstanceSubsystem* LevelInstanceSubsystem = UWorld::GetSubsystem<ULevelInstanceSubsystem>(RepresentingWorld.Get()))
 			{
-				const ILevelInstanceInterface* ActorAsLevelInstance = Cast<ILevelInstanceInterface>(Actor);
-				const ILevelInstanceInterface* ActorParentLevelInstance = LevelInstanceSubsystem->GetParentLevelInstance(Actor);
-				if (!LevelInstanceSubsystem->IsEditingLevelInstance(ActorAsLevelInstance) &&
-					!LevelInstanceSubsystem->IsEditingLevelInstance(ActorParentLevelInstance))
+				const ILevelInstanceInterface* ParentLevelInstance = LevelInstanceSubsystem->GetParentLevelInstance(Actor);
+				if (ParentLevelInstance && !LevelInstanceSubsystem->IsEditingLevelInstance(ParentLevelInstance))
 				{
 					return false;
 				}
@@ -412,13 +419,23 @@ void FDataLayerMode::OnItemPassesFilters(const ISceneOutlinerTreeItem& Item)
 
 void FDataLayerMode::OnItemDoubleClick(FSceneOutlinerTreeItemPtr Item)
 {
-	if (const FDataLayerTreeItem* DataLayerItem = Item->CastTo<FDataLayerTreeItem>())
+	if (FDataLayerTreeItem* DataLayerItem = Item->CastTo<FDataLayerTreeItem>())
 	{
 		if (UDataLayerInstance* DataLayerInstance = DataLayerItem->GetDataLayer())
 		{
-			const FScopedTransaction Transaction(LOCTEXT("SelectActorsInDataLayer", "Select Actors in Data Layer"));
-			GEditor->SelectNone(/*bNoteSelectionChange*/false, true);
-			DataLayerEditorSubsystem->SelectActorsInDataLayer(DataLayerInstance, /*bSelect*/true, /*bNotify*/true, /*bSelectEvenIfHidden*/true);
+			if (!DataLayerInstance->IsLocked())
+			{
+				if (!DataLayerInstance->IsInActorEditorContext())
+				{
+					const FScopedTransaction Transaction(LOCTEXT("MakeCurrentDataLayers", "Make Current Data Layer(s)"));
+					UDataLayerEditorSubsystem::Get()->AddToActorEditorContext(DataLayerInstance);
+				}
+				else
+				{
+					const FScopedTransaction Transaction(LOCTEXT("RemoveCurrentDataLayers", "Remove Current Data Layer(s)"));
+					UDataLayerEditorSubsystem::Get()->RemoveFromActorEditorContext(DataLayerInstance);
+				}
+			}
 		}
 	}
 	else if (FDataLayerActorTreeItem* DataLayerActorItem = Item->CastTo<FDataLayerActorTreeItem>())
@@ -529,6 +546,12 @@ FReply FDataLayerMode::OnKeyDown(const FKeyEvent& InKeyEvent)
 		return FReply::Handled();
 
 	}
+
+	if (Commands->ProcessCommandBindings(InKeyEvent))
+	{
+		return FReply::Handled();
+	}
+
 	return FReply::Unhandled();
 }
 
@@ -1160,6 +1183,43 @@ AWorldDataLayers* FDataLayerMode::GetOwningWorldAWorldDataLayers() const
 	return OwningWorld ? OwningWorld->GetWorldDataLayers() : nullptr;
 }
 
+void FDataLayerMode::FindInContentBrowser()
+{
+	if (SceneOutliner)
+	{
+		TArray<UObject*> Objects;
+		for (TWeakObjectPtr<const UDataLayerInstance>& DataLayerInstance : SelectedDataLayersSet)
+		{
+			if (const UDataLayerInstanceWithAsset* DataLayerInstanceWithAsset = Cast<UDataLayerInstanceWithAsset>(DataLayerInstance.Get()))
+			{
+				if (const UDataLayerAsset* Asset = DataLayerInstanceWithAsset->GetAsset())
+				{
+					Objects.Add(const_cast<UDataLayerAsset*>(Asset));
+				}
+			}
+		}
+		if (!Objects.IsEmpty())
+		{
+			GEditor->SyncBrowserToObjects(Objects);
+		}
+	}
+}
+
+bool FDataLayerMode::CanFindInContentBrowser() const
+{
+	for (const TWeakObjectPtr<const UDataLayerInstance>& DataLayerInstance : SelectedDataLayersSet)
+	{
+		if (const UDataLayerInstanceWithAsset* DataLayerInstanceWithAsset = Cast<UDataLayerInstanceWithAsset>(DataLayerInstance.Get()))
+		{
+			if (const UDataLayerAsset* Asset = DataLayerInstanceWithAsset->GetAsset())
+			{
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 void FDataLayerMode::RegisterContextMenu()
 {
 	UToolMenus* ToolMenus = UToolMenus::Get();
@@ -1372,20 +1432,23 @@ void FDataLayerMode::RegisterContextMenu()
 						FCanExecuteAction::CreateLambda([SelectedDataLayers,bSelectedDataLayersContainsLocked] { return !SelectedDataLayers.IsEmpty() && !bSelectedDataLayersContainsLocked; })
 					));
 
-				Section.AddMenuEntry("RenameSelectedDataLayer", LOCTEXT("RenameSelectedDataLayer", "Rename Selected Data Layer"), FText(), FSlateIcon(),
-					FUIAction(
-						FExecuteAction::CreateLambda([Mode,SceneOutliner,SelectedDataLayers]() {
-							if (SelectedDataLayers.Num() == 1)
-							{
-								FSceneOutlinerTreeItemPtr ItemToRename = SceneOutliner->GetTreeItem(SelectedDataLayers[0]);
-								if (ItemToRename.IsValid() && Mode->CanRenameItem(*ItemToRename) && ItemToRename->CanInteract())
+				if (UDataLayerEditorSubsystem::Get()->HasDeprecatedDataLayers())
+				{
+					Section.AddMenuEntry("RenameSelectedDataLayer", LOCTEXT("RenameSelectedDataLayer", "Rename Selected Data Layer"), FText(), FSlateIcon(),
+						FUIAction(
+							FExecuteAction::CreateLambda([Mode, SceneOutliner, SelectedDataLayers]() {
+								if (SelectedDataLayers.Num() == 1)
 								{
-									SceneOutliner->SetPendingRenameItem(ItemToRename);
-									SceneOutliner->ScrollItemIntoView(ItemToRename);
-								}
-							}}),
-						FCanExecuteAction::CreateLambda([SelectedDataLayers] { return (SelectedDataLayers.Num() == 1) && !SelectedDataLayers[0]->IsLocked(); })
-					));
+									FSceneOutlinerTreeItemPtr ItemToRename = SceneOutliner->GetTreeItem(SelectedDataLayers[0]);
+									if (ItemToRename.IsValid() && Mode->CanRenameItem(*ItemToRename) && ItemToRename->CanInteract())
+									{
+										SceneOutliner->SetPendingRenameItem(ItemToRename);
+										SceneOutliner->ScrollItemIntoView(ItemToRename);
+									}
+								}}),
+							FCanExecuteAction::CreateLambda([SelectedDataLayers] { return (SelectedDataLayers.Num() == 1) && !SelectedDataLayers[0]->IsLocked(); })
+						));
+				}
 
 				Section.AddSeparator("SectionsSeparator");
 			}
@@ -1518,6 +1581,12 @@ void FDataLayerMode::RegisterContextMenu()
 							}}),
 						FCanExecuteAction::CreateLambda([AllDataLayers] { return !AllDataLayers.IsEmpty(); })
 					));
+			}
+
+			if (!UDataLayerEditorSubsystem::Get()->HasDeprecatedDataLayers())
+			{
+				FToolMenuSection& Section = InMenu->AddSection("AssetOptionsSection", LOCTEXT("AssetOptionsText", "Asset Options"));
+				Section.AddMenuEntryWithCommandList(FGlobalEditorCommonCommands::Get().FindInContentBrowser, Mode->Commands);
 			}
 		}));
 	}
@@ -1803,7 +1872,6 @@ void FDataLayerMode::ChooseRepresentingWorld()
 	if (RepresentingWorld == nullptr)
 	{
 		// still not world so fallback to old logic where we just prefer PIE over Editor
-
 		for (const FWorldContext& Context : GEngine->GetWorldContexts())
 		{
 			if (Context.WorldType == EWorldType::PIE)
@@ -1814,16 +1882,6 @@ void FDataLayerMode::ChooseRepresentingWorld()
 			else if (Context.WorldType == EWorldType::Editor)
 			{
 				RepresentingWorld = Context.World();
-				if (RepresentingWorld.IsValid())
-				{
-					// Favor Current Level's outer world if exists
-					ULevel* CurrentLevel = RepresentingWorld->GetCurrentLevel();
-					if (CurrentLevel && !CurrentLevel->IsPersistentLevel() && CurrentLevel->GetWorldDataLayers())
-					{
-						RepresentingWorld = CurrentLevel->GetTypedOuter<UWorld>();
-						check(RepresentingWorld.IsValid());
-					}
-				}
 			}
 		}
 	}

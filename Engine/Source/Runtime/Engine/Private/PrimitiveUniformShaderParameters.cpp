@@ -1,12 +1,30 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PrimitiveUniformShaderParameters.h"
-#include "InstanceUniformShaderParameters.h"
-#include "PrimitiveSceneProxy.h"
 #include "PrimitiveSceneInfo.h"
 #include "NaniteSceneProxy.h"
 #include "ProfilingDebugging/LoadTimeTracker.h"
+#include "SceneInterface.h"
+#include "UnrealEngine.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
+FPrimitiveUniformShaderParametersBuilder& FPrimitiveUniformShaderParametersBuilder::InstanceDrawDistance(FVector2f DistanceMinMax)
+{
+	// Only scale the far distance by scalability parameters
+	DistanceMinMax.Y *= GetCachedScalabilityCVars().ViewDistanceScale;
+	Parameters.InstanceDrawDistanceMinMaxSquared = FMath::Square(DistanceMinMax);
+	bHasInstanceDrawDistanceCull = true;
+	return *this;
+}
+
+FPrimitiveUniformShaderParametersBuilder& FPrimitiveUniformShaderParametersBuilder::InstanceWorldPositionOffsetDisableDistance(float WPODisableDistance)
+{
+	WPODisableDistance *= GetCachedScalabilityCVars().ViewDistanceScale;
+	bHasWPODisableDistance = true;
+	Parameters.InstanceWPODisableDistanceSquared = WPODisableDistance * WPODisableDistance;
+
+	return *this;
+}
 
 void FSinglePrimitiveStructured::InitRHI() 
 {
@@ -128,6 +146,7 @@ FPrimitiveSceneShaderData::FPrimitiveSceneShaderData(const FPrimitiveSceneProxy*
 	uint32 NaniteImposterIndex = INDEX_NONE;
 	uint32 NaniteFilterFlags = 0u;
 	uint32 NaniteRayTracingDataOffset = INDEX_NONE;
+	bool bReverseCulling = false;
 
 	if (Proxy->IsNaniteMesh())
 	{
@@ -135,6 +154,7 @@ FPrimitiveSceneShaderData::FPrimitiveSceneShaderData(const FPrimitiveSceneProxy*
 		NaniteProxy->GetNaniteResourceInfo(NaniteResourceID, NaniteHierarchyOffset, NaniteImposterIndex);
 		NaniteFilterFlags = uint32(NaniteProxy->GetFilterFlags());
 		NaniteRayTracingDataOffset = NaniteProxy->GetRayTracingDataOffset();
+		bReverseCulling = NaniteProxy->IsCullingReversedByComponent(); // needed because Nanite doesn't use raster state
 	}
 
 	FPrimitiveUniformShaderParametersBuilder Builder = FPrimitiveUniformShaderParametersBuilder{}
@@ -144,7 +164,6 @@ FPrimitiveSceneShaderData::FPrimitiveSceneShaderData(const FPrimitiveSceneProxy*
 		.ActorWorldPosition(Proxy->GetActorPosition())
 		.WorldBounds(Proxy->GetBounds())
 		.LocalBounds(Proxy->GetLocalBounds())
-		.BoundsScale(Proxy->GetBoundsScale())
 		.PreSkinnedLocalBounds(PreSkinnedLocalBounds)
 		.CustomPrimitiveData(Proxy->GetCustomPrimitiveData())
 		.LightingChannelMask(Proxy->GetLightingChannelMask())
@@ -156,12 +175,14 @@ FPrimitiveSceneShaderData::FPrimitiveSceneShaderData(const FPrimitiveSceneProxy*
 		.NumInstanceSceneDataEntries(Proxy->GetPrimitiveSceneInfo()->GetNumInstanceSceneDataEntries())
 		.InstancePayloadDataOffset(Proxy->GetPrimitiveSceneInfo()->GetInstancePayloadDataOffset())
 		.InstancePayloadDataStride(Proxy->GetPrimitiveSceneInfo()->GetInstancePayloadDataStride())
+		.HasDistanceFieldRepresentation(Proxy->HasDistanceFieldRepresentation())
 		.HasCapsuleRepresentation(Proxy->HasDynamicIndirectShadowCasterRepresentation())
 		.UseSingleSampleShadowFromStationaryLights(Proxy->UseSingleSampleShadowFromStationaryLights())
 		.ReceivesDecals(Proxy->ReceivesDecals())
 		.CacheShadowAsStatic(PrimitiveSceneInfo->ShouldCacheShadowAsStatic())
 		.OutputVelocity(bOutputVelocity)
 		.EvaluateWorldPositionOffset(Proxy->EvaluateWorldPositionOffset() && Proxy->AnyMaterialHasWorldPositionOffset())
+		.MaxWorldPositionOffsetDisplacement(Proxy->GetMaxWorldPositionOffsetDisplacement())
 		.CastContactShadow(Proxy->CastsContactShadow())
 		.CastShadow(Proxy->CastsDynamicShadow())
 		.CastHiddenShadow(Proxy->CastsHiddenShadow())
@@ -170,9 +191,11 @@ FPrimitiveSceneShaderData::FPrimitiveSceneShaderData(const FPrimitiveSceneProxy*
 		.VisibleInReflectionCaptures(Proxy->IsVisibleInReflectionCaptures())
 		.VisibleInRealTimeSkyCaptures(Proxy->IsVisibleInRealTimeSkyCaptures())
 		.VisibleInRayTracing(Proxy->IsVisibleInRayTracing())
+		.VisibleInLumenScene(Proxy->IsVisibleInLumenScene())
 		.VisibleInSceneCaptureOnly(Proxy->IsVisibleInSceneCaptureOnly())
 		.HiddenInSceneCapture(Proxy->IsHiddenInSceneCapture())
 		.ForceHidden(Proxy->IsForceHidden())
+		.Holdout(Proxy->Holdout())
 		.UseVolumetricLightmap(bHasPrecomputedVolumetricLightmap)
 		.NaniteResourceID(NaniteResourceID)
 		.NaniteHierarchyOffset(NaniteHierarchyOffset)
@@ -180,7 +203,8 @@ FPrimitiveSceneShaderData::FPrimitiveSceneShaderData(const FPrimitiveSceneProxy*
 		.NaniteFilterFlags(NaniteFilterFlags)
 		.NaniteRayTracingDataOffset(NaniteRayTracingDataOffset)
 		.PrimitiveComponentId(Proxy->GetPrimitiveComponentId().PrimIDValue)
-		.EditorColors(Proxy->GetWireframeColor(), Proxy->GetLevelColor());
+		.EditorColors(Proxy->GetWireframeColor(), Proxy->GetLevelColor())
+		.ReverseCulling(bReverseCulling);
 
 	FVector2f InstanceDrawDistanceMinMax;
 	if (Proxy->GetInstanceDrawDistanceMinMax(InstanceDrawDistanceMinMax))
@@ -200,12 +224,16 @@ FPrimitiveSceneShaderData::FPrimitiveSceneShaderData(const FPrimitiveSceneProxy*
 		Builder.InstanceLocalBounds(InstanceBounds[0]);
 	}
 
+	if (Proxy->ShouldRenderCustomDepth())
+	{
+		Builder.CustomDepthStencil(Proxy->GetCustomDepthStencilValue(), Proxy->GetStencilWriteMask());
+	}
+
 	Setup(Builder.Build());
 }
 
 void FPrimitiveSceneShaderData::Setup(const FPrimitiveUniformShaderParameters& PrimitiveUniformShaderParameters)
 {
-	static_assert(sizeof(FPrimitiveUniformShaderParameters) == sizeof(FPrimitiveSceneShaderData), "The FPrimitiveSceneShaderData manual layout below and in usf must match FPrimitiveUniformShaderParameters.  Update this assert when adding a new member.");
 	static_assert(NUM_LIGHTING_CHANNELS == 3, "The FPrimitiveSceneShaderData packing currently assumes a maximum of 3 lighting channels.");
 
 	// Note: layout must match GetPrimitiveData in usf
@@ -222,76 +250,84 @@ void FPrimitiveSceneShaderData::Setup(const FPrimitiveUniformShaderParameters& P
 	Data[1].Z	= PrimitiveUniformShaderParameters.TilePosition.Z;
 	Data[1].W	= FMath::AsFloat(PrimitiveUniformShaderParameters.PrimitiveComponentId);
 
-	Data[2]		= *(const FVector4f*)&PrimitiveUniformShaderParameters.LocalToRelativeWorld.M[0][0];
-	Data[3]		= *(const FVector4f*)&PrimitiveUniformShaderParameters.LocalToRelativeWorld.M[1][0];
-	Data[4]		= *(const FVector4f*)&PrimitiveUniformShaderParameters.LocalToRelativeWorld.M[2][0];
-	Data[5]		= *(const FVector4f*)&PrimitiveUniformShaderParameters.LocalToRelativeWorld.M[3][0];
+	// Pack these matrices into the buffer as float3x4 transposed
 
-	Data[6]		= *(const FVector4f*)&PrimitiveUniformShaderParameters.RelativeWorldToLocal.M[0][0];
-	Data[7]		= *(const FVector4f*)&PrimitiveUniformShaderParameters.RelativeWorldToLocal.M[1][0];
-	Data[8]		= *(const FVector4f*)&PrimitiveUniformShaderParameters.RelativeWorldToLocal.M[2][0];
-	Data[9]		= *(const FVector4f*)&PrimitiveUniformShaderParameters.RelativeWorldToLocal.M[3][0];
+	FMatrix44f LocalToRelativeWorldTranspose = PrimitiveUniformShaderParameters.LocalToRelativeWorld.GetTransposed();
+	Data[2]		= *(const FVector4f*)&LocalToRelativeWorldTranspose.M[0][0];
+	Data[3]		= *(const FVector4f*)&LocalToRelativeWorldTranspose.M[1][0];
+	Data[4]		= *(const FVector4f*)&LocalToRelativeWorldTranspose.M[2][0];
 
-	Data[10]	= *(const FVector4f*)&PrimitiveUniformShaderParameters.PreviousLocalToRelativeWorld.M[0][0];
-	Data[11]	= *(const FVector4f*)&PrimitiveUniformShaderParameters.PreviousLocalToRelativeWorld.M[1][0];
-	Data[12]	= *(const FVector4f*)&PrimitiveUniformShaderParameters.PreviousLocalToRelativeWorld.M[2][0];
-	Data[13]	= *(const FVector4f*)&PrimitiveUniformShaderParameters.PreviousLocalToRelativeWorld.M[3][0];
+	FMatrix44f RelativeWorldToLocalTranspose = PrimitiveUniformShaderParameters.RelativeWorldToLocal.GetTransposed();
+	Data[5]		= *(const FVector4f*)&RelativeWorldToLocalTranspose.M[0][0];
+	Data[6]		= *(const FVector4f*)&RelativeWorldToLocalTranspose.M[1][0];
+	Data[7]		= *(const FVector4f*)&RelativeWorldToLocalTranspose.M[2][0];
 
-	Data[14]	= *(const FVector4f*)&PrimitiveUniformShaderParameters.PreviousRelativeWorldToLocal.M[0][0];
-	Data[15]	= *(const FVector4f*)&PrimitiveUniformShaderParameters.PreviousRelativeWorldToLocal.M[1][0];
-	Data[16]	= *(const FVector4f*)&PrimitiveUniformShaderParameters.PreviousRelativeWorldToLocal.M[2][0];
-	Data[17]	= *(const FVector4f*)&PrimitiveUniformShaderParameters.PreviousRelativeWorldToLocal.M[3][0];
+	FMatrix44f PreviousLocalToRelativeWorldTranspose = PrimitiveUniformShaderParameters.PreviousLocalToRelativeWorld.GetTransposed();
+	Data[8]		= *(const FVector4f*)&PreviousLocalToRelativeWorldTranspose.M[0][0];
+	Data[9]		= *(const FVector4f*)&PreviousLocalToRelativeWorldTranspose.M[1][0];
+	Data[10]	= *(const FVector4f*)&PreviousLocalToRelativeWorldTranspose.M[2][0];
 
-	Data[18]	= FVector4f(PrimitiveUniformShaderParameters.InvNonUniformScale, PrimitiveUniformShaderParameters.ObjectBoundsX);
-	Data[19]	= PrimitiveUniformShaderParameters.ObjectRelativeWorldPositionAndRadius;
+	FMatrix44f PreviousRelativeWorldToLocalTranspose = PrimitiveUniformShaderParameters.PreviousRelativeWorldToLocal.GetTransposed();
+	Data[11]	= *(const FVector4f*)&PreviousRelativeWorldToLocalTranspose.M[0][0];
+	Data[12]	= *(const FVector4f*)&PreviousRelativeWorldToLocalTranspose.M[1][0];
+	Data[13]	= *(const FVector4f*)&PreviousRelativeWorldToLocalTranspose.M[2][0];
 
-	Data[20]	= FVector4f(PrimitiveUniformShaderParameters.ActorRelativeWorldPosition, 0.0f);
-	Data[20].W	= FMath::AsFloat(PrimitiveUniformShaderParameters.LightmapUVIndex);
+	FMatrix44f WorldToPreviousWorldTranspose = PrimitiveUniformShaderParameters.WorldToPreviousWorld.GetTransposed();
+	Data[14]	= *(const FVector4f*)&WorldToPreviousWorldTranspose.M[0][0];
+	Data[15]	= *(const FVector4f*)&WorldToPreviousWorldTranspose.M[1][0];
+	Data[16]	= *(const FVector4f*)&WorldToPreviousWorldTranspose.M[2][0];
 
-	Data[21]	= FVector4f(PrimitiveUniformShaderParameters.ObjectOrientation, 0.0f);
-	Data[21].W	= FMath::AsFloat(PrimitiveUniformShaderParameters.LightmapDataIndex);
+	Data[17]	= FVector4f(PrimitiveUniformShaderParameters.InvNonUniformScale, PrimitiveUniformShaderParameters.ObjectBoundsX);
+	Data[18]	= PrimitiveUniformShaderParameters.ObjectRelativeWorldPositionAndRadius;
 
-	Data[22]	= PrimitiveUniformShaderParameters.NonUniformScale;
+	Data[19]	= FVector4f(PrimitiveUniformShaderParameters.ActorRelativeWorldPosition, 0.0f);
+	Data[19].W	= FMath::AsFloat(PrimitiveUniformShaderParameters.LightmapUVIndex);
 
-	Data[23]	= FVector4f(PrimitiveUniformShaderParameters.PreSkinnedLocalBoundsMin, 0.0f);
-	Data[23].W	= FMath::AsFloat(PrimitiveUniformShaderParameters.NaniteResourceID);
+	Data[20]	= FVector4f(PrimitiveUniformShaderParameters.ObjectOrientation, 0.0f);
+	Data[20].W	= FMath::AsFloat(PrimitiveUniformShaderParameters.LightmapDataIndex);
 
-	Data[24]	= FVector4f(PrimitiveUniformShaderParameters.PreSkinnedLocalBoundsMax, 0.0f);
-	Data[24].W	= FMath::AsFloat(PrimitiveUniformShaderParameters.NaniteHierarchyOffset);
+	Data[21]	= PrimitiveUniformShaderParameters.NonUniformScale;
 
-	Data[25]	= FVector4f(PrimitiveUniformShaderParameters.LocalObjectBoundsMin, PrimitiveUniformShaderParameters.ObjectBoundsY);
-	Data[26]	= FVector4f(PrimitiveUniformShaderParameters.LocalObjectBoundsMax, PrimitiveUniformShaderParameters.ObjectBoundsZ);
+	Data[22]	= FVector4f(PrimitiveUniformShaderParameters.PreSkinnedLocalBoundsMin, 0.0f);
+	Data[22].W	= FMath::AsFloat(PrimitiveUniformShaderParameters.NaniteResourceID);
 
-	Data[27].X = PrimitiveUniformShaderParameters.InstanceLocalBoundsCenter.X;
-	Data[27].Y = PrimitiveUniformShaderParameters.InstanceLocalBoundsCenter.Y;
-	Data[27].Z = PrimitiveUniformShaderParameters.InstanceLocalBoundsCenter.Z;
-	Data[27].W = FMath::AsFloat(PrimitiveUniformShaderParameters.InstancePayloadDataOffset);
+	Data[23]	= FVector4f(PrimitiveUniformShaderParameters.PreSkinnedLocalBoundsMax, 0.0f);
+	Data[23].W	= FMath::AsFloat(PrimitiveUniformShaderParameters.NaniteHierarchyOffset);
 
-	Data[28].X = PrimitiveUniformShaderParameters.InstanceLocalBoundsExtent.X;
-	Data[28].Y = PrimitiveUniformShaderParameters.InstanceLocalBoundsExtent.Y;
-	Data[28].Z = PrimitiveUniformShaderParameters.InstanceLocalBoundsExtent.Z;
-	Data[28].W = FMath::AsFloat(PrimitiveUniformShaderParameters.InstancePayloadDataStride);
+	Data[24]	= FVector4f(PrimitiveUniformShaderParameters.LocalObjectBoundsMin, PrimitiveUniformShaderParameters.ObjectBoundsY);
+	Data[25]	= FVector4f(PrimitiveUniformShaderParameters.LocalObjectBoundsMax, PrimitiveUniformShaderParameters.ObjectBoundsZ);
+
+	Data[26].X = PrimitiveUniformShaderParameters.InstanceLocalBoundsCenter.X;
+	Data[26].Y = PrimitiveUniformShaderParameters.InstanceLocalBoundsCenter.Y;
+	Data[26].Z = PrimitiveUniformShaderParameters.InstanceLocalBoundsCenter.Z;
+	Data[26].W = FMath::AsFloat(PrimitiveUniformShaderParameters.InstancePayloadDataOffset);
+
+	Data[27].X = PrimitiveUniformShaderParameters.InstanceLocalBoundsExtent.X;
+	Data[27].Y = PrimitiveUniformShaderParameters.InstanceLocalBoundsExtent.Y;
+	Data[27].Z = PrimitiveUniformShaderParameters.InstanceLocalBoundsExtent.Z;
+	Data[27].W = FMath::AsFloat(PrimitiveUniformShaderParameters.InstancePayloadDataStride);
 	
-	Data[29].X = PrimitiveUniformShaderParameters.WireframeColor.X;
-	Data[29].Y = PrimitiveUniformShaderParameters.WireframeColor.Y;
-	Data[29].Z = PrimitiveUniformShaderParameters.WireframeColor.Z;
-	Data[29].W = FMath::AsFloat(PrimitiveUniformShaderParameters.PackedNaniteFlags);
+	Data[28].X = PrimitiveUniformShaderParameters.WireframeColor.X;
+	Data[28].Y = PrimitiveUniformShaderParameters.WireframeColor.Y;
+	Data[28].Z = PrimitiveUniformShaderParameters.WireframeColor.Z;
+	Data[28].W = FMath::AsFloat(PrimitiveUniformShaderParameters.PackedNaniteFlags);
 
-	Data[30].X = PrimitiveUniformShaderParameters.LevelColor.X;
-	Data[30].Y = PrimitiveUniformShaderParameters.LevelColor.Y;
-	Data[30].Z = PrimitiveUniformShaderParameters.LevelColor.Z;
-	Data[30].W = FMath::AsFloat(uint32(PrimitiveUniformShaderParameters.PersistentPrimitiveIndex));
+	Data[29].X = PrimitiveUniformShaderParameters.LevelColor.X;
+	Data[29].Y = PrimitiveUniformShaderParameters.LevelColor.Y;
+	Data[29].Z = PrimitiveUniformShaderParameters.LevelColor.Z;
+	Data[29].W = FMath::AsFloat(uint32(PrimitiveUniformShaderParameters.PersistentPrimitiveIndex));
 
-	Data[31].X = PrimitiveUniformShaderParameters.InstanceDrawDistanceMinMaxSquared.X;
-	Data[31].Y = PrimitiveUniformShaderParameters.InstanceDrawDistanceMinMaxSquared.Y;
-	Data[31].Z = PrimitiveUniformShaderParameters.InstanceWPODisableDistanceSquared;
-	Data[31].W = FMath::AsFloat(PrimitiveUniformShaderParameters.NaniteRayTracingDataOffset);
+	Data[30].X = PrimitiveUniformShaderParameters.InstanceDrawDistanceMinMaxSquared.X;
+	Data[30].Y = PrimitiveUniformShaderParameters.InstanceDrawDistanceMinMaxSquared.Y;
+	Data[30].Z = PrimitiveUniformShaderParameters.InstanceWPODisableDistanceSquared;
+	Data[30].W = FMath::AsFloat(PrimitiveUniformShaderParameters.NaniteRayTracingDataOffset);
 
-	Data[32].X = PrimitiveUniformShaderParameters.BoundsScale;
-	// .YZW Unused
+	Data[31].X = PrimitiveUniformShaderParameters.MaxWPODisplacement;
+	Data[31].Y = FMath::AsFloat(PrimitiveUniformShaderParameters.CustomStencilValueAndMask);
+	// .ZW Unused
 
 	// Set all the custom primitive data float4. This matches the loop in SceneData.ush
-	const int32 CustomPrimitiveDataStartIndex = 33;
+	const int32 CustomPrimitiveDataStartIndex = 32;
 	for (int32 DataIndex = 0; DataIndex < FCustomPrimitiveData::NumCustomPrimitiveDataFloat4s; ++DataIndex)
 	{
 		Data[CustomPrimitiveDataStartIndex + DataIndex] = PrimitiveUniformShaderParameters.CustomPrimitiveData[DataIndex];

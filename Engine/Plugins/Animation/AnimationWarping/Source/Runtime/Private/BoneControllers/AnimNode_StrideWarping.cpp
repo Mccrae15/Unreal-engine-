@@ -2,7 +2,11 @@
 
 #include "BoneControllers/AnimNode_StrideWarping.h"
 #include "Animation/AnimInstanceProxy.h"
+#include "Animation/AnimNodeFunctionRef.h"
 #include "Animation/AnimRootMotionProvider.h"
+#include "HAL/IConsoleManager.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_StrideWarping)
 
 DECLARE_CYCLE_STAT(TEXT("StrideWarping Eval"), STAT_StrideWarping_Eval, STATGROUP_Anim);
 

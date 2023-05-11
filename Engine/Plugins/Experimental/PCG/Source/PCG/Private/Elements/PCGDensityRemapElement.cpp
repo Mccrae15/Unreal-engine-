@@ -2,10 +2,12 @@
 
 #include "Elements/PCGDensityRemapElement.h"
 
-#include "PCGHelpers.h"
-#include "Helpers/PCGSettingsHelpers.h"
+#include "PCGContext.h"
+#include "PCGCustomVersion.h"
 
-#include "Math/RandomStream.h"
+#include "PCGPoint.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGDensityRemapElement)
 
 FPCGElementPtr UPCGDensityRemapSettings::CreateElement() const
 {
@@ -21,13 +23,12 @@ bool FPCGDensityRemapElement::ExecuteInternal(FPCGContext* Context) const
 
 	TArray<FPCGTaggedData> Inputs = Context->InputData.GetInputs();
 	TArray<FPCGTaggedData>& Outputs = Context->OutputData.TaggedData;
-	UPCGParamData* Params = Context->InputData.GetParams();
 
-	const float InRangeMin = PCG_GET_OVERRIDEN_VALUE(Settings, InRangeMin, Params);
-	const float InRangeMax = PCG_GET_OVERRIDEN_VALUE(Settings, InRangeMax, Params);
-	const float OutRangeMin = PCG_GET_OVERRIDEN_VALUE(Settings, OutRangeMin, Params);
-	const float OutRangeMax = PCG_GET_OVERRIDEN_VALUE(Settings, OutRangeMax, Params);
-	const bool bExcludeValuesOutsideInputRange = PCG_GET_OVERRIDEN_VALUE(Settings, bExcludeValuesOutsideInputRange, Params);
+	const float InRangeMin = Settings->InRangeMin;
+	const float InRangeMax = Settings->InRangeMax;
+	const float OutRangeMin = Settings->OutRangeMin;
+	const float OutRangeMax = Settings->OutRangeMax;
+	const bool bExcludeValuesOutsideInputRange = Settings->bExcludeValuesOutsideInputRange;
 
 	// used to determine if a density value lies between TrueMin and TrueMax
 	const float InRangeTrueMin = FMath::Min(InRangeMin, InRangeMax);
@@ -51,7 +52,7 @@ bool FPCGDensityRemapElement::ExecuteInternal(FPCGContext* Context) const
 		Intercept = OutRangeMin;
 	}
 
-	ProcessPoints(Context, Inputs, Outputs, [&](const FPCGPoint& InPoint, FPCGPoint& OutPoint)
+	ProcessPoints(Context, Inputs, Outputs, [bExcludeValuesOutsideInputRange, InRangeTrueMin, InRangeTrueMax, Slope, InRangeMin, Intercept](const FPCGPoint& InPoint, FPCGPoint& OutPoint)
 	{
 		OutPoint = InPoint;
 		const float SourceDensity = InPoint.Density;
@@ -64,9 +65,6 @@ bool FPCGDensityRemapElement::ExecuteInternal(FPCGContext* Context) const
 
 		return true;
 	});
-
-	// Forward any non-input data
-	Outputs.Append(Context->InputData.GetAllSettings());
 
 	return true;
 }

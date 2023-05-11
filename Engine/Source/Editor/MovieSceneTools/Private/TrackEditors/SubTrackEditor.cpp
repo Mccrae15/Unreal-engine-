@@ -76,7 +76,7 @@ public:
 
 		MenuBuilder.AddMenuEntry(
 			LOCTEXT("PlayableDirectly_Label", "Playable Directly"),
-			LOCTEXT("PlayableDirectly_Tip", "When enabled, this sequence will also support being played directly outside of the master sequence. Disable this to save some memory on complex hierarchies of sequences."),
+			LOCTEXT("PlayableDirectly_Tip", "When enabled, this sequence will also support being played directly outside of the root sequence. Disable this to save some memory on complex hierarchies of sequences."),
 			FSlateIcon(),
 			FUIAction(
 				FExecuteAction::CreateRaw(this, &FSubSection::TogglePlayableDirectly),
@@ -351,7 +351,8 @@ bool FSubTrackEditor::OnAllowDrop(const FDragDropEvent& DragDropEvent, FSequence
 			continue;
 		}
 
-		if (UMovieSceneSequence* Sequence = Cast<UMovieSceneSequence>(AssetData.GetAsset()))
+		UMovieSceneSequence* Sequence = Cast<UMovieSceneSequence>(AssetData.GetAsset());
+		if (CanAddSubSequence(*Sequence))
 		{
 			FFrameRate TickResolution = SequencerPtr->GetFocusedTickResolution();
 
@@ -410,8 +411,7 @@ FReply FSubTrackEditor::OnDrop(const FDragDropEvent& DragDropEvent, const FSeque
 		}
 
 		UMovieSceneSequence* Sequence = Cast<UMovieSceneSequence>(AssetData.GetAsset());
-
-		if (Sequence)
+		if (CanAddSubSequence(*Sequence))
 		{
 			AnimatablePropertyChanged(FOnKeyProperty::CreateRaw(this, &FSubTrackEditor::HandleSequenceAdded, Sequence, DragDropParams.Track.Get(), DragDropParams.RowIndex));
 
@@ -436,7 +436,7 @@ bool FSubTrackEditor::CanAddSubSequence(const UMovieSceneSequence& Sequence) con
 
 UMovieSceneSubTrack* FSubTrackEditor::CreateNewTrack(UMovieScene* MovieScene) const
 {
-	return MovieScene->AddMasterTrack<UMovieSceneSubTrack>();
+	return MovieScene->AddTrack<UMovieSceneSubTrack>();
 }
 
 void FSubTrackEditor::GetSupportedSequenceClassPaths(TArray<FTopLevelAssetPath>& ClassPaths) const
@@ -473,24 +473,6 @@ void FSubTrackEditor::HandleAddSubTrackMenuEntryExecute()
 	}
 }
 
-/** Helper function - get the first PIE world (or first PIE client world if there is more than one) */
-static UWorld* GetFirstPIEWorld()
-{
-	for (const FWorldContext& Context : GEngine->GetWorldContexts())
-	{
-		if (Context.World()->IsPlayInEditor())
-		{
-			if(Context.World()->GetNetMode() == ENetMode::NM_Standalone ||
-				(Context.World()->GetNetMode() == ENetMode::NM_Client && Context.PIEInstance == 2))
-			{
-				return Context.World();
-			}
-		}
-	}
-
-	return nullptr;
-}
-
 TSharedRef<SWidget> FSubTrackEditor::HandleAddSubSequenceComboButtonGetMenuContent(UMovieSceneTrack* InTrack)
 {
 	FMenuBuilder MenuBuilder(true, nullptr);
@@ -511,6 +493,7 @@ TSharedRef<SWidget> FSubTrackEditor::HandleAddSubSequenceComboButtonGetMenuConte
 			AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateRaw( this, &FSubTrackEditor::HandleAddSubSequenceComboButtonMenuEntryExecute, InTrack);
 			AssetPickerConfig.OnAssetEnterPressed = FOnAssetEnterPressed::CreateRaw( this, &FSubTrackEditor::HandleAddSubSequenceComboButtonMenuEntryEnterPressed, InTrack);
 			AssetPickerConfig.bAllowNullSelection = false;
+			AssetPickerConfig.bAddFilterUI = true;
 			AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
 			GetSupportedSequenceClassPaths(AssetPickerConfig.Filter.ClassPaths);
 			AssetPickerConfig.SaveSettingsName = TEXT("SequencerAssetPicker");
@@ -558,14 +541,12 @@ void FSubTrackEditor::HandleAddSubSequenceComboButtonMenuEntryEnterPressed(const
 
 void FSubTrackEditor::InsertSequence(UMovieSceneTrack* Track)
 {
-	const FScopedTransaction Transaction(LOCTEXT("InsertSequence_Transaction", "Insert Sequence"));
-
 	FFrameTime NewSectionStartTime = GetSequencer()->GetLocalTime().Time;
 
 	UMovieSceneSubTrack* SubTrack = Cast<UMovieSceneSubTrack>(Track);
 	if (!SubTrack)
 	{
-		SubTrack = FindOrCreateMasterTrack<UMovieSceneSubTrack>().Track;
+		SubTrack = FindOrCreateRootTrack<UMovieSceneSubTrack>().Track;
 	}
 
 	FString NewSequencePath = FPaths::GetPath(GetSequencer()->GetFocusedMovieSceneSequence()->GetPathName());
@@ -574,16 +555,22 @@ void FSubTrackEditor::InsertSequence(UMovieSceneTrack* Track)
 	FAssetToolsModule& AssetToolsModule = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools");
 	AssetToolsModule.Get().CreateUniqueAssetName(NewSequencePath + TEXT("/") + NewSequenceName, TEXT(""), NewSequencePath, NewSequenceName);
 
-	UMovieSceneSubSection* NewSection = MovieSceneToolHelpers::CreateSubSequence(NewSequenceName, NewSequencePath, NewSectionStartTime.FrameNumber, SubTrack);
-	if (NewSection)
+	if (UMovieSceneSequence* NewSequence = MovieSceneToolHelpers::CreateSequence(NewSequenceName, NewSequencePath))
 	{
-		NewSection->SetRowIndex(MovieSceneToolHelpers::FindAvailableRowIndex(Track, NewSection));
-	}
+		const FScopedTransaction Transaction(LOCTEXT("InsertSequence_Transaction", "Insert Sequence"));
 
-	GetSequencer()->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::MovieSceneStructureItemAdded);
-	GetSequencer()->EmptySelection();
-	GetSequencer()->SelectSection(NewSection);
-	GetSequencer()->ThrobSectionSelection();
+		int32 Duration = UE::MovieScene::DiscreteSize(NewSequence->GetMovieScene()->GetPlaybackRange());
+
+		if (UMovieSceneSubSection* NewSection = SubTrack->AddSequence(NewSequence, NewSectionStartTime.FrameNumber, Duration))
+		{
+			NewSection->SetRowIndex(MovieSceneToolHelpers::FindAvailableRowIndex(Track, NewSection));
+
+			GetSequencer()->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::MovieSceneStructureItemAdded);
+			GetSequencer()->EmptySelection();
+			GetSequencer()->SelectSection(NewSection);
+			GetSequencer()->ThrobSectionSelection();
+		}
+	}
 }
 
 FKeyPropertyResult FSubTrackEditor::AddKeyInternal(FFrameNumber KeyTime, UMovieSceneSequence* InMovieSceneSequence, UMovieSceneTrack* InTrack, int32 RowIndex)
@@ -642,7 +629,7 @@ FKeyPropertyResult FSubTrackEditor::HandleSequenceAdded(FFrameNumber KeyTime, UM
 	UMovieSceneSubTrack* SubTrack = Cast<UMovieSceneSubTrack>(Track);
 	if (!SubTrack)
 	{
-		SubTrack = FindOrCreateMasterTrack<UMovieSceneSubTrack>().Track;
+		SubTrack = FindOrCreateRootTrack<UMovieSceneSubTrack>().Track;
 	}
 
 	const FFrameRate TickResolution = Sequence->GetMovieScene()->GetTickResolution();

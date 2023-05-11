@@ -199,7 +199,7 @@ namespace UE
 			TArray<UObject*> OriginalPipelines;
 
 			TArray<FGraphEventRef> TranslatorTasks;
-			TArray<FGraphEventRef> PipelinePreImportTasks;
+			TArray<FGraphEventRef> PipelineTasks;
 			TArray<FGraphEventRef> PipelinePostImportTasks;
 			FGraphEventRef ParsingTask;
 			TArray<FGraphEventRef> CreatePackageTasks;
@@ -242,8 +242,13 @@ namespace UE
 
 			void SendAnalyticImportEndData();
 			void ReleaseTranslatorsSource();
+
+			/**
+			 * Wait synchronously after graph parsing task is done and return the GraphEventArray up to the completion TaskGraphEvent
+			 */
+			FGraphEventArray GetCompletionTaskGraphEvent();
+
 			void InitCancel();
-			void CancelAndWaitUntilDoneSynchronously();
 
 			void CleanUp();
 		};
@@ -258,8 +263,21 @@ namespace UE
 	} //ns interchange
 } //ns UE
 
+/**
+ * This class is use to pass override pipelines in the ImportAssetTask Options member
+ */
+UCLASS(Transient, BlueprintType)
+class INTERCHANGEENGINE_API UInterchangePipelineStackOverride : public UObject
+{
+	GENERATED_BODY()
+public:
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interchange|ImportAsset")
+		TArray<TObjectPtr<UInterchangePipelineBase>> OverridePipelines;
+};
+
 USTRUCT(BlueprintType)
-struct FImportAssetParameters
+struct INTERCHANGEENGINE_API FImportAssetParameters
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -520,14 +538,15 @@ protected:
 	/**
 	 * This function cancel all task and finish them has fast as possible.
 	 * We use this if the user cancel the work or if the editor is exiting.
-	 * @note - This is a blocking call until the tasks are completed.
+	 * @note - This is a asynchronous call, tasks will be completed (cancel) soon.
 	 */
 	void CancelAllTasks();
 
 	/**
-	 * Same has CancelAllTasks, but will wait all task are done before exiting the function
+	 * Wait synchronously that all tasks are done
 	 */
-	void CancelAllTasksSynchronously();
+	void WaitUntilAllTasksDone(bool bCancel);
+
 
 	/**
 	 * If we set the mode to active we will setup the timer and add the thread that will block the GC.

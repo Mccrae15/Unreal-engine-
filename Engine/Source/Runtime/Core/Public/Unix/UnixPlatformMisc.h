@@ -61,24 +61,6 @@ struct CORE_API FUnixPlatformMisc : public FGenericPlatformMisc
 		__sync_synchronize();
 	}
 
-	FORCEINLINE static void PrefetchBlock(const void* InPtr, int32 NumBytes = 1)
-	{
-		extern size_t GCacheLineSize;
-
-		const char* Ptr = static_cast<const char*>(InPtr);
-		const size_t CacheLineSize = GCacheLineSize;
-		for (size_t BytesPrefetched = 0; BytesPrefetched < NumBytes; BytesPrefetched += CacheLineSize)
-		{
-			__builtin_prefetch(Ptr);
-			Ptr += CacheLineSize;
-		}
-	}
-
-	FORCEINLINE static void Prefetch(void const* Ptr, int32 Offset = 0)
-	{
-		__builtin_prefetch(static_cast<char const*>(Ptr) + Offset);
-	}
-
 	static int32 NumberOfCores();
 	static int32 NumberOfCoresIncludingHyperthreads();
 	static FString GetOperatingSystemId();
@@ -157,4 +139,9 @@ struct CORE_API FUnixPlatformMisc : public FGenericPlatformMisc
 	static void CustomNamedStat(const TCHAR* Text, float Value, const TCHAR* Graph, const TCHAR* Unit);
 	static void CustomNamedStat(const ANSICHAR* Text, float Value, const ANSICHAR* Graph, const ANSICHAR* Unit);
 #endif
+
+	/* Explicitly call this function to setup syscall filters based on a file passed in from the command line
+	 * -allowsyscallfilterfile=PATH_TO_FILE
+	 */
+	static bool SetupSyscallFilters();
 };

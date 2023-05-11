@@ -3,7 +3,6 @@
 #include "TileSetEditor/SingleTileEditorViewportClient.h"
 #include "Materials/MaterialInterface.h"
 #include "PaperTileSet.h"
-#include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 #include "CanvasItem.h"
 #include "CanvasTypes.h"
@@ -65,11 +64,7 @@ FBox FSingleTileEditorViewportClient::GetDesiredFocusBounds() const
 void FSingleTileEditorViewportClient::Tick(float DeltaSeconds)
 {
 	FPaperEditorViewportClient::Tick(DeltaSeconds);
-
-	if (!GIntraFrameDebuggingGameThread)
-	{
-		OwnedPreviewScene.GetWorld()->Tick(LEVELTICK_All, DeltaSeconds);
-	}
+	OwnedPreviewScene.GetWorld()->Tick(LEVELTICK_All, DeltaSeconds);
 }
 
 FLinearColor FSingleTileEditorViewportClient::GetBackgroundColor() const

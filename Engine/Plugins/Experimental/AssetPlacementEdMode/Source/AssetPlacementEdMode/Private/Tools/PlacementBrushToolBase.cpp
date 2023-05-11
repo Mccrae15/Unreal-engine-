@@ -19,6 +19,7 @@
 #include "Elements/Interfaces/TypedElementSelectionInterface.h"
 #include "ActorPartition/ActorPartitionSubsystem.h"
 #include "Editor.h"
+#include "MaterialShared.h"
 #include "Modes/PlacementModeSubsystem.h"
 #include "ActorFactories/ActorFactory.h"
 #include "BaseGizmos/GizmoRenderingUtil.h"
@@ -103,7 +104,7 @@ bool UPlacementBrushToolBase::FindHitResultWithStartAndEndTraceVectors(FHitResul
 
 			// deny list
 			bAllowed &=
-				(bAllowTranslucent || !(InComponent->GetMaterial(0) && IsTranslucentBlendMode(InComponent->GetMaterial(0)->GetBlendMode())));
+				(bAllowTranslucent || !(InComponent->GetMaterial(0) && IsTranslucentBlendMode(*InComponent->GetMaterial(0))));
 
 			return bAllowed;
 		}

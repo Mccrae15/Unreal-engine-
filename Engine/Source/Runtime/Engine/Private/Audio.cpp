@@ -5,28 +5,17 @@
 =============================================================================*/
 
 #include "Audio.h"
-#include "ActiveSound.h"
-#include "AnalyticsEventAttribute.h"
+#include "Algo/Find.h"
 #include "Audio/AudioDebug.h"
 #include "AudioDevice.h"
 #include "AudioPluginUtilities.h"
-#include "AudioThread.h"
-#include "Components/AudioComponent.h"
 #include "Components/SynthComponent.h"
-#include "ContentStreaming.h"
-#include "DrawDebugHelpers.h"
 #include "EngineAnalytics.h"
-#include "Interfaces/IAnalyticsProvider.h"
-#include "Misc/FrameRate.h"
+#include "IAnalyticsProviderET.h"
 #include "Misc/Paths.h"
-#include "Sound/SoundBase.h"
+#include "Sound/AudioOutputTarget.h"
 #include "Sound/SoundCue.h"
-#include "Sound/SoundSubmix.h"
 #include "Sound/SoundNodeWavePlayer.h"
-#include "Sound/SoundWave.h"
-#include "Sound/SoundWaveTimecodeInfo.h"
-#include "Sound/QuartzQuantizationUtilities.h"
-#include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 #include "XmlFile.h"
 #include "XmlNode.h"
@@ -771,8 +760,8 @@ FArchive& operator<<( FArchive& Ar, FNotifyBufferFinishedHooks& NotifyHook )
 	FWaveInstance implementation.
 -----------------------------------------------------------------------------*/
 
-/** Helper to create good unique type hashs for FWaveInstance instances */
-uint32 FWaveInstance::TypeHashCounter = 0;
+/** Helper to create good play order for FWaveInstance instances */
+uint32 FWaveInstance::PlayOrderCounter = 0;
 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 FWaveInstance::FWaveInstance(FWaveInstance&&) = default;
@@ -845,11 +834,11 @@ FWaveInstance::FWaveInstance(const UPTRINT InWaveInstanceHash, FActiveSound& InA
 	, PlaybackTime(0.0f)
 	, ReverbSendLevel(0.0f)
 	, ManualReverbSendLevel(0.0f)
-	, TypeHash(0)
+	, PlayOrder(0)
 	, WaveInstanceHash(InWaveInstanceHash)
 	, UserIndex(0)
 {
-	TypeHash = ++TypeHashCounter;
+	PlayOrder = ++PlayOrderCounter;
 }
 
 bool FWaveInstance::IsPlaying() const

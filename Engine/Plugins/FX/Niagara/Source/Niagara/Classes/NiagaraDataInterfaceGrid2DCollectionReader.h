@@ -5,8 +5,8 @@
 #include "NiagaraDataInterfaceRW.h"
 #include "ClearQuad.h"
 #include "NiagaraComponent.h"
-#include "Niagara/Private/NiagaraStats.h"
 #include "NiagaraDataInterfaceGrid2DCollection.h"
+#include "NiagaraStats.h"
 
 #include "NiagaraDataInterfaceGrid2DCollectionReader.generated.h"
 
@@ -28,6 +28,8 @@ public:
 	// Name of the Grid2DCollection Data Interface on the emitter
 	UPROPERTY(EditAnywhere, Category = "Reader")
 	FString DIName;
+
+	virtual void Serialize(FArchive& Ar) override { UNiagaraDataInterfaceRWBase::Serialize(Ar); }
 
 	virtual bool Equals(const UNiagaraDataInterface* Other) const override;
 	virtual bool InitPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance) override;

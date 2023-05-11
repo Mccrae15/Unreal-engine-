@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TextureEditorToolkit.h"
+#include "UObject/UObjectIterator.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Engine/Texture.h"
@@ -55,6 +56,7 @@
 #include "Settings/ProjectPackagingSettings.h"
 #include "Compression/OodleDataCompressionUtil.h"
 #include "Components/SceneCaptureComponent2D.h"
+#include "TextureResource.h"
 
 #define LOCTEXT_NAMESPACE "FTextureEditorToolkit"
 
@@ -260,13 +262,12 @@ void FTextureEditorToolkit::InitTextureEditor( const EToolkitMode::Type Mode, co
 	SpecifiedFace = 0;
 	bUseSpecifiedFace = false;
 
-	SavedCompressionSetting = false;
-
-	// Start at whatever the last used zoom mode, volume view mode and cubemap view mode were
+	// Start at whatever the last used values of the following settings were
 	const UTextureEditorSettings& Settings = *GetDefault<UTextureEditorSettings>();
 	ZoomMode = Settings.ZoomMode;
 	VolumeViewMode = Settings.VolumeViewMode;
 	CubemapViewMode = Settings.CubemapViewMode;
+	Sampling = Settings.Sampling;
 
 	ResetOrientation();
 	Zoom = 1.0f;
@@ -509,7 +510,8 @@ void FTextureEditorToolkit::PopulateQuickInfo( )
 	FTexturePlatformData** PlatformDataPtr = Texture->GetRunningPlatformData();
 	if (PlatformDataPtr && PlatformDataPtr[0]) // Can be null if we haven't had a chance to call CachePlatformData on the texture (brand new)
 	{
-		FTexturePlatformData::FTextureEncodeResultMetadata const& ResultMetadata = PlatformDataPtr[0]->ResultMetadata;
+		FTexturePlatformData* PlatformData = PlatformDataPtr[0];
+		FTexturePlatformData::FTextureEncodeResultMetadata const& ResultMetadata = PlatformData->ResultMetadata;
 		if (ResultMetadata.bIsValid == false)
 		{
 			EncodeSpeedText->SetText(NSLOCTEXT("TextureEditor", "QuickInfo_EncodeSpeed_NA", "Encode Speed: N/A"));
@@ -538,8 +540,6 @@ void FTextureEditorToolkit::PopulateQuickInfo( )
 			// Check if we need to compress new Oodle preview once we know we have
 			// valid results.
 			//
-			FTexturePlatformData* PlatformData = PlatformDataPtr[0];
-
 			bool AlreadyHaveResults = false;
 			if (PlatformData->DerivedDataKey.GetIndex() == OodleCompressedPreviewDDCKey.GetIndex())
 			{
@@ -702,6 +702,9 @@ void FTextureEditorToolkit::PopulateQuickInfo( )
 				OodleTilingText->SetText(FText::AsCultureInvariant(UniversalTilingEnum->GetNameStringByValue(ResultMetadata.OodleUniversalTiling)));
 			} // end if encode speed supported
 		} // end if results metadata valid
+
+		SourceMipsAlphaDetectedText->SetText(FText::Format(NSLOCTEXT("TextureEditor", "QuickInfo_SourceAlphaDetected", "Source Alpha Detected: {0}"),
+			PlatformData->bSourceMipsAlphaDetectedValid ? (PlatformData->bSourceMipsAlphaDetected ? NSLOCTEXT("TextureEditor", "True", "True") : NSLOCTEXT("TextureEditor", "False", "False")) : NSLOCTEXT("TextureEditor", "Unknown", "Unknown")));
 	} // end if valid platform data
 
 	UTexture2D* Texture2D = Cast<UTexture2D>(Texture);
@@ -889,42 +892,38 @@ double FTextureEditorToolkit::CalculateDisplayedZoomLevel() const
 
 void FTextureEditorToolkit::SetCustomZoomLevel( double ZoomValue )
 {
-	Zoom = FMath::Clamp(ZoomValue, MinZoom, MaxZoom);
+	// snap to discrete steps so that if we are nearly at 1.0 or 2.0, we hit them exactly:
+	//ZoomValue = FMath::GridSnap(ZoomValue, MinZoom/4.0);
+
+	double LogZoom = log2(ZoomValue);
+	// the mouse wheel zoom is quantized on ZoomFactorLogSteps
+	//	but that's too chunky for the drag slider, give it more steps, but on the same quantization grid
+	double QuantizationSteps = ZoomFactorLogSteps*2.0;
+	double LogZoomQuantized = (1.0/QuantizationSteps) * FMath::RoundToInt( QuantizationSteps * LogZoom );
+	ZoomValue = pow(2.0,LogZoomQuantized);
+
+	ZoomValue = FMath::Clamp(ZoomValue, MinZoom, MaxZoom);
 	
+	// set member variable "Zoom"
+	Zoom = ZoomValue;
+
 	// For now we also want to be in custom mode whenever this is changed
 	SetZoomMode(ETextureEditorZoomMode::Custom);
 }
 
 
-void FTextureEditorToolkit::OffsetZoom(double OffsetValue, bool bSnapToStepSize)
-{
-	// Offset from our current "visual" zoom level so that you can
-	// smoothly transition from Fit/Fill mode into a custom zoom level
-	const double CurrentZoom = CalculateDisplayedZoomLevel();
-
-	if (bSnapToStepSize)
-	{
-		// Snap to the zoom step when offsetting to avoid zooming all the way to the min (0.01)
-		// then back up (+0.1) causing your zoom level to be off by 0.01 (eg. 11%)
-		// If we were in a fit view mode then our current zoom level could also be off the grid
-		const double FinalZoom = FMath::GridSnap(CurrentZoom + OffsetValue, ZoomStep);
-		SetCustomZoomLevel(FinalZoom);
-	}
-	else
-	{
-		SetCustomZoomLevel(CurrentZoom + OffsetValue);
-	}
-}
-
 void FTextureEditorToolkit::ZoomIn( )
 {
-	OffsetZoom(ZoomStep);
+	// mouse wheel zoom
+	const double CurrentZoom = CalculateDisplayedZoomLevel();
+	SetCustomZoomLevel(CurrentZoom * ZoomFactor);
 }
 
 
 void FTextureEditorToolkit::ZoomOut( )
 {
-	OffsetZoom(-ZoomStep);
+	const double CurrentZoom = CalculateDisplayedZoomLevel();
+	SetCustomZoomLevel(CurrentZoom / ZoomFactor);
 }
 
 float FTextureEditorToolkit::GetVolumeOpacity() const
@@ -990,6 +989,11 @@ void FTextureEditorToolkit::SetOrientation(const FRotator& InOrientation)
 void FTextureEditorToolkit::ResetOrientation()
 {
 	SetOrientation(IsVolumeTexture() ? FRotator(90, 0, -90) : FRotator(0, 0, 0));
+}
+
+ETextureEditorSampling FTextureEditorToolkit::GetSampling() const
+{
+	return Sampling;
 }
 
 /* IToolkit interface
@@ -1114,6 +1118,18 @@ void FTextureEditorToolkit::BindCommands( )
 		FIsActionChecked::CreateSP(this, &FTextureEditorToolkit::HandleTextureBorderActionIsChecked));
 
 	ToolkitCommands->MapAction(
+		Commands.DefaultSampling,
+		FExecuteAction::CreateSP(this, &FTextureEditorToolkit::HandleSamplingActionExecute, TextureEditorSampling_Default),
+		FCanExecuteAction(),
+		FIsActionChecked::CreateSP(this, &FTextureEditorToolkit::HandleSamplingActionIsChecked, TextureEditorSampling_Default));
+
+	ToolkitCommands->MapAction(
+		Commands.PointSampling,
+		FExecuteAction::CreateSP(this, &FTextureEditorToolkit::HandleSamplingActionExecute, TextureEditorSampling_Point),
+		FCanExecuteAction(),
+		FIsActionChecked::CreateSP(this, &FTextureEditorToolkit::HandleSamplingActionIsChecked, TextureEditorSampling_Point));
+
+	ToolkitCommands->MapAction(
 		Commands.CompressNow,
 		FExecuteAction::CreateSP(this, &FTextureEditorToolkit::HandleCompressNowActionExecute),
 		FCanExecuteAction::CreateSP(this, &FTextureEditorToolkit::HandleCompressNowActionCanExecute));
@@ -1155,7 +1171,7 @@ void FTextureEditorToolkit::CreateInternalWidgets()
 	// Default to Distribution
 	TSharedPtr<FString> InitialPackagingSetting = PackagingSettingsNames[2];
 
-	// Determine which oodle encoder they are using.
+	// Determine which oodle compressor they are using.
 	const TCHAR* CompressorName = 0;
 	{
 		// Validity check the string by trying to convert to enum.
@@ -1369,7 +1385,7 @@ void FTextureEditorToolkit::CreateInternalWidgets()
 						[
 							SNew(STextBlock)
 							.Text(LOCTEXT("OodleTab_Label_OverrideCompression", "Enabled:"))
-							.ToolTipText(LOCTEXT("OodleTab_ToolTip_OverrideCompression", "If checked, allows you to experiment with Oodle RDO compression settings to visualize results."))
+							.ToolTipText(LOCTEXT("OodleTab_ToolTip_OverrideEncoding", "If checked, allows you to experiment with Oodle RDO encoder settings to visualize results."))
 						]
 					+ SVerticalBox::Slot()
 						.AutoHeight()
@@ -1495,7 +1511,7 @@ void FTextureEditorToolkit::CreateInternalWidgets()
 						[
 							SNew(STextBlock)
 							.Text(LOCTEXT("OodleTab_Label_EncoderSettings", "Packaging Configuration:"))
-							.ToolTipText(LOCTEXT("OodleTab_ToolTip_EncoderSettings", "Which packaging configuration to pull from for determining which Oodle encoder and compression level to use."))
+							.ToolTipText(LOCTEXT("OodleTab_ToolTip_CompressorSettings", "Which packaging configuration to pull from for determining which Oodle compressor and compression level to use."))
 						]
 					+ SVerticalBox::Slot()
 						.AutoHeight()
@@ -1503,8 +1519,8 @@ void FTextureEditorToolkit::CreateInternalWidgets()
 						.Padding(6)
 						[
 							SNew(STextBlock)
-							.Text(LOCTEXT("OodleTab_Label_EstimateEncoder", "Oodle Encoder:"))
-							.ToolTipText(LOCTEXT("OodleTab_ToolTip_EstimateEncoder", "The oodle encoder to use for estimating. Pulled from the packaging configuration specified above."))
+							.Text(LOCTEXT("OodleTab_Label_EstimateCompressor", "Oodle Compressor:"))
+							.ToolTipText(LOCTEXT("OodleTab_ToolTip_EstimateCompressor", "The oodle compressor to use for estimating. Pulled from the packaging configuration specified above."))
 						]
 					+ SVerticalBox::Slot()
 						.AutoHeight()
@@ -1576,7 +1592,7 @@ void FTextureEditorToolkit::CreateInternalWidgets()
 						.VAlign(VAlign_Center)
 						.Padding(8)
 						[
-							SAssignNew(OodleEncoderUsed, STextBlock)
+							SAssignNew(OodleCompressorUsed, STextBlock)
 							.Text(FText::AsCultureInvariant(CompressorName))
 							.IsEnabled(this, &FTextureEditorToolkit::EstimateCompressionEnabled)
 						]
@@ -1668,6 +1684,14 @@ void FTextureEditorToolkit::CreateInternalWidgets()
 			.Padding(4.0f)
 			[
 				SAssignNew(HasAlphaChannelText, STextBlock)
+			]
+
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.VAlign(VAlign_Center)
+			.Padding(4.0f)
+			[
+				SAssignNew(SourceMipsAlphaDetectedText, STextBlock)
 			]
 
 			+ SVerticalBox::Slot()
@@ -2143,6 +2167,22 @@ bool FTextureEditorToolkit::HandleCheckeredBackgroundActionIsChecked( ETextureEd
 	return (Background == Settings.Background);
 }
 
+void FTextureEditorToolkit::HandleSamplingActionExecute(ETextureEditorSampling InSampling)
+{
+	// Update our own sampling
+	Sampling = InSampling;
+
+	UTextureEditorSettings& Settings = *GetMutableDefault<UTextureEditorSettings>();
+	Settings.Sampling = InSampling;
+	Settings.PostEditChange();
+}
+
+
+bool FTextureEditorToolkit::HandleSamplingActionIsChecked(ETextureEditorSampling InSampling)
+{
+	return InSampling == Sampling;
+}
+
 // Callback for toggling the volume view action.
 void FTextureEditorToolkit::HandleVolumeViewModeActionExecute(ETextureEditorVolumeViewMode InViewMode)
 {
@@ -2396,12 +2436,6 @@ void FTextureEditorToolkit::HandleReimportManagerPostReimport( UObject* InObject
 		return;
 	}
 
-	if (!bSuccess)
-	{
-		// Failed, restore the compression flag
-		Texture->DeferCompression = SavedCompressionSetting;
-	}
-
 	// Re-enable viewport rendering now that the texture should be in a known state again
 	TextureViewport->EnableRendering();
 }
@@ -2414,10 +2448,6 @@ void FTextureEditorToolkit::HandleReimportManagerPreReimport( UObject* InObject 
 	{
 		return;
 	}
-
-	// Prevent the texture from being compressed immediately, so the user can see the results
-	SavedCompressionSetting = Texture->DeferCompression;
-	Texture->DeferCompression = true;
 
 	// Disable viewport rendering until the texture has finished re-importing
 	TextureViewport->DisableRendering();
@@ -2602,14 +2632,22 @@ FText FTextureEditorToolkit::HandleZoomPercentageText() const
 	return ZoomLevelPercent;
 }
 
-void FTextureEditorToolkit::HandleZoomSliderChanged(float NewValue)
+void FTextureEditorToolkit::HandleZoomSliderChanged(float SliderValue)
 {
-	SetCustomZoomLevel(NewValue * MaxZoom);
+	// zoom slider is log scale, SliderValue in [0,1] between MinZoom and MaxZoom
+	double Octaves = log2( MaxZoom/MinZoom );
+	double ZoomValue = pow(2.0,SliderValue * Octaves) * MinZoom;
+
+	SetCustomZoomLevel((float)ZoomValue);
 }
 
 float FTextureEditorToolkit::HandleZoomSliderValue() const
 {
-	return (CalculateDisplayedZoomLevel() / MaxZoom);
+	float ZoomValue = CalculateDisplayedZoomLevel();
+	double Octaves = log2( MaxZoom/MinZoom );
+	double SliderValue = log2( ZoomValue/MinZoom ) / Octaves;
+
+	return (float)SliderValue;
 }
 
 int32 FTextureEditorToolkit::GetEditorOodleSettingsEffort() const

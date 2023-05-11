@@ -92,6 +92,9 @@ namespace Chaos
 	bool bChaos_Collision_UseCapsuleTriMesh2 = true;
 	FAutoConsoleVariableRef CVarChaos_Collision_UseCapsuleTriMesh2(TEXT("p.Chaos.Collision.UseCapsuleTriMesh2"), bChaos_Collision_UseCapsuleTriMesh2, TEXT(""));
 
+	bool bChaos_Collision_UseConvexTriMesh2 = true;
+	FAutoConsoleVariableRef CVarChaos_Collision_UseConvexTriMesh2(TEXT("p.Chaos.Collision.UseConvexTriMesh2"), bChaos_Collision_UseConvexTriMesh2, TEXT(""));
+
 	namespace Collisions
 	{
 		// Forward delarations we need from CollisionRestitution.cpp
@@ -283,7 +286,7 @@ namespace Chaos
 		// more vertices may be added to outputVertexBuffer by this function
 		// This is the core of the Sutherland-Hodgman algorithm
 		// Plane Normals face outwards 
-		inline uint32 ClipVerticesAgainstPlane(const FVec3* InputVertexBuffer, FVec3* OutputVertexBuffer, const uint32 ClipPointCount, const uint32 MaxNumberOfOutputPoints, const FVec3 ClippingPlaneNormal, const FReal PlaneDistance)
+		uint32 ClipVerticesAgainstPlane(const FVec3* InputVertexBuffer, FVec3* OutputVertexBuffer, const uint32 ClipPointCount, const uint32 MaxNumberOfOutputPoints, const FVec3 ClippingPlaneNormal, const FReal PlaneDistance)
 		{
 			check(ClipPointCount > 0);
 
@@ -1001,7 +1004,7 @@ namespace Chaos
 			const ConvexType& Convex,
 			const FRigidTransform3& ConvexTransform,
 			const FReal CullDistance,
-			TCArray<FContactPoint, 4>& OutContactPoints)
+			FContactPointManifold& OutContactPoints)
 		{
 			SCOPE_CYCLE_COUNTER_MANIFOLD();
 			check(OutContactPoints.Num() == 0);
@@ -1189,7 +1192,7 @@ namespace Chaos
 			}
 		}
 
-		void ConstructCapsuleTriangleOneShotManifold(const FImplicitCapsule3& Capsule, const FTriangle& Triangle, const FReal CullDistance, TCArray<FContactPoint, 4>& OutContactPoints)
+		void ConstructCapsuleTriangleOneShotManifold(const FImplicitCapsule3& Capsule, const FTriangle& Triangle, const FReal CullDistance, FContactPointManifold& OutContactPoints)
 		{
 			// @todo(chaos): make custom capsule-triangle manifold function.
 			// NOTE: ConstructCapsuleConvexOneShotManifold could be used but it has issues when we collide a triangle edge with the capsule cylinder - that needs fixing...
@@ -1204,7 +1207,7 @@ namespace Chaos
 
 		// @todo(chaos): don't use GJK/EPA for triangle-convex so we can avoid using margins and errors related to misidentifying edge contacts
 		template <typename ConvexType>
-		void ConstructPlanarConvexTriangleOneShotManifold(const ConvexType& Convex, const FTriangle& Triangle, const FReal CullDistance, TCArray<FContactPoint, 4>& OutContactPoints)
+		void ConstructPlanarConvexTriangleOneShotManifold(const ConvexType& Convex, const FTriangle& Triangle, const FReal CullDistance, FContactPointManifold& OutContactPoints)
 		{
 			SCOPE_CYCLE_COUNTER_MANIFOLD();
 			check(OutContactPoints.Num() == 0);
@@ -1585,7 +1588,7 @@ namespace Chaos
 			const FImplicitConvex3& Convex,
 			const FRigidTransform3& ConvexTransform,
 			const FReal CullDistance,
-			TCArray<FContactPoint, 4>& OutContactPoints);
+			FContactPointManifold& OutContactPoints);
 
 		template
 		void ConstructCapsuleConvexOneShotManifold(
@@ -1594,7 +1597,7 @@ namespace Chaos
 			const TImplicitObjectInstanced<FImplicitConvex3>& Convex,
 			const FRigidTransform3& ConvexTransform,
 			const FReal CullDistance,
-			TCArray<FContactPoint, 4>& OutContactPoints);
+			FContactPointManifold& OutContactPoints);
 
 		template
 		void ConstructCapsuleConvexOneShotManifold(
@@ -1603,7 +1606,7 @@ namespace Chaos
 			const TImplicitObjectScaled<FImplicitConvex3>& Convex,
 			const FRigidTransform3& ConvexTransform,
 			const FReal CullDistance,
-			TCArray<FContactPoint, 4>& OutContactPoints);
+			FContactPointManifold& OutContactPoints);
 
 		template
 		void ConstructCapsuleConvexOneShotManifold(
@@ -1612,7 +1615,7 @@ namespace Chaos
 			const FImplicitBox3& Convex,
 			const FRigidTransform3& ConvexTransform,
 			const FReal CullDistance,
-			TCArray<FContactPoint, 4>& OutContactPoints);
+			FContactPointManifold& OutContactPoints);
 
 
 		template
@@ -1620,42 +1623,42 @@ namespace Chaos
 			const FImplicitConvex3& Convex, 
 			const FTriangle& Triangle,
 			const FReal CullDistance, 
-			TCArray<FContactPoint, 4>& OutContactPoints);
+			FContactPointManifold& OutContactPoints);
 
 		template
 		void ConstructPlanarConvexTriangleOneShotManifold(
 			const TImplicitObjectInstanced<FImplicitConvex3>& Convex,
 			const FTriangle& Triangle,
 			const FReal CullDistance,
-			TCArray<FContactPoint, 4>& OutContactPoints);
+			FContactPointManifold& OutContactPoints);
 
 		template
 		void ConstructPlanarConvexTriangleOneShotManifold(
 			const TImplicitObjectScaled<FImplicitConvex3>& Convex,
 			const FTriangle& Triangle,
 			const FReal CullDistance,
-			TCArray<FContactPoint, 4>& OutContactPoints);
+			FContactPointManifold& OutContactPoints);
 
 		template
 		void ConstructPlanarConvexTriangleOneShotManifold(
 			const FImplicitBox3& Convex,
 			const FTriangle& Triangle,
 			const FReal CullDistance,
-			TCArray<FContactPoint, 4>& OutContactPoints);
+			FContactPointManifold& OutContactPoints);
 
 		template
 		void ConstructPlanarConvexTriangleOneShotManifold(
 			const TImplicitObjectScaled<FImplicitBox3>& Convex,
 			const FTriangle& Triangle,
 			const FReal CullDistance,
-			TCArray<FContactPoint, 4>& OutContactPoints);
+			FContactPointManifold& OutContactPoints);
 
 		template
 		void ConstructPlanarConvexTriangleOneShotManifold(
 			const TImplicitObjectInstanced<FImplicitBox3>& Convex,
 			const FTriangle& Triangle,
 			const FReal CullDistance,
-			TCArray<FContactPoint, 4>& OutContactPoints);
+			FContactPointManifold& OutContactPoints);
 
 
 		// @todo(chaos): all ConstructConvexConvexOneShotManifold taking a triangle are still used in FHeightField::ContactManifoldImp and the 

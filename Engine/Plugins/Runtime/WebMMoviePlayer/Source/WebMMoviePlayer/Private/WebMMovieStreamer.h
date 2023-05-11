@@ -5,16 +5,17 @@
 #if WITH_WEBM_LIBS
 
 #include "MoviePlayer.h"
-#include "WebMAudioBackend.h"
+
 #include COMPILED_PLATFORM_HEADER(WebMAudioBackendDefines.h)
-#include "WebMMediaFrame.h"
 #include "Containers/Queue.h"
 #include "WebMSamplesSink.h"
 
+class FSlateTexture2DRHIRef;
 class FWebMVideoDecoder;
 class FWebMAudioDecoder;
 class FMediaSamples;
 class FWebMContainer;
+struct FWebMFrame;
 
 class FWebMMovieStreamer : public IMovieStreamer, public IWebMSamplesSink
 {

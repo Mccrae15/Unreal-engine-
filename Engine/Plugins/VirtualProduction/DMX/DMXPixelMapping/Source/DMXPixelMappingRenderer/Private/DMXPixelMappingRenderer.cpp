@@ -1,24 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DMXPixelMappingRenderer.h"
-#include "DMXPixelMappingRendererCommon.h"
 
 #include "Blueprint/UserWidget.h"
 #include "ClearQuad.h"
-#include "GlobalShader.h"
+#include "CommonRenderResources.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Materials/Material.h"
 #include "Modules/ModuleManager.h"
 #include "PixelShaderUtils.h"
-#include "RHIStaticStates.h"
 #include "ScreenRendering.h"
+#include "Rendering/SlateRenderer.h"
 #include "SlateMaterialBrush.h"
+#include "RenderingThread.h"
 #include "Slate/WidgetRenderer.h"
-#include "ShaderParameterStruct.h"
-#include "ShaderPermutation.h"
-#include "ShaderParameters.h"
 #include "TextureResource.h"
 #include "Widgets/Images/SImage.h"
+#include "Widgets/SOverlay.h"
 
 namespace DMXPixelMappingRenderer
 {
@@ -76,10 +74,9 @@ public:
 		SHADER_PARAMETER_TEXTURE(Texture2D, InputTexture)
 		SHADER_PARAMETER_SAMPLER(SamplerState, InputSampler)
 
+		SHADER_PARAMETER(float, Brightness)
 		SHADER_PARAMETER(FIntPoint, InputTextureSize)
 		SHADER_PARAMETER(FIntPoint, OutputTextureSize)
-		SHADER_PARAMETER(FVector4f, PixelFactor)
-		SHADER_PARAMETER(FIntVector4, InvertPixel)
 		SHADER_PARAMETER(FVector2f, UVCellSize)
 	END_SHADER_PARAMETER_STRUCT()
 
@@ -123,7 +120,7 @@ void FDMXPixelMappingRenderer::DownsampleRender(
 	const FTextureResource* InputTexture,
 	const FTextureResource* DstTexture,
 	const FTextureRenderTargetResource* DstTextureTargetResource,
-	const TArray<FDMXPixelMappingDownsamplePixelParam>& InDownsamplePixelPass,
+	const TArray<FDMXPixelMappingDownsamplePixelParamsV2>& InDownsamplePixelPass,
 	DownsampleReadCallback InCallback
 ) const
 {
@@ -135,7 +132,7 @@ void FDMXPixelMappingRenderer::DownsampleRender(
 		{
 			SCOPED_GPU_STAT(RHICmdList, DMXPixelMappingShadersStat);
 			SCOPED_DRAW_EVENTF(RHICmdList, DMXPixelMappingShadersStat, DMXPixelMappingRenderer::RenderPassName);
-
+			
 			FRHITexture* RenderTargetRef = DstTextureTargetResource->TextureRHI;
 			FRHITexture* DstTextureRef = DstTexture->TextureRHI;
 			FRHITexture* ResolveRenderTarget = DstTextureTargetResource->GetRenderTargetTexture();
@@ -161,7 +158,7 @@ void FDMXPixelMappingRenderer::DownsampleRender(
 			{
 				RHICmdList.SetViewport(0.f, 0.f, 0.f, OutputTextureSize.X, OutputTextureSize.Y, 1.f);
 
-				for (const FDMXPixelMappingDownsamplePixelParam& PixelParam : DownsamplePixelPass)
+				for (const FDMXPixelMappingDownsamplePixelParamsV2& PixelParam : DownsamplePixelPass)
 				{
 					// Create shader permutations
 					FDMXPixelMappingRendererPS::FPermutationDomain PermutationVector;
@@ -193,15 +190,14 @@ void FDMXPixelMappingRenderer::DownsampleRender(
 						1.f / OutputTextureSize.X, 1.f / OutputTextureSize.Y,
 						1.f / TextureSize.X, 1.f / TextureSize.Y);
 					SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), VSParameters);
-
+					
 					// Set pixel shader buffer
 					FDMXPixelMappingRendererPS::FParameters PSParameters;
 					PSParameters.InputTexture = InputTextureRHI;
+					PSParameters.Brightness = Brightness;
 					PSParameters.InputSampler = TStaticSamplerState<SF_Trilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 					PSParameters.InputTextureSize = InputTextureSize;
 					PSParameters.OutputTextureSize = OutputTextureSize;
-					PSParameters.PixelFactor = FVector4f(PixelParam.PixelFactor);
-					PSParameters.InvertPixel = PixelParam.InvertPixel;
 					PSParameters.UVCellSize = FVector2f(PixelParam.UVCellSize);
 					SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), PSParameters);
 

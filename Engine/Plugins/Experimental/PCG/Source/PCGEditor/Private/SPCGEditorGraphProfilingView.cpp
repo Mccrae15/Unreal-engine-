@@ -2,17 +2,16 @@
 
 #include "SPCGEditorGraphProfilingView.h"
 
+#include "Framework/Views/TableViewMetadata.h"
 #include "PCGComponent.h"
 #include "PCGEditor.h"
 #include "PCGEditorGraph.h"
 #include "PCGEditorGraphNode.h"
-#include "PCGGraph.h"
 
-#include "Styling/AppStyle.h"
-#include "Widgets/Input/SSearchBox.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Layout/SScrollBox.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/SWidget.h"
+#include "Widgets/Views/SListView.h"
 
 #define LOCTEXT_NAMESPACE "SPCGEditorGraphProfilingView"
 
@@ -22,21 +21,21 @@ namespace PCGEditorGraphProfilingView
 	
 	/** Names of the columns in the attribute list */
 	const FName NAME_Node = FName(TEXT("Node"));
-	const FName NAME_AvgTime = FName(TEXT("AvgTime"));
-	const FName NAME_MinTime = FName(TEXT("MinTime"));
-	const FName NAME_MaxTime = FName(TEXT("MaxTime"));
-	const FName NAME_StdTime = FName(TEXT("StdTime"));
-	const FName NAME_TotalTime = FName(TEXT("TotalTime"));
-	const FName NAME_NbCalls = FName(TEXT("NbCalls"));
+	const FName NAME_PrepareDataTime = FName(TEXT("PrepareDataTime"));
+	const FName NAME_MinExecutionFrameTime = FName(TEXT("MinFrameTime"));
+	const FName NAME_MaxExecutionFrameTime = FName(TEXT("MaxFrameTime"));
+	const FName NAME_TotalExecutionTime = FName(TEXT("TotalExecutionTime"));
+	const FName NAME_NbExecutionFrames = FName(TEXT("NbExecutionFrames"));
+	const FName NAME_PostExecuteTime = FName(TEXT("PostExecuteTime"));
 
 	/** Labels of the columns */
 	const FText TEXT_NodeLabel = LOCTEXT("NodeLabel", "Node");
-	const FText TEXT_AvgTimeLabel = LOCTEXT("AvgTimeLabel", "Avg Time(ms)");
-	const FText TEXT_MinTimeLabel = LOCTEXT("MinTimeLabel", "Min Time(ms)");
-	const FText TEXT_MaxTimeLabel = LOCTEXT("MaxTimeLabel", "Max Time(ms)");
-	const FText TEXT_StdTimeLabel = LOCTEXT("StdTimeLabel", "Std(ms)");
-	const FText TEXT_TotalTimeLabel = LOCTEXT("TotalTimeLabel", "Total time(s)");
-	const FText TEXT_NbCallsLabel = LOCTEXT("NbCallsLabel", "Number of calls");
+	const FText TEXT_PrepareDataTimeLabel = LOCTEXT("PrepareDataTimeLabel", "PrepareData (ms)");
+	const FText TEXT_PostExecuteTimeLabel = LOCTEXT("PostExecuteTimeLabel", "PostExecute (ms)");
+	const FText TEXT_MinExecutionFrameTimeLabel = LOCTEXT("MinExecutionFrameTimeLabel", "Min Frame Time(ms)");
+	const FText TEXT_MaxExecutionFrameTimeLabel = LOCTEXT("MaxExecutionFrameTimeLabel", "Max Frame Time(ms)");
+	const FText TEXT_TotalExecutionTimeLabel = LOCTEXT("TotalExecutionTimeLabel", "Total time(s)");
+	const FText TEXT_NbExecutionFramesLabel = LOCTEXT("NbExecutionFramesLabel", "Exec frames");
 }
 
 void SPCGProfilingListViewItemRow::Construct(const FArguments& InArgs, const TSharedRef<STableViewBase>& InOwnerTableView, const PCGProfilingListViewItemPtr& Item)
@@ -56,41 +55,38 @@ TSharedRef<SWidget> SPCGProfilingListViewItemRow::GenerateWidgetForColumn(const 
 	{
 		if (ColumnId == PCGEditorGraphProfilingView::NAME_Node)
 		{
-			ColumnData = FText::FromName(InternalItem->Name);
+			ColumnData = FText::FromString(InternalItem->Name);
 		}
-		else if (ColumnId == PCGEditorGraphProfilingView::NAME_NbCalls)
+		else if (ColumnId == PCGEditorGraphProfilingView::NAME_NbExecutionFrames)
 		{
-			ColumnData = FText::AsNumber(InternalItem->NbCalls);
+			ColumnData = ((InternalItem->CallTime.ExecutionFrameCount >= 0) ? FText::AsNumber(InternalItem->CallTime.ExecutionFrameCount) : FText());
 		}
-		// For all other values, if we don't have data, just write "N/A"
 		else if (!InternalItem->HasData)
 		{
 			ColumnData = PCGEditorGraphProfilingView::NoDataAvailableText;
 		}
-		else if (ColumnId == PCGEditorGraphProfilingView::NAME_AvgTime)
+		else if (ColumnId == PCGEditorGraphProfilingView::NAME_MinExecutionFrameTime)
 		{
 			// In ms
-			ColumnData = FText::AsNumber(InternalItem->AvgTime * 1000.0);
+			ColumnData = ((InternalItem->CallTime.MinExecutionFrameTime >= 0) ? FText::AsNumber(InternalItem->CallTime.MinExecutionFrameTime * 1000.0) : FText());
 		}
-		else if (ColumnId == PCGEditorGraphProfilingView::NAME_MinTime)
+		else if (ColumnId == PCGEditorGraphProfilingView::NAME_MaxExecutionFrameTime)
 		{
 			// In ms
-			ColumnData = FText::AsNumber(InternalItem->MinTime * 1000.0);
+			ColumnData = ((InternalItem->CallTime.MaxExecutionFrameTime >= 0) ? FText::AsNumber(InternalItem->CallTime.MaxExecutionFrameTime * 1000.0) : FText());
 		}
-		else if (ColumnId == PCGEditorGraphProfilingView::NAME_MaxTime)
-		{
-			// In ms
-			ColumnData = FText::AsNumber(InternalItem->MaxTime * 1000.0);
-		}
-		else if (ColumnId == PCGEditorGraphProfilingView::NAME_StdTime)
-		{
-			// In ms
-			ColumnData = FText::AsNumber(InternalItem->StdTime * 1000.0);
-		}
-		else if (ColumnId == PCGEditorGraphProfilingView::NAME_TotalTime)
+		else if (ColumnId == PCGEditorGraphProfilingView::NAME_TotalExecutionTime)
 		{
 			// In s
-			ColumnData = FText::AsNumber(InternalItem->TotalTime);
+			ColumnData = FText::AsNumber(InternalItem->CallTime.ExecutionTime);
+		}
+		else if (ColumnId == PCGEditorGraphProfilingView::NAME_PrepareDataTime)
+		{
+			ColumnData = FText::AsNumber(InternalItem->CallTime.PrepareDataTime * 1000.0);
+		}
+		else if (ColumnId == PCGEditorGraphProfilingView::NAME_PostExecuteTime)
+		{
+			ColumnData = FText::AsNumber(InternalItem->CallTime.PostExecuteTime * 1000.0);
 		}
 	}
 
@@ -113,6 +109,14 @@ void SPCGEditorGraphProfilingView::OnItemDoubleClicked(PCGProfilingListViewItemP
 	PCGEditor->JumpToNode(Item->EditorNode);
 }
 
+SPCGEditorGraphProfilingView::~SPCGEditorGraphProfilingView()
+{
+	if (PCGEditorPtr.IsValid())
+	{
+		PCGEditorPtr.Pin()->OnDebugObjectChangedDelegate.RemoveAll(this);
+	}
+}
+
 void SPCGEditorGraphProfilingView::Construct(const FArguments& InArgs, TSharedPtr<FPCGEditor> InPCGEditor)
 {
 	PCGEditorPtr = InPCGEditor;
@@ -121,8 +125,13 @@ void SPCGEditorGraphProfilingView::Construct(const FArguments& InArgs, TSharedPt
 	if (PCGEditor)
 	{
 		PCGEditorGraph = PCGEditor->GetPCGEditorGraph();
+		PCGComponent = PCGEditor->GetPCGComponentBeingDebugged();
+
+		PCGEditor->OnDebugObjectChangedDelegate.AddSP(this, &SPCGEditorGraphProfilingView::OnDebugObjectChanged);
 	}
 
+	SortingColumn = PCGEditorGraphProfilingView::NAME_TotalExecutionTime;
+	SortMode = EColumnSortMode::Descending;
 	ListViewHeader = CreateHeaderRowWidget();
 
 	const TSharedRef<SScrollBar> HorizontalScrollBar = SNew(SScrollBar)
@@ -153,15 +162,35 @@ void SPCGEditorGraphProfilingView::Construct(const FArguments& InArgs, TSharedPt
 			.AutoWidth()
 			[
 				SNew(SButton)
-				.Text(LOCTEXT("RefreshButton", "Refresh"))
-				.OnClicked(this, &SPCGEditorGraphProfilingView::Refresh)
+				.Text(LOCTEXT("ResetButton", "Reset"))
+				.OnClicked(this, &SPCGEditorGraphProfilingView::ResetTimers)
 			]
 			+SHorizontalBox::Slot()
 			.AutoWidth()
 			[
-				SNew(SButton)
-				.Text(LOCTEXT("ResetButton", "Reset"))
-				.OnClicked(this, &SPCGEditorGraphProfilingView::ResetTimers)
+				SNew(STextBlock)
+				.Text(LOCTEXT("ExpandSubgraph", "Expand Subgraph"))
+			]
+			+SHorizontalBox::Slot()
+			.AutoWidth()
+			[
+				SNew(SCheckBox)
+				.IsChecked(this, &SPCGEditorGraphProfilingView::IsSubgraphExpanded)
+				.OnCheckStateChanged(this, &SPCGEditorGraphProfilingView::OnSubgraphExpandedChanged)
+			]
+			+SHorizontalBox::Slot()
+			.Padding(FMargin(30.f, 0.f, 0.f, 5.f))
+			.AutoWidth()
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("TotalExecutionTime", "Total Time:"))
+			]
+			+SHorizontalBox::Slot()
+			.AutoWidth()
+			[
+				SNew(STextBlock)
+				.Text(this, &SPCGEditorGraphProfilingView::GetTotalTimeLabel)
+				.MinDesiredWidth(50.0f)
 			]
 		]
 		+SVerticalBox::Slot()
@@ -211,48 +240,46 @@ TSharedRef<SHeaderRow> SPCGEditorGraphProfilingView::CreateHeaderRowWidget()
 		.HAlignCell(HAlign_Left)
 		.SortMode(this, &SPCGEditorGraphProfilingView::GetColumnSortMode, PCGEditorGraphProfilingView::NAME_Node)
 		.OnSort(this, &SPCGEditorGraphProfilingView::OnSortColumnHeader)
-		+ SHeaderRow::Column(PCGEditorGraphProfilingView::NAME_AvgTime)
-		.ManualWidth(100)
-		.DefaultLabel(PCGEditorGraphProfilingView::TEXT_AvgTimeLabel)
-		.HAlignHeader(HAlign_Center)
-		.HAlignCell(HAlign_Right)
-		.SortMode(this, &SPCGEditorGraphProfilingView::GetColumnSortMode, PCGEditorGraphProfilingView::NAME_AvgTime)
-		.OnSort(this, &SPCGEditorGraphProfilingView::OnSortColumnHeader)
-		+ SHeaderRow::Column(PCGEditorGraphProfilingView::NAME_MinTime)
-		.ManualWidth(100)
-		.DefaultLabel(PCGEditorGraphProfilingView::TEXT_MinTimeLabel)
-		.HAlignHeader(HAlign_Center)
-		.HAlignCell(HAlign_Right)
-		.SortMode(this, &SPCGEditorGraphProfilingView::GetColumnSortMode, PCGEditorGraphProfilingView::NAME_MinTime)
-		.OnSort(this, &SPCGEditorGraphProfilingView::OnSortColumnHeader)
-		+ SHeaderRow::Column(PCGEditorGraphProfilingView::NAME_MaxTime)
-		.ManualWidth(100)
-		.DefaultLabel(PCGEditorGraphProfilingView::TEXT_MaxTimeLabel)
-		.HAlignHeader(HAlign_Center)
-		.HAlignCell(HAlign_Right)
-		.SortMode(this, &SPCGEditorGraphProfilingView::GetColumnSortMode, PCGEditorGraphProfilingView::NAME_MaxTime)
-		.OnSort(this, &SPCGEditorGraphProfilingView::OnSortColumnHeader)
-		+ SHeaderRow::Column(PCGEditorGraphProfilingView::NAME_StdTime)
-		.ManualWidth(100)
-		.DefaultLabel(PCGEditorGraphProfilingView::TEXT_StdTimeLabel)
-		.HAlignHeader(HAlign_Center)
-		.HAlignCell(HAlign_Right)
-		.SortMode(this, &SPCGEditorGraphProfilingView::GetColumnSortMode, PCGEditorGraphProfilingView::NAME_StdTime)
-		.OnSort(this, &SPCGEditorGraphProfilingView::OnSortColumnHeader)
-		+ SHeaderRow::Column(PCGEditorGraphProfilingView::NAME_TotalTime)
-		.ManualWidth(100)
-		.DefaultLabel(PCGEditorGraphProfilingView::TEXT_TotalTimeLabel)
-		.HAlignHeader(HAlign_Center)
-		.HAlignCell(HAlign_Right)
-		.SortMode(this, &SPCGEditorGraphProfilingView::GetColumnSortMode, PCGEditorGraphProfilingView::NAME_TotalTime)
-		.OnSort(this, &SPCGEditorGraphProfilingView::OnSortColumnHeader)
-		+ SHeaderRow::Column(PCGEditorGraphProfilingView::NAME_NbCalls)
+		+ SHeaderRow::Column(PCGEditorGraphProfilingView::NAME_PrepareDataTime)
 		.ManualWidth(125)
-		.DefaultLabel(PCGEditorGraphProfilingView::TEXT_NbCallsLabel)
+		.DefaultLabel(PCGEditorGraphProfilingView::TEXT_PrepareDataTimeLabel)
 		.HAlignHeader(HAlign_Center)
 		.HAlignCell(HAlign_Right)
-		.SortMode(this, &SPCGEditorGraphProfilingView::GetColumnSortMode, PCGEditorGraphProfilingView::NAME_NbCalls)
+		.SortMode(this, &SPCGEditorGraphProfilingView::GetColumnSortMode, PCGEditorGraphProfilingView::NAME_PrepareDataTime)
+		.OnSort(this, &SPCGEditorGraphProfilingView::OnSortColumnHeader)
+		+ SHeaderRow::Column(PCGEditorGraphProfilingView::NAME_NbExecutionFrames)
+		.ManualWidth(80)
+		.DefaultLabel(PCGEditorGraphProfilingView::TEXT_NbExecutionFramesLabel)
+		.HAlignHeader(HAlign_Center)
+		.HAlignCell(HAlign_Right)
+		.SortMode(this, &SPCGEditorGraphProfilingView::GetColumnSortMode, PCGEditorGraphProfilingView::NAME_NbExecutionFrames)
+		.OnSort(this, &SPCGEditorGraphProfilingView::OnSortColumnHeader)
+		+ SHeaderRow::Column(PCGEditorGraphProfilingView::NAME_MinExecutionFrameTime)
+		.ManualWidth(130)
+		.DefaultLabel(PCGEditorGraphProfilingView::TEXT_MinExecutionFrameTimeLabel)
+		.HAlignHeader(HAlign_Center)
+		.HAlignCell(HAlign_Right)
+		.SortMode(this, &SPCGEditorGraphProfilingView::GetColumnSortMode, PCGEditorGraphProfilingView::NAME_MinExecutionFrameTime)
+		.OnSort(this, &SPCGEditorGraphProfilingView::OnSortColumnHeader)
+		+ SHeaderRow::Column(PCGEditorGraphProfilingView::NAME_MaxExecutionFrameTime)
+		.ManualWidth(130)
+		.DefaultLabel(PCGEditorGraphProfilingView::TEXT_MaxExecutionFrameTimeLabel)
+		.HAlignHeader(HAlign_Center)
+		.HAlignCell(HAlign_Right)
+		.SortMode(this, &SPCGEditorGraphProfilingView::GetColumnSortMode, PCGEditorGraphProfilingView::NAME_MaxExecutionFrameTime)
+		.OnSort(this, &SPCGEditorGraphProfilingView::OnSortColumnHeader)
+		+ SHeaderRow::Column(PCGEditorGraphProfilingView::NAME_TotalExecutionTime)
+		.ManualWidth(100)
+		.DefaultLabel(PCGEditorGraphProfilingView::TEXT_TotalExecutionTimeLabel)
+		.HAlignHeader(HAlign_Center)
+		.HAlignCell(HAlign_Right)
+		.SortMode(this, &SPCGEditorGraphProfilingView::GetColumnSortMode, PCGEditorGraphProfilingView::NAME_TotalExecutionTime)
 		.OnSort(this, &SPCGEditorGraphProfilingView::OnSortColumnHeader);
+}
+
+FText SPCGEditorGraphProfilingView::GetTotalTimeLabel() const
+{
+	return FText::Format(LOCTEXT("GraphTotalTimeLabel", "{0} s"), TotalTime);
 }
 
 void SPCGEditorGraphProfilingView::OnSortColumnHeader(const EColumnSortPriority::Type SortPriority, const FName& ColumnId, const EColumnSortMode::Type NewSortMode)
@@ -268,6 +295,17 @@ void SPCGEditorGraphProfilingView::OnSortColumnHeader(const EColumnSortPriority:
 		SortMode = NewSortMode;
 	}
 
+	Refresh();
+}
+
+ECheckBoxState SPCGEditorGraphProfilingView::IsSubgraphExpanded() const
+{
+	return bExpandSubgraph ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+}
+
+void SPCGEditorGraphProfilingView::OnSubgraphExpandedChanged(ECheckBoxState InNewState)
+{
+	bExpandSubgraph = (InNewState == ECheckBoxState::Checked);
 	Refresh();
 }
 
@@ -294,30 +332,58 @@ FReply SPCGEditorGraphProfilingView::ResetTimers()
 		return FReply::Handled();
 	}
 
-	TArray<UPCGEditorGraphNode*> EditorNodes;
-	PCGEditorGraph->GetNodesOfClass<UPCGEditorGraphNode>(EditorNodes);
-
-	for (UPCGEditorGraphNode* PCGEditorNode : EditorNodes)
+	if (const UPCGComponent* Component = PCGComponent.Get())
 	{
-		if (PCGEditorNode)
-		{
-			if (UPCGNode* PCGNode = PCGEditorNode->GetPCGNode())
-			{
-				if (UPCGSettings* Settings = PCGNode->DefaultSettings)
-				{
-					if (IPCGElement* Element = Settings->GetElement().Get())
-					{
-						Element->ResetTimers();
-					}
-				}
-			}
-		}
+		Component->ExtraCapture.ResetTimers();
+		Refresh();
 	}
-
-	Refresh();
 
 	return FReply::Handled();
 }
+
+namespace PCGEditorGraphProfilingView
+{
+	void AddListItems(
+		TArray<PCGProfilingListViewItemPtr>& OutListViewItems,
+		const TArray<PCGUtils::FCallTreeInfo>& TreeInfo,
+		const TMap<const UPCGNode*, UPCGEditorGraphNode*>& EditorNodeLookup,
+		bool bExpandSubgraph,
+		FString FolderName,
+		UPCGEditorGraphNode* CurrentEditorNode = nullptr)
+	{
+		for (const PCGUtils::FCallTreeInfo& Info : TreeInfo)
+		{
+			UPCGEditorGraphNode*const* EditorNodeItr = EditorNodeLookup.Find(Info.Node);
+			UPCGEditorGraphNode* EditorNode = EditorNodeItr ? *EditorNodeItr : CurrentEditorNode;
+
+			FString Fullname = FolderName;
+			if (Info.Node)
+			{
+				Fullname += Info.Node->GetNodeTitle().ToString();
+			}
+
+			// don't show inclusive times when bExpandSubgraph is on or the total sum of everything will mismatch reality
+			if ((Info.Children.IsEmpty() || bExpandSubgraph == false) && Info.CallTime.MaxExecutionFrameTime > 0)
+			{
+				PCGProfilingListViewItemPtr ListViewItem = MakeShared<FPCGProfilingListViewItem>();
+
+				ListViewItem->PCGNode = Info.Node;
+				ListViewItem->EditorNode = EditorNode;
+				ListViewItem->Name = Fullname;
+				ListViewItem->HasData = true;
+
+				ListViewItem->CallTime = Info.CallTime;
+
+				OutListViewItems.Add(ListViewItem);
+			}
+
+			if (bExpandSubgraph && !Info.Children.IsEmpty())
+			{
+				AddListItems(OutListViewItems, Info.Children, EditorNodeLookup, /* bExpandSubgraph */ true, Fullname + "/", EditorNode);
+			}
+		}
+	}
+} 
 
 FReply SPCGEditorGraphProfilingView::Refresh()
 {
@@ -335,64 +401,29 @@ FReply SPCGEditorGraphProfilingView::Refresh()
 		return FReply::Handled();
 	}
 
+	const UPCGComponent* Component = PCGComponent.Get();
+	if (!Component)
+	{
+		return FReply::Handled();
+	}
+
 	TArray<UPCGEditorGraphNode*> EditorNodes;
 	PCGEditorGraph->GetNodesOfClass<UPCGEditorGraphNode>(EditorNodes);
-	ListViewItems.Reserve(EditorNodes.Num());
 
-	for (const UPCGEditorGraphNode* PCGEditorNode : EditorNodes)
+	TMap<const UPCGNode*, UPCGEditorGraphNode*> EditorNodeLookup;
+	for (UPCGEditorGraphNode* EditorNode : EditorNodes)
 	{
-		if (PCGEditorNode)
-		{
-			PCGProfilingListViewItemPtr ListViewItem = MakeShared<FPCGProfilingListViewItem>();
-			ListViewItem->EditorNode = PCGEditorNode;
-			ListViewItem->PCGNode = PCGEditorNode->GetPCGNode();
-
-			if (ListViewItem->PCGNode)
-			{
-				ListViewItem->Name = ListViewItem->PCGNode->GetNodeTitle();
-
-				if (const UPCGSettings* Settings = ListViewItem->PCGNode->DefaultSettings)
-				{
-					if (const IPCGElement* Element = Settings->GetElement().Get())
-					{
-						const TArray<double>& Timers = Element->GetTimers();
-						if (!Timers.IsEmpty())
-						{
-							ListViewItem->MinTime = std::numeric_limits<double>::max();
-							ListViewItem->MaxTime = std::numeric_limits<double>::min();
-							for (double v : Timers)
-							{
-								ListViewItem->TotalTime += v;
-								if (v < ListViewItem->MinTime)
-								{
-									ListViewItem->MinTime = v;
-								}
-
-								if (v > ListViewItem->MaxTime)
-								{
-									ListViewItem->MaxTime = v;
-								}
-							}
-
-							ListViewItem->AvgTime = ListViewItem->TotalTime / Timers.Num();
-
-							for (double v : Timers)
-							{
-								ListViewItem->StdTime += (ListViewItem->AvgTime - v) * (ListViewItem->AvgTime - v);
-							}
-
-							ListViewItem->StdTime = FMath::Sqrt(ListViewItem->StdTime / Timers.Num());
-
-							ListViewItem->HasData = true;
-							ListViewItem->NbCalls = Timers.Num();
-						}
-					}
-				}
-			}
-
-			ListViewItems.Add(ListViewItem);
-		}
+		EditorNodeLookup.Add(EditorNode->GetPCGNode(), EditorNode);
 	}
+
+	PCGUtils::FCallTreeInfo TreeInfo = Component->ExtraCapture.CalculateCallTreeInfo(Component);
+
+	TotalTime = TreeInfo.CallTime.ExecutionTime;
+
+	ListViewItems.Reserve(TreeInfo.Children.Num());
+
+	//TODO: could turn this into a tree instead of expanding into a list
+	PCGEditorGraphProfilingView::AddListItems(ListViewItems, TreeInfo.Children, EditorNodeLookup, bExpandSubgraph, FString());
 
 	if (SortingColumn != NAME_None && SortMode != EColumnSortMode::None)
 	{
@@ -401,40 +432,58 @@ FReply SPCGEditorGraphProfilingView::Refresh()
 				bool isLess = false;
 				if (SortingColumn == PCGEditorGraphProfilingView::NAME_Node)
 				{
-					isLess = A->Name.FastLess(B->Name);
+					isLess = A->Name < B->Name;
 				}
-				else if (SortingColumn == PCGEditorGraphProfilingView::NAME_AvgTime)
+				else if (SortingColumn == PCGEditorGraphProfilingView::NAME_PrepareDataTime)
 				{
-					isLess = A->AvgTime < B->AvgTime;
+					isLess = A->CallTime.PrepareDataTime < B->CallTime.PrepareDataTime;
 				}
-				else if (SortingColumn == PCGEditorGraphProfilingView::NAME_MinTime)
+				else if (SortingColumn == PCGEditorGraphProfilingView::NAME_MinExecutionFrameTime)
 				{
-					isLess = A->MinTime < B->MinTime;
+					isLess = A->CallTime.MinExecutionFrameTime < B->CallTime.MinExecutionFrameTime;
 				}
-				else if (SortingColumn == PCGEditorGraphProfilingView::NAME_MaxTime)
+				else if (SortingColumn == PCGEditorGraphProfilingView::NAME_MaxExecutionFrameTime)
 				{
-					isLess = A->MaxTime < B->MaxTime;
+					isLess = A->CallTime.MaxExecutionFrameTime < B->CallTime.MaxExecutionFrameTime;
 				}
-				else if (SortingColumn == PCGEditorGraphProfilingView::NAME_StdTime)
+				else if (SortingColumn == PCGEditorGraphProfilingView::NAME_TotalExecutionTime)
 				{
-					isLess = A->StdTime < B->StdTime;
+					isLess = A->CallTime.ExecutionTime < B->CallTime.ExecutionTime;
 				}
-				else if (SortingColumn == PCGEditorGraphProfilingView::NAME_TotalTime)
+				else if (SortingColumn == PCGEditorGraphProfilingView::NAME_NbExecutionFrames)
 				{
-					isLess = A->TotalTime < B->TotalTime;
-				}
-				else if (SortingColumn == PCGEditorGraphProfilingView::NAME_NbCalls)
-				{
-					isLess = A->NbCalls < B->NbCalls;
+					isLess = A->CallTime.ExecutionFrameCount < B->CallTime.ExecutionFrameCount;
 				}
 
 				return SortMode == EColumnSortMode::Ascending ? isLess : !isLess;
 			});
 	}
 
-	ListView->SetListItemsSource(ListViewItems);
+	ListView->SetItemsSource(&ListViewItems);
 
 	return FReply::Handled();
+}
+
+void SPCGEditorGraphProfilingView::OnDebugObjectChanged(UPCGComponent* InPCGComponent)
+{
+	if (PCGComponent.IsValid())
+	{
+		PCGComponent->OnPCGGraphGeneratedDelegate.RemoveAll(this);
+	}
+
+	PCGComponent = InPCGComponent;
+
+	if (PCGComponent.IsValid())
+	{
+		PCGComponent->OnPCGGraphGeneratedDelegate.AddSP(this, &SPCGEditorGraphProfilingView::OnGenerateUpdated);
+	}
+
+	Refresh();
+}
+
+void SPCGEditorGraphProfilingView::OnGenerateUpdated(UPCGComponent* InPCGComponent)
+{
+	Refresh();
 }
 
 TSharedRef<ITableRow> SPCGEditorGraphProfilingView::OnGenerateRow(PCGProfilingListViewItemPtr Item, const TSharedRef<STableViewBase>& OwnerTable) const

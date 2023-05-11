@@ -2,15 +2,12 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
 #include "Channels/MovieSceneFloatChannel.h"
-#include "EntitySystem/BuiltInComponentTypes.h"
-#include "EntitySystem/IMovieSceneEntityProvider.h"
-#include "EntitySystem/MovieSceneEntityIDs.h"
 #include "EntitySystem/MovieScenePropertyBinding.h"
 #include "Sections/MovieSceneSubSection.h"
 #include "TemplateSequenceSection.generated.h"
+
+enum class EMovieSceneChannelProxyType : uint8;
 
 /**
  * Defines the type of property scaling for a template sequence.
@@ -53,7 +50,6 @@ struct FTemplateSectionPropertyScale
 UCLASS()
 class TEMPLATESEQUENCE_API UTemplateSequenceSection 
 	: public UMovieSceneSubSection
-	, public IMovieSceneEntityProvider
 {
 public:
 
@@ -73,10 +69,15 @@ protected:
 	virtual EMovieSceneChannelProxyType CacheChannelProxy() override;
 
 	virtual bool PopulateEvaluationFieldImpl(const TRange<FFrameNumber>& EffectiveRange, const FMovieSceneEvaluationFieldEntityMetaData& InMetaData, FMovieSceneEntityComponentFieldBuilder* OutFieldBuilder) override;
-	virtual void ImportEntityImpl(UMovieSceneEntitySystemLinker* EntityLinker, const FEntityImportParams& Params, FImportedEntity* OutImportedEntity) override;
+	virtual void ImportEntityImpl(UMovieSceneEntitySystemLinker* EntityLinker, const UE::MovieScene::FEntityImportParams& Params, UE::MovieScene::FImportedEntity* OutImportedEntity) override;
 
 public:
 
 	UPROPERTY()
 	TArray<FTemplateSectionPropertyScale> PropertyScales;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "EntitySystem/BuiltInComponentTypes.h"
+#endif

@@ -2,18 +2,16 @@
 
 #include "GitSourceControlUtils.h"
 #include "GitSourceControlCommand.h"
+#include "GitSourceControlState.h"
 #include "HAL/PlatformProcess.h"
+#include "HAL/PlatformFile.h"
 #include "HAL/PlatformFileManager.h"
-#include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
-#include "Modules/ModuleManager.h"
 #include "ISourceControlModule.h"
 #include "GitSourceControlModule.h"
-#include "GitSourceControlProvider.h"
 
 #if PLATFORM_LINUX
-#include <sys/ioctl.h>
 #endif
 
 
@@ -784,7 +782,7 @@ void AbsoluteFilenames(const FString& InRepositoryRoot, TArray<FString>& InFileN
 
 /** Run a 'git ls-files' command to get all files tracked by Git recursively in a directory.
  *
- * Called in case of a "directory status" (no file listed in the command) when using the "Submit to Source Control" menu.
+ * Called in case of a "directory status" (no file listed in the command) when using the "Submit to Revision Control" menu.
 */
 static bool ListFilesInDirectoryRecurse(const FString& InPathToGitBinary, const FString& InRepositoryRoot, const FString& InDirectory, TArray<FString>& OutFiles)
 {
@@ -875,7 +873,7 @@ static void ParseDirectoryStatusResult(const FString& InPathToGitBinary, const F
 /**
  * @brief Detects how to parse the result of a "status" command to get workspace file states
  *
- *  It is either a command for a whole directory (ie. "Content/", in case of "Submit to Source Control" menu),
+ *  It is either a command for a whole directory (ie. "Content/", in case of "Submit to Revision Control" menu),
  * or for one or more files all on a same directory (by design, since we group files by directory in RunUpdateStatus())
  *
  * @param[in]	InPathToGitBinary	The path to the Git binary
@@ -889,7 +887,7 @@ static void ParseStatusResults(const FString& InPathToGitBinary, const FString& 
 	if(1 == InFiles.Num() && FPaths::DirectoryExists(InFiles[0]))
 	{
 		// 1) Special case for "status" of a directory: requires to get the list of files by ourselves.
-		//   (this is triggered by the "Submit to Source Control" menu)
+		//   (this is triggered by the "Submit to Revision Control" menu)
 		TArray<FString> Files;
 		const FString& Directory = InFiles[0];
 		const bool bResult = ListFilesInDirectoryRecurse(InPathToGitBinary, InRepositoryRoot, Directory, Files);
@@ -1005,7 +1003,7 @@ bool RunDumpToFile(const FString& InPathToGitBinary, const FString& InRepository
 
 	verify(FPlatformProcess::CreatePipe(PipeRead, PipeWrite));
 
-	FProcHandle ProcessHandle = FPlatformProcess::CreateProc(*InPathToGitBinary, *FullCommand, bLaunchDetached, bLaunchHidden, bLaunchReallyHidden, nullptr, 0, *InRepositoryRoot, PipeWrite);
+	FProcHandle ProcessHandle = FPlatformProcess::CreateProc(*InPathToGitBinary, *FullCommand, bLaunchDetached, bLaunchHidden, bLaunchReallyHidden, nullptr, 0, *InRepositoryRoot, PipeWrite, nullptr, nullptr);
 	if(ProcessHandle.IsValid())
 	{
 		FPlatformProcess::Sleep(0.01);

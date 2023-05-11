@@ -4,6 +4,7 @@
 
 #include "MVVMPropertyPath.h"
 #include "Types/MVVMBindingMode.h"
+#include "Types/MVVMExecutionMode.h"
 
 #include "MVVMBlueprintViewBinding.generated.h"
 
@@ -51,8 +52,11 @@ struct MODELVIEWVIEWMODELBLUEPRINT_API FMVVMBlueprintViewBinding
 	UPROPERTY(EditAnywhere, Category = "MVVM")
 	EMVVMBindingMode BindingType = EMVVMBindingMode::OneWayToDestination;
 
-	UPROPERTY(EditAnywhere, Category = "MVVM")
-	EMVVMViewBindingUpdateMode UpdateMode = EMVVMViewBindingUpdateMode::Immediate;
+	UPROPERTY()
+	bool bOverrideExecutionMode = false;
+
+	UPROPERTY(EditAnywhere, Category = "MVVM", meta=(EditCondition="bOverrideExecutionMode"))
+	EMVVMExecutionMode OverrideExecutionMode = EMVVMExecutionMode::Immediate;
 
 	/** */
 	UPROPERTY(EditAnywhere, Category = "MVVM")
@@ -63,6 +67,7 @@ struct MODELVIEWVIEWMODELBLUEPRINT_API FMVVMBlueprintViewBinding
 	TArray<FText> Errors;
 
 	/** The unique ID of this binding. */
+	UPROPERTY(VisibleAnywhere, Category = "MVVM")
 	FGuid BindingId;
 
 	/** Whether the binding is enabled or disabled by default. The instance may enable the binding at runtime. */

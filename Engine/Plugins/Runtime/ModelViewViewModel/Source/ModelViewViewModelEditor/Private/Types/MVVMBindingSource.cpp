@@ -2,10 +2,30 @@
 
 #include "Types/MVVMBindingSource.h"
 #include "Blueprint/WidgetTree.h"
-#include "Components/Widget.h"
 #include "Editor.h"
+#include "MVVMBlueprintView.h"
 #include "MVVMEditorSubsystem.h"
+#include "Types/MVVMBindingName.h"
 #include "WidgetBlueprint.h"
+
+FMVVMBindingName UE::MVVM::FBindingSource::ToBindingName(const UWidgetBlueprint* WidgetBlueprint) const
+{
+	if (ViewModelId.IsValid())
+	{
+		if (UMVVMBlueprintView* View = GEditor->GetEditorSubsystem<UMVVMEditorSubsystem>()->GetView(WidgetBlueprint))
+		{
+			if (const FMVVMBlueprintViewModelContext* ViewModel = View->FindViewModel(ViewModelId))
+			{
+				return FMVVMBindingName(ViewModel->GetViewModelName());
+			}
+		}
+		return FMVVMBindingName();
+	}
+	else
+	{
+		return FMVVMBindingName(Name);
+	}
+}
 
 UE::MVVM::FBindingSource UE::MVVM::FBindingSource::CreateForWidget(const UWidgetBlueprint* WidgetBlueprint, FName WidgetName)
 {

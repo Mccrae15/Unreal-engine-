@@ -9,7 +9,6 @@
 #include "Containers/Array.h"
 #include "Containers/Map.h"
 #include "Containers/UnrealString.h"
-#include "CoreMinimal.h"
 #include "CoreTypes.h"
 #include "HAL/ThreadSafeCounter.h"
 #include "Misc/AssertionMacros.h"
@@ -18,7 +17,6 @@
 #include "Templates/PointerIsConvertibleFromTo.h"
 #include "Templates/TypeHash.h"
 #include "Templates/UnrealTemplate.h"
-#include "UObject/FastReferenceCollectorOptions.h"
 #include "UObject/Field.h"
 #include "UObject/NameTypes.h"
 #include "UObject/UObjectArray.h"
@@ -36,9 +34,7 @@ template <typename T> struct TIsZeroConstructType;
 
 struct COREUOBJECT_API FFieldPath
 {
-	// GC needs access to GetResolvedOwnerItemInternal and ClearCachedFieldInternal
-	template <typename ReferenceProcessorType, typename CollectorType, typename ArrayPoolType, EFastReferenceCollectorOptions Options>
-	friend class TFastReferenceCollector;
+	friend struct FGCInternals;
 
 	// TWeakFieldPtr needs access to ClearCachedField
 	template<class T>
@@ -438,19 +434,6 @@ public:
 	}
 
 	/**
-	* Compare weak pointers for inequality
-	* @param Other weak pointer to compare to
-	**/
-	template <typename OtherPropertyType>
-	FORCEINLINE bool operator!=(const TFieldPath<OtherPropertyType> &Other) const
-	{
-		static_assert(TPointerIsConvertibleFromTo<OtherPropertyType, const FField>::Value, "TFieldPath can only be compared with FField types");
-		static_assert(TPointerIsConvertibleFromTo<PropertyType, OtherPropertyType>::Value, "Unable to compare TFieldPath with raw pointer - types are incompatible");
-
-		return FFieldPath::operator!=(Other);
-	}
-
-	/**
 	* Compare weak pointers for equality
 	* @param Other pointer to compare to
 	**/
@@ -461,6 +444,26 @@ public:
 		static_assert(TPointerIsConvertibleFromTo<PropertyType, OtherPropertyType>::Value, "Unable to compare TFieldPath with raw pointer - types are incompatible");
 
 		return Get() == Other;
+	}
+
+	FORCENOINLINE bool operator==(TYPE_OF_NULLPTR) const
+	{
+		return !Get();
+	}
+
+#if !PLATFORM_COMPILER_HAS_GENERATED_COMPARISON_OPERATORS
+
+	/**
+	* Compare weak pointers for inequality
+	* @param Other weak pointer to compare to
+	**/
+	template <typename OtherPropertyType>
+	FORCEINLINE bool operator!=(const TFieldPath<OtherPropertyType> &Other) const
+	{
+		static_assert(TPointerIsConvertibleFromTo<OtherPropertyType, const FField>::Value, "TFieldPath can only be compared with FField types");
+		static_assert(TPointerIsConvertibleFromTo<PropertyType, OtherPropertyType>::Value, "Unable to compare TFieldPath with raw pointer - types are incompatible");
+
+		return FFieldPath::operator!=(Other);
 	}
 
 	/**
@@ -475,6 +478,44 @@ public:
 
 		return Get() != Other;
 	}
+
+	template <typename LhsT>
+	friend FORCENOINLINE bool operator==(const LhsT* Lhs, const TFieldPath<PropertyType>& Rhs)
+	{
+		// It's also possible that these static_asserts may fail for valid conversions because
+		// one or both of the types have only been forward-declared.
+		static_assert(TPointerIsConvertibleFromTo<LhsT, const FField>::Value, "TFieldPath can only be compared with FField types");
+		static_assert(TPointerIsConvertibleFromTo<LhsT, PropertyType>::Value || TPointerIsConvertibleFromTo<PropertyType, LhsT>::Value, "Unable to compare TFieldPath with raw pointer - types are incompatible");
+
+		return Rhs == Lhs;
+	}
+
+	friend FORCENOINLINE bool operator==(TYPE_OF_NULLPTR, const TFieldPath<PropertyType>& Rhs)
+	{
+		return !Rhs.Get();
+	}
+
+	template <typename LhsT>
+	friend FORCENOINLINE bool operator!=(const LhsT* Lhs, const TFieldPath<PropertyType>& Rhs)
+	{
+		// It's also possible that these static_asserts may fail for valid conversions because
+		// one or both of the types have only been forward-declared.
+		static_assert(TPointerIsConvertibleFromTo<LhsT, const FField>::Value, "TFieldPath can only be compared with FField types");
+		static_assert(TPointerIsConvertibleFromTo<LhsT, PropertyType>::Value || TPointerIsConvertibleFromTo<PropertyType, LhsT>::Value, "Unable to compare TFieldPath with raw pointer - types are incompatible");
+
+		return Rhs != Lhs;
+	}
+
+	FORCENOINLINE bool operator!=(TYPE_OF_NULLPTR) const
+	{
+		return !!Get();
+	}
+
+	friend FORCENOINLINE bool operator!=(TYPE_OF_NULLPTR, const TFieldPath<PropertyType>& Rhs)
+	{
+		return !!Rhs.Get();
+	}
+#endif
 };
 
 // Helper function which deduces the type of the initializer
@@ -484,51 +525,6 @@ FORCEINLINE TFieldPath<PropertyType> MakePropertyPath(PropertyType* Ptr)
 	return TFieldPath<PropertyType>(Ptr);
 }
 
-template <typename LhsT, typename RhsT>
-FORCENOINLINE bool operator==(const LhsT* Lhs, const TFieldPath<RhsT>& Rhs)
-{
-	// It's also possible that these static_asserts may fail for valid conversions because
-	// one or both of the types have only been forward-declared.
-	static_assert(TPointerIsConvertibleFromTo<LhsT, const FField>::Value, "TFieldPath can only be compared with FField types");
-	static_assert(TPointerIsConvertibleFromTo<LhsT, RhsT>::Value || TPointerIsConvertibleFromTo<RhsT, LhsT>::Value, "Unable to compare TFieldPath with raw pointer - types are incompatible");
-
-	return Rhs == Lhs;
-}
-
-template <typename LhsT>
-FORCENOINLINE bool operator==(const TFieldPath<LhsT>& Lhs, TYPE_OF_NULLPTR)
-{
-	return !Lhs.Get();
-}
-
-template <typename RhsT>
-FORCENOINLINE bool operator==(TYPE_OF_NULLPTR, const TFieldPath<RhsT>& Rhs)
-{
-	return !Rhs.Get();
-}
-
-template <typename LhsT, typename RhsT>
-FORCENOINLINE bool operator!=(const LhsT* Lhs, const TFieldPath<RhsT>& Rhs)
-{
-	// It's also possible that these static_asserts may fail for valid conversions because
-	// one or both of the types have only been forward-declared.
-	static_assert(TPointerIsConvertibleFromTo<LhsT, const FField>::Value, "TFieldPath can only be compared with FField types");
-	static_assert(TPointerIsConvertibleFromTo<LhsT, RhsT>::Value || TPointerIsConvertibleFromTo<RhsT, LhsT>::Value, "Unable to compare TFieldPath with raw pointer - types are incompatible");
-
-	return Rhs != Lhs;
-}
-
-template <typename LhsT>
-FORCENOINLINE bool operator!=(const TFieldPath<LhsT>& Lhs, TYPE_OF_NULLPTR)
-{
-	return !!Lhs.Get();
-}
-
-template <typename RhsT>
-FORCENOINLINE bool operator!=(TYPE_OF_NULLPTR, const TFieldPath<RhsT>& Rhs)
-{
-	return !!Rhs.Get();
-}
 
 template<class T> struct TIsPODType<TFieldPath<T> > { enum { Value = true }; };
 template<class T> struct TIsZeroConstructType<TFieldPath<T> > { enum { Value = true }; };
@@ -554,3 +550,6 @@ struct TPropertyPathMapKeyFuncs : public TDefaultMapKeyFuncs<KeyType, ValueType,
 	}
 };
 
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

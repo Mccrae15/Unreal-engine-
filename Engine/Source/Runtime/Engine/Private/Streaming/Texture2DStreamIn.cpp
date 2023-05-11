@@ -5,11 +5,10 @@ Texture2DStreamIn.cpp: Stream in helper for 2D textures.
 =============================================================================*/
 
 #include "Streaming/Texture2DStreamIn.h"
+#include "EngineLogs.h"
 #include "RenderUtils.h"
-#include "HAL/PlatformFileManager.h"
-#include "HAL/FileManager.h"
-#include "Misc/Paths.h"
 #include "Rendering/Texture2DResource.h"
+#include "Streaming/Texture2DUpdate.h"
 
 FTexture2DStreamIn::FTexture2DStreamIn(UTexture2D* InTexture)
 	: FTexture2DUpdate(InTexture)
@@ -111,7 +110,10 @@ void FTexture2DStreamIn::DoCopySharedMips(const FContext& Context)
 
 	if (!IsCancelled() && IntermediateTextureRHI && Context.Resource)
 	{
-		RHICopySharedMips(IntermediateTextureRHI, Context.Resource->GetTexture2DRHI());
+		UE::RHI::CopySharedMips_AssumeSRVMaskState(
+			FRHICommandListExecutor::GetImmediateCommandList(),
+			Context.Resource->GetTexture2DRHI(),
+			IntermediateTextureRHI);
 	}
 }
 

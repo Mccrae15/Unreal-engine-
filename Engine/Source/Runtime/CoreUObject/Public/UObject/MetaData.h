@@ -4,7 +4,6 @@
 
 #include "Containers/Map.h"
 #include "Containers/UnrealString.h"
-#include "CoreMinimal.h"
 #include "HAL/Platform.h"
 #include "Serialization/StructuredArchive.h"
 #include "UObject/NameTypes.h"
@@ -169,11 +168,6 @@ public:
 	// Returns the remapped key name, or NAME_None was not remapped.
 	static FName GetRemappedKeyName(FName OldKey);
 
-#if HACK_HEADER_GENERATOR
-	// Required by UHT makefiles for internal data serialization.
-	friend struct FMetadataArchiveProxy;
-#endif
-
 private:
 	static void InitializeRedirectMap();
 
@@ -233,3 +227,7 @@ private:
 };
 
 #endif //WITH_EDITOR
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

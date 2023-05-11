@@ -3,8 +3,9 @@
 #include "VirtualTextureUploadCache.h"
 
 #include "RenderGraphBuilder.h"
-#include "RHI.h"
+#include "RenderUtils.h"
 #include "VirtualTextureChunkManager.h"
+#include "Stats/StatsTrace.h"
 
 // Allow uploading CPU buffer directly to GPU texture
 // This is slow under D3D11
@@ -39,7 +40,7 @@ static TAutoConsoleVariable<int32> CVarMaxUploadRequests(
 	ECVF_RenderThreadSafe);
 
 
-uint32 FVTUploadTileAllocator::Allocate(EPixelFormat InFormat, uint32 InTileSize)
+uint32 FVTUploadTileAllocator::Allocate(FRHICommandList& RHICmdList, EPixelFormat InFormat, uint32 InTileSize)
 {
 	// Find matching FormatBuffer.
 	const FPixelFormatInfo& FormatInfo = GPixelFormats[InFormat];
@@ -96,7 +97,7 @@ uint32 FVTUploadTileAllocator::Allocate(EPixelFormat InFormat, uint32 InTileSize
 	if (StagingBuffer.Memory == nullptr)
 	{
 		// Staging buffer needs underlying buffer allocating.
-		StagingBuffer.Init(Desc.BlockBytes, Desc.MemorySize);
+		StagingBuffer.Init(RHICmdList, Desc.BlockBytes, Desc.MemorySize);
 		NumAllocatedBytes += StagingBuffer.TileSizeAligned * StagingBuffer.NumTiles;
 	}
 
@@ -110,7 +111,7 @@ uint32 FVTUploadTileAllocator::Allocate(EPixelFormat InFormat, uint32 InTileSize
 	return Handle.PackedValue;
 }
 
-void FVTUploadTileAllocator::Free(uint32 InHandle)
+void FVTUploadTileAllocator::Free(FRHICommandList& RHICmdList, uint32 InHandle)
 {
 	FHandle Handle;
 	Handle.PackedValue = InHandle;
@@ -125,7 +126,7 @@ void FVTUploadTileAllocator::Free(uint32 InHandle)
 		check(NumAllocatedBytes >= StagingBuffer.TileSizeAligned * StagingBuffer.NumTiles);
 		NumAllocatedBytes -= StagingBuffer.TileSizeAligned * StagingBuffer.NumTiles;
 
-		StagingBuffer.Release();
+		StagingBuffer.Release(&RHICmdList);
 	}
 }
 
@@ -162,10 +163,10 @@ FVTUploadTileBufferExt FVTUploadTileAllocator::GetBufferFromHandleExt(uint32 InH
 
 FVTUploadTileAllocator::FStagingBuffer::~FStagingBuffer()
 {
-	Release();
+	Release(nullptr);
 }
 
-void FVTUploadTileAllocator::FStagingBuffer::Init(uint32 InBufferStrideBytes, uint32 InTileSizeBytes)
+void FVTUploadTileAllocator::FStagingBuffer::Init(FRHICommandList& RHICmdList, uint32 InBufferStrideBytes, uint32 InTileSizeBytes)
 {
 	TileSize = InTileSizeBytes;
 	TileSizeAligned = Align(InTileSizeBytes, 128u);
@@ -184,11 +185,8 @@ void FVTUploadTileAllocator::FStagingBuffer::Init(uint32 InBufferStrideBytes, ui
 	if (GRHISupportsDirectGPUMemoryLock && GRHISupportsUpdateFromBufferTexture)
 	{
 		// Allocate staging buffer directly in GPU memory.
-		checkSlow(IsInRenderingThread());
-		FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
-
 		FRHIResourceCreateInfo CreateInfo(TEXT("StagingBuffer"));
-		RHIBuffer = RHICreateStructuredBuffer(InBufferStrideBytes, BufferSize, BUF_ShaderResource | BUF_Static | BUF_KeepCPUAccessible, CreateInfo);
+		RHIBuffer = RHICmdList.CreateBuffer(BufferSize, BUF_ShaderResource | BUF_Static | BUF_KeepCPUAccessible | BUF_StructuredBuffer, InBufferStrideBytes, ERHIAccess::SRVMask, CreateInfo);
 
 		// Here we bypass 'normal' RHI operations in order to get a persistent pointer to GPU memory, on supported platforms
 		// This should be encapsulated into a proper RHI method at some point
@@ -205,14 +203,16 @@ void FVTUploadTileAllocator::FStagingBuffer::Init(uint32 InBufferStrideBytes, ui
 	}
 }
 
-void FVTUploadTileAllocator::FStagingBuffer::Release()
+void FVTUploadTileAllocator::FStagingBuffer::Release(FRHICommandList* RHICmdList)
 {
 	const uint32 BufferSize = TileSizeAligned * NumTiles;
 
 	if (RHIBuffer.IsValid())
 	{
+		check(RHICmdList);
+
 		// Unmap and release the GPU buffer if present.
-		RHIUnlockBuffer(RHIBuffer);
+		RHICmdList->UnlockBuffer(RHIBuffer);
 		RHIBuffer.SafeRelease();
 		// In this case 'Memory' was the mapped pointer, so release it.
 		Memory = nullptr;
@@ -259,8 +259,8 @@ void FVirtualTextureUploadCache::Finalize(FRDGBuilder& GraphBuilder)
 	SCOPED_DRAW_EVENT(RHICmdList, FVirtualTextureUploadCache_Finalize);
 	SCOPE_CYCLE_COUNTER(STAT_VTP_FlushUpload)
 
-		// Multi-GPU support : May be inefficient for AFR.
-		SCOPED_GPU_MASK(RHICmdList, FRHIGPUMask::All());
+	// Multi-GPU support:
+	SCOPED_GPU_MASK(RHICmdList, FRHIGPUMask::All());
 
 	for (int PoolIndex = 0; PoolIndex < Pools.Num(); ++PoolIndex)
 	{
@@ -341,7 +341,7 @@ void FVirtualTextureUploadCache::Finalize(FRDGBuilder& GraphBuilder)
 			}
 
 			// Can release upload buffer.
-			TileAllocator.Free(Entry.TileHandle);
+			TileAllocator.Free(RHICmdList, Entry.TileHandle);
 		}
 
 		RHICmdList.UnlockTexture2D(StagingTexture.RHITexture, 0u, false, false);
@@ -390,22 +390,24 @@ void FVirtualTextureUploadCache::Finalize(FRDGBuilder& GraphBuilder)
 
 void FVirtualTextureUploadCache::ReleaseRHI()
 {
+	check(IsInRenderingThread());
+	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
+
 	// Complete/Cancel all work will release allocated staging buffers.
-	UpdateFreeList(true);
+	UpdateFreeList(RHICmdList, true);
 	for (TSparseArray<FTileEntry>::TIterator It(PendingUpload); It; ++It)
 	{
-		CancelTile(FVTUploadTileHandle(It.GetIndex()));
+		CancelTile(RHICmdList, FVTUploadTileHandle(It.GetIndex()));
 	}
 	// Release staging textures.
 	Pools.Empty();
 }
 
-FVTUploadTileHandle FVirtualTextureUploadCache::PrepareTileForUpload(FVTUploadTileBuffer& OutBuffer, EPixelFormat InFormat, uint32 InTileSize)
+FVTUploadTileHandle FVirtualTextureUploadCache::PrepareTileForUpload(FRHICommandList& RHICmdList, FVTUploadTileBuffer& OutBuffer, EPixelFormat InFormat, uint32 InTileSize)
 {
 	SCOPE_CYCLE_COUNTER(STAT_VTP_StageTile)
-	checkSlow(IsInRenderingThread());
 
-	uint32 TileHandle = TileAllocator.Allocate(InFormat, InTileSize);
+	uint32 TileHandle = TileAllocator.Allocate(RHICmdList, InFormat, InTileSize);
 	OutBuffer = TileAllocator.GetBufferFromHandle(TileHandle);
 
 	const int32 PoolIndex = GetOrCreatePoolIndex(InFormat, InTileSize);
@@ -419,9 +421,9 @@ FVTUploadTileHandle FVirtualTextureUploadCache::PrepareTileForUpload(FVTUploadTi
 	return FVTUploadTileHandle(Index);
 }
 
-void FVirtualTextureUploadCache::SubmitTile(FRHICommandListImmediate& RHICmdList, const FVTUploadTileHandle& InHandle, FRHITexture2D* InDestTexture, int InDestX, int InDestY, int InSkipBorderSize)
+void FVirtualTextureUploadCache::SubmitTile(FRHICommandList& RHICmdList, const FVTUploadTileHandle& InHandle, FRHITexture2D* InDestTexture, int InDestX, int InDestY, int InSkipBorderSize)
 {
-	checkSlow(IsInRenderingThread());
+	checkSlow(IsInParallelRenderingThread());
 
 	check(PendingUpload.IsValidIndex(InHandle.Index));
 	FTileEntry& Entry = PendingUpload[InHandle.Index];
@@ -459,7 +461,7 @@ void FVirtualTextureUploadCache::SubmitTile(FRHICommandListImmediate& RHICmdList
 		RHICmdList.UpdateTexture2D(InDestTexture, 0u, UpdateRegion, UploadBuffer.Stride, (uint8*)UploadBuffer.BufferMemory + UploadBuffer.BufferOffset);
 
 		// UpdateTexture2D makes internal copy of data, no need to wait before re-using tile
-		TileAllocator.Free(Entry.TileHandle);
+		TileAllocator.Free(RHICmdList, Entry.TileHandle);
 	}
 	else
 	{
@@ -475,20 +477,16 @@ void FVirtualTextureUploadCache::SubmitTile(FRHICommandListImmediate& RHICmdList
 	PendingUpload.RemoveAt(InHandle.Index);
 }
 
-void FVirtualTextureUploadCache::CancelTile(const FVTUploadTileHandle& InHandle)
+void FVirtualTextureUploadCache::CancelTile(FRHICommandList& RHICmdList, const FVTUploadTileHandle& InHandle)
 {
-	checkSlow(IsInRenderingThread());
-
 	check(PendingUpload.IsValidIndex(InHandle.Index));
 	FTileEntry& Entry = PendingUpload[InHandle.Index];
-	TileAllocator.Free(Entry.TileHandle);
+	TileAllocator.Free(RHICmdList, Entry.TileHandle);
 	PendingUpload.RemoveAt(InHandle.Index);
 }
 
-void FVirtualTextureUploadCache::UpdateFreeList(bool bForceFreeAll)
+void FVirtualTextureUploadCache::UpdateFreeList(FRHICommandList& RHICmdList, bool bForceFreeAll)
 {
-	checkSlow(IsInRenderingThread());
-
 	const uint32 CurrentFrame = GFrameNumberRenderThread;
 
 	// Iterate tiles pending release and free them if they are old enough.
@@ -501,7 +499,7 @@ void FVirtualTextureUploadCache::UpdateFreeList(bool bForceFreeAll)
 			break;
 		}
 
-		TileAllocator.Free(It->TileHandle);
+		TileAllocator.Free(RHICmdList, It->TileHandle);
 		It.RemoveCurrent();
 	}
 }

@@ -4,6 +4,7 @@
 #include "Channels/MovieSceneChannelProxy.h"
 #include "Channels/MovieSceneCurveChannelImpl.h"
 #include "Channels/MovieSceneFloatChannel.h"
+#include "Channels/MovieSceneInterpolation.h"
 #include "HAL/Platform.h"
 #include "MovieSceneFrameMigration.h"
 #include "MovieSceneFwd.h"
@@ -60,9 +61,24 @@ bool FMovieSceneDoubleChannel::Evaluate(FFrameTime InTime, float& OutValue) cons
 	return bResult;
 }
 
+UE::MovieScene::Interpolation::FCachedInterpolation FMovieSceneDoubleChannel::GetInterpolationForTime(FFrameTime InTime) const
+{
+	return FMovieSceneDoubleChannelImpl::GetInterpolationForTime(this, InTime);
+}
+
 void FMovieSceneDoubleChannel::Set(TArray<FFrameNumber> InTimes, TArray<FMovieSceneDoubleValue> InValues)
 {
 	FMovieSceneDoubleChannelImpl::Set(this, InTimes, InValues);
+}
+
+void FMovieSceneDoubleChannel::SetKeysOnly(TArrayView<FFrameNumber> InTimes, TArrayView<FMovieSceneDoubleValue> InValues)
+{
+	check(InTimes.Num() == InValues.Num());
+
+	Times = MoveTemp(InTimes);
+	Values = MoveTemp(InValues);
+
+	KeyHandles.Reset();
 }
 
 void FMovieSceneDoubleChannel::AutoSetTangents(float Tension)
@@ -150,6 +166,11 @@ void FMovieSceneDoubleChannel::Optimize(const FKeyDataOptimizationParams& Params
 void FMovieSceneDoubleChannel::ClearDefault()
 {
 	bHasDefaultValue = false;
+}
+
+EMovieSceneKeyInterpolation GetInterpolationMode(FMovieSceneDoubleChannel* InChannel, const FFrameNumber& InTime, EMovieSceneKeyInterpolation DefaultInterpolationMode)
+{
+	return TMovieSceneCurveChannelImpl<FMovieSceneDoubleChannel>::GetInterpolationMode(InChannel, InTime, DefaultInterpolationMode);
 }
 
 FKeyHandle AddKeyToChannel(FMovieSceneDoubleChannel* Channel, FFrameNumber InFrameNumber, double InValue, EMovieSceneKeyInterpolation Interpolation)

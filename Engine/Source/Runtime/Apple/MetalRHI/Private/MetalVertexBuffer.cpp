@@ -136,6 +136,13 @@ FMetalRHIBuffer::FMetalRHIBuffer(uint32 InSize, EBufferUsageFlags InUsage, EMeta
 	{
 		Usage |= BUF_Dynamic;
 	}
+#if METAL_RHI_RAYTRACING
+	if (EnumHasAnyFlags(Usage, BUF_AccelerationStructure))
+	{
+		AccelerationStructureHandle = GetMetalDeviceContext().GetDevice().NewAccelerationStructureWithSize(Size);
+		return;
+	}
+#endif
 	
 	const bool bIsStatic = EnumHasAnyFlags(Usage, BUF_Static);
 	const bool bIsDynamic = EnumHasAnyFlags(Usage, BUF_Dynamic);
@@ -149,7 +156,7 @@ FMetalRHIBuffer::FMetalRHIBuffer(uint32 InSize, EBufferUsageFlags InUsage, EMeta
 	
 	if (InSize)
 	{
-		checkf(InSize <= 1024 * 1024 * 1024, TEXT("Metal doesn't support buffers > 1GB"));
+		checkf(InSize <= [GetMetalDeviceContext().GetDevice().GetPtr() maxBufferLength], TEXT("Requested buffer size larger than supported by device."));
 		
 		// Temporary buffers less than the buffer page size - currently 4Kb - is better off going through the set*Bytes API if available.
 		// These can't be used for shader resources or UAVs if we want to use the 'Linear Texture' code path
@@ -319,6 +326,14 @@ FMetalRHIBuffer::~FMetalRHIBuffer()
 		METAL_INC_DWORD_STAT_BY(Type, MemFreed, Size, Usage);
 		SafeReleaseMetalObject(Data);
 	}
+
+#if METAL_RHI_RAYTRACING
+	if (EnumHasAnyFlags(Usage, BUF_AccelerationStructure))
+	{
+		SafeReleaseMetalObject(AccelerationStructureHandle);
+		AccelerationStructureHandle = nil;
+	}
+#endif // METAL_RHI_RAYTRACING
 }
 
 void FMetalRHIBuffer::AllocTransferBuffer(bool bOnRHIThread, uint32 InSize, EResourceLockMode LockMode)

@@ -1,20 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Slate/DebugCanvas.h"
+#include "Engine/World.h"
 #include "RenderingThread.h"
-#include "UnrealClient.h"
 #include "CanvasTypes.h"
 #include "Engine/Engine.h"
-#include "EngineModule.h"
 #include "EngineFontServices.h"
 #include "Framework/Application/SlateApplication.h"
 #include "IStereoLayers.h"
+#include "ProfilingDebugging/RealtimeGPUProfiler.h"
 #include "StereoRendering.h"
 #include "Slate/SceneViewport.h"
 #include "IXRTrackingSystem.h"
 #include "ISpectatorScreenController.h"
 #include "IHeadMountedDisplay.h"
 #include "RenderTargetPool.h"
+#include "ViewportClient.h"
 
 /**
  * Simple representation of the backbuffer that the debug canvas renders to

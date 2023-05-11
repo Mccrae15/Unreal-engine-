@@ -162,6 +162,7 @@ protect /Saved/
 + /Source/Programs/UnrealHeaderTool/
 + /Source/Programs/UnrealHeaderTool/**.def
 + /Source/Programs/UnrealLightmass/
++ /Source/Programs/InterchangeWorker/
 - /Source/Programs/**/bin/
 - /Source/Programs/**/obj/
 - /Source/Programs/*/
@@ -193,6 +194,8 @@ protect /Source/Programs/Shared/EpicGames.Build/bin/**
 + /Source/ThirdParty/mimalloc/src/**
 + /Source/ThirdParty/**/IOS/**.framework/**
 + /Source/ThirdParty/**/TVOS/**.framework/**
++ /Source/ThirdParty/**/IOS/**.xcframework/**
++ /Source/ThirdParty/**/TVOS/**.xcframework/**
 - /Source/ThirdParty/**
 
 # Source: Include everything else

@@ -3,6 +3,7 @@
 #include "InterchangeSkeletalMeshFactoryNode.h"
 
 #include "Engine/SkeletalMesh.h"
+#include "Engine/SkinnedAssetCommon.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(InterchangeSkeletalMeshFactoryNode)
 
@@ -110,6 +111,23 @@ bool UInterchangeSkeletalMeshFactoryNode::SetCustomPhysicAssetSoftObjectPath(con
 	IMPLEMENT_NODE_ATTRIBUTE_SETTER_NODELEGATE(PhysicAssetSoftObjectPath, FSoftObjectPath)
 }
 
+bool UInterchangeSkeletalMeshFactoryNode::GetCustomUseHighPrecisionSkinWeights(bool& AttributeValue) const
+{
+	IMPLEMENT_NODE_ATTRIBUTE_GETTER(UseHighPrecisionSkinWeights, bool)
+}
+bool UInterchangeSkeletalMeshFactoryNode::SetCustomUseHighPrecisionSkinWeights(const bool& AttributeValue, bool bAddApplyDelegate)
+{
+	IMPLEMENT_NODE_ATTRIBUTE_SETTER_WITH_CUSTOM_DELEGATE(UInterchangeSkeletalMeshFactoryNode, UseHighPrecisionSkinWeights, bool);
+}
+bool UInterchangeSkeletalMeshFactoryNode::ApplyCustomUseHighPrecisionSkinWeightsToAsset(UObject* Asset) const
+{
+	IMPLEMENT_SKELETAL_BUILD_VALUE_TO_ASSET(UseHighPrecisionSkinWeights, bool, bUseHighPrecisionSkinWeights);
+}
+bool UInterchangeSkeletalMeshFactoryNode::FillCustomUseHighPrecisionSkinWeightsFromAsset(UObject* Asset)
+{
+	IMPLEMENT_SKELETALMESH_BUILD_ASSET_TO_VALUE(UseHighPrecisionSkinWeights, bUseHighPrecisionSkinWeights);
+}
+
 bool UInterchangeSkeletalMeshFactoryNode::GetCustomThresholdPosition(float& AttributeValue) const
 {
 	IMPLEMENT_NODE_ATTRIBUTE_GETTER(ThresholdPosition, float)
@@ -176,6 +194,23 @@ bool UInterchangeSkeletalMeshFactoryNode::ApplyCustomMorphThresholdPositionToAss
 bool UInterchangeSkeletalMeshFactoryNode::FillCustomMorphThresholdPositionFromAsset(UObject* Asset)
 {
 	IMPLEMENT_SKELETALMESH_BUILD_ASSET_TO_VALUE(MorphThresholdPosition, MorphThresholdPosition);
+}
+
+bool UInterchangeSkeletalMeshFactoryNode::GetCustomBoneInfluenceLimit(int32& AttributeValue) const
+{
+	IMPLEMENT_NODE_ATTRIBUTE_GETTER(BoneInfluenceLimit, int32)
+}
+bool UInterchangeSkeletalMeshFactoryNode::SetCustomBoneInfluenceLimit(const int32& AttributeValue, bool bAddApplyDelegate)
+{
+	IMPLEMENT_NODE_ATTRIBUTE_SETTER_WITH_CUSTOM_DELEGATE(UInterchangeSkeletalMeshFactoryNode, BoneInfluenceLimit, int32);
+}
+bool UInterchangeSkeletalMeshFactoryNode::ApplyCustomBoneInfluenceLimitToAsset(UObject* Asset) const
+{
+	IMPLEMENT_SKELETAL_BUILD_VALUE_TO_ASSET(BoneInfluenceLimit, int32, BoneInfluenceLimit);
+}
+bool UInterchangeSkeletalMeshFactoryNode::FillCustomBoneInfluenceLimitFromAsset(UObject* Asset)
+{
+	IMPLEMENT_SKELETALMESH_BUILD_ASSET_TO_VALUE(BoneInfluenceLimit, BoneInfluenceLimit);
 }
 
 bool UInterchangeSkeletalMeshFactoryNode::GetCustomImportContentType(EInterchangeSkeletalMeshContentType& AttributeValue) const

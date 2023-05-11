@@ -7,37 +7,36 @@
 #include "Misc/Crc.h"
 
 #include "GeometryCollection/GeometryCollectionConvexPropertiesInterface.h"
+#include "GeometryCollection/GeometryCollectionProximityPropertiesInterface.h"
 #include "GeometryCollection/ManagedArrayAccessor.h"
+#include "GeometryCollection/Facades/CollectionUVFacade.h"
 
 namespace Chaos
 {
 	class FChaosArchive;
 }
 class FGeometryCollectionConvexPropertiesInterface;
+class FGeometryCollectionProximityPropertiesInterface;
 
-namespace GeometryCollectionUV
-{
-	enum
-	{
-		MAX_NUM_UV_CHANNELS = 8,
-	};
-}
 
 /**
 * FGeometryCollection (FTransformCollection)
 */
 class CHAOS_API FGeometryCollection : public FTransformCollection, 
-	public FGeometryCollectionConvexPropertiesInterface
+	public FGeometryCollectionConvexPropertiesInterface,
+	public FGeometryCollectionProximityPropertiesInterface
 {
 
 public:
+	typedef FTransformCollection Super;
+
 	FGeometryCollection();
 	FGeometryCollection(FGeometryCollection &) = delete;
 	FGeometryCollection& operator=(const FGeometryCollection &) = delete;
 	FGeometryCollection(FGeometryCollection &&) = default;
 	FGeometryCollection& operator=(FGeometryCollection &&) = default;
+	MANAGED_ARRAY_COLLECTION_INTERNAL(FGeometryCollection);
 
-	typedef FTransformCollection Super;
 		/***
 		*  Attribute Groups
 		*
@@ -122,15 +121,14 @@ public:
 		FS_IgnoreCollisionInParentCluster = 0x00000008
 
 	};
-	//
-	//
-	//
+
 
 	/**
 	 * Create a GeometryCollection from Vertex and Indices arrays
 	 */
 	static FGeometryCollection* NewGeometryCollection(const TArray<float>& RawVertexArray, const TArray<int32>& RawIndicesArray, bool ReverseVertexOrder = true);
 	static void Init(FGeometryCollection* Collection, const TArray<float>& RawVertexArray, const TArray<int32>& RawIndicesArray, bool ReverseVertexOrder = true);
+	static void DefineGeometrySchema(FManagedArrayCollection&);
 
 	/**
 	* Create a GeometryCollection from Vertex, Indices, BoneMap, Transform, BoneHierarchy arrays
@@ -192,6 +190,7 @@ public:
 	*  Update bounding box entries for the geometry
 	*/
 	void UpdateBoundingBox();
+	static void UpdateBoundingBox(FManagedArrayCollection&, bool bSkipCheck=false);
 
 	/**  
 	* GetBoundingBox 
@@ -207,13 +206,14 @@ public:
 	* Reindex sections to keep polys with same materials together to reduce the number of draw calls
 	*/
 	void ReindexMaterials();
-		
+	static void ReindexMaterials(FManagedArrayCollection&);
+
 	/**
 	* Builds mesh sections for a given index buffer that could be a subset.
 	* Currently, this call assumes that the indices are ordered by MaterialID
 	* #todo(dmp): Refactor this and ReindexMaterials to share code
 	*/
-	TArray<FGeometryCollectionSection> BuildMeshSections(const TArray<FIntVector> &Indices, TArray<int32> BaseMeshOriginalIndicesIndex, TArray<FIntVector> &RetIndices) const;
+	TArray<FGeometryCollectionSection> BuildMeshSections(const TArray<FIntVector> &Indices, const TArray<int32>& BaseMeshOriginalIndicesIndex, TArray<FIntVector> &RetIndices) const;
 	//
 	//
 	//
@@ -278,8 +278,28 @@ public:
 
 	// Vertices Group
 	TManagedArray<FVector3f>		 Vertex;
-	// Outer array is the array of vertices, inner array is the uv channels
-	TManagedArray<TArray<FVector2f>> UVs;
+
+	// Note: UVs have been reworked, and unfortunately there is not a safe path to provide the original UVs managed array as a deprecated accessor.
+	// They are now stored in dynamically allocated attributes per UV channel (/ layer)
+	// See Facades/CollectionUVFacade.h for a more complete interface to access UV layers,
+	// but accesses of the form Collection.UVs[Vertex][Layer] can be replaced with Collection.GetUV(Vertex, Layer) (or ModifyUV)
+	FVector2f& ModifyUV(int32 VertexIndex, int32 UVLayer)
+	{
+		return GeometryCollection::UV::ModifyUVLayer(*this, UVLayer)[VertexIndex];
+	}
+	const FVector2f& GetUV(int32 VertexIndex, int32 UVLayer) const
+	{
+		return GeometryCollection::UV::GetUVLayer(*this, UVLayer)[VertexIndex];
+	}
+	inline TManagedArray<FVector2f>* FindUVLayer(int32 UVLayer)
+	{
+		return GeometryCollection::UV::FindUVLayer(*this, UVLayer);
+	}
+	inline const TManagedArray<FVector2f>* FindUVLayer(int32 UVLayer) const
+	{
+		return GeometryCollection::UV::FindUVLayer(*this, UVLayer);
+	}
+
 	TManagedArray<FLinearColor>      Color;
 	TManagedArray<FVector3f>         TangentU;
 	TManagedArray<FVector3f>         TangentV;
@@ -306,6 +326,15 @@ public:
 	TManagedArray<FGeometryCollectionSection> Sections;
 	
 protected:
+
+	/**
+	 * Virtual helper function called by CopyMatchingAttributesFrom; adds attributes 'default, but optional' attributes that are present in InCollection
+	 * This is used by FGeometryCollection to make sure all UV layers are copied over by CopyMatchingAttributesFrom()
+	 */
+	virtual void MatchOptionalDefaultAttributes(const FManagedArrayCollection& InCollection) override
+	{
+		GeometryCollection::UV::MatchUVLayerCount(*this, InCollection);
+	}
 
 	void Construct();
 
@@ -350,36 +379,3 @@ FORCEINLINE Chaos::FChaosArchive& operator<<(Chaos::FChaosArchive& Ar, FGeometry
 	return Ar;
 }
 
-class CHAOS_API FGeometryCollectionMeshFacade
-{
-public:
-	FGeometryCollectionMeshFacade(FManagedArrayCollection& InCollection);
-
-	/** 
-	 * returns true if all the necessary attributes are present
-	 * if not then the API can be used to create  
-	 */
-	bool IsValid() const;	
-
-	/**
-	 * Add the necessary attributes if they are missing
-	 */
-	void AddAttributes();
-
-	TManagedArrayAccessor<FVector3f> Vertex;
-	TManagedArrayAccessor<FVector3f> TangentU;
-	TManagedArrayAccessor<FVector3f> TangentV;
-	TManagedArrayAccessor<FVector3f> Normal;
-	TManagedArrayAccessor<TArray<FVector2f>> UVs;
-	TManagedArrayAccessor<FLinearColor> Color;
-	TManagedArrayAccessor<int32> BoneMap;
-	TManagedArrayAccessor<int32> VertexStart;
-	TManagedArrayAccessor<int32> VertexCount;
-
-	TManagedArrayAccessor<FIntVector> Indices;
-	TManagedArrayAccessor<bool> Visible;
-	TManagedArrayAccessor<int32> MaterialIndex;
-	TManagedArrayAccessor<int32> MaterialID;
-	TManagedArrayAccessor<int32> FaceStart;
-	TManagedArrayAccessor<int32> FaceCount;
-};

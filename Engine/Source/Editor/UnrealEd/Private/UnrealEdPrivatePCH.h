@@ -23,7 +23,6 @@
 #include "Misc/VarArgs.h"
 #include "HAL/PlatformAtomics.h"
 #include "GenericPlatform/GenericPlatformAtomics.h"
-#include "Templates/AreTypesEqual.h"
 #include "Templates/UnrealTypeTraits.h"
 #include "Templates/AndOrNot.h"
 #include "Templates/IsArithmetic.h"
@@ -433,7 +432,6 @@
 // From RenderCore:
 #include "RenderCommandFence.h"
 #include "RenderResource.h"
-#include "RenderCore.h"
 #include "RenderingThread.h"
 #include "UniformBuffer.h"
 #include "PackedNormal.h"

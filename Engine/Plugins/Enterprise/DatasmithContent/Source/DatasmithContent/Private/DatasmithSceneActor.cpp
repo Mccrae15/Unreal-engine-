@@ -5,6 +5,7 @@
 #include "DatasmithContentModule.h"
 
 #include "Engine/Engine.h"
+#include "UObject/UObjectIterator.h"
 
 #if WITH_EDITOR
 #include "Editor.h"
@@ -13,51 +14,79 @@
 ADatasmithSceneActor::ADatasmithSceneActor()
 {
 #if WITH_EDITOR
-	if (HasAnyFlags(RF_ClassDefaultObject))
+	if (!IsTemplate())
 	{
-		return;
+		if (HasAnyFlags(RF_NeedPostLoad) || GetOuter()->HasAnyFlags(RF_NeedPostLoad))
+		{
+			// Delegate registration is not thread-safe, so we postpone it on PostLoad when coming from loading which could be on another thread
+		}
+		else
+		{
+			RegisterDelegates();
+		}
 	}
+#endif // WITH_EDITOR
+}
+
+void ADatasmithSceneActor::BeginDestroy()
+{
+	Super::BeginDestroy();
+
+#if WITH_EDITOR
+	if (!IsTemplate())
+	{
+		UnregisterDelegates();
+	}
+#endif
+}
+
+#if WITH_EDITOR
+
+void ADatasmithSceneActor::RegisterDelegates()
+{
+	ensureMsgf(IsInGameThread(), TEXT("Potential race condition in ADatasmithSceneActor registering to delegates from non game-thread"));
 
 	FEditorDelegates::MapChange.AddUObject(this, &ADatasmithSceneActor::OnMapChange);
 
-	if ( GEngine )
+	if (GEngine)
 	{
-		OnActorDeletedDelegateHandle = GEngine->OnLevelActorDeleted().AddUObject( this, &ADatasmithSceneActor::OnActorDeleted );
+		OnActorDeletedDelegateHandle = GEngine->OnLevelActorDeleted().AddUObject(this, &ADatasmithSceneActor::OnActorDeleted);
 	}
 
-	if ( GEditor )
+	if (GEditor)
 	{
 		GEditor->GetEditorSubsystem<UImportSubsystem>()->OnAssetPostImport.AddUObject(this, &ADatasmithSceneActor::OnAssetPostImport);
 	}
-#endif // WITH_EDITOR
 }
 
-ADatasmithSceneActor::~ADatasmithSceneActor()
+void ADatasmithSceneActor::UnregisterDelegates()
 {
-#if WITH_EDITOR
-	if (HasAnyFlags(RF_ClassDefaultObject))
-	{
-		return;
-	}
+	ensureMsgf(IsInGameThread(), TEXT("Potential race condition in ADatasmithSceneActor unregistering to delegates from non game-thread"));
 
 	FEditorDelegates::MapChange.RemoveAll(this);
 
-	if ( GEngine )
+	if (GEngine)
 	{
-		GEngine->OnLevelActorDeleted().Remove( OnActorDeletedDelegateHandle );
+		GEngine->OnLevelActorDeleted().Remove(OnActorDeletedDelegateHandle);
 	}
 
-	if ( GEditor && GEditor->GetEditorSubsystem<UImportSubsystem>() )
+	if (UImportSubsystem* ImportSubsystem = (GEditor ? GEditor->GetEditorSubsystem<UImportSubsystem>() : nullptr))
 	{
-		GEditor->GetEditorSubsystem<UImportSubsystem>()->OnAssetPostImport.RemoveAll(this);
+		ImportSubsystem->OnAssetPostImport.RemoveAll(this);
 	}
-#endif // WITH_EDITOR
 }
+
+#endif
 
 #if WITH_EDITOR
 
 void ADatasmithSceneActor::PostLoad()
 {
+	if (!IsTemplate())
+	{
+		RegisterDelegates();
+	}
+
 	EnsureDatasmithIdsForRelatedActors();
 
 	Super::PostLoad();

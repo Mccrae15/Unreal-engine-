@@ -2,16 +2,15 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 
 #include "ContentBrowserAssetDataPayload.h"
 #include "ContentBrowserDataSource.h"
 
-#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/PathTree.h"
-#include "ContentBrowserItemData.h"
-#include "ContentBrowserItemPath.h"
 #include "ContentBrowserAliasDataSource.generated.h"
+
+class IAssetRegistry;
+struct FPropertyChangedEvent;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogContentBrowserAliasDataSource, Log, All);
 
@@ -70,6 +69,10 @@ public:
 	virtual bool CanEditItem(const FContentBrowserItemData& InItem, FText* OutErrorMsg) override;
 	virtual bool EditItem(const FContentBrowserItemData& InItem) override;
 	virtual bool BulkEditItems(TArrayView<const FContentBrowserItemData> InItems) override;
+	
+	virtual bool CanViewItem(const FContentBrowserItemData& InItem, FText* OutErrorMsg) override;
+	virtual bool ViewItem(const FContentBrowserItemData& InItem) override;
+	virtual bool BulkViewItems(TArrayView<const FContentBrowserItemData> InItems) override;
 
 	virtual bool CanPreviewItem(const FContentBrowserItemData& InItem, FText* OutErrorMsg) override;
 	virtual bool PreviewItem(const FContentBrowserItemData& InItem) override;
@@ -78,6 +81,10 @@ public:
 	virtual bool CanSaveItem(const FContentBrowserItemData& InItem, const EContentBrowserItemSaveFlags InSaveFlags, FText* OutErrorMsg) override;
 	virtual bool SaveItem(const FContentBrowserItemData& InItem, const EContentBrowserItemSaveFlags InSaveFlags) override;
 	virtual bool BulkSaveItems(TArrayView<const FContentBrowserItemData> InItems, const EContentBrowserItemSaveFlags InSaveFlags) override;
+
+	virtual bool CanPrivatizeItem(const FContentBrowserItemData& InItem, FText* OutErrorMsg) override;
+	virtual bool PrivatizeItem(const FContentBrowserItemData& InItem) override;
+	virtual bool BulkPrivatizeItems(TArrayView<const FContentBrowserItemData> InItems) override;
 
 	virtual bool AppendItemReference(const FContentBrowserItemData& InItem, FString& InOutStr) override;
 	virtual bool UpdateThumbnail(const FContentBrowserItemData& InItem, FAssetThumbnail& InThumbnail) override;
@@ -172,3 +179,9 @@ private:
 	/** A set used for removing duplicate aliases in the same query, stored here to avoid constant reallocation */
 	TSet<FSoftObjectPath> AlreadyAddedOriginalAssets;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "ContentBrowserItemPath.h"
+#include "CoreMinimal.h"
+#endif

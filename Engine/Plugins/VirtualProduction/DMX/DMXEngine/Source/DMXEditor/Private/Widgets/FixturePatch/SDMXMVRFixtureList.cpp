@@ -8,6 +8,7 @@
 #include "DMXFixturePatchSharedData.h"
 #include "DMXRuntimeUtils.h"
 #include "Commands/DMXEditorCommands.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Library/DMXEntityFixturePatch.h"
 #include "Library/DMXEntityFixtureType.h"
 #include "Library/DMXLibrary.h"
@@ -156,6 +157,9 @@ namespace UE::DMX::SDMXMVRFixtureList::Private
 
 		constexpr bool bMarkLibraryDirty = false;
 		UDMXEntityFixturePatch* NewFixturePatch = UDMXEntityFixturePatch::CreateFixturePatchInLibrary(ConstructionParams, FixturePatchToDuplicate->Name, bMarkLibraryDirty);
+
+		// Use the same color as the duplicated patch
+		NewFixturePatch->EditorColor = FixturePatchToDuplicate->EditorColor;
 
 		Address += ChannelSpan;
 
@@ -562,7 +566,7 @@ const FName FDMXMVRFixtureListCollumnIDs::Patch = "Patch";
 
 SDMXMVRFixtureList::SDMXMVRFixtureList()
 	: SortMode(EColumnSortMode::Ascending)
-	, SortedByColumnID(FDMXMVRFixtureListCollumnIDs::Patch)
+	, SortedByColumnID(FDMXMVRFixtureListCollumnIDs::FixtureID)
 {}
 
 SDMXMVRFixtureList::~SDMXMVRFixtureList()
@@ -736,6 +740,8 @@ void SDMXMVRFixtureList::RefreshList()
 			if (!bUpdatedGeneralSceneDescription)
 			{	
 				// Ony update the General Scene Description when Nodes were never acquired, or new patches were added.
+				constexpr bool bAlwaysMarkDirty = false;
+				DMXLibrary->Modify(bAlwaysMarkDirty);				
 				DMXLibrary->UpdateGeneralSceneDescription();
 				bUpdatedGeneralSceneDescription = true;
 			}
@@ -763,7 +769,7 @@ void SDMXMVRFixtureList::RefreshList()
 	// Update and sort the list and its widgets
 	ListView->RebuildList();
 
-	SortByColumnID(EColumnSortPriority::Max, FDMXMVRFixtureListCollumnIDs::Patch, EColumnSortMode::Ascending);
+	SortByColumnID(EColumnSortPriority::Max, SortedByColumnID, EColumnSortMode::Ascending);
 
 	AdoptSelectionFromFixturePatchSharedData();
 }
@@ -1358,7 +1364,6 @@ void SDMXMVRFixtureList::OnPasteItems()
 		FixturePatchSharedData->SelectFixturePatches(WeakPastedFixturePatches);
 
 		RequestListRefresh();
-		AdoptSelectionFromFixturePatchSharedData();
 	}
 }
 
@@ -1379,7 +1384,17 @@ void SDMXMVRFixtureList::OnDuplicateItems()
 	const FText TransactionText = LOCTEXT("DuplicateFixturePatchesTransaction", "Duplicate Fixture Patches");
 	const FScopedTransaction PasteTransaction(TransactionText);
 
-	const TArray<TWeakObjectPtr<UDMXEntityFixturePatch>> SelectedFixturePatches = FixturePatchSharedData->GetSelectedFixturePatches();
+	TArray<TWeakObjectPtr<UDMXEntityFixturePatch>> SelectedFixturePatches = FixturePatchSharedData->GetSelectedFixturePatches();
+	
+	// Sort in order of the list so duplicate happens in order of the list
+	Algo::SortBy(SelectedFixturePatches, [this](TWeakObjectPtr<UDMXEntityFixturePatch> FixturePatch)
+		{
+			return ListSource.IndexOfByPredicate([FixturePatch](const TSharedPtr<FDMXMVRFixtureListItem>& Item)
+				{
+					return Item->GetFixturePatch() == FixturePatch;
+				});
+		});
+
 	TArray<TWeakObjectPtr<UDMXEntityFixturePatch>> NewFixturePatches;
 	for (const TWeakObjectPtr<UDMXEntityFixturePatch> FixturePatch : SelectedFixturePatches)
 	{
@@ -1395,7 +1410,6 @@ void SDMXMVRFixtureList::OnDuplicateItems()
 	FixturePatchSharedData->SelectFixturePatches(NewFixturePatches);
 
 	RequestListRefresh();
-	AdoptSelectionFromFixturePatchSharedData();
 }
 
 bool SDMXMVRFixtureList::CanDeleteItems() const

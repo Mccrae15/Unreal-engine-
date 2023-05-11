@@ -7,6 +7,7 @@
 #include "Chaos/Evolution/ConstraintGroupSolver.h"
 #include "Chaos/Evolution/SimulationSpace.h"
 #include "Chaos/Evolution/SolverBodyContainer.h"
+#include "Chaos/Evolution/IterationSettings.h"
 #include "Chaos/ParticleHandleFwd.h"
 
 
@@ -33,7 +34,7 @@ namespace Chaos
 		using FEvolutionCallback = TFunction<void()>;
 		using FRigidParticleSOAs = FPBDRigidsSOAs;
 
-		FPBDMinEvolution(FRigidParticleSOAs& InParticles, TArrayCollectionArray<FVec3>& InPrevX, TArrayCollectionArray<FRotation3>& InPrevR, FCollisionDetector& InCollisionDetector, const FReal InBoundsExtension);
+		FPBDMinEvolution(FRigidParticleSOAs& InParticles, TArrayCollectionArray<FVec3>& InPrevX, TArrayCollectionArray<FRotation3>& InPrevR, FCollisionDetector& InCollisionDetector);
 		~FPBDMinEvolution();
 
 		void AddConstraintContainer(FPBDConstraintContainer& InContainer, const int32 Priority = 0);
@@ -44,17 +45,23 @@ namespace Chaos
 
 		void SetNumPositionIterations(const int32 NumIts)
 		{
-			NumPositionIterations = NumIts;
+			Private::FIterationSettings Iterations = ConstraintSolver.GetIterationSettings();
+			Iterations.SetNumPositionIterations(NumIts);
+			ConstraintSolver.SetIterationSettings(Iterations);
 		}
 
 		void SetNumVelocityIterations(const int32 NumIts)
 		{
-			NumVelocityIterations = NumIts;
+			Private::FIterationSettings Iterations = ConstraintSolver.GetIterationSettings();
+			Iterations.SetNumVelocityIterations(NumIts);
+			ConstraintSolver.SetIterationSettings(Iterations);
 		}
 
 		void SetNumProjectionIterations(const int32 NumIts)
 		{
-			NumProjectionIterations = NumIts;
+			Private::FIterationSettings Iterations = ConstraintSolver.GetIterationSettings();
+			Iterations.SetNumProjectionIterations(NumIts);
+			ConstraintSolver.SetIterationSettings(Iterations);
 		}
 
 		void SetGravity(const FVec3& G)
@@ -62,10 +69,6 @@ namespace Chaos
 			Gravity = G;
 		}
 
-		void SetBoundsExtension(const FReal InBoundsExtension)
-		{
-			BoundsExtension = InBoundsExtension;
-		}
 
 		void SetSimulationSpace(const FSimulationSpace& InSimulationSpace)
 		{
@@ -85,6 +88,18 @@ namespace Chaos
 		void SetSimulationSpaceSettings(const FSimulationSpaceSettings& InSimulationSpaceSettings)
 		{
 			SimulationSpaceSettings = InSimulationSpaceSettings;
+		}
+
+
+		UE_DEPRECATED(5.2, "InBoundsExtension parameter has been removed")
+		FPBDMinEvolution(FRigidParticleSOAs& InParticles, TArrayCollectionArray<FVec3>& InPrevX, TArrayCollectionArray<FRotation3>& InPrevR, FCollisionDetector& InCollisionDetector, const FReal InBoundsExtension)
+			: FPBDMinEvolution(InParticles, InPrevX, InPrevR, InCollisionDetector)
+		{
+		}
+
+		UE_DEPRECATED(5.2, "BoundsExtension has been removed")
+		void SetBoudsExtension(const FReal Unused)
+		{
 		}
 
 	private:
@@ -107,12 +122,8 @@ namespace Chaos
 		TArrayCollectionArray<FRotation3>& ParticlePrevRs;
 
 		TArray<FPBDConstraintContainer*> ConstraintContainers;
-		FPBDSceneConstraintGroupSolver ConstraintSolver;
+		Private::FPBDSceneConstraintGroupSolver ConstraintSolver;
 
-		int32 NumPositionIterations;
-		int32 NumVelocityIterations;
-		int32 NumProjectionIterations;
-		FReal BoundsExtension;
 		FVec3 Gravity;
 		FSimulationSpaceSettings SimulationSpaceSettings;
 		FSimulationSpace SimulationSpace;

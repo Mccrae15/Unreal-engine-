@@ -5,6 +5,7 @@
 #include "MeshCardRepresentation.h"
 #include "ComponentRecreateRenderStateContext.h"
 #include "LumenHeightfields.h"
+#include "MeshCardBuild.h"
 
 TAutoConsoleVariable<float> CVarLumenMeshCardsMinSize(
 	TEXT("r.LumenScene.SurfaceCache.MeshCardsMinSize"),
@@ -29,7 +30,7 @@ FAutoConsoleVariableRef CVarLumenMeshCardsMergeComponents(
 	ECVF_Scalability | ECVF_RenderThreadSafe
 );
 
-int32 GLumenMeshCardsMergeInstances = 1;
+int32 GLumenMeshCardsMergeInstances = 0;
 FAutoConsoleVariableRef CVarLumenMeshCardsMergeInstances(
 	TEXT("r.LumenScene.SurfaceCache.MeshCardsMergeInstances"),
 	GLumenMeshCardsMergeInstances,
@@ -170,9 +171,9 @@ public:
 	{
 		// Note: layout must match GetLumenCardData in usf
 
-		OutData[0] = FVector4f(Card.WorldOBB.AxisX[0], Card.WorldOBB.AxisY[0], Card.WorldOBB.AxisZ[0], Card.WorldOBB.Origin.X);
-		OutData[1] = FVector4f(Card.WorldOBB.AxisX[1], Card.WorldOBB.AxisY[1], Card.WorldOBB.AxisZ[1], Card.WorldOBB.Origin.Y);
-		OutData[2] = FVector4f(Card.WorldOBB.AxisX[2], Card.WorldOBB.AxisY[2], Card.WorldOBB.AxisZ[2], Card.WorldOBB.Origin.Z);
+		OutData[0] = FVector4f(Card.WorldOBB.AxisX[0], Card.WorldOBB.AxisY[0], Card.WorldOBB.AxisZ[0], Card.WorldOBB.Origin.X); // LWC_TODO
+		OutData[1] = FVector4f(Card.WorldOBB.AxisX[1], Card.WorldOBB.AxisY[1], Card.WorldOBB.AxisZ[1], Card.WorldOBB.Origin.Y); // LWC_TODO
+		OutData[2] = FVector4f(Card.WorldOBB.AxisX[2], Card.WorldOBB.AxisY[2], Card.WorldOBB.AxisZ[2], Card.WorldOBB.Origin.Z); // LWC_TODO
 
 		const FIntPoint ResLevelBias = Card.ResLevelToResLevelXYBias();
 		const uint32 LightingChannelMask = InPrimitiveGroup ? InPrimitiveGroup->LightingChannelMask : UINT32_MAX;
@@ -233,14 +234,15 @@ void FLumenMeshCardsGPUData::FillData(const FLumenMeshCards& RESTRICT MeshCards,
 {
 	// Note: layout must match GetLumenMeshCardsData in usf
 	const FVector WorldOrigin = MeshCards.LocalToWorld.GetOrigin();
-	OutData[0] = FVector4f(FVector4(MeshCards.WorldToLocalRotation.GetScaledAxis(EAxis::X), WorldOrigin.X));
-	OutData[1] = FVector4f(FVector4(MeshCards.WorldToLocalRotation.GetScaledAxis(EAxis::Y), WorldOrigin.Y));
-	OutData[2] = FVector4f(FVector4(MeshCards.WorldToLocalRotation.GetScaledAxis(EAxis::Z), WorldOrigin.Z));
+	OutData[0] = FVector4f(FVector4(MeshCards.WorldToLocalRotation.GetScaledAxis(EAxis::X), WorldOrigin.X)); // LWC_TODO
+	OutData[1] = FVector4f(FVector4(MeshCards.WorldToLocalRotation.GetScaledAxis(EAxis::Y), WorldOrigin.Y)); // LWC_TODO
+	OutData[2] = FVector4f(FVector4(MeshCards.WorldToLocalRotation.GetScaledAxis(EAxis::Z), WorldOrigin.Z)); // LWC_TODO
 
 	uint32 PackedData[4];
 	PackedData[0] = MeshCards.FirstCardIndex;
 	PackedData[1] = MeshCards.NumCards & 0xFFFF;
 	PackedData[1] |= MeshCards.bHeightfield ? 0x10000 : 0;
+	PackedData[1] |= MeshCards.bMostlyTwoSided ? 0x20000 : 0;
 	PackedData[2] = MeshCards.CardLookup[0];
 	PackedData[3] = MeshCards.CardLookup[1];
 	OutData[3] = *(FVector4f*)&PackedData;
@@ -380,8 +382,6 @@ void UpdateLumenMeshCards(FRDGBuilder& GraphBuilder, const FScene& Scene, const 
 		if (NumMeshCardsUploads > 0)
 		{
 			FLumenMeshCards NullMeshCards;
-			NullMeshCards.Initialize(FMatrix::Identity, FBox(FVector(-1.0f), FVector(-1.0f)), -1, 0, 0, false, false, false);
-
 			LumenSceneData.MeshCardsUploadBuffer.Init(GraphBuilder, NumMeshCardsUploads, FLumenMeshCardsGPUData::DataStrideInBytes, true, TEXT("Lumen.MeshCardsUpload"));
 
 			for (int32 Index : LumenSceneData.MeshCardsIndicesToUpdateInBuffer)
@@ -576,7 +576,7 @@ void BuildMeshCardsDataForMergedInstances(const FLumenPrimitiveGroup& PrimitiveG
 	for (const FPrimitiveSceneInfo* PrimitiveSceneInfo : PrimitiveGroup.Primitives)
 	{
 		const FMatrix& PrimitiveToWorld = PrimitiveSceneInfo->Proxy->GetLocalToWorld();
-		const TConstArrayView<FPrimitiveInstance> InstanceSceneData = PrimitiveSceneInfo->Proxy->GetInstanceSceneData();
+		const TConstArrayView<FInstanceSceneData> InstanceSceneData = PrimitiveSceneInfo->Proxy->GetInstanceSceneData();
 
 		const FBoxSphereBounds& PrimitiveBounds = PrimitiveSceneInfo->Proxy->GetBounds();
 		float InstanceArea = BoxSurfaceArea(PrimitiveBounds.BoxExtent);
@@ -584,7 +584,7 @@ void BuildMeshCardsDataForMergedInstances(const FLumenPrimitiveGroup& PrimitiveG
 
 		for (int32 InstanceIndex = 0; InstanceIndex < InstanceSceneData.Num(); ++InstanceIndex)
 		{
-			const FPrimitiveInstance& Instance = InstanceSceneData[InstanceIndex];
+			const FInstanceSceneData& Instance = InstanceSceneData[InstanceIndex];
 			InstanceArea = BoxSurfaceArea((FVector)PrimitiveSceneInfo->Proxy->GetInstanceLocalBounds(InstanceIndex).GetExtent());
 			InstanceMeshCardsLocalToWorld = Instance.LocalToPrimitive.ToMatrix() * PrimitiveToWorld;
 		}
@@ -609,7 +609,7 @@ void BuildMeshCardsDataForMergedInstances(const FLumenPrimitiveGroup& PrimitiveG
 		if (CardRepresentationData)
 		{
 			const FMatrix& PrimitiveToWorld = PrimitiveSceneInfo->Proxy->GetLocalToWorld();
-			const TConstArrayView<FPrimitiveInstance> InstanceSceneData = PrimitiveSceneInfo->Proxy->GetInstanceSceneData();
+			const TConstArrayView<FInstanceSceneData> InstanceSceneData = PrimitiveSceneInfo->Proxy->GetInstanceSceneData();
 			const FMeshCardsBuildData& PrimitiveMeshCardsBuildData = CardRepresentationData->MeshCardsBuildData;
 			const FMatrix PrimitiveLocalToMeshCardsLocal = PrimitiveToWorld * WorldToMeshCardsLocal;
 
@@ -617,7 +617,7 @@ void BuildMeshCardsDataForMergedInstances(const FLumenPrimitiveGroup& PrimitiveG
 			{
 				for (int32 InstanceIndex = 0; InstanceIndex < InstanceSceneData.Num(); ++InstanceIndex)
 				{
-					const FPrimitiveInstance& Instance = InstanceSceneData[InstanceIndex];
+					const FInstanceSceneData& Instance = InstanceSceneData[InstanceIndex];
 					MergedMeshCards.AddInstance(
 						PrimitiveSceneInfo->Proxy->GetInstanceLocalBounds(InstanceIndex).ToBox(),
 						Instance.LocalToPrimitive.ToMatrix() * PrimitiveLocalToMeshCardsLocal,
@@ -710,7 +710,7 @@ void FLumenSceneData::AddMeshCards(int32 PrimitiveGroupIndex)
 			const FPrimitiveSceneInfo* PrimitiveSceneInfo = PrimitiveGroup.Primitives[0];
 
 			FMatrix LocalToWorld = PrimitiveSceneInfo->Proxy->GetLocalToWorld();
-			const TConstArrayView<FPrimitiveInstance> InstanceSceneData = PrimitiveSceneInfo->Proxy->GetInstanceSceneData();
+			const TConstArrayView<FInstanceSceneData> InstanceSceneData = PrimitiveSceneInfo->Proxy->GetInstanceSceneData();
 
 			if (InstanceSceneData.Num() > 0)
 			{
@@ -811,13 +811,11 @@ void FLumenSceneData::AddMeshCardsFromBuildData(int32 PrimitiveGroupIndex, const
 			FLumenMeshCards& MeshCardsInstance = MeshCards[MeshCardsIndex];
 			MeshCardsInstance.Initialize(
 				LocalToWorld,
-				MeshCardsBuildData.Bounds,
 				PrimitiveGroupIndex,
 				FirstCardIndex,
 				NumCards,
-				PrimitiveGroup.bFarField,
-				PrimitiveGroup.bHeightfield,
-				PrimitiveGroup.bEmissiveLightSource);
+				MeshCardsBuildData,
+				PrimitiveGroup);
 
 			MeshCardsIndicesToUpdateInBuffer.Add(MeshCardsIndex);
 
@@ -906,7 +904,7 @@ void FLumenSceneData::UpdateMeshCards(const FMatrix& LocalToWorld, int32 MeshCar
 			const uint32 CardIndex = MeshCardsInstance.FirstCardIndex + LocalCardIndex;
 			FLumenCard& Card = Cards[CardIndex];
 
-			Card.SetTransform(FMatrix44f(LocalToWorld), MeshCardsInstance);		// LWC_TODO: Precision loss
+			Card.SetTransform(LocalToWorld, MeshCardsInstance);
 
 			CardIndicesToUpdateInBuffer.Add(CardIndex);
 		}
@@ -994,14 +992,14 @@ void FLumenCard::Initialize(
 	AxisAlignedDirectionIndex = CardBuildData.AxisAlignedDirectionIndex;
 	bHeightfield = InMeshCardsInstance.bHeightfield;
 
-	SetTransform(FMatrix44f(LocalToWorld), InMeshCardsInstance);		// LWC_TODO: Precision loss?
+	SetTransform(LocalToWorld, InMeshCardsInstance);
 
 	CardAspect = WorldOBB.Extent.X / WorldOBB.Extent.Y;
 }
 
-void FLumenCard::SetTransform(const FMatrix44f& LocalToWorld, const FLumenMeshCards& MeshCards)
+void FLumenCard::SetTransform(const FMatrix& LocalToWorld, const FLumenMeshCards& MeshCards)
 {
-	WorldOBB = LocalOBB.Transform(LocalToWorld);
+	WorldOBB = FLumenCardOBBd(LocalOBB).Transform(LocalToWorld);
 
 	MeshCardsOBB.AxisX = FVector4f(MeshCards.WorldToLocalRotation.TransformVector(FVector(WorldOBB.AxisX)));
 	MeshCardsOBB.AxisY = FVector4f(MeshCards.WorldToLocalRotation.TransformVector(FVector(WorldOBB.AxisY)));
@@ -1117,6 +1115,29 @@ void FLumenCard::GetSurfaceStats(const TSparseSpanArray<FLumenPageTableEntry>& P
 			Stats.DroppedResLevels += DesiredLockedResLevel - MinAllocatedResLevel;
 		}
 	}
+}
+
+void FLumenMeshCards::Initialize(
+	const FMatrix& InLocalToWorld,
+	int32 InPrimitiveGroupIndex,
+	uint32 InFirstCardIndex,
+	uint32 InNumCards,
+	const FMeshCardsBuildData& MeshCardsBuildData,
+	const FLumenPrimitiveGroup& PrimitiveGroup)
+{
+	PrimitiveGroupIndex = InPrimitiveGroupIndex;
+
+	LocalBounds = MeshCardsBuildData.Bounds;
+	bMostlyTwoSided = MeshCardsBuildData.bMostlyTwoSided;
+
+	FirstCardIndex = InFirstCardIndex;
+	NumCards = InNumCards;
+
+	bFarField = PrimitiveGroup.bFarField;
+	bHeightfield = PrimitiveGroup.bHeightfield;
+	bEmissiveLightSource = PrimitiveGroup.bEmissiveLightSource;
+
+	SetTransform(InLocalToWorld);
 }
 
 void FLumenMeshCards::UpdateLookup(const TSparseSpanArray<FLumenCard>& Cards)

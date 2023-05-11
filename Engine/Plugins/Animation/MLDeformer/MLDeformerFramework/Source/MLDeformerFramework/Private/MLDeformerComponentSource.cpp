@@ -6,7 +6,10 @@
 #include "MLDeformerModelInstance.h"
 
 #include "Components/SkeletalMeshComponent.h"
+#include "Rendering/SkeletalMeshRenderData.h"
 #include "SkeletalRenderPublic.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MLDeformerComponentSource)
 
 
 #define LOCTEXT_NAMESPACE "MLDeformerComponentSource"

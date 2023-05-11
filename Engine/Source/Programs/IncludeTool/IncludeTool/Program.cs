@@ -658,7 +658,7 @@ namespace IncludeTool
 					}
 
 					// Print all the conflicting declarations
-					SymbolTable.PrintConflicts(Log);
+					SymbolTable.PrintConflicts(InputDir, Log);
 				}
 
 				// Build a list of forward declarations per file
@@ -905,12 +905,12 @@ namespace IncludeTool
 				}
 			}
 
-			if (Utility.Run(Unreal.DotnetPath, String.Format("\"{0}\" -Mode=JsonExport {1} {2} {3}{4} -disableunity -xgeexport -nobuilduht -nopch -nodebuginfo -define:UE_INCLUDE_TOOL=1 -execcodegenactions -outputfile=\"{5}\"",
+			if (Utility.Run(Unreal.DotnetPath, String.Format("\"{0}\" -Mode=JsonExport {1} {2} {3}{4} -disableunity -xgeexport -nopch -nodebuginfo -define:UE_INCLUDE_TOOL=1 -execcodegenactions -outputfile=\"{5}\"",
 				Unreal.UnrealBuildToolDllPath, Target, Configuration, Platform, Precompile? " -precompile" : "", TaskListFile.ChangeExtension(".json").FullName), Unreal.EngineDirectory, Log) != 0)
 			{
 				throw new Exception("UnrealBuildTool failed");
 			}
-			if (Utility.Run(Unreal.DotnetPath, String.Format("\"{0}\" {1} {2} {3}{4} -disableunity -xgeexport -nobuilduht -nopch -nodebuginfo -define:UE_INCLUDE_TOOL=1",
+			if (Utility.Run(Unreal.DotnetPath, String.Format("\"{0}\" {1} {2} {3}{4} -disableunity -xgeexport -nopch -nodebuginfo -define:UE_INCLUDE_TOOL=1",
 				Unreal.UnrealBuildToolDllPath, Target, Configuration, Platform, Precompile? " -precompile" : ""), Unreal.EngineDirectory, Log) != 0)
 			{
 				throw new Exception("UnrealBuildTool failed");
@@ -968,26 +968,37 @@ namespace IncludeTool
 		/// Preprocess a given file, updating the markup for each included file
 		/// </summary>
 		/// <param name="Location">The file to process</param>
-		/// <param name="PreludeDefinitions">Built-in definitions for the preprocessor, scraped from the underlying compiler</param>
+		/// <param name="PreludeLocation">Built-in definitions for the preprocessor, scraped from the underlying compiler</param>
 		/// <param name="CompileEnvironment">Compile environment for the given file</param>
 		/// <param name="FileToActiveMarkup">Map from source file to bit array of the markup blocks that are active. Used to verify all preprocessed files parse the same way.</param>
 		/// <param name="Log">Writer for output messages</param>
 		static void PreprocessFile(FileReference Location, FileReference PreludeLocation, CompileEnvironment CompileEnvironment, IEnumerable<DirectoryReference> ExtraSystemIncludePaths, ConcurrentDictionary<SourceFile, MarkupState> FileToActiveMarkup, LineBasedTextWriter Log)
 		{
-			// Get the initial file
-			PreprocessorFile InitialFile = new PreprocessorFile(Location.FullName, Workspace.GetFile(Location));
-
-			// Get all the include paths. For Clang, we have to add these paths manually.
-			List<DirectoryReference> IncludePaths = new List<DirectoryReference>(CompileEnvironment.IncludePaths);
-			IncludePaths.AddRange(ExtraSystemIncludePaths);
-
-			// Set up the preprocessor with the correct defines for this environment
-			Preprocessor PreprocessorInst = new Preprocessor(PreludeLocation, CompileEnvironment.Definitions, IncludePaths);
-			foreach(FileReference ForceIncludedFile in CompileEnvironment.ForceIncludeFiles)
+			try
 			{
-				PreprocessIncludedFile(PreprocessorInst, new PreprocessorFile(ForceIncludedFile.FullName, Workspace.GetFile(ForceIncludedFile)), FileToActiveMarkup, Log);
+				// Get the initial file
+				PreprocessorFile InitialFile = new PreprocessorFile(Location.FullName, Workspace.GetFile(Location));
+
+				// Get all the include paths. For Clang, we have to add these paths manually.
+				List<DirectoryReference> IncludePaths = new List<DirectoryReference>(CompileEnvironment.IncludePaths);
+				IncludePaths.AddRange(ExtraSystemIncludePaths);
+
+				// Set up the preprocessor with the correct defines for this environment
+				Preprocessor PreprocessorInst = new Preprocessor(PreludeLocation, CompileEnvironment.Definitions, IncludePaths);
+				foreach (FileReference ForceIncludedFile in CompileEnvironment.ForceIncludeFiles)
+				{
+					PreprocessIncludedFile(PreprocessorInst, new PreprocessorFile(ForceIncludedFile.FullName, Workspace.GetFile(ForceIncludedFile)), FileToActiveMarkup, Log);
+				}
+				PreprocessIncludedFile(PreprocessorInst, InitialFile, FileToActiveMarkup, Log);
 			}
-			PreprocessIncludedFile(PreprocessorInst, InitialFile, FileToActiveMarkup, Log);
+			catch (TokenException ex)
+			{
+				Log.WriteLine(ex.Message);
+			}
+			catch (Exception ex)
+			{
+				Log.WriteLine("Error parsing {0}: {1}", Location, ex.ToString());
+			}
 		}
 
 		/// <summary>
@@ -1067,6 +1078,7 @@ namespace IncludeTool
 							&& !File.Location.FullName.Contains("lz4")
 							&& !File.Location.FullName.Contains("NeuralNetworkInference")
 							&& !File.Location.FullName.Contains("NNI")
+							&& !File.Location.FullName.Contains("NNE")
 							&& !File.Location.FullName.Contains("PhyaLib")
 							)
 						{

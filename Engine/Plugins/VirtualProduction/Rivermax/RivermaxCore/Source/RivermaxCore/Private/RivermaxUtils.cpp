@@ -85,7 +85,7 @@ namespace UE::RivermaxCore::Private::Utils
 		}
 	}
 
-	void StreamOptionsToSDPDescription(const UE::RivermaxCore::FRivermaxStreamOptions& Options, FAnsiStringBuilderBase& OutSDPDescription)
+	void StreamOptionsToSDPDescription(const UE::RivermaxCore::FRivermaxOutputStreamOptions& Options, FAnsiStringBuilderBase& OutSDPDescription)
 	{
 		// Basic SDP string creation from a set of options. At some point, having a proper SDP loader / creator would be useful.
 		// Refer to https://datatracker.ietf.org/doc/html/rfc4570
@@ -111,8 +111,8 @@ namespace UE::RivermaxCore::Private::Utils
 		OutSDPDescription.Appendf("a=rtpmap:96 raw/90000\n");
 		OutSDPDescription.Appendf("a=fmtp: 96 sampling=%S; width=%d; height=%d; exactframerate=%S; depth=%S; TCS=SDR; colorimetry=BT709; PM=2110GPM; SSN=ST2110-20:2017; TP=2110TPN;\n"
 			, *PixelFormatToSamplingDesc(Options.PixelFormat)
-			, Options.Resolution.X
-			, Options.Resolution.Y
+			, Options.AlignedResolution.X
+			, Options.AlignedResolution.Y
 			, *FrameRateDescription
 			, *PixelFormatToBitDepth(Options.PixelFormat));
 	}

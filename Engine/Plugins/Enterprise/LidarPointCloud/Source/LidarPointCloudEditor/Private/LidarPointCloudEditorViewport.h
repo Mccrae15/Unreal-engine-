@@ -2,12 +2,13 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/GCObject.h"
-#include "EditorViewportClient.h"
 #include "AdvancedPreviewScene.h"
+#include "CoreMinimal.h"
+#include "EditorViewportClient.h"
+#include "SCommonEditorViewportToolbarBase.h"
 #include "SEditorViewport.h"
-#include "Editor/UnrealEd/Public/SCommonEditorViewportToolbarBase.h"
+#include "UObject/GCObject.h"
+#include "Widgets/Layout/SBorder.h"
 
 class FLidarPointCloudEditor;
 class FLidarPointCloudEditorViewportClient;

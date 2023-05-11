@@ -4,12 +4,7 @@
 
 #if WITH_EDITOR
 
-#include "Misc/ConfigCacheIni.h"
-#include "WorldPartition/WorldPartitionRuntimeLevelStreamingCell.h"
-#include "WorldPartition/WorldPartitionLevelStreamingDynamic.h"
-#include "WorldPartition/WorldPartitionRuntimeCell.h"
-#include "WorldPartition/WorldPartitionRuntimeHash.h"
-#include "WorldPartition/WorldPartitionSubsystem.h"
+#include "Engine/Level.h"
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionLog.h"
 #include "Editor.h"
@@ -104,11 +99,8 @@ TArray<ICookPackageSplitter::FGeneratedPackage> FWorldPartitionCookPackageSplitt
 
 	WorldPartition->BeginCook(CookContext);
 
-	bool bIsSuccess = true;
-	for (IWorldPartitionCookPackageGenerator* CookPackageGenerator : CookContext.GetCookPackageGenerators())
-	{
-		bIsSuccess &= CookPackageGenerator->GatherPackagesToCook(CookContext);
-	}
+	bool bIsSuccess = CookContext.GatherPackagesToCook();
+	UE_CLOG(!bIsSuccess, LogWorldPartition, Warning, TEXT("[Cook] Errors while gathering packages to took from generators for owner object %s."), *GetFullNameSafe(OwnerObject));
 
 	UE_LOG(LogWorldPartition, Log, TEXT("[Cook] Gathered %u packages to generate from %u Generators."), CookContext.NumPackageToGenerate(), CookContext.NumGenerators());
 

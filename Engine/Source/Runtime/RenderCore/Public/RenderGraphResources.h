@@ -45,12 +45,10 @@ struct FRDGViewableResourceDebugData;
 /** Used for tracking pass producer / consumer edges in the graph for culling and pipe fencing. */
 struct FRDGProducerState
 {
-	/** Returns whether the next state is dependent on the last producer in the producer graph. */
-	static bool IsDependencyRequired(FRDGProducerState LastProducer, ERHIPipeline LastPipeline, FRDGProducerState NextState, ERHIPipeline NextPipeline);
-
 	FRDGProducerState() = default;
 
 	FRDGPass* Pass = nullptr;
+	FRDGPass* PassIfSkipUAVBarrier = nullptr;
 	ERHIAccess Access = ERHIAccess::Unknown;
 	FRDGViewHandle NoUAVBarrierHandle;
 };
@@ -138,6 +136,13 @@ public:
 		return ResourceRHI;
 	}
 
+	void SetOwnerName(const FName& InOwnerName)
+	{
+#if RHI_ENABLE_RESOURCE_INFO
+		OwnerName = InOwnerName;
+#endif
+	}
+
 	//////////////////////////////////////////////////////////////////////////
 
 protected:
@@ -167,6 +172,10 @@ private:
 	FRDGResourceDebugData& GetDebugData() const;
 #endif
 
+#if RHI_ENABLE_RESOURCE_INFO
+	FName OwnerName;	// For RHI resource tracking
+#endif
+
 	friend FRDGBuilder;
 	friend FRDGUserValidation;
 	friend FRDGBarrierValidation;
@@ -182,6 +191,11 @@ public:
 	FORCEINLINE const FRDGParameterStruct& GetParameters() const
 	{
 		return ParameterStruct;
+	}
+
+	FORCEINLINE const TCHAR* GetLayoutName() const
+	{
+		return *ParameterStruct.GetLayout().GetDebugName();
 	}
 
 #if RDG_ENABLE_DEBUG
@@ -219,6 +233,7 @@ private:
 	TRefCountPtr<FRHIUniformBuffer> UniformBufferRHI;
 	FRDGUniformBufferHandle Handle;
 	bool bQueuedForCreate = false;
+	bool bExternal = false;
 
 	friend FRDGBuilder;
 	friend FRDGUniformBufferRegistry;
@@ -457,14 +472,6 @@ inline FRDGTextureDesc Translate(const FPooledRenderTargetDesc& InDesc);
 /** Translates from an RHI/RDG texture descriptor to a pooled render target descriptor. */
 inline FPooledRenderTargetDesc Translate(const FRHITextureDesc& InDesc);
 
-UE_DEPRECATED(5.0, "Translate with ERenderTargetTexture is deprecated. Please use the single parameter variant.")
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-inline FRDGTextureDesc Translate(const FPooledRenderTargetDesc& InDesc, ERenderTargetTexture InTexture)
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-{
-	return Translate(InDesc);
-}
-
 class RENDERCORE_API FRDGPooledTexture final
 	: public FRefCountBase
 {
@@ -500,10 +507,6 @@ public:
 
 	//////////////////////////////////////////////////////////////////////////
 	//! The following methods may only be called during pass execution.
-
-	/** Returns the allocated pooled render target. */
-	UE_DEPRECATED(5.0, "Accessing the underlying pooled render target has been deprecated. Use GetRHI() instead.")
-	IPooledRenderTarget* GetPooledRenderTarget() const;
 
 	/** Returns the allocated RHI texture. */
 	FORCEINLINE FRHITexture* GetRHI() const
@@ -884,6 +887,15 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	FRDGBufferDesc& operator=(const FRDGBufferDesc&) = default;
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
+	static FRDGBufferDesc CreateIndirectDesc(uint32 BytesPerElement, uint32 NumElements)
+	{
+		FRDGBufferDesc Desc;
+		Desc.Usage = EBufferUsageFlags::Static | EBufferUsageFlags::DrawIndirect | EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::ShaderResource | EBufferUsageFlags::VertexBuffer;
+		Desc.BytesPerElement = BytesPerElement;
+		Desc.NumElements = NumElements;
+		return Desc;
+	}
+
 	/** Create the descriptor for an indirect RHI call.
 	 *
 	 * Note, IndirectParameterStruct should be one of the:
@@ -894,20 +906,12 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	template<typename IndirectParameterStruct>
 	static FRDGBufferDesc CreateIndirectDesc(uint32 NumElements = 1)
 	{
-		FRDGBufferDesc Desc;
-		Desc.Usage = EBufferUsageFlags::Static | EBufferUsageFlags::DrawIndirect | EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::ShaderResource | EBufferUsageFlags::VertexBuffer;
-		Desc.BytesPerElement = sizeof(IndirectParameterStruct);
-		Desc.NumElements = NumElements;
-		return Desc;
+		return CreateIndirectDesc(sizeof(IndirectParameterStruct), NumElements);
 	}
 
 	static FRDGBufferDesc CreateIndirectDesc(uint32 NumElements = 1)
 	{
-		FRDGBufferDesc Desc;
-		Desc.Usage = EBufferUsageFlags::Static | EBufferUsageFlags::DrawIndirect | EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::ShaderResource | EBufferUsageFlags::VertexBuffer;
-		Desc.BytesPerElement = 4;
-		Desc.NumElements = NumElements;
-		return Desc;
+		return CreateIndirectDesc(4u, NumElements);
 	}
 
 	static FRDGBufferDesc CreateStructuredDesc(uint32 BytesPerElement, uint32 NumElements)
@@ -1172,6 +1176,11 @@ public:
 		return CachedSRV;
 	}
 
+	FORCEINLINE FRHIShaderResourceView* GetSRV(const FRHIBufferSRVCreateInfo& SRVDesc)
+	{
+		return GetOrCreateSRV(SRVDesc);
+	}
+
 	FORCEINLINE uint32 GetSize() const
 	{
 		return Desc.GetSize();
@@ -1231,20 +1240,6 @@ public:
 	FORCEINLINE FRHIBuffer* GetIndirectRHICallBuffer() const
 	{
 		checkf(Desc.Usage & BUF_DrawIndirect, TEXT("Buffer %s was not flagged for indirect draw usage."), Name);
-		return GetRHI();
-	}
-
-	/** Returns the buffer to use for RHI calls, eg RHILockBuffer. */
-	UE_DEPRECATED(5.0, "Buffers types have been consolidated; use GetRHI() instead.")
-	FORCEINLINE FRHIBuffer* GetRHIVertexBuffer() const
-	{
-		return GetRHI();
-	}
-
-	/** Returns the buffer to use for structured buffer calls. */
-	UE_DEPRECATED(5.0, "Buffers types have been consolidated; use GetRHI() instead.")
-	FORCEINLINE FRHIBuffer* GetRHIStructuredBuffer() const
-	{
 		return GetRHI();
 	}
 

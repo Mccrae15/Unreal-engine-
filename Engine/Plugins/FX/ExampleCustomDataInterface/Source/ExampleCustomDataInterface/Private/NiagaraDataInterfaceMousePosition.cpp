@@ -3,17 +3,14 @@
 #include "NiagaraDataInterfaceMousePosition.h"
 
 #if WITH_EDITORONLY_DATA
-#include "Editor.h"
 #include "LevelEditorViewport.h"
+#else
+#include "Engine/World.h"
 #endif
 
-#include "NiagaraTypes.h"
-#include "ShaderParameterUtils.h"
-#include "Internationalization/Internationalization.h"
+#include "NiagaraCompileHashVisitor.h"
 #include "NiagaraShaderParametersBuilder.h"
 #include "NiagaraSystemInstance.h"
-#include "NiagaraWorldManager.h"
-#include "ShaderCompilerCore.h"
 #include "GameFramework/PlayerController.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraDataInterfaceMousePosition"
@@ -210,8 +207,7 @@ bool UNiagaraDataInterfaceMousePosition::AppendCompileHash(FNiagaraCompileHashVi
 		return false;
 	}
 
-	FSHAHash Hash = GetShaderFileHash(MouseDITemplateShaderFile, SP_PCD3D_SM5);
-	InVisitor->UpdateString(TEXT("NiagaraDataInterfaceMousePositionHLSLSource"), Hash.ToString());
+	InVisitor->UpdateShaderFile(MouseDITemplateShaderFile);
 	InVisitor->UpdateShaderParameters<FShaderParameters>();
 	return true;
 }
@@ -227,14 +223,11 @@ bool UNiagaraDataInterfaceMousePosition::GetFunctionHLSL(const FNiagaraDataInter
 // this loads our hlsl template script file and 
 void UNiagaraDataInterfaceMousePosition::GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo,	FString& OutHLSL)
 {
-	TMap<FString, FStringFormatArg> TemplateArgs =
+	const TMap<FString, FStringFormatArg> TemplateArgs =
 	{
 		{TEXT("ParameterName"),	ParamInfo.DataInterfaceHLSLSymbol},
 	};
-
-	FString TemplateFile;
-	LoadShaderSourceFile(MouseDITemplateShaderFile, SP_PCD3D_SM5, &TemplateFile, nullptr);
-	OutHLSL += FString::Format(*TemplateFile, TemplateArgs);
+	AppendTemplateHLSL(OutHLSL, MouseDITemplateShaderFile, TemplateArgs);
 }
 
 #endif

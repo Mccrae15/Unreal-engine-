@@ -2,11 +2,7 @@
 
 #include "MuCOE/Nodes/CustomizableObjectNodeTextureSample.h"
 
-#include "Containers/UnrealString.h"
-#include "EdGraph/EdGraphPin.h"
-#include "Internationalization/Internationalization.h"
 #include "MuCOE/EdGraphSchema_CustomizableObject.h"
-#include "UObject/NameTypes.h"
 
 class UCustomizableObjectNodeRemapPins;
 struct FPropertyChangedEvent;
@@ -69,7 +65,7 @@ FLinearColor UCustomizableObjectNodeTextureSample::GetNodeTitleColor() const
 
 FText UCustomizableObjectNodeTextureSample::GetTooltipText() const
 {
-	return LOCTEXT("Texture_Sample_Tooltip","Texture Sample");
+	return LOCTEXT("Texture_Sample_Tooltip","Get the color found in a texture at the targeted X and Y position (from 0.0 to 1.0, both included).");
 }
 
 #undef LOCTEXT_NAMESPACE

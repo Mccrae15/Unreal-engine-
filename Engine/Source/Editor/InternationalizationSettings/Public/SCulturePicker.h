@@ -32,6 +32,7 @@ struct FCultureEntry
 	FCulturePtr Culture;
 	TArray< TSharedPtr<FCultureEntry> > Children;
 	bool IsSelectable;
+	bool AutoExpand = false;
 
 	FCultureEntry(const FCulturePtr& InCulture, const bool InIsSelectable = true)
 		: Culture(InCulture)
@@ -70,15 +71,25 @@ public:
 		NativeAndActiveCultureDisplayName,
 	};
 
+	enum class ECulturesViewMode
+	{
+		/** Display the cultures hierarchically in a tree */
+		Hierarchical,
+		/** Display the cultures as a flat list */
+		Flat,
+	};
+
 public:
 	SLATE_BEGIN_ARGS( SCulturePicker )
 		: _DisplayNameFormat(ECultureDisplayFormat::ActiveCultureDisplayName)
+		, _ViewMode(ECulturesViewMode::Hierarchical)
 		, _CanSelectNone(false)
 	{}
 		SLATE_EVENT( FOnSelectionChanged, OnSelectionChanged )
 		SLATE_EVENT( FIsCulturePickable, IsCulturePickable )
 		SLATE_ARGUMENT( FCulturePtr, InitialSelection )
 		SLATE_ARGUMENT(ECultureDisplayFormat, DisplayNameFormat)
+		SLATE_ARGUMENT(ECulturesViewMode, ViewMode)
 		SLATE_ARGUMENT(bool, CanSelectNone)
 	SLATE_END_ARGS()
 
@@ -92,6 +103,12 @@ public:
 	void RequestTreeRefresh();
 
 private:
+	TSharedPtr<FCultureEntry> FindEntryForCulture(FCulturePtr Culture) const;
+	TSharedPtr<FCultureEntry> FindEntryForCultureImpl(FCulturePtr Culture, const TArray<TSharedPtr<FCultureEntry>>& Entries) const;
+
+	void AutoExpandEntries();
+	void AutoExpandEntriesImpl(const TArray<TSharedPtr<FCultureEntry>>& Entries);
+
 	void BuildStockEntries();
 	void RebuildEntries();
 
@@ -122,6 +139,9 @@ private:
 
 	/** How should we display culture names? */
 	ECultureDisplayFormat DisplayNameFormat;
+
+	/** How should we display the list of cultures? */
+	ECulturesViewMode ViewMode;
 
 	/** Should a null culture option be available? */
 	bool CanSelectNone;

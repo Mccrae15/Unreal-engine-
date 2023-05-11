@@ -10,6 +10,7 @@
 #if WITH_ENGINE
 #include "RenderingThread.h"
 #include "RHI.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "MediaShaders.h"
 #include "StaticBoundShaderState.h"
 #include "Misc/ScopeLock.h"
@@ -20,54 +21,6 @@
 
 #include "AvfMediaTextureSample.h"
 
-
-/**
- * Passes a CV*TextureRef or CVPixelBufferRef through to the RHI to wrap in an RHI texture without traversing system memory.
- */
-class FAvfTexture2DResourceWrapper
-	: public FResourceBulkDataInterface
-{
-public:
-
-	FAvfTexture2DResourceWrapper(CFTypeRef InImageBuffer)
-		: ImageBuffer(InImageBuffer)
-	{
-		check(ImageBuffer);
-		CFRetain(ImageBuffer);
-	}
-
-	virtual ~FAvfTexture2DResourceWrapper()
-	{
-		CFRelease(ImageBuffer);
-		ImageBuffer = nullptr;
-	}
-
-public:
-
-	//~ FResourceBulkDataInterface interface
-
-	virtual void Discard() override
-	{
-		delete this;
-	}
-
-	virtual const void* GetResourceBulkData() const override
-	{
-		return ImageBuffer;
-	}
-	
-	virtual uint32 GetResourceBulkDataSize() const override
-	{
-		return ImageBuffer ? ~0u : 0;
-	}
-
-	virtual EBulkDataType GetResourceType() const override
-	{
-		return EBulkDataType::MediaTexture;
-	}
-			
-	CFTypeRef ImageBuffer;
-};
 
 
 /**

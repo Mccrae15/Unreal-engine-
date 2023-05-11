@@ -309,10 +309,8 @@ InitListHandler::createInitForVectorType(QualType elemType, uint32_t count,
   return spvBuilder.createCompositeConstruct(vecType, elements, srcLoc, range);
 }
 
-SpirvInstruction *
-InitListHandler::createInitForMatrixType(QualType matrixType,
-                                         SourceLocation srcLoc,
-	                                     SourceRange range) {
+SpirvInstruction *InitListHandler::createInitForMatrixType(
+    QualType matrixType, SourceLocation srcLoc, SourceRange range) {
   uint32_t rowCount = 0, colCount = 0;
   hlsl::GetHLSLMatRowColCount(matrixType, rowCount, colCount);
   const QualType elemType = hlsl::GetHLSLMatElementType(matrixType);
@@ -387,6 +385,8 @@ InitListHandler::createInitForStructType(QualType type, SourceLocation srcLoc,
   llvm::SmallVector<SpirvInstruction *, 4> fields;
   const RecordDecl *structDecl = type->getAsStructureType()->getDecl();
   for (const auto *field : structDecl->fields()) {
+    if (field->getType()->isEmptyStructureType())
+      continue;
     fields.push_back(
         createInitForType(field->getType(), field->getLocation(), range));
     if (!fields.back())

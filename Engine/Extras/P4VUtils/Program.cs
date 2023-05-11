@@ -70,6 +70,7 @@ namespace P4VUtils
 			["unshelvemakedatawritable"] = new UnshelveMakeDataWritable(),
 			["convertcldatatolocalwritable"] = new ConvertCLDataToLocalWritable(),
 			["convertdatatolocalwritable"] = new ConvertDataToLocalWritable(),
+			["describedirectory"] = new DescribeDirectoryCommand(),
 		};
 
 		// UEIntegrate Folder commands - complex commands to facilitate integrations/backout
@@ -87,6 +88,7 @@ namespace P4VUtils
 			["preflight"] = new PreflightCommand(),
 			["preflightandsubmit"] = new PreflightAndSubmitCommand(),
 			["movewriteablepreflightandsubmit"] = new MoveWriteableFilesthenPreflightAndSubmitCommand(),
+			["openpreflight"] = new OpenPreflightCommand(),
 		};
 
 		public static IDictionary<string, Command> Commands = SubmissionCommands.Concat(RootHelperCommands).Concat(ToolboxCommands).Concat(IntegrateCommands).Concat(HordeCommands).ToDictionary(p => p.Key, p => p.Value, StringComparer.OrdinalIgnoreCase);

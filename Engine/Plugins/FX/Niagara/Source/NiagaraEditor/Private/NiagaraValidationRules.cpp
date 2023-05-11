@@ -4,12 +4,17 @@
 
 #include "NiagaraClipboard.h"
 #include "NiagaraComponentRendererProperties.h"
+#include "NiagaraDataInterfaceCamera.h"
+#include "NiagaraDataInterfaceSkeletalMesh.h"
+#include "NiagaraDataInterfaceUtilities.h"
+#include "NiagaraEditorSettings.h"
 #include "NiagaraNodeFunctionCall.h"
 #include "NiagaraScriptSource.h"
 #include "NiagaraSettings.h"
 #include "NiagaraSimulationStageBase.h"
-#include "NiagaraSystem.h"
+#include "NiagaraSystemImpl.h"
 #include "NiagaraSystemEditorData.h"
+#include "DataInterface/NiagaraDataInterfaceActorComponent.h"
 #include "ViewModels/NiagaraEmitterHandleViewModel.h"
 #include "ViewModels/NiagaraSystemViewModel.h"
 #include "ViewModels/Stack/NiagaraStackEmitterSettingsGroup.h"
@@ -109,6 +114,107 @@ namespace NiagaraValidation
 				}
 			});
 	}
+
+	FString GetPlatformConflictsString(const FNiagaraPlatformSet& PlatformSetA, const FNiagaraPlatformSet& PlatformSetB, int MaxPlatformsToShow = 4)
+	{
+		TArray<const FNiagaraPlatformSet*> CheckSets;
+		CheckSets.Add(&PlatformSetA);
+		CheckSets.Add(&PlatformSetB);
+
+		TArray<FNiagaraPlatformSetConflictInfo> ConflictInfos;
+		FNiagaraPlatformSet::GatherConflicts(CheckSets, ConflictInfos);
+
+		if (ConflictInfos.Num() > 0)
+		{
+			TSet<FName> BannedPlatformNames;
+			for (const FNiagaraPlatformSetConflictInfo& ConflictInfo : ConflictInfos)
+			{
+				for (const FNiagaraPlatformSetConflictEntry& ConflictEntry : ConflictInfo.Conflicts)
+				{
+					BannedPlatformNames.Add(ConflictEntry.ProfileName);
+				}
+			}
+
+			TStringBuilder<256> BannedPlatformsString;
+			int NumFounds = 0;
+			for (FName PlatformName : BannedPlatformNames)
+			{
+				if (NumFounds >= MaxPlatformsToShow)
+				{
+					BannedPlatformsString.Append(TEXT(", ..."));
+					break;
+				}
+				if (NumFounds != 0)
+				{
+					BannedPlatformsString.Append(TEXT(", "));
+				}
+				++NumFounds;
+				PlatformName.AppendString(BannedPlatformsString);
+			}
+			return BannedPlatformsString.ToString();
+		}
+		return FString();
+	}
+
+	TSharedPtr<FNiagaraEmitterHandleViewModel> GetEmitterViewModel(const FNiagaraValidationContext& Context, UNiagaraEmitter* NiagaraEmitter)
+	{
+		if (NiagaraEmitter == nullptr)
+		{
+			return nullptr;
+		}
+
+		const TSharedRef<FNiagaraEmitterHandleViewModel>* EmitterViewModel =
+			Context.ViewModel->GetEmitterHandleViewModels().FindByPredicate(
+				[NiagaraEmitter](const TSharedRef<FNiagaraEmitterHandleViewModel>& EmitterViewModelRef)
+				{
+					FNiagaraEmitterHandle* EmitterHandle = EmitterViewModelRef->GetEmitterHandle();
+					return EmitterHandle && EmitterHandle->GetInstance().Emitter == NiagaraEmitter;
+				}
+			);
+
+		if ( EmitterViewModel )
+		{
+			return *EmitterViewModel;
+		}
+		return nullptr;
+	}
+}
+
+// --------------------------------------------------------------------------------------------------------------------------------------------
+
+bool NiagaraValidation::HasValidationRules(UNiagaraSystem* NiagaraSystem)
+{
+	if ( NiagaraSystem != nullptr )
+	{
+		if (const UNiagaraEditorSettings* EditorSettings = GetDefault<UNiagaraEditorSettings>())
+		{
+			for (const TSoftObjectPtr<UNiagaraValidationRuleSet>& ValidationRuleSetPtr : EditorSettings->DefaultValidationRuleSets)
+			{
+				const UNiagaraValidationRuleSet* ValidationRuleSet = ValidationRuleSetPtr.LoadSynchronous();
+				if (ValidationRuleSet != nullptr && ValidationRuleSet->ValidationRules.Num() > 0)
+				{
+					return true;
+				}
+			}
+		}
+
+		if (UNiagaraEffectType* EffectType = NiagaraSystem->GetEffectType())
+		{
+			if (EffectType->ValidationRules.Num() > 0)
+			{
+				return true;
+			}
+
+			for (UNiagaraValidationRuleSet* ValidationRuleSet : EffectType->ValidationRuleSets)
+			{
+				if (ValidationRuleSet != nullptr && ValidationRuleSet->ValidationRules.Num() > 0)
+				{
+					return true;
+				}
+			}
+		}
+	}
+	return false;
 }
 
 // --------------------------------------------------------------------------------------------------------------------------------------------
@@ -125,19 +231,46 @@ void NiagaraValidation::ValidateAllRulesInSystem(TSharedPtr<FNiagaraSystemViewMo
 	TArray<FNiagaraValidationResult> NiagaraValidationResults;
 	
 	UNiagaraSystem& NiagaraSystem = SysViewModel->GetSystem();
-	if (NiagaraSystem.GetEffectType())
-	{
-		// go over the validation rules in the effect type
-		for (UNiagaraValidationRule* ValidationRule : NiagaraSystem.GetEffectType()->ValidationRules)
+
+	// Helper function
+	const auto& ExecuteValidateRules =
+		[&](TConstArrayView<TObjectPtr<UNiagaraValidationRule>> ValidationRules)
 		{
-			if (ValidationRule)
+			for (const UNiagaraValidationRule* ValidationRule : ValidationRules)
 			{
-				ValidationRule->CheckValidity(Context, NiagaraValidationResults);
+				if (ValidationRule)
+				{
+					ValidationRule->CheckValidity(Context, NiagaraValidationResults);
+				}
+		}
+	};
+
+	// Validate Global Rules
+	if (const UNiagaraEditorSettings* EditorSettings = GetDefault<UNiagaraEditorSettings>())
+	{
+		for (const TSoftObjectPtr<UNiagaraValidationRuleSet>& ValidationRuleSetPtr : EditorSettings->DefaultValidationRuleSets)
+		{
+			if (const UNiagaraValidationRuleSet* ValidationRuleSet = ValidationRuleSetPtr.LoadSynchronous())
+			{
+				ExecuteValidateRules(ValidationRuleSet->ValidationRules);
 			}
 		}
 	}
 
-	// go over the module-specific rules
+	// Validate EffectType Rules
+	if (UNiagaraEffectType* EffectType = NiagaraSystem.GetEffectType())
+	{
+		ExecuteValidateRules(EffectType->ValidationRules);
+		for (UNiagaraValidationRuleSet* ValidationRuleSet : EffectType->ValidationRuleSets)
+		{
+			if (ValidationRuleSet != nullptr)
+			{
+				ExecuteValidateRules(ValidationRuleSet->ValidationRules);
+			}
+		}
+	}
+
+	// Validate Module Specific Rules
 	TArray<UNiagaraStackModuleItem*> StackModuleItems =	NiagaraValidation::GetAllStackEntriesInSystem<UNiagaraStackModuleItem>(Context.ViewModel);
 	for (UNiagaraStackModuleItem* Module : StackModuleItems)
 	{
@@ -328,6 +461,75 @@ void UNiagaraValidationRule_BannedModules::CheckValidity(const FNiagaraValidatio
 	}
 }
 
+void UNiagaraValidationRule_BannedDataInterfaces::CheckValidity(const FNiagaraValidationContext& Context, TArray<FNiagaraValidationResult>& Results)  const
+{
+	UNiagaraSystem* NiagaraSystem = &Context.ViewModel->GetSystem();
+
+	FNiagaraDataInterfaceUtilities::ForEachDataInterface(
+		NiagaraSystem,
+		[&](const FNiagaraDataInterfaceUtilities::FDataInterfaceUsageContext& UsageContext) -> bool
+		{
+			UClass* DIClass = UsageContext.DataInterface->GetClass();
+			if (BannedDataInterfaces.Contains(DIClass) == false)
+			{
+				return true;
+			}
+
+			static const FText WarningFormat(LOCTEXT("BannedDataInteraceFormatWarn", "DataInterface '{0}' is banned on currently enabled platforms"));
+			static const FText SystemDescFormat(LOCTEXT("BannedDataInteraceSystemFormatDesc", "DataInterface '{0} - {1}' is banned on currently enabled platforms"));
+			static const FText EmitterDescFormat(LOCTEXT("BannedDataInteraceEmitterFormatDesc", "DataInterface '{0} - {1}' is banned on currently enabled platforms '{2}'"));
+
+			UObject* WarningObject = nullptr;
+			if (UNiagaraEmitter* NiagaraEmitter = Cast<UNiagaraEmitter>(UsageContext.OwnerObject))
+			{
+				const TSharedPtr<FNiagaraEmitterHandleViewModel> EmitterViewModel = NiagaraValidation::GetEmitterViewModel(Context, NiagaraEmitter);
+				if (EmitterViewModel == nullptr)
+				{
+					return true;
+				}
+
+				const FVersionedNiagaraEmitterData* EmitterData = EmitterViewModel->GetEmitterHandle()->GetEmitterData();
+				if (EmitterData == nullptr)
+				{
+					return true;
+				}
+
+				const bool bIsBanEnabled =
+					((EmitterData->SimTarget == ENiagaraSimTarget::CPUSim) && bBanOnCpu) ||
+					((EmitterData->SimTarget == ENiagaraSimTarget::GPUComputeSim) && bBanOnGpu);
+
+				if (bIsBanEnabled)
+				{
+					FString PlatformConflictsString = NiagaraValidation::GetPlatformConflictsString(Platforms, EmitterData->Platforms);
+					if (PlatformConflictsString.IsEmpty() == false)
+					{
+						Results.Emplace(
+							Severity,
+							FText::Format(WarningFormat, FText::FromName(UsageContext.Variable.GetName())),
+							FText::Format(EmitterDescFormat, FText::FromName(UsageContext.Variable.GetName()), FText::FromName(DIClass->GetFName()), FText::FromString(PlatformConflictsString)),
+							NiagaraValidation::GetStackEntry<UNiagaraStackEmitterPropertiesItem>(EmitterViewModel->GetEmitterStackViewModel())
+						);
+					}
+				}
+			}
+			else if (UNiagaraSystem* NiagaraSystem = Cast<UNiagaraSystem>(UsageContext.OwnerObject))
+			{
+				if (bBanOnCpu == true)
+				{
+					Results.Emplace(
+						ENiagaraValidationSeverity::Warning,
+						FText::Format(WarningFormat, FText::FromName(UsageContext.Variable.GetName())),
+						FText::Format(SystemDescFormat, FText::FromName(UsageContext.Variable.GetName()), FText::FromName(DIClass->GetFName())),
+						NiagaraValidation::GetStackEntry<UNiagaraStackSystemPropertiesItem>(Context.ViewModel->GetSystemStackViewModel())
+					);
+				}
+			}
+
+			return true;
+		}
+	);
+}
+
 void UNiagaraValidationRule_InvalidEffectType::CheckValidity(const FNiagaraValidationContext& Context, TArray<FNiagaraValidationResult>& Results)  const
 {
 	UNiagaraStackSystemPropertiesItem* SystemProperties = NiagaraValidation::GetStackEntry<UNiagaraStackSystemPropertiesItem>(Context.ViewModel->GetSystemStackViewModel());
@@ -465,7 +667,7 @@ void UNiagaraValidationRule_NoOpaqueRenderMaterial::CheckValidity(const FNiagara
 								continue;
 							}
 							
-							if (Material->GetBlendMode() == BLEND_Opaque || Material->GetBlendMode() == BLEND_Masked)
+							if (IsOpaqueOrMaskedBlendMode(*Material))
 							{
 								FText Description = LOCTEXT("NoOpaqueRenderMaterialDescription", "This renderer uses a material with a masked or opaque blend mode, which writes to the depth buffer.\nThis will cause conflicts when the collision module also uses depth buffer collisions.");
 								FNiagaraValidationResult Result(ENiagaraValidationSeverity::Warning, FText::Format(LOCTEXT("NoOpaqueRenderMaterialSummary", "Renderer '{0}' has an opaque material"), Renderer->GetDisplayName()), Description, Renderer);
@@ -528,7 +730,7 @@ void UNiagaraValidationRule_NoFixedDeltaTime::CheckValidity(const FNiagaraValida
 		{
 			OutResults.Emplace_GetRef(
 				ENiagaraValidationSeverity::Error,
-				LOCTEXT("NoFixedDeltaTime", "Effect tyoe does not allow fixed tick delta time"),
+				LOCTEXT("NoFixedDeltaTime", "Effect type does not allow fixed tick delta time"),
 				LOCTEXT("NoFixedDeltaTimeDetailed", "This system uses a fixed tick delta time, which means it might tick multiple times per frame or might skip ticks depending on the global tick rate.\nThe selected effect type does not allow fixed tick delta times."),
 				NiagaraValidation::GetStackEntry<UNiagaraStackSystemPropertiesItem>(Context.ViewModel->GetSystemStackViewModel())
 			);
@@ -569,7 +771,7 @@ void UNiagaraValidationRule_SimulationStageBudget::CheckValidity(const FNiagaraV
 			{
 				UNiagaraStackEmitterPropertiesItem* EmitterProperties = NiagaraValidation::GetStackEntry<UNiagaraStackEmitterPropertiesItem>(EmitterHandleModel.Get().GetEmitterStackViewModel());
 				OutResults.Emplace_GetRef(
-					ENiagaraValidationSeverity::Error,
+					Severity,
 					FText::Format(LOCTEXT("SimStageTooManyIterationsFormat", "Simulation Stage '{0}' has too many iterations"), FText::FromName(SimStage->SimulationStageName)),
 					FText::Format(LOCTEXT("SimStageTooManyIterationsDetailedFormat", "Simulation Stage '{0}' has {1} iterations and we only allow {2}"), FText::FromName(SimStage->SimulationStageName), FText::AsNumber(SimStage->Iterations), FText::AsNumber(MaxIterationsPerStage)),
 					EmitterProperties
@@ -581,7 +783,7 @@ void UNiagaraValidationRule_SimulationStageBudget::CheckValidity(const FNiagaraV
 		{
 			UNiagaraStackEmitterPropertiesItem* EmitterProperties = NiagaraValidation::GetStackEntry<UNiagaraStackEmitterPropertiesItem>(EmitterHandleModel.Get().GetEmitterStackViewModel());
 			OutResults.Emplace(
-				ENiagaraValidationSeverity::Error,
+				Severity,
 				LOCTEXT("SimStageTooManyTotalIterationsFormat", "Emitter has too many total simulation stage iterations"),
 				FText::Format(LOCTEXT("SimStageTooManyTotalIterationsDetailedFormat", "Emitter has {0} total simulation stage iterations and we only allow {1}"), FText::AsNumber(TotalIterations), FText::AsNumber(MaxTotalIterations)),
 				EmitterProperties
@@ -592,7 +794,7 @@ void UNiagaraValidationRule_SimulationStageBudget::CheckValidity(const FNiagaraV
 		{
 			UNiagaraStackEmitterPropertiesItem* EmitterProperties = NiagaraValidation::GetStackEntry<UNiagaraStackEmitterPropertiesItem>(EmitterHandleModel.Get().GetEmitterStackViewModel());
 			OutResults.Emplace(
-				ENiagaraValidationSeverity::Error,
+				Severity,
 				LOCTEXT("TooManySimStagesFormat", "Emitter has too many simulation stages"),
 				FText::Format(LOCTEXT("TooManySimStagesDetailedFormat", "Emitter has {0} simulation stages active and we only allow {1}"), FText::AsNumber(TotalEnabledStages), FText::AsNumber(MaxSimulationStages)),
 				EmitterProperties
@@ -601,5 +803,68 @@ void UNiagaraValidationRule_SimulationStageBudget::CheckValidity(const FNiagaraV
 	}
 }
 
-#undef LOCTEXT_NAMESPACE
+void UNiagaraValidationRule_TickDependencyCheck::CheckValidity(const FNiagaraValidationContext& Context, TArray<FNiagaraValidationResult>& OutResults) const
+{
+	UNiagaraSystem* NiagaraSystem = &Context.ViewModel->GetSystem();
 
+	if (!bCheckActorComponentInterface && !bCheckCameraDataInterface && !bCheckSkeletalMeshInterface)
+	{
+		return;
+	}
+
+	NiagaraSystem->ForEachScript(
+		[&](UNiagaraScript* NiagaraScript)
+		{
+			const TArray<FNiagaraScriptDataInterfaceInfo>& CachedDefaultDIs = NiagaraScript->GetCachedDefaultDataInterfaces();
+			for ( const FNiagaraScriptDataInterfaceInfo& CachedDefaultDI : CachedDefaultDIs )
+			{
+				bool bWarnTickDependency = false;
+				if (UNiagaraDataInterfaceCamera* CameraDataInterface = Cast<UNiagaraDataInterfaceCamera>(CachedDefaultDI.DataInterface))
+				{
+					bWarnTickDependency = bCheckCameraDataInterface && CameraDataInterface->bRequireCurrentFrameData;
+				}
+				else if (UNiagaraDataInterfaceSkeletalMesh* SkeletalMeshDataInterface = Cast<UNiagaraDataInterfaceSkeletalMesh>(CachedDefaultDI.DataInterface))
+				{
+					bWarnTickDependency = bCheckSkeletalMeshInterface && SkeletalMeshDataInterface->bRequireCurrentFrameData;
+				}
+				else if (UNiagaraDataInterfaceActorComponent* ActorComponentDataInterface = Cast<UNiagaraDataInterfaceActorComponent>(CachedDefaultDI.DataInterface))
+				{
+					bWarnTickDependency = bCheckActorComponentInterface && ActorComponentDataInterface->bRequireCurrentFrameData;
+				}
+
+				if (bWarnTickDependency)
+				{
+					UNiagaraEmitter* NiagaraEmitter = NiagaraScript->GetTypedOuter<UNiagaraEmitter>();
+
+					UObject* StackObject = nullptr;
+					if ( NiagaraEmitter )
+					{
+						// If we are attatched to an emitter than is not enabled bail
+						const TSharedPtr<FNiagaraEmitterHandleViewModel> EmitterViewModel = NiagaraValidation::GetEmitterViewModel(Context, NiagaraEmitter);
+						if (EmitterViewModel == nullptr || EmitterViewModel->GetIsEnabled() == false)
+						{
+							return;
+						}
+						StackObject = NiagaraValidation::GetStackEntry<UNiagaraStackEmitterPropertiesItem>(EmitterViewModel->GetEmitterStackViewModel());
+					}
+					else
+					{
+						StackObject = NiagaraValidation::GetStackEntry<UNiagaraStackSystemPropertiesItem>(Context.ViewModel->GetSystemStackViewModel());
+					}
+
+					const FText OwnerStackText = FText::FromString(NiagaraEmitter ? NiagaraEmitter->GetName() : FString(TEXT("System")));
+					const FText DIClassText = FText::FromName(CachedDefaultDI.DataInterface->GetClass()->GetFName());
+					const FText VariableText = FText::FromName(CachedDefaultDI.Name);
+					OutResults.Emplace(
+						Severity,
+						FText::Format(LOCTEXT("TickDependencyCheckFormat", "'{0}' has a tick dependency that can potentially be removed"), OwnerStackText),
+						FText::Format(LOCTEXT("TickDependencyCheckDetailedFormat", "'{0}' has a tick dependency from data interace '{1}' variable '{2}' that can removed by unchecking 'RequireCurrentFrameData'"), OwnerStackText, DIClassText, VariableText),
+						StackObject
+					);
+				}
+			}
+		}
+	);
+}
+
+#undef LOCTEXT_NAMESPACE

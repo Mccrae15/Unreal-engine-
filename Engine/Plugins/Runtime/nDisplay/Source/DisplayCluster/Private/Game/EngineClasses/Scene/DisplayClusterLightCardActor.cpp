@@ -2,22 +2,28 @@
 
 #include "DisplayClusterLightCardActor.h"
 
+#include "Blueprints/DisplayClusterBlueprintLib.h"
 #include "DisplayClusterConfigurationTypes.h"
 #include "DisplayClusterRootActor.h"
+#include "Features/IModularFeatures.h"
+#include "Misc/DisplayClusterLog.h"
+#include "DisplayClusterWidgetComponent.h"
+
 #include "IDisplayClusterLightCardActorExtender.h"
 
 #include "Components/DisplayClusterLabelComponent.h"
+#include "Components/DisplayClusterLightCardStageActorComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Features/IModularFeatures.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Engine/StaticMesh.h"
 #include "UObject/ConstructorHelpers.h"
 
 #if WITH_EDITOR
-
-#include "Editor.h"
-#include "Layers/LayersSubsystem.h"
-
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "Widgets/Notifications/SNotificationList.h"
 #endif
 
 #if WITH_OPENCV
@@ -40,6 +46,7 @@ static FAutoConsoleVariableRef CVarDisplayClusterLightCardPolygonTextureSize(
 
 const float ADisplayClusterLightCardActor::UVPlaneDefaultSize = 200.0f;
 const float ADisplayClusterLightCardActor::UVPlaneDefaultDistance = 100.0f;
+const FName ADisplayClusterLightCardActor::LightCardStageActorComponentName = TEXT("LightCardStageActorComponent");
 
 ADisplayClusterLightCardActor::ADisplayClusterLightCardActor(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -51,6 +58,7 @@ ADisplayClusterLightCardActor::ADisplayClusterLightCardActor(const FObjectInitia
 	, Yaw(0.f)
 	, Scale(FVector2D(1.f))
 	, RadialOffset(-0.5)
+	, bAlwaysFlushToWall(true)
 	, Mask(EDisplayClusterLightCardMask::Circle)
 	, Texture(nullptr)
 	, Color(FLinearColor(1.f, 1.f, 1.f, 1.f))
@@ -81,6 +89,9 @@ ADisplayClusterLightCardActor::ADisplayClusterLightCardActor(const FObjectInitia
 		LightCardComponent->SetCollisionProfileName(TEXT("OverlapAllDynamic"));
 		LightCardComponent->Mobility = EComponentMobility::Movable;
 		LightCardComponent->SetStaticMesh(PlaneObj.Object);
+
+		// Overlap events are expensive and seem to not be needed at the moment, so we disable them.
+		LightCardComponent->SetGenerateOverlapEvents(false);
 	}
 
 #if WITH_EDITOR
@@ -96,14 +107,31 @@ ADisplayClusterLightCardActor::ADisplayClusterLightCardActor(const FObjectInitia
 		UVIndicatorComponent->SetRelativeLocation(FVector(0, 0, 1)); // Slightly in front of the parent
 		UVIndicatorComponent->SetVisibility(false);
 	}
+
+	if (!IsTemplate() && GEngine)
+	{
+		GEngine->OnLevelActorDeleted().AddUObject(this, &ADisplayClusterLightCardActor::OnLevelActorDeleted);
+	}
 #endif // WITH_EDITOR
 
+	StageActorComponent = CreateOptionalDefaultSubobject<UDisplayClusterLightCardStageActorComponent>(LightCardStageActorComponentName);
+	
 	UpdateStageActorTransform();
 
 	LabelComponent = CreateOptionalDefaultSubobject<UDisplayClusterLabelComponent>(TEXT("Label"), true);
 	LabelComponent->AttachToComponent(LightCardComponent, FAttachmentTransformRules::KeepRelativeTransform);
 
 	CreateComponentsForExtenders();
+}
+
+ADisplayClusterLightCardActor::~ADisplayClusterLightCardActor()
+{
+#if WITH_EDITOR
+	if (GEngine)
+	{
+		GEngine->OnLevelActorDeleted().RemoveAll(this);
+	}
+#endif
 }
 
 void ADisplayClusterLightCardActor::PostLoad()
@@ -132,14 +160,29 @@ void ADisplayClusterLightCardActor::OnConstruction(const FTransform& Transform)
 
 void ADisplayClusterLightCardActor::Tick(float DeltaSeconds)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(DCLightcard_Tick);
+
 	Super::Tick(DeltaSeconds);
 
+	if (!MainSpringArmComponent || !LightCardTransformerComponent || !LightCardComponent)
+	{
+		// @todo Using WP with MU can trigger this in -game if an actor was added prior to converting to an MU session, and that actor was deleted.
+		// It looks like the actor isn't being destroyed properly on the clients.
+		UE_LOG(LogDisplayClusterGame, Error, TEXT("Light Card Actor is missing components."));
+		return;
+	}
+	
 	ClampLatitudeAndLongitude(Latitude, Longitude);
 
+	UpdateLightCardPositionToRootActor();
 	UpdateStageActorTransform();
 	UpdateLightCardMaterialInstance();
 	UpdateLightCardVisibility();
 	UpdateUVIndicator();
+	if (LabelComponent->IsVisible())
+	{
+		LabelComponent->GetWidgetComponent()->SetTranslucentSortPriority(LightCardComponent->TranslucencySortPriority + 1);
+	}
 }
 
 #if WITH_EDITOR
@@ -153,11 +196,19 @@ void ADisplayClusterLightCardActor::PostEditChangeProperty(FPropertyChangedEvent
 		PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(ADisplayClusterLightCardActor, Longitude) ||
 		PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(ADisplayClusterLightCardActor, Latitude) ||
 		PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(ADisplayClusterLightCardActor, Spin) ||
+		PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(ADisplayClusterLightCardActor, Pitch) ||
+		PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(ADisplayClusterLightCardActor, Yaw) ||
 		PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(ADisplayClusterLightCardActor, RadialOffset) ||
 		PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(ADisplayClusterLightCardActor, Scale) ||
-		PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(ADisplayClusterLightCardActor, bIsUVLightCard)))
+		PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(ADisplayClusterLightCardActor, bIsUVLightCard) ||
+		PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(ADisplayClusterLightCardActor, bAlwaysFlushToWall)))
 	{
 		UpdateStageActorTransform();
+
+		if (bAlwaysFlushToWall)
+		{
+			MakeFlushToWall();
+		}
 	}
 
 	if (PropertyChangedEvent.Property && (
@@ -198,6 +249,11 @@ FName ADisplayClusterLightCardActor::GetCustomIconName() const
 		return TEXT("ClassIcon.DisplayClusterLightCardActor.UVLightCard");
 	}
 
+	if (bIsLightCardFlag)
+	{
+		return TEXT("ClassIcon.DisplayClusterLightCardActor.Flag");
+	}
+	
 	return Super::GetCustomIconName();
 }
 
@@ -227,12 +283,12 @@ void ADisplayClusterLightCardActor::SetStaticMesh(UStaticMesh* InStaticMesh)
 
 void ADisplayClusterLightCardActor::UpdateLightCardMaterialInstance()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(DCLightcard_UpdateLightCardMaterialInstance);
+
 	if (UMaterialInstanceDynamic* LightCardMaterialInstance = Cast<UMaterialInstanceDynamic>(LightCardComponent->GetMaterial(0)))
 	{
 		// Showing proxy with low opacity to make it less distracting when it doesn't line up well with its projection in the Light Card Editor.
 		constexpr float ProxyOpacity = 0.25;
-
-		LightCardMaterialInstance->ClearParameterValues();
 
 		LightCardMaterialInstance->SetVectorParameterValue(TEXT("CardColor"), Color);
 		LightCardMaterialInstance->SetScalarParameterValue(TEXT("Temperature"), Temperature);
@@ -436,6 +492,103 @@ void ADisplayClusterLightCardActor::UpdateUVIndicator()
 #endif // WITH_EDITOR
 }
 
+void ADisplayClusterLightCardActor::UpdateLightCardPositionToRootActor()
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(DCLightcard_UpdateLightCardPositionToRootActor);
+
+	if (!bLockToOwningRootActor || HasAnyFlags(RF_Transient) /* Proxies update from world instance positions instead */)
+	{
+		return;
+	}
+	
+	if (const ADisplayClusterRootActor* RootActor = GetRootActorOwner())
+	{
+		if (const UDisplayClusterConfigurationData* ConfigData = RootActor->GetConfigData())
+		{
+			if (ConfigData->StageSettings.Lightcard.bEnable)
+			{
+				// Find a view origin to use as the transform "anchor" of each light card. At the moment, assume the first view origin component
+				// found is the correct view origin (the same assumption is made in the light card editor). If no view origin is found, use the root component
+				const USceneComponent* ViewOriginComponent = RootActor->GetRootComponent();
+
+				TArray<UDisplayClusterCameraComponent*> ViewOriginComponents;
+				RootActor->GetComponents(ViewOriginComponents);
+
+				if (ViewOriginComponents.Num())
+				{
+					ViewOriginComponent = ViewOriginComponents[0];
+				}
+		
+				const FVector Location = ViewOriginComponent ? ViewOriginComponent->GetComponentLocation() : RootActor->GetActorLocation();
+				const FVector RelativeLocation = RootActor->GetTransform().InverseTransformPosition(Location);
+				const FRotator Rotation = RootActor->GetActorRotation();
+				
+				const bool bRepositionLightCards = RelativeLocation != LastOrbitLocation && !IsUVActor();
+
+				const FTransform OldLightCardTransform = GetStageActorTransform();
+				
+				SetActorLocation(Location);
+				SetActorRotation(Rotation);
+
+				if (bRepositionLightCards)
+				{
+					const FTransform StageActorTransform = GetOrigin();
+					FDisplayClusterPositionalParams PositionalParams = GetPositionalParams();
+					// We want to adjust the positional params so that the light card stays in the same world position.
+					// First, compute the desired relative location based on the new orbit origin and the light card's previous world position
+					// Then convert that to longitude and latitude values
+					const FVector OrbitLocation = Rotation.UnrotateVector(OldLightCardTransform.GetLocation() - Location);
+					PositionalParams.DistanceFromCenter = OrbitLocation.Length();
+					if (PositionalParams.DistanceFromCenter > UE_SMALL_NUMBER)
+					{
+						PositionalParams.Latitude = FMath::RadiansToDegrees(FMath::Asin(OrbitLocation.Z / PositionalParams.DistanceFromCenter));
+						PositionalParams.Longitude = FMath::RadiansToDegrees(FMath::Atan2(OrbitLocation.Y, OrbitLocation.X)) + 180.0;
+					}
+					else
+					{
+						PositionalParams.Latitude = 0.0;
+						PositionalParams.Longitude = 180.0;
+					}
+					// The light card's orientation needs to be adjusted as well, since the orientation parameters are defined in radial space,
+					// which is relative to the orbit origin
+					const FVector WorldNormal = OldLightCardTransform.GetRotation().RotateVector(FVector::ForwardVector);
+					const FVector LocalNormal = FRotationMatrix::MakeFromX(OrbitLocation.GetSafeNormal()).InverseTransformVector(StageActorTransform.InverseTransformVectorNoScale(WorldNormal));
+					const FRotator NormalRotation = FRotationMatrix::MakeFromX(-LocalNormal).Rotator();
+					PositionalParams.Pitch = NormalRotation.Pitch;
+					PositionalParams.Yaw = NormalRotation.Yaw;
+					// The spin also needs to be adjusted. This can be done by transforming the old spin vector from world space into the new normal space,
+					// and then converting to an angle
+					const FVector WorldSpin = OldLightCardTransform.GetRotation().RotateVector(FVector::UpVector);
+					const FVector LocalSpin = FRotationMatrix::MakeFromX(OrbitLocation.GetSafeNormal()).InverseTransformVector(StageActorTransform.InverseTransformVectorNoScale(WorldSpin));
+					const FVector NormalSpin = FRotationMatrix::MakeFromX(LocalNormal).InverseTransformVector(LocalSpin);
+					PositionalParams.Spin = FMath::RadiansToDegrees(FMath::Atan2(NormalSpin.Y, NormalSpin.Z));
+					SetPositionalParams(PositionalParams);
+
+					LastOrbitLocation = RelativeLocation;
+				}
+			}
+		}
+	}
+}
+
+void ADisplayClusterLightCardActor::MakeFlushToWall()
+{
+	if (ADisplayClusterRootActor* RootActor = GetRootActorOwner())
+	{
+		RootActor->MakeStageActorFlushToWall(this);
+	}
+}
+
+void ADisplayClusterLightCardActor::SetIsLightCardFlag(bool bNewFlagValue)
+{
+	bIsLightCardFlag = bNewFlagValue;
+}
+
+void ADisplayClusterLightCardActor::SetIsUVActor(bool bNewUVValue)
+{
+	bIsUVLightCard = bNewUVValue;
+}
+
 void ADisplayClusterLightCardActor::ShowLightCardLabel(bool bValue, float ScaleValue, ADisplayClusterRootActor* InRootActor)
 {
 	if (IsUVActor())
@@ -451,121 +604,131 @@ void ADisplayClusterLightCardActor::ShowLightCardLabel(bool bValue, float ScaleV
 	LabelComponent->SetVisibility(bValue, true);
 	LabelComponent->SetRootActor(InRootActor);
 	LabelComponent->SetWidgetScale(ScaleValue);
-	
-	const float LightCardSortPriorityLow = -1.f;
-	
-	if (bValue)
+}
+
+void ADisplayClusterLightCardActor::SetWeakRootActorOwner(ADisplayClusterRootActor* InRootActor)
+{
+	// Pre 5.2 light cards won't have a StageActorComponent->RootActor, but still need to know the root actor
+	// owner for certain operations. We shouldn't automatically set the RootActorOwner, because it will cause competing
+	// ownership of the light card. Legacy LCs have a ShowOnlyList on the root actor to determine ownership, whereas
+	// new LCs determine the root actor they belong to.
+	const bool bCanSetWeakActorPtr = !StageActorComponent || !StageActorComponent->GetRootActor().IsValid()
+		|| InRootActor == StageActorComponent->GetRootActor().Get() || InRootActor == nullptr;
+	if (!bCanSetWeakActorPtr && !HasAnyFlags(RF_Transient))
 	{
-		// Change the translucent sort priority of the light card component so it will always be shown behind the
-		// label component. When left at 0 the renderer will choose the sort order which may be wrong.
-		// This does rely on the light card material being translucent as well.
-		SavedTranslucencySortPriority = LightCardComponent->TranslucencySortPriority;
-		LightCardComponent->SetTranslucentSortPriority(LightCardSortPriorityLow);
+#if WITH_EDITOR
+		check(InRootActor && StageActorComponent && StageActorComponent->GetRootActor().IsValid());
+		const FText CurrentClassName = GetClass()->GetDisplayNameText();
+		const FText CurrentActorName = FText::FromString(GetActorLabel());
+		const FText CurrentRootActorName = FText::FromString(StageActorComponent->GetRootActor()->GetActorLabel());
+		const FText NewRootActorName = FText::FromString(InRootActor->GetActorLabel());
+		const FText ErrorMessage = FText::Format(NSLOCTEXT("DisplayClusterLightCard", "InvalidRootActorOwner",
+"The {0} '{1}' belongs to '{2}' but appears in the content for '{3}'. Remove it from the content and only use the {0}'s nDisplay Root Actor property."),
+					CurrentClassName, CurrentActorName, CurrentRootActorName, NewRootActorName);
+		
+		// Only warn once so as not to spam the message log since this function is called per tick.
+		if (!bHadRootActorMismatch && GIsEditor && FSlateApplication::IsInitialized())
+		{
+			FNotificationInfo Info(ErrorMessage);
+			Info.Image = FAppStyle::GetBrush(TEXT("Icons.Error"));
+			Info.bFireAndForget = true;
+			Info.bUseSuccessFailIcons = false;
+			Info.ExpireDuration = 10.0f;
+
+			FSlateNotificationManager::Get().AddNotification(Info);
+			UE_LOG(LogDisplayClusterGame, Error, TEXT("%s"), *ErrorMessage.ToString());
+
+			bHadRootActorMismatch = true;
+		}
+		else
+		{
+			UE_LOG(LogDisplayClusterGame, Verbose, TEXT("%s"), *ErrorMessage.ToString());
+		}
+#endif
 	}
-	else if (SavedTranslucencySortPriority.IsSet() && *SavedTranslucencySortPriority != LightCardComponent->TranslucencySortPriority &&
-			LightCardComponent->TranslucencySortPriority == LightCardSortPriorityLow)
+	else
 	{
-		// Change the sort order back to the original value and only if the user hasn't modified it since activating the label.
-		// It's highly unlikely this will ever be anything besides 0.
-		LightCardComponent->SetTranslucentSortPriority(*SavedTranslucencySortPriority);
-		SavedTranslucencySortPriority.Reset();
+		WeakRootActorOwner = InRootActor;
 	}
 }
 
 void ADisplayClusterLightCardActor::SetRootActorOwner(ADisplayClusterRootActor* InRootActor)
 {
-	RootActorOwner = MakeWeakObjectPtr(InRootActor);
+	if (StageActorComponent)
+	{
+		StageActorComponent->SetRootActor(InRootActor);
+	}
+}
+
+ADisplayClusterRootActor* ADisplayClusterLightCardActor::GetRootActorOwner() const
+{
+	return StageActorComponent && StageActorComponent->GetRootActor().IsValid() ? StageActorComponent->GetRootActor().Get() : WeakRootActorOwner.Get();
+}
+
+UDisplayClusterStageActorComponent* ADisplayClusterLightCardActor::GetStageActorComponent() const
+{
+	return StageActorComponent;
 }
 
 void ADisplayClusterLightCardActor::AddToLightCardLayer(ADisplayClusterRootActor* InRootActor)
 {
+	AddToRootActor(InRootActor);
+}
+
+void ADisplayClusterLightCardActor::AddToRootActor(ADisplayClusterRootActor* InRootActor)
+{
 	check(InRootActor);
 
-	UDisplayClusterConfigurationData* ConfigData = InRootActor->GetConfigData();
-	check(ConfigData);
-	
-	// Add light cards to an existing layer or a new layer. This helps with restoring snapshots of a DCRA
-	// so they can be done separately from light cards and still have access to all light cards in the layer.
-				
-	static const FString LightCardPrefix = TEXT("LightCards");
-	FName LightCardLayerName = NAME_None;
-
-	FDisplayClusterConfigurationICVFX_VisibilityList& RootActorLightCards = ConfigData->StageSettings.Lightcard.ShowOnlyList;
-	
-	if (const FActorLayer* ExistingLightCardLayer = RootActorLightCards.ActorLayers.FindByPredicate([](const FActorLayer& Layer)
-	{
-		return Layer.Name.ToString().StartsWith(LightCardPrefix);
-	}))
-	{
-		LightCardLayerName = ExistingLightCardLayer->Name;
-	}
-	else
-	{
-		// Find a unique name so it's LightCards_XXXX
-		do
-		{
-			const FGuid LayerGuid = FGuid::NewGuid();
-			const FString GuidStr = LayerGuid.ToString().Left(4);
-			LightCardLayerName = *FString::Printf(TEXT("%s_%s"), *LightCardPrefix, *GuidStr);
-		}
-		while (FindObject<UObject>(GetWorld(), *LightCardLayerName.ToString()) != nullptr);
-		
-		ConfigData->Modify();
-		RootActorLightCards.ActorLayers.AddDefaulted_GetRef().Name = LightCardLayerName;
-	}
-	
-	check(!LightCardLayerName.IsNone());
-
-	bool bLayerAdded = false;
 #if WITH_EDITOR
-	ULayersSubsystem* LayersSubsystem = GEditor ? GEditor->GetEditorSubsystem<ULayersSubsystem>() : nullptr;
-	if (LayersSubsystem)
+	Modify();
+#endif
+	
+	// Adjust transparent sort order for UV light cards
+	if (IsUVActor())
 	{
-		// Adjust transparent sort order for UV light cards
-		if (IsUVActor())
-		{
-			int32 HighestPriority = MIN_int32;
-			bool bExistingPrioritiesFound = false;
-			
-			const TArray<AActor*> ActorsInLayer = LayersSubsystem->GetActorsFromLayer(LightCardLayerName);
-			for (AActor* Actor : ActorsInLayer)
-			{
-				if (const ADisplayClusterLightCardActor* LightCard = Cast<ADisplayClusterLightCardActor>(Actor))
-				{
-					if (LightCard->IsUVActor())
-					{
-						if (LightCard->LightCardComponent->TranslucencySortPriority > HighestPriority)
-						{
-							HighestPriority = LightCard->LightCardComponent->TranslucencySortPriority;
-						}
-						bExistingPrioritiesFound = true;
-					}
-				}
-			}
+		TSet<ADisplayClusterLightCardActor*> LightCards;
+		UDisplayClusterBlueprintLib::FindLightCardsForRootActor(InRootActor, LightCards);
+		
+		int32 HighestPriority = MIN_int32;
+		bool bExistingPrioritiesFound = false;
 
-			if (bExistingPrioritiesFound)
+		for (const ADisplayClusterLightCardActor* LightCard : LightCards)
+		{
+			if (LightCard->IsUVActor())
 			{
-				// Newly added cards should be on the top-most visibility layer
-				LightCardComponent->TranslucencySortPriority = HighestPriority < MAX_int32 ? HighestPriority + 1 : HighestPriority;
+				if (LightCard->LightCardComponent->TranslucencySortPriority > HighestPriority)
+				{
+					HighestPriority = LightCard->LightCardComponent->TranslucencySortPriority;
+				}
+				bExistingPrioritiesFound = true;
 			}
 		}
 
-		LayersSubsystem->AddActorsToLayer(TArray<AActor*>{ this }, LightCardLayerName);
-		bLayerAdded = true;
-	}
-#endif
-	if (!bLayerAdded)
-	{
-		// Likely -game and we need to add the layer directly
-		Layers.AddUnique(LightCardLayerName);
+		if (bExistingPrioritiesFound)
+		{
+			// Newly added cards should be on the top-most visibility layer
+			LightCardComponent->TranslucencySortPriority = HighestPriority < MAX_int32 ? HighestPriority + 1 : HighestPriority;
+		}
 	}
 
-	SetRootActorOwner(InRootActor);
+	StageActorComponent->SetRootActor(InRootActor);
+}
+
+void ADisplayClusterLightCardActor::RemoveFromRootActor()
+{
+#if WITH_EDITOR
+	Modify();
+#endif
+	if (StageActorComponent)
+	{
+		StageActorComponent->SetRootActor(nullptr);
+	}
+	WeakRootActorOwner.Reset();
 }
 
 void ADisplayClusterLightCardActor::UpdateStageActorTransform()
 {
-	// If the light card is in UV space, set the spring arm's trasform to be zero, effectively removing it from the transform hierarchy
+	// If the light card is in UV space, set the spring arm's transform to be zero, effectively removing it from the transform hierarchy
 	// This allows the light card to be positioned with the actor's cartesian coordinates instead of longitude and latitude
 	if (bIsUVLightCard)
 	{
@@ -599,7 +762,12 @@ FTransform ADisplayClusterLightCardActor::GetStageActorTransform(bool bRemoveOri
 {
 	FTransform Transform;
 
-	FVector Position = LightCardComponent->GetComponentLocation();
+	const FVector ForwardVector = (GetActorRotation().Quaternion() * FRotator(-Latitude, Longitude, 0.0).Quaternion()).RotateVector(-FVector::ForwardVector);
+	constexpr float DistanceFactor = 0.99f;
+	FVector Position = bIsUVLightCard ?
+		FVector(DistanceFactor * UVPlaneDefaultDistance, -UVPlaneDefaultSize * (0.5 - UVCoordinates.X), UVPlaneDefaultSize * (0.5 - UVCoordinates.Y)) :
+		GetActorLocation() + DistanceFromCenter * ForwardVector;
+
 	if (bRemoveOrigin)
 	{
 		Position -= GetActorLocation();
@@ -799,3 +967,13 @@ void ADisplayClusterLightCardActor::CleanUpComponentsForExtenders()
 		}
 	}
 }
+
+#if WITH_EDITOR
+void ADisplayClusterLightCardActor::OnLevelActorDeleted(AActor* DeletedActor)
+{
+	if (DeletedActor && StageActorComponent && Cast<ADisplayClusterRootActor>(DeletedActor) == StageActorComponent->GetRootActor().Get())
+	{
+		RemoveFromRootActor();
+	}
+}
+#endif

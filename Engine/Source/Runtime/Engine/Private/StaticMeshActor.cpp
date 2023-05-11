@@ -6,17 +6,16 @@
 
 #include "Engine/StaticMeshActor.h"
 #include "UObject/FrameworkObjectVersion.h"
-#include "CollisionQueryParams.h"
-#include "WorldCollision.h"
-#include "Components/StaticMeshComponent.h"
 #include "Engine/CollisionProfile.h"
-#include "Logging/TokenizedMessage.h"
+#include "Engine/World.h"
 #include "Logging/MessageLog.h"
 #include "Misc/UObjectToken.h"
 #include "Misc/MapErrors.h"
 #include "PhysicsEngine/BodySetup.h"
+#include "StaticMeshComponentLODInfo.h"
 #include "StaticMeshResources.h"
 #include "Engine/StaticMesh.h"
+#include "UObject/UnrealType.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(StaticMeshActor)
 

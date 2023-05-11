@@ -12,6 +12,7 @@
 #include "EngineModule.h"
 #include "CanvasTypes.h"
 #include "LegacyScreenPercentageDriver.h"
+#include "SceneManagement.h"
 #include "SceneView.h"
 #include "SceneViewExtension.h"
 
@@ -28,37 +29,70 @@
 #include "Render/Viewport/Configuration/DisplayClusterViewportConfigurationHelpers_Postprocess.h"
 
 ///////////////////////////////////////////////////////////////////////////////////////
+int32 GDisplayClusterPreviewEnableViewState = 1;
+static FAutoConsoleVariableRef CVarDisplayClusterPreviewEnableViewState(
+	TEXT("nDisplay.preview.EnableViewState"),
+	GDisplayClusterPreviewEnableViewState,
+	TEXT("Enable view state for preview (0 - disable).\n"),
+	ECVF_RenderThreadSafe
+);
+
+int32 GDisplayClusterPreviewEnableConfiguratorViewState = 0;
+static FAutoConsoleVariableRef CVarDisplayClusterPreviewEnableConfiguratorViewState(
+	TEXT("nDisplay.preview.EnableConfiguratorViewState"),
+	GDisplayClusterPreviewEnableConfiguratorViewState,
+	TEXT("Enable view state for preview in Configurator window (0 - disable).\n"),
+	ECVF_RenderThreadSafe
+);
+
+///////////////////////////////////////////////////////////////////////////////////////
 //          FDisplayClusterViewport
 ///////////////////////////////////////////////////////////////////////////////////////
 void FDisplayClusterViewport::CleanupViewState()
 {
-	for (FSceneViewStateReference& ViewState : ViewStates)
+	for (TSharedPtr<FSceneViewStateReference, ESPMode::ThreadSafe>& ViewState : ViewStates)
 	{
-		FSceneViewStateInterface* Ref = ViewState.GetReference();
-		if (Ref != nullptr)
+		if (ViewState.IsValid())
 		{
-			Ref->ClearMIDPool();
+			FSceneViewStateInterface* Ref = ViewState->GetReference();
+			if (Ref != nullptr)
+			{
+				Ref->ClearMIDPool();
+			}
 		}
 	}
 }
 
 FSceneViewStateInterface* FDisplayClusterViewport::GetViewState(uint32 ViewIndex)
 {
+	if (GDisplayClusterPreviewEnableViewState == 0 || (GDisplayClusterPreviewEnableConfiguratorViewState == 0 && Owner.IsEditorPreviewWorld()))
+	{
+		// Disable ViewState
+		ViewStates.Empty();
+
+		return nullptr;
+	}
+
 	int32 RequiredAmount = (int32)ViewIndex - ViewStates.Num() + 1;
-	if(RequiredAmount > 0)
+	if (RequiredAmount > 0)
 	{
 		ViewStates.AddDefaulted(RequiredAmount);
 	}
 
-	if (ViewStates[ViewIndex].GetReference() == NULL)
+	if (!ViewStates[ViewIndex].IsValid())
+	{
+		ViewStates[ViewIndex] = MakeShared<FSceneViewStateReference>();
+	}
+
+	if (ViewStates[ViewIndex]->GetReference() == NULL)
 	{
 		const UWorld* CurrentWorld = Owner.GetCurrentWorld();
 		const ERHIFeatureLevel::Type FeatureLevel = CurrentWorld ? CurrentWorld->FeatureLevel.GetValue() : GMaxRHIFeatureLevel;
 
-		ViewStates[ViewIndex].Allocate(FeatureLevel);
+		ViewStates[ViewIndex]->Allocate(FeatureLevel);
 	}
 
-	return ViewStates[ViewIndex].GetReference();
+	return ViewStates[ViewIndex]->GetReference();
 }
 
 FSceneView* FDisplayClusterViewport::ImplCalcScenePreview(FSceneViewFamilyContext& InOutViewFamily, uint32 InContextNum)
@@ -118,7 +152,6 @@ FSceneView* FDisplayClusterViewport::ImplCalcScenePreview(FSceneViewFamilyContex
 			ViewInitOptions.OverlayColor = FLinearColor::Black;
 		}
 
-		ViewInitOptions.bIsSceneCapture = true;
 		ViewInitOptions.bSceneCaptureUsesRayTracing = false;
 		ViewInitOptions.bIsPlanarReflection = false;
 

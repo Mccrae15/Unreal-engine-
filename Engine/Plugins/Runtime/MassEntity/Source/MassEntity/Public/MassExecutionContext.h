@@ -5,6 +5,7 @@
 #include "MassEntityTypes.h"
 #include "MassExternalSubsystemTraits.h"
 #include "MassEntityQuery.h"
+#include "MassSubsystemAccess.h"
 
 
 struct MASSENTITY_API FMassExecutionContext
@@ -34,9 +35,7 @@ private:
 	using FSharedFragmentView = TFragmentView<FStructView>;
 	TArray<FSharedFragmentView, TInlineAllocator<4>> SharedFragmentViews;
 
-	FMassExternalSubsystemBitSet ConstSubsystemsBitSet;
-	FMassExternalSubsystemBitSet MutableSubsystemsBitSet;
-	TArray<UWorldSubsystem*> Subsystems;
+	FMassSubsystemAccess SubsystemAccess;
 	
 	// mz@todo make this shared ptr thread-safe and never auto-flush in MT environment. 
 	TSharedPtr<FMassCommandBuffer> DeferredCommandBuffer;
@@ -52,7 +51,7 @@ private:
 	int32 ChunkSerialModificationNumber = -1;
 	FMassTagBitSet CurrentArchetypesTagBitSet;
 
-	TSharedPtr<FMassEntityManager> EntityManager;
+	TSharedRef<FMassEntityManager> EntityManager;
 
 #if WITH_MASSENTITY_DEBUG
 	FString DebugExecutionDescription;
@@ -67,25 +66,25 @@ private:
 	TArrayView<FConstSharedFragmentView> GetMutableConstSharedRequirements() { return ConstSharedFragmentViews; }
 	TArrayView<FSharedFragmentView> GetMutableSharedRequirements() { return SharedFragmentViews; }
 
+	void GetSubsystemRequirementBits(FMassExternalSubsystemBitSet& OutConstSubsystemsBitSet, FMassExternalSubsystemBitSet& OutMutableSubsystemsBitSet)
+	{
+		SubsystemAccess.GetSubsystemRequirementBits(OutConstSubsystemsBitSet, OutMutableSubsystemsBitSet);
+	}
+
+	void SetSubsystemRequirementBits(const FMassExternalSubsystemBitSet& InConstSubsystemsBitSet, const FMassExternalSubsystemBitSet& InMutableSubsystemsBitSet)
+	{
+		SubsystemAccess.SetSubsystemRequirementBits(InConstSubsystemsBitSet, InMutableSubsystemsBitSet);
+	}
+
 	EMassExecutionContextType ExecutionType = EMassExecutionContextType::Local;
 
 	friend FMassArchetypeData;
 	friend FMassEntityQuery;
 
 public:
-	explicit FMassExecutionContext(const TSharedPtr<FMassEntityManager>& InEntityManager, const float InDeltaTimeSeconds, const bool bInFlushDeferredCommands = true)
-		: DeltaTimeSeconds(InDeltaTimeSeconds)
-		, EntityManager(InEntityManager)
-		, bFlushDeferredCommands(bInFlushDeferredCommands)
-	{
-		Subsystems.AddZeroed(FMassExternalSubsystemBitSet::GetMaxNum());
-	}
+	explicit FMassExecutionContext(FMassEntityManager& InEntityManager, const float InDeltaTimeSeconds = 0.f, const bool bInFlushDeferredCommands = true);
 
-	FMassExecutionContext()
-		: FMassExecutionContext(nullptr, /*InDeltaTimeSeconds=*/0.f)
-	{}
-
-	FMassEntityManager& GetEntityManagerChecked() { check(EntityManager); return *EntityManager.Get(); }
+	FMassEntityManager& GetEntityManagerChecked() { return EntityManager.Get(); }
 
 #if WITH_MASSENTITY_DEBUG
 	const FString& DebugGetExecutionDesc() const { return DebugExecutionDescription; }
@@ -106,6 +105,8 @@ public:
 	{
 		return DeltaTimeSeconds;
 	}
+
+	UWorld* GetWorld();
 
 	TSharedPtr<FMassCommandBuffer> GetSharedDeferredCommandBuffer() const { return DeferredCommandBuffer; }
 	FMassCommandBuffer& Defer() const { checkSlow(DeferredCommandBuffer.IsValid()); return *DeferredCommandBuffer.Get(); }
@@ -130,17 +131,17 @@ public:
 	int32 GetChunkSerialModificationNumber() const { return ChunkSerialModificationNumber; }
 
 	template<typename T>
-	T* GetMutableChunkFragmentPtr() const
+	T* GetMutableChunkFragmentPtr()
 	{
 		static_assert(TIsDerivedFrom<T, FMassChunkFragment>::IsDerived, "Given struct doesn't represent a valid chunk fragment type. Make sure to inherit from FMassChunkFragment or one of its child-types.");
 
 		const UScriptStruct* Type = T::StaticStruct();
-		const FChunkFragmentView* FoundChunkFragmentData = ChunkFragmentViews.FindByPredicate([Type](const FChunkFragmentView& Element) { return Element.Requirement.StructType == Type; } );
+		FChunkFragmentView* FoundChunkFragmentData = ChunkFragmentViews.FindByPredicate([Type](const FChunkFragmentView& Element) { return Element.Requirement.StructType == Type; } );
 		return FoundChunkFragmentData ? FoundChunkFragmentData->FragmentView.GetMutablePtr<T>() : static_cast<T*>(nullptr);
 	}
 	
 	template<typename T>
-	T& GetMutableChunkFragment() const
+	T& GetMutableChunkFragment()
 	{
 		T* ChunkFragment = GetMutableChunkFragmentPtr<T>();
 		checkf(ChunkFragment, TEXT("Chunk Fragment requirement not found: %s"), *T::StaticStruct()->GetName());
@@ -150,13 +151,17 @@ public:
 	template<typename T>
 	const T* GetChunkFragmentPtr() const
 	{
-		return GetMutableChunkFragmentPtr<T>();
+		static_assert(TIsDerivedFrom<T, FMassChunkFragment>::IsDerived, "Given struct doesn't represent a valid chunk fragment type. Make sure to inherit from FMassChunkFragment or one of its child-types.");
+
+		const UScriptStruct* Type = T::StaticStruct();
+		const FChunkFragmentView* FoundChunkFragmentData = ChunkFragmentViews.FindByPredicate([Type](const FChunkFragmentView& Element) { return Element.Requirement.StructType == Type; } );
+		return FoundChunkFragmentData ? FoundChunkFragmentData->FragmentView.GetPtr<T>() : static_cast<const T*>(nullptr);
 	}
 	
 	template<typename T>
 	const T& GetChunkFragment() const
 	{
-		const T* ChunkFragment = GetMutableChunkFragmentPtr<T>();
+		const T* ChunkFragment = GetChunkFragmentPtr<T>();
 		checkf(ChunkFragment, TEXT("Chunk Fragment requirement not found: %s"), *T::StaticStruct()->GetName());
 		return *ChunkFragment;
 	}
@@ -181,26 +186,29 @@ public:
 
 
 	template<typename T>
-	T* GetMutableSharedFragmentPtr() const
+	T* GetMutableSharedFragmentPtr()
 	{
 		static_assert(TIsDerivedFrom<T, FMassSharedFragment>::IsDerived, "Given struct doesn't represent a valid shared fragment type. Make sure to inherit from FMassSharedFragment or one of its child-types.");
 
-		const FSharedFragmentView* FoundSharedFragmentData = SharedFragmentViews.FindByPredicate([](const FSharedFragmentView& Element) { return Element.Requirement.StructType == T::StaticStruct(); });
+		FSharedFragmentView* FoundSharedFragmentData = SharedFragmentViews.FindByPredicate([](const FSharedFragmentView& Element) { return Element.Requirement.StructType == T::StaticStruct(); });
 		return FoundSharedFragmentData ? FoundSharedFragmentData->FragmentView.GetMutablePtr<T>() : static_cast<T*>(nullptr);
-	}
-
-	template<typename T>
-	T& GetMutableSharedFragment() const
-	{
-		T* SharedFragment = GetMutableSharedFragmentPtr<T>();
-		checkf(SharedFragment, TEXT("Shared Fragment requirement not found: %s"), *T::StaticStruct()->GetName());
-		return *SharedFragment;
 	}
 
 	template<typename T>
 	const T* GetSharedFragmentPtr() const
 	{
-		return GetMutableSharedFragmentPtr<T>();
+		static_assert(TIsDerivedFrom<T, FMassSharedFragment>::IsDerived, "Given struct doesn't represent a valid shared fragment type. Make sure to inherit from FMassSharedFragment or one of its child-types.");
+
+		const FSharedFragmentView* FoundSharedFragmentData = SharedFragmentViews.FindByPredicate([](const FSharedFragmentView& Element) { return Element.Requirement.StructType == T::StaticStruct(); });
+		return FoundSharedFragmentData ? FoundSharedFragmentData->FragmentView.GetPtr<T>() : static_cast<const T*>(nullptr);
+	}
+
+	template<typename T>
+	T& GetMutableSharedFragment()
+	{
+		T* SharedFragment = GetMutableSharedFragmentPtr<T>();
+		checkf(SharedFragment, TEXT("Shared Fragment requirement not found: %s"), *T::StaticStruct()->GetName());
+		return *SharedFragment;
 	}
 
 	template<typename T>
@@ -245,84 +253,52 @@ public:
 		return View->FragmentView;
 	}
 
-	template<typename T>
-	T* GetMutableSubsystem(const UWorld* World)
+	template<typename T, typename = typename TEnableIf<TIsDerivedFrom<T, USubsystem>::IsDerived>::Type>
+	T* GetMutableSubsystem()
 	{
-		// @todo consider getting this directly from entity subsystem - it should cache all the used system
-		const uint32 SystemIndex = FMassExternalSubsystemBitSet::GetTypeIndex<T>();
-		if (ensure(MutableSubsystemsBitSet.IsBitSet(SystemIndex)))
-		{
-			return GetSubsystemInternal<T>(World, SystemIndex);
-		}
-
-		return nullptr;
+		return SubsystemAccess.GetMutableSubsystem<T>();
 	}
 
-	template<typename T>
-	T& GetMutableSubsystemChecked(const UWorld* World)
+	template<typename T, typename = typename TEnableIf<TIsDerivedFrom<T, USubsystem>::IsDerived>::Type>
+	T& GetMutableSubsystemChecked()
 	{
-		T* InstancePtr = GetMutableSubsystem<T>(World);
-		check(InstancePtr);
-		return *InstancePtr;
+		return SubsystemAccess.GetMutableSubsystemChecked<T>();
 	}
 
-	template<typename T>
-	const T* GetSubsystem(const UWorld* World)
+	template<typename T, typename = typename TEnableIf<TIsDerivedFrom<T, USubsystem>::IsDerived>::Type>
+	const T* GetSubsystem()
 	{
-		const uint32 SystemIndex = FMassExternalSubsystemBitSet::GetTypeIndex<T>();
-		if (ensure(ConstSubsystemsBitSet.IsBitSet(SystemIndex) || MutableSubsystemsBitSet.IsBitSet(SystemIndex)))
-		{
-			return GetSubsystemInternal<T>(World, SystemIndex);
-		}
-		return nullptr;
+		return SubsystemAccess.GetSubsystem<T>();
 	}
 
-	template<typename T>
-	const T& GetSubsystemChecked(const UWorld* World)
+	template<typename T, typename = typename TEnableIf<TIsDerivedFrom<T, USubsystem>::IsDerived>::Type>
+	const T& GetSubsystemChecked()
 	{
-		const T* InstancePtr = GetSubsystem<T>(World);
-		check(InstancePtr);
-		return *InstancePtr;
+		return SubsystemAccess.GetSubsystemChecked<T>();
 	}
 
-	template<typename T>
-	T* GetMutableSubsystem(const UWorld* World, const TSubclassOf<UWorldSubsystem> SubsystemClass)
+	template<typename T, typename = typename TEnableIf<TIsDerivedFrom<T, USubsystem>::IsDerived>::Type>
+	T* GetMutableSubsystem(const TSubclassOf<USubsystem> SubsystemClass)
 	{
-		// @todo consider getting this directly from entity subsystem - it should cache all the used system
-		const uint32 SystemIndex = FMassExternalSubsystemBitSet::GetTypeIndex(**SubsystemClass);
-		if (ensure(MutableSubsystemsBitSet.IsBitSet(SystemIndex)))
-		{
-			return GetSubsystemInternal<T>(World, SystemIndex, SubsystemClass);
-		}
-
-		return nullptr;
+		return SubsystemAccess.GetMutableSubsystem<T>(SubsystemClass);
 	}
 
-	template<typename T>
-	T& GetMutableSubsystemChecked(const UWorld* World, const TSubclassOf<UWorldSubsystem> SubsystemClass)
+	template<typename T, typename = typename TEnableIf<TIsDerivedFrom<T, USubsystem>::IsDerived>::Type>
+	T& GetMutableSubsystemChecked(const TSubclassOf<USubsystem> SubsystemClass)
 	{
-		T* InstancePtr = GetMutableSubsystem<T>(World, SubsystemClass);
-		check(InstancePtr);
-		return *InstancePtr;
+		return SubsystemAccess.GetMutableSubsystemChecked<T>(SubsystemClass);
 	}
 
-	template<typename T>
-	const T* GetSubsystem(const UWorld* World, const TSubclassOf<UWorldSubsystem> SubsystemClass)
+	template<typename T, typename = typename TEnableIf<TIsDerivedFrom<T, USubsystem>::IsDerived>::Type>
+	const T* GetSubsystem(const TSubclassOf<USubsystem> SubsystemClass)
 	{
-		const uint32 SystemIndex = FMassExternalSubsystemBitSet::GetTypeIndex(**SubsystemClass);
-		if (ensure(ConstSubsystemsBitSet.IsBitSet(SystemIndex) || MutableSubsystemsBitSet.IsBitSet(SystemIndex)))
-		{
-			return GetSubsystemInternal<T>(World, SystemIndex, SubsystemClass);
-		}
-		return nullptr;
+		return SubsystemAccess.GetSubsystem<T>(SubsystemClass);
 	}
 
-	template<typename T>
-	const T& GetSubsystemChecked(const UWorld* World, const TSubclassOf<UWorldSubsystem> SubsystemClass)
+	template<typename T, typename = typename TEnableIf<TIsDerivedFrom<T, USubsystem>::IsDerived>::Type>
+	const T& GetSubsystemChecked(const TSubclassOf<USubsystem> SubsystemClass)
 	{
-		const T* InstancePtr = GetSubsystem<T>(World, SubsystemClass);
-		check(InstancePtr);
-		return *InstancePtr;
+		return SubsystemAccess.GetSubsystemChecked<T>(SubsystemClass);
 	}
 
 	/** Sparse chunk related operation */
@@ -347,13 +323,21 @@ public:
 	}
 
 	/** 
-	 * Processes SubsystemRequirements to fetch and process all the indicated subsystems.
-	 * @return `true` if all required subsystems have been found, `false` otherwise
+	 * Processes SubsystemRequirements to fetch and cache all the indicated subsystems. If a UWorld is required to fetch
+	 * a specific subsystem then the one associated with the stored EntityManager will be used.
+	 *
+	 * @param SubsystemRequirements indicates all the subsystems that are expected to be accessed. Requesting a subsystem 
+	 *	not indicated by the SubsystemRequirements will result in a failure.
+	 * 
+	 * @return `true` if all required subsystems have been found, `false` otherwise.
 	 */
-	bool CacheSubsystemRequirements(const UWorld* World, const FMassSubsystemRequirements& SubsystemRequirements);
+	bool CacheSubsystemRequirements(const FMassSubsystemRequirements& SubsystemRequirements);
 
 protected:
-	void SetSubsystemRequirements(const FMassSubsystemRequirements& SubsystemRequirements);
+	void SetSubsystemRequirements(const FMassSubsystemRequirements& SubsystemRequirements)
+	{
+		SubsystemAccess.SetSubsystemRequirements(SubsystemRequirements);
+	}
 
 	void SetFragmentRequirements(const FMassFragmentRequirements& FragmentRequirements);
 
@@ -377,39 +361,69 @@ protected:
 		}
 	}
 
-	template<typename T>
-	T* GetSubsystemInternal(const UWorld* World, const uint32 SystemIndex)
-	{
-		if (UNLIKELY(Subsystems.IsValidIndex(SystemIndex) == false))
-		{
-			Subsystems.AddZeroed(Subsystems.Num() - SystemIndex + 1);
-		}
+public:
+	//////////////////////////////////////////////////////////////////////////
+	// DEPRECATED functions
 
-		T* SystemInstance = (T*)Subsystems[SystemIndex];
-		if (SystemInstance == nullptr)
-		{
-			SystemInstance = FMassExternalSubsystemTraits::GetInstance<typename TRemoveConst<T>::Type>(World);
-			Subsystems[SystemIndex] = SystemInstance;
-		}
-		return SystemInstance;
+	template<typename T>
+	UE_DEPRECATED(5.2, "The Get*Subsystem(World) functions have been deprecated. Use the world-less flavor.")
+	T* GetMutableSubsystem(const UWorld* World)
+	{
+		return SubsystemAccess.GetMutableSubsystem<T>();
 	}
 
 	template<typename T>
-	T* GetSubsystemInternal(const UWorld* World, const uint32 SystemIndex, const TSubclassOf<UWorldSubsystem> SubsystemClass)
+	UE_DEPRECATED(5.2, "The Get*Subsystem(World) functions have been deprecated. Use the world-less flavor.")
+	T& GetMutableSubsystemChecked(const UWorld* World)
 	{
-		if (UNLIKELY(Subsystems.IsValidIndex(SystemIndex) == false))
-		{
-			Subsystems.AddZeroed(Subsystems.Num() - SystemIndex + 1);
-		}
-
-		T* SystemInstance = (T*)Subsystems[SystemIndex];
-		if (SystemInstance == nullptr)
-		{
-			SystemInstance = FMassExternalSubsystemTraits::GetInstance<typename TRemoveConst<T>::Type>(World, SubsystemClass);
-			Subsystems[SystemIndex] = SystemInstance;
-		}
-		return SystemInstance;
+		return SubsystemAccess.GetMutableSubsystemChecked<T>();
 	}
 
-	bool CacheSubsystem(const UWorld* World, const uint32 SystemIndex);
+	template<typename T>
+	UE_DEPRECATED(5.2, "The Get*Subsystem(World) functions have been deprecated. Use the world-less flavor.")
+	const T* GetSubsystem(const UWorld* World)
+	{
+		return SubsystemAccess.GetSubsystem<T>();
+	}
+
+	template<typename T>
+	UE_DEPRECATED(5.2, "The Get*Subsystem(World) functions have been deprecated. Use the world-less flavor.")
+	const T& GetSubsystemChecked(const UWorld* World)
+	{
+		return SubsystemAccess.GetSubsystemChecked<T>();
+	}
+
+	template<typename T>
+	UE_DEPRECATED(5.2, "The Get*Subsystem(World) functions have been deprecated. Use the world-less flavor.")
+	T* GetMutableSubsystem(const UWorld* World, const TSubclassOf<USubsystem> SubsystemClass)
+	{
+		return SubsystemAccess.GetMutableSubsystem<T>(SubsystemClass);
+	}
+
+	template<typename T>
+	UE_DEPRECATED(5.2, "The Get*Subsystem(World) functions have been deprecated. Use the world-less flavor.")
+	T& GetMutableSubsystemChecked(const UWorld* World, const TSubclassOf<USubsystem> SubsystemClass)
+	{
+		return SubsystemAccess.GetMutableSubsystemChecked<T>(SubsystemClass);
+	}
+
+	template<typename T>
+	UE_DEPRECATED(5.2, "The Get*Subsystem(World) functions have been deprecated. Use the world-less flavor.")
+	const T* GetSubsystem(const UWorld* World, const TSubclassOf<USubsystem> SubsystemClass)
+	{
+		return SubsystemAccess.GetSubsystem<T>(SubsystemClass);
+	}
+
+	template<typename T>
+	UE_DEPRECATED(5.2, "The Get*Subsystem(World) functions have been deprecated. Use the world-less flavor.")
+	const T& GetSubsystemChecked(const UWorld* World, const TSubclassOf<USubsystem> SubsystemClass)
+	{
+		return SubsystemAccess.GetSubsystemChecked<T>(SubsystemClass);
+	}
+
+	UE_DEPRECATED(5.2, "This version of CacheSubsystemRequirements is deprecated. Use the one without the UWorld parameter")
+	bool CacheSubsystemRequirements(const UWorld*, const FMassSubsystemRequirements& SubsystemRequirements)
+	{
+		return CacheSubsystemRequirements(SubsystemRequirements);
+	}
 };

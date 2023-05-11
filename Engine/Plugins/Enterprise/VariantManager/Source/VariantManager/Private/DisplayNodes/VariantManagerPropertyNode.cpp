@@ -4,8 +4,8 @@
 
 #include "PropertyTemplateObject.h"
 #include "PropertyValue.h"
-#include "PropertyValueSoftObject.h"
 #include "SVariantManager.h"
+#include "UObject/Package.h"
 #include "VariantManager.h"
 #include "VariantManagerDragDropOp.h"
 #include "VariantManagerEditorCommands.h"
@@ -13,20 +13,14 @@
 #include "VariantObjectBinding.h"
 
 #include "EditorFontGlyphs.h"
-#include "Styling/AppStyle.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "GameFramework/Actor.h"
 #include "ISinglePropertyView.h"
-#include "Input/Reply.h"
 #include "Modules/ModuleManager.h"
-#include "PropertyCustomizationHelpers.h"
-#include "PropertyEditorModule.h"
 #include "PropertyHandle.h"
 #include "ScopedTransaction.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
-#include "PropertyCustomizationHelpers.h"
+#include "Widgets/Views/STableRow.h"
 #define LOCTEXT_NAMESPACE "FVariantManagerPropertyNode"
 
 using FDisplayNodeRef = TSharedRef<FVariantManagerDisplayNode>;

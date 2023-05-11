@@ -33,7 +33,7 @@ namespace EBTDecoratorLogic
 {
 	// keep in sync with DescribeLogicOp() in BTCompositeNode.cpp
 
-	enum Type
+	enum Type : int
 	{
 		Invalid,
 		/** Test decorator conditions. */
@@ -117,9 +117,22 @@ class AIMODULE_API UBTCompositeNode : public UBTNode
 	void OnChildActivation(FBehaviorTreeSearchData& SearchData, const UBTNode& ChildNode) const;
 	void OnChildActivation(FBehaviorTreeSearchData& SearchData, int32 ChildIndex) const;
 
-	/** called after child has finished search */
-	void OnChildDeactivation(FBehaviorTreeSearchData& SearchData, const UBTNode& ChildNode, EBTNodeResult::Type& NodeResult, const bool bIsRequestFromActiveInstance) const;
-	void OnChildDeactivation(FBehaviorTreeSearchData& SearchData, int32 ChildIndex, EBTNodeResult::Type& NodeResult, const bool bIsRequestFromActiveInstance) const;
+	/**
+	 * Notification called after child has finished search
+	 * @param SearchData for any new addition or removal of extra aux nodes/ descriptor
+	 * @param ChildNode is the children being deactivated
+	 * @param NodeResult the raison of the deactivation
+	 * @param bRequestedFromValidInstance the new requested search start is within the current active instances
+	 */
+	void OnChildDeactivation(FBehaviorTreeSearchData& SearchData, const UBTNode& ChildNode, EBTNodeResult::Type& NodeResult, const bool bRequestedFromValidInstance) const;
+	/**
+	 * Notification called after child has finished search
+	 * @param SearchData for any new addition or removal of extra aux nodes/ descriptor
+	 * @param ChildIndex of the child node being deactivated
+	 * @param NodeResult the raison of the deactivation
+	 * @param bRequestedFromValidInstance the new request search start is within the current active instances
+	 */
+	void OnChildDeactivation(FBehaviorTreeSearchData& SearchData, int32 ChildIndex, EBTNodeResult::Type& NodeResult, const bool bRequestedFromValidInstance) const;
 
 	/** called when start enters this node */
 	void OnNodeActivation(FBehaviorTreeSearchData& SearchData) const;
@@ -170,15 +183,15 @@ class AIMODULE_API UBTCompositeNode : public UBTNode
 	uint16 GetBranchExecutionIndex(uint16 NodeInBranchIdx) const;
 
 	/** is child execution allowed by decorators? */
-	bool DoDecoratorsAllowExecution(UBehaviorTreeComponent& OwnerComp, int32 InstanceIdx, int32 ChildIdx) const;
+	bool DoDecoratorsAllowExecution(UBehaviorTreeComponent& OwnerComp, const int32 InstanceIdx, const int32 ChildIdx) const;
 
 	bool IsApplyingDecoratorScope() const;
 
 	// Deprecated methods
 	UE_DEPRECATED(5.0, "This function is deprecated. Please use RequestBranchDeactivation instead.")
-	void OnChildDeactivation(FBehaviorTreeSearchData& SearchData, const UBTNode& ChildNode, EBTNodeResult::Type& NodeResult) const { OnChildDeactivation(SearchData, ChildNode, NodeResult, true/*bIsRequestFromActiveInstance*/); }
+	void OnChildDeactivation(FBehaviorTreeSearchData& SearchData, const UBTNode& ChildNode, EBTNodeResult::Type& NodeResult) const { OnChildDeactivation(SearchData, ChildNode, NodeResult, /*bRequestedFromValidInstance*/true); }
 	UE_DEPRECATED(5.0, "This function is deprecated. Please use RequestBranchDeactivation instead.")
-	void OnChildDeactivation(FBehaviorTreeSearchData& SearchData, int32 ChildIndex, EBTNodeResult::Type& NodeResult) const { OnChildDeactivation(SearchData, ChildIndex, NodeResult, true /*bIsRequestFromActiveInstance*/); }
+	void OnChildDeactivation(FBehaviorTreeSearchData& SearchData, int32 ChildIndex, EBTNodeResult::Type& NodeResult) const { OnChildDeactivation(SearchData, ChildIndex, NodeResult, /*bRequestedFromValidInstance*/true ); }
 
 protected:
 
@@ -260,12 +273,12 @@ protected:
 	void InitNotifyFlags(NotifyChildExecution, NotifyNodeActivation, NotifyNodeDeactivation,
 						 CanNotifyDecoratorsOnActivation, CanNotifyDecoratorsOnDeactivation, CanNotifyDecoratorsOnFailedActivation)
 	{
-		bUseChildExecutionNotify = !TIsSame<decltype(&UBTCompositeNode::NotifyChildExecution), NotifyChildExecution>::Value;
-		bUseNodeActivationNotify = !TIsSame<decltype(&UBTCompositeNode::NotifyNodeActivation), NotifyNodeActivation>::Value;
-		bUseNodeDeactivationNotify = !TIsSame<decltype(&UBTCompositeNode::NotifyNodeDeactivation), NotifyNodeDeactivation>::Value;
-		bUseDecoratorsActivationCheck = !TIsSame<decltype(&UBTCompositeNode::CanNotifyDecoratorsOnActivation), CanNotifyDecoratorsOnActivation>::Value;
-		bUseDecoratorsDeactivationCheck = !TIsSame<decltype(&UBTCompositeNode::CanNotifyDecoratorsOnDeactivation), CanNotifyDecoratorsOnDeactivation>::Value;
-		bUseDecoratorsFailedActivationCheck = !TIsSame<decltype(&UBTCompositeNode::CanNotifyDecoratorsOnFailedActivation), CanNotifyDecoratorsOnFailedActivation>::Value;
+		bUseChildExecutionNotify = !std::is_same_v<decltype(&UBTCompositeNode::NotifyChildExecution), NotifyChildExecution>;
+		bUseNodeActivationNotify = !std::is_same_v<decltype(&UBTCompositeNode::NotifyNodeActivation), NotifyNodeActivation>;
+		bUseNodeDeactivationNotify = !std::is_same_v<decltype(&UBTCompositeNode::NotifyNodeDeactivation), NotifyNodeDeactivation>;
+		bUseDecoratorsActivationCheck = !std::is_same_v<decltype(&UBTCompositeNode::CanNotifyDecoratorsOnActivation), CanNotifyDecoratorsOnActivation>;
+		bUseDecoratorsDeactivationCheck = !std::is_same_v<decltype(&UBTCompositeNode::CanNotifyDecoratorsOnDeactivation), CanNotifyDecoratorsOnDeactivation>;
+		bUseDecoratorsFailedActivationCheck = !std::is_same_v<decltype(&UBTCompositeNode::CanNotifyDecoratorsOnFailedActivation), CanNotifyDecoratorsOnFailedActivation>;
 	}
 };
 

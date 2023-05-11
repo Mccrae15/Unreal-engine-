@@ -1,7 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
+#include "Engine/SkeletalMesh.h"
 #include "Units/RigUnit.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Units/RigDispatchFactory.h"
 #include "Animation/BuiltInAttributeTypes.h"
 #include "RigUnit_AnimAttribute.generated.h"
@@ -57,7 +59,7 @@ namespace RigUnit_AnimAttribute
 	template<typename T>
 	T* GetAnimAttributeValue(
 		bool bAddIfNotFound,
-		const FRigUnitContext& Context,
+		const FControlRigExecuteContext& Context,
 		const FName& Name,
 		const FName& BoneName,
 		FName& CachedBoneName,
@@ -68,12 +70,12 @@ namespace RigUnit_AnimAttribute
 			return nullptr;
 		}
 
-		if (!Context.AnimAttributeContainer)
+		if (!Context.UnitContext.AnimAttributeContainer)
 		{
 			return nullptr;
 		}
 	
-		const USkeletalMeshComponent* OwningComponent = Cast<USkeletalMeshComponent>(Context.OwningComponent);
+		const USkeletalMeshComponent* OwningComponent = Cast<USkeletalMeshComponent>(Context.GetOwningComponent());
 
 		if (!OwningComponent ||
 			!OwningComponent->GetSkeletalMeshAsset())
@@ -101,8 +103,8 @@ namespace RigUnit_AnimAttribute
 		{
 			const UE::Anim::FAttributeId Id = {Name, FCompactPoseBoneIndex(CachedBoneIndex)} ;
 			typename TAnimAttributeType<T>::Type* Attribute = bAddIfNotFound ?
-				Context.AnimAttributeContainer->FindOrAdd<typename TAnimAttributeType<T>::Type>(Id) :
-				Context.AnimAttributeContainer->Find<typename TAnimAttributeType<T>::Type>(Id);
+				Context.UnitContext.AnimAttributeContainer->FindOrAdd<typename TAnimAttributeType<T>::Type>(Id) :
+				Context.UnitContext.AnimAttributeContainer->Find<typename TAnimAttributeType<T>::Type>(Id);
 			if (Attribute)
 			{
 				return &Attribute->Value;
@@ -145,9 +147,6 @@ protected:
 	
 	mutable TArray<FRigVMTemplateArgument> Arguments;
 
-	// IO
-	mutable int32 ExecuteArgIndex = INDEX_NONE;
-	
 	// input
 	mutable int32 NameArgIndex = INDEX_NONE;
 	mutable int32 BoneNameArgIndex = INDEX_NONE;
@@ -192,7 +191,7 @@ protected:
 
 #if WITH_EDITOR
 	template<typename ValueType>
-	FORCEINLINE_DEBUGGABLE bool CheckArgumentTypes(FRigVMMemoryHandleArray Handles) const
+	bool CheckArgumentTypes(FRigVMMemoryHandleArray Handles) const
 	{
 		return CheckArgumentType(Handles[NameArgIndex].IsType<FName>(), NameArgName) &&
 			CheckArgumentType(Handles[BoneNameArgIndex].IsType<FName>(), BoneNameArgName) &&
@@ -203,7 +202,7 @@ protected:
 			CheckArgumentType(Handles[FoundArgIndex].IsType<bool>(), FoundArgName);
 	}
 
-	FORCEINLINE_DEBUGGABLE bool CheckArgumentTypes(FRigVMMemoryHandleArray Handles) const
+	bool CheckArgumentTypes(FRigVMMemoryHandleArray Handles) const
 	{
 		return CheckArgumentType(Handles[NameArgIndex].IsType<FName>(), NameArgName) &&
 			CheckArgumentType(Handles[BoneNameArgIndex].IsType<FName>(), BoneNameArgName) &&
@@ -215,7 +214,7 @@ protected:
 
 	// dispatch function for built-in types
 	template<typename ValueType>	
-	FORCEINLINE_DEBUGGABLE static void GetAnimAttributeDispatch(FRigVMExtendedExecuteContext& InContext, FRigVMMemoryHandleArray Handles)
+	static void GetAnimAttributeDispatch(FRigVMExtendedExecuteContext& InContext, FRigVMMemoryHandleArray Handles)
 	{
 		const FRigDispatch_GetAnimAttribute* Factory = static_cast<const FRigDispatch_GetAnimAttribute*>(InContext.Factory);
 		
@@ -238,7 +237,7 @@ protected:
 		int32& CachedBoneIndex = *(int32*)Handles[Factory->CachedBoneIndexArgIndex].GetData(false, InContext.GetSlice().GetIndex());
 
 		// extract the animation attribute
-		const FRigUnitContext& Context = GetRigUnitContext(InContext);
+		const FControlRigExecuteContext& Context = InContext.GetPublicDataSafe<FControlRigExecuteContext>();
 		const ValueType* ValuePtr = RigUnit_AnimAttribute::GetAnimAttributeValue<ValueType>(false, Context, Name, BoneName, CachedBoneName, CachedBoneIndex);
 		Found = ValuePtr ? true : false;
 		Value = ValuePtr ? *ValuePtr : Default;
@@ -258,6 +257,7 @@ struct CONTROLRIG_API FRigDispatch_SetAnimAttribute: public FRigDispatch_AnimAtt
 	GENERATED_BODY()
 	virtual bool IsSet() const override { return true; }
 	virtual TArray<FRigVMTemplateArgument> GetArguments() const override;
+	virtual TArray<FRigVMExecuteArgument> GetExecuteArguments_Impl(const FRigVMDispatchContext& InContext) const override;
 	virtual FRigVMTemplateTypeMap OnNewArgumentType(const FName& InArgumentName, TRigVMTypeIndex InTypeIndex) const override;
 	
 protected:
@@ -265,7 +265,7 @@ protected:
 
 #if WITH_EDITOR
 	template<typename ValueType>
-	FORCEINLINE_DEBUGGABLE bool CheckArgumentTypes(FRigVMMemoryHandleArray Handles) const
+	bool CheckArgumentTypes(FRigVMMemoryHandleArray Handles) const
 	{
 		return CheckArgumentType(Handles[NameArgIndex].IsType<FName>(), NameArgName) &&
 			CheckArgumentType(Handles[BoneNameArgIndex].IsType<FName>(), BoneNameArgName) &&
@@ -275,7 +275,7 @@ protected:
 			CheckArgumentType(Handles[SuccessArgIndex].IsType<bool>(), FoundArgName);
 	}
 
-	FORCEINLINE_DEBUGGABLE bool CheckArgumentTypes(FRigVMMemoryHandleArray Handles) const
+	bool CheckArgumentTypes(FRigVMMemoryHandleArray Handles) const
 	{
 		return CheckArgumentType(Handles[NameArgIndex].IsType<FName>(), NameArgName) &&
 			CheckArgumentType(Handles[BoneNameArgIndex].IsType<FName>(), BoneNameArgName) &&
@@ -287,7 +287,7 @@ protected:
 
 	// dispatch function for built-in types
 	template<typename ValueType>	
-	FORCEINLINE_DEBUGGABLE static void SetAnimAttributeDispatch(FRigVMExtendedExecuteContext& InContext, FRigVMMemoryHandleArray Handles)
+	static void SetAnimAttributeDispatch(FRigVMExtendedExecuteContext& InContext, FRigVMMemoryHandleArray Handles)
 	{
 		const FRigDispatch_SetAnimAttribute* Factory = static_cast<const FRigDispatch_SetAnimAttribute*>(InContext.Factory);
 		
@@ -310,7 +310,7 @@ protected:
 		int32& CachedBoneIndex = *(int32*)Handles[Factory->CachedBoneIndexArgIndex].GetData(false, InContext.GetSlice().GetIndex());
 
 		// extract the animation attribute
-		const FRigUnitContext& Context = GetRigUnitContext(InContext);
+		const FControlRigExecuteContext& Context = InContext.GetPublicDataSafe<FControlRigExecuteContext>();
 		ValueType* ValuePtr = RigUnit_AnimAttribute::GetAnimAttributeValue<ValueType>(true, Context, Name, BoneName, CachedBoneName, CachedBoneIndex);
 		if (ValuePtr)
 		{

@@ -75,44 +75,23 @@ namespace EpicGames.UHT.Parsers
 					// Read base for enum class
 					if (enumObject.CppForm == UhtEnumCppForm.EnumClass)
 					{
-						if (topScope.TokenReader.TryOptional(':'))
-						{
-							UhtToken enumType = topScope.TokenReader.GetIdentifier("enumeration base");
+						ParseUnderlyingType(topScope, enumObject);
 
-							if (!System.Enum.TryParse<UhtEnumUnderlyingType>(enumType.Value.ToString(), out UhtEnumUnderlyingType underlyingType) || underlyingType == UhtEnumUnderlyingType.Unspecified)
-							{
-								topScope.TokenReader.LogError(enumType.InputLine, $"Unsupported enum class base type '{enumType.Value}'");
-							}
-							enumObject.UnderlyingType = underlyingType;
-						}
-						else
+						if (enumObject.UnderlyingType != UhtEnumUnderlyingType.Unspecified && enumObject.UnderlyingType != UhtEnumUnderlyingType.Uint8 && enumObject.MetaData.ContainsKey("BlueprintType"))
 						{
-							enumObject.UnderlyingType = UhtEnumUnderlyingType.Unspecified;
+							topScope.TokenReader.LogError("Invalid BlueprintType enum base - currently only uint8 supported");
 						}
 					}
 					else
 					{
 						if (enumObject.CppForm == UhtEnumCppForm.Regular)
 						{
-							if (topScope.TokenReader.TryOptional(":"))
-							{
-								UhtToken enumType = topScope.TokenReader.GetIdentifier("enumeration base");
-
-								if (enumType.Value != "int")
-								{
-									topScope.TokenReader.LogError($"Regular enums only support 'int' as the value size");
-								}
-							}
+							ParseUnderlyingType(topScope, enumObject);
 						}
 						if ((enumObject.EnumFlags & EEnumFlags.Flags) != 0)
 						{
 							topScope.TokenReader.LogError("The 'Flags' specifier can only be used on enum classes");
 						}
-					}
-
-					if (enumObject.UnderlyingType != UhtEnumUnderlyingType.uint8 && enumObject.MetaData.ContainsKey("BlueprintType"))
-					{
-						topScope.TokenReader.LogError("Invalid BlueprintType enum base - currently only uint8 supported");
 					}
 
 					//EnumDef.GetDefinitionRange().Start = &Input[InputPos];
@@ -129,15 +108,7 @@ namespace EpicGames.UHT.Parsers
 
 							UhtToken innerEnumToken = topScope.TokenReader.GetIdentifier("enumeration type name");
 
-							if (topScope.TokenReader.TryOptional(":"))
-							{
-								UhtToken enumType = topScope.TokenReader.GetIdentifier("enumeration base");
-
-								if (enumType.Value != "int")
-								{
-									topScope.TokenReader.LogError($"Namespace enums only support 'int' as the value size");
-								}
-							}
+							ParseUnderlyingType(topScope, enumObject);
 
 							topScope.TokenReader.Require('{');
 							enumObject.CppType = $"{enumObject.SourceName}::{innerEnumToken.Value}";
@@ -147,6 +118,27 @@ namespace EpicGames.UHT.Parsers
 						case UhtEnumCppForm.Regular:
 							enumObject.CppType = enumObject.SourceName;
 							break;
+					}
+
+					if (enumObject.CppForm != UhtEnumCppForm.EnumClass && enumObject.UnderlyingType == UhtEnumUnderlyingType.Unspecified)
+					{
+						UhtIssueBehavior enumUnderlyingTypeBehavior = enumObject.Package.IsPartOfEngine ? topScope.Session.Config!.EngineEnumUnderlyingTypeNotSet
+							: topScope.Session.Config!.NonEngineEnumUnderlyingTypeNotSet;
+
+						string logMessage = $"Underlying type must be specified.";
+						switch (enumUnderlyingTypeBehavior)
+						{
+							case UhtIssueBehavior.AllowSilently:
+								break;
+
+							case UhtIssueBehavior.AllowAndLog:
+								topScope.TokenReader.LogTrace(enumToken.InputLine, logMessage);
+								break;
+
+							default:
+								topScope.TokenReader.LogError(enumToken.InputLine, logMessage);
+								break;
+						}
 					}
 
 					tokenContext.Reset($"UENUM {enumObject.SourceName}");
@@ -184,6 +176,9 @@ namespace EpicGames.UHT.Parsers
 						}
 
 						// Save the new tag with a default value.  This will be replaced later
+						//COMPATIBILITY-TODO: If a enum value has a comment and a tooltip, it will generate an error.
+						// This is the reverse of all other parsing.  This code should be modified to process the comment
+						// after the UMETA.
 						int enumIndex = enumObject.AddEnumValue(tagToken.Value.ToString(), 0);
 						topScope.AddFormattedCommentsAsTooltipMetaData(enumIndex);
 
@@ -250,6 +245,24 @@ namespace EpicGames.UHT.Parsers
 				}
 
 				return UhtParseResult.Handled;
+			}
+		}
+
+		private static void ParseUnderlyingType(UhtParsingScope topScope, UhtEnum enumObject)
+		{
+			if (topScope.TokenReader.TryOptional(':'))
+			{
+				UhtToken enumType = topScope.TokenReader.GetIdentifier("enumeration base");
+
+				if (!System.Enum.TryParse<UhtEnumUnderlyingType>(enumType.Value.ToString(), true, out UhtEnumUnderlyingType underlyingType) || underlyingType == UhtEnumUnderlyingType.Unspecified)
+				{
+					topScope.TokenReader.LogError(enumType.InputLine, $"Unsupported enum underlying base type '{enumType.Value}'");
+				}
+				enumObject.UnderlyingType = underlyingType;
+			}
+			else
+			{
+				enumObject.UnderlyingType = UhtEnumUnderlyingType.Unspecified;
 			}
 		}
 	}

@@ -46,6 +46,11 @@
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Styling/AppStyle.h"
+#include "ControlRigSkeletalMeshComponent.h"
+#include "Sequencer/ControlRigLayerInstance.h"
+#include "Algo/MinElement.h"
+#include "Algo/MaxElement.h"
+#include "RigVMFunctions/Math/RigVMMathLibrary.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SRigHierarchy)
 
@@ -227,6 +232,7 @@ void SRigHierarchy::Construct(const FArguments& InArgs, TSharedRef<FControlRigEd
 				[
 					SAssignNew(TreeView, SRigHierarchyTreeView)
 					.RigTreeDelegates(Delegates)
+					.AutoScrollEnabled(true)
 				]
 			]
 		]
@@ -700,6 +706,7 @@ void SRigHierarchy::OnHierarchyModified(ERigHierarchyNotification InNotif, URigH
 			break;
 		}
 		case ERigHierarchyNotification::ElementRenamed:
+		case ERigHierarchyNotification::ElementReordered:
 		case ERigHierarchyNotification::HierarchyReset:
 		{
 			RefreshTreeView();
@@ -803,8 +810,10 @@ void SRigHierarchy::OnHierarchyModified_AnyThread(ERigHierarchyNotification InNo
             {
                 return;
             }
-            const FRigBaseElement* Element = WeakHierarchy.Get()->Find(Key);
-            OnHierarchyModified(InNotif, WeakHierarchy.Get(), Element);
+            if (const FRigBaseElement* Element = WeakHierarchy.Get()->Find(Key))
+            {
+	            OnHierarchyModified(InNotif, WeakHierarchy.Get(), Element);
+            }
 			
         }, TStatId(), NULL, ENamedThreads::GameThread);
 	}
@@ -854,7 +863,7 @@ void SRigHierarchy::HandleSetObjectBeingDebugged(UObject* InObject)
 	RefreshTreeView();
 }
 
-void SRigHierarchy::OnPreConstruction_AnyThread(UControlRig* InRig, const EControlRigState InState, const FName& InEventName)
+void SRigHierarchy::OnPreConstruction_AnyThread(UControlRig* InRig, const FName& InEventName)
 {
 	if(InRig != ControlRigBeingDebuggedPtr.Get())
 	{
@@ -864,7 +873,7 @@ void SRigHierarchy::OnPreConstruction_AnyThread(UControlRig* InRig, const EContr
 	SelectionBeforeConstruction = InRig->GetHierarchy()->GetSelectedKeys();
 }
 
-void SRigHierarchy::OnPostConstruction_AnyThread(UControlRig* InRig, const EControlRigState InState, const FName& InEventName)
+void SRigHierarchy::OnPostConstruction_AnyThread(UControlRig* InRig, const FName& InEventName)
 {
 	if(InRig != ControlRigBeingDebuggedPtr.Get())
 	{
@@ -1338,7 +1347,8 @@ void SRigHierarchy::RefreshHierarchy(const FAssetData& InAssetData)
 		return;
 	}
 
-	ControlRigEditor.Pin()->ClearDetailObject();
+	FControlRigEditor* StrongEditor = ControlRigEditor.Pin().Get();
+	StrongEditor->ClearDetailObject();
 
 	URigHierarchy* Hierarchy = GetDefaultHierarchy();
 	USkeletalMesh* Mesh = Cast<USkeletalMesh>(InAssetData.GetAsset());
@@ -1352,7 +1362,7 @@ void SRigHierarchy::RefreshHierarchy(const FAssetData& InAssetData)
 		// we do this to avoid the editmode / viewport shapes to refresh recursively,
 		// which can add an extreme slowdown depending on the number of bones (n^(n-1))
 		bool bSelectBones = true;
-		if (UControlRig* CurrentRig = ControlRigEditor.Pin()->ControlRig)
+		if (UControlRig* CurrentRig = StrongEditor->ControlRig)
 		{
 			bSelectBones = !CurrentRig->IsConstructionModeEnabled();
 		}
@@ -1367,20 +1377,28 @@ void SRigHierarchy::RefreshHierarchy(const FAssetData& InAssetData)
 	}
 
 	ControlRigBlueprint->PropagateHierarchyFromBPToInstances();
-	ControlRigEditor.Pin()->OnHierarchyChanged();
+	StrongEditor->OnHierarchyChanged();
 	ControlRigBlueprint->BroadcastRefreshEditor();
 	RefreshTreeView();
 	FSlateApplication::Get().DismissAllMenus();
 
-	if (ControlRigEditor.IsValid() && 
-		Mesh != nullptr)
+	if (Mesh != nullptr)
 	{
-		ControlRigEditor.Pin()->GetPersonaToolkit()->SetPreviewMesh(Mesh, true);
+		StrongEditor->GetPersonaToolkit()->SetPreviewMesh(Mesh, true);
+		const UControlRigSkeletalMeshComponent* EditorSkelComp = Cast<UControlRigSkeletalMeshComponent>(StrongEditor->GetPersonaToolkit()->GetPreviewMeshComponent());
+		if (UControlRigLayerInstance* ControlRigLayerInstance = Cast<UControlRigLayerInstance>(EditorSkelComp->GetAnimInstance()))
+		{
+			StrongEditor->PreviewInstance = Cast<UAnimPreviewInstance>(ControlRigLayerInstance->GetSourceAnimInstance());
+		}
+		else
+		{
+			StrongEditor->PreviewInstance = Cast<UAnimPreviewInstance>(EditorSkelComp->GetAnimInstance());
+		}
 	}
 
 	if (ControlRigEditor.IsValid())
 	{
-		ControlRigEditor.Pin()->Compile();
+		StrongEditor->Compile();
 	}
 }
 
@@ -1857,8 +1875,8 @@ void SRigHierarchy::HandleMirrorItem()
 		URigHierarchyController* Controller = Hierarchy->GetController(true);
 		check(Controller);
 		
-		FRigMirrorSettings Settings;
-		TSharedPtr<FStructOnScope> StructToDisplay = MakeShareable(new FStructOnScope(FRigMirrorSettings::StaticStruct(), (uint8*)&Settings));
+		FRigVMMirrorSettings Settings;
+		TSharedPtr<FStructOnScope> StructToDisplay = MakeShareable(new FStructOnScope(FRigVMMirrorSettings::StaticStruct(), (uint8*)&Settings));
 
 		TSharedRef<SKismetInspector> KismetInspector = SNew(SKismetInspector);
 		KismetInspector->ShowSingleStruct(StructToDisplay);
@@ -2168,45 +2186,65 @@ FReply SRigHierarchy::OnDragDetected(const FGeometry& MyGeometry, const FPointer
 
 TOptional<EItemDropZone> SRigHierarchy::OnCanAcceptDrop(const FDragDropEvent& DragDropEvent, EItemDropZone DropZone, TSharedPtr<FRigTreeElement> TargetItem)
 {
+	const TOptional<EItemDropZone> InvalidDropZone;
 	TOptional<EItemDropZone> ReturnDropZone;
 
-	TSharedPtr<FRigElementHierarchyDragDropOp> RigDragDropOp = DragDropEvent.GetOperationAs<FRigElementHierarchyDragDropOp>();
+	const TSharedPtr<FRigElementHierarchyDragDropOp> RigDragDropOp = DragDropEvent.GetOperationAs<FRigElementHierarchyDragDropOp>();
 	if (RigDragDropOp.IsValid())
 	{
-		URigHierarchy* Hierarchy = GetHierarchy();
-		if (Hierarchy)
+		FRigElementKey TargetKey;
+		if (const URigHierarchy* Hierarchy = GetHierarchy())
 		{
+			switch(DropZone)
+			{
+				case EItemDropZone::AboveItem:
+				case EItemDropZone::BelowItem:
+				{
+					TargetKey = Hierarchy->GetFirstParent(TargetItem->Key);
+					break;
+				}
+				case EItemDropZone::OntoItem:
+				{
+					TargetKey = TargetItem->Key;
+					break;
+				}
+			}
+
 			for (const FRigElementKey& DraggedKey : RigDragDropOp->GetElements())
 			{
-				if (DraggedKey == TargetItem->Key)
-				{
-					return ReturnDropZone;
-				}
-
 				if(Hierarchy->IsProcedural(DraggedKey))
 				{
-					return ReturnDropZone;
+					return InvalidDropZone;
 				}
 
-				if(Hierarchy->IsParentedTo(TargetItem->Key, DraggedKey))
+				// re-parenting directly onto an item
+				if (DraggedKey == TargetKey)
 				{
-					return ReturnDropZone;
+					return InvalidDropZone;
+				}
+
+				if(DropZone == EItemDropZone::OntoItem)
+				{
+					if(Hierarchy->IsParentedTo(TargetKey, DraggedKey))
+					{
+						return InvalidDropZone;
+					}
 				}
 			}
 		}
 
 		// don't allow dragging onto procedural items
-		if(!GetDefaultHierarchy()->Contains(TargetItem->Key))
+		if(TargetKey.IsValid() && !GetDefaultHierarchy()->Contains(TargetKey))
 		{
-			return ReturnDropZone;
+			return InvalidDropZone;
 		}
 
-		switch (TargetItem->Key.Type)
+		switch (TargetKey.Type)
 		{
 			case ERigElementType::Bone:
 			{
 				// bones can parent anything
-				ReturnDropZone = EItemDropZone::OntoItem;
+				ReturnDropZone = DropZone;
 				break;
 			}
 			case ERigElementType::Control:
@@ -2227,16 +2265,16 @@ TOptional<EItemDropZone> SRigHierarchy::OnCanAcceptDrop(const FDragDropEvent& Dr
 						}
 						default:
 						{
-							return ReturnDropZone;
+							return InvalidDropZone;
 						}
 					}
 				}
-				ReturnDropZone = EItemDropZone::OntoItem;
+				ReturnDropZone = DropZone;
 				break;
 			}
 			default:
 			{
-				ReturnDropZone = EItemDropZone::OntoItem;
+				ReturnDropZone = DropZone;
 				break;
 			}
 		}
@@ -2272,12 +2310,36 @@ FReply SRigHierarchy::OnAcceptDrop(const FDragDropEvent& DragDropEvent, EItemDro
 		}
 		else
 		{
+			const URigHierarchy* Hierarchy = GetDefaultHierarchy();
+
 			FRigElementKey TargetKey;
+			int32 LocalIndex = INDEX_NONE;
+
 			if (TargetItem.IsValid())
 			{
-				TargetKey = TargetItem->Key;
+				switch(DropZone)
+				{
+					case EItemDropZone::AboveItem:
+					{
+						TargetKey = Hierarchy->GetFirstParent(TargetItem->Key);
+						LocalIndex = Hierarchy->GetLocalIndex(TargetItem->Key);
+						break;
+					}
+					case EItemDropZone::BelowItem:
+					{
+						TargetKey = Hierarchy->GetFirstParent(TargetItem->Key);
+						LocalIndex = Hierarchy->GetLocalIndex(TargetItem->Key) + 1;
+						break;
+					}
+					case EItemDropZone::OntoItem:
+					{
+						TargetKey = TargetItem->Key;
+						break;
+					}
+				}
 			}
-			return ReparentOrMatchTransform(RigDragDropOp->GetElements(), TargetKey, bReparentItems);			
+			
+			return ReparentOrMatchTransform(RigDragDropOp->GetElements(), TargetKey, bReparentItems, LocalIndex);			
 		}
 
 	}
@@ -2708,7 +2770,7 @@ void SRigHierarchy::HandleAlign(const FToolMenuContext& Context)
 	}
 }
 
-FReply SRigHierarchy::ReparentOrMatchTransform(const TArray<FRigElementKey>& DraggedKeys, FRigElementKey TargetKey, bool bReparentItems)
+FReply SRigHierarchy::ReparentOrMatchTransform(const TArray<FRigElementKey>& DraggedKeys, FRigElementKey TargetKey, bool bReparentItems, int32 LocalIndex)
 {
 	bool bMatchTransforms = !bReparentItems;
 
@@ -2741,7 +2803,10 @@ FReply SRigHierarchy::ReparentOrMatchTransform(const TArray<FRigElementKey>& Dra
 			{
 				if(Hierarchy->IsParentedTo(TargetKey, DraggedKey))
 				{
-					return FReply::Unhandled();
+					if(LocalIndex == INDEX_NONE)
+					{
+						return FReply::Unhandled();
+					}
 				}
 			}
 
@@ -2815,41 +2880,50 @@ FReply SRigHierarchy::ReparentOrMatchTransform(const TArray<FRigElementKey>& Dra
 			const FTransform CurrentLocalTransform = DebuggedHierarchy->GetLocalTransform(DraggedKey);
 			const FTransform CurrentGlobalOffsetTransform = DebuggedHierarchy->GetGlobalControlOffsetTransform(DraggedKey, false);
 
-			if(ParentKey.IsValid())
+			bool bElementWasReparented = false;
+			if(ParentKey.IsValid() && (Hierarchy->GetFirstParent(DraggedKey) != ParentKey))
 			{
-				Controller->SetParent(DraggedKey, ParentKey, true, true, true);
+				bElementWasReparented = Controller->SetParent(DraggedKey, ParentKey, true, true, true);
 			}
-			else
+			else if(!ParentKey.IsValid() && (Hierarchy->GetNumberOfParents(DraggedKey) > 0))
 			{
-				Controller->RemoveAllParents(DraggedKey, true, true, true);
+				bElementWasReparented = Controller->RemoveAllParents(DraggedKey, true, true, true);
 			}
 
-			if (DraggedKey.Type == ERigElementType::Control)
+			if(LocalIndex != INDEX_NONE)
 			{
-				int32 ControlIndex = DebuggedHierarchy->GetIndex(DraggedKey);
-				if (ControlIndex == INDEX_NONE)
+				Controller->ReorderElement(DraggedKey, LocalIndex, true, true);
+			}
+
+			if(bElementWasReparented)
+			{
+				if (DraggedKey.Type == ERigElementType::Control)
 				{
-					continue;
+					int32 ControlIndex = DebuggedHierarchy->GetIndex(DraggedKey);
+					if (ControlIndex == INDEX_NONE)
+					{
+						continue;
+					}
+
+					const FTransform GlobalParentTransform = DebuggedHierarchy->GetGlobalTransform(ParentKey, false);
+					const FTransform LocalOffsetTransform = CurrentGlobalOffsetTransform.GetRelativeTransform(GlobalParentTransform);
+
+					Hierarchy->SetControlOffsetTransformByIndex(ControlIndex, LocalOffsetTransform, ERigTransformType::InitialLocal, true, true, true);
+					Hierarchy->SetControlOffsetTransformByIndex(ControlIndex, LocalOffsetTransform, ERigTransformType::CurrentLocal, true, true, true);
+					Hierarchy->SetLocalTransform(DraggedKey, CurrentLocalTransform, true, true, true, true);
+					Hierarchy->SetInitialLocalTransform(DraggedKey, InitialLocalTransform, true, true, true);
+					DebuggedHierarchy->SetControlOffsetTransformByIndex(ControlIndex, LocalOffsetTransform, ERigTransformType::InitialLocal, true, true);
+					DebuggedHierarchy->SetControlOffsetTransformByIndex(ControlIndex, LocalOffsetTransform, ERigTransformType::CurrentLocal, true, true);
+					DebuggedHierarchy->SetLocalTransform(DraggedKey, CurrentLocalTransform, true, true, true);
+					DebuggedHierarchy->SetInitialLocalTransform(DraggedKey, InitialLocalTransform, true, true);
 				}
-
-				const FTransform GlobalParentTransform = DebuggedHierarchy->GetGlobalTransform(ParentKey, false);
-				const FTransform LocalOffsetTransform = CurrentGlobalOffsetTransform.GetRelativeTransform(GlobalParentTransform);
-
-				Hierarchy->SetControlOffsetTransformByIndex(ControlIndex, LocalOffsetTransform, ERigTransformType::InitialLocal, true, true, true);
-				Hierarchy->SetControlOffsetTransformByIndex(ControlIndex, LocalOffsetTransform, ERigTransformType::CurrentLocal, true, true, true);
-				Hierarchy->SetLocalTransform(DraggedKey, CurrentLocalTransform, true, true, true, true);
-				Hierarchy->SetInitialLocalTransform(DraggedKey, InitialLocalTransform, true, true, true);
-				DebuggedHierarchy->SetControlOffsetTransformByIndex(ControlIndex, LocalOffsetTransform, ERigTransformType::InitialLocal, true, true);
-				DebuggedHierarchy->SetControlOffsetTransformByIndex(ControlIndex, LocalOffsetTransform, ERigTransformType::CurrentLocal, true, true);
-				DebuggedHierarchy->SetLocalTransform(DraggedKey, CurrentLocalTransform, true, true, true);
-				DebuggedHierarchy->SetInitialLocalTransform(DraggedKey, InitialLocalTransform, true, true);
-			}
-			else
-			{
-				DebuggedHierarchy->SetInitialGlobalTransform(DraggedKey, InitialGlobalTransform, true, true);
-				DebuggedHierarchy->SetGlobalTransform(DraggedKey, CurrentGlobalTransform, false, true, true);
-				Hierarchy->SetInitialGlobalTransform(DraggedKey, InitialGlobalTransform, true, true);
-				Hierarchy->SetGlobalTransform(DraggedKey, CurrentGlobalTransform, false, true, true);
+				else
+				{
+					DebuggedHierarchy->SetInitialGlobalTransform(DraggedKey, InitialGlobalTransform, true, true);
+					DebuggedHierarchy->SetGlobalTransform(DraggedKey, CurrentGlobalTransform, false, true, true);
+					Hierarchy->SetInitialGlobalTransform(DraggedKey, InitialGlobalTransform, true, true);
+					Hierarchy->SetGlobalTransform(DraggedKey, CurrentGlobalTransform, false, true, true);
+				}
 			}
 		}
 	}

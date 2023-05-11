@@ -3,6 +3,7 @@
 #include "IConcertSyncServerModule.h"
 #include "ConcertSyncServer.h"
 #include "ConcertSettings.h"
+#include "ConcertServerSettings.h"
 #include "Logging/LogVerbosity.h"
 #include "Misc/EngineVersion.h"
 #include "ConcertLogGlobal.h"
@@ -68,8 +69,19 @@ public:
 
 	virtual TSharedRef<IConcertSyncServer> CreateServer(const FString& InRole, const FConcertSessionFilter& InAutoArchiveSessionFilter) override
 	{
-		return MakeShared<FConcertSyncServer>(InRole, InAutoArchiveSessionFilter);
+		TSharedRef<IConcertSyncServer> ConcertSyncServer = MakeShared<FConcertSyncServer>(InRole, InAutoArchiveSessionFilter);
+		OnConcertSyncServerCreatedDelegate.Broadcast(ConcertSyncServer);
+		return ConcertSyncServer;
 	}
+
+	virtual FOnConcertSyncServerCreated& OnServerCreated() override
+	{
+		return OnConcertSyncServerCreatedDelegate;
+	}
+
+protected:
+
+	FOnConcertSyncServerCreated OnConcertSyncServerCreatedDelegate;
 };
 
 IMPLEMENT_MODULE(FConcertSyncServerModule, ConcertSyncServer);

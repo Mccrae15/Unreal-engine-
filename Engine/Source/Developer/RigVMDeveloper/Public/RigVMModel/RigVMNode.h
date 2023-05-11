@@ -76,7 +76,7 @@ public:
 
 	// Returns true if the node has orphaned pins - which leads to a compiler error
 	UFUNCTION(BlueprintPure, Category = RigVMNode)
-    FORCEINLINE bool HasOrphanedPins() const { return GetOrphanedPins().Num() > 0; }
+    bool HasOrphanedPins() const { return GetOrphanedPins().Num() > 0; }
 
 	// Returns the Graph of this Node
 	UFUNCTION(BlueprintCallable, Category = RigVMNode)
@@ -166,6 +166,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = RigVMNode)
 	virtual bool HasIOPin() const;
 
+	// Returns true if the node has any lazily evaluating pins
+	UFUNCTION(BlueprintCallable, Category = RigVMNode)
+	virtual bool HasLazyPin(bool bOnlyConsiderPinsWithLinks = false) const;
+
 	// Returns true if the node has any output pins
 	UFUNCTION(BlueprintCallable, Category = RigVMNode)
 	virtual bool HasOutputPin(bool bIncludeIO = true) const;
@@ -208,7 +212,17 @@ public:
 
 	// return true if this node is a loop node
 	UFUNCTION(BlueprintPure, Category = RigVMNode)
-	virtual bool IsLoopNode() const { return false; }
+	bool IsLoopNode() const;
+
+	// return true if this node is a control flow node
+	UFUNCTION(BlueprintPure, Category = RigVMNode)
+	bool IsControlFlowNode() const;
+
+	// returns the names of the control flow blocks of this node
+	virtual const TArray<FName>& GetControlFlowBlocks() const;
+
+	// returns true if a control flow block requires slicing
+	virtual const bool IsControlFlowBlockSliced(const FName& InBlockName) const;
 
 	// returns true if the node can be upgraded
 	UFUNCTION(BlueprintPure, Category = RigVMNode)
@@ -254,6 +268,9 @@ public:
 	UFUNCTION(BlueprintPure, Category = RigVMNode)
 	virtual FName GetNextAggregateName(const FName& InLastAggregatePinName) const { return NAME_None; }
 
+	UFUNCTION(BlueprintCallable, Category = RigVMNode)
+	virtual URigVMLibraryNode* FindFunctionForNode();
+
 	virtual FRigVMStructUpgradeInfo GetUpgradeInfo() const { return FRigVMStructUpgradeInfo(); }
 
 private:
@@ -269,6 +286,7 @@ protected:
 	virtual TArray<int32> GetInstructionsForVMImpl(URigVM* InVM, const FRigVMASTProxy& InProxy = FRigVMASTProxy()) const; 
 	virtual FText GetToolTipTextForPin(const URigVMPin* InPin) const;
 	virtual bool AllowsLinksOn(const URigVMPin* InPin) const { return true; }
+	virtual bool ShouldInputPinComputeLazily(const URigVMPin* InPin) const { return false; }
 
 	UPROPERTY()
 	FString NodeTitle;

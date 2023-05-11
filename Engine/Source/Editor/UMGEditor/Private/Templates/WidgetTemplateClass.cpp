@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Templates/WidgetTemplateClass.h"
+#include "Engine/Blueprint.h"
 
 #if WITH_EDITOR
 	#include "Editor.h"
@@ -176,7 +177,7 @@ UWidget* FWidgetTemplateClass::CreateNamed(class UWidgetTree* Tree, FName NameOv
 	}
 
 	UWidget* NewWidget = Tree->ConstructWidget<UWidget>(WidgetClass.Get(), NameOverride);
-	NewWidget->OnCreationFromPalette();
+	NewWidget->CreatedFromPalette();
 
 	return NewWidget;
 }

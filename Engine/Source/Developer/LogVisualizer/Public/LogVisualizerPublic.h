@@ -8,6 +8,7 @@
 class FText;
 struct FGeometry;
 struct FKeyEvent;
+class FReply;
 class FString;
 class UWorld;
 class UObject;
@@ -55,7 +56,9 @@ struct LOGVISUALIZER_API FLogVisualizer
 	int32 GetNextItem(FName RowName, int32 MoveDistance = 1);
 	int32 GetPreviousItem(FName RowName, int32 MoveDistance = 1);
 
+	// @todo: This function currently doesn't do anything!
 	void GotoNextItem(FName RowName, int32 MoveDistance = 1);
+	// @todo: This function currently doesn't do anything!
 	void GotoPreviousItem(FName RowName, int32 MoveDistance = 1);
 	void GotoFirstItem(FName RowName);
 	void GotoLastItem(FName RowName);

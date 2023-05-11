@@ -10,7 +10,7 @@
 #include "ScopedTransaction.h"
 #include "Animation/BlendSpace.h"
 #include "AnimationEditorPreviewScene.h"
-#include "Animation/AnimData/AnimDataModel.h"
+#include "Animation/AnimData/IAnimationDataModel.h"
 #include "Animation/AnimSequenceHelpers.h"
 
 #define LOCTEXT_NAMESPACE "AnimationScrubPanel"
@@ -362,7 +362,7 @@ float SAnimationScrubPanel::GetSequenceLength() const
 		FAnimBlueprintDebugData* DebugData;
 		if (GetAnimBlueprintDebugData(/*out*/ Instance, /*out*/ DebugData))
 		{
-			return Instance->LifeTimer;
+			return static_cast<float>(Instance->LifeTimer);
 		}
 	}
 
@@ -373,7 +373,7 @@ bool SAnimationScrubPanel::DoesSyncViewport() const
 {
 	UAnimSingleNodeInstance* PreviewInstance = GetPreviewInstance();
 
-	return (( LockedSequence==NULL && PreviewInstance ) || ( LockedSequence && PreviewInstance && PreviewInstance->GetCurrentAsset() == LockedSequence ));
+	return (( LockedSequence==nullptr && PreviewInstance ) || ( LockedSequence && PreviewInstance && PreviewInstance->GetCurrentAsset() == LockedSequence ));
 }
 
 void SAnimationScrubPanel::Tick( const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime )
@@ -387,7 +387,7 @@ void SAnimationScrubPanel::Tick( const FGeometry& AllottedGeometry, const double
 class UAnimSingleNodeInstance* SAnimationScrubPanel::GetPreviewInstance() const
 {
 	UDebugSkelMeshComponent* PreviewMeshComponent = GetPreviewScene()->GetPreviewMeshComponent();
-	return PreviewMeshComponent && PreviewMeshComponent->IsPreviewOn()? PreviewMeshComponent->PreviewInstance : NULL;
+	return PreviewMeshComponent && PreviewMeshComponent->IsPreviewOn()? PreviewMeshComponent->PreviewInstance : nullptr;
 }
 
 float SAnimationScrubPanel::GetScrubValue() const
@@ -406,7 +406,7 @@ float SAnimationScrubPanel::GetScrubValue() const
 		FAnimBlueprintDebugData* DebugData;
 		if (GetAnimBlueprintDebugData(/*out*/ Instance, /*out*/ DebugData))
 		{
-			return Instance->CurrentLifeTimerScrubPosition;
+			return static_cast<float>(Instance->CurrentLifeTimerScrubPosition);
 		}
 	}
 
@@ -424,20 +424,20 @@ UAnimInstance* SAnimationScrubPanel::GetAnimInstanceWithBlueprint() const
 	{
 		UAnimInstance* Instance = DebugComponent->GetAnimInstance();
 
-		if ((Instance != NULL) && (Instance->GetClass()->ClassGeneratedBy != NULL))
+		if ((Instance != nullptr) && (Instance->GetClass()->ClassGeneratedBy != nullptr))
 		{
 			return Instance;
 		}
 	}
 
-	return NULL;
+	return nullptr;
 }
 
 bool SAnimationScrubPanel::GetAnimBlueprintDebugData(UAnimInstance*& Instance, FAnimBlueprintDebugData*& DebugInfo) const
 {
 	Instance = GetAnimInstanceWithBlueprint();
 
-	if (Instance != NULL)
+	if (Instance != nullptr)
 	{
 		// Avoid updating the instance if we're replaying the past
 		if (UAnimBlueprintGeneratedClass* AnimBlueprintClass = Cast<UAnimBlueprintGeneratedClass>(Instance->GetClass()))
@@ -552,46 +552,55 @@ void SAnimationScrubPanel::OnReZeroAnimSequence(int32 FrameIndex)
 
 		if (PreviewInstance->GetCurrentAsset() && PreviewSkelComp )
 		{
-			UAnimSequence* AnimSequence = Cast<UAnimSequence>( PreviewInstance->GetCurrentAsset() );
-			if( AnimSequence )
+			if(UAnimSequence* AnimSequence = Cast<UAnimSequence>( PreviewInstance->GetCurrentAsset()))
 			{
-				const FScopedTransaction Transaction( LOCTEXT("ReZeroAnimation", "ReZero Animation Sequence") );
-
-				//Call modify to restore anim sequence current state
-				AnimSequence->Modify();
-
-				// As above, animations don't have any idea of hierarchy, so we don't know for sure if track 0 is the root bone's track.
-				const FBoneAnimationTrack& AnimationTrack = AnimSequence->GetDataModel()->GetBoneTrackByIndex(0);
-				FRawAnimSequenceTrack RawTrack = AnimationTrack.InternalTrackData;
-
-				// Find vector that would translate current root bone location onto origin.
-				FVector FrameTransform = FVector::ZeroVector;
-				if (FrameIndex == INDEX_NONE)
+				if (const USkeleton* Skeleton = AnimSequence->GetSkeleton())
 				{
-					// Use current transform
-					FrameTransform = PreviewSkelComp->GetComponentSpaceTransforms()[0].GetLocation();
+					const FName RootBoneName = Skeleton->GetReferenceSkeleton().GetBoneName(0);
+
+					if(AnimSequence->GetDataModel()->IsValidBoneTrackName(RootBoneName))
+					{
+						TArray<FVector3f> PosKeys;
+						TArray<FQuat4f> RotKeys;
+						TArray<FVector3f> ScaleKeys;
+
+						TArray<FTransform> BoneTransforms;
+						AnimSequence->GetDataModel()->GetBoneTrackTransforms(RootBoneName, BoneTransforms);
+
+						PosKeys.SetNum(BoneTransforms.Num());
+						RotKeys.SetNum(BoneTransforms.Num());
+						ScaleKeys.SetNum(BoneTransforms.Num());
+
+						// Find vector that would translate current root bone location onto origin.
+						FVector FrameTransform = FVector::ZeroVector;
+						if (FrameIndex == INDEX_NONE)
+						{
+							// Use current transform
+							FrameTransform = PreviewSkelComp->GetComponentSpaceTransforms()[0].GetLocation();
+						}
+						else if(BoneTransforms.IsValidIndex(FrameIndex))
+						{
+							// Use transform at frame
+							FrameTransform = BoneTransforms[FrameIndex].GetLocation();
+						}
+
+						FVector ApplyTranslation = -1.f * FrameTransform;
+
+						// Convert into world space
+						const FVector WorldApplyTranslation = PreviewSkelComp->GetComponentTransform().TransformVector(ApplyTranslation);
+						ApplyTranslation = PreviewSkelComp->GetComponentTransform().InverseTransformVector(WorldApplyTranslation);
+
+						for(int32 KeyIndex = 0; KeyIndex < BoneTransforms.Num(); KeyIndex++)
+						{
+							PosKeys[KeyIndex] = FVector3f(BoneTransforms[KeyIndex].GetLocation() + ApplyTranslation);
+							RotKeys[KeyIndex] = FQuat4f(BoneTransforms[KeyIndex].GetRotation());
+							ScaleKeys[KeyIndex] = FVector3f(BoneTransforms[KeyIndex].GetScale3D());
+						}
+
+						IAnimationDataController& Controller = AnimSequence->GetController();
+						Controller.SetBoneTrackKeys(RootBoneName, PosKeys, RotKeys, ScaleKeys);
+					}
 				}
-				else if(RawTrack.PosKeys.IsValidIndex(FrameIndex))
-				{
-					// Use transform at frame
-					FrameTransform = (FVector)RawTrack.PosKeys[FrameIndex];
-				}
-
-				FVector ApplyTranslation = -1.f * FrameTransform;
-
-				// Convert into world space
-				FVector WorldApplyTranslation = PreviewSkelComp->GetComponentTransform().TransformVector(ApplyTranslation);
-				ApplyTranslation = PreviewSkelComp->GetComponentTransform().InverseTransformVector(WorldApplyTranslation);
-
-				for(int32 i=0; i<RawTrack.PosKeys.Num(); i++)
-				{
-					RawTrack.PosKeys[i] += (FVector3f)ApplyTranslation;
-				}
-
-				IAnimationDataController& Controller = AnimSequence->GetController();
-				Controller.SetBoneTrackKeys(AnimationTrack.Name, RawTrack.PosKeys, RawTrack.RotKeys, RawTrack.ScaleKeys);
-
-				AnimSequence->MarkPackageDirty();
 			}
 		}
 	}

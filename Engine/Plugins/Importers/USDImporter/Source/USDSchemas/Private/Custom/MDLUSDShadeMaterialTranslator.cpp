@@ -1,12 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MDLUSDShadeMaterialTranslator.h"
+#include "Engine/Level.h"
 
 #if USE_USD_SDK && WITH_EDITOR
 
+#include "USDAssetCache.h"
 #include "USDAssetImportData.h"
 #include "USDConversionUtils.h"
 #include "USDErrorUtils.h"
+#include "USDLog.h"
 #include "USDShadeConversion.h"
 #include "USDTypesConversion.h"
 
@@ -14,9 +17,12 @@
 #include "UsdWrappers/SdfPath.h"
 #include "UsdWrappers/UsdPrim.h"
 
+#include "Engine/Texture.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstance.h"
 #include "Materials/MaterialInstanceConstant.h"
+#include "MaterialShared.h"
+#include "Misc/Paths.h"
 #include "MDLImporterOptions.h"
 #include "MDLMaterialImporter.h"
 #include "UObject/StrongObjectPtr.h"
@@ -78,6 +84,15 @@ void FMdlUsdShadeMaterialTranslator::CreateAssets()
 		return;
 	}
 
+	if (Context->bTranslateOnlyUsedMaterials && Context->InfoCache)
+	{
+		if (!Context->InfoCache->IsMaterialUsed(PrimPath))
+		{
+			UE_LOG(LogUsd, Verbose, TEXT("Skipping creating assets for material prim '%s' as it is not currently bound by any prim."), *PrimPath.GetString());
+			return;
+		}
+	}
+
 	FScopedUsdAllocs UsdAllocs;
 
 	pxr::UsdShadeMaterial ShadeMaterial( GetPrim() );
@@ -125,17 +140,17 @@ void FMdlUsdShadeMaterialTranslator::CreateAssets()
 		return ModuleName;
 	}();
 
-	if ( !MdlModuleName.IsEmpty() )
+	if (!MdlModuleName.IsEmpty() && Context->AssetCache)
 	{
 		pxr::TfToken MdlDefinitionToken;
 		SurfaceShader.GetSourceAssetSubIdentifier( &MdlDefinitionToken, MdlToken );
 
 		const FString MdlDefinitionName = UsdToUnreal::ConvertToken( MdlDefinitionToken );
 
-		const FString MdlFullname = MdlModuleName + TEXT("::") + MdlDefinitionName;
+		const FString MdlFullName = MdlModuleName + TEXT("::") + MdlDefinitionName;
+		const FString MdlFullInstanceName = MdlFullName + TEXT("_Instance");
 
-		UMaterialInterface* MdlMaterial = Cast< UMaterialInterface >( Context->AssetCache->GetCachedAsset( MdlFullname ) );
-
+		UMaterialInterface* MdlMaterial = Cast< UMaterialInterface >( Context->AssetCache->GetCachedAsset( MdlFullName ) );
 		if ( !MdlMaterial )
 		{
 			FScopedUnrealAllocs UnrealAllocs;
@@ -145,7 +160,7 @@ void FMdlUsdShadeMaterialTranslator::CreateAssets()
 
 			TStrongObjectPtr< UMDLImporterOptions > ImportOptions( NewObject< UMDLImporterOptions >() );
 
-			MdlMaterial = FMdlMaterialImporter::ImportMaterialFromModule( GetTransientPackage(), Context->ObjectFlags, MdlModuleName, MdlDefinitionName, *ImportOptions.Get() );
+			MdlMaterial = FMdlMaterialImporter::ImportMaterialFromModule( GetTransientPackage(), Context->ObjectFlags | RF_Transient, MdlModuleName, MdlDefinitionName, *ImportOptions.Get() );
 
 			if ( MdlMaterial )
 			{
@@ -153,7 +168,7 @@ void FMdlUsdShadeMaterialTranslator::CreateAssets()
 				ImportData->PrimPath = PrimPath.GetString();
 				MdlMaterial->AssetImportData = ImportData;
 
-				Context->AssetCache->CacheAsset( MdlFullname, MdlMaterial );
+				Context->AssetCache->CacheAsset( MdlFullName, MdlMaterial );
 
 				UE::MDLShadeTranslatorImpl::Private::NotifyIfMaterialNeedsVirtualTextures( MdlMaterial );
 			}
@@ -165,42 +180,103 @@ void FMdlUsdShadeMaterialTranslator::CreateAssets()
 			}
 		}
 
-		UMaterialInstanceConstant* MdlMaterialInstance = nullptr;
-		if ( MdlMaterial )
+		UMaterialInstanceConstant* MdlMaterialInstance = Cast< UMaterialInstanceConstant >(Context->AssetCache->GetCachedAsset(MdlFullInstanceName));
+		if ( !MdlMaterialInstance && MdlMaterial )
 		{
-			MdlMaterialInstance = NewObject< UMaterialInstanceConstant >( GetTransientPackage() );
+			MdlMaterialInstance = NewObject< UMaterialInstanceConstant >(GetTransientPackage(), NAME_None, Context->ObjectFlags | RF_Transient);
 
-			if ( MdlMaterialInstance )
+			UUsdAssetImportData* ImportData = NewObject< UUsdAssetImportData >( MdlMaterialInstance, TEXT( "USDAssetImportData" ) );
+			ImportData->PrimPath = PrimPath.GetString();
+			MdlMaterialInstance->AssetImportData = ImportData;
+
+			MdlMaterialInstance->SetParentEditorOnly( MdlMaterial );
+
+			UsdToUnreal::ConvertShadeInputsToParameters( ShadeMaterial, *MdlMaterialInstance, Context->AssetCache.Get(), *Context->RenderContext.ToString() );
+
+			// We can't blindly recreate all component render states when a level is being added, because we may end up first creating
+			// render states for some components, and UWorld::AddToWorld calls FScene::AddPrimitive which expects the component to not have
+			// primitives yet
+			FMaterialUpdateContext::EOptions::Type Options = FMaterialUpdateContext::EOptions::Default;
+			if ( Context->Level->bIsAssociatingLevel )
 			{
-				UUsdAssetImportData* ImportData = NewObject< UUsdAssetImportData >( MdlMaterialInstance, TEXT( "USDAssetImportData" ) );
-				ImportData->PrimPath = PrimPath.GetString();
-				MdlMaterialInstance->AssetImportData = ImportData;
-
-				MdlMaterialInstance->SetParentEditorOnly( MdlMaterial );
-
-				UsdToUnreal::ConvertShadeInputsToParameters( ShadeMaterial, *MdlMaterialInstance, Context->AssetCache.Get(), *Context->RenderContext.ToString() );
-
-				// We can't blindly recreate all component render states when a level is being added, because we may end up first creating
-				// render states for some components, and UWorld::AddToWorld calls FScene::AddPrimitive which expects the component to not have
-				// primitives yet
-				FMaterialUpdateContext::EOptions::Type Options = FMaterialUpdateContext::EOptions::Default;
-				if ( Context->Level->bIsAssociatingLevel )
-				{
-					Options = ( FMaterialUpdateContext::EOptions::Type ) ( Options & ~FMaterialUpdateContext::EOptions::RecreateRenderStates );
-				}
-
-				FMaterialUpdateContext UpdateContext( Options, GMaxRHIShaderPlatform );
-				UpdateContext.AddMaterialInstance( MdlMaterialInstance );
-				MdlMaterialInstance->PreEditChange( nullptr );
-				MdlMaterialInstance->PostEditChange();
-
-				UE::MDLShadeTranslatorImpl::Private::NotifyIfMaterialNeedsVirtualTextures( MdlMaterialInstance );
+				Options = ( FMaterialUpdateContext::EOptions::Type ) ( Options & ~FMaterialUpdateContext::EOptions::RecreateRenderStates );
 			}
+
+			FMaterialUpdateContext UpdateContext( Options, GMaxRHIShaderPlatform );
+			UpdateContext.AddMaterialInstance( MdlMaterialInstance );
+			MdlMaterialInstance->PreEditChange( nullptr );
+			MdlMaterialInstance->PostEditChange();
+
+			Context->AssetCache->CacheAsset(MdlFullInstanceName, MdlMaterialInstance);
+
+			UE::MDLShadeTranslatorImpl::Private::NotifyIfMaterialNeedsVirtualTextures( MdlMaterialInstance );
 		}
 
-		const FString PrimPathString = PrimPath.GetString();
-		Context->AssetCache->CacheAsset( PrimPathString, MdlMaterialInstance );
-		Context->AssetCache->LinkAssetToPrim( PrimPathString, MdlMaterialInstance );
+		if (Context->InfoCache)
+		{
+			Context->InfoCache->LinkAssetToPrim(PrimPath, MdlMaterial);
+			Context->InfoCache->LinkAssetToPrim(PrimPath, MdlMaterialInstance);
+
+			if (UMaterial* MdlReference = Cast<UMaterial>(MdlMaterial))
+			{
+				TArray<UTexture*> UsedTextures;
+				const bool bAllQualityLevels = true;
+				const bool bAllFeatureLevels = true;
+				MdlReference->GetUsedTextures(
+					UsedTextures,
+					EMaterialQualityLevel::High,
+					bAllQualityLevels,
+					ERHIFeatureLevel::SM5,
+					bAllFeatureLevels
+				);
+
+				for (UTexture* Texture : UsedTextures)
+				{
+					if (Texture->GetOutermost() == GetTransientPackage())
+					{
+						Context->InfoCache->LinkAssetToPrim(PrimPath, Texture);
+
+						const FString FilePath = Texture->AssetImportData ? Texture->AssetImportData->GetFirstFilename() : Texture->GetName();
+						const FString TextureHash = UsdUtils::GetTextureHash(
+							FilePath,
+							Texture->SRGB,
+							Texture->CompressionSettings,
+							Texture->GetTextureAddressX(),
+							Texture->GetTextureAddressY()
+						);
+
+						Texture->SetFlags(RF_Transient);
+						Context->AssetCache->CacheAsset(TextureHash, Texture);
+					}
+				}
+			}
+
+			if (MdlMaterialInstance)
+			{
+				for (const FTextureParameterValue& TextureValue : MdlMaterialInstance->TextureParameterValues)
+				{
+					if (UTexture* Texture = TextureValue.ParameterValue)
+					{
+						if (Texture->GetOutermost() == GetTransientPackage())
+						{
+							Context->InfoCache->LinkAssetToPrim(PrimPath, Texture);
+
+							const FString FilePath = Texture->AssetImportData ? Texture->AssetImportData->GetFirstFilename() : Texture->GetName();
+							const FString TextureHash = UsdUtils::GetTextureHash(
+								FilePath,
+								Texture->SRGB,
+								Texture->CompressionSettings,
+								Texture->GetTextureAddressX(),
+								Texture->GetTextureAddressY()
+							);
+
+							Texture->SetFlags(RF_Transient);
+							Context->AssetCache->CacheAsset(TextureHash, Texture);
+						}
+					}
+				}
+			}
+		}
 	}
 	else
 	{

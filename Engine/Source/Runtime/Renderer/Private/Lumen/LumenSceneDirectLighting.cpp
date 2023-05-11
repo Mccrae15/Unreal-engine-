@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LumenSceneLighting.h"
+#include "Materials/Material.h"
 #include "RendererPrivate.h"
 #include "ScenePrivate.h"
 #include "SceneUtils.h"
@@ -8,7 +9,6 @@
 #include "ShaderParameterStruct.h"
 #include "VolumeLighting.h"
 #include "DistanceFieldLightingShared.h"
-#include "VirtualShadowMaps/VirtualShadowMapClipmap.h"
 #include "VolumetricCloudRendering.h"
 #include "LumenTracingUtils.h"
 
@@ -19,22 +19,6 @@ FAutoConsoleVariableRef CVarLumenDirectLighting(
 	TEXT(""),
 	ECVF_Scalability | ECVF_RenderThreadSafe
 	);
-
-int32 GLumenDirectLightingForceForceShadowMaps = 0;
-FAutoConsoleVariableRef CVarLumenDirectLightingForceShadowMaps(
-	TEXT("r.LumenScene.DirectLighting.ForceShadowMaps"),
-	GLumenDirectLightingForceForceShadowMaps,
-	TEXT("Use shadow maps for all lights casting shadows."),
-	ECVF_Scalability | ECVF_RenderThreadSafe
-);
-
-int32 GLumenDirectLightingReuseShadowMaps = 1;
-FAutoConsoleVariableRef CVarLumenDirectLightingReuseShadowMaps(
-	TEXT("r.LumenScene.DirectLighting.ReuseShadowMaps"),
-	GLumenDirectLightingReuseShadowMaps,
-	TEXT("Whether to use shadow maps for shadowing Lumen Scene, where they are available (onscreen).  Offscreen areas will still use ray tracing."),
-	ECVF_Scalability | ECVF_RenderThreadSafe
-);
 
 int32 GLumenDirectLightingOffscreenShadowingTraceMeshSDFs = 1;
 FAutoConsoleVariableRef CVarLumenDirectLightingOffscreenShadowingTraceMeshSDFs(
@@ -67,28 +51,6 @@ FAutoConsoleVariableRef CVarLumenDirectLightingCloudTransmittance(
 	ECVF_Scalability | ECVF_RenderThreadSafe
 );
 
-int32 GLumenDirectLightingVirtualShadowMap = 1;
-FAutoConsoleVariableRef CVarLumenDirectLightingVirtualShadowMap(
-	TEXT("r.LumenScene.DirectLighting.VirtualShadowMap"),
-	GLumenDirectLightingVirtualShadowMap,
-	TEXT("Whether to sample virtual shadow when avaible."),
-	ECVF_Scalability | ECVF_RenderThreadSafe
-);
-
-static TAutoConsoleVariable<float> CVarLumenDirectLightingShadowMapSamplingBias(
-	TEXT("r.LumenScene.DirectLighting.ShadowMap.SamplingBias"),
-	2.0f,
-	TEXT("Bias for sampling shadow maps."),
-	ECVF_Scalability | ECVF_RenderThreadSafe
-);
-
-static TAutoConsoleVariable<float> CVarLumenDirectLightingVirtualShadowMapSamplingBias(
-	TEXT("r.LumenScene.DirectLighting.VirtualShadowMap.SamplingBias"),
-	7.0f,
-	TEXT("Bias for sampling virtual shadow maps."),
-	ECVF_Scalability | ECVF_RenderThreadSafe
-);
-
 static TAutoConsoleVariable<float> CVarLumenDirectLightingMeshSDFShadowRayBias(
 	TEXT("r.LumenScene.DirectLighting.MeshSDF.ShadowRayBias"),
 	2.0f,
@@ -117,16 +79,6 @@ static TAutoConsoleVariable<float> CVarLumenDirectLightingHardwareRayTracingShad
 	ECVF_Scalability | ECVF_RenderThreadSafe
 );
 
-float LumenSceneDirectLighting::GetShadowMapSamplingBias()
-{
-	return FMath::Max(CVarLumenDirectLightingShadowMapSamplingBias.GetValueOnRenderThread(), 0.0f);
-}
-
-float LumenSceneDirectLighting::GetVirtualShadowMapSamplingBias()
-{
-	return FMath::Max(CVarLumenDirectLightingVirtualShadowMapSamplingBias.GetValueOnRenderThread(), 0.0f);
-}
-
 float LumenSceneDirectLighting::GetMeshSDFShadowRayBias()
 {
 	return FMath::Max(CVarLumenDirectLightingMeshSDFShadowRayBias.GetValueOnRenderThread(), 0.0f);
@@ -145,16 +97,6 @@ float LumenSceneDirectLighting::GetGlobalSDFShadowRayBias()
 float LumenSceneDirectLighting::GetHardwareRayTracingShadowRayBias()
 {
 	return FMath::Max(CVarLumenDirectLightingHardwareRayTracingShadowRayBias.GetValueOnRenderThread(), 0.0f);
-}
-
-bool LumenSceneDirectLighting::UseVirtualShadowMaps()
-{
-	return GLumenDirectLightingVirtualShadowMap != 0;
-}
-
-bool LumenSceneDirectLighting::AllowShadowMaps(const FEngineShowFlags& EngineShowFlags)
-{
-	return GLumenDirectLightingReuseShadowMaps != 0 && EngineShowFlags.LumenReuseShadowMaps;
 }
 
 class FLumenGatheredLight
@@ -535,19 +477,19 @@ void ClearLumenSceneDirectLighting(
 	const FViewInfo& View,
 	FRDGBuilder& GraphBuilder,
 	const FLumenSceneData& LumenSceneData,
-	const FLumenCardTracingInputs& TracingInputs,
+	const FLumenSceneFrameTemporaries& FrameTemporaries,
 	FLumenCardUpdateContext CardUpdateContext)
 {
 	FClearLumenCardsParameters* PassParameters = GraphBuilder.AllocParameters<FClearLumenCardsParameters>();
 
-	PassParameters->RenderTargets[0] = FRenderTargetBinding(TracingInputs.DirectLightingAtlas, ERenderTargetLoadAction::ELoad);
-	PassParameters->VS.LumenCardScene = TracingInputs.LumenCardSceneUniformBuffer;
+	PassParameters->RenderTargets[0] = FRenderTargetBinding(FrameTemporaries.DirectLightingAtlas, ERenderTargetLoadAction::ELoad);
+	PassParameters->VS.LumenCardScene = FrameTemporaries.LumenCardSceneUniformBuffer;
 	PassParameters->VS.DrawIndirectArgs = CardUpdateContext.DrawCardPageIndicesIndirectArgs;
 	PassParameters->VS.CardPageIndexAllocator = GraphBuilder.CreateSRV(CardUpdateContext.CardPageIndexAllocator);
 	PassParameters->VS.CardPageIndexData = GraphBuilder.CreateSRV(CardUpdateContext.CardPageIndexData);
 	PassParameters->VS.IndirectLightingAtlasSize = LumenSceneData.GetRadiosityAtlasSize();
 	PassParameters->PS.View = View.ViewUniformBuffer;
-	PassParameters->PS.LumenCardScene = TracingInputs.LumenCardSceneUniformBuffer;
+	PassParameters->PS.LumenCardScene = FrameTemporaries.LumenCardSceneUniformBuffer;
 
 	GraphBuilder.AddPass(
 		RDG_EVENT_NAME("ClearDirectLighting"),
@@ -642,21 +584,11 @@ BEGIN_SHADER_PARAMETER_STRUCT(FLumenDirectLightingNonRayTracedShadowsParameters,
 	SHADER_PARAMETER(uint32, DummyZeroForFixingShaderCompilerBug)
 	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FForwardLightData, ForwardLightData)
 	SHADER_PARAMETER_STRUCT_REF(FDeferredLightUniformStruct, DeferredLightUniforms)
-	SHADER_PARAMETER_STRUCT_INCLUDE(FVirtualShadowMapSamplingParameters, VirtualShadowMapSamplingParameters)
-	SHADER_PARAMETER_STRUCT_INCLUDE(FVolumeShadowingShaderParameters, VolumeShadowingShaderParameters)
 	SHADER_PARAMETER_STRUCT_INCLUDE(FLightCloudTransmittanceParameters, LightCloudTransmittanceParameters)
-	SHADER_PARAMETER(float, ShadowMapSamplingBias)
-	SHADER_PARAMETER(float, VirtualShadowMapSamplingBias)
 	SHADER_PARAMETER(float, HeightfieldShadowReceiverBias)
 	SHADER_PARAMETER(float, StepFactor)
 	SHADER_PARAMETER(float, TanLightSourceAngle)
 	SHADER_PARAMETER(float, MaxTraceDistance)
-	SHADER_PARAMETER(int32, VirtualShadowMapId)
-	SHADER_PARAMETER(uint32, SampleDenseShadowMap)
-	SHADER_PARAMETER(uint32, ForceShadowMaps)
-	SHADER_PARAMETER(uint32, UseIESProfile)
-	SHADER_PARAMETER_TEXTURE(Texture2D, IESTexture)
-	SHADER_PARAMETER_SAMPLER(SamplerState, IESTextureSampler)
 END_SHADER_PARAMETER_STRUCT()
 
 class FLumenDirectLightingNonRayTracedShadowsCS : public FGlobalShader
@@ -671,11 +603,8 @@ class FLumenDirectLightingNonRayTracedShadowsCS : public FGlobalShader
 	class FThreadGroupSize32 : SHADER_PERMUTATION_BOOL("THREADGROUP_SIZE_32");
 	class FCompactShadowTraces : SHADER_PERMUTATION_BOOL("COMPACT_SHADOW_TRACES");
 	class FLightType : SHADER_PERMUTATION_ENUM_CLASS("LIGHT_TYPE", ELumenLightType);
-	class FDynamicallyShadowed : SHADER_PERMUTATION_BOOL("DYNAMICALLY_SHADOWED");
-	class FVirtualShadowMap : SHADER_PERMUTATION_BOOL("VIRTUAL_SHADOW_MAP");
-	class FDenseShadowMap : SHADER_PERMUTATION_BOOL("DENSE_SHADOW_MAP");
 	class FCloudTransmittance : SHADER_PERMUTATION_BOOL("USE_CLOUD_TRANSMITTANCE");
-	using FPermutationDomain = TShaderPermutationDomain<FThreadGroupSize32, FCompactShadowTraces, FLightType, FDynamicallyShadowed, FVirtualShadowMap, FDenseShadowMap, FCloudTransmittance>;
+	using FPermutationDomain = TShaderPermutationDomain<FThreadGroupSize32, FCompactShadowTraces, FLightType, FCloudTransmittance>;
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
@@ -686,18 +615,12 @@ class FLumenDirectLightingNonRayTracedShadowsCS : public FGlobalShader
 			return false;
 		}
 
-		if (PermutationVector.Get<FDynamicallyShadowed>() && !PermutationVector.Get<FDenseShadowMap>())
-		{
-			return false;
-		}
-
 		return DoesPlatformSupportLumenGI(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-		FVirtualShadowMapArray::SetShaderDefines(OutEnvironment);
 		OutEnvironment.CompilerFlags.Add(CFLAG_Wave32);
 		OutEnvironment.SetDefine(TEXT("LIGHT_FUNCTION"), 0);
 		OutEnvironment.SetDefine(TEXT("USE_IES_PROFILE"), 1);
@@ -738,11 +661,8 @@ class FLumenDirectLightingNonRayTracedShadowsWithLightFunctionCS : public FMater
 	class FThreadGroupSize32 : SHADER_PERMUTATION_BOOL("THREADGROUP_SIZE_32");
 	class FCompactShadowTraces : SHADER_PERMUTATION_BOOL("COMPACT_SHADOW_TRACES");
 	class FLightType : SHADER_PERMUTATION_ENUM_CLASS("LIGHT_TYPE", ELumenLightType);
-	class FDynamicallyShadowed : SHADER_PERMUTATION_BOOL("DYNAMICALLY_SHADOWED");
-	class FVirtualShadowMap : SHADER_PERMUTATION_BOOL("VIRTUAL_SHADOW_MAP");
-	class FDenseShadowMap : SHADER_PERMUTATION_BOOL("DENSE_SHADOW_MAP");
 	class FCloudTransmittance : SHADER_PERMUTATION_BOOL("USE_CLOUD_TRANSMITTANCE");
-	using FPermutationDomain = TShaderPermutationDomain<FThreadGroupSize32, FCompactShadowTraces, FLightType, FDynamicallyShadowed, FVirtualShadowMap, FDenseShadowMap, FCloudTransmittance>;
+	using FPermutationDomain = TShaderPermutationDomain<FThreadGroupSize32, FCompactShadowTraces, FLightType, FCloudTransmittance>;
 
 	static bool ShouldCompilePermutation(const FMaterialShaderPermutationParameters& Parameters)
 	{
@@ -753,17 +673,11 @@ class FLumenDirectLightingNonRayTracedShadowsWithLightFunctionCS : public FMater
 			return false;
 		}
 
-		if (PermutationVector.Get<FDynamicallyShadowed>() && !PermutationVector.Get<FDenseShadowMap>())
-		{
-			return false;
-		}
-
 		return Parameters.MaterialParameters.MaterialDomain == EMaterialDomain::MD_LightFunction && DoesPlatformSupportLumenGI(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
-		FVirtualShadowMapArray::SetShaderDefines(OutEnvironment);
 		FMaterialShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 		OutEnvironment.CompilerFlags.Add(CFLAG_Wave32);
 		OutEnvironment.SetDefine(TEXT("LIGHT_FUNCTION"), 1);
@@ -1014,6 +928,9 @@ void CullMeshObjectsForLightCards(
 
 	FDistanceFieldCulledObjectBufferParameters CulledObjectBufferParameters;
 
+	const bool bCullingForDirectShadowing = false;
+	const bool bCullHeighfieldsNotInAtlas = false;
+
 	CullDistanceFieldObjectsForLight(
 		GraphBuilder,
 		View,
@@ -1025,36 +942,12 @@ void CullMeshObjectsForLightCards(
 		PrePlaneTranslation,
 		LocalLightShadowBoundingSphere,
 		MeshSDFShadowBounds.W,
-		false,
+		bCullingForDirectShadowing,
+		bCullHeighfieldsNotInAtlas,
 		ObjectBufferParameters,
 		CulledObjectBufferParameters,
 		LightTileIntersectionParameters);
 }
-
-FLumenShadowSetup GetShadowForLumenDirectLighting(const FViewInfo& View, FVisibleLightInfo& VisibleLightInfo)
-{
-	FLumenShadowSetup ShadowSetup;
-	ShadowSetup.VirtualShadowMapId = LumenSceneDirectLighting::UseVirtualShadowMaps() ? VisibleLightInfo.GetVirtualShadowMapId(&View) : INDEX_NONE;
-	ShadowSetup.DenseShadowMap = nullptr;
-
-	for (int32 ShadowIndex = 0; ShadowIndex < VisibleLightInfo.ShadowsToProject.Num(); ShadowIndex++)
-	{
-		FProjectedShadowInfo* ProjectedShadowInfo = VisibleLightInfo.ShadowsToProject[ShadowIndex];
-		if (ProjectedShadowInfo->bIncludeInScreenSpaceShadowMask 
-			&& ProjectedShadowInfo->bWholeSceneShadow 
-			&& !ProjectedShadowInfo->bRayTracedDistanceField)
-		{
-			if (ProjectedShadowInfo->bAllocated)
-			{
-				ShadowSetup.DenseShadowMap = ProjectedShadowInfo;
-			}
-		}
-	}
-
-	return ShadowSetup;
-}
-
-const FProjectedShadowInfo* GetShadowForInjectionIntoVolumetricFog(const FVisibleLightInfo & VisibleLightInfo);
 
 void RenderDirectLightIntoLumenCardsBatched(
 	FRDGBuilder& GraphBuilder,
@@ -1106,7 +999,6 @@ void ComputeNonRayTracedShadows(
 	const FViewInfo& View,
 	TRDGUniformBufferRef<FLumenCardScene> LumenCardSceneUniformBuffer,
 	TArray<FVisibleLightInfo, SceneRenderingAllocator>& VisibleLightInfos,
-	const FVirtualShadowMapArray& VirtualShadowMapArray,
 	const FLumenGatheredLight& Light,
 	const FLumenLightTileScatterParameters& LightTileScatterParameters,
 	int32 ViewIndex,
@@ -1120,21 +1012,6 @@ void ComputeNonRayTracedShadows(
 	check(Light.NeedsShadowMask());
 
 	FVisibleLightInfo& VisibleLightInfo = VisibleLightInfos[Light.LightSceneInfo->Id];
-	FLumenShadowSetup ShadowSetup = GetShadowForLumenDirectLighting(View, VisibleLightInfo);
-
-	bool bUseVirtualShadowMap = false;
-	bool bUseDenseShadowMap = false;
-
-	if (Light.bHasShadows && LumenSceneDirectLighting::AllowShadowMaps(View.Family->EngineShowFlags))
-	{
-		bUseVirtualShadowMap = ShadowSetup.VirtualShadowMapId != INDEX_NONE;
-		if (!bUseVirtualShadowMap)
-		{
-			// Fallback to a complete shadow map
-			ShadowSetup.DenseShadowMap = GetShadowForInjectionIntoVolumetricFog(VisibleLightInfo);
-		}
-		bUseDenseShadowMap = ShadowSetup.DenseShadowMap != nullptr;
-	}
 
 	bool bUseCloudTransmittance = false;
 	auto SetCommonParameters = [&](FLumenDirectLightingNonRayTracedShadowsParameters& CommonParameters)
@@ -1154,27 +1031,10 @@ void ComputeNonRayTracedShadows(
 		CommonParameters.DummyZeroForFixingShaderCompilerBug = 0;
 		Lumen::SetDirectLightingDeferredLightUniformBuffer(View, Light.LightSceneInfo, CommonParameters.DeferredLightUniforms);
 		CommonParameters.ForwardLightData = View.ForwardLightingResources.ForwardLightUniformBuffer;
-
-		GetVolumeShadowingShaderParameters(
-			GraphBuilder,
-			View,
-			Light.LightSceneInfo,
-			ShadowSetup.DenseShadowMap,
-			CommonParameters.VolumeShadowingShaderParameters);
-		
-		CommonParameters.VirtualShadowMapId = ShadowSetup.VirtualShadowMapId;
-		if (bUseVirtualShadowMap)
-		{
-			CommonParameters.VirtualShadowMapSamplingParameters = VirtualShadowMapArray.GetSamplingParameters(GraphBuilder);
-		}
-
 		CommonParameters.TanLightSourceAngle = FMath::Tan(Light.LightSceneInfo->Proxy->GetLightSourceAngle());
 		CommonParameters.MaxTraceDistance = Lumen::GetMaxTraceDistance(View);
 		CommonParameters.StepFactor = FMath::Clamp(GOffscreenShadowingTraceStepFactor, .1f, 10.0f);
-		CommonParameters.ShadowMapSamplingBias = LumenSceneDirectLighting::GetShadowMapSamplingBias();
-		CommonParameters.VirtualShadowMapSamplingBias = LumenSceneDirectLighting::GetVirtualShadowMapSamplingBias();
 		CommonParameters.HeightfieldShadowReceiverBias = Lumen::GetHeightfieldReceiverBias();
-		CommonParameters.ForceShadowMaps = GLumenDirectLightingForceForceShadowMaps;
 
 		bUseCloudTransmittance = SetupLightCloudTransmittanceParameters(
 			GraphBuilder,
@@ -1182,10 +1042,6 @@ void ComputeNonRayTracedShadows(
 			View,
 			GLumenDirectLightingCloudTransmittance != 0 && Light.bHasCloudTransmittance ? Light.LightSceneInfo : nullptr,
 			CommonParameters.LightCloudTransmittanceParameters);
-
-		CommonParameters.UseIESProfile = Light.IESTexture ? 1 : 0;
-		CommonParameters.IESTexture = Light.IESTexture ? Light.IESTexture : GWhiteTexture->TextureRHI.GetReference();
-		CommonParameters.IESTextureSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 	};
 
 	const FMaterialRenderProxy* LightFunctionMaterialProxy = Light.LightSceneInfo->Proxy->GetLightFunctionMaterial();
@@ -1211,9 +1067,6 @@ void ComputeNonRayTracedShadows(
 		PermutationVector.Set<FLumenDirectLightingNonRayTracedShadowsWithLightFunctionCS::FThreadGroupSize32>(Lumen::UseThreadGroupSize32());
 		PermutationVector.Set<FLumenDirectLightingNonRayTracedShadowsWithLightFunctionCS::FCompactShadowTraces>(ShadowTraceAllocatorUAV != nullptr);
 		PermutationVector.Set<FLumenDirectLightingNonRayTracedShadowsWithLightFunctionCS::FLightType>(Light.Type);
-		PermutationVector.Set<FLumenDirectLightingNonRayTracedShadowsWithLightFunctionCS::FVirtualShadowMap>(bUseVirtualShadowMap);
-		PermutationVector.Set<FLumenDirectLightingNonRayTracedShadowsWithLightFunctionCS::FDynamicallyShadowed>(bUseDenseShadowMap);
-		PermutationVector.Set<FLumenDirectLightingNonRayTracedShadowsWithLightFunctionCS::FDenseShadowMap>(bUseDenseShadowMap);
 		PermutationVector.Set<FLumenDirectLightingNonRayTracedShadowsWithLightFunctionCS::FCloudTransmittance>(bUseCloudTransmittance);
 		
 		const FMaterial& Material = LightFunctionMaterialProxy->GetMaterialWithFallback(Scene->GetFeatureLevel(), LightFunctionMaterialProxy);
@@ -1248,9 +1101,6 @@ void ComputeNonRayTracedShadows(
 		PermutationVector.Set<FLumenDirectLightingNonRayTracedShadowsCS::FThreadGroupSize32>(Lumen::UseThreadGroupSize32());
 		PermutationVector.Set<FLumenDirectLightingNonRayTracedShadowsCS::FCompactShadowTraces>(ShadowTraceAllocatorUAV != nullptr);
 		PermutationVector.Set<FLumenDirectLightingNonRayTracedShadowsCS::FLightType>(Light.Type);
-		PermutationVector.Set<FLumenDirectLightingNonRayTracedShadowsCS::FVirtualShadowMap>(bUseVirtualShadowMap);
-		PermutationVector.Set<FLumenDirectLightingNonRayTracedShadowsCS::FDynamicallyShadowed>(bUseDenseShadowMap);
-		PermutationVector.Set<FLumenDirectLightingNonRayTracedShadowsCS::FDenseShadowMap>(bUseDenseShadowMap);
 		PermutationVector.Set<FLumenDirectLightingNonRayTracedShadowsCS::FCloudTransmittance>(bUseCloudTransmittance);
 		TShaderRef<FLumenDirectLightingNonRayTracedShadowsCS> ComputeShader = View.ShaderMap->GetShader<FLumenDirectLightingNonRayTracedShadowsCS>(PermutationVector);
 
@@ -1435,7 +1285,8 @@ struct FLumenPackedLight
 
 	uint32 LightingChannelMask;
 	uint32 bHasShadowMask;
-	uint32 Padding[2];
+	float IESAtlasIndex;
+	uint32 Padding;
 };
 
 FRDGBufferRef CreateLumenLightDataBuffer(FRDGBuilder& GraphBuilder, const TArray<FLumenGatheredLight, TInlineAllocator<64>>& GatheredLights, float Exposure)
@@ -1499,7 +1350,7 @@ FRDGBufferRef CreateLumenLightDataBuffer(FRDGBuilder& GraphBuilder, const TArray
 			LightData.SinCosConeAngleOrRectLightAtlasUVScale = FVector2f(FMath::Sin(LightSceneInfo->Proxy->GetOuterConeAngle()), FMath::Cos(LightSceneInfo->Proxy->GetOuterConeAngle()));
 		}
 		LightData.RectLightAtlasUVOffset = ShaderParameters.RectLightAtlasUVOffset;
-
+		LightData.IESAtlasIndex = ShaderParameters.IESAtlasIndex;
 		LightData.LightingChannelMask = LightSceneInfo->Proxy->GetLightingChannelMask();
 		LightData.bHasShadowMask = LumenLight.NeedsShadowMask() ? 1 : 0;
 	}
@@ -1708,13 +1559,13 @@ void CullDirectLightingTiles(
 
 void FDeferredShadingSceneRenderer::RenderDirectLightingForLumenScene(
 	FRDGBuilder& GraphBuilder,
-	const FLumenCardTracingInputs& TracingInputs,
+	const FLumenSceneFrameTemporaries& FrameTemporaries,
 	const FLumenCardUpdateContext& CardUpdateContext,
 	ERDGPassFlags ComputePassFlags)
 {
 	LLM_SCOPE_BYTAG(Lumen);
 
-	if (GLumenDirectLighting)
+	if (GLumenDirectLighting && CardUpdateContext.MaxUpdateTiles > 0)
 	{
 		RDG_EVENT_SCOPE(GraphBuilder, "DirectLighting");
 		QUICK_SCOPE_CYCLE_COUNTER(RenderDirectLightingForLumenScene);
@@ -1722,7 +1573,7 @@ void FDeferredShadingSceneRenderer::RenderDirectLightingForLumenScene(
 		const FViewInfo& MainView = Views[0];
 		FLumenSceneData& LumenSceneData = *Scene->GetLumenSceneData(Views[0]);
 
-		TRDGUniformBufferRef<FLumenCardScene> LumenCardSceneUniformBuffer = TracingInputs.LumenCardSceneUniformBuffer;
+		TRDGUniformBufferRef<FLumenCardScene> LumenCardSceneUniformBuffer = FrameTemporaries.LumenCardSceneUniformBuffer;
 
 		TArray<FLumenGatheredLight, TInlineAllocator<64>> GatheredLights;
 		bool bHasRectLights = false;
@@ -1772,7 +1623,7 @@ void FDeferredShadingSceneRenderer::RenderDirectLightingForLumenScene(
 
 		// Apply shadow map
 		{
-			RDG_EVENT_SCOPE(GraphBuilder, "Non raytraced shadows");
+			RDG_EVENT_SCOPE_FINAL(GraphBuilder, "Non raytraced shadows");
 
 			FRDGBufferUAVRef ShadowMaskTilesUAV = GraphBuilder.CreateUAV(ShadowMaskTiles, ERDGUnorderedAccessViewFlags::SkipBarrier);
 			FRDGBufferUAVRef ShadowTraceAllocatorUAV = ShadowTraceAllocator ? GraphBuilder.CreateUAV(ShadowTraceAllocator, ERDGUnorderedAccessViewFlags::SkipBarrier) : nullptr;
@@ -1794,7 +1645,6 @@ void FDeferredShadingSceneRenderer::RenderDirectLightingForLumenScene(
 							View,
 							LumenCardSceneUniformBuffer,
 							VisibleLightInfos,
-							VirtualShadowMapArray,
 							GatheredLight,
 							CullContext.LightTileScatterParameters,
 							ViewIndex,
@@ -1836,7 +1686,7 @@ void FDeferredShadingSceneRenderer::RenderDirectLightingForLumenScene(
 
 		// Offscreen shadowing
 		{
-			RDG_EVENT_SCOPE(GraphBuilder, "Offscreen shadows");
+			RDG_EVENT_SCOPE_FINAL(GraphBuilder, "Offscreen shadows");
 
 			FRDGBufferUAVRef ShadowMaskTilesUAV = GraphBuilder.CreateUAV(ShadowMaskTiles, ERDGUnorderedAccessViewFlags::SkipBarrier);
 
@@ -1851,14 +1701,15 @@ void FDeferredShadingSceneRenderer::RenderDirectLightingForLumenScene(
 						Scene,
 						View,
 						ViewIndex,
-						TracingInputs,
+						FrameTemporaries,
 						ShadowTraceIndirectArgs,
 						ShadowTraceAllocator,
 						ShadowTraces,
 						CullContext.LightTileAllocator,
 						CullContext.LightTiles,
 						LumenPackedLights,
-						ShadowMaskTilesUAV);
+						ShadowMaskTilesUAV,
+						ComputePassFlags);
 				}
 				else
 				{
@@ -1893,7 +1744,7 @@ void FDeferredShadingSceneRenderer::RenderDirectLightingForLumenScene(
 			FRDGBufferSRVRef CardTilesSRV = GraphBuilder.CreateSRV(CardTileUpdateContext.CardTiles);
 			FRDGBufferSRVRef LightTileOffsetNumPerCardTileSRV = GraphBuilder.CreateSRV(CullContext.LightTileOffsetNumPerCardTile);
 			FRDGBufferSRVRef LightTilesPerCardTileSRV = GraphBuilder.CreateSRV(CullContext.LightTilesPerCardTile);
-			FRDGTextureUAVRef DirectLightingAtlasUAV = GraphBuilder.CreateUAV(TracingInputs.DirectLightingAtlas);
+			FRDGTextureUAVRef DirectLightingAtlasUAV = GraphBuilder.CreateUAV(FrameTemporaries.DirectLightingAtlas);
 
 			RenderDirectLightIntoLumenCardsBatched(
 				GraphBuilder,
@@ -1915,7 +1766,7 @@ void FDeferredShadingSceneRenderer::RenderDirectLightingForLumenScene(
 			Scene,
 			MainView,
 			GraphBuilder,
-			TracingInputs,
+			FrameTemporaries,
 			CardUpdateContext,
 			CardTileUpdateContext,
 			ComputePassFlags);

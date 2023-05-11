@@ -35,11 +35,13 @@
 #include "Logging/MessageLog.h"
 #include "Misc/EngineBuildSettings.h"
 #include "Framework/Notifications/NotificationManager.h"
+#include "UObject/Linker.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Interfaces/IPluginManager.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Editor.h"
 #include "UObject/LinkerInstancingContext.h"
+#include "LevelEditorViewport.h"
 
 #define LOCTEXT_NAMESPACE "ContentBrowser"
 
@@ -57,7 +59,7 @@ namespace AssetViewUtils
 	static FOnFolderPathChanged OnFolderPathChangedDelegate;
 
 	/** Keep a map of all the paths that have custom colors, so updating the color in one location updates them all */
-	static TMap< FString, TSharedPtr< FLinearColor > > PathColors;
+	static TMap< FString, FLinearColor > PathColors;
 
 	/** Internal function to delete a folder from disk, but only if it is empty. InPathToDelete is in FPackageName format. */
 	bool DeleteEmptyFolderFromDisk(const FString& InPathToDelete);
@@ -166,40 +168,41 @@ bool AssetViewUtils::LoadAssetsIfNeeded(const TArray<FString>& ObjectPaths, TArr
 			SlowTask.MakeDialog();
 		}
 
-		GIsEditorLoadingPackage = true;
-
-		// We usually don't want to follow redirects when loading objects for the Content Browser.  It would
-		// allow a user to interact with a ghost/unverified asset as if it were still alive.
-		// This can be overridden by providing bLoadRedirects = true as a parameter.
-		const ELoadFlags LoadFlags = bLoadRedirects ? LOAD_None : LOAD_NoRedirects;
-
 		bool bSomeObjectsFailedToLoad = false;
-		for (int32 PathIdx = 0; PathIdx < UnloadedObjectPaths.Num(); ++PathIdx)
 		{
-			const FString& ObjectPath = UnloadedObjectPaths[PathIdx];
-			SlowTask.EnterProgressFrame(1, FText::Format(LOCTEXT("LoadingObjectf", "Loading {0}..."), FText::FromString(ObjectPath)));
+			TGuardValue<bool> IsEditorLoadingPackageGuard(GIsEditorLoadingPackage, true);
 
-			// Load up the object
-			FLinkerInstancingContext InstancingContext(bLoadAllExternalObjects ? TSet<FName>{ ULevel::LoadAllExternalObjectsTag } : TSet<FName>());
-			UObject* LoadedObject = LoadObject<UObject>(NULL, *ObjectPath, NULL, LoadFlags, NULL, &InstancingContext);
-			if ( LoadedObject )
-			{
-				LoadedObjects.Add(LoadedObject);
-			}
-			else
-			{
-				bSomeObjectsFailedToLoad = true;
-			}
+			// We usually don't want to follow redirects when loading objects for the Content Browser.  It would
+			// allow a user to interact with a ghost/unverified asset as if it were still alive.
+			// This can be overridden by providing bLoadRedirects = true as a parameter.
+			const ELoadFlags LoadFlags = bLoadRedirects ? LOAD_None : LOAD_NoRedirects;
 
-			if (GWarn->ReceivedUserCancel())
+			for (int32 PathIdx = 0; PathIdx < UnloadedObjectPaths.Num(); ++PathIdx)
 			{
-				// If the user has canceled stop loading the remaining objects. We don't add the remaining objects to the failed string,
-				// this would only result in launching another dialog when by their actions the user clearly knows not all of the 
-				// assets will have been loaded.
-				break;
+				const FString& ObjectPath = UnloadedObjectPaths[PathIdx];
+				SlowTask.EnterProgressFrame(1, FText::Format(LOCTEXT("LoadingObjectf", "Loading {0}..."), FText::FromString(ObjectPath)));
+
+				// Load up the object
+				FLinkerInstancingContext InstancingContext(bLoadAllExternalObjects ? TSet<FName>{ ULevel::LoadAllExternalObjectsTag } : TSet<FName>());
+				UObject* LoadedObject = LoadObject<UObject>(NULL, *ObjectPath, NULL, LoadFlags, NULL, &InstancingContext);
+				if ( LoadedObject )
+				{
+					LoadedObjects.Add(LoadedObject);
+				}
+				else
+				{
+					bSomeObjectsFailedToLoad = true;
+				}
+
+				if (GWarn->ReceivedUserCancel())
+				{
+					// If the user has canceled stop loading the remaining objects. We don't add the remaining objects to the failed string,
+					// this would only result in launching another dialog when by their actions the user clearly knows not all of the 
+					// assets will have been loaded.
+					break;
+				}
 			}
 		}
-		GIsEditorLoadingPackage = false;
 
 		if ( bSomeObjectsFailedToLoad )
 		{
@@ -554,11 +557,11 @@ bool AssetViewUtils::RenameFolder(const FString& DestPath, const FString& Source
 	GetObjectsInAssetData(AssetsInFolder, ObjectsInFolder, bLoadAllExternalObjects);
 
 	FResultMessage Result;
-	Result.bSucceeded = true;
+	Result.bSuccess = true;
 	FEditorDelegates::OnPreDestructiveAssetAction.Broadcast(ObjectsInFolder, EDestructiveAssetActions::AssetRename, Result);
-	if (!Result.WasSuccesful())
+	if (!Result.bSuccess)
 	{
-		UE_LOG(LogAssetViewTools, Warning, TEXT("%s"), *Result.GetErrorMessage());
+		UE_LOG(LogAssetViewTools, Warning, TEXT("%s"), *Result.ErrorMessage);
 		return false;
 	}
 
@@ -575,11 +578,11 @@ bool AssetViewUtils::RenameFolder(const FString& DestPath, const FString& Source
 	}
 
 	// set color of folder to new path
-	const TSharedPtr<FLinearColor> FolderColor = LoadColor(SourcePath);
-	if (FolderColor.IsValid())
+	const TOptional<FLinearColor> FolderColor = GetPathColor(SourcePath);
+	if (FolderColor.IsSet())
 	{
-		SaveColor(SourcePath, nullptr);
-		SaveColor(DestPath, FolderColor);
+		SetPathColor(SourcePath, TOptional<FLinearColor>());
+		SetPathColor(DestPath, FolderColor);
 	}
 
 	{
@@ -626,10 +629,10 @@ bool AssetViewUtils::CopyFolders(const TArray<FString>& InSourcePathNames, const
 			ObjectTools::DuplicateObjects( PathIt.Value(), SourcePath, Destination, /*bOpenDialog=*/false );
 		}
 
-		const TSharedPtr<FLinearColor> FolderColor = LoadColor(SourcePath);
-		if (FolderColor.IsValid())
+		const TOptional<FLinearColor> FolderColor = GetPathColor(SourcePath);
+		if (FolderColor.IsSet())
 		{
-			SaveColor(Destination, FolderColor);
+			SetPathColor(Destination, FolderColor);
 		}
 	}
 
@@ -669,11 +672,11 @@ bool AssetViewUtils::MoveFolders(const TArray<FString>& InSourcePathNames, const
 	}
 
 	FResultMessage Result;
-	Result.bSucceeded = true;
+	Result.bSuccess = true;
 	FEditorDelegates::OnPreDestructiveAssetAction.Broadcast(AssetsToMove, EDestructiveAssetActions::AssetMove, Result);
-	if (!Result.WasSuccesful())
+	if (!Result.bSuccess)
 	{
-		UE_LOG(LogAssetViewTools, Warning, TEXT("%s"), *Result.GetErrorMessage());
+		UE_LOG(LogAssetViewTools, Warning, TEXT("%s"), *Result.ErrorMessage);
 		return false;
 	}
 	
@@ -707,11 +710,11 @@ bool AssetViewUtils::MoveFolders(const TArray<FString>& InSourcePathNames, const
 			AssetRegistryModule.Get().RemovePath(SourcePath);
 		}
 
-		const TSharedPtr<FLinearColor> FolderColor = LoadColor(SourcePath);
-		if (FolderColor.IsValid())
+		const TOptional<FLinearColor> FolderColor = GetPathColor(SourcePath);
+		if (FolderColor.IsSet())
 		{
-			SaveColor(SourcePath, nullptr);
-			SaveColor(Destination, FolderColor);
+			SetPathColor(SourcePath, TOptional<FLinearColor>());
+			SetPathColor(Destination, FolderColor);
 		}
 
 		ChangedPaths.Add(MakeTuple(SourcePath, Destination));
@@ -1108,13 +1111,23 @@ bool AssetViewUtils::DoesFolderExist(const FString& FolderPath)
 
 const TSharedPtr<FLinearColor> AssetViewUtils::LoadColor(const FString& FolderPath)
 {
-	auto LoadColorInternal = [](const FString& InPath) -> TSharedPtr<FLinearColor>
+	TOptional<FLinearColor> FoundColor = GetPathColor(FolderPath);
+	if (FoundColor.IsSet())
+	{
+		return MakeShared<FLinearColor>(FoundColor.GetValue());
+	}
+	return TSharedPtr<FLinearColor>();
+}
+
+TOptional<FLinearColor> AssetViewUtils::GetPathColor(const FString& FolderPath)
+{
+	auto GetPathColorInternal = [](const FString& InPath) -> TOptional<FLinearColor>
 	{
 		// See if we have a value cached first
-		TSharedPtr<FLinearColor> CachedColor = PathColors.FindRef(InPath);
-		if(CachedColor.IsValid())
+		FLinearColor* CachedColor = PathColors.Find(InPath);
+		if(CachedColor)
 		{
-			return CachedColor;
+			return *CachedColor;
 		}
 		
 		// Loads the color of folder at the given path from the config
@@ -1127,21 +1140,21 @@ const TSharedPtr<FLinearColor> AssetViewUtils::LoadColor(const FString& FolderPa
 				FLinearColor Color;
 				if(Color.InitFromString(ColorStr) && !Color.Equals(GetDefaultColor()))
 				{
-					return PathColors.Add(InPath, MakeShareable(new FLinearColor(Color)));
+					return PathColors.Add(InPath, FLinearColor(Color));
 				}
 			}
 			else
 			{
-				return PathColors.Add(InPath, MakeShareable(new FLinearColor(GetDefaultColor())));
+				return PathColors.Add(InPath, FLinearColor(GetDefaultColor()));
 			}
 		}
 
-		return nullptr;
+		return TOptional<FLinearColor>();
 	};
 
 	// First try and find the color using the given path, as this works correctly for both assets and classes
-	TSharedPtr<FLinearColor> FoundColor = LoadColorInternal(FolderPath);
-	if(FoundColor.IsValid())
+	TOptional<FLinearColor> FoundColor = GetPathColorInternal(FolderPath);
+	if(FoundColor.IsSet())
 	{
 		return FoundColor;
 	}
@@ -1151,21 +1164,35 @@ const TSharedPtr<FLinearColor> AssetViewUtils::LoadColor(const FString& FolderPa
 		FString RelativePath;
 		if (FPackageName::TryConvertLongPackageNameToFilename(FolderPath / FString(), RelativePath))
 		{
-			return LoadColorInternal(RelativePath);
+			return GetPathColorInternal(RelativePath);
 		}
 	}
 
-	return nullptr;
+	return TOptional<FLinearColor>();
 }
 
 void AssetViewUtils::SaveColor(const FString& FolderPath, const TSharedPtr<FLinearColor>& FolderColor, bool bForceAdd)
 {
-	auto SaveColorInternal = [](const FString& InPath, const TSharedPtr<FLinearColor>& InFolderColor)
+	TOptional<FLinearColor> OptionalFolderColor;
+	if (FolderColor)
+	{
+		OptionalFolderColor = *FolderColor.Get();
+	}
+	else if (bForceAdd)
+	{
+		OptionalFolderColor = GetDefaultColor();
+	}
+	SetPathColor(FolderPath, OptionalFolderColor);
+}
+
+void AssetViewUtils::SetPathColor(const FString& FolderPath, TOptional<FLinearColor> FolderColor)
+{
+	auto SetPathColorInternal = [](const FString& InPath, FLinearColor InFolderColor)
 	{
 		// Saves the color of the folder to the config
 		if(FPaths::FileExists(GEditorPerProjectIni))
 		{
-			GConfig->SetString(TEXT("PathColor"), *InPath, *InFolderColor->ToString(), GEditorPerProjectIni);
+			GConfig->SetString(TEXT("PathColor"), *InPath, *InFolderColor.ToString(), GEditorPerProjectIni);
 		}
 
 		// Update the map too
@@ -1185,15 +1212,14 @@ void AssetViewUtils::SaveColor(const FString& FolderPath, const TSharedPtr<FLine
 	};
 
 	// Remove the color if it's invalid or default
-	const bool bRemove = !FolderColor.IsValid() || (!bForceAdd && FolderColor->Equals(GetDefaultColor()));
-
+	const bool bRemove = !FolderColor.IsSet() || FolderColor->Equals(GetDefaultColor());
 	if(bRemove)
 	{
 		RemoveColorInternal(FolderPath);
 	}
 	else
 	{
-		SaveColorInternal(FolderPath, FolderColor);
+		SetPathColorInternal(FolderPath, FolderColor.GetValue());
 	}
 
 	// Make sure and remove any colors using the legacy path format
@@ -1423,7 +1449,7 @@ FString AssetViewUtils::GetPackagePathWithinRoot(const FString& PackageName)
 	return RelativePathToAsset;
 }
 
-int32 AssetViewUtils::GetPackageLengthForCooking(const FString& PackageName, bool IsInternalBuild)
+int32 AssetViewUtils::GetPackageLengthForCooking(const FString& PackageName, bool bIsInternalBuild)
 {
 	FString RelativePathToAsset;
 	if (!FPackageName::TryConvertLongPackageNameToFilename(PackageName, RelativePathToAsset, FPackageName::GetAssetPackageExtension()))
@@ -1459,13 +1485,13 @@ int32 AssetViewUtils::GetPackageLengthForCooking(const FString& PackageName, boo
 
 		if (FString ExternalPluginCookedRootPath = CVarExternalPluginCookedRootPath->GetValueOnGameThread(); ExternalPluginCookedRootPath.Len() > 0)
 		{
-			IsInternalBuild = false;
+			bIsInternalBuild = false;
 			AbsoluteTargetPath = MoveTemp(ExternalPluginCookedRootPath);
 			AbsoluteTargetPath /= FString();
 		}
 	}
 
-	if (IsInternalBuild)
+	if (bIsInternalBuild)
 	{
 		// We assume a constant size for the build machine base path for things that reside within the UE source tree
 		const FString AbsoluteUERootPath = FPaths::ConvertRelativePathToFull(FPaths::RootDir());
@@ -1678,13 +1704,15 @@ void ShowSyncDependenciesDialog(const TArray<FString>& InDependencies, TArray<FS
 	}
 }
 
-void AssetViewUtils::SyncPackagesFromSourceControl(const TArray<FString>& PackageNames)
+void AssetViewUtils::SyncPackagesFromSourceControl(const TArray<FString>& PackageNames, bool bIsSyncLatestOperation)
 {
-	if (PackageNames.Num() > 0)
+	if (PackageNames.Num() > 0 || bIsSyncLatestOperation)
 	{
-		// Warn about any packages that are being synced without also getting the newest version of their dependencies...
 		TArray<FString> PackageNamesToSync = PackageNames;
+
+		if (!bIsSyncLatestOperation)
 		{
+			// Warn about any packages that are being synced without also getting the newest version of their dependencies...
 			TArray<FString> OutOfDateDependencies;
 			GetOutOfDatePackageDependencies(PackageNamesToSync, OutOfDateDependencies);
 
@@ -1718,30 +1746,126 @@ void AssetViewUtils::SyncPackagesFromSourceControl(const TArray<FString>& Packag
 		}
 
 		// Sync everything...
-		SCCProvider.Execute(ISourceControlOperation::Create<FSync>(), PackageFilenames);
+		TSharedRef<FSync> Operation = ISourceControlOperation::Create<FSync>();
+		if (bIsSyncLatestOperation)
+		{
+			Operation->SetHeadRevisionFlag(true);
+			if (SCCProvider.Execute(Operation) != ECommandResult::Succeeded)
+			{
+				UE_LOG(LogAssetViewTools, Warning, TEXT("Error while syncing latest revision"));
+				return;
+			}
+		}
+		else
+		{
+			SCCProvider.Execute(Operation, PackageFilenames);
+		}
 
 		// Syncing may have deleted some packages, so we need to unload those rather than re-load them...
-		TArray<UPackage*> PackagesToUnload;
+		// Note: we will store the package using weak pointers here otherwise we might have garbage collection issues after the ReloadPackages call
+		TArray<TWeakObjectPtr<UPackage>> PackagesToUnload;
 		LoadedPackages.RemoveAll([&](UPackage* InPackage) -> bool
 		{
 			const FString PackageExtension = InPackage->ContainsMap() ? FPackageName::GetMapPackageExtension() : FPackageName::GetAssetPackageExtension();
 			const FString PackageFilename = FPackageName::LongPackageNameToFilename(InPackage->GetName(), PackageExtension);
 			if (!FPaths::FileExists(PackageFilename))
 			{
-				PackagesToUnload.Emplace(InPackage);
+				PackagesToUnload.Emplace(MakeWeakObjectPtr(InPackage));
 				return true; // remove package
 			}
 			return false; // keep package
 		});
 
+		// Syncing may result in a map reload, so we retain the camera views to restore after the reload...
+		struct FCameraView
+		{
+			FVector Location;
+			FRotator Rotation;
+		};
+		TMap<FLevelEditorViewportClient*, FCameraView> CameraViews;
+		for (FLevelEditorViewportClient* LevelVC : GEditor->GetLevelViewportClients())
+		{
+			CameraViews.Add(LevelVC, { LevelVC->GetViewLocation(), LevelVC->GetViewRotation() });
+		}
+
 		// Hot-reload the new packages...
+		if (bIsSyncLatestOperation)
+		{
+			UWorld* EditorWorld = GEditor->GetEditorWorldContext().World();
+			LoadedPackages.Add(EditorWorld->GetPackage());
+		}
 		UPackageTools::ReloadPackages(LoadedPackages);
 
+		// Restore the camera views after a map reload if necessary...
+		for (FLevelEditorViewportClient* LevelVC : GEditor->GetLevelViewportClients())
+		{
+			const FCameraView& CameraView = CameraViews.FindChecked(LevelVC);
+			LevelVC->SetViewLocation(CameraView.Location);
+			if (!LevelVC->IsOrtho())
+			{
+				LevelVC->SetViewRotation(CameraView.Rotation);
+			}
+			LevelVC->Invalidate();
+			FEditorDelegates::OnEditorCameraMoved.Broadcast(CameraView.Location, CameraView.Rotation, LevelVC->ViewportType, LevelVC->ViewIndex);
+		}
+
 		// Unload any deleted packages...
-		UPackageTools::UnloadPackages(PackagesToUnload);
+		TArray<UPackage*> PackageRawPtrsToUnload;
+		for (TWeakObjectPtr<UPackage>& PackageToUnload : PackagesToUnload)
+		{
+			if (PackageToUnload.IsValid())
+			{
+				PackageRawPtrsToUnload.Emplace(PackageToUnload.Get());
+			}
+		}
+
+		UPackageTools::UnloadPackages(PackageRawPtrsToUnload);
 
 		// Re-cache the SCC state...
-		SCCProvider.Execute(ISourceControlOperation::Create<FUpdateStatus>(), PackageFilenames, EConcurrency::Asynchronous);
+		SCCProvider.Execute(ISourceControlOperation::Create<FUpdateStatus>(), PackageFilenames);
+	}
+}
+
+void AssetViewUtils::SyncLatestFromSourceControl()
+{
+	TArray<FString> PackageNames;
+	TArray<FString> PackageFilenames;
+
+	ISourceControlProvider& SCCProvider = ISourceControlModule::Get().GetProvider();
+	TSharedRef<FSyncPreview> PreviewOperation = ISourceControlOperation::Create<FSyncPreview>();
+	PreviewOperation->SetHeadRevisionFlag(true);
+	ECommandResult::Type OperationResult =  SCCProvider.Execute(PreviewOperation);
+
+	if (OperationResult == ECommandResult::Succeeded)
+	{
+		PackageFilenames = PreviewOperation->GetAffectedFiles();
+
+		for (const FString& PackageFilename : PackageFilenames)
+		{
+			FString PackageName;
+			if (FPackageName::TryConvertFilenameToLongPackageName(PackageFilename, PackageName))
+			{
+				PackageNames.Add(PackageName);
+			}
+		}
+
+		SyncPackagesFromSourceControl(PackageNames, /*IsSyncLatestOperation=*/true);
+	}
+	else
+	{
+		// Likely the source control provider does not support sync previews. Proceed to syncing all paths under source control
+		TArray<FString> SourceControlLocations;
+
+		if (ISourceControlModule::Get().UsesCustomProjectDir())
+		{
+			SourceControlLocations.Add(ISourceControlModule::Get().GetSourceControlProjectDir());
+		}
+		else
+		{
+			SourceControlLocations = SourceControlHelpers::GetSourceControlLocations(/*bContentOnly=*/true);
+		}
+
+		SyncPathsFromSourceControl(SourceControlLocations);
 	}
 }
 
@@ -1873,7 +1997,7 @@ void AssetViewUtils::SyncPathsFromSourceControl(const TArray<FString>& ContentPa
 		UPackageTools::UnloadPackages(PackageRawPtrsToUnload);
 
 		// Re-cache the SCC state...
-		SCCProvider.Execute(ISourceControlOperation::Create<FUpdateStatus>(), PathsOnDisk, EConcurrency::Asynchronous);
+		SCCProvider.Execute(ISourceControlOperation::Create<FUpdateStatus>(), PathsOnDisk);
 	}
 }
 

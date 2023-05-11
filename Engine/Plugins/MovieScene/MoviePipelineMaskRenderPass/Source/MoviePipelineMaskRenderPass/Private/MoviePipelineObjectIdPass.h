@@ -1,8 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "MoviePipelineDeferredPasses.h"
-#include "MovieRenderOverlappedMask.h"
+#include "MoviePipelineImagePassBase.h"
 #include "MoviePipelineObjectIdPass.generated.h"
 
 UENUM(BlueprintType)
@@ -50,7 +49,12 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Settings")
 	EMoviePipelineObjectIdPassIdType IdType;
 
+	/** If true, translucent objects will be included in the ObjectId pass (but as an opaque layer due to limitations). False will omit translucent objects. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Settings")
+	bool bIncludeTranslucentObjects;
+
 private:
 	TSharedPtr<FAccumulatorPool, ESPMode::ThreadSafe> AccumulatorPool;
 	TArray<FMoviePipelinePassIdentifier> ExpectedPassIdentifiers;
+	bool bPrevAllowSelectTranslucent;
 };

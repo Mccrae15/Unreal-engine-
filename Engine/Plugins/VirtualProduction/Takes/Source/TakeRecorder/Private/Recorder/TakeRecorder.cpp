@@ -46,6 +46,7 @@
 #include "Widgets/Images/SThrobber.h"
 #include "Widgets/Input/SHyperlink.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Layout/SBox.h"
 
 // LevelEditor includes
 #include "IAssetViewport.h"
@@ -487,6 +488,12 @@ bool UTakeRecorder::Initialize ( ULevelSequence* LevelSequenceBase, UTakeRecorde
 		Parameters.Project.bStartAtCurrentTimecode = false;
 		Parameters.User.bStopAtPlaybackEnd = true;
 		Parameters.User.bAutoLock = false;
+	}
+
+	if (Parameters.Project.RecordingClockSource == EUpdateClockSource::Timecode)
+	{
+		Parameters.Project.bStartAtCurrentTimecode = true;
+		UE_LOG(LogTakesCore, Warning, TEXT("Overriding Start at Current Timecode to True since the clock source is synced to Timecode."));
 	}
 
 	// Perform any other parameter-configurable initialization. Must have a valid world at this point.

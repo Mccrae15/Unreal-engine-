@@ -9,6 +9,7 @@
 #include "UObject/SoftObjectPath.h"
 #include "GameFramework/PlayerInput.h"
 #include "Components/InputComponent.h"
+#include "Engine/PlatformSettings.h"
 
 #include "InputSettings.generated.h"
 
@@ -26,6 +27,13 @@ class ENGINE_API UInputSettings
 	/** Properties of Axis controls */
 	UPROPERTY(config, EditAnywhere, EditFixedSize, Category="Bindings", meta=(ToolTip="List of Axis Properties"), AdvancedDisplay)
 	TArray<struct FInputAxisConfigEntry> AxisConfig;
+
+	/**
+	 * Platform specific settings for Input.
+	 * @see UInputPlatformSettings
+	 */
+	UPROPERTY(EditAnywhere, Category = "Platforms")
+	FPerPlatformSettings PlatformSettings;
 
 	UPROPERTY(config, EditAnywhere, Category="Bindings", AdvancedDisplay)
 	uint8 bAltEnterTogglesFullscreen:1;
@@ -69,6 +77,15 @@ class ENGINE_API UInputSettings
 	 */
 	UPROPERTY(config, EditAnywhere, Category = "Input")
 	uint8 bFilterInputByPlatformUser:1;
+
+	/**
+	 * If true, then the input device subsystem will be allowed to Initalize when the engine boots.
+	 * NOTE: For this setting to take effect, and editor restart is required.
+	 * 
+	 * @see UInputDeviceSubsystem
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Input")
+	uint8 bEnableInputDeviceSubsystem:1;
 
 	/**
 	 * If true, then the Player Controller will have it's Pressed Keys flushed when the input mode is changed
@@ -272,4 +289,132 @@ public:
 	
 private:
 	void PopulateAxisConfigs();
+};
+
+/**
+* An identifier that can be used to determine what input devices are available based on the FInputDeviceScope.
+* These mappings should match a FInputDeviceScope that is used by an IInputDevice
+*/
+USTRUCT(BlueprintType)
+struct ENGINE_API FHardwareDeviceIdentifier
+{
+	GENERATED_BODY()
+
+	FHardwareDeviceIdentifier();
+	FHardwareDeviceIdentifier(const FName InClassName, const FName InHardwareDeviceIdentifier);
+	
+	/** 
+	* The name of the Input Class that uses this hardware device.
+	* This should correspond with a FInputDeviceScope that is used by an IInputDevice
+	*/
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hardware")
+	FName InputClassName;
+
+	/**
+	 * The name of this hardware device. 
+	 * This should correspond with a FInputDeviceScope that is used by an IInputDevice
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Hardware")
+	FName HardwareDeviceIdentifier;
+
+	/** Returns true if this hardware device Identifier has valid names */
+	bool IsValid() const;
+	
+	/** An Invalid Hardware Device Identifier. */
+	static FHardwareDeviceIdentifier Invalid;
+
+	/** Hardware device ID that represents a keyboard and mouse. This is what will be set when an Input Event's FKey is not a gamepad key. */
+	static FHardwareDeviceIdentifier DefaultKeyboardAndMouse;
+
+	bool operator==(const FHardwareDeviceIdentifier& Other) const
+	{
+		return Other.InputClassName == InputClassName && Other.HardwareDeviceIdentifier == HardwareDeviceIdentifier;
+	}
+};
+
+/** Per-Platform input options */
+UCLASS(config=Input, defaultconfig)
+class ENGINE_API UInputPlatformSettings : public UPlatformSettings
+{
+	GENERATED_BODY()
+
+public:
+
+	UInputPlatformSettings();
+	
+	static UInputPlatformSettings* Get();
+
+#if WITH_EDITOR
+	/**
+	* Returns an array of Hardware device names from every registered platform ini.
+	* For use in the editor so that you can get a list of all known input devices and 
+	* make device-specific options. For example, you can map any data type to a specific input 
+	* device
+	* 
+	* UPROPERTY(EditAnywhere, BlueprintReadOnly, meta=(GetOptions="Engine.InputPlatformSettings.GetAllHardwareDeviceNames"))
+	* TMap<FString, UFooData> DeviceSpecificMap;
+	* 
+	* and the editor will make a nice drop down for you with all the current options that are in the settings.
+	*/
+	UFUNCTION()
+	static const TArray<FName>& GetAllHardwareDeviceNames();
+#endif	// WITH_EDITOR
+
+	/** Add the given hardware device identifier to this platform's settings. */
+	void AddHardwareDeviceIdentifier(const FHardwareDeviceIdentifier& InHardwareDevice);
+
+	/** Returns an array of all Hardware Device Identifiers known to this platform */
+	const TArray<FHardwareDeviceIdentifier>& GetHardwareDevices() const;
+
+	////////////////////////////////////////////////////
+	// Trigger Feedback
+	
+	/**
+	 * The maximum position that a trigger can be set to
+	 * 
+	 * @see UInputDeviceTriggerFeedbackProperty
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Device Properties|Trigger Feedback", meta = (UIMin = "0"))
+	int32 MaxTriggerFeedbackPosition;
+
+	/**
+	 * The maximum strength that trigger feedback can be set to
+	 * 
+	 * @see UInputDeviceTriggerFeedbackProperty
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Device Properties|Trigger Feedback", meta = (UIMin = "0"))
+	int32 MaxTriggerFeedbackStrength;
+
+	////////////////////////////////////////////////////
+	// Trigger Vibrations
+	
+	/**
+	 * The max position that a vibration trigger effect can be set to.
+	 * 
+	 * @see UInputDeviceTriggerVibrationProperty::GetTriggerPositionValue
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Device Properties|Trigger Vibration", meta = (UIMin = "0"))
+	int32 MaxTriggerVibrationTriggerPosition;
+
+	/**
+	 * The max frequency that a trigger vibration can occur
+	 * 
+	 * @see UInputDeviceTriggerVibrationProperty::GetVibrationFrequencyValue
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Device Properties|Trigger Vibration", meta = (UIMin = "0"))
+	int32 MaxTriggerVibrationFrequency;
+
+	/**
+	 * The maximum amplitude that can be set on trigger vibrations
+	 * 
+	 * @see UInputDeviceTriggerVibrationProperty::GetVibrationAmplitudeValue
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Device Properties|Trigger Vibration", meta = (UIMin = "0"))
+	int32 MaxTriggerVibrationAmplitude;
+	
+protected:
+
+	/** A list of identifiable hardware devices available on this platform */
+	UPROPERTY(config, EditAnywhere, Category = "Hardware")
+	TArray<FHardwareDeviceIdentifier> HardwareDevices;
 };

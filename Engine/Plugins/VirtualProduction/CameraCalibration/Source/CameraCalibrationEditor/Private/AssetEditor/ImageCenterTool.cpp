@@ -5,11 +5,13 @@
 #include "CameraCalibrationStepsController.h"
 #include "CameraCalibrationSubsystem.h"
 #include "CameraImageCenterAlgo.h"
+#include "Engine/Engine.h"
 #include "LensDistortionTool.h"
 #include "LensFile.h"
 #include "Misc/MessageDialog.h"
 #include "ScopedTransaction.h"
 #include "SImageCenterToolPanel.h"
+#include "UObject/Package.h"
 
 #define LOCTEXT_NAMESPACE "ImageCenterTool"
 

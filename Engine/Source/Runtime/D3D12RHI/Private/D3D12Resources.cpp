@@ -274,7 +274,7 @@ HRESULT FD3D12Adapter::CreateCommittedResource(const FD3D12ResourceDesc& InDesc,
 
 	HRESULT hr = S_OK;
 #if INTEL_EXTENSIONS
-	if (InDesc.bRequires64BitAtomicSupport && IsRHIDeviceIntel() && GRHISupportsAtomicUInt64)
+	if (InDesc.bRequires64BitAtomicSupport && IsRHIDeviceIntel() && GDX12INTCAtomicUInt64Emulation)
 	{
 		INTC_D3D12_RESOURCE_DESC_0001 IntelLocalDesc{};
 		IntelLocalDesc.pD3D12Desc = &LocalDesc;
@@ -329,7 +329,7 @@ HRESULT FD3D12Adapter::CreatePlacedResource(const FD3D12ResourceDesc& InDesc, FD
 	TRefCountPtr<ID3D12Resource> pResource;
 	HRESULT hr = S_OK;
 #if INTEL_EXTENSIONS
-	if (InDesc.bRequires64BitAtomicSupport && IsRHIDeviceIntel() && GRHISupportsAtomicUInt64)
+	if (InDesc.bRequires64BitAtomicSupport && IsRHIDeviceIntel() && GDX12INTCAtomicUInt64Emulation)
 	{
 		FD3D12ResourceDesc LocalDesc = InDesc;
 		INTC_D3D12_RESOURCE_DESC_0001 IntelLocalDesc{};
@@ -446,7 +446,15 @@ void FD3D12Adapter::CreateUAVAliasResource(D3D12_CLEAR_VALUE* ClearValuePtr, con
 
 	if (ensure(ResourceHeap != nullptr) && ensure(SourceFormat != PF_Unknown) && SourceFormat != AliasTextureFormat)
 	{
-		const uint64 SourceOffset = Location.GetOffsetFromBaseOfResource();
+		uint64 SourceOffset = Location.GetOffsetFromBaseOfResource();
+
+		if (Location.GetAllocatorType() == FD3D12ResourceLocation::AT_Pool && Location.GetType() == FD3D12ResourceLocation::ResourceLocationType::eSubAllocation)
+		{
+			FD3D12HeapAndOffset HeapAndOffset = Location.GetPoolAllocator()->GetBackingHeapAndAllocationOffsetInBytes(Location);
+			check(SourceOffset == 0);
+			check(ResourceHeap == HeapAndOffset.Heap);
+			SourceOffset = HeapAndOffset.Offset;
+		}
 
 		FD3D12ResourceDesc AliasTextureDesc = SourceDesc;
 		AliasTextureDesc.Format = (DXGI_FORMAT)GPixelFormats[AliasTextureFormat].PlatformFormat;
@@ -683,16 +691,26 @@ void FD3D12ResourceLocation::ReleaseResource()
 		bool bIncrement = false;
 		UpdateStandAloneStats(bIncrement);
 
-		// Multi-GPU support : because of references, several GPU nodes can refrence the same stand-alone resource.
-		check(UnderlyingResource->GetRefCount() == 1 || GNumExplicitGPUsForRendering > 1);
-		
-		if (UnderlyingResource->ShouldDeferDelete())
+		// Multi-GPU support : When the resource enters this point for the first time the number of references should be the same as number of GPUs.
+		// Shouldn't queue deferred deletion until all references are released as this could cause issues at the end of the pipe.
+		// Instead reduce number of references until nothing else holds the resource.
+		if (GNumExplicitGPUsForRendering > 1 && UnderlyingResource->GetRefCount() > 1)
 		{
-			UnderlyingResource->DeferDelete();
+			check(UnderlyingResource->GetRefCount() <= GNumExplicitGPUsForRendering)
+			UnderlyingResource->Release();
 		}
 		else
 		{
-			UnderlyingResource->Release();
+			check(UnderlyingResource->GetRefCount() == 1);
+
+			if (UnderlyingResource->ShouldDeferDelete())
+			{
+				UnderlyingResource->DeferDelete();
+			}
+			else
+			{
+				UnderlyingResource->Release();
+			}
 		}
 		break;
 	}
@@ -914,7 +932,6 @@ bool FD3D12ResourceLocation::OnAllocationMoved(FRHIPoolAllocationData* InNewData
 
 		FD3D12Resource* NewResource = nullptr;
 		VERIFYD3D12RESULT(CurrentResource->GetParentDevice()->GetParentAdapter()->CreatePlacedResource(CurrentResource->GetDesc(), HeapAndOffset.Heap, HeapAndOffset.Offset, CreateState, ResourceStateMode, D3D12_RESOURCE_STATE_TBD, ClearValue, &NewResource, *Name.ToString()));
-
 		UnderlyingResource = NewResource;
 	}
 
@@ -931,6 +948,10 @@ bool FD3D12ResourceLocation::OnAllocationMoved(FRHIPoolAllocationData* InNewData
 		OtherResourceLocation->GPUVirtualAddress = GPUVirtualAddress;
 		OtherResourceLocation->ResidencyHandle = ResidencyHandle;
 	}
+
+	// TODO: recreate the aliased UAV resource if we have one. For the time being we just check that we don't get here with such a resource,
+	// because defrag is disabled for the UAV pool in the FD3D12TextureAllocatorPool constructor.
+	check(!CurrentResource->GetDesc().NeedsUAVAliasWorkarounds());
 
 	// Notify all the dependent resources about the change
 	Owner->ResourceRenamed(this);
@@ -1007,8 +1028,6 @@ void FD3D12ResourceBarrierBatcher::AddAliasingBarrier(ID3D12Resource* InResource
 
 void FD3D12ResourceBarrierBatcher::FlushIntoCommandList(FD3D12CommandList& CommandList, FD3D12QueryAllocator& TimestampAllocator)
 {
-	int32 const BarrierBatchMax = FD3D12DynamicRHI::GetResourceBarrierBatchSizeLimit();
-
 	auto InsertTimestamp = [&](ED3D12QueryType Type)
 	{
 		CommandList.EndQuery(TimestampAllocator.Allocate(Type, nullptr));
@@ -1020,8 +1039,7 @@ void FD3D12ResourceBarrierBatcher::FlushIntoCommandList(FD3D12CommandList& Comma
 		bool const bIdle = Barriers[BatchEnd].HasIdleFlag();
 
 		while (BatchEnd < Barriers.Num() 
-			&& bIdle == Barriers[BatchEnd].HasIdleFlag() 
-			&& (BatchEnd - BatchStart) < BarrierBatchMax)
+			&& bIdle == Barriers[BatchEnd].HasIdleFlag())
 		{
 			// Clear the idle flag since its not a valid D3D bit.
 			Barriers[BatchEnd++].ClearIdleFlag();
@@ -1034,6 +1052,13 @@ void FD3D12ResourceBarrierBatcher::FlushIntoCommandList(FD3D12CommandList& Comma
 		}
 
 		CommandList.GraphicsCommandList()->ResourceBarrier(BatchEnd - BatchStart, &Barriers[BatchStart]);
+#if DEBUG_RESOURCE_STATES
+		// Keep track of all the resource barriers that have been submitted to the current command list.
+		for(int i = BatchStart; i < BatchEnd - BatchStart - 1; i++)
+		{
+			CommandList.State.ResourceBarriers.Emplace(Barriers[i]);
+		}
+#endif // #if DEBUG_RESOURCE_STATES
 
 		if (bIdle)
 		{

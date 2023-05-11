@@ -11,6 +11,8 @@
 
 #include "ComputeFramework/ShaderParamTypeDefinition.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(OptimusNode_DataInterface)
+
 
 #define LOCTEXT_NAMESPACE "OptimusNode_DataInterface"
 
@@ -217,9 +219,11 @@ void UOptimusNode_DataInterface::PostDuplicate(EDuplicateMode::Type DuplicateMod
 {
 	// Currently duplication doesn't set the correct outer so fix here.
 	// We can remove this when duplication handles the outer correctly.
-	if (ensure(DataInterfaceData))
+	if (ensure(DataInterfaceData) && DataInterfaceData->GetOuter() != this)
 	{
-		DataInterfaceData->Rename(nullptr, GetOuter());
+		FObjectDuplicationParameters DupParams = InitStaticDuplicateObjectParams(DataInterfaceData, this);
+		
+		DataInterfaceData = Cast<UOptimusComputeDataInterface>(StaticDuplicateObjectEx(DupParams));	
 	}
 }
 

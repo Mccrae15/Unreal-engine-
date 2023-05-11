@@ -1,27 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ContextualAnimAssetEditorToolkit.h"
+#include "Framework/Commands/UICommandList.h"
 #include "SContextualAnimViewport.h"
+#include "IDetailsView.h"
 #include "SContextualAnimAssetBrowser.h"
 #include "SContextualAnimNewAnimSetDialog.h"
 #include "ContextualAnimPreviewScene.h"
 #include "ContextualAnimAssetEditorCommands.h"
 #include "Widgets/Docking/SDockTab.h"
-#include "GameFramework/WorldSettings.h"
 #include "ContextualAnimViewModel.h"
 #include "ContextualAnimSceneAsset.h"
-#include "ContextualAnimMovieSceneSequence.h"
-#include "ISequencerModule.h"
 #include "ISequencer.h"
-#include "MovieScene.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "AdvancedPreviewSceneModule.h"
-#include "IStructureDetailsView.h"
-#include "PropertyEditorModule.h"
 #include "Modules/ModuleManager.h"
-#include "ContextualAnimEditorTypes.h"
-#include "Widgets/Input/SButton.h"
-#include "Styling/AppStyle.h"
 
 #define LOCTEXT_NAMESPACE "ContextualAnimAssetEditorToolkit"
 
@@ -49,6 +41,8 @@ FContextualAnimAssetEditorToolkit::FContextualAnimAssetEditorToolkit()
 
 FContextualAnimAssetEditorToolkit::~FContextualAnimAssetEditorToolkit()
 {
+	check(ViewModel.IsValid());
+	ViewModel->Shutdown();
 }
 
 UContextualAnimSceneAsset* FContextualAnimAssetEditorToolkit::GetSceneAsset() const
@@ -69,11 +63,8 @@ void FContextualAnimAssetEditorToolkit::InitAssetEditor(const EToolkitMode::Type
 	// Create Preview Scene
 	if (!PreviewScene.IsValid())
 	{
-		PreviewScene = MakeShareable(new FContextualAnimPreviewScene(FPreviewScene::ConstructionValues().AllowAudioPlayback(true).ShouldSimulatePhysics(true).ForceUseMovementComponentInNonGameWorld(true),
+		PreviewScene = MakeShareable(new FContextualAnimPreviewScene(FPreviewScene::ConstructionValues().AllowAudioPlayback(true).ShouldSimulatePhysics(false).ForceUseMovementComponentInNonGameWorld(true),
 			StaticCastSharedRef<FContextualAnimAssetEditorToolkit>(AsShared())));
-
-		//Temporary fix for missing attached assets - MDW (Copied from FPersonaToolkit::CreatePreviewScene)
-		PreviewScene->GetWorld()->GetWorldSettings()->SetIsTemporarilyHiddenInEditor(false);
 	}
 
 	// Create viewport widget
@@ -86,19 +77,8 @@ void FContextualAnimAssetEditorToolkit::InitAssetEditor(const EToolkitMode::Type
 	ViewModel = MakeShared<FContextualAnimViewModel>();
 	ViewModel->Initialize(SceneAsset, PreviewScene.ToSharedRef());
 
-	// Create Asset Details widget
-	FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
-
-	FDetailsViewArgs Args;
-	Args.bHideSelectionTip = true;
-	Args.NotifyHook = this;
-
-	EditingAssetWidget = PropertyModule.CreateDetailView(Args);
-	EditingAssetWidget->SetObject(SceneAsset);
-	EditingAssetWidget->OnFinishedChangingProperties().AddSP(this, &FContextualAnimAssetEditorToolkit::OnFinishedChangingProperties);
-
 	// Define Editor Layout
-	const TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_ContextualAnimAnimEditor_Layout_v0.10")
+	const TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_ContextualAnimAnimEditor_Layout_v0.13")
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()->SetOrientation(Orient_Vertical)
@@ -156,11 +136,13 @@ void FContextualAnimAssetEditorToolkit::BindCommands()
 	ToolkitCommands->MapAction(
 		Commands.ResetPreviewScene,
 		FExecuteAction::CreateSP(this, &FContextualAnimAssetEditorToolkit::ResetPreviewScene),
+		FCanExecuteAction::CreateSP(this, &FContextualAnimAssetEditorToolkit::CanMakeEdits),
 		EUIActionRepeatMode::RepeatDisabled);
 
 	ToolkitCommands->MapAction(
 		Commands.NewAnimSet,
 		FExecuteAction::CreateSP(this, &FContextualAnimAssetEditorToolkit::ShowNewAnimSetDialog),
+		FCanExecuteAction::CreateSP(this, &FContextualAnimAssetEditorToolkit::CanMakeEdits),
 		EUIActionRepeatMode::RepeatDisabled);
 
 	ToolkitCommands->MapAction(
@@ -181,6 +163,11 @@ void FContextualAnimAssetEditorToolkit::ToggleSimulateMode()
 bool FContextualAnimAssetEditorToolkit::IsSimulateModeActive() const
 {
 	return (ViewModel.IsValid() && !ViewModel->IsSimulateModeInactive());
+}
+
+bool FContextualAnimAssetEditorToolkit::CanMakeEdits() const
+{
+	return (ViewModel.IsValid() && ViewModel->CanMakeEdits());
 }
 
 void FContextualAnimAssetEditorToolkit::ExtendToolbar()
@@ -208,7 +195,11 @@ void FContextualAnimAssetEditorToolkit::FillToolbar(FToolBarBuilder& ToolbarBuil
 	);
 
 	ToolbarBuilder.AddComboButton(
-		FUIAction(),
+		FUIAction(
+			FExecuteAction(),
+			FCanExecuteAction::CreateSP(this, &FContextualAnimAssetEditorToolkit::CanMakeEdits),
+			FIsActionChecked()
+		),
 		FOnGetContent::CreateSP(this, &FContextualAnimAssetEditorToolkit::BuildSectionsMenu),
 		LOCTEXT("Sections_Label", "Sections"),
 		FText::GetEmpty(),
@@ -367,7 +358,7 @@ TSharedRef<SDockTab> FContextualAnimAssetEditorToolkit::SpawnTab_AssetDetails(co
 	return SNew(SDockTab)
 		.Label(LOCTEXT("AssetDetails_Title", "Asset Details"))
 		[
-			EditingAssetWidget.ToSharedRef()
+			ViewModel->GetDetailsView().ToSharedRef()
 		];
 }
 
@@ -399,11 +390,6 @@ TSharedRef<SDockTab> FContextualAnimAssetEditorToolkit::SpawnTab_PreviewSettings
 		];
 
 	return SpawnedTab;
-}
-
-void FContextualAnimAssetEditorToolkit::OnFinishedChangingProperties(const FPropertyChangedEvent& PropertyChangedEvent)
-{
-	ViewModel->OnFinishedChangingProperties(PropertyChangedEvent);
 }
 
 #undef LOCTEXT_NAMESPACE

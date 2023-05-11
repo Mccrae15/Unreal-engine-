@@ -4,25 +4,17 @@
 
 #include "SQLiteDatabase.h"
 #include "HAL/FileManager.h"
-#include "UObject/StructOnScope.h"
-#include "Serialization/MemoryReader.h"
-#include "Serialization/MemoryWriter.h"
 
 #include "AssetRegistry/AssetData.h"
 #include "Misc/TextFilterExpressionEvaluator.h"
-#include "Misc/PackageName.h"
-#include "Misc/Paths.h"
-#include "Misc/SecureHash.h"
-#include "Engine/World.h"
-#include "HAL/PlatformFileManager.h"
-#include "Misc/StringBuilder.h"
 #include "Algo/LevenshteinDistance.h"
+#include "SQLitePreparedStatement.h"
+#include "SearchQuery.h"
+#include "Serialization/JsonReader.h"
 
 DEFINE_LOG_CATEGORY(LogAssetSearch);
 
 FString ConvertToFullTextSearchQuery(const FString& QueryText);
-
-PRAGMA_DISABLE_OPTIMIZATION
 
 enum class EAssetSearchDatabaseVersion
 {
@@ -929,5 +921,3 @@ FString ConvertToFullTextSearchQuery(const FString& QueryText)
 
 	return Q.ToString();
 }
-
-PRAGMA_ENABLE_OPTIMIZATION

@@ -1,9 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GeometryCacheEdModule.h"
-#include "AssetToolsModule.h"
 #include "AssetTypeActions_GeometryCache.h"
-#include "ComponentAssetBroker.h"
 #include "GeometryCache.h"
 #include "GeometryCacheAssetBroker.h"
 #include "GeometryCacheComponent.h"
@@ -11,7 +9,6 @@
 #include "GeometryCacheThumbnailRenderer.h"
 #include "NiagaraEditorModule.h"
 #include "NiagaraGeometryCacheRendererProperties.h"
-#include "ThumbnailRendering/ThumbnailManager.h"
 
 IMPLEMENT_MODULE(FGeometryCacheEdModule, GeometryCacheEd)
 
@@ -40,7 +37,7 @@ void FGeometryCacheEdModule::StartupModule()
 			UNiagaraGeometryCacheRendererProperties* NewRenderer = NewObject<UNiagaraGeometryCacheRendererProperties>(OuterEmitter, NAME_None, RF_Transactional);
 			if(ensure(NewRenderer->GeometryCaches.Num() == 1))
 			{
-				FSoftObjectPath DefaultGeometryCache(TEXT("GeometryCache'/Niagara/DefaultAssets/DefaultGeometryCacheAsset.DefaultGeometryCacheAsset'"));
+				FSoftObjectPath DefaultGeometryCache(TEXT("GeometryCache'/Niagara/DefaultAssets/GeometryCache/DefaultGeometryCacheAsset.DefaultGeometryCacheAsset'"));
 				NewRenderer->GeometryCaches[0].GeometryCache = Cast<UGeometryCache>(DefaultGeometryCache.TryLoad());
 			}
 			return NewRenderer;

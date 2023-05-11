@@ -10,6 +10,7 @@
 #include "RenderingThread.h"
 #include "Components/LightComponentBase.h"
 #include "Math/SHMath.h"
+#include "RenderDeferredCleanup.h"
 #include "SkyLightComponent.generated.h"
 
 class FSkyLightSceneProxy;
@@ -79,7 +80,7 @@ private:
 };
 
 UENUM()
-enum ESkyLightSourceType
+enum ESkyLightSourceType : int
 {
 	/** Construct the sky light from the captured scene, anything further than SkyDistanceThreshold from the sky light position will be included. */
 	SLS_CapturedScene,
@@ -202,6 +203,13 @@ class ENGINE_API USkyLightComponent : public ULightComponentBase
 	/** Controls how occlusion from Distance Field Ambient Occlusion is combined with Screen Space Ambient Occlusion. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=DistanceFieldAmbientOcclusion)
 	TEnumAsByte<enum EOcclusionCombineMode> OcclusionCombineMode;
+	
+	/**
+	 * When enabled, visualize on screen the sky cube map as well as the integrate half hemisphere of luminance, together with the sky illuminance contribution at the position of the skylight component.
+	 * It also show the atmospheric directional light illuminance post SkyAtmosphere transmittance at the position on the skylight component.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Visualization)
+	uint32 bShowIlluminanceMeter : 1;
 		
 	class FSkyLightSceneProxy* CreateSceneProxy() const;
 
@@ -332,6 +340,8 @@ protected:
 	TRefCountPtr<FSkyTextureCubeResource> BlendDestinationProcessedSkyTexture;
 	FSHVectorRGB3 BlendDestinationIrradianceEnvironmentMap;
 	float BlendDestinationAverageBrightness;
+
+	FLinearColor SpecifiedCubemapColorScale;
 
 	/** Tracks when the rendering thread has completed its writes to IrradianceEnvironmentMap. */
 	FRenderCommandFence IrradianceMapFence;

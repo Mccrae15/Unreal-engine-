@@ -3,7 +3,7 @@
 #pragma once
 
 
-#include "Misc/Guid.h"
+struct FGuid;
 
 class UCustomizableObject;
 class UCustomizableObjectNode;
@@ -28,3 +28,8 @@ protected:
 
 	virtual UCustomizableObject* GetParentObject() const = 0;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "HAL/Platform.h"
+#include "Misc/Guid.h"
+#endif

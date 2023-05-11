@@ -35,7 +35,7 @@ typedef FName FEditorModeID;
 struct FTypedElementSelectionOptions;
 
 UENUM()
-enum EPackageNotifyState
+enum EPackageNotifyState : int
 {
 	/** Updating the source control state of the package */
 	NS_Updating,
@@ -886,7 +886,13 @@ protected:
 	/**
 	 * The list of visualizers to draw when selection changes
 	 */
-	TArray<FCachedComponentVisualizer> VisualizersForSelection;
+	struct FComponentVisualizerForSelection
+	{
+		FCachedComponentVisualizer ComponentVisualizer;
+		TOptional<TFunction<bool(void)>> IsEnabledDelegate;
+	};
+
+	TArray<FComponentVisualizerForSelection> VisualizersForSelection;
 
 	/** Instance responsible for monitoring this editor's performance */
 	FPerformanceMonitor* PerformanceMonitor;

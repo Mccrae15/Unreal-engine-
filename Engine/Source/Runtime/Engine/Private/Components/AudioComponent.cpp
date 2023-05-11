@@ -1,18 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/AudioComponent.h"
-#include "ActiveSound.h"
-#include "Audio.h"
 #include "Audio/ActorSoundParameterInterface.h"
 #include "AudioDevice.h"
-#include "AudioThread.h"
 #include "Components/BillboardComponent.h"
-#include "DSP/VolumeFader.h"
 #include "Engine/Texture2D.h"
+#include "Engine/World.h"
 #include "Kismet/GameplayStatics.h"
-#include "Misc/App.h"
+#include "Quartz/AudioMixerClockHandle.h"
+#include "Quartz/QuartzSubsystem.h"
 #include "Sound/SoundCue.h"
 #include "Sound/SoundNodeAttenuation.h"
+#include "Stats/StatsTrace.h"
 #include "UObject/FrameworkObjectVersion.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AudioComponent)
@@ -1729,6 +1728,91 @@ bool UAudioComponent::GetCookedEnvelopeDataForAllPlayingSounds(TArray<FSoundWave
 		}
 	}
 	return bHadData;
+}
+
+void UAudioComponent::SetModulationRouting(const TSet<USoundModulatorBase*>& Modulators, const EModulationDestination Destination, const EModulationRouting RoutingMethod)
+{
+	FAudioDevice* AudioDevice = GetAudioDevice();
+	if (!AudioDevice)
+	{
+		return;
+	}
+
+	switch (Destination)
+	{
+	case EModulationDestination::Volume:
+		ModulationRouting.VolumeRouting = RoutingMethod;
+		ModulationRouting.VolumeModulationDestination.Modulators = Modulators;
+		break;
+	case EModulationDestination::Pitch:
+		ModulationRouting.PitchRouting = RoutingMethod;
+		ModulationRouting.PitchModulationDestination.Modulators = Modulators;
+		break;
+	case EModulationDestination::Lowpass:
+		ModulationRouting.LowpassRouting = RoutingMethod;
+		ModulationRouting.LowpassModulationDestination.Modulators = Modulators;
+		break;
+	case EModulationDestination::Highpass:
+		ModulationRouting.HighpassRouting = RoutingMethod;
+		ModulationRouting.HighpassModulationDestination.Modulators = Modulators;
+		break;
+	default:
+	{
+		static_assert(static_cast<int32>(EModulationDestination::Count) == 4, "Possible missing ELiteralType case coverage.");
+		ensureMsgf(false, TEXT("Failed to set input node default: Literal type not supported"));
+		return;
+	}
+	}
+
+	// Tell the active sounds on the component to use the new Modulation Routing
+	AudioDevice->SendCommandToActiveSounds(AudioComponentID, [NewRouting = ModulationRouting](FActiveSound& ActiveSound)
+		{
+			ActiveSound.SetNewModulationRouting(NewRouting);
+		});
+
+}
+
+TSet<USoundModulatorBase*> UAudioComponent::GetModulators(const EModulationDestination Destination)
+{
+	FAudioDevice* AudioDevice = GetAudioDevice();
+	if (!AudioDevice)
+	{
+		return TSet<USoundModulatorBase*>();
+	}
+	
+	const TSet<TObjectPtr<USoundModulatorBase>>* ModulatorSet = nullptr;
+
+	switch (Destination)
+	{
+	case EModulationDestination::Volume:
+		ModulatorSet = &ModulationRouting.VolumeModulationDestination.Modulators;
+		break;
+	case EModulationDestination::Pitch:
+		ModulatorSet = &ModulationRouting.PitchModulationDestination.Modulators;
+		break;
+	case EModulationDestination::Lowpass:
+		ModulatorSet = &ModulationRouting.LowpassModulationDestination.Modulators;
+		break;
+	case EModulationDestination::Highpass:
+		ModulatorSet = &ModulationRouting.HighpassModulationDestination.Modulators;
+		break;
+	default:
+	{
+		static_assert(static_cast<int32>(EModulationDestination::Count) == 4, "Possible missing ELiteralType case coverage.");
+		ensureMsgf(false, TEXT("Failed to set input node default: Literal type not supported"));
+		return TSet<USoundModulatorBase*>();
+	}
+	}
+
+	check(ModulatorSet);
+
+	TSet<USoundModulatorBase*> Modulators;
+	for (const TObjectPtr<USoundModulatorBase>& Modulator : *ModulatorSet)
+	{
+		Modulators.Add(Modulator.Get());
+	}
+
+	return Modulators;
 }
 
 void UAudioComponent::SetSourceEffectChain(USoundEffectSourcePresetChain* InSourceEffectChain)

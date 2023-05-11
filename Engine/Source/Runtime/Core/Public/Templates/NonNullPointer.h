@@ -3,11 +3,13 @@
 #pragma once
 
 #include "CoreTypes.h"
+#include "Misc/AssertionMacros.h"
 #include "Misc/OptionalFwd.h"
+#include "Templates/EnableIf.h"
 #include "Templates/PointerIsConvertibleFromTo.h"
 
-// So we can construct TNonNullPtrs
-enum class EDefaultConstructNonNullPtr { UnsafeDoNotUse };
+class FArchive;
+enum class EDefaultConstructNonNullPtr { UnsafeDoNotUse }; // So we can construct TNonNullPtrs
 
 namespace UE::Core::Private::NonNullPtr {
 template <typename...>
@@ -210,14 +212,14 @@ public:
 		return InPointer;
 	}
 
-	friend bool operator==(const TOptional& lhs, const TOptional& rhs)
+	bool operator==(const TOptional& rhs) const
 	{
-		return lhs.Pointer == rhs.Pointer;
+		return Pointer == rhs.Pointer;
 	}
 
-	friend bool operator!=(const TOptional& lhs, const TOptional& rhs)
+	bool operator!=(const TOptional& rhs) const
 	{
-		return !(lhs == rhs);
+		return Pointer != rhs.Pointer;
 	}
 
 	friend FArchive& operator<<(FArchive& Ar, TOptional& Optional)

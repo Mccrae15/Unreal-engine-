@@ -189,7 +189,7 @@ namespace UnrealBuildTool
 
 			// Find all of the target files.  This will filter out any modules or targets that don't
 			// belong to platforms we're generating project files for.
-			List<FileReference> AllTargetFiles = DiscoverTargets(AllGames, Logger);
+			List<FileReference> AllTargetFiles = DiscoverTargets(AllGames, Logger, OnlyGameProject, SupportedPlatforms, bIncludeEngineSource: bIncludeEngineSource, bIncludeTempTargets: bIncludeTempTargets);
 
 			// Sort the targets by name. When we have multiple targets of a given type for a project, we'll use the order to determine which goes in the primary project file (so that client names with a suffix will go into their own project).
 			AllTargetFiles = AllTargetFiles.OrderBy(x => x.FullName, StringComparer.OrdinalIgnoreCase).ToList();
@@ -239,7 +239,7 @@ namespace UnrealBuildTool
 					// Create target rules for all of the platforms and configuration combinations that we want to enable support for.
 					// Just use the current platform as we only need to recover the target type and both should be supported for all targets...
 					TargetRules TargetRulesObject = RulesAssembly.CreateTargetRules(TargetName,
-						BuildHostPlatform.Current.Platform, UnrealTargetConfiguration.Development, "", CheckProjectFile,
+						BuildHostPlatform.Current.Platform, UnrealTargetConfiguration.Development, null, CheckProjectFile,
 						null, Logger);
 
 					bool IsProgramTarget = false;
@@ -396,7 +396,7 @@ namespace UnrealBuildTool
 						SupportedPlatforms: TargetRulesObject.GetSupportedPlatforms()
 							.Where(x => UEBuildPlatform.TryGetBuildPlatform(x, out _)).ToArray(),
 						CreateRulesDelegate: (Platform, Configuration) =>
-							RulesAssembly.CreateTargetRules(TargetName, Platform, Configuration, "", CheckProjectFile,
+							RulesAssembly.CreateTargetRules(TargetName, Platform, Configuration, null, CheckProjectFile,
 								null, Logger)
 					);
 

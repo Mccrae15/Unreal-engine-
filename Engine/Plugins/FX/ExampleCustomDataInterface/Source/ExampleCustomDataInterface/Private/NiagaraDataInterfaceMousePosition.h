@@ -1,11 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "NiagaraCommon.h"
-#include "NiagaraShared.h"
-#include "VectorVM.h"
 #include "NiagaraDataInterface.h"
 #include "NiagaraDataInterfaceMousePosition.generated.h"
+
+enum class ENiagaraSimTarget : uint8;
+struct FNiagaraDataInterfaceGeneratedFunction;
+struct FNiagaraFunctionSignature;
+struct FVMExternalFunctionBindingInfo;
 
 UCLASS(EditInlineNew, Category = "Mouse", meta = (DisplayName = "MousePosition Query"))
 class UNiagaraDataInterfaceMousePosition : public UNiagaraDataInterface
@@ -30,7 +32,6 @@ public:
 	virtual bool GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL) override;
 	virtual void GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL) override;
 #endif
-	virtual bool UseLegacyShaderBindings() const override { return false; }
 	virtual void BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const override;
 	virtual void SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const override;
 

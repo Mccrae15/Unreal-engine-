@@ -2,7 +2,10 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "Delegates/Delegate.h"
+
+class FString;
+class FUniqueNetId;
 
 struct FOnlineError;
 
@@ -48,3 +51,8 @@ public:
 	*/
 	virtual void UnregisterDeviceByChannelType(const FUniqueNetId& LocalUserId, const FString& InstanceId, const FString& ChannelType, const FOnUnregisterDeviceByChannelTypeComplete& Delegate) = 0;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "Online/CoreOnline.h"
+#endif

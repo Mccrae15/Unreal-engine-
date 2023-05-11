@@ -148,7 +148,7 @@ public class Python3 : ModuleRules
 		}
 		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 		{
-			if (Target.Architecture.StartsWith("x86_64"))
+			if (Target.Architecture == UnrealArch.X64)
 			{
 				var PlatformDir = Target.Platform.ToString();
 		
@@ -180,7 +180,7 @@ public class Python3 : ModuleRules
 		// the executable we can guarantee it will be found and loaded
 		if (Target.Platform == UnrealTargetPlatform.Win64 && Target.LinkType == TargetLinkType.Monolithic && IsEnginePython)
 		{
-			RuntimeDependencies.Add("$(ProjectDir)/Binaries/Win64/python39.dll", "$(EngineDir)/Binaries/ThirdParty/Python3/Win64/python39.dll", StagedFileType.NonUFS);
+			RuntimeDependencies.Add("$(TargetOutputDir)/python39.dll", "$(EngineDir)/Binaries/ThirdParty/Python3/Win64/python39.dll", StagedFileType.NonUFS);
 		}
 	}
 

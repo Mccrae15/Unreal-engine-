@@ -1,27 +1,28 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MoviePipelineObjectIdPass.h"
-#include "MoviePipeline.h"
-#include "MovieRenderPipelineCoreModule.h"
-#include "MovieRenderOverlappedImage.h"
+#include "CanvasTypes.h"
 #include "MoviePipelineOutputBuilder.h"
-#include "Engine/TextureRenderTarget.h"
 #include "Engine/TextureRenderTarget2D.h"
-#include "HitProxies.h"
 #include "EngineUtils.h"
-#include "Containers/HashTable.h"
-#include "Misc/CString.h"
-#include "Dom/JsonObject.h"
-#include "Serialization/JsonWriter.h"
+#include "MoviePipelineSurfaceReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "MoviePipelineHashUtils.h"
 #include "EngineModule.h"
-#include "Async/ParallelFor.h"
 #include "Materials/Material.h"
-#include "Materials/MaterialInstance.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Components/InstancedStaticMeshComponent.h"
+#include "MovieRenderOverlappedMask.h"
+#include "TextureResource.h"
+#include "RendererInterface.h"
+#include "UObject/Package.h"
+#include "RenderingThread.h"
 #include "UObject/UObjectAnnotation.h"
+#include "SceneView.h"
+
+#if WITH_EDITOR
+#include "Editor/EditorPerProjectUserSettings.h"
+#endif
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MoviePipelineObjectIdPass)
 
@@ -180,11 +181,22 @@ void UMoviePipelineObjectIdRenderPass::SetupImpl(const MoviePipeline::FMoviePipe
 		AccelData.JsonManifest->SetStringField(TEXT("default"), FString::Printf(TEXT("%08x"), DefaultHash));
 	}
 	ManifestAnnotation.AddAnnotation(this, AccelData);
+
+#if WITH_EDITOR
+	UEditorPerProjectUserSettings* EditorSettings = GetMutableDefault<UEditorPerProjectUserSettings>();
+	bPrevAllowSelectTranslucent = EditorSettings->bAllowSelectTranslucent;
+	EditorSettings->bAllowSelectTranslucent = bIncludeTranslucentObjects;
+#endif
 }
 
 void UMoviePipelineObjectIdRenderPass::TeardownImpl()
 {
 	ManifestAnnotation.RemoveAnnotation(this);
+
+#if WITH_EDITOR
+	UEditorPerProjectUserSettings* EditorSettings = GetMutableDefault<UEditorPerProjectUserSettings>();
+	EditorSettings->bAllowSelectTranslucent = bPrevAllowSelectTranslucent;
+#endif
 
 	// Preserve our view state until the rendering thread has been flushed.
 	Super::TeardownImpl();

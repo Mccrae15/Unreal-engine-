@@ -5,10 +5,13 @@
 #include "Blueprint/UserWidget.h"
 #include "CanvasItem.h"
 #include "CanvasTypes.h"
+#include "Engine/Texture2D.h"
 #include "Engine/TextureRenderTarget2D.h"
+#include "GlobalRenderResources.h"
 #include "Input/HittestGrid.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Slate/WidgetRenderer.h"
+#include "TextureResource.h"
 #include "WidgetBlueprint.h"
 #include "Widgets/SVirtualWindow.h"
 #include "WidgetBlueprintEditorUtils.h"
@@ -208,6 +211,10 @@ void UWidgetBlueprintThumbnailRenderer::Draw(UObject* Object, int32 X, int32 Y, 
 #endif
 }
 
+bool UWidgetBlueprintThumbnailRenderer::AllowsRealtimeThumbnails(UObject* Object) const 
+{ 
+	return false; 
+}
 
 void UWidgetBlueprintThumbnailRenderer::OnBlueprintUnloaded(UBlueprint* Blueprint)
 {

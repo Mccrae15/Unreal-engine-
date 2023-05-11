@@ -2,10 +2,14 @@
 
 #include "Elements/PCGDensityNoise.h"
 
-#include "PCGHelpers.h"
-#include "Helpers/PCGSettingsHelpers.h"
+#include "PCGContext.h"
+#include "PCGCustomVersion.h"
+#include "Helpers/PCGHelpers.h"
 
 #include "Math/RandomStream.h"
+#include "PCGPoint.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGDensityNoise)
 
 UPCGDensityNoiseSettings::UPCGDensityNoiseSettings()
 {
@@ -26,17 +30,16 @@ bool FPCGDensityNoiseElement::ExecuteInternal(FPCGContext* Context) const
 
 	TArray<FPCGTaggedData> Inputs = Context->InputData.GetInputs();
 	TArray<FPCGTaggedData>& Outputs = Context->OutputData.TaggedData;
-	UPCGParamData* Params = Context->InputData.GetParams();
 
-	const EPCGDensityNoiseMode DensityMode = PCG_GET_OVERRIDEN_VALUE(Settings, DensityMode, Params);
-	const float DensityNoiseMin = PCG_GET_OVERRIDEN_VALUE(Settings, DensityNoiseMin, Params);
-	const float DensityNoiseMax = PCG_GET_OVERRIDEN_VALUE(Settings, DensityNoiseMax, Params);
-	const bool bInvertSourceDensity = PCG_GET_OVERRIDEN_VALUE(Settings, bInvertSourceDensity, Params);
+	const EPCGDensityNoiseMode DensityMode = Settings->DensityMode;
+	const float DensityNoiseMin = Settings->DensityNoiseMin;
+	const float DensityNoiseMax = Settings->DensityNoiseMax;
+	const bool bInvertSourceDensity = Settings->bInvertSourceDensity;
 
 	// Precompute a seed based on the settings one and the component one
-	const int Seed = PCGSettingsHelpers::ComputeSeedWithOverride(Settings, Context->SourceComponent, Params);
+	const int Seed = Context->GetSeed();
 
-	ProcessPoints(Context, Inputs, Outputs, [&](const FPCGPoint& InPoint, FPCGPoint& OutPoint)
+	ProcessPoints(Context, Inputs, Outputs, [Seed, DensityNoiseMin, DensityNoiseMax, bInvertSourceDensity, DensityMode](const FPCGPoint& InPoint, FPCGPoint& OutPoint)
 	{
 		OutPoint = InPoint;
 		FRandomStream RandomSource(PCGHelpers::ComputeSeed(Seed, OutPoint.Seed));
@@ -73,9 +76,6 @@ bool FPCGDensityNoiseElement::ExecuteInternal(FPCGContext* Context) const
 
 		return true;
 	});
-
-	// Forward any non-input data
-	Outputs.Append(Context->InputData.GetAllSettings());
 
 	return true;
 }

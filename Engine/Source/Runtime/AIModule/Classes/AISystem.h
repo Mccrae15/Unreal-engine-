@@ -67,12 +67,6 @@ public:
 	UPROPERTY(globalconfig, EditDefaultsOnly, Category = "Movement")
 	bool bAllowStrafing;
 
-	/** 
-	 * Deprecated: Whether or not to enable Gameplay Tasks for move tasks (always enabled now)
-	 */
-	UPROPERTY(globalconfig, EditDefaultsOnly, Category = "Gameplay Tasks", meta=(DisplayName="DEPRECATED Enable BT AITasks"))
-	bool bEnableBTAITasks;
-
 	/** if enable will make EQS not complaint about using Controllers as queriers. Default behavior (false) will 
 	 *	in places automatically convert controllers to pawns, and complain if code user bypasses the conversion or uses
 	 *	pawn-less controller */
@@ -96,6 +90,10 @@ public:
 
 	UPROPERTY(globalconfig, EditDefaultsOnly, Category = "Behavior Tree")
 	bool bClearBBEntryOnBTEQSFail = true;
+	
+	/** If enabled, blackboard based decorators will set key to 'Invalid' on creation or when selected key no longer exists (instead of using the first key of the blackboard). */
+	UPROPERTY(globalconfig, EditDefaultsOnly, Category = "Behavior Tree")
+	bool bBlackboardKeyDecoratorAllowsNoneAsValue = false;
 
 	/** Which collision channel to use for sight checks by default */
 	UPROPERTY(globalconfig, EditDefaultsOnly, Category = "PerceptionSystem")
@@ -128,6 +126,8 @@ protected:
 	FBlackboardDataToComponentsMap BlackboardDataToComponentsMap;
 
 	FDelegateHandle ActorSpawnedDelegateHandle;
+
+	FDelegateHandle PawnBeginPlayDelegateHandle;
 
 	/** random number stream to be used by all things AI. WIP */
 	static FRandomStream RandomStream;
@@ -276,5 +276,7 @@ public:
 
 protected:
 	virtual void OnActorSpawned(AActor* SpawnedActor);
+	virtual void OnPawnBeginPlay(APawn* Pawn);
+
 	void LoadDebuggerPlugin();
 };

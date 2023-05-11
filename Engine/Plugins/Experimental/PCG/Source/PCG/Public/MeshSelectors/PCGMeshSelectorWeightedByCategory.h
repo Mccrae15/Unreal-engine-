@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "PCGMeshSelectorBase.h"
+#include "MeshSelectors/PCGMeshSelectorBase.h"
 #include "PCGMeshSelectorWeighted.h"
 
 #include "PCGMeshSelectorWeightedByCategory.generated.h"
@@ -17,6 +17,10 @@ struct PCG_API FPCGWeightedByCategoryEntryList
 	FPCGWeightedByCategoryEntryList(const FString& InCategoryEntry, const TArray<FPCGMeshSelectorWeightedEntry>& InWeightedMeshEntries)
 		: CategoryEntry(InCategoryEntry), WeightedMeshEntries(InWeightedMeshEntries)
 	{}
+
+#if WITH_EDITOR
+	void ApplyDeprecation();
+#endif
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings)
 	FString CategoryEntry;
@@ -34,12 +38,14 @@ class PCG_API UPCGMeshSelectorWeightedByCategory : public UPCGMeshSelectorBase
 	GENERATED_BODY()
 
 public:
-	virtual void SelectInstances_Implementation(
-		UPARAM(ref) FPCGContext& Context,
+	virtual bool SelectInstances(
+		FPCGStaticMeshSpawnerContext& Context,
 		const UPCGStaticMeshSpawnerSettings* Settings,
-		const UPCGSpatialData* InSpatialData,
+		const UPCGPointData* InPointData,
 		TArray<FPCGMeshInstanceList>& OutMeshInstances,
 		UPCGPointData* OutPointData) const override;
+
+	void PostLoad();
 
 public:
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings)
@@ -47,4 +53,10 @@ public:
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings)
 	TArray<FPCGWeightedByCategoryEntryList> Entries;
+
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings, meta = (InlineEditConditionToggle))
+	bool bUseAttributeMaterialOverrides = false;
+
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, DisplayName = "By Attribute Material Overrides", Category = Settings, meta = (EditCondition = "bUseAttributeMaterialOverrides"))
+	TArray<FName> MaterialOverrideAttributes;
 };

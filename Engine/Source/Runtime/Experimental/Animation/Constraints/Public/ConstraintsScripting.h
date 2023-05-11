@@ -9,6 +9,7 @@
 #include "ConstraintsScripting.generated.h"
 
 class UConstraintsManager;
+class UTransformableHandle;
 class UTransformableComponentHandle;
 class UTickableConstraint;
 class UTickableTransformConstraint;
@@ -46,6 +47,16 @@ public:
 	static UTransformableComponentHandle* CreateTransformableComponentHandle(UWorld* InWorld, USceneComponent* InSceneComponent, const FName& InSocketName);
 
 	/**
+	* Create the transformable handle that deals with getting and setting transforms on this object
+	* @param InWorld, the world you are in
+	* @param InObject World to create the constraint
+	* @param InAttachmentName Optional name of the attachment to get the transform. Not that this can represent a scene component's socket name or a control rig control for example. 
+	* @return returns the handle for this scene component
+	**/
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig | Constraints")
+	static UTransformableHandle* CreateTransformableHandle(UWorld* InWorld, UObject* InObject, const FName& InAttachmentName = NAME_None);
+
+	/**
 	* Create Constraint based on the specified type.
 	* @param InWorld World to create the constraint
 	* @param InType The type of constraint
@@ -71,11 +82,22 @@ public:
 	@param InWorld World we are in
 	@return Copy of the constraints in the level
 	*/
-	static TArray<TWeakObjectPtr<UTickableConstraint>> GetConstraintsArray(UWorld* InWorld);
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig | Constraints")
+	static TArray<UTickableConstraint*> GetConstraintsArray(UWorld* InWorld);
+
+
+	/**
+	* Remove specified constraint 
+	* @param InWorld World to remove the constraint
+	* @param InTickableConstraint Constraint to remove
+	* @return return If constraint removed correctly
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Sequencer Tools | Control Rig | Constraints")
+	static bool RemoveThisConstraint(UWorld* InWorld, UTickableConstraint* InTickableConstraint);
 
 	/**
 	* Remove constraint at specified index
-	* @param InWorld World to create the constraint
+	* @param InWorld World to remove the constraint
 	* @param InIndex Index to remove from
 	* @return return If constraint removed correctly
 	*/

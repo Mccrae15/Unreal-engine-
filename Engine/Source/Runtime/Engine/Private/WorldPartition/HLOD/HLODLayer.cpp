@@ -5,22 +5,20 @@
 =============================================================================*/
 
 #include "WorldPartition/HLOD/HLODLayer.h"
-#include "WorldPartition/HLOD/HLODActor.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(HLODLayer)
 
 #if WITH_EDITOR
-#include "Serialization/ArchiveCrc32.h"
-
 #include "Engine/World.h"
 #include "Misc/ConfigCacheIni.h"
-
-#include "WorldPartition/WorldPartition.h"
-#include "WorldPartition/WorldPartitionActorDesc.h"
-#include "WorldPartition/WorldPartitionActorDescView.h"
-#include "WorldPartition/HLOD/IWorldPartitionHLODUtilitiesModule.h"
-
+#include "Misc/StringFormatArg.h"
 #include "Modules/ModuleManager.h"
+#include "UObject/UnrealType.h"
+#include "WorldPartition/HLOD/HLODActor.h"
+#include "WorldPartition/HLOD/IWorldPartitionHLODUtilities.h"
+#include "WorldPartition/HLOD/IWorldPartitionHLODUtilitiesModule.h"
+#include "WorldPartition/WorldPartition.h"
+#include "WorldPartition/WorldPartitionActorDescView.h"
 #endif
 
 DEFINE_LOG_CATEGORY_STATIC(LogHLODLayer, Log, All);
@@ -175,6 +173,17 @@ void UHLODLayer::PostLoad()
 		bIsSpatiallyLoaded = false;
 	}
 }
+
+#if WITH_EDITORONLY_DATA
+void UHLODLayer::DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass)
+{
+	Super::DeclareConstructClasses(OutConstructClasses, SpecificSubclass);
+	OutConstructClasses.Add(FTopLevelAssetPath(TEXT("/Script/WorldPartitionHLODUtilities.HLODBuilderInstancingSettings")));
+	OutConstructClasses.Add(FTopLevelAssetPath(TEXT("/Script/WorldPartitionHLODUtilities.HLODBuilderMeshMerge")));
+	OutConstructClasses.Add(FTopLevelAssetPath(TEXT("/Script/WorldPartitionHLODUtilities.HLODBuilderMeshSimplify")));
+	OutConstructClasses.Add(FTopLevelAssetPath(TEXT("/Script/WorldPartitionHLODUtilities.HLODBuilderMeshApproximate")));
+}
+#endif
 
 void UHLODLayer::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {

@@ -10,9 +10,11 @@
 #include "PrimitiveSceneProxy.h"
 #include "MeshBatch.h"
 #include "Engine/Engine.h"
+#include "SceneInterface.h"
 #include "SceneManagement.h"
 #include "LocalVertexFactory.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialRenderProxy.h"
 #if RHI_RAYTRACING
 #include "RayTracingInstance.h"
 #endif
@@ -436,7 +438,6 @@ public:
 					RayTracingInstance.Geometry = Geometry;
 					RayTracingInstance.InstanceTransformsView = MakeArrayView(&ThisLocalToWorld, 1);
 					RayTracingInstance.MaterialsView = MakeArrayView(NodeRayTracingMaterials);
-					RayTracingInstance.BuildInstanceMaskAndFlags(GetScene().GetFeatureLevel());
 
 					Context.DynamicRayTracingGeometriesToUpdate.Add(
 						FRayTracingDynamicGeometryUpdateParams

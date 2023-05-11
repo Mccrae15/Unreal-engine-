@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "Containers/StaticArray.h"
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "Misc/Guid.h"
@@ -10,6 +11,7 @@
 #include "PerPlatformProperties.h"
 #include "Serialization/BulkData.h"
 #include "LandscapePhysicalMaterial.h"
+#include "LandscapeInfo.h"
 #include "LandscapeWeightmapUsage.h"
 #include "Containers/ArrayView.h"
 #include "Engine/StreamableRenderAsset.h"
@@ -365,7 +367,7 @@ static const uint32 DefaultSplineHash = 0xFFFFFFFF;
 #endif
 
 UENUM()
-enum ELandscapeClearMode
+enum ELandscapeClearMode : int
 {
 	Clear_Weightmap = 1 << 0 UMETA(DisplayName = "Paint"),
 	Clear_Heightmap = 1 << 1 UMETA(DisplayName = "Sculpt"),
@@ -418,7 +420,7 @@ class ULandscapeComponent : public UPrimitiveComponent
 
 	UPROPERTY()
 	TObjectPtr<UMaterialInstanceConstant> MaterialInstance_DEPRECATED;
-#endif
+#endif // WITH_EDITORONLY_DATA
 
 	UPROPERTY(TextExportTransient)
 	TArray<TObjectPtr<UMaterialInstanceConstant>> MaterialInstances;
@@ -450,11 +452,21 @@ class ULandscapeComponent : public UPrimitiveComponent
 	UPROPERTY()
 	FBox CachedLocalBox;
 
-	/** Reference to associated collision component */
+#if WITH_EDITORONLY_DATA
 	UPROPERTY()
-	TLazyObjectPtr<ULandscapeHeightfieldCollisionComponent> CollisionComponent;
+	TLazyObjectPtr<ULandscapeHeightfieldCollisionComponent> CollisionComponent_DEPRECATED;
+#endif // !WITH_EDITORONLY_DATA
 
 private:
+	/** Reference to associated collision component */
+	UPROPERTY()
+	TObjectPtr<ULandscapeHeightfieldCollisionComponent> CollisionComponentRef;
+
+
+	/** Store  */ 
+	UPROPERTY(Transient)
+	bool bUserTriggeredChangeRequested = false;
+	
 	UPROPERTY(Transient)
 	bool bNaniteActive;
 
@@ -463,14 +475,10 @@ private:
 	UPROPERTY()
 	FGuid LightingGuid;
 
+	/** Edit Layers that have data for this component store it here */
 	UPROPERTY()
 	TMap<FGuid, FLandscapeLayerComponentData> LayersData;
 
-	/** Compoment's Data for Editing Layer */
-	FGuid LandscapeEditingLayer;
-	mutable FGuid CachedEditingLayer;
-	mutable FLandscapeLayerComponentData* CachedEditingLayerData;
-		
 	// Final layer data
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<ULandscapeWeightmapUsage>> WeightmapTexturesUsage;
@@ -508,10 +516,6 @@ public:
 	/** Uniquely identifies this component's built map data. */
 	UPROPERTY()
 	FGuid MapBuildDataId;
-
-	/**	Legacy irrelevant lights */
-	UPROPERTY()
-	TArray<FGuid> IrrelevantLights_DEPRECATED;
 
 	/** Heightfield mipmap used to generate collision */
 	UPROPERTY(EditAnywhere, Category=LandscapeComponent)
@@ -559,6 +563,10 @@ public:
 	TObjectPtr<UTexture2D> GIBakedBaseColorTexture;
 
 #if WITH_EDITORONLY_DATA
+	/**	Legacy irrelevant lights */
+	UPROPERTY()
+	TArray<FGuid> IrrelevantLights_DEPRECATED;
+
 	/** LOD level Bias to use when lighting building via lightmass, -1 Means automatic LOD calculation based on ForcedLOD + LODBias */
 	UPROPERTY(EditAnywhere, Category=LandscapeComponent)
 	int32 LightingLODBias;
@@ -592,7 +600,7 @@ public:
 	/** Represents last saved hash for PhysicalMaterialTask */
 	UPROPERTY(Transient)
 	uint32 LastSavedPhysicalMaterialHash;
-#endif
+#endif // WITH_EDITORONLY_DATA
 
 	UPROPERTY(NonPIEDuplicateTransient)
 	TObjectPtr<UMaterialInterface> MobileMaterialInterface_DEPRECATED;
@@ -617,7 +625,7 @@ public:
 
 	UPROPERTY(NonPIEDuplicateTransient)
 	TObjectPtr<UMaterialInstanceConstant> MobileCombinationMaterialInstance_DEPRECATED;
-#endif
+#endif // WITH_EDITORONLY_DATA
 
 public:
 	/** Grass data for generation **/
@@ -648,8 +656,11 @@ public:
 	static void DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass);
 #endif
 
+	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
+
 #if WITH_EDITOR
 	virtual void BeginCacheForCookedPlatformData(const ITargetPlatform* TargetPlatform) override;
+	virtual void PreEditUndo() override;
 	virtual void PostEditUndo() override;
 	virtual void PreEditChange(FProperty* PropertyThatWillChange) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
@@ -700,14 +711,13 @@ public:
 	const TArray<FLandscapePerLODMaterialOverride>& GetPerLODOverrideMaterials() const { return PerLODOverrideMaterials; }
 	void SetPerLODOverrideMaterials(const TArray<FLandscapePerLODMaterialOverride>& InValue) { PerLODOverrideMaterials = InValue; }
 
-#if WITH_EDITOR
-	LANDSCAPE_API uint32 ComputeLayerHash(bool InReturnEditingHash = true) const;
-
 	LANDSCAPE_API void SetHeightmap(UTexture2D* NewHeightmap);
-
 	LANDSCAPE_API void SetWeightmapTextures(const TArray<UTexture2D*>& InNewWeightmapTextures, bool InApplyToEditingWeightmap = false);
 
+#if WITH_EDITOR
 	LANDSCAPE_API void SetWeightmapLayerAllocations(const TArray<FWeightmapLayerAllocationInfo>& InNewWeightmapLayerAllocations);
+	LANDSCAPE_API uint32 ComputeLayerHash(bool InReturnEditingHash = true) const;
+
 	LANDSCAPE_API void SetWeightmapTexturesUsage(const TArray<ULandscapeWeightmapUsage*>& InNewWeightmapTexturesUsage, bool InApplyToEditingWeightmap = false);
 	LANDSCAPE_API TArray<ULandscapeWeightmapUsage*>& GetWeightmapTexturesUsage(bool InReturnEditingWeightmap = false);
 	LANDSCAPE_API const TArray<ULandscapeWeightmapUsage*>& GetWeightmapTexturesUsage(bool InReturnEditingWeightmap = false) const;
@@ -723,9 +733,14 @@ public:
 	LANDSCAPE_API void RemoveLayerData(const FGuid& InLayerGuid);
 	LANDSCAPE_API void ForEachLayer(TFunctionRef<void(const FGuid&, struct FLandscapeLayerComponentData&)> Fn);
 
-	LANDSCAPE_API void SetEditingLayer(const FGuid& InEditingLayer);
+	UE_DEPRECATED(5.1, "SetEditingLayer has been deprecated, use GetLandscapeActor()->SetEditingLayer() instead.")
+	LANDSCAPE_API void SetEditingLayer(const FGuid& InEditingLayer) {}
+
+	/** Get the Landscape Actor's editing layer data */
 	FLandscapeLayerComponentData* GetEditingLayer();
 	const FLandscapeLayerComponentData* GetEditingLayer() const;
+
+	/** Get the Landscape Actor's editing layer GUID */
 	FGuid GetEditingLayerGUID() const;
 
 	void CopyFinalLayerIntoEditingLayer(FLandscapeEditDataInterface& DataInterface, TSet<UTexture2D*>& ProcessedHeightmaps);
@@ -769,11 +784,14 @@ public:
 
 #if WITH_EDITOR
 
-	/** Deletes a layer from this component, removing all its data, adjusting other layer's weightmaps if necessary, etc. */
+	/** Deletes a material layer from the current edit layer on this component, removing all its data, adjusting other layer's weightmaps if necessary, etc. */
 	LANDSCAPE_API void DeleteLayer(ULandscapeLayerInfoObject* LayerInfo, FLandscapeEditDataInterface& LandscapeEdit);
+	
+	/** Deletes a material layer from the specified edit layer on this component, removing all its data, adjusting other layer's weightmaps if necessary, etc. */
+	void DeleteLayerInternal(ULandscapeLayerInfoObject* LayerInfo, FLandscapeEditDataInterface& LandscapeEdit, const FGuid& EditLayerGuid);
 
 	/** Deletes a layer from this component, but doesn't do anything else (assumes the user knows what he's doing, use DeleteLayer otherwise) */
-	void DeleteLayerAllocation(const FGuid& InEditLayerGuid, int32 InLayerIdx, bool bInShouldDirtyPackage);
+	void DeleteLayerAllocation(const FGuid& InEditLayerGuid, int32 InLayerAllocationIdx, bool bInShouldDirtyPackage);
 
 	/** Fills a layer to 100% on this component, adding it if needed and removing other layers that get painted away */
 	LANDSCAPE_API void FillLayer(ULandscapeLayerInfoObject* LayerInfo, FLandscapeEditDataInterface& LandscapeEdit);
@@ -883,10 +901,10 @@ public:
 
 	LANDSCAPE_API const FMeshMapBuildData* GetMeshMapBuildData() const;
 
-#if WITH_EDITOR
 	/** Initialize the landscape component */
-	LANDSCAPE_API void Init(int32 InBaseX,int32 InBaseY,int32 InComponentSizeQuads, int32 InNumSubsections,int32 InSubsectionSizeQuads);
+	LANDSCAPE_API void Init(int32 InBaseX, int32 InBaseY, int32 InComponentSizeQuads, int32 InNumSubsections, int32 InSubsectionSizeQuads);
 
+#if WITH_EDITOR
 	/**
 	 * Recalculate cached bounds using height values.
 	 */
@@ -1040,19 +1058,10 @@ public:
 	/** returns the 2D bounds of this component (in landscape quads) */
 	LANDSCAPE_API FIntRect GetComponentExtent() const;
 
-	/** Updates navigation properties to match landscape actor's */
-	void UpdateNavigationRelevance();
-
-	/** Updates the reject navmesh underneath flag in the collision component */
-	void UpdateRejectNavmeshUnderneath();
-	
-	/** Updates the values of component-level properties exposed by the Landscape Actor */
-	LANDSCAPE_API void UpdatedSharedPropertiesFromActor();
-
 	LANDSCAPE_API void ClearUpdateFlagsForModes(uint32 InModeMask);
-	LANDSCAPE_API void RequestWeightmapUpdate(bool bUpdateAll = false, bool bUpdateCollision = true);
-	LANDSCAPE_API void RequestHeightmapUpdate(bool bUpdateAll = false, bool bUpdateCollision = true);
-	LANDSCAPE_API void RequestEditingClientUpdate();
+	LANDSCAPE_API void RequestWeightmapUpdate(bool bUpdateAll = false, bool bUpdateCollision = true, bool bInUserTriggered = false);
+	LANDSCAPE_API void RequestHeightmapUpdate(bool bUpdateAll = false, bool bUpdateCollision = true, bool bInUserTriggered = false);
+	LANDSCAPE_API void RequestEditingClientUpdate(bool bInUserTriggered = false);
 	LANDSCAPE_API void RequestDeferredClientUpdate();
 	LANDSCAPE_API uint32 GetLayerUpdateFlagPerMode() const { return LayerUpdateFlagPerMode; }
 	LANDSCAPE_API uint32 ComputeWeightmapsHash();
@@ -1063,6 +1072,15 @@ public:
 	void GetLandscapeComponentWeightmapsToRender(TSet<ULandscapeComponent*>& WeightmapComponents) const;
 	void GetLandscapeComponentNeighbors3x3(TStaticArray<ULandscapeComponent*, 9>& OutNeighborComponents) const;
 #endif
+
+	/** Updates navigation properties to match landscape actor's */
+	void UpdateNavigationRelevance();
+
+	/** Updates the reject navmesh underneath flag in the collision component */
+	void UpdateRejectNavmeshUnderneath();
+
+	/** Updates the values of component-level properties exposed by the Landscape Actor */
+	LANDSCAPE_API void UpdatedSharedPropertiesFromActor();
 
 	friend class FLandscapeComponentSceneProxy;
 	friend struct FLandscapeComponentDataInterface;
@@ -1082,6 +1100,19 @@ public:
 		return bNaniteActive;
 	}
 
+	LANDSCAPE_API ULandscapeHeightfieldCollisionComponent* GetCollisionComponent() const { return CollisionComponentRef.Get(); }
+	LANDSCAPE_API void SetCollisionComponent(ULandscapeHeightfieldCollisionComponent* InCollisionComponent) { CollisionComponentRef = InCollisionComponent; }
+
+	void SetUserTriggeredChangeRequested(bool bInUserTriggeredChangeRequested)
+	{
+		bUserTriggeredChangeRequested = bInUserTriggeredChangeRequested;
+	}
+
+	bool GetUserTriggeredChangeRequested() const
+	{
+		return bUserTriggeredChangeRequested;
+	}
+
 protected:
 
 #if WITH_EDITOR
@@ -1097,4 +1128,11 @@ protected:
 	{
 		return true;
 	}
+
+#if WITH_EDITOR
+public:
+	/** Records the ULandscapeComponents that are modified in any undo/redo operation that is being applied currently */
+	static uint32 UndoRedoModifiedComponentCount;
+	static TArray<ULandscapeComponent*> UndoRedoModifiedComponents;
+#endif // WITH_EDITOR
 };

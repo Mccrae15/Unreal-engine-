@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "Internationalization/Text.h"
+
 namespace UE
 {
 namespace Interchange
@@ -86,6 +88,31 @@ namespace Interchange
 					}
 				}
 
+				namespace Noise
+				{
+					const FName Name = TEXT("Noise");
+
+					namespace Inputs
+					{
+						const FName Position = TEXT("Position");
+						const FName FilterWidth = TEXT("FilterWidth");
+					}
+
+					namespace Attributes
+					{
+						const FName Scale = TEXT("Scale");
+						const FName Quality = TEXT("Quality");
+						const FName Function = TEXT("NoiseFunction");
+						const FName Turbulence = TEXT("bTurbulence");
+						const FName Levels = TEXT("Levels");
+						const FName OutputMin = TEXT("OutputMin");
+						const FName OutputMax = TEXT("OutputMax");
+						const FName LevelScale = TEXT("LevelScale");
+						const FName Tiling = TEXT("bTiling");
+						const FName RepeatSize = TEXT("RepeatSize");
+					}
+				}
+
 				namespace OneMinus
 				{
 					const FName Name = TEXT("OneMinus");
@@ -132,6 +159,69 @@ namespace Interchange
 						const FName RGBA = TEXT("RGBA"); // Type: linear color
 					}
 				}
+
+				namespace Time
+				{
+					const FName Name = TEXT("Time");
+
+					namespace Attributes
+					{
+						const FName IgnorePause= TEXT("bIgnorePause");
+						const FName OverridePeriod = TEXT("bOverride_Period");
+						const FName Period = TEXT("Period");
+					}
+				}
+
+				namespace TransformPosition
+				{
+					const FName Name = TEXT("TransformPosition");
+
+					namespace Attributes
+					{
+						const FName TransformSourceType = TEXT("TransformSourceType");
+						const FName TransformType = TEXT("TransformType");
+					}
+
+					namespace Inputs
+					{
+						const FName Input = TEXT("Input");
+					}
+				}
+
+				namespace TransformVector
+				{
+					const FName Name = TEXT("Transform");
+
+					namespace Attributes
+					{
+						const FName TransformSourceType = TEXT("TransformSourceType");
+						const FName TransformType = TEXT("TransformType");
+					}
+
+					namespace Inputs
+					{
+						const FName Input = TEXT("Input");
+					}
+				}
+
+				namespace VectorNoise
+				{
+
+					const FName Name = TEXT("VectorNoise");
+
+					namespace Attributes
+					{
+						const FName Function = TEXT("NoiseFunction");
+						const FName Quality = TEXT("Quality");
+						const FName Tiling = TEXT("bTiling");
+						const FName TileSize = TEXT("TileSize");
+					}
+
+					namespace Inputs
+					{
+						const FName Position = TEXT("Position");
+					}
+				}
 			}
 		}
 
@@ -146,6 +236,7 @@ namespace Interchange
 				const FName Occlusion = TEXT("Occlusion"); // Type: float
 				const FName IndexOfRefraction = TEXT("IOR"); // Type: float
 				const FName BxDF = TEXT("BxDF"); // input/output of BSDF or BRDF or BXDF or BTDF data
+				const FName Refraction = TEXT("Refraction"); // input/output of BSDF or BRDF or BXDF or BTDF data
 			}
 		}
 

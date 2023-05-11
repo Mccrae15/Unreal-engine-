@@ -1,14 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "Tests/Determinism/PCGDeterminismTestsCommon.h"
 
+#include "Data/PCGPolyLineData.h"
 #include "PCGComponent.h"
-#include "PCGData.h"
+#include "Data/PCGSpatialData.h"
 #include "PCGGraph.h"
-#include "PCGHelpers.h"
-#include "PCGNode.h"
+#include "PCGContext.h"
 #include "PCGParamData.h"
 #include "PCGPin.h"
-#include "PCGPoint.h"
 #include "Data/PCGPointData.h"
 #include "Data/PCGPrimitiveData.h"
 #include "Data/PCGSplineData.h"
@@ -16,13 +15,13 @@
 #include "Data/PCGVolumeData.h"
 #include "Graph/PCGGraphCache.h"
 #include "Graph/PCGGraphExecutor.h"
-#include "Metadata/PCGMetadata.h"
-#include "Metadata/PCGMetadataAttribute.h"
-#include "Metadata/PCGMetadataAttributeTpl.h"
+#include "Helpers/PCGHelpers.h"
 
 #include "Components/SplineComponent.h"
 #include "Components/StaticMeshComponent.h"
-#include "GameFramework/Actor.h"
+#include "UObject/Package.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGDeterminismTestsCommon)
 
 #define LOCTEXT_NAMESPACE "PCGDeterminism"
 
@@ -44,7 +43,7 @@ namespace PCGDeterminismTests
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(PCGDeterminismTests::RunDeterminismTest::Node);
 
-		if (!InPCGNode || !InPCGNode->DefaultSettings)
+		if (!InPCGNode || !InPCGNode->GetSettings())
 		{
 			OutResult.DataTypesTested = EPCGDataType::None;
 			OutResult.bFlagRaised = true;
@@ -278,14 +277,14 @@ namespace PCGDeterminismTests
 		const UPCGNode* PCGNode = NodeAndOptions.PCGNode;
 		const TArray<TArray<EPCGDataType>>& BaseOptionsByPin = NodeAndOptions.BaseOptionsByPin;
 
-		PCGTestsCommon::FTestData TestData(NodeAndOptions.Seed, PCGNode->DefaultSettings);
+		PCGTestsCommon::FTestData TestData(NodeAndOptions.Seed, PCGNode->GetSettings());
 
 		// For all permutations
 		const int32 NumPermutations = GetNumPermutations(BaseOptionsByPin);
 		for (int32 PermutationIndex = 0; PermutationIndex < NumPermutations; ++PermutationIndex)
 		{
 			// Reset test data
-			TestData.Reset(PCGNode->DefaultSettings);
+			TestData.Reset(PCGNode->GetSettings());
 
 			// Add an input for each pin
 			for (int32 PinIndex = 0; PinIndex < BaseOptionsByPin.Num(); ++PinIndex)
@@ -308,16 +307,16 @@ namespace PCGDeterminismTests
 		const UPCGNode* PCGNode = NodeAndOptions.PCGNode;
 		const TArray<TArray<EPCGDataType>>& BaseOptionsByPin = NodeAndOptions.BaseOptionsByPin;
 
-		PCGTestsCommon::FTestData FirstTestData(NodeAndOptions.Seed, PCGNode->DefaultSettings);
-		PCGTestsCommon::FTestData SecondTestData(NodeAndOptions.Seed, PCGNode->DefaultSettings);
+		PCGTestsCommon::FTestData FirstTestData(NodeAndOptions.Seed, PCGNode->GetSettings());
+		PCGTestsCommon::FTestData SecondTestData(NodeAndOptions.Seed, PCGNode->GetSettings());
 
 		const int32 NumPermutations = GetNumPermutations(BaseOptionsByPin);
 		// For all permutations
 		for (int32 PermutationIndex = 0; PermutationIndex < NumPermutations; ++PermutationIndex)
 		{
 			// Reset test data
-			FirstTestData.Reset(PCGNode->DefaultSettings);
-			SecondTestData.Reset(PCGNode->DefaultSettings);
+			FirstTestData.Reset(PCGNode->GetSettings());
+			SecondTestData.Reset(PCGNode->GetSettings());
 
 			// Add an input for each pin
 			for (int32 PinIndex = 0; PinIndex < BaseOptionsByPin.Num(); ++PinIndex)
@@ -345,8 +344,8 @@ namespace PCGDeterminismTests
 		const UPCGNode* PCGNode = NodeAndOptions.PCGNode;
 		const TArray<TArray<EPCGDataType>>& BaseOptionsByPin = NodeAndOptions.BaseOptionsByPin;
 
-		PCGTestsCommon::FTestData FirstTestData(NodeAndOptions.Seed, PCGNode->DefaultSettings);
-		PCGTestsCommon::FTestData SecondTestData(NodeAndOptions.Seed, PCGNode->DefaultSettings);
+		PCGTestsCommon::FTestData FirstTestData(NodeAndOptions.Seed, PCGNode->GetSettings());
+		PCGTestsCommon::FTestData SecondTestData(NodeAndOptions.Seed, PCGNode->GetSettings());
 
 		int32 NumInputs = NodeAndOptions.bMultipleOptionsPerPin ? NumInputsPerPin : 1;
 		const int32 NumPermutations = GetNumPermutations(BaseOptionsByPin);
@@ -357,8 +356,8 @@ namespace PCGDeterminismTests
 			for (int32 PermutationIndex = 0; PermutationIndex < NumPermutations;)
 			{
 				// Reset test data
-				FirstTestData.Reset(PCGNode->DefaultSettings);
-				SecondTestData.Reset(PCGNode->DefaultSettings);
+				FirstTestData.Reset(PCGNode->GetSettings());
+				SecondTestData.Reset(PCGNode->GetSettings());
 
 				// Add an input for each pin
 				for (int32 PinIndex = 0; PinIndex < BaseOptionsByPin.Num(); ++PinIndex)
@@ -423,8 +422,8 @@ namespace PCGDeterminismTests
 		const UPCGNode* PCGNode = NodeAndOptions.PCGNode;
 		const TArray<TArray<EPCGDataType>>& BaseOptionsByPin = NodeAndOptions.BaseOptionsByPin;
 
-		PCGTestsCommon::FTestData FirstTestData(NodeAndOptions.Seed, PCGNode->DefaultSettings);
-		PCGTestsCommon::FTestData SecondTestData(NodeAndOptions.Seed, PCGNode->DefaultSettings);
+		PCGTestsCommon::FTestData FirstTestData(NodeAndOptions.Seed, PCGNode->GetSettings());
+		PCGTestsCommon::FTestData SecondTestData(NodeAndOptions.Seed, PCGNode->GetSettings());
 
 		int32 NumInputs = NodeAndOptions.bMultipleOptionsPerPin ? NumInputsPerPin : 1;
 
@@ -1486,9 +1485,7 @@ namespace PCGDeterminismTests
 	{
 		FPCGElementPtr Element = TestData.Settings->GetElement();
 
-		TUniquePtr<FPCGContext> Context(Element->Initialize(TestData.InputData, TestData.TestPCGComponent, PCGNode));
-
-		Context->NumAvailableTasks = 1;
+		TUniquePtr<FPCGContext> Context = TestData.InitializeTestContext(PCGNode);
 
 		// Execute both elements until complete
 		while (!Element->Execute(Context.Get()))
@@ -1503,11 +1500,8 @@ namespace PCGDeterminismTests
 		FPCGElementPtr FirstElement = TestData.Settings->GetElement();
 		FPCGElementPtr SecondElement = TestData.Settings->GetElement();
 
-		TUniquePtr<FPCGContext> FirstContext(FirstElement->Initialize(TestData.InputData, TestData.TestPCGComponent, PCGNode));
-		TUniquePtr<FPCGContext> SecondContext(SecondElement->Initialize(TestData.InputData, TestData.TestPCGComponent, PCGNode));
-
-		FirstContext->NumAvailableTasks = 1;
-		SecondContext->NumAvailableTasks = 1;
+		TUniquePtr<FPCGContext> FirstContext = PCGTestsCommon::InitializeTestContext(FirstElement.Get(), TestData.InputData, TestData.TestPCGComponent, PCGNode);
+		TUniquePtr<FPCGContext> SecondContext = PCGTestsCommon::InitializeTestContext(SecondElement.Get(), TestData.InputData, TestData.TestPCGComponent, PCGNode);
 
 		// Execute both elements until complete
 		while (!FirstElement->Execute(FirstContext.Get()))
@@ -1527,11 +1521,8 @@ namespace PCGDeterminismTests
 	{
 		FPCGElementPtr Element = TestData.Settings->GetElement();
 
-		TUniquePtr<FPCGContext> FirstContext(Element->Initialize(TestData.InputData, TestData.TestPCGComponent, PCGNode));
-		TUniquePtr<FPCGContext> SecondContext(Element->Initialize(TestData.InputData, TestData.TestPCGComponent, PCGNode));
-
-		FirstContext->NumAvailableTasks = 1;
-		SecondContext->NumAvailableTasks = 1;
+		TUniquePtr<FPCGContext> FirstContext = TestData.InitializeTestContext(PCGNode);
+		TUniquePtr<FPCGContext> SecondContext = TestData.InitializeTestContext(PCGNode);
 
 		// Execute both elements until complete
 		while (!Element->Execute(FirstContext.Get()))
@@ -1571,3 +1562,4 @@ namespace PCGDeterminismTests
 }
 
 #undef LOCTEXT_NAMESPACE
+

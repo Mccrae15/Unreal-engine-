@@ -196,7 +196,7 @@ bool					GIsServer						= false;					/* Whether engine was launched as a server,
 bool					GIsCriticalError				= false;					/* An appError() has occured */
 bool					GIsGuarded						= false;					/* Whether execution is happening within main()/WinMain()'s try/catch handler */
 TSAN_ATOMIC(bool)		GIsRunning(false);											/* Whether execution is happening within MainLoop() */
-bool					GIsDuplicatingClassForReinstancing = false;					/* Whether we are currently using SDO on a UClass or CDO for live reinstancing */
+FIsDuplicatingClassForReinstancing	GIsDuplicatingClassForReinstancing;					        /* Whether we are currently using SDO on a UClass or CDO for live reinstancing */
 /** This specifies whether the engine was launched as a build machine process								*/
 bool					GIsBuildMachine					= false;
 /** This determines if we should output any log text.  If Yes then no log text should be emitted.			*/
@@ -242,13 +242,18 @@ bool					GExitPurge						= false;
 
 FChunkedFixedUObjectArray* GCoreObjectArrayForDebugVisualizers = nullptr;
 
-UE::ObjectPath::Private::FStoredObjectPath* GCoreComplexObjectPathDebug = nullptr;
-FObjectHandlePackageDebugData* GCoreObjectHandlePackageDebug = nullptr;
+namespace UE::CoreUObject::Private
+{
+	struct FStoredObjectPath;
+	struct FObjectHandlePackageDebugData;
+}
+UE::CoreUObject::Private::FStoredObjectPath* GCoreComplexObjectPathDebug = nullptr;
+UE::CoreUObject::Private::FObjectHandlePackageDebugData* GCoreObjectHandlePackageDebug = nullptr;
 #if PLATFORM_UNIX
 uint8** CORE_API GNameBlocksDebug = FNameDebugVisualizer::GetBlocks();
 FChunkedFixedUObjectArray*& CORE_API GObjectArrayForDebugVisualizers = GCoreObjectArrayForDebugVisualizers;
-UE::ObjectPath::Private::FStoredObjectPath*& GComplexObjectPathDebug = GCoreComplexObjectPathDebug;
-FObjectHandlePackageDebugData*& CORE_API GObjectHandlePackageDebug = GCoreObjectHandlePackageDebug;
+UE::CoreUObject::Private::FStoredObjectPath*& GComplexObjectPathDebug = GCoreComplexObjectPathDebug;
+UE::CoreUObject::Private::FObjectHandlePackageDebugData*& CORE_API GObjectHandlePackageDebug = GCoreObjectHandlePackageDebug;
 #endif
 
 /** Game name, used for base game directory and ini among other things										*/
@@ -722,6 +727,19 @@ DEFINE_LOG_CATEGORY(LogVirtualization);
 #ifdef PLATFORM_GLOBAL_LOG_CATEGORY_ALT
 	DEFINE_LOG_CATEGORY_HELPER(PLATFORM_GLOBAL_LOG_CATEGORY_ALT);
 #endif
+
+thread_local bool PRIVATE_GIsDuplicatingClassForReinstancing = false;
+
+FIsDuplicatingClassForReinstancing& FIsDuplicatingClassForReinstancing::operator= (bool bOther)
+{
+	PRIVATE_GIsDuplicatingClassForReinstancing = bOther;
+	return *this;
+}
+
+FIsDuplicatingClassForReinstancing::operator bool() const
+{
+	return PRIVATE_GIsDuplicatingClassForReinstancing;
+}
 
 #undef LOCTEXT_NAMESPACE
 

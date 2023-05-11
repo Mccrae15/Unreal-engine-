@@ -1,16 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SConversationDiff.h"
-#include "Widgets/Layout/SSplitter.h"
-#include "EdGraph/EdGraph.h"
+#include "DetailsViewArgs.h"
 #include "SlateOptMacros.h"
-#include "Framework/Commands/Commands.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Framework/MultiBox/MultiBoxDefs.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/Views/TableViewMetadata.h"
 #include "Widgets/Input/SButton.h"
+#include "IDetailsView.h"
 #include "Widgets/Views/SListView.h"
-#include "Styling/AppStyle.h"
 #include "ISourceControlProvider.h"
 #include "ISourceControlModule.h"
 #include "DiffResults.h"
@@ -182,8 +179,8 @@ void SConversationDiff::Construct( const FArguments& InArgs )
 	];
 
 	//@TODO: CONVERSATION: Diff tool doesn't support more than one graph yet
-	UEdGraph* OldGraph = FConversationCompiler::GetGraphFromBank(PanelOld.ConversationBank, 0);
-	UEdGraph* NewGraph = FConversationCompiler::GetGraphFromBank(PanelNew.ConversationBank, 0);
+	UEdGraph* OldGraph = PanelOld.ConversationBank? FConversationCompiler::GetGraphFromBank(PanelOld.ConversationBank, 0) : nullptr;
+	UEdGraph* NewGraph = PanelNew.ConversationBank? FConversationCompiler::GetGraphFromBank(PanelNew.ConversationBank, 0) : nullptr;
 	PanelOld.GeneratePanel(OldGraph, NewGraph);
 	PanelNew.GeneratePanel(NewGraph, OldGraph);
 }
@@ -271,8 +268,10 @@ void SConversationDiff::BuildDiffSourceArray()
 {
 	TArray<FDiffSingleResult> FoundDiffs;
 	//@TODO: CONVERSATION: Support diffing multiple graphs
-	FGraphDiffControl::DiffGraphs(FConversationCompiler::GetGraphFromBank(PanelOld.ConversationBank, 0), FConversationCompiler::GetGraphFromBank(PanelNew.ConversationBank, 0), FoundDiffs);
-
+	if (PanelOld.ConversationBank && PanelNew.ConversationBank)
+	{
+		FGraphDiffControl::DiffGraphs(FConversationCompiler::GetGraphFromBank(PanelOld.ConversationBank, 0), FConversationCompiler::GetGraphFromBank(PanelNew.ConversationBank, 0), FoundDiffs);
+	}
 	DiffListSource.Empty();
 	for (auto DiffIt(FoundDiffs.CreateConstIterator()); DiffIt; ++DiffIt)
 	{
@@ -505,7 +504,7 @@ FText SConversationDiff::FConversationDiffPanel::GetTitle() const
 		const FText RevisionText = FText::FromString(RevisionInfo.Revision);
 		const FText ChangelistText = FText::AsNumber(RevisionInfo.Changelist, &FNumberFormattingOptions::DefaultNoGrouping());
 
-		if (bShowAssetName)
+		if (bShowAssetName && ConversationBank)
 		{
 			FString AssetName = ConversationBank->GetName();
 			if(ISourceControlModule::Get().GetProvider().UsesChangelists())
@@ -533,7 +532,7 @@ FText SConversationDiff::FConversationDiffPanel::GetTitle() const
 			}
 		}
 	}
-	else if (bShowAssetName)
+	else if (bShowAssetName && ConversationBank)
 	{
 		FString AssetName = ConversationBank->GetName();
 		FText LocalizedFormat = LOCTEXT("NamedCurrentRevisionFmt", "{0} - Current Revision");

@@ -2,37 +2,38 @@
 
 #include "ContentBrowserAssetDataSource.h"
 #include "ContentBrowserAssetDataCore.h"
-#include "ContentBrowserDataLegacyBridge.h"
-#include "Modules/ModuleManager.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
 #include "CollectionManagerModule.h"
+#include "ContentBrowserAssetDataPayload.h"
 #include "ICollectionManager.h"
 #include "AssetViewUtils.h"
-#include "ObjectTools.h"
+#include "ContentBrowserItemPath.h"
 #include "UObject/GCObjectScopeGuard.h"
+#include "UObject/ObjectSaveContext.h"
 #include "Factories/Factory.h"
-#include "Misc/ScopeExit.h"
-#include "Misc/StringBuilder.h"
-#include "Misc/ScopedSlowTask.h"
 #include "HAL/FileManager.h"
-#include "Interfaces/IPluginManager.h"
-#include "FileHelpers.h"
 #include "Editor.h"
-#include "Subsystems/AssetEditorSubsystem.h"
+#include "IAssetTools.h"
 #include "ToolMenus.h"
+#include "Misc/PackageName.h"
 #include "NewAssetContextMenu.h"
 #include "AssetFolderContextMenu.h"
 #include "AssetFileContextMenu.h"
 #include "ContentBrowserDataSubsystem.h"
 #include "ContentBrowserDataUtils.h"
-#include "IContentBrowserDataModule.h"
 #include "ContentBrowserModule.h"
 #include "IContentBrowserSingleton.h"
-#include "EditorDirectories.h"
 #include "ContentBrowserMenuContexts.h"
+#include "Misc/Paths.h"
 #include "Widgets/Input/SButton.h"
+#include "Subsystems/ImportSubsystem.h"
 #include "Widgets/Images/SImage.h"
+#include "ToolMenu.h"
+#include "ToolMenuEntry.h"
+#include "ToolMenuSection.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Text/STextBlock.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ContentBrowserAssetDataSource)
 
@@ -40,6 +41,8 @@
 
 void UContentBrowserAssetDataSource::Initialize(const bool InAutoRegister)
 {
+	check(GIsEditor && !IsRunningCommandlet());
+
 	Super::Initialize(InAutoRegister);
 
 	AssetRegistry = &FModuleManager::LoadModuleChecked<FAssetRegistryModule>(AssetRegistryConstants::ModuleName).Get();
@@ -63,6 +66,9 @@ void UContentBrowserAssetDataSource::Initialize(const bool InAutoRegister)
 
 	// Listen for when assets are loaded or changed
 	FCoreUObjectDelegates::OnObjectPropertyChanged.AddUObject(this, &UContentBrowserAssetDataSource::OnObjectPropertyChanged);
+	
+	// Listen for when assets are saved, listerns are notified in time despite presave because we queue updates for later processing 
+	FCoreUObjectDelegates::OnObjectPreSave.AddUObject(this, &UContentBrowserAssetDataSource::OnObjectPreSave);
 
 	// Listen for new mount roots
 	FPackageName::OnContentPathMounted().AddUObject(this, &UContentBrowserAssetDataSource::OnContentPathMounted);
@@ -83,58 +89,58 @@ void UContentBrowserAssetDataSource::Initialize(const bool InAutoRegister)
 		if (UToolMenu* Menu = UToolMenus::Get()->ExtendMenu("ContentBrowser.AddNewContextMenu"))
 		{
 			Menu->AddDynamicSection(*FString::Printf(TEXT("DynamicSection_DataSource_%s"), *GetName()), FNewToolMenuDelegate::CreateLambda([WeakThis = TWeakObjectPtr<UContentBrowserAssetDataSource>(this)](UToolMenu* InMenu)
-			{
-				if (UContentBrowserAssetDataSource* This = WeakThis.Get())
 				{
-					This->PopulateAddNewContextMenu(InMenu);
-				}
-			}));
+					if (UContentBrowserAssetDataSource* This = WeakThis.Get())
+					{
+						This->PopulateAddNewContextMenu(InMenu);
+					}
+				}));
 		}
 
 
 		if (UToolMenu* Menu = UToolMenus::Get()->ExtendMenu("ContentBrowser.ToolBar"))
 		{
 			Menu->AddDynamicSection(*FString::Printf(TEXT("DynamicSection_DataSource_%s"), *GetName()), FNewToolMenuDelegate::CreateLambda([WeakThis = TWeakObjectPtr<UContentBrowserAssetDataSource>(this)](UToolMenu* InMenu)
-			{
-				if (UContentBrowserAssetDataSource* This = WeakThis.Get())
 				{
-					This->PopulateContentBrowserToolBar(InMenu);
-				}
-			}));
+					if (UContentBrowserAssetDataSource* This = WeakThis.Get())
+					{
+						This->PopulateContentBrowserToolBar(InMenu);
+					}
+				}));
 		}
 
 
 		if (UToolMenu* Menu = UToolMenus::Get()->ExtendMenu("ContentBrowser.FolderContextMenu"))
 		{
 			Menu->AddDynamicSection(*FString::Printf(TEXT("DynamicSection_DataSource_%s"), *GetName()), FNewToolMenuDelegate::CreateLambda([WeakThis = TWeakObjectPtr<UContentBrowserAssetDataSource>(this)](UToolMenu* InMenu)
-			{
-				if (UContentBrowserAssetDataSource* This = WeakThis.Get())
 				{
-					This->PopulateAssetFolderContextMenu(InMenu);
-				}
-			}));
+					if (UContentBrowserAssetDataSource* This = WeakThis.Get())
+					{
+						This->PopulateAssetFolderContextMenu(InMenu);
+					}
+				}));
 		}
 
 		if (UToolMenu* Menu = UToolMenus::Get()->ExtendMenu("ContentBrowser.AssetContextMenu"))
 		{
 			Menu->AddDynamicSection(*FString::Printf(TEXT("DynamicSection_DataSource_%s"), *GetName()), FNewToolMenuDelegate::CreateLambda([WeakThis = TWeakObjectPtr<UContentBrowserAssetDataSource>(this)](UToolMenu* InMenu)
-			{
-				if (UContentBrowserAssetDataSource* This = WeakThis.Get())
 				{
-					This->PopulateAssetFileContextMenu(InMenu);
-				}
-			}));
+					if (UContentBrowserAssetDataSource* This = WeakThis.Get())
+					{
+						This->PopulateAssetFileContextMenu(InMenu);
+					}
+				}));
 		}
 
 		if (UToolMenu* Menu = UToolMenus::Get()->ExtendMenu("ContentBrowser.DragDropContextMenu"))
 		{
 			Menu->AddDynamicSection(*FString::Printf(TEXT("DynamicSection_DataSource_%s"), *GetName()), FNewToolMenuDelegate::CreateLambda([WeakThis = TWeakObjectPtr<UContentBrowserAssetDataSource>(this)](UToolMenu* InMenu)
-			{
-				if (UContentBrowserAssetDataSource* This = WeakThis.Get())
 				{
-					This->PopulateDragDropContextMenu(InMenu);
-				}
-			}));
+					if (UContentBrowserAssetDataSource* This = WeakThis.Get())
+					{
+						This->PopulateDragDropContextMenu(InMenu);
+					}
+				}));
 		}
 	}
 
@@ -143,13 +149,14 @@ void UContentBrowserAssetDataSource::Initialize(const bool InAutoRegister)
 	// Populate the initial set of hidden empty folders
 	// This will be updated as the scan finds more content
 	AssetRegistry->EnumerateAllCachedPaths([this](FName InPath)
-	{
-		if (!AssetRegistry->HasAssets(InPath, /*bRecursive*/true))
 		{
-			EmptyAssetFolders.Add(InPath.ToString());
-		}
-		return true;
-	});
+			if (!AssetRegistry->HasAssets(InPath, /*bRecursive*/true))
+			{
+				EmptyAssetFolders.Add(InPath);
+			}
+			return true;
+		});
+	VisitedEmptyAssetFolders.Empty();
 
 	FPackageName::QueryRootContentPaths(RootContentPaths);
 
@@ -167,25 +174,27 @@ void UContentBrowserAssetDataSource::Shutdown()
 	CollectionManager = nullptr;
 
 	AssetTools = nullptr;
+	AssetRegistry = nullptr;
 
-	if (!FModuleManager::Get().IsModuleLoaded(AssetRegistryConstants::ModuleName))
+	if (FAssetRegistryModule* AssetRegistryModule = FModuleManager::GetModulePtr<FAssetRegistryModule>(AssetRegistryConstants::ModuleName))
 	{
-		AssetRegistry = nullptr;
-	}
+		IAssetRegistry* AssetRegistryMaybe = AssetRegistryModule->TryGet();
+		if (AssetRegistryMaybe)
+		{
+			AssetRegistryMaybe->OnFileLoadProgressUpdated().RemoveAll(this);
 
-	if (AssetRegistry)
-	{
-		AssetRegistry->OnFileLoadProgressUpdated().RemoveAll(this);
-
-		AssetRegistry->OnAssetAdded().RemoveAll(this);
-		AssetRegistry->OnAssetRemoved().RemoveAll(this);
-		AssetRegistry->OnAssetRenamed().RemoveAll(this);
-		AssetRegistry->OnAssetUpdated().RemoveAll(this);
-		AssetRegistry->OnPathAdded().RemoveAll(this);
-		AssetRegistry->OnPathRemoved().RemoveAll(this);
+			AssetRegistryMaybe->OnAssetAdded().RemoveAll(this);
+			AssetRegistryMaybe->OnAssetRemoved().RemoveAll(this);
+			AssetRegistryMaybe->OnAssetRenamed().RemoveAll(this);
+			AssetRegistryMaybe->OnAssetUpdated().RemoveAll(this);
+			AssetRegistryMaybe->OnPathAdded().RemoveAll(this);
+			AssetRegistryMaybe->OnPathRemoved().RemoveAll(this);
+			AssetRegistryMaybe->OnFilesLoaded().RemoveAll(this);
+		}
 	}
 
 	FCoreUObjectDelegates::OnObjectPropertyChanged.RemoveAll(this);
+	FCoreUObjectDelegates::OnObjectPreSave.RemoveAll(this);
 
 	AssetViewUtils::OnAlwaysShowPath().RemoveAll(this);
 
@@ -557,7 +566,6 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 				{
 					AllowListClassFilter.ClassPaths.Add(FTopLevelAssetPath(AllowListPair.Key));
 				}
-				AllowListClassFilter.bRecursiveClasses = true;
 				Params.AssetRegistry->CompileFilter(AllowListClassFilter, CompiledClassFilterAllowList);
 			}
 
@@ -634,7 +642,6 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 				{
 					ClassFilter.ClassPaths.Add(FTopLevelAssetPath(FilterPair.Key));
 				}
-				ClassFilter.bRecursiveClasses = true;
 				Params.AssetRegistry->CompileFilter(ClassFilter, CompiledClassFilter);
 			}
 
@@ -1047,13 +1054,8 @@ bool UContentBrowserAssetDataSource::IsFolderVisibleIfHidingEmpty(const FName In
 		return false;
 	}
 
-	FNameBuilder InternalPathStr(ConvertedPath);
-
-	const FStringView InternalPathStrView = InternalPathStr;
-	const uint32 InternalPathHash = GetTypeHash(InternalPathStrView);
-
-	return AlwaysVisibleAssetFolders.ContainsByHash(InternalPathHash, InternalPathStrView) 
-		|| !EmptyAssetFolders.ContainsByHash(InternalPathHash, InternalPathStrView);
+	return AlwaysVisibleAssetFolders.Contains(ConvertedPath)
+		|| !EmptyAssetFolders.Contains(ConvertedPath);
 }
 
 bool UContentBrowserAssetDataSource::CanCreateFolder(const FName InPath, FText* OutErrorMsg)
@@ -1235,6 +1237,21 @@ bool UContentBrowserAssetDataSource::EditItem(const FContentBrowserItemData& InI
 bool UContentBrowserAssetDataSource::BulkEditItems(TArrayView<const FContentBrowserItemData> InItems)
 {
 	return ContentBrowserAssetData::EditItems(AssetTools, this, InItems);
+}
+
+bool UContentBrowserAssetDataSource::CanViewItem(const FContentBrowserItemData& InItem, FText* OutErrorMsg)
+{
+	return ContentBrowserAssetData::CanViewItem(AssetTools, this, InItem, OutErrorMsg);
+}
+
+bool UContentBrowserAssetDataSource::ViewItem(const FContentBrowserItemData& InItem)
+{
+	return ContentBrowserAssetData::ViewItems(AssetTools, this, MakeArrayView(&InItem, 1));
+}
+
+bool UContentBrowserAssetDataSource::BulkViewItems(TArrayView<const FContentBrowserItemData> InItems)
+{
+	return ContentBrowserAssetData::ViewItems(AssetTools, this, InItems);
 }
 
 bool UContentBrowserAssetDataSource::CanPreviewItem(const FContentBrowserItemData& InItem, FText* OutErrorMsg)
@@ -1783,21 +1800,33 @@ void UContentBrowserAssetDataSource::OnObjectPropertyChanged(UObject* InObject, 
 	}
 }
 
+void UContentBrowserAssetDataSource::OnObjectPreSave(UObject* InObject, FObjectPreSaveContext InObjectPreSaveContext)
+{
+	if (InObject && InObject->IsAsset() && ContentBrowserAssetData::IsPrimaryAsset(InObject))
+	{
+		FAssetData AssetData(InObject);
+		QueueItemDataUpdate(FContentBrowserItemDataUpdate::MakeItemModifiedUpdate(CreateAssetFileItem(AssetData)));
+	}
+}
+
 void UContentBrowserAssetDataSource::OnPathAdded(const FString& InPath)
 {
 	// New paths are considered empty until assets are added inside them
-	EmptyAssetFolders.Add(InPath);
+	FName PathName(InPath);
+	EmptyAssetFolders.Add(PathName);
+	VisitedEmptyAssetFolders.Empty();
 
-	QueueItemDataUpdate(FContentBrowserItemDataUpdate::MakeItemAddedUpdate(CreateAssetFolderItem(*InPath)));
+	QueueItemDataUpdate(FContentBrowserItemDataUpdate::MakeItemAddedUpdate(CreateAssetFolderItem(PathName)));
 }
 
 void UContentBrowserAssetDataSource::OnPathRemoved(const FString& InPath)
 {
 	// Deleted paths are no longer relevant for tracking
-	AlwaysVisibleAssetFolders.Remove(InPath);
-	EmptyAssetFolders.Remove(InPath);
+	FName PathName(InPath);
+	AlwaysVisibleAssetFolders.Remove(PathName);
+	EmptyAssetFolders.Remove(PathName);
 
-	QueueItemDataUpdate(FContentBrowserItemDataUpdate::MakeItemRemovedUpdate(CreateAssetFolderItem(*InPath)));
+	QueueItemDataUpdate(FContentBrowserItemDataUpdate::MakeItemRemovedUpdate(CreateAssetFolderItem(PathName)));
 }
 
 void UContentBrowserAssetDataSource::OnPathPopulated(const FName InPath)
@@ -1817,6 +1846,15 @@ void UContentBrowserAssetDataSource::OnPathPopulated(const FStringView InPath)
 			Path = Path.Left(Path.Len() - 1);
 		}
 
+		FName PathName(Path);
+
+		// If we've already visited this path then we can assume we visited the parents as well
+		// and can skip visiting this path and its parents
+		if (VisitedEmptyAssetFolders.Contains(PathName))
+		{
+			return;
+		}
+
 		// Recurse first as we want parents to be updated before their children
 		{
 			int32 LastSlashIndex = INDEX_NONE;
@@ -1827,12 +1865,14 @@ void UContentBrowserAssetDataSource::OnPathPopulated(const FStringView InPath)
 		}
 
 		// Unhide this folder and emit a notification if required
-		const uint32 PathHash = GetTypeHash(Path);
-		if (EmptyAssetFolders.RemoveByHash(PathHash, Path) > 0)
+		if (EmptyAssetFolders.Remove(PathName) > 0)
 		{
 			// Queue an update event for this path as it may have become visible in the view
-			QueueItemDataUpdate(FContentBrowserItemDataUpdate::MakeItemModifiedUpdate(CreateAssetFolderItem(FName(Path))));
+			QueueItemDataUpdate(FContentBrowserItemDataUpdate::MakeItemModifiedUpdate(CreateAssetFolderItem(PathName)));
 		}
+
+		// Mark that this path has been visited
+		VisitedEmptyAssetFolders.Add(PathName);
 	}
 }
 
@@ -1858,12 +1898,13 @@ void UContentBrowserAssetDataSource::OnAlwaysShowPath(const FString& InPath)
 		}
 
 		// Force show this folder and emit a notification if required
-		if (!AlwaysVisibleAssetFolders.Contains(Path))
+		FName PathName(Path);
+		if (!AlwaysVisibleAssetFolders.Contains(PathName))
 		{
-			AlwaysVisibleAssetFolders.Add(Path);
+			AlwaysVisibleAssetFolders.Add(PathName);
 
 			// Queue an update event for this path as it may have become visible in the view
-			QueueItemDataUpdate(FContentBrowserItemDataUpdate::MakeItemModifiedUpdate(CreateAssetFolderItem(FName(*Path))));
+			QueueItemDataUpdate(FContentBrowserItemDataUpdate::MakeItemModifiedUpdate(CreateAssetFolderItem(PathName)));
 		}
 	}
 }

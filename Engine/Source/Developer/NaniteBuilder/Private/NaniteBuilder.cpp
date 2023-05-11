@@ -23,12 +23,14 @@
 
 #define NANITE_LOG_COMPRESSED_SIZES		0
 
+#if NANITE_IMPOSTERS_SUPPORTED
 static TAutoConsoleVariable<bool> CVarBuildImposters(
 	TEXT("r.Nanite.Builder.Imposters"),
 	false,
 	TEXT("Build imposters for small/distant object rendering. For scenes with lots of small or distant objects, imposters can sometimes speed up rendering, but they come at the cost of additional runtime memory and disk footprint overhead."),
 	ECVF_ReadOnly
 );
+#endif
 
 namespace Nanite
 {
@@ -73,10 +75,15 @@ const FString& FBuilderModule::GetVersionString() const
 
 	if (VersionString.IsEmpty())
 	{
+	#if NANITE_IMPOSTERS_SUPPORTED
+		const bool bBuildImposters = CVarBuildImposters.GetValueOnAnyThread();
+	#else
+		const bool bBuildImposters = false;
+	#endif
 		VersionString = FString::Printf(TEXT("%s%s%s%s"), *FDevSystemGuids::GetSystemGuid(FDevSystemGuids::Get().NANITE_DERIVEDDATA_VER).ToString(EGuidFormats::DigitsWithHyphens),
 										NANITE_USE_CONSTRAINED_CLUSTERS ? TEXT("_CONSTRAINED") : TEXT(""),
 										NANITE_USE_UNCOMPRESSED_VERTEX_DATA ? TEXT("_UNCOMPRESSED") : TEXT(""),
-										CVarBuildImposters.GetValueOnAnyThread() ? TEXT("_IMPOSTERS") : TEXT(""));
+										bBuildImposters ? TEXT("_IMPOSTERS") : TEXT(""));
 
 #if PLATFORM_CPU_ARM_FAMILY
 		// Separate out arm keys as x64 and arm64 clang do not generate the same data for a given
@@ -475,6 +482,13 @@ static void CalculateCompressedNaniteDiskSize(FResources& Resources, int32& OutU
 }
 #endif
 
+void TessellateAndDisplace(
+	TArray< FStaticMeshBuildVertex >& Verts,
+	TArray< uint32 >& Indexes,
+	TArray< int32 >& MaterialIndexes,
+	const FBounds3f& MeshBounds,
+	const FMeshNaniteSettings& Settings );
+
 static bool BuildNaniteData(
 	FResources& Resources,
 	IBuilderModule::FVertexMeshData& InputMeshData,
@@ -503,6 +517,17 @@ static bool BuildNaniteData(
 		Channel &= Vert.Color.B;
 		Channel &= Vert.Color.A;
 	}
+	
+	if( MeshTriangleCounts.Num() == 1 && Settings.TrimRelativeError != 0.0f )
+	{
+		uint32 Time0 = FPlatformTime::Cycles();
+
+		TessellateAndDisplace( InputMeshData.Vertices, InputMeshData.TriangleIndices, MaterialIndexes, VertexBounds, Settings );
+		MeshTriangleCounts[0] = InputMeshData.TriangleIndices.Num() / 3;
+
+		uint32 Time1 = FPlatformTime::Cycles();
+		UE_LOG( LogStaticMesh, Log, TEXT("Adaptive tessellate [%.2fs], tris: %i"), FPlatformTime::ToMilliseconds( Time1 - Time0 ) / 1000.0f, MeshTriangleCounts[0] );
+	}
 
 	Resources.NumInputTriangles	= InputMeshData.TriangleIndices.Num() / 3;
 	Resources.NumInputVertices	= InputMeshData.Vertices.Num();
@@ -511,7 +536,6 @@ static bool BuildNaniteData(
 
 	// Don't trust any input. We only have color if it isn't all white.
 	const bool bHasVertexColor = Channel != 255;
-	const bool bHasImposter = CVarBuildImposters.GetValueOnAnyThread() && (Resources.NumInputMeshes == 1);
 
 	Resources.ResourceFlags = 0x0;
 
@@ -520,10 +544,13 @@ static bool BuildNaniteData(
 		Resources.ResourceFlags |= NANITE_RESOURCE_FLAG_HAS_VERTEX_COLOR;
 	}
 
+#if NANITE_IMPOSTERS_SUPPORTED
+	const bool bHasImposter = CVarBuildImposters.GetValueOnAnyThread() && (Resources.NumInputMeshes == 1);
 	if (bHasImposter)
 	{
 		Resources.ResourceFlags |= NANITE_RESOURCE_FLAG_HAS_IMPOSTER;
 	}
+#endif
 
 	TArray< uint32 > ClusterCountPerMesh;
 	TArray< FCluster > Clusters;
@@ -686,6 +713,7 @@ static bool BuildNaniteData(
 	uint32 EncodeTime1 = FPlatformTime::Cycles();
 	UE_LOG( LogStaticMesh, Log, TEXT("Encode [%.2fs]"), FPlatformTime::ToMilliseconds( EncodeTime1 - EncodeTime0 ) / 1000.0f );
 
+#if NANITE_IMPOSTERS_SUPPORTED
 	if (bHasImposter)
 	{
 		uint32 ImposterStartTime = FPlatformTime::Cycles();
@@ -708,6 +736,7 @@ static bool BuildNaniteData(
 
 		UE_LOG(LogStaticMesh, Log, TEXT("Imposter [%.2fs]"), FPlatformTime::ToMilliseconds(FPlatformTime::Cycles() - ImposterStartTime ) / 1000.0f);
 	}
+#endif
 
 #if NANITE_LOG_COMPRESSED_SIZES
 	int32 UncompressedSize, CompressedSize;

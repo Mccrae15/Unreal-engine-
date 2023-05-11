@@ -3,13 +3,16 @@
 #include "NiagaraDataInterface.h"
 #include "Curves/CurveVector.h"
 #include "Curves/CurveLinearColor.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "NiagaraTypes.h"
 #include "ShaderParameterUtils.h"
 #include "NiagaraGPUSystemTick.h"
 #include "NiagaraGpuComputeDispatch.h"
 #include "NiagaraShader.h"
+#include "NiagaraSystem.h"
 #include "NiagaraComponent.h"
 #include "ShaderCompilerCore.h"
+#include "NiagaraDataInterfaceUtilities.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterface)
 
@@ -41,13 +44,14 @@ bool UNiagaraDataInterface::AppendCompileHash(FNiagaraCompileHashVisitor* InVisi
 {
 	//-TODO: Currently applied to all, but we only need to hash this in for the iteration source
 	const UNiagaraDataInterface* BaseDataInterface = GetDefault<UNiagaraDataInterface>();
+	const FString DataInterfaceName = GetClass()->GetName();
 	if (BaseDataInterface->GetGpuDispatchType() != GetGpuDispatchType())
 	{
-		const FString DataInterfaceName = GetClass()->GetName();
 		InVisitor->UpdatePOD(*FString::Printf(TEXT("%s_GpuDispatchType"), *DataInterfaceName), (int32)GetGpuDispatchType());
 		InVisitor->UpdateString(*FString::Printf(TEXT("%s_GpuDispatchNumThreads"), *DataInterfaceName), *FString::Printf(TEXT("%dx%dx%d"), GetGpuDispatchNumThreads().X, GetGpuDispatchNumThreads().Y, GetGpuDispatchNumThreads().Z));
 	}
-
+	InVisitor->UpdatePOD(*FString::Printf(TEXT("%s_GpuUseIndirectDispatch"), *DataInterfaceName), (int32)GetGpuUseIndirectDispatch());
+	
 	return true;
 }
 #endif
@@ -142,6 +146,16 @@ bool UNiagaraDataInterface::IsDataInterfaceType(const FNiagaraTypeDefinition& Ty
 	return false;
 }
 
+#if WITH_EDITORONLY_DATA
+void UNiagaraDataInterface::AppendTemplateHLSL(FString& OutHLSL, const TCHAR* TemplateShaderFile, const TMap<FString, FStringFormatArg>& TemplateArgs) const
+{
+	FString TemplateFile;
+	LoadShaderSourceFile(TemplateShaderFile, EShaderPlatform::SP_PCD3D_SM5, &TemplateFile, nullptr);
+	OutHLSL.Append(FString::Format(*TemplateFile, TemplateArgs));
+	OutHLSL.AppendChar('\n');
+}
+#endif
+
 bool UNiagaraDataInterface::CopyToInternal(UNiagaraDataInterface* Destination) const
 {
 	if (Destination == nullptr || Destination->GetClass() != GetClass())
@@ -152,6 +166,21 @@ bool UNiagaraDataInterface::CopyToInternal(UNiagaraDataInterface* Destination) c
 }
 
 #if WITH_EDITOR
+
+void UNiagaraDataInterface::GetParameterDefinitionHLSL(FNiagaraDataInterfaceHlslGenerationContext& HlslGenContext, FString& OutHLSL)
+{
+	//Base implementation will call into the legacy functions so that all DIs need not be updated immediately.
+	//Do not implement both current and legacy functions in any DI or it's parent classes.
+	GetParameterDefinitionHLSL(HlslGenContext.ParameterInfo, OutHLSL);
+}
+
+bool UNiagaraDataInterface::GetFunctionHLSL(FNiagaraDataInterfaceHlslGenerationContext& HlslGenContext, FString& OutHLSL)
+{
+	//Base implementation will call into the legacy functions so that all DIs need not be updated immediately.
+	//Do not implement both current and legacy functions in any DI or it's parent classes.
+	return GetFunctionHLSL(HlslGenContext.ParameterInfo, HlslGenContext.ParameterInfo.GeneratedFunctions[HlslGenContext.FunctionInstanceIndex], HlslGenContext.FunctionInstanceIndex, OutHLSL);
+}
+
 void UNiagaraDataInterface::GetFeedback(UNiagaraSystem* InAsset, UNiagaraComponent* InComponent, TArray<FNiagaraDataInterfaceError>& OutErrors, TArray<FNiagaraDataInterfaceFeedback>& OutWarnings, TArray<FNiagaraDataInterfaceFeedback>& OutInfo)
 {
 	OutErrors = GetErrors();
@@ -345,7 +374,8 @@ uint16 FNiagaraDataInterfaceSetShaderParametersContext::GetParameterIncludedStru
 	{
 		if (StructIncludeInfo.StructMetadata == StructMetadata)
 		{
-			return StructIncludeInfo.ParamterOffset;
+			ensure(StructIncludeInfo.ParamterOffset <= TNumericLimits<uint16>::Max());
+			return uint16(StructIncludeInfo.ParamterOffset);
 		}
 	}
 

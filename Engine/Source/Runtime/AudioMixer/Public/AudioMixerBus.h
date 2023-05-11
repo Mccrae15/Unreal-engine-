@@ -26,7 +26,7 @@ namespace Audio
 		void AddNewPatchOutput(const FPatchOutputStrongPtr& InPatchOutputStrongPtr);
 
 		// Allow anybody to write audio into this audio bus from any thread.
-		void AddNewPatchInput(FPatchInput& InPatchInput);
+		void AddNewPatchInput(const FPatchInput& InPatchInput);
 
 		// Allow anybody to write audio into this audio bus from any thread.
 		void RemovePatchInput(const FPatchInput& InPatchInput);
@@ -106,8 +106,9 @@ namespace Audio
 		FMixerSourceManager* SourceManager;
 
 		// Multiple places can produce and consume from audio buses
-		Audio::FPatchInput AudioBusInput;
-		Audio::FPatchMixerSplitter PatchMixerSplitter;
+		Audio::FPatchMixer PatchMixer;
+		Audio::FPatchSplitter PatchSplitter;
+		FAlignedFloatBuffer SampleCache;
 
 		// Was created manually, not via source buses.
 		bool bIsAutomatic;

@@ -10,6 +10,7 @@
 #include "ContentBrowserModule.h"
 #include "EditorReimportHandler.h"
 #include "IContentBrowserSingleton.h"
+#include "RigEditor/IKRigController.h"
 #include "ObjectEditorUtils.h"
 #include "SSkeletonWidget.h"
 #include "PropertyCustomizationHelpers.h"
@@ -27,7 +28,7 @@
 
 #define LOCTEXT_NAMESPACE "RetargetBatchOperation"
 
-int32 FIKRetargetBatchOperation::GenerateAssetLists(const FIKRetargetBatchOperationContext& Context)
+int32 UIKRetargetBatchOperation::GenerateAssetLists(const FIKRetargetBatchOperationContext& Context)
 {
 	// re-generate lists of selected and referenced assets
 	AnimationAssetsToRetarget.Reset();
@@ -97,7 +98,7 @@ int32 FIKRetargetBatchOperation::GenerateAssetLists(const FIKRetargetBatchOperat
 	return AnimationAssetsToRetarget.Num();
 }
 
-void FIKRetargetBatchOperation::DuplicateRetargetAssets(
+void UIKRetargetBatchOperation::DuplicateRetargetAssets(
 	const FIKRetargetBatchOperationContext& Context,
 	FScopedSlowTask& Progress)
 {
@@ -161,7 +162,7 @@ void FIKRetargetBatchOperation::DuplicateRetargetAssets(
 	DuplicatedBlueprints.GenerateValueArray(AnimBlueprintsToRetarget);
 }
 
-void FIKRetargetBatchOperation::RetargetAssets(
+void UIKRetargetBatchOperation::RetargetAssets(
 	const FIKRetargetBatchOperationContext& Context,
 	FScopedSlowTask& Progress)
 {
@@ -186,6 +187,7 @@ void FIKRetargetBatchOperation::RetargetAssets(
 			// set the retarget source to the target skeletal mesh
 			AnimSequenceToRetarget->RetargetSource = NAME_None;
 			AnimSequenceToRetarget->RetargetSourceAsset = Context.TargetMesh;
+			Controller.UpdateWithSkeleton(NewSkeleton);
 			// done editing sequence data, close bracket
 			Controller.CloseBracket(ShouldTransactAnimEdits);
 		}
@@ -246,7 +248,7 @@ void FIKRetargetBatchOperation::RetargetAssets(
 	}
 }
 
-void FIKRetargetBatchOperation::ConvertAnimation(
+void UIKRetargetBatchOperation::ConvertAnimation(
 	const FIKRetargetBatchOperationContext& Context,
 	FScopedSlowTask& Progress)
 {
@@ -393,7 +395,7 @@ void FIKRetargetBatchOperation::ConvertAnimation(
 			const FName& TargetBoneName = TargetBoneNames[TargetBoneIndex];
 
 			const FRawAnimSequenceTrack& RawTrack = BoneTracks[TargetBoneIndex];
-			TargetSeqController.AddBoneTrack(TargetBoneName, bShouldTransact);
+			TargetSeqController.AddBoneCurve(TargetBoneName, bShouldTransact);
 			TargetSeqController.SetBoneTrackKeys(TargetBoneName, RawTrack.PosKeys, RawTrack.RotKeys, RawTrack.ScaleKeys);
 		}
 
@@ -402,7 +404,7 @@ void FIKRetargetBatchOperation::ConvertAnimation(
 	}
 }
 
-void FIKRetargetBatchOperation::NotifyUserOfResults(
+void UIKRetargetBatchOperation::NotifyUserOfResults(
 	const FIKRetargetBatchOperationContext& Context,
 	FScopedSlowTask& Progress) const
 {
@@ -439,7 +441,7 @@ void FIKRetargetBatchOperation::NotifyUserOfResults(
 	ContentBrowserModule.Get().SyncBrowserToAssets(CurrentSelection);
 }
 
-void FIKRetargetBatchOperation::GetNewAssets(TArray<UObject*>& NewAssets) const
+void UIKRetargetBatchOperation::GetNewAssets(TArray<UObject*>& NewAssets) const
 {
 	TArray<UAnimationAsset*> NewAnims;
 	DuplicatedAnimAssets.GenerateValueArray(NewAnims);
@@ -457,10 +459,106 @@ void FIKRetargetBatchOperation::GetNewAssets(TArray<UObject*>& NewAssets) const
 }
 
 
+TArray<FAssetData> UIKRetargetBatchOperation::DuplicateAndRetarget(
+	const TArray<FAssetData>& AssetsToRetarget,
+	USkeletalMesh* SourceMesh,
+	USkeletalMesh* TargetMesh,
+	UIKRetargeter* IKRetargetAsset,
+	const FString& Search,
+	const FString& Replace,
+	const FString& Prefix,
+	const FString& Suffix,
+	const bool bRemapReferencedAssets)
+{
+	// fill the context with all the data needed to run a batch retarget
+	FIKRetargetBatchOperationContext Context;
+	for (const FAssetData& Asset : AssetsToRetarget)
+	{
+		Context.AssetsToRetarget.Add(Asset.GetAsset()); // convert asset data to soft refs
+	}
+	Context.SourceMesh = SourceMesh;
+	Context.TargetMesh = TargetMesh;
+	Context.IKRetargetAsset = IKRetargetAsset;
+	Context.NameRule.Prefix = Prefix;
+	Context.NameRule.Suffix = Suffix;
+	Context.NameRule.ReplaceFrom = Search;
+	Context.NameRule.ReplaceTo = Replace;
+	Context.bRemapReferencedAssets = bRemapReferencedAssets;
 
-void FIKRetargetBatchOperation::RunRetarget(FIKRetargetBatchOperationContext& Context)
-{	
+	// actually run the batch operation
+	UIKRetargetBatchOperation* BatchOperation = NewObject<UIKRetargetBatchOperation>();
+	BatchOperation->AddToRoot();
+	BatchOperation->RunRetarget(Context);
+
+	// create array of FAssetData to return
+	TArray<FAssetData> Results;
+	for (const UAnimationAsset* RetargetedAsset : BatchOperation->AnimationAssetsToRetarget)
+	{
+		Results.Add(FAssetData(RetargetedAsset));
+	}
+	
+	BatchOperation->RemoveFromRoot();
+	return Results;
+}
+
+void UIKRetargetBatchOperation::RunRetarget(FIKRetargetBatchOperationContext& Context)
+{
+	Reset();
+	
+	// validate animation assets were provided
 	const int32 NumAssets = GenerateAssetLists(Context);
+	if (NumAssets == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Batch retarget aborted. No animation assets were specified."));
+		return;
+	}
+
+	// validate a retarget asset was provided
+	if (!Context.IKRetargetAsset)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Batch retarget aborted. No IK Retargeter asset was specified."));
+		return;
+	}
+
+	// validate a source IK rig was provided
+	const UIKRigDefinition* SrcIKRig = Context.IKRetargetAsset->GetSourceIKRig();
+	if (!SrcIKRig)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Batch retarget aborted. Specified IK Retargeter does not reference a source IK Rig."));
+		return;
+	}
+
+	// validate a target IK rig was provided
+	const UIKRigDefinition* TgtIKRig = Context.IKRetargetAsset->GetTargetIKRig();
+	if (!TgtIKRig)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Batch retarget aborted. Specified IK Retargeter does not reference a target IK Rig."));
+		return;
+	}
+
+	// validate a source mesh was provided
+	if (!Context.SourceMesh)
+	{
+		// fallback to mesh provided by IK Rig
+		Context.SourceMesh = SrcIKRig->GetPreviewMesh();
+		if (!Context.SourceMesh)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("Batch retarget aborted. No source mesh was specified and the source IK Rig did not have one. "));
+			return;	
+		}
+	}
+
+	// validate a target mesh was provided
+	if (!Context.TargetMesh)
+	{
+		// fallback to mesh provided by IK Rig
+		Context.TargetMesh = TgtIKRig->GetPreviewMesh();
+		if (!Context.TargetMesh)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("Batch retarget aborted. No target mesh was specified and the target IK Rig did not have one. "));
+			return;
+		}
+	}
 	
 	// show progress bar
 	FScopedSlowTask Progress(NumAssets + 2, LOCTEXT("GatheringBatchRetarget", "Gathering animation assets..."));
@@ -469,6 +567,15 @@ void FIKRetargetBatchOperation::RunRetarget(FIKRetargetBatchOperationContext& Co
 	DuplicateRetargetAssets(Context, Progress);
 	RetargetAssets(Context, Progress);
 	NotifyUserOfResults(Context, Progress);
+}
+
+void UIKRetargetBatchOperation::Reset()
+{
+	AnimationAssetsToRetarget.Reset();
+	AnimBlueprintsToRetarget.Reset();
+	DuplicatedAnimAssets.Reset();
+	DuplicatedBlueprints.Reset();
+	RemappedAnimAssets.Reset();
 }
 
 /**
@@ -481,7 +588,7 @@ void FIKRetargetBatchOperation::RunRetarget(FIKRetargetBatchOperationContext& Co
 * @return	TMap of original animation to duplicate
 */
 template<class AssetType>
-TMap<AssetType*, AssetType*> FIKRetargetBatchOperation::DuplicateAssets(
+TMap<AssetType*, AssetType*> UIKRetargetBatchOperation::DuplicateAssets(
 	const TArray<AssetType*>& AssetsToDuplicate,
 	UPackage* DestinationPackage,
 	const FNameDuplicationRule* NameRule)

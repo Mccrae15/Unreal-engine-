@@ -10,17 +10,9 @@ FRigUnit_SphericalPoseReader_Execute()
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
 
-	URigHierarchy* Hierarchy = Context.Hierarchy;
+	URigHierarchy* Hierarchy = ExecuteContext.Hierarchy;
 	if (Hierarchy == nullptr)
 	{
-		return;
-	}
-
-	if (Context.State == EControlRigState::Init)
-	{
-		DriverCache.Reset();
-		OptionalParentCache.Reset();
-		bCachedInitTransforms = false;
 		return;
 	}
 
@@ -101,7 +93,7 @@ FRigUnit_SphericalPoseReader_Execute()
 	{
 		// avoid NaNs from DistanceToEllipse, and guaranteed to be inside inner ellipse
 		OutputParam = 1.0f;
-		Debug.DrawDebug(WorldOffset, Context.DrawInterface, InnerRegion, OuterRegion, DriverNormal, Driver2D, OutputParam);
+		Debug.DrawDebug(WorldOffset, ExecuteContext.GetDrawInterface(), InnerRegion, OuterRegion, DriverNormal, Driver2D, OutputParam);
 		return;
 	}
 	
@@ -125,7 +117,7 @@ FRigUnit_SphericalPoseReader_Execute()
 	OutputParam = CalcOutputParam(InnerEllipseResults, OuterEllipseResults);
 
 	// do all debug drawing
-	Debug.DrawDebug(WorldOffset, Context.DrawInterface, InnerRegion, OuterRegion, DriverNormal, Driver2D, OutputParam);
+	Debug.DrawDebug(WorldOffset, ExecuteContext.GetDrawInterface(), InnerRegion, OuterRegion, DriverNormal, Driver2D, OutputParam);
 }
 
 void FRigUnit_SphericalPoseReader::RemapAndConvertInputs(

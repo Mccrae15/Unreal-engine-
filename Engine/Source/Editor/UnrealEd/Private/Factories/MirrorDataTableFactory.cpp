@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Factories/MirrorDataTableFactory.h"
+#include "Animation/Skeleton.h"
 #include "DataTableEditorUtils.h"
 #include "Animation/MirrorDataTable.h"
 #include "Animation/AnimationSettings.h"
@@ -15,6 +16,7 @@
 #include "Widgets/Layout/SUniformGridPanel.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SComboBox.h"
 #include "Widgets/Layout/SExpandableArea.h"
 #include "Widgets/SWindow.h"
 
@@ -102,7 +104,7 @@ public:
 		Options.StructFilter = MakeShared<FDataTableStructFilter>();
 		return
 			SNew(SBox)
-			.WidthOverride(330)
+			.WidthOverride(330.0f)
 			[
 				SNew(SVerticalBox)
 
@@ -195,7 +197,7 @@ public:
 				[
 					SNew(SExpandableArea)
 					.AreaTitle(LOCTEXT("CreateMirrorDataTableAdvancedOptions", "Advanced Options"))
-					.Padding(2)
+					.Padding(2.0f)
 					.InitiallyCollapsed(true)
 					.BodyContent()
 					[

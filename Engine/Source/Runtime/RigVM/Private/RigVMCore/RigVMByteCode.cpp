@@ -134,6 +134,13 @@ void FRigVMInvokeEntryOp::Serialize(FArchive& Ar)
 	}
 }
 
+void FRigVMJumpToBranchOp::Serialize(FArchive& Ar)
+{
+	Ar << OpCode;
+	Ar << Arg;
+	Ar << FirstBranchInfoIndex;
+}
+
 FRigVMInstructionArray::FRigVMInstructionArray()
 {
 }
@@ -431,6 +438,12 @@ void FRigVMByteCode::Save(FArchive& Ar) const
 				Ar << Op;
 				break;
 			}
+			case ERigVMOpCode::JumpToBranch:
+			{
+				FRigVMJumpToBranchOp Op = GetOpAt<FRigVMJumpToBranchOp>(Instruction.ByteCodeIndex);
+				Ar << Op;
+				break;
+			}
 			default:
 			{
 				ensure(false);
@@ -452,6 +465,9 @@ void FRigVMByteCode::Save(FArchive& Ar) const
 	}
 
 	Ar << View;
+
+	TArray<FRigVMBranchInfo> TempBranchInfos = BranchInfos;
+	Ar << TempBranchInfos;
 }
 
 void FRigVMByteCode::Load(FArchive& Ar)
@@ -662,6 +678,13 @@ void FRigVMByteCode::Load(FArchive& Ar)
 				AddOp<FRigVMInvokeEntryOp>(Op);
 				break;
 			}
+			case ERigVMOpCode::JumpToBranch:
+			{
+				FRigVMJumpToBranchOp Op;
+				Ar << Op;
+				AddOp<FRigVMJumpToBranchOp>(Op);
+				break;
+			}
 			default:
 			{
 				ensure(false);
@@ -686,6 +709,20 @@ void FRigVMByteCode::Load(FArchive& Ar)
 			Entries.Add(Entry);
 		}
 	}
+
+	if (Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) >= FUE5MainStreamObjectVersion::RigVMLazyEvaluation)
+	{
+		Ar << BranchInfos;
+
+		// make sure the lookup table is up 2 date
+		BranchInfoLookup.Reset();
+		(void)GetBranchInfo({0,0});
+	}
+	else
+	{
+		BranchInfos.Reset();
+		BranchInfoLookup.Reset();
+	}
 }
 
 void FRigVMByteCode::Reset()
@@ -694,6 +731,8 @@ void FRigVMByteCode::Reset()
 	bByteCodeIsAligned = false;
 	NumInstructions = 0;
 	Entries.Reset();
+	BranchInfos.Reset();
+	BranchInfoLookup.Reset();
 
 #if WITH_EDITORONLY_DATA
 	SubjectPerInstruction.Reset();
@@ -742,6 +781,11 @@ uint32 FRigVMByteCode::GetByteCodeHash() const
 	for(const FRigVMInstruction& Instruction : Instructions)
 	{
 		Hash = HashCombine(Hash, GetOperatorHash(Instruction));
+	}
+
+	for(const FRigVMBranchInfo& BranchInfo : BranchInfos)
+	{
+		Hash = HashCombine(Hash, GetTypeHash(BranchInfo));
 	}
 
 	return Hash;
@@ -901,6 +945,10 @@ uint32 FRigVMByteCode::GetOperatorHash(const FRigVMInstruction& InInstruction) c
 		case ERigVMOpCode::InvokeEntry:
 		{
 			return GetTypeHash(GetOpAt<FRigVMInvokeEntryOp>(InInstruction));
+		}
+		case ERigVMOpCode::JumpToBranch:
+		{
+			return GetTypeHash(GetOpAt<FRigVMJumpToBranchOp>(InInstruction));
 		}
 		case ERigVMOpCode::Invalid:
 		{
@@ -1109,6 +1157,10 @@ uint64 FRigVMByteCode::GetOpNumBytesAt(uint64 InByteCodeIndex, bool bIncludeOper
 		{
 			return (uint64)sizeof(FRigVMInvokeEntryOp);
 		}
+		case ERigVMOpCode::JumpToBranch:
+		{
+			return (uint64)sizeof(FRigVMJumpToBranchOp);
+		}
 		case ERigVMOpCode::Invalid:
 		{
 			ensure(false);
@@ -1225,6 +1277,16 @@ uint64 FRigVMByteCode::AddExecuteOp(uint16 InFunctionIndex, const FRigVMOperandA
 
 	uint64 OperandsByteIndex = (uint64)ByteCode.AddZeroed(sizeof(FRigVMOperand) * InOperands.Num());
 	FMemory::Memcpy(ByteCode.GetData() + OperandsByteIndex, InOperands.GetData(), sizeof(FRigVMOperand) * InOperands.Num());
+	return OpByteIndex;
+}
+
+uint64 FRigVMByteCode::InlineFunction(const FRigVMByteCode* FunctionByteCode, const FRigVMOperandArray& InOperands)
+{
+	check(FunctionByteCode);
+	uint64 OpByteIndex = ByteCode.Num();
+	ByteCode.Append(FunctionByteCode->ByteCode);
+	NumInstructions += FunctionByteCode->NumInstructions;
+	
 	return OpByteIndex;
 }
 
@@ -1348,8 +1410,6 @@ FString FRigVMByteCode::DumpToText() const
 			case ERigVMOpCode::BoolTrue:
 			case ERigVMOpCode::Increment:
 			case ERigVMOpCode::Decrement:
-			case ERigVMOpCode::ArrayReset:
-			case ERigVMOpCode::ArrayReverse:
 			{
 				const FRigVMUnaryOp& Op = GetOpAt<FRigVMUnaryOp>(Instruction.ByteCodeIndex);
 				FString ArgContent;
@@ -1397,12 +1457,6 @@ FString FRigVMByteCode::DumpToText() const
 				break;
 			}
 			case ERigVMOpCode::BeginBlock:
-			case ERigVMOpCode::ArrayGetNum:
-			case ERigVMOpCode::ArraySetNum:
-			case ERigVMOpCode::ArrayAppend:
-			case ERigVMOpCode::ArrayClone:
-			case ERigVMOpCode::ArrayRemove:
-			case ERigVMOpCode::ArrayUnion:
 			{
 				const FRigVMBinaryOp& Op = GetOpAt<FRigVMBinaryOp>(Instruction.ByteCodeIndex);
 				FString ArgA, ArgB;
@@ -1412,59 +1466,32 @@ FString FRigVMByteCode::DumpToText() const
 				Line += FString::Printf(TEXT(", ArgB %s"), *ArgB);
 				break;
 			}
-			case ERigVMOpCode::ArrayAdd:
-			case ERigVMOpCode::ArrayGetAtIndex:
-			case ERigVMOpCode::ArraySetAtIndex:
-			case ERigVMOpCode::ArrayInsert:
-			case ERigVMOpCode::ArrayDifference:
-			case ERigVMOpCode::ArrayIntersection:
-			{
-				const FRigVMTernaryOp& Op = GetOpAt<FRigVMTernaryOp>(Instruction.ByteCodeIndex);
-				FString ArgA, ArgB, ArgC;
-				FRigVMOperand::StaticStruct()->ExportText(ArgA, &Op.ArgA, &Op.ArgA, nullptr, PPF_None, nullptr);
-				FRigVMOperand::StaticStruct()->ExportText(ArgB, &Op.ArgB, &Op.ArgB, nullptr, PPF_None, nullptr);
-				FRigVMOperand::StaticStruct()->ExportText(ArgC, &Op.ArgC, &Op.ArgC, nullptr, PPF_None, nullptr);
-				Line += FString::Printf(TEXT(", ArgA %s"), *ArgA);
-				Line += FString::Printf(TEXT(", ArgB %s"), *ArgB);
-				Line += FString::Printf(TEXT(", ArgC %s"), *ArgC);
-				break;
-			}
-			case ERigVMOpCode::ArrayFind:
-			{
-				const FRigVMQuaternaryOp& Op = GetOpAt<FRigVMQuaternaryOp>(Instruction.ByteCodeIndex);
-				FString ArgA, ArgB, ArgC, ArgD;
-				FRigVMOperand::StaticStruct()->ExportText(ArgA, &Op.ArgA, &Op.ArgA, nullptr, PPF_None, nullptr);
-				FRigVMOperand::StaticStruct()->ExportText(ArgB, &Op.ArgB, &Op.ArgB, nullptr, PPF_None, nullptr);
-				FRigVMOperand::StaticStruct()->ExportText(ArgC, &Op.ArgC, &Op.ArgC, nullptr, PPF_None, nullptr);
-				FRigVMOperand::StaticStruct()->ExportText(ArgD, &Op.ArgD, &Op.ArgD, nullptr, PPF_None, nullptr);
-				Line += FString::Printf(TEXT(", ArgA %s"), *ArgA);
-				Line += FString::Printf(TEXT(", ArgB %s"), *ArgB);
-				Line += FString::Printf(TEXT(", ArgC %s"), *ArgC);
-				Line += FString::Printf(TEXT(", ArgD %s"), *ArgD);
-				break;
-			}
-			case ERigVMOpCode::ArrayIterator:
-			{
-				const FRigVMSenaryOp& Op = GetOpAt<FRigVMSenaryOp>(Instruction.ByteCodeIndex);
-				FString ArgA, ArgB, ArgC, ArgD, ArgE, ArgF;
-				FRigVMOperand::StaticStruct()->ExportText(ArgA, &Op.ArgA, &Op.ArgA, nullptr, PPF_None, nullptr);
-				FRigVMOperand::StaticStruct()->ExportText(ArgB, &Op.ArgB, &Op.ArgB, nullptr, PPF_None, nullptr);
-				FRigVMOperand::StaticStruct()->ExportText(ArgC, &Op.ArgC, &Op.ArgC, nullptr, PPF_None, nullptr);
-				FRigVMOperand::StaticStruct()->ExportText(ArgD, &Op.ArgD, &Op.ArgD, nullptr, PPF_None, nullptr);
-				FRigVMOperand::StaticStruct()->ExportText(ArgE, &Op.ArgE, &Op.ArgE, nullptr, PPF_None, nullptr);
-				FRigVMOperand::StaticStruct()->ExportText(ArgF, &Op.ArgF, &Op.ArgF, nullptr, PPF_None, nullptr);
-				Line += FString::Printf(TEXT(", ArgA %s"), *ArgA);
-				Line += FString::Printf(TEXT(", ArgB %s"), *ArgB);
-				Line += FString::Printf(TEXT(", ArgC %s"), *ArgC);
-				Line += FString::Printf(TEXT(", ArgD %s"), *ArgD);
-				Line += FString::Printf(TEXT(", ArgE %s"), *ArgE);
-				Line += FString::Printf(TEXT(", ArgF %s"), *ArgF);
-				break;
-			}
 			case ERigVMOpCode::InvokeEntry:
 			{
 				const FRigVMInvokeEntryOp& Op = GetOpAt<FRigVMInvokeEntryOp>(Instruction.ByteCodeIndex);
 				Line += FString::Printf(TEXT(", Entry '%s'"), *Op.EntryName.ToString());
+				break;
+			}
+			case ERigVMOpCode::JumpToBranch:
+			{
+				const FRigVMJumpToBranchOp& Op = GetOpAt<FRigVMJumpToBranchOp>(Instruction.ByteCodeIndex);
+				FString Arg;
+				FRigVMOperand::StaticStruct()->ExportText(Arg, &Op.Arg, &Op.Arg, nullptr, PPF_None, nullptr);
+				Line += TEXT(" BlockToRun ");
+				Line += Arg;
+				Line += TEXT(" for branches ");
+
+				TArray<FString> BranchInfoTexts;
+				for(int32 BranchIndex = Op.FirstBranchInfoIndex; BranchIndex < BranchInfos.Num(); BranchIndex++)
+				{
+					const FRigVMBranchInfo& BranchInfo = BranchInfos[BranchIndex];
+					if(BranchInfo.InstructionIndex != InstructionIndex)
+					{
+						break;
+					}
+					BranchInfoTexts.Add(FString::Printf(TEXT("%s (%d)"), *BranchInfo.Label.ToString(), (int32)BranchInfo.FirstInstruction));
+				}
+				Line += FString::Join(BranchInfoTexts, TEXT(", "));
 				break;
 			}
 			case ERigVMOpCode::Invalid:
@@ -1500,89 +1527,35 @@ uint64 FRigVMByteCode::AddEndBlockOp()
 	return AddOp(Op);
 }
 
-uint64 FRigVMByteCode::AddArrayResetOp(FRigVMOperand InArrayArg)
-{
-	return AddOp(FRigVMUnaryOp(ERigVMOpCode::ArrayReset, InArrayArg));
-}
-
-uint64 FRigVMByteCode::AddArrayGetNumOp(FRigVMOperand InArrayArg, FRigVMOperand InNumArg)
-{
-	return AddOp(FRigVMBinaryOp(ERigVMOpCode::ArrayGetNum, InArrayArg, InNumArg));
-}
-
-uint64 FRigVMByteCode::AddArraySetNumOp(FRigVMOperand InArrayArg, FRigVMOperand InNumArg)
-{
-	return AddOp(FRigVMBinaryOp(ERigVMOpCode::ArraySetNum, InArrayArg, InNumArg));
-}
-
-uint64 FRigVMByteCode::AddArrayGetAtIndexOp(FRigVMOperand InArrayArg, FRigVMOperand InIndexArg, FRigVMOperand InElementArg)
-{
-	return AddOp(FRigVMTernaryOp(ERigVMOpCode::ArrayGetAtIndex, InArrayArg, InIndexArg, InElementArg));
-}
-
-uint64 FRigVMByteCode::AddArraySetAtIndexOp(FRigVMOperand InArrayArg, FRigVMOperand InIndexArg, FRigVMOperand InElementArg)
-{
-	return AddOp(FRigVMTernaryOp(ERigVMOpCode::ArraySetAtIndex, InArrayArg, InIndexArg, InElementArg));
-}
-
-uint64 FRigVMByteCode::AddArrayAddOp(FRigVMOperand InArrayArg, FRigVMOperand InElementArg, FRigVMOperand InIndexArg)
-{
-	return AddOp(FRigVMTernaryOp(ERigVMOpCode::ArrayAdd, InArrayArg, InElementArg, InIndexArg));	
-}
-
-uint64 FRigVMByteCode::AddArrayInsertOp(FRigVMOperand InArrayArg, FRigVMOperand InIndexArg, FRigVMOperand InElementArg)
-{
-	return AddOp(FRigVMTernaryOp(ERigVMOpCode::ArrayInsert, InArrayArg, InIndexArg, InElementArg));
-}
-
-uint64 FRigVMByteCode::AddArrayRemoveOp(FRigVMOperand InArrayArg, FRigVMOperand InIndexArg)
-{
-	return AddOp(FRigVMBinaryOp(ERigVMOpCode::ArrayRemove, InArrayArg, InIndexArg));
-}
-
-uint64 FRigVMByteCode::AddArrayFindOp(FRigVMOperand InArrayArg, FRigVMOperand InElementArg, FRigVMOperand InIndexArg, FRigVMOperand InSuccessArg)
-{
-	return AddOp(FRigVMQuaternaryOp(ERigVMOpCode::ArrayFind, InArrayArg, InElementArg, InIndexArg, InSuccessArg));	
-}
-
-uint64 FRigVMByteCode::AddArrayAppendOp(FRigVMOperand InArrayArg, FRigVMOperand InOtherArrayArg)
-{
-	return AddOp(FRigVMBinaryOp(ERigVMOpCode::ArrayAppend, InArrayArg, InOtherArrayArg));
-}
-
-uint64 FRigVMByteCode::AddArrayCloneOp(FRigVMOperand InArrayArg, FRigVMOperand InClonedArrayArg)
-{
-	return AddOp(FRigVMBinaryOp(ERigVMOpCode::ArrayClone, InArrayArg, InClonedArrayArg));
-}
-
-uint64 FRigVMByteCode::AddArrayIteratorOp(FRigVMOperand InArrayArg, FRigVMOperand InElementArg, FRigVMOperand InIndexArg, FRigVMOperand InCountArg, FRigVMOperand InRatioArg, FRigVMOperand InContinueArg)
-{
-	return AddOp(FRigVMSenaryOp(ERigVMOpCode::ArrayIterator, InArrayArg, InElementArg, InIndexArg, InCountArg, InRatioArg, InContinueArg));
-}
-
-uint64 FRigVMByteCode::AddArrayUnionOp(FRigVMOperand InArrayArg, FRigVMOperand InOtherArrayArg)
-{
-	return AddOp(FRigVMBinaryOp(ERigVMOpCode::ArrayUnion, InArrayArg, InOtherArrayArg));
-}
-	
-uint64 FRigVMByteCode::AddArrayDifferenceOp(FRigVMOperand InArrayArg, FRigVMOperand InOtherArrayArg, FRigVMOperand InResultArrayArg)
-{
-	return AddOp(FRigVMTernaryOp(ERigVMOpCode::ArrayDifference, InArrayArg, InOtherArrayArg, InResultArrayArg));
-}
-	
-uint64 FRigVMByteCode::AddArrayIntersectionOp(FRigVMOperand InArrayArg, FRigVMOperand InOtherArrayArg, FRigVMOperand InResultArrayArg)
-{
-	return AddOp(FRigVMTernaryOp(ERigVMOpCode::ArrayIntersection, InArrayArg, InOtherArrayArg, InResultArrayArg));
-}
-	
-uint64 FRigVMByteCode::AddArrayReverseOp(FRigVMOperand InArrayArg)
-{
-	return AddOp(FRigVMUnaryOp(ERigVMOpCode::ArrayReverse, InArrayArg));
-}
-
 uint64 FRigVMByteCode::AddInvokeEntryOp(const FName& InEntryName)
 {
 	return AddOp(FRigVMInvokeEntryOp(InEntryName));
+}
+
+uint64 FRigVMByteCode::AddJumpToBranchOp(FRigVMOperand InBranchNameArg, int32 InFirstBranchInfoIndex)
+{
+	return AddOp(FRigVMJumpToBranchOp(InBranchNameArg, InFirstBranchInfoIndex));
+}
+
+int32 FRigVMByteCode::AddBranchInfo(const FRigVMBranchInfo& InBranchInfo)
+{
+	FRigVMBranchInfo BranchInfo = InBranchInfo;
+	BranchInfo.Index = BranchInfos.Num();
+	BranchInfos.Add(BranchInfo);
+	BranchInfoLookup.Reset();
+	return BranchInfo.Index;
+}
+
+int32 FRigVMByteCode::AddBranchInfo(const FName& InBranchLabel, int32 InInstructionIndex, int32 InArgumentIndex,
+	int32 InFirstBranchInstruction, int32 InLastBranchInstruction)
+{
+	FRigVMBranchInfo BranchInfo;
+	BranchInfo.Label = InBranchLabel;
+	BranchInfo.InstructionIndex = InInstructionIndex;
+	BranchInfo.ArgumentIndex = InArgumentIndex;
+	BranchInfo.FirstInstruction = InFirstBranchInstruction;
+	BranchInfo.LastInstruction = InLastBranchInstruction;
+	return AddBranchInfo(BranchInfo);
 }
 
 FRigVMOperandArray FRigVMByteCode::GetOperandsForOp(const FRigVMInstruction& InInstruction) const
@@ -1717,6 +1690,11 @@ FRigVMOperandArray FRigVMByteCode::GetOperandsForOp(const FRigVMInstruction& InI
 			const FRigVMSenaryOp& Op = GetOpAt<FRigVMSenaryOp>(InInstruction.ByteCodeIndex);
 			return FRigVMOperandArray(&Op.ArgA, 6);
 		}
+		case ERigVMOpCode::JumpToBranch:
+		{
+			const FRigVMJumpToBranchOp& Op = GetOpAt<FRigVMJumpToBranchOp>(InInstruction.ByteCodeIndex);
+			return FRigVMOperandArray(&Op.Arg, 1);
+		}
 		case ERigVMOpCode::JumpAbsolute:
 		case ERigVMOpCode::JumpForward:
 		case ERigVMOpCode::JumpBackward:
@@ -1731,6 +1709,99 @@ FRigVMOperandArray FRigVMByteCode::GetOperandsForOp(const FRigVMInstruction& InI
 	}
 
 	return FRigVMOperandArray();
+}
+
+uint64 FRigVMByteCode::GetFirstOperandByteIndex(const FRigVMInstruction& InInstruction) const
+{
+	if (InInstruction.OpCode >= ERigVMOpCode::Execute_0_Operands && InInstruction.OpCode <= ERigVMOpCode::Execute_64_Operands)
+	{
+		const uint64 ByteCodeIndex = InInstruction.ByteCodeIndex;
+		// if the bytecode is not aligned the OperandAlignment needs to be 0
+		ensure(bByteCodeIsAligned || InInstruction.OperandAlignment == 0);
+		return ByteCodeIndex + sizeof(FRigVMExecuteOp) + (uint64)InInstruction.OperandAlignment;
+	}
+
+	switch(InInstruction.OpCode)
+	{
+		case ERigVMOpCode::Copy:
+		{
+			const FRigVMCopyOp& Op = GetOpAt<FRigVMCopyOp>(InInstruction.ByteCodeIndex);
+			return InInstruction.ByteCodeIndex + ((uint64)&Op.Source - (uint64)&Op);
+		}
+		case ERigVMOpCode::Zero:
+		case ERigVMOpCode::BoolFalse:
+		case ERigVMOpCode::BoolTrue:
+		case ERigVMOpCode::Increment:
+		case ERigVMOpCode::Decrement:
+		case ERigVMOpCode::ArrayReset:
+		case ERigVMOpCode::ArrayReverse:
+		{
+			const FRigVMUnaryOp& Op = GetOpAt<FRigVMUnaryOp>(InInstruction.ByteCodeIndex);
+			return InInstruction.ByteCodeIndex + ((uint64)&Op.Arg - (uint64)&Op);
+		}
+		case ERigVMOpCode::Equals:
+		case ERigVMOpCode::NotEquals:
+		{
+			const FRigVMComparisonOp& Op = GetOpAt<FRigVMComparisonOp>(InInstruction.ByteCodeIndex);
+			return InInstruction.ByteCodeIndex + ((uint64)&Op.A - (uint64)&Op);
+		}
+		case ERigVMOpCode::JumpAbsoluteIf:
+		case ERigVMOpCode::JumpForwardIf:
+		case ERigVMOpCode::JumpBackwardIf:
+		{
+			const FRigVMJumpIfOp& Op = GetOpAt<FRigVMJumpIfOp>(InInstruction.ByteCodeIndex);
+			return InInstruction.ByteCodeIndex + ((uint64)&Op.Arg - (uint64)&Op);
+		}
+		case ERigVMOpCode::BeginBlock:
+		case ERigVMOpCode::ArrayGetNum:
+		case ERigVMOpCode::ArraySetNum:
+		case ERigVMOpCode::ArrayAppend:
+		case ERigVMOpCode::ArrayClone:
+		case ERigVMOpCode::ArrayRemove:
+		case ERigVMOpCode::ArrayUnion:
+		{
+			const FRigVMBinaryOp& Op = GetOpAt<FRigVMBinaryOp>(InInstruction.ByteCodeIndex);
+			return InInstruction.ByteCodeIndex + ((uint64)&Op.ArgA - (uint64)&Op);
+		}
+		case ERigVMOpCode::ArrayAdd:
+		case ERigVMOpCode::ArrayGetAtIndex:
+		case ERigVMOpCode::ArraySetAtIndex:
+		case ERigVMOpCode::ArrayInsert:
+		case ERigVMOpCode::ArrayDifference:
+		case ERigVMOpCode::ArrayIntersection:
+		{
+			const FRigVMTernaryOp& Op = GetOpAt<FRigVMTernaryOp>(InInstruction.ByteCodeIndex);
+			return InInstruction.ByteCodeIndex + ((uint64)&Op.ArgA - (uint64)&Op);
+		}
+		case ERigVMOpCode::ArrayFind:
+		{
+			const FRigVMQuaternaryOp& Op = GetOpAt<FRigVMQuaternaryOp>(InInstruction.ByteCodeIndex);
+			return InInstruction.ByteCodeIndex + ((uint64)&Op.ArgA - (uint64)&Op);
+		}
+		case ERigVMOpCode::ArrayIterator:
+		{
+			const FRigVMSenaryOp& Op = GetOpAt<FRigVMSenaryOp>(InInstruction.ByteCodeIndex);
+			return InInstruction.ByteCodeIndex + ((uint64)&Op.ArgA - (uint64)&Op);
+		}
+		case ERigVMOpCode::JumpToBranch:
+		{
+			const FRigVMJumpToBranchOp& Op = GetOpAt<FRigVMJumpToBranchOp>(InInstruction.ByteCodeIndex);
+			return InInstruction.ByteCodeIndex + ((uint64)&Op.Arg - (uint64)&Op);
+		}
+		case ERigVMOpCode::JumpAbsolute:
+		case ERigVMOpCode::JumpForward:
+		case ERigVMOpCode::JumpBackward:
+		case ERigVMOpCode::ChangeType:
+		case ERigVMOpCode::Exit:
+		case ERigVMOpCode::EndBlock:
+		case ERigVMOpCode::Invalid:
+		default:
+		{
+			break;
+		}
+	}
+
+	return INDEX_NONE;
 }
 
 TArray<int32> FRigVMByteCode::GetInstructionsForOperand(const FRigVMOperand& InOperand) const
@@ -1907,6 +1978,11 @@ uint64 FRigVMByteCode::GetOpAlignment(ERigVMOpCode InOpCode) const
 		case ERigVMOpCode::InvokeEntry:
 		{
 			static const uint64 Alignment = FRigVMInvokeEntryOp::StaticStruct()->GetCppStructOps()->GetAlignment();
+			return Alignment;
+		}
+		case ERigVMOpCode::JumpToBranch:
+		{
+			static const uint64 Alignment = FRigVMJumpToBranchOp::StaticStruct()->GetCppStructOps()->GetAlignment();
 			return Alignment;
 		}
 		case ERigVMOpCode::Invalid:
@@ -2246,3 +2322,26 @@ void FRigVMByteCode::SetOperandsForInstruction(int32 InInstructionIndex, const F
 
 #endif
 
+const FRigVMBranchInfo* FRigVMByteCode::GetBranchInfo(const FRigVMBranchInfoKey& InBranchInfoKey) const
+{
+	if(BranchInfos.IsEmpty())
+	{
+		return nullptr;
+	}
+
+	if(BranchInfoLookup.IsEmpty())
+	{
+		for(const FRigVMBranchInfo& BranchInfo : BranchInfos)
+		{
+			const FRigVMBranchInfoKey Key(BranchInfo.InstructionIndex, BranchInfo.ArgumentIndex, BranchInfo.Label);
+			BranchInfoLookup.FindOrAdd(Key) = &BranchInfo;
+		}
+	}
+	
+	if(const FRigVMBranchInfo** BranchInfoPtr = BranchInfoLookup.Find(InBranchInfoKey))
+	{
+		return *BranchInfoPtr;
+	}
+
+	return nullptr;
+}

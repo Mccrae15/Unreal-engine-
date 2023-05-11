@@ -1,31 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Transport/UdpMessageTransport.h"
-#include "Algo/AnyOf.h"
-#include "INetworkMessagingExtension.h"
-#include "Interfaces/IPv4/IPv4Address.h"
-#include "Interfaces/IPv4/IPv4Endpoint.h"
-#include "UdpMessagingPrivate.h"
 
 #include "Common/UdpSocketBuilder.h"
 #include "Common/UdpSocketReceiver.h"
-#include "Containers/Ticker.h"
-#include "HAL/RunnableThread.h"
-#include "IMessageContext.h"
 #include "IMessageTransportHandler.h"
-#include "Misc/Guid.h"
-#include "Serialization/ArrayReader.h"
-#include "SocketSubsystem.h"
-#include "Sockets.h"
-#include "UObject/UObjectBase.h"
 #include "Async/Async.h"
 
 #include "Shared/UdpMessagingSettings.h"
 #include "Transport/UdpReassembledMessage.h"
 #include "Transport/UdpDeserializedMessage.h"
-#include "Transport/UdpSerializedMessage.h"
 #include "Transport/UdpMessageProcessor.h"
-#include "Misc/Guid.h"
 
 
 /* FUdpMessageTransport structors
@@ -53,6 +38,69 @@ TAutoConsoleVariable<bool> CVarEndpointDenyListEnabled(
 	ECVF_Default
 );
 
+namespace UE::UdpMessageTransport::Private
+{
+
+struct FDenyList
+{
+	struct FDenyCandidate
+	{
+		int32 EndpointFailureCount = 0;
+		FDateTime LastFailTime = FDateTime::UtcNow();
+	};
+
+	FDenyList() :
+		ClearDenyList(TEXT("MessageBus.UDP.ClearDenyList"), TEXT("Clear the UDP socket deny list."),
+					  FConsoleCommandDelegate::CreateRaw(this, &FDenyList::DoClearDenyCandidateList))
+	{
+	}
+
+	void DoClearDenyCandidateList()
+	{
+		FScopeLock DenyListLock(&DenyListCS);
+		DenyCandidateList.Reset();
+	}
+
+	bool ShouldAllowEndpoint(const FGuid& EndpointNodeId) const
+	{
+		FScopeLock DenyListLock(&DenyListCS);
+		const FDenyCandidate* DenyCandidate = DenyCandidateList.Find(EndpointNodeId);
+		if (DenyCandidate && DenyCandidate->EndpointFailureCount > CVarMaxRetriesForBadEndpoint.GetValueOnAnyThread())
+		{
+			return false;
+		}
+		return true;
+	}
+
+	void HandleEndpointError(const FGuid& EndpointId)
+	{
+		FScopeLock DenyListLock(&DenyListCS);
+		FDenyCandidate& DenyCandidate = DenyCandidateList.FindOrAdd(EndpointId);
+		FDateTime CurrentTime = FDateTime::UtcNow();
+		if ((CurrentTime - DenyCandidate.LastFailTime).GetSeconds() < CVarBadEndpointPeriod.GetValueOnAnyThread())
+		{
+			DenyCandidate.EndpointFailureCount++;
+		}
+		else
+		{
+			DenyCandidate.EndpointFailureCount = 0;
+		}
+		DenyCandidate.LastFailTime = CurrentTime;
+	}
+
+	/** Mutex protecting access to the DenyList map.. */
+	mutable FCriticalSection DenyListCS;
+
+	/** Deny list of node ids not allowed to talk to UDP processor */
+	TMap<FGuid, FDenyCandidate> DenyCandidateList;
+
+	/** Console command to reset the deny list */
+	FAutoConsoleCommand ClearDenyList;
+};
+
+static FDenyList GlobalDenyCandidateTable;
+}
+
 FUdpMessageTransport::FUdpMessageTransport(const FIPv4Endpoint& InUnicastEndpoint, const FIPv4Endpoint& InMulticastEndpoint, TArray<FIPv4Endpoint> InStaticEndpoints, TArray<FIPv4Endpoint> InExcludedEndpoints, uint8 InMulticastTtl)
 	: MessageProcessor(nullptr)
 	, MulticastEndpoint(InMulticastEndpoint)
@@ -68,8 +116,6 @@ FUdpMessageTransport::FUdpMessageTransport(const FIPv4Endpoint& InUnicastEndpoin
 #endif
 	, StaticEndpoints(MoveTemp(InStaticEndpoints))
 	, ExcludedEndpoints(MoveTemp(InExcludedEndpoints))
-	, ClearDenyList(TEXT("MessageBus.UDP.ClearDenyList"), TEXT("Clear the UDP socket deny list."),
-					FConsoleCommandDelegate::CreateRaw(this, &FUdpMessageTransport::DoClearDenyCandidateList))
 {
 }
 
@@ -239,9 +285,11 @@ bool FUdpMessageTransport::StartTransport(IMessageTransportHandler& Handler)
 #endif
 		.WithReceiveBufferSize(UDP_MESSAGING_RECEIVE_BUFFER_SIZE);
 
-	UE::UdpMessaging::Private::JoinedToGroup(UnicastEndpoint, MulticastEndpoint, MulticastSocket);
-	
-	if (MulticastSocket == nullptr)
+	if (MulticastSocket != nullptr)
+	{
+		UE::UdpMessaging::Private::JoinedToGroup(UnicastEndpoint, MulticastEndpoint, MulticastSocket);
+	}
+	else
 	{
 		UE_LOG(LogUdpMessaging, Warning, TEXT("StartTransport failed to create multicast socket on %s, joined to %s with TTL %i"), *UnicastEndpoint.ToString(), *MulticastEndpoint.ToString(), MulticastTtl);
 
@@ -388,8 +436,7 @@ bool FUdpMessageTransport::HandleProcessorEndpointCheck(const FGuid& EndpointNod
 {
 	if (CVarEndpointDenyListEnabled.GetValueOnAnyThread())
 	{
-		FDenyCandidate* DenyCandidate = DenyCandidateList.Find(EndpointNodeId);
-		if (DenyCandidate && DenyCandidate->EndpointFailureCount > CVarMaxRetriesForBadEndpoint.GetValueOnAnyThread())
+		if (!UE::UdpMessageTransport::Private::GlobalDenyCandidateTable.ShouldAllowEndpoint(EndpointNodeId))
 		{
 			return false;
 		}
@@ -406,24 +453,9 @@ bool FUdpMessageTransport::HandleProcessorEndpointCheck(const FGuid& EndpointNod
 	return true;
 }
 
-void FUdpMessageTransport::DoClearDenyCandidateList()
-{
-	DenyCandidateList.Reset();
-}
-
 void FUdpMessageTransport::HandleEndpointCommunicationError(const FGuid& EndpointId, const FIPv4Endpoint& /*Unused EndpointIdAddress*/)
 {
-	FDenyCandidate& DenyCandidate = DenyCandidateList.FindOrAdd(EndpointId);
-	FDateTime CurrentTime = FDateTime::UtcNow();
-	if ((CurrentTime - DenyCandidate.LastFailTime).GetSeconds() < CVarBadEndpointPeriod.GetValueOnAnyThread())
-	{
-		DenyCandidate.EndpointFailureCount++;
-	}
-	else
-	{
-		DenyCandidate.EndpointFailureCount = 0;
-	}
-	DenyCandidate.LastFailTime = CurrentTime;
+	UE::UdpMessageTransport::Private::GlobalDenyCandidateTable.HandleEndpointError(EndpointId);
 }
 
 void FUdpMessageTransport::HandleProcessorError()

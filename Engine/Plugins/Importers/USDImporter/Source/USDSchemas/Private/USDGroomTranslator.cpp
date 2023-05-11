@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "USDGroomTranslator.h"
+#include "UObject/Package.h"
 
 #if USE_USD_SDK && WITH_EDITOR
 
@@ -191,9 +192,9 @@ protected:
 					}
 				}
 
-				if (GroomAsset)
+				if (GroomAsset && Context->InfoCache)
 				{
-					Context->AssetCache->LinkAssetToPrim(PrimPathString, GroomAsset);
+					Context->InfoCache->LinkAssetToPrim(PrimPath, GroomAsset);
 				}
 
 				// Next step is to parse the GroomCache data if it was determined that the groom has animated attributes
@@ -203,7 +204,14 @@ protected:
 		Then(ESchemaTranslationLaunchPolicy::Async,
 			[this]() -> bool
 			{
-				UGroomAsset* GroomAsset = Cast<UGroomAsset>(Context->AssetCache->GetAssetForPrim(PrimPath.GetString()));
+				if (!Context->InfoCache)
+				{
+					return false;
+				}
+
+				UGroomAsset* GroomAsset = Context->InfoCache->GetSingleAssetForPrim<UGroomAsset>(
+					PrimPath
+				);
 				if (!GroomAsset)
 				{
 					return false;
@@ -291,9 +299,12 @@ protected:
 						GroomCacheProcessor->AddGroomSample(MoveTemp(HairGroupsData));
 					}
 				}
-				else
+				else if (Context->InfoCache)
 				{
-					Context->AssetCache->LinkAssetToPrim(UsdGroomTranslatorUtils::GetStrandsGroomCachePrimPath(PrimPath), GroomCache);
+					Context->InfoCache->LinkAssetToPrim(
+						UE::FSdfPath{*UsdGroomTranslatorUtils::GetStrandsGroomCachePrimPath(PrimPath)},
+						GroomCache
+					);
 				}
 
 				if (!bSuccess)
@@ -308,8 +319,9 @@ protected:
 		Then(ESchemaTranslationLaunchPolicy::Sync,
 			[this]() -> bool
 			{
+				const FString StrandsGroomCachePrimPath = UsdGroomTranslatorUtils::GetStrandsGroomCachePrimPath(PrimPath);
 				FHairImportContext HairImportContext(nullptr, GetTransientPackage(), nullptr, FName(), Context->ObjectFlags | EObjectFlags::RF_Public);
-				FName UniqueName = MakeUniqueObjectName(GetTransientPackage(), UGroomCache::StaticClass(), *FPaths::GetBaseFilename(UsdGroomTranslatorUtils::GetStrandsGroomCachePrimPath(PrimPath)));
+				FName UniqueName = MakeUniqueObjectName(GetTransientPackage(), UGroomCache::StaticClass(), *FPaths::GetBaseFilename(StrandsGroomCachePrimPath));
 
 				// Once the processing has completed successfully, the data is transferred to the GroomCache
 				UGroomCache* GroomCache = FGroomCacheImporter::ProcessToGroomCache(*GroomCacheProcessor, AnimInfo, HairImportContext, UniqueName.ToString());
@@ -324,7 +336,10 @@ protected:
 #endif // WITH_EDITOR
 
 					Context->AssetCache->CacheAsset(GroomCacheHash.ToString(), GroomCache);
-					Context->AssetCache->LinkAssetToPrim(UsdGroomTranslatorUtils::GetStrandsGroomCachePrimPath(PrimPath), GroomCache);
+					Context->InfoCache->LinkAssetToPrim(
+						UE::FSdfPath{*StrandsGroomCachePrimPath},
+						GroomCache
+					);
 				}
 
 				return GroomCache != nullptr;
@@ -379,7 +394,13 @@ void FUsdGroomTranslator::UpdateComponents(USceneComponent* SceneComponent)
 	{
 		GroomComponent->Modify();
 
-		UGroomAsset* Groom = Cast<UGroomAsset>(Context->AssetCache->GetAssetForPrim(PrimPath.GetString()));
+		UGroomAsset* Groom = nullptr;
+		if(Context->InfoCache)
+		{
+			Groom = Context->InfoCache->GetSingleAssetForPrim<UGroomAsset>(
+				PrimPath
+			);
+		}
 
 		bool bShouldRegister = false;
 		if (Groom != GroomComponent->GroomAsset.Get())
@@ -395,7 +416,9 @@ void FUsdGroomTranslator::UpdateComponents(USceneComponent* SceneComponent)
 
 			if (Groom)
 			{
-				UGroomCache* GroomCache = Cast<UGroomCache>(Context->AssetCache->GetAssetForPrim(UsdGroomTranslatorUtils::GetStrandsGroomCachePrimPath(PrimPath)));
+				UGroomCache* GroomCache = Context->InfoCache->GetSingleAssetForPrim<UGroomCache>(
+					UE::FSdfPath{*UsdGroomTranslatorUtils::GetStrandsGroomCachePrimPath(PrimPath)}
+				);
 				if (GroomCache != GroomComponent->GroomCache.Get())
 				{
 					GroomComponent->SetGroomCache(GroomCache);

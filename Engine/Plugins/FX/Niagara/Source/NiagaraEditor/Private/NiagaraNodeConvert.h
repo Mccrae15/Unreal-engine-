@@ -40,9 +40,9 @@ struct FNiagaraConvertPinRecord
 		}
 		return Record;
 	}
-};
 
-bool operator ==(const FNiagaraConvertPinRecord &, const FNiagaraConvertPinRecord &);
+	bool operator ==(const FNiagaraConvertPinRecord &) const;
+};
 
 /** Helper struct that stores a connection between two sockets.*/
 USTRUCT()
@@ -83,7 +83,7 @@ struct FNiagaraConvertConnection
 	{
 	}
 
-	bool operator ==(const FNiagaraConvertConnection& B) { return SourcePinId == B.SourcePinId && DestinationPinId == B.DestinationPinId && DestinationPath == B.DestinationPath && SourcePath == B.SourcePath; }
+	bool operator ==(const FNiagaraConvertConnection& B) const { return SourcePinId == B.SourcePinId && DestinationPinId == B.DestinationPinId && DestinationPath == B.DestinationPath && SourcePath == B.SourcePath; }
 
 	FString ToString() const;
 };
@@ -102,7 +102,6 @@ public:
 	virtual TSharedPtr<SGraphNode> CreateVisualWidget() override;
 	virtual void  AutowireNewNode(UEdGraphPin* FromPin)override;
 	virtual FText GetNodeTitle(ENodeTitleType::Type TitleType) const override;
-	virtual bool CanMovePin(const UEdGraphPin* Pin, int32 DirectionToMove) const override { return false; }
 
 	//~ UNiagaraNode interface
 	virtual void Compile(class FHlslNiagaraTranslator* Translator, TArray<int32>& Outputs) override;

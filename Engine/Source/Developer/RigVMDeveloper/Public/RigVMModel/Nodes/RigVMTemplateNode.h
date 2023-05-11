@@ -27,8 +27,8 @@ public:
 #endif
 	}
 
-	FORCEINLINE const FName& GetArgument() const { return Argument; }
-	FORCEINLINE TRigVMTypeIndex GetTypeIndex() const
+	const FName& GetArgument() const { return Argument; }
+	TRigVMTypeIndex GetTypeIndex() const
 	{
 #if UE_RIGVM_DEBUG_TYPEINDEX
 		const FRigVMTemplateArgumentType& Type = FRigVMRegistry::Get().GetType(TypeIndex);
@@ -182,10 +182,12 @@ protected:
 	UPROPERTY()
 	FString ResolvedFunctionName;
 
+#if WITH_EDITORONLY_DATA
 	// Indicates a preferred permutation using the types of the arguments
 	// Each element is in the format "ArgumentName:CPPType"
 	UPROPERTY()
 	TArray<FString> PreferredPermutationTypes_DEPRECATED;
+#endif
 
 	UPROPERTY()
 	TArray<FRigVMTemplatePreferredType> PreferredPermutationPairs;

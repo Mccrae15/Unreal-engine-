@@ -28,19 +28,18 @@ class CONTROLRIGEDITOR_API UControlRigFunctionRefNodeSpawner : public UBlueprint
 public:
 
 	/**
-	 * Creates a new UControlRigVariableNodeSpawner, charged with spawning 
-	 * a new member-variable node
+	 * Creates a new UControlRigFunctionRefNodeSpawner, charged with spawning a function reference
 	 * 
 	 * @return A newly allocated instance of this class.
 	 */
 	static UControlRigFunctionRefNodeSpawner* CreateFromFunction(URigVMLibraryNode* InFunction);
 
 	/**
-	 * Creates a new UControlRigVariableNodeSpawner, charged with spawning 
-	 * a new member-variable node
+	 * Creates a new UControlRigFunctionRefNodeSpawner, charged with spawning a function reference
 	 * 
 	 * @return A newly allocated instance of this class.
 	 */
+	static UControlRigFunctionRefNodeSpawner* CreateFromAssetData(const FAssetData& InAssetData, const FRigVMGraphFunctionHeader& InPublicFunction);
 	static UControlRigFunctionRefNodeSpawner* CreateFromAssetData(const FAssetData& InAssetData, const FControlRigPublicFunctionData& InPublicFunction);
 
 	// UBlueprintNodeSpawner interface
@@ -53,23 +52,18 @@ public:
 
 private:
 
-	/** The unit type we will spawn [optional] */
-	UPROPERTY(Transient)
-	mutable TWeakObjectPtr<URigVMLibraryNode> ReferencedFunctionPtr;
-
-	/** The asset object path we'll spawn from [optional] */
-	UPROPERTY(Transient)
-	FName ReferencedAssetObjectPath;
-
 	/** The public function definition we will spawn from [optional] */
 	UPROPERTY(Transient)
-	FControlRigPublicFunctionData ReferencedPublicFunctionData;
+	mutable FRigVMGraphFunctionHeader ReferencedPublicFunctionHeader;
 
 	/** Marked as true for local function definitions */
 	UPROPERTY(Transient)
 	bool bIsLocalFunction;
 
-	static UControlRigGraphNode* SpawnNode(UEdGraph* ParentGraph, UBlueprint* Blueprint, URigVMLibraryNode* InFunction, FVector2D const Location);
+	UPROPERTY()
+	FSoftObjectPath AssetPath;
+
+	static UControlRigGraphNode* SpawnNode(UEdGraph* ParentGraph, UBlueprint* Blueprint, FRigVMGraphFunctionHeader& InFunction, FVector2D const Location);
 
 	friend class UEngineTestControlRig;
 	friend class FControlRigEditor;

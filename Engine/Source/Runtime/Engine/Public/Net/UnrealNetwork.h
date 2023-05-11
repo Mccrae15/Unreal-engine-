@@ -155,8 +155,9 @@ namespace NetworkingPrivate
 {
 	struct ENGINE_API FRepPropertyDescriptor
 	{
+		UE_DEPRECATED(5.2, "No longer used")
 		FRepPropertyDescriptor(const FProperty* Property)
-			: PropertyName(VerifyPropertyAndGetName(Property))
+			: PropertyName(TEXT(""))
 			, RepIndex(Property->RepIndex)
 			, ArrayDim(Property->ArrayDim)
 		{
@@ -174,13 +175,6 @@ namespace NetworkingPrivate
 		const int32 ArrayDim;
 
 	private:
-
-		static const TCHAR* VerifyPropertyAndGetName(const FProperty* Property)
-		{
-			check(Property);
-			return *(Property->GetName());
-		}
-
 		UE_NONCOPYABLE(FRepPropertyDescriptor);
 
 		void* operator new(size_t) = delete;
@@ -309,7 +303,7 @@ static FProperty* GetReplicatedProperty(const UClass* CallingClass, const UClass
 #define DOREPLIFETIME_ACTIVE_OVERRIDE_FAST(c,v,active) \
 { \
 	static const bool bIsValid_##c_##v = ValidateReplicatedClassInheritance(StaticClass(), c::StaticClass(), TEXT(#v)); \
-	ChangedPropertyTracker.SetCustomIsActiveOverride(this, (int32)c::ENetFields_Private::v, active); \
+	UE::Net::Private::FNetPropertyConditionManager::SetPropertyActiveOverride(ChangedPropertyTracker, this, (int32)c::ENetFields_Private::v, active); \
 }
 
 #define DOREPLIFETIME_ACTIVE_OVERRIDE_FAST_STATIC_ARRAY(c,v,active) \
@@ -317,7 +311,7 @@ static FProperty* GetReplicatedProperty(const UClass* CallingClass, const UClass
 	static const bool bIsValid_##c_##v = ValidateReplicatedClassInheritance(StaticClass(), c::StaticClass(), TEXT(#v)); \
 	for (int32 i = 0; i < (int32)c::EArrayDims_Private::v; ++i) \
 	{ \
-		ChangedPropertyTracker.SetCustomIsActiveOverride(this, (int32)c::ENetFields_Private::v##_STATIC_ARRAY + i, active); \
+		UE::Net::Private::FNetPropertyConditionManager::SetPropertyActiveOverride(ChangedPropertyTracker, this, (int32)c::ENetFields_Private::v##_STATIC_ARRAY + i, active); \
 	} \
 }
 
@@ -326,7 +320,7 @@ static FProperty* GetReplicatedProperty(const UClass* CallingClass, const UClass
 	static FProperty* sp##v = GetReplicatedProperty(StaticClass(), c::StaticClass(),GET_MEMBER_NAME_CHECKED(c,v)); \
 	for (int32 i = 0; i < sp##v->ArrayDim; i++) \
 	{ \
-		ChangedPropertyTracker.SetCustomIsActiveOverride(this, sp##v->RepIndex + i, active); \
+		UE::Net::Private::FNetPropertyConditionManager::SetPropertyActiveOverride(ChangedPropertyTracker, this, sp##v->RepIndex + i, active); \
 	} \
 }
 
@@ -343,9 +337,10 @@ static FProperty* GetReplicatedProperty(const UClass* CallingClass, const UClass
 
 #define DOREPCUSTOMCONDITION_SETACTIVE_FAST_STATIC_ARRAY(c,v,active) \
 { \
+	UE::Net::Private::FNetPropertyConditionManager& PropertyConditionManager = UE::Net::Private::FNetPropertyConditionManager::Get(); \
 	for (int32 i = 0; i < (int32)c::EArrayDims_Private::v; ++i) \
 	{ \
-		UE::Net::Private::FNetPropertyConditionManager::Get().SetPropertyActive(this, (uint16)c::ENetFields_Private::v##_STATIC_ARRAY + i, active); \
+		PropertyConditionManager.SetPropertyActive(this, (uint16)c::ENetFields_Private::v##_STATIC_ARRAY + i, active); \
 	} \
 }
 
@@ -373,6 +368,12 @@ struct CGetFastArrayCreateReplicationFragmentFuncable
 template<typename T>
 inline typename TEnableIf<TModels<CGetFastArrayCreateReplicationFragmentFuncable, T>::Value, const FDoRepLifetimeParams>::Type FixupParams(const FDoRepLifetimeParams& Params)
 {
+	// Use passed in CreateAndRegisterReplicationFragmentFunction if set
+	if (Params.CreateAndRegisterReplicationFragmentFunction)
+	{
+		return Params;
+	}
+
 	FDoRepLifetimeParams NewParams(Params);
 	NewParams.CreateAndRegisterReplicationFragmentFunction = T::GetFastArrayCreateReplicationFragmentFunction();
 	return NewParams;
@@ -425,8 +426,8 @@ DisableAllReplicatedPropertiesOfClass(StaticClass(), c::StaticClass(), SuperClas
 #define DISABLE_ALL_CLASS_REPLICATED_PROPERTIES_FAST(c, SuperClassBehavior) \
 { \
 	static const bool bIsValid_##c_##v = ValidateReplicatedClassInheritance(StaticClass(), c::StaticClass(), TEXT("DISABLE_ALL_CLASS_REPLICATED_PROPERTIES")); \
-	const TCHAR* DoRepPropertyName_##c(TEXT(#c)); \
-	const NetworkingPrivate::FRepClassDescriptor ClassDescriptor_##c(DoRepPropertyName_##c, (int32)c::ENetFields_Private::NETFIELD_REP_START, (int32)c::ENetFields_Private::NETFIELD_REP_END); \
+	const TCHAR* DoRepClassName_##c(TEXT(#c)); \
+	const NetworkingPrivate::FRepClassDescriptor ClassDescriptor_##c(DoRepClassName_##c, (int32)c::ENetFields_Private::NETFIELD_REP_START, (int32)c::ENetFields_Private::NETFIELD_REP_END); \
 	DisableAllReplicatedPropertiesOfClass(ClassDescriptor_##c, SuperClassBehavior, OutLifetimeProps); \
 }	
 

@@ -33,9 +33,6 @@
 extern "C" {
 #endif
 
-// Internal init function. Do not call directly.
-bool SwappyGL_init_internal(JNIEnv *env, jobject jactivity);
-
 /**
  * @brief Initialize Swappy, getting the required Android parameters from the
  * display subsystem via JNI.
@@ -44,13 +41,7 @@ bool SwappyGL_init_internal(JNIEnv *env, jobject jactivity);
  * @return false if Swappy failed to initialize.
  * @see SwappyGL_destroy
  */
-static inline bool SwappyGL_init(JNIEnv *env, jobject jactivity) {
-    // This call ensures that the header and the linked library are from the
-    // same version (if not, a linker error will be triggered because of an
-    // undefined symbolP).
-    SWAPPY_VERSION_SYMBOL();
-    return SwappyGL_init_internal(env, jactivity);
-}
+bool SwappyGL_init(JNIEnv *env, jobject jactivity);
 
 /**
  * @brief Check if Swappy was successfully initialized.
@@ -133,6 +124,22 @@ bool SwappyGL_getUseAffinity();
  * @brief Get the fence timeout value, in nanoseconds.
  */
 uint64_t SwappyGL_getFenceTimeoutNS();
+
+/**
+ * @brief Set the number of bad frames to wait before applying a fix for buffer
+ * stuffing. Set to zero in order to turn off this feature. Default value = 0.
+ */
+void SwappyGL_setBufferStuffingFixWait(int32_t n_frames);
+
+/**
+ * @brief Get the supported refresh periods of this device. Call once with
+ * out_refreshrates set to nullptr to get the number of supported refresh
+ * periods, then call again passing that number as allocated_entries and
+ * an array of size equal to allocated_entries that will be filled with the
+ * refresh periods.
+ */
+int SwappyGL_getSupportedRefreshPeriodsNS(uint64_t *out_refreshrates,
+                                          int allocated_entries);
 
 #ifdef __cplusplus
 };

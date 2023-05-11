@@ -11,6 +11,8 @@
 #include "ComputeFramework/ComputeGraphWorker.h"
 #include "ComputeFramework/ComputeSystem.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ComputeGraphInstance)
+
 void FComputeGraphInstance::CreateDataProviders(UComputeGraph* InComputeGraph, int32 InBindingIndex, TObjectPtr<UObject> InBindingObject)
 {
 	if (InComputeGraph != nullptr)
@@ -24,20 +26,20 @@ void FComputeGraphInstance::DestroyDataProviders()
 	DataProviders.Reset();
 }
 
-bool FComputeGraphInstance::ValidateDataProviders(UComputeGraph* InComputeGraph) const
-{
-	return InComputeGraph != nullptr && InComputeGraph->IsCompiled() && InComputeGraph->ValidateGraph() && InComputeGraph->ValidateProviders(DataProviders);
-}
-
-bool FComputeGraphInstance::EnqueueWork(UComputeGraph* InComputeGraph, FSceneInterface const* InScene, FName InOwnerName)
+bool FComputeGraphInstance::EnqueueWork(UComputeGraph* InComputeGraph, FSceneInterface const* InScene, FName InExecutionGroupName, FName InOwnerName, FSimpleDelegate InFallbackDelegate)
 {
 	if (InComputeGraph == nullptr || InScene == nullptr)
 	{
-		// todo[CF]: We should have a default fallback for all cases where we can't submit work.
 		return false;
 	}
 
 	if (!ComputeFramework::IsEnabled() || FComputeFrameworkModule::GetComputeSystem() == nullptr)
+	{
+		return false;
+	}
+
+	// Don't submit work if we don't have all of the expected bindings.
+	if (!InComputeGraph->ValidateProviders(DataProviders))
 	{
 		return false;
 	}
@@ -49,18 +51,13 @@ bool FComputeGraphInstance::EnqueueWork(UComputeGraph* InComputeGraph, FSceneInt
 		return false;
 	}
 
-	// Don't submit work if we don't have all of the expected bindings.
-	// If we hit the ensure then something invalidated providers without calling CreateDataProviders().
-	// Those paths DO need fixing. We can remove the ensure() if we ever feel safe enough!
-	const bool bValidProviders = InComputeGraph->ValidateProviders(DataProviders);
-	if (!ensure(bValidProviders))
-	{
-		return false;
-	}
-
 	FComputeGraphRenderProxy const* GraphRenderProxy = InComputeGraph->GetRenderProxy();
-	if (!ensure(GraphRenderProxy))
+	if (GraphRenderProxy == nullptr)
 	{
+		// This can happen if we have deferred compilation.
+		// Trigger compilation now.
+		ensure(ComputeFramework::IsDeferredCompilation());
+		InComputeGraph->UpdateResources();
 		return false;
 	}
 
@@ -74,10 +71,10 @@ bool FComputeGraphInstance::EnqueueWork(UComputeGraph* InComputeGraph, FSceneInt
 	}
 
 	ENQUEUE_RENDER_COMMAND(ComputeFrameworkEnqueueExecutionCommand)(
-		[ComputeGraphWorker, InOwnerName, GraphRenderProxy, MovedDataProviderRenderProxies = MoveTemp(DataProviderRenderProxies)](FRHICommandListImmediate& RHICmdList)
+		[ComputeGraphWorker, InExecutionGroupName, InOwnerName, SortPriority = GraphSortPriority, GraphRenderProxy, MovedDataProviderRenderProxies = MoveTemp(DataProviderRenderProxies), InFallbackDelegate](FRHICommandListImmediate& RHICmdList)
 		{
 			// Compute graph scheduler will take ownership of the provider proxies.
-			ComputeGraphWorker->Enqueue(InOwnerName, GraphRenderProxy, MovedDataProviderRenderProxies);
+			ComputeGraphWorker->Enqueue(InExecutionGroupName, InOwnerName, SortPriority, GraphRenderProxy, MovedDataProviderRenderProxies, InFallbackDelegate);
 		});
 
 	return true;

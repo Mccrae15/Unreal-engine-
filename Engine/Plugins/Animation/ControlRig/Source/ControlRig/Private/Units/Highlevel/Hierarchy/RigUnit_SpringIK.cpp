@@ -19,13 +19,6 @@ FRigUnit_SpringIK_Execute()
 	TArray<FTransform>& Transforms = WorkData.Transforms;
 	FCRSimPointContainer& Simulation = WorkData.Simulation;
 
-	if (Context.State == EControlRigState::Init)
-	{
-		CachedBones.Reset();
-		CachedPoleVector.Reset();
-		return;
-	}
-
 	if(CachedBones.Num() == 0)
 	{
 		Simulation.Reset();
@@ -62,7 +55,7 @@ FRigUnit_SpringIK_Execute()
 
 		for (int32 PointIndex = 0; PointIndex < CachedBones.Num() - 1; PointIndex++)
 		{
-			Simulation.Points.Add(FCRSimPoint());
+			Simulation.Points.Add(FRigVMSimPoint());
 
 			FTransform A = Hierarchy->GetInitialGlobalTransform(CachedBones[PointIndex]);
 			FTransform B = Hierarchy->GetInitialGlobalTransform(CachedBones[PointIndex + 1]);
@@ -96,7 +89,7 @@ FRigUnit_SpringIK_Execute()
 				Simulation.Springs.Add(Spring);
 			}
 		}
-		Simulation.Points.Add(FCRSimPoint());
+		Simulation.Points.Add(FRigVMSimPoint());
 
 		Simulation.Points[0].Mass = 0.f;
 		Simulation.Points.Last().Mass = 0.f;
@@ -215,7 +208,7 @@ FRigUnit_SpringIK_Execute()
 		}
 	}
 
-	Simulation.StepSemiExplicitEuler((bLiveSimulation ? Context.DeltaTime : Simulation.TimeStep) * (float)FMath::Clamp<int32>(Iterations, 1, 32));
+	Simulation.StepSemiExplicitEuler((bLiveSimulation ? ExecuteContext.GetDeltaTime() : Simulation.TimeStep) * (float)FMath::Clamp<int32>(Iterations, 1, 32));
 
 	FVector AccumulatedTarget = FVector::ZeroVector;
 	FVector LastPrimaryTarget = FVector::ZeroVector;
@@ -308,11 +301,10 @@ FRigUnit_SpringIK_Execute()
 		Hierarchy->SetGlobalTransform(CachedBones[PointIndex], Transform, bPropagateToChildren);
 	}
 
-	if (Context.DrawInterface != nullptr && DebugSettings.bEnabled)
+	if (ExecuteContext.GetDrawInterface() != nullptr && DebugSettings.bEnabled)
 	{
-		Context.DrawInterface->DrawPointSimulation(DebugSettings.WorldOffset, Simulation, DebugSettings.Color, DebugSettings.Scale * 0.25f);
-		Context.DrawInterface->DrawLine(DebugSettings.WorldOffset, PoleTarget, FirstPoint, DebugSettings.Color, 0.f);
-		Context.DrawInterface->DrawLine(DebugSettings.WorldOffset, PoleTarget, LastPoint, DebugSettings.Color, 0.f);
-		Context.DrawInterface->DrawBox(DebugSettings.WorldOffset, FTransform(FQuat::Identity, PoleTarget, FVector::OneVector * DebugSettings.Scale * 10.f), DebugSettings.Color);
+		ExecuteContext.GetDrawInterface()->DrawLine(DebugSettings.WorldOffset, PoleTarget, FirstPoint, DebugSettings.Color, 0.f);
+		ExecuteContext.GetDrawInterface()->DrawLine(DebugSettings.WorldOffset, PoleTarget, LastPoint, DebugSettings.Color, 0.f);
+		ExecuteContext.GetDrawInterface()->DrawBox(DebugSettings.WorldOffset, FTransform(FQuat::Identity, PoleTarget, FVector::OneVector * DebugSettings.Scale * 10.f), DebugSettings.Color);
 	}
 }

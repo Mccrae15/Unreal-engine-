@@ -197,6 +197,12 @@ namespace UnrealBuildTool
 			// If linking is disabled, our build products are just the compiled object files
 			if (Target.bDisableLinking)
 			{
+				if (Target.LinkType == TargetLinkType.Modular)
+				{
+					// Make sure we record these files as outputs for this particular module.
+					Graph.SetOutputItemsForModule(PrimaryModule.Name, BinaryLinkEnvironment.InputFiles.ToArray());
+				}
+
 				return BinaryLinkEnvironment.InputFiles;
 			}
 
@@ -206,13 +212,10 @@ namespace UnrealBuildTool
 			{
 				// Mark the link environment as cross-referenced.
 				BinaryLinkEnvironment.bIsCrossReferenced = true;
-
-				if (BinaryLinkEnvironment.Platform.IsInGroup(UnrealPlatformGroup.Microsoft))
-				{
-					// Create the import library.
-					OutputFiles.AddRange(ToolChain.LinkAllFiles(BinaryLinkEnvironment, true, Graph));
-				}
 			}
+
+			// Create the import library if needed
+			OutputFiles.AddRange(ToolChain.LinkImportLibrary(BinaryLinkEnvironment, Graph));
 
 			// Link the binary.
 			FileItem[] Executables = ToolChain.LinkAllFiles(BinaryLinkEnvironment, false, Graph);
@@ -761,6 +764,9 @@ namespace UnrealBuildTool
 
 			// Set the link output file.
 			BinaryLinkEnvironment.OutputFilePaths = OutputFilePaths.ToList();
+
+			// Rembmer the link type
+			BinaryLinkEnvironment.LinkType = Target.LinkType;
 
 			// Set whether the link is allowed to have exports.
 			BinaryLinkEnvironment.bHasExports = bAllowExports;

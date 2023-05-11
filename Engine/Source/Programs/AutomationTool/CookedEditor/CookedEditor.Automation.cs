@@ -83,6 +83,7 @@ public class ModifyStageContext
 	public bool bStagePlatformDirs = true;
 	public bool bStageUAT = false;
 	public bool bIsForExternalDistribution = false;
+	public bool bStagePython = false;
 
 	public ConfigHelper ConfigHelper;
 
@@ -113,6 +114,7 @@ public class ModifyStageContext
 		bStagePlatformDirs = ConfigHelper.GetBool("bStagePlatformDirs");
 		bStageUAT = ConfigHelper.GetBool("bStageUAT");
 		bIsForExternalDistribution = ConfigHelper.GetBool("bIsForExternalDistribution");
+		bStagePython = ConfigHelper.GetBool("bStagePython");
 
 		// cache some useful properties
 		ProjectDirectory = Params.RawProjectPath.Directory;
@@ -470,10 +472,11 @@ public class MakeCookedEditor : BuildCommand
 		{
 			List<string> CulturesToStage = Project.GetCulturesToStage(Params, ConfigHelper.GameConfig);
 
-			string[] EditorLocalizationTargetsToStage = { "Category", "Editor", "EditorTutorials", "Keywords", "PropertyNames", "ToolTips" };
+			string[] EditorLocalizationTargetsToStage = { "Category", "Engine", "Editor", "EditorTutorials", "Keywords", "PropertyNames", "ToolTips" };
 			foreach (string EditorLocalizationTargetToStage in EditorLocalizationTargetsToStage)
 			{
-				if (Project.ShouldStageLocalizationTarget(SC, null, EditorLocalizationTargetToStage))
+				// Note: We skip "ShouldStageLocalizationTarget" below as games may disable certain targets that they don't need at runtime (eg, Engine), but all of these targets are still needed for an editor!
+				//if (Project.ShouldStageLocalizationTarget(SC, null, EditorLocalizationTargetToStage))
 				{
 					Project.StageLocalizationDataForTarget(SC, CulturesToStage, DirectoryReference.Combine(Unreal.EngineDirectory, "Content", "Localization", EditorLocalizationTargetToStage));
 				}
@@ -743,6 +746,10 @@ public class MakeCookedEditor : BuildCommand
 		CookedEditorStageDirectory = SC.StageDirectory;
 	}
 
+	protected virtual void FinalizeDeploymentContext(ProjectParams Params, DeploymentContext SC)
+	{
+	}
+
 	protected virtual void SetupDLCMode(FileReference ProjectFile, out string DLCName, out string ReleaseVersion, out TargetType Type)
 	{
 		bool bBuildAgainstRelease = ConfigHelper.GetBool("bBuildAgainstRelease");
@@ -879,7 +886,7 @@ public class MakeCookedEditor : BuildCommand
 
 		foreach (string Entry in Entries)
 		{
-			Dictionary<string, string> Props = ParseStructProperties(Entry);
+			Dictionary<string, string> Props = ConfigHierarchy.GetStructKeyValuePairs(Entry);
 
 			string SubPath = Props["Path"];
 			string FileWildcard = "*";
@@ -915,7 +922,7 @@ public class MakeCookedEditor : BuildCommand
 					throw new AutomationException($"Unable to stage directories with \"Dest\" setting for CookedEditor: '{Entry}'");
 				}
 
-				// now stage it to a different location a specified in the params
+				// now stage it to a different location as specified in the params
 				StagedFileType FileType = (FileList == Context.NonUFSFilesToStage) ? StagedFileType.NonUFS : StagedFileType.UFS;
 				SC.StageFile(FileType, SourceFile, new StagedFileReference(Props["Dest"]));
 				continue;
@@ -1110,8 +1117,9 @@ public class MakeCookedEditor : BuildCommand
 		}
 
 		// set up override functions
-		Params.PreModifyDeploymentContextCallback = new Action<ProjectParams, DeploymentContext>((ProjectParams P, DeploymentContext SC) => { PreModifyDeploymentContext(P, SC); });
-		Params.ModifyDeploymentContextCallback = new Action<ProjectParams, DeploymentContext>((ProjectParams P, DeploymentContext SC) => { ModifyDeploymentContext(P, SC); });
+		Params.PreModifyDeploymentContextCallback = (P, SC) => PreModifyDeploymentContext(P, SC);
+		Params.ModifyDeploymentContextCallback = (P, SC) => ModifyDeploymentContext(P, SC);
+		Params.FinalizeDeploymentContextCallback = (P, SC) => FinalizeDeploymentContext(P, SC);
 
 		// this will make all of the files that are specified in BUild.cs files with "AdditionalPropertiesForReceipt.Add("CookerSupportFiles", ...);"  be copied into this
 		// subdirectory along with a batch file that can be used to set platform SDK environment variables during cooking
@@ -1170,13 +1178,12 @@ public class MakeCookedEditor : BuildCommand
 
 	protected static void GatherTargetDependencies(ProjectParams Params, DeploymentContext SC, ModifyStageContext Context, string ReceiptName, UnrealTargetConfiguration Configuration)
 	{
-		string Architecture = Params.SpecifiedArchitecture;
-		if (string.IsNullOrEmpty(Architecture))
+		UnrealArchitectures Architecture = Params.EditorArchitecture;
+		if (Architecture == null)
 		{
-			Architecture = "";
 			if (PlatformExports.IsPlatformAvailable(SC.StageTargetPlatform.IniPlatformType))
 			{
-				Architecture = PlatformExports.GetDefaultArchitecture(SC.StageTargetPlatform.IniPlatformType, Params.RawProjectPath);
+				Architecture = UnrealArchitectureConfig.ForPlatform(SC.StageTargetPlatform.IniPlatformType).ActiveArchitectures(Params.RawProjectPath, null);
 			}
 		}
 
@@ -1216,94 +1223,5 @@ public class MakeCookedEditor : BuildCommand
 		}
 
 		Context.NonUFSFilesToStage.Add(ReceiptFilename);
-	}
-
-
-
-
-	// @todo: Move this into UBT or something
-	private static Dictionary<string, string> ParseStructProperties(string PropsString)
-	{
-		// we expect parens around a properly encoded struct
-		if (!PropsString.StartsWith("(") || !PropsString.EndsWith(")"))
-		{
-			return null;
-		}
-		// strip ()
-		PropsString = PropsString.Substring(1, PropsString.Length - 2);
-
-		List<string> Props = new List<string>();
-
-		int TokenStart = 0;
-		int StrLen = PropsString.Length;
-		while (TokenStart < StrLen)
-		{
-			// get the next location of each special character
-			int NextComma = PropsString.IndexOf(',', TokenStart);
-			int NextQuote = PropsString.IndexOf('\"', TokenStart);
-			// comma first? easy
-			if (NextComma != -1 && NextComma < NextQuote)
-			{
-				Props.Add(PropsString.Substring(TokenStart, NextComma - TokenStart));
-				TokenStart = NextComma + 1;
-			}
-			// comma but no quotes
-			else if (NextComma != -1 && NextQuote == -1)
-			{
-				Props.Add(PropsString.Substring(TokenStart, NextComma - TokenStart));
-				TokenStart = NextComma + 1;
-			}
-			// neither found, use the rest
-			else if (NextComma == -1 && NextQuote == -1)
-			{
-				Props.Add(PropsString.Substring(TokenStart));
-				break;
-			}
-			// quote first? look for quote after
-			else
-			{
-				NextQuote = PropsString.IndexOf('\"', NextQuote + 1);
-				// are we at the end?
-				if (NextQuote + 1 == StrLen)
-				{
-					// use the rest of the string
-					Props.Add(PropsString.Substring(TokenStart));
-					break;
-				}
-				// it's expected that the following character is a comma, if not, give up
-				if (PropsString[NextQuote + 1] != ',')
-				{
-					break;
-				}
-				// if next is comma, we are done this token
-				Props.Add(PropsString.Substring(TokenStart, (NextQuote - TokenStart) + 1));
-				// skip over the quote and following commma
-				TokenStart = NextQuote + 2;
-			}
-		}
-
-		// now make a dictionary from the properties
-		Dictionary<string, string> KeyValues = new Dictionary<string, string>();
-		foreach (string AProp in Props)
-		{
-			string Prop = AProp.Trim(" \t".ToCharArray());
-			// find the first = (UE properties can't have an equal sign, so it's valid to do)
-			int Equals = Prop.IndexOf('=');
-			// we must have one
-			if (Equals == -1)
-			{
-				continue;
-			}
-
-			string Key = Prop.Substring(0, Equals);
-			string Value = Prop.Substring(Equals + 1);
-			// trim off any quotes around the entire value
-			Value = Value.Trim(" \"".ToCharArray());
-			Key = Key.Trim(" ".ToCharArray());
-			KeyValues.Add(Key, Value);
-		}
-
-		// convert to array type
-		return KeyValues;
 	}
 }

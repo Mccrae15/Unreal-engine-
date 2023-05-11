@@ -8,7 +8,9 @@
 #include "ContextualAnimMovieSceneNotifyTrackEditor.h"
 #include "ContextualAnimAssetEditorCommands.h"
 #include "DetailCustomizations/ContextualAnimNotifySectionDetailCustom.h"
+#include "EditorModeRegistry.h"
 #include "ISequencerModule.h"
+#include "PropertyEditorModule.h"
 
 #define LOCTEXT_NAMESPACE "FContextualAnimationEditorModule"
 

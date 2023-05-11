@@ -4,14 +4,14 @@
 #include "UObject/Object.h"
 #include "MovieRenderPipelineDataTypes.h"
 #include "LevelSequence.h"
-#include "MoviePipelineMasterConfig.h"
+#include "MoviePipelinePrimaryConfig.h"
 #include "MoviePipelineShotConfig.h"
 #include "MoviePipelineConfigBase.h"
 #include "MovieSceneSequenceID.h"
 
 #include "MoviePipelineQueue.generated.h"
 
-class UMoviePipelineMasterConfig;
+class UMoviePipelinePrimaryConfig;
 class ULevel;
 class ULevelSequence;
 
@@ -203,7 +203,7 @@ public:
 		bEnabled = true;
 		StatusProgress = 0.f;
 		bIsConsumed = false;
-		Configuration = CreateDefaultSubobject<UMoviePipelineMasterConfig>("DefaultConfig");
+		Configuration = CreateDefaultSubobject<UMoviePipelinePrimaryConfig>("DefaultConfig");
 	}
 
 public:	
@@ -336,22 +336,33 @@ public:
 	void OnDuplicated();
 
 	UFUNCTION(BlueprintCallable, Category = "Movie Render Pipeline")
-	void SetPresetOrigin(UMoviePipelineMasterConfig* InPreset);
+	void SetPresetOrigin(UMoviePipelinePrimaryConfig* InPreset);
 
+	/**
+	 * Gets the preset for this job, but only if the preset has not been modified. If it has been modified, or the preset
+	 * no longer exists, returns nullptr.
+	 * @see GetConfiguration()
+	 */
 	UFUNCTION(BlueprintPure, Category = "Movie Render Pipeline")
-	UMoviePipelineMasterConfig* GetPresetOrigin() const 
+	UMoviePipelinePrimaryConfig* GetPresetOrigin() const 
 	{
 		return PresetOrigin.LoadSynchronous();
 	}
 
+	/**
+	 * Gets the configuration for the job. This configuration is either standalone (not associated with any preset), or
+	 * contains a copy of the preset origin plus any modifications made on top of it. If the preset that this
+	 * configuration was originally based on no longer exists, this configuration will still be valid.
+	 * @see GetPresetOrigin()
+	 */
 	UFUNCTION(BlueprintPure, Category = "Movie Render Pipeline")
-	UMoviePipelineMasterConfig* GetConfiguration() const
+	UMoviePipelinePrimaryConfig* GetConfiguration() const
 	{
 		return Configuration;
 	}
 
 	UFUNCTION(BlueprintCallable, Category = "Movie Render Pipeline")
-	void SetConfiguration(UMoviePipelineMasterConfig* InPreset);
+	void SetConfiguration(UMoviePipelinePrimaryConfig* InPreset);
 
 	UFUNCTION(BlueprintSetter, Category = "Movie Render Pipeline")
 	void SetSequence(FSoftObjectPath InSequence);
@@ -372,7 +383,13 @@ protected:
 	virtual float GetStatusProgress_Implementation() const { return StatusProgress; }
 	virtual bool IsConsumed_Implementation() const { return bIsConsumed; }
 	virtual void OnDuplicated_Implementation();
-	virtual void SetIsEnabled_Implementation(const bool bInEnabled) { bEnabled = bInEnabled; }
+	virtual void SetIsEnabled_Implementation(const bool bInEnabled)
+	{
+		// Call Modify() so OnObjectModified picks up this change.
+		Modify();
+
+		bEnabled = bInEnabled;
+	}
 	virtual bool IsEnabled_Implementation() const { return bEnabled; }
 	// ~UMoviePipelineExecutorJob Interface
 
@@ -419,12 +436,12 @@ private:
 	/** 
 	*/
 	UPROPERTY(Instanced)
-	TObjectPtr<UMoviePipelineMasterConfig> Configuration;
+	TObjectPtr<UMoviePipelinePrimaryConfig> Configuration;
 
 	/**
 	*/
 	UPROPERTY()
-	TSoftObjectPtr<UMoviePipelineMasterConfig> PresetOrigin;
+	TSoftObjectPtr<UMoviePipelinePrimaryConfig> PresetOrigin;
 
 	/** Whether this job is enabled and should be rendered. */
 	UPROPERTY()
@@ -441,15 +458,7 @@ class MOVIERENDERPIPELINECORE_API UMoviePipelineQueue : public UObject
 	GENERATED_BODY()
 public:
 	
-	UMoviePipelineQueue()
-		: QueueSerialNumber(0)
-	{
-		// Ensure instances are always transactional
-		if (!HasAnyFlags(RF_ClassDefaultObject))
-		{
-			SetFlags(RF_Transactional);
-		}
-	}
+	UMoviePipelineQueue();
 	
 	/**
 	* Allocates a new Job in this Queue. The Queue owns the jobs for memory management purposes,
@@ -494,15 +503,44 @@ public:
 		return Jobs;
 	}
 
+	/**
+	 * Gets the queue that this queue was originally based on (if any). The origin will only be set on transient
+	 * queues; the origin will be nullptr for non-transient queues because the origin will be this object.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Movie Render Pipeline|Queue")
+	UMoviePipelineQueue* GetQueueOrigin() const { return QueueOrigin.LoadSynchronous(); }
+
+	/**
+	 * Sets the queue that this queue originated from (if any). The origin should only be set for transient queues.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Movie Render Pipeline|Queue")
+	void SetQueueOrigin(UMoviePipelineQueue* InConfig) { QueueOrigin = InConfig; }
+
 	/** 
 	* Replace the contents of this queue with a copy of the contents from another queue. 
 	*/
-	UFUNCTION(BlueprintCallable, Category = "Movie Render Pipeline")
+	UFUNCTION(BlueprintCallable, Category = "Movie Render Pipeline|Queue")
 	void CopyFrom(UMoviePipelineQueue* InQueue);
 	
 	/* Set the index of the given job */
-	UFUNCTION(BlueprintCallable, Category = "Movie Render Pipeline")
+	UFUNCTION(BlueprintCallable, Category = "Movie Render Pipeline|Queue")
 	void SetJobIndex(UMoviePipelineExecutorJob* InJob, int32 Index);
+
+#if WITH_EDITOR
+	/**
+	 * Gets the dirty state of this queue. Note that dirty state is only tracked when the editor is active.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Movie Render Pipeline|Queue")
+	bool IsDirty() const { return bIsDirty; }
+
+	/**
+	 * Sets the dirty state of this queue. Generally the queue will correctly track the dirty state; however, there are
+	 * situations where a queue may need its dirty state reset (eg, it may be appropriate to reset the dirty state after
+	 * a call to CopyFrom(), depending on the use case).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Movie Render Pipeline|Queue")
+	void SetIsDirty(const bool bNewDirtyState) { bIsDirty = bNewDirtyState; }
+#endif
 	
 	/**
 	 * Retrieve the serial number that is incremented when a job is added or removed from this list.
@@ -518,10 +556,27 @@ public:
 		QueueSerialNumber++;
 	}
 
+	// UObject Interface
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
+	// ~UObject interface
+
+private:
+#if WITH_EDITOR
+	void OnAnyObjectModified(UObject* InModifiedObject);
+#endif
+
 private:
 	UPROPERTY(Instanced)
 	TArray<TObjectPtr<UMoviePipelineExecutorJob>> Jobs;
+
+	/* The queue that this queue originated from. Helpful for determining the source of the queue when this queue is transient. */
+	UPROPERTY()
+	TSoftObjectPtr<UMoviePipelineQueue> QueueOrigin;
 	
 private:
 	int32 QueueSerialNumber;
+
+	/* Dirty state is tracked explicitly so transient queues, which are based on a transient package, know when modifications
+	 * have been made. */
+	bool bIsDirty;
 };

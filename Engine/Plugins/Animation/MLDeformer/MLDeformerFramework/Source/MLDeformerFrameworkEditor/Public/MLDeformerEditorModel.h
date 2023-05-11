@@ -11,6 +11,7 @@
 #include "Misc/FrameTime.h"
 #include "MLDeformerVizSettings.h"
 #include "MLDeformerModule.h"
+#include "MLDeformerModel.h"
 
 class UMLDeformerModel;
 class UMLDeformerInputInfo;
@@ -151,9 +152,19 @@ namespace UE::MLDeformer
 
 		/**
 		 * Clears the world, which basically means it removes all the editor actors and engine actors from the editor world.
-		 * It also resets the Persona preview scene.
 		 */
 		virtual void ClearWorld();
+
+		/**
+		 * Clears the Persona preview scene. Resetting the preview mesh, preview mesh component etc.
+		 */
+		virtual void ClearPersonaPreviewScene();
+
+		/**
+		 * Clear both the world and preview scene.
+		 * This calls ClearWorld and ClearPersonaPreviewScene.
+		 */
+		virtual void ClearWorldAndPersonaPreviewScene();
 
 		/**
 		 * Create an actor in the editor viewport.
@@ -502,6 +513,9 @@ namespace UE::MLDeformer
 		 */
 		virtual void UpdateDeformerGraph();
 
+		UE_DEPRECATED(5.2, "This method will be deleted and will just return a nullptr right now.")
+		UNeuralNetwork* LoadNeuralNetworkFromOnnx(const FString& Filename) const { return nullptr; }
+
 		/**
 		 * Sample the vertex deltas between the training base model and target model.
 		 * This will initialize the sampler if needed and set the sampler space to post-skinning deltas, and then samples them using the sampler.
@@ -514,7 +528,7 @@ namespace UE::MLDeformer
 		 * Load the trained network from an onnx file.
 		 * The filename of the onnx file is determined by the GetTrainedNetworkOnnxFile method.
 		 */
-		virtual bool LoadTrainedNetwork() const;
+		virtual bool LoadTrainedNetwork() const { return false; }
 
 		/**
 		 * Get the onnx file name of the trained network.
@@ -530,7 +544,7 @@ namespace UE::MLDeformer
 		 * This is determined by looking whether the neural network pointer is nullptr or not.
 		 * @return Returns true when the model is trained already, or false if it hasn't been trained yet.
 		 */
-		virtual bool IsTrained() const;
+		virtual bool IsTrained() const { return false; }
 
 		/**
 		 * Get the editor actor that defines the timeline play position.
@@ -550,6 +564,20 @@ namespace UE::MLDeformer
 		 * @return The path to the heat map deformer graph asset.
 		 */
 		virtual FString GetHeatMapDeformerGraphPath() const;
+
+		/**
+		 * Generate the normals for a given morph target.
+		 * @param LOD The LOD level.
+		 * @param SkelMesh The skeletal mesh to get the mesh data from.
+		 * @param Deltas The per vertex deltas. The number of elements in this array is NumMorphTargets * NumImportedVertices.
+		 * @param BaseVertexPositions The positions of the base/neutral mesh, basically the unskinned vertices.
+		 * @param BaseNormals The normals of the base mesh.
+		 * @param OutDeltaNormals The array that we will write the generated normals to. This will automatically be resized by this method.
+		 */
+		virtual void GenerateNormalsForMorphTarget(int32 LOD, USkeletalMesh* SkelMesh, int32 MorphTargetIndex, TArrayView<const FVector3f> Deltas, TArrayView<const FVector3f> BaseVertexPositions, TArrayView<FVector3f> BaseNormals, TArray<FVector3f>& OutDeltaNormals);
+
+		/** Invalidate the memory usage, so it gets updated in the UI again. */
+		void UpdateMemoryUsage();	
 
 		/** Get the current view range. */
 		TRange<double> GetViewRange() const;
@@ -720,13 +748,6 @@ namespace UE::MLDeformer
 		int32 GetNumCurvesOnSkeletalMesh(USkeletalMesh* SkelMesh) const;
 
 		/**
-		 * Load a neural network from a given Onnx file.
-		 * @param Filename The onnx file name.
-		 * @return A pointer to the newly created neural network, or nullptr in case it failed to load.
-		 */
-		UNeuralNetwork* LoadNeuralNetworkFromOnnx(const FString& Filename) const;
-
-		/**
 		 * Get the currently desired training frame number.
 		 * You can call CheckTrainingFrameChanged in order to make the desired frame the actual frame.
 		 * @return The currenty desired training frame number, which might not the the same as the real training frame number.
@@ -750,6 +771,13 @@ namespace UE::MLDeformer
 		 * @param DrawOffset An offset to perform the debug draw at.
 		 */
 		void DrawMorphTarget(FPrimitiveDrawInterface* PDI, const TArray<FVector3f>& MorphDeltas, float DeltaThreshold, int32 MorphTargetIndex, const FVector& DrawOffset);
+
+		/**
+		 * Find the ML Deformer component of a given editor actor.
+		 * @param ActorID The actor ID to get the component for.
+		 * @return A pointer to the ML Deformer component, if it exists on the actor, otherwise nullptr is returned.
+		 */
+		UMLDeformerComponent* FindMLDeformerComponent(int32 ActorID = ActorID_Test_MLDeformed) const;
 
 	protected:
 		/**
@@ -783,8 +811,20 @@ namespace UE::MLDeformer
 		 * @param NamePrefix The morph target name prefix. If set to "MorphTarget_" the names will be "MorphTarget_000", "MorphTarget_001", "MorphTarget_002", etc.
 		 * @param LOD The LOD index to generate the morphs for.
 		 * @param DeltaThreshold Only include deltas with a length larger than this threshold in the morph targets.
+		 * @param bIncludeNormals Include normals inside the morph targets? This can be an alternative to recalculating normals at the end, although setting this to true and not 
+		 *        recomputing normals can lead to lower quality results, in trade for faster performance.
+		 * @param MaskChannel The weight mask mode, which specifies what channel to get the weight data from. Such channel allows the user to define what areas the deformer should for example not be active in.
+		 * @param bInvertMaskChannel Specifies whether the weight mask should be inverted or not.
 		 */
-		void CreateEngineMorphTargets(TArray<UMorphTarget*>& OutMorphTargets, const TArray<FVector3f>& Deltas, const FString& NamePrefix = TEXT("MorphTarget_"), int32 LOD = 0, float DeltaThreshold = 0.01f);
+		void CreateEngineMorphTargets(
+			TArray<UMorphTarget*>& OutMorphTargets,
+			const TArray<FVector3f>& Deltas,
+			const FString& NamePrefix = TEXT("MorphTarget_"),
+			int32 LOD = 0,
+			float DeltaThreshold = 0.01f,
+			bool bIncludeNormals=false,
+			const EMLDeformerMaskChannel MaskChannel = EMLDeformerMaskChannel::Disabled,
+			bool bInvertMaskChannel = false);
 
 		/** 
 		 * Compress morph targets into GPU based morph buffers.
@@ -820,6 +860,16 @@ namespace UE::MLDeformer
 		 * Update the timeline related ranges, based on the length of the training or testing data.
 		 */
 		void UpdateRanges();
+
+		/**
+		 * Calculate the normals for each vertex, given the triangle data and positions.
+		 * It computes this by summing up the face normals for each vertex using that face, and normalizing them at the end.
+		 * @param VertexPositions The buffer with vertex positions. This is the size of the number of imported vertices.
+		 * @param IndexArray The index buffer, which contains NumTriangles * 3 number of integers.
+		 * @param VertexMap For each render vertex, an imported vertex number. For example, for a cube these indices go from 0..7.
+		 * @param OutNormals The array that will contain the normals. This will automatically be resized internally by this method.
+		 */
+		void CalcMeshNormals(TArrayView<const FVector3f> VertexPositions, TArrayView<const uint32> IndexArray, TArrayView<const int32> VertexMap, TArray<FVector3f>& OutNormals) const;
 
 	protected:
 		/** The runtime model associated with this editor model. */

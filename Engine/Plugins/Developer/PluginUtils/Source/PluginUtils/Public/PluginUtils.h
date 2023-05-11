@@ -4,7 +4,6 @@
 
 #if WITH_EDITOR
 
-#include "CoreMinimal.h"
 #include "PluginDescriptor.h"
 #include "ModuleDescriptor.h"
 
@@ -91,6 +90,9 @@ public:
 
 		/** The Verse path to the root of this plugin's content directory */
 		FString VersePath;
+
+		/** If to generate Verse source code definitions from assets contained in this plugin */
+		bool bEnableVerseAssetReflection = false;
 
 		/** Whether this plugin should be enabled/disabled by default for any project. */
 		EPluginEnabledByDefault EnabledByDefault = EPluginEnabledByDefault::Unspecified;
@@ -352,6 +354,15 @@ public:
 	 * @param OutFailReason Outputs the reason of the failure if any
 	 * @return Whether plugin assets were successfully unloaded
 	 */
+	static bool UnloadPluginsAssets(const TSet<FString>& PluginNames, FText* OutFailReason = nullptr);
+
+	/**
+	 * Unload assets from the specified plugin but does not unmount them
+	 * @warning Dirty assets that need to be saved will be unloaded anyway
+	 * @param PluginNames Names of the plugins to unload assets from
+	 * @param OutFailReason Outputs the reason of the failure if any
+	 * @return Whether plugin assets were successfully unloaded
+	 */
 	static bool UnloadPluginsAssets(const TConstArrayView<FString> PluginNames, FText* OutFailReason = nullptr);
 
 	/**
@@ -384,3 +395,7 @@ public:
 };
 
 #endif //if WITH_EDITOR
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

@@ -6,8 +6,10 @@
 #include "StateTreeEvaluatorBase.h"
 #include "StateTreeConditionBase.h"
 #include "StateTreeExecutionContext.h"
-#include "StateTreeLinker.h"
 #include "StateTreeTestTypes.generated.h"
+
+class UStateTree;
+struct FStateTreeInstanceData;
 
 
 struct FTestStateTreeExecutionContext : public FStateTreeExecutionContext
@@ -229,7 +231,7 @@ struct FStateTreeTestConditionInstanceData
 	static std::atomic<int32> GlobalCounter;
 };
 
-USTRUCT()
+USTRUCT(meta = (Hidden))
 struct FStateTreeTestCondition : public FStateTreeConditionCommonBase
 {
 	GENERATED_BODY()

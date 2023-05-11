@@ -4,12 +4,11 @@
 #include "PointCloud.h"
 #include "PointCloudSceneProxy.h"
 #include "UObject/ConstructorHelpers.h"
-#include "EngineGlobals.h"
 #include "Engine/Engine.h"
-#include "Materials/MaterialInterface.h"
 #include "Materials/Material.h"
 #include "ARBlueprintLibrary.h"
 #include "TimerManager.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 
 DECLARE_CYCLE_STAT(TEXT("Create Point Cloud Proxy"), STAT_PointCloud_CreateSceneProxy, STATGROUP_PointCloud);

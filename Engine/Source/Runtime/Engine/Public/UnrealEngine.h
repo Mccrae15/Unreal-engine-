@@ -31,6 +31,7 @@ ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogEngine, Log, All);
 //	}	
 //
 
+
 class FLocalPlayerIterator
 {
 protected:
@@ -441,7 +442,7 @@ struct FCachedSystemScalabilityCVars
 
 	FCachedSystemScalabilityCVars();
 
-	bool operator==(const FCachedSystemScalabilityCVars& Other);
+	bool operator==(const FCachedSystemScalabilityCVars& Other) const;
 
 protected:
 	// This isn't public as it's only used to detect the change. Use ComputeAnisotropyRT()

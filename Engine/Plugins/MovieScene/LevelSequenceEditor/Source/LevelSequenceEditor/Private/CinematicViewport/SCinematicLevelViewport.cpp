@@ -1,34 +1,26 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CinematicViewport/SCinematicLevelViewport.h"
-#include "Widgets/SBoxPanel.h"
+#include "EditorModeManager.h"
 #include "Framework/Commands/UICommandList.h"
-#include "Widgets/Text/STextBlock.h"
+#include "Evaluation/MovieSceneSequenceTransform.h"
 #include "Widgets/Layout/SBorder.h"
 #include "LevelSequenceEditorToolkit.h"
+#include "Rendering/SlateRenderer.h"
 #include "SlateOptMacros.h"
 #include "Widgets/Layout/SSpacer.h"
 #include "Widgets/Layout/SBox.h"
-#include "Widgets/Input/NumericTypeInterface.h"
 #include "Widgets/Input/SSpinBox.h"
-#include "Styling/AppStyle.h"
 #include "LevelSequenceEditorCommands.h"
 #include "SLevelViewport.h"
-#include "LevelViewportLayout.h"
-#include "MovieScene.h"
 #include "ISequencer.h"
-#include "MovieSceneSequence.h"
 #include "Tracks/MovieSceneCinematicShotTrack.h"
 #include "Sections/MovieSceneCinematicShotSection.h"
 #include "SequencerKeyCollection.h"
 #include "CinematicViewport/SCinematicTransportRange.h"
 #include "CinematicViewport/FilmOverlays.h"
 #include "Widgets/Layout/SWidgetSwitcher.h"
-#include "CineCameraComponent.h"
-#include "Math/UnitConversion.h"
-#include "LevelEditorSequencerIntegration.h"
 #include "Fonts/FontMeasure.h"
-#include "Editor.h"
 #include "AssetEditorViewportLayout.h"
 
 
@@ -641,14 +633,12 @@ void SCinematicLevelViewport::CleanUp()
 	TransportControlsContainer->SetContent(SNullWidget::NullWidget);
 	TimeRangeContainer->SetContent(SNullWidget::NullWidget);
 
+	CurrentToolkit.Reset();
 }
 
 void SCinematicLevelViewport::OnEditorOpened(FLevelSequenceEditorToolkit& Toolkit)
 {
-	if (!CurrentToolkit.IsValid())
-	{
-		Setup(Toolkit);
-	}
+	Setup(Toolkit);
 }
 
 void SCinematicLevelViewport::OnEditorClosed()
@@ -695,7 +685,7 @@ void SCinematicLevelViewport::Tick(const FGeometry& AllottedGeometry, const doub
 	}
 
 	// Find the cinematic shot track
-	UMovieSceneCinematicShotTrack* CinematicShotTrack = Cast<UMovieSceneCinematicShotTrack>(Sequence->GetMovieScene()->FindMasterTrack(UMovieSceneCinematicShotTrack::StaticClass()));
+	UMovieSceneCinematicShotTrack* CinematicShotTrack = Cast<UMovieSceneCinematicShotTrack>(Sequence->GetMovieScene()->FindTrack(UMovieSceneCinematicShotTrack::StaticClass()));
 
 	const FFrameRate OuterResolution = Sequencer->GetFocusedTickResolution();
 	const FFrameRate OuterPlayRate   = Sequencer->GetFocusedDisplayRate();
@@ -751,16 +741,16 @@ void SCinematicLevelViewport::Tick(const FGeometry& AllottedGeometry, const doub
 
 	const FMovieSceneEditorData& EditorData = Sequence->GetMovieScene()->GetEditorData();
 
-	FQualifiedFrameTime MasterStartTime(EditorData.WorkStart * OuterPlayRate, OuterPlayRate);
-	UIData.MasterStartText = FText::Format(
+	FQualifiedFrameTime RootStartTime(EditorData.WorkStart * OuterPlayRate, OuterPlayRate);
+	UIData.RootStartText = FText::Format(
 		TimeFormat,
-		FText::FromString(TimeDisplayFormatInterface->ToString(MasterStartTime.Time.GetFrame().Value))
+		FText::FromString(TimeDisplayFormatInterface->ToString(RootStartTime.Time.GetFrame().Value))
 	);
 
-	FQualifiedFrameTime MasterEndTime(EditorData.WorkEnd * OuterPlayRate, OuterPlayRate);
-	UIData.MasterEndText = FText::Format(
+	FQualifiedFrameTime RootEndTime(EditorData.WorkEnd * OuterPlayRate, OuterPlayRate);
+	UIData.RootEndText = FText::Format(
 		TimeFormat,
-		FText::FromString(TimeDisplayFormatInterface->ToString(MasterEndTime.Time.GetFrame().Value))
+		FText::FromString(TimeDisplayFormatInterface->ToString(RootEndTime.Time.GetFrame().Value))
 	);
 
 	UIData.CameraName = FText::GetEmpty();

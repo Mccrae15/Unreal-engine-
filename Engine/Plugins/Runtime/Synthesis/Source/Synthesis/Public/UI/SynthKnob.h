@@ -2,26 +2,11 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UI/SSynthKnob.h"
-#include "UI/SSynthTooltip.h"
 #include "UI/SynthKnobStyle.h"
-#include "UI/SynthTypes.h"
-#include "UObject/ObjectMacros.h"
-#include "Styling/SlateTypes.h"
-#include "Widgets/SWidget.h"
-#include "Components/TextBlock.h"
-#include "Components/Widget.h"
-#include "Components/ContentWidget.h"
+#include "Components/Slider.h"
 #include "SynthKnob.generated.h"
 
-
-DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnMouseCaptureBeginEvent);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnMouseCaptureEndEvent);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnControllerCaptureBeginEvent);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnControllerCaptureEndEvent);
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnFloatValueChangedEvent, float, Value);
-
+class SSynthKnob;
 
 /**
  * A simple widget that shows a sliding bar with a handle that allows you to control the value between 0..1.
@@ -147,3 +132,13 @@ protected:
 protected:
 	PROPERTY_BINDING_IMPLEMENTATION(float, Value);
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Components/ContentWidget.h"
+#include "Components/TextBlock.h"
+#include "CoreMinimal.h"
+#include "UI/SSynthKnob.h"
+#include "UI/SSynthTooltip.h"
+#include "UI/SynthTypes.h"
+#include "Widgets/SWidget.h"
+#endif

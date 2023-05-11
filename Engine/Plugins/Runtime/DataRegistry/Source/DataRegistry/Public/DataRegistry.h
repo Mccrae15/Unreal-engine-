@@ -3,7 +3,12 @@
 #pragma once
 
 #include "DataRegistryTypes.h"
+#include "Engine/TimerHandle.h"
+
 #include "DataRegistry.generated.h"
+
+struct FDataRegistryId;
+struct FPropertyChangedEvent;
 
 class UDataRegistrySource;
 struct FDataRegistryCache;

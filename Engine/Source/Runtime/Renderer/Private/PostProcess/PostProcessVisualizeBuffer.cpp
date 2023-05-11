@@ -25,37 +25,9 @@ public:
 		SHADER_PARAMETER(FLinearColor, SelectionColor)
 		RENDER_TARGET_BINDING_SLOTS()
 	END_SHADER_PARAMETER_STRUCT()
-
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::ES3_1);
-	}
 };
 
 IMPLEMENT_GLOBAL_SHADER(FVisualizeBufferPS, "/Engine/Private/PostProcessVisualizeBuffer.usf", "MainPS", SF_Pixel);
-
-struct FVisualizeBufferTile
-{
-	// The input texture to visualize.
-	FScreenPassTexture Input;
-
-	// The label of the tile shown on the visualizer.
-	FString Label;
-
-	// Whether the tile is shown as selected.
-	bool bSelected = false;
-};
-
-struct FVisualizeBufferInputs
-{
-	FScreenPassRenderTarget OverrideOutput;
-
-	// The scene color input to propagate.
-	FScreenPassTexture SceneColor;
-
-	// The array of tiles to render onto the scene color texture.
-	TArrayView<const FVisualizeBufferTile> Tiles;
-};
 
 FScreenPassTexture AddVisualizeBufferPass(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FVisualizeBufferInputs& Inputs)
 {
@@ -289,6 +261,11 @@ void AddDumpToFilePass(FRDGBuilder& GraphBuilder, FScreenPassTexture Input, cons
 
 			// ImageTask->PixelData should be sRGB
 			//  it will gamma correct automatically if written to EXR
+		}
+		else if(ImageTask->Format == EImageFormat::PNG)
+		{
+			// PNGs can't have 0 alpha or RGB data is destroyed.
+			ImageTask->PixelPreProcessors.Add(TAsyncAlphaWrite<FLinearColor>(1.0f));
 		}
 
 		HighResScreenshotConfig.ImageWriteQueue->Enqueue(MoveTemp(ImageTask));

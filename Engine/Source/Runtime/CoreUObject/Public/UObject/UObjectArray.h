@@ -6,7 +6,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "HAL/ThreadSafeCounter.h"
 #include "Containers/LockFreeList.h"
 #include "UObject/ObjectMacros.h"
@@ -103,7 +102,7 @@ struct FUObjectItem
 
 	FORCEINLINE EInternalObjectFlags GetFlags() const
 	{
-		return EInternalObjectFlags(Flags);
+		return EInternalObjectFlags(GetFlagsInternal());
 	}
 
 	FORCEINLINE void ClearFlags(EInternalObjectFlags FlagsToClear)
@@ -123,7 +122,7 @@ struct FUObjectItem
 		bool bIChangedIt = false;
 		while (1)
 		{
-			int32 StartValue = int32(Flags);
+			int32 StartValue = GetFlagsInternal();
 			if (!(StartValue & int32(FlagToClear)))
 			{
 				break;
@@ -144,7 +143,7 @@ struct FUObjectItem
 		bool bIChangedIt = false;
 		while (1)
 		{
-			int32 StartValue = int32(Flags);
+			int32 StartValue = GetFlagsInternal();
 			if ((StartValue & int32(FlagToSet)) == int32(FlagToSet))
 			{
 				break;
@@ -161,7 +160,7 @@ struct FUObjectItem
 
 	FORCEINLINE bool HasAnyFlags(EInternalObjectFlags InFlags) const
 	{
-		return !!(Flags & int32(InFlags));
+		return !!(GetFlagsInternal() & int32(InFlags));
 	}
 
 	FORCEINLINE void SetUnreachable()
@@ -174,7 +173,7 @@ struct FUObjectItem
 	}
 	FORCEINLINE bool IsUnreachable() const
 	{
-		return !!(Flags & int32(EInternalObjectFlags::Unreachable));
+		return !!(GetFlagsInternal() & int32(EInternalObjectFlags::Unreachable));
 	}
 	FORCEINLINE bool ThisThreadAtomicallyClearedRFUnreachable()
 	{
@@ -196,7 +195,7 @@ struct FUObjectItem
 	FORCEINLINE bool IsPendingKill() const
 	{
 		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		return !!(Flags & int32(EInternalObjectFlags::PendingKill));
+		return !!(GetFlagsInternal() & int32(EInternalObjectFlags::PendingKill));
 		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
@@ -210,19 +209,17 @@ struct FUObjectItem
 	}
 	FORCEINLINE bool IsRootSet() const
 	{
-		return !!(Flags & int32(EInternalObjectFlags::RootSet));
-	}
-
-	FORCEINLINE void ResetSerialNumberAndFlags()
-	{
-		Flags = 0;
-		ClusterRootIndex = 0;
-		SerialNumber = 0;
+		return !!(GetFlagsInternal() & int32(EInternalObjectFlags::RootSet));
 	}
 
 #if STATS || ENABLE_STATNAMEDEVENTS_UOBJECT
 	COREUOBJECT_API void CreateStatID() const;
 #endif
+private:
+	FORCEINLINE int32 GetFlagsInternal() const
+	{
+		return FPlatformAtomics::AtomicRead_Relaxed((int32*)&Flags);
+	}
 };
 
 /**
@@ -498,10 +495,10 @@ public:
 	**/
 	FORCEINLINE_DEBUGGABLE FUObjectItem const* GetObjectPtr(int32 Index) const TSAN_SAFE
 	{
-		const int32 ChunkIndex = Index / NumElementsPerChunk;
-		const int32 WithinChunkIndex = Index % NumElementsPerChunk;
+		const uint32 ChunkIndex = (uint32)Index / NumElementsPerChunk;
+		const uint32 WithinChunkIndex = (uint32)Index % NumElementsPerChunk;
 		checkf(IsValidIndex(Index), TEXT("IsValidIndex(%d)"), Index);
-		checkf(ChunkIndex < NumChunks, TEXT("ChunkIndex (%d) < NumChunks (%d)"), ChunkIndex, NumChunks);
+		checkf(ChunkIndex < (uint32)NumChunks, TEXT("ChunkIndex (%d) < NumChunks (%d)"), ChunkIndex, NumChunks);
 		checkf(Index < MaxElements, TEXT("Index (%d) < MaxElements (%d)"), Index, MaxElements);
 		FUObjectItem* Chunk = Objects[ChunkIndex];
 		check(Chunk);
@@ -509,14 +506,22 @@ public:
 	}
 	FORCEINLINE_DEBUGGABLE FUObjectItem* GetObjectPtr(int32 Index) TSAN_SAFE
 	{
-		const int32 ChunkIndex = Index / NumElementsPerChunk;
-		const int32 WithinChunkIndex = Index % NumElementsPerChunk;
+		const uint32 ChunkIndex = (uint32)Index / NumElementsPerChunk;
+		const uint32 WithinChunkIndex = (uint32)Index % NumElementsPerChunk;
 		checkf(IsValidIndex(Index), TEXT("IsValidIndex(%d)"), Index);
-		checkf(ChunkIndex < NumChunks, TEXT("ChunkIndex (%d) < NumChunks (%d)"), ChunkIndex, NumChunks);
+		checkf(ChunkIndex < (uint32)NumChunks, TEXT("ChunkIndex (%d) < NumChunks (%d)"), ChunkIndex, NumChunks);
 		checkf(Index < MaxElements, TEXT("Index (%d) < MaxElements (%d)"), Index, MaxElements);
 		FUObjectItem* Chunk = Objects[ChunkIndex];
 		check(Chunk);
 		return Chunk + WithinChunkIndex;
+	}
+
+	FORCEINLINE_DEBUGGABLE void PrefetchObjectPtr(int32 Index) const TSAN_SAFE
+	{
+		const uint32 ChunkIndex = (uint32)Index / NumElementsPerChunk;
+		const uint32 WithinChunkIndex = (uint32)Index % NumElementsPerChunk;
+		const FUObjectItem* Chunk = Objects[ChunkIndex];
+		FPlatformMisc::Prefetch(Chunk + WithinChunkIndex);
 	}
 
 	/**
@@ -579,6 +584,8 @@ public:
 class COREUOBJECT_API FUObjectArray
 {
 	friend class UObject;
+	friend COREUOBJECT_API UObject* StaticAllocateObject(const UClass*, UObject*, FName, EObjectFlags, EInternalObjectFlags, bool, bool*, UPackage*);
+
 private:
 	/**
 	 * Reset the serial number from the game thread to invalidate all weak object pointers to it
@@ -686,8 +693,10 @@ public:
 	 * Adds a uobject to the global array which is used for uobject iteration
 	 *
 	 * @param	Object Object to allocate an index for
+	 * @param	AlreadyAllocatedIndex already allocated internal index to use, negative value means allocate a new index
+	 * @param	SerialNumber serial number to use
 	 */
-	void AllocateUObjectIndex(class UObjectBase* Object, bool bMergingThreads = false);
+	void AllocateUObjectIndex(class UObjectBase* Object, int32 AlreadyAllocatedIndex = -1, int32 SerialNumber = 0);
 
 	/**
 	 * Returns a UObject index top to the global uobject array
@@ -999,8 +1008,8 @@ public:
 			Advance();
 		}
 
-		friend bool operator==(const TIterator& Lhs, const TIterator& Rhs) { return Lhs.Index == Rhs.Index; }
-		friend bool operator!=(const TIterator& Lhs, const TIterator& Rhs) { return Lhs.Index != Rhs.Index; }
+		bool operator==(const TIterator& Rhs) const { return Index == Rhs.Index; }
+		bool operator!=(const TIterator& Rhs) const { return Index != Rhs.Index; }
 
 		/** Conversion to "bool" returning true if the iterator is valid. */
 		FORCEINLINE explicit operator bool() const
@@ -1105,6 +1114,9 @@ private:
 
 	/** Current primary serial number **/
 	FThreadSafeCounter	PrimarySerialNumber;
+
+	/** If set to false object indices won't be recycled to the global pool and can be explicitly reused when creating new objects */
+	bool bShouldRecycleObjectIndices = true;
 
 public:
 
@@ -1238,3 +1250,7 @@ struct FIndexToObject
 		return ObjectItem ? ObjectItem->Object : nullptr;
 	}
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

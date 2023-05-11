@@ -14,6 +14,35 @@ class UPCGPointData;
 class UPCGMetadata;
 struct FPCGPoint;
 
+USTRUCT(BlueprintType)
+struct FPCGLandscapeLayerWeight
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Landscape Attribute")
+	FName Name = NAME_None;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Landscape Attribute")
+	float Weight = 0.0f;
+};
+
+namespace PCGLandscapeCache
+{
+	struct FSafeIndices
+	{
+		int32 X0Y0 = 0;
+		int32 X1Y0 = 0;
+		int32 X0Y1 = 0;
+		int32 X1Y1 = 0;
+
+		float XFraction = 0;
+		float YFraction = 0;
+	};
+
+	// this will ensure all indicies are valid in a Stride*Stride sized array
+	FSafeIndices CalcSafeIndices(FVector2D LocalPosition, int32 Stride);
+}
+
 struct FPCGLandscapeCacheEntry
 {
 	friend class UPCGLandscapeCache;
@@ -22,16 +51,22 @@ public:
 	void GetPoint(int32 PointIndex, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const;
 	void GetPointHeightOnly(int32 PointIndex, FPCGPoint& OutPoint) const;
 	void GetInterpolatedPoint(const FVector2D& LocalPoint, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const;
+	void GetInterpolatedPointMetadataOnly(const FVector2D& LocalPoint, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const;
 	void GetInterpolatedPointHeightOnly(const FVector2D& LocalPoint, FPCGPoint& OutPoint) const;
+	void GetInterpolatedLayerWeights(const FVector2D& LocalPoint, TArray<FPCGLandscapeLayerWeight>& OutLayerWeights) const;
 
 private:
+	// Private API to remove boilerplate
+	void GetInterpolatedPointInternal(const PCGLandscapeCache::FSafeIndices& Indices, FPCGPoint& OutPoint, bool bHeightOnly = false) const;
+	void GetInterpolatedPointMetadataInternal(const PCGLandscapeCache::FSafeIndices& Indices, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const;
+
 	// Private API for UPCGLandscapeCache usage
 	bool TouchAndLoad(int32 Touch) const;
 	void Unload();
 	int32 GetMemorySize() const;
 
 #if WITH_EDITOR
-	void BuildCacheData(ULandscapeInfo* LandscapeInfo, ULandscapeComponent* InComponent);
+	static FPCGLandscapeCacheEntry* CreateCacheEntry(ULandscapeInfo* LandscapeInfo, ULandscapeComponent* InComponent);
 #endif
 
 	// Serialize called from the landscape cache
@@ -74,8 +109,18 @@ public:
 	void ClearCache();
 	void Tick(float DeltaSeconds);
 
+#if WITH_EDITOR
+	/** Gets (and creates if needed) the cache entry - available only in Editor */
 	const FPCGLandscapeCacheEntry* GetCacheEntry(ULandscapeComponent* LandscapeComponent, const FIntPoint& ComponentKey);
+#endif
+
+	/** Gets landscape cache entry, works both in editor (but does not create) but works in game mode too. */
+	const FPCGLandscapeCacheEntry* GetCacheEntry(const FGuid& LandscapeGuid, const FIntPoint& ComponentKey);
+
 	TArray<FName> GetLayerNames(ALandscapeProxy* Landscape);
+
+	/** Convenience method to get metadata from the landscape for a given pair of landscape and position */
+	void SampleMetadataOnPoint(ALandscapeProxy* Landscape, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata);
 
 private:
 #if WITH_EDITOR

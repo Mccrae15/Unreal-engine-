@@ -124,6 +124,11 @@ void UMultiLineEditableTextBox::SynchronizeProperties()
 {
 	Super::SynchronizeProperties();
 
+	if (!MyEditableTextBlock.IsValid())
+	{
+		return;
+	}
+
 	TAttribute<FText> HintTextBinding = PROPERTY_BINDING(FText, HintText);
 
 	MyEditableTextBlock->SetStyle(&WidgetStyle);
@@ -163,11 +168,22 @@ FText UMultiLineEditableTextBox::GetText() const
 
 void UMultiLineEditableTextBox::SetText(FText InText)
 {
-	Text = InText;
-	if ( MyEditableTextBlock.IsValid() )
+	if (SetTextInternal(InText) && MyEditableTextBlock.IsValid() )
 	{
 		MyEditableTextBlock->SetText(Text);
 	}
+}
+
+bool UMultiLineEditableTextBox::SetTextInternal(const FText& InText)
+{
+	if (!Text.IdenticalTo(InText, ETextIdenticalModeFlags::DeepCompare | ETextIdenticalModeFlags::LexicalCompareInvariants))
+	{
+		Text = InText;
+		BroadcastFieldValueChanged(FFieldNotificationClassDescriptor::Text);
+		return true;
+	}
+
+	return false;
 }
 
 FText UMultiLineEditableTextBox::GetHintText() const
@@ -236,11 +252,15 @@ void UMultiLineEditableTextBox::SetForegroundColor(FLinearColor color)
 
 void UMultiLineEditableTextBox::HandleOnTextChanged(const FText& InText)
 {
-	OnTextChanged.Broadcast(InText);
+	if (SetTextInternal(InText))
+	{
+		OnTextChanged.Broadcast(InText);
+	}
 }
 
 void UMultiLineEditableTextBox::HandleOnTextCommitted(const FText& InText, ETextCommit::Type CommitMethod)
 {
+	SetTextInternal(InText);
 	OnTextCommitted.Broadcast(InText, CommitMethod);
 }
 

@@ -1,9 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MovieRenderPipelineDataTypes.h"
-#include "MovieRenderPipelineCoreModule.h"
-#include "Sections/MovieSceneCinematicShotSection.h"
 #include "MoviePipeline.h"
+#include "MovieRenderPipelineCoreModule.h"
+#include "RHI.h"
+#include "Sections/MovieSceneCinematicShotSection.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MovieRenderPipelineDataTypes)
 
@@ -13,7 +14,7 @@ FFrameNumber FMoviePipelineCameraCutInfo::GetOutputFrameCountEstimate() const
 	FFrameNumber OneFrameInTicks = FFrameRate::TransformTime(FFrameTime(FFrameNumber(1)), CachedFrameRate, CachedTickResolution).FloorToFrame();
 
 	// Find out how many ticks long our total output range is.
-	FFrameNumber TotalOutputRangeTicks = TotalOutputRangeMaster.Size<FFrameNumber>();
+	FFrameNumber TotalOutputRangeTicks = TotalOutputRangeRoot.Size<FFrameNumber>();
 	int32 NumFrames = FMath::CeilToInt(TotalOutputRangeTicks.Value / (double)OneFrameInTicks.Value);
 
 	return FFrameNumber(NumFrames);
@@ -71,6 +72,11 @@ void FMoviePipelineCameraCutInfo::SetNextStateAfter(const EMovieRenderShotState 
 		break;
 	}
 
+}
+
+MoviePipeline::FMoviePipelineRenderPassInitSettings::FMoviePipelineRenderPassInitSettings()
+{
+	FeatureLevel = GMaxRHIFeatureLevel;
 }
 
 bool MoviePipeline::FTileWeight1D::operator==(const FTileWeight1D& Rhs) const

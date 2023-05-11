@@ -64,6 +64,7 @@ public:
 	}
 
 	virtual FVTRequestPageResult RequestPageData(
+		FRHICommandList& RHICmdList,
 		const FVirtualTextureProducerHandle& ProducerHandle,
 		uint8 LayerMask,
 		uint8 vLevel,
@@ -76,11 +77,11 @@ public:
 		vAddress = FMath::MortonCode2_64(X) | (FMath::MortonCode2_64(Y) << 1);
 		vLevel = (uint8)(FMath::Max((int32)vLevel + LevelOffset, 0));
 
-		return VirtualTexture->RequestPageData(ProducerHandle, LayerMask, vLevel, vAddress, Priority);
+		return VirtualTexture->RequestPageData(RHICmdList, ProducerHandle, LayerMask, vLevel, vAddress, Priority);
 	}
 
 	virtual IVirtualTextureFinalizer* ProducePageData(
-		FRHICommandListImmediate& RHICmdList,
+		FRHICommandList& RHICmdList,
 		ERHIFeatureLevel::Type FeatureLevel,
 		EVTProducePageFlags Flags,
 		const FVirtualTextureProducerHandle& ProducerHandle,

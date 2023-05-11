@@ -6,6 +6,7 @@
 #include "SceneUtils.h"
 #include "PipelineStateCache.h"
 #include "ShaderParameterStruct.h"
+#include "LightSceneProxy.h"
 #include "MeshPassProcessor.inl"
 #include "MeshCardRepresentation.h"
 #include "GPUScene.h"
@@ -22,6 +23,8 @@
 #include "DistanceFieldAmbientOcclusion.h"
 #include "HAL/LowLevelMemStats.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "DataDrivenShaderPlatformInfo.h"
+#include "StaticMeshBatch.h"
 
 int32 GLumenSupported = 1;
 FAutoConsoleVariableRef CVarLumenSupported(
@@ -386,9 +389,16 @@ bool Lumen::ShouldHandleSkyLight(const FScene* Scene, const FSceneViewFamily& Vi
 		&& !ViewFamily.EngineShowFlags.VisualizeLightCulling;
 }
 
+bool DoesPlatformSupportLumenGI(EShaderPlatform Platform, bool bSkipProjectCheck)
+{
+	return (bSkipProjectCheck || GLumenSupported)
+		&& FDataDrivenShaderPlatformInfo::GetSupportsLumenGI(Platform)
+		&& !IsForwardShadingEnabled(Platform);
+}
+
 bool DoesRuntimePlatformSupportLumen()
 {
-	return RHIIsTypedUAVLoadSupported(PF_R16_UINT);
+	return UE::PixelFormat::HasCapabilities(PF_R16_UINT, EPixelFormatCapabilities::TypedUAVLoad);
 }
 
 bool ShouldRenderLumenForViewFamily(const FScene* Scene, const FSceneViewFamily& ViewFamily, bool bSkipProjectCheck)
@@ -515,6 +525,14 @@ DECLARE_GPU_STAT(UpdateLumenSceneBuffers);
 
 IMPLEMENT_STATIC_UNIFORM_BUFFER_STRUCT(FLumenCardPassUniformParameters, "LumenCardPass", SceneTextures);
 
+bool ShouldCompileLumenMeshCardShaders(const FMeshMaterialShaderPermutationParameters& Parameters)
+{
+	return Parameters.MaterialParameters.MaterialDomain == MD_Surface
+		&& Parameters.VertexFactoryType->SupportsLumenMeshCards()
+		&& IsOpaqueOrMaskedBlendMode(Parameters.MaterialParameters.BlendMode)
+		&& DoesPlatformSupportLumenGI(Parameters.Platform);
+}
+
 class FLumenCardVS : public FMeshMaterialShader
 {
 	DECLARE_SHADER_TYPE(FLumenCardVS, MeshMaterial);
@@ -523,8 +541,7 @@ protected:
 
 	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
-		//@todo DynamicGI - filter
-		return DoesPlatformSupportLumenGI(Parameters.Platform);
+		return ShouldCompileLumenMeshCardShaders(Parameters);
 	}
 
 	FLumenCardVS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
@@ -550,8 +567,7 @@ public:
 			return false;
 		}
 
-		//@todo DynamicGI - filter
-		return DoesPlatformSupportLumenGI(Parameters.Platform);
+		return ShouldCompileLumenMeshCardShaders(Parameters);
 	}
 
 	FLumenCardPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
@@ -611,7 +627,7 @@ public:
 	FLumenCardMeshProcessor(const FScene* Scene, ERHIFeatureLevel::Type FeatureLevel, const FSceneView* InViewIfDynamicMeshCommand, const FMeshPassProcessorRenderState& InPassDrawRenderState, FMeshPassDrawListContext* InDrawListContext);
 
 	virtual void AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId = -1) override final;
-	virtual void CollectPSOInitializers(const FSceneTexturesConfig& SceneTexturesConfig, const FMaterial& Material, const FVertexFactoryType* VertexFactoryType, const FPSOPrecacheParams& PreCacheParams, TArray<FPSOPrecacheData>& PSOInitializers) override final;
+	virtual void CollectPSOInitializers(const FSceneTexturesConfig& SceneTexturesConfig, const FMaterial& Material, const FPSOPrecacheVertexFactoryData& VertexFactoryData, const FPSOPrecacheParams& PreCacheParams, TArray<FPSOPrecacheData>& PSOInitializers) override final;
 
 	FMeshPassProcessorRenderState PassDrawRenderState;
 };
@@ -653,9 +669,8 @@ void FLumenCardMeshProcessor::AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch,
 			{
 				auto TryAddMeshBatch = [this](const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId, const FMaterialRenderProxy& MaterialRenderProxy, const FMaterial& Material) -> bool
 				{
-					const EBlendMode BlendMode = Material.GetBlendMode();
 					const FMaterialShadingModelField ShadingModels = Material.GetShadingModels();
-					const bool bIsTranslucent = IsTranslucentBlendMode(BlendMode);
+					const bool bIsTranslucent = IsTranslucentBlendMode(Material);
 					const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
 					const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(Material, OverrideSettings);
 					const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(Material, OverrideSettings);
@@ -714,19 +729,18 @@ void FLumenCardMeshProcessor::AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch,
 	}
 }
 
-void FLumenCardMeshProcessor::CollectPSOInitializers(const FSceneTexturesConfig& SceneTexturesConfig, const FMaterial& Material, const FVertexFactoryType* VertexFactoryType, const FPSOPrecacheParams& PreCacheParams, TArray<FPSOPrecacheData>& PSOInitializers)
+void FLumenCardMeshProcessor::CollectPSOInitializers(const FSceneTexturesConfig& SceneTexturesConfig, const FMaterial& Material, const FPSOPrecacheVertexFactoryData& VertexFactoryData, const FPSOPrecacheParams& PreCacheParams, TArray<FPSOPrecacheData>& PSOInitializers)
 {
 	LLM_SCOPE_BYTAG(Lumen);
 
 	if (!PreCacheParams.bRenderInMainPass || !PreCacheParams.bAffectDynamicIndirectLighting ||
-		!DoesPlatformSupportLumenGI(GetFeatureLevelShaderPlatform(FeatureLevel)))
+		!Lumen::ShouldPrecachePSOs(GetFeatureLevelShaderPlatform(FeatureLevel)))
 	{
 		return;
 	}
 
-	const EBlendMode BlendMode = Material.GetBlendMode();
 	const FMaterialShadingModelField ShadingModels = Material.GetShadingModels();
-	const bool bIsTranslucent = IsTranslucentBlendMode(BlendMode);
+	const bool bIsTranslucent = IsTranslucentBlendMode(Material);
 	const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(PreCacheParams);
 	const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(Material, OverrideSettings);
 	const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(Material, OverrideSettings);
@@ -742,7 +756,7 @@ void FLumenCardMeshProcessor::CollectPSOInitializers(const FSceneTexturesConfig&
 
 		if (!GetLumenCardShaders(
 			Material,
-			VertexFactoryType,
+			VertexFactoryData.VertexFactoryType,
 			PassShaders.VertexShader,
 			PassShaders.PixelShader))
 		{
@@ -753,7 +767,7 @@ void FLumenCardMeshProcessor::CollectPSOInitializers(const FSceneTexturesConfig&
 		SetupCardCaptureRenderTargetsInfo(RenderTargetsInfo);
 
 		AddGraphicsPipelineStateInitializer(
-			VertexFactoryType,
+			VertexFactoryData,
 			Material,
 			PassDrawRenderState,
 			RenderTargetsInfo,
@@ -762,6 +776,7 @@ void FLumenCardMeshProcessor::CollectPSOInitializers(const FSceneTexturesConfig&
 			MeshCullMode,
 			(EPrimitiveType)PreCacheParams.PrimitiveType,
 			EMeshPassFeatures::Default, 
+			true /*bRequired*/,
 			PSOInitializers);
 	}
 }
@@ -794,7 +809,7 @@ public:
 	FLumenCardNaniteMeshProcessor(const FScene* Scene, ERHIFeatureLevel::Type FeatureLevel, const FSceneView* InViewIfDynamicMeshCommand, const FMeshPassProcessorRenderState& InPassDrawRenderState, FMeshPassDrawListContext* InDrawListContext);
 
 	virtual void AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId = -1) override final;
-	virtual void CollectPSOInitializers(const FSceneTexturesConfig& SceneTexturesConfig, const FMaterial& Material, const FVertexFactoryType* VertexFactoryType, const FPSOPrecacheParams& PreCacheParams, TArray<FPSOPrecacheData>& PSOInitializers) override final;
+	virtual void CollectPSOInitializers(const FSceneTexturesConfig& SceneTexturesConfig, const FMaterial& Material, const FPSOPrecacheVertexFactoryData& VertexFactoryData, const FPSOPrecacheParams& PreCacheParams, TArray<FPSOPrecacheData>& PSOInitializers) override final;
 
 	FMeshPassProcessorRenderState PassDrawRenderState;
 
@@ -858,8 +873,7 @@ bool FLumenCardNaniteMeshProcessor::TryAddMeshBatch(
 	const FMaterialRenderProxy& MaterialRenderProxy,
 	const FMaterial& Material)
 {
-	const EBlendMode BlendMode = Material.GetBlendMode();
-	check(Nanite::IsSupportedBlendMode(BlendMode));
+	check(Nanite::IsSupportedBlendMode(Material));
 	check(Nanite::IsSupportedMaterialDomain(Material.GetMaterialDomain()));
 
 	TShaderMapRef<FNaniteMultiViewMaterialVS> VertexShader(GetGlobalShaderMap(FeatureLevel));
@@ -906,18 +920,18 @@ bool FLumenCardNaniteMeshProcessor::TryAddMeshBatch(
 void FLumenCardNaniteMeshProcessor::CollectPSOInitializers(
 	const FSceneTexturesConfig& SceneTexturesConfig,
 	const FMaterial& Material, 
-	const FVertexFactoryType* VertexFactoryType, 
+	const FPSOPrecacheVertexFactoryData& VertexFactoryData,
 	const FPSOPrecacheParams& PreCacheParams,
 	TArray<FPSOPrecacheData>& PSOInitializers)
 {
 	// Make sure nanite rendering is supported
-	if (!SupportsNaniteRendering(VertexFactoryType, Material, FeatureLevel))
+	if (!SupportsNaniteRendering(VertexFactoryData.VertexFactoryType, Material, FeatureLevel))
 	{
 		return;
 	}
 
-	const EBlendMode BlendMode = Material.GetBlendMode();
-	if (!Nanite::IsSupportedBlendMode(BlendMode) || Material.GetMaterialDomain())
+	if (!Nanite::IsSupportedBlendMode(Material) || Material.GetMaterialDomain() ||
+		!Lumen::ShouldPrecachePSOs(GetFeatureLevelShaderPlatform(FeatureLevel)))
 	{
 		return;
 	}
@@ -936,7 +950,7 @@ void FLumenCardNaniteMeshProcessor::CollectPSOInitializers(
 	ShaderTypes.AddShaderType<FLumenCardPS<bMultiViewCapture>>();
 
 	FMaterialShaders Shaders;
-	if (!Material.TryGetShaders(ShaderTypes, VertexFactoryType, Shaders))
+	if (!Material.TryGetShaders(ShaderTypes, VertexFactoryData.VertexFactoryType, Shaders))
 	{
 		return;
 	}
@@ -947,7 +961,7 @@ void FLumenCardNaniteMeshProcessor::CollectPSOInitializers(
 	SetupCardCaptureRenderTargetsInfo(RenderTargetsInfo);
 
 	AddGraphicsPipelineStateInitializer(
-		VertexFactoryType,
+		VertexFactoryData,
 		Material,
 		PassDrawRenderState,
 		RenderTargetsInfo,
@@ -956,6 +970,7 @@ void FLumenCardNaniteMeshProcessor::CollectPSOInitializers(
 		MeshCullMode,
 		(EPrimitiveType)PreCacheParams.PrimitiveType,
 		EMeshPassFeatures::Default,
+		true /*bRequired*/,
 		PSOInitializers);
 }
 
@@ -977,6 +992,11 @@ FMeshPassProcessor* CreateLumenCardNaniteMeshProcessor(
 }
 
 REGISTER_MESHPASSPROCESSOR_AND_PSOCOLLECTOR(LumenCardNanitePass, CreateLumenCardNaniteMeshProcessor, EShadingPath::Deferred, EMeshPass::LumenCardNanite, EMeshPassFlags::None);
+
+bool Lumen::HasPrimitiveNaniteMeshBatches(const FPrimitiveSceneProxy* Proxy)
+{
+	return Proxy && Proxy->ShouldRenderInMainPass() && Proxy->AffectsDynamicIndirectLighting();
+}
 
 FCardPageRenderData::FCardPageRenderData(
 	const FViewInfo& InMainView,
@@ -1010,14 +1030,16 @@ FCardPageRenderData::FCardPageRenderData(
 	UpdateViewMatrices(InMainView);
 }
 
+FCardPageRenderData::~FCardPageRenderData() = default;
+
 void FCardPageRenderData::UpdateViewMatrices(const FViewInfo& MainView)
 {
-	ensureMsgf(FVector3f::DotProduct(CardWorldOBB.AxisX, FVector3f::CrossProduct(CardWorldOBB.AxisY, CardWorldOBB.AxisZ)) < 0.0f, TEXT("Card has wrong handedness"));
+	ensureMsgf(FVector::DotProduct(CardWorldOBB.AxisX, FVector::CrossProduct(CardWorldOBB.AxisY, CardWorldOBB.AxisZ)) < 0.0f, TEXT("Card has wrong handedness"));
 
 	FMatrix ViewRotationMatrix = FMatrix::Identity;
-	ViewRotationMatrix.SetColumn(0, (FVector)CardWorldOBB.AxisX);
-	ViewRotationMatrix.SetColumn(1, (FVector)CardWorldOBB.AxisY);
-	ViewRotationMatrix.SetColumn(2, (FVector)-CardWorldOBB.AxisZ);
+	ViewRotationMatrix.SetColumn(0, CardWorldOBB.AxisX);
+	ViewRotationMatrix.SetColumn(1, CardWorldOBB.AxisY);
+	ViewRotationMatrix.SetColumn(2, -CardWorldOBB.AxisZ);
 
 	FVector ViewLocation(CardWorldOBB.Origin);
 	FVector FaceLocalExtent(CardWorldOBB.Extent);
@@ -1054,9 +1076,10 @@ void FCardPageRenderData::UpdateViewMatrices(const FViewInfo& MainView)
 	Initializer.ProjectionMatrix = ProjectionMatrix;
 	Initializer.ConstrainedViewRect = MainView.SceneViewInitOptions.GetConstrainedViewRect();
 	Initializer.StereoPass = MainView.SceneViewInitOptions.StereoPass;
-#if WITH_EDITOR
-	Initializer.bUseFauxOrthoViewPos = MainView.SceneViewInitOptions.bUseFauxOrthoViewPos;
-#endif
+
+	// We do not want FauxOrtho projection moving the camera origin far away from the card since we have just setup the correct projection.
+	// That can result in low accuracy when using world position even with LWC.
+	Initializer.bUseFauxOrthoViewPos = false;
 
 	ViewMatrices = FViewMatrices(Initializer);
 }
@@ -1285,11 +1308,11 @@ public:
 
 				// Rough card min resolution test
 				float CardMaxDistanceSq = MaxDistanceFromCamera * MaxDistanceFromCamera;
-				float DistanceSquared = FLT_MAX;
+				float DistanceSquared = FLT_MAX; // LWC_TODO
 
 				for (FVector ViewOrigin : ViewOrigins)
 				{
-					DistanceSquared = FMath::Min(DistanceSquared, ComputeSquaredDistanceFromBoxToPoint(FVector(PrimitiveGroup.WorldSpaceBoundingBox.Min), FVector(PrimitiveGroup.WorldSpaceBoundingBox.Max), ViewOrigin));
+					DistanceSquared = FMath::Min(DistanceSquared, ComputeSquaredDistanceFromBoxToPoint(FVector(PrimitiveGroup.WorldSpaceBoundingBox.Min), FVector(PrimitiveGroup.WorldSpaceBoundingBox.Max), ViewOrigin)); // LWC_TODO
 				}
 				
 				const float MaxCardExtent = PrimitiveGroup.WorldSpaceBoundingBox.GetExtent().GetMax();
@@ -1387,11 +1410,11 @@ public:
 					const FLumenCard& LumenCard = LumenCards[CardIndex];
 
 					float CardMaxDistance = MaxDistanceFromCamera;
-					float ViewerDistance = FLT_MAX;
+					float ViewerDistance = FLT_MAX; // LWC_TODO
 
 					for (FVector ViewOrigin : ViewOrigins)
 					{
-						ViewerDistance = FMath::Min(ViewerDistance, FMath::Max(FMath::Sqrt(LumenCard.WorldOBB.ComputeSquaredDistanceToPoint((FVector3f)ViewOrigin)), 100.0f));
+						ViewerDistance = FMath::Min(ViewerDistance, FMath::Max(FMath::Sqrt(LumenCard.WorldOBB.ComputeSquaredDistanceToPoint(ViewOrigin)), 100.0f));
 					}
 
 					// Compute resolution based on its largest extent
@@ -1463,7 +1486,7 @@ float ComputeMaxCardUpdateDistanceFromCamera(const FViewInfo& View)
 
 #if RHI_RAYTRACING
 	// Limit to ray tracing culling radius if ray tracing is used
-	if (Lumen::UseHardwareRayTracing(*View.Family) && GetRayTracingCulling() != 0)
+	if (Lumen::UseHardwareRayTracing(*View.Family) && RayTracing::GetCullingMode(View.Family->EngineShowFlags) != RayTracing::ECullingMode::Disabled)
 	{
 		MaxCardDistanceFromCamera = GetRayTracingCullingRadius();
 	}
@@ -1494,6 +1517,11 @@ bool UpdateStaticMeshes(FLumenPrimitiveGroup& PrimitiveGroup)
 				// Need to defer to next InitViews, as main view visible primitives are processed on parallel tasks and calling 
 				// CacheMeshDrawCommands may resize CachedDrawLists/CachedMeshDrawCommandStateBuckets causing a crash.
 				PrimitiveSceneInfo->BeginDeferredUpdateStaticMeshesWithoutVisibilityCheck();
+				bReadyToRender = false;
+			}
+
+			if (PrimitiveSceneInfo->Proxy->StaticMeshHasPendingStreaming())
+			{
 				bReadyToRender = false;
 			}
 
@@ -2802,7 +2830,7 @@ void FDeferredShadingSceneRenderer::UpdateLumenScene(FRDGBuilder& GraphBuilder, 
 
 			FLumenCardPassUniformParameters* PassUniformParameters = GraphBuilder.AllocParameters<FLumenCardPassUniformParameters>();
 			SetupSceneTextureUniformParameters(GraphBuilder, &GetActiveSceneTextures(), Scene->GetFeatureLevel(), /*SceneTextureSetupMode*/ ESceneTextureSetupMode::None, PassUniformParameters->SceneTextures);
-			PassUniformParameters->EyeAdaptationTexture = GetEyeAdaptationTexture(GraphBuilder, Views[0]);
+			PassUniformParameters->EyeAdaptationBuffer = GraphBuilder.CreateSRV(GetEyeAdaptationBuffer(GraphBuilder, Views[0]));
 
 			{
 				uint32 NumPages = 0;
@@ -2943,7 +2971,9 @@ void FDeferredShadingSceneRenderer::UpdateLumenScene(FRDGBuilder& GraphBuilder, 
 				Nanite::FRasterContext RasterContext = Nanite::InitRasterContext(
 					GraphBuilder,
 					SharedContext,
+					ViewFamily,
 					DepthStencilAtlasSize,
+					DepthAtlasRect,
 					false,
 					Nanite::EOutputBufferMode::VisBuffer,
 					true,
@@ -2993,6 +3023,8 @@ void FDeferredShadingSceneRenderer::UpdateLumenScene(FRDGBuilder& GraphBuilder, 
 							Params.ViewRect = CardPageRenderData.CardCaptureAtlasRect;
 							Params.RasterContextSize = DepthStencilAtlasSize;
 							Params.LODScaleFactor = CardPageRenderData.NaniteLODScaleFactor;
+							Params.MaxPixelsPerEdgeMultipler = 1.0f;
+
 							NaniteViews.Add(Nanite::CreatePackedView(Params));
 						}
 
@@ -3003,7 +3035,6 @@ void FDeferredShadingSceneRenderer::UpdateLumenScene(FRDGBuilder& GraphBuilder, 
 					{
 						RDG_EVENT_SCOPE(GraphBuilder, "Nanite::RasterizeLumenCards");
 
-						Nanite::FRasterState RasterState;
 						Nanite::CullRasterize(
 							GraphBuilder,
 							Scene->NaniteRasterPipelines[ENaniteMeshPass::BasePass],
@@ -3014,7 +3045,6 @@ void FDeferredShadingSceneRenderer::UpdateLumenScene(FRDGBuilder& GraphBuilder, 
 							SharedContext,
 							CullingContext,
 							RasterContext,
-							RasterState,
 							&NaniteInstanceDraws
 						);
 					}
@@ -3027,8 +3057,6 @@ void FDeferredShadingSceneRenderer::UpdateLumenScene(FRDGBuilder& GraphBuilder, 
 				{
 					if (CardPageRenderData.bDistantScene)
 					{
-						Nanite::FRasterState RasterState;
-
 						CardPageRenderData.PatchView(Scene, SharedView);
 						Nanite::FPackedView PackedView = Nanite::CreatePackedViewFromViewInfo(
 							*SharedView,
@@ -3047,8 +3075,7 @@ void FDeferredShadingSceneRenderer::UpdateLumenScene(FRDGBuilder& GraphBuilder, 
 							{ PackedView },
 							SharedContext,
 							CullingContext,
-							RasterContext,
-							RasterState);
+							RasterContext);
 					}
 				}
 

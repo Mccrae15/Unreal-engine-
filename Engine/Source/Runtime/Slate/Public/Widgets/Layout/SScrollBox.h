@@ -22,6 +22,8 @@
 #include "Framework/Layout/InertialScrollManager.h"
 #include "Framework/Layout/Overscroll.h"
 
+#include "SScrollBox.generated.h"
+
 class FPaintArgs;
 class FSlateWindowElementList;
 class SScrollPanel;
@@ -70,7 +72,106 @@ class SLATE_API SScrollBox : public SCompoundWidget
 {
 public:
 	/** A Slot that provides layout options for the contents of a scrollable box. */
-	using FSlot = FBasicLayoutWidgetSlot;
+	class SLATE_API FSlot : public TBasicLayoutWidgetSlot<FSlot>
+	{
+	public:
+		SLATE_SLOT_BEGIN_ARGS(FSlot, TBasicLayoutWidgetSlot<FSlot>)
+			SLATE_ARGUMENT(TOptional<FSizeParam>, SizeParam)
+			TAttribute<float> _MaxSize;
+
+			/** The widget's DesiredSize will be used as the space required. */
+			FSlotArguments& AutoSize()
+			{
+				_SizeParam = FAuto();
+				return Me();
+			}
+			/** The available space will be distributed proportionately. */
+			FSlotArguments& FillSize(TAttribute<float> InStretchCoefficient)
+			{
+				_SizeParam = FStretch(MoveTemp(InStretchCoefficient));
+				return Me();
+			}
+			/** Set the max size in SlateUnit this slot can be. */
+			FSlotArguments& MaxSize(TAttribute<float> InMaxHeight)
+			{
+				_MaxSize = MoveTemp(InMaxHeight);
+				return Me();
+			}
+		SLATE_SLOT_END_ARGS()
+
+		/** Default values for a slot. */
+		FSlot()
+			: TBasicLayoutWidgetSlot<FSlot>(HAlign_Fill, VAlign_Fill)
+			, SizeRule(FSizeParam::SizeRule_Auto)
+			, SizeValue(*this, 1.f)
+			, MaxSize(*this, 0.0f)
+		{ }
+
+		void Construct(const FChildren& SlotOwner, FSlotArguments&& InArgs);
+		static void RegisterAttributes(FSlateWidgetSlotAttributeInitializer& AttributeInitializer);
+
+		/** Get the space rule this slot should occupy along scrollbox's direction. */
+		FSizeParam::ESizeRule GetSizeRule() const
+		{
+			return SizeRule;
+		}
+
+		/** Get the space rule value this slot should occupy along scrollbox's direction. */
+		float GetSizeValue() const
+		{
+			return SizeValue.Get();
+		}
+
+		/** Get the max size the slot can be.*/
+		float GetMaxSize() const
+		{
+			return MaxSize.Get();
+		}
+
+		/** Set the size Param of the slot, It could be a FStretch or a FAuto. */
+		void SetSizeParam(FSizeParam InSizeParam)
+		{
+			SizeRule = InSizeParam.SizeRule;
+			SizeValue.Assign(*this, MoveTemp(InSizeParam.Value));
+		}
+
+		/** The widget's DesiredSize will be used as the space required. */
+		void SetSizeToAuto()
+		{
+			SetSizeParam(FAuto());
+		}
+
+		/** The available space will be distributed proportionately. */
+		void SetSizeToStretch(TAttribute<float> StretchCoefficient)
+		{
+			SetSizeParam(FStretch(MoveTemp(StretchCoefficient)));
+		}
+
+		/** Set the max size in SlateUnit this slot can be. */
+		void SetMaxSize(TAttribute<float> InMaxSize)
+		{
+			MaxSize.Assign(*this, MoveTemp(InMaxSize));
+		}
+
+	private:
+		/**
+		 * How much space this slot should occupy along scrollbox's direction.
+		 * When SizeRule is SizeRule_Auto, the widget's DesiredSize will be used as the space required.
+		 * When SizeRule is SizeRule_Stretch, the available space will be distributed proportionately between
+		 * peer Widgets depending on the Value property. Available space is space remaining after all the
+		 * peers' SizeRule_Auto requirements have been satisfied.
+		 */
+
+		 /** The sizing rule to use. */
+		FSizeParam::ESizeRule SizeRule;
+
+		/** The actual value this size parameter stores. */
+		typename TBasicLayoutWidgetSlot<FSlot>::template TSlateSlotAttribute<float> SizeValue;
+
+		/** The max size that this slot can be (0 if no max) */
+		typename TBasicLayoutWidgetSlot<FSlot>::template TSlateSlotAttribute<float> MaxSize;
+
+	};
 
 	SLATE_BEGIN_ARGS(SScrollBox)
 		: _Style( &FAppStyle::Get().GetWidgetStyle<FScrollBoxStyle>("ScrollBox") )
@@ -80,7 +181,7 @@ public:
 		, _ScrollBarVisibility(EVisibility::Visible)
 		, _ScrollBarAlwaysVisible(false)
 		, _ScrollBarDragFocusCause(EFocusCause::Mouse)
-		, _ScrollBarThickness(FVector2D(_Style->BarThickness, _Style->BarThickness))
+		, _ScrollBarThickness(FVector2f(_Style->BarThickness, _Style->BarThickness))
 		, _ScrollBarPadding(2.0f)
 		, _AllowOverscroll(EAllowOverscroll::Yes)
 		, _BackPadScrolling(false)
@@ -116,7 +217,7 @@ public:
 
 		SLATE_ARGUMENT( EFocusCause, ScrollBarDragFocusCause )
 
-		SLATE_ARGUMENT( FVector2D, ScrollBarThickness )
+		SLATE_ARGUMENT( UE::Slate::FDeprecateVector2DParameter, ScrollBarThickness )
 
 		/** This accounts for total internal scroll bar padding; default 2.0f padding from the scroll bar itself is removed */
 		SLATE_ARGUMENT( FMargin, ScrollBarPadding )
@@ -221,11 +322,20 @@ public:
 	
 	void SetScrollBarTrackAlwaysVisible(bool InAlwaysVisible);
 
-	void SetScrollBarThickness(FVector2D InThickness);
+	void SetScrollBarThickness(UE::Slate::FDeprecateVector2DParameter InThickness);
 
 	void SetScrollBarPadding(const FMargin& InPadding);
 
 	void SetScrollBarRightClickDragAllowed(bool bIsAllowed);
+
+	void SetStyle(const FScrollBoxStyle* InStyle);
+	
+	void SetScrollBarStyle(const FScrollBarStyle* InBarStyle);
+
+	void InvalidateStyle();
+
+	void InvalidateScrollBarStyle();
+
 public:
 
 	// SWidget interface
@@ -261,13 +371,13 @@ private:
 	void ConstructHorizontalLayout();
 
 	/** Gets the component of a vector in the direction of scrolling based on the Orientation property. */
-	FORCEINLINE float GetScrollComponentFromVector(FVector2D Vector) const
+	FORCEINLINE float GetScrollComponentFromVector(FVector2f Vector) const
 	{
 		return float(Orientation == Orient_Vertical ? Vector.Y : Vector.X);
 	}
 
 	/** Sets the component of a vector in the direction of scrolling based on the Orientation property. */
-	inline void SetScrollComponentOnVector(FVector2D& InVector, float Value) const
+	inline void SetScrollComponentOnVector(FVector2f& InVector, float Value) const
 	{
 		if (Orientation == Orient_Vertical)
 		{
@@ -378,7 +488,7 @@ protected:
 	EScrollWhenFocusChanges ScrollWhenFocusChanges;
 
 	/**	The current position of the software cursor */
-	FVector2D SoftwareCursorPosition;
+	FVector2f SoftwareCursorPosition;
 
 	/** Fired when the user scrolls the scrollbox */
 	FOnUserScrolled OnUserScrolled;
@@ -447,10 +557,10 @@ public:
 	SLATE_ARGUMENT(bool, BackPadScrolling)
 	SLATE_ARGUMENT(bool, FrontPadScrolling)
 
-		SLATE_END_ARGS()
+	SLATE_END_ARGS()
 
-		SScrollPanel()
-		: Children(this)
+	SScrollPanel()
+	: Children(this)
 	{
 	}
 
@@ -485,11 +595,6 @@ protected:
 	// Begin SWidget overrides.
 	virtual FVector2D ComputeDesiredSize(float) const override;
 	// End SWidget overrides.
-
-private:
-
-	float ArrangeChildVerticalAndReturnOffset(const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren, const SScrollBox::FSlot& ThisSlot, float CurChildOffset) const;
-	float ArrangeChildHorizontalAndReturnOffset(const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren, const SScrollBox::FSlot& ThisSlot, float CurChildOffset) const;
 
 private:
 

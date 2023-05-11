@@ -2,10 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/Object.h"
-#include "Engine/EngineTypes.h"
 #include "AndroidFileServerRuntimeSettings.generated.h"
 
 /**
@@ -15,7 +11,7 @@
 UENUM()
 namespace EAFSConnectionType
 {
-	enum Type
+	enum Type : int
 	{
 		USBOnly = 0 UMETA(DisplayName = "USB only"),
 		NetworkOnly = 1 UMETA(DisplayName = "Network only"),
@@ -81,3 +77,8 @@ private:
 	// UObject interface
 	virtual void PostInitProperties() override;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "Engine/EngineTypes.h"
+#endif

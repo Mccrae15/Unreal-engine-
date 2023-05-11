@@ -4,43 +4,11 @@
 
 #include "Animation/AnimationAsset.h"
 #include "Animation/DebugSkelMeshComponent.h"
-#include "Animation/PoseAsset.h"
-#include "AssetRegistry/AssetData.h"
-#include "Containers/EnumAsByte.h"
-#include "Containers/IndirectArray.h"
-#include "Containers/Map.h"
-#include "Delegates/Delegate.h"
-#include "DragAndDrop/AssetDragDropOp.h"
-#include "Editor.h"
-#include "Editor/EditorEngine.h"
 #include "Editor/UnrealEdEngine.h"
-#include "Editor/UnrealEdTypes.h"
-#include "EditorViewportClient.h"
 #include "EditorViewportCommands.h"
-#include "Engine/Engine.h"
-#include "Engine/SkeletalMesh.h"
-#include "Engine/World.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Framework/Commands/UIAction.h"
 #include "Framework/Commands/UICommandList.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Framework/MultiBox/MultiBoxDefs.h"
-#include "Framework/SlateDelegates.h"
-#include "GenericPlatform/ICursor.h"
-#include "HAL/PlatformCrt.h"
-#include "Input/DragAndDrop.h"
-#include "Internationalization/Text.h"
-#include "Layout/Children.h"
-#include "Layout/Visibility.h"
-#include "Materials/Material.h"
-#include "Materials/MaterialInterface.h"
-#include "Math/Transform.h"
-#include "Misc/AssertionMacros.h"
-#include "Misc/Attribute.h"
-#include "Misc/CString.h"
-#include "Misc/Optional.h"
 #include "MuCO/CustomizableObjectInstance.h"
-#include "MuCO/UnrealPortabilityHelpers.h"
 #include "MuCOE/CustomizableObjectEditorActions.h"
 #include "MuCOE/CustomizableObjectEditorUtilities.h"
 #include "MuCOE/CustomizableObjectEditorViewportClient.h"
@@ -51,23 +19,9 @@
 #include "MuCOE/SCustomizableObjectEditorViewportToolBar.h"
 #include "MuCOE/SCustomizableObjectHighresScreenshot.h"
 #include "MuCOE/UnrealEditorPortabilityHelpers.h"
-#include "PreviewScene.h"
-#include "Rendering/SkeletalMeshLODRenderData.h"
-#include "Rendering/SkeletalMeshRenderData.h"
-#include "Slate/SceneViewport.h"
-#include "SlotBase.h"
-#include "Styling/AppStyle.h"
-#include "Templates/Casts.h"
-#include "Textures/SlateIcon.h"
-#include "Types/ISlateMetaData.h"
-#include "UObject/ObjectPtr.h"
-#include "UObject/UObjectGlobals.h"
+#include "Settings/LevelEditorViewportSettings.h"
 #include "UnrealEdGlobals.h"
-#include "Viewports.h"
 #include "Widgets/Input/STextComboBox.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/SWidget.h"
 
 class UCustomizableObject;
 class UCustomizableObjectNodeProjectorConstant;
@@ -618,6 +572,14 @@ void SCustomizableObjectEditorViewportTabBody::BindCommands()
 		FIsActionChecked::CreateSP(this, &SCustomizableObjectEditorViewportTabBody::IsCameraModeActive,1)
 	);
 
+	// Bones Mode
+	CommandList.MapAction(
+		ViewportLODMenuCommands.ShowBones,
+		FExecuteAction::CreateSP(this, &SCustomizableObjectEditorViewportTabBody::SetShowBones),
+		FCanExecuteAction(),
+		FIsActionChecked::CreateSP(this, &SCustomizableObjectEditorViewportTabBody::IsShowingBones)
+	);
+
 	const FEditorViewportCommands& ViewportCommands = FEditorViewportCommands::Get();
 
 	// Camera Views
@@ -717,6 +679,30 @@ void SCustomizableObjectEditorViewportTabBody::SetDrawDefaultUVMaterial()
 			LevelViewportClient->SetDrawUVOverlayMaterial(*(ArrayUVMaterialOptionString[0]), "0");
 		}
 	}
+}
+
+
+void SCustomizableObjectEditorViewportTabBody::SetShowBones()
+{
+	LevelViewportClient->SetShowBones();
+}
+
+
+bool SCustomizableObjectEditorViewportTabBody::IsShowingBones()
+{
+	return LevelViewportClient->IsShowingBones();
+}
+
+
+void SCustomizableObjectEditorViewportTabBody::SetViewportCameraSpeed(const int32 Speed)
+{
+	LevelViewportClient->SetCameraSpeedSetting(Speed);
+}
+
+
+int32 SCustomizableObjectEditorViewportTabBody::GetViewportCameraSpeed()
+{
+	return LevelViewportClient->GetCameraSpeedSetting();
 }
 
 
@@ -1072,13 +1058,7 @@ FReply SCustomizableObjectEditorViewportTabBody::OnDrop(const FGeometry& MyGeome
 	{
 		if (Helper_GetAssets(DragDropOp).Num())
 		{
-			UPoseAsset* PoseAsset = Cast<UPoseAsset>(Helper_GetAssets(DragDropOp)[0].GetAsset());
-			if (PoseAsset != nullptr)
-			{
-				CustomizableObjectEditorPtr.Pin()->SetPoseAsset(PoseAsset);
-				return FReply::Handled();
-			}
-
+			// This cast also includes UPoseAsset assets.
 			UAnimationAsset* AnimationAsset = Cast<UAnimationAsset>(Helper_GetAssets(DragDropOp)[0].GetAsset());
 			if (AnimationAsset)
 			{

@@ -1,9 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MobileFSRUpscaler.h"
-#include "SceneRenderTargetParameters.h"
-#include "SceneRendering.h"
-#include "PostProcess/PostProcessing.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 #define A_CPU 1
 // ffx_a.ush will override these definitions
@@ -13,8 +11,8 @@
 #ifdef A_RESTRICT
 #undef A_RESTRICT
 #endif
-#include "../Shaders/Private/ffx_a.ush"
-#include "../Shaders/Private/ffx_fsr1.ush"
+#include "ffx_a.ush"
+#include "ffx_fsr1.ush"
 
 
 //////////////////////////////////////////////////////////////////////////

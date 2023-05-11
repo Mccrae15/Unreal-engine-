@@ -6,15 +6,26 @@
 
 void UCompositeCameraShakePattern::GetShakePatternInfoImpl(FCameraShakeInfo& OutInfo) const
 {
-	// We will manage our duration ourselves.
-	//
-	// While we could return the maximum duration of all our children, the problem lies with
-	// the Stop method, when bImmediately is false: it means we have to move our current time
-	// to the beginning of the longest blend-out among our children. We could also set the
-	// blend in/out times to the maximum blend time of all our children, but frankly we don't
-	// need the make the base class to compute all kinds of stuff we don't need anyway. So
-	// it's simpler to use a custom duration and get on with it.
 	OutInfo.Duration = FCameraShakeDuration::Custom();
+
+	for (UCameraShakePattern* Pattern : ChildPatterns)
+	{
+		if (Pattern != nullptr)
+		{
+			FCameraShakeInfo ChildInfo;
+			Pattern->GetShakePatternInfo(ChildInfo);
+
+			if (ChildInfo.Duration.IsInfinite())
+			{
+				OutInfo = ChildInfo;
+				break;
+			}
+			else
+			{
+				OutInfo.Duration = FMath::Max(ChildInfo.Duration.Get(), OutInfo.Duration.Get());
+			}
+		}
+	}
 }
 
 void UCompositeCameraShakePattern::StartShakePatternImpl(const FCameraShakeStartParams& Params)
@@ -50,39 +61,42 @@ void UCompositeCameraShakePattern::UpdateShakePatternImpl(const FCameraShakeUpda
 
 	for (uint32 Index = 0, Num = ChildPatterns.Num(); Index < Num; ++Index)
 	{
-		FCameraShakeState& PatternState = ChildStates[Index];
-		UCameraShakePattern* Pattern = ChildPatterns[Index];
-		if (Pattern != nullptr)
+		if (Index < (uint32)ChildStates.Num())
 		{
-			// Update the child state.
-			float ChildBlendingWeight = PatternState.Update(Params.DeltaTime);
-			if (!PatternState.IsActive())
+			FCameraShakeState& PatternState = ChildStates[Index];
+			UCameraShakePattern* Pattern = ChildPatterns[Index];
+			if (Pattern != nullptr)
 			{
-				continue;
-			}
+				// Update the child state.
+				float ChildBlendingWeight = PatternState.Update(Params.DeltaTime);
+				if (!PatternState.IsActive())
+				{
+					continue;
+				}
 
-			// Let the child pattern run on the current result, with its own blending weight.
-			ChildParams.BlendingWeight = Params.BlendingWeight * ChildBlendingWeight;
+				// Let the child pattern run on the current result, with its own blending weight.
+				ChildParams.BlendingWeight = Params.BlendingWeight * ChildBlendingWeight;
 
-			FCameraShakeUpdateResult ChildResult;
+				FCameraShakeUpdateResult ChildResult;
 
-			Pattern->UpdateShakePattern(ChildParams, ChildResult);
+				Pattern->UpdateShakePattern(ChildParams, ChildResult);
 
-			if (IsChildPatternFinished(PatternState, Pattern))
-			{
-				// This pattern just ended now. Reset its state and move on to the next.
-				ChildStates[Index] = FCameraShakeState();
-				continue;
-			}
+				if (IsChildPatternFinished(PatternState, Pattern))
+				{
+					// This pattern just ended now. Reset its state and move on to the next.
+					ChildStates[Index] = FCameraShakeState();
+					continue;
+				}
 			
-			// Apply this result and pass it on to the next child pattern.
-			FCameraShakeApplyResultParams ApplyParams;
-			ApplyParams.Scale = ChildParams.GetTotalScale();
-			ApplyParams.PlaySpace = ShakeInstance->GetPlaySpace();
-			ApplyParams.UserPlaySpaceMatrix = ShakeInstance->GetUserPlaySpaceMatrix();
-			// This applies the current pattern's update to the parameters we'll pass
-			// to the next one.
-			UCameraShakeBase::ApplyResult(ApplyParams, ChildResult, ChildParams.POV);
+				// Apply this result and pass it on to the next child pattern.
+				FCameraShakeApplyResultParams ApplyParams;
+				ApplyParams.Scale = ChildParams.GetTotalScale();
+				ApplyParams.PlaySpace = ShakeInstance->GetPlaySpace();
+				ApplyParams.UserPlaySpaceMatrix = ShakeInstance->GetUserPlaySpaceMatrix();
+				// This applies the current pattern's update to the parameters we'll pass
+				// to the next one.
+				UCameraShakeBase::ApplyResult(ApplyParams, ChildResult, ChildParams.POV);
+			}
 		}
 	}
 
@@ -107,41 +121,44 @@ void UCompositeCameraShakePattern::ScrubShakePatternImpl(const FCameraShakeScrub
 
 	for (uint32 Index = 0, Num = ChildPatterns.Num(); Index < Num; ++Index)
 	{
-		FCameraShakeState& PatternState = ChildStates[Index];
-		if (!PatternState.IsActive())
+		if (Index < (uint32)ChildStates.Num())
 		{
-			// This pattern was finished for some time already.
-			continue;
-		}
-
-		UCameraShakePattern* Pattern = ChildPatterns[Index];
-		if (Pattern != nullptr)
-		{
-			// Scrub the child state.
-			float ChildBlendingWeight = PatternState.Scrub(Params.AbsoluteTime);
-
-			// Let the child pattern run on the current result, with its own blending weight.
-			ChildParams.BlendingWeight = Params.BlendingWeight * ChildBlendingWeight;
-
-			FCameraShakeUpdateResult ChildResult;
-
-			Pattern->ScrubShakePattern(ChildParams, ChildResult);
-
-			if (IsChildPatternFinished(PatternState, Pattern))
+			FCameraShakeState& PatternState = ChildStates[Index];
+			if (!PatternState.IsActive())
 			{
-				// This pattern just ended now. Reset its state and move on to the next.
-				ChildStates[Index] = FCameraShakeState();
+				// This pattern was finished for some time already.
 				continue;
 			}
+
+			UCameraShakePattern* Pattern = ChildPatterns[Index];
+			if (Pattern != nullptr)
+			{
+				// Scrub the child state.
+				float ChildBlendingWeight = PatternState.Scrub(Params.AbsoluteTime);
+
+				// Let the child pattern run on the current result, with its own blending weight.
+				ChildParams.BlendingWeight = Params.BlendingWeight * ChildBlendingWeight;
+
+				FCameraShakeUpdateResult ChildResult;
+
+				Pattern->ScrubShakePattern(ChildParams, ChildResult);
+
+				if (IsChildPatternFinished(PatternState, Pattern))
+				{
+					// This pattern just ended now. Reset its state and move on to the next.
+					ChildStates[Index] = FCameraShakeState();
+					continue;
+				}
 			
-			// Apply this result and pass it on to the next child pattern.
-			FCameraShakeApplyResultParams ApplyParams;
-			ApplyParams.Scale = ChildParams.GetTotalScale();
-			ApplyParams.PlaySpace = ShakeInstance->GetPlaySpace();
-			ApplyParams.UserPlaySpaceMatrix = ShakeInstance->GetUserPlaySpaceMatrix();
-			// This applies the current pattern's scrubbing to the parameters we'll pass
-			// to the next one.
-			UCameraShakeBase::ApplyResult(ApplyParams, ChildResult, ChildParams.POV);
+				// Apply this result and pass it on to the next child pattern.
+				FCameraShakeApplyResultParams ApplyParams;
+				ApplyParams.Scale = ChildParams.GetTotalScale();
+				ApplyParams.PlaySpace = ShakeInstance->GetPlaySpace();
+				ApplyParams.UserPlaySpaceMatrix = ShakeInstance->GetUserPlaySpaceMatrix();
+				// This applies the current pattern's scrubbing to the parameters we'll pass
+				// to the next one.
+				UCameraShakeBase::ApplyResult(ApplyParams, ChildResult, ChildParams.POV);
+			}
 		}
 	}
 
@@ -175,12 +192,15 @@ bool UCompositeCameraShakePattern::IsFinishedImpl() const
 	for (uint32 Index = 0, Num = ChildPatterns.Num(); Index < Num; ++Index)
 	{
 		const UCameraShakePattern* Pattern = ChildPatterns[Index];
-		const FCameraShakeState& PatternState = ChildStates[Index];
-
-		const bool bIsChildFinished = IsChildPatternFinished(PatternState, Pattern);
-		if (!bIsChildFinished)
+		if (Index < (uint32)ChildStates.Num())
 		{
-			return false;
+			const FCameraShakeState& PatternState = ChildStates[Index];
+
+			const bool bIsChildFinished = IsChildPatternFinished(PatternState, Pattern);
+			if (!bIsChildFinished)
+			{
+				return false;
+			}
 		}
 	}
 	return true;
@@ -192,15 +212,18 @@ void UCompositeCameraShakePattern::StopShakePatternImpl(const FCameraShakeStopPa
 	for (uint32 Index = 0, Num = ChildPatterns.Num(); Index < Num; ++Index)
 	{
 		UCameraShakePattern* Pattern = ChildPatterns[Index];
-		FCameraShakeState& PatternState = ChildStates[Index];
-
-		if (PatternState.IsActive())
+		if (Index < (uint32)ChildStates.Num())
 		{
-			PatternState.Stop(Params.bImmediately);
+			FCameraShakeState& PatternState = ChildStates[Index];
 
-			if (Pattern != nullptr)
+			if (PatternState.IsActive())
 			{
-				Pattern->StopShakePattern(Params);
+				PatternState.Stop(Params.bImmediately);
+
+				if (Pattern != nullptr)
+				{
+					Pattern->StopShakePattern(Params);
+				}
 			}
 		}
 	}

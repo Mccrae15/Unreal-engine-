@@ -11,7 +11,6 @@ D3D12Device.h: D3D12 Device Interfaces
 
 class FD3D12Device;
 class FD3D12DynamicRHI;
-class FD3D12BasicRayTracingPipeline;
 class FD3D12Buffer;
 class FD3D12RayTracingDescriptorHeapCache;
 class FD3D12RayTracingPipelineCache;
@@ -284,7 +283,6 @@ public:
 	ID3D12Device5*							  GetDevice5();
 	ID3D12Device7*							  GetDevice7();
 
-	const FD3D12BasicRayTracingPipeline*	  GetBasicRayTracingPipeline           ();
 	FD3D12RayTracingDescriptorHeapCache*	  GetRayTracingDescriptorHeapCache     () { return RayTracingDescriptorHeapCache;      }
 	FD3D12RayTracingPipelineCache*			  GetRayTracingPipelineCache           () { return RayTracingPipelineCache;            }
 	FD3D12Buffer*							  GetRayTracingDispatchRaysDescBuffer  () { return RayTracingDispatchRaysDescBuffer;   }
@@ -307,7 +305,7 @@ public:
 	inline FD3D12OnlineDescriptorManager&   GetOnlineDescriptorManager  () { return OnlineDescriptorManager;   }
 	inline FD3D12OfflineDescriptorManager&  GetOfflineDescriptorManager (ERHIDescriptorHeapType InType)
 	{
-		check(InType < ERHIDescriptorHeapType::count);
+		check(InType < ERHIDescriptorHeapType::Count);
 		return OfflineDescriptorManagers[static_cast<int>(InType)];
 	}
 
@@ -369,7 +367,7 @@ private:
 
 	FD3D12DescriptorHeapManager     DescriptorHeapManager;
 	FD3D12BindlessDescriptorManager BindlessDescriptorManager;
-	TArray<FD3D12OfflineDescriptorManager, TInlineAllocator<(uint32)ERHIDescriptorHeapType::count>> OfflineDescriptorManagers;
+	TArray<FD3D12OfflineDescriptorManager, TInlineAllocator<(uint32)ERHIDescriptorHeapType::Count>> OfflineDescriptorManagers;
 
 	FD3D12GlobalOnlineSamplerHeap GlobalSamplerHeap;
 	FD3D12OnlineDescriptorManager OnlineDescriptorManager;
@@ -401,7 +399,6 @@ private:
 	FD3D12TextureAllocatorPool   TextureAllocator;
 
 #if D3D12_RHI_RAYTRACING
-	FD3D12BasicRayTracingPipeline* BasicRayTracingPipeline = nullptr;
 	FD3D12RayTracingPipelineCache* RayTracingPipelineCache = nullptr;
 	FD3D12RayTracingCompactionRequestHandler* RayTracingCompactionRequestHandler = nullptr;
 	FD3D12Buffer* RayTracingDispatchRaysDescBuffer = nullptr;

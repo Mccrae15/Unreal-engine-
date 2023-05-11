@@ -2,10 +2,11 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "ContextualAnimTypes.h"
 #include "Interfaces/Interface_BoneReferenceSkeletonProvider.h"
 #include "ContextualAnimEditorTypes.generated.h"
+
+class IPropertyHandle;
 
 class UContextualAnimSceneAsset;
 
@@ -71,10 +72,15 @@ struct FContextualAnimNewAnimSetData
 	FName RoleName = NAME_None;
 
 	UPROPERTY(EditAnywhere, Category = "Settings")
-	TObjectPtr<UAnimSequenceBase> Animation = nullptr;
+	TObjectPtr<class UAnimMontage> Animation = nullptr;
 
 	UPROPERTY(EditAnywhere, Category = "Settings")
 	bool bRequiresFlyingMode = false;
+
+	UPROPERTY(EditAnywhere, Category = "Settings")
+	bool bOptional = false;
+
+	//@TODO: Refactor this to use FContextualAnimTrack directly with a details customization to hide the properties that are not editable when adding a new set
 };
 
 /** Struct used to construct the widget for adding a new set */
@@ -88,4 +94,11 @@ struct FContextualAnimNewAnimSetParams
 
 	UPROPERTY(EditAnywhere, EditFixedSize, Category = "Settings", meta = (TitleProperty = "RoleName"))
 	TArray<FContextualAnimNewAnimSetData> Data;
+
+	UPROPERTY(EditAnywhere, Category = "Settings", meta = (ClampMin = "0", UIMin = "0", ClampMax = "1", UIMax = "1"))
+	float RandomWeight = 1.f;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

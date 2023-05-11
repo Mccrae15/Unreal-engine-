@@ -1,12 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "IMediaTextureSample.h"
-#include "IMediaTextureSampleConverter.h"
-#include "MediaObjectPool.h"
-#include "Misc/Timespan.h"
-#include "Templates/SharedPointer.h"
-#include "Templates/RefCounting.h"
+#include "IElectraTextureSample.h"
 #include "RHI.h"
 #include "RHIResources.h"
 #include "ShaderCore.h"
@@ -17,9 +12,12 @@
 #error "Should only be used on Windows"
 #endif
 
+THIRD_PARTY_INCLUDES_START
+#include "d3d12.h"
+THIRD_PARTY_INCLUDES_END
+
 class ELECTRASAMPLES_API FElectraTextureSample final
-	: public IMediaTextureSample
-	, public IMediaPoolable
+	: public IElectraTextureSampleBase
 	, public IMediaTextureSampleConverter
 {
 public:
@@ -39,35 +37,9 @@ public:
 	virtual const void* GetBuffer() override;
 	virtual uint32 GetStride() const override;
 
-	virtual FIntPoint GetDim() const override;
-	virtual FIntPoint GetOutputDim() const override;
-
-	virtual FMediaTimeStamp GetTime() const override;
-	virtual FTimespan GetDuration() const override;
-
-	virtual double GetAspectRatio() const override
-	{
-		return VideoDecoderOutput->GetAspectRatio();
-	}
-
-	virtual EMediaOrientation GetOrientation() const override
-	{
-		return (EMediaOrientation)VideoDecoderOutput->GetOrientation();
-	}
-
 	virtual EMediaTextureSampleFormat GetFormat() const override
 	{
 		return SampleFormat;
-	}
-
-	virtual bool IsCacheable() const override
-	{
-		return true;
-	}
-
-	virtual bool IsOutputSrgb() const override
-	{
-		return true;
 	}
 
 #if WITH_ENGINE
@@ -78,11 +50,6 @@ public:
 #endif //WITH_ENGINE
 
 	IMFSample* GetMFSample();
-
-#if !UE_SERVER
-	virtual void InitializePoolable() override;
-	virtual void ShutdownPoolable() override;
-#endif
 
 	virtual IMediaTextureSampleConverter* GetMediaTextureSampleConverter() override;
 
@@ -99,8 +66,12 @@ private:
 	/** Destination Texture resource (from Rendering device) */
 	FTexture2DRHIRef Texture;
 
-	/** Output data from video decoder. */
-	TSharedPtr<FVideoDecoderOutputPC, ESPMode::ThreadSafe> VideoDecoderOutput;
+	/** Output data from video decoder. Baseclass holds reference */
+	FVideoDecoderOutputPC* VideoDecoderOutputPC;
+
+	/** DX12 related resources */
+	TRefCountPtr<ID3D12GraphicsCommandList> D3DCmdList;
+	TRefCountPtr<ID3D12CommandAllocator> D3DCmdAllocator;
 };
 
 using FElectraTextureSamplePtr = TSharedPtr<FElectraTextureSample, ESPMode::ThreadSafe>;

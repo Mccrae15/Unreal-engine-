@@ -2,16 +2,14 @@
 
 #pragma once
 
-#include "CoreTypes.h"
-#include "Delegates/IDelegateInstance.h"
 #include "IMessageTransport.h"
-#include "INetworkMessagingExtension.h"
 #include "Interfaces/IPv4/IPv4Endpoint.h"
-#include "IMessageAttachment.h"
-#include "Templates/SharedPointer.h"
 #include "Async/Future.h"
 #include "Containers/Ticker.h"
 #include "HAL/IConsoleManager.h"
+#include "Misc/Guid.h"
+
+struct FMessageTransportStatistics;
 
 class FArrayReader;
 class FUdpReassembledMessage;
@@ -173,21 +171,9 @@ private:
 	FSocket* UnicastSocket;
 #endif
 
-	struct FDenyCandidate
-	{
-		int32 EndpointFailureCount = 0;
-		FDateTime LastFailTime = FDateTime::UtcNow();
-	};
-
-	/** Deny list of node ids not allowed to talk to UDP processor */
-	TMap<FGuid, FDenyCandidate> DenyCandidateList;
-
 	/** Holds the static endpoints. */
 	TSet<FIPv4Endpoint> StaticEndpoints;
 
 	/** Excluded list of IP addresses not allowed to talk to UDP processor */
 	TArray<FIPv4Endpoint> ExcludedEndpoints;
-
-	/** Console command to reset the deny list */
-	FAutoConsoleCommand ClearDenyList;
 };

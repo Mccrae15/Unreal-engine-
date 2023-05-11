@@ -4,12 +4,13 @@
 
 #include "MuR/MeshPrivate.h"
 #include "MuR/ConvertData.h"
+#include "MuR/ParametersPrivate.h"
 #include "MuR/Platform.h"
 
 
 namespace mu
 {
-	inline bool PointInBoundingBox(const vec3f& point, const SHAPE& selectionShape)
+	inline bool PointInBoundingBox(const vec3f& point, const FShape& selectionShape)
 	{
 		vec3f v = point - selectionShape.position;
 
@@ -69,7 +70,7 @@ namespace mu
 	//! Reference version
 	//---------------------------------------------------------------------------------------------
 	inline MeshPtr MeshClipMorphPlane(const Mesh* pBase, const vec3f& origin, const vec3f& normal, float dist, float factor, float radius,
-		float radius2, float angle, const SHAPE& selectionShape, const mu::string& boneName = mu::string(), float vertexSelectionBoneMaxRadius = -1.f)
+		float radius2, float angle, const FShape& selectionShape, const mu::string& boneName = mu::string(), float vertexSelectionBoneMaxRadius = -1.f)
 	{
 		//float radius = 8.f;
 		//float radius2 = 4.f;
@@ -301,8 +302,8 @@ namespace mu
 
 						if (
 							(  !boneName.empty() && VertexIsAffectedByBone(v, bone_is_affected, vertex_info) && VertexIsInMaxRadius(vertex, origin, vertexSelectionBoneMaxRadius))
-                            || (boneName.empty() && selectionShape.type == (uint8_t)SHAPE::Type::None)
-                            || (selectionShape.type == (uint8_t)SHAPE::Type::AABox && PointInBoundingBox(vertex, selectionShape))
+                            || (boneName.empty() && selectionShape.type == (uint8_t)FShape::Type::None)
+                            || (selectionShape.type == (uint8_t)FShape::Type::AABox && PointInBoundingBox(vertex, selectionShape))
 							)
 						{
 							vec3f morph_plane_center = origin;					// MORPH PLANE POS relative to root of the selected bone

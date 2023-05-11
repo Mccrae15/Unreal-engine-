@@ -4,6 +4,7 @@
 #include "HeadlessChaos.h"
 #include "HeadlessChaosTestUtility.h"
 #include "Modules/ModuleManager.h"
+#include "Chaos/GeometryQueries.h"
 #include "Chaos/HeightField.h"
 
 namespace ChaosTest {
@@ -932,13 +933,83 @@ namespace ChaosTest {
 		SweepBoxTest();
 	}
 
-	void OverlapTest()
+
+	void OverlapConsistentTest()
 	{
 		const FReal CountToWorldScale = 1;
 		const int32 Columns = 10;
 		const int32 Rows = 10;
 
-		
+		TArray<FReal> Heights = CreateMountain(Columns, Rows);
+
+		TArray<FReal> HeightsCopy = Heights;
+		FVec3 Scale(1.0, 1.0, 1.0);
+		FHeightField Heightfield(MoveTemp(HeightsCopy), TArray<uint8>(), Rows, Columns, Scale);
+		const auto& Bounds = Heightfield.BoundingBox();	//Current API forces us to do this to cache the bounds
+		{
+			TBox<FReal, 3> Box(FVec3(-0.5, -0.5, -0.5), FVec3(0.5, 0.5, 0.5));
+			FCapsule Capsule(FVec3(0.0, 0.0, 0.0), FVec3(0.0, 0.0, 9.0), 1.14);
+			Chaos::FSphere Sphere1(FVec3(0.0, 0.0, -2.0), 0.6);
+
+			FMTDInfo OutBoxMTD;
+			FMTDInfo OutCapsuleMTD;
+			FMTDInfo OutSphereMTD;
+
+			for (int32 Row = 0; Row < Rows; ++Row)
+			{
+				for (int32 Col = 0; Col < Columns; ++Col)
+				{
+					for (FReal Height = 0; Height < 12; Height+=0.5)
+					{
+
+						const FVec3 Translation(Col, Row, Height);
+						FRigidTransform3 QueryTM(Translation, TRotation<FReal, 3>::Identity);
+						FVec3 Dir(1, 0, 0);
+						bool BoxResult = Heightfield.OverlapGeom(Box, QueryTM, 0.0, nullptr);
+						bool BoxResultMTD = Heightfield.OverlapGeom(Box, QueryTM, 0.0, &OutBoxMTD);
+						EXPECT_EQ(BoxResult, BoxResultMTD);
+
+						bool CapsuleResult = Heightfield.OverlapGeom(Capsule, QueryTM, 0.0, nullptr);
+						bool CapsuleResultMTD = Heightfield.OverlapGeom(Capsule, QueryTM, 0.0, &OutCapsuleMTD);
+						EXPECT_EQ(CapsuleResult, CapsuleResultMTD);
+
+						bool SphereResult = Heightfield.OverlapGeom(Sphere1, QueryTM, 0.0, nullptr);
+						bool SphereResultMTD = Heightfield.OverlapGeom(Sphere1, QueryTM, 0.0, &OutSphereMTD);
+						EXPECT_EQ(SphereResult, SphereResultMTD);
+					}
+				}
+			}
+		}
+		// Testing capsule upside down
+		{
+			FCapsule Capsule(FVec3(0.0, 0.0, 9.0), FVec3(0.0, 0.0, 0.0), 1.14);
+			FMTDInfo OutCapsuleMTD;
+
+			for (int32 Row = 0; Row < Rows; ++Row)
+			{
+				for (int32 Col = 0; Col < Columns; ++Col)
+				{
+					for (FReal Height = 0; Height < 12; Height += 0.5)
+					{
+
+						const FVec3 Translation(Col, Row, Height);
+						FRigidTransform3 QueryTM(Translation, TRotation<FReal, 3>::Identity);
+						FVec3 Dir(1, 0, 0);
+
+						bool CapsuleResult = Heightfield.OverlapGeom(Capsule, QueryTM, 0.0, nullptr);
+						bool CapsuleResultMTD = Heightfield.OverlapGeom(Capsule, QueryTM, 0.0, &OutCapsuleMTD);
+						EXPECT_EQ(CapsuleResult, CapsuleResultMTD);
+					}
+				}
+			}
+		}
+	}
+
+	void OverlapTest()
+	{
+		const FReal CountToWorldScale = 1;
+		const int32 Columns = 10;
+		const int32 Rows = 10;
 
 		TArray<FReal> Heights = CreateMountain(Columns, Rows);
 
@@ -949,6 +1020,9 @@ namespace ChaosTest {
 		// Long box
 		{
 			TBox<FReal, 3> Box(FVec3(-1.0, -1.0, -1.0), FVec3(1.0, 1.0, 10.0));
+			FCapsule Capsule(FVec3(0.0, 0.0, 0.0), FVec3(0.0, 0.0, 9.0), 1.14);
+			Chaos::FSphere Sphere1(FVec3(0.0, 0.0, -2.0), 0.6);
+
 			for (int32 Row = 0; Row < Rows; ++Row)
 			{
 				for (int32 Col = 0; Col < Columns; ++Col)
@@ -956,20 +1030,31 @@ namespace ChaosTest {
 					const FVec3 Translation(Col, Row, 1.5);
 					FRigidTransform3 QueryTM(Translation, TRotation<FReal, 3>::Identity);
 					FVec3 Dir(1, 0, 0);
-					bool Result = Heightfield.OverlapGeom(Box, QueryTM, 0.0, nullptr);
+					bool BoxResult = Heightfield.OverlapGeom(Box, QueryTM, 0.0, nullptr);
+					bool CapsuleResult = Heightfield.OverlapGeom(Capsule, QueryTM, 0.0, nullptr);
+					bool SphereResult = Heightfield.OverlapGeom(Sphere1, QueryTM, 0.0, nullptr);
 					// No collision on the side of the mountain
 					if ((Col < 3 || Col > 7) && (Row < 3 || Row > 7))
 					{
-						EXPECT_FALSE(Result);
+						EXPECT_FALSE(BoxResult);
+						EXPECT_FALSE(CapsuleResult);
+						// Sphere on the floor
+						EXPECT_TRUE(SphereResult);
 					}
 					// Collision with the mountain
 					else if ((Col >= 3 && Col <= 7) && (Row >= 3 && Row <= 7))
 					{
-						EXPECT_TRUE(Result);
+						EXPECT_TRUE(BoxResult);
+						EXPECT_TRUE(CapsuleResult);
 					}
 					else
 					{
-						EXPECT_FALSE(Result);
+						EXPECT_FALSE(BoxResult);
+					}
+					// Inside the mountain the sphere shouldn't collide
+					if ((Col > 3 && Col < 7) && (Row > 3 && Row < 7))
+					{
+						EXPECT_FALSE(SphereResult);
 					}
 				}
 			}
@@ -977,6 +1062,7 @@ namespace ChaosTest {
 		// Box rotated in X
 		{
 			TBox<FReal, 3> Box(FVec3(-1.0, -1.0, -20.0), FVec3(1.0, 1.0, 20.0));
+			FCapsule Capsule(FVec3(0.0, 0.0, -19.0), FVec3(0.0, 0.0, 19.0), 1.14);
 			for (int32 Row = 0; Row < Rows; ++Row)
 			{
 				for (int32 Col = 0; Col < Columns; ++Col)
@@ -984,15 +1070,18 @@ namespace ChaosTest {
 					const FVec3 Translation(Col, Row, 2.0);
 					FRigidTransform3 QueryTM(Translation, TRotation<FReal, 3>(UE::Math::TQuat<FReal>(TVector<FReal, 3>(1.0, 0.0, 0.0), 3.14159/2.0)));
 					FVec3 Dir(1, 0, 0);
-					bool Result = Heightfield.OverlapGeom(Box, QueryTM, 0.0, nullptr);
+					bool BoxResult = Heightfield.OverlapGeom(Box, QueryTM, 0.0, nullptr);
+					bool CapsuleResult = Heightfield.OverlapGeom(Capsule, QueryTM, 0.0, nullptr);
 					// Collision with the mountain
 					if (Col >= 3 && Col <= 7)
 					{
-						EXPECT_TRUE(Result);
+						EXPECT_TRUE(BoxResult);
+						EXPECT_TRUE(CapsuleResult);
 					}
 					else
 					{
-						EXPECT_FALSE(Result);
+						EXPECT_FALSE(BoxResult);
+						EXPECT_FALSE(CapsuleResult);
 					}
 				}
 			}
@@ -1000,6 +1089,7 @@ namespace ChaosTest {
 		// Box rotated in Y
 		{
 			TBox<FReal, 3> Box(FVec3(-1.0, -1.0, -20.0), FVec3(1.0, 1.0, 20.0));
+			FCapsule Capsule(FVec3(0.0, 0.0, -19.0), FVec3(0.0, 0.0, 19.0), 1.14);
 			for (int32 Row = 0; Row < Rows; ++Row)
 			{
 				for (int32 Col = 0; Col < Columns; ++Col)
@@ -1007,15 +1097,18 @@ namespace ChaosTest {
 					const FVec3 Translation(Col, Row, 2.0);
 					FRigidTransform3 QueryTM(Translation, TRotation<FReal, 3>(UE::Math::TQuat<FReal>(TVector<FReal, 3>(0.0, 1.0, 0.0), 3.14159 / 2.0)));
 					FVec3 Dir(1, 0, 0);
-					bool Result = Heightfield.OverlapGeom(Box, QueryTM, 0.0, nullptr);
+					bool BoxResult = Heightfield.OverlapGeom(Box, QueryTM, 0.0, nullptr);
+					bool CapsuleResult = Heightfield.OverlapGeom(Capsule, QueryTM, 0.0, nullptr);
 					// Collision with the mountain
 					if (Row >= 3 && Row <= 7)
 					{
-						EXPECT_TRUE(Result);
+						EXPECT_TRUE(BoxResult);
+						EXPECT_TRUE(CapsuleResult);
 					}
 					else
 					{
-						EXPECT_FALSE(Result);
+						EXPECT_FALSE(BoxResult);
+						EXPECT_FALSE(CapsuleResult);
 					}
 				}
 			}
@@ -1023,6 +1116,7 @@ namespace ChaosTest {
 		// Thin Box
 		{
 			TBox<FReal, 3> Box(FVec3(-10.0, -10.0, -0.001), FVec3(10.0, 10.0, 0.001));
+			FCapsule Capsule(FVec3(0.0, 0.0, -0.001), FVec3(0.0, 0.0, 0.001), 11.4);
 			for (int32 Row = 0; Row < Rows; ++Row)
 			{
 				for (int32 Col = 0; Col < Columns; ++Col)
@@ -1030,15 +1124,17 @@ namespace ChaosTest {
 					const FVec3 Translation(Col, Row, 2.0);
 					FRigidTransform3 QueryTM(Translation, TRotation<FReal, 3>(UE::Math::TQuat<FReal>(TVector<FReal, 3>(1.0, 0.0, 0.0), 0.0)));
 					FVec3 Dir(1, 0, 0);
-					bool Result = Heightfield.OverlapGeom(Box, QueryTM, 0.0, nullptr);
-					// Collision with the mountain
-					EXPECT_TRUE(Result);
+					bool BoxResult = Heightfield.OverlapGeom(Box, QueryTM, 0.0, nullptr);
+					bool CapsuleResult = Heightfield.OverlapGeom(Capsule, QueryTM, 0.0, nullptr);
+					EXPECT_TRUE(BoxResult);
+					EXPECT_TRUE(CapsuleResult);
 				}
 			}
 		}
 		// Thin Box on the top
 		{
 			TBox<FReal, 3> Box(FVec3(-10.0, -10.0, -0.001), FVec3(10.0, 10.0, 0.001));
+			FCapsule Capsule(FVec3(0.0, 0.0, -0.001), FVec3(0.0, 0.0, 0.001), 11.4);
 			for (int32 Row = 0; Row < Rows; ++Row)
 			{
 				for (int32 Col = 0; Col < Columns; ++Col)
@@ -1046,9 +1142,10 @@ namespace ChaosTest {
 					const FVec3 Translation(Col, Row, 9.5);
 					FRigidTransform3 QueryTM(Translation, TRotation<FReal, 3>(UE::Math::TQuat<FReal>(TVector<FReal, 3>(1.0, 0.0, 0.0), 0.0)));
 					FVec3 Dir(1, 0, 0);
-					bool Result = Heightfield.OverlapGeom(Box, QueryTM, 0.0, nullptr);
-					// Collision with the mountain
-					EXPECT_TRUE(Result);
+					bool BoxResult = Heightfield.OverlapGeom(Box, QueryTM, 0.0, nullptr);
+					bool CapsuleResult = Heightfield.OverlapGeom(Capsule, QueryTM, 0.0, nullptr);
+					EXPECT_TRUE(BoxResult);
+					EXPECT_TRUE(CapsuleResult);
 				}
 			}
 		}
@@ -1056,12 +1153,14 @@ namespace ChaosTest {
 		// Inclined Box
 		{
 			TBox<FReal, 3> Box(FVec3(-1.0, -1.0, -0.0001), FVec3(1.0, 1.0, 10.0));
+			FCapsule Capsule(FVec3(0.0, 0.0, 1.0-0.0001), FVec3(0.0, 0.0, 9.0), 1.0);
 			const FVec3 Translation(5.0, 0.0, 15.0);
 			FRigidTransform3 QueryTM(Translation, TRotation<FReal, 3>(UE::Math::TQuat<FReal>(TVector<FReal, 3>(1.0, 0.0, 0.0), -3*3.1415926 / 4.0)));
 			FVec3 Dir(1, 0, 0);
-			bool Result = Heightfield.OverlapGeom(Box, QueryTM, 0.0, nullptr);
-			// Collision with the mountain
-			EXPECT_TRUE(Result);
+			bool BoxResult = Heightfield.OverlapGeom(Box, QueryTM, 0.0, nullptr);
+			bool CapsuleResult = Heightfield.OverlapGeom(Capsule, QueryTM, 0.0, nullptr);
+			EXPECT_TRUE(BoxResult);
+			EXPECT_TRUE(CapsuleResult);
 		}
 	}
 	
@@ -1073,8 +1172,90 @@ namespace ChaosTest {
 		ChaosTest::RaycastVariousWalkOnHeightField();
 		ChaosTest::SweepTest();
 		ChaosTest::OverlapTest();
+		ChaosTest::OverlapConsistentTest();
 		EditHeights();
 		SUCCEED();
 	}
 
+	// A flat heightfield and a sphere swept downwards using the CCD API.
+	// Check that the IgnoreThreshold is being used to ignore sweeps that have a penetration depth
+	// less that that threshold at T=1.
+	GTEST_TEST(HeightfieldCCDTests, TestSphere)
+	{
+		int32 Rows = 64;
+		int32 Columns = 64;
+		FVec3 Scale(100.0, 100.0, 100.0);
+		TArray<FReal> Heights;
+		Heights.AddZeroed(Rows * Columns);
+
+		TArray<FReal> HeightsCopy = Heights;
+		FHeightField Heightfield(MoveTemp(HeightsCopy), TArray<uint8>(), Rows, Columns, Scale);
+		const auto& Bounds = Heightfield.BoundingBox();	//Current API forces us to do this to cache the bounds
+
+		TSphere<FReal, 3> Sphere(FVec3(0.0, 0.0, 0.0), 50.0);
+
+		FReal TOI, Phi;
+		FVec3 Position, Normal, FaceNormal;
+		int32 FaceIdx = 0;
+
+		const FRigidTransform3 Start(FVec3(0, 0, 60), FRotation3::FromIdentity());
+		const FVec3 Dir(0, 0, -1);
+		const FReal CCDIgnorePenetration = 30;
+		const FReal CCDTargetPenetration = 0;
+
+		// The first sweep should be less than the ignore threshold so get no hit
+		const FReal CCDSweepLengthA = 30;
+		const bool bHitA = Heightfield.SweepGeomCCD(Sphere, Start, Dir, CCDSweepLengthA, CCDIgnorePenetration, CCDTargetPenetration, TOI, Phi, Position, Normal, FaceIdx, FaceNormal);
+		EXPECT_FALSE(bHitA);
+
+		// The second sweep should be greater than the ignore threshold so we get a hit
+		const FReal CCDSweepLengthB = 50;
+		const bool bHitB = Heightfield.SweepGeomCCD(Sphere, Start, Dir, CCDSweepLengthB, CCDIgnorePenetration, CCDTargetPenetration, TOI, Phi, Position, Normal, FaceIdx, FaceNormal);
+		EXPECT_TRUE(bHitB);
+		EXPECT_NEAR(TOI, 0.2, UE_KINDA_SMALL_NUMBER);	// 10 / 50
+		EXPECT_NEAR(Phi, 0.0, UE_KINDA_SMALL_NUMBER);	// We are not initially penetrating
+	}
+
+	// Same as TestSphere except the sphere has a local offset built in.
+	// CCD sweeps have an early out if the depth at T=1 is less than some threshold, and there was a bug in this.
+	// related to the fact that the sweep is effectively an AABB sweep to find the overlapping heightfield cells, 
+	// and a Shape sweep to find the shape-triangle overlaps. The bug was that the AABB sweep position was being 
+	// used in the early-rejection code that should be using the shape position.
+	GTEST_TEST(HeightfieldCCDTests, TestSphereWithOffset)
+	{
+		int32 Rows = 64;
+		int32 Columns = 64;
+		FVec3 Scale(100.0, 100.0, 100.0);
+		TArray<FReal> Heights;
+		Heights.AddZeroed(Rows * Columns);
+
+		TArray<FReal> HeightsCopy = Heights;
+		FHeightField Heightfield(MoveTemp(HeightsCopy), TArray<uint8>(), Rows, Columns, Scale);
+		const auto& Bounds = Heightfield.BoundingBox();	//Current API forces us to do this to cache the bounds
+
+		// NOTE: Sphere center 50cm up
+		TSphere<FReal, 3> Sphere(FVec3(0.0, 0.0, 50.0), 50.0);
+
+		FReal TOI, Phi;
+		FVec3 Position, Normal, FaceNormal;
+		int32 FaceIdx = 0;
+
+		// NOTE: Start height at 10, rather than 60 in TestSphere
+		const FRigidTransform3 Start(FVec3(0, 0, 10), FRotation3::FromIdentity());
+		const FVec3 Dir(0, 0, -1);
+		const FReal CCDIgnorePenetration = 30;
+		const FReal CCDTargetPenetration = 0;
+		
+		// The first sweep should be less than the ignore threshold so get no hit
+		const FReal CCDSweepLengthA = 30;
+		const bool bHitA = Heightfield.SweepGeomCCD(Sphere, Start, Dir, CCDSweepLengthA, CCDIgnorePenetration, CCDTargetPenetration, TOI, Phi, Position, Normal, FaceIdx, FaceNormal);
+		EXPECT_FALSE(bHitA);
+
+		// The second sweep should be greater than the ignore threshold so we get a hit
+		const FReal CCDSweepLengthB = 50;
+		const bool bHitB = Heightfield.SweepGeomCCD(Sphere, Start, Dir, CCDSweepLengthB, CCDIgnorePenetration, CCDTargetPenetration, TOI, Phi, Position, Normal, FaceIdx, FaceNormal);
+		EXPECT_TRUE(bHitB);
+		EXPECT_NEAR(TOI, 0.2, UE_KINDA_SMALL_NUMBER);	// 10 / 50
+		EXPECT_NEAR(Phi, 0.0, UE_KINDA_SMALL_NUMBER);	// We are not initially penetrating
+	}
 }

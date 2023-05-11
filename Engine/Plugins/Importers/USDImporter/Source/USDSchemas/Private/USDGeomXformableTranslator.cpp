@@ -2,6 +2,8 @@
 
 #include "USDGeomXformableTranslator.h"
 
+#include "Engine/Level.h"
+#include "MeshTranslationImpl.h"
 #include "UnrealUSDWrapper.h"
 #include "USDAssetCache.h"
 #include "USDConversionUtils.h"
@@ -53,12 +55,6 @@ static FAutoConsoleVariableRef CVarCollapsePrimsWithoutKind(
 	TEXT( "USD.CollapsePrimsWithoutKind" ),
 	GCollapsePrimsWithoutKind,
 	TEXT( "Allow collapsing prims that have no authored 'Kind' value" ) );
-
-static int32 GMaxNumVerticesCollapsedMesh = 5000000;
-static FAutoConsoleVariableRef CVarMaxNumVerticesCollapsedMesh(
-	TEXT( "USD.MaxNumVerticesCollapsedMesh" ),
-	GMaxNumVerticesCollapsedMesh,
-	TEXT( "Maximum number of vertices that a combined Mesh can have for us to collapse it into a single StaticMesh" ) );
 
 static bool GEnableCollision = true;
 static FAutoConsoleVariableRef CVarEnableCollision(
@@ -234,6 +230,12 @@ void FUsdGeomXformableCreateAssetsTaskChain::SetupTasks()
 				RenderContextToken = UnrealToUsd::ConvertToken( *Context->RenderContext.ToString() ).Get();
 			}
 
+			pxr::TfToken MaterialPurposeToken = pxr::UsdShadeTokens->allPurpose;
+			if (!Context->MaterialPurpose.IsNone())
+			{
+				MaterialPurposeToken = UnrealToUsd::ConvertToken(*Context->MaterialPurpose.ToString()).Get();
+			}
+
 			// We're going to put Prim's transform and visibility on the component, so we don't need to bake it into the combined mesh
 			const bool bSkipRootPrimTransformAndVis = true;
 
@@ -241,6 +243,7 @@ void FUsdGeomXformableCreateAssetsTaskChain::SetupTasks()
 			Options.TimeCode = Context->Time;
 			Options.PurposesToLoad = Context->PurposesToLoad;
 			Options.RenderContext = RenderContextToken;
+			Options.MaterialPurpose = MaterialPurposeToken;
 			Options.MaterialToPrimvarToUVIndex = MaterialToPrimvarToUVIndex;
 			Options.bMergeIdenticalMaterialSlots = Context->bMergeIdenticalMaterialSlots;
 
@@ -279,12 +282,49 @@ FUsdGeomXformableTranslator::FUsdGeomXformableTranslator( TSubclassOf< USceneCom
 
 USceneComponent* FUsdGeomXformableTranslator::CreateComponents()
 {
-	USceneComponent* Component = CreateComponentsEx( {}, {} );
+	USceneComponent* SceneComponent = CreateComponentsEx( {}, {} );
 
 	// We pulled UpdateComponents outside CreateComponentsEx as in some cases we don't want to do it
 	// right away (like on FUsdGeomPointInstancerTranslator::CreateComponents)
-	UpdateComponents( Component );
-	return Component;
+	UpdateComponents(SceneComponent);
+
+	// Handle material overrides for collapsed meshes. This can happen if we have two separate subtrees that collapse
+	// the same: A single static mesh will be shared between them and one of the task chains will manage to put their
+	// material assignments on the mesh directly. To ensure the correct materials for the second subtree, we need to
+	// set overrides.
+	// Note how we don't have to handle geometry caches in here like the geom mesh translator does though: We don't
+	// collapse geometry caches, at least for now
+	if (UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(SceneComponent))
+	{
+		if (Context->InfoCache)
+		{
+			if (UStaticMesh* StaticMesh = Context->InfoCache->GetSingleAssetForPrim<UStaticMesh>(
+				PrimPath
+			))
+			{
+				TArray<UMaterialInterface*> ExistingAssignments;
+				for (FStaticMaterial& StaticMaterial : StaticMesh->GetStaticMaterials())
+				{
+					ExistingAssignments.Add(StaticMaterial.MaterialInterface);
+				}
+
+				MeshTranslationImpl::SetMaterialOverrides(
+					GetPrim(),
+					ExistingAssignments,
+					*StaticMeshComponent,
+					*Context->AssetCache.Get(),
+					*Context->InfoCache.Get(),
+					Context->Time,
+					Context->ObjectFlags,
+					Context->bAllowInterpretingLODs,
+					Context->RenderContext,
+					Context->MaterialPurpose
+				);
+			}
+		}
+	}
+
+	return SceneComponent;
 }
 
 USceneComponent* FUsdGeomXformableTranslator::CreateComponentsEx( TOptional< TSubclassOf< USceneComponent > > ComponentType, TOptional< bool > bNeedsActor )
@@ -412,12 +452,6 @@ USceneComponent* FUsdGeomXformableTranslator::CreateComponentsEx( TOptional< TSu
 			}
 #endif // WITH_EDITOR
 
-			// Hack to show transient actors in world outliner
-			if (SpawnedActor->HasAnyFlags(EObjectFlags::RF_Transient))
-			{
-				SpawnedActor->Tags.AddUnique( TEXT("SequencerActor") );
-			}
-
 			SceneComponent = SpawnedActor->GetRootComponent();
 
 			ComponentOuter = SpawnedActor;
@@ -462,9 +496,14 @@ USceneComponent* FUsdGeomXformableTranslator::CreateComponentsEx( TOptional< TSu
 				}
 				// If this is a component for a point instancer that just collapsed itself into a static mesh, just make
 				// a static mesh component that can receive it
-				else if ( Context->bCollapseTopLevelPointInstancers && pxr::UsdPrim{ Prim }.IsA<pxr::UsdGeomPointInstancer>() )
+				else if ( pxr::UsdPrim{ Prim }.IsA<pxr::UsdGeomPointInstancer>() )
 				{
-					ComponentType = UStaticMeshComponent::StaticClass();
+					static IConsoleVariable* CollapseCvar =
+						IConsoleManager::Get().FindConsoleVariable( TEXT( "USD.CollapseTopLevelPointInstancers" ) );
+					if ( CollapseCvar && CollapseCvar->GetBool() )
+					{
+						ComponentType = UStaticMeshComponent::StaticClass();
+					}
 				}
 			}
 		}
@@ -539,7 +578,7 @@ void FUsdGeomXformableTranslator::UpdateComponents( USceneComponent* SceneCompon
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE( FUsdGeomXformableTranslator::UpdateComponents );
 
-	if ( SceneComponent )
+	if (SceneComponent && Context->InfoCache)
 	{
 		SceneComponent->Modify();
 
@@ -556,7 +595,10 @@ void FUsdGeomXformableTranslator::UpdateComponents( USceneComponent* SceneCompon
 		bool bHasMultipleLODs = false;
 		if ( UStaticMeshComponent* StaticMeshComponent = Cast< UStaticMeshComponent >( SceneComponent ) )
 		{
-			UStaticMesh* PrimStaticMesh = Cast< UStaticMesh >( Context->AssetCache->GetAssetForPrim( PrimPath.GetString() ) );
+			UStaticMesh* PrimStaticMesh = Context->InfoCache->GetSingleAssetForPrim<UStaticMesh>(
+				PrimPath
+			);
+
 			if ( PrimStaticMesh )
 			{
 				bHasMultipleLODs = PrimStaticMesh->GetNumLODs() > 1;
@@ -673,94 +715,12 @@ bool FUsdGeomXformableTranslator::CollapsesChildren( ECollapsingType CollapsingT
 		}
 	}
 
-	if ( bCollapsesChildren )
-	{
-		TArray< TUsdStore< pxr::UsdPrim > > ChildGeomMeshes = UsdUtils::GetAllPrimsOfType( Prim, pxr::TfType::Find< pxr::UsdGeomMesh >() );
-
-		// Don't collapse children if they have different Nanite override values
-		bool bChildrenWantNanite = false;
-		bool bOtherChildHasNaniteOpinion = false;
-		for ( const TUsdStore< pxr::UsdPrim >& StoredPrim : ChildGeomMeshes )
-		{
-			pxr::UsdPrim ChildGeomMeshPrim = StoredPrim.Get();
-			if ( !pxr::UsdGeomMesh{ ChildGeomMeshPrim } )
-			{
-				continue;
-			}
-
-			if ( pxr::UsdAttribute NaniteOverride = ChildGeomMeshPrim.GetAttribute( UnrealIdentifiers::UnrealNaniteOverride ) )
-			{
-				pxr::TfToken OverrideValue;
-				if ( NaniteOverride.Get( &OverrideValue ) )
-				{
-					const bool bChildWantsNanite = ( OverrideValue == UnrealIdentifiers::UnrealNaniteOverrideEnable );
-
-					if ( bOtherChildHasNaniteOpinion && ( bChildWantsNanite != bChildrenWantNanite ) )
-					{
-						UE_LOG( LogUsd, Log, TEXT( "Not collapsing down from prim '%s' as child meshes have different values for the '%s' attribute" ),
-							*PrimPath.GetString(),
-							*UsdToUnreal::ConvertToken( UnrealIdentifiers::UnrealNaniteOverride )
-						);
-						return false;
-					}
-					else if ( !bOtherChildHasNaniteOpinion )
-					{
-						bChildrenWantNanite = bChildWantsNanite;
-						bOtherChildHasNaniteOpinion = true;
-					}
-				}
-			}
-		}
-
-
-		// We only support collapsing GeomMeshes for now and we only want to do it when there are multiple meshes as the resulting mesh is considered unique
-		if ( ChildGeomMeshes.Num() < 2 )
-		{
-			bCollapsesChildren = false;
-		}
-		else if ( Context->InfoCache.IsValid() )
-		{
-			TOptional<uint64> NumExpectedVertices = Context->InfoCache->GetSubtreeVertexCount( PrimPath );
-			if ( !NumExpectedVertices.IsSet() || NumExpectedVertices.GetValue() > GMaxNumVerticesCollapsedMesh )
-			{
-				bCollapsesChildren = false;
-			}
-
-			if ( bChildrenWantNanite )
-			{
-				TOptional<uint64> NumExpectedMaterialSlots = Context->InfoCache->GetSubtreeMaterialSlotCount( PrimPath ).Get( 0 );
-
-				// Note that we wont try to prevent collapsing in general if the combined mesh would have a triangle count above the threshold but too many material slots:
-				// We'll just disable Nanite with a message on the log instead.
-				// This because not only is it difficult to estimate the total number of UE triangles we'll get from the combined USD Mesh prims, but also because
-				// it doesn't really work very well: Imagine we have the Kitchen Set scene (that collapses to like 500 material slots) and we put the threshold just under
-				// the combined number of triangles. This means we can't collapse then, as the combined mesh would want Nanite (as it has more triangles than the threshold)
-				// but has too many material slots. If we prevent if from collapsing, what do we do with the uncollapsed meshes then?
-				//  - If we enable Nanite for them its a bit unexpected because now we'll have a bunch of tiny meshes that for some reason have Nanite enabled;
-				//  - If we don't enable Nanite for them, then what is the benefit? Now the mesh hasn't collapsed but we don't have Nanite anywhere anyway...
-				// At least for the case below (with the explicit overrides) we would end up with some meshes having Nanite, according to how the user set them.
-				// In the future we could expose the collapsing controls on the stage actor to let the user control this a bit better
-				const int32 MaxNumSections = 64; // There is no define for this, but it's checked for on NaniteBuilder.cpp, FBuilderModule::Build
-				if ( !NumExpectedMaterialSlots.IsSet() || NumExpectedMaterialSlots.GetValue() > MaxNumSections )
-				{
-					UE_LOG( LogUsd, Log, TEXT( "Not collapsing down from prim '%s' as child meshes want Nanite to be abled but the generated static mesh would have more than '%d' material slots" ),
-						*PrimPath.GetString(),
-						MaxNumSections
-					);
-					bCollapsesChildren = false;
-				}
-			}
-		}
-	}
-
 	return bCollapsesChildren;
 }
 
 bool FUsdGeomXformableTranslator::CanBeCollapsed( ECollapsingType CollapsingType ) const
 {
 	FScopedUsdAllocs UsdAllocs;
-
-	FString PrimPathStr = PrimPath.GetString();
 
 	pxr::UsdPrim UsdPrim{ GetPrim() };
 	if ( !UsdPrim )

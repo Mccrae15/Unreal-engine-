@@ -3,8 +3,8 @@
 
 #pragma once
 
-#include "Runtime/Launch/Resources/Version.h"
 #include "BinkMediaTexture.h"
+#include "TextureResource.h"
 
 struct FBinkMediaTextureResource : FTextureResource, FRenderTarget, FDeferredUpdateResource 
 {

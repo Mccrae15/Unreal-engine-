@@ -2,15 +2,13 @@
 
 #include "ContentBrowserClassDataSource.h"
 #include "ContentBrowserClassDataCore.h"
-#include "NativeClassHierarchy.h"
-#include "Modules/ModuleManager.h"
 #include "AssetToolsModule.h"
 #include "CollectionManagerModule.h"
+#include "ContentBrowserClassDataPayload.h"
 #include "ICollectionManager.h"
-#include "Misc/StringBuilder.h"
-#include "Misc/NamePermissionList.h"
-#include "UObject/UObjectHash.h"
+#include "ContentBrowserDataFilter.h"
 #include "ToolMenus.h"
+#include "ContentBrowserDataMenuContexts.h"
 #include "NewClassContextMenu.h"
 #include "GameProjectGenerationModule.h"
 #include "Framework/Docking/TabManager.h"
@@ -18,8 +16,11 @@
 #include "ContentBrowserDataUtils.h"
 #include "ContentBrowserItemPath.h"
 #include "Editor/UnrealEdEngine.h"
+#include "IAssetTools.h"
 #include "Preferences/UnrealEdOptions.h"
+#include "IAssetTypeActions.h"
 #include "UnrealEdGlobals.h"
+#include "ToolMenu.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ContentBrowserClassDataSource)
 
@@ -28,12 +29,6 @@
 void UContentBrowserClassDataSource::Initialize(const bool InAutoRegister)
 {
 	Super::Initialize(InAutoRegister);
-
-	{
-		static const FName NAME_AssetTools = "AssetTools";
-		FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>(NAME_AssetTools);
-		ClassTypeActions = AssetToolsModule.Get().GetAssetTypeActionsForClass(UClass::StaticClass()).Pin();
-	}
 
 	CollectionManager = &FCollectionManagerModule::GetModule().Get();
 
@@ -61,6 +56,18 @@ void UContentBrowserClassDataSource::Shutdown()
 	NativeClassHierarchy.Reset();
 
 	Super::Shutdown();
+}
+
+TSharedPtr<IAssetTypeActions> UContentBrowserClassDataSource::GetClassTypeActions()
+{
+	if (!ClassTypeActions)
+	{
+		static const FName NAME_AssetTools = "AssetTools";
+		FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>(NAME_AssetTools);
+		ClassTypeActions = AssetToolsModule.Get().GetAssetTypeActionsForClass(UClass::StaticClass()).Pin();
+	}
+
+	return ClassTypeActions;
 }
 
 void UContentBrowserClassDataSource::BuildRootPathVirtualTree()
@@ -476,7 +483,7 @@ bool UContentBrowserClassDataSource::DoesItemPassFilter(const FContentBrowserIte
 
 bool UContentBrowserClassDataSource::GetItemAttribute(const FContentBrowserItemData& InItem, const bool InIncludeMetaData, const FName InAttributeKey, FContentBrowserItemDataAttributeValue& OutAttributeValue)
 {
-	return ContentBrowserClassData::GetItemAttribute(ClassTypeActions.Get(), this, InItem, InIncludeMetaData, InAttributeKey, OutAttributeValue);
+	return ContentBrowserClassData::GetItemAttribute(GetClassTypeActions().Get(), this, InItem, InIncludeMetaData, InAttributeKey, OutAttributeValue);
 }
 
 bool UContentBrowserClassDataSource::GetItemAttributes(const FContentBrowserItemData& InItem, const bool InIncludeMetaData, FContentBrowserItemDataAttributeValues& OutAttributeValues)
@@ -496,12 +503,12 @@ bool UContentBrowserClassDataSource::CanEditItem(const FContentBrowserItemData& 
 
 bool UContentBrowserClassDataSource::EditItem(const FContentBrowserItemData& InItem)
 {
-	return ContentBrowserClassData::EditItems(ClassTypeActions.Get(), this, MakeArrayView(&InItem, 1));
+	return ContentBrowserClassData::EditItems(GetClassTypeActions().Get(), this, MakeArrayView(&InItem, 1));
 }
 
 bool UContentBrowserClassDataSource::BulkEditItems(TArrayView<const FContentBrowserItemData> InItems)
 {
-	return ContentBrowserClassData::EditItems(ClassTypeActions.Get(), this, InItems);
+	return ContentBrowserClassData::EditItems(GetClassTypeActions().Get(), this, InItems);
 }
 
 bool UContentBrowserClassDataSource::AppendItemReference(const FContentBrowserItemData& InItem, FString& InOutStr)

@@ -6,11 +6,9 @@
 #include "WorldPartition/ContentBundle/ContentBundleClient.h"
 #include "WorldPartition/ContentBundle/ContentBundleEngineSubsystem.h"
 #include "WorldPartition/WorldPartition.h"
-#include "WorldPartition/WorldPartitionSubsystem.h"
 #include "WorldPartition/ContentBundle/ContentBundleEditor.h"
 #include "WorldPartition/ContentBundle/ContentBundleWorldSubsystem.h"
 #include "WorldPartition/ContentBundle/ContentBundleLog.h"
-#include "UObject/UObjectGlobals.h"
 
 FContentBundleContainer::FContentBundleContainer(UWorld* WorldToInjectIn)
 	: InjectedWorld(WorldToInjectIn)
@@ -36,7 +34,8 @@ UWorld* FContentBundleContainer::GetInjectedWorld() const
 
 void FContentBundleContainer::Initialize()
 {
-	UE_LOG(LogContentBundle, Log, TEXT("[Container: %s] Creating new contrainer."), *GetInjectedWorld()->GetName());
+	TRACE_CPUPROFILER_EVENT_SCOPE(FContentBundleContainer::Initialize);
+	UE_LOG(LogContentBundle, Log, TEXT("%s Creating new contrainer."), *ContentBundle::Log::MakeDebugInfoString(*this));
 
 #if WITH_EDITOR
 	if (UseEditorContentBundle())
@@ -53,21 +52,32 @@ void FContentBundleContainer::Initialize()
 	RegisterContentBundleClientEvents();
 
 #if WITH_EDITOR
-	UWorldPartition* WorldPartition = GetInjectedWorld()->GetWorldPartition();
-	WorldPartition->OnPreGenerateStreaming.AddRaw(this, &FContentBundleContainer::OnPreGenerateStreaming);
-	WorldPartition->OnBeginCook.AddRaw(this, &FContentBundleContainer::OnBeginCook);
+	if (UseEditorContentBundle())
+	{
+		UWorldPartition* WorldPartition = GetInjectedWorld()->GetWorldPartition();
+		WorldPartition->OnPreGenerateStreaming.AddRaw(this, &FContentBundleContainer::OnPreGenerateStreaming);
+		WorldPartition->OnBeginCook.AddRaw(this, &FContentBundleContainer::OnBeginCook);
+	}
 #endif
 }
 
 void FContentBundleContainer::Deinitialize()
 {
-	UE_LOG(LogContentBundle, Log, TEXT("[Container: %s] Deleting container."), *GetInjectedWorld()->GetName());
+	TRACE_CPUPROFILER_EVENT_SCOPE(FContentBundleContainer::Deinitialize);
+
+	if (GetInjectedWorld())
+	{
+		UE_LOG(LogContentBundle, Log, TEXT("%s Deleting container."), *ContentBundle::Log::MakeDebugInfoString(*this));
 
 #if WITH_EDITOR
-	UWorldPartition* WorldPartition = GetInjectedWorld()->GetWorldPartition();
-	WorldPartition->OnPreGenerateStreaming.RemoveAll(this);
-	WorldPartition->OnBeginCook.RemoveAll(this);
+		if (UseEditorContentBundle())
+		{
+			UWorldPartition* WorldPartition = GetInjectedWorld()->GetWorldPartition();
+			WorldPartition->OnPreGenerateStreaming.RemoveAll(this);
+			WorldPartition->OnBeginCook.RemoveAll(this);
+		}
 #endif
+	}
 
 	UnregisterContentBundleClientEvents();
 	DeinitializeContentBundles();
@@ -83,7 +93,7 @@ uint32 FContentBundleContainer::GetNumContentBundles() const
 #if WITH_EDITOR
 	if(UseEditorContentBundle())
 	{
-		GetEditorContentBundles().Num();
+		return GetEditorContentBundles().Num();
 	}
 #endif
 
@@ -112,6 +122,19 @@ TSharedPtr<FContentBundleEditor> FContentBundleContainer::GetEditorContentBundle
 	for (const TSharedPtr<FContentBundleEditor>& ContentBundle : GetEditorContentBundles())
 	{
 		if (ContentBundle->GetDescriptor() == Descriptor)
+		{
+			return ContentBundle;
+		}
+	}
+
+	return nullptr;
+}
+
+TSharedPtr<FContentBundleEditor> FContentBundleContainer::GetEditorContentBundle(const FGuid& ContentBundleGuid) const
+{
+	for (const TSharedPtr<FContentBundleEditor>& ContentBundle : GetEditorContentBundles())
+	{
+		if (ContentBundle->GetDescriptor()->GetGuid() == ContentBundleGuid)
 		{
 			return ContentBundle;
 		}
@@ -211,8 +234,8 @@ FContentBundleBase& FContentBundleContainer::InitializeContentBundle(TSharedPtr<
 
 	FContentBundleBase* ContentBundle = nullptr;
 
-	UE_LOG(LogContentBundle, Log, TEXT("[Container: %s] Creating new ContentBundle %s from client %s with state %s."), 
-		*GetInjectedWorld()->GetName(), *ContentBundleClient->GetDescriptor()->GetDisplayName(), *ContentBundleClient->GetDisplayName(), *UEnum::GetDisplayValueAsText(ContentBundleClient->GetState()).ToString());
+	UE_LOG(LogContentBundle, Log, TEXT("%s Creating new content bundle from client %s with client state %s."), 
+		*ContentBundle::Log::MakeDebugInfoString(*ContentBundleClient , GetInjectedWorld()), *ContentBundleClient->GetDisplayName(), *UEnum::GetDisplayValueAsText(ContentBundleClient->GetState()).ToString());
 
 #if WITH_EDITOR
 	if (UseEditorContentBundle())
@@ -249,14 +272,63 @@ void FContentBundleContainer::DeinitializeContentBundle(FContentBundleBase& Cont
 	GetGameContentBundles().RemoveAtSwap(Index);
 }
 
-void FContentBundleContainer::InjectContentBundle(FContentBundleBase& ContentBundle)
+bool FContentBundleContainer::InjectContentBundle(FContentBundleClient& ContentBundleClient)
 {
-	ContentBundle.InjectContent();
+	if (FContentBundleBase* ContentBundle = GetContentBundle(ContentBundleClient))
+	{
+		return InjectContentBundle(*ContentBundle);
+	}
+
+	UE_LOG(LogContentBundle, Log, TEXT("%s Failed to inject content bundle from client %s. It was not found in world."),
+		*ContentBundle::Log::MakeDebugInfoString(ContentBundleClient, InjectedWorld), *ContentBundleClient.GetDisplayName());
+	return false;
 }
 
-void FContentBundleContainer::RemoveContentBundle(FContentBundleBase& ContentBundle)
+bool FContentBundleContainer::InjectContentBundle(FContentBundleBase& ContentBundle)
 {
-	ContentBundle.RemoveContent();
+	if (ContentBundle.GetStatus() == EContentBundleStatus::Registered)
+	{
+		TSharedPtr<FContentBundleClient> ContentBundleClient = ContentBundle.GetClient().Pin();
+		if (ContentBundleClient != nullptr && ContentBundleClient->ShouldInjectContent(InjectedWorld))
+		{
+			ContentBundle.InjectContent();
+			return true;
+		}
+	}
+	
+	return false;
+}
+
+bool FContentBundleContainer::RemoveContentBundle(FContentBundleClient& ContentBundleClient)
+{
+	if (FContentBundleBase* ContentBundle = GetContentBundle(ContentBundleClient))
+	{
+		return RemoveContentBundle(*ContentBundle);
+	}
+
+	UE_LOG(LogContentBundle, Log, TEXT("%s Failed to remove content bundle from client %s. It was not found in world."),
+		*ContentBundle::Log::MakeDebugInfoString(ContentBundleClient, InjectedWorld), *ContentBundleClient.GetDisplayName());
+	return false;
+}
+
+bool FContentBundleContainer::RemoveContentBundle(FContentBundleBase& ContentBundle)
+{
+	if ((ContentBundle.GetStatus() == EContentBundleStatus::ContentInjected || ContentBundle.GetStatus() == EContentBundleStatus::ReadyToInject))
+	{
+		TSharedPtr<FContentBundleClient> ContentBundleClient = ContentBundle.GetClient().Pin();
+		if (ContentBundleClient == nullptr || ContentBundleClient->ShouldRemoveContent(InjectedWorld) || !InjectedWorld->ContentBundleManager->CanInject())
+		{
+			ContentBundle.RemoveContent();
+			return true;
+		}
+		else
+		{
+			UE_LOG(LogContentBundle, Log, TEXT("%s Client %s determined content bundle will not be removed from world."),
+				*ContentBundle::Log::MakeDebugInfoString(ContentBundle), *ContentBundleClient->GetDisplayName());
+		}
+	}
+	
+	return false;
 }
 
 void FContentBundleContainer::OnContentBundleClientRegistered(TSharedPtr<FContentBundleClient>& ContentBundleClient)
@@ -274,18 +346,12 @@ void FContentBundleContainer::OnContentBundleClientUnregistered(FContentBundleCl
 
 void FContentBundleContainer::OnContentBundleClientContentInjectionRequested(FContentBundleClient& ContentBundleClient)
 {
-	if (FContentBundleBase* ContentBundle = GetContentBundle(ContentBundleClient))
-	{
-		InjectContentBundle(*ContentBundle);
-	}
+	InjectContentBundle(ContentBundleClient);
 }
 
 void FContentBundleContainer::OnContentBundleClientContentRemovalRequested(FContentBundleClient& ContentBundleClient)
 {
-	if (FContentBundleBase* ContentBundle = GetContentBundle(ContentBundleClient))
-	{
-		RemoveContentBundle(*ContentBundle);
-	}
+	RemoveContentBundle(ContentBundleClient);
 }
 
 void FContentBundleContainer::RegisterContentBundleClientEvents()
@@ -306,11 +372,6 @@ void FContentBundleContainer::UnregisterContentBundleClientEvents()
 	ContentBundleEngineSubsystem->OnContentBundleClientRequestedContentRemoval.RemoveAll(this);
 }
 
-bool FContentBundleContainer::ShouldInjectClientContent(const TSharedPtr<FContentBundleClient>& ContentBundleClient) const
-{
-	return ContentBundleClient->GetState() == EContentBundleClientState::ContentInjectionRequested;
-}
-
 void FContentBundleContainer::InitializeContentBundlesForegisteredClients()
 {
 	UContentBundleEngineSubsystem* ContentBundleEngineSubsystem = UContentBundleEngineSubsystem::Get();
@@ -318,19 +379,15 @@ void FContentBundleContainer::InitializeContentBundlesForegisteredClients()
 
 	if (!ContentBundleClients.IsEmpty())
 	{
-		UE_LOG(LogContentBundle, Log, TEXT("[Container: %s] Begin initializing ContentBundles from %u registered clients."), *GetInjectedWorld()->GetName(), ContentBundleClients.Num());
+		UE_LOG(LogContentBundle, Log, TEXT("%s Begin initializing ContentBundles from %u registered clients."), *ContentBundle::Log::MakeDebugInfoString(*this), ContentBundleClients.Num());
 
 		for (TSharedPtr<FContentBundleClient>& ContentBundleClient : ContentBundleClients)
 		{
 			FContentBundleBase& ContentBundle = InitializeContentBundle(ContentBundleClient);
-
-			if (ShouldInjectClientContent(ContentBundleClient))
-			{
-				InjectContentBundle(ContentBundle);
-			}
+			InjectContentBundle(ContentBundle);
 		}
 
-		UE_LOG(LogContentBundle, Log, TEXT("[Container: %s] End initializing ContentBundles."), *GetInjectedWorld()->GetName());
+		UE_LOG(LogContentBundle, Log, TEXT("%s End initializing ContentBundles."), *ContentBundle::Log::MakeDebugInfoString(*this));
 	}
 }
 
@@ -353,7 +410,7 @@ void FContentBundleContainer::DeinitializeContentBundles()
 
 void FContentBundleContainer::OnPreGenerateStreaming(TArray<FString>* OutPackageToGenerate)
 {
-	UE_LOG(LogContentBundle, Log, TEXT("[Container: %s] Generating Streaming for %u Content Bundles."), *GetInjectedWorld()->GetName(), GetEditorContentBundles().Num());
+	UE_LOG(LogContentBundle, Log, TEXT("%s Generating Streaming for %u Content Bundles."), *ContentBundle::Log::MakeDebugInfoString(*this), GetEditorContentBundles().Num());
 
 	if (IsRunningCookCommandlet())
 	{
@@ -365,9 +422,10 @@ void FContentBundleContainer::OnPreGenerateStreaming(TArray<FString>* OutPackage
 
 	GetInjectedWorld()->ContentBundleManager->GetPIEDuplicateHelper()->Clear();
 
+	const bool bIsPIE = true;
 	for (TSharedPtr<FContentBundleEditor>& ContentBundle : GetEditorContentBundles())
 	{
-		ContentBundle->GenerateStreaming(OutPackageToGenerate);
+		ContentBundle->GenerateStreaming(OutPackageToGenerate, bIsPIE);
 	}
 }
 

@@ -37,7 +37,6 @@ namespace UE::AssetRegistry::Impl { struct FClassInheritanceContext; }
 namespace UE::AssetDependencyGatherer::Private { class FRegisteredAssetDependencyGatherer; }
 #endif
 
-#if ASSETREGISTRY_ENABLE_PREMADE_REGISTRY_IN_EDITOR
 namespace UE::AssetRegistry::Premade
 {
 
@@ -68,7 +67,6 @@ private:
 };
 
 }
-#endif
 
 namespace UE::AssetRegistry
 {
@@ -143,7 +141,8 @@ public:
 	void ScanModifiedAssetFiles(Impl::FEventContext& EventContext, Impl::FClassInheritanceContext& InheritanceContext,
 		const TArray<FString>& InFilePaths);
 	void Serialize(FArchive& Ar, Impl::FEventContext& EventContext);
-	void AppendState(Impl::FEventContext& EventContext, const FAssetRegistryState& InState);
+	void AppendState(Impl::FEventContext& EventContext, const FAssetRegistryState& InState,
+		FAssetRegistryState::EInitializationMode Mode = FAssetRegistryState::EInitializationMode::Append);
 	void GetAllocatedSize(bool bLogDetailed, SIZE_T& StateSize, SIZE_T& StaticSize, SIZE_T& SearchSize) const;
 	bool IsLoadingAssets() const;
 	void SetManageReferences(const TMultiMap<FAssetIdentifier, FAssetIdentifier>& ManagerMap,
@@ -154,6 +153,8 @@ public:
 #if WITH_EDITOR
 	void OnDirectoryChanged(Impl::FEventContext& EventContext, Impl::FClassInheritanceContext& InheritanceContext,
 		TArray<FFileChangeData>& FileChangesProcessed);
+	void OnDirectoryRescanRequired(Impl::FEventContext& EventContext,
+		Impl::FClassInheritanceContext& InheritanceContext, FString& DirPath, int64 BeforeTimeStamp);
 	void AddLoadedAssetToProcess(const UObject& AssetLoaded);
 #endif
 	void OnContentPathMounted(Impl::FEventContext& EventContext, Impl::FClassInheritanceContext& InheritanceContext,
@@ -179,15 +180,21 @@ public:
 	/** Delete any temporary allocated objects that were passed out to external callers and hopefully have been deleted by now */
 	UE_DEPRECATED(5.0, "Supports deprecated functions returning pointers")
 	void TickDeletes();
+	/** Waits for the gatherer to be idle if it is operating synchronously. */
+	void WaitForGathererIdleIfSynchronous();
 	/** Callback type for TickGatherer */
-	typedef TFunctionRef<void(const TRingBuffer<FAssetData*>&)> FAssetsFoundCallback;
+	typedef TFunctionRef<void(const TMultiMap<FName, FAssetData*>&)> FAssetsFoundCallback;
 	/** Consume any results from the gatherer and return its status */
 	Impl::EGatherStatus TickGatherer(Impl::FEventContext& EventContext,
 		Impl::FClassInheritanceContext& InheritanceContext, const double TickStartTime, bool& bOutInterrupted,
 		TOptional<FAssetsFoundCallback> AssetsFoundCallback = TOptional<FAssetsFoundCallback>());
+	/** Send a log message with the search statistics. */
+	void LogSearchDiagnostics() const;
 	/** Look for and load a single AssetData result from the gatherer. */
 	void TickGatherPackage(Impl::FEventContext& EventContext, const FString& PackageName, const FString& LocalPath);
+	void ClearGathererCache();
 #if WITH_EDITOR
+	void AssetsSaved(UE::AssetRegistry::Impl::FEventContext& EventContext, TArray<FAssetData>&& Assets);
 	void GetProcessLoadedAssetsBatch(TArray<const UObject*>& OutLoadedAssets, uint32 BatchSize);
 	void PushProcessLoadedAssetsBatch(Impl::FEventContext& EventContext,
 		TArrayView<FAssetData> LoadedAssetDatas, TArrayView<const UObject*> UnprocessedFromBatch);
@@ -205,6 +212,9 @@ public:
 	void AddDirectoryReferencer(FName PackageName, const FString& DirectoryLocalPathOrLongPackageName);
 	/** Remove all directory watches for PackageName. */
 	void RemoveDirectoryReferencer(FName PackageName);
+
+	/** Called when new gatherer is registered. Requires subsequent call to RebuildAssetDependencyGathererMapIfNeeded */
+	void OnAssetDependencyGathererRegistered() { bRegisteredDependencyGathererClassesDirty = true; }
 #endif
 
 	/** Adds an asset to the empty package list which contains packages that have no assets left in them */
@@ -275,7 +285,7 @@ private:
 	 * Called every tick to when data is retrieved by the background asset search.
 	 * If TickStartTime is < 0, the entire list of gathered assets will be cached. Also used in sychronous searches
 	 */
-	void AssetSearchDataGathered(Impl::FEventContext& EventContext, const double TickStartTime, TRingBuffer<FAssetData*>& AssetResults);
+	void AssetSearchDataGathered(Impl::FEventContext& EventContext, const double TickStartTime, TMultiMap<FName, FAssetData*>& AssetResults);
 
 	/**
 	 * Called every tick when data is retrieved by the background path search.
@@ -284,7 +294,7 @@ private:
 	void PathDataGathered(Impl::FEventContext& EventContext, const double TickStartTime, TRingBuffer<FString>& PathResults);
 
 	/** Called every tick when data is retrieved by the background dependency search */
-	void DependencyDataGathered(const double TickStartTime, TRingBuffer<FPackageDependencyData>& DependsResults);
+	void DependencyDataGathered(const double TickStartTime, TMultiMap<FName, FPackageDependencyData>& DependsResults);
 
 	/** Called every tick when data is retrieved by the background search for cooked packages that do not contain asset data */
 	void CookedPackageNamesWithoutAssetDataGathered(Impl::FEventContext& EventContext, const double TickStartTime,
@@ -297,7 +307,7 @@ private:
 	void AddAssetData(Impl::FEventContext& EventContext, FAssetData* AssetData);
 
 	/** Updates an existing asset data with the new value and updates lookup maps */
-	void UpdateAssetData(Impl::FEventContext& EventContext, FAssetData* AssetData, FAssetData&& NewAssetData);
+	void UpdateAssetData(Impl::FEventContext& EventContext, FAssetData* AssetData, FAssetData&& NewAssetData, bool bKeepDeletedTags);
 
 	/** Removes the asset data from the lookup maps */
 	bool RemoveAssetData(Impl::FEventContext& EventContext, FAssetData* AssetData);
@@ -311,6 +321,9 @@ private:
 
 	/** Update Redirect collector with redirects loaded from asset registry */
 	void UpdateRedirectCollector();
+
+	/** If new gatherers were registered, this call will refresh the mapping */
+	void RebuildAssetDependencyGathererMapIfNeeded();
 #endif // WITH_EDITOR
 	void GetSubClasses_Recursive(Impl::FClassInheritanceContext& InheritanceContext, FTopLevelAssetPath InClassName,
 		TSet<FTopLevelAssetPath>& SubClassNames, TSet<FTopLevelAssetPath>& ProcessedClassNames, const TSet<FTopLevelAssetPath>& ExcludedClassNames) const;
@@ -328,7 +341,7 @@ private:
 	void ConsumeOrDeferPreloadedPremade(UAssetRegistryImpl& UARI, Impl::FEventContext& EventContext);
 	/** Moves a premade asset registry state into this AR */
 	void LoadPremadeAssetRegistry(Impl::FEventContext& Context,
-		Premade::ELoadResult LoadResult, FAssetRegistryState&& ARState, FAssetRegistryState::EInitializationMode Mode);
+		Premade::ELoadResult LoadResult, FAssetRegistryState&& ARState);
 
 private:
 
@@ -375,10 +388,8 @@ private:
 	UE_DEPRECATED(5.0, "DelayDelete is only intended to support deprecated functions.")
 	TArray<TUniqueFunction<void()>> DeleteActions;
 
-	/** The start time of the full asset search */
-	double FullSearchStartTime;
-	double AmortizeStartTime;
-	double TotalAmortizeTime;
+	/** Time spent processing Gather results */
+	float StoreGatherResultsTimeSeconds;
 	/** The highest number of pending results observed during initial gathering */
 	int32 HighestPending = 0;
 
@@ -433,6 +444,7 @@ private:
 
 	/** A map of per asset class dependency gatherer called in LoadCalculatedDependencies */
 	TMap<UClass*, UE::AssetDependencyGatherer::Private::FRegisteredAssetDependencyGatherer*> RegisteredDependencyGathererClasses;
+	bool bRegisteredDependencyGathererClassesDirty;
 #endif
 #if WITH_ENGINE && WITH_EDITOR
 	/** Class names that return true for IsAsset but which should not be treated as assets in uncooked packages */
@@ -440,9 +452,7 @@ private:
 	/** Class names that return true for IsAsset but which should not be treated as assets in cooked packages */
 	TSet<FTopLevelAssetPath> SkipCookedClasses;
 #endif
-#if ASSETREGISTRY_ENABLE_PREMADE_REGISTRY_IN_EDITOR
 	UE::AssetRegistry::Premade::FAsyncConsumer AsyncConsumer;
-#endif
 	friend struct UE::AssetRegistry::Premade::FAsyncConsumer;
 	friend struct Impl::FClassInheritanceContext;
 };

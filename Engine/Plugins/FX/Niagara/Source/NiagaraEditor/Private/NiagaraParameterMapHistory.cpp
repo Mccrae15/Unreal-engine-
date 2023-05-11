@@ -5,6 +5,7 @@
 #include "NiagaraEditorCommon.h"
 #include "NiagaraHlslTranslator.h"
 #include "NiagaraSystem.h"
+#include "NiagaraSystemImpl.h"
 #include "NiagaraGraph.h"
 #include "EdGraphSchema_Niagara.h"
 #include "NiagaraNode.h"
@@ -76,33 +77,61 @@ bool NiagaraDebugShouldLogEntriesByNameSubstring(const FName& InName)
 
 #endif
 
-void FGraphTraversalHandle::Push(const UEdGraphNode* Node)
+void FGraphTraversalHandle::PushNode(const UEdGraphNode* Node)
 {
-	ensure(Node->NodeGuid.IsValid());
-	Path.Push(Node->NodeGuid);
-	FriendlyPath.Push(Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
+	if (ensure(Node))
+	{
+		ensure(Node->NodeGuid.IsValid());
+		Path.Push(Node->NodeGuid);
+		FriendlyPath.Push(Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
+	}
+	else
+	{
+		Path.Push(FGuid());
+		FriendlyPath.Push(FString());
+	}
 }
 
-void FGraphTraversalHandle::Push(const UEdGraphPin* Pin)
+void FGraphTraversalHandle::PushPin(const UEdGraphPin* Pin)
 {
-	if (Pin->PersistentGuid.IsValid())
+	if (ensure(Pin && Pin->GetOwningNode()))
 	{
-		Path.Push(Pin->PersistentGuid);
-	}
-	else if (Pin->GetOwningNode())
-	{
-		FGuid NodeGuid = Pin->GetOwningNode()->NodeGuid;
-		int32 Index = Pin->GetOwningNode()->GetPinIndex((UEdGraphPin*)Pin);
-		ensure(NodeGuid.IsValid());
-		NodeGuid.A += Index; // This is a bit hacky, but the chance of collisions within the same graph is really low and we want a unique value for this graph.
-		Path.Push(NodeGuid);
-	}
+		PushNode(Pin->GetOwningNode());
+
+		if (Pin->PersistentGuid.IsValid())
+		{
+			Path.Push(Pin->PersistentGuid);
+		}
+		else if (Pin->GetOwningNode())
+		{
+			int32 Index = Pin->GetOwningNode()->GetPinIndex((UEdGraphPin*)Pin);
+			FGuid PinIndexGuid(Index, 0, 0, 0);
+			Path.Push(PinIndexGuid);
+		}
 	
-	FriendlyPath.Push(Pin->GetOwningNode()->GetNodeTitle(ENodeTitleType::FullTitle).ToString() + TEXT("->") + Pin->PinName.ToString());
+		FriendlyPath.Push(Pin->GetOwningNode()->GetNodeTitle(ENodeTitleType::FullTitle).ToString() + TEXT("->") + Pin->PinName.ToString());
+	}
+	else
+	{
+		Path.Push(FGuid());
+		FriendlyPath.Push(FString());
+
+		Path.Push(FGuid());
+		FriendlyPath.Push(FString());
+	}
 }
 
-void FGraphTraversalHandle::Pop()
+void FGraphTraversalHandle::PopNode()
 {
+	Path.Pop();
+	FriendlyPath.Pop();
+}
+
+
+void FGraphTraversalHandle::PopPin()
+{
+	PopNode();
+
 	Path.Pop();
 	FriendlyPath.Pop();
 }
@@ -216,7 +245,7 @@ void FNiagaraParameterMapHistory::RegisterConstantPin(const FGraphTraversalHandl
 	if (UEdGraphSchema_Niagara::IsStaticPin(InPin))
 	{
 		FGraphTraversalHandle Handle = InTraversalPath;
-		Handle.Push(InPin);
+		Handle.PushPin(InPin);
 		
 		FString* FoundValue = PinToConstantValues.Find(Handle);
 		if (FoundValue != nullptr)
@@ -1124,7 +1153,7 @@ int32 FNiagaraParameterMapHistoryBuilder::RegisterConstantFromInputPin(const UEd
 	if (UNiagaraScript::LogCompileStaticVars > 0 || NiagaraDebugShouldLogEntriesByNameSubstring(InputPin->PinName.ToString()))
 	{
 		FGraphTraversalHandle TestPath = ActivePath;
-		TestPath.Push(InputPin);
+		TestPath.PushPin(InputPin);
 		UE_LOG(LogNiagaraEditor, Log, TEXT("RegisterConstantFromInputPin Value \"%s\" Var: \"%s\""), ConstantIdx != INDEX_NONE ? *Constants[ConstantIdx] : TEXT("INDEX_NONE"), *TestPath.ToString());
 	}
 
@@ -1143,7 +1172,7 @@ int32 FNiagaraParameterMapHistoryBuilder::GetConstantFromInputPin(const UEdGraph
 				if (UNiagaraScript::LogCompileStaticVars > 0 || NiagaraDebugShouldLogEntriesByNameSubstring(InputPin->PinName.ToString()))
 				{
 					FGraphTraversalHandle TestPath = ActivePath;
-					TestPath.Push(InputPin);
+					TestPath.PushPin(InputPin);
 					UE_LOG(LogNiagaraEditor, Log, TEXT("GetConstantFromInputPin Value \"%s\" Var: \"%s\""), *Constants[*IdxPtr], *TestPath.ToString());
 				}
 				return *IdxPtr;
@@ -1165,7 +1194,7 @@ int32 FNiagaraParameterMapHistoryBuilder::GetConstantFromOutputPin(const UEdGrap
 				if (UNiagaraScript::LogCompileStaticVars > 0 || NiagaraDebugShouldLogEntriesByNameSubstring(OutputPin->GetName()))
 				{
 					FGraphTraversalHandle TestPath = ActivePath;
-					TestPath.Push(OutputPin);
+					TestPath.PushPin(OutputPin);
 					UE_LOG(LogNiagaraEditor, Log, TEXT("GetConstantFromOutputPin Value \"%s\" Var: \"%s\""), *Constants[*IdxPtr], *TestPath.ToString());
 				}
 				return *IdxPtr;
@@ -1433,7 +1462,7 @@ void FNiagaraParameterMapHistoryBuilder::EnterFunction(const FString& InNodeName
 	{
 		RegisterNodeVisitation(Node);
 		CallingContext.Push(Node);
-		ActivePath.Push(Node);
+		ActivePath.PushNode(Node);
 		CallingGraphContext.Push(InGraph);
 		PinToParameterMapIndices.Emplace();
 		PinToConstantIndices.Emplace();
@@ -1453,7 +1482,7 @@ void FNiagaraParameterMapHistoryBuilder::ExitFunction(const FString& InNodeName,
 	{
 		CallingContext.Pop();
 		CallingGraphContext.Pop();
-		ActivePath.Pop();
+		ActivePath.PopNode();
 		PinToParameterMapIndices.Pop();
 		FunctionNameContextStack.Pop();
 		PinToConstantIndices.Pop();
@@ -1466,7 +1495,7 @@ void FNiagaraParameterMapHistoryBuilder::EnterEmitter(const FString& InEmitterNa
 {
 	RegisterNodeVisitation(Node);
 	CallingContext.Push(Node);
-	ActivePath.Push(Node);
+	ActivePath.PushNode(Node);
 	CallingGraphContext.Push(InGraph);
 	EmitterNameContextStack.Emplace(*InEmitterName);
 	BuildCurrentAliases();
@@ -1499,7 +1528,7 @@ void FNiagaraParameterMapHistoryBuilder::ExitEmitter(const FString& InEmitterNam
 	CallingContext.Pop();
 	CallingGraphContext.Pop();
 	EmitterNameContextStack.Pop();
-	ActivePath.Pop();
+	ActivePath.PopNode();
 	BuildCurrentAliases();
 	ContextuallyVisitedNodes.Pop();
 	EncounteredFunctionNames.Pop();
@@ -1809,10 +1838,17 @@ int32 FNiagaraParameterMapHistoryBuilder::HandleVariableRead(int32 ParamMapIdx, 
 		{					
 			FNiagaraVariable VarRapid = FNiagaraParameterMapHistory::ConvertVariableToRapidIterationConstantName(Histories[ParamMapIdx].Variables[FoundIdx], EmitterNamespace.Len() == 0 ? nullptr : *EmitterNamespace, Usage);
 			
-			int32 StaticIdx = StaticVariables.IndexOfByPredicate([&](const FNiagaraVariable& InObj) -> bool
-				{
-					return (InObj.GetName() == VarRapid.GetName());
-				});;
+			int32 StaticIdx = INDEX_NONE;
+			
+			// See the comments in FNiagaraStackGraphUtilities::GetStackFunctionInputPinsWithoutCache to see 
+			// why this check is necessary.
+			if (!bIgnoreStaticRapidIterationParameters)
+			{
+				StaticIdx = StaticVariables.IndexOfByPredicate([&](const FNiagaraVariable& InObj) -> bool
+					{
+						return (InObj.GetName() == VarRapid.GetName());
+					});;
+			}
 
 			if (StaticIdx == INDEX_NONE)
 			{
@@ -1841,7 +1877,7 @@ int32 FNiagaraParameterMapHistoryBuilder::HandleVariableRead(int32 ParamMapIdx, 
 			if (UNiagaraScript::LogCompileStaticVars > 0)
 			{
 				FGraphTraversalHandle TestPath = ActivePath;
-				TestPath.Push(InPin);
+				TestPath.PushPin(InPin);
 				UE_LOG(LogNiagaraEditor, Log, TEXT("HandleVariableRead RapidIt Value \"%s\" Var: \"%s\" Path: \"%s\""), *DefaultValue, *VarRapid.GetName().ToString(),  *TestPath.ToString());
 			}
 			
@@ -1872,7 +1908,7 @@ int32 FNiagaraParameterMapHistoryBuilder::HandleVariableRead(int32 ParamMapIdx, 
 			if (UNiagaraScript::LogCompileStaticVars > 0)
 			{
 				FGraphTraversalHandle TestPath = ActivePath;
-				TestPath.Push(InPin);
+				TestPath.PushPin(InPin);
 				UE_LOG(LogNiagaraEditor, Log, TEXT("HandleVariableRead Ext Value \"%s\" Var: \"%s\" Path: \"%s\""), *DefaultValue, *VarRapid.GetName().ToString(),  *TestPath.ToString());
 			}
 		}
@@ -2091,6 +2127,23 @@ int32 FNiagaraParameterMapHistoryBuilder::FindStaticVariable(const FNiagaraVaria
 		});;
 
 	return FoundOverrideIdx;
+}
+
+bool FNiagaraParameterMapHistoryBuilder::ShouldProcessDepthTraversal(const UNiagaraGraph* Graph)
+{
+	// first check if there are limits setup for how deep we should look
+	if (MaxGraphDepthTraversal == INDEX_NONE || CurrentGraphDepth < MaxGraphDepthTraversal)
+	{
+		// next, if we only care about static variables, check if the graph we're going to go into actually includes any
+		if (StaticVariableSearchContext.bCollectingStaticVariablesOnly)
+		{
+			return Graph->ReferencesStaticVariable(StaticVariableSearchContext);
+		}
+
+		return true;
+	}
+
+	return false;
 }
 
 void FNiagaraParameterMapHistoryBuilder::SetConstantByStaticVariable(int32& OutValue, const FNiagaraVariable& Var)
@@ -2420,6 +2473,67 @@ int32 FNiagaraParameterMapHistoryWithMetaDataBuilder::AddVariableToHistory(FNiag
 	}
 	TOptional<FNiagaraVariableMetaData> BlankMetaData = FNiagaraVariableMetaData();
 	return History.AddVariable(InVar, InAliasedVar, ModuleName, InPin, BlankMetaData);
+}
+
+namespace NiagaraGraphCachedBuiltHistoryImpl
+{
+
+template<typename T>
+static void CollectScriptChangeIds(const T* InObject, TArray<FGuid>& ChangeIds)
+{
+	if (InObject)
+	{
+		InObject->ForEachScript([&ChangeIds](const UNiagaraScript* Script)
+		{
+			ChangeIds.Add(Script->GetBaseChangeID());
+		});
+	}
+}
+
+};
+
+bool FNiagaraGraphCachedBuiltHistory::IsValidForSystem(const UNiagaraSystem* InSystem) const
+{
+	if (!InSystem)
+	{
+		return false;
+	}
+
+	TArray<FGuid> TestChangeIds;
+	NiagaraGraphCachedBuiltHistoryImpl::CollectScriptChangeIds(InSystem, TestChangeIds);
+	return TestChangeIds == SourceAssetChangeIds;
+}
+
+void FNiagaraGraphCachedBuiltHistory::SetSourceSystem(const UNiagaraSystem* InSystem)
+{
+	SourceAssetChangeIds.Reset();
+
+	if (InSystem)
+	{
+		NiagaraGraphCachedBuiltHistoryImpl::CollectScriptChangeIds(InSystem, SourceAssetChangeIds);
+	}
+}
+
+bool FNiagaraGraphCachedBuiltHistory::IsValidForEmitter(const FVersionedNiagaraEmitterData* InEmitterData) const
+{
+	if (!InEmitterData)
+	{
+		return false;
+	}
+
+	TArray<FGuid> TestChangeIds;
+	NiagaraGraphCachedBuiltHistoryImpl::CollectScriptChangeIds(InEmitterData, TestChangeIds);
+	return TestChangeIds == SourceAssetChangeIds;
+}
+
+void FNiagaraGraphCachedBuiltHistory::SetSourceEmitter(const FVersionedNiagaraEmitterData* InEmitterData)
+{
+	SourceAssetChangeIds.Reset();
+
+	if (InEmitterData)
+	{
+		NiagaraGraphCachedBuiltHistoryImpl::CollectScriptChangeIds(InEmitterData, SourceAssetChangeIds);
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

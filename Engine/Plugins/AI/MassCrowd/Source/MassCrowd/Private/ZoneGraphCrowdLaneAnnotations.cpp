@@ -1,10 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ZoneGraphCrowdLaneAnnotations.h"
+#include "Engine/Engine.h"
+#include "MassCrowdSubsystem.h"
 #include "ZoneGraphAnnotationSubsystem.h"
 #include "ZoneGraphRenderingUtilities.h"
 #include "ZoneGraphSubsystem.h"
-#include "ZoneGraphTypes.h"
 #include "ZoneGraphQuery.h"
 #include "ZoneGraphSettings.h"
 #include "MassNavigationTypes.h"
@@ -31,15 +32,15 @@ FZoneGraphTagMask UZoneGraphCrowdLaneAnnotations::GetAnnotationTags() const
 	return AllTags;
 }
 
-void UZoneGraphCrowdLaneAnnotations::HandleEvents(TConstArrayView<const UScriptStruct*> AllEventStructs, const FInstancedStructStream& Events)
+void UZoneGraphCrowdLaneAnnotations::HandleEvents(const FInstancedStructContainer& Events)
 {
-	Events.ForEach([this](const FConstStructView View)
+	for (FConstStructView Event : Events)
 	{
-		if (const FZoneGraphCrowdLaneStateChangeEvent* const StateChangeEvent = View.GetPtr<FZoneGraphCrowdLaneStateChangeEvent>())
+		if (const FZoneGraphCrowdLaneStateChangeEvent* const StateChangeEvent = Event.GetPtr<FZoneGraphCrowdLaneStateChangeEvent>())
 		{
 			StateChangeEvents.Add(*StateChangeEvent);
 		}
-	});
+	}
 }
 
 void UZoneGraphCrowdLaneAnnotations::TickAnnotation(const float DeltaTime, FZoneGraphAnnotationTagContainer& AnnotationTagContainer)
@@ -130,7 +131,7 @@ void UZoneGraphCrowdLaneAnnotations::DebugDraw(FZoneGraphAnnotationSceneProxy* D
 
 		for (const FZoneData& Zone : ZoneStorage->Zones)
 		{
-			const float DistanceSq = FVector::DistSquared(ViewLocation, Zone.Bounds.GetCenter());
+			const FVector::FReal DistanceSq = FVector::DistSquared(ViewLocation, Zone.Bounds.GetCenter());
 			if (DistanceSq > DrawDistanceSq)
 			{
 				continue;
@@ -181,7 +182,7 @@ void UZoneGraphCrowdLaneAnnotations::DebugDraw(FZoneGraphAnnotationSceneProxy* D
 		{
 			if (WaitArea.Slots.Num() > 0)
 			{
-				const float DistanceSq = FVector::DistSquared(ViewLocation, WaitArea.Slots[0].Position);
+				const FVector::FReal DistanceSq = FVector::DistSquared(ViewLocation, WaitArea.Slots[0].Position);
 				if (DistanceSq < DrawDistanceSq)
 				{
 					for (const FCrowdWaitSlot& Slot : WaitArea.Slots)
@@ -224,7 +225,7 @@ void UZoneGraphCrowdLaneAnnotations::DebugDrawCanvas(UCanvas* Canvas, APlayerCon
 	
 	const FVector ViewLocation = Canvas->SceneView->ViewLocation;
 	const float DrawDistance = GetMaxDebugDrawDistance() * 0.25f;
-	const float DrawDistanceSq = FMath::Square(DrawDistance);
+	const FVector::FReal DrawDistanceSq = FMath::Square(DrawDistance);
 
 	auto InFrustum = [Canvas](const FVector& Location)
 	{
@@ -241,7 +242,7 @@ void UZoneGraphCrowdLaneAnnotations::DebugDrawCanvas(UCanvas* Canvas, APlayerCon
 
 		for (const FZoneData& Zone : ZoneStorage->Zones)
 		{
-			const float DistanceSq = FVector::DistSquared(ViewLocation, Zone.Bounds.GetCenter());
+			const FVector::FReal DistanceSq = FVector::DistSquared(ViewLocation, Zone.Bounds.GetCenter());
 			if (DistanceSq > DrawDistanceSq)
 			{
 				continue;
@@ -265,7 +266,10 @@ void UZoneGraphCrowdLaneAnnotations::DebugDrawCanvas(UCanvas* Canvas, APlayerCon
 				if (bDisplayTags)
 				{
 					const FZoneGraphTagMask Mask = ZoneGraphAnnotationSubsystem->GetAnnotationTags(LaneHandle);
-					Canvas->DrawText(RenderFont, FString::Printf(TEXT("%s\n0x%08X"), *UE::ZoneGraph::Helpers::GetTagMaskString(Mask, TEXT(", ")), Mask.GetValue()), ScreenLoc.X, ScreenLoc.Y, /*XScale*/1.0f, /*YScale*/1.0f, FontInfo);
+					Canvas->DrawText(RenderFont, FString::Printf(TEXT("%s\n0x%08X"), *UE::ZoneGraph::Helpers::GetTagMaskString(Mask, TEXT(", ")), Mask.GetValue())
+						, FloatCastChecked<float>(ScreenLoc.X, UE::LWC::DefaultFloatPrecision)
+						, FloatCastChecked<float>(ScreenLoc.Y, UE::LWC::DefaultFloatPrecision)
+						, /*XScale*/1.0f, /*YScale*/1.0f, FontInfo);
 				}
 
 				// Tracking
@@ -273,7 +277,10 @@ void UZoneGraphCrowdLaneAnnotations::DebugDrawCanvas(UCanvas* Canvas, APlayerCon
 				{
 					if (TrackingData->NumEntitiesOnLane > 0)
 					{
-						Canvas->DrawText(RenderFont, FString::Printf(TEXT("Num Entities: %d"), TrackingData->NumEntitiesOnLane), ScreenLoc.X, ScreenLoc.Y + 20, /*XScale*/1.0f, /*YScale*/1.0f, FontInfo);
+						Canvas->DrawText(RenderFont, FString::Printf(TEXT("Num Entities: %d"), TrackingData->NumEntitiesOnLane)
+						, FloatCastChecked<float>(ScreenLoc.X, UE::LWC::DefaultFloatPrecision)
+						, FloatCastChecked<float>(ScreenLoc.Y + 20, UE::LWC::DefaultFloatPrecision)
+						, /*XScale*/1.0f, /*YScale*/1.0f, FontInfo);
 					}
 				}
 			}
@@ -284,7 +291,7 @@ void UZoneGraphCrowdLaneAnnotations::DebugDrawCanvas(UCanvas* Canvas, APlayerCon
 		{
 			if (WaitArea.Slots.Num() > 0)
 			{
-				const float DistanceSq = FVector::DistSquared(ViewLocation, WaitArea.Slots[0].Position);
+				const FVector::FReal DistanceSq = FVector::DistSquared(ViewLocation, WaitArea.Slots[0].Position);
 				if (DistanceSq < DrawDistanceSq)
 				{
 					for (const FCrowdWaitSlot& Slot : WaitArea.Slots)
@@ -297,7 +304,10 @@ void UZoneGraphCrowdLaneAnnotations::DebugDrawCanvas(UCanvas* Canvas, APlayerCon
 							}
 
 							const FVector ScreenLoc = Canvas->Project(Slot.Position + ZOffset);
-							Canvas->DrawText(RenderFont, TEXT("OCCUPIED"), ScreenLoc.X, ScreenLoc.Y, /*XScale*/1.0f, /*YScale*/1.0f, FontInfo);
+							Canvas->DrawText(RenderFont, TEXT("OCCUPIED")
+								, FloatCastChecked<float>(ScreenLoc.X, UE::LWC::DefaultFloatPrecision)
+								, FloatCastChecked<float>(ScreenLoc.Y, UE::LWC::DefaultFloatPrecision)
+								, /*XScale*/1.0f, /*YScale*/1.0f, FontInfo);
 						}
 					}
 				}

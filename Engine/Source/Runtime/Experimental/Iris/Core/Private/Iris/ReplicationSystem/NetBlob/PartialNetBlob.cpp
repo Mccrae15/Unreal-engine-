@@ -32,12 +32,12 @@ TArrayView<const FNetObjectReference> FPartialNetBlob::GetExports() const
 	}
 }
 
-void FPartialNetBlob::SerializeWithObject(FNetSerializationContext& Context, FNetHandle NetHandle) const
+void FPartialNetBlob::SerializeWithObject(FNetSerializationContext& Context, FNetRefHandle RefHandle) const
 {
 	InternalSerialize(Context);
 }
 
-void FPartialNetBlob::DeserializeWithObject(FNetSerializationContext& Context, FNetHandle NetHandle)
+void FPartialNetBlob::DeserializeWithObject(FNetSerializationContext& Context, FNetRefHandle RefHandle)
 {
 	InternalDeserialize(Context);
 }
@@ -203,6 +203,7 @@ bool FPartialNetBlob::SplitNetBlob(const FNetSerializationContext& Context, cons
 			}
 
 			CurrentPayloadBitCount = NewPayloadBitCount;
+			continue;
 		}
 
 		// Adjust the payload bit count to the final value

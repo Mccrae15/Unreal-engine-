@@ -175,6 +175,9 @@ RENDERCORE_API bool LoadFromCompactBinary(FCbFieldView Field, FStableShaderKeyAn
 #endif
 
 
+DECLARE_DELEGATE_OneParam(FSharedShaderMapResourceExplicitRelease, const FShaderMapResource*);
+RENDERCORE_API extern FSharedShaderMapResourceExplicitRelease OnSharedShaderMapResourceExplicitRelease;
+
 DECLARE_MULTICAST_DELEGATE_TwoParams(FSharedShaderCodeRequest, const FSHAHash&, FArchive*);
 DECLARE_MULTICAST_DELEGATE_OneParam(FSharedShaderCodeRelease, const FSHAHash&);
 
@@ -218,7 +221,8 @@ struct RENDERCORE_API FShaderCodeLibrary
 	 */
 	static void CloseLibrary(FString const& Name);
 
-    static bool ContainsShaderCode(const FSHAHash& Hash);
+	static bool ContainsShaderCode(const FSHAHash& Hash);
+    static bool ContainsShaderCode(const FSHAHash& Hash, const FString& LogicalLibraryName);
 
 	static TRefCountPtr<FShaderMapResource> LoadResource(const FSHAHash& Hash, FArchive* Ar);
 

@@ -4,8 +4,10 @@
 
 #include "Engine/World.h"
 #include "GameFramework/Pawn.h"
-#include "Kismet/KismetMathLibrary.h"
 #include "Kismet/KismetSystemLibrary.h"
+#include "Modules/ModuleManager.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MotionTrajectory)
 
 #define LOCTEXT_NAMESPACE "MotionTrajectory"
 
@@ -37,7 +39,6 @@ void UMotionTrajectoryComponent::TickTrajectory(float DeltaTime)
 {
 	// Compute the instantaneous/present trajectory sample and guarantee that is zeroed on all accumulated domains
 	PresentTrajectorySampleWS = CalcWorldSpacePresentTrajectorySample(DeltaTime);
-	PresentTrajectorySampleWS.AccumulatedDistance = 0.f;
 	PresentTrajectorySampleWS.AccumulatedSeconds = 0.f;
 
 	// convert to local space
@@ -73,7 +74,7 @@ FTrajectorySampleRange UMotionTrajectoryComponent::CombineHistoryPresentPredicti
 	Trajectory.Samples.Append(History.Samples);
 	Trajectory.Samples.Add(PresentTrajectorySampleLS);
 	Trajectory.Samples.Append(Prediction.Samples);
-	Trajectory.SampleRate = SampleRate;
+
 #if WITH_EDITORONLY_DATA
 	Trajectory.DebugDrawTrajectory(bDebugDrawTrajectory, GetOwner()->GetWorld(), PreviousWorldTransform);
 #endif
@@ -103,11 +104,6 @@ void UMotionTrajectoryComponent::TickHistoryEvictionPolicy()
 		const FTrajectorySample FirstSample = SampleHistory.First();
 		const float FirstSampleTime = FirstSample.AccumulatedSeconds;
 
-		constexpr int32 DistanceDomainMask = static_cast<int32>(ETrajectorySampleDomain::Distance);
-		constexpr int32 TimeDomainMask = static_cast<int32>(ETrajectorySampleDomain::Time);
-		const bool bDistanceDomainEnabled = (HistorySettings.Domain & DistanceDomainMask) == DistanceDomainMask;
-		const bool bTimeDomainEnabled = (HistorySettings.Domain & TimeDomainMask) == TimeDomainMask;
-
 		// For both time and distance history domains, we compute the concept of an "effective" time horizon:
 		// This value is present to guarantee uniform history decay against a fixed anchor point in the past when there is lack of trajectory motion
 		// The anchor point is defined by the AccumulatedTime of the furthest history sample at the exact moment of zero motion
@@ -134,14 +130,8 @@ void UMotionTrajectoryComponent::TickHistoryEvictionPolicy()
 					return true;
 				}
 
-				// Distance horizon
-				if (bDistanceDomainEnabled && (Sample.AccumulatedDistance < -HistorySettings.Distance))
-				{
-					return true;
-				}
-
 				// Time horizon
-				if (bTimeDomainEnabled && (Sample.AccumulatedSeconds < -HistorySettings.Seconds))
+				if (Sample.AccumulatedSeconds < -HistorySettings.Seconds)
 				{
 					return true;
 				}
@@ -206,71 +196,26 @@ FTrajectorySampleRange UMotionTrajectoryComponent::GetTrajectory() const
 {
 	const APawn* Pawn = TryGetOwnerPawn();
 	checkf(false, TEXT("UMotionTrajectoryComponent::GetTrajectory for Pawn: %s requires implementation."), Pawn ? *(Pawn->GetHumanReadableName()) : TEXT("NULL"));
-	return FTrajectorySampleRange(SampleRate);
+	return FTrajectorySampleRange();
 }
 
 FTrajectorySampleRange UMotionTrajectoryComponent::GetTrajectoryWithSettings(const FMotionTrajectorySettings& Settings, bool bIncludeHistory) const
 {
 	const APawn* Pawn = TryGetOwnerPawn();
 	checkf(false, TEXT("UMotionTrajectoryComponent::GetTrajectoryWithSettings for Pawn: %s requires implementation."), Pawn ? *(Pawn->GetHumanReadableName()) : TEXT("NULL"));
-	return FTrajectorySampleRange(SampleRate);
-}
-
-void UMotionTrajectoryComponent::SetSampleRate(int32 Rate)
-{
-	// To maintain trajectory sample coherency, changing the sample rate will cause all historical samples to be flushed
-	// In the future, we may consider leveraging the frame-rate independent uniform resampling algorithm implemented within GetHistory()
-	FlushHistory();
-	SampleRate = Rate;
+	return FTrajectorySampleRange();
 }
 
 FTrajectorySampleRange UMotionTrajectoryComponent::GetHistory() const
 {
-	if (SampleHistory.IsEmpty())
+	FTrajectorySampleRange SourceHistory;
+	const int32 HistorySampleCount = SampleHistory.Num();
+	if (HistorySampleCount > 0)
 	{
-		return FTrajectorySampleRange(SampleRate);
-	}
-	else if (bUniformSampledHistory)
-	{
-		// Establish a uniform history range that will be frame-rate independent, and resampled against the SampleRate property specified by this component
-		FTrajectorySampleRange UniformHistory;
-		UniformHistory.Samples.Reserve(SampleHistory.Num());
-		UniformHistory.SampleRate = SampleRate;
-
-		int32 InterpStartIdx = 0;
-		const float SampleFrequency = 1.f / static_cast<float>(SampleRate);
-		const float FirstNonUniformSampleTime = SampleHistory.First().AccumulatedSeconds;
-		const float FirstUniformSampleTime = FMath::CeilToFloat(FirstNonUniformSampleTime / SampleFrequency) * SampleFrequency;
-
-		check(SampleFrequency > 0.f);
-		check(FirstUniformSampleTime <= 0.f);
-
-		// Iterate the source history buffer with a uniform sample frequency
-		// The iteration exit condition is meant to guarantee that we do not include (erroneously) a instantaneous/present trajectory sample at zero time
-		for (int32 Idx = 0;; ++Idx)
-		{
-			const float SampleTime = FirstUniformSampleTime + static_cast<float>(Idx) * SampleFrequency;
-			if (SampleTime < -UE_KINDA_SMALL_NUMBER)
-			{
-				const FTrajectorySample Sample = FTrajectorySampleRange::IterSampleTrajectory(SampleHistory, ETrajectorySampleDomain::Time, SampleTime, InterpStartIdx, bSmoothInterpolation);
-				UniformHistory.Samples.Emplace(Sample);
-			}
-			else
-			{
-				break;
-			}
-		}
-
-		return UniformHistory;
-	}
-	else
-	{
-		const int32 HistorySampleCount = SampleHistory.Num();
 		const int32 PresentSampleIdx = HistorySampleCount - 1;
 
 		// Convert the source history ring buffer into a trajectory range
 		// We consider these values to be non-uniform with a variable, frame-rate dependent sample rate governed by the component tick rate
-		FTrajectorySampleRange SourceHistory;
 		SourceHistory.Samples.Reserve(HistorySampleCount);
 
 		for (const auto& Sample : SampleHistory)
@@ -278,12 +223,12 @@ FTrajectorySampleRange UMotionTrajectoryComponent::GetHistory() const
 			SourceHistory.Samples.Emplace(Sample);
 		}
 
+		// @todo: fix me - maybe don't add it in the first place?
 		// Remove the present trajectory sample, this will not be included in the history
 		check(FMath::IsNearlyZero(SourceHistory.Samples[PresentSampleIdx].AccumulatedSeconds));
 		SourceHistory.Samples.RemoveAt(PresentSampleIdx);
-
-		return SourceHistory;
 	}
+	return SourceHistory;
 }
 
 #undef LOCTEXT_NAMESPACE

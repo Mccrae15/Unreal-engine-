@@ -2,7 +2,6 @@
 
 #include "HAL/PlatformCrt.h"
 #include "Misc/AssertionMacros.h"
-#include "MuR/MemoryPrivate.h"
 #include "MuR/Operations.h"
 #include "MuR/Parameters.h"
 #include "MuR/ParametersPrivate.h"
@@ -27,16 +26,16 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	void CodeGenerator::GenerateBool(BOOL_GENERATION_RESULT& result, const NodeBoolPtrConst& untyped)
+	void CodeGenerator::GenerateBool(FBoolGenerationResult& result, const NodeBoolPtrConst& untyped)
 	{
 		if (!untyped)
 		{
-			result = BOOL_GENERATION_RESULT();
+			result = FBoolGenerationResult();
 			return;
 		}
 
 		// See if it was already generated
-		VISITED_MAP_KEY key = GetCurrentCacheKey(untyped);
+		FVisitedKeyMap key = GetCurrentCacheKey(untyped);
 		GeneratedBoolsMap::ValueType* it = m_generatedBools.Find(key);
 		if (it)
 		{
@@ -76,7 +75,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	void CodeGenerator::GenerateBool_Constant(BOOL_GENERATION_RESULT& result, const Ptr<const NodeBoolConstant>& Typed)
+	void CodeGenerator::GenerateBool_Constant(FBoolGenerationResult& result, const Ptr<const NodeBoolConstant>& Typed)
 	{
 		const NodeBoolConstant::Private& node = *Typed->GetPrivate();
 
@@ -88,7 +87,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	void CodeGenerator::GenerateBool_Parameter(BOOL_GENERATION_RESULT& result, const Ptr<const NodeBoolParameter>& Typed)
+	void CodeGenerator::GenerateBool_Parameter(FBoolGenerationResult& result, const Ptr<const NodeBoolParameter>& Typed)
 	{
 		const NodeBoolParameter::Private& node = *Typed->GetPrivate();
 
@@ -97,7 +96,7 @@ namespace mu
 		auto it = m_nodeVariables.find(node.m_pNode);
 		if (it == m_nodeVariables.end())
 		{
-			PARAMETER_DESC param;
+			FParameterDesc param;
 			param.m_name = node.m_name;
 			param.m_uid = node.m_uid;
 			param.m_type = PARAMETER_TYPE::T_BOOL;
@@ -110,7 +109,7 @@ namespace mu
 			// Generate the code for the ranges
 			for (int32 a = 0; a < node.m_ranges.Num(); ++a)
 			{
-				RANGE_GENERATION_RESULT rangeResult;
+				FRangeGenerationResult rangeResult;
 				GenerateRange(rangeResult, node.m_ranges[a]);
 				op->ranges.Emplace(op.get(), rangeResult.sizeOp, rangeResult.rangeName, rangeResult.rangeUID);
 			}
@@ -127,7 +126,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	void CodeGenerator::GenerateBool_IsNull(BOOL_GENERATION_RESULT& result, const Ptr<const NodeBoolIsNull>& Typed)
+	void CodeGenerator::GenerateBool_IsNull(FBoolGenerationResult& result, const Ptr<const NodeBoolIsNull>& Typed)
 	{
 		const NodeBoolIsNull::Private& node = *Typed->GetPrivate();
 
@@ -140,7 +139,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	void CodeGenerator::GenerateBool_Not(BOOL_GENERATION_RESULT& result, const Ptr<const NodeBoolNot>& Typed)
+	void CodeGenerator::GenerateBool_Not(FBoolGenerationResult& result, const Ptr<const NodeBoolNot>& Typed)
 	{
 		const NodeBoolNot::Private& node = *Typed->GetPrivate();
 
@@ -153,7 +152,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	void CodeGenerator::GenerateBool_And(BOOL_GENERATION_RESULT& result, const Ptr<const NodeBoolAnd>& Typed)
+	void CodeGenerator::GenerateBool_And(FBoolGenerationResult& result, const Ptr<const NodeBoolAnd>& Typed)
 	{
 		const NodeBoolAnd::Private& node = *Typed->GetPrivate();
 

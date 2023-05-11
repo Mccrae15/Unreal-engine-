@@ -2,50 +2,48 @@
 
 #pragma once
 
-#include "MuR/Model.h"
-#include "MuR/System.h"
-#include "MuR/Mesh.h"
-#include "MuR/Image.h"
-#include "Engine/StaticMesh.h"
-#include "Engine/StreamableManager.h"
 
+#include "Materials/MaterialInterface.h"
 #include "MuCO/CustomizableObjectInstance.h"
 #include "MuCO/CustomizableObjectSystemPrivate.h"
-#include "Engine/Texture2D.h"
 
-#include "ClothingAsset.h"
 #include "GameplayTagContainer.h"
 
+#include "UObject/Package.h"
 #include "CustomizableInstancePrivateData.generated.h"
+
+namespace mu { class PhysicsBody; }
+struct FMutableModelImageProperties;
+struct FMutableRefSkeletalMeshData;
+struct FStreamableHandle;
 
 /** CustomizableObject Instance flags for internal use  */
 enum ECOInstanceFlags
 {
-	None							= 0,
+	ECONone							= 0,  // Should not use the name None here.. it collides with other enum in global namespace
 
 	// Update process
 	Updating						= 1 << 0,	//
 	CreatingSkeletalMesh			= 1 << 1,	//
 	Generated						= 1 << 2,	//
-	AssetsLoaded					= 1 << 3,	// Assets required to generate a mesh. Mainly Materials, PhysicsAssets and AnimBps 
-	ReduceLODs						= 1 << 4,	// CurrentMinLOD will be mapped to the LOD 0 of the generated SkeletalMesh. 
-	ReuseTextures					= 1 << 5, 	// 
-	ReplacePhysicsAssets			= 1 << 6,	// Merge active PhysicsAssets and replace the base physics asset
-	PendingMeshUpdate				= 1 << 7,	// Internaly used to know if we should regenerate the SkeletalMeshes when updating the instance
+	ReuseTextures					= 1 << 3, 	// 
+	ReplacePhysicsAssets			= 1 << 4,	// Merge active PhysicsAssets and replace the base physics asset
 
 	// Update priorities
-	UsedByComponent					= 1 << 8,	// If any components are using this instance, they will set flag every frame
-	UsedByComponentInPlay			= 1 << 9,	// If any components are using this instance in play, they will set flag every frame
-	UsedByPlayerOrNearIt			= 1 << 10,	// The instance is used by the player or is near the player, used to give more priority to its updates
-	DiscardedByNumInstancesLimit	= 1 << 11,	// The instance is descarded because we exceeded the limit of instances generated 
+	UsedByComponent					= 1 << 5,	// If any components are using this instance, they will set flag every frame
+	UsedByComponentInPlay			= 1 << 6,	// If any components are using this instance in play, they will set flag every frame
+	UsedByPlayerOrNearIt			= 1 << 7,	// The instance is used by the player or is near the player, used to give more priority to its updates
+	DiscardedByNumInstancesLimit	= 1 << 8,	// The instance is descarded because we exceeded the limit of instances generated 
 
 	// Types of updates
-	PendingLODsUpdate				= 1 << 12,	// Used to queue an update due to a change in LODs required by the instance
-	PendingLODsUpdateSecondStage	= 1 << 13,	// Second stage of the previous flag, Internaly used to queue an update due to a change in LODs required by the instance
-	PendingLODsDowngrade			= 1 << 14,	// Used to queue a downgrade update to reduce the number of LODs. LOD update goes from a high res level to a low res one, ex: 0 to 1 or 1 to 2
+	PendingLODsUpdate				= 1 << 9,	// Used to queue an update due to a change in LODs required by the instance
+	PendingLODsDowngrade			= 1 << 10,	// Used to queue a downgrade update to reduce the number of LODs. LOD update goes from a high res level to a low res one, ex: 0 to 1 or 1 to 2
 
 	// Streaming
-	LODsStreamingEnabled			= 1 << 15,	// Stream LODs instead of generating all LODs at once. Enables LODs update(upgrade)/downgrade.
+	LODsStreamingEnabled			= 1 << 11,	// Stream LODs instead of generating all LODs at once. Enables LODs update(upgrade)/downgrade.
+	
+	// Generation
+	ForceGenerateAllLODs			= 1 << 12,	// If set, Requested LOD Levels will be ignored and all LODs in between the current min/max lod will be generated
 };
 
 
@@ -122,6 +120,11 @@ struct FCustomizableInstanceComponentData
 	UPROPERTY(Transient, Category = CustomizableObjectInstance, editfixedsize, VisibleAnywhere)
 	TMap<int32, TSoftClassPtr<UAnimInstance>> AnimSlotToBP;
 
+#if WITH_EDITORONLY_DATA
+	// Just used for mutable.EnableMutableAnimInfoDebugging command
+	TArray<FString> MeshPartPaths;
+#endif
+
 	/** Skeletons required by the current generated instance. Skeletons to be loaded and merged.*/
 	UPROPERTY(Transient)
 	FReferencedSkeletons Skeletons;
@@ -175,6 +178,9 @@ public:
 	// Handle used to store a streaming request operation if one is ongoing.
 	TSharedPtr<FStreamableHandle> StreamingHandle;
 
+	// Only used in LiveUpdateMode to reuse core instances between updates and their temp data to speed up updates, but spend way more memory
+	mu::Instance::ID LiveUpdateModeInstanceID = 0;
+
 	FCustomizableInstanceComponentData* GetComponentData(int32 ComponentIndex);
 	const FCustomizableInstanceComponentData* GetComponentData(int32 ComponentIndex) const;
 
@@ -190,11 +196,18 @@ public:
 	// Return an event that will be fired when the assets  have been loaded. It returns null if no asset needs loading.
 	FGraphEventRef LoadAdditionalAssetsAsync(const TSharedPtr<FMutableOperationData>& OperationData, UCustomizableObjectInstance* Public, struct FStreamableManager &StreamableManager);
 	void AdditionalAssetsAsyncLoaded(UCustomizableObjectInstance* Public);
-	
-	mu::ParametersPtr ReloadParametersFromObject(UCustomizableObjectInstance* Public, bool ClearLastMeshIds = false);
 
-	void TickUpdateCloseCustomizableObjects(UCustomizableObjectInstance* Public);
-	void UpdateInstanceIfNotGenerated(UCustomizableObjectInstance* Public, bool bAsync);
+	/** Temporal function. Used by GetParameters and ReloadParameters but its body should be moved somewhere else (probably on some other Instance update function). */
+	void InstanceUpdateFlags(const UCustomizableObjectInstance& Public);
+
+	/** See FCustomizableObjectInstanceDescriptor::GetParameters(...). */
+	mu::ParametersPtr GetParameters(UCustomizableObjectInstance* Public);
+
+	/** See FCustomizableObjectInstanceDescriptor::ReloadParameters(...). */
+	void ReloadParameters(UCustomizableObjectInstance* Public);
+
+	void TickUpdateCloseCustomizableObjects(UCustomizableObjectInstance& Public);
+	void UpdateInstanceIfNotGenerated(UCustomizableObjectInstance& Public);
 
 	// Returns true if success (?)
 	bool UpdateSkeletalMesh_PostBeginUpdate0(UCustomizableObjectInstance* Public, const TSharedPtr<FMutableOperationData>& OperationData);
@@ -216,15 +229,12 @@ public:
 	// Copy data generated in the mutable thread over to the instance and initializes additional data required during the update
 	void PrepareForUpdate(const TSharedPtr<FMutableOperationData>& OperationData);
 
-	void SetMinMaxLODToLoad(UCustomizableObjectInstance* Public, int32 NewMinLOD, int32 NewMaxLOD, bool bLimitLODUpgrades = true);
-	
 	int32 GetNumLODsAvailable() const { return NumLODsAvailable; }
 	
 	// The following method is basically copied from PostEditChangeProperty and/or SkeletalMesh.cpp to be able to replicate PostEditChangeProperty without the editor
 	void PostEditChangePropertyWithoutEditor(USkeletalMesh* SkeletalMesh);
 	
-	void DoUpdateSkeletalMeshAsync(UCustomizableObjectInstance* Instance, FMutableQueueElem::EQueuePriorityType Priority = FMutableQueueElem::EQueuePriorityType::Low);
-	void DoUpdateSkeletalMesh(UCustomizableObjectInstance* Instance, bool bAsync, bool bIsCloseDistTick=false, bool bOnlyUpdateIfNotGenerated=false, bool bIgnoreCloseDist=false, bool bForceHighPriority = false);
+	void DoUpdateSkeletalMesh(UCustomizableObjectInstance& Instance, bool bIsCloseDistTick=false, bool bOnlyUpdateIfNotGenerated=false, bool bIgnoreCloseDist=false, bool bForceHighPriority = false);
 
 	void DiscardResourcesAndSetReferenceSkeletalMesh(UCustomizableObjectInstance* Public);
 
@@ -235,46 +245,47 @@ public:
 	CUSTOMIZABLEOBJECT_API static void ConvertImage(class UTexture2D* Texture, mu::ImagePtrConst MutableImage, const FMutableModelImageProperties& Props, int32 OnlyLOD=-1, int32 ExtractChannel=-1);
 
 	/** Set OnlyLOD to -1 to generate all mips */
-	CUSTOMIZABLEOBJECT_API static FTexturePlatformData* MutableCreateImagePlatformData(const mu::Image* MutableImage, int32 OnlyLOD, uint16 FullSizeX, uint16 FullSizeY);
+	CUSTOMIZABLEOBJECT_API static FTexturePlatformData* MutableCreateImagePlatformData(mu::Ptr<const mu::Image> MutableImage, int32 OnlyLOD, uint16 FullSizeX, uint16 FullSizeY);
 
 private:
 
-	bool BuildSkeletalMeshSkeletonData(const TSharedPtr<FMutableOperationData>& OperationData, USkeletalMesh* SkeletalMesh, const FMutableRefSkeletalMeshData* RefSkeletalMeshData, UCustomizableObjectInstance* CustomizableObjectIntance, int32 ComponentIndex);
-	void BuildMorphTargetsData(const TSharedPtr<FMutableOperationData>& OperationData, USkeletalMesh* SkeletalMesh, UCustomizableObjectInstance* CustomizableObjectInstance, int32 ComponentIndex);
-	void BuildClothingData(const TSharedPtr<FMutableOperationData>& OperationData, USkeletalMesh* SkeletalMesh, UCustomizableObjectInstance* CustomizableObjectInstance, int32 ComponentIndex);
-	void BuildSkeletalMeshElementData(const TSharedPtr<FMutableOperationData>& OperationData, USkeletalMesh* SkeletalMesh, UCustomizableObjectInstance* CustomizableObjectInstance, int32 ComponentIndex);
-	bool BuildSkeletalMeshRenderData(const TSharedPtr<FMutableOperationData>& OperationData, USkeletalMesh* SkeletalMesh, UCustomizableObjectInstance* CustomizableObjectInstance, int32 ComponentIndex);
+	void InitLastUpdateData(const TSharedPtr<FMutableOperationData>& OperationData);
+
+	void InitSkeletalMeshData(const TSharedPtr<FMutableOperationData>& OperationData, USkeletalMesh* SkeletalMesh, const FMutableRefSkeletalMeshData* RefSkeletalMeshData, int32 ComponentIndex);
+
+	bool BuildSkeletonData(const TSharedPtr<FMutableOperationData>& OperationData, USkeletalMesh* SkeletalMesh, const FMutableRefSkeletalMeshData* RefSkeletalMeshData, UCustomizableObjectInstance* CustomizableObjectIntance, int32 ComponentIndex);
+	void BuildMeshSockets(const TSharedPtr<FMutableOperationData>& OperationData, USkeletalMesh* SkeletalMesh, const FMutableRefSkeletalMeshData* RefSkeletalMeshData, UCustomizableObjectInstance* CustomizableObjectInstance, mu::MeshPtrConst MutableMesh);
+	void BuildOrCopyElementData(const TSharedPtr<FMutableOperationData>& OperationData, USkeletalMesh* SkeletalMesh, UCustomizableObjectInstance* CustomizableObjectInstance, int32 ComponentIndex);
+	void BuildOrCopyMorphTargetsData(const TSharedPtr<FMutableOperationData>& OperationData, USkeletalMesh* SkeletalMesh, const USkeletalMesh* SrcSkeletalMesh, UCustomizableObjectInstance* CustomizableObjectInstance, int32 ComponentIndex);
+	bool BuildOrCopyRenderData(const TSharedPtr<FMutableOperationData>& OperationData, USkeletalMesh* SkeletalMesh, const USkeletalMesh* SrcSkeletalMesh, UCustomizableObjectInstance* CustomizableObjectInstance, int32 ComponentIndex);
+	void BuildOrCopyClothingData(const TSharedPtr<FMutableOperationData>& OperationData, USkeletalMesh* SkeletalMesh, const USkeletalMesh* SrcSkeletalMesh, UCustomizableObjectInstance* CustomizableObjectInstance, int32 ComponentIndex);
+
+	bool CopySkeletonData(const TSharedPtr<FMutableOperationData>& OperationData, USkeletalMesh* SrcSkeletalMesh, USkeletalMesh* DestSkeletalMesh, int32 ComponentIndex);
+	void CopyMeshSockets(USkeletalMesh* SrcSkeletalMesh, USkeletalMesh* DestSkeletalMesh);
 
 	//
 	USkeleton* MergeSkeletons(UCustomizableObjectInstance* Public, const FMutableRefSkeletalMeshData* RefSkeletalMeshData, int32 ComponentIndex);
 
 	//
-	UPhysicsAsset* BuildPhysicsAsset(TObjectPtr<class UPhysicsAsset> TamplateAsset, const mu::PhysicsBody* PhysicsBody, int32 ComponentIndex, bool bDisableCollisionBetweenAssets);
+	UPhysicsAsset* GetOrBuildPhysicsAsset(TObjectPtr<class UPhysicsAsset> TamplateAsset, const mu::PhysicsBody* PhysicsBody, int32 ComponentIndex, bool bDisableCollisionBetweenAssets);
 	
+	// Create a transient texture and add it to the TextureTrackerArray
+	UTexture2D* CreateTexture();
+
 	
+	void InvalidateGeneratedData();
+
+	bool DoComponentsNeedUpdate(UCustomizableObjectInstance* CustomizableObjectInstance, const TSharedPtr<FMutableOperationData>& OperationData, TArray<bool>& OutComponentNeedsUpdate, bool& bOutEmptyMesh);
+
 	int32 GetLastMeshId(int32 ComponentIndex, int32 LODIndex) const;
 	void SetLastMeshId(int32 ComponentIndex, int32 LODIndex, int32 MeshId);
-	void ClearAllLastMeshIds();
 
-	bool MeshNeedsUpdate(UCustomizableObjectInstance* Public, const TSharedPtr<FMutableOperationData>& OperationData, bool& bOutEmptyMesh);
-
-	UTexture2D* CreateTexture();
-	
 public:
 
 	// If any components are using this instance, they will store the min of their distances to the player here every frame for LOD purposes
 	float MinSquareDistFromComponentToPlayer;
 	float LastMinSquareDistFromComponentToPlayer; // The same as the previous dist for last frame
 												
-	double LastUpdateTime;
-
-	// LODs applied on the last update. Represent the actual LODs the Instance is using.
-	int32 LastUpdateMinLOD = -1;
-	int32 LastUpdateMaxLOD = -1;
-
-	/** Saves the LODs requested on the update. */
-	void SaveMinMaxLODToLoad(const UCustomizableObjectInstance* Public);
-	
 	// This is the LODs that the Customizable Object has
 	int32 NumLODsAvailable;
 
@@ -283,7 +294,6 @@ public:
 
 	// Maximum number of SkeletalMesh LODs to stream
 	uint8 NumMaxLODsToStream;
-	
 	
 	TMap<FString, FTextureCoverageQueryData> TextureCoverageQueries;
 
@@ -308,9 +318,12 @@ public:
 	UPROPERTY(Transient, Category = CustomizableObjectInstance, editfixedsize, VisibleAnywhere)
 	FGameplayTagContainer AnimBPGameplayTags;
 
+	// Struct used during an update to avoid generating resources that can be reused.
+	FInstanceGeneratedData LastUpdateData;
+
 private:
 	
-	ECOInstanceFlags InstanceFlagsPrivate = ECOInstanceFlags::None;
+	ECOInstanceFlags InstanceFlagsPrivate = ECOInstanceFlags::ECONone;
 
 	// Struct used by BuildMaterials() to identify common materials between LODs
 	struct FMutableMaterialPlaceholder

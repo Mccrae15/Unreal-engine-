@@ -17,10 +17,9 @@ Texture2D InputTexture;
 SamplerState InputSampler;
 
 // PS Parameters
+float Brightness;
 int2 InputTextureSize;
 int2 OutputTextureSize;
-float4 PixelFactor;
-int4 InvertPixel;
 float2 UVCellSize;
 
 struct InputVS

@@ -1,9 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OnlineSubsystemUtilsModule.h"
-#include "Modules/ModuleManager.h"
-#include "Interfaces/OnlineIdentityInterface.h"
-#include "OnlineSubsystem.h"
+#include "Online.h"
 #include "OnlineSubsystemUtils.h"
 #include "OnlineServicesEngineUtilsImpl.h"
 #include "OnlineDelegates.h"
@@ -212,8 +210,9 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		CREATE_HASH(THUNDERHEAD_SUBSYSTEM); 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		CREATE_HASH(WECHAT_SUBSYSTEM);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		CREATE_HASH(OCULUS_SUBSYSTEM); 
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 		CREATE_HASH(QUAIL_SUBSYSTEM);
 		// Shouldn't need these as they are mocking interfaces for existing platforms
 		CREATE_HASH(PS4SERVER_SUBSYSTEM);

@@ -6,7 +6,10 @@
 #include "OptimusComponentSource.h"
 #include "OptimusDeformer.h"
 
+#include "UObject/Package.h"
 #include "UObject/UObjectGlobals.h" 
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(OptimusComponentBindingActions)
 
 
 FOptimusComponentBindingAction_AddBinding::FOptimusComponentBindingAction_AddBinding(

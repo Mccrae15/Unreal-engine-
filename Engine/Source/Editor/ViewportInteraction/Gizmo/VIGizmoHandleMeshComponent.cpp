@@ -2,6 +2,7 @@
 
 #include "VIGizmoHandleMeshComponent.h"
 #include "StaticMeshResources.h"
+#include "StaticMeshSceneProxy.h"
 
 #include "RHIResources.h"
 
@@ -68,7 +69,7 @@ public:
 	}
 
 	virtual uint32 GetMemoryFootprint(void) const override { return sizeof *this + GetAllocatedSize(); }
-	uint32 GetAllocatedSize(void) const { return FPrimitiveSceneProxy::GetAllocatedSize(); }
+	SIZE_T GetAllocatedSize(void) const { return FPrimitiveSceneProxy::GetAllocatedSize(); }
 };
 
 UGizmoHandleMeshComponent::UGizmoHandleMeshComponent() :

@@ -12,46 +12,50 @@
 
 struct FMassEntityView;
 
-
-UENUM()
-enum class EMassEntityTemplateIDType : uint8
-{
-	None,
-	ScriptStruct,
-	Class,
-	Instance
-};
-
 //ID of the template an entity is using
 USTRUCT()
 struct MASSSPAWNER_API FMassEntityTemplateID
 {
 	GENERATED_BODY()
 
-	FMassEntityTemplateID(uint32 InHash, EMassEntityTemplateIDType InType)
-	: Hash(InHash)
-	, Type(InType)
+	FMassEntityTemplateID()
+		: bIsSet(false)
+	{}
+	explicit FMassEntityTemplateID(uint32 InHash)
+		: Hash(InHash), bIsSet(true)
 	{}
 
-	FMassEntityTemplateID() = default;
+	uint32 GetHash() const 
+	{
+		checkSlow(bIsSet);
+		return Hash; 
+	}
+	
+	void SetHash(uint32 InHash) 
+	{ 
+		Hash = InHash; 
+		bIsSet = true;
+	}
 
-	uint32 GetHash() const { return Hash; }
-	void SetHash(uint32 InHash) { Hash = InHash; }
-
-	EMassEntityTemplateIDType GetType() const { return Type; }
-	void SetType(EMassEntityTemplateIDType InType) { Type = InType; }
+	void Invalidate(uint32 InHash)
+	{
+		// the exact value we set here doesn't really matter, but just to keep the possible states consistent we set it 
+		// to the default value;
+		Hash = 0;
+		bIsSet = false;
+	}
 
 	bool operator==(const FMassEntityTemplateID& Other) const
 	{
-		return (Hash == Other.Hash) && (Type == Other.Type);
+		return (Hash == Other.Hash) && IsValid() == Other.IsValid();
 	}
 
 	friend uint32 GetTypeHash(const FMassEntityTemplateID& TemplateID)
 	{
-		return HashCombine(TemplateID.Hash, (uint32)TemplateID.Type);
+		return HashCombine(TemplateID.Hash, uint32(TemplateID.bIsSet));
 	}
 
-	bool IsValid() { return Type != EMassEntityTemplateIDType::None; }
+	bool IsValid() const { return bIsSet; }
 
 	FString ToString() const;
 
@@ -60,7 +64,7 @@ protected:
 	uint32 Hash = 0;
 
 	UPROPERTY()
-	EMassEntityTemplateIDType Type = EMassEntityTemplateIDType::None;
+	uint8 bIsSet : 1;
 };
 
 /** @todo document	*/
@@ -79,7 +83,7 @@ struct MASSSPAWNER_API FMassEntityTemplate
 	TConstArrayView<FObjectFragmentInitializerFunction> GetObjectFragmentInitializers() const { return ObjectInitializers; }
 	TArray<FObjectFragmentInitializerFunction>& GetMutableObjectFragmentInitializers() { return ObjectInitializers; }
 
-	bool IsValid() const { return Archetype.IsValid() && (Composition.IsEmpty() == false); }
+	bool IsValid() const { return Archetype.IsValid(); }
 	bool IsEmpty() const { return Composition.IsEmpty(); }
 
 	void SetTemplateID(FMassEntityTemplateID InTemplateID) { TemplateID = InTemplateID; }
@@ -112,11 +116,11 @@ struct MASSSPAWNER_API FMassEntityTemplate
 		if (!Composition.Fragments.Contains(*FragmentType))
 		{
 			Composition.Fragments.Add(*FragmentType);
-			InitialFragmentValues.Add(Fragment);
+			InitialFragmentValues.Emplace(Fragment);
 		}
 		else if (!InitialFragmentValues.ContainsByPredicate(FStructTypeEqualOperator(FragmentType)))
 		{
-			InitialFragmentValues.Add(Fragment);
+			InitialFragmentValues.Emplace(Fragment);
 		}
 	}
 
@@ -128,7 +132,7 @@ struct MASSSPAWNER_API FMassEntityTemplate
 		{
 			Composition.Fragments.Add<T>();
 		}
-		else if (const FInstancedStruct* Fragment = InitialFragmentValues.FindByPredicate(FStructTypeEqualOperator(T::StaticStruct())))
+		else if (FInstancedStruct* Fragment = InitialFragmentValues.FindByPredicate(FStructTypeEqualOperator(T::StaticStruct())))
 		{
 			return Fragment->template GetMutable<T>();
 		}
@@ -140,11 +144,13 @@ struct MASSSPAWNER_API FMassEntityTemplate
 	template<typename T>
 	void AddTag()
 	{
+		static_assert(TIsDerivedFrom<T, FMassTag>::IsDerived, "Given struct doesn't represent a valid mass tag type. Make sure to inherit from FMassTag or one of its child-types.");
 		Composition.Tags.Add<T>();
 	}
 	
 	void AddTag(const UScriptStruct& TagType)
 	{
+		checkf(TagType.IsChildOf(FMassFragment::StaticStruct()), TEXT("Given struct doesn't represent a valid mass tag type. Make sure to inherit from FMassTag or one of its child-types."));
 		Composition.Tags.Add(TagType);
 	}
 

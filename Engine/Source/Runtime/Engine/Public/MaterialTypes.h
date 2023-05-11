@@ -15,9 +15,10 @@ class UCurveLinearColor;
 class UCurveLinearColorAtlas;
 class UFont;
 class URuntimeVirtualTexture;
+class USparseVolumeTexture;
 
 UENUM()
-enum EMaterialParameterAssociation
+enum EMaterialParameterAssociation : int
 {
 	LayerParameter,
 	BlendParameter,
@@ -75,6 +76,21 @@ struct ENGINE_API FMaterialParameterInfo
 	}
 
 	bool RemapLayerIndex(TArrayView<const int32> IndexRemap, FMaterialParameterInfo& OutResult) const;
+
+	friend FORCEINLINE bool operator==(const FMaterialParameterInfo& Lhs, const FMaterialParameterInfo& Rhs)
+	{
+		return Lhs.Name.IsEqual(Rhs.Name) && Lhs.Association == Rhs.Association && Lhs.Index == Rhs.Index;
+	}
+
+	friend FORCEINLINE bool operator!=(const FMaterialParameterInfo& Lhs, const FMaterialParameterInfo& Rhs)
+	{
+		return !operator==(Lhs, Rhs);
+	}
+
+	friend FORCEINLINE uint32 GetTypeHash(const FMaterialParameterInfo& Value)
+	{
+		return HashCombine(HashCombine(GetTypeHash(NameToScriptName(Value.Name)), Value.Index), (uint32)Value.Association);
+	}
 };
 
 struct FMemoryImageMaterialParameterInfo
@@ -122,6 +138,41 @@ public:
 	LAYOUT_FIELD(FScriptName, Name);
 	LAYOUT_FIELD(int32, Index);
 	LAYOUT_FIELD(TEnumAsByte<EMaterialParameterAssociation>, Association);
+
+	friend FORCEINLINE bool operator==(const FMemoryImageMaterialParameterInfo& Lhs, const FMemoryImageMaterialParameterInfo& Rhs)
+	{
+		return Lhs.Name == Rhs.Name && Lhs.Association == Rhs.Association && Lhs.Index == Rhs.Index;
+	}
+
+	friend FORCEINLINE bool operator!=(const FMemoryImageMaterialParameterInfo& Lhs, const FMemoryImageMaterialParameterInfo& Rhs)
+	{
+		return !operator==(Lhs, Rhs);
+	}
+
+	friend FORCEINLINE bool operator==(const FMaterialParameterInfo& Lhs, const FMemoryImageMaterialParameterInfo& Rhs)
+	{
+		return Lhs.Name == Rhs.Name && Lhs.Index == Rhs.Index && Lhs.Association == Rhs.Association;
+	}
+
+	friend FORCEINLINE bool operator!=(const FMaterialParameterInfo& Lhs, const FMemoryImageMaterialParameterInfo& Rhs)
+	{
+		return !operator==(Lhs, Rhs);
+	}
+
+	friend FORCEINLINE bool operator==(const FMemoryImageMaterialParameterInfo& Lhs, const FMaterialParameterInfo& Rhs)
+	{
+		return Lhs.Name == Rhs.Name && Lhs.Index == Rhs.Index && Lhs.Association == Rhs.Association;
+	}
+
+	friend FORCEINLINE bool operator!=(const FMemoryImageMaterialParameterInfo& Lhs, const FMaterialParameterInfo& Rhs)
+	{
+		return !operator==(Lhs, Rhs);
+	}
+
+	friend FORCEINLINE uint32 GetTypeHash(const FMemoryImageMaterialParameterInfo& Value)
+	{
+		return HashCombine(HashCombine(GetTypeHash(Value.Name), Value.Index), (uint32)Value.Association);
+	}
 };
 
 FORCEINLINE FMaterialParameterInfo::FMaterialParameterInfo(const struct FMemoryImageMaterialParameterInfo& Rhs)
@@ -129,51 +180,6 @@ FORCEINLINE FMaterialParameterInfo::FMaterialParameterInfo(const struct FMemoryI
 	, Association(Rhs.Association)
 	, Index(Rhs.Index)
 {
-}
-
-FORCEINLINE bool operator==(const FMaterialParameterInfo& Lhs, const FMaterialParameterInfo& Rhs)
-{
-	return Lhs.Name.IsEqual(Rhs.Name) && Lhs.Association == Rhs.Association && Lhs.Index == Rhs.Index;
-}
-
-FORCEINLINE bool operator!=(const FMaterialParameterInfo& Lhs, const FMaterialParameterInfo& Rhs)
-{
-	return !operator==(Lhs, Rhs);
-}
-
-FORCEINLINE bool operator==(const FMemoryImageMaterialParameterInfo& Lhs, const FMemoryImageMaterialParameterInfo& Rhs)
-{
-	return Lhs.Name == Rhs.Name && Lhs.Association == Rhs.Association && Lhs.Index == Rhs.Index;
-}
-
-FORCEINLINE bool operator!=(const FMemoryImageMaterialParameterInfo& Lhs, const FMemoryImageMaterialParameterInfo& Rhs)
-{
-	return !operator==(Lhs, Rhs);
-}
-
-FORCEINLINE bool operator==(const FMaterialParameterInfo& Lhs, const FMemoryImageMaterialParameterInfo& Rhs)
-{
-	return Lhs.Name == Rhs.Name && Lhs.Index == Rhs.Index && Lhs.Association == Rhs.Association;
-}
-
-FORCEINLINE bool operator!=(const FMaterialParameterInfo& Lhs, const FMemoryImageMaterialParameterInfo& Rhs)
-{
-	return !operator==(Lhs, Rhs);
-}
-
-FORCEINLINE bool operator==(const FMemoryImageMaterialParameterInfo& Lhs, const FMaterialParameterInfo& Rhs)
-{
-	return Lhs.Name == Rhs.Name && Lhs.Index == Rhs.Index && Lhs.Association == Rhs.Association;
-}
-
-FORCEINLINE bool operator!=(const FMemoryImageMaterialParameterInfo& Lhs, const FMaterialParameterInfo& Rhs)
-{
-	return !operator==(Lhs, Rhs);
-}
-
-FORCEINLINE uint32 GetTypeHash(const FMemoryImageMaterialParameterInfo& Value)
-{
-	return HashCombine(HashCombine(GetTypeHash(Value.Name), Value.Index), (uint32)Value.Association);
 }
 
 // Backwards compat
@@ -187,12 +193,13 @@ enum class EMaterialParameterType : uint8
 	Texture,
 	Font,
 	RuntimeVirtualTexture,
+	SparseVolumeTexture,
+	StaticSwitch,
 
 	NumRuntime, // Runtime parameter types must go above here, and editor-only ones below
 
 	// TODO - Would be nice to make static parameter values editor-only, but will save that for a future-refactor
-	StaticSwitch = NumRuntime,
-	StaticComponentMask,
+	StaticComponentMask = NumRuntime,
 
 	Num,
 	None = 0xff,
@@ -267,6 +274,11 @@ struct FParameterChannelNames
 
 	UPROPERTY(EditAnywhere, Category = MaterialExpressionVectorParameter)
 	FText A;
+
+	bool operator==(const FParameterChannelNames& Other) const
+	{
+		return R.EqualTo(Other.R) && G.EqualTo(Other.G) && B.EqualTo(Other.B) && A.EqualTo(Other.A);
+	}
 };
 
 USTRUCT()
@@ -288,6 +300,11 @@ struct FStaticComponentMaskValue
 
 	UPROPERTY()
 	bool A = false;
+
+	bool operator==(const FStaticComponentMaskValue& Other) const
+	{
+		return R == Other.R && G == Other.G && B == Other.B && A == Other.A;
+	}
 };
 
 struct FMaterialTextureValue
@@ -311,6 +328,8 @@ struct FMaterialParameterValue
 	FMaterialParameterValue(const TObjectPtr<UTexture>& InValue) : Type(EMaterialParameterType::Texture) { Texture = InValue; }
 	FMaterialParameterValue(URuntimeVirtualTexture* InValue) : Type(EMaterialParameterType::RuntimeVirtualTexture) { RuntimeVirtualTexture = InValue; }
 	FMaterialParameterValue(const TObjectPtr<URuntimeVirtualTexture>& InValue) : Type(EMaterialParameterType::RuntimeVirtualTexture) { RuntimeVirtualTexture = InValue; }
+	FMaterialParameterValue(USparseVolumeTexture* InValue) : Type(EMaterialParameterType::SparseVolumeTexture) { SparseVolumeTexture = InValue; }
+	FMaterialParameterValue(const TObjectPtr<USparseVolumeTexture>& InValue) : Type(EMaterialParameterType::SparseVolumeTexture) { SparseVolumeTexture = InValue; }
 
 	// Gamethread parameters are typically non-const, but renderthread parameters are const
 	// Would be possible to store an additional const-flag member, and provide runtime checks to ensure constness is not violated...maybe worth doing in the future
@@ -318,6 +337,8 @@ struct FMaterialParameterValue
 	FMaterialParameterValue(const TObjectPtr<const UTexture>& InValue) : Type(EMaterialParameterType::Texture) { Texture = const_cast<UTexture*>(InValue.Get()); }
 	FMaterialParameterValue(const URuntimeVirtualTexture* InValue) : Type(EMaterialParameterType::RuntimeVirtualTexture) { RuntimeVirtualTexture = const_cast<URuntimeVirtualTexture*>(InValue); }
 	FMaterialParameterValue(const TObjectPtr<const URuntimeVirtualTexture>& InValue) : Type(EMaterialParameterType::RuntimeVirtualTexture) { RuntimeVirtualTexture = const_cast<URuntimeVirtualTexture*>(InValue.Get()); }
+	FMaterialParameterValue(const USparseVolumeTexture* InValue) : Type(EMaterialParameterType::SparseVolumeTexture) { SparseVolumeTexture = const_cast<USparseVolumeTexture*>(InValue); }
+	FMaterialParameterValue(const TObjectPtr<const USparseVolumeTexture>& InValue) : Type(EMaterialParameterType::SparseVolumeTexture) { SparseVolumeTexture = const_cast<USparseVolumeTexture*>(InValue.Get()); }
 
 	FMaterialParameterValue(UFont* InValue, int32 InPage) : Type(EMaterialParameterType::Font) { Font.Value = InValue; Font.Page = InPage; }
 	FMaterialParameterValue(bool InValue) : Type(EMaterialParameterType::StaticSwitch) { Bool[0] = InValue; }
@@ -341,6 +362,7 @@ struct FMaterialParameterValue
 		bool Bool[4];
 		UTexture* Texture;
 		URuntimeVirtualTexture* RuntimeVirtualTexture;
+		USparseVolumeTexture* SparseVolumeTexture;
 		struct
 		{
 			UFont* Value;
@@ -348,46 +370,47 @@ struct FMaterialParameterValue
 		} Font;
 	};
 	EMaterialParameterType Type;
+
+	friend inline bool operator==(const FMaterialParameterValue& Lhs, const FMaterialParameterValue& Rhs)
+	{
+		const EMaterialParameterType ParameterType = Lhs.Type;
+		if (ParameterType != Rhs.Type)
+		{
+			return false;
+		}
+		switch (ParameterType)
+		{
+		case EMaterialParameterType::None: return true;
+		case EMaterialParameterType::Scalar: return Lhs.Float[0] == Rhs.Float[0];
+		case EMaterialParameterType::Vector: return
+			Lhs.Float[0] == Rhs.Float[0] &&
+			Lhs.Float[1] == Rhs.Float[1] &&
+			Lhs.Float[2] == Rhs.Float[2] &&
+			Lhs.Float[3] == Rhs.Float[3];
+		case EMaterialParameterType::DoubleVector: return
+			Lhs.Double[0] == Rhs.Double[0] &&
+			Lhs.Double[1] == Rhs.Double[1] &&
+			Lhs.Double[2] == Rhs.Double[2] &&
+			Lhs.Double[3] == Rhs.Double[3];
+		case EMaterialParameterType::Texture: return Lhs.Texture == Rhs.Texture;
+		case EMaterialParameterType::Font: return Lhs.Font.Value == Rhs.Font.Value && Lhs.Font.Page == Rhs.Font.Page;
+		case EMaterialParameterType::RuntimeVirtualTexture: return Lhs.RuntimeVirtualTexture == Rhs.RuntimeVirtualTexture;
+		case EMaterialParameterType::SparseVolumeTexture: return Lhs.SparseVolumeTexture == Rhs.SparseVolumeTexture;
+		case EMaterialParameterType::StaticSwitch: return Lhs.Bool[0] == Rhs.Bool[0];
+		case EMaterialParameterType::StaticComponentMask: return
+			Lhs.Bool[0] == Rhs.Bool[0] &&
+			Lhs.Bool[1] == Rhs.Bool[1] &&
+			Lhs.Bool[2] == Rhs.Bool[2] &&
+			Lhs.Bool[3] == Rhs.Bool[3];
+		default: checkNoEntry(); return false;
+		}
+	}
+
+	friend inline bool operator!=(const FMaterialParameterValue& Lhs, const FMaterialParameterValue& Rhs)
+	{
+		return !operator==(Lhs, Rhs);
+	}
 };
-
-inline bool operator==(const FMaterialParameterValue& Lhs, const FMaterialParameterValue& Rhs)
-{
-	const EMaterialParameterType Type = Lhs.Type;
-	if (Type != Rhs.Type)
-	{
-		return false;
-	}
-	switch (Type)
-	{
-	case EMaterialParameterType::None: return true;
-	case EMaterialParameterType::Scalar: return Lhs.Float[0] == Rhs.Float[0];
-	case EMaterialParameterType::Vector: return
-		Lhs.Float[0] == Rhs.Float[0] &&
-		Lhs.Float[1] == Rhs.Float[1] &&
-		Lhs.Float[2] == Rhs.Float[2] &&
-		Lhs.Float[3] == Rhs.Float[3];
-	case EMaterialParameterType::DoubleVector: return
-		Lhs.Double[0] == Rhs.Double[0] &&
-		Lhs.Double[1] == Rhs.Double[1] &&
-		Lhs.Double[2] == Rhs.Double[2] &&
-		Lhs.Double[3] == Rhs.Double[3];
-	case EMaterialParameterType::Texture: return Lhs.Texture == Rhs.Texture;
-	case EMaterialParameterType::Font: return Lhs.Font.Value == Rhs.Font.Value && Lhs.Font.Page == Rhs.Font.Page;
-	case EMaterialParameterType::RuntimeVirtualTexture: return Lhs.RuntimeVirtualTexture == Rhs.RuntimeVirtualTexture;
-	case EMaterialParameterType::StaticSwitch: return Lhs.Bool[0] == Rhs.Bool[0];
-	case EMaterialParameterType::StaticComponentMask: return
-		Lhs.Bool[0] == Rhs.Bool[0] &&
-		Lhs.Bool[1] == Rhs.Bool[1] &&
-		Lhs.Bool[2] == Rhs.Bool[2] &&
-		Lhs.Bool[3] == Rhs.Bool[3];
-	default: checkNoEntry(); return false;
-	}
-}
-
-inline bool operator!=(const FMaterialParameterValue& Lhs, const FMaterialParameterValue& Rhs)
-{
-	return !operator==(Lhs, Rhs);
-}
 
 /** Holds a value, along with editor-only metadata that describes that value */
 struct FMaterialParameterMetadata
@@ -435,4 +458,29 @@ struct FMaterialParameterMetadata
 	/** Is the parameter overriden on the material it was queried from? */
 	bool bOverride = false;
 #endif // WITH_EDITORONLY_DATA
+
+	/** Is a Static Switch parameter using a dynamic branch? */
+	bool bDynamicSwitchParameter = false;
+};
+
+class FSHA1;
+struct FStrataCompilationConfig
+{
+	bool bFullSimplify = false;
+
+	FString GetShaderMapKeyString() const;
+
+	void UpdateHash(FSHA1& Hasher) const;
+
+	void Serialize(FArchive& Ar);
+
+	friend inline bool operator==(const FStrataCompilationConfig& Lhs, const FStrataCompilationConfig& Rhs)
+	{
+		return Lhs.bFullSimplify == Rhs.bFullSimplify;
+	}
+
+	friend inline bool operator!=(const FStrataCompilationConfig& Lhs, const FStrataCompilationConfig& Rhs)
+	{
+		return !operator==(Lhs, Rhs);
+	}
 };

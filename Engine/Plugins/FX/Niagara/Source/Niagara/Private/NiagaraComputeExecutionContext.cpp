@@ -66,7 +66,7 @@ void FNiagaraComputeExecutionContext::InitParams(UNiagaraScript* InGPUComputeScr
 		DIClassNames.Empty(Shader->GetDIParameters().Num());
 		for (const FNiagaraDataInterfaceParamRef& DIParams : Shader->GetDIParameters())
 		{
-			DIClassNames.Add(DIParams.DIType.Get(Shader.GetPointerTable().DITypes)->GetClass()->GetName());
+			DIClassNames.Add(DIParams.DIType.Get(Shader.GetPointerTable().DITypes)->GetClass()->GetFName());
 		}
 	}
 	else
@@ -75,7 +75,7 @@ void FNiagaraComputeExecutionContext::InitParams(UNiagaraScript* InGPUComputeScr
 		DIClassNames.Empty(ScriptParametersMetadata->DataInterfaceParamInfo.Num());
 		for (const FNiagaraDataInterfaceGPUParamInfo& DIParams : ScriptParametersMetadata->DataInterfaceParamInfo)
 		{
-			DIClassNames.Add(DIParams.DIClassName);
+			DIClassNames.Emplace(DIParams.DIClassName);
 		}
 	}
 #endif
@@ -103,7 +103,7 @@ bool FNiagaraComputeExecutionContext::IsIterationStage(FNiagaraDataInterfaceProx
 {
 	if (DIProxy && !DIProxy->SourceDIName.IsNone())
 	{
-		return !SimStageInfo[SimulationStageIndex].IterationSource.IsNone() && (SimStageInfo[SimulationStageIndex].IterationSource == DIProxy->SourceDIName);
+		return SimStageInfo[SimulationStageIndex].IterationSourceType == ENiagaraIterationSource::DataInterface && (SimStageInfo[SimulationStageIndex].IterationDataInterface == DIProxy->SourceDIName);
 	}
 	return false;
 }
@@ -111,20 +111,20 @@ bool FNiagaraComputeExecutionContext::IsIterationStage(FNiagaraDataInterfaceProx
 FNiagaraDataInterfaceProxyRW* FNiagaraComputeExecutionContext::FindIterationInterface(const TArray<FNiagaraDataInterfaceProxyRW*>& InProxies, uint32 SimulationStageIndex) const
 {
 	// Particle stage
-	if ( SimStageInfo[SimulationStageIndex].IterationSource.IsNone() )
+	if ( SimStageInfo[SimulationStageIndex].IterationSourceType != ENiagaraIterationSource::DataInterface )
 	{
 		return nullptr;
 	}
 
 	for (FNiagaraDataInterfaceProxyRW* Proxy : InProxies)
 	{
-		if (Proxy->SourceDIName == SimStageInfo[SimulationStageIndex].IterationSource)
+		if (Proxy->SourceDIName == SimStageInfo[SimulationStageIndex].IterationDataInterface)
 		{
 			return Proxy;
 		}
 	}
 
-	UE_LOG(LogNiagara, Verbose, TEXT("FNiagaraComputeExecutionContext::FindIterationInterface could not find IterationInterface %s"), *SimStageInfo[SimulationStageIndex].IterationSource.ToString());
+	UE_LOG(LogNiagara, Verbose, TEXT("FNiagaraComputeExecutionContext::FindIterationInterface could not find IterationInterface %s"), *SimStageInfo[SimulationStageIndex].IterationDataInterface.ToString());
 
 	return nullptr;
 }
@@ -148,13 +148,15 @@ bool FNiagaraComputeExecutionContext::Tick(FNiagaraSystemInstance* ParentSystemI
 			return false;
 		}
 
-		for (int32 i = 0; i < DIClassNames.Num(); ++i)
+		for (int32 i=0; i < DIClassNames.Num(); ++i)
 		{
-			FString UsedClassName = DataInterfaces[i]->GetClass()->GetName();
+			UNiagaraDataInterface* UsedDataInterface = DataInterfaces[i];
+			checkf(UsedDataInterface, TEXT("DataInterface for GPU execution context is nullptr. System(%s) Index(%d) ExpectedType(%s)"), *GetNameSafe(ParentSystemInstance->GetSystem()), i, *DIClassNames[i].ToString());
+
+			const FName UsedClassName = UsedDataInterface->GetClass()->GetFName();
 			if (DIClassNames[i] != UsedClassName)
 			{
-				UE_LOG(LogNiagara, Warning, TEXT("Mismatched class between Niagara GPU Execution Context data interfaces and those in its script!\nIndex:%d\nShader:%s\nScript:%s")
-					, i, *DIClassNames[i], *UsedClassName);
+				UE_LOG(LogNiagara, Warning, TEXT("Mismatched class between Niagara GPU Execution Context data interfaces and those in its script! System(%s) Index(%d) ExpectedType(%s) CombinedParamStoreType(%s)"), *GetNameSafe(ParentSystemInstance->GetSystem()), i, *DIClassNames[i].ToString(), *UsedClassName.ToString());
 			}
 		}
 #endif

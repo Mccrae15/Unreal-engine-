@@ -1,18 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SpriteEditor/SpriteEditorViewportClient.h"
-#include "Modules/ModuleManager.h"
+#include "InputKeyEventArgs.h"
+#include "Materials/MaterialInterface.h"
+#include "MaterialShared.h"
 #include "CanvasItem.h"
+#include "Misc/PackageName.h"
 #include "Utils.h"
 #include "PaperSpriteComponent.h"
 #include "AssetEditorModeManager.h"
+#include "SEditorViewport.h"
+#include "SceneView.h"
 #include "ScopedTransaction.h"
-
+#include "GlobalRenderResources.h"
 #include "ComponentReregisterContext.h"
 
 #include "IAssetTools.h"
 #include "AssetToolsModule.h"
-#include "AssetRegistry/ARFilter.h"
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -356,21 +360,17 @@ void FSpriteEditorViewportClient::AnalyzeSpriteMaterialType(UPaperSprite* Sprite
 		{
 			if (Material != nullptr)
 			{
-				switch (Material->GetBlendMode())
+				if (IsOpaqueBlendMode(*Material))
 				{
-				case EBlendMode::BLEND_Opaque:
 					NumOpaqueTriangles += NumTriangles;
-					break;
-				case EBlendMode::BLEND_Translucent:
-				case EBlendMode::BLEND_Additive:
-				case EBlendMode::BLEND_Modulate:
-				case EBlendMode::BLEND_AlphaComposite:
-				case EBlendMode::BLEND_AlphaHoldout:
-					NumTranslucentTriangles += NumTriangles;
-					break;
-				case EBlendMode::BLEND_Masked:
+				}
+				else if (IsMaskedBlendMode(*Material))
+				{
 					NumMaskedTriangles += NumTriangles;
-					break;
+				}
+				else
+				{
+					NumTranslucentTriangles += NumTriangles;
 				}
 			}
 		}
@@ -647,10 +647,7 @@ void FSpriteEditorViewportClient::Tick(float DeltaSeconds)
 
 	FPaperEditorViewportClient::Tick(DeltaSeconds);
 
-	if (!GIntraFrameDebuggingGameThread)
-	{
-		OwnedPreviewScene.GetWorld()->Tick(LEVELTICK_All, DeltaSeconds);
-	}
+	OwnedPreviewScene.GetWorld()->Tick(LEVELTICK_All, DeltaSeconds);
 }
 
 void FSpriteEditorViewportClient::ToggleShowSourceTexture()

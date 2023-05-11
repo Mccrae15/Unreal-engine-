@@ -239,9 +239,6 @@ static FVector CapturedCameraWorldPos;
 static FMatrix CapturedWorldToClipMatrix;
 static FMatrix CapturedProjMatrix;
 
-bool IsHairStrandsClusterDebugEnable();
-bool IsHairStrandsClusterDebugAABBEnable();
-
 static void AddClusterCullingPass(
 	FRDGBuilder& GraphBuilder,
 	FGlobalShaderMap* ShaderMap,
@@ -284,8 +281,8 @@ static void AddClusterCullingPass(
 		};
 
 		static IConsoleVariable* CVarClusterDebug = IConsoleManager::Get().FindConsoleVariable(TEXT("r.HairStrands.Cluster.Debug"));
-		bClusterDebugAABBBuffer = IsHairStrandsClusterDebugAABBEnable();
-		bClusterDebug = IsHairStrandsClusterDebugEnable();
+		bClusterDebugAABBBuffer = GetGroomViewMode(View) == EGroomViewMode::ClusterAABB;
+		bClusterDebug = GetGroomViewMode(View) == EGroomViewMode::Cluster;
 		ClusterDebugInfoBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(FHairClusterDebugInfo), ClusterData.ClusterCount), TEXT("Hair.CulledCompactedIndexBuffer"));
 	}
 #endif

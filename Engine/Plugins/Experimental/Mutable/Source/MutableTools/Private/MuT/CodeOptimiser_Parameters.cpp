@@ -7,7 +7,6 @@
 #include "Misc/AssertionMacros.h"
 #include "MuR/Image.h"
 #include "MuR/ImagePrivate.h"
-#include "MuR/MemoryPrivate.h"
 #include "MuR/MutableTrace.h"
 #include "MuR/Operations.h"
 #include "MuR/ParametersPrivate.h"
@@ -20,8 +19,11 @@
 #include "MuT/ASTOpImageCompose.h"
 #include "MuT/ASTOpImageMipmap.h"
 #include "MuT/ASTOpImagePixelFormat.h"
+#include "MuT/ASTOpImageLayer.h"
+#include "MuT/ASTOpImageLayerColor.h"
 #include "MuT/ASTOpMeshMorph.h"
 #include "MuT/ASTOpInstanceAdd.h"
+#include "MuT/ASTOpLayoutFromMesh.h"
 #include "MuT/ASTOpParameter.h"
 #include "MuT/CodeOptimiser.h"
 #include "MuT/Compiler.h"
@@ -37,8 +39,6 @@
 
 namespace mu
 {
-class TaskManager;
-
 
     //---------------------------------------------------------------------------------------------
     //---------------------------------------------------------------------------------------------
@@ -141,8 +141,8 @@ class TaskManager;
                     case OP_TYPE::PR_PARAMETER:
                     case OP_TYPE::IM_PARAMETER:
                     {
-                        auto typed = dynamic_cast<const ASTOpParameter*>(at.get());
-                        const auto& params = m_pState->nodeState.m_runtimeParams;
+						const ASTOpParameter* typed = dynamic_cast<const ASTOpParameter*>(at.get());
+                        const TArray<string>& params = m_pState->nodeState.m_runtimeParams;
                         if ( params.Find( typed->parameter.m_name)
                              !=
                              INDEX_NONE )
@@ -155,7 +155,7 @@ class TaskManager;
 
                     case OP_TYPE::ME_INTERPOLATE:
                     {
-                        auto typed = dynamic_cast<const ASTOpFixed*>(at.get());
+						const ASTOpFixed* typed = dynamic_cast<const ASTOpFixed*>(at.get());
                         PENDING_ITEM childItem;
                         childItem.itemType = 0;
                         childItem.onlyLayoutsRelevant = item.onlyLayoutsRelevant;
@@ -242,7 +242,8 @@ class TaskManager;
             whiteOp->op.type = OP_TYPE::CO_CONSTANT;
             whiteOp->op.args.ColourConstant.value[0] = 1;
             whiteOp->op.args.ColourConstant.value[1] = 1;
-            whiteOp->op.args.ColourConstant.value[2] = 1;
+			whiteOp->op.args.ColourConstant.value[2] = 1;
+			whiteOp->op.args.ColourConstant.value[3] = 1;
 
             Ptr<ASTOpFixed> wplainOp = new ASTOpFixed;
             wplainOp->op.type = OP_TYPE::IM_PLAINCOLOUR;
@@ -268,7 +269,7 @@ class TaskManager;
     //---------------------------------------------------------------------------------------------
     ParameterOptimiserAST::ParameterOptimiserAST(
             STATE_COMPILATION_DATA& s,
-            const MODEL_OPTIMIZATION_OPTIONS& optimisationOptions
+            const FModelOptimizationOptions& optimisationOptions
             )
             : m_stateProps(s)
             , m_modified(false)
@@ -379,7 +380,7 @@ class TaskManager;
         //-------------------------------------------------------------------------------------
         case OP_TYPE::IM_CONDITIONAL:
         {
-            auto typedAt = dynamic_cast<const ASTOpConditional*>(at.get());
+			const ASTOpConditional* typedAt = dynamic_cast<const ASTOpConditional*>(at.get());
 
             // If the condition is not runtime, but the branches are, try to move the
             // conditional down
@@ -413,27 +414,27 @@ class TaskManager;
                              )
                             {
                                 // Move the conditional down
-                                auto compOp = mu::Clone<ASTOpImageCompose>(typedYes);
+                                Ptr<ASTOpImageCompose> compOp = mu::Clone<ASTOpImageCompose>(typedYes);
 
-                                auto baseCond = mu::Clone<ASTOpConditional>(typedAt);
+                                Ptr<ASTOpConditional> baseCond = mu::Clone<ASTOpConditional>(typedAt);
                                 baseCond->yes = typedYes->Base.child();
                                 baseCond->no = typedNo->Base.child();
                                 compOp->Base = baseCond;
 
-                                auto blockCond = mu::Clone<ASTOpConditional>(typedAt);
+                                Ptr<ASTOpConditional> blockCond = mu::Clone<ASTOpConditional>(typedAt);
                                 blockCond->yes = typedYes->BlockImage.child();
                                 blockCond->no = typedNo->BlockImage.child();
                                 compOp->BlockImage = blockCond;
 
                                 if (typedYes->Mask)
                                 {
-                                    auto maskCond = mu::Clone<ASTOpConditional>(typedAt);
+                                    Ptr<ASTOpConditional> maskCond = mu::Clone<ASTOpConditional>(typedAt);
                                     maskCond->yes = typedYes->Mask.child();
                                     maskCond->no = typedNo->Mask.child();
                                     compOp->Mask = maskCond;
                                 }
 
-                                auto layCond = mu::Clone<ASTOpConditional>(typedAt);
+                                Ptr<ASTOpConditional> layCond = mu::Clone<ASTOpConditional>(typedAt);
                                 layCond->type = OP_TYPE::LA_CONDITIONAL;
                                 layCond->yes = typedYes->Layout.child();
                                 layCond->no = typedNo->Layout.child();
@@ -460,13 +461,14 @@ class TaskManager;
                         {
                             optimised = true;
 
-                            auto typedYes = dynamic_cast<const ASTOpFixed*>(typedAt->yes.child().get());
+							const ASTOpImageLayerColor* typedYes = dynamic_cast<const ASTOpImageLayerColor*>(typedAt->yes.child().get());
 
                             Ptr<ASTOpFixed> blackOp = new ASTOpFixed;
                             blackOp->op.type = OP_TYPE::CO_CONSTANT;
                             blackOp->op.args.ColourConstant.value[0] = 0;
                             blackOp->op.args.ColourConstant.value[1] = 0;
-                            blackOp->op.args.ColourConstant.value[2] = 0;
+							blackOp->op.args.ColourConstant.value[2] = 0;
+							blackOp->op.args.ColourConstant.value[3] = 1;
 
                             Ptr<ASTOpFixed> plainOp = new ASTOpFixed;
                             plainOp->op.type = OP_TYPE::IM_PLAINCOLOUR;
@@ -478,24 +480,21 @@ class TaskManager;
                             Ptr<ASTOpFixed> resizeOp = new ASTOpFixed;
                             resizeOp->op.type = OP_TYPE::IM_RESIZELIKE;
                             resizeOp->SetChild( resizeOp->op.args.ImageResizeLike.source, plainOp );
-                            resizeOp->SetChild( resizeOp->op.args.ImageResizeLike.sizeSource,
-                                                typedYes->children[ typedYes->op.args.ImageLayerColour.base ] );
+                            resizeOp->SetChild( resizeOp->op.args.ImageResizeLike.sizeSource, typedYes->base );
 
-                            auto maskOp = mu::Clone<ASTOpConditional>(typedAt);
+                            Ptr<ASTOpConditional> maskOp = mu::Clone<ASTOpConditional>(typedAt);
                             maskOp->no = resizeOp;
 
                             // If there is no mask (because it is optional), we need to make a
                             // white plain image
-                            maskOp->yes = EnsureValidMask
-                                    ( typedYes->children[ typedYes->op.args.ImageLayerColour.mask ].child(),
-                                      typedYes->children[ typedYes->op.args.ImageLayerColour.base ].child() );
+                            maskOp->yes = EnsureValidMask( typedYes->mask.child(), typedYes->base.child() );
 
-                            auto baseOp = mu::Clone<ASTOpConditional>(typedAt);
-                            baseOp->yes = typedYes->children[ typedYes->op.args.ImageLayerColour.base ].child();
+							Ptr<ASTOpConditional> baseOp = mu::Clone<ASTOpConditional>(typedAt);
+                            baseOp->yes = typedYes->base.child();
 
-                            auto softOp = mu::Clone<ASTOpFixed>(typedYes);
-                            softOp->SetChild( softOp->op.args.ImageLayerColour.base, baseOp );
-                            softOp->SetChild( softOp->op.args.ImageLayerColour.mask, maskOp );
+                            Ptr<ASTOpImageLayerColor> softOp = mu::Clone<ASTOpImageLayerColor>(typedYes);
+                            softOp->base = baseOp;
+                            softOp->mask = maskOp;
 
                             at = softOp;
                             break;
@@ -514,6 +513,7 @@ class TaskManager;
 //							blackOp.args.ColourConstant.value[0] = 0;
 //							blackOp.args.ColourConstant.value[1] = 0;
 //							blackOp.args.ColourConstant.value[2] = 0;
+//							blackOp.args.ColourConstant.value[3] = 1;
 
 //							OP plainOp;
 //							plainOp.type = OP_TYPE::IM_PLAINCOLOUR;
@@ -565,13 +565,14 @@ class TaskManager;
                         {
                             optimised = true;
 
-                            auto typedNo = dynamic_cast<const ASTOpFixed*>(typedAt->no.child().get());
+                            const ASTOpImageLayerColor* typedNo = dynamic_cast<const ASTOpImageLayerColor*>(typedAt->no.child().get());
 
                             Ptr<ASTOpFixed> blackOp = new ASTOpFixed;
                             blackOp->op.type = OP_TYPE::CO_CONSTANT;
                             blackOp->op.args.ColourConstant.value[0] = 0;
                             blackOp->op.args.ColourConstant.value[1] = 0;
-                            blackOp->op.args.ColourConstant.value[2] = 0;
+							blackOp->op.args.ColourConstant.value[2] = 0;
+							blackOp->op.args.ColourConstant.value[3] = 1;
 
                             Ptr<ASTOpFixed> plainOp = new ASTOpFixed;
                             plainOp->op.type = OP_TYPE::IM_PLAINCOLOUR;
@@ -583,24 +584,21 @@ class TaskManager;
                             Ptr<ASTOpFixed> resizeOp = new ASTOpFixed;
                             resizeOp->op.type = OP_TYPE::IM_RESIZELIKE;
                             resizeOp->SetChild( resizeOp->op.args.ImageResizeLike.source, plainOp );
-                            resizeOp->SetChild( resizeOp->op.args.ImageResizeLike.sizeSource,
-                                                typedNo->children[ typedNo->op.args.ImageLayerColour.base ] );
+                            resizeOp->SetChild( resizeOp->op.args.ImageResizeLike.sizeSource, typedNo->base );
 
-                            auto maskOp = mu::Clone<ASTOpConditional>(typedAt);
+                            Ptr<ASTOpConditional> maskOp = mu::Clone<ASTOpConditional>(typedAt);
                             maskOp->no = resizeOp;
 
                             // If there is no mask (because it is optional), we need to make a
                             // white plain image
-                            maskOp->no = EnsureValidMask
-                                    ( typedNo->children[ typedNo->op.args.ImageLayerColour.mask ].child(),
-                                      typedNo->children[ typedNo->op.args.ImageLayerColour.base ].child() );
+                            maskOp->no = EnsureValidMask( typedNo->mask.child(), typedNo->base.child() );
 
-                            auto baseOp = mu::Clone<ASTOpConditional>(typedAt);
-                            baseOp->no = typedNo->children[ typedNo->op.args.ImageLayerColour.base ].child();
+                            Ptr<ASTOpConditional> baseOp = mu::Clone<ASTOpConditional>(typedAt);
+                            baseOp->no = typedNo->base.child();
 
-                            auto softOp = mu::Clone<ASTOpFixed>(typedNo);
-                            softOp->SetChild( softOp->op.args.ImageLayerColour.base, baseOp );
-                            softOp->SetChild( softOp->op.args.ImageLayerColour.mask, maskOp );
+                            Ptr<ASTOpImageLayerColor> softOp = mu::Clone<ASTOpImageLayerColor>(typedNo);
+                            softOp->base = baseOp;
+                            softOp->mask = maskOp;
 
                             at = softOp;
                             break;
@@ -854,9 +852,9 @@ class TaskManager;
         {
 			const ASTOpImageCompose* typedAt = dynamic_cast<const ASTOpImageCompose*>(at.get());
 
-            auto blockAt = typedAt->BlockImage.child();
-            auto baseAt = typedAt->Base.child();
-            auto layoutAt = typedAt->Layout.child();
+            Ptr<ASTOp> blockAt = typedAt->BlockImage.child();
+			Ptr<ASTOp> baseAt = typedAt->Base.child();
+			Ptr<ASTOp> layoutAt = typedAt->Layout.child();
 
 			if (!blockAt)
 			{
@@ -884,23 +882,15 @@ class TaskManager;
                     {
                         optimised = true;
 
-                        auto typedBaseAt = dynamic_cast<const ASTOpFixed*>(baseAt.get());
-                        auto typedBlockAt = dynamic_cast<const ASTOpFixed*>(blockAt.get());
+						const ASTOpImageLayerColor* typedBaseAt = dynamic_cast<const ASTOpImageLayerColor*>(baseAt.get());
+						const ASTOpImageLayerColor* typedBlockAt = dynamic_cast<const ASTOpImageLayerColor*>(blockAt.get());
 
                         // The mask is a compose of the block mask on the base mask, but if none has
                         // a mask we don't need to make one.
-                        auto baseImage =
-                            typedBaseAt->children[typedBaseAt->op.args.ImageLayerColour.base]
-                                .child();
-                        auto baseMask =
-                            typedBaseAt->children[typedBaseAt->op.args.ImageLayerColour.mask]
-                                .child();
-                        auto blockImage =
-                            typedBlockAt->children[typedBlockAt->op.args.ImageLayerColour.base]
-                                .child();
-                        auto blockMask =
-                            typedBlockAt->children[typedBlockAt->op.args.ImageLayerColour.mask]
-                                .child();
+						Ptr<ASTOp> baseImage = typedBaseAt->base.child();
+						Ptr<ASTOp> baseMask = typedBaseAt->mask.child();
+						Ptr<ASTOp> blockImage = typedBlockAt->base.child();
+						Ptr<ASTOp> blockMask = typedBlockAt->mask.child();
 
                         Ptr<ASTOpImageCompose> maskOp;
                         if (baseMask || blockMask)
@@ -908,8 +898,8 @@ class TaskManager;
                             // \TODO: BLEH! This may create a discrepancy of number of mips between
                             // the base image and the mask This is for now solved with emergy fix
                             // c36adf47-e40d-490f-b709-41142bafad78
-                            auto newBaseMask = EnsureValidMask(baseMask, baseImage);
-                            auto newBlockMask = EnsureValidMask(blockMask, blockImage);
+							Ptr<ASTOp> newBaseMask = EnsureValidMask(baseMask, baseImage);
+							Ptr<ASTOp> newBlockMask = EnsureValidMask(blockMask, blockImage);
 
                             maskOp = mu::Clone<ASTOpImageCompose>(typedAt);
                             maskOp->Base = newBaseMask;
@@ -917,13 +907,13 @@ class TaskManager;
                         }
 
                         // The base is composition of the bases of both layer effect
-                        auto baseOp = mu::Clone<ASTOpImageCompose>(typedAt);
+						Ptr<ASTOpImageCompose> baseOp = mu::Clone<ASTOpImageCompose>(typedAt);
                         baseOp->Base = baseImage;
                         baseOp->BlockImage = blockImage;
 
-                        Ptr<ASTOpFixed> nop = mu::Clone<ASTOpFixed>(blockAt);
-                        nop->SetChild( nop->op.args.ImageLayerColour.mask, maskOp );
-                        nop->SetChild( nop->op.args.ImageLayerColour.base, baseOp );
+                        Ptr<ASTOpImageLayerColor> nop = mu::Clone<ASTOpImageLayerColor>(blockAt);
+                        nop->mask = maskOp;
+                        nop->base = baseOp;
 
                         // Done
                         at = nop;
@@ -934,29 +924,17 @@ class TaskManager;
                     {
                         optimised = true;
 
-                        auto typedBaseAt = dynamic_cast<const ASTOpFixed*>(baseAt.get());
-                        auto typedBlockAt = dynamic_cast<const ASTOpFixed*>(blockAt.get());
+						const ASTOpImageLayer* typedBaseAt = dynamic_cast<const ASTOpImageLayer*>(baseAt.get());
+						const ASTOpImageLayer* typedBlockAt = dynamic_cast<const ASTOpImageLayer*>(blockAt.get());
 
                         // The mask is a compose of the block mask on the base mask, but if none has
                         // a mask we don't need to make one.
-                        auto baseImage =
-                            typedBaseAt->children[typedBaseAt->op.args.ImageLayer.base]
-                                .child();
-                        auto baseBlended =
-                            typedBaseAt->children[typedBaseAt->op.args.ImageLayer.blended]
-                                .child();
-                        auto baseMask =
-                            typedBaseAt->children[typedBaseAt->op.args.ImageLayer.mask]
-                                .child();
-                        auto blockImage =
-                            typedBlockAt->children[typedBlockAt->op.args.ImageLayer.base]
-                                .child();
-                        auto blockBlended =
-                            typedBlockAt->children[typedBlockAt->op.args.ImageLayer.blended]
-                                .child();
-                        auto blockMask =
-                            typedBlockAt->children[typedBlockAt->op.args.ImageLayer.mask]
-                                .child();
+						Ptr<ASTOp> baseImage = typedBaseAt->base.child();
+						Ptr<ASTOp> baseBlended = typedBaseAt->blend.child();
+						Ptr<ASTOp> baseMask = typedBaseAt->mask.child();
+						Ptr<ASTOp> blockImage = typedBlockAt->base.child();
+						Ptr<ASTOp> blockBlended = typedBlockAt->blend.child();
+						Ptr<ASTOp> blockMask = typedBlockAt->mask.child();
 
                         Ptr<ASTOpImageCompose> maskOp;
                         if (baseMask || blockMask)
@@ -964,8 +942,8 @@ class TaskManager;
                             // \TODO: BLEH! This may create a discrepancy of number of mips between
                             // the base image and the mask This is for now solved with emergy fix
                             // c36adf47-e40d-490f-b709-41142bafad78
-                            auto newBaseMask = EnsureValidMask(baseMask, baseImage);
-                            auto newBlockMask = EnsureValidMask(blockMask, blockImage);
+							Ptr<ASTOp> newBaseMask = EnsureValidMask(baseMask, baseImage);
+							Ptr<ASTOp> newBlockMask = EnsureValidMask(blockMask, blockImage);
 
                             maskOp = mu::Clone<ASTOpImageCompose>(typedAt);
                             maskOp->Base = newBaseMask;
@@ -973,19 +951,19 @@ class TaskManager;
                         }
 
                         // The base is composition of the bases of both layer effect
-                        auto baseOp = mu::Clone<ASTOpImageCompose>(typedAt);
+						Ptr<ASTOpImageCompose> baseOp = mu::Clone<ASTOpImageCompose>(typedAt);
                         baseOp->Base = baseImage;
                         baseOp->BlockImage = blockImage;
 
                         // The base is composition of the bases of both layer effect
-                        auto blendedOp = mu::Clone<ASTOpImageCompose>(typedAt);
+						Ptr<ASTOpImageCompose> blendedOp = mu::Clone<ASTOpImageCompose>(typedAt);
                         blendedOp->Base = baseBlended;
                         blendedOp->BlockImage = blockBlended;
 
-                        Ptr<ASTOpFixed> nop = mu::Clone<ASTOpFixed>(blockAt);
-                        nop->SetChild(nop->op.args.ImageLayer.mask, maskOp);
-                        nop->SetChild(nop->op.args.ImageLayer.base, baseOp);
-                        nop->SetChild(nop->op.args.ImageLayer.blended, blendedOp);
+                        Ptr<ASTOpImageLayer> nop = mu::Clone<ASTOpImageLayer>(blockAt);
+                        nop->mask = maskOp;
+                        nop->base = baseOp;
+                        nop->blend = blendedOp;
 
                         // Done
                         at = nop;
@@ -1004,19 +982,19 @@ class TaskManager;
                  &&
                  baseType == OP_TYPE::IM_COMPOSE )
             {
-                auto typedBaseAt = dynamic_cast<const ASTOpImageCompose*>(baseAt.get());
+				const ASTOpImageCompose* typedBaseAt = dynamic_cast<const ASTOpImageCompose*>(baseAt.get());
 
-                auto baseBlockAt = typedBaseAt->BlockImage.child();
+				Ptr<ASTOp> baseBlockAt = typedBaseAt->BlockImage.child();
                 bool baseBlockHasAny = m_hasRuntimeParamVisitor.HasAny( baseBlockAt );
                 if ( baseBlockHasAny )
                 {
                     optimised = true;
 
                     // Swap
-                    auto childCompose = mu::Clone<ASTOpImageCompose>(at);
+					Ptr<ASTOpImageCompose> childCompose = mu::Clone<ASTOpImageCompose>(at);
                     childCompose->Base = typedBaseAt->Base.child();
 
-                    auto parentCompose = mu::Clone<ASTOpImageCompose>(baseAt);
+					Ptr<ASTOpImageCompose> parentCompose = mu::Clone<ASTOpImageCompose>(baseAt);
                     parentCompose->Base = childCompose;
 
                     at = parentCompose;
@@ -1041,12 +1019,10 @@ class TaskManager;
                 {
                     optimised = true;
 
-                    auto typedBlockAt = dynamic_cast<const ASTOpFixed*>(blockAt.get());
+					const ASTOpImageLayerColor* typedBlockAt = dynamic_cast<const ASTOpImageLayerColor*>(blockAt.get());
 
-                    auto blockImage =
-                        typedBlockAt->children[typedBlockAt->op.args.ImageLayerColour.base].child();
-                    auto blockMask =
-                        typedBlockAt->children[typedBlockAt->op.args.ImageLayerColour.mask].child();
+					Ptr<ASTOp> blockImage = typedBlockAt->base.child();
+					Ptr<ASTOp> blockMask = typedBlockAt->mask.child();
 
                     // The mask is a compose of the layer mask on a black image, however if there is
                     // no mask and the base of the layer opertation is a blanklayout, we can skip
@@ -1055,7 +1031,7 @@ class TaskManager;
                     if (blockMask || baseType!=OP_TYPE::IM_BLANKLAYOUT)
                     {
                         maskOp = mu::Clone<ASTOpImageCompose>(at);
-                        auto newMaskBlock = EnsureValidMask(blockMask, blockImage);
+						Ptr<ASTOp> newMaskBlock = EnsureValidMask(blockMask, blockImage);
                         maskOp->BlockImage = newMaskBlock;
 
                         Ptr<ASTOpFixed> blackOp = new ASTOpFixed;
@@ -1063,6 +1039,7 @@ class TaskManager;
                         blackOp->op.args.ColourConstant.value[0] = 0;
                         blackOp->op.args.ColourConstant.value[1] = 0;
                         blackOp->op.args.ColourConstant.value[2] = 0;
+						blackOp->op.args.ColourConstant.value[3] = 1;
 
                         Ptr<ASTOpFixed> plainOp = new ASTOpFixed;
                         plainOp->op.type = OP_TYPE::IM_PLAINCOLOUR;
@@ -1080,12 +1057,12 @@ class TaskManager;
                     }
 
                     // The base is composition of the layer base on the compose base
-                    auto baseOp = mu::Clone<ASTOpImageCompose>(at);
-                    baseOp->BlockImage = typedBlockAt->children[typedBlockAt->op.args.ImageLayerColour.base].child();
+                    Ptr<ASTOpImageCompose> baseOp = mu::Clone<ASTOpImageCompose>(at);
+                    baseOp->BlockImage = typedBlockAt->base.child();
 
-                    auto nop = mu::Clone<ASTOpFixed>(blockAt);
-                    nop->SetChild( nop->op.args.ImageLayerColour.mask, maskOp );
-                    nop->SetChild( nop->op.args.ImageLayerColour.base, baseOp );
+                    Ptr<ASTOpImageLayerColor> nop = mu::Clone<ASTOpImageLayerColor>(blockAt);
+                    nop->mask = maskOp;
+                    nop->base = baseOp;
 
                     // Done
                     at = nop;
@@ -1096,14 +1073,11 @@ class TaskManager;
                 {
                     optimised = true;
 
-                    auto typedBlockAt = dynamic_cast<const ASTOpFixed*>(blockAt.get());
+                    const ASTOpImageLayer* typedBlockAt = dynamic_cast<const ASTOpImageLayer*>(blockAt.get());
 
-                    auto blockImage =
-                        typedBlockAt->children[typedBlockAt->op.args.ImageLayer.base].child();
-                    auto blockBlended =
-                         typedBlockAt->children[typedBlockAt->op.args.ImageLayer.blended].child();
-                    auto blockMask =
-                        typedBlockAt->children[typedBlockAt->op.args.ImageLayer.mask].child();
+					Ptr<ASTOp> blockImage = typedBlockAt->base.child();
+					Ptr<ASTOp> blockBlended = typedBlockAt->blend.child();
+					Ptr<ASTOp> blockMask = typedBlockAt->mask.child();
 
                     // The mask is a compose of the layer mask on a black image, however if there is
                     // no mask and the base of the layer opertation is a blanklayout, we can skip
@@ -1112,7 +1086,7 @@ class TaskManager;
                     if (blockMask || baseType != OP_TYPE::IM_BLANKLAYOUT)
                     {
                         maskOp = mu::Clone<ASTOpImageCompose>(at);
-                        auto newMaskBlock = EnsureValidMask(blockMask, blockImage);
+						Ptr<ASTOp> newMaskBlock = EnsureValidMask(blockMask, blockImage);
                         maskOp->BlockImage = newMaskBlock;
 
 
@@ -1121,6 +1095,7 @@ class TaskManager;
                         blackOp->op.args.ColourConstant.value[0] = 0;
                         blackOp->op.args.ColourConstant.value[1] = 0;
                         blackOp->op.args.ColourConstant.value[2] = 0;
+						blackOp->op.args.ColourConstant.value[3] = 1;
 
                         Ptr<ASTOpFixed> plainOp = new ASTOpFixed;
                         plainOp->op.type = OP_TYPE::IM_PLAINCOLOUR;
@@ -1138,7 +1113,7 @@ class TaskManager;
                     }
 
                     // The blended is a compose of the blended image on a blank image
-                    auto blendedOp = mu::Clone<ASTOpImageCompose>(at);
+					Ptr<ASTOpImageCompose> blendedOp = mu::Clone<ASTOpImageCompose>(at);
                     {
                         blendedOp->BlockImage = blockBlended;
 
@@ -1147,6 +1122,7 @@ class TaskManager;
                         blackOp->op.args.ColourConstant.value[0] = 0;
                         blackOp->op.args.ColourConstant.value[1] = 0;
                         blackOp->op.args.ColourConstant.value[2] = 0;
+						blackOp->op.args.ColourConstant.value[3] = 1;
 
                         Ptr<ASTOpFixed> plainOp = new ASTOpFixed;
                         plainOp->op.type = OP_TYPE::IM_PLAINCOLOUR;
@@ -1165,13 +1141,13 @@ class TaskManager;
                     }
 
                     // The base is composition of the softlight base on the compose base
-                    auto baseOp = mu::Clone<ASTOpImageCompose>(at);
-                    baseOp->BlockImage = typedBlockAt->children[typedBlockAt->op.args.ImageLayer.base].child();
+                    Ptr<ASTOpImageCompose> baseOp = mu::Clone<ASTOpImageCompose>(at);
+                    baseOp->BlockImage = typedBlockAt->base.child();
 
-                    auto nop = mu::Clone<ASTOpFixed>(blockAt);
-                    nop->SetChild( nop->op.args.ImageLayer.base, baseOp );
-                    nop->SetChild( nop->op.args.ImageLayer.mask, maskOp );
-                    nop->SetChild( nop->op.args.ImageLayer.blended, blendedOp );
+                    Ptr<ASTOpImageLayer> nop = mu::Clone<ASTOpImageLayer>(blockAt);
+                    nop->base = baseOp;
+                    nop->mask = maskOp;
+                    nop->blend = blendedOp;
 
                     // Done
                     at = nop;
@@ -1221,15 +1197,16 @@ class TaskManager;
                 {
                     optimised = true;
 
-                    auto typedBaseAt = dynamic_cast<const ASTOpFixed*>(baseAt.get());
+                    const ASTOpImageLayerColor* typedBaseAt = dynamic_cast<const ASTOpImageLayerColor*>(baseAt.get());
 
-                    auto maskOp = mu::Clone<ASTOpImageCompose>(at);
+					Ptr<ASTOpImageCompose> maskOp = mu::Clone<ASTOpImageCompose>(at);
                     {
                         Ptr<ASTOpFixed> blackOp = new ASTOpFixed;
                         blackOp->op.type = OP_TYPE::CO_CONSTANT;
                         blackOp->op.args.ColourConstant.value[0] = 0;
                         blackOp->op.args.ColourConstant.value[1] = 0;
                         blackOp->op.args.ColourConstant.value[2] = 0;
+						blackOp->op.args.ColourConstant.value[3] = 1;
 
                         Ptr<ASTOpFixed> plainOp = new ASTOpFixed;
                         plainOp->op.type = OP_TYPE::IM_PLAINCOLOUR;
@@ -1244,20 +1221,18 @@ class TaskManager;
                         blockResizeOp->SetChild( blockResizeOp->op.args.ImageResizeLike.source, plainOp );
 
                         // Blank out the block from the mask
-                        auto newMaskBase = EnsureValidMask(
-                                    typedBaseAt->children[ typedBaseAt->op.args.ImageLayerColour.mask].child(),
-                                    baseAt );
+						Ptr<ASTOp> newMaskBase = EnsureValidMask( typedBaseAt->mask.child(), baseAt );
                         maskOp->Base = newMaskBase;
                         maskOp->BlockImage = blockResizeOp;
                     }
 
                     // The base is composition of the softlight base on the compose base
-                    auto baseOp = mu::Clone<ASTOpImageCompose>(at);
-                    baseOp->Base = typedBaseAt->children[typedBaseAt->op.args.ImageLayerColour.base].child();
+					Ptr<ASTOpImageCompose> baseOp = mu::Clone<ASTOpImageCompose>(at);
+                    baseOp->Base = typedBaseAt->base.child();
 
-                    auto nop = mu::Clone<ASTOpFixed>(baseAt);
-                    nop->SetChild( nop->op.args.ImageLayerColour.base, baseOp );
-                    nop->SetChild( nop->op.args.ImageLayerColour.mask, maskOp );
+                    Ptr<ASTOpImageLayerColor> nop = mu::Clone<ASTOpImageLayerColor>(baseAt);
+                    nop->base = baseOp;
+                    nop->mask = maskOp;
 
                     // Done
                     at = nop;
@@ -1268,15 +1243,16 @@ class TaskManager;
                 {
                     optimised = true;
 
-                    auto typedBaseAt = dynamic_cast<const ASTOpFixed*>(baseAt.get());
+                    const ASTOpImageLayer* typedBaseAt = dynamic_cast<const ASTOpImageLayer*>(baseAt.get());
 
-                    auto maskOp = mu::Clone<ASTOpImageCompose>(at);
+					Ptr<ASTOpImageCompose> maskOp = mu::Clone<ASTOpImageCompose>(at);
                     {
                         Ptr<ASTOpFixed> blackOp = new ASTOpFixed;
                         blackOp->op.type = OP_TYPE::CO_CONSTANT;
                         blackOp->op.args.ColourConstant.value[0] = 0;
                         blackOp->op.args.ColourConstant.value[1] = 0;
                         blackOp->op.args.ColourConstant.value[2] = 0;
+						blackOp->op.args.ColourConstant.value[3] = 1;
 
                         Ptr<ASTOpFixed> plainOp = new ASTOpFixed;
                         plainOp->op.type = OP_TYPE::IM_PLAINCOLOUR;
@@ -1291,20 +1267,18 @@ class TaskManager;
                         blockResizeOp->SetChild( blockResizeOp->op.args.ImageResizeLike.source, plainOp );
 
                         // Blank out the block from the mask
-                        auto newMaskBase = EnsureValidMask(
-                                    typedBaseAt->children[ typedBaseAt->op.args.ImageLayer.mask ].child(),
-                                    baseAt );
+                        Ptr<ASTOp> newMaskBase = EnsureValidMask( typedBaseAt->mask.child(), baseAt );
                         maskOp->Base = newMaskBase;
                         maskOp->BlockImage = blockResizeOp;
                     }
 
                     // The base is composition of the effect base on the compose base
-                    auto baseOp = mu::Clone<ASTOpImageCompose>(at);
-                    baseOp->Base = typedBaseAt->children[typedBaseAt->op.args.ImageLayer.base].child();
+                    Ptr<ASTOpImageCompose> baseOp = mu::Clone<ASTOpImageCompose>(at);
+                    baseOp->Base = typedBaseAt->base.child();
 
-                    auto nop = mu::Clone<ASTOpFixed>(baseAt);
-                    nop->SetChild( nop->op.args.ImageLayer.base, baseOp );
-                    nop->SetChild( nop->op.args.ImageLayer.mask, maskOp );
+                    Ptr<ASTOpImageLayer> nop = mu::Clone<ASTOpImageLayer>(baseAt);
+                    nop->base = baseOp;
+                    nop->mask = maskOp;
 
                     // Done
                     at = nop;
@@ -1442,35 +1416,34 @@ class TaskManager;
         // Sink the mipmap if worth it.
         case OP_TYPE::IM_MIPMAP:
         {
-            auto typedAt = dynamic_cast<const ASTOpImageMipmap*>(at.get());
+			const ASTOpImageMipmap* typedAt = dynamic_cast<const ASTOpImageMipmap*>(at.get());
 
-            auto sourceOp = typedAt->Source.child();
+			Ptr<ASTOp> sourceOp = typedAt->Source.child();
 
             switch ( sourceOp->GetOpType() )
             {
             case OP_TYPE::IM_LAYERCOLOUR:
             {
-                auto typedSource = dynamic_cast<const ASTOpFixed*>(sourceOp.get());
+                const ASTOpImageLayerColor* typedSource = dynamic_cast<const ASTOpImageLayerColor*>(sourceOp.get());
 
-                bool colourHasRuntime = m_hasRuntimeParamVisitor.HasAny
-                        ( typedSource->children[ typedSource->op.args.ImageLayerColour.colour].child() );
+                bool colourHasRuntime = m_hasRuntimeParamVisitor.HasAny( typedSource->color.child() );
 
                 if (colourHasRuntime)
                 {
                     m_modified = true;
 
-                    auto top = mu::Clone<ASTOpFixed>(sourceOp);
+					Ptr<ASTOpImageLayerColor> top = mu::Clone<ASTOpImageLayerColor>(sourceOp);
 
-                    auto baseOp = mu::Clone<ASTOpImageMipmap>(at);
-                    baseOp->Source = typedSource->children[ typedSource->op.args.ImageLayerColour.base ].child();
-                    top->SetChild( top->op.args.ImageLayerColour.base, baseOp );
+					Ptr<ASTOpImageMipmap> baseOp = mu::Clone<ASTOpImageMipmap>(at);
+                    baseOp->Source = typedSource->base.child();
+                    top->base = baseOp;
 
-                    auto sourceMaskOp = typedSource->children[typedSource->op.args.ImageLayerColour.mask].child();
+					Ptr<ASTOp> sourceMaskOp = typedSource->mask.child();
                     if (sourceMaskOp)
                     {
-                        auto maskOp = mu::Clone<ASTOpImageMipmap>(at);
+						Ptr<ASTOpImageMipmap> maskOp = mu::Clone<ASTOpImageMipmap>(at);
                         maskOp->Source = sourceMaskOp;
-                        top->SetChild( top->op.args.ImageLayerColour.mask, maskOp );
+                        top->mask = maskOp;
                     }
 
                     at = top;
@@ -1522,7 +1495,7 @@ class TaskManager;
             // Remove unsupported formats
             if (GetOpDataType( at->GetOpType() )==DT_IMAGE)
             {
-                auto it = m_supportedFormats.Find(at);
+				std::array<uint8_t, (size_t)EImageFormat::IF_COUNT>* it = m_supportedFormats.Find(at);
                 if (!it)
                 {
                     // Default to all supported
@@ -1544,29 +1517,29 @@ class TaskManager;
             // TODO: Code shared with the constant data format optimisation visitor
             case OP_TYPE::IM_LAYERCOLOUR:
             {
-                auto typedAt = dynamic_cast<const ASTOpFixed*>(at.get());
+                const ASTOpImageLayerColor* typedAt = dynamic_cast<const ASTOpImageLayerColor*>(at.get());
 
-                RecurseWithCurrentState( typedAt->children[typedAt->op.args.ImageLayerColour.base].child() );
-                RecurseWithCurrentState( typedAt->children[typedAt->op.args.ImageLayerColour.colour].child() );
+                RecurseWithCurrentState( typedAt->base.child() );
+                RecurseWithCurrentState( typedAt->color.child() );
 
-                if ( typedAt->children[typedAt->op.args.ImageLayerColour.mask] )
+                if ( typedAt->mask )
                 {
                     std::array<uint8_t, (size_t)EImageFormat::IF_COUNT> newState;
                     newState.fill(0);
                     newState[(size_t)EImageFormat::IF_L_UBYTE ] = 1;
                     newState[(size_t)EImageFormat::IF_L_UBYTE_RLE ] = 1;
 
-                    RecurseWithState( typedAt->children[typedAt->op.args.ImageLayerColour.mask].child(), newState );
+                    RecurseWithState( typedAt->mask.child(), newState );
                 }
                 break;
             }
 
             case OP_TYPE::IM_LAYER:
             {
-                auto typedAt = dynamic_cast<const ASTOpFixed*>(at.get());
+                const ASTOpImageLayer* typedAt = dynamic_cast<const ASTOpImageLayer*>(at.get());
 
-                RecurseWithCurrentState( typedAt->children[typedAt->op.args.ImageLayer.base].child() );
-                RecurseWithCurrentState( typedAt->children[typedAt->op.args.ImageLayer.blended].child() );
+                RecurseWithCurrentState( typedAt->base.child() );
+                RecurseWithCurrentState( typedAt->blend.child() );
 
                 std::array<uint8_t, (size_t)EImageFormat::IF_COUNT> newState;
                 newState.fill(0);
@@ -1574,16 +1547,16 @@ class TaskManager;
                 //newState[ IF_L_UBYTE ] = 1;
                 //newState[ IF_L_UBYTE_RLE ] = 1;
 
-                if ( typedAt->op.args.ImageLayer.mask )
+                if ( typedAt->mask )
                 {
-                    RecurseWithState( typedAt->children[typedAt->op.args.ImageLayer.mask].child(), newState );
+                    RecurseWithState( typedAt->mask.child(), newState );
                 }
                 break;
             }
 
             case OP_TYPE::IM_DISPLACE:
             {
-                auto typedAt = dynamic_cast<const ASTOpFixed*>(at.get());
+				const ASTOpFixed* typedAt = dynamic_cast<const ASTOpFixed*>(at.get());
 
                 RecurseWithCurrentState( typedAt->children[typedAt->op.args.ImageDisplace.source].child() );
 
@@ -1607,7 +1580,7 @@ class TaskManager;
 
         bool IsSupportedFormat( Ptr<ASTOp> at, EImageFormat format ) const
         {
-            auto it = m_supportedFormats.Find(at);
+            const std::array<uint8_t, (size_t)EImageFormat::IF_COUNT>* it = m_supportedFormats.Find(at);
             if (!it)
             {
                 return false;
@@ -1636,7 +1609,7 @@ class TaskManager;
     void SubtreeRelevantParametersVisitorAST::Run( Ptr<ASTOp> root )
     {
         // Cached?
-        auto it = m_resultCache.find( STATE(root,false) );
+		std::unordered_map< STATE, std::unordered_set< string >, state_hash >::iterator it = m_resultCache.find( STATE(root,false) );
         if (it!=m_resultCache.end())
         {
             m_params = it->second;
@@ -1664,7 +1637,7 @@ class TaskManager;
                 case OP_TYPE::PR_PARAMETER:
                 case OP_TYPE::IM_PARAMETER:
                 {
-                    auto typedAt = dynamic_cast<const ASTOpParameter*>(at.get());
+					const ASTOpParameter* typedAt = dynamic_cast<const ASTOpParameter*>(at.get());
                     m_params.insert(typedAt->parameter.m_name);
 
                     // Not interested in the parameters from the parameters decorators.
@@ -1673,48 +1646,43 @@ class TaskManager;
                     break;
                 }
 
-                case OP_TYPE::LA_REMOVEBLOCKS:
-                {
-                    // Manually choose how to recurse this op
-                    auto pTyped = dynamic_cast<const ASTOpFixed*>( at.get() );
+				case OP_TYPE::LA_FROMMESH:
+				{
+					// Manually choose how to recurse this op
+					const ASTOpLayoutFromMesh* pTyped = dynamic_cast<const ASTOpLayoutFromMesh*>(at.get());
 
-                    if ( auto& source = pTyped->children[pTyped->op.args.LayoutRemoveBlocks.source] )
-                    {
-						pending.Add({ source.m_child, state });
-                    }
+					// For that mesh we only want to know about the layouts
+					if (const ASTChild& Mesh = pTyped->Mesh)
+					{
+						pending.Add({ Mesh.m_child, true });
+					}
 
-                    // For that mesh we only want to know about the layouts
-                    if ( auto& mesh = pTyped->children[pTyped->op.args.LayoutRemoveBlocks.mesh] )
-                    {
-						pending.Add({ mesh.m_child, true });
-                    }
-
-                    return false;
-                }
+					return false;
+				}
 
                 case OP_TYPE::ME_MORPH2:
                 {
                     // Manually choose how to recurse this op
 					const ASTOpMeshMorph* pTyped = dynamic_cast<const ASTOpMeshMorph*>( at.get() );
 
-                    if ( auto& base = pTyped->Base )
+                    if ( pTyped->Base )
                     {
-						pending.Add({ base.m_child, state });
+						pending.Add({ pTyped->Base.m_child, state });
                     }
 
                     // Mesh morphs don't modify the layouts, so we can ignore the factor and morphs
                     if (!state)
                     {
-                        if ( auto& factor = pTyped->Factor )
+                        if ( pTyped->Factor )
                         {
-							pending.Add({ factor.m_child, state });
+							pending.Add({ pTyped->Factor.m_child, state });
                         }
 
                         for (int32 t=0;t<pTyped->Targets.Num(); ++t)
                         {
-                            if ( auto& target = pTyped->Targets[t] )
+                            if ( pTyped->Targets[t] )
                             {
-								pending.Add({ target.m_child, state });
+								pending.Add({ pTyped->Targets[t].m_child, state });
                             }
                         }
                     }
@@ -1756,7 +1724,7 @@ class TaskManager;
             pState->m_updateCache.Empty();
             pState->m_dynamicResources.Empty();
 
-            for( const auto& i : m_cache )
+            for( const TPair<Ptr<ASTOp>, bool>& i : m_cache )
             {
                 if ( i.Value )
                 {
@@ -1764,7 +1732,7 @@ class TaskManager;
                 }
             }
 
-            for(const auto& i : m_dynamicResourceRoot )
+            for(const TPair<Ptr<ASTOp>, bool>& i : m_dynamicResourceRoot )
             {
                 if ( i.Value )
                 {
@@ -1774,7 +1742,7 @@ class TaskManager;
 
 					// Temp copy
 					TArray<mu::string> ParamCopy;
-					for ( const auto& e: subtreeParams.m_params )
+					for ( const string& e: subtreeParams.m_params )
 					{
 						ParamCopy.Add(e);
 					}
@@ -1825,7 +1793,7 @@ class TaskManager;
                 case OP_TYPE::IN_ADDSCALAR:
                 case OP_TYPE::IN_ADDSTRING:
                 {
-                    auto typedAt = dynamic_cast<const ASTOpInstanceAdd*>(at.get());
+					const ASTOpInstanceAdd* typedAt = dynamic_cast<const ASTOpInstanceAdd*>(at.get());
 
                     TPair<bool,bool> newState;
                     newState.Key = false; //resource root
@@ -1950,8 +1918,8 @@ class TaskManager;
         // textures? We don't want them uncompressed.
         if( type==OP_TYPE::IN_ADDIMAGE )
         {
-            auto typedAt = dynamic_cast<ASTOpInstanceAdd*>(at.get());
-            auto imageAt = typedAt->value.child();
+			ASTOpInstanceAdd* typedAt = dynamic_cast<ASTOpInstanceAdd*>(at.get());
+			Ptr<ASTOp> imageAt = typedAt->value.child();
 
             // Does it have a runtime parameter in its subtree?
             bool hasRuntimeParameter = m_hasRuntimeParamVisitor.HasAny( imageAt );
@@ -2001,7 +1969,7 @@ class TaskManager;
 
         if( at->GetOpType()==OP_TYPE::IN_ADDLOD )
         {
-            auto* typedAt = dynamic_cast<ASTOpAddLOD*>(at.get());
+			ASTOpAddLOD* typedAt = dynamic_cast<ASTOpAddLOD*>(at.get());
 
             if (typedAt->lods.Num()>(size_t)m_lodCount)
             {
@@ -2023,7 +1991,7 @@ class TaskManager;
     //---------------------------------------------------------------------------------------------
     //---------------------------------------------------------------------------------------------
     //---------------------------------------------------------------------------------------------
-    void CodeOptimiser::OptimiseStatesAST( TaskManager* pTaskManager )
+    void CodeOptimiser::OptimiseStatesAST()
     {
         MUTABLE_CPUPROFILER_SCOPE(OptimiseStatesAST);
 
@@ -2060,8 +2028,7 @@ class TaskManager;
 
                     UE_LOG(LogMutableCore, Verbose, TEXT(" - before parameter optimiser"));
 
-                    ParameterOptimiserAST param( m_states[s],
-                                                 m_options->GetPrivate()->m_optimisationOptions );
+                    ParameterOptimiserAST param( m_states[s], m_options->GetPrivate()->m_optimisationOptions );
                     modified = param.Apply();
 
                     TArray<Ptr<ASTOp>> roots;
@@ -2072,14 +2039,12 @@ class TaskManager;
 
                     // All kind of optimisations that depend on the meaning of each operation
                     UE_LOG(LogMutableCore, Verbose, TEXT(" - semantic optimiser"));
-                    modified |= SemanticOptimiserAST(
-                        roots, m_options->GetPrivate()->m_optimisationOptions );
+                    modified |= SemanticOptimiserAST( roots, m_options->GetPrivate()->m_optimisationOptions );
 					UE_LOG(LogMutableCore, Verbose, TEXT("(int) %s : %ld"), TEXT("ast size"), int64(ASTOp::CountNodes(roots)));
 					//ASTOp::LogHistogram(roots);
 
                     UE_LOG(LogMutableCore, Verbose, TEXT(" - sink optimiser"));
-                    modified |=
-                        SinkOptimiserAST( roots, m_options->GetPrivate()->m_optimisationOptions );
+                    modified |= SinkOptimiserAST( roots, m_options->GetPrivate()->m_optimisationOptions );
 					UE_LOG(LogMutableCore, Verbose, TEXT("(int) %s : %ld"), TEXT("ast size"), int64(ASTOp::CountNodes(roots)));
 					//ASTOp::LogHistogram(roots);
 
@@ -2111,7 +2076,7 @@ class TaskManager;
         // necessary at this stage before GPU optimisation.
         {
             TArray<Ptr<ASTOp>> roots;
-            for(const auto& s:m_states)
+            for(const STATE_COMPILATION_DATA& s:m_states)
             {
                 roots.Add(s.root);
             }
@@ -2119,7 +2084,7 @@ class TaskManager;
             AccumulateAllImageFormatsOpAST opFormats;
             opFormats.Run(roots);
 
-            for ( auto& s: m_states )
+            for (STATE_COMPILATION_DATA& s: m_states )
             {
                 {
                     UE_LOG(LogMutableCore, Verbose, TEXT(" - state cache"));
@@ -2163,7 +2128,7 @@ class TaskManager;
             while (modified && (!m_optimizeIterationsMax || m_optimizeIterationsLeft>0 || !numIterations ))
             {
                 TArray<Ptr<ASTOp>> roots;
-                for(const auto& s:m_states)
+                for(const STATE_COMPILATION_DATA& s:m_states)
                 {
                     roots.Add(s.root);
                 }
@@ -2186,14 +2151,14 @@ class TaskManager;
 				UE_LOG(LogMutableCore, Verbose, TEXT("(int) %s : %ld"), TEXT("ast size"), int64(ASTOp::CountNodes(roots)));
 			}
 
-            for(auto& s:m_states)
+            for(STATE_COMPILATION_DATA& s:m_states)
             {
                 UE_LOG(LogMutableCore, Verbose, TEXT(" - constant optimiser"));
-                ConstantGeneratorAST( m_options->GetPrivate(), s.root, pTaskManager );
+                ConstantGeneratorAST( m_options->GetPrivate(), s.root );
             }
 
             TArray<Ptr<ASTOp>> roots;
-            for(const auto& s:m_states)
+            for(const STATE_COMPILATION_DATA& s:m_states)
             {
                 roots.Add(s.root);
             }
@@ -2210,7 +2175,7 @@ class TaskManager;
 
         // Gather all the current roots
         TArray<Ptr<ASTOp>> roots;
-        for(const auto& s:m_states)
+        for(const STATE_COMPILATION_DATA& s:m_states)
         {
             roots.Add(s.root);
         }
@@ -2228,7 +2193,7 @@ class TaskManager;
 
             // Update the marks for the instructions that don't depend on runtime parameters to be
             // cached.
-            for (auto& s:m_states)
+            for (STATE_COMPILATION_DATA& s:m_states)
             {
                 StateCacheDetectorAST c( &s );
             }

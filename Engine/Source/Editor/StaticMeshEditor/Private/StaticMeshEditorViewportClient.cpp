@@ -4,6 +4,7 @@
 #include "EditorModeManager.h"
 #include "EngineGlobals.h"
 #include "RawIndexBuffer.h"
+#include "SceneView.h"
 #include "Settings/LevelEditorViewportSettings.h"
 #include "Engine/StaticMesh.h"
 #include "Editor.h"
@@ -108,10 +109,7 @@ void FStaticMeshEditorViewportClient::Tick(float DeltaSeconds)
 	FEditorViewportClient::Tick(DeltaSeconds);
 
 	// Tick the preview scene world.
-	if (!GIntraFrameDebuggingGameThread)
-	{
-		PreviewScene->GetWorld()->Tick(LEVELTICK_All, DeltaSeconds);
-	}
+	PreviewScene->GetWorld()->Tick(LEVELTICK_All, DeltaSeconds);
 }
 
 /**
@@ -805,6 +803,9 @@ void FStaticMeshEditorViewportClient::DrawCanvas(FViewport& InViewport, FSceneVi
 			{
 				const FString PositionStr = FNaniteSettingsLayout::PositionPrecisionValueToDisplayString(Resources.PositionPrecision);
 				TextItems.Emplace(FText::Format(NSLOCTEXT("UnrealEd", "NanitePositionPrecision", "Position Precision: {0}"), FText::FromString(PositionStr)));
+
+				const FString NormalStr = FNaniteSettingsLayout::NormalPrecisionValueToDisplayString(Resources.NormalPrecision);
+				TextItems.Emplace(FText::Format(NSLOCTEXT("UnrealEd", "NaniteNormalPrecision", "Normal Precision: {0}"), FText::FromString(NormalStr)));
 
 				const uint32 NumStreamingPages = Resources.PageStreamingStates.Num() - Resources.NumRootPages;
 				const uint64 RootKB = uint64(Resources.NumRootPages) * NANITE_ROOT_PAGE_GPU_SIZE;

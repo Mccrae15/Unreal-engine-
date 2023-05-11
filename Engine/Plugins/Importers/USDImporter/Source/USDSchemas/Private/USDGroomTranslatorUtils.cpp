@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "USDGroomTranslatorUtils.h"
+#include "UObject/Package.h"
 
 #if USE_USD_SDK && WITH_EDITOR
 
@@ -15,6 +16,7 @@
 #include "UnrealUSDWrapper.h"
 #include "USDAssetCache.h"
 #include "USDGeomXformableTranslator.h"
+#include "USDInfoCache.h"
 #include "USDIntegrationUtils.h"
 #include "USDSchemaTranslator.h"
 #include "USDTypesConversion.h"
@@ -145,7 +147,7 @@ namespace UE::UsdGroomTranslatorUtils::Private
 		return {};
 	}
 
-	UObject* GetGroomBindingSourceMesh(const pxr::UsdPrim& Prim, const UUsdAssetCache& AssetCache, EGroomBindingMeshType BindingType)
+	UObject* GetGroomBindingSourceMesh(const pxr::UsdPrim& Prim, const FUsdInfoCache& InfoCache, EGroomBindingMeshType BindingType)
 	{
 		FScopedUsdAllocs Allocs;
 
@@ -158,8 +160,7 @@ namespace UE::UsdGroomTranslatorUtils::Private
 			if (Targets.size() > 0)
 			{
 				const pxr::SdfPath& TargetPrimPath = Targets[0];
-				FString PrimPath(UsdToUnreal::ConvertPath(TargetPrimPath));
-				UObject* Mesh = AssetCache.GetAssetForPrim(PrimPath);
+				UObject* Mesh = InfoCache.GetSingleAssetForPrim(UE::FSdfPath{TargetPrimPath});
 
 				// Validate that the target prim and associated asset are of the expected type for the binding
 				pxr::UsdPrim TargetPrim = Prim.GetPrimAtPath(TargetPrimPath);
@@ -181,7 +182,12 @@ namespace UsdGroomTranslatorUtils
 {
 	using namespace UE::UsdGroomTranslatorUtils::Private;
 
-	void CreateGroomBindingAsset(const pxr::UsdPrim& Prim, UUsdAssetCache& AssetCache, EObjectFlags ObjectFlags)
+	void CreateGroomBindingAsset(
+		const pxr::UsdPrim& Prim,
+		UUsdAssetCache2& AssetCache,
+		FUsdInfoCache& InfoCache,
+		EObjectFlags ObjectFlags
+	)
 	{
 		// At this point, the prim (SkelRoot or GeomMesh) has already been checked to have the GroomBindingAPI,
 		// so we need to set up the GroomComponent and the groom binding asset to be able to bind it to the mesh
@@ -195,7 +201,9 @@ namespace UsdGroomTranslatorUtils
 		}
 
 		// The GroomAsset should already be processed and cached by the USDGroomTranslator
-		UGroomAsset* GroomAsset = Cast<UGroomAsset>(AssetCache.GetAssetForPrim(GroomPrimPath));
+		UGroomAsset* GroomAsset = InfoCache.GetSingleAssetForPrim<UGroomAsset>(
+			UE::FSdfPath{*GroomPrimPath}
+		);
 		if (!GroomAsset)
 		{
 			return;
@@ -203,7 +211,7 @@ namespace UsdGroomTranslatorUtils
 
 		// Determine the type of binding needed based on the prim mesh type
 		const FString PrimPath(UsdToUnreal::ConvertPath(Prim.GetPath()));
-		UObject* PrimAsset = AssetCache.GetAssetForPrim(PrimPath);
+		UObject* PrimAsset = InfoCache.GetSingleAssetForPrim(UE::FSdfPath{*PrimPath});
 
 		EGroomBindingMeshType GroomBindingType = EGroomBindingMeshType::SkeletalMesh;
 		UObject* TargetMesh = Cast<USkeletalMesh>(PrimAsset);
@@ -221,7 +229,7 @@ namespace UsdGroomTranslatorUtils
 		Settings.GroomBindingType = GroomBindingType;
 		Settings.Groom = GroomAsset;
 		Settings.TargetMesh = TargetMesh;
-		Settings.SourceMesh = GetGroomBindingSourceMesh(Prim, AssetCache, GroomBindingType);
+		Settings.SourceMesh = GetGroomBindingSourceMesh(Prim, InfoCache, GroomBindingType);
 
 		// Try to get the GroomBindingAsset from the cache
 		const FSHAHash SHAHash = ComputeGroomBindingHash(Settings);
@@ -240,11 +248,11 @@ namespace UsdGroomTranslatorUtils
 
 		if (GroomBinding)
 		{
-			AssetCache.LinkAssetToPrim(GroomBindingPath, GroomBinding);
+			InfoCache.LinkAssetToPrim(UE::FSdfPath{*GroomBindingPath}, GroomBinding);
 		}
 	}
 
-	void SetGroomFromPrim(const pxr::UsdPrim& Prim, const UUsdAssetCache& AssetCache, USceneComponent* SceneComponent)
+	void SetGroomFromPrim(const pxr::UsdPrim& Prim, const FUsdInfoCache& InfoCache, USceneComponent* SceneComponent)
 	{
 		if (!SceneComponent)
 		{
@@ -259,7 +267,9 @@ namespace UsdGroomTranslatorUtils
 			return;
 		}
 
-		UGroomAsset* GroomAsset = Cast<UGroomAsset>(AssetCache.GetAssetForPrim(GroomPrimPath));
+		UGroomAsset* GroomAsset = InfoCache.GetSingleAssetForPrim<UGroomAsset>(
+			UE::FSdfPath{*GroomPrimPath}
+		);
 		if (!GroomAsset)
 		{
 			return;
@@ -267,7 +277,9 @@ namespace UsdGroomTranslatorUtils
 
 		const FString PrimPath(UsdToUnreal::ConvertPath(Prim.GetPath()));
 		const FString GroomBindingPath = FString::Printf(TEXT("%s_groombinding"), *PrimPath);
-		UGroomBindingAsset* GroomBinding = Cast<UGroomBindingAsset>(AssetCache.GetAssetForPrim(GroomBindingPath));
+		UGroomBindingAsset* GroomBinding = InfoCache.GetSingleAssetForPrim<UGroomBindingAsset>(
+			UE::FSdfPath{*GroomBindingPath}
+		);
 
 		// Set the GroomAsset and GroomBindingAsset on the child GroomComponent of SceneComponent that was set up in the translator
 		TArray<USceneComponent*> Children;

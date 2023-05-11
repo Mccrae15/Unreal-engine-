@@ -11,27 +11,6 @@ using Microsoft.Extensions.Configuration;
 namespace Horde.Agent
 {
 	/// <summary>
-	/// The type of executor to use
-	/// </summary>
-	public enum ExecutorType
-	{
-		/// <summary>
-		/// The test executor (predefined job, 
-		/// </summary>
-		Test,
-
-		/// <summary>
-		/// The local executor (run all steps locally)
-		/// </summary>
-		Local,
-
-		/// <summary>
-		/// Manage workspaces and run steps in a synced branch
-		/// </summary>
-		Perforce,
-	}
-
-	/// <summary>
 	/// Describes a network share to mount
 	/// </summary>
 	public class MountNetworkShare
@@ -165,7 +144,7 @@ namespace Horde.Agent
 		/// <summary>
 		/// The executor to use for jobs. Defaults to the Perforce executor.
 		/// </summary>
-		public ExecutorType Executor { get; set; } = ExecutorType.Perforce;
+		public string Executor { get; set; } = Execution.PerforceExecutor.Name;
 
 		/// <summary>
 		/// Settings for the local executor
@@ -201,6 +180,21 @@ namespace Horde.Agent
 		/// Whether to write step output to the logging device
 		/// </summary>
 		public bool WriteStepOutputToLogger { get; set; }
+
+		/// <summary>
+		/// Queries information about the current agent through the AWS EC2 interface
+		/// </summary>
+		public bool EnableAwsEc2Support { get; set; } = true;
+
+		/// <summary>
+		/// Whether to enable the new storage-API based log system 
+		/// </summary>
+		public bool EnableNewLogger { get; set; }
+
+		/// <summary>
+		/// Option to use a local storage client rather than connecting through the server. Primarily for convenience when debugging / iterating locally.
+		/// </summary>
+		public bool UseLocalStorageClient { get; set; }
 
 		/// <summary>
 		/// Key/value properties in addition to those set internally by the agent

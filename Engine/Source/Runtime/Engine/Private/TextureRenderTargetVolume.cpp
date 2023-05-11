@@ -5,13 +5,13 @@
 =============================================================================*/
 
 #include "Engine/TextureRenderTargetVolume.h"
-#include "RenderUtils.h"
+#include "RenderingThread.h"
 #include "TextureRenderTargetVolumeResource.h"
 #include "UnrealEngine.h"
 #include "DeviceProfiles/DeviceProfile.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
 #include "Engine/VolumeTexture.h"
-#include "ClearQuad.h"
+#include "HAL/LowLevelMemStats.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(TextureRenderTargetVolume)
 
@@ -227,6 +227,8 @@ UVolumeTexture* UTextureRenderTargetVolume::ConstructTextureVolume(UObject* ObjO
  */
 void FTextureRenderTargetVolumeResource::InitDynamicRHI()
 {
+	LLM_SCOPED_TAG_WITH_OBJECT_IN_SET(Owner->GetOutermost(), ELLMTagSet::Assets);
+
 	if((Owner->SizeX > 0) && (Owner->SizeY > 0) && (Owner->SizeZ > 0))
 	{
 		bool bIsSRGB = true;
@@ -306,6 +308,10 @@ void FTextureRenderTargetVolumeResource::ReleaseDynamicRHI()
  */
 void FTextureRenderTargetVolumeResource::UpdateDeferredResource(FRHICommandListImmediate& RHICmdList, bool bClearRenderTarget/*=true*/)
 {
+	LLM_SCOPED_TAG_WITH_OBJECT_IN_SET(Owner->GetOutermost(), ELLMTagSet::Assets);
+
+	RemoveFromDeferredUpdateList();
+
 	if (bClearRenderTarget)
 	{
 		RHICmdList.Transition(FRHITransitionInfo(TextureRHI, ERHIAccess::Unknown, ERHIAccess::RTV));

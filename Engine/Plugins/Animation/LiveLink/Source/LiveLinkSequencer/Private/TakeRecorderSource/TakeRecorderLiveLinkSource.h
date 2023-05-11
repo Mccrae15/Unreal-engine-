@@ -3,8 +3,6 @@
 #pragma once
 
 #include "TakeRecorderSource.h"
-#include "UObject/SoftObjectPtr.h"
-#include "Templates/SubclassOf.h"
 #include "TakeRecorderLiveLinkSource.generated.h"
 
 class UMovieSceneLiveLinkTrackRecorder;
@@ -76,7 +74,7 @@ public:
 	bool bDiscardSamplesBeforeStart;
 
 	/**
-	* The master track recorder we created.
+	* The track recorder we created.
 	*/
 	UPROPERTY()
 	TObjectPtr<UMovieSceneLiveLinkTrackRecorder> TrackRecorder;
@@ -84,11 +82,11 @@ public:
 private:
 
 	// UTakeRecorderSource
-	virtual TArray<UTakeRecorderSource*> PreRecording(ULevelSequence* InSequence, FMovieSceneSequenceID InSequenceID, ULevelSequence* InMasterSequence, FManifestSerializer* InManifestSerializer) override;
+	virtual TArray<UTakeRecorderSource*> PreRecording(ULevelSequence* InSequence, FMovieSceneSequenceID InSequenceID, ULevelSequence* InRootSequence, FManifestSerializer* InManifestSerializer) override;
 	virtual void StartRecording(const FTimecode& InSectionStartTimecode, const FFrameNumber& InSectionFirstFrame, class ULevelSequence* InSequence) override;
 	virtual void TickRecording(const FQualifiedFrameTime& CurrentSequenceTime) override;
 	virtual void StopRecording(class ULevelSequence* InSequence) override;
-	virtual TArray<UTakeRecorderSource*> PostRecording(class ULevelSequence* InSequence, class ULevelSequence* InMasterSequence, const bool bCancelled) override;
+	virtual TArray<UTakeRecorderSource*> PostRecording(class ULevelSequence* InSequence, class ULevelSequence* InRootSequence, const bool bCancelled) override;
 
 	virtual FText GetDisplayTextImpl() const override;
 	virtual void AddContentsToFolder(class UMovieSceneFolder* InFolder) override;

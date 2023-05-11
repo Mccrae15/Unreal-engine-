@@ -322,6 +322,8 @@ FRDGTextureRef OrDefault3dUintTextureIfNull(FRDGBuilder& GraphBuilder, FRDGTextu
 	return Texture ? Texture: GSystemTextures.GetVolumetricBlackUintDummy(GraphBuilder);
 }
 
+float GetLumenReflectionSpecularScale();
+float GetLumenReflectionContrast();
 FLumenTranslucencyLightingParameters GetLumenTranslucencyLightingParameters(
 	FRDGBuilder& GraphBuilder, 
 	const FLumenTranslucencyGIVolume& LumenTranslucencyGIVolume,
@@ -353,6 +355,8 @@ FLumenTranslucencyLightingParameters GetLumenTranslucencyLightingParameters(
 	Parameters.FrontLayerTranslucencyReflectionParameters.Radiance = OrDefault2dTextureIfNull(GraphBuilder, LumenFrontLayerTranslucency.Radiance);
 	Parameters.FrontLayerTranslucencyReflectionParameters.Normal = OrDefault2dTextureIfNull(GraphBuilder, LumenFrontLayerTranslucency.Normal);
 	Parameters.FrontLayerTranslucencyReflectionParameters.SceneDepth = OrDefault2dTextureIfNull(GraphBuilder, LumenFrontLayerTranslucency.SceneDepth);
+	Parameters.FrontLayerTranslucencyReflectionParameters.SpecularScale = GetLumenReflectionSpecularScale();
+	Parameters.FrontLayerTranslucencyReflectionParameters.Contrast = GetLumenReflectionContrast();
 
 	Parameters.TranslucencyGIVolume0            = LumenTranslucencyGIVolume.Texture0        ? LumenTranslucencyGIVolume.Texture0        : SystemTextures.VolumetricBlack;
 	Parameters.TranslucencyGIVolume1            = LumenTranslucencyGIVolume.Texture1        ? LumenTranslucencyGIVolume.Texture1        : SystemTextures.VolumetricBlack;
@@ -453,6 +457,7 @@ class FTranslucencyVolumeTraceVoxelsCS : public FGlobalShader
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE"), GetGroupSize().X);
+		OutEnvironment.SetDefine(TEXT("USE_GLOBAL_GPU_SCENE_DATA"), 1);
 		OutEnvironment.CompilerFlags.Add(CFLAG_Wave32);
 	}
 };
@@ -509,7 +514,6 @@ class FTranslucencyVolumeIntegrateCS : public FGlobalShader
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture3D<float4>, RWTranslucencyGINewHistory1)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FLumenTranslucencyLightingVolumeParameters, VolumeParameters)
-		SHADER_PARAMETER_STRUCT_INCLUDE(FOctahedralSolidAngleParameters, OctahedralSolidAngleParameters)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture3D, VolumeTraceRadiance)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture3D, VolumeTraceHitDistance)
 		SHADER_PARAMETER(float, HistoryWeight)
@@ -605,7 +609,7 @@ void TraceVoxelsTranslucencyVolume(
 	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View,
 	bool bDynamicSkyLight,
-	const FLumenCardTracingInputs& TracingInputs,
+	const FLumenCardTracingParameters& TracingParameters,
 	LumenRadianceCache::FRadianceCacheInterpolationParameters RadianceCacheParameters,
 	FLumenTranslucencyLightingVolumeParameters VolumeParameters,
 	FLumenTranslucencyLightingVolumeTraceSetupParameters TraceSetupParameters,
@@ -617,7 +621,7 @@ void TraceVoxelsTranslucencyVolume(
 	PassParameters->RWVolumeTraceRadiance = GraphBuilder.CreateUAV(VolumeTraceRadiance);
 	PassParameters->RWVolumeTraceHitDistance = GraphBuilder.CreateUAV(VolumeTraceHitDistance);
 
-	GetLumenCardTracingParameters(GraphBuilder, View, TracingInputs, PassParameters->TracingParameters);
+	PassParameters->TracingParameters = TracingParameters;
 	PassParameters->RadianceCacheParameters = RadianceCacheParameters;
 	PassParameters->VolumeParameters = VolumeParameters;
 	PassParameters->TraceSetupParameters = TraceSetupParameters;
@@ -644,7 +648,7 @@ void TraceVoxelsTranslucencyVolume(
 LumenRadianceCache::FUpdateInputs FDeferredShadingSceneRenderer::GetLumenTranslucencyGIVolumeRadianceCacheInputs(
 	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View, 
-	const FLumenCardTracingInputs& TracingInputs,
+	const FLumenSceneFrameTemporaries& FrameTemporaries,
 	ERDGPassFlags ComputePassFlags)
 {
 	const FLumenTranslucencyLightingVolumeParameters VolumeParameters = GetTranslucencyLightingVolumeParameters(View);
@@ -672,7 +676,6 @@ LumenRadianceCache::FUpdateInputs FDeferredShadingSceneRenderer::GetLumenTranslu
 	}
 
 	LumenRadianceCache::FUpdateInputs RadianceCacheUpdateInputs(
-		TracingInputs,
 		RadianceCacheInputs,
 		Configuration,
 		View,
@@ -687,7 +690,7 @@ LumenRadianceCache::FUpdateInputs FDeferredShadingSceneRenderer::GetLumenTranslu
 void FDeferredShadingSceneRenderer::ComputeLumenTranslucencyGIVolume(
 	FRDGBuilder& GraphBuilder,
 	FViewInfo& View, 
-	const FLumenCardTracingInputs& TracingInputs,
+	const FLumenSceneFrameTemporaries& FrameTemporaries,
 	LumenRadianceCache::FRadianceCacheInterpolationParameters& RadianceCacheParameters,
 	ERDGPassFlags ComputePassFlags)
 {
@@ -703,7 +706,7 @@ void FDeferredShadingSceneRenderer::ComputeLumenTranslucencyGIVolume(
 			LumenRadianceCache::FUpdateInputs TranslucencyVolumeRadianceCacheUpdateInputs = GetLumenTranslucencyGIVolumeRadianceCacheInputs(
 				GraphBuilder,
 				View, 
-				TracingInputs,
+				FrameTemporaries,
 				ComputePassFlags);
 
 			if (TranslucencyVolumeRadianceCacheUpdateInputs.IsAnyCallbackBound())
@@ -715,16 +718,20 @@ void FDeferredShadingSceneRenderer::ComputeLumenTranslucencyGIVolume(
 
 				LumenRadianceCache::UpdateRadianceCaches(
 					GraphBuilder, 
+					FrameTemporaries,
 					InputArray,
 					OutputArray,
 					Scene,
-					ViewFamily.EngineShowFlags,
+					ViewFamily,
 					LumenCardRenderer.bPropagateGlobalLightingChange,
 					ComputePassFlags);
 			}
 		}
 
 		{
+			FLumenCardTracingParameters TracingParameters;
+			GetLumenCardTracingParameters(GraphBuilder, View, *Scene->GetLumenSceneData(View), FrameTemporaries, /*bSurfaceCacheFeedback*/ false, TracingParameters);
+
 			const FLumenTranslucencyLightingVolumeParameters VolumeParameters = GetTranslucencyLightingVolumeParameters(View);
 			const FIntVector TranslucencyGridSize = VolumeParameters.TranslucencyGIGridSize;
 
@@ -749,17 +756,16 @@ void FDeferredShadingSceneRenderer::ComputeLumenTranslucencyGIVolume(
 
 			if (Lumen::UseHardwareRayTracedTranslucencyVolume(ViewFamily) && GLumenTranslucencyVolumeTraceFromVolume != 0)
 			{
-				check(ComputePassFlags == ERDGPassFlags::Compute);
-
 				HardwareRayTraceTranslucencyVolume(
 					GraphBuilder,
 					View,
-					TracingInputs,
+					TracingParameters,
 					RadianceCacheParameters,
 					VolumeParameters,
 					TraceSetupParameters, 
 					VolumeTraceRadiance, 
-					VolumeTraceHitDistance);
+					VolumeTraceHitDistance,
+					ComputePassFlags);
 			}
 			else
 			{
@@ -768,7 +774,7 @@ void FDeferredShadingSceneRenderer::ComputeLumenTranslucencyGIVolume(
 					GraphBuilder,
 					View,
 					bDynamicSkyLight,
-					TracingInputs,
+					TracingParameters,
 					RadianceCacheParameters,
 					VolumeParameters,
 					TraceSetupParameters,
@@ -844,12 +850,6 @@ void FDeferredShadingSceneRenderer::ComputeLumenTranslucencyGIVolume(
 				PassParameters->VolumeTraceRadiance = VolumeTraceRadiance;
 				PassParameters->VolumeTraceHitDistance = VolumeTraceHitDistance;
 				PassParameters->VolumeParameters = VolumeParameters;
-
-				TRefCountPtr<IPooledRenderTarget> LocalOctahedralSolidAngleTextureRT;
-				TRefCountPtr<IPooledRenderTarget>& OctahedralSolidAngleTextureRT = View.ViewState ? View.ViewState->Lumen.ScreenProbeGatherState.OctahedralSolidAngleTextureRT : LocalOctahedralSolidAngleTextureRT;
-				extern int32 GLumenOctahedralSolidAngleTextureSize;
-				PassParameters->OctahedralSolidAngleParameters.OctahedralSolidAngleTextureResolutionSq = GLumenOctahedralSolidAngleTextureSize * GLumenOctahedralSolidAngleTextureSize;
-				PassParameters->OctahedralSolidAngleParameters.OctahedralSolidAngleTexture = InitializeOctahedralSolidAngleTexture(GraphBuilder, View.ShaderMap, GLumenOctahedralSolidAngleTextureSize, OctahedralSolidAngleTextureRT);
 
 				const bool bUseTemporalReprojection =
 					GTranslucencyVolumeTemporalReprojection

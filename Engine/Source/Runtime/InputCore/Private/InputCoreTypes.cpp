@@ -529,7 +529,7 @@ void FKeyDetails::CommonInit(const uint32 InKeyFlags)
 }
 
 #if !FAST_BOOT_HACKS
-PRAGMA_DISABLE_OPTIMIZATION
+UE_DISABLE_OPTIMIZATION_SHIP
 #endif
 void EKeys::Initialize()
 {
@@ -992,7 +992,7 @@ void EKeys::Initialize()
 	FInputKeyManager::Get();
 }
 #if !FAST_BOOT_HACKS
-PRAGMA_ENABLE_OPTIMIZATION
+UE_ENABLE_OPTIMIZATION_SHIP
 #endif
 
 void EKeys::AddKey(const FKeyDetails& KeyDetails)
@@ -1089,7 +1089,7 @@ FName EKeys::GetMenuCategoryPaletteIcon(const FName CategoryName)
 
 EConsoleForGamepadLabels::Type EKeys::ConsoleForGamepadLabels = EConsoleForGamepadLabels::None;
 
-PRAGMA_DISABLE_OPTIMIZATION
+UE_DISABLE_OPTIMIZATION_SHIP
 FText EKeys::GetGamepadDisplayName(const FKey Key)
 {
 	switch (ConsoleForGamepadLabels)
@@ -1275,7 +1275,7 @@ FText EKeys::GetGamepadDisplayName(const FKey Key)
 	ensureMsgf(false, TEXT("Unexpected key %s using EKeys::GetGamepadDisplayName"), *Key.ToString());
 	return FText::FromString(Key.ToString());
 }
-PRAGMA_ENABLE_OPTIMIZATION
+UE_ENABLE_OPTIMIZATION_SHIP
 
 bool FKey::IsValid() const
 {
@@ -1458,12 +1458,6 @@ bool FKey::SerializeFromMismatchedTag(struct FPropertyTag const& Tag, FStructure
 
 bool FKey::ExportTextItem(FString& ValueStr, FKey const& DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope) const
 {
-	if (0 != (PortFlags & EPropertyPortFlags::PPF_ExportCpp))
-	{
-		ValueStr += FString::Printf(TEXT("FKey(TEXT(\"%s\"))"), *KeyName.ToString());
-		return true;
-	}
-
 	ValueStr += KeyName.ToString();
 	return true;
 }
@@ -1578,7 +1572,7 @@ FKey FInputKeyManager::GetKeyFromCodes( const uint32 KeyCode, const uint32 CharC
 	if (KeyPtr == nullptr && CharCode > 32)
 	{
 		FKey NewKey(*FString::Printf(TEXT("%s%d"), FKey::SyntheticCharPrefix, CharCode));
-		EKeys::AddKey(FKeyDetails(NewKey, FText::AsCultureInvariant(FString::Chr(CharCode)), FKeyDetails::NotBlueprintBindableKey | FKeyDetails::NotActionBindableKey));
+		EKeys::AddKey(FKeyDetails(NewKey, FText::AsCultureInvariant(FString::Chr((TCHAR)CharCode)), FKeyDetails::NotBlueprintBindableKey | FKeyDetails::NotActionBindableKey));
 		const_cast<FInputKeyManager*>(this)->KeyMapCharToEnum.Add(CharCode, NewKey);
 		return NewKey;
 	}

@@ -4,24 +4,24 @@
 	PhysCollision.cpp: Skeletal mesh collision code
 =============================================================================*/ 
 
-#include "CoreMinimal.h"
 #include "EngineDefines.h"
 #include "EngineLogs.h"
+#include "Math/BoxSphereBounds.h"
 #include "PhysicsEngine/ShapeElem.h"
 #include "PhysicsEngine/ConvexElem.h"
 #include "PhysicsEngine/BoxElem.h"
+#include "PhysicsEngine/LevelSetElem.h"
 #include "PhysicsEngine/SphereElem.h"
 #include "PhysicsEngine/SphylElem.h"
 #include "PhysicsEngine/AggregateGeom.h"
 #include "Engine/Polys.h"
-#include "PhysXIncludes.h"
 #include "Chaos/Convex.h"
 #include "Chaos/Levelset.h"
+#include "PhysicsEngine/TaperedCapsuleElem.h"
 #if INTEL_ISPC
 #include "KAggregateGeom.ispc.generated.h"
 #endif
 
-#include "Chaos/ImplicitObject.h"
 
 
 #define MIN_HULL_VERT_DISTANCE		(0.1f)
@@ -514,6 +514,17 @@ FBox FKLevelSetElem::UntransformedAABB() const
 	return Box;
 }
 
+FIntVector3 FKLevelSetElem::GridResolution() const
+{
+	if (LevelSet.IsValid())
+	{
+		const Chaos::TVec3<int32>& Dim = LevelSet->GetGrid().Counts();
+		return FIntVector3(Dim[0], Dim[1], Dim[2]);
+	}
+
+	return FIntVector3(0,0,0);
+}
+
 void FKLevelSetElem::BuildLevelSet(const FTransform& GridTransform, const TArray<double>& GridValues, const FIntVector& GridDims, float GridCellSize)
 {
 	const Chaos::FVec3 Min(0, 0, 0);
@@ -580,82 +591,7 @@ void FKLevelSetElem::GetZeroIsosurfaceGridCellFaces(TArray<FVector3f>& Vertices,
 {
 	if (LevelSet.IsValid())
 	{
-		const Chaos::TUniformGrid<Chaos::FReal, 3>& Grid = LevelSet->GetGrid();
-		const Chaos::TVector<int32, 3> Cells = Grid.Counts();
-		for (int i = 0; i < Cells.X-1; ++i)
-		{
-			for (int j = 0; j < Cells.Y-1; ++j)
-			{
-				for (int k = 0; k < Cells.Z-1; ++k)
-				{
-					const double Sign = FMath::Sign(LevelSet->GetPhiArray()(i, j, k));
-					const double SignNextI = FMath::Sign(LevelSet->GetPhiArray()(i+1, j, k));
-					const double SignNextJ = FMath::Sign(LevelSet->GetPhiArray()(i, j+1, k));
-					const double SignNextK = FMath::Sign(LevelSet->GetPhiArray()(i, j, k+1));
-
-					const FVector3d CellMin = Grid.MinCorner() + Grid.Dx() * FVector3d(i, j, k);
-
-					if (Sign > SignNextI)
-					{
-						const int32 V0 = Vertices.Emplace( CellMin + FVector3d(1, 0, 0) );
-						const int32 V1 = Vertices.Emplace( CellMin + FVector3d(1, 1, 0) );
-						const int32 V2 = Vertices.Emplace( CellMin + FVector3d(1, 1, 1) );
-						const int32 V3 = Vertices.Emplace( CellMin + FVector3d(1, 0, 1) );
-						Tris.Emplace(FIntVector(V0, V1, V2));
-						Tris.Emplace(FIntVector(V2, V3, V0));
-					}
-					else if (Sign < SignNextI)
-					{
-						const int32 V0 = Vertices.Emplace(CellMin + FVector3d(1, 0, 0));
-						const int32 V1 = Vertices.Emplace(CellMin + FVector3d(1, 1, 0));
-						const int32 V2 = Vertices.Emplace(CellMin + FVector3d(1, 1, 1));
-						const int32 V3 = Vertices.Emplace(CellMin + FVector3d(1, 0, 1));
-						Tris.Emplace(FIntVector(V0, V2, V1));
-						Tris.Emplace(FIntVector(V2, V0, V3));
-					}
-
-					
-					if (Sign > SignNextJ)
-					{
-						const int32 V0 = Vertices.Emplace(CellMin + FVector3d(0, 1, 0));
-						const int32 V1 = Vertices.Emplace(CellMin + FVector3d(1, 1, 0));
-						const int32 V2 = Vertices.Emplace(CellMin + FVector3d(1, 1, 1));
-						const int32 V3 = Vertices.Emplace(CellMin + FVector3d(0, 1, 1));
-						Tris.Emplace(FIntVector(V0, V2, V1));
-						Tris.Emplace(FIntVector(V2, V0, V3));
-					}
-					else if (Sign < SignNextJ)
-					{
-						const int32 V0 = Vertices.Emplace(CellMin + FVector3d(0, 1, 0));
-						const int32 V1 = Vertices.Emplace(CellMin + FVector3d(1, 1, 0));
-						const int32 V2 = Vertices.Emplace(CellMin + FVector3d(1, 1, 1));
-						const int32 V3 = Vertices.Emplace(CellMin + FVector3d(0, 1, 1));
-						Tris.Emplace(FIntVector(V0, V1, V2));
-						Tris.Emplace(FIntVector(V2, V3, V0));
-					}
-
-					if (Sign > SignNextK)
-					{
-						const int32 V0 = Vertices.Emplace(CellMin + FVector3d(0, 0, 1));
-						const int32 V1 = Vertices.Emplace(CellMin + FVector3d(1, 0, 1));
-						const int32 V2 = Vertices.Emplace(CellMin + FVector3d(1, 1, 1));
-						const int32 V3 = Vertices.Emplace(CellMin + FVector3d(0, 1, 1));
-						Tris.Emplace(FIntVector(V0, V1, V2));
-						Tris.Emplace(FIntVector(V2, V3, V0));
-					}
-					else if (Sign < SignNextK)
-					{
-						const int32 V0 = Vertices.Emplace(CellMin + FVector3d(0, 0, 1));
-						const int32 V1 = Vertices.Emplace(CellMin + FVector3d(1, 0, 1));
-						const int32 V2 = Vertices.Emplace(CellMin + FVector3d(1, 1, 1));
-						const int32 V3 = Vertices.Emplace(CellMin + FVector3d(0, 1, 1));
-						Tris.Emplace(FIntVector(V0, V2, V1));
-						Tris.Emplace(FIntVector(V2, V0, V3));
-					}
-
-				}
-			}
-		}
+		LevelSet->GetZeroIsosurfaceGridCellFaces(Vertices, Tris);
 	}
 }
 

@@ -5,11 +5,14 @@
 #include "PCGEditor.h"
 #include "PCGEditorGraph.h"
 #include "PCGEditorGraphNodeBase.h"
+#include "PCGNode.h"
 
-#include "EdGraph/EdGraph.h"
-#include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphSchema.h"
-#include "Widgets/SWidget.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Views/TableViewMetadata.h"
+#include "Layout/WidgetPath.h"
+#include "Widgets/Input/SSearchBox.h"
+#include "Widgets/Views/STreeView.h"
 
 #define LOCTEXT_NAMESPACE "PCGEditorGraphFind"
 
@@ -275,14 +278,22 @@ void SPCGEditorGraphFind::MatchTokens(const TArray<FString>& InTokens)
 		const FString NodeType = Node->GetNodeTitle(ENodeTitleType::ListView).ToString();
 
 		FString NodeSearchString = NodeName + NodeType + Node->NodeComment;
+
+		if (const UPCGEditorGraphNodeBase* PCGEditorGraphNodeBase = Cast<UPCGEditorGraphNodeBase>(Node))
+        {
+        	if (const UPCGNode* PCGNode = PCGEditorGraphNodeBase->GetPCGNode())
+        	{
+        		NodeSearchString.Append(PCGNode->GetName());
+        	}
+        }
 		NodeSearchString = NodeSearchString.Replace(TEXT(" "), TEXT(""));
 
 		FPCGEditorGraphFindResultPtr NodeResult;
-		auto GetOrCreateNodeResult = [&]() -> FPCGEditorGraphFindResultPtr&
+		auto GetOrCreateNodeResult = [this, &NodeResult, &NodeName, &NodeType, Node]() -> FPCGEditorGraphFindResultPtr&
 		{
 			if (!NodeResult.IsValid())
 			{
-				NodeResult = MakeShared<FPCGEditorGraphFindResult>(NodeName == NodeType ? NodeName : NodeName + " - " + NodeType, RootFindResult, Node);
+				NodeResult = MakeShared<FPCGEditorGraphFindResult>((NodeName == NodeType) ? NodeName : NodeName + " - " + NodeType, RootFindResult, Node);
 			}
 			return NodeResult;
 		};

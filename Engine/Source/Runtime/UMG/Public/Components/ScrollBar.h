@@ -18,28 +18,34 @@ class UMG_API UScrollBar : public UWidget
 
 public:
 
+	UE_DEPRECATED(5.2, "Direct access to WidgetStyle is deprecated. Please use the getter or setter.")
 	/** Style of the scrollbar */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Style", meta=( DisplayName="Style" ))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, Category="Style", meta=( DisplayName="Style" ))
 	FScrollBarStyle WidgetStyle;
 
+	UE_DEPRECATED(5.2, "Direct access to bAlwaysShowScrollbar is deprecated. Please use the getter or setter.")
 	/**  */
-	UPROPERTY(EditAnywhere, Category="Behavior")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter = "IsAlwaysShowScrollbar", Setter = "SetAlwaysShowScrollbar", Category = "Behavior")
 	bool bAlwaysShowScrollbar;
 
+	UE_DEPRECATED(5.2, "Direct access to bAlwaysShowScrollbarTrack is deprecated. Please use the getter or setter.")
 	/**  */
-	UPROPERTY(EditAnywhere, Category = "Behavior")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter = "IsAlwaysShowScrollbarTrack", Setter = "SetAlwaysShowScrollbarTrack", Category = "Behavior")
 	bool bAlwaysShowScrollbarTrack;
 
+	UE_DEPRECATED(5.2, "Direct access to Orientation is deprecated. Please use the getter. Note that the orientation of a scrollbar is only set at construction and is not modifiable at runtime.")
 	/**  */
-	UPROPERTY(EditAnywhere, Category="Behavior")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Getter, Category="Behavior")
 	TEnumAsByte<EOrientation> Orientation;
 
+	UE_DEPRECATED(5.2, "Direct access to Thickness is deprecated. Please use the getter or setter.")
 	/** The thickness of the scrollbar thumb */
-	UPROPERTY(EditAnywhere, Category="Behavior")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, Category="Behavior")
 	FVector2D Thickness;
 
+	UE_DEPRECATED(5.2, "Direct access to Padding is deprecated. Please use the getter or setter.")
 	/** The margin around the scrollbar */
-	UPROPERTY(EditAnywhere, Category = "Behavior")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, Category = "Behavior")
 	FMargin Padding;
 
 public:
@@ -54,21 +60,6 @@ public:
 	*/
 	UFUNCTION(BlueprintCallable, Category="Scrolling")
 	void SetState(float InOffsetFraction, float InThumbSizeFraction);
-
-	///** @return true if scrolling is possible; false if the view is big enough to fit all the content */
-	//bool IsNeeded() const;
-
-	///** @return normalized distance from top */
-	//float DistanceFromTop() const;
-
-	///** @return normalized distance from bottom */
-	//float DistanceFromBottom() const;
-
-	///** @return the scrollbar's visibility as a product of internal rules and user-specified visibility */
-	//EVisibility ShouldBeVisible() const;
-
-	///** @return True if the user is scrolling by dragging the scroll bar thumb. */
-	//bool IsScrolling() const;
 
 	//~ Begin UWidget Interface
 	virtual void SynchronizeProperties() override;
@@ -90,6 +81,34 @@ public:
 	//~ End UWidget Interface
 #endif
 
+	/** @return the style of scrollbar. */
+	const FScrollBarStyle& GetWidgetStyle() const;
+	/** Sets the style of scrollbar. */
+	void SetWidgetStyle(const FScrollBarStyle& InWidgetStyle);
+
+	/** @return True if the scrollbar should always show. */
+	bool IsAlwaysShowScrollbar() const;
+	/** Sets whether the scrollbar should always show. */
+	void SetAlwaysShowScrollbar(bool bNewValue);
+
+	/** @return True if the scrollbar track should always show. */
+	bool IsAlwaysShowScrollbarTrack() const;
+	/** Sets whether the scrollbar track should always show */
+	void SetAlwaysShowScrollbarTrack(bool bNewValue);
+
+	/** @return the orientation of the scrollbar. */
+	EOrientation GetOrientation() const;
+
+	/** @return the thickness of the scrollbar. */
+	FVector2D GetThickness() const;
+	/** Sets the thickness of the scrollbar. */
+	void SetThickness(const FVector2D& InThickness);
+
+	/** Sets the padding of the scrollbar. */
+	FMargin GetPadding() const;
+	/** @return the padding of the scrollbar. */
+	void SetPadding(const FMargin& InPadding);
+
 protected:
 
 	TSharedPtr<class SScrollBar> MyScrollBar;
@@ -98,4 +117,7 @@ protected:
 	//~ Begin UWidget Interface
 	virtual TSharedRef<SWidget> RebuildWidget() override;
 	//~ End UWidget Interface
+
+	/** Initialize the orientation of the scrollbar in the constructor before the SWidget is constructed. */
+	void InitOrientation(EOrientation InOrientation);
 };

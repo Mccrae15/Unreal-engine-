@@ -1,12 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DataStreamChannel.h"
-#include "Engine/NetConnection.h"
-#include "Net/Core/Misc/ResizableCircularQueue.h"
-#include "Net/DataBunch.h"
-#include "Net/Core/Trace/NetTrace.h"
+#include "HAL/IConsoleManager.h"
+#include "Templates/Casts.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(DataStreamChannel)
 
 #if UE_WITH_IRIS
+// IWYU pragma: begin_keep
+#include "Engine/NetConnection.h"
 #include "Iris/IrisConfig.h"
 #include "Iris/DataStream/DataStreamManager.h"
 #include "Iris/PacketControl/PacketNotification.h"
@@ -16,7 +18,10 @@
 #include "Iris/Serialization/NetSerializationContext.h"
 #include "Iris/Core/IrisProfiler.h"
 #include "Iris/Core/IrisMemoryTracker.h"
+#include "Net/Core/Trace/NetTrace.h"
+#include "PacketHandler.h"
 #include "ProfilingDebugging/CsvProfiler.h"
+// IWYU pragma: end_keep
 #endif // UE_WITH_IRIS
 
 namespace UE::Net::Private
@@ -51,7 +56,6 @@ void UDataStreamChannel::Init(UNetConnection* InConnection, int32 InChIndex, ECh
 		DataStreamManager->Init(InitParams);
 	}
 
-	// $IRIS TODO: Not pretty. Need to figure out something elegant. This will have to do for now
 	if (UReplicationSystem* ReplicationSystem = InConnection->Driver->GetReplicationSystem())
 	{
 		bIsReadyToHandshake = 1U;
@@ -83,9 +87,17 @@ void UDataStreamChannel::ReceivedBunch(FInBunch& Bunch)
 
 	IRIS_PROFILER_SCOPE(UDataStreamChannel_ReceivedBunch);
 
-	// We are sending dummy bunches until we are open...
+	// We are sending dummy bunches until we are open.
 	if (!Bunch.GetNumBits())
 	{
+		return;
+	}
+
+	// We do not support partial bunches.
+	if (Bunch.bPartial)
+	{
+		Bunch.SetAtEnd();
+		Bunch.SetError();
 		return;
 	}
 
@@ -96,7 +108,7 @@ void UDataStreamChannel::ReceivedBunch(FInBunch& Bunch)
 	FNetSerializationContext SerializationContext(&BitReader);
 
 	// For packet stats
-	SerializationContext.SetNetTraceCollector(Connection->GetInTraceCollector());
+	SerializationContext.SetTraceCollector(Connection->GetInTraceCollector());
 
 	DataStreamManager->ReadData(SerializationContext);
 
@@ -151,7 +163,7 @@ void UDataStreamChannel::Tick()
 		return;
 	}
 
-	if (!IsNetReady(Private::bIrisSaturateBandwidth) || IsPacketWindowFull() || !Connection->HasReceivedClientPacket() || (Connection->Handler != nullptr && !Connection->Handler->IsFullyInitialized()))
+	if (!IsNetReady(UE::Net::Private::bIrisSaturateBandwidth) || IsPacketWindowFull() || !Connection->HasReceivedClientPacket() || (Connection->Handler != nullptr && !Connection->Handler->IsFullyInitialized()))
 	{
 		return;
 	}
@@ -200,7 +212,7 @@ void UDataStreamChannel::Tick()
 #if UE_NET_TRACE_ENABLED	
 		// For Iris we can use the connection trace collector as long as we make sure that the packet is prepared 
 		FNetTraceCollector* Collector = Connection->GetOutTraceCollector();
-		SerializationContext.SetNetTraceCollector(Collector);
+		SerializationContext.SetTraceCollector(Collector);
 		UE_NET_TRACE_BEGIN_BUNCH(Collector);
 #endif
 
@@ -269,7 +281,7 @@ void UDataStreamChannel::Tick()
 	{
 		// Write data until we are not allowed to write more
 	}
-	while ((WriteDataFunction() == UDataStream::EWriteResult::HasMoreData) && IsNetReady(Private::bIrisSaturateBandwidth) && (!IsPacketWindowFull()));
+	while ((WriteDataFunction() == UDataStream::EWriteResult::HasMoreData) && IsNetReady(UE::Net::Private::bIrisSaturateBandwidth) && (!IsPacketWindowFull()));
 
 	// call end write to cleanup data initialized in BeginWrite	
 	DataStreamManager->EndWrite();

@@ -129,7 +129,7 @@ namespace EpicGames.Core
 		/// <summary>
 		/// Buffer for holding partial line data
 		/// </summary>
-		readonly MemoryStream _partialLine = new MemoryStream();
+		readonly ByteArrayBuilder _partialLine = new ByteArrayBuilder();
 
 		/// <summary>
 		/// Whether matching is currently enabled
@@ -140,6 +140,11 @@ namespace EpicGames.Core
 		/// The inner logger
 		/// </summary>
 		ILogger _logger;
+
+		/// <summary>
+		/// Log events sinks in addition to <see cref="_logger" />
+		/// </summary>
+		readonly List<ILogEventSink> _logEventSinks = new List<ILogEventSink>();
 
 		/// <summary>
 		/// Timer for the parser being active
@@ -169,14 +174,36 @@ namespace EpicGames.Core
 		/// Constructor
 		/// </summary>
 		/// <param name="logger">The logger to receive parsed output messages</param>
-		public LogEventParser(ILogger logger)
+		/// <param name="logEventSinks">Additional sinks to receive log events</param>
+		public LogEventParser(ILogger logger, List<ILogEventSink>? logEventSinks = null)
 		{
 			_logger = logger;
 			_buffer = new LogBuffer(50);
+			
+			if (logEventSinks != null)
+			{
+				_logEventSinks.AddRange(logEventSinks);
+			}
 		}
 
 		/// <inheritdoc/>
-		public void Dispose() => Flush();
+		public void Dispose()
+		{
+			Dispose(true);
+			GC.SuppressFinalize(this);
+		}
+
+		/// <summary>
+		/// Standard Dispose pattern method
+		/// </summary>
+		/// <param name="disposing"></param>
+		protected virtual void Dispose(bool disposing)
+		{
+			if (disposing)
+			{
+				Flush();
+			}
+		}
 
 		/// <summary>
 		/// Enumerate all the types that implement <see cref="ILogEventMatcher"/> in the given assembly, and create instances of them
@@ -319,7 +346,7 @@ namespace EpicGames.Core
 				{
 					if (span[scanIdx] == '\n')
 					{
-						_partialLine.Write(span.Slice(baseIdx, scanIdx - baseIdx));
+						_partialLine.WriteFixedLengthBytes(span.Slice(baseIdx, scanIdx - baseIdx));
 						FlushPartialLine();
 						baseIdx = ++scanIdx;
 						break;
@@ -338,7 +365,7 @@ namespace EpicGames.Core
 			}
 
 			// Add the rest of the text to the partial line buffer
-			_partialLine.Write(span.Slice(baseIdx));
+			_partialLine.WriteFixedLengthBytes(span.Slice(baseIdx));
 
 			// Process the new data
 			ProcessData(false);
@@ -375,7 +402,7 @@ namespace EpicGames.Core
 				if (JsonLogEvent.TryParse(data, out jsonEvent))
 				{
 					ProcessData(true);
-					_logger.Log(jsonEvent.Level, jsonEvent.EventId, jsonEvent, null, JsonLogEvent.Format);
+					_logger.LogJsonLogEvent(jsonEvent);
 					return;
 				}
 			}
@@ -387,9 +414,8 @@ namespace EpicGames.Core
 		/// </summary>
 		private void FlushPartialLine()
 		{
-			AddLine(_partialLine.ToArray());
-			_partialLine.Position = 0;
-			_partialLine.SetLength(0);
+			AddLine(_partialLine.ToByteArray());
+			_partialLine.Clear();
 		}
 
 		/// <summary>
@@ -404,11 +430,11 @@ namespace EpicGames.Core
 			{
 				// Try to match an event
 				List<LogEvent>? events = null;
-				if (Regex.IsMatch(_buffer[0], "<-- Suspend Log Parsing -->", RegexOptions.IgnoreCase))
+				if (Regex.IsMatch(_buffer[0]!, "<-- Suspend Log Parsing -->", RegexOptions.IgnoreCase))
 				{
 					_matchingEnabled--;
 				}
-				else if (Regex.IsMatch(_buffer[0], "<-- Resume Log Parsing -->", RegexOptions.IgnoreCase))
+				else if (Regex.IsMatch(_buffer[0]!, "<-- Resume Log Parsing -->", RegexOptions.IgnoreCase))
 				{
 					_matchingEnabled++;
 				}
@@ -429,7 +455,7 @@ namespace EpicGames.Core
 				{
 					foreach (Regex ignorePattern in IgnorePatterns)
 					{
-						if (ignorePattern.IsMatch(_buffer[0]))
+						if (ignorePattern.IsMatch(_buffer[0]!))
 						{
 							events = null;
 							break;
@@ -509,6 +535,10 @@ namespace EpicGames.Core
 			foreach (LogEvent logEvent in logEvents)
 			{
 				_logger.Log(logEvent.Level, logEvent.Id, logEvent, null, (state, exception) => state.ToString());
+				foreach (ILogEventSink logEventSink in _logEventSinks)
+				{
+					logEventSink.ProcessEvent(logEvent);
+				}
 			}
 		}
 	}

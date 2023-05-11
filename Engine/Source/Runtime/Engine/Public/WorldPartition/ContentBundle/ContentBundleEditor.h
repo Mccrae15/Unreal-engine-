@@ -34,7 +34,7 @@ public:
 	virtual bool IsValid() const override;
 	//~ End IContentBundle Interface
 
-	const FGuid& GetGuid() const { return Guid; }
+	const FGuid& GetTreeItemID() const { return TreeItemID; }
 
 	void StartEditing();
 	void StopEditing();
@@ -52,16 +52,19 @@ public:
 	void ReferenceAllActors();
 	void UnreferenceAllActors();
 
-	void GenerateStreaming(TArray<FString>* OutPackageToGenerate);
+	void GenerateStreaming(TArray<FString>* OutPackageToGenerate, bool bIsPIE);
 
 	URuntimeHashExternalStreamingObjectBase* GetStreamingObject() const { return ExternalStreamingObject; }
 
+	// Cooking
 	void OnBeginCook(IWorldPartitionCookPackageContext& CookContext);
-
-	bool GatherPackagesToCook(class IWorldPartitionCookPackageContext& CookContext);
-	bool PopulateGeneratorPackageForCook(class IWorldPartitionCookPackageContext& CookContext, const TArray<FWorldPartitionCookPackage*>& PackagesToCook, TArray<UPackage*>& OutModifiedPackages);
-	bool PopulateGeneratedPackageForCook(class IWorldPartitionCookPackageContext& CookContext, const FWorldPartitionCookPackage& PackagesToCook, TArray<UPackage*>& OutModifiedPackages);
 	bool HasCookedContent() const { return ExternalStreamingObject != nullptr; }
+	//~Begin IWorldPartitionCookPackageGenerator
+	virtual bool GatherPackagesToCook(class IWorldPartitionCookPackageContext& CookContext) override;
+	virtual bool PopulateGeneratorPackageForCook(class IWorldPartitionCookPackageContext& CookContext, const TArray<FWorldPartitionCookPackage*>& PackagesToCook, TArray<UPackage*>& OutModifiedPackages) override;
+	virtual bool PopulateGeneratedPackageForCook(class IWorldPartitionCookPackageContext& CookContext, const FWorldPartitionCookPackage& PackageToCook, TArray<UPackage*>& OutModifiedPackages) override;
+	virtual UWorldPartitionRuntimeCell* GetCellForPackage(const FWorldPartitionCookPackage& PackageToCook) const override;
+	//~End IWorldPartitionCookPackageGenerator
 
 protected:
 	//~ Begin IContentBundle Interface
@@ -75,7 +78,6 @@ private:
 	void OnUnsavedActorDeleted(AActor* Actor);
 
 	void BroadcastChanged();
-	bool BuildContentBundleContainerPackagePath(FString& ContainerPackagePath) const;
 	UPackage* CreateActorPackage(const FName& ActorName) const;
 	FName BuildWorlDataLayersName() const;
 
@@ -95,7 +97,8 @@ private:
 	TMap<uint32, const UWorldPartitionRuntimeCell*> CookPackageIdsToCell;
 	URuntimeHashExternalStreamingObjectBase* ExternalStreamingObject;
 
-	FGuid Guid;
+	// Used by Content Bundle Outliner to link tree item to FContentBundle instance.
+	FGuid TreeItemID;
 
 	bool bIsBeingEdited;
 };

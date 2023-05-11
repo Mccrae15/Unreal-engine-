@@ -8,9 +8,11 @@
 
 class AActor;
 class UPrimitiveComponent;
+class FHitProxyConsumer;
 class FSceneView;
 class FViewInfo;
 class FPrimitiveDrawInterface;
+class FPrimitiveSceneProxy;
 class FSimpleElementCollector;
 class FMeshProjectionPassParameters;
 struct FEngineShowFlags;

@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Xml;
 
 namespace EpicGames.Core
@@ -303,7 +304,7 @@ namespace EpicGames.Core
 
 			string selector = $"//member[@name='P:{type.FullName}.{name}']/summary";
 
-			XmlNode node = xmlDoc.SelectSingleNode(selector);
+			XmlNode? node = xmlDoc.SelectSingleNode(selector);
 			if (node == null)
 			{
 				return null;
@@ -333,7 +334,14 @@ namespace EpicGames.Core
 				case TypeCode.UInt32:
 				case TypeCode.Int64:
 				case TypeCode.UInt64:
-					return new JsonSchemaInteger();
+					if (type.IsEnum)
+					{
+						return new JsonSchemaEnum(Enum.GetNames(type)) { Name = type.Name };
+					}
+					else
+					{
+						return new JsonSchemaInteger();
+					}
 				case TypeCode.Single:
 				case TypeCode.Double:
 					return new JsonSchemaNumber();
@@ -348,10 +356,6 @@ namespace EpicGames.Core
 					return new JsonSchemaString(str.Format);
 			}
 
-			if (type.IsEnum)
-			{
-				return new JsonSchemaEnum(Enum.GetNames(type)) { Name = type.Name };
-			}
 			if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(Nullable<>))
 			{
 				return CreateSchemaType(type.GetGenericArguments()[0], typeCache, xmlDoc);
@@ -359,6 +363,10 @@ namespace EpicGames.Core
 			if (type == typeof(DateTime) || type == typeof(DateTimeOffset))
 			{
 				return new JsonSchemaString(JsonSchemaStringFormat.DateTime);
+			}
+			if (type == typeof(TimeSpan))
+			{
+				return new JsonSchemaString();
 			}
 
 			Type[] interfaceTypes = type.GetInterfaces();
@@ -431,9 +439,12 @@ namespace EpicGames.Core
 			PropertyInfo[] properties = type.GetProperties(BindingFlags.Instance | BindingFlags.Public);
 			foreach (PropertyInfo property in properties)
 			{
-				string? description = GetPropertyDescription(type, property.Name, xmlDoc);
-				JsonSchemaType propertyType = CreateSchemaType(property.PropertyType, typeCache, xmlDoc);
-				obj.Properties.Add(new JsonSchemaProperty(property.Name, description, propertyType));
+				if (property.GetCustomAttribute<JsonIgnoreAttribute>() == null)
+				{
+					string? description = GetPropertyDescription(type, property.Name, xmlDoc);
+					JsonSchemaType propertyType = CreateSchemaType(property.PropertyType, typeCache, xmlDoc);
+					obj.Properties.Add(new JsonSchemaProperty(property.Name, description, propertyType));
+				}
 			}
 		}
 	}

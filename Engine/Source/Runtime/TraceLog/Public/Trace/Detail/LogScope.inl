@@ -18,6 +18,7 @@ namespace Trace {
 namespace Private {
 
 ////////////////////////////////////////////////////////////////////////////////
+extern TRACELOG_API uint64			GStartCycle;
 extern TRACELOG_API uint32 volatile	GLogSerial;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -84,10 +85,12 @@ inline void FLogScope::Enter(uint32 Uid, uint32 Size)
 {
 	EnterPrelude<FEventHeaderSync>(Size);
 
-	// Event header
-	auto* Header = (uint16*)(Ptr - sizeof(FEventHeaderSync::SerialHigh));
-	*(uint32*)(Header - 1) = uint32(AtomicAddRelaxed(&GLogSerial, 1u));
-	Header[-2] = uint16(Uid)|int32(EKnownEventUids::Flag_TwoByteUid);
+	uint16 Uid16 = uint16(Uid) | int32(EKnownEventUids::Flag_TwoByteUid);
+	uint32 Serial = uint32(AtomicAddRelaxed(&GLogSerial, 1u));
+
+	// Event header FEventHeaderSync
+	memcpy(Ptr - 3, &Serial, sizeof(Serial)); /* FEventHeaderSync::SerialHigh,SerialLow */
+	memcpy(Ptr - 5, &Uid16,  sizeof(Uid16));  /* FEventHeaderSync::Uid */
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -95,9 +98,11 @@ inline void FLogScope::EnterNoSync(uint32 Uid, uint32 Size)
 {
 	EnterPrelude<FEventHeader>(Size);
 
-	// Event header
+	uint16 Uid16 = uint16(Uid) | int32(EKnownEventUids::Flag_TwoByteUid);
+
+	// Event header FEventHeader
 	auto* Header = (uint16*)(Ptr);
-	Header[-1] = uint16(Uid)|int32(EKnownEventUids::Flag_TwoByteUid);
+	memcpy(Header - 1, &Uid16, sizeof(Uid16)); /* FEventHeader::Uid */
 }
 
 
@@ -161,17 +166,16 @@ inline FScopedStampedLogScope::~FScopedStampedLogScope()
 		return;
 	}
 
+	uint64 Stamp = TimeGetTimestamp() - GStartCycle;
+
 	FWriteBuffer* Buffer = Writer_GetBuffer();
-
-	uint64 Stamp = Writer_GetTimestamp(Buffer);
-
 	if (UNLIKELY(int32((uint8*)Buffer - Buffer->Cursor) < int32(sizeof(Stamp))))
 	{
 		Buffer = Writer_NextBuffer();
 	}
 
 	Stamp <<= 8;
-	Stamp += uint8(EKnownEventUids::LeaveScope_T) << EKnownEventUids::_UidShift;
+	Stamp += uint8(EKnownEventUids::LeaveScope_TB) << EKnownEventUids::_UidShift;
 	memcpy((uint64*)(Buffer->Cursor), &Stamp, sizeof(Stamp));
 	Buffer->Cursor += sizeof(Stamp);
 
@@ -227,9 +231,9 @@ FORCENOINLINE auto FLogScope::ScopedStampedEnter()
 		Buffer = Writer_NextBuffer();
 	}
 
-	Stamp = Writer_GetTimestamp(Buffer);
+	Stamp = TimeGetTimestamp() - GStartCycle;
 	Stamp <<= 8;
-	Stamp += uint8(EKnownEventUids::EnterScope_T) << EKnownEventUids::_UidShift;
+	Stamp += uint8(EKnownEventUids::EnterScope_TB) << EKnownEventUids::_UidShift;
 	memcpy((uint64*)(Buffer->Cursor), &Stamp, sizeof(Stamp));
 	Buffer->Cursor += sizeof(Stamp);
 

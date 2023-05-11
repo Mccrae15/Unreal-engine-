@@ -1,17 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "WebSocketNetworkingPrivate.h"
 
-#include "IPAddress.h"
-#include "Sockets.h"
-#include "Net/NetworkProfiler.h"
 #include "Net/DataChannel.h"
 
-#include "WebSocketConnection.h"
-#include "WebSocketNetDriver.h"
-#include "WebSocket.h"
-#include "Runtime/PacketHandlers/PacketHandler/Public/PacketHandler.h"
 #include "PacketHandlers/StatelessConnectHandlerComponent.h"
+#include "WebSocket.h"
+#include "WebSocketConnection.h"
 
 /*-----------------------------------------------------------------------------
 Declarations.

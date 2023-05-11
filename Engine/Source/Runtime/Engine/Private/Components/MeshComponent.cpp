@@ -2,11 +2,15 @@
 
 #include "Components/MeshComponent.h"
 #include "Materials/Material.h"
+#include "MaterialDomain.h"
 #include "Engine/Texture2D.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "ContentStreaming.h"
+#include "Materials/MaterialRelevance.h"
 #include "Streaming/TextureStreamingHelpers.h"
 #include "Engine/World.h"
+#include "PSOPrecache.h"
+#include "UObject/UnrealType.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MeshComponent)
 
@@ -74,6 +78,10 @@ void UMeshComponent::SetMaterial(int32 ElementIndex, UMaterialInterface* Materia
 
 			// Set the material and invalidate things
 			OverrideMaterials[ElementIndex] = Material;
+
+			// Precache PSOs again
+			PrecachePSOs();
+
 			MarkRenderStateDirty();
 			// If MarkRenderStateDirty didn't notify the streamer, do it now
 			if (!bIgnoreStreamingManagerUpdate && OwnerLevelHasRegisteredStaticComponentsInStreamingManager(GetOwner()))
@@ -90,8 +98,6 @@ void UMeshComponent::SetMaterial(int32 ElementIndex, UMaterialInterface* Materia
 			{
 				BodyInst->UpdatePhysicalMaterials();
 			}
-
-			PrecachePSOs();
 
 #if WITH_EDITOR
 			// Static Lighting is updated when compilation finishes

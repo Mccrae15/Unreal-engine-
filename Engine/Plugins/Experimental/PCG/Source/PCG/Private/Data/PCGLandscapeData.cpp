@@ -2,16 +2,17 @@
 
 #include "Data/PCGLandscapeData.h"
 
-#include "PCGHelpers.h"
 #include "PCGSubsystem.h"
 #include "Data/PCGPointData.h"
-#include "Data/PCGPolyLineData.h"
-#include "Data/PCGSpatialData.h"
+#include "Data/PCGSurfaceData.h"
 #include "Grid/PCGLandscapeCache.h"
-#include "Helpers/PCGAsync.h"
+#include "Helpers/PCGHelpers.h"
 
-#include "Landscape.h"
-#include "LandscapeEdit.h"
+#include "LandscapeInfo.h"
+#include "LandscapeProxy.h"
+#include "Engine/World.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGLandscapeData)
 
 void UPCGLandscapeData::Initialize(const TArray<TWeakObjectPtr<ALandscapeProxy>>& InLandscapes, const FBox& InBounds, bool bInHeightOnly, bool bInUseMetadata)
 {
@@ -29,6 +30,7 @@ void UPCGLandscapeData::Initialize(const TArray<TWeakObjectPtr<ALandscapeProxy>>
 	check(!Landscapes.IsEmpty());
 
 	ALandscapeProxy* FirstLandscape = Landscapes[0].Get();
+	check(FirstLandscape);
 
 	TargetActor = FirstLandscape;
 	Bounds = InBounds;
@@ -38,7 +40,8 @@ void UPCGLandscapeData::Initialize(const TArray<TWeakObjectPtr<ALandscapeProxy>>
 	Transform = FirstLandscape->GetActorTransform();
 
 	// Store cache pointer for easier access
-	LandscapeCache = (FirstLandscape->GetWorld() && FirstLandscape->GetWorld()->GetSubsystem<UPCGSubsystem>()) ? FirstLandscape->GetWorld()->GetSubsystem<UPCGSubsystem>()->GetLandscapeCache() : nullptr;
+	UPCGSubsystem* PCGSubsystem = UPCGSubsystem::GetInstance(FirstLandscape->GetWorld());
+	LandscapeCache = PCGSubsystem ? PCGSubsystem->GetLandscapeCache() : nullptr;
 
 	// TODO: find a better way to do this - maybe there should be a prototype metadata in the landscape cache
 	if (LandscapeCache)
@@ -51,7 +54,10 @@ void UPCGLandscapeData::Initialize(const TArray<TWeakObjectPtr<ALandscapeProxy>>
 
 				for (const FName& Layer : Layers)
 				{
-					Metadata->CreateFloatAttribute(Layer, 0.0f, /*bAllowInterpolation=*/true);
+					if (!Metadata->HasAttribute(Layer))
+					{
+						Metadata->CreateFloatAttribute(Layer, 0.0f, /*bAllowInterpolation=*/true);
+					}
 				}
 			}
 		}
@@ -64,6 +70,8 @@ void UPCGLandscapeData::Initialize(const TArray<TWeakObjectPtr<ALandscapeProxy>>
 
 void UPCGLandscapeData::PostLoad()
 {
+	Super::PostLoad();
+
 	ALandscapeProxy* FirstLandscape = nullptr;
 
 	for (TSoftObjectPtr<ALandscapeProxy> Landscape : Landscapes)
@@ -85,7 +93,8 @@ void UPCGLandscapeData::PostLoad()
 	}
 
 	TargetActor = FirstLandscape;
-	LandscapeCache = (FirstLandscape && FirstLandscape->GetWorld() && FirstLandscape->GetWorld()->GetSubsystem<UPCGSubsystem>()) ? FirstLandscape->GetWorld()->GetSubsystem<UPCGSubsystem>()->GetLandscapeCache() : nullptr;
+	UPCGSubsystem* PCGSubsystem = UPCGSubsystem::GetInstance(FirstLandscape ? FirstLandscape->GetWorld() : nullptr);
+	LandscapeCache = PCGSubsystem ? PCGSubsystem->GetLandscapeCache() : nullptr;
 }
 
 FBox UPCGLandscapeData::GetBounds() const
@@ -102,14 +111,32 @@ FBox UPCGLandscapeData::GetStrictBounds() const
 
 bool UPCGLandscapeData::SamplePoint(const FTransform& InTransform, const FBox& InBounds, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const
 {
-	//TRACE_CPUPROFILER_EVENT_SCOPE(UPCGLandscapeData::SamplePoint);
+	// The point is in/on the shape if it coincides with its projection. I.e. projecting on landscape does not move the point. Implementing
+	// this way shares the sampling code.
+	if (ProjectPoint(InTransform, InBounds, {}, OutPoint, OutMetadata))
+	{
+		if (InBounds.IsValid)
+		{
+			return FMath::PointBoxIntersection(OutPoint.Transform.GetLocation(), InBounds.TransformBy(InTransform));
+		}
+		else
+		{
+			return (InTransform.GetLocation() - OutPoint.Transform.GetLocation()).SquaredLength() < UE_SMALL_NUMBER;
+		}
+	}
+
+	return false;
+}
+
+bool UPCGLandscapeData::ProjectPoint(const FTransform& InTransform, const FBox& InBounds, const FPCGProjectionParams& InParams, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const
+{
 	if (!LandscapeCache)
 	{
 		return false;
 	}
 
 	const ULandscapeInfo* LandscapeInfo = GetLandscapeInfo(InTransform.GetLocation());
-	if (!LandscapeInfo)
+	if (!LandscapeInfo || !LandscapeInfo->GetLandscapeProxy())
 	{
 		return false;
 	}
@@ -120,32 +147,53 @@ bool UPCGLandscapeData::SamplePoint(const FTransform& InTransform, const FBox& I
 	const FVector LocalPoint = LandscapeTransform.InverseTransformPosition(InTransform.GetLocation());
 	const FIntPoint ComponentMapKey(FMath::FloorToInt(LocalPoint.X / LandscapeInfo->ComponentSizeQuads), FMath::FloorToInt(LocalPoint.Y / LandscapeInfo->ComponentSizeQuads));
 
-	if (ULandscapeComponent* LandscapeComponent = LandscapeInfo->XYtoComponentMap.FindRef(ComponentMapKey))
-	{
-		const FPCGLandscapeCacheEntry* LandscapeCacheEntry = LandscapeCache->GetCacheEntry(LandscapeComponent, ComponentMapKey);
+#if WITH_EDITOR
+	ULandscapeComponent* LandscapeComponent = LandscapeInfo->XYtoComponentMap.FindRef(ComponentMapKey);
+	const FPCGLandscapeCacheEntry * LandscapeCacheEntry = (LandscapeComponent ? LandscapeCache->GetCacheEntry(LandscapeComponent, ComponentMapKey) : nullptr);
+#else
+	const FPCGLandscapeCacheEntry* LandscapeCacheEntry = LandscapeCache->GetCacheEntry(LandscapeInfo->LandscapeGuid, ComponentMapKey);
+#endif
 
-		if (!LandscapeCacheEntry)
-		{
-			return false;
-		}
-
-		const FVector2D ComponentLocalPoint(LocalPoint.X - ComponentMapKey.X * LandscapeInfo->ComponentSizeQuads, LocalPoint.Y - ComponentMapKey.Y * LandscapeInfo->ComponentSizeQuads);
-
-		if (bHeightOnly)
-		{
-			LandscapeCacheEntry->GetInterpolatedPointHeightOnly(ComponentLocalPoint, OutPoint);
-		}
-		else
-		{
-			LandscapeCacheEntry->GetInterpolatedPoint(ComponentLocalPoint, OutPoint, bUseMetadata ? OutMetadata : nullptr);
-		}
-
-		return true;
-	}
-	else
+	if (!LandscapeCacheEntry)
 	{
 		return false;
 	}
+
+	const FVector2D ComponentLocalPoint(LocalPoint.X - ComponentMapKey.X * LandscapeInfo->ComponentSizeQuads, LocalPoint.Y - ComponentMapKey.Y * LandscapeInfo->ComponentSizeQuads);
+
+	if (bHeightOnly)
+	{
+		LandscapeCacheEntry->GetInterpolatedPointHeightOnly(ComponentLocalPoint, OutPoint);
+	}
+	else
+	{
+		LandscapeCacheEntry->GetInterpolatedPoint(ComponentLocalPoint, OutPoint, bUseMetadata ? OutMetadata : nullptr);
+	}
+
+	// Respect projection settings
+	if (!InParams.bProjectPositions)
+	{
+		OutPoint.Transform.SetLocation(InTransform.GetLocation());
+	}
+		
+	if (!InParams.bProjectRotations)
+	{
+		OutPoint.Transform.SetRotation(InTransform.GetRotation());
+	}
+	else
+	{
+		// Take landscape transform, but respect initial point yaw (don't spin points around Z axis).
+		FVector RotVector = InTransform.GetRotation().ToRotationVector();
+		RotVector.X = RotVector.Y = 0;
+		OutPoint.Transform.SetRotation(OutPoint.Transform.GetRotation() * FQuat::MakeFromRotationVector(RotVector));
+	}
+
+	if (!InParams.bProjectScales)
+	{
+		OutPoint.Transform.SetScale3D(InTransform.GetScale3D());
+	}
+
+	return true;
 }
 
 const UPCGPointData* UPCGLandscapeData::CreatePointData(FPCGContext* Context, const FBox& InBounds) const
@@ -174,9 +222,16 @@ const UPCGPointData* UPCGLandscapeData::CreatePointData(FPCGContext* Context, co
 		return Data;
 	}
 
+	UPCGMetadata* OutMetadata = bUseMetadata ? Data->Metadata : nullptr;
+
 	for (const TPair<FBox, ULandscapeInfo*>& LandscapeInfoPair : LandscapeInfos)
 	{
 		ULandscapeInfo* LandscapeInfo = LandscapeInfoPair.Value;
+
+		if (!LandscapeInfo || !LandscapeInfo->GetLandscapeProxy())
+		{
+			continue;
+		}
 
 		const FTransform& LandscapeTransform = LandscapeInfo->GetLandscapeProxy()->GetTransform();
 		const int32 ComponentSizeQuads = LandscapeInfo->ComponentSizeQuads;
@@ -214,39 +269,41 @@ const UPCGPointData* UPCGLandscapeData::CreatePointData(FPCGContext* Context, co
 			for (int32 ComponentY = MinComponentY; ComponentY <= MaxComponentY; ++ComponentY)
 			{
 				FIntPoint ComponentMapKey(ComponentX, ComponentY);
-				if (ULandscapeComponent* LandscapeComponent = LandscapeInfo->XYtoComponentMap.FindRef(ComponentMapKey))
+#if WITH_EDITOR
+				ULandscapeComponent* LandscapeComponent = LandscapeInfo->XYtoComponentMap.FindRef(ComponentMapKey);
+				const FPCGLandscapeCacheEntry* LandscapeCacheEntry = LandscapeComponent ? LandscapeCache->GetCacheEntry(LandscapeComponent, ComponentMapKey) : nullptr;
+#else
+				const FPCGLandscapeCacheEntry* LandscapeCacheEntry = LandscapeCache->GetCacheEntry(LandscapeInfo->LandscapeGuid, ComponentMapKey);
+#endif
+
+				if (!LandscapeCacheEntry)
 				{
-					const FPCGLandscapeCacheEntry* LandscapeCacheEntry = LandscapeCache->GetCacheEntry(LandscapeComponent, ComponentMapKey);
+					continue;
+				}
 
-					if (!LandscapeCacheEntry)
+				// Rebase our bounds in the component referential
+				const int32 LocalMinX = FMath::Clamp(MinX - ComponentMapKey.X * ComponentSizeQuads, 0, ComponentSizeQuads - 1);
+				const int32 LocalMaxX = FMath::Clamp(MaxX - ComponentMapKey.X * ComponentSizeQuads, 0, ComponentSizeQuads - 1);
+
+				const int32 LocalMinY = FMath::Clamp(MinY - ComponentMapKey.Y * ComponentSizeQuads, 0, ComponentSizeQuads - 1);
+				const int32 LocalMaxY = FMath::Clamp(MaxY - ComponentMapKey.Y * ComponentSizeQuads, 0, ComponentSizeQuads - 1);
+
+				// We can't really copy data from the component points wholesale because the component points have an additional boundary point.
+				// TODO: consider optimizing this, though it will impact the Sample then
+				for (int32 LocalX = LocalMinX; LocalX <= LocalMaxX; ++LocalX)
+				{
+					for (int32 LocalY = LocalMinY; LocalY <= LocalMaxY; ++LocalY)
 					{
-						continue;
-					}
+						const int32 PointIndex = LocalX + LocalY * (ComponentSizeQuads + 1);
 
-					// Rebase our bounds in the component referential
-					const int32 LocalMinX = FMath::Clamp(MinX - ComponentMapKey.X * ComponentSizeQuads, 0, ComponentSizeQuads - 1);
-					const int32 LocalMaxX = FMath::Clamp(MaxX - ComponentMapKey.X * ComponentSizeQuads, 0, ComponentSizeQuads - 1);
-
-					const int32 LocalMinY = FMath::Clamp(MinY - ComponentMapKey.Y * ComponentSizeQuads, 0, ComponentSizeQuads - 1);
-					const int32 LocalMaxY = FMath::Clamp(MaxY - ComponentMapKey.Y * ComponentSizeQuads, 0, ComponentSizeQuads - 1);
-
-					// We can't really copy data from the component points wholesale because the component points have an additional boundary point.
-					// TODO: consider optimizing this, though it will impact the Sample then
-					for (int32 LocalX = LocalMinX; LocalX <= LocalMaxX; ++LocalX)
-					{
-						for (int32 LocalY = LocalMinY; LocalY <= LocalMaxY; ++LocalY)
+						FPCGPoint& Point = Points.Emplace_GetRef();
+						if (bHeightOnly)
 						{
-							const int32 PointIndex = LocalX + LocalY * (ComponentSizeQuads + 1);
-
-							FPCGPoint& Point = Points.Emplace_GetRef();
-							if (bHeightOnly)
-							{
-								LandscapeCacheEntry->GetPointHeightOnly(PointIndex, Point);
-							}
-							else
-							{
-								LandscapeCacheEntry->GetPoint(PointIndex, Point, bUseMetadata ? Data->Metadata : nullptr);
-							}
+							LandscapeCacheEntry->GetPointHeightOnly(PointIndex, Point);
+						}
+						else
+						{
+							LandscapeCacheEntry->GetPoint(PointIndex, Point, OutMetadata);
 						}
 					}
 				}
@@ -274,11 +331,27 @@ const ULandscapeInfo* UPCGLandscapeData::GetLandscapeInfo(const FVector& InPosit
 	// TODO: we could maybe improve on this if we find the "nearest" landscape on a Z perspective, but this might still lead to issues
 	for (const TPair<FBox, ULandscapeInfo*>& LandscapeInfoPair : LandscapeInfos)
 	{
-		if (LandscapeInfoPair.Key.IsInside(InPosition))
+		if (LandscapeInfoPair.Key.IsInsideXY(InPosition))
 		{
 			return LandscapeInfoPair.Value;
 		}
 	}
 
 	return nullptr;
+}
+
+UPCGSpatialData* UPCGLandscapeData::CopyInternal() const
+{
+	UPCGLandscapeData* NewLandsacapeData = NewObject<UPCGLandscapeData>();
+
+	CopyBaseSurfaceData(NewLandsacapeData);
+
+	NewLandsacapeData->Landscapes = Landscapes;
+	NewLandsacapeData->Bounds = Bounds;
+	NewLandsacapeData->bHeightOnly = bHeightOnly;
+	NewLandsacapeData->bUseMetadata = bUseMetadata;
+	NewLandsacapeData->LandscapeInfos = LandscapeInfos;
+	NewLandsacapeData->LandscapeCache = LandscapeCache;
+
+	return NewLandsacapeData;
 }

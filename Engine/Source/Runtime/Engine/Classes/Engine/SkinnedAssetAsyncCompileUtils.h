@@ -7,6 +7,7 @@
  */
 
 #include "Async/AsyncWork.h"
+#include "SkeletalMeshTypes.h"
 
 class USkinnedAsset;
 
@@ -40,13 +41,11 @@ public:
 class FSkinnedAsyncTaskContext : public FSkinnedAssetCompilationContext
 {
 public:
-	FSkinnedAsyncTaskContext(bool bInResetAsyncFlagOnFinish, TFunctionRef<void()> InAsyncTaskFunction)
-		: bResetAsyncFlagOnFinish(bInResetAsyncFlagOnFinish)
-		, AsyncTaskFunction(InAsyncTaskFunction)
+	FSkinnedAsyncTaskContext(TFunctionRef<void()> InAsyncTaskFunction)
+		: AsyncTaskFunction(InAsyncTaskFunction)
 	{
 	}
 
-	bool bResetAsyncFlagOnFinish = true;
 	TFunctionRef<void()> AsyncTaskFunction;
 };
 

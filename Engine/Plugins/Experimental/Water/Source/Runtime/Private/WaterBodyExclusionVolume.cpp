@@ -1,19 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WaterBodyExclusionVolume.h"
-#include "Components/BrushComponent.h"
 #include "UObject/FortniteMainBranchObjectVersion.h"
-#include "EngineUtils.h"
-#include "WaterSubsystem.h"
+#include "Engine/World.h"
 #include "UObject/UObjectIterator.h"
-#include "WaterBodyComponent.h"
+#include "WaterBodyActor.h"
+#include "WaterBodyManager.h"
+#include "WaterEditorServices.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(WaterBodyExclusionVolume)
 
 #if WITH_EDITOR
 #include "Components/BillboardComponent.h"
 #include "WaterIconHelper.h"
-#include "WaterSubsystem.h"
 #include "Modules/ModuleManager.h"
 #include "WaterModule.h"
 #endif

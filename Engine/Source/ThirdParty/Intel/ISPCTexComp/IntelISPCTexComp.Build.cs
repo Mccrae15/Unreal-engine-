@@ -11,7 +11,7 @@ public class IntelISPCTexComp : ModuleRules
         string SourcePath = Target.UEThirdPartySourceDirectory + "Intel/ISPCTexComp/ISPCTextureCompressor-14d998c/";
         string IncludesPath = SourcePath + "ispc_texcomp/";
         string BinaryFolder = Target.UEThirdPartyBinariesDirectory + "Intel/ISPCTexComp/";
-		PublicIncludePaths.Add(IncludesPath);
+		PublicSystemIncludePaths.Add(IncludesPath);
 
         //NOTE: If you change bUseDebugBuild, you must also change FTextureFormatIntelISPCTexCompModule.GetTextureFormat() to load the corresponding DLL
         bool bUseDebugBuild = false;
@@ -34,7 +34,7 @@ public class IntelISPCTexComp : ModuleRules
             PublicDelayLoadDLLs.Add(LibraryFilePath);
             RuntimeDependencies.Add(LibraryFilePath);
         }
-        else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix) && Target.Architecture.StartsWith("x86_64"))
+        else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix) && Target.Architecture == UnrealArch.X64)
         {
             string BinaryLibraryFolder = BinaryFolder + "Linux64-Release";
 			PrivateRuntimeLibraryPaths.Add(BinaryLibraryFolder);

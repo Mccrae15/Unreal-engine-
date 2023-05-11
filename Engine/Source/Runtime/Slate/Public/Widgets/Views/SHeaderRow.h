@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Containers/IndirectArray.h"
 #include "Misc/Attribute.h"
 #include "Layout/Visibility.h"
@@ -76,6 +75,9 @@ enum class EHeaderComboVisibility
 
 	/** Only show the drop down when hovered */
 	OnHover,
+
+	/** Never show the drop down. Context Menu can still be opened with a context click (such as right-click) */
+	Never
 };
 
 
@@ -371,7 +373,7 @@ private:
 	TIndirectArray<FColumn> Columns;
 	TArray<TSharedPtr<class STableColumnHeader>> HeaderWidgets;
 
-	FVector2D ScrollBarThickness;
+	FVector2f ScrollBarThickness;
 	TAttribute< EVisibility > ScrollBarVisibility;
 	const FHeaderRowStyle* Style;
 	FColumnsChanged ColumnsChanged;

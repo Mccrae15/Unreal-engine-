@@ -2,37 +2,24 @@
 
 #include "ModelViewViewModelEditorModule.h"
 
-#include "AssetToolsModule.h"
 #include "BlueprintModes/WidgetBlueprintApplicationMode.h"
 #include "BlueprintModes/WidgetBlueprintApplicationModes.h"
 #include "Customizations/MVVMPropertyBindingExtension.h"
-#include "EdGraphSchema_K2.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Framework/Docking/LayoutExtender.h"
-#include "Framework/Docking/TabManager.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "IHasPropertyBindingExtensibility.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "MessageLogInitializationOptions.h"
 #include "MessageLogModule.h"
 #include "MVVMBlueprintView.h"
-#include "MVVMBlueprintViewModelContext.h"
 #include "MVVMEditorCommands.h"
+#include "MVVMEditorSubsystem.h"
 #include "MVVMWidgetBlueprintExtension_View.h"
-#include "StatusBarSubsystem.h"
 #include "Styling/MVVMEditorStyle.h"
-#include "Styling/SlateColor.h"
-#include "Styling/StyleColors.h"
 #include "Tabs/MVVMBindingSummoner.h"
 #include "Tabs/MVVMViewModelSummoner.h"
 #include "UMGEditorModule.h"
 #include "ViewModel/AssetTypeActions_ViewModelBlueprint.h"
-#include "WidgetBlueprint.h"
-#include "WidgetBlueprintExtension.h"
-#include "WidgetBlueprintToolMenuContext.h"
+#include "WidgetBlueprintEditor.h"
 #include "WidgetDrawerConfig.h"
-#include "Widgets/Images/SImage.h"
-#include "WorkflowOrientedApp/WorkflowTabFactory.h"
-#include "WorkflowOrientedApp/WorkflowTabManager.h"
 
 #define LOCTEXT_NAMESPACE "ModelViewViewModelModule"
 
@@ -48,9 +35,12 @@ void FModelViewViewModelEditorModule::StartupModule()
 
 	// Register asset types
 	{
+#if UE_MVVM_WITH_VIEWMODEL_EDITOR
+		// Only remove what is related to the viewmodel editor, not the UMG extention for view.
 		IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
 		ViewModelBlueprintActions = MakeShared<UE::MVVM::FAssetTypeActions_ViewModelBlueprint>();
 		AssetTools.RegisterAssetTypeActions(ViewModelBlueprintActions.ToSharedRef());
+#endif
 	}
 
 	PropertyBindingExtension = MakeShared<FMVVMPropertyBindingExtension>();
@@ -68,11 +58,13 @@ void FModelViewViewModelEditorModule::StartupModule()
 	}
 
 	FMVVMEditorCommands::Register();
+	FWidgetBlueprintDelegates::GetAssetTags.AddRaw(this, &FModelViewViewModelEditorModule::HandleAssetTags);
 }
 
 
 void FModelViewViewModelEditorModule::ShutdownModule()
 {
+	FWidgetBlueprintDelegates::GetAssetTags.RemoveAll(this);
 	if (FMessageLogModule* MessageLogModule = FModuleManager::GetModulePtr<FMessageLogModule>("MessageLog"))
 	{
 		MessageLogModule->UnregisterLogListing("Model View Viewmodel");
@@ -87,11 +79,16 @@ void FModelViewViewModelEditorModule::ShutdownModule()
 	}
 	PropertyBindingExtension.Reset();
 
+#if UE_MVVM_WITH_VIEWMODEL_EDITOR
 	// Unregister all the asset types that we registered
 	if (FAssetToolsModule* AssetTools = FModuleManager::GetModulePtr<FAssetToolsModule>("AssetTools"))
 	{
-		AssetTools->Get().UnregisterAssetTypeActions(ViewModelBlueprintActions.ToSharedRef());
+		if (ViewModelBlueprintActions)
+		{
+			AssetTools->Get().UnregisterAssetTypeActions(ViewModelBlueprintActions.ToSharedRef());
+		}
 	}
+#endif
 
 	FMVVMEditorStyle::DestroyInstance();
 
@@ -194,6 +191,20 @@ void FModelViewViewModelEditorModule::HandleActivateMode(FWidgetBlueprintApplica
 		BP->GetToolkitCommands()->MapAction(FMVVMEditorCommands::Get().ToggleMVVMDrawer,
 			FExecuteAction::CreateStatic(&FMVVMBindingSummoner::ToggleMVVMDrawer)
 		);
+	}
+}
+
+void FModelViewViewModelEditorModule::HandleAssetTags(const UWidgetBlueprint* WidgetBlueprint, TArray<UObject::FAssetRegistryTag>& OutTags)
+{
+	if (WidgetBlueprint && GEditor)
+	{
+		if (UMVVMEditorSubsystem* Subsystem = GEditor->GetEditorSubsystem<UMVVMEditorSubsystem>())
+		{
+			if (UMVVMBlueprintView* BlueprintView = Subsystem->GetView(WidgetBlueprint))
+			{
+				BlueprintView->AddAssetTags(OutTags);
+			}
+		}
 	}
 }
 

@@ -23,7 +23,7 @@ public:
 	FTransformCollection& operator=(const FTransformCollection&) = delete;
 	FTransformCollection(FTransformCollection&&) = default;
 	FTransformCollection& operator=(FTransformCollection&&) = default;
-
+	MANAGED_ARRAY_COLLECTION_INTERNAL(FTransformCollection);
 
 	/***
 	*  Attribute Groups
@@ -50,6 +50,12 @@ public:
 	static const FName ParentAttribute;
 	static const FName ChildrenAttribute;
 	static const FName ParticlesAttribute;
+	static const FName LevelAttribute;
+
+
+	/** Schema */
+	static void DefineTransformSchema(FManagedArrayCollection&);
+
 
 	/** Serialize */
 	virtual void Serialize(Chaos::FChaosArchive& Ar) override;
@@ -59,6 +65,12 @@ public:
 	*   Create a single transform.
 	*/
 	static FTransformCollection SingleTransform(const FTransform& TransformRoot = FTransform::Identity);
+
+	/**
+	* Append Collection and reindex dependencies on this collection.
+	* @param InCollection : Collection to add.
+	*/
+	virtual void Append(const FManagedArrayCollection& Collection);
 
 	/*
 	* AppendTransform:

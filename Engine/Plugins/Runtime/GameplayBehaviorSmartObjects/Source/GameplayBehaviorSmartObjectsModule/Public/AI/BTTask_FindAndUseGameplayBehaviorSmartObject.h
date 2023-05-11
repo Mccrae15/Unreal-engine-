@@ -3,15 +3,17 @@
 #pragma once
 
 #include "BehaviorTree/BTTaskNode.h"
-#include "AI/AITask_UseGameplayBehaviorSmartObject.h"
+#include "EnvironmentQuery/EnvQueryTypes.h"
 #include "BTTask_FindAndUseGameplayBehaviorSmartObject.generated.h"
 
-
+class UAITask_UseGameplayBehaviorSmartObject;
 class AITask_UseSmartObject;
+struct FSmartObjectClaimHandle;
 
 struct FBTUseSOTaskMemory
 {
 	TWeakObjectPtr<UAITask_UseGameplayBehaviorSmartObject> TaskInstance;
+	int32 EQSRequestID;
 };
 
 /**
@@ -22,14 +24,21 @@ class GAMEPLAYBEHAVIORSMARTOBJECTSMODULE_API UBTTask_FindAndUseGameplayBehaviorS
 {
 	GENERATED_BODY()
 public:
-	UBTTask_FindAndUseGameplayBehaviorSmartObject(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+	UBTTask_FindAndUseGameplayBehaviorSmartObject();
 
+protected:
 	virtual EBTNodeResult::Type ExecuteTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory) override;
 	virtual EBTNodeResult::Type AbortTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory) override;
 	virtual void OnTaskFinished(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory, EBTNodeResult::Type TaskResult) override;
 	virtual uint16 GetInstanceMemorySize() const override { return sizeof(FBTUseSOTaskMemory); }
 
 	virtual FString GetStaticDescription() const override;
+
+	virtual void InitializeFromAsset(UBehaviorTree& Asset) override;
+
+	void OnQueryFinished(TSharedPtr<FEnvQueryResult> Result);
+
+	void UseClaimedSmartObject(UBehaviorTreeComponent& OwnerComp, FSmartObjectClaimHandle ClaimHandle, FBTUseSOTaskMemory& MyMemory);
 
 protected:
 	/** Additional tag query to filter available smart objects. We'll query for smart
@@ -39,5 +48,15 @@ protected:
 	FGameplayTagQuery ActivityRequirements;
 
 	UPROPERTY(EditAnywhere, Category = SmartObjects)
+	FEQSParametrizedQueryExecutionRequest EQSRequest;
+
+	/** Used for smart object querying if EQSRequest is not configured */
+	UPROPERTY(EditAnywhere, Category = SmartObjects, meta=(DisplayName="Fallback Radius"))
 	float Radius;
+
+	FQueryFinishedSignature EQSQueryFinishedDelegate; 
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "AI/AITask_UseGameplayBehaviorSmartObject.h"
+#endif

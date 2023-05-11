@@ -8,6 +8,8 @@
 #include "Framework/Commands/Commands.h"
 #include "Framework/Commands/UICommandList.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "SceneView.h"
+#include "Settings/LevelEditorViewportSettings.h"
 #include "Styling/AppStyle.h"
 #include "Editor.h"
 #include "EditorViewportClient.h"

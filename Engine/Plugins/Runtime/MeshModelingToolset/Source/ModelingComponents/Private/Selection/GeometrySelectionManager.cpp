@@ -1,17 +1,29 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Selection/GeometrySelectionManager.h"
+#include "Engine/Engine.h"
 #include "Selection/DynamicMeshSelector.h"
 #include "Selection/SelectionEditInteractiveCommand.h"
+#include "InteractiveToolsContext.h"
+#include "InteractiveToolManager.h"
 #include "ToolContextInterfaces.h"
 #include "ToolDataVisualizer.h"
+#include "Selections/GeometrySelectionUtil.h"
 
 // for debug drawing
-#include "SceneManagement.h"		
+#include "SceneManagement.h"
+#include "SceneView.h"
 #include "DynamicMeshBuilder.h"
 #include "ToolSetupUtil.h"
 
-#include "Selection/PersistentMeshSelection.h"
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GeometrySelectionManager)
+
+static TAutoConsoleVariable<int32> CVarGeometrySelectionManager_FullSelectionHoverHighlights(
+	TEXT("modeling.Selection.FullHoverHighlights"),
+	0,
+	TEXT("Use full selection hover highlights instead of simplified highlights")
+);
+
 
 
 using namespace UE::Geometry;
@@ -37,6 +49,11 @@ void UGeometrySelectionManager::Shutdown()
 	OnSelectionModified.Clear();
 	ToolsContext = nullptr;
 	TransactionsAPI = nullptr;
+
+	for (TSharedPtr<FGeometrySelectionTarget> Target : ActiveTargetReferences)
+	{
+		SleepOrShutdownTarget(Target.Get(), false);
+	}
 
 	ResetTargetCache();
 	ActiveTargetReferences.Reset();
@@ -106,7 +123,8 @@ void UGeometrySelectionManager::SetSelectionElementTypeInternal(EGeometryElement
 		for (TSharedPtr<FGeometrySelectionTarget> Target : ActiveTargetReferences)
 		{
 			Target->Selection.ElementType = SelectionElementType;
-			// do we need to update/rebuild Editors here? They currently do not have state...
+			bool bEnableTopologyFilter = (Target->Selection.TopologyType == EGeometryTopologyType::Polygroup && Target->Selection.ElementType != EGeometryElementType::Vertex);
+			Target->SelectionEditor->UpdateQueryConfig(GetCurrentSelectionQueryConfig(), bEnableTopologyFilter);
 		}
 	}
 }
@@ -129,6 +147,7 @@ void UGeometrySelectionManager::SetSelectionElementType(EGeometryElementType New
 		TUniquePtr<FGeometrySelectionManager_SelectionTypeChange> TypeChange = MakeUnique<FGeometrySelectionManager_SelectionTypeChange>();
 		TypeChange->FromElementType = SelectionElementType;
 		TypeChange->ToElementType = NewElementType;
+		TypeChange->FromTopologyMode = TypeChange->ToTopologyMode = MeshTopologyMode;		// no-op
 		GetTransactionsAPI()->AppendChange(this, MoveTemp(TypeChange), LOCTEXT("ChangeElementType", "Selection Type"));
 
 		SetSelectionElementTypeInternal(NewElementType);
@@ -149,7 +168,8 @@ void UGeometrySelectionManager::SetMeshTopologyModeInternal(EMeshTopologyMode Ne
 		for (TSharedPtr<FGeometrySelectionTarget> Target : ActiveTargetReferences)
 		{
 			Target->Selection.TopologyType = GetSelectionTopologyType();
-			// do we need to update/rebuild Editors here? They currently do not have state...
+			bool bEnableTopologyFilter = (Target->Selection.TopologyType == EGeometryTopologyType::Polygroup && Target->Selection.ElementType != EGeometryElementType::Vertex);
+			Target->SelectionEditor->UpdateQueryConfig(GetCurrentSelectionQueryConfig(), bEnableTopologyFilter);
 		}
 	}
 }
@@ -171,7 +191,8 @@ void UGeometrySelectionManager::SetMeshTopologyMode(EMeshTopologyMode NewTopolog
 		// so that when we undo, we change to the correct type before we restore
 		TUniquePtr<FGeometrySelectionManager_SelectionTypeChange> TypeChange = MakeUnique<FGeometrySelectionManager_SelectionTypeChange>();
 		TypeChange->FromTopologyMode = MeshTopologyMode;
-		TypeChange->FromTopologyMode = NewTopologyMode;
+		TypeChange->ToTopologyMode = NewTopologyMode;
+		TypeChange->FromElementType = TypeChange->ToElementType = SelectionElementType;		// no-op
 		GetTransactionsAPI()->AppendChange(this, MoveTemp(TypeChange),LOCTEXT("ChangeSelectionMode", "Selection Mode"));
 
 		SetMeshTopologyModeInternal(NewTopologyMode);
@@ -194,6 +215,16 @@ EGeometryTopologyType UGeometrySelectionManager::GetSelectionTopologyType() cons
 	}
 }
 
+
+
+UE::Geometry::FGeometrySelectionHitQueryConfig UGeometrySelectionManager::GetCurrentSelectionQueryConfig() const
+{
+	FGeometrySelectionHitQueryConfig HitQueryConfig;
+	HitQueryConfig.TopologyType = GetSelectionTopologyType();
+	HitQueryConfig.ElementType = GetSelectionElementType();
+	HitQueryConfig.bOnlyVisible = true;
+	return HitQueryConfig;
+}
 
 
 bool UGeometrySelectionManager::HasSelection() const
@@ -385,6 +416,8 @@ TSharedPtr<UGeometrySelectionManager::FGeometrySelectionTarget> UGeometrySelecti
 		// ensure these are current, as they may have changed while Target was asleep
 		FoundTarget->Selection.ElementType = GetSelectionElementType();
 		FoundTarget->Selection.TopologyType = GetSelectionTopologyType();
+		bool bEnableTopologyFilter = (FoundTarget->Selection.TopologyType == EGeometryTopologyType::Polygroup && FoundTarget->Selection.ElementType != EGeometryElementType::Vertex);
+		FoundTarget->SelectionEditor->UpdateQueryConfig(GetCurrentSelectionQueryConfig(), bEnableTopologyFilter);
 
 		return FoundTarget;
 	}
@@ -405,7 +438,9 @@ TSharedPtr<UGeometrySelectionManager::FGeometrySelectionTarget> UGeometrySelecti
 	SelectionTarget->Selection.TopologyType = GetSelectionTopologyType();
 
 	SelectionTarget->SelectionEditor = MakeUnique<FGeometrySelectionEditor>();
-	SelectionTarget->SelectionEditor->Initialize(&SelectionTarget->Selection);
+	FGeometrySelectionHitQueryConfig HitQueryConfig = GetCurrentSelectionQueryConfig();
+	bool bEnableTopologyFilter = (HitQueryConfig.TopologyType == EGeometryTopologyType::Polygroup && HitQueryConfig.ElementType != EGeometryElementType::Vertex);
+	SelectionTarget->SelectionEditor->Initialize(&SelectionTarget->Selection, HitQueryConfig, bEnableTopologyFilter);
 
 	if (SelectionTarget->Selector->SupportsSleep())
 	{
@@ -436,7 +471,16 @@ bool UGeometrySelectionManager::RayHitTest(
 		return false;
 	}
 
-	bool bHit = ActiveTargetReferences[0]->Selector->RayHitTest(WorldRay, HitResultOut);
+	IGeometrySelector::FWorldRayQueryInfo RayQueryInfo;
+	RayQueryInfo.WorldRay = WorldRay;
+	IToolsContextQueriesAPI* QueryAPI = this->ToolsContext->ToolManager->GetContextQueriesAPI();
+	QueryAPI->GetCurrentViewState(RayQueryInfo.CameraState);
+
+	// currently only going to support one object, not sure how to support more yet...
+	FGeometrySelectionTarget* Target = ActiveTargetReferences[0].Get();
+
+	FGeometrySelectionHitQueryConfig HitQueryConfig = GetCurrentSelectionQueryConfig();
+	bool bHit = Target->Selector->RayHitTest(RayQueryInfo, HitQueryConfig, HitResultOut);
 	if (bHit)
 	{
 		HitResultOut.HitOwner = ActiveTargetReferences[0].Get();
@@ -494,8 +538,13 @@ void UGeometrySelectionManager::UpdateSelectionViaRaycast(
 	// currently only going to support one object, not sure how to support more yet...
 	FGeometrySelectionTarget* Target = ActiveTargetReferences[0].Get();
 
+	IGeometrySelector::FWorldRayQueryInfo RayQueryInfo;
+	RayQueryInfo.WorldRay = WorldRay;
+	IToolsContextQueriesAPI* QueryAPI = this->ToolsContext->ToolManager->GetContextQueriesAPI();
+	QueryAPI->GetCurrentViewState(RayQueryInfo.CameraState);
+
 	Target->Selector->UpdateSelectionViaRaycast(
-		WorldRay, *Target->SelectionEditor, UpdateConfig, ResultOut
+		RayQueryInfo, *Target->SelectionEditor, UpdateConfig, ResultOut
 	);
 
 	if (ResultOut.bSelectionModified)
@@ -518,6 +567,217 @@ void UGeometrySelectionManager::UpdateSelectionViaRaycast(
 }
 
 
+void UGeometrySelectionManager::UpdateSelectionViaConvex(
+	const FConvexVolume& ConvexVolume,
+	const FGeometrySelectionUpdateConfig& UpdateConfig,
+	FGeometrySelectionUpdateResult& ResultOut )
+{
+	ResultOut.bSelectionModified = false;
+
+	if (ActiveTargetReferences.Num() == 0)
+	{
+		return;
+	}
+
+	// currently only going to support one object, not sure how to support more yet...
+	FGeometrySelectionTarget* Target = ActiveTargetReferences[0].Get();
+
+	IGeometrySelector::FWorldShapeQueryInfo ShapeQueryInfo;
+	ShapeQueryInfo.Convex = ConvexVolume;
+	IToolsContextQueriesAPI* QueryAPI = this->ToolsContext->ToolManager->GetContextQueriesAPI();
+	QueryAPI->GetCurrentViewState(ShapeQueryInfo.CameraState);
+
+	Target->Selector->UpdateSelectionViaShape(
+		ShapeQueryInfo, *Target->SelectionEditor, UpdateConfig, ResultOut );
+
+	if (ResultOut.bSelectionModified)
+	{
+		TUniquePtr<FGeometrySelectionDeltaChange> DeltaChange = MakeUnique<FGeometrySelectionDeltaChange>();
+		DeltaChange->Identifier = Target->SelectionIdentifer;
+		DeltaChange->Delta = ResultOut.SelectionDelta;
+
+		GetTransactionsAPI()->BeginUndoTransaction(LOCTEXT("UpdateSelectionViaConvex", "Change Selection"));
+		GetTransactionsAPI()->AppendChange(this, MoveTemp(DeltaChange), LOCTEXT("UpdateSelectionViaConvex", "Change Selection"));
+		GetTransactionsAPI()->EndUndoTransaction();
+
+		bSelectionRenderCachesDirty = true;
+		OnSelectionModified.Broadcast();
+	}
+	else if (ResultOut.bSelectionMissed && UpdateConfig.ChangeType == EGeometrySelectionChangeType::Replace)
+	{
+		ClearSelection();
+	}
+}
+
+
+
+bool UGeometrySelectionManager::CanBeginTrackedSelectionChange() const
+{
+	return ActiveTargetReferences.Num() > 0 && bInTrackedSelectionChange == false;
+}
+
+bool UGeometrySelectionManager::BeginTrackedSelectionChange(FGeometrySelectionUpdateConfig UpdateConfig, bool bClearOnBegin)
+{
+	if (ensureMsgf(CanBeginTrackedSelectionChange(), TEXT("Cannot begin Selection Change - validate CanBeginTrackedSelectionChange() before calling BeginTrackedSelectionChange()")) == false)
+	{
+		return false;
+	}
+
+	GetTransactionsAPI()->BeginUndoTransaction(LOCTEXT("ChangeSelection", "Change Selection"));
+	bInTrackedSelectionChange = true;
+
+	// currently only going to support one object, not sure how to support more yet...
+	FGeometrySelectionTarget* Target = ActiveTargetReferences[0].Get();
+
+	ActiveTrackedUpdateConfig = UpdateConfig;
+	bSelectionModifiedDuringTrackedChange = false;
+
+	// if we are doing a Replace selection, we want to clear on initialization...
+	InitialTrackedDelta = FGeometrySelectionDelta();
+	if (bClearOnBegin)
+	{
+		Target->SelectionEditor->ClearSelection(InitialTrackedDelta);
+		bSelectionModifiedDuringTrackedChange = true;
+	}
+
+	ActiveTrackedSelection = Target->Selection;
+	ActiveTrackedDelta = FGeometrySelectionDelta();
+
+	if (bClearOnBegin && InitialTrackedDelta.IsEmpty() == false)
+	{
+		bSelectionRenderCachesDirty = true;
+		OnSelectionModified.Broadcast();
+	}
+
+	return true;
+}
+
+void UGeometrySelectionManager::AccumulateSelectionUpdate_Raycast(
+	const FRay3d& WorldRay,
+	FGeometrySelectionUpdateResult& ResultOut )
+{
+	if (!ensure(bInTrackedSelectionChange)) return;
+
+	// currently only going to support one object, not sure how to support more yet...
+	FGeometrySelectionTarget* Target = ActiveTargetReferences[0].Get();
+
+	IGeometrySelector::FWorldRayQueryInfo RayQueryInfo;
+	RayQueryInfo.WorldRay = WorldRay;
+	IToolsContextQueriesAPI* QueryAPI = this->ToolsContext->ToolManager->GetContextQueriesAPI();
+	QueryAPI->GetCurrentViewState(RayQueryInfo.CameraState);
+
+	Target->Selector->UpdateSelectionViaRaycast(
+		RayQueryInfo, *Target->SelectionEditor, ActiveTrackedUpdateConfig, ResultOut );
+
+	if (ResultOut.bSelectionModified)
+	{
+		bSelectionModifiedDuringTrackedChange = true;
+		ActiveTrackedDelta.Added.Append( ResultOut.SelectionDelta.Added );
+		ActiveTrackedDelta.Removed.Append( ResultOut.SelectionDelta.Removed );
+
+		bSelectionRenderCachesDirty = true;
+		OnSelectionModified.Broadcast();
+	}
+}
+
+void UGeometrySelectionManager::EndTrackedSelectionChange()
+{
+	if ( ensure(bInTrackedSelectionChange) )
+	{
+		if (bSelectionModifiedDuringTrackedChange)
+		{
+			FGeometrySelectionTarget* Target = ActiveTargetReferences[0].Get();
+
+			if (InitialTrackedDelta.IsEmpty() == false)
+			{
+				TUniquePtr<FGeometrySelectionDeltaChange> InitialDeltaChange = MakeUnique<FGeometrySelectionDeltaChange>();
+				InitialDeltaChange->Identifier = Target->SelectionIdentifer;
+				InitialDeltaChange->Delta = MoveTemp(InitialTrackedDelta);
+				GetTransactionsAPI()->AppendChange(this, MoveTemp(InitialDeltaChange), LOCTEXT("ChangeSelection", "Change Selection"));
+			}
+
+			if (ActiveTrackedDelta.IsEmpty() == false)
+			{
+				TUniquePtr<FGeometrySelectionDeltaChange> AccumDeltaChange = MakeUnique<FGeometrySelectionDeltaChange>();
+				AccumDeltaChange->Identifier = Target->SelectionIdentifer;
+				AccumDeltaChange->Delta = MoveTemp(ActiveTrackedDelta);
+				GetTransactionsAPI()->AppendChange(this, MoveTemp(AccumDeltaChange), LOCTEXT("ChangeSelection", "Change Selection"));
+			}
+		}
+
+		GetTransactionsAPI()->EndUndoTransaction();
+		bInTrackedSelectionChange = false;
+	}
+}
+
+
+bool UGeometrySelectionManager::SetSelectionForComponent(UPrimitiveComponent* Component, const FGeometrySelection& NewSelection)
+{
+	for (TSharedPtr<FGeometrySelectionTarget> Target : ActiveTargetReferences)
+	{
+		if (Target->TargetIdentifier.TargetObject == Component)
+		{
+			FGeometrySelection InitialSelection = Target->Selection;
+			FGeometrySelectionDelta AfterDelta;
+			Target->Selector->UpdateSelectionFromSelection(
+				NewSelection, true, *Target->SelectionEditor, 
+				FGeometrySelectionUpdateConfig{EGeometrySelectionChangeType::Replace}, &AfterDelta);
+			if ( AfterDelta.IsEmpty() == false )
+			{
+				TUniquePtr<FGeometrySelectionReplaceChange> NewSelectionChange = MakeUnique<FGeometrySelectionReplaceChange>();
+				NewSelectionChange->Identifier = Target->Selector->GetIdentifier();
+				NewSelectionChange->After = Target->Selection;
+				NewSelectionChange->Before = InitialSelection;
+				GetTransactionsAPI()->AppendChange(this, MoveTemp(NewSelectionChange), LOCTEXT("NewSelection", "New Selection"));
+
+				bSelectionRenderCachesDirty = true;
+				OnSelectionModified.Broadcast();
+			}
+			return true;
+		}
+	}
+	return false;
+}
+
+
+bool UGeometrySelectionManager::UpdateSelectionPreviewViaRaycast(
+	const FRay3d& WorldRay )
+{
+	if (ActiveTargetReferences.Num() == 0)
+	{
+		return false;
+	}
+	bool bUseSimplifiedPreviewHighlight = (CVarGeometrySelectionManager_FullSelectionHoverHighlights.GetValueOnGameThread() == 0);
+
+	// currently only going to support one object, not sure how to support more yet...
+
+	FGeometrySelectionTarget* Target = ActiveTargetReferences[0].Get();
+
+	IGeometrySelector::FWorldRayQueryInfo RayQueryInfo;
+	RayQueryInfo.WorldRay = WorldRay;
+	IToolsContextQueriesAPI* QueryAPI = this->ToolsContext->ToolManager->GetContextQueriesAPI();
+	QueryAPI->GetCurrentViewState(RayQueryInfo.CameraState);
+
+	FGeometrySelectionPreview NewPreview( *(Target->SelectionEditor) );
+	Target->Selector->GetSelectionPreviewForRaycast( RayQueryInfo, NewPreview );
+	if ( ! UE::Geometry::AreSelectionsIdentical(NewPreview.PreviewSelection, ActivePreviewSelection) )
+	{
+		ActivePreviewSelection = MoveTemp(NewPreview.PreviewSelection);
+		CachedPreviewRenderElements.Reset();
+		if (ActivePreviewSelection.IsEmpty() == false)
+		{
+			Target->Selector->AccumulateSelectionElements(ActivePreviewSelection, CachedPreviewRenderElements, true, bUseSimplifiedPreviewHighlight);
+		}
+	}
+
+	return (ActivePreviewSelection.IsEmpty() == false);
+}
+
+void UGeometrySelectionManager::ClearSelectionPreview()
+{
+	ActivePreviewSelection.Selection.Reset();
+	CachedPreviewRenderElements.Reset();
+}
 
 
 
@@ -675,7 +935,7 @@ bool UGeometrySelectionManager::CanExecuteSelectionCommand(UGeometrySelectionEdi
 		bHaveSelections = true;
 	});
 
-	return bHaveSelections && bCanExecute;
+	return ( bHaveSelections || (Command->AllowEmptySelection() && HasActiveTargets() && MeshTopologyMode != EMeshTopologyMode::None ) ) && bCanExecute;
 }
 
 void UGeometrySelectionManager::ExecuteSelectionCommand(UGeometrySelectionEditCommand* Command)
@@ -691,7 +951,10 @@ void UGeometrySelectionManager::ExecuteSelectionCommand(UGeometrySelectionEditCo
 
 	for (TSharedPtr<FGeometrySelectionTarget> Target : ActiveTargetReferences)
 	{
-		if (Target->Selection.IsEmpty()) continue;
+		if (Target->Selection.IsEmpty() && Command->AllowEmptySelection() == false) continue;
+
+		// TODO: can use Command->IsModifySelectionCommand() to check if this is a command that only affects selection
+		// and not geometry. In that case we can skip the intermediate clear-selection and emit a single change.
 
 		// When initially executing the command, we do not clear the selection, because we pass it to the command.
 		// However, when we later *undo* any changes emitted by the command, we need to restore the selection aftewards.
@@ -707,17 +970,34 @@ void UGeometrySelectionManager::ExecuteSelectionCommand(UGeometrySelectionEditCo
 		GetTransactionsAPI()->AppendChange(this, MoveTemp(ClearChange), LOCTEXT("ClearSelection", "Clear Selection"));
 
 		// q: we could clear the selection here, and pass the Handle a copy. Perhaps safer?
-
-		SelectionArguments->SelectionHandle = FGeometrySelectionHandle{ Target->Selector->GetIdentifier(), &Target->Selection };
+		UInteractiveCommandResult* ResultPtr = nullptr;
+		SelectionArguments->SelectionHandle = FGeometrySelectionHandle{ Target->Selector->GetIdentifier(), &Target->Selection, Target->Selector.Get() };
 		SelectionArguments->SetTransactionsAPI(TransactionsAPI);
-		Command->ExecuteCommand(SelectionArguments);
+		Command->ExecuteCommand(SelectionArguments, &ResultPtr);
 
-		// clear selection after executing command
+		// actually clear selection after executing command. 
 		FGeometrySelectionDelta ClearDelta;
 		Target->SelectionEditor->ClearSelection(ClearDelta);
 
-		// 
-		// if commands could emit new selections, this is where we would set them up and emit changes!
+		// if selection returned a result, and it was a non-empty selection, select it
+		if ( UGeometrySelectionEditCommandResult* SelectionResult = Cast<UGeometrySelectionEditCommandResult>(ResultPtr) )
+		{
+			if (SelectionResult->OutputSelection.IsEmpty() == false )
+			{
+				FGeometrySelectionDelta AfterDelta;
+				Target->Selector->UpdateSelectionFromSelection(
+					SelectionResult->OutputSelection, true, *Target->SelectionEditor, 
+					FGeometrySelectionUpdateConfig{EGeometrySelectionChangeType::Add}, &AfterDelta);
+				if (Target->Selection.IsEmpty() == false)
+				{
+					TUniquePtr<FGeometrySelectionReplaceChange> NewSelectionChange = MakeUnique<FGeometrySelectionReplaceChange>();
+					NewSelectionChange->Identifier = Target->Selector->GetIdentifier();
+					NewSelectionChange->After = Target->Selection;
+					NewSelectionChange->Before.InitializeTypes(Target->Selection);
+					GetTransactionsAPI()->AppendChange(this, MoveTemp(NewSelectionChange), LOCTEXT("NewSelection", "New Selection"));
+				}
+			}
+		}
 	}
 
 	GetTransactionsAPI()->EndUndoTransaction();
@@ -737,6 +1017,7 @@ void UGeometrySelectionManager::ProcessActiveSelections(TFunctionRef<void(FGeome
 			FGeometrySelectionHandle Handle;
 			Handle.Selection = & Target->Selection;
 			Handle.Identifier = Target->Selector->GetIdentifier();
+			Handle.Selector = Target->Selector.Get();
 			ProcessFunc(Handle);
 		}
 	}
@@ -811,6 +1092,8 @@ void UGeometrySelectionManager::RevertChange(IGeometrySelectionChange* Change)
 void UGeometrySelectionManager::OnTargetGeometryModified(IGeometrySelector* Selector)
 {
 	bSelectionRenderCachesDirty = true;
+
+	ClearActivePreview();
 }
 
 
@@ -819,6 +1102,8 @@ void UGeometrySelectionManager::UpdateSelectionRenderCacheOnTargetChange()
 	CachedSelectionRenderElements.Reset();
 	CachedSelectionRenderElements.SetNum(ActiveTargetReferences.Num());
 	bSelectionRenderCachesDirty = true;
+
+	ClearActivePreview();
 }
 
 void UGeometrySelectionManager::RebuildSelectionRenderCaches()
@@ -836,10 +1121,17 @@ void UGeometrySelectionManager::RebuildSelectionRenderCaches()
 		FGeometrySelectionElements& Elements = CachedSelectionRenderElements[k];
 		Elements.Reset();
 
-		Target->Selector->AccumulateSelectionElements(Target->Selection, Elements, true);
+		Target->Selector->AccumulateSelectionElements(Target->Selection, Elements, true, false);
 	}
 
 	bSelectionRenderCachesDirty = false;
+}
+
+
+void UGeometrySelectionManager::ClearActivePreview()
+{
+	ActivePreviewSelection.Reset();
+	CachedPreviewRenderElements.Reset();
 }
 
 
@@ -898,14 +1190,53 @@ void UGeometrySelectionManager::DebugRender(IToolsContextRenderAPI* RenderAPI)
 		Visualizer.bDepthTested = false;
 		Visualizer.BeginFrame(RenderAPI);
 
-		Visualizer.SetLineParameters(FLinearColor(0,1,0,1), 2.0f);
+		Visualizer.SetLineParameters(FLinearColor(0,0.3f,0.95f,1), 3.0f);
 		for (const FSegment3d& Segment : Elements.Segments)
 		{
 			Visualizer.DrawLine(Segment.StartPoint(), Segment.EndPoint());
 		}
 
-		Visualizer.SetPointParameters(FLinearColor(0,0,1,1), 10.0f);
+		Visualizer.SetPointParameters(FLinearColor(0,0.3f,0.95f,1), 10.0f);
 		for (const FVector3d& Point : Elements.Points)
+		{
+			Visualizer.DrawPoint(Point);
+		}
+
+		Visualizer.EndFrame();
+	}
+
+	// draw selection preview
+	{
+		FPrimitiveDrawInterface* CurrentPDI = RenderAPI->GetPrimitiveDrawInterface();
+		FDynamicMeshBuilder MeshBuilder(CurrentPDI->View->GetFeatureLevel());
+		int32 DepthPriority = SDPG_World; // SDPG_Foreground;  // SDPG_World
+		FVector2f UVs[3] = { FVector2f(0,0), FVector2f(0,1), FVector2f(1,1) };
+		FVector3f Normal = FVector3f(0, 0, 1);
+		FVector3f Tangent = FVector3f(1, 0, 0);
+		for (const FTriangle3d& Triangle : CachedPreviewRenderElements.Triangles)
+		{
+			int32 V0 = MeshBuilder.AddVertex(FDynamicMeshVertex((FVector3f)Triangle.V[0], Tangent, Normal, UVs[0], FColor::White));
+			int32 V1 = MeshBuilder.AddVertex(FDynamicMeshVertex((FVector3f)Triangle.V[1], Tangent, Normal, UVs[1], FColor::White));
+			int32 V2 = MeshBuilder.AddVertex(FDynamicMeshVertex((FVector3f)Triangle.V[2], Tangent, Normal, UVs[2], FColor::White));
+			MeshBuilder.AddTriangle(V0, V1, V2);
+		}
+		//FMaterialRenderProxy* MaterialRenderProxy = TriangleMaterial->GetRenderProxy();		// currently does not work, material does not render
+		FMaterialRenderProxy* MaterialRenderProxy = GEngine->ConstraintLimitMaterialX->GetRenderProxy();
+		MeshBuilder.Draw(CurrentPDI, FMatrix::Identity, MaterialRenderProxy, DepthPriority, false, false);
+
+
+		FToolDataVisualizer Visualizer;
+		Visualizer.bDepthTested = false;
+		Visualizer.BeginFrame(RenderAPI);
+
+		Visualizer.SetLineParameters(FLinearColor(1, 1, 0, 1), 1.0f);
+		for (const FSegment3d& Segment : CachedPreviewRenderElements.Segments)
+		{
+			Visualizer.DrawLine(Segment.StartPoint(), Segment.EndPoint());
+		}
+
+		Visualizer.SetPointParameters(FLinearColor(1, 1, 0, 1), 5.0f);
+		for (const FVector3d& Point : CachedPreviewRenderElements.Points)
 		{
 			Visualizer.DrawPoint(Point);
 		}
@@ -916,57 +1247,6 @@ void UGeometrySelectionManager::DebugRender(IToolsContextRenderAPI* RenderAPI)
 }
 
 
-
-UPersistentMeshSelection* UGeometrySelectionManager::GetActiveSingleSelectionConverted_Legacy(UPrimitiveComponent* ForComponent)
-{
-	OldSelection = nullptr;
-
-	if (HasSelection() == false)
-	{
-		return nullptr;
-	}
-
-	for (TSharedPtr<FGeometrySelectionTarget> Target : ActiveTargetReferences)
-	{
-		if (Target->TargetIdentifier.TargetObject == ForComponent)
-		{
-			const FGeometrySelection& GeoSelection = Target->Selection;
-
-			OldSelection = NewObject<UPersistentMeshSelection>(this);
-			FGenericMeshSelection Selection;
-			Selection.SourceComponent = ForComponent;
-
-			if (GeoSelection.TopologyType == EGeometryTopologyType::Triangle)
-			{
-				Selection.TopologyType = FGenericMeshSelection::ETopologyType::FTriangleGroupTopology;
-				if (GeoSelection.ElementType == EGeometryElementType::Face)
-				{
-					for (uint64 tid : GeoSelection.Selection)
-					{
-						Selection.FaceIDs.Add((int32)tid);
-					}
-				}
-			}
-			else
-			{
-				Selection.TopologyType = FGenericMeshSelection::ETopologyType::FGroupTopology;
-				if (GeoSelection.ElementType == EGeometryElementType::Face)
-				{
-					for (uint64 EncodedID : GeoSelection.Selection)
-					{
-						FGeoSelectionID SelectionID(EncodedID);
-						Selection.FaceIDs.Add((int32)SelectionID.TopologyID);
-					}
-				}
-			}
-
-			
-			OldSelection->SetSelection(Selection);
-		}
-	}
-
-	return OldSelection;
-}
 
 
 #undef LOCTEXT_NAMESPACE

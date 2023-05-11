@@ -7,10 +7,10 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
 #include "ThumbnailRendering/DefaultSizedThumbnailRenderer.h"
 #include "GeometryCacheThumbnailRenderer.generated.h"
+
+enum class EThumbnailRenderFrequency : uint8;
 
 class FCanvas;
 class FGeometryCacheThumbnailScene;
@@ -31,6 +31,10 @@ class UGeometryCacheThumbnailRenderer : public UDefaultSizedThumbnailRenderer
 private:
 	FGeometryCacheThumbnailScene* ThumbnailScene;
 public:
-	virtual bool AllowsRealtimeThumbnails(UObject* Object) const override;
+	virtual EThumbnailRenderFrequency GetThumbnailRenderFrequency(UObject* Object) const override;
 
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

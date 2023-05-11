@@ -8,9 +8,12 @@
 #include "UObject/Class.h"
 #include "Engine/Selection.h"
 
+#include "KismetDebugUtilities.generated.h"
+
 static_assert(DO_BLUEPRINT_GUARD, "KismetDebugUtilities assumes BP exception tracking is enabled");
 
 class UBlueprint;
+class UEdGraphPin;
 struct FBlueprintBreakpoint;
 struct FBlueprintWatchedPin;
 template<typename ElementType> class TSimpleRingBuffer;
@@ -84,14 +87,25 @@ struct FPropertyInstanceInfo
 	/** Returns the watch text for info popup bubbles on the graph */
 	UNREALED_API FString GetWatchText() const;
 	
+	UNREALED_API const TArray<TSharedPtr<FPropertyInstanceInfo>>& GetChildren() const;
+
 	FText Name;
 	FText DisplayName;
 	FText Value;
 	FText Type;
 	TWeakObjectPtr<UObject> Object = nullptr; // only filled if property is a UObject
 	TFieldPath<const FProperty> Property;
-	TArray<TSharedPtr<FPropertyInstanceInfo>> Children;
 	bool bIsInContainer = false;
+
+private:
+	TArray<TSharedPtr<FPropertyInstanceInfo>> Children;
+
+	/** 
+	 * Only populated when this is an object and was already seen in the debug tree
+	 * used to avoid circular references in cases where the same object may be referenced by multiple properties  
+	 */
+	TSharedPtr<FPropertyInstanceInfo> ReferencedObject; 
+
 };
 
 inline uint32 GetTypeHash(const FPropertyInstanceInfo::FPropertyInstance& PropertyInstance)
@@ -191,11 +205,17 @@ public:
 
 	static void OnScriptException(const UObject* ActiveObject, const FFrame& StackFrame, const FBlueprintExceptionInfo& Info);
 
-	/** Returns the current instruction; if a PIE/SIE session is started but paused; otherwise NULL */
+	/** Returns the current instruction; if a debugging session has started; otherwise none */
 	static class UEdGraphNode* GetCurrentInstruction();
 
-	/** Returns the most recent hit breakpoint; if a PIE/SIE session is started but paused; otherwise NULL */
+	/** Returns the most recent hit breakpoint; if a debugging session has started; otherwise none */
 	static class UEdGraphNode* GetMostRecentBreakpointHit();
+
+	/** Returns the most recent hit breakpoint; if a debugging session has started in PIE/SIE; otherwise none */
+	static UWorld* GetCurrentDebuggingWorld();
+
+	/** Request abort the current frame execution */
+	static void RequestAbortingExecution();
 
 	/** Request an attempt to single-step to the next node */
 	static void RequestSingleStepIn();

@@ -2,15 +2,11 @@
 
 #include "Elements/Metadata/PCGMetadataTransformOpElement.h"
 
-#include "Elements/Metadata/PCGMetadataElementCommon.h"
 #include "Elements/Metadata/PCGMetadataRotatorOpElement.h"
-#include "Helpers/PCGSettingsHelpers.h"
-#include "Metadata/PCGMetadata.h"
-#include "Metadata/PCGMetadataAttribute.h"
-#include "Metadata/PCGMetadataAttributeTpl.h"
-#include "Metadata/PCGMetadataEntryKeyIterator.h"
 
 #include "Math/DualQuat.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGMetadataTransformOpElement)
 
 namespace PCGMetadataTransfromSettings
 {
@@ -75,6 +71,31 @@ namespace PCGMetadataTransfromSettings
 	}
 }
 
+void UPCGMetadataTransformSettings::PostLoad()
+{
+	Super::PostLoad();
+
+#if WITH_EDITOR
+	if (Input1AttributeName_DEPRECATED != NAME_None)
+	{
+		InputSource1.SetAttributeName(Input1AttributeName_DEPRECATED);
+		Input1AttributeName_DEPRECATED = NAME_None;
+	}
+
+	if (Input2AttributeName_DEPRECATED != NAME_None)
+	{
+		InputSource2.SetAttributeName(Input2AttributeName_DEPRECATED);
+		Input2AttributeName_DEPRECATED = NAME_None;
+	}
+
+	if (Input3AttributeName_DEPRECATED != NAME_None)
+	{
+		InputSource3.SetAttributeName(Input3AttributeName_DEPRECATED);
+		Input3AttributeName_DEPRECATED = NAME_None;
+	}
+#endif // WITH_EDITOR
+}
+
 FName UPCGMetadataTransformSettings::GetInputPinLabel(uint32 Index) const
 {
 	switch (Index)
@@ -120,18 +141,18 @@ bool UPCGMetadataTransformSettings::IsSupportedInputType(uint16 TypeId, uint32 I
 	}
 }
 
-FName UPCGMetadataTransformSettings::GetInputAttributeNameWithOverride(uint32 Index, UPCGParamData* Params) const
+FPCGAttributePropertySelector UPCGMetadataTransformSettings::GetInputSource(uint32 Index) const
 {
 	switch (Index)
 	{
 	case 0:
-		return PCG_GET_OVERRIDEN_VALUE(this, Input1AttributeName, Params);
+		return InputSource1;
 	case 1:
-		return PCG_GET_OVERRIDEN_VALUE(this, Input2AttributeName, Params);
+		return InputSource2;
 	case 2:
-		return PCG_GET_OVERRIDEN_VALUE(this, Input3AttributeName, Params);
+		return InputSource3;
 	default:
-		return NAME_None;
+		return FPCGAttributePropertySelector();
 	}
 }
 
@@ -150,7 +171,12 @@ FName UPCGMetadataTransformSettings::AdditionalTaskName() const
 #if WITH_EDITOR
 FName UPCGMetadataTransformSettings::GetDefaultNodeName() const
 {
-	return TEXT("Attribute Transform Op");
+	return TEXT("AttributeTransformOp");
+}
+
+FText UPCGMetadataTransformSettings::GetDefaultNodeTitle() const
+{
+	return NSLOCTEXT("PCGMetadataTransformSettings", "NodeTitle", "Attribute Transform Op");
 }
 #endif // WITH_EDITOR
 

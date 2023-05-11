@@ -2,42 +2,30 @@
 
 #include "SSceneOutliner.h"
 
-#include "EdMode.h"
 #include "Editor.h"
-#include "Editor/UnrealEdEngine.h"
-#include "EditorModeManager.h"
 #include "Styling/AppStyle.h"
 #include "Engine/GameViewportClient.h"
-#include "Engine/Selection.h"
-#include "EngineUtils.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Commands/UIAction.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "ISceneOutlinerColumn.h"
-#include "Kismet2/ComponentEditorUtils.h"
 #include "Layout/WidgetPath.h"
 #include "Modules/ModuleManager.h"
-#include "SceneOutlinerDelegates.h"
 #include "SceneOutlinerFilters.h"
 #include "SceneOutlinerModule.h"
 #include "ScopedTransaction.h"
 #include "Textures/SlateIcon.h"
 #include "ToolMenus.h"
-#include "UnrealEdGlobals.h"
 #include "UObject/PackageReload.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SComboButton.h"
-#include "Widgets/Input/SSearchBox.h"
-#include "Widgets/Layout/SSeparator.h"
 #include "Widgets/SOverlay.h"
-#include "SceneOutlinerMenuContext.h"
 #include "ISceneOutlinerMode.h"
 #include "FolderTreeItem.h"
 #include "EditorFolderUtils.h"
 #include "SceneOutlinerConfig.h"
-#include "Algo/ForEach.h"
 #include "SceneOutlinerFilterBar.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
@@ -133,7 +121,7 @@ void SSceneOutliner::Construct(const FArguments& InArgs, const FSceneOutlinerIni
 		SNew( SHeaderRow )
 			// Only show the list header if the user configured the outliner for that
 			.Visibility(InInitOptions.bShowHeaderRow ? EVisibility::Visible : EVisibility::Collapsed)
-			.CanSelectGeneratedColumn(true)
+			.CanSelectGeneratedColumn(InInitOptions.bCanSelectGeneratedColumns)
 			.OnHiddenColumnsListChanged(this, &SSceneOutliner::HandleHiddenColumnsChanged);
 
 	SetupColumns(*HeaderRowWidget);
@@ -362,14 +350,34 @@ void SSceneOutliner::HandleHiddenColumnsChanged()
 	{
 		TMap<FName, bool> ColumnVisibilities = OutlinerConfig->ColumnVisibilities;
 
+		bool bAnyColumnVisibilityChanged = false;
+		
 		for (const TPair<FName, TSharedPtr<ISceneOutlinerColumn>>& Pair : Columns)
 		{
-			ColumnVisibilities.Add(Pair.Key, HiddenColumns.Find(Pair.Key) == INDEX_NONE);
+			const bool bIsColumnVisible = HiddenColumns.Find(Pair.Key) == INDEX_NONE;
+
+			// If this column already has a visibility saved in the config, only update if it changed
+			if (bool* ExistingColumnVisibility = ColumnVisibilities.Find(Pair.Key))
+			{
+				if(*ExistingColumnVisibility != bIsColumnVisible)
+				{
+					*ExistingColumnVisibility = bIsColumnVisible;
+					bAnyColumnVisibilityChanged = true;
+				}
+			}
+			else
+			{
+				ColumnVisibilities.Add(Pair.Key, bIsColumnVisible);
+				bAnyColumnVisibilityChanged = true;
+			}
 		}
 
-		OutlinerConfig->ColumnVisibilities = ColumnVisibilities;
-
-		SaveConfig();
+		// Only call SaveConfig if something actually changed
+		if(bAnyColumnVisibilityChanged)
+		{
+			OutlinerConfig->ColumnVisibilities = ColumnVisibilities;
+			SaveConfig();
+		}
 	}
 }
 
@@ -487,27 +495,37 @@ void SSceneOutliner::SetupColumns(SHeaderRow& HeaderRow)
 				ColumnArgs.ShouldGenerateWidget(true);
 			}
 
-			if (SharedData->ColumnMap[ID].FillSize.IsSet())
+			if (FilteredColumnMap[ID].FillSize.IsSet())
 			{
-				ColumnArgs.FillWidth(SharedData->ColumnMap[ID].FillSize.GetValue());
+				ColumnArgs.FillWidth(FilteredColumnMap[ID].FillSize.GetValue());
 			}
 
+			if (FilteredColumnMap[ID].OnGetHeaderContextMenuContent.IsBound())
+			{
+				ColumnArgs.MenuContent()
+				[
+					FilteredColumnMap[ID].OnGetHeaderContextMenuContent.Execute()
+				];
+			}
+
+			ColumnArgs.HeaderComboVisibility(FilteredColumnMap[ID].HeaderComboVisibility);
+
 			HeaderRow.AddColumn(ColumnArgs);
-			HeaderRowWidget->SetShowGeneratedColumn(ID, bIsVisible);
+			HeaderRow.SetShowGeneratedColumn(ID, bIsVisible);
 		}
 	}
 	Columns.Shrink();
 	bNeedsColumRefresh = false;
 }
 
-void SSceneOutliner::RefreshColums()
+void SSceneOutliner::RefreshColumns()
 {
 	bNeedsColumRefresh = true;
 }
 
 void SSceneOutliner::OnColumnPermissionListChanged()
 {
-	RefreshColums();
+	RefreshColumns();
 	FullRefresh();
 }
 
@@ -1140,7 +1158,7 @@ void SSceneOutliner::AddColumn(FName ColumId, const FSceneOutlinerColumnInfo& Co
 	if (!SharedData->ColumnMap.Contains(ColumId))
 	{
 		SharedData->ColumnMap.Add(ColumId, ColumInfo);
-		RefreshColums();
+		RefreshColumns();
 	}
 }
 
@@ -1149,7 +1167,7 @@ void SSceneOutliner::RemoveColumn(FName ColumId)
 	if (SharedData->ColumnMap.Contains(ColumId))
 	{
 		SharedData->ColumnMap.Remove(ColumId);
-		RefreshColums();
+		RefreshColumns();
 	}
 }
 
@@ -2356,14 +2374,42 @@ void SSceneOutliner::UnpinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems
 	Mode->UnpinItems(InItems);
 }
 
+bool SSceneOutliner::CanPinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems) const
+{
+	return Mode->CanPinItems(InItems);
+}
+
+bool SSceneOutliner::CanUnpinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems) const
+{
+	return Mode->CanUnpinItems(InItems);
+}
+
 void SSceneOutliner::PinSelectedItems()
 {
-	Mode->PinSelectedItems();
+	TArray<FSceneOutlinerTreeItemPtr> SelectedItems;
+	GetSelection().Get(SelectedItems);
+	PinItems(SelectedItems);
 }
 
 void SSceneOutliner::UnpinSelectedItems()
 {
-	Mode->UnpinSelectedItems();
+	TArray<FSceneOutlinerTreeItemPtr> SelectedItems;
+	GetSelection().Get(SelectedItems);
+	UnpinItems(SelectedItems);
+}
+
+bool SSceneOutliner::CanPinSelectedItems() const
+{
+	TArray<FSceneOutlinerTreeItemPtr> SelectedItems;
+	GetSelection().Get(SelectedItems);
+	return CanPinItems(SelectedItems);
+}
+
+bool SSceneOutliner::CanUnpinSelectedItems() const
+{
+	TArray<FSceneOutlinerTreeItemPtr> SelectedItems;
+	GetSelection().Get(SelectedItems);
+	return CanUnpinItems(SelectedItems);
 }
 
 FSceneOutlinerTreeItemPtr SSceneOutliner::FindParent(const ISceneOutlinerTreeItem& InItem) const
@@ -2467,7 +2513,7 @@ bool SSceneOutliner::CompareItemWithClassName(SceneOutliner::FilterBarType InIte
 
 void SSceneOutliner::CreateFilterBar(const FSceneOutlinerFilterBarOptions& FilterBarOptions)
 {
-	if(!FilterBarOptions.bHasFilterBar)
+	if (!FilterBarOptions.bHasFilterBar)
 	{
 		return;
 	}
@@ -2491,6 +2537,19 @@ void SSceneOutliner::CreateFilterBar(const FSceneOutlinerFilterBarOptions& Filte
 	}));
 
 	FilterBar->LoadSettings();
+}
+
+bool SSceneOutliner::IsFilterActive(const FString& FilterName) const
+{
+	if (FilterBar.IsValid())
+	{
+		if (TSharedPtr<FFilterBase<SceneOutliner::FilterBarType>> FoundFilter = FilterBar->GetFilter(FilterName))
+		{
+			return FilterBar->IsFilterActive(FoundFilter);
+		}
+	}
+
+	return false;
 }
 
 #undef LOCTEXT_NAMESPACE

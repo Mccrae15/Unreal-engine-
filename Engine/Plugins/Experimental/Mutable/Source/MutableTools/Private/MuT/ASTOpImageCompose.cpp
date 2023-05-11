@@ -6,7 +6,6 @@
 #include "Containers/Map.h"
 #include "HAL/PlatformMath.h"
 #include "MuR/Layout.h"
-#include "MuR/MemoryPrivate.h"
 #include "MuR/ModelPrivate.h"
 #include "MuR/MutableMath.h"
 #include "MuR/MutableTrace.h"
@@ -96,7 +95,7 @@ void ASTOpImageCompose::ForEachChild(const TFunctionRef<void(ASTChild&)> f )
 
 
 //-------------------------------------------------------------------------------------------------
-void ASTOpImageCompose::Link( PROGRAM& program, const FLinkerOptions*)
+void ASTOpImageCompose::Link( FProgram& program, const FLinkerOptions*)
 {
     // Already linked?
     if (!linkedAddress)
@@ -119,12 +118,12 @@ void ASTOpImageCompose::Link( PROGRAM& program, const FLinkerOptions*)
 }
 
 
-FImageDesc ASTOpImageCompose::GetImageDesc( bool returnBestOption, GetImageDescContext* context )
+FImageDesc ASTOpImageCompose::GetImageDesc( bool returnBestOption, FGetImageDescContext* context ) const
 {
     FImageDesc res;
 
     // Local context in case it is necessary
-    GetImageDescContext localContext;
+    FGetImageDescContext localContext;
     if (!context)
     {
       context = &localContext;
@@ -167,7 +166,7 @@ mu::Ptr<ImageSizeExpression> ASTOpImageCompose::GetImageSizeExpression() const
 }
 
 
-bool ASTOpImageCompose::IsImagePlainConstant(vec4<float>& colour) const
+bool ASTOpImageCompose::IsImagePlainConstant(FVector4f& colour) const
 {
 	bool res = false;
 
@@ -178,7 +177,7 @@ bool ASTOpImageCompose::IsImagePlainConstant(vec4<float>& colour) const
 
 	if (res && Base.child())
 	{
-		vec4<float> baseColour;
+		FVector4f baseColour;
 		res = Base->IsImagePlainConstant(baseColour);
 		res &= (colour == baseColour);
 	}
@@ -196,7 +195,7 @@ void ASTOpImageCompose::GetLayoutBlockSize(int* pBlockX, int* pBlockY)
 	if (Layout.child())
 	{
 		MUTABLE_CPUPROFILER_SCOPE(GetLayoutBlockSize_GetBlockLayoutSize);
-		BLOCK_LAYOUT_SIZE_CACHE cache;
+		FBlockLayoutSizeCache cache;
 		Layout->GetBlockLayoutSizeCached(BlockIndex,
 			&layoutBlocksX, &layoutBlocksY,
 			&cache);
@@ -217,7 +216,7 @@ void ASTOpImageCompose::GetLayoutBlockSize(int* pBlockX, int* pBlockY)
 }
 
 
-mu::Ptr<ASTOp> ASTOpImageCompose::OptimiseSemantic(const MODEL_OPTIMIZATION_OPTIONS& options) const
+mu::Ptr<ASTOp> ASTOpImageCompose::OptimiseSemantic(const FModelOptimizationOptions& options) const
 {
 	mu::Ptr<ASTOp> at;
 

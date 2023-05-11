@@ -2,12 +2,13 @@
 
 #include "NiagaraRendererGeometryCache.h"
 
+#include "Engine/World.h"
+#include "GeometryCache.h"
 #include "GeometryCacheStreamingManager.h"
-#include "NiagaraConstants.h"
-#include "NiagaraDataSet.h"
+#include "GeometryCacheComponent.h"
 #include "NiagaraGeometryCacheRendererProperties.h"
+#include "NiagaraEmitterInstance.h"
 #include "NiagaraSystemInstance.h"
-#include "NiagaraEmitter.h"
 #include "Async/Async.h"
 
 static float GNiagaraGeometryComponentRenderPoolInactiveTimeLimit = 5;
@@ -113,6 +114,14 @@ void FNiagaraRendererGeometryCache::PostSystemTick_GameThread(const UNiagaraRend
 		return;
 	}
 
+#if WITH_EDITORONLY_DATA
+	if (SystemInstance->GetIsolateEnabled() && !Emitter->GetEmitterHandle().IsIsolated())
+	{
+		ResetComponentPool(true);
+		return;
+	}
+#endif
+
 	USceneComponent* AttachComponent = SystemInstance->GetAttachComponent();
 	if (!AttachComponent)
 	{
@@ -126,7 +135,8 @@ void FNiagaraRendererGeometryCache::PostSystemTick_GameThread(const UNiagaraRend
 	FNiagaraDataSetReaderInt32<int32> VisTagAccessor = FNiagaraDataSetAccessor<int32>::CreateReader(Data, Properties->RendererVisibilityTagBinding.GetDataSetBindableVariable().GetName());
 	FNiagaraDataSetReaderInt32<int32> ArrayIndexAccessor = FNiagaraDataSetAccessor<int32>::CreateReader(Data, Properties->ArrayIndexBinding.GetDataSetBindableVariable().GetName());
 	FNiagaraDataSetReaderInt32<int32> UniqueIDAccessor = FNiagaraDataSetAccessor<int32>::CreateReader(Data, FName("UniqueID"));
-	float CurrentTime = AttachComponent->GetWorld()->GetRealTimeSeconds();
+	const float CurrentTime = AttachComponent->GetWorld()->GetRealTimeSeconds();
+	const bool bIsRendererEnabled = IsRendererEnabled(InProperties, Emitter);
 	
 	auto IsParticleEnabled = [&EnabledAccessor, &VisTagAccessor, Properties](int32 ParticleIndex)
 	{
@@ -171,7 +181,7 @@ void FNiagaraRendererGeometryCache::PostSystemTick_GameThread(const UNiagaraRend
 			int32 PoolIndex;
 			if (UsedSlots.RemoveAndCopyValue(ParticleID, PoolIndex))
 			{
-				if (IsParticleEnabled(ParticleIndex))
+				if (bIsRendererEnabled && IsParticleEnabled(ParticleIndex))
 				{
 					ParticlesWithComponents.Emplace(ParticleID, PoolIndex);
 				}
@@ -209,7 +219,7 @@ void FNiagaraRendererGeometryCache::PostSystemTick_GameThread(const UNiagaraRend
 	int32 ComponentCount = 0;
 	for (uint32 ParticleIndex = 0; ParticleIndex < ParticleData.GetNumInstances(); ParticleIndex++)
 	{
-		if (!IsParticleEnabled(ParticleIndex))
+		if (!bIsRendererEnabled || !IsParticleEnabled(ParticleIndex))
 		{
 			// Skip particles that don't want a component
 			continue;

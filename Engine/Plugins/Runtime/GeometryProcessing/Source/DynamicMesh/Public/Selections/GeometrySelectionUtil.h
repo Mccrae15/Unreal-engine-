@@ -19,6 +19,18 @@ class FColliderMesh;
 class FGroupTopology;
 struct FGroupTopologySelection;
 
+
+/**
+ * Test if SelectionA and SelectionB are the same selection.
+ * This is currently relatively expensive on Polygroup selections due to how they are encoded
+ * @return true if the selections are iddentical
+ */
+DYNAMICMESH_API bool AreSelectionsIdentical(
+	const FGeometrySelection& SelectionA,
+	const FGeometrySelection& SelectionB);
+
+
+
 /**
  * Assuming that the uint64 values in the GeometrySelection are encoded FGeoSelectionID's, 
  * find the item that has a matching TopologyID, ignoring the GeometryID.
@@ -146,7 +158,8 @@ DYNAMICMESH_API bool EnumerateTriangleSelectionElements(
 	TFunctionRef<void(int32, const FVector3d&)> VertexFunc,
 	TFunctionRef<void(int32, const FSegment3d&)> EdgeFunc,
 	TFunctionRef<void(int32, const FTriangle3d&)> TriangleFunc,
-	const FTransform* ApplyTransform = nullptr
+	const FTransform* ApplyTransform = nullptr,
+	bool bMapFacesToEdgeLoops = false
 );
 /**
  * Call VertexFunc/EdgeFunc/TriangleFunc for the mesh vertices/edges/triangles identified by MeshSelection,
@@ -163,7 +176,8 @@ DYNAMICMESH_API bool EnumeratePolygroupSelectionElements(
 	TFunctionRef<void(int32, const FVector3d&)> VertexFunc,
 	TFunctionRef<void(int32, const FSegment3d&)> EdgeFunc,
 	TFunctionRef<void(int32, const FTriangle3d&)> TriangleFunc,
-	const FTransform* ApplyTransform = nullptr
+	const FTransform* ApplyTransform = nullptr,
+	bool bMapFacesToEdgeLoops = false
 );
 
 
@@ -176,6 +190,96 @@ DYNAMICMESH_API bool ConvertPolygroupSelectionToTopologySelection(
 	const FGroupTopology* GroupTopology,
 	FGroupTopologySelection& TopologySelectionOut
 );
+
+
+/**
+ * Convert Triangle IDs to target Selection type
+ */
+DYNAMICMESH_API bool InitializeSelectionFromTriangles(
+	const UE::Geometry::FDynamicMesh3& Mesh,
+	const FGroupTopology* GroupTopology,
+	TArrayView<const int> Triangles,
+	FGeometrySelection& SelectionOut);
+
+
+/**
+ * Convert Selection from one type to another, based on geometry/topology types in FromSelectionIn and ToSelectionOut.
+ * Not all conversion types are necessarily supported
+ * (currently only Triangles -> All Others is working)
+ * @return true if conversion is supported and was computed successfully
+ */
+DYNAMICMESH_API bool ConvertSelection(
+	const UE::Geometry::FDynamicMesh3& Mesh,
+	const FGroupTopology* GroupTopology,
+	const FGeometrySelection& FromSelectionIn,
+	FGeometrySelection& ToSelectionOut);
+
+
+/**
+ * Select all elements of the provided Mesh and GroupTopology that pass the provided SelectionIDPredicate, 
+ * and store in the output AllSelection. The type of elements selected is defined by the existing configured
+ * type of the AllSelection parameter. 
+ * @param GroupTopology precomputed group topology for Mesh, can be passed as null for EGeometryTopologyType::Triangle selections
+ * @return true if AllSelection had a known geometry/topology type pair and was populated
+ */
+DYNAMICMESH_API bool MakeSelectAllSelection(
+	const UE::Geometry::FDynamicMesh3& Mesh,
+	const FGroupTopology* GroupTopology,
+	TFunctionRef<bool(FGeoSelectionID)> SelectionIDPredicate,
+	FGeometrySelection& AllSelection);
+
+/**
+ * Expand the input ReferenceSelection to include all "connected" elements and return in AllConnectedSelection.
+ * The type of selected element is defined by ReferenceSelection.
+ * @param GroupTopology precomputed group topology for Mesh, can be passed as null for EGeometryTopologyType::Triangle selections
+ * @param SelectionIDPredicate only elements that pass this filter will be expanded "to"  (but elements of ReferenceSelection that fail the filter will still be included in output)
+ * @param IsConnectedPredicate this function determines if "A" should be considered connected to "B", ie can "expand" along that connection
+ * @return true if ReferenceSelection had a known geometry/topology type pair and AllConnectedSelection was populated
+ */
+DYNAMICMESH_API bool MakeSelectAllConnectedSelection(
+	const UE::Geometry::FDynamicMesh3& Mesh,
+	const FGroupTopology* GroupTopology,
+	const FGeometrySelection& ReferenceSelection,
+	TFunctionRef<bool(FGeoSelectionID)> SelectionIDPredicate,
+	TFunctionRef<bool(FGeoSelectionID A, FGeoSelectionID B)> IsConnectedPredicate,
+	FGeometrySelection& AllConnectedSelection);
+
+/**
+ * Create a selection of the elements adjacent to the "Border" of the given ReferenceSelection and return in BoundaryConnectedSelection.
+ * The type of selected element is defined by ReferenceSelection.
+ * Currently "adjacency" is defined as "included in the one-ring of the boundary vertices of the ReferenceSelection", ie first the 
+ * vertices on boundary edges are found, and then their one-rings are enumerated. Note that this will include "inside" and "outside" adjacent elements,
+ * and for vertices, the boundary vertices will still also be included. The main purpose of this function is to implement expand/contract selection
+ * operations, which would typically involve first finding the boundary-connected set and then using CombineSelectionInPlace to modify the original selection.
+ * @param GroupTopology precomputed group topology for Mesh, can be passed as null for EGeometryTopologyType::Triangle selections
+ * @param SelectionIDPredicate only elements that pass this filter will be expanded "to"  (but elements of ReferenceSelection that fail the filter will still be included in output)
+ * @return true if ReferenceSelection had a known geometry/topology type pair and BoundaryConnectedSelection was populated
+ */
+DYNAMICMESH_API bool MakeBoundaryConnectedSelection(
+	const UE::Geometry::FDynamicMesh3& Mesh,
+	const FGroupTopology* GroupTopology,
+	const FGeometrySelection& ReferenceSelection,
+	TFunctionRef<bool(FGeoSelectionID)> SelectionIDPredicate,
+	FGeometrySelection& BoundaryConnectedSelection);
+
+
+enum class EGeometrySelectionCombineModes : uint8
+{
+	Add,
+	Subtract,
+	Intersection
+};
+
+
+/**
+ * Combine the elements of SelectionA and SelectionB using the provided CombineMode, and store the result in SelectionA.
+ * @return true if the selectins were compatible (ie both the same type) and of supported geometry/topology type.
+ */
+DYNAMICMESH_API bool CombineSelectionInPlace(
+	FGeometrySelection& SelectionA,
+	const FGeometrySelection& SelectionB, 
+	EGeometrySelectionCombineModes CombineMode );
+
 
 
 /**

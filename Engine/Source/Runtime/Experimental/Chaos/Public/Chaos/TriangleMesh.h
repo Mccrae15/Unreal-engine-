@@ -48,6 +48,9 @@ namespace Chaos
 		/** Returns the unique set of vertices used by this triangle mesh. */
 		CHAOS_API void GetVertexSet(TSet<int32>& VertexSet) const;
 
+		/** Returns the unique set of vertices used by this triangle mesh. */
+		CHAOS_API void GetVertexSetAsArray(TArray<int32>& VertexSet) const;
+
 		/**
 		 * Extends the vertex range.
 		 *
@@ -150,7 +153,7 @@ namespace Chaos
 		FORCEINLINE TArray<FVec3> GetFaceNormals(const FParticles& InParticles, const bool ReturnEmptyOnError = true) const
 		{ return GetFaceNormals(TConstArrayView<FVec3>(InParticles.X()), ReturnEmptyOnError); }
 
-		CHAOS_API TArray<FVec3> GetPointNormals(const TConstArrayView<FVec3>& points, const bool ReturnEmptyOnError = true);
+		CHAOS_API TArray<FVec3> GetPointNormals(const TConstArrayView<FVec3>& points, const bool ReturnEmptyOnError = true, const bool bUseGlobalArray=false);
 		FORCEINLINE TArray<FVec3> GetPointNormals(const FParticles& InParticles, const bool ReturnEmptyOnError = true)
 		{ return GetPointNormals(TConstArrayView<FVec3>(InParticles.X()), ReturnEmptyOnError); }
 		
@@ -294,6 +297,11 @@ namespace Chaos
 		template<typename T>
 		bool EdgeIntersectionQuery(const TBVHType<T>& BVH, const TConstArrayView<TVec3<T>>& Points, const int32 EdgeIndex, const TVec3<T>& EdgePosition1, const TVec3<T>& EdgePosition2,
 			TFunctionRef<bool(const int32 EdgeIndex, const int32 TriangleIndex)> BroadphaseTest, TArray<TTriangleCollisionPoint<T>>& Result) const;
+
+		//! Returns \c false if \p Point is outside of the smooth normal cone, where a smooth projection doesn't exist.
+		template<typename T>
+		bool SmoothProject(const TBVHType<T>& BVH, const TConstArrayView<FVec3>& Points, const TArray<FVec3>& PointNormals,
+			const FVec3& Point, int32& TriangleIndex, FVec3& Weights, const int32 MaxIters=10) const;
 
 		template<typename T>
 		using TSpatialHashType = THierarchicalSpatialHash<int32, T>;

@@ -2,57 +2,20 @@
 
 #include "MuCOE/CustomizableObjectEditor.h"
 
-#include "AdvancedPreviewSceneModule.h"
-#include "Animation/AnimSingleNodeInstance.h"
 #include "Animation/DebugSkelMeshComponent.h"
-#include "Animation/PoseAsset.h"
-#include "Animation/SmartName.h"
 #include "AssetRegistry/ARFilter.h"
-#include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/AssetRegistryModule.h"
-#include "AssetRegistry/IAssetRegistry.h"
-#include "Components/SkeletalMeshComponent.h"
-#include "Containers/Set.h"
 #include "DetailsViewArgs.h"
-#include "EdGraph/EdGraph.h"
-#include "EdGraph/EdGraphPin.h"
-#include "EdGraph/EdGraphSchema.h"
-#include "EdGraphNode_Comment.h"
 #include "EdGraphUtilities.h"
-#include "Editor.h"
-#include "Editor/EditorEngine.h"
-#include "Engine/Engine.h"
-#include "Engine/EngineTypes.h"
 #include "Engine/StaticMesh.h"
-#include "Engine/StreamableManager.h"
 #include "FileHelpers.h"
 #include "Framework/Commands/GenericCommands.h"
-#include "Framework/Commands/UIAction.h"
-#include "Framework/Commands/UICommandList.h"
-#include "Framework/Docking/TabManager.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Framework/MultiBox/MultiBoxExtender.h"
-#include "Framework/Notifications/NotificationManager.h"
-#include "Framework/SlateDelegates.h"
 #include "GraphEditorActions.h"
 #include "HAL/PlatformApplicationMisc.h"
-#include "HAL/PlatformTime.h"
 #include "IDetailsView.h"
-#include "Internationalization/Internationalization.h"
-#include "Layout/BasicLayoutWidgetSlot.h"
-#include "Layout/ChildrenBase.h"
-#include "Layout/SlateRect.h"
-#include "Logging/LogCategory.h"
-#include "Logging/LogMacros.h"
-#include "Logging/TokenizedMessage.h"
 #include "MaterialGraph/MaterialGraphNode.h"
 #include "MaterialGraph/MaterialGraphNode_Comment.h"
-#include "Misc/AssertionMacros.h"
-#include "Misc/Attribute.h"
-#include "Misc/CString.h"
-#include "Misc/Guid.h"
-#include "Modules/ModuleManager.h"
-#include "MuCO/CustomizableObject.h"
 #include "MuCO/CustomizableObjectInstance.h"
 #include "MuCO/CustomizableObjectSystem.h"
 #include "MuCO/CustomizableSkeletalComponent.h"
@@ -69,70 +32,36 @@
 #include "MuCOE/CustomizableObjectPreviewScene.h"
 #include "MuCOE/EdGraphSchema_CustomizableObject.h"
 #include "MuCOE/GraphTraversal.h"
-#include "MuCOE/Nodes/CustomizableObjectNode.h"
-#include "MuCOE/Nodes/CustomizableObjectNodeColorArithmeticOp.h"
-#include "MuCOE/Nodes/CustomizableObjectNodeEditMaterial.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeEnumParameter.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeFloatParameter.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeGroupProjectorParameter.h"
-#include "MuCOE/Nodes/CustomizableObjectNodeLayoutBlocks.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeMaterial.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeMaterialVariation.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeMeshClipMorph.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeMeshClipWithMesh.h"
-#include "MuCOE/Nodes/CustomizableObjectNodeObject.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeObjectGroup.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeProjectorConstant.h"
-#include "MuCOE/Nodes/CustomizableObjectNodeProjectorParameter.h"
-#include "MuCOE/Nodes/CustomizableObjectNodeRemoveMeshBlocks.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeSkeletalMesh.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeStaticMesh.h"
-#include "MuCOE/Nodes/CustomizableObjectNodeTable.h"
 #include "MuCOE/SCustomizableObjectEditorAdvancedPreviewSettings.h"
 #include "MuCOE/SCustomizableObjectEditorPerformanceReport.h"
 #include "MuCOE/SCustomizableObjectEditorTagExplorer.h"
 #include "MuCOE/SCustomizableObjectEditorTextureAnalyzer.h"
 #include "MuCOE/SCustomizableObjectEditorViewport.h"
-#include "MuCOE/SCustomizableObjectNodeLayoutBlocksEditor.h"
-#include "MuCOE/SCustomizableObjectNodeLayoutBlocksSelector.h"
 #include "PropertyEditorModule.h"
-#include "SNodePanel.h"
 #include "ScopedTransaction.h"
-#include "SlotBase.h"
-#include "Styling/AppStyle.h"
-#include "Styling/ISlateStyle.h"
-#include "Templates/Casts.h"
-#include "Templates/Function.h"
-#include "Templates/SubclassOf.h"
-#include "Textures/SlateIcon.h"
-#include "Toolkits/AssetEditorToolkit.h"
-#include "Trace/Detail/Channel.h"
-#include "Types/SlateEnums.h"
-#include "Types/SlateStructs.h"
-#include "UObject/Class.h"
 #include "UObject/EnumProperty.h"
-#include "UObject/Field.h"
-#include "UObject/Package.h"
-#include "UObject/TopLevelAssetPath.h"
-#include "UObject/UnrealNames.h"
-#include "UObject/UnrealType.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Input/STextComboBox.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/Layout/SScrollBar.h"
 #include "Widgets/Layout/SScrollBox.h"
-#include "Widgets/Layout/SSplitter.h"
 #include "Widgets/Notifications/SNotificationList.h"
-#include "Widgets/SBoxPanel.h"
 
 class FAdvancedPreviewScene;
 class FWorkspaceItem;
 class IToolkitHost;
 class SWidget;
-
+enum class EColorArithmeticOperation : uint8;
 
 #define LOCTEXT_NAMESPACE "CustomizableObjectEditor"
 
@@ -301,19 +230,13 @@ void FCustomizableObjectEditor::InitCustomizableObjectEditor(const EToolkitMode:
 	DetailsViewArgs.bAllowSearch = false;
 	//DetailsViewArgs.bShowActorLabel = false;
 	DetailsViewArgs.bShowObjectLabel = false;
+	DetailsViewArgs.bShowScrollBar = false;
 
 	CustomizableObjectDetailsView = PropPlugin.CreateDetailView( DetailsViewArgs );
 	CustomizableObjectDetailsView->SetObject(CustomizableObject);
 
-	CustomizableInstanceDetailsView = PropPlugin.CreateDetailView( DetailsViewArgs );	
-
-	FDetailsViewArgs GraphDetailsViewArgs;
-	GraphDetailsViewArgs.NotifyHook = this;
-	GraphDetailsViewArgs.NameAreaSettings = FDetailsViewArgs::ENameAreaSettings::HideNameArea;
-	GraphDetailsViewArgs.bAllowSearch = false;
-	//GraphDetailsViewArgs.bShowActorLabel = false;
-	GraphDetailsViewArgs.bShowObjectLabel = false;
-	GraphNodeDetailsView = PropPlugin.CreateDetailView( GraphDetailsViewArgs );
+	CustomizableInstanceDetailsView = PropPlugin.CreateDetailView( DetailsViewArgs );
+	GraphNodeDetailsView = PropPlugin.CreateDetailView(DetailsViewArgs);
 
 	Viewport = SNew(SCustomizableObjectEditorViewportTabBody)
 		.CustomizableObjectEditor(SharedThis(this));
@@ -447,32 +370,6 @@ void FCustomizableObjectEditor::SelectNode(const UCustomizableObjectNode* Node)
 	GraphEditor->JumpToNode(Node);
 }
 
-void FCustomizableObjectEditor::SetPoseAsset(class UPoseAsset* PoseAssetParameter)
-{
-	PoseAsset = PoseAssetParameter;
-
-	if (PoseAsset != nullptr)
-	{
-		Viewport->SetAnimation(nullptr, EAnimationMode::AnimationBlueprint);
-
-		for (UDebugSkelMeshComponent* PreviewSkeletalMeshComponent : PreviewSkeletalMeshComponents)
-		{
-			PreviewSkeletalMeshComponent->SetAnimationMode(EAnimationMode::AnimationBlueprint);
-			PreviewSkeletalMeshComponent->InitAnim(false);
-			PreviewSkeletalMeshComponent->SetAnimation(PoseAsset);
-
-			UAnimSingleNodeInstance* SingleNodeInstance = Cast<UAnimSingleNodeInstance>(PreviewSkeletalMeshComponent->GetAnimInstance());
-			if (SingleNodeInstance)
-			{
-				TArray<FSmartName> ArrayPoseSmartNames = PoseAsset->GetPoseNames();
-				for (int32 i = 0; i < ArrayPoseSmartNames.Num(); ++i)
-				{
-					SingleNodeInstance->SetPreviewCurveOverride(ArrayPoseSmartNames[i].DisplayName, 1.0f, false);
-				}
-			}
-		}
-	}
-}
 
 bool FCustomizableObjectEditor::CreatePreviewComponent(int32 ComponentIndex)
 {
@@ -499,7 +396,6 @@ bool FCustomizableObjectEditor::CreatePreviewComponent(int32 ComponentIndex)
 
 		if (PreviewSkeletalMeshComponents[ComponentIndex])
 		{
-			PreviewSkeletalMeshComponents[ComponentIndex]->UseInGameBounds(true);
 			PreviewCustomizableSkeletalComponents[ComponentIndex]->AttachToComponent(PreviewSkeletalMeshComponents[ComponentIndex], FAttachmentTransformRules::KeepRelativeTransform);
 
 			return true;
@@ -623,11 +519,18 @@ TSharedRef<SDockTab> FCustomizableObjectEditor::SpawnTab_ObjectProperties( const
 {
 	check( Args.GetTabId() == ObjectPropertiesTabId );
 
+	TSharedRef<SScrollBox> ScrollBox = SNew(SScrollBox)
+		+ SScrollBox::Slot()
+		[
+			CustomizableObjectDetailsView.ToSharedRef()
+		];
+
+	ScrollBox->SetScrollBarRightClickDragAllowed(true);
+
 	TSharedRef<SDockTab> DockTab = SNew(SDockTab)
 		.Label( FText::FromString( GetTabPrefix() + LOCTEXT( "CustomizableObjectProperties_TabTitle", "Object Properties" ).ToString() ) )
 		[
-			CustomizableObjectDetailsView.ToSharedRef()
-			//CustomizableObjectProperties.ToSharedRef()
+			ScrollBox
 		];
 
 	DockTab->SetTabIcon(FCustomizableObjectEditorStyle::Get().GetBrush("CustomizableObjectEditor.Tabs.CustomizableObjectProperties"));
@@ -640,10 +543,18 @@ TSharedRef<SDockTab> FCustomizableObjectEditor::SpawnTab_InstanceProperties( con
 {
 	check( Args.GetTabId() == InstancePropertiesTabId );
 
+	TSharedRef<SScrollBox> ScrollBox = SNew(SScrollBox)
+		+ SScrollBox::Slot()
+		[
+			CustomizableInstanceDetailsView.ToSharedRef()
+		];
+
+	ScrollBox->SetScrollBarRightClickDragAllowed(true);
+
 	TSharedRef<SDockTab> DockTab = SNew(SDockTab)
 		.Label( FText::FromString( GetTabPrefix() + LOCTEXT( "CustomizableInstanceProperties_TabTitle", "Preview Inst. Properties" ).ToString() ) )
 		[
-			CustomizableInstanceDetailsView.ToSharedRef()
+			ScrollBox
 		];
 
 	DockTab->SetTabIcon(FCustomizableObjectEditorStyle::Get().GetBrush("CustomizableObjectEditor.Tabs.CustomizableInstanceProperties"));
@@ -773,44 +684,19 @@ TSharedRef<SDockTab> FCustomizableObjectEditor::SpawnTab_GraphNodeProperties( co
 {
 	check( Args.GetTabId().TabType == GraphNodePropertiesTabId );
 
-	TSharedRef<SScrollBar> ScrollBar = SNew(SScrollBar);
+	TSharedRef<SScrollBox> ScrollBox = SNew(SScrollBox)
+		+ SScrollBox::Slot()
+		[
+			GraphNodeDetailsView.ToSharedRef()
+		];
 
-	NodeDetailsSplitter = SNew( SSplitter )
-			.Orientation(Orient_Vertical)
-			+SSplitter::Slot()
-			.Value(0.5f)
-			[
-				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot()
-				.FillWidth(1)
-				[
-					SNew(SScrollBox)
-					.ExternalScrollbar(ScrollBar)
-					+ SScrollBox::Slot()
-					[
-						SNew(SVerticalBox)
-						+ SVerticalBox::Slot().AutoHeight()
-						[
-							GraphNodeDetailsView.ToSharedRef()
-						]
-					]
-				]
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				[
-					SNew(SBox)
-					.WidthOverride(FOptionalSize(16))
-					[
-						ScrollBar
-					]
-				]
-			];
+	ScrollBox->SetScrollBarRightClickDragAllowed(true);
 
 	TSharedRef<SDockTab> DockTab = SNew(SDockTab)
 		.Label(FText::FromString(GetTabPrefix() + LOCTEXT("Graph Node Properties", "Node Properties").ToString()))
 		.TabColorScale(GetTabColorScale())
 		[
-			NodeDetailsSplitter.ToSharedRef()
+			ScrollBox
 		];
 
 	DockTab->SetTabIcon(FCustomizableObjectEditorStyle::Get().GetBrush("CustomizableObjectEditor.Tabs.NodeProperties"));
@@ -1721,78 +1607,6 @@ void FCustomizableObjectEditor::OnSelectedGraphNodesChanged(const FGraphPanelSel
 		SelectedProjectorParameterNode = nullptr;
 	}
 
-	// Special details. Usually widgets that you want to be able to scale
-	if ( NodeDetailsSplitter.IsValid() )
-	{
-		UObject* FirstNode = 0;		
-		if ( Objects.Num() )
-		{
-			FirstNode = Objects[0];
-		}
-
-		TSharedPtr<SWidget> ChildWidget;
-
-		// Set the size of the child widget to show properly the node widgets
-		FVector2D SplitWeights = { 0.15f,0.85f };
-		
-		if ( UCustomizableObjectNodeEditMaterial* CustomizableObjectNodeEditMaterial = Cast<UCustomizableObjectNodeEditMaterial>(FirstNode) )
-		{
-			if (!LayoutBlocksSelector.IsValid())
-			{
-				LayoutBlocksSelector = SNew(SCustomizableObjectNodeLayoutBlocksSelector)
-					.CustomizableObjectEditor(SharedThis(this));
-			}
-
-			LayoutBlocksSelector->SetSelectedNode(CustomizableObjectNodeEditMaterial);
-			SplitWeights = { 0.25f,0.75f };
-
-			ChildWidget = LayoutBlocksSelector;
-		}
-		else if (UCustomizableObjectNodeRemoveMeshBlocks* CustomizableObjectNodeRemoveMeshBlocks = Cast< UCustomizableObjectNodeRemoveMeshBlocks>(FirstNode))
-		{
-			if (!LayoutBlocksSelector.IsValid())
-			{
-				LayoutBlocksSelector = SNew(SCustomizableObjectNodeLayoutBlocksSelector)
-					.CustomizableObjectEditor(SharedThis(this));
-			}
-
-			LayoutBlocksSelector->SetSelectedNode(CustomizableObjectNodeRemoveMeshBlocks);
-			SplitWeights = { 0.25f,0.75f };
-
-			ChildWidget = LayoutBlocksSelector;
-		}
-
-		if ( ChildWidget.IsValid() )
-		{
-			if ( NodeDetailsSplitter->GetChildren()->Num()<=1 )
-			{
-				NodeDetailsSplitter->AddSlot();
-			}
-
-			NodeDetailsSplitter->SlotAt(0).SetSizeValue(SplitWeights.X);
-			NodeDetailsSplitter->SlotAt(1).SetSizeValue(SplitWeights.Y);
-
-			NodeDetailsSplitter->SlotAt(1)
-				[
-					SNew(SBorder)
-					.BorderImage( FAppStyle::GetBrush( TEXT("Graph.TitleBackground") ) )
-					.HAlign(HAlign_Fill)
-					[
-						ChildWidget.ToSharedRef()
-					]
-				];
-		}
-		else
-		{
-			NodeDetailsSplitter->SlotAt(0).SetSizeValue(0.5);
-
-			if ( NodeDetailsSplitter->GetChildren()->Num()>1 )
-			{
-				NodeDetailsSplitter->RemoveAt(1);
-			}
-		}
-	}
-
 	if (!ManagingProjector)
 	{
 		SelectedGraphNodesChanged = true;
@@ -1928,7 +1742,7 @@ void FCustomizableObjectEditor::Tick( float InDeltaTime )
 			ResetProjectorVisibilityNoUpdate();
 		}
 
-		if (SelectedGraphNodesChanged && !SelectedProjectorParameterNotNode)
+		if ((SelectedGraphNodesChanged && !SelectedProjectorParameterNotNode) || (PreviewInstance && PreviewInstance->TempUpdateGizmoInViewport))
 		{
 			ManagingProjector = true;
 			Viewport->ResetProjectorVisibility(false);

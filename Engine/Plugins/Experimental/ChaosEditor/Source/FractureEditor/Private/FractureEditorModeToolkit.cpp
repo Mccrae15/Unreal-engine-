@@ -10,9 +10,11 @@
 #include "FractureEditorMode.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/MultiBox/MultiBoxDefs.h"
+#include "GeometryCollection/GeometryCollectionObject.h"
 #include "IDetailsView.h"
 #include "IDetailRootObjectCustomization.h"
 #include "PropertyEditorModule.h"
+#include "UObject/UObjectIterator.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SBox.h"
@@ -711,10 +713,6 @@ void FFractureEditorModeToolkit::OnObjectPostEditChange( UObject* Object, FPrope
 		{
 			HistogramView->RegenerateNodes(GetLevelViewValue());
 		}
-		else if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UOutlinerSettings, ItemText))
-		{
-			OutlinerView->RegenerateItems();
-		}
 		else if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UOutlinerSettings, ColorByLevel))
 		{
 			OutlinerView->RegenerateItems();
@@ -725,7 +723,6 @@ void FFractureEditorModeToolkit::OnObjectPostEditChange( UObject* Object, FPrope
 		else if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UOutlinerSettings, ColumnMode))
 		{
 			OutlinerView->RegenerateHeader();
-			OutlinerView->RegenerateItems();
 			FGeometryCollectionStatistics Stats;
 			GetStatisticsSummary(Stats);
 			StatisticsView->SetStatistics(Stats);
@@ -872,6 +869,7 @@ void FFractureEditorModeToolkit::BuildToolPalette(FName PaletteIndex, class FToo
 		ToolbarBuilder.AddToolBarButton(Commands.ConvertToMesh);
 		ToolbarBuilder.AddToolBarButton(Commands.Validate);
 		ToolbarBuilder.AddToolBarButton(Commands.MakeConvex);
+		ToolbarBuilder.AddToolBarButton(Commands.Proximity);
 		ToolbarBuilder.AddToolBarButton(Commands.FixTinyGeo);
 		ToolbarBuilder.AddToolBarButton(Commands.SetInitialDynamicState);
 		ToolbarBuilder.AddToolBarButton(Commands.SetRemoveOnBreak);
@@ -1887,24 +1885,23 @@ void FFractureEditorModeToolkit::GetStatisticsSummary(FGeometryCollectionStatist
 	{
 		for (FSelectionIterator Iter(*SelectedActors); Iter; ++Iter)
 		{
-			if (AGeometryCollectionActor* Actor = Cast<AGeometryCollectionActor>(*Iter))
+			if (AActor* Actor = Cast<AActor>(*Iter))
 			{
-				if (UGeometryCollectionComponent* Component = Actor->GetGeometryCollectionComponent())
+				TInlineComponentArray<UGeometryCollectionComponent*> GeometryCollectionComponents;
+				Actor->GetComponents(GeometryCollectionComponents);
+				for (UGeometryCollectionComponent* GeometryCollectionComponent : GeometryCollectionComponents)
 				{
-					if (const UGeometryCollection* RestCollection = Component->GetRestCollection())
+					if (const UGeometryCollection* RestCollection = GeometryCollectionComponent->GetRestCollection())
 					{
-						const FGeometryCollection* GeometryCollection = RestCollection->GetGeometryCollection().Get();
-
-						if (GeometryCollection != nullptr)
+						if (RestCollection->GetGeometryCollection())
 						{
-							GeometryCollectionArray.Add(GeometryCollection);
+							GeometryCollectionArray.Add(RestCollection->GetGeometryCollection().Get());
 						}
 					}
 				}
 			}
 		}
 	}
-
 
 	if (GeometryCollectionArray.Num() > 0)
 	{

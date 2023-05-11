@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "Delegates/DelegateCombinations.h"
 #include "MVVMPropertyPath.h"
 #include "Widgets/SCompoundWidget.h"
 
@@ -44,7 +43,10 @@ private:
 	ECheckBoxState OnGetIsBindArgumentChecked() const;
 	void OnBindArgumentChecked(ECheckBoxState Checked);
 	EVisibility OnGetVisibility(bool bDefaultValue) const;
+
 	FMVVMBlueprintPropertyPath OnGetSelectedField() const;
+	void SetSelectedField(const FMVVMBlueprintPropertyPath& Path);
+
 	void OnFieldSelectionChanged(FMVVMBlueprintPropertyPath Selected);
 
 private:
@@ -57,8 +59,12 @@ private:
 	TSharedPtr<UE::MVVM::SFieldSelector> FieldSelector;
 	FGetBindingMode GetBindingModeDelegate;
 
+	// Previously selected field value so that toggling bind on and off doesn't clear the reference.
+	FMVVMBlueprintPropertyPath PreviousSelectedField;
+
 	bool bSourceToDestination = true;
 	bool bAllowDefault = true;
+	bool bDefaultValueVisible = true;
 };
 
 }

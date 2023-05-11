@@ -146,6 +146,12 @@ public:
 	{
 		check(NewPosition >= 0);
 
+		// Avoid allowing for a negative NewPosition as this will set FileOffset which is returned in Tell blindly
+		if (NewPosition < 0)
+		{
+			return false;
+		}
+
 		if (!FileOpenAsWrite)
 		{
 			FileOffset = NewPosition >= FileSize ? FileSize - 1 : NewPosition;
@@ -161,6 +167,13 @@ public:
 	virtual bool SeekFromEnd(int64 NewPositionRelativeToEnd = 0) override
 	{
 		check(NewPositionRelativeToEnd <= 0);
+
+		// Avoid allowing a relative position to set less then the size of the file
+		// lseek handles this negative but we return FileOffset blindly which could be used incorrectly
+		if (NewPositionRelativeToEnd < (-FileSize))
+		{
+			return false;
+		}
 
 		if (!FileOpenAsWrite)
 		{
@@ -265,6 +278,12 @@ private:
 	{
 		check(IsValid());
 		int64 BytesRead = 0;
+
+		if (BytesToRead < 0)
+		{
+			return 0;
+		}
+
 		while (BytesToRead)
 		{
 			check(BytesToRead >= 0);
@@ -341,6 +360,8 @@ namespace
 		virtual const FileEntry* Find(const FString& Key) = 0;
 		virtual void AddEntry(const FString& Key, const FString& Elem) = 0;
 		virtual void Invalidate(const FString& Key) = 0;
+		virtual void Lock() = 0;
+		virtual void Unlock() = 0;
 	};
 
 	class FileMapCacheDummy : public FileMapCache
@@ -356,6 +377,12 @@ namespace
 
 		void Invalidate(const FString& Key) override
 		{ }
+
+		void Lock() override
+		{ }
+
+		void Unlock() override
+		{ }
 	};
 
 	class FileMapCacheDefault : public FileMapCache
@@ -368,20 +395,27 @@ namespace
 
 		const FileEntry* Find(const FString& Key) override
 		{
-			FScopeLock ScopeLock(&Mutex);
 			return Cache.FindAndTouch(Key);
 		}
 
 		void AddEntry(const FString& Key, const FString& Elem) override
 		{
-			FScopeLock ScopeLock(&Mutex);
 			Cache.Add(Key, {Elem, Elem.IsEmpty(), FPlatformTime::Seconds()});
 		}
 
 		void Invalidate(const FString& Key) override
 		{
-			FScopeLock ScopeLock(&Mutex);
 			Cache.Remove(Key);
+		}
+
+		void Lock() override
+		{
+			Mutex.Lock();
+		}
+
+		void Unlock() override
+		{
+			Mutex.Unlock();
 		}
 
 	private:
@@ -577,6 +611,7 @@ public:
 		else
 		{
 			FileMapCache& Cache = GetFileMapCache();
+			UE::TScopeLock Lock(Cache);
 			const FileEntry* Entry = Cache.Find(PossiblyWrongFilename);
 
 			if (Entry != nullptr)
@@ -853,7 +888,11 @@ bool FUnixPlatformFile::DeleteFile(const TCHAR* Filename)
 		return false;
 	}
 
-	GetFileMapCache().Invalidate(IntendedFilename);
+	{
+		FileMapCache& Cache = GetFileMapCache();
+		UE::TScopeLock Lock(Cache);
+		Cache.Invalidate(IntendedFilename);
+	}
 
 	// removing mapped file is too dangerous
 	if (IntendedFilename != CaseSensitiveFilename)
@@ -891,7 +930,11 @@ bool FUnixPlatformFile::MoveFile(const TCHAR* To, const TCHAR* From)
 		return false;
 	}
 
-	GetFileMapCache().Invalidate(IntendedFilename);
+	{
+		FileMapCache& Cache = GetFileMapCache();
+		UE::TScopeLock Lock(Cache);
+		Cache.Invalidate(IntendedFilename);
+	}
 
 	int32 Result = rename(TCHAR_TO_UTF8(*CaseSensitiveFilename), TCHAR_TO_UTF8(*NormalizeFilename(To, true)));
 	if (Result == -1 && errno == EXDEV)
@@ -1018,6 +1061,28 @@ FString FUnixPlatformFile::GetFilenameOnDisk(const TCHAR* Filename)
 */
 }
 
+bool FUnixPlatformFile::IsSymlink(const TCHAR* Filename)
+{
+	FString CaseSensitiveFilename;
+	FString NormalizedFilename = NormalizeFilename(Filename, false);
+#if !UNIX_PLATFORM_FILE_SPEEDUP_FILE_OPERATIONS
+	if (!GCaseInsensMapper.MapCaseInsensitiveFile(NormalizedFilename, CaseSensitiveFilename))
+	{
+		// could not find the file
+		return false;
+	}
+#else
+	CaseSensitiveFilename = NormalizedFilename;
+#endif
+
+	struct stat FileInfo;
+	if(stat(TCHAR_TO_UTF8(*CaseSensitiveFilename), &FileInfo) != -1)
+	{
+		return S_ISLNK(FileInfo.st_mode);
+	}
+	return false;
+}
+
 IFileHandle* FUnixPlatformFile::OpenRead(const TCHAR* Filename, bool bAllowWrite)
 {
 	// let the file registry manage read files
@@ -1038,7 +1103,11 @@ IFileHandle* FUnixPlatformFile::OpenWrite(const TCHAR* Filename, bool bAppend, b
 	}
 
 	// We may have cached this as an invalid file, so lets just remove a newly created file from the cache
-	GetFileMapCache().Invalidate(FString(Filename));
+	{
+		FileMapCache& Cache = GetFileMapCache();
+		UE::TScopeLock Lock(Cache);
+		Cache.Invalidate(FString(Filename));
+	}
 
 	// create directories if needed.
 	if (!CreateDirectoriesFromPath(Filename))
@@ -1169,7 +1238,11 @@ bool FUnixPlatformFile::DeleteDirectory(const TCHAR* Directory)
 	CaseSensitiveFilename = IntendedFilename;
 #endif
 
-	GetFileMapCache().Invalidate(IntendedFilename);
+	{
+		FileMapCache& Cache = GetFileMapCache();
+		UE::TScopeLock Lock(Cache);
+		GetFileMapCache().Invalidate(IntendedFilename);
+	}
 
 	// removing mapped directory is too dangerous
 	if (IntendedFilename != CaseSensitiveFilename)

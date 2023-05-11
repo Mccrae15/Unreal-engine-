@@ -2,8 +2,7 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "RHIDefinitions.h"
+#include "RHIFeatureLevel.h"
 
 namespace VirtualHeightfieldMesh
 {

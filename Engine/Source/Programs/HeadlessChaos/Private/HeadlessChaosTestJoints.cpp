@@ -42,12 +42,15 @@ namespace ChaosTest {
 		FJointConstraintsTest(const int32 NumIterations, const FReal Gravity)
 			: Base(NumIterations, Gravity)
 		{
-			Evolution.AddConstraintContainer(Joints);
 		}
 
 		FPBDJointConstraintHandle* AddJoint(const TVec2<FGeometryParticleHandle*>& InConstrainedParticles, const FVec3& InLocation)
 		{
-			FPBDJointConstraintHandle* Constraint = Joints.AddConstraint(InConstrainedParticles, FRigidTransform3(InLocation, FRotation3::FromIdentity()));
+			FPBDJointConstraintHandle* Constraint = Evolution.GetJointConstraints().AddConstraint(InConstrainedParticles, FRigidTransform3(InLocation, FRotation3::FromIdentity()));
+
+			FPBDJointSettings Settings = Constraint->GetSettings();
+			Settings.LinearProjection = 1.0;
+			Constraint->SetSettings(Settings);
 
 			// @todo(chaos): this should be automatic, but it's handled by the proxy. Fix this
 			InConstrainedParticles[0]->ParticleConstraints().Add(Constraint);
@@ -79,9 +82,6 @@ namespace ChaosTest {
 		// Initial joints setup
 		TArray<FVec3> JointPositions;
 		TArray<TVec2<int32>> JointParticleIndices;
-
-		// Solver state
-		FPBDJointConstraints Joints;
 	};
 
 	/**
@@ -147,7 +147,7 @@ namespace ChaosTest {
 	template <typename TEvolution>
 	void JointConstraint_SingleMoveRoot()
 	{
-		const int32 NumIterations = 5;
+		const int32 NumIterations = 10;
 		const FReal Gravity = 0;
 		const FReal BoxSize = 1;
 		const FReal BoxMass = 1;
@@ -203,7 +203,7 @@ namespace ChaosTest {
 
 		// Move the kinematic body
 		const FVec3 RootPosition = Test.ParticlePositions[0] + RootDelta;
-		Test.GetParticle(Box1Id)->X() = RootPosition;
+		Test.Evolution.SetParticleKinematicTarget(Test.GetParticle(Box1Id)->CastToKinematicParticle(), FKinematicTarget::MakePositionTarget(RootPosition, Test.GetParticle(Box1Id)->R()));
 
 		for (int32 i = 0; i < 1000; ++i)
 		{
@@ -214,13 +214,14 @@ namespace ChaosTest {
 			EXPECT_LT((Test.GetParticle(Box1Id)->X() - RootPosition).Size(), (FReal)0.1 * BoxSize) << "Post-move instability on frame " << i;
 
 			// Particles should remain fixed distance apart (joint point is at Box1 location)
-			const FVec3 Delta = Test.GetParticle(Box2Id)->CastToRigidParticle()->P() - Test.GetParticle(Box1Id)->X();
+			// NOTE: when using linear joints the error can be moderately large
+			const FVec3 Delta = Test.GetParticle(Box2Id)->X() - Test.GetParticle(Box1Id)->X();
 			const FReal Distance = Delta.Size();
-			EXPECT_NEAR(Distance, ExpectedDistance, (FReal)0.1 * BoxSize) << "Post-move instability on frame " << i;
+			EXPECT_NEAR(Distance, ExpectedDistance, (FReal)0.15 * BoxSize) << "Post-move instability on frame " << i;
 
 			// Joint position calculted from pose and local-space joint pos
 			const FVec3 Box2WorldSpaceJointPosition = Test.GetParticle(Box2Id)->R().RotateVector(Box2LocalSpaceJointPosition) + Test.GetParticle(Box2Id)->X();
-			EXPECT_LT((Box2WorldSpaceJointPosition - RootPosition).Size(), (FReal)0.1 * BoxSize) << "Post-move instability on frame " << i;
+			EXPECT_LT((Box2WorldSpaceJointPosition - RootPosition).Size(), (FReal)0.15 * BoxSize) << "Post-move instability on frame " << i;
 		}
 	}
 
@@ -279,7 +280,7 @@ namespace ChaosTest {
 			const FVec3 RootOffset = FMath::Sin((FReal)2 * PI * Time / AnimPeriod) * AnimDelta;
 			const FVec3 RootPosition = Test.ParticlePositions[0] + RootOffset;
 
-			Test.GetParticle(Box1Id)->X() = RootPosition;
+			Test.Evolution.SetParticleKinematicTarget(Test.GetParticle(Box1Id)->CastToKinematicParticle(), FKinematicTarget::MakePositionTarget(RootPosition, Test.GetParticle(Box1Id)->R()));
 
 			Test.Evolution.AdvanceOneTimeStep(Dt);
 			Test.Evolution.EndFrame(Dt);
@@ -357,9 +358,8 @@ namespace ChaosTest {
 			const FVec3 RootOffset = FMath::Sin((FReal)2 * PI * Time / AnimPeriod) * AnimDelta;
 			const FVec3 RootPosition = Test.ParticlePositions[0] + RootOffset;
 
-			Test.GetParticle(0)->X() = RootPosition;
+			Test.Evolution.SetParticleKinematicTarget(Test.GetParticle(0)->CastToKinematicParticle(), FKinematicTarget::MakePositionTarget(RootPosition, Test.GetParticle(0)->R()));
 
-			Test.Evolution.GetCollisionDetector().SetBoundsVelocityInflation(1);
 			Test.Evolution.AdvanceOneTimeStep(Dt);
 			Test.Evolution.EndFrame(Dt);
 
@@ -433,7 +433,6 @@ namespace ChaosTest {
 		}
 
 		Test.Create();
-		Test.Evolution.GetCollisionDetector().SetBoundsVelocityInflation(1);
 
 		const FVec3 Box2LocalSpaceJointPosition = Test.JointPositions[0] - Test.ParticlePositions[1];
 
@@ -445,7 +444,7 @@ namespace ChaosTest {
 			const FVec3 RootOffset = FMath::Sin((FReal)2 * PI * Time / AnimPeriod) * AnimDelta;
 			const FVec3 RootPosition = Test.ParticlePositions[0] + RootOffset;
 
-			Test.GetParticle(0)->X() = RootPosition;
+			Test.Evolution.SetParticleKinematicTarget(Test.GetParticle(0)->CastToKinematicParticle(), FKinematicTarget::MakePositionTarget(RootPosition, Test.GetParticle(0)->R()));
 
 			Test.Evolution.AdvanceOneTimeStep(Dt);
 			Test.Evolution.EndFrame(Dt);
@@ -691,12 +690,76 @@ namespace ChaosTest {
 		JointConstraint_DisableOneConstrainedParticle<FPBDRigidsEvolutionGBF>();
 	}
 
+	// Create a kinematic-dynamic particle chain with a center of mass offset on the kinematic
+	// and verify that the joint offsets are used correctly. The two particles are arranged vertically
+	// with the joint between them, the center of mass offset should not affect behaviour.
+	//
+	// NOTE: We create both particles as dynamics and then change one to be kinematic so that we
+	// can alter its mass properties.
+	//
+	GTEST_TEST(JointTests, TestJointCoMOffset)
+	{
+		const int32 NumIterations = 1;
+		const FReal Gravity = 980;
+		FJointConstraintsTest<FPBDRigidsEvolutionGBF> Test(NumIterations, Gravity);
+
+		Test.ParticlePositions =
+		{
+			{ (FReal)0, (FReal)0, (FReal)0 },
+			{ (FReal)0, (FReal)0, (FReal)1000 },
+		};
+		Test.ParticleSizes =
+		{
+			{ (FReal)100, (FReal)100, (FReal)100 },
+			{ (FReal)100, (FReal)100, (FReal)100 },
+		};
+		Test.ParticleMasses =
+		{
+			(FReal)1000,
+			(FReal)1000,
+		};
+
+		Test.JointPositions =
+		{
+			{ (FReal)0, (FReal)0, (FReal)500 },
+		};
+		Test.JointParticleIndices =
+		{
+			{ 0, 1 },
+		};
+
+		Test.Create();
+
+		// Move the center of mass of the soon-to-be kinematic
+		Test.GetParticle(0)->CastToRigidParticle()->SetCenterOfMass(FVec3(0, 0, -100));
+		EXPECT_NEAR((Test.GetParticle(0)->CastToRigidParticle()->CenterOfMass() - FVec3(0, 0, -100)).Size(), 0, UE_KINDA_SMALL_NUMBER);
+
+		// Make the root body kinematic
+		Test.Evolution.SetParticleObjectState(Test.GetParticle(0)->CastToRigidParticle(), EObjectStateType::Kinematic);
+
+		// The kinematic will now report zero center of mass via the GenericParticle API, but internally it will still be set
+		EXPECT_NEAR(FGenericParticleHandle(Test.GetParticle(0))->CenterOfMass().Size(), 0, UE_KINDA_SMALL_NUMBER);
+		EXPECT_NEAR((Test.GetParticle(0)->CastToRigidParticle()->CenterOfMass() - FVec3(0, 0, -100)).Size(), 0, UE_KINDA_SMALL_NUMBER);
+
+		const FReal Dt = 0.01f;
+		for (int32 i = 0; i < 100; ++i)
+		{
+			Test.Evolution.AdvanceOneTimeStep(Dt);
+			Test.Evolution.EndFrame(Dt);
+
+			// Neither particle should have moved
+			EXPECT_LT((Test.GetParticle(0)->X() - Test.ParticlePositions[0]).Size(), (FReal)0.1);
+			EXPECT_LT((Test.GetParticle(1)->X() - Test.ParticlePositions[1]).Size(), (FReal)0.1);
+		}
+	}
+
 	// Check that constraints end up in the same island when graph is fully connected
 	GTEST_TEST(JointTests, TestJointConstraintGraph_Connected)
 	{
 		FParticleUniqueIndicesMultithreaded UniqueIndices;
 		FPBDRigidsSOAs ParticleContainer(UniqueIndices);
 		FPBDJointConstraints JointContainer;
+		JointContainer.SetSortEnabled(true);
 
 		// Create 3 particles
 		TArray<FPBDRigidParticleHandle*> Rigids = ParticleContainer.CreateDynamicParticles(3);
@@ -712,14 +775,14 @@ namespace ChaosTest {
 		JointContainer.PrepareTick();
 
 		// Both joints should be in an island
-		EXPECT_GE(Joints[0]->GetConstraintIsland(), 0);
-		EXPECT_GE(Joints[0]->GetConstraintIsland(), 0);
+		EXPECT_GE(JointContainer.GetConstraintIsland(0), 0);
+		EXPECT_GE(JointContainer.GetConstraintIsland(1), 0);
 
 		// Both joints should be in same island
-		EXPECT_EQ(Joints[0]->GetConstraintIsland(), Joints[1]->GetConstraintIsland());
+		EXPECT_EQ(JointContainer.GetConstraintIsland(0), JointContainer.GetConstraintIsland(1));
 
 		// Joints should have different colors
-		EXPECT_NE(Joints[0]->GetConstraintColor(), Joints[1]->GetConstraintColor());
+		EXPECT_NE(JointContainer.GetConstraintColor(0), JointContainer.GetConstraintColor(1));
 	}
 
 	// Check that constraints islands are not merged through shared kinematic particles
@@ -728,6 +791,7 @@ namespace ChaosTest {
 		FParticleUniqueIndicesMultithreaded UniqueIndices;
 		FPBDRigidsSOAs ParticleContainer(UniqueIndices);
 		FPBDJointConstraints JointContainer;
+		JointContainer.SetSortEnabled(true);
 
 		// Create 3 particles
 		TArray<FPBDRigidParticleHandle*> Rigids = ParticleContainer.CreateDynamicParticles(3);
@@ -746,17 +810,16 @@ namespace ChaosTest {
 		JointContainer.PrepareTick();
 
 		// Both joints should be in an island
-		EXPECT_GE(Joints[0]->GetConstraintIsland(), 0);
-		EXPECT_GE(Joints[1]->GetConstraintIsland(), 0);
+		EXPECT_GE(JointContainer.GetConstraintIsland(0), 0);
+		EXPECT_GE(JointContainer.GetConstraintIsland(1), 0);
 
 		// Joints should be in different islands
-		EXPECT_NE(Joints[0]->GetConstraintIsland(), Joints[1]->GetConstraintIsland());
+		EXPECT_NE(JointContainer.GetConstraintIsland(0), JointContainer.GetConstraintIsland(1));
 
 		// Both joints should be at level 0
-		EXPECT_EQ(Joints[0]->GetConstraintLevel(), 0);
-		EXPECT_EQ(Joints[1]->GetConstraintLevel(), 0);
+		EXPECT_EQ(JointContainer.GetConstraintLevel(0), 0);
+		EXPECT_EQ(JointContainer.GetConstraintLevel(1), 0);
 	}
-
 
 }
 

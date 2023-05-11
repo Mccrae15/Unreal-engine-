@@ -14,6 +14,7 @@
  */
 
 class UActorDescContainer;
+class UDataLayerLoadingPolicy;
 class UCanvas;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnDataLayerRuntimeStateChanged, const UDataLayerInstance*, DataLayer, EDataLayerRuntimeState, State);
@@ -42,7 +43,7 @@ private:
 };
 #endif
 
-UCLASS()
+UCLASS(Config = Engine)
 class ENGINE_API UDataLayerSubsystem : public UWorldSubsystem
 {
 	GENERATED_BODY()
@@ -82,6 +83,7 @@ public:
 	//~ End Blueprint callable functions
 
 #if WITH_EDITOR
+	bool ResolveIsLoadedInEditor(const TArray<FName>& InDataLayerInstanceNames) const;
 	bool CanResolveDataLayers() const;
 
 	bool RemoveDataLayer(const UDataLayerInstance* InDataLayer);
@@ -118,8 +120,8 @@ public:
 	EDataLayerRuntimeState GetDataLayerEffectiveRuntimeState(const UDataLayerInstance* InDataLayer) const;
 	EDataLayerRuntimeState GetDataLayerEffectiveRuntimeStateByName(const FName& InDataLayerName) const;
 	bool IsAnyDataLayerInEffectiveRuntimeState(const TArray<FName>& InDataLayerNames, EDataLayerRuntimeState InState) const;
-	TSet<FName> GetEffectiveActiveDataLayerNames() const;
-	TSet<FName> GetEffectiveLoadedDataLayerNames() const;
+	const TSet<FName>& GetEffectiveActiveDataLayerNames() const;
+	const TSet<FName>& GetEffectiveLoadedDataLayerNames() const;
 
 #if WITH_EDITOR
 	/** Called once a AWorldDataLayers has been registered. */
@@ -219,9 +221,17 @@ public:
 	//~ End Deprecated
 
 private:
+	UPROPERTY(Config)
+	TSoftClassPtr<UDataLayerLoadingPolicy> DataLayerLoadingPolicyClass;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UDataLayerLoadingPolicy> DataLayerLoadingPolicy;
+
 #if WITH_EDITOR
 	void RegisterEarlyLoadedWorldDataLayers();
 	void OnActorDescContainerInitialized(UActorDescContainer* InActorDescContainer);
+	void ResolveActorDescContainer(UActorDescContainer* InActorDescContainer);
+	void ResolveActorDescContainers();
 
 	mutable int32 DataLayerActorEditorContextID;
 #endif
@@ -234,6 +244,15 @@ private:
 
 	/** Console command used to set Runtime DataLayer state*/
 	static class FAutoConsoleCommand SetDataLayerRuntimeStateCommand;
+
+	void OnEffectiveRuntimeDataLayerStatesChanged(AWorldDataLayers* InWorldDataLayers);
+	void UpdateCachedEffectiveRuntimeStates() const;
+
+	mutable bool bIsCachedEffectiveStateDirty;
+	mutable TSet<FName> CachedEffectiveActiveDataLayerNames;
+	mutable TSet<FName> CachedEffectiveLoadedDataLayerNames;
+
+	friend class AWorldDataLayers;
 
 	FWorldDataLayersCollection WorldDataLayerCollection;
 };

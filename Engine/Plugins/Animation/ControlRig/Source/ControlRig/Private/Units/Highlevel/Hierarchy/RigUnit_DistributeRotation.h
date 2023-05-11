@@ -64,7 +64,7 @@ struct CONTROLRIG_API FRigUnit_DistributeRotation : public FRigUnit_HighlevelBas
 	FRigUnit_DistributeRotation()
 	{
 		StartBone = EndBone = NAME_None;
-		RotationEaseType = EControlRigAnimEasingType::Linear;
+		RotationEaseType = ERigVMAnimEasingType::Linear;
 		Weight = 1.f;
 		bPropagateToChildren = true;
 	}
@@ -79,7 +79,7 @@ struct CONTROLRIG_API FRigUnit_DistributeRotation : public FRigUnit_HighlevelBas
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/** 
 	 * The name of the first bone to align
@@ -103,7 +103,7 @@ struct CONTROLRIG_API FRigUnit_DistributeRotation : public FRigUnit_HighlevelBas
 	 * The easing to use between to rotations.
 	 */
 	UPROPERTY(meta = (Input, Constant))
-	EControlRigAnimEasingType RotationEaseType;
+	ERigVMAnimEasingType RotationEaseType;
 
 	/**
 	 * The weight of the solver - how much the rotation should be applied
@@ -138,12 +138,12 @@ struct CONTROLRIG_API FRigUnit_DistributeRotationForCollection : public FRigUnit
 
 	FRigUnit_DistributeRotationForCollection()
 	{
-		RotationEaseType = EControlRigAnimEasingType::Linear;
+		RotationEaseType = ERigVMAnimEasingType::Linear;
 		Weight = 1.f;
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/** 
 	 * The items to use to distribute the rotation
@@ -161,7 +161,7 @@ struct CONTROLRIG_API FRigUnit_DistributeRotationForCollection : public FRigUnit
 	 * The easing to use between to rotations.
 	 */
 	UPROPERTY(meta = (Input, Constant))
-	EControlRigAnimEasingType RotationEaseType;
+	ERigVMAnimEasingType RotationEaseType;
 
 	/**
 	 * The weight of the solver - how much the rotation should be applied
@@ -188,12 +188,12 @@ struct CONTROLRIG_API FRigUnit_DistributeRotationForItemArray : public FRigUnit_
 
 	FRigUnit_DistributeRotationForItemArray()
 	{
-		RotationEaseType = EControlRigAnimEasingType::Linear;
+		RotationEaseType = ERigVMAnimEasingType::Linear;
 		Weight = 1.f;
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/** 
 	 * The items to use to distribute the rotation
@@ -211,7 +211,7 @@ struct CONTROLRIG_API FRigUnit_DistributeRotationForItemArray : public FRigUnit_
 	 * The easing to use between to rotations.
 	 */
 	UPROPERTY(meta = (Input, Constant))
-	EControlRigAnimEasingType RotationEaseType;
+	ERigVMAnimEasingType RotationEaseType;
 
 	/**
 	 * The weight of the solver - how much the rotation should be applied

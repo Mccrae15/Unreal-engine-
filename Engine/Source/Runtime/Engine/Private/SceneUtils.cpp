@@ -1,9 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SceneUtils.h"
+#include "HAL/IConsoleManager.h"
 #include "RHI.h"
 #include "Engine/Scene.h"
 #include "RenderUtils.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 DEFINE_LOG_CATEGORY(LogSceneUtils);
 

@@ -2,13 +2,12 @@
 
 #include "MVVMEditorSubsystem.h"
 
-#include "Algo/Reverse.h"
 #include "Bindings/MVVMBindingHelper.h"
 #include "Bindings/MVVMConversionFunctionHelper.h"
 #include "Blueprint/WidgetTree.h"
 #include "BlueprintActionDatabase.h"
+#include "BlueprintActionFilter.h"
 #include "BlueprintNodeSpawner.h"
-#include "Containers/Deque.h"
 #include "Engine/Engine.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -21,9 +20,8 @@
 #include "MVVMSubsystem.h"
 #include "MVVMWidgetBlueprintExtension_View.h"
 #include "ScopedTransaction.h"
+#include "Types/MVVMAvailableBinding.h"
 #include "Types/MVVMBindingSource.h"
-#include "UObject/MetaData.h"
-#include "WidgetBlueprint.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MVVMEditorSubsystem)
 
@@ -263,7 +261,7 @@ bool UMVVMEditorSubsystem::RenameViewModel(UWidgetBlueprint* WidgetBlueprint, FN
 		return false;
 	}
 
-	const FScopedTransaction Transaction(LOCTEXT("RenameViewModel", "Rename viewmodel"));
+	const FScopedTransaction Transaction(LOCTEXT("RenameViewModel", "Rename Viewmodel"));
 	View->Modify();
 	return View->RenameViewModel(ViewModel, NewViewModel);
 }
@@ -492,19 +490,37 @@ void UMVVMEditorSubsystem::SetViewModelPropertyForBinding(UWidgetBlueprint* Widg
 	}
 }
 
-void UMVVMEditorSubsystem::SetUpdateModeForBinding(UWidgetBlueprint* WidgetBlueprint, FMVVMBlueprintViewBinding& Binding, EMVVMViewBindingUpdateMode Mode)
+void UMVVMEditorSubsystem::OverrideExecutionModeForBinding(UWidgetBlueprint* WidgetBlueprint, FMVVMBlueprintViewBinding& Binding, EMVVMExecutionMode Mode)
 {
-	if (Binding.UpdateMode != Mode)
+	if (!Binding.bOverrideExecutionMode || Binding.OverrideExecutionMode != Mode)
 	{
 		if (UMVVMBlueprintView* View = GetView(WidgetBlueprint))
 		{
-			FScopedTransaction Transaction(LOCTEXT("SetUpdateMode", "Set Update Mode"));
+			FScopedTransaction Transaction(LOCTEXT("SetExecutionMode", "Set Execution Mode"));
 
-			UE::MVVM::Private::OnBindingPreEditChange(View, GET_MEMBER_NAME_CHECKED(FMVVMBlueprintViewBinding, UpdateMode));
+			UE::MVVM::Private::OnBindingPreEditChange(View, GET_MEMBER_NAME_CHECKED(FMVVMBlueprintViewBinding, OverrideExecutionMode));
 
-			Binding.UpdateMode = Mode;
+			Binding.bOverrideExecutionMode = true;
+			Binding.OverrideExecutionMode = Mode;
 
-			UE::MVVM::Private::OnBindingPreEditChange(View, GET_MEMBER_NAME_CHECKED(FMVVMBlueprintViewBinding, UpdateMode));
+			UE::MVVM::Private::OnBindingPostEditChange(View, GET_MEMBER_NAME_CHECKED(FMVVMBlueprintViewBinding, OverrideExecutionMode));
+		}
+	}
+}
+
+void UMVVMEditorSubsystem::ResetExecutionModeForBinding(UWidgetBlueprint* WidgetBlueprint, FMVVMBlueprintViewBinding& Binding)
+{
+	if (Binding.bOverrideExecutionMode)
+	{
+		if (UMVVMBlueprintView* View = GetView(WidgetBlueprint))
+		{
+			FScopedTransaction Transaction(LOCTEXT("ResetExecutionMode", "Reset Execution Mode"));
+
+			UE::MVVM::Private::OnBindingPreEditChange(View, GET_MEMBER_NAME_CHECKED(FMVVMBlueprintViewBinding, OverrideExecutionMode));
+
+			Binding.bOverrideExecutionMode = false;
+
+			UE::MVVM::Private::OnBindingPostEditChange(View, GET_MEMBER_NAME_CHECKED(FMVVMBlueprintViewBinding, OverrideExecutionMode));
 		}
 	}
 }
@@ -532,6 +548,8 @@ void UMVVMEditorSubsystem::SetEnabledForBinding(UWidgetBlueprint* WidgetBlueprin
 	{
 		if (UMVVMBlueprintView* View = GetView(WidgetBlueprint))
 		{
+			FScopedTransaction Transaction(LOCTEXT("SetBindingEnabled", "Set Binding Enabled"));
+
 			UE::MVVM::Private::OnBindingPreEditChange(View, GET_MEMBER_NAME_CHECKED(FMVVMBlueprintViewBinding, bEnabled));
 
 			Binding.bEnabled = bEnabled;
@@ -547,6 +565,8 @@ void UMVVMEditorSubsystem::SetCompileForBinding(UWidgetBlueprint* WidgetBlueprin
 	{
 		if (UMVVMBlueprintView* View = GetView(WidgetBlueprint))
 		{
+			FScopedTransaction Transaction(LOCTEXT("SetBindingCompiled", "Set Binding Compiled"));
+
 			UE::MVVM::Private::OnBindingPreEditChange(View, GET_MEMBER_NAME_CHECKED(FMVVMBlueprintViewBinding, bCompile));
 
 			Binding.bCompile = bCompile;

@@ -2,6 +2,8 @@
 
 #include "USDShadeMaterialTranslator.h"
 
+#include "Engine/Level.h"
+#include "MeshTranslationImpl.h"
 #include "USDAssetCache.h"
 #include "USDAssetImportData.h"
 #include "USDLog.h"
@@ -14,6 +16,7 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "MaterialShared.h"
 #include "Misc/SecureHash.h"
 
 #if USE_USD_SDK
@@ -26,71 +29,6 @@
 
 namespace UE::UsdShadeTranslator::Private
 {
-	const static FString BaseMaterialPathTranslucentVT = TEXT( "/USDImporter/Materials/UsdPreviewSurfaceTranslucentVT.UsdPreviewSurfaceTranslucentVT" );
-	const static FString BaseMaterialPathTranslucent = TEXT( "/USDImporter/Materials/UsdPreviewSurfaceTranslucent.UsdPreviewSurfaceTranslucent" );
-	const static FString BaseMaterialPathVT = TEXT( "/USDImporter/Materials/UsdPreviewSurfaceVT.UsdPreviewSurfaceVT" );
-	const static FString BaseMaterialPath = TEXT( "/USDImporter/Materials/UsdPreviewSurface.UsdPreviewSurface" );
-
-	UMaterialInterface* GetBaseMaterial( bool bIsTranslucent, bool bIsVT )
-	{
-		const FString* TargetMaterialPath = nullptr;
-		if ( bIsTranslucent )
-		{
-			if ( bIsVT )
-			{
-				TargetMaterialPath = &BaseMaterialPathTranslucentVT;
-			}
-			else
-			{
-				TargetMaterialPath = &BaseMaterialPathTranslucent;
-			}
-		}
-		else
-		{
-			if ( bIsVT )
-			{
-				TargetMaterialPath = &BaseMaterialPathVT;
-			}
-			else
-			{
-				TargetMaterialPath = &BaseMaterialPath;
-			}
-		}
-
-		if ( !TargetMaterialPath )
-		{
-			return nullptr;
-		}
-
-		return Cast< UMaterialInterface >( FSoftObjectPath( *TargetMaterialPath ).TryLoad() );
-	}
-
-	UMaterialInterface* GetVTVersionOfBaseMaterial( UMaterialInterface* BaseMaterial )
-	{
-		if ( !BaseMaterial )
-		{
-			return nullptr;
-		}
-
-		const FString PathName = BaseMaterial->GetPathName();
-		if ( PathName == BaseMaterialPathTranslucentVT || PathName == BaseMaterialPathVT )
-		{
-			return BaseMaterial;
-		}
-		else if ( PathName == BaseMaterialPath )
-		{
-			return Cast< UMaterialInterface >( FSoftObjectPath{ BaseMaterialPathVT }.TryLoad() );
-		}
-		else if ( PathName == BaseMaterialPathTranslucent )
-		{
-			return Cast< UMaterialInterface >( FSoftObjectPath{ BaseMaterialPathTranslucentVT }.TryLoad() );
-		}
-
-		// We should only ever call this function with a BaseMaterial that matches one of the above paths
-		ensure( false );
-		return nullptr;
-	}
-
 	void RecursiveUpgradeMaterialsAndTexturesToVT(
 		const TSet<UTexture*>& TexturesToUpgrade,
 		const TSharedRef< FUsdSchemaTranslationContext >& Context,
@@ -129,17 +67,18 @@ namespace UE::UsdShadeTranslator::Private
 					if ( UMaterialInstance* MaterialInstance = Cast<UMaterialInstance>( UserMaterial ) )
 					{
 						// Important to not use GetBaseMaterial() here because if our parent is the translucent we'll
-						// get the base UsdPreviewSurface instead, as that is also *its* base
-						UMaterialInterface* BaseMaterial = MaterialInstance->Parent.Get();
-						UMaterialInterface* BaseMaterialVT = GetVTVersionOfBaseMaterial( BaseMaterial );
-						if ( BaseMaterial == BaseMaterialVT )
+						// get the reference UsdPreviewSurface instead, as that is also *its* reference
+						UMaterialInterface* ReferenceMaterial = MaterialInstance->Parent.Get();
+						UMaterialInterface* ReferenceMaterialVT =
+							MeshTranslationImpl::GetVTVersionOfReferencePreviewSurfaceMaterial( ReferenceMaterial );
+						if ( ReferenceMaterial == ReferenceMaterialVT )
 						{
 							// Material is already VT, we're good
 							continue;
 						}
 
 						// Visit it before we start recursing. We need this because we must convert textures to VT
-						// before materials (or else we get a warning) but we'll only actually swap the base material
+						// before materials (or else we get a warning) but we'll only actually swap the reference material
 						// at the end of this scope
 						VisitedMaterials.Add( UserMaterial );
 
@@ -171,7 +110,7 @@ namespace UE::UsdShadeTranslator::Private
 							);
 						}
 
-						UE_LOG( LogUsd, Log, TEXT( "Upgrading material instance '%s' to being based on VT as texture '%s' requires it" ),
+						UE_LOG( LogUsd, Log, TEXT( "Upgrading material instance '%s' to having a VT reference as texture '%s' requires it" ),
 							*MaterialInstance->GetName(),
 							*Texture->GetName()
 						);
@@ -183,30 +122,30 @@ namespace UE::UsdShadeTranslator::Private
 							FMaterialUpdateContext UpdateContext( Options, GMaxRHIShaderPlatform );
 							UpdateContext.AddMaterialInstance( MIC );
 							MIC->PreEditChange( nullptr );
-							MIC->SetParentEditorOnly( BaseMaterialVT );
+							MIC->SetParentEditorOnly( ReferenceMaterialVT );
 							MIC->PostEditChange();
 						}
 						else
 #endif // WITH_EDITOR
 						if ( UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>( UserMaterial ) )
 						{
-							if ( Context->AssetCache )
+							if ( Context->AssetCache && Context->InfoCache )
 							{
-								// This is super slow as it will essentially linear search the asset cache twice, but
+								// This is super slow as it will essentially linear search the asset cache, but
 								// not much we can do at runtime without asset import data
-								const FString PrimPath = Context->AssetCache->GetPrimForAsset( MID );
+								const UE::FSdfPath PrimPath = Context->InfoCache->GetPrimForAsset( MID );
 								const FString Hash = Context->AssetCache->GetHashForAsset( MID );
 
 								const FName NewInstanceName = MakeUniqueObjectName(
 									GetTransientPackage(),
 									UMaterialInstance::StaticClass(),
-									*FPaths::GetBaseFilename( PrimPath )
+									PrimPath.IsEmpty() ? TEXT("MaterialInstance") : *FPaths::GetBaseFilename(PrimPath.GetString())
 								);
 
-								// For MID we can't swap the base material, so we need to create a brand new one and copy
+								// For MID we can't swap the reference material, so we need to create a brand new one and copy
 								// the overrides
 								UMaterialInstanceDynamic* NewMID = UMaterialInstanceDynamic::Create(
-									BaseMaterialVT,
+									ReferenceMaterialVT,
 									GetTransientPackage(),
 									NewInstanceName
 								);
@@ -216,9 +155,15 @@ namespace UE::UsdShadeTranslator::Private
 								}
 								NewMID->CopyParameterOverrides( MID );
 
-								Context->AssetCache->DiscardAsset( Hash );
-								Context->AssetCache->CacheAsset( Hash, NewMID, PrimPath );
-								NewMaterials.Add( NewMID );
+								if (Context->AssetCache->RemoveAsset(Hash))
+								{
+									Context->AssetCache->CacheAsset(Hash, NewMID);
+									if (!PrimPath.IsEmpty())
+									{
+										Context->InfoCache->LinkAssetToPrim(PrimPath, NewMID);
+									}
+									NewMaterials.Add( NewMID );
+								}
 							}
 						}
 						else
@@ -278,6 +223,15 @@ void FUsdShadeMaterialTranslator::CreateAssets()
 		return;
 	}
 
+	if (Context->bTranslateOnlyUsedMaterials && Context->InfoCache)
+	{
+		if (!Context->InfoCache->IsMaterialUsed(PrimPath))
+		{
+			UE_LOG(LogUsd, Verbose, TEXT("Skipping creating assets for material prim '%s' as it is not currently bound by any prim."), *PrimPath.GetString());
+			return;
+		}
+	}
+
 	TRACE_CPUPROFILER_EVENT_SCOPE( FUsdShadeMaterialTranslator::CreateAssets );
 
 	const pxr::TfToken RenderContextToken =
@@ -295,22 +249,29 @@ void FUsdShadeMaterialTranslator::CreateAssets()
 
 	if ( !ConvertedMaterial )
 	{
+		const FString PrimPathString = PrimPath.GetString();
 		const bool bIsTranslucent = UsdUtils::IsMaterialTranslucent( ShadeMaterial );
 		const FName InstanceName = MakeUniqueObjectName(
 			GetTransientPackage(),
 			UMaterialInstance::StaticClass(),
-			*FPaths::GetBaseFilename( PrimPath.GetString() )
+			*FPaths::GetBaseFilename(PrimPathString)
 		);
 
+		// TODO: There is an issue here: Note how we're only ever going to write the material prim's primvars into
+		// this PrimvarToUVIndex map when first creating the material, and not if we find it in the asset cache.
+		// This because finding the primvars to use essentially involves parsing the entire material again, so we
+		// likely shouldn't do it every time.
+		// This means that a mesh with float2 UV sets and materials that use them will likely end up with no UVs once
+		// the stage reloads...
 		TMap<FString, int32> Unused;
 		TMap<FString, int32>& PrimvarToUVIndex = Context->MaterialToPrimvarToUVIndex
-			? Context->MaterialToPrimvarToUVIndex->FindOrAdd( PrimPath.GetString() )
+			? Context->MaterialToPrimvarToUVIndex->FindOrAdd(PrimPathString)
 			: Unused;
 
 #if WITH_EDITOR
 		if ( GIsEditor ) // Also have to prevent Standalone game from going with MaterialInstanceConstants
 		{
-			if ( UMaterialInstanceConstant* NewMaterial = NewObject<UMaterialInstanceConstant>( GetTransientPackage(), InstanceName, Context->ObjectFlags ) )
+			if ( UMaterialInstanceConstant* NewMaterial = NewObject<UMaterialInstanceConstant>( GetTransientPackage(), InstanceName, Context->ObjectFlags | EObjectFlags::RF_Transient ) )
 			{
 				UUsdAssetImportData* ImportData = NewObject< UUsdAssetImportData >( NewMaterial, TEXT( "USDAssetImportData" ) );
 				ImportData->PrimPath = PrimPath.GetString();
@@ -355,15 +316,20 @@ void FUsdShadeMaterialTranslator::CreateAssets()
 					UE::UsdShadeTranslator::Private::UpgradeMaterialsAndTexturesToVT( NonVTTextures, Context );
 				}
 
-				const bool bNeedsVT = VTTextures.Num() > 0;
-				UMaterialInterface* BaseMaterial = UE::UsdShadeTranslator::Private::GetBaseMaterial(
-					bIsTranslucent,
-					bNeedsVT
-				);
-
-				if ( ensure( BaseMaterial ) )
+				MeshTranslationImpl::EUsdReferenceMaterialProperties Properties = MeshTranslationImpl::EUsdReferenceMaterialProperties::None;
+				if ( bIsTranslucent )
 				{
-					NewMaterial->SetParentEditorOnly( BaseMaterial );
+					Properties |= MeshTranslationImpl::EUsdReferenceMaterialProperties::Translucent;
+				}
+				if ( VTTextures.Num() > 0 )
+				{
+					Properties |= MeshTranslationImpl::EUsdReferenceMaterialProperties::VT;
+				}
+				UMaterialInterface* ReferenceMaterial = MeshTranslationImpl::GetReferencePreviewSurfaceMaterial( Properties );
+
+				if ( ensure( ReferenceMaterial ) )
+				{
+					NewMaterial->SetParentEditorOnly( ReferenceMaterial );
 
 					// We can't blindly recreate all component render states when a level is being added, because we may end up first creating
 					// render states for some components, and UWorld::AddToWorld calls FScene::AddPrimitive which expects the component to not have
@@ -391,20 +357,23 @@ void FUsdShadeMaterialTranslator::CreateAssets()
 		else
 #endif // WITH_EDITOR
 		{
-			// At runtime we always start with a non-VT base and if we discover we need one we just create a new MID
-			// using the VT base and copy the overrides. Not much else we can do as we need a base to call
+			// At runtime we always start with a non-VT reference and if we discover we need one we just create a new MID
+			// using the VT reference and copy the overrides. Not much else we can do as we need a reference to call
 			// UMaterialInstanceDynamic::Create and get our instance, but we an instance to call UsdToUnreal::ConvertMaterial
-			// to create our textures and decide on our base.
-			const bool bNeedsVT = false;
-			UMaterialInterface* BaseMaterial = UE::UsdShadeTranslator::Private::GetBaseMaterial(
-				bIsTranslucent,
-				bNeedsVT
-			);
-
-			if ( ensure( BaseMaterial ) )
+			// to create our textures and decide on our reference.
+			MeshTranslationImpl::EUsdReferenceMaterialProperties Properties = MeshTranslationImpl::EUsdReferenceMaterialProperties::None;
+			if ( bIsTranslucent )
 			{
-				if ( UMaterialInstanceDynamic* NewMaterial = UMaterialInstanceDynamic::Create( BaseMaterial, GetTransientPackage(), InstanceName ) )
+				Properties |= MeshTranslationImpl::EUsdReferenceMaterialProperties::Translucent;
+			}
+			UMaterialInterface* ReferenceMaterial = MeshTranslationImpl::GetReferencePreviewSurfaceMaterial( Properties );
+
+			if ( ensure( ReferenceMaterial ) )
+			{
+				if ( UMaterialInstanceDynamic* NewMaterial = UMaterialInstanceDynamic::Create( ReferenceMaterial, GetTransientPackage(), InstanceName ) )
 				{
+					NewMaterial->SetFlags(RF_Transient);
+
 					if ( UsdToUnreal::ConvertMaterial( ShadeMaterial, *NewMaterial, Context->AssetCache.Get(), PrimvarToUVIndex, *Context->RenderContext.ToString() ) )
 					{
 						TSet<UTexture*> VTTextures;
@@ -425,10 +394,11 @@ void FUsdShadeMaterialTranslator::CreateAssets()
 						}
 
 						// We must stash our material and textures *before* we call UpgradeMaterialsAndTexturesToVT, as that
-						// is what will actually swap our base with a VT one if needed
-						if ( Context->AssetCache )
+						// is what will actually swap our reference with a VT one if needed
+						if ( Context->AssetCache && Context->InfoCache )
 						{
-							Context->AssetCache->CacheAsset( MaterialHashString, NewMaterial, PrimPath.GetString() );
+							Context->AssetCache->CacheAsset(MaterialHashString, NewMaterial);
+							Context->InfoCache->LinkAssetToPrim(PrimPath, NewMaterial);
 						}
 						for ( UTexture* Texture : VTTextures.Union( NonVTTextures ) )
 						{
@@ -445,26 +415,64 @@ void FUsdShadeMaterialTranslator::CreateAssets()
 						}
 
 						// We must go through the cache to fetch our result material here as UpgradeMaterialsAndTexturesToVT
-						// may have created a new MID for this material with a VT base
+						// may have created a new MID for this material with a VT reference
 						ConvertedMaterial = Cast<UMaterialInterface>( Context->AssetCache->GetCachedAsset( MaterialHashString ) );
 					}
 				}
 			}
 		}
 	}
-	else if ( Context->MaterialToPrimvarToUVIndex && Context->AssetCache )
+	else if ( Context->MaterialToPrimvarToUVIndex && Context->InfoCache )
 	{
-		if ( TMap<FString, int32>* PrimvarToUVIndex = Context->MaterialToPrimvarToUVIndex->Find( Context->AssetCache->GetPrimForAsset( ConvertedMaterial ) ) )
+		const UE::FSdfPath FoundPrimPath = Context->InfoCache->GetPrimForAsset(ConvertedMaterial);
+		if (!FoundPrimPath.IsEmpty())
 		{
-			// Copy the Material -> Primvar -> UV index mapping from the cached material prim path to this prim path
-			Context->MaterialToPrimvarToUVIndex->FindOrAdd( PrimPath.GetString() ) = *PrimvarToUVIndex;
+			if (TMap<FString, int32>* PrimvarToUVIndex = Context->MaterialToPrimvarToUVIndex->Find(FoundPrimPath.GetString()))
+			{
+				// Copy the Material -> Primvar -> UV index mapping from the cached material prim path to this prim path
+				Context->MaterialToPrimvarToUVIndex->FindOrAdd(PrimPath.GetString()) = *PrimvarToUVIndex;
+			}
 		}
 	}
 
-	if ( ConvertedMaterial )
+	// Note that this needs to run even if we do find the material from the asset cache, otherwise we won't
+	// re-register the prim asset links when we reload a stage
+	if (ConvertedMaterial)
 	{
-		Context->AssetCache->CacheAsset( MaterialHashString, ConvertedMaterial, PrimPath.GetString() );
+		if (Context->InfoCache)
+		{
+			Context->InfoCache->LinkAssetToPrim(PrimPath, ConvertedMaterial);
+
+			// Also link the textures to the same material prim.
+			// This is important because it lets the stage actor drop its references to old unused textures in the
+			// asset cache if they aren't being used by any other material
+			if (UMaterialInstance* MaterialInstance = Cast<UMaterialInstance>(ConvertedMaterial))
+			{
+				for (const FTextureParameterValue& TextureValue : MaterialInstance->TextureParameterValues)
+				{
+					if (UTexture* Texture = TextureValue.ParameterValue)
+					{
+						Context->InfoCache->LinkAssetToPrim(PrimPath, Texture);
+					}
+				}
+			}
+		}
+
+		if (Context->AssetCache)
+		{
+			Context->AssetCache->CacheAsset(MaterialHashString, ConvertedMaterial);
+		}
 	}
+}
+
+bool FUsdShadeMaterialTranslator::CollapsesChildren( ECollapsingType CollapsingType ) const
+{
+	return false;
+}
+
+bool FUsdShadeMaterialTranslator::CanBeCollapsed( ECollapsingType CollapsingType ) const
+{
+	return false;
 }
 
 #endif // #if USE_USD_SDK

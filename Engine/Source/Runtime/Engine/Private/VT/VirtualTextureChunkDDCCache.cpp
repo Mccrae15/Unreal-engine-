@@ -4,21 +4,14 @@
 
 #if WITH_EDITOR
 
+#include "HAL/PlatformFile.h"
 #include "HAL/PlatformFileManager.h"
-#include "HAL/FileManager.h"
-#include "Misc/Paths.h"
 #include "Async/AsyncWork.h"
-#include "Misc/CoreMisc.h"
 #include "DerivedDataCache.h"
 #include "DerivedDataRequestOwner.h"
-#include "HAL/FileManager.h"
-#include "Misc/PackageName.h"
 #include "Misc/FileHelper.h"
+#include "Misc/Guid.h"
 #include "VirtualTextureBuiltData.h"
-#include "VirtualTextureChunkManager.h"
-#include "HAL/RunnableThread.h"
-#include "HAL/ThreadSafeCounter.h"
-#include "HAL/Runnable.h"
 #include "Misc/ConfigCacheIni.h"
 
 DECLARE_LOG_CATEGORY_EXTERN(LogVTDiskCache, Log, All);
@@ -284,7 +277,7 @@ bool FVirtualTextureChunkDDCCache::MakeChunkAvailable(struct FVirtualTextureData
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FVirtualTextureChunkDDCCache::MakeChunkAvailable);
 
-	check(IsInRenderingThread());
+	check(IsInParallelRenderingThread());
 
 	const FString CachedFilePath = AbsoluteCachePath / Chunk->ShortDerivedDataKey;
 	const FString TempFilePath = AbsoluteCachePath / FGuid::NewGuid().ToString() + ".tmp";

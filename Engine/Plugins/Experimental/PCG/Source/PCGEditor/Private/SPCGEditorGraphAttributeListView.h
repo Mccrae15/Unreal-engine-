@@ -2,18 +2,25 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Metadata/PCGMetadata.h"
-#include "Widgets/Input/SComboBox.h"
-#include "Widgets/SCompoundWidget.h"
-#include "Widgets/Views/SHeaderRow.h"
-#include "Widgets/Views/SListView.h"
+#include "Widgets/Views/ITableRow.h"
+#include "Widgets/Views/STableRow.h"
+
+class STableViewBase;
+class STextBlock;
+template <typename OptionType> class SComboBox;
 
 class FPCGEditor;
+class FPCGMetadataAttributeBase;
 class UPCGComponent;
-class UPCGNode;
+class UPCGEditorGraphNodeBase;
+class UPCGMetadata;
 class UPCGParamData;
 struct FPCGPoint;
+enum class EPCGMetadataTypes : uint8;
+
+class SComboButton;
+class SHeaderRow;
+struct FSlateBrush;
 
 struct FPCGMetadataInfo
 {
@@ -64,23 +71,31 @@ private:
 	TSharedRef<SHeaderRow> CreateHeaderRowWidget() const;
 
 	void OnDebugObjectChanged(UPCGComponent* InPCGComponent);
-	void OnInspectedNodeChanged(UPCGNode* InPCGNode);
+	void OnInspectedNodeChanged(UPCGEditorGraphNodeBase* InPCGEditorGraphNode);
 
 	void OnGenerateUpdated(UPCGComponent* InPCGComponent);
 
 	void RefreshAttributeList();
 	void RefreshDataComboBox();
 
+	const FSlateBrush* GetFilterBadgeIcon() const;
+	TSharedRef<SWidget> OnGenerateFilterMenu();
 	TSharedRef<SWidget> OnGenerateDataWidget(TSharedPtr<FName> InItem) const;
 	void OnSelectionChanged(TSharedPtr<FName> Item, ESelectInfo::Type SelectInfo);
 	FText OnGenerateSelectedDataText() const;
 	int32 GetSelectedDataIndex() const;
 	void GenerateColumnsFromMetadata(const UPCGMetadata* PCGMetadata);
 
-	TSharedRef<ITableRow> OnGenerateRow(PCGListviewItemPtr Item, const TSharedRef<STableViewBase>& OwnerTable) const;
+	void ToggleAllAttributes();
+	void ToggleAttribute(FName InAttributeName);
+	ECheckBoxState GetAnyAttributeEnabledState() const;
+	bool IsAttributeEnabled(FName InAttributeName) const;
 
-	void AddColumn(const FName& InColumnID, const FText& ColumnLabel, float ColumnWidth, EHorizontalAlignment HeaderHAlign = HAlign_Center, EHorizontalAlignment CellHAlign = HAlign_Right);
-	void RemoveColumn(const FName& InColumnID);
+	TSharedRef<ITableRow> OnGenerateRow(PCGListviewItemPtr Item, const TSharedRef<STableViewBase>& OwnerTable) const;
+	void OnItemDoubleClicked(PCGListviewItemPtr Item) const;
+
+	void AddColumn(const FName& InColumnId, const FText& ColumnLabel, EHorizontalAlignment HeaderHAlign = HAlign_Center, EHorizontalAlignment CellHAlign = HAlign_Right);
+	void RemoveColumn(const FName& InColumnId);
 
 	void AddIndexColumn();
 	void RemoveIndexColumn();
@@ -88,14 +103,17 @@ private:
 	void AddPointDataColumns();
 	void RemovePointDataColumns();
 
-	void AddMetadataColumn(const FName& InColumnId, const FName& InMetadataId, const int8 InValueIndex = INDEX_NONE, const TCHAR* PostFix = nullptr);
+	void AddMetadataColumn(const FName& InColumnId, const FName& InMetadataId, EPCGMetadataTypes InMetadataType, const int8 InValueIndex = INDEX_NONE, const TCHAR* PostFix = nullptr);
 	void RemoveMetadataColumns();
 
 	/** Pointer back to the PCG editor that owns us */
 	TWeakPtr<FPCGEditor> PCGEditorPtr;
 
 	/** Cached PCGComponent being viewed */
-	UPCGComponent* PCGComponent = nullptr;
+	TWeakObjectPtr<UPCGComponent> PCGComponent;
+
+	/** Cached PCGGraphNode being viewed */
+	TWeakObjectPtr<UPCGEditorGraphNodeBase> PCGEditorGraphNode;
 
 	TSharedPtr<SHeaderRow> ListViewHeader;
 	TSharedPtr<SListView<PCGListviewItemPtr>> ListView;
@@ -103,6 +121,11 @@ private:
 
 	TSharedPtr<SComboBox<TSharedPtr<FName>>> DataComboBox;
 	TArray<TSharedPtr<FName>> DataComboBoxItems;
+	
+	TSharedPtr<STextBlock> NodeNameTextBlock;
+	TSharedPtr<STextBlock> InfoTextBlock;
+	TSharedPtr<SComboButton> FilterButton;
 
 	TMap<FName, FPCGMetadataInfo> MetadataInfos;
+	TArray<FName> HiddenAttributes;	
 };

@@ -2,39 +2,25 @@
 
 #include "Widgets/SMVVMViewModelPanel.h"
 
-#include "Bindings/MVVMBindingHelper.h"
-#include "Editor.h"
-#include "Editor/EditorEngine.h"
+#include "DetailsViewArgs.h"
 #include "IStructureDetailsView.h"
-#include "Kismet2/Kismet2NameValidators.h"
 #include "MVVMBlueprintView.h"
-#include "MVVMBlueprintViewModelContext.h"
 #include "MVVMEditorSubsystem.h"
-#include "MVVMSubsystem.h"
-#include "MVVMViewModelBase.h"
 #include "PropertyEditorModule.h"
 #include "WidgetBlueprint.h"
 #include "WidgetBlueprintEditor.h"
 
 #include "Framework/Commands/GenericCommands.h"
-#include "Framework/Commands/UICommandList.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 
-#include "Styling/AppStyle.h"
-#include "Styling/SlateIconFinder.h"
-#include "Styling/MVVMEditorStyle.h"
 
-#include "Widgets/SBoxPanel.h"
 #include "Widgets/Images/SImage.h"
-#include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Layout/SBorder.h"
-#include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SSplitter.h"
 #include "Widgets/PropertyViewer/SFieldIcon.h"
-#include "Widgets/PropertyViewer/SFieldName.h"
-#include "Widgets/PropertyViewer/SPropertyViewer.h"
 #include "Widgets/SMVVMSelectViewModel.h"
+#include "Widgets/SMVVMViewModelBindingListWidget.h"
 #include "Widgets/Text/SInlineEditableTextBlock.h"
-#include "Widgets/Text/STextBlock.h"
 #include "SPositiveActionButton.h"
 
 #define LOCTEXT_NAMESPACE "ViewModelPanel"
@@ -50,7 +36,8 @@ void SMVVMViewModelPanel::Construct(const FArguments& InArgs, TSharedPtr<FWidget
 
 	WeakBlueprintEditor = WidgetBlueprintEditor;
 	WeakBlueprintView = CurrentBlueprintView;
-	FieldIterator = MakeUnique<FFieldIterator_Bindable>(WidgetBlueprint, EFieldVisibility::Notify);
+	FieldIterator = MakeUnique<FFieldIterator_Bindable>(WidgetBlueprint, EFieldVisibility::None);
+	FieldExpander = MakeUnique<FFieldExpander_Bindable>();
 
 	if (CurrentBlueprintView)
 	{
@@ -66,6 +53,8 @@ void SMVVMViewModelPanel::Construct(const FArguments& InArgs, TSharedPtr<FWidget
 		.bShowFieldIcon(true)
 		.bSanitizeName(true)
 		.FieldIterator(FieldIterator.Get())
+		.FieldExpander(FieldExpander.Get())
+		.OnGetPreSlot(this, &SMVVMViewModelPanel::HandleGetPreSlot)
 		.OnContextMenuOpening(this, &SMVVMViewModelPanel::HandleContextMenuOpening)
 		.OnSelectionChanged(this, &SMVVMViewModelPanel::HandleSelectionChanged)
 		.OnGenerateContainer(this, &SMVVMViewModelPanel::HandleGenerateContainer)
@@ -114,6 +103,7 @@ void SMVVMViewModelPanel::Construct(const FArguments& InArgs, TSharedPtr<FWidget
 	];
 }
 
+SMVVMViewModelPanel::SMVVMViewModelPanel() = default;
 
 SMVVMViewModelPanel::~SMVVMViewModelPanel()
 {
@@ -272,6 +262,23 @@ bool SMVVMViewModelPanel::HandleCanEditViewmodelList() const
 		return WidgetBlueprintEditor->InEditingMode();
 	}
 	return false;
+}
+
+
+TSharedPtr<SWidget> SMVVMViewModelPanel::HandleGetPreSlot(UE::PropertyViewer::SPropertyViewer::FHandle Handle, TArrayView<const FFieldVariant> FieldPath)
+{
+	if (FieldPath.Num() > 0)
+	{
+		UWidgetBlueprint* WidgetBlueprint = nullptr;
+		if (TSharedPtr<FWidgetBlueprintEditor> WidgetBlueprintEditor = WeakBlueprintEditor.Pin())
+		{
+			WidgetBlueprint = WidgetBlueprintEditor->GetWidgetBlueprintObj();
+		}
+
+		return ConstructFieldPreSlot(WidgetBlueprint, Handle, FieldPath.Last());
+	}
+
+	return TSharedPtr<SWidget>();
 }
 
 
@@ -468,6 +475,7 @@ void SMVVMViewModelPanel::HandleSelectionChanged(UE::PropertyViewer::SPropertyVi
 		if (const FGuid* VMGuidPtr = PropertyViewerHandles.Find(ContainerHandle))
 		{
 			SelectedViewModelGuid = *VMGuidPtr;
+
 			if (UMVVMBlueprintView* BlueprintView = WeakBlueprintView.Get())
 			{
 				if (FMVVMBlueprintViewModelContext* ViewModelContext = BlueprintView->FindViewModel(SelectedViewModelGuid))

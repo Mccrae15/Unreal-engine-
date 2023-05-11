@@ -3,12 +3,11 @@
 #include "HLODBuilderMeshMerge.h"
 
 #include "Algo/ForEach.h"
+#include "Engine/Engine.h"
 #include "Engine/StaticMesh.h"
 #include "Materials/Material.h"
 #include "Components/StaticMeshComponent.h"
 
-#include "WorldPartition/HLOD/HLODActor.h"
-#include "WorldPartition/HLOD/HLODLayer.h"
 
 #include "IMeshMergeUtilities.h"
 #include "MeshMergeModule.h"
@@ -42,6 +41,10 @@ uint32 UHLODBuilderMeshMergeSettings::GetCRC() const
 	UHLODBuilderMeshMergeSettings& This = *const_cast<UHLODBuilderMeshMergeSettings*>(this);
 
 	FArchiveCrc32 Ar;
+
+	// Base mesh merge key, changing this will force a rebuild of all HLODs from this builder
+	FString HLODBaseKey = "89D89284DD3847FA90C5998E06DD8FEC";
+	Ar << HLODBaseKey;
 
 	Ar << This.MeshMergeSettings;
 	UE_LOG(LogHLODBuilder, VeryVerbose, TEXT(" - MeshMergeSettings = %d"), Ar.GetCrc());
@@ -80,7 +83,7 @@ TArray<UActorComponent*> UHLODBuilderMeshMerge::Build(const FHLODBuildContext& I
 	FMeshMergingSettings UseSettings = MeshMergeSettings->MeshMergeSettings; // Make a copy as we may tweak some values
 	UMaterialInterface* HLODMaterial = MeshMergeSettings->HLODMaterial.LoadSynchronous();
 
-	// When using automatic textuse sizing based on draw distance, use the MinVisibleDistance for this HLOD.
+	// When using automatic texture sizing based on draw distance, use the MinVisibleDistance for this HLOD.
 	if (UseSettings.MaterialSettings.TextureSizingType == TextureSizingType_AutomaticFromMeshDrawDistance)
 	{
 		UseSettings.MaterialSettings.MeshMinDrawDistance = InHLODBuildContext.MinVisibleDistance;

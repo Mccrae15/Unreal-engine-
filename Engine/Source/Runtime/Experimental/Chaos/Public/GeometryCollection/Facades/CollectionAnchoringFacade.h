@@ -15,6 +15,20 @@ namespace Chaos::Facades
 	{
 	public:
 		FCollectionAnchoringFacade(FManagedArrayCollection& InCollection);
+		FCollectionAnchoringFacade(const FManagedArrayCollection& InCollection);
+
+		/** Create the facade attributes. */
+		void DefineSchema() {}
+
+		/** Valid if all accessors arrays are available */
+		bool IsValid() const;
+
+		/** Is the facade defined from a constant collection. */
+		bool IsConst() const { return InitialDynamicStateAttribute.IsConst(); }
+
+		//
+		//  Facade Functionality
+		//
 
 		bool HasInitialDynamicStateAttribute() const;
 		

@@ -47,6 +47,11 @@ struct FNDIArrayImplHelper<int32> : public FNDIArrayImplHelperBase<int32>
 		}
 		return PrevValue;
 	}
+
+	static void AppendValueToString(const int32 Value, FString& OutString)
+	{
+		OutString.AppendInt(Value);
+	}
 };
 
 template<>
@@ -86,6 +91,11 @@ struct FNDIArrayImplHelper<uint8> : public FNDIArrayImplHelperBase<uint8>
 			Dest[i] = int32(Src[i]);
 		}
 	}
+
+	static void AppendValueToString(const uint8 Value, FString& OutString)
+	{
+		OutString.AppendInt(Value);
+	}
 };
 
 template<>
@@ -123,6 +133,11 @@ struct FNDIArrayImplHelper<bool> : public FNDIArrayImplHelperBase<bool>
 			*TypedDest++ = *TypedSrc++ == 0 ? false : true;
 		}
 	}
+
+	static void AppendValueToString(const bool Value, FString& OutString)
+	{
+		OutString.Append(Value ? TEXT("True") : TEXT("False"));
+	}
 };
 
 UCLASS(EditInlineNew, Category = "Array", meta = (DisplayName = "Int32 Array"), Blueprintable, BlueprintType)
@@ -130,10 +145,11 @@ class NIAGARA_API UNiagaraDataInterfaceArrayInt32 : public UNiagaraDataInterface
 {
 public:
 	GENERATED_BODY()
-	NDIARRAY_GENERATE_BODY(UNiagaraDataInterfaceArrayInt32, int32, IntData)
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Array")
 	TArray<int32> IntData;
+
+	NDIARRAY_GENERATE_BODY(UNiagaraDataInterfaceArrayInt32, int32, IntData)
 };
 
 UCLASS(EditInlineNew, Category = "Array", meta = (DisplayName = "UInt8 Array"), Blueprintable, BlueprintType)
@@ -141,7 +157,6 @@ class NIAGARA_API UNiagaraDataInterfaceArrayUInt8 : public UNiagaraDataInterface
 {
 public:
 	GENERATED_BODY()
-	NDIARRAY_GENERATE_BODY_LWC(UNiagaraDataInterfaceArrayUInt8, uint8, IntData)
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Array")
@@ -150,6 +165,8 @@ public:
 
 	UPROPERTY()
 	TArray<uint8> InternalIntData;
+
+	NDIARRAY_GENERATE_BODY_LWC(UNiagaraDataInterfaceArrayUInt8, uint8, IntData)
 };
 
 UCLASS(EditInlineNew, Category = "Array", meta = (DisplayName = "Bool Array"), Blueprintable, BlueprintType)
@@ -157,8 +174,9 @@ class NIAGARA_API UNiagaraDataInterfaceArrayBool : public UNiagaraDataInterfaceA
 {
 public:
 	GENERATED_BODY()
-	NDIARRAY_GENERATE_BODY(UNiagaraDataInterfaceArrayBool, bool, BoolData)
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Array")
 	TArray<bool> BoolData;
+
+	NDIARRAY_GENERATE_BODY(UNiagaraDataInterfaceArrayBool, bool, BoolData)
 };

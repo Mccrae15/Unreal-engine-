@@ -6,10 +6,20 @@ namespace UnrealBuildTool.Rules
 	{
 		public Media(ReadOnlyTargetRules Target) : base(Target)
 		{
+			IWYUSupport = IWYUSupport.KeepAsIsForNow;
+
 			PublicDependencyModuleNames.AddRange(
 				new string[]
 				{
 					"Core",
+					"RenderCore",
+					"ColorManagement",
+				});
+
+			PublicIncludePathModuleNames.AddRange(
+				new string[] {
+					"ColorManagement",
+					"RenderCore",
 				});
 		}
 	}

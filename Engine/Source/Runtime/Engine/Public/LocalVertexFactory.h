@@ -6,6 +6,7 @@
 #include "ShaderParameters.h"
 #include "Components.h"
 #include "VertexFactory.h"
+#include "GlobalRenderResources.h"
 
 class FMaterial;
 class FSceneView;
@@ -27,6 +28,8 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLocalVertexFactoryUniformShaderParameters,
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLocalVertexFactoryLooseParameters,)
+	SHADER_PARAMETER(uint32, FrameNumber)
+	SHADER_PARAMETER_SRV(Buffer<float>, GPUSkinPassThroughPositionBuffer)
 	SHADER_PARAMETER_SRV(Buffer<float>, GPUSkinPassThroughPreviousPositionBuffer)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
@@ -67,12 +70,17 @@ public:
 	 * Should we cache the material's shadertype on this platform with this vertex factory? 
 	 */
 	static bool ShouldCompilePermutation(const FVertexFactoryShaderPermutationParameters& Parameters);
-
 	static void ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
-
 	static void ValidateCompiledResult(const FVertexFactoryType* Type, EShaderPlatform Platform, const FShaderParameterMap& ParameterMap, TArray<FString>& OutErrors);
 
 	static void GetPSOPrecacheVertexFetchElements(EVertexInputStreamType VertexInputStreamType, FVertexDeclarationElementList& Elements);
+	static void GetVertexElements(ERHIFeatureLevel::Type FeatureLevel, EVertexInputStreamType InputStreamType, bool bSupportsManualVertexFetch, FDataType& Data, FVertexDeclarationElementList& Elements);
+
+	/** 
+	 * Does the platform support GPUSkinPassthrough permutations.
+	 * This knowledge can be used to indicate if we need to create SRV for index/vertex buffers.
+	 */
+	static bool IsGPUSkinPassThroughSupported(EShaderPlatform Platform);
 
 	/**
 	 * An implementation of the interface used by TSynchronizedResource to update the resource with new data from the game thread.
@@ -165,6 +173,15 @@ protected:
 	friend class FSkeletalMeshSceneProxy;
 
 	const FDataType& GetData() const { return Data; }
+	
+	static void GetVertexElements(
+		ERHIFeatureLevel::Type FeatureLevel, 
+		EVertexInputStreamType InputStreamType, 
+		bool bSupportsManualVertexFetch,
+		FDataType& Data, 
+		FVertexDeclarationElementList& Elements, 
+		FVertexStreamList& InOutStreams, 
+		int32& OutColorStreamIndex);
 
 	FDataType Data;
 	TUniformBufferRef<FLocalVertexFactoryUniformShaderParameters> UniformBuffer;
@@ -242,28 +259,5 @@ public:
 	) const; 
 
 private:
-	void GetElementShaderBindingsGPUSkinPassThrough(
-		const FSceneInterface* Scene,
-		const FSceneView* View,
-		const FMeshMaterialShader* Shader,
-		const EVertexInputStreamType InputStreamType,
-		ERHIFeatureLevel::Type FeatureLevel,
-		const FVertexFactory* VertexFactory,
-		const FMeshBatchElement& BatchElement,
-		class FMeshDrawSingleShaderBindings& ShaderBindings,
-		FVertexInputStreamArray& VertexStreams) const;
-
-	void GetElementShaderBindingsSkinCache(
-		class FGPUSkinPassthroughVertexFactory const* PassthroughVertexFactory,
-		struct FGPUSkinBatchElementUserData* BatchUserData,
-		FMeshDrawSingleShaderBindings& ShaderBindings,
-		FVertexInputStreamArray& VertexStreams) const;
-
-	void GetElementShaderBindingsMeshDeformer(
-		class FGPUSkinPassthroughVertexFactory const* PassthroughVertexFactory,
-		FMeshDrawSingleShaderBindings& ShaderBindings,
-		FVertexInputStreamArray& VertexStreams) const;
-
-	LAYOUT_FIELD(FShaderResourceParameter, GPUSkinCachePositionBuffer);
 	LAYOUT_FIELD(FShaderParameter, IsGPUSkinPassThrough);
 };

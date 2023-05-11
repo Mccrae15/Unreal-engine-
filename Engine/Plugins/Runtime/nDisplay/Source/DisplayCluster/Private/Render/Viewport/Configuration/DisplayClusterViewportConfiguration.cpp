@@ -22,17 +22,137 @@
 #include "Misc/DisplayClusterGlobals.h"
 #include "Misc/DisplayClusterLog.h"
 
-int32 GDisplayClusterOverrideMultiGPUMode = -1;
-static FAutoConsoleVariableRef CVarDisplayClusterOverrideMultiGPUMode(
-	TEXT("DC.OverrideMultiGPUMode"),
-	GDisplayClusterOverrideMultiGPUMode,
-	TEXT("Override Multi GPU Mode setting from component (-1 == no override, or EDisplayClusterConfigurationRenderMGPUMode enum)"),
+#include "Engine/Classes/Engine/RendererSettings.h"
+
+
+///////////////////////////////////////////////////////////////////
+int32 GDisplayClusterCrossGPUTransferEnable = 0;
+static FAutoConsoleVariableRef CDisplayClusterCrossGPUTransferEnable(
+	TEXT("nDisplay.render.CrossGPUTransfer.Enable"),
+	GDisplayClusterCrossGPUTransferEnable,
+	TEXT("Enable cross-GPU transfers using nDisplay implementation (0 - disable, default) \n")
+	TEXT("That replaces the default cross-GPU transfers using UE Core for the nDisplay viewports viewfamilies.\n"),
+	ECVF_RenderThreadSafe
+);
+
+int32 GDisplayClusterCrossGPUTransferLockSteps = 1;
+static FAutoConsoleVariableRef CDisplayClusterCrossGPUTransferLockSteps(
+	TEXT("nDisplay.render.CrossGPUTransfer.LockSteps"),
+	GDisplayClusterCrossGPUTransferLockSteps,
+	TEXT("The bLockSteps parameter is simply passed to the FTransferResourceParams structure. (0 - disable)\n")
+	TEXT("Whether the GPUs must handshake before and after the transfer. Required if the texture rect is being written to in several render passes.\n")
+	TEXT("Otherwise, minimal synchronization will be used.\n"),
+	ECVF_RenderThreadSafe
+);
+
+int32 GDisplayClusterCrossGPUTransferPullData = 1;
+static FAutoConsoleVariableRef CVarDisplayClusterCrossGPUTransferPullData(
+	TEXT("nDisplay.render.CrossGPUTransfer.PullData"),
+	GDisplayClusterCrossGPUTransferPullData,
+	TEXT("The bPullData parameter is simply passed to the FTransferResourceParams structure. (0 - disable)\n")
+	TEXT("Whether the data is read by the dest GPU, or written by the src GPU (not allowed if the texture is a backbuffer)\n"),
+	ECVF_RenderThreadSafe
+);
+
+/**
+* This enum is for CVar values only and is used to process the logic that converts the values to the runtime enum in GetAlphaChannelCaptureMode().
+*/
+enum class ECVarDisplayClusterAlphaChannelCaptureMode : uint8
+{
+	/** [Auto]
+	 * Use one of the [ThroughTonemapper] or [FXAA] modes available for the current project settings.
+	 */
+	Auto = 0,
+
+	/** [Disabled]
+	 * Disable alpha channel saving.
+	 */
+	 Disabled,
+
+	/** [ThroughTonemapper]
+	 * When rendering with the PropagateAlpha experimental mode turned on, the alpha channel is forwarded to post-processes.
+	 * In this case, the alpha channel is anti-aliased along with the color.
+	 * Since some post-processing may change the alpha, it is copied at the beginning of the PP and restored after all post-processing is completed.
+	 */
+	ThroughTonemapper,
+
+	/** [FXAA]
+	 * Otherwise, if the PropagateAlpha mode is disabled in the project settings, we need to save the alpha before it becomes invalid.
+	 * The alpha is valid until the scene color is resolved (on the ResolvedSceneColor callback). Therefore, it is copied to a temporary resource on this cb.
+	 * Since we need to remove AA jittering (because alpha copied before AA), anti-aliasing is turned off for this viewport.
+	 * And finally the FXAA is used for smoothing.
+	 */
+	FXAA,
+
+	/** [Copy]
+	 * Disable AA and TAA, Copy alpha from scenecolor texture to final.
+	 * These experimental (temporary) modes for the performance tests.
+	 */
+	 Copy,
+
+	/** [CopyAA]
+	 * Use AA, disable TAA, Copy alpha from scenecolor texture to final.
+	 * These experimental (temporary) modes for the performance tests.
+	 */
+	 CopyAA,
+
+	COUNT
+};
+
+/**
+ *Choose method to preserve alpha channel
+ */
+int32 GDisplayClusterAlphaChannelCaptureMode = 0;
+static FAutoConsoleVariableRef CVarDisplayClusterAlphaChannelCaptureMode(
+	TEXT("nDisplay.render.AlphaChannelCaptureMode"),
+	GDisplayClusterAlphaChannelCaptureMode,
+	TEXT("Alpha channel capture mode\n")
+	TEXT("0 - Auto (default) ThroughTonemapper or FXAA depend from prj settings\n")
+	TEXT("1 - Disabled\n")
+	TEXT("2 - ThroughTonemapper\n")
+	TEXT("3 - FXAA\n")
+	TEXT("4 - Copy [experimental]\n")
+	TEXT("5 - CopyAA [experimental]\n"),
 	ECVF_RenderThreadSafe
 );
 
 ///////////////////////////////////////////////////////////////////
 // FDisplayClusterViewportConfiguration
 ///////////////////////////////////////////////////////////////////
+EDisplayClusterRenderFrameAlphaChannelCaptureMode FDisplayClusterViewportConfiguration::GetAlphaChannelCaptureMode() const
+{
+	ECVarDisplayClusterAlphaChannelCaptureMode AlphaChannelCaptureMode = (ECVarDisplayClusterAlphaChannelCaptureMode)FMath::Clamp(GDisplayClusterAlphaChannelCaptureMode, 0, (int32)ECVarDisplayClusterAlphaChannelCaptureMode::COUNT - 1);
+
+	static const auto CVarPropagateAlpha = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.PostProcessing.PropagateAlpha"));
+	const EAlphaChannelMode::Type PropagateAlpha = EAlphaChannelMode::FromInt(CVarPropagateAlpha->GetValueOnGameThread());
+	const bool bAllowThroughTonemapper = PropagateAlpha == EAlphaChannelMode::AllowThroughTonemapper;
+
+	switch (AlphaChannelCaptureMode)
+	{
+	case ECVarDisplayClusterAlphaChannelCaptureMode::Auto:
+		// Fit best possible AA
+		return bAllowThroughTonemapper ? EDisplayClusterRenderFrameAlphaChannelCaptureMode::ThroughTonemapper : EDisplayClusterRenderFrameAlphaChannelCaptureMode::FXAA;
+
+	case ECVarDisplayClusterAlphaChannelCaptureMode::ThroughTonemapper:
+		// Disable alpha capture if PropagateAlpha not valid
+		return bAllowThroughTonemapper ? EDisplayClusterRenderFrameAlphaChannelCaptureMode::ThroughTonemapper : EDisplayClusterRenderFrameAlphaChannelCaptureMode::None;
+
+	case ECVarDisplayClusterAlphaChannelCaptureMode::FXAA:
+		return EDisplayClusterRenderFrameAlphaChannelCaptureMode::FXAA;
+
+	case ECVarDisplayClusterAlphaChannelCaptureMode::Copy:
+		return EDisplayClusterRenderFrameAlphaChannelCaptureMode::Copy;
+
+	case ECVarDisplayClusterAlphaChannelCaptureMode::CopyAA:
+		return EDisplayClusterRenderFrameAlphaChannelCaptureMode::CopyAA;
+
+	case ECVarDisplayClusterAlphaChannelCaptureMode::Disabled:
+	default:
+		break;
+	}
+
+	return EDisplayClusterRenderFrameAlphaChannelCaptureMode::None;
+}
 
 bool FDisplayClusterViewportConfiguration::SetRootActor(ADisplayClusterRootActor* InRootActorPtr)
 {
@@ -84,6 +204,9 @@ bool FDisplayClusterViewportConfiguration::ImplUpdateConfiguration(EDisplayClust
 			// Set current rendering mode
 			RenderFrameSettings.RenderMode = InRenderMode;
 			RenderFrameSettings.ClusterNodeId = InClusterNodeId;
+
+			// Support alpha channel capture
+			RenderFrameSettings.AlphaChannelCaptureMode = GetAlphaChannelCaptureMode();
 
 			if (InPreviewSettings != nullptr)
 			{
@@ -200,7 +323,7 @@ bool FDisplayClusterViewportConfiguration::UpdatePreviewConfiguration(EDisplayCl
 }
 #endif
 
-void FDisplayClusterViewportConfiguration::ImplUpdateConfigurationVisibility(ADisplayClusterRootActor& RootActor, const UDisplayClusterConfigurationData& ConfigurationData)
+void FDisplayClusterViewportConfiguration::ImplUpdateConfigurationVisibility(ADisplayClusterRootActor& RootActor, const UDisplayClusterConfigurationData& ConfigurationData) const
 {
 	// Hide root actor components for all viewports
 	TSet<FPrimitiveComponentId> RootActorHidePrimitivesList;
@@ -257,26 +380,10 @@ void FDisplayClusterViewportConfiguration::ImplUpdateRenderFrameConfiguration(co
 		break;
 	}
 
-	// Performance: Allow change global MGPU settings
-	int32 ModeOverride = FMath::Min(GDisplayClusterOverrideMultiGPUMode,
-		(int32)EDisplayClusterConfigurationRenderMGPUMode::Optimized_DisabledLockSteps);
-
-	switch (ModeOverride >= 0 ? (EDisplayClusterConfigurationRenderMGPUMode)ModeOverride : InRenderFrameConfiguration.MultiGPUMode)
-	{
-	case EDisplayClusterConfigurationRenderMGPUMode::None:
-		RenderFrameSettings.MultiGPUMode = EDisplayClusterMultiGPUMode::None;
-		break;
-	case EDisplayClusterConfigurationRenderMGPUMode::Optimized_DisabledLockSteps:
-		RenderFrameSettings.MultiGPUMode = EDisplayClusterMultiGPUMode::Optimized_DisabledLockSteps;
-		break;
-	case EDisplayClusterConfigurationRenderMGPUMode::Optimized_EnabledLockSteps:
-		RenderFrameSettings.MultiGPUMode = EDisplayClusterMultiGPUMode::Optimized_EnabledLockSteps;
-		break;
-	case EDisplayClusterConfigurationRenderMGPUMode::Enabled:
-	default:
-		RenderFrameSettings.MultiGPUMode = EDisplayClusterMultiGPUMode::Enabled;
-		break;
-	};
+	// Performance: nDisplay has its own implementation of cross-GPU transfer.
+	RenderFrameSettings.CrossGPUTransfer.bEnable    = GDisplayClusterCrossGPUTransferEnable != 0;
+	RenderFrameSettings.CrossGPUTransfer.bLockSteps = GDisplayClusterCrossGPUTransferLockSteps != 0;
+	RenderFrameSettings.CrossGPUTransfer.bPullData  = GDisplayClusterCrossGPUTransferPullData != 0;
 
 	// Performance: Allow to use parent ViewFamily from parent viewport 
 	// (icvfx has child viewports: lightcard and chromakey with prj_view matrices copied from parent viewport. May sense to use same viewfamily?)

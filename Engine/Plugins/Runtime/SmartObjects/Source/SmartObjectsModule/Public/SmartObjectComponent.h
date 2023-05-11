@@ -7,8 +7,18 @@
 #include "SmartObjectDefinition.h"
 #include "SmartObjectComponent.generated.h"
 
+namespace EEndPlayReason { enum Type : int; }
+
 class UAbilitySystemComponent;
 struct FSmartObjectRuntime;
+
+enum class ESmartObjectRegistrationType : uint8
+{
+	None, // corresponds to "not registered"
+	WithCollection,
+	Dynamic
+};
+
 
 UCLASS(Blueprintable, ClassGroup = Gameplay, meta = (BlueprintSpawnableComponent), config = Game, HideCategories = (Activation, AssetUserData, Collision, Cooking, HLOD, Lighting, LOD, Mobile, Mobility, Navigation, Physics, RayTracing, Rendering, Tags, TextureStreaming))
 class SMARTOBJECTSMODULE_API USmartObjectComponent : public USceneComponent
@@ -16,6 +26,8 @@ class SMARTOBJECTSMODULE_API USmartObjectComponent : public USceneComponent
 	GENERATED_BODY()
 
 public:
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnSmartObjectChanged, const USmartObjectComponent& /*Instance*/);
+
 	explicit USmartObjectComponent(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
 
 	FBox GetSmartObjectBounds() const;
@@ -23,13 +35,16 @@ public:
 	const USmartObjectDefinition* GetDefinition() const { return DefinitionAsset; }
 	void SetDefinition(USmartObjectDefinition* Definition) { DefinitionAsset = Definition; }
 
-	FSmartObjectHandle GetRegisteredHandle() const { return RegisteredHandle; }
-	void SetRegisteredHandle(const FSmartObjectHandle Value) { RegisteredHandle = Value; }
+	bool GetCanBePartOfCollection() const { return bCanBePartOfCollection; }
 
-	void OnRuntimeInstanceCreated(FSmartObjectRuntime& RuntimeInstance);
-	void OnRuntimeInstanceDestroyed();
-	void OnRuntimeInstanceBound(FSmartObjectRuntime& RuntimeInstance);
-	void OnRuntimeInstanceUnbound(FSmartObjectRuntime& RuntimeInstance);
+	ESmartObjectRegistrationType GetRegistrationType() const { return RegistrationType; }
+	FSmartObjectHandle GetRegisteredHandle() const { return RegisteredHandle; }
+	void SetRegisteredHandle(const FSmartObjectHandle Value, const ESmartObjectRegistrationType InRegistrationType);
+	void InvalidateRegisteredHandle();
+
+#if WITH_EDITORONLY_DATA
+	static FOnSmartObjectChanged& GetOnSmartObjectChanged() { return OnSmartObjectChanged; }
+#endif // WITH_EDITORONLY_DATA
 
 protected:
 	friend struct FSmartObjectComponentInstanceData;
@@ -37,13 +52,15 @@ protected:
 
 	virtual void OnRegister() override;
 	virtual void OnUnregister() override;
-	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void PostInitProperties() override;
+
+#if WITH_EDITOR
+	virtual void PostEditUndo() override;
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif // WITH_EDITOR
 
 	void RegisterToSubsystem();
-
-	void BindTagsDelegates(FSmartObjectRuntime& RuntimeInstance, UAbilitySystemComponent& AbilitySystemComponent);
-	void UnbindComponentTagsDelegate();
-	void UnbindRuntimeInstanceTagsDelegate(FSmartObjectRuntime& RuntimeInstance);
 
 	UPROPERTY(EditAnywhere, Category = SmartObject, BlueprintReadWrite)
 	TObjectPtr<USmartObjectDefinition> DefinitionAsset;
@@ -52,8 +69,20 @@ protected:
 	UPROPERTY(Transient, VisibleAnywhere, Category = SmartObject)
 	FSmartObjectHandle RegisteredHandle;
 
-	FDelegateHandle OnComponentTagsModifiedHandle;
-	bool bInstanceTagsDelegateBound = false;
+	ESmartObjectRegistrationType RegistrationType = ESmartObjectRegistrationType::None;
+
+	/** 
+	 * Controls whether a given SmartObject can be aggregated in SmartObjectPersistentCollections. SOs in collections
+	 * can be queried and reasoned about even while the actual Actor and its components are not streamed in.
+	 * By default SmartObjects are not placed in collections and are active only as long as the owner-actor remains
+	 * loaded and active (i.e. not streamed out).
+	 */
+	UPROPERTY(config, EditAnywhere, Category = SmartObject, AdvancedDisplay)
+	bool bCanBePartOfCollection = false;
+
+#if WITH_EDITORONLY_DATA
+	static FOnSmartObjectChanged OnSmartObjectChanged;
+#endif // WITH_EDITORONLY_DATA
 };
 
 

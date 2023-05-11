@@ -3,8 +3,8 @@
 #if USING_FLITE
 #include "Flite/FliteTextToSpeech.h"
 #include "Flite/FliteAdapter.h"
+#include "Flite/FliteSynthesizedSpeechData.h"
 #include "Flite/FliteTextToSpeechSubmixListener.h"
-#include "AudioDeviceManager.h"
 #include "AudioDevice.h"
 #include "TextToSpeechLog.h"
 
@@ -141,6 +141,11 @@ void FFliteTextToSpeech::OnActivated()
 			FliteAdapter = MakeUnique<FFliteAdapter>();
 			TTSSubmixListener = MakeUnique<FFliteTextToSpeechSubmixListener>(GetId());
 			AudioDeviceHandle->RegisterSubmixBufferListener(TTSSubmixListener.Get());
+			// RegisterSubmixBufferListener lazily enqueues the registration on the audio thread,
+		// so we have to wait for the audio thread to destroy.
+			FAudioCommandFence Fence;
+			Fence.BeginFence();
+			Fence.Wait();
 		}
 	}
 }
@@ -162,6 +167,9 @@ void FFliteTextToSpeech::OnDeactivated()
 		if (FAudioDeviceHandle AudioDeviceHandle = AudioDeviceManager->GetMainAudioDeviceHandle())
 		{
 			AudioDeviceHandle->UnregisterSubmixBufferListener(TTSSubmixListener.Get());
+			FAudioCommandFence Fence;
+			Fence.BeginFence();
+			Fence.Wait();
 		}
 		FliteAdapter = nullptr;
 		TTSSubmixListener = nullptr;

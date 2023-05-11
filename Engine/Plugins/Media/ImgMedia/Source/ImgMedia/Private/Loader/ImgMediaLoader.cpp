@@ -57,21 +57,15 @@ namespace ImgMediaLoader
 	}
 	
 	// Check if the existing tiles contain all of the requested ones. (Is existing a superset of requested?)
-	bool ContainsMipTiles(const TSharedPtr<FImgMediaFrame, ESPMode::ThreadSafe>& ExistingFrame, const TMap<int32, FImgMediaTileSelection>& RequestedTiles)
+	bool ContainsMipTiles(const TMap<int32, FImgMediaTileSelection>& ExistingTiles, const TMap<int32, FImgMediaTileSelection>& RequestedTiles)
 	{
 		for (auto Iter = RequestedTiles.CreateConstIterator(); Iter; ++Iter)
 		{
 			const int32 RequestedMipLevel = Iter.Key();
 			const FImgMediaTileSelection& RequestedSelection = Iter.Value();
 
-			if (const FImgMediaTileSelection* ExistingSelection = ExistingFrame->MipTilesPresent.Find(RequestedMipLevel))
+			if (const FImgMediaTileSelection* ExistingSelection = ExistingTiles.Find(RequestedMipLevel))
 			{
-				if (ExistingSelection->GetDimensions().GetMax() < RequestedSelection.GetDimensions().GetMax())
-				{
-					// If an empty 1x1 frame was cached but we're now requesting a fully tiled frame.
-					return false;
-				}
-
 				if (!ExistingSelection->Contains(RequestedSelection))
 				{
 					// Requested tile selection is not present.
@@ -209,6 +203,11 @@ FImgMediaLoader::FImgMediaLoader(const TSharedRef<FImgMediaScheduler, ESPMode::T
 	, RetryCount(0)
 	, UseGlobalCache(false)
 	, SmartCacheSettings(InSmartCacheSettings)
+	, bIsPlaybackBlocking(false)
+	, bIsBandwidthThrottlingEnabled(true)
+	, bIsSkipFramesEnabled(false)
+	, SkipFramesCounter(0)
+	, SkipFramesLevel(0)
 #if WITH_EDITOR
 	, Bandwidth()
 #endif
@@ -340,6 +339,15 @@ void FImgMediaLoader::ResetFetchLogic()
 	QueuedSampleFetch.LastFrameIndex = INDEX_NONE;
 	// note: we can reset the sequence index here as this will be called when MFW does flush any queues - so we can start from scratch with no issues
 	QueuedSampleFetch.CurrentSequenceIndex = 0;
+
+	SkipFramesCounter = 0;
+	SkipFramesLevel = 0;
+}
+
+void FImgMediaLoader::SetIsPlaybackBlocking(bool bIsBlocking)
+{
+	bIsPlaybackBlocking = bIsBlocking;
+	UpdateBandwidthThrottling();
 }
 
 void FImgMediaLoader::HandlePause()
@@ -395,7 +403,7 @@ const TSharedPtr<FImgMediaFrame, ESPMode::ThreadSafe>* FImgMediaLoader::GetFrame
 }
 
 
-IMediaSamples::EFetchBestSampleResult FImgMediaLoader::FetchBestVideoSampleForTimeRange(const TRange<FMediaTimeStamp>& TimeRange, TSharedPtr<IMediaTextureSample, ESPMode::ThreadSafe>& OutSample, bool bIsLoopingEnabled, float PlayRate, bool bPlaybackIsBlocking)
+IMediaSamples::EFetchBestSampleResult FImgMediaLoader::FetchBestVideoSampleForTimeRange(const TRange<FMediaTimeStamp>& TimeRange, TSharedPtr<IMediaTextureSample, ESPMode::ThreadSafe>& OutSample, bool bIsLoopingEnabled, float PlayRate)
 {
 	if (IsInitialized() && TimeRange.HasLowerBound() && TimeRange.HasUpperBound())
 	{
@@ -493,7 +501,7 @@ IMediaSamples::EFetchBestSampleResult FImgMediaLoader::FetchBestVideoSampleForTi
 			// If playback is not blocking, we expect less expectancy of precision on the users side, but more need for speedy return of "some ok frame"
 			// So: if we detect non-blocking playback we return a "as good sample as we can", but not always the "perfect" one we calculated
 			// (still we adhere to a rough emulation of a classic output pipeline as other players have)
-			if (!bPlaybackIsBlocking)
+			if (!bIsPlaybackBlocking)
 			{
 				// Check what data we actually have in the cache already & attempt to go further backwards on the time line
 				// to get a less then optimal frame that is still on screen and available...
@@ -682,6 +690,11 @@ bool FImgMediaLoader::PeekVideoSampleTime(FMediaTimeStamp &TimeStamp, bool bIsLo
 			Idx = TimeToFrameNumber(CurrentTime);
 		}
 
+		if (SkipFramesLevel > 0)
+		{
+			Idx = GetSkipFrame(Idx);
+		}
+
 		// If possible, fetch any existing frame data...
 		// (just to see if we have any)
 		const TSharedPtr<FImgMediaFrame, ESPMode::ThreadSafe>* Frame = ((uint32)Idx != INDEX_NONE) ? (UseGlobalCache ? GlobalCache->FindAndTouch(SequenceName, Idx) : Frames.FindAndTouch(Idx)) : nullptr;
@@ -731,16 +744,14 @@ IQueuedWork* FImgMediaLoader::GetWork()
 	if (DesiredMipsAndTiles.IsEmpty())
 	{
 		// Still provide the cache with an empty frame to prevent blocking playback from stalling.
-		bool bIsFrameAlreadyCached = UseGlobalCache ? GlobalCache->Contains(SequenceName, FrameNumber) : Frames.Contains(FrameNumber);
-
-		if (!bIsFrameAlreadyCached)
-		{
-			AddEmptyFrame(FrameNumber);
-		}
+		TryAddEmptyFrame(FrameNumber);
 
 		// No selection was visible, so we don't queue any work.
 		return nullptr;
 	}
+
+	// Update minimum mip level to upscale
+	MinimumMipLevelToUpscale = GetDesiredMinimumMipLevelToUpscale();
 
 	FImgMediaLoaderWork* Work = (WorkPool.Num() > 0) ? WorkPool.Pop() : new FImgMediaLoaderWork(AsShared(), Reader.ToSharedRef());
 	
@@ -897,6 +908,8 @@ bool FImgMediaLoader::LoadSequence(const FString& SequencePath, const FFrameRate
 	}
 
 	const UImgMediaSettings* Settings = GetDefault<UImgMediaSettings>();
+	bIsBandwidthThrottlingEnabled = Settings->BandwidthThrottlingEnabled;
+	UpdateBandwidthThrottling();
 	UseGlobalCache = Settings->UseGlobalCache;
 	if (SmartCacheSettings.bIsEnabled)
 	{
@@ -937,6 +950,7 @@ bool FImgMediaLoader::LoadSequence(const FString& SequencePath, const FFrameRate
 	}
 
 	NumMipLevels = FMath::Max(FirstFrameInfo.NumMipLevels, ImagePaths.Num());
+	MinimumMipLevelToUpscale = -1;
 
 	SequenceDim = FirstFrameInfo.Dim;
 
@@ -1233,6 +1247,15 @@ void FImgMediaLoader::Update(int32 PlayHeadFrame, float PlayRate, bool Loop)
 		int32 LoadBehindCount = NumLoadBehind;
 		int32 LoadBehindIndex = PlayHeadFrame - FrameOffset;
 
+		// Adjust if we are skipping frames.
+		if (SkipFramesLevel > 0)
+		{
+			int32 Mult = (1 << SkipFramesLevel);
+			LoadAheadIndex = GetSkipFrame(LoadAheadIndex);
+			LoadBehindIndex = GetSkipFrame(LoadBehindIndex);
+			FrameOffset *= Mult;
+		}
+
 		// alternate between look ahead and look behind
 		
 		while ((FramesToLoad.Num() < NumFramesToLoad) &&
@@ -1245,6 +1268,7 @@ void FImgMediaLoader::Update(int32 PlayHeadFrame, float PlayRate, bool Loop)
 					if (Loop)
 					{
 						LoadAheadIndex += NumImagePaths;
+						LoadAheadIndex = GetSkipFrame(LoadAheadIndex);
 					}
 					else
 					{
@@ -1256,6 +1280,7 @@ void FImgMediaLoader::Update(int32 PlayHeadFrame, float PlayRate, bool Loop)
 					if (Loop)
 					{
 						LoadAheadIndex -= NumImagePaths;
+						LoadAheadIndex = GetSkipFrame(LoadAheadIndex);
 					}
 					else
 					{
@@ -1279,6 +1304,7 @@ void FImgMediaLoader::Update(int32 PlayHeadFrame, float PlayRate, bool Loop)
 					if (Loop)
 					{
 						LoadBehindIndex += NumImagePaths;
+						LoadBehindIndex = GetSkipFrame(LoadBehindIndex);
 					}
 					else
 					{
@@ -1290,6 +1316,7 @@ void FImgMediaLoader::Update(int32 PlayHeadFrame, float PlayRate, bool Loop)
 					if (Loop)
 					{
 						LoadBehindIndex -= NumImagePaths;
+						LoadBehindIndex = GetSkipFrame(LoadBehindIndex);
 					}
 					else
 					{
@@ -1320,6 +1347,17 @@ void FImgMediaLoader::Update(int32 PlayHeadFrame, float PlayRate, bool Loop)
 			UE_LOG(LogImgMedia, Verbose, TEXT("Loader %p: Removed Frame %i"), this, FrameNumber);
 			QueuedFrameNumbers.RemoveAtSwap(Idx);
 			Reader->CancelFrame(FrameNumber);
+			
+			// We failed to load this frame... are we throttling?
+			if (bIsSkipFramesEnabled)
+			{
+				SkipFramesCounter++;
+				if (SkipFramesCounter > SkipFramesCounterRaiseLevelThreshold)
+				{
+					SkipFramesLevel++;
+					SkipFramesCounter = SkipFramesCounterNewLevelValue;
+				}
+			}
 		}
 	}
 
@@ -1355,7 +1393,7 @@ void FImgMediaLoader::Update(int32 PlayHeadFrame, float PlayRate, bool Loop)
 			TMap<int32, FImgMediaTileSelection> DesiredMipsAndTiles;
 			GetDesiredMipTiles(FrameNumber, DesiredMipsAndTiles);
 
-			NeedFrame = !ImgMediaLoader::ContainsMipTiles(*FramePtr, DesiredMipsAndTiles);
+			NeedFrame = !ImgMediaLoader::ContainsMipTiles((*FramePtr)->MipTilesPresent, DesiredMipsAndTiles);
 
 			if (NeedFrame)
 			{
@@ -1368,7 +1406,7 @@ void FImgMediaLoader::Update(int32 PlayHeadFrame, float PlayRate, bool Loop)
 			// Do we actually have a frame for this?
 			if (ImagePaths[0][FrameNumber].Len() == 0)
 			{
-				AddEmptyFrame(FrameNumber);
+				TryAddEmptyFrame(FrameNumber);
 			}
 			else
 			{
@@ -1378,6 +1416,23 @@ void FImgMediaLoader::Update(int32 PlayHeadFrame, float PlayRate, bool Loop)
 	}
 	Algo::Reverse(PendingFrameNumbers);
 
+	// Are we throttling and there no frames pending?
+	if ((bIsSkipFramesEnabled) && (PendingFrameNumbers.Num() == 0))
+	{
+		// This implies that we have spare bandwidth, so lower the skip count.
+		if (SkipFramesCounter > 0)
+		{
+			SkipFramesCounter--;
+			if (SkipFramesCounter <= 0)
+			{
+				if (SkipFramesLevel > 0)
+				{
+					SkipFramesLevel--;
+					SkipFramesCounter = SkipFramesCounterNewLevelValue;
+				}
+			}
+		}
+	}
 	CSV_EVENT(ImgMedia, TEXT("LoaderUpdatePending %d %d"), (PendingFrameNumbers.Num() > 0) ? PendingFrameNumbers[0] : -1, (PendingFrameNumbers.Num() > 0) ? PendingFrameNumbers[PendingFrameNumbers.Num() - 1] : -1);
 }
 
@@ -1386,25 +1441,28 @@ void FImgMediaLoader::Update(int32 PlayHeadFrame, float PlayRate, bool Loop)
  *****************************************************************************/
 
 
-void FImgMediaLoader::AddEmptyFrame(int32 FrameNumber)
+bool FImgMediaLoader::TryAddEmptyFrame(int32 FrameNumber)
 {
 	FScopeLock Lock(&CriticalSection);
 
-	TSharedPtr<FImgMediaFrame, ESPMode::ThreadSafe> Frame;
-	int32 NumChannels = 3;
-	int32 PixelSize = sizeof(uint16) * NumChannels;
-	Frame = MakeShareable(new FImgMediaFrame());
-	Frame->Info.Dim = SequenceDim;
-	Frame->Info.FrameRate = SequenceFrameRate;
-	Frame->Info.NumChannels = NumChannels;
-	Frame->Info.bHasTiles = false;
-	Frame->Format = EMediaTextureSampleFormat::FloatRGB;
-	Frame->Stride = Frame->Info.Dim.X * PixelSize;
-	for (int32 Level = 0; Level < GetNumMipLevels(); ++Level)
+	bool bAddFrame = UseGlobalCache ? !GlobalCache->Contains(SequenceName, FrameNumber) : !Frames.Contains(FrameNumber);
+
+	if (bAddFrame)
 	{
-		Frame->MipTilesPresent.Emplace(Level, FImgMediaTileSelection(1, 1, true));
+		const int32 NumChannels = 3;
+		const int32 PixelSize = sizeof(uint16) * NumChannels;
+		TSharedPtr<FImgMediaFrame, ESPMode::ThreadSafe> Frame = MakeShared<FImgMediaFrame>();
+		Frame->Info.Dim = SequenceDim;
+		Frame->Info.FrameRate = SequenceFrameRate;
+		Frame->Info.NumChannels = NumChannels;
+		Frame->Info.bHasTiles = false;
+		Frame->Format = EMediaTextureSampleFormat::FloatRGB;
+		Frame->Stride = Frame->Info.Dim.X * PixelSize;
+
+		AddFrameToCache(FrameNumber, Frame);
 	}
-	AddFrameToCache(FrameNumber, Frame);
+
+	return bAddFrame;
 }
 
 void FImgMediaLoader::NotifyWorkComplete(FImgMediaLoaderWork& CompletedWork, int32 FrameNumber,
@@ -1416,7 +1474,18 @@ void FImgMediaLoader::NotifyWorkComplete(FImgMediaLoaderWork& CompletedWork, int
 	if (QueuedFrameNumbers.Remove(FrameNumber) > 0)
 	{
 		AddFrameToCache(FrameNumber, Frame);
+
+		// Reduce SkipFramesCounter when at skip level 0, otherwise it will never go down
+		// unless we have a lot more bandwidth than needed.
+		if ((bIsSkipFramesEnabled) && (SkipFramesLevel == 0) && (SkipFramesCounter > 0))
+		{
+			SkipFramesCounter--;
+		}
 	}
+	
+	// Make sure the frame is no longer cancelled, otherwise we might end up cancelling this frame
+	// later on inadvertently!
+	Reader->UncancelFrame(FrameNumber);
 
 	WorkPool.Push(&CompletedWork);
 
@@ -1466,6 +1535,16 @@ void FImgMediaLoader::GetDesiredMipTiles(int32 FrameIndex, TMap<int32, FImgMedia
 			OutMipsAndTiles.Emplace(MipLevel, FImgMediaTileSelection::CreateForTargetMipLevel(SequenceDim, TilingDescription.TileSize, MipLevel, true));
 		}
 	}
+}
+
+int32 FImgMediaLoader::GetDesiredMinimumMipLevelToUpscale()
+{
+	if (MipMapInfo.IsValid())
+	{
+		return MipMapInfo->GetMinimumMipLevelToUpscale();
+	}
+
+	return -1;
 }
 
 
@@ -1550,4 +1629,31 @@ bool FImgMediaLoader::GetNumberAtEndOfString(int32 &Number, const FString& Strin
 	
 	return bFoundNumber;
 }
+
+
+int32 FImgMediaLoader::GetSkipFrame(int32 FrameIndex)
+{
+	int32 Mult = (1 << SkipFramesLevel);
+	int32 Mask = ~(Mult - 1);
+	FrameIndex = (FrameIndex & Mask) + (Mult - 1);
+	
+	const int32 NumImagePaths = GetNumImages();
+	if (FrameIndex >= NumImagePaths)
+	{
+		FrameIndex = NumImagePaths - 1;
+	}
+
+	return FrameIndex;
+}
+
+void FImgMediaLoader::UpdateBandwidthThrottling()
+{
+	bIsSkipFramesEnabled = bIsBandwidthThrottlingEnabled && (bIsPlaybackBlocking == false);
+	if (bIsSkipFramesEnabled == false)
+	{
+		SkipFramesCounter = 0;
+		SkipFramesLevel = 0;
+	}
+}
+
 

@@ -18,6 +18,7 @@
 
 class APlayerController;
 class ARecastNavMesh;
+class FColoredMaterialRenderProxy;
 class FMeshElementCollector;
 class FPrimitiveDrawInterface;
 class UCanvas;
@@ -42,6 +43,9 @@ enum class ENavMeshDetailFlags : uint8
 	NavOctree,
 	NavOctreeDetails,
 	MarkForbiddenPolys,
+	TileBuildTimes,
+	TileBuildTimesHeatMap,
+	TileResolutions
 };
 
 // exported to API for GameplayDebugger module
@@ -80,6 +84,7 @@ struct NAVIGATIONSYSTEM_API FNavMeshSceneProxyData : public TSharedFromThis<FNav
 
 		FDebugText() {}
 		FDebugText(const FVector& InLocation, const FString& InText) : Location(InLocation), Text(InText) {}
+		FDebugText(const FString& InText) : Location(FNavigationSystem::InvalidLocation), Text(InText) {}
 	};
 	TArray<FDebugText> DebugLabels;
 	
@@ -162,6 +167,12 @@ public:
 		DebugLabels.Append(InSceneProxy->ProxyData.DebugLabels);
 		bForceRendering = InSceneProxy->bForceRendering;
 		bNeedsNewData = InSceneProxy->ProxyData.bNeedsNewData;
+	}
+
+	void Reset()
+	{
+		DebugLabels.Reset();
+		bNeedsNewData = true;
 	}
 
 protected:

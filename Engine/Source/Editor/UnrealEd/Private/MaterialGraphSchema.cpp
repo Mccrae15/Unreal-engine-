@@ -43,6 +43,7 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "MaterialEditorActions.h"
 #include "MaterialGraphNode_Knot.h"
+#include "RenderUtils.h"
 
 #define LOCTEXT_NAMESPACE "MaterialGraphSchema"
 
@@ -111,8 +112,14 @@ void FMaterialGraphSchemaAction_NewNode::SetFunctionInputType(UMaterialExpressio
 	case MCT_StaticBool:
 		FunctionInput->InputType = FunctionInput_StaticBool;
 		break;
+	case MCT_Bool:
+		FunctionInput->InputType = FunctionInput_Bool;
+		break;
 	case MCT_MaterialAttributes:
 		FunctionInput->InputType = FunctionInput_MaterialAttributes;
+		break;
+	case MCT_Strata:
+		FunctionInput->InputType = FunctionInput_Substrate;
 		break;
 	default:
 		break;
@@ -908,12 +915,6 @@ TSharedPtr<FEdGraphSchemaAction> UMaterialGraphSchema::GetCreateCommentAction() 
 	return TSharedPtr<FEdGraphSchemaAction>(static_cast<FEdGraphSchemaAction*>(new FMaterialGraphSchemaAction_NewComment));
 }
 
-bool UnrealEd_IsStrataEnabled()
-{
-	static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Strata"));
-	return CVar && CVar->GetValueOnAnyThread() > 0;
-}
-
 void UMaterialGraphSchema::GetMaterialFunctionActions(FGraphActionMenuBuilder& ActionMenuBuilder) const
 {
 	// Get type of dragged pin
@@ -995,9 +996,9 @@ void UMaterialGraphSchema::GetMaterialFunctionActions(FGraphActionMenuBuilder& A
 					bool bSkipMaterialFunction = false;
 					for (const FText& Category : LibraryCategoriesText)
 					{
-						if (Category.ToString().Contains("Strata"))
+						if (Category.ToString().Contains("Substrate"))
 						{
-							bSkipMaterialFunction = !UnrealEd_IsStrataEnabled();
+							bSkipMaterialFunction = !Strata::IsStrataEnabled();
 							break;
 						}
 					}

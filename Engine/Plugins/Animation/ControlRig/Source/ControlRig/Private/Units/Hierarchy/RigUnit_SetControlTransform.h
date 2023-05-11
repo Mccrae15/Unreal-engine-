@@ -19,7 +19,7 @@ struct CONTROLRIG_API FRigUnit_SetControlBool : public FRigUnitMutable
 	{}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The name of the Control to set the bool for.
@@ -72,7 +72,7 @@ struct CONTROLRIG_API FRigUnit_SetMultiControlBool : public FRigUnitMutable
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The array of control-Bool pairs to be processed
@@ -100,7 +100,7 @@ struct CONTROLRIG_API FRigUnit_SetControlFloat : public FRigUnitMutable
 	{}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The name of the Control to set the transform for.
@@ -161,7 +161,7 @@ struct CONTROLRIG_API FRigUnit_SetMultiControlFloat : public FRigUnitMutable
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The array of control-float pairs to be processed
@@ -197,7 +197,7 @@ struct CONTROLRIG_API FRigUnit_SetControlInteger : public FRigUnitMutable
 	{}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The name of the Control to set the transform for.
@@ -258,7 +258,7 @@ struct CONTROLRIG_API FRigUnit_SetMultiControlInteger : public FRigUnitMutable
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The array of control-integer pairs to be processed
@@ -292,7 +292,7 @@ struct CONTROLRIG_API FRigUnit_SetControlVector2D : public FRigUnitMutable
 	{}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The name of the Control to set the transform for.
@@ -354,7 +354,7 @@ struct CONTROLRIG_API FRigUnit_SetMultiControlVector2D : public FRigUnitMutable
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The array of control-vector2D pairs to be processed
@@ -384,12 +384,12 @@ struct CONTROLRIG_API FRigUnit_SetControlVector : public FRigUnitMutable
 	FRigUnit_SetControlVector()
 		: Weight(1.f)
 		, Vector(FVector::OneVector)
-		, Space(EBoneGetterSetterMode::GlobalSpace)
+		, Space(ERigVMTransformSpace::GlobalSpace)
 		, CachedControlIndex(FCachedRigElement())
 	{}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The name of the Control to set the transform for.
@@ -414,7 +414,7 @@ struct CONTROLRIG_API FRigUnit_SetControlVector : public FRigUnitMutable
 	 * in local or global space.
 	 */
 	UPROPERTY(meta = (Input))
-	EBoneGetterSetterMode Space;
+	ERigVMTransformSpace Space;
 
 	// Used to cache the internally used bone index
 	UPROPERTY()
@@ -432,12 +432,12 @@ struct CONTROLRIG_API FRigUnit_SetControlRotator : public FRigUnitMutable
 	FRigUnit_SetControlRotator()
 		: Weight(1.f)
 		, Rotator(FRotator::ZeroRotator)
-		, Space(EBoneGetterSetterMode::GlobalSpace)
+		, Space(ERigVMTransformSpace::GlobalSpace)
 		, CachedControlIndex(FCachedRigElement())
 	{}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The name of the Control to set the transform for.
@@ -462,7 +462,7 @@ struct CONTROLRIG_API FRigUnit_SetControlRotator : public FRigUnitMutable
 	 * in local or global space.
 	 */
 	UPROPERTY(meta = (Input))
-	EBoneGetterSetterMode Space;
+	ERigVMTransformSpace Space;
 
 	// Used to cache the internally used bone index
 	UPROPERTY()
@@ -477,7 +477,7 @@ struct CONTROLRIG_API FRigUnit_SetMultiControlRotator_Entry
 	FRigUnit_SetMultiControlRotator_Entry()
 	{
 		Rotator = FRotator::ZeroRotator;
-		Space = EBoneGetterSetterMode::GlobalSpace;
+		Space = ERigVMTransformSpace::GlobalSpace;
 	}
 
 	/**
@@ -497,7 +497,7 @@ struct CONTROLRIG_API FRigUnit_SetMultiControlRotator_Entry
 	 * in local or global space.
 	 */
 	UPROPERTY(meta = (Input))
-	EBoneGetterSetterMode Space;
+	ERigVMTransformSpace Space;
 };
 
 /**
@@ -515,7 +515,7 @@ struct CONTROLRIG_API FRigUnit_SetMultiControlRotator : public FRigUnitMutable
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The array of control-rotator pairs to be processed
@@ -544,12 +544,12 @@ struct CONTROLRIG_API FRigUnit_SetControlTransform : public FRigUnitMutable
 
 	FRigUnit_SetControlTransform()
 		: Weight(1.f)
-		, Space(EBoneGetterSetterMode::GlobalSpace)
+		, Space(ERigVMTransformSpace::GlobalSpace)
 		, CachedControlIndex(FCachedRigElement())
 	{}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The name of the Control to set the transform for.
@@ -574,7 +574,7 @@ struct CONTROLRIG_API FRigUnit_SetControlTransform : public FRigUnitMutable
 	 * in local or global space.
 	 */
 	UPROPERTY(meta = (Input))
-	EBoneGetterSetterMode Space;
+	ERigVMTransformSpace Space;
 
 	// Used to cache the internally used bone index
 	UPROPERTY()

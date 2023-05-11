@@ -11,6 +11,7 @@
 #include "DecalRenderingShared.h"
 #include "RayTracingTypes.h"
 #include "RayTracingDefinitions.h"
+#include <limits>
 
 TAutoConsoleVariable<int32> CVarDecalGridResolution(
 	TEXT("r.RayTracing.DecalGrid.Resolution"),
@@ -36,6 +37,20 @@ enum class EDecalsWriteFlags : uint32
 	AmbientOcclusion			= (1 << 4),
 };
 
+static uint32 CalculateDecalWriteFlags(FDecalBlendDesc DecalBlendDesc)
+{
+	uint32 Flags = (uint32)EDecalsWriteFlags::None;
+#define SET_FLAG(BOOL_VAL, WRITE_FLAG) Flags |= uint32(DecalBlendDesc.BOOL_VAL ? EDecalsWriteFlags::WRITE_FLAG : EDecalsWriteFlags::None)
+	SET_FLAG(bWriteBaseColor, BaseColor);
+	SET_FLAG(bWriteNormal, Normal);
+	SET_FLAG(bWriteRoughnessSpecularMetallic, RoughnessSpecularMetallic);
+	SET_FLAG(bWriteEmissive, Emissive);
+	SET_FLAG(bWriteAmbientOcclusion, AmbientOcclusion);
+#undef SET_FLAG
+
+	return Flags;
+}
+
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FRayTracingDecals, "RayTracingDecals");
 
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FDecalParametersRayTracing, )
@@ -45,6 +60,7 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FDecalParametersRayTracing, )
 	SHADER_PARAMETER(FVector3f, DecalToWorldInvScale)
 	SHADER_PARAMETER(FVector3f, DecalOrientation)
 	SHADER_PARAMETER(FVector2f, DecalParams)
+	SHADER_PARAMETER(FVector4f, DecalColorParam)
 	SHADER_PARAMETER(uint32, DecalWriteFlags)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
@@ -70,6 +86,7 @@ static TUniformBufferRef<FDecalParametersRayTracing> CreateDecalParametersBuffer
 	Parameters.DecalToWorld = RelativeDecalToWorldMatrix;
 	Parameters.DecalToWorldInvScale = RelativeDecalToWorldMatrix.GetScaleVector().Reciprocal();
 	Parameters.DecalOrientation = OrientationVector;
+	Parameters.DecalColorParam = DecalData.DecalColor;
 
 	float LifetimeAlpha = 1.0f;
 
@@ -80,15 +97,9 @@ static TUniformBufferRef<FDecalParametersRayTracing> CreateDecalParametersBuffer
 	}
 
 	Parameters.DecalParams = FVector2f(DecalData.FadeAlpha, LifetimeAlpha);
+	Parameters.DecalColorParam = DecalData.DecalColor;
 
-	Parameters.DecalWriteFlags = (uint32)EDecalsWriteFlags::None;
-#define SET_FLAG(BOOL_VAL, WRITE_FLAG) Parameters.DecalWriteFlags |= uint32(DecalData.BlendDesc.BOOL_VAL ? EDecalsWriteFlags::WRITE_FLAG : EDecalsWriteFlags::None)
-	SET_FLAG(bWriteBaseColor, BaseColor);
-	SET_FLAG(bWriteNormal, Normal);
-	SET_FLAG(bWriteRoughnessSpecularMetallic, RoughnessSpecularMetallic);
-	SET_FLAG(bWriteEmissive, Emissive);
-	SET_FLAG(bWriteAmbientOcclusion, AmbientOcclusion);
-#undef SET_FLAG
+	Parameters.DecalWriteFlags = CalculateDecalWriteFlags(DecalData.BlendDesc);
 
 	return CreateUniformBufferImmediate(Parameters, Usage);
 }
@@ -157,6 +168,9 @@ public:
 	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FMaterialShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+
+		// DECAL_PRIMITIVE informs material templates which functions to expose when rendering decals.
+		OutEnvironment.SetDefine(TEXT("DECAL_PRIMITIVE"), 1);
 	}
 
 	static bool ValidateCompiledResult(EShaderPlatform Platform, const FShaderParameterMap& ParameterMap, TArray<FString>& OutError)
@@ -180,6 +194,11 @@ public:
 		return true;
 	}
 
+	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
+	{
+		return ERayTracingPayloadType::Decals;
+	}
+
 	void GetShaderBindings(
 		const FScene* Scene,
 		ERHIFeatureLevel::Type FeatureLevel,
@@ -192,6 +211,9 @@ public:
 		FMaterialShader::GetShaderBindings(Scene, FeatureLevel, MaterialRenderProxy, Material, ShaderBindings);
 
 		ShaderBindings.Add(GetUniformBufferParameter<FViewUniformShaderParameters>(), View.ViewUniformBuffer);
+		// Similar to DecalRendering::SetShader(...) uses GIdentityPrimitiveUniformBuffer
+		// We could potentially bind the actual primitive uniform buffer
+		ShaderBindings.Add(GetUniformBufferParameter<FPrimitiveUniformShaderParameters>(), GIdentityPrimitiveUniformBuffer);
 		ShaderBindings.Add(DecalParameter, DecalParameters);
 	}
 
@@ -199,7 +221,158 @@ private:
 	LAYOUT_FIELD(FShaderUniformBufferParameter, DecalParameter);
 };
 
-IMPLEMENT_MATERIAL_SHADER_TYPE(, FRayTracingDecalMaterialShader, TEXT("/Engine/Private/RayTracing/RayTracingDecalMaterialShader.usf"), TEXT("RayTracingDecalMaterialShader"), SF_RayCallable);
+IMPLEMENT_RT_PAYLOAD_TYPE(ERayTracingPayloadType::Decals, 60);
+
+IMPLEMENT_SHADER_TYPE(, FRayTracingDecalMaterialShader, TEXT("/Engine/Private/RayTracing/RayTracingDecalMaterialShader.usf"), TEXT("RayTracingDecalMaterialShader"), SF_RayCallable);
+
+static bool NeedsAnyHitShader(EBlendMode BlendMode)
+{
+	return BlendMode != BLEND_Opaque;
+}
+
+template<bool bUseAnyHitShader>
+class TRayTracingDecalMaterial : public FMeshMaterialShader
+{
+	DECLARE_SHADER_TYPE(TRayTracingDecalMaterial, MeshMaterial);
+public:
+	TRayTracingDecalMaterial() = default;
+
+	TRayTracingDecalMaterial(const FMeshMaterialShaderType::CompiledShaderInitializerType& Initializer)
+		: FMeshMaterialShader(Initializer)
+	{}
+
+	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
+	{
+		if (!ShouldCompileRayTracingShadersForProject(Parameters.Platform))
+		{
+			// is raytracing enabled at all?
+			return false;
+		}
+		if (!Parameters.VertexFactoryType->SupportsRayTracing())
+		{
+			// does the VF support ray tracing at all?
+			return false;
+		}
+		if (Parameters.MaterialParameters.MaterialDomain != MD_DeferredDecal)
+		{
+			return false;
+		}
+		if (NeedsAnyHitShader(Parameters.MaterialParameters.BlendMode) != bUseAnyHitShader)
+		{
+			// the anyhit permutation is only required if the material is masked or has a non-opaque blend mode
+			return false;
+		}
+
+		return true;
+	}
+
+	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FMeshMaterialShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+
+		check(Parameters.MaterialParameters.MaterialDomain == MD_DeferredDecal);
+
+		FDecalBlendDesc DecalBlendDesc = DecalRendering::ComputeDecalBlendDesc(Parameters.Platform, Parameters.MaterialParameters);
+
+		OutEnvironment.SetDefine(TEXT("DECAL_PAYLOAD_FLAGS"), CalculateDecalWriteFlags(DecalBlendDesc));
+		OutEnvironment.SetDefine(TEXT("USE_MATERIAL_ANY_HIT_SHADER"), bUseAnyHitShader ? 1 : 0);
+	}
+
+	static bool ValidateCompiledResult(EShaderPlatform Platform, const FShaderParameterMap& ParameterMap, TArray<FString>& OutError)
+	{
+		if (ParameterMap.ContainsParameterAllocation(FSceneTextureUniformParameters::StaticStructMetadata.GetShaderVariableName()))
+		{
+			OutError.Add(TEXT("Ray tracing closest hit shaders cannot read from the SceneTexturesStruct."));
+			return false;
+		}
+
+		for (const auto& It : ParameterMap.GetParameterMap())
+		{
+			const FParameterAllocation& ParamAllocation = It.Value;
+			if (ParamAllocation.Type != EShaderParameterType::UniformBuffer
+				&& ParamAllocation.Type != EShaderParameterType::LooseData)
+			{
+				OutError.Add(FString::Printf(TEXT("Invalid ray tracing shader parameter '%s'. Only uniform buffers and loose data parameters are supported."), *(It.Key)));
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
+	{
+		return ERayTracingPayloadType::Decals;
+	}
+};
+
+using FRayTracingDecalMaterialCHS = TRayTracingDecalMaterial<false>;
+using FRayTracingDecalMaterialCHS_AHS = TRayTracingDecalMaterial<true>;
+
+IMPLEMENT_MATERIAL_SHADER_TYPE(template<>, FRayTracingDecalMaterialCHS, TEXT("/Engine/Private/RayTracing/RayTracingDecalMaterialShader.usf"), TEXT("closesthit=RayTracingDecalMaterialCHS"), SF_RayHitGroup);
+IMPLEMENT_MATERIAL_SHADER_TYPE(template<>, FRayTracingDecalMaterialCHS_AHS, TEXT("/Engine/Private/RayTracing/RayTracingDecalMaterialShader.usf"), TEXT("closesthit=RayTracingDecalMaterialCHS anyhit=RayTracingDecalMaterialAHS"), SF_RayHitGroup);
+
+FShaderType* GetRayTracingDecalMaterialShaderType(EBlendMode BlendMode)
+{
+	if (NeedsAnyHitShader(BlendMode))
+	{
+		return &FRayTracingDecalMaterialCHS_AHS::StaticType; 
+	}
+	else
+	{
+		return &FRayTracingDecalMaterialCHS::StaticType;
+	}
+}
+
+class FDefaultOpaqueMeshDecalHitGroup : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FDefaultOpaqueMeshDecalHitGroup)
+	SHADER_USE_ROOT_PARAMETER_STRUCT(FDefaultOpaqueMeshDecalHitGroup, FGlobalShader)
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return ShouldCompileRayTracingShadersForProject(Parameters.Platform);
+	}
+
+	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
+	{
+		return ERayTracingPayloadType::Decals;
+	}
+
+	using FParameters = FEmptyShaderParameters;
+};
+
+IMPLEMENT_SHADER_TYPE(, FDefaultOpaqueMeshDecalHitGroup, TEXT("/Engine/Private/RayTracing/RayTracingDefaultDecalHitShader.usf"), TEXT("closesthit=RayTracingDefaultOpaqueDecalMaterialCHS"), SF_RayHitGroup);
+
+class FDefaultHiddenMeshDecalHitGroup : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FDefaultHiddenMeshDecalHitGroup)
+	SHADER_USE_ROOT_PARAMETER_STRUCT(FDefaultHiddenMeshDecalHitGroup, FGlobalShader)
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return ShouldCompileRayTracingShadersForProject(Parameters.Platform);
+	}
+
+	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
+	{
+		return ERayTracingPayloadType::Decals;
+	}
+
+	using FParameters = FEmptyShaderParameters;
+};
+
+IMPLEMENT_SHADER_TYPE(, FDefaultHiddenMeshDecalHitGroup, TEXT("/Engine/Private/RayTracing/RayTracingDefaultDecalHitShader.usf"), TEXT("closesthit=RayTracingDefaultHiddenDecalMaterialCHS anyhit=RayTracingDefaultHiddenDecalMaterialAHS"), SF_RayHitGroup);
+
+FRHIRayTracingShader* GetDefaultOpaqueMeshDecalHitShader(const FGlobalShaderMap* ShaderMap)
+{
+	return ShaderMap->GetShader<FDefaultOpaqueMeshDecalHitGroup>().GetRayTracingShader();
+}
+
+FRHIRayTracingShader* GetDefaultHiddenMeshDecalHitShader(const FGlobalShaderMap* ShaderMap)
+{
+	return ShaderMap->GetShader<FDefaultHiddenMeshDecalHitGroup>().GetRayTracingShader();
+}
 
 void BuildDecalGrid(FRDGBuilder& GraphBuilder, uint32 NumDecals, FRDGBufferSRVRef DecalsSRV, FRayTracingDecals& OutParameters)
 {

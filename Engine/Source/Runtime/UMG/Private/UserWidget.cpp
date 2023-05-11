@@ -2,6 +2,7 @@
 
 #include "Blueprint/UserWidget.h"
 
+#include "Engine/GameInstance.h"
 #include "Rendering/DrawElements.h"
 #include "Sound/SoundBase.h"
 #include "Sound/SlateSound.h"
@@ -82,9 +83,11 @@ UUserWidget::UUserWidget(const FObjectInitializer& ObjectInitializer)
 {
 	SetVisibilityInternal(ESlateVisibility::SelfHitTestInvisible);
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	bIsFocusable = false;
 	ColorAndOpacity = FLinearColor::White;
 	ForegroundColor = FSlateColor::UseForeground();
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	MinimumDesiredSize = FVector2D(0, 0);
 
@@ -311,15 +314,18 @@ void UUserWidget::SynchronizeProperties()
 	TSharedPtr<SObjectWidget> SafeGCWidget = MyGCWidget.Pin();
 	if ( SafeGCWidget.IsValid() )
 	{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		TAttribute<FLinearColor> ColorBinding = PROPERTY_BINDING(FLinearColor, ColorAndOpacity);
 		TAttribute<FSlateColor> ForegroundColorBinding = PROPERTY_BINDING(FSlateColor, ForegroundColor);
 
 		SafeGCWidget->SetColorAndOpacity(ColorBinding);
 		SafeGCWidget->SetForegroundColor(ForegroundColorBinding);
 		SafeGCWidget->SetPadding(Padding);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 void UUserWidget::SetColorAndOpacity(FLinearColor InColorAndOpacity)
 {
 	ColorAndOpacity = InColorAndOpacity;
@@ -329,6 +335,11 @@ void UUserWidget::SetColorAndOpacity(FLinearColor InColorAndOpacity)
 	{
 		SafeGCWidget->SetColorAndOpacity(ColorAndOpacity);
 	}
+}
+
+const FLinearColor& UUserWidget::GetColorAndOpacity() const
+{
+	return ColorAndOpacity;
 }
 
 void UUserWidget::SetForegroundColor(FSlateColor InForegroundColor)
@@ -342,6 +353,11 @@ void UUserWidget::SetForegroundColor(FSlateColor InForegroundColor)
 	}
 }
 
+const FSlateColor& UUserWidget::GetForegroundColor() const
+{
+	return ForegroundColor;
+}
+
 void UUserWidget::SetPadding(FMargin InPadding)
 {
 	Padding = InPadding;
@@ -352,6 +368,12 @@ void UUserWidget::SetPadding(FMargin InPadding)
 		SafeGCWidget->SetPadding(Padding);
 	}
 }
+
+FMargin UUserWidget::GetPadding() const
+{
+	return Padding;
+}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 UWorld* UUserWidget::GetWorld() const
 {
@@ -414,8 +436,11 @@ UUMGSequencePlayer* UUserWidget::GetOrAddSequencePlayer(UWidgetAnimation* InAnim
 		if (!AnimationTickManager)
 		{
 			AnimationTickManager = UUMGSequenceTickManager::Get(this);
-			AnimationTickManager->AddWidget(this);
 		}
+
+		// Always ensure that this widget's animations are ticked for at least the first frame
+		// If this widget is currently offscreen it would very well not be being tracked by the tick manager
+		AnimationTickManager->AddWidget(this);
 
 		// @todo UMG sequencer - Restart animations which have had Play called on them?
 		UUMGSequencePlayer* FoundPlayer = nullptr;
@@ -536,7 +561,7 @@ UUMGSequencePlayer* UUserWidget::PlayAnimationForward(UWidgetAnimation* InAnimat
 		return Player;
 	}
 
-	return PlayAnimation(InAnimation, 0.0f, 1.0f, EUMGSequencePlayMode::Forward, PlaybackSpeed, bRestoreState);
+	return PlayAnimation(InAnimation, 0.0f, 1, EUMGSequencePlayMode::Forward, PlaybackSpeed, bRestoreState);
 }
 
 UUMGSequencePlayer* UUserWidget::PlayAnimationReverse(UWidgetAnimation* InAnimation, float PlaybackSpeed, bool bRestoreState)
@@ -554,7 +579,7 @@ UUMGSequencePlayer* UUserWidget::PlayAnimationReverse(UWidgetAnimation* InAnimat
 		return Player;
 	}
 
-	return PlayAnimation(InAnimation, 0.0f, 1.0f, EUMGSequencePlayMode::Reverse, PlaybackSpeed, bRestoreState);
+	return PlayAnimation(InAnimation, 0.0f, 1, EUMGSequencePlayMode::Reverse, PlaybackSpeed, bRestoreState);
 }
 
 void UUserWidget::StopAnimation(const UWidgetAnimation* InAnimation)
@@ -1240,6 +1265,37 @@ void UUserWidget::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedE
 	}
 }
 
+void UUserWidget::AssignGUIDToBindings()
+{
+	if (UWidgetBlueprintGeneratedClass* BGClass = GetWidgetTreeOwningClass())
+	{
+		for (int32 BindingIndex = 0; BindingIndex < NamedSlotBindings.Num(); BindingIndex++)
+		{
+			FNamedSlotBinding& Binding = NamedSlotBindings[BindingIndex];
+			if (BGClass->NamedSlotsWithID.Contains(Binding.Name))
+			{
+				Binding.Guid = BGClass->NamedSlotsWithID[Binding.Name];
+			}
+		}
+	}
+}
+
+void UUserWidget::UpdateBindingForSlot(FName SlotName)
+{
+	if (UWidgetBlueprintGeneratedClass* BGClass = GetWidgetTreeOwningClass())
+	{
+		if (BGClass->NamedSlotsWithID.Contains(SlotName))
+		{
+			for (FNamedSlotBinding& Binding : NamedSlotBindings)
+			{
+				if (BGClass->NamedSlotsWithID[SlotName] == Binding.Guid && !BGClass->NamedSlotsWithID.Contains(Binding.Name))
+				{
+					Binding.Name = SlotName;
+				}
+			}
+		}
+	}
+}
 #endif
 
 void UUserWidget::OnAnimationStarted_Implementation(const UWidgetAnimation* Animation)
@@ -1594,6 +1650,7 @@ void UUserWidget::UnregisterInputComponent()
 	}
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 void UUserWidget::SetInputActionPriority( int32 NewPriority )
 {
 	if ( InputComponent )
@@ -1601,6 +1658,11 @@ void UUserWidget::SetInputActionPriority( int32 NewPriority )
 		Priority = NewPriority;
 		InputComponent->Priority = Priority;
 	}
+}
+
+int32 UUserWidget::GetInputActionPriority() const
+{
+	return Priority;
 }
 
 void UUserWidget::SetInputActionBlocking( bool bShouldBlock )
@@ -1611,6 +1673,13 @@ void UUserWidget::SetInputActionBlocking( bool bShouldBlock )
 		InputComponent->bBlockInput = bStopAction;
 	}
 }
+
+bool UUserWidget::IsInputActionBlocking() const
+{
+	return bStopAction;
+}
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 void UUserWidget::OnInputAction( FOnInputAction Callback )
 {
@@ -1629,8 +1698,10 @@ void UUserWidget::InitializeInputComponent()
 		// class then this would fail
 		UClass* InputClass = Controller->InputComponent ? Controller->InputComponent->GetClass() : UInputSettings::GetDefaultInputComponentClass();
 		InputComponent = NewObject< UInputComponent >( this, InputClass, NAME_None, RF_Transient );
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		InputComponent->bBlockInput = bStopAction;
 		InputComponent->Priority = Priority;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		Controller->PushInputComponent( InputComponent );
 	}
 	else
@@ -1701,10 +1772,24 @@ bool UUserWidget::NativeIsInteractable() const
 	return IsInteractable();
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 bool UUserWidget::NativeSupportsKeyboardFocus() const
 {
 	return bIsFocusable;
 }
+
+bool UUserWidget::IsFocusable() const
+{
+	return bIsFocusable;
+}
+
+void UUserWidget::SetIsFocusable(bool InIsFocusable)
+{
+	bIsFocusable = InIsFocusable;
+	Invalidate(EInvalidateWidgetReason::Paint);
+}
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 FReply UUserWidget::NativeOnFocusReceived( const FGeometry& InGeometry, const FFocusEvent& InFocusEvent )
 {

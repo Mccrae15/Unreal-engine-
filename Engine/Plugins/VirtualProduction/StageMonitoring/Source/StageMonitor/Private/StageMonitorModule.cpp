@@ -3,13 +3,10 @@
 #include "StageMonitorModule.h"
 
 #include "Engine/Engine.h"
-#include "HAL/IConsoleManager.h"
 #include "Misc/CoreDelegates.h"
 #include "StageMonitor.h"
-#include "StageMonitoringSettings.h"
 #include "StageMonitorSessionManager.h"
-#include "VPSettings.h"
-#include "VPRoles/Public/VPRolesSubsystem.h"
+#include "VPRolesSubsystem.h"
 
 const FName IStageMonitorModule::ModuleName = TEXT("StageMonitor");
 

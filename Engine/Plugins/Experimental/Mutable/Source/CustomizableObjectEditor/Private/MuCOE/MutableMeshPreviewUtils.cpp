@@ -3,44 +3,14 @@
 #include "MuCOE/MutableMeshPreviewUtils.h"
 
 #include "Animation/Skeleton.h"
-#include "Containers/Array.h"
-#include "Containers/IndirectArray.h"
-#include "Containers/Map.h"
-#include "Containers/SparseArray.h"
-#include "CoreGlobals.h"
-#include "Engine/EngineTypes.h"
-#include "Engine/SkeletalMesh.h"
-#include "HAL/PlatformCrt.h"
-#include "Logging/LogCategory.h"
-#include "Logging/LogMacros.h"
-#include "MaterialShared.h"
+#include "MaterialDomain.h"
 #include "Materials/Material.h"
-#include "Math/BoxSphereBounds.h"
-#include "Math/Matrix.h"
-#include "Math/UnrealMathSSE.h"
-#include "Misc/AssertionMacros.h"
-#include "MuCO/CustomizableObject.h"
 #include "MuCO/CustomizableObjectInstance.h"
 #include "MuCO/MutableMeshBufferUtils.h"
 #include "MuCO/UnrealConversionUtils.h"
 #include "MuCO/UnrealPortabilityHelpers.h"
-#include "MuR/Mesh.h"
-#include "MuR/MeshBufferSet.h"
-#include "MuR/MutableTrace.h"
 #include "MuR/OpMeshFormat.h"
-#include "MuR/Parameters.h"
-#include "MuR/Ptr.h"
-#include "MuR/RefCounted.h"
-#include "MuR/Skeleton.h"
-#include "PerPlatformProperties.h"
-#include "ReferenceSkeleton.h"
-#include "Rendering/SkeletalMeshLODRenderData.h"
-#include "Trace/Detail/Channel.h"
-#include "UObject/NameTypes.h"
-#include "UObject/ObjectPtr.h"
 #include "UObject/Package.h"
-#include "UObject/UObjectGlobals.h"
-#include "UObject/UnrealNames.h"
 
 class UMaterialInterface;
 
@@ -579,8 +549,16 @@ namespace MutableMeshPreviewUtils
 			OutSkeletalMesh->GetMaterials().SetNum(1);
 			OutSkeletalMesh->GetMaterials()[0] = UnrealMaterial;
 
-			constexpr int32 MeshLODIndex = 0;
-			UnrealConversionUtils::BuildSkeletalMeshElementDataAtLOD(MeshLODIndex,InMutableMesh,OutSkeletalMesh);
+			Helper_GetLODInfoArray(OutSkeletalMesh)[0].LODMaterialMap.SetNumZeroed(1);
+
+			// Add RenderSections for each surface in the mesh
+			if (InMutableMesh)
+			{
+				for (int32 SurfaceIndex = 0; SurfaceIndex < InMutableMesh->GetSurfaceCount(); ++SurfaceIndex)
+				{
+					new(Helper_GetLODRenderSections(OutSkeletalMesh, 0)) Helper_SkelMeshRenderSection();
+				}
+			}
 		}
 
 

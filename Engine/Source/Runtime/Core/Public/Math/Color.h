@@ -77,7 +77,7 @@ struct FLinearColor
 	 * @param Color The sRGB color that needs to be converted into linear space.
 	 * to get direct conversion use ReinterpretAsLinear
 	 */
-	FORCEINLINE FLinearColor(const FColor& Color);
+	constexpr FORCEINLINE FLinearColor(const FColor& Color);
 
 	CORE_API FLinearColor(const FVector3f& Vector);
 	CORE_API explicit FLinearColor(const FVector3d& Vector); // Warning: keep this explicit, or FVector4f will be implicitly created from FVector3d via FLinearColor
@@ -459,6 +459,12 @@ struct FLinearColor
 	static CORE_API const FLinearColor Green;
 	static CORE_API const FLinearColor Blue;
 	static CORE_API const FLinearColor Yellow;
+
+	friend FORCEINLINE uint32 GetTypeHash( const FLinearColor& LinearColor )
+	{
+		// Note: this assumes there's no padding in FLinearColor that could contain uncompared data.
+		return FCrc::MemCrc_DEPRECATED(&LinearColor, sizeof(FLinearColor));
+	}
 };
 DECLARE_INTRINSIC_TYPE_LAYOUT(FLinearColor);
 
@@ -479,20 +485,13 @@ struct FColor
 public:
 	// Variables.
 #if PLATFORM_LITTLE_ENDIAN
-	#ifdef _MSC_VER
-		// Win32 x86
-		union { struct{ uint8 B,G,R,A; }; uint32 AlignmentDummy; };
-	#else
-		// Linux x86, etc
-		uint8 B GCC_ALIGN(4);
-		uint8 G,R,A;
-	#endif
+	union { struct{ uint8 B,G,R,A; }; uint32 Bits; };
 #else // PLATFORM_LITTLE_ENDIAN
-	union { struct{ uint8 A,R,G,B; }; uint32 AlignmentDummy; };
+	union { struct{ uint8 A,R,G,B; }; uint32 Bits; };
 #endif
 
-	uint32& DWColor(void) {return *((uint32*)this);}
-	const uint32& DWColor(void) const {return *((uint32*)this);}
+	uint32& DWColor(void) {return Bits;}
+	const uint32& DWColor(void) const {return Bits;}
 
 	// Constructors.
 	FORCEINLINE FColor() {}
@@ -779,6 +778,11 @@ public:
 	static CORE_API const FColor Silver;
 	static CORE_API const FColor Emerald;
 
+	friend FORCEINLINE uint32 GetTypeHash( const FColor& Color )
+	{
+		return Color.DWColor();
+	}
+
 private:
 	/**
 	 * Please use .ToFColor(true) on FLinearColor if you wish to convert from FLinearColor to FColor,
@@ -791,12 +795,12 @@ private:
 };
 DECLARE_INTRINSIC_TYPE_LAYOUT(FColor);
 
-FORCEINLINE FLinearColor::FLinearColor(const FColor& Color)
+constexpr FORCEINLINE FLinearColor::FLinearColor(const FColor& Color)
+	: R(sRGBToLinearTable[Color.R])
+    , G(sRGBToLinearTable[Color.G])
+    , B(sRGBToLinearTable[Color.B])
+    , A(static_cast<float>(Color.A) * (1.0f / 255.0f))
 {
-	R = sRGBToLinearTable[Color.R];
-	G = sRGBToLinearTable[Color.G];
-	B = sRGBToLinearTable[Color.B];
-	A = float(Color.A) * (1.0f / 255.0f);
 }
 
 FORCEINLINE FColor FLinearColor::QuantizeRound() const
@@ -835,18 +839,6 @@ FORCEINLINE FColor FLinearColor::ToFColor(const bool bSRGB) const
 	{
 		return QuantizeRound();
 	}
-}
-
-FORCEINLINE uint32 GetTypeHash( const FColor& Color )
-{
-	return Color.DWColor();
-}
-
-
-FORCEINLINE uint32 GetTypeHash( const FLinearColor& LinearColor )
-{
-	// Note: this assumes there's no padding in FLinearColor that could contain uncompared data.
-	return FCrc::MemCrc_DEPRECATED(&LinearColor, sizeof(FLinearColor));
 }
 
 

@@ -10,8 +10,11 @@
 #include "HAL/IConsoleManager.h"
 #include "Templates/RefCounting.h"
 #include "RHI.h"
+#include "DataDrivenShaderPlatformInfo.h"
+#include "LightSceneProxy.h"
 #include "RenderResource.h"
 #include "UniformBuffer.h"
+#include "SceneInterface.h"
 #include "ShaderParameters.h"
 #include "Shader.h"
 #include "HitProxies.h"
@@ -131,7 +134,7 @@ public:
 		EMeshPass::Type InMeshPassTargetType);
 
 	virtual void AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId = -1) override final;
-	virtual void CollectPSOInitializers(const FSceneTexturesConfig& SceneTexturesConfig, const FMaterial& Material, const FVertexFactoryType* VertexFactoryType, const FPSOPrecacheParams& PreCacheParams, TArray<FPSOPrecacheData>& PSOInitializers) override final;
+	virtual void CollectPSOInitializers(const FSceneTexturesConfig& SceneTexturesConfig, const FMaterial& Material, const FPSOPrecacheVertexFactoryData& VertexFactoryData, const FPSOPrecacheParams& PreCacheParams, TArray<FPSOPrecacheData>& PSOInitializers) override final;
 
 	FMeshPassProcessorRenderState PassDrawRenderState;
 
@@ -154,7 +157,7 @@ private:
 		ERasterizerCullMode MeshCullMode);
 
 	void CollectPSOInitializersForEachShadowDepthType(
-		const FVertexFactoryType* VertexFactoryType,
+		const FPSOPrecacheVertexFactoryData& VertexFactoryData,
 		const FMaterial& RESTRICT MaterialResource,
 		ERasterizerFillMode MeshFillMode,
 		ERasterizerCullMode MeshCullMode,
@@ -162,20 +165,22 @@ private:
 		TArray<FPSOPrecacheData>& PSOInitializers);
 
 	void CollectPSOInitializersForEachStreamSetup(
-		const FVertexFactoryType* VertexFactoryType,
+		const FPSOPrecacheVertexFactoryData& VertexFactoryData,
 		const FMaterial& RESTRICT MaterialResource,
 		const FShadowDepthType& InShadowDepthType,
 		ERasterizerFillMode MeshFillMode,
 		ERasterizerCullMode MeshCullMode,
+		bool bRequired,
 		TArray<FPSOPrecacheData>& PSOInitializers);
 
 	void CollectPSOInitializersInternal(
-		const FVertexFactoryType* VertexFactoryType,
+		const FPSOPrecacheVertexFactoryData& VertexFactoryData,
 		const FMaterial& RESTRICT MaterialResource,
 		const FShadowDepthType& InShadowDepthType,
 		ERasterizerFillMode MeshFillMode,
 		ERasterizerCullMode MeshCullMode,
 		bool bSupportsPositionAndNormalOnlyStream,
+		bool bRequired,
 		TArray<FPSOPrecacheData>& PSOInitializers);
 
 	FShadowDepthType ShadowDepthType;
@@ -655,7 +660,7 @@ public:
 	/**
 	 * Adds a primitive to the shadow's subject list.
 	 */
-	bool AddSubjectPrimitive(FPrimitiveSceneInfo* PrimitiveSceneInfo, TArrayView<FViewInfo> ViewArray, bool bRecordShadowSubjectForMobileShading);
+	bool AddSubjectPrimitive(FDynamicShadowsTaskData& TaskData, FPrimitiveSceneInfo* PrimitiveSceneInfo, TArrayView<FViewInfo> ViewArray, bool bRecordShadowSubjectForMobileShading);
 
 	uint64 AddSubjectPrimitive_AnyThread(
 		const FPrimitiveSceneInfoCompact& PrimitiveSceneInfoCompact,
@@ -667,6 +672,7 @@ public:
 	void PresizeSubjectPrimitiveArrays(struct FAddSubjectPrimitiveStats const& Stats);
 
 	void FinalizeAddSubjectPrimitive(
+		FDynamicShadowsTaskData& TaskData,
 		struct FAddSubjectPrimitiveOp const& Op,
 		TArrayView<FViewInfo> ViewArray,
 		struct FFinalizeAddSubjectPrimitiveContext& Context);
@@ -737,15 +743,8 @@ public:
 	/** How large the soft PCF comparison should be, similar to DepthBias, before this was called TransitionScale and 1/Size */
 	float ComputeTransitionSize() const;
 
-	inline bool IsWholeSceneDirectionalShadow() const 
-	{ 
-		return bWholeSceneShadow && CascadeSettings.ShadowSplitIndex >= 0 && bDirectionalLight; 
-	}
-
-	inline bool IsWholeScenePointLightShadow() const
-	{
-		return bWholeSceneShadow && ( LightSceneInfo->Proxy->GetLightType() == LightType_Point || LightSceneInfo->Proxy->GetLightType() == LightType_Rect );
-	}
+	bool IsWholeSceneDirectionalShadow() const;
+	bool IsWholeScenePointLightShadow() const;
 
 	bool ShouldClampToNearPlane() const
 	{
@@ -1283,6 +1282,7 @@ public:
 	{
 		TShadowProjectionPS<Quality, false, true>::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 		OutEnvironment.SetDefine(TEXT("MODULATED_SHADOWS"), 1);
+		OutEnvironment.SetDefine(TEXT("IS_MOBILE_DEPTHREAD_SUBPASS"), 1);
 	}
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -1292,11 +1292,7 @@ public:
 
 	TModulatedShadowProjection() {}
 
-	TModulatedShadowProjection(const ShaderMetaType::CompiledShaderInitializerType& Initializer) :
-		TShadowProjectionPS<Quality, false, true>(Initializer)
-	{
-		ModulatedShadowColorParameter.Bind(Initializer.ParameterMap, TEXT("ModulatedShadowColor"));
-	}
+	TModulatedShadowProjection(const ShaderMetaType::CompiledShaderInitializerType& Initializer);
 
 	void SetParameters(
 		FRHICommandList& RHICmdList,
@@ -1311,6 +1307,7 @@ public:
 
 protected:
 	LAYOUT_FIELD(FShaderParameter, ModulatedShadowColorParameter);
+	LAYOUT_FIELD(FShaderUniformBufferParameter, MobileBasePassUniformBuffer);
 };
 
 /** Translucency shadow projection uniform buffer containing data needed for Fourier opacity maps. */

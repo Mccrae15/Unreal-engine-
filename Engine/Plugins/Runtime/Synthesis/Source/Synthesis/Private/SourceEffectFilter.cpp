@@ -1,13 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SourceEffects/SourceEffectFilter.h"
-#include "DSP/FloatArrayMath.h"
-#include "DSP/Dsp.h"
+#include "AudioBusSubsystem.h"
 #include "AudioMixerDevice.h"
+#include "DSP/BufferVectorOperations.h"
+#include "DSP/FloatArrayMath.h"
+#include "AudioMixerDevice.h"
+#include "Sound/AudioBus.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SourceEffectFilter)
-
-PRAGMA_DISABLE_OPTIMIZATION
 
 FSourceEffectFilter::FSourceEffectFilter()
 	: CurrentFilter(nullptr)
@@ -116,7 +117,9 @@ void FSourceEffectFilter::OnPresetChanged()
 					FAudioBusModulationData& NewModData = ModData.AddDefaulted_GetRef();
 
 					uint32 AudioBusId = BusModulationSettings.AudioBus->GetUniqueID();
-					NewModData.AudioBusPatch = MixerDevice->AddPatchForAudioBus(AudioBusId, 1.0f);
+					UAudioBusSubsystem* AudioBusSubsystem = MixerDevice->GetSubsystem<UAudioBusSubsystem>();
+					check(AudioBusSubsystem);
+					NewModData.AudioBusPatch = AudioBusSubsystem->AddPatchOutputForAudioBus(Audio::FAudioBusKey(AudioBusId), MixerDevice->GetNumOutputFrames(), BusModulationSettings.AudioBus->GetNumChannels());
 
 					NewModData.MinFreqModValue = BusModulationSettings.MinFrequencyModulation;
 					NewModData.MaxFreqModValue = BusModulationSettings.MaxFrequencyModulation;
@@ -213,6 +216,3 @@ void USourceEffectFilterPreset::SetSettings(const FSourceEffectFilterSettings& I
 {
 	UpdateSettings(InSettings);
 }
-
-PRAGMA_ENABLE_OPTIMIZATION
-

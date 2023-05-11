@@ -1,15 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Amf_EncoderH264.h"
-#include "HAL/Platform.h"
-#include "VideoEncoderCommon.h"
+#include "Amf_Common.h"
 #include "CodecPacket.h"
-#include "AVEncoderDebug.h"
-#include "VideoEncoderInput.h"
+#include "Misc/CommandLine.h"
 #include "RHI.h"
-#include <stdio.h>
-#include "Misc/ScopedEvent.h"
 #include "Async/Async.h"
+#include "VideoEncoderFactory.h"
+#include "VideoEncoderInputImpl.h"
+#include <components/ComponentCaps.h>
+#include <components/VideoEncoderVCE.h>
+#include <core/Buffer.h>
+#include <core/Data.h>
+#include <core/PropertyStorage.h>
 
 #define MAX_GPU_INDEXES 50
 #define DEFAULT_BITRATE 1000000u
@@ -165,13 +168,6 @@ namespace AVEncoder
 		case AVEncoder::EVideoFrameFormat::Undefined:
 		default:
 			UE_LOG(LogEncoderAMF, Error, TEXT("Frame format %s is not currently supported by Amf Encoder on this platform."), *ToString(FrameFormat));
-			return false;
-		}
-
-		//TODO(sandor.hadas) see if the current issues with AMF can be resolved then remove this error message
-		if (RHIType == ERHIInterfaceType::D3D11)
-		{
-			UE_LOG(LogEncoderAMF, Error, TEXT("AMF with DX11 is not currently supported try DX12 or Vulkan."));
 			return false;
 		}
 
@@ -732,7 +728,7 @@ namespace AVEncoder
 		}
 		else
 		{
-			UE_LOG(LogEncoderAMF, Error, TEXT("Amf recieved nullptr to texture."));
+			UE_LOG(LogEncoderAMF, Error, TEXT("Amf received nullptr to texture."));
 			return false;
 		}
 

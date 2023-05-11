@@ -6,6 +6,7 @@
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
+#include "Widgets/Text/STextBlock.h"
 #include "DetailLayoutBuilder.h"
 #include "Editor.h"
 #include "Styling/AppStyle.h"
@@ -61,7 +62,7 @@ void SControlRigFunctionBulkEditWidget::OnAssetsActivated(const TArray<FAssetDat
 
 void SControlRigFunctionBulkEditWidget::LoadAffectedAssets()
 {
-	TArray<FAssetData> FirstLevelReferenceAssets = Controller->GetAffectedAssets(EditType, false, true);
+	TArray<FAssetData> FirstLevelReferenceAssets = Controller->GetAffectedAssets(EditType, false);
 
 	{
 		FScopedSlowTask SlowTask((float)FirstLevelReferenceAssets.Num(), LOCTEXT("LoadingAffectedAssets", "Loading Affected Assets"));
@@ -86,7 +87,7 @@ void SControlRigFunctionBulkEditWidget::LoadAffectedAssets()
 		
 		SlowTask.MakeDialog();
 
-		Controller->GetAffectedAssets(EditType, true, true);
+		Controller->GetAffectedAssets(EditType, true);
 	}
 
 	Controller->OnBulkEditProgressDelegate.Unbind();
@@ -110,7 +111,7 @@ TSharedRef<SWidget> SControlRigFunctionBulkEditWidget::MakeAssetViewForReference
 	AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
 	AssetPickerConfig.OnGetCustomSourceAssets.BindLambda([this](const FARFilter& SourceFilter, TArray<FAssetData>& AddedAssets)
 	{
-		AddedAssets.Append(Controller->GetAffectedAssets(EditType, false, true));
+		AddedAssets.Append(Controller->GetAffectedAssets(EditType, false));
 	});
 	
 	return ContentBrowserModule.Get().CreateAssetPicker(AssetPickerConfig);

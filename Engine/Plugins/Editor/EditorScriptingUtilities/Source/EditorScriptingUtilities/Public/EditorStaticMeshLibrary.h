@@ -2,14 +2,8 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "Editor.h"
-#include "Engine/StaticMesh.h"
-#include "Engine/MeshMerging.h"
-#include "GameFramework/Actor.h"
-#include "BodySetupEnums.h"
-#include "UVMapSettings.h"
 #include "StaticMeshEditorSubsystemHelpers.h"
 #include "StaticMeshEditorSubsystem.h"
 #include "EditorStaticMeshLibrary.generated.h"
@@ -360,7 +354,7 @@ public:
 	 * @param	StaticMesh			Static mesh to remove collisions from.
 	 * @param	LODIndex			Index of the StaticMesh LOD.
 	 * @param	SectionIndex		Index of the StaticMesh Section.
-	 * @return True is the collision is enabled for the specified LOD of the StaticMesh section.
+	 * @return True if the collision is enabled for the specified LOD of the StaticMesh section.
 	 */
 	UE_DEPRECATED(5.0, "The Editor Scripting Utilities Plugin is deprecated - Use the function in Static Mesh Editor Subsystem")
 	UFUNCTION(BlueprintPure, Category = "Editor Scripting | StaticMesh", meta = (DeprecatedFunction, DeprecationMessage = "The Editor Scripting Utilities Plugin is deprecated - Use the function in Static Mesh Editor Subsystem"))
@@ -542,3 +536,10 @@ public:
 	}
 
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "BodySetupEnums.h"
+#include "CoreMinimal.h"
+#include "Engine/StaticMesh.h"
+#include "UVMapSettings.h"
+#endif

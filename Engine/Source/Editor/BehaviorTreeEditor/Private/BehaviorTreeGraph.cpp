@@ -164,18 +164,18 @@ void UBehaviorTreeGraph::UpdateAsset(int32 UpdateFlags)
 
 	// we can't look at pins until pin references have been fixed up post undo:
 	UEdGraphPin::ResolveAllPinReferences();
+
+	UBehaviorTreeGraphNode* Node = nullptr;
 	if (RootNode && RootNode->Pins.Num() > 0 && RootNode->Pins[0]->LinkedTo.Num() > 0)
 	{
-		UBehaviorTreeGraphNode* Node = Cast<UBehaviorTreeGraphNode>(RootNode->Pins[0]->LinkedTo[0]->GetOwningNode());
-		if (Node)
-		{
-			CreateBTFromGraph(Node);
+		Node = Cast<UBehaviorTreeGraphNode>(RootNode->Pins[0]->LinkedTo[0]->GetOwningNode());
+	}
 
-			if ((UpdateFlags & KeepRebuildCounter) == 0)
-			{
-				ModCounter++;
-			}
-		}
+	CreateBTFromGraph(Node);
+
+	if ((UpdateFlags & KeepRebuildCounter) == 0)
+	{
+		ModCounter++;
 	}
 
 	UpdateBlackboardChange();
@@ -346,7 +346,7 @@ namespace BTGraphHelpers
 			}
 			else if (MyCompositeNode)
 			{
-				MyCompositeNode->SetDecoratorData(RootNode, ChildIdx);
+				MyCompositeNode->SetDecoratorData(RootNode, IntCastChecked<uint8>(ChildIdx));
 
 				FIntIntPair RangeData;
 				RangeData.FirstIdx = DecoratorInstances.Num();
@@ -369,7 +369,7 @@ namespace BTGraphHelpers
 			DecoratorInstances[i]->InitializeNode(RootNode, *ExecutionIndex, 0, TreeDepth);
 			if (bInitializeNodes)
 			{
-				DecoratorInstances[i]->InitializeParentLink(ChildIdx);
+				DecoratorInstances[i]->InitializeParentLink(IntCastChecked<uint8>(ChildIdx));
 				*ExecutionIndex += 1;
 
 				// make sure that flow abort mode matches - skip for root level nodes
@@ -399,7 +399,7 @@ namespace BTGraphHelpers
 		{
 			if (NumNodes > 1)
 			{
-				FBTDecoratorLogic LogicOp(EBTDecoratorLogic::And, NumNodes);
+				FBTDecoratorLogic LogicOp(EBTDecoratorLogic::And, IntCastChecked<uint16>(NumNodes));
 				DecoratorOperations.Insert(LogicOp, 0);
 			}
 		}
@@ -432,7 +432,7 @@ namespace BTGraphHelpers
 			}
 			else if (MyCompositeNode)
 			{
-				MyCompositeNode->SetDecoratorData(RootNode, ChildIdx);
+				MyCompositeNode->SetDecoratorData(RootNode, IntCastChecked<uint8>(ChildIdx));
 
 				FIntIntPair RangeData;
 				RangeData.FirstIdx = DecoratorInstances.Num();
@@ -447,7 +447,7 @@ namespace BTGraphHelpers
 		for (int32 i = 0; i < DecoratorInstances.Num(); i++)
 		{
 			DecoratorInstances[i]->InitializeNode(RootNode, ExecutionIndex, 0, TreeDepth);
-			DecoratorInstances[i]->InitializeParentLink(ChildIdx);
+			DecoratorInstances[i]->InitializeParentLink(IntCastChecked<uint8>(ChildIdx));
 			ExecutionIndex++;
 		}
 
@@ -594,7 +594,7 @@ namespace BTGraphHelpers
 				UBTTask_RunBehavior* SubtreeTask = Cast<UBTTask_RunBehavior>(TaskInstance);
 				if (SubtreeTask)
 				{
-					*ExecutionIndex += SubtreeTask->GetInjectedNodesCount();
+					*ExecutionIndex += IntCastChecked<uint16>(SubtreeTask->GetInjectedNodesCount());
 				}
 
 				// collect services (task node)
@@ -613,7 +613,7 @@ namespace BTGraphHelpers
 							}
 
 							ServiceInstance->InitializeNode(RootNode, *ExecutionIndex, 0, TreeDepth);
-							ServiceInstance->InitializeParentLink(ChildIdx);
+							ServiceInstance->InitializeParentLink(IntCastChecked<uint8>(ChildIdx));
 							*ExecutionIndex += 1;
 
 							TaskInstance->Services.Add(ServiceInstance);
@@ -722,7 +722,7 @@ namespace BTGraphHelpers
 				UBTTask_RunBehavior* SubtreeTask = Cast<UBTTask_RunBehavior>(TaskInstance);
 				if (SubtreeTask)
 				{
-					*ExecutionIndex += SubtreeTask->GetInjectedNodesCount();
+					*ExecutionIndex += IntCastChecked<uint16>(SubtreeTask->GetInjectedNodesCount());
 				}
 
 				// collect services: task
@@ -843,8 +843,8 @@ namespace BTGraphHelpers
 		if (GraphNode)
 		{
 			const int32 ParentSubNodes = ParentGraphNode->Services.Num() + ParentGraphNode->Decorators.Num();
-			GraphNode->NodePosX = ParentGraphNode->NodePosX + ChildIdx * 400.0f;
-			GraphNode->NodePosY = ParentGraphNode->NodePosY + (ParentDecoratorCount + ParentSubNodes + 1) * 75.0f;
+			GraphNode->NodePosX = ParentGraphNode->NodePosX + ChildIdx * 400;
+			GraphNode->NodePosY = ParentGraphNode->NodePosY + (ParentDecoratorCount + ParentSubNodes + 1) * 75;
 			GraphNode->NodeInstance = Node;
 		}
 
@@ -897,44 +897,56 @@ namespace BTGraphHelpers
 void UBehaviorTreeGraph::CreateBTFromGraph(UBehaviorTreeGraphNode* RootEdNode)
 {
 	UBehaviorTree* BTAsset = Cast<UBehaviorTree>(GetOuter());
-	BTAsset->RootNode = NULL; //discard old tree
 
-	// let's create new tree from graph
-	uint16 ExecutionIndex = 0;
-	uint8 TreeDepth = 0;
-
-	BTAsset->RootNode = Cast<UBTCompositeNode>(RootEdNode->NodeInstance);
-	if (BTAsset->RootNode)
-	{
-		BTAsset->RootNode->InitializeNode(NULL, ExecutionIndex, 0, TreeDepth);
-		ExecutionIndex++;
-	}
-
-	// collect root level decorators
-	uint16 DummyIndex = MAX_uint16;
+	//discard old tree
+	BTAsset->RootNode = nullptr;
 	BTAsset->RootDecorators.Empty();
 	BTAsset->RootDecoratorOps.Empty();
-	BTGraphHelpers::CollectDecorators(BTAsset, RootEdNode, BTAsset->RootDecorators, BTAsset->RootDecoratorOps, false, NULL, &DummyIndex, 0, 0);
 
-	// connect tree nodes
-	BTGraphHelpers::CreateChildren(BTAsset, BTAsset->RootNode, RootEdNode, &ExecutionIndex, TreeDepth + 1); //-V595
-
-	// mark root level nodes
-	BTGraphHelpers::ClearRootLevelFlags(this);
-
-	RootEdNode->bRootLevel = true;
-	for (int32 Index = 0; Index < RootEdNode->Decorators.Num(); Index++)
+	if (RootEdNode != nullptr)
 	{
-		UBehaviorTreeGraphNode* Node = RootEdNode->Decorators[Index];
-		if (Node)
+		// let's create new tree from graph
+		uint16 ExecutionIndex = 0;
+
+		BTAsset->RootNode = Cast<UBTCompositeNode>(RootEdNode->NodeInstance);
+		if (BTAsset->RootNode)
 		{
-			Node->bRootLevel = true;
+			BTAsset->RootNode->InitializeNode(/*ParentNode*/nullptr, ExecutionIndex, /*MemoryOffset*/0 , /*TreeDepth*/0);
+			ExecutionIndex++;
 		}
-	}
 
-	if (BTAsset->RootNode)
-	{
-		BTAsset->RootNode->InitializeComposite(ExecutionIndex - 1);
+		// collect root level decorators
+		uint16 DummyExecutionIndex = MAX_uint16;
+		BTGraphHelpers::CollectDecorators(BTAsset
+			, RootEdNode
+			, BTAsset->RootDecorators
+			, BTAsset->RootDecoratorOps
+			, /*bInitializeNodes*/false
+			, /*RootNode*/nullptr
+			, &DummyExecutionIndex
+			, /*TreeDepth*/0
+			, /*ChildIdx*/0);
+
+		// connect tree nodes
+		BTGraphHelpers::CreateChildren(BTAsset, BTAsset->RootNode, RootEdNode, &ExecutionIndex, /*TreeDepth*/1); //-V595
+
+		// mark root level nodes
+		BTGraphHelpers::ClearRootLevelFlags(this);
+
+		RootEdNode->bRootLevel = true;
+		for (int32 Index = 0; Index < RootEdNode->Decorators.Num(); Index++)
+		{
+			UBehaviorTreeGraphNode* Node = RootEdNode->Decorators[Index];
+			if (Node)
+			{
+				Node->bRootLevel = true;
+			}
+		}
+
+		if (BTAsset->RootNode)
+		{
+			BTAsset->RootNode->InitializeComposite(ExecutionIndex - 1);
+		}
 	}
 
 	// Now remove any orphaned nodes left behind after regeneration
@@ -1028,7 +1040,7 @@ void UBehaviorTreeGraph::SpawnMissingNodesForParallel()
 					UBehaviorTreeGraphNode* MainTaskNode = Cast<UBehaviorTreeGraphNode>(MainTaskPin->LinkedTo[0]->GetOwningNode());
 					if (MainTaskNode)
 					{
-						const int32 Width = MainTaskNode->DEPRECATED_NodeWidget.IsValid() ? MainTaskNode->DEPRECATED_NodeWidget.Pin()->GetDesiredSize().X : 200;
+						const int32 Width = MainTaskNode->DEPRECATED_NodeWidget.IsValid() ? static_cast<int32>(MainTaskNode->DEPRECATED_NodeWidget.Pin()->GetDesiredSize().X) : 200;
 						XOffset = MainTaskNode->NodePosX - ParallelNode->NodePosX + Width + 20;
 					}
 				}
@@ -1038,7 +1050,7 @@ void UBehaviorTreeGraph::SpawnMissingNodesForParallel()
 				WaitTaskNode->ClassData = FGraphNodeClassData(UBTTask_Wait::StaticClass(), "");
 				NodeBuilder.Finalize();
 
-				const int32 ParentHeight = ParallelNode->DEPRECATED_NodeWidget.IsValid() ? ParallelNode->DEPRECATED_NodeWidget.Pin()->GetDesiredSize().Y : 200;
+				const int32 ParentHeight = ParallelNode->DEPRECATED_NodeWidget.IsValid() ? static_cast<int32>(ParallelNode->DEPRECATED_NodeWidget.Pin()->GetDesiredSize().Y) : 200;
 				WaitTaskNode->NodePosX = ParallelNode->NodePosX + XOffset;
 				WaitTaskNode->NodePosY = ParallelNode->NodePosY + ParentHeight + 20;
 
@@ -1198,7 +1210,7 @@ namespace BTAutoArrangeHelpers
 {
 	struct FNodeBoundsInfo
 	{
-		FVector2D SubGraphBBox;
+		FDeprecateSlateVector2D SubGraphBBox;
 		TArray<FNodeBoundsInfo> Children;
 	};
 
@@ -1217,11 +1229,10 @@ namespace BTAutoArrangeHelpers
 				if (GraphNode && BBoxTree.Children.Num() > 0)
 				{
 					AutoArrangeNodes(GraphNode, BBoxTree.Children[BBoxIndex], PosX, PosY + GraphNode->DEPRECATED_NodeWidget.Pin()->GetDesiredSize().Y * 2.5f);
-					GraphNode->DEPRECATED_NodeWidget.Pin()->MoveTo(FVector2D(BBoxTree.Children[BBoxIndex].SubGraphBBox.X / 2 - GraphNode->DEPRECATED_NodeWidget.Pin()->GetDesiredSize().X / 2 + PosX, PosY), NodeFilter);
-					PosX += BBoxTree.Children[BBoxIndex].SubGraphBBox.X + 20;
+					GraphNode->DEPRECATED_NodeWidget.Pin()->MoveTo(FDeprecateSlateVector2D(BBoxTree.Children[BBoxIndex].SubGraphBBox.X / 2.f - GraphNode->DEPRECATED_NodeWidget.Pin()->GetDesiredSize().X / 2.f + PosX, PosY), NodeFilter);
+					PosX += BBoxTree.Children[BBoxIndex].SubGraphBBox.X + 20.f;
 					BBoxIndex++;
 				}
-
 			}
 		}
 	}
@@ -1246,7 +1257,7 @@ namespace BTAutoArrangeHelpers
 
 					GetNodeSizeInfo(GraphNode, ChildBounds);
 
-					LevelWidth += ChildBounds.SubGraphBBox.X + 20;
+					LevelWidth += ChildBounds.SubGraphBBox.X + 20.f;
 					if (ChildBounds.SubGraphBBox.Y > LevelHeight)
 					{
 						LevelHeight = ChildBounds.SubGraphBBox.Y;
@@ -1285,7 +1296,7 @@ void UBehaviorTreeGraph::AutoArrange()
 	BTAutoArrangeHelpers::GetNodeSizeInfo(RootNode, BBoxTree);
 	BTAutoArrangeHelpers::AutoArrangeNodes(RootNode, BBoxTree, 0, RootNode->DEPRECATED_NodeWidget.Pin()->GetDesiredSize().Y * 2.5f);
 
-	RootNode->NodePosX = BBoxTree.SubGraphBBox.X / 2 - RootNode->DEPRECATED_NodeWidget.Pin()->GetDesiredSize().X / 2;
+	RootNode->NodePosX = static_cast<int32>(BBoxTree.SubGraphBBox.X / 2.f - RootNode->DEPRECATED_NodeWidget.Pin()->GetDesiredSize().X / 2.f);
 	RootNode->NodePosY = 0;
 
 	RootNode->DEPRECATED_NodeWidget.Pin()->GetOwnerPanel()->ZoomToFit(/*bOnlySelection=*/ false);

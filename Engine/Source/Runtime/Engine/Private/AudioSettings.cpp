@@ -1,19 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "Sound/AudioSettings.h"
 
+#include "AudioBusSubsystem.h"
 #include "AudioDevice.h"
-#include "AudioDeviceManager.h"
-#include "AudioMixerDevice.h"
-#include "IAudioParameterInterfaceRegistry.h"
-#include "Misc/ConfigCacheIni.h"
-#include "Misc/Paths.h"
-#include "Sound/SoundAttenuation.h"
-#include "Sound/SoundBase.h"
-#include "Sound/SoundClass.h"
-#include "Sound/SoundConcurrency.h"
 #include "Sound/SoundNodeQualityLevel.h"
 #include "Sound/SoundSubmix.h"
-#include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AudioSettings)
@@ -162,7 +153,9 @@ void UAudioSettings::PostEditChangeChainProperty(FPropertyChangedChainEvent& Pro
 			{
 				DeviceManager->IterateOverAllDevices([this](Audio::FDeviceId, FAudioDevice* InDevice)
 				{
-					InDevice->InitDefaultAudioBuses();
+					UAudioBusSubsystem* AudioBusSubsystem = InDevice->GetSubsystem<UAudioBusSubsystem>();
+					check(AudioBusSubsystem);
+					AudioBusSubsystem->InitDefaultAudioBuses();
 				});
 			}
 		}

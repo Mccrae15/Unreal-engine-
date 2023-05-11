@@ -16,7 +16,7 @@
  * Enumerates modes for the viewport's rotation grid.
  */
 UENUM()
-enum ERotationGridMode
+enum ERotationGridMode : int
 {
 	/** Using Divisions of 360 degrees (e.g 360/2. 360/3, 360/4, ... ). */
 	GridMode_DivisionsOf360,
@@ -30,7 +30,7 @@ enum ERotationGridMode
  * Enumerates camera control types for the W, A, S and D keys.
  */
 UENUM()
-enum EWASDType
+enum EWASDType : int
 {
 	WASD_Always  UMETA(DisplayName="Use WASD for Camera Controls"),
 	WASD_RMBOnly UMETA(DisplayName="Use WASD only when a Mouse Button is Pressed"),
@@ -53,7 +53,7 @@ enum class ELandscapeFoliageEditorControlType : uint8
  * Units used by measuring tool
  */
 UENUM()
-enum EMeasuringToolUnits
+enum EMeasuringToolUnits : int
 {
 	MeasureUnits_Centimeters UMETA(DisplayName="Centimeters"),
 	MeasureUnits_Meters      UMETA(DisplayName="Meters"),
@@ -98,6 +98,8 @@ struct UNREALED_API FLevelEditorViewportInstanceSettings
 		, BufferVisualizationMode()
 		, NaniteVisualizationMode()
 		, LumenVisualizationMode()
+		, StrataVisualizationMode()
+		, GroomVisualizationMode()
 		, VirtualShadowMapVisualizationMode()
 		, GPUSkinCacheVisualizationMode()
 		, ExposureSettings()
@@ -147,6 +149,14 @@ struct UNREALED_API FLevelEditorViewportInstanceSettings
 	/** The Lumen visualization mode for the viewport. */
 	UPROPERTY(config)
 	FName LumenVisualizationMode;
+
+	/** The Strata visualization mode for the viewport. */
+	UPROPERTY(config)
+	FName StrataVisualizationMode;
+
+	/** The Groom visualization mode for the viewport. */
+	UPROPERTY(config)
+	FName GroomVisualizationMode;
 
 	/** The virtual shadow map visualization mode for the viewport. */
 	UPROPERTY(config)

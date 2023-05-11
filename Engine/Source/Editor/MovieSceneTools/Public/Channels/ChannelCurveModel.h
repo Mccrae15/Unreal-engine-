@@ -15,12 +15,14 @@
 #include "Curves/KeyHandle.h"
 #include "Delegates/IDelegateInstance.h"
 #include "IBufferedCurveModel.h"
+#include "Misc/OptionalFwd.h"
 #include "MovieSceneSection.h"
 #include "Templates/SharedPointer.h"
 #include "Templates/Tuple.h"
 #include "UObject/UnrealType.h"
 #include "UObject/WeakObjectPtr.h"
 #include "UObject/WeakObjectPtrTemplates.h"
+#include "Misc/Guid.h"
 
 class FCurveEditor;
 class FString;
@@ -32,7 +34,6 @@ struct FCurveEditorScreenSpace;
 struct FKeyAttributes;
 struct FKeyDrawInfo;
 struct FKeyPosition;
-template <typename OptionalType> struct TOptional;
 
 template <class ChannelType, class ChannelValue, class KeyType>
 class FChannelCurveModel : public FCurveModel
@@ -66,6 +67,20 @@ public:
 	{
 		return WeakSection.Get();
 	}
+	virtual bool HasChangedAndResetTest() override
+	{
+		if (UMovieSceneSection* Section = WeakSection.Get())
+		{
+			if (Section->GetSignature() != LastSignature)
+			{
+				LastSignature = Section->GetSignature();
+				return true;
+			}
+			return false;
+		}
+		return true;
+	}
+
 	virtual void GetCurveColorObjectAndName(UObject** OutObject, FString& OutName) const override;
 
 protected:
@@ -87,4 +102,5 @@ private:
 	TWeakObjectPtr<UMovieSceneSection> WeakSection;
 	TWeakPtr<ISequencer> WeakSequencer;
 	FDelegateHandle OnDestroyHandle;
+	FGuid LastSignature;
 };

@@ -2,16 +2,7 @@
 
 #include "MuCOE/SMutableColorViewer.h"
 
-#include "HAL/Platform.h"
-#include "Internationalization/Internationalization.h"
-#include "Internationalization/Text.h"
-#include "Layout/Children.h"
-#include "Math/Color.h"
-#include "Misc/Attribute.h"
 #include "MuCOE/SMutableColorPreviewBox.h"
-#include "SlotBase.h"
-#include "Styling/SlateColor.h"
-#include "Templates/SharedPointer.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 
@@ -25,6 +16,7 @@ void SMutableColorViewer::Construct(const FArguments& InArgs)
 	const FText RedColorValueTitle = LOCTEXT("RedColorValueTitle", "Red : ");
 	const FText GreenColorValueTitle = LOCTEXT("GreenColorValueTitle", "Green : ");
 	const FText BlueColorValueTitle = LOCTEXT("BlueColorValueTitle", "Blue : ");
+	const FText AlphaColorValueTitle = LOCTEXT("AlphaColorValueTitle", "Alpha : ");
 
 	const int32 IndentationSpace = 16;	
 	const int32 AfterTitleSpacing = 4;
@@ -99,25 +91,48 @@ void SMutableColorViewer::Construct(const FArguments& InArgs)
 
 				// Blue channel ----------------------------------------
 				+SVerticalBox::Slot()
-				.Padding(0, 1)
-				.AutoHeight()
-				[
-					SNew(SHorizontalBox)
+					.Padding(0, 1)
+					.AutoHeight()
+					[
+						SNew(SHorizontalBox)
 
-					+ SHorizontalBox::Slot()
+						+ SHorizontalBox::Slot()
 					.AutoWidth()
 					[
 						SNew(STextBlock).
 						Text(BlueColorValueTitle)
 					]
 
-					+ SHorizontalBox::Slot()
+				+ SHorizontalBox::Slot()
 					.AutoWidth()
 					[
 						SNew(STextBlock).
 						Text(this, &SMutableColorViewer::GetBlueValue)
 					]
-				]
+					]
+				// -----------------------------------------------------
+
+				// Alpha channel ----------------------------------------
+				+SVerticalBox::Slot()
+					.Padding(0, 1)
+					.AutoHeight()
+					[
+						SNew(SHorizontalBox)
+
+						+ SHorizontalBox::Slot()
+					.AutoWidth()
+					[
+						SNew(STextBlock).
+						Text(AlphaColorValueTitle)
+					]
+
+				+ SHorizontalBox::Slot()
+					.AutoWidth()
+					[
+						SNew(STextBlock).
+						Text(this, &SMutableColorViewer::GetAlphaValue)
+					]
+					]
 				// -----------------------------------------------------
 			]
 		
@@ -134,11 +149,12 @@ void SMutableColorViewer::Construct(const FArguments& InArgs)
 	];
 }
 
-void SMutableColorViewer::SetColor(const float& InRed, const float& InGreen, const float& InBlue)
+void SMutableColorViewer::SetColor(float InRed, float InGreen, float InBlue, float InAlpha)
 {
 	this->RedValue = InRed;
 	this->GreenValue = InGreen;
 	this->BlueValue = InBlue;
+	this->AlphaValue = InAlpha;
 
 	this->ColorPreview->SetColor( this->GetPreviewColor() );
 }
@@ -162,6 +178,11 @@ FText SMutableColorViewer::GetGreenValue() const
 FText SMutableColorViewer::GetBlueValue() const
 {
 	return FText::AsNumber(this->BlueValue);
+}
+
+FText SMutableColorViewer::GetAlphaValue() const
+{
+	return FText::AsNumber(this->AlphaValue);
 }
 
 #undef LOCTEXT_NAMESPACE

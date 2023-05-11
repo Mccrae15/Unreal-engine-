@@ -2,26 +2,33 @@
 
 using System;
 using System.Collections.Generic;
+using System.Collections.Specialized;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Web;
 using EpicGames.Core;
 using EpicGames.Perforce;
 using EpicGames.Perforce.Managed;
+using Horde.Agent.Services;
 using Horde.Agent.Utility;
 using HordeCommon.Rpc;
 using HordeCommon.Rpc.Messages;
+using HordeCommon.Rpc.Tasks;
 using Microsoft.Extensions.Logging;
 using OpenTracing;
 using OpenTracing.Util;
 
 namespace Horde.Agent.Execution
 {
-	class PerforceExecutor : BuildGraphExecutor
+	class PerforceExecutor : JobExecutor
 	{
+		public const string Name = "Perforce";
+
 		protected AgentWorkspace? _autoSdkWorkspaceInfo;
 		protected AgentWorkspace _workspaceInfo;
 		protected DirectoryReference _rootDir;
@@ -30,10 +37,8 @@ namespace Horde.Agent.Execution
 		protected WorkspaceInfo? _autoSdkWorkspace;
 		protected WorkspaceInfo _workspace;
 
-		protected Dictionary<string, string> _envVars = new Dictionary<string, string>();
-
-		public PerforceExecutor(IRpcConnection rpcConnection, string jobId, string batchId, string agentTypeName, AgentWorkspace? autoSdkWorkspaceInfo, AgentWorkspace workspaceInfo, DirectoryReference rootDir)
-			: base(rpcConnection, jobId, batchId, agentTypeName)
+		public PerforceExecutor(ISession session, string jobId, string batchId, string agentTypeName, AgentWorkspace? autoSdkWorkspaceInfo, AgentWorkspace workspaceInfo, DirectoryReference rootDir, IHttpClientFactory httpClientFactory, ILogger logger)
+			: base(session, jobId, batchId, agentTypeName, httpClientFactory, logger)
 		{
 			_autoSdkWorkspaceInfo = autoSdkWorkspaceInfo;
 			_workspaceInfo = workspaceInfo;
@@ -46,48 +51,49 @@ namespace Horde.Agent.Execution
 		{
 			await base.InitializeAsync(logger, cancellationToken);
 
-			// Setup and sync the autosdk workspace
+			// Setup and sync the AutoSDK workspace
 			if (_autoSdkWorkspaceInfo != null)
 			{
-				using (IScope ccope = GlobalTracer.Instance.BuildSpan("Workspace").WithResourceName("AutoSDK").StartActive())
+				using IScope _ = GlobalTracer.Instance.BuildSpan("Workspace").WithResourceName("AutoSDK").StartActive();
+				
+				bool useHaveTable = ShouldUseHaveTable(_autoSdkWorkspaceInfo.Method);
+				_autoSdkWorkspace = await Utility.WorkspaceInfo.SetupWorkspaceAsync(_autoSdkWorkspaceInfo, _rootDir, useHaveTable, logger, cancellationToken);
+
+				DirectoryReference legacyDir = DirectoryReference.Combine(_autoSdkWorkspace.MetadataDir, "HostWin64");
+				if (DirectoryReference.Exists(legacyDir))
 				{
-					_autoSdkWorkspace = await Utility.WorkspaceInfo.SetupWorkspaceAsync(_autoSdkWorkspaceInfo, _rootDir, logger, cancellationToken);
-
-					DirectoryReference legacyDir = DirectoryReference.Combine(_autoSdkWorkspace.MetadataDir, "HostWin64");
-					if (DirectoryReference.Exists(legacyDir))
+					try
 					{
-						try
-						{
-							FileUtils.ForceDeleteDirectory(legacyDir);
-						}
-						catch(Exception ex)
-						{
-							logger.LogInformation(ex, "Unable to delete {Dir}", legacyDir);
-						}
+						FileUtils.ForceDeleteDirectory(legacyDir);
 					}
-
-					int autoSdkChangeNumber = await _autoSdkWorkspace.GetLatestChangeAsync(cancellationToken);
-
-					string syncText = $"Synced to CL {autoSdkChangeNumber}";
-
-					FileReference syncFile = FileReference.Combine(_autoSdkWorkspace.MetadataDir, "Synced.txt");
-					if (!FileReference.Exists(syncFile) || FileReference.ReadAllText(syncFile) != syncText)
+					catch(Exception ex)
 					{
-						FileReference.Delete(syncFile);
-
-						FileReference autoSdkCacheFile = FileReference.Combine(_autoSdkWorkspace.MetadataDir, "Contents.dat");
-						await WorkspaceInfo.UpdateLocalCacheMarker(autoSdkCacheFile, autoSdkChangeNumber, -1);
-						await _autoSdkWorkspace.SyncAsync(autoSdkChangeNumber, -1, autoSdkCacheFile, cancellationToken);
-
-						await FileReference.WriteAllTextAsync(syncFile, syncText);
+						logger.LogInformation(ex, "Unable to delete {Dir}", legacyDir);
 					}
+				}
+
+				int autoSdkChangeNumber = await _autoSdkWorkspace.GetLatestChangeAsync(cancellationToken);
+
+				string syncText = $"Synced to CL {autoSdkChangeNumber}";
+
+				FileReference syncFile = FileReference.Combine(_autoSdkWorkspace.MetadataDir, "Synced.txt");
+				if (!FileReference.Exists(syncFile) || FileReference.ReadAllText(syncFile) != syncText)
+				{
+					FileReference.Delete(syncFile);
+
+					FileReference autoSdkCacheFile = FileReference.Combine(_autoSdkWorkspace.MetadataDir, "Contents.dat");
+					await WorkspaceInfo.UpdateLocalCacheMarker(autoSdkCacheFile, autoSdkChangeNumber, -1);
+					await _autoSdkWorkspace.SyncAsync(autoSdkChangeNumber, -1, autoSdkCacheFile, cancellationToken);
+
+					await FileReference.WriteAllTextAsync(syncFile, syncText);
 				}
 			}
 
 			using (IScope scope = GlobalTracer.Instance.BuildSpan("Workspace").WithResourceName(_workspaceInfo.Identifier).StartActive())
 			{
 				// Sync the regular workspace
-				_workspace = await Utility.WorkspaceInfo.SetupWorkspaceAsync(_workspaceInfo, _rootDir, logger, cancellationToken);
+				bool useHaveTable = ShouldUseHaveTable(_workspaceInfo.Method);
+				_workspace = await Utility.WorkspaceInfo.SetupWorkspaceAsync(_workspaceInfo, _rootDir, useHaveTable, logger, cancellationToken);
 
 				// Figure out the change to build
 				if (_job.Change == 0)
@@ -98,7 +104,7 @@ namespace Horde.Agent.Execution
 					UpdateJobRequest updateJobRequest = new UpdateJobRequest();
 					updateJobRequest.JobId = _jobId;
 					updateJobRequest.Change = _job.Change;
-					await _rpcConnection.InvokeAsync(x => x.UpdateJobAsync(updateJobRequest, null, null, cancellationToken), new RpcContext(), cancellationToken);
+					await RpcConnection.InvokeAsync((HordeRpc.HordeRpcClient x) => x.UpdateJobAsync(updateJobRequest, null, null, cancellationToken), cancellationToken);
 				}
 
 				// Sync the workspace
@@ -151,7 +157,7 @@ namespace Horde.Agent.Execution
 			}
 		}
 
-		private static void DeleteEngineUserSettings(ILogger logger)
+		internal static void DeleteEngineUserSettings(ILogger logger)
 		{
 			if(RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
 			{
@@ -207,13 +213,13 @@ namespace Horde.Agent.Execution
 		protected override async Task<bool> SetupAsync(BeginStepResponse step, ILogger logger, CancellationToken cancellationToken)
 		{
 			PerforceLogger perforceLogger = CreatePerforceLogger(logger);
-			return await SetupAsync(step, _workspace.WorkspaceDir, _sharedStorageDir, _envVars, perforceLogger, cancellationToken);
+			return await SetupAsync(step, _workspace.WorkspaceDir, _sharedStorageDir, perforceLogger, cancellationToken);
 		}
 
 		protected override async Task<bool> ExecuteAsync(BeginStepResponse step, ILogger logger, CancellationToken cancellationToken)
 		{
 			PerforceLogger perforceLogger = CreatePerforceLogger(logger);
-			return await ExecuteAsync(step, _workspace.WorkspaceDir, _sharedStorageDir, _envVars, perforceLogger, cancellationToken);
+			return await ExecuteAsync(step, _workspace.WorkspaceDir, _sharedStorageDir, perforceLogger, cancellationToken);
 		}
 
 		public override async Task FinalizeAsync(ILogger logger, CancellationToken cancellationToken)
@@ -223,6 +229,9 @@ namespace Horde.Agent.Execution
 
 		public static async Task ConformAsync(DirectoryReference rootDir, IList<AgentWorkspace> pendingWorkspaces, bool removeUntrackedFiles, ILogger logger, CancellationToken cancellationToken)
 		{
+			using IScope scope = GlobalTracer.Instance.BuildSpan("Conform").StartActive();
+			scope.Span.SetTag("workspaces", String.Join(',', pendingWorkspaces.Select(x => x.Identifier)));
+			
 			// Print out all the workspaces we're going to sync
 			logger.LogInformation("Workspaces:");
 			foreach (AgentWorkspace pendingWorkspace in pendingWorkspaces)
@@ -234,7 +243,8 @@ namespace Horde.Agent.Execution
 			List<WorkspaceInfo> workspaces = new List<WorkspaceInfo>();
 			foreach (AgentWorkspace pendingWorkspace in pendingWorkspaces)
 			{
-				WorkspaceInfo workspace = await Utility.WorkspaceInfo.SetupWorkspaceAsync(pendingWorkspace, rootDir, logger, cancellationToken);
+				bool useHaveTable = ShouldUseHaveTable(pendingWorkspace.Method);
+				WorkspaceInfo workspace = await Utility.WorkspaceInfo.SetupWorkspaceAsync(pendingWorkspace, rootDir, useHaveTable, logger, cancellationToken);
 				workspaces.Add(workspace);
 			}
 
@@ -352,9 +362,13 @@ namespace Horde.Agent.Execution
 				List<Func<Task>> syncFuncs = new List<Func<Task>>();
 				foreach (IGrouping<DirectoryReference, WorkspaceInfo> workspaceGroup in workspaces.GroupBy(x => x.MetadataDir).OrderBy(x => x.Key.FullName))
 				{
+					logger.LogInformation("Queuing workspaces for sync/populate:");
+					
 					List<PopulateRequest> populateRequests = new List<PopulateRequest>();
 					foreach (WorkspaceInfo workspace in workspaceGroup)
 					{
+						logger.LogInformation("  Stream={StreamName} RemoveUntrackedFiles={RemoveUntrackedFiles} MetadataDir={MetadataDir} WorkspaceDir={WorkspaceDir} ClientName={ClientName}",
+							workspace.StreamName, workspace.RemoveUntrackedFiles, workspace.MetadataDir.FullName, workspace.WorkspaceDir.FullName, workspace.ClientName);
 						IPerforceConnection perforceClient = await workspace.PerforceClient.WithClientAsync(workspace.ClientName);
 						perforceConnections.Add(perforceClient);
 						populateRequests.Add(new PopulateRequest(perforceClient, workspace.StreamName, workspace.View));
@@ -385,6 +399,56 @@ namespace Horde.Agent.Execution
 					perforceConnection.Dispose();
 				}
 			}
+		}
+
+		/// <summary>
+		/// Parse a text string as a query string to determine use of have table
+		/// </summary>
+		/// <param name="method">Method text string from workspace config</param>
+		/// <returns>True if have table should be enabled</returns>
+		public static bool ShouldUseHaveTable(string? method)
+		{
+			const string NameKey = "name";
+			const string ManagedWorkspaceValue = "managedWorkspace";
+			const string UseHaveTableKey = "useHaveTable";
+			
+			if (String.IsNullOrEmpty(method))
+			{
+				return true;
+			}
+
+			NameValueCollection nameValues = HttpUtility.ParseQueryString(method);
+			string? name = nameValues[NameKey];
+			string? useHaveTable = nameValues[UseHaveTableKey];
+			
+			if (name != null && name.Equals(ManagedWorkspaceValue, StringComparison.OrdinalIgnoreCase))
+			{
+				if (useHaveTable != null && useHaveTable.Equals("false", StringComparison.OrdinalIgnoreCase))
+				{
+					return false;
+				}
+			}
+
+			return true;
+		}
+	}
+
+	class PerforceExecutorFactory : JobExecutorFactory
+	{
+		readonly IHttpClientFactory _httpClientFactory;
+		readonly ILogger<PerforceExecutor> _logger;
+
+		public override string Name => PerforceExecutor.Name;
+
+		public PerforceExecutorFactory(IHttpClientFactory httpClientFactory, ILogger<PerforceExecutor> logger)
+		{
+			_httpClientFactory = httpClientFactory;
+			_logger = logger;
+		}
+
+		public override JobExecutor CreateExecutor(ISession session, ExecuteJobTask executeJobTask, BeginBatchResponse beginBatchResponse)
+		{
+			return new PerforceExecutor(session, executeJobTask.JobId, executeJobTask.BatchId, beginBatchResponse.AgentType, executeJobTask.AutoSdkWorkspace, executeJobTask.Workspace, session.WorkingDir, _httpClientFactory, _logger);
 		}
 	}
 }

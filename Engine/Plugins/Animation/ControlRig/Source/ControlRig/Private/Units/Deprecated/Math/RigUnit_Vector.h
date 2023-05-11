@@ -4,6 +4,8 @@
 
 #include "Units/RigUnit.h"
 #include "MathLibrary.h"
+#include "Math/ControlRigMathLibrary.h"
+#include "RigVMFunctions/Math/RigVMFunction_MathVector.h"
 #include "RigUnit_Vector.generated.h"
 
 /** Two args and a result of Vector type */
@@ -28,7 +30,7 @@ struct CONTROLRIG_API FRigUnit_Multiply_VectorVector : public FRigUnit_BinaryVec
 	GENERATED_BODY()
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	RIGVM_METHOD()
 	virtual FRigVMStructUpgradeInfo GetUpgradeInfo() const override;
@@ -40,7 +42,7 @@ struct CONTROLRIG_API FRigUnit_Add_VectorVector : public FRigUnit_BinaryVectorOp
 	GENERATED_BODY()
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	RIGVM_METHOD()
 	virtual FRigVMStructUpgradeInfo GetUpgradeInfo() const override;
@@ -52,7 +54,7 @@ struct CONTROLRIG_API FRigUnit_Subtract_VectorVector : public FRigUnit_BinaryVec
 	GENERATED_BODY()
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	RIGVM_METHOD()
 	virtual FRigVMStructUpgradeInfo GetUpgradeInfo() const override;
@@ -64,7 +66,7 @@ struct CONTROLRIG_API FRigUnit_Divide_VectorVector : public FRigUnit_BinaryVecto
 	GENERATED_BODY()
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	RIGVM_METHOD()
 	virtual FRigVMStructUpgradeInfo GetUpgradeInfo() const override;
@@ -85,7 +87,64 @@ struct CONTROLRIG_API FRigUnit_Distance_VectorVector : public FRigUnit
 	float Result = 0.f;
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
+
+	RIGVM_METHOD()
+	virtual FRigVMStructUpgradeInfo GetUpgradeInfo() const override;
+};
+
+/**
+ * Returns the 4 point bezier interpolation
+ */
+USTRUCT(meta=(DisplayName="Bezier Four Point", Deprecated = "5.0"))
+struct CONTROLRIG_API FRigUnit_MathVectorBezierFourPoint : public FRigVMFunction_MathVectorBase
+{
+	GENERATED_BODY()
+
+	FRigUnit_MathVectorBezierFourPoint()
+	{
+		Bezier = FRigVMFourPointBezier();
+		T = 0.f;
+		Result = Tangent = FVector::ZeroVector;
+	}
+
+	RIGVM_METHOD()
+	virtual void Execute() override;
+
+	UPROPERTY(meta=(Input))
+	FRigVMFourPointBezier Bezier;
+
+	UPROPERTY(meta=(Input))
+	float T;
+
+	UPROPERTY(meta=(Output))
+	FVector Result;
+
+	UPROPERTY(meta=(Output))
+	FVector Tangent;
+
+	RIGVM_METHOD()
+	virtual FRigVMStructUpgradeInfo GetUpgradeInfo() const override;
+};
+
+/**
+ * Creates a bezier four point
+ */
+USTRUCT(meta = (DisplayName = "Make Bezier Four Point", Constant, Deprecated = "5.0"))
+struct CONTROLRIG_API FRigUnit_MathVectorMakeBezierFourPoint : public FRigVMFunction_MathVectorBase
+{
+	GENERATED_BODY()
+
+	FRigUnit_MathVectorMakeBezierFourPoint()
+	{
+		Bezier = FRigVMFourPointBezier();
+	}
+
+	RIGVM_METHOD()
+	virtual void Execute() override;
+
+	UPROPERTY(meta = (Input, Output))
+	FRigVMFourPointBezier Bezier;
 
 	RIGVM_METHOD()
 	virtual FRigVMStructUpgradeInfo GetUpgradeInfo() const override;

@@ -4,24 +4,15 @@
 
 #if ANIM_TRACE_ENABLED
 
-#include "Trace/Trace.inl"
-#include "Animation/AnimationAsset.h"
 #include "Animation/AnimInstanceProxy.h"
-#include "ObjectTrace.h"
 #include "Components/SkeletalMeshComponent.h"
-#include "Misc/CommandLine.h"
 #include "Engine/SkeletalMesh.h"
-#include "Math/TransformNonVectorized.h"
-#include "Animation/AnimNodeBase.h"
 #include "Animation/AnimMontage.h"
-#include "Animation/BlendSpace.h"
 #include "Animation/AnimBlueprintGeneratedClass.h"
 #include "Animation/AnimNode_SequencePlayer.h"
 #include "Animation/AnimNotifies/AnimNotify.h"
 #include "Animation/AnimNotifies/AnimNotifyState.h"
-#include "Animation/AnimTypes.h"
-#include "TraceFilter.h"
-#include "Animation/AnimAttributes.h"
+#include "Trace/Trace.inl"
 #include "UObject/UObjectAnnotation.h"
 
 UE_TRACE_CHANNEL_DEFINE(AnimationChannel);
@@ -263,6 +254,12 @@ uint32 GAnimTraceCurrentNameId = 1;
 
 // Critical section used to lock global name map & index
 FCriticalSection GAnimTraceNameCriticalSection;
+
+void FAnimTrace::Reset()
+{
+	GSkeletalMeshTraceAnnotations.ClearAll();
+	GAnimTraceCurrentNameId = 1;
+}
 
 // Scratch buffers for various traces to avoid allocation churn.
 // These can be removed when lambda support is added for array fields to remove a memcpy.

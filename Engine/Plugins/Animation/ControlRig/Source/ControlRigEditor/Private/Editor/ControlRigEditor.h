@@ -8,7 +8,6 @@
 #include "DragAndDrop/GraphNodeDragDropOp.h"
 #include "ControlRigDefines.h"
 #include "Units/RigUnitContext.h"
-#include "ControlRigLog.h"
 #include "IPersonaViewport.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "RigVMModel/RigVMGraph.h"
@@ -21,6 +20,8 @@
 #include "Graph/ControlRigGraphNode.h"
 #include "RigVMModel/RigVMController.h"
 #include "Editor/DetailsViewWrapperObject.h"
+#include "ControlRigTestData.h"
+#include "RigVMHost.h"
 
 class UControlRigBlueprint;
 class IPersonaToolkit;
@@ -83,12 +84,12 @@ private:
 
 	FControlRigEditorClosed ControlRigEditorClosedDelegate;
 
-	static bool bAreFunctionReferencesInitialized;
-	static void InitFunctionReferences();
 
 public:
+	
 	// IToolkit Interface
 	virtual FName GetToolkitFName() const override;
+	virtual FName GetToolkitContextFName() const override;
 	virtual FText GetBaseToolkitName() const override;
 	virtual FText GetToolkitToolTipText() const override;
 	virtual FString GetWorldCentricTabPrefix() const override;
@@ -113,6 +114,9 @@ public:
 
 	virtual void PasteNodes() override;
 	virtual bool CanPasteNodes() const override;
+
+	virtual bool IsNativeParentClassCodeLinkEnabled() const override { return false; }
+	virtual bool ReparentBlueprint_IsVisible() const override { return false; }
 
 	virtual FReply OnSpawnGraphNodeByShortcut(FInputChord InChord, const FVector2D& InPosition, UEdGraph* InGraph) override;
 
@@ -239,7 +243,7 @@ protected:
 
 	void HandleModifiedEvent(ERigVMGraphNotifType InNotifType, URigVMGraph* InGraph, UObject* InSubject);
 	void HandleVMCompiledEvent(UObject* InCompiledObject, URigVM* InVM);
-	void HandleControlRigExecutedEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName);
+	void HandleControlRigExecutedEvent(URigVMHost* InControlRig, const FName& InEventName);
 	void HandleControlRigExecutionHalted(const int32 InstructionIndex, UObject* InNode, const FName& InEntryName);
 	void SetHaltedNode(URigVMNode* Node);
 
@@ -377,6 +381,14 @@ private:
 
 	void FrameSelection();
 
+	FText GetTestAssetName() const;
+	FText GetTestAssetTooltip() const;
+	bool SetTestAssetPath(const FString& InAssetPath);
+	TSharedRef<SWidget> GenerateTestAssetModeMenuContent();
+	TSharedRef<SWidget> GenerateTestAssetRecordMenuContent();
+	bool RecordTestData(double InRecordingDuration);
+	void ToggleTestData();
+
 protected:
 
 	/** Toolbox hosting widget */
@@ -423,7 +435,7 @@ protected:
 	virtual void OnFinishedChangingProperties(const FPropertyChangedEvent& PropertyChangedEvent) override;
 	void OnPropertyChanged(UObject* InObject, FPropertyChangedEvent& InEvent);
 	void OnWrappedPropertyChangedChainEvent(UDetailsViewWrapperObject* InWrapperObject, const FString& InPropertyPath, FPropertyChangedChainEvent& InPropertyChangedChainEvent);
-	void OnRequestLocalizeFunctionDialog(URigVMLibraryNode* InFunction, UControlRigBlueprint* InTargetBlueprint, bool bForce);
+	void OnRequestLocalizeFunctionDialog(FRigVMGraphFunctionIdentifier& InFunction, UControlRigBlueprint* InTargetBlueprint, bool bForce);
 	FRigVMController_BulkEditResult OnRequestBulkEditDialog(UControlRigBlueprint* InBlueprint, URigVMController* InController, URigVMLibraryNode* InFunction, ERigVMControllerBulkEditType InEditType);
 	bool OnRequestBreakLinksDialog(TArray<URigVMLink*> InLinks);
 	void HandleJumpToHyperlink(const UObject* InSubject);
@@ -448,7 +460,7 @@ protected:
 	bool bExecutionControlRig;
 
 	/** The log to use for errors resulting from the init phase of the units */
-	FControlRigLog ControlRigLog;
+	FRigVMLog ControlRigLog;
 	/** Once the log is collected update the graph */
 	void UpdateGraphCompilerErrors();
 
@@ -486,12 +498,14 @@ protected:
 
 	FDelegateHandle PropertyChangedHandle;
 
-	void OnPreConstruction_AnyThread(UControlRig* InRig, const EControlRigState InState, const FName& InEventName);
-	void OnPostConstruction_AnyThread(UControlRig* InRig, const EControlRigState InState, const FName& InEventName);
+	void OnPreConstruction_AnyThread(UControlRig* InRig, const FName& InEventName);
+	void OnPostConstruction_AnyThread(UControlRig* InRig, const FName& InEventName);
 
 	bool bIsConstructionEventRunning;
 	uint32 LastHierarchyHash;
 
+	TStrongObjectPtr<UControlRigTestData> TestDataStrongPtr;
+	
 	static const TArray<FName> ForwardsSolveEventQueue;
 	static const TArray<FName> BackwardsSolveEventQueue;
 	static const TArray<FName> ConstructionEventQueue;

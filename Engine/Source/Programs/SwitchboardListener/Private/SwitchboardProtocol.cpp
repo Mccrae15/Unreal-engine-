@@ -176,6 +176,11 @@ bool CreateTaskFromCommand(const FString& InCommand, const FIPv4Endpoint& InEndp
 			UpdateClientsWithStdoutField->TryGetBool(Task->bUpdateClientsWithStdout);
 		}
 
+		if (TSharedPtr<FJsonValue> LockGpuClock = JsonData->TryGetField(TEXT("bLockGpuClock")))
+		{
+			LockGpuClock->TryGetBool(Task->bLockGpuClock);
+		}
+
 		if (TSharedPtr<FJsonValue> PriorityModifierField = JsonData->TryGetField(TEXT("priority_modifier")))
 		{
 			PriorityModifierField->TryGetNumber(Task->PriorityModifier);
@@ -252,7 +257,7 @@ bool CreateTaskFromCommand(const FString& InCommand, const FIPv4Endpoint& InEndp
 		}
 	}
 	else if (CommandName == TEXT("redeploy listener"))
-	{
+	{		
 		TSharedPtr<FJsonValue> Sha1Field = TryGetCommandRequiredField(JsonData, TEXT("sha1"));
 		TSharedPtr<FJsonValue> FileContentField = TryGetCommandRequiredField(JsonData, TEXT("content"));
 
@@ -261,6 +266,11 @@ bool CreateTaskFromCommand(const FString& InCommand, const FIPv4Endpoint& InEndp
 			OutTask = MakeUnique<FSwitchboardRedeployListenerTask>(MessageID, InEndpoint, Sha1Field->AsString(), FileContentField->AsString());
 			return true;
 		}
+	}
+	else if (CommandName == TEXT("free binary"))
+	{
+		OutTask = MakeUnique<FSwitchboardFreeListenerBinaryTask>(MessageID, InEndpoint);
+		return true;
 	}
 	else if (CommandName == TEXT("fixExeFlags"))
 	{

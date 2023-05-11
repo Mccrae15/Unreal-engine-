@@ -2,15 +2,14 @@
 
 #include "SInterchangeResultsBrowserWindow.h"
 
-#include "Styling/AppStyle.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/Views/TableViewMetadata.h"
+#include "Misc/PackageName.h"
 #include "IDocumentation.h"
-#include "Modules/ModuleManager.h"
+#include "InterchangeResultsContainer.h"
 #include "Styling/SlateIconFinder.h"
-#include "Widgets/Images/SImage.h"
+#include "Misc/Paths.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "Widgets/Layout/SSplitter.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
 #include "Widgets/Layout/SSpacer.h"
 
@@ -376,6 +375,7 @@ TSharedRef<SWidget> SInterchangeResultsBrowserListRow::GenerateWidgetForColumn(c
 				+ SHorizontalBox::Slot()
 				.Padding(RowPadding)
 				.AutoWidth()
+				.VAlign(VAlign_Center)
 				[
 					SNew(SImage)
 					.Image(FSlateIconFinder::FindIcon(GetImageFromResultType(Item->GetResultType())).GetOptionalIcon())
@@ -386,6 +386,7 @@ TSharedRef<SWidget> SInterchangeResultsBrowserListRow::GenerateWidgetForColumn(c
 			return SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot()
 				.Padding(RowPadding)
+				.VAlign(VAlign_Center)
 				[
 					SNew(STextBlock)
 					.Text(FText::FromString(FPaths::GetCleanFilename(Item->SourceAssetName)))
@@ -397,6 +398,7 @@ TSharedRef<SWidget> SInterchangeResultsBrowserListRow::GenerateWidgetForColumn(c
 			return SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot()
 				.Padding(RowPadding)
+				.VAlign(VAlign_Center)
 				[
 					SNew(STextBlock)
 					.Text(FText::FromString(FPackageName::ObjectPathToObjectName(Item->DestinationAssetName)))
@@ -408,6 +410,7 @@ TSharedRef<SWidget> SInterchangeResultsBrowserListRow::GenerateWidgetForColumn(c
 			return SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot()
 				.Padding(RowPadding)
+				.VAlign(VAlign_Center)
 				[
 					SNew(STextBlock)
 					.Text(FText::FromString(Item->AssetType ? Item->AssetType->GetName() : FString()))
@@ -418,6 +421,7 @@ TSharedRef<SWidget> SInterchangeResultsBrowserListRow::GenerateWidgetForColumn(c
 			return SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot()
 				.Padding(RowPadding)
+				.VAlign(VAlign_Center)
 				[
 					SNew(STextBlock)
 					.Text(Item->GetText())

@@ -11,6 +11,7 @@
 #include "NiagaraBakerSettings.h"
 
 class UNiagaraBakerSettings;
+struct FSlateIcon;
 
 enum class ENiagaraBakerColorChannel : uint8
 {
@@ -33,17 +34,13 @@ public:
 
 	TSharedPtr<class SWidget> GetWidget();
 
-	void RenderBaker();
-
-	void RefreshView();
+	FNiagaraBakerFeedbackContext RenderBaker();
 
 	void SetDisplayTimeFromNormalized(float NormalizeTime);
 
 	FNiagaraBakerRenderer& GetBakerRenderer() const { check(BakerRenderer.IsValid()); return *BakerRenderer.Get(); }
 	UNiagaraBakerSettings* GetBakerSettings() const { return BakerRenderer->GetBakerSettings(); }
 	const UNiagaraBakerSettings* GetBakerGeneratedSettings() { return BakerRenderer->GetBakerGeneratedSettings(); }
-
-	bool RenderView(const FRenderTarget* RenderTarget, FCanvas* Canvas, float WorldTime, int32 iOutputTextureIndex, bool bFillCanvas = false) const;
 
 	bool IsChannelEnabled(ENiagaraBakerColorChannel Channel) const { return bColorChannelEnabled[int(Channel)]; }
 	void ToggleChannelEnabled(ENiagaraBakerColorChannel Channel) { bColorChannelEnabled[int(Channel)] = !bColorChannelEnabled[int(Channel)]; }
@@ -135,6 +132,9 @@ public:
 	int32 GetFramesOnY() const;
 	void SetFramesOnY(int32 Value);
 
+	float GetPlaybackRate() const { return PlaybackRate; }
+	void SetPlaybackRate(float Value) { PlaybackRate = FMath::Clamp(Value, 0.0f, 10.0f); }
+
 	FOnCurrentOutputChanged OnCurrentOutputChanged;
 
 private:
@@ -149,4 +149,6 @@ private:
 	bool bCheckerboardEnabled = true;		//-TODO: Move to Baker Settings?
 	bool bShowInfoText = true;				//-TODO: Remove later
 	bool bColorChannelEnabled[int(ENiagaraBakerColorChannel::Num)] = {true, true, true, false};
+
+	float PlaybackRate = 1.0f;
 };

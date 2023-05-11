@@ -515,12 +515,24 @@ public:
 	bool SerializeFromMismatchedTag(FName StructTag, FArchive& Ar);
 	
 	// Conversion from other type: double->float
-	template<typename FArg, TEMPLATE_REQUIRES(TAnd<TIsSame<FArg, double>, TIsSame<T, float>>::Value)>
+	template<typename FArg, TEMPLATE_REQUIRES(std::is_same_v<FArg, double> && std::is_same_v<T, float>)>
 	explicit TVector4(const TVector4<FArg>& From) : TVector4<T>((T)From.X, (T)From.Y, (T)From.Z, (T)From.W) {}
 
 	// Conversion from other type: float->double
-	template<typename FArg, TEMPLATE_REQUIRES(TAnd<TIsSame<FArg, float>, TIsSame<T, double>>::Value)>
+	template<typename FArg, TEMPLATE_REQUIRES(std::is_same_v<FArg, float> && std::is_same_v<T, double>)>
 	explicit TVector4(const TVector4<FArg>& From) : TVector4<T>((T)From.X, (T)From.Y, (T)From.Z, (T)From.W) {}
+
+	/**
+	 * Creates a hash value from a TVector4.
+	 *
+	 * @param Vector the vector to create a hash value for
+	 *
+	 * @return The hash value from the components
+	 */
+	FORCEINLINE friend uint32 GetTypeHash(const UE::Math::TVector4<T>& Vector)
+	{
+		return FCrc::MemCrc_DEPRECATED(&Vector, sizeof(Vector));
+	}
 };
 
 /**
@@ -921,21 +933,6 @@ inline bool FVector4d::SerializeFromMismatchedTag(FName StructTag, FArchive& Ar)
 	}
 
 	return UE_SERIALIZE_VARIANT_FROM_MISMATCHED_TAG(Ar, Vector4, Vector4d, Vector4f);
-}
-
-
-/**
- * Creates a hash value from a TVector4.
- *
- * @param Vector the vector to create a hash value for
- *
- * @return The hash value from the components
- */
-template<typename T>
-FORCEINLINE uint32 GetTypeHash(const UE::Math::TVector4<T>& Vector)
-{
-	// Note: this assumes there's no padding in FVector that could contain uncompared data.
-	return FCrc::MemCrc_DEPRECATED(&Vector, sizeof(Vector));
 }
 
 

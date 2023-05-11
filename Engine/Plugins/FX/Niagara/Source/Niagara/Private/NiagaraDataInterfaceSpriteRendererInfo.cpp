@@ -8,6 +8,8 @@
 #include "NiagaraRenderer.h"
 #include "NiagaraShaderParametersBuilder.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceSpriteRendererInfo)
+
 #define LOCTEXT_NAMESPACE "NiagaraDataInterfaceSpriteRendererInfo"
 
 namespace NDISpriteRendererInfoLocal
@@ -214,21 +216,18 @@ bool UNiagaraDataInterfaceSpriteRendererInfo::Equals(const UNiagaraDataInterface
 bool UNiagaraDataInterfaceSpriteRendererInfo::AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const
 {
 	bool bSuccess = Super::AppendCompileHash(InVisitor);
-	bSuccess &= InVisitor->UpdateString(TEXT("NiagaraDataInterfaceSpriteRendererInfoHLSLSource"), GetShaderFileHash(NDISpriteRendererInfoLocal::TemplateShaderFile, EShaderPlatform::SP_PCD3D_SM5).ToString());
+	bSuccess &= InVisitor->UpdateShaderFile(NDISpriteRendererInfoLocal::TemplateShaderFile);
 	bSuccess &= InVisitor->UpdateShaderParameters<NDISpriteRendererInfoLocal::FShaderParameters>();
 	return bSuccess;
 }
 
 void UNiagaraDataInterfaceSpriteRendererInfo::GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL)
 {
-	TMap<FString, FStringFormatArg> TemplateArgs =
+	const TMap<FString, FStringFormatArg> TemplateArgs =
 	{
 		{TEXT("ParameterName"),	ParamInfo.DataInterfaceHLSLSymbol},
 	};
-
-	FString TemplateFile;
-	LoadShaderSourceFile(NDISpriteRendererInfoLocal::TemplateShaderFile, EShaderPlatform::SP_PCD3D_SM5, &TemplateFile, nullptr);
-	OutHLSL += FString::Format(*TemplateFile, TemplateArgs);
+	AppendTemplateHLSL(OutHLSL, NDISpriteRendererInfoLocal::TemplateShaderFile, TemplateArgs);
 }
 
 bool UNiagaraDataInterfaceSpriteRendererInfo::GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL)

@@ -3,9 +3,9 @@
 #pragma once
 
 
+#include "MuR/Image.h"
 #include "MuT/NodeImageConstant.h"
-#include "MuT/NodeSurfaceNew.h"
-#include "MuT/Table.h"
+#include "MuT/NodeRange.h"
 
 class FCustomizableObjectCompiler;
 class UCustomizableObjectNode;
@@ -20,4 +20,4 @@ mu::NodeImagePtr ResizeToMaxTextureSize(float MaxTextureSize, const UTexture2D* 
 
 
 /** Convert a CustomizableObject Source Graph into a mutable source graph. */
-mu::NodeImagePtr GenerateMutableSourceImage(const UEdGraphPin* Pin, FMutableGraphGenerationContext& GenerationContext, float MaxTextureSize);
+mu::NodeImagePtr GenerateMutableSourceImage(const UEdGraphPin* Pin, FMutableGraphGenerationContext& GenerationContext, float MaxTextureSize, mu::NodeRangePtr NodeRange = nullptr);

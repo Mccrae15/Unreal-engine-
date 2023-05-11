@@ -1,8 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "CoreMinimal.h"
 #include "Styling/AppStyle.h"
 #include "Engine/EngineBaseTypes.h"
+#include "Styling/SlateBrush.h"
 
 #define LOCTEXT_NAMESPACE "UViewModeUtils"
 
@@ -280,6 +280,14 @@ TArray<const FSlateBrush*> FillViewModeDisplayIcons()
 		else if (ViewModeIndex == VMI_VisualizeLumen)
 		{
 			ViewModeDisplayIcons.Emplace(FAppStyle::Get().GetBrush("EditorViewport.VisualizeLumenMode"));
+		}
+		else if (ViewModeIndex == VMI_VisualizeSubstrate)
+		{
+			ViewModeDisplayIcons.Emplace(FAppStyle::Get().GetBrush("EditorViewport.VisualizeSubstrateMode"));
+		}
+		else if (ViewModeIndex == VMI_VisualizeGroom)
+		{
+			ViewModeDisplayIcons.Emplace(FAppStyle::Get().GetBrush("EditorViewport.VisualizeGroomMode"));
 		}
 		else if (ViewModeIndex == VMI_VisualizeVirtualShadowMap)
 		{

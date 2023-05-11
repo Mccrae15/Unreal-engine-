@@ -7,6 +7,7 @@
 #include "NiagaraPlatformSet.h"
 #include "NiagaraPerfBaseline.h"
 #include "NiagaraValidationRule.h"
+#include "NiagaraValidationRuleSet.h"
 #include "NiagaraEffectType.generated.h"
 
 #define DEBUG_SCALABILITY_STATE (!UE_BUILD_SHIPPING)
@@ -45,7 +46,7 @@ enum class ENiagaraScalabilityUpdateFrequency
 
 /** Controls how cull proxies should be handled for a system. */
 UENUM()
-enum class ENiagaraCullProxyMode
+enum class ENiagaraCullProxyMode : uint32
 {
 	/** No cull proxy replaces culled systems. */
 	None,
@@ -289,16 +290,6 @@ struct NIAGARA_API FNiagaraSystemScalabilityOverride : public FNiagaraSystemScal
 	uint32 bOverrideCullProxySettings : 1;
 };
 
-/** Container struct for an array of system scalability overrides. Enables details customization and data validation. */
-USTRUCT()
-struct NIAGARA_API FNiagaraSystemScalabilityOverrides
-{
-	GENERATED_USTRUCT_BODY()
-	
-	UPROPERTY(EditAnywhere, Category = "Override")
-	TArray<FNiagaraSystemScalabilityOverride> Overrides;
-};
-
 /** Scalability settings for Niagara Emitters on a particular platform set. */
 USTRUCT()
 struct NIAGARA_API FNiagaraEmitterScalabilitySettings
@@ -441,9 +432,15 @@ class NIAGARA_API UNiagaraEffectType : public UObject
 	UPROPERTY(EditAnywhere, Category = "Scalability")
 	FNiagaraEmitterScalabilitySettingsArray EmitterScalabilitySettings;
 
+#if WITH_EDITORONLY_DATA
 	/** A set of rules to apply when checking content. To create your own rules, write a custom class that extends UNiagaraValidationRule. */
 	UPROPERTY(EditAnywhere, Category = "Validation", Instanced)
 	TArray<TObjectPtr<UNiagaraValidationRule>> ValidationRules;
+
+	/** Array of reusable rule sets to apply when checking content. To create your own rules, write a custom class that extends UNiagaraValidationRule. */
+	UPROPERTY(EditAnywhere, Category = "Validation")
+	TArray<TObjectPtr<UNiagaraValidationRuleSet>> ValidationRuleSets;
+#endif
 
 	FORCEINLINE const FNiagaraSystemScalabilitySettingsArray& GetSystemScalabilitySettings()const { return SystemScalabilitySettings; }
 	FORCEINLINE const FNiagaraEmitterScalabilitySettingsArray& GetEmitterScalabilitySettings()const { return EmitterScalabilitySettings; }

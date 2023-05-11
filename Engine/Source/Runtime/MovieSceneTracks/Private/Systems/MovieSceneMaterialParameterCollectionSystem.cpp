@@ -2,17 +2,17 @@
 
 #include "Systems/MovieSceneMaterialParameterCollectionSystem.h"
 
+#include "Engine/Engine.h"
 #include "IMovieScenePlayer.h"
 #include "MovieSceneSequence.h"
 #include "Evaluation/MovieSceneEvaluationTemplateInstance.h"
-#include "Evaluation/PreAnimatedState/MovieScenePreAnimatedStorageID.inl"
 #include "EntitySystem/BuiltInComponentTypes.h"
 #include "EntitySystem/MovieSceneEntityMutations.h"
-#include "Evaluation/PreAnimatedState/MovieScenePreAnimatedStorageID.inl"
 
 #include "MovieSceneTracksComponentTypes.h"
 #include "Systems/FloatChannelEvaluatorSystem.h"
 #include "Systems/MovieScenePiecewiseDoubleBlenderSystem.h"
+#include "Systems/MovieScenePreAnimatedMaterialParameters.h"
 
 #include "Logging/MessageLog.h"
 #include "Misc/UObjectToken.h"
@@ -25,105 +25,6 @@
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneMaterialParameterCollectionSystem)
 
-namespace UE::MovieScene
-{
-
-
-struct FMaterialParameterCollectionKey
-{
-	TObjectKey<UMaterialParameterCollectionInstance> MPCI;
-	FName ParameterName;
-
-	FMaterialParameterCollectionKey(UObject* InBoundMaterial, const FName& InParameterName)
-		: MPCI(CastChecked<UMaterialParameterCollectionInstance>(InBoundMaterial))
-		, ParameterName(InParameterName)
-	{}
-
-	friend uint32 GetTypeHash(const FMaterialParameterCollectionKey& InKey)
-	{
-		return GetTypeHash(InKey.MPCI) ^ GetTypeHash(InKey.ParameterName);
-	}
-
-	friend bool operator==(const FMaterialParameterCollectionKey& A, const FMaterialParameterCollectionKey& B)
-	{
-		return A.MPCI == B.MPCI && A.ParameterName == B.ParameterName;
-	}
-};
-
-struct FMaterialParameterCollectionScalarTraits : FBoundObjectPreAnimatedStateTraits
-{
-	using KeyType = FMaterialParameterCollectionKey;
-	using StorageType = float;
-
-	static void ReplaceObject(FMaterialParameterCollectionKey& InOutKey, const FObjectKey& NewObject)
-	{
-		InOutKey.MPCI = Cast<UMaterialParameterCollectionInstance>(NewObject.ResolveObjectPtr());
-	}
-
-	static float CachePreAnimatedValue(UObject* InBoundMaterial, const FName& ParameterName)
-	{
-		UMaterialParameterCollectionInstance* MPCI = CastChecked<UMaterialParameterCollectionInstance>(InBoundMaterial);
-
-		float ParameterValue = 0.f;
-		MPCI->GetScalarParameterValue(ParameterName, ParameterValue);
-		return ParameterValue;
-	}
-
-	static void RestorePreAnimatedValue(const FMaterialParameterCollectionKey& InKey, float OldValue, const FRestoreStateParams& Params)
-	{
-		UMaterialParameterCollectionInstance* MPCI = InKey.MPCI.ResolveObjectPtr();
-		if (MPCI)
-		{
-			MPCI->SetScalarParameterValue(InKey.ParameterName, OldValue);
-		}
-	}
-};
-
-struct FMaterialParameterCollectionVectorTraits : FBoundObjectPreAnimatedStateTraits
-{
-	using KeyType = FMaterialParameterCollectionKey;
-	using StorageType = FLinearColor;
-
-	static void ReplaceObject(FMaterialParameterCollectionKey& InOutKey, const FObjectKey& NewObject)
-	{
-		InOutKey.MPCI = Cast<UMaterialParameterCollectionInstance>(NewObject.ResolveObjectPtr());
-	}
-
-	static FLinearColor CachePreAnimatedValue(UObject* InBoundMaterial, const FName& ParameterName)
-	{
-		UMaterialParameterCollectionInstance* MPCI = CastChecked<UMaterialParameterCollectionInstance>(InBoundMaterial);
-		FLinearColor ParameterValue = FLinearColor::White;
-		MPCI->GetVectorParameterValue(ParameterName, ParameterValue);
-		return ParameterValue;
-	}
-
-	static void RestorePreAnimatedValue(const FMaterialParameterCollectionKey& InKey, const FLinearColor& OldValue, const FRestoreStateParams& Params)
-	{
-		UMaterialParameterCollectionInstance* MPCI = InKey.MPCI.ResolveObjectPtr();
-		if (MPCI)
-		{
-			MPCI->SetVectorParameterValue(InKey.ParameterName, OldValue);
-		}
-	}
-};
-
-struct FPreAnimatedMPCScalarStorage
-	: public TPreAnimatedStateStorage<FMaterialParameterCollectionScalarTraits>
-{
-	static TAutoRegisterPreAnimatedStorageID<FPreAnimatedMPCScalarStorage> StorageID;
-};
-
-struct FPreAnimatedMPCVectorStorage
-	: public TPreAnimatedStateStorage<FMaterialParameterCollectionVectorTraits>
-{
-	static TAutoRegisterPreAnimatedStorageID<FPreAnimatedMPCVectorStorage> StorageID;
-};
-
-
-TAutoRegisterPreAnimatedStorageID<FPreAnimatedMPCScalarStorage> FPreAnimatedMPCScalarStorage::StorageID;
-TAutoRegisterPreAnimatedStorageID<FPreAnimatedMPCVectorStorage> FPreAnimatedMPCVectorStorage::StorageID;
-
-} // namespace UE::MovieScene
 
 UMovieSceneMaterialParameterCollectionSystem::UMovieSceneMaterialParameterCollectionSystem(const FObjectInitializer& ObjInit)
 	: Super(ObjInit)
@@ -138,7 +39,7 @@ UMovieSceneMaterialParameterCollectionSystem::UMovieSceneMaterialParameterCollec
 
 	if (HasAnyFlags(RF_ClassDefaultObject))
 	{
-		DefineComponentConsumer(GetClass(), BuiltInComponents->Tags.Master);
+		DefineComponentConsumer(GetClass(), BuiltInComponents->Tags.Root);
 		DefineComponentProducer(GetClass(), TracksComponents->BoundMaterial);
 		DefineImplicitPrerequisite(UMovieSceneCachePreAnimatedStateSystem::StaticClass(), GetClass());
 	}
@@ -148,8 +49,8 @@ void UMovieSceneMaterialParameterCollectionSystem::OnLink()
 {
 	using namespace UE::MovieScene;
 
-	ScalarParameterStorage = Linker->PreAnimatedState.GetOrCreateStorage<FPreAnimatedMPCScalarStorage>();
-	VectorParameterStorage = Linker->PreAnimatedState.GetOrCreateStorage<FPreAnimatedMPCVectorStorage>();
+	ScalarParameterStorage = Linker->PreAnimatedState.GetOrCreateStorage<FPreAnimatedScalarMaterialParameterStorage>();
+	VectorParameterStorage = Linker->PreAnimatedState.GetOrCreateStorage<FPreAnimatedVectorMaterialParameterStorage>();
 }
 
 void UMovieSceneMaterialParameterCollectionSystem::OnRun(FSystemTaskPrerequisites& InPrerequisites, FSystemSubsequentTasks& Subsequents)
@@ -266,26 +167,13 @@ void UMovieSceneMaterialParameterCollectionSystem::OnRun(FSystemTaskPrerequisite
 	FAddMPCMutation BindMaterialsMutation(Linker);
 	Linker->EntityManager.MutateAll(Filter, BindMaterialsMutation);
 	BindMaterialsMutation.Cleanup(Linker);
-}
 
+	TPreAnimatedStateTaskParams<UObject*, FName> Params;
 
-void UMovieSceneMaterialParameterCollectionSystem::SavePreAnimatedState(const FPreAnimationParameters& InParameters)
-{
-	using namespace UE::MovieScene;
-
-	FBuiltInComponentTypes*          BuiltInComponents = FBuiltInComponentTypes::Get();
-	FMovieSceneTracksComponentTypes* TracksComponents  = FMovieSceneTracksComponentTypes::Get();
-
-	TSavePreAnimatedStateParams<UObject*, FName> Params;
-
+	Params.AdditionalFilter.None({ BuiltInComponents->BlendChannelOutput });
 	Params.AdditionalFilter.All({ TracksComponents->MPC });
-	ScalarParameterStorage->BeginTrackingEntitiesTask(Linker, Params, TracksComponents->BoundMaterial, TracksComponents->ScalarParameterName);
-	ScalarParameterStorage->CachePreAnimatedValuesTask(Linker, Params, TracksComponents->BoundMaterial, TracksComponents->ScalarParameterName);
-
-	VectorParameterStorage->BeginTrackingEntitiesTask(Linker, Params, TracksComponents->BoundMaterial, TracksComponents->VectorParameterName);
-	VectorParameterStorage->BeginTrackingEntitiesTask(Linker, Params, TracksComponents->BoundMaterial, TracksComponents->ColorParameterName);
-	VectorParameterStorage->CachePreAnimatedValuesTask(Linker, Params, TracksComponents->BoundMaterial, TracksComponents->VectorParameterName);
-	VectorParameterStorage->CachePreAnimatedValuesTask(Linker, Params, TracksComponents->BoundMaterial, TracksComponents->ColorParameterName);
+	ScalarParameterStorage->BeginTrackingAndCachePreAnimatedValuesTask(Linker, Params, TracksComponents->BoundMaterial, TracksComponents->ScalarParameterName);
+	VectorParameterStorage->BeginTrackingAndCachePreAnimatedValuesTask(Linker, Params, TracksComponents->BoundMaterial, TracksComponents->VectorParameterName);
+	VectorParameterStorage->BeginTrackingAndCachePreAnimatedValuesTask(Linker, Params, TracksComponents->BoundMaterial, TracksComponents->ColorParameterName);
 }
-
 

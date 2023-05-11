@@ -2,11 +2,13 @@
 
 #pragma once 
 
-#include "CoreMinimal.h"
-#include "SlateFwd.h"
-#include "Modules/ModuleManager.h"
 #include "IPluginBrowser.h"
-#include "Widgets/SWindow.h"
+
+class IModuleInterface;
+class IPluginWizardDefinition;
+class SDockTab;
+class SNotificationItem;
+class SWindow;
 
 class FSpawnTabArgs;
 
@@ -86,7 +88,7 @@ private:
 	TSharedRef<SDockTab> HandleSpawnPluginCreatorTab(const FSpawnTabArgs& SpawnTabArgs);
 
 	/** Callback for the main frame finishing load */
-	void OnMainFrameLoaded(TSharedPtr<SWindow> InRootWindow, bool bIsNewProjectWindow);
+	void OnMainFrameLoaded(TSharedPtr<SWindow> InRootWindow, bool bIsRunningStartupDialog);
 
 	/** Callback for when the user selects to edit installed plugins */
 	void OnNewPluginsPopupSettingsClicked();

@@ -11,6 +11,7 @@
 #include "BaseGizmos/TransformGizmoUtil.h"
 #include "ModelingToolTargetUtil.h"
 #include "Selection/StoredMeshSelectionUtil.h"
+#include "Selections/GeometrySelectionUtil.h"
 
 #include "DynamicMesh/DynamicMesh3.h"
 #include "DynamicMesh/DynamicMeshAABBTree3.h"
@@ -19,6 +20,8 @@
 #include "Parameterization/DynamicMeshUVEditor.h"
 #include "Operations/MeshConvexHull.h"
 #include "MinVolumeBox3.h"
+#include "ToolTargetManager.h"
+
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(UVProjectionTool)
 
@@ -30,9 +33,16 @@ using namespace UE::Geometry;
  * ToolBuilder
  */
 
-USingleSelectionMeshEditingTool* UUVProjectionToolBuilder::CreateNewTool(const FToolBuilderState& SceneState) const
+USingleTargetWithSelectionTool* UUVProjectionToolBuilder::CreateNewTool(const FToolBuilderState& SceneState) const
 {
 	return NewObject<UUVProjectionTool>(SceneState.ToolManager);
+}
+
+bool UUVProjectionToolBuilder::CanBuildTool(const FToolBuilderState& SceneState) const
+{
+	return USingleTargetWithSelectionToolBuilder::CanBuildTool(SceneState) && 
+		SceneState.TargetManager->CountSelectedAndTargetableWithPredicate(SceneState, GetTargetRequirements(),
+			[](UActorComponent& Component) { return ToolBuilderUtil::ComponentTypeCouldHaveUVs(Component); }) > 0;
 }
 
 /*
@@ -114,17 +124,56 @@ void UUVProjectionTool::Setup()
 	TransformGizmo->SetActiveTarget(TransformProxy, GetToolManager());
 
 	InitialDimensions = BasicProperties->Dimensions;
-	bInitialUniformDimensions = BasicProperties->bUniformDimensions;
+	bInitialProportionalDimensions = BasicProperties->bProportionalDimensions;
 	InitialTransform = TransformGizmo->GetGizmoTransform();
 	
 	ApplyInitializationMode();
 
+	// Some lambdas for proportional dimension changes
+	auto OnProportionalDimensionsChanged = [this](bool bNewValue)
+	{
+		if (bNewValue) { CachedDimensions = BasicProperties->Dimensions; }
+		bTransformModified = true;
+	};
+
+	auto ApplyProportionalDimensions = [this](FVector& NewVector, FVector& CachedVector)
+	{
+		// Determines which component of the vector is being changed by looking at which component is
+		// most different from the previous values
+		const FVector Difference = NewVector - CachedVector;
+		const int32 DifferenceMaxElementIndex = MaxAbsElementIndex(Difference);
+
+		// Readability aliases
+		const double& NewComponent = NewVector[DifferenceMaxElementIndex];
+		const double& ChangedComponent = CachedVector[DifferenceMaxElementIndex];
+
+		// If the component we are changing is 0 (or very close to it), then just set all components to new component,
+		// effectively setting the vector's direction to (1, 1, 1) and scaling according to the new value
+		const double ScaleFactor = NewComponent / ChangedComponent;
+		NewVector = FMath::Abs(ChangedComponent) < UE_KINDA_SMALL_NUMBER ? FVector(NewComponent) : CachedVector * ScaleFactor;
+		CachedVector = NewVector;
+	};
+
 	// start watching for dimensions changes
-	DimensionsWatcher = BasicProperties->WatchProperty(BasicProperties->Dimensions, [this](FVector) { bTransformModified = true; });
-	DimensionsModeWatcher = BasicProperties->WatchProperty(BasicProperties->bUniformDimensions, [this](bool) { bTransformModified = true; });
+	DimensionsWatcher = BasicProperties->WatchProperty(BasicProperties->Dimensions, [this, &ApplyProportionalDimensions](FVector)
+	{
+		if (BasicProperties->bProportionalDimensions)
+		{
+			ApplyProportionalDimensions(BasicProperties->Dimensions, CachedDimensions);
+			BasicProperties->SilentUpdateWatcherAtIndex(DimensionsWatcher);
+		}
+
+		bTransformModified = true;
+	});
+	DimensionsModeWatcher = BasicProperties->WatchProperty(BasicProperties->bProportionalDimensions, OnProportionalDimensionsChanged);
 	BasicProperties->WatchProperty(BasicProperties->Initialization, [this](EUVProjectionToolInitializationMode NewMode) { OnInitializationModeChanged(); });
-	bTransformModified = false;
 	BasicProperties->SilentUpdateWatched();
+
+	OnProportionalDimensionsChanged(true);	// Initialize CachedDimensions
+
+	// Allow the user to change the Initialization mode and have it affect the current run of the tool, as long as they do it before modifying the transform
+	bTransformModified = false;
+
 
 	// click to set plane behavior
 	SetPlaneCtrlClickBehaviorTarget = MakeUnique<FSelectClickedAction>();
@@ -203,7 +252,7 @@ void UUVProjectionTool::OnShutdown(EToolShutdownType ShutdownType)
 {
 	UVChannelProperties->SaveProperties(this);
 	BasicProperties->SavedDimensions = BasicProperties->Dimensions;
-	BasicProperties->bSavedUniformDimensions = BasicProperties->bUniformDimensions;
+	BasicProperties->bSavedProportionalDimensions = BasicProperties->bProportionalDimensions;
 	BasicProperties->SavedTransform = TransformGizmo->GetGizmoTransform();
 	BasicProperties->SaveProperties(this);
 	MaterialSettings->SaveProperties(this);
@@ -222,6 +271,12 @@ void UUVProjectionTool::OnShutdown(EToolShutdownType ShutdownType)
 		{
 			UE::ToolTarget::CommitDynamicMeshUVUpdate(Target, NewDynamicMesh);
 		}
+
+		if (HasGeometrySelection())
+		{
+			UE::Geometry::SetToolOutputGeometrySelectionForTarget(this, Target, GetGeometrySelection());
+		}
+
 		GetToolManager()->EndUndoTransaction();
 	}
 
@@ -279,9 +334,11 @@ void UUVProjectionTool::InitializeMesh()
 
 	// initialize triangle ROI if one exists
 	TriangleROI = MakeShared<TArray<int32>, ESPMode::ThreadSafe>();
-	if (USingleSelectionMeshEditingTool::HasInputSelection())
+	if (HasGeometrySelection())
 	{
-		UE::Geometry::GetStoredSelectionAsTriangles(GetInputSelection(), *InputMesh, *TriangleROI);
+		const FGeometrySelection& InputSelection = GetGeometrySelection();
+		UE::Geometry::EnumerateSelectionTriangles(InputSelection, *InputMesh, 
+			[&](int32 TriangleID) { TriangleROI->Add(TriangleID); });
 		TriangleROISet.Append(*TriangleROI);
 	}
 	VertexROI = MakeShared<TArray<int32>, ESPMode::ThreadSafe>();
@@ -309,9 +366,7 @@ void UUVProjectionTool::InitializeMesh()
 FOrientedBox3d UUVProjectionTool::GetProjectionBox() const
 {
 	const FFrame3d BoxFrame(TransformProxy->GetTransform());
-	const FVector3d BoxDimensions = 0.5 * (BasicProperties->bUniformDimensions
-		                                       ? FVector3d(BasicProperties->Dimensions.X, BasicProperties->Dimensions.X, BasicProperties->Dimensions.X)
-		                                       : static_cast<FVector3d>(BasicProperties->Dimensions));
+	const FVector3d BoxDimensions = 0.5 * BasicProperties->Dimensions;
 	return FOrientedBox3d(BoxFrame, BoxDimensions);
 }
 
@@ -353,6 +408,23 @@ void UUVProjectionTool::Render(IToolsContextRenderAPI* RenderAPI)
 	}
 	
 	ProjectionShapeVisualizer.EndFrame();
+}
+
+void UUVProjectionTool::OnPropertyModified(UObject* PropertySet, FProperty* Property)
+{
+	if (PropertySet == BasicProperties && BasicProperties->bProportionalDimensions)
+	{
+		// We are silencing all watchers if Property corresponds to an FVector UProperty because this indicates that
+		// the "Reset to Default" button was pressed. If individual components are modified instead, then Property will
+		// not be castable to an FStructProperty
+		
+		const FStructProperty* StructProperty = CastField<FStructProperty>(Property);
+		if (StructProperty != nullptr && StructProperty->Struct->GetName() == FString("Vector"))
+		{
+			CachedDimensions = BasicProperties->Dimensions;
+			BasicProperties->SilentUpdateWatcherAtIndex(DimensionsWatcher);
+		}
+	}
 }
 
 void UUVProjectionTool::OnTick(float DeltaTime)

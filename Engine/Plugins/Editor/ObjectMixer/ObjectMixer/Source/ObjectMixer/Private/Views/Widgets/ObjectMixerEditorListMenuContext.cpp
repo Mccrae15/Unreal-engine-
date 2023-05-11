@@ -2,190 +2,182 @@
 
 #include "Views/Widgets/ObjectMixerEditorListMenuContext.h"
 
-#include "Views/MainPanel/ObjectMixerEditorMainPanel.h"
+#include "Views/List/ObjectMixerEditorList.h"
+#include "Views/List/ObjectMixerUtils.h"
 
-#include "Elements/Framework/TypedElementSelectionSet.h"
-#include "Elements/Interfaces/TypedElementObjectInterface.h"
-#include "Framework/MultiBox/MultiBoxDefs.h"
-#include "LevelEditor.h"
-#include "LevelEditorContextMenu.h"
-#include "LevelEditorMenuContext.h"
-#include "LevelEditorViewport.h"
-#include "Selection.h"
+#include "Algo/Find.h"
 #include "ToolMenu.h"
-#include "ToolMenus.h"
 #include "ToolMenuContext.h"
 #include "ToolMenuDelegates.h"
 #include "ToolMenuEntry.h"
+#include "ToolMenus.h"
 #include "ToolMenuSection.h"
-#include "Widgets/Layout/SBox.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Commands/GenericCommands.h"
+#include "Framework/MultiBox/MultiBoxDefs.h"
+#include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Layout/SBox.h"
 
-#define LOCTEXT_NAMESPACE "ObjectMixerEditorListMenuContext"
+#define LOCTEXT_NAMESPACE "ObjectMixerEditor"
 
-FName UObjectMixerEditorListMenuContext::DefaultContextBaseMenuName("ObjectMixer.ContextMenuBase");
-
-TSharedPtr<SWidget> UObjectMixerEditorListMenuContext::CreateContextMenu(const FObjectMixerEditorListMenuContextData InData)
+bool UObjectMixerEditorListMenuContext::DoesSelectionHaveType(const FObjectMixerEditorListMenuContextData& InData, UClass* Type)
 {
-	if (InData.SelectedItems.Num() == 0)
+	if (const TSharedPtr<ISceneOutlinerTreeItem>* Match = Algo::FindByPredicate(
+		InData.SelectedItems,
+		[Type](const TSharedPtr<ISceneOutlinerTreeItem>& SelectedItem)
+		{
+			const UObject* Object = FObjectMixerUtils::GetRowObject(SelectedItem);
+			return Object && Object->IsA(Type);
+		}))
 	{
-		return nullptr;
+		return true;
 	}
 
-	return BuildContextMenu(InData);
+	return false;
 }
 
-TSharedPtr<SWidget> UObjectMixerEditorListMenuContext::BuildContextMenu(const FObjectMixerEditorListMenuContextData& InData)
-{
-	FLevelEditorContextMenu::RegisterComponentContextMenu();
-	FLevelEditorContextMenu::RegisterActorContextMenu();
-	FLevelEditorContextMenu::RegisterElementContextMenu();
-	RegisterObjectMixerContextMenu();
-
-	FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
-	TSharedPtr<ILevelEditor> LevelEditorPtr = LevelEditorModule.GetLevelEditorInstance().Pin();
-	check(LevelEditorPtr);
-
-	TSharedPtr<FUICommandList> LevelEditorActionsList = LevelEditorPtr->GetLevelEditorActions();
-	FToolMenuContext Context;
-	Context.AppendCommandList(LevelEditorActionsList);
-
-	ULevelEditorContextMenuContext* LevelEditorContextObject = NewObject<ULevelEditorContextMenuContext>();
-	LevelEditorContextObject->LevelEditor = LevelEditorPtr;
-	LevelEditorContextObject->ContextType = ELevelEditorMenuContext::SceneOutliner;
-	LevelEditorContextObject->CurrentSelection = LevelEditorPtr->GetElementSelectionSet();
-	
-	for (FSelectedEditableComponentIterator It(GEditor->GetSelectedEditableComponentIterator()); It; ++It)
-	{
-		LevelEditorContextObject->SelectedComponents.Add(CastChecked<UActorComponent>(*It));
-	}
-	
-	Context.AddObject(LevelEditorContextObject, [](UObject* InContext)
-	{
-		ULevelEditorContextMenuContext* CastContext = CastChecked<ULevelEditorContextMenuContext>(InContext);
-		CastContext->CurrentSelection = nullptr;
-		CastContext->HitProxyElement.Release();
-	});
-
-	UObjectMixerEditorListMenuContext* ObjectMixerContextObject = NewObject<UObjectMixerEditorListMenuContext>();
-	ObjectMixerContextObject->Data = InData;
-
-	Context.AddObject(ObjectMixerContextObject, [](UObject* InContext)
-	{
-		UObjectMixerEditorListMenuContext* CastContext = CastChecked<UObjectMixerEditorListMenuContext>(InContext);
-		CastContext->Data.SelectedItems.Empty();
-		CastContext->Data.MainPanelPtr.Reset();
-	});
-
-	if (LevelEditorPtr->GetElementSelectionSet()->GetSelectedObjects<UActorComponent>().Num() == 0 &&
-		LevelEditorPtr->GetElementSelectionSet()->GetSelectedObjects<AActor>().Num() > 0)
-	{
-		const TArray<AActor*> SelectedActors = LevelEditorPtr->GetElementSelectionSet()->GetSelectedObjects<AActor>();
-	
-		// Get all menu extenders for this context menu from the level editor module
-		TArray<FLevelEditorModule::FLevelViewportMenuExtender_SelectedActors> MenuExtenderDelegates = LevelEditorModule.GetAllLevelViewportContextMenuExtenders();
-		TArray<TSharedPtr<FExtender>> Extenders;
-		for (int32 i = 0; i < MenuExtenderDelegates.Num(); ++i)
-		{
-			if (MenuExtenderDelegates[i].IsBound())
-			{
-				Extenders.Add(MenuExtenderDelegates[i].Execute(LevelEditorActionsList.ToSharedRef(), SelectedActors));
-			}
-		}
-	
-		if (Extenders.Num() > 0)
-		{
-			Context.AddExtender(FExtender::Combine(Extenders));
-		}
-	}
-
-	return UToolMenus::Get()->GenerateWidget("LevelEditor.ActorContextMenu", Context);
-}
-
-void UObjectMixerEditorListMenuContext::RegisterObjectMixerContextMenu()
+void UObjectMixerEditorListMenuContext::RegisterFoldersOnlyContextMenu()
 {
 	UToolMenus* ToolMenus = UToolMenus::Get();
-	
-	if (ToolMenus->IsMenuRegistered("LevelEditor.ActorContextMenu"))
+	if (ToolMenus->IsMenuRegistered("ObjectMixer.FoldersOnlyContextMenu"))
 	{
-		UToolMenu* Menu = ToolMenus->ExtendMenu("LevelEditor.ActorContextMenu");
-	
-		Menu->AddDynamicSection("DynamicCollectionsSection", FNewToolMenuDelegate::CreateLambda(
+		return;
+	}
+
+	UToolMenu* Menu = ToolMenus->RegisterMenu("ObjectMixer.FoldersOnlyContextMenu");
+	Menu->AddDynamicSection("FolderContextMenuDynamic", FNewToolMenuDelegate::CreateLambda([](UToolMenu* InMenu)
+	{
+		// Ensure proper context
+		UObjectMixerEditorListMenuContext* Context = InMenu->FindContext<UObjectMixerEditorListMenuContext>();
+		if (!Context || Context->Data.SelectedItems.Num() == 0)
+		{
+			return;
+		}
+
+		const FObjectMixerEditorListMenuContextData& ContextData = Context->Data;
+
+		// For future CL
+		// {
+		// 	FToolMenuSection& Section = InMenu->AddSection("ElementEditActions");
+		// 	Section.AddSubMenu(
+		// 		"EditSubMenu",
+		// 		LOCTEXT("EditSubMenu", "Edit"),
+		// 		FText::GetEmpty(),
+		// 		FNewToolMenuDelegate::CreateLambda([ContextData](UToolMenu* InMenu)
+		// 		{
+		// 			FToolMenuSection& Section = InMenu->AddSection("Section");
+		// 			Section.AddEntry(MakeCustomEditMenu(ContextData));
+		// 		}),
+		// 		false, // default value
+		// 		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Edit"));
+		// }
+	}));
+}
+
+void UObjectMixerEditorListMenuContext::AddCollectionsMenuItem(UToolMenu* InMenu, const FObjectMixerEditorListMenuContextData& ContextData)
+{
+	FToolMenuSection& Section = InMenu->FindOrAddSection("ObjectMixerCollections");
+	Section.Label = LOCTEXT("ObjectMixerCollectionsSectionName", "Mixer Collections");
+		
+	Section.AddSubMenu(
+		"SelectCollectionsSubMenu",
+		LOCTEXT("SelectCollectionsSubmenu", "Select or Add Collection"),
+		LOCTEXT("SelectCollectionsSubmenu_Tooltip", "Select the collection to which you wish to assign this object."),
+		FNewToolMenuDelegate::CreateStatic(&UObjectMixerEditorListMenuContext::CreateSelectCollectionsSubMenu, ContextData)
+	);
+}
+
+void UObjectMixerEditorListMenuContext::RegisterObjectMixerDynamicCollectionsContextMenuExtension(const FName& MenuName)
+{
+	if (UToolMenu* ActorContextMenu = UToolMenus::Get()->ExtendMenu(MenuName))
+	{		
+		ActorContextMenu->AddDynamicSection("DynamicCollectionsSection", FNewToolMenuDelegate::CreateLambda(
 			[](UToolMenu* InMenu)
 			{
+				// Ensure proper context
 				UObjectMixerEditorListMenuContext* Context = InMenu->FindContext<UObjectMixerEditorListMenuContext>();
 				if (!Context || Context->Data.SelectedItems.Num() == 0)
 				{
 					return;
 				}
-	
-				FToolMenuSection& Section = InMenu->FindOrAddSection("ObjectMixerCollections");
-				Section.Label = LOCTEXT("ObjectMixerCollectionsSectionName", "Mixer Collections");
-				
-				FObjectMixerEditorListMenuContextData& ContextData = Context->Data;
-			
-				Section.AddSubMenu(
-					"SelectCollectionsSubMenu",
-					LOCTEXT("SelectCollectionsSubmenu", "Select or Add Collection"),
-					LOCTEXT("SelectCollectionsSubmenu_Tooltip", "Select the collection to which you wish to assign this object."),
-					FNewToolMenuDelegate::CreateLambda(
-						[ContextData](UToolMenu* Menu)
-						{
-							FToolMenuEntry Args;
-							Args.Type = EMultiBlockType::Widget;
-							Args.MakeCustomWidget.BindLambda(
-								[ContextData](const FToolMenuContext&, const FToolMenuCustomWidgetContext&)
-								{
-									return SNew(SBox)
-											.MinDesiredWidth(200)
-											.Padding(8, 0)
-											[
-												SNew(SEditableTextBox)
-												.HintText(LOCTEXT("NewCollectionEditableHintText", "Enter a new collection name..."))
-												.OnTextCommitted_Static(&UObjectMixerEditorListMenuContext::OnTextCommitted, ContextData)
-											]
-									;
-								}
-							);
-							Menu->AddMenuEntry("NewCollectionInput", Args);
-							
-							if (const TSharedPtr<FObjectMixerEditorMainPanel> MainPanel = ContextData.MainPanelPtr.Pin())
-							{
-								if (TArray<FName> Collections = MainPanel->GetAllCollectionNames(); Collections.Num() > 0)
-								{
-									FToolMenuSection& Section = Menu->FindOrAddSection("Collections");
-								   Section.Label = LOCTEXT("CollectionsSectionName", "Collections");
 
-								   Collections.StableSort([](const FName& A, const FName B)
-								   {
-									   return A.LexicalLess(B);
-								   });
-								
-								   for (const FName& Key : Collections)
-								   {
-									   const FText KeyText = FText::FromName(Key);
-									
-									   Section.AddMenuEntry(
-										   Key,
-										   KeyText,
-										   FText::Format(LOCTEXT("AddObjectsToCollectionTooltipFormat", "Add selected to collection '{0}'"), KeyText),
-										   FSlateIcon(),
-										   FUIAction(
-											   FExecuteAction::CreateStatic(&UObjectMixerEditorListMenuContext::OnClickCollectionMenuEntry, Key, ContextData),
-											   FCanExecuteAction(),
-											   FIsActionChecked::CreateStatic(&UObjectMixerEditorListMenuContext::AreAllObjectsInCollection, Key, ContextData)
-										   ),
-										   EUserInterfaceActionType::ToggleButton
-									   );
-								   }
-								}
-							}
-						}
-					)
-				);
+				const FObjectMixerEditorListMenuContextData& ContextData = Context->Data;
+
+				AddCollectionsMenuItem(InMenu, ContextData);
 			}),
 			FToolMenuInsert(NAME_None,EToolMenuInsertType::First)
 		);
+	}
+}
+
+void UObjectMixerEditorListMenuContext::AddCollectionWidget(const FName& Key, const FObjectMixerEditorListMenuContextData& ContextData, UToolMenu* Menu)
+{
+	const FText KeyText = FText::FromName(Key);
+
+	TSharedRef<SHorizontalBox> Widget = SNew(SHorizontalBox);
+
+	Widget->AddSlot()
+	.Padding(FMargin(8, 0))
+	.AutoWidth()
+	[
+		SNew(SCheckBox)
+		.OnCheckStateChanged_Lambda([Key, ContextData](ECheckBoxState)
+		{
+			OnCollectionMenuEntryCheckStateChanged(Key, ContextData);
+		})
+		.IsChecked_Static(&UObjectMixerEditorListMenuContext::GetCheckStateForCollection, Key, ContextData)
+	];
+
+	Widget->AddSlot()
+	.AutoWidth()
+	[
+		SNew(STextBlock)
+		.Text(KeyText)
+	];
+								
+	Menu->AddMenuEntry(Key, FToolMenuEntry::InitWidget(Key, Widget, FText(), true));
+}
+
+void UObjectMixerEditorListMenuContext::CreateSelectCollectionsSubMenu(UToolMenu* Menu, FObjectMixerEditorListMenuContextData ContextData)
+{
+	FToolMenuEntry Args;
+	Args.Type = EMultiBlockType::Widget;
+	Args.MakeCustomWidget.BindLambda(
+		[ContextData](const FToolMenuContext&, const FToolMenuCustomWidgetContext&)
+		{
+			return
+				SNew(SBox)
+				.MinDesiredWidth(200)
+				.Padding(8, 0)
+				[
+					SNew(SEditableTextBox)
+					.HintText(LOCTEXT("NewCollectionEditableHintText", "Enter a new collection name..."))
+					.OnTextCommitted_Static(&UObjectMixerEditorListMenuContext::OnTextCommitted, ContextData)
+				]
+			;
+		}
+	);
+	Menu->AddMenuEntry("NewCollectionInput", Args);
+						
+	if (const TSharedPtr<FObjectMixerEditorList> List = ContextData.ListModelPtr.Pin())
+	{
+		if (TArray<FName> Collections = List->GetAllCollectionNames(); Collections.Num() > 0)
+		{
+			FToolMenuSection& Section = Menu->FindOrAddSection("Collections");
+			FToolMenuEntry& Separator = Section.AddSeparator("CollectionsSeparator");
+			Separator.Label = LOCTEXT("CollectionsSeparatorLabel", "Collections");
+
+			Collections.StableSort([](const FName& A, const FName B)
+			{
+				return A.LexicalLess(B);
+			});
+							
+			for (const FName& Key : Collections)
+			{
+				AddCollectionWidget(Key, ContextData, Menu);
+			}
+		}
 	}
 }
 
@@ -197,7 +189,7 @@ void UObjectMixerEditorListMenuContext::OnTextCommitted(const FText& InText, ETe
 	}
 }
 
-void UObjectMixerEditorListMenuContext::OnClickCollectionMenuEntry(const FName Key, const FObjectMixerEditorListMenuContextData ContextData)
+void UObjectMixerEditorListMenuContext::OnCollectionMenuEntryCheckStateChanged(const FName Key, const FObjectMixerEditorListMenuContextData ContextData)
 {
 	if (AreAllObjectsInCollection(Key, ContextData))
 	{
@@ -211,37 +203,37 @@ void UObjectMixerEditorListMenuContext::OnClickCollectionMenuEntry(const FName K
 
 void UObjectMixerEditorListMenuContext::AddObjectsToCollection(const FName Key, const FObjectMixerEditorListMenuContextData ContextData)
 {
-	if (const TSharedPtr<FObjectMixerEditorMainPanel> MainPanel = ContextData.MainPanelPtr.Pin())
+	if (const TSharedPtr<FObjectMixerEditorList> List = ContextData.ListModelPtr.Pin())
 	{
 		TSet<FSoftObjectPath> ObjectPaths;
 
-		for (const TSharedPtr<FObjectMixerEditorListRow>& Item : ContextData.SelectedItems)
+		for (const TSharedPtr<ISceneOutlinerTreeItem>& Item : ContextData.SelectedItems)
 		{
-			if (const UObject* Object = Item->GetObject())
+			if (const UObject* Object = FObjectMixerUtils::GetRowObject(Item))
 			{
 				ObjectPaths.Add(Object);
 			}
 		}
 		
-		MainPanel->RequestAddObjectsToCollection(Key, ObjectPaths);
+		List->RequestAddObjectsToCollection(Key, ObjectPaths);
 	}
 }
 
 void UObjectMixerEditorListMenuContext::RemoveObjectsFromCollection(const FName Key, const FObjectMixerEditorListMenuContextData ContextData)
 {
-	if (const TSharedPtr<FObjectMixerEditorMainPanel> MainPanel = ContextData.MainPanelPtr.Pin())
+	if (const TSharedPtr<FObjectMixerEditorList> List = ContextData.ListModelPtr.Pin())
 	{
 		TSet<FSoftObjectPath> ObjectPaths;
 
-		for (const TSharedPtr<FObjectMixerEditorListRow>& Item : ContextData.SelectedItems)
+		for (const TSharedPtr<ISceneOutlinerTreeItem>& Item : ContextData.SelectedItems)
 		{
-			if (const UObject* Object = Item->GetObject())
+			if (const UObject* Object = FObjectMixerUtils::GetRowObject(Item))
 			{
 				ObjectPaths.Add(Object);
 			}
 		}
 		
-		MainPanel->RequestRemoveObjectsFromCollection(Key, ObjectPaths);
+		List->RequestRemoveObjectsFromCollection(Key, ObjectPaths);
 	}
 }
 
@@ -249,13 +241,13 @@ bool UObjectMixerEditorListMenuContext::AreAllObjectsInCollection(const FName Ke
 {
 	bool bAreAllSelectedObjectsInCollection = false;
 
-	if (const TSharedPtr<FObjectMixerEditorMainPanel> MainPanel = ContextData.MainPanelPtr.Pin())
+	if (const TSharedPtr<FObjectMixerEditorList> List = ContextData.ListModelPtr.Pin())
 	{
-		for (const TSharedPtr<FObjectMixerEditorListRow>& Item : ContextData.SelectedItems)
+		for (const TSharedPtr<ISceneOutlinerTreeItem>& Item : ContextData.SelectedItems)
 		{
-			if (const UObject* Object = Item->GetObject())
+			if (const UObject* Object = FObjectMixerUtils::GetRowObject(Item))
 			{
-				bAreAllSelectedObjectsInCollection = MainPanel->IsObjectInCollection(Key, Object);
+				bAreAllSelectedObjectsInCollection = List->IsObjectInCollection(Key, Object);
 
 				if (!bAreAllSelectedObjectsInCollection)
 				{
@@ -266,6 +258,101 @@ bool UObjectMixerEditorListMenuContext::AreAllObjectsInCollection(const FName Ke
 	}
 
 	return bAreAllSelectedObjectsInCollection;
+}
+
+ECheckBoxState UObjectMixerEditorListMenuContext::GetCheckStateForCollection(const FName Key,
+	const FObjectMixerEditorListMenuContextData ContextData)
+{
+	const int32 ItemCount = ContextData.SelectedItems.Num();
+	int32 ItemsInCollection = 0;
+	int32 ItemsNotInCollection = 0;
+
+	if (const TSharedPtr<FObjectMixerEditorList> List = ContextData.ListModelPtr.Pin())
+	{
+		for (const TSharedPtr<ISceneOutlinerTreeItem>& Item : ContextData.SelectedItems)
+		{
+			if (const UObject* Object = FObjectMixerUtils::GetRowObject(Item))
+			{
+				if (List->IsObjectInCollection(Key, Object))
+				{
+					ItemsInCollection++;
+				}
+				else
+				{
+					ItemsNotInCollection++;
+				}
+			}
+		}
+	}
+
+	ECheckBoxState ReturnValue = ECheckBoxState::Undetermined;
+
+	if (ItemsInCollection == ItemCount)
+	{
+		ReturnValue = ECheckBoxState::Checked;
+	}
+	else if (ItemsNotInCollection == ItemCount)
+	{
+		ReturnValue = ECheckBoxState::Unchecked;
+	}
+
+	return ReturnValue;
+}
+
+FToolMenuEntry UObjectMixerEditorListMenuContext::MakeCustomEditMenu(const FObjectMixerEditorListMenuContextData& ContextData)
+{
+	FToolMenuEntry Entry;
+	Entry.Name = TEXT("ObjectMixerGenericCommands");
+	Entry.Type = EMultiBlockType::Widget;
+	FToolMenuEntryWidgetData WidgetData;
+	WidgetData.bNoIndent = true;
+	WidgetData.bNoPadding = true;
+	Entry.WidgetData = WidgetData;
+	Entry.MakeCustomWidget.BindLambda(
+		[ContextData](const FToolMenuContext&, const FToolMenuCustomWidgetContext&)
+		{
+			if (TSharedPtr<FObjectMixerEditorList> PinnedList = ContextData.ListModelPtr.Pin())
+			{
+				// Add options with our mapped command list to an FMenuBuilder
+				FMenuBuilder Builder(true, PinnedList->ObjectMixerElementEditCommands);
+				{
+					Builder.AddMenuEntry( FGenericCommands::Get().Cut);
+					Builder.AddMenuEntry( FGenericCommands::Get().Copy);
+					Builder.AddMenuEntry( FGenericCommands::Get().Paste);
+					Builder.AddMenuEntry( FGenericCommands::Get().Duplicate);
+					Builder.AddMenuEntry( FGenericCommands::Get().Delete);
+					Builder.AddMenuEntry( FGenericCommands::Get().Rename);
+				}
+
+				return Builder.MakeWidget();
+			}
+
+			return SNullWidget::NullWidget;
+		}
+	);
+
+	return Entry;
+}
+
+void UObjectMixerEditorListMenuContext::ReplaceEditSubMenu(const FObjectMixerEditorListMenuContextData& ContextData)
+{
+	if (UToolMenu* EditSubMenu = UToolMenus::Get()->ExtendMenu("LevelEditor.LevelEditorSceneOutliner.ContextMenu.ElementEditActions"))
+	{
+		// Remove existing edit sub menu options
+		FCustomizedToolMenu* MenuCustomization = EditSubMenu->AddMenuCustomization();
+		{
+			MenuCustomization->AddEntry(TEXT("Cut"))->Visibility = ECustomizedToolMenuVisibility::Hidden;
+			MenuCustomization->AddEntry(TEXT("Copy"))->Visibility = ECustomizedToolMenuVisibility::Hidden;
+			MenuCustomization->AddEntry(TEXT("Paste"))->Visibility = ECustomizedToolMenuVisibility::Hidden;
+			MenuCustomization->AddEntry(TEXT("Duplicate"))->Visibility = ECustomizedToolMenuVisibility::Hidden;
+			MenuCustomization->AddEntry(TEXT("Delete"))->Visibility = ECustomizedToolMenuVisibility::Hidden;
+			MenuCustomization->AddEntry(TEXT("Rename"))->Visibility = ECustomizedToolMenuVisibility::Hidden;
+		}
+
+		// Add our menu widget to the edit submenu
+		// It must be a widget entry because we hid the entries above, so they won't show as regular menu entries since they share names
+		EditSubMenu->AddMenuEntry(NAME_None, MakeCustomEditMenu(ContextData));
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

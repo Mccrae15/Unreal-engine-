@@ -15,6 +15,9 @@
 #include "BaseGizmos/GizmoLineHandleComponent.h"
 #include "BaseGizmos/GizmoViewContext.h"
 
+#include "MathUtil.h"
+#include "VectorUtil.h"
+
 // need this to implement hover
 #include "BaseGizmos/GizmoBaseComponent.h"
 
@@ -29,6 +32,40 @@
 
 #define LOCTEXT_NAMESPACE "UCombinedTransformGizmo"
 
+namespace CombinedTransformGizmoLocals
+{
+	// Looks at a gizmo actor and figures out what sub element flags must have been active when creating it.
+	ETransformGizmoSubElements GetSubElementFlagsFromActor(ACombinedTransformGizmoActor* GizmoActor)
+	{
+		ETransformGizmoSubElements Elements = ETransformGizmoSubElements::None;
+		if (!GizmoActor)
+		{
+			return Elements;
+		}
+
+		if (GizmoActor->TranslateX) { Elements |= ETransformGizmoSubElements::TranslateAxisX; }
+		if (GizmoActor->TranslateY) { Elements |= ETransformGizmoSubElements::TranslateAxisY; }
+		if (GizmoActor->TranslateZ) { Elements |= ETransformGizmoSubElements::TranslateAxisZ; }
+		if (GizmoActor->TranslateXY) { Elements |= ETransformGizmoSubElements::TranslatePlaneXY; }
+		if (GizmoActor->TranslateYZ) { Elements |= ETransformGizmoSubElements::TranslatePlaneYZ; }
+		if (GizmoActor->TranslateXZ) { Elements |= ETransformGizmoSubElements::TranslatePlaneXZ; }
+
+		if (GizmoActor->RotateX) { Elements |= ETransformGizmoSubElements::RotateAxisX; }
+		if (GizmoActor->RotateY) { Elements |= ETransformGizmoSubElements::RotateAxisY; }
+		if (GizmoActor->RotateZ) { Elements |= ETransformGizmoSubElements::RotateAxisZ; }
+
+		if (GizmoActor->AxisScaleX) { Elements |= ETransformGizmoSubElements::ScaleAxisX; }
+		if (GizmoActor->AxisScaleY) { Elements |= ETransformGizmoSubElements::ScaleAxisY; }
+		if (GizmoActor->AxisScaleZ) { Elements |= ETransformGizmoSubElements::ScaleAxisZ; }
+		if (GizmoActor->PlaneScaleXY) { Elements |= ETransformGizmoSubElements::ScalePlaneXY; }
+		if (GizmoActor->PlaneScaleYZ) { Elements |= ETransformGizmoSubElements::ScalePlaneYZ; }
+		if (GizmoActor->PlaneScaleXZ) { Elements |= ETransformGizmoSubElements::ScalePlaneXZ; }
+
+		if (GizmoActor->UniformScale) { Elements |= ETransformGizmoSubElements::ScaleUniform; }
+
+		return Elements;
+	}
+}
 
 ACombinedTransformGizmoActor::ACombinedTransformGizmoActor()
 {
@@ -147,6 +184,7 @@ ACombinedTransformGizmoActor* ACombinedTransformGizmoActor::ConstructCustom3Axis
 		SphereEdge->Radius = 120.0f;
 		SphereEdge->bViewAligned = true;
 		SphereEdge->RegisterComponent();
+		NewActor->RotationSphere = SphereEdge;
 	}
 
 
@@ -363,7 +401,7 @@ void UCombinedTransformGizmo::SetDisallowNegativeScaling(bool bDisallow)
 
 void UCombinedTransformGizmo::SetIsNonUniformScaleAllowedFunction(TUniqueFunction<bool()>&& IsNonUniformScaleAllowedIn)
 {
-	IsNonUniformScaleAllowed = MoveTemp(IsNonUniformScaleAllowedIn);
+	IsNonUniformScaleAllowedFunc = MoveTemp(IsNonUniformScaleAllowedIn);
 }
 
 
@@ -425,10 +463,12 @@ void UCombinedTransformGizmo::Tick(float DeltaTime)
 	{
 		CurrentCoordinateSystem = GetGizmoManager()->GetContextQueriesAPI()->GetCurrentCoordinateSystem();
 	}
-	
 	check(CurrentCoordinateSystem == EToolContextCoordinateSystem::World || CurrentCoordinateSystem == EToolContextCoordinateSystem::Local)
-	bool bUseLocalAxes = (CurrentCoordinateSystem == EToolContextCoordinateSystem::Local);
+	
+	FToolContextSnappingConfiguration SnappingConfig = GetGizmoManager()->GetContextQueriesAPI()->GetCurrentSnappingSettings();
+	RelativeTranslationSnapping.UpdateContextValue(SnappingConfig.bEnableAbsoluteWorldSnapping == false);
 
+	bool bUseLocalAxes = (CurrentCoordinateSystem == EToolContextCoordinateSystem::Local);
 	if (AxisXSource != nullptr && AxisYSource != nullptr && AxisZSource != nullptr)
 	{
 		AxisXSource->bLocalAxes = bUseLocalAxes;
@@ -443,11 +483,39 @@ void UCombinedTransformGizmo::Tick(float DeltaTime)
 		}
 	}
 
-	bool bShouldShowNonUniformScale = IsNonUniformScaleAllowed();
-	for (UPrimitiveComponent* Component : NonuniformScaleComponents)
+	// apply dynamic visibility filtering to sub-gizmos
+
+	auto SetSubGizmoTypeVisibility = [this](TArray<FSubGizmoInfo>& GizmoInfos, bool bVisible)
 	{
-		Component->SetVisibility(bShouldShowNonUniformScale);
+		for (FSubGizmoInfo& GizmoInfo : GizmoInfos)
+		{
+			if (GizmoInfo.Component.IsValid())
+			{
+				GizmoInfo.Component->SetVisibility(bVisible);
+			}
+		}
+	};
+
+	if (bUseContextGizmoMode)
+	{
+		ActiveGizmoMode = GetGizmoManager()->GetContextQueriesAPI()->GetCurrentTransformGizmoMode();
 	}
+	EToolContextTransformGizmoMode UseGizmoMode = ActiveGizmoMode;
+
+	bool bShouldShowTranslation =
+		(UseGizmoMode == EToolContextTransformGizmoMode::Combined || UseGizmoMode == EToolContextTransformGizmoMode::Translation);
+	bool bShouldShowRotation =
+		(UseGizmoMode == EToolContextTransformGizmoMode::Combined || UseGizmoMode == EToolContextTransformGizmoMode::Rotation);
+	bool bShouldShowUniformScale =
+		(UseGizmoMode == EToolContextTransformGizmoMode::Combined || UseGizmoMode == EToolContextTransformGizmoMode::Scale);
+	bool bShouldShowNonUniformScale = 
+		(UseGizmoMode == EToolContextTransformGizmoMode::Combined || UseGizmoMode == EToolContextTransformGizmoMode::Scale)
+		&& IsNonUniformScaleAllowedFunc();
+
+	SetSubGizmoTypeVisibility(TranslationSubGizmos, bShouldShowTranslation);
+	SetSubGizmoTypeVisibility(RotationSubGizmos, bShouldShowRotation);
+	SetSubGizmoTypeVisibility(UniformScaleSubGizmos, bShouldShowUniformScale);
+	SetSubGizmoTypeVisibility(NonUniformScaleSubGizmos, bShouldShowNonUniformScale);
 
 	UpdateCameraAxisSource();
 }
@@ -495,51 +563,66 @@ void UCombinedTransformGizmo::SetActiveTarget(UTransformProxy* Target, IToolCont
 	// todo should we hold onto these?
 	if (GizmoActor->TranslateX != nullptr)
 	{
-		AddAxisTranslationGizmo(GizmoActor->TranslateX, GizmoComponent, AxisXSource, TransformSource, StateTarget);
+		UInteractiveGizmo* NewGizmo = AddAxisTranslationGizmo(GizmoActor->TranslateX, GizmoComponent, AxisXSource, TransformSource, StateTarget, 0);
 		ActiveComponents.Add(GizmoActor->TranslateX);
+		TranslationSubGizmos.Add( FSubGizmoInfo{ GizmoActor->TranslateX, NewGizmo } );
 	}
 	if (GizmoActor->TranslateY != nullptr)
 	{
-		AddAxisTranslationGizmo(GizmoActor->TranslateY, GizmoComponent, AxisYSource, TransformSource, StateTarget);
+		UInteractiveGizmo* NewGizmo = AddAxisTranslationGizmo(GizmoActor->TranslateY, GizmoComponent, AxisYSource, TransformSource, StateTarget, 1);
 		ActiveComponents.Add(GizmoActor->TranslateY);
+		TranslationSubGizmos.Add(FSubGizmoInfo{ GizmoActor->TranslateY, NewGizmo });
 	}
 	if (GizmoActor->TranslateZ != nullptr)
 	{
-		AddAxisTranslationGizmo(GizmoActor->TranslateZ, GizmoComponent, AxisZSource, TransformSource, StateTarget);
+		UInteractiveGizmo* NewGizmo = AddAxisTranslationGizmo(GizmoActor->TranslateZ, GizmoComponent, AxisZSource, TransformSource, StateTarget, 2);
 		ActiveComponents.Add(GizmoActor->TranslateZ);
+		TranslationSubGizmos.Add(FSubGizmoInfo{ GizmoActor->TranslateZ, NewGizmo });
 	}
 
 
 	if (GizmoActor->TranslateYZ != nullptr)
 	{
-		AddPlaneTranslationGizmo(GizmoActor->TranslateYZ, GizmoComponent, AxisXSource, TransformSource, StateTarget);
+		UInteractiveGizmo* NewGizmo = AddPlaneTranslationGizmo(GizmoActor->TranslateYZ, GizmoComponent, AxisXSource, TransformSource, StateTarget, 1, 2);
 		ActiveComponents.Add(GizmoActor->TranslateYZ);
+		TranslationSubGizmos.Add(FSubGizmoInfo{ GizmoActor->TranslateYZ, NewGizmo });
 	}
 	if (GizmoActor->TranslateXZ != nullptr)
 	{
-		AddPlaneTranslationGizmo(GizmoActor->TranslateXZ, GizmoComponent, AxisYSource, TransformSource, StateTarget);
+		UInteractiveGizmo* NewGizmo = AddPlaneTranslationGizmo(GizmoActor->TranslateXZ, GizmoComponent, AxisYSource, TransformSource, StateTarget, 2, 0);	// flip here corresponds to UGizmoComponentAxisSource::GetTangentVectors()
 		ActiveComponents.Add(GizmoActor->TranslateXZ);
+		TranslationSubGizmos.Add(FSubGizmoInfo{ GizmoActor->TranslateXZ, NewGizmo });
 	}
 	if (GizmoActor->TranslateXY != nullptr)
 	{
-		AddPlaneTranslationGizmo(GizmoActor->TranslateXY, GizmoComponent, AxisZSource, TransformSource, StateTarget);
+		UInteractiveGizmo* NewGizmo = AddPlaneTranslationGizmo(GizmoActor->TranslateXY, GizmoComponent, AxisZSource, TransformSource, StateTarget, 0, 1);
 		ActiveComponents.Add(GizmoActor->TranslateXY);
+		TranslationSubGizmos.Add(FSubGizmoInfo{ GizmoActor->TranslateXY, NewGizmo });
 	}
 
 	if (GizmoActor->RotateX != nullptr)
 	{
-		AddAxisRotationGizmo(GizmoActor->RotateX, GizmoComponent, AxisXSource, TransformSource, StateTarget);
+		UInteractiveGizmo* NewGizmo = AddAxisRotationGizmo(GizmoActor->RotateX, GizmoComponent, AxisXSource, TransformSource, StateTarget);
 		ActiveComponents.Add(GizmoActor->RotateX);
+		RotationSubGizmos.Add(FSubGizmoInfo{ GizmoActor->RotateX, NewGizmo });
 	}
 	if (GizmoActor->RotateY != nullptr)
 	{
-		AddAxisRotationGizmo(GizmoActor->RotateY, GizmoComponent, AxisYSource, TransformSource, StateTarget);
+		UInteractiveGizmo* NewGizmo = AddAxisRotationGizmo(GizmoActor->RotateY, GizmoComponent, AxisYSource, TransformSource, StateTarget);
 		ActiveComponents.Add(GizmoActor->RotateY);
+		RotationSubGizmos.Add(FSubGizmoInfo{ GizmoActor->RotateY, NewGizmo });
 	}
 	if (GizmoActor->RotateZ != nullptr)
 	{
-		AddAxisRotationGizmo(GizmoActor->RotateZ, GizmoComponent, AxisZSource, TransformSource, StateTarget);
+		UInteractiveGizmo* NewGizmo = AddAxisRotationGizmo(GizmoActor->RotateZ, GizmoComponent, AxisZSource, TransformSource, StateTarget);
 		ActiveComponents.Add(GizmoActor->RotateZ);
+		RotationSubGizmos.Add(FSubGizmoInfo{ GizmoActor->RotateZ, NewGizmo });
+	}
+	if (GizmoActor->RotationSphere != nullptr)
+	{
+		// no gizmo for the sphere currently
+		ActiveComponents.Add(GizmoActor->RotationSphere);
+		RotationSubGizmos.Add(FSubGizmoInfo{ GizmoActor->RotationSphere, nullptr });
 	}
 
 
@@ -552,47 +635,50 @@ void UCombinedTransformGizmo::SetActiveTarget(UTransformProxy* Target, IToolCont
 
 	if (GizmoActor->UniformScale != nullptr)
 	{
-		AddUniformScaleGizmo(GizmoActor->UniformScale, GizmoComponent, CameraAxisSource, CameraAxisSource, TransformSource, StateTarget);
+		UInteractiveGizmo* NewGizmo = AddUniformScaleGizmo(GizmoActor->UniformScale, GizmoComponent, CameraAxisSource, CameraAxisSource, TransformSource, StateTarget);
 		ActiveComponents.Add(GizmoActor->UniformScale);
+		UniformScaleSubGizmos.Add(FSubGizmoInfo{ GizmoActor->UniformScale, NewGizmo });
 	}
 
 	if (GizmoActor->AxisScaleX != nullptr)
 	{
-		AddAxisScaleGizmo(GizmoActor->AxisScaleX, GizmoComponent, AxisXSource, UnitAxisXSource, TransformSource, StateTarget);
+		UInteractiveGizmo* NewGizmo = AddAxisScaleGizmo(GizmoActor->AxisScaleX, GizmoComponent, AxisXSource, UnitAxisXSource, TransformSource, StateTarget);
 		ActiveComponents.Add(GizmoActor->AxisScaleX);
-		NonuniformScaleComponents.Add(GizmoActor->AxisScaleX);
+		NonUniformScaleSubGizmos.Add(FSubGizmoInfo{ GizmoActor->AxisScaleX, NewGizmo });
 	}
 	if (GizmoActor->AxisScaleY != nullptr)
 	{
-		AddAxisScaleGizmo(GizmoActor->AxisScaleY, GizmoComponent, AxisYSource, UnitAxisYSource, TransformSource, StateTarget);
+		UInteractiveGizmo* NewGizmo = AddAxisScaleGizmo(GizmoActor->AxisScaleY, GizmoComponent, AxisYSource, UnitAxisYSource, TransformSource, StateTarget);
 		ActiveComponents.Add(GizmoActor->AxisScaleY);
-		NonuniformScaleComponents.Add(GizmoActor->AxisScaleY);
+		NonUniformScaleSubGizmos.Add(FSubGizmoInfo{ GizmoActor->AxisScaleY, NewGizmo });
 	}
 	if (GizmoActor->AxisScaleZ != nullptr)
 	{
-		AddAxisScaleGizmo(GizmoActor->AxisScaleZ, GizmoComponent, AxisZSource, UnitAxisZSource, TransformSource, StateTarget);
+		UInteractiveGizmo* NewGizmo = AddAxisScaleGizmo(GizmoActor->AxisScaleZ, GizmoComponent, AxisZSource, UnitAxisZSource, TransformSource, StateTarget);
 		ActiveComponents.Add(GizmoActor->AxisScaleZ);
-		NonuniformScaleComponents.Add(GizmoActor->AxisScaleZ);
+		NonUniformScaleSubGizmos.Add(FSubGizmoInfo{ GizmoActor->AxisScaleZ, NewGizmo });
 	}
 
 	if (GizmoActor->PlaneScaleYZ != nullptr)
 	{
-		AddPlaneScaleGizmo(GizmoActor->PlaneScaleYZ, GizmoComponent, AxisXSource, UnitAxisXSource, TransformSource, StateTarget);
+		UInteractiveGizmo* NewGizmo = AddPlaneScaleGizmo(GizmoActor->PlaneScaleYZ, GizmoComponent, AxisXSource, UnitAxisXSource, TransformSource, StateTarget);
 		ActiveComponents.Add(GizmoActor->PlaneScaleYZ);
-		NonuniformScaleComponents.Add(GizmoActor->PlaneScaleYZ);
+		NonUniformScaleSubGizmos.Add(FSubGizmoInfo{ GizmoActor->PlaneScaleYZ, NewGizmo });
 	}
 	if (GizmoActor->PlaneScaleXZ != nullptr)
 	{
-		UPlanePositionGizmo* Gizmo = (UPlanePositionGizmo *)AddPlaneScaleGizmo(GizmoActor->PlaneScaleXZ, GizmoComponent, AxisYSource, UnitAxisYSource, TransformSource, StateTarget);
+		UInteractiveGizmo* NewGizmo = AddPlaneScaleGizmo(GizmoActor->PlaneScaleXZ, GizmoComponent, AxisYSource, UnitAxisYSource, TransformSource, StateTarget);
 		ActiveComponents.Add(GizmoActor->PlaneScaleXZ);
-		NonuniformScaleComponents.Add(GizmoActor->PlaneScaleXZ);
+		NonUniformScaleSubGizmos.Add(FSubGizmoInfo{ GizmoActor->PlaneScaleXZ, NewGizmo });
 	}
 	if (GizmoActor->PlaneScaleXY != nullptr)
 	{
-		AddPlaneScaleGizmo(GizmoActor->PlaneScaleXY, GizmoComponent, AxisZSource, UnitAxisZSource, TransformSource, StateTarget);
+		UInteractiveGizmo* NewGizmo = AddPlaneScaleGizmo(GizmoActor->PlaneScaleXY, GizmoComponent, AxisZSource, UnitAxisZSource, TransformSource, StateTarget);
 		ActiveComponents.Add(GizmoActor->PlaneScaleXY);
-		NonuniformScaleComponents.Add(GizmoActor->PlaneScaleXY);
+		NonUniformScaleSubGizmos.Add(FSubGizmoInfo{ GizmoActor->PlaneScaleXY, NewGizmo });
 	}
+
+	OnSetActiveTarget.Broadcast(this, ActiveTarget);
 }
 
 FTransform UCombinedTransformGizmo::GetGizmoTransform() const
@@ -628,7 +714,30 @@ void UCombinedTransformGizmo::SetNewGizmoTransform(const FTransform& NewTransfor
 {
 	check(ActiveTarget != nullptr);
 
-	StateTarget->BeginUpdate();
+	BeginTransformEditSequence();
+	UpdateTransformDuringEditSequence(NewTransform, bKeepGizmoUnscaled);
+	EndTransformEditSequence();
+}
+
+void UCombinedTransformGizmo::BeginTransformEditSequence()
+{
+	if (ensure(StateTarget))
+	{
+		StateTarget->BeginUpdate();
+	}
+}
+
+void UCombinedTransformGizmo::EndTransformEditSequence()
+{
+	if (ensure(StateTarget))
+	{
+		StateTarget->EndUpdate();
+	}
+}
+
+void UCombinedTransformGizmo::UpdateTransformDuringEditSequence(const FTransform& NewTransform, bool bKeepGizmoUnscaled)
+{
+	check(ActiveTarget != nullptr);
 
 	USceneComponent* GizmoComponent = GizmoActor->GetRootComponent();
 	FTransform GizmoTransform = NewTransform;
@@ -638,10 +747,7 @@ void UCombinedTransformGizmo::SetNewGizmoTransform(const FTransform& NewTransfor
 	}
 	GizmoComponent->SetWorldTransform(GizmoTransform);
 	ActiveTarget->SetTransform(NewTransform);
-
-	StateTarget->EndUpdate();
 }
-
 
 void UCombinedTransformGizmo::SetNewChildScale(const FVector& NewChildScale)
 {
@@ -657,18 +763,42 @@ void UCombinedTransformGizmo::SetNewChildScale(const FVector& NewChildScale)
 
 void UCombinedTransformGizmo::SetVisibility(bool bVisible)
 {
+	bool bPreviousVisibility = !GizmoActor->IsHidden();
+
 	GizmoActor->SetActorHiddenInGame(bVisible == false);
 #if WITH_EDITOR
 	GizmoActor->SetIsTemporarilyHiddenInEditor(bVisible == false);
 #endif
+
+	if (bPreviousVisibility != bVisible)
+	{
+		OnVisibilityChanged.Broadcast(this, bVisible);
+	}
 }
 
+void UCombinedTransformGizmo::SetDisplaySpaceTransform(TOptional<FTransform> TransformIn)
+{
+	if (DisplaySpaceTransform.IsSet() != TransformIn.IsSet()
+		|| (TransformIn.IsSet() && !TransformIn.GetValue().Equals(DisplaySpaceTransform.GetValue())))
+	{
+		DisplaySpaceTransform = TransformIn;
+		OnDisplaySpaceTransformChanged.Broadcast(this, TransformIn);
+	}
+}
+
+ETransformGizmoSubElements UCombinedTransformGizmo::GetGizmoElements()
+{
+	using namespace CombinedTransformGizmoLocals;
+
+	return GetSubElementFlagsFromActor(GizmoActor);
+}
 
 UInteractiveGizmo* UCombinedTransformGizmo::AddAxisTranslationGizmo(
 	UPrimitiveComponent* AxisComponent, USceneComponent* RootComponent,
 	IGizmoAxisSource* AxisSource,
 	IGizmoTransformSource* TransformSource,
-	IGizmoStateTarget* StateTargetIn)
+	IGizmoStateTarget* StateTargetIn,
+	int AxisIndex)
 {
 	// create axis-position gizmo, axis-position parameter will drive translation
 	UAxisPositionGizmo* TranslateGizmo = Cast<UAxisPositionGizmo>(GetGizmoManager()->CreateGizmo(AxisPositionBuilderIdentifier));
@@ -680,6 +810,7 @@ UInteractiveGizmo* UCombinedTransformGizmo::AddAxisTranslationGizmo(
 	// parameter source maps axis-parameter-change to translation of TransformSource's transform
 	UGizmoAxisTranslationParameterSource* ParamSource = UGizmoAxisTranslationParameterSource::Construct(AxisSource, TransformSource, this);
 	ParamSource->PositionConstraintFunction = [this](const FVector& Pos, FVector& Snapped) { return PositionSnapFunction(Pos, Snapped); };
+	ParamSource->AxisDeltaConstraintFunction = [this, AxisIndex](double AxisDelta, double& SnappedAxisDelta) { return PositionAxisDeltaSnapFunction(AxisDelta, SnappedAxisDelta, AxisIndex); };
 	TranslateGizmo->ParameterSource = ParamSource;
 
 	// sub-component provides hit target
@@ -708,7 +839,8 @@ UInteractiveGizmo* UCombinedTransformGizmo::AddPlaneTranslationGizmo(
 	UPrimitiveComponent* AxisComponent, USceneComponent* RootComponent,
 	IGizmoAxisSource* AxisSource,
 	IGizmoTransformSource* TransformSource,
-	IGizmoStateTarget* StateTargetIn)
+	IGizmoStateTarget* StateTargetIn,
+	int XAxisIndex, int YAxisIndex)
 {
 	// create axis-position gizmo, axis-position parameter will drive translation
 	UPlanePositionGizmo* TranslateGizmo = Cast<UPlanePositionGizmo>(GetGizmoManager()->CreateGizmo(PlanePositionBuilderIdentifier));
@@ -720,6 +852,8 @@ UInteractiveGizmo* UCombinedTransformGizmo::AddPlaneTranslationGizmo(
 	// parameter source maps axis-parameter-change to translation of TransformSource's transform
 	UGizmoPlaneTranslationParameterSource* ParamSource = UGizmoPlaneTranslationParameterSource::Construct(AxisSource, TransformSource, this);
 	ParamSource->PositionConstraintFunction = [this](const FVector& Pos, FVector& Snapped) { return PositionSnapFunction(Pos, Snapped); };
+	ParamSource->AxisXDeltaConstraintFunction = [this, XAxisIndex](double AxisDelta, double& SnappedAxisDelta) { return PositionAxisDeltaSnapFunction(AxisDelta, SnappedAxisDelta, XAxisIndex); };
+	ParamSource->AxisYDeltaConstraintFunction = [this, YAxisIndex](double AxisDelta, double& SnappedAxisDelta) { return PositionAxisDeltaSnapFunction(AxisDelta, SnappedAxisDelta, YAxisIndex); };
 	TranslateGizmo->ParameterSource = ParamSource;
 
 	// sub-component provides hit target
@@ -761,7 +895,9 @@ UInteractiveGizmo* UCombinedTransformGizmo::AddAxisRotationGizmo(
 
 	// parameter source maps angle-parameter-change to rotation of TransformSource's transform
 	UGizmoAxisRotationParameterSource* AngleSource = UGizmoAxisRotationParameterSource::Construct(AxisSource, TransformSource, this);
-	AngleSource->RotationConstraintFunction = [this](const FQuat& DeltaRotation){ return RotationSnapFunction(DeltaRotation); };
+	// axis rotation is currently only relative so it should only ever snap angle-deltas
+	//AngleSource->RotationConstraintFunction = [this](const FQuat& DeltaRotation){ return RotationSnapFunction(DeltaRotation); };
+	AngleSource->AngleDeltaConstraintFunction = [this](double AngleDelta, double& SnappedDelta){ return RotationAxisAngleSnapFunction(AngleDelta, SnappedDelta, 0); };
 	RotateGizmo->AngleSource = AngleSource;
 
 	// sub-component provides hit target
@@ -896,13 +1032,18 @@ UInteractiveGizmo* UCombinedTransformGizmo::AddUniformScaleGizmo(
 
 void UCombinedTransformGizmo::ClearActiveTarget()
 {
+	OnAboutToClearActiveTarget.Broadcast(this, ActiveTarget);
+
 	for (UInteractiveGizmo* Gizmo : ActiveGizmos)
 	{
 		GetGizmoManager()->DestroyGizmo(Gizmo);
 	}
 	ActiveGizmos.SetNum(0);
 	ActiveComponents.SetNum(0);
-	NonuniformScaleComponents.SetNum(0);
+	TranslationSubGizmos.SetNum(0);
+	RotationSubGizmos.SetNum(0);
+	UniformScaleSubGizmos.SetNum(0);
+	NonUniformScaleSubGizmos.SetNum(0);
 
 	CameraAxisSource = nullptr;
 	AxisXSource = nullptr;
@@ -923,84 +1064,149 @@ bool UCombinedTransformGizmo::PositionSnapFunction(const FVector& WorldPosition,
 {
 	SnappedPositionOut = WorldPosition;
 
-	// only snap if we want snapping obvs
-	if (bSnapToWorldGrid == false)
+	// only snap world positions if we want world position snapping...
+	if (bSnapToWorldGrid == false || RelativeTranslationSnapping.IsEnabled() == true)
 	{
 		return false;
 	}
 
-	// only snap to world grid when using world axes
+	// we can only snap positions in world coordinate system
 	EToolContextCoordinateSystem CoordSystem = GetGizmoManager()->GetContextQueriesAPI()->GetCurrentCoordinateSystem();
 	if (CoordSystem != EToolContextCoordinateSystem::World)
 	{
 		return false;
 	}
 
-	USceneSnappingManager* SnapManager = USceneSnappingManager::Find(GetGizmoManager());
-	if (!SnapManager)
+	// need a snapping manager
+	if ( USceneSnappingManager* SnapManager = USceneSnappingManager::Find(GetGizmoManager()) )
 	{
-		return false;
-	}
+		FSceneSnapQueryRequest Request;
+		Request.RequestType = ESceneSnapQueryType::Position;
+		Request.TargetTypes = ESceneSnapQueryTargetType::Grid;
+		if ( bGridSizeIsExplicit )
+		{
+			Request.GridSize = ExplicitGridSize;
+		}
+		TArray<FSceneSnapQueryResult> Results;
+		Results.Reserve(1);
 
-	FSceneSnapQueryRequest Request;
-	Request.RequestType = ESceneSnapQueryType::Position;
-	Request.TargetTypes = ESceneSnapQueryTargetType::Grid;
-	Request.Position = WorldPosition;
-	if ( bGridSizeIsExplicit )
-	{
-		Request.GridSize = ExplicitGridSize;
+		Request.Position = WorldPosition;
+		if (SnapManager->ExecuteSceneSnapQuery(Request, Results))
+		{
+			SnappedPositionOut = Results[0].Position;
+			return true;
+		};
 	}
-	TArray<FSceneSnapQueryResult> Results;
-	if (SnapManager->ExecuteSceneSnapQuery(Request, Results))
-	{
-		SnappedPositionOut = Results[0].Position;
-		return true;
-	};
 
 	return false;
 }
 
+
+bool UCombinedTransformGizmo::PositionAxisDeltaSnapFunction(double AxisDelta, double& SnappedDeltaOut, int AxisIndex) const
+{
+	if (!bSnapToWorldGrid) return false;
+
+	EToolContextCoordinateSystem CoordSystem = GetGizmoManager()->GetContextQueriesAPI()->GetCurrentCoordinateSystem();
+	bool bUseRelativeSnapping = RelativeTranslationSnapping.IsEnabled() || (CoordSystem != EToolContextCoordinateSystem::World);
+	if (!bUseRelativeSnapping)
+	{
+		return false;
+	}
+
+	if ( USceneSnappingManager* SnapManager = USceneSnappingManager::Find(GetGizmoManager()) )
+	{
+		FSceneSnapQueryRequest Request;
+		Request.RequestType = ESceneSnapQueryType::Position;
+		Request.TargetTypes = ESceneSnapQueryTargetType::Grid;
+		if ( bGridSizeIsExplicit )
+		{
+			Request.GridSize = ExplicitGridSize;
+		}
+		TArray<FSceneSnapQueryResult> Results;
+		Results.Reserve(1);
+		
+		// this is a bit of a hack, since the snap query only snaps world points, and the grid may not be
+		// uniform. A point on the specified X/Y/Z at the delta-distance is snapped, this is ideally
+		// equivalent to actually computing a snap of the axis-delta
+		Request.Position = FVector::Zero();
+		Request.Position[AxisIndex] = AxisDelta;
+		if (SnapManager->ExecuteSceneSnapQuery(Request, Results))
+		{
+			SnappedDeltaOut = Results[0].Position[AxisIndex];
+			return true;
+		};
+	}
+	return false;
+}
+
+
+
+
 FQuat UCombinedTransformGizmo::RotationSnapFunction(const FQuat& DeltaRotation) const
 {
+	// note: this is currently unused. Although we can snap to the "rotation grid", since the
+	// gizmo only supports axis rotations, it doesn't make sense. Leaving in for now in case
+	// a "tumble" handle is added, in which case it makes sense to snap to the world rotation grid...
+
 	FQuat SnappedDeltaRotation = DeltaRotation;
 
-	// only snap if we want snapping obvs
-	if (!bSnapToWorldGrid)
+	// only snap world positions if we want world position snapping...
+	if (bSnapToWorldRotGrid == false )
 	{
 		return SnappedDeltaRotation;
 	}
 
-	// To match our position snapping behavior, only snap when using world axes.
-	// Note that if we someday want to snap in local mode, this function will need further
-	// changing because the quaternion is given and snapped in world space, whereas we
-	// would want to snap it relative to the local frame start orientation.
+	// can only snap absolute rotations in World coordinates
 	EToolContextCoordinateSystem CoordSystem = GetGizmoManager()->GetContextQueriesAPI()->GetCurrentCoordinateSystem();
 	if (CoordSystem != EToolContextCoordinateSystem::World)
 	{
 		return SnappedDeltaRotation;
 	}
 
-	USceneSnappingManager* SnapManager = USceneSnappingManager::Find(GetGizmoManager());
-	if (!SnapManager)
+	// need a snapping manager
+	if ( USceneSnappingManager* SnapManager = USceneSnappingManager::Find(GetGizmoManager()) )
 	{
-		return SnappedDeltaRotation;
+		FSceneSnapQueryRequest Request;
+		Request.RequestType   = ESceneSnapQueryType::Rotation;
+		Request.TargetTypes   = ESceneSnapQueryTargetType::Grid;
+		Request.DeltaRotation = DeltaRotation;
+		if ( bRotationGridSizeIsExplicit )
+		{
+			Request.RotGridSize = ExplicitRotationGridSize;
+		}
+		TArray<FSceneSnapQueryResult> Results;
+		if (SnapManager->ExecuteSceneSnapQuery(Request, Results))
+		{
+			SnappedDeltaRotation = Results[0].DeltaRotation;
+		};
 	}
-
-	FSceneSnapQueryRequest Request;
-	Request.RequestType   = ESceneSnapQueryType::Rotation;
-	Request.TargetTypes   = ESceneSnapQueryTargetType::Grid;
-	Request.DeltaRotation = DeltaRotation;
-	if ( bRotationGridSizeIsExplicit )
-	{
-		Request.RotGridSize = ExplicitRotationGridSize;
-	}
-	TArray<FSceneSnapQueryResult> Results;
-	if (SnapManager->ExecuteSceneSnapQuery(Request, Results))
-	{
-		SnappedDeltaRotation = Results[0].DeltaRotation;
-	};
 
 	return SnappedDeltaRotation;
+}
+
+
+
+
+
+bool UCombinedTransformGizmo::RotationAxisAngleSnapFunction(double AxisAngleDelta, double& SnappedAxisAngleDeltaOut, int AxisIndex) const
+{
+	if (!bSnapToWorldRotGrid) return false;
+
+	FToolContextSnappingConfiguration SnappingConfig = GetGizmoManager()->GetContextQueriesAPI()->GetCurrentSnappingSettings();
+	if ( SnappingConfig.bEnableRotationGridSnapping )
+	{
+		double SnapDelta = SnappingConfig.RotationGridAngles.Yaw;		// could use AxisIndex here?
+		if ( bRotationGridSizeIsExplicit )
+		{
+			SnapDelta = ExplicitRotationGridSize.Yaw;
+		}
+		AxisAngleDelta *= FMathd::RadToDeg;
+		SnappedAxisAngleDeltaOut = UE::Geometry::SnapToIncrement(AxisAngleDelta, SnapDelta);
+		SnappedAxisAngleDeltaOut *= FMathd::DegToRad;
+		return true;
+	}
+
+	return false;
 }
 
 #undef LOCTEXT_NAMESPACE

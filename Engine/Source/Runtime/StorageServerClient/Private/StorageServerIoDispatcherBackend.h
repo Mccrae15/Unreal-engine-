@@ -4,6 +4,7 @@
 
 #include "IO/IoDispatcherBackend.h"
 #include "HAL/Runnable.h"
+#include "Misc/IQueuedWork.h"
 
 #if !UE_BUILD_SHIPPING
 
@@ -19,6 +20,7 @@ public:
 	~FStorageServerIoDispatcherBackend();
 
 	void Initialize(TSharedRef<const FIoDispatcherBackendContext> Context) override;
+	void Shutdown() override;
 	bool Resolve(FIoRequestImpl* Request) override;
 	void CancelIoRequest(FIoRequestImpl* Request) override {};
 	void UpdatePriorityForIoRequest(FIoRequestImpl* Request) override {};
@@ -64,12 +66,7 @@ private:
 	struct FBatch
 		: public IQueuedWork
 	{
-		FBatch(FStorageServerIoDispatcherBackend& InOwner, TUniquePtr<FStorageServerSerializationContext> InSerializationContext)
-			: Owner(InOwner)
-			, SerializationContext(MoveTemp(InSerializationContext))
-		{
-
-		}
+		FBatch(FStorageServerIoDispatcherBackend& InOwner, TUniquePtr<FStorageServerSerializationContext> InSerializationContext);
 
 		virtual void DoThreadedWork() override;
 		virtual void Abandon() override {};
@@ -84,7 +81,7 @@ private:
 
 	void SubmitBatch(FBatch* Batch);
 	void OnBatchCompleted(FBatch* Batch);
-	void WaitForBatchToComplete();
+	bool WaitForBatchToComplete(uint32 WaitTime = MAX_uint32);
 
 	FStorageServerConnection& Connection;
 	TSharedPtr<const FIoDispatcherBackendContext> BackendContext;

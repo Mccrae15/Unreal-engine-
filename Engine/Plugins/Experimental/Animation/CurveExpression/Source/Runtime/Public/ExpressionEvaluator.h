@@ -3,10 +3,11 @@
 #pragma once
 
 #include "Containers/Map.h"
-#include "Containers/UnrealString.h"
-#include "Misc/Optional.h"
 #include "Misc/TVariant.h"
+#include "Misc/TVariantMeta.h"
 #include "UObject/NameTypes.h"
+
+template <typename OptionalType> struct TOptional;
 
 namespace CurveExpression::Evaluator
 {
@@ -81,6 +82,13 @@ enum class EParseFlags
 ENUM_CLASS_FLAGS(EParseFlags)
 
 
+/** Dictate how constants are updated. */
+enum class EUpdateConstantsMethod
+{
+	IgnoreMissing,					/** Existing constant values that are not updated are left unchanged. */
+	ZeroMissing						/** Existing constant values that are not updated are zeroed out. */
+};
+
 class CURVEEXPRESSION_API FEngine
 {
 public:
@@ -102,7 +110,8 @@ public:
 
 	/** Update existing constant values. No new constants are added. */
 	void UpdateConstantValues(
-		const TMap<FName, float>& InConstants
+		const TMap<FName, float>& InConstants,
+		EUpdateConstantsMethod InUpdateMethod = EUpdateConstantsMethod::ZeroMissing
 		);
 
 	/** Return existing constants and their values. */
@@ -149,6 +158,8 @@ private:
 		ParenOpen,			// '('
 		ParenClose,			// ')'
 		Comma,				// ','
+
+		Max					// Must be last
 	};
 	using FToken = TVariant<EOperatorToken, /* Identifier */ FName, /* Value */ float>;
 	

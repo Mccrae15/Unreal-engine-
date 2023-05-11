@@ -11,64 +11,130 @@
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////
-constexpr uint32 FourCc(int A, int B, int C, int D)
-{
-    return ((A << 24) | (B << 16) | (C << 8) | D);
-}
-
-
-
-////////////////////////////////////////////////////////////////////////////////
 class FRecorderRelay
 	: public FAsioIoSink
 {
 public:
-						FRecorderRelay(asio::ip::tcp::socket& Socket, FAsioWriteable* InOutput);
+						FRecorderRelay(asio::ip::tcp::socket& Socket, FStore& InStore);
 	virtual				~FRecorderRelay();
 	bool				IsOpen();
 	void				Close();
+	uint32				GetTraceId() const;
 	uint32				GetIpAddress() const;
 	uint32				GetControlPort() const;
 
 private:
 	virtual void		OnIoComplete(uint32 Id, int32 Size) override;
+	bool				CreateTrace();
+	bool				ReadMagic();
 	bool				ReadMetadata(int32 Size);
-	static const uint32	BufferSize = 64 * 1024;
-	enum				{ OpStart, OpSocketReadMetadata, OpSocketRead, OpFileWrite };
+	static const uint32	BufferSize = 256 * 1024;
 	FAsioSocket			Input;
-	FAsioWriteable*		Output;
-	uint32				ActiveReadOp = OpSocketReadMetadata;
+	FAsioWriteable*		Output = nullptr;
+	FStore&				Store;
+	uint8*				PreambleCursor;
+	uint32				TraceId = 0;
 	uint16				ControlPort = 0;
-	uint8				Buffer[BufferSize];
+	uint8				FillDrainCounter = 1;
+	uint32				BufferPolarity = 0;
+	uint8*				Buffer[2];
+	uint32				FillSize[2] = {};
+
+	enum
+	{
+		OpMagicRead			= 0x1000,
+		OpMetadataRead		= 0x1001,
+		OpBuffer0			= 0b00,
+		OpBuffer1			= 0b10,
+		OpFill				= 0b00,
+		OpDrain				= 0b01,
+	};
+
+	using MagicType				= uint32;
+	using MetadataSizeType		= uint16;
+	using VersionType			= struct { uint8 Transport; uint8 Protocol; };
+
+	static_assert(sizeof(VersionType) == 2, "Unexpected struct size");
 };
 
 ////////////////////////////////////////////////////////////////////////////////
-FRecorderRelay::FRecorderRelay(asio::ip::tcp::socket& Socket, FAsioWriteable* InOutput)
+FRecorderRelay::FRecorderRelay(asio::ip::tcp::socket& Socket, FStore& InStore)
 : Input(Socket)
-, Output(InOutput)
+, Store(InStore)
 {
-	OnIoComplete(OpStart, 0);
+	Buffer[0] = new uint8[BufferSize];
+	Buffer[1] = new uint8[BufferSize];
+
+#if TS_USING(TS_PLATFORM_WINDOWS)
+	// Trace data is a stream and communication is one way. It is implemented
+	// this way to share code between sending trace data over the wire and writing
+	// it to a file. Because there's no ping/pong we can end up with a half-open
+	// TCP connection if the other end doesn't close its socket. So we'll enable
+	// keep-alive on the socket and set a short timeout (default is 2hrs).
+	tcp_keepalive KeepAlive =
+	{
+		1,		// on
+		15000,	// timeout_ms
+		2000,	// interval_ms
+	};
+
+	DWORD BytesReturned;
+	WSAIoctl(
+		Socket.native_handle(),
+		SIO_KEEPALIVE_VALS,
+		&KeepAlive, sizeof(KeepAlive),
+		nullptr, 0,
+		&BytesReturned,
+		nullptr,
+		nullptr
+	);
+#endif
+
+	// Kick things off by reading the magic four bytes at the start of the stream
+	// along with an additional two bytes that are likely the metadata size.
+	uint32 PreambleReadSize = sizeof(MagicType) + sizeof(MetadataSizeType);
+	PreambleCursor = Buffer[0] + PreambleReadSize;
+	Input.Read(Buffer[0], PreambleReadSize, this, OpMagicRead);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 FRecorderRelay::~FRecorderRelay()
 {
 	check(!Input.IsOpen());
-	check(!Output->IsOpen());
-	delete Output;
+	if (Output != nullptr)
+	{
+		check(!Output->IsOpen());
+		delete Output;
+	}
+
+	delete[] Buffer[1];
+	delete[] Buffer[0];
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 bool FRecorderRelay::IsOpen()
 {
-	return Input.IsOpen();
+	// Even if the input socket has been closed we should still report ourselves
+	// as open if there is a pending write on the output.
+	bool Ret = (Output != nullptr && FillDrainCounter < 2);
+	Ret |= Input.IsOpen();
+	return Ret;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 void FRecorderRelay::Close()
 {
 	Input.Close();
-	Output->Close();
+	if (Output != nullptr)
+	{
+		Output->Close();
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////
+uint32 FRecorderRelay::GetTraceId() const
+{
+	return TraceId;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -84,61 +150,77 @@ uint32 FRecorderRelay::GetControlPort() const
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-bool FRecorderRelay::ReadMetadata(int32 Size)
+bool FRecorderRelay::CreateTrace()
 {
-	const uint8* Cursor = Buffer;
-	auto Read = [&] (int32 SizeToRead)
+	FStore::FNewTrace Trace = Store.CreateTrace();
+	TraceId = Trace.Id;
+	Output = Trace.Writeable;
+	return (Output != nullptr);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+bool FRecorderRelay::ReadMagic()
+{
+	const uint8* Cursor = Buffer[0];
+
+	// Here we'll check the magic four bytes at the start of the stream and create
+	// a trace to write into if they are bytes we're expecting.
+
+	// We will only support clients that send the magic. Very early clients did
+	// not do this but they were unreleased and should no longer be in use.
+	if (Cursor[3] != 'T' || Cursor[2] != 'R' || Cursor[1] != 'C')
 	{
-		const uint8* Ptr = Cursor;
-		Cursor += SizeToRead;
-		Size -= SizeToRead;
-		return Ptr;
-	};
-
-	// Stream header
-	uint32 Magic;
-	if (Size < sizeof(Magic))
-	{
-		return true;
-	}
-
-	Magic = *(const uint32*)(Read(sizeof(Magic)));
-	switch (Magic)
-	{
-	/* trace with metadata data */
-	case FourCc('T', 'R', 'C', '2'):
-		break;
-
-	/* valid, but to old or wrong endian for us */
-	case FourCc('T', 'R', 'C', 'E'):
-	case FourCc('E', 'C', 'R', 'T'):
-	case FourCc('2', 'C', 'R', 'T'):
-		return true;
-
-	/* unexpected magic */
-	default:
 		return false;
 	}
 
-	// MetadataSize field
-	if (Size < 2)
+	// Later clients have a metadata block (TRC2). There's loose support for the
+	// future too if need be (TRC[3-9]).
+	if (Cursor[0] < '2' || Cursor[0] > '9')
 	{
-		return true;
+		return false;
 	}
-	Size = *(const uint16*)(Read(2));
+
+	// Concatenate metadata into the buffer, first validating the given size is
+	// one that we can handle in a single read.
+	uint32 MetadataSize = *(MetadataSizeType*)(Cursor + sizeof(MagicType));
+	MetadataSize += sizeof(VersionType);
+	if (MetadataSize > BufferSize - uint32(ptrdiff_t(PreambleCursor - Cursor)))
+	{
+		return false;
+	}
+
+	Input.Read(PreambleCursor, MetadataSize, this, OpMetadataRead);
+
+	return true;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+bool FRecorderRelay::ReadMetadata(int32 Size)
+{
+	// At this point Buffer          [magic][md_size][metadata][t_ver][p_ver]
+	// looks like this;              Buffer--------->PreambleCursor--------->
+	//                                               |---------Size---------|
+
+	// We want to consume [metadata] so some adjustment is required.
+	int32 ReadSize = Size - sizeof(VersionType);
+	const uint8* Cursor = PreambleCursor;
 
 	// MetadataFields
-	while (Size >= 2)
+	while (ReadSize >= 2)
 	{
-		struct {
+		struct FMetadataHeader
+		{
 			uint8	Size;
 			uint8	Id;
-		} MetadataField;
-		MetadataField = *(const decltype(MetadataField)*)(Read(sizeof(MetadataField)));
+		};
+		const auto& MetadataField = *(FMetadataHeader*)(Cursor);
 
-		if (Size < MetadataField.Size)
+		Cursor += sizeof(FMetadataHeader);
+		ReadSize -= sizeof(FMetadataHeader);
+
+		if (ReadSize < MetadataField.Size)
 		{
-			break;
+			return false;
 		}
 
 		if (MetadataField.Id == 0) /* ControlPortFieldId */
@@ -146,8 +228,25 @@ bool FRecorderRelay::ReadMetadata(int32 Size)
 			ControlPort = *(const uint16*)Cursor;
 		}
 
-		Size -= MetadataField.Size;
+		Cursor += MetadataField.Size;
+		ReadSize -= MetadataField.Size;
 	}
+
+	// There should be no data left to consume if the metadata was well-formed
+	if (ReadSize != 0)
+	{
+		return false;
+	}
+
+	// Now we've a full preamble we are ready to write the trace.
+	if (!CreateTrace())
+	{
+		return false;
+	}
+
+	// Analysis needs the preamble too.
+	uint32 PreambleSize = uint32(ptrdiff_t(PreambleCursor - Buffer[0])) + Size;
+	OnIoComplete(OpBuffer0|OpFill, PreambleSize);
 
 	return true;
 }
@@ -157,30 +256,53 @@ void FRecorderRelay::OnIoComplete(uint32 Id, int32 Size)
 {
 	if (Size < 0)
 	{
+		FillDrainCounter += (Output != nullptr);
 		Close();
 		return;
 	}
 
+	// A completed preamble read?
 	switch (Id)
 	{
-	case OpSocketReadMetadata:
-		ActiveReadOp = OpSocketRead;
+	case OpMagicRead:
+		if (!ReadMagic())
+		{
+			Close();
+		}
+		return;
+
+	case OpMetadataRead:
 		if (!ReadMetadata(Size))
 		{
 			Close();
-			return;
 		}
-		/* fallthrough */
-
-	case OpSocketRead:
-		Output->Write(Buffer, Size, this, OpFileWrite);
-		break;
-
-	case OpStart:
-	case OpFileWrite:
-		Input.ReadSome(Buffer, BufferSize, this, ActiveReadOp);
-		break;
+		return;
 	}
+
+	// If we've got to here then a fill or drain op has completed.
+
+	// Cache fill sizes so they can be used when we are ready to issue the drain
+	if ((Id & 0b01) == 0)
+	{
+		uint32 BufferIndex = (Id & 0b10) >> 1;
+		FillSize[BufferIndex] = Size;
+	}
+
+	// We only dispatch another fill/drain pair once the previous two have
+	// completed. This is so we don't overlap fills, drains, or buffer use.
+	++FillDrainCounter;
+	if (FillDrainCounter < 2)
+	{
+		return;
+	}
+	FillDrainCounter = 0;
+
+	// At this point we've one buffer that's been filled and another that has
+	// finished being drained. We are free to issue two more concurrent ops
+	uint32 BufferIndex = (BufferPolarity != 0);
+	Output->Write(Buffer[BufferIndex], FillSize[BufferIndex], this, BufferPolarity|OpDrain);
+	BufferPolarity ^= 0b10;
+	Input.ReadSome(Buffer[BufferIndex ^ 1], BufferSize, this, BufferPolarity|OpFill);
 }
 
 
@@ -194,7 +316,7 @@ uint32 FRecorder::FSession::GetId() const
 ////////////////////////////////////////////////////////////////////////////////
 uint32 FRecorder::FSession::GetTraceId() const
 {
-	return TraceId;
+	return Relay->GetTraceId();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -264,38 +386,7 @@ const FRecorder::FSession* FRecorder::GetSessionInfo(uint32 Index) const
 ////////////////////////////////////////////////////////////////////////////////
 bool FRecorder::OnAccept(asio::ip::tcp::socket& Socket)
 {
-	FStore::FNewTrace Trace = Store.CreateTrace();
-	if (Trace.Writeable == nullptr)
-	{
-		return true;
-	}
-
-#if TS_USING(TS_PLATFORM_WINDOWS)
-	// Trace data is a stream and communication is one way. It is implemented
-	// this way to share code between sending trace data over the wire and writing
-	// it to a file. Because there's no ping/pong we can end up with a half-open
-	// TCP connection if the other end doesn't close its socket. So we'll enable
-	// keep-alive on the socket and set a short timeout (default is 2hrs).
-	tcp_keepalive KeepAlive =
-	{
-		1,		// on
-		15000,	// timeout_ms
-		2000,	// interval_ms
-	};
-
-	DWORD BytesReturned;
-	WSAIoctl(
-		Socket.native_handle(),
-		SIO_KEEPALIVE_VALS,
-		&KeepAlive, sizeof(KeepAlive),
-		nullptr, 0,
-		&BytesReturned,
-		nullptr,
-		nullptr
-	);
-#endif
-
-	auto* Relay = new FRecorderRelay(Socket, Trace.Writeable);
+	auto* Relay = new FRecorderRelay(Socket, Store);
 
 	uint32 IdPieces[] = {
 		Relay->GetIpAddress(),
@@ -307,7 +398,6 @@ bool FRecorder::OnAccept(asio::ip::tcp::socket& Socket)
 	FSession Session;
 	Session.Relay = Relay;
 	Session.Id = QuickStoreHash(IdPieces);
-	Session.TraceId = Trace.Id;
 	Sessions.Add(Session);
 
 	return true;

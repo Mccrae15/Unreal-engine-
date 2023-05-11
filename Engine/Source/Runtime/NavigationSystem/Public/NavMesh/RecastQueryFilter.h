@@ -3,8 +3,11 @@
 #pragma once 
 
 #include "CoreMinimal.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "NavFilters/NavigationQueryFilter.h"
+#endif //UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "AI/Navigation/NavigationTypes.h"
+#include "AI/Navigation/NavQueryFilter.h"
 
 #if WITH_RECAST
 #include "Detour/DetourNavMesh.h"
@@ -14,7 +17,6 @@
 
 class UNavigationSystemV1;
 
-// LWC_TODO_AI: make a lot of the float params used in this class FReals. Not until after 5.0!
 class NAVIGATIONSYSTEM_API FRecastQueryFilter : public INavigationQueryFilterInterface, public dtQueryFilter
 {
 public:

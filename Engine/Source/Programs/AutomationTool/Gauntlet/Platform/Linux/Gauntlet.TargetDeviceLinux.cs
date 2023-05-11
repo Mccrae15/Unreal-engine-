@@ -8,6 +8,8 @@ using System.Threading;
 using AutomationTool;
 using UnrealBuildTool;
 using System.Text.RegularExpressions;
+using EpicGames.Core;
+using static AutomationTool.ProcessResult;
 
 namespace Gauntlet
 {
@@ -73,18 +75,43 @@ namespace Gauntlet
 			return Device.Run(this);
 		}
 
+		public bool ForceCleanDeviceArtifacts()
+		{
+			DirectoryInfo ClientTempDirInfo = new DirectoryInfo(ArtifactPath) { Attributes = FileAttributes.Normal };
+			Log.Info(KnownLogEvents.Gauntlet_DeviceEvent, "Setting files in device artifacts {0} to have normal attributes (no longer read-only).", ArtifactPath);
+			foreach (FileSystemInfo info in ClientTempDirInfo.GetFileSystemInfos("*", SearchOption.AllDirectories))
+			{
+				info.Attributes = FileAttributes.Normal;
+			}
+			try
+			{
+				Log.Info(KnownLogEvents.Gauntlet_DeviceEvent, "Clearing device artifact path {0} (force)", ArtifactPath);
+				Directory.Delete(ArtifactPath, true);
+			}
+			catch (Exception Ex)
+			{
+				Log.Warning(KnownLogEvents.Gauntlet_DeviceEvent, "Failed to force delete artifact path {File}. {Exception}", ArtifactPath, Ex.Message);
+				return false;
+			}
+			return true;
+		}
+
 		public virtual void CleanDeviceArtifacts()
 		{
 			if (!string.IsNullOrEmpty(ArtifactPath) && Directory.Exists(ArtifactPath))
 			{
 				try
 				{
-					Log.Info("Clearing actifact path {0} for {1}", ArtifactPath, Device.Name);
+					Log.Info("Clearing device artifacts path {0} for {1}", ArtifactPath, Device.Name);
 					Directory.Delete(ArtifactPath, true);
 				}
 				catch (Exception Ex)
 				{
-					Log.Warning("Failed to delete {0}. {1}", ArtifactPath, Ex.Message);
+					Log.Info(KnownLogEvents.Gauntlet_DeviceEvent, "First attempt at clearing artifact path {0} failed - trying again", ArtifactPath);
+					if (!ForceCleanDeviceArtifacts())
+					{
+						Log.Warning(KnownLogEvents.Gauntlet_DeviceEvent, "Failed to delete {File}. {Exception}", ArtifactPath, Ex.Message);
+					}
 				}
 			}
 		}
@@ -186,7 +213,6 @@ namespace Gauntlet
 			}
 
 			IProcessResult Result = null;
-			string ProcessLogFile = null;
 
 			lock (Globals.MainLock)
 			{
@@ -199,48 +225,9 @@ namespace Gauntlet
 
 				string CmdLine = LinuxApp.CommandArguments;
 
-				// Look in app parameters if abslog is specified, if so use it
-				/* TODO for linux
-				Regex CLRegex = new Regex(@"(--?[a-zA-Z]+)[:\s=]?([A-Z]:(?:\\[\w\s-]+)+\\?(?=\s-)|\""[^\""]*\""|[^-][^\s]*)?");
-				foreach (Match M in CLRegex.Matches(CmdLine))
-				{
-					if (M.Groups.Count == 3 && M.Groups[1].Value == "-abslog")
-					{
-						ProcessLogFile = M.Groups[2].Value;
-					}
-				}
-				*/
-
-				// explicitly set log file when not already defined
-				if (string.IsNullOrEmpty(ProcessLogFile))
-				{
-					string LogFolder = string.Format(@"{0}/Logs", LinuxApp.ArtifactPath);
-
-					if (!Directory.Exists(LogFolder))
-					{
-						Directory.CreateDirectory(LogFolder);
-					}
-
-					ProcessLogFile = string.Format("{0}/{1}.log", LogFolder, LinuxApp.ProjectName);
-					CmdLine = string.Format("{0} -abslog=\"{1}\"", CmdLine, ProcessLogFile);
-				}
-
-				// cleanup any existing log file
-				try
-				{
-					if (File.Exists(ProcessLogFile))
-					{
-						File.Delete(ProcessLogFile);
-					}
-				}
-				catch (Exception Ex)
-				{
-					throw new AutomationException("Unable to delete existing log file {0} {1}", ProcessLogFile, Ex.Message);
-				}
-
 				Log.Verbose("\t{0}", CmdLine);
 
-				Result = CommandUtils.Run(LinuxApp.ExecutablePath, CmdLine, Options: LinuxApp.RunOptions | (ProcessLogFile != null ? CommandUtils.ERunOptions.NoStdOutRedirect : 0 ));
+				Result = CommandUtils.Run(LinuxApp.ExecutablePath, CmdLine, Options: LinuxApp.RunOptions, SpewFilterCallback: new SpewFilterCallbackType(delegate(string M) { return null; }) /* make sure stderr does not spew in the stdout */);
 
 				if (Result.HasExited && Result.ExitCode != 0)
 				{
@@ -250,7 +237,7 @@ namespace Gauntlet
 				Environment.CurrentDirectory = OldWD;
 			}
 
-			return new LinuxAppInstance(LinuxApp, Result, ProcessLogFile);
+			return new LinuxAppInstance(LinuxApp, Result);
 		}
 
 		private void CopyAdditionalFiles(UnrealAppConfig AppConfig)
@@ -279,7 +266,7 @@ namespace Gauntlet
 					}
 					else
 					{
-						Log.Warning("File to copy {0} not found", FileToCopy);
+						Log.Warning(KnownLogEvents.Gauntlet_DeviceEvent, "File to copy {File} not found", FileToCopy);
 					}
 				}
 			}

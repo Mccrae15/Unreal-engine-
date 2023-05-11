@@ -8,7 +8,7 @@
 /**
  * GetControlColor is used to retrieve the color of control
  */
-USTRUCT(meta=(DisplayName="Set Gontrol Color", Category="Controls", DocumentationPolicy="Strict", Keywords = "GetControlColor,GetGizmoColor", TemplateName="GetControlColor", NodeColor = "0.0 0.36470600962638855 1.0"))
+USTRUCT(meta=(DisplayName="Get Control Color", Category="Controls", DocumentationPolicy="Strict", Keywords = "GetControlColor,GetGizmoColor", TemplateName="GetControlColor", NodeColor = "0.0 0.36470600962638855 1.0"))
 struct CONTROLRIG_API FRigUnit_GetControlColor : public FRigUnit
 {
 	GENERATED_BODY()
@@ -20,7 +20,7 @@ struct CONTROLRIG_API FRigUnit_GetControlColor : public FRigUnit
 	{}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The name of the Control to get the color for.
@@ -54,7 +54,7 @@ struct CONTROLRIG_API FRigUnit_SetControlColor : public FRigUnitMutable
 	{}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The name of the Control to set the color for.

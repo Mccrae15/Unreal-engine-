@@ -18,6 +18,7 @@
 #include "Delegates/Delegate.h"
 #include "HAL/PlatformCrt.h"
 #include "Internationalization/Text.h"
+#include "Internationalization/TextLocalizationResource.h"
 #include "Logging/LogMacros.h"
 #include "Math/Color.h"
 #include "Math/MathFwd.h"
@@ -109,6 +110,7 @@ public:
 		, bRead(false)
 #endif
 	{
+		SavedValueHash = FTextLocalizationResource::HashString(SavedValue);
 		ExpandValueInternal();
 	}
 
@@ -118,6 +120,7 @@ public:
 		, bRead(false)
 #endif
 	{
+		SavedValueHash = FTextLocalizationResource::HashString(SavedValue);
 		ExpandValueInternal();
 	}
 
@@ -127,12 +130,14 @@ public:
 		, bRead(false)
 #endif
 	{
+		SavedValueHash = FTextLocalizationResource::HashString(SavedValue);
 		ExpandValueInternal();
 	}
 
 	FConfigValue(const FConfigValue& InConfigValue)
 		: SavedValue(InConfigValue.SavedValue)
 		, ExpandedValue(InConfigValue.ExpandedValue)
+		, SavedValueHash(InConfigValue.SavedValueHash)
 #if CONFIG_REMEMBER_ACCESS_PATTERN 
 		, bRead(InConfigValue.bRead)
 #endif
@@ -143,6 +148,7 @@ public:
 	FConfigValue(FConfigValue&& InConfigValue)
 		: SavedValue(MoveTemp(InConfigValue.SavedValue))
 		, ExpandedValue(MoveTemp(InConfigValue.ExpandedValue))
+		, SavedValueHash(InConfigValue.SavedValueHash)
 #if CONFIG_REMEMBER_ACCESS_PATTERN 
 		, bRead(InConfigValue.bRead)
 #endif
@@ -154,6 +160,7 @@ public:
 	{
 		SavedValue = MoveTemp(RHS.SavedValue);
 		ExpandedValue = MoveTemp(RHS.ExpandedValue);
+		SavedValueHash = RHS.SavedValueHash;
 #if CONFIG_REMEMBER_ACCESS_PATTERN 
 		bRead = RHS.bRead;
 #endif
@@ -165,6 +172,7 @@ public:
 	{
 		SavedValue = RHS.SavedValue;
 		ExpandedValue = RHS.ExpandedValue;
+		SavedValueHash = RHS.SavedValueHash;
 #if CONFIG_REMEMBER_ACCESS_PATTERN 
 		bRead = RHS.bRead;
 #endif
@@ -202,7 +210,7 @@ public:
 	}
 #endif
 
-	bool operator==(const FConfigValue& Other) const { return (SavedValue.Compare(Other.SavedValue) == 0); }
+	bool operator==(const FConfigValue& Other) const { return SavedValueHash == Other.SavedValueHash; }
 	bool operator!=(const FConfigValue& Other) const { return !(FConfigValue::operator==(Other)); }
 
 	friend FArchive& operator<<(FArchive& Ar, FConfigValue& ConfigSection)
@@ -275,6 +283,7 @@ private:
 
 	FString SavedValue;
 	FString ExpandedValue;
+	uint32 SavedValueHash;
 #if CONFIG_REMEMBER_ACCESS_PATTERN 
 	mutable bool bRead; // has this value been read since the config system started
 #endif
@@ -349,8 +358,6 @@ public:
 
 	friend FArchive& operator<<(FArchive& Ar, FConfigSection& ConfigSection);
 };
-
-FArchive& operator<<(FArchive& Ar, FConfigSection& ConfigSection);
 
 
 #if ALLOW_INI_OVERRIDE_FROM_COMMANDLINE
@@ -613,8 +620,6 @@ private:
 	friend class FConfigCacheIni;
 	friend FConfigContext;
 };
-
-FArchive& operator<<(FArchive& Ar, FConfigFile& ConfigFile);
 
 /**
  * Declares a delegate type that's used by the config system to allow iteration of key value pairs.
@@ -1197,6 +1202,26 @@ public:
 	 *	@return A normalized version of the path (may be the same as the input).
 	 */
 	static FString NormalizeConfigIniPath(const FString& NonNormalizedPath);
+
+	/**
+	 * This helper function searches the cache before trying to load the ini file using LoadLocalIniFile. 
+	 * Note that the returned FConfigFile pointer must have the same lifetime as the passed in LocalFile.
+	 *
+	 * @param LocalFile The output object to fill. If the FConfigFile is found in the cache, this won't be used.
+	 * @param IniName Either a Base ini name (Engine) or a full ini name (WrangleContent). NO PATH OR EXTENSION SHOULD BE USED!
+	 * @param Platform The platform to use for Base ini names, NULL means to use the current platform
+	 * @return FConfigFile Found or loaded FConfigFile
+	 */
+	static FConfigFile* FindOrLoadPlatformConfig(FConfigFile& LocalFile, const TCHAR* IniName, const TCHAR* Platform = NULL);
+
+	/**
+	 * Attempts to find the platform config in the cache.
+	 *
+	 * @param IniName Either a Base ini name (Engine) or a full ini name (WrangleContent). NO PATH OR EXTENSION SHOULD BE USED!
+	 * @param Platform The platform to use for Base ini names, NULL means to use the current platform
+	 * @return FConfigFile Found FConfigFile
+	 */
+	static FConfigFile* FindPlatformConfig(const TCHAR* IniName, const TCHAR* Platform);
 	
 	/**
 	 * Save the current config cache state into a file for bootstrapping other processes.

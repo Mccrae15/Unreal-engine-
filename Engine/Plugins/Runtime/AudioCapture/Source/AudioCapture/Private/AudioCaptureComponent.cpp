@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AudioCaptureComponent.h"
+#include "Audio.h"
 #include "AudioAnalytics.h"
 
 static const unsigned int MaxBufferSize = 2 * 5 * 48000;
@@ -65,6 +66,9 @@ void UAudioCaptureComponent::BeginDestroy()
 
 bool UAudioCaptureComponent::IsReadyForFinishDestroy()
 {
+	//Prevent an infinite loop here if it was marked pending kill while generating
+	OnEndGenerate();
+
 	return !bIsNotReadyForForFinishDestroy;
 }
 

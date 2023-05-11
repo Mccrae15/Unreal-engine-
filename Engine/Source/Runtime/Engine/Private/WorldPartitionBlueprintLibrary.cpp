@@ -6,8 +6,8 @@
 
 #if WITH_EDITOR
 #include "Subsystems/UnrealEditorSubsystem.h"
+#include "WorldPartition/LoaderAdapter/LoaderAdapterActorList.h"
 #include "WorldPartition/WorldPartition.h"
-#include "WorldPartition/WorldPartitionActorDesc.h"
 #include "WorldPartition/WorldPartitionHelpers.h"
 #include "Editor.h"
 #endif
@@ -34,7 +34,7 @@ FActorDesc::FActorDesc(const FWorldPartitionActorDesc& InActorDesc, const FTrans
 
 	Name = InActorDesc.GetActorName();
 	Label = InActorDesc.GetActorLabel();
-	Bounds = InActorDesc.GetBounds().TransformBy(InTransform);
+	Bounds = InActorDesc.GetEditorBounds().TransformBy(InTransform);
 	RuntimeGrid = InActorDesc.GetRuntimeGrid();
 	bIsSpatiallyLoaded = InActorDesc.GetIsSpatiallyLoaded();
 	bActorIsEditorOnly = InActorDesc.GetActorIsEditorOnly();
@@ -158,7 +158,7 @@ bool UWorldPartitionBlueprintLibrary::GetIntersectingActorDescs(const UActorDesc
 
 	for (FActorDescList::TConstIterator<> ActorDescIt(InContainer); ActorDescIt; ++ActorDescIt)
 	{
-		if (ActorDescIt->GetBounds().Intersect(InBox))
+		if (ActorDescIt->GetEditorBounds().Intersect(InBox))
 		{
 			bResult &= HandleIntersectingActorDesc(*ActorDescIt, InBox, InTransform, OutActorDescs);
 		}
@@ -207,15 +207,35 @@ void UWorldPartitionBlueprintLibrary::LoadActors(const TArray<FGuid>& InActorsTo
 #endif
 }
 
-void UWorldPartitionBlueprintLibrary::UnloadActors(const TArray<FGuid>& InActorsToLoad)
+void UWorldPartitionBlueprintLibrary::UnloadActors(const TArray<FGuid>& InActorsToUnload)
 {
 #if WITH_EDITOR
 	if (UWorldPartition* WorldPartition = GetWorldPartition())
 	{
 		if (TUniquePtr<FLoaderAdapterActorList>* LoaderAdapterActorList = LoaderAdapterActorListMap.Find(WorldPartition))
 		{
-			(*LoaderAdapterActorList)->RemoveActors(InActorsToLoad);
+			(*LoaderAdapterActorList)->RemoveActors(InActorsToUnload);
 		}
+	}
+#endif
+}
+
+void UWorldPartitionBlueprintLibrary::PinActors(const TArray<FGuid>& InActorsToPin)
+{
+#if WITH_EDITOR
+	if (UWorldPartition* WorldPartition = GetWorldPartition())
+	{
+		WorldPartition->PinActors(InActorsToPin);
+	}
+#endif
+}
+
+void UWorldPartitionBlueprintLibrary::UnpinActors(const TArray<FGuid>& InActorsToUnpin)
+{
+#if WITH_EDITOR
+	if (UWorldPartition* WorldPartition = GetWorldPartition())
+	{
+		WorldPartition->UnpinActors(InActorsToUnpin);
 	}
 #endif
 }

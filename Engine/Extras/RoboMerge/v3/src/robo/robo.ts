@@ -94,10 +94,24 @@ const COMMAND_LINE_ARGS: {[param: string]: Arg<any>} = {
 		dflt: false
 	},
 
+	noMail: {
+		match: /^(-noMail)$/,
+		parse: _str => true,
+		env: 'ROBO_NO_MAIL',
+		dflt: false
+	},
+
 	noTLS: {
 		match: /^(-noTLS)$/,
 		parse: _str => true,
 		env: 'ROBO_NO_TLS',
+		dflt: false
+	},
+
+	useSlackInDev: {
+		match: /^(-useSlackInDev)$/,
+		parse: _str => true,
+		env: 'ROBO_USE_SLACK_IN_DEV',
 		dflt: false
 	},
 
@@ -106,9 +120,10 @@ const COMMAND_LINE_ARGS: {[param: string]: Arg<any>} = {
 		env: 'ROBO_VAULT_PATH',
 		dflt: '/vault'
 	},
+
 	devMode: {
 		match: /^(-devMode)$/,
-		parse: _str => true,
+		parse: str => str === "false" ? false : true,
 		env: 'ROBO_DEV_MODE',
 		dflt: false
 	},
@@ -220,13 +235,14 @@ export class RoboMerge {
 }
 
 async function _getExistingWorkspaces(user?: string) {
-	const existingWorkspacesObjects = await robo.p4.find_workspaces(user);
-	return new Set<string>(existingWorkspacesObjects.map((ws: ClientSpec) => ws.client));
+	const existingWorkspacesObjects = await robo.p4.find_workspaces(user, {includeUnloaded: true});
+	return new Map<string, ClientSpec>(existingWorkspacesObjects.map((ws: ClientSpec) => [ws.client, ws]));
 }
 
-async function _initWorkspacesForGraphBot(graphBot: GraphBot, existingWorkspaces: Set<string>, logger: ContextualLogger) {
+async function _initWorkspacesForGraphBot(graphBot: GraphBot, existingWorkspaces: Map<string, ClientSpec>, logger: ContextualLogger) {
 	// name and depot root pair
 	const workspacesToReset: [string, string][] = []
+	let reloadedWorkspaces = []
 
 	for (const branch of graphBot.branchGraph.branches) {
 		if (branch.workspace !== null) {
@@ -252,7 +268,11 @@ async function _initWorkspacesForGraphBot(graphBot: GraphBot, existingWorkspaces
 		}
 
 		// see if we already have this workspace
-		if (existingWorkspaces.has(ws)) {
+		const clientSpec = existingWorkspaces.get(ws)
+		if (clientSpec) {
+			if (clientSpec.IsUnloaded) {
+				reloadedWorkspaces.push(robo.p4.reloadWorkspace(ws))
+			}
 			workspacesToReset.push([ws, branch.rootPath])
 		}
 		else {
@@ -282,6 +302,7 @@ async function _initWorkspacesForGraphBot(graphBot: GraphBot, existingWorkspaces
 		}
 	}
 
+	Promise.all(reloadedWorkspaces)
 	if (workspacesToReset.length > 0) {
 		logger.info('The following workspaces already exist and will be reset: ' + workspacesToReset.join(', '))
 		await p4util.cleanWorkspaces(robo.p4, workspacesToReset)
@@ -297,7 +318,7 @@ async function _initBranchWorkspacesForAllBots(logger: ContextualLogger) {
 
 // should be called after data directory has been synced, to get latest email template
 function _initMailer(logger: ContextualLogger) {
-	robo.mailer = new Mailer(roboAnalytics!, logger);
+	robo.mailer = new Mailer(roboAnalytics!, logger, args.noMail);
 }
 
 function _checkForAutoPauseBots(branches: Branch[], logger: ContextualLogger) {
@@ -374,6 +395,29 @@ async function init(logger: ContextualLogger) {
 		if (workspace.length === 0) {
 			logger.info("Cannot find branch spec workspace " + args.branchSpecsWorkspace + 
 						", creating a new one.")
+
+			while (true) {
+				const match = args.branchSpecsRootPath.match(/(\/\/.*?\/.*?)(\/|$)/)
+				if (match) {
+					const branchSpecsStream = match[1]
+					try {
+						const streams = await robo.p4.streams();
+						if (streams.has(branchSpecsStream)) {
+							break
+						}
+					}
+					catch (err) {
+					}
+
+					const timeout = 5.0;
+					logger.info(`Will check again in ${timeout} sec...`);
+					await _setTimeout(timeout*1000);
+				}
+				else {
+					logger.warn(`Unable to determine stream from root path '${args.branchSpecsRootPath}'`)
+				}
+			}
+
 			await robo.p4.newBranchSpecWorkspace(autoUpdaterConfig.workspace, args.branchSpecsRootPath)
 		}
 

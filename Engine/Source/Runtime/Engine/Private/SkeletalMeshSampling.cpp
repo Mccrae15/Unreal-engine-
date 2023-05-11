@@ -2,8 +2,7 @@
 
 #include "Engine/SkeletalMeshSampling.h"
 #include "Engine/SkeletalMesh.h"
-#include "RawIndexBuffer.h"
-#include "Rendering/SkeletalMeshLODRenderData.h"
+#include "Engine/SkinnedAssetCommon.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "UObject/NiagaraObjectVersion.h"
 

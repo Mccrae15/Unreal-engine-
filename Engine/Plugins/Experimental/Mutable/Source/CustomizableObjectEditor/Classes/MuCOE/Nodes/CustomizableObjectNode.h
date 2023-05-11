@@ -2,22 +2,9 @@
 
 #pragma once
 
-#include "Containers/Array.h"
-#include "Containers/ArrayView.h"
-#include "Containers/Map.h"
-#include "Containers/UnrealString.h"
-#include "Delegates/Delegate.h"
-#include "EdGraph/EdGraph.h"
-#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraph.h" // IWYU pragma: keep
 #include "EdGraph/EdGraphPin.h"
-#include "HAL/Platform.h"
-#include "Misc/Guid.h"
 #include "MuCO/CustomizableObject.h"
-#include "Templates/SharedPointer.h"
-#include "UObject/NameTypes.h"
-#include "UObject/Object.h"
-#include "UObject/ObjectPtr.h"
-#include "UObject/UObjectGlobals.h"
 
 #include "CustomizableObjectNode.generated.h"
 
@@ -59,6 +46,8 @@ DECLARE_MULTICAST_DELEGATE(FPostReconstructNodeDelegate);
 
 DECLARE_MULTICAST_DELEGATE(FNodeConnectionListChangedDelegate);
 
+DECLARE_MULTICAST_DELEGATE_OneParam(FPinConnectionListChangedDelegate, UEdGraphPin*);
+
 DECLARE_MULTICAST_DELEGATE(FDestroyNodeDelegate);
 
 using FRemapPinsDelegateParameter = TMap<UEdGraphPin*, UEdGraphPin*>; // Required for the delegate macro.
@@ -81,20 +70,21 @@ public:
 	GENERATED_BODY()
 
 	// UObject interface
-	void Serialize(FArchive& Ar) override;
+	virtual void Serialize(FArchive& Ar) override;
 	virtual void PostLoad() override; // Do work at PostBackwardsCompatibleFixup.
 
 	// UEdGraphNode interface
-	void AutowireNewNode(UEdGraphPin* FromPin) override;
-	void NodeConnectionListChanged() override;
-	void DestroyNode() override;
+	virtual void AutowireNewNode(UEdGraphPin* FromPin) override;
+	virtual void NodeConnectionListChanged() override;
+	virtual void PinConnectionListChanged(UEdGraphPin* Pin) override;
+	virtual void DestroyNode() override;
 
 	/** Allocates the default pins using the empty remap pins action. Usually called from CreateNode. */
-	void AllocateDefaultPins() override final; // Final. Override AllocateDefaultPins(UCustomizableObjectNodeRemapPins* RemapPins) instead
+	virtual void AllocateDefaultPins() override final; // Final. Override AllocateDefaultPins(UCustomizableObjectNodeRemapPins* RemapPins) instead
 	
 	/** Reconstructs the node using its default remap pins action. */
-	void ReconstructNode() override final; // Final. Override ReconstructNode(UCustomizableObjectNodeRemapPins* RemapPins) instead
-	void PostInitProperties() override;
+	virtual void ReconstructNode() override final; // Final. Override ReconstructNode(UCustomizableObjectNodeRemapPins* RemapPins) instead
+	virtual void PostInitProperties() override;
 
 	// Own interface
 	/** Called at the beginning of the node lifecycle.*/
@@ -246,6 +236,8 @@ public:
 	FPostReconstructNodeDelegate PostReconstructNodeDelegate;
 
 	FNodeConnectionListChangedDelegate NodeConnectionListChangedDelegate;
+
+	FPinConnectionListChangedDelegate PinConnectionListChangedDelegate;
 
 	FDestroyNodeDelegate DestroyNodeDelegate;
 

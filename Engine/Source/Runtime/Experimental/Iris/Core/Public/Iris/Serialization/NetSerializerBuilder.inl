@@ -124,44 +124,51 @@ private:
 		static constexpr bool bHasCustomNetReference = true;
 		static constexpr bool bHasDynamicState = true;
 		static constexpr bool bUseDefaultDelta = true;
+		static constexpr bool bUseSerializerIsEqual = false;
 	};
 
 	template<typename U, U> struct FSignatureCheck;
 	template<typename> struct FTypeCheck;
 
 	// Version check
-	template<typename U> static ETrueType TestHasVersion(typename TEnableIf<TIsSame<decltype(&FVersion::Version), decltype(&U::Version)>::Value>::Type*);
+	template<typename U> static ETrueType TestHasVersion(typename TEnableIf<std::is_same_v<decltype(&FVersion::Version), decltype(&U::Version)>>::Type*);
 	template<typename> static EFalseType TestHasVersion(...);
 
 	// Traits
 	template<typename U> static ETrueType TestHasCustomNetReferenceIsPresent(FTypeCheck<decltype(&U::bHasCustomNetReference)>*);
 	template<typename> static EFalseType TestHasCustomNetReferenceIsPresent(...);
 
-	template<typename U> static ETrueType TestHasCustomNetReferenceIsBool(typename TEnableIf<TIsSame<decltype(&FTraits::bHasCustomNetReference), decltype(&U::bHasCustomNetReference)>::Value>::Type*);
+	template<typename U> static ETrueType TestHasCustomNetReferenceIsBool(typename TEnableIf<std::is_same_v<decltype(&FTraits::bHasCustomNetReference), decltype(&U::bHasCustomNetReference)>>::Type*);
 	template<typename> static EFalseType TestHasCustomNetReferenceIsBool(...);
+
+	template<typename U> static ETrueType TestUseSerializerIsEqualIsPresent(FTypeCheck<decltype(&U::bUseSerializerIsEqual)>*);
+	template<typename> static EFalseType TestUseSerializerIsEqualIsPresent(...);
+
+	template<typename U> static ETrueType TestUseSerializerIsEqualIsBool(typename TEnableIf<std::is_same_v<decltype(&FTraits::bUseSerializerIsEqual), decltype(&U::bUseSerializerIsEqual)>>::Type*);
+	template<typename> static EFalseType TestUseSerializerIsEqualIsBool(...);
 
 	template<typename U> static ETrueType TestIsForwardingSerializerIsPresent(FTypeCheck<decltype(&U::bIsForwardingSerializer)>*);
 	template<typename> static EFalseType TestIsForwardingSerializerIsPresent(...);
 
-	template<typename U> static ETrueType TestIsForwardingSerializerIsBool(typename TEnableIf<TIsSame<decltype(&FTraits::bIsForwardingSerializer), decltype(&U::bIsForwardingSerializer)>::Value>::Type*);
+	template<typename U> static ETrueType TestIsForwardingSerializerIsBool(typename TEnableIf<std::is_same_v<decltype(&FTraits::bIsForwardingSerializer), decltype(&U::bIsForwardingSerializer)>>::Type*);
 	template<typename> static EFalseType TestIsForwardingSerializerIsBool(...);
 
 	template<typename U> static ETrueType TestHasConnectionSpecificSerializationIsPresent(FTypeCheck<decltype(&U::bHasConnectionSpecificSerialization)>*);
 	template<typename> static EFalseType TestHasConnectionSpecificSerializationIsPresent(...);
 
-	template<typename U> static ETrueType TestHasConnectionSpecificSerializationIsBool(typename TEnableIf<TIsSame<decltype(&FTraits::bHasConnectionSpecificSerialization), decltype(&U::bHasConnectionSpecificSerialization)>::Value>::Type*);
+	template<typename U> static ETrueType TestHasConnectionSpecificSerializationIsBool(typename TEnableIf<std::is_same_v<decltype(&FTraits::bHasConnectionSpecificSerialization), decltype(&U::bHasConnectionSpecificSerialization)>>::Type*);
 	template<typename> static EFalseType TestHasConnectionSpecificSerializationIsBool(...);
 
 	template<typename U> static ETrueType TestHasDynamicStateIsPresent(FTypeCheck<decltype(&U::bHasDynamicState)>*);
 	template<typename> static EFalseType TestHasDynamicStateIsPresent(...);
 
-	template<typename U> static ETrueType TestHasDynamicStateIsBool(typename TEnableIf<TIsSame<decltype(&FTraits::bHasDynamicState), decltype(&U::bHasDynamicState)>::Value>::Type*);
+	template<typename U> static ETrueType TestHasDynamicStateIsBool(typename TEnableIf<std::is_same_v<decltype(&FTraits::bHasDynamicState), decltype(&U::bHasDynamicState)>>::Type*);
 	template<typename> static EFalseType TestHasDynamicStateIsBool(...);
 
 	template<typename U> static ETrueType TestUseDefaultDeltaIsPresent(FTypeCheck<decltype(&U::bUseDefaultDelta)>*);
 	template<typename> static EFalseType TestUseDefaultDeltaIsPresent(...);
 
-	template<typename U> static ETrueType TestUseDefaultDeltaIsBool(typename TEnableIf<TIsSame<decltype(&FTraits::bUseDefaultDelta), decltype(&U::bUseDefaultDelta)>::Value>::Type*);
+	template<typename U> static ETrueType TestUseDefaultDeltaIsBool(typename TEnableIf<std::is_same_v<decltype(&FTraits::bUseDefaultDelta), decltype(&U::bUseDefaultDelta)>>::Type*);
 	template<typename> static EFalseType TestUseDefaultDeltaIsBool(...);
 
 	// Type checks
@@ -225,6 +232,9 @@ private:
 		HasCustomNetReferenceIsPresent = unsigned(decltype(TestHasCustomNetReferenceIsPresent<NetSerializerImpl>(nullptr))::Value),
 		HasCustomNetReferenceIsBool = unsigned(decltype(TestHasCustomNetReferenceIsBool<NetSerializerImpl>(nullptr))::Value),
 
+		UseSerializerIsEqualIsPresent = unsigned(decltype(TestUseSerializerIsEqualIsPresent<NetSerializerImpl>(nullptr))::Value),
+		UseSerializerIsEqualIsBool = unsigned(decltype(TestUseSerializerIsEqualIsBool<NetSerializerImpl>(nullptr))::Value),
+
 		IsForwardingSerializerIsPresent = unsigned(decltype(TestIsForwardingSerializerIsPresent<NetSerializerImpl>(nullptr))::Value),
 		IsForwardingSerializerIsBool = unsigned(decltype(TestIsForwardingSerializerIsBool<NetSerializerImpl>(nullptr))::Value),
 		HasConnectionSpecificSerializationIsPresent = unsigned(decltype(TestHasConnectionSpecificSerializationIsPresent<NetSerializerImpl>(nullptr))::Value),
@@ -269,6 +279,12 @@ public:
 
 	template<typename T = void, typename U = typename TEnableIf<!HasCustomNetReferenceIsBool, T>::Type, char V = 0>
 	static constexpr bool HasCustomNetReference() { return false; }
+
+	template<typename T = void, typename U = typename TEnableIf<UseSerializerIsEqualIsBool && HasIsEqual, T>::Type, bool V = true>
+	static constexpr bool UseSerializerIsEqual() { return NetSerializerImpl::bUseSerializerIsEqual; }
+
+	template<typename T = void, typename U = typename TEnableIf<!(UseSerializerIsEqualIsBool && HasIsEqual), T>::Type, char V = 0>
+	static constexpr bool UseSerializerIsEqual() { return false; }
 
 	template<typename T = void, typename U = typename TEnableIf<IsForwardingSerializerIsBool, T>::Type, bool V = true>
 	static constexpr bool IsForwardingSerializer() { return NetSerializerImpl::bIsForwardingSerializer; }
@@ -405,7 +421,7 @@ public:
 	static constexpr uint32 GetQuantizedTypeSize() { return sizeof(typename NetSerializerImpl::QuantizedType); }
 
 	template<typename T = void, typename U = typename TEnableIf<!HasQuantizedType && HasSourceType, T>::Type, bool V = true, char W = 0>
-	static constexpr uint32 GetQuantizedTypeSize() { return TIsSame<void, typename NetSerializerImpl::SourceType>::Value ? uint32(0) : sizeof(typename TChooseClass<TIsSame<void, typename NetSerializerImpl::SourceType>::Value, uint8, typename NetSerializerImpl::SourceType>::Result); }
+	static constexpr uint32 GetQuantizedTypeSize() { return std::is_same_v<void, typename NetSerializerImpl::SourceType> ? uint32(0) : sizeof(typename TChooseClass<std::is_same_v<void, typename NetSerializerImpl::SourceType>, uint8, typename NetSerializerImpl::SourceType>::Result); }
 
 	template<typename T = void, typename U = typename TEnableIf<!(HasSourceType || HasQuantizedType), T>::Type, char V = 0>
 	static constexpr uint32 GetQuantizedTypeSize() { return 0; }
@@ -414,7 +430,7 @@ public:
 	static constexpr uint32 GetQuantizedTypeAlignment() { return alignof(typename NetSerializerImpl::QuantizedType); }
 
 	template<typename T = void, typename U = typename TEnableIf<!HasQuantizedType && HasSourceType, T>::Type, bool V = true, char W = 0>
-	static constexpr uint32 GetQuantizedTypeAlignment() { return alignof(typename TChooseClass<TIsSame<void, typename NetSerializerImpl::SourceType>::Value, uint8, typename NetSerializerImpl::SourceType>::Result); }
+	static constexpr uint32 GetQuantizedTypeAlignment() { return alignof(typename TChooseClass<std::is_same_v<void, typename NetSerializerImpl::SourceType>, uint8, typename NetSerializerImpl::SourceType>::Result); }
 
 	template<typename T = void, typename U = typename TEnableIf<!(HasSourceType || HasQuantizedType), T>::Type, char V = 0>
 	static constexpr uint32 GetQuantizedTypeAlignment() { return 1; }
@@ -426,6 +442,8 @@ public:
 		Traits |= (HasConnectionSpecificSerialization() ? ENetSerializerTraits::HasConnectionSpecificSerialization : ENetSerializerTraits::None);
 		Traits |= (HasCustomNetReference() ? ENetSerializerTraits::HasCustomNetReference : ENetSerializerTraits::None);
 		Traits |= (HasDynamicState() ? ENetSerializerTraits::HasDynamicState : ENetSerializerTraits::None);
+		Traits |= (UseSerializerIsEqual() ? ENetSerializerTraits::UseSerializerIsEqual : ENetSerializerTraits::None);
+
 		return Traits;
 	}
 

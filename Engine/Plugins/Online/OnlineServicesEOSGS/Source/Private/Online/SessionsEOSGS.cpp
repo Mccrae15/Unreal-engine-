@@ -2,10 +2,10 @@
 
 #include "Online/SessionsEOSGS.h"
 
+#include "EOSShared.h"
 #include "Online/AuthEOSGS.h"
-#include "Online/OnlineIdEOSGS.h"
+#include "Online/LobbiesCommonTypes.h"
 #include "Online/OnlineServicesEOSGS.h"
-#include "Online/OnlineServicesEOSGSTypes.h"
 #include "Online/NboSerializerEOSGSSvc.h"
 #include "Online/OnlineErrorEOSGS.h"
 #include "Online/SessionsEOSGSTypes.h"
@@ -46,8 +46,8 @@ FSessionEOSGS::FSessionEOSGS(const TSharedPtr<FSessionDetailsHandleEOSGS>& InSes
 	: SessionDetailsHandle(InSessionDetailsHandle)
 {
 	EOS_SessionDetails_CopyInfoOptions CopyInfoOptions = { };
-	CopyInfoOptions.ApiVersion = EOS_SESSIONDETAILS_COPYINFO_API_LATEST;
-	static_assert(EOS_SESSIONDETAILS_COPYINFO_API_LATEST == 1, "EOS_SessionDetails_CopyInfoOptions updated, check new fields");
+	CopyInfoOptions.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONDETAILS_COPYINFO_API_LATEST, 1);
 
 	EOS_SessionDetails_Info* SessionDetailsInfo = nullptr;
 	EOS_EResult CopyInfoResult = EOS_SessionDetails_CopyInfo(SessionDetailsHandle->SessionDetailsHandle, &CopyInfoOptions, &SessionDetailsInfo);
@@ -65,8 +65,8 @@ FSessionEOSGS::FSessionEOSGS(const TSharedPtr<FSessionDetailsHandleEOSGS>& InSes
 
 		// We retrieve all the session attributes
 		EOS_SessionDetails_GetSessionAttributeCountOptions GetAttributeCountOptions = {};
-		GetAttributeCountOptions.ApiVersion = EOS_SESSIONDETAILS_GETSESSIONATTRIBUTECOUNT_API_LATEST;
-		static_assert(EOS_SESSIONDETAILS_GETSESSIONATTRIBUTECOUNT_API_LATEST == 1, "EOS_SessionDetails_GetSessionAttributeCountOptions updated, check new fields");
+		GetAttributeCountOptions.ApiVersion = 1;
+		UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONDETAILS_GETSESSIONATTRIBUTECOUNT_API_LATEST, 1);
 
 		uint32_t AttributeCount = EOS_SessionDetails_GetSessionAttributeCount(SessionDetailsHandle->SessionDetailsHandle, &GetAttributeCountOptions);
 		for (uint32_t Index = 0; Index < AttributeCount; ++Index)
@@ -74,8 +74,8 @@ FSessionEOSGS::FSessionEOSGS(const TSharedPtr<FSessionDetailsHandleEOSGS>& InSes
 			// We parse a single attribute
 
 			EOS_SessionDetails_CopySessionAttributeByIndexOptions CopyAttributeByIndexOptions = {};
-			CopyAttributeByIndexOptions.ApiVersion = EOS_SESSIONDETAILS_COPYSESSIONATTRIBUTEBYINDEX_API_LATEST;
-			static_assert(EOS_SESSIONDETAILS_COPYSESSIONATTRIBUTEBYINDEX_API_LATEST == 1, "EOS_SessionDetails_CopySessionAttributeByIndexOptions updated, check new fields");
+			CopyAttributeByIndexOptions.ApiVersion = 1;
+			UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONDETAILS_COPYSESSIONATTRIBUTEBYINDEX_API_LATEST, 1);
 
 			CopyAttributeByIndexOptions.AttrIndex = Index;
 
@@ -88,12 +88,6 @@ FSessionEOSGS::FSessionEOSGS(const TSharedPtr<FSessionDetailsHandleEOSGS>& InSes
 				TPair<FSchemaAttributeId, FSchemaVariant> CustomSettingData = CustomSettingConverter.GetAttributeData();
 					
 				// Most Session Settings values get parsed in the same way as Custom Session Settings, so we will attempt to retrieve them
-				if (Key == EOSGS_OWNER_ACCOUNT_ID_ATTRIBUTE_KEY.ToString())
-				{
-					const FString& PlayerIdStr = CustomSettingData.Value.GetString();
-					const EOS_ProductUserId ProductUserId = EOS_ProductUserId_FromString(TCHAR_TO_UTF8(*PlayerIdStr));
-					OwnerAccountId = FindAccountId(ProductUserId);
-				}
 				if (Key == EOSGS_ALLOW_NEW_MEMBERS_ATTRIBUTE_KEY.ToString())
 				{
 					SessionSettings.bAllowNewMembers = CustomSettingData.Value.GetBoolean();
@@ -168,34 +162,31 @@ void FSessionsEOSGS::RegisterEventHandlers()
 	OnSessionInviteReceivedEventRegistration = EOS_RegisterComponentEventHandler(
 		this,
 		SessionsHandle,
-		EOS_SESSIONS_ADDNOTIFYSESSIONINVITERECEIVED_API_LATEST,
+		1,
 		&EOS_Sessions_AddNotifySessionInviteReceived,
 		&EOS_Sessions_RemoveNotifySessionInviteReceived,
 		&FSessionsEOSGS::HandleSessionInviteReceived);
-
-	static_assert(EOS_SESSIONS_ADDNOTIFYSESSIONINVITERECEIVED_API_LATEST == 1, "EOS_Sessions_AddNotifySessionInviteReceivedOptions updated, check new fields");
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONS_ADDNOTIFYSESSIONINVITERECEIVED_API_LATEST, 1);
 
 	// Register for session invites accepted events
 	OnSessionInviteAcceptedEventRegistration = EOS_RegisterComponentEventHandler(
 		this,
 		SessionsHandle,
-		EOS_SESSIONS_ADDNOTIFYSESSIONINVITEACCEPTED_API_LATEST,
+		1,
 		&EOS_Sessions_AddNotifySessionInviteAccepted,
 		&EOS_Sessions_RemoveNotifySessionInviteAccepted,
 		&FSessionsEOSGS::HandleSessionInviteAccepted);
-
-	static_assert(EOS_SESSIONS_ADDNOTIFYSESSIONINVITEACCEPTED_API_LATEST == 1, "EOS_Sessions_AddNotifySessionInviteAcceptedOptions updated, check new fields");
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONS_ADDNOTIFYSESSIONINVITEACCEPTED_API_LATEST, 1);
 
 	// Register for join session accepted events
 	OnJoinSessionAcceptedEventRegistration = EOS_RegisterComponentEventHandler(
 		this,
 		SessionsHandle,
-		EOS_SESSIONS_ADDNOTIFYJOINSESSIONACCEPTED_API_LATEST,
+		1,
 		&EOS_Sessions_AddNotifyJoinSessionAccepted,
 		&EOS_Sessions_RemoveNotifyJoinSessionAccepted,
 		&FSessionsEOSGS::HandleJoinSessionAccepted);
-
-	static_assert(EOS_SESSIONS_ADDNOTIFYJOINSESSIONACCEPTED_API_LATEST == 1, "EOS_Sessions_AddNotifyJoinSessionAcceptedOptions updated, check new fields");
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONS_ADDNOTIFYJOINSESSIONACCEPTED_API_LATEST, 1);
 }
 
 void FSessionsEOSGS::UnregisterEventHandlers()
@@ -332,25 +323,9 @@ TFuture<TOnlineResult<FCreateSession>> FSessionsEOSGS::CreateSessionImpl(const F
 	TPromise<TOnlineResult<FCreateSession>> Promise;
 	TFuture<TOnlineResult<FCreateSession>> Future = Promise.GetFuture();
 
-	if (!Params.SessionIdOverride.IsEmpty())
-	{
-		int32 Length = Params.SessionIdOverride.Len();
-
-		if (Length < EOS_SESSIONMODIFICATION_MIN_SESSIONIDOVERRIDE_LENGTH || Length > EOS_SESSIONMODIFICATION_MAX_SESSIONIDOVERRIDE_LENGTH)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("[FSessionsEOSGS::CreateSession] Could not create session with SessionIdOverride [%s] of size [%d]. SessionIdOverride size must be between [%d] and [%d] characters long"), *Params.SessionIdOverride, Length, EOS_SESSIONMODIFICATION_MIN_SESSIONIDOVERRIDE_LENGTH, EOS_SESSIONMODIFICATION_MAX_SESSIONIDOVERRIDE_LENGTH);
-
-			Promise.EmplaceValue(Errors::InvalidParams());
-
-			return Future;
-		}
-	}
-
-	// After all initial checks, we start the session creation operations
-
 	EOS_Sessions_CreateSessionModificationOptions CreateSessionModificationOptions = {};
-	CreateSessionModificationOptions.ApiVersion = EOS_SESSIONS_CREATESESSIONMODIFICATION_API_LATEST;
-	static_assert(EOS_SESSIONS_CREATESESSIONMODIFICATION_API_LATEST == 4, "EOS_Sessions_CreateSessionModificationOptions updated, check new fields");
+	CreateSessionModificationOptions.ApiVersion = 4;
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONS_CREATESESSIONMODIFICATION_API_LATEST, 4);
 
 	CreateSessionModificationOptions.bPresenceEnabled = Params.bPresenceEnabled;
 	CreateSessionModificationOptions.bSanctionsEnabled = !Params.bAllowSanctionedPlayers;
@@ -431,12 +406,33 @@ TFuture<TOnlineResult<FCreateSession>> FSessionsEOSGS::CreateSessionImpl(const F
 	return Future;
 }
 
+TOptional<FOnlineError> FSessionsEOSGS::CheckState(const FCreateSession::Params& Params) const
+{
+	if (TOptional<FOnlineError> BaseCheck = Super::CheckState(Params))
+	{
+		return BaseCheck;
+	}
+	
+	if (!Params.bIsLANSession && !Params.SessionIdOverride.IsEmpty())
+	{
+		int32 Length = Params.SessionIdOverride.Len();
+
+		if (Length < EOS_SESSIONMODIFICATION_MIN_SESSIONIDOVERRIDE_LENGTH || Length > EOS_SESSIONMODIFICATION_MAX_SESSIONIDOVERRIDE_LENGTH)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[%s] Could not create session with SessionIdOverride [%s] of size [%d]. SessionIdOverride size must be between [%d] and [%d] characters long"), UTF8_TO_TCHAR(__FUNCTION__), *Params.SessionIdOverride, Length, EOS_SESSIONMODIFICATION_MIN_SESSIONIDOVERRIDE_LENGTH, EOS_SESSIONMODIFICATION_MAX_SESSIONIDOVERRIDE_LENGTH);
+
+			return TOptional<FOnlineError>(Errors::InvalidParams());
+		}
+	}
+
+	return TOptional<FOnlineError>();
+}
+
 void FSessionsEOSGS::SetHostAddress(EOS_HSessionModification& SessionModHandle, FString HostAddress)
 {
-	// TODO: We could call EOS_SessionModification_SetHostAddress at this point, although it's not necessary
 	EOS_SessionModification_SetHostAddressOptions Options = {};
-	Options.ApiVersion = EOS_SESSIONMODIFICATION_SETHOSTADDRESS_API_LATEST;
-	static_assert(EOS_SESSIONMODIFICATION_SETHOSTADDRESS_API_LATEST == 1, "EOS_SessionModification_SetHostAddressOptions updated, check new fields");
+	Options.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONMODIFICATION_SETHOSTADDRESS_API_LATEST, 1);
 
 	const FTCHARToUTF8 HostAddressUtf8(*HostAddress);
 	Options.HostAddress = HostAddressUtf8.Get();
@@ -451,8 +447,8 @@ void FSessionsEOSGS::SetHostAddress(EOS_HSessionModification& SessionModHandle, 
 void FSessionsEOSGS::SetJoinInProgressAllowed(EOS_HSessionModification& SessionModHandle, bool bIsJoinInProgressAllowed)
 {
 	EOS_SessionModification_SetJoinInProgressAllowedOptions Options = {};
-	Options.ApiVersion = EOS_SESSIONMODIFICATION_SETJOININPROGRESSALLOWED_API_LATEST;
-	static_assert(EOS_SESSIONMODIFICATION_SETJOININPROGRESSALLOWED_API_LATEST == 1, "EOS_SessionModification_SetJoinInProgressAllowedOptions updated, check new fields");
+	Options.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONMODIFICATION_SETJOININPROGRESSALLOWED_API_LATEST, 1);
 
 	Options.bAllowJoinInProgress = bIsJoinInProgressAllowed;
 
@@ -466,8 +462,8 @@ void FSessionsEOSGS::SetJoinInProgressAllowed(EOS_HSessionModification& SessionM
 void FSessionsEOSGS::SetInvitesAllowed(EOS_HSessionModification& SessionModHandle, bool bAreInvitesAllowed)
 {
 	EOS_SessionModification_SetInvitesAllowedOptions Options = {};
-	Options.ApiVersion = EOS_SESSIONMODIFICATION_SETINVITESALLOWED_API_LATEST;
-	static_assert(EOS_SESSIONMODIFICATION_SETINVITESALLOWED_API_LATEST == 1, "EOS_SessionModification_SetInvitesAllowedOptions updated, check new fields");
+	Options.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONMODIFICATION_SETINVITESALLOWED_API_LATEST, 1);
 
 	Options.bInvitesAllowed = bAreInvitesAllowed;
 
@@ -481,8 +477,8 @@ void FSessionsEOSGS::SetInvitesAllowed(EOS_HSessionModification& SessionModHandl
 void FSessionsEOSGS::SetPermissionLevel(EOS_HSessionModification& SessionModificationHandle, const ESessionJoinPolicy& NewJoinPolicy)
 {
 	EOS_SessionModification_SetPermissionLevelOptions Options = { };
-	Options.ApiVersion = EOS_SESSIONMODIFICATION_SETPERMISSIONLEVEL_API_LATEST;
-	static_assert(EOS_SESSIONMODIFICATION_SETPERMISSIONLEVEL_API_LATEST == 1, "EOS_SessionModification_SetPermissionLevelOptions updated, check new fields");
+	Options.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONMODIFICATION_SETPERMISSIONLEVEL_API_LATEST, 1);
 
 	Options.PermissionLevel = ToServiceType(NewJoinPolicy);
 
@@ -496,8 +492,8 @@ void FSessionsEOSGS::SetPermissionLevel(EOS_HSessionModification& SessionModific
 void FSessionsEOSGS::SetBucketId(EOS_HSessionModification& SessionModificationHandle, const FString& NewBucketId)
 {
 	EOS_SessionModification_SetBucketIdOptions Options = { };
-	Options.ApiVersion = EOS_SESSIONMODIFICATION_SETBUCKETID_API_LATEST;
-	static_assert(EOS_SESSIONMODIFICATION_SETBUCKETID_API_LATEST == 1, "EOS_SessionModification_SetBucketIdOptions updated, check new fields");
+	Options.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONMODIFICATION_SETBUCKETID_API_LATEST, 1);
 
 	const FTCHARToUTF8 BucketIdUtf8(*NewBucketId);
 	Options.BucketId = BucketIdUtf8.Get();
@@ -512,8 +508,8 @@ void FSessionsEOSGS::SetBucketId(EOS_HSessionModification& SessionModificationHa
 void FSessionsEOSGS::SetMaxPlayers(EOS_HSessionModification& SessionModificationHandle, const uint32& NewMaxPlayers)
 {
 	EOS_SessionModification_SetMaxPlayersOptions Options = { };
-	Options.ApiVersion = EOS_SESSIONMODIFICATION_SETMAXPLAYERS_API_LATEST;
-	static_assert(EOS_SESSIONMODIFICATION_SETMAXPLAYERS_API_LATEST == 1, "EOS_SessionModification_SetMaxPlayersOptions updated, check new fields");
+	Options.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONMODIFICATION_SETMAXPLAYERS_API_LATEST, 1);
 
 	Options.MaxPlayers = NewMaxPlayers;
 
@@ -527,8 +523,8 @@ void FSessionsEOSGS::SetMaxPlayers(EOS_HSessionModification& SessionModification
 void FSessionsEOSGS::AddAttribute(EOS_HSessionModification& SessionModificationHandle, const FSchemaAttributeId& Key, const FCustomSessionSetting& Value)
 {
 	EOS_SessionModification_AddAttributeOptions Options = { };
-	Options.ApiVersion = EOS_SESSIONMODIFICATION_ADDATTRIBUTE_API_LATEST;
-	static_assert(EOS_SESSIONMODIFICATION_ADDATTRIBUTE_API_LATEST == 1, "EOS_SessionModification_AddAttributeOptions updated, check new fields");
+	Options.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONMODIFICATION_ADDATTRIBUTE_API_LATEST, 1);
 
 	Options.AdvertisementType = ToServiceType(Value.Visibility);
 
@@ -545,8 +541,8 @@ void FSessionsEOSGS::AddAttribute(EOS_HSessionModification& SessionModificationH
 void FSessionsEOSGS::RemoveAttribute(EOS_HSessionModification& SessionModificationHandle, const FSchemaAttributeId& Key)
 {
 	EOS_SessionModification_RemoveAttributeOptions Options = { };
-	Options.ApiVersion = EOS_SESSIONMODIFICATION_REMOVEATTRIBUTE_API_LATEST;
-	static_assert(EOS_SESSIONMODIFICATION_REMOVEATTRIBUTE_API_LATEST == 1, "EOS_SessionModification_RemoveAttributeOptions updated, check new fields");
+	Options.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONMODIFICATION_REMOVEATTRIBUTE_API_LATEST, 1);
 
 	const FTCHARToUTF8 KeyUtf8(Key.ToString());
 	Options.Key = KeyUtf8.Get();
@@ -586,9 +582,6 @@ void FSessionsEOSGS::WriteCreateSessionModificationHandle(EOS_HSessionModificati
 	SetMaxPlayers(SessionModificationHandle, Params.SessionSettings.NumMaxConnections);
 
 	AddAttribute(SessionModificationHandle, EOSGS_SCHEMA_NAME_ATTRIBUTE_KEY, { FSchemaVariant(Params.SessionSettings.SchemaName.ToString()), ESchemaAttributeVisibility::Public });
-
-	EOS_ProductUserId OwnerPUID = GetProductUserId(Params.LocalAccountId);
-	AddAttribute(SessionModificationHandle, EOSGS_OWNER_ACCOUNT_ID_ATTRIBUTE_KEY, { FSchemaVariant(LexToString(OwnerPUID)), ESchemaAttributeVisibility::Public });
 
 	// Custom Settings
 
@@ -676,8 +669,8 @@ TFuture<TOnlineResult<FUpdateSessionSettings>> FSessionsEOSGS::UpdateSessionSett
 	TFuture<TOnlineResult<FUpdateSessionSettings>> Future = Promise.GetFuture();
 
 	EOS_Sessions_UpdateSessionModificationOptions UpdateSessionModificationOptions = {};
-	UpdateSessionModificationOptions.ApiVersion = EOS_SESSIONS_UPDATESESSIONMODIFICATION_API_LATEST;
-	static_assert(EOS_SESSIONS_UPDATESESSIONMODIFICATION_API_LATEST == 1, "EOS_Sessions_UpdateSessionModificationOptions updated, check new fields");
+	UpdateSessionModificationOptions.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONS_UPDATESESSIONMODIFICATION_API_LATEST, 1);
 
 	const FTCHARToUTF8 SessionNameUtf8(*Params.SessionName.ToString());
 	UpdateSessionModificationOptions.SessionName = SessionNameUtf8.Get();
@@ -743,8 +736,8 @@ TFuture<TOnlineResult<FUpdateSessionSettings>> FSessionsEOSGS::UpdateSessionSett
 TFuture<TDefaultErrorResult<FUpdateSessionImplEOSGS>> FSessionsEOSGS::UpdateSessionImplEOSGS(FUpdateSessionImplEOSGS::Params&& Params)
 {
 	EOS_Sessions_UpdateSessionOptions UpdateSessionOptions = {};
-	UpdateSessionOptions.ApiVersion = EOS_SESSIONS_UPDATESESSION_API_LATEST;
-	static_assert(EOS_SESSIONS_UPDATESESSION_API_LATEST == 1, "EOS_Sessions_UpdateSessionOptions updated, check new fields");
+	UpdateSessionOptions.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONS_UPDATESESSION_API_LATEST, 1);
 
 	UpdateSessionOptions.SessionModificationHandle = Params.SessionModificationHandle->ModificationHandle;
 
@@ -794,8 +787,8 @@ TFuture<TDefaultErrorResult<FUpdateSessionJoinabilityImpl>> FSessionsEOSGS::Upda
 
 	// We get the active session handle with the session name
 	EOS_Sessions_CopyActiveSessionHandleOptions CopyActiveSessionHandleOptions = {};
-	CopyActiveSessionHandleOptions.ApiVersion = EOS_SESSIONS_COPYACTIVESESSIONHANDLE_API_LATEST;
-	static_assert(EOS_SESSIONS_COPYACTIVESESSIONHANDLE_API_LATEST == 1, "EOS_Sessions_CopyActiveSessionHandleOptions updated, check new fields");
+	CopyActiveSessionHandleOptions.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONS_COPYACTIVESESSIONHANDLE_API_LATEST, 1);
 
 	const FTCHARToUTF8 SessionNameUtf8(*Params.SessionName.ToString());
 	CopyActiveSessionHandleOptions.SessionName = SessionNameUtf8.Get();
@@ -809,8 +802,8 @@ TFuture<TDefaultErrorResult<FUpdateSessionJoinabilityImpl>> FSessionsEOSGS::Upda
 
 	// We get the active session info with the handle
 	EOS_ActiveSession_CopyInfoOptions CopyInfoOptions = {};
-	CopyInfoOptions.ApiVersion = EOS_ACTIVESESSION_COPYINFO_API_LATEST;
-	static_assert(EOS_ACTIVESESSION_COPYINFO_API_LATEST == 1, "EOS_ActiveSession_CopyInfoOptions updated, check new fields");
+	CopyInfoOptions.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_ACTIVESESSION_COPYINFO_API_LATEST, 1);
 
 	EOS_ActiveSession_Info* ActiveSessionInfo = nullptr;
 	EOS_EResult CopyInfoResult = EOS_ActiveSession_CopyInfo(ActiveSessionHandle, &CopyInfoOptions, &ActiveSessionInfo);
@@ -826,8 +819,8 @@ TFuture<TDefaultErrorResult<FUpdateSessionJoinabilityImpl>> FSessionsEOSGS::Upda
 		if (ActiveSessionInfo->State == EOS_EOnlineSessionState::EOS_OSS_InProgress)
 		{
 			EOS_Sessions_EndSessionOptions Options = {};
-			Options.ApiVersion = EOS_SESSIONS_ENDSESSION_API_LATEST;
-			static_assert(EOS_SESSIONS_ENDSESSION_API_LATEST == 1, "EOS_Sessions_EndSessionOptions updated, check new fields");
+			Options.ApiVersion = 1;
+			UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONS_ENDSESSION_API_LATEST, 1);
 
 			Options.SessionName = SessionNameUtf8.Get();
 
@@ -855,8 +848,8 @@ TFuture<TDefaultErrorResult<FUpdateSessionJoinabilityImpl>> FSessionsEOSGS::Upda
 		if (ActiveSessionInfo->State == EOS_EOnlineSessionState::EOS_OSS_Pending || ActiveSessionInfo->State == EOS_EOnlineSessionState::EOS_OSS_Ended)
 		{
 			EOS_Sessions_StartSessionOptions Options = {};
-			Options.ApiVersion = EOS_SESSIONS_STARTSESSION_API_LATEST;
-			static_assert(EOS_SESSIONS_STARTSESSION_API_LATEST == 1, "EOS_Sessions_StartSessionOptions updated, check new fields");
+			Options.ApiVersion = 1;
+			UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONS_STARTSESSION_API_LATEST, 1);
 
 			Options.SessionName = SessionNameUtf8.Get();
 
@@ -888,8 +881,8 @@ TOnlineAsyncOpHandle<FSendSingleSessionInviteImpl> FSessionsEOSGS::SendSingleSes
 	const FSendSingleSessionInviteImpl::Params& OpParams = Op->GetParams();
 
 	EOS_Sessions_SendInviteOptions SendInviteOptions = { };
-	SendInviteOptions.ApiVersion = EOS_SESSIONS_SENDINVITE_API_LATEST;
-	static_assert(EOS_SESSIONS_SENDINVITE_API_LATEST == 1, "EOS_Sessions_SendInviteOptions updated, check new fields");
+	SendInviteOptions.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONS_SENDINVITE_API_LATEST, 1);
 
 	SendInviteOptions.LocalUserId = GetProductUserIdChecked(OpParams.LocalAccountId);
 
@@ -932,8 +925,8 @@ TFuture<TOnlineResult<FLeaveSession>> FSessionsEOSGS::LeaveSessionImpl(const FLe
 	TFuture<TOnlineResult<FLeaveSession>> Future = Promise.GetFuture();
 
 	EOS_Sessions_DestroySessionOptions DestroySessionOptions = {};
-	DestroySessionOptions.ApiVersion = EOS_SESSIONS_DESTROYSESSION_API_LATEST;
-	static_assert(EOS_SESSIONS_DESTROYSESSION_API_LATEST == 1, "EOS_Sessions_DestroySessionOptions updated, check new fields");
+	DestroySessionOptions.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONS_DESTROYSESSION_API_LATEST, 1);
 
 	const FTCHARToUTF8 SessionNameUtf8(*Params.SessionName.ToString());
 	DestroySessionOptions.SessionName = SessionNameUtf8.Get();
@@ -943,6 +936,7 @@ TFuture<TOnlineResult<FLeaveSession>> FSessionsEOSGS::LeaveSessionImpl(const FLe
 		{
 			if (Result->ResultCode != EOS_EResult::EOS_Success)
 			{
+				UE_LOG(LogTemp, Warning, TEXT("EOS_Sessions_DestroySession failed with result [%s]"), *LexToString(Result->ResultCode));
 				Promise.EmplaceValue(Errors::FromEOSResult(Result->ResultCode));
 				return;
 			}
@@ -972,8 +966,8 @@ TFuture<TOnlineResult<FLeaveSession>> FSessionsEOSGS::LeaveSessionImpl(const FLe
 void FSessionsEOSGS::SetSessionSearchMaxResults(FSessionSearchHandleEOSGS& SessionSearchHandle, uint32 MaxResults)
 {
 	EOS_SessionSearch_SetMaxResultsOptions Options = { };
-	Options.ApiVersion = EOS_SESSIONSEARCH_SETMAXSEARCHRESULTS_API_LATEST;
-	static_assert(EOS_SESSIONSEARCH_SETMAXSEARCHRESULTS_API_LATEST == 1, "EOS_SessionSearch_SetMaxResultsOptions updated, check new fields");
+	Options.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONSEARCH_SETMAXSEARCHRESULTS_API_LATEST, 1);
 
 	// We truncate the max results parameter up to the value of EOS_SESSIONS_MAX_SEARCH_RESULTS
 	Options.MaxSearchResults = FMath::Clamp(MaxResults, 1, EOS_SESSIONS_MAX_SEARCH_RESULTS);
@@ -990,8 +984,8 @@ void FSessionsEOSGS::SetSessionSearchParameters(FSessionSearchHandleEOSGS& Sessi
 	for (const FFindSessionsSearchFilter& Filter : Filters)
 	{
 		EOS_SessionSearch_SetParameterOptions Options = { };
-		Options.ApiVersion = EOS_SESSIONSEARCH_SETPARAMETER_API_LATEST;
-		static_assert(EOS_SESSIONSEARCH_SETPARAMETER_API_LATEST == 1, "EOS_SessionSearch_SetMaxResultsOptions updated, check new fields");
+		Options.ApiVersion = 1;
+		UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONSEARCH_SETPARAMETER_API_LATEST, 1);
 
 		Options.ComparisonOp = ToServiceType(Filter.ComparisonOp);
 		
@@ -1009,8 +1003,8 @@ void FSessionsEOSGS::SetSessionSearchParameters(FSessionSearchHandleEOSGS& Sessi
 void FSessionsEOSGS::SetSessionSearchSessionId(FSessionSearchHandleEOSGS& SessionSearchHandle, const FOnlineSessionId& SessionId)
 {
 	EOS_SessionSearch_SetSessionIdOptions Options = { };
-	Options.ApiVersion = EOS_SESSIONSEARCH_SETSESSIONID_API_LATEST;
-	static_assert(EOS_SESSIONSEARCH_SETSESSIONID_API_LATEST == 1, "EOS_SessionSearch_SetSessionIdOptions updated, check new fields");
+	Options.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONSEARCH_SETSESSIONID_API_LATEST, 1);
 
 	const FTCHARToUTF8 SessionIdUtf8(*FOnlineSessionIdRegistryEOSGS::Get().ToLogString(SessionId));
 	Options.SessionId = SessionIdUtf8.Get();
@@ -1025,8 +1019,8 @@ void FSessionsEOSGS::SetSessionSearchSessionId(FSessionSearchHandleEOSGS& Sessio
 void FSessionsEOSGS::SetSessionSearchTargetId(FSessionSearchHandleEOSGS& SessionSearchHandle, const FAccountId& TargetAccountId)
 {
 	EOS_SessionSearch_SetTargetUserIdOptions Options = { };
-	Options.ApiVersion = EOS_SESSIONSEARCH_SETTARGETUSERID_API_LATEST;
-	static_assert(EOS_SESSIONSEARCH_SETTARGETUSERID_API_LATEST == 1, "EOS_SessionSearch_SetTargetUserIdOptions updated, check new fields");
+	Options.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONSEARCH_SETTARGETUSERID_API_LATEST, 1);
 	Options.TargetUserId = GetProductUserIdChecked(TargetAccountId);
 
 	EOS_EResult ResultCode = EOS_SessionSearch_SetTargetUserId(SessionSearchHandle.SearchHandle, &Options);
@@ -1080,8 +1074,8 @@ TFuture<TOnlineResult<FFindSessions>> FSessionsEOSGS::FindSessionsImpl(const FFi
 
 	// We start preparing the search
 	EOS_Sessions_CreateSessionSearchOptions CreateSessionSearchOptions = { };
-	CreateSessionSearchOptions.ApiVersion = EOS_SESSIONS_CREATESESSIONSEARCH_API_LATEST;
-	static_assert(EOS_SESSIONS_CREATESESSIONSEARCH_API_LATEST == 1, "EOS_Sessions_CreateSessionSearchOptions updated, check new fields");
+	CreateSessionSearchOptions.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONS_CREATESESSIONSEARCH_API_LATEST, 1);
 	CreateSessionSearchOptions.MaxSearchResults = FMath::Clamp(Params.MaxResults, 0, EOS_SESSIONS_MAX_SEARCH_RESULTS);
 
 	EOS_HSessionSearch SearchHandle = nullptr;
@@ -1104,8 +1098,8 @@ TFuture<TOnlineResult<FFindSessions>> FSessionsEOSGS::FindSessionsImpl(const FFi
 	WriteSessionSearchHandle(*CurrentSessionSearchHandleEOSGS, Params);
 
 	EOS_SessionSearch_FindOptions FindOptions = { };
-	FindOptions.ApiVersion = EOS_SESSIONSEARCH_FIND_API_LATEST;
-	static_assert(EOS_SESSIONSEARCH_FIND_API_LATEST == 2, "EOS_SessionSearch_FindOptions updated, check new fields");
+	FindOptions.ApiVersion = 2;
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONSEARCH_FIND_API_LATEST, 2);
 	FindOptions.LocalUserId = GetProductUserIdChecked(Params.LocalAccountId);
 
 	EOS_Async(EOS_SessionSearch_Find, CurrentSessionSearchHandleEOSGS->SearchHandle, FindOptions,
@@ -1115,6 +1109,7 @@ TFuture<TOnlineResult<FFindSessions>> FSessionsEOSGS::FindSessionsImpl(const FFi
 
 			if (FindCallbackInfoResult->ResultCode != EOS_EResult::EOS_Success)
 			{
+				UE_LOG(LogTemp, Warning, TEXT("EOS_SessionSearch_Find failed with result [%s]"), *LexToString(FindCallbackInfoResult->ResultCode));
 				Promise.EmplaceValue(Errors::FromEOSResult(FindCallbackInfoResult->ResultCode));
 				return;
 			}
@@ -1123,13 +1118,13 @@ TFuture<TOnlineResult<FFindSessions>> FSessionsEOSGS::FindSessionsImpl(const FFi
 
 			// For a successful session, we'll get the search results
 			EOS_SessionSearch_GetSearchResultCountOptions GetSearchResultCountOptions = { };
-			GetSearchResultCountOptions.ApiVersion = EOS_SESSIONSEARCH_GETSEARCHRESULTCOUNT_API_LATEST;
-			static_assert(EOS_SESSIONSEARCH_GETSEARCHRESULTCOUNT_API_LATEST == 1, "EOS_SessionSearch_GetSearchResultCountOptions updated, check new fields");
+			GetSearchResultCountOptions.ApiVersion = 1;
+			UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONSEARCH_GETSEARCHRESULTCOUNT_API_LATEST, 1);
 			int32 NumSearchResults = EOS_SessionSearch_GetSearchResultCount(CurrentSessionSearchHandleEOSGS->SearchHandle, &GetSearchResultCountOptions);
 
 			EOS_SessionSearch_CopySearchResultByIndexOptions CopySearchResultByIndexOptions = { };
-			CopySearchResultByIndexOptions.ApiVersion = EOS_SESSIONSEARCH_COPYSEARCHRESULTBYINDEX_API_LATEST;
-			static_assert(EOS_SESSIONSEARCH_COPYSEARCHRESULTBYINDEX_API_LATEST == 1, "EOS_SessionSearch_CopySearchResultByIndexOptions updated, check new fields");
+			CopySearchResultByIndexOptions.ApiVersion = 1;
+			UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONSEARCH_COPYSEARCHRESULTBYINDEX_API_LATEST, 1);
 
 			TArray<TFuture<TDefaultErrorResult<FBuildSessionFromDetailsHandle>>> PendingSessionsBuilt;
 
@@ -1222,20 +1217,10 @@ TFuture<TOnlineResult<FJoinSession>> FSessionsEOSGS::JoinSessionImpl(const FJoin
 
 	// EOSGS Sessions
 
-	// We check that the passed session has a valid details handle
-	const FSessionEOSGS& SessionEOSGS = FSessionEOSGS::Cast(*FoundSession);
-	if (!SessionEOSGS.SessionDetailsHandle.IsValid())
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[%s] Could not join session with invalid session details handle in session with id [%s]"), UTF8_TO_TCHAR(__FUNCTION__), *ToLogString(Params.SessionId));
-
-		Promise.EmplaceValue(Errors::InvalidState());
-		return Future;
-	}
-
 	// We start setup for the API call
 	EOS_Sessions_JoinSessionOptions JoinSessionOptions = { };
-	JoinSessionOptions.ApiVersion = EOS_SESSIONS_JOINSESSION_API_LATEST;
-	static_assert(EOS_SESSIONS_JOINSESSION_API_LATEST == 2, "EOS_Sessions_JoinSessionOptions updated, check new fields");
+	JoinSessionOptions.ApiVersion = 2;
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONS_JOINSESSION_API_LATEST, 2);
 
 	JoinSessionOptions.bPresenceEnabled = Params.bPresenceEnabled;
 
@@ -1244,6 +1229,7 @@ TFuture<TOnlineResult<FJoinSession>> FSessionsEOSGS::JoinSessionImpl(const FJoin
 	const FTCHARToUTF8 SessionNameUtf8(*Params.SessionName.ToString());
 	JoinSessionOptions.SessionName = SessionNameUtf8.Get();
 
+	const FSessionEOSGS& SessionEOSGS = FSessionEOSGS::Cast(*FoundSession);
 	JoinSessionOptions.SessionHandle = SessionEOSGS.SessionDetailsHandle->SessionDetailsHandle;
 
 	EOS_Async(EOS_Sessions_JoinSession, SessionsHandle, JoinSessionOptions, 
@@ -1251,6 +1237,7 @@ TFuture<TOnlineResult<FJoinSession>> FSessionsEOSGS::JoinSessionImpl(const FJoin
 		{
 			if (Result->ResultCode != EOS_EResult::EOS_Success)
 			{
+				UE_LOG(LogTemp, Warning, TEXT("EOS_Sessions_JoinSession failed with result [%s]"), *LexToString(Result->ResultCode));
 				Promise.EmplaceValue(Errors::FromEOSResult(Result->ResultCode));
 				return;
 			}
@@ -1287,11 +1274,40 @@ TFuture<TOnlineResult<FJoinSession>> FSessionsEOSGS::JoinSessionImpl(const FJoin
 	return Future;
 }
 
+TOptional<FOnlineError> FSessionsEOSGS::CheckState(const FJoinSession::Params& Params) const
+{
+	if (TOptional<FOnlineError> BaseCheck = Super::CheckState(Params))
+	{
+		return BaseCheck;
+	}
+
+	TOnlineResult<FGetSessionById> GetSessionByIdResult = GetSessionById({ Params.SessionId });
+	if (GetSessionByIdResult.IsOk())
+	{
+		const TSharedRef<const ISession>& FoundSession = GetSessionByIdResult.GetOkValue().Session;
+
+		// We check that the passed session has a valid details handle
+		const FSessionEOSGS& SessionEOSGS = FSessionEOSGS::Cast(*FoundSession);
+		if (!FoundSession->GetSessionInfo().bIsLANSession && !SessionEOSGS.SessionDetailsHandle.IsValid())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[%s] Could not join session with invalid session details handle in session with id [%s]"), UTF8_TO_TCHAR(__FUNCTION__), *ToLogString(Params.SessionId));
+
+			return TOptional<FOnlineError>(Errors::InvalidState());
+		}
+	}
+	else
+	{
+		return TOptional<FOnlineError>(GetSessionByIdResult.GetErrorValue());
+	}
+
+	return TOptional<FOnlineError>();
+}
+
 TOnlineAsyncOpHandle<FBuildSessionFromDetailsHandle> FSessionsEOSGS::BuildSessionFromInvite(const FAccountId& LocalAccountId, const FString& InInviteId)
 {
 	EOS_Sessions_CopySessionHandleByInviteIdOptions CopySessionHandleByInviteIdOptions = { };
-	CopySessionHandleByInviteIdOptions.ApiVersion = EOS_SESSIONS_COPYSESSIONHANDLEBYINVITEID_API_LATEST;
-	static_assert(EOS_SESSIONS_COPYSESSIONHANDLEBYINVITEID_API_LATEST == 1, "EOS_Sessions_CopySessionHandleByInviteIdOptions updated, check new fields");
+	CopySessionHandleByInviteIdOptions.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONS_COPYSESSIONHANDLEBYINVITEID_API_LATEST, 1);
 
 	const FTCHARToUTF8 InviteIdUtf8(*InInviteId);
 	CopySessionHandleByInviteIdOptions.InviteId = InviteIdUtf8.Get();
@@ -1315,8 +1331,8 @@ TOnlineAsyncOpHandle<FBuildSessionFromDetailsHandle> FSessionsEOSGS::BuildSessio
 TOnlineAsyncOpHandle<FBuildSessionFromDetailsHandle> FSessionsEOSGS::BuildSessionFromUIEvent(const FAccountId& LocalAccountId, const EOS_UI_EventId& UIEventId)
 {
 	EOS_Sessions_CopySessionHandleByUiEventIdOptions CopySessionHandleByUiEventIdOptions = { };
-	CopySessionHandleByUiEventIdOptions.ApiVersion = EOS_SESSIONS_COPYSESSIONHANDLEBYUIEVENTID_API_LATEST;
-	static_assert(EOS_SESSIONS_COPYSESSIONHANDLEBYUIEVENTID_API_LATEST == 1, "EOS_Sessions_CopySessionHandleByUiEventIdOptions updated, check new fields");
+	CopySessionHandleByUiEventIdOptions.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONS_COPYSESSIONHANDLEBYUIEVENTID_API_LATEST, 1);
 
 	CopySessionHandleByUiEventIdOptions.UiEventId = UIEventId;
 
@@ -1340,63 +1356,26 @@ TResult<TArray<EOS_ProductUserId>, FOnlineError> GetProductUserIdsFromEOSGSSessi
 {
 	TArray<EOS_ProductUserId> Result;
 
-	EOS_SessionDetails_CopyInfoOptions CopyInfoOptions = { };
-	CopyInfoOptions.ApiVersion = EOS_SESSIONDETAILS_COPYINFO_API_LATEST;
-	static_assert(EOS_SESSIONDETAILS_COPYINFO_API_LATEST == 1, "EOS_SessionDetails_CopyInfoOptions updated, check new fields");
+	// This code will remain commented until the related functionality is made available by EOSSDK
+
+	/*EOS_SessionDetails_CopyInfoOptions CopyInfoOptions = {};
+	CopyInfoOptions.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONDETAILS_COPYINFO_API_LATEST, 1);
 
 	EOS_SessionDetails_Info* SessionDetailsInfo = nullptr;
 	EOS_EResult CopyInfoResult = EOS_SessionDetails_CopyInfo(SessionDetailsHandle, &CopyInfoOptions, &SessionDetailsInfo);
 	if (CopyInfoResult == EOS_EResult::EOS_Success)
 	{
-		// We retrieve all the session attributes
-		EOS_SessionDetails_GetSessionAttributeCountOptions GetAttributeCountOptions = {};
-		GetAttributeCountOptions.ApiVersion = EOS_SESSIONDETAILS_GETSESSIONATTRIBUTECOUNT_API_LATEST;
-		static_assert(EOS_SESSIONDETAILS_GETSESSIONATTRIBUTECOUNT_API_LATEST == 1, "EOS_SessionDetails_GetSessionAttributeCountOptions updated, check new fields");
-		
-		uint32_t AttributeCount = EOS_SessionDetails_GetSessionAttributeCount(SessionDetailsHandle, &GetAttributeCountOptions);
-		for (uint32_t Index = 0; Index < AttributeCount; ++Index)
-		{
-			EOS_SessionDetails_CopySessionAttributeByIndexOptions CopyAttributeByIndexOptions = {};
-			CopyAttributeByIndexOptions.ApiVersion = EOS_SESSIONDETAILS_COPYSESSIONATTRIBUTEBYINDEX_API_LATEST;
-			static_assert(EOS_SESSIONDETAILS_COPYSESSIONATTRIBUTEBYINDEX_API_LATEST == 1, "EOS_SessionDetails_CopySessionAttributeByIndexOptions updated, check new fields");
-
-			CopyAttributeByIndexOptions.AttrIndex = Index;
-
-			EOS_SessionDetails_Attribute* Attribute = nullptr;
-			EOS_EResult CopyAttributeByIndexResult = EOS_SessionDetails_CopySessionAttributeByIndex(SessionDetailsHandle, &CopyAttributeByIndexOptions, &Attribute);
-			if (CopyAttributeByIndexResult == EOS_EResult::EOS_Success)
-			{
-				// We parse a single attribute
-				FString Key(Attribute->Data->Key);
-
-				if (Key == EOSGS_OWNER_ACCOUNT_ID_ATTRIBUTE_KEY.ToString())
-				{
-					FSessionAttributeConverter<ESessionAttributeConversionType::FromService> CustomSettingConverter(*Attribute->Data);
-					TPair<FSchemaAttributeId, FSchemaVariant> CustomSettingData = CustomSettingConverter.GetAttributeData();
-
-					const FString& PlayerIdStr = CustomSettingData.Value.GetString();
-					const EOS_ProductUserId ProductUserId = EOS_ProductUserId_FromString(TCHAR_TO_UTF8(*PlayerIdStr));
-					Result.AddUnique(ProductUserId);
-
-					break;
-				}
-			}
-			else
-			{
-				UE_LOG(LogTemp, Warning, TEXT("[FSessionsEOSGS::BuildSessionFromDetailsHandle] EOS_SessionDetails_CopySessionAttributeByIndex failed with result [%s]"), *LexToString(CopyAttributeByIndexResult));
-
-				TResult<TArray<EOS_ProductUserId>, FOnlineError>(Errors::FromEOSResult(CopyAttributeByIndexResult));
-			}
-		}
+		// TODO: When available, we'll retrieve the Session's Owner Id here.
 	}
 	else
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[FSessionsEOSGS::BuildSessionFromDetailsHandle] EOS_SessionDetails_CopyInfo failed with result [%s]"), *LexToString(CopyInfoResult));
 
 		TResult<TArray<EOS_ProductUserId>, FOnlineError>(Errors::FromEOSResult(CopyInfoResult));
-	}
+	}*/
 
-	return TResult<TArray<EOS_ProductUserId>, FOnlineError>(Result);
+	return TResult<TArray<EOS_ProductUserId>, FOnlineError>(MoveTemp(Result));
 }
 
 TOnlineAsyncOpHandle<FBuildSessionFromDetailsHandle> FSessionsEOSGS::BuildSessionFromDetailsHandle(FBuildSessionFromDetailsHandle::Params&& Params)
@@ -1481,8 +1460,8 @@ TFuture<TOnlineResult<FRejectSessionInvite>> FSessionsEOSGS::RejectSessionInvite
 	TFuture<TOnlineResult<FRejectSessionInvite>> Future = Promise.GetFuture();
 
 	EOS_Sessions_RejectInviteOptions RejectInviteOptions = { };
-	RejectInviteOptions.ApiVersion = EOS_SESSIONS_REJECTINVITE_API_LATEST;
-	static_assert(EOS_SESSIONS_REJECTINVITE_API_LATEST == 1, "EOS_Sessions_RejectInviteOptions updated, check new fields");
+	RejectInviteOptions.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONS_REJECTINVITE_API_LATEST, 1);
 
 	RejectInviteOptions.LocalUserId = GetProductUserIdChecked(Params.LocalAccountId);
 
@@ -1495,6 +1474,7 @@ TFuture<TOnlineResult<FRejectSessionInvite>> FSessionsEOSGS::RejectSessionInvite
 		{
 			if (Result->ResultCode != EOS_EResult::EOS_Success)
 			{
+				UE_LOG(LogTemp, Warning, TEXT("EOS_Sessions_RejectInvite failed with result [%s]"), *LexToString(Result->ResultCode));
 				Promise.EmplaceValue(Errors::FromEOSResult(Result->ResultCode));
 				return;
 			}
@@ -1530,8 +1510,8 @@ TFuture<TOnlineResult<FAddSessionMember>> FSessionsEOSGS::AddSessionMemberImpl(c
 				if (!ResolvedAccountIds.IsEmpty())
 				{
 					EOS_Sessions_RegisterPlayersOptions Options = { };
-					Options.ApiVersion = EOS_SESSIONS_REGISTERPLAYERS_API_LATEST;
-					static_assert(EOS_SESSIONS_REGISTERPLAYERS_API_LATEST == 2, "EOS_Sessions_RegisterPlayersOptions updated, check new fields");
+					Options.ApiVersion = 3;
+					UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONS_REGISTERPLAYERS_API_LATEST, 3);
 
 					Options.PlayersToRegisterCount = 1;
 
@@ -1546,6 +1526,7 @@ TFuture<TOnlineResult<FAddSessionMember>> FSessionsEOSGS::AddSessionMemberImpl(c
 						{
 							if (Result->ResultCode != EOS_EResult::EOS_Success)
 							{
+								UE_LOG(LogTemp, Warning, TEXT("EOS_Sessions_RegisterPlayers failed with result [%s]"), *LexToString(Result->ResultCode));
 								Promise.EmplaceValue(Errors::FromEOSResult(Result->ResultCode));
 								return;
 							}
@@ -1582,8 +1563,8 @@ TFuture<TOnlineResult<FRemoveSessionMember>> FSessionsEOSGS::RemoveSessionMember
 				if (!ResolvedAccountIds.IsEmpty())
 				{
 					EOS_Sessions_UnregisterPlayersOptions Options = { };
-					Options.ApiVersion = EOS_SESSIONS_UNREGISTERPLAYERS_API_LATEST;
-					static_assert(EOS_SESSIONS_UNREGISTERPLAYERS_API_LATEST == 2, "EOS_Sessions_UnregisterPlayersOptions updated, check new fields");
+					Options.ApiVersion = 2;
+					UE_EOS_CHECK_API_MISMATCH(EOS_SESSIONS_UNREGISTERPLAYERS_API_LATEST, 2);
 
 					Options.PlayersToUnregisterCount = 1;
 
@@ -1598,6 +1579,7 @@ TFuture<TOnlineResult<FRemoveSessionMember>> FSessionsEOSGS::RemoveSessionMember
 						{
 							if (Result->ResultCode != EOS_EResult::EOS_Success)
 							{
+								UE_LOG(LogTemp, Warning, TEXT("EOS_Sessions_UnregisterPlayers failed with result [%s]"), *LexToString(Result->ResultCode));
 								Promise.EmplaceValue(Errors::FromEOSResult(Result->ResultCode));
 								return;
 							}

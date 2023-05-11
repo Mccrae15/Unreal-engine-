@@ -9,6 +9,11 @@
 #if RHI_RAYTRACING
 
 class FScene;
+class FShaderType;
+class FRHIRayTracingShader;
+class FGlobalShaderMap;
+
+enum EBlendMode : int;
 
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FRayTracingDecals, RENDERER_API)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D<uint>, Grid)
@@ -23,5 +28,10 @@ END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 TRDGUniformBufferRef<FRayTracingDecals> CreateNullRayTracingDecalsUniformBuffer(FRDGBuilder& GraphBuilder);
 TRDGUniformBufferRef<FRayTracingDecals> CreateRayTracingDecalData(FRDGBuilder& GraphBuilder, FScene& Scene, const FViewInfo& View, uint32 BaseCallableSlotIndex);
+
+FShaderType* GetRayTracingDecalMaterialShaderType(EBlendMode BlendMode);
+
+FRHIRayTracingShader* GetDefaultOpaqueMeshDecalHitShader(const FGlobalShaderMap* ShaderMap);
+FRHIRayTracingShader* GetDefaultHiddenMeshDecalHitShader(const FGlobalShaderMap* ShaderMap);
 
 #endif

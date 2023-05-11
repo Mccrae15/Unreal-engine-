@@ -1,7 +1,27 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Elements/PCGUnionElement.h"
-#include "Helpers/PCGSettingsHelpers.h"
+#include "Data/PCGSpatialData.h"
+#include "PCGContext.h"
+#include "PCGPin.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGUnionElement)
+
+TArray<FPCGPinProperties> UPCGUnionSettings::InputPinProperties() const
+{
+	TArray<FPCGPinProperties> PinProperties;
+	PinProperties.Emplace(PCGPinConstants::DefaultInputLabel, EPCGDataType::Spatial);
+
+	return PinProperties;
+}
+
+TArray<FPCGPinProperties> UPCGUnionSettings::OutputPinProperties() const
+{
+	TArray<FPCGPinProperties> PinProperties;
+	PinProperties.Emplace(PCGPinConstants::DefaultOutputLabel, EPCGDataType::Spatial);
+
+	return PinProperties;
+}
 
 FPCGElementPtr UPCGUnionSettings::CreateElement() const
 {
@@ -16,10 +36,9 @@ bool FPCGUnionElement::ExecuteInternal(FPCGContext* Context) const
 	check(Settings);
 
 	TArray<FPCGTaggedData> Inputs = Context->InputData.GetInputs();
-	UPCGParamData* Params = Context->InputData.GetParams();
 
-	const EPCGUnionType Type = PCGSettingsHelpers::GetValue(GET_MEMBER_NAME_CHECKED(UPCGUnionSettings, Type), Settings->Type, Params);
-	const EPCGUnionDensityFunction DensityFunction = PCGSettingsHelpers::GetValue(GET_MEMBER_NAME_CHECKED(UPCGUnionSettings, DensityFunction), Settings->DensityFunction, Params);
+	const EPCGUnionType Type = Settings->Type;
+	const EPCGUnionDensityFunction DensityFunction = Settings->DensityFunction;
 
 	TArray<FPCGTaggedData>& Outputs = Context->OutputData.TaggedData;
 
@@ -65,9 +84,6 @@ bool FPCGUnionElement::ExecuteInternal(FPCGContext* Context) const
 		
 		UnionTaggedData.Data = UnionData;
 	}
-
-	// Finally, pass-through settings
-	Outputs.Append(Context->InputData.GetAllSettings());
 
 	return true;
 }

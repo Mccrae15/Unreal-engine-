@@ -2,12 +2,16 @@
 
 #include "PCGEditorGraph.h"
 
-#include "PCGGraph.h"
 #include "PCGEdge.h"
 #include "PCGEditorGraphNode.h"
 #include "PCGEditorGraphNodeInput.h"
 #include "PCGEditorGraphNodeOutput.h"
+#include "PCGEditorGraphNodeReroute.h"
 #include "PCGEditorModule.h"
+#include "PCGGraph.h"
+#include "PCGPin.h"
+#include "Elements/PCGReroute.h"
+#include "Elements/PCGUserParameterGet.h"
 
 #include "EdGraph/EdGraphPin.h"
 
@@ -15,6 +19,8 @@ void UPCGEditorGraph::InitFromNodeGraph(UPCGGraph* InPCGGraph)
 {
 	check(InPCGGraph && !PCGGraph);
 	PCGGraph = InPCGGraph;
+
+	PCGGraph->OnGraphParametersChangedDelegate.AddUObject(this, &UPCGEditorGraph::OnGraphUserParametersChanged);
 
 	TMap<UPCGNode*, UPCGEditorGraphNodeBase*> NodeLookup;
 	const bool bSelectNewNode = false;
@@ -35,11 +41,27 @@ void UPCGEditorGraph::InitFromNodeGraph(UPCGGraph* InPCGGraph)
 
 	for (UPCGNode* PCGNode : PCGGraph->GetNodes())
 	{
-		FGraphNodeCreator<UPCGEditorGraphNode> NodeCreator(*this);
-		UPCGEditorGraphNode* GraphNode = NodeCreator.CreateNode(bSelectNewNode);
-		GraphNode->Construct(PCGNode);
-		NodeCreator.Finalize();
-		NodeLookup.Add(PCGNode, GraphNode);
+		if (!IsValid(PCGNode))
+		{
+			continue;	
+		}
+		
+		if (Cast<UPCGRerouteSettings>(PCGNode->GetSettings()))
+		{
+			FGraphNodeCreator<UPCGEditorGraphNodeReroute> NodeCreator(*this);
+			UPCGEditorGraphNodeReroute* RerouteGraphNode = NodeCreator.CreateNode(bSelectNewNode);
+			RerouteGraphNode->Construct(PCGNode);
+			NodeCreator.Finalize();
+			NodeLookup.Add(PCGNode, RerouteGraphNode);
+		}
+		else
+		{
+			FGraphNodeCreator<UPCGEditorGraphNode> NodeCreator(*this);
+			UPCGEditorGraphNode* GraphNode = NodeCreator.CreateNode(bSelectNewNode);
+			GraphNode->Construct(PCGNode);
+			NodeCreator.Finalize();
+			NodeLookup.Add(PCGNode, GraphNode);
+		}
 	}
 
 	for (const auto& NodeLookupIt : NodeLookup)
@@ -57,6 +79,21 @@ void UPCGEditorGraph::InitFromNodeGraph(UPCGGraph* InPCGGraph)
 			const bool bIsUserAction = false;
 			AddNode(NewNode, bIsUserAction, bSelectNewNode);
 		}
+	}
+}
+
+void UPCGEditorGraph::BeginDestroy()
+{
+	Super::BeginDestroy();
+
+	OnClose();
+}
+
+void UPCGEditorGraph::OnClose()
+{
+	if (PCGGraph)
+	{
+		PCGGraph->OnGraphParametersChangedDelegate.RemoveAll(this);
 	}
 }
 
@@ -92,7 +129,11 @@ void UPCGEditorGraph::CreateLinks(UPCGEditorGraphNodeBase* GraphNode, bool bCrea
 
 			if (!InPin)
 			{
-				UE_LOG(LogPCGEditor, Error, TEXT("Invalid InputPin for %s"), *InputPin->Properties.Label.ToString());
+				if (!Cast<UPCGEditorGraphNodeInput>(GraphNode))
+				{
+					UE_LOG(LogPCGEditor, Error, TEXT("Invalid InputPin for %s"), *InputPin->Properties.Label.ToString());
+				}
+
 				continue;
 			}
 
@@ -129,7 +170,11 @@ void UPCGEditorGraph::CreateLinks(UPCGEditorGraphNodeBase* GraphNode, bool bCrea
 
 			if (!OutPin)
 			{
-				UE_LOG(LogPCGEditor, Error, TEXT("Invalid OutputPin for %s"), *OutputPin->Properties.Label.ToString());
+				if (!Cast<UPCGEditorGraphNodeOutput>(GraphNode))
+				{
+					UE_LOG(LogPCGEditor, Error, TEXT("Invalid OutputPin for %s"), *OutputPin->Properties.Label.ToString());
+				}
+				
 				continue;
 			}
 
@@ -156,5 +201,44 @@ void UPCGEditorGraph::CreateLinks(UPCGEditorGraphNodeBase* GraphNode, bool bCrea
 				}
 			}
 		}
+	}
+}
+
+void UPCGEditorGraph::OnGraphUserParametersChanged(UPCGGraphInterface* InGraph, EPCGGraphParameterEvent ChangeType, FName ChangedPropertyName)
+{
+	if (ChangeType != EPCGGraphParameterEvent::Removed || InGraph != PCGGraph)
+	{
+		return;
+	}
+
+	// If a parameter was removed, just look for getter nodes that do exists in the editor graph, but not in the PCG graph.
+	TArray<UPCGEditorGraphNodeBase*> NodesToRemove;
+	for (UEdGraphNode* EditorNode : Nodes)
+	{
+		if (UPCGEditorGraphNodeBase* PCGEditorNode = Cast<UPCGEditorGraphNodeBase>(EditorNode))
+		{
+			if (UPCGNode* PCGNode = PCGEditorNode->GetPCGNode())
+			{
+				if (UPCGUserParameterGetSettings* Settings = Cast<UPCGUserParameterGetSettings>(PCGNode->GetSettings()))
+				{
+					if (!PCGGraph->Contains(PCGNode))
+					{
+						NodesToRemove.Add(PCGEditorNode);
+					}
+				}
+			}
+		}
+	}
+
+	if (NodesToRemove.IsEmpty())
+	{
+		return;
+	}
+
+	Modify();
+
+	for (UPCGEditorGraphNodeBase* NodeToRemove : NodesToRemove)
+	{
+		NodeToRemove->DestroyNode();
 	}
 }

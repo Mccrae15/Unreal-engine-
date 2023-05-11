@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WaterSplineComponent.h"
-#include "WaterSplineMetadata.h"
+#include "UObject/FortniteMainBranchObjectVersion.h"
 #include "WaterBodyActor.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(WaterSplineComponent)
@@ -129,6 +129,20 @@ FBoxSphereBounds UWaterSplineComponent::CalcBounds(const FTransform& LocalToWorl
 	}
 }
 
+void UWaterSplineComponent::K2_SynchronizeAndBroadcastDataChange()
+{
+#if WITH_EDITOR
+	SynchronizeWaterProperties();
+
+	FPropertyChangedEvent PropertyChangedEvent(FindFProperty<FProperty>(UWaterSplineComponent::StaticClass(), TEXT("SplineCurves")), 1 << 6);
+	FOnWaterSplineDataChangedParams OnWaterSplineDataChangedParams(PropertyChangedEvent);
+	OnWaterSplineDataChangedParams.bUserTriggered = true;
+
+	WaterSplineDataChangedEvent.Broadcast(OnWaterSplineDataChangedParams);
+#endif
+}
+
+
 #if WITH_EDITOR
 
 bool UWaterSplineComponent::CanEditChange(const FProperty* InProperty) const
@@ -153,7 +167,10 @@ void UWaterSplineComponent::PostEditChangeProperty(FPropertyChangedEvent& Proper
 
 	SynchronizeWaterProperties();
 
-	WaterSplineDataChangedEvent.Broadcast(FOnWaterSplineDataChangedParams(PropertyChangedEvent));
+	FOnWaterSplineDataChangedParams OnWaterSplineDataChangedParams(PropertyChangedEvent);
+	OnWaterSplineDataChangedParams.bUserTriggered = true;
+	
+	WaterSplineDataChangedEvent.Broadcast(OnWaterSplineDataChangedParams);
 }
 
 void UWaterSplineComponent::PostEditImport()

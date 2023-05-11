@@ -3,11 +3,14 @@
 #include "MovieSceneNiagaraSystemTrackTemplate.h"
 #include "MovieSceneExecutionToken.h"
 #include "NiagaraComponent.h"
+#include "NiagaraSystemInstanceController.h"
 #include "IMovieScenePlayer.h"
 
 #include "Evaluation/MovieSceneEvaluationTemplateInstance.h"
 #include "MovieSceneSequence.h"
 #include "MovieScene.h"
+#include "Evaluation/MovieSceneEvaluationTrack.h"
+#include "MovieScene/MovieSceneNiagaraSystemTrack.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneNiagaraSystemTrackTemplate)
 
@@ -229,13 +232,13 @@ struct FNiagaraSystemUpdateDesiredAgeExecutionToken : IMovieSceneExecutionToken
 
 			if (SystemInstanceController.IsValid() && SystemInstanceController->IsValid() && SystemInstanceController->IsComplete() == false)
 			{
-				float DesiredAge = Context.GetFrameRate().AsSeconds(Context.GetTime() - SpawnSectionStartFrame);
+				const float DesiredAge = FMath::RoundToFloat(static_cast<float>(Context.GetFrameRate().AsSeconds(Context.GetTime() - SpawnSectionStartFrame)) * MinAgeResolution) / MinAgeResolution;
 				if (DesiredAge >= 0)
 				{
 					// Add a quarter of a frame offset here to push the desired age into the middle of the frame since it will be automatically rounded
 					// down to the nearest seek delta.  This prevents a situation where float rounding results in a value which is just slightly less than
 					// the frame boundary, which results in a skipped simulation frame.
-					float FrameOffset = NiagaraComponent->GetSeekDelta() / 4;
+					const float FrameOffset = NiagaraComponent->GetLockDesiredAgeDeltaTimeToSeekDelta() ? (NiagaraComponent->GetSeekDelta() / 4.0f) : 0.0f;
 					NiagaraComponent->SetDesiredAge(DesiredAge + FrameOffset);
 				}
 			}
@@ -249,6 +252,9 @@ struct FNiagaraSystemUpdateDesiredAgeExecutionToken : IMovieSceneExecutionToken
 	ENiagaraSystemSpawnSectionEndBehavior SpawnSectionEndBehavior;
 	ENiagaraAgeUpdateMode AgeUpdateMode;
 	bool bAllowScalability;
+
+	//TODO (mga) move to global sim resolution config, update sim cache as well
+	static constexpr float MinAgeResolution = 10000.0f;
 };
 
 FMovieSceneNiagaraSystemTrackImplementation::FMovieSceneNiagaraSystemTrackImplementation(
@@ -280,8 +286,15 @@ FMovieSceneNiagaraSystemTrackImplementation::FMovieSceneNiagaraSystemTrackImplem
 void FMovieSceneNiagaraSystemTrackImplementation::Evaluate(const FMovieSceneEvaluationTrack& Track, TArrayView<const FMovieSceneFieldEntry_ChildTemplate> Children, const FMovieSceneEvaluationOperand& Operand, const FMovieSceneContext& Context, const FPersistentEvaluationData& PersistentData, FMovieSceneExecutionTokens& ExecutionTokens) const
 {
 	ExecutionTokens.SetContext(Context);
-	ExecutionTokens.Add(FNiagaraSystemUpdateDesiredAgeExecutionToken(
+
+	// only add a token if there isn't one already, otherwise another track's token takes precendence
+	FMovieSceneSharedDataId TokenID = UMovieSceneNiagaraSystemTrack::SharedDataId;
+	FNiagaraSharedMarkerToken* SharedCacheToken = static_cast<FNiagaraSharedMarkerToken*>(ExecutionTokens.FindShared(TokenID));
+	if (SharedCacheToken == nullptr || !SharedCacheToken->BoundObjectIDs.Contains(Operand.ObjectBindingID))
+	{
+		ExecutionTokens.Add(FNiagaraSystemUpdateDesiredAgeExecutionToken(
 		SpawnSectionStartFrame, SpawnSectionEndFrame,
 		SpawnSectionStartBehavior, SpawnSectionEvaluateBehavior,
 		SpawnSectionEndBehavior, AgeUpdateMode, bAllowScalability));
+	}
 }

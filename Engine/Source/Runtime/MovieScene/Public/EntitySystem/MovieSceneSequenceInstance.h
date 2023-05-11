@@ -83,6 +83,15 @@ public:
 
 
 	/**
+	 * Returns whether this instance can be finished immediately without any last update.
+	 *
+	 * @param Linker     The linker that owns this sequence instance
+	 * @return           Whether the instance can be finished immediately
+	 */
+	bool CanFinishImmediately(UMovieSceneEntitySystemLinker* Linker) const;
+
+
+	/**
 	 * Mark this instance as finished, causing all its entities to be unlinked and the instance to become inactive at the end of the next update.
 	 *
 	 * @param Linker     The linker that owns this sequence instance
@@ -113,7 +122,7 @@ public:
 	/**
 	 * Retrieve the SequenceID for this instance
 	 *
-	 * @return This sequence instance's SequenceID within the root-sequences hierachy, or MovieSceneSequenceID::Root for master sequence instances.
+	 * @return This sequence instance's SequenceID within the root-sequences hierachy, or MovieSceneSequenceID::Root for root sequence instances.
 	 */
 	FMovieSceneSequenceID GetSequenceID() const
 	{
@@ -146,6 +155,16 @@ public:
 	FRootInstanceHandle GetRootInstanceHandle() const
 	{
 		return RootInstanceHandle;
+	}
+
+	/**
+	 * Get a handle to the parent instance for this sequence instance, or an invalid handle if it is a root instance
+	 *
+	 * @return A a handle to the parent instance for this sequence instance, or an invalid handle if it is a root instance
+	 */
+	FInstanceHandle GetParentInstanceHandle() const
+	{
+		return ParentInstanceHandle;
 	}
 
 	/**
@@ -261,7 +280,7 @@ public:
 	explicit FSequenceInstance(UMovieSceneEntitySystemLinker* Linker, IMovieScenePlayer* Player, FRootInstanceHandle ThisInstanceHandle);
 
 	/** Constructor for sub sequences */
-	explicit FSequenceInstance(UMovieSceneEntitySystemLinker* Linker, IMovieScenePlayer* Player, FInstanceHandle ThisInstanceHandle, FRootInstanceHandle RootInstanceHandle, FMovieSceneSequenceID InSequenceID, FMovieSceneCompiledDataID InCompiledDataID);
+	explicit FSequenceInstance(UMovieSceneEntitySystemLinker* Linker, IMovieScenePlayer* Player, FInstanceHandle ThisInstanceHandle, FInstanceHandle InParentInstanceHandle, FRootInstanceHandle RootInstanceHandle, FMovieSceneSequenceID InSequenceID);
 
 	/** Destructor */
 	~FSequenceInstance();
@@ -297,8 +316,6 @@ private:
 
 	/** Delegate Binding for when an object binding is invalidated in this instance . */
 	FDelegateHandle OnInvalidateObjectBindingHandle;
-	/** This sequence's compiled data ID. */
-	FMovieSceneCompiledDataID CompiledDataID;
 	/** This sequence instances sequence ID, or MovieSceneSequenceID::Root for top-level sequences. */
 	FMovieSceneSequenceID SequenceID;
 	/** When SequenceID != MovieSceneSequenceID::Root, specifies an ID to override as a simulated root. */
@@ -307,6 +324,8 @@ private:
 	int32 PlayerIndex;
 	/** This instance's handle. */
 	FInstanceHandle InstanceHandle;
+	/** This instance's parent handle. */
+	FInstanceHandle ParentInstanceHandle;
 	/** This instance's root handle, if it is a sub sequence. */
 	FRootInstanceHandle RootInstanceHandle;
 	/** Flag that is set when this sequence has or (will be) finished. */

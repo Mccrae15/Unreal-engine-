@@ -6,6 +6,8 @@
 #include "Animation/AnimInstanceProxy.h"
 #include "Animation/NodeMappingContainer.h"
 #include "AnimationRuntime.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/SkeletalMesh.h"
 #include "Units/Execution/RigUnit_BeginExecution.h"
 #include "Units/Execution/RigUnit_PrepareForExecution.h"
 #include "Algo/Transform.h"
@@ -75,6 +77,10 @@ void FAnimNode_ControlRigBase::Initialize_AnyThread(const FAnimationInitializeCo
 		bControlRigRequiresInitialization = true;
 		LastBonesSerialNumberForCacheBones = 0;
 	}
+	else
+	{
+		SetTargetInstance(nullptr);
+	}
 }
 
 void FAnimNode_ControlRigBase::GatherDebugData(FNodeDebugData& DebugData)
@@ -126,14 +132,17 @@ void FAnimNode_ControlRigBase::UpdateInput(UControlRig* ControlRig, const FPoseC
 		return;
 	}
 
+	URigHierarchy* Hierarchy = ControlRig->GetHierarchy();
+	if(Hierarchy == nullptr)
+	{
+		return;
+	}
+
 #if WITH_EDITOR
 	// if we are recording any change - let's clear the undo stack
-	if(URigHierarchy* Hierarchy = ControlRig->GetHierarchy())
+	if(Hierarchy->IsTracingChanges())
 	{
-		if(Hierarchy->IsTracingChanges())
-		{
-			Hierarchy->ResetTransformStack();
-		}
+		Hierarchy->ResetTransformStack();
 	}
 #endif
 
@@ -149,16 +158,16 @@ void FAnimNode_ControlRigBase::UpdateInput(UControlRig* ControlRig, const FPoseC
 		if(!ControlRigBoneInputMappingByName.IsEmpty() || bResetInputPoseToInitial)
 		{
 			{
-				FRigHierarchyValidityBracket ValidityBracket(ControlRig->GetHierarchy());
+				FRigHierarchyValidityBracket ValidityBracket(Hierarchy);
 			}
-			FRigHierarchyValidityBracket ValidityBracket(ControlRig->GetHierarchy());
+			FRigHierarchyValidityBracket ValidityBracket(Hierarchy);
 
 			{
 #if WITH_EDITOR
 				// make sure transient controls don't get reset
 				UControlRig::FTransientControlPoseScope PoseScope(ControlRig);
 #endif 
-				ControlRig->GetHierarchy()->ResetPoseToInitial(ERigElementType::Bone);
+				Hierarchy->ResetPoseToInitial(ERigElementType::Bone);
 			}
 		}
 
@@ -178,7 +187,7 @@ void FAnimNode_ControlRigBase::UpdateInput(UControlRig* ControlRig, const FPoseC
 					
 					FCompactPoseBoneIndex CompactPoseIndex(SkeletonIndex);
 					FTransform ComponentTransform = MeshPoses.GetComponentSpaceTransform(CompactPoseIndex);
-					ControlRig->GetHierarchy()->SetGlobalTransformByIndex(ControlRigIndex, ComponentTransform, false);
+					Hierarchy->SetGlobalTransformByIndex(ControlRigIndex, ComponentTransform, false);
 				}
 			}
 			else
@@ -195,7 +204,7 @@ void FAnimNode_ControlRigBase::UpdateInput(UControlRig* ControlRig, const FPoseC
 					{
 						ComponentTransform = NodeMappingContainer->GetSourceToTargetTransform(Name).GetRelativeTransformReverse(ComponentTransform);
 					}
-					ControlRig->GetHierarchy()->SetGlobalTransform(Key, ComponentTransform, false);
+					Hierarchy->SetGlobalTransform(Key, ComponentTransform, false);
 				}
 			}
 		}
@@ -210,7 +219,7 @@ void FAnimNode_ControlRigBase::UpdateInput(UControlRig* ControlRig, const FPoseC
 					
 					FCompactPoseBoneIndex CompactPoseIndex(SkeletonIndex);
 					FTransform LocalTransform = InOutput.Pose[CompactPoseIndex];
-					ControlRig->GetHierarchy()->SetLocalTransformByIndex(ControlRigIndex, LocalTransform, false);
+					Hierarchy->SetLocalTransformByIndex(ControlRigIndex, LocalTransform, false);
 				}
 			}
 			else
@@ -223,7 +232,7 @@ void FAnimNode_ControlRigBase::UpdateInput(UControlRig* ControlRig, const FPoseC
 
 					FCompactPoseBoneIndex CompactPoseIndex(SkeletonIndex);
 					FTransform LocalTransform = InOutput.Pose[CompactPoseIndex];
-					ControlRig->GetHierarchy()->SetLocalTransform(Key, LocalTransform, false);
+					Hierarchy->SetLocalTransform(Key, LocalTransform, false);
 				}
 			}
 		}
@@ -243,11 +252,11 @@ void FAnimNode_ControlRigBase::UpdateInput(UControlRig* ControlRig, const FPoseC
 				const float Value = InOutput.Curve.Get(SkeletonIndex, bIsValid);
 				if (bIsValid)
 				{
-					ControlRig->GetHierarchy()->SetCurveValueByIndex(ControlRigIndex, Value);
+					Hierarchy->SetCurveValueByIndex(ControlRigIndex, Value);
 				}
 				else
 				{
-					ControlRig->GetHierarchy()->UnsetCurveValueByIndex(ControlRigIndex);
+					Hierarchy->UnsetCurveValueByIndex(ControlRigIndex);
 				}
 			}
 		}
@@ -263,23 +272,20 @@ void FAnimNode_ControlRigBase::UpdateInput(UControlRig* ControlRig, const FPoseC
 				const float Value = InOutput.Curve.Get(SkeletonIndex, bIsValid);
 				if (bIsValid)
 				{
-					ControlRig->GetHierarchy()->SetCurveValue(Key, Value);
+					Hierarchy->SetCurveValue(Key, Value);
 				}
 				else
 				{
-					ControlRig->GetHierarchy()->UnsetCurveValue(Key);
+					Hierarchy->UnsetCurveValue(Key);
 				}
 			}
 		}
 	}
 
 #if WITH_EDITOR
-	if(URigHierarchy* Hierarchy = ControlRig->GetHierarchy())
+	if(Hierarchy->IsTracingChanges())
 	{
-		if(Hierarchy->IsTracingChanges())
-		{
-			Hierarchy->StorePoseForTrace(TEXT("FAnimNode_ControlRigBase::UpdateInput"));
-		}
+		Hierarchy->StorePoseForTrace(TEXT("FAnimNode_ControlRigBase::UpdateInput"));
 	}
 #endif
 }
@@ -289,6 +295,12 @@ void FAnimNode_ControlRigBase::UpdateOutput(UControlRig* ControlRig, FPoseContex
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_ControlRig_UpdateOutput);
 
 	if(!CanExecute())
+	{
+		return;
+	}
+
+	URigHierarchy* Hierarchy = ControlRig->GetHierarchy();
+	if(Hierarchy == nullptr)
 	{
 		return;
 	}
@@ -324,7 +336,7 @@ void FAnimNode_ControlRigBase::UpdateOutput(UControlRig* ControlRig, FPoseContex
 					const uint16 SkeletonIndex = Pair.Value;
 
 					FCompactPoseBoneIndex CompactPoseIndex(SkeletonIndex);
-					FTransform ComponentTransform = ControlRig->GetHierarchy()->GetGlobalTransformByIndex(ControlRigIndex);
+					FTransform ComponentTransform = Hierarchy->GetGlobalTransformByIndex(ControlRigIndex);
 					MeshPoses.SetComponentSpaceTransform(CompactPoseIndex, ComponentTransform);
 				}
 			}
@@ -337,7 +349,7 @@ void FAnimNode_ControlRigBase::UpdateOutput(UControlRig* ControlRig, FPoseContex
 					const FRigElementKey Key(Name, ERigElementType::Bone);
 
 					FCompactPoseBoneIndex CompactPoseIndex(SkeletonIndex);
-					FTransform ComponentTransform = ControlRig->GetHierarchy()->GetGlobalTransform(Key);
+					FTransform ComponentTransform = Hierarchy->GetGlobalTransform(Key);
 					if (NodeMappingContainer.IsValid())
 					{
 						ComponentTransform = NodeMappingContainer->GetSourceToTargetTransform(Name) * ComponentTransform;
@@ -360,7 +372,7 @@ void FAnimNode_ControlRigBase::UpdateOutput(UControlRig* ControlRig, FPoseContex
 					const uint16 SkeletonIndex = Pair.Value;
 
 					FCompactPoseBoneIndex CompactPoseIndex(SkeletonIndex);
-					FTransform LocalTransform = ControlRig->GetHierarchy()->GetLocalTransformByIndex(ControlRigIndex);
+					FTransform LocalTransform = Hierarchy->GetLocalTransformByIndex(ControlRigIndex);
 					InOutput.Pose[CompactPoseIndex] = LocalTransform;
 				}
 			}
@@ -373,7 +385,7 @@ void FAnimNode_ControlRigBase::UpdateOutput(UControlRig* ControlRig, FPoseContex
 					const FRigElementKey Key(Name, ERigElementType::Bone);
 
 					FCompactPoseBoneIndex CompactPoseIndex(Index);
-					FTransform LocalTransform = ControlRig->GetHierarchy()->GetLocalTransform(Key);
+					FTransform LocalTransform = Hierarchy->GetLocalTransform(Key);
 					InOutput.Pose[CompactPoseIndex] = LocalTransform;
 				}
 			}
@@ -389,9 +401,9 @@ void FAnimNode_ControlRigBase::UpdateOutput(UControlRig* ControlRig, FPoseContex
 				const uint16 ControlRigIndex = Pair.Key;
 				const uint16 SkeletonIndex = Pair.Value;
 
-				if (ControlRig->GetHierarchy()->IsCurveValueSetByIndex(ControlRigIndex))
+				if (Hierarchy->IsCurveValueSetByIndex(ControlRigIndex))
 				{
-					InOutput.Curve.Set(SkeletonIndex, ControlRig->GetHierarchy()->GetCurveValueByIndex(ControlRigIndex));
+					InOutput.Curve.Set(SkeletonIndex, Hierarchy->GetCurveValueByIndex(ControlRigIndex));
 				}
 				else
 				{
@@ -411,9 +423,9 @@ void FAnimNode_ControlRigBase::UpdateOutput(UControlRig* ControlRig, FPoseContex
 				const uint16 Index = Iter.Value();
 				const FRigElementKey Key(Name, ERigElementType::Curve);
 
-				if (ControlRig->GetHierarchy()->IsCurveValueSet(Key))
+				if (Hierarchy->IsCurveValueSet(Key))
 				{
-					InOutput.Curve.Set(Index, ControlRig->GetHierarchy()->GetCurveValue(Key));
+					InOutput.Curve.Set(Index, Hierarchy->GetCurveValue(Key));
 				}
 				else
 				{
@@ -428,13 +440,10 @@ void FAnimNode_ControlRigBase::UpdateOutput(UControlRig* ControlRig, FPoseContex
 	}
 
 #if WITH_EDITOR
-	if(URigHierarchy* Hierarchy = ControlRig->GetHierarchy())
+	if(Hierarchy->IsTracingChanges())
 	{
-		if(Hierarchy->IsTracingChanges())
-		{
-			Hierarchy->StorePoseForTrace(TEXT("FAnimNode_ControlRigBase::UpdateOutput"));
-			Hierarchy->DumpTransformStackToFile();
-		}
+		Hierarchy->StorePoseForTrace(TEXT("FAnimNode_ControlRigBase::UpdateOutput"));
+		Hierarchy->DumpTransformStackToFile();
 	}
 #endif
 }
@@ -500,15 +509,19 @@ void FAnimNode_ControlRigBase::ExecuteControlRig(FPoseContext& InOutput)
 		// first update input to the system
 		UpdateInput(ControlRig, InOutput);
 
+		
 		if (bExecute)
 		{
 #if WITH_EDITOR
-			if(URigHierarchy* Hierarchy = ControlRig->GetHierarchy())
+			URigHierarchy* Hierarchy = ControlRig->GetHierarchy();
+			if(Hierarchy == nullptr)
 			{
-				if(Hierarchy->IsTracingChanges())
-				{
-					Hierarchy->StorePoseForTrace(TEXT("FAnimNode_ControlRigBase::BeforeEvaluate"));
-				}
+				return;
+			}
+
+			if(Hierarchy->IsTracingChanges())
+			{
+				Hierarchy->StorePoseForTrace(TEXT("FAnimNode_ControlRigBase::BeforeEvaluate"));
 			}
 #endif
 
@@ -546,12 +559,9 @@ void FAnimNode_ControlRigBase::ExecuteControlRig(FPoseContext& InOutput)
 #endif
 
 #if WITH_EDITOR
-			if(URigHierarchy* Hierarchy = ControlRig->GetHierarchy())
+			if(Hierarchy->IsTracingChanges())
 			{
-				if(Hierarchy->IsTracingChanges())
-				{
-					Hierarchy->StorePoseForTrace(TEXT("FAnimNode_ControlRigBase::AfterEvaluate"));
-				}
+				Hierarchy->StorePoseForTrace(TEXT("FAnimNode_ControlRigBase::AfterEvaluate"));
 			}
 #endif
 		}
@@ -602,6 +612,12 @@ void FAnimNode_ControlRigBase::CacheBones_AnyThread(const FAnimationCacheBonesCo
 
 	if (UControlRig* ControlRig = GetControlRig())
 	{
+		URigHierarchy* Hierarchy = ControlRig->GetHierarchy();
+		if(Hierarchy == nullptr)
+		{
+			return;
+		}
+
 		// fill up node names
 		FBoneContainer& RequiredBones = Context.AnimInstanceProxy->GetRequiredBones();
 
@@ -612,7 +628,7 @@ void FAnimNode_ControlRigBase::CacheBones_AnyThread(const FAnimationCacheBonesCo
 		if(ControlRig->IsConstructionModeEnabled() ||
 			(ControlRig->IsConstructionRequired() && (bControlRigRequiresInitialization || bIsLODChange)))
 		{
-			ControlRig->Execute(EControlRigState::Update, FRigUnit_PrepareForExecution::EventName);
+			ControlRig->Execute(FRigUnit_PrepareForExecution::EventName);
 			bControlRigRequiresInitialization = false;
 		}
 
@@ -715,7 +731,6 @@ void FAnimNode_ControlRigBase::CacheBones_AnyThread(const FAnimationCacheBonesCo
 			// we just support curves by name only
 			{
 				const FSmartNameMapping* CurveMapping = RequiredBones.GetSkeletonAsset()->GetSmartNameContainer(USkeleton::AnimCurveMappingName);
-				URigHierarchy* Hierarchy = ControlRig->GetHierarchy();
 				CurveMapping->Iterate([Hierarchy, this](const FSmartNameMappingIterator& Iterator)
 				{
 					// see if the curve name exists in the control rig
@@ -750,7 +765,7 @@ void FAnimNode_ControlRigBase::CacheBones_AnyThread(const FAnimationCacheBonesCo
 					for (auto Iter = NameBasedMapping.CreateConstIterator(); Iter; ++Iter)
 					{
 						const uint16 SkeletonIndex = Iter.Value();
-						const int32 ControlRigIndex = ControlRig->GetHierarchy()->GetIndex(FRigElementKey(Iter.Key(), ERigElementType::Bone));
+						const int32 ControlRigIndex = Hierarchy->GetIndex(FRigElementKey(Iter.Key(), ERigElementType::Bone));
 						if(ControlRigIndex != INDEX_NONE)
 						{
 							IndexBasedMapping.Add(TPair<uint16, uint16>((uint16)ControlRigIndex, SkeletonIndex));
@@ -778,7 +793,7 @@ void FAnimNode_ControlRigBase::CacheBones_AnyThread(const FAnimationCacheBonesCo
 			for (auto Iter = ControlRigCurveMappingByName.CreateConstIterator(); Iter; ++Iter)
 			{
 				const uint16 SkeletonIndex = Iter.Value();
-				const int32 ControlRigIndex = ControlRig->GetHierarchy()->GetIndex(FRigElementKey(Iter.Key(), ERigElementType::Curve));
+				const int32 ControlRigIndex = Hierarchy->GetIndex(FRigElementKey(Iter.Key(), ERigElementType::Curve));
 				if(ControlRigIndex != INDEX_NONE)
 				{
 					ControlRigCurveMappingByIndex.Add(TPair<uint16, uint16>((uint16)ControlRigIndex, SkeletonIndex));
@@ -803,8 +818,7 @@ void FAnimNode_ControlRigBase::CacheBones_AnyThread(const FAnimationCacheBonesCo
 		{
 			// re-init only if this is the first run
 			// and restore control values
-			FControlRigControlScope Scope(ControlRig);
-			ControlRig->Execute(EControlRigState::Init, FRigUnit_BeginExecution::EventName);
+			ControlRig->RequestInit();
 			bControlRigRequiresInitialization = false;
 		}
 		
@@ -829,7 +843,7 @@ void FAnimNode_ControlRigBase::QueueControlRigDrawInstructions(UControlRig* Cont
 
 	if (ControlRig && Proxy)
 	{
-		for (const FControlRigDrawInstruction& Instruction : ControlRig->GetDrawInterface())
+		for (const FRigVMDrawInstruction& Instruction : ControlRig->GetDrawInterface())
 		{
 			if (!Instruction.IsValid())
 			{
@@ -839,7 +853,7 @@ void FAnimNode_ControlRigBase::QueueControlRigDrawInstructions(UControlRig* Cont
 			FTransform InstructionTransform = Instruction.Transform * Proxy->GetComponentTransform();
 			switch (Instruction.PrimitiveType)
 			{
-				case EControlRigDrawSettings::Points:
+				case ERigVMDrawSettings::Points:
 				{
 					for (const FVector& Point : Instruction.Positions)
 					{
@@ -847,7 +861,7 @@ void FAnimNode_ControlRigBase::QueueControlRigDrawInstructions(UControlRig* Cont
 					}
 					break;
 				}
-				case EControlRigDrawSettings::Lines:
+				case ERigVMDrawSettings::Lines:
 				{
 					const TArray<FVector>& Points = Instruction.Positions;
 
@@ -857,7 +871,7 @@ void FAnimNode_ControlRigBase::QueueControlRigDrawInstructions(UControlRig* Cont
 					}
 					break;
 				}
-				case EControlRigDrawSettings::LineStrip:
+				case ERigVMDrawSettings::LineStrip:
 				{
 					const TArray<FVector>& Points = Instruction.Positions;
 
@@ -868,7 +882,7 @@ void FAnimNode_ControlRigBase::QueueControlRigDrawInstructions(UControlRig* Cont
 					break;
 				}
 
-				case EControlRigDrawSettings::DynamicMesh:
+				case ERigVMDrawSettings::DynamicMesh:
 				{
 					// TODO: Add support for this if anyone is actually using it. Currently it is only defined and referenced in an unused API, DrawCone in Control Rig.
 					break;

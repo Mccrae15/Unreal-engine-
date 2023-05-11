@@ -2,10 +2,13 @@
 
 #pragma once
 
+#include "Math/GenericOctreePublic.h"
 #include "SmartObjectTypes.h"
-#include "Templates/SharedPointer.h"
 #include "Math/GenericOctree.h"
 #include "SmartObjectOctree.generated.h"
+
+struct FInstancedStruct;
+struct FStructView;
 
 typedef TSharedRef<struct FSmartObjectOctreeID, ESPMode::ThreadSafe> FSmartObjectOctreeIDSharedRef;
 
@@ -78,7 +81,7 @@ class SMARTOBJECTSMODULE_API USmartObjectOctree : public USmartObjectSpacePartit
 
 protected:
 	virtual FInstancedStruct Add(const FSmartObjectHandle Handle, const FBox& Bounds) override;
-	virtual void Remove(const FSmartObjectHandle Handle, const FStructView& EntryData) override;
+	virtual void Remove(const FSmartObjectHandle Handle, FStructView EntryData) override;
 	virtual void Find(const FBox& QueryBox, TArray<FSmartObjectHandle>& OutResults) override;
 	virtual void SetBounds(const FBox& Bounds) override;
 

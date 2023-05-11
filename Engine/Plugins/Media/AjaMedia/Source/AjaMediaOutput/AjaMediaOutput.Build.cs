@@ -24,10 +24,11 @@ namespace UnrealBuildTool.Rules
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
 				{
-					"AJA",
+					"AjaCore",
 					"Core",
 					"CoreUObject",
 					"Engine",
+					"GPUTextureTransfer",
 					"MovieSceneCapture",
 					"RenderCore",
 					"RHI",

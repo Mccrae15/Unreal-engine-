@@ -4,7 +4,6 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "VisualLogger/VisualLogger.h"
 #include "GameplayTasksComponent.h"
-#include "ContextualAnimSceneInstance.h"
 #include "GameplayInteractionsTypes.h"
 #include "GameplayTaskTransition.h"
 #include "GameplayActuationStateProvider.h"
@@ -47,7 +46,7 @@ UGameplayTask* UGameplayActuationComponent::TryMakeTransitionTask(const FConstSt
 	
 	for (const FInstancedStruct& Transition : Transitions)
 	{
-		if (const FGameplayTransitionDesc* Desc = Transition.GetMutablePtr<FGameplayTransitionDesc>())
+		if (const FGameplayTransitionDesc* Desc = Transition.GetPtr<FGameplayTransitionDesc>())
 		{
 			Result = Desc->MakeTransitionTask(TransitionContext);
 			if (Result != nullptr)
@@ -125,7 +124,7 @@ void UGameplayActuationComponent::TickComponent(float DeltaTime, ELevelTick Tick
 		}
 
 		// Take copy of the new state so that both states exists during the transition.
-		FInstancedStruct NewState = NextState;
+		FInstancedStruct NewState(NextState);
 		
 		if (FGameplayActuationStateBase* State = NewState.GetMutablePtr<FGameplayActuationStateBase>())
 		{
@@ -192,7 +191,7 @@ void UGameplayActuationComponent::TickComponent(float DeltaTime, ELevelTick Tick
 #if ENABLE_VISUAL_LOG
 void UGameplayActuationComponent::GrabDebugSnapshot(FVisualLogEntry* Snapshot) const
 {
-	const FGameplayActuationStateBase* State = ActuationState.GetMutablePtr<FGameplayActuationStateBase>();
+	const FGameplayActuationStateBase* State = ActuationState.GetPtr<FGameplayActuationStateBase>();
 	if (State == nullptr)
 	{
 		return;

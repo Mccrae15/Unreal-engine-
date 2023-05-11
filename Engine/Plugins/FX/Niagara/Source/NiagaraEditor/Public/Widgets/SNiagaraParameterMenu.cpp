@@ -5,6 +5,7 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraph/EdGraphSchema.h"
+#include "Framework/Application/SlateApplication.h"
 #include "NiagaraActions.h"
 #include "NiagaraConstants.h"
 #include "NiagaraEditorSettings.h"
@@ -174,7 +175,7 @@ void SNiagaraAddParameterFromPanelMenu::CollectMakeNew(FNiagaraMenuActionCollect
 	}
 	else
 	{
-		FNiagaraEditorUtilities::GetAllowedTypes(SectionTypes);
+		FNiagaraEditorUtilities::GetAllowedParameterTypes(SectionTypes);
 	}
 
 	TArray<FNiagaraTypeDefinition> TypeDefinitions;
@@ -741,7 +742,7 @@ void SNiagaraAddParameterFromPanelMenu::NewParameterSelected(FNiagaraTypeDefinit
 
 	const FString NewVariableDefaultName = TypeDisplayName.IsEmpty()
 		? TEXT("New Variable")
-		: TEXT("New ") + TypeDisplayName;
+		: TypeDisplayName;
 
 	TArray<FString> NameParts;
 
@@ -828,7 +829,7 @@ void SNiagaraAddParameterFromPinMenu::CollectAllActions(FGraphActionListBuilderB
 {
 	FNiagaraMenuActionCollector Collector;
 	TArray<FNiagaraTypeDefinition> Types;
-	FNiagaraEditorUtilities::GetAllowedTypes(Types);
+	FNiagaraEditorUtilities::GetAllowedParameterTypes(Types);
 	Types.Sort([](const FNiagaraTypeDefinition& A, const FNiagaraTypeDefinition& B) { return (A.GetNameText().ToLower().ToString() < B.GetNameText().ToLower().ToString()); });
 
 	for (const FNiagaraTypeDefinition& RegisteredType : Types)
@@ -877,7 +878,7 @@ void SNiagaraChangePinTypeMenu::CollectAllActions(FGraphActionListBuilderBase& O
 	checkf(Node, TEXT("Niagara node pin did not have a valid outer node!"));
 
 	TArray<FNiagaraTypeDefinition> Types;
-	FNiagaraEditorUtilities::GetAllowedTypes(Types);
+	FNiagaraEditorUtilities::GetAllowedParameterTypes(Types);
 	Types.Sort([](const FNiagaraTypeDefinition& A, const FNiagaraTypeDefinition& B) { return (A.GetNameText().ToLower().ToString() < B.GetNameText().ToLower().ToString()); });
 
 	for (const FNiagaraTypeDefinition& RegisteredType : Types)

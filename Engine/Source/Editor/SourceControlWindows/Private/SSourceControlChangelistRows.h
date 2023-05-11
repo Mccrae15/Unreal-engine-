@@ -60,6 +60,30 @@ namespace SourceControlFileViewColumn
 		FText GetDisplayText();
 		FText GetToolTipText();
 	}
+
+	/** "What changelist a given file belongs to" column. */
+	namespace Changelist
+	{
+		FName Id();
+		FText GetDisplayText();
+		FText GetToolTipText();
+	}
+
+	/** "Whether a file is unsaved/dirty" column */
+	namespace Dirty
+	{
+		FName Id();
+		FText GetDisplayText();
+		FText GetToolTipText();
+	}
+
+	/** "Discard unsaved changes" column */
+	namespace Discard
+	{
+		FName Id();
+		FText GetDisplayText();
+		FText GetToolTipText();
+	}
 }
 
 
@@ -88,13 +112,13 @@ public:
 
 	FText GetChangelistText() const;
 	FText GetChangelistDescriptionText() const;
+	FText GetChangelistDescriptionSingleLineText() const;
 
 	static void PopulateSearchString(const FChangelistTreeItem& Item, TArray<FString>& OutStrings);
 
 protected:
 	//~ Begin STableRow Interface.
 	virtual FReply OnDrop(const FGeometry& InGeometry, const FDragDropEvent& InDragDropEvent) override;
-	static FString GetChangelistDescription(const FChangelistTreeItem& Item);
 
 private:
 	/** The info about the widget that we are visualizing. */
@@ -144,6 +168,17 @@ private:
 	FSimpleDelegate OnPostDrop;
 };
 
+/** Displays a block for unsaved assets with icon and count */
+class SUnsavedAssetsTableRow : public STableRow<FChangelistTreeItemPtr>
+{
+public:
+	/**
+	* Construct child widgets that comprise this widget.
+	*
+	* @param InArgs Declaration from which to construct this widget.
+	*/
+	void Construct(const FArguments& InArgs, const TSharedRef<STableViewBase>& InOwner);
+};
 
 /** Display information about a file (icon, name, location, type, etc.) */
 class SFileTableRow : public SMultiColumnTableRow<FChangelistTreeItemPtr>

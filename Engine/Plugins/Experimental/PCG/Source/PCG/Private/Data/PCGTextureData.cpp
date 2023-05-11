@@ -2,9 +2,14 @@
 
 #include "Data/PCGTextureData.h"
 
-#include "PCGHelpers.h"
 #include "Data/PCGPointData.h"
 #include "Helpers/PCGAsync.h"
+#include "Helpers/PCGHelpers.h"
+
+#include "TextureResource.h"
+#include "Engine/Texture2D.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGTextureData)
 
 namespace PCGTextureSampling
 {
@@ -129,6 +134,12 @@ bool UPCGBaseTextureData::SamplePoint(const FTransform& InTransform, const FBox&
 {
 	// TODO: add metadata support
 	// TODO: add sampling along the bounds
+
+	// TODO: needs unpicking of sample vs projection. I believe the below is a projection.. But semantics are slightly different.
+	// 1 - We have some information telling us the 'z' size of the surface allowing us to reject points that would be too far from the surface, maybe including some density falloff by distance
+	// 2 - We suppose that the surface has an infinite 'z' size, in which case the sampling is basically the same as the sampling, except that it does not change the position
+	// 3 - The surface is infinitesimal - we'll return something if and only if the point overlaps with the projected position
+
 	if (!IsValid())
 	{
 		return false;
@@ -208,7 +219,7 @@ const UPCGPointData* UPCGBaseTextureData::CreatePointData(FPCGContext* Context) 
 		if (PCGTextureSampling::Sample<FLinearColor>(LocalCoordinate, Surface, this, Width, Height, Color, [this](int32 Index) { return ColorData[Index]; }))
 		{
 			const float Density = ((DensityFunction == EPCGTextureDensityFunction::Ignore) ? 1.0f : PCGTextureSampling::SampleFloatChannel(Color, ColorChannel));
-#if WITH_EDITORONLY_DATA
+#if WITH_EDITOR
 			if (Density > 0 || bKeepZeroDensityPoints)
 #else
 			if (Density > 0)
@@ -237,6 +248,25 @@ bool UPCGBaseTextureData::IsValid() const
 	return Height > 0 && Width > 0;
 }
 
+void UPCGBaseTextureData::CopyBaseTextureData(UPCGBaseTextureData* NewTextureData) const
+{
+	CopyBaseSurfaceData(NewTextureData);
+
+	NewTextureData->DensityFunction = DensityFunction;
+	NewTextureData->ColorChannel = ColorChannel;
+	NewTextureData->TexelSize = TexelSize;
+	NewTextureData->bUseAdvancedTiling = bUseAdvancedTiling;
+	NewTextureData->Tiling = Tiling;
+	NewTextureData->CenterOffset = CenterOffset;
+	NewTextureData->Rotation = Rotation;
+	NewTextureData->bUseTileBounds = bUseTileBounds;
+	NewTextureData->TileBounds = TileBounds;
+	NewTextureData->ColorData = ColorData;
+	NewTextureData->Bounds = Bounds;
+	NewTextureData->Height = Height;
+	NewTextureData->Width = Width;
+}
+
 void UPCGTextureData::Initialize(UTexture2D* InTexture, const FTransform& InTransform)
 {
 	Texture = InTexture;
@@ -244,17 +274,15 @@ void UPCGTextureData::Initialize(UTexture2D* InTexture, const FTransform& InTran
 	Width = 0;
 	Height = 0;
 
-	if (Texture)
+	if (InTexture)
 	{
-		FTexturePlatformData* PlatformData = Texture->GetPlatformData();
-		if (PlatformData && PlatformData->Mips.Num() > 0)
+		if (IsSupported(InTexture))
 		{
-			TRACE_CPUPROFILER_EVENT_SCOPE(UPCGTextureData::Initialize::ReadData);
-
-			if (PlatformData->PixelFormat == PF_B8G8R8A8 ||
-				PlatformData->PixelFormat == PF_R8G8B8A8 ||
-				PlatformData->PixelFormat == PF_G8)
+			FTexturePlatformData* PlatformData = Texture->GetPlatformData();
+			if (PlatformData)
 			{
+				TRACE_CPUPROFILER_EVENT_SCOPE(UPCGTextureData::Initialize::ReadData);
+
 				if (const uint8_t* BulkData = reinterpret_cast<const uint8_t*>(PlatformData->Mips[0].BulkData.LockReadOnly()))
 				{
 					Width = Texture->GetSizeX();
@@ -293,13 +321,13 @@ void UPCGTextureData::Initialize(UTexture2D* InTexture, const FTransform& InTran
 				{
 					UE_LOG(LogPCG, Error, TEXT("PCGTextureData unable to get bulk data from %s"), *Texture->GetFName().ToString());
 				}
-				
+
 				PlatformData->Mips[0].BulkData.Unlock();
 			}
-			else
-			{
-				UE_LOG(LogPCG, Error, TEXT("PCGTextureData does not support the format of %s"), *Texture->GetFName().ToString());
-			}
+		}
+		else
+		{
+			UE_LOG(LogPCG, Error, TEXT("PCGTextureData does not support the format of %s"), *Texture->GetFName().ToString());
 		}
 	}
 
@@ -307,4 +335,23 @@ void UPCGTextureData::Initialize(UTexture2D* InTexture, const FTransform& InTran
 	Bounds += FVector(-1.0f, -1.0f, 0.0f);
 	Bounds += FVector(1.0f, 1.0f, 0.0f);
 	Bounds = Bounds.TransformBy(Transform);
+}
+
+bool UPCGTextureData::IsSupported(UTexture2D* InTexture)
+{
+	const FTexturePlatformData* PlatformData = InTexture ? InTexture->GetPlatformData() : nullptr;
+
+	return PlatformData && PlatformData->Mips.Num() > 0 &&
+		(PlatformData->PixelFormat == PF_B8G8R8A8 || PlatformData->PixelFormat == PF_R8G8B8A8 || PlatformData->PixelFormat == PF_G8);
+}
+
+UPCGSpatialData* UPCGTextureData::CopyInternal() const
+{
+	UPCGTextureData* NewTextureData = NewObject<UPCGTextureData>();
+
+	CopyBaseTextureData(NewTextureData);
+
+	NewTextureData->Texture = Texture;
+
+	return NewTextureData;
 }

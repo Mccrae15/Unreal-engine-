@@ -5,35 +5,31 @@
 =============================================================================*/ 
 
 #include "PhysicsEngine/BodySetup.h"
-#include "EngineGlobals.h"
-#include "HAL/IConsoleManager.h"
-#include "Components/PrimitiveComponent.h"
+#include "BodySetupEnums.h"
 #include "Engine/Engine.h"
 #include "Engine/StaticMesh.h"
-#include "Trace/Trace.h"
-#include "Trace/Trace.inl"
 #include "Components/SkinnedMeshComponent.h"
-#include "Components/StaticMeshComponent.h"
-#include "Interfaces/Interface_CollisionDataProvider.h"
+#include "Engine/World.h"
 #include "PhysicsEngine/PhysicsSettings.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "Animation/AnimStats.h"
 #include "DerivedDataCacheInterface.h"
+#include "Physics/PhysicsInterfaceTypes.h"
 #include "UObject/UObjectIterator.h"
-#include "UObject/PropertyPortFlags.h"
 #include "Components/SplineMeshComponent.h"
+#include "PhysicsEngine/BoxElem.h"
 #include "UObject/FortniteReleaseBranchCustomObjectVersion.h"
 
-#include "ChaosCheck.h"
 #include "Chaos/Convex.h"
-#include "Chaos/Levelset.h"
 
-#include "Modules/ModuleManager.h"
 
-#include "Physics/PhysicsInterfaceUtils.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
+#include "PhysicsEngine/ConvexElem.h"
 #include "ProfilingDebugging/CookStats.h"
+#include "PhysicsEngine/LevelSetElem.h"
+#include "Serialization/MemoryWriter.h"
+#include "PhysicsEngine/SphereElem.h"
 #include "UObject/AnimPhysObjectVersion.h"
 
 #include "Chaos/TriangleMeshImplicitObject.h"
@@ -41,6 +37,8 @@
 #include "Physics/Experimental/ChaosDerivedDataReader.h"
 #include "Chaos/CollisionConvexMesh.h"
 #include "Experimental/ChaosCooking.h"
+#include "PhysicsEngine/SphylElem.h"
+#include "PhysicsEngine/TaperedCapsuleElem.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(BodySetup)
 
@@ -996,6 +994,7 @@ void UBodySetup::Serialize(FArchive& Ar)
 
 void UBodySetup::PostLoad()
 {
+	LLM_SCOPE(ELLMTag::Physics);
 	Super::PostLoad();
 
 	// Our owner needs to be post-loaded before us else they may not have loaded
@@ -1355,6 +1354,7 @@ void GetDDCBuiltData(FByteBulkData* OutResult, DDCBuilderType& InBuilder, UBodyS
 		{
 			bDataWasBuilt = true;
 			InBuilder.Build(OutData);
+			COOK_STAT(Timer.TrackCyclesOnly());
 		}
 	}
 
@@ -1916,7 +1916,7 @@ FKBoxElem FKBoxElem::GetFinalScaled(const FVector& Scale3D, const FTransform& Re
 	ScaledBox.Z *= Scale3DAbs.Z;
 
 	FTransform ScaleTransform(FQuat::Identity, FVector::ZeroVector, Scale3D); 
-	FTransform BoxTransform = GetTransform() * ScaleTransform * RelativeTM;
+	FTransform BoxTransform = GetTransform() * RelativeTM * ScaleTransform;
 	ScaledBox.SetTransform(BoxTransform);
 
 	return ScaledBox;

@@ -2,30 +2,22 @@
 
 #include "Widgets/DataprepGraph/SDataprepGraphTrackNode.h"
 
-#include "DataprepAsset.h"
-#include "DataprepEditorLogCategory.h"
 #include "DataprepEditorStyle.h"
 #include "DataprepGraph/DataprepGraph.h"
 #include "DataprepGraph/DataprepGraphActionNode.h"
 #include "SchemaActions/DataprepDragDropOp.h"
 
 #include "Widgets/DataprepGraph/SDataprepGraphActionNode.h"
-#include "Widgets/DataprepGraph/SDataprepGraphEditor.h"
-#include "Widgets/DataprepWidgets.h"
 
 #include "DragAndDrop/AssetDragDropOp.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Application/SlateUser.h"
-#include "GenericPlatform/ICursor.h"
-#include "Layout/Children.h"
 #include "NodeFactory.h"
 #include "ScopedTransaction.h"
 #include "SGraphPanel.h"
 #include "Widgets/Colors/SColorBlock.h"
-#include "Widgets/Images/SImage.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SConstraintCanvas.h"
-#include "Widgets/SBoxPanel.h"
 #include "Widgets/SOverlay.h"
 
 #if PLATFORM_MICROSOFT
@@ -36,7 +28,7 @@
 
 FVector2D SDataprepGraphTrackNode::TrackAnchor( 15.f, 40.f );
 
-typedef TFunctionRef<float(const FVector2D&, float)> DragCallback;
+typedef TFunction<float(const FVector2D&, float)> DragCallback;
 
 class SDataprepEmptyActionNode : public SVerticalBox
 {
@@ -130,7 +122,7 @@ public:
 			FSlateDrawElement::MakeBox(
 				OutDrawElements,
 				MaxLayerId,
-				AllottedGeometry.ToPaintGeometry( GetSoftwareCursorPosition() - ( Brush->ImageSize / 2 ) , Brush->ImageSize / AllottedGeometry.Scale ),
+				AllottedGeometry.ToPaintGeometry( Brush->ImageSize / AllottedGeometry.Scale, FSlateLayoutTransform(GetSoftwareCursorPosition() - ( Brush->ImageSize / 2 )) ),
 				Brush);
 #ifdef DEBUG_DRAG
 			FVector2D LocalCursorPosition = GetTickSpaceGeometry().AbsoluteToLocal(FSlateApplication::Get().GetCursorPos());

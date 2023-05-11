@@ -4,7 +4,9 @@
 
 #include "HeightfieldMinMaxTexture.h"
 #include "HeightfieldMinMaxTextureBuild.h"
+#include "PackageSourceControlHelper.h"
 #include "UObject/SavePackage.h"
+#include "UObject/Package.h"
 #include "UObject/UObjectIterator.h"
 #include "VirtualHeightfieldMeshComponent.h"
 
@@ -50,7 +52,7 @@ bool UWorldPartitionVirtualHeightfieldMeshBuilder::RunInternal(UWorld* World, co
 			FString PackageFileName = SourceControlHelpers::PackageFilename(Package);
 			FSavePackageArgs SaveArgs;
 			SaveArgs.TopLevelFlags = RF_Standalone;
-			SaveArgs.SaveFlags = SAVE_Async;
+			SaveArgs.SaveFlags = SAVE_None;
 			if (!UPackage::SavePackage(Package, nullptr, *PackageFileName, SaveArgs))
 			{
 				UE_LOG(LogWorldPartitionVirtualHeightfieldMeshBuilder, Error, TEXT("Error saving package %s."), *Package->GetName());
@@ -59,13 +61,11 @@ bool UWorldPartitionVirtualHeightfieldMeshBuilder::RunInternal(UWorld* World, co
 
 			if (!PackageHelper.AddToSourceControl(Package))
 			{
-				UE_LOG(LogWorldPartitionVirtualHeightfieldMeshBuilder, Error, TEXT("Error adding package %s to source control."), *Package->GetName());
+				UE_LOG(LogWorldPartitionVirtualHeightfieldMeshBuilder, Error, TEXT("Error adding package %s to revision control."), *Package->GetName());
 				return false;
 			}
 		}
 	}
-
-	UPackage::WaitForAsyncFileWrites();
 
 	return true;
 }

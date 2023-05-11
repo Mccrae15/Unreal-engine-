@@ -7,6 +7,7 @@
 
 #include "ElectraPlayerMisc.h"
 #include "ElectraPlayerResourceDelegate.h"
+#include "MediaStreamMetadata.h"
 
 class FVideoDecoderOutput;
 using FVideoDecoderOutputPtr = TSharedPtr<FVideoDecoderOutput, ESPMode::ThreadSafe>;
@@ -38,9 +39,19 @@ public:
 		PlayListData,
 		LicenseKeyData,
 		PlaystartPosFromSeekPositions,
+		MediaMetadataUpdate,
+		CustomAnalyticsMetric,
 		Android_VideoSurface,
 	};
 	virtual Electra::FVariantValue QueryOptions(EOptionType Type, const Electra::FVariantValue& Param = Electra::FVariantValue()) = 0;
+
+	enum class EBlobResultType
+	{
+		Success,
+		TimedOut,
+		HttpFailure
+	};
+	virtual void BlobReceived(const TSharedPtr<TArray<uint8>, ESPMode::ThreadSafe>& InBlobData, EBlobResultType InResultType, int32 InResultCode, const Electra::FParamDict* InExtraInfo) = 0;
 
 	enum class EPlayerEvent
 	{
@@ -54,6 +65,7 @@ public:
 		PlaybackSuspended,
 		SeekCompleted,
 		TracksChanged,
+		MetadataChanged,
 
 		Internal_Start,
 		Internal_PurgeVideoSamplesHint = Internal_Start,
@@ -126,7 +138,13 @@ public:
 		bool						bDoNotPreload = false;
 	};
 
-	virtual bool OpenInternal(const FString& Url, const Electra::FParamDict& PlayerOptions, const FPlaystartOptions& InPlaystartOptions) = 0;
+	enum class EOpenType
+	{
+		Media,
+		Blob
+	};
+
+	virtual bool OpenInternal(const FString& Url, const Electra::FParamDict& PlayerOptions, const FPlaystartOptions& InPlaystartOptions, EOpenType InOpenType) = 0;
 	virtual void CloseInternal(bool bKillAfterClose) = 0;
 
 	virtual void Tick(FTimespan DeltaTime, FTimespan Timecode) = 0;
@@ -233,6 +251,8 @@ public:
 	virtual int32 GetNumVideoStreams(int32 TrackIndex) const = 0;
 	virtual bool GetVideoStreamFormat(FVideoStreamFormat& OutFormat, int32 InTrackIndex, int32 InStreamIndex) const = 0;
 	virtual bool GetActiveVideoStreamFormat(FVideoStreamFormat& OutFormat) const = 0;
+
+	virtual TSharedPtr<TMap<FString, TArray<TSharedPtr<Electra::IMediaStreamMetadata::IItem, ESPMode::ThreadSafe>>>, ESPMode::ThreadSafe> GetMediaMetadata() const = 0;
 
 	virtual void NotifyOfOptionChange() = 0;
 

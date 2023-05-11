@@ -16,12 +16,12 @@ struct CONTROLRIG_API FRigUnit_SetControlOffset : public FRigUnitMutable
 
 	FRigUnit_SetControlOffset()
 		: Control(NAME_None)
-		, Space(EBoneGetterSetterMode::GlobalSpace)
+		, Space(ERigVMTransformSpace::GlobalSpace)
 	{
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The name of the Control to set the transform for.
@@ -40,7 +40,7 @@ struct CONTROLRIG_API FRigUnit_SetControlOffset : public FRigUnitMutable
 	 * in local or global space.
 	 */
 	UPROPERTY(meta = (Input))
-	EBoneGetterSetterMode Space;
+	ERigVMTransformSpace Space;
 
 	// user to internally cache the index of the bone
 	UPROPERTY()
@@ -63,7 +63,7 @@ struct CONTROLRIG_API FRigUnit_GetShapeTransform : public FRigUnit
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The name of the Control to set the transform for.
@@ -98,7 +98,7 @@ struct CONTROLRIG_API FRigUnit_SetShapeTransform : public FRigUnitMutable
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The name of the Control to set the transform for.

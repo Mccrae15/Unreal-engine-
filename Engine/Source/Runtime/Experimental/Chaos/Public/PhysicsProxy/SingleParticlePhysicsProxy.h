@@ -8,6 +8,7 @@
 #include "Chaos/Framework/PhysicsProxy.h"
 #include "Chaos/PBDPositionConstraints.h"
 #include "Chaos/ParticleHandle.h"
+#include "Chaos/PhysicsObject.h"
 #include "PhysicsCoreTypes.h"
 #include "Chaos/Defines.h"
 #include "Chaos/PullPhysicsDataImp.h"
@@ -119,7 +120,7 @@ public:
 
 	// Threading API
 
-	void PushToPhysicsState(const FDirtyPropertiesManager& Manager,int32 DataIdx,const FDirtyProxy& Dirty,FShapeDirtyData* ShapesData, FPBDRigidsEvolutionGBF& Evolution, FReal ExternalDt);
+	void PushToPhysicsState(const FDirtyPropertiesManager& Manager,int32 DataIdx,const FDirtyProxy& Dirty,FShapeDirtyData* ShapesData, FReal ExternalDt);
 
 	/**/
 	void ClearAccumulatedData();
@@ -165,9 +166,20 @@ public:
 		return static_cast<const FPBDRigidParticle*>(GetParticle_LowLevel());
 	}
 
+	FPhysicsObjectHandle GetPhysicsObject()
+	{
+		return Reference.Get();
+	}
+
+	const FPhysicsObjectHandle GetPhysicsObject() const
+	{
+		return Reference.Get();
+	}
+
 protected:
 	TUniquePtr<PARTICLE_TYPE> Particle;
 	FParticleHandle* Handle;
+	FPhysicsObjectUniquePtr Reference;
 
 private:
 	FProxyInterpolationData InterpolationData;
@@ -811,7 +823,7 @@ public:
 
 	const FReal LinearEtherDrag() const
 	{
-		return Read([](auto* Particle)
+		return Read([](auto* Particle) -> FReal
 		{
 			if (auto Rigid = Particle->CastToRigidParticle())
 			{
@@ -835,7 +847,7 @@ public:
 
 	const FReal AngularEtherDrag() const
 	{
-		return Read([](auto* Particle)
+		return Read([](auto* Particle) -> FReal
 		{
 			if (auto Rigid = Particle->CastToRigidParticle())
 			{

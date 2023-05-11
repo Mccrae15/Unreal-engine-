@@ -2,9 +2,11 @@
 
 #include "GenerateNaniteDisplacedMeshCommandlet.h"
 
+#include "AssetRegistry/ARFilter.h"
 #include "CollectionManagerModule.h"
-#include "CollectionManagerTypes.h"
+#include "Engine/World.h"
 #include "ICollectionManager.h"
+#include "Misc/PackageName.h"
 #include "NaniteDisplacedMesh.h"
 #include "NaniteDisplacedMeshLog.h"
 #include "NaniteDisplacedMeshEditorModule.h"
@@ -13,7 +15,6 @@
 
 #include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/AssetRegistryModule.h"
-#include "AssetRegistry/IAssetRegistry.h"
 #include "Engine/Level.h"
 #include "HAL/FileManager.h"
 #include "UObject/GCObjectScopeGuard.h"
@@ -41,7 +42,7 @@ int32 UGenerateNaniteDisplacedMeshCommandlet::Main(const FString& CmdLineParams)
 	const bool bDeleteUnused = Switches.Contains(TEXT("GNDMDeleteUnused"));
 
 	FPackageSourceControlHelper SourceControlHelper;
-	UE_LOG(LogNaniteDisplacedMesh, Display, TEXT("Source control enabled: %s"), SourceControlHelper.UseSourceControl() ? TEXT("true") : TEXT("false"));
+	UE_LOG(LogNaniteDisplacedMesh, Display, TEXT("Revision control enabled: %s"), SourceControlHelper.UseSourceControl() ? TEXT("true") : TEXT("false"));
 
 	FARFilter Filter;
 	Filter.ClassPaths.Add(UWorld::StaticClass()->GetClassPathName());

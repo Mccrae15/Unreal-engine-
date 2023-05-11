@@ -1223,10 +1223,48 @@ void WritePackedUBHeader(CrossCompiler::FHlslccHeaderWriter& CCHeaderWriter, con
 	{
 		FString UBName(UBNames[Pair.Key].c_str());
 		
-		for (const PackedUBMemberInfo& MemberInfo : UBMemberInfo[Pair.Key])
+		std::string CurTypeQualifier = "\0";
+		uint32_t CurSrcOffset = 0;
+		uint32_t NextSrcOffset = 0;
+		uint32_t CurDestOffset = 0;
+		uint32_t NextDestOffset = 0;
+		uint32_t TotalSize = 0;
+
+		// Write out UB Copy data
+		// Groups copies together to save time on upload
+		for (int32_t MemberIdx = 0; MemberIdx < UBMemberInfo[Pair.Key].Num(); MemberIdx++)
 		{
+			const PackedUBMemberInfo& MemberInfo = UBMemberInfo[Pair.Key][MemberIdx];
 			CCHeaderWriter.WritePackedUBField(UBName, UTF8_TO_TCHAR(MemberInfo.SanitizedName.c_str()), MemberInfo.SrcOffset, MemberInfo.DestSizeInFloats * sizeof(float));
-			CCHeaderWriter.WritePackedUBCopy(Pair.Key, MemberInfo.SrcOffset / sizeof(float), Pair.Key, MemberInfo.TypeQualifier[0], MemberInfo.DestOffset / sizeof(float), MemberInfo.DestSizeInFloats, true);
+
+			if (TotalSize == 0)
+			{
+				CurTypeQualifier = MemberInfo.TypeQualifier;
+				CurSrcOffset = MemberInfo.SrcOffset / sizeof(float);
+				CurDestOffset = MemberInfo.DestOffset / sizeof(float);
+			}
+			else if(CurTypeQualifier[0] != MemberInfo.TypeQualifier[0] ||
+					NextSrcOffset != MemberInfo.SrcOffset / sizeof(float) ||
+					NextDestOffset != MemberInfo.DestOffset / sizeof(float))
+			{
+				// Write out data before starting new 
+				CCHeaderWriter.WritePackedUBCopy(Pair.Key, CurSrcOffset, Pair.Key, CurTypeQualifier[0], CurDestOffset, TotalSize, true);
+
+				CurTypeQualifier = MemberInfo.TypeQualifier;
+				TotalSize = 0;
+				CurSrcOffset = MemberInfo.SrcOffset / sizeof(float);
+				CurDestOffset = MemberInfo.DestOffset / sizeof(float);
+			}
+
+			TotalSize += MemberInfo.DestSizeInFloats;
+			NextSrcOffset = MemberInfo.SrcOffset / sizeof(float) + MemberInfo.DestSizeInFloats;
+			NextDestOffset = MemberInfo.DestOffset / sizeof(float) + MemberInfo.DestSizeInFloats;
+		}
+
+		// Write out any final data
+		if (TotalSize > 0)
+		{
+			CCHeaderWriter.WritePackedUBCopy(Pair.Key, CurSrcOffset, Pair.Key, CurTypeQualifier[0], CurDestOffset, TotalSize, true);
 		}
 	}
 }
@@ -2428,7 +2466,8 @@ bool GenerateGlslShader(std::string& OutString, GLSLCompileParameters& GLSLCompi
 			{
 				std::string SamplerName = "SPIRV_Cross_Combined";
 				SamplerName += TCHAR_TO_ANSI(*(Texture + Sampler));
-				size_t FindCombinedSampler = OutString.find(SamplerName.c_str());
+				std::string SamplerNameDecl = SamplerName + ";";
+				size_t FindCombinedSampler = OutString.find(SamplerNameDecl.c_str());
 
 				if (FindCombinedSampler != std::string::npos)
 				{
@@ -3008,21 +3047,9 @@ static bool CompileToGlslWithShaderConductor(
 	FShaderCompilerDefinitions AdditionalDefines;
 	AdditionalDefines.SetDefine(TEXT("TextureExternal"), TEXT("Texture2D"));
 
-	if (bDumpDebugInfo)
-	{
-		FString DirectCompileLine = CrossCompiler::CreateResourceTableFromEnvironment(Input.Environment);
-
-		DirectCompileLine += TEXT("#if 0 /*DIRECT COMPILE*/\n");
-		DirectCompileLine += CreateShaderCompilerWorkerDirectCommandLine(Input, CCFlags);
-		DirectCompileLine += TEXT("\n#endif /*DIRECT COMPILE*/\n");
-
-		DumpDebugUSF(Input, (PreprocessedShader + DirectCompileLine), CCFlags);
-
-		if (Input.bGenerateDirectCompileFile)
-		{
-			FFileHelper::SaveStringToFile(CreateShaderCompilerWorkerDirectCommandLine(Input), *(Input.DumpDebugInfoPath / TEXT("DirectCompile.txt")));
-		}
-	}
+	UE::ShaderCompilerCommon::FDebugShaderDataOptions DebugDataOptions;
+	DebugDataOptions.HlslCCFlags = CCFlags;
+	UE::ShaderCompilerCommon::DumpDebugShaderData(Input, PreprocessedShader, DebugDataOptions);
 
 	uint32_t BlendFlags = GetDecalBlendFlags(Input);
 
@@ -3066,7 +3093,7 @@ static bool CompileToGlslWithShaderConductor(
 	// Reduce arrays with const accessors to structs, which will then be packed to an array by GL cross compile
 	if(!bCompilationFailed && !Options.bDisableOptimizations && (Version == GLSL_ES3_1_ANDROID || Version == GLSL_150_ES3_1))
 	{
-		const char* OptArgs[] = { "--reduce-const-array-to-struct" };
+		const char* OptArgs[] = { "--reduce-const-array-to-struct", "--convert-composite-to-op-access-chain-pass"};
 		if (!CompilerContext.OptimizeSpirv(SpirvData, OptArgs, UE_ARRAY_COUNT(OptArgs)))
 		{
 			UE_LOG(LogOpenGLShaderCompiler, Error, TEXT("Failed to apply reduce-const-array-to-struct for Android"));
@@ -3102,6 +3129,8 @@ static bool CompileToGlslWithShaderConductor(
 		}
 
 		CrossCompiler::FShaderConductorTarget TargetDesc;
+
+		TargetDesc.CompileFlags.SetDefine(TEXT("relax_nan_checks"), 1);
 
 		switch (Version)
 		{
@@ -3349,7 +3378,7 @@ void FOpenGLFrontend::CompileShader(const FShaderCompilerInput& Input, FShaderCo
 	}
 
 	FShaderParameterParser ShaderParameterParser;
-	if (!ShaderParameterParser.ParseAndModify(Input, Output, PreprocessedShader, /* ConstantBufferType = */ nullptr))
+	if (!ShaderParameterParser.ParseAndModify(Input, Output, PreprocessedShader))
 	{
 		// The FShaderParameterParser will add any relevant errors.
 		return;
@@ -3360,6 +3389,14 @@ void FOpenGLFrontend::CompileShader(const FShaderCompilerInput& Input, FShaderCo
 
 	// Process TEXT macro.
 	TransformStringIntoCharacterArray(PreprocessedShader);
+
+	// Run the experimental shader minifier
+#if UE_OPENGL_SHADER_COMPILER_ALLOW_DEAD_CODE_REMOVAL
+	if (Input.Environment.CompilerFlags.Contains(CFLAG_RemoveDeadCode))
+	{
+		UE::ShaderCompilerCommon::RemoveDeadCode(PreprocessedShader, Input.EntryPointName, Output.Errors);
+	}
+#endif // UE_OPENGL_SHADER_COMPILER_ALLOW_DEAD_CODE_REMOVAL
 
 	uint32 CCFlags = CalculateCrossCompilerFlags(Version, Input.Environment.FullPrecisionInPS, Input.Environment.CompilerFlags);
 
@@ -3376,17 +3413,10 @@ void FOpenGLFrontend::CompileShader(const FShaderCompilerInput& Input, FShaderCo
 	else
 #endif // DXC_SUPPORTED
 	{
-		// Write out the preprocessed file and a batch file to compile it if requested (DumpDebugInfoPath is valid)
-		if (bDumpDebugInfo)
-		{
-			DumpDebugUSF(Input, PreprocessedShader, CCFlags);
-
-			if (Input.bGenerateDirectCompileFile)
-			{
-				FFileHelper::SaveStringToFile(CreateShaderCompilerWorkerDirectCommandLine(Input), *(Input.DumpDebugInfoPath / TEXT("DirectCompile.txt")));
-			}
-		}
-
+		UE::ShaderCompilerCommon::FDebugShaderDataOptions DebugDataOptions;
+		DebugDataOptions.HlslCCFlags = CCFlags;
+		UE::ShaderCompilerCommon::DumpDebugShaderData(Input, PreprocessedShader, DebugDataOptions);
+		
 		CCFlags |= HLSLCC_NoValidation;
 		FGlslCodeBackend* BackEnd = CreateBackend(Version, CCFlags, HlslCompilerTarget);
 
@@ -3532,22 +3562,6 @@ static bool MoveHashLines(FString& Destination, FString &Source)
 	}
 
 	return bFound;
-}
-
-inline bool OpenGLShaderPlatformSeparable(const GLSLVersion InShaderPlatform)
-{
-	switch (InShaderPlatform)
-	{
-		case GLSL_150_ES3_1:
-			return false;
-
-		case GLSL_ES3_1_ANDROID:
-			return false;
-
-		default:
-			return true;
-		break;
-	}
 }
 
 TSharedPtr<ANSICHAR> FOpenGLFrontend::PrepareCodeForOfflineCompilation(const GLSLVersion ShaderVersion, EShaderFrequency Frequency, const ANSICHAR* InShaderSource) const

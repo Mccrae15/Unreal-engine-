@@ -10,9 +10,11 @@ using Horde.Build.Agents.Leases;
 using Horde.Build.Agents.Software;
 using Horde.Build.Jobs;
 using Horde.Build.Logs;
+using Horde.Build.Server;
 using Horde.Build.Utilities;
 using HordeCommon;
 using HordeCommon.Rpc.Tasks;
+using Microsoft.Extensions.Options;
 
 namespace Horde.Build.Tasks
 {
@@ -29,12 +31,16 @@ namespace Horde.Build.Tasks
 
 		readonly AgentSoftwareService _agentSoftwareService;
 		readonly ILogFileService _logService;
+		readonly IOptionsMonitor<GlobalConfig> _globalConfig;
+		readonly IOptions<ServerSettings> _serverSettings;
 		readonly IClock _clock;
 
-		public UpgradeTaskSource(AgentSoftwareService agentSoftwareService, ILogFileService logService, IClock clock)
+		public UpgradeTaskSource(AgentSoftwareService agentSoftwareService, ILogFileService logService, IOptionsMonitor<GlobalConfig> globalConfig, IOptions<ServerSettings> serverSettings, IClock clock)
 		{
 			_agentSoftwareService = agentSoftwareService;
 			_logService = logService;
+			_globalConfig = globalConfig;
+			_serverSettings = serverSettings;
 			_clock = clock;
 
 			OnLeaseStartedProperties.Add(nameof(UpgradeTask.LogId), x => new LogId(x.LogId));
@@ -42,6 +48,11 @@ namespace Horde.Build.Tasks
 
 		public override async Task<Task<AgentLease?>> AssignLeaseAsync(IAgent agent, CancellationToken cancellationToken)
 		{
+			if (!_serverSettings.Value.EnableUpgradeTasks)
+			{
+				return Skip(cancellationToken);
+			}
+
 			string? requiredVersion = await GetRequiredSoftwareVersion(agent);
 			if (requiredVersion == null || agent.Version == requiredVersion)
 			{
@@ -52,7 +63,7 @@ namespace Horde.Build.Tasks
 				return await DrainAsync(cancellationToken);
 			}
 
-			ILogFile logFile = await _logService.CreateLogFileAsync(JobId.Empty, agent.SessionId, LogType.Json);
+			ILogFile logFile = await _logService.CreateLogFileAsync(JobId.Empty, agent.SessionId, LogType.Json, cancellationToken: cancellationToken);
 
 			UpgradeTask task = new UpgradeTask();
 			task.SoftwareId = requiredVersion.ToString();
@@ -81,7 +92,18 @@ namespace Horde.Build.Tasks
 		/// <returns>Unique id of the client version this agent should be running</returns>
 		public async Task<string?> GetRequiredSoftwareVersion(IAgent agent)
 		{
-			AgentSoftwareChannelName channelName = agent.Channel ?? AgentSoftwareService.DefaultChannelName;
+			GlobalConfig globalConfig = _globalConfig.CurrentValue;
+
+			AgentSoftwareChannelName channelName = AgentSoftwareService.DefaultChannelName;
+			foreach (AgentSoftwareConfig softwareConfig in globalConfig.Software)
+			{
+				if (softwareConfig.Condition != null && agent.SatisfiesCondition(softwareConfig.Condition))
+				{
+					channelName = softwareConfig.Channel;
+					break;
+				}
+			}
+
 			IAgentSoftwareChannel? channel = await _agentSoftwareService.GetCachedChannelAsync(channelName);
 			return channel?.Version;
 		}

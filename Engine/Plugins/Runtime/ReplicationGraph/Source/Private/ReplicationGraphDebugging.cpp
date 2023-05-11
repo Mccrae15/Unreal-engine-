@@ -1,20 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ReplicationGraph.h"
-#include "ReplicationGraphTypes.h"
 
 #include "Misc/CoreDelegates.h"
 #include "Engine/ActorChannel.h"
-#include "Engine/LocalPlayer.h"
 #include "GameFramework/PlayerController.h"
-#include "GameFramework/Info.h"
-#include "GameFramework/HUD.h"
 #include "UObject/UObjectIterator.h"
-#include "UObject/UObjectBaseUtility.h"
-#include "Engine/Canvas.h"
 #include "Engine/Engine.h"
 #include "DrawDebugHelpers.h"
-#include "ProfilingDebugging/CsvProfiler.h"
 #include "EngineUtils.h"
 #include "Engine/NetConnection.h"
 
@@ -303,7 +296,12 @@ void AReplicationGraphDebugActor::PrintAllActorInfo(FString MatchString)
 
 	for (auto ClassRepInfoIt = ReplicationGraph->GlobalActorReplicationInfoMap.CreateClassMapIterator(); ClassRepInfoIt; ++ClassRepInfoIt)
 	{
-		UClass* Class = CastChecked<UClass>(ClassRepInfoIt.Key().ResolveObjectPtr());
+		UClass* Class = Cast<UClass>(ClassRepInfoIt.Key().ResolveObjectPtr());
+		if (!Class)
+		{
+			continue;
+		}
+
 		const FClassReplicationInfo& ClassInfo = ClassRepInfoIt.Value();
 
 		if (!Matches(Class))
@@ -967,12 +965,26 @@ void FGlobalActorReplicationInfo::LogDebugString(FOutputDevice& Ar) const
 	Ar.Logf(TEXT("  LastPreReplicationFrame: %d. ForceNetUpdateFrame: %d. WorldLocation: %s. bWantsToBeDormant %d. LastFlushNetDormancyFrame: %d"), LastPreReplicationFrame, ForceNetUpdateFrame, *WorldLocation.ToString(), bWantsToBeDormant, LastFlushNetDormancyFrame);
 	Ar.Logf(TEXT("  Settings: %s"), *Settings.BuildDebugStringDelta());
 
-	if (DependentActorList.Num() > 0)
+	TArray<AActor*> DependentActors;
+	DependentActorList.GetAllActors(DependentActors);
+
+	if (DependentActors.Num() > 0)
 	{
 		FString DependentActorStr = TEXT("DependentActors: ");
-		for (FActorRepListType Actor : DependentActorList)
+		for (AActor* DependentActor : DependentActors)
 		{
-			DependentActorStr += GetActorRepListTypeDebugString(Actor) + ' ';
+			DependentActorStr += GetActorRepListTypeDebugString(DependentActor) + ' ';
+		}
+
+		Ar.Logf(TEXT("  %s"), *DependentActorStr);
+	}
+
+	if (ParentActorList.Num() > 0)
+	{
+		FString DependentActorStr = TEXT("IsADependentOf: ");
+		for (AActor* ParentDependentActor : ParentActorList)
+		{
+			DependentActorStr += GetActorRepListTypeDebugString(ParentDependentActor) + ' ';
 		}
 
 		Ar.Logf(TEXT("  %s"), *DependentActorStr);

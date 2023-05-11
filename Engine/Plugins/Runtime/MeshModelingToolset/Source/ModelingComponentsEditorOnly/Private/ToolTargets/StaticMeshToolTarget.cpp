@@ -6,6 +6,7 @@
 #include "ConversionUtils/DynamicMeshViaMeshDescriptionUtil.h"
 #include "DynamicMesh/DynamicMesh3.h"
 #include "Engine/StaticMesh.h"
+#include "MaterialDomain.h"
 #include "Materials/Material.h"
 #include "RenderingThread.h"
 #include "Widgets/Notifications/SNotificationList.h"
@@ -289,11 +290,11 @@ void UStaticMeshToolTarget::CommitMeshDescription(UStaticMesh* StaticMeshIn, con
 
 	if (EditingLODIn == EMeshLODIdentifier::HiResSource)
 	{
-		verify(StaticMeshIn->ModifyHiResMeshDescription());
+		StaticMeshIn->ModifyHiResMeshDescription();
 	}
 	else
 	{
-		verify(StaticMeshIn->ModifyMeshDescription((int32)EditingLODIn));
+		StaticMeshIn->ModifyMeshDescription((int32)EditingLODIn);
 	}
 
 	FCommitterParams CommitterParams;
@@ -311,8 +312,7 @@ void UStaticMeshToolTarget::CommitMeshDescription(UStaticMesh* StaticMeshIn, con
 
 		// configure build settings to prevent the standard static mesh reduction from running and replacing the render LOD.
 		FStaticMeshSourceModel& ThisSourceModel = StaticMeshIn->GetSourceModel((int32)EditingLODIn);
-		ThisSourceModel.ReductionSettings.PercentTriangles = 1.f;
-		ThisSourceModel.ReductionSettings.PercentVertices = 1.f;
+		ThisSourceModel.ResetReductionSetting();
 	}
 
 	StaticMeshIn->PostEditChange();

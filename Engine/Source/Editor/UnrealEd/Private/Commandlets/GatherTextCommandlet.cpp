@@ -9,6 +9,7 @@
 #include "UObject/Package.h"
 #include "UObject/GCObjectScopeGuard.h"
 #include "SourceControlHelpers.h"
+#include "GeneralProjectSettings.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogGatherTextCommandlet, Log, All);
 
@@ -27,8 +28,8 @@ const FString UGatherTextCommandlet::UsageText
 	TEXT("    \r\n")
 	TEXT("    <path to config ini file> Full path to the .ini config file that defines what gather steps the commandlet will run.\r\n")
 	TEXT("    Preview\t Runs the commandlet and its child commandlets in preview. Some commandlets will not be executed in preview mode. Use this to dump all generated warnings without writing any files. Using this switch implies -DisableSCCSubmit\r\n")
-	TEXT("    EnableSCC\t Enables source control and allows the commandlet to check out files for editing.\r\n")
-	TEXT("    DisableSCCSubmit\t Prevents the commandlet from submitting checked out files in source control that have been edited.\r\n")
+	TEXT("    EnableSCC\t Enables revision control and allows the commandlet to check out files for editing.\r\n")
+	TEXT("    DisableSCCSubmit\t Prevents the commandlet from submitting checked out files in revision control that have been edited.\r\n")
 	TEXT("    GatherType\t Only performs a gather on the specified type of file (currently only works in preview mode). Source only runs commandlets that gather source files. Asset only runs commandlets that gather asset files. All runs commandlets that gather both source and asset files. Leaving this param out implies a gather type of All.")
 	TEXT("Metadata only runs commandlets that gather metadata files. All runs commandlets that gather both source and asset files. Leaving this param out implies a gather type of All.\r\n")
 	);
@@ -97,7 +98,7 @@ int32 UGatherTextCommandlet::Main( const FString& Params )
 		FText SCCErrorStr;
 		if (!CommandletSourceControlInfo->IsReady(SCCErrorStr))
 		{
-			UE_LOG(LogGatherTextCommandlet, Error, TEXT("Source Control error: %s"), *SCCErrorStr.ToString());
+			UE_LOG(LogGatherTextCommandlet, Error, TEXT("Revision Control error: %s"), *SCCErrorStr.ToString());
 			return -1;
 		}
 	}
@@ -168,8 +169,15 @@ int32 UGatherTextCommandlet::ProcessGatherConfig(const FString& GatherTextConfig
 		LocalizationTargetName = FPaths::GetBaseFilename(ManifestName);
 	}
 
+	FString CopyrightNotice;
+	if (!GetStringFromConfig(TEXT("CommonSettings"), TEXT("CopyrightNotice"), CopyrightNotice, GatherTextConfigPath))
+	{
+		CopyrightNotice = GetDefault<UGeneralProjectSettings>()->CopyrightNotice;
+	}
+
 	// Basic helper that can be used only to gather a new manifest for writing
 	TSharedRef<FLocTextHelper> CommandletGatherManifestHelper = MakeShared<FLocTextHelper>(LocalizationTargetName, MakeShared<FLocFileSCCNotifies>(CommandletSourceControlInfo), PlatformSplitMode);
+	CommandletGatherManifestHelper->SetCopyrightNotice(CopyrightNotice);
 	CommandletGatherManifestHelper->LoadManifest(ELocTextHelperLoadFlags::Create);
 
 	const FString GatherTextStepPrefix = TEXT("GatherTextStep");

@@ -18,6 +18,16 @@ struct FGuid;
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+namespace UE::Serialization::Private
+{
+
+/** Utility for logging problems with FCbField. For internal use only */
+CORE_API void LogFieldTooLargeForArrayWarning(uint64 FieldLength);
+
+} // namespace UE::Serialization::Private
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 /**
  * Determine the size in bytes of the compact binary field at the start of the view.
  *
@@ -181,21 +191,40 @@ inline bool LoadFromCompactBinary(FCbFieldView Field, FCbObjectId& OutValue, con
 template <typename T, typename Allocator>
 inline bool LoadFromCompactBinary(FCbFieldView Field, TArray<T, Allocator>& OutValue)
 {
-	OutValue.Reset(Field.AsArrayView().Num());
-	bool bOk = !Field.HasError();
-	for (const FCbFieldView& ElementField : Field)
+	const uint64 Length = Field.AsArrayView().Num();
+	if (Length <= MAX_int32)
 	{
-		bOk = LoadFromCompactBinary(ElementField, OutValue.Emplace_GetRef()) & bOk;
+		OutValue.Reset((int32)Length);
+		bool bOk = !Field.HasError();
+		for (const FCbFieldView& ElementField : Field)
+		{
+			bOk = LoadFromCompactBinary(ElementField, OutValue.Emplace_GetRef()) & bOk;
+		}
+		return bOk;
 	}
-	return bOk;
+	else
+	{
+		UE::Serialization::Private::LogFieldTooLargeForArrayWarning(Length);
+		return false;
+	}
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-/** Convert the object to JSON in a multi-line format with indentation. */
+/** Convert the compact binary to JSON in a multi-line format with indentation. */
+CORE_API void CompactBinaryToJson(const FCbFieldView& Field, FUtf8StringBuilderBase& Builder);
+CORE_API void CompactBinaryToJson(const FCbFieldView& Field, FWideStringBuilderBase& Builder);
+CORE_API void CompactBinaryToJson(const FCbArrayView& Array, FUtf8StringBuilderBase& Builder);
+CORE_API void CompactBinaryToJson(const FCbArrayView& Array, FWideStringBuilderBase& Builder);
 CORE_API void CompactBinaryToJson(const FCbObjectView& Object, FUtf8StringBuilderBase& Builder);
+CORE_API void CompactBinaryToJson(const FCbObjectView& Object, FWideStringBuilderBase& Builder);
 
-/** Convert the object to JSON in a compact format with no added whitespace. */
+/** Convert the compact binary to JSON in a compact format with no added whitespace. */
+CORE_API void CompactBinaryToCompactJson(const FCbFieldView& Field, FUtf8StringBuilderBase& Builder);
+CORE_API void CompactBinaryToCompactJson(const FCbFieldView& Field, FWideStringBuilderBase& Builder);
+CORE_API void CompactBinaryToCompactJson(const FCbArrayView& Array, FUtf8StringBuilderBase& Builder);
+CORE_API void CompactBinaryToCompactJson(const FCbArrayView& Array, FWideStringBuilderBase& Builder);
 CORE_API void CompactBinaryToCompactJson(const FCbObjectView& Object, FUtf8StringBuilderBase& Builder);
+CORE_API void CompactBinaryToCompactJson(const FCbObjectView& Object, FWideStringBuilderBase& Builder);
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

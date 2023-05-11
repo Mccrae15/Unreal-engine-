@@ -3,7 +3,7 @@
 #include "PCGVolumeFactory.h"
 
 #include "PCGComponent.h"
-#include "PCGEditorSettings.h"
+#include "PCGEngineSettings.h"
 #include "PCGGraph.h"
 #include "PCGVolume.h"
 
@@ -19,7 +19,12 @@ UPCGVolumeFactory::UPCGVolumeFactory(const FObjectInitializer& ObjectInitializer
 
 bool UPCGVolumeFactory::CanCreateActorFrom(const FAssetData& AssetData, FText& OutErrorMsg)
 {
-	if ( !AssetData.IsValid() || !AssetData.IsInstanceOf(UPCGGraph::StaticClass()))
+	if (UActorFactory::CanCreateActorFrom(AssetData, OutErrorMsg))
+	{
+		return true;
+	}
+
+	if ( AssetData.IsValid() && !AssetData.IsInstanceOf<UPCGGraphInterface>())
 	{
 		OutErrorMsg = LOCTEXT("NoPCGGraph", "A valid PCG graph asset must be specified.");
 		return false;
@@ -32,17 +37,23 @@ void UPCGVolumeFactory::PostSpawnActor(UObject* Asset, AActor* NewActor)
 {
 	Super::PostSpawnActor(Asset, NewActor);
 
-	if (UPCGGraph* PCGGraph = Cast<UPCGGraph>(Asset))
+	// Disable auto-refreshing on preview actors until we have something more robust on the execution side.
+	if (NewActor && NewActor->bIsEditorPreviewActor)
 	{
-		const UPCGEditorSettings* PCGEditorSettings = GetDefault<UPCGEditorSettings>();
+		return;
+	}
+
+	if (UPCGGraphInterface* PCGGraph = Cast<UPCGGraphInterface>(Asset))
+	{
+		const UPCGEngineSettings* Settings = GetDefault<UPCGEngineSettings>();
 		
 		APCGVolume* PCGVolume = CastChecked<APCGVolume>(NewActor);
-		PCGVolume->SetActorScale3D(PCGEditorSettings->VolumeScale);
+		PCGVolume->SetActorScale3D(Settings->VolumeScale);
 		
 		UPCGComponent* PCGComponent = CastChecked<UPCGComponent>(PCGVolume->GetComponentByClass(UPCGComponent::StaticClass()));
 		PCGComponent->SetGraph(PCGGraph);
 
-		if (PCGEditorSettings->bGenerateOnDrop)
+		if (Settings->bGenerateOnDrop)
 		{
 			PCGComponent->Generate();
 		}

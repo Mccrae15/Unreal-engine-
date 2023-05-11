@@ -103,11 +103,7 @@ public:
 	virtual void WaitForFrameEventCompletion() override;
 	virtual void IssueFrameEvent() override;
 
-	/**
-	  * RHIEndDrawingViewport flushes commands internally, so we don't need to flush before calling it.
-	  * Avoids wasteful issuing of another entire command list with just a few commands.
-	  */
-	virtual bool NeedFlushBeforeEndDrawing() { return false; }
+	virtual bool NeedFlushBeforeEndDrawing() override;
 
 #if D3D12_VIEWPORT_EXPOSES_SWAP_CHAIN
 	virtual void* GetNativeSwapChain() const override { return SwapChain1; }
@@ -205,7 +201,6 @@ private:
 #endif
 
 #if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
-	bool bHDRMetaDataSet;
 	DXGI_COLOR_SPACE_TYPE ColorSpace;
 #endif
 #endif // D3D12_VIEWPORT_EXPOSES_SWAP_CHAIN
@@ -243,7 +238,7 @@ private:
 	/** A fence value used to track the GPU's progress. */
 	TArray<FD3D12SyncPointRef> FrameSyncPoints;
 
-	// Determine how deep the swapchain should be (based on AFR or not)
+	// Determine how deep the swapchain should be
 	void CalculateSwapChainDepth(int32 DefaultSwapChainDepth);
 
 	FCustomPresentRHIRef CustomPresent;
@@ -274,13 +269,6 @@ private:
 #if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
 	/** Ensure the correct color space is set on the swap chain */
 	void EnsureColorSpace(EDisplayColorGamut DisplayGamut, EDisplayOutputFormat OutputDevice);
-
-	/** 
-	 * Set HDR meta data. 
-	 * Note: Meta data should only be provided for TVs, not monitors. 
-	 * This is because the TV is doing the work to display the colors correctly.
-	 */
-	void SetHDRTVMode(bool bEnableHDR, EDisplayColorGamut DisplayGamut, float MaxOutputNits, float MinOutputNits, float MaxCLL, float MaxFALL);
 #endif
 };
 

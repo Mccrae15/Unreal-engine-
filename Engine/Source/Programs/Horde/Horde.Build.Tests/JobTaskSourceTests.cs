@@ -35,7 +35,7 @@ namespace Horde.Build.Tests
 
 		static NewNode AddNode(NewGroup @group, string name, string[]? inputDependencies, Action<NewNode>? action = null)
 		{
-			NewNode node = new NewNode(name, inputDependencies?.ToList(), inputDependencies?.ToList(), null, null, null, null, null, null);
+			NewNode node = new NewNode(name, inputDependencies: inputDependencies?.ToList(), orderDependencies: inputDependencies?.ToList());
 			if (action != null)
 			{
 				action.Invoke(node);
@@ -49,7 +49,6 @@ namespace Horde.Build.Tests
 		{
 			Fixture fixture = await SetupPoolWithAgentAsync(isPoolAutoScaled: true, shouldCreateAgent: true, isAgentEnabled: true);
 
-			Assert.AreEqual(0, JobTaskSource.GetQueueForTesting().Count);
 			await JobTaskSource.TickAsync(CancellationToken.None);
 			Assert.AreEqual(1, JobTaskSource.GetQueueForTesting().Count);
 			Assert.AreEqual(fixture.Job1.Id, JobTaskSource.GetQueueForTesting().Min!.Id.Item1);
@@ -64,7 +63,6 @@ namespace Horde.Build.Tests
 		{
 			Fixture fixture = await SetupPoolWithAgentAsync(isPoolAutoScaled: true, shouldCreateAgent: false, isAgentEnabled: false);
 			
-			Assert.AreEqual(0, JobTaskSource.GetQueueForTesting().Count);
 			await JobTaskSource.TickAsync(CancellationToken.None);
 			Assert.AreEqual(0, JobTaskSource.GetQueueForTesting().Count);
 
@@ -79,14 +77,14 @@ namespace Horde.Build.Tests
 		{
 			Fixture fixture = await SetupPoolWithAgentAsync(isPoolAutoScaled: false, shouldCreateAgent: true, isAgentEnabled: false);
 			
-			Assert.AreEqual(0, JobTaskSource.GetQueueForTesting().Count);
 			await JobTaskSource.TickAsync(CancellationToken.None);
-			Assert.AreEqual(0, JobTaskSource.GetQueueForTesting().Count);
+			Assert.AreEqual(1, JobTaskSource.GetQueueForTesting().Count);
 
-			IJob job = (await JobService.GetJobAsync(fixture.Job1.Id))!;
-			Assert.AreEqual(JobStepBatchError.NoAgentsOnline, job.Batches[0].Error);
-			
-			Assert.IsFalse(_eventReceived);
+			Assert.AreEqual(fixture.Job1.Id, JobTaskSource.GetQueueForTesting().Min!.Id.Item1);
+			Assert.AreEqual(JobStepBatchState.Ready, JobTaskSource.GetQueueForTesting().Min!.Batch.State);
+
+			Assert.IsTrue(_eventReceived);
+			Assert.IsFalse(_eventPoolHasAgentsOnline!.Value);
 		}
 		
 		[TestMethod]
@@ -94,7 +92,6 @@ namespace Horde.Build.Tests
 		{
 			Fixture fixture = await SetupPoolWithAgentAsync(isPoolAutoScaled: true, shouldCreateAgent: true, isAgentEnabled: false);
 			
-			Assert.AreEqual(0, JobTaskSource.GetQueueForTesting().Count);
 			await JobTaskSource.TickAsync(CancellationToken.None);
 			Assert.AreEqual(1, JobTaskSource.GetQueueForTesting().Count);
 
@@ -111,7 +108,8 @@ namespace Horde.Build.Tests
 			Fixture fixture = await SetupPoolWithAgentAsync(isPoolAutoScaled: true, shouldCreateAgent: true, isAgentEnabled: true);
 
 			// update template with some step states
-			IStream Stream = Deref(await StreamService.TryUpdateTemplateRefAsync(fixture.Stream!, fixture.TemplateRefId1, new List<UpdateStepStateRequest>() { new UpdateStepStateRequest() { Name = "Paused Step", PausedByUserId = UserId.GenerateNewId().ToString() } }));
+			IStream Stream = await StreamCollection.GetAsync(fixture.StreamConfig!);
+			Stream = Deref(await StreamCollection.TryUpdateTemplateRefAsync(Stream, fixture.TemplateRefId1, new List<UpdateStepStateRequest>() { new UpdateStepStateRequest() { Name = "Paused Step", PausedByUserId = UserId.GenerateNewId().ToString() } }));
 
 			// create a new graph with the associated nodes
 			List<NewGroup> newGroups = new List<NewGroup>();
@@ -132,13 +130,14 @@ namespace Horde.Build.Tests
 			}
 
 			// create a new job
+			CreateJobOptions options = new CreateJobOptions();
+			options.Arguments.Add("-Target=Step That Depends on Paused Step;Step That Depends on Update Version Files");
+
 			IJob job = await JobCollection.AddAsync(JobId.GenerateNewId(), Stream.Id,
-				fixture.TemplateRefId1, fixture.Template.Id, graph, "Test Paused Step Job",
-				1000, 1000, null, null, null, null, Priority.Highest, null, null, null, null, false,
-				false, null, null, new List<string> { "-Target=" + "Step That Depends on Paused Step;Step That Depends on Update Version Files" });
+				fixture.TemplateRefId1, fixture.Template.Hash, graph, "Test Paused Step Job",
+				1000, 1000, options);
 
 			// validate
-			Assert.AreEqual(0, JobTaskSource.GetQueueForTesting().Count);
 			await JobTaskSource.TickAsync(CancellationToken.None);
 			Assert.AreEqual(1, JobTaskSource.GetQueueForTesting().Count);
 			Assert.AreEqual(job.Id, JobTaskSource.GetQueueForTesting().Min!.Id.Item1);
@@ -168,7 +167,7 @@ namespace Horde.Build.Tests
 
 			if (shouldCreateAgent)
 			{
-				IAgent? agent = await AgentService.CreateAgentAsync("TestAgent", isAgentEnabled, null, new List<StringId<IPool>> { pool.Id });
+				IAgent? agent = await AgentService.CreateAgentAsync("TestAgent", isAgentEnabled, new List<StringId<IPool>> { pool.Id });
 				await AgentService.CreateSessionAsync(agent, AgentStatus.Ok, new List<string>(), new Dictionary<string, int>(), null);
 			}
 			

@@ -71,6 +71,19 @@ struct FGridChronos
 	}
 };
 
+enum class ENodeMarker : uint8
+{
+	None = 0x00u,  // No flags.
+
+	IsInside = 0x01u,
+	IsInsideButTooCloseToLoop = 0x02u,  // node inside the loop but too close to the loop to be include in the mesh
+	IsCloseToLoop = 0x04u,
+
+	All = 0xFFu
+};
+ENUM_CLASS_FLAGS(ENodeMarker);
+
+
 class FGrid : public FHaveStates
 {
 protected:
@@ -131,16 +144,10 @@ protected:
 	double MinOfMaxElementSize = 0;
 
 	/**
-	 * Array to flag each points as inside the face (if IsInsideDomain[Index] = 1) or outer
-	 * @see IsNodeInsideFace
+	 * Array to flag each points as inside, close, ... the face
+	 * @see IsNode...,
 	 */
-	TArray<char> IsInsideFace;
-
-	/**
-	 * Array to flag each points as close to a loop of the face if IsCloseToLoop[Index] = 1
-	 * @see IsNodeCloseToLoop
-	 */
-	TArray<char> IsCloseToLoop;
+	TArray<ENodeMarker> NodeMarkers;
 
 	/**
 	 * 2D Coordinate of grid nodes in each space
@@ -231,12 +238,21 @@ protected:
 	 */
 	void ComputeNewCoordinate(const TArray<FPoint2D>& NewGrid, int32 IndexU, int32 IndexV, const FPoint2D& InPoint, FPoint2D& OutNewScaledPoint) const
 	{
+		const FPoint2D& PointU0V0 = NewGrid[(IndexV + 0) * CuttingCount[EIso::IsoU] + (IndexU + 0)];
+		const FPoint2D& PointU1V0 = NewGrid[(IndexV + 0) * CuttingCount[EIso::IsoU] + (IndexU + 1)];
+		const FPoint2D& PointU0V1 = NewGrid[(IndexV + 1) * CuttingCount[EIso::IsoU] + (IndexU + 0)];
+		const FPoint2D& PointU1V1 = NewGrid[(IndexV + 1) * CuttingCount[EIso::IsoU] + (IndexU + 1)];
+
+		const double U1MinusU0 = CuttingCoordinates[EIso::IsoU][IndexU + 1] - CuttingCoordinates[EIso::IsoU][IndexU];
+		const double U0MinusU = CuttingCoordinates[EIso::IsoU][IndexU] - InPoint.U;
+		const double V1MinusV0 = CuttingCoordinates[EIso::IsoV][IndexV + 1] - CuttingCoordinates[EIso::IsoV][IndexV];
+		const double V0MinusV = CuttingCoordinates[EIso::IsoV][IndexV] - InPoint.V;
+
 		OutNewScaledPoint =
-			NewGrid[(IndexV + 0) * CuttingCount[EIso::IsoU] + (IndexU + 0)] * (CuttingCoordinates[EIso::IsoU][IndexU + 1] - InPoint.U) * (CuttingCoordinates[EIso::IsoV][IndexV + 1] - InPoint.V) -
-			NewGrid[(IndexV + 0) * CuttingCount[EIso::IsoU] + (IndexU + 1)] * (CuttingCoordinates[EIso::IsoU][IndexU + 0] - InPoint.U) * (CuttingCoordinates[EIso::IsoV][IndexV + 1] - InPoint.V) -
-			NewGrid[(IndexV + 1) * CuttingCount[EIso::IsoU] + (IndexU + 0)] * (CuttingCoordinates[EIso::IsoU][IndexU + 1] - InPoint.U) * (CuttingCoordinates[EIso::IsoV][IndexV + 0] - InPoint.V) +
-			NewGrid[(IndexV + 1) * CuttingCount[EIso::IsoU] + (IndexU + 1)] * (CuttingCoordinates[EIso::IsoU][IndexU + 0] - InPoint.U) * (CuttingCoordinates[EIso::IsoV][IndexV + 0] - InPoint.V);
-		OutNewScaledPoint /= (CuttingCoordinates[EIso::IsoU][IndexU + 1] - CuttingCoordinates[EIso::IsoU][IndexU + 0]) * (CuttingCoordinates[EIso::IsoV][IndexV + 1] - CuttingCoordinates[EIso::IsoV][IndexV + 0]);
+			PointU0V0 +
+			(PointU0V0 - PointU1V0) * (U0MinusU / U1MinusU0) +
+			(PointU0V0 - PointU0V1) * (V0MinusV / V1MinusV0) +
+			(PointU0V0 - PointU0V1 + PointU1V1 - PointU1V0) * ((U0MinusU * V0MinusV) / (U1MinusU0 * V1MinusV0));		
 	};
 
 	/**
@@ -249,7 +265,7 @@ protected:
 	 *
 	 * This algorithm is inspired of Bresenham's line algorithm
 	 * The loop is traversed segment by segment
-	 * For each segment, according to the slop of the segment, each cell intersecting the segment is selected (FindIntersectionsCaseSlop_) i.e. each corner node of the cell is flagged IsCloseToLoop (SetCellCloseToLoop)
+	 * For each segment, according to the slop of the segment, each cell intersecting the segment is selected (FindIntersectionsCaseSlope_) i.e. each corner node of the cell is flagged IsCloseToLoop (SetCellCloseToLoop)
 	 * @see SlopeUtils
 	 * @see IsNodeCloseToLoop
 	 * @see ProcessPointCloud (called in ProcessPointClound)
@@ -265,8 +281,7 @@ protected:
 	 *
 	 * @see ProcessPointClound (called in ProcessPointClound)
 	 */
-	void RemovePointsClosedToLoop();
-
+	void RemovePointsCloseToLoop();
 
 	/**
 	 * Gets the cutting coordinates of the existing mesh of bordering edges (loop's edges)
@@ -318,19 +333,54 @@ public:
 	}
 
 	/**
-	 * @return true if the node is inner the external loop and outer the inner loops
+	 * @return true if the node is inner the external loop and outer the inner loops and not too close
 	 */
-	const bool IsNodeInsideFace(int32 IndexU, int32 IndexV) const
+	const bool IsNodeInsideAndMeshable(int32 Index) const
 	{
-		return IsInsideFace[GobalIndex(IndexU, IndexV)] == 1;
+		return (NodeMarkers[Index] & ENodeMarker::IsInside) == ENodeMarker::IsInside;
+	}
+
+	const bool IsNodeInsideButTooCloseToLoop(int32 Index) const
+	{
+		return (NodeMarkers[Index] & ENodeMarker::IsInsideButTooCloseToLoop) == ENodeMarker::IsInsideButTooCloseToLoop;
 	}
 
 	/**
-	 * @return true if the node is inner the external loop and outer the inner loops
+	 * @return true if the bits EPointMarker::IsInside, EPointMarker::IsInsideButTooCloseToLoop and EPointMarker::IsCloseToLoop are alls equal to 0
 	 */
-	const bool IsNodeInsideFace(int32 Index) const
+	const bool IsNodeFarFromFace(int32 Index) const
 	{
-		return IsInsideFace[Index] == 1;
+		constexpr ENodeMarker IsInsideAndClose = ENodeMarker::IsInside | ENodeMarker::IsInsideButTooCloseToLoop | ENodeMarker::IsCloseToLoop;
+		return (NodeMarkers[Index] & IsInsideAndClose) == ENodeMarker::None;
+	}
+
+	/**
+	 * @return true if the bits EPointMarker::IsInside, EPointMarker::IsInsideButTooCloseToLoop and EPointMarker::IsCloseToLoop are alls equal to 0
+	 */
+	const bool IsNodeOutsideFace(int32 Index) const
+	{
+		constexpr ENodeMarker IsInsideAndClose = ENodeMarker::IsInside | ENodeMarker::IsInsideButTooCloseToLoop;
+		return (NodeMarkers[Index] & IsInsideAndClose) == ENodeMarker::None;
+	}
+
+	const bool IsNodeInsideAndCloseToLoop(int32 Index) const
+	{
+		constexpr ENodeMarker IsInsideAndClose = ENodeMarker::IsInside | ENodeMarker::IsCloseToLoop;
+		return (NodeMarkers[Index] & IsInsideAndClose) == IsInsideAndClose;
+	}
+
+	/**
+	 * @return true if the bits EPointMarker::IsInside and EPointMarker::IsInsideButTooCloseToLoop are booth equal to 0 and EPointMarker::IsCloseToLoop  is equal to 1
+	 */
+	const bool IsNodeOusideFaceButClose(int32 Index) const
+	{
+		constexpr ENodeMarker IsInsideAndClose = ENodeMarker::IsInside | ENodeMarker::IsInsideButTooCloseToLoop | ENodeMarker::IsCloseToLoop;
+		return (NodeMarkers[Index] & IsInsideAndClose) == ENodeMarker::IsCloseToLoop;
+	}
+
+	void SetNodeInside(int32 Index)
+	{
+		NodeMarkers[Index] |= ENodeMarker::IsInside;
 	}
 
 	/**
@@ -344,17 +394,30 @@ public:
 	/**
 	 * @return true if the node is close to a loop i.e. the loop cross the space [[IndexU - 1, IndexU + 1], [IndexV - 1, IndexV + 1]]
 	 */
-	const bool IsNodeCloseToLoop(int32 IndexU, int32 IndexV) const
-	{
-		return IsCloseToLoop[GobalIndex(IndexU, IndexV)] == 1;
-	}
-
-	/**
-	 * @return true if the node is close to a loop i.e. the loop cross the space [[IndexU - 1, IndexU + 1], [IndexV - 1, IndexV + 1]]
-	 */
 	const bool IsNodeCloseToLoop(int32 Index) const
 	{
-		return IsCloseToLoop[Index] == 1;
+		return (NodeMarkers[Index] & ENodeMarker::IsCloseToLoop) == ENodeMarker::IsCloseToLoop;
+	}
+
+	const bool IsNodeTooCloseToLoop(int32 Index) const
+	{
+		return (NodeMarkers[Index] & ENodeMarker::IsInsideButTooCloseToLoop) == ENodeMarker::IsInsideButTooCloseToLoop;
+	}
+
+	void SetCloseToLoop(int32 Index)
+	{
+		NodeMarkers[Index] |= ENodeMarker::IsCloseToLoop;
+	}
+
+	void SetTooCloseToLoop(int32 Index)
+	{
+		NodeMarkers[Index] |= ENodeMarker::IsInsideButTooCloseToLoop;
+		NodeMarkers[Index] &= ~ENodeMarker::IsInside;
+	}
+
+	void ResetInsideLoop(int32 Index)
+	{
+		NodeMarkers[Index] &= ~ENodeMarker::IsInside;
 	}
 
 	/**
@@ -641,13 +704,21 @@ public:
 		F3DDebugSession _(Message);
 		for (int32 Index = 0; Index < Points.Num(); ++Index)
 		{
-			if (IsInsideFace[Index])
+			if (IsNodeInsideAndCloseToLoop(Index))
 			{
-				DisplayPoint(Points[Index] * DisplayScale, IsCloseToLoop[Index] ? EVisuProperty::BluePoint : EVisuProperty::GreenPoint, Index);
+				DisplayPoint(Points[Index] * DisplayScale, EVisuProperty::OrangePoint, Index);
+			}
+			else if (IsNodeInsideAndMeshable(Index))
+			{
+				DisplayPoint(Points[Index] * DisplayScale, EVisuProperty::BluePoint, Index);
+			}
+			else if (IsNodeTooCloseToLoop(Index))
+			{
+				DisplayPoint(Points[Index] * DisplayScale, EVisuProperty::RedPoint, Index);
 			}
 			else
 			{
-				DisplayPoint(Points[Index] * DisplayScale, EVisuProperty::OrangePoint, Index);
+				DisplayPoint(Points[Index] * DisplayScale, IsNodeCloseToLoop(Index) ? EVisuProperty::YellowPoint : EVisuProperty::GreenPoint , Index);
 			}
 		}
 	}

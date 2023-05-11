@@ -1,12 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/SimpleConstructionScript.h"
-#include "Engine/Blueprint.h"
 #include "Components/InputComponent.h"
-#include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/SCS_Node.h"
+#include "EngineLogs.h"
 #include "UObject/BlueprintsObjectVersion.h"
-#include "UObject/LinkerLoad.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SimpleConstructionScript)
 
@@ -14,7 +12,8 @@
 #include "Kismet2/CompilerResultsLog.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/ComponentEditorUtils.h"
-#include "Kismet2/Kismet2NameValidators.h"
+#else
+#include "UObject/LinkerLoad.h"
 #endif
 
 //////////////////////////////////////////////////////////////////////////
@@ -636,7 +635,7 @@ void USimpleConstructionScript::RegisterInstancedComponent(UActorComponent* Inst
 	}
 }
 
-void USimpleConstructionScript::ExecuteScriptOnActor(AActor* Actor, const TInlineComponentArray<USceneComponent*>& NativeSceneComponents, const FTransform& RootTransform, const FRotationConversionCache* RootRelativeRotationCache, bool bIsDefaultTransform)
+void USimpleConstructionScript::ExecuteScriptOnActor(AActor* Actor, const TInlineComponentArray<USceneComponent*>& NativeSceneComponents, const FTransform& RootTransform, const FRotationConversionCache* RootRelativeRotationCache, bool bIsDefaultTransform, ESpawnActorScaleMethod TransformScaleMethod)
 {
 	if(RootNodes.Num() > 0)
 	{
@@ -684,7 +683,7 @@ void USimpleConstructionScript::ExecuteScriptOnActor(AActor* Actor, const TInlin
 				}
 
 				// Create the new component instance and any child components it may have
-				RootNode->ExecuteNodeOnActor(Actor, ParentComponent != nullptr ? ParentComponent : RootComponent, &RootTransform, RootRelativeRotationCache, bIsDefaultTransform);
+				RootNode->ExecuteNodeOnActor(Actor, ParentComponent != nullptr ? ParentComponent : RootComponent, &RootTransform, RootRelativeRotationCache, bIsDefaultTransform, TransformScaleMethod);
 			}
 		}
 	}

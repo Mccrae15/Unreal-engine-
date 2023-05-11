@@ -28,6 +28,12 @@ public:
 	// Returns the rigvm client for this host
 	virtual const FRigVMClient* GetRigVMClient() const = 0;
 
+	// Returns the rigvm function host
+	virtual IRigVMGraphFunctionHost* GetRigVMGraphFunctionHost() = 0;
+
+	// Returns the rigvm function host
+	virtual const IRigVMGraphFunctionHost* GetRigVMGraphFunctionHost() const = 0;
+
 	// Returns the editor object corresponding with the supplied editor object
 	virtual UObject* GetEditorObjectForRigVMGraph(URigVMGraph* InVMGraph) const = 0;
 
@@ -42,6 +48,7 @@ public:
 
 	// Reacts to a request to configure a controller
 	virtual void HandleConfigureRigVMController(const FRigVMClient* InClient, URigVMController* InControllerToConfigure) = 0;
+
 };
 
 UINTERFACE()
@@ -76,20 +83,23 @@ public:
 	GENERATED_BODY()
 
 	FRigVMClient()
-		: FunctionLibrary(nullptr)
+		: ExecuteContextStruct(nullptr)
+		, FunctionLibrary(nullptr)
 		, bSuspendNotifications(false)
+		, bIgnoreModelNotifications(false)
 		, OuterClientHost(nullptr)
 		, OuterClientPropertyName(NAME_None)
 	{
+		ExecuteContextStruct = FRigVMExecuteContext::StaticStruct();
 	}
 
 	void SetOuterClientHost(UObject* InOuterClientHost, const FName& InOuterClientHostPropertyName);
 	void SetFromDeprecatedData(URigVMGraph* InDefaultGraph, URigVMFunctionLibrary* InFunctionLibrary);
 
 	void Reset();
-	FORCEINLINE int32 Num() const { return Models.Num(); }
+	int32 Num() const { return Models.Num(); }
 	URigVMGraph* GetDefaultModel() const;
-	FORCEINLINE URigVMGraph* GetModel(int32 InIndex) const { return Models[InIndex]; }
+	URigVMGraph* GetModel(int32 InIndex) const { return Models[InIndex]; }
 	URigVMGraph* GetModel(const FString& InNodePathOrName) const;
 	URigVMGraph* GetModel(const UObject* InEditorSideObject) const;
 	TArray<URigVMGraph*> GetAllModels(bool bIncludeFunctionLibrary, bool bRecursive) const;
@@ -104,6 +114,8 @@ public:
 	URigVMFunctionLibrary* GetFunctionLibrary() const { return FunctionLibrary; }
 	URigVMFunctionLibrary* GetOrCreateFunctionLibrary(bool bSetupUndoRedo, const FObjectInitializer* ObjectInitializer = nullptr, bool bCreateController = true);
 	TArray<FName> GetEntryNames() const;
+	UScriptStruct* GetExecuteContextStruct() const { return ExecuteContextStruct; }
+	void SetExecuteContextStruct(UScriptStruct* InExecuteContextStruct) { ExecuteContextStruct = InExecuteContextStruct; }
 
 	URigVMGraph* AddModel(const FName& InName, bool bSetupUndoRedo, const FObjectInitializer* ObjectInitializer = nullptr, bool bCreateController = true);
 	void AddModel(URigVMGraph* InModel, bool bCreateController);
@@ -115,10 +127,10 @@ public:
 	URigVMNode* FindNode(const FString& InNodePathOrName) const;
 	URigVMPin* FindPin(const FString& InPinPath) const;
 	
-	FORCEINLINE TArray<TObjectPtr<URigVMGraph>>::RangedForIteratorType      begin() { return Models.begin(); }
-	FORCEINLINE TArray<TObjectPtr<URigVMGraph>>::RangedForConstIteratorType begin() const { return Models.begin(); }
-	FORCEINLINE TArray<TObjectPtr<URigVMGraph>>::RangedForIteratorType      end() { return Models.end(); }
-	FORCEINLINE TArray<TObjectPtr<URigVMGraph>>::RangedForConstIteratorType end() const { return Models.end(); }
+	TArray<TObjectPtr<URigVMGraph>>::RangedForIteratorType      begin() { return Models.begin(); }
+	TArray<TObjectPtr<URigVMGraph>>::RangedForConstIteratorType begin() const { return Models.begin(); }
+	TArray<TObjectPtr<URigVMGraph>>::RangedForIteratorType      end() { return Models.end(); }
+	TArray<TObjectPtr<URigVMGraph>>::RangedForConstIteratorType end() const { return Models.end(); }
 
 	UObject* GetOuter() const;
 	FProperty* GetOuterClientProperty() const;
@@ -126,6 +138,26 @@ public:
 	FName GetUniqueName(const FName& InDesiredName) const;
 	static FName GetUniqueName(UObject* InOuter, const FName& InDesiredName);
 	static void DestroyObject(UObject* InObject);
+
+	// backwards compatibility
+	FRigVMClientPatchResult PatchModelsOnLoad();
+
+	// work to be done after a duplication of the source asset
+	void PostDuplicateHost(const FString& InOldPathName, const FString& InNewPathName);
+
+	// work to be done before saving
+	void PreSave();
+
+	void HandleGraphModifiedEvent(ERigVMGraphNotifType InNotifType, URigVMGraph* InGraph, UObject* InSubject);
+
+	FRigVMGraphFunctionStore* FindFunctionStore(const URigVMLibraryNode* InLibraryNode);
+	bool UpdateGraphFunctionData(const URigVMLibraryNode* InLibraryNode);
+	bool UpdateExternalVariablesForFunction(const URigVMLibraryNode* InLibraryNode);
+	bool UpdateDependenciesForFunction(const URigVMLibraryNode* InLibraryNode);
+	bool UpdateFunctionReferences(const FRigVMGraphFunctionHeader& InHeader, bool bUpdateDependencies, bool bUpdateExternalVariables);
+	bool DirtyGraphFunctionCompilationData(URigVMLibraryNode* InLibraryNode);
+	bool UpdateGraphFunctionSerializedGraph(URigVMLibraryNode* InLibraryNode);
+	bool IsFunctionPublic(URigVMLibraryNode* InLibraryNode);
 
 private:
 
@@ -145,6 +177,9 @@ private:
 
 	URigVMController* CreateController(const URigVMGraph* InModel);
 
+	UPROPERTY(transient)
+	TObjectPtr<UScriptStruct> ExecuteContextStruct;
+
 	UPROPERTY()
 	TArray<TObjectPtr<URigVMGraph>> Models;
 
@@ -162,6 +197,7 @@ private:
 
 public:
 	bool bSuspendNotifications;
+	bool bIgnoreModelNotifications;
 private:
 	TWeakObjectPtr<UObject> OuterClientHost;
 	FName OuterClientPropertyName;

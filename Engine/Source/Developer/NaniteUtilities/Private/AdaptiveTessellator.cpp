@@ -33,8 +33,14 @@ FAdaptiveTessellator::FAdaptiveTessellator(
 	Triangles.AddUninitialized( NumTris );
 
 	Displacements.AddUninitialized( Verts.Num() );
-	for( int32 i = 0; i < Verts.Num(); i++ )
-		Displacements[i] = GetDisplacement( FVector3f( 1.0f, 0.0f, 0.0f ), Verts[i], Verts[i], Verts[i] );
+	for( int32 TriIndex = 0; TriIndex < MaterialIndexes.Num(); TriIndex++ )
+	{
+		for( int k = 0; k < 3; k++ )
+		{
+			uint32 i = Indexes[ TriIndex * 3 + k ];
+			Displacements[i] = GetDisplacement( FVector3f( 1.0f, 0.0f, 0.0f ), Verts[i], Verts[i], Verts[i], MaterialIndexes[ TriIndex ] );
+		}
+	}
 
 	{
 		FEdgeHash EdgeHash( Indexes.Num() );
@@ -161,7 +167,7 @@ void FAdaptiveTessellator::FindSplit( uint32 TriIndex )
 
 	auto GetError = [&]( const FVector3f& Barycentrics )
 	{
-		FVector3f NewDisplacement = GetDisplacement( Barycentrics, Vert0, Vert1, Vert2 );
+		FVector3f NewDisplacement = GetDisplacement( Barycentrics, Vert0, Vert1, Vert2, MaterialIndexes[ TriIndex ] );
 
 		FVector3f LerpedDisplacement;
 		LerpedDisplacement  = Displacement0 * Barycentrics.X;
@@ -337,7 +343,8 @@ void FAdaptiveTessellator::FindSplitBVH( uint32 TriIndex )
 			Vert2,
 			Displacement0,
 			Displacement1,
-			Displacement2 );
+			Displacement2,
+			MaterialIndexes[ TriIndex ] );
 
 		Node.ErrorMin = ErrorBounds.X;
 		Node.ErrorMax = ErrorBounds.Y;
@@ -386,7 +393,8 @@ void FAdaptiveTessellator::FindSplitBVH( uint32 TriIndex )
 					Vert2,
 					Displacement0,
 					Displacement1,
-					Displacement2 );
+					Displacement2,
+					MaterialIndexes[ TriIndex ] );
 
 				ChildNode.ErrorMin = ErrorBounds.X;
 				ChildNode.ErrorMax = ErrorBounds.Y;
@@ -469,7 +477,7 @@ void FAdaptiveTessellator::FindSplitBVH( uint32 TriIndex )
 
 						if( !bTooCloseToEdge )
 						{
-							FVector3f NewDisplacement = GetDisplacement( Split, Vert0, Vert1, Vert2 );
+							FVector3f NewDisplacement = GetDisplacement( Split, Vert0, Vert1, Vert2, MaterialIndexes[ TriIndex ] );
 
 							FVector3f LerpedDisplacement;
 							LerpedDisplacement  = Displacement0 * Split.X;
@@ -481,7 +489,6 @@ void FAdaptiveTessellator::FindSplitBVH( uint32 TriIndex )
 							{
 								BestSplit = Split;
 								BestError = Error;
-						
 							}
 						}
 					}
@@ -534,7 +541,7 @@ void FAdaptiveTessellator::SplitTriangle( uint32 TriIndex )
 	NewVert += Vert1 * Barycentrics.Y;
 	NewVert += Vert2 * Barycentrics.Z;
 
-	FVector3f NewDisplacment = GetDisplacement( Barycentrics, Vert0, Vert1, Vert2 );
+	FVector3f NewDisplacment = GetDisplacement( Barycentrics, Vert0, Vert1, Vert2, MaterialIndexes[ TriIndex ] );
 
 	uint32 NewIndex = Verts.Add( NewVert );
 	Displacements.Add( NewDisplacment );
@@ -600,7 +607,7 @@ void FAdaptiveTessellator::SplitTriangle( uint32 TriIndex )
 					NewVert  = Verts[ OldIndex0 ] * Barycentrics[ ( EdgeIndex + 1 ) % 3 ];
 					NewVert += Verts[ OldIndex1 ] * Barycentrics[ EdgeIndex ];
 
-					NewDisplacment = GetDisplacement( FVector3f( 1.0f, 0.0f, 0.0f ), NewVert, NewVert, NewVert );
+					NewDisplacment = GetDisplacement( FVector3f( 1.0f, 0.0f, 0.0f ), NewVert, NewVert, NewVert, MaterialIndexes[ OldTriIndex[j] ] );
 
 					NewIndex = Verts.Add( NewVert );
 					Displacements.Add( NewDisplacment );
@@ -759,17 +766,31 @@ bool FAdaptiveTessellator::CouldFlipEdge( uint32 EdgeIndex ) const
 	if( MaterialIndexes[ TriIndex ] != MaterialIndexes[ AdjTriIndex ] )
 		return false;
 
+#if 1
 	FVector3f TriNormal = GetTriNormal( TriIndex );
 	FVector3f AdjNormal = GetTriNormal( AdjTriIndex );
 
-#if 1
 	return ( TriNormal | AdjNormal ) > 0.999f;
 #else
-	FVector3f Point = Verts[ Indexes[ EdgeIndex ] ].Position;
+	const FVector3f& a0 = Verts[ Indexes[ AdjTriIndex * 3 + 0 ] ].Position;
+	const FVector3f& a1 = Verts[ Indexes[ AdjTriIndex * 3 + 1 ] ].Position;
+	const FVector3f& a2 = Verts[ Indexes[ AdjTriIndex * 3 + 2 ] ].Position;
 
-	float DistToAdjPlane = ( Verts[ Indexes[ Cycle3( EdgeIndex, 2 ) ] ].Position - Point ) | AdjNormal;
-	float DistToTriPlane = ( Verts[ Indexes[ Cycle3( AdjEdgeIndex, 2 ) ] ].Position - Point ) | TriNormal;
-	return DistToTriPlane < 1e-2f || DistToAdjPlane < 1e-2f;
+	float AdjArea = 0.5f * ( (a2 - a0) ^ (a1 - a0) ).Size();
+
+	const FVector3f& p0 = Verts[ Indexes[ TriIndex * 3 + 0 ] ].Position;
+	const FVector3f& p1 = Verts[ Indexes[ TriIndex * 3 + 1 ] ].Position;
+	const FVector3f& p2 = Verts[ Indexes[ TriIndex * 3 + 2 ] ].Position;
+	const FVector3f& p3 = Verts[ Indexes[ Cycle3( AdjEdgeIndex, 2 ) ] ].Position;
+
+	FVector3f Cross = (p2 - p0) ^ (p1 - p0);
+
+	// Tetrahedron
+	float Volume = (1.0f / 6.0f) * FMath::Abs( (p3 - p0) | Cross );
+	float Area = FMath::Max( 0.5f * Cross.Size(), AdjArea );
+
+	float Height = 3.0f * Volume / Area;
+	return Height < 1e-2f;
 #endif
 }
 

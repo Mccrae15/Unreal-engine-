@@ -1056,9 +1056,12 @@ void FDatasmithMaxCoronaMaterialsToUEPbr::Convert( TSharedRef< IDatasmithScene >
 			TransmittanceExpression->ConnectExpression( *ThinTranslucencyMaterialOutput->GetInput(0) );
 		}
 	}
-	else if (OpacityExpression)
+	else
 	{
-		Connect(PbrMaterialElement->GetOpacity(), *OpacityExpression);
+		if (OpacityExpression)
+		{
+			Connect(PbrMaterialElement->GetOpacity(), *OpacityExpression);
+		}
 	}
 
 	MaterialElement = PbrMaterialElement;

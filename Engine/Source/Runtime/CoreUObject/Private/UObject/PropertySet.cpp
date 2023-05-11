@@ -549,12 +549,6 @@ FString FSetProperty::GetCPPTypeForwardDeclaration() const
 
 void FSetProperty::ExportText_Internal(FString& ValueStr, const void* ContainerOrPropertyPtr, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope) const
 {
-	if (0 != (PortFlags & PPF_ExportCpp))
-	{
-		ValueStr += TEXT("{}");
-		return;
-	}
-
 	checkSlow(ElementProp);
 
 	uint8* TempSetStorage = nullptr;
@@ -1111,6 +1105,5 @@ void* FSetProperty::GetValueAddressAtIndex_Direct(const FProperty* Inner, void* 
 			Num--;
 		}
 	}
-	checkf(false, TEXT("Set element index (%d) out of range"), Index);
 	return nullptr;
 }

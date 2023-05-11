@@ -2,17 +2,14 @@
 
 #include "SVariantManagerTableRow.h"
 
+#include "DisplayNodes/VariantManagerActorNode.h"
 #include "SVariantManager.h"
 #include "VariantManager.h"
 #include "VariantManagerDragDropOp.h"
 #include "VariantManagerSelection.h"
-#include "DisplayNodes/VariantManagerPropertyNode.h"
 
-#include "CoreMinimal.h"
-#include "Framework/Commands/GenericCommands.h"
 #include "GameFramework/Actor.h"
 #include "Styling/SlateIconFinder.h"
-#include "Widgets/Views/SHeaderRow.h"
 
 #define LOCTEXT_NAMESPACE "SVariantManagerTableRow"
 

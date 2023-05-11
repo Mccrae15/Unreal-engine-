@@ -3,75 +3,25 @@
 #include "MuCOE/SCustomizableInstanceProperties.h"
 
 #include "ContentBrowserModule.h"
-#include "CoreGlobals.h"
-#include "Delegates/Delegate.h"
 #include "Editor.h"
-#include "Editor/EditorEngine.h"
-#include "Engine/Engine.h"
-#include "Engine/Texture2D.h"
-#include "Fonts/SlateFontInfo.h"
-#include "Framework/SlateDelegates.h"
-#include "Framework/Text/TextLayout.h"
 #include "HAL/PlatformApplicationMisc.h"
-#include "HAL/PlatformCrt.h"
-#include "HAL/PlatformMisc.h"
-#include "Input/Events.h"
-#include "InputCoreTypes.h"
-#include "Internationalization/Internationalization.h"
-#include "Layout/Children.h"
-#include "Layout/Margin.h"
-#include "Layout/Visibility.h"
-#include "Logging/LogCategory.h"
-#include "Logging/LogMacros.h"
-#include "Math/UnrealMathSSE.h"
-#include "Math/Vector.h"
-#include "Math/Vector2D.h"
-#include "Misc/AssertionMacros.h"
-#include "Misc/Attribute.h"
-#include "Misc/CString.h"
-#include "Misc/Optional.h"
-#include "Misc/OutputDeviceRedirector.h"
 #include "Misc/Paths.h"
-#include "Modules/ModuleManager.h"
 #include "MuCO/CustomizableObject.h"
-#include "MuCO/CustomizableObjectIdentifier.h"
 #include "MuCO/CustomizableObjectInstance.h"
-#include "MuCO/CustomizableObjectParameterTypeDefinitions.h"
 #include "MuCO/CustomizableObjectSystem.h"
-#include "MuCO/CustomizableObjectUIData.h"
-#include "MuCO/MultilayerProjector.h"
 #include "MuCOE/CustomizableInstanceDetails.h"
 #include "MuCOE/CustomizableObjectEditorUtilities.h"
 #include "MuCOE/SMutableTextSearchBox.h"
 #include "Serialization/BufferArchive.h"
-#include "Serialization/MemoryReader.h"
 #include "Slate/DeferredCleanupSlateBrush.h"
-#include "SlotBase.h"
-#include "Styling/AppStyle.h"
-#include "Styling/SlateBrush.h"
-#include "Styling/SlateColor.h"
-#include "Trace/Detail/Channel.h"
-#include "Types/SlateStructs.h"
-#include "UObject/Class.h"
-#include "UObject/NameTypes.h"
-#include "UObject/PropertyPortFlags.h"
-#include "UObject/UObjectBaseUtility.h"
-#include "UObject/UObjectGlobals.h"
 #include "Widgets/Colors/SColorBlock.h"
 #include "Widgets/Colors/SColorPicker.h"
-#include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Input/STextComboBox.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SExpandableArea.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/SWindow.h"
-#include "Widgets/Text/STextBlock.h"
 
 struct FGeometry;
 
@@ -127,7 +77,7 @@ void SCustomizableInstanceProperties::Construct(const FArguments& InArgs)
 
 		// Store the texture parameters data required for the ui.
 		TextureParameterValueNames.Add(MakeShareable(new FString("None")));
-		TextureParameterValues.Add(-1);
+		TextureParameterValues.AddDefaulted();
 		TArray<FCustomizableObjectExternalTexture> Textures = UCustomizableObjectSystem::GetInstance()->GetTextureParameterValues();
 		for (int i = 0; i < Textures.Num(); ++i)
 		{
@@ -844,28 +794,17 @@ void SCustomizableInstanceProperties::AddParameter(int32 ParamIndexInObject)
 
 	case EMutableParameterType::Texture:
 	{
-		TArray<FCustomizableObjectTextureParameterValue>& TextureParameters = CustomInstance->GetTextureParameters();
-		TSharedPtr<FString> InitiallySelected = TextureParameterValueNames[0];
-		for (int i = 0; i < TextureParameters.Num(); ++i)
+		const TArray<FCustomizableObjectTextureParameterValue>& TextureParameters = CustomInstance->GetTextureParameters();
+		TSharedPtr<FString> InitiallySelected = TextureParameterValueNames[0]; // First index is always the None option.
+
+		const uint64 ParameterValue = CustomInstance->GetTextureParameterSelectedOption(ParamName);
+		
+		// Look for the value index
+		for (int32 ValueIndex = 0; ValueIndex < TextureParameterValueNames.Num(); ++ValueIndex)
 		{
-			FString LocalParamName = TextureParameters[i].ParameterName;
-			uint64 ParamValue = TextureParameters[i].ParameterValue;
-			if (TextureParameters[i].ParameterName == LocalParamName)
+			if (ParameterValue == TextureParameterValues[ValueIndex])
 			{
-				// Look for the value index
-				for (int ValueIndex = 0; ValueIndex < TextureParameterValueNames.Num(); ++ValueIndex)
-				{
-					if (TextureParameterValues[ValueIndex] == ParamValue)
-					{
-						InitiallySelected = TextureParameterValueNames[ValueIndex];
-
-						/*if (CustomInstance->ProfileParameterDat.)
-						{
-							CustomInstance->ProfileParameterDat->TextureParameters[i].ParameterValue = ParamValue;
-						}*/	
-					}
-				}
-
+				InitiallySelected = TextureParameterValueNames[ValueIndex];
 				break;
 			}
 		}
@@ -1010,101 +949,105 @@ void SCustomizableInstanceProperties::AddParameter(int32 ParamIndexInObject)
 			else
 			{
 				TArray<FCustomizableObjectProjectorParameterValue>& ProjectorParameters = CustomInstance->GetProjectorParameters();
-				int32 ProjectorParamIndex = CustomInstance->FindProjectorParameterNameIndex(ParamName);
+				const int32 ProjectorParamIndex = CustomInstance->FindProjectorParameterNameIndex(ParamName);
 				check(ProjectorParamIndex < ProjectorParameters.Num());
 
+				// Selected Pose UI
 				FString PoseSwitchEnumParamName = ParamName + FMultilayerProjector::POSE_PARAMETER_POSTFIX;
 				FString PoseSwitchEnumParamNameWithRange = PoseSwitchEnumParamName + FString::Printf(TEXT("__%d"), -1);
-				int32 PoseSwitchEnumParamIndexInObject = CustomizableObject->FindParameter(PoseSwitchEnumParamName);
-				check(PoseSwitchEnumParamIndexInObject >= 0);
+				const int32 PoseSwitchEnumParamIndexInObject = CustomizableObject->FindParameter(PoseSwitchEnumParamName);
 
-				int32 NumPoseValues = CustomizableObject->GetIntParameterNumOptions(PoseSwitchEnumParamIndexInObject);
-
-				//TSharedPtr< TArray< TSharedPtr<FString> > > PoseOptionNames = MakeShareable(new TArray< TSharedPtr<FString> >());
-				//IntOptionNames.Add(PoseOptionNames);
-				
-				TArray<FString> PoseOptionNamesAttribute;
-				FString PoseValue = GetIntParameterValue(PoseSwitchEnumParamName, -1);
-				int32 PoseValueIndex = 0;
-				
-				for (int32 j = 0; j < NumPoseValues; ++j)
+				if (PoseSwitchEnumParamIndexInObject != INDEX_NONE)
 				{
-					FString PossibleValue = CustomizableObject->GetIntParameterAvailableOption(PoseSwitchEnumParamIndexInObject, j);
-					if (PossibleValue == PoseValue)
+					const int32 NumPoseValues = CustomizableObject->GetIntParameterNumOptions(PoseSwitchEnumParamIndexInObject);
+
+					TArray<FString> PoseOptionNamesAttribute;
+					FString PoseValue = GetIntParameterValue(PoseSwitchEnumParamName, -1);
+					int32 PoseValueIndex = 0;
+
+					for (int32 j = 0; j < NumPoseValues; ++j)
 					{
-						PoseValueIndex = j;
+						const FString PossibleValue = CustomizableObject->GetIntParameterAvailableOption(PoseSwitchEnumParamIndexInObject, j);
+						if (PossibleValue == PoseValue)
+						{
+							PoseValueIndex = j;
+						}
+
+						PoseOptionNamesAttribute.Add(PossibleValue);
 					}
-					//PoseOptionNames->Add(MakeShareable(new FString(CustomizableObject->GetIntParameterAvailableOption(PoseSwitchEnumParamIndexInObject, j))));
-					PoseOptionNamesAttribute.Add(CustomizableObject->GetIntParameterAvailableOption(PoseSwitchEnumParamIndexInObject, j));
+
+					ParameterBox->AddSlot()
+						.HAlign(HAlign_Right)
+						.VAlign(VAlign_Fill)
+						.FillWidth(10.f)
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+								.HAlign(HAlign_Fill)
+								.VAlign(VAlign_Center)
+								.FillWidth(0.45f)
+								[
+									SNew(SMutableTextSearchBox)
+									.PossibleSuggestions(PoseOptionNamesAttribute)
+									.InitialText(FText::FromString(PoseOptionNamesAttribute[PoseValueIndex]))
+									.MustMatchPossibleSuggestions(TAttribute<bool>(true))
+									.SuggestionListPlacement(EMenuPlacement::MenuPlacement_ComboBox)
+									.OnTextCommitted(this, &SCustomizableInstanceProperties::OnProjectorTextureParameterComboBoxChanged, PoseSwitchEnumParamNameWithRange)
+									.ToolTipText(LOCTEXT("Pose selector tooltip", "Select the skeletal mesh pose used for projection. This does not control the actual visual mesh pose in the viewport (or during gameplay for that matter). It has to be manually set. You can drag&drop a pose onto the preview viewport."))
+								]
+
+							+ SHorizontalBox::Slot()
+								.HAlign(HAlign_Fill)
+								.VAlign(VAlign_Center)
+								.FillWidth(0.3f)
+								[
+									SNew(SButton)
+									.ToolTipText(LOCTEXT("Add Layer", "Add Layer"))
+									.Text(LOCTEXT("Add Layer", "Add Layer"))
+									.OnClicked(this, &SCustomizableInstanceProperties::OnProjectorLayerAdded, ParamName)
+									.HAlign(HAlign_Fill)
+								]
+						];
+
+				}
+				else
+				{
+					ParameterBox->AddSlot()
+						.HAlign(HAlign_Right)
+						.VAlign(VAlign_Fill)
+						.FillWidth(10.f)
+						[
+							SNew(SButton)
+							.ToolTipText(LOCTEXT("Add Layer", "Add Layer"))
+							.Text(LOCTEXT("Add Layer", "Add Layer"))
+							.OnClicked(this, &SCustomizableInstanceProperties::OnProjectorLayerAdded, ParamName)
+							.HAlign(HAlign_Fill)
+						];
 				}
 
-				TSharedPtr<SHorizontalBox> Box;
 
-				ParameterBox->AddSlot()
-				.HAlign(HAlign_Right)
-				.VAlign(VAlign_Fill)
-				.FillWidth(10.f)
-				[
-					SAssignNew(Box, SHorizontalBox)
-					+ SHorizontalBox::Slot()
-					.HAlign(HAlign_Fill)
-					.VAlign(VAlign_Center)
-					.FillWidth(0.45f)
-					[
-						SNew(SMutableTextSearchBox)
-						.PossibleSuggestions(PoseOptionNamesAttribute)
-						.InitialText(FText::FromString(PoseOptionNamesAttribute[PoseValueIndex]))
-						.MustMatchPossibleSuggestions(TAttribute<bool>(true))
-						.SuggestionListPlacement(EMenuPlacement::MenuPlacement_ComboBox)
-						.OnTextCommitted(this, &SCustomizableInstanceProperties::OnProjectorTextureParameterComboBoxChanged, PoseSwitchEnumParamNameWithRange)
-					]
-					
-					+ SHorizontalBox::Slot()
-					.HAlign(HAlign_Fill)
-					.VAlign(VAlign_Center)
-					.FillWidth(0.3f)
-					[
-						SNew(SButton)
-						.ToolTipText(LOCTEXT("Add Layer", "Add Layer"))
-						.Text(LOCTEXT("Add Layer", "Add Layer"))
-						.OnClicked(this, &SCustomizableInstanceProperties::OnProjectorLayerAdded, ParamName)
-						.HAlign(HAlign_Fill)
-					]
-				];
+				FString TextureSwitchEnumParamName = ParamName + FMultilayerProjector::IMAGE_PARAMETER_POSTFIX;
+
+				// Add the necessary ranges. Ranges could be lower if in the previous compilation the Group Projector used the Texture pin.
+				if (int32 ParameterIndex = CustomInstance->FindIntParameterNameIndex(TextureSwitchEnumParamName);
+					ParameterIndex != INDEX_NONE)
+				{
+					const int32 ProjectorRange = ProjectorParameters[ProjectorParamIndex].RangeValues.Num();
+					const int32 ImagesRange = CustomInstance->GetIntParameters()[ParameterIndex].ParameterRangeValueNames.Num();
+					for (int32 Range = 0; Range < ProjectorRange - ImagesRange; ++Range)
+					{
+						CustomInstance->AddValueToIntRange(TextureSwitchEnumParamName);
+					}
+				}
 
 				for (int32 i = 0; i < ProjectorParameters[ProjectorParamIndex].RangeValues.Num(); ++i)
 				{
 					FString ParamNameWithIndex = ParamName + FString::Printf(TEXT("__%d"), i);
-
-					FString TextureSwitchEnumParamName = ParamName + FMultilayerProjector::IMAGE_PARAMETER_POSTFIX;
+					
 					FString TextureSwitchEnumParamNameWithRange = TextureSwitchEnumParamName + FString::Printf(TEXT("__%d"), i);
-					int32 TextureSwitchEnumParamIndexInObject = CustomizableObject->FindParameter(TextureSwitchEnumParamName);
-					check(TextureSwitchEnumParamIndexInObject >= 0);
-					int32 numValues = CustomizableObject->GetIntParameterNumOptions(TextureSwitchEnumParamIndexInObject);
 
 					FString OpacitySliderParamName = ParamName + FMultilayerProjector::OPACITY_PARAMETER_POSTFIX;
 					FString OpacitySliderParamNameWithRange = OpacitySliderParamName + FString::Printf(TEXT("__%d"), i);
-
-					//if (numValues)
-					//{
-					//TSharedPtr< TArray< TSharedPtr<FString> > > OptionNames = MakeShareable(new TArray< TSharedPtr<FString> >());
-					//IntOptionNames.Add(OptionNames);
-
-					TArray<FString> OptionNamesAttribute;
-					FString Value = GetIntParameterValue(TextureSwitchEnumParamName, i);
-					int32 ValueIndex = 0;
-
-					for (int32 CandidateIndex = 0; CandidateIndex < numValues; ++CandidateIndex)
-					{
-						FString PossibleValue = CustomizableObject->GetIntParameterAvailableOption(TextureSwitchEnumParamIndexInObject, CandidateIndex);
-						if (PossibleValue == Value)
-						{
-							ValueIndex = CandidateIndex;
-						}
-						//OptionNames->Add(MakeShareable(new FString(CustomizableObject->GetIntParameterAvailableOption(TextureSwitchEnumParamIndexInObject, CandidateIndex))));
-						OptionNamesAttribute.Add(CustomizableObject->GetIntParameterAvailableOption(TextureSwitchEnumParamIndexInObject, CandidateIndex));
-					}
-					//}
 
 					TSharedPtr<SHorizontalBox> SliderBox;
 					TSharedPtr<SSpinBox<float>> Slider;
@@ -1146,21 +1089,6 @@ void SCustomizableInstanceProperties::AddParameter(int32 ParamIndexInObject)
 										.Justification(ETextJustify::Center)
 										//.AutoWrapText(true)
 									]
-								]
-							]
-
-							+ SHorizontalBox::Slot()
-							.Padding(1, 0)
-							[
-								SNew(SBox)
-								.MinDesiredWidth(120.f)
-								[
-									SNew(SMutableTextSearchBox)
-									.PossibleSuggestions(OptionNamesAttribute)
-									.InitialText(FText::FromString(OptionNamesAttribute[ValueIndex]))
-									.MustMatchPossibleSuggestions(TAttribute<bool>(true))
-									.SuggestionListPlacement(EMenuPlacement::MenuPlacement_ComboBox)
-									.OnTextCommitted(this, &SCustomizableInstanceProperties::OnProjectorTextureParameterComboBoxChanged, TextureSwitchEnumParamNameWithRange)
 								]
 							]
 						]
@@ -1298,6 +1226,44 @@ void SCustomizableInstanceProperties::AddParameter(int32 ParamIndexInObject)
 					}
 
 					FloatSliders.Add(FSliderData(Slider, OpacitySliderParamName, i, GetFloatParameterValue(OpacitySliderParamName, i)));
+
+					if (CustomizableObject->FindParameter(TextureSwitchEnumParamName) != INDEX_NONE)
+					{
+						int32 TextureSwitchEnumParamIndexInObject = CustomizableObject->FindParameter(TextureSwitchEnumParamName);
+						check(TextureSwitchEnumParamIndexInObject >= 0);
+						int32 NumValues = CustomizableObject->GetIntParameterNumOptions(TextureSwitchEnumParamIndexInObject);
+
+						TArray<FString> OptionNamesAttribute;
+						int32 ValueIndex = 0;
+
+						FString Value = GetIntParameterValue(TextureSwitchEnumParamName, i);
+
+						for (int32 CandidateIndex = 0; CandidateIndex < NumValues; ++CandidateIndex)
+						{
+							FString PossibleValue = CustomizableObject->GetIntParameterAvailableOption(TextureSwitchEnumParamIndexInObject, CandidateIndex);
+							if (PossibleValue == Value)
+							{
+								ValueIndex = CandidateIndex;
+							}
+
+							OptionNamesAttribute.Add(CustomizableObject->GetIntParameterAvailableOption(TextureSwitchEnumParamIndexInObject, CandidateIndex));
+						}
+
+						PropertiesHB->AddSlot()
+							.Padding(1, 0)
+							[
+								SNew(SBox)
+								.MinDesiredWidth(120.f)
+								[
+									SNew(SMutableTextSearchBox)
+									.PossibleSuggestions(OptionNamesAttribute)
+									.InitialText(FText::FromString(OptionNamesAttribute[ValueIndex]))
+									.MustMatchPossibleSuggestions(TAttribute<bool>(true))
+									.SuggestionListPlacement(EMenuPlacement::MenuPlacement_ComboBox)
+									.OnTextCommitted(this, &SCustomizableInstanceProperties::OnProjectorTextureParameterComboBoxChanged, TextureSwitchEnumParamNameWithRange)
+								]
+							];
+					}
 				}
 			}
 		}
@@ -1308,6 +1274,7 @@ void SCustomizableInstanceProperties::AddParameter(int32 ParamIndexInObject)
 		break;
 	}
 }
+
 
 void SCustomizableInstanceProperties::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
 {
@@ -1730,7 +1697,7 @@ FReply SCustomizableInstanceProperties::OnColorBlockMouseButtonDown(const FGeome
 	args.bIsModal = true;
 	args.bUseAlpha = false;
 	args.bOnlyRefreshOnMouseUp = false;
-	args.InitialColorOverride = col;
+	args.InitialColor = col;
 	args.OnColorCommitted = FOnLinearColorValueChanged::CreateSP(this, &SCustomizableInstanceProperties::OnSetColorFromColorPicker, ParamName);
 	OpenColorPicker(args);
 
@@ -1817,7 +1784,6 @@ ECheckBoxState SCustomizableInstanceProperties::IsProjectorScale(FString ParamNa
 	return ECheckBoxState::Unchecked;
 }
 
-
 FReply SCustomizableInstanceProperties::OnProjectorLayerAdded(FString ParamName) const
 {
 	const int32 NumLayers = CustomInstance->AddValueToProjectorRange(ParamName) + 1;
@@ -1827,9 +1793,12 @@ FReply SCustomizableInstanceProperties::OnProjectorLayerAdded(FString ParamName)
 	}
 
 	const FString TextureSwitchEnumParamName = ParamName + FMultilayerProjector::IMAGE_PARAMETER_POSTFIX;
-	CustomInstance->AddValueToIntRange(TextureSwitchEnumParamName);
-	check(CustomInstance->FindIntParameterNameIndex(TextureSwitchEnumParamName) != INDEX_NONE);
-	check(NumLayers == CustomInstance->GetIntParameters()[CustomInstance->FindIntParameterNameIndex(TextureSwitchEnumParamName)].ParameterRangeValueNames.Num());
+	if (CustomInstance->GetCustomizableObject()->FindParameter(TextureSwitchEnumParamName) != INDEX_NONE)
+	{
+		CustomInstance->AddValueToIntRange(TextureSwitchEnumParamName);
+		check(CustomInstance->FindIntParameterNameIndex(TextureSwitchEnumParamName) != INDEX_NONE);
+		check(NumLayers == CustomInstance->GetIntParameters()[CustomInstance->FindIntParameterNameIndex(TextureSwitchEnumParamName)].ParameterRangeValueNames.Num());
+	}
 
 	TArray<FCustomizableObjectFloatParameterValue>& FloatParameters = CustomInstance->GetFloatParameters();
 	
@@ -1873,9 +1842,12 @@ FReply SCustomizableInstanceProperties::OnProjectorLayerRemoved(FString ParamNam
 	CustomInstance->RemovedProjectorParameterNameWithIndex = ParamNameWithIndex; // Since the gizmo updates the CustomObjectInstance when unselected, a check is required to avoid updating the removed projector parameter range index
 
 	const FString TextureSwitchEnumParamName = ParamName + FMultilayerProjector::IMAGE_PARAMETER_POSTFIX;
-	CustomInstance->RemoveValueFromIntRange(TextureSwitchEnumParamName, RangeIndex);
-	check(CustomInstance->FindIntParameterNameIndex(TextureSwitchEnumParamName) != INDEX_NONE);
-	check(NumLayers == CustomInstance->GetIntParameters()[CustomInstance->FindIntParameterNameIndex(TextureSwitchEnumParamName)].ParameterRangeValueNames.Num());
+	if (CustomInstance->GetCustomizableObject()->FindParameter(TextureSwitchEnumParamName) != INDEX_NONE)
+	{
+		CustomInstance->RemoveValueFromIntRange(TextureSwitchEnumParamName, RangeIndex);
+		check(CustomInstance->FindIntParameterNameIndex(TextureSwitchEnumParamName) != INDEX_NONE);
+		check(NumLayers == CustomInstance->GetIntParameters()[CustomInstance->FindIntParameterNameIndex(TextureSwitchEnumParamName)].ParameterRangeValueNames.Num());
+	}
 
 	TArray<FCustomizableObjectFloatParameterValue>& FloatParameters = CustomInstance->GetFloatParameters();
 
@@ -2018,9 +1990,8 @@ void SCustomizableInstanceProperties::OnProjectorTextureParameterComboBoxChanged
 					FString ValueName = CustomObject->GetIntParameterAvailableOption(ParamIndexInObject, v);
 					if (ValueName == *Selection)
 					{
-						if (RangeIndex >= 0)
+						if (IntParameters[i].ParameterRangeValueNames.IsValidIndex(RangeIndex))
 						{
-							check(IntParameters[i].ParameterRangeValueNames.IsValidIndex(RangeIndex));
 							IntParameters[i].ParameterRangeValueNames[RangeIndex] = ValueName;
 						}
 						else

@@ -170,7 +170,7 @@ void SKeySelector::Construct(const FArguments& InArgs)
 		[
 			SAssignNew(KeyComboButton, SComboButton)
 			.OnGetMenuContent(this, &SKeySelector::GetMenuContent)
-			.ContentPadding(0)
+			.ContentPadding(0.0f)
 			.ToolTipText(this, &SKeySelector::GetKeyDescriptionToolTip)	// Longer key descriptions can overrun the visible space in the combo button if the parent width is constrained, so we reflect them in the tooltip too.
 			.ButtonContent()
 			[
@@ -207,11 +207,6 @@ FText SKeySelector::GetKeyDescription() const
 
 FText SKeySelector::GetKeyDescriptionToolTip() const
 {
-	if(!bEnabledFromKeyStructCustomization)
-    {
-    	return LOCTEXT("KeySelectorDisabledToolTipText", "This Key cannot be part of the combo trigger so Key selection has been disabled.");
-    }
-    
 	TOptional<FKey> CurrentKeyValue = CurrentKey.Get();
 	if (CurrentKeyValue.IsSet())
 	{
@@ -239,7 +234,7 @@ FText SKeySelector::GetKeyTooltip() const
 {
 	if(!bEnabledFromKeyStructCustomization)
 	{
-		return LOCTEXT("KeySelectorDisabledToolTipText", "This Key cannot be part of the combo trigger so Key selection has been disabled.");
+		return DisabledSelectorToolTip;
 	}
 	
 	TOptional<FKey> CurrentKeyValue = CurrentKey.Get();

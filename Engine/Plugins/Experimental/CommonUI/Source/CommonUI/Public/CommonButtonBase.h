@@ -3,16 +3,20 @@
 #pragma once
 
 #include "CommonUserWidget.h"
-#include "CommonUITypes.h"
 #include "Components/Button.h"
-#include "Misc/Optional.h"
+#include "Engine/DataTable.h"
 #include "Types/ISlateMetaData.h"
 #include "CommonInputModeTypes.h"
 #include "CommonButtonBase.generated.h"
 
+class UCommonButtonBase;
+class UMaterialInstanceDynamic;
+enum class ECommonInputType : uint8;
+
 class UCommonTextStyle;
 class SBox;
 class UCommonActionWidget;
+class UInputAction;
 
 class COMMONUI_API FCommonButtonMetaData : public ISlateMetaData
 {
@@ -412,9 +416,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Common Button|Setters")
 	void SetTriggeringInputAction(const FDataTableRowHandle & InputActionRow);
 
+	/** Updates the current triggering enhanced input action, requires enhanced input enabled in CommonUI settings */
+	UFUNCTION(BlueprintCallable, Category = "Common Button|Setters")
+	void SetTriggeringEnhancedInputAction(UInputAction* InInputAction);
+
 	/** Gets the appropriate input action that is set */
 	UFUNCTION(BlueprintCallable, Category = "Common Button|Getters")
 	bool GetInputAction(FDataTableRowHandle &InputActionRow) const;
+
+	/** Gets the appropriate enhanced input action that is set */
+	UFUNCTION(BlueprintCallable, Category = "Common Button|Getters")
+	UInputAction* GetEnhancedInputAction() const;
 
 	/** Updates the bIsFocusable flag */
 	UFUNCTION(BlueprintCallable, Category = "Common Button|Getters")
@@ -499,6 +511,7 @@ protected:
 
 	UFUNCTION()
 	virtual void HandleTriggeringActionCommited(bool& bPassthrough);
+	virtual void HandleTriggeringActionCommited();
 
 	//@TODO: DarenC - API decision, consider removing
 	virtual void ExecuteTriggeredInput();
@@ -600,18 +613,26 @@ protected:
 	UFUNCTION(BlueprintCallable, meta=(BlueprintProtected="true"), Category = "Common Button")
 	void SetSelectedInternal(bool bInSelected, bool bAllowSound = true, bool bBroadcast = true);
 
+	/** Callback fired when input action datatable row changes */
 	UFUNCTION(BlueprintImplementableEvent, Category = "Common Button")
 	void OnTriggeredInputActionChanged(const FDataTableRowHandle& NewTriggeredAction);
 
+	/** Callback fired when triggered input action datatable row changes */
 	UFUNCTION(BlueprintImplementableEvent, Category = "Common Button")
 	void OnTriggeringInputActionChanged(const FDataTableRowHandle& NewTriggeredAction);
 
+	/** Callback fired when enhanced input action changes */
+	UFUNCTION(BlueprintImplementableEvent, Category = "Common Button")
+	void OnTriggeringEnhancedInputActionChanged(const UInputAction* InInputAction);
+
+	/** Callback fired continously during hold interactions */
 	UFUNCTION(BlueprintImplementableEvent, Category = "Common Button")
 	void OnActionProgress(float HeldPercent);
 	
 	UFUNCTION()
 	virtual void NativeOnActionProgress(float HeldPercent);
 
+	/** Callback fired when hold events complete */
 	UFUNCTION(BlueprintImplementableEvent, Category = "Common Button")
 	void OnActionComplete();
 
@@ -735,7 +756,12 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Input)
 	TEnumAsByte<EButtonPressMethod::Type> PressMethod;
 
-	/** This is the priority for the TriggeringInputAction.  The first, HIGHEST PRIORITY widget will handle the input action, and no other widgets will be considered.  Additionally, no inputs with a priority below the current ActivatablePanel's Input Priority value will even be considered! */
+	/** 
+	 * This is the priority for the TriggeringInputAction.  The first, HIGHEST PRIORITY widget will handle the input action, and no other widgets will be considered.  
+	 * Additionally, no inputs with a priority below the current ActivatablePanel's Input Priority value will even be considered! 
+	 * 
+	 * @TODO: This is part of legacy CommonUI and should be removed
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Input, meta = (ExposeOnSpawn = true))
 	int32 InputPriority;
 
@@ -746,9 +772,18 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Input, meta = (ExposeOnSpawn = true, RowType = "/Script/CommonUI.CommonInputActionDataBase"))
 	FDataTableRowHandle TriggeringInputAction;
 
+	/** 
+	 *	The enhanced input action that is bound to this button. The common input manager will trigger this button to 
+	 *	click if the action was pressed 
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Input, meta = (EditCondition = "CommonInput.CommonInputSettings.IsEnhancedInputSupportEnabled", EditConditionHides))
+	TObjectPtr<UInputAction> TriggeringEnhancedInputAction;
+
 	/**
-	 *	The input action that can be visualized as well as triggered when the user
-	 *	clicks the button.
+	 * The input action that can be visualized as well as triggered when the user
+	 * clicks the button.
+	 * 
+	 * @TODO: This is part of legacy CommonUI and should be removed
 	 */
 	FDataTableRowHandle TriggeredInputAction;
 
@@ -852,6 +887,7 @@ protected:
 	/**
 	 * Optionally bound widget for visualization behavior of an input action;
 	 * NOTE: If specified, will visualize according to the following algorithm:
+	 * If TriggeringEnhancedInputAction is specified, visualize it else:
 	 * If TriggeringInputAction is specified, visualize it else:
 	 * If TriggeredInputAction is specified, visualize it else:
 	 * Visualize the default click action while hovered
@@ -859,3 +895,8 @@ protected:
 	UPROPERTY(BlueprintReadOnly, Category = Input, meta = (BindWidget, OptionalWidget = true, AllowPrivateAccess = true))
 	TObjectPtr<UCommonActionWidget> InputActionWidget;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CommonUITypes.h"
+#include "Misc/Optional.h"
+#endif

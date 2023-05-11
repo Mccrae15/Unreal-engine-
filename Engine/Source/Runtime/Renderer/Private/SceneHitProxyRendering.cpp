@@ -5,6 +5,7 @@
 =============================================================================*/
 
 #include "SceneHitProxyRendering.h"
+#include "Engine/Engine.h"
 #include "RendererInterface.h"
 #include "BatchedElements.h"
 #include "Materials/Material.h"
@@ -13,6 +14,7 @@
 #include "MeshMaterialShader.h"
 #include "ShaderBaseClasses.h"
 #include "SceneRendering.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "DeferredShadingRenderer.h"
 #include "ScenePrivate.h"
 #include "DynamicPrimitiveDrawing.h"
@@ -31,6 +33,7 @@
 #include "InstanceCulling/InstanceCullingManager.h"
 #include "GPUMessaging.h"
 #include "HairStrands/HairStrandsData.h"
+#include "SimpleMeshDrawCommandPass.h"
 
 static int32 GNaniteProgrammableRasterHitProxy = 1;
 static FAutoConsoleVariableRef CNaniteProgrammableRasterHitProxy(
@@ -187,10 +190,10 @@ void InitHitProxyRender(FRDGBuilder& GraphBuilder, FSceneRenderer* SceneRenderer
 	// Ensure VirtualTexture resources are allocated
 	if (UseVirtualTexturing(FeatureLevel))
 	{
-		FVirtualTextureSystem::Get().AllocateResources(GraphBuilder, FeatureLevel);
-		FVirtualTextureSystem::Get().CallPendingCallbacks();
-		// Because there is no Update(), we need to manually finalize the resources
-		FVirtualTextureSystem::Get().FinalizeResources(GraphBuilder, FeatureLevel);
+		FVirtualTextureUpdateSettings Settings;
+		Settings.EnablePageRequests(false);
+
+		FVirtualTextureSystem::Get().Update(GraphBuilder, FeatureLevel, nullptr, Settings);
 	}
 
 	// Initialize global system textures (pass-through if already initialized).
@@ -627,12 +630,10 @@ void FDeferredShadingSceneRenderer::RenderHitProxies(FRDGBuilder& GraphBuilder)
 	FInstanceCullingManager& InstanceCullingManager = *GraphBuilder.AllocObject<FInstanceCullingManager>(Scene->GPUScene.IsEnabled(), GraphBuilder);
 
 	// Find the visible primitives.
-	{
-		FLumenSceneFrameTemporaries LumenFrameTemporaries;
-		FILCUpdatePrimTaskData ILCTaskData;
-		InitViews(GraphBuilder, SceneTexturesConfig, FExclusiveDepthStencil::DepthWrite_StencilWrite, ILCTaskData, InstanceCullingManager);
-		InitViewsAfterPrepass(GraphBuilder, LumenFrameTemporaries, ILCTaskData, InstanceCullingManager);
-	}
+	FLumenSceneFrameTemporaries LumenFrameTemporaries;
+	FILCUpdatePrimTaskData ILCTaskData;
+	FRDGExternalAccessQueue ExternalAccessQueue;
+	BeginInitViews(GraphBuilder, SceneTexturesConfig, FExclusiveDepthStencil::DepthWrite_StencilWrite, ILCTaskData, InstanceCullingManager);
 
 	extern TSet<IPersistentViewUniformBufferExtension*> PersistentViewUniformBufferExtensions;
 
@@ -647,23 +648,18 @@ void FDeferredShadingSceneRenderer::RenderHitProxies(FRDGBuilder& GraphBuilder)
 		}
 	}
 
+	ShaderPrint::BeginViews(GraphBuilder, Views);
+
+	Scene->GPUScene.Update(GraphBuilder, *Scene, ExternalAccessQueue);
+
 	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 	{
-		ShaderPrint::BeginView(GraphBuilder, Views[ViewIndex]);
+		Scene->GPUScene.UploadDynamicPrimitiveShaderDataForView(GraphBuilder, *Scene, Views[ViewIndex], ExternalAccessQueue);
 	}
 
-	{
-		FRDGExternalAccessQueue ExternalAccessQueue;
+	EndInitViews(GraphBuilder, LumenFrameTemporaries, ILCTaskData, InstanceCullingManager, ExternalAccessQueue);
 
-		Scene->GPUScene.Update(GraphBuilder, *Scene, ExternalAccessQueue);
-
-		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
-		{
-			Scene->GPUScene.UploadDynamicPrimitiveShaderDataForView(GraphBuilder, *Scene, Views[ViewIndex], ExternalAccessQueue);
-		}
-
-		ExternalAccessQueue.Submit(GraphBuilder);
-	}
+	ExternalAccessQueue.Submit(GraphBuilder);
 
 	InstanceCullingManager.FlushRegisteredViews(GraphBuilder);
 
@@ -709,8 +705,9 @@ void FDeferredShadingSceneRenderer::RenderHitProxies(FRDGBuilder& GraphBuilder)
 		SharedContext.ShaderMap = GetGlobalShaderMap(SharedContext.FeatureLevel);
 		SharedContext.Pipeline = Nanite::EPipeline::HitProxy;
 
-		Nanite::FRasterState RasterState;
-		Nanite::FRasterContext RasterContext = Nanite::InitRasterContext(GraphBuilder, SharedContext, HitProxyTextureSize, false);
+		FIntRect HitProxyTextureRect(0, 0, HitProxyTextureSize.X, HitProxyTextureSize.Y);
+
+		Nanite::FRasterContext RasterContext = Nanite::InitRasterContext(GraphBuilder, SharedContext, ViewFamily, HitProxyTextureSize, HitProxyTextureRect, false);
 
 		Nanite::FCullingContext::FConfiguration CullingConfig = {0};
 		CullingConfig.bForceHWRaster = RasterContext.RasterScheduling == Nanite::ERasterScheduling::HardwareOnly;
@@ -742,8 +739,7 @@ void FDeferredShadingSceneRenderer::RenderHitProxies(FRDGBuilder& GraphBuilder)
 				{ PackedView },
 				SharedContext,
 				CullingContext,
-				RasterContext,
-				RasterState
+				RasterContext
 			);
 			Nanite::ExtractResults(GraphBuilder, CullingContext, RasterContext, NaniteRasterResults[ViewIndex]);
 		}
@@ -751,13 +747,11 @@ void FDeferredShadingSceneRenderer::RenderHitProxies(FRDGBuilder& GraphBuilder)
 
 	::DoRenderHitProxies(GraphBuilder, this, HitProxyTexture, HitProxyDepthTexture, NaniteRasterResults, InstanceCullingManager);
 
-	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
-	{
-		ShaderPrint::EndView(Views[ViewIndex]);
-	}
+	ShaderPrint::EndViews(Views);
 
 	GEngine->GetPostRenderDelegateEx().Broadcast(GraphBuilder);
 
+	AddDispatchToRHIThreadPass(GraphBuilder);
 #endif
 }
 
@@ -765,7 +759,7 @@ void FDeferredShadingSceneRenderer::RenderHitProxies(FRDGBuilder& GraphBuilder)
 
 bool FHitProxyMeshProcessor::TryAddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId, const FMaterialRenderProxy* MaterialRenderProxy, const FMaterial* Material)
 {
-	const EBlendMode BlendMode = Material->GetBlendMode();
+	const bool bIsTranslucent = IsTranslucentBlendMode(*Material);
 	const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
 	const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(*Material, OverrideSettings);
 	const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(*Material, OverrideSettings);
@@ -803,7 +797,7 @@ bool FHitProxyMeshProcessor::TryAddMeshBatch(const FMeshBatch& RESTRICT MeshBatc
 	}
 
 	bool bResult = true;
-	if (bAddTranslucentPrimitive || !IsTranslucentBlendMode(BlendMode))
+	if (bAddTranslucentPrimitive || !bIsTranslucent)
 	{
 		bResult = Process(MeshBatch, BatchElementMask, StaticMeshId, PrimitiveSceneProxy, *MaterialRenderProxy, *Material, MeshFillMode, MeshCullMode);
 	}

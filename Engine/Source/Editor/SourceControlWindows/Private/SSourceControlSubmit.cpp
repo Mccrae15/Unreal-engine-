@@ -26,6 +26,7 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Virtualization/VirtualizationSystem.h"
 #include "Logging/MessageLog.h"
+#include "RevisionControlStyle/RevisionControlStyle.h"
 
 #if SOURCE_CONTROL_WITH_SLATE
 
@@ -37,27 +38,32 @@ static FText GSavedChangeListDescription;
 
 bool TryToVirtualizeFilesToSubmit(const TArray<FString>& FilesToSubmit, FText& Description, FText& OutFailureMsg)
 {
-	// TODO: Once this is removed and not deprecated move the following arrays inside of the System.IsEnabled() scope
-	TArray<FText> PayloadErrors;
-	TArray<FText> DescriptionTags;
+	using namespace UE::Virtualization;
+
+	{
+		TArray<FText> PayloadErrors;
+		TArray<FText> DescriptionTags;
 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	ISourceControlModule::Get().GetOnPreSubmitFinalize().Broadcast(FilesToSubmit, DescriptionTags, PayloadErrors);
+		ISourceControlModule::Get().GetOnPreSubmitFinalize().Broadcast(FilesToSubmit, DescriptionTags, PayloadErrors);
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
 
-	UE::Virtualization::IVirtualizationSystem& System = UE::Virtualization::IVirtualizationSystem::Get();
+	IVirtualizationSystem& System = IVirtualizationSystem::Get();
 	if (!System.IsEnabled())
 	{
 		return true;
 	}
 
-	UE::Virtualization::EVirtualizationResult Result = System.TryVirtualizePackages(FilesToSubmit, DescriptionTags, PayloadErrors);
-	if (Result == UE::Virtualization::EVirtualizationResult::Success)
+	EVirtualizationOptions VirtualizationOptions = EVirtualizationOptions::None;
+
+	FVirtualizationResult Result = System.TryVirtualizePackages(FilesToSubmit, VirtualizationOptions);
+	if (Result.WasSuccessful())
 	{
 		FTextBuilder NewDescription;
 		NewDescription.AppendLine(Description);
 
-		for (const FText& Line : DescriptionTags)
+		for (const FText& Line : Result.DescriptionTags)
 		{
 			NewDescription.AppendLine(Line);
 		}
@@ -68,7 +74,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 	else if (System.AllowSubmitIfVirtualizationFailed())
 	{
-		for (const FText& Error : PayloadErrors)
+		for (const FText& Error : Result.Errors)
 		{
 			FMessageLog("SourceControl").Warning(Error);
 		}
@@ -78,7 +84,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 	else
 	{
-		for (const FText& Error : PayloadErrors)
+		for (const FText& Error : Result.Errors)
 		{
 			FMessageLog("SourceControl").Error(Error);
 		}
@@ -141,6 +147,7 @@ void SSourceControlSubmitWidget::Construct(const FArguments& InArgs)
 		GSavedChangeListDescription = InArgs._Description.Get();
 	}
 	bAllowSubmit = InArgs._AllowSubmit.Get();
+	bAllowDiffAgainstDepot = InArgs._AllowDiffAgainstDepot.Get();
 
 	const bool bDescriptionIsReadOnly = !InArgs._AllowDescriptionChange.Get();
 	const bool bAllowUncheckFiles = InArgs._AllowUncheckFiles.Get();
@@ -373,27 +380,20 @@ void SSourceControlSubmitWidget::Construct(const FArguments& InArgs)
 
 	const float AdditionalTopPadding = (bAllowKeepCheckedOut ? 0.0f : 5.0f);
 
+	TSharedPtr<SUniformGridPanel> SubmitSaveCancelButtonGrid;
+	int32 ButtonSlotId = 0;
+
 	Contents->AddSlot()
 	.AutoHeight()
 	.HAlign(HAlign_Right)
 	.VAlign(VAlign_Bottom)
-	.Padding(0.0f,AdditionalTopPadding,0.0f,5.0f)
+	.Padding(0.0f, AdditionalTopPadding, 0.0f, 5.0f)
 	[
-		SNew(SUniformGridPanel)
+		SAssignNew(SubmitSaveCancelButtonGrid, SUniformGridPanel)
 		.SlotPadding(FAppStyle::GetMargin("StandardDialog.SlotPadding"))
 		.MinDesiredSlotWidth(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotWidth"))
 		.MinDesiredSlotHeight(FAppStyle::GetFloat("StandardDialog.MinDesiredSlotHeight"))
-		+SUniformGridPanel::Slot(0,0)
-		[
-			SNew(SButton)
-			.Visibility(bAllowSaveAndClose ? EVisibility::Visible : EVisibility::Collapsed)
-			.HAlign(HAlign_Center)
-			.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
-			.Text(NSLOCTEXT("SourceControl.SubmitPanel", "Save", "Save"))
-			.ToolTipText(NSLOCTEXT("SourceControl.SubmitPanel", "Save_Tooltip", "Save the description and close without submitting."))
-			.OnClicked(this, &SSourceControlSubmitWidget::SaveAndCloseClicked)
-		]
-		+SUniformGridPanel::Slot(1,0)
+		+SUniformGridPanel::Slot(ButtonSlotId++, 0)
 		[
 			SNew(SButton)
 			.HAlign(HAlign_Center)
@@ -402,15 +402,29 @@ void SSourceControlSubmitWidget::Construct(const FArguments& InArgs)
 			.Text( NSLOCTEXT("SourceControl.SubmitPanel", "OKButton", "Submit") )
 			.OnClicked(this, &SSourceControlSubmitWidget::SubmitClicked)
 		]
-		+SUniformGridPanel::Slot(2,0)
+	];
+
+	if (bAllowSaveAndClose)
+	{
+		SubmitSaveCancelButtonGrid->AddSlot(ButtonSlotId++, 0)
+			[
+				SNew(SButton)
+				.HAlign(HAlign_Center)
+				.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
+				.Text(NSLOCTEXT("SourceControl.SubmitPanel", "Save", "Save"))
+				.ToolTipText(NSLOCTEXT("SourceControl.SubmitPanel", "Save_Tooltip", "Save the description and close without submitting."))
+				.OnClicked(this, &SSourceControlSubmitWidget::SaveAndCloseClicked)
+			];
+	}
+
+	SubmitSaveCancelButtonGrid->AddSlot(ButtonSlotId++, 0)
 		[
 			SNew(SButton)
 			.HAlign(HAlign_Center)
 			.ContentPadding(FAppStyle::GetMargin("StandardDialog.ContentPadding"))
 			.Text( NSLOCTEXT("SourceControl.SubmitPanel", "CancelButton", "Cancel") )
 			.OnClicked(this, &SSourceControlSubmitWidget::CancelClicked)
-		]
-	];
+		];
 
 	RequestSort();
 
@@ -427,11 +441,11 @@ TSharedPtr<SWidget> SSourceControlSubmitWidget::OnCreateContextMenu()
 	{
 		FMenuBuilder MenuBuilder(true, NULL);
 
-		MenuBuilder.BeginSection("Source Control", NSLOCTEXT("SourceControl.SubmitWindow.Menu", "SourceControlSectionHeader", "Source Control"));
+		MenuBuilder.BeginSection("Source Control", NSLOCTEXT("SourceControl.SubmitWindow.Menu", "SourceControlSectionHeader", "Revision Control"));
 		{
 			MenuBuilder.AddMenuEntry(
 				NSLOCTEXT("SourceControl.SubmitWindow.Menu", "DiffAgainstDepot", "Diff Against Depot"),
-				NSLOCTEXT("SourceControl.SubmitWindow.Menu", "DiffAgainstDepotTooltip", "Look at differences between your version of the asset and that in source control."),
+				NSLOCTEXT("SourceControl.SubmitWindow.Menu", "DiffAgainstDepotTooltip", "Look at differences between your version of the asset and that in revision control."),
 				FSlateIcon(FAppStyle::GetAppStyleSetName(), "SourceControl.Actions.Diff"),
 				FUIAction(
 					FExecuteAction::CreateSP(this, &SSourceControlSubmitWidget::OnDiffAgainstDepot),
@@ -452,10 +466,13 @@ TSharedPtr<SWidget> SSourceControlSubmitWidget::OnCreateContextMenu()
 bool SSourceControlSubmitWidget::CanDiffAgainstDepot() const
 {
 	bool bCanDiff = false;
-	const auto& SelectedItems = ListView->GetSelectedItems();
-	if (SelectedItems.Num() == 1)
+	if (bAllowDiffAgainstDepot)
 	{
-		bCanDiff = SelectedItems[0]->CanDiff();
+		const auto& SelectedItems = ListView->GetSelectedItems();
+		if (SelectedItems.Num() == 1)
+		{
+			bCanDiff = SelectedItems[0]->CanDiff();
+		}
 	}
 	return bCanDiff;
 }
@@ -471,21 +488,24 @@ void SSourceControlSubmitWidget::OnDiffAgainstDepot()
 
 void SSourceControlSubmitWidget::OnDiffAgainstDepotSelected(TSharedPtr<FFileTreeItem> InSelectedItem)
 {
-	FString PackageName;
-	if (FPackageName::TryConvertFilenameToLongPackageName(InSelectedItem->GetFileName().ToString(), PackageName))
+	if (bAllowDiffAgainstDepot)
 	{
-		TArray<FAssetData> Assets;
-		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-		AssetRegistryModule.Get().GetAssetsByPackageName(*PackageName, Assets);
-		if (Assets.Num() == 1)
+		FString PackageName;
+		if (FPackageName::TryConvertFilenameToLongPackageName(InSelectedItem->GetFileName().ToString(), PackageName))
 		{
-			const FAssetData& AssetData = Assets[0];
-			UObject* CurrentObject = AssetData.GetAsset();
-			if (CurrentObject)
+			TArray<FAssetData> Assets;
+			FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+			AssetRegistryModule.Get().GetAssetsByPackageName(*PackageName, Assets);
+			if (Assets.Num() == 1)
 			{
-				const FString AssetName = AssetData.AssetName.ToString();
-				FAssetToolsModule& AssetToolsModule = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools");
-				AssetToolsModule.Get().DiffAgainstDepot(CurrentObject, PackageName, AssetName);
+				const FAssetData& AssetData = Assets[0];
+				UObject* CurrentObject = AssetData.GetAsset();
+				if (CurrentObject)
+				{
+					const FString AssetName = AssetData.AssetName.ToString();
+					FAssetToolsModule& AssetToolsModule = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools");
+					AssetToolsModule.Get().DiffAgainstDepot(CurrentObject, PackageName, AssetName);
+				}
 			}
 		}
 	}
@@ -529,7 +549,7 @@ TSharedRef<SWidget> SSourceControlSubmitWidget::GenerateWidgetForItemAndColumn(T
 			.VAlign(VAlign_Center)
 			[
 				SNew(SImage)
-				.Image(FAppStyle::GetBrush(Item->GetIconName()))
+				.Image(FRevisionControlStyleManager::Get().GetBrush(Item->GetIconName()))
 				.ToolTipText(Item->GetIconTooltip())
 			];
 	}

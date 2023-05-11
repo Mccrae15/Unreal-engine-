@@ -1,32 +1,29 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
-// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	ContentStreaming.cpp: Implementation of content streaming classes.
 =============================================================================*/
 
 #include "ContentStreaming.h"
+#include "Components/PrimitiveComponent.h"
 #include "Engine/Texture2D.h"
-#include "Engine/StaticMesh.h"
-#include "Engine/SkeletalMesh.h"
-#include "LandscapeComponent.h"
-#include "Misc/CommandLine.h"
 #include "Misc/ConfigCacheIni.h"
-#include "UObject/UObjectHash.h"
+#include "RHI.h"
 #include "UObject/UObjectIterator.h"
-#include "EngineGlobals.h"
-#include "Components/MeshComponent.h"
-#include "Engine/Engine.h"
-#include "Streaming/TextureStreamingHelpers.h"
+#include "Engine/Level.h"
+#include "RenderingThread.h"
 #include "Streaming/StreamingManagerTexture.h"
-#include "AudioStreaming.h"
 #include "Animation/AnimationStreaming.h"
 #include "AudioStreamingCache.h"
 #include "AudioCompressionSettingsUtils.h"
 #include "VT/VirtualTextureChunkManager.h"
-#include "Interfaces/ITargetPlatform.h"
-#include "Interfaces/ITargetPlatformManagerModule.h"
 #include "Rendering/NaniteCoarseMeshStreamingManager.h"
+
+#if WITH_EDITOR
+#include "AudioDevice.h"
+#else
+#include "Engine/Engine.h"
+#endif
 
 /*-----------------------------------------------------------------------------
 	Globals.
@@ -1006,6 +1003,11 @@ bool FStreamingManagerCollection::IsStreamingEnabled() const
 	return DisableResourceStreamingCount == 0;
 }
 
+bool FStreamingManagerCollection::IsTextureStreamingEnabled() const
+{
+	return IsRenderAssetStreamingEnabled(EStreamableRenderAssetType::Texture);
+}
+
 bool FStreamingManagerCollection::IsRenderAssetStreamingEnabled(EStreamableRenderAssetType FilteredAssetType) const
 {
 	if (RenderAssetStreamingManager)
@@ -1234,8 +1236,6 @@ void FStreamingManagerCollection::PropagateLightingScenarioChange()
 }
 
 #if WITH_EDITOR
-#include "AudioDevice.h"
-#include "AudioDeviceManager.h"
 
 void FStreamingManagerCollection::OnAudioStreamingParamsChanged()
 {
@@ -1360,6 +1360,9 @@ void FStreamingManagerCollection::AddOrRemoveTextureStreamingManagerIfNeeded(boo
 				It->UnlinkStreaming();
 			}
 
+			// Remove unreachable assets from the streamer before it goes away
+			UnhashUnreachableObjects(false);
+
 			RemoveStreamingManager(RenderAssetStreamingManager);
 			delete RenderAssetStreamingManager;
 			RenderAssetStreamingManager = nullptr;
@@ -1439,11 +1442,10 @@ FArchive& operator<<( FArchive& Ar, FDynamicTextureInstance& TextureInstance )
 FAudioChunkHandle::FAudioChunkHandle()
 	: CachedData(nullptr)
 	, CachedDataNumBytes(0)
-	, CorrespondingWave(nullptr)
-	, CorrespondingWaveName()
 	, ChunkIndex(INDEX_NONE)
 #if WITH_EDITOR
-	, ChunkGeneration(INDEX_NONE)
+	, CorrespondingWave(nullptr)
+	, ChunkRevision(INDEX_NONE)
 #endif
 {
 }
@@ -1451,13 +1453,21 @@ FAudioChunkHandle::FAudioChunkHandle()
 FAudioChunkHandle::FAudioChunkHandle(const uint8* InData, uint32 NumBytes, const FSoundWaveProxyPtr&  InSoundWave, const FName& SoundWaveName, uint32 InChunkIndex, uint64 InCacheLookupID)
 	: CachedData(InData)
 	, CachedDataNumBytes(NumBytes)
-	, CorrespondingWave(InSoundWave->GetSoundWaveData())
 	, CorrespondingWaveName(SoundWaveName)
 	, ChunkIndex(InChunkIndex)
 #if WITH_EDITOR
-	, ChunkGeneration(InSoundWave.IsValid()? InSoundWave->GetCurrentChunkRevision() : 0)
+	, CorrespondingWave(InSoundWave->GetSoundWaveData())
+	, ChunkRevision(InSoundWave.IsValid()? InSoundWave->GetCurrentChunkRevision() : 0)
 #endif
 {
+	if (InSoundWave.IsValid())
+	{
+		TSharedPtr<FSoundWaveData> SoundWaveData = InSoundWave->GetSoundWaveData();
+		if (SoundWaveData.IsValid())
+		{
+			CorrespondingWaveObjectKey = SoundWaveData->GetFObjectKey();
+		}
+	}
 }
 
 FAudioChunkHandle::FAudioChunkHandle(const FAudioChunkHandle& Other)
@@ -1482,22 +1492,24 @@ FAudioChunkHandle& FAudioChunkHandle::operator=(FAudioChunkHandle&& Other)
 
 	CachedData = Other.CachedData;
 	CachedDataNumBytes = Other.CachedDataNumBytes;
-	CorrespondingWave = MoveTemp(Other.CorrespondingWave);
 	CorrespondingWaveName = Other.CorrespondingWaveName;
+	CorrespondingWaveObjectKey = Other.CorrespondingWaveObjectKey;
 	ChunkIndex = Other.ChunkIndex;
 #if WITH_EDITOR
-	ChunkGeneration = Other.ChunkGeneration;
+	CorrespondingWave = MoveTemp(Other.CorrespondingWave);
+	ChunkRevision = Other.ChunkRevision;
 #endif
 
 	// we don't need to call RemoveReferenceToChunk on Other, nor add a new reference to this chunk, since this is a move.
 	// Instead, we can simply null out the other chunk handle without invoking it's destructor.
 	Other.CachedData = nullptr;
 	Other.CachedDataNumBytes = 0;
-	Other.CorrespondingWave = nullptr;
 	Other.CorrespondingWaveName = FName();
+	Other.CorrespondingWaveObjectKey = FObjectKey();
 	Other.ChunkIndex = INDEX_NONE;
 #if WITH_EDITOR
-	Other.ChunkGeneration = INDEX_NONE;
+	Other.CorrespondingWave = nullptr;
+	Other.ChunkRevision = INDEX_NONE;
 #endif
 
 	return *this;
@@ -1509,21 +1521,16 @@ FAudioChunkHandle& FAudioChunkHandle::operator=(const FAudioChunkHandle& Other)
 	if (IsValid())
 	{
 		IStreamingManager::Get().GetAudioStreamingManager().RemoveReferenceToChunk(*this);
-		CorrespondingWave.Reset();
 	}
 
 	CachedData = Other.CachedData;
 	CachedDataNumBytes = Other.CachedDataNumBytes;
-
-	if (Other.CorrespondingWave.IsValid())
-	{
-		CorrespondingWave = Other.CorrespondingWave;
-	}
-
 	CorrespondingWaveName = Other.CorrespondingWaveName;
+	CorrespondingWaveObjectKey = Other.CorrespondingWaveObjectKey;
 	ChunkIndex = Other.ChunkIndex;
 #if WITH_EDITOR
-	ChunkGeneration = Other.ChunkGeneration;
+	CorrespondingWave = Other.CorrespondingWave;
+	ChunkRevision = Other.ChunkRevision;
 #endif
 
 	if (IsValid())
@@ -1555,7 +1562,7 @@ uint32 FAudioChunkHandle::Num() const
 
 bool FAudioChunkHandle::IsValid() const
 {
-	return GetData() && CorrespondingWave.Pin().IsValid();
+	return (nullptr != GetData());
 }
 
 #if WITH_EDITOR
@@ -1566,7 +1573,7 @@ bool FAudioChunkHandle::IsStale() const
 	if (SoundWaveDataPtr.IsValid())
 	{
 		// NOTE: While this is currently safe in editor, there's no guarantee the USoundWave will be kept alive during the lifecycle of this chunk handle.
-		return ChunkGeneration != SoundWaveDataPtr->GetCurrentChunkRevision();
+		return ChunkRevision != SoundWaveDataPtr->GetCurrentChunkRevision();
 	}
 	else
 	{

@@ -29,7 +29,6 @@
 #include "Operations/MinimalHoleFiller.h"
 #include "Operations/PolygroupRemesh.h"
 #include "Operations/WeldEdgeSequence.h"
-#include "Selection/PersistentMeshSelection.h"
 #include "Selection/StoredMeshSelectionUtil.h"
 #include "Selection/PolygonSelectionMechanic.h"
 #include "Selections/MeshConnectedComponents.h"
@@ -50,6 +49,7 @@
 #include "ToolTargetManager.h"
 #include "TransformTypes.h"
 #include "Util/CompactMaps.h"
+#include "Selections/GeometrySelection.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(EditMeshPolygonsTool)
 
@@ -117,14 +117,14 @@ namespace EditMeshPolygonsToolLocals
  */
 
 
-USingleSelectionMeshEditingTool* UEditMeshPolygonsToolBuilder::CreateNewTool(const FToolBuilderState& SceneState) const
+USingleTargetWithSelectionTool* UEditMeshPolygonsToolBuilder::CreateNewTool(const FToolBuilderState& SceneState) const
 {
 	return NewObject<UEditMeshPolygonsTool>(SceneState.ToolManager);
 }
 
-void UEditMeshPolygonsToolBuilder::InitializeNewTool(USingleSelectionMeshEditingTool* Tool, const FToolBuilderState& SceneState) const
+void UEditMeshPolygonsToolBuilder::InitializeNewTool(USingleTargetWithSelectionTool* Tool, const FToolBuilderState& SceneState) const
 {
-	USingleSelectionMeshEditingToolBuilder::InitializeNewTool(Tool, SceneState);
+	USingleTargetWithSelectionToolBuilder::InitializeNewTool(Tool, SceneState);
 	UEditMeshPolygonsTool* EditPolygonsTool = CastChecked<UEditMeshPolygonsTool>(Tool);
 	if (bTriangleMode)
 	{
@@ -134,7 +134,7 @@ void UEditMeshPolygonsToolBuilder::InitializeNewTool(USingleSelectionMeshEditing
 
 
 
-void UEditMeshPolygonsActionModeToolBuilder::InitializeNewTool(USingleSelectionMeshEditingTool* Tool, const FToolBuilderState& SceneState) const
+void UEditMeshPolygonsActionModeToolBuilder::InitializeNewTool(USingleTargetWithSelectionTool* Tool, const FToolBuilderState& SceneState) const
 {
 	UEditMeshPolygonsToolBuilder::InitializeNewTool(Tool, SceneState);
 	UEditMeshPolygonsTool* EditPolygonsTool = CastChecked<UEditMeshPolygonsTool>(Tool);
@@ -143,13 +143,13 @@ void UEditMeshPolygonsActionModeToolBuilder::InitializeNewTool(USingleSelectionM
 	EditPolygonsTool->PostSetupFunction = [UseAction](UEditMeshPolygonsTool* PolyTool)
 	{
 		PolyTool->SetToSelectionModeInterface();
-		PolyTool->RequestAction(UseAction);
+		PolyTool->RequestSingleShotAction(UseAction);
 	};
 }
 
 
 
-void UEditMeshPolygonsSelectionModeToolBuilder::InitializeNewTool(USingleSelectionMeshEditingTool* Tool, const FToolBuilderState& SceneState) const
+void UEditMeshPolygonsSelectionModeToolBuilder::InitializeNewTool(USingleTargetWithSelectionTool* Tool, const FToolBuilderState& SceneState) const
 {
 	UEditMeshPolygonsToolBuilder::InitializeNewTool(Tool, SceneState);
 	UEditMeshPolygonsTool* EditPolygonsTool = CastChecked<UEditMeshPolygonsTool>(Tool);
@@ -160,7 +160,7 @@ void UEditMeshPolygonsSelectionModeToolBuilder::InitializeNewTool(USingleSelecti
 		PolyTool->SetToSelectionModeInterface();
 
 		UPolygonSelectionMechanic* SelectionMechanic = PolyTool->SelectionMechanic;
-		UPolygonSelectionMechanicProperties* SelectionProps = SelectionMechanic->Properties;
+		UMeshTopologySelectionMechanicProperties* SelectionProps = SelectionMechanic->Properties;
 		SelectionProps->bSelectFaces = SelectionProps->bSelectEdges = SelectionProps->bSelectVertices = false;
 		SelectionProps->bSelectEdgeLoops = SelectionProps->bSelectEdgeRings = false;
 
@@ -414,7 +414,7 @@ void UEditMeshPolygonsTool::Setup()
 
 	// Create the preview object
 	Preview = NewObject<UMeshOpPreviewWithBackgroundCompute>();
-	Preview->Setup(TargetWorld);
+	Preview->Setup(GetTargetWorld());
 	ToolSetupUtil::ApplyRenderingConfigurationToPreview(Preview->PreviewMesh, Target); 
 	Preview->PreviewMesh->SetTransform((FTransform)WorldTransform);
 
@@ -466,18 +466,25 @@ void UEditMeshPolygonsTool::Setup()
 	}
 	SelectionMechanic->Initialize(CurrentMesh.Get(),
 		(FTransform3d)Preview->PreviewMesh->GetTransform(),
-		TargetWorld,
+		GetTargetWorld(),
 		Topology.Get(),
 		[this]() { return &GetSpatial(); }
 	);
 
 	LinearDeformer.Initialize(CurrentMesh.Get(), Topology.Get());
 
-	// Have to load selection after initializing the selection mechanic since we need to have
-	// the topology built.
-	if (HasInputSelection() && IsToolInputSelectionUsable(GetInputSelection()))
+	// initialize our selection from input selection, if available 
+	if (HasGeometrySelection())
 	{
-		SelectionMechanic->LoadSelection(*GetInputSelection());
+		const FGeometrySelection& CurSelection = GetGeometrySelection();
+		if (CurSelection.TopologyType == EGeometryTopologyType::Triangle && bTriangleMode)
+		{
+			SelectionMechanic->SetSelection_AsTriangleTopology(CurSelection);
+		}
+		else if (CurSelection.TopologyType == EGeometryTopologyType::Polygroup && bTriangleMode == false)
+		{
+			SelectionMechanic->SetSelection_AsGroupTopology(CurSelection);
+		}
 	}
 
 	bSelectionStateDirty = SelectionMechanic->HasSelection();
@@ -606,12 +613,11 @@ void UEditMeshPolygonsTool::Setup()
 
 void UEditMeshPolygonsTool::ResetUserMessage()
 {
-	// When the gizmo is hidden, notify the user and
-	// specify the toggle hotkey to prevent panic
+	// When the gizmo is hidden, notify the user and tell them how to fix it.
 	if (!TransformGizmo->IsVisible())
 	{
 		GetToolManager()->DisplayMessage(
-			LOCTEXT("ToggleTransformGizmoNotify", "Transform Gizmo Hidden, Press 'R' to Unhide"),
+			LOCTEXT("ToggleTransformGizmoNotify", "Transform gizmo hidden, unhide by toggling \"Gizmo Visible\" (or using hotkey, if set)"),
 			EToolMessageLevel::UserNotification);
 	}
 	else
@@ -622,22 +628,6 @@ void UEditMeshPolygonsTool::ResetUserMessage()
 	}
 }
 
-bool UEditMeshPolygonsTool::IsToolInputSelectionUsable(const UPersistentMeshSelection* InputSelectionIn)
-{
-	// TODO: We currently don't support persistent selection on volume brushes because
-	// a conversion back to a brush involves a simplification step that may make the 
-	// same vids unrecoverable. Once we have persistence of dynamic meshes, this will
-	// hopefully not become a problem, and this function (along with stored selection
-	// identifying info) will change.
-	return !Cast<UBrushComponent>(UE::ToolTarget::GetTargetComponent(Target))
-
-		&& InputSelectionIn
-		&& InputSelectionIn->GetSelectionType() == (bTriangleMode ?
-			FGenericMeshSelection::ETopologyType::FTriangleGroupTopology
-			: FGenericMeshSelection::ETopologyType::FGroupTopology)
-		&& InputSelectionIn->GetTargetComponent() == UE::ToolTarget::GetTargetComponent(Target)
-		&& !InputSelectionIn->IsEmpty();
-}
 
 void UEditMeshPolygonsTool::OnShutdown(EToolShutdownType ShutdownType)
 {
@@ -681,22 +671,22 @@ void UEditMeshPolygonsTool::OnShutdown(EToolShutdownType ShutdownType)
 
 		if (ShutdownType == EToolShutdownType::Accept)
 		{
-			UPersistentMeshSelection* OutputSelection = nullptr;
-			FCompactMaps CompactMaps;
-
-			// Prep if we have a selection to store. We don't support storing selections for volumes
-			// because the conversion will change vids.
-			if (!SelectionMechanic->GetActiveSelection().IsEmpty()
-				&& !Cast<UBrushComponent>(UE::ToolTarget::GetTargetComponent(Target)))
+			FGeometrySelection OutputSelection;
+			EGeometryElementType CurElemType = EGeometryElementType::Face;
+			if (SelectionMechanic->GetActiveSelection().SelectedCornerIDs.Num() > 0)
 			{
-				OutputSelection = NewObject<UPersistentMeshSelection>();
-				FGenericMeshSelection NewSelection;
-				NewSelection.SourceComponent = UE::ToolTarget::GetTargetComponent(Target);
-				NewSelection.TopologyType = (bTriangleMode ?
-					FGenericMeshSelection::ETopologyType::FTriangleGroupTopology
-					: FGenericMeshSelection::ETopologyType::FGroupTopology);
-				OutputSelection->SetSelection(NewSelection);
+				CurElemType = EGeometryElementType::Vertex;
 			}
+			else if (SelectionMechanic->GetActiveSelection().SelectedEdgeIDs.Num() > 0)
+			{
+				CurElemType = EGeometryElementType::Edge;
+			}
+			OutputSelection.InitializeTypes( CurElemType, (bTriangleMode) ? EGeometryTopologyType::Triangle : EGeometryTopologyType::Polygroup);
+
+			FCompactMaps CompactMaps;
+			//bool bIsBrushComponent = (Cast<UBrushComponent>(UE::ToolTarget::GetTargetComponent(Target)) == nullptr);
+			bool bIsBrushComponent = false;		// can we allow this now?
+			bool bWantSelection = (SelectionMechanic->GetActiveSelection().IsEmpty() == false);
 
 			// Note: When not in triangle mode, ModifiedTopologyCounter refers to polygroup topology, so does not tell us
 			// about the triangle topology.  In this case, we just assume the triangle topology may have been modified.
@@ -706,13 +696,20 @@ void UEditMeshPolygonsTool::OnShutdown(EToolShutdownType ShutdownType)
 			if (bModifiedTriangleTopology)
 			{
 				// Store the compact maps if we have a selection that we need to update
-				CurrentMesh->CompactInPlace(OutputSelection ? &CompactMaps : nullptr);
+				CurrentMesh->CompactInPlace(bWantSelection ? &CompactMaps : nullptr);
 			}
 
 			// Finish prepping the stored selection
-			if (OutputSelection)
+			if (bWantSelection)
 			{
-				SelectionMechanic->GetSelection(*OutputSelection, bModifiedTriangleTopology ? &CompactMaps : nullptr);
+				if (bTriangleMode)
+				{
+					SelectionMechanic->GetSelection_AsTriangleTopology(OutputSelection, bModifiedTriangleTopology ? &CompactMaps : nullptr);
+				}
+				else
+				{
+					SelectionMechanic->GetSelection_AsGroupTopology(OutputSelection, bModifiedTriangleTopology ? &CompactMaps : nullptr);
+				}
 			}
 
 			// Bake CurrentMesh back to target inside an undo transaction
@@ -720,7 +717,10 @@ void UEditMeshPolygonsTool::OnShutdown(EToolShutdownType ShutdownType)
 			MeshTransforms::ApplyTransformInverse(*CurrentMesh, BakedTransform, true);
 			UE::ToolTarget::CommitDynamicMeshUpdate(Target, *CurrentMesh, bModifiedTriangleTopology);
 
-			UE::Geometry::SetToolOutputSelection(this, OutputSelection);
+			if (OutputSelection.IsEmpty() == false)
+			{
+				UE::Geometry::SetToolOutputGeometrySelectionForTarget(this, Target, OutputSelection);
+			}
 		
 			GetToolManager()->EndUndoTransaction();
 		}
@@ -734,7 +734,6 @@ void UEditMeshPolygonsTool::OnShutdown(EToolShutdownType ShutdownType)
 
 	// We null out as many pointers as we can because the tool pointer usually ends up sticking
 	// around in the undo stack.
-	TargetWorld = nullptr;
 	CommonProps = nullptr;
 	EditActions = nullptr;
 	EditActions_Triangles = nullptr;
@@ -794,11 +793,15 @@ void UEditMeshPolygonsTool::RegisterActions(FInteractiveToolActionSet& ActionSet
 		LOCTEXT("DeleteSelectionUIName", "Delete Selection"),
 		LOCTEXT("DeleteSelectionTooltip", "Delete Selection"),
 		EModifierKey::None, EKeys::Delete, OnDeletionKeyPress);
+
+	// This hotkey can make the tool seem broken if it is accidentally pressed, so don't set a default.
+	// However we still register it because setting a hotkey can be useful in some workflows (when the
+	// gizmo gets in the way of shift-selecting multiple things).
 	ActionSet.RegisterAction(this, (int32)EStandardToolActions::BaseClientDefinedActionID + 5,
-		TEXT("ToggleTransformGizmoAKey"),
-		LOCTEXT("ToggleTransformGizmoUIName", "Toggle Transform Gizmo Visibility"),
-		LOCTEXT("ToggleTransformGizmoTooltip", "Toggle Transform Gizmo Visibility"),
-		EModifierKey::None, EKeys::R,
+		TEXT("ToggleGizmoVisibilityKey"),
+		LOCTEXT("ToggleGizmoVisibilityUIName", "Toggle Transform Gizmo Visibility"),
+		LOCTEXT("ToggleGizmoVisibilityTooltip", "Toggle the visibility of the transform gizmo"),
+		EModifierKey::None, EKeys::Invalid,
 		[this]() 
 		{
 			if (!CurrentActivity)
@@ -831,6 +834,27 @@ void UEditMeshPolygonsTool::RequestAction(EEditMeshPolygonsToolActions ActionTyp
 
 	PendingAction = ActionType;
 }
+
+
+void UEditMeshPolygonsTool::RequestSingleShotAction(EEditMeshPolygonsToolActions ActionType)
+{
+	bTerminateOnPendingActionComplete = true;
+
+	if ( ActionType == EEditMeshPolygonsToolActions::BevelAuto )
+	{
+		if (SelectionMechanic->GetActiveSelection().SelectedEdgeIDs.Num() > 0)
+		{
+			ActionType = EEditMeshPolygonsToolActions::BevelEdges;
+		}
+		else
+		{
+			ActionType = EEditMeshPolygonsToolActions::BevelFaces;
+		}
+	}
+
+	RequestAction(ActionType);
+}
+
 
 FDynamicMeshAABBTree3& UEditMeshPolygonsTool::GetSpatial()
 {
@@ -939,6 +963,13 @@ void UEditMeshPolygonsTool::OnGizmoTransformChanged(UTransformProxy* Proxy, FTra
 void UEditMeshPolygonsTool::OnEndGizmoTransform(UTransformProxy* Proxy)
 {
 	bInGizmoDrag = false;
+	// Sometimes we don't get a tick between OnGizmoTransformChanged and OnEndGizmoTransform. In
+	// most drag cases this is not much of a problem, but if we type values into the gizmo numerical
+	// UI, it is.
+	if (bGizmoUpdatePending)
+	{
+		ComputeUpdate_Gizmo();
+	}
 	bGizmoUpdatePending = false;
 	bSpatialDirty = true;
 	SelectionMechanic->NotifyMeshChanged(false);
@@ -1236,7 +1267,7 @@ void UEditMeshPolygonsTool::OnTick(float DeltaTime)
 
 void UEditMeshPolygonsTool::StartActivity(TObjectPtr<UInteractiveToolActivity> Activity)
 {
-	EndCurrentActivity();
+	EndCurrentActivity(EToolShutdownType::Accept);
 
 	// Right now we rely on the activity to fail to start or to issue an error message if the
 	// conditions are not right. Someday, we are going to disable the buttons based on a CanStart
@@ -1251,15 +1282,32 @@ void UEditMeshPolygonsTool::StartActivity(TObjectPtr<UInteractiveToolActivity> A
 		SetToolPropertySourceEnabled(SelectionMechanic->Properties, false);
 		SetToolPropertySourceEnabled(TopologyProperties, false);
 		CurrentActivity = Activity;
-		if (CurrentActivity->HasAccept())
+
+		if ( bTerminateOnPendingActionComplete == false )
 		{
-			SetToolPropertySourceEnabled(AcceptCancelAction, true);
+			if (CurrentActivity->HasAccept())
+			{
+				SetToolPropertySourceEnabled(AcceptCancelAction, true);
+			}
+			else
+			{
+				SetToolPropertySourceEnabled(CancelAction, true);
+			}
 		}
 		else
 		{
-			SetToolPropertySourceEnabled(CancelAction, true);
+			SetToolPropertySourceEnabled(CommonProps, false);			
 		}
+
 		SetActionButtonPanelsVisible(false);
+	}
+	else
+	{
+		if (bTerminateOnPendingActionComplete)
+		{
+			GetToolManager()->PostActiveToolShutdownRequest(this, EToolShutdownType::Cancel);
+			return;
+		}
 	}
 }
 
@@ -1274,6 +1322,12 @@ void UEditMeshPolygonsTool::EndCurrentActivity(EToolShutdownType ShutdownType)
 
 		CurrentActivity = nullptr;
 		++ActivityTimestamp;
+
+		if (bTerminateOnPendingActionComplete)
+		{
+			GetToolManager()->PostActiveToolShutdownRequest(this, ShutdownType);
+			return;
+		}
 
 		SetToolPropertySourceEnabled(CancelAction, false);
 		SetToolPropertySourceEnabled(AcceptCancelAction, false);
@@ -1291,7 +1345,7 @@ void UEditMeshPolygonsTool::EndCurrentActivity(EToolShutdownType ShutdownType)
 
 void UEditMeshPolygonsTool::NotifyActivitySelfEnded(UInteractiveToolActivity* Activity)
 {
-	EndCurrentActivity();
+	EndCurrentActivity(EToolShutdownType::Accept);
 }
 
 void UEditMeshPolygonsTool::UpdateGizmoVisibility()
@@ -2163,14 +2217,14 @@ void UEditMeshPolygonsTool::ApplyPokeSingleFace()
 
 void UEditMeshPolygonsTool::ApplyFlipSingleEdge()
 {
-	if (BeginMeshEdgeEditChange() == false)
+	FDynamicMesh3* Mesh = CurrentMesh.Get();
+
+	if (!BeginMeshEdgeEditChange([Mesh](int32 Eid) {return !Mesh->IsBoundaryEdge(Eid) && !Mesh->Attributes()->IsSeamEdge(Eid); }))
 	{
-		GetToolManager()->DisplayMessage(LOCTEXT("OnFlipFailedMessage", "Cannot Flip Current Selection"), EToolMessageLevel::UserWarning);
+		GetToolManager()->DisplayMessage(LOCTEXT("OnFlipFailedMessage", "Cannot Flip Current Selection (no non-seam edges selected)"), EToolMessageLevel::UserWarning);
 		return;
 	}
 
-	FDynamicMesh3* Mesh = CurrentMesh.Get();
-	FGroupTopologySelection ActiveSelection = SelectionMechanic->GetActiveSelection();
 	FDynamicMeshChangeTracker ChangeTracker(Mesh);
 	ChangeTracker.BeginChange();
 	for (FSelectedEdge& Edge : ActiveEdgeSelection)
@@ -2186,9 +2240,24 @@ void UEditMeshPolygonsTool::ApplyFlipSingleEdge()
 		}
 	}
 
-	// Group topology may or may not change, but just assume that it does.
+	// After flipping edges, edge ID's stay the same but group edge id's in our topology end up swapping around after
+	// the topology rebuild (because they are assigned in order of iteration through triangles). In order to update them,
+	// we need to go ahead and do the topology rebuild now. This means that we don't actually need to do the rebuild
+	// that happens inside EmitCurrentMeshChangeAndUpdate, but it's not worth trying to refactor to avoid it, so we
+	// just end up doing an extraneous update.
+	FGroupTopologySelection NewSelection;
+	Topology->RebuildTopology();
+	for (FSelectedEdge& Edge : ActiveEdgeSelection)
+	{
+		int32 Eid = Edge.EdgeIDs[0];
+		if (Mesh->IsEdge(Eid))
+		{
+			NewSelection.SelectedEdgeIDs.Add(Topology->FindGroupEdgeID(Eid));
+		}
+	}
+
 	EmitCurrentMeshChangeAndUpdate(LOCTEXT("PolyMeshFlipChange", "Flip Edges"),
-		ChangeTracker.EndChange(), ActiveSelection);
+		ChangeTracker.EndChange(), NewSelection);
 }
 
 void UEditMeshPolygonsTool::ApplyCollapseSingleEdge()
@@ -2466,6 +2535,8 @@ void UEditMeshPolygonsTool::SetActionButtonPanelsVisible(bool bVisible)
 
 bool UEditMeshPolygonsTool::CanCurrentlyNestedCancel()
 {
+	if ( bTerminateOnPendingActionComplete ) return false;
+
 	return CurrentActivity != nullptr 
 		|| (SelectionMechanic && !SelectionMechanic->GetActiveSelection().IsEmpty());
 }
@@ -2489,6 +2560,7 @@ bool UEditMeshPolygonsTool::ExecuteNestedCancelCommand()
 
 bool UEditMeshPolygonsTool::CanCurrentlyNestedAccept()
 {
+	if ( bTerminateOnPendingActionComplete ) return false;
 	return CurrentActivity != nullptr;
 }
 
@@ -2535,7 +2607,8 @@ FString FEditMeshPolygonsToolMeshChange::ToString() const
 
 void FPolyEditActivityStartChange::Revert(UObject* Object)
 {
-	Cast<UEditMeshPolygonsTool>(Object)->EndCurrentActivity();
+	//note: previously called EndCurrentActivity() which defauled to Cancel, so leaving that behavior here...
+	Cast<UEditMeshPolygonsTool>(Object)->EndCurrentActivity(EToolShutdownType::Cancel);
 	bHaveDoneUndo = true;
 }
 bool FPolyEditActivityStartChange::HasExpired(UObject* Object) const

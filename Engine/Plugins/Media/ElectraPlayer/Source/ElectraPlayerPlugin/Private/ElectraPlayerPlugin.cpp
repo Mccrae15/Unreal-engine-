@@ -16,7 +16,19 @@
 #include "MediaSubtitleDecoderOutput.h"
 #include "MediaMetaDataDecoderOutput.h"
 
+#include "HAL/IConsoleManager.h"
+
 using namespace Electra;
+
+//-----------------------------------------------------------------------------
+
+static int GElectraEnableBlockOnFetch = 0;							// Temporarily disable Electra's support for BlockOnFetch by default
+static FAutoConsoleVariableRef CVarElectraEnableBlockOnFetch(
+	TEXT("ElectraPlayer.EnableBlockOnFetch"),
+	GElectraEnableBlockOnFetch,
+	TEXT("Whether 'BlockOnFetch' support is enabled.\n")
+	TEXT(" 0: disabled (default)\n")
+	TEXT(" 1: enabled"));
 
 //-----------------------------------------------------------------------------
 
@@ -33,6 +45,7 @@ FElectraPlayerPlugin::FElectraPlayerPlugin()
 	static_assert((int32)EMediaEvent::PlaybackSuspended == (int32)IElectraPlayerAdapterDelegate::EPlayerEvent::PlaybackSuspended, "check alignment of both enums");
 	static_assert((int32)EMediaEvent::SeekCompleted == (int32)IElectraPlayerAdapterDelegate::EPlayerEvent::SeekCompleted, "check alignment of both enums");
 	static_assert((int32)EMediaEvent::TracksChanged == (int32)IElectraPlayerAdapterDelegate::EPlayerEvent::TracksChanged, "check alignment of both enums");
+	static_assert((int32)EMediaEvent::MetadataChanged == (int32)IElectraPlayerAdapterDelegate::EPlayerEvent::MetadataChanged, "check alignment of both enums");
 	static_assert((int32)EMediaEvent::Internal_PurgeVideoSamplesHint == (int32)IElectraPlayerAdapterDelegate::EPlayerEvent::Internal_PurgeVideoSamplesHint, "check alignment of both enums");
 	static_assert((int32)EMediaEvent::Internal_ResetForDiscontinuity == (int32)IElectraPlayerAdapterDelegate::EPlayerEvent::Internal_ResetForDiscontinuity, "check alignment of both enums");
 	static_assert((int32)EMediaEvent::Internal_RenderClockStart == (int32)IElectraPlayerAdapterDelegate::EPlayerEvent::Internal_RenderClockStart, "check alignment of both enums");
@@ -81,6 +94,8 @@ bool FElectraPlayerPlugin::Initialize(IMediaEventSink& InEventSink,
 	PlayerDelegate = MakeShareable(new FPlayerAdapterDelegate(AsShared()));
 	Player = MakeShareable(FElectraPlayerRuntimeFactory::CreatePlayer(PlayerDelegate, InSendAnalyticMetricsDelegate, InSendAnalyticMetricsPerMinuteDelegate, InReportVideoStreamingErrorDelegate, InReportSubtitlesFileMetricsDelegate));
 
+	bMetadataChanged = false;
+	CurrentMetadata.Reset();
 	return true;
 }
 
@@ -224,8 +239,30 @@ public:
 
 //-----------------------------------------------------------------------------
 
+class FStreamMetadataItem : public IMediaPlayer::IMetadataItem
+{
+public:
+	FStreamMetadataItem(const TSharedPtr<Electra::IMediaStreamMetadata::IItem, ESPMode::ThreadSafe>& InItem) : Item(InItem.ToSharedRef())
+	{ }
+	virtual ~FStreamMetadataItem()
+	{ }
+	const FString& GetLanguageCode() const override
+	{ return Item->GetLanguageCode(); }
+	const FString& GetMimeType() const override
+	{ return Item->GetMimeType(); }
+	const FVariant& GetValue() const override
+	{ return Item->GetValue(); }
+private:
+	TSharedRef<Electra::IMediaStreamMetadata::IItem, ESPMode::ThreadSafe> Item;
+};
 
-Electra::FVariantValue FElectraPlayerPlugin::FPlayerAdapterDelegate::QueryOptions(EOptionType Type, const Electra::FVariantValue & Param)
+//-----------------------------------------------------------------------------
+
+void FElectraPlayerPlugin::FPlayerAdapterDelegate::BlobReceived(const TSharedPtr<TArray<uint8>, ESPMode::ThreadSafe>& InBlobData, IElectraPlayerAdapterDelegate::EBlobResultType InResultType, int32 InResultCode, const Electra::FParamDict* InExtraInfo)
+{
+}
+
+Electra::FVariantValue FElectraPlayerPlugin::FPlayerAdapterDelegate::QueryOptions(EOptionType Type, const Electra::FVariantValue& Param)
 {
 	TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin();
 	if (PinnedHost.IsValid())
@@ -239,7 +276,7 @@ Electra::FVariantValue FElectraPlayerPlugin::FPlayerAdapterDelegate::QueryOption
 			IMediaOptions *SafeOptions = SafeOptionInterface->GetMediaOptionInterface();
 			if (SafeOptions)
 			{
-				switch (Type)
+				switch(Type)
 				{
 					case EOptionType::MaxVerticalStreamResolution:
 					{
@@ -271,6 +308,32 @@ Electra::FVariantValue FElectraPlayerPlugin::FPlayerAdapterDelegate::QueryOption
 						{
 							check(Param.IsType(FVariantValue::EDataType::TypeFString));
 							return FVariantValue(SafeOptions->GetMediaOption(LicenseKeyDataOptionKey, Param.GetFString()));
+						}
+						break;
+					}
+
+					case EOptionType::MediaMetadataUpdate:
+					{
+						static const FName MetadataUpdateOptionKey = TEXT("ElectraMetaDataUpdate");
+						if (SafeOptions->HasMediaOption(MetadataUpdateOptionKey))
+						{
+							check(Param.IsType(FVariantValue::EDataType::TypeFString));
+							// This only provides metadata, the return value of the Get is of no consequence.
+							SafeOptions->GetMediaOption(MetadataUpdateOptionKey, Param.GetFString());
+						}
+						break;
+					}
+
+					case EOptionType::CustomAnalyticsMetric:
+					{
+						check(Param.IsType(FVariantValue::EDataType::TypeFString));
+						if (Param.IsType(FVariantValue::EDataType::TypeFString))
+						{
+							FName OptionKey(*Param.GetFString());
+							if (SafeOptions->HasMediaOption(OptionKey))
+							{
+								return FVariantValue(SafeOptions->GetMediaOption(OptionKey, FString()));
+							}
 						}
 						break;
 					}
@@ -313,6 +376,10 @@ void FElectraPlayerPlugin::FPlayerAdapterDelegate::SendMediaEvent(EPlayerEvent E
 	TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin();
 	if (PinnedHost.IsValid())
 	{
+		if (Event == EPlayerEvent::MetadataChanged)
+		{
+			PinnedHost->SetMetadataChanged();
+		}
 		FScopeLock lock(&PinnedHost->CallbackPointerLock);
 		if (PinnedHost->EventSink)
 		{
@@ -626,7 +693,10 @@ bool FElectraPlayerPlugin::Open(const FString& Url, const IMediaOptions* Options
 		LocalPlaystartOptions.MaxBandwidthForStreaming = (int32)MaxBandwidthForStreaming;
 	}
 
-	return Player->OpenInternal(Url, PlayerOptions, LocalPlaystartOptions);
+	bMetadataChanged = false;
+	CurrentMetadata.Reset();
+
+	return Player->OpenInternal(Url, PlayerOptions, LocalPlaystartOptions, IElectraPlayerInterface::EOpenType::Media);
 }
 
 //-----------------------------------------------------------------------------
@@ -663,6 +733,42 @@ void FElectraPlayerPlugin::TickInput(FTimespan DeltaTime, FTimespan Timecode)
 	OutputTexturePool->Tick();
 	Player->Tick(DeltaTime, Timecode);
 }
+
+//-----------------------------------------------------------------------------
+/**
+	Returns the current metadata, if any.
+*/
+TSharedPtr<TMap<FString, TArray<TUniquePtr<IMediaPlayer::IMetadataItem>>>, ESPMode::ThreadSafe> FElectraPlayerPlugin::GetMediaMetadata() const
+{
+	if (bMetadataChanged && Player.IsValid())
+	{
+		TSharedPtr<TMap<FString, TArray<TSharedPtr<Electra::IMediaStreamMetadata::IItem, ESPMode::ThreadSafe>>>, ESPMode::ThreadSafe> PlayerMeta = Player->GetMediaMetadata();
+		if (PlayerMeta.IsValid())
+		{
+			TSharedPtr<TMap<FString, TArray<TUniquePtr<IMediaPlayer::IMetadataItem>>>, ESPMode::ThreadSafe> NewMeta(new TMap<FString, TArray<TUniquePtr<IMediaPlayer::IMetadataItem>>>);
+			for(auto& PlayerMetaItem : *PlayerMeta)
+			{
+				TArray<TUniquePtr<IMediaPlayer::IMetadataItem>>& NewItemList = NewMeta->Emplace(PlayerMetaItem.Key);
+				for(auto& PlayerMetaListItem : PlayerMetaItem.Value)
+				{
+					if (PlayerMetaListItem.IsValid())
+					{
+						NewItemList.Emplace(MakeUnique<FStreamMetadataItem>(PlayerMetaListItem));
+					}
+				}
+			}
+			bMetadataChanged = false;
+			CurrentMetadata = MoveTemp(NewMeta);
+		}
+	}
+	return CurrentMetadata;
+}
+
+void FElectraPlayerPlugin::SetMetadataChanged()
+{
+	bMetadataChanged = true;
+}
+
 
 //-----------------------------------------------------------------------------
 /**
@@ -724,6 +830,10 @@ bool FElectraPlayerPlugin::CanControl(EMediaControl Control) const
 	EMediaState CurrentState = GetState();
 	if (Control == EMediaControl::BlockOnFetch)
 	{
+		if (GElectraEnableBlockOnFetch == 0)
+		{
+			return false;
+		}
 		return CurrentState == EMediaState::Playing;
 	}
 	else if (Control == EMediaControl::Pause)

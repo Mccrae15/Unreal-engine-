@@ -7,7 +7,6 @@
 #include "HAL/UnrealMemory.h"
 #include "Templates/EnableIf.h"
 #include "Templates/AndOrNot.h"
-#include "Templates/AreTypesEqual.h"
 #include "Templates/CopyQualifiersAndRefsFromTo.h"
 #include "Templates/IsArithmetic.h"
 #include "Templates/UnrealTypeTraits.h"
@@ -15,6 +14,7 @@
 #include "Templates/TypeCompatibleBytes.h"
 #include "Templates/Identity.h"
 #include "Traits/IsContiguousContainer.h"
+#include <type_traits>
 
 /*-----------------------------------------------------------------------------
 	Standard templates.
@@ -467,13 +467,13 @@ FORCEINLINE typename TRemoveReference<T>::Type&& MoveTemp(T&& Obj)
 
 	// Validate that we're not being passed an rvalue or a const object - the former is redundant, the latter is almost certainly a mistake
 	static_assert(TIsLValueReferenceType<T>::Value, "MoveTemp called on an rvalue");
-	static_assert(!TAreTypesEqual<CastType&, const CastType&>::Value, "MoveTemp called on a const object");
+	static_assert(!std::is_same_v<CastType&, const CastType&>, "MoveTemp called on a const object");
 
 	return (CastType&&)Obj;
 }
 
 /**
- * MoveTemp will cast a reference to an rvalue reference.
+ * MoveTempIfPossible will cast a reference to an rvalue reference.
  * This is UE's equivalent of std::move.  It doesn't static assert like MoveTemp, because it is useful in
  * templates or macros where it's not obvious what the argument is, but you want to take advantage of move semantics
  * where you can but not stop compilation.
@@ -486,9 +486,13 @@ FORCEINLINE typename TRemoveReference<T>::Type&& MoveTempIfPossible(T&& Obj)
 }
 
 /**
- * CopyTemp will enforce the creation of an rvalue which can bind to rvalue reference parameters.
- * Unlike MoveTemp, the source object will never be modifed. (i.e. a copy will be made)
- * There is no std:: equivalent.
+ * CopyTemp will enforce the creation of a prvalue which can bind to rvalue reference parameters.
+ * Unlike MoveTemp, a source lvalue will never be modified. (i.e. a copy will always be made)
+ * There is no std:: equivalent, though there is the exposition function std::decay-copy:
+ * https://eel.is/c++draft/expos.only.func
+ * CopyTemp(<rvalue>) is regarded as an error and will not compile, similarly to how MoveTemp(<rvalue>)
+ * does not compile, and CopyTempIfNecessary should be used instead when the nature of the
+ * argument is not known in advance.
  */
 template <typename T>
 FORCEINLINE T CopyTemp(T& Val)
@@ -503,10 +507,33 @@ FORCEINLINE T CopyTemp(const T& Val)
 }
 
 template <typename T>
+UE_DEPRECATED(5.2, "CopyTemp on an rvalue is deprecated and should be removed or replaced with CopyTempIfNecessary when the argument is unknown")
 FORCEINLINE T&& CopyTemp(T&& Val)
 {
-	// If we already have an rvalue, just return it unchanged, rather than needlessly creating yet another rvalue from it.
+// Compile this block back in after removing the deprecation, rather than deleting the function entirely.
+// Also change the return type to `T`.
+#if 0
+	// Comment this in rather than deleting the function when removing the deprecation
+	static_assert(sizeof(T) == 0, "CopyTemp called on an rvalue");
+#endif
+
+	// Create a prvalue by move-constructing from the xvalue - wasteful if Val
+	// already refers to a prvalue, but we can't differentiate those.
 	return MoveTemp(Val);
+}
+
+/**
+ * CopyTempIfNecessary will enforce the creation of a prvalue.
+ * This is UE's equivalent of the exposition std::decay-copy:
+ * https://eel.is/c++draft/expos.only.func
+ * It doesn't static assert like CopyTemp, because it is useful in
+ * templates or macros where it's not obvious what the argument is, but you want to
+ * create a PR value without stopping compilation.
+ */
+template <typename T>
+FORCEINLINE std::decay_t<T> CopyTempIfNecessary(T&& Val)
+{
+	return (T&&)Val;
 }
 
 /**
@@ -590,7 +617,7 @@ template <typename T> struct TRValueToLValueReference<T&&> { typedef T& Type; };
  * @return The bit-swapped value.
  */
 template <typename T>
-FORCEINLINE typename TEnableIf<TAreTypesEqual<T, uint32>::Value, T>::Type ReverseBits( T Bits )
+FORCEINLINE typename TEnableIf<std::is_same_v<T, uint32>, T>::Type ReverseBits( T Bits )
 {
 	Bits = ( Bits << 16) | ( Bits >> 16);
 	Bits = ( (Bits & 0x00ff00ff) << 8 ) | ( (Bits & 0xff00ff00) >> 8 );

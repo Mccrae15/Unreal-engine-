@@ -5,6 +5,7 @@
 =============================================================================*/
 
 #include "CoreMinimal.h"
+#include "Animation/Skeleton.h"
 #include "HAL/FileManager.h"
 #include "Misc/CommandLine.h"
 #include "Misc/FileHelper.h"
@@ -104,7 +105,14 @@ bool NormalizePackageNames( TArray<FString> PackageNames, TArray<FString>& Packa
 		IFileManager::Get().FindFiles( PackageNames, *PackageWildcard, true, false );
 	}
 
-	const FString DeveloperFolder = IFileManager::Get().ConvertToAbsolutePathForExternalAppForRead(*FPaths::GameDevelopersDir());
+	FString ProjectContentDir = FPaths::ProjectContentDir();
+	FStringView DevelopersFolderName = FPaths::DevelopersFolderName();
+	const FString DeveloperFolder = IFileManager::Get().ConvertToAbsolutePathForExternalAppForRead(
+		*FPaths::Combine(ProjectContentDir, DevelopersFolderName));
+	const FString DeveloperExternalActorsFolder = IFileManager::Get().ConvertToAbsolutePathForExternalAppForRead(
+		*FPaths::Combine(ProjectContentDir, FPackagePath::GetExternalActorsFolderName(), DevelopersFolderName));
+	const FString DeveloperExternalObjectsFolder = IFileManager::Get().ConvertToAbsolutePathForExternalAppForRead(
+		*FPaths::Combine(ProjectContentDir, FPackagePath::GetExternalObjectsFolderName(), DevelopersFolderName));
 
 	if( PackageNames.Num() == 0 )
 	{
@@ -194,17 +202,16 @@ bool NormalizePackageNames( TArray<FString> PackageNames, TArray<FString>& Packa
 
 			FString Filename = IFileManager::Get().ConvertToAbsolutePathForExternalAppForRead(*PackagePathNames[PackageIndex]);
 			
-			if ( (PackageFilter&NORMALIZE_ExcludeDeveloperPackages) != 0 )
+			if ( (PackageFilter & NORMALIZE_ExcludeDeveloperPackages) != 0 || 
+				 (PackageFilter & NORMALIZE_ExcludeNonDeveloperPackages) != 0)
 			{
-				if (Filename.StartsWith(DeveloperFolder))
-				{
-					PackagePathNames.RemoveAt(PackageIndex);
-					continue;
-				}
-			}
-			else if ( (PackageFilter&NORMALIZE_ExcludeNonDeveloperPackages) != 0 )
-			{
-				if (!Filename.StartsWith(DeveloperFolder))
+				// Technically both flags present should mean exclude everything, but legacy behavior is to have
+				// excludedevelopers override excludenondevelopers.
+				bool bDevelopersFolderIncluded = !((PackageFilter & NORMALIZE_ExcludeDeveloperPackages) != 0);
+				bool bIsDeveloperFolder = Filename.StartsWith(DeveloperFolder) ||
+					Filename.StartsWith(DeveloperExternalActorsFolder) ||
+					Filename.StartsWith(DeveloperExternalObjectsFolder);
+				if (bDevelopersFolderIncluded != bIsDeveloperFolder)
 				{
 					PackagePathNames.RemoveAt(PackageIndex);
 					continue;
@@ -1686,8 +1693,8 @@ int32 UPkgInfoCommandlet::Main( const FString& Params )
 		{
 			// Turn off log categories etc as it makes diffing hard
 			TGuardValue<ELogTimes::Type> GuardPrintLogTimes(GPrintLogTimes, ELogTimes::None);
-			TGuardValue<bool> GuardPrintLogCategory(GPrintLogCategory, false);
-			TGuardValue<bool> GuardPrintLogVerbosity(GPrintLogVerbosity, false);
+			TGuardValue GuardPrintLogCategory(GPrintLogCategory, false);
+			TGuardValue GuardPrintLogVerbosity(GPrintLogVerbosity, false);
 
 			if (Linker)
 			{
@@ -1723,6 +1730,12 @@ int32 UPkgInfoCommandlet::Main( const FString& Params )
 				Out.Logf(ELogVerbosity::Display, TEXT("Total number of Serialize calls: %lld"), TotalSerializeCalls);
 			}
 #endif // !NO_LOGGING
+
+			// Flush logs while the disabled times, category, and verbosity are in scope.
+			if (GLog)
+			{
+				GLog->Flush();
+			}
 		}
 		CollectGarbage(RF_NoFlags);
 	}
@@ -1978,7 +1991,7 @@ struct CompressAnimationsFunctor
 			UE_LOG(LogPackageUtilities, Warning, TEXT("%s (%s) Resetting with to default compression settings."), *AnimSeq->GetName(), *AnimSeq->GetFullName());
 			AnimSeq->BoneCompressionSettings = nullptr;
 			AnimSeq->CurveCompressionSettings = nullptr;
-			AnimSeq->RequestAnimCompression(FRequestAnimCompressionParams(false, true, false));
+			AnimSeq->CacheDerivedDataForCurrentPlatform();
 
 			// Automatic compression should have picked a suitable compressor
 			if (!AnimSeq->IsCompressedDataValid())
@@ -1986,7 +1999,7 @@ struct CompressAnimationsFunctor
 				// Update CompressCommandletVersion in that case, and create a proper DDC entry
 				// (with actual compressor)
 				AnimSeq->CompressCommandletVersion = CompressCommandletVersion;
-				AnimSeq->RequestAnimCompression(FRequestAnimCompressionParams(false, false, false));
+				AnimSeq->BeginCacheDerivedDataForCurrentPlatform();
 				bDirtyPackage = true;
 			}
 
@@ -2272,7 +2285,7 @@ int32 UReplaceActorCommandlet::Main(const FString& Params)
 		}
 		else if ( bAutoCheckOut && SourceControlState.IsValid() && !SourceControlState->IsCurrent() )
 		{
-			UE_LOG(LogPackageUtilities, Warning, TEXT("Skipping %s (Not at head source control revision)"), *PackageName );
+			UE_LOG(LogPackageUtilities, Warning, TEXT("Skipping %s (Newer version exists in revision control)"), *PackageName );
 			continue;
 		}
 		else

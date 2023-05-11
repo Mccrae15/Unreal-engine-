@@ -81,15 +81,20 @@ private:
 	bool bHasShutdown = false;
 	TSet<TWeakObjectPtr<USoundWave>> RegisteredSoundWaves;
 
+	mutable FRWLock Lock;
 	FName GetAssetTypeName() const override;
 	FTextFormat GetAssetNameFormat() const override;
 	TArrayView<FName> GetDependentTypeNames() const override;
 	int32 GetNumRemainingAssets() const override;
 
+	/** Handle generic finish compilation */
+	void FinishCompilationForObjects(TArrayView<UObject* const> InObjects) override;
+
 	void UpdateCompilationNotification();
 	void PostCompilation(TArrayView<USoundWave* const> InCompiledSoundWaves);
 	void PostCompilation(USoundWave* SoundWave);
 	void ProcessSoundWaves(bool bLimitExecutionTime, int32 MinBatchSize = 1);
+	TArray<USoundWave*> GatherPendingSoundWaves();
 
 	/** Notification for the amount of pending sound wave compilations */
 	FAsyncCompilationNotification Notification;

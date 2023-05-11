@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "Math/Vector4.h"
 #include "Misc/SecureHash.h"
 
 namespace GLTF
@@ -164,6 +164,8 @@ namespace GLTF
 		bool     bHasIOR;
 		bool     bHasSpecular;
 
+		FString UniqueId; //will be generated in FAsset::GenerateNames
+
 		FMaterial(const FString& Name)
 		    : Name(Name)
 		    , BaseColorFactor {1.0f, 1.0f, 1.0f, 1.0f}
@@ -193,3 +195,7 @@ namespace GLTF
 	};
 }  // namespace GLTF
 
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

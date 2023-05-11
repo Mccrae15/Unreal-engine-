@@ -6,26 +6,29 @@
  * Contains the shared data that is used by skinned assets
  */
 
-#include "CoreMinimal.h"
-#include "Components.h"
 #include "BoneContainer.h"
+#include "Components.h"
+#include "CoreMinimal.h"
+#include "Engine/EngineTypes.h"
 #include "PerPlatformProperties.h"
-#include "PerQualityLevelProperties.h"
 #include "SkeletalMeshReductionSettings.h"
 #include "SkinnedAssetCommon.generated.h"
 
-struct FSkeletalMeshLODGroupSettings;
-class UAnimSequence;
+
 class FSkeletalMeshLODModel;
+class UAnimSequence;
+class UMaterialInterface;
+struct FSkelMeshSection;
+struct FSkeletalMeshLODGroupSettings;
 
 
 UENUM()
 enum class ESkinCacheUsage : uint8
 {
-	// Auto will defer to child or global behavior based on context. If Support Ray Tracing is enabled on the mesh, will imply Enabled
+	// Auto will defer to child or global behavior based on context
 	Auto		= 0,
 
-	// Mesh will not use the skin cache. If Support Ray Tracing is enabled on the mesh, will imply Enabled
+	// Mesh will not use the skin cache. However, if Support Ray Tracing is enabled on the mesh, the skin cache will still be used for Ray Tracing updates
 	Disabled	= uint8(-1),
 
 	// Mesh will use the skin cache
@@ -70,7 +73,7 @@ struct FSectionReference
 	/** return true if it has a valid section index for LodModel parameter **/
 	ENGINE_API bool IsValidToEvaluate(const FSkeletalMeshLODModel& LodModel) const;
 
-	const struct FSkelMeshSection* GetMeshLodSection(const FSkeletalMeshLODModel& LodModel) const;
+	const FSkelMeshSection* GetMeshLodSection(const FSkeletalMeshLODModel& LodModel) const;
 	int32 GetMeshLodSectionIndex(const FSkeletalMeshLODModel& LodModel) const;
 #endif
 
@@ -241,7 +244,22 @@ struct FSkeletalMaterial
 
 	}
 
-	FSkeletalMaterial( class UMaterialInterface* InMaterialInterface
+	FSkeletalMaterial(
+		UMaterialInterface* InMaterialInterface,
+		FName InMaterialSlotName,
+		FName InImportedMaterialSlotName = NAME_None)
+		: MaterialInterface( InMaterialInterface )
+		, MaterialSlotName(InMaterialSlotName)
+#if WITH_EDITORONLY_DATA
+		, bEnableShadowCasting_DEPRECATED(true)
+		, bRecomputeTangent_DEPRECATED(false)
+		, ImportedMaterialSlotName(InImportedMaterialSlotName)
+#endif //WITH_EDITORONLY_DATA
+	{
+
+	}
+
+	FSkeletalMaterial( UMaterialInterface* InMaterialInterface
 						, bool bInEnableShadowCasting = true
 						, bool bInRecomputeTangent = false
 						, FName InMaterialSlotName = NAME_None
@@ -267,7 +285,7 @@ struct FSkeletalMaterial
 	ENGINE_API friend bool operator==( const UMaterialInterface& LHS, const FSkeletalMaterial& RHS );
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=SkeletalMesh)
-	TObjectPtr<class UMaterialInterface> 	MaterialInterface;
+	TObjectPtr<UMaterialInterface> 	MaterialInterface;
 	
 	/*This name should be use by the gameplay to avoid error if the skeletal mesh Materials array topology change*/
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = SkeletalMesh)

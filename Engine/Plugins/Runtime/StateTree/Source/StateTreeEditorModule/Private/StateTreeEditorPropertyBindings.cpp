@@ -1,7 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "StateTreeEditorPropertyBindings.h"
-#include "PropertyPathHelpers.h"
 #include "StateTreePropertyBindingCompiler.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(StateTreeEditorPropertyBindings)
@@ -26,6 +25,25 @@ void FStateTreeEditorPropertyBindings::RemovePropertyBindings(const FStateTreeEd
 		{
 			return Binding.TargetPath == TargetPath;
 		});
+}
+
+void FStateTreeEditorPropertyBindings::CopyBindings(const FGuid FromStructID, const FGuid ToStructID)
+{
+	// Copy all bindings that target "FromStructID" and retarget them to "ToStructID".
+	TArray<FStateTreeEditorPropertyBinding> NewBindings;
+	for (const FStateTreeEditorPropertyBinding& Binding : PropertyBindings)
+	{
+		if (Binding.TargetPath.StructID == FromStructID)
+		{
+			FStateTreeEditorPropertyBinding& NewBinding = NewBindings.Add_GetRef(Binding);
+			NewBinding.TargetPath.StructID = ToStructID;
+		}
+	}
+
+	for (const FStateTreeEditorPropertyBinding& NewBinding : NewBindings)
+	{
+		AddPropertyBinding(NewBinding.SourcePath, NewBinding.TargetPath);
+	}
 }
 
 bool FStateTreeEditorPropertyBindings::HasPropertyBinding(const FStateTreeEditorPropertyPath& TargetPath) const

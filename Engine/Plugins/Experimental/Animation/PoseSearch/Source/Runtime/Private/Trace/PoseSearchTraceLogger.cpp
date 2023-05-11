@@ -2,9 +2,12 @@
 
 #include "PoseSearchTraceLogger.h"
 #include "Animation/AnimInstanceProxy.h"
-#include "Trace/Trace.inl"
 #include "Animation/AnimNodeBase.h"
-
+#include "Components/SkeletalMeshComponent.h"
+#include "PoseSearch/PoseSearchDatabase.h"
+#include "Serialization/MemoryWriter.h"
+#include "Trace/Trace.inl"
+#include "TraceFilter.h"
 
 UE_TRACE_CHANNEL_DEFINE(PoseSearchChannel);
 
@@ -69,7 +72,6 @@ FArchive& operator<<(FArchive& Ar, FTraceMotionMatchingState& State)
 {
 	Ar << State.SearchableAssetId;
 	Ar << State.ElapsedPoseJumpTime;
-	Ar << State.Flags;
 	Ar << State.AssetPlayerTime;
 	Ar << State.DeltaTime;
 	Ar << State.SimLinearVelocity;

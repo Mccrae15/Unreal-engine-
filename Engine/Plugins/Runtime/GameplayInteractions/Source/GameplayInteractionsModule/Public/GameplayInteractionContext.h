@@ -4,8 +4,11 @@
 
 #include "GameplayInteractionsTypes.h"
 #include "SmartObjectRuntime.h"
-#include "StateTreeExecutionContext.h"
+#include "StateTreeInstanceData.h"
 #include "GameplayInteractionContext.generated.h"
+
+struct FGameplayTag;
+struct FStateTreeEvent;
 
 class UGameplayInteractionSmartObjectBehaviorDefinition;
 
@@ -51,8 +54,12 @@ public:
 	GAMEPLAYINTERACTIONSMODULE_API void Deactivate();
 	
 	/** Sends event for the StateTree. Will be received on the next tick by the StateTree. */
+	UE_DEPRECATED(5.2, "Please use SendEvent() with separate parameters instead.")
 	GAMEPLAYINTERACTIONSMODULE_API void SendEvent(const FStateTreeEvent& Event);
-	
+
+	/** Sends event for the StateTree. Will be received on the next tick by the StateTree. */
+	GAMEPLAYINTERACTIONSMODULE_API void SendEvent(const FGameplayTag Tag, const FConstStructView Payload = FConstStructView(), const FName Origin = FName());
+
 protected:	
 	/**
 	 * Updates all external data views from the provided interaction context.  
@@ -81,3 +88,7 @@ protected:
 	UPROPERTY()
 	TObjectPtr<const UGameplayInteractionSmartObjectBehaviorDefinition> Definition = nullptr;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "StateTreeExecutionContext.h"
+#endif

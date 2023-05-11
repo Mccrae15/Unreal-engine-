@@ -2,8 +2,9 @@
 
 #pragma once
 
-#include "RenderGraphAllocator.h"
 #include "ProfilingDebugging/RealtimeGPUProfiler.h"
+#include "RenderGraphAllocator.h"
+#include "RenderGraphFwd.h"
 
 /** DEFINES */
 
@@ -93,7 +94,7 @@ enum class ERDGBuilderFlags
 ENUM_CLASS_FLAGS(ERDGBuilderFlags);
 
 /** Flags to annotate a pass with when calling AddPass. */
-enum class ERDGPassFlags : uint8
+enum class ERDGPassFlags : uint16
 {
 	/** Pass doesn't have any inputs or outputs tracked by the graph. This may only be used by the parameterless AddPass function. */
 	None = 0,
@@ -121,6 +122,8 @@ enum class ERDGPassFlags : uint8
 
 	/** Pass will never run off the render thread. */
 	NeverParallel = 1 << 7,
+
+	ParallelTranslate = 1 << 8,
 
 	/** Pass uses copy commands but writes to a staging resource. */
 	Readback = Copy | NeverCull
@@ -399,13 +402,12 @@ public:
 private:
 	static const IndexType kNullIndex = TNumericLimits<IndexType>::Max();
 	IndexType Index = kNullIndex;
-};
 
-template <typename ObjectType, typename IndexType>
-FORCEINLINE uint32 GetTypeHash(TRDGHandle<ObjectType, IndexType> Handle)
-{
-	return Handle.GetIndex();
-}
+	friend FORCEINLINE uint32 GetTypeHash(TRDGHandle Handle)
+	{
+		return Handle.GetIndex();
+	}
+};
 
 enum class ERDGHandleRegistryDestructPolicy
 {
@@ -709,12 +711,8 @@ class FRDGBarrierBatch;
 class FRDGBarrierBatchBegin;
 class FRDGBarrierBatchEnd;
 class FRDGBarrierValidation;
-class FRDGBuilder;
 class FRDGEventName;
 class FRDGUserValidation;
-
-class FRDGResource;
-using FRDGResourceRef = FRDGResource*;
 
 class FRDGViewableResource;
 
@@ -724,64 +722,29 @@ typedef FRDGViewableResource FRDGParentResource;
 UE_DEPRECATED(5.1, "FRDGParentResourceRef has been renamed to FRDGViewableResource*.")
 typedef FRDGViewableResource* FRDGParentResourceRef;
 
-class FRDGShaderResourceView;
-using FRDGShaderResourceViewRef = FRDGShaderResourceView*;
-
-class FRDGUnorderedAccessView;
-using FRDGUnorderedAccessViewRef = FRDGUnorderedAccessView*;
-
-class FRDGTextureSRV;
-using FRDGTextureSRVRef = FRDGTextureSRV*;
-
-class FRDGTextureUAV;
-using FRDGTextureUAVRef = FRDGTextureUAV*;
-
-class FRDGBufferSRV;
-using FRDGBufferSRVRef = FRDGBufferSRV*;
-
-class FRDGBufferUAV;
-using FRDGBufferUAVRef = FRDGBufferUAV*;
-
-class FRDGPass;
-using FRDGPassRef = FRDGPass*;
 using FRDGPassHandle = TRDGHandle<FRDGPass, uint16>;
 using FRDGPassRegistry = TRDGHandleRegistry<FRDGPassHandle>;
 using FRDGPassHandleArray = TArray<FRDGPassHandle, TInlineAllocator<4, FRDGArrayAllocator>>;
 using FRDGPassBitArray = TRDGHandleBitArray<FRDGPassHandle>;
 
-class FRDGUniformBuffer;
-using FRDGUniformBufferRef = FRDGUniformBuffer*;
 using FRDGUniformBufferHandle = TRDGHandle<FRDGUniformBuffer, uint16>;
 using FRDGUniformBufferRegistry = TRDGHandleRegistry<FRDGUniformBufferHandle>;
 using FRDGUniformBufferBitArray = TRDGHandleBitArray<FRDGUniformBufferHandle>;
 
-class FRDGView;
-using FRDGViewRef = FRDGView*;
 using FRDGViewHandle = TRDGHandle<FRDGView, uint16>;
 using FRDGViewRegistry = TRDGHandleRegistry<FRDGViewHandle, ERDGHandleRegistryDestructPolicy::Never>;
 using FRDGViewUniqueFilter = TRDGHandleUniqueFilter<FRDGViewHandle>;
 
-class FRDGTexture;
-using FRDGTextureRef = FRDGTexture*;
 using FRDGTextureHandle = TRDGHandle<FRDGTexture, uint16>;
 using FRDGTextureRegistry = TRDGHandleRegistry<FRDGTextureHandle, ERDGHandleRegistryDestructPolicy::Never>;
 using FRDGTextureBitArray = TRDGHandleBitArray<FRDGTextureHandle>;
 
-struct FRDGBufferDesc;
-
-class FRDGBuffer;
-using FRDGBufferRef = FRDGBuffer*;
 using FRDGBufferHandle = TRDGHandle<FRDGBuffer, uint16>;
 using FRDGBufferRegistry = TRDGHandleRegistry<FRDGBufferHandle, ERDGHandleRegistryDestructPolicy::Registry>;
 using FRDGBufferBitArray = TRDGHandleBitArray<FRDGBufferHandle>;
 
-class FRDGPooledTexture;
-class FRDGPooledBuffer;
 class FRDGBufferPool;
 class FRDGTransientRenderTarget;
-
-template <typename TUniformStruct> class TRDGUniformBuffer;
-template <typename TUniformStruct> using TRDGUniformBufferRef = TRDGUniformBuffer<TUniformStruct>*;
 
 using FRDGPassHandlesByPipeline = TRHIPipelineArray<FRDGPassHandle>;
 using FRDGPassesByPipeline = TRHIPipelineArray<FRDGPass*>;

@@ -1,10 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PCGManagedResource.h"
+
 #include "PCGComponent.h"
+#include "PCGModule.h"
+#include "Helpers/PCGHelpers.h"
 
 #include "Components/InstancedStaticMeshComponent.h"
-#include "Components/SceneComponent.h"
+#include "Utils/PCGGeneratedResourcesLogging.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGManagedResource)
+
+static TAutoConsoleVariable<bool> CVarForceReleaseResourcesOnGenerate(
+	TEXT("pcg.ForceReleaseResourcesOnGenerate"),
+	false,
+	TEXT("Purges all tracked generated resources on generate"));
 
 void UPCGManagedResource::PostApplyToComponent()
 {
@@ -35,6 +45,11 @@ bool UPCGManagedResource::ReleaseIfUnused(TSet<TSoftObjectPtr<AActor>>& OutActor
 	return false;
 }
 
+bool UPCGManagedResource::DebugForcePurgeAllResourcesOnGenerate()
+{
+	return CVarForceReleaseResourcesOnGenerate.GetValueOnAnyThread();
+}
+
 void UPCGManagedActors::PostEditImport()
 {
 	// In this case, the managed actors won't be copied along the actor/component,
@@ -54,10 +69,23 @@ bool UPCGManagedActors::Release(bool bHardRelease, TSet<TSoftObjectPtr<AActor>>&
 
 	if (!Super::Release(bHardRelease, OutActorsToDelete))
 	{
+		PCGGeneratedResourcesLogging::LogManagedActorsSoftRelease(GeneratedActors);
+
+		// Mark actors as potentially-to-be-cleaned-up
+		for (TSoftObjectPtr<AActor> GeneratedActor : GeneratedActors)
+		{
+			if (GeneratedActor.IsValid())
+			{
+				GeneratedActor->Tags.Add(PCGHelpers::MarkedForCleanupPCGTag);
+			}
+		}
+
 		return false;
 	}
 
 	OutActorsToDelete.Append(GeneratedActors);
+
+	PCGGeneratedResourcesLogging::LogManagedActorsHardRelease(GeneratedActors);
 
 	// Cleanup recursively
 	TInlineComponentArray<UPCGComponent*, 1> ComponentsToCleanup;
@@ -100,12 +128,33 @@ bool UPCGManagedActors::MoveResourceToNewActor(AActor* NewActor)
 		}
 
 		Actor->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+		Actor->SetOwner(nullptr);
 		Actor->AttachToActor(NewActor, FAttachmentTransformRules::KeepWorldTransform);
 	}
 
 	GeneratedActors.Empty();
 
 	return true;
+}
+
+void UPCGManagedActors::MarkAsUsed()
+{
+	Super::MarkAsUsed();
+	// Technically we don't ever have to "use" a preexisting managed actor resource, but this is to be consistent with the other implementations
+	ensure(0);
+}
+
+void UPCGManagedActors::MarkAsReused()
+{
+	Super::MarkAsReused();
+
+	for (TSoftObjectPtr<AActor> GeneratedActor : GeneratedActors)
+	{
+		if (GeneratedActor.IsValid())
+		{
+			GeneratedActor->Tags.Remove(PCGHelpers::MarkedForCleanupPCGTag);
+		}
+	}
 }
 
 void UPCGManagedComponent::PostEditImport()
@@ -129,6 +178,7 @@ void UPCGManagedComponent::PostEditImport()
 			{
 				GeneratedComponent = Component;
 				bFoundMatch = true;
+				break;
 			}
 		}
 
@@ -136,13 +186,13 @@ void UPCGManagedComponent::PostEditImport()
 		{
 			// Not quite clear what to do when we have a component that cannot be remapped.
 			// Maybe we should check against guids instead?
-			GeneratedComponent.Reset();
+			ForgetComponent();
 		}
 	}
 	else
 	{
 		// Somewhat irrelevant case, if we don't have an actor or a component, there's not a lot we can do.
-		GeneratedComponent.Reset();
+		ForgetComponent();
 	}
 }
 
@@ -163,6 +213,7 @@ bool UPCGManagedComponent::Release(bool bHardRelease, TSet<TSoftObjectPtr<AActor
 		{
 			// We can only mark it unused if we can reset the component.
 			bIsMarkedUnused = true;
+			GeneratedComponent->ComponentTags.Add(PCGHelpers::MarkedForCleanupPCGTag);
 		}
 	}
 
@@ -211,7 +262,7 @@ bool UPCGManagedComponent::MoveResourceToNewActor(AActor* NewActor)
 		NewActor->AddInstanceComponent(GeneratedComponent.Get());
 	}
 
-	GeneratedComponent.Reset();
+	ForgetComponent();
 
 	return true;
 }
@@ -223,11 +274,58 @@ void UPCGManagedComponent::MarkAsUsed()
 		return;
 	}
 
+	Super::MarkAsUsed();
+
 	// Can't reuse a resource if we can't reset it. Make sure we never take this path in this case.
 	check(SupportsComponentReset());
 
 	ResetComponent();
-	bIsMarkedUnused = false;
+
+	if (GeneratedComponent.Get())
+	{
+		GeneratedComponent->ComponentTags.Remove(PCGHelpers::MarkedForCleanupPCGTag);
+	}
+}
+
+void UPCGManagedComponent::MarkAsReused()
+{
+	Super::MarkAsReused();
+
+	if (GeneratedComponent.Get())
+	{
+		GeneratedComponent->ComponentTags.Remove(PCGHelpers::MarkedForCleanupPCGTag);
+	}
+}
+
+void UPCGManagedISMComponent::PostLoad()
+{
+	Super::PostLoad();
+
+	if (!bHasDescriptor)
+	{
+		if (UInstancedStaticMeshComponent* ISMC = GetComponent())
+		{
+			FISMComponentDescriptor NewDescriptor;
+			NewDescriptor.InitFrom(ISMC);
+
+			SetDescriptor(NewDescriptor);
+		}
+	}
+
+	// Cache raw ptr
+	GetComponent();
+}
+
+void UPCGManagedISMComponent::ForgetComponent()
+{
+	Super::ForgetComponent();
+	CachedRawComponentPtr = nullptr;
+}
+
+void UPCGManagedISMComponent::SetDescriptor(const FISMComponentDescriptor& InDescriptor)
+{
+	bHasDescriptor = true;
+	Descriptor = InDescriptor;
 }
 
 bool UPCGManagedISMComponent::ReleaseIfUnused(TSet<TSoftObjectPtr<AActor>>& OutActorsToDelete)
@@ -239,6 +337,7 @@ bool UPCGManagedISMComponent::ReleaseIfUnused(TSet<TSoftObjectPtr<AActor>>& OutA
 	else if (GetComponent()->GetInstanceCount() == 0)
 	{
 		GeneratedComponent->DestroyComponent();
+		ForgetComponent();
 		return true;
 	}
 	else
@@ -258,5 +357,16 @@ void UPCGManagedISMComponent::ResetComponent()
 
 UInstancedStaticMeshComponent* UPCGManagedISMComponent::GetComponent() const
 {
-	return Cast<UInstancedStaticMeshComponent>(GeneratedComponent.Get());
+	if (!CachedRawComponentPtr)
+	{
+		CachedRawComponentPtr = Cast<UInstancedStaticMeshComponent>(GeneratedComponent.Get());
+	}
+
+	return CachedRawComponentPtr;
+}
+
+void UPCGManagedISMComponent::SetComponent(UInstancedStaticMeshComponent* InComponent)
+{
+	GeneratedComponent = InComponent;
+	CachedRawComponentPtr = InComponent;
 }

@@ -75,11 +75,25 @@ struct ENGINE_API FEdGraphTerminalType
 	static FEdGraphTerminalType FromPinType(const FEdGraphPinType& PinType);
 
 	friend FArchive& operator<<(FArchive& Ar, FEdGraphTerminalType& P);
+
+	friend inline bool operator!= (const FEdGraphTerminalType& A, const FEdGraphTerminalType& B)
+	{
+		return A.TerminalCategory != B.TerminalCategory
+			|| A.TerminalSubCategory != B.TerminalSubCategory
+			|| A.TerminalSubCategoryObject != B.TerminalSubCategoryObject
+			|| A.bTerminalIsConst != B.bTerminalIsConst
+			|| A.bTerminalIsWeakPointer != B.bTerminalIsWeakPointer;
+	}
+
+	friend inline bool operator==(const FEdGraphTerminalType& A, const FEdGraphTerminalType& B)
+	{
+		return !(A != B);
+	}
 };
 
 /** Enum used to define which way data flows into or out of this pin. */
 UENUM()
-enum EEdGraphPinDirection
+enum EEdGraphPinDirection : int
 {
 	EGPD_Input,
 	EGPD_Output,
@@ -116,7 +130,7 @@ enum class EPinContainerType : uint8
 UENUM()
 namespace ENodeTitleType
 {
-	enum Type
+	enum Type : int
 	{
 		/** The full title, may be multiple lines. */
 		FullTitle,
@@ -135,7 +149,7 @@ namespace ENodeTitleType
 UENUM()
 namespace ENodeAdvancedPins
 {
-	enum Type
+	enum Type : int
 	{
 		/** No advanced pins. */
 		NoPins,
@@ -667,6 +681,12 @@ public:
 	{
 		bHasCompilerMessage = false;
 	}
+
+	/** If true, this node whill show the Visual Warning message */
+	virtual bool ShowVisualWarning() const;
+
+	/** Visual Warning tooltip message to show */
+	virtual FText GetVisualWarningTooltipText() const;
 
 	/** Generate a unique pin name, trying to stick close to a passed in name */
 	virtual FName CreateUniquePinName(FName SourcePinName) const

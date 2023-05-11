@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "HDRIBackdropPlacement.h"
+#include "Engine/Blueprint.h"
 #include "IPlacementModeModule.h"
 #include "ActorFactories/ActorFactoryBlueprint.h"
 

@@ -163,23 +163,26 @@ namespace UnrealBuildTool
 
 		internal class ZenUploader
 		{
-			Dictionary<string, IoHash> FileHashes = new Dictionary<string, IoHash>();
-
+			FileHasher FileHasher;
 			Dictionary<IoHash, byte[]> Datas = new Dictionary<IoHash, byte[]>();
 			HashSet<IoHash> Uploaded = new HashSet<IoHash>();
 
+			public ZenUploader(ILogger? Logger = null)
+			{
+				FileHasher = new(Logger);
+			}
+
 			public IoHash HashFile(FileReference File)
 			{
-				if (!FileHashes.ContainsKey(File.FullName))
+				IoHash Hash = FileHasher.GetDigest(File);
+				if (!Datas.ContainsKey(Hash))
 				{
-					byte[] Data = FileReference.ReadAllBytes(File);
-					IoHash Hash = HashAndStoreData(Data);
-					lock (FileHashes)
+					lock (Datas)
 					{
-						FileHashes.TryAdd(File.FullName, Hash);
+						Datas.TryAdd(Hash, FileReference.ReadAllBytes(File));
 					}
 				}
-				return FileHashes[File.FullName];
+				return Hash;
 			}
 
 			// HashString is not cached
@@ -418,10 +421,15 @@ namespace UnrealBuildTool
 		/// Executes the specified actions locally.
 		/// </summary>
 		/// <returns>True if all the tasks successfully executed, or false if any of them failed.</returns>
-		public override bool ExecuteActions(List<LinkedAction> InputActions, ILogger Logger)
+		public override bool ExecuteActions(IEnumerable<LinkedAction> InputActions, ILogger Logger)
 		{
+			if (!InputActions.Any())
+			{
+				return true;
+			}
+
 			int NumCompletedActions = 0;
-			int TotalActions = InputActions.Count;
+			int TotalActions = InputActions.Count();
 			int ActualNumParallelProcesses = Math.Min(TotalActions, NumParallelProcesses);
 
 			using ManagedProcessGroup ProcessGroup = new ManagedProcessGroup();

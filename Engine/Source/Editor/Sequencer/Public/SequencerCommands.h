@@ -142,6 +142,12 @@ public:
 	/** When enabled, enables a single asynchronous evaluation once per-frame. When disabled, forces a full blocking evaluation every time this sequence is evaluated (should be avoided for real-time content). */
 	TSharedPtr< FUICommandInfo > ToggleAsyncEvaluation;
 
+	/** When enabled, all blendable tracks will always cache their initial values to ensure that they are able to correctly blend in/out when dynamic weights are being used. */
+	TSharedPtr< FUICommandInfo > ToggleDynamicWeighting;
+
+	/** Toggle resetting the playhead when navigating in and out of subsequences */
+	TSharedPtr< FUICommandInfo > ToggleResetPlayheadWhenNavigating;
+
 	/** Toggle constraining the time cursor to the playback range while scrubbing */
 	TSharedPtr< FUICommandInfo > ToggleKeepCursorInPlaybackRangeWhileScrubbing;
 
@@ -438,6 +444,18 @@ public:
 
 	/** Sets a scale key at the current time for the selected actor */
 	TSharedPtr< FUICommandInfo > AddScaleKey;
+
+	/** Set the key to a specified time */
+	TSharedPtr< FUICommandInfo > SetKeyTime;
+
+	/** Set the selected key's time to the current time */
+	TSharedPtr< FUICommandInfo > Rekey;
+
+	/** Snap selected keys to frame */
+	TSharedPtr< FUICommandInfo > SnapToFrame;
+
+	/** Deletes the selected keys */
+	TSharedPtr< FUICommandInfo > DeleteKeys;
 
 	/** Toggle piloting the last camera or the camera cut camera */
 	TSharedPtr< FUICommandInfo > TogglePilotCamera;

@@ -7,21 +7,38 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "GameTime.h"
+#include "SceneTypes.h"
 #include "UObject/ObjectMacros.h"
 #include "Engine/EngineTypes.h"
 #include "HitProxies.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "BatchedElements.h"
 #include "RendererInterface.h"
 #include "StaticMeshResources.h"
 #include "UnrealEngine.h"
+#endif
 #include "CanvasTypes.generated.h"
 
+class FBatchedElementParameters;
+class FBatchedElements;
+class FRDGBuilder;
+class FRHICommandListImmediate;
+class FCanvasBatchedElementRenderItem;
 class FCanvasRenderContext;
 class FCanvasRenderThreadScope;
 class FCanvasItem;
+class FTexture;
 class FMaterialRenderProxy;
+class FRenderTarget;
+class FSceneInterface;
 class IBreakIterator;
 class UFont;
+class FRDGTexture;
+namespace ERHIFeatureLevel { enum Type : int; }
+struct FMeshPassProcessorRenderState;
+using FRDGTextureRef = FRDGTexture*;
+enum EShaderPlatform : uint16;
 
 /**
  * General purpose data structure for grouping all parameters needed when sizing or wrapping a string
@@ -529,7 +546,7 @@ public:
 	*
 	* @return shader platform that this canvas is rendering at
 	*/
-	EShaderPlatform GetShaderPlatform() const { return GShaderPlatformForFeatureLevel[FeatureLevel]; }
+	ENGINE_API EShaderPlatform GetShaderPlatform() const;
 
 public:
 	float AlphaModulate;
@@ -715,8 +732,8 @@ public:
 	* @param Texture - Texture to draw
 	* @param AlphaBlend - true to alphablend
 	*/
-	ENGINE_API void DrawTile(float X, float Y, float SizeX, float SizeY, float U, float V,  float SizeU, float SizeV, const FLinearColor& Color, const FTexture* Texture = NULL, bool AlphaBlend = true);
-	ENGINE_API void DrawTile(float X, float Y, float SizeX, float SizeY, float U, float V, float SizeU, float SizeV, const FLinearColor& Color, const FTexture* Texture, ESimpleElementBlendMode BlendMode);
+	ENGINE_API void DrawTile(double X, double Y, double SizeX, double SizeY, float U, float V, float SizeU, float SizeV, const FLinearColor& Color, const FTexture* Texture = NULL, bool AlphaBlend = true);
+	ENGINE_API void DrawTile(double X, double Y, double SizeX, double SizeY, float U, float V, float SizeU, float SizeV, const FLinearColor& Color, const FTexture* Texture, ESimpleElementBlendMode BlendMode);
 
 	/** 
 	* Draw an string centered on given location. 
@@ -730,9 +747,9 @@ public:
 	* @param ShadowColor - Shadow color to draw underneath the text (ignored for distance field fonts)
 	* @return total size in pixels of text drawn
 	*/
-	ENGINE_API int32 DrawShadowedString( float StartX, float StartY, const TCHAR* Text, const UFont* Font, const FLinearColor& Color, const FLinearColor& ShadowColor = FLinearColor::Black );
+	ENGINE_API int32 DrawShadowedString(double StartX, double StartY, const TCHAR* Text, const UFont* Font, const FLinearColor& Color, const FLinearColor& ShadowColor = FLinearColor::Black );
 	
-	ENGINE_API int32 DrawShadowedText( float StartX, float StartY, const FText& Text, const UFont* Font, const FLinearColor& Color, const FLinearColor& ShadowColor = FLinearColor::Black );
+	ENGINE_API int32 DrawShadowedText(double StartX, double StartY, const FText& Text, const UFont* Font, const FLinearColor& Color, const FLinearColor& ShadowColor = FLinearColor::Black );
 
 	ENGINE_API void WrapString( FTextSizingParameters& Parameters, const float InCurX, const TCHAR* const pText, TArray<FWrappedStringElement>& out_Lines, FCanvasWordWrapper::FWrappedLineData* const OutWrappedLineData = nullptr);
 
@@ -838,451 +855,6 @@ public:
 
 
 /**
-* Info needed to render a batched element set
-*/
-class FCanvasBatchedElementRenderItem : public FCanvasBaseRenderItem
-{
-public:
-	/** 
-	* Init constructor 
-	*/
-	FCanvasBatchedElementRenderItem(
-		FBatchedElementParameters* InBatchedElementParameters=NULL,
-		const FTexture* InTexture=NULL,
-		ESimpleElementBlendMode InBlendMode=SE_BLEND_MAX,
-		FCanvas::EElementType InElementType=FCanvas::ET_MAX,
-		const FCanvas::FTransformEntry& InTransform=FCanvas::FTransformEntry(FMatrix::Identity),
-		const FDepthFieldGlowInfo& InGlowInfo=FDepthFieldGlowInfo() )
-		// this data is deleted after rendering has completed
-		: Data(new FRenderData(InBatchedElementParameters, InTexture, InBlendMode, InElementType, InTransform, InGlowInfo))
-	{}
-
-	/**
-	* Destructor to delete data in case nothing rendered
-	*/
-	virtual ~FCanvasBatchedElementRenderItem()
-	{
-		delete Data;
-	}
-
-	/**
-	* FCanvasBatchedElementRenderItem instance accessor
-	*
-	* @return this instance
-	*/
-	virtual class FCanvasBatchedElementRenderItem* GetCanvasBatchedElementRenderItem() override
-	{ 
-		return this; 
-	}
-
-	/**
-	* Renders the canvas item. 
-	* Iterates over all batched elements and draws them with their own transforms
-	*
-	* @param Canvas - canvas currently being rendered
-	* @param RHICmdList - command list to use
-	* @return true if anything rendered
-	*/
-	virtual bool Render_RenderThread(FCanvasRenderContext& RenderContext, FMeshPassProcessorRenderState& DrawRenderState, const FCanvas* Canvas) override;
-	
-	/**
-	* Renders the canvas item.
-	* Iterates over all batched elements and draws them with their own transforms
-	*
-	* @param Canvas - canvas currently being rendered
-	* @return true if anything rendered
-	*/
-	virtual bool Render_GameThread(const FCanvas* Canvas, FCanvasRenderThreadScope& RenderScope) override;
-
-	/**
-	* Determine if this is a matching set by comparing texture,blendmode,elementype,transform. All must match
-	*
-	* @param BatchedElementParameters - parameters for this batched element
-	* @param InTexture - texture resource for the item being rendered
-	* @param InBlendMode - current alpha blend mode 
-	* @param InElementType - type of item being rendered: triangle,line,etc
-	* @param InTransform - the transform for the item being rendered
-	* @param InGlowInfo - the depth field glow of the item being rendered
-	* @return true if the parameters match this render item
-	*/
-	bool IsMatch(FBatchedElementParameters* BatchedElementParameters, const FTexture* InTexture, ESimpleElementBlendMode InBlendMode, FCanvas::EElementType InElementType, const FCanvas::FTransformEntry& InTransform, const FDepthFieldGlowInfo& InGlowInfo)
-	{
-		return(	Data->BatchedElementParameters.GetReference() == BatchedElementParameters &&
-				Data->Texture == InTexture &&
-				Data->BlendMode == InBlendMode &&
-				Data->ElementType == InElementType &&
-				Data->Transform.GetMatrixCRC() == InTransform.GetMatrixCRC() &&
-				Data->GlowInfo == InGlowInfo );
-	}
-
-	/**
-	* Accessor for the batched elements. This can be used for adding triangles and primitives to the batched elements
-	*
-	* @return pointer to batched elements struct
-	*/
-	FORCEINLINE FBatchedElements* GetBatchedElements()
-	{
-		return &Data->BatchedElements;
-	}
-
-private:
-	class FRenderData
-	{
-	public:
-		/**
-		* Init constructor
-		*/
-		FRenderData(
-			FBatchedElementParameters* InBatchedElementParameters=NULL,
-			const FTexture* InTexture=NULL,
-			ESimpleElementBlendMode InBlendMode=SE_BLEND_MAX,
-			FCanvas::EElementType InElementType=FCanvas::ET_MAX,
-			const FCanvas::FTransformEntry& InTransform=FCanvas::FTransformEntry(FMatrix::Identity),
-			const FDepthFieldGlowInfo& InGlowInfo=FDepthFieldGlowInfo() )
-			:	BatchedElementParameters(InBatchedElementParameters)
-			,	Texture(InTexture)
-			,	BlendMode(InBlendMode)
-			,	ElementType(InElementType)
-			,	Transform(InTransform)
-			,	GlowInfo(InGlowInfo)
-		{}
-		/** Current batched elements, destroyed once rendering completes. */
-		FBatchedElements BatchedElements;
-		/** Batched element parameters */
-		TRefCountPtr<FBatchedElementParameters> BatchedElementParameters;
-		/** Current texture being used for batching, set to NULL if it hasn't been used yet. */
-		const FTexture* Texture;
-		/** Current blend mode being used for batching, set to BLEND_MAX if it hasn't been used yet. */
-		ESimpleElementBlendMode BlendMode;
-		/** Current element type being used for batching, set to ET_MAX if it hasn't been used yet. */
-		FCanvas::EElementType ElementType;
-		/** Transform used to render including projection */
-		FCanvas::FTransformEntry Transform;
-		/** info for optional glow effect when using depth field rendering */
-		FDepthFieldGlowInfo GlowInfo;
-	};
-	
-	/**
-	* Render data which is allocated when a new FCanvasBatchedElementRenderItem is added for rendering.
-	* This data is only freed on the rendering thread once the item has finished rendering
-	*/
-	FRenderData* Data;		
-};
-
-
-/**
-* Info needed to render a single FTileRenderer
-*/
-class FCanvasTileRendererItem : public FCanvasBaseRenderItem
-{
-public:
-	/** 
-	* Init constructor 
-	*/
-	FCanvasTileRendererItem(ERHIFeatureLevel::Type InFeatureLevel,
-		const FMaterialRenderProxy* InMaterialRenderProxy=NULL,
-		const FCanvas::FTransformEntry& InTransform=FCanvas::FTransformEntry(FMatrix::Identity),
-		bool bInFreezeTime=false)
-		// this data is deleted after rendering has completed
-		: Data(MakeShared<FRenderData>(InFeatureLevel,InMaterialRenderProxy,InTransform))
-		, bFreezeTime(bInFreezeTime)
-	{}
-
-	/**
-	* FCanvasTileRendererItem instance accessor
-	*
-	* @return this instance
-	*/
-	virtual class FCanvasTileRendererItem* GetCanvasTileRendererItem() override
-	{ 
-		return this; 
-	}
-
-	/**
-	* Renders the canvas item. 
-	* Iterates over each tile to be rendered and draws it with its own transforms
-	*
-	* @param Canvas - canvas currently being rendered
-	* @param RHICmdList - command list to use
-	* @return true if anything rendered
-	*/
-	virtual bool Render_RenderThread(FCanvasRenderContext& RenderContext, FMeshPassProcessorRenderState& DrawRenderState, const FCanvas* Canvas) override;
-
-	/**
-	* Renders the canvas item.
-	* Iterates over each tile to be rendered and draws it with its own transforms
-	*
-	* @param Canvas - canvas currently being rendered
-	* @return true if anything rendered
-	*/
-	virtual bool Render_GameThread(const FCanvas* Canvas, FCanvasRenderThreadScope& RenderScope) override;
-
-	/**
-	* Determine if this is a matching set by comparing material,transform. All must match
-	*
-	* @param IInMaterialRenderProxy - material proxy resource for the item being rendered
-	* @param InTransform - the transform for the item being rendered
-	* @return true if the parameters match this render item
-	*/
-	bool IsMatch( const FMaterialRenderProxy* InMaterialRenderProxy, const FCanvas::FTransformEntry& InTransform )
-	{
-		return( Data->MaterialRenderProxy == InMaterialRenderProxy && 
-				Data->Transform.GetMatrixCRC() == InTransform.GetMatrixCRC() );
-	};
-
-	/**
-	* Add a new tile to the render data. These tiles all use the same transform and material proxy
-	*
-	* @param X - tile X offset
-	* @param Y - tile Y offset
-	* @param SizeX - tile X size
-	* @param SizeY - tile Y size
-	* @param U - tile U offset
-	* @param V - tile V offset
-	* @param SizeU - tile U size
-	* @param SizeV - tile V size
-	* @param return number of tiles added
-	*/
-	FORCEINLINE int32 AddTile(float X,float Y,float SizeX,float SizeY,float U,float V,float SizeU,float SizeV,FHitProxyId HitProxyId,FColor InColor)
-	{
-		return Data->AddTile(X,Y,SizeX,SizeY,U,V,SizeU,SizeV,HitProxyId,InColor);
-	};
-
-private:
-	class FTileVertexFactory : public FLocalVertexFactory
-	{
-	public:
-		FTileVertexFactory(const FStaticMeshVertexBuffers* VertexBuffers, ERHIFeatureLevel::Type InFeatureLevel);
-		void InitResource() override;
-
-	private:
-		const FStaticMeshVertexBuffers* VertexBuffers;
-	};
-
-	class FRenderData
-	{
-	public:
-		FRenderData(
-			ERHIFeatureLevel::Type InFeatureLevel,
-			const FMaterialRenderProxy* InMaterialRenderProxy,
-			const FCanvas::FTransformEntry& InTransform);
-
-		void RenderTiles(
-			FCanvasRenderContext& RenderContext,
-			FMeshPassProcessorRenderState& DrawRenderState,
-			const FSceneView& View,
-			bool bIsHitTesting,
-			bool bUse128bitRT = false);
-
-		const FMaterialRenderProxy* const MaterialRenderProxy;
-		const FCanvas::FTransformEntry Transform;
-
-		inline int32 AddTile(float X, float Y, float SizeX, float SizeY, float U, float V, float SizeU, float SizeV, FHitProxyId HitProxyId, FColor InColor)
-		{
-			FTileInst NewTile = { X,Y,SizeX,SizeY,U,V,SizeU,SizeV,HitProxyId,InColor };
-			return Tiles.Add(NewTile);
-		};
-
-		uint32 GetNumVertices() const;
-		uint32 GetNumIndices() const;
-
-	private:
-		FMeshBatch* AllocTileMeshBatch(FCanvasRenderContext& InRenderContext, FHitProxyId InHitProxyId);
-		void InitTileMesh(const FSceneView& View);
-		void ReleaseTileMesh();
-
-		FRawIndexBuffer16or32 IndexBuffer;
-		FStaticMeshVertexBuffers StaticMeshVertexBuffers;
-		FTileVertexFactory VertexFactory;
-
-		struct FTileInst
-		{
-			float X, Y;
-			float SizeX, SizeY;
-			float U, V;
-			float SizeU, SizeV;
-			FHitProxyId HitProxyId;
-			FColor InColor;
-		};
-		TArray<FTileInst> Tiles;
-	};
-
-	/**
-	 * Render data which is allocated when a new FCanvasTileRendererItem is added for rendering.
-	 * This data is only freed on the rendering thread once the item has finished rendering
-	 */
-	TSharedPtr<FRenderData> Data;
-
-	const bool bFreezeTime;
-};
-
-/**
-* Info needed to render a single FTriangleRenderer
-*/
-class FCanvasTriangleRendererItem : public FCanvasBaseRenderItem
-{
-public:
-	/**
-	* Init constructor
-	*/
-	FCanvasTriangleRendererItem(ERHIFeatureLevel::Type InFeatureLevel,
-		const FMaterialRenderProxy* InMaterialRenderProxy = NULL,
-		const FCanvas::FTransformEntry& InTransform = FCanvas::FTransformEntry(FMatrix::Identity),
-		bool bInFreezeTime = false)
-		// this data is deleted after rendering has completed
-		: Data(MakeShared<FRenderData>(InFeatureLevel, InMaterialRenderProxy, InTransform))
-		, bFreezeTime(bInFreezeTime)
-	{}
-
-	/**
-	 * FCanvasTriangleRendererItem instance accessor
-	 *
-	 * @return this instance
-	 */
-	virtual class FCanvasTriangleRendererItem* GetCanvasTriangleRendererItem() override
-	{
-		return this;
-	}
-
-	/**
-	* Renders the canvas item.
-	* Iterates over each triangle to be rendered and draws it with its own transforms
-	*
-	* @param Canvas - canvas currently being rendered
-	* @param RHICmdList - command list to use
-	* @return true if anything rendered
-	*/
-	virtual bool Render_RenderThread(FCanvasRenderContext& RenderContext, FMeshPassProcessorRenderState& DrawRenderState, const FCanvas* Canvas) override;
-
-	/**
-	* Renders the canvas item.
-	* Iterates over each triangle to be rendered and draws it with its own transforms
-	*
-	* @param Canvas - canvas currently being rendered
-	* @return true if anything rendered
-	*/
-	virtual bool Render_GameThread(const FCanvas* Canvas, FCanvasRenderThreadScope& RenderScope) override;
-
-	/**
-	* Determine if this is a matching set by comparing material,transform. All must match
-	*
-	* @param IInMaterialRenderProxy - material proxy resource for the item being rendered
-	* @param InTransform - the transform for the item being rendered
-	* @return true if the parameters match this render item
-	*/
-	bool IsMatch(const FMaterialRenderProxy* InMaterialRenderProxy, const FCanvas::FTransformEntry& InTransform)
-	{
-		return(Data->MaterialRenderProxy == InMaterialRenderProxy &&
-			Data->Transform.GetMatrixCRC() == InTransform.GetMatrixCRC());
-	};
-
-	/**
-	* Add a new triangle to the render data. These triangles all use the same transform and material proxy
-	*
-	* @param return number of triangles added
-	*/
-	FORCEINLINE int32 AddTriangle(const FCanvasUVTri& Tri, FHitProxyId HitProxyId)
-	{
-		return Data->AddTriangle(Tri, HitProxyId);
-	};
-
-	/**
-	 * Reserves space in array for NumTriangles new triangles.
-	 *
-	 * @param NumTriangles Additional number of triangles to reserve space for.
-	 */
-	FORCEINLINE void AddReserveTriangles(int32 NumTriangles)
-	{
-		Data->AddReserveTriangles(NumTriangles);
-	}
-
-	/**
-	* Reserves space in array for at least NumTriangles total triangles.
-	*
-	* @param NumTriangles Additional number of triangles to reserve space for.
-	*/
-	FORCEINLINE void ReserveTriangles(int32 NumTriangles)
-	{
-		Data->ReserveTriangles(NumTriangles);
-	}
-
-private:
-	class FTriangleVertexFactory : public FLocalVertexFactory
-	{
-	public:
-		FTriangleVertexFactory(const FStaticMeshVertexBuffers* VertexBuffers, ERHIFeatureLevel::Type InFeatureLevel);
-		void InitResource() override;
-
-	private:
-		const FStaticMeshVertexBuffers* VertexBuffers;
-	};
-
-	class FRenderData
-	{
-	public:
-		FRenderData(ERHIFeatureLevel::Type InFeatureLevel,
-			const FMaterialRenderProxy* InMaterialRenderProxy,
-			const FCanvas::FTransformEntry& InTransform)
-			: MaterialRenderProxy(InMaterialRenderProxy)
-			, Transform(InTransform)
-			, VertexFactory(&StaticMeshVertexBuffers, InFeatureLevel)
-		{}
-
-		FORCEINLINE int32 AddTriangle(const FCanvasUVTri& Tri, FHitProxyId HitProxyId)
-		{
-			FTriangleInst NewTri = { Tri, HitProxyId };
-			return Triangles.Add(NewTri);
-		};
-
-		FORCEINLINE void AddReserveTriangles(int32 NumTriangles)
-		{
-			Triangles.Reserve(Triangles.Num() + NumTriangles);
-		}
-
-		FORCEINLINE void ReserveTriangles(int32 NumTriangles)
-		{
-			Triangles.Reserve(NumTriangles);
-		}
-
-		void RenderTriangles(
-			FCanvasRenderContext& RenderContext,
-			FMeshPassProcessorRenderState& DrawRenderState,
-			const FSceneView& View,
-			bool bIsHitTesting);
-
-		const FMaterialRenderProxy* const MaterialRenderProxy;
-		const FCanvas::FTransformEntry Transform;
-
-		uint32 GetNumVertices() const;
-		uint32 GetNumIndices() const; 
-
-	private:
-		FMeshBatch* AllocTriangleMeshBatch(FCanvasRenderContext& InRenderContext, FHitProxyId InHitProxyId);
-		void InitTriangleMesh(const FSceneView& View);
-		void ReleaseTriangleMesh();
-
-		FRawIndexBuffer16or32 IndexBuffer;
-		FStaticMeshVertexBuffers StaticMeshVertexBuffers;
-		FTriangleVertexFactory VertexFactory;
-
-		struct FTriangleInst
-		{
-			FCanvasUVTri Tri;
-			FHitProxyId HitProxyId;
-		};
-		TArray<FTriangleInst> Triangles;
-	};
-
-	/**
-	 * Render data which is allocated when a new FCanvasTriangleRendererItem is added for rendering.
-	 * This data is only freed on the rendering thread once the item has finished rendering
-	 */
-	TSharedPtr<FRenderData> Data;
-
-	const bool bFreezeTime;
-};
-
-/**
 * Render string using both a font and a material. The material should have a font exposed as a 
 * parameter so that the correct font page can be set based on the character being drawn.
 *
@@ -1308,11 +880,7 @@ struct FScreenMessageWriter
 		Y += 14;
 	}
 
-	void DrawLine(const FText& Message, int32 X = 10, const FLinearColor& Color = FLinearColor(1.0, 0.05, 0.05, 1.0))
-	{
-		Canvas.DrawShadowedText((float)X, (float)Y, Message, GetStatsFont(), Color);
-		EmptyLine();
-	}
+	ENGINE_API void DrawLine(const FText& Message, int32 X = 10, const FLinearColor& Color = FLinearColor(1.0, 0.05, 0.05, 1.0));
 
 	FCanvas& Canvas;
 	int32 Y;

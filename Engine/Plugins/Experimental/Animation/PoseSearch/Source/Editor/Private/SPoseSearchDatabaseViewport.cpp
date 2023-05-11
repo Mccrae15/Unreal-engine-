@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SPoseSearchDatabaseViewport.h"
+#include "Framework/Application/SlateApplication.h"
 #include "PoseSearchDatabaseViewportClient.h"
 #include "PoseSearchDatabaseViewModel.h"
 #include "PoseSearchDatabaseEditor.h"
@@ -8,6 +9,7 @@
 #include "PoseSearchDatabaseEditorCommands.h"
 
 #include "SSimpleTimeSlider.h"
+#include "Viewports.h"
 #include "Widgets/Input/SButton.h"
 
 namespace UE::PoseSearch
@@ -60,6 +62,18 @@ namespace UE::PoseSearch
 				EFeaturesDrawMode::All));
 
 		CommandList->MapAction(
+			Commands.ShowPoseFeaturesDetailed,
+			FExecuteAction::CreateSP(
+				ViewModelRef,
+				&FDatabaseViewModel::OnSetPoseFeaturesDrawMode,
+				EFeaturesDrawMode::Detailed),
+			FCanExecuteAction(),
+			FIsActionChecked::CreateSP(
+				ViewModelRef,
+				&FDatabaseViewModel::IsPoseFeaturesDrawMode,
+				EFeaturesDrawMode::Detailed));
+
+		CommandList->MapAction(
 			Commands.ShowAnimationNone,
 			FExecuteAction::CreateSP(
 				ViewModelRef,
@@ -94,6 +108,12 @@ namespace UE::PoseSearch
 				ViewModelRef,
 				&FDatabaseViewModel::IsAnimationPreviewMode,
 				EAnimationPreviewMode::OriginalAndMirrored));
+
+		CommandList->MapAction(
+			Commands.ShowDisplayRootMotionSpeed,
+			FExecuteAction::CreateSP(ViewModelRef, &FDatabaseViewModel::OnToggleDisplayRootMotionSpeed),
+			FCanExecuteAction(),
+			FIsActionChecked::CreateSP(ViewModelRef, &FDatabaseViewModel::IsDisplayRootMotionSpeedChecked));
 	}
 
 	TSharedRef<FEditorViewportClient> SDatabaseViewport::MakeEditorViewportClient()

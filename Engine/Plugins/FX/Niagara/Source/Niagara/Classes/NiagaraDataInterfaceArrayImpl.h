@@ -3,11 +3,12 @@
 #pragma once
 
 #include "NiagaraClearCounts.h"
+#include "NiagaraCompileHashVisitor.h"
 #include "NiagaraDataInterfaceArray.h"
 #include "NiagaraDataInterfaceUtilities.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
-#include "Niagara/Private/NiagaraGpuReadbackManager.h"
-#include "Niagara/Private/NiagaraStats.h"
+#include "NiagaraGpuReadbackManager.h"
+#include "NiagaraStats.h"
 #include "NiagaraSystemInstance.h"
 
 #include "Async/Async.h"
@@ -24,6 +25,19 @@
 	{ \
 		Proxy.Reset(new FProxyType(this)); \
 		Super::PostInitProperties(); \
+	} \
+	template<typename TFromArrayType> \
+	void SetVariantArrayData(TConstArrayView<TFromArrayType> InArrayData) \
+	{ \
+		MEMBERNAME = InArrayData; \
+	} \
+	template<typename TFromArrayType> \
+	void SetVariantArrayValue(int Index, const TFromArrayType& Value, bool bSizeToFit) \
+	{ \
+		const int NumRequired = Index + 1 - MEMBERNAME.Num(); \
+		if ( NumRequired > 0 && !bSizeToFit ) return; \
+		MEMBERNAME.AddDefaulted(FMath::Max(NumRequired, 0)); \
+		MEMBERNAME[Index] = Value; \
 	} \
 	TArray<TYPENAME>& GetArrayReference() { return MEMBERNAME; }
 
@@ -65,6 +79,30 @@
 				Super::Equals(Other) && \
 				TypedOther != nullptr && \
 				TypedOther->MEMBERNAME == MEMBERNAME; \
+		} \
+		template<typename TFromArrayType> \
+		void SetVariantArrayData(TConstArrayView<TFromArrayType> InArrayData) \
+		{ \
+			if constexpr (std::is_same_v<TFromArrayType, decltype(MEMBERNAME)::ElementType>) \
+			{ \
+				MEMBERNAME = InArrayData; \
+				GetProxyAs<FProxyType>()->template SetArrayData<decltype(MEMBERNAME)::ElementType>(InArrayData); \
+			} \
+			else \
+			{ \
+				MEMBERNAME.SetNumUninitialized(InArrayData.Num()); \
+				FNDIArrayImplHelper<TYPENAME>::CopyCpuToCpuMemory(MEMBERNAME.GetData(), InArrayData.GetData(), InArrayData.Num()); \
+				GetProxyAs<FProxyType>()->template SetArrayData<decltype(Internal##MEMBERNAME)::ElementType>(InArrayData); \
+			} \
+		} \
+		template<typename TFromArrayType> \
+		void SetVariantArrayValue(int Index, const TFromArrayType& Value, bool bSizeToFit) \
+		{ \
+			const int NumRequired = Index + 1 - MEMBERNAME.Num(); \
+			if ( NumRequired > 0 && !bSizeToFit ) return; \
+			MEMBERNAME.AddDefaulted(FMath::Max(NumRequired, 0)); \
+			MEMBERNAME[Index] = Value; \
+			GetProxyAs<FProxyType>()->template SetArrayData<decltype(MEMBERNAME)::ElementType>(MEMBERNAME); \
 		} \
 		TArray<TYPENAME>& GetArrayReference() { return Internal##MEMBERNAME; }
 #else
@@ -255,9 +293,9 @@ struct FNDIArrayInstanceData_RenderThread
 			const FNiagaraGPUInstanceCountManager& CounterManager = ComputeInterface->GetGPUInstanceCounterManager();
 			const FRWBuffer& CountBuffer = CounterManager.GetInstanceCountBuffer();
 			
-			const TPair<uint32, int32> DataToClear(CountOffset, InArrayData.Num());
+			const TPair<uint32, uint32> DataToClear(CountOffset, InArrayData.Num());
 			RHICmdList.Transition(FRHITransitionInfo(CountBuffer.UAV, FNiagaraGPUInstanceCountManager::kCountBufferDefaultState, ERHIAccess::UAVCompute));
-			NiagaraClearCounts::ClearCountsInt(RHICmdList, CountBuffer.UAV, MakeArrayView(&DataToClear, 1));
+			NiagaraClearCounts::ClearCountsUInt(RHICmdList, CountBuffer.UAV, MakeArrayView(&DataToClear, 1));
 			RHICmdList.Transition(FRHITransitionInfo(CountBuffer.UAV, ERHIAccess::UAVCompute, FNiagaraGPUInstanceCountManager::kCountBufferDefaultState));
 		}
 	}
@@ -978,10 +1016,8 @@ struct FNDIArrayProxyImpl : public INDIArrayProxyBase
 	{
 		if (FNDIArrayImplHelper<TArrayType>::bSupportsGPU)
 		{
-			FSHAHash Hash = GetShaderFileHash(FNiagaraDataInterfaceArrayImplHelper::GetHLSLTemplateFile(false), EShaderPlatform::SP_PCD3D_SM5);
-			InVisitor->UpdateString(TEXT("NiagaraDataInterfaceArrayTemplateHLSLSource"), Hash.ToString());
-			Hash = GetShaderFileHash(FNiagaraDataInterfaceArrayImplHelper::GetHLSLTemplateFile(true), EShaderPlatform::SP_PCD3D_SM5);
-			InVisitor->UpdateString(TEXT("NiagaraDataInterfaceArrayTemplateHLSLSource"), Hash.ToString());
+			InVisitor->UpdateShaderFile(FNiagaraDataInterfaceArrayImplHelper::GetHLSLTemplateFile(false));
+			InVisitor->UpdateShaderFile(FNiagaraDataInterfaceArrayImplHelper::GetHLSLTemplateFile(true));
 		}
 		return true;
 	}
@@ -999,8 +1035,29 @@ struct FNDIArrayProxyImpl : public INDIArrayProxyBase
 		{
 			return;
 		}
+
 		FReadArrayRef ArrayData(Owner, InstanceData);
-		VariableDataString = FString::Printf(TEXT("ArrayType(%s) CpuLength(%d)"), *FNDIArrayImplHelper<TArrayType>::GetTypeDefinition().GetName(), ArrayData.GetArray().Num());
+		FString CpuValuesString;
+
+		const int32 MaxStringElements = 8;
+		const int32 NumElements = FMath::Min(MaxStringElements, ArrayData.GetArray().Num());
+		for (int32 i=0; i < NumElements; ++i)
+		{
+			CpuValuesString.Append(i > 0 ? TEXT(", [") : TEXT("["));
+			FNDIArrayImplHelper<TArrayType>::AppendValueToString(ArrayData.GetArray()[i], CpuValuesString);
+			CpuValuesString.Append(TEXT("]"));
+		}
+		if (MaxStringElements < ArrayData.GetArray().Num())
+		{
+			CpuValuesString.Append(TEXT(", ..."));
+		}
+
+		VariableDataString = FString::Printf(
+			TEXT("Type(%s) CpuLength(%d) CpuValues(%s)"),
+			*FNDIArrayImplHelper<TArrayType>::GetTypeDefinition().GetName(),
+			ArrayData.GetArray().Num(),
+			*CpuValuesString
+		);
 	}
 #endif
 

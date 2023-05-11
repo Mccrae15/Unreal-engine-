@@ -3,7 +3,6 @@
 #pragma once
 
 #include "Engine/DataAsset.h"
-#include "Templates/SubclassOf.h"
 #include "ContextualAnimTypes.h"
 #include "ContextualAnimSceneAsset.generated.h"
 
@@ -31,17 +30,29 @@ public:
 	FORCEINLINE int32 GetNumRoles() const { return Roles.Num(); }
 };
 
-/** List of AnimTrack for each role */
+/**
+ * Contains AnimTracks for each role in the interaction.
+ * Example: An specific set for a interaction with a car would have two tracks, one with the animation for the character and another one with the animation for the car.
+ * It is common to have variations of the same action with different animations. We could have one AnimSet with the animations for getting into the car from the driver side and another for getting into the car from the passenger side.
+*/
 USTRUCT(BlueprintType)
 struct CONTEXTUALANIMATION_API FContextualAnimSet
 {
 	GENERATED_BODY()
 
+	/** List of tracks with animation (and relevant data specific to that animation) for each role */
 	UPROPERTY(EditAnywhere, Category = "Defaults")
 	TArray<FContextualAnimTrack> Tracks;
 
+	/** Scene pivots for this set. Generated off line based on the AnimSetPivotDefinitions for the section this Set belongs to */
 	UPROPERTY(EditAnywhere, Category = "Defaults")
 	TArray<FTransform> ScenePivots;
+
+	/** Used by the selection mechanism to 'break the tie' when multiple Sets can be selected */
+	UPROPERTY(EditAnywhere, Category = "Defaults", meta = (ClampMin = "0", UIMin = "0", ClampMax = "1", UIMax = "1"))
+	float RandomWeight = 1.f;
+
+	int32 GetNumMandatoryRoles() const;
 };
 
 /** Named container with one or more ContextualAnimSet */
@@ -140,6 +151,39 @@ enum class EContextualAnimCriterionToConsider : uint8
 	Other
 };
 
+UENUM(BlueprintType)
+enum class EContextualAnimActorPreviewType : uint8
+{
+	SkeletalMesh,
+	StaticMesh,
+	Actor,
+	None
+};
+
+USTRUCT(BlueprintType)
+struct FContextualAnimActorPreviewData
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, Category = "Defaults", meta = (GetOptions = "GetRoles"))
+	FName Role;
+
+	UPROPERTY(EditAnywhere, Category = "Defaults", meta = (GetOptions = "GetRoles"))
+	EContextualAnimActorPreviewType Type = EContextualAnimActorPreviewType::StaticMesh;
+
+	UPROPERTY(EditAnywhere, Category = "Defaults", meta = (EditCondition = "Type==EContextualAnimActorPreviewType::SkeletalMesh", EditConditionHides))
+	TSoftObjectPtr<class USkeletalMesh> PreviewSkeletalMesh;
+
+	UPROPERTY(EditAnywhere, Category = "Defaults", meta = (EditCondition = "Type==EContextualAnimActorPreviewType::SkeletalMesh", EditConditionHides))
+	TSoftClassPtr<class UAnimInstance> PreviewAnimInstance;
+
+	UPROPERTY(EditAnywhere, Category = "Defaults", meta = (EditCondition = "Type==EContextualAnimActorPreviewType::StaticMesh", EditConditionHides))
+	TSoftObjectPtr<class UStaticMesh> PreviewStaticMesh;
+
+	UPROPERTY(EditAnywhere, Category = "Defaults", meta = (EditCondition = "Type==EContextualAnimActorPreviewType::Actor", EditConditionHides))
+	TSoftClassPtr<class AActor> PreviewActorClass;
+};
+
 UCLASS(Blueprintable)
 class CONTEXTUALANIMATION_API UContextualAnimSceneAsset : public UDataAsset
 {
@@ -173,6 +217,8 @@ public:
 
 	int32 GetNumRoles() const { return RolesAsset ? RolesAsset->GetNumRoles() : 0; }
 
+	int32 GetNumMandatoryRoles(int32 SectionIdx, int32 AnimSetIdx) const;
+
 	const FTransform& GetMeshToComponentForRole(const FName& Role) const;
 
 	TArray<FName> GetSectionNames() const;
@@ -184,6 +230,8 @@ public:
 	const FContextualAnimSceneSection* GetSection(int32 SectionIdx) const;
 
 	const FContextualAnimSceneSection* GetSection(const FName& SectionName) const;
+
+	const FContextualAnimSet* GetAnimSet(int32 SectionIdx, int32 AnimSetIdx) const;
 
 	int32 GetSectionIndex(const FName& SectionName) const;
 	
@@ -235,11 +283,14 @@ public:
 
 protected:
 
-	UPROPERTY(EditAnywhere, Category = "Defaults")
+	UPROPERTY(EditAnywhere, Category = "Settings")
 	TObjectPtr<UContextualAnimRolesAsset> RolesAsset;
 
-	UPROPERTY(EditAnywhere, Category = "Defaults", meta = (GetOptions = "GetRoles"))
+	UPROPERTY(EditAnywhere, Category = "Settings", meta = (GetOptions = "GetRoles"))
 	FName PrimaryRole = NAME_None;
+
+	UPROPERTY(EditAnywhere, Category = "Settings", meta = (TitleProperty = "Role"))
+	TArray<FContextualAnimActorPreviewData> OverridePreviewData;
 
 	UPROPERTY(EditAnywhere, Category = "Defaults")
 	TArray<FContextualAnimSceneSection> Sections;

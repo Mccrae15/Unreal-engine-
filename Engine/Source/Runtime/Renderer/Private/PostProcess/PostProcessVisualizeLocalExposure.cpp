@@ -3,6 +3,7 @@
 #include "PostProcess/PostProcessVisualizeLocalExposure.h"
 #include "PostProcess/PostProcessTonemap.h"
 #include "UnrealEngine.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 TAutoConsoleVariable<int> CVarLocalExposureVisualizeDebugMode(
 	TEXT("r.LocalExposure.VisualizeDebugMode"),
@@ -26,7 +27,7 @@ public:
 		SHADER_PARAMETER_STRUCT(FScreenPassTextureViewportParameters, Output)
 
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, HDRSceneColorTexture)
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, EyeAdaptationTexture)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, EyeAdaptationBuffer)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture3D, LumBilateralGrid)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, BlurredLogLum)
 
@@ -51,7 +52,7 @@ FScreenPassTexture AddVisualizeLocalExposurePass(FRDGBuilder& GraphBuilder, cons
 	check(Inputs.HDRSceneColor.IsValid());
 	check(Inputs.LumBilateralGridTexture);
 	check(Inputs.BlurredLumTexture);
-	check(Inputs.EyeAdaptationTexture);
+	check(Inputs.EyeAdaptationBuffer);
 	check(Inputs.EyeAdaptationParameters);
 
 	FScreenPassRenderTarget Output = Inputs.OverrideOutput;
@@ -75,7 +76,7 @@ FScreenPassTexture AddVisualizeLocalExposurePass(FRDGBuilder& GraphBuilder, cons
 	PassParameters->Input = GetScreenPassTextureViewportParameters(InputViewport);
 	PassParameters->Output = GetScreenPassTextureViewportParameters(OutputViewport);
 	PassParameters->HDRSceneColorTexture = Inputs.HDRSceneColor.Texture;
-	PassParameters->EyeAdaptationTexture = Inputs.EyeAdaptationTexture;
+	PassParameters->EyeAdaptationBuffer = GraphBuilder.CreateSRV(Inputs.EyeAdaptationBuffer);
 	PassParameters->LumBilateralGrid = Inputs.LumBilateralGridTexture;
 	PassParameters->BlurredLogLum = Inputs.BlurredLumTexture;
 	PassParameters->TextureSampler = BilinearClampSampler;

@@ -64,6 +64,7 @@ const FName FInsightsManagerTabs::LoadingProfilerTabId(TEXT("LoadingProfiler"));
 const FName FInsightsManagerTabs::NetworkingProfilerTabId(TEXT("NetworkingProfiler"));
 const FName FInsightsManagerTabs::MemoryProfilerTabId(TEXT("MemoryProfiler"));
 const FName FInsightsManagerTabs::AutomationWindowTabId(TEXT("AutomationWindow"));
+const FName FInsightsManagerTabs::MessageLogTabId(TEXT("MessageLog"));
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // FAvailabilityCheck
@@ -497,6 +498,19 @@ FInsightsSettings& FInsightsManager::GetSettings()
 
 bool FInsightsManager::Tick(float DeltaTime)
 {
+	if (RetryLoadLastLiveSessionTimer > 0.0f)
+	{
+		LoadLastLiveSession(0.0f);
+		if (Session)
+		{
+			RetryLoadLastLiveSessionTimer = 0.0f;
+		}
+		else
+		{
+			RetryLoadLastLiveSessionTimer -= DeltaTime;
+		}
+	}
+	
 	AutoLoadLiveSession();
 
 	UpdateSessionDuration();
@@ -834,7 +848,7 @@ void FInsightsManager::AutoLoadLiveSession()
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void FInsightsManager::LoadLastLiveSession()
+void FInsightsManager::LoadLastLiveSession(float RetryTime)
 {
 	ResetSession();
 
@@ -851,6 +865,11 @@ void FInsightsManager::LoadLastLiveSession()
 		{
 			LoadTrace(SessionInfo->GetTraceId());
 		}
+	}
+
+	if (Session == nullptr && RetryTime > 0)
+	{
+		RetryLoadLastLiveSessionTimer = RetryTime;
 	}
 }
 
@@ -1070,6 +1089,26 @@ void FInsightsManager::ScheduleCommand(const FString& InCmd)
 
 void FInsightsManager::OnSessionAnalysisCompleted()
 {
+	// Report any errors or warning that occurred
+	FMessageLog* Log = Session->GetLog();
+	if (Log)
+	{
+		if (const int32 NumErrors = Log->NumMessages(EMessageSeverity::Error); NumErrors > 0)
+		{
+			Log->Notify(FText::Format(NSLOCTEXT("TraceAnalysis", "FinishedWithErrors", "Analysis finished with {0} error(s)"),
+				FText::AsNumber(NumErrors)));
+		}
+		else if (const int32 NumWarnings = Log->NumMessages(EMessageSeverity::Warning); NumWarnings > 0)
+		{
+			Log->Notify(FText::Format(NSLOCTEXT("TraceAnalysis", "FinishedWithWarnings", "Analysis finished with {0} warning(s)"),
+				FText::AsNumber(NumWarnings)));
+		}
+		else
+		{
+			Log->Notify(NSLOCTEXT("TraceAnalysis", "Finished", "Analysis finished."));
+		}
+	}
+	
 	if (!SessionAnalysisCompletedCmd.IsEmpty())
 	{
 		FOutputDevice& Ar = *GLog;

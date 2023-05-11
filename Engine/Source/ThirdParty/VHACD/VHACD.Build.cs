@@ -9,7 +9,7 @@ public class VHACD : ModuleRules
 
 		string VHACDDirectory = Target.UEThirdPartySourceDirectory + "VHACD/";
 		string VHACDLibPath = VHACDDirectory;
-		PublicIncludePaths.Add(VHACDDirectory + "public");
+		PublicSystemIncludePaths.Add(VHACDDirectory + "public");
 
 		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
@@ -41,11 +41,11 @@ public class VHACD : ModuleRules
 		{
 			if (Target.LinkType == TargetLinkType.Monolithic)
 			{
-				PublicAdditionalLibraries.Add(VHACDDirectory + "Lib/Linux/" + Target.Architecture + "/libVHACD.a");
+				PublicAdditionalLibraries.Add(VHACDDirectory + "Lib/Linux/" + Target.Architecture.LinuxName + "/libVHACD.a");
 			}
 			else
 			{
-				PublicAdditionalLibraries.Add(VHACDDirectory + "Lib/Linux/" + Target.Architecture + "/libVHACD_fPIC.a");
+				PublicAdditionalLibraries.Add(VHACDDirectory + "Lib/Linux/" + Target.Architecture.LinuxName + "/libVHACD_fPIC.a");
 			}
 		}
 	}

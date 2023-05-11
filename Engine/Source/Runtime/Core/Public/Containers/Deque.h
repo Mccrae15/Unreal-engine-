@@ -206,6 +206,17 @@ public:
 		return Count;
 	}
 
+	/**
+	 * Helper function to return the amount of memory allocated by this container.
+	 * Only returns the size of allocations made directly by the container, not the elements themselves.
+	 *
+	 * @returns Number of bytes allocated by this container.
+	 */
+	FORCEINLINE SIZE_T GetAllocatedSize() const
+	{
+		return Storage.GetAllocatedSize(Capacity, sizeof(ElementType));
+	}
+
 	/*
 	 * Constructs an element in place using the parameter arguments and adds it at the back of the queue.
 	 * This method returns a reference to the constructed element.
@@ -576,38 +587,34 @@ private:
 			checkf((Index >= 0) & (Index < Count), TEXT("Parameter index %d exceeds container size %d"), Index, Count);
 		}
 	}
-};
 
-//---------------------------------------------------------------------------------------------------------------------
-// TDeque comparison operators
-//---------------------------------------------------------------------------------------------------------------------
-
-template <typename InElementType, typename InAllocatorType>
-inline bool operator==(
-	const TDeque<InElementType, InAllocatorType>& Left,
-	const TDeque<InElementType, InAllocatorType>& Right)
-{
-	if (Left.Num() == Right.Num())
+	//---------------------------------------------------------------------------------------------------------------------
+	// TDeque comparison operators
+	//---------------------------------------------------------------------------------------------------------------------
+public:
+	inline bool operator==(const TDeque& Right) const
 	{
-		auto EndIt = Left.end();
-		auto LeftIt = Left.begin();
-		auto RightIt = Right.begin();
-		while (LeftIt != EndIt)
+		if (Num() == Right.Num())
 		{
-			if (*LeftIt++ != *RightIt++)
+			auto EndIt = end();
+			auto LeftIt = begin();
+			auto RightIt = Right.begin();
+			while (LeftIt != EndIt)
 			{
-				return false;
+				if (*LeftIt++ != *RightIt++)
+				{
+					return false;
+				}
 			}
+			return true;
 		}
-		return true;
+		return false;
 	}
-	return false;
-}
 
-template <typename InElementType, typename InAllocatorType>
-inline bool operator!=(
-	const TDeque<InElementType, InAllocatorType>& Left,
-	const TDeque<InElementType, InAllocatorType>& Right)
-{
-	return !(Left == Right);
-}
+#if !PLATFORM_COMPILER_HAS_GENERATED_COMPARISON_OPERATORS
+	inline bool operator!=(const TDeque& Right) const
+	{
+		return !(*this == Right);
+	}
+#endif
+};

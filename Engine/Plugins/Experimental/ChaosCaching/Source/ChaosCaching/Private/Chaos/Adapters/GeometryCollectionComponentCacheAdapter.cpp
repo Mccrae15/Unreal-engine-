@@ -1,14 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Chaos/Adapters/GeometryCollectionComponentCacheAdapter.h"
+#include "Chaos/Adapters/CacheAdapter.h"
 #include "Chaos/ChaosCache.h"
-#include "Chaos/ParticleHandle.h"
+#include "Engine/World.h"
+#include "EventManager.h"
 #include "GeometryCollection/GeometryCollectionComponent.h"
-#include "PBDRigidsSolver.h"
+#include "GeometryCollection/GeometryCollectionObject.h"
+#include "Physics/Experimental/PhysScene_Chaos.h"
 #include "PhysicsProxy/GeometryCollectionPhysicsProxy.h"
-#include "PhysicsProxy/SingleParticlePhysicsProxy.h"
 #include "Chaos/ChaosSolverActor.h"
-#include "GeometryCollection/GeometryCollectionAlgo.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(GeometryCollectionComponentCacheAdapter)
 
 FName FEnableStateEvent::EventName("GC_Enable");
 FName FBreakingEvent::EventName("GC_Breaking");
@@ -900,3 +903,4 @@ namespace Chaos
 	}
 
 }    // namespace Chaos
+

@@ -23,7 +23,7 @@ public:
 	//~ UEdGraphNode interface
 	virtual void PinConnectionListChanged(UEdGraphPin* Pin) override;
 	virtual void GetNodeContextMenuActions(class UToolMenu* Menu, class UGraphNodeContextMenuContext* Context) const override;
-	virtual bool IncludeParentNodeContextMenu() const { return true; }
+	virtual bool IncludeParentNodeContextMenu() const override { return true; }
 
 	/** Requests a new pin be added to the node with the specified direction, type, and name. */
 	UEdGraphPin* RequestNewTypedPin(EEdGraphPinDirection Direction, const FNiagaraTypeDefinition& Type, FName InName);
@@ -33,6 +33,9 @@ public:
 
 	/** Helper to identify if a pin is an Add pin.*/
 	bool IsAddPin(const UEdGraphPin* Pin) const;
+
+	/** Helper to identify if a pin is an Add pin.*/
+	bool IsExecPin(const UEdGraphPin* Pin) const;
 
 	/** Determine whether or not a Niagara type is supported for an Add Pin possibility.*/
 	virtual bool AllowNiagaraTypeForAddPin(const FNiagaraTypeDefinition& InType) const;
@@ -57,19 +60,22 @@ protected:
 	
 	/** Called in subclasses to restrict renaming.*/
 	/** Verify that the potential rename has produced acceptable results for a pin.*/
-	virtual bool VerifyEditablePinName(const FText& InName, FText& OutErrorMessage, const UEdGraphPin* InGraphPinObj) const { OutErrorMessage = FText::GetEmpty(); return true; }
+	virtual bool VerifyEditablePinName(const FText& InName, FText& OutErrorMessage, const UEdGraphPin* InGraphPinObj) const override { OutErrorMessage = FText::GetEmpty(); return true; }
 
 	/** Called when a pin is renamed. */
 	virtual void OnPinRenamed(UEdGraphPin* RenamedPin, const FString& OldPinName) { }
 
 	virtual bool CanRenamePinFromContextMenu(const UEdGraphPin* Pin) const { return CanRenamePin(Pin); }
 
+	/** Called to determine if this node can modify a given pin at all. */
+	virtual bool CanModifyPin(const UEdGraphPin* Pin) const;
+	
 	/** Called to determine if a pin can be renamed by the user. */
 	virtual bool CanRenamePin(const UEdGraphPin* Pin) const;
 
 	/** Called to determine if a pin can be removed by the user. */
 	virtual bool CanRemovePin(const UEdGraphPin* Pin) const;
-
+	
 	/** Called to determine if a pin can be moved by the user. Negative values for up, positive for down. */
 	virtual bool CanMovePin(const UEdGraphPin* Pin, int32 DirectionToMove) const;
 
@@ -81,7 +87,7 @@ protected:
 
 	virtual bool OnVerifyTextChanged(const FText& NewText, FText& OutMessage) { return true; };
 
-	bool IsValidPinToCompile(UEdGraphPin* Pin) const override;
+	virtual bool IsValidPinToCompile(UEdGraphPin* Pin) const override;
 
 private:
 

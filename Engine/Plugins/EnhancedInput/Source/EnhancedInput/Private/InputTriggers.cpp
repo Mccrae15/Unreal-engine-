@@ -1,10 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "InputTriggers.h"
-#include "InputAction.h"
-#include "InputActionValue.h"
+#include "EnhancedInputModule.h"
 #include "EnhancedPlayerInput.h"
-#include "GameFramework/PlayerController.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(InputTriggers)
 
@@ -237,19 +235,21 @@ ETriggerState UInputTriggerCombo::UpdateState_Implementation(const UEnhancedPlay
 {
 	if (ComboActions.IsEmpty())
 	{
-		ensureMsgf(false, TEXT("You must add combo actions to the UInputTriggerCombo for it work properly! Exiting..."));
+		UE_LOG(LogEnhancedInput, Warning, TEXT("A Combo Trigger has no combo actions and will not work properly!"));
 		return ETriggerState::None;
 	}
 	
 	if (const UInputAction* CurrentAction = ComboActions[CurrentComboStepIndex].ComboStepAction)
 	{
 		// loop through all cancel actions and check if they've fired
-		for (const UInputAction* CancelAction : CancelActions)
+		for (FInputCancelAction InputCancelActionData : InputCancelActions)
 		{
+			const UInputAction* CancelAction = InputCancelActionData.CancelAction;
 			if (CancelAction && CancelAction != CurrentAction)
 			{
 				const FInputActionInstance* CancelState = PlayerInput->FindActionInstanceData(CancelAction);
-				if (CancelState && CancelState->GetTriggerEvent() != ETriggerEvent::None)
+				// Check the cancellation state against the states that should cancel the combo
+				if (CancelState && (InputCancelActionData.CancellationStates & static_cast<uint8>(CancelState->GetTriggerEvent())))
 				{
 					// Cancel action firing!
 					CurrentComboStepIndex = 0;
@@ -264,7 +264,8 @@ ETriggerState UInputTriggerCombo::UpdateState_Implementation(const UEnhancedPlay
 			if (ComboStep.ComboStepAction && ComboStep.ComboStepAction != CurrentAction)
 			{
 				const FInputActionInstance* CancelState = PlayerInput->FindActionInstanceData(ComboStep.ComboStepAction);
-				if (CancelState && CancelState->GetTriggerEvent() != ETriggerEvent::None)
+				// Check the combo action state against the states that should complete this step
+				if (CancelState && (ComboStep.ComboStepCompletionStates & static_cast<uint8>(CancelState->GetTriggerEvent())))
 				{
 					// Other combo action firing - should cancel
 					CurrentComboStepIndex = 0;
@@ -286,8 +287,8 @@ ETriggerState UInputTriggerCombo::UpdateState_Implementation(const UEnhancedPlay
 		}
 
 		const FInputActionInstance* CurrentState = PlayerInput->FindActionInstanceData(CurrentAction);
-		// check to see if current action is completed - if so advance the combo to the next combo action
-		if (CurrentState && CurrentState->GetTriggerEvent() == ETriggerEvent::Completed) // + possibly Triggered
+		// check to see if current action is in one of it's completion states - if so advance the combo to the next combo action
+		if (CurrentState && (ComboActions[CurrentComboStepIndex].ComboStepCompletionStates & static_cast<uint8>(CurrentState->GetTriggerEvent())))
 		{
 			CurrentComboStepIndex++;
 			CurrentTimeBetweenComboSteps = 0;
@@ -329,7 +330,30 @@ EDataValidationResult UInputTriggerCombo::IsDataValid(TArray<FText>& ValidationE
 
 	return Result;
 }
+#endif // WITH_EDITOR
 
-#endif
+void UInputTriggerCombo::PostLoad()
+{
+	Super::PostLoad();
+	
+	// start fix up in case it's an old version that just has the cancel input action
+#if WITH_EDITORONLY_DATA
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
+	if (!CancelActions.IsEmpty())
+	{
+		for (TObjectPtr<const UInputAction> InputAction : CancelActions)
+		{
+			// use default settings but set cancel action
+			FInputCancelAction InputCancelAction;
+			InputCancelAction.CancelAction = InputAction;
+			InputCancelActions.Add(InputCancelAction);
+		}
+		CancelActions.Empty();
+	}
+		
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+#endif // WITH_EDITORONLY_DATA
+}
 
 #undef LOCTEXT_NAMESPACE

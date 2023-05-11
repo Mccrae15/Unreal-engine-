@@ -5,18 +5,23 @@
 #include "Misc/SecureHash.h"
 #include "Windows/MinimalWindowsApi.h"
 
-//////////////////////////////////////////////////////////////////////////////////////////////
-namespace TextureShareCoreInterprocessContainersHelper
+namespace UE
 {
-	static FTextureShareCoreSMD5Hash CreateEmptySMD5Hash()
+	namespace TextureShareCore
 	{
-		FTextureShareCoreSMD5Hash Result;
-		Result.Empty();
+		namespace InterprocessContainers
+		{
+			static FTextureShareCoreSMD5Hash CreateEmptySMD5Hash()
+			{
+				FTextureShareCoreSMD5Hash Result;
+				Result.Empty();
 
-		return Result;
+				return Result;
+			}
+		}
 	}
 };
-using namespace TextureShareCoreInterprocessContainersHelper;
+using namespace UE::TextureShareCore::InterprocessContainers;
 
 //////////////////////////////////////////////////////////////////////////////////////////////
 FTextureShareCoreSMD5Hash FTextureShareCoreSMD5Hash::EmptyValue = CreateEmptySMD5Hash();
@@ -28,12 +33,9 @@ void FTextureShareCoreSMD5Hash::Initialize(const FString& InText)
 {
 	Empty();
 
-	// Create MD5 Hash
-	const uint8* BlobInput = (unsigned char*)TCHAR_TO_ANSI(*InText);
-	uint64 BlobInputLen = FCString::Strlen(*InText);
-
+	// Generate MD5 Hash from TCHAR as binary data
 	FMD5 Md5Gen;
-	Md5Gen.Update(BlobInput, BlobInputLen);
+	Md5Gen.Update((const uint8*)GetData(InText), GetNum(InText) * sizeof(TCHAR));
 	Md5Gen.Final(MD5Digest);
 }
 
@@ -69,19 +71,12 @@ void FTextureShareCoreStringHash::Initialize(const FString& InText)
 
 	Hash.Initialize(InText);
 
-	// Copy string
-	const wchar_t* WCharValue = FTCHARToWChar(*InText).Get();
-	if (WCharValue && WCharValue[0])
+	FTCHARToWChar WCharString(*InText);
 	{
-		for (int32 CharIt = 0; CharIt < (MaxStringLength-1); CharIt++)
-		{
-			String[CharIt] = WCharValue[CharIt];
+		const int32 StrLength = FMath::Min(WCharString.Length(), MaxStringLength - 1);
 
-			// EndOfString
-			if (WCharValue[CharIt] == 0)
-			{
-				break;
-			}
-		}
+		// Reset and copy wchar string
+		FPlatformMemory::Memset(&String[0], 0, sizeof(String));
+		FPlatformMemory::Memcpy(&String[0], WCharString.Get(), sizeof(wchar_t) * StrLength);
 	}
 }

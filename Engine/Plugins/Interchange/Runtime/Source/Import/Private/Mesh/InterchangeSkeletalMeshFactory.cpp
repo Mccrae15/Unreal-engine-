@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved. 
 #include "Mesh/InterchangeSkeletalMeshFactory.h"
 
+#include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Async/Async.h"
 #include "Async/ParallelFor.h"
@@ -8,6 +9,7 @@
 #include "CoreGlobals.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/SkinnedAssetAsyncCompileUtils.h"
+#include "Engine/SkinnedAssetCommon.h"
 #include "GenericPlatform/GenericPlatformMisc.h"
 #include "GPUSkinPublicDefs.h"
 #include "InterchangeAssetImportData.h"
@@ -23,6 +25,7 @@
 #include "InterchangeSkeletonHelper.h"
 #include "InterchangeSourceData.h"
 #include "InterchangeTranslatorBase.h"
+#include "MaterialDomain.h"
 #include "Materials/Material.h"
 #include "Math/GenericOctree.h"
 #include "Mesh/InterchangeSkeletalMeshPayload.h"
@@ -403,7 +406,7 @@ namespace UE
 																  , FSkeletalMeshImportData& DestinationImportData
 																  , TArray<FMeshNodeContext>& MeshReferences
 																  , TArray<SkeletalMeshImportData::FBone>& RefBonesBinary
-																  , const UInterchangeSkeletalMeshFactory::FCreateAssetParams& Arguments
+																  , const UInterchangeSkeletalMeshFactory::FImportAssetObjectParams& Arguments
 																  , const IInterchangeSkeletalMeshPayloadInterface* SkeletalMeshTranslatorPayloadInterface
 																  , const bool bSkinControlPointToTimeZero
 																  , const UInterchangeBaseNodeContainer* NodeContainer
@@ -515,7 +518,8 @@ namespace UE
 						//Add the skinning in the mesh description
 						{
 							FSkeletalMeshAttributes PayloadSkeletalMeshAttributes(LodMeshPayload->LodMeshDescription);
-							PayloadSkeletalMeshAttributes.Register();
+							constexpr bool bKeepExistingAttribute = true;
+							PayloadSkeletalMeshAttributes.Register(bKeepExistingAttribute);
 							using namespace UE::AnimationCore;
 							TArray<FBoneWeight> BoneWeights;
 							FBoneWeight& BoneWeight = BoneWeights.AddDefaulted_GetRef();
@@ -585,8 +589,6 @@ namespace UE
 				int32	InfluenceCount = 0;
 
 				float TotalWeight = 0.f;
-				const float MINWEIGHT = 0.01f;
-
 				int MaxVertexInfluence = 0;
 				float MaxIgnoredWeight = 0.0f;
 
@@ -669,8 +671,9 @@ namespace UE
 						LastVertexIndex = Influences[i].VertexIndex;
 					}
 
-					// if less than min weight, or it's more than 8, then we clear it to use weight
-					if (Influences[i].Weight > MINWEIGHT && InfluenceCount < MAX_TOTAL_INFLUENCES)
+					// if less than min weight, or it's more than 12, then we clear it to use weight
+					if (Influences[i].Weight >= UE::AnimationCore::BoneWeightThreshold &&
+						InfluenceCount < MAX_TOTAL_INFLUENCES)
 					{
 						LastNewInfluenceIndex = NewInfluences.Add(Influences[i]);
 						InfluenceCount++;
@@ -870,9 +873,9 @@ UClass* UInterchangeSkeletalMeshFactory::GetFactoryClass() const
 	return USkeletalMesh::StaticClass();
 }
 
-UObject* UInterchangeSkeletalMeshFactory::CreateEmptyAsset(const FCreateAssetParams& Arguments)
+UObject* UInterchangeSkeletalMeshFactory::ImportAssetObject_GameThread(const FImportAssetObjectParams& Arguments)
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE("UInterchangeSkeletalMeshFactory::CreateEmptyAsset")
+	TRACE_CPUPROFILER_EVENT_SCOPE("UInterchangeSkeletalMeshFactory::ImportAssetObject_GameThread")
 #if !WITH_EDITOR || !WITH_EDITORONLY_DATA
 
 	UE_LOG(LogInterchangeImport, Error, TEXT("Cannot import skeletalMesh asset in runtime, this is an editor only feature."));
@@ -929,7 +932,7 @@ UObject* UInterchangeSkeletalMeshFactory::CreateEmptyAsset(const FCreateAssetPar
 #endif //else !WITH_EDITOR || !WITH_EDITORONLY_DATA
 }
 
-UObject* UInterchangeSkeletalMeshFactory::CreateAsset(const FCreateAssetParams& Arguments)
+UObject* UInterchangeSkeletalMeshFactory::ImportAssetObject_Async(const FImportAssetObjectParams& Arguments)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE("UInterchangeSkeletalMeshFactory::CreateAsset")
 
@@ -969,8 +972,15 @@ UObject* UInterchangeSkeletalMeshFactory::CreateAsset(const FCreateAssetParams& 
 	{
 		//NewObject is not thread safe, the asset registry directory watcher tick on the main thread can trig before we finish initializing the UObject and will crash
 		//The UObject should have been create by calling CreateEmptyAsset on the main thread.
-		check(IsInGameThread());
-		SkeletalMeshObject = NewObject<UObject>(Arguments.Parent, SkeletalMeshClass, *Arguments.AssetName, RF_Public | RF_Standalone);
+		if (IsInGameThread())
+		{
+			SkeletalMeshObject = NewObject<UObject>(Arguments.Parent, SkeletalMeshClass, *Arguments.AssetName, RF_Public | RF_Standalone);
+		}
+		else
+		{
+			UE_LOG(LogInterchangeImport, Error, TEXT("Could not create SkeletalMesh asset [%s] outside of the game thread"), *Arguments.AssetName);
+			return nullptr;
+		}
 	}
 	else if(ExistingAsset->GetClass()->IsChildOf(SkeletalMeshClass))
 	{
@@ -1060,19 +1070,24 @@ UObject* UInterchangeSkeletalMeshFactory::CreateAsset(const FCreateAssetParams& 
 	// Update skeletal materials
 	TArray<FSkeletalMaterial>& Materials = SkeletalMesh->GetMaterials();
 
-	auto UpdateOrAddSkeletalMaterial = [&Materials](const FName& MaterialSlotName, UMaterialInterface* MaterialInterface)
+	auto UpdateOrAddSkeletalMaterial = [&Materials, bIsReImport](const FName& MaterialSlotName, UMaterialInterface* MaterialInterface)
 	{
+		UMaterialInterface* NewMaterial = MaterialInterface ? MaterialInterface : UMaterial::GetDefaultMaterial(MD_Surface);
+
 		FSkeletalMaterial* SkeletalMaterial = Materials.FindByPredicate([&MaterialSlotName](const FSkeletalMaterial& Material) { return Material.MaterialSlotName == MaterialSlotName; });
-		
 		if (SkeletalMaterial)
 		{
-			SkeletalMaterial->MaterialInterface = MaterialInterface;
+			//When we do a reimport we update the material interface only if the specified MaterialInterface is not null
+			if (!bIsReImport || MaterialInterface || !SkeletalMaterial->MaterialInterface)
+			{
+				SkeletalMaterial->MaterialInterface = NewMaterial;
+			}
 		}
 		else
 		{
 			const bool bEnableShadowCasting = true;
 			const bool bInRecomputeTangent = false;
-			Materials.Emplace(MaterialInterface, bEnableShadowCasting, bInRecomputeTangent, MaterialSlotName, MaterialSlotName);
+			Materials.Emplace(NewMaterial, bEnableShadowCasting, bInRecomputeTangent, MaterialSlotName, MaterialSlotName);
 		}
 	};
 
@@ -1087,7 +1102,7 @@ UObject* UInterchangeSkeletalMeshFactory::CreateAsset(const FCreateAssetParams& 
 		const UInterchangeBaseMaterialFactoryNode* MaterialFactoryNode = Cast<UInterchangeBaseMaterialFactoryNode>(Arguments.NodeContainer->GetNode(SlotMaterialDependency.Value));
 		if (!MaterialFactoryNode || !MaterialFactoryNode->IsEnabled())
 		{
-			UpdateOrAddSkeletalMaterial(MaterialSlotName, UMaterial::GetDefaultMaterial(MD_Surface));
+			UpdateOrAddSkeletalMaterial(MaterialSlotName, nullptr);
 			continue;
 		}
 
@@ -1095,12 +1110,12 @@ UObject* UInterchangeSkeletalMeshFactory::CreateAsset(const FCreateAssetParams& 
 		MaterialFactoryNode->GetCustomReferenceObject(MaterialFactoryNodeReferenceObject);
 		if (!MaterialFactoryNodeReferenceObject.IsValid())
 		{
-			UpdateOrAddSkeletalMaterial(MaterialSlotName, UMaterial::GetDefaultMaterial(MD_Surface));
+			UpdateOrAddSkeletalMaterial(MaterialSlotName, nullptr);
 			continue;
 		}
 
 		UMaterialInterface* MaterialInterface = Cast<UMaterialInterface>(MaterialFactoryNodeReferenceObject.ResolveObject());
-		UpdateOrAddSkeletalMaterial(MaterialSlotName, MaterialInterface ? MaterialInterface : UMaterial::GetDefaultMaterial(MD_Surface));
+		UpdateOrAddSkeletalMaterial(MaterialSlotName, MaterialInterface ? MaterialInterface : nullptr);
 	}
 
 	for (int32 LodIndex = 0; LodIndex < LodCount; ++LodIndex)
@@ -1411,9 +1426,22 @@ UObject* UInterchangeSkeletalMeshFactory::CreateAsset(const FCreateAssetParams& 
 				if (LODMatIndex == INDEX_NONE)
 				{
 					LODMatIndex = Materials.Add(FSkeletalMaterial(ImportedMaterials[ImportedMaterialIndex].Material.Get(), true, false, ImportedMaterialName, ImportedMaterialName));
+					LodInfo->LODMaterialMap.Add(LODMatIndex);
 				}
-
-				LodInfo->LODMaterialMap.Add(LODMatIndex);
+				else
+				{
+					if (CurrentLodIndex == 0)
+					{
+						//For base lod, the skeletalmesh build will reorder the FSkeletalMeshImportData face in the correct order
+						//see FLODUtilities::AdjustImportDataFaceMaterialIndex function, so we dont need to set 
+						LodInfo->LODMaterialMap.Add(ImportedMaterialIndex);
+					}
+					else
+					{
+						//For non base lod we want to use the LODMatIndex
+						LodInfo->LODMaterialMap.Add(LODMatIndex);
+					}
+				}
 			}
 		}
 
@@ -1598,11 +1626,11 @@ void UInterchangeSkeletalMeshFactory::Cancel()
 }
 
 /* This function is call in the completion task on the main thread, use it to call main thread post creation step for your assets*/
-void UInterchangeSkeletalMeshFactory::PreImportPreCompletedCallback(const FImportPreCompletedCallbackParams& Arguments)
+void UInterchangeSkeletalMeshFactory::SetupObject_GameThread(const FSetupObjectParams& Arguments)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE("UInterchangeSkeletalMeshFactory::PreImportPreCompletedCallback")
 	check(IsInGameThread());
-	Super::PreImportPreCompletedCallback(Arguments);
+	Super::SetupObject_GameThread(Arguments);
 
 	//TODO make sure this work at runtime
 #if WITH_EDITORONLY_DATA

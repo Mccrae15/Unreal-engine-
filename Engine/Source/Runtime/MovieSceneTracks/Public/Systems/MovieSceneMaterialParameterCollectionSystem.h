@@ -12,8 +12,8 @@
 namespace UE::MovieScene
 {
 
-struct FPreAnimatedMPCScalarStorage;
-struct FPreAnimatedMPCVectorStorage;
+struct FPreAnimatedScalarMaterialParameterStorage;
+struct FPreAnimatedVectorMaterialParameterStorage;
 
 } // namespace UE::MovieScene
 
@@ -25,7 +25,6 @@ struct FPreAnimatedMPCVectorStorage;
 UCLASS(MinimalAPI)
 class UMovieSceneMaterialParameterCollectionSystem
 	: public UMovieSceneEntitySystem
-	, public IMovieScenePreAnimatedStateSystemInterface
 {
 public:
 
@@ -38,12 +37,10 @@ private:
 	virtual void OnLink() override;
 	virtual void OnRun(FSystemTaskPrerequisites& InPrerequisites, FSystemSubsequentTasks& Subsequents) override;
 
-	virtual void SavePreAnimatedState(const FPreAnimationParameters& InParameters) override;
-
 private:
 
 	/** Holds pre-animated values for scalar MPC values */
-	TSharedPtr<UE::MovieScene::FPreAnimatedMPCScalarStorage> ScalarParameterStorage;
+	TSharedPtr<UE::MovieScene::FPreAnimatedScalarMaterialParameterStorage> ScalarParameterStorage;
 	/** Holds pre-animated values for vector or color MPC values */
-	TSharedPtr<UE::MovieScene::FPreAnimatedMPCVectorStorage> VectorParameterStorage;
+	TSharedPtr<UE::MovieScene::FPreAnimatedVectorMaterialParameterStorage> VectorParameterStorage;
 };

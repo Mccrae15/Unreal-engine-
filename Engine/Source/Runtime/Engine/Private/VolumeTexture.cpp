@@ -5,21 +5,22 @@
 =============================================================================*/
 
 #include "Engine/VolumeTexture.h"
-#include "Containers/ResourceArray.h"
-#include "DeviceProfiles/DeviceProfile.h"
-#include "DeviceProfiles/DeviceProfileManager.h"
+#include "Engine/Texture2D.h"
 #include "Engine/TextureMipDataProviderFactory.h"
+#include "EngineLogs.h"
 #include "EngineUtils.h"
 #include "ImageUtils.h"
 #include "Misc/ScopedSlowTask.h"
 #include "RenderUtils.h"
-#include "Rendering/Texture3DResource.h"
+#include "Streaming/Texture2DMipDataProvider_DDC.h"
 #include "Streaming/TextureStreamIn.h"
+#include "Streaming/Texture2DMipDataProvider_IO.h"
 #include "Streaming/TextureStreamOut.h"
 #include "Streaming/VolumeTextureStreaming.h"
 #include "TextureCompiler.h"
-#include "TextureResource.h"
+#include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
+#include "ImageCoreUtils.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(VolumeTexture)
 
@@ -29,6 +30,11 @@
 
 // Externed global switch to control whether streaming is enabled for volume texture. 
 bool GSupportsVolumeTextureStreaming = true;
+static FAutoConsoleVariableRef CVarSupportsVolumeTextureStreaming(
+	TEXT("r.SupportsVolumeTextureStreaming"),
+	GSupportsVolumeTextureStreaming,
+	TEXT("Enable Support of VolumeTexture Streaming\n")
+);
 
 // Limit the possible depth of volume texture otherwise when the user converts 2D textures, they can crash the engine.
 const int32 MAX_VOLUME_TEXTURE_DEPTH = 512;
@@ -247,10 +253,8 @@ ENGINE_API bool UVolumeTexture::UpdateSourceFromFunction(TFunction<void(int32, i
 	
 	Modify(true);
 
-	// First clear up the existing source with the requested TextureSourceFormat
-	Source.Init(0, 0, 0, 1, Format, nullptr);
-	// It is now possible to query the correct FormatDataSize (there is no static version of GetBytesPerPixel)
-	const int32 FormatDataSize = Source.GetBytesPerPixel();
+	Source2DTexture = nullptr;
+	const int32 FormatDataSize = ERawImageFormat::GetBytesPerPixel(FImageCoreUtils::ConvertToRawImageFormat(Format));
 
 	// Allocate temp buffer used to fill texture
 	uint8* const NewData = (uint8*)FMemory::Malloc(SizeX * SizeY * SizeZ * FormatDataSize);
@@ -500,24 +504,6 @@ EPixelFormat UVolumeTexture::GetPixelFormat() const
 	}
 	return PF_Unknown;
 }
-
-#if WITH_EDITOR
-bool UVolumeTexture::GetStreamableRenderResourceState(FTexturePlatformData* InPlatformData, FStreamableRenderResourceState& OutState) const
-{
-	TGuardValue<FTexturePlatformData*> Guard(const_cast<UVolumeTexture*>(this)->PrivatePlatformData, InPlatformData);
-	if (GetPlatformData())
-	{
-		const FPixelFormatInfo& FormatInfo = GPixelFormats[GetPixelFormat()];
-		const bool bFormatIsSupported = FormatInfo.Supported;
-		if (GetNumMips() > 0 && GSupportsTexture3D && bFormatIsSupported)
-		{
-			OutState = GetResourcePostInitState(GetPlatformData(), GSupportsVolumeTextureStreaming, 0, 0, /*bSkipCanBeLoaded*/ true);
-			return true;
-		}
-	}
-	return false;
-}
-#endif
 
 FTextureResource* UVolumeTexture::CreateResource()
 {

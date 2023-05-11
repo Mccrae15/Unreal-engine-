@@ -2,8 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/Object.h"
 
 #include "MVVMBindingName.generated.h"
 
@@ -55,6 +53,10 @@ public:
 
 private:
 	//todo this should be and make helper function to build the name in BP with a picker
-	UPROPERTY(EditAnywhere, Category="MVVM")
+	UPROPERTY(EditAnywhere, Category = "Viewmodel")
 	FName BindingName;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

@@ -1,13 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "InstancePackers/PCGInstancePackerByAttribute.h"
-#include "Metadata/PCGMetadataAttribute.h"
+#include "Data/PCGSpatialData.h"
+#include "InstancePackers/PCGInstancePackerBase.h"
+#include "PCGContext.h"
+#include "PCGElement.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGInstancePackerByAttribute)
+
+#define LOCTEXT_NAMESPACE "PCGInstancePackerByAttribute"
 
 void UPCGInstancePackerByAttribute::PackInstances_Implementation(FPCGContext& Context, const UPCGSpatialData* InSpatialData, const FPCGMeshInstanceList& InstanceList, FPCGPackedCustomData& OutPackedCustomData) const
 {
 	if (!InSpatialData || !InSpatialData->Metadata)
 	{
-		PCGE_LOG_C(Error, &Context, "Invalid input data");
+		PCGE_LOG_C(Error, GraphAndLog, &Context, LOCTEXT("InvalidInputData", "Invalid input data"));
 		return;
 	}
 
@@ -18,7 +25,7 @@ void UPCGInstancePackerByAttribute::PackInstances_Implementation(FPCGContext& Co
 	{
 		if (!InSpatialData->Metadata->HasAttribute(AttributeName)) 
 		{
-			PCGE_LOG_C(Warning, &Context, "Attribute %s is not in the metadata", *AttributeName.ToString());
+			PCGE_LOG_C(Warning, GraphAndLog, &Context, FText::Format(LOCTEXT("AttributeNotInMetadata", "Attribute '{0}' is not in the metadata"), FText::FromName(AttributeName)));
 			continue;
 		}
 
@@ -27,7 +34,7 @@ void UPCGInstancePackerByAttribute::PackInstances_Implementation(FPCGContext& Co
 
 		if (!AddTypeToPacking(AttributeBase->GetTypeId(), OutPackedCustomData))
 		{
-			PCGE_LOG_C(Warning, &Context, "Attribute name %s is not a valid type", *AttributeName.ToString());
+			PCGE_LOG_C(Warning, GraphAndLog, &Context, FText::Format(LOCTEXT("AttributeInvalidType", "Attribute name '{0}' is not a valid type"), FText::FromName(AttributeName)));
 			continue;
 		}
 
@@ -36,3 +43,5 @@ void UPCGInstancePackerByAttribute::PackInstances_Implementation(FPCGContext& Co
 
 	PackCustomDataFromAttributes(InstanceList, SelectedAttributes, OutPackedCustomData);
  }
+
+#undef LOCTEXT_NAMESPACE

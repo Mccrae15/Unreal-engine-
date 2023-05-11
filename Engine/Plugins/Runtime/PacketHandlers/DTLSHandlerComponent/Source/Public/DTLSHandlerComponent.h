@@ -3,10 +3,13 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "HAL/IConsoleManager.h"
 #include "PacketHandler.h"
 #include "EncryptionComponent.h"
 #include "UObject/CoreNet.h"
 #include "DTLSContext.h"
+
+#if WITH_SSL
 
 extern TAutoConsoleVariable<int32> CVarPreSharedKeys;
 
@@ -73,6 +76,8 @@ private:
 
 	bool bPendingHandshakeData;
 };
+
+#endif // WITH_SSL
 
 /**
  * The public interface to this module.

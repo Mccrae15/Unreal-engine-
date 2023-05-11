@@ -1,16 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "View/MVVMViewClass.h"
+#include "Types/MVVMFieldContext.h"
 #include "View/MVVMView.h"
 
-#include "Bindings/MVVMBindingHelper.h"
 #include "Bindings/MVVMFieldPathHelper.h"
 #include "Blueprint/UserWidget.h"
-#include "Blueprint/WidgetTree.h"
 #include "Engine/Engine.h"
-#include "FieldNotification/IFieldValueChanged.h"
 #include "MVVMMessageLog.h"
-#include "MVVMViewModelBase.h"
 #include "MVVMSubsystem.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MVVMViewClass)
@@ -156,6 +153,21 @@ UObject* FMVVMViewClass_SourceCreator::CreateInstance(const UMVVMViewClass* InVi
 ///////////////////////////////////////////////////////////////////////
 // 
 ///////////////////////////////////////////////////////////////////////
+namespace UE::MVVM::Private
+{
+	int32 GDefaultEvaluationMode = (int32)EMVVMExecutionMode::Immediate;
+	static FAutoConsoleVariableRef CVarDefaultEvaluationMode(
+		TEXT("MVVM.DefaultExecutionMode"),
+		GDefaultEvaluationMode,
+		TEXT("The default evaluation mode of a MVVM binding.")
+	);
+}
+
+EMVVMExecutionMode FMVVMViewClass_CompiledBinding::GetExecuteMode() const
+{
+	EMVVMExecutionMode DefaultMode = (EMVVMExecutionMode)UE::MVVM::Private::GDefaultEvaluationMode;
+	return (Flags & EBindingFlags::OverrideExecuteMode) == 0 ? DefaultMode : ExecutionMode;
+}
 
 FString FMVVMViewClass_CompiledBinding::ToString() const
 {

@@ -29,6 +29,7 @@ struct FRayMarchingContext
 	// World-space
 	float3 WorldRayOrigin;
 	float3 WorldRayDirection;
+	float LocalToWorldScale;
 
 	// Ray-step attributes
 	float Jitter;
@@ -81,6 +82,12 @@ FRayMarchingContext CreateRayMarchingContext(
 	Context.bApplyDirectLighting = bApplyDirectLighting;
 	Context.bApplyShadowTransmittance = bApplyShadowTransmittance;
 
+	// Transform local-scale properties into world-scale
+	float3 LocalRayHit = LocalRayOrigin + LocalRayDirection * LocalRayTMax;
+	float3 WorldRayHit = mul(float4(LocalRayHit, 1.0), GetLocalToWorld()).xyz;
+	float WorldRayTMax = length(WorldRayHit - WorldRayOrigin);
+	Context.LocalToWorldScale = WorldRayTMax / LocalRayTMax;
+
 	Context.MipLevel = 0.0f;
 
 	return Context;
@@ -107,7 +114,7 @@ uint CalcStepCount(inout FRayMarchingContext Context)
 
 float ComputeHardSurfaceShadowFactor(
 	float3 TranslatedWorldPosition,
-	inout FDeferredLightData LightData,
+	FDeferredLightData LightData,
 	uint LightType
 )
 {
@@ -158,8 +165,9 @@ void RayMarchTransmittance(
 {
 	for (uint StepIndex = 0; StepIndex < StepCount; ++StepIndex)
 	{
-		float3 LocalPosition = RayMarchingContext.LocalRayOrigin + RayMarchingContext.LocalRayDirection * (RayMarchingContext.LocalRayTMin + RayMarchingContext.StepSize * (RayMarchingContext.Jitter + StepIndex));
-		float3 WorldPosition = RayMarchingContext.WorldRayOrigin + RayMarchingContext.WorldRayDirection * (RayMarchingContext.LocalRayTMin + RayMarchingContext.StepSize * (RayMarchingContext.Jitter + StepIndex));
+		float LocalHitT = RayMarchingContext.LocalRayTMin + RayMarchingContext.StepSize * (RayMarchingContext.Jitter + StepIndex);
+		float3 LocalPosition = RayMarchingContext.LocalRayOrigin + RayMarchingContext.LocalRayDirection * LocalHitT;
+		float3 WorldPosition = RayMarchingContext.WorldRayOrigin + RayMarchingContext.WorldRayDirection * LocalHitT * RayMarchingContext.LocalToWorldScale;
 
 		FVolumeSampleContext SampleContext = CreateVolumeSampleContext(LocalPosition, WorldPosition, RayMarchingContext.MipLevel);
 		float3 Extinction = SampleExtinction(SampleContext);
@@ -260,7 +268,7 @@ float3 ComputeTransmittance(
 
 float3 ComputeInscattering(
 	float3 WorldPosition,
-	inout FDeferredLightData LightData,
+	FDeferredLightData LightData,
 	uint LightType,
 	uint MaxStepCount,
 	bool bApplyShadowTransmittance
@@ -274,7 +282,7 @@ float3 ComputeInscattering(
 	float3 TransmittanceUVW = saturate((LocalShadowRayOrigin - LocalBoundsMin) / (2.0 * GetLocalBoundsExtent()));
 	float MipLevel = 0;
 
-	Inscattering = SampleLightingCache(TransmittanceUVW, MipLevel);
+	Inscattering = SampleLightingCache(TransmittanceUVW, MipLevel) * View.OneOverPreExposure;
 
 #else // DIM_USE_INSCATTERING_VOLUME
 	float3 L = LightData.Direction;
@@ -319,8 +327,9 @@ void RayMarchEmissionAbsorption(
 {
 	for (uint StepIndex = 0; StepIndex < StepCount; ++StepIndex)
 	{
-		float3 LocalPosition = RayMarchingContext.LocalRayOrigin + RayMarchingContext.LocalRayDirection * (RayMarchingContext.LocalRayTMin + RayMarchingContext.StepSize * (RayMarchingContext.Jitter + StepIndex));
-		float3 WorldPosition = RayMarchingContext.WorldRayOrigin + RayMarchingContext.WorldRayDirection * (RayMarchingContext.LocalRayTMin + RayMarchingContext.StepSize * (RayMarchingContext.Jitter + StepIndex));
+		float LocalHitT = RayMarchingContext.LocalRayTMin + RayMarchingContext.StepSize * (RayMarchingContext.Jitter + StepIndex);
+		float3 LocalPosition = RayMarchingContext.LocalRayOrigin + RayMarchingContext.LocalRayDirection * LocalHitT;
+		float3 WorldPosition = RayMarchingContext.WorldRayOrigin + RayMarchingContext.WorldRayDirection * LocalHitT * RayMarchingContext.LocalToWorldScale;
 
 		FVolumeSampleContext SampleContext = CreateVolumeSampleContext(LocalPosition, WorldPosition, RayMarchingContext.MipLevel);
 		float3 Extinction = SampleExtinction(SampleContext);
@@ -335,7 +344,7 @@ void RayMarchEmissionAbsorption(
 
 void RayMarchSingleScattering(
 	inout FRayMarchingContext RayMarchingContext,
-	inout FDeferredLightData LightData,
+	FDeferredLightData LightData,
 	uint LightType,
 	uint StepCount,
 	inout float3 Radiance,
@@ -344,8 +353,9 @@ void RayMarchSingleScattering(
 {
 	for (uint StepIndex = 0; StepIndex < StepCount; ++StepIndex)
 	{
-		float3 LocalPosition = RayMarchingContext.LocalRayOrigin + RayMarchingContext.LocalRayDirection * (RayMarchingContext.LocalRayTMin + RayMarchingContext.StepSize * (RayMarchingContext.Jitter + StepIndex));
-		float3 WorldPosition = RayMarchingContext.WorldRayOrigin + RayMarchingContext.WorldRayDirection * (RayMarchingContext.LocalRayTMin + RayMarchingContext.StepSize * (RayMarchingContext.Jitter + StepIndex));
+		float LocalHitT = RayMarchingContext.LocalRayTMin + RayMarchingContext.StepSize * (RayMarchingContext.Jitter + StepIndex);
+		float3 LocalPosition = RayMarchingContext.LocalRayOrigin + RayMarchingContext.LocalRayDirection * LocalHitT;
+		float3 WorldPosition = RayMarchingContext.WorldRayOrigin + RayMarchingContext.WorldRayDirection * LocalHitT * RayMarchingContext.LocalToWorldScale;
 		FVolumeSampleContext SampleContext = CreateVolumeSampleContext(LocalPosition, WorldPosition, RayMarchingContext.MipLevel);
 
 		if (RayMarchingContext.bApplyEmissionAndTransmittance)

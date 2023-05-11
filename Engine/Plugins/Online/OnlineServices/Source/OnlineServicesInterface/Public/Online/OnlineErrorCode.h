@@ -1,5 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
+
+#include "CoreTypes.h"
+
+class FString;
+
 namespace UE::Online::Errors {
 using ErrorCodeType = uint64;
 
@@ -20,12 +25,12 @@ namespace ErrorCode
 
 	constexpr ErrorCodeType Create(uint32 Source, uint32 Category, uint32 Code)
 	{
-		return ((Source & 0x3ull) << 60ull) | ((Category & 0x3fffffffull) << 32ull) | static_cast<ErrorCodeType>(Code);
+		return ((Source & 0xfull) << 60ull) | ((Category & 0x0fffffffull) << 32ull) | static_cast<ErrorCodeType>(Code);
 	}
 
 	constexpr ErrorCodeType Create(uint32 Category, uint32 Code)
 	{
-		return ((Category & 0x3fffffffull) << 32ull) | static_cast<ErrorCodeType>(Code);
+		return ((Category & 0x0fffffffull) << 32ull) | static_cast<ErrorCodeType>(Code);
 	}
 
 	namespace System
@@ -89,3 +94,7 @@ namespace ErrorCode { namespace Category { \
 	UE_ONLINE_ERROR_INTERNAL(CategoryName, Name, ErrorCodeValue, ErrorMessage, ErrorText)
 
 } /* namespace UE::Online::Errors */
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Containers/UnrealString.h"
+#endif

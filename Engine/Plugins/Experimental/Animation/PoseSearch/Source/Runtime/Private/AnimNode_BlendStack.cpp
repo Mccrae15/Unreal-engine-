@@ -1,10 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PoseSearch/AnimNode_BlendStack.h"
-
 #include "Algo/MaxElement.h"
+#include "Animation/AnimInstanceProxy.h"
+#include "Animation/AnimComposite.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/BlendSpace.h"
+#include "PoseSearch/PoseSearchDefines.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_BlendStack)
 
 #define LOCTEXT_NAMESPACE "AnimNode_BlendStack"
 
@@ -15,7 +19,7 @@ TAutoConsoleVariable<int32> CVarAnimBlendStackPruningEnable(TEXT("a.AnimNode.Ble
 
 /////////////////////////////////////////////////////
 // FPoseSearchAnimPlayer
-void FPoseSearchAnimPlayer::Initialize(ESearchIndexAssetType InAssetType, UAnimationAsset* AnimationAsset, float AccumulatedTime, bool bLoop, bool bMirrored, UMirrorDataTable* MirrorDataTable, float BlendTime, const UBlendProfile* BlendProfile, EAlphaBlendOption InBlendOption, FVector BlendParameters)
+void FPoseSearchAnimPlayer::Initialize(ESearchIndexAssetType InAssetType, UAnimationAsset* AnimationAsset, float AccumulatedTime, bool bLoop, bool bMirrored, UMirrorDataTable* MirrorDataTable, float BlendTime, const UBlendProfile* BlendProfile, EAlphaBlendOption InBlendOption, FVector BlendParameters, float PlayRate)
 {
 	check(AnimationAsset);
 
@@ -49,7 +53,7 @@ void FPoseSearchAnimPlayer::Initialize(ESearchIndexAssetType InAssetType, UAnima
 	MirrorNode.SetMirrorDataTable(MirrorDataTable);
 	MirrorNode.SetMirror(bMirrored);
 	
-	if (AssetType == ESearchIndexAssetType::Sequence)
+	if (AssetType == ESearchIndexAssetType::Sequence || AssetType == ESearchIndexAssetType::AnimComposite)
 	{
 		UAnimSequenceBase* Sequence = Cast<UAnimSequenceBase>(AnimationAsset);
 		check(Sequence);
@@ -57,7 +61,7 @@ void FPoseSearchAnimPlayer::Initialize(ESearchIndexAssetType InAssetType, UAnima
 		SequencePlayerNode.SetAccumulatedTime(AccumulatedTime);
 		SequencePlayerNode.SetSequence(Sequence);
 		SequencePlayerNode.SetLoopAnimation(bLoop);
-		SequencePlayerNode.SetPlayRate(1.0f);
+		SequencePlayerNode.SetPlayRate(PlayRate);
 	}
 	else if (AssetType == ESearchIndexAssetType::BlendSpace)
 	{
@@ -67,14 +71,31 @@ void FPoseSearchAnimPlayer::Initialize(ESearchIndexAssetType InAssetType, UAnima
 		BlendSpacePlayerNode.SetAccumulatedTime(AccumulatedTime);
 		BlendSpacePlayerNode.SetBlendSpace(BlendSpace);
 		BlendSpacePlayerNode.SetLoop(bLoop);
-		BlendSpacePlayerNode.SetPlayRate(1.0f);
+		BlendSpacePlayerNode.SetPlayRate(PlayRate);
 		BlendSpacePlayerNode.SetPosition(BlendParameters);
 	}
 	else 
 	{
 		checkNoEntry();
 	}
+
 	UpdateSourceLinkNode();
+}
+
+void FPoseSearchAnimPlayer::UpdatePlayRate(float PlayRate)
+{
+	if (AssetType == ESearchIndexAssetType::Sequence || AssetType == ESearchIndexAssetType::AnimComposite)
+	{
+		SequencePlayerNode.SetPlayRate(PlayRate);
+	}
+	else if (AssetType == ESearchIndexAssetType::BlendSpace)
+	{
+		BlendSpacePlayerNode.SetPlayRate(PlayRate);
+	}
+	else
+	{
+		checkNoEntry();
+	}
 }
 
 void FPoseSearchAnimPlayer::StorePoseContext(const FPoseContext& PoseContext)
@@ -128,7 +149,7 @@ void FPoseSearchAnimPlayer::RestorePoseContext(FPoseContext& PoseContext) const
 // since we're making copies and moving this object in memory, we're using this method to set the MirrorNode SourceLinkNode when necessary
 void FPoseSearchAnimPlayer::UpdateSourceLinkNode()
 {
-	if (AssetType == ESearchIndexAssetType::Sequence)
+	if (AssetType == ESearchIndexAssetType::Sequence || AssetType == ESearchIndexAssetType::AnimComposite)
 	{
 		MirrorNode.SetSourceLinkNode(&SequencePlayerNode);
 	}
@@ -166,7 +187,7 @@ void FPoseSearchAnimPlayer::Update_AnyThread(const FAnimationUpdateContext& Cont
 
 float FPoseSearchAnimPlayer::GetAccumulatedTime() const
 {
-	if (AssetType == ESearchIndexAssetType::Sequence)
+	if (AssetType == ESearchIndexAssetType::Sequence || AssetType == ESearchIndexAssetType::AnimComposite)
 	{
 		return SequencePlayerNode.GetAccumulatedTime();
 	}
@@ -175,13 +196,14 @@ float FPoseSearchAnimPlayer::GetAccumulatedTime() const
 	{
 		return BlendSpacePlayerNode.GetAccumulatedTime();
 	}
-	
+
+	checkNoEntry();
 	return 0.f;
 }
 
 FString FPoseSearchAnimPlayer::GetAnimName() const
 {
-	if (AssetType == ESearchIndexAssetType::Sequence)
+	if (AssetType == ESearchIndexAssetType::Sequence || AssetType == ESearchIndexAssetType::AnimComposite)
 	{
 		check(SequencePlayerNode.GetSequence());
 		return SequencePlayerNode.GetSequence()->GetName();
@@ -193,6 +215,7 @@ FString FPoseSearchAnimPlayer::GetAnimName() const
 		return BlendSpacePlayerNode.GetBlendSpace()->GetName();
 	}
 
+	checkNoEntry();
 	return FString("StoredPose");
 }
 
@@ -361,11 +384,19 @@ float FAnimNode_BlendStack::GetAccumulatedTime() const
 	return AnimPlayers.IsEmpty() ? 0.f : AnimPlayers.First().GetAccumulatedTime();
 }
 
-void FAnimNode_BlendStack::BlendTo(ESearchIndexAssetType AssetType, UAnimationAsset* AnimationAsset, float AccumulatedTime, bool bLoop, bool bMirrored, UMirrorDataTable* MirrorDataTable, int32 MaxActiveBlends, float BlendTime, const UBlendProfile* BlendProfile, EAlphaBlendOption BlendOption, FVector BlendParameters)
+void FAnimNode_BlendStack::BlendTo(ESearchIndexAssetType AssetType, UAnimationAsset* AnimationAsset, float AccumulatedTime, bool bLoop, bool bMirrored, UMirrorDataTable* MirrorDataTable, int32 MaxActiveBlends, float BlendTime, const UBlendProfile* BlendProfile, EAlphaBlendOption BlendOption, FVector BlendParameters, float PlayRate)
 {
 	RequestedMaxActiveBlends = MaxActiveBlends;
 	AnimPlayers.PushFirst(FPoseSearchAnimPlayer());
-	AnimPlayers.First().Initialize(AssetType, AnimationAsset, AccumulatedTime, bLoop, bMirrored, MirrorDataTable, BlendTime, BlendProfile, BlendOption, BlendParameters);
+	AnimPlayers.First().Initialize(AssetType, AnimationAsset, AccumulatedTime, bLoop, bMirrored, MirrorDataTable, BlendTime, BlendProfile, BlendOption, BlendParameters, PlayRate);
+}
+
+void FAnimNode_BlendStack::UpdatePlayRate(float PlayRate)
+{
+	if (!AnimPlayers.IsEmpty())
+	{
+		AnimPlayers.First().UpdatePlayRate(PlayRate);
+	}
 }
 
 void FAnimNode_BlendStack::GatherDebugData(FNodeDebugData& DebugData)

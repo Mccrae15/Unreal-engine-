@@ -10,13 +10,14 @@ using System.Net.Mime;
 using System.Security.Claims;
 using System.Threading.Tasks;
 using Horde.Build.Acls;
-using Horde.Build.Jobs;
 using Horde.Build.Jobs.Graphs;
 using Horde.Build.Server;
+using Horde.Build.Streams;
 using Horde.Build.Utilities;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using MongoDB.Bson;
 
@@ -31,35 +32,22 @@ namespace Horde.Build.Jobs.Artifacts
 	[Route("[controller]")]
 	public class ArtifactsController : ControllerBase
 	{
-		/// <summary>
-		/// Instance of the database service
-		/// </summary>
-		private readonly MongoService _mongoService;
-
-		/// <summary>
-		/// Instance of the artifact collection
-		/// </summary>
+		private readonly GlobalsService _globalsService;
 		private readonly IArtifactCollection _artifactCollection;
-
-		/// <summary>
-		/// Instance of the ACL service
-		/// </summary>
 		private readonly AclService _aclService;
-
-		/// <summary>
-		/// Instance of the Job service
-		/// </summary>
 		private readonly JobService _jobService;
+		private readonly IOptionsSnapshot<GlobalConfig> _globalConfig;
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		public ArtifactsController(MongoService mongoService, IArtifactCollection artifactCollection, AclService aclService, JobService jobService)
+		public ArtifactsController(GlobalsService globalsService, IArtifactCollection artifactCollection, AclService aclService, JobService jobService, IOptionsSnapshot<GlobalConfig> globalConfig)
 		{
-			_mongoService = mongoService;
+			_globalsService = globalsService;
 			_artifactCollection = artifactCollection;
 			_aclService = aclService;
 			_jobService = jobService;
+			_globalConfig = globalConfig;
 		}
 
 		/// <summary>
@@ -77,10 +65,15 @@ namespace Horde.Build.Jobs.Artifacts
 			IJob? job = await _jobService.GetJobAsync(jobId);
 			if(job == null)
 			{
-				return NotFound();
+				return NotFound(jobId);
 			}
 
-			if (!await _jobService.AuthorizeAsync(job, AclAction.UploadArtifact, User, null))
+			StreamConfig? streamConfig;
+			if (!_globalConfig.Value.TryGetStream(job.StreamId, out streamConfig))
+			{
+				return NotFound(job.StreamId);
+			}
+			if (!streamConfig.Authorize(AclAction.UploadArtifact, User))
 			{
 				return Forbid();
 			}
@@ -122,7 +115,7 @@ namespace Horde.Build.Jobs.Artifacts
 			{
 				return NotFound();
 			}
-			if (!await _jobService.AuthorizeAsync(artifact.JobId, AclAction.UploadArtifact, User, null))
+			if (!await _jobService.AuthorizeAsync(artifact.JobId, AclAction.UploadArtifact, User, _globalConfig.Value))
 			{
 				return Forbid();
 			}
@@ -145,12 +138,12 @@ namespace Horde.Build.Jobs.Artifacts
 		[ProducesResponseType(typeof(List<GetArtifactResponse>), 200)]
 		public async Task<ActionResult<List<object>>> GetArtifacts([FromQuery] JobId jobId, [FromQuery] string? stepId = null, [FromQuery] bool code = false, [FromQuery] PropertyFilter? filter = null)
 		{
-			if (!await _jobService.AuthorizeAsync(jobId, AclAction.DownloadArtifact, User, null))
+			if (!await _jobService.AuthorizeAsync(jobId, AclAction.DownloadArtifact, User, _globalConfig.Value))
 			{
 				return Forbid();
 			}
 
-			string? downloadCode = code ? (string?)GetDirectDownloadCodeForJob(jobId) : null;
+			string? downloadCode = code ? (string?)await GetDirectDownloadCodeForJobAsync(jobId) : null;
 
 			List<IArtifact> artifacts = await _artifactCollection.GetArtifactsAsync(jobId, stepId?.ToSubResourceId(), null);
 			return artifacts.ConvertAll(x => new GetArtifactResponse(x, downloadCode).ApplyFilter(filter));
@@ -171,10 +164,10 @@ namespace Horde.Build.Jobs.Artifacts
 		/// </summary>
 		/// <param name="jobId">The job id</param>
 		/// <returns>The download code</returns>
-		string GetDirectDownloadCodeForJob(JobId jobId)
+		async ValueTask<string> GetDirectDownloadCodeForJobAsync(JobId jobId)
 		{
 			Claim downloadClaim = GetDirectDownloadClaim(jobId);
-			return _aclService.IssueBearerToken(new[] { downloadClaim }, TimeSpan.FromHours(4.0));
+			return await _aclService.IssueBearerTokenAsync(new[] { downloadClaim }, TimeSpan.FromHours(4.0));
 		}
 
 		/// <summary>
@@ -195,12 +188,12 @@ namespace Horde.Build.Jobs.Artifacts
 			{
 				return NotFound();
 			}
-			if (!await _jobService.AuthorizeAsync(artifact.JobId, AclAction.DownloadArtifact, User, null))
+			if (!await _jobService.AuthorizeAsync(artifact.JobId, AclAction.DownloadArtifact, User, _globalConfig.Value))
 			{
 				return Forbid();
 			}
 
-			string? downloadCode = code? (string?)GetDirectDownloadCodeForJob(artifact.JobId) : null;
+			string? downloadCode = code? (string?)await GetDirectDownloadCodeForJobAsync(artifact.JobId) : null;
 			return new GetArtifactResponse(artifact, downloadCode).ApplyFilter(filter);
 		}
 
@@ -219,7 +212,7 @@ namespace Horde.Build.Jobs.Artifacts
 			{
 				return NotFound();
 			}
-			if (!await _jobService.AuthorizeAsync(artifact.JobId, AclAction.DownloadArtifact, User, null))
+			if (!await _jobService.AuthorizeAsync(artifact.JobId, AclAction.DownloadArtifact, User, _globalConfig.Value))
 			{
 				return Forbid();
 			}
@@ -241,7 +234,7 @@ namespace Horde.Build.Jobs.Artifacts
 		{
 			SubResourceId stepIdValue = stepId.ToSubResourceId();
 
-			if (!await _jobService.AuthorizeAsync(jobId, AclAction.DownloadArtifact, User, null))
+			if (!await _jobService.AuthorizeAsync(jobId, AclAction.DownloadArtifact, User, _globalConfig.Value))
 			{
 				return Forbid();
 			}
@@ -301,14 +294,16 @@ namespace Horde.Build.Jobs.Artifacts
 		[Route("/api/v1/artifacts/{artifactId}/download")]
 		public async Task<ActionResult> DownloadArtifact(string artifactId, [FromQuery] string code)
 		{
+			IGlobals globals = await _globalsService.GetAsync();
+
 			TokenValidationParameters parameters = new TokenValidationParameters();
 			parameters.ValidateAudience = false;
 			parameters.RequireExpirationTime = true;
 			parameters.ValidateLifetime = true;
-			parameters.ValidIssuer = _mongoService.JwtIssuer;
+			parameters.ValidIssuer = globals.JwtIssuer;
 			parameters.ValidateIssuer = true;
 			parameters.ValidateIssuerSigningKey = true;
-			parameters.IssuerSigningKey = _mongoService.JwtSigningKey;
+			parameters.IssuerSigningKey = globals.JwtSigningKey;
 
 			JwtSecurityTokenHandler handler = new JwtSecurityTokenHandler();
 			ClaimsPrincipal principal = handler.ValidateToken(code, parameters, out _);
@@ -348,7 +343,7 @@ namespace Horde.Build.Jobs.Artifacts
 			{
 				return NotFound();
 			}
-			if (!await _jobService.AuthorizeAsync(job, AclAction.DownloadArtifact, User, null))
+			if (!_globalConfig.Value.Authorize(job, AclAction.DownloadArtifact, User))
 			{
 				return Forbid();
 			}

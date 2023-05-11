@@ -95,22 +95,6 @@ void FD3D12ContextCommon::AddAliasingBarrier(ID3D12Resource* InResourceBefore, I
 
 void FD3D12ContextCommon::FlushResourceBarriers()
 {
-#if DEBUG_RESOURCE_STATES
-	// Keep track of all the resource barriers that have been submitted to the current command list.
-	const TArray<D3D12_RESOURCE_BARRIER>& Barriers = ResourceBarrierBatcher.GetBarriers();
-	if (Barriers.Num())
-	{
-		ResourceBarriers.Append(Barriers.GetData(), Barriers.Num());
-	}
-
-	const TArray<D3D12_RESOURCE_BARRIER>& BackBufferBarriers = ResourceBarrierBatcher.GetBackBufferBarriers();
-	if (BackBufferBarriers.Num())
-	{
-		ResourceBarriers.Append(BackBufferBarriers.GetData(), BackBufferBarriers.Num());
-	}
-
-#endif // #if DEBUG_RESOURCE_STATES
-
 	if (ResourceBarrierBatcher.Num())
 	{
 		ResourceBarrierBatcher.FlushIntoCommandList(GetCommandList(), TimestampQueries);
@@ -397,10 +381,18 @@ void FD3D12ContextCommon::TransitionResource(FD3D12DepthStencilView* View)
 	{
 		TransitionResource(Resource, D3D12_RESOURCE_STATE_TBD, D3D12_RESOURCE_STATE_DEPTH_WRITE, View->GetDepthOnlyViewSubresourceSubset());
 	}
+	else if (bHasDepth)
+	{
+		TransitionResource(Resource, D3D12_RESOURCE_STATE_TBD, D3D12_RESOURCE_STATE_DEPTH_READ, View->GetDepthOnlyViewSubresourceSubset());
+	}
 
 	if (bStencilIsWritable)
 	{
 		TransitionResource(Resource, D3D12_RESOURCE_STATE_TBD, D3D12_RESOURCE_STATE_DEPTH_WRITE, View->GetStencilOnlyViewSubresourceSubset());
+	}
+	else if (bHasStencil)
+	{
+		TransitionResource(Resource, D3D12_RESOURCE_STATE_TBD, D3D12_RESOURCE_STATE_DEPTH_READ, View->GetStencilOnlyViewSubresourceSubset());
 	}
 }
 
@@ -629,6 +621,7 @@ static inline bool IsTransitionNeeded(D3D12_RESOURCE_STATES Before, D3D12_RESOUR
 	// Depth write is actually a suitable for read operations as a "normal" depth buffer.
 	if (Before == D3D12_RESOURCE_STATE_DEPTH_WRITE && After == D3D12_RESOURCE_STATE_DEPTH_READ)
 	{
+		After = D3D12_RESOURCE_STATE_DEPTH_WRITE;
 		return false;
 	}
 

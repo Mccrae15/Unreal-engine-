@@ -53,13 +53,16 @@ struct FNDIDebugDrawInstanceData_GameThread
 		//-OPT: Need to improve this
 		FScopeLock RWLock(&LineBufferLock);
 
-		auto& Line = LineBuffer.AddDefaulted_GetRef();
-		Line.Start = Start;
-		Line.End = End;
-		Line.Color = uint32(FMath::Clamp(Color.R, 0.0f, 1.0f) * 255.0f) << 24;
-		Line.Color |= uint32(FMath::Clamp(Color.G, 0.0f, 1.0f) * 255.0f) << 16;
-		Line.Color |= uint32(FMath::Clamp(Color.B, 0.0f, 1.0f) * 255.0f) << 8;
-		Line.Color |= uint32(FMath::Clamp(Color.A, 0.0f, 1.0f) * 255.0f) << 0;
+		if (OverrideMaxLineInstances == 0 || uint32(LineBuffer.Num()) < OverrideMaxLineInstances)
+		{
+			auto& Line = LineBuffer.AddDefaulted_GetRef();
+			Line.Start = Start;
+			Line.End = End;
+			Line.Color = uint32(FMath::Clamp(Color.R, 0.0f, 1.0f) * 255.0f) << 24;
+			Line.Color |= uint32(FMath::Clamp(Color.G, 0.0f, 1.0f) * 255.0f) << 16;
+			Line.Color |= uint32(FMath::Clamp(Color.B, 0.0f, 1.0f) * 255.0f) << 8;
+			Line.Color |= uint32(FMath::Clamp(Color.A, 0.0f, 1.0f) * 255.0f) << 0;
+		}
 	}
 
 	void AddSphere(const FVector3f& Location, float Radius, int32 Segments, const FLinearColor& Color)
@@ -74,7 +77,7 @@ struct FNDIDebugDrawInstanceData_GameThread
 		float ux = 0.0f;
 		float SinX0 = FMath::Sin(ux);
 		float CosX0 = FMath::Cos(ux);
-		FVector3f LerpVector = FVector3f(bHemiX ? 1.0f : 0.0f, bHemiY ? 1.0f : 0.0f, bHemiZ ? 1.0f : 0.0f);
+		FVector3f LerpVector = FVector3f(bHemiX ? 0.0f : 1.0f, bHemiY ? 0.0f : 1.0f, bHemiZ ? 0.0f : 1.0f);
 		FTransform3f LocalToWorld;
 		LocalToWorld.SetComponents(WorldRotate, FVector3f::ZeroVector, WorldScale);
 
@@ -271,9 +274,9 @@ struct FNDIDebugDrawInstanceData_GameThread
 	{
 		const FVector3f HeightVector = FVector3f::ZAxisVector * Height;
 		const FVector3f HalfHeightOffset = bCenterVertically ? HeightVector * 0.5f : FVector3f::ZeroVector;
-		const FVector3f AxisStep = FVector3f::ZAxisVector * Height / NumHeightSegments;
+		const FVector3f AxisStep = FVector3f::ZAxisVector * Height / float(NumHeightSegments);
 
-		const float HeightSegmentStepAlpha = 1.0 / NumHeightSegments;
+		const float HeightSegmentStepAlpha = 1.0f / float(NumHeightSegments);
 
 		float CurrentRotation = 0.0f;
 		FVector3f LastPointNormal = (FVector3f::YAxisVector * FMath::Cos(CurrentRotation)) + (FVector3f::XAxisVector * FMath::Sin(CurrentRotation));
@@ -421,7 +424,7 @@ struct FNDIDebugDrawInstanceData_GameThread
 	bool bResolvedPersistentShapes = false;
 	FCriticalSection LineBufferLock;
 	TArray<FNiagaraSimulationDebugDrawData::FGpuLine> LineBuffer;
-
+	uint32 OverrideMaxLineInstances = 0;
 
 	template<typename TYPE>
 	static inline TOptional<TYPE> GetCompileTag(FNiagaraSystemInstance* SystemInstance, const UNiagaraScript* Script, const FNiagaraTypeDefinition& VarType, const FName& ParameterName)
@@ -1009,8 +1012,8 @@ struct FNDIDebugDrawInstanceData_GameThread
 			TOptional<FQuat4f> Rotation = GetTag<FQuat4f>(SystemInstance, FNiagaraTypeDefinition::GetQuatDef(), 4);
 			TOptional<ENiagaraCoordinateSpace> RotationWorldSpace = GetTag<ENiagaraCoordinateSpace>(SystemInstance, CoordTypeDef, 5);
 			TOptional<FVector2f> Extents = GetTag<FVector2f>(SystemInstance, FNiagaraTypeDefinition::GetVec2Def(), 6);
-			TOptional<float> NumCellsX = GetTag<float>(SystemInstance, FNiagaraTypeDefinition::GetFloatDef(), 7);
-			TOptional<float> NumCellsY = GetTag<float>(SystemInstance, FNiagaraTypeDefinition::GetFloatDef(), 8);
+			TOptional<int32> NumCellsX = GetTag<int32>(SystemInstance, FNiagaraTypeDefinition::GetIntDef(), 7);
+			TOptional<int32> NumCellsY = GetTag<int32>(SystemInstance, FNiagaraTypeDefinition::GetIntDef(), 8);
 			TOptional<FLinearColor> Color = GetTag<FLinearColor>(SystemInstance, FNiagaraTypeDefinition::GetColorDef(), 9);
 
 
@@ -1046,9 +1049,9 @@ struct FNDIDebugDrawInstanceData_GameThread
 			TOptional<FQuat4f> Rotation = GetTag<FQuat4f>(SystemInstance, FNiagaraTypeDefinition::GetQuatDef(), 4);
 			TOptional<ENiagaraCoordinateSpace> RotationWorldSpace = GetTag<ENiagaraCoordinateSpace>(SystemInstance, CoordTypeDef, 5);
 			TOptional<FVector3f> Extents = GetTag<FVector3f>(SystemInstance, FNiagaraTypeDefinition::GetVec3Def(), 6);
-			TOptional<float> NumCellsX = GetTag<float>(SystemInstance, FNiagaraTypeDefinition::GetFloatDef(), 7);
-			TOptional<float> NumCellsY = GetTag<float>(SystemInstance, FNiagaraTypeDefinition::GetFloatDef(), 8);
-			TOptional<float> NumCellsZ = GetTag<float>(SystemInstance, FNiagaraTypeDefinition::GetFloatDef(), 9);
+			TOptional<int32> NumCellsX = GetTag<int32>(SystemInstance, FNiagaraTypeDefinition::GetIntDef(), 7);
+			TOptional<int32> NumCellsY = GetTag<int32>(SystemInstance, FNiagaraTypeDefinition::GetIntDef(), 8);
+			TOptional<int32> NumCellsZ = GetTag<int32>(SystemInstance, FNiagaraTypeDefinition::GetIntDef(), 9);
 			TOptional<FLinearColor> Color = GetTag<FLinearColor>(SystemInstance, FNiagaraTypeDefinition::GetColorDef(), 10);
 
 
@@ -2918,8 +2921,8 @@ bool UNiagaraDataInterfaceDebugDraw::AppendCompileHash(FNiagaraCompileHashVisito
 	if (!Super::AppendCompileHash(InVisitor))
 		return false;
 
-	InVisitor->UpdateString(TEXT("NiagaraDataInterfaceDebugDrawHLSLSource"), GetShaderFileHash(NDIDebugDrawLocal::CommonShaderFile, EShaderPlatform::SP_PCD3D_SM5).ToString());
-	InVisitor->UpdateString(TEXT("NiagaraDataInterfaceDebugDrawTemplateHLSLSource"), GetShaderFileHash(NDIDebugDrawLocal::TemplateShaderFile, EShaderPlatform::SP_PCD3D_SM5).ToString());
+	InVisitor->UpdateShaderFile(NDIDebugDrawLocal::CommonShaderFile);
+	InVisitor->UpdateShaderFile(NDIDebugDrawLocal::TemplateShaderFile);
 
 	InVisitor->UpdatePOD<int32>(TEXT("NiagaraDataInterfaceDebugDrawVersion"), FNiagaraDebugDrawDIFunctionVersion::LatestVersion);	
 	InVisitor->UpdateShaderParameters<FNDIDebugDrawShaderParameters>();
@@ -2935,14 +2938,11 @@ void UNiagaraDataInterfaceDebugDraw::GetCommonHLSL(FString& OutHLSL)
 
 void UNiagaraDataInterfaceDebugDraw::GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL)
 {
-	TMap<FString, FStringFormatArg> TemplateArgs =
+	const TMap<FString, FStringFormatArg> TemplateArgs =
 	{
 		{TEXT("ParameterName"),	ParamInfo.DataInterfaceHLSLSymbol},
 	};
-
-	FString TemplateFile;
-	LoadShaderSourceFile(NDIDebugDrawLocal::TemplateShaderFile, EShaderPlatform::SP_PCD3D_SM5, &TemplateFile, nullptr);
-	OutHLSL += FString::Format(*TemplateFile, TemplateArgs);
+	AppendTemplateHLSL(OutHLSL, NDIDebugDrawLocal::TemplateShaderFile, TemplateArgs);
 }
 
 bool UNiagaraDataInterfaceDebugDraw::GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL)
@@ -3043,6 +3043,7 @@ bool UNiagaraDataInterfaceDebugDraw::PerInstanceTick(void* PerInstanceData, FNia
 #if NIAGARA_COMPUTEDEBUG_ENABLED
 	FNDIDebugDrawInstanceData_GameThread* InstanceData = reinterpret_cast<FNDIDebugDrawInstanceData_GameThread*>(PerInstanceData);
 	InstanceData->LineBuffer.Reset();
+	InstanceData->OverrideMaxLineInstances = FMath::Min<uint32>(OverrideMaxLineInstances, TNumericLimits<int32>::Max());
 #endif
 	return false;
 }

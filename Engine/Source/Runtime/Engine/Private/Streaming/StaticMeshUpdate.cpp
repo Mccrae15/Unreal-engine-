@@ -5,13 +5,14 @@ StaticMeshUpdate.cpp: Helpers to stream in and out static mesh LODs.
 =============================================================================*/
 
 #include "Streaming/StaticMeshUpdate.h"
+#include "HAL/PlatformFile.h"
 #include "RenderUtils.h"
-#include "Containers/ResourceArray.h"
 #include "Streaming/TextureStreamingHelpers.h"
-#include "HAL/PlatformFileManager.h"
 #include "Serialization/MemoryReader.h"
+#include "StaticMeshResources.h"
 #include "Streaming/RenderAssetUpdate.inl"
 #include "ContentStreaming.h"
+#include "RHIResourceUpdates.h"
 
 int32 GStreamingMaxReferenceChecks = 2;
 static FAutoConsoleVariableRef CVarStreamingMaxReferenceChecksBeforeStreamOut(
@@ -20,6 +21,13 @@ static FAutoConsoleVariableRef CVarStreamingMaxReferenceChecksBeforeStreamOut(
 	TEXT("Number of times the engine wait for references to be released before forcing streamout. (default=2)"),
 	ECVF_Default
 );
+
+int32 GStreamingStaticMeshIOPriority = (int32)AIOP_Low;
+static FAutoConsoleVariableRef CVarStreamingStaticMeshIOPriority(
+	TEXT("r.Streaming.StaticMeshIOPriority"),
+	GStreamingStaticMeshIOPriority,
+	TEXT("Base I/O priority for loading static mesh LODs"),
+	ECVF_Default);
 
 // Instantiate TRenderAssetUpdate for FStaticMeshUpdateContext
 template class TRenderAssetUpdate<FStaticMeshUpdateContext>;
@@ -104,8 +112,7 @@ void FStaticMeshStreamIn::FIntermediateBuffers::SafeRelease()
 	WireframeIndexBuffer.SafeRelease();
 }
 
-template <uint32 MaxNumUpdates>
-void FStaticMeshStreamIn::FIntermediateBuffers::TransferBuffers(FStaticMeshLODResources& LODResource, TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
+void FStaticMeshStreamIn::FIntermediateBuffers::TransferBuffers(FStaticMeshLODResources& LODResource, FRHIResourceUpdateBatcher& Batcher)
 {
 	FStaticMeshVertexBuffers& VBs = LODResource.VertexBuffers;
 	VBs.StaticMeshVertexBuffer.InitRHIForStreaming(TangentsVertexBuffer, TexCoordVertexBuffer, Batcher);
@@ -174,14 +181,16 @@ void FStaticMeshStreamIn::CreateBuffers_Internal(const FContext& Context)
 			if (IsRayTracingEnabled() && Context.Mesh->bSupportRayTracing &&
 				LODResource.VertexBuffers.StaticMeshVertexBuffer.GetNumVertices() > 0)
 			{
+				const FName OwnerName = UStaticMesh::GetLODPathName(Context.Mesh, LODIdx);
+
 				FRayTracingGeometryInitializer Initializer;
 				if (Context.Mesh->HasValidNaniteData() && Nanite::GetSupportsRayTracingProceduralPrimitive(GMaxRHIShaderPlatform))
 				{
-					FStaticMeshLODResources::SetupRayTracingProceduralGeometryInitializer(Initializer, Context.Mesh->GetFName());
+					FStaticMeshLODResources::SetupRayTracingProceduralGeometryInitializer(Initializer, Context.Mesh->GetFName(), OwnerName);
 				}
 				else
 				{
-					Context.LODResourcesView[LODIdx]->SetupRayTracingGeometryInitializer(Initializer, Context.Mesh->GetFName());
+					Context.LODResourcesView[LODIdx]->SetupRayTracingGeometryInitializer(Initializer, Context.Mesh->GetFName(), OwnerName);
 				}
 				Initializer.Type = ERayTracingGeometryInitializerType::StreamingSource;
 				IntermediateRayTracingGeometry[LODIdx].SetInitializer(Initializer);
@@ -236,12 +245,11 @@ void FStaticMeshStreamIn::DoFinishUpdate(const FContext& Context)
 #if RHI_RAYTRACING
 				if (IsRayTracingEnabled() && Context.Mesh->bSupportRayTracing &&
 					LODResource.VertexBuffers.StaticMeshVertexBuffer.GetNumVertices() > 0)
-				{
-					check(LODResource.RayTracingGeometry.RayTracingGeometryRHI != nullptr);
+				{					
 					check(IntermediateRayTracingGeometry[LODIdx].RayTracingGeometryRHI != nullptr);
 					LODResource.RayTracingGeometry.InitRHIForStreaming(IntermediateRayTracingGeometry[LODIdx].RayTracingGeometryRHI, Batcher);
 
-					LODResource.RayTracingGeometry.bRequiresBuild = IntermediateRayTracingGeometry[LODIdx].bRequiresBuild;
+					LODResource.RayTracingGeometry.SetRequiresBuild(IntermediateRayTracingGeometry[LODIdx].GetRequiresBuild());
 
 					IntermediateRayTracingGeometry[LODIdx].Initializer = {};
 					IntermediateRayTracingGeometry[LODIdx].RayTracingGeometryRHI.SafeRelease();				
@@ -252,7 +260,7 @@ void FStaticMeshStreamIn::DoFinishUpdate(const FContext& Context)
 
 #if RHI_RAYTRACING
 		// Must happen after the batched updates have been flushed
-		if (IsRayTracingEnabled() && Context.Mesh->bSupportRayTracing)
+		if (IsRayTracingAllowed() && Context.Mesh->bSupportRayTracing)
 		{
 			for (int32 LODIndex = PendingFirstLODIdx; LODIndex < CurrentFirstLODIdx; ++LODIndex)
 			{
@@ -261,19 +269,26 @@ void FStaticMeshStreamIn::DoFinishUpdate(const FContext& Context)
 				// Skip LODs that have their render data stripped
 				if (LODResource.VertexBuffers.StaticMeshVertexBuffer.GetNumVertices() > 0)
 				{
+					const FName OwnerName = UStaticMesh::GetLODPathName(Context.Mesh, LODIndex);
+
 					// Rebuild the initializer because it could have been reset during a previous release
 					FRayTracingGeometryInitializer Initializer;
 					if (Context.Mesh->HasValidNaniteData() && Nanite::GetSupportsRayTracingProceduralPrimitive(GMaxRHIShaderPlatform))
 					{
-						FStaticMeshLODResources::SetupRayTracingProceduralGeometryInitializer(Initializer, Context.Mesh->GetFName());
+						FStaticMeshLODResources::SetupRayTracingProceduralGeometryInitializer(Initializer, Context.Mesh->GetFName(), OwnerName);
 					}
 					else
 					{
-						LODResource.SetupRayTracingGeometryInitializer(Initializer, Context.Mesh->GetFName());
+						LODResource.SetupRayTracingGeometryInitializer(Initializer, Context.Mesh->GetFName(), OwnerName);
 					}
 					LODResource.RayTracingGeometry.SetInitializer(Initializer);
+					LODResource.RayTracingGeometry.SetAsStreamedIn();			
 
-					LODResource.RayTracingGeometry.RequestBuildIfNeeded(ERTAccelerationStructureBuildPriority::Normal);
+					// Under very rare circumstances that we switch ray tracing on/off right in the middle of streaming RayTracingGeometryRHI might not be valid.
+					if (IsRayTracingEnabled() && LODResource.RayTracingGeometry.RayTracingGeometryRHI.IsValid())
+					{
+						LODResource.RayTracingGeometry.RequestBuildIfNeeded(ERTAccelerationStructureBuildPriority::Normal);
+					}
 				}
 			}
 
@@ -398,7 +413,7 @@ void FStaticMeshStreamOut::ReleaseRHIBuffers(const FContext& Context)
 			LODResource.ReleaseRHIForStreaming(Batcher);
 			
 #if RHI_RAYTRACING
-			if (IsRayTracingEnabled())
+			if (IsRayTracingAllowed())
 			{
 				LODResource.RayTracingGeometry.ReleaseRHIForStreaming(Batcher);
 			}
@@ -474,13 +489,14 @@ void FStaticMeshStreamIn_IO::SetIORequest(const FContext& Context)
 		// Increment as we push the request. If a request complete immediately, then it will call the callback
 		// but that won't do anything because the tick would not try to acquire the lock since it is already locked.
 		TaskSynchronization.Increment();
-		
-		const EAsyncIOPriorityAndFlags Priority = bHighPrioIORequest ? AIOP_BelowNormal : AIOP_Low;
+
+		const EAsyncIOPriorityAndFlags Priority = (EAsyncIOPriorityAndFlags)FMath::Clamp<int32>(GStreamingStaticMeshIOPriority + (bHighPrioIORequest ? 1 : 0), AIOP_Low, AIOP_High);
+
 		Batch.Issue(BulkData, Priority, [this](FBulkDataRequest::EStatus Status)
 		{
 			TaskSynchronization.Decrement();
 
-			if (FBulkDataRequest::EStatus::Cancelled == Status)
+			if (FBulkDataRequest::EStatus::Ok != Status)
 			{
 				// If IO requests was cancelled but the streaming request wasn't, this is an IO error.
 				if (!bIsCancelled)

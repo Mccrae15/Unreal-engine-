@@ -194,7 +194,7 @@ void InitAsyncThread()
 		bCommandLineEnabled = FParse::Param(FCommandLine::Get(), TEXT("ZenLoader"));
 		check(GConfig);
 		GConfig->GetBool(TEXT("/Script/Engine.EditorStreamingSettings"), TEXT("s.ZenLoaderEnabled"), bSettingsEnabled, GEngineIni);
-		bHasUseIoStoreParamInEditor = FParse::Param(FCommandLine::Get(), TEXT("UseIoStore"));
+		bHasUseIoStoreParamInEditor = UE_FORCE_USE_IOSTORE || FParse::Param(FCommandLine::Get(), TEXT("UseIoStore"));
 #endif
 		FIoDispatcher& IoDispatcher = FIoDispatcher::Get();
 		bool bHasScriptObjectsChunk = IoDispatcher.DoesChunkExist(CreateIoChunkId(0, 0, EIoChunkType::ScriptObjects));
@@ -676,12 +676,6 @@ void NotifyRegistrationComplete()
 	GPackageLoader->StartThread();
 }
 
-void NotifyConstructedDuringAsyncLoading(UObject* Object, bool bSubObject)
-{
-	LLM_SCOPE(ELLMTag::AsyncLoading);
-	GetAsyncPackageLoader().NotifyConstructedDuringAsyncLoading(Object, bSubObject);
-}
-
 void NotifyUnreachableObjects(const TArrayView<FUObjectItem*>& UnreachableObjects)
 {
 	LLM_SCOPE(ELLMTag::AsyncLoading);
@@ -728,7 +722,7 @@ void IsTimeLimitExceededPrint(
 	double InTickStartTime,
 	double CurrentTime,
 	double LastTestTime,
-	float InTimeLimit, 
+	double InTimeLimit,
 	const TCHAR* InLastTypeOfWorkPerformed,
 	UObject* InLastObjectWorkWasPerformedOn)
 {

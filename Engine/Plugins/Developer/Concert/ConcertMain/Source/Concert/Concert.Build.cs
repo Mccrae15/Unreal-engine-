@@ -12,23 +12,16 @@ namespace UnrealBuildTool.Rules
 					"Core",
 					"CoreUObject",  // FH: Can we do without at some point?
 					"ConcertTransport",
-					"Serialization",
+					"Serialization"
 				}
 			);
 
 			PublicIncludePathModuleNames.AddRange(
 				new string[]
 				{
-					"ConcertTransport",
+					"ConcertTransport"
 				}
 			);
-
-			//PrivateDependencyModuleNames.AddRange(
-			//	new string[]
-			//	{
-			//		"ConcertTransport",
-			//	}
-			//);
 		}
 	}
 }

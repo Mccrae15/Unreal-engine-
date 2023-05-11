@@ -2,6 +2,8 @@
 
 #pragma once
 
+// HEADER_UNIT_UNSUPPORTED - Contains code with dll export not allowed COREUOBJECT_API
+
 #include "Async/Future.h"
 #include "Containers/StringView.h"
 #include "IO/IoDispatcher.h"
@@ -13,9 +15,12 @@
 #include "Templates/UniquePtr.h"
 
 class FAssetRegistryState;
+class FCbObject;
+class FCbObjectView;
 class FLargeMemoryWriter;
 class ICookedPackageWriter;
 class IPackageStoreWriter;
+class UObject;
 struct FPackageStoreEntryResource;
 struct FSavePackageArgs;
 struct FSavePackageResultStruct;
@@ -153,15 +158,25 @@ public:
 	/** Write separate data written by UObjects via FLinkerSave::AdditionalDataToAppend. */
 	virtual void WriteLinkerAdditionalData(const FLinkerAdditionalDataInfo& Info, const FIoBuffer& Data, const TArray<FFileRegion>& FileRegions) = 0;
 
-	/** Increase the referenced ExportsSize by the size in bytes of the data that will be added on to it during
-	 * commit before writing to disk. Used for accurate disk size reporting on the UPackage and AssetRegistry.
-	 */
-	virtual void AddToExportsSize(int64& InOutExportsSize)
+	/** Report the size of the Footer that is added after Exports and BulkData but before the PackageTrailer */ 
+	virtual int64 GetExportsFooterSize()
 	{
+		return 0;
 	}
+
+	struct FPackageTrailerInfo
+	{
+		FName PackageName;
+		uint16 MultiOutputIndex = 0;
+	};
+	/** Write the PackageTrailer, a separate segment for some bulkdata that is written the end of the file. */
+	virtual void WritePackageTrailer(const FPackageTrailerInfo& Info, const FIoBuffer& Data) = 0;
 
 	/** Create the FLargeMemoryWriter to which the Header and Exports are written during the save. */
 	COREUOBJECT_API virtual TUniquePtr<FLargeMemoryWriter> CreateLinkerArchive(FName PackageName, UObject* Asset);
+
+	/** Returns an archive to be used when serializing exports. */
+	COREUOBJECT_API virtual TUniquePtr<FLargeMemoryWriter> CreateLinkerExportsArchive(FName PackageName, UObject* Asset);
 
 	/** Report whether PreSave was already called by the PackageWriter before the current UPackage::Save call. */
 	virtual bool IsPreSaveCompleted() const
@@ -179,14 +194,20 @@ public:
 ENUM_CLASS_FLAGS(IPackageWriter::EWriteOptions);
 
 /** Struct containing hashes computed during cooked package writing. */
-struct FPackageHashes : FRefCountBase
+struct FPackageHashes : FThreadSafeRefCountedObject
 {
-	// Hashes for each chunk saved by the package.
+	/** Hashes for each chunk saved by the package. */
 	TMap<FIoChunkId, FIoHash> ChunkHashes;
 
-	// This is a hash representing the entire package. Note this is
-	// not consistently computed across PackageWriters!
+	/** This is a hash representing the entire package. Not consistently computed across PackageWriters! */
 	FMD5Hash PackageHash;
+
+	/**
+	 * A Future that is triggered after all packages have been stored on *this.
+	 * Left as an invalid TFuture when hashes are not async; caller should check for IsValid before
+	 * chaining with .Then or .Next.
+	 */
+	TFuture<int> CompletionFuture;
 };
 
 /** Interface for cooking that writes cooked packages to storage usable by the runtime game. */
@@ -242,11 +263,11 @@ public:
 		Package data may only be produced after BeginCook() has been called and
 		before EndCook() is called
 	  */
-	virtual void BeginCook() = 0;
+	virtual void BeginCook(const FCookInfo& Info) = 0;
 
 	/** Signal the end of a cooking pass.
 	  */
-	virtual void EndCook() = 0;
+	virtual void EndCook(const FCookInfo& Info) = 0;
 
 	struct FCookedPackageInfo
 	{
@@ -313,6 +334,17 @@ public:
 	{
 		return false;
 	}
+	/**
+	 * Asynchronously create a CompactBinary Object message that replicates all of the package data from package save
+	 * that is collected in memory and written at end of cook rather than being written to disk during package save.
+	 * Used during MPCook to transfer this information from CookWorker to CookDirector. Called after CommitPackage,
+	 * and only on CookWorkers.
+	 */
+	virtual TFuture<FCbObject> WriteMPCookMessageForPackage(FName PackageName) = 0;
+
+	/** Read PackageData written by WriteMPCookMessageForPackage on a CookWorker. Called only on CookDirector. */
+	virtual bool TryReadMPCookMessageForPackage(FName PackageName, FCbObjectView Message) = 0;
+
 	/** Downcast function for ICookedPackageWriters that implement the IPackageStoreWriter inherited interface. */
 	virtual IPackageStoreWriter* AsPackageStoreWriter()
 	{

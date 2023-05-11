@@ -2,7 +2,9 @@
 
 #pragma once
 
+#include "AssetRegistry/AssetData.h"
 #include "CoreMinimal.h"
+#include "Misc/PackageName.h"
 #include "MovieScene.h"
 #include "Modules/ModuleManager.h"
 #include "AssetRegistry/IAssetRegistry.h"

@@ -2,12 +2,9 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "PCGContext.h"
-#include "PCGData.h"
 #include "PCGElement.h"
-#include "PCGGraphCache.h"
 #include "PCGSubsystem.h"
+#include "Graph/PCGGraphCache.h"
 
 #if WITH_EDITOR
 #include "AsyncCompilationHelpers.h"
@@ -19,6 +16,7 @@ class UPCGGraph;
 class UPCGNode;
 class UPCGComponent;
 class FPCGGraphCompiler;
+class FTextFormat;
 
 struct FPCGGraphTaskInput
 {
@@ -31,8 +29,14 @@ struct FPCGGraphTaskInput
 	}
 
 	FPCGTaskId TaskId;
+
+	/** The upstream output pin from which the input data comes. */
 	const UPCGPin* InPin;
+
+	/** The input pin on the task element. */
 	const UPCGPin* OutPin;
+
+	/** Whether the input provides any data. For the post execute task, only the output node will provide data. */
 	bool bProvideData;
 };
 
@@ -45,11 +49,16 @@ struct FPCGGraphTask
 	FPCGElementPtr Element; // Added to have tasks that aren't node-bound
 	FPCGContext* Context = nullptr;
 	FPCGTaskId NodeId = InvalidPCGTaskId;
+	FPCGTaskId CompiledTaskId = InvalidPCGTaskId; // the task id as it exists when compiled
+	FPCGTaskId ParentId = InvalidPCGTaskId; // represents the parent sub object graph task, if we were called from one
 };
 
 struct FPCGGraphScheduleTask
 {
 	TArray<FPCGGraphTask> Tasks;
+	TWeakObjectPtr<UPCGComponent> SourceComponent = nullptr;
+	int32 FirstTaskIndex = 0;
+	int32 LastTaskIndex = 0;
 };
 
 struct FPCGGraphActiveTask
@@ -57,6 +66,7 @@ struct FPCGGraphActiveTask
 	FPCGElementPtr Element;
 	TUniquePtr<FPCGContext> Context;
 	FPCGTaskId NodeId = InvalidPCGTaskId;
+	bool bWasCancelled = false;
 #if WITH_EDITOR
 	bool bIsBypassed = false;
 #endif
@@ -74,6 +84,18 @@ public:
 	/** Schedules the execution of a given graph with specified inputs. This call is threadsafe */
 	FPCGTaskId Schedule(UPCGComponent* InComponent, const TArray<FPCGTaskId>& TaskDependency = TArray<FPCGTaskId>());
 	FPCGTaskId Schedule(UPCGGraph* Graph, UPCGComponent* InSourceComponent, FPCGElementPtr InputElement, const TArray<FPCGTaskId>& TaskDependency);
+
+	/** Cancels all tasks originating from the given component */
+	TArray<UPCGComponent*> Cancel(UPCGComponent* InComponent);
+	
+	/** Cancels all tasks running a given graph */
+	TArray<UPCGComponent*> Cancel(UPCGGraph* InGraph);
+
+	/** Cancels all tasks */
+	TArray<UPCGComponent*> CancelAll();
+
+	/** Returns true if any task is scheduled or executing for the given graph. */
+	bool IsGraphCurrentlyExecuting(UPCGGraph* InGraph);
 
 	// Back compatibility function. Use ScheduleGenericWithContext
 	FPCGTaskId ScheduleGeneric(TFunction<bool()> InOperation, UPCGComponent* InSourceComponent, const TArray<FPCGTaskId>& TaskDependencies);
@@ -97,6 +119,12 @@ public:
 
 	/** Notify compiler that graph has changed so it'll be removed from the cache */
 	void NotifyGraphChanged(UPCGGraph* InGraph);
+
+	/** So the profiler can decode graph task ids **/
+	FPCGGraphCompiler* GetCompiler() const { return GraphCompiler.Get(); }
+
+	/** Returns the number of entries currently in the cache for InElement. */
+	uint32 GetGraphCacheEntryCount(IPCGElement* InElement) const { return GraphCache.GetGraphCacheEntryCount(InElement); }
 #endif
 
 	/** "Tick" of the graph executor. This call is NOT THREADSAFE */
@@ -105,9 +133,17 @@ public:
 	/** Expose cache so it can be dirtied */
 	FPCGGraphCache& GetCache() { return GraphCache; }
 
+	/** True if graph cache debugging is enabled. */
+	bool IsGraphCacheDebuggingEnabled() const { return GraphCache.IsDebuggingEnabled(); }
+
 private:
+	TSet<UPCGComponent*> Cancel(TFunctionRef<bool(TWeakObjectPtr<UPCGComponent>)> CancelFilter);
+	void ClearAllTasks();
 	void QueueNextTasks(FPCGTaskId FinishedTask);
+	bool CancelNextTasks(FPCGTaskId CancelledTask, TSet<UPCGComponent*>& OutCancelledComponents);
 	void BuildTaskInput(const FPCGGraphTask& Task, FPCGDataCollection& TaskInput);
+	/** Combine all param data into one on the Params pin, if any.*/
+	void CombineParams(FPCGTaskId InTaskId, FPCGDataCollection& InTaskInput);
 	void StoreResults(FPCGTaskId InTaskId, const FPCGDataCollection& InTaskOutput);
 	void ClearResults();
 
@@ -117,8 +153,7 @@ private:
 	void SaveDirtyActors();
 	void ReleaseUnusedActors();
 
-	void UpdateGenerationNotification(int32 RemainingTaskNum);
-	void EndGenerationNotification();
+	void UpdateGenerationNotification();
 	static FTextFormat GetNotificationTextFormat();
 #endif
 
@@ -145,6 +180,8 @@ private:
 	/** Map of node instances to their output, could be cleared once execution is done */
 	/** Note: this should at some point unload based on loaded/unloaded proxies, otherwise memory cost will be unbounded */
 	TMap<FPCGTaskId, FPCGDataCollection> OutputData;
+	/** Map of node instances to their temporary input, could be cleared once execution is done */
+	TMap<FPCGTaskId, FPCGDataCollection> InputTemporaryData;
 	/** Monotonically increasing id. Should be reset once all tasks are executed, should be protected by the ScheduleLock */
 	FPCGTaskId NextTaskId = 0;
 
@@ -156,8 +193,10 @@ private:
 	TSet<AActor*> ActorsToSave;
 	TSet<FWorldPartitionReference> ActorsToRelease;
 
-	int32 CountUntilGC = 30;
+	int32 ReleaseActorsCountUntilGC = 30;
 	FAsyncCompilationNotification GenerationProgressNotification;
+
+	int32 TidyCacheCountUntilGC = 100;
 #endif
 };
 
@@ -169,7 +208,7 @@ public:
 
 protected:
 	virtual bool ExecuteInternal(FPCGContext* Context) const override;
-	virtual bool IsPassthrough() const override { return true; }
+	virtual bool IsPassthrough(const UPCGSettings* InSettings) const override { return true; }
 };
 
 class FPCGGenericElement : public FSimplePCGElement

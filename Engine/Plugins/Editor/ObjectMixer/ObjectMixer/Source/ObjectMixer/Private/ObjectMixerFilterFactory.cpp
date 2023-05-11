@@ -2,12 +2,14 @@
 
 #include "ObjectMixerFilterFactory.h"
 
+#include "AssetTypeCategories.h"
 #include "ObjectFilter/ObjectMixerEditorObjectFilter.h"
 
-#include "AssetToolsModule.h"
+#include "Engine/Blueprint.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Engine/BlueprintGeneratedClass.h"
 
-#define LOCTEXT_NAMESPACE "ObjectMixerFilterFactory"
+#define LOCTEXT_NAMESPACE "ObjectMixerEditor"
 
 UObjectMixerBlueprintFilterFactory::UObjectMixerBlueprintFilterFactory()
 {

@@ -5,6 +5,7 @@ using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
 using EpicGames.Core;
 using EpicGames.Perforce;
@@ -20,6 +21,10 @@ namespace Horde.Agent.Tests
 	public class LogParserTests
 	{
 		const string LogLine = "LogLine";
+
+		static readonly DirectoryReference s_rootDir = new DirectoryReference(RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "C:\\Horde" : "/horde");
+
+		static string MakeAbsolutePath(string path) => FileReference.Combine(s_rootDir, path).FullName;
 
 		class LoggerCapture : ILogger
 		{
@@ -83,8 +88,8 @@ namespace Horde.Agent.Tests
 			string[] lines =
 			{
 				@"Took 620.820352s to run UE4Editor-Cmd.exe, ExitCode=777003",
-				@"Editor terminated with exit code 777003 while running GenerateSkinSwapDetections for D:\Build\++UE5\Sync\FortniteGame\FortniteGame.uproject; see log D:\Build\++UE5\Sync\Engine\Programs\AutomationTool\Saved\Logs\GenerateSkinSwapDetections-2020.08.18-21.47.07.txt",
-				@"Error executing D:\build\++Fortnite\Sync\Engine\Build\Windows\link - filter\link - filter.exe(tool returned code: STATUS_ACCESS_VIOLATION)",
+				@"Editor terminated with exit code 777003 while running GenerateSkinSwapDetections for D:\Build\++UE5\Sync\ShooterGame\ShooterGame.uproject; see log D:\Build\++UE5\Sync\Engine\Programs\AutomationTool\Saved\Logs\GenerateSkinSwapDetections-2020.08.18-21.47.07.txt",
+				@"Error executing D:\build\++ShooterGame\Sync\Engine\Build\Windows\link - filter\link - filter.exe(tool returned code: STATUS_ACCESS_VIOLATION)",
 				@"Error executing C:\Windows\system32\cmd.exe (tool returned code: 1)",
 				@"AutomationTool exiting with ExitCode=1 (Error_Unknown)",
 				@"BUILD FAILED"
@@ -102,11 +107,26 @@ namespace Horde.Agent.Tests
 				@"1 error generated.",
 				@"",
 				@"Error executing d:\build\AutoSDK\Sync\HostWin64\Android\-24\ndk\21.4.7075529\toolchains\llvm\prebuilt\windows-x86_64\bin\clang++.exe (tool returned code: 1)",
-				@"AnimNode_BlendListByInt.gen.cpp [arm64] (0:22.43 at +2:47)",
 			};
 
 			List<LogEvent> logEvents = Parse(lines);
 			CheckEventGroup(logEvents, 2, 1, LogLevel.Error, KnownLogEvents.ExitCode);
+		}
+
+		[TestMethod]
+		public void ExitCodeEventMatcher3()
+		{
+			string[] lines =
+			{
+				@"Took 5406.5523184s to run UnrealEditor-Cmd.exe, ExitCode=-1073741819",
+				@"Editor terminated with exit code -1073741819 while running Cook for D:\build\++UE5\Sync\Samples\Games\AncientGame\AncientGame.uproject; see log d:\build\++UE5\Sync\Engine\Programs\AutomationTool\Saved\Logs\Cook-2022.11.11-08.02.19.txt",
+				@"AutomationTool executed for 1h 33m 5s",
+				@"AutomationTool exiting with ExitCode=1 (Error_Unknown)",
+				@"BUILD FAILED"
+			};
+
+			List<LogEvent> logEvents = Parse(lines);
+			CheckEventGroup(logEvents, 1, 1, LogLevel.Error, KnownLogEvents.ExitCode);
 		}
 
 		[TestMethod]
@@ -155,6 +175,18 @@ namespace Horde.Agent.Tests
 		}
 
 		[TestMethod]
+		public void AssertionFailedEventMatcher()
+		{
+			string[] lines =
+			{
+				@"Assertion failed: !NumUsed.GetValue() [File:Runtime/Core/Public/Containers/LockFreeFixedSizeAllocator.h] [Line: 201]"
+			};
+
+			List<LogEvent> logEvents = Parse(lines);
+			CheckEventGroup(logEvents, 0, 1, LogLevel.Error, KnownLogEvents.Engine_AssertionFailed);
+		}
+
+		[TestMethod]
 		public void SymbolStripSpuriousEventMatcher()
 		{
 			// Symbol stripping error
@@ -179,8 +211,8 @@ namespace Horde.Agent.Tests
 			{
 				string[] lines =
 				{
-					@"  GenerateSigningRequestDialog.cs(22,7): error CS0246: The type or namespace name 'Org' could not be found (are you missing a using directive or an assembly reference?) [c:\Horde\Engine\Source\Programs\IOS\iPhonePackager\iPhonePackager.csproj]",
-					@"  Utilities.cs(16,7): error CS0246: The type or namespace name 'Org' could not be found (are you missing a using directive or an assembly reference?) [c:\Horde\Engine\Source\Programs\IOS\iPhonePackager\iPhonePackager.csproj]"
+					@"  GenerateSigningRequestDialog.cs(22,7): error CS0246: The type or namespace name 'Org' could not be found (are you missing a using directive or an assembly reference?) [" + MakeAbsolutePath(@"Engine\Source\Programs\IOS\iPhonePackager\iPhonePackager.csproj") + @"]",
+					@"  Utilities.cs(16,7): error CS0246: The type or namespace name 'Org' could not be found (are you missing a using directive or an assembly reference?) [" + MakeAbsolutePath(@"Engine\Source\Programs\IOS\iPhonePackager\iPhonePackager.csproj") + @"]"
 				};
 
 				List<LogEvent> logEvents = Parse(String.Join("\n", lines));
@@ -215,7 +247,7 @@ namespace Horde.Agent.Tests
 			{
 				string[] lines =
 				{
-					@"  Configuration\TargetRules.cs(1497,58): warning CS8625: Cannot convert null literal to non-nullable reference type. [C:\Horde\Engine\Source\Programs\UnrealBuildTool\UnrealBuildTool.csproj]",
+					@"  Configuration\TargetRules.cs(1497,58): warning CS8625: Cannot convert null literal to non-nullable reference type. [" + MakeAbsolutePath(@"Engine\Source\Programs\UnrealBuildTool\UnrealBuildTool.csproj") + @"]",
 				};
 
 				List<LogEvent> events = Parse(String.Join("\n", lines));
@@ -237,10 +269,12 @@ namespace Horde.Agent.Tests
 		{
 			// C# compile error from UBT
 			{
+				string absPath = MakeAbsolutePath(@"Engine\Source\Runtime\CoreOnline\CoreOnline.Build.cs");
+
 				string[] lines =
 				{
-					@"  ERROR: c:\Horde\Engine\Source\Runtime\CoreOnline\CoreOnline.Build.cs(4,7): error CS0246: The type or namespace name 'Tools' could not be found (are you missing a using directive or an assembly reference?)",
-					@"  WARNING: C:\horde\Engine\Source\Runtime\CoreOnline\CoreOnline.Build.cs(4,7): warning CS0246: The type or namespace name 'Tools' could not be found (are you missing a using directive or an assembly reference?)"
+					@"  ERROR: " + absPath + @"(4,7): error CS0246: The type or namespace name 'Tools' could not be found (are you missing a using directive or an assembly reference?)",
+					@"  WARNING: " + absPath + @"(4,7): warning CS0246: The type or namespace name 'Tools' could not be found (are you missing a using directive or an assembly reference?)"
 				};
 
 				List<LogEvent> logEvents = Parse(String.Join("\n", lines));
@@ -251,7 +285,7 @@ namespace Horde.Agent.Tests
 				Assert.AreEqual("4", logEvents[0].GetProperty("line").ToString());
 
 				LogValue fileProperty = (LogValue)logEvents[0].GetProperty("file");
-				Assert.AreEqual(@"c:\Horde\Engine\Source\Runtime\CoreOnline\CoreOnline.Build.cs", fileProperty.Text);
+				Assert.AreEqual(absPath, fileProperty.Text);
 				Assert.AreEqual(@"SourceFile", fileProperty.Type);
 				Assert.AreEqual(@"Engine/Source/Runtime/CoreOnline/CoreOnline.Build.cs", fileProperty.Properties!["relativePath"].ToString());
 				Assert.AreEqual(@"//UE4/Main/Engine/Source/Runtime/CoreOnline/CoreOnline.Build.cs@12345", fileProperty.Properties!["depotPath"].ToString());
@@ -261,7 +295,7 @@ namespace Horde.Agent.Tests
 				Assert.AreEqual("4", logEvents[1].GetProperty("line").ToString());
 
 				LogValue fileProperty1 = logEvents[1].GetProperty<LogValue>("file");
-				Assert.AreEqual(@"C:\horde\Engine\Source\Runtime\CoreOnline\CoreOnline.Build.cs", fileProperty1.Text);
+				Assert.AreEqual(absPath, fileProperty1.Text);
 				Assert.AreEqual(@"SourceFile", fileProperty1.Type);
 				Assert.AreEqual(@"Engine/Source/Runtime/CoreOnline/CoreOnline.Build.cs", fileProperty1.Properties!["relativePath"].ToString());
 				Assert.AreEqual(@"//UE4/Main/Engine/Source/Runtime/CoreOnline/CoreOnline.Build.cs@12345", fileProperty1.Properties!["depotPath"].ToString());
@@ -287,8 +321,8 @@ namespace Horde.Agent.Tests
 			{
 				string[] lines =
 				{
-					@" C:\Horde\Foo\Bar.txt(20): warning TL2012: Some error message",
-					@" C:\Horde\Foo\Bar.txt(20, 30) : warning TL2034: Some error message",
+					@" " + MakeAbsolutePath(@"Foo\Bar.txt") + @"(20): warning TL2012: Some error message",
+					@" " + MakeAbsolutePath(@"Foo\Bar.txt") + @"(20, 30) : warning TL2034: Some error message",
 					@" CSC : error CS2012: Cannot open 'D:\Build\++UE4\Sync\Engine\Source\Programs\Enterprise\Datasmith\DatasmithRevitExporter\Resources\obj\Release\DatasmithRevitResources.dll' for writing -- 'The process cannot access the file 'D:\Build\++UE4\Sync\Engine\Source\Programs\Enterprise\Datasmith\DatasmithRevitExporter\Resources\obj\Release\DatasmithRevitResources.dll' because it is being used by another process.' [D:\Build\++UE4\Sync\Engine\Source\Programs\Enterprise\Datasmith\DatasmithRevitExporter\Resources\DatasmithRevitResources.csproj]"
 				};
 
@@ -328,10 +362,10 @@ namespace Horde.Agent.Tests
 			{
 				string[] lines =
 				{
-					@"C:\Horde\Engine\Plugins\Experimental\VirtualCamera\Source\VirtualCamera\Private\VCamBlueprintFunctionLibrary.cpp(249): error C2220: the following warning is treated as an error",
-					@"C:\Horde\Engine\Plugins\Experimental\VirtualCamera\Source\VirtualCamera\Private\VCamBlueprintFunctionLibrary.cpp(249): warning C4996: 'UEditorLevelLibrary::PilotLevelActor': The Editor Scripting Utilities Plugin is deprecated - Use the function in Level Editor Subsystem Please update your code to the new API before upgrading to the next release, otherwise your project will no longer compile.",
+					MakeAbsolutePath(@"Engine\Plugins\Experimental\VirtualCamera\Source\VirtualCamera\Private\VCamBlueprintFunctionLibrary.cpp") + @"(249): error C2220: the following warning is treated as an error",
+					MakeAbsolutePath(@"Engine\Plugins\Experimental\VirtualCamera\Source\VirtualCamera\Private\VCamBlueprintFunctionLibrary.cpp") + @"(249): warning C4996: 'UEditorLevelLibrary::PilotLevelActor': The Editor Scripting Utilities Plugin is deprecated - Use the function in Level Editor Subsystem Please update your code to the new API before upgrading to the next release, otherwise your project will no longer compile.",
 					@"..\Plugins\Editor\EditorScriptingUtilities\Source\EditorScriptingUtilities\Public\EditorLevelLibrary.h(122): note: see declaration of 'UEditorLevelLibrary::PilotLevelActor'",
-					@"C:\Horde\Engine\Plugins\Experimental\VirtualCamera\Source\VirtualCamera\Private\VCamBlueprintFunctionLibrary.cpp(314): warning C4996: 'UEditorLevelLibrary::EditorSetGameView': The Editor Scripting Utilities Plugin is deprecated - Use the function in Level Editor Subsystem Please update your code to the new API before upgrading to the next release, otherwise your project will no longer compile.",
+					MakeAbsolutePath(@"Engine\Plugins\Experimental\VirtualCamera\Source\VirtualCamera\Private\VCamBlueprintFunctionLibrary.cpp") + @"(314): warning C4996: 'UEditorLevelLibrary::EditorSetGameView': The Editor Scripting Utilities Plugin is deprecated - Use the function in Level Editor Subsystem Please update your code to the new API before upgrading to the next release, otherwise your project will no longer compile.",
 					@"..\Plugins\Editor\EditorScriptingUtilities\Source\EditorScriptingUtilities\Public\EditorLevelLibrary.h(190): note: see declaration of 'UEditorLevelLibrary::EditorSetGameView'"
 				};
 
@@ -361,10 +395,10 @@ namespace Horde.Agent.Tests
 		{
 			string[] lines =
 			{
-				@"LogBlueprint: Warning: [AssetLog] D:\build\++UE5\Sync\QAGame\Plugins\NiagaraFluids\Content\Blueprints\Phsyarum_BP.uasset: [Compiler] Fill Texture 2D : Usage of 'Fill Texture 2D' has been deprecated. This function has been replaced by object user variables on the emitter to specify render targets to fill with data.",
+				@"LogBlueprint: Warning: [AssetLog] " + MakeAbsolutePath(@"QAGame\Plugins\NiagaraFluids\Content\Blueprints\Phsyarum_BP.uasset") + @": [Compiler] Fill Texture 2D : Usage of 'Fill Texture 2D' has been deprecated. This function has been replaced by object user variables on the emitter to specify render targets to fill with data.",
 			};
 
-			List<LogEvent> events = Parse(String.Join("\n", lines), new DirectoryReference("D:\\build\\++UE5\\Sync"));
+			List<LogEvent> events = Parse(String.Join("\n", lines));
 			Assert.AreEqual(1, events.Count);
 			Assert.AreEqual(events[0].Id, KnownLogEvents.Engine_AssetLog);
 
@@ -398,13 +432,10 @@ namespace Horde.Agent.Tests
 		[TestMethod]
 		public void MSBuildEventMatcher()
 		{
-			List<LogEvent> logEvents = Parse(@"  C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\MSBuild\Current\Bin\Microsoft.Common.CurrentVersion.targets(4207,5): warning MSB3026: Could not copy ""obj\Development\DotNETUtilities.dll"" to ""..\..\..\..\Binaries\DotNET\DotNETUtilities.dll"". Beginning retry 2 in 1000ms. The process cannot access the file '..\..\..\..\Binaries\DotNET\DotNETUtilities.dll' because it is being used by another process. The file is locked by: ""UnrealAutomationTool(13236)"" [C:\Horde\Engine\Source\Programs\DotNETCommon\DotNETUtilities\DotNETUtilities.csproj]");
+			List<LogEvent> logEvents = Parse(@"  C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\MSBuild\Current\Bin\Microsoft.Common.CurrentVersion.targets(4207,5): warning MSB3026: Could not copy ""obj\Development\DotNETUtilities.dll"" to ""..\..\..\..\Binaries\DotNET\DotNETUtilities.dll"". Beginning retry 2 in 1000ms. The process cannot access the file '..\..\..\..\Binaries\DotNET\DotNETUtilities.dll' because it is being used by another process. The file is locked by: ""UnrealAutomationTool(13236)"" [" + MakeAbsolutePath(@"Engine\Source\Programs\DotNETCommon\DotNETUtilities\DotNETUtilities.csproj") + @"]");
 			CheckEventGroup(logEvents, 0, 1, LogLevel.Information, KnownLogEvents.Systemic_MSBuild);
 
 			Assert.AreEqual("warning", logEvents[0].GetProperty("severity").ToString());
-			
-			// FIXME: Fails on Linux. Properties dict is empty
-			//Assert.AreEqual(@"Engine\Source\Programs\DotNETCommon\DotNETUtilities\DotNETUtilities.csproj", GetSubProperty(Events[0], "file", "relativePath"));
 		}
 
 		[TestMethod]
@@ -487,43 +518,12 @@ namespace Horde.Agent.Tests
 			string[] lines =
 			{
 				@"  <-- Suspend Log Parsing -->",
-				@"  Error: File Copy failed with Could not find a part of the path 'P:\Builds\Automation\Fortnite\Logs\++Fortnite+Release-14.60\CL-14584315\FortTest.QuickSmokeAthena_(XboxOne_Development_Client)\Client\Saved\Settings\FortniteGame\Saved\Config\CrashReportClient\UE4CC-XboxOne-C4477473430A2DD50ABDD297FF7811CD\CrashReportClient.ini'..",
+				@"  Error: File Copy failed with Could not find a part of the path 'P:\Builds\Automation\ShooterGame\Logs\++ShooterGame+Release-14.60\CL-14584315\ShooterGame.QuickSmokeAthena_(Win64_Development_Client)\Client\Saved\Settings\ShooterGame\Saved\Config\CrashReportClient\UE4CC-Win64-C4477473430A2DD50ABDD297FF7811CD\CrashReportClient.ini'..",
 				@"  <-- Resume Log Parsing -->"
 			};
 
 			List<LogEvent> logEvents = Parse(lines);
 			Assert.AreEqual(0, logEvents.Count);
-		}
-
-		[TestMethod]
-		public void GauntletGenericErrorMatcher()
-		{
-			string[] lines =
-			{
-				@"  Error: EngineTest.RunTests Group:HLOD (Win64 Development EditorGame) result=Failed",
-				@"    # EngineTest.RunTests Group:HLOD Report",
-				@"    ----------------------------------------",
-				@"    ### Process Role: Editor (Win64 Development)",
-				@"    ----------------------------------------",
-				@"    ##### Result: Abnormal Exit: Reason=3/24 tests failed, Code=-1",
-				@"    FatalErrors: 0, Ensures: 0, Errors: 8, Warnings: 20, Hash: 0",
-				@"    ##### Artifacts",
-				@"    Log: P:/Builds/Automation/Reports/++UE5+Main/EngineTest/++UE5+Main-CL-14167122/HLOD_Win64Editor\Saved_1\Editor\EditorOutput.log",
-				@"    Commandline: d:\Build\++UE5\Sync\EngineTest\EngineTest.uproject   -gauntlet  -unattended  -stdout  -AllowStdOutLogVerbosity  -gauntlet.heartbeatperiod=30  -NoWatchdog  -FORCELOGFLUSH  -CrashForUAT  -buildmachine  -ReportExportPath=""P:/Builds/Automation/Reports/++UE5+Main/EngineTest/++UE5+Main-CL-14167122/HLOD_Win64Editor""  -ExecCmds=""Automation RunTests Group:HLOD; Quit;""  -ddc=default  -userdir=""d:\Build\++UE5\Sync/Tests\DeviceCache\Win64\LocalDevice0_UserDir""",
-				@"    P:/Builds/Automation/Reports/++UE5+Main/EngineTest/++UE5+Main-CL-14167122/HLOD_Win64Editor\Saved_1\Editor",
-				@"    ----------------------------------------",
-				@"    ## Summary",
-				@"    ### EngineTest.RunTests Group:HLOD Failed",
-				@"    ### Editor: 3/24 tests failed",
-				@"    See below for logs and any callstacks",
-				@"    Context: Win64 Development EditorGame",
-				@"    FatalErrors: 0, Ensures: 0, Errors: 8, Warnings: 20",
-				@"    Result: Failed, ResultHash: 0",
-				@"    21 of 24 tests passed"
-			};
-
-			List<LogEvent> logEvents = Parse(lines);
-			CheckEventGroup(logEvents, 0, 20, LogLevel.Error, KnownLogEvents.Gauntlet);
 		}
 
 		[TestMethod]
@@ -562,96 +562,6 @@ namespace Horde.Agent.Tests
 		}
 
 		[TestMethod]
-		public void GauntletErrorMatcher()
-		{
-			string[] lines =
-			{
-				@"  Error: EngineTest.RunTests Group:HLOD (Win64 Development EditorGame) result=Failed",
-				@"    # EngineTest.RunTests Group:HLOD Report",
-				@"    ----------------------------------------",
-				@"    ### Process Role: Editor (Win64 Development)",
-				@"    ----------------------------------------",
-				@"    ##### Result: Abnormal Exit: Reason=3/24 tests failed, Code=-1",
-				@"    FatalErrors: 0, Ensures: 0, Errors: 8, Warnings: 20, Hash: 0",
-				@"",
-				@"    ##### Artifacts",
-				@"    Log: P:/Builds/Automation/Reports/++UE5+Main/EngineTest/++UE5+Main-CL-14167122/HLOD_Win64Editor\Saved_1\Editor\EditorOutput.log",
-				@"",
-				@"    Commandline: d:\Build\++UE5\Sync\EngineTest\EngineTest.uproject   -gauntlet  -unattended  -stdout  -AllowStdOutLogVerbosity  -gauntlet.heartbeatperiod=30  -NoWatchdog  -FORCELOGFLUSH  -CrashForUAT  -buildmachine  -ReportExportPath=""P:/Builds/Automation/Reports/++UE5+Main/EngineTest/++UE5+Main-CL-14167122/HLOD_Win64Editor""  -ExecCmds=""Automation RunTests Group:HLOD; Quit;""  -ddc=default  -userdir=""d:\Build\++UE5\Sync/Tests\DeviceCache\Win64\LocalDevice0_UserDir""",
-				@"",
-				@"    P:/Builds/Automation/Reports/++UE5+Main/EngineTest/++UE5+Main-CL-14167122/HLOD_Win64Editor\Saved_1\Editor",
-				@"",
-				@"    ----------------------------------------",
-				@"    ## Summary",
-				@"    ### EngineTest.RunTests Group:HLOD Failed",
-				@"    ### Editor: 3/24 tests failed",
-				@"    See below for logs and any callstacks",
-				@"",
-				@"    Context: Win64 Development EditorGame",
-				@"",
-				@"    FatalErrors: 0, Ensures: 0, Errors: 8, Warnings: 20",
-				@"    Result: Failed, ResultHash: 0",
-				@"",
-				@"    21 of 24 tests passed",
-				@"",
-				@"    ### The following tests failed:",
-				@"    ##### SectionFlags: SectionFlags",
-				@"    * LogAutomationController: Building static mesh SectionFlags... [D:\Build\++UE5\Sync\Engine\Source\Runtime\Core\Private\Logging\LogMacros.cpp(92)]",
-				@"    * LogAutomationController: Building static mesh SectionFlags... [D:\Build\++UE5\Sync\Engine\Source\Runtime\Core\Private\Logging\LogMacros.cpp(92)]",
-				@"    * LogAutomationController: Err0r: Screenshot 'ActorMerging_SectionFlags_LOD_0_None' test failed, Screenshots were different!  Global Difference = 0.058361, Max Local Difference = 0.821376 [D:\Build\++UE5\Sync\Engine\Source\Runtime\Core\Public\Delegates\DelegateInstancesImpl.h(546)]",
-				@"",
-				@"    ##### SimpleMerge: SimpleMerge",
-				@"    * LogAutomationController: Building static mesh SM_TeapotHLOD... [D:\Build\++UE5\Sync\Engine\Source\Runtime\Core\Private\Logging\LogMacros.cpp(92)]",
-				@"    * LogAutomationController: Building static mesh SM_TeapotHLOD... [D:\Build\++UE5\Sync\Engine\Source\Runtime\Core\Private\Logging\LogMacros.cpp(92)]",
-				@"    * LogAutomationController: Screenshot 'ActorMerging_SimpleMeshMerge_LOD_0_None' was similar!  Global Difference = 0.000298, Max Local Difference = 0.010725 [D:\Build\++UE5\Sync\Engine\Source\Runtime\Core\Public\Delegates\DelegateInstancesImpl.h(546)]",
-				@"    * LogAutomationController: Err0r: Screenshot 'ActorMerging_SimpleMeshMerge_LOD_1_None' test failed, Screenshots were different!  Global Difference = 0.006954, Max Local Difference = 0.129438 [D:\Build\++UE5\Sync\Engine\Source\Runtime\Core\Public\Delegates\DelegateInstancesImpl.h(546)]",
-				@"    * LogAutomationController: Err0r: Screenshot 'ActorMerging_SimpleMeshMerge_LOD_2_None' test failed, Screenshots were different!  Global Difference = 0.007732, Max Local Difference = 0.127959 [D:\Build\++UE5\Sync\Engine\Source\Runtime\Core\Public\Delegates\DelegateInstancesImpl.h(546)]",
-				@"    * LogAutomationController: Err0r: Screenshot 'ActorMerging_SimpleMeshMerge_LOD_3_None' test failed, Screenshots were different!  Global Difference = 0.009140, Max Local Difference = 0.172337 [D:\Build\++UE5\Sync\Engine\Source\Runtime\Core\Public\Delegates\DelegateInstancesImpl.h(546)]",
-				@"    * LogAutomationController: Screenshot 'ActorMerging_SimpleMeshMerge_LOD_0_BaseColor' was similar!  Global Difference = 0.000000, Max Local Difference = 0.000000 [D:\Build\++UE5\Sync\Engine\Source\Runtime\Core\Public\Delegates\DelegateInstancesImpl.h(546)]",
-				@"    * LogAutomationController: Screenshot 'ActorMerging_SimpleMeshMerge_LOD_1_BaseColor' was similar!  Global Difference = 0.002068, Max Local Difference = 0.045858 [D:\Build\++UE5\Sync\Engine\Source\Runtime\Core\Public\Delegates\DelegateInstancesImpl.h(546)]",
-				@"    * LogAutomationController: Screenshot 'ActorMerging_SimpleMeshMerge_LOD_2_BaseColor' was similar!  Global Difference = 0.002377, Max Local Difference = 0.045858 [D:\Build\++UE5\Sync\Engine\Source\Runtime\Core\Public\Delegates\DelegateInstancesImpl.h(546)]",
-				@"    * LogAutomationController: Screenshot 'ActorMerging_SimpleMeshMerge_LOD_3_BaseColor' was similar!  Global Difference = 0.002647, Max Local Difference = 0.057322 [D:\Build\++UE5\Sync\Engine\Source\Runtime\Core\Public\Delegates\DelegateInstancesImpl.h(546)]",
-				@"",
-				@"    ##### SingleLODMerge: SingleLODMerge",
-				@"    * LogAutomationController: Building static mesh Pencil2... [D:\Build\++UE5\Sync\Engine\Source\Runtime\Core\Private\Logging\LogMacros.cpp(92)]",
-				@"    * LogAutomationController: Building static mesh Pencil2... [D:\Build\++UE5\Sync\Engine\Source\Runtime\Core\Private\Logging\LogMacros.cpp(92)]",
-				@"    * LogAutomationController: Err0r: Screenshot 'ActorMerging_SingleLODMerge_LOD_0_BaseColor' test failed, Screenshots were different!  Global Difference = 0.013100, Max Local Difference = 0.131657 [D:\Build\++UE5\Sync\Engine\Source\Runtime\Core\Public\Delegates\DelegateInstancesImpl.h(546)]",
-				@"",
-				@"    ### Links",
-				@"    View results here: http://automation.epicgames.net/reports/++UE5+Main/EngineTest/++UE5+Main-CL-14167122/HLOD_Win64Editor/index.html",
-				@"",
-				@"    Open results in UnrealEd from P:/Builds/Automation/Reports/++UE5+Main/EngineTest/++UE5+Main-CL-14167122/HLOD_Win64Editor",
-			};
-
-			List<LogEvent> logEvents = Parse(lines);
-			CheckEventGroup(logEvents, 0, 55, LogLevel.Error, KnownLogEvents.Gauntlet_UnitTest);
-
-			Assert.AreEqual("HLOD", logEvents[29].GetProperty("group").ToString());
-			Assert.AreEqual("SectionFlags", logEvents[29].GetProperty("name").ToString());
-			Assert.AreEqual("SectionFlags", logEvents[29].GetProperty("friendly_name").ToString());
-
-			Assert.AreEqual("HLOD", logEvents[34].GetProperty("group").ToString());
-			Assert.AreEqual("SimpleMerge", logEvents[34].GetProperty("name").ToString());
-			Assert.AreEqual("SimpleMerge", logEvents[34].GetProperty("friendly_name").ToString());
-
-			Assert.AreEqual("HLOD", logEvents[46].GetProperty("group").ToString());
-			Assert.AreEqual("SingleLODMerge", logEvents[46].GetProperty("name").ToString());
-			Assert.AreEqual("SingleLODMerge", logEvents[46].GetProperty("friendly_name").ToString());
-		}
-
-		[TestMethod]
-		public void GauntletScreenshotErrorMatcher()
-		{
-			string text = @"  Error: LogAutomationController: Error: Screenshot 'ActorMerging_SectionFlags_LOD_0_None' test failed, Screenshots were different!  Global Difference = 0.058361, Max Local Difference = 0.821376 [D:\Build\++UE5\Sync\Engine\Source\Runtime\Core\Public\Delegates\DelegateInstancesImpl.h(546)]";
-
-			List<LogEvent> logEvents = Parse(text);
-			CheckEventGroup(logEvents, 0, 1, LogLevel.Error, KnownLogEvents.Gauntlet_ScreenshotTest);
-
-			LogEvent logEvent = logEvents[0];
-			Assert.AreEqual("ActorMerging_SectionFlags_LOD_0_None", logEvent.GetProperty("screenshot").ToString());
-		}
-
-		[TestMethod]
 		public void SystemicErrorMatcher()
 		{
 			string[] lines =
@@ -686,6 +596,63 @@ namespace Horde.Agent.Tests
 			CheckEventGroup(logEvents.Slice(6, 1), 7, 1, LogLevel.Information, KnownLogEvents.Systemic_Xge_ServiceNotRunning);
 			CheckEventGroup(logEvents.Slice(7, 1), 8, 1, LogLevel.Error, KnownLogEvents.Systemic_Xge_BuildFailed);
 		}
+		
+		[TestMethod]
+		public void XoreaxTaskMetadataMatcher()
+		{
+			string[] lines =
+			{
+				@"MiMalloc.c (0:01.17 at +0:11)",
+				@"SomeFile.cpp (4:31.12 at +0:16)",
+				@"Default.rc2 (Agent 'SomeAgentName (Core #7)', 2:34.56 at +55:18)",
+				@" (1:01.12 at +58:03)",
+			};
+
+			List<LogEvent> logEvents = Parse(lines);
+			Assert.AreEqual(4, logEvents.Count);
+			CheckEventGroup(logEvents.Slice(0, 1), 0, 1, LogLevel.Information, KnownLogEvents.Systemic_Xge_TaskMetadata);
+			CheckEventGroup(logEvents.Slice(1, 1), 1, 1, LogLevel.Information, KnownLogEvents.Systemic_Xge_TaskMetadata);
+			CheckEventGroup(logEvents.Slice(2, 1), 2, 1, LogLevel.Information, KnownLogEvents.Systemic_Xge_TaskMetadata);
+			CheckEventGroup(logEvents.Slice(3, 1), 3, 1, LogLevel.Information, KnownLogEvents.Systemic_Xge_TaskMetadata);
+
+			Assert.AreEqual("MiMalloc.c", logEvents[0].GetProperty<string>("name"));
+			Assert.AreEqual(1170, logEvents[0].GetProperty<int>("duration"));
+			Assert.AreEqual(11000, logEvents[0].GetProperty<int>("startTime"));
+			
+			Assert.AreEqual("SomeFile.cpp", logEvents[1].GetProperty<string>("name"));
+			Assert.AreEqual(271120, logEvents[1].GetProperty<int>("duration"));
+			Assert.AreEqual(16000, logEvents[1].GetProperty<int>("startTime"));
+			
+			Assert.AreEqual("Default.rc2", logEvents[2].GetProperty<string>("name"));
+			Assert.AreEqual("SomeAgentName (Core #7)", logEvents[2].GetProperty<string>("agent"));
+			Assert.AreEqual(154560, logEvents[2].GetProperty<int>("duration"));
+			Assert.AreEqual(3318000, logEvents[2].GetProperty<int>("startTime"));
+			
+			Assert.AreEqual("", logEvents[3].GetProperty<string>("name"));
+			Assert.AreEqual(61120, logEvents[3].GetProperty<int>("duration"));
+			Assert.AreEqual(3483000, logEvents[3].GetProperty<int>("startTime"));
+		}
+
+		private class FakeLogSink : ILogEventSink
+		{
+			public List<LogEvent> ReceivedLogEvents { get; } = new();
+			public void ProcessEvent(LogEvent logEvent)
+			{
+				ReceivedLogEvents.Add(logEvent);
+			}
+		}
+		
+		[TestMethod]
+		public void AdditionalLogSinks()
+		{
+			FakeLogSink fakeLogSink = new();
+			using LogParser parser = new (NullLogger.Instance, new List<string>(), new List<ILogEventSink>() { fakeLogSink });
+
+			parser.WriteLine(@"MiMalloc.c (0:01.17 at +0:11)");
+			
+			Assert.AreEqual(1, fakeLogSink.ReceivedLogEvents.Count);
+			Assert.AreEqual("MiMalloc.c", fakeLogSink.ReceivedLogEvents[0].GetProperty<string>("name"));
+		}
 
 		[TestMethod]
 		public void LogChannelMatcher()
@@ -693,7 +660,7 @@ namespace Horde.Agent.Tests
 			string[] lines =
 			{
 				@"Execution of commandlet took:  749.68 seconds",
-				@"LogFort: Error: Serialized Class /Script/Engine.AnimSequence for a property of Class /Script/Engine.BlendSpace. Reference will be nullptred.",
+				@"LogShooterGAme: Error: Serialized Class /Script/Engine.AnimSequence for a property of Class /Script/Engine.BlendSpace. Reference will be nullptred.",
 				@"    Property = ObjectProperty /Game/Animation/Game/Enemies/HuskHusky/HuskyHusk_AnimBlueprint.HuskyHusk_AnimBlueprint_C:AnimBlueprintGeneratedConstantData:ObjectProperty_358",
 				@"    Item = AnimSequence /Game/Animation/Game/Enemies/HuskyHusk_Riot/Locomotion/Idle/Idle_Shield.Idle_Shield",
 				@"LogDataAssetDirectoryExporter: Display: 'Platform' property is of type: string",
@@ -833,7 +800,7 @@ namespace Horde.Agent.Tests
 
 		static List<LogEvent> Parse(string text)
 		{
-			return Parse(text, new DirectoryReference("C:\\Horde".Replace('\\', Path.DirectorySeparatorChar)));
+			return Parse(text, s_rootDir);
 		}
 
 		static List<LogEvent> Parse(string text, DirectoryReference workspaceDir)
@@ -870,10 +837,10 @@ namespace Horde.Agent.Tests
 				Assert.IsTrue(enumerator.MoveNext());
 
 				LogEvent logEvent = enumerator.Current;
-				Assert.AreEqual(level, logEvent.Level);
-				Assert.AreEqual(eventId, logEvent.Id);
-				Assert.AreEqual(idx, logEvent.LineIndex);
-				Assert.AreEqual(count, logEvent.LineCount);
+				Assert.AreEqual(level, logEvent.Level, "Log level mismatch");
+				Assert.AreEqual(eventId, logEvent.Id, "Event ID mismatch");
+				Assert.AreEqual(idx, logEvent.LineIndex, "Line index mismatch");
+				Assert.AreEqual(count, logEvent.LineCount, "Line count mismatch");
 				Assert.AreEqual(index + idx, logEvent.GetProperty(LogLine));
 			}
 			Assert.IsFalse(enumerator.MoveNext());

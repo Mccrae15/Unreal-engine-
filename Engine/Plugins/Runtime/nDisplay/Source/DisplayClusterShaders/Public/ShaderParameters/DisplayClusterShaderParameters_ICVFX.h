@@ -73,11 +73,6 @@ public:
 	}
 
 public:
-	bool IsAnyLightcardUsed() const
-	{
-		return IsLightcardOverUsed() || IsLightcardUnderUsed();
-	}
-
 	bool IsLightcardOverUsed() const
 	{
 		return Lightcard.IsValid() && LightcardMode == EDisplayClusterShaderParametersICVFX_LightcardRenderMode::Over;
@@ -86,6 +81,16 @@ public:
 	bool IsLightcardUnderUsed() const
 	{
 		return Lightcard.IsValid() && LightcardMode == EDisplayClusterShaderParametersICVFX_LightcardRenderMode::Under;
+	}
+
+	bool IsUVLightcardOverUsed() const
+	{
+		return UVLightcard.IsValid() && LightcardMode == EDisplayClusterShaderParametersICVFX_LightcardRenderMode::Over;
+	}
+
+	bool IsUVLightcardUnderUsed() const
+	{
+		return UVLightcard.IsValid() && LightcardMode == EDisplayClusterShaderParametersICVFX_LightcardRenderMode::Under;
 	}
 
 	bool IsCameraUsed(int32 CameraIndex) const
@@ -105,16 +110,16 @@ public:
 
 	bool IsValid()
 	{
-		return IsAnyLightcardUsed() || IsAnyCameraUsed();
+		return Lightcard.IsValid() || UVLightcard.IsValid() || IsAnyCameraUsed();
 	}
 
 public:
 	void Reset()
 	{
 		Cameras.Empty();
-		Lightcard.Reset();
 
-		UVLightCardMap = nullptr;
+		UVLightcard.Reset();
+		Lightcard.Reset();
 	}
 
 	// Implement copy ref and arrays
@@ -124,23 +129,9 @@ public:
 
 		Cameras = InParameters.Cameras;
 
-		Lightcard      = InParameters.Lightcard;
+		UVLightcard   = InParameters.UVLightcard;
+		Lightcard     = InParameters.Lightcard;
 		LightcardMode = InParameters.LightcardMode;
-
-		UVLightCardMap = InParameters.UVLightCardMap;
-	}
-
-	void CollectRefViewports(TArray<FDisplayClusterShaderParametersICVFX_ViewportResource*>& Dst)
-	{
-		if (Lightcard.IsDefined())
-		{
-			Dst.Add(&Lightcard);
-		}
-
-		for (FCameraSettings& CameraIt : Cameras)
-		{
-			CameraIt.CollectRefViewports(Dst);
-		}
 	}
 
 	inline void SortCamerasRenderOrder()
@@ -159,19 +150,6 @@ public:
 	// ICVFX Target only data
 	struct FCameraSettings
 	{
-		void CollectRefViewports(TArray<FDisplayClusterShaderParametersICVFX_ViewportResource*>& Dst)
-		{
-			if (Resource.IsDefined())
-			{
-				Dst.Add(&Resource);
-			}
-
-			if (Chromakey.IsDefined())
-			{
-				Dst.Add(&Chromakey);
-			}
-		}
-
 		bool IsUsed() const
 		{
 			return (ChromakeySource == EDisplayClusterShaderParametersICVFX_ChromakeySource::FrameColor) || Resource.IsValid();
@@ -188,6 +166,23 @@ public:
 			CameraViewRotation = Local2WorldTransform.InverseTransformRotation(InContext.CameraViewRotation.Quaternion()).Rotator();
 			CameraViewLocation = Local2WorldTransform.InverseTransformPosition(InContext.CameraViewLocation);
 			CameraPrjMatrix = InContext.CameraPrjMatrix;
+		}
+
+		/**
+		 * Iterate over all defined viewport resources with a predicate functor.
+		 */
+		template <typename Predicate>
+		void IterateViewportResourcesByPredicate(Predicate Pred)
+		{
+			if (Resource.IsDefined())
+			{
+				::Invoke(Pred, Resource);
+			}
+
+			if (Chromakey.IsDefined())
+			{
+				::Invoke(Pred, Chromakey);
+			}
 		}
 
 	public:
@@ -221,6 +216,39 @@ public:
 		int32 RenderOrder = -1;
 	};
 
+	/**
+	 * Iterate over all defined viewport resources with a predicate functor.
+	 */
+	template <typename Predicate>
+	void IterateViewportResourcesByPredicate(Predicate Pred)
+	{
+		if (Lightcard.IsDefined())
+		{
+			::Invoke(Pred, Lightcard);
+		}
+
+		if (UVLightcard.IsDefined())
+		{
+			::Invoke(Pred, UVLightcard);
+		}
+
+		for (FCameraSettings& CameraIt : Cameras)
+		{
+			CameraIt.IterateViewportResourcesByPredicate(Pred);
+		}
+	}
+
+	/**
+	 * Find camera settings by viewport name
+	 */
+	inline FCameraSettings* FindCameraByName(const FString& InViewportId)
+	{
+		return Cameras.FindByPredicate([InViewportId](const FCameraSettings& CameraIt)
+			{
+				return CameraIt.Resource.ViewportId == InViewportId;
+			});
+	}
+
 	// Remove unused cameras from render
 	bool CleanupCamerasForRender()
 	{
@@ -241,9 +269,7 @@ public:
 	TArray<FCameraSettings> Cameras;
 
 	// Lightcard settings
+	FDisplayClusterShaderParametersICVFX_ViewportResource    UVLightcard;
 	FDisplayClusterShaderParametersICVFX_ViewportResource    Lightcard;
 	EDisplayClusterShaderParametersICVFX_LightcardRenderMode LightcardMode = EDisplayClusterShaderParametersICVFX_LightcardRenderMode::Under;
-
-	/** Texture containing a UV map of the rendered UV light cards */
-	FTextureRHIRef UVLightCardMap;
 };

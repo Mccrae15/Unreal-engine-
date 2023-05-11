@@ -2,27 +2,15 @@
 
 #include "MuCOE/CustomizableObjectLayout.h"
 
-#include "Containers/SparseArray.h"
-#include "EdGraph/EdGraph.h"
-#include "EdGraph/EdGraphPin.h"
-#include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
-#include "HAL/PlatformCrt.h"
-#include "MuCO/CustomizableObject.h"
 #include "MuCOE/CustomizableObjectCompiler.h"
-#include "MuCOE/GenerateMutableSource/GenerateMutableSource.h"
 #include "MuCOE/GenerateMutableSource/GenerateMutableSourceMesh.h"
 #include "MuCOE/GraphTraversal.h"
 #include "MuCOE/ICustomizableObjectEditor.h"
-#include "MuCOE/Nodes/CustomizableObjectNode.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeLayoutBlocks.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeMesh.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTable.h"
-#include "MuR/Ptr.h"
 #include "MuT/NodeLayout.h"
-#include "MuT/Table.h"
-#include "Templates/Casts.h"
-#include "Templates/SharedPointer.h"
 
 #define LOCTEXT_NAMESPACE "CustomizableObjectEditor"
 
@@ -95,6 +83,13 @@ void UCustomizableObjectLayout::GenerateBlocksFromUVs()
 		
 		if (USkeletalMesh* SkeletalMesh = Cast<USkeletalMesh>(Mesh))
 		{
+			// We don't need all the data to generate the blocks
+			const EMutableMeshConversionFlags ShapeFlags = 
+					EMutableMeshConversionFlags::IgnoreSkinning | 
+					EMutableMeshConversionFlags::IgnorePhysics;
+
+			GenerationContext.MeshGenerationFlags.Push(ShapeFlags);
+
 			GenerationContext.ComponentInfos.Add(SkeletalMesh);
 			MutableMesh = ConvertSkeletalMeshToMutable(SkeletalMesh, LOD, Material, GenerationContext, Node);
 		}

@@ -53,6 +53,29 @@ UE_NET_TEST_FIXTURE(FPartialNetBlobTestFixture, CanSplitNetBlobInNeedOfSplitting
 	UE_NET_ASSERT_EQ(MockNetBlobHandler->GetFunctionCallCounts().OnNetBlobReceived, ExpectedMockNetBlobReceiveCount);
 }
 
+UE_NET_TEST_FIXTURE(FPartialNetBlobTestFixture, CanSplitHugeNetBlob)
+{
+	FTestContext ServerContext;
+	SetupTestContext(ServerContext, Server);
+
+	constexpr uint32 PayloadBitCount = 384U*1024U*8U; // 384KiB
+	const TRefCountPtr<FNetBlob>& Blob = CreateUnreliableMockNetBlob(PayloadBitCount);
+
+	TArray<TRefCountPtr<FNetBlob>> PartialNetBlobs;
+	MockSequentialPartialNetBlobHandler->SplitNetBlob(Blob, PartialNetBlobs);
+	UE_NET_ASSERT_GE(PartialNetBlobs.Num(), 2);
+
+	for (const TRefCountPtr<FNetBlob>& PartialNetBlob : PartialNetBlobs)
+	{
+		ServerContext.SerializationContext.GetNetBlobReceiver()->OnNetBlobReceived(ServerContext.SerializationContext, PartialNetBlob);
+	}
+
+	const uint32 ExpectedPartialNetBlobReceiveCount = PartialNetBlobs.Num();
+	constexpr uint32 ExpectedMockNetBlobReceiveCount = 1U;
+	UE_NET_ASSERT_EQ(MockSequentialPartialNetBlobHandler->GetFunctionCallCounts().OnNetBlobReceived, ExpectedPartialNetBlobReceiveCount);
+	UE_NET_ASSERT_EQ(MockNetBlobHandler->GetFunctionCallCounts().OnNetBlobReceived, ExpectedMockNetBlobReceiveCount);
+}
+
 UE_NET_TEST_FIXTURE(FPartialNetBlobTestFixture, MissingFirstPartialNetBlobCausesError)
 {
 	FTestContext ServerContext;
@@ -101,13 +124,13 @@ UE_NET_TEST_FIXTURE(FPartialNetBlobTestFixture, TestSplitBlobIsReceivedDespitePa
 	Server->SendAndDeliverTo(Client, DeliverPacket);
 	Server->PostSendUpdate();
 
-	UE_NET_ASSERT_NE(Client->GetReplicationBridge()->GetReplicatedObject(ServerObject->NetHandle), nullptr);
+	UE_NET_ASSERT_NE(Client->GetReplicationBridge()->GetReplicatedObject(ServerObject->NetRefHandle), nullptr);
 
 	// Create attachment
 	{
 		constexpr uint32 PayloadBitCount = 16000;
 		const TRefCountPtr<FNetObjectAttachment>& Attachment = MockNetObjectAttachmentHandler->CreateUnreliableNetObjectAttachment(PayloadBitCount);
-		FNetObjectReference AttachmentTarget = FObjectReferenceCache::MakeNetObjectReference(ServerObject->NetHandle);
+		FNetObjectReference AttachmentTarget = FObjectReferenceCache::MakeNetObjectReference(ServerObject->NetRefHandle);
 		Server->GetReplicationSystem()->QueueNetObjectAttachment(Client->ConnectionIdOnServer, AttachmentTarget, Attachment);
 	}
 
@@ -136,6 +159,42 @@ UE_NET_TEST_FIXTURE(FPartialNetBlobTestFixture, TestSplitBlobIsReceivedDespitePa
 	UE_NET_ASSERT_EQ(ClientMockNetObjectAttachmentHandler->GetFunctionCallCounts().OnNetBlobReceived, 1U);
 
 	Server->DestroyObject(ServerObject);
+}
+
+UE_NET_TEST_FIXTURE(FPartialNetBlobTestFixture, PartOfUnexpectedSizeCausesError)
+{
+	FTestContext ServerContext;
+	SetupTestContext(ServerContext, Server);
+
+	TArray<TRefCountPtr<FNetBlob>> PartialNetBlobs;
+	TRefCountPtr<FNetBlob> WrongSizeSecondBlob;
+	{
+		const USequentialPartialNetBlobHandlerConfig* Config = MockSequentialPartialNetBlobHandler->GetConfig();
+
+		// Guesstimate on blob overhead. The important thing is we get exactly as many pars as we wish.
+		constexpr uint32 BlobOverheadBitCount = 128U;
+
+		constexpr int32 PartCount = 3U;
+		uint32 TotalPayloadBitCountForOriginalSplit = PartCount*Config->GetMaxPartBitCount() - BlobOverheadBitCount - 1U;
+		const TRefCountPtr<FNetBlob>& Blob = CreateUnreliableMockNetBlob(TotalPayloadBitCountForOriginalSplit);
+		MockSequentialPartialNetBlobHandler->SplitNetBlob(Blob, PartialNetBlobs);
+		UE_NET_ASSERT_EQ(PartialNetBlobs.Num(), PartCount);
+
+		// Create a second blob with two parts, where the second part will be sent to cause an error.
+		constexpr int32 OtherPartCount = 2U;
+		TArray<TRefCountPtr<FNetBlob>> OtherPartialNetBlobs;
+		const uint32 TotalPayloadBitCountForWrongSizeBlob = OtherPartCount*Config->GetMaxPartBitCount() - BlobOverheadBitCount - 1U;
+		const TRefCountPtr<FNetBlob>& OtherBlob = CreateUnreliableMockNetBlob(TotalPayloadBitCountForWrongSizeBlob);
+		MockSequentialPartialNetBlobHandler->SplitNetBlob(OtherBlob, OtherPartialNetBlobs);
+		UE_NET_ASSERT_EQ(OtherPartialNetBlobs.Num(), OtherPartCount);
+
+		WrongSizeSecondBlob = MoveTemp(OtherPartialNetBlobs[1]);
+	}
+
+
+	ServerContext.SerializationContext.GetNetBlobReceiver()->OnNetBlobReceived(ServerContext.SerializationContext, PartialNetBlobs[0]);
+	ServerContext.SerializationContext.GetNetBlobReceiver()->OnNetBlobReceived(ServerContext.SerializationContext, WrongSizeSecondBlob);
+	UE_NET_ASSERT_TRUE(ServerContext.SerializationContext.HasError());
 }
 
 }

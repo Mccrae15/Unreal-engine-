@@ -5,7 +5,7 @@
 #include "IPixelStreamingModule.h"
 #include "RHI.h"
 #include "Tickable.h"
-#include "PixelStreamingProtocol.h"
+#include "PixelStreamingInputProtocol.h"
 
 class UPixelStreamingInput;
 class SWindow;
@@ -34,13 +34,12 @@ namespace UE::PixelStreaming
 		virtual TSharedPtr<IPixelStreamingStreamer> CreateStreamer(const FString& StreamerId) override;
 		virtual TArray<FString> GetStreamerIds() override;
 		virtual TSharedPtr<IPixelStreamingStreamer> GetStreamer(const FString& StreamerId) override;
+		virtual TSharedPtr<IPixelStreamingStreamer> FindStreamer(const FString& StreamerId) override;
 		virtual TSharedPtr<IPixelStreamingStreamer> DeleteStreamer(const FString& StreamerId) override;
+		void DeleteStreamer(TSharedPtr<IPixelStreamingStreamer> ToBeDeleted) override;
 		virtual FString GetDefaultStreamerID() override;
 		virtual FString GetDefaultSignallingURL() override;
-		virtual const Protocol::FPixelStreamingProtocol& GetProtocol() override;
-		
-		virtual void RegisterMessage(Protocol::EPixelStreamingMessageDirection MessageDirection, const FString& MessageType, Protocol::FPixelStreamingInputMessage Message, const TFunction<void(FMemoryReader)>& Handler) override;
-		virtual TFunction<void(FMemoryReader)> FindMessageHandler(const FString& MessageType) override;
+
 		// These are staying on the module at the moment as theres no way of the BPs knowing which streamer they are relevant to
 		virtual void AddInputComponent(UPixelStreamingInput* InInputComponent) override;
 		virtual void RemoveInputComponent(UPixelStreamingInput* InInputComponent) override;
@@ -59,14 +58,17 @@ namespace UE::PixelStreaming
 		void ShutdownModule() override;
 		/** End IModuleInterface implementation */
 
-		/** IInputDeviceModule implementation */
-		virtual TSharedPtr<IInputDevice> CreateInputDevice(const TSharedRef<FGenericApplicationMessageHandler>& InMessageHandler) override;
-		/** End IInputDeviceModule implementation */
+		/** Deprected methods from the IPixelStreamingModule. We're only keeping these here until we can fully remove them */
+		const FPixelStreamingInputProtocol GetProtocol() override;
+		void RegisterMessage(EPixelStreamingMessageDirection MessageDirection, const FString& MessageType, FPixelStreamingInputMessage Message, const TFunction<void(FMemoryReader)>& Handler) override;
+		TFunction<void(FMemoryReader)> FindMessageHandler(const FString& MessageType) override;
+		/** End deprecated methods */
 
 		// Own methods
 		void InitDefaultStreamer();
 		bool IsPlatformCompatible() const;
-		void PopulateProtocol();
+		void RegisterCustomHandlers(TSharedPtr<IPixelStreamingStreamer> Streamer);
+		void HandleUIInteraction(FMemoryReader Ar);
 
 	private:
 		bool bModuleReady = false;
@@ -77,7 +79,7 @@ namespace UE::PixelStreaming
 		TArray<UPixelStreamingInput*> InputComponents;
 		TSharedPtr<FVideoSourceGroup> ExternalVideoSourceGroup;
 		mutable FCriticalSection StreamersCS;
-		TMap<FString, TSharedPtr<IPixelStreamingStreamer>> Streamers;
-		Protocol::FPixelStreamingProtocol MessageProtocol;
+		TMap<FString, TWeakPtr<IPixelStreamingStreamer>> Streamers;
+		TSharedPtr<IPixelStreamingStreamer> DefaultStreamer;
 	};
 } // namespace UE::PixelStreaming

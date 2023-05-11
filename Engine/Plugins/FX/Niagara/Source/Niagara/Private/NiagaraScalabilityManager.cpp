@@ -2,6 +2,7 @@
 #include "NiagaraScalabilityManager.h"
 #include "NiagaraWorldManager.h"
 #include "NiagaraComponent.h"
+#include "NiagaraSystemInstanceController.h"
 #include "Particles/FXBudget.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraScalabilityManager)
@@ -74,7 +75,7 @@ static int32 GetMaxUpdatesPerFrame(const UNiagaraEffectType* EffectType, int32 I
 
 FNiagaraScalabilityManager::FNiagaraScalabilityManager()
 	: EffectType(nullptr)
-	, LastUpdateTime(0.0f)
+	, LastUpdateTime(0.0)
 	, bRefreshCachedSystemData(false)
 {
 
@@ -216,8 +217,8 @@ bool FNiagaraScalabilityManager::EvaluateCullState(FNiagaraWorldManager* WorldMa
 		UNiagaraSystem* System = Component->GetAsset();
 		if (System == nullptr)
 		{
-			UE_LOG(LogNiagara, Warning, TEXT("Niagara System has been destroyed with components still registered to the scalability manager. Unregistering this component.\nComponent: 0x%P - %s\nEffectType: 0x%P - %s"),
-				Component, *Component->GetName(), EffectType, *EffectType->GetName());
+			UE_LOG(LogNiagara, Warning, TEXT("Niagara System has been destroyed with components still registered to the scalability manager. Unregistering this component.\nComponent: 0x%p - %s\nEffectType: 0x%p - %s"),
+				Component, *Component->GetName(), EffectType.Get(), *EffectType->GetName());
 			Unregister(Component);
 			return false;
 		}
@@ -475,7 +476,7 @@ void FNiagaraScalabilityManager::Update(FNiagaraWorldManager* WorldMan, float De
 
 		check(ManagedComponents.Num() == 0);
 		check(State.Num() == 0);
-		LastUpdateTime = 0.0f;
+		LastUpdateTime = 0.0;
 		return;
 	}
 
@@ -503,8 +504,8 @@ void FNiagaraScalabilityManager::Update(FNiagaraWorldManager* WorldMan, float De
 		return;
 	}
 
-	const float CurrentTime = WorldMan->GetWorld()->GetTimeSeconds();
-	const float TimeSinceUpdate = CurrentTime - LastUpdateTime;
+	const double CurrentTime = WorldMan->GetWorld()->GetTimeSeconds();
+	const float TimeSinceUpdate = float(CurrentTime - LastUpdateTime);
 	const float UpdatePeriod = GetScalabilityUpdatePeriod(EffectType->UpdateFrequency);
 
 	const bool bResetUpdate = bRefreshOwnerAllowsScalability || EffectType->UpdateFrequency == ENiagaraScalabilityUpdateFrequency::Continuous
@@ -572,7 +573,8 @@ FNiagaraScalabilitySystemData& FNiagaraScalabilityManager::GetSystemData(int32 C
 		int32* SysDataIndex = SystemDataIndexMap.Find(System);
 		if (SysDataIndex == nullptr)
 		{
-			CompState.SystemDataIndex = SystemData.Num();
+			ensure(SystemData.Num() <= TNumericLimits<decltype(CompState.SystemDataIndex)>::Max());
+			CompState.SystemDataIndex = int16(SystemData.Num());
 			SystemDataIndexMap.Add(System) = CompState.SystemDataIndex;			
 
 			FNiagaraScalabilitySystemData& NewSystemData = SystemData.AddDefaulted_GetRef();
@@ -581,7 +583,9 @@ FNiagaraScalabilitySystemData& FNiagaraScalabilityManager::GetSystemData(int32 C
 		}
 		else
 		{
-			CompState.SystemDataIndex = *SysDataIndex;
+			const int32 SysDataIndexValue = *SysDataIndex;
+			ensure(SysDataIndexValue <= TNumericLimits<int16>::Max());
+			CompState.SystemDataIndex = int16(SysDataIndexValue);
 		}
 	}
 

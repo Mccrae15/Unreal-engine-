@@ -3,6 +3,8 @@
 #include "LandscapeEdMode.h"
 
 #include "Algo/Accumulate.h"
+#include "MaterialDomain.h"
+#include "Materials/Material.h"
 #include "SceneView.h"
 #include "Engine/Texture2D.h"
 #include "EditorViewportClient.h"
@@ -73,12 +75,20 @@ namespace LandscapeTool
 {
 	UMaterialInstance* CreateMaterialInstance(UMaterialInterface* BaseMaterial)
 	{
-		ULandscapeMaterialInstanceConstant* MaterialInstance = NewObject<ULandscapeMaterialInstanceConstant>(GetTransientPackage());
+		UObject* Outer = GetTransientPackage();
+		// Use the base material's name as the base of our MIC to help debug: 
+		FString MICName(FString::Format(TEXT("LandscapeMaterialInstanceConstant_{0}"), { *BaseMaterial->GetName() }));
+		ULandscapeMaterialInstanceConstant* MaterialInstance = NewObject<ULandscapeMaterialInstanceConstant>(Outer, MakeUniqueObjectName(Outer, ULandscapeMaterialInstanceConstant::StaticClass(), FName(MICName)));
 		MaterialInstance->bEditorToolUsage = true;
 		MaterialInstance->SetParentEditorOnly(BaseMaterial);
 		MaterialInstance->PostEditChange();
 		return MaterialInstance;
 	}
+
+	/** Indicates the user is currently moving the landscape gizmo object by dragging the mouse. */
+	bool GIsGizmoDragging = false;
+	/** Indicates the user is currently changing the landscape brush radius/falloff by dragging the mouse. */
+	bool GIsAdjustingBrush = false;
 }
 
 //
@@ -478,8 +488,8 @@ void FEdModeLandscape::Enter()
 	UpdateLandscapeList();
 	UpdateBrushList();
 
-	OnWorldChangeDelegateHandle                 = FEditorSupportDelegates::WorldChange.AddRaw(this, &FEdModeLandscape::HandleLevelsChanged, true);
-	OnLevelsChangedDelegateHandle				= GetWorld()->OnLevelsChanged().AddRaw(this, &FEdModeLandscape::HandleLevelsChanged, true);
+	OnWorldChangeDelegateHandle                 = FEditorSupportDelegates::WorldChange.AddRaw(this, &FEdModeLandscape::HandleLevelsChanged);
+	OnLevelsChangedDelegateHandle				= GetWorld()->OnLevelsChanged().AddRaw(this, &FEdModeLandscape::HandleLevelsChanged);
 	OnMaterialCompilationFinishedDelegateHandle = UMaterial::OnMaterialCompilationFinished().AddRaw(this, &FEdModeLandscape::OnMaterialCompilationFinished);
 
 	if (CurrentToolTarget.LandscapeInfo.IsValid())
@@ -504,8 +514,7 @@ void FEdModeLandscape::Enter()
 	if (CurrentGizmoActor.IsValid())
 	{
 		CurrentGizmoActor->SetTargetLandscape(CurrentToolTarget.LandscapeInfo.Get());
-
-		CurrentGizmoActor.Get()->bSnapToLandscapeGrid = UISettings->bSnapGizmo;
+		CurrentGizmoActor->SnapType = UISettings->SnapMode;
 	}
 
 	int32 SquaredDataTex = ALandscapeGizmoActiveActor::DataTexSize * ALandscapeGizmoActiveActor::DataTexSize;
@@ -631,11 +640,19 @@ void FEdModeLandscape::Enter()
 	{
 		GizmoBrush->EnterBrush();
 	}
+
+	// Reset mouse tracking info : 
+	LandscapeTool::GIsGizmoDragging = false;
+	LandscapeTool::GIsAdjustingBrush  = false;
 }
 
 /** FEdMode: Called when the mode is exited */
 void FEdModeLandscape::Exit()
 {
+	// Reset mouse tracking info : 
+	LandscapeTool::GIsGizmoDragging = false;
+	LandscapeTool::GIsAdjustingBrush  = false;
+
 	if (UWorld* World = GetWorld())
 	{
 		for (auto It = ULandscapeInfoMap::GetLandscapeInfoMap(World).Map.CreateIterator(); It; ++It)
@@ -1020,17 +1037,18 @@ bool FEdModeLandscape::CapturedMouseMove(FEditorViewportClient* ViewportClient, 
 	return MouseMove(ViewportClient, Viewport, MouseX, MouseY);
 }
 
-namespace
-{
-	bool GIsGizmoDragging = false;
-}
-
 /** FEdMode: Called when a mouse button is pressed */
 bool FEdModeLandscape::StartTracking(FEditorViewportClient* InViewportClient, FViewport* InViewport)
 {
 	if (CurrentGizmoActor.IsValid() && CurrentGizmoActor->IsSelected() && GLandscapeEditRenderMode & ELandscapeEditRenderMode::Gizmo)
 	{
-		GIsGizmoDragging = true;
+		LandscapeTool::GIsGizmoDragging = true;
+		return true;
+	}
+	else if (IsAdjustingBrush(InViewportClient))
+	{ 
+		LandscapeTool::GIsAdjustingBrush = true;
+		// We're adjusting the brush via mouse tracking, return true in order to prevent the viewport client from doing any mouse dragging operation while we're doing it
 		return true;
 	}
 	return false;
@@ -1041,9 +1059,14 @@ bool FEdModeLandscape::StartTracking(FEditorViewportClient* InViewportClient, FV
 /** FEdMode: Called when the a mouse button is released */
 bool FEdModeLandscape::EndTracking(FEditorViewportClient* InViewportClient, FViewport* InViewport)
 {
-	if (GIsGizmoDragging)
+	if (LandscapeTool::GIsGizmoDragging)
 	{
-		GIsGizmoDragging = false;
+		LandscapeTool::GIsGizmoDragging = false;
+		return true;
+	}
+	if (LandscapeTool::GIsAdjustingBrush)
+	{
+		LandscapeTool::GIsAdjustingBrush = false;
 		return true;
 	}
 	return false;
@@ -1165,71 +1188,74 @@ bool FEdModeLandscape::LandscapeTrace(const FVector& InRayOrigin, const FVector&
 
 	UE_VLOG_SEGMENT_THICK(World, LogLandscapeEdMode, VeryVerbose, InRayOrigin, InRayOrigin + 20000.0f * InDirection, FColor(255,100,100), 4, TEXT("landscape:ray-miss"));
 		
-	// If there is no landscape directly under the mouse search for a landscape collision
-	// under the shape of the brush.
-	FCollisionShape SphereShape;
-	SphereShape.SetSphere(UISettings->GetCurrentToolBrushRadius());
-	if ( World->SweepMultiByObjectType(Results, Start, End, FQuat::Identity, FCollisionObjectQueryParams(ECollisionChannel::ECC_Visibility), SphereShape, FCollisionQueryParams(SCENE_QUERY_STAT(LandscapeTrace), true)))
+	if (CurrentTool->UseSphereTrace())
 	{
-		if (FProcessLandscapeTraceHitsResult SweepProcessResult; ProcessLandscapeTraceHits(Results, SweepProcessResult))
+		// If there is no landscape directly under the mouse search for a landscape collision
+		// under the shape of the brush.
+		FCollisionShape SphereShape;
+		SphereShape.SetSphere(UISettings->GetCurrentToolBrushRadius());
+		if (World->SweepMultiByObjectType(Results, Start, End, FQuat::Identity, FCollisionObjectQueryParams(ECollisionChannel::ECC_Visibility), SphereShape, FCollisionQueryParams(SCENE_QUERY_STAT(LandscapeTrace), true)))
 		{
-			UE_VLOG_LOCATION(World, LogLandscapeEdMode, VeryVerbose,  SweepProcessResult.HitLocation, UISettings->GetCurrentToolBrushRadius(),  FColor(255,100,100), TEXT("landscape:sweep-hit-location"));
-			FSphere HitSphere(SweepProcessResult.HitLocation, UISettings->GetCurrentToolBrushRadius());
-
-			float MeanHeight = 0.0f;
-			int32 Count = 0;
-			const int32 NumHeightSamples = 16;
-			
-			for (int32 Y = 0; Y < NumHeightSamples; ++Y)
+			if (FProcessLandscapeTraceHitsResult SweepProcessResult; ProcessLandscapeTraceHits(Results, SweepProcessResult))
 			{
-				float HY = (Y / (float) NumHeightSamples) * HitSphere.W * 2.0f +  HitSphere.Center.Y - HitSphere.W;
-				for (int32 X = 0; X < NumHeightSamples; ++X)
+				UE_VLOG_LOCATION(World, LogLandscapeEdMode, VeryVerbose, SweepProcessResult.HitLocation, UISettings->GetCurrentToolBrushRadius(), FColor(255, 100, 100), TEXT("landscape:sweep-hit-location"));
+				FSphere HitSphere(SweepProcessResult.HitLocation, UISettings->GetCurrentToolBrushRadius());
+
+				float MeanHeight = 0.0f;
+				int32 Count = 0;
+				const int32 NumHeightSamples = 16;
+
+				for (int32 Y = 0; Y < NumHeightSamples; ++Y)
 				{
-					float HX = (X / (float) NumHeightSamples) * HitSphere.W * 2.0f +  HitSphere.Center.X - HitSphere.W;
-
-					FVector HeightSampleLocation(HX, HY, HitSphere.Center.Z);
-
-					TOptional<float> Height = SweepProcessResult.LandscapeProxy->GetHeightAtLocation(HeightSampleLocation, EHeightfieldSource::Editor);
-
-					if (!Height.IsSet())
+					float HY = (Y / (float)NumHeightSamples) * HitSphere.W * 2.0f + HitSphere.Center.Y - HitSphere.W;
+					for (int32 X = 0; X < NumHeightSamples; ++X)
 					{
-						continue;
+						float HX = (X / (float)NumHeightSamples) * HitSphere.W * 2.0f + HitSphere.Center.X - HitSphere.W;
+
+						FVector HeightSampleLocation(HX, HY, HitSphere.Center.Z);
+
+						TOptional<float> Height = SweepProcessResult.LandscapeProxy->GetHeightAtLocation(HeightSampleLocation, EHeightfieldSource::Editor);
+
+						if (!Height.IsSet())
+						{
+							continue;
+						}
+
+						UE_VLOG_LOCATION(World, LogLandscapeEdMode, VeryVerbose, FVector(HX, HY, Height.GetValue()), 2.0f, FColor(100, 100, 255), TEXT(""));
+
+						MeanHeight += Height.GetValue();
+						Count++;
 					}
-
-					UE_VLOG_LOCATION(World, LogLandscapeEdMode, VeryVerbose,  FVector(HX, HY, Height.GetValue()), 2.0f,  FColor(100,100,255), TEXT(""));
-					
-					MeanHeight += Height.GetValue();
-					Count++;
 				}
+
+				FVector PointOnPlane(HitSphere.Center.X, HitSphere.Center.Y, HitSphere.Center.Z);
+
+				if (Count > 0)
+				{
+					MeanHeight /= (float)Count;
+					PointOnPlane.Z = MeanHeight;
+				}
+
+				UE_VLOG_LOCATION(World, LogLandscapeEdMode, VeryVerbose, PointOnPlane, 10.0, FColor(100, 100, 255), TEXT("landscape:point-on-plane"));
+
+				if (FMath::Abs(FVector::DotProduct(InDirection, FVector::ZAxisVector)) < SMALL_NUMBER)
+				{
+					// the ray and plane are nearly parallel, and won't intersect (or if they do it will be wildly far away)
+					return false;
+				}
+
+				const FPlane Plane(PointOnPlane, FVector::ZAxisVector);
+				FVector EstimatedHitLocation = FMath::RayPlaneIntersection(Start, InDirection, Plane);
+				check(!EstimatedHitLocation.ContainsNaN());
+
+				UE_VLOG_LOCATION(World, LogLandscapeEdMode, VeryVerbose, EstimatedHitLocation, 10.0, FColor(100, 100, 255), TEXT("landscape:estimated-hit-location"));
+
+				OutHitLocation = SweepProcessResult.LandscapeProxy->LandscapeActorToWorld().InverseTransformPosition(EstimatedHitLocation);
+				return true;
 			}
-
-			FVector PointOnPlane ( HitSphere.Center.X, HitSphere.Center.Y, HitSphere.Center.Z );
-			
-			if  ( Count > 0)
-			{
-				MeanHeight /= (float) Count;
-				PointOnPlane.Z = MeanHeight;
-			}
-
-			UE_VLOG_LOCATION(World, LogLandscapeEdMode, VeryVerbose,  PointOnPlane, 10.0,  FColor(100,100,255), TEXT("landscape:point-on-plane"));
-			
-			if (FMath::Abs(FVector::DotProduct(InDirection, FVector::ZAxisVector)) < SMALL_NUMBER)
-			{
-				// the ray and plane are nearly parallel, and won't intersect (or if they do it will be wildly far away)
-				return false;
-			}
-
-			const FPlane Plane( PointOnPlane, FVector::ZAxisVector);
-			FVector EstimatedHitLocation = FMath::RayPlaneIntersection(Start, InDirection, Plane);
-			check(!EstimatedHitLocation.ContainsNaN());
-
-			UE_VLOG_LOCATION(World, LogLandscapeEdMode, VeryVerbose,  EstimatedHitLocation, 10.0,  FColor(100,100,255), TEXT("landscape:estimated-hit-location"));
-			
-			OutHitLocation = SweepProcessResult.LandscapeProxy->LandscapeActorToWorld().InverseTransformPosition(EstimatedHitLocation);
-			return true;
 		}
 	}
-	
+
 	return false;
 }
 
@@ -2782,16 +2808,15 @@ void FEdModeLandscape::MoveTargetLayerDisplayOrder(int32 IndexToMove, int32 Inde
 
 FEdModeLandscape::FTargetsListUpdated FEdModeLandscape::TargetsListUpdated;
 
-void FEdModeLandscape::HandleLevelsChanged(bool ShouldExitMode)
+void FEdModeLandscape::HandleLevelsChanged()
 {
-	bool bHadLandscape = (NewLandscapePreviewMode == ENewLandscapePreviewMode::None);
-
 	UpdateLandscapeList();
 	UpdateTargetList();
 	UpdateBrushList();
 
 	// if the Landscape is deleted then close the landscape editor
-	if (ShouldExitMode && bHadLandscape && CurrentToolTarget.LandscapeInfo == nullptr)
+	const bool bHadLandscape = (NewLandscapePreviewMode == ENewLandscapePreviewMode::None);
+	if (bHadLandscape && CurrentToolTarget.LandscapeInfo == nullptr)
 	{
 		RequestDeletion();
 	}
@@ -3027,7 +3052,9 @@ void FEdModeLandscape::ActorMoveNotify()
 
 void FEdModeLandscape::PostUndo()
 {
-	HandleLevelsChanged(false);
+	UpdateLandscapeList();
+	UpdateTargetList();
+	UpdateBrushList();
 }
 
 /** Forces all level editor viewports to realtime mode */
@@ -3233,7 +3260,7 @@ void FEdModeLandscape::DeleteLandscapeComponents(ULandscapeInfo* LandscapeInfo, 
 	for (ULandscapeComponent* Component : ComponentsToDelete)
 	{
 		Component->Modify();
-		ULandscapeHeightfieldCollisionComponent* CollisionComp = Component->CollisionComponent.Get();
+		ULandscapeHeightfieldCollisionComponent* CollisionComp = Component->GetCollisionComponent();
 		if (CollisionComp)
 		{
 			CollisionComp->Modify();
@@ -3292,7 +3319,7 @@ void FEdModeLandscape::DeleteLandscapeComponents(ULandscapeInfo* LandscapeInfo, 
 	// Remove attached foliage
 	for (ULandscapeComponent* Component : ComponentsToDelete)
 	{
-		ULandscapeHeightfieldCollisionComponent* CollisionComp = Component->CollisionComponent.Get();
+		ULandscapeHeightfieldCollisionComponent* CollisionComp = Component->GetCollisionComponent();
 		if (CollisionComp)
 		{
 			AInstancedFoliageActor::DeleteInstancesForComponent(Proxy->GetWorld(), CollisionComp);
@@ -3400,7 +3427,7 @@ void FEdModeLandscape::DeleteLandscapeComponents(ULandscapeInfo* LandscapeInfo, 
 			Component->XYOffsetmapTexture->ClearFlags(RF_Standalone);
 		}
 
-		ULandscapeHeightfieldCollisionComponent* CollisionComp = Component->CollisionComponent.Get();
+		ULandscapeHeightfieldCollisionComponent* CollisionComp = Component->GetCollisionComponent();
 		if (CollisionComp)
 		{
 			CollisionComp->DestroyComponent();
@@ -3639,7 +3666,6 @@ ALandscape* FEdModeLandscape::ChangeComponentSetting(int32 NumComponentsX, int32
 			NewLandscape->CustomDepthStencilWriteMask = OldLandscape->CustomDepthStencilWriteMask;
 			NewLandscape->CustomDepthStencilValue = OldLandscape->CustomDepthStencilValue;
 			NewLandscape->LightmassSettings = OldLandscape->LightmassSettings;
-			NewLandscape->CollisionThickness = OldLandscape->CollisionThickness;
 			NewLandscape->BodyInstance.SetCollisionProfileName(OldLandscape->BodyInstance.GetCollisionProfileName());
 			if (NewLandscape->BodyInstance.DoesUseCollisionProfile() == false)
 			{
@@ -3698,8 +3724,8 @@ ALandscape* FEdModeLandscape::ChangeComponentSetting(int32 NumComponentsX, int32
 					ULandscapeComponent* NewComponent = NewLandscapeInfo->XYtoComponentMap.FindRef(Entry.Key);
 					if (NewComponent)
 					{
-						ULandscapeHeightfieldCollisionComponent* OldCollisionComponent = Entry.Value->CollisionComponent.Get();
-						ULandscapeHeightfieldCollisionComponent* NewCollisionComponent = NewComponent->CollisionComponent.Get();
+						ULandscapeHeightfieldCollisionComponent* OldCollisionComponent = Entry.Value->GetCollisionComponent();
+						ULandscapeHeightfieldCollisionComponent* NewCollisionComponent = NewComponent->GetCollisionComponent();
 
 						if (OldCollisionComponent && NewCollisionComponent)
 						{
@@ -3730,7 +3756,7 @@ ALandscape* FEdModeLandscape::ChangeComponentSetting(int32 NumComponentsX, int32
 				// Move instances
 				for (const TPair<FIntPoint, ULandscapeComponent*>& OldEntry : LandscapeInfo->XYtoComponentMap)
 				{
-					ULandscapeHeightfieldCollisionComponent* OldCollisionComponent = OldEntry.Value->CollisionComponent.Get();
+					ULandscapeHeightfieldCollisionComponent* OldCollisionComponent = OldEntry.Value->GetCollisionComponent();
 
 					if (OldCollisionComponent)
 					{
@@ -3738,7 +3764,7 @@ ALandscape* FEdModeLandscape::ChangeComponentSetting(int32 NumComponentsX, int32
 
 						for (const TPair<FIntPoint, ULandscapeComponent*>& NewEntry : NewLandscapeInfo->XYtoComponentMap)
 						{
-							ULandscapeHeightfieldCollisionComponent* NewCollisionComponent = NewEntry.Value->CollisionComponent.Get();
+							ULandscapeHeightfieldCollisionComponent* NewCollisionComponent = NewEntry.Value->GetCollisionComponent();
 
 							if (NewCollisionComponent && FBoxSphereBounds::BoxesIntersect(NewCollisionComponent->Bounds, OldCollisionComponent->Bounds))
 							{
@@ -3755,7 +3781,7 @@ ALandscape* FEdModeLandscape::ChangeComponentSetting(int32 NumComponentsX, int32
 				// Snap them to the bounds
 				for (const TPair<FIntPoint, ULandscapeComponent*>& NewEntry : NewLandscapeInfo->XYtoComponentMap)
 				{
-					ULandscapeHeightfieldCollisionComponent* NewCollisionComponent = NewEntry.Value->CollisionComponent.Get();
+					ULandscapeHeightfieldCollisionComponent* NewCollisionComponent = NewEntry.Value->GetCollisionComponent();
 
 					if (NewCollisionComponent)
 					{
@@ -3791,7 +3817,7 @@ ALandscape* FEdModeLandscape::ChangeComponentSetting(int32 NumComponentsX, int32
 			// Delete the old Landscape and all its proxies
 			for (ALandscapeStreamingProxy* Proxy : TActorRange<ALandscapeStreamingProxy>(OldLandscape->GetWorld()))
 			{
-				if (Proxy->LandscapeActor == OldLandscapeActor)
+				if (Proxy->GetLandscapeActor() == OldLandscapeActor)
 				{
 					Proxy->Destroy();
 				}

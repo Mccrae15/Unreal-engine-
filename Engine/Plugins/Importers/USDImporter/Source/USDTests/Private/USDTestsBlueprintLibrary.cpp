@@ -2,11 +2,13 @@
 
 #include "USDTestsBlueprintLibrary.h"
 
+#include "USDInfoCache.h"
 #include "USDLog.h"
 #include "USDStageActor.h"
 
 #include "CoreMinimal.h"
 #include "Editor.h"
+#include "Editor/Transactor.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "UObject/ObjectMacros.h"
@@ -132,4 +134,26 @@ int64 USDTestsBlueprintLibrary::GetSubtreeMaterialSlotCount( AUsdStageActor* Sta
 	}
 
 	return -1;
+}
+
+void USDTestsBlueprintLibrary::SetUsdStageCpp(AUsdStageActor* StageActor, const FString& NewStageRootLayer)
+{
+	if (!StageActor)
+	{
+		return;
+	}
+
+	UE::FUsdStage NewStage = UnrealUSDWrapper::OpenStage(*NewStageRootLayer, EUsdInitialLoadSet::LoadAll);
+	StageActor->SetUsdStage(NewStage);
+}
+
+void USDTestsBlueprintLibrary::ClearTransactionHistory()
+{
+	if (GEditor)
+	{
+		if (UTransactor* Transactor = GEditor->Trans)
+		{
+			Transactor->Reset(NSLOCTEXT("USDTests", "ClearTransactionHistoryReason", "USDTestsBlueprintLibrary::ClearTransactionHistory was called"));
+		}
+	}
 }

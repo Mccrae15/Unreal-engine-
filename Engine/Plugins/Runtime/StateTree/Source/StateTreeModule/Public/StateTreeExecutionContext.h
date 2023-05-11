@@ -3,49 +3,17 @@
 #pragma once
 
 #include "StateTree.h"
-#include "StateTreePropertyBindings.h"
-#include "StateTreeInstanceData.h"
 #include "StateTreeNodeBase.h"
 #include "Experimental/ConcurrentLinearAllocator.h"
-#include "StateTreeExecutionContext.generated.h"
+
+struct FGameplayTag;
+struct FInstancedPropertyBag;
 
 struct FStateTreeEvaluatorBase;
 struct FStateTreeTaskBase;
 struct FStateTreeConditionBase;
 struct FStateTreeEvent;
-
-USTRUCT()
-struct STATETREEMODULE_API FStateTreeExecutionState
-{
-	GENERATED_BODY()
-
-	/** Currently active states */
-	FStateTreeActiveStates ActiveStates;
-
-	/** Index of the first task struct in the currently initialized instance data. */
-	FStateTreeIndex16 FirstTaskStructIndex = FStateTreeIndex16::Invalid;
-	
-	/** Index of the first task object in the currently initialized instance data. */
-	FStateTreeIndex16 FirstTaskObjectIndex = FStateTreeIndex16::Invalid;
-
-	/** The index of the task that failed during enter state. Exit state uses it to call ExitState() symmetrically. */
-	FStateTreeIndex16 EnterStateFailedTaskIndex = FStateTreeIndex16::Invalid;
-
-	/** Result of last tick */
-	EStateTreeRunStatus LastTickStatus = EStateTreeRunStatus::Failed;
-
-	/** Running status of the instance */
-	EStateTreeRunStatus TreeRunStatus = EStateTreeRunStatus::Unset;
-
-	/** Delayed transition handle, if exists */
-	FStateTreeIndex16 GatedTransitionIndex = FStateTreeIndex16::Invalid;
-
-	/** Number of times a new state has been changed. */
-	uint16 StateChangeCount = 0;
-
-	/** Running time of the delayed transition */
-	float GatedTransitionTime = 0.0f;
-};
+struct FStateTreeTransitionRequest;
 
 /**
  * StateTree Execution Context is a helper that is used to update and access StateTree instance data.
@@ -90,19 +58,24 @@ public:
 	/** @return the StateTree asset in use. */
 	const UStateTree* GetStateTree() const { return &StateTree; }
 
-	/** @retrun const references to the instance data in use, or nullptr if the context is not valid. */
+	/** @return const references to the instance data in use, or nullptr if the context is not valid. */
 	const FStateTreeInstanceData* GetInstanceData() const { return &InstanceData; }
 
-	/** @retrun mutable references to the instance data in use, or nullptr if the context is not valid. */
+	/** @retuen mutable references to the instance data in use, or nullptr if the context is not valid. */
 	FStateTreeInstanceData* GetMutableInstanceData() const { return &InstanceData; }
-	
+
+	/** @return mutable references to the instance data in use. */
+	const FStateTreeEventQueue& GetEventQueue() const { return InstanceData.GetEventQueue(); }
+
+	/** @return mutable references to the instance data in use. */
+	FStateTreeEventQueue& GetMutableEventQueue() const { return InstanceData.GetMutableEventQueue(); }
+
 	/** @return The owner of the context */
 	UObject* GetOwner() const { return &Owner; }
 	/** @return The world of the owner or nullptr if the owner is not set. */ 
 	UWorld* GetWorld() const { return Owner.GetWorld(); };
 
 	/** @return True of the the execution context is valid and initialized. */ 
-	//bool IsValid() const { return Owner != nullptr && StateTree != nullptr && InstanceData != nullptr; }
 	bool IsValid() const { return StateTree.IsReadyToRun(); }
 	
 	/** Start executing. */
@@ -111,8 +84,15 @@ public:
 	/** Stop executing. */
 	EStateTreeRunStatus Stop();
 
-	/** Tick the state tree logic. */
+	/**
+	 * Tick the state tree logic.
+	 * @param DeltaTime time to advance the logic.
+	 * @returns tree run status after the tick.
+	 */
 	EStateTreeRunStatus Tick(const float DeltaTime);
+
+	/** @return the tree run status. */
+	EStateTreeRunStatus GetStateTreeRunStatus() const;
 
 	/** @return the status of the last tick function */
 	EStateTreeRunStatus GetLastTickStatus() const;
@@ -138,7 +118,11 @@ public:
 	TArray<FName> GetActiveStateNames() const;
 
 	/** Sends event for the StateTree. */
-	void SendEvent(const FStateTreeEvent& Event);
+	UE_DEPRECATED(5.2, "Use AddEvent() with individual parameters instead.")
+	void SendEvent(const FStateTreeEvent& Event) const;
+
+	/** Sends event for the StateTree. */
+	void SendEvent(const FGameplayTag Tag, const FConstStructView Payload = FConstStructView(), const FName Origin = FName()) const;
 
 	/** Iterates over all events. Can only be used during StateTree tick. Expects a lambda which takes const FStateTreeEvent& Event, and returns EStateTreeLoopEvents. */
 	template<typename TFunc>
@@ -156,6 +140,22 @@ public:
 	/** @return events to process this tick. */
 	TConstArrayView<FStateTreeEvent> GetEventsToProcess() const { return EventsToProcess; }
 
+	/** @return true if there is a pending event with specified tag. */
+	bool HasEventToProcess(const FGameplayTag Tag) const
+	{
+		if (EventsToProcess.IsEmpty())
+		{
+			return false;
+		}
+		
+		return EventsToProcess.ContainsByPredicate([Tag](const FStateTreeEvent& Event)
+		{
+			return Event.Tag.MatchesTag(Tag);
+		});
+	}
+
+	/** @return the currently processed state if applicable. */
+	FStateTreeStateHandle GetCurrentlyProcessedState() const { return CurrentlyProcessedState; }
 	
 	/** @return Pointer to a State or null if state not found */ 
 	const FCompactStateTreeState* GetStateFromHandle(const FStateTreeStateHandle StateHandle) const
@@ -247,13 +247,33 @@ public:
 		return DataViews[Node.DataViewIndex.Get()].template GetMutable<typename T::FInstanceDataType>();
 	}
 
+	/** @returns reference to instance data struct that can be passed to lambdas. See TStateTreeInstanceDataStructRef for usage. */
+	template <typename T>
+	TStateTreeInstanceDataStructRef<typename T::FInstanceDataType> GetInstanceDataStructRef(const T& Node) const
+	{
+		static_assert(TIsDerivedFrom<T, FStateTreeNodeBase>::IsDerived, "Expecting Node to derive from FStateTreeNodeBase.");
+		return TStateTreeInstanceDataStructRef<typename T::FInstanceDataType>(InstanceData, DataViews[Node.DataViewIndex.Get()].template GetMutable<typename T::FInstanceDataType>());
+	}
+
+	/**
+	 * Requests transition to a state.
+	 * If called during during transition processing (e.g. from FStateTreeTaskBase::TriggerTransitions()) the transition
+	 * is attempted to be activate immediately (it can fail e.g. because of preconditions on a target state).
+	 * If called outside the transition handling, the request is buffered and handled at the beginning of next transition processing.
+	 * @param Request The state to transition to.
+	 */
+	void RequestTransition(const FStateTreeTransitionRequest& Request);
+
 protected:
 
 	/** @return Prefix that will be used by STATETREE_LOG and STATETREE_CLOG, empty by default. */
 	virtual FString GetInstanceDescription() const;
 
-	/** Callback when gated transition is triggered. Contexts that are event based can use this to trigger a future event. */
-	virtual void BeginGatedTransition(const FStateTreeExecutionState& Exec) {};
+	UE_DEPRECATED(5.2, "Use BeginDelayedTransition() instead.")
+	virtual void BeginGatedTransition(const FStateTreeExecutionState& Exec) final {};
+	
+	/** Callback when delayed transition is triggered. Contexts that are event based can use this to trigger a future event. */
+	virtual void BeginDelayedTransition(const FStateTreeTransitionDelayedState& DelayedState) {};
 
 	void UpdateInstanceData(const FStateTreeActiveStates& CurrentActiveStates, const FStateTreeActiveStates& NextActiveStates);
 
@@ -278,13 +298,20 @@ protected:
 	void StateCompleted();
 
 	/**
-	 * Ticks global evaluators by delta time.
+	 * Tick evaluators and global tasks by delta time.
 	 */
-	void TickEvaluators(const float DeltaTime);
+	EStateTreeRunStatus TickEvaluatorsAndGlobalTasks(const float DeltaTime, bool bTickGlobalTasks = true);
 
-	void StartEvaluators();
+	/**
+	 * Starts evaluators and global tasks.
+	 * @return true if all evaluators and tasks were started, or false if any failed.
+	 */
+	bool StartEvaluatorsAndGlobalTasks(FStateTreeIndex16& OutLastInitializedTaskIndex);
 
-	void StopEvaluators();
+	/**
+	 * Stops evaluators and global tasks.
+	 */
+	void StopEvaluatorsAndGlobalTasks(const FStateTreeIndex16 LastInitializedTaskIndex = FStateTreeIndex16());
 
 	/**
 	 * Ticks tasks of all active states starting from current state by delta time.
@@ -296,7 +323,12 @@ protected:
 	 * Checks all conditions at given range
 	 * @return True if all conditions pass.
 	 */
-	bool TestAllConditions(FStateTreeInstanceData& SharedInstanceData, const int32 ConditionsOffset, const int32 ConditionsNum);
+	bool TestAllConditions(const int32 ConditionsOffset, const int32 ConditionsNum);
+
+	/**
+	 * Requests transition to a specified state with specified priority.
+	 */
+	bool RequestTransition(const FStateTreeStateHandle NextState, const EStateTreeTransitionPriority Priority);
 
 	/**
 	 * Triggers transitions based on current run status. CurrentStatus is used to select which transitions events are triggered.
@@ -305,24 +337,31 @@ protected:
 	 * the actual next state returned by the selector.
 	 * @return Transition result describing the source state, state transitioned to, and next selected state.
 	 */
-	bool TriggerTransitions(FStateTreeInstanceData& SharedInstanceData, FStateTreeTransitionResult& OutTransition);
+	bool TriggerTransitions();
+
+	/**
+	 * Traverses the ActiveStates from StartStateIndex to 0 and returns first linked state.
+	 * @return Parent linked state, or invalid state if no linked state found. 
+	 */
+	FStateTreeStateHandle GetParentLinkedStateHandle(const FStateTreeActiveStates& ActiveStates, const int32 StartStateIndex) const;
+
+	FStateTreeStateHandle GetParentLinkedStateHandle(const FStateTreeActiveStates& ActiveStates, const FStateTreeStateHandle StartStateHandle) const;
 
 	/**
 	 * Runs state selection logic starting at the specified state, walking towards the leaf states.
 	 * If a state cannot be selected, false is returned. 
 	 * If NextState is a selector state, SelectStateInternal is called recursively (depth-first) to all child states (where NextState will be one of child states).
 	 * If NextState is a leaf state, the active states leading from root to the leaf are returned.
-	 * @param InstanceData Reference to the instance data
 	 * @param NextState The state which we try to select next.
 	 * @param OutNewActiveStates Active states that got selected.
 	 * @return True if succeeded to select new active states.
 	 */
-	bool SelectState(FStateTreeInstanceData& SharedInstanceData, const FStateTreeStateHandle NextState, FStateTreeActiveStates& OutNewActiveStates);
+	bool SelectState(const FStateTreeStateHandle NextState, FStateTreeActiveStates& OutNewActiveStates);
 
 	/**
 	 * Used internally to do the recursive part of the SelectState().
 	 */
-	bool SelectStateInternal(FStateTreeInstanceData& SharedInstanceData, const FStateTreeStateHandle NextState, FStateTreeActiveStates& OutNewActiveStates);
+	bool SelectStateInternal(const FStateTreeStateHandle NextState, FStateTreeActiveStates& OutNewActiveStates);
 
 	/** @return StateTree execution state from the instance storage. */
 	FStateTreeExecutionState& GetExecState()
@@ -337,7 +376,7 @@ protected:
 	}
 
 	/** Sets up parameter data view for a linked state and copies bound properties. */
-	void UpdateLinkedStateParameters(const FCompactStateTreeState& State, const uint16 ParameterInstanceIndex);
+	void UpdateLinkedStateParameters(const FCompactStateTreeState& State, const int32 ParameterInstanceIndex);
 
 	/** Sets up parameter data view for subtree state. */
 	void UpdateSubtreeStateParameters(const FCompactStateTreeState& State);
@@ -349,8 +388,11 @@ protected:
 	FString GetSafeStateName(const FStateTreeStateHandle State) const;
 
 	/** @return String describing full path of an activate state for logging and debug. */
-	FString DebugGetStatePath(const FStateTreeActiveStates& ActiveStates, int32 ActiveStateIndex) const;
+	FString DebugGetStatePath(const FStateTreeActiveStates& ActiveStates, const int32 ActiveStateIndex = INDEX_NONE) const;
 
+	/** @return String describing all events that are currently being processed  for logging and debug. */
+	FString DebugGetEventsAsString() const;
+	
 	/** Helper function to update struct or object dataview of a node. */
 	template<typename T>
 	void SetNodeDataView(T& Node, int32& InstanceStructIndex, int32& InstanceObjectIndex)
@@ -382,4 +424,50 @@ protected:
 
 	/** Events to process in current tick. */
 	TArray<FStateTreeEvent, TConcurrentLinearArrayAllocator<FDefaultBlockAllocationTag>> EventsToProcess;
+
+	/** Shared instance data for the duration of the context. */
+	TSharedPtr<FStateTreeInstanceData> SharedInstanceData;
+
+	/** Next transition, used by RequestTransition(). */
+	FStateTreeTransitionResult NextTransition;
+
+	/** Current state we're processing, or invalid if not applicable. */
+	FStateTreeStateHandle CurrentlyProcessedState;
+
+	/** True if transitions are allowed to be requested directly instead of buffering. */
+	bool bAllowDirectTransitions = false;
+
+	/** Helper struct to track when it is allowed to request transitions. */
+	struct FAllowDirectTransitionsScope
+	{
+		FAllowDirectTransitionsScope(FStateTreeExecutionContext& InContext)
+			: Context(InContext)
+		{
+			Context.bAllowDirectTransitions = true;
+		}
+
+		~FAllowDirectTransitionsScope()
+		{
+			Context.bAllowDirectTransitions = false;
+		}
+		
+		FStateTreeExecutionContext& Context;
+	};
+	
+	/** Helper struct to track currently processed state. */
+	struct FCurrentlyProcessedStateScope
+	{
+		FCurrentlyProcessedStateScope(FStateTreeExecutionContext& InContext, const FStateTreeStateHandle State)
+			: Context(InContext)
+		{
+			Context.CurrentlyProcessedState = State;
+		}
+
+		~FCurrentlyProcessedStateScope()
+		{
+			Context.CurrentlyProcessedState = FStateTreeStateHandle::Invalid;
+		}
+		
+		FStateTreeExecutionContext& Context;
+	};
 };

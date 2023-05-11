@@ -220,10 +220,6 @@ struct TEntityBuilderImpl<TIntegerSequence<int, Indices...>, T...> : IEntityBuil
 	{
 		if (Entity.Data.Allocation != nullptr)
 		{
-			if (bAddMutualComponents)
-			{
-				EntityManager->InitializeMutualComponents(Entity.EntityID);
-			}
 			VisitTupleElements([Entity](auto& In){ In.Apply(Entity.Data.Allocation, Entity.Data.ComponentOffset); }, this->Payload);
 		}
 	}
@@ -482,11 +478,20 @@ struct TAdd : FAdd
 	{
 		const FComponentHeader& Header = Allocation->GetComponentHeaderChecked(ComponentTypeID);
 		check(!Header.IsTag());
-		Header.ReadWriteLock.WriteLock();
+
+		if (Allocation->GetCurrentLockMode() != EComponentHeaderLockMode::LockFree)
+		{
+			Header.ReadWriteLock.WriteLock();
+		}
+
 		T* ComponentPtr = static_cast<T*>(Header.GetValuePtr(ComponentOffset));
 		*ComponentPtr = MoveTemp(Payload.GetValue());
 		Payload.Reset();
-		Header.ReadWriteLock.WriteUnlock();
+
+		if (Allocation->GetCurrentLockMode() != EComponentHeaderLockMode::LockFree)
+		{
+			Header.ReadWriteLock.WriteUnlock();
+		}
 	}
 };
 
@@ -508,11 +513,20 @@ struct TAddConditional : FAddConditional
 		{
 			const FComponentHeader& Header = Allocation->GetComponentHeaderChecked(ComponentTypeID);
 			check(!Header.IsTag());
-			Header.ReadWriteLock.WriteLock();
+
+			if (Allocation->GetCurrentLockMode() != EComponentHeaderLockMode::LockFree)
+			{
+				Header.ReadWriteLock.WriteLock();
+			}
+
 			T* ComponentPtr = static_cast<T*>(Header.GetValuePtr(ComponentOffset));
 			*ComponentPtr = MoveTemp(Payload.GetValue());
 			Payload.Reset();
-			Header.ReadWriteLock.WriteUnlock();
+
+			if (Allocation->GetCurrentLockMode() != EComponentHeaderLockMode::LockFree)
+			{
+				Header.ReadWriteLock.WriteUnlock();
+			}
 		}
 	}
 };

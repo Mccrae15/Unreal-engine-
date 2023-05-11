@@ -2,15 +2,16 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Tools/LegacyEdModeWidgetHelpers.h"
 
-#include "InputState.h"
-#include "InteractiveToolManager.h"
-#include "EdModeInteractiveToolsContext.h"
-#include "ModelingToolsActions.h"
 
 #include "ModelingToolsEditorMode.generated.h"
+
+class IToolsContextRenderAPI;
+enum class EModelingModeActionCommands;
+enum class EToolSide;
+struct FInputDeviceRay;
+struct FToolBuilderState;
 
 class FEditorComponentSourceFactory;
 class FUICommandList;
@@ -22,7 +23,7 @@ class UGeometrySelectionManager;
 class UInteractiveCommand;
 
 UCLASS(Transient)
-class UModelingToolsEditorMode : public UBaseLegacyWidgetEdMode
+class UModelingToolsEditorMode : public UBaseLegacyWidgetEdMode, public ILegacyEdModeSelectInterface
 {
 	GENERATED_BODY()
 public:
@@ -66,10 +67,31 @@ public:
 	//////////////////
 
 
+	// ILegacyEdModeSelectInterface
+	virtual bool BoxSelect(FBox& InBox, bool InSelect = true) override;
+	virtual bool FrustumSelect(const FConvexVolume& InFrustum, FEditorViewportClient* InViewportClient, bool InSelect) override;
+
+
+
+	//
+	// Selection System configuration, this will likely move elsewhere
+	//
+
 	virtual UGeometrySelectionManager* GetSelectionManager() const
 	{
 		return SelectionManager;
 	}
+	virtual UModelingSelectionInteraction* GetSelectionInteraction() const
+	{
+		return SelectionInteraction;
+	}
+
+	UPROPERTY()
+	bool bEnableVolumeElementSelection = false;
+
+	UPROPERTY()
+	bool bEnableStaticMeshElementSelection = false;
+
 
 protected:
 	virtual void BindCommands() override;
@@ -104,9 +126,10 @@ protected:
 	bool GetGeometrySelectionChangesAllowed() const;
 	bool TestForEditorGizmoHit(const FInputDeviceRay&) const;
 
-	void UpdateSelectionManagerOnEditorSelectionChange();
+	void UpdateSelectionManagerOnEditorSelectionChange(bool bEnteringMode = false);
 
 	void OnToolsContextRender(IToolsContextRenderAPI* RenderAPI);
+	void OnToolsContextDrawHUD(FCanvas* Canvas, IToolsContextRenderAPI* RenderAPI);
 
 	void ModelingModeShortcutRequested(EModelingModeActionCommands Command);
 	void FocusCameraAtCursorHotkey();
@@ -129,3 +152,11 @@ protected:
 	static FDateTime LastModeStartTimestamp;
 	static FDateTime LastToolStartTimestamp;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "EdModeInteractiveToolsContext.h"
+#include "InputState.h"
+#include "InteractiveToolManager.h"
+#include "ModelingToolsActions.h"
+#endif

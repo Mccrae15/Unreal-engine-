@@ -37,11 +37,16 @@ public:
 	{
 		Inner->WriteLinkerAdditionalData(Info, Data, FileRegions);
 	}
-	virtual void AddToExportsSize(int64& ExportsSize) override
+	virtual void WritePackageTrailer(const FPackageTrailerInfo& Info, const FIoBuffer& Data) override
 	{
-		Inner->AddToExportsSize(ExportsSize);
+		Inner->WritePackageTrailer(Info, Data);
+	}
+	virtual int64 GetExportsFooterSize() override
+	{
+		return Inner->GetExportsFooterSize();
 	}
 	virtual TUniquePtr<FLargeMemoryWriter> CreateLinkerArchive(FName PackageName, UObject* Asset) override;
+	virtual TUniquePtr<FLargeMemoryWriter> CreateLinkerExportsArchive(FName PackageName, UObject* Asset) override;
 	virtual bool IsPreSaveCompleted() const override
 	{
 		return bDiffCallstack;
@@ -62,13 +67,13 @@ public:
 	{
 		Inner->Initialize(Info);
 	}
-	virtual void BeginCook() override
+	virtual void BeginCook(const FCookInfo& Info) override
 	{
-		Inner->BeginCook();
+		Inner->BeginCook(Info);
 	}
-	virtual void EndCook() override
+	virtual void EndCook(const FCookInfo& Info) override
 	{
-		Inner->EndCook();
+		Inner->EndCook(Info);
 	}
 	virtual TUniquePtr<FAssetRegistryState> LoadPreviousAssetRegistry() override
 	{
@@ -95,6 +100,14 @@ public:
 		Inner->UpdateSaveArguments(SaveArgs);
 	}
 	virtual bool IsAnotherSaveNeeded(FSavePackageResultStruct& PreviousResult, FSavePackageArgs& SaveArgs) override;
+	virtual TFuture<FCbObject> WriteMPCookMessageForPackage(FName PackageName) override
+	{
+		return Inner->WriteMPCookMessageForPackage(PackageName);
+	}
+	virtual bool TryReadMPCookMessageForPackage(FName PackageName, FCbObjectView Message) override
+	{
+		return Inner->TryReadMPCookMessageForPackage(PackageName, Message);
+	}
 	virtual TMap<FName, TRefCountPtr<FPackageHashes>>& GetPackageHashes() override
 	{
 		return Inner->GetPackageHashes();
@@ -109,10 +122,12 @@ private:
 	void ConditionallyDumpObjects();
 
 	FArchiveDiffMap DiffMap;
+	TUniquePtr<FArchiveCallstacks> ExportsCallstacks;
 	FBeginPackageInfo BeginInfo;
 	TUniquePtr<ICookedPackageWriter> Inner;
 	FString DumpObjListParams;
 	FString PackageFilter;
+	int64 ExportsDiffMapOffset = 0;
 	int32 MaxDiffsToLog = 5;
 	bool bSaveForDiff = false;
 	bool bIgnoreHeaderDiffs = false;
@@ -159,9 +174,13 @@ public:
 	{
 		Inner->WriteLinkerAdditionalData(Info, Data, FileRegions);
 	}
-	virtual void AddToExportsSize(int64& ExportsSize) override
+	virtual void WritePackageTrailer(const FPackageTrailerInfo& Info, const FIoBuffer& Data) override
 	{
-		Inner->AddToExportsSize(ExportsSize);
+		Inner->WritePackageTrailer(Info, Data);
+	}
+	virtual int64 GetExportsFooterSize() override
+	{
+		return Inner->GetExportsFooterSize();
 	}
 	virtual TUniquePtr<FLargeMemoryWriter> CreateLinkerArchive(FName PackageName, UObject* Asset) override
 	{
@@ -187,13 +206,13 @@ public:
 	{
 		Inner->Initialize(Info);
 	}
-	virtual void BeginCook() override
+	virtual void BeginCook(const FCookInfo& Info) override
 	{
-		Inner->BeginCook();
+		Inner->BeginCook(Info);
 	}
-	virtual void EndCook() override
+	virtual void EndCook(const FCookInfo& Info) override
 	{
-		Inner->EndCook();
+		Inner->EndCook(Info);
 	}
 	virtual TUniquePtr<FAssetRegistryState> LoadPreviousAssetRegistry() override
 	{
@@ -217,6 +236,14 @@ public:
 	}
 	virtual void UpdateSaveArguments(FSavePackageArgs& SaveArgs) override;
 	virtual bool IsAnotherSaveNeeded(FSavePackageResultStruct& PreviousResult, FSavePackageArgs& SaveArgs) override;
+	virtual TFuture<FCbObject> WriteMPCookMessageForPackage(FName PackageName) override
+	{
+		return Inner->WriteMPCookMessageForPackage(PackageName);
+	}
+	virtual bool TryReadMPCookMessageForPackage(FName PackageName, FCbObjectView Message) override
+	{
+		return Inner->TryReadMPCookMessageForPackage(PackageName, Message);
+	}
 	virtual TMap<FName, TRefCountPtr<FPackageHashes>>& GetPackageHashes() override
 	{
 		return Inner->GetPackageHashes();

@@ -2,17 +2,12 @@
 
 #pragma once
 
-#include "Containers/UnrealString.h"
-#include "EdGraph/EdGraphNode.h"
-#include "HAL/Platform.h"
-#include "Internationalization/Text.h"
-#include "Math/Color.h"
-#include "MuCO/CustomizableObjectParameterTypeDefinitions.h"
-#include "MuCO/CustomizableObjectUIData.h"
 #include "MuCOE/Nodes/CustomizableObjectNode.h"
-#include "UObject/UObjectGlobals.h"
 
 #include "CustomizableObjectNodeObjectGroup.generated.h"
+
+enum class ECustomizableObjectGroupType : uint8;
+namespace ENodeTitleType { enum Type : int; }
 
 class FArchive;
 class UCustomizableObjectNodeRemapPins;
@@ -38,6 +33,11 @@ public:
 	UPROPERTY(EditAnywhere, Category = UI, meta = (DisplayName = "Parameter UI Metadata"))
 	FMutableParamUIMetadata ParamUIMetadata;
 
+	// The sockets defined in meshes deriving from this node will inherit this socket priority. When in the generated merged mesh there
+	// are clashes with socket names, the one with higher priority will be kept and the other discarded.
+	UPROPERTY(EditAnywhere, Category = MeshSockets)
+	int32 SocketPriority = 0;
+
 	// UObject interface.
 	void Serialize(FArchive& Ar) override;
 	void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
@@ -49,16 +49,16 @@ public:
 
 	// UCustomizableObjectNode interface
 	void AllocateDefaultPins(UCustomizableObjectNodeRemapPins* RemapPins) override;
+	bool IsSingleOutputNode() const override;
 
 	// Own interface
-	UEdGraphPin* ObjectsPin() const
-	{
-		return FindPin(TEXT("Objects"));
-	}
+	UEdGraphPin* ObjectsPin() const;
 
-	UEdGraphPin* GroupProjectorsPin() const
-	{
-		return FindPin(TEXT("Projectors"));
-	}
+	UEdGraphPin* GroupProjectorsPin() const;
+
+	UEdGraphPin* GroupPin() const;
+
+private:
+	FString LastGroupName;
 };
 

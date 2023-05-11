@@ -34,6 +34,9 @@ float3			{ParameterName}_InstanceWorldVelocity;
 
 float3			{ParameterName}_PreSkinnedLocalBoundsCenter;
 float3			{ParameterName}_PreSkinnedLocalBoundsExtents;
+float3			{ParameterName}_MeshBoundsWSCenter;
+float3			{ParameterName}_MeshBoundsWSExtents;
+float3			{ParameterName}_OwnerToMeshVector;
 float3			{ParameterName}_SystemLWCTile;
 
 #if DISTATICMESH_ALLOWDISTANCEFIELD
@@ -65,7 +68,7 @@ void GetPreSkinnedLocalBounds_{ParameterName}(out float3 OutCenter, out float3 O
 {
 	OutCenter		= {ParameterName}_PreSkinnedLocalBoundsCenter;
 	OutHalfExtents	= {ParameterName}_PreSkinnedLocalBoundsExtents;
-	OutExtents		= OutExtents * 2.0f;
+	OutExtents		= OutHalfExtents * 2.0f;
 	OutExtentsMin	= OutCenter - OutHalfExtents;
 	OutExtentsMax	= OutCenter + OutHalfExtents;
 }
@@ -103,9 +106,20 @@ void GetVertex_{ParameterName}(int Vertex, out float3 Position, out float3 Veloc
 		float3 TangentY = cross(TangentZ.xyz, TangentX.xyz) * TangentZ.w;
 
 		Velocity	= float3(0, 0, 0);
-		Normal		= TangentZ.xyz;
-		Bitangent	= TangentY;
-		Tangent		= TangentX.xyz;
+
+		// Sometimes we have bogus tangent data in the buffer, i.e. X==Z so ensure we handle this and don't end up with NaNs in the buffer
+		if ( length2(TangentY) > 0.001f )
+		{
+			Normal		= TangentZ.xyz;
+			Bitangent	= TangentY;
+			Tangent		= TangentX.xyz;
+		}
+		else
+		{
+			Normal		= float3(0, 0, 1);
+			Bitangent	= float3(0, 1, 0);
+			Tangent		= float3(1, 0, 0);
+		}
 	}
 	else
 	{
@@ -726,6 +740,26 @@ void GetLocalToWorldInverseTransposed_{ParameterName}(out float4x4 OutMatrix)
 void GetWorldVelocity_{ParameterName}(out float3 Velocity)
 {
 	Velocity = {ParameterName}_InstanceWorldVelocity;
+}
+
+void GetMeshBounds_{ParameterName}(out float3 Center, out float3 ExtentsMin, out float3 ExtentsMax, out float3 Extents, out float3 HalfExtents, out float3 OwnerToMeshVector)
+{
+	Center				= {ParameterName}_PreSkinnedLocalBoundsCenter;
+	HalfExtents			= {ParameterName}_MeshBoundsWSExtents;
+	Extents				= HalfExtents * 2.0f;
+	ExtentsMin			= Center - HalfExtents;
+	ExtentsMax			= Center + HalfExtents;
+	OwnerToMeshVector	= {ParameterName}_OwnerToMeshVector;
+}
+
+void GetMeshBoundsWS_{ParameterName}(out float3 Center, out float3 ExtentsMin, out float3 ExtentsMax, out float3 Extents, out float3 HalfExtents, out float3 OwnerToMeshVector)
+{
+	Center				= {ParameterName}_MeshBoundsWSCenter;
+	HalfExtents			= {ParameterName}_MeshBoundsWSExtents;
+	Extents				= HalfExtents * 2.0f;
+	ExtentsMin			= Center - HalfExtents;
+	ExtentsMax			= Center + HalfExtents;
+	OwnerToMeshVector	= {ParameterName}_OwnerToMeshVector;
 }
 
 //////////////////////////////////////////////////////////////////////////

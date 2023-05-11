@@ -53,6 +53,7 @@ struct FCluster
 	uint	BitsPerIndex;
 	int		PosPrecision;
 	uint3	PosBits;
+	uint	NormalPrecision;
 
 	float4	LODBounds;
 
@@ -130,12 +131,15 @@ struct FNaniteView
 	float4x4	PrevViewToClip;
 	FLWCMatrix	PrevClipToWorld;
 
+	float4		TranslatedGlobalClipPlane;
+
 	int4		ViewRect;
 	float4		ViewSizeAndInvSize;
 	float4		ClipSpaceScaleOffset;
 	FLWCVector3	PreViewTranslation;
 	FLWCVector3	PrevPreViewTranslation;
 	FLWCVector3	WorldCameraOrigin;
+	float3		DrawDistanceOriginTranslatedWorld;
 	float3		ViewForward;
 	float3		ViewTilePosition;
 	float3		MatrixTilePosition;
@@ -165,6 +169,7 @@ struct FNaniteFullscreenVSToPS
 	nointerpolation uint EyeIndex  : PACKED_EYE_INDEX;
 #endif
 	nointerpolation uint ViewIndex : PACKED_VIEW_INDEX;
+	nointerpolation uint TileIndex : MACRO_TILE_INDEX;
 };
 
 #if NANITE_USE_UNIFORM_BUFFER
@@ -271,13 +276,18 @@ FVisibleCluster GetVisibleCluster( uint ClusterIdx, bool bHasPageData )
 
 bool IsVisibleClusterIndexImposter(uint ClusterIndex)
 {
+#if NANITE_IMPOSTERS_SUPPORTED
 	return ClusterIndex >= (1 << 24);
+#else
+	return false;
+#endif
 }
 
 FVisibleCluster GetVisibleCluster( uint ClusterIndex )
 {
 	FVisibleCluster VisibleCluster;
 
+#if NANITE_IMPOSTERS_SUPPORTED
 	if( IsVisibleClusterIndexImposter(ClusterIndex) )
 	{
 		// Couldn't have been stored so signals this is an imposter
@@ -288,6 +298,7 @@ FVisibleCluster GetVisibleCluster( uint ClusterIndex )
 		VisibleCluster.ClusterIndex = ClusterIndex & 1;
 	}
 	else
+#endif
 	{
 		VisibleCluster = GetVisibleCluster( ClusterIndex, false );
 	}
@@ -299,12 +310,14 @@ FInstanceSceneData GetInstanceSceneData( inout FVisibleCluster VisibleCluster, b
 {
 	FInstanceSceneData InstanceData = GetInstanceSceneData( VisibleCluster.InstanceId, PageConstants.x, bCheckValid );
 
+#if NANITE_IMPOSTERS_SUPPORTED
 	// Couldn't have been stored so signals this is an imposter
 	if( VisibleCluster.Flags == (1 << NANITE_NUM_CULLING_FLAG_BITS) )
 	{
 		const uint MaxStreamingPages = 1 << 12;
 		VisibleCluster.PageIndex = MaxStreamingPages + (InstanceData.NaniteRuntimeResourceID & NANITE_MAX_GPU_PAGES_MASK);
 	}
+#endif
 
 	return InstanceData;
 }
@@ -347,6 +360,7 @@ FCluster UnpackCluster(uint4 ClusterData[NANITE_NUM_PACKED_CLUSTER_FLOAT4S])
 	Cluster.PosBits.x			= BitFieldExtractU32(ClusterData[1].w, 5, 9);
 	Cluster.PosBits.y			= BitFieldExtractU32(ClusterData[1].w, 5, 14);
 	Cluster.PosBits.z			= BitFieldExtractU32(ClusterData[1].w, 5, 19);
+	Cluster.NormalPrecision		= BitFieldExtractU32(ClusterData[1].w, 4, 24);
 
 	Cluster.LODBounds			= asfloat(ClusterData[2]);
 
@@ -510,7 +524,7 @@ FHierarchyNodeSlice GetHierarchyNodeSlice(uint NodeIndex, uint ChildIndex)
 }
 
 // Decode triangle that is represented by one base index and two 5-bit offsets.
-uint3 ReadTriangleIndices(FCluster Cluster, uint TriIndex)
+uint3 DecodeTriangleIndices(FCluster Cluster, uint TriIndex, bool bSwapI1I2)
 {
 	const uint BitsPerTriangle = Cluster.BitsPerIndex + 2 * 5;
 
@@ -520,28 +534,88 @@ uint3 ReadTriangleIndices(FCluster Cluster, uint TriIndex)
 	uint Delta0 = BitStreamReader_Read_RO(ClusterPageData, BitStreamReader, 5, 5);
 	uint Delta1 = BitStreamReader_Read_RO(ClusterPageData, BitStreamReader, 5, 5);
 
-	return BaseIndex + uint3(0, Delta0, Delta1);
+	uint3 Indices = BaseIndex + uint3(0, Delta0, Delta1);
+	if (bSwapI1I2)
+	{
+		Indices.yz = Indices.zy;
+	}
+	return Indices;
 }
 
-uint PackMaterialResolve(
-	uint MaterialSlot,
-	bool IsDecalReceiver)
+struct FNaniteMaterialFlags
+{
+	bool bWorldPositionOffset;
+	bool bPixelDepthOffset;
+	bool bPixelDiscard;
+	bool bDynamicTessellation;
+	bool bVertexProgrammable;
+	bool bPixelProgrammable;
+};
+
+FNaniteMaterialFlags UnpackMaterialFlags(uint Packed)
+{
+	FNaniteMaterialFlags MaterialFlags;
+	MaterialFlags.bWorldPositionOffset	= (Packed & NANITE_MATERIAL_FLAG_WORLD_POSITION_OFFSET) != 0u;
+	MaterialFlags.bPixelDepthOffset		= (Packed & NANITE_MATERIAL_FLAG_PIXEL_DEPTH_OFFSET) != 0u;
+	MaterialFlags.bPixelDiscard			= (Packed & NANITE_MATERIAL_FLAG_PIXEL_DISCARD) != 0u;
+	MaterialFlags.bDynamicTessellation	= (Packed & NANITE_MATERIAL_FLAG_DYNAMIC_TESSELLATION) != 0u;
+	MaterialFlags.bVertexProgrammable	= (Packed & NANITE_MATERIAL_VERTEX_PROGRAMMABLE_FLAGS) != 0u;
+	MaterialFlags.bPixelProgrammable	= (Packed & NANITE_MATERIAL_PIXEL_PROGRAMMABLE_FLAGS) != 0u;
+	return MaterialFlags;
+}
+
+bool IsMaterialVertexProgrammable(FNaniteMaterialFlags MaterialFlags)
+{
+	return MaterialFlags.bWorldPositionOffset;
+}
+
+bool IsMaterialPixelProgrammable(FNaniteMaterialFlags MaterialFlags)
+{
+	return MaterialFlags.bPixelDepthOffset || MaterialFlags.bPixelDiscard;
+}
+
+bool IsMaterialProgrammable(FNaniteMaterialFlags MaterialFlags)
+{
+	return IsMaterialVertexProgrammable(MaterialFlags) || IsMaterialPixelProgrammable(MaterialFlags);
+}
+
+struct FResolvedMaterial
+{
+	bool bIsNanitePixel;
+	bool bIsDecalReceiver;
+	bool bHasDistanceField;
+	uint LightingChannels;
+	uint ShadingBin;
+	uint LegacyShadingId;
+};
+
+uint2 PackMaterialResolve(
+	uint LegacyShadingId,
+	uint ShadingBin,
+	bool bIsDecalReceiver,
+	bool bHasDistanceField,
+	uint LightingChannels)
 {
 	uint Packed = 0x1; // Is Nanite
-	Packed |= (BitFieldMaskU32(14, 1) & (MaterialSlot << 1u));
-	Packed |= CondMask(IsDecalReceiver, 1u << 15u, 0u);
-	return Packed;
+	Packed |= (BitFieldMaskU32(3, 1) & (LightingChannels << 1u)); // 3 bits for channels 0,1,2
+	Packed |= (BitFieldMaskU32(14, 4) & (ShadingBin << 4u));
+	Packed |= select(bIsDecalReceiver, 1u << 18u, 0u);
+	Packed |= select(bHasDistanceField, 1u << 19u, 0u);
+	return uint2(Packed, LegacyShadingId);
 }
 
-void UnpackMaterialResolve(
-	uint Packed,
-	out bool IsNanitePixel,
-	out bool IsDecalReceiver,
-	out uint MaterialSlot)
+FResolvedMaterial UnpackMaterialResolve(uint2 Packed)
 {
-	IsNanitePixel   = BitFieldExtractU32(Packed,  1,  0) != 0;
-	MaterialSlot    = BitFieldExtractU32(Packed, 14,  1);
-	IsDecalReceiver = BitFieldExtractU32(Packed,  1, 15) != 0;
+	FResolvedMaterial Resolved;
+
+	Resolved.bIsNanitePixel		= BitFieldExtractU32(Packed.x,  1,  0) != 0;
+	Resolved.LightingChannels	= BitFieldExtractU32(Packed.x,  3,  1);
+	Resolved.ShadingBin			= BitFieldExtractU32(Packed.x, 14,  4);
+	Resolved.bIsDecalReceiver	= BitFieldExtractU32(Packed.x,  1, 18) != 0;
+	Resolved.bHasDistanceField	= BitFieldExtractU32(Packed.x,  1, 19) != 0;
+	Resolved.LegacyShadingId	= Packed.y; // TODO: Remove
+
+	return Resolved;
 }
 
 void UnpackVisPixel(
@@ -571,7 +645,11 @@ void UnpackVisPixel(
 	VisibleClusterIndex = Unpacked.x >> 7;
 	TriIndex = Unpacked.x & 0x7F;
 	DepthInt = Unpacked.y;
+#if NANITE_IMPOSTERS_SUPPORTED
 	bIsImposter = (Unpacked.x >> 31);
+#else
+	bIsImposter = false;
+#endif
 
 	VisibleClusterIndex--;
 }
@@ -623,11 +701,18 @@ float3 DecodePosition(uint VertIndex, FCluster Cluster)
 
 FNaniteView UnpackNaniteView(FPackedNaniteView PackedView)
 {
+	const float3 ViewTilePosition =
+	{
+		PackedView.ViewTilePositionX,
+		PackedView.ViewTilePositionY,
+		PackedView.ViewTilePositionZ
+	};
+
 	FNaniteView NaniteView;
-	
+
 	NaniteView.SVPositionToTranslatedWorld	= PackedView.SVPositionToTranslatedWorld;
 	NaniteView.ViewToTranslatedWorld		= PackedView.ViewToTranslatedWorld;
-	NaniteView.ViewTilePosition				= PackedView.ViewTilePosition;
+	NaniteView.ViewTilePosition				= ViewTilePosition;
 	NaniteView.MatrixTilePosition			= PackedView.MatrixTilePosition;
 
 	NaniteView.TranslatedWorldToView		= PackedView.TranslatedWorldToView;
@@ -641,14 +726,17 @@ FNaniteView UnpackNaniteView(FPackedNaniteView PackedView)
 	NaniteView.PrevViewToClip				= PackedView.PrevViewToClip;
 	NaniteView.PrevClipToWorld				= MakeLWCMatrix(PackedView.MatrixTilePosition, PackedView.PrevClipToRelativeWorld);
 
+	NaniteView.TranslatedGlobalClipPlane	= PackedView.TranslatedGlobalClipPlane;
+
 	NaniteView.ViewRect						= PackedView.ViewRect;
 	NaniteView.ViewSizeAndInvSize			= PackedView.ViewSizeAndInvSize;
 	NaniteView.ClipSpaceScaleOffset			= PackedView.ClipSpaceScaleOffset;
-	NaniteView.PreViewTranslation			= MakeLWCVector3(-PackedView.ViewTilePosition, PackedView.PreViewTranslation.xyz);
-	NaniteView.PrevPreViewTranslation		= MakeLWCVector3(-PackedView.ViewTilePosition, PackedView.PrevPreViewTranslation.xyz);
-	NaniteView.WorldCameraOrigin			= MakeLWCVector3(PackedView.ViewTilePosition, PackedView.WorldCameraOrigin.xyz);
-	NaniteView.ViewForward					= PackedView.ViewForwardAndNearPlane.xyz;
-	NaniteView.NearPlane					= PackedView.ViewForwardAndNearPlane.w;
+	NaniteView.PreViewTranslation			= MakeLWCVector3(-ViewTilePosition, PackedView.RelativePreViewTranslation);
+	NaniteView.PrevPreViewTranslation		= MakeLWCVector3(-ViewTilePosition, PackedView.RelativePrevPreViewTranslation);
+	NaniteView.WorldCameraOrigin			= MakeLWCVector3(ViewTilePosition, PackedView.RelativeWorldCameraOrigin);
+	NaniteView.DrawDistanceOriginTranslatedWorld = PackedView.DrawDistanceOriginTranslatedWorld;
+	NaniteView.ViewForward					= PackedView.ViewForward;
+	NaniteView.NearPlane					= PackedView.NearPlane;
 	NaniteView.LODScale						= PackedView.LODScales.x;
 	NaniteView.LODScaleHW					= PackedView.LODScales.y;
 	NaniteView.MinBoundsRadiusSq			= PackedView.MinBoundsRadiusSq;
@@ -688,6 +776,8 @@ FNaniteView GetNaniteView( uint ViewIndex )
 	NaniteView.PrevTranslatedWorldToClip	= LocalView.PrevTranslatedWorldToClip;
 	NaniteView.PrevViewToClip				= LocalView.PrevViewToClip;
 	NaniteView.PrevClipToWorld				= LocalView.PrevClipToWorld;
+
+	NaniteView.TranslatedGlobalClipPlane	= LocalView.GlobalClippingPlane;
 
 	NaniteView.ViewSizeAndInvSize			= LocalView.ViewSizeAndInvSize;
 	NaniteView.ViewRect						= int4(int2(LocalView.ViewRectMin.xy + 0.5f), int2(LocalView.ViewRectMin.xy + LocalView.ViewSizeAndInvSize.xy + 0.5f));

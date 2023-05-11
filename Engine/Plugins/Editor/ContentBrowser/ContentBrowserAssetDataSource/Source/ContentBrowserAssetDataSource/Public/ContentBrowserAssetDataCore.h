@@ -2,8 +2,10 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "ContentBrowserAssetDataPayload.h"
+#include "ContentBrowserItemData.h"
+
+class FContentBrowserAssetFileItemDataPayload;
+class FContentBrowserAssetFolderItemDataPayload;
 
 class IAssetTools;
 class IAssetRegistry;
@@ -52,6 +54,14 @@ namespace ContentBrowserAssetData
 	CONTENTBROWSERASSETDATASOURCE_API bool EditItems(IAssetTools* InAssetTools, const UContentBrowserDataSource* InOwnerDataSource, TArrayView<const FContentBrowserItemData> InItems);
 
 	CONTENTBROWSERASSETDATASOURCE_API bool EditAssetFileItems(TArrayView<const TSharedRef<const FContentBrowserAssetFileItemDataPayload>> InAssetPayloads);
+
+	CONTENTBROWSERASSETDATASOURCE_API bool CanViewItem(IAssetTools* InAssetTools, const UContentBrowserDataSource* InOwnerDataSource, const FContentBrowserItemData& InItem, FText* OutErrorMsg);
+
+	CONTENTBROWSERASSETDATASOURCE_API bool CanViewAssetFileItem(IAssetTools* InAssetTools, const FContentBrowserAssetFileItemDataPayload& InAssetPayload, FText* OutErrorMsg);
+
+	CONTENTBROWSERASSETDATASOURCE_API bool ViewItems(IAssetTools* InAssetTools, const UContentBrowserDataSource* InOwnerDataSource, TArrayView<const FContentBrowserItemData> InItems);
+
+	CONTENTBROWSERASSETDATASOURCE_API bool ViewAssetFileItems(TArrayView<const TSharedRef<const FContentBrowserAssetFileItemDataPayload>> InAssetPayloads);
 
 	CONTENTBROWSERASSETDATASOURCE_API bool CanPreviewItem(IAssetTools* InAssetTools, const UContentBrowserDataSource* InOwnerDataSource, const FContentBrowserItemData& InItem, FText* OutErrorMsg);
 
@@ -158,3 +168,8 @@ namespace ContentBrowserAssetData
 	CONTENTBROWSERASSETDATASOURCE_API void PopulateAssetFileContextMenu(UContentBrowserDataSource* InOwnerDataSource, UToolMenu* InMenu, FAssetFileContextMenu& InAssetFileContextMenu);
 
 }
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "ContentBrowserAssetDataPayload.h"
+#include "CoreMinimal.h"
+#endif

@@ -2,19 +2,19 @@
 
 #include "MDLImporterModule.h"
 
+#include "AssetRegistry/AssetData.h"
 #include "MDLImporter.h"
 #include "MdlFileImporter.h"
 
-#include "ContentBrowserDelegates.h"
 #include "ContentBrowserModule.h"
 #include "EditorFramework/AssetImportData.h"
 #include "EditorReimportHandler.h"
-#include "Styling/AppStyle.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstance.h"
 #include "Misc/Paths.h"
 #include "Interfaces/IPluginManager.h"
+#include "ShaderCore.h"
 
 #define LOCTEXT_NAMESPACE "MDL Importer"
 

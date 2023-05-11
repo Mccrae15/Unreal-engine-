@@ -2,6 +2,7 @@
 
 #include "StatsPages/PrimitiveStatsPage.h"
 #include "Engine/Level.h"
+#include "Engine/SkeletalMesh.h"
 #include "GameFramework/Actor.h"
 #include "Serialization/ArchiveCountMem.h"
 #include "Components/PrimitiveComponent.h"
@@ -13,6 +14,8 @@
 #include "Engine/Selection.h"
 #include "Editor.h"
 #include "UObject/UObjectIterator.h"
+#include "SceneInterface.h"
+#include "StaticMeshComponentLODInfo.h"
 #include "StaticMeshResources.h"
 #include "LandscapeProxy.h"
 #include "LightMap.h"
@@ -210,7 +213,7 @@ struct PrimitiveStatsGenerator
 			int32 LightMapWidth			= 0;
 			int32 LightMapHeight		= 0;
 			InPrimitiveComponent->GetLightMapResolution( LightMapWidth, LightMapHeight );
-			int32 LMSMResolution		= FMath::Sqrt( static_cast<float>(LightMapHeight * LightMapWidth) );
+			int32 LMSMResolution		= FMath::TruncToInt32(FMath::Sqrt( static_cast<float>(LightMapHeight * LightMapWidth) ));
 			int32 LightMapData			= 0;
 			int32 LegacyShadowMapData	= 0;
 			InPrimitiveComponent->GetLightAndShadowMapMemoryUsage( LightMapData, LegacyShadowMapData );
@@ -288,7 +291,7 @@ struct PrimitiveStatsGenerator
 				NewStatsEntry->LightsLM			= LightsLMCount;
 				NewStatsEntry->LightsOther		= (float)LightsOtherCount;
 				NewStatsEntry->LightMapData		= (float)LightMapData / 1024.0f;
-				NewStatsEntry->LMSMResolution	= LMSMResolution;
+				NewStatsEntry->LMSMResolution	= (float)LMSMResolution;
 				NewStatsEntry->VertexColorMem	= (float)VertexColorMem / 1024.0f;
 				NewStatsEntry->InstVertexColorMem = (float)InstVertexColorMem / 1024.0f;
 				NewStatsEntry->UpdateNames();
@@ -518,7 +521,7 @@ void FPrimitiveStatsPage::GenerateTotals( const TArray< TWeakObjectPtr<UObject> 
 	{
 		UPrimitiveStats* TotalEntry = NewObject<UPrimitiveStats>();
 
-		TotalEntry->RadiusMin = FLT_MAX;
+		TotalEntry->RadiusMin = TNumericLimits<double>::Max();
 		TotalEntry->RadiusMax = 0.0f;
 
 		// build total entry

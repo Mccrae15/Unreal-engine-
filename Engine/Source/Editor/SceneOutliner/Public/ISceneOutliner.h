@@ -139,17 +139,32 @@ public:
 	/**  Unpins an item list in the outliner. */
 	virtual void UnpinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems) = 0;
 	
+	/** Returns true if any of the items can be pinned. */
+	virtual bool CanPinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems) const = 0;
+
+	/** Returns true if any of the items can be unpinned. */
+	virtual bool CanUnpinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems) const = 0;
+
 	/** Pin selected items */
 	virtual void PinSelectedItems() = 0;
 
 	/** Unpins selected items */
 	virtual void UnpinSelectedItems() = 0;
 
+	/** Returns true if any of the selected items can be pinned */
+	virtual bool CanPinSelectedItems() const = 0;
+
+	/** Returns true if any of the selected items can be unpinned */
+	virtual bool CanUnpinSelectedItems() const = 0;
+
 	/** Get the active SceneOutlinerMode */
 	const ISceneOutlinerMode* GetMode() const { return Mode; }
 
 	/** Get the associated source control object for the specified item. */
 	virtual TSharedPtr<FSceneOutlinerTreeItemSCC> GetItemSourceControl(const FSceneOutlinerTreeItemPtr& InItem) = 0;
+
+	/** Check if a filter with the given name exists and is active in the filter bar for this Outliner (if this Outliner has a filter bar). */
+	virtual bool IsFilterActive(const FString& FilterName) const = 0;
 protected:
 	ISceneOutlinerMode* Mode;
 };

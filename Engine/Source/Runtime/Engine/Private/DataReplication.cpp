@@ -5,24 +5,28 @@
 =============================================================================*/
 
 #include "Net/DataReplication.h"
-#include "Misc/MemStack.h"
-#include "HAL/IConsoleManager.h"
+#include "Containers/StaticBitArray.h"
 #include "EngineStats.h"
 #include "Engine/World.h"
-#include "Net/DataBunch.h"
+#include "Misc/MemStack.h"
+#include "Misc/ScopeExit.h"
+#include "Net/Core/Trace/Private/NetTraceInternal.h"
 #include "Net/NetworkProfiler.h"
 #include "Engine/PackageMapClient.h"
 #include "Net/RepLayout.h"
 #include "Engine/ActorChannel.h"
-#include "ProfilingDebugging/CsvProfiler.h"
+#include "Net/Serialization/FastArraySerializer.h"
 #include "Engine/Engine.h"
 #include "Engine/NetConnection.h"
 #include "Net/NetworkGranularMemoryLogging.h"
-#include "Misc/ScopeExit.h"
 #include "Net/Core/Trace/NetTrace.h"
-#include "ProfilingDebugging/CsvProfiler.h"
 #include "HAL/LowLevelMemStats.h"
 #include "Net/Core/PushModel/Types/PushModelPerNetDriverState.h"
+#include "Net/RPCDoSDetection.h"
+
+#if UE_WITH_IRIS
+#include "Iris/IrisConfig.h"
+#endif
 
 DECLARE_LLM_MEMORY_STAT(TEXT("NetObjReplicator"), STAT_NetObjReplicatorLLM, STATGROUP_LLMFULL);
 LLM_DEFINE_TAG(NetObjReplicator, NAME_None, TEXT("Networking"), GET_STATFNAME(STAT_NetObjReplicatorLLM), GET_STATFNAME(STAT_NetworkingSummaryLLM));
@@ -373,8 +377,11 @@ bool FObjectReplicator::SendCustomDeltaProperty(UObject* InObject, uint16 Custom
 	Parms.bInternalAck = Connection->IsInternalAck();
 
 #if UE_WITH_IRIS
-	// When initializing baselines we should not modify the source data if it originates from the CDO or archetype
-	Parms.bIsInitializingBaseFromDefault = Parms.Object && Parms.Object->HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject);
+	if (UE::Net::ShouldUseIrisReplication())
+	{
+		// When initializing baselines we should not modify the source data if it originates from the CDO or archetype
+		Parms.bIsInitializingBaseFromDefault = Parms.Object && Parms.Object->HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject);
+	}
 #endif
 
 	return FNetSerializeCB::SendCustomDeltaProperty(*RepLayout, Parms, CustomDeltaIndex);
@@ -1263,7 +1270,7 @@ bool FObjectReplicator::ReceivedRPC(FNetBitReader& Reader, const FReplicationFla
 	UObject* Object = GetObject();
 	FName FunctionName = FieldCache->Field.GetFName();
 	UFunction* Function = Object->FindFunction(FunctionName);
-	FRPCDoSDetection& RPCDoS = Connection->GetRPCDoS();
+	FRPCDoSDetection* RPCDoS = Connection->GetRPCDoS();
 	FScopedRPCTimingTracker ScopedTracker(Function, Connection);
 	SCOPE_CYCLE_COUNTER(STAT_NetReceiveRPC);
 	SCOPE_CYCLE_UOBJECT(Function, Function);
@@ -1287,13 +1294,13 @@ bool FObjectReplicator::ReceivedRPC(FNetBitReader& Reader, const FReplicationFla
 	}
 
 
-	if (bIsServer && RPCDoS.IsRPCDoSDetectionEnabled() && !Connection->IsReplay())
+	if (RPCDoS != nullptr && bIsServer && RPCDoS->IsRPCDoSDetectionEnabled() && !Connection->IsReplay())
 	{
-		ScopedTracker.RPCDoS = &RPCDoS;
+		ScopedTracker.RPCDoS = RPCDoS;
 
-		if (UNLIKELY(RPCDoS.ShouldMonitorReceivedRPC()))
+		if (UNLIKELY(RPCDoS->ShouldMonitorReceivedRPC()))
 		{
-			ERPCNotifyResult Result = RPCDoS.NotifyReceivedRPC(Reader, UnmappedGuids, Object, Function, FunctionName);
+			ERPCNotifyResult Result = RPCDoS->NotifyReceivedRPC(Reader, UnmappedGuids, Object, Function, FunctionName);
 
 			if (UNLIKELY(Result == ERPCNotifyResult::BlockRPC))
 			{
@@ -1304,7 +1311,7 @@ bool FObjectReplicator::ReceivedRPC(FNetBitReader& Reader, const FReplicationFla
 		}
 		else
 		{
-			RPCDoS.LightweightReceivedRPC(Function, FunctionName);
+			RPCDoS->LightweightReceivedRPC(Function, FunctionName);
 		}
 	}
 
@@ -1745,7 +1752,7 @@ bool FObjectReplicator::CanSkipUpdate(FReplicationFlags RepFlags)
 			SendingRepState.LastChangelistIndex == RepChangelistState.HistoryEnd &&
 			Connection->ResendAllDataState == EResendAllDataState::None &&
 			!OwningChannel->bForceCompareProperties &&
-			(!GbPushModelSkipUndirtiedFastArrays || (RepChangelistState.CustomDeltaChangeIndex == SendingRepState.CustomDeltaChangeIndex)) &&
+			(!GbPushModelSkipUndirtiedFastArrays || ((RepChangelistState.CustomDeltaChangeIndex == SendingRepState.CustomDeltaChangeIndex) && !SendingRepState.HasAnyPendingRetirements())) &&
 			!RepChangelistState.HasAnyDirtyProperties())
 		))
 	{

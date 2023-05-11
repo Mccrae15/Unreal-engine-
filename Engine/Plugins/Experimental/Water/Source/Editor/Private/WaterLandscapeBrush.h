@@ -2,14 +2,15 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/WeakInterfacePtr.h"
-#include "GameFramework/Actor.h"
 #include "LandscapeBlueprintBrush.h"
-#include "Containers/Map.h"
 #include "WaterBrushActorInterface.h"
 #include "WaterLandscapeBrush.generated.h"
+
+class ALandscape;
+class UBillboardComponent;
+class UTexture2D;
+template <class T> struct TWeakInterfacePtr;
+template <typename InterfaceType> class TScriptInterface;
 
 class AWaterBody;
 class AWaterBodyIsland;
@@ -22,7 +23,6 @@ class AWaterLandscapeBrush : public ALandscapeBlueprintBrush
 public:
 	AWaterLandscapeBrush(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
 
-	virtual void PostInitProperties() override;
 	virtual void OnConstruction(const FTransform& Transform) override;
 	virtual void BeginDestroy() override;
 	virtual void PostRegisterAllComponents() override;
@@ -89,6 +89,9 @@ public:
 
 	virtual void GetRenderDependencies(TSet<UObject *>& OutDependencies) override;
 
+	virtual void PostLoad() override;
+	virtual void PostActorCreated() override;
+
 	void ForceUpdate();
 
 #if WITH_EDITOR
@@ -118,7 +121,7 @@ private:
 	void UpdateAffectedWeightmaps();
 	void ClearActors();
 	bool IsActorAffectingLandscape(AActor* Actor) const;
-
+	void RegisterDelegates();
 	void OnFullHeightmapRenderDone(UTextureRenderTarget2D* HeightmapRenderTarget);
 	void OnWaterBrushActorChanged(const IWaterBrushActorInterface::FWaterBrushActorChangedEventParams& InParams);
 	void OnActorsAffectingLandscapeChanged();

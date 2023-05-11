@@ -5,8 +5,7 @@
 #include UE_INLINE_GENERATED_CPP_BY_NAME(PartitionActor)
 
 #if WITH_EDITOR
-#include "Components/BoxComponent.h"
-#include "WorldPartition/WorldPartitionActorDesc.h"
+#include "Engine/Level.h"
 #include "WorldPartition/ActorPartition/PartitionActorDesc.h"
 #include "GameFramework/WorldSettings.h"
 #include "Engine/World.h"

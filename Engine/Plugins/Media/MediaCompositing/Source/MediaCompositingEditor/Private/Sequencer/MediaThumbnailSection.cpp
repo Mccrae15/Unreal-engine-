@@ -3,6 +3,7 @@
 #include "Sequencer/MediaThumbnailSection.h"
 
 #include "Fonts/FontMeasure.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Styling/AppStyle.h"
 #include "IMediaCache.h"
 #include "IMediaTracks.h"
@@ -71,7 +72,13 @@ float FMediaThumbnailSection::GetSectionHeight() const
 FText FMediaThumbnailSection::GetSectionTitle() const
 {
 	UMovieSceneMediaSection* MediaSection = CastChecked<UMovieSceneMediaSection>(Section);
-	UMediaSource* MediaSource = MediaSection->GetMediaSource();
+	TSharedPtr<ISequencer> Sequencer = SequencerPtr.Pin();
+	UMediaSource* MediaSource = nullptr;
+
+	if (MediaSection && Sequencer.IsValid())
+	{
+		MediaSource = MediaSection->GetMediaSourceOrProxy(*Sequencer, Sequencer->GetFocusedTemplateID());
+	}
 
 	if (MediaSource == nullptr)
 	{
@@ -299,7 +306,7 @@ void FMediaThumbnailSection::DrawLoopIndicators(FSequencerSectionPainter& InPain
 		FSlateDrawElement::MakeBox(
 			InPainter.DrawElements,
 			InPainter.LayerId++,
-			InPainter.SectionGeometry.ToPaintGeometry(FVector2D(DrawOffset, 0.0f), FVector2D(1.0f, SectionSize.Y)),
+			InPainter.SectionGeometry.ToPaintGeometry(FVector2D(1.0f, SectionSize.Y), FSlateLayoutTransform(FVector2D(DrawOffset, 0.0f))),
 			GenericBrush,
 			ESlateDrawEffect::None,
 			FLinearColor::Gray
@@ -326,23 +333,29 @@ void FMediaThumbnailSection::DrawSampleStates(FSequencerSectionPainter& InPainte
 
 	TArray<TRange<FTimespan>> Ranges;
 	RangeSet.GetRanges(Ranges);
+	float LoopDrawOffset = -TimeToPixelConverter.SecondsToPixel(TickResolution.AsSeconds(MediaSection->StartFrameOffset));
 
-	for (auto& Range : Ranges)
+	while (LoopDrawOffset < SectionSize.X)
 	{
-		const float DrawOffset = FMath::RoundToNegativeInfinity(FTimespan::Ratio(Range.GetLowerBoundValue(), MediaDuration) * MediaSizeX) -
-			TimeToPixelConverter.SecondsToPixel(TickResolution.AsSeconds(MediaSection->StartFrameOffset)) +
-			TimeToPixelConverter.SecondsToPixel(0.0);
-		const float DrawSize = FMath::RoundToPositiveInfinity(FTimespan::Ratio(Range.Size<FTimespan>(), MediaDuration) * MediaSizeX);
-		const float BarHeight = 4.0f;
+		for (auto& Range : Ranges)
+		{
+			const float DrawOffset = FMath::RoundToNegativeInfinity(FTimespan::Ratio(Range.GetLowerBoundValue(), MediaDuration) * MediaSizeX) +	
+				LoopDrawOffset +
+				TimeToPixelConverter.SecondsToPixel(0.0);
+			const float DrawSize = FMath::RoundToPositiveInfinity(FTimespan::Ratio(Range.Size<FTimespan>(), MediaDuration) * MediaSizeX);
+			const float BarHeight = 4.0f;
 
-		FSlateDrawElement::MakeBox(
-			InPainter.DrawElements,
-			InPainter.LayerId++,
-			InPainter.SectionGeometry.ToPaintGeometry(FVector2D(DrawOffset, SectionSize.Y - BarHeight - 1.0f), FVector2D(DrawSize, BarHeight)),
-			GenericBrush,
-			ESlateDrawEffect::None,
-			Color
-		);
+			FSlateDrawElement::MakeBox(
+				InPainter.DrawElements,
+				InPainter.LayerId++,
+				InPainter.SectionGeometry.ToPaintGeometry(FVector2D(DrawSize, BarHeight), FSlateLayoutTransform(FVector2D(DrawOffset, SectionSize.Y - BarHeight - 1.0f))),
+				GenericBrush,
+				ESlateDrawEffect::None,
+				Color
+			);
+		}
+
+		LoopDrawOffset += MediaSizeX;
 	}
 }
 
@@ -388,7 +401,7 @@ void FMediaThumbnailSection::DrawMediaInfo(FSequencerSectionPainter& InPainter,
 		FSlateDrawElement::MakeText(
 			InPainter.DrawElements,
 			InPainter.LayerId++,
-			InPainter.SectionGeometry.ToPaintGeometry(TextOffset, TextSize),
+			InPainter.SectionGeometry.ToPaintGeometry(TextSize, FSlateLayoutTransform(TextOffset)),
 			TileString,
 			SmallLayoutFont,
 			DrawEffects,
@@ -407,7 +420,7 @@ void FMediaThumbnailSection::DrawMediaInfo(FSequencerSectionPainter& InPainter,
 		FSlateDrawElement::MakeText(
 			InPainter.DrawElements,
 			InPainter.LayerId++,
-			InPainter.SectionGeometry.ToPaintGeometry(TextOffset, TextSize),
+			InPainter.SectionGeometry.ToPaintGeometry(TextSize, FSlateLayoutTransform(TextOffset)),
 			MipString,
 			SmallLayoutFont,
 			DrawEffects,

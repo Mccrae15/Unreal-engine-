@@ -7,7 +7,7 @@
 
 #include "IKRig_BodyMover.generated.h"
 
-UCLASS()
+UCLASS(BlueprintType)
 class IKRIG_API UIKRig_BodyMoverEffector : public UObject
 {
 	GENERATED_BODY()
@@ -15,18 +15,18 @@ class IKRIG_API UIKRig_BodyMoverEffector : public UObject
 public:
 	UIKRig_BodyMoverEffector() { SetFlags(RF_Transactional); }
 	
-	UPROPERTY(VisibleAnywhere, Category = "Body Mover Effector")
+	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category = "Body Mover Effector")
 	FName GoalName;
 
-	UPROPERTY(VisibleAnywhere, Category = "Body Mover Effector")
+	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category = "Body Mover Effector")
 	FName BoneName;
 
 	/** Scale the influence this effector has on the body. Range is 0-10. Default is 1.0. */
-	UPROPERTY(EditAnywhere, Category = "Body Mover Effector", meta = (ClampMin = "0", ClampMax = "10", UIMin = "0.0", UIMax = "10.0"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Body Mover Effector", meta = (ClampMin = "0", ClampMax = "10", UIMin = "0.0", UIMax = "10.0"))
 	float InfluenceMultiplier = 1.0f;
 };
 
-UCLASS(EditInlineNew)
+UCLASS(BlueprintType, EditInlineNew)
 class IKRIG_API UIKRig_BodyMover : public UIKRigSolver
 {
 	GENERATED_BODY()
@@ -38,47 +38,47 @@ public:
 	FName RootBone;
 
 	/** Blend the translational effect of this solver on/off. Range is 0-1. Default is 1.0. */
-	UPROPERTY(EditAnywhere, Category = "Body Mover Settings", meta = (UIMin = "0.0", UIMax = "1.0"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Body Mover Settings", meta = (UIMin = "0.0", UIMax = "1.0"))
 	float PositionAlpha = 1.0f;
 
 	/** Multiply the POSITIVE X translation. Range is 0-1. Default is 1.0. */
-	UPROPERTY(EditAnywhere, Category = "Body Mover Settings", meta = (UIMin = "0.0", UIMax = "1.0"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Body Mover Settings", meta = (UIMin = "0.0", UIMax = "1.0"))
 	float PositionPositiveX = 1.0f;
 
 	/** Multiply the NEGATIVE X translation. Range is 0-1. Default is 1.0. */
-	UPROPERTY(EditAnywhere, Category = "Body Mover Settings", meta = (UIMin = "0.0", UIMax = "1.0"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Body Mover Settings", meta = (UIMin = "0.0", UIMax = "1.0"))
 	float PositionNegativeX = 1.0f;
 
 	/** Multiply the POSITIVE Y translation. Range is 0-1. Default is 1.0. */
-	UPROPERTY(EditAnywhere, Category = "Body Mover Settings", meta = (UIMin = "0.0", UIMax = "1.0"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Body Mover Settings", meta = (UIMin = "0.0", UIMax = "1.0"))
 	float PositionPositiveY = 1.0f;
 
 	/** Multiply the NEGATIVE Y translation. Range is 0-1. Default is 1.0. */
-	UPROPERTY(EditAnywhere, Category = "Body Mover Settings", meta = (UIMin = "0.0", UIMax = "1.0"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Body Mover Settings", meta = (UIMin = "0.0", UIMax = "1.0"))
 	float PositionNegativeY = 1.0f;
 
 	/** Multiply the POSITIVE Z translation. Range is 0-1. Default is 1.0. */
-	UPROPERTY(EditAnywhere, Category = "Body Mover Settings", meta = (UIMin = "0.0", UIMax = "1.0"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Body Mover Settings", meta = (UIMin = "0.0", UIMax = "1.0"))
 	float PositionPositiveZ = 1.0f;
 
 	/** Multiply the NEGATIVE Z translation. Range is 0-1. Default is 1.0. */
-	UPROPERTY(EditAnywhere, Category = "Body Mover Settings", meta = (UIMin = "0.0", UIMax = "1.0"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Body Mover Settings", meta = (UIMin = "0.0", UIMax = "1.0"))
 	float PositionNegativeZ = 1.0f;
 
 	/** Blend the total rotational effect on/off. Range is 0-1. Default is 1.0. */
-	UPROPERTY(EditAnywhere, Category = "Body Mover Settings", meta = (UIMin = "0.0", UIMax = "1.0"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Body Mover Settings", meta = (UIMin = "0.0", UIMax = "1.0"))
 	float RotationAlpha = 1.0f;
 
 	/** Blend the X-axis rotational effect on/off. Range is 0-1. Default is 1.0. */
-	UPROPERTY(EditAnywhere, Category = "Body Mover Settings", meta = (UIMin = "0.0", UIMax = "1.0"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Body Mover Settings", meta = (UIMin = "0.0", UIMax = "1.0"))
 	float RotateXAlpha = 1.0f;
 
 	/** Blend the Y-axis rotational effect on/off. Range is 0-1. Default is 1.0. */
-	UPROPERTY(EditAnywhere, Category = "Body Mover Settings", meta = (UIMin = "0.0", UIMax = "1.0"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Body Mover Settings", meta = (UIMin = "0.0", UIMax = "1.0"))
 	float RotateYAlpha = 1.0f;
 
 	/** Blend the Z-axis rotational effect on/off. Range is 0-1. Default is 1.0. */
-	UPROPERTY(EditAnywhere, Category = "Body Mover Settings", meta = (UIMin = "0.0", UIMax = "1.0"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Body Mover Settings", meta = (UIMin = "0.0", UIMax = "1.0"))
 	float RotateZAlpha = 1.0f;
 	
 	UPROPERTY()

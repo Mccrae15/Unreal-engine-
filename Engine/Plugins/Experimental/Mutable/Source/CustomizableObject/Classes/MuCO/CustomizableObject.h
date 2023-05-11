@@ -2,45 +2,14 @@
  
 #pragma once
 
-#include "Containers/Array.h"
-#include "Containers/BitArray.h"
-#include "Containers/ContainerAllocationPolicies.h"
-#include "Containers/ContainersFwd.h"
-#include "Containers/EnumAsByte.h"
-#include "Containers/Map.h"
-#include "Containers/Set.h"
-#include "Containers/UnrealString.h"
-#include "Delegates/Delegate.h"
-#include "Engine/Texture.h"
-#include "Engine/TextureDefines.h"
-#include "Input/Reply.h"
-#include "Logging/LogMacros.h"
-#include "Math/BoxSphereBounds.h"
-#include "Math/Rotator.h"
-#include "Math/UnrealMathSSE.h"
-#include "Math/Vector.h"
-#include "Math/Vector4.h"
-#include "Misc/AssertionMacros.h"
-#include "Misc/Guid.h"
 #include "MuCO/CustomizableObjectClothingTypes.h"
 #include "MuCO/CustomizableObjectIdentifier.h"
-#include "MuCO/CustomizableObjectParameterTypeDefinitions.h"
 #include "MuCO/CustomizableObjectUIData.h"
 #include "RHIDefinitions.h"
-#include "Serialization/Archive.h"
-#include "Serialization/StructuredArchiveAdapters.h"
-#include "SkeletalMeshTypes.h"
-#include "Templates/SharedPointer.h"
-#include "UObject/NameTypes.h"
-#include "UObject/Object.h"
-#include "UObject/ObjectPtr.h"
-#include "UObject/SoftObjectPath.h"
-#include "UObject/SoftObjectPtr.h"
-#include "UObject/UObjectGlobals.h"
+
+class FReply;
 
 #if WITH_EDITORONLY_DATA
-#include "PerPlatformProperties.h"
-#include "PerQualityLevelProperties.h"
 #endif
 
 
@@ -200,8 +169,18 @@ struct FCompilationOptions
 	// Used to enable 16 bit bone weights
 	bool b16BitBoneWeightsEnabled = false;
 
+	// Used to enable skin weight profiles.
+	bool bSkinWeightProfilesEnabled = true;
+
+	// Used to enable physics asset merge.
+	bool bPhysicsAssetMergeEnebled = false;
+
 	// Used to reduce the number of notifications when compiling objects
 	bool bSilentCompilation = true;
+
+	/** Force a very big number on the mips to skip during compilation. Useful to debug special cooks of the data. */
+	bool bForceLargeLODBias = false;
+	int32 DebugBias = 0;
 
 };
 
@@ -600,6 +579,42 @@ struct FCustomizableObjectMeshToMeshVertData
 };
 template<> struct TCanBulkSerialize<FCustomizableObjectMeshToMeshVertData> { enum { Value = true }; };
 
+
+USTRUCT()
+struct FMutableSkinWeightProfileInfo
+{
+	GENERATED_USTRUCT_BODY()
+
+	FMutableSkinWeightProfileInfo() {};
+
+	FMutableSkinWeightProfileInfo(FName InName, bool InDefaultProfile, int8 InDefaultProfileFromLODIndex) : Name(InName),
+		DefaultProfile(InDefaultProfile), DefaultProfileFromLODIndex(InDefaultProfileFromLODIndex) {};
+
+	UPROPERTY()
+	FName Name;
+
+	UPROPERTY()
+	bool DefaultProfile = false;
+
+	UPROPERTY(meta = (ClampMin = 0))
+	int8 DefaultProfileFromLODIndex = 0;
+
+	friend FArchive& operator<<(FArchive& Ar, FMutableSkinWeightProfileInfo& Info)
+	{
+		Ar << Info.Name;
+		Ar << Info.DefaultProfile;
+		Ar << Info.DefaultProfileFromLODIndex;
+
+		return Ar;
+	}
+
+	bool operator==(const FMutableSkinWeightProfileInfo& Other) const
+	{
+		return Name == Other.Name;
+	}
+};
+
+
 UCLASS()
 class CUSTOMIZABLEOBJECT_API UMutableMaskOutCache : public UObject
 {
@@ -701,16 +716,46 @@ struct FMutableRefLODData
 };
 
 
+USTRUCT()
 struct FMutableRefSocket
 {
+	GENERATED_BODY()
+
+	UPROPERTY()
 	FName SocketName;
+	UPROPERTY()
 	FName BoneName;
 
+	UPROPERTY()
 	FVector RelativeLocation;
+	UPROPERTY()
 	FRotator RelativeRotation;
+	UPROPERTY()
 	FVector RelativeScale;
 
+	UPROPERTY()
 	bool bForceAlwaysAnimated = false;
+
+	// When two sockets have the same name, the one with higher priority will be picked and the other discarded
+	UPROPERTY()
+	int32 Priority = -1;
+
+	bool operator ==(const FMutableRefSocket& Other) const
+	{
+		if (
+			SocketName == Other.SocketName &&
+			BoneName == Other.BoneName &&
+			RelativeLocation == Other.RelativeLocation &&
+			RelativeRotation == Other.RelativeRotation &&
+			RelativeScale == Other.RelativeScale &&
+			bForceAlwaysAnimated == Other.bForceAlwaysAnimated &&
+			Priority == Other.Priority)
+		{
+			return true;
+		}
+
+		return false;
+	}
 	
 	friend FArchive& operator<<(FArchive& Ar, FMutableRefSocket& Data)
 	{
@@ -719,6 +764,8 @@ struct FMutableRefSocket
 		Ar << Data.RelativeLocation;
 		Ar << Data.RelativeRotation;
 		Ar << Data.RelativeScale;
+		Ar << Data.bForceAlwaysAnimated;
+		Ar << Data.Priority;
 
 		return Ar;
 	}
@@ -729,9 +776,12 @@ struct FMutableRefSkeletalMeshSettings
 {
 	bool bEnablePerPolyCollision = false;
 
+	float DefaultUVChannelDensity = 0.f;
+
 	friend FArchive& operator<<(FArchive& Ar, FMutableRefSkeletalMeshSettings& Data)
 	{
 		Ar << Data.bEnablePerPolyCollision;
+		Ar << Data.DefaultUVChannelDensity;
 
 		return Ar;
 	}
@@ -996,6 +1046,9 @@ public:
 	UPROPERTY(Transient)
 	TArray<FCustomizableObjectMeshToMeshVertData> ClothMeshToMeshVertData;
 
+	UPROPERTY()
+	TArray<FMutableSkinWeightProfileInfo> SkinWeightProfilesInfo;
+
 #if WITH_EDITORONLY_DATA
 
 	// Hide this property because it is not used yet.
@@ -1022,6 +1075,14 @@ public:
 	// TODO: Enable 16 bit weights 
 	UPROPERTY(VisibleAnywhere, Category = CompileOptions)
 	bool bEnable16BitBoneWeights = false;
+
+	//
+	UPROPERTY(EditAnywhere, Category = CompileOptions)
+	bool bEnableAltSkinWeightProfiles = false;
+
+	//
+	UPROPERTY(EditAnywhere, Category = CompileOptions)
+	bool bEnablePhysicsAssetMerge = false;
 
 	// Options when compiling this customizable object (see EMutableCompileMeshType declaration for info)
 	UPROPERTY(EditAnywhere, Category = CompileOptions)
@@ -1057,6 +1118,16 @@ public:
 
 #endif // WITH_EDITORONLY_DATA
 
+	/** Amount of components in this CO. Set at the end of the model compilation process. */
+	UPROPERTY()
+	int32 NumMeshComponentsInRoot = 0;
+	
+	/** Method to query the amount of components this Customizable Object has.
+	 * @warning It must be invoked from a COInstance to ensure that the CO has been compiled
+	 */
+	UFUNCTION(BlueprintCallable, Category = CustomizableObject)
+	int32 GetComponentCount() const;
+	
 	// Object parameters interface. This is used to query static data about the parameters available
 	// in instances of this object.
 
@@ -1066,7 +1137,7 @@ public:
 
 	// Get the index of a parameter
 	UFUNCTION(BlueprintCallable, Category = CustomizableObject)
-	int FindParameter(const FString& Name) const;
+	int32 FindParameter(const FString& Name) const;
 
 	// Get the type of a parameter
 	UFUNCTION(BlueprintCallable, Category = CustomizableObject)
@@ -1132,7 +1203,7 @@ private:
 	// This is a manual version number for the binary blobs in this asset.
 	// Increasing it invalidates all the previously compiled models.
 	// Warning: If while merging code both versions have changed, take the highest+1.
-	static const int32 CurrentSupportedVersion = 350;
+	static const int32 CurrentSupportedVersion = 366;
 
 public:
 
@@ -1270,6 +1341,10 @@ public:
 	UPROPERTY()
 	TMap<FString, TSoftClassPtr<UAnimInstance>> AnimBPAssetsMap;
 
+	UPROPERTY()
+	/** Stores the sockets provided by the part skeletal meshes, to be merged in the generated meshes */
+	TArray<FMutableRefSocket> SocketArray;
+
 	/** Stores the textures that will be used to mask-out areas in projectors. The cache isn't used for rendering, but for coverage testing */
 	UPROPERTY()
 	TSoftObjectPtr<UMutableMaskOutCache> MaskOutCache;
@@ -1322,10 +1397,10 @@ public:
 	// See UCustomizableObjectSystem::LockObject()
 	bool IsLocked() const;
 
-	mu::Model* GetModel() const;
+	TSharedPtr<mu::Model, ESPMode::ThreadSafe> GetModel() const;
 
 #if WITH_EDITOR
-	void SetModel(mu::Model* Model);
+	void SetModel(TSharedPtr<mu::Model, ESPMode::ThreadSafe> Model);
 #endif
 
 	int32 GetNumLODs() const;
@@ -1339,6 +1414,18 @@ public:
 	virtual EDataValidationResult IsDataValid(class FDataValidationContext& Context) override;
 	// End of UObject Interface
 
+private:
+
+	/** Cached handle to be able later to remove the bound method from the FEditorDelegates::OnPostAssetValidation delegate */
+	inline static FDelegateHandle OnPostCOValidationHandle;
+	
+	/** Collection with all root objects tested during this IsDataValidRun. Shared with all COs */
+	inline static TArray<UCustomizableObject*> AlreadyValidatedRootObjects;
+	
+	/** Method invoked once the validation of all assets has been completed. */
+	static void OnPostCOsValidation();
+
+public:
 	// UObject Interface -> Asset saving
 	virtual void PreSaveRoot(FObjectPreSaveRootContext ObjectSaveContext) override;
 	// End of UObject Interface
@@ -1374,3 +1461,7 @@ private:
 
 	TSharedPtr<FCustomizableObjectPrivateData> PrivateData;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Input/Reply.h"
+#endif

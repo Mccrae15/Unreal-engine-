@@ -18,6 +18,11 @@ export interface BotConfig {
 	isDefaultBot: boolean
 	noStreamAliases: boolean
 	globalNotify: string[]
+	nagWhenBlocked: boolean | null
+	nagSchedule: number[] | null
+	nagAcknowledgedSchedule: number[] | null
+	nagAcknowledgedLeeway: number | null
+	triager: string | null
 	checkIntervalSecs: number
 	excludeAuthors: string[]
 	emailOnBlockage: boolean
@@ -44,6 +49,11 @@ const branchBasePrototype = {
 	forceFlowTo: [''],
 	defaultFlow: [''],
 	resolver: '' as string | null,
+	triager: '' as string | null,
+	nagWhenBlocked: false as boolean | null,
+	nagSchedule: [] as number[] | null,
+	nagAcknowledgedSchedule: [] as number[] | null,
+	nagAcknowledgedLeeway: 0 as number | null,
 	aliases: [''],
 	badgeProject: '' as string | null,
 }
@@ -135,6 +145,14 @@ const edgeOptionFieldsPrototype = {
 	additionalSlackChannel: '',
 
 	postOnlyToAdditionalChannel: false,
+
+	resolver: '',
+	triager: '',
+
+	nagSchedule: [],
+	nagAcknowledgedSchedule: [],
+	nagAcknowledgedLeeway: 0,
+	nagWhenBlocked: true,
 
 	terminal: false, // changes go along terminal edges but no further
 
@@ -254,6 +272,11 @@ export class BranchDefs {
 			isDefaultBot: false,
 			noStreamAliases: false,
 			globalNotify: [],
+			triager: null,
+			nagSchedule: null,
+			nagAcknowledgedSchedule: null,
+			nagAcknowledgedLeeway: null,
+			nagWhenBlocked: null,
 			emailOnBlockage: true,
 			checkIntervalSecs: 30.0,
 			excludeAuthors: [],
@@ -431,12 +454,7 @@ export class BranchDefs {
 
 				// check all properties are known (could make things case insensitive here)
 				for (const keyName of Object.keys(edge)) {
-					if (keyName !== 'from' && keyName !== 'to' 
-
-// temporarily allow resolver until supported properly
-&& keyName !== 'resolver'
-
-						&& !edgeOptionFieldNames.has(keyName)) {
+					if (keyName !== 'from' && keyName !== 'to' && !edgeOptionFieldNames.has(keyName)) {
 						throw new Error(`Unknown property '${keyName}' specified for edge ${edge.from}->${edge.to}`)
 					}
 				}

@@ -45,6 +45,8 @@
 #include "Misc/MessageDialog.h"
 #include "Modules/ModuleManager.h"
 #include "Textures/SlateIcon.h"
+#include "UObject/LinkerLoad.h"
+#include "Algo/Sort.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(EdGraphSchema_Niagara)
 
@@ -688,7 +690,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			
 			// Dynamic Makes from type registry. Should include the pin type as well.
 			TArray<FNiagaraTypeDefinition> CandidateTypes;
-			FNiagaraEditorUtilities::GetAllowedTypes(CandidateTypes);
+			FNiagaraEditorUtilities::GetAllowedParameterTypes(CandidateTypes);
 			for (const FNiagaraTypeDefinition& CandidateType : FNiagaraTypeRegistry::GetRegisteredTypes())
 			{
 				bool bAddMake = false;
@@ -883,7 +885,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	// Handle output tag nodes
 	if (bAllowOutputTagNodes && NiagaraEditorSettings->IsAllowedClass(UNiagaraNodeOutputTag::StaticClass()))
 	{
-		FText MenuCat = FText::FromString("Compiler Tagging");
+		FText MenuCat = FText::FromString("Special Purpose Parameters");
 
 		{
 			FString Name = TEXT("Add Compiler Output Tag");
@@ -2158,46 +2160,65 @@ void UEdGraphSchema_Niagara::GetNumericConversionToSubMenuActionsAll(UToolMenu* 
 	}
 }
 
+TArray<TPair<FString, FString>> UEdGraphSchema_Niagara::GetDataInterfaceFunctionPrototypes(const UEdGraphPin* InGraphPin)
+{
+	TArray<TPair<FString, FString>> FunctionPrototypes;
+	if (InGraphPin)
+	{
+		FNiagaraTypeDefinition GraphPinType = UEdGraphSchema_Niagara::PinToTypeDefinition(InGraphPin);
+		if (GraphPinType.IsDataInterface())
+		{
+			UNiagaraDataInterface* DataInterface = CastChecked<UNiagaraDataInterface>(GraphPinType.GetClass()->GetDefaultObject());
+			
+			// No functions, don't add an option
+			TArray<FNiagaraFunctionSignature> FunctionSignatures;
+			DataInterface->GetFunctions(FunctionSignatures);
+			if (FunctionSignatures.Num() == 0)
+			{
+				return FunctionPrototypes;
+			}
+
+			// Make the data interface name
+			FString DataInterfaceName = InGraphPin->GetName();
+			{
+				int32 LastPinNameDot = 0;
+				if (DataInterfaceName.FindLastChar('.', LastPinNameDot))
+				{
+					DataInterfaceName.RightChopInline(LastPinNameDot + 1);
+				}
+				DataInterfaceName = FHlslNiagaraTranslator::GetSanitizedSymbolName(DataInterfaceName);
+			}
+
+			// Generate all prototypes
+			FunctionPrototypes.Reserve(FunctionSignatures.Num());
+			for (const FNiagaraFunctionSignature& FunctionSignature : FunctionSignatures)
+			{
+				if (FunctionSignature.bSoftDeprecatedFunction || FunctionSignature.bHidden )
+				{
+					continue;
+				}
+
+				FString Prototype = FHlslNiagaraTranslator::GenerateFunctionHlslPrototype(DataInterfaceName, FunctionSignature);
+				if ( Prototype.Len() > 0 )
+				{
+					Prototype.Append(TEXT("\r\n"));
+					FunctionPrototypes.Emplace(FunctionSignature.GetNameString(), Prototype);
+				}
+			}
+		}
+	}
+	return FunctionPrototypes;
+}
+
 void UEdGraphSchema_Niagara::GenerateDataInterfacePinMenu(UToolMenu* ToolMenu, const FName SectionName, const UEdGraphPin* GraphPin, FNiagaraTypeDefinition TypeDef) const
 {
-	UNiagaraDataInterface* DataInterface = CastChecked<UNiagaraDataInterface>(TypeDef.GetClass()->GetDefaultObject());
-
-	// No functions, don't add an option
-	TArray<FNiagaraFunctionSignature> FunctionSignatures;
-	DataInterface->GetFunctions(FunctionSignatures);
-	if (FunctionSignatures.Num() == 0)
+	TArray<TPair<FString, FString>> FunctionPrototypes = GetDataInterfaceFunctionPrototypes(GraphPin);
+	if (FunctionPrototypes.Num () == 0)
 	{
 		return;
 	}
 
-	// Make the data interface name
-	FString DataInterfaceName = GraphPin->GetName();
-	{
-		int32 LastPinNameDot = 0;
-		if (DataInterfaceName.FindLastChar('.', LastPinNameDot))
-		{
-			DataInterfaceName.RightChopInline(LastPinNameDot + 1);
-		}
-		DataInterfaceName = FHlslNiagaraTranslator::GetSanitizedSymbolName(DataInterfaceName);
-	}
-
-	// Generate all prototypes
-	TArray<TPair<FString, FString>> FunctionPrototypes;
-	FunctionPrototypes.Reserve(FunctionSignatures.Num());
-	for (const FNiagaraFunctionSignature& FunctionSignature : FunctionSignatures)
-	{
-		FString Prototype = FHlslNiagaraTranslator::GenerateFunctionHlslPrototype(DataInterfaceName, FunctionSignature);
-		if ( Prototype.Len() > 0 )
-		{
-			Prototype.Append(TEXT("\r\n"));
-			FunctionPrototypes.Emplace(FunctionSignature.GetNameString(), Prototype);
-		}
-	}
-
-	if ( FunctionPrototypes.Num () == 0 )
-	{
-		return;
-	}
+	Algo::Sort(FunctionPrototypes, [](const TPair<FString, FString>& Lhs, const TPair<FString, FString>& Rhs) { return Lhs.Key < Rhs.Key; });
 
 	// Make the menu
 	FToolMenuSection& Section = ToolMenu->FindOrAddSection(SectionName);
@@ -2315,39 +2336,49 @@ void UEdGraphSchema_Niagara::GetContextMenuActions(UToolMenu* Menu, UGraphNodeCo
 	const UEdGraphPin* InGraphPin = Context->Pin;
 	if (InGraphPin)
 	{
+		const FName SectionName = "EdGraphSchemaPinActions";
+		FToolMenuSection& Section = Menu->FindOrAddSection(SectionName);
+		FNiagaraTypeDefinition InGraphPinType = PinToTypeDefinition(InGraphPin);
+		if (InGraphPinType == FNiagaraTypeDefinition::GetGenericNumericDef() && InGraphPin->LinkedTo.Num() == 0)
 		{
-			const FName SectionName = "EdGraphSchema_NiagaraPinActions";
-			FToolMenuSection& Section = Menu->AddSection(SectionName, LOCTEXT("PinActionsMenuHeader", "Pin Actions"));
-			FNiagaraTypeDefinition InGraphPinType = PinToTypeDefinition(InGraphPin);
-			if (InGraphPinType == FNiagaraTypeDefinition::GetGenericNumericDef() && InGraphPin->LinkedTo.Num() == 0)
-			{
-				Section.AddSubMenu(
-					"ConvertNumericSpecific",
-					LOCTEXT("ConvertNumericSpecific", "Convert Numeric To..."),
-					LOCTEXT("ConvertNumericSpecificToolTip", "Convert Numeric pin to the specific typed pin."),
-				FNewToolMenuDelegate::CreateUObject((UEdGraphSchema_Niagara*const)this, &UEdGraphSchema_Niagara::GetNumericConversionToSubMenuActions, SectionName, const_cast<UEdGraphPin*>(InGraphPin)));
-			}
-			else if ( InGraphPinType.IsDataInterface() )
-			{
-				GenerateDataInterfacePinMenu(Menu, SectionName, InGraphPin, InGraphPinType);
-			}
+			Section.AddSubMenu(
+				"ConvertNumericSpecific",
+				LOCTEXT("ConvertNumericSpecific", "Convert Numeric To..."),
+				LOCTEXT("ConvertNumericSpecificToolTip", "Convert Numeric pin to the specific typed pin."),
+			FNewToolMenuDelegate::CreateUObject((UEdGraphSchema_Niagara*const)this, &UEdGraphSchema_Niagara::GetNumericConversionToSubMenuActions, SectionName, const_cast<UEdGraphPin*>(InGraphPin)));
+		}
+		else if ( InGraphPinType.IsDataInterface() )
+		{
+			GenerateDataInterfacePinMenu(Menu, SectionName, InGraphPin, InGraphPinType);
+		}
 
-			if (InGraphPin->Direction == EEdGraphPinDirection::EGPD_Input)
+		if (InGraphPin->Direction == EEdGraphPinDirection::EGPD_Input)
+		{
+			FUIAction PromoteToParameterAction(FExecuteAction::CreateUObject((UEdGraphSchema_Niagara*const)this, &UEdGraphSchema_Niagara::PromoteSinglePinToParameter, const_cast<UEdGraphPin*>(InGraphPin)),					
+				FCanExecuteAction::CreateStatic(&UEdGraphSchema_Niagara::CanPromoteSinglePinToParameter, InGraphPin));
+			PromoteToParameterAction.IsActionVisibleDelegate = FIsActionButtonVisible::CreateStatic(&UEdGraphSchema_Niagara::CanPromoteSinglePinToParameter, InGraphPin);
+			
+			Section.AddMenuEntry(
+			"PromoteToParameter",
+			LOCTEXT("PromoteToParameter", "Promote to Parameter"),
+			LOCTEXT("PromoteToParameterTooltip", "Create a parameter argument and connect this pin to that parameter."),
+				FSlateIcon(),
+				PromoteToParameterAction
+			);
+			
+			if (InGraphPin->LinkedTo.Num() == 0 && InGraphPin->bDefaultValueIsIgnored == false)
 			{
-				Section.AddMenuEntry("PromoteToParameter", LOCTEXT("PromoteToParameter", "Promote to Parameter"), LOCTEXT("PromoteToParameterTooltip", "Create a parameter argument and connect this pin to that parameter."), FSlateIcon(),
-					FUIAction(FExecuteAction::CreateUObject((UEdGraphSchema_Niagara*const)this, &UEdGraphSchema_Niagara::PromoteSinglePinToParameter, const_cast<UEdGraphPin*>(InGraphPin)),
-						FCanExecuteAction::CreateStatic(&UEdGraphSchema_Niagara::CanPromoteSinglePinToParameter, InGraphPin)));
-				if (InGraphPin->LinkedTo.Num() == 0 && InGraphPin->bDefaultValueIsIgnored == false)
-				{
-					Section.AddMenuEntry(
-						"ResetInputToDefault",
-						LOCTEXT("ResetInputToDefault", "Reset to Default"),  // TODO(mv): This is currently broken
-						LOCTEXT("ResetInputToDefaultToolTip", "Reset this input to its default value."),
-						FSlateIcon(),
-						FUIAction(
-							FExecuteAction::CreateUObject((UEdGraphSchema_Niagara*const)this, &UEdGraphSchema_Niagara::ResetPinToAutogeneratedDefaultValue, const_cast<UEdGraphPin*>(InGraphPin), true),
-							FCanExecuteAction::CreateStatic(&CanResetPinToDefault, this, InGraphPin)));
-				}
+				FUIAction ResetToDefaultAction(FExecuteAction::CreateUObject((UEdGraphSchema_Niagara*const)this, &UEdGraphSchema_Niagara::ResetPinToAutogeneratedDefaultValue, const_cast<UEdGraphPin*>(InGraphPin), true),
+					FCanExecuteAction::CreateStatic(&CanResetPinToDefault, this, InGraphPin));
+				ResetToDefaultAction.IsActionVisibleDelegate = FIsActionButtonVisible::CreateStatic(&CanResetPinToDefault, this, InGraphPin);
+				
+				Section.AddMenuEntry(
+					"ResetInputToDefault",
+					LOCTEXT("ResetInputToDefault", "Reset to Default"),
+					LOCTEXT("ResetInputToDefaultToolTip", "Reset this input to its default value."),
+					FSlateIcon(),
+					ResetToDefaultAction
+				);
 			}
 		}
 	}
@@ -2386,7 +2417,7 @@ void UEdGraphSchema_Niagara::GetContextMenuActions(UToolMenu* Menu, UGraphNodeCo
 				FNewToolMenuDelegate::CreateUObject((UEdGraphSchema_Niagara*const)this, &UEdGraphSchema_Niagara::GetNumericConversionToSubMenuActionsAll, SectionName, const_cast<UNiagaraNode*>(Node)));
 		}
 		
-		FToolMenuSection& Section = Menu->AddSection("EdGraphSchema_NiagaraNodeActions", LOCTEXT("NodeActionsMenuHeader", "Node Actions"));
+		FToolMenuSection& Section = Menu->AddSection("EdGraphSchema_NiagaraNodeActions", LOCTEXT("NodeActionsMenuHeader", "Niagara Node Actions"));
 		Section.AddMenuEntry("ToggleEnabledState", LOCTEXT("ToggleEnabledState", "Toggle Enabled State"), LOCTEXT("ToggleEnabledStateTooltip", "Toggle this node between Enbled (default) and Disabled (skipped from compilation)."), FSlateIcon(),
 			FUIAction(FExecuteAction::CreateUObject((UEdGraphSchema_Niagara*const)this, &UEdGraphSchema_Niagara::ToggleNodeEnabledState, const_cast<UNiagaraNode*>(Node))));
 		Section.AddMenuEntry("RefreshNode", LOCTEXT("RefreshNode", "Refresh Node"), LOCTEXT("RefreshNodeTooltip", "Refresh this node."), FSlateIcon(),

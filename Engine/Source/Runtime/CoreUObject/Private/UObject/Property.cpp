@@ -21,6 +21,8 @@
 #include "UObject/CoreRedirects.h"
 #include "UObject/SoftObjectPath.h"
 #include "Math/Box2D.h"
+#include "Math/Ray.h"
+#include "Math/Sphere.h"
 #include "Math/InterpCurvePoint.h"
 #include "UObject/ReleaseObjectVersion.h"
 
@@ -331,6 +333,42 @@ struct TStructOpsTypeTraits<FTwoVectors> : public TStructOpsTypeTraitsBase2<FTwo
 };
 UE_IMPLEMENT_STRUCT("/Script/CoreUObject", TwoVectors);
 
+
+template<typename T>
+struct TRay3StructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
+{
+	enum
+	{
+		WithIdenticalViaEquality = true,
+		WithNoInitConstructor = true,
+		WithZeroConstructor = true,
+		WithSerializeFromMismatchedTag = true,		
+	};
+};
+template<> struct TStructOpsTypeTraits<FRay3f> : public TRay3StructOpsTypeTraits<FRay3f> {};
+template<> struct TStructOpsTypeTraits<FRay3d> : public TRay3StructOpsTypeTraits<FRay3d> {};
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Ray3f);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Ray3d);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Ray);
+
+
+template<typename T>
+struct TSphere3StructOpsTypeTraits : public TStructOpsTypeTraitsBase2<T>
+{
+	enum
+	{
+		WithIdenticalViaEquality = true,
+		WithNoInitConstructor = true,
+		WithZeroConstructor = true,
+		WithSerializeFromMismatchedTag = true,
+	};
+};
+template<> struct TStructOpsTypeTraits<FSphere3f> : public TSphere3StructOpsTypeTraits<FSphere3f> {};
+template<> struct TStructOpsTypeTraits<FSphere3d> : public TSphere3StructOpsTypeTraits<FSphere3d> {};
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Sphere3f);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Sphere3d);
+UE_IMPLEMENT_STRUCT("/Script/CoreUObject", Sphere); 
+
 template<>
 struct TStructOpsTypeTraits<FInterpCurvePointFloat> : public TStructOpsTypeTraitsBase2<FInterpCurvePointFloat>
 {
@@ -427,7 +465,6 @@ struct TStructOpsTypeTraits<FRandomStream> : public TStructOpsTypeTraitsBase2<FR
 {
 	enum 
 	{
-		WithExportTextItem = true,
 		WithNoInitConstructor = true,
 		WithZeroConstructor = true,
 	};
@@ -908,6 +945,32 @@ void FProperty::CopyCompleteValueFromScriptVM( void* Dest, void const* Src ) con
 	CopyCompleteValue(Dest, Src);
 }
 
+void FProperty::CopyCompleteValueToScriptVM_InContainer( void* OutValue, void const* InContainer ) const
+{
+	if (HasGetter())
+	{
+		CallGetter(InContainer, OutValue);
+	}
+	else
+	{
+		const void* InObj = ContainerPtrToValuePtr<uint8>(InContainer);
+		CopyCompleteValue(OutValue, InObj);
+	}
+}
+
+void FProperty::CopyCompleteValueFromScriptVM_InContainer( void* OutContainer, void const* InValue ) const
+{
+	if (HasSetter())
+	{
+		CallSetter(OutContainer, InValue);
+	}
+	else
+	{
+		void* OutObj = ContainerPtrToValuePtr<uint8>(OutContainer);
+		CopyCompleteValue(OutObj, InValue);
+	}
+}
+
 void FProperty::ClearValueInternal( void* Data ) const
 {
 	checkf(0, TEXT("%s failed to handle ClearValueInternal, but it was not CPF_NoDestructor | CPF_ZeroConstructor"), *GetFullName());
@@ -1137,13 +1200,15 @@ bool FProperty::ExportText_Direct
 	return false;
 }
 
-bool FProperty::ShouldSerializeValue( FArchive& Ar ) const
+bool FProperty::ShouldSerializeValue(FArchive& Ar) const
 {
+	// Skip the property if the archive says we should
 	if (Ar.ShouldSkipProperty(this))
 	{
 		return false;
 	}
 
+	// Skip non-SaveGame properties if we're saving game state
 	if (!(PropertyFlags & CPF_SaveGame) && Ar.IsSaveGame())
 	{
 		return false;
@@ -1155,16 +1220,50 @@ bool FProperty::ShouldSerializeValue( FArchive& Ar ) const
 		return true;
 	}
 
-	bool Skip =
-			((PropertyFlags & CPF_Transient) && Ar.IsPersistent() && !Ar.IsSerializingDefaults())
-		||	((PropertyFlags & CPF_DuplicateTransient) && (Ar.GetPortFlags() & PPF_Duplicate))
-		||	((PropertyFlags & CPF_NonPIEDuplicateTransient) && !(Ar.GetPortFlags() & PPF_DuplicateForPIE) && (Ar.GetPortFlags() & PPF_Duplicate))
-		||	((PropertyFlags & CPF_NonTransactional) && Ar.IsTransacting())
-		||	((PropertyFlags & CPF_Deprecated) && !Ar.HasAllPortFlags(PPF_UseDeprecatedProperties) && (Ar.IsSaving() || Ar.IsTransacting() || Ar.WantBinaryPropertySerialization()))
-		||  ((PropertyFlags & CPF_SkipSerialization) && (Ar.WantBinaryPropertySerialization() || !Ar.HasAllPortFlags(PPF_ForceTaggedSerialization)))
-		||  (IsEditorOnlyProperty() && Ar.IsFilterEditorOnly());
+	// Skip properties marked Transient when persisting an object, unless we're saving an archetype
+	if ((PropertyFlags & CPF_Transient) && Ar.IsPersistent() && !Ar.IsSerializingDefaults())
+	{
+		return false;
+	}
 
-	return !Skip;
+	// Skip properties marked DuplicateTransient when duplicating
+	if ((PropertyFlags & CPF_DuplicateTransient) && (Ar.GetPortFlags() & PPF_Duplicate))
+	{
+		return false;
+	}
+
+	// Skip properties marked NonPIEDuplicateTransient when duplicating, but not when we're duplicating for PIE
+	if ((PropertyFlags & CPF_NonPIEDuplicateTransient) && !(Ar.GetPortFlags() & PPF_DuplicateForPIE) && (Ar.GetPortFlags() & PPF_Duplicate))
+	{
+		return false;
+	}
+
+	// Skip properties marked NonTransactional when transacting
+	if ((PropertyFlags & CPF_NonTransactional) && Ar.IsTransacting())
+	{
+		return false;
+	}
+
+	// Skip deprecated properties when saving or transacting, unless the archive has explicitly requested them
+	if ((PropertyFlags & CPF_Deprecated) && !Ar.HasAllPortFlags(PPF_UseDeprecatedProperties) && (Ar.IsSaving() || Ar.IsTransacting() || Ar.WantBinaryPropertySerialization()))
+	{
+		return false;
+	}
+
+	// Skip properties marked SkipSerialization, unless the archive is forcing them
+	if ((PropertyFlags & CPF_SkipSerialization) && (Ar.WantBinaryPropertySerialization() || !Ar.HasAllPortFlags(PPF_ForceTaggedSerialization)))
+	{
+		return false;
+	}
+
+	// Skip editor-only properties when the archive is rejecting them
+	if (IsEditorOnlyProperty() && Ar.IsFilterEditorOnly())
+	{
+		return false;
+	}
+
+	// Otherwise serialize!
+	return true;
 }
 
 
@@ -1324,30 +1423,30 @@ void* FProperty::GetValueAddressAtIndex_Direct(const FProperty* Inner, void* InV
 	return (uint8*)InValueAddress + ElementSize * Index;
 }
 
-void FProperty::SetSingleValue_InContainer(void* InContainer, const void* InValue, int32 ArrayIndex) const
+void FProperty::SetSingleValue_InContainer(void* OutContainer, const void* InValue, int32 ArrayIndex) const
 {
 	checkf(ArrayIndex <= ArrayDim, TEXT("ArrayIndex (%d) must be less than the property %s array size (%d)"), ArrayIndex, *GetFullName(), ArrayDim);
 	if (!HasSetter())
 	{
 		// Fast path - direct memory access
-		CopySingleValue(ContainerVoidPtrToValuePtrInternal((void*)InContainer, ArrayIndex), InValue);
+		CopySingleValue(ContainerVoidPtrToValuePtrInternal((void*)OutContainer, ArrayIndex), InValue);
 	}
 	else
 	{
 		if (ArrayDim == 1)
 		{
 			// Slower but no mallocs. We can copy the value directly to the resulting param
-			CallSetter(InContainer, InValue);
+			CallSetter(OutContainer, InValue);
 		}
 		else
 		{
 			// Malloc a temp value that is the size of the array. We will then copy the entire array to the temp value
 			uint8* ValueArray = (uint8*)AllocateAndInitializeValue();
-			GetValue_InContainer(InContainer, ValueArray);
+			GetValue_InContainer(OutContainer, ValueArray);
 			// Replace the value at the specified index in the temp array with the InValue
 			CopySingleValue(ValueArray + ArrayIndex * ElementSize, InValue);
 			// Now call a setter to replace the entire array and then destroy the temp value
-			CallSetter(InContainer, ValueArray);
+			CallSetter(OutContainer, ValueArray);
 			DestroyAndFreeValue(ValueArray);
 		}
 	}
@@ -1380,21 +1479,21 @@ void FProperty::GetSingleValue_InContainer(const void* InContainer, void* OutVal
 	}
 }
 
-void FProperty::PerformOperationWithSetter(void* InContainer, void* DirectPropertyAddress, TFunctionRef<void(void*)> DirectValueAccessFunc) const
+void FProperty::PerformOperationWithSetter(void* OutContainer, void* DirectPropertyAddress, TFunctionRef<void(void*)> DirectValueAccessFunc) const
 {
-	if (InContainer && HasSetterOrGetter()) // If there's a getter we need to allocate a temp value even if there's no setter
+	if (OutContainer && HasSetterOrGetter()) // If there's a getter we need to allocate a temp value even if there's no setter
 	{
 		// When modifying container or struct properties that have a setter or getter function we first allocate a temp value
 		// that we can operate on directly (add new elements or modify existing ones)
 		void* LocalValuePtr = AllocateAndInitializeValue();
 		// Copy the value to the allocated local (using a getter if present)
-		GetValue_InContainer(InContainer, LocalValuePtr);
+		GetValue_InContainer(OutContainer, LocalValuePtr);
 
 		// Perform operation on the temp value
 		DirectValueAccessFunc(LocalValuePtr);
 
 		// Assign the temp value back to the property using a setter function
-		SetValue_InContainer(InContainer, LocalValuePtr);
+		SetValue_InContainer(OutContainer, LocalValuePtr);
 		// Destroy and free the temp value
 		DestroyAndFreeValue(LocalValuePtr);
 	}
@@ -1403,22 +1502,22 @@ void FProperty::PerformOperationWithSetter(void* InContainer, void* DirectProper
 		// When there's no setter or getter present it's ok to perform the operation directly on the container / struct memory
 		if (!DirectPropertyAddress)
 		{
-			checkf(InContainer, TEXT("Container pointr must be valid if DirectPropertyAddress is not valid"));
-			DirectPropertyAddress = PointerToValuePtr(InContainer, EPropertyPointerType::Container);
+			checkf(OutContainer, TEXT("Container pointr must be valid if DirectPropertyAddress is not valid"));
+			DirectPropertyAddress = PointerToValuePtr(OutContainer, EPropertyPointerType::Container);
 		}
 		DirectValueAccessFunc(DirectPropertyAddress);
 	}
 }
 
-void FProperty::PerformOperationWithGetter(void* InContainer, const void* DirectPropertyAddress, TFunctionRef<void(const void*)> DirectValueAccessFunc) const
+void FProperty::PerformOperationWithGetter(void* OutContainer, const void* DirectPropertyAddress, TFunctionRef<void(const void*)> DirectValueAccessFunc) const
 {
-	if (InContainer && HasGetter())
+	if (OutContainer && HasGetter())
 	{
 		// When modifying container or struct properties that have a getter function we first allocate a temp value
 		// that we can operate on directly (add new elements or modify existing ones)
 		void* LocalValuePtr = AllocateAndInitializeValue();
 		// Copy the value to the allocated local using a getter
-		GetValue_InContainer(InContainer, LocalValuePtr);
+		GetValue_InContainer(OutContainer, LocalValuePtr);
 
 		// Perform read-only operation on the temp value
 		DirectValueAccessFunc(LocalValuePtr);
@@ -1430,8 +1529,8 @@ void FProperty::PerformOperationWithGetter(void* InContainer, const void* Direct
 	{
 		if (!DirectPropertyAddress)
 		{
-			checkf(InContainer, TEXT("Container pointr must be valid if DirectPropertyAddress is not valid"));
-			DirectPropertyAddress = PointerToValuePtr(InContainer, EPropertyPointerType::Container);
+			checkf(OutContainer, TEXT("Container pointr must be valid if DirectPropertyAddress is not valid"));
+			DirectPropertyAddress = PointerToValuePtr(OutContainer, EPropertyPointerType::Container);
 		}
 		DirectValueAccessFunc(DirectPropertyAddress);
 	}
@@ -2004,16 +2103,6 @@ UPropertyWrapper* FProperty::GetUPropertyWrapper()
 	return Wrapper;
 }
 #endif //  WITH_EDITORONLY_DATA
-
-void FFloatProperty::ExportText_Internal(FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope) const
-{
-	Super::ExportText_Internal(ValueStr, PropertyValueOrContainer, PropertyPointerType, DefaultValue, Parent, PortFlags, ExportRootScope);
-
-	if (0 != (PortFlags & PPF_ExportCpp))
-	{
-		ValueStr += TEXT("f");
-	}
-}
 
 
 FProperty* UStruct::FindPropertyByName(FName InName) const

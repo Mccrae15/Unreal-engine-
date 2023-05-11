@@ -81,26 +81,33 @@ UClass* FAssetTypeActions_BehaviorTree::GetSupportedClass() const
 void FAssetTypeActions_BehaviorTree::PerformAssetDiff(UObject* OldAsset, UObject* NewAsset, const struct FRevisionInfo& OldRevision, const struct FRevisionInfo& NewRevision) const
 {
 	UBehaviorTree* OldBehaviorTree = Cast<UBehaviorTree>(OldAsset);
-	check(OldBehaviorTree != NULL);
-
 	UBehaviorTree* NewBehaviorTree = Cast<UBehaviorTree>(NewAsset);
-	check(NewBehaviorTree != NULL);
+	check(NewBehaviorTree != nullptr || OldBehaviorTree != nullptr);
 
 	// sometimes we're comparing different revisions of one single asset (other 
 	// times we're comparing two completely separate assets altogether)
-	bool bIsSingleAsset = (NewBehaviorTree->GetName() == OldBehaviorTree->GetName());
+	const bool bIsSingleAsset = !NewBehaviorTree || !OldBehaviorTree || (NewBehaviorTree->GetName() == OldBehaviorTree->GetName());
 
 	FText WindowTitle = LOCTEXT("NamelessBehaviorTreeDiff", "Behavior Tree Diff");
 	// if we're diffing one asset against itself 
 	if (bIsSingleAsset)
 	{
 		// identify the assumed single asset in the window's title
-		WindowTitle = FText::Format(LOCTEXT("Behavior Tree Diff", "{0} - Behavior Tree Diff"), FText::FromString(NewBehaviorTree->GetName()));
+		FString TreeName;
+		if (NewBehaviorTree)
+		{
+			TreeName = NewBehaviorTree->GetName();
+		}
+		else if (OldBehaviorTree)
+		{
+			TreeName = OldBehaviorTree->GetName();
+		}
+		WindowTitle = FText::Format(LOCTEXT("Behavior Tree Diff", "{0} - Behavior Tree Diff"), FText::FromString(TreeName));
 	}
 
 	const TSharedPtr<SWindow> Window = SNew(SWindow)
 		.Title(WindowTitle)
-		.ClientSize(FVector2D(1000,800));
+		.ClientSize(FVector2f(1000.f,800.f));
 
 	Window->SetContent(SNew(SBehaviorTreeDiff)
 		.BehaviorTreeOld(OldBehaviorTree)

@@ -3,7 +3,10 @@
 #include "ReplaySubsystem.h"
 #include "Engine/Engine.h"
 #include "Engine/DemoNetDriver.h"
+#include "Engine/GameInstance.h"
 #include "Engine/NetworkObjectList.h"
+#include "Engine/World.h"
+#include "Misc/CommandLine.h"
 #include "ReplayNetConnection.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ReplaySubsystem)

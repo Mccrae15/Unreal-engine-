@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Elements/Framework/TypedElementHandle.h"
 #include "SlateFwd.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/UObjectGlobals.h"
@@ -17,21 +18,27 @@
 #include "TimerManager.h"
 #include "UObject/UObjectAnnotation.h"
 #include "Engine/Brush.h"
-#include "Model.h"
 #include "Engine/Engine.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "Settings/LevelEditorPlaySettings.h"
 #include "Settings/LevelEditorViewportSettings.h"
+#endif
 #include "Misc/CompilationResult.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "PlayInEditorDataTypes.h"
 #include "EditorSubsystem.h"
 #include "Subsystems/SubsystemCollection.h"
-#include "RHI.h"
 #include "UnrealEngine.h"
 #include "Templates/PimplPtr.h"
 #include "Templates/UniqueObj.h"
 #include "Editor/AssetReferenceFilter.h"
+#include "RHIShaderPlatform.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Model.h"
+#include "RHI.h"
+#endif
 
 #include "EditorEngine.generated.h"
 
@@ -39,6 +46,7 @@ class APlayerStart;
 class Error;
 class FEditorViewportClient;
 class FEditorWorldManager;
+class FLevelEditorViewportClient;
 class FMessageLog;
 class FOutputLogErrorsToMessageLogProxy;
 class FPoly;
@@ -58,6 +66,7 @@ class UBrushBuilder;
 class UFoliageType;
 class UFbxImportUI;
 class UGameViewportClient;
+class ULevelEditorPlaySettings;
 class ULocalPlayer;
 class UNetDriver;
 class UPrimitiveComponent;
@@ -67,6 +76,7 @@ class USoundNode;
 class UTextureRenderTarget2D;
 class UTransactor;
 class FTransactionObjectEvent;
+enum ERotationGridMode : int;
 struct FEdge;
 struct FTransactionContext;
 struct FEditorTransactionDeltaContext;
@@ -83,7 +93,7 @@ class IProjectExternalContentInterface;
 // Things to set in mapSetBrush.
 //
 UENUM()
-enum EMapSetBrushFlags				
+enum EMapSetBrushFlags : int
 {
 	/** Set brush color. */
 	MSB_BrushColor	= 1,
@@ -96,7 +106,7 @@ enum EMapSetBrushFlags
 };
 
 UENUM()
-enum EPasteTo
+enum EPasteTo : int
 {
 	PT_OriginalLocation	= 0,
 	PT_Here				= 1,
@@ -262,11 +272,7 @@ struct FPreviewPlatformInfo
 	}
 
 	/** returns the preview feature level if active, or GMaxRHIFeatureLevel otherwise */
-	ERHIFeatureLevel::Type GetEffectivePreviewFeatureLevel() const
-	{
-		return bPreviewFeatureLevelActive ? PreviewFeatureLevel : GMaxRHIFeatureLevel;
-	}
-
+	UNREALED_API ERHIFeatureLevel::Type GetEffectivePreviewFeatureLevel() const;
 };
 
 /** Struct used in filtering allowed references between assets. Passes context about the referencers to game-level filters */
@@ -808,14 +814,14 @@ private:
 
 	/** Called when hotreload adds a new class to create volume factories */
 	void CreateVolumeFactoriesForNewClasses(const TArray<UClass*>& NewClasses);
-
-public:
 	//~ End UEngine Interface.
 	
 	//~ Begin FExec Interface
-	virtual bool Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar=*GLog ) override;
+protected:
+	virtual bool Exec_Editor( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar=*GLog ) override;
 	//~ End FExec Interface
 
+public:
 	bool	CommandIsDeprecated( const TCHAR* CommandStr, FOutputDevice& Ar );
 	
 	/**
@@ -3175,6 +3181,9 @@ private:
 	/** Gets the init values for worlds opened via Map_Load in the editor */
 	UWorld::InitializationValues GetEditorWorldInitializationValues() const;
 
+	/** Logic that needs to run on change of effective shader platform (can happen via both SetPreviewPlatform and ToggleFeatureLevelPreview). */
+	void OnEffectivePreviewShaderPlatformChange();
+
 public:
 	// Launcher Worker
 	TSharedPtr<class ILauncherWorker> LauncherWorker;
@@ -3199,6 +3208,9 @@ public:
 
 	/** Return whether the feature level preview enabled via Settings->Preview Rendering Level is currently active/displaying. */
 	bool IsFeatureLevelPreviewActive() const;
+
+	/** Return the current active shader platform in the editor*/
+	EShaderPlatform GetActiveShaderPlatform() const;
 
 	/**
 	 * Return the active feature level. This will be the chosen Settings->Preview Rendering Level if the Preview Mode button

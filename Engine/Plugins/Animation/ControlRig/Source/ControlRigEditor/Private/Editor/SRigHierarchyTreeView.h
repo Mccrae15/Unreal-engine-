@@ -92,7 +92,7 @@ struct CONTROLRIGEDITOR_API FRigTreeDelegates
 		bIsChangingRigHierarchy = false;
 	}
 
-	FORCEINLINE const URigHierarchy* GetHierarchy() const
+	const URigHierarchy* GetHierarchy() const
 	{
 		if(OnGetHierarchy.IsBound())
 		{
@@ -101,7 +101,7 @@ struct CONTROLRIGEDITOR_API FRigTreeDelegates
 		return nullptr;
 	}
 
-	FORCEINLINE const FRigTreeDisplaySettings& GetDisplaySettings() const
+	const FRigTreeDisplaySettings& GetDisplaySettings() const
 	{
 		if(OnGetDisplaySettings.IsBound())
 		{
@@ -110,7 +110,7 @@ struct CONTROLRIGEDITOR_API FRigTreeDelegates
 		return DefaultDisplaySettings;
 	}
 	
-	FORCEINLINE FName HandleRenameElement(const FRigElementKey& OldKey, const FString& NewName) const
+	FName HandleRenameElement(const FRigElementKey& OldKey, const FString& NewName) const
 	{
 		if(OnRenameElement.IsBound())
 		{
@@ -119,7 +119,7 @@ struct CONTROLRIGEDITOR_API FRigTreeDelegates
 		return OldKey.Name;
 	}
 	
-	FORCEINLINE bool HandleVerifyElementNameChanged(const FRigElementKey& OldKey, const FString& NewName, FText& OutErrorMessage) const
+	bool HandleVerifyElementNameChanged(const FRigElementKey& OldKey, const FString& NewName, FText& OutErrorMessage) const
 	{
 		if(OnVerifyElementNameChanged.IsBound())
 		{
@@ -128,7 +128,7 @@ struct CONTROLRIGEDITOR_API FRigTreeDelegates
 		return false;
 	}
 
-	FORCEINLINE void HandleSelectionChanged(TSharedPtr<FRigTreeElement> Selection, ESelectInfo::Type SelectInfo)
+	void HandleSelectionChanged(TSharedPtr<FRigTreeElement> Selection, ESelectInfo::Type SelectInfo)
 	{
 		if(bIsChangingRigHierarchy)
 		{
@@ -212,18 +212,26 @@ private:
  	FRigTreeDelegates Delegates;
 
 	FText GetName() const;
+
+	friend class SRigHierarchyTreeView; 
 };
 
 class SRigHierarchyTreeView : public STreeView<TSharedPtr<FRigTreeElement>>
 {
 public:
 
-	SLATE_BEGIN_ARGS(SRigHierarchyTreeView) {}
+	SLATE_BEGIN_ARGS(SRigHierarchyTreeView)
+		: _AutoScrollEnabled(false)
+	{}
 		SLATE_ARGUMENT(FRigTreeDelegates, RigTreeDelegates)
+		SLATE_ARGUMENT(bool, AutoScrollEnabled)
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs);
 	virtual ~SRigHierarchyTreeView() {}
+
+	/** Performs auto scroll */
+	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 
 	virtual FReply OnFocusReceived(const FGeometry& MyGeometry, const FFocusEvent& InFocusEvent) override
 	{
@@ -293,6 +301,10 @@ private:
 	TMap<FRigElementKey, FRigElementKey> ParentMap;
 
 	FRigTreeDelegates Delegates;
+
+	bool bAutoScrollEnabled;
+	FVector2D LastMousePosition;
+	double TimeAtMousePosition;
 
 	friend class SRigHierarchy;
 };

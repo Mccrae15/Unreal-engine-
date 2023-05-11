@@ -1,30 +1,32 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "Editor/EditorEngine.h"
-#include "ITargetDeviceServicesModule.h"
-#include "ILauncherServicesModule.h"
-#include "EditorAnalytics.h"
-#include "AnalyticsEventAttribute.h"
-#include "Widgets/Notifications/SNotificationList.h"
-#include "Interfaces/ITargetPlatform.h"
-#include "Misc/CoreMisc.h"
-#include "GameProjectGenerationModule.h"
-#include "CookerSettings.h"
-#include "Settings/EditorExperimentalSettings.h"
-#include "UnrealEdMisc.h"
-#include "Interfaces/ITargetPlatformManagerModule.h"
-#include "Settings/ProjectPackagingSettings.h"
-#include "Framework/Notifications/NotificationManager.h"
-#include "PlayLevel.h"
 #include "Algo/AllOf.h"
+#include "AnalyticsEventAttribute.h"
 #include "Async/Async.h"
-#include "Logging/MessageLog.h"
-#include "TargetReceipt.h"
+#include "CookerSettings.h"
 #include "DesktopPlatformModule.h"
-#include "PlatformInfo.h"
-#include "Framework/Docking/TabManager.h"
+#include "Editor/EditorEngine.h"
 #include "Editor/EditorPerProjectUserSettings.h"
-#include "ZenServerInterface.h"
+#include "EditorAnalytics.h"
+#include "Experimental/ZenServerInterface.h"
+#include "Framework/Docking/TabManager.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "GameProjectGenerationModule.h"
+#include "ILauncherServicesModule.h"
+#include "Interfaces/ITargetPlatform.h"
+#include "Interfaces/ITargetPlatformManagerModule.h"
+#include "ITargetDeviceServicesModule.h"
+#include "Logging/MessageLog.h"
+#include "Misc/CoreMisc.h"
+#include "PlatformInfo.h"
+#include "PlayLevel.h"
+#include "Settings/EditorExperimentalSettings.h"
+#include "Settings/LevelEditorPlaySettings.h"
+#include "Settings/ProjectPackagingSettings.h"
+#include "Settings/PlatformsMenuSettings.h"
+#include "TargetReceipt.h"
+#include "UnrealEdMisc.h"
+#include "Widgets/Notifications/SNotificationList.h"
 
 #define LOCTEXT_NAMESPACE "PlayLevel"
 
@@ -156,8 +158,9 @@ void UEditorEngine::StartPlayUsingLauncherSession(FRequestPlaySessionParams& InR
 	default:
 	{
 		const UProjectPackagingSettings* AllPlatformPackagingSettings = GetDefault<UProjectPackagingSettings>();
+		const UPlatformsMenuSettings* PlatformsSettings = GetDefault<UPlatformsMenuSettings>();
 
-		EProjectPackagingBuildConfigurations BuildConfig = AllPlatformPackagingSettings->GetBuildConfigurationForPlatform(*IniPlatformName);
+		EProjectPackagingBuildConfigurations BuildConfig = PlatformsSettings->GetBuildConfigurationForPlatform(*IniPlatformName);
 		// if PPBC_MAX is set, then the project default should be used instead of the per platform build config
 		if (BuildConfig == EProjectPackagingBuildConfigurations::PPBC_MAX)
 		{
@@ -279,10 +282,11 @@ void UEditorEngine::StartPlayUsingLauncherSession(FRequestPlaySessionParams& InR
 	// only set the BuildTarget in code-based projects
 	if (LauncherSessionInfo->bPlayUsingLauncherHasCode)
 	{
-		const FTargetInfo* TargetInfo = GetDefault<UProjectPackagingSettings>()->GetLaunchOnTargetInfo();
+		const FTargetInfo* TargetInfo = GetDefault<UPlatformsMenuSettings>()->GetLaunchOnTargetInfo();
 		if (TargetInfo != nullptr)
 		{
 			LauncherProfile->SetBuildTarget(TargetInfo->Name);
+			LauncherProfile->SetBuildTargetSpecified(true);
 		}
 	}
 	LauncherProfile->SetCookMode(CurrentLauncherCookMode);

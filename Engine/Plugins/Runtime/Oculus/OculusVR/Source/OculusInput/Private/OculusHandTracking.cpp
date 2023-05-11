@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OculusHandTracking.h"
+#include "Animation/Skeleton.h"
 #include "OculusHMD.h"
 #include "Misc/CoreDelegates.h"
 #include "IOculusInputModule.h"
@@ -10,10 +11,12 @@
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "Rendering/SkeletalMeshLODModel.h"
 #include "Rendering/SkeletalMeshModel.h"
+#include "MaterialDomain.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Model.h"
 #include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
+#include "Engine/SkinnedAssetCommon.h"
 
 #define OCULUS_TO_UE4_SCALE 100.0f
 

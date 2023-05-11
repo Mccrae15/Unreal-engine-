@@ -20,6 +20,7 @@ public class VPUtilities : ModuleRules
 				"TimeManagement",
 				"UMG",
 				"VPBookmark",
+				"VPSettings"
 			}
 		);
 
@@ -31,6 +32,8 @@ public class VPUtilities : ModuleRules
 				"RHI",
 				"Slate",
 				"SlateCore",
+				"ConcertClient",
+				"VPRoles"
 			}
 		);
 

@@ -7,7 +7,6 @@ using System.Runtime.InteropServices;
 
 namespace DatasmithSolidworks
 {
-	[ComVisible(false)]
     public static class MathUtils
     {
 		public static float Rad2Deg { get { return (float)(180.0 / Math.PI); } }
@@ -78,6 +77,17 @@ namespace DatasmithSolidworks
 			return Result;
 		}
 
+		public static float[] TransformIdentity()
+		{
+			return new[]
+			{
+				1.0f, 0.0f, 0.0f, 0.0f,
+				0.0f, 1.0f, 0.0f, 0.0f,
+				0.0f, 0.0f, 1.0f, 0.0f,
+				0.0f, 0.0f, 0.0f, 1.0f
+			};
+		}
+
 		public static float[] LookAt(FVec3 InDirection, FVec3 InFromPoint, float InGeomScale)
 		{
 			float[] Ret = new float[16];
@@ -85,8 +95,8 @@ namespace DatasmithSolidworks
 			if (InDirection != null)
 			{
 				FVec3 Forward = InDirection.Normalized();
-				FVec3 Right = FVec3.Cross(FVec3.YAxis, Forward);
-				FVec3 Up = FVec3.Cross(Forward, Right);
+				FVec3 Right = - FVec3.Cross(FVec3.YAxis, Forward);
+				FVec3 Up = - FVec3.Cross(Forward, Right);
 
 				Ret[0] = Forward.X;
 				Ret[1] = Forward.Y;

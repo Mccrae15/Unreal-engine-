@@ -17,7 +17,7 @@ class UDialogueWave;
 UENUM()
 namespace EGrammaticalGender
 {
-	enum Type
+	enum Type : int
 	{
 		Neuter		UMETA( DisplayName = "Neuter" ),
 		Masculine	UMETA( DisplayName = "Masculine" ),
@@ -29,7 +29,7 @@ namespace EGrammaticalGender
 UENUM()
 namespace EGrammaticalNumber
 {
-	enum Type
+	enum Type : int
 	{
 		Singular	UMETA( DisplayName = "Singular" ),
 		Plural		UMETA( DisplayName = "Plural" ),
@@ -56,10 +56,10 @@ struct ENGINE_API FDialogueContext
 
 	/** Gets a generated hash created from the source and targets. */
 	FString GetContextHash() const;
-};
 
-ENGINE_API bool operator==(const FDialogueContext& LHS, const FDialogueContext& RHS);
-ENGINE_API bool operator!=(const FDialogueContext& LHS, const FDialogueContext& RHS);
+	friend ENGINE_API bool operator==(const FDialogueContext& LHS, const FDialogueContext& RHS);
+	friend ENGINE_API bool operator!=(const FDialogueContext& LHS, const FDialogueContext& RHS);
+};
 
 USTRUCT()
 struct ENGINE_API FDialogueWaveParameter

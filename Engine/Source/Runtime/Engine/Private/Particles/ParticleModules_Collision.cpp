@@ -5,29 +5,33 @@
 	Collision-related particle module implementations.
 =============================================================================*/
 
-#include "CoreMinimal.h"
-#include "Stats/Stats.h"
-#include "HAL/IConsoleManager.h"
-#include "EngineDefines.h"
-#include "Engine/EngineTypes.h"
+#include "Components/PrimitiveComponent.h"
+#include "Engine/World.h"
 #include "GameFramework/Pawn.h"
-#include "CollisionQueryParams.h"
+#include "MaterialDomain.h"
 #include "Materials/Material.h"
-#include "ParticleHelper.h"
+#include "MaterialShared.h"
 #include "Distributions/DistributionFloatConstant.h"
 #include "Distributions/DistributionFloatUniform.h"
 #include "Distributions/DistributionVectorConstant.h"
 #include "Distributions/DistributionVectorUniform.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/TriggerBase.h"
+#include "ParticleEmitterInstances.h"
 #include "Particles/Collision/ParticleModuleCollisionBase.h"
 #include "Particles/Collision/ParticleModuleCollision.h"
 #include "Particles/Collision/ParticleModuleCollisionGPU.h"
 #include "Particles/Event/ParticleModuleEventGenerator.h"
+#include "Particles/ParticleEmitter.h"
 #include "Particles/TypeData/ParticleModuleTypeDataMesh.h"
+#include "Particles/ParticleModule.h"
 #include "Particles/TypeData/ParticleModuleTypeDataGpu.h"
 #include "Particles/ParticleLODLevel.h"
 #include "Particles/ParticleModuleRequired.h"
+#include "Particles/ParticleSystem.h"
+#include "Particles/ParticleSystemComponent.h"
+#include "Particles/TypeData/ParticleModuleTypeDataBase.h"
+#include "SceneManagement.h"
 
 UParticleModuleCollisionBase::UParticleModuleCollisionBase(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -672,15 +676,15 @@ bool UParticleModuleCollisionGPU::IsValidForLODLevel(UParticleLODLevel* LODLevel
 	}
 	check(Material);
 
-	EBlendMode BlendMode = BLEND_Opaque;
+	bool bIsOpaqueOrMasked = true;
 	UWorld* World = GetWorld();
 	const FMaterialResource* MaterialResource = Material->GetMaterialResource(World ? World->FeatureLevel.GetValue() : GMaxRHIFeatureLevel);
-	if(MaterialResource)
+	if (MaterialResource)
 	{
-		BlendMode = MaterialResource->GetBlendMode();
+		bIsOpaqueOrMasked = IsOpaqueOrMaskedBlendMode(*MaterialResource);
 	}
 
-	if (CollisionMode == EParticleCollisionMode::SceneDepth && (BlendMode == BLEND_Opaque || BlendMode == BLEND_Masked))
+	if (CollisionMode == EParticleCollisionMode::SceneDepth && bIsOpaqueOrMasked)
 	{
 		OutErrorString = NSLOCTEXT("UnrealEd", "CollisionOnOpaqueEmitter", "Scene depth collision cannot be used on emitters with an opaque material.").ToString();
 		return false;

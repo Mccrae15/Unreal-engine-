@@ -14,6 +14,7 @@
 #include "Misc/EnumClassFlags.h"
 #include "Net/UnrealNetwork.h"
 #include "Iris/ReplicationSystem/Filtering/NetObjectFilter.h"
+#include "Iris/ReplicationSystem/FastArrayReplicationFragment.h"
 
 UTestFastArrayReplicationState_FastArray_TestClassFastArray::UTestFastArrayReplicationState_FastArray_TestClassFastArray()
 : UReplicatedTestObject()
@@ -39,14 +40,80 @@ UTestFastArrayReplicationState_FastArray_TestClassFastArrayWithExtraProperty::UT
 {
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Note: this is a test for something that should not be done. This is purely to avoid refactoring existing code before full transition to iris.
+// A FastArraySerializer struct should not contain any additional data.
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+class FTestFastArrayReplicationState_FastArrayWithExtraProperty::FastArrayWithExtraPropertiesReplicationFragment : public UE::Net::TFastArrayReplicationFragment<typename TFastArrayTypeHelper<FTestFastArrayReplicationState_FastArrayWithExtraProperty>::FastArrayItemType, FTestFastArrayReplicationState_FastArrayWithExtraProperty>
+{
+public:
+	typedef TFastArrayReplicationFragment<typename TFastArrayTypeHelper<FTestFastArrayReplicationState_FastArrayWithExtraProperty>::FastArrayItemType, FTestFastArrayReplicationState_FastArrayWithExtraProperty> SuperT;
+
+	FastArrayWithExtraPropertiesReplicationFragment(UE::Net::EReplicationFragmentTraits InTraits, UObject* InOwner, const UE::Net::FReplicationStateDescriptor* InDescriptor)
+	: SuperT(InTraits, InOwner, InDescriptor, EAllowAdditionalPropertiesType::AllowAdditionalProperties)
+	{
+	}
+
+	virtual void ApplyReplicatedState(UE::Net::FReplicationStateApplyContext& Context) const override
+	{
+		// Get the wrapped FastArraySerializer and array
+		FTestFastArrayReplicationState_FastArrayWithExtraProperty* DstArraySerializer = this->GetFastArraySerializerFromOwner();
+
+		// Intentionally not const as we allow the src state to be modified
+		FTestFastArrayReplicationState_FastArrayWithExtraProperty* SrcArraySerializer = this->GetFastArraySerializerFromApplyContext(Context);
+
+		// Apply additional state
+		DstArraySerializer->ExtraInt = SrcArraySerializer->ExtraInt;
+
+		// Forward to fast array serializer
+		SuperT::ApplyReplicatedState(Context);
+	}
+
+	virtual bool PollReplicatedState(UE::Net::EReplicationFragmentPollFlags PollOption) override
+	{
+		// Lookup source data, we need the actual FastArraySerializer and the Array it is wrapping
+		FTestFastArrayReplicationState_FastArrayWithExtraProperty* SrcArraySerializer = this->GetFastArraySerializerFromOwner();
+	
+		// Lookup destination data
+		FTestFastArrayReplicationState_FastArrayWithExtraProperty* DstArraySerializer = this->GetFastArraySerializerFromReplicationState();
+
+		// Explicit poll of additional properties in the fastarray and mark dirty if needed
+		if (SrcArraySerializer->ExtraInt != DstArraySerializer->ExtraInt)
+		{	
+			this->MarkDirty();
+		}
+		DstArraySerializer->ExtraInt = SrcArraySerializer->ExtraInt;
+
+		return SuperT::PollReplicatedState(PollOption);
+	}
+};
+
+UE::Net::FReplicationFragment* FTestFastArrayReplicationState_FastArrayWithExtraProperty::CreateAndRegisterReplicationFragment(UObject* Owner, const UE::Net::FReplicationStateDescriptor* Descriptor, UE::Net::FFragmentRegistrationContext& Context)
+{
+	using namespace UE::Net;
+	static_assert(TFastArrayTypeHelper<FTestFastArrayReplicationState_FastArrayWithExtraProperty>::HasValidFastArrayItemType(), "Invalid FastArrayItemType detected. Make sure that FastArraySerializer has a single replicated dynamic array");
+
+	if (FTestFastArrayReplicationState_FastArrayWithExtraProperty::FastArrayWithExtraPropertiesReplicationFragment* Fragment = new FTestFastArrayReplicationState_FastArrayWithExtraProperty::FastArrayWithExtraPropertiesReplicationFragment(Context.GetFragmentTraits(), Owner, Descriptor))
+	{
+		Fragment->Register(Context, EReplicationFragmentTraits::DeleteWithInstanceProtocol);
+		return Fragment;
+	}
+	return nullptr;
+}
+
+//////////////////////////////////////////////////////////////////////////
+
 void UTestFastArrayReplicationState_FastArray_TestClassFastArrayWithExtraProperty::GetLifetimeReplicatedProps(TArray<class FLifetimeProperty>& OutLifetimeProps) const
 {
-	DOREPLIFETIME(UTestFastArrayReplicationState_FastArray_TestClassFastArrayWithExtraProperty, FastArray);
+	FDoRepLifetimeParams Params;
+	Params.CreateAndRegisterReplicationFragmentFunction = &FTestFastArrayReplicationState_FastArrayWithExtraProperty::CreateAndRegisterReplicationFragment;
+	DOREPLIFETIME_WITH_PARAMS_FAST(UTestFastArrayReplicationState_FastArray_TestClassFastArrayWithExtraProperty, FastArray, Params);
 }
 
 void UTestFastArrayReplicationState_FastArray_TestClassFastArrayWithExtraProperty::RegisterReplicationFragments(UE::Net::FFragmentRegistrationContext& Context, UE::Net::EFragmentRegistrationFlags RegistrationFlags)
 {
-	Super::RegisterReplicationFragments(Context, RegistrationFlags);
+	// Explicitly allow building descriptors for FastArray with additional properties to be allow to test this special case.
+	UE::Net::FReplicationFragmentUtil::CreateAndRegisterFragmentsForObject(this, Context, RegistrationFlags | UE::Net::EFragmentRegistrationFlags::AllowFastArraysWithAdditionalProperties);
 }
 
 void FTestFastArrayReplicationState_FastArrayItem::PostReplicatedAdd(const struct FTestFastArrayReplicationState_FastArraySerializer& InArraySerializer)
@@ -119,11 +186,10 @@ UE_NET_TEST_FIXTURE(FTestFastArrayReplicationStateContext, BuildClassDescriptorF
 
 UE_NET_TEST_FIXTURE(FTestFastArrayReplicationStateContext, BuildClassDescriptorForSinglePropertyForFastArrayWithExtraProperty)
 {
+	// We expect this test to fail as we do not pass the flag allowing fastarrays to contain extra properties
 	InitDescriptor(UTestFastArrayReplicationState_FastArray_TestClassFastArrayWithExtraProperty::StaticClass(), (int32)UTestFastArrayReplicationState_FastArray_TestClassFastArrayWithExtraProperty::ENetFields_Private::FastArray);
-
 	UE_NET_ASSERT_FALSE(EnumHasAnyFlags(Descriptor->Traits, EReplicationStateTraits::IsFastArrayReplicationState));	
 }
-
 
 UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestAddItem)
 {
@@ -138,7 +204,7 @@ UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestAddItem)
 	Server->PostSendUpdate();
 
 	// Store Pointer to objects
-	UTestFastArrayReplicationState_FastArray_TestClassFastArray* ClientObject = Cast<UTestFastArrayReplicationState_FastArray_TestClassFastArray>(Client->GetReplicationBridge()->GetReplicatedObject(ServerObject->NetHandle));
+	UTestFastArrayReplicationState_FastArray_TestClassFastArray* ClientObject = Cast<UTestFastArrayReplicationState_FastArray_TestClassFastArray>(Client->GetReplicationBridge()->GetReplicatedObject(ServerObject->NetRefHandle));
 
 	// Verify initial replication
 	UE_NET_ASSERT_TRUE(ClientObject!= nullptr);
@@ -190,7 +256,7 @@ UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestRemoveItem)
 	Server->PostSendUpdate();
 
 	// Store Pointer to objects
-	UTestFastArrayReplicationState_FastArray_TestClassFastArray* ClientObject = Cast<UTestFastArrayReplicationState_FastArray_TestClassFastArray>(Client->GetReplicationBridge()->GetReplicatedObject(ServerObject->NetHandle));
+	UTestFastArrayReplicationState_FastArray_TestClassFastArray* ClientObject = Cast<UTestFastArrayReplicationState_FastArray_TestClassFastArray>(Client->GetReplicationBridge()->GetReplicatedObject(ServerObject->NetRefHandle));
 
 	// Verify initial replication
 	UE_NET_ASSERT_TRUE(ClientObject!= nullptr);
@@ -258,7 +324,7 @@ UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestLocalItemAreP
 	Server->PostSendUpdate();
 
 	// Store Pointer to objects
-	UTestFastArrayReplicationState_FastArray_TestClassFastArray* ClientObject = Cast<UTestFastArrayReplicationState_FastArray_TestClassFastArray>(Client->GetReplicationBridge()->GetReplicatedObject(ServerObject->NetHandle));
+	UTestFastArrayReplicationState_FastArray_TestClassFastArray* ClientObject = Cast<UTestFastArrayReplicationState_FastArray_TestClassFastArray>(Client->GetReplicationBridge()->GetReplicatedObject(ServerObject->NetRefHandle));
 
 	// Verify initial replication
 	UE_NET_ASSERT_TRUE(ClientObject!= nullptr);
@@ -341,7 +407,7 @@ UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestModifyItem)
 	Server->PostSendUpdate();
 
 	// Store Pointer to objects
-	UTestFastArrayReplicationState_FastArray_TestClassFastArray* ClientObject = Cast<UTestFastArrayReplicationState_FastArray_TestClassFastArray>(Client->GetReplicationBridge()->GetReplicatedObject(ServerObject->NetHandle));
+	UTestFastArrayReplicationState_FastArray_TestClassFastArray* ClientObject = Cast<UTestFastArrayReplicationState_FastArray_TestClassFastArray>(Client->GetReplicationBridge()->GetReplicatedObject(ServerObject->NetRefHandle));
 
 	// Verify initial replication
 	UE_NET_ASSERT_TRUE(ClientObject!= nullptr);
@@ -414,7 +480,7 @@ UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestInsertItem)
 	Server->PostSendUpdate();
 
 	// Store Pointer to objects
-	UTestFastArrayReplicationState_FastArray_TestClassFastArray* ClientObject = Cast<UTestFastArrayReplicationState_FastArray_TestClassFastArray>(Client->GetReplicationBridge()->GetReplicatedObject(ServerObject->NetHandle));
+	UTestFastArrayReplicationState_FastArray_TestClassFastArray* ClientObject = Cast<UTestFastArrayReplicationState_FastArray_TestClassFastArray>(Client->GetReplicationBridge()->GetReplicatedObject(ServerObject->NetRefHandle));
 
 	// Verify initial replication
 	UE_NET_ASSERT_TRUE(ClientObject!= nullptr);
@@ -496,7 +562,7 @@ UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestModifyItemDoe
 	Server->PostSendUpdate();
 
 	// Store Pointer to objects
-	UTestFastArrayReplicationState_FastArray_TestClassFastArray* ClientObject = Cast<UTestFastArrayReplicationState_FastArray_TestClassFastArray>(Client->GetReplicationBridge()->GetReplicatedObject(ServerObject->NetHandle));
+	UTestFastArrayReplicationState_FastArray_TestClassFastArray* ClientObject = Cast<UTestFastArrayReplicationState_FastArray_TestClassFastArray>(Client->GetReplicationBridge()->GetReplicatedObject(ServerObject->NetRefHandle));
 
 	// Verify initial replication
 	UE_NET_ASSERT_TRUE(ClientObject!= nullptr);
@@ -599,7 +665,7 @@ UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestAddItemWithou
 	Server->PostSendUpdate();
 
 	// Store Pointer to objects
-	UTestFastArrayReplicationState_FastArray_TestClassFastArray* ClientObject = Cast<UTestFastArrayReplicationState_FastArray_TestClassFastArray>(Client->GetReplicationBridge()->GetReplicatedObject(ServerObject->NetHandle));
+	UTestFastArrayReplicationState_FastArray_TestClassFastArray* ClientObject = Cast<UTestFastArrayReplicationState_FastArray_TestClassFastArray>(Client->GetReplicationBridge()->GetReplicatedObject(ServerObject->NetRefHandle));
 
 	// Verify that we received the data
 	UE_NET_ASSERT_TRUE(ClientObject!= nullptr);
@@ -622,7 +688,7 @@ UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestChangeMaskWra
 	Server->PostSendUpdate();
 
 	// Store Pointer to objects
-	UTestFastArrayReplicationState_FastArray_TestClassFastArray* ClientObject = Cast<UTestFastArrayReplicationState_FastArray_TestClassFastArray>(Client->GetReplicationBridge()->GetReplicatedObject(ServerObject->NetHandle));
+	UTestFastArrayReplicationState_FastArray_TestClassFastArray* ClientObject = Cast<UTestFastArrayReplicationState_FastArray_TestClassFastArray>(Client->GetReplicationBridge()->GetReplicatedObject(ServerObject->NetRefHandle));
 
 	// Verify initial replication
 	UE_NET_ASSERT_TRUE(ClientObject!= nullptr);
@@ -736,8 +802,8 @@ UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestPostReplicate
 	FastArrayEditor.Add(Item);
 
 	// Make sure that references are not replicated to client
-	Server->ReplicationSystem->AddToGroup(NotReplicatedNetObjectGroupHandle, ServerReferencedObjectA->NetHandle);
-	Server->ReplicationSystem->AddToGroup(NotReplicatedNetObjectGroupHandle, ServerReferencedObjectB->NetHandle);
+	Server->ReplicationSystem->AddToGroup(NotReplicatedNetObjectGroupHandle, ServerReferencedObjectA->NetRefHandle);
+	Server->ReplicationSystem->AddToGroup(NotReplicatedNetObjectGroupHandle, ServerReferencedObjectB->NetRefHandle);
 	
 	// Replicate
 	Server->PreSendUpdate();
@@ -745,7 +811,7 @@ UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestPostReplicate
 	Server->PostSendUpdate();
 
 	// Verify that object has been spawned on client
-	auto ClientObject = Client->GetObjectAs<UTestFastArrayReplicationState_FastArray_TestClassFastArray>(ServerObject->NetHandle);
+	auto ClientObject = Client->GetObjectAs<UTestFastArrayReplicationState_FastArray_TestClassFastArray>(ServerObject->NetRefHandle);
 	UE_NET_ASSERT_TRUE(ClientObject != nullptr);
 
 	auto& ClientFastArray = ClientObject->FastArray;
@@ -766,7 +832,7 @@ UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestPostReplicate
 	ClientFastArray.bPostReplicatedReceiveWasHitWithUnresolvedReferences = false;
 
 	// Enable replication for ServerReferenceObjectA
-	Server->ReplicationSystem->RemoveFromGroup(NotReplicatedNetObjectGroupHandle, ServerReferencedObjectA->NetHandle);
+	Server->ReplicationSystem->RemoveFromGroup(NotReplicatedNetObjectGroupHandle, ServerReferencedObjectA->NetRefHandle);
 
 	// Replicate
 	Server->PreSendUpdate();
@@ -785,7 +851,7 @@ UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestPostReplicate
 	ClientFastArray.bPostReplicatedReceiveWasHitWithUnresolvedReferences = false;
 
 	// Enable replication for ServerReferenceObjectB 
-	Server->ReplicationSystem->RemoveFromGroup(NotReplicatedNetObjectGroupHandle, ServerReferencedObjectB->NetHandle);
+	Server->ReplicationSystem->RemoveFromGroup(NotReplicatedNetObjectGroupHandle, ServerReferencedObjectB->NetRefHandle);
 
 	// Replicate
 	Server->PreSendUpdate();
@@ -800,5 +866,72 @@ UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestPostReplicate
 	UE_NET_ASSERT_TRUE(ClientFastArray.bHitPostReplicatedReceive);
 	UE_NET_ASSERT_FALSE(ClientFastArray.bPostReplicatedReceiveWasHitWithUnresolvedReferences);
 }
+
+UE_NET_TEST_FIXTURE(FReplicationSystemServerClientTestFixture, TestFastArrayWithExtraProperty)
+{
+	// Add a client
+	FReplicationSystemTestClient* Client = CreateClient();
+
+	UTestFastArrayReplicationState_FastArray_TestClassFastArrayWithExtraProperty* ServerObject = Server->CreateObject<UTestFastArrayReplicationState_FastArray_TestClassFastArrayWithExtraProperty>();
+
+
+	// Send and deliver packet
+	Server->PreSendUpdate();
+	Server->SendAndDeliverTo(Client, true);
+	Server->PostSendUpdate();
+
+	// Store Pointer to objects
+	UTestFastArrayReplicationState_FastArray_TestClassFastArrayWithExtraProperty* ClientObject = Cast<UTestFastArrayReplicationState_FastArray_TestClassFastArrayWithExtraProperty>(Client->GetReplicationBridge()->GetReplicatedObject(ServerObject->NetRefHandle));
+
+	// Verify initial replication
+	UE_NET_ASSERT_TRUE(ClientObject!= nullptr);
+	UE_NET_ASSERT_FALSE(ClientObject->FastArray.bHitReplicatedAdd);
+	UE_NET_ASSERT_FALSE(ClientObject->FastArray.bHitReplicatedChange);
+	UE_NET_ASSERT_FALSE(ClientObject->FastArray.bHitReplicatedRemove);
+
+	// Verify that we received the data
+	UE_NET_ASSERT_EQ(ServerObject->FastArray.GetItemArray().Num(), ClientObject->FastArray.GetItemArray().Num());
+	UE_NET_ASSERT_EQ(ServerObject->FastArray.ExtraInt, ClientObject->FastArray.ExtraInt);
+
+	// Add data to array
+	FTestFastArrayReplicationState_FastArrayItem NewEntry;
+	NewEntry.bRepBool = false;
+	NewEntry.RepInt32 = 0U;
+	
+	ServerObject->FastArray.Edit().Add(NewEntry);
+
+	NewEntry.bRepBool = true;
+	NewEntry.RepInt32 = 1U;
+	
+	ServerObject->FastArray.Edit().Add(NewEntry);
+
+	// Send and deliver packet
+	Server->PreSendUpdate();
+	Server->SendAndDeliverTo(Client, true);
+	Server->PostSendUpdate();
+
+	// Verify that we received the data
+	UE_NET_ASSERT_EQ(ServerObject->FastArray.GetItemArray().Num(), ClientObject->FastArray.GetItemArray().Num());
+	UE_NET_ASSERT_EQ(ServerObject->FastArray.ExtraInt, ClientObject->FastArray.ExtraInt);
+
+	// In this case we expect order to be the same
+	UE_NET_ASSERT_EQ(ServerObject->FastArray.GetItemArray()[0].RepInt32, ClientObject->FastArray.GetItemArray()[0].RepInt32);
+
+	UE_NET_ASSERT_TRUE(ClientObject->FastArray.bHitReplicatedAdd);
+	UE_NET_ASSERT_FALSE(ClientObject->FastArray.bHitReplicatedChange);
+	UE_NET_ASSERT_FALSE(ClientObject->FastArray.bHitReplicatedRemove);
+
+	// Modify extraint
+	ServerObject->FastArray.ExtraInt = 3;
+
+	// Send and deliver packet
+	Server->PreSendUpdate();
+	Server->SendAndDeliverTo(Client, true);
+	Server->PostSendUpdate();
+
+	// Verify that we received the data
+	UE_NET_ASSERT_EQ(ServerObject->FastArray.ExtraInt, ClientObject->FastArray.ExtraInt);
+}
+
 
 }

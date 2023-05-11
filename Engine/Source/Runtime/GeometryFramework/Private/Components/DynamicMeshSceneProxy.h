@@ -6,6 +6,10 @@
 #include "Components/BaseDynamicMeshSceneProxy.h"
 #include "DynamicMesh/MeshTangents.h"
 #include "Async/ParallelFor.h"
+#include "Materials/Material.h"
+#include "MaterialDomain.h"
+#include "MaterialShared.h"
+#include "SceneInterface.h"
 
 /**
  * Scene Proxy for UDynamicMeshComponent.

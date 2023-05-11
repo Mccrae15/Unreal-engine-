@@ -2,6 +2,8 @@
 
 #pragma once
 
+// HEADER_UNIT_SKIP - Not included directly
+
 #include <sal.h>
 
 #if defined(__clang__)
@@ -52,15 +54,14 @@ typedef FWindowsPlatformTypes FPlatformTypes;
 #define PLATFORM_SUPPORTS_UNALIGNED_LOADS					1
 
 #define PLATFORM_SUPPORTS_PRAGMA_PACK						1
-#define PLATFORM_ENABLE_VECTORINTRINSICS					1
-#ifndef PLATFORM_MAYBE_HAS_SSE4_1 // May be set from UnrealBuildTool
-	#define PLATFORM_MAYBE_HAS_SSE4_1						1
-#endif
-// Current unreal minspec is sse2, not sse4, so on windows any calling code must check _cpuid before calling SSE4 instructions;
-// If called on a platform for which _cpuid for SSE4 returns false, attempting to call SSE4 intrinsics will crash
-// If your title has raised the minspec to sse4, you can define PLATFORM_ALWAYS_HAS_SSE4_1 to 1
-#ifndef PLATFORM_ALWAYS_HAS_SSE4_1 // May be set from UnrealBuildTool
-	#define PLATFORM_ALWAYS_HAS_SSE4_1						0
+#if defined(_M_ARM) || defined(_M_ARM64) || defined(_M_ARM64EC)
+	#define PLATFORM_CPU_ARM_FAMILY							1
+	#define PLATFORM_ENABLE_VECTORINTRINSICS_NEON			1
+	#define PLATFORM_ENABLE_VECTORINTRINSICS				1
+#elif (defined(_M_IX86) || defined(_M_X64))
+	#define PLATFORM_CPU_X86_FAMILY							1
+	#define PLATFORM_ENABLE_VECTORINTRINSICS				1
+
 #endif
 // FMA3 support was added starting from AMD Piledriver (excluding Jaguar) and Intel Haswell (excluding Pentium and Celeron)
 #ifndef PLATFORM_ALWAYS_HAS_FMA3
@@ -79,7 +80,11 @@ typedef FWindowsPlatformTypes FPlatformTypes;
 #define PLATFORM_USES_MICROSOFT_LIBC_FUNCTIONS				1
 #define PLATFORM_IS_ANSI_MALLOC_THREADSAFE					1
 #define PLATFORM_SUPPORTS_TBB								1
+#if PLATFORM_CPU_ARM_FAMILY
+#define PLATFORM_SUPPORTS_MIMALLOC							0
+#else
 #define PLATFORM_SUPPORTS_MIMALLOC							PLATFORM_64BITS
+#endif
 #define PLATFORM_SUPPORTS_NAMED_PIPES						1
 #define PLATFORM_COMPILER_HAS_TCHAR_WMAIN					1
 #define PLATFORM_SUPPORTS_EARLY_MOVIE_PLAYBACK				(!WITH_EDITOR) // movies will start before engine is initalized
@@ -122,8 +127,11 @@ typedef FWindowsPlatformTypes FPlatformTypes;
 
 // Intrinsics for 128-bit atomics on Windows platform requires Windows 8 or higher (WINVER>=0x0602)
 // http://msdn.microsoft.com/en-us/library/windows/desktop/hh972640.aspx
-#define PLATFORM_HAS_128BIT_ATOMICS							(!HACK_HEADER_GENERATOR && PLATFORM_64BITS && (WINVER >= 0x602))
-#define PLATFORM_USES_ANSI_STRING_FOR_EXTERNAL_PROFILING	0
+#define PLATFORM_HAS_128BIT_ATOMICS							(PLATFORM_64BITS && (WINVER >= 0x602))
+
+#ifdef CDECL
+#undef CDECL
+#endif
 
 // Function type macros.
 #define VARARGS     __cdecl											/* Functions with variable arguments */

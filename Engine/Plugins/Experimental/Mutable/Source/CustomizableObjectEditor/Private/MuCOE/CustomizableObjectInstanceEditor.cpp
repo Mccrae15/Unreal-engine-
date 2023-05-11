@@ -6,37 +6,15 @@
 #include "Animation/AnimSingleNodeInstance.h"
 #include "Animation/DebugSkelMeshComponent.h"
 #include "Animation/PoseAsset.h"
-#include "Animation/SmartName.h"
-#include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/AssetRegistryModule.h"
-#include "AssetRegistry/IAssetRegistry.h"
-#include "Components/SkeletalMeshComponent.h"
 #include "ContentBrowserModule.h"
 #include "DetailsViewArgs.h"
-#include "EdGraph/EdGraph.h"
-#include "Editor.h"
-#include "Editor/EditorEngine.h"
-#include "Engine/EngineTypes.h"
 #include "FileHelpers.h"
-#include "Framework/Commands/UIAction.h"
 #include "Framework/Commands/UICommandList.h"
-#include "Framework/Docking/TabManager.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Framework/MultiBox/MultiBoxExtender.h"
-#include "Framework/Notifications/NotificationManager.h"
-#include "HAL/PlatformCrt.h"
-#include "HAL/PlatformTime.h"
 #include "IContentBrowserSingleton.h"
 #include "IDetailsView.h"
-#include "Internationalization/Internationalization.h"
-#include "Logging/LogCategory.h"
-#include "Logging/LogMacros.h"
-#include "Misc/AssertionMacros.h"
-#include "Misc/Attribute.h"
-#include "Modules/ModuleManager.h"
-#include "MuCO/CustomizableObject.h"
 #include "MuCO/CustomizableObjectInstance.h"
-#include "MuCO/CustomizableObjectParameterTypeDefinitions.h"
 #include "MuCO/CustomizableObjectSystem.h"
 #include "MuCO/CustomizableSkeletalComponent.h"
 #include "MuCOE/CustomizableObjectBakeHelpers.h"
@@ -46,22 +24,11 @@
 #include "MuCOE/CustomizableObjectEditorViewportClient.h"
 #include "MuCOE/CustomizableObjectInstanceEditorActions.h"
 #include "MuCOE/CustomizableObjectPreviewScene.h"
-#include "MuCOE/Nodes/CustomizableObjectNodeObject.h"
 #include "MuCOE/SCustomizableObjectEditorTextureAnalyzer.h"
 #include "MuCOE/SCustomizableObjectEditorViewport.h"
 #include "MuCOE/UnrealEditorPortabilityHelpers.h"
 #include "PropertyEditorModule.h"
 #include "Selection.h"
-#include "Subsystems/AssetEditorSubsystem.h"
-#include "Templates/Casts.h"
-#include "Toolkits/AssetEditorToolkit.h"
-#include "Trace/Detail/Channel.h"
-#include "Types/SlateEnums.h"
-#include "UObject/Class.h"
-#include "UObject/ObjectPtr.h"
-#include "UObject/Package.h"
-#include "UObject/UnrealNames.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "WorkspaceMenuStructure.h"
@@ -350,7 +317,6 @@ void FCustomizableObjectInstanceEditor::CreatePreviewInstance()
 
 				if (PreviewSkeletalMeshComponents[ComponentIndex])
 				{
-					PreviewSkeletalMeshComponents[ComponentIndex]->UseInGameBounds(true);
 					PreviewCustomizableSkeletalComponents[ComponentIndex]->AttachToComponent(PreviewSkeletalMeshComponents[ComponentIndex], FAttachmentTransformRules::KeepRelativeTransform);
 				}
 				else
@@ -398,7 +364,7 @@ void FCustomizableObjectInstanceEditor::UpdatePreviewVisibility()
 {
 	for (UDebugSkelMeshComponent* PreviewSkeletalMeshComponent : PreviewSkeletalMeshComponents)
 	{
-		if (CustomizableObjectInstance->SkeletalMeshStatus != ESkeletalMeshState::UpdateError)
+		if (CustomizableObjectInstance->SkeletalMeshStatus == ESkeletalMeshState::Correct)
 		{
 			PreviewSkeletalMeshComponent->SetVisibility(true, true);
 		}

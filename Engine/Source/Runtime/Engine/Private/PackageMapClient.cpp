@@ -1,34 +1,23 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/PackageMapClient.h"
-#include "HAL/IConsoleManager.h"
+#include "Net/Core/Trace/Private/NetTraceInternal.h"
 #include "UObject/Package.h"
 #include "EngineStats.h"
-#include "EngineGlobals.h"
-#include "Engine/NetSerialization.h"
-#include "Engine/NetworkDelegates.h"
-#include "Engine/EngineTypes.h"
 #include "Engine/Level.h"
 #include "TimerManager.h"
-#include "GameFramework/Actor.h"
 #include "Engine/World.h"
 #include "Engine/Engine.h"
-#include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 #include "Engine/NetConnection.h"
 #include "Net/NetworkProfiler.h"
 #include "Engine/ActorChannel.h"
-#include "Net/RepLayout.h"
 #include "ProfilingDebugging/ScopedTimers.h"
 #include "GameFramework/GameStateBase.h"
-#include "HAL/LowLevelMemTracker.h"
 #include "HAL/LowLevelMemStats.h"
 #include "Net/Core/Trace/NetTrace.h"
 #include "Serialization/MemoryReader.h"
-#include "Serialization/MemoryWriter.h"
-#include "Components/ChildActorComponent.h"
 #include "Net/NetworkGranularMemoryLogging.h"
-#include "GameFramework/Controller.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(PackageMapClient)
 
@@ -65,7 +54,7 @@ namespace UE
 		int32 MaxSerializedNetGuids = 2048;
 		static FAutoConsoleVariableRef CVarMaxSerializedNetGuids(TEXT("net.MaxSerializedNetGuids"), MaxSerializedNetGuids, TEXT("Maximum number of network guids we would expect to receive in a bunch"));
 
-		int32 MaxSerializedReplayNetGuids = 16 * 1024;
+		int32 MaxSerializedReplayNetGuids = 32 * 1024;
 		static FAutoConsoleVariableRef CVarMaxSerializedReplayNetGuids(TEXT("net.MaxSerializedReplayNetGuids"), MaxSerializedReplayNetGuids, TEXT("Maximum number of network guids we would expect to receive in replay export data."));
 
 		int32 MaxSerializedNetExportGroups = 64 * 1024;
@@ -531,6 +520,16 @@ bool UPackageMapClient::SerializeNewActor(FArchive& Ar, class UActorChannel *Cha
 				Location = FRepMovement::RebaseOntoZeroOrigin(Actor->GetActorLocation(), Actor);
 				Rotation = Actor->GetActorRotation();
 				Scale = Actor->GetActorScale();
+
+				if (USceneComponent* AttachParent = RootComponent->GetAttachParent())
+				{
+					// If this actor is attached, when the scale is serialized on the client, the attach parent property won't be set yet.
+					// USceneComponent::SetWorldScale3D (which got called by AActor::SetActorScale3D, which we used to do but no longer).
+					// would perform this transformation so that what is sent is relative to the parent. If we don't do this, we will
+					// apply the world scale on the client, which will then get applied a second time when the attach parent property is received.
+					FTransform ParentToWorld = AttachParent->GetSocketTransform(RootComponent->GetAttachSocketName());
+					Scale = Scale * ParentToWorld.GetSafeScaleReciprocal(ParentToWorld.GetScale3D());
+				}
 				Velocity = Actor->GetVelocity();
 			}
 		}
@@ -538,7 +537,7 @@ bool UPackageMapClient::SerializeNewActor(FArchive& Ar, class UActorChannel *Cha
 		FNetworkGUID ArchetypeNetGUID;
 		SerializeObject(Ar, UObject::StaticClass(), Archetype, &ArchetypeNetGUID);
 
-		if (Ar.IsSaving() || (Connection && (Connection->EngineNetworkProtocolVersion >= EEngineNetworkVersionHistory::HISTORY_NEW_ACTOR_OVERRIDE_LEVEL)))
+		if (Ar.IsSaving() || (Connection && (Connection->GetNetworkCustomVersion(FEngineNetworkCustomVersion::Guid) >= FEngineNetworkCustomVersion::NewActorOverrideLevel)))
 		{
 			SerializeObject(Ar, ULevel::StaticClass(), ActorLevel);
 		}
@@ -602,7 +601,7 @@ bool UPackageMapClient::SerializeNewActor(FArchive& Ar, class UActorChannel *Cha
 				Ar.SerializeBits(&bWasSerialized, 1);
 				if (bWasSerialized)
 				{
-					if (Ar.EngineNetVer() < HISTORY_OPTIONALLY_QUANTIZE_SPAWN_INFO)
+					if (Ar.IsLoading() && Ar.EngineNetVer() < FEngineNetworkCustomVersion::OptionallyQuantizeSpawnInfo)
 					{
 						bShouldQuantize = true;
 					}
@@ -679,7 +678,7 @@ bool UPackageMapClient::SerializeNewActor(FArchive& Ar, class UActorChannel *Cha
 							// Scale was serialized by the server
 							if (bSerializeScale)
 							{
-								Actor->SetActorScale3D(Scale);
+								Actor->SetActorRelativeScale3D(Scale);
 							}
 
 							GuidCache->RegisterNetGUID_Client(NetGUID, Actor);
@@ -1990,6 +1989,11 @@ void UPackageMapClient::AppendExportBunches(TArray<FOutBunch *>& OutgoingBunches
 	}
 }
 
+int32 UPackageMapClient::GetNumExportBunches() const
+{
+	return ExportBunches.Num();
+}
+
 void UPackageMapClient::SyncPackageMapExportAckStatus( const UPackageMapClient* Source )
 {
 	AckState = Source->AckState;
@@ -2689,6 +2693,21 @@ bool FNetGUIDCache::SupportsObject( const UObject* Object, const TWeakObjectPtr<
 		return true;
 	}
 
+#if WITH_EDITOR
+	const UPackage* ObjectPackage = Object->GetPackage();
+	if (ObjectPackage->HasAnyPackageFlags(PKG_PlayInEditor))
+	{
+		const int32 DriverPIEInstanceID = Driver->GetWorld() ? Driver->GetWorld()->GetPackage()->GetPIEInstanceID() : INDEX_NONE;
+		const int32 ObjectPIEInstanceID = ObjectPackage->GetPIEInstanceID();
+
+		if (!ensureAlwaysMsgf(DriverPIEInstanceID == ObjectPIEInstanceID, TEXT("FNetGUIDCache::SupportsObject: Object %s is not supported since its PIE InstanceID: %d differs from the one of the NetDriver's world PIE InstanceID: %d, it will replicate as an invalid reference."), *GetPathNameSafe(Object), ObjectPIEInstanceID, DriverPIEInstanceID))
+		{
+			// Don't replicate references to objects owned by other PIE instances.
+			return false;
+		}
+	}
+#endif
+
 	if ( Object->IsFullNameStableForNetworking() )
 	{
 		// If object is fully net addressable, it's definitely supported
@@ -3104,18 +3123,21 @@ void FNetGUIDCache::ValidateAsyncLoadingPackage(FNetGuidCacheObject& CacheObject
 	// re-loaded, it will likely be assigned a new NetGUID (since the TWeakObjectPtr to the old package
 	// in the cache object would have gone stale). During replay fast-forward, it's possible
 	// to see the new NetGUID before the previous one has finished loading, so here we fix up
-	// PendingAsyncPackages to refer to the new NewGUID.
+	// PendingAsyncPackages to refer to the new NewGUID. Also keep track of all the GUIDs referring
+	// to the same package so their CacheObjects can be properly updated later.
 	FPendingAsyncLoadRequest& PendingLoadRequest = PendingAsyncLoadRequests[CacheObject.PathName];
-	if (PendingLoadRequest.NetGUID != NetGUID)
+
+	PendingLoadRequest.Merge(NetGUID);
+	CacheObject.bIsPending = true;
+
+	if (PendingLoadRequest.NetGUIDs.Last() != NetGUID)
 	{
 		UE_LOG(LogNetPackageMap, Log, TEXT("ValidateAsyncLoadingPackage: Already async loading package with a different NetGUID. Path: %s, original NetGUID: %s, new NetGUID: %s"),
-			*CacheObject.PathName.ToString(), *PendingLoadRequest.NetGUID.ToString(), *NetGUID.ToString());
+			*CacheObject.PathName.ToString(), *PendingLoadRequest.NetGUIDs.Last().ToString(), *NetGUID.ToString());
 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		PendingAsyncPackages[CacheObject.PathName] = NetGUID;
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
-		PendingLoadRequest.NetGUID = NetGUID;
 	}
 	else
 	{
@@ -3142,11 +3164,20 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	LoadRequest.bWasRequestedByOwnerOrPawn = IsTrackingOwnerOrPawn();
 #endif
 
+	CacheObject.bIsPending = true;
+
+	FPendingAsyncLoadRequest* ExistingRequest = PendingAsyncLoadRequests.Find(CacheObject.PathName);
+	if (ExistingRequest)
+	{
+		// Same package name but a possibly different net GUID. Note down the GUID and wait for the async load completion callback
+		ExistingRequest->Merge(LoadRequest);
+		return;
+	}
+
 	PendingAsyncLoadRequests.Emplace(CacheObject.PathName, MoveTemp(LoadRequest));
 
 	DelinquentAsyncLoads.MaxConcurrentAsyncLoads = FMath::Max<uint32>(DelinquentAsyncLoads.MaxConcurrentAsyncLoads, PendingAsyncLoadRequests.Num());
 
-	CacheObject.bIsPending = true;
 	LoadPackageAsync(CacheObject.PathName.ToString(), FLoadPackageAsyncDelegate::CreateRaw(this, &FNetGUIDCache::AsyncPackageCallback));
 }
 
@@ -3160,37 +3191,40 @@ void FNetGUIDCache::AsyncPackageCallback(const FName& PackageName, UPackage * Pa
 	{
 		const bool bIsBroken = (Package == nullptr);
 
-		if (FNetGuidCacheObject* CacheObject = ObjectLookup.Find(PendingLoadRequest->NetGUID))
+		for (FNetworkGUID NetGUIDToProcess : PendingLoadRequest->NetGUIDs)
 		{
-			if (!CacheObject->bIsPending)
+			if (FNetGuidCacheObject* CacheObject = ObjectLookup.Find(NetGUIDToProcess))
 			{
-				UE_LOG(LogNetPackageMap, Error, TEXT("AsyncPackageCallback: Package wasn't pending. Path: %s, NetGUID: %s"), *PackageName.ToString(), *PendingLoadRequest->NetGUID.ToString());
-			}
-
-			CacheObject->bIsPending = false;
-
-			if (bIsBroken)
-			{
-				CacheObject->bIsBroken = true;
-				UE_LOG(LogNetPackageMap, Error, TEXT("AsyncPackageCallback: Package FAILED to load. Path: %s, NetGUID: %s"), *PackageName.ToString(), *PendingLoadRequest->NetGUID.ToString());
-			}
-
-			if (UObject* Object = CacheObject->Object.Get())
-			{
-				UpdateQueuedBunchObjectReference(PendingLoadRequest->NetGUID, Object);
-
-				if (UWorld* World = Object->GetWorld())
+				if (!CacheObject->bIsPending)
 				{
-					if (AGameStateBase* GS = World->GetGameState())
+					UE_LOG(LogNetPackageMap, Error, TEXT("AsyncPackageCallback: Package wasn't pending. Path: %s, NetGUID: %s"), *PackageName.ToString(), *NetGUIDToProcess.ToString());
+				}
+
+				CacheObject->bIsPending = false;
+
+				if (bIsBroken)
+				{
+					CacheObject->bIsBroken = true;
+					UE_LOG(LogNetPackageMap, Error, TEXT("AsyncPackageCallback: Package FAILED to load. Path: %s, NetGUID: %s"), *PackageName.ToString(), *NetGUIDToProcess.ToString());
+				}
+
+				if (UObject* Object = CacheObject->Object.Get())
+				{
+					UpdateQueuedBunchObjectReference(NetGUIDToProcess, Object);
+
+					if (UWorld* World = Object->GetWorld())
 					{
-						GS->AsyncPackageLoaded(Object);
+						if (AGameStateBase* GS = World->GetGameState())
+						{
+							GS->AsyncPackageLoaded(Object);
+						}
 					}
 				}
 			}
-		}
-		else
-		{
-			UE_LOG(LogNetPackageMap, Error, TEXT("AsyncPackageCallback: Could not find net guid. Path: %s, NetGUID: %s"), *PackageName.ToString(), *PendingLoadRequest->NetGUID.ToString());
+			else
+			{
+				UE_LOG(LogNetPackageMap, Error, TEXT("AsyncPackageCallback: Could not find net guid. Path: %s, NetGUID: %s"), *PackageName.ToString(), *NetGUIDToProcess.ToString());
+			}
 		}
 
 		// This won't be the exact amount of time that we spent loading the package, but should
@@ -3672,7 +3706,7 @@ void FNetGUIDCache::GenerateFullNetGUIDPath_r( const FNetworkGUID& NetGUID, FStr
 
 	const FNetGuidCacheObject* CacheObject = ObjectLookup.Find( NetGUID );
 
-	if ( CacheObject == NULL )
+	if ( CacheObject == nullptr )
 	{
 		// Doh, this shouldn't be possible, but if this happens, we can't continue
 		// So warn, and return
@@ -3691,7 +3725,7 @@ void FNetGUIDCache::GenerateFullNetGUIDPath_r( const FNetworkGUID& NetGUID, FStr
 	if ( CacheObject->Object.IsValid() )
 	{
 		// Sanity check that the names match if the path was stored
-		if ( CacheObject->PathName != NAME_None && CacheObject->Object->GetName() != CacheObject->PathName.ToString() )
+		if ( !CacheObject->PathName.IsNone() && CacheObject->Object->GetFName() != CacheObject->PathName )
 		{
 			UE_LOG( LogNetPackageMap, Warning, TEXT( "GenerateFullNetGUIDPath_r: Name mismatch! %s != %s" ), *CacheObject->PathName.ToString(), *CacheObject->Object->GetName() );	
 		}
@@ -3700,7 +3734,7 @@ void FNetGUIDCache::GenerateFullNetGUIDPath_r( const FNetworkGUID& NetGUID, FStr
 	}
 	else
 	{
-		if ( CacheObject->PathName == NAME_None )
+		if (CacheObject->PathName.IsNone())
 		{
 			// This can happen when a non stably named object is NULL
 			FullPath += FString::Printf( TEXT( "[%s]EMPTY" ), *NetGUID.ToString() );
@@ -3867,7 +3901,7 @@ FArchive& operator<<(FArchive& Ar, FNetFieldExport& C)
 		Ar.SerializeIntPacked(C.Handle);
 		Ar << C.CompatibleChecksum;
 
-		if (Ar.IsLoading() && Ar.EngineNetVer() < HISTORY_NETEXPORT_SERIALIZATION)
+		if (Ar.IsLoading() && Ar.EngineNetVer() < FEngineNetworkCustomVersion::NetExportSerialization)
 		{
 			FName TempName;
 			FString TempType;
@@ -3879,7 +3913,7 @@ FArchive& operator<<(FArchive& Ar, FNetFieldExport& C)
 		}
 		else
 		{
-			if (Ar.IsLoading() && Ar.EngineNetVer() < HISTORY_NETEXPORT_SERIALIZE_FIX)
+			if (Ar.IsLoading() && Ar.EngineNetVer() < FEngineNetworkCustomVersion::NetExportSerializeFix)
 			{
 				Ar << C.ExportName;
 			}

@@ -455,17 +455,6 @@ namespace mu
 		}
 
 		//-----------------------------------------------------------------------------------------
-		inline bool AlmostNull( SCALAR tol = std::numeric_limits<SCALAR>::min() ) const
-		{
-			bool res = true;
-			for( int i=0; i<DIM; ++i )
-			{
-				res &= fabs(m[i])<tol;
-			}
-			return res;
-		}
-
-		//-----------------------------------------------------------------------------------------
 		inline void Serialise( OutputArchive& arch ) const
 		{
 			for( int i=0; i<DIM; ++i )
@@ -586,7 +575,23 @@ namespace mu
 		}
 
 		//-----------------------------------------------------------------------------------------
-		inline vec3( const vec<SCALAR,3>& other )
+		inline vec3(const vec<SCALAR, 3>& other)
+		{
+			this->m[0] = other[0];
+			this->m[1] = other[1];
+			this->m[2] = other[2];
+		}				
+
+		//-----------------------------------------------------------------------------------------
+		inline vec3(const FVector3f& other)
+		{
+			this->m[0] = other[0];
+			this->m[1] = other[1];
+			this->m[2] = other[2];
+		}
+
+		//-----------------------------------------------------------------------------------------
+		inline vec3(const FVector4f& other)
 		{
 			this->m[0] = other[0];
 			this->m[1] = other[1];
@@ -723,26 +728,25 @@ namespace mu
 	//---------------------------------------------------------------------------------------------
 	//! Point to plane distance
 	//---------------------------------------------------------------------------------------------
-	template <class SCALAR, int DIM>
-	inline float point_to_plane_dist(const vec<SCALAR, DIM> &point, const vec<SCALAR, DIM> &plane_origin, const vec<SCALAR, DIM> &plane_normal)
+	inline float point_to_plane_dist(const FVector3f& point, const FVector3f& plane_origin, const FVector3f& plane_normal)
 	{
-		return dot((point - plane_origin), plane_normal);
+		return FVector3f::DotProduct((point - plane_origin), plane_normal);
 	}
 
 	//---------------------------------------------------------------------------------------------
 	//! Ray plane intersection
 	//---------------------------------------------------------------------------------------------
-	inline vec3f ray_plane_intersection(const vec3f& ray_start, const vec3f& ray_end, const vec3f& plane_origin, const vec3f &plane_normal)
+	inline FVector3f ray_plane_intersection(const FVector3f& ray_start, const FVector3f& ray_end, const FVector3f& plane_origin, const FVector3f&plane_normal)
 	{
-		return ray_start + (ray_end - ray_start) *	(dot((plane_origin - ray_start), plane_normal) / dot((ray_end - ray_start), plane_normal));
+		return ray_start + (ray_end - ray_start) *	(FVector3f::DotProduct((plane_origin - ray_start), plane_normal) / FVector3f::DotProduct((ray_end - ray_start), plane_normal));
 	}
 
     //constexpr float point_in_plane_eps = 0.0001f;
 
-    inline bool point_in_face(const vec3f& InVtx, const vec3f& normal, vec3f vertices[3], int& out_intersected_vert, int& out_intersected_edge_v0, int& out_intersected_edge_v1, float point_in_plane_eps = 0.0001f)
+    inline bool point_in_face(const FVector3f& InVtx, const FVector3f& normal, FVector3f vertices[3], int& out_intersected_vert, int& out_intersected_edge_v0, int& out_intersected_edge_v1, float point_in_plane_eps = 0.0001f)
     {
-        vec3f SidePlaneNormal;
-        vec3f Side;
+		FVector3f SidePlaneNormal;
+		FVector3f Side;
         bool intersected_edge[3] = { false, false, false };
         int intersected_edge_count = 0;
 
@@ -750,8 +754,8 @@ namespace mu
         {
             // Create plane perpendicular to both this side and the polygon's normal.
             Side = vertices[x] - vertices[(x - 1 < 0) ? 3 - 1 : x - 1];
-            SidePlaneNormal = cross<float>(Side, normalise(normal));
-            normalise(SidePlaneNormal);
+            SidePlaneNormal = FVector3f::CrossProduct(Side, normal.GetSafeNormal());
+            SidePlaneNormal.Normalize();
 
             float dist = point_to_plane_dist(InVtx, vertices[x], SidePlaneNormal);
 
@@ -811,13 +815,13 @@ namespace mu
     }
 
     //---------------------------------------------------------------------------------------------
-    inline bool rayIntersectsFace( const vec3f& ray_start, const vec3f& ray_end,
-                                   const vec3f& v0, const vec3f& v1, const vec3f& v2,
-                                   vec3f& out_intersection,
+    inline bool rayIntersectsFace( const FVector3f& ray_start, const FVector3f& ray_end,
+                                   const FVector3f& v0, const FVector3f& v1, const FVector3f& v2,
+								   FVector3f& out_intersection,
                                    int& out_intersected_vert, int& out_intersected_edge_v0,
                                    int& out_intersected_edge_v1, float point_in_face_epsilon = 0.0001f)
     {
-        vec3f normal = cross<float>(v1 - v0, v2 - v0);
+		FVector3f normal = FVector3f::CrossProduct(v1 - v0, v2 - v0);
 
         // Does the ray cross the plane?
         const float DistStart = point_to_plane_dist(ray_start, v0, normal);
@@ -838,7 +842,7 @@ namespace mu
         }
 
         // Check if the intersection point is actually on the poly.
-        vec3f vertices[3] = { v0, v1, v2 };
+		FVector3f vertices[3] = { v0, v1, v2 };
 
         return point_in_face( out_intersection, normal, vertices,
                               out_intersected_vert,
@@ -847,18 +851,18 @@ namespace mu
 
 
     //---------------------------------------------------------------------------------------------
-    inline bool ray_plane_intersection( const vec3f& ray_start, const vec3f& ray_end,
-                                        const vec3f& plane_origin, const vec3f &plane_normal,
-                                        vec3f& out_intersection, float& out_t )
+    inline bool ray_plane_intersection( const FVector3f& ray_start, const FVector3f& ray_end,
+                                        const FVector3f& plane_origin, const FVector3f&plane_normal,
+                                        FVector3f& out_intersection, float& out_t )
     {
-        float den = mu::dot<float, 3>(ray_end - ray_start, plane_normal);
+        float den = FVector3f::DotProduct(ray_end - ray_start, plane_normal);
 
         if (den == 0.f)
         {
             return false;
         }
 
-        out_t = mu::dot<float, 3>((plane_origin - ray_start), plane_normal) / den;
+        out_t = FVector3f::DotProduct((plane_origin - ray_start), plane_normal) / den;
         out_intersection = ray_start + (ray_end - ray_start) * out_t;
 
         return true;
@@ -866,14 +870,14 @@ namespace mu
 
 
     //---------------------------------------------------------------------------------------------
-    inline bool rayIntersectsFace2(const vec3f& ray_start, const vec3f& ray_end,
-                                   const vec3f& v0, const vec3f& v1, const vec3f& v2,
-                                   vec3f& out_intersection,
+    inline bool rayIntersectsFace2(const FVector3f& ray_start, const FVector3f& ray_end,
+                                   const FVector3f& v0, const FVector3f& v1, const FVector3f& v2,
+		FVector3f& out_intersection,
                                    int& out_intersected_vert,
                                    int& out_intersected_edge_v0, int& out_intersected_edge_v1,
                                    float& out_t )
     {
-        vec3f normal = cross<float>(v1 - v0, v2 - v0);
+		FVector3f normal = FVector3f::CrossProduct(v1 - v0, v2 - v0);
 
         // Does the ray cross the plane?
         const float DistStart = point_to_plane_dist(ray_start, v0, normal);
@@ -897,7 +901,7 @@ namespace mu
         }
 
         // Check if the intersection point is actually on the poly.
-        vec3f vertices[3] = { v0, v1, v2 };
+		FVector3f vertices[3] = { v0, v1, v2 };
 
         return point_in_face( out_intersection, normal, vertices, out_intersected_vert,
                               out_intersected_edge_v0, out_intersected_edge_v1 );
@@ -932,84 +936,6 @@ namespace mu
 	{
 		return a * rsqrt_approx( dot(a,a) );
 	}
-
-
-	//---------------------------------------------------------------------------------------------
-	//! Angle between two vectors, in radians
-	//---------------------------------------------------------------------------------------------
-	inline float angle( const vec3f& a, const vec3f& b )
-	{
-		float s = sqrt( dot(a,a) * dot(b,b) );
-
-		if ( s > std::numeric_limits<float>::min() )
-		{
-			return acos( dot(a,b) / s );
-		}
-		else
-		{
-			return 0.0f;
-		}
-	}
-
-
-	//---------------------------------------------------------------------------------------------
-	//!
-	//---------------------------------------------------------------------------------------------
-	template <class SCALAR>
-	class vec4 : public vec<SCALAR,4>
-	{
-	public:
-
-		//-----------------------------------------------------------------------------------------
-		inline vec4()
-		{
-			// Elements are cleared in the parent constructor
-		}
-
-		//-----------------------------------------------------------------------------------------
-		inline vec4( SCALAR x, SCALAR y, SCALAR z, SCALAR w )
-		{
-			this->m[0] = x;
-			this->m[1] = y;
-			this->m[2] = z;
-			this->m[3] = w;
-		}
-
-        //-----------------------------------------------------------------------------------------
-        inline vec4( const vec<SCALAR,4>& other )
-        {
-            this->m[0] = other[0];
-            this->m[1] = other[1];
-            this->m[2] = other[2];
-            this->m[3] = other[3];
-        }
-
-        //-----------------------------------------------------------------------------------------
-        inline vec4( const vec<SCALAR,3>& other, float w )
-        {
-            this->m[0] = other[0];
-            this->m[1] = other[1];
-            this->m[2] = other[2];
-            this->m[3] = w;
-        }
-
-        //-----------------------------------------------------------------------------------------
-        inline vec3<SCALAR> xyz() const
-        {
-            return vec3<SCALAR>( this->m[0], this->m[1], this->m[2] );
-        }
-
-        //-----------------------------------------------------------------------------------------
-        inline vec2<SCALAR> xy() const
-        {
-            return vec2<SCALAR>( this->m[0], this->m[1] );
-        }
-
-	};
-
-	//!
-	typedef vec4<float> vec4f;
-    MUTABLE_DEFINE_POD_VECTOR_SERIALISABLE( vec4f );
 
 
 	//!
@@ -1098,22 +1024,40 @@ namespace mu
 			return (v-min)/size;
 		}
 
-        //-----------------------------------------------------------------------------------------
-        inline void Bound( const VECTOR& v )
-        {
-            for ( int d=0; d<VECTOR::GetDim(); ++d )
-            {
-                if (v[d]<min[d])
-                {
-                    size[d] += min[d]-v[d];
-                    min[d] = v[d];
-                }
-                else if (v[d]-min[d]>size[d])
-                {
-                    size[d] = v[d]-min[d];
-                }
-            }
-        }
+		//-----------------------------------------------------------------------------------------
+		inline void Bound(const VECTOR& v)
+		{
+			for (int d = 0; d < VECTOR::GetDim(); ++d)
+			{
+				if (v[d] < min[d])
+				{
+					size[d] += min[d] - v[d];
+					min[d] = v[d];
+				}
+				else if (v[d] - min[d] > size[d])
+				{
+					size[d] = v[d] - min[d];
+				}
+			}
+		}
+
+		//-----------------------------------------------------------------------------------------
+		inline void Bound3(const VECTOR& v)
+		{
+			for (int d = 0; d < 3; ++d)
+			{
+				if (v[d] < min[d])
+				{
+					size[d] += min[d] - v[d];
+					min[d] = v[d];
+				}
+				else if (v[d] - min[d] > size[d])
+				{
+					size[d] = v[d] - min[d];
+				}
+			}
+		}
+
 
 		//-----------------------------------------------------------------------------------------
 		inline void Bound(const box<VECTOR>& other)
@@ -1418,18 +1362,24 @@ namespace mu
             return r;
         }
 
-        //-----------------------------------------------------------------------------------------
-        V operator*( const V& v ) const
-        {
-            V r;
+		//-----------------------------------------------------------------------------------------
+		V Transform(const V& v) const
+		{
+			V r;
 
-            for ( int i=0; i<DIM; ++i )
-            {
-                r[i] = dot( m[i], v );
-            }
+			for (int i = 0; i < DIM; ++i)
+			{
+				r[i] = dot(m[i], v);
+			}
 
-            return r;
-        }
+			return r;
+		}
+
+		//-----------------------------------------------------------------------------------------
+		V operator*(const V& v) const
+		{
+			return Transform(v);
+		}
 
         //-----------------------------------------------------------------------------------------
         SCALAR GetDeterminant() const
@@ -1492,17 +1442,6 @@ namespace mu
 			for( int i=0; i<DIM; ++i )
 			{
 				res &= m[i].AlmostEqual(other.m[i],tol);
-			}
-			return res;
-		}
-
-		//-----------------------------------------------------------------------------------------
-		inline bool AlmostNull( SCALAR tol = std::numeric_limits<SCALAR>::min() ) const
-		{
-			bool res = true;
-			for( int i=0; i<DIM; ++i )
-			{
-				res &= m[i].AlmostNull( tol );
 			}
 			return res;
 		}

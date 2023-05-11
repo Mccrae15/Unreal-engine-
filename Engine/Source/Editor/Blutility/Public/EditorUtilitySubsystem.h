@@ -48,7 +48,7 @@ public:
 
 	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
 
-	void MainFrameCreationFinished(TSharedPtr<SWindow> InRootWindow, bool bIsNewProjectWindow);
+	void MainFrameCreationFinished(TSharedPtr<SWindow> InRootWindow, bool bIsRunningStartupDialog);
 	void HandleStartup();
 
 	UPROPERTY(config)
@@ -95,6 +95,10 @@ public:
 	/** Given an ID for a tab, try to find and close an existing tab. Returns true if it found a tab to close. */
 	UFUNCTION(BlueprintCallable, Category = "Development|Editor")
 	bool CloseTabByID(FName NewTabID);
+
+	/** Given an ID for a tab, try to close and unregister a tab that was registered through this subsystem */
+	UFUNCTION(BlueprintCallable, Category = "Development|Editor")
+	bool UnregisterTabByID(FName TabID);
 
 	/** Given an editor utility widget blueprint, get the widget it creates. This will return a null pointer if the widget is not currently in a tab.*/
 	UFUNCTION(BlueprintCallable, Category = "Development|Editor")

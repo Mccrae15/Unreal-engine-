@@ -20,7 +20,7 @@ public class LibWebM : ModuleRules
 		}
 		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 		{
-			PublicAdditionalLibraries.Add(RootPath + "/lib/Unix/" + Target.Architecture + ((Target.LinkType == TargetLinkType.Monolithic) ? "/libwebm" : "/libwebm_fPIC") + ".a");
+			PublicAdditionalLibraries.Add(RootPath + "/lib/Unix/" + Target.Architecture.LinuxName + ((Target.LinkType == TargetLinkType.Monolithic) ? "/libwebm" : "/libwebm_fPIC") + ".a");
 		}
 		else if (Target.Platform == UnrealTargetPlatform.Mac)
 		{
@@ -28,6 +28,6 @@ public class LibWebM : ModuleRules
 		}
 
 		string IncludePath = RootPath + "/include";
-		PublicIncludePaths.Add(IncludePath);
+		PublicSystemIncludePaths.Add(IncludePath);
 	}
 }

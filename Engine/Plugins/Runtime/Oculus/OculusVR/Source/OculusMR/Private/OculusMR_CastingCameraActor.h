@@ -15,11 +15,13 @@
 
 class UOculusMR_PlaneMeshComponent;
 class UMaterial;
+class UTexture2D;
 class AOculusMR_BoundaryActor;
 class UTextureRenderTarget2D;
 class UDEPRECATED_UOculusMR_Settings;
 class UOculusMR_State;
 class UMaterialInstanceDynamic;
+class UTexture2D;
 
 /**
 * The camera actor in the level that tracks the binded physical camera in game

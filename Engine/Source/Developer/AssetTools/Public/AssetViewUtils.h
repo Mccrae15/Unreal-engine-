@@ -144,7 +144,16 @@ namespace AssetViewUtils
 	 * @param FolderPath - The path to the folder
 	 * @return The color the folder should appear as, will be NULL if not customized
 	 */
+	UE_DEPRECATED(5.0, "LoadColor deprecated, please use GetPathColor")
 	ASSETTOOLS_API const TSharedPtr<FLinearColor> LoadColor(const FString& FolderPath);
+
+	/**
+	 * Returns the color of this path from the config
+	 *
+	 * @param FolderPath - The path to the folder
+	 * @return The color the folder should appear as, will be invalid if not customized
+	 */
+	ASSETTOOLS_API TOptional<FLinearColor> GetPathColor(const FString& FolderPath);
 
 	/**
 	 * Saves the color of the path to the config
@@ -153,7 +162,16 @@ namespace AssetViewUtils
 	 * @param FolderColor - The color the folder should appear as
 	 * @param bForceAdd - If true, force the color to be added for the path
 	 */
+	UE_DEPRECATED(5.0, "SaveColor deprecated, please use SetPathColor")
 	ASSETTOOLS_API void SaveColor(const FString& FolderPath, const TSharedPtr<FLinearColor>& FolderColor, bool bForceAdd = false);
+
+	/**
+	 * Saves the color of the path to the config
+	 *
+	 * @param FolderPath - The path to the folder
+	 * @param FolderColor - The color the folder should appear as
+	 */
+	ASSETTOOLS_API void SetPathColor(const FString& FolderPath, TOptional<FLinearColor> FolderColor);
 
 	/**
 	 * Checks to see if any folder has a custom color, optionally outputs them to a list
@@ -179,7 +197,7 @@ namespace AssetViewUtils
 	ASSETTOOLS_API FString GetPackagePathWithinRoot(const FString& PackageName);
 
 	/** Returns the length of the computed cooked package name and path whether it's run on a build machine or locally */
-	ASSETTOOLS_API int32 GetPackageLengthForCooking(const FString& PackageName, bool IsInternalBuild);
+	ASSETTOOLS_API int32 GetPackageLengthForCooking(const FString& PackageName, bool bIsInternalBuild);
 
 	/** Checks to see whether the path is within the size restrictions for cooking */
 	ASSETTOOLS_API bool IsValidPackageForCooking(const FString& PackageName, FText& OutErrorMessage);
@@ -190,11 +208,14 @@ namespace AssetViewUtils
 	/** Gets the maximum path length for a cooked file. Changes behavior based on whether the editor experimental setting for long paths is enabled. */
 	ASSETTOOLS_API int32 GetMaxCookPathLen();
 
-	/** Syncs the specified packages from source control, other than any level assets which are currently being edited */
-	ASSETTOOLS_API void SyncPackagesFromSourceControl(const TArray<FString>& PackageNames);
+	/** Syncs the specified packages from source control, other than any level assets which are currently being edited.*/
+	ASSETTOOLS_API void SyncPackagesFromSourceControl(const TArray<FString>& PackageNames, bool bIsSyncLatestOperation = false);
 
 	/** Syncs the content from the specified paths from source control, other than any level assets which are currently being edited */
 	ASSETTOOLS_API void SyncPathsFromSourceControl(const TArray<FString>& ContentPaths);
+
+	/** Syncs latest from source control and attempts to reload the world */
+	ASSETTOOLS_API void SyncLatestFromSourceControl();
 
 	/** Show an error notification toast if the given error message is not empty */
 	ASSETTOOLS_API void ShowErrorNotifcation(const FText& InErrorMsg);

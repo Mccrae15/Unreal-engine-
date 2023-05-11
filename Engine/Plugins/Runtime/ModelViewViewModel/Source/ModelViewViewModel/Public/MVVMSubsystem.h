@@ -3,13 +3,16 @@
 #pragma once
 
 #include "Subsystems/EngineSubsystem.h"
-#include "Templates/ValueOrError.h"
-#include "Types/MVVMBindingName.h"
 #include "Types/MVVMFieldVariant.h"
 #include "Types/MVVMBindingMode.h"
 #include "Types/MVVMViewModelCollection.h"
 
+#include "UObject/Package.h"
 #include "MVVMSubsystem.generated.h"
+
+struct FMVVMAvailableBinding;
+struct FMVVMBindingName;
+template <typename ValueType, typename ErrorType> class TValueOrError;
 
 class UMVVMView;
 class UMVVMViewModelBase;
@@ -29,31 +32,36 @@ public:
 	virtual void Deinitialize() override;
 	//~ End UEngineSubsystem interface
 
-	UFUNCTION(BlueprintCallable, Category="MVVM")
-	UMVVMView* GetViewFromUserWidget(const UUserWidget* UserWidget) const;
+	UFUNCTION(BlueprintCallable, Category = "Viewmodel", meta = (DisplayName = "Get View From User Widget"))
+	UMVVMView* K2_GetViewFromUserWidget(const UUserWidget* UserWidget) const;
 
-	UFUNCTION(BlueprintCallable, Category = "MVVM")
+	static UMVVMView* GetViewFromUserWidget(const UUserWidget* UserWidget);
+
+	UFUNCTION(BlueprintCallable, Category = "Viewmodel")
 	bool DoesWidgetTreeContainedWidget(const UWidgetTree* WidgetTree, const UWidget* ViewWidget) const;
 
-	/**
-	 * @return The list of all the bindings that are available for the Class.
-	 */
-	UFUNCTION(BlueprintCallable, Category = "MVVM")
-	TArray<FMVVMAvailableBinding> GetAvailableBindings(const UClass* Class, const UClass* Accessor) const;
+	/** @return The list of all the AvailableBindings that are available for the Class. */
+	UFUNCTION(BlueprintCallable, Category = "Viewmodel", meta = (DisplayName = "Get Available Bindings"))
+	TArray<FMVVMAvailableBinding> K2_GetAvailableBindings(const UClass* Class, const UClass* Accessor) const;
+
+	static TArray<FMVVMAvailableBinding> GetAvailableBindings(const UClass* Class, const UClass* Accessor);
 
 	/**
-	 * @return The list of all the bindings that are available from the SriptStuct.
+	 * @return The list of all the AvailableBindings that are available from the SriptStuct.
 	 * @note When FMVVMAvailableBinding::HasNotify is false, a notification can still be triggered by the owner of the struct. The struct changed but which property of the struct changed is unknown.
 	 */
-	TArray<FMVVMAvailableBinding> GetAvailableBindingsForStruct(const UScriptStruct* Struct) const;
+	static TArray<FMVVMAvailableBinding> GetAvailableBindingsForStruct(const UScriptStruct* Struct);
 
-	/**
-	 * @return the available binding from the binding.
-	 */
-	UFUNCTION(BlueprintCallable, Category = "MVVM")
-	FMVVMAvailableBinding GetAvailableBinding(const UClass* Class, FMVVMBindingName BindingName, const UClass* Accessor) const;
+	/** @return The AvailableBinding from a BindingName. */
+	UFUNCTION(BlueprintCallable, Category = "Viewmodel", meta = (DisplayName = "Get Available Binding"))
+	FMVVMAvailableBinding K2_GetAvailableBinding(const UClass* Class, FMVVMBindingName BindingName, const UClass* Accessor) const;
 
-	UFUNCTION(BlueprintCallable, Category = "MVVM")
+	static FMVVMAvailableBinding GetAvailableBinding(const UClass* Class, FMVVMBindingName BindingName, const UClass* Accessor);
+
+	/** @return The AvailableBinding from a field. */
+	static FMVVMAvailableBinding GetAvailableBindingForField(UE::MVVM::FMVVMConstFieldVariant Variant, const UClass* Accessor);
+
+	UFUNCTION(BlueprintCallable, Category = "Viewmodel")
 	UMVVMViewModelCollectionObject* GetGlobalViewModelCollection() const
 	{
 		return GlobalViewModelCollection;
@@ -97,3 +105,8 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UMVVMViewModelCollectionObject> GlobalViewModelCollection;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Templates/ValueOrError.h"
+#include "Types/MVVMBindingName.h"
+#endif

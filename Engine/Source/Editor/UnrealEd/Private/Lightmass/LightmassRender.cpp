@@ -10,8 +10,11 @@
 #include "Misc/Paths.h"
 #include "Misc/Guid.h"
 #include "RenderingThread.h"
+#include "MaterialDomain.h"
 #include "MaterialShared.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialAttributeDefinitionMap.h"
+#include "Materials/MaterialRenderProxy.h"
 #include "CanvasItem.h"
 #include "CanvasTypes.h"
 #include "Engine/TextureRenderTarget2D.h"
@@ -25,12 +28,13 @@
 #include "LandscapeMaterialInstanceConstant.h"
 #include "EngineModule.h"
 #include "EngineUtils.h"
+#include "TextureResource.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogLightmassRender, Error, All);
 
-extern bool Lightmass_IsStrataEnabled()
+extern bool Lightmass_IsSubstrateEnabled()
 {
-	static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Strata"));
+	static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Substrate"));
 	return CVar && CVar->GetValueOnAnyThread() > 0;
 }
 
@@ -213,6 +217,11 @@ struct FLightmassMaterialCompiler : public FProxyMaterialCompiler
 		return Compiler->Constant(0.0f);
 	}
 
+	virtual int32 DecalColor() override
+	{
+		return Compiler->Constant4(1.0f, 1.0f, 1.0f, 1.0f);
+	}
+
 	virtual int32 DecalLifetimeOpacity() override
 	{
 		return Compiler->Constant(0.0f);
@@ -246,7 +255,7 @@ public:
 	{
 		if (InMaterialInterface)
 		{
-			bStrataEnabled = Lightmass_IsStrataEnabled();
+			bStrataEnabled = Lightmass_IsSubstrateEnabled();
 			MaterialInterface = InMaterialInterface;
 			Material = MaterialInterface ? MaterialInterface->GetMaterial() : NULL;
 			PropertyToCompile = InPropertyToCompile;
@@ -370,33 +379,38 @@ public:
 
 		if (bStrataEnabled)
 		{
-			EStrataBlendMode StrataBlendMode = MaterialInterface->GetStrataBlendMode();
-			uint8 LegacyBlendMode = MaterialInterface->GetBlendMode();
-			EStrataMaterialExportContext StrataMaterialExportContext = (StrataBlendMode == SBM_Opaque || StrataBlendMode == SBM_Masked) ? EStrataMaterialExportContext::SMEC_Opaque : EStrataMaterialExportContext::SMEC_Translucent;
+			uint8 BlendMode = static_cast<uint8>(MaterialInterface->GetBlendMode());
+			EStrataMaterialExportContext StrataMaterialExportContext = IsOpaqueOrMaskedBlendMode(*MaterialInterface) ? EStrataMaterialExportContext::SMEC_Opaque : EStrataMaterialExportContext::SMEC_Translucent;
 
 			if (Usage == EMaterialShaderMapUsage::LightmassExportDiffuse)
 			{
-				Compiler->SetStrataMaterialExportType(SME_Diffuse, StrataMaterialExportContext, LegacyBlendMode);
+				Compiler->SetStrataMaterialExportType(SME_Diffuse, StrataMaterialExportContext, BlendMode);
 			}
 			else if (Usage == EMaterialShaderMapUsage::LightmassExportNormal)
 			{
-				Compiler->SetStrataMaterialExportType(SME_Normal, StrataMaterialExportContext, LegacyBlendMode);
+				Compiler->SetStrataMaterialExportType(SME_Normal, StrataMaterialExportContext, BlendMode);
 			}
 			else if (Usage == EMaterialShaderMapUsage::LightmassExportOpacity)
 			{
-				Compiler->SetStrataMaterialExportType(SME_Transmittance, StrataMaterialExportContext, LegacyBlendMode);
+				Compiler->SetStrataMaterialExportType(SME_Transmittance, StrataMaterialExportContext, BlendMode);
 			}
 			else if (Usage == EMaterialShaderMapUsage::LightmassExportEmissive)
 			{
-				Compiler->SetStrataMaterialExportType(SME_Emissive, StrataMaterialExportContext, LegacyBlendMode);
+				Compiler->SetStrataMaterialExportType(SME_Emissive, StrataMaterialExportContext, BlendMode);
 			}
 		}
 
 		if( Property == MP_EmissiveColor )
 		{
 			UMaterial* ProxyMaterial = MaterialInterface->GetMaterial();
-			EBlendMode BlendMode = MaterialInterface->GetBlendMode();
 			bool bIsMaterialUnlit = MaterialInterface->GetShadingModels().IsUnlit();
+			const bool bIsOpaque = IsOpaqueBlendMode(*MaterialInterface);
+			const bool bIsMasked = IsMaskedBlendMode(*MaterialInterface);
+			const bool bIsModulate = IsModulateBlendMode(*MaterialInterface);
+			const bool bIsTranslucentOnly = IsTranslucentOnlyBlendMode(*MaterialInterface);
+			const bool bIsAlphaHoldout = IsAlphaHoldoutBlendMode(*MaterialInterface);
+			const bool bIsAdditive = IsAdditiveBlendMode(*MaterialInterface);
+			const bool bIsAlphaComposite = IsAlphaCompositeBlendMode(*MaterialInterface);
 			check(ProxyMaterial);
 			FLightmassMaterialCompiler ProxyCompiler(Compiler);
 
@@ -407,14 +421,14 @@ public:
 				return Compiler->Max(MaterialInterface->CompileProperty(&ProxyCompiler,MP_EmissiveColor, ForceCast_Exact_Replicate), Compiler->Constant3(0, 0, 0));
 			case MP_DiffuseColor:
 				// Only return for Opaque and Masked...
-				if (BlendMode == BLEND_Opaque || BlendMode == BLEND_Masked)
+				if (bIsOpaque || bIsMasked)
 				{
 					return Compiler->Saturate(MaterialInterface->CompileProperty(&ProxyCompiler, DiffuseInput, ForceCast_Exact_Replicate));
 				}
 				break;
 			case MP_SpecularColor: 
 				// Only return for Opaque and Masked...
-				if (BlendMode == BLEND_Opaque || BlendMode == BLEND_Masked)
+				if (bIsOpaque || bIsMasked)
 				{
 					return Compiler->AppendVector(
 						Compiler->Saturate(MaterialInterface->CompileProperty(&ProxyCompiler, MP_SpecularColor, ForceCast_Exact_Replicate)), 
@@ -423,22 +437,22 @@ public:
 				break;
 			case MP_Normal:
 				// Only return for Opaque and Masked...
-				if (BlendMode == BLEND_Opaque || BlendMode == BLEND_Masked)
+				if (bIsOpaque || bIsMasked)
 				{
 					return MaterialInterface->CompileProperty(&ProxyCompiler, MP_Normal, ForceCast_Exact_Replicate);
 				}
 				break;
 			
 			case MP_Opacity:
-				if (BlendMode == BLEND_Masked)
+				if (bIsMasked)
 				{
 					return MaterialInterface->CompileProperty(&ProxyCompiler, MP_OpacityMask);
 				}
-				else if (IsTranslucentBlendMode((EBlendMode)BlendMode) && ProxyMaterial->GetCastShadowAsMasked())
+				else if (IsTranslucentBlendMode(*MaterialInterface) && ProxyMaterial->GetCastShadowAsMasked())
 				{
 					return MaterialInterface->CompileProperty(&ProxyCompiler, MP_Opacity);
 				}
-				else if (BlendMode == BLEND_Modulate)
+				else if (bIsModulate)
 				{
 					if (bIsMaterialUnlit)
 					{
@@ -449,7 +463,7 @@ public:
 						return Compiler->Saturate(MaterialInterface->CompileProperty(Compiler, DiffuseInput, ForceCast_Exact_Replicate));
 					}
 				}
-				else if ((BlendMode == BLEND_Translucent) || (BlendMode == BLEND_Additive) || (BlendMode == BLEND_AlphaComposite) || (BlendMode == BLEND_AlphaHoldout))
+				else if (bIsTranslucentOnly || bIsAdditive || bIsAlphaComposite || bIsAlphaHoldout)
 				{
 					int32 ColoredOpacity = INDEX_NONE;
 					if (bIsMaterialUnlit)
@@ -502,6 +516,10 @@ public:
 		{
 			return MaterialInterface->CompileProperty(Compiler, MP_OpacityMask);
 		}
+		else if (Property == MP_SurfaceThickness)
+		{
+			return MaterialInterface->CompileProperty(Compiler, MP_SurfaceThickness);
+		}
 		else if (Property == MP_FrontMaterial)
 		{
 			if (bStrataEnabled)
@@ -541,6 +559,14 @@ public:
 		if (MaterialInterface)
 		{
 			return MaterialInterface->IsTwoSided();
+		}
+		return false;
+	}
+	virtual bool IsThinSurface() const override
+	{
+		if (MaterialInterface)
+		{
+			return MaterialInterface->IsThinSurface();
 		}
 		return false;
 	}
@@ -586,7 +612,8 @@ public:
 	}
 	virtual bool IsMasked() const override									{ return false; }
 	virtual enum EBlendMode GetBlendMode() const override					{ return BLEND_Opaque; }
-	virtual enum EStrataBlendMode GetStrataBlendMode() const override		{ return EStrataBlendMode::SBM_Opaque; }
+	virtual enum ERefractionMode GetRefractionMode() const override			{ return Material ? (ERefractionMode)Material->RefractionMethod : RM_None; }
+	virtual bool GetRootNodeOverridesDefaultRefraction()const override		{ return Material ? Material->bRootNodeOverridesDefaultDistortion : false; }
 	virtual FMaterialShadingModelField GetShadingModels() const override	{ return MSM_Unlit; }
 	virtual bool IsShadingModelFromMaterialExpression() const override		{ return false; }
 	virtual float GetOpacityMaskClipValue() const override					{ return 0.5f; }
@@ -682,7 +709,8 @@ public:
 
 		if (bStrataEnabled)
 		{
-			EStrataBlendMode StrataBlendMode = MaterialInterface->GetStrataBlendMode();
+			const bool bIsOpaque = IsOpaqueBlendMode(*MaterialInterface);
+			const bool bIsMasked = IsMaskedBlendMode(*MaterialInterface);
 
 			switch (Usage)
 			{
@@ -690,20 +718,20 @@ public:
 				bExpressionIsNULL = !IsMaterialInputConnected(Material, MP_FrontMaterial);
 				break;
 			case EMaterialShaderMapUsage::LightmassExportDiffuse:
-				if (StrataBlendMode == SBM_Opaque || StrataBlendMode == SBM_Masked)
+				if (bIsOpaque || bIsMasked)
 				{
 					bExpressionIsNULL = !IsMaterialInputConnected(Material, MP_FrontMaterial);
 				}
 				break;
 			case EMaterialShaderMapUsage::LightmassExportOpacity:
-				if (StrataBlendMode != SBM_Opaque)
+				if (!bIsOpaque)
 				{
 					bExpressionIsNULL = !IsMaterialInputConnected(Material, MP_FrontMaterial);
 					OutUniformValue.A = 15.0f;
 				}
 				break;
 			case EMaterialShaderMapUsage::LightmassExportNormal:
-				if (StrataBlendMode == SBM_Opaque || StrataBlendMode == SBM_Masked)
+				if (bIsOpaque || bIsMasked)
 				{
 					bExpressionIsNULL = !IsMaterialInputConnected(Material, MP_FrontMaterial);
 					OutUniformValue.B = 1.0f;	// Default normal is (0,0,1)
@@ -716,6 +744,7 @@ public:
 		}
 		else
 		{
+			const bool bIsOpaqueOrMasked = IsOpaqueOrMaskedBlendMode(*MaterialInterface);
 			bool bIsMaterialUnlit = MaterialInterface->GetShadingModels().IsUnlit();
 			EBlendMode BlendMode = MaterialInterface->GetBlendMode();
 
@@ -727,14 +756,14 @@ public:
 				break;
 			case MP_DiffuseColor:
 				// Only return for Opaque and Masked...
-				if (BlendMode == BLEND_Opaque || BlendMode == BLEND_Masked)
+				if (bIsOpaqueOrMasked)
 				{
 					bExpressionIsNULL = !IsMaterialInputConnected(Material, PropertyToCompile);
 				}
 				break;
 			case MP_SpecularColor: 
 				// Only return for Opaque and Masked...
-				if (BlendMode == BLEND_Opaque || BlendMode == BLEND_Masked)
+				if (bIsOpaqueOrMasked)
 				{
 					bExpressionIsNULL = !IsMaterialInputConnected(Material, PropertyToCompile);
 					OutUniformValue.A = 15.0f;
@@ -742,7 +771,7 @@ public:
 				break;
 			case MP_Normal:
 				// Only return for Opaque and Masked...
-				if (BlendMode == BLEND_Opaque || BlendMode == BLEND_Masked)
+				if (bIsOpaqueOrMasked)
 				{
 					bExpressionIsNULL = !IsMaterialInputConnected(Material, PropertyToCompile);
 					OutUniformValue.B = 1.0f;	// Default normal is (0,0,1)
@@ -843,7 +872,7 @@ public:
 		return true;
 	}
 
-	static bool WillFillData(EBlendMode InBlendMode, EMaterialProperty InMaterialProperty, bool bStrataEnabled, EStrataBlendMode InStrataBlendMode)
+	static bool WillFillData(EBlendMode InBlendMode, EMaterialProperty InMaterialProperty, bool bStrataEnabled)
 	{
 		// MAKE SURE THIS MATCHES THE CHART IN CompileProperty
 		// 						  RETURNED VALUES (F16 'textures')
@@ -868,15 +897,15 @@ public:
 			{
 			case MP_DiffuseColor:
 			{
-				return InStrataBlendMode == SBM_Opaque || InStrataBlendMode == SBM_Masked;
+				return InBlendMode == BLEND_Opaque || InBlendMode == BLEND_Masked;
 			}
 			case MP_Normal:
 			{
-				return InStrataBlendMode == SBM_Opaque || InStrataBlendMode == SBM_Masked;
+				return InBlendMode == BLEND_Opaque || InBlendMode == BLEND_Masked;
 			}
 			case MP_Opacity:
 			{
-				return InStrataBlendMode != SBM_Opaque;
+				return InBlendMode != BLEND_Opaque;
 				break;
 			}
 			default:
@@ -955,6 +984,11 @@ public:
 		}
 	}
 
+	virtual bool CheckInValidStateForCompilation(class FMaterialCompiler* Compiler) const override
+	{
+		return Material && Material->CheckInValidStateForCompilation(Compiler);
+	}
+
 private:
 	/** The material interface for this proxy */
 	UMaterialInterface* MaterialInterface;
@@ -1014,24 +1048,23 @@ void FLightmassMaterialRenderer::BeginGenerateMaterialData(
 	if (BaseMaterial)
 	{
 		check(!MaterialExportData.Contains(InMaterial));
-		const bool bStrataEnabled = Lightmass_IsStrataEnabled();
-		EStrataBlendMode StrataBlendMode = InMaterial->GetStrataBlendMode();
+		const bool bStrataEnabled = Lightmass_IsSubstrateEnabled();
 
 		FMaterialExportDataEntry& MaterialData = MaterialExportData.Add(InMaterial, FMaterialExportDataEntry(ChannelName));
 
-		if (FLightmassMaterialProxy::WillFillData(BlendMode, MP_DiffuseColor, bStrataEnabled, StrataBlendMode))
+		if (FLightmassMaterialProxy::WillFillData(BlendMode, MP_DiffuseColor, bStrataEnabled))
 		{
 			MaterialData.DiffuseMaterialProxy = new FLightmassMaterialProxy();
 			MaterialData.DiffuseMaterialProxy->BeginCompiling(InMaterial, MP_DiffuseColor, EMaterialShaderMapUsage::LightmassExportDiffuse);
 		}
 
-		if (FLightmassMaterialProxy::WillFillData(BlendMode, MP_EmissiveColor, bStrataEnabled, StrataBlendMode))
+		if (FLightmassMaterialProxy::WillFillData(BlendMode, MP_EmissiveColor, bStrataEnabled))
 		{
 			MaterialData.EmissiveMaterialProxy = new FLightmassMaterialProxy();
 			MaterialData.EmissiveMaterialProxy->BeginCompiling(InMaterial, MP_EmissiveColor, EMaterialShaderMapUsage::LightmassExportEmissive);
 		}
 
-		if (FLightmassMaterialProxy::WillFillData(BlendMode, MP_Opacity, bStrataEnabled, StrataBlendMode))
+		if (FLightmassMaterialProxy::WillFillData(BlendMode, MP_Opacity, bStrataEnabled))
 		{
 			// Landscape opacity is generated from the hole mask, not the material
 			if (!bIsLandscapeMaterial)
@@ -1041,7 +1074,7 @@ void FLightmassMaterialRenderer::BeginGenerateMaterialData(
 			}
 		}
 
-		if (bInWantNormals && FLightmassMaterialProxy::WillFillData(BlendMode, MP_Normal, bStrataEnabled, StrataBlendMode))
+		if (bInWantNormals && FLightmassMaterialProxy::WillFillData(BlendMode, MP_Normal, bStrataEnabled))
 		{
 			MaterialData.NormalMaterialProxy = new FLightmassMaterialProxy();
 			MaterialData.NormalMaterialProxy->BeginCompiling(InMaterial, MP_Normal, EMaterialShaderMapUsage::LightmassExportNormal);
@@ -1076,7 +1109,7 @@ bool FLightmassMaterialRenderer::GenerateMaterialData(
 	check(BaseMaterial);
 
 	EBlendMode BlendMode = InMaterial.GetBlendMode();
-	const bool bStrataEnabled = Lightmass_IsStrataEnabled();
+	const bool bStrataEnabled = Lightmass_IsSubstrateEnabled();
 
 	FMaterialShadingModelField ShadingModels = InMaterial.GetShadingModels();
  	if (!bStrataEnabled &&		// Shading models are irrelevant when using Strata
@@ -1094,17 +1127,10 @@ bool FLightmassMaterialRenderer::GenerateMaterialData(
 	// Set the blend mode
 	static_assert(EBlendMode::BLEND_MAX == (EBlendMode)Lightmass::BLEND_MAX, "Debug type sizes must match.");
 	OutMaterialData.BlendMode = (Lightmass::EBlendMode)((int32)BlendMode);
-	if (Lightmass_IsStrataEnabled())
-	{
-		OutMaterialData.StrataBlendMode = (Lightmass::EStrataBlendMode)((int32)InMaterial.GetStrataBlendMode());
-	}
-	else
-	{
-		OutMaterialData.StrataBlendMode = Lightmass::SBM_MAX;
-	}
 
 	// Set the two-sided flag
 	OutMaterialData.bTwoSided = (uint32)InMaterial.IsTwoSided();
+	OutMaterialData.bIsThinSurface = (uint32)InMaterial.IsThinSurface();
 	OutMaterialData.OpacityMaskClipValue = InMaterial.GetOpacityMaskClipValue();
 	// Cast shadow as masked feature need to access transmission texture. Only allow
 	// if transmission/opacity data exists
@@ -1115,7 +1141,8 @@ bool FLightmassMaterialRenderer::GenerateMaterialData(
 	const bool bIsLandscapeMaterial = InMaterial.IsA<ULandscapeMaterialInstanceConstant>();
 
 	// due to landscape using an expanded mesh, we have to mask out the edge data even on opaque components (sigh)
-	if (bIsLandscapeMaterial && OutMaterialData.BlendMode == Lightmass::BLEND_Opaque)
+	const bool bIsOpaque = OutMaterialData.BlendMode == Lightmass::BLEND_Opaque;
+	if (bIsLandscapeMaterial && bIsOpaque)
 	{
 		OutMaterialData.BlendMode = Lightmass::BLEND_Masked;
 	}

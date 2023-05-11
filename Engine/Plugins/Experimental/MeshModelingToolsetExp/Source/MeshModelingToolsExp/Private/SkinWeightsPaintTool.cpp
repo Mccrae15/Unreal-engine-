@@ -1,9 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SkinWeightsPaintTool.h"
-
+#include "Engine/SkeletalMesh.h"
 #include "InteractiveToolManager.h"
 #include "ToolBuilderUtil.h"
+#include "SceneManagement.h"
 #include "SkeletalMeshAttributes.h"
 #include "SkeletalDebugRendering.h"
 #include "Math/UnrealMathUtility.h"
@@ -13,6 +14,7 @@
 #include "ModelingToolTargetUtil.h"
 
 #include "MeshDescription.h"
+#include "DynamicMesh/NonManifoldMappingSupport.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SkinWeightsPaintTool)
 
@@ -64,6 +66,9 @@ void USkinWeightsPaintTool::Setup()
 
 	IPrimitiveComponentBackedTarget* TargetComponent = Cast<IPrimitiveComponentBackedTarget>(Target);
 	USkeletalMeshComponent* Component = Cast<USkeletalMeshComponent>(TargetComponent->GetOwnerComponent());
+
+	EditedMesh = MakeUnique<FMeshDescription>();
+	*EditedMesh = *UE::ToolTarget::GetMeshDescription(Target);
 
 	// hide strength and falloff
 	BrushProperties->RestoreProperties(this);
@@ -129,9 +134,6 @@ void USkinWeightsPaintTool::Setup()
 	GetToolManager()->DisplayMessage(
 		LOCTEXT("OnStartSkinWeightsPaint", "Paint per-bone skin weights. [ and ] change brush size, Ctrl to Erase/Subtract, Shift to Smooth"),
 		EToolMessageLevel::UserNotification);
-
-	EditedMesh = MakeUnique<FMeshDescription>();
-	*EditedMesh = *UE::ToolTarget::GetMeshDescription(Target);
 
 	InitializeSkinWeights();
 
@@ -317,11 +319,13 @@ void USkinWeightsPaintTool::UpdateBoneVisualization()
 	// update mesh with new value colors
 	PreviewMesh->EditMesh([&](FDynamicMesh3& Mesh)
 	{
+		UE::Geometry::FNonManifoldMappingSupport NonManifoldMappingSupport(Mesh);
 		UE::Geometry::FDynamicMeshColorOverlay* ColorOverlay = Mesh.Attributes()->PrimaryColors();
 		for (int32 ElementId : ColorOverlay->ElementIndicesItr())
 		{
-			const int32 VertexId = ColorOverlay->GetParentVertex(ElementId);
-			const float Value = SkinWeightsData[VertexId];
+			const int32 VertexId = ColorOverlay->GetParentVertex(ElementId);	
+			const int32 SrcVertexId = NonManifoldMappingSupport.GetOriginalNonManifoldVertexID(VertexId);
+               const float Value = SkinWeightsData.IsValidIndex(SrcVertexId) ? SkinWeightsData[SrcVertexId] : 0.f;
 			const FVector4f Color(WeightToColor(Value));
 			ColorOverlay->SetElement(ElementId, Color);
 		}
@@ -368,6 +372,7 @@ void USkinWeightsPaintTool::ApplyStamp(const FBrushStampData& Stamp)
 	TArray<float>& SkinWeightsData = *SkinWeightsMap.Find(CurrentBone);
 
 	const FDynamicMesh3* CurrentMesh = PreviewMesh->GetMesh();
+	UE::Geometry::FNonManifoldMappingSupport NonManifoldMappingSupport(*CurrentMesh);
 	if (bInSmoothStroke)
 	{
 		const float SmoothSpeed = 0.25f;
@@ -375,21 +380,23 @@ void USkinWeightsPaintTool::ApplyStamp(const FBrushStampData& Stamp)
 		for (int32 Index = 0; Index < NumROIVertices; ++Index)
 		{
 			const int32 VertexId = ROIVertices[Index];
+			const int32 SrcVertexId = NonManifoldMappingSupport.GetOriginalNonManifoldVertexID(VertexId);
 			FVector3d Position = CurrentMesh->GetVertex(VertexId);
 			float ValueSum = 0, WeightSum = 0;
 			for (int32 NeighborVertexId : CurrentMesh->VtxVerticesItr(VertexId))
 			{
 				FVector3d NbrPos = CurrentMesh->GetVertex(NeighborVertexId);
 				const float Weight = FMathf::Clamp(1.0f / FVector3d::DistSquared(NbrPos, Position), 0.0001f, 1000.0f);
-				ValueSum += Weight * SkinWeightsData[NeighborVertexId];
+				const int32 SrcNeighborVertexId = NonManifoldMappingSupport.GetOriginalNonManifoldVertexID(NeighborVertexId);
+				ValueSum += Weight * SkinWeightsData[SrcNeighborVertexId];
 				WeightSum += Weight;
 			}
 			ValueSum /= WeightSum;
 
 			const float Falloff = float(CalculateBrushFalloff(FVector3d::Dist(Position, StampPosLocal)));
-			const float NewValue = FMathf::Lerp(SkinWeightsData[VertexId], ValueSum, SmoothSpeed*Falloff);
+			const float NewValue = FMathf::Lerp(SkinWeightsData[SrcVertexId], ValueSum, SmoothSpeed*Falloff);
 
-			ROIBefore[Index] = SkinWeightsData[VertexId];
+			ROIBefore[Index] = SkinWeightsData[SrcVertexId];
 			ROIAfter[Index] = FMath::Clamp(NewValue, 0.0f, 1.0f);
 		}
 	}
@@ -401,9 +408,10 @@ void USkinWeightsPaintTool::ApplyStamp(const FBrushStampData& Stamp)
 		for (int32 Index = 0; Index < NumROIVertices; ++Index)
 		{
 			const int32 VertexId = ROIVertices[Index];
+			const int32 SrcVertexId = NonManifoldMappingSupport.GetOriginalNonManifoldVertexID(VertexId);
 			const FVector3d Position = CurrentMesh->GetVertex(VertexId);
 			const float Falloff = (float)CalculateBrushFalloff(FVector3d::Dist(Position, StampPosLocal));
-			ROIBefore[Index] = SkinWeightsData[VertexId];
+			ROIBefore[Index] = SkinWeightsData[SrcVertexId];
 			ROIAfter[Index] = FMath::Clamp(ROIBefore[Index] + UseStrength * Falloff, 0.0f, 1.0f);
 		}
 	}
@@ -422,7 +430,8 @@ void USkinWeightsPaintTool::ApplyStamp(const FBrushStampData& Stamp)
 		for (int32 Index = 0; Index < NumROIVertices; ++Index)
 		{
 			const int32 VertexId = ROIVertices[Index];
-			SkinWeightsData[VertexId] = ROIAfter[Index];
+			const int32 SrcVertexId = NonManifoldMappingSupport.GetOriginalNonManifoldVertexID(VertexId);
+			SkinWeightsData[SrcVertexId] = ROIAfter[Index];
 			FVector4f NewColor(WeightToColor(ROIAfter[Index]));
 			ColorOverlay->GetVertexElements(VertexId, ElementIds);
 			for (int ElementId : ElementIds)

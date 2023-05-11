@@ -2,76 +2,22 @@
 
 #include "MuCOE/CustomizableObjectCompiler.h"
 
-#include "Animation/Skeleton.h"
 #include "AssetRegistry/ARFilter.h"
 #include "AssetRegistry/AssetRegistryModule.h"
-#include "AssetRegistry/IAssetRegistry.h"
 #include "ClothConfig.h"
-#include "Containers/ArrayView.h"
-#include "Containers/EnumAsByte.h"
-#include "Containers/Set.h"
-#include "Containers/SparseArray.h"
-#include "CoreGlobals.h"
-#include "Delegates/Delegate.h"
-#include "EdGraph/EdGraph.h"
-#include "Engine/SkeletalMesh.h"
-#include "Engine/StreamableManager.h"
-#include "Engine/Texture.h"
-#include "Framework/Notifications/NotificationManager.h"
-#include "GenericPlatform/GenericPlatformAffinity.h"
-#include "HAL/IConsoleManager.h"
-#include "HAL/PlatformCrt.h"
-#include "HAL/PlatformTime.h"
 #include "HAL/RunnableThread.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
-#include "Internationalization/Internationalization.h"
-#include "Internationalization/Text.h"
-#include "Logging/LogCategory.h"
-#include "Logging/LogMacros.h"
 #include "Materials/MaterialInterface.h"
-#include "Math/UnrealMathSSE.h"
 #include "MessageLogModule.h"
-#include "Misc/App.h"
-#include "Misc/AssertionMacros.h"
-#include "Misc/AssetRegistryInterface.h"
-#include "Misc/CoreMisc.h"
-#include "Misc/Guid.h"
-#include "Modules/ModuleManager.h"
-#include "MuCO/CustomizableObject.h"
-#include "MuCO/CustomizableObjectClothingTypes.h"
-#include "MuCO/CustomizableObjectIdentifier.h"
 #include "MuCO/CustomizableObjectInstance.h"
-#include "MuCO/CustomizableObjectParameterTypeDefinitions.h"
 #include "MuCO/CustomizableObjectSystem.h"
-#include "MuCO/CustomizableObjectUIData.h"
 #include "MuCO/ICustomizableObjectModule.h"
 #include "MuCOE/CustomizableObjectCompileRunnable.h"
 #include "MuCOE/CustomizableObjectEditorLogger.h"
 #include "MuCOE/GenerateMutableSource/GenerateMutableSourceImage.h"
 #include "MuCOE/GraphTraversal.h"
 #include "MuCOE/ICustomizableObjectPopulationModule.h"
-#include "MuCOE/Nodes/CustomizableObjectNode.h"
-#include "MuCOE/Nodes/CustomizableObjectNodeObject.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeObjectGroup.h"
-#include "MuR/Image.h"
-#include "MuR/Model.h"
-#include "MuR/MutableTrace.h"
-#include "MuR/Ptr.h"
-#include "MuR/RefCounted.h"
-#include "MuT/Node.h"
-#include "MuT/NodeImageConstant.h"
-#include "MuT/Table.h"
-#include "PhysicsEngine/PhysicsAsset.h"
-#include "Templates/Casts.h"
-#include "Templates/UnrealTemplate.h"
-#include "Trace/Detail/Channel.h"
-#include "UObject/Class.h"
-#include "UObject/Object.h"
-#include "UObject/ObjectPtr.h"
-#include "UObject/Package.h"
-#include "UObject/SoftObjectPath.h"
-#include "UObject/SoftObjectPtr.h"
-#include "UObject/UObjectGlobals.h"
 #include "UObject/UObjectIterator.h"
 #include "Widgets/Notifications/SNotificationList.h"
 
@@ -232,7 +178,10 @@ void FCustomizableObjectCompiler::PreloadingReferencerAssetsCallback(UCustomizab
 
 void FCustomizableObjectCompiler::Compile(UCustomizableObject& Object, const FCompilationOptions& InOptions, bool bAsync)
 {
-	if (UCustomizableObjectSystem::GetInstance()->IsCompilationDisabled())
+	UCustomizableObjectSystem* System = UCustomizableObjectSystem::GetInstance();
+	check(System);
+
+	if (System->IsCompilationDisabled())
 	{
 		CompileInternal(&Object, InOptions, bAsync);
 		return;
@@ -240,32 +189,29 @@ void FCustomizableObjectCompiler::Compile(UCustomizableObject& Object, const FCo
 
 	UE_LOG(LogMutable, Log, TEXT("PROFILE: [ %16.8f ] Preload asynchronously assets start."), FPlatformTime::Seconds());
 
+	FString Message = FString::Printf(TEXT("Customizable Object %s is already being compiled or updated. Please wait a few seconds and try again."), *Object.GetName());
+	FNotificationInfo Info(LOCTEXT("CustomizableObjectBeingCompilerOrUpdated", "Customizable Object compile and/or update still in process. Please wait a few seconds and try again."));
+	Info.bFireAndForget = true;
+	Info.bUseThrobber = true;
+	Info.FadeOutDuration = 1.0f;
+	Info.ExpireDuration = 1.0f;
+
 	if (PreloadingReferencerAssets || CompilationLaunchPending || (Object.IsLocked()))
 	{
-		FString Message = FString::Printf(TEXT("Customizable Object %s is already being compiled or updated. Please wait a few seconds and try again."), *Object.GetName());
 		UE_LOG(LogMutable, Warning, TEXT("%s"), *Message);
-		FNotificationInfo Info(LOCTEXT("CustomizableObjectBeingCompilerOrUpdated", "Customizable object compile and update still in process"));
-		Info.bFireAndForget = true;
-		Info.bUseThrobber = true;
-		Info.FadeOutDuration = 1.0f;
-		Info.ExpireDuration = 1.0f;
 		FSlateNotificationManager::Get().AddNotification(Info);
+
 		return;
 	}
 
-	// Lock object during asynchronous asset loading to avoid instance updates
-	bool LockResult = UCustomizableObjectSystem::GetInstance()->LockObject(&Object);
+	// Lock object during asynchronous asset loading to avoid instance/mip updates and reentrant compilations
+	bool LockResult = System->LockObject(&Object);
 
 	if (!LockResult)
-	{
-		FString Message = FString::Printf(TEXT("Customizable Object %s is already being compiled or updated. Please wait a few seconds and try again."), *Object.GetName());
+	{		
 		UE_LOG(LogMutable, Warning, TEXT("%s"), *Message);
-		FNotificationInfo Info(LOCTEXT("CustomizableObjectBeingCompilerOrUpdated", "Customizable object compile and update still in process"));
-		Info.bFireAndForget = true;
-		Info.bUseThrobber = true;
-		Info.FadeOutDuration = 1.0f;
-		Info.ExpireDuration = 1.0f;
 		FSlateNotificationManager::Get().AddNotification(Info);
+
 		return;
 	}
 
@@ -291,7 +237,7 @@ void FCustomizableObjectCompiler::Compile(UCustomizableObject& Object, const FCo
 
 	if (ArrayAssetToStream.Num() > 0)
 	{
-		FStreamableManager& Streamable = UCustomizableObjectSystem::GetInstance()->GetStreamableManager();
+		FStreamableManager& Streamable = System->GetStreamableManager();
 
 		if (bAsync) 
 		{
@@ -950,6 +896,8 @@ void FCustomizableObjectCompiler::CompileInternal(UCustomizableObject* Object, c
 	Options.bRealTimeMorphTargetsEnabled = Object->bEnableRealTimeMorphTargets;
 	Options.bClothingEnabled = Object->bEnableClothing;
 	Options.b16BitBoneWeightsEnabled = Object->bEnable16BitBoneWeights;
+	Options.bSkinWeightProfilesEnabled = Object->bEnableAltSkinWeightProfiles;
+	Options.bPhysicsAssetMergeEnebled = Object->bEnablePhysicsAssetMerge;
 
 	if (Object->IsLocked() || !UCustomizableObjectSystem::GetInstance()->LockObject(Object))
 	{
@@ -1031,29 +979,31 @@ void FCustomizableObjectCompiler::CompileInternal(UCustomizableObject* Object, c
 		// to avoid a possibly expensive copy.
 		Object->ContributingMorphTargetsInfo = MoveTemp(GenerationContext.ContributingMorphTargetsInfo);
 		Object->MorphTargetReconstructionData = MoveTemp(GenerationContext.MorphTargetReconstructionData);
-
+		
+		Object->SkinWeightProfilesInfo = MoveTemp(GenerationContext.SkinWeightProfilesInfo);
+		
 		// Clothing	
-		Object->ClothMeshToMeshVertData = MoveTemp( GenerationContext.ClothMeshToMeshVertData );
-		
-		Object->ContributingClothingAssetsData = MoveTemp( GenerationContext.ContributingClothingAssetsData );
-		
+		Object->ClothMeshToMeshVertData = MoveTemp(GenerationContext.ClothMeshToMeshVertData);
+		Object->ContributingClothingAssetsData = MoveTemp(GenerationContext.ContributingClothingAssetsData);
+		Object->ClothSharedConfigsData.Empty();
+
 		// A clothing backend, e.g. Chaos cloth, can use 2 config files, one owned by the asset, and another that is shared 
 		// among all assets in a SkeletalMesh. When merging different assets in a skeletalmesh we need to make sure only one of 
 		// the shared is used. In that case we will keep the first visited of a type and will be stored separated from the asset.
 		// TODO: Shared configs, which typically controls the quality of the simulation (iterations, etc), probably should be specified 
 		// somewhere else to give more control with which config ends up used. 
-		auto IsSharedConfigData = []( const FCustomizableObjectClothConfigData& ConfigData ) -> bool
+		auto IsSharedConfigData = [](const FCustomizableObjectClothConfigData& ConfigData) -> bool
 		{
 			 const UClass* ConfigClass = FindObject<UClass>(nullptr, *ConfigData.ClassPath);
 			 return ConfigClass ? static_cast<bool>( Cast<UClothSharedConfigCommon>(ConfigClass->GetDefaultObject() ) ) : false;
 		};
 		
 		// Find shared configs to be used (One of each type) 
-		for ( FCustomizableObjectClothingAssetData& ClothingAssetData : Object->ContributingClothingAssetsData )
+		for (FCustomizableObjectClothingAssetData& ClothingAssetData : Object->ContributingClothingAssetsData)
 		{
-			 for ( FCustomizableObjectClothConfigData& ClothConfigData : ClothingAssetData.ConfigsData )
+			 for (FCustomizableObjectClothConfigData& ClothConfigData : ClothingAssetData.ConfigsData)
 			 {
-				  if ( IsSharedConfigData( ClothConfigData ) )
+				  if (IsSharedConfigData(ClothConfigData))
 				  {
 					  FCustomizableObjectClothConfigData* FoundConfig = Object->ClothSharedConfigsData.FindByPredicate(
 						   [Name = ClothConfigData.ConfigName](const FCustomizableObjectClothConfigData& Other)
@@ -1063,15 +1013,14 @@ void FCustomizableObjectCompiler::CompileInternal(UCustomizableObject* Object, c
 
 					  if (!FoundConfig)
 					  {
-						   FCustomizableObjectClothConfigData& ObjectConfig = Object->ClothSharedConfigsData.AddDefaulted_GetRef();
-						   ObjectConfig = ClothConfigData;
+						   Object->ClothSharedConfigsData.AddDefaulted_GetRef() = ClothConfigData;
 					  }
 				  }
 			 }
 		}
 		
 		// Remove shared configs
-		for ( FCustomizableObjectClothingAssetData& ClothingAssetData : Object->ContributingClothingAssetsData )
+		for (FCustomizableObjectClothingAssetData& ClothingAssetData : Object->ContributingClothingAssetsData)
 		{
 			 ClothingAssetData.ConfigsData.RemoveAllSwap(IsSharedConfigData);
 		}
@@ -1134,7 +1083,9 @@ void FCustomizableObjectCompiler::CompileInternal(UCustomizableObject* Object, c
 #endif
 
 		Object->LODSettings.NumLODsInRoot = GenerationContext.NumLODsInRoot;
-
+		
+		Object->NumMeshComponentsInRoot = GenerationContext.NumMeshComponentsInRoot;
+		
 		Object->LODSettings.FirstLODAvailable = GenerationContext.FirstLODAvailable;
 
 		Object->LODSettings.bLODStreamingEnabled = GenerationContext.bEnableLODStreaming;
@@ -1161,6 +1112,17 @@ void FCustomizableObjectCompiler::CompileInternal(UCustomizableObject* Object, c
 		}
 	
 		Object->AnimBPAssetsMap = GenerationContext.AnimBPAssetsMap;
+
+		// Mark the object as modified, used to avoid missing assets in packages.
+		if (Object->SocketArray != GenerationContext.SocketArray)
+		{
+			if (!ParamNamesToSelectedOptions.Num()) // Don't mark the objects as modified because of a partial compilation
+			{
+				Object->MarkPackageDirty();
+			}
+		}
+
+		Object->SocketArray = GenerationContext.SocketArray;
 
 		// 
 		if (!ParamNamesToSelectedOptions.Num()) // Don't mark the objects as modified because of a partial compilation
@@ -1385,9 +1347,9 @@ void FCustomizableObjectCompiler::FinishCompilation()
 	check(CompileTask.IsValid());
 
 	UpdateCompilerLogData();
-	mu::ModelPtr Model = CompileTask->Model;
+	TSharedPtr<mu::Model, ESPMode::ThreadSafe> Model = CompileTask->Model;
 
-	CurrentObject->SetModel(Model.get());
+	CurrentObject->SetModel(Model);
 
 	// Reset all instances, as the parameters may need to be rebuilt.
 	for (TObjectIterator<UCustomizableObjectInstance> It; It; ++It)

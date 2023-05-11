@@ -16,7 +16,7 @@
 UENUM(BlueprintType)
 namespace EWindowMode
 {
-	enum Type
+	enum Type : int
 	{
 		/** The window is in true fullscreen mode */
 		Fullscreen,
@@ -100,7 +100,7 @@ public:
 
 	/** Returns the user setting for dynamic resolution. */
 	UFUNCTION(BlueprintPure, Category = Settings)
-	bool IsDynamicResolutionEnabled() const;
+	virtual bool IsDynamicResolutionEnabled() const;
 
 	/** Checks if the Screen Resolution user setting is different from current */
 	UFUNCTION(BlueprintPure, Category=Settings)

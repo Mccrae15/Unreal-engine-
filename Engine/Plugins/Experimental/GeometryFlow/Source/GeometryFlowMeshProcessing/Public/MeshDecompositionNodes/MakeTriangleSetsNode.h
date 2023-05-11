@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "DynamicMesh/DynamicMeshAttributeSet.h"
+#include "GeometryFlowMovableData.h"
 #include "GeometryFlowNodeUtil.h"
 #include "DataTypes/DynamicMeshData.h"
 #include "DataTypes/IndexSetsData.h"

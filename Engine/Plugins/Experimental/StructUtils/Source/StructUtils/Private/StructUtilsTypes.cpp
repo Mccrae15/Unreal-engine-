@@ -1,9 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "StructUtilsTypes.h"
-#include "UObject/Class.h"
 #include "Serialization/ArchiveCrc32.h"
-#include "InstancedStruct.h"
 
 namespace UE::StructUtils
 {
@@ -26,5 +24,4 @@ namespace UE::StructUtils
 		}
 		return 0;
 	}
-
 }

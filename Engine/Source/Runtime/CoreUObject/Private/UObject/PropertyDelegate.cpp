@@ -54,7 +54,7 @@ void FDelegateProperty::InstanceSubobjects(void* Data, void const* DefaultData, 
 				Template = DefaultDelegate.GetUObject();
 			}
 
-			UObject* NewUObject = InstanceGraph->InstancePropertyValue(Template, CurrentUObject, InOwner, HasAnyPropertyFlags(CPF_Transient), false, true);
+			UObject* NewUObject = InstanceGraph->InstancePropertyValue(Template, CurrentUObject, InOwner, EInstancePropertyValueFlags::AllowSelfReference | EInstancePropertyValueFlags::DoNotCreateNewInstance);
 			DestDelegate.BindUFunction(NewUObject, DestDelegate.GetFunctionName());
 		}
 	}
@@ -142,12 +142,6 @@ FString FDelegateProperty::GetCPPTypeForwardDeclaration() const
 
 void FDelegateProperty::ExportText_Internal( FString& ValueStr, const void* PropertyValueOrContainer, EPropertyPointerType PropertyPointerType, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const
 {
-	if (0 != (PortFlags & PPF_ExportCpp))
-	{
-		ValueStr += TEXT("{}");
-		return;
-	}
-
 	auto ExportDelegateAsText = [&ValueStr](FScriptDelegate* ScriptDelegate)
 	{
 		check(ScriptDelegate != NULL);

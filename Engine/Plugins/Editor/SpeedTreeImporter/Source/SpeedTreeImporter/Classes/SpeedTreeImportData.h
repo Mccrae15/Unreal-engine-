@@ -25,7 +25,7 @@ class SWidget;
 
 /** Geometry import type */
 UENUM()
-enum EImportGeometryType
+enum EImportGeometryType : int
 {
 	IGT_3D UMETA(DisplayName = "3D LODs"),
 	IGT_Billboards UMETA(DisplayName = "Billboards"),
@@ -35,7 +35,7 @@ enum EImportGeometryType
 
 /** LOD type **/
 UENUM()
-enum EImportLODType
+enum EImportLODType : int
 {
 	ILT_PaintedFoliage UMETA(DisplayName = "Painted Foliage"),
 	ILT_IndividualActors UMETA(DisplayName = "Individual Actors")
@@ -51,11 +51,11 @@ class USpeedTreeImportData : public UAssetImportData
 	UPROPERTY(EditAnywhere, config, Category=Mesh, meta=(DisplayName = "Tree Scale"))
 	float TreeScale;
 
-	/** Choose weather to import as a 3D asset, billboard or both */
+	/** Choose whether to import as a 3D asset, billboard or both */
 	UPROPERTY(EditAnywhere, config, Category=Mesh, meta = (DisplayName = "Geometry"))
 	TEnumAsByte<enum EImportGeometryType> ImportGeometryType;
 
-	/** Choose weather painted foliage or individual actor */
+	/** Choose whether painted foliage or individual actor */
 	UPROPERTY(EditAnywhere, config, Category=Mesh, meta = (DisplayName = "LOD Setup", SpeedTreeVersion = "8"))
 	TEnumAsByte<enum EImportLODType> LODType;
 

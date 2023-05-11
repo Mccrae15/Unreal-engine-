@@ -2,31 +2,14 @@
 
 #include "Strata.h"
 #include "SceneTextureParameters.h"
+#include "ScenePrivate.h"
 #include "SceneRendering.h"
 #include "ScreenPass.h"
 #include "ShaderCompiler.h"
 #include "PixelShaderUtils.h"
 #include "BasePassRendering.h"
 #include "IndirectLightRendering.h"
-
-
-static TAutoConsoleVariable<int32> CVarStrataClassificationDebug(
-	TEXT("r.Strata.Classification.Debug"),
-	0,
-	TEXT("Enable strata classification visualization: 1 shows simple material tiles in green and complex material tiles in red."),
-	ECVF_RenderThreadSafe);
-
-static TAutoConsoleVariable<int32> CVarStrataDebugVisualizeMode(
-	TEXT("r.Strata.Debug.VisualizeMode"),
-	1,
-	TEXT("Strata debug view mode."),
-	ECVF_RenderThreadSafe);
-
-static TAutoConsoleVariable<int32> CVarStrataDebugAdvancedVisualizationShaders(
-	TEXT("r.Strata.Debug.AdvancedVisualizationShaders"),
-	0,
-	TEXT("Enable advanced strata material debug visualization shaders. Base pass shaders can output such advanced data."),
-	ECVF_ReadOnly | ECVF_RenderThreadSafe);
+#include "StrataVisualizationData.h"
 
 namespace Strata
 {
@@ -38,11 +21,6 @@ void AddStrataInternalClassificationTilePass(
 	const FRDGTextureRef* ColorTexture,
 	EStrataTileType TileMaterialType,
 	const bool bDebug);
-
-bool IsStrataAdvancedVisualizationShadersEnabled()
-{
-	return CVarStrataDebugAdvancedVisualizationShaders.GetValueOnRenderThread() > 0;
-}
 
 static bool StrataDebugVisualizationCanRunOnPlatform(EShaderPlatform Platform)
 {
@@ -87,10 +65,10 @@ class FMaterialPrintInfoCS : public FGlobalShader
 };
 IMPLEMENT_GLOBAL_SHADER(FMaterialPrintInfoCS, "/Engine/Private/Strata/StrataVisualize.usf", "MaterialPrintInfoCS", SF_Compute);
 
-class FVisualizeMaterialPS : public FGlobalShader
+class FVisualizeMaterialCountPS : public FGlobalShader
 {
-	DECLARE_GLOBAL_SHADER(FVisualizeMaterialPS);
-	SHADER_USE_PARAMETER_STRUCT(FVisualizeMaterialPS, FGlobalShader);
+	DECLARE_GLOBAL_SHADER(FVisualizeMaterialCountPS);
+	SHADER_USE_PARAMETER_STRUCT(FVisualizeMaterialCountPS, FGlobalShader);
 
 	using FPermutationDomain = TShaderPermutationDomain<>;
 
@@ -119,10 +97,59 @@ class FVisualizeMaterialPS : public FGlobalShader
 
 		// Stay debug and skip optimizations to reduce compilation time on this long shader.
 		OutEnvironment.CompilerFlags.Add(CFLAG_Debug);
-		OutEnvironment.SetDefine(TEXT("SHADER_MATERIALVISUALIZE"), 1);
+		OutEnvironment.SetDefine(TEXT("SHADER_MATERIALCOUNT"), 1);
 	}
 };
-IMPLEMENT_GLOBAL_SHADER(FVisualizeMaterialPS, "/Engine/Private/Strata/StrataVisualize.usf", "VisualizeMaterialPS", SF_Pixel);
+IMPLEMENT_GLOBAL_SHADER(FVisualizeMaterialCountPS, "/Engine/Private/Strata/StrataVisualize.usf", "VisualizeMaterialPS", SF_Pixel);
+
+
+class FStrataSystemInfoCS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FStrataSystemInfoCS);
+	SHADER_USE_PARAMETER_STRUCT(FStrataSystemInfoCS, FGlobalShader);
+
+	using FPermutationDomain = TShaderPermutationDomain<>;
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER(uint32, bAdvancedDebugEnabled)
+		SHADER_PARAMETER(uint32, bEnergyConservation)
+		SHADER_PARAMETER(uint32, bEnergyPreservation)
+		SHADER_PARAMETER(uint32, bDbufferPass)
+		SHADER_PARAMETER(uint32, ClassificationCMask)
+		SHADER_PARAMETER(uint32, ClassificationAsync)
+		SHADER_PARAMETER(uint32, Classification8bits)
+		SHADER_PARAMETER(uint32, bRoughRefraction)
+		SHADER_PARAMETER(uint32, bTileOverflowUseMaterialData)
+		SHADER_PARAMETER(uint32, ProjectMaxBytePerPixel)
+		SHADER_PARAMETER(uint32, MaterialBufferAllocationInBytes)
+		SHADER_PARAMETER(float, TileOverflowRatio)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, ClassificationTileDrawIndirectBuffer)
+		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FStrataGlobalUniformParameters, Strata)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
+		SHADER_PARAMETER_STRUCT_INCLUDE(ShaderPrint::FShaderParameters, ShaderPrintParameters)
+	END_SHADER_PARAMETER_STRUCT()
+
+		static FPermutationDomain RemapPermutation(FPermutationDomain PermutationVector)
+	{
+		return PermutationVector;
+	}
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return Strata::IsStrataEnabled() && StrataDebugVisualizationCanRunOnPlatform(Parameters.Platform) && EnumHasAllFlags(Parameters.Flags, EShaderPermutationFlags::HasEditorOnlyData);
+	}
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+
+		// Stay debug and skip optimizations to reduce compilation time on this long shader.
+		OutEnvironment.CompilerFlags.Add(CFLAG_Debug);
+		OutEnvironment.SetDefine(TEXT("SHADER_SYSTEMINFO"), 1);
+	}
+};
+IMPLEMENT_GLOBAL_SHADER(FStrataSystemInfoCS, "/Engine/Private/Strata/StrataVisualize.usf", "MainCS", SF_Compute);
 
 class FMaterialDebugStrataTreeCS : public FGlobalShader
 {
@@ -168,7 +195,7 @@ class FMaterialDebugStrataTreePS : public FGlobalShader
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FStrataGlobalUniformParameters, Strata)
-		SHADER_PARAMETER_STRUCT_REF(FReflectionUniformParameters, ReflectionStruct)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FReflectionUniformParameters, ReflectionStruct)
 		SHADER_PARAMETER_STRUCT_REF(FReflectionCaptureShaderData, ReflectionCapture)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FForwardLightData, ForwardLightData)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSkyDiffuseLightingParameters, SkyDiffuseLighting)
@@ -196,135 +223,218 @@ class FMaterialDebugStrataTreePS : public FGlobalShader
 };
 IMPLEMENT_GLOBAL_SHADER(FMaterialDebugStrataTreePS, "/Engine/Private/Strata/StrataVisualize.usf", "MaterialDebugStrataTreePS", SF_Pixel);
 
-static void AddVisualizeMaterialPasses(FRDGBuilder& GraphBuilder, const FViewInfo& View, FScreenPassTexture& ScreenPassSceneColor, EShaderPlatform Platform)
+static void AddVisualizeMaterialPropertiesPasses(FRDGBuilder& GraphBuilder, const FViewInfo& View, FScreenPassTexture& ScreenPassSceneColor, EShaderPlatform Platform)
 {
+	// Force ShaderPrint on.
+	ShaderPrint::SetEnabled(true);
+	ShaderPrint::RequestSpaceForLines(1024);
+	ShaderPrint::RequestSpaceForCharacters(1024);
+	FRDGBufferUAVRef PrintOffsetBufferUAV = nullptr;
+
+	FRDGBufferRef PrintOffsetBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(4, 2), TEXT("Substrate.DebugPrintPositionOffset"));
+	PrintOffsetBufferUAV = GraphBuilder.CreateUAV(PrintOffsetBuffer, PF_R32_UINT);
+	AddClearUAVPass(GraphBuilder, PrintOffsetBufferUAV, 50u);
+	const uint32 MaxBSDFCount = 8;
+
+	for (uint32 BSDFIndex=0; BSDFIndex < MaxBSDFCount; ++BSDFIndex)
+	{
+		FMaterialPrintInfoCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FMaterialPrintInfoCS::FParameters>();
+		PassParameters->BSDFIndex = BSDFIndex;
+		PassParameters->RWPositionOffsetBuffer = PrintOffsetBufferUAV;
+		PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
+		PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
+		PassParameters->SceneTextures = GetSceneTextureParameters(GraphBuilder, View);
+		ShaderPrint::SetParameters(GraphBuilder, View.ShaderPrintData, PassParameters->ShaderPrintParameters);
+
+		TShaderMapRef<FMaterialPrintInfoCS> ComputeShader(View.ShaderMap);
+		FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("Substrate::VisualizeMaterial(Print, BSDF=%d)", BSDFIndex), ComputeShader, PassParameters, FIntVector(1, 1, 1));
+	}
+}
+
+static void AddVisualizeMaterialCountPasses(FRDGBuilder & GraphBuilder, const FViewInfo & View, FScreenPassTexture & ScreenPassSceneColor, EShaderPlatform Platform)
+{
+	ShaderPrint::SetEnabled(true);
+	ShaderPrint::RequestSpaceForLines(1024);
+	ShaderPrint::RequestSpaceForCharacters(1024);
+
 	FRDGTextureRef SceneColorTexture = ScreenPassSceneColor.Texture;
 	FRHIBlendState* PreMultipliedColorTransmittanceBlend = TStaticBlendState<CW_RGB, BO_Add, BF_One, BF_SourceAlpha, BO_Add, BF_Zero, BF_One>::GetRHI();
-	if (View.Family->EngineShowFlags.VisualizeStrataMaterial)
+
+	FVisualizeMaterialCountPS::FParameters* PassParameters = GraphBuilder.AllocParameters<FVisualizeMaterialCountPS::FParameters>();
+	PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
+	PassParameters->ViewMode = 2;
+	PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
+	PassParameters->SceneTextures = GetSceneTextureParameters(GraphBuilder, View);
+	PassParameters->RenderTargets[0] = FRenderTargetBinding(SceneColorTexture, ERenderTargetLoadAction::ELoad);
+	ShaderPrint::SetParameters(GraphBuilder, View.ShaderPrintData, PassParameters->ShaderPrintParameters);
+
+	FVisualizeMaterialCountPS::FPermutationDomain PermutationVector;
+	TShaderMapRef<FVisualizeMaterialCountPS> PixelShader(View.ShaderMap, PermutationVector);
+
+	FPixelShaderUtils::AddFullscreenPass<FVisualizeMaterialCountPS>(GraphBuilder, View.ShaderMap, RDG_EVENT_NAME("Substrate::VisualizeMaterial(Draw)"), PixelShader, PassParameters, ScreenPassSceneColor.ViewRect, PreMultipliedColorTransmittanceBlend);
+}
+
+float GetStrataTileOverflowRatio(const FViewInfo& View);
+bool IsClassificationAsync();
+bool SupportsCMask(const FStaticShaderPlatform InPlatform);
+bool DoesStrataTileOverflowUseMaterialData();
+
+static void AddVisualizeSystemInfoPasses(FRDGBuilder& GraphBuilder, const FViewInfo& View, FScreenPassTexture& ScreenPassSceneColor, EShaderPlatform Platform)
+{
+	// Force ShaderPrint on.
+	ShaderPrint::SetEnabled(true);
+	ShaderPrint::RequestSpaceForLines(1024);
+	ShaderPrint::RequestSpaceForCharacters(1024);
+
+	const FRDGTextureDesc MaterialBufferDesc = View.StrataViewData.SceneData->MaterialTextureArray->Desc;
+
+	FStrataSystemInfoCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FStrataSystemInfoCS::FParameters>();
+	PassParameters->bAdvancedDebugEnabled = IsAdvancedVisualizationEnabled() ? 1u : 0u;
+	PassParameters->bEnergyConservation = View.ViewState ? View.ViewState->ShadingEnergyConservationData.bEnergyConservation : false;;
+	PassParameters->bEnergyPreservation = View.ViewState ? View.ViewState->ShadingEnergyConservationData.bEnergyPreservation : false;;
+	PassParameters->bDbufferPass = IsDBufferPassEnabled(View.GetShaderPlatform()) ? 1 : 0;
+	PassParameters->ClassificationCMask = SupportsCMask(View.GetShaderPlatform()) ? 1 : 0;
+	PassParameters->ClassificationAsync = IsClassificationAsync() ? 1 : 0;
+	PassParameters->Classification8bits = Is8bitTileCoordEnabled() ? 1 : 0;
+	PassParameters->TileOverflowRatio = GetStrataTileOverflowRatio(View);
+	PassParameters->bTileOverflowUseMaterialData = DoesStrataTileOverflowUseMaterialData() ? 1 : 0;
+	PassParameters->bRoughRefraction = IsOpaqueRoughRefractionEnabled() ? 1 : 0;
+	PassParameters->ClassificationTileDrawIndirectBuffer = GraphBuilder.CreateSRV(View.StrataViewData.ClassificationTileDrawIndirectBuffer, PF_R32_UINT);
+	PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
+	PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
+	PassParameters->SceneTextures = GetSceneTextureParameters(GraphBuilder, View);	
+	PassParameters->ProjectMaxBytePerPixel = GetBytePerPixel(View.GetShaderPlatform());	
+	PassParameters->MaterialBufferAllocationInBytes = MaterialBufferDesc.Extent.X * MaterialBufferDesc.Extent.Y * MaterialBufferDesc.ArraySize * sizeof(uint32);
+	ShaderPrint::SetParameters(GraphBuilder, View.ShaderPrintData, PassParameters->ShaderPrintParameters);
+
+	TShaderMapRef<FStrataSystemInfoCS> ComputeShader(View.ShaderMap);
+	FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("Substrate::VisualizeSystemInfo"), ComputeShader, PassParameters, FIntVector(1, 1, 1));
+}
+
+// Draw each material layer independently
+static void AddVisualizeAdvancedMaterialPasses(FRDGBuilder& GraphBuilder, const FViewInfo& View, FScreenPassTexture& ScreenPassSceneColor, EShaderPlatform Platform)
+{
+	if (!IsAdvancedVisualizationEnabled())
 	{
-		// Force ShaderPrint on.
-		ShaderPrint::SetEnabled(true);
-		ShaderPrint::RequestSpaceForLines(1024);
-		ShaderPrint::RequestSpaceForCharacters(1024);
+		return;
+	}
 
-		const uint32 ViewMode = FMath::Max(0, CVarStrataDebugVisualizeMode.GetValueOnRenderThread());
+	ShaderPrint::SetEnabled(true);
+	ShaderPrint::RequestSpaceForLines(1024);
+	ShaderPrint::RequestSpaceForCharacters(1024);
 
-		FSceneTextureParameters SceneTextureParameters = GetSceneTextureParameters(GraphBuilder, View);
+	FRDGTextureRef SceneColorTexture = ScreenPassSceneColor.Texture;
+	FRHIBlendState* PreMultipliedColorTransmittanceBlend = TStaticBlendState<CW_RGB, BO_Add, BF_One, BF_SourceAlpha, BO_Add, BF_Zero, BF_One>::GetRHI();
+	{
+		FMaterialDebugStrataTreeCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FMaterialDebugStrataTreeCS::FParameters>();
+		PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
+		PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
+		ShaderPrint::SetParameters(GraphBuilder, View.ShaderPrintData, PassParameters->ShaderPrintParameters);
 
-		// Print Material info
-		if(ViewMode >= 1 && ViewMode != 3)
+		TShaderMapRef<FMaterialDebugStrataTreeCS> ComputeShader(View.ShaderMap);
+		FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("Substrate::StrataAdvancedVisualization(Print)"), ComputeShader, PassParameters, FIntVector(1, 1, 1));
+	}
+
+	{
+		FMaterialDebugStrataTreePS::FParameters* PassParameters = GraphBuilder.AllocParameters<FMaterialDebugStrataTreePS::FParameters>();
+		PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
+		PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
+		PassParameters->ReflectionStruct = CreateReflectionUniformBuffer(GraphBuilder, View);
+		PassParameters->ReflectionCapture = View.ReflectionCaptureUniformBuffer;
+		PassParameters->ForwardLightData = View.ForwardLightingResources.ForwardLightUniformBuffer;
+		PassParameters->RenderTargets[0] = FRenderTargetBinding(SceneColorTexture, ERenderTargetLoadAction::ELoad);
+
+		const float DynamicBentNormalAO = 0.0f;
+		FSkyLightSceneProxy* NullSkyLight = nullptr;
+		PassParameters->SkyDiffuseLighting = GetSkyDiffuseLightingParameters(NullSkyLight, DynamicBentNormalAO);
+
+		FMaterialDebugStrataTreePS::FPermutationDomain PermutationVector;
+		TShaderMapRef<FMaterialDebugStrataTreePS> PixelShader(View.ShaderMap, PermutationVector);
+
+		FPixelShaderUtils::AddFullscreenPass<FMaterialDebugStrataTreePS>(GraphBuilder, View.ShaderMap, RDG_EVENT_NAME("Substrate::StrataAdvancedVisualization(Draw)"), PixelShader, PassParameters, ScreenPassSceneColor.ViewRect, PreMultipliedColorTransmittanceBlend);
+	}
+}
+
+bool ShouldRenderStrataRoughRefractionRnD();
+void StrataRoughRefractionRnD(FRDGBuilder& GraphBuilder, const FViewInfo& View, FScreenPassTexture& ScreenPassSceneColor);
+
+static FStrataVisualizationData::FViewMode GetStrataVisualizeMode(const FViewInfo & View)
+{
+	FStrataVisualizationData::FViewMode Out = FStrataVisualizationData::FViewMode::None;
+	if (IsStrataEnabled() && StrataDebugVisualizationCanRunOnPlatform(View.GetShaderPlatform()))
+	{
+		// Variable defined in StrataVisualizationData.h/.cpp
+		static const auto CVar = IConsoleManager::Get().FindConsoleVariable(FStrataVisualizationData::GetVisualizeConsoleCommandName());
+		const uint32 ViewMode = CVar && CVar->AsVariableInt() ? CVar->AsVariableInt()->GetValueOnRenderThread() : 0;
+		switch (ViewMode)
 		{
-			FRDGBufferUAVRef PrintOffsetBufferUAV = nullptr;
-
-			FRDGBufferRef PrintOffsetBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(4, 2), TEXT("Strata.DebugPrintPositionOffset"));
-			PrintOffsetBufferUAV = GraphBuilder.CreateUAV(PrintOffsetBuffer, PF_R32_UINT);
-			AddClearUAVPass(GraphBuilder, PrintOffsetBufferUAV, 50u);
-			const uint32 MaxBSDFCount = 8;
-
-			for (uint32 BSDFIndex=0; BSDFIndex < MaxBSDFCount; ++BSDFIndex)
-			{
-				FMaterialPrintInfoCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FMaterialPrintInfoCS::FParameters>();
-				PassParameters->BSDFIndex = BSDFIndex;
-				PassParameters->RWPositionOffsetBuffer = PrintOffsetBufferUAV;
-				PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
-				PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
-				PassParameters->SceneTextures = GetSceneTextureParameters(GraphBuilder, View);
-				ShaderPrint::SetParameters(GraphBuilder, View.ShaderPrintData, PassParameters->ShaderPrintParameters);
-
-				TShaderMapRef<FMaterialPrintInfoCS> ComputeShader(View.ShaderMap);
-				FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("Strata::VisualizeMaterial(Print, BSDF=%d)", BSDFIndex), ComputeShader, PassParameters, FIntVector(1, 1, 1));
-			}
+			case 1: return FStrataVisualizationData::FViewMode::MaterialProperties;
+			case 2: return FStrataVisualizationData::FViewMode::MaterialCount;
+			case 3: return FStrataVisualizationData::FViewMode::AdvancedMaterialProperties;
+			case 4: return FStrataVisualizationData::FViewMode::MaterialClassification;
+			case 5: return FStrataVisualizationData::FViewMode::DecalClassification;
+			case 6: return FStrataVisualizationData::FViewMode::RoughRefractionClassification;
+			case 7: return FStrataVisualizationData::FViewMode::StrataInfo;
 		}
 
-		// Draw material debug
-		if (ViewMode >= 2 && ViewMode != 3)
+		const FStrataVisualizationData& VisualizationData = GetStrataVisualizationData();
+		if (View.Family && View.Family->EngineShowFlags.VisualizeSubstrate)
 		{
-			FVisualizeMaterialPS::FParameters* PassParameters = GraphBuilder.AllocParameters<FVisualizeMaterialPS::FParameters>();
-			PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
-			PassParameters->ViewMode = ViewMode;
-			PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
-			PassParameters->SceneTextures = GetSceneTextureParameters(GraphBuilder, View);
-			PassParameters->RenderTargets[0] = FRenderTargetBinding(SceneColorTexture, ERenderTargetLoadAction::ELoad);
-			ShaderPrint::SetParameters(GraphBuilder, View.ShaderPrintData, PassParameters->ShaderPrintParameters);
-
-			FVisualizeMaterialPS::FPermutationDomain PermutationVector;
-			TShaderMapRef<FVisualizeMaterialPS> PixelShader(View.ShaderMap, PermutationVector);
-
-			FPixelShaderUtils::AddFullscreenPass<FVisualizeMaterialPS>(GraphBuilder, View.ShaderMap, RDG_EVENT_NAME("Strata::VisualizeMaterial(Draw)"), PixelShader, PassParameters, ScreenPassSceneColor.ViewRect, PreMultipliedColorTransmittanceBlend);
-		}
-
-		// Draw each material layer independently
-		if (ViewMode == 3)
-		{
-			if (IsStrataAdvancedVisualizationShadersEnabled())
-			{
-				{
-					FMaterialDebugStrataTreeCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FMaterialDebugStrataTreeCS::FParameters>();
-					PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
-					PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
-					ShaderPrint::SetParameters(GraphBuilder, View.ShaderPrintData, PassParameters->ShaderPrintParameters);
-
-					TShaderMapRef<FMaterialDebugStrataTreeCS> ComputeShader(View.ShaderMap);
-					FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("Strata::StrataAdvancedVisualization(Print)"), ComputeShader, PassParameters, FIntVector(1, 1, 1));
-				}
-
-				{
-					FMaterialDebugStrataTreePS::FParameters* PassParameters = GraphBuilder.AllocParameters<FMaterialDebugStrataTreePS::FParameters>();
-					PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
-					PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
-					PassParameters->ReflectionStruct = CreateReflectionUniformBuffer(View, UniformBuffer_SingleFrame);
-					PassParameters->ReflectionCapture = View.ReflectionCaptureUniformBuffer;
-					PassParameters->ForwardLightData = View.ForwardLightingResources.ForwardLightUniformBuffer;
-					PassParameters->RenderTargets[0] = FRenderTargetBinding(SceneColorTexture, ERenderTargetLoadAction::ELoad);
-
-					const float DynamicBentNormalAO = 0.0f;
-					FSkyLightSceneProxy* NullSkyLight = nullptr;
-					PassParameters->SkyDiffuseLighting = GetSkyDiffuseLightingParameters(NullSkyLight, DynamicBentNormalAO);
-
-					FMaterialDebugStrataTreePS::FPermutationDomain PermutationVector;
-					TShaderMapRef<FMaterialDebugStrataTreePS> PixelShader(View.ShaderMap, PermutationVector);
-
-					FPixelShaderUtils::AddFullscreenPass<FMaterialDebugStrataTreePS>(GraphBuilder, View.ShaderMap, RDG_EVENT_NAME("Strata::StrataAdvancedVisualization(Draw)"), PixelShader, PassParameters, ScreenPassSceneColor.ViewRect, PreMultipliedColorTransmittanceBlend);
-				}
-			}
-			else
-			{
-				// TODO warn the user that this mode is not available with delegate SceneRenderer.OnGetOnScreenMessages.AddLambda([](FScreenMessageWriter& ScreenMessageWriter)->void
-			}
+			Out = VisualizationData.GetViewMode(View.CurrentStrataVisualizationMode);
 		}
 	}
+	return Out;
 }
 
 bool ShouldRenderStrataDebugPasses(const FViewInfo& View)
 {
-	return IsStrataEnabled() && (
-		(StrataDebugVisualizationCanRunOnPlatform(View.GetShaderPlatform()) && ( (View.Family && View.Family->EngineShowFlags.VisualizeStrataMaterial) || CVarStrataClassificationDebug.GetValueOnAnyThread() > 0 ))
-		|| ShouldRenderStrataRoughRefractionRnD()
-		);
+	return GetStrataVisualizeMode(View) != FStrataVisualizationData::FViewMode::None || ShouldRenderStrataRoughRefractionRnD();
 }
 
 FScreenPassTexture AddStrataDebugPasses(FRDGBuilder& GraphBuilder, const FViewInfo& View, FScreenPassTexture& ScreenPassSceneColor)
 {
 	check(IsStrataEnabled());
-	EShaderPlatform Platform = View.GetShaderPlatform();
 
-	if (StrataDebugVisualizationCanRunOnPlatform(Platform))
+	const FStrataVisualizationData::FViewMode DebugMode = GetStrataVisualizeMode(View);
+	if (DebugMode != FStrataVisualizationData::FViewMode::None)
 	{
-		RDG_EVENT_SCOPE(GraphBuilder, "Strata::VisualizeMaterial");
-		AddVisualizeMaterialPasses(GraphBuilder, View, ScreenPassSceneColor, Platform);
-	}
+		RDG_EVENT_SCOPE(GraphBuilder, "Substrate::VisualizeMaterial");
 
-	const int32 StrataClassificationDebug = CVarStrataClassificationDebug.GetValueOnAnyThread();
-	if (StrataClassificationDebug > 0)
-	{
-		RDG_EVENT_SCOPE(GraphBuilder, "Strata::VisualizeClassification");
 		const bool bDebugPass = true;
-		if (StrataClassificationDebug > 1)
+		if (DebugMode == FStrataVisualizationData::FViewMode::MaterialProperties)
 		{
-			AddStrataInternalClassificationTilePass(GraphBuilder, View, nullptr, &ScreenPassSceneColor.Texture, EStrataTileType::EOpaqueRoughRefraction, bDebugPass);
-			AddStrataInternalClassificationTilePass(GraphBuilder, View, nullptr, &ScreenPassSceneColor.Texture, EStrataTileType::ESSSWithoutOpaqueRoughRefraction, bDebugPass);
+			AddVisualizeMaterialPropertiesPasses(GraphBuilder, View, ScreenPassSceneColor, View.GetShaderPlatform());
 		}
-		else
+		if (DebugMode == FStrataVisualizationData::FViewMode::MaterialCount)
+		{
+			AddVisualizeMaterialCountPasses(GraphBuilder, View, ScreenPassSceneColor, View.GetShaderPlatform());
+		}
+		if (DebugMode == FStrataVisualizationData::FViewMode::AdvancedMaterialProperties)
+		{
+			AddVisualizeAdvancedMaterialPasses(GraphBuilder, View, ScreenPassSceneColor, View.GetShaderPlatform());
+		}
+		else if (DebugMode == FStrataVisualizationData::FViewMode::StrataInfo)
+		{
+			AddVisualizeSystemInfoPasses(GraphBuilder, View, ScreenPassSceneColor, View.GetShaderPlatform());
+		}
+		else if (DebugMode == FStrataVisualizationData::FViewMode::DecalClassification)
+		{
+			if (IsDBufferPassEnabled(View.GetShaderPlatform()))
+			{
+				AddStrataInternalClassificationTilePass(GraphBuilder, View, nullptr, &ScreenPassSceneColor.Texture, EStrataTileType::EDecalSimple, bDebugPass);
+				AddStrataInternalClassificationTilePass(GraphBuilder, View, nullptr, &ScreenPassSceneColor.Texture, EStrataTileType::EDecalSingle, bDebugPass);
+				AddStrataInternalClassificationTilePass(GraphBuilder, View, nullptr, &ScreenPassSceneColor.Texture, EStrataTileType::EDecalComplex, bDebugPass);
+			}
+		}
+		else if (DebugMode == FStrataVisualizationData::FViewMode::RoughRefractionClassification)
+		{
+			if (IsOpaqueRoughRefractionEnabled())
+			{
+				AddStrataInternalClassificationTilePass(GraphBuilder, View, nullptr, &ScreenPassSceneColor.Texture, EStrataTileType::EOpaqueRoughRefraction, bDebugPass);
+				AddStrataInternalClassificationTilePass(GraphBuilder, View, nullptr, &ScreenPassSceneColor.Texture, EStrataTileType::EOpaqueRoughRefractionSSSWithout, bDebugPass);
+			}
+		}
+		else if (DebugMode == FStrataVisualizationData::FViewMode::MaterialClassification)
 		{
 			AddStrataInternalClassificationTilePass(GraphBuilder, View, nullptr, &ScreenPassSceneColor.Texture, EStrataTileType::EComplex, bDebugPass);
 			AddStrataInternalClassificationTilePass(GraphBuilder, View, nullptr, &ScreenPassSceneColor.Texture, EStrataTileType::ESingle, bDebugPass);

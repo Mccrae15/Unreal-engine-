@@ -5,6 +5,7 @@
 #include "DisplayClusterConfiguratorStyle.h"
 #include "DisplayClusterConfiguratorBlueprintEditor.h"
 #include "DisplayClusterConfigurationTypes.h"
+#include "TextureResource.h"
 #include "Views/TreeViews/IDisplayClusterConfiguratorTreeItem.h"
 #include "Views/OutputMapping/IDisplayClusterConfiguratorViewOutputMapping.h"
 #include "Views/OutputMapping/EdNodes/DisplayClusterConfiguratorViewportNode.h"
@@ -461,7 +462,7 @@ void SDisplayClusterConfiguratorViewportNode::UpdatePreviewTexture()
 		CachedTexture = CurrentTexture;
 		if (CachedTexture != nullptr)
 		{
-			if (BackgroundActiveBrush.GetResourceObject() != CachedTexture)
+			if (BackgroundActiveBrush.GetResourceObject() != CachedTexture && CachedTexture->GetResource() != nullptr)
 			{
 				BackgroundActiveBrush = FSlateBrush();
 				BackgroundActiveBrush.SetResourceObject(CachedTexture);

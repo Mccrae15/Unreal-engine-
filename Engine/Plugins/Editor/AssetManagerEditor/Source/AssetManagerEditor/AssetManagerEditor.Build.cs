@@ -35,6 +35,7 @@ public class AssetManagerEditor : ModuleRules
 				"ContentBrowser",
 				"ContentBrowserData",
 				"WorkspaceMenuStructure",
+				"AssetDefinition",
 				"AssetTools",
 				"PropertyEditor",
 				"GraphEditor",
@@ -46,6 +47,9 @@ public class AssetManagerEditor : ModuleRules
 				"TreeMap",
 				"ToolMenus",
 				"ToolWidgets",
+				"SourceControl",
+				"SourceControlWindows",
+				"UncontrolledChangelists",
 			}
 		);
 	}

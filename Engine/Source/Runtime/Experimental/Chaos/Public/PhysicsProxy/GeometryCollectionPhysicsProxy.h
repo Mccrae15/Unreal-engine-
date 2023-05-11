@@ -13,6 +13,7 @@
 #include "Chaos/GeometryParticlesfwd.h"
 #include "Chaos/ParticleHandle.h"
 #include "Chaos/ParticleHandleFwd.h"
+#include "Chaos/PhysicsObject.h"
 #include "Containers/Array.h"
 #include "PBDRigidsSolver.h"
 #include "Chaos/Defines.h"
@@ -141,6 +142,7 @@ class CHAOS_API FGeometryCollectionPhysicsProxy : public TPhysicsProxy<FGeometry
 public:
 	typedef TPhysicsProxy<FGeometryCollectionPhysicsProxy, FStubGeometryCollectionData, FGeometryCollectionProxyTimestamp> Base;
 	typedef FCollisionStructureManager::FSimplicial FSimplicial;
+	typedef Chaos::TPBDRigidParticle<Chaos::FReal, 3> FParticle;
 	typedef Chaos::TPBDRigidParticleHandle<Chaos::FReal, 3> FParticleHandle;
 	typedef Chaos::TPBDRigidClusteredParticleHandle<Chaos::FReal, 3> FClusterHandle;
 
@@ -171,6 +173,8 @@ public:
 	 */
 	void Initialize(Chaos::FPBDRigidsEvolutionBase* Evolution);
 	void Reset() { }
+
+	bool IsInitializedOnPhysicsThread() const { return bIsInitializedOnPhysicsThread; }
 
 	/** 
 	 * Finish initialization on the physics thread. 
@@ -283,10 +287,21 @@ public:
 		return PhysicsThreadCollection;
 	}
 
-	TManagedArray<TUniquePtr<Chaos::FGeometryParticle>>& GetExternalParticles()
+	FGeometryDynamicCollection& GetExternalCollection()
+	{
+		return GameThreadCollection;
+	}
+
+	TManagedArray<TUniquePtr<FParticle>>& GetExternalParticles()
 	{
 		return GTParticles;
 	}
+
+	FParticle* GetParticleByIndex_External(int32 Index);
+	const FParticle* GetParticleByIndex_External(int32 Index) const;
+
+	FParticleHandle* GetParticleByIndex_Internal(int32 Index);
+	const FParticleHandle* GetParticleByIndex_Internal(int32 Index) const;
 
 	/**
 	*  * Get all the geometry collection particle handles based on the processing resolution
@@ -335,7 +350,7 @@ public:
 		// first find the GTParticle matching the Transform index
 		if (ChildTransformIndex >= 0 && ChildTransformIndex < GTParticles.Num())
 		{
-			const TUniquePtr<Chaos::FGeometryParticle>& ChildGTParticle = GTParticles[ChildTransformIndex];
+			const TUniquePtr<FParticle>& ChildGTParticle = GTParticles[ChildTransformIndex];
 			if (const int32* InternalClusterUniqueIdx = GTParticlesToInternalClusterUniqueIdx.Find(ChildGTParticle.Get()))
 			{
 				return FGeometryCollectionItemIndex::CreateInternalClusterItemIndex(*InternalClusterUniqueIdx);
@@ -353,7 +368,7 @@ public:
 		return nullptr;
 	}
 	
-	FGeometryCollectionItemIndex GetItemIndexFromGTParticle_External(const Chaos::FGeometryParticle* GTPParticle) const
+	FGeometryCollectionItemIndex GetItemIndexFromGTParticle_External(const FParticle* GTPParticle) const
 	{
 		// internal cluster have  no representation on the GT, so we use the child GT particle to find the matching internal cluster unique index 
 		if (const int32* InternalClusterUniqueIdx = GTParticlesToInternalClusterUniqueIdx.Find(GTPParticle))
@@ -376,6 +391,8 @@ public:
 	void ApplyImpulseAt_External(FVector Force, FVector WorldLocation);
 	void BreakClusters_External(TArray<FGeometryCollectionItemIndex>&& ItemIndices);
 	void BreakActiveClusters_External();
+	void SetAnchoredByIndex_External(int32 Index, bool bAnchored);
+	void SetAnchoredByTransformedBox_External(const FBox& Box, const FTransform& Transform, bool bAnchored, int32 MaxLevel = INDEX_NONE);
 	void RemoveAllAnchors_External();
 	void ApplyExternalStrain_External(FGeometryCollectionItemIndex ItemIndex, const FVector& WorldLocation, float Radius, int32 PropagationDepth, float PropagationFactor, float StrainValue);
 	void ApplyInternalStrain_External(FGeometryCollectionItemIndex ItemIndex, const FVector& WorldLocation, float Radius, int32 PropagationDepth, float PropagationFactor, float StrainValue);
@@ -383,6 +400,13 @@ public:
 	void ApplyBreakingAngularVelocity_External(FGeometryCollectionItemIndex ItemIndex, const FVector& AngularVelocity);
 	void ApplyLinearVelocity_External(FGeometryCollectionItemIndex ItemIndex, const FVector& LinearVelocity);
 	void ApplyAngularVelocity_External(FGeometryCollectionItemIndex ItemIndex, const FVector& AngularVelocity);
+
+	void SetProxyDirty_External();
+
+	void SetEnableDamageFromCollision_External(bool bEnable);
+	void SetNotifyBreakings_External(bool bNotify);
+	void SetNotifyRemovals_External(bool bNotify);
+	void SetNotifyCrumblings_External(bool bNotify, bool bIncludeChildren);
 
 	FProxyInterpolationData& GetInterpolationData() { return InterpolationData; }
 	const FProxyInterpolationData& GetInterpolationData() const { return InterpolationData; }
@@ -412,6 +436,9 @@ public:
 		PostPhysicsSyncCallback = Callback;
 	}
 	
+	TArray<Chaos::FPhysicsObjectHandle> GetAllPhysicsObjects();
+	Chaos::FPhysicsObjectHandle GetPhysicsObjectByIndex(int32 Index) const;
+	int32 GetNumParticles() const { return NumParticles; }
 protected:
 	/**
 	* Compute damage threshold for a specific transform
@@ -453,8 +480,10 @@ protected:
 	void CreateNonClusteredParticles(Chaos::FPBDRigidsSolver* RigidsSolver,	const FGeometryCollection& RestCollection, const FGeometryDynamicCollection& DynamicCollection);
 
 	Chaos::FPBDRigidClusteredParticleHandle* FindClusteredParticleHandleByItemIndex_Internal(FGeometryCollectionItemIndex ItemIndex) const;
-	
 private:
+
+	/* set to true once InitializeBodiesPT has been called*/
+	bool bIsInitializedOnPhysicsThread = false;
 
 	FSimulationParameters Parameters;
 	TArray<FFieldSystemCommand> Commands;
@@ -462,6 +491,7 @@ private:
 	/** Field Datas stored during evaluation */
 	FFieldExecutionDatas ExecutionDatas;
 
+	TArray<Chaos::FPhysicsObjectUniquePtr> PhysicsObjects;
 	//
 	//  Proxy State Information
 	//
@@ -483,12 +513,12 @@ private:
 
 	EReplicationMode ReplicationMode = EReplicationMode::Unknown;	
 
-	TManagedArray<TUniquePtr<Chaos::FGeometryParticle>> GTParticles;
-	TMap<Chaos::FGeometryParticle*, int32> GTParticlesToTransformGroupIndex;
-	TMap<Chaos::FGeometryParticle*, int32> GTParticlesToInternalClusterUniqueIdx;
+	TManagedArray<TUniquePtr<FParticle>> GTParticles;
+	TMap<FParticle*, int32> GTParticlesToTransformGroupIndex;
+	TMap<FParticle*, int32> GTParticlesToInternalClusterUniqueIdx;
 	TMap<int32, TArray<int32>> InternalClusterUniqueIdxToChildrenTransformIndices;
 
-	TMap<int32, TUniquePtr<Chaos::FGeometryParticle>> GTInternalClustersByUniqueIdx;
+	TMap<int32, TUniquePtr<FParticle>> GTInternalClustersByUniqueIdx;
 
 	// These are read on both threads and should not be changed
 	const FCollisionFilterData SimFilter;

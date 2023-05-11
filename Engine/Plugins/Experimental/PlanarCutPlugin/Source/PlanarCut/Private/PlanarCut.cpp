@@ -1,48 +1,30 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "PlanarCut.h"
+#include "GeometryCollection/Facades/CollectionMeshFacade.h"
 #include "PlanarCutPlugin.h"
 
-#include "Async/ParallelFor.h"
-#include "Spatial/FastWinding.h"
-#include "Spatial/PointHashGrid3.h"
-#include "Spatial/MeshSpatialSort.h"
 #include "Spatial/SparseDynamicOctree3.h"
 #include "Util/IndexUtil.h"
-#include "Arrangement2d.h"
-#include "MeshAdapter.h"
-#include "FrameTypes.h"
-#include "Polygon2.h"
-#include "CompGeom/PolygonTriangulation.h"
 
 #include "GeometryCollection/GeometryCollectionAlgo.h"
 #include "GeometryCollection/GeometryCollectionClusteringUtility.h"
-#include "GeometryCollection/GeometryCollectionProximityUtility.h"
 
-#include "DisjointSet.h"
 
-#include "DynamicMesh/DynamicMesh3.h"
 #include "DynamicMeshEditor.h"
-#include "DynamicMesh/DynamicMeshAABBTree3.h"
-#include "Selections/MeshConnectedComponents.h"
 #include "DynamicMesh/MeshTransforms.h"
 #include "Operations/MeshBoolean.h"
-#include "Operations/MeshSelfUnion.h"
 #include "DynamicMesh/Operations/MergeCoincidentMeshEdges.h"
-#include "MeshBoundaryLoops.h"
-#include "QueueRemesher.h"
-#include "DynamicMesh/DynamicVertexAttribute.h"
 #include "DynamicMesh/MeshNormals.h"
 #include "DynamicMesh/MeshTangents.h"
-#include "ConstrainedDelaunay2.h"
-#include "Util/ProgressCancel.h"
 
 #include "StaticMeshOperations.h"
 #include "MeshDescriptionToDynamicMesh.h"
 #include "DynamicMeshToMeshDescription.h"
 
-#include "Algo/Rotate.h"
+#include "Algo/Reverse.h"
 
 #include "GeometryMeshConversion.h"
+#include "Voronoi/Voronoi.h"
 
 using namespace UE::Geometry;
 
@@ -104,13 +86,13 @@ int32 FInternalSurfaceMaterials::GetDefaultMaterialIDForGeometry(const FGeometry
 	return InternalMaterialID;
 }
 
-void FInternalSurfaceMaterials::SetUVScaleFromCollection(const FGeometryCollectionMeshFacade& CollectionMesh, int32 GeometryIdx)
+void FInternalSurfaceMaterials::SetUVScaleFromCollection(const GeometryCollection::Facades::FCollectionMeshFacade& CollectionMesh, int32 GeometryIdx)
 {
-	const auto& VertexArray = CollectionMesh.Vertex.Get();
-	const auto& UVsArray = CollectionMesh.UVs.Get();
-	const auto& IndicesArray = CollectionMesh.Indices.Get();
-	const auto& FaceStartArray = CollectionMesh.FaceStart.Get();
-	const auto& FaceCountArray = CollectionMesh.FaceCount.Get();
+	const auto& VertexArray = CollectionMesh.VertexAttribute.Get();
+	const auto& UV0Array = CollectionMesh.GetUVLayer(0);
+	const auto& IndicesArray = CollectionMesh.IndicesAttribute.Get();
+	const auto& FaceStartArray = CollectionMesh.FaceStartAttribute.Get();
+	const auto& FaceCountArray = CollectionMesh.FaceCountAttribute.Get();
 	
 	int32 FaceStart = 0;
 	int32 FaceEnd = IndicesArray.Num();
@@ -119,22 +101,22 @@ void FInternalSurfaceMaterials::SetUVScaleFromCollection(const FGeometryCollecti
 		FaceStart = FaceStartArray[GeometryIdx];
 		FaceEnd = FaceCountArray[GeometryIdx] + FaceStartArray[GeometryIdx];
 	}
-	float UVDistance = 0;
+	double UVDistance = 0;
 	float WorldDistance = 0;
 	for (int32 FaceIdx = FaceStart; FaceIdx < FaceEnd; FaceIdx++)
 	{
 		const FIntVector& Tri = IndicesArray[FaceIdx];
 		WorldDistance += FVector3f::Distance(VertexArray[Tri.X], VertexArray[Tri.Y]);
-		UVDistance += FVector2D::Distance(FVector2D(UVsArray[Tri.X][0]), FVector2D(UVsArray[Tri.Y][0]));
+		UVDistance += FVector2D::Distance(FVector2D(UV0Array[Tri.X]), FVector2D(UV0Array[Tri.Y]));
 		WorldDistance += FVector3f::Distance(VertexArray[Tri.Z], VertexArray[Tri.Y]);
-		UVDistance += FVector2D::Distance(FVector2D(UVsArray[Tri.Z][0]), FVector2D(UVsArray[Tri.Y][0]));
+		UVDistance += FVector2D::Distance(FVector2D(UV0Array[Tri.Z]), FVector2D(UV0Array[Tri.Y]));
 		WorldDistance += FVector3f::Distance(VertexArray[Tri.X], VertexArray[Tri.Z]);
-		UVDistance += FVector2D::Distance(FVector2D(UVsArray[Tri.X][0]), FVector2D(UVsArray[Tri.Z][0]));
+		UVDistance += FVector2D::Distance(FVector2D(UV0Array[Tri.X]), FVector2D(UV0Array[Tri.Z]));
 	}
 
 	if (WorldDistance > 0)
 	{
-		GlobalUVScale =  UVDistance / WorldDistance;
+		GlobalUVScale =  static_cast<float>(UVDistance) / WorldDistance;
 	}
 	if (GlobalUVScale <= 0)
 	{
@@ -452,20 +434,20 @@ FPlanarCells::FPlanarCells(const FBox& Region, const FIntVector& CubesPerAxis)
 			}
 		}
 	}
-	float Z = Region.Min.Z;
+	float Z = static_cast<float>( Region.Min.Z );
 	int32 ZSliceSize = VertsPerAxis.X * VertsPerAxis.Y;
 	int32 VIdxOffs[8] = { 0, 1, VertsPerAxis.X + 1, VertsPerAxis.X, ZSliceSize, ZSliceSize + 1, ZSliceSize + VertsPerAxis.X + 1, ZSliceSize + VertsPerAxis.X };
-	for (int32 Zi = 0; Zi < CubesPerAxis.Z; Zi++, Z += CellSizes.Z)
+	for (int32 Zi = 0; Zi < CubesPerAxis.Z; Zi++, Z += static_cast<float>(CellSizes.Z))
 	{
-		float Y = Region.Min.Y;
-		float ZN = Z + CellSizes.Z;
-		for (int32 Yi = 0; Yi < CubesPerAxis.Y; Yi++, Y += CellSizes.Y)
+		float Y = static_cast<float>( Region.Min.Y );
+		float ZN = Z + static_cast<float>(CellSizes.Z);
+		for (int32 Yi = 0; Yi < CubesPerAxis.Y; Yi++, Y += static_cast<float>(CellSizes.Y))
 		{
-			float X = Region.Min.X;
-			float YN = Y + CellSizes.Y;
-			for (int32 Xi = 0; Xi < CubesPerAxis.X; Xi++, X += CellSizes.X)
+			float X = static_cast<float>(Region.Min.X);
+			float YN = Y + static_cast<float>(CellSizes.Y);
+			for (int32 Xi = 0; Xi < CubesPerAxis.X; Xi++, X += static_cast<float>(CellSizes.X))
 			{
-				float XN = X + CellSizes.X;
+				float XN = X + static_cast<float>( CellSizes.X );
 				int VIdx = ToIdxUnsafe(VertsPerAxis, Xi, Yi, Zi);
 				int BoxIdx = ToIdxUnsafe(CubesPerAxis, Xi, Yi, Zi);
 
@@ -717,6 +699,89 @@ FPlanarCells::FPlanarCells(const FBox &Region, const TArrayView<const FColor> Im
 }
 
 
+void FPlanarCells::DiscardCells(TFunctionRef<bool(int32)> KeepFunc, bool bKeepNeighbors)
+{
+	TArray<int32> OldToNew;
+	OldToNew.Init(-1, NumCells);
+	int32 KeptCells = 0;
+	for (int32 CellIdx = 0; CellIdx < NumCells; ++CellIdx)
+	{
+		if (KeepFunc(CellIdx))
+		{
+			OldToNew[CellIdx] = KeptCells++;
+		}
+	}
+	if (bKeepNeighbors && KeptCells < NumCells)
+	{
+		for (const TPair<int32, int32>& Neighbors : PlaneCells)
+		{
+			if (Neighbors.Key < 0 || Neighbors.Value < 0)
+			{
+				continue;
+			}
+			bool bKeptKey = KeepFunc(Neighbors.Key);
+			bool bKeptValue = KeepFunc(Neighbors.Value);
+			if (bKeptKey != bKeptValue)
+			{
+				int32 Nbr = bKeptKey ? Neighbors.Value : Neighbors.Key;
+				if (OldToNew[Nbr] < 0)
+				{
+					OldToNew[Nbr] = KeptCells++;
+				}
+			}
+		}
+	}
+	if (KeptCells == NumCells)
+	{
+		return;
+	}
+
+	NumCells = KeptCells;
+	for (int32 PlaneIdx = 0; PlaneIdx < Planes.Num(); ++PlaneIdx)
+	{
+		TPair<int32, int32> Cells = PlaneCells[PlaneIdx];
+		Cells.Key = Cells.Key > -1 ? OldToNew[Cells.Key] : -1;
+		Cells.Value = Cells.Value > -1 ? OldToNew[Cells.Value] : -1;
+		if (Cells.Key == Cells.Value && Cells.Key == -1)
+		{
+			PlaneCells.RemoveAtSwap(PlaneIdx, 1, false);
+			Planes.RemoveAtSwap(PlaneIdx, 1, false);
+			PlaneBoundaries.RemoveAtSwap(PlaneIdx, 1, false);
+			PlaneIdx--; // consider the swapped-in value in the next iteration
+		}
+		else
+		{
+			// on boundary to outside, the 'outside' index must always be second
+			// if the discards above broke that invariant, flip the plane to fix it
+			if (Cells.Key < 0)
+			{
+				Swap(Cells.Key, Cells.Value);
+				Algo::Reverse(PlaneBoundaries[PlaneIdx]);
+				Planes[PlaneIdx] = Planes[PlaneIdx].Flip();
+			}
+			PlaneCells[PlaneIdx] = Cells;
+		}
+	}
+
+	// Compress vertices array to only the used vertices
+	TArray<int32> OldToNewVertex;
+	OldToNewVertex.Init(-1, PlaneBoundaryVertices.Num());
+	TArray<FVector> NewBoundaryVertices;
+	for (TArray<int32>& PlaneBoundary : PlaneBoundaries)
+	{
+		for (int32& VID : PlaneBoundary)
+		{
+			int32& NewVID = OldToNewVertex[VID];
+			if (NewVID < 0)
+			{
+				NewVID = NewBoundaryVertices.Add(PlaneBoundaryVertices[VID]);
+			}
+			VID = NewVID;
+		}
+	}
+	PlaneBoundaryVertices = MoveTemp(NewBoundaryVertices);
+}
+
 
 
 // Simpler invocation of CutWithPlanarCells w/ reasonable defaults
@@ -756,7 +821,7 @@ int32 CutMultipleWithMultiplePlanes(
 	int32 OrigNumGeom = Collection.FaceCount.Num();
 	int32 CurNumGeom = OrigNumGeom;
 
-	FGeometryCollectionMeshFacade CollectionMesh(Collection);
+	GeometryCollection::Facades::FCollectionMeshFacade CollectionMesh(Collection);
 	if (!CollectionMesh.IsValid())
 	{
 		return -1;
@@ -804,6 +869,51 @@ int32 CutMultipleWithMultiplePlanes(
 	ReindexScope.Done();
 
 	return NewGeomStartIdx;
+}
+
+void CreateCuttingSurfacePreview(
+	const FPlanarCells& Cells,
+	const FBox& Bounds,
+	double Grout,
+	int32 RandomSeed,
+	FDynamicMesh3& OutCuttingMeshes,
+	TFunctionRef<bool(int)> FilterCellsFunc,
+	const TOptional<FTransform>& TransformCollection,
+	FProgressCancel* Progress,
+	FVector CellsOrigin
+)
+{
+	FTransform CollectionToWorld = TransformCollection.Get(FTransform::Identity);
+	// Put Collection in the same local space as the Cells
+	FTransform CollectionToWorldCentered = CollectionToWorld * FTransform(-CellsOrigin);
+
+	FProgressCancel::FProgressScope SurfaceScope = FProgressCancel::CreateScopeTo(Progress, .99);
+	UE::Geometry::FAxisAlignedBox3d GeoBounds(Bounds);
+	double OnePercentExtend = GeoBounds.MaxDim() * .01;
+	FRandomStream RandomStream(RandomSeed);
+	FCellMeshes CellMeshes(0, RandomStream, Cells, GeoBounds, Grout, OnePercentExtend, false);
+	SurfaceScope.Done();
+
+	if (Progress && Progress->Cancelled())
+	{
+		return;
+	}
+
+	FProgressCancel::FProgressScope AppendScope = FProgressCancel::CreateScopeTo(Progress, 1.0);
+	OutCuttingMeshes.Clear();
+	OutCuttingMeshes.EnableAttributes();
+	FDynamicMeshEditor Editor(&OutCuttingMeshes);
+
+	FMeshIndexMappings IndexMaps; // Needed for Editor.AppendMesh, not used otherwise
+	for (int32 CellIdx = 0; CellIdx < CellMeshes.CellMeshes.Num(); ++CellIdx)
+	{
+		if (FilterCellsFunc(CellIdx))
+		{
+			Editor.AppendMesh(&CellMeshes.CellMeshes[CellIdx].AugMesh, IndexMaps);
+		}
+	}
+	
+	AppendScope.Done();
 }
 
 // Cut multiple Geometry groups inside a GeometryCollection with PlanarCells, and add each cut cell back to the GeometryCollection as a new child of their source Geometry
@@ -1220,7 +1330,7 @@ int32 MergeBones(
 	FTransform CellsToWorld = FTransform::Identity;
 
 	FGeometryCollectionProximityUtility ProximityUtility(&Collection);
-	ProximityUtility.UpdateProximity();
+	ProximityUtility.RequireProximity();
 	const TManagedArray<TSet<int32>>& Proximity = Collection.GetAttribute<TSet<int32>>("Proximity", FGeometryCollection::GeometryGroup);
 
 	// local array so we can populate it with all transforms if input was empty

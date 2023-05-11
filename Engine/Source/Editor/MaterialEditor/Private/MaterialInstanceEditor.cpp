@@ -4,6 +4,7 @@
 
 #include "Widgets/Text/STextBlock.h"
 #include "EngineGlobals.h"
+#include "Engine/Texture.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Modules/ModuleManager.h"
 #include "Widgets/Views/SListView.h"
@@ -14,9 +15,11 @@
 #include "Styling/CoreStyle.h"
 #include "MaterialEditor/DEditorTextureParameterValue.h"
 #include "MaterialEditor/DEditorRuntimeVirtualTextureParameterValue.h"
+#include "MaterialEditor/DEditorSparseVolumeTextureParameterValue.h"
 #include "Materials/Material.h"
 #include "MaterialEditor/MaterialEditorInstanceConstant.h"
 #include "ThumbnailRendering/SceneThumbnailInfoWithPrimitive.h"
+#include "Materials/MaterialFunction.h"
 #include "Materials/MaterialInstance.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "Materials/MaterialFunctionInstance.h"
@@ -29,6 +32,7 @@
 #include "Materials/MaterialExpressionTextureBase.h"
 #include "Materials/MaterialExpressionTextureSampleParameter.h"
 #include "Materials/MaterialExpressionRuntimeVirtualTextureSampleParameter.h"
+#include "Materials/MaterialExpressionSparseVolumeTextureSample.h"
 
 #include "MaterialEditor.h"
 #include "MaterialEditorActions.h"
@@ -52,6 +56,7 @@
 #include "Widgets/Layout/SScrollBox.h"
 #include "DebugViewModeHelpers.h"
 #include "VT/RuntimeVirtualTexture.h"
+#include "SparseVolumeTexture/SparseVolumeTexture.h"
 #include "Widgets/Input/SButton.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 
@@ -524,10 +529,11 @@ void FMaterialInstanceEditor::ReInitMaterialFunctionProxies()
 		TArray<FDoubleVectorParameterValue> DoubleVectorParameterValues = FunctionInstanceProxy->DoubleVectorParameterValues;
 		TArray<FTextureParameterValue> TextureParameterValues = FunctionInstanceProxy->TextureParameterValues;
 		TArray<FRuntimeVirtualTextureParameterValue> RuntimeVirtualTextureParameterValues = FunctionInstanceProxy->RuntimeVirtualTextureParameterValues;
+		TArray<FSparseVolumeTextureParameterValue> SparseVolumeTextureParameterValues = FunctionInstanceProxy->SparseVolumeTextureParameterValues;
 		TArray<FFontParameterValue> FontParameterValues = FunctionInstanceProxy->FontParameterValues;
 
 		const FStaticParameterSet& OldStaticParameters = FunctionInstanceProxy->GetStaticParameters();
-		TArray<FStaticSwitchParameter> StaticSwitchParameters = OldStaticParameters.EditorOnly.StaticSwitchParameters;
+		TArray<FStaticSwitchParameter> StaticSwitchParameters = OldStaticParameters.StaticSwitchParameters;
 		TArray<FStaticComponentMaskParameter> StaticComponentMaskParameters = OldStaticParameters.EditorOnly.StaticComponentMaskParameters;
 
 		// Regenerate proxies
@@ -599,6 +605,18 @@ void FMaterialInstanceEditor::ReInitMaterialFunctionProxies()
 			}
 		}
 
+		FunctionInstanceProxy->GetAllSparseVolumeTextureParameterInfo(OutParameterInfo, Guids);
+		FunctionInstanceProxy->SparseVolumeTextureParameterValues.Empty();
+		for (FSparseVolumeTextureParameterValue& SparseVolumeTextureParameter : SparseVolumeTextureParameterValues)
+		{
+			int32 Index = Guids.Find(SparseVolumeTextureParameter.ExpressionGUID);
+			if (Index != INDEX_NONE)
+			{
+				FunctionInstanceProxy->SparseVolumeTextureParameterValues.Add(SparseVolumeTextureParameter);
+				FunctionInstanceProxy->SparseVolumeTextureParameterValues.Last().ParameterInfo = OutParameterInfo[Index];
+			}
+		}
+
 		FunctionInstanceProxy->GetAllFontParameterInfo(OutParameterInfo, Guids);
 		FunctionInstanceProxy->FontParameterValues.Empty();
 		for (FFontParameterValue& FontParameter : FontParameterValues)
@@ -615,14 +633,14 @@ void FMaterialInstanceEditor::ReInitMaterialFunctionProxies()
 		FStaticParameterSet StaticParametersOverride = FunctionInstanceProxy->GetStaticParameters();
 
 		FunctionInstanceProxy->GetAllStaticSwitchParameterInfo(OutParameterInfo, Guids);
-		StaticParametersOverride.EditorOnly.StaticSwitchParameters.Empty();
+		StaticParametersOverride.StaticSwitchParameters.Empty();
 		for (FStaticSwitchParameter& StaticSwitchParameter : StaticSwitchParameters)
 		{
 			int32 Index = Guids.Find(StaticSwitchParameter.ExpressionGUID);
 			if (Index != INDEX_NONE)
 			{
-				StaticParametersOverride.EditorOnly.StaticSwitchParameters.Add(StaticSwitchParameter);
-				StaticParametersOverride.EditorOnly.StaticSwitchParameters.Last().ParameterInfo = OutParameterInfo[Index];
+				StaticParametersOverride.StaticSwitchParameters.Add(StaticSwitchParameter);
+				StaticParametersOverride.StaticSwitchParameters.Last().ParameterInfo = OutParameterInfo[Index];
 			}
 		}
 
@@ -1371,6 +1389,22 @@ void FMaterialInstanceEditor::RefreshOnScreenMessages()
 									FText::FromString(RuntimeVirtualTexture->GetAdaptivePageTable() ? TEXT("true") : TEXT("false")),
 									FText::FromString(Expression->bAdaptive ? TEXT("true") : TEXT("false")),
 									FText::FromString(RuntimeVirtualTexture->GetPathName())).ToString());
+							}
+						}
+					}
+
+					UDEditorSparseVolumeTextureParameterValue * SparseVolumeTextureParameterValue = Cast<UDEditorSparseVolumeTextureParameterValue>(Group.Parameters[ParameterIndex]);
+					if (SparseVolumeTextureParameterValue && SparseVolumeTextureParameterValue->ExpressionId.IsValid())
+					{
+						USparseVolumeTexture* SparseVolumeTexture = NULL;
+						MaterialEditorInstance->SourceInstance->GetSparseVolumeTextureParameterValue(SparseVolumeTextureParameterValue->ParameterInfo, SparseVolumeTexture);
+						if (SparseVolumeTexture)
+						{
+							UMaterialExpressionSparseVolumeTextureSampleParameter* Expression = BaseMaterial->FindExpressionByGUID<UMaterialExpressionSparseVolumeTextureSampleParameter>(SparseVolumeTextureParameterValue->ExpressionId);
+							if (!Expression)
+							{
+								const FText ExpressionNameText = FText::Format(LOCTEXT("MissingSVTExpression", "Warning: Sparse Volume Texture Expression {0} not found."), FText::FromName(SparseVolumeTextureParameterValue->ParameterInfo.Name));
+								OnScreenMessages.Emplace(FLinearColor(1, 1, 0), ExpressionNameText.ToString());
 							}
 						}
 					}

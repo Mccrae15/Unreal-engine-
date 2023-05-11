@@ -191,23 +191,14 @@ struct ENGINE_API FDynamicTextureInstance : public FStreamableTextureInstance
 	friend FArchive& operator<<( FArchive& Ar, FDynamicTextureInstance& TextureInstance );
 };
 
-/** Manually implement TPointerIsConvertibleFromTo for AActor so that TWeakObjectPtr can use it below when AActor is forward declared. */
-template<> struct TPointerIsConvertibleFromTo<AActor, const volatile UObject>
-{
-	enum { Value = 1 };
-};
-
 /** Struct that holds on to information about Actors that wish to be auto enabled for input before the player controller has been created */
 struct FPendingAutoReceiveInputActor
 {
 	TWeakObjectPtr<AActor> Actor;
 	int32 PlayerIndex;
 
-	FPendingAutoReceiveInputActor(AActor* InActor, const int32 InPlayerIndex)
-		: Actor(InActor)
-		, PlayerIndex(InPlayerIndex)
-	{
-	}
+	FPendingAutoReceiveInputActor(AActor* InActor, const int32 InPlayerIndex);
+	~FPendingAutoReceiveInputActor();
 };
 
 /** A precomputed visibility cell, whose data is stored in FCompressedVisibilityChunk. */
@@ -1318,7 +1309,13 @@ public:
 	/** 
 	 * Call on a level that was loaded from disk instead of PIE-duplicating, to fixup actor references
 	 */
-	ENGINE_API void FixupForPIE(int32 PIEInstanceID, TFunctionRef<void(int32, FSoftObjectPath&)> CustomFixupFunction = [](int32, FSoftObjectPath&) {});
+	ENGINE_API void FixupForPIE(int32 PIEInstanceID);
+	ENGINE_API void FixupForPIE(int32 PIEInstanceID, TFunctionRef<void(int32, FSoftObjectPath&)> CustomFixupFunction);
+
+	/**
+	 * Returns true if the level contains static meshes that have not finished compiling yet.
+	 */
+	ENGINE_API bool HasStaticMeshCompilationPending();
 #endif
 
 	/** @todo document */
@@ -1370,7 +1367,7 @@ private:
 	bool IncrementalRegisterComponents(bool bPreRegisterComponents, int32 NumComponentsToUpdate, FRegisterComponentContext* Context);
 #if WITH_EDITOR
 	bool IncrementalRunConstructionScripts(bool bProcessAllActors);
-
+	TOptional<bool> bCachedHasStaticMeshCompilationPending;
 private:
 	/**
 	 * Potentially defer the running of an actor's construction script on load

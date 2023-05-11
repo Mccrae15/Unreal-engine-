@@ -24,7 +24,7 @@ enum class ETextShapingMethod : uint8;
 UENUM( BlueprintType )
 namespace ETextJustify
 {
-	enum Type
+	enum Type : int
 	{
 		/**
 		 * Justify the text logically to the left.
@@ -77,6 +77,9 @@ enum class ETextFlowDirection : uint8
 
 	/** Force text to be flowed right-to-left */
 	RightToLeft,
+
+	/** Uses the set culture to determine if text should flow left-to-right or right-to-left.  By comparison, Auto will use the text itself to determine it. */
+	Culture,
 };
 
 /** Get the default text flow direction (from the "Slate.DefaultTextFlowDirection" CVar) */

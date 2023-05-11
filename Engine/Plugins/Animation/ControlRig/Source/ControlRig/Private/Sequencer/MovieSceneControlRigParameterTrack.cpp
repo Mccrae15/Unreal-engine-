@@ -9,6 +9,7 @@
 #include "MovieSceneTimeHelpers.h"
 #include "Channels/MovieSceneChannelProxy.h"
 #include "Rigs/RigHierarchyController.h"
+#include "UObject/Package.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneControlRigParameterTrack)
 
@@ -28,6 +29,16 @@ UMovieSceneControlRigParameterTrack::UMovieSceneControlRigParameterTrack(const F
 	SupportedBlendTypes.Add(EMovieSceneBlendType::Absolute);
 
 }
+
+void UMovieSceneControlRigParameterTrack::BeginDestroy()
+{
+	Super::BeginDestroy();
+	if (IsValid(ControlRig))
+	{
+		ControlRig->OnInitialized_AnyThread().RemoveAll(this);
+	}
+}
+
 FMovieSceneEvalTemplatePtr UMovieSceneControlRigParameterTrack::CreateTemplateForSection(const UMovieSceneSection& InSection) const
 {
 	return FMovieSceneControlRigParameterTemplate(*CastChecked<UMovieSceneControlRigParameterSection>(&InSection), *this);
@@ -181,11 +192,24 @@ FText UMovieSceneControlRigParameterTrack::GetDefaultDisplayName() const
 
 UMovieSceneSection* UMovieSceneControlRigParameterTrack::CreateControlRigSection(FFrameNumber StartTime, UControlRig* InControlRig, bool bInOwnsControlRig)
 {
+	if (InControlRig == nullptr)
+	{
+		return nullptr;
+	}
 	if (!bInOwnsControlRig)
 	{
 		InControlRig->Rename(nullptr, this);
 	}
+
+	if (IsValid(ControlRig))
+	{
+		ControlRig->OnInitialized_AnyThread().RemoveAll(this);
+	}
+
 	ControlRig = InControlRig;
+
+	ControlRig->OnInitialized_AnyThread().AddUObject(this, &UMovieSceneControlRigParameterTrack::HandleOnInitialized);
+	
 	UMovieSceneControlRigParameterSection*  NewSection = Cast<UMovieSceneControlRigParameterSection>(CreateNewSection());
 	
 	UMovieScene* OuterMovieScene = GetTypedOuter<UMovieScene>();
@@ -379,7 +403,7 @@ UMovieSceneSection* UMovieSceneControlRigParameterTrack::GetSectionToKey() const
 
 void UMovieSceneControlRigParameterTrack::ReconstructControlRig()
 {
-	if (ControlRig  && !ControlRig->HasAnyFlags(RF_NeedLoad | RF_NeedPostLoad | RF_NeedInitialization))
+	if (ControlRig && !ControlRig->HasAnyFlags(RF_NeedLoad | RF_NeedPostLoad | RF_NeedInitialization))
 	{
 		ControlRig->ConditionalPostLoad();
 		ControlRig->Initialize();
@@ -413,13 +437,41 @@ void UMovieSceneControlRigParameterTrack::PostLoad()
 
 #if WITH_EDITOR
 	FCoreUObjectDelegates::OnEndLoadPackage.AddUObject(this, &UMovieSceneControlRigParameterTrack::HandlePackageDone);
-	if (ControlRig)
+	// If we have a control Rig and it's not a native one, register OnEndLoadPackage callback on instance directly
+	if (ControlRig && !ControlRig->GetClass()->IsNative())
 	{
 		ControlRig->OnEndLoadPackage().AddUObject(this, &UMovieSceneControlRigParameterTrack::HandleControlRigPackageDone);
 	}
-#else
-	ReconstructControlRig();
+	// Otherwise try and reconstruct the control rig directly (which is fine for native classes)
+	else
 #endif
+	{		
+		ReconstructControlRig();
+	}
+
+	if (IsValid(ControlRig))
+	{
+		ControlRig->OnInitialized_AnyThread().AddUObject(this, &UMovieSceneControlRigParameterTrack::HandleOnInitialized);
+	}
+}
+
+void UMovieSceneControlRigParameterTrack::HandleOnInitialized(URigVMHost* Subject, const FName& InEventName)
+{
+	if (IsValid(ControlRig))
+	{
+		TArray<FRigControlElement*> SortedControls;
+		ControlRig->GetControlsInOrder(SortedControls);
+		for (UMovieSceneSection* BaseSection : GetAllSections())
+		{
+			if (UMovieSceneControlRigParameterSection* Section = Cast<UMovieSceneControlRigParameterSection>(BaseSection))
+			{
+				if (Section->IsDifferentThanLastControlsUsedToReconstruct(SortedControls))
+				{
+					Section->RecreateWithThisControlRig(ControlRig, Section->GetBlendType() == EMovieSceneBlendType::Absolute);
+				}
+			}
+		}
+	}
 }
 
 #if WITH_EDITORONLY_DATA
@@ -449,11 +501,12 @@ void UMovieSceneControlRigParameterTrack::HandlePackageDone(const FEndLoadPackag
 				return;
 			}
 		}
+
+		// Only reconstruct in case it is not a native ControlRig class
+		ReconstructControlRig();
 	}
 
 	FCoreUObjectDelegates::OnEndLoadPackage.RemoveAll(this);
-
-	ReconstructControlRig();
 }
 
 void UMovieSceneControlRigParameterTrack::HandleControlRigPackageDone(UControlRig* InControlRig)
@@ -472,6 +525,10 @@ void UMovieSceneControlRigParameterTrack::PostEditImport()
 	Super::PostEditImport();
 	if (ControlRig)
 	{
+		if (ControlRig->OnInitialized_AnyThread().IsBoundToObject(this) == false)
+		{
+			ControlRig->OnInitialized_AnyThread().AddUObject(this, &UMovieSceneControlRigParameterTrack::HandleOnInitialized);
+		}
 		ControlRig->ClearFlags(RF_Transient); //when copied make sure it's no longer transient, sequencer does this for tracks/sections 
 											  //but not for all objects in them since the control rig itself has transient objects.
 	}
@@ -494,10 +551,21 @@ void UMovieSceneControlRigParameterTrack::RenameParameterName(const FName& OldPa
 
 void UMovieSceneControlRigParameterTrack::ReplaceControlRig(UControlRig* NewControlRig, bool RecreateChannels)
 {
-	ControlRig = NewControlRig;
-	if (ControlRig->GetOuter() != this)
+	if (IsValid(ControlRig))
 	{
-		ControlRig->Rename(nullptr, this);
+		ControlRig->OnInitialized_AnyThread().RemoveAll(this);
+	}
+
+	ControlRig = NewControlRig;
+
+	if (IsValid(ControlRig))
+	{
+		ControlRig->OnInitialized_AnyThread().AddUObject(this, &UMovieSceneControlRigParameterTrack::HandleOnInitialized);
+
+		if (ControlRig->GetOuter() != this)
+		{
+			ControlRig->Rename(nullptr, this);
+		}
 	}
 	for (UMovieSceneSection* Section : Sections)
 	{

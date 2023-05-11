@@ -13,6 +13,7 @@
 #include "Serialization/CustomVersion.h"
 #include "Serialization/MemoryReader.h"
 #include "Shader.h"
+#include "RenderUtils.h"
 #include "Misc/EngineVersion.h"
 #include "PipelineStateCache.h"
 #include "PipelineFileCache.h"
@@ -155,6 +156,13 @@ static TAutoConsoleVariable<float> CVarPSOFileCacheMaxPrecompileTime(
 																TEXT("The maximum time to allow a PSO to be precompiled.  if greather than 0, the amount of wall time we will allow pre-compile of PSOs and then switch to background processing."),
 																ECVF_Default | ECVF_RenderThreadSafe
 																);
+
+static TAutoConsoleVariable<int32> CVarPSOGlobalShadersOnlyWhenPSOPrecaching(
+                                                                TEXT("r.ShaderPipelineCache.GlobalShadersOnlyWhenPSOPrecaching"),
+                                                                (int32)0,
+                                                                TEXT("Only compile PSOs from the GlobalShader cache when runtime PSOPrecaching is enabled (default disabled)"),
+                                                                ECVF_Default | ECVF_RenderThreadSafe
+                                                                );
 
 static bool GetShaderPipelineCacheSaveBoundPSOLog()
 {
@@ -382,8 +390,8 @@ class FShaderPipelineCacheTask
 	friend class FShaderPipelineCache;
 
 public:
-	FShaderPipelineCacheTask(bool bIsUserCacheIn, EShaderPlatform InShaderPlatform) :
-		ShaderPlatform(InShaderPlatform), bIsUserCache(bIsUserCacheIn)
+	FShaderPipelineCacheTask(FShaderPipelineCache* InCache, bool bIsUserCacheIn, EShaderPlatform InShaderPlatform) :
+		ShaderPlatform(InShaderPlatform), bIsUserCache(bIsUserCacheIn), Cache(InCache)
 	{
 		bReady = !CVarPSOFileCacheGameFileMaskEnabled.GetValueOnAnyThread() || CVarPSOFileCachePreOptimizeEnabled.GetValueOnAnyThread();
 	}
@@ -433,6 +441,9 @@ private:
 	bool bReady = false;
 	bool bOpened = false;
 	bool bIsUserCache;
+
+	/** Cache which kicked off this task. */
+	FShaderPipelineCache* Cache = nullptr;
 
 	// as there is only ever one active precompile task at a time
 	// these stats are available to read anywhere.
@@ -793,6 +804,9 @@ uint32 FShaderPipelineCache::NumPrecompilesRemaining()
 		}
 	}
 
+	// Add the number of active PSO precache requests as well
+	NumRemaining += PipelineStateCache::NumActivePrecacheRequests();
+
 	// NumRemaining is correct only for the current cache.
 	// This ensures we do not return 0 if there are more caches to process.
 	uint32 PendingCaches = IsPrecompiling() ? 1 : 0;
@@ -836,7 +850,7 @@ bool FShaderPipelineCache::OpenPipelineFileCacheInternal(bool bWantUserCache, co
 {
 	if(!ShaderCacheTasks.Contains(PSOCacheKey))
 	{
-		TUniquePtr<FShaderPipelineCacheTask> NewPSOTask = MakeUnique<FShaderPipelineCacheTask>(bWantUserCache, Platform);
+		TUniquePtr<FShaderPipelineCacheTask> NewPSOTask = MakeUnique<FShaderPipelineCacheTask>(this, bWantUserCache, Platform);
 		bool bOpened = NewPSOTask->Open(PSOCacheKey, CacheName, Platform);
 		if(bOpened)
 		{
@@ -950,6 +964,12 @@ bool FShaderPipelineCacheTask::Precompile(FRHICommandListImmediate& RHICmdList, 
 
 				if (PSO.GraphicsDesc.MeshShader != FSHAHash())
 				{
+					// Skip creation of mesh shaders if RHI doesn't support them
+					if (!GRHISupportsMeshShadersTier0)
+					{
+						return false;
+					}
+
 					FMeshShaderRHIRef MeshShader = FShaderCodeLibrary::CreateMeshShader(Platform, PSO.GraphicsDesc.MeshShader);
 					GraphicsInitializer.BoundShaderState.SetMeshShader(MeshShader);
 
@@ -1024,6 +1044,14 @@ bool FShaderPipelineCacheTask::Precompile(FRHICommandListImmediate& RHICmdList, 
 				// This indicates we do not want a fatal error if this compilation fails
 				// (ie, if this entry in the file cache is bad)
 				GraphicsInitializer.bFromPSOFileCache = true;
+
+#if !UE_BUILD_SHIPPING
+				// dump to log to describe
+				if (Cache && Cache->ShaderHashToStableKey.IsInitialized())
+				{
+					Cache->ShaderHashToStableKey.DumpPSOToLogIfConfigured(GraphicsInitializer);
+				}
+#endif
 			}
 			// Use SetGraphicsPipelineState to call down into PipelineStateCache and also handle the fallback case used by OpenGL.
 			// we lose track of our PSO precompile jobs through here. they may not be RHI dependencies and could persist beyond the next tick.
@@ -1532,6 +1560,12 @@ FShaderPipelineCache::FShaderPipelineCache(EShaderPlatform Platform)
 	BatchSize = CVarPSOFileCacheBatchSize.GetValueOnAnyThread();
 	BatchTime = CVarPSOFileCacheBatchTime.GetValueOnAnyThread();
 	
+	FString StableShaderKeyFile;
+	if (FParse::Value(FCommandLine::Get(), TEXT("-shkfile="), StableShaderKeyFile) && !StableShaderKeyFile.IsEmpty())
+	{
+		ShaderHashToStableKey.Initialize(StableShaderKeyFile);
+	}
+
 	uint64 PreCompileMask = (uint64)CVarPSOFileCachePreCompileMask.GetValueOnAnyThread();
 	FPipelineFileCacheManager::SetGameUsageMaskWithComparison(PreCompileMask, PreCompileMaskComparison);
 
@@ -1632,6 +1666,7 @@ void FShaderPipelineCache::ClearPendingPrecompileTaskQueue()
 		CurrentPrecompilingPSOFCKey.Empty();
 	}
 	PendingPrecompilePSOCacheKeys.Reset();
+	bHasShaderPipelineTask = false;
 }
 
 void FShaderPipelineCache::EnqueuePendingPrecompileTask(const FString& PSOCacheKey)
@@ -2007,13 +2042,23 @@ void FShaderPipelineCacheTask::BeginPrecompilingPipelineCache()
 		// Iterate over all the tasks we haven't yet begun to read data for - these are the 'waiting' tasks
 		int64 EligibleTaskCount = LocalPreFetchedTasks.Num();
 
+		// Only interested in global shaders when PSO precaching is enabled
+		FString LibraryName(TEXT("Global"));
+
 		int32 MissingShaders = 0;
-		int32 NewSize = Algo::StableRemoveIf(LocalPreFetchedTasks, [&MissingShaders](FPipelineCachePSOHeader& Task)
+		int32 NewSize = Algo::StableRemoveIf(LocalPreFetchedTasks, [&MissingShaders, LibraryName](FPipelineCachePSOHeader& Task)
 		{
 			bool bHasShaders = true;
 			for (FSHAHash const& Hash : Task.Shaders)
 			{
-				bHasShaders &= FShaderCodeLibrary::ContainsShaderCode(Hash);
+				if (PipelineStateCache::IsPSOPrecachingEnabled() && CVarPSOGlobalShadersOnlyWhenPSOPrecaching.GetValueOnAnyThread() > 0)
+				{
+					bHasShaders &= FShaderCodeLibrary::ContainsShaderCode(Hash, LibraryName);
+				}
+				else
+				{
+					bHasShaders &= FShaderCodeLibrary::ContainsShaderCode(Hash);
+				}
 			}
 			if(!bHasShaders)
 			{

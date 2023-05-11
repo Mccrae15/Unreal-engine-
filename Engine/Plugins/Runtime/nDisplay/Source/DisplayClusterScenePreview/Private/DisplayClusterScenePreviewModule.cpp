@@ -8,8 +8,11 @@
 #include "Components/DisplayClusterPreviewComponent.h"
 #include "DisplayClusterLightCardActor.h"
 #include "DisplayClusterRootActor.h"
+#include "Engine/Blueprint.h"
+#include "Engine/Canvas.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Misc/TransactionObjectEvent.h"
+#include "TextureResource.h"
 
 #if WITH_EDITOR
 #include "LevelEditorViewport.h"
@@ -335,6 +338,14 @@ bool FDisplayClusterScenePreviewModule::InternalRenderImmediate(FRendererConfig&
 				{
 					PreviewComponentOverrideTextures.Add(PreviewComp, PreviewComp->GetOverrideTexture());
 					PreviewComp->SetOverrideTexture(PreviewComp->GetRenderTargetTexturePostProcess());
+
+					// Force the preview mesh to recreate its render state immediately, in case setting the override texture
+					// caused the preview component to create and set the preview material on the mesh (as is the case when
+					// previews are disabled on the root actor)
+					if (UMeshComponent* PreviewMesh = PreviewComp->GetPreviewMesh())
+					{
+						PreviewMesh->RecreateRenderState_Concurrent();
+					}
 				}
 			}
 		}
@@ -610,9 +621,22 @@ void FDisplayClusterScenePreviewModule::OnActorPropertyChanged(UObject* ObjectBe
 	for (TPair<int32, FRendererConfig>& ConfigPair : RendererConfigs)
 	{
 		FRendererConfig& Config = ConfigPair.Value;
-		if (Config.bAutoUpdateLightcards && Config.RootActor == ObjectBeingModified)
+		if (Config.bAutoUpdateLightcards)
 		{
-			Config.bIsSceneDirty = true;
+			if (Config.RootActor == ObjectBeingModified)
+			{
+				Config.bIsSceneDirty = true;
+				continue;
+			}
+
+			if (UActorComponent* Component = Cast<UActorComponent>(ObjectBeingModified))
+			{
+				if (Component->GetOwner() == Config.RootActor)
+				{
+					Config.bIsSceneDirty = true;
+					continue;
+				}
+			}
 		}
 	}
 }

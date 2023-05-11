@@ -6,10 +6,11 @@
 #include "AssetToolsModule.h"
 #include "CoreMinimal.h"
 #include "EdGraphUtilities.h"
-#include "DataflowEditorToolkit.h"
+#include "Dataflow/DataflowEditorToolkit.h"
 #include "Dataflow/DataflowNodeFactory.h"
 #include "Dataflow/DataflowAssetActions.h"
 #include "Dataflow/DataflowSNodeFactories.h"
+#include "PropertyEditorModule.h"
 
 #define LOCTEXT_NAMESPACE "DataflowEditor"
 
@@ -45,10 +46,10 @@ void IDataflowEditorPlugin::ShutdownModule()
 	}
 }
 
-TSharedRef<FAssetEditorToolkit> IDataflowEditorPlugin::CreateDataflowAssetEditor(const EToolkitMode::Type Mode, const TSharedPtr<IToolkitHost>& InitToolkitHost, UObject* FleshAsset)
+TSharedRef<FAssetEditorToolkit> IDataflowEditorPlugin::CreateDataflowAssetEditor(const EToolkitMode::Type Mode, const TSharedPtr<IToolkitHost>& InitToolkitHost, UObject* Asset)
 {
 	TSharedPtr<FDataflowEditorToolkit> NewDataflowAssetEditor = MakeShared<FDataflowEditorToolkit>();
-	NewDataflowAssetEditor->InitDataflowEditor(Mode, InitToolkitHost, FleshAsset);
+	NewDataflowAssetEditor->InitializeEditor(Mode, InitToolkitHost, Asset);
 	return StaticCastSharedPtr<FAssetEditorToolkit>(NewDataflowAssetEditor).ToSharedRef();
 }
 

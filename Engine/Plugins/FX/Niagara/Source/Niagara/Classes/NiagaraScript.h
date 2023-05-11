@@ -445,6 +445,10 @@ public:
 	UPROPERTY()
 	TArray<FNiagaraCompileDependency> ExternalDependencies;
 
+	/** The default set of rapid iteration parameters defined by the script that this data represents.  In the case of baked
+	    in RI parameters this will be the values that are baked in, otherwise it will be the set of defaults based on the graphs. */
+	UPROPERTY()
+	TArray<FNiagaraVariable> BakedRapidIterationParameters;
 #endif
 
 	UPROPERTY()
@@ -534,9 +538,6 @@ public:
 	UPROPERTY()
 	FString ErrorMsg;
 
-	UPROPERTY()
-	float CompileTime;
-
 	/** Array of all compile events generated last time the script was compiled.*/
 	UPROPERTY()
 	TArray<FNiagaraCompileEvent> LastCompileEvents;
@@ -584,8 +585,14 @@ struct TStructOpsTypeTraits<FNiagaraVMExecutableData> : public TStructOpsTypeTra
 
 struct NIAGARA_API FNiagaraGraphCachedDataBase
 {
-	virtual ~FNiagaraGraphCachedDataBase() {}
+	virtual ~FNiagaraGraphCachedDataBase() = default;
 	virtual void GetStaticVariables(TArray<FNiagaraVariable>& OutVars) {}
+
+	virtual bool IsValidForSystem(const UNiagaraSystem* InSystem) const { return false; };
+	virtual void SetSourceSystem(const UNiagaraSystem* InSystem) {};
+
+	virtual bool IsValidForEmitter(const FVersionedNiagaraEmitterData* InEmitterData) const { return false; };
+	virtual void SetSourceEmitter(const FVersionedNiagaraEmitterData* InEmitterData) {};
 };
 
 /** Struct containing all of the data that can be different between different script versions.*/
@@ -984,7 +991,9 @@ public:
 
 	NIAGARA_API bool CanBeRunOnGpu() const;
 	NIAGARA_API bool IsReadyToRun(ENiagaraSimTarget SimTarget) const;
-	NIAGARA_API bool ShouldCacheShadersForCooking(const ITargetPlatform* TargetPlatform) const;
+#if WITH_EDITORONLY_DATA
+	NIAGARA_API static void SetPreviewFeatureLevel(ERHIFeatureLevel::Type PreviewFeatureLevel);
+#endif
 
 #if WITH_EDITORONLY_DATA
 	NIAGARA_API class UNiagaraScriptSourceBase* GetLatestSource();
@@ -1036,6 +1045,9 @@ public:
 	virtual bool IsCachedCookedPlatformDataLoaded(const ITargetPlatform* TargetPlatform) override;
 	void CacheShadersForResources(FNiagaraShaderScript* ResourceToCache, bool bApplyCompletedShaderMapForRendering, bool bForceRecompile = false, bool bCooking=false, const ITargetPlatform* TargetPlatform = nullptr);
 	void SaveShaderStableKeys(const class ITargetPlatform* TP);
+
+	TArray<FName> FindShaderFormatsForCooking(const ITargetPlatform* TargetPlatform) const;
+
 #endif // WITH_EDITOR
 	FNiagaraShaderScript* AllocateResource();
 	FNiagaraShaderScript* GetRenderThreadScript()
@@ -1114,11 +1126,11 @@ public:
 		gather up the results with. The function returns whether or not any compiles were actually issued. */
 	NIAGARA_API bool RequestExternallyManagedAsyncCompile(const TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe>& RequestData, const TSharedPtr<FNiagaraCompileRequestDuplicateDataBase, ESPMode::ThreadSafe>& RequestDuplicateData, FNiagaraVMExecutableDataId& OutCompileId, uint32& OutAsyncHandle);
 
-	/** Builds the DDC string for the derived data cache using the supplied CompiledId */
-	static FString BuildNiagaraDDCKeyString(const FNiagaraVMExecutableDataId& CompileId);
+	/** Builds the DDC string for the derived data cache using the supplied CompiledId and ScriptPath */
+	static FString BuildNiagaraDDCKeyString(const FNiagaraVMExecutableDataId& CompileId, const FString& ScriptPath);
 
 	/** Creates a string key for the derived data cache */
-	FString GetNiagaraDDCKeyString(const FGuid& ScriptVersion);
+	FString GetNiagaraDDCKeyString(const FGuid& ScriptVersion, const FString& ScriptPath);
 
 	/** Callback issued whenever a VM script compilation successfully happened (even if the results are a script that cannot be executed due to errors)*/
 	NIAGARA_API FOnScriptCompiled& OnVMScriptCompiled();
@@ -1130,7 +1142,7 @@ public:
 	NIAGARA_API FOnPropertyChanged& OnPropertyChanged();
 
 	/** External call used to identify the values for a successful VM script compilation. OnVMScriptCompiled will be issued in this case.*/
-	void SetVMCompilationResults(const FNiagaraVMExecutableDataId& InCompileId, FNiagaraVMExecutableData& InScriptVM, FString EmitterUniqueName, const TMap<FName, UNiagaraDataInterface*>& ObjectNameMap);
+	void SetVMCompilationResults(const FNiagaraVMExecutableDataId& InCompileId, FNiagaraVMExecutableData& InScriptVM, FString EmitterUniqueName, const TMap<FName, UNiagaraDataInterface*>& ObjectNameMap, bool ApplyRapidIterationParameters);
 
 	/** In the event where we "merge" we duplicate the changes of the source script onto the newly cloned copy. This function will synchronize the compiled script 
 		results assuming that the scripts themselves are bound to the same key. This saves looking things up in the DDC. It returns true if successfully synchronized and 

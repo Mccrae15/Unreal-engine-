@@ -12,7 +12,7 @@
  
 class IDetailCategoryBuilder;
 class UEdGraphPin;
-
+struct FEdGraphEditAction;
 
 /** Intermediate representations for default mode set on parameter definition script variables. Maps to ENiagaraDefaultMode and bOverrideParameterDefinitionsDefaultValue of UNiagaraScriptVariable. */
 UENUM()
@@ -64,6 +64,8 @@ private:
 	void CustomizeDetailsStaticSwitchScriptVariable(IDetailLayoutBuilder& DetailBuilder);
 	void CustomizeDetailsParameterDefinitionsSynchronizedScriptVariable(IDetailLayoutBuilder& DetailBuilder);
 
+	void OnGraphChanged(const FEdGraphEditAction& EdGraphEditAction, TWeakObjectPtr<class UNiagaraScriptVariable> ScriptVariable);
+	
 	void AddGraphDefaultValueCustomRow(IDetailCategoryBuilder& CategoryBuilder);
 	void AddLibraryDefaultValueCustomRow(IDetailCategoryBuilder& CategoryBuilder, bool bInLibraryAsset);
 
@@ -94,6 +96,8 @@ private:
 	// Bool to track whether a parameters value has actually changed at any point during OnBeginValueChanged(), OnValueChanged() and OnEndValueChanged() to prevent excessive refreshing.
 	bool bParameterValueChangedDuringOnValueChanged;
 
+	FDelegateHandle ParameterMapWatcherDelegate;
+	
 	// Cached value of enum selector for choosing the library default mode.
 	int32 LibraryDefaultModeValue;
 

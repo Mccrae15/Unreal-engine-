@@ -1,51 +1,32 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "Utilities/MiscUtils.h"
+#include "Engine/StaticMeshActor.h"
 #include "Utilities/MaterialUtils.h"
 
-#include "Serialization/JsonSerializer.h"
+#include "MSSettings.h"
 #include "Misc/Paths.h"
 #include "HAL/PlatformFileManager.h"
-#include "GenericPlatform/GenericPlatformFile.h"
-#include "HAL/FileManager.h"
 
-#include "Modules/ModuleManager.h"
 #include "AssetRegistry/AssetRegistryModule.h"
-#include "AssetRegistry/IAssetRegistry.h"
-#include "UObject/Package.h"
 
 #include "ContentBrowserModule.h"
 #include "IContentBrowserSingleton.h"
-#include "Engine/Selection.h"
 
-#include "Factories/MaterialInstanceConstantFactoryNew.h"
 
-#include "Engine/StaticMesh.h"
 
-#include "Misc/MessageDialog.h"
-#include "Internationalization/Text.h"
 
-#include "PackageTools.h"
+#include "Materials/MaterialInstanceConstant.h"
 #include "Misc/FileHelper.h"
 #include "FileHelpers.h"
 
 #include "EditorAssetLibrary.h"
-#include "AssetRegistry/AssetData.h"
 #include "JsonObjectConverter.h"
-#include "Serialization/JsonReader.h"
 #include "InstancedFoliageActor.h"
 #include "FoliageType_InstancedStaticMesh.h"
-#include "Engine/World.h"
-#include "Editor/EditorEngine.h"
 
-#include "EngineGlobals.h"
 #include "Editor.h"
 
-#include "UObject/SoftObjectPath.h"
-#include "Engine/StreamableManager.h"
-#include "Engine/AssetManager.h"
-#include "Engine/Texture.h"
 
-#include "HAL/IConsoleManager.h"
 
 #include "Tools/BlendMaterials.h"
 
@@ -254,6 +235,10 @@ TArray<UMaterialInstanceConstant*> AssetUtils::GetSelectedAssets(const FTopLevel
 
 	for (FAssetData SelectedAsset : AssetDatas)
 	{
+		if (SelectedAsset.AssetClassPath == AssetClass)
+		{
+			ObjectArray.Add(CastChecked<UMaterialInstanceConstant>(UEditorAssetLibrary::LoadAsset(SelectedAsset.GetObjectPathString())));
+		}
 
 		if (SelectedAsset.AssetClassPath == AssetClass)
 		{
@@ -338,16 +323,18 @@ void CopyUassetFiles(TArray<FString> FilesToCopy, FString DestinationDirectory)
 	PlatformFile.CreateDirectoryTree(*DestinationDirectory);
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::GetModuleChecked<FAssetRegistryModule>("AssetRegistry");
 	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
-
-	for (FString FileToCopy : FilesToCopy)
+	
+	TArray<FString> NewFilePaths;
+	NewFilePaths.Reserve(FilesToCopy.Num());
+	
+	for (const FString& FileToCopy : FilesToCopy)
 	{
-		FString DestinationFile = FPaths::Combine(DestinationDirectory, FPaths::GetCleanFilename(FileToCopy));
+		const FString DestinationFile = FPaths::Combine(DestinationDirectory, FPaths::GetCleanFilename(FileToCopy));
 		PlatformFile.CopyFile(*DestinationFile, *FileToCopy);
+		NewFilePaths.Add(DestinationFile);
 	}
 
-	TArray<FString> SyncPaths;
-	SyncPaths.Add(TEXT("/Game/Megascans"));
-	AssetRegistryModule.Get().ScanPathsSynchronous(SyncPaths, true);
+	AssetRegistryModule.Get().ScanFilesSynchronous(NewFilePaths, true);
 }
 
 void AssetUtils::SyncFolder(const FString& TargetFolder)
@@ -406,17 +393,20 @@ void CopyUassetFilesPlants(TArray<FString> FilesToCopy, FString DestinationDirec
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::GetModuleChecked<FAssetRegistryModule>("AssetRegistry");
 	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
 
-	FString FoliageDestination = FPaths::Combine(DestinationDirectory, TEXT("Foliage"));
+	const FString FoliageDestination = FPaths::Combine(DestinationDirectory, TEXT("Foliage"));
 
 	if (AssetTier < 4)
 	{
 		PlatformFile.CreateDirectoryTree(*FoliageDestination);
 	}
 
-	for (FString FileToCopy : FilesToCopy)
+	TArray<FString> NewFilePaths;
+	NewFilePaths.Reserve(FilesToCopy.Num());
+	
+	for (const FString& FileToCopy : FilesToCopy)
 	{
 		FString DestinationFile = TEXT("");
-		FString TypeConvention = FPaths::GetBaseFilename(FileToCopy).Left(2);
+		const FString TypeConvention = FPaths::GetBaseFilename(FileToCopy).Left(2);
 		if (TypeConvention == TEXT("FT"))
 		{
 			DestinationFile = FPaths::Combine(FoliageDestination, FPaths::GetCleanFilename(FileToCopy));
@@ -426,11 +416,10 @@ void CopyUassetFilesPlants(TArray<FString> FilesToCopy, FString DestinationDirec
 			DestinationFile = FPaths::Combine(DestinationDirectory, FPaths::GetCleanFilename(FileToCopy));
 		}
 		PlatformFile.CopyFile(*DestinationFile, *FileToCopy);
+		NewFilePaths.Add(DestinationFile);
 	}
 
-	TArray<FString> SyncPaths;
-	SyncPaths.Add(TEXT("/Game/Megascans"));
-	AssetRegistryModule.Get().ScanPathsSynchronous(SyncPaths, true);
+	AssetRegistryModule.Get().ScanFilesSynchronous(NewFilePaths, true);
 }
 
 void UpdateMHVersionInfo(TMap<FString, TArray<FString>> AssetsStatus, TMap<FString, float> SourceAssetsVersionInfo)

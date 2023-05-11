@@ -6,6 +6,7 @@
 #include "ControlRig.h"
 #include "ControlRigAnimInstance.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "PrimitiveSceneProxy.h"
 
 #if WITH_EDITOR
 #include "Widgets/Notifications/SNotificationList.h"
@@ -72,7 +73,7 @@ struct FControlRigComponentMappedElement
 	FComponentReference ComponentReference;
 
 	// An optional index that can be used with components
-	// with multiple transforms (for example the InstancedStaticMechComponent)
+	// with multiple transforms (for example the InstancedStaticMeshComponent)
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mapping")
 	int32 TransformIndex;
 
@@ -217,9 +218,6 @@ public:
 	//~ End UObject Interface
 	
 	//~ Begin UActorComponent Interface
-#if WITH_EDITOR
-	virtual void InitializeComponent() override;
-#endif
 	virtual void OnRegister() override;
 	virtual void OnUnregister() override;
 	virtual void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
@@ -644,12 +642,12 @@ private:
 	void TransferOutputs();
 	static FName GetComponentNameWithinActor(UActorComponent* InComponent);
 
-	void HandleControlRigInitializedEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName);
-	void HandleControlRigPreConstructionEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName);
-	void HandleControlRigPostConstructionEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName);
-	void HandleControlRigPreForwardsSolveEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName);
-	void HandleControlRigPostForwardsSolveEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName);
-	void HandleControlRigExecutedEvent(UControlRig* InControlRig, const EControlRigState InState, const FName& InEventName);
+	void HandleControlRigInitializedEvent(URigVMHost* InControlRig, const FName& InEventName);
+	void HandleControlRigPreConstructionEvent(UControlRig* InControlRig, const FName& InEventName);
+	void HandleControlRigPostConstructionEvent(UControlRig* InControlRig, const FName& InEventName);
+	void HandleControlRigPreForwardsSolveEvent(UControlRig* InControlRig, const FName& InEventName);
+	void HandleControlRigPostForwardsSolveEvent(UControlRig* InControlRig, const FName& InEventName);
+	void HandleControlRigExecutedEvent(URigVMHost* InControlRig, const FName& InEventName);
 
 	void ConvertTransformToRigSpace(FTransform& InOutTransform, EControlRigComponentSpace FromSpace);
 	void ConvertTransformFromRigSpace(FTransform& InOutTransform, EControlRigComponentSpace ToSpace);
@@ -675,6 +673,8 @@ private:
 	TArray<FTransform> LastInputTransforms;
 
 	TSharedPtr<IControlRigObjectBinding> ObjectBinding;
+
+	bool bNeedToInitialize;
 
 	friend class FControlRigSceneProxy;
 };

@@ -15,11 +15,13 @@
 
 class FTextureResource;
 class UClass;
+class FRHITexture;
 
 BEGIN_SHADER_PARAMETER_STRUCT(FOpenColorIOPixelShaderParameters, )
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, InputTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, InputTextureSampler)
 	SHADER_PARAMETER(float, Gamma)
+	SHADER_PARAMETER(uint32, TransformAlpha)
 	
 	SHADER_PARAMETER_TEXTURE(Texture3D, Ocio_lut3d_0)
 	SHADER_PARAMETER_SAMPLER(SamplerState, Ocio_lut3d_0Sampler)
@@ -82,4 +84,22 @@ public:
 	}
 };
 
+BEGIN_SHADER_PARAMETER_STRUCT(FOpenColorIOInvalidShaderParameters, )
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, InputTexture)
+	SHADER_PARAMETER_SAMPLER(SamplerState, InputTextureSampler)
+	SHADER_PARAMETER_TEXTURE(Texture2D, MiniFontTexture)
+	RENDER_TARGET_BINDING_SLOTS()
+END_SHADER_PARAMETER_STRUCT()
+
+class OPENCOLORIO_API FOpenColorIOInvalidPixelShader : public FGlobalShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FOpenColorIOInvalidPixelShader);
+	SHADER_USE_PARAMETER_STRUCT(FOpenColorIOInvalidPixelShader, FGlobalShader);
+
+	using FParameters = FOpenColorIOInvalidShaderParameters;
+};
+
 OPENCOLORIO_API void OpenColorIOBindTextureResources(FOpenColorIOPixelShaderParameters* Parameters, const TSortedMap<int32, FTextureResource*>& InTextureResources);
+
+FRHITexture* OpenColorIOGetMiniFontTexture();

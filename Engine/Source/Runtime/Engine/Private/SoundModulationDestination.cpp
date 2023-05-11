@@ -2,15 +2,9 @@
 
 #include "Sound/SoundModulationDestination.h"
 
-#include "Algo/NoneOf.h"
-#include "Algo/Transform.h"
-#include "Async/Async.h"
+#include "Algo/AnyOf.h"
 #include "AudioDevice.h"
 #include "DSP/FloatArrayMath.h"
-#include "IAudioModulation.h"
-#include "Math/TransformCalculus.h"
-#include "UObject/Object.h"
-#include "GenericPlatform/GenericPlatformCompilerPreSetup.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SoundModulationDestination)
 
@@ -146,7 +140,7 @@ namespace Audio
 	bool FModulationDestination::IsActive()
 	{
 		FScopeLock Lock(&HandleCritSection);
-		return Algo::NoneOf(Handles, [](const FModulatorHandle& Handle) { return Handle.IsValid(); });
+		return Algo::AnyOf(Handles, [](const FModulatorHandle& Handle) { return Handle.IsValid(); });
 	}
 
 	bool FModulationDestination::ProcessControl(float InValueUnitBase, int32 InNumSamples)

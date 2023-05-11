@@ -98,6 +98,8 @@ namespace Chaos
 		virtual FVec3 FindGeometryOpposingNormal(const FVec3& DenormDir, int32 FaceIndex, const FVec3& OriginalNormal) const override;
 
 		/**
+		 * Visit all triangles transformed into the specified space. Triangles will have standard winding, regardless of heightfield scale.
+		 * 
 		 * @param QueryBounds Bounding box in which we want to produce triangles, in HeightField space
 		 * @param QueryTransform Transforms from HeightField space to query space (usually the other object's space)
 		 * @param CullDistance The distance at which we can ignore triangles
@@ -114,7 +116,10 @@ namespace Chaos
 			TArray<TVec2<int32>> Intersections;
 			GetGridIntersections(GridQueryBounds, Intersections);
 
+			const bool bStandardWinding = ((GeomData.Scale.X * GeomData.Scale.Y * GeomData.Scale.Z) >= FReal(0));
+
 			FVec3 Points[4];
+			FTriangle Triangles[2];
 
 			for (const TVec2<int32>& Cell : Intersections)
 			{
@@ -149,8 +154,21 @@ namespace Chaos
 					// Generate contacts if overlapping
 					const int32 FaceIndex0 = CellIndex * 2 + 0;
 					const int32 FaceIndex1 = CellIndex * 2 + 1;
-					Visitor(FTriangle(Points[0], Points[1], Points[3]), FaceIndex0, VertexIndex0, VertexIndex1, VertexIndex3);
-					Visitor(FTriangle(Points[0], Points[3], Points[2]), FaceIndex1, VertexIndex0, VertexIndex3, VertexIndex2);
+
+					if (bStandardWinding)
+					{
+						Triangles[0] = FTriangle(Points[0], Points[1], Points[3]);
+						Triangles[1] = FTriangle(Points[0], Points[3], Points[2]);
+						Visitor(Triangles[0], FaceIndex0, VertexIndex0, VertexIndex1, VertexIndex3);
+						Visitor(Triangles[1], FaceIndex1, VertexIndex0, VertexIndex3, VertexIndex2);
+					}
+					else
+					{
+						Triangles[0] = FTriangle(Points[0], Points[3], Points[1]);
+						Triangles[1] = FTriangle(Points[0], Points[2], Points[3]);
+						Visitor(Triangles[0], FaceIndex0, VertexIndex0, VertexIndex3, VertexIndex1);
+						Visitor(Triangles[1], FaceIndex1, VertexIndex0, VertexIndex2, VertexIndex3);
+					}
 				}
 			}
 		}
@@ -257,10 +275,10 @@ namespace Chaos
 
 			// Only supporting unsigned int types for the height range - really no difference using
 			// this or signed but this is a little nicer overall
-			static_assert(TIsSame<StorageType, uint8>::Value || 
-				TIsSame<StorageType, uint16>::Value || 
-				TIsSame<StorageType, uint32>::Value || 
-				TIsSame<StorageType, uint64>::Value,
+			static_assert(std::is_same_v<StorageType, uint8> ||
+				std::is_same_v<StorageType, uint16> ||
+				std::is_same_v<StorageType, uint32> ||
+				std::is_same_v<StorageType, uint64>,
 				"Expected unsigned integer type for heightfield data storage");
 
 			// Data sizes to validate during serialization

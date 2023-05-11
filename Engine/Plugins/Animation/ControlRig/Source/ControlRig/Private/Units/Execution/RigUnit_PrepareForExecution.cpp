@@ -10,8 +10,6 @@ FName FRigUnit_PrepareForExecution::EventName = TEXT("Construction");
 FRigUnit_PrepareForExecution_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
-	ExecuteContext.CopyFrom(RigVMExecuteContext);
-	ExecuteContext.Hierarchy = Context.Hierarchy;
-	ExecuteContext.EventName = FRigUnit_PrepareForExecution::EventName;
+	ExecuteContext.SetEventName(FRigUnit_PrepareForExecution::EventName);
 }
 

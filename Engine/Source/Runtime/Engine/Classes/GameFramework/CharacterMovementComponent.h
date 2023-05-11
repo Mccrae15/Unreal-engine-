@@ -2124,6 +2124,12 @@ protected:
 	/** Simulate movement on a non-owning client. Called by SimulatedTick(). */
 	virtual void SimulateMovement(float DeltaTime);
 
+	/** Special Tick to allow custom server-side functionality on Autonomous Proxies. 
+	 * Called for all remote APs, including APs controlled on Listen Servers such as the hosting player's Character.
+	 * If full server-side control is desired, you may need to override ControlledCharacterMove as well.
+	 */
+	virtual void ServerAutonomousProxyTick(float DeltaSeconds) { }
+
 public:
 
 	/** Force a client update by making it appear on the server that the client hasn't updated in a long time. */
@@ -2830,6 +2836,7 @@ public:
 	FRotator SavedRotation;
 	FVector SavedVelocity;
 	FVector SavedRelativeLocation;
+	FVector SavedRelativeAcceleration;
 	FRotator SavedControlRotation;
 	TWeakObjectPtr<UPrimitiveComponent> EndBase;
 	FName EndBoneName;

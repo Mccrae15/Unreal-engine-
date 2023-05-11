@@ -12,7 +12,7 @@ public class nvTextureTools : ModuleRules
 
 		string nvttLibPath = nvttPath + "lib";
 
-		PublicIncludePaths.Add(nvttPath + "src/src");
+		PublicSystemIncludePaths.Add(nvttPath + "src/src");
 
 		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
@@ -47,7 +47,7 @@ public class nvTextureTools : ModuleRules
 		}
 		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 		{
-			string NvBinariesDir = Target.UEThirdPartyBinariesDirectory + "nvTextureTools/Linux/" + Target.Architecture;
+			string NvBinariesDir = Target.UEThirdPartyBinariesDirectory + "nvTextureTools/Linux/" + Target.Architecture.LinuxName;
 			PrivateRuntimeLibraryPaths.Add(NvBinariesDir);
 
 			PublicAdditionalLibraries.Add(NvBinariesDir + "/libnvcore.so");

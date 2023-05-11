@@ -1115,6 +1115,35 @@ struct FControlRigParameterExecutionToken : IMovieSceneExecutionToken
 	FControlRigParameterExecutionToken(const FControlRigParameterExecutionToken&) = delete;
 	FControlRigParameterExecutionToken& operator=(const FControlRigParameterExecutionToken&) = delete;
 
+	UObject* GetBindableObject(UObject* InObject) const
+	{
+		// If we are binding to an actor, find the first skeletal mesh component
+		if (AActor* Actor = Cast<AActor>(InObject))
+		{
+			if (UControlRigComponent* ControlRigComponent = Actor->FindComponentByClass<UControlRigComponent>())
+			{
+				return ControlRigComponent;
+			}
+			else if (USkeletalMeshComponent* SkeletalMeshComponent = Actor->FindComponentByClass<USkeletalMeshComponent>())
+			{
+				return SkeletalMeshComponent;
+			}
+		}
+		else if (UControlRigComponent* ControlRigComponent = Cast<UControlRigComponent>(InObject))
+		{
+			return ControlRigComponent;
+		}
+		else if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(InObject))
+		{
+			return SkeletalMeshComponent;
+		}
+		else if (USkeleton* Skeleton = Cast<USkeleton>(InObject))
+		{
+			return Skeleton;
+		}
+		return nullptr;
+	}
+
 	virtual void Execute(const FMovieSceneContext& Context, const FMovieSceneEvaluationOperand& Operand, FPersistentEvaluationData& PersistentData, IMovieScenePlayer& Player)
 	{
 		MOVIESCENE_DETAILED_SCOPE_CYCLE_COUNTER(MovieSceneEval_ControlRigParameterTrack_TokenExecute)
@@ -1129,18 +1158,25 @@ struct FControlRigParameterExecutionToken : IMovieSceneExecutionToken
 			const UMovieSceneSequence* Sequence = Player.State.FindSequence(Operand.SequenceID);
 			TArrayView<TWeakObjectPtr<>> BoundObjects = Player.FindBoundObjects(Operand);
 
-			if (Sequence && BoundObjects.Num() > 0 && BoundObjects[0].Get())
+			UObject* BoundObject = BoundObjects.Num() > 0 ? BoundObjects[0].Get() : nullptr;
+			if (Sequence && BoundObject)
 			{
 				if (!ControlRig->GetObjectBinding())
 				{
 					ControlRig->SetObjectBinding(MakeShared<FControlRigObjectBinding>());
 				}
 
-				if (!ControlRig->GetObjectBinding()->GetBoundObject())
+				if (ControlRig->GetObjectBinding()->GetBoundObject() != GetBindableObject(BoundObject))
 				{
-					ControlRig->GetObjectBinding()->BindToObject(BoundObjects[0].Get());
+					ControlRig->GetObjectBinding()->BindToObject(BoundObject);
 					TArray<FName> SelectedControls = ControlRig->CurrentControlSelection();
 					ControlRig->Initialize();
+					if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(GetBindableObject(BoundObject)))
+					{
+						ControlRig->RequestInit();
+						ControlRig->SetBoneInitialTransformsFromSkeletalMeshComponent(SkeletalMeshComponent, true);
+						ControlRig->Evaluate_AnyThread();
+					};
 					if (ControlRig->IsA<UFKControlRig>())
 					{
 						UMovieSceneControlRigParameterTrack* Track = Section->GetTypedOuter<UMovieSceneControlRigParameterTrack>();
@@ -1155,6 +1191,13 @@ struct FControlRigParameterExecutionToken : IMovieSceneExecutionToken
 						SelectControls(ControlRig, SelectedControls);
 					}
 				}
+
+				// make sure to pick the correct CR instance for the  Components to bind.
+				// In case of PIE + Spawnable Actor + CR component, sequencer should grab
+				// CR component's CR instance for evaluation, see comment in BindToSequencerInstance
+				// i.e. CR component should bind to the instance that it owns itself.
+				ControlRig = GetControlRig(Section, BoundObjects[0].Get());
+				
 				// ensure that pre animated state is saved, must be done before bind
 				Player.SavePreAnimatedState(*ControlRig, FMovieSceneControlRigParameterTemplate::GetAnimTypeID(), FControlRigParameterPreAnimatedTokenProducer(Operand.SequenceID));
 
@@ -2182,15 +2225,13 @@ void FMovieSceneControlRigParameterTemplate::Interrogate(const FMovieSceneContex
 
 		FControlRigAnimTypeIDsPtr TypeIDs = FControlRigAnimTypeIDs::Get(Section->GetControlRig());
 
-		float Weight = 1.f;
-
-		//float Weight = EvaluateEasing(Context.GetTime());
-	//if (EnumHasAllFlags(TemplateData.Mask.GetChannels(), EMovieSceneTransformChannel::Weight))
-	//{
-	//	float ManualWeight = 1.f;
-	//	TemplateData.ManualWeight.Evaluate(Context.GetTime(), ManualWeight);
-	//	Weight *= ManualWeight;
-	//}
+		float Weight = EvaluateEasing(Context.GetTime());
+		if (EnumHasAllFlags(Section->TransformMask.GetChannels(), EMovieSceneTransformChannel::Weight))
+		{
+			float ManualWeight = 1.f;
+			Section->Weight.Evaluate(Context.GetTime(), ManualWeight);
+			Weight *= ManualWeight;
+		}
 
 
 		for (const FScalarParameterStringAndValue& ScalarNameAndValue : Values.ScalarValues)

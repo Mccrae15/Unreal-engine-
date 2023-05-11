@@ -75,6 +75,7 @@
 #include "Subsystems/BrushEditingSubsystem.h"
 #include "Misc/ScopedSlowTask.h"
 #include "Subsystems/AssetEditorSubsystem.h"
+#include "SceneInterface.h"
 
 #define LOCTEXT_NAMESPACE "UnrealEd.EditorActor"
 
@@ -161,14 +162,18 @@ void UUnrealEdEngine::CopyActors(const TArray<AActor*>& InActorsToCopy, UWorld* 
 	// Export the actors.
 	FStringOutputDevice Ar;
 	const FSelectedActorExportObjectInnerContext Context(ActorsToCopy);
-	UExporter::ExportToOutputDevice(&Context, InWorld, NULL, Ar, TEXT("copy"), 0, PPF_DeepCompareInstances | PPF_ExportsNotFullyQualified);
-	if (DestinationData)
+	const bool bExportSucceeded = UExporter::ExportToOutputDevice(&Context, InWorld, NULL, Ar, TEXT("copy"), 0, PPF_DeepCompareInstances | PPF_ExportsNotFullyQualified);
+
+	if (bExportSucceeded)
 	{
-		*DestinationData = MoveTemp(Ar);
-	}
-	else
-	{
-		FPlatformApplicationMisc::ClipboardCopy(*Ar);
+		if (DestinationData)
+		{
+			*DestinationData = MoveTemp(Ar);
+		}
+		else
+		{
+			FPlatformApplicationMisc::ClipboardCopy(*Ar);
+		}
 	}
 }
 
@@ -349,8 +354,7 @@ void UUnrealEdEngine::PasteActors(TArray<AActor*>& OutPastedActors, UWorld* InWo
 
 	// Reinstate old BSP update setting, and force a rebuild - any levels whose geometry has changed while pasting will be rebuilt
 	GetMutableDefault<ULevelEditorMiscSettings>()->bBSPAutoUpdate = bBSPAutoUpdate;
-	RebuildAlteredBSP();
-
+	
 	// FactoryCreateText set the selection to the new actors, so copy that into OutPastedActors and restore the original selection
 	ActorSelection->GetSelectedObjects<AActor>(OutPastedActors);
 	FObjectReader(ActorSelection, OriginalSelectionState);
@@ -360,8 +364,17 @@ void UUnrealEdEngine::PasteActors(TArray<AActor*>& OutPastedActors, UWorld* InWo
 
 	// Update the actors' locations and update the global list of visible layers.
 	ULayersSubsystem* LayersSubsystem = GEditor->GetEditorSubsystem<ULayersSubsystem>();
+	bool bRebuildBSP = false;
 	for (AActor* Actor : OutPastedActors)
 	{
+		if (!bRebuildBSP)
+		{
+			if (ABrush* Brush = Cast<ABrush>(Actor))
+			{
+				bRebuildBSP = Brush->IsStaticBrush();
+			}
+		}
+
 		if (!LocationOffset.IsZero())
 		{
 			// We only want to offset the location if this actor is the root of a selected attachment hierarchy
@@ -408,6 +421,11 @@ void UUnrealEdEngine::PasteActors(TArray<AActor*>& OutPastedActors, UWorld* InWo
 		// Request saves/refreshes.
 		Actor->MarkPackageDirty();
 		LevelDirtyCallback.Request();
+	}
+
+	if (bRebuildBSP)
+	{
+		RebuildAlteredBSP();
 	}
 }
 
@@ -917,7 +935,7 @@ bool UUnrealEdEngine::DeleteActors(const TArray<AActor*>& InActorsToDelete, UWor
 
 			if (bWarnAboutSoftReferences)
 			{
-				FScopedSlowTask SlowTask(ActorsToDeletePaths.Num(), LOCTEXT("ComputeActorSoftReferences", "Computing References"));
+				FScopedSlowTask SlowTask(static_cast<float>(ActorsToDeletePaths.Num()), LOCTEXT("ComputeActorSoftReferences", "Computing References"));
 				SlowTask.MakeDialogDelayed(1.0f);
 
 				FAssetToolsModule& AssetToolsModule = FModuleManager::GetModuleChecked<FAssetToolsModule>(TEXT("AssetTools"));
@@ -1187,6 +1205,7 @@ bool UUnrealEdEngine::DeleteActors(const TArray<AActor*>& InActorsToDelete, UWor
 		{
 			InSelectionSet->DeselectElement(ActorHandle, SelectionOptions);
 		}
+		UEngineElementsLibrary::UnregisterActorElement(Actor);
 
 		// Modify the level.  Each level is modified only once.
 		// @todo DB: Shouldn't this be calling UWorld::ModifyLevel?

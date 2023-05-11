@@ -392,7 +392,7 @@ void FAndroidInputInterface::UpdateVibeMotors()
 	}
 }
 
-static uint32 CharMap[] =
+static TCHAR CharMap[] =
 {
 	0,
 	0,
@@ -619,7 +619,7 @@ static uint32 CharMap[] =
 	0
 };
 
-static uint32 CharMapShift[] =
+static TCHAR CharMapShift[] =
 {
 	0,
 	0,
@@ -930,6 +930,22 @@ void FAndroidInputInterface::SendControllerEvents()
 						{
 							CurrentDevice.bSupportsHat = true;
 						}
+						else if (CurrentDevice.DeviceInfo.Name.StartsWith(TEXT("Generic X-Box pad")))
+						{
+							CurrentDevice.ControllerClass = ControllerClassType::XBoxWired;
+							CurrentDevice.bSupportsHat = true;
+							CurrentDevice.bTriggersUseThresholdForClick = true;
+
+							// different mapping before Android 12
+							if (FAndroidMisc::GetAndroidBuildVersion() < 31)
+							{
+								CurrentDevice.bRightStickZRZ = false;
+								CurrentDevice.bRightStickRXRY = true;
+								CurrentDevice.bMapZRZToTriggers = true;
+								CurrentDevice.LTAnalogRangeMinimum = -1.0f;
+								CurrentDevice.RTAnalogRangeMinimum = -1.0f;
+							}
+						}
 						else if (CurrentDevice.DeviceInfo.Name.StartsWith(TEXT("Xbox Wired Controller")))
 						{
 							CurrentDevice.ControllerClass = ControllerClassType::XBoxWired;
@@ -975,13 +991,15 @@ void FAndroidInputInterface::SendControllerEvents()
 						}
 						else if (CurrentDevice.DeviceInfo.Name.StartsWith(TEXT("PS5 Wireless Controller")))
 						{
-							CurrentDevice.ButtonRemapping = FAndroidMisc::GetAndroidBuildVersion() > 11 ? ButtonRemapType::PS5New : ButtonRemapType::PS5;
+							//FAndroidMisc::GetAndroidBuildVersion() actually returns the API Level instead of the Android Version
+							bool bUseNewPS5Mapping = FAndroidMisc::GetAndroidBuildVersion() > 30;
+							CurrentDevice.ButtonRemapping = bUseNewPS5Mapping ? ButtonRemapType::PS5New : ButtonRemapType::PS5;
 							CurrentDevice.ControllerClass = ControllerClassType::PlaystationWireless;
 							CurrentDevice.bSupportsHat = true;
 							CurrentDevice.bRightStickZRZ = true;
-							CurrentDevice.bMapRXRYToTriggers = true;
-							CurrentDevice.LTAnalogRangeMinimum = -1.0f;
-							CurrentDevice.RTAnalogRangeMinimum = -1.0f;
+							CurrentDevice.bMapRXRYToTriggers = !bUseNewPS5Mapping;
+							CurrentDevice.LTAnalogRangeMinimum = bUseNewPS5Mapping ? 0.0f : -1.0f;
+							CurrentDevice.RTAnalogRangeMinimum = bUseNewPS5Mapping ? 0.0f : -1.0f;
 						}
 						else if (CurrentDevice.DeviceInfo.Name.StartsWith(TEXT("glap QXPGP001")))
 						{
@@ -994,6 +1012,27 @@ void FAndroidInputInterface::SendControllerEvents()
 						else if (CurrentDevice.DeviceInfo.Name.StartsWith(TEXT("Razer")))
 						{
 							CurrentDevice.bSupportsHat = true;
+							if (CurrentDevice.DeviceInfo.Name.StartsWith(TEXT("Razer Kishi V2 Pro XBox360")))
+							{
+								CurrentDevice.ControllerClass = ControllerClassType::XBoxWired;
+								CurrentDevice.bSupportsHat = true;
+								CurrentDevice.bTriggersUseThresholdForClick = true;
+
+								// different mapping before Android 12
+								if (FAndroidMisc::GetAndroidBuildVersion() < 31)
+								{
+									CurrentDevice.bRightStickZRZ = false;
+									CurrentDevice.bRightStickRXRY = true;
+									CurrentDevice.bMapZRZToTriggers = true;
+									CurrentDevice.LTAnalogRangeMinimum = -1.0f;
+									CurrentDevice.RTAnalogRangeMinimum = -1.0f;
+								}
+							}
+							else if (CurrentDevice.DeviceInfo.Name.StartsWith(TEXT("Razer Kishi V2")))
+							{
+								CurrentDevice.ControllerClass = ControllerClassType::XBoxWired;
+								CurrentDevice.bTriggersUseThresholdForClick = true;
+							}
 						}
 
 						IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
@@ -1220,7 +1259,7 @@ void FAndroidInputInterface::SendControllerEvents()
 	for (int32 MessageIndex = 0; MessageIndex < FMath::Min(DeferredMessageQueueLastEntryIndex, MAX_DEFERRED_MESSAGE_QUEUE_SIZE); ++MessageIndex)
 	{
 		const FDeferredAndroidMessage& DeferredMessage = DeferredMessages[MessageIndex];
-		const int32 Char = DeferredMessage.KeyEventData.modifier & AMETA_SHIFT_ON ? CharMapShift[DeferredMessage.KeyEventData.keyId] : CharMap[DeferredMessage.KeyEventData.keyId];
+		const TCHAR Char = DeferredMessage.KeyEventData.modifier & AMETA_SHIFT_ON ? CharMapShift[DeferredMessage.KeyEventData.keyId] : CharMap[DeferredMessage.KeyEventData.keyId];
 		
 		switch (DeferredMessage.messageType)
 		{

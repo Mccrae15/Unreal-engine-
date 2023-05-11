@@ -2,25 +2,20 @@
 
 #include "Components/VolumetricCloudComponent.h"
 
+#include "Engine/Texture2D.h"
 #include "VolumetricCloudProxy.h"
-#include "Components/ArrowComponent.h"
 #include "Components/BillboardComponent.h"
-#include "Engine/MapBuildDataRegistry.h"
-#include "Internationalization/Text.h"
-#include "Logging/MessageLog.h"
-#include "Logging/TokenizedMessage.h"
-#include "Misc/MapErrors.h"
-#include "Misc/UObjectToken.h"
-#include "UObject/UObjectIterator.h"
+#include "Engine/World.h"
+#include "Materials/MaterialInterface.h"
 #include "UObject/ConstructorHelpers.h"
-#include "Materials/MaterialInstance.h"
+#include "RenderingThread.h"
 #include "UObject/UE5ReleaseStreamObjectVersion.h"
+#include "SceneInterface.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(VolumetricCloudComponent)
 
 #if WITH_EDITOR
-#include "ObjectEditorUtils.h"
 #endif
 
 #define LOCTEXT_NAMESPACE "VolumetricCloudComponent"
@@ -53,6 +48,10 @@ UVolumetricCloudComponent::UVolumetricCloudComponent(const FObjectInitializer& O
 	, ShadowReflectionSampleCountScale_DEPRECATED(1.0f)
 	, ShadowTracingDistance(15.0f)
 	, StopTracingTransmittanceThreshold(0.005f)
+	, AerialPespectiveRayleighScatteringStartDistance(0.0f)
+	, AerialPespectiveRayleighScatteringFadeDistance(0.0f)
+	, AerialPespectiveMieScatteringStartDistance(0.0f)
+	, AerialPespectiveMieScatteringFadeDistance(0.0f)
 	, VolumetricCloudSceneProxy(nullptr)
 {
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> VolumetricCloudDefaultMaterialRef(TEXT("/Engine/EngineSky/VolumetricClouds/m_SimpleVolumetricCloud_Inst.m_SimpleVolumetricCloud_Inst"));
@@ -210,7 +209,6 @@ void UVolumetricCloudComponent::SetShadowReflectionSampleCountScale(float NewVal
 =============================================================================*/
 
 #if WITH_EDITOR
-#include "ObjectEditorUtils.h"
 #endif
 
 AVolumetricCloud::AVolumetricCloud(const FObjectInitializer& ObjectInitializer)

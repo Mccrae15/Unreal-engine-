@@ -1,6 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-
 #pragma once
 
 #include "CoreTypes.h"
@@ -13,7 +12,6 @@
 #include "HAL/IConsoleManager.h"
 #include "RHIDefinitions.h"
 #include "RHICommandList.h"
-
 
 static inline bool IsDepthOrStencilFormat(EPixelFormat Format)
 {
@@ -237,12 +235,6 @@ struct FTextureRWBuffer2D : public FTextureRWBuffer
 	{
 		Initialize2D(InDebugName, BytesPerElement, SizeX, SizeY, Format, Flags);
 	}
-
-	UE_DEPRECATED(5.0, "AcquireTransientResource is deprecated. Transient resources are allocated through IRHITransientResourceAllocator instead.")
-	void AcquireTransientResource() {}
-
-	UE_DEPRECATED(5.0, "DiscardTransientResource is deprecated. Transient resources are allocated through IRHITransientResourceAllocator instead.")
-	void DiscardTransientResource() {}
 };
 
 struct UE_DEPRECATED(5.1, "FTextureRWBuffer should be used instead of FTextureRWBuffer3D.") FTextureRWBuffer3D;
@@ -253,12 +245,6 @@ struct FTextureRWBuffer3D : public FTextureRWBuffer
 	{
 		Initialize3D(InDebugName, BytesPerElement, SizeX, SizeY, SizeZ, Format, Flags);
 	}
-
-	UE_DEPRECATED(5.0, "AcquireTransientResource is deprecated. Transient resources are allocated through IRHITransientResourceAllocator instead.")
-	void AcquireTransientResource() {}
-
-	UE_DEPRECATED(5.0, "DiscardTransientResource is deprecated. Transient resources are allocated through IRHITransientResourceAllocator instead.")
-	void DiscardTransientResource() {}
 };
 
 /** Encapsulates a GPU read/write buffer with its UAV and SRV. */
@@ -334,12 +320,6 @@ struct FRWBuffer
 		Initialize(InDebugName, BytesPerElement, NumElements, Format, ERHIAccess::UAVCompute, AdditionalUsage, InResourceArray);
 	}
 
-	UE_DEPRECATED(5.0, "AcquireTransientResource is deprecated. Transient resources are allocated through IRHITransientResourceAllocator instead.")
-	void AcquireTransientResource() {}
-
-	UE_DEPRECATED(5.0, "DiscardTransientResource is deprecated. Transient resources are allocated through IRHITransientResourceAllocator instead.")
-	void DiscardTransientResource() {}
-
 	void Release()
 	{
 		NumBytes = 0;
@@ -379,12 +359,6 @@ struct FTextureReadBuffer2D
 		
 		SRV = RHICreateShaderResourceView(Buffer, 0);
 	}
-
-	UE_DEPRECATED(5.0, "AcquireTransientResource is deprecated. Transient resources are allocated through IRHITransientResourceAllocator instead.")
-	void AcquireTransientResource() {}
-
-	UE_DEPRECATED(5.0, "DiscardTransientResource is deprecated. Transient resources are allocated through IRHITransientResourceAllocator instead.")
-	void DiscardTransientResource() {}
 
 	void Release()
 	{
@@ -437,7 +411,6 @@ struct FRWBufferStructured
 
 	void Initialize(const TCHAR* InDebugName, uint32 BytesPerElement, uint32 NumElements, EBufferUsageFlags AdditionalUsage = BUF_None, bool bUseUavCounter = false, bool bAppendBuffer = false, ERHIAccess InitialState = ERHIAccess::UAVMask)
 	{
-		check(GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM5 || GMaxRHIFeatureLevel == ERHIFeatureLevel::ES3_1);
 		// Provide a debug name if using Fast VRAM so the allocators diagnostics will work
 		ensure(!(EnumHasAnyFlags(AdditionalUsage, BUF_FastVRAM) && !InDebugName));
 
@@ -455,12 +428,6 @@ struct FRWBufferStructured
 		UAV.SafeRelease();
 		SRV.SafeRelease();
 	}
-
-	UE_DEPRECATED(5.0, "AcquireTransientResource is deprecated. Transient resources are allocated through IRHITransientResourceAllocator instead.")
-	void AcquireTransientResource() {}
-
-	UE_DEPRECATED(5.0, "DiscardTransientResource is deprecated. Transient resources are allocated through IRHITransientResourceAllocator instead.")
-	void DiscardTransientResource() {}
 };
 
 struct FByteAddressBuffer
@@ -558,80 +525,7 @@ struct FDynamicReadBuffer : public FReadBuffer
  * Convert the ESimpleRenderTargetMode into usable values 
  * @todo: Can we easily put this into a .cpp somewhere?
  */
-inline void DecodeRenderTargetMode(ESimpleRenderTargetMode Mode, ERenderTargetLoadAction& ColorLoadAction, ERenderTargetStoreAction& ColorStoreAction, ERenderTargetLoadAction& DepthLoadAction, ERenderTargetStoreAction& DepthStoreAction, ERenderTargetLoadAction& StencilLoadAction, ERenderTargetStoreAction& StencilStoreAction, FExclusiveDepthStencil DepthStencilUsage)
-{
-	// set defaults
-	ColorStoreAction = ERenderTargetStoreAction::EStore;
-	DepthStoreAction = ERenderTargetStoreAction::EStore;
-	StencilStoreAction = ERenderTargetStoreAction::EStore;
-
-	switch (Mode)
-	{
-	case ESimpleRenderTargetMode::EExistingColorAndDepth:
-		ColorLoadAction = ERenderTargetLoadAction::ELoad;
-		DepthLoadAction = ERenderTargetLoadAction::ELoad;
-		break;
-	case ESimpleRenderTargetMode::EUninitializedColorAndDepth:
-		ColorLoadAction = ERenderTargetLoadAction::ENoAction;
-		DepthLoadAction = ERenderTargetLoadAction::ENoAction;
-		break;
-	case ESimpleRenderTargetMode::EUninitializedColorExistingDepth:
-		ColorLoadAction = ERenderTargetLoadAction::ENoAction;
-		DepthLoadAction = ERenderTargetLoadAction::ELoad;
-		break;
-	case ESimpleRenderTargetMode::EUninitializedColorClearDepth:
-		ColorLoadAction = ERenderTargetLoadAction::ENoAction;
-		DepthLoadAction = ERenderTargetLoadAction::EClear;
-		break;
-	case ESimpleRenderTargetMode::EClearColorExistingDepth:
-		ColorLoadAction = ERenderTargetLoadAction::EClear;
-		DepthLoadAction = ERenderTargetLoadAction::ELoad;
-		break;
-	case ESimpleRenderTargetMode::EClearColorAndDepth:
-		ColorLoadAction = ERenderTargetLoadAction::EClear;
-		DepthLoadAction = ERenderTargetLoadAction::EClear;
-		break;
-	case ESimpleRenderTargetMode::EExistingContents_NoDepthStore:
-		ColorLoadAction = ERenderTargetLoadAction::ELoad;
-		DepthLoadAction = ERenderTargetLoadAction::ELoad;
-		DepthStoreAction = ERenderTargetStoreAction::ENoAction;
-		break;
-	case ESimpleRenderTargetMode::EExistingColorAndClearDepth:
-		ColorLoadAction = ERenderTargetLoadAction::ELoad;
-		DepthLoadAction = ERenderTargetLoadAction::EClear;
-		break;
-	case ESimpleRenderTargetMode::EExistingColorAndDepthAndClearStencil:
-		ColorLoadAction = ERenderTargetLoadAction::ELoad;
-		DepthLoadAction = ERenderTargetLoadAction::ELoad;
-		break;
-	default:
-		UE_LOG(LogRHI, Fatal, TEXT("Using a ESimpleRenderTargetMode that wasn't decoded in DecodeRenderTargetMode [value = %d]"), (int32)Mode);
-	}
-	
-	StencilLoadAction = DepthLoadAction;
-	
-	if (!DepthStencilUsage.IsUsingDepth())
-	{
-		DepthLoadAction = ERenderTargetLoadAction::ENoAction;
-	}
-	
-	//if we aren't writing to depth, there's no reason to store it back out again.  Should save some bandwidth on mobile platforms.
-	if (!DepthStencilUsage.IsDepthWrite())
-	{
-		DepthStoreAction = ERenderTargetStoreAction::ENoAction;
-	}
-	
-	if (!DepthStencilUsage.IsUsingStencil())
-	{
-		StencilLoadAction = ERenderTargetLoadAction::ENoAction;
-	}
-	
-	//if we aren't writing to stencil, there's no reason to store it back out again.  Should save some bandwidth on mobile platforms.
-	if (!DepthStencilUsage.IsStencilWrite())
-	{
-		StencilStoreAction = ERenderTargetStoreAction::ENoAction;
-	}
-}
+RHI_API void DecodeRenderTargetMode(ESimpleRenderTargetMode Mode, ERenderTargetLoadAction& ColorLoadAction, ERenderTargetStoreAction& ColorStoreAction, ERenderTargetLoadAction& DepthLoadAction, ERenderTargetStoreAction& DepthStoreAction, ERenderTargetLoadAction& StencilLoadAction, ERenderTargetStoreAction& StencilStoreAction, FExclusiveDepthStencil DepthStencilUsage);
 
 inline void TransitionRenderPassTargets(FRHICommandList& RHICmdList, const FRHIRenderPassInfo& RPInfo)
 {
@@ -833,9 +727,9 @@ inline void TransitionAndCopyTexture(FRHICommandList& RHICmdList, FRHITexture* S
  */
 inline uint32 GetVertexCountForPrimitiveCount(uint32 NumPrimitives, uint32 PrimitiveType)
 {
-	static_assert(PT_Num == 38, "This function needs to be updated");
-	uint32 Factor = (PrimitiveType == PT_TriangleList)? 3 : (PrimitiveType == PT_LineList)? 2 : (PrimitiveType == PT_RectList)? 3 : (PrimitiveType >= PT_1_ControlPointPatchList)? (PrimitiveType - PT_1_ControlPointPatchList + 1) : 1;
-	uint32 Offset = (PrimitiveType == PT_TriangleStrip)? 2 : 0;
+	static_assert(PT_Num == 6, "This function needs to be updated");
+	uint32 Factor = (PrimitiveType == PT_TriangleList) ? 3 : (PrimitiveType == PT_LineList) ? 2 : (PrimitiveType == PT_RectList) ? 3 : 1;
+	uint32 Offset = (PrimitiveType == PT_TriangleStrip) ? 2 : 0;
 
 	return NumPrimitives * Factor + Offset;
 
@@ -969,7 +863,7 @@ struct FRHILockTracker
 				return Result;
 			}
 		}
-		UE_LOG(LogRHI, Fatal, TEXT("Mismatched RHI buffer locks."));
+		RaiseMismatchError();
 		return FLockParams(nullptr, nullptr, 0, 0, RLM_WriteOnly, false, false);
 	}
 	
@@ -1008,6 +902,8 @@ struct FRHILockTracker
 			}
 		}
 	}
+
+	RHI_API void RaiseMismatchError();
 };
 
 extern RHI_API FRHILockTracker GRHILockTracker;

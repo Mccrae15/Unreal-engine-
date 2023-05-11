@@ -2,23 +2,21 @@
 
 #include "EnhancedInputModule.h"
 
+#include "DrawDebugHelpers.h"
 #include "Engine/Canvas.h"
+#include "Engine/Engine.h"
 #include "Engine/LocalPlayer.h"
-#include "Engine/World.h"
 #include "EnhancedInputLibrary.h"
 #include "EnhancedInputSubsystems.h"
-#include "EnhancedPlayerInput.h"
 #include "GameFramework/HUD.h"
 #include "GameFramework/PlayerController.h"
-#include "InputAction.h"
-#include "InputActionValue.h"
-#include "InputCoreTypes.h"
-#include "Modules/ModuleInterface.h"
-#include "Modules/ModuleManager.h"
-#include "Tickable.h"
+#include "UObject/Package.h"
 #include "UObject/UObjectIterator.h"
+#include "EnhancedInputDeveloperSettings.h"
 
 #define LOCTEXT_NAMESPACE "EnhancedInput"
+
+const FKey FEnhancedInputKeys::ComboKey("ComboKey");
 
 DEFINE_LOG_CATEGORY(LogEnhancedInput);
 
@@ -229,6 +227,10 @@ void FEnhancedInputModule::StartupModule()
 {
 	Library = NewObject<UEnhancedInputLibrary>(GetTransientPackage(), UEnhancedInputLibrary::StaticClass(), NAME_None);
 	Library->AddToRoot();
+	
+	const FName NAME_EnhancedInput(TEXT("EnhancedInput"));
+	EKeys::AddMenuCategoryDisplayInfo(NAME_EnhancedInput, LOCTEXT("EnhancedInputSubCateogry", "Enhanced Input"), TEXT("GraphEditor.KeyEvent_16x"));
+	EKeys::AddKey(FKeyDetails(FEnhancedInputKeys::ComboKey, LOCTEXT("ComboKey", "Combo Key"), FKeyDetails::NotActionBindableKey, NAME_EnhancedInput));
 
 	if (!IsRunningDedicatedServer())
 	{
@@ -283,12 +285,28 @@ void FEnhancedInputModule::ShutdownModule()
 
 void FEnhancedInputModule::Tick(float DeltaTime)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FEnhancedInputModule::Tick);
+
 	// This may tick multiple times per frame? See MIDIDevice module.
 	if (LastFrameNumberWeTicked == GFrameCounter)
 	{
 		return;
 	}
 	LastFrameNumberWeTicked = GFrameCounter;
+
+	/* 
+	* Tick the World subsystems 
+	* The Enhanced Input local player subsystem will have their Player Input's ticked by their owning 
+	* Player Controller in APlayerController::TickPlayerInput, but because the world subsystem has no
+	* owning controller we need to tick it here.
+	*/
+	if (GetDefault<UEnhancedInputDeveloperSettings>()->bEnableWorldSubsystem)
+	{
+		for (TObjectIterator<UEnhancedInputWorldSubsystem> It; It; ++It)
+		{
+			(*It)->TickPlayerInput(DeltaTime);
+		}
+	}	
 
 	UEnhancedInputLibrary::ForEachSubsystem([DeltaTime](IEnhancedInputSubsystemInterface* Subsystem)
 		{
@@ -302,7 +320,8 @@ void FEnhancedInputModule::Tick(float DeltaTime)
 void FEnhancedInputModule::OnShowDebugInfo(AHUD* HUD, UCanvas* Canvas, const FDebugDisplayInfo& DisplayInfo, float& YL, float& YPos)
 {
 	static const FName NAME_EnhancedInput("EnhancedInput");
-	static const FName NAME_PlatformDevices("Devices");
+	static const FName NAME_WorldSubsystemInput("WorldSubsystemInput");
+
 	if (Canvas)
 	{
 		if (HUD->ShouldDisplayDebug(NAME_EnhancedInput))
@@ -321,13 +340,13 @@ void FEnhancedInputModule::OnShowDebugInfo(AHUD* HUD, UCanvas* Canvas, const FDe
 				FirstPlayer->ShowDebugInfo(Canvas);
 			}
 		}
-		
-		if (HUD->ShouldDisplayDebug(NAME_PlatformDevices))
+
+		if (HUD->ShouldDisplayDebug(NAME_WorldSubsystemInput))
 		{
-			UEnhancedInputLibrary::ForEachSubsystem([Canvas](IEnhancedInputSubsystemInterface* Subsystem)
+			for (TObjectIterator<UEnhancedInputWorldSubsystem> It; It; ++It)
 			{
-				Subsystem->ShowPlatformInputDebugInfo(Canvas);
-			});
+				It->ShowDebugInfo(Canvas);
+			}
 		}
 	}
 	else

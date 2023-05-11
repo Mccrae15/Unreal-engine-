@@ -2,23 +2,13 @@
 
 #pragma once
 
-#include "Components/SkeletalMeshComponent.h"
-#include "Containers/Array.h"
-#include "Containers/UnrealString.h"
-#include "Engine/EngineBaseTypes.h"
-#include "Input/Reply.h"
-#include "Math/BoxSphereBounds.h"
-#include "Math/Color.h"
-#include "Math/UnrealMathSSE.h"
-#include "Math/Vector.h"
 #include "SEditorViewport.h"
-#include "Settings/LevelEditorViewportSettings.h"
-#include "Templates/SharedPointer.h"
-#include "Types/SlateEnums.h"
 #include "UObject/GCObject.h"
-#include "UnrealWidgetFwd.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SCompoundWidget.h"
+
+enum ERotationGridMode : int;
+enum EViewModeIndex : int;
+namespace EAnimationMode { enum Type : int; }
+namespace ESelectInfo { enum Type : int; }
 
 class FDragDropEvent;
 class FEditorViewportClient;
@@ -263,6 +253,18 @@ public:
 
 	/** Sets the first material of the instance as the default section to draw in the UVs Overlay (when there is no material selected in the combobox)*/
 	void SetDrawDefaultUVMaterial();
+
+	/** Sets the bones visibility */
+	void SetShowBones();
+
+	/** Returns true if the skeletal mesh bones are visible in the viewport */
+	bool IsShowingBones();
+
+	/** Sets the speed of the viewport camera */
+	void SetViewportCameraSpeed(const int32 Speed);
+
+	/** Returns the current speed of the viewport camera */
+	int32 GetViewportCameraSpeed();
 
 private:
 	/** Determines the visibility of the viewport. */

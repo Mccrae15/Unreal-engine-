@@ -1,8 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NaniteDisplacedMesh.h"
+#include "Engine/Texture2D.h"
+#include "Engine/StaticMeshSourceData.h"
 #include "NaniteDisplacedMeshLog.h"
-#include "Modules/ModuleManager.h"
 #include "Engine/StaticMesh.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
@@ -12,11 +13,11 @@
 #if WITH_EDITOR
 #include "DerivedDataCache.h"
 #include "DerivedDataRequestOwner.h"
+#include "RenderUtils.h"
 #include "Serialization/MemoryHasher.h"
-#include "Async/Async.h"
-#include "MeshDescription.h"
-#include "MeshAttributes.h"
+#include "Serialization/MemoryReader.h"
 #include "StaticMeshAttributes.h"
+#include "Serialization/MemoryWriter.h"
 #include "StaticMeshBuilder.h"
 #include "Experimental/Misc/ExecutionResource.h"
 #include "MeshDescriptionHelper.h"
@@ -674,7 +675,7 @@ FIoHash UNaniteDisplacedMesh::CreateDerivedDataKeyHash(const ITargetPlatform* Ta
 
 	FMemoryHasherBlake3 Writer;
 
-	FGuid DisplacedMeshVersionGuid(0x5E7DB989, 0x619E4CCA, 0x88D133BE, 0x2B847F10);
+	FGuid DisplacedMeshVersionGuid(0x5E01B289, 0xE19EACCA, 0x883133BE, 0x2B899C10);
 	Writer << DisplacedMeshVersionGuid;
 
 	FGuid NaniteVersionGuid = FDevSystemGuids::GetSystemGuid(FDevSystemGuids::Get().NANITE_DERIVEDDATA_VER);
@@ -697,6 +698,8 @@ FIoHash UNaniteDisplacedMesh::CreateDerivedDataKeyHash(const ITargetPlatform* Ta
 		{
 			FGuid TextureId = DisplacementMap.Texture->Source.GetId();
 			Writer << TextureId;
+			Writer << DisplacementMap.Texture->AddressX;
+			Writer << DisplacementMap.Texture->AddressY;
 		}
 
 		Writer << DisplacementMap.Magnitude;

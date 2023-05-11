@@ -30,6 +30,7 @@
 #include "ShaderCore.h"
 #include "Templates/UnrealTemplate.h"
 #include "UObject/NameTypes.h"
+#include "VertexStreamComponent.h"
 
 #include <atomic>
 
@@ -90,13 +91,6 @@ struct FVertexInputStream
  */
 typedef TArray<FVertexInputStream, TInlineAllocator<4>> FVertexInputStreamArray;
 
-enum class EVertexStreamUsage : uint8
-{
-	Default			= 0 << 0,
-	Instancing		= 1 << 0,
-	Overridden		= 1 << 1,
-	ManualFetch		= 1 << 2
-};
 ENUM_CLASS_FLAGS(EVertexStreamUsage);
 
 enum class EVertexInputStreamType : uint8
@@ -126,65 +120,10 @@ enum class EVertexFactoryFlags : uint32
 	SupportsManualVertexFetch			  = 1u << 14,
 	DoesNotSupportNullPixelShader		  = 1u << 15,
 	SupportsGPUSkinPassThrough			  = 1u << 16,
-	SupportsComputeShading                = 1u << 17
+	SupportsComputeShading                = 1u << 17,
+	SupportsLumenMeshCards				  = 1u << 18
 };
 ENUM_CLASS_FLAGS(EVertexFactoryFlags);
-
-/**
- * A typed data source for a vertex factory which streams data from a vertex buffer.
- */
-struct FVertexStreamComponent
-{
-	/** The vertex buffer to stream data from.  If null, no data can be read from this stream. */
-	const FVertexBuffer* VertexBuffer = nullptr;
-
-	/** The offset to the start of the vertex buffer fetch. */
-	uint32 StreamOffset = 0;
-
-	/** The offset of the data, relative to the beginning of each element in the vertex buffer. */
-	uint8 Offset = 0;
-
-	/** The stride of the data. */
-	uint8 Stride = 0;
-
-	/** The type of the data read from this stream. */
-	TEnumAsByte<EVertexElementType> Type = VET_None;
-
-	EVertexStreamUsage VertexStreamUsage = EVertexStreamUsage::Default;
-
-	/**
-	 * Initializes the data stream to null.
-	 */
-	FVertexStreamComponent()
-	{}
-
-	/**
-	 * Minimal initialization constructor.
-	 */
-	FVertexStreamComponent(const FVertexBuffer* InVertexBuffer, uint32 InOffset, uint32 InStride, EVertexElementType InType, EVertexStreamUsage Usage = EVertexStreamUsage::Default) :
-		VertexBuffer(InVertexBuffer),
-		StreamOffset(0),
-		Offset((uint8)InOffset),
-		Stride((uint8)InStride),
-		Type(InType),
-		VertexStreamUsage(Usage)
-	{
-		check(InStride <= 0xFF);
-		check(InOffset <= 0xFF);
-	}
-
-	FVertexStreamComponent(const FVertexBuffer* InVertexBuffer, uint32 InStreamOffset, uint32 InOffset, uint32 InStride, EVertexElementType InType, EVertexStreamUsage Usage = EVertexStreamUsage::Default) :
-		VertexBuffer(InVertexBuffer),
-		StreamOffset(InStreamOffset),
-		Offset((uint8)InOffset),
-		Stride((uint8)InStride),
-		Type(InType),
-		VertexStreamUsage(Usage)
-	{
-		check(InStride <= 0xFF);
-		check(InOffset <= 0xFF);
-	}
-};
 
 /**
  * A macro which initializes a FVertexStreamComponent to read a member from a struct.
@@ -349,10 +288,12 @@ public:
 		class FMeshDrawSingleShaderBindings& ShaderBindings,
 		FVertexInputStreamArray& VertexStreams);
 	typedef void (*GetPSOPrecacheVertexFetchElementsType)(EVertexInputStreamType VertexInputStreamType, FVertexDeclarationElementList& Elements);
-
 	typedef bool (*ShouldCacheType)(const FVertexFactoryShaderPermutationParameters&);
+
+#if WITH_EDITOR
 	typedef void (*ModifyCompilationEnvironmentType)(const FVertexFactoryShaderPermutationParameters&, FShaderCompilerEnvironment&);
 	typedef void (*ValidateCompiledResultType)(const FVertexFactoryType*, EShaderPlatform, const FShaderParameterMap& ParameterMap, TArray<FString>& OutErrors);
+#endif // WITH_EDITOR
 
 	static int32 GetNumVertexFactoryTypes() { return NumVertexFactories; }
 
@@ -382,9 +323,11 @@ public:
 		GetParameterTypeLayoutType InGetParameterTypeLayout,
 		GetParameterTypeElementShaderBindingsType InGetParameterTypeElementShaderBindings,
 		GetPSOPrecacheVertexFetchElementsType InGetPSOPrecacheVertexFetchElements,
-		ShouldCacheType InShouldCache,
-		ModifyCompilationEnvironmentType InModifyCompilationEnvironment,
-		ValidateCompiledResultType InValidateCompiledResult
+		ShouldCacheType InShouldCache
+#if WITH_EDITOR
+		, ModifyCompilationEnvironmentType InModifyCompilationEnvironment
+		, ValidateCompiledResultType InValidateCompiledResult
+#endif // WITH_EDITOR
 		);
 
 	RENDERCORE_API virtual ~FVertexFactoryType();
@@ -437,12 +380,14 @@ public:
 	bool SupportsNullPixelShader() const			   { return !HasFlags(EVertexFactoryFlags::DoesNotSupportNullPixelShader); }
 	bool SupportsGPUSkinPassThrough() const			   { return HasFlags(EVertexFactoryFlags::SupportsGPUSkinPassThrough); }
 	bool SupportsComputeShading() const                { return HasFlags(EVertexFactoryFlags::SupportsComputeShading); }
+	bool SupportsLumenMeshCards() const				   { return HasFlags(EVertexFactoryFlags::SupportsLumenMeshCards); }
 
 	bool SupportsManualVertexFetch(ERHIFeatureLevel::Type InFeatureLevel) const 
 	{
-		check(InFeatureLevel != ERHIFeatureLevel::Num);
-		return HasFlags(EVertexFactoryFlags::SupportsManualVertexFetch) && (InFeatureLevel > ERHIFeatureLevel::ES3_1) && RHISupportsManualVertexFetch(GMaxRHIShaderPlatform);
+		return HasFlags(EVertexFactoryFlags::SupportsManualVertexFetch) && CheckManualVertexFetchSupport(InFeatureLevel);
 	}
+
+	static RENDERCORE_API bool CheckManualVertexFetchSupport(ERHIFeatureLevel::Type InFeatureLevel);
 
 	// Hash function.
 	friend uint32 GetTypeHash(const FVertexFactoryType* Type)
@@ -461,6 +406,7 @@ public:
 		return (*ShouldCacheRef)(Parameters);
 	}
 
+#if WITH_EDITOR
 	/**
 	* Calls the function ptr for the shader type on the given environment
 	* @param Environment - shader compile environment to modify
@@ -482,13 +428,21 @@ public:
 	}
 
 	/** Adds include statements for uniform buffers that this shader type references, and builds a prefix for the shader file with the include statements. */
-	RENDERCORE_API void AddReferencedUniformBufferIncludes(FShaderCompilerEnvironment& OutEnvironment, FString& OutSourceFilePrefix, EShaderPlatform Platform) const;
+	RENDERCORE_API void AddUniformBufferIncludesToEnvironment(FShaderCompilerEnvironment& OutEnvironment, EShaderPlatform Platform) const;
 
-	RENDERCORE_API void FlushShaderFileCache(const TMap<FString, TArray<const TCHAR*> >& ShaderFileToUniformBufferVariables);
-	const TMap<const TCHAR*, FCachedUniformBufferDeclaration>& GetReferencedUniformBufferStructsCache() const
+	UE_DEPRECATED(5.2, "AddReferencedUniformBufferIncludes has moved to AddUniformBufferIncludesToEnvironment and no longer takes a prefix argument.")
+	inline void AddReferencedUniformBufferIncludes(FShaderCompilerEnvironment& OutEnvironment, FString& OutSourceFilePrefix, EShaderPlatform Platform) const
 	{
-		return ReferencedUniformBufferStructsCache;
+		AddUniformBufferIncludesToEnvironment(OutEnvironment, Platform);
 	}
+
+	RENDERCORE_API void UpdateReferencedUniformBufferNames(const TMap<FString, TArray<const TCHAR*>>& ShaderFileToUniformBufferVariables);
+
+	UE_DEPRECATED(5.2, "FlushShaderFileCache is deprecated. UpdateReferencedUniformBufferNames should be used to flush any uniform buffer changes")
+	RENDERCORE_API void FlushShaderFileCache(const TMap<FString, TArray<const TCHAR*> >& ShaderFileToUniformBufferVariables);
+
+	inline const TSet<const TCHAR*>& GetReferencedUniformBufferNames() const { return ReferencedUniformBufferNames; };
+#endif // WITH_EDITOR
 
 private:
 	static RENDERCORE_API uint32 NumVertexFactories;
@@ -506,20 +460,21 @@ private:
 	GetParameterTypeElementShaderBindingsType GetParameterTypeElementShaderBindings;
 	GetPSOPrecacheVertexFetchElementsType GetPSOPrecacheVertexFetchElements;
 	ShouldCacheType ShouldCacheRef;
+#if WITH_EDITOR
 	ModifyCompilationEnvironmentType ModifyCompilationEnvironmentRef;
 	ValidateCompiledResultType ValidateCompiledResultRef;
+#endif // WITH_EDITOR
 
 	TLinkedList<FVertexFactoryType*> GlobalListLink;
 
+#if WITH_EDITOR
 	/** 
 	 * Cache of referenced uniform buffer includes.  
 	 * These are derived from source files so they need to be flushed when editing and recompiling shaders on the fly. 
-	 * FVertexFactoryType::Initialize will add an entry for each referenced uniform buffer, but the declarations are added on demand as shaders are compiled.
+	 * FShaderType::Initialize will add the referenced uniform buffers, but this set may be updated by FlushShaderFileCache
 	 */
-	mutable TMap<const TCHAR*, FCachedUniformBufferDeclaration> ReferencedUniformBufferStructsCache;
-
-	/** Tracks what platforms ReferencedUniformBufferStructsCache has had declarations cached for. */
-	mutable std::atomic<EShaderPlatform> CachedUniformBufferPlatform;
+	TSet<const TCHAR*> ReferencedUniformBufferNames;
+#endif // WITH_EDITOR
 };
 
 /**
@@ -541,14 +496,21 @@ extern RENDERCORE_API FVertexFactoryType* FindVertexFactoryType(const FHashedNam
 	static FVertexFactoryType StaticType; \
 	virtual FVertexFactoryType* GetType() const override;
 
+#if WITH_EDITOR
+	#define IMPLEMENT_VERTEX_FACTORY_EDITOR_VTABLE(FactoryClass) \
+		, FactoryClass::ModifyCompilationEnvironment \
+		, FactoryClass::ValidateCompiledResult
+#else
+	#define IMPLEMENT_VERTEX_FACTORY_EDITOR_VTABLE(FactoryClass)
+#endif // WITH_EDITOR
+
 #define IMPLEMENT_VERTEX_FACTORY_VTABLE(FactoryClass) \
 	&ConstructVertexFactoryParameters<FactoryClass>, \
 	&GetVertexFactoryParametersLayout<FactoryClass>, \
 	&GetVertexFactoryParametersElementShaderBindings<FactoryClass>, \
 	FactoryClass::GetPSOPrecacheVertexFetchElements, \
-	FactoryClass::ShouldCompilePermutation, \
-	FactoryClass::ModifyCompilationEnvironment, \
-	FactoryClass::ValidateCompiledResult
+	FactoryClass::ShouldCompilePermutation \
+	IMPLEMENT_VERTEX_FACTORY_EDITOR_VTABLE(FactoryClass)
 
 /**
  * A macro for implementing the static vertex factory type object, and specifying parameters used by the type.
@@ -722,7 +684,10 @@ protected:
 	 * @param AttributeIndex - The attribute index to which the stream component is bound.
 	 * @return The vertex element which corresponds to Component.
 	 */
-	FVertexElement AccessStreamComponent(const FVertexStreamComponent& Component,uint8 AttributeIndex);
+	FVertexElement AccessStreamComponent(const FVertexStreamComponent& Component, uint8 AttributeIndex)
+	{
+		return AccessStreamComponent(Component, AttributeIndex, Streams);
+	}
 
 	/**
 	 * Creates a vertex element for a vertex stream component.  Adds a unique position stream index for the vertex buffer used by the component.
@@ -732,6 +697,25 @@ protected:
 	 * @return The vertex element which corresponds to Component.
 	 */
 	FVertexElement AccessStreamComponent(const FVertexStreamComponent& Component, uint8 AttributeIndex, EVertexInputStreamType InputStreamType);
+	
+	/**
+	 * Creates a vertex element for a vertex stream components.  Adds a unique stream index for the vertex buffer used by the component.
+	 * @param Component - The vertex stream component.
+	 * @param AttributeIndex - The attribute index to which the stream component is bound.
+	 * @param AttributeIndex - Stream array where to add the new streams.
+	 * @return The vertex element which corresponds to Component.
+	 */
+	template<typename VertexStreamListType>
+	static FVertexElement AccessStreamComponent(const FVertexStreamComponent& Component, uint8 AttributeIndex, VertexStreamListType& InOutStreams)
+	{
+		FVertexStream VertexStream;
+		VertexStream.VertexBuffer = Component.VertexBuffer;
+		VertexStream.Stride = Component.Stride;
+		VertexStream.Offset = Component.StreamOffset;
+		VertexStream.VertexStreamUsage = Component.VertexStreamUsage;
+		return FVertexElement((uint8)InOutStreams.AddUnique(VertexStream), Component.Offset, Component.Type, AttributeIndex, VertexStream.Stride, EnumHasAnyFlags(EVertexStreamUsage::Instancing, VertexStream.VertexStreamUsage));
+	}
+
 
 	/**
 	 * Initializes the vertex declaration.
@@ -760,8 +744,10 @@ protected:
 		}
 	};
 
+	typedef TArray<FVertexStream, TInlineAllocator<8> > FVertexStreamList;
+		
 	/** The vertex streams used to render the factory. */
-	TArray<FVertexStream,TInlineAllocator<8> > Streams;
+	FVertexStreamList Streams;
 
 	/* VF can explicitly set this to false to avoid errors without decls; this is for VFs that fetch from buffers directly (e.g. Niagara) */
 	bool bNeedsDeclaration = true;
@@ -788,7 +774,7 @@ private:
 	int8 PrimitiveIdStreamIndex[(int32)EVertexInputStreamType::Count];
 #endif
 
-	inline int32 TranslatePrimitiveIdStreamIndex(const FStaticFeatureLevel InFeatureLevel, EVertexInputStreamType InputStreamType) const
+	static int32 TranslatePrimitiveIdStreamIndex(const FStaticFeatureLevel InFeatureLevel, EVertexInputStreamType InputStreamType)
 	{
 	#if WITH_EDITOR
 		return static_cast<int32>(InputStreamType) + (InFeatureLevel <= ERHIFeatureLevel::ES3_1 ? static_cast<int32>(EVertexInputStreamType::Count) : 0); 

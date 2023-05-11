@@ -1,16 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "StateTreeAnyEnumDetails.h"
-#include "Framework/Commands/UIAction.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "DetailWidgetRow.h"
 #include "DetailLayoutBuilder.h"
-#include "IPropertyUtilities.h"
 #include "StateTreePropertyHelpers.h"
-#include "StateTreePropertyBindings.h"
 #include "StateTreeAnyEnum.h"
 
 #define LOCTEXT_NAMESPACE "StateTreeEditor"
@@ -71,7 +66,7 @@ FText FStateTreeAnyEnumDetails::GetDescription() const
 		return LOCTEXT("MultipleSelected", "Multiple Selected");
 	}
 
-	return LOCTEXT("Invalid", "Invalid");
+	return LOCTEXT("None", "None");
 }
 
 TSharedRef<SWidget> FStateTreeAnyEnumDetails::OnGetComboContent() const
@@ -105,7 +100,7 @@ TSharedRef<SWidget> FStateTreeAnyEnumDetails::OnGetComboContent() const
 
 	if (!bSuccess)
 	{
-		MenuBuilder.AddMenuEntry(LOCTEXT("Empty", "Empty"), TAttribute<FText>(), FSlateIcon(), FUIAction());
+		MenuBuilder.AddMenuEntry(LOCTEXT("None", "None"), TAttribute<FText>(), FSlateIcon(), FUIAction());
 	}
 
 	return MenuBuilder.MakeWidget();

@@ -34,6 +34,10 @@ struct FPropertyTag;
 template<typename> struct TMovieSceneCurveChannelImpl;
 template <typename T> struct TIsPODType;
 
+namespace UE::MovieScene::Interpolation
+{
+	struct FCachedInterpolation;
+}
 
 USTRUCT()
 struct FMovieSceneFloatValue
@@ -77,8 +81,14 @@ struct FMovieSceneFloatValue
 	 */
 	UPROPERTY()
 	uint8 PaddingByte;
-};
 
+	// This is required because TMovieSceneCurveChannelImpl<ChannelType>::Serialize dumps us as a byte array so we need padding to be initialized to avoid indeterminism in the cooked build
+	uint8 UnserializedPaddingBytes[1] = {0};
+};
+static_assert(
+	sizeof(FMovieSceneFloatValue) ==
+	sizeof(FMovieSceneFloatValue::Value) + sizeof(FMovieSceneFloatValue::Tangent) + sizeof(FMovieSceneFloatValue::InterpMode) + sizeof(FMovieSceneFloatValue::TangentMode) + sizeof(FMovieSceneFloatValue::PaddingByte) + sizeof(FMovieSceneFloatValue::UnserializedPaddingBytes),
+	"Adjust padding size to avoid cooked build indeterminism with uninitialized padded data");
 
 template<>
 struct TIsPODType<FMovieSceneFloatValue>
@@ -111,7 +121,7 @@ struct MOVIESCENE_API FMovieSceneFloatChannel : public FMovieSceneChannel
 	FMovieSceneFloatChannel() 
 		: PreInfinityExtrap(RCCE_Constant)
 		, PostInfinityExtrap(RCCE_Constant)
-		, DefaultValue()
+		, DefaultValue(0.f)
 		, bHasDefaultValue(false)
 #if WITH_EDITORONLY_DATA
 		, bShowCurve(false)
@@ -165,10 +175,19 @@ struct MOVIESCENE_API FMovieSceneFloatChannel : public FMovieSceneChannel
 	bool Evaluate(FFrameTime InTime, float& OutValue) const;
 
 	/**
+	 * Retrieve a cached interpolation from this channel for the specified time
+	 */
+	UE::MovieScene::Interpolation::FCachedInterpolation GetInterpolationForTime(FFrameTime InTime) const;
+
+	/**
 	 * Set the channel's times and values to the requested values
 	 */
 	void Set(TArray<FFrameNumber> InTimes, TArray<FMovieSceneFloatValue> InValues);
 
+	/**
+	 * Set the channel's times and values to the requested values, but does not allocate key handles
+	 */
+	void SetKeysOnly(TArrayView<FFrameNumber> InTimes, TArrayView<FMovieSceneFloatValue> InValues);
 public:
 
 	// ~ FMovieSceneChannel Interface
@@ -348,10 +367,14 @@ struct TMovieSceneChannelTraits<FMovieSceneFloatChannel> : TMovieSceneChannelTra
 };
 
 /**
+ * Overload for getting the interpolation mode for a channel at a specified time, it could be the previous key's mode.See UE::MovieScene::GetInterpolationMode for default implementation.
+ */
+MOVIESCENE_API EMovieSceneKeyInterpolation GetInterpolationMode(FMovieSceneFloatChannel* InChannel, const FFrameNumber& InTime, EMovieSceneKeyInterpolation DefaultInterpolationMode);
+
+/**
  * Overload for adding a new key to a float channel at a given time. See UE::MovieScene::AddKeyToChannel for default implementation.
  */
 MOVIESCENE_API FKeyHandle AddKeyToChannel(FMovieSceneFloatChannel* Channel, FFrameNumber InFrameNumber, float InValue, EMovieSceneKeyInterpolation Interpolation);
-
 
 /**
  * Overload for dilating float channel data. See UE::MovieScene::Dilate for default implementation.

@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraRendererComponents.h"
+#include "Engine/World.h"
 #include "NiagaraConstants.h"
 #include "NiagaraDataSet.h"
 #include "NiagaraStats.h"
@@ -129,6 +130,12 @@ void ConvertVariableToType(const FNiagaraVariable& SourceVariable, const FNiagar
 		const FQuat4f Data = SourceVariable.GetValue<FQuat4f>();
 		TargetData.AddUninitialized(sizeof(FRotator));
 		*reinterpret_cast<FRotator*>(TargetData.GetData()) = FRotator(Data.Rotator());
+	}
+	else if (SourceType == FNiagaraTypeDefinition::GetFloatDef() && TargetType == UNiagaraComponentRendererProperties::GetDoubleDef())
+	{
+		const FNiagaraFloat Data = SourceVariable.GetValue<FNiagaraFloat>();
+		TargetData.AddUninitialized(sizeof(FNiagaraDouble));
+		reinterpret_cast<FNiagaraDouble*>(TargetData.GetData())->Value = Data.Value;
 	}
 }
 
@@ -377,6 +384,14 @@ void FNiagaraRendererComponents::PostSystemTick_GameThread(const UNiagaraRendere
 		return;
 	}
 
+#if WITH_EDITORONLY_DATA
+	if (SystemInstance->GetIsolateEnabled() && !Emitter->GetEmitterHandle().IsIsolated())
+	{
+		ResetComponentPool(true);
+		return;
+	}
+#endif
+
 	USceneComponent* AttachComponent = SystemInstance->GetAttachComponent();
 	if (!AttachComponent)
 	{
@@ -384,7 +399,7 @@ void FNiagaraRendererComponents::PostSystemTick_GameThread(const UNiagaraRendere
 		return;
 	}
 
-	const float CurrentTime = AttachComponent->GetWorld()->GetRealTimeSeconds();
+	const double CurrentTime = AttachComponent->GetWorld()->GetRealTimeSeconds();
 	FNiagaraDataSet& Data = Emitter->GetData();
 	FNiagaraDataBuffer& ParticleData = Data.GetCurrentDataChecked();
 	FNiagaraDataSetReaderInt32<FNiagaraBool> EnabledAccessor = FNiagaraDataSetAccessor<FNiagaraBool>::CreateReader(Data, Properties->EnabledBinding.GetDataSetBindableVariable().GetName());
@@ -703,6 +718,12 @@ void FNiagaraRendererComponents::TickPropertyBindings(
 					FNiagaraTypeDefinition VarType = DataVariable.GetType();
 					if (Property->GetSize() == VarType.GetSize())
 					{
+						break;
+					}
+
+					if (Property->GetClass()->IsChildOf(FDoubleProperty::StaticClass()))
+					{
+						PropertyType = UNiagaraComponentRendererProperties::GetDoubleDef();
 						break;
 					}
 

@@ -7,10 +7,12 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SComboButton.h"
 #include "Widgets/Layout/SBox.h"
 #include "Styling/AppStyle.h"
 #include "Components/MeshComponent.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/Texture2D.h"
 #include "Editor/UnrealEdEngine.h"
 #include "MaterialEditor/MaterialEditorMeshComponent.h"
 #include "Engine/StaticMesh.h"
@@ -109,10 +111,7 @@ void FMaterialEditorViewportClient::Tick(float DeltaSeconds)
 	FEditorViewportClient::Tick(DeltaSeconds);
 
 	// Tick the preview scene world.
-	if (!GIntraFrameDebuggingGameThread)
-	{
-		PreviewScene->GetWorld()->Tick(LEVELTICK_All, DeltaSeconds);
-	}
+	PreviewScene->GetWorld()->Tick(LEVELTICK_All, DeltaSeconds);
 }
 
 
@@ -175,11 +174,11 @@ FLinearColor FMaterialEditorViewportClient::GetBackgroundColor() const
 			if (MaterialInterface)
 			{
 				const EBlendMode PreviewBlendMode = (EBlendMode)MaterialInterface->GetBlendMode();
-				if (PreviewBlendMode == BLEND_Modulate)
+				if (IsModulateBlendMode(*MaterialInterface))
 				{
 					BackgroundColor = FLinearColor::White;
 				}
-				else if (PreviewBlendMode == BLEND_Translucent || PreviewBlendMode == BLEND_AlphaComposite || PreviewBlendMode == BLEND_AlphaHoldout)
+				else if (IsTranslucentOnlyBlendMode(*MaterialInterface) || IsAlphaCompositeBlendMode(*MaterialInterface) || IsAlphaHoldoutBlendMode(*MaterialInterface))
 				{
 					BackgroundColor = FColor(64, 64, 64);
 				}

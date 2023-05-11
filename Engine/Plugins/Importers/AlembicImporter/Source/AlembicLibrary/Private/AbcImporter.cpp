@@ -1,39 +1,49 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AbcImporter.h"
+#include "AbcImportLogger.h"
+#include "AbcPolyMesh.h"
+#include "Animation/Skeleton.h"
+
+#include "BoneWeights.h"
 
 #if PLATFORM_WINDOWS
+#include "AbcPolyMesh.h"
 #include "Windows/WindowsHWrapper.h"
 #endif
 
 THIRD_PARTY_INCLUDES_START
-#include <Alembic/AbcCoreAbstract/TimeSampling.h>
+#include "Animation/AnimData/AnimDataModel.h"
 #include <Alembic/AbcCoreFactory/All.h>
+#include "Animation/AnimData/IAnimationDataController.h"
 #include <Alembic/AbcCoreOgawa/All.h>
 THIRD_PARTY_INCLUDES_END
 
+#include "Engine/StaticMeshSourceData.h"
 #include "Misc/Paths.h"
-#include "Misc/FeedbackContext.h"
-#include "Stats/StatsMisc.h"
-#include "UObject/UObjectIterator.h"
-#include "UObject/UObjectHash.h"
-#include "RawIndexBuffer.h"
+#include "GeometryCache.h"
 #include "Misc/ScopedSlowTask.h"
 
+#include "GeometryCacheComponent.h"
 #include "PackageTools.h"
+#include "GeometryCacheMeshData.h"
 #include "StaticMeshAttributes.h"
+#include "GeometryCacheTrackStreamable.h"
 #include "StaticMeshOperations.h"
+#include "Logging/TokenizedMessage.h"
 #include "ObjectTools.h"
 
 #include "Engine/StaticMesh.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/SkinnedAssetCommon.h"
 #include "Animation/AnimSequence.h"
+#include "Misc/PackageName.h"
 #include "Rendering/SkeletalMeshModel.h"
 
 #include "AbcImportUtilities.h"
-#include "Utils.h"
 
 #include "MeshUtilities.h"
+#include "MaterialDomain.h"
 #include "Materials/Material.h"
 #include "Modules/ModuleManager.h"
 
@@ -44,14 +54,18 @@ THIRD_PARTY_INCLUDES_END
 #include "AbcAssetImportData.h"
 #include "AbcFile.h"
 
-#include "AnimationUtils.h"
 #include "ComponentReregisterContext.h"
 #include "GeometryCacheCodecV1.h"
+#include "RenderMath.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Editor.h"
 
+#include "Rendering/SkeletalMeshLODModel.h"
 #include "UObject/MetaData.h"
-#include "UObject/Package.h"
+
+#if WITH_EDITOR
+#include "MeshBudgetProjectSettings.h"
+#endif
 
 #define LOCTEXT_NAMESPACE "AbcImporter"
 
@@ -246,6 +260,9 @@ UStaticMesh* FAbcImporter::CreateStaticMeshFromSample(UObject* InParent, const F
 		//Set the Imported version before calling the build
 		StaticMesh->ImportVersion = EImportStaticMeshVersion::LastVersion;
 
+#if WITH_EDITOR
+		FMeshBudgetProjectSettingsUtils::SetLodGroupForStaticMesh(StaticMesh);
+#endif
 		// Build the static mesh (using the build setting etc.) this generates correct tangents using the extracting smoothing group along with the imported Normals data
 		StaticMesh->Build(false);
 
@@ -578,7 +595,7 @@ TArray<UObject*> FAbcImporter::ImportAsSkeletalMesh(UObject* InParent, EObjectFl
 	if (SkeletalMesh)
 	{
 		// Touch pre edit change
-		SkeletalMesh->PreEditChange(NULL);
+		SkeletalMesh->PreEditChange(nullptr);
 
 		// Retrieve the imported resource structure and allocate a new LOD model
 		FSkeletalMeshModel* ImportedModel = SkeletalMesh->GetImportedModel();
@@ -654,12 +671,15 @@ TArray<UObject*> FAbcImporter::ImportAsSkeletalMesh(UObject* InParent, EObjectFl
 		IAnimationDataController& Controller = Sequence->GetController();
 
 		Controller.OpenBracket(LOCTEXT("ImportAsSkeletalMesh", "Importing Alembic Animation"));
+		Controller.InitializeModel();
 
-		Controller.SetPlayLength(AbcFile->GetImportLength());
-		Controller.SetFrameRate( FFrameRate(AbcFile->GetFramerate(), 1));
+		const FFrameRate FrameRate(AbcFile->GetFramerate(), 1);
+		Controller.SetFrameRate(FrameRate);	
+		const FFrameNumber FrameNumber = FrameRate.AsFrameNumber(AbcFile->GetImportLength());
+		Controller.SetNumberOfFrames(FrameNumber);
 
-		Sequence->ImportFileFramerate = AbcFile->GetFramerate();
-		Sequence->ImportResampleFramerate = 1.0f / (float)AbcFile->GetFramerate();
+		Sequence->ImportFileFramerate = FrameRate.AsDecimal();
+		Sequence->ImportResampleFramerate = FrameRate.AsInterval();
 
 		{
 #if WITH_EDITOR
@@ -757,7 +777,7 @@ TArray<UObject*> FAbcImporter::ImportAsSkeletalMesh(UObject* InParent, EObjectFl
 				const FReferenceSkeleton& RefSkeleton = SkeletalMesh->GetRefSkeleton();
 				const TArray<FMeshBoneInfo>& BonesInfo = RefSkeleton.GetRawRefBoneInfo();
 				
-				Controller.AddBoneTrack(BonesInfo[0].Name);
+				Controller.AddBoneCurve(BonesInfo[0].Name);
 				Controller.SetBoneTrackKeys(BonesInfo[0].Name, RootBoneTrack.PosKeys, RootBoneTrack.RotKeys, RootBoneTrack.ScaleKeys);
 			}
 
@@ -1756,7 +1776,7 @@ bool FAbcImporter::BuildSkeletalMesh( FSkeletalMeshLODModel& LODModel, const FRe
 				// Set up bone influence (only using one bone so maxed out weight)
 				FMemory::Memzero(NewVertex.InfluenceBones);
 				FMemory::Memzero(NewVertex.InfluenceWeights);
-				NewVertex.InfluenceWeights[0] = 255;
+				NewVertex.InfluenceWeights[0] = UE::AnimationCore::MaxRawBoneWeight;
 				
 				int32 FinalVertexIndex = INDEX_NONE;
 				if (DuplicateVertexIndices.Num())
@@ -1821,7 +1841,7 @@ bool FAbcImporter::BuildSkeletalMesh( FSkeletalMeshLODModel& LODModel, const FRe
 	}
 
 	// Compute the required bones for this model.
-	USkeletalMesh::CalculateRequiredBones(LODModel, RefSkeleton, NULL);
+	USkeletalMesh::CalculateRequiredBones(LODModel, RefSkeleton, nullptr);
 
 	return true;
 }

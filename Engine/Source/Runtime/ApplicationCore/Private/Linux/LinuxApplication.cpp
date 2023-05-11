@@ -442,11 +442,6 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 					if (CurrentlyActiveWindow != CurrentEventWindow)
 					{
 						ActivateWindow(CurrentEventWindow);
-
-						if(NotificationWindows.Num() > 0)
-						{
-							RaiseNotificationWindows(CurrentEventWindow);
-						}
 					}
 
 					// Check if we have to set the focus.
@@ -456,6 +451,11 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 					}
 
 					MessageHandler->OnMouseDown(CurrentEventWindow, button);
+
+					if (NotificationWindows.Num() > 0)
+					{
+						RaiseNotificationWindows(CurrentEventWindow);
+					}
 				}
 			}
 		}
@@ -793,8 +793,10 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 
 				case SDL_WINDOWEVENT_MOVED:
 					{
-						int32 ClientScreenX = windowEvent.data1;
-						int32 ClientScreenY = windowEvent.data2;
+						// Mask away the higher bits, as SDL uses those as flags
+						// See: SDL_WINDOWPOS_UNDEFINED_MASK & SDL_WINDOWPOS_CENTERED_MASK for context
+						int32 ClientScreenX = windowEvent.data1 & 0xFFFF;
+						int32 ClientScreenY = windowEvent.data2 & 0xFFFF;
 
 						int32 BorderSizeX, BorderSizeY;
 						CurrentEventWindow->GetNativeBordersSize(BorderSizeX, BorderSizeY);
@@ -802,6 +804,16 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 						ClientScreenY += BorderSizeY;
 
 						MessageHandler->OnMovedWindow(CurrentEventWindow.ToSharedRef(), ClientScreenX, ClientScreenY);
+
+						if (bFirstFrameOfWindowMove)
+						{
+							bFirstFrameOfWindowMove = false;
+
+							if (NotificationWindows.Num() > 0)
+							{
+								RaiseNotificationWindows(CurrentEventWindow);
+							}
+						}
 					}
 					break;
 
@@ -809,6 +821,11 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 					{
 						MessageHandler->OnWindowAction(CurrentEventWindow.ToSharedRef(), EWindowAction::Maximize);
 						UE_LOG(LogLinuxWindowEvent, Verbose, TEXT("Window: '%d' got maximized"), CurrentEventWindow->GetID());
+
+						if (NotificationWindows.Num() > 0)
+						{
+							RaiseNotificationWindows(CurrentEventWindow);
+						}
 					}
 					break;
 
@@ -816,6 +833,11 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 					{
 						MessageHandler->OnWindowAction(CurrentEventWindow.ToSharedRef(), EWindowAction::Restore);
 						UE_LOG(LogLinuxWindowEvent, Verbose, TEXT("Window: '%d' got restored"), CurrentEventWindow->GetID());
+
+						if (NotificationWindows.Num() > 0)
+						{
+							RaiseNotificationWindows(CurrentEventWindow);
+						}
 					}
 					break;
 
@@ -878,6 +900,8 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 						{
 							RaiseNotificationWindows(CurrentEventWindow);
 						}
+
+						bFirstFrameOfWindowMove = true;
 					}
 					break;
 
@@ -903,6 +927,11 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 						UE_LOG(LogLinuxWindowEvent, Verbose, TEXT("WM_SETFOCUS                                 : %d"), CurrentEventWindow->GetID());
 
 						CurrentFocusWindow = CurrentEventWindow;
+
+						if (NotificationWindows.Num() > 0)
+						{
+							RaiseNotificationWindows(CurrentEventWindow);
+						}
 
 						// We have gained focus, we can stop trying to check if we need to deactivate
 						FocusOutDeactivationTime = 0.0;
@@ -993,19 +1022,23 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 			{
 				// remove touch context even if it existed
 				uint64 FingerId = static_cast<uint64>(Event.tfinger.fingerId);
+
+				FTouchContext* TouchContext = Touches.Find(FingerId);
 				if (UNLIKELY(Touches.Find(FingerId) != nullptr))
 				{
+					TouchIds[TouchContext->TouchIndex] = TOptional<uint64>();
 					Touches.Remove(FingerId);
 					UE_LOG(LogLinuxWindow, Warning, TEXT("Received another SDL_FINGERDOWN for finger %llu which was already down."), FingerId);
 				}
 
 				FTouchContext NewTouch;
-				NewTouch.TouchIndex = Touches.Num();
+				NewTouch.TouchIndex = GetFirstFreeTouchId();
 				NewTouch.Location = GetTouchEventLocation(NativeWindow, Event);
 				NewTouch.DeviceId = Event.tfinger.touchId;
 				Touches.Add(FingerId, NewTouch);
+				TouchIds[NewTouch.TouchIndex] = TOptional<uint64>(FingerId);
 
-				UE_LOG(LogLinuxWindow, Verbose, TEXT("OnTouchStarted at (%f, %f), finger %d (system touch id %llu)"), NewTouch.Location.X, NewTouch.Location.Y, NewTouch.TouchIndex, FingerId);
+				UE_LOG(LogLinuxWindow, Verbose, TEXT("OnTouchStarted at (%f, %f), finger %d (system touch id %llu)"), NewTouch.Location.X, NewTouch.Location.Y, FingerId, NewTouch.TouchIndex);
 				MessageHandler->OnTouchStarted(CurrentEventWindow, NewTouch.Location, 1.0f, NewTouch.TouchIndex, 0);// NewTouch.DeviceId);
 			}
 			else
@@ -1034,10 +1067,11 @@ void FLinuxApplication::ProcessDeferredMessage( SDL_Event Event )
 					TouchContext->Location = GetTouchEventLocation(NativeWindow, Event);
 					// check touch device?
 
-					UE_LOG(LogLinuxWindow, Verbose, TEXT("OnTouchEnded at (%f, %f), finger %d (system touch id %llu)"), TouchContext->Location.X, TouchContext->Location.Y, TouchContext->TouchIndex, FingerId);
+					UE_LOG(LogLinuxWindow, Verbose, TEXT("OnTouchEnded at (%f, %f), finger %d (system touch id %llu)"), TouchContext->Location.X, TouchContext->Location.Y, FingerId, TouchContext->TouchIndex);
 					MessageHandler->OnTouchEnded(TouchContext->Location, TouchContext->TouchIndex, 0);// TouchContext->DeviceId);
 
 					// remove the touch
+					TouchIds[TouchContext->TouchIndex] = TOptional<uint64>();
 					Touches.Remove(FingerId);
 				}
 			}
@@ -1109,6 +1143,19 @@ void FLinuxApplication::CheckIfApplicatioNeedsDeactivation()
 			FocusOutDeactivationTime = 0.0;
 		}
 	}
+}
+
+int FLinuxApplication::GetFirstFreeTouchId()
+{
+	for (int i = 0; i < TouchIds.Num(); i++)
+	{
+		if (TouchIds[i].IsSet() == false)
+		{
+			return i;
+		}
+	}
+
+	return TouchIds.Add(TOptional<uint64>()); 
 }
 
 FVector2D FLinuxApplication::GetTouchEventLocation(SDL_HWindow NativeWindow, SDL_Event TouchEvent)
@@ -1619,7 +1666,7 @@ void FLinuxApplication::RemoveNotificationWindow(SDL_HWindow HWnd)
 	for (int32 WindowIndex=0; WindowIndex < NotificationWindows.Num(); ++WindowIndex)
 	{
 		TSharedRef< FLinuxWindow > Window = NotificationWindows[ WindowIndex ];
-		
+
 		if ( Window->GetHWnd() == HWnd )
 		{
 			NotificationWindows.RemoveAt(WindowIndex);
@@ -1630,12 +1677,12 @@ void FLinuxApplication::RemoveNotificationWindow(SDL_HWindow HWnd)
 
 void FLinuxApplication::RaiseNotificationWindows(const TSharedPtr< FLinuxWindow >& ParentWindow)
 {
-	// Raise notification window only for the correct parent window.
-	// TODO Do we have to make this restriction?
+	// Raise notification windows above everything except for modal windows
 	for (int32 WindowIndex=0; WindowIndex < NotificationWindows.Num(); ++WindowIndex)
 	{
 		TSharedRef< FLinuxWindow > NotificationWindow = NotificationWindows[WindowIndex];
-		if(ParentWindow == NotificationWindow->GetParent())
+
+		if(!ParentWindow->IsModalWindow())
 		{
 			SDL_RaiseWindow(NotificationWindow->GetHWnd());
 		}

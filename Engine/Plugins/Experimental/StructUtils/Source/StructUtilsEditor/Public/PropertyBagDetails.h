@@ -2,12 +2,16 @@
 
 #pragma once
 
-#include "IPropertyTypeCustomization.h"
 #include "InstancedStructDetails.h"
 #include "EdGraphSchema_K2.h"
 #include "PropertyBagDetails.generated.h"
 
+class FReply;
+enum class EPinContainerType : uint8;
+struct FEdGraphSchemaAction;
+
 class IPropertyHandle;
+class IPropertyUtilities;
 class IDetailPropertyRow;
 class SInlineEditableTextBlock;
 class SWidget;
@@ -22,12 +26,12 @@ public:
 	static TSharedRef<IPropertyTypeCustomization> MakeInstance();
 
 	/** Creates add property widget. */
-	static TSharedPtr<SWidget> MakeAddPropertyWidget(TSharedPtr<IPropertyHandle> StructProperty, class IPropertyUtilities* PropUtils);
+	static TSharedPtr<SWidget> MakeAddPropertyWidget(TSharedPtr<IPropertyHandle> InStructProperty, TSharedPtr<IPropertyUtilities> InPropUtils);
 	
 protected:
 	/** IPropertyTypeCustomization interface */
-	virtual void CustomizeHeader(TSharedRef<IPropertyHandle> StructPropertyHandle, class FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& StructCustomizationUtils) override;
-	virtual void CustomizeChildren(TSharedRef<IPropertyHandle> StructPropertyHandle, class IDetailChildrenBuilder& StructBuilder, IPropertyTypeCustomizationUtils& StructCustomizationUtils) override;
+	virtual void CustomizeHeader(TSharedRef<IPropertyHandle> StructPropertyHandle, FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& StructCustomizationUtils) override;
+	virtual void CustomizeChildren(TSharedRef<IPropertyHandle> StructPropertyHandle, IDetailChildrenBuilder& StructBuilder, IPropertyTypeCustomizationUtils& StructCustomizationUtils) override;
 
 private:
 
@@ -35,10 +39,8 @@ private:
 	
 	/** Handle to the struct property being edited */
 	TSharedPtr<IPropertyHandle> StructProperty;
-
+	TSharedPtr<IPropertyUtilities> PropUtils;
 	bool bFixedLayout = false; 
-	
-	class IPropertyUtilities* PropUtils = nullptr;
 };
 
 /** 
@@ -52,7 +54,7 @@ private:
 class STRUCTUTILSEDITOR_API FPropertyBagInstanceDataDetails : public FInstancedStructDataDetails
 {
 public:
-	FPropertyBagInstanceDataDetails(TSharedPtr<IPropertyHandle> InStructProperty, IPropertyUtilities* InPropUtils, const bool bInFixedLayout);
+	FPropertyBagInstanceDataDetails(TSharedPtr<IPropertyHandle> InStructProperty, const TSharedPtr<IPropertyUtilities>& InPropUtils, const bool bInFixedLayout);
 
 	virtual void OnChildRowAdded(IDetailPropertyRow& ChildRow) override;
 
@@ -60,7 +62,7 @@ protected:
 	TSharedRef<SWidget> OnPropertyNameContent(TSharedPtr<IPropertyHandle> ChildPropertyHandle, TSharedPtr<SInlineEditableTextBlock> InlineWidget) const;
 
 	TSharedPtr<IPropertyHandle> BagStructProperty;
-	IPropertyUtilities* PropUtils = nullptr;
+	TSharedPtr<IPropertyUtilities> PropUtils;
 	bool bFixedLayout = false;
 };
 

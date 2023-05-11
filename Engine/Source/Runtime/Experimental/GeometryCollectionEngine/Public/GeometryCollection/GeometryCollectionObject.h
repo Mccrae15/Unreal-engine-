@@ -7,6 +7,7 @@
 #include "Rendering/NaniteResources.h"
 #include "InstanceUniformShaderParameters.h"
 #include "GeometryCollection/ManagedArray.h"
+#include "GeometryCollection/GeometryCollectionDamagePropagationData.h"
 #include "GeometryCollection/GeometryCollectionSimulationTypes.h"
 #include "Chaos/ChaosSolverActor.h"
 
@@ -55,6 +56,8 @@ struct GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionAutoInstanceMesh
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "AutoInstance")
 	TArray<TObjectPtr<UMaterialInterface>> Materials;
+
+	bool operator ==(const FGeometryCollectionAutoInstanceMesh& Other) const;
 };
 
 USTRUCT(BlueprintType)
@@ -316,25 +319,6 @@ private:
 };
 
 
-USTRUCT(BlueprintType)
-struct GEOMETRYCOLLECTIONENGINE_API FGeometryCollectionDamagePropagationData
-{
-public:
-	GENERATED_BODY()
-
-	/** Whether or not damage propagation is enabled. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Damage Propagation")
-	bool bEnabled = true;
-
-	/** factor of the remaining strain propagated through the connection graph after a piece breaks. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Damage Propagation")
-	float BreakDamagePropagationFactor = 1.0f;
-
-	/** factor of the received strain propagated throug the connection graph if the piece did not break. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Damage Propagation")
-	float ShockDamagePropagationFactor = 0.0f;
-};
-
 /**
 * UGeometryCollectionObject (UObject)
 *
@@ -354,6 +338,7 @@ public:
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual bool Modify(bool bAlwaysMarkDirty = true) override;
 #endif
+	virtual void PostInitProperties() override;
 	virtual void PostLoad() override;
 	virtual void BeginDestroy() override;
 	/** End UObject Interface */
@@ -374,6 +359,9 @@ public:
 
 	/** Return collection to initial (ie. empty) state. */
 	void Reset();
+
+	/** Reset the collection from another set of attributes and materials. */
+	void ResetFrom(const FManagedArrayCollection& InCollection, const TArray<UMaterial*>& InMaterials, bool bHasInternalMaterials);
 	
 	int32 AppendGeometry(const UGeometryCollection & Element, bool ReindexAllMaterials = false, const FTransform& TransformRoot = FTransform::Identity);
 	int32 NumElements(const FName& Group) const;
@@ -412,7 +400,7 @@ public:
 	void ReindexMaterialSections();
 
 	/** appends the standard materials to this UObject */
-	void InitializeMaterials();
+	void InitializeMaterials(bool bHasInternalMaterials = true);
 
 
 	/** Returns true if there is anything to render */
@@ -442,12 +430,22 @@ public:
 	/** Produce a deep copy of GeometryCollection member, stripped of data unecessary for gameplay. */
 	TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GenerateMinimalGeometryCollection() const;
 
+	/** copy a collection and remove geometry from it */
+	static TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> CopyCollectionAndRemoveGeometry(const TSharedPtr<const FGeometryCollection, ESPMode::ThreadSafe>& CollectionToCopy);
+
 #if WITH_EDITOR
 	/** If this flag is set, we only regenerate simulation data when requested via CreateSimulationData() */
 	bool bManualDataCreate;
 	
-	/** Create the simulation data that can be shared among all instances (mass, volume, etc...)*/
+	/** 
+	* Create the simulation data that can be shared among all instances (mass, volume, etc...) 
+	* Note : this does not check if the simulation data is drty or not and will cause a load from the DDC
+	* use CreateSimulationDataIfNeeded() for avoiding extra runtime cost 
+	*/
 	void CreateSimulationData();
+
+	/** Create the simulation data ( calls CreateSimulationData) only if the simulation data is dirty */
+	void CreateSimulationDataIfNeeded();
 
 	/** Create the Nanite rendering data. */
 	static TUniquePtr<FGeometryCollectionNaniteData> CreateNaniteData(FGeometryCollection* Collection);
@@ -603,7 +601,7 @@ public:
 	/**
 	* whether to import collision from the source asset
 	*/
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Collisions")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Collisions")
 	bool bImportCollisionFromSource;
 	
 #if WITH_EDITORONLY_DATA
@@ -671,6 +669,10 @@ public:
 	static const TCHAR* GetSelectedMaterialPath();
 
 #if WITH_EDITORONLY_DATA
+	/** Importing data and options used for this geometry collection */
+	UPROPERTY(EditAnywhere, Instanced, Category = ImportSettings)
+	TObjectPtr<class UAssetImportData> AssetImportData;
+
 	/** Information for thumbnail rendering */
 	UPROPERTY(VisibleAnywhere, Instanced, AdvancedDisplay, Category = GeometryCollection)
 	TObjectPtr<class UThumbnailInfo> ThumbnailInfo;
@@ -680,13 +682,23 @@ public:
 	* Update the convex geometry on the collection.
 	*/
 	void UpdateConvexGeometry();
+	void UpdateConvexGeometryIfMissing();
+	
+	/*
+	 * Update properties that depend on the geometry and clustering: Proximity, Convex Hulls, Volume and Size data.
+	 */
+	void UpdateGeometryDependentProperties();
 
 
 	//
 	// Dataflow
 	//
-	UPROPERTY(EditAnywhere, Category = "Procedural")
-	TObjectPtr<UDataflow> Dataflow;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dataflow")
+	TObjectPtr<UDataflow> DataflowAsset;
+
+	UPROPERTY(EditAnywhere, Category = "Dataflow")
+	FString DataflowTerminal = "GeometryCollectionTerminal";
+
 
 private:
 #if WITH_EDITOR

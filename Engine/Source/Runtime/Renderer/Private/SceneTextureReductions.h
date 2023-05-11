@@ -2,9 +2,16 @@
 
 #pragma once
 
-#include "ScenePrivate.h"
-#include "RenderGraph.h"
-#include "SceneTextureParameters.h"
+#include "PixelFormat.h"
+#include "RenderGraphFwd.h"
+#include "RHIFwd.h"
+
+struct FBuildHZBAsyncComputeParams
+{
+	FRDGPassRef Prerequisite = nullptr;
+};
+
+static constexpr EPixelFormat BuildHZBDefaultPixelFormat = PF_R16F;
 
 void BuildHZB(
 	FRDGBuilder& GraphBuilder,
@@ -17,7 +24,8 @@ void BuildHZB(
 	FRDGTextureRef* OutClosestHZBTexture,
 	const TCHAR* FurthestHZBName,
 	FRDGTextureRef* OutFurthestHZBTexture,
-	EPixelFormat Format = PF_R16F);
+	EPixelFormat Format = BuildHZBDefaultPixelFormat,
+	const FBuildHZBAsyncComputeParams* AsyncComputeParams = nullptr);
 
 // Build only the furthest HZB
 void BuildHZBFurthest(
@@ -29,4 +37,5 @@ void BuildHZBFurthest(
 	EShaderPlatform ShaderPlatform,
 	const TCHAR* FurthestHZBName,
 	FRDGTextureRef* OutFurthestHZBTexture,
-	EPixelFormat Format = PF_R16F);
+	EPixelFormat Format = BuildHZBDefaultPixelFormat,
+	const FBuildHZBAsyncComputeParams* AsyncComputeParams = nullptr);

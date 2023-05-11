@@ -2,12 +2,15 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "PCGCommon.h"
-#include "PCGPin.h"
 #include "PCGNode.generated.h"
 
+class UPCGNode;
+class UPCGPin;
+enum class EPCGChangeType : uint8;
+struct FPCGPinProperties;
+
 class UPCGSettings;
+class UPCGSettingsInterface;
 class UPCGGraph;
 class UPCGEdge;
 class IPCGElement;
@@ -38,7 +41,10 @@ public:
 	virtual void PostEditUndo() override;
 	/** ~End UObject interface */
 
-	/** Used to be able to force deprecation when things need to be deprecated at the graph level */
+	/** UpdatePins will kick off invalid edges, so this is useful for making pin changes graceful. */
+	void ApplyDeprecationBeforeUpdatePins();
+
+	/** Used to be able to force deprecation when things need to be deprecated at the graph level. */
 	void ApplyDeprecation();
 #endif
 
@@ -48,10 +54,19 @@ public:
 
 	/** Adds an edge in the owning graph to the given "To" node. */
 	UFUNCTION(BlueprintCallable, Category = Node)
-	UPCGNode* AddEdgeTo(FName InboundName, UPCGNode* To, FName OutboundName);
+	UPCGNode* AddEdgeTo(FName FromPinLabel, UPCGNode* To, FName ToPinLabel);
+
+	/** Removes an edge originating from this node */
+	UFUNCTION(BlueprintCallable, Category = Node)
+	bool RemoveEdgeTo(FName FromPinLable, UPCGNode* To, FName ToPinLabel);
 
 	/** Returns the node title, based either on the current node label, or defaulted to its settings */
-	FName GetNodeTitle() const;
+	FText GetNodeTitle() const;
+
+#if WITH_EDITOR
+	/** Tooltip that describes node functionality and other information. */
+	FText GetNodeTooltipText() const;
+#endif
 
 	/** Returns all the input pin properties */
 	TArray<FPCGPinProperties> InputPinProperties() const;
@@ -65,8 +80,18 @@ public:
 	/** Returns true if the output pin is connected */
 	bool IsOutputPinConnected(const FName& Label) const;
 
+	/** Returns true if the node has an instance of the settings (e.g. does not own the settings) */
+	bool IsInstance() const;
+
+	/** Returns the settings interface (settings or instance of settings) on this node */
+	UPCGSettingsInterface* GetSettingsInterface() const { return SettingsInterface.Get(); }
+
 	/** Changes the default settings in the node */
-	void SetDefaultSettings(TObjectPtr<UPCGSettings> InSettings, bool bUpdatePins = true);
+	void SetSettingsInterface(UPCGSettingsInterface* InSettingsInterface, bool bUpdatePins = true);
+
+	/** Returns the settings this node holds (either directly or through an instance) */
+	UFUNCTION(BlueprintCallable, Category = Node)
+	UPCGSettings* GetSettings() const;
 
 	/** Triggers some uppdates after creating a new node and changing its settings */
 	void UpdateAfterSettingsChangeDuringCreation();
@@ -77,6 +102,19 @@ public:
 	const UPCGPin* GetOutputPin(const FName& Label) const;
 	bool HasInboundEdges() const;
 
+	/** Allow to change the name of a pin, to keep edges connected. You need to make sure that the underlying settings are also updated, otherwise, it will be overwritten next time the settings are updated */
+	void RenameInputPin(const FName& OldLabel, const FName& NewLabel);
+	void RenameOutputPin(const FName& OldLabel, const FName& NewLabel);
+
+	/** Pin from which data is passed through when this node is disabled. */
+	virtual const UPCGPin* GetPassThroughInputPin() const;
+
+	/** True if the pin is being used by the node. UI will gray out unused pins. */
+	virtual bool IsPinUsedByNodeExecution(const UPCGPin* InPin) const;
+
+	/** True if the edge is being used by the node. UI will gray out unused pins. */
+	virtual bool IsEdgeUsedByNodeExecution(const UPCGEdge* InEdge) const;
+
 	const TArray<TObjectPtr<UPCGPin>>& GetInputPins() const { return InputPins; }
 	const TArray<TObjectPtr<UPCGPin>>& GetOutputPins() const { return OutputPins; }
 
@@ -85,9 +123,18 @@ public:
 	void TransferEditorProperties(UPCGNode* OtherNode) const;
 #endif // WITH_EDITOR
 
-	/** Note: do not set this property directly from code, use SetDefaultSettings instead */
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Node, meta=(EditInline))
-	TObjectPtr<UPCGSettings> DefaultSettings;
+#if WITH_EDITOR
+	UFUNCTION(BlueprintCallable, Category = Node)
+	void GetNodePosition(int32& OutPositionX, int32& OutPositionY) const;
+
+	UFUNCTION(BlueprintCallable, Category = Node)
+	void SetNodePosition(int32 InPositionX, int32 InPositionY);
+#endif
+
+#if WITH_EDITORONLY_DATA
+	UPROPERTY()
+	TObjectPtr<UPCGSettings> DefaultSettings_DEPRECATED; 
+#endif
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Node)
 	FName NodeTitle = NAME_None;
@@ -119,14 +166,26 @@ public:
 #endif // WITH_EDITORONLY_DATA
 
 protected:
-	bool UpdatePins();
-	bool UpdatePins(TFunctionRef<UPCGPin* (UPCGNode*)> PinAllocator);
+	EPCGChangeType UpdatePins();
+	EPCGChangeType UpdatePins(TFunctionRef<UPCGPin* (UPCGNode*)> PinAllocator, const UPCGNode* FromNode = nullptr);
+	EPCGChangeType UpdateDynamicPins(const UPCGNode* FromNode = nullptr);
+
+	// When we create a new graph, we initialize the input/output nodes as default, with default pins.
+	// Those default pins are not serialized, therefore if we change the default pins, combined with the use
+	// of recycling objects in Unreal, can lead to pins that are garbage or even worse: valid pins but not the right
+	// one, potentially making the edges connecting wrong pins together!
+	// That is why we have a specific function to create default pins, and we have to make sure that those
+	// default pins are always created the same way.
+	void CreateDefaultPins(TFunctionRef<UPCGPin* (UPCGNode*)> PinAllocator);
 
 #if WITH_EDITOR
-	virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 	void OnSettingsChanged(UPCGSettings* InSettings, EPCGChangeType ChangeType);
 #endif
+
+	/** Note: do not set this property directly from code, use SetSettingsInterface instead */
+	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category = Node)
+	TObjectPtr<UPCGSettingsInterface> SettingsInterface;
 
 	UPROPERTY()
 	TArray<TObjectPtr<UPCGNode>> OutboundNodes_DEPRECATED;
@@ -149,3 +208,9 @@ protected:
 	// - Generates artifacts (here or element)
 	// - Priority
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "PCGCommon.h"
+#include "PCGPin.h"
+#endif

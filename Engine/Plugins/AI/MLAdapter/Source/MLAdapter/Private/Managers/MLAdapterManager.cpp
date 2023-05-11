@@ -2,6 +2,7 @@
 
 #include "Managers/MLAdapterManager.h"
 #include "CoreGlobals.h"
+#include "Misc/CommandLine.h"
 #include "Misc/CoreDelegates.h"
 #include "Engine/Engine.h"
 #include "GameFramework/GameModeBase.h"
@@ -332,7 +333,7 @@ void UMLAdapterManager::BindToDelegates()
 {	
 	// Commented out possible other useful delegates
 	//	FCoreDelegates::GameStateClassChanged;
-	//	FCoreDelegates::ConfigReadyForUse;
+	//	FCoreDelegates::TSConfigReadyForUse();
 	//  FWorldDelegates::OnPostWorldCreation;
 	//	FWorldDelegates::OnPreWorldInitialization; 
 

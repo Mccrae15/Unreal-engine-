@@ -11,7 +11,7 @@
 
 namespace mu
 {
-struct PROGRAM;
+	struct FProgram;
 
 
 	//---------------------------------------------------------------------------------------------
@@ -24,8 +24,16 @@ struct PROGRAM;
 		ASTChild base;
 		ASTChild blend;
 		ASTChild mask;
-		RANGE_DATA range;
-		EBlendType blendType;
+		FRangeData range;
+
+		/** Blend type used for the colour channels. */
+		EBlendType blendType = EBlendType::BT_NONE;
+
+		/** Blend type used for the alpha channel if any. */
+		EBlendType blendTypeAlpha = EBlendType::BT_NONE;
+
+		/** If true, use the alpha channel of the blended image as mask. Mask should be null.*/
+		bool bUseMaskFromBlended = false;
 
 	public:
 
@@ -38,8 +46,8 @@ struct PROGRAM;
 		bool IsEqual(const ASTOp& otherUntyped) const override;
 		Ptr<ASTOp> Clone(MapChildFuncRef mapChild) const override;
 		void ForEachChild(const TFunctionRef<void(ASTChild&)>) override;
-		void Link(PROGRAM& program, const FLinkerOptions* Options) override;
-		FImageDesc GetImageDesc(bool returnBestOption, GetImageDescContext* context) override;
+		void Link(FProgram& program, const FLinkerOptions* Options) override;
+		FImageDesc GetImageDesc(bool returnBestOption, FGetImageDescContext* context) const override;
 		void GetLayoutBlockSize(int* pBlockX, int* pBlockY) override;
 		Ptr<ImageSizeExpression> GetImageSizeExpression() const override;
 	};

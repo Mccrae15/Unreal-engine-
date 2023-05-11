@@ -2,6 +2,8 @@
 
 #include "NiagaraCommon.h"
 
+#include "DataDrivenShaderPlatformInfo.h"
+#include "LocalVertexFactory.h"
 #include "Misc/StringBuilder.h"
 #include "NiagaraComponent.h"
 #include "NiagaraConstants.h"
@@ -11,10 +13,10 @@
 #include "NiagaraSettings.h"
 #include "NiagaraStats.h"
 #include "NiagaraSystemInstance.h"
+#include "NiagaraSystemInstanceController.h"
 #include "NiagaraWorldManager.h"
 #include "String/ParseTokens.h"
 #include "UObject/Class.h"
-#include "GPUSkinCache.h"
 
 DECLARE_CYCLE_STAT(TEXT("Niagara - Utilities - PrepareRapidIterationParameters"), STAT_Niagara_Utilities_PrepareRapidIterationParameters, STATGROUP_Niagara);
 
@@ -181,7 +183,9 @@ void FNiagaraSystemUpdateContext::Add(const FVersionedNiagaraEmitter& Emitter, b
 		UNiagaraComponent* Comp = *It;
 		check(Comp);
 		UNiagaraSystem* System = Comp->GetAsset();
-		if (System && System->UsesEmitter(Emitter))
+
+		// only worry about systems that are fully loaded (and don't force it to be fully loaded just because it shows up in the iterator
+		if (System && System->bFullyLoaded && System->UsesEmitter(Emitter))
 		{
 			bool bAllowDestroySystemSim = true;
 			AddInternal(Comp, bReInit, bAllowDestroySystemSim);
@@ -195,8 +199,10 @@ void FNiagaraSystemUpdateContext::Add(const UNiagaraScript* Script, bool bReInit
 	{
 		UNiagaraComponent* Comp = *It;
 		check(Comp);
+
+		// only worry about systems that are fully loaded (and don't force it to be fully loaded just because it shows up in the iterator
 		UNiagaraSystem* System = Comp->GetAsset();
-		if (System && System->UsesScript(Script))
+		if (System && System->bFullyLoaded && System->UsesScript(Script))
 		{
 			bool bAllowDestroySystemSim = true;
 			AddInternal(Comp, bReInit, bAllowDestroySystemSim);
@@ -211,7 +217,9 @@ void FNiagaraSystemUpdateContext::Add(const UNiagaraParameterCollection* Collect
 		UNiagaraComponent* Comp = *It;
 		check(Comp);
 		UNiagaraSystem* System = Comp->GetAsset();
-		if (System && System->UsesCollection(Collection))
+
+		// only worry about systems that are fully loaded (and don't force it to be fully loaded just because it shows up in the iterator
+		if (System && System->bFullyLoaded && System->UsesCollection(Collection))
 		{
 			bool bAllowDestroySystemSim = true;
 			AddInternal(Comp, bReInit, bAllowDestroySystemSim);
@@ -914,7 +922,7 @@ bool FNiagaraUtilities::AllowGPUCulling(EShaderPlatform ShaderPlatform)
 
 bool FNiagaraUtilities::AreBufferSRVsAlwaysCreated(EShaderPlatform ShaderPlatform)
 {
-	return RHISupportsManualVertexFetch(ShaderPlatform) || IsGPUSkinCacheAvailable(ShaderPlatform);
+	return RHISupportsManualVertexFetch(ShaderPlatform) || FLocalVertexFactory::IsGPUSkinPassThroughSupported(ShaderPlatform);
 }
 
 ENiagaraCompileUsageStaticSwitch FNiagaraUtilities::ConvertScriptUsageToStaticSwitchUsage(ENiagaraScriptUsage ScriptUsage)
@@ -1570,4 +1578,48 @@ EPSCPoolMethod ToPSCPoolMethod(ENCPoolMethod PoolingMethod)
 		return EPSCPoolMethod::ManualRelease;
 	}
 	return EPSCPoolMethod::None;
+}
+
+//////////////////////////////////////////////////////////////////////////
+
+
+void FNiagaraFunctionSignature::GetVariadicInputs(TArray<FNiagaraVariableBase>& OutVariadicInputs, bool bStripNonExecution/* =true */)const
+{
+	static const FNiagaraVariableBase InstDataVar(FNiagaraTypeDefinition::GetIntDef(), TEXT("InstanceData"));
+	OutVariadicInputs.Reset(NumOptionalInputs());
+	int32 NumInputs = 0;
+	for (const FNiagaraVariableBase& Param : Inputs)
+	{
+		if (bStripNonExecution && (Param.GetType() == FNiagaraTypeDefinition::GetParameterMapDef() || Param == InstDataVar))
+		{
+			continue;
+		}
+
+		if (NumInputs++ < NumRequiredInputs())
+		{
+			continue;
+		}
+
+		OutVariadicInputs.Emplace(Param);
+	}
+}
+
+void FNiagaraFunctionSignature::GetVariadicOutputs(TArray<FNiagaraVariableBase>& OutVariadicOutputs, bool bStripNonExecution/* =true */)const
+{
+	OutVariadicOutputs.Reset(NumOptionalOutputs());
+	int32 NumOutputs = 0;
+	for (const FNiagaraVariableBase& Param : Outputs)
+	{
+		if (bStripNonExecution && (Param.GetType() == FNiagaraTypeDefinition::GetParameterMapDef()))
+		{
+			continue;
+		}
+
+		if (NumOutputs++ < NumRequiredOutputs())
+		{
+			continue;
+		}
+
+		OutVariadicOutputs.Emplace(Param);
+	}
 }

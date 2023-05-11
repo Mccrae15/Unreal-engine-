@@ -5,9 +5,9 @@
 #include "CommonUISettings.h"
 #include "CommonUIEditorSettings.h"
 #include "Engine/AssetManager.h"
-#include "Misc/CoreDelegates.h"
 
 #include "Input/CommonUIInputSettings.h"
+#include "UObject/Package.h"
 
 #if WITH_EDITOR
 #include "ISettingsModule.h"

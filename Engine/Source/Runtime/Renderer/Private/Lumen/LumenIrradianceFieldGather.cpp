@@ -193,11 +193,10 @@ class FIrradianceFieldGatherCS : public FGlobalShader
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, RWDiffuseIndirect)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float3>, RWRoughSpecularIndirect)
 		SHADER_PARAMETER_STRUCT_INCLUDE(LumenRadianceCache::FRadianceCacheInterpolationParameters, RadianceCacheParameters)
+		SHADER_PARAMETER_STRUCT_INCLUDE(LumenReflections::FCompositeParameters, ReflectionsCompositeParameters)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneTextureUniformParameters, SceneTexturesStruct)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FStrataGlobalUniformParameters, Strata)
-		SHADER_PARAMETER(float, MaxRoughnessToTrace)
-		SHADER_PARAMETER(float, RoughnessFadeLength)
 		SHADER_PARAMETER(float, ProbeOcclusionViewBias)
 		SHADER_PARAMETER(float, ProbeOcclusionNormalBias)
 	END_SHADER_PARAMETER_STRUCT()
@@ -261,8 +260,6 @@ FSSDSignalTextures FDeferredShadingSceneRenderer::RenderLumenIrradianceFieldGath
 
 	check(GLumenIrradianceFieldGather != 0);
 
-	FLumenCardTracingInputs TracingInputs(GraphBuilder, *Scene->GetLumenSceneData(View), FrameTemporaries);
-
 	const LumenRadianceCache::FRadianceCacheInputs RadianceCacheInputs = LumenIrradianceFieldGather::SetupRadianceCacheInputs();
 
 	FMarkUsedRadianceCacheProbes Callbacks;
@@ -285,7 +282,6 @@ FSSDSignalTextures FDeferredShadingSceneRenderer::RenderLumenIrradianceFieldGath
 	LumenRadianceCache::TInlineArray<LumenRadianceCache::FUpdateOutputs> OutputArray;
 
 	InputArray.Add(LumenRadianceCache::FUpdateInputs(
-		TracingInputs,
 		RadianceCacheInputs,
 		FRadianceCacheConfiguration(),
 		View,
@@ -301,7 +297,7 @@ FSSDSignalTextures FDeferredShadingSceneRenderer::RenderLumenIrradianceFieldGath
 	LumenRadianceCache::FUpdateInputs TranslucencyVolumeRadianceCacheUpdateInputs = GetLumenTranslucencyGIVolumeRadianceCacheInputs(
 		GraphBuilder,
 		View, 
-		TracingInputs,
+		FrameTemporaries,
 		ComputePassFlags);
 
 	if (TranslucencyVolumeRadianceCacheUpdateInputs.IsAnyCallbackBound())
@@ -314,10 +310,11 @@ FSSDSignalTextures FDeferredShadingSceneRenderer::RenderLumenIrradianceFieldGath
 
 	LumenRadianceCache::UpdateRadianceCaches(
 		GraphBuilder, 
+		FrameTemporaries,
 		InputArray,
 		OutputArray,
 		Scene,
-		ViewFamily.EngineShowFlags,
+		ViewFamily,
 		LumenCardRenderer.bPropagateGlobalLightingChange,
 		ComputePassFlags);
 
@@ -335,10 +332,7 @@ FSSDSignalTextures FDeferredShadingSceneRenderer::RenderLumenIrradianceFieldGath
 		PassParameters->View = View.ViewUniformBuffer;
 		PassParameters->SceneTexturesStruct = SceneTextures.UniformBuffer;
 		PassParameters->Strata = Strata::BindStrataGlobalUniformParameters(View);
-		extern float GLumenReflectionMaxRoughnessToTrace;
-		extern float GLumenReflectionRoughnessFadeLength;
-		PassParameters->MaxRoughnessToTrace = GLumenReflectionMaxRoughnessToTrace;
-		PassParameters->RoughnessFadeLength = GLumenReflectionRoughnessFadeLength;
+		LumenReflections::SetupCompositeParameters(PassParameters->ReflectionsCompositeParameters);
 		PassParameters->ProbeOcclusionViewBias = GLumenIrradianceFieldProbeOcclusionViewBias;
 		PassParameters->ProbeOcclusionNormalBias = GLumenIrradianceFieldProbeOcclusionNormalBias;
 

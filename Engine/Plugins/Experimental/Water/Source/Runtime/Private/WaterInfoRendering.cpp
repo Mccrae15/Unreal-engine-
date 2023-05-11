@@ -2,29 +2,37 @@
 
 #include "WaterInfoRendering.h"
 
-#include "EngineModule.h"
+#include "CommonRenderResources.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "LegacyScreenPercentageDriver.h"
+#include "Modules/ModuleManager.h"
 #include "RenderCaptureInterface.h"
-#include "WaterBodyActor.h"
+#include "RHIStaticStates.h"
 #include "WaterBodySceneProxy.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "ScenePrivate.h"
-#include "RendererModule.h"
 #include "SceneCaptureRendering.h"
 #include "PostProcess/SceneFilterRendering.h"
 #include "Math/OrthoMatrix.h"
 #include "GameFramework/WorldSettings.h"
+#include "ScreenRendering.h"
 #include "WaterZoneActor.h"
-#include "Rendering/NaniteStreamingManager.h"
-#include "SceneViewExtension.h"
 #include "LandscapeRender.h"
 #include "LandscapeModule.h"
+#include "TextureResource.h"
+#include "WaterBodyComponent.h"
 
 static int32 RenderCaptureNextWaterInfoDraws = 0;
 static FAutoConsoleVariableRef CVarRenderCaptureNextWaterInfoDraws(
 	TEXT("r.Water.WaterInfo.RenderCaptureNextWaterInfoDraws"),
 	RenderCaptureNextWaterInfoDraws,
 	TEXT("Enable capturing of the water info texture for the next N draws"));
+
+static int32 WaterInfoRenderLandscapeMinimumMipLevel = 0;
+static FAutoConsoleVariableRef CVarWaterInfoRenderLandscapeMinimumMipLevel(
+	TEXT("r.Water.WaterInfo.LandscapeMinimumMipLevel"),
+	WaterInfoRenderLandscapeMinimumMipLevel,
+	TEXT("Clamps the minimum allowed mip level for the landscape when rendering the water info texture. Used on the lowest end platforms which cannot support rendering all the landscape vertices at the highest LOD."));
 
 namespace UE::WaterInfo
 {
@@ -359,8 +367,9 @@ private:
 			{
 				if (LandscapeSectionInfo != nullptr)
 				{
-					const double LandscapeComponentUnitsPerVertex = LandscapeSectionInfo->ComputeSectionResolution();
-					if (LandscapeComponentUnitsPerVertex <= 0.f)
+					// Double the required landscape resolution to achieve 2 quads per pixel.
+					const double LandscapeComponentUnitsPerQuad = 2.0 * LandscapeSectionInfo->ComputeSectionResolution();
+					if (LandscapeComponentUnitsPerQuad <= 0.f)
 					{
 						// No section resolution probably means the section is a mesh proxy, which might not have regular units per vertex.
 						// Avoid computing optimal LOD in this case.
@@ -368,8 +377,8 @@ private:
 					}
 
 					// Derived from:
-					// LandscapeComponentUnitsPerVertex * 2 ^ (LODLevel) <= WaterInfoUnitsPerPixel * 0.5
-					OptimalLODLevel = FMath::Max(0, int32(FMath::FloorLog2(WaterInfoUnitsPerPixel / LandscapeComponentUnitsPerVertex)) - 1);
+					// (ComponentWorldExtent / WaterInfoWorldspaceExtent) * WaterInfoTextureResolution = (NumComponentQuads / 2 ^ (LodLevel))
+					OptimalLODLevel = FMath::Max(WaterInfoRenderLandscapeMinimumMipLevel, FMath::FloorToInt(FMath::Log2(WaterInfoUnitsPerPixel / LandscapeComponentUnitsPerQuad)));
 
 					break;
 				}

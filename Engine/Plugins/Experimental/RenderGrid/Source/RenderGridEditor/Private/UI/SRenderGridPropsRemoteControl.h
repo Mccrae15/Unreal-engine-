@@ -49,17 +49,17 @@ namespace UE::RenderGrid::Private
 		URenderGridJob* GetSelectedJob();
 
 		/** Obtains the value (as bytes) of the given prop (the given remote control entity), returns true if it succeeded, returns false otherwise. */
-		bool GetSelectedJobFieldValue(const TSharedPtr<FRemoteControlEntity>& RemoteControlEntity, TArray<uint8>& OutBinaryArray);
+		bool GetSelectedJobFieldValue(const TSharedPtr<FRemoteControlEntity>& RemoteControlEntity, TArray<uint8>& OutBytes);
 
 		/** Sets the value of the given prop (the given remote control entity) with the given value (as bytes), returns true if it succeeded, returns false otherwise. */
-		bool SetSelectedJobFieldValue(const TSharedPtr<FRemoteControlEntity>& RemoteControlEntity, const TArray<uint8>& BinaryArray);
+		bool SetSelectedJobFieldValue(const TSharedPtr<FRemoteControlEntity>& RemoteControlEntity, const TArray<uint8>& Bytes);
 
 	private:
 		/** A reference to the blueprint editor that owns the render grid instance. */
 		TWeakPtr<IRenderGridEditor> BlueprintEditorWeakPtr;
 
 		/** The props source control. */
-		TObjectPtr<URenderGridPropsSourceRemoteControl> PropsSource;
+		TWeakObjectPtr<URenderGridPropsSourceRemoteControl> PropsSourceWeakPtr;
 
 		/** The widget that lists the property rows. */
 		TSharedPtr<SVerticalBox> RowWidgetsContainer;

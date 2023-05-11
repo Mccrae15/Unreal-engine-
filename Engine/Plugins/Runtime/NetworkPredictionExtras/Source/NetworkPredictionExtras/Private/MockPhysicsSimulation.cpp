@@ -1,22 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MockPhysicsSimulation.h"
-#include "Physics/Experimental/PhysInterface_Chaos.h"
-#include "Chaos/ParticleHandle.h"
-#include "Chaos/Framework/PhysicsSolverBase.h"
-#include "Chaos/PBDRigidsEvolutionFwd.h"
-#include "PBDRigidsSolver.h"
-#include "Chaos/ChaosScene.h"
-#include "UObject/Object.h"
-#include "GameFramework/Actor.h"
-#include "Components/PrimitiveComponent.h"
-#include "Physics/GenericPhysicsInterface.h"
-#include "Engine/EngineTypes.h"
-#include "CollisionQueryParams.h"
-#include "PhysicsEngine/BodyInstance.h"
+#include "Engine/World.h"
 #include "DrawDebugHelpers.h"
-#include "Logging/LogMacros.h"
-#include "NetworkPredictionCues.h"
+#include "NetworkPredictionTickState.h"
 #include "PhysicsProxy/SingleParticlePhysicsProxy.h"
 
 NETSIMCUE_REGISTER(FMockPhysicsJumpCue, TEXT("MockPhysicsJumpCue"));

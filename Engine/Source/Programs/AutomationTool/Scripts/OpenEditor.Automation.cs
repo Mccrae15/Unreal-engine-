@@ -14,10 +14,10 @@ namespace AutomationTool
 
 	[Help("Opens the specified project.")]
 	[Help("project=<QAGame>", "Project to open. Will search current path and paths in ueprojectdirs. If omitted will open vanilla UnrealEditor")]
-	public class OpenEditor: BuildCommand
+	public class OpenEditor : BuildCommand
 	{
 		// exposed as a property so projects can derive and set this directly
-		public string ProjectName { get; set; }
+		public string ProjectName { get; set; } = string.Empty;
 
 		private string _UnrealEditorApp = "UnrealEditor";
 		public string UnrealEditorApp
@@ -38,14 +38,22 @@ namespace AutomationTool
 		{
 			bNoProject = false;
 		}
-		
+
 		public override ExitCode Execute()
 		{
-			string EditorPath = HostPlatform.Current.GetUnrealExePath(UnrealEditorApp);
+			string EditorPath = string.Empty;
+			if (Path.IsPathRooted(UnrealEditorApp) && File.Exists(UnrealEditorApp))
+			{
+				EditorPath = UnrealEditorApp;
+			}
+			else
+			{
+				EditorPath = HostPlatform.Current.GetUnrealExePath(UnrealEditorApp);
+			}
 
 			string EditorArgs = "";
 
-			ProjectName = ParseParamValue("project", ProjectName);
+			ProjectName = (string.IsNullOrEmpty(ProjectName) || !Path.IsPathRooted(ProjectName)) ? ParseParamValue("project", ProjectName) : ProjectName;
 			IEnumerable<string> ParamList = null;
 
 			if (bNoProject)
@@ -54,7 +62,11 @@ namespace AutomationTool
 			}
 			else
 			{
-				if (!String.IsNullOrEmpty(ProjectName))
+				if (Path.IsPathRooted(ProjectName) && File.Exists(ProjectName))
+				{
+					EditorArgs = ProjectName;
+				}
+				else if (!string.IsNullOrEmpty(ProjectName))
 				{
 					FileReference ProjectFile = ProjectUtils.FindProjectFileFromName(ProjectName);
 
@@ -73,16 +85,19 @@ namespace AutomationTool
 
 			ParamList = new[] { EditorArgs }.Concat(ParamList);
 
-			bool bLaunched = RunUntrackedProcess(EditorPath, string.Join(" -", ParamList));
+			bool bLaunched = RunProceess.RunUntrackedProcess(EditorPath, string.Join(" -", ParamList));
 
 			return bLaunched ? ExitCode.Success : ExitCode.Error_UATLaunchFailure;
 		}
+	}
 
-		protected bool RunUntrackedProcess(string BinaryPath, string Args)
+	public class RunProceess
+	{ 
+		public static bool RunUntrackedProcess(string BinaryPath, string Args)
 		{
-			LogInformation("Running {0} {1}", BinaryPath, Args);
+			CommandUtils.LogInformation("Running {0} {1}", BinaryPath, Args);
 
-			var NewProcess = HostPlatform.Current.CreateProcess(BinaryPath);			
+			var NewProcess = HostPlatform.Current.CreateProcess(BinaryPath);
 			var Result = new ProcessResult(BinaryPath, NewProcess, false, false);
 			System.Diagnostics.Process Proc = Result.ProcessObject;
 
@@ -92,5 +107,4 @@ namespace AutomationTool
 			return Proc.Start();
 		}
 	}
-
 }

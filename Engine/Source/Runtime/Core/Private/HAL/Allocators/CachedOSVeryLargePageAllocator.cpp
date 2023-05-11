@@ -1,27 +1,53 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "HAL/Allocators/CachedOSVeryLargePageAllocator.h"
+#include "HAL/IConsoleManager.h"
 #include "HAL/UnrealMemory.h"
 #include "Logging/LogMacros.h"
 #include "CoreGlobals.h"
 #include "HAL/LowLevelMemTracker.h"
+#include "HAL/IConsoleManager.h"
 #include "ProfilingDebugging/CsvProfiler.h"
 
 #if UE_USE_VERYLARGEPAGEALLOCATOR
-static int32 GVeryLargePageAllocatorMaxEmptyBackstore = 10;
-static FAutoConsoleVariableRef CVarVeryLargePageAllocatorMaxEmptyBackstore(
-	TEXT("VeryLargePageAllocator.MaxEmptyBackstore"),
-	GVeryLargePageAllocatorMaxEmptyBackstore,
-	TEXT(""));
 
 CORE_API bool GEnableVeryLargePageAllocator = true;
+static int32 GVeryLargePageAllocatorMaxEmptyBackStoreCount[FMemory::AllocationHints::Max] = {
+	0,	// FMemory::AllocationHints::Default
+	0,	// FMemory::AllocationHints::Temporary
+	0	// FMemory::AllocationHints::SmallPool
+};
+
+static_assert(int32(FMemory::AllocationHints::Max) == 3); // ensure FMemory::AllocationHints has 3 types of hint so GVeryLargePageAllocatorMaxEmptyBackStoreCount has needed values
+
+bool GVeryLargePageAllocatorPreAllocatePools = true;
+static FAutoConsoleVariableRef CVarVeryLargePageAllocatorPreAllocatePools(
+	TEXT("VeryLargePageAllocator.PreAllocatePools"),
+	GVeryLargePageAllocatorPreAllocatePools,
+	TEXT("Having pages preallocated and cached during the life of the title help to avoid defragmentation of physical memory.\n")
+	TEXT("Preallocation is disabled when system reaches OOM."));
+
+bool GVeryLargePageAllocatorLeavePageCachingEnabledWhenOOMHappened = true;
+static FAutoConsoleVariableRef CVarVeryLargePageAllocatorLeavePageCachingEnabledWhenOOMHappened(
+	TEXT("VeryLargePageAllocator.LeavePageCachingEnabledWhenOOMHappened"),
+	GVeryLargePageAllocatorLeavePageCachingEnabledWhenOOMHappened,
+	TEXT("Leave page caching enabled when a OOM has happened and all unusued pages have been freed (so new allocated pages gets cached again)"));
+
+static FAutoConsoleVariableRef CVarVeryLargePageAllocatorMaxEmptyBackstoreDefault(
+	TEXT("VeryLargePageAllocator.MaxEmptyBackstoreDefault"),
+	GVeryLargePageAllocatorMaxEmptyBackStoreCount[FMemory::AllocationHints::Default],
+	TEXT("Number of free pages (2MB each) to cache (not decommited) for allocation hint DEFAULT"));
+
+static FAutoConsoleVariableRef CVarVeryLargePageAllocatorMaxEmptyBackstoreSmallPool(
+	TEXT("VeryLargePageAllocator.MaxEmptyBackstoreSmallPool"),
+	GVeryLargePageAllocatorMaxEmptyBackStoreCount[FMemory::AllocationHints::SmallPool],
+	TEXT("Number of free pages (2MB each) to cache (not decommited) for allocation hint SMALL POOL"));
 
 #if CSV_PROFILER
 CSV_DECLARE_CATEGORY_MODULE_EXTERN(CORE_API, FMemory);
 
 static volatile int32 GLargePageAllocatorCommitCount = 0;
 static volatile int32 GLargePageAllocatorDecommitCount = 0;
-static volatile int32 GLargePageAllocatorLargePageCount = 0;
 #endif
 
 void FCachedOSVeryLargePageAllocator::Init()
@@ -43,7 +69,9 @@ void FCachedOSVeryLargePageAllocator::Init()
 		UsedLargePagesHead[i] = nullptr;
 		EmptyButAvailableLargePagesHead[i] = nullptr;
 		EmptyBackStoreCount[i] = 0;
+		CommitedLargePagesCount[i] = 0;
 	}
+
 #if UE_VERYLARGEPAGEALLOCATOR_TAKEONALL64KBALLOCATIONS
 	for (int i = 0; i < NumberOfLargePages / 2; i++)
 #else
@@ -65,6 +93,56 @@ void FCachedOSVeryLargePageAllocator::Init()
 	if (!GEnableVeryLargePageAllocator)
 	{
 		bEnabled = false;
+	}
+}
+
+void FCachedOSVeryLargePageAllocator::Refresh()
+{
+	if (!bEnabled)
+	{
+		return;
+	}
+
+	// Function is not thread safe 
+	UE_LOG(LogMemory, Log, TEXT("Refreshing LargePageAllocator"));
+
+	for (int32 i = 0; i < FMemory::AllocationHints::Max; i++)
+	{
+		FMemory::AllocationHints AllocationHint = FMemory::AllocationHints(i);
+
+		int32 LargePageCount = CommitedLargePagesCount[AllocationHint] + EmptyBackStoreCount[AllocationHint];
+
+		if (LargePageCount < GVeryLargePageAllocatorMaxEmptyBackStoreCount[AllocationHint] && GVeryLargePageAllocatorPreAllocatePools)
+		{
+			// Preallocate large pages
+			for ( ; LargePageCount < GVeryLargePageAllocatorMaxEmptyBackStoreCount[AllocationHint]; LargePageCount++)
+			{
+				LLM_PLATFORM_SCOPE(ELLMTag::FMalloc);
+
+				FLargePage* LargePage = FreeLargePagesHead[AllocationHint];
+
+				check(LargePage != nullptr); // Can't happen
+				LargePage->AllocationHint = AllocationHint;
+				LargePage->Unlink();
+
+				if (!Block.Commit(LargePage->BaseAddress - AddressSpaceReserved, SizeOfLargePage, false))
+				{
+					// Cant commit 2MB pages, stop preallocating and return page to FreeLargePagesHead list
+					LargePage->LinkHead(FreeLargePagesHead[AllocationHint]);
+					GVeryLargePageAllocatorPreAllocatePools = false;
+					break;
+				}
+
+				LargePage->LinkHead(EmptyButAvailableLargePagesHead[AllocationHint]);
+				CachedFree += SizeOfLargePage;
+				CommitedLargePagesCount[AllocationHint] += 1;
+				EmptyBackStoreCount[AllocationHint] += 1;
+			}
+		}
+		else
+		{
+			ShrinkEmptyBackStore(GVeryLargePageAllocatorMaxEmptyBackStoreCount[AllocationHint], AllocationHint);
+		}
 	}
 }
 
@@ -125,17 +203,21 @@ void* FCachedOSVeryLargePageAllocator::Allocate(SIZE_T Size, uint32 AllocationHi
 								// Fallback to regular allocator
 								LargePage = nullptr;
 							}
-#if CSV_PROFILER
 							else
 							{
+								// A new large page has been created. Add it to CachedFree counter
+								CachedFree += SizeOfLargePage;
+								CommitedLargePagesCount[AllocationHint] += 1;
+#if CSV_PROFILER
 								FPlatformAtomics::InterlockedIncrement(&GLargePageAllocatorCommitCount);
-								FPlatformAtomics::InterlockedIncrement(&GLargePageAllocatorLargePageCount);
-							}
 #endif
+							}
 						}
 					}
 #else 
 							Block.Commit(LargePage->BaseAddress - AddressSpaceReserved, SizeOfLargePage);
+							CachedFree += SizeOfLargePage;
+							CommitedLargePagesCount[AllocationHint] += 1;
 						}
 					}
 #endif // UE_USE_VERYLARGEPAGEALLOCATOR_FALLBACKPATH
@@ -146,7 +228,6 @@ void* FCachedOSVeryLargePageAllocator::Allocate(SIZE_T Size, uint32 AllocationHi
 				if (bLinkToUsedLargePagesWithSpaceHead)
 				{
 					LargePage->LinkHead(UsedLargePagesWithSpaceHead[AllocationHint]);
-					CachedFree += SizeOfLargePage;
 				}
 
 				ret = LargePage->Allocate();
@@ -196,7 +277,7 @@ void FCachedOSVeryLargePageAllocator::Free(void* Ptr, SIZE_T Size, FCriticalSect
 			LargePage->Unlink();
 
 			// move it to EmptyButAvailableLargePagesHead if that pool of backstore is not full yet
-			if (EmptyBackStoreCount[LargePage->AllocationHint] < GVeryLargePageAllocatorMaxEmptyBackstore)
+			if (EmptyBackStoreCount[LargePage->AllocationHint] < GVeryLargePageAllocatorMaxEmptyBackStoreCount[LargePage->AllocationHint])
 			{
 				LargePage->LinkHead(EmptyButAvailableLargePagesHead[LargePage->AllocationHint]);
 				EmptyBackStoreCount[LargePage->AllocationHint] += 1;
@@ -211,9 +292,9 @@ void FCachedOSVeryLargePageAllocator::Free(void* Ptr, SIZE_T Size, FCriticalSect
 					Block.Decommit(LargePage->BaseAddress - AddressSpaceReserved, SizeOfLargePage);
 				}
 
+				CommitedLargePagesCount[LargePage->AllocationHint] -= 1;
 #if CSV_PROFILER
 				FPlatformAtomics::InterlockedIncrement(&GLargePageAllocatorDecommitCount);
-				FPlatformAtomics::InterlockedDecrement(&GLargePageAllocatorLargePageCount);
 #endif
 
 				LargePage->LinkHead(FreeLargePagesHead[LargePage->AllocationHint]);
@@ -281,24 +362,54 @@ void FCachedOSVeryLargePageAllocator::Free(void* Ptr, SIZE_T Size, FCriticalSect
 	}
 }
 
+void FCachedOSVeryLargePageAllocator::ShrinkEmptyBackStore(int32 NewEmptyBackStoreSize, FMemory::AllocationHints AllocationHint)
+{
+	while (EmptyBackStoreCount[AllocationHint] > NewEmptyBackStoreSize)
+	{
+		FLargePage* LargePage = EmptyButAvailableLargePagesHead[AllocationHint];
+
+		if (LargePage == nullptr)
+		{
+			break;
+		}
+		LargePage->Unlink();
+		Block.Decommit(LargePage->BaseAddress - AddressSpaceReserved, SizeOfLargePage);
+
+		LargePage->LinkHead(FreeLargePagesHead[LargePage->AllocationHint]);
+		CachedFree -= SizeOfLargePage;
+		EmptyBackStoreCount[AllocationHint] -= 1;
+		CommitedLargePagesCount[LargePage->AllocationHint] -= 1;
+	}
+}
+
+
 void FCachedOSVeryLargePageAllocator::FreeAll(FCriticalSection* Mutex)
 {
+	for (int i = 0; i < FMemory::AllocationHints::Max; i++)
+	{
+		FMemory::AllocationHints AllocationHint = FMemory::AllocationHints(i);
+		ShrinkEmptyBackStore(0, AllocationHint);
+	}
+
+	// Stop preallocating system since allocator reached a OOM
+	if (!GVeryLargePageAllocatorLeavePageCachingEnabledWhenOOMHappened)
+	{
+		GVeryLargePageAllocatorPreAllocatePools = false;
+	}
+
+	// Free empty cached pages of CachedOSPageAllocator
 	CachedOSPageAllocator.FreeAll(Mutex);
 }
 
 void FCachedOSVeryLargePageAllocator::UpdateStats()
 {
 #if CSV_PROFILER
-	int32 BackingStoreCount = 0;
-	for (int i = 0; i < FMemory::AllocationHints::Max; i++)
-	{
-		BackingStoreCount += EmptyBackStoreCount[i];
-	}
-
 	CSV_CUSTOM_STAT(FMemory, LargeAllocatorCommitCount, GLargePageAllocatorCommitCount, ECsvCustomStatOp::Set);
 	CSV_CUSTOM_STAT(FMemory, LargeAllocatorDecommitCount, GLargePageAllocatorDecommitCount, ECsvCustomStatOp::Set);
-	CSV_CUSTOM_STAT(FMemory, LargeAllocatorBackingStoreCount, BackingStoreCount, ECsvCustomStatOp::Set);
-	CSV_CUSTOM_STAT(FMemory, LargeAllocatorPageCount, GLargePageAllocatorLargePageCount, ECsvCustomStatOp::Set);
+	CSV_CUSTOM_STAT(FMemory, LargeAllocatorBackingStoreCountSmall, EmptyBackStoreCount[FMemory::AllocationHints::SmallPool], ECsvCustomStatOp::Set);
+	CSV_CUSTOM_STAT(FMemory, LargeAllocatorBackingStoreCountDefault, EmptyBackStoreCount[FMemory::AllocationHints::Default], ECsvCustomStatOp::Set);
+	CSV_CUSTOM_STAT(FMemory, LargeAllocatorPageCountSmall, CommitedLargePagesCount[FMemory::AllocationHints::SmallPool], ECsvCustomStatOp::Set);
+	CSV_CUSTOM_STAT(FMemory, LargeAllocatorPageCountDefault, CommitedLargePagesCount[FMemory::AllocationHints::Default], ECsvCustomStatOp::Set);
 
 	GLargePageAllocatorCommitCount = 0;
 	GLargePageAllocatorDecommitCount = 0;

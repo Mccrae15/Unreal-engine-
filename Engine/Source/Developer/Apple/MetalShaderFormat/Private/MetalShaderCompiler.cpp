@@ -88,12 +88,14 @@ struct FHlslccMetalHeader : public CrossCompiler::FHlslccHeader
 	
 	TMap<uint8, TArray<uint8>> ArgumentBuffers;
 	int8 SideTable;
+	uint32 RayTracingInstanceIndexBuffer;
 	uint32 Version;
 };
 
 FHlslccMetalHeader::FHlslccMetalHeader(uint32 const InVersion)
 {
 	SideTable = -1;
+	RayTracingInstanceIndexBuffer = UINT_MAX;
 	Version = InVersion;
 }
 
@@ -109,6 +111,7 @@ static const ANSICHAR* Str##Prefix = "// @" #Str ": "; \
 static const int32 Str##PrefixLen = FCStringAnsi::Strlen(Str##Prefix)
 	DEF_PREFIX_STR(ArgumentBuffers);
 	DEF_PREFIX_STR(SideTable);
+	DEF_PREFIX_STR(RayTracingInstanceIndexBuffer);
 #undef DEF_PREFIX_STR
 	
 	const ANSICHAR* SideTableString = FCStringAnsi::Strstr(ShaderSource, SideTablePrefix);
@@ -144,6 +147,21 @@ static const int32 Str##PrefixLen = FCStringAnsi::Strlen(Str##Prefix)
 		}
 	}
 	
+	const ANSICHAR* RayTracingInstanceIndexBufferString = FCStringAnsi::Strstr(ShaderSource, RayTracingInstanceIndexBufferPrefix);
+	if (RayTracingInstanceIndexBufferString)
+	{
+		ShaderSource += RayTracingInstanceIndexBufferPrefixLen;
+		if (!CrossCompiler::ParseIntegerNumber(ShaderSource, RayTracingInstanceIndexBuffer))
+		{
+			return false;
+		}
+
+		if (*ShaderSource && !CrossCompiler::Match(ShaderSource, '\n'))
+		{
+			return false;
+		}
+	}
+
 	const ANSICHAR* ArgumentTable = FCStringAnsi::Strstr(ShaderSource, ArgumentBuffersPrefix);
 	if (ArgumentTable)
 	{
@@ -502,6 +520,12 @@ void BuildMetalShaderOutput(
 	Header.NumThreadsY = CCHeader.NumThreads[1];
 	Header.NumThreadsZ = CCHeader.NumThreads[2];
 	
+	// TODO: Should be for inline RT only.
+	if (Frequency == SF_Compute)
+	{
+		Header.RayTracing.InstanceIndexBuffer = CCHeader.RayTracingInstanceIndexBuffer;
+	}
+
 	Header.bDeviceFunctionConstants = (FCStringAnsi::Strstr(USFSource, "#define __METAL_DEVICE_CONSTANT_INDEX__ 1") != nullptr);
 	Header.SideTable = CCHeader.SideTable;
 	Header.Bindings.ArgumentBufferMasks = CCHeader.ArgumentBuffers;
@@ -533,10 +557,6 @@ void BuildMetalShaderOutput(
 	}
 
 	FString MetalCode = FString(USFSource);
-	if (ShaderInput.Environment.CompilerFlags.Contains(CFLAG_ExtraShaderData))
-	{
-		ShaderOutput.ShaderCode.AddOptionalData(FShaderCodeName::Key, TCHAR_TO_UTF8(*ShaderInput.GenerateShaderName()));
-	}
 
 	if (ShaderInput.Environment.CompilerFlags.Contains(CFLAG_Debug))
 	{
@@ -665,6 +685,9 @@ void BuildMetalShaderOutput(
 					IFileManager::Get().Delete(*SaveFile);
 				}
 			}
+
+			// For iOS 14.0+ this is required. Version==0 is IOSMetalSLStandard_Minimum
+			const bool bPreserveInvariance = Frequency == SF_Vertex && (Version == 0 || Version > 5);
 			
 			// TODO This is the actual MetalSL -> AIR piece
 			FMetalShaderBytecodeJob Job;
@@ -677,7 +700,7 @@ void BuildMetalShaderOutput(
 			Job.OutputObjectFile = AIRFileName;
 			Job.CompilerVersion = CompilerVersionString;
 			Job.MinOSVersion = MinOSVersion;
-			Job.PreserveInvariance = Frequency == SF_Vertex && Version > 5 ? TEXT("-fpreserve-invariance") : TEXT("");
+			Job.PreserveInvariance = bPreserveInvariance ? TEXT("-fpreserve-invariance") : TEXT("");
 			Job.DebugInfo = DebugInfo;
 			Job.MathMode = MathMode;
 			Job.Standard = Standard;
@@ -860,6 +883,10 @@ void CompileShader_Metal(const FShaderCompilerInput& _Input,FShaderCompilerOutpu
 		}
 	}();
 
+	#if PLATFORM_MAC_ENABLE_EXPERIMENTAL_NANITE_SUPPORT
+		AdditionalDefines.SetDefine(TEXT("METAL_ENABLE_EXPERIMENTAL_NANITE_SUPPORT"), 1);
+	#endif 
+
 	// TODO read from toolchain
 	bool bAppleTV = (Input.ShaderFormat == NAME_SF_METAL_TVOS || Input.ShaderFormat == NAME_SF_METAL_MRT_TVOS);
 	if (Input.ShaderFormat == NAME_SF_METAL || Input.ShaderFormat == NAME_SF_METAL_TVOS)
@@ -1007,7 +1034,7 @@ void CompileShader_Metal(const FShaderCompilerInput& _Input,FShaderCompilerOutpu
 		Input.DumpDebugInfoPath = FPaths::GetPath(Input.VirtualSourceFilePath);
 	}
 	
-	const bool bDumpDebugInfo = (Input.DumpDebugInfoPath != TEXT("") && IFileManager::Get().DirectoryExists(*Input.DumpDebugInfoPath));
+	const bool bDumpDebugInfo = Input.DumpDebugInfoEnabled();
 
 	// Allow the shader pipeline to override the platform default in here.
 	uint32 MaxUnrollLoops = 32;
@@ -1024,6 +1051,12 @@ void CompileShader_Metal(const FShaderCompilerInput& _Input,FShaderCompilerOutpu
 	else
 	{
 		AdditionalDefines.SetDefine(TEXT("COMPILER_SUPPORTS_ATTRIBUTES"), (uint32)1);
+	}
+
+	bool bUsesInlineRayTracing = Input.Environment.CompilerFlags.Contains(CFLAG_InlineRayTracing);
+	if (bUsesInlineRayTracing)
+	{
+		AdditionalDefines.SetDefine(TEXT("PLATFORM_SUPPORTS_INLINE_RAY_TRACING"), 1);
 	}
 
 	AdditionalDefines.SetDefine(TEXT("COMPILER_SUPPORTS_DUAL_SOURCE_BLENDING_SLOT_DECORATION"), (uint32)1);
@@ -1066,7 +1099,7 @@ void CompileShader_Metal(const FShaderCompilerInput& _Input,FShaderCompilerOutpu
 	}
 
 	FShaderParameterParser ShaderParameterParser;
-	if (!ShaderParameterParser.ParseAndModify(Input, Output, PreprocessedShader, /* ConstantBufferType = */ nullptr))
+	if (!ShaderParameterParser.ParseAndModify(Input, Output, PreprocessedShader))
 	{
 		// The FShaderParameterParser will add any relevant errors.
 		return;
@@ -1077,6 +1110,14 @@ void CompileShader_Metal(const FShaderCompilerInput& _Input,FShaderCompilerOutpu
 
 	// Process TEXT macro.
 	TransformStringIntoCharacterArray(PreprocessedShader);
+
+	// Run the experimental shader minifier
+	#if UE_METAL_SHADER_COMPILER_ALLOW_DEAD_CODE_REMOVAL
+	if (Input.Environment.CompilerFlags.Contains(CFLAG_RemoveDeadCode))
+	{
+		UE::ShaderCompilerCommon::RemoveDeadCode(PreprocessedShader, Input.EntryPointName, Output.Errors);
+	}
+	#endif // UE_METAL_SHADER_COMPILER_ALLOW_DEAD_CODE_REMOVAL
 
 	Output.PreprocessTime = FPlatformTime::Seconds() - StartPreprocessTime;
 	
@@ -1093,26 +1134,17 @@ void CompileShader_Metal(const FShaderCompilerInput& _Input,FShaderCompilerOutpu
 	// Write out the preprocessed file and a batch file to compile it if requested (DumpDebugInfoPath is valid)
 	if (bDumpDebugInfo && !bDirectCompile)
 	{
-		FArchive* FileWriter = IFileManager::Get().CreateFileWriter(*(Input.DumpDebugInfoPath / FPaths::GetBaseFilename(Input.GetSourceFilename() + TEXT(".usf"))));
-		if (FileWriter)
+		UE::ShaderCompilerCommon::FDebugShaderDataOptions DebugDataOptions;
+		DebugDataOptions.HlslCCFlags = CCFlags;
+		DebugDataOptions.AppendPostSource = [&Input]()
 		{
-			FString Line = GetDumpDebugUSFContents(Input, PreprocessedShader, 0);
-
 			// add the remote data if necessary
 //			if (IsRemoteBuildingConfigured(&Input.Environment))
 			{
-				Line += CreateRemoteDataFromEnvironment(Input.Environment);
+				return CreateRemoteDataFromEnvironment(Input.Environment);
 			}
-
-			FileWriter->Serialize(TCHAR_TO_ANSI(*Line), Line.Len());
-			FileWriter->Close();
-			delete FileWriter;
-		}
-
-		if (Input.bGenerateDirectCompileFile)
-		{
-			FFileHelper::SaveStringToFile(CreateShaderCompilerWorkerDirectCommandLine(Input, CCFlags), *(Input.DumpDebugInfoPath / TEXT("DirectCompile.txt")));
-		}
+		};
+		UE::ShaderCompilerCommon::DumpDebugShaderData(Input, PreprocessedShader, DebugDataOptions);
 	}
 
 	FSHAHash GUIDHash;

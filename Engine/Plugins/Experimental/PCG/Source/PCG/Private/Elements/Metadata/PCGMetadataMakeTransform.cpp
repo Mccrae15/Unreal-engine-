@@ -2,9 +2,9 @@
 
 #include "Elements/Metadata/PCGMetadataMakeTransform.h"
 
-#include "Helpers/PCGSettingsHelpers.h"
 #include "Metadata/PCGMetadataAttributeTpl.h"
-#include "Elements/Metadata/PCGMetadataElementCommon.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGMetadataMakeTransform)
 
 namespace PCGMetadataMakeTransformSettings
 {
@@ -25,6 +25,31 @@ namespace PCGMetadataMakeTransformSettings
 	{
 		return FTransform(Rotation, FVector(Translation, 0.0), FVector(Scale, 1.0));
 	}
+}
+
+void UPCGMetadataMakeTransformSettings::PostLoad()
+{
+	Super::PostLoad();
+
+#if WITH_EDITOR
+	if (Input1AttributeName_DEPRECATED != NAME_None)
+	{
+		InputSource1.SetAttributeName(Input1AttributeName_DEPRECATED);
+		Input1AttributeName_DEPRECATED = NAME_None;
+	}
+
+	if (Input2AttributeName_DEPRECATED != NAME_None)
+	{
+		InputSource2.SetAttributeName(Input2AttributeName_DEPRECATED);
+		Input2AttributeName_DEPRECATED = NAME_None;
+	}
+
+	if (Input3AttributeName_DEPRECATED != NAME_None)
+	{
+		InputSource3.SetAttributeName(Input3AttributeName_DEPRECATED);
+		Input3AttributeName_DEPRECATED = NAME_None;
+	}
+#endif // WITH_EDITOR
 }
 
 FName UPCGMetadataMakeTransformSettings::GetInputPinLabel(uint32 Index) const
@@ -61,18 +86,18 @@ bool UPCGMetadataMakeTransformSettings::IsSupportedInputType(uint16 TypeId, uint
 	}
 }
 
-FName UPCGMetadataMakeTransformSettings::GetInputAttributeNameWithOverride(uint32 Index, UPCGParamData* Params) const
+FPCGAttributePropertySelector UPCGMetadataMakeTransformSettings::GetInputSource(uint32 Index) const
 {
 	switch (Index)
 	{
 	case 0:
-		return PCG_GET_OVERRIDEN_VALUE(this, Input1AttributeName, Params);
+		return InputSource1;
 	case 1:
-		return PCG_GET_OVERRIDEN_VALUE(this, Input2AttributeName, Params);
+		return InputSource2;
 	case 2:
-		return PCG_GET_OVERRIDEN_VALUE(this, Input3AttributeName, Params);
+		return InputSource3;
 	default:
-		return NAME_None;
+		return FPCGAttributePropertySelector();
 	}
 }
 
@@ -84,7 +109,12 @@ uint16 UPCGMetadataMakeTransformSettings::GetOutputType(uint16 InputTypeId) cons
 #if WITH_EDITOR
 FName UPCGMetadataMakeTransformSettings::GetDefaultNodeName() const
 {
-	return TEXT("Make Transform Attribute");
+	return TEXT("MakeTransformAttribute");
+}
+
+FText UPCGMetadataMakeTransformSettings::GetDefaultNodeTitle() const
+{
+	return NSLOCTEXT("PCGMetadataMakeTransformSettings", "NodeTitle", "Make Transform Attribute");
 }
 #endif // WITH_EDITOR
 

@@ -3,7 +3,10 @@
 #include "ComputeFramework/ComputeGraphComponent.h"
 
 #include "ComputeFramework/ComputeGraph.h"
+#include "ComputeWorkerInterface.h"
 #include "GameFramework/Actor.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(ComputeGraphComponent)
 
 UComputeGraphComponent::UComputeGraphComponent()
 {
@@ -21,33 +24,19 @@ UComputeGraphComponent::~UComputeGraphComponent()
 void UComputeGraphComponent::CreateDataProviders(int32 InBindingIndex, UObject* InBindingObject)
 {
  	ComputeGraphInstance.CreateDataProviders(ComputeGraph, InBindingIndex, InBindingObject);
-
-	// We only want to queue work after validating the new providers.
-	bValidProviders = false;
 }
 
 void UComputeGraphComponent::DestroyDataProviders()
 {
 	ComputeGraphInstance.DestroyDataProviders();
-	bValidProviders = false;
 }
 
 void UComputeGraphComponent::QueueExecute()
 {
-	if (ComputeGraph == nullptr)
+	if (ComputeGraph != nullptr)
 	{
-		// todo[CF]: We should have a default fallback for all cases where we can't submit work.
-		return;
+		MarkRenderDynamicDataDirty();
 	}
-
-	// Don't submit work if we don't have all of the expected bindings.
-	bValidProviders = bValidProviders || ComputeGraphInstance.ValidateDataProviders(ComputeGraph);
-	if (!bValidProviders)
-	{
-		return;
-	}
-
-	MarkRenderDynamicDataDirty();
 }
 
 void UComputeGraphComponent::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
@@ -61,5 +50,5 @@ void UComputeGraphComponent::SendRenderDynamicData_Concurrent()
 {
 	Super::SendRenderDynamicData_Concurrent();
 	
-	ComputeGraphInstance.EnqueueWork(ComputeGraph, GetScene(), GetOwner()->GetFName());
+	ComputeGraphInstance.EnqueueWork(ComputeGraph, GetScene(), ComputeTaskExecutionGroup::EndOfFrameUpdate, GetOwner()->GetFName(), FSimpleDelegate());
 }

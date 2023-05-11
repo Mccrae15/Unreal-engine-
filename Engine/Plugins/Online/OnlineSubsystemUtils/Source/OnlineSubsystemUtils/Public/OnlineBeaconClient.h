@@ -2,12 +2,11 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "Engine/EngineTypes.h"
-#include "Containers/ArrayView.h"
 #include "OnlineBeacon.h"
 #include "OnlineBeaconClient.generated.h"
+
+struct FEncryptionKeyResponse;
+struct FURL;
 
 class AOnlineBeaconHostObject;
 class FInBunch;
@@ -132,6 +131,15 @@ class ONLINESUBSYSTEMUTILS_API AOnlineBeaconClient : public AOnlineBeacon
 	const FUniqueNetIdRepl& GetUniqueId() const;
 
 	/**
+	* Get the authentication ticket to send when the server requires auth.
+	* 
+	* @param PlayerId unique id of the user on this connection
+	* 
+	* @return AuthTicket value to send to server
+	*/
+	virtual FString GetAuthTicket(const FUniqueNetIdRepl& PlayerId);
+
+	/**
 	 * Get the connection state
 	 * Higher level than the net connection because of the handshaking of the actors
 	 *
@@ -233,3 +241,7 @@ inline const TCHAR* ToString(EBeaconConnectionState Value)
 	}
 	return TEXT("");
 }
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

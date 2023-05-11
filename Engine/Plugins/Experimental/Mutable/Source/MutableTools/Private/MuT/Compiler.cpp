@@ -12,7 +12,6 @@
 #include "Logging/LogMacros.h"
 #include "Misc/AssertionMacros.h"
 #include "MuR/Image.h"
-#include "MuR/MemoryPrivate.h"
 #include "MuR/Mesh.h"
 #include "MuR/Model.h"
 #include "MuR/ModelPrivate.h"
@@ -32,7 +31,6 @@
 #include "MuT/Node.h"
 #include "MuT/NodePrivate.h"
 #include "MuT/Table.h"
-#include "MuT/TaskManager.h"
 #include "Trace/Detail/Channel.h"
 
 #include <algorithm>
@@ -106,20 +104,6 @@ namespace mu
     }
 
 
-	//---------------------------------------------------------------------------------------------
-	void CompilerOptions::SetEnablePartialOptimisation(bool bEnabled)
-	{
-		m_pD->m_enablePartialOptimise = bEnabled;
-	}
-
-
-	//---------------------------------------------------------------------------------------------
-	void CompilerOptions::SetEnableConcurrency(bool bEnabled)
-	{
-		m_pD->m_enableConcurrency = bEnabled;
-	}
-
-
     //---------------------------------------------------------------------------------------------
     void CompilerOptions::SetUseDiskCache( bool enabled )
     {
@@ -163,6 +147,13 @@ namespace mu
 	}
 
 
+	//---------------------------------------------------------------------------------------------
+	void CompilerOptions::SetEnableProgressiveImages(bool bEnabled)
+	{
+		m_pD->m_optimisationOptions.bEnableProgressiveImages = bEnabled;
+	}
+
+
     //---------------------------------------------------------------------------------------------
     //---------------------------------------------------------------------------------------------
     //---------------------------------------------------------------------------------------------
@@ -187,18 +178,16 @@ namespace mu
 
 
     //---------------------------------------------------------------------------------------------
-    ModelPtr Compiler::Compile( const Ptr<Node>& pNode )
+	TSharedPtr<Model> Compiler::Compile( const Ptr<Node>& pNode )
     {
         MUTABLE_CPUPROFILER_SCOPE(Compile);
-
-        TaskManager* pTaskManager = new TaskManager(m_pD->m_options->GetPrivate()->m_enableConcurrency);
 
         vector< STATE_COMPILATION_DATA > states;
         Ptr<ErrorLog> genErrorLog;
         {
             CodeGenerator gen( m_pD->m_options->GetPrivate() );
 
-            gen.GenerateRoot( pNode, pTaskManager );
+            gen.GenerateRoot( pNode );
 
             check( !gen.m_states.IsEmpty() );
 
@@ -227,12 +216,12 @@ namespace mu
         // Optimize the generated code
         {
             CodeOptimiser optimiser( m_pD->m_options, states );
-            optimiser.OptimiseAST( pTaskManager );
+            optimiser.OptimiseAST( );
         }
 
 
         // Link the program and generate state data.
-        ModelPtr pResult = new Model();
+		TSharedPtr<Model> pResult = MakeShared<Model>();
         auto& program = pResult->GetPrivate()->m_program;
         for( auto& s: states )
         {
@@ -251,7 +240,7 @@ namespace mu
         }
 
         // Set the runtime parameter indices.
-        for( auto& s: states )
+        for( STATE_COMPILATION_DATA& s: states )
         {
             for ( int32 p=0; p<s.nodeState.m_runtimeParams.Num(); ++p )
             {
@@ -272,16 +261,13 @@ namespace mu
                 }
                 else
                 {
-                    char temp[256];
-                    mutable_snprintf( temp, 256,
-                                      "The state [%s] refers to a parameter [%s] "
-                                      "that has not been found in the model. This error can be "
-                                      "safely dismissed in case of partial compilation.",
-                                      s.nodeState.m_name.c_str(),
-                                      s.nodeState.m_runtimeParams[p].c_str()
-                                      );
-                    m_pD->m_pErrorLog->GetPrivate()->Add
-                            ( temp, ELMT_WARNING, pNode->GetBasePrivate()->m_errorContext );
+					FString Temp = FString::Printf(TEXT(
+						"The state [%s] refers to a parameter [%s] "
+						"that has not been found in the model. This error can be "
+						"safely dismissed in case of partial compilation."), 
+						s.nodeState.m_name.c_str(),
+						s.nodeState.m_runtimeParams[p].c_str());
+                    m_pD->m_pErrorLog->GetPrivate()->Add(Temp, ELMT_WARNING, pNode->GetBasePrivate()->m_errorContext );
                 }
             }
 
@@ -338,27 +324,15 @@ namespace mu
 
 		UE_LOG(LogMutableCore, Verbose, TEXT("(int) %s : %ld"), TEXT("program size"), int64(program.m_opAddress.Num()));
 
-        // Optimize the generated code
-        {        
-//            CodeOptimiser optimiser( m_pD->m_gpuPlatformProps,
-//                                     m_pD->m_optimisationOptions,
-//                                     states );
-//            optimiser.Optimise( pResult.get() );
-
-//            m_pD->m_pModelReport = optimiser.m_pModelReport;
-        }
-
         // Merge the log in the right order
         genErrorLog->Merge( m_pD->m_pErrorLog.get() );
         m_pD->m_pErrorLog = genErrorLog.get();
 
 		// Pack data
 		int32 MinimumBytesPerRom = 1024; // \TODO: compilation parameter
-		m_pD->GenerateRoms(pResult.get(),MinimumBytesPerRom);
+		m_pD->GenerateRoms(pResult.Get(),MinimumBytesPerRom);
 
 		UE_LOG(LogMutableCore, Verbose, TEXT("(int) %s : %ld"), TEXT("program size"), int64(program.m_opAddress.Num()));
-
-        delete pTaskManager;
 
         return pResult;
     }
@@ -374,7 +348,7 @@ namespace mu
 	//---------------------------------------------------------------------------------------------
 	namespace
 	{
-		inline void EnsureUniqueRomId(uint32& RomId, const mu::PROGRAM& program)
+		inline void EnsureUniqueRomId(uint32& RomId, const mu::FProgram& program)
 		{
 			while (true)
 			{
@@ -407,7 +381,7 @@ namespace mu
 		LLM_SCOPE_BYNAME(TEXT("MutableRuntime"));
 		MUTABLE_CPUPROFILER_SCOPE(Mutable_GenerateRoms);
 
-		mu::PROGRAM& program = p->GetPrivate()->m_program;
+		mu::FProgram& program = p->GetPrivate()->m_program;
 
 		int32 NumRoms = 0;
 		int32 NumEmbedded = 0;

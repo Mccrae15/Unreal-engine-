@@ -1,43 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 
-#include "CoreMinimal.h"
-#include "Misc/Paths.h"
-#include "Misc/OutputDeviceFile.h"
-#include "Stats/Stats.h"
-#include "HAL/IConsoleManager.h"
-#include "Misc/App.h"
 #include "UObject/Package.h"
 #include "Misc/PackageName.h"
-#include "Misc/Base64.h"
-#include "Misc/DateTime.h"
-#include "UObject/ScriptStackTracker.h"
 #include "EngineStats.h"
-#include "EngineGlobals.h"
-#include "Engine/EngineTypes.h"
 #include "Engine/Level.h"
-#include "GameFramework/Actor.h"
-#include "GameFramework/Pawn.h"
-#include "CollisionQueryParams.h"
-#include "WorldCollision.h"
-#include "Engine/World.h"
-#include "Components/PrimitiveComponent.h"
 #include "AI/NavigationSystemBase.h"
-#include "Engine/Brush.h"
 #include "UObject/LinkerLoad.h"
-#include "Online/CoreOnline.h"
 #include "GameFramework/OnlineReplStructs.h"
 #include "Engine/Engine.h"
 #include "Engine/LevelStreaming.h"
 #include "ContentStreaming.h"
 #include "EditorSupportDelegates.h"
 #include "GameFramework/GameModeBase.h"
-#include "AudioDeviceManager.h"
-#include "Logging/TokenizedMessage.h"
 #include "Logging/MessageLog.h"
 #include "Misc/MapErrors.h"
 #include "GameFramework/WorldSettings.h"
-#include "Engine/NetDriver.h"
 #include "Engine/DemoNetDriver.h"
 #include "Engine/Player.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -47,7 +25,6 @@
 #include "GameFramework/MovementComponent.h"
 
 #include "Misc/TimeGuard.h"
-#include "ProfilingDebugging/CsvProfiler.h"
 
 #define LOCTEXT_NAMESPACE "LevelActor"
 
@@ -280,8 +257,10 @@ void LineCheckTracker::CaptureLineCheck(int32 LineCheckFlags, const FVector* Ext
  *	  change every ~17 minutes for a specific actor class).
  *  - The name number bit 30 is reserved to know if this is a globally unique name. This
  *	  is not 100% safe, but should cover most cases.
- *  - The name number bit 31 is reserved to preserve the  fast path name generation (see
+ *  - The name number bit 31 is reserved to preserve the fast path name generation (see
  *	  GFastPathUniqueNameGeneration).
+ *	- On some environments, cooking happens without network, so we can't retrieve the 
+ *	  MAC adress for spawned actors, assign a default one in this case.
  **/
 class FActorGUIDGenerator
 {
@@ -291,7 +270,13 @@ public:
 		, MacAddress(FPlatformMisc::GetMacAddress())
 		, Counter(0)
 	{
-		check(MacAddress.Num() == 6);
+		if (MacAddress.Num() != 6)
+		{
+			// During cooking, some platform can't retrieve the MAC adress, so force a default one.
+			check(IsRunningCommandlet());
+			MacAddress.Empty(6);
+			MacAddress.AddZeroed(6);
+		}
 	}
 
 	FName NewActorGUID(FName BaseName)
@@ -326,8 +311,8 @@ public:
 	}
 	
 private:
-	const FDateTime Origin;
-	const TArray<uint8> MacAddress;
+	FDateTime Origin;
+	TArray<uint8> MacAddress;
 	uint32 Counter;
 };
 #endif
@@ -718,7 +703,7 @@ AActor* UWorld::SpawnActor( UClass* Class, FTransform const* UserTransformPtr, c
 	// Broadcast delegate before the actor and its contained components are initialized
 	OnActorPreSpawnInitialization.Broadcast(Actor);
 
-	Actor->PostSpawnInitialize(UserTransform, SpawnParameters.Owner, SpawnParameters.Instigator, SpawnParameters.IsRemoteOwned(), SpawnParameters.bNoFail, SpawnParameters.bDeferConstruction);
+	Actor->PostSpawnInitialize(UserTransform, SpawnParameters.Owner, SpawnParameters.Instigator, SpawnParameters.IsRemoteOwned(), SpawnParameters.bNoFail, SpawnParameters.bDeferConstruction, SpawnParameters.TransformScaleMethod);
 	
 	// If we are spawning an external actor, mark this package dirty
 	if (ExternalPackage)
@@ -987,6 +972,8 @@ bool UWorld::DestroyActor( AActor* ThisActor, bool bNetForce, bool bShouldModify
 		GEngine->BroadcastLevelActorDeleted(ThisActor);
 #endif
 	}
+
+	OnActorRemovedFromWorld.Broadcast(ThisActor);
 
 	// Clean up the actor's components.
 	ThisActor->UnregisterAllComponents();

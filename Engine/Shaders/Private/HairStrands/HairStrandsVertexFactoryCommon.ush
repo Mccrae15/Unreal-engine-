@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include "/Engine/Shared/HairStrandsDefinitions.h"
+
 #define HAIR_CONTROLPOINT_INSIDE 0
 #define HAIR_CONTROLPOINT_START	1
 #define HAIR_CONTROLPOINT_END	2
@@ -50,6 +52,22 @@ FHairControlPoint UnpackHairControlPoint(
 	return Out;	
 }
 
+float UnpackHairControlPointCoordU(uint4 InPackedData)
+{
+	const uint PackedAlpha = asuint(InPackedData.w);
+	return ((PackedAlpha & 0xFF00) >> 8) / 255.f;
+}
+
+float3 UnpackHairControlPointPosition(uint4 InPackedData, float3 InVF_PositionOffset)
+{
+	return f16tof32(InPackedData.xyz) + InVF_PositionOffset;
+}
+
+uint4 PackHairControlPointPosition(uint4 InPackedData, float3 InNewPosition, float3 InPositionOffset)
+{
+	return uint4(f32tof16(InNewPosition.xyz - InPositionOffset), InPackedData.w);
+}
+
 bool IsValidHairStrandsSegment(const FHairControlPoint CP0, const FHairControlPoint CP1)
 {
 	return !(CP0.Type == HAIR_CONTROLPOINT_END && CP1.Type == HAIR_CONTROLPOINT_START);
@@ -58,28 +76,63 @@ bool IsValidHairStrandsSegment(const FHairControlPoint CP0, const FHairControlPo
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Hair attributes
 
-struct FHairAttributes
-{
-	float2 RootUV;
-	float Seed;
-	float WorldLength;
-};
-
-FHairAttributes DecodeHairAttribute(float2 Attributes0, uint Attributes1, float InVF_Length)
+float2 UnpackHairRootUV(uint In)
 {
 	float2 RootUV, RootIndex;
-	RootUV.x		= ((Attributes1    ) & 0x7FF) / 2047.f;	// Coord are encoded on 11 bits
-	RootUV.y		= ((Attributes1>>11) & 0x7FF) / 2047.f;	// Coord are encoded on 11 bits 
-	RootIndex.x		= ((Attributes1>>22) & 0x1F);			// UDIM tile are encoded on 5bits
-	RootIndex.y		= ((Attributes1>>27) & 0x1F);			// UDIM tile are encoded on 5bits
+	RootUV.x	= ((In) & 0x7FF) / 2047.f;			// Coord are encoded on 11 bits
+	RootUV.y	= ((In >> 11) & 0x7FF) / 2047.f;	// Coord are encoded on 11 bits 
+	RootIndex.x = ((In >> 22) & 0x1F);				// UDIM tile are encoded on 5bits
+	RootIndex.y = ((In >> 27) & 0x1F);				// UDIM tile are encoded on 5bits
 
 	// Invert V to compensate image origin flip. Similar to GetHairStrandsRootUV in HairCardsAttributeCommon.ush
 	RootUV.y = 1.0f - RootUV.y;
 
-	FHairAttributes Out;
-	Out.RootUV		= RootUV + RootIndex;
-	Out.WorldLength = Attributes0.x * InVF_Length;
-	Out.Seed		= Attributes0.y;
+	return RootUV = RootUV + RootIndex;
+}
+
+float UnpackHairLength(uint In)
+{
+	return f16tof32(In & 0xFFFF);
+}
+
+float UnpackHairSeed(uint In)
+{
+	return (In & 0xFF) / 255.f;
+}
+
+uint UnpackHairClumpID(uint In)
+{
+	return (In & 0xFFFF);
+}
+
+float3 UnpackHairColor(uint In)
+{
+	float3 Out;
+	Out.x = (In       & 0x7FF) / 2047.f;
+	Out.y = ((In>>11) & 0x7FF) / 2047.f;
+	Out.z = ((In>>22) & 0x3FF) / 1023.f;
+	return Out;
+}
+
+float UnpackHairRoughness(uint In)
+{
+	return (In & 0xFF) / 255.f;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Hair curve
+
+struct FHairCurve
+{
+	uint PointIndex;
+	uint PointCount;
+};
+
+FHairCurve UnpackHairCurve(uint In)
+{
+	FHairCurve Out = (FHairCurve)0;
+	Out.PointIndex = In & 0xFFFFFF;
+	Out.PointCount = In >> 24;
 	return Out;
 }
 
@@ -97,10 +150,13 @@ float			HairStrandsVF_Density;
 uint			HairStrandsVF_bUseStableRasterization;
 float3			HairStrandsVF_PositionOffset;
 uint			HairStrandsVF_VertexCount;
+uint			HairStrandsVF_CurveCount;
 float4x4		HairStrandsVF_LocalToWorldPrimitiveTransform;
 float4x4		HairStrandsVF_LocalToTranslatedWorldPrimitiveTransform;
 Buffer<uint4>	HairStrandsVF_PositionBuffer;
 Buffer<float4>	HairStrandsVF_PositionOffsetBuffer;
+Buffer<uint>	HairStrandsVF_CurveBuffer;
+uint4			HairStrandsVF_AttributeOffsets[HAIR_ATTRIBUTE_OFFSET_COUNT];
 
 #if defined(PERMUTATION_CULLING) && PERMUTATION_CULLING == 1
 Buffer<uint>	HairStrandsVF_CullingIndirectBuffer;

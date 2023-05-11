@@ -5,6 +5,7 @@
 =============================================================================*/
 
 #include "PlanarReflectionRendering.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "Engine/Scene.h"
 #include "SceneInterface.h"
 #include "RenderingThread.h"
@@ -25,6 +26,7 @@
 #include "PostProcess/SceneFilterRendering.h"
 #include "PostProcess/PostProcessing.h"
 #include "LightRendering.h"
+#include "Materials/MaterialRenderProxy.h"
 #include "Components/SceneCaptureComponent.h"
 #include "Components/PlanarReflectionComponent.h"
 #include "PlanarReflectionSceneProxy.h"

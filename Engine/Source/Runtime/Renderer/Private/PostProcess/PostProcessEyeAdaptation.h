@@ -26,6 +26,19 @@ FORCEINLINE float Log2ToEV100(float LuminanceMax, float Log2)
 	return Log2 - FMath::Log2(LuminanceMax);
 }
 
+namespace AutoExposurePermutation
+{
+	class FUsePrecalculatedLuminanceDim : SHADER_PERMUTATION_BOOL("USE_PRECALCULATED_LUMINANCE");
+	class FUseApproxIlluminanceDim : SHADER_PERMUTATION_BOOL("USE_APPROX_ILLUMINANCE");
+	class FUseDebugOutputDim : SHADER_PERMUTATION_BOOL("USE_DEBUG_OUTPUT");
+
+	using FCommonDomain = TShaderPermutationDomain<FUsePrecalculatedLuminanceDim, FUseApproxIlluminanceDim, FUseDebugOutputDim>;
+
+	bool ShouldCompileCommonPermutation(const FCommonDomain& PermutationVector);
+
+	FCommonDomain BuildCommonPermutationDomain();
+} // namespace AutoExposurePermutation
+
 // For converting the auto exposure to new values from 4.24 to 4.25
 float CalculateEyeAdaptationParameterExposureConversion(const FPostProcessSettings& Settings, const bool bExtendedLuminanceRange);
 
@@ -48,6 +61,9 @@ float CalculateManualAutoExposure(const FViewInfo& View, bool bForceDisablePhysi
 float GetAutoExposureCompensationFromSettings(const FViewInfo& View);
 
 bool IsExtendLuminanceRangeEnabled();
+
+bool IsAutoExposureUsingIlluminanceEnabled(const FViewInfo& View);
+int32 GetAutoExposureIlluminanceDownscaleFactor();
 
 // Returns the auto exposure method enabled by the view (including CVar override).
 EAutoExposureMethod GetAutoExposureMethod(const FViewInfo& View);
@@ -76,6 +92,10 @@ BEGIN_SHADER_PARAMETER_STRUCT(FEyeAdaptationParameters, )
 	SHADER_PARAMETER(float, ExponentialDownM)
 	SHADER_PARAMETER(float, StartDistance)
 	SHADER_PARAMETER(float, LuminanceMax)
+	SHADER_PARAMETER(float, IgnoreMaterialsEvaluationPositionBias)
+	SHADER_PARAMETER(float, IgnoreMaterialsLuminanceScale)
+	SHADER_PARAMETER(float, IgnoreMaterialsMinBaseColorLuminance)
+	SHADER_PARAMETER(uint32, IgnoreMaterialsReconstructFromSceneColor)
 	SHADER_PARAMETER(float, ForceTarget)
 	SHADER_PARAMETER(int, VisualizeDebugType)
 	SHADER_PARAMETER_TEXTURE(Texture2D, MeterMaskTexture)
@@ -87,8 +107,20 @@ FEyeAdaptationParameters GetEyeAdaptationParameters(const FViewInfo& ViewInfo, E
 // Computes the a fixed exposure to be used to replace the dynamic exposure when it's not supported (< SM5).
 float GetEyeAdaptationFixedExposure(const FViewInfo& View);
 
-// Returns the updated 1x1 eye adaptation texture.
-FRDGTextureRef AddHistogramEyeAdaptationPass(
+FRDGTextureRef AddSetupExposureIlluminancePass(
+	FRDGBuilder& GraphBuilder,
+	TArrayView<const FViewInfo> Views,
+	const FSceneTextures& SceneTextures);
+
+FRDGTextureRef AddCalculateExposureIlluminancePass(
+	FRDGBuilder& GraphBuilder,
+	TArrayView<const FViewInfo> Views,
+	const FSceneTextures& SceneTextures,
+	const struct FTranslucencyLightingVolumeTextures& TranslucencyLightingVolumeTextures,
+	FRDGTextureRef ExposureIlluminanceSetup);
+
+// Returns the updated eye adaptation buffer.
+FRDGBufferRef AddHistogramEyeAdaptationPass(
 	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View,
 	const FEyeAdaptationParameters& EyeAdaptationParameters,
@@ -101,10 +133,16 @@ FScreenPassTexture AddBasicEyeAdaptationSetupPass(
 	const FEyeAdaptationParameters& EyeAdaptationParameters,
 	FScreenPassTexture SceneColor);
 
-// Returns the updated 1x1 eye adaptation texture.
-FRDGTextureRef AddBasicEyeAdaptationPass(
+// Returns the updated eye adaptation buffer.
+FRDGBufferRef AddBasicEyeAdaptationPass(
 	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View,
 	const FEyeAdaptationParameters& EyeAdaptationParameters,
 	FScreenPassTexture SceneColor,
-	FRDGTextureRef EyeAdaptationTexture);
+	FRDGBufferRef EyeAdaptationBuffer);
+
+/**
+* Helper function to get current eye adaptation in a texture.
+* Should only be used by external plugins that require eye adaptation data in texture format.
+*/
+RENDERER_API FRDGTextureRef AddCopyEyeAdaptationDataToTexturePass(FRDGBuilder& GraphBuilder, const FViewInfo& View);

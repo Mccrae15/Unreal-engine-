@@ -19,8 +19,6 @@
 #include "Matrix3x4.h"
 #include "SkeletalMeshTypes.h"
 
-class FRDGPooledBuffer;
-
 template <class T> class TConsoleVariableData;
 
 // Uniform buffer for APEX cloth
@@ -214,7 +212,8 @@ public:
 
 		// @param FrameTime from GFrameTime
 		bool UpdateBoneData(FRHICommandListImmediate& RHICmdList, const TArray<FMatrix44f>& ReferenceToLocalMatrices,
-			const TArray<FBoneIndexType>& BoneMap, uint32 RevisionNumber, bool bPrevious, ERHIFeatureLevel::Type FeatureLevel, bool bUseSkinCache);
+			const TArray<FBoneIndexType>& BoneMap, uint32 RevisionNumber, bool bPrevious, ERHIFeatureLevel::Type FeatureLevel, 
+			bool bUseSkinCache, bool bForceUpdateImmediately, const FName& AssetPathName);
 
 		void ReleaseBoneData()
 		{
@@ -324,6 +323,8 @@ public:
 
 			if ((CurrentRevisionNumber - PreviousRevisionNumber) > 1)
 			{
+				// If the revision number has incremented too much, ignore the request and use the current buffer.
+				// With ClearMotionVector calls, we intentionally increment revision number to retrieve current buffer for bPrevious true.
 				bPrevious = false;
 			}
 
@@ -373,12 +374,23 @@ public:
 
 	static const uint32 GHardwareMaxGPUSkinBones = 65536;
 	
-	ENGINE_API static bool UseUnlimitedBoneInfluences(uint32 MaxBoneInfluences);
-	ENGINE_API static bool GetUnlimitedBoneInfluences();
+	ENGINE_API static bool UseUnlimitedBoneInfluences(uint32 MaxBoneInfluences, const ITargetPlatform* TargetPlatform = nullptr);
+	ENGINE_API static bool GetUnlimitedBoneInfluences(const ITargetPlatform* TargetPlatform = nullptr);
+
+	/*
+	 * Returns the maximum number of bone influences that should be used for a skeletal mesh, given
+	 * the user-requested limit.
+	 * 
+	 * If the requested limit is 0, the limit will be determined from the project settings.
+	 * 
+	 * The return value is guaranteed to be greater than zero, but note that it may be higher than
+	 * the maximum supported bone influences.
+	 */
+	ENGINE_API static int32 GetBoneInfluenceLimitForAsset(int32 AssetProvidedLimit, const ITargetPlatform* TargetPlatform = nullptr);
 
 	/** Morph vertex factory functions */
 	virtual void UpdateMorphVertexStream(const class FMorphVertexBuffer* MorphVertexBuffer) {}
-	virtual const class FMorphVertexBuffer* GetMorphVertexBuffer(bool bPrevious, uint32 FrameNumber) const { return nullptr; }
+	virtual const class FMorphVertexBuffer* GetMorphVertexBuffer(bool bPrevious) const { return nullptr; }
 	/** Cloth vertex factory access. */
 	virtual class FGPUBaseSkinAPEXClothVertexFactory* GetClothVertexFactory() { return nullptr; }
 	virtual class FGPUBaseSkinAPEXClothVertexFactory const* GetClothVertexFactory() const { return nullptr; }
@@ -406,7 +418,7 @@ public:
 		return Data->TangentBasisComponents[Index];
 	}
 
-	void CopyDataTypeForPassthroughFactory(class FGPUSkinPassthroughVertexFactory* PassthroughVertexFactory);
+	void CopyDataTypeForLocalVertexFactory(FLocalVertexFactory::FDataType& OutDestData) const;
 
 protected:
 	/**
@@ -449,11 +461,13 @@ public:
 
 	static void ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
 	static bool ShouldCompilePermutation(const FVertexFactoryShaderPermutationParameters& Parameters);
+
 	static void GetPSOPrecacheVertexFetchElements(EVertexInputStreamType VertexInputStreamType, FVertexDeclarationElementList& Elements);	
+	static void GetVertexElements(ERHIFeatureLevel::Type FeatureLevel, EVertexInputStreamType InputStreamType, FGPUSkinDataType& GPUSkinData, FVertexDeclarationElementList& Elements);
 	
 	/** FGPUBaseSkinVertexFactory overrides */
 	virtual void UpdateMorphVertexStream(const class FMorphVertexBuffer* MorphVertexBuffer) override;
-	virtual const class FMorphVertexBuffer* GetMorphVertexBuffer(bool bPrevious, uint32 FrameNumber) const override;
+	virtual const class FMorphVertexBuffer* GetMorphVertexBuffer(bool bPrevious) const override;
 
 
 	// FRenderResource interface.
@@ -469,134 +483,12 @@ protected:
 	*/
 	virtual void AddVertexElements(FVertexDeclarationElementList& OutElements) override;
 
+	static void GetVertexElements(ERHIFeatureLevel::Type FeatureLevel, EVertexInputStreamType InputStreamType, FGPUSkinDataType& GPUSkinData, FVertexDeclarationElementList& Elements, FVertexStreamList& InOutStreams, int32& OutMorphDeltaStreamIndex);
+
 private:
 	int32 MorphDeltaStreamIndex = -1;
 };
 
-/** 
- * Vertex factory with vertex stream components for GPU-skinned streams, enabled for passthrough mode when vertices have been pre-skinned 
- */
-class FGPUSkinPassthroughVertexFactory : public FLocalVertexFactory
-{
-	typedef FLocalVertexFactory Super;
-
-public:
-	FGPUSkinPassthroughVertexFactory(ERHIFeatureLevel::Type InFeatureLevel);
-	~FGPUSkinPassthroughVertexFactory();
-
-	inline int32 GetPositionStreamIndex() const
-	{
-		check(PositionStreamIndex > -1);
-		return PositionStreamIndex;
-	}
-
-	inline int32 GetTangentStreamIndex() const
-	{
-		return TangentStreamIndex;
-	}
-
-	void SetData(const FDataType& InData);
-
-	uint32 GetUpdatedFrameNumber() const { return UpdatedFrameNumber; }
-
-	//TODO should be supported
-	bool SupportsPositionOnlyStream() const override { return false; }
-	bool SupportsPositionAndNormalOnlyStream() const override { return false; }
-
-	inline void InvalidateStreams()
-	{
-		PositionStreamIndex = -1;
-		TangentStreamIndex = -1;
-
-		PositionVBAlias.ReleaseRHI();
-		TangentVBAlias.ReleaseRHI();
-		ColorVBAlias.ReleaseRHI();
-	}
-
-	virtual void ReleaseRHI() override;
-
-	/** Poke values into the vertex factory. */
-	inline void UpdateVertexDeclaration(
-		FGPUBaseSkinVertexFactory const* SourceVertexFactory, 
-		struct FRWBuffer* PositionRWBuffer, 
-		struct FRWBuffer* TangentRWBuffer)
-	{
-		UpdatedFrameNumber = SourceVertexFactory->GetShaderData().UpdatedFrameNumber;
-		if (PositionStreamIndex == -1)
-		{
-			InternalUpdateVertexDeclaration(SourceVertexFactory, PositionRWBuffer, TangentRWBuffer);
-		}
-	}
-
-	/** Flags for override bitmask passed to UpdateVertexDeclaration(). */
-	enum class EOverrideFlags
-	{
-		None		= 0,
-		Position	= 1 << 0,
-		Tangent		= 1 << 1,
-		Color		= 1 << 2,
-		All			= 0xff,
-	};
-
-	/** Poke values into the vertex factory. */
-	inline void UpdateVertexDeclaration(
-		EOverrideFlags OverrideFlags,
-		FGPUBaseSkinVertexFactory const* SourceVertexFactory,
-		TRefCountPtr<FRDGPooledBuffer> const& PositionBuffer,
-		TRefCountPtr<FRDGPooledBuffer> const& TangentBuffer,
-		TRefCountPtr<FRDGPooledBuffer> const& ColorBuffer)
-	{
-		UpdatedFrameNumber = SourceVertexFactory->GetShaderData().UpdatedFrameNumber;
-		if (PositionStreamIndex == -1)
-		{
-			InternalUpdateVertexDeclaration(OverrideFlags, SourceVertexFactory, PositionBuffer, TangentBuffer, ColorBuffer);
-		}
-	}
-
-	inline FRHIShaderResourceView* GetPreviousPositionsSRV() const
-	{
-		return PrevPositionSRVAlias;
-	}
-
-protected:
-	friend class FLocalVertexFactoryShaderParameters;
-	friend class FSkeletalMeshSceneProxy;
-
-	// Reference holders for RDG buffers
-	TRefCountPtr<FRDGPooledBuffer> PositionRDG;
-	TRefCountPtr<FRDGPooledBuffer> PrevPositionRDG;
-	TRefCountPtr<FRDGPooledBuffer> TangentRDG;
-	TRefCountPtr<FRDGPooledBuffer> ColorRDG;
-	// Vertex buffer required for creating the Vertex Declaration
-	FVertexBuffer PositionVBAlias;
-	FVertexBuffer TangentVBAlias;
-	FVertexBuffer ColorVBAlias;
-	// SRVs required for binding
-	FRHIShaderResourceView* PositionSRVAlias = nullptr;
-	FRHIShaderResourceView* PrevPositionSRVAlias = nullptr;
-	FRHIShaderResourceView* TangentSRVAlias = nullptr;
-	FRHIShaderResourceView* ColorSRVAlias = nullptr;
-	// Cached stream indices
-	int32 PositionStreamIndex = -1;
-	int32 TangentStreamIndex = -1;
-	// Frame number of the bone data that is last updated
-	uint32 UpdatedFrameNumber = 0;
-
-	void InternalUpdateVertexDeclaration(
-		FGPUBaseSkinVertexFactory const* SourceVertexFactory);
-	void InternalUpdateVertexDeclaration(
-		FGPUBaseSkinVertexFactory const* SourceVertexFactory, 
-		struct FRWBuffer* PositionRWBuffer, 
-		struct FRWBuffer* TangentRWBuffer);
-	void InternalUpdateVertexDeclaration(
-		EOverrideFlags OverrideFlags,
-		FGPUBaseSkinVertexFactory const* SourceVertexFactory,
-		TRefCountPtr<FRDGPooledBuffer> const& PositionBuffer,
-		TRefCountPtr<FRDGPooledBuffer> const& TangentBuffer,
-		TRefCountPtr<FRDGPooledBuffer> const& ColorBuffer);
-};
-
-ENUM_CLASS_FLAGS(FGPUSkinPassthroughVertexFactory::EOverrideFlags)
 
 /** Vertex factory with vertex stream components for GPU-skinned and morph target streams */
 class FGPUBaseSkinAPEXClothVertexFactory
@@ -609,7 +501,8 @@ public:
 			Reset();
 		}
 
-		bool UpdateClothSimulData(FRHICommandListImmediate& RHICmdList, const TArray<FVector3f>& InSimulPositions, const TArray<FVector3f>& InSimulNormals, uint32 FrameNumber, ERHIFeatureLevel::Type FeatureLevel);
+		bool UpdateClothSimulData(FRHICommandListImmediate& RHICmdList, const TArray<FVector3f>& InSimulPositions, const TArray<FVector3f>& InSimulNormals, uint32 RevisionNumber, 
+									ERHIFeatureLevel::Type FeatureLevel, bool bForceUpdateImmediately, const FName& AssetPathName);
 
 		void ReleaseClothSimulData()
 		{
@@ -632,87 +525,37 @@ public:
 		{
 			return APEXClothUniformBuffer;
 		}
-		
-		// @param FrameNumber usually from View.Family->FrameNumber
-		// @return IsValid() can fail, then you have to create the buffers first (or if the size changes)
-		FVertexBufferAndSRV& GetClothBufferForWriting(uint32 FrameNumber)
-		{
-			uint32 Index = GetOldestIndex(FrameNumber);
-			Index = (BufferFrameNumber[0] == FrameNumber) ? 0 : Index;
-			Index = (BufferFrameNumber[1] == FrameNumber) ? 1 : Index;
 
-			// we don't write -1 as that is used to invalidate the entry
-			if(FrameNumber == -1)
-			{
-				// this could cause a 1 frame glitch on wraparound
-				FrameNumber = 0;
-			}
+		void SetCurrentRevisionNumber(uint32 RevisionNumber);
 
-			BufferFrameNumber[Index] = FrameNumber;
+		FVertexBufferAndSRV& GetClothBufferForWriting();
+		bool HasClothBufferForReading(bool bPrevious) const;
+		const FVertexBufferAndSRV& GetClothBufferForReading(bool bPrevious) const;
 
-			return ClothSimulPositionNormalBuffer[Index];
-		}
-
-		bool HasClothBufferForReading(bool bPrevious, uint32 FrameNumber) const
-		{
-			int32 Index = GetMostRecentIndex(FrameNumber);
-			if (bPrevious && DoWeHavePreviousData())
-			{
-				Index = 1 - Index;
-			}
-			return ClothSimulPositionNormalBuffer[Index].VertexBufferRHI.IsValid();
-		}
-
-		// @param bPrevious true:previous, false:current
-		// @param FrameNumber usually from View.Family->FrameNumber
-		const FVertexBufferAndSRV& GetClothBufferForReading(bool bPrevious, uint32 FrameNumber) const
-		{
-			int32 Index = GetMostRecentIndex(FrameNumber);
-
-			if(bPrevious && DoWeHavePreviousData())
-			{
-				Index = 1 - Index;
-			}
-
-			checkf(ClothSimulPositionNormalBuffer[Index].VertexBufferRHI.IsValid(), TEXT("Index: %i Buffer0: %s Frame0: %i Buffer1: %s Frame1: %i"), Index,  ClothSimulPositionNormalBuffer[0].VertexBufferRHI.IsValid() ? TEXT("true") : TEXT("false"), BufferFrameNumber[0], ClothSimulPositionNormalBuffer[1].VertexBufferRHI.IsValid() ? TEXT("true") : TEXT("false"), BufferFrameNumber[1]);
-			return ClothSimulPositionNormalBuffer[Index];
-		}
-		
-		FMatrix44f& GetClothToLocalForWriting(uint32 FrameNumber)
-		{
-			uint32 Index = GetOldestIndex(FrameNumber);
-			Index = (BufferFrameNumber[0] == FrameNumber) ? 0 : Index;
-			Index = (BufferFrameNumber[1] == FrameNumber) ? 1 : Index;
-
-			return ClothToLocal[Index];
-		}
-
-		const FMatrix44f& GetClothToLocalForReading(bool bPrevious, uint32 FrameNumber) const
-		{
-			int32 Index = GetMostRecentIndex(FrameNumber);
-
-			if(bPrevious && DoWeHavePreviousData())
-			{
-				Index = 1 - Index;
-			}
-
-			return ClothToLocal[Index];
-		}
+		FMatrix44f& GetClothToLocalForWriting();
+		const FMatrix44f& GetClothToLocalForReading(bool bPrevious) const;
 
 		/**
 		 * weight to blend between simulated positions and key-framed poses
 		 * if ClothBlendWeight is 1.0, it shows only simulated positions and if it is 0.0, it shows only key-framed animation
 		 */
 		float ClothBlendWeight = 1.0f;
+		/** Scale of the owner actor */
+		FVector3f WorldScale = FVector3f::OneVector;
 		uint32 NumInfluencesPerVertex = 1;
 
 	private:
+		// Helper for GetClothBufferIndexForWriting and GetClothBufferIndexForReading
+		uint32 GetClothBufferIndexInternal(bool bPrevious) const;
+		// Helper for GetClothBufferForWriting and GetClothToLocalForWriting
+		uint32 GetClothBufferIndexForWriting() const;
+		// Helper for GetClothBufferForReading and GetClothToLocalForReading
+		uint32 GetClothBufferIndexForReading(bool bPrevious) const;
+
 		// fallback for ClothSimulPositionNormalBuffer if the shadermodel doesn't allow it
 		TUniformBufferRef<FAPEXClothUniformShaderParameters> APEXClothUniformBuffer;
 		// 
 		FVertexBufferAndSRV ClothSimulPositionNormalBuffer[2];
-		// from GFrameNumber, to detect pause and old data when an object was not rendered for some time
-		uint32 BufferFrameNumber[2];
 
 		/**
 		 * Matrix to apply to positions/normals
@@ -722,78 +565,17 @@ public:
 		/** Whether to double buffer. */
 		bool bDoubleBuffer = false;
 
-		// @return 0 / 1, index into ClothSimulPositionNormalBuffer[]
-		uint32 GetMostRecentIndex(uint32 FrameNumber) const
-		{
-			if (!bDoubleBuffer)
-			{
-				return 0;
-			}
-
-			if(BufferFrameNumber[0] == -1)
-			{
-				//ensure(BufferFrameNumber[1] != -1);
-
-				return 1;
-			}
-			else if(BufferFrameNumber[1] == -1)
-			{
-				//ensure(BufferFrameNumber[0] != -1);
-				return 0;
-			}
-
-			// should handle warp around correctly, did some basic testing
-			uint32 Age0 = FrameNumber - BufferFrameNumber[0];
-			uint32 Age1 = FrameNumber - BufferFrameNumber[1];
-
-			return (Age0 > Age1) ? 1 : 0;
-		}
-
-		// @return 0/1, index into ClothSimulPositionNormalBuffer[]
-		uint32 GetOldestIndex(uint32 FrameNumber) const
-		{
-			if (!bDoubleBuffer)
-			{
-				return 0;
-			}
-
-			if(BufferFrameNumber[0] == -1)
-			{
-				return 0;
-			}
-			else if(BufferFrameNumber[1] == -1)
-			{
-				return 1;
-			}
-
-			// should handle warp around correctly (todo: test)
-			uint32 Age0 = FrameNumber - BufferFrameNumber[0];
-			uint32 Age1 = FrameNumber - BufferFrameNumber[1];
-
-			return (Age0 > Age1) ? 0 : 1;
-		}
-
-		bool DoWeHavePreviousData() const
-		{
-			if(BufferFrameNumber[0] == -1 || BufferFrameNumber[1] == -1)
-			{
-				return false;
-			}
-			
-			int32 Diff = BufferFrameNumber[0] - BufferFrameNumber[1];
-
-			uint32 DiffAbs = FMath::Abs(Diff);
-
-			// threshold is >1 because there could be in between frames e.g. HitProxyRendering
-			// We should switch to TickNumber to solve this
-			return DiffAbs <= 2;
-		}
+		// 0 / 1 to index into BoneBuffer
+		uint32 CurrentBuffer = 0;
+		// RevisionNumber Tracker
+		uint32 PreviousRevisionNumber = 0;
+		uint32 CurrentRevisionNumber = 0;
 
 		void Reset()
 		{
-			// both are not valid
-			BufferFrameNumber[0] = -1;
-			BufferFrameNumber[1] = -1;
+			CurrentBuffer = 0;
+			PreviousRevisionNumber = 0;
+			CurrentRevisionNumber = 0;
 
 			ClothToLocal[0] = FMatrix44f::Identity;
 			ClothToLocal[1] = FMatrix44f::Identity;
@@ -936,3 +718,96 @@ protected:
 	FGPUSkinAPEXClothDataType* ClothDataPtr = nullptr;
 };
 
+
+/**
+ * Vertex factory with vertex stream components for GPU-skinned streams.
+ * This enables Passthrough mode where vertices have been pre-skinned.
+ * Individual vertex attributes can be flagged so that they can be overriden by externally owned buffers.
+ */
+class FGPUSkinPassthroughVertexFactory : public FLocalVertexFactory
+{
+public:
+	FGPUSkinPassthroughVertexFactory(ERHIFeatureLevel::Type InFeatureLevel);
+
+	// Begin FVertexFactory Interface.
+	bool SupportsPositionOnlyStream() const override { return false; }
+	bool SupportsPositionAndNormalOnlyStream() const override { return false; }
+	// End FVertexFactory Interface.
+
+	/**
+	 * Reset all added vertex attributes and SRVs.
+	 * This doesn't reset the vertex factory itself. Call SetData() to do that.
+	 */
+	void ResetVertexAttributes();
+
+	/** Vertex attributes that we can override. */
+	enum EVertexAtttribute
+	{
+		VertexPosition,
+		VertexTangent,
+		VertexColor,
+		VertexTexCoord0,
+		VertexTexCoord1,
+		VertexTexCoord2,
+		VertexTexCoord3,
+		VertexTexCoord4,
+		VertexTexCoord5,
+		VertexTexCoord6,
+		VertexTexCoord7,
+		NumAttributes
+	};
+	
+	/** SRVs that we can provide. */
+	enum EShaderResource
+	{
+		Position,
+		PreviousPosition,
+		Tangent,
+		Color,
+		TexCoord,
+		NumShaderResources
+	};
+
+	/** Structure used for calls to SetVertexAttributes(). */
+	struct FAddVertexAttributeDesc
+	{
+		FAddVertexAttributeDesc() : SRVs(InPlace, nullptr) {}
+
+		/** Frame number at animation update. Used to determine if animation motion is valid and needs to output velocity. */
+		uint32 FrameNumber = ~0U;
+		/** Vertex attributes to use in vertex declaration. */
+		TArray<EVertexAtttribute, TFixedAllocator<EVertexAtttribute::NumAttributes>> VertexAttributes;
+		/** SRVs for binding. These are only be used by platforms that support manual vertex fetch. */
+		TStaticArray<FRHIShaderResourceView*, EShaderResource::NumShaderResources> SRVs;
+	};
+
+	/** 
+	 * Set vertex attributes and SRVs to be used. 
+	 * The vertex declaration is made by accumulating attributes set here along with all that already been added by previous calls to this function.
+	 * If any attributes are being added for the first time then we pay the cost to recreate the vertex declaration here.
+	 * The SRVs are cached per attribute. If any passed in SRV is changed from the cached value then we recreate the vertex factory uniform buffer here.
+	 * Note that on platforms that support manual vertex fetch, only Position will be in the final vertex stream and other attributes will be read through an SRV.
+	 */
+	void SetVertexAttributes(FGPUBaseSkinVertexFactory const* InSourceVertexFactory, FAddVertexAttributeDesc const& InDesc);
+
+	/** 
+	 * Get the vertex stream index for a vertex attribute.
+	 * This will be -1 for attributes that haven't been set in AddVertexAttributes().
+	 * It may also be -1 for attributes that are read through manual vertex fetch.
+	 */
+	int32 GetAttributeStreamIndex(EVertexAtttribute InAttribute) const;
+
+private:
+	void OverrideAttributeData();
+	void OverrideSRVs(FGPUBaseSkinVertexFactory const* InSourceVertexFactory);
+	void BuildStreamIndices();
+	void CreateUniformBuffer();
+	void CreateLooseUniformBuffer(FGPUBaseSkinVertexFactory const* InSourceVertexFactory, uint32 InFrameNumber);
+
+	uint32 VertexAttributeMask;
+	TStaticArray<int32, EVertexAtttribute::NumAttributes> StreamIndices;
+	TStaticArray<FRHIShaderResourceView*, EShaderResource::NumShaderResources> SRVs;
+	uint32 UpdatedFrameNumber;
+
+	static TStaticArray<FVertexBuffer, EVertexAtttribute::NumAttributes> DummyVBs;
+};

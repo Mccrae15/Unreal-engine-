@@ -1,17 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WaterMeshSceneProxy.h"
+#include "MaterialShared.h"
 #include "WaterMeshComponent.h"
-#include "WaterVertexFactory.h"
-#include "WaterInstanceDataBuffer.h"
-#include "WaterSubsystem.h"
+#include "Materials/Material.h"
 #include "WaterUtils.h"
+#include "PrimitiveViewRelevance.h"
 #include "SceneManagement.h"
 #include "Engine/Engine.h"
-#include "Materials/MaterialInstanceDynamic.h"
-#include "DrawDebugHelpers.h"
+#include "Materials/MaterialRenderProxy.h"
 #include "Math/ColorList.h"
 #include "RayTracingInstance.h"
+#include "SceneInterface.h"
 
 DECLARE_STATS_GROUP(TEXT("Water Mesh"), STATGROUP_WaterMesh, STATCAT_Advanced);
 
@@ -335,7 +335,7 @@ void FWaterMeshSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*
 					if (const FMaterial* BucketMaterial = MaterialRenderProxy->GetMaterialNoFallback(GetScene().GetFeatureLevel()))
 					{
 						// Preemptively turn off depth rendering for this mesh batch if the material doesn't need it
-						bUseForDepthPass = !BucketMaterial->GetShadingModels().HasShadingModel(MSM_SingleLayerWater) && BucketMaterial->GetBlendMode() != EBlendMode::BLEND_Translucent;
+						bUseForDepthPass = !BucketMaterial->GetShadingModels().HasShadingModel(MSM_SingleLayerWater) && !IsTranslucentOnlyBlendMode(*BucketMaterial);
 					}
 
 					bMaterialDrawn = true;
@@ -614,7 +614,6 @@ void FWaterMeshSceneProxy::GetDynamicRayTracingInstances(FRayTracingMaterialGath
 				RayTracingInstance.Geometry = &WaterInstanceRayTracingData.Geometry;
 				RayTracingInstance.InstanceTransforms.Add(GetLocalToWorld());
 				RayTracingInstance.Materials.Add(BaseMesh);
-				RayTracingInstance.BuildInstanceMaskAndFlags(GetScene().GetFeatureLevel());
 				OutRayTracingInstances.Add(RayTracingInstance);
 
 				Context.DynamicRayTracingGeometriesToUpdate.Add(

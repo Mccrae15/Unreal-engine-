@@ -54,12 +54,14 @@ struct FMassEntityTemplateBuildContext
 	{
 		// Tags can be added by multiple traits, so they do not follow the same rules as fragments
 		Template.AddTag<T>();
+		TypeAdded(*T::StaticStruct());
 	}
 
 	void AddTag(const UScriptStruct& TagType)
 	{
 		// Tags can be added by multiple traits, so they do not follow the same rules as fragments
 		Template.AddTag(TagType);
+		TypeAdded(TagType);
 	}
 
 	template<typename T>
@@ -141,6 +143,12 @@ struct FMassEntityTemplateBuildContext
 		AddDependency(T::StaticStruct());
 	}
 
+	template<typename T>
+	void RequireTag()
+	{
+		AddDependency(T::StaticStruct());
+	}
+
 	void AddDependency(const UStruct* Dependency)
 	{
 		TraitsDependencies.Add( {Dependency, BuildingTrait} );
@@ -190,21 +198,16 @@ protected:
 
 /** @todo document 
  */
-UCLASS()
-class MASSSPAWNER_API UMassEntityTemplateRegistry : public UObject
+struct MASSSPAWNER_API FMassEntityTemplateRegistry
 {
-	GENERATED_BODY()
-public:
 	// @todo consider TFunction instead
-	DECLARE_DELEGATE_ThreeParams(FStructToTemplateBuilderDelegate, const UWorld* /*World*/, const FInstancedStruct& /*InStructInstance*/, FMassEntityTemplateBuildContext& /*BuildContext*/);
+	DECLARE_DELEGATE_ThreeParams(FStructToTemplateBuilderDelegate, const UWorld* /*World*/, const FConstStructView /*InStructInstance*/, FMassEntityTemplateBuildContext& /*BuildContext*/);
 
-	UMassEntityTemplateRegistry() = default;
-	virtual void BeginDestroy() override;
-	virtual UWorld* GetWorld() const override;
+	explicit FMassEntityTemplateRegistry(UObject* InOwner = nullptr);
+	
+	UWorld* GetWorld() const;
 
 	static FStructToTemplateBuilderDelegate& FindOrAdd(const UScriptStruct& DataType);
-
-	const FMassEntityTemplate* FindOrBuildStructTemplate(const FInstancedStruct& StructInstance);
 
 	/** Removes all the cached template instances */
 	void DebugReset();
@@ -212,25 +215,25 @@ public:
 	const FMassEntityTemplate* FindTemplateFromTemplateID(FMassEntityTemplateID TemplateID) const;
 	FMassEntityTemplate* FindMutableTemplateFromTemplateID(FMassEntityTemplateID TemplateID);
 
-	FMassEntityTemplate& CreateTemplate(const uint32 HashLookup, FMassEntityTemplateID TemplateID);
-	void DestroyTemplate(const uint32 HashLookup, FMassEntityTemplateID TemplateID);
-	void InitializeEntityTemplate(FMassEntityTemplate& OutTemplate) const;
+	FMassEntityTemplate& CreateTemplate(FMassEntityTemplateID TemplateID);
+	void DestroyTemplate(FMassEntityTemplateID TemplateID);
+	void InitializeEntityTemplate(FMassEntityTemplate& InOutTemplate) const;
 
 protected:
 	/** @return true if a template has been built, false otherwise */
-	bool BuildTemplateImpl(const FStructToTemplateBuilderDelegate& Builder, const FInstancedStruct& StructInstance, FMassEntityTemplate& OutTemplate);
+	bool BuildTemplateImpl(const FStructToTemplateBuilderDelegate& Builder, const FConstStructView StructInstance, FMassEntityTemplate& OutTemplate);
 
 protected:
 	static TMap<const UScriptStruct*, FStructToTemplateBuilderDelegate> StructBasedBuilders;
 
-	/** 
-	 *  Map from a hash to a FMassEntityTemplateID
-	 *  For build from FInstancedStruct it will be the Combined hash of the UScriptStruct FName and FTemplateRegistryHelpers::CalcHash()
-	 *  This hash will not be deterministic between server and clients
-	 */
-	TMap<uint32, FMassEntityTemplateID> LookupTemplateIDMap;
-
-	UPROPERTY(Transient)
 	TMap<FMassEntityTemplateID, FMassEntityTemplate> TemplateIDToTemplateMap;
+
+	TWeakObjectPtr<UObject> Owner;
 };
 
+
+UCLASS(deprecated, meta = (DeprecationMessage = "UMassEntityTemplateRegistry is deprecated starting UE5.2. Use FMassEntityTemplateRegistry instead"))
+class MASSSPAWNER_API UDEPRECATED_MassEntityTemplateRegistry : public UObject
+{
+	GENERATED_BODY()
+};

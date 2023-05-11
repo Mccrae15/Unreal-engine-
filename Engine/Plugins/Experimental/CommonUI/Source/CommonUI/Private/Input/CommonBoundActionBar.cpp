@@ -2,12 +2,15 @@
 
 #include "Input/CommonBoundActionBar.h"
 #include "CommonInputSubsystem.h"
+#include "CommonInputTypeEnum.h"
 #include "Editor/WidgetCompilerLog.h"
+#include "CommonUITypes.h"
 #include "Engine/GameInstance.h"
-#include "Engine/LocalPlayer.h"
+#include "Engine/GameViewportClient.h"
 #include "Input/CommonBoundActionButtonInterface.h"
 #include "Input/CommonUIActionRouterBase.h"
-#include "Input/UIActionRouterTypes.h"
+#include "Input/UIActionBinding.h"
+#include "InputAction.h"
 #include "TimerManager.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(CommonBoundActionBar)
@@ -32,6 +35,29 @@ void UCommonBoundActionBar::SetDisplayOwningPlayerActionsOnly(bool bShouldOnlyDi
 			HandleBoundActionsUpdated(true);
 		}
 	}
+}
+
+void UCommonBoundActionBar::Tick(float DeltaTime)
+{
+	if (bIsRefreshQueued)
+	{
+		HandleDeferredDisplayUpdate();
+	}
+}
+
+ETickableTickType UCommonBoundActionBar::GetTickableTickType() const
+{
+	return ETickableTickType::Always;
+}
+
+TStatId UCommonBoundActionBar::GetStatId() const
+{
+	RETURN_QUICK_DECLARE_CYCLE_STAT(UCommonBoundActionBar, STATGROUP_Tickables);
+}
+
+bool UCommonBoundActionBar::IsTickableWhenPaused() const
+{
+	return true;
 }
 
 void UCommonBoundActionBar::OnWidgetRebuilt()
@@ -99,13 +125,9 @@ void UCommonBoundActionBar::ValidateCompiledDefaults(IWidgetCompilerLog& Compile
 
 void UCommonBoundActionBar::HandleBoundActionsUpdated(bool bFromOwningPlayer)
 {
-	if (!bIsRefreshQueued && (bFromOwningPlayer || !bDisplayOwningPlayerActionsOnly))
+	if (bFromOwningPlayer || !bDisplayOwningPlayerActionsOnly)
 	{
 		bIsRefreshQueued = true;
-
-		UGameInstance* GameInstance = GetGameInstance();
-		check(GameInstance);
-		GameInstance->GetTimerManager().SetTimerForNextTick(FTimerDelegate::CreateUObject(this, &UCommonBoundActionBar::HandleDeferredDisplayUpdate));
 	}
 }
 
@@ -140,13 +162,21 @@ void UCommonBoundActionBar::HandleDeferredDisplayUpdate()
 					const FName& PlayerGamepadName = InputSubsystem.GetCurrentGamepadName();
 
 					TSet<FName> AcceptedBindings;
-					TArray<FUIActionBindingHandle> FilteredBindings = ActionRouter->GatherActiveBindings().FilterByPredicate([PlayerInputType, PlayerGamepadName, &AcceptedBindings](const FUIActionBindingHandle& Handle) mutable
+					TArray<FUIActionBindingHandle> FilteredBindings = ActionRouter->GatherActiveBindings().FilterByPredicate([ActionRouter, PlayerInputType, PlayerGamepadName, &AcceptedBindings](const FUIActionBindingHandle& Handle) mutable
 						{
 							if (TSharedPtr<FUIActionBinding> Binding = FUIActionBinding::FindBinding(Handle))
 							{
 								if (!Binding->bDisplayInActionBar && !bActionBarIgnoreOptOut)
 								{
 									return false;
+								}
+
+								if (CommonUI::IsEnhancedInputSupportEnabled())
+								{
+									if (TObjectPtr<const UInputAction> InputAction = Binding->InputAction.Get())
+									{
+										return CommonUI::ActionValidForInputType(ActionRouter->GetLocalPlayer(), PlayerInputType, InputAction);
+									}
 								}
 
 								if (FCommonInputActionDataBase* LegacyData = Binding->GetLegacyInputActionData())
@@ -171,45 +201,98 @@ void UCommonBoundActionBar::HandleDeferredDisplayUpdate()
 
 					//Force Virtual_Back to one end of the list so Back actions are always consistent.
 					//Otherwise, order within a node is controlled by order of add/remove.
-					Algo::Sort(FilteredBindings, [PlayerInputType, PlayerGamepadName](const FUIActionBindingHandle& A, const FUIActionBindingHandle& B)
+					Algo::Sort(FilteredBindings, [ActionRouter, PlayerInputType, PlayerGamepadName](const FUIActionBindingHandle& A, const FUIActionBindingHandle& B)
 					{
 						TSharedPtr<FUIActionBinding> BindingA = FUIActionBinding::FindBinding(A);
 						TSharedPtr<FUIActionBinding> BindingB = FUIActionBinding::FindBinding(B);
 
 						if (ensureMsgf((BindingA && BindingB), TEXT("The array filter above should enforce that there are no null bindings")))
 						{
-							FCommonInputActionDataBase* LegacyDataA = BindingA->GetLegacyInputActionData();
-							FCommonInputActionDataBase* LegacyDataB = BindingB->GetLegacyInputActionData();
-							
-							if (ensureMsgf((LegacyDataA && LegacyDataB), TEXT("Non-legacy bindings not displayed yet -- array filter enforces they are not included")))
+							auto IsKeyBackAction = [ActionRouter, PlayerInputType, PlayerGamepadName](FCommonInputActionDataBase* LegacyData, const UInputAction* InputAction)
 							{
-								FKey KeyA = LegacyDataA->GetInputTypeInfo(PlayerInputType, PlayerGamepadName).GetKey();
-								FKey KeyB = LegacyDataB->GetInputTypeInfo(PlayerInputType, PlayerGamepadName).GetKey();
-							
-								// Fallback back to keyboard key when there is no key for touch
-								if (PlayerInputType == ECommonInputType::Touch)
+								if (LegacyData)
 								{
-									if (!KeyA.IsValid())
+									FKey Key = LegacyData->GetInputTypeInfo(PlayerInputType, PlayerGamepadName).GetKey();
+
+									// Fallback back to keyboard key when there is no key for touch
+									if (PlayerInputType == ECommonInputType::Touch)
 									{
-										KeyA = LegacyDataA->GetInputTypeInfo(ECommonInputType::MouseAndKeyboard, PlayerGamepadName).GetKey();
+										if (!Key.IsValid())
+										{
+											Key = LegacyData->GetInputTypeInfo(ECommonInputType::MouseAndKeyboard, PlayerGamepadName).GetKey();
+										}
 									}
 
-									if (!KeyB.IsValid())
+									return Key == EKeys::Virtual_Back || Key == EKeys::Escape || Key == EKeys::Android_Back;
+								}
+								else if (InputAction)
+								{
+									FKey Key = CommonUI::GetFirstKeyForInputType(ActionRouter->GetLocalPlayer(), PlayerInputType, InputAction);
+
+									// Fallback back to keyboard key when there is no key for touch
+									if (PlayerInputType == ECommonInputType::Touch)
 									{
-										KeyB = LegacyDataB->GetInputTypeInfo(ECommonInputType::MouseAndKeyboard, PlayerGamepadName).GetKey();
+										if (!Key.IsValid())
+										{
+											Key = CommonUI::GetFirstKeyForInputType(ActionRouter->GetLocalPlayer(), ECommonInputType::MouseAndKeyboard, InputAction);
+										}
+									}
+
+									return Key == EKeys::Virtual_Back || Key == EKeys::Escape || Key == EKeys::Android_Back;
+								}
+
+								return false;
+							};
+
+							auto GetNavBarPriority = [](FCommonInputActionDataBase* LegacyData, const UInputAction* InputAction)
+							{
+								if (LegacyData)
+								{
+									return LegacyData->NavBarPriority;
+								}
+								else if (InputAction)
+								{
+									if (TObjectPtr<const UCommonInputMetadata> InputActionMetadata = CommonUI::GetEnhancedInputActionMetadata(InputAction))
+									{
+										return InputActionMetadata->NavBarPriority;
 									}
 								}
 
-								bool bAIsBack = (KeyA == EKeys::Virtual_Back || KeyA == EKeys::Escape || KeyA == EKeys::Android_Back);
-								bool bBIsBack = (KeyB == EKeys::Virtual_Back || KeyB == EKeys::Escape || KeyB == EKeys::Android_Back);
-							
+								return 0;
+							};
+
+							FCommonInputActionDataBase* LegacyDataA = BindingA->GetLegacyInputActionData();
+							FCommonInputActionDataBase* LegacyDataB = BindingB->GetLegacyInputActionData();
+
+							const UInputAction* InputActionA = nullptr;
+							const UInputAction* InputActionB = nullptr;
+
+							// InputActions will be null unless IsEnhancedInputSupportEnabled, so we don't have to check for support below
+							if (CommonUI::IsEnhancedInputSupportEnabled())
+							{
+								InputActionA = BindingA->InputAction.Get();
+								InputActionB = BindingB->InputAction.Get();
+							}
+
+							bool bIsValidActionA = LegacyDataA || InputActionA;
+							bool bIsValidActionB = LegacyDataB || InputActionB;
+
+							if (ensureMsgf((bIsValidActionA && bIsValidActionB), TEXT("Action bindings not displayed yet -- array filter enforces they are not included")))
+							{
+								bool bAIsBack = IsKeyBackAction(LegacyDataA, InputActionA);
+								bool bBIsBack = IsKeyBackAction(LegacyDataB, InputActionB);
+
 								if (bAIsBack && !bBIsBack)
 								{
 									return false;
 								}
-								else if (LegacyDataA->NavBarPriority != LegacyDataB->NavBarPriority)
+
+								int32 NavBarPriorityA = GetNavBarPriority(LegacyDataA, InputActionA);
+								int32 NavBarPriorityB = GetNavBarPriority(LegacyDataB, InputActionB);
+
+								if (NavBarPriorityA != NavBarPriorityB)
 								{
-									return LegacyDataA->NavBarPriority < LegacyDataB->NavBarPriority;
+									return NavBarPriorityA < NavBarPriorityB;
 								}
 							}
 

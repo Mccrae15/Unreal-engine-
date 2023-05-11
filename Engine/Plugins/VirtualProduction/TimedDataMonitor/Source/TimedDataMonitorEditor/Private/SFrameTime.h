@@ -2,9 +2,10 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Rendering/DrawElements.h"
-#include "Styling/AppStyle.h"
+#include "Engine/Engine.h"
+#include "Misc/App.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/SlateTypes.h"
 #include "TimedDataMonitorEditorSettings.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SLeafWidget.h"
@@ -97,8 +98,9 @@ public:
 		{
 			FPaintGeometry PaintRect;
 			PaintRect = AllottedGeometry.ToPaintGeometry(
-				FVector2D(0.0f, 0.0f),
-				FVector2D(AllottedGeometry.GetLocalSize().X * ClampedFraction, AllottedGeometry.GetLocalSize().Y));
+				FVector2D(AllottedGeometry.GetLocalSize().X * ClampedFraction, AllottedGeometry.GetLocalSize().Y),
+				FSlateLayoutTransform()
+				);
 
 			// Draw fill
 			FSlateDrawElement::MakeBox(

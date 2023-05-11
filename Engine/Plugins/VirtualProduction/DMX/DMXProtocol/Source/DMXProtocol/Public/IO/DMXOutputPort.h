@@ -20,6 +20,8 @@ class FDMXPortManager;
 class FDMXSignal;
 class IDMXSender;
 
+class FEvent;
+
 
 /** Helper to determine how DMX should be communicated (loopback, send) */
 struct FDMXOutputPortCommunicationDeterminator
@@ -56,10 +58,10 @@ struct FDMXOutputPortCommunicationDeterminator
 	FORCEINLINE bool IsLoopbackToEngineEnabled() const { return bLoopbackToEngine; }
 
 private:
-	bool bLoopbackToEngine;
-	bool bReceiveEnabled;
-	bool bSendEnabled;
-	bool bHasValidSender;
+	TAtomic<bool> bLoopbackToEngine;
+	TAtomic<bool> bReceiveEnabled;
+	TAtomic<bool> bSendEnabled;
+	TAtomic<bool> bHasValidSender;
 };
 
 
@@ -93,7 +95,9 @@ struct DMXPROTOCOL_API FDMXSignalFragment
  *
  * To loopback outputs refer to DMXRawListener and DMXTickedUniverseListener.
  *
- * Can only be constructed via DMXPortManger, see FDMXPortManager::CreateOutputPort and FDMXPortManager::CreateOutputPortFromConfig
+ * Can only be constructed via DMXPortManger, see FDMXPortManager::CreateOutputPort and FDMXPortManager::CreateOutputPortFromConfig.
+ * 
+ * Note, internally locks have to be acquired in order as they're declared in the header.
  */
 class DMXPROTOCOL_API FDMXOutputPort
 	: public FDMXPort
@@ -134,9 +138,6 @@ public:
 	/** Clears all buffers */
 	void ClearBuffers();
 
-	/** Returns true if the port loopsback to engine */
-	bool IsLoopbackToEngine() const;
-
 	/** 
 	 * Game-Thread only: Gets the last signal received in specified local universe. 
 	 * 
@@ -153,10 +154,6 @@ public:
 	/**  DEPRECATED 4.27. Gets the DMX signal from an extern (remote) Universe ID. */
 	UE_DEPRECATED(4.27, "Use GameThreadGetDMXSignal instead. GameThreadGetDMXSignalFromRemoteUniverse only exists to support deprecated blueprint nodes.")
 	bool GameThreadGetDMXSignalFromRemoteUniverse(FDMXSignalSharedPtr& OutDMXSignal, int32 RemoteUniverseID, bool bEvenIfNotLoopbackToEngine);
-
-	/** DEPRECATED 5.0 */
-	UE_DEPRECATED(5.0, "Output Ports now support many destination addresses. Please use FDMXOutputPort::GetDestinationAddresses instead.")
-	FString GetDestinationAddress() const;
 
 	/** Returns the output port's delay in seconds */
 	FORCEINLINE double GetDelaySeconds() const { return DelaySeconds; }
@@ -213,14 +210,17 @@ private:
 	/** Helper to determine how dmx should be communicated (loopback, send) */
 	FDMXOutputPortCommunicationDeterminator CommunicationDeterminator;
 
+	/** Mutex access to members required to send DMX  */
+	mutable FCriticalSection SendDMXMutex;
+
 	/** Priority on which packets are being sent */
 	int32 Priority = 0;
 
 	/** Map of raw Inputs */
 	TSet<TSharedRef<FDMXRawListener>> RawListeners;
 
-	/** True if the port is registered with it its protocol */
-	bool bRegistered = false;
+	/** True if the port is registered with its protocol */
+	TAtomic<bool> bRegistered = false;
 
 	/** The unique identifier of this port, shared with the port config this was constructed from. Should not be changed after construction. */
 	FGuid PortGuid;
@@ -231,13 +231,10 @@ private:
 	/** The frame rate of the delay */
 	FFrameRate DelayFrameRate;
 
-	/** Critical section required to be used when clearing buffers */
-	FCriticalSection AccessSenderArrayCriticalSection;
+	/** Send DMX sync event */
+	FEvent* SendDMXEvent = nullptr;
 
-	/** Critical section required to be used when clearing buffers */
-	FCriticalSection ClearBuffersCriticalSection;
-
-	/** Holds the thread object. */
+	/** Holds this thread object */
 	FRunnableThread* Thread = nullptr;
 
 	/** Flag indicating that the thread is stopping. */

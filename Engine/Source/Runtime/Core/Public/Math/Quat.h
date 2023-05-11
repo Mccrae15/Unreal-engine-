@@ -688,7 +688,7 @@ public:
 	bool SerializeFromMismatchedTag(FName StructTag, FArchive& Ar);
 
 	// Conversion to other type.
-	template<typename FArg, TEMPLATE_REQUIRES(!TIsSame<T, FArg>::Value)>
+	template<typename FArg, TEMPLATE_REQUIRES(!std::is_same_v<T, FArg>)>
 	explicit TQuat(const TQuat<FArg>& From) : TQuat<T>((T)From.X, (T)From.Y, (T)From.Z, (T)From.W) {}
 };
 
@@ -1405,7 +1405,7 @@ inline bool FQuat4d::SerializeFromMismatchedTag(FName StructTag, FArchive& Ar)
 template<typename T>
 struct TCustomLerp< UE::Math::TQuat<T> >
 {
-	enum { Value = true };
+	constexpr static bool Value = true;
 	using QuatType = UE::Math::TQuat<T>;
 
 	template<class U>

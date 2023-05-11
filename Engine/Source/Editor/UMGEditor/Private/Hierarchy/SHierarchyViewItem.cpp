@@ -388,6 +388,24 @@ TOptional<EItemDropZone> ProcessHierarchyDragDrop(const FDragDropEvent& DragDrop
 						}
 					}
 
+					// If this widget inherits from another one, we can't access the inherited named slots by traversing the widget tree from its root.
+					// So we have to look at the NamedSlotBindings to find a named slot for the moved content.
+					else if (Blueprint->ParentClass && Blueprint->ParentClass != UUserWidget::StaticClass())
+					{
+						TArray<FName> SlotNames;
+						Blueprint->WidgetTree->GetSlotNames(SlotNames);
+						for (FName SlotName : SlotNames)
+						{
+							if (UWidget* SlotContent = Blueprint->WidgetTree->GetContentForSlot(SlotName))
+							{
+								if (SlotContent == TemplateWidget)
+								{
+									Blueprint->WidgetTree->SetContentForSlot(SlotName, nullptr);
+								}
+							}
+						}
+					}
+
 					UPanelWidget* OriginalParent = TemplateWidget->GetParent();
 					UBlueprint* OriginalBP = nullptr;
 
@@ -1047,6 +1065,37 @@ FNamedSlotModel::FNamedSlotModel(FWidgetReference InItem, FName InSlotName, TSha
 	: FNamedSlotModelBase(InSlotName, InBlueprintEditor)
 	, Item(InItem)
 {
+#if WITH_EDITOR
+
+	// Revive trashed child of this NamedSlot, if any.
+	if (INamedSlotInterface* TemplateWidget = Cast<INamedSlotInterface>(Item.GetTemplate()))
+	{
+		if (UWidget* SlotContent = TemplateWidget->GetContentForSlot(SlotName))
+		{
+			if (SlotContent->HasAllFlags(RF_Transient) && SlotContent->GetOuter() == GetTransientPackage() && SlotContent->GetFName().ToString().StartsWith("TRASH_") && BlueprintEditor.IsValid())
+			{
+				if (UWidgetBlueprint* Blueprint = BlueprintEditor.Pin()->GetWidgetBlueprintObj())
+				{
+					FString NewName = SlotContent->GetFName().ToString();
+					NewName.RemoveFromStart("TRASH_");
+					SlotContent->ClearFlags(RF_Transient);
+					SlotContent->Rename(*NewName, Blueprint->WidgetTree);
+					TemplateWidget->SetContentForSlot(SlotName, SlotContent);
+				}
+			}
+		}
+	}
+
+	// Update the list of bindings if any renaming has occurred.
+	if (UUserWidget* TemplateWidget = Cast<UUserWidget>(Item.GetTemplate()))
+	{
+		TemplateWidget->AssignGUIDToBindings();
+		if (!TemplateWidget->GetContentForSlot(SlotName))
+		{
+			TemplateWidget->UpdateBindingForSlot(SlotName);
+		}
+	}
+#endif
 }
 
 FName FNamedSlotModel::GetUniqueName() const

@@ -5,36 +5,33 @@
 =============================================================================*/
 
 #include "DistanceFieldAtlas.h"
-#include "HAL/RunnableThread.h"
-#include "HAL/Runnable.h"
-#include "Misc/App.h"
-#include "Serialization/MemoryReader.h"
-#include "Serialization/MemoryWriter.h"
-#include "Modules/ModuleManager.h"
+#include "DataDrivenShaderPlatformInfo.h"
+#include "Engine/Texture2D.h"
+#include "EngineLogs.h"
 #include "StaticMeshResources.h"
+#include "Materials/MaterialInterface.h"
 #include "ProfilingDebugging/CookStats.h"
-#include "Templates/UniquePtr.h"
+#include "RHIStaticStates.h"
 #include "Engine/StaticMesh.h"
 #include "Misc/AutomationTest.h"
-#include "Async/ParallelFor.h"
-#include "DistanceFieldDownsampling.h"
 #include "GlobalShader.h"
-#include "RenderGraph.h"
+#include "SceneManagement.h"
+#include "TextureResource.h"
+#include "MeshCardBuild.h"
 #include "MeshCardRepresentation.h"
 #include "Misc/QueuedThreadPoolWrapper.h"
-#include "Async/Async.h"
 #include "ObjectCacheContext.h"
 
 #if WITH_EDITOR
 #include "DerivedDataCacheInterface.h"
-#include "AssetCompilingManager.h"
-#include "MeshUtilities.h"
 #include "StaticMeshCompiler.h"
 #endif
 
 #if WITH_EDITORONLY_DATA
 #include "IMeshBuilderModule.h"
 #endif
+
+#include <atomic>
 
 #define LOCTEXT_NAMESPACE "DistanceField"
 
@@ -127,7 +124,7 @@ FDistanceFieldAsyncQueue* GDistanceFieldAsyncQueue = NULL;
 #if WITH_EDITOR
 
 // DDC key for distance field data, must be changed when modifying the generation code or data format
-#define DISTANCEFIELD_DERIVEDDATA_VER TEXT("23A632E6-DB31-4A5B-B43D-17D98C6E946C")
+#define DISTANCEFIELD_DERIVEDDATA_VER TEXT("295895D9-FFCE-48B5-9A4B-131DB318441E")
 
 FString BuildDistanceFieldDerivedDataKey(const FString& InMeshKey)
 {
@@ -236,15 +233,14 @@ void FDistanceFieldVolumeData::CacheDerivedData(const FString& InStaticMeshDeriv
 
 #endif
 
-uint64 NextDistanceFieldVolumeDataId = 1;
+std::atomic<uint64> NextDistanceFieldVolumeDataId { 1 };
 
 FDistanceFieldVolumeData::FDistanceFieldVolumeData() :
 	LocalSpaceMeshBounds(ForceInit),
 	bMostlyTwoSided(false),
 	bAsyncBuilding(false)
 {
-	Id = NextDistanceFieldVolumeDataId;
-	NextDistanceFieldVolumeDataId++;
+	Id = NextDistanceFieldVolumeDataId++;
 }
 
 void FDistanceFieldVolumeData::Serialize(FArchive& Ar, UObject* Owner)
@@ -368,6 +364,32 @@ void FDistanceFieldAsyncQueue::FinishAllCompilation()
 	BlockUntilAllBuildsComplete(); 
 }
 
+void FDistanceFieldAsyncQueue::FinishCompilationForObjects(TArrayView<UObject* const> InObjects)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(FDistanceFieldAsyncQueue::FinishCompilationForObjects);
+
+	TSet<UStaticMesh*> StaticMeshes;
+	for (UObject* Object : InObjects)
+	{
+		if (UStaticMesh* StaticMesh = Cast<UStaticMesh>(Object))
+		{
+			StaticMeshes.Add(StaticMesh);
+		}
+		else if (UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(Object))
+		{
+			if (StaticMeshComponent->GetStaticMesh())
+			{
+				StaticMeshes.Add(StaticMeshComponent->GetStaticMesh());
+			}
+		}
+	}
+
+	for (UStaticMesh* StaticMesh : StaticMeshes)
+	{
+		BlockUntilBuildComplete(StaticMesh, false);
+	}
+}
+
 bool FDistanceFieldAsyncQueue::IsTaskInvalid(FAsyncDistanceFieldTask* Task) const
 {
 	return (Task->StaticMesh && Task->StaticMesh->IsUnreachable()) || (Task->GenerateSource && Task->GenerateSource->IsUnreachable());
@@ -460,6 +482,8 @@ void FDistanceFieldAsyncQueue::StartBackgroundTask(FAsyncDistanceFieldTask* Task
 
 void FDistanceFieldAsyncQueue::ProcessPendingTasks()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FDistanceFieldAsyncQueue::ProcessPendingTasks);
+
 	FScopeLock Lock(&CriticalSection);
 
 	for (auto It = PendingTasks.CreateIterator(); It; ++It)

@@ -4,6 +4,31 @@
 
 #if WITH_EOS_SDK
 
+#include "HAL/PreprocessorHelpers.h"
+
+#ifndef UE_WITH_EOS_SDK_APIVERSION_WARNINGS
+#define UE_WITH_EOS_SDK_APIVERSION_WARNINGS 1
+#endif
+
+/**
+ * Emits warnings when an SDK upgrade bumps the ApiVersion, to let you know something changed and you should at least check the changes.
+ * To silence warnings, either bump the Actual value to match the new Expected once you have checked the API changes, or in the Engine ini hierarchy, set
+ * 
+ * [EOSShared]
+ * bEnableApiVersionWarnings=false
+ */
+#if UE_WITH_EOS_SDK_APIVERSION_WARNINGS
+#define UE_EOS_CHECK_API_MISMATCH(Actual, Expected) \
+	struct PREPROCESSOR_JOIN(FEosApiMismatchMsg_, __LINE__) { \
+		[[deprecated(#Actual " updated from " #Expected " to " PREPROCESSOR_TO_STRING(Actual) ", behaviour/params may have changed")]] \
+		static constexpr int condition(TStaticDeprecateExpression<true>) { return 1; } \
+		static constexpr int condition(TStaticDeprecateExpression<false>) { return 1; } \
+	}; \
+	enum class PREPROCESSOR_JOIN(EEosApiMismatchMsg_, __LINE__) { Value = PREPROCESSOR_JOIN(FEosApiMismatchMsg_, __LINE__)::condition(TStaticDeprecateExpression<Actual != Expected>()) }
+#else
+#define UE_EOS_CHECK_API_MISMATCH(Actual, Expected)
+#endif
+
 #include "Containers/UnrealString.h"
 #include "Logging/LogMacros.h"
 
@@ -44,6 +69,7 @@ inline EOS_ProductUserId EOSProductUserIdFromString(const TCHAR* String)
 }
 
 EOSSHARED_API FString LexToString(const EOS_EpicAccountId AccountId);
+EOSSHARED_API void LexFromString(EOS_EpicAccountId& AccountId, const TCHAR* String);
 
 EOSSHARED_API const TCHAR* LexToString(const EOS_EApplicationStatus ApplicationStatus);
 EOSSHARED_API const TCHAR* LexToString(const EOS_EAuthTokenType AuthTokenType);
@@ -54,7 +80,7 @@ EOSSHARED_API const TCHAR* LexToString(const EOS_ELoginStatus LoginStatus);
 EOSSHARED_API const TCHAR* LexToString(const EOS_ENetworkStatus NetworkStatus);
 EOSSHARED_API const TCHAR* LexToString(const EOS_Presence_EStatus PresenceStatus);
 
-EOSSHARED_API bool LexFromString(EOS_EAuthScopeFlags& OutEnum, const TCHAR* InString);
+EOSSHARED_API bool LexFromString(EOS_EAuthScopeFlags& OutEnum, const FStringView InString);
 EOSSHARED_API bool LexFromString(EOS_EExternalCredentialType& OutEnum, const TCHAR* InString);
 EOSSHARED_API bool LexFromString(EOS_ELoginCredentialType& OutEnum, const TCHAR* InString);
 

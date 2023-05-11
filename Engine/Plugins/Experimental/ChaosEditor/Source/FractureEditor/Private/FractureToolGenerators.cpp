@@ -2,6 +2,7 @@
 
 #include "FractureToolGenerators.h"
 
+#include "Components/StaticMeshComponent.h"
 #include "Editor.h"
 #include "ScopedTransaction.h"
 #include "Engine/Selection.h"
@@ -11,6 +12,7 @@
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Misc/Change.h"
 #include "ChangeTransactor.h"
 
@@ -685,12 +687,8 @@ AGeometryCollectionActor* UFractureToolGenerateAsset::ConvertActorsToGeometryCol
 	// Add and initialize guids
 	::GeometryCollection::GenerateTemporaryGuids(FracturedGeometryCollection->GetGeometryCollection().Get(), 0 , true);
 
-	// Update proximity graph
-	FGeometryCollectionProximityUtility ProximityUtility(FracturedGeometryCollection->GetGeometryCollection().Get());
-	ProximityUtility.UpdateProximity();
-
 	const UFractureModeSettings* ModeSettings = GetDefault<UFractureModeSettings>();
-	ModeSettings->ApplyDefaultConvexSettings(*FracturedGeometryCollection->GetGeometryCollection());
+	ModeSettings->ApplyDefaultSettings(*FracturedGeometryCollection->GetGeometryCollection());
 
 	return NewActor;
 }
@@ -876,13 +874,9 @@ void UFractureToolResetAsset::Execute(TWeakPtr<FFractureEditorModeToolkit> InToo
 						GeometryCollectionObject->Materials[NewMatNum - 1] = OldMaterials[OldMatNum - 1];
 					}
 				}
-				
-				// Update proximity graph
-				FGeometryCollectionProximityUtility ProximityUtility(GeometryCollection);
-				ProximityUtility.UpdateProximity();
 
 				const UFractureModeSettings* ModeSettings = GetDefault<UFractureModeSettings>();
-				ModeSettings->ApplyDefaultConvexSettings(*GeometryCollection);
+				ModeSettings->ApplyDefaultSettings(*GeometryCollection);
 
 				FGeometryCollectionClusteringUtility::UpdateHierarchyLevelOfChildren(GeometryCollection, -1);
 				AddSingleRootNodeIfRequired(GeometryCollectionObject);

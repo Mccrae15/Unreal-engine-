@@ -5,12 +5,11 @@
 #include "Chaos/ParticleHandleFwd.h"
 #include "Chaos/PBDRigidsEvolutionFwd.h"
 #include "ChaosCache.h"
-#include "Adapters/CacheAdapter.h"
-#include "Engine/EngineTypes.h"
-#include "Chaos/Core.h"
 #include "GameFramework/Actor.h"
 
 #include "CacheManagerActor.generated.h"
+
+namespace Chaos { class FPhysicsSolverEvents; }
 
 class UChaosCacheCollection;
 class UPrimitiveComponent;
@@ -48,6 +47,8 @@ struct CHAOSCACHING_API FObservedComponent
 	FObservedComponent()
 		: CacheName(NAME_None)
 		, bIsSimulating(true)
+		, bHasNotifyBreaks(false)
+		, bPlaybackEnabled(true)
 		, Cache(nullptr)
 		, BestFitAdapter(nullptr)
 	{
@@ -57,6 +58,8 @@ struct CHAOSCACHING_API FObservedComponent
 	{
 		CacheName = OtherComponent.CacheName;
 		bIsSimulating = OtherComponent.bIsSimulating;
+		bHasNotifyBreaks = OtherComponent.bHasNotifyBreaks;
+		bPlaybackEnabled = OtherComponent.bPlaybackEnabled;
 		bTriggered = OtherComponent.bTriggered;
 		AbsoluteTime = OtherComponent.AbsoluteTime;
 		TimeSinceTrigger = OtherComponent.TimeSinceTrigger;
@@ -70,6 +73,8 @@ struct CHAOSCACHING_API FObservedComponent
 	{
 		CacheName = OtherComponent.CacheName;
 		bIsSimulating = OtherComponent.bIsSimulating;
+		bHasNotifyBreaks = OtherComponent.bHasNotifyBreaks;
+		bPlaybackEnabled = OtherComponent.bPlaybackEnabled;
 		bTriggered = OtherComponent.bTriggered;
 		AbsoluteTime = OtherComponent.AbsoluteTime;
 		TimeSinceTrigger = OtherComponent.TimeSinceTrigger;
@@ -82,7 +87,7 @@ struct CHAOSCACHING_API FObservedComponent
 	}
 
 	/** Unique name for the cache, used as a key into the cache collection */
-	UPROPERTY(EditAnywhere, Category = "Caching")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Caching")
 	FName CacheName;
 
 	/** Deprecated hard object reference. Not working with sequencer and take recorder since
@@ -96,8 +101,15 @@ struct CHAOSCACHING_API FObservedComponent
 	FSoftComponentReference SoftComponentRef;
 
 	/** Capture of the initial state of the component before cache manager takes control. */
-	UPROPERTY(EditAnywhere, Category = "Caching")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Caching")
 	bool bIsSimulating;
+
+	/** 
+	* Capture the state of bNotifyBreaks of the component before cache manager takes control. 
+	* this is because when recording the cache needs the component to have bNotifyBreaks set on the component 
+	* to be able to properly record when clusters are breaking into smaller pieces
+	*/
+	bool bHasNotifyBreaks;
 
 	/** Post serialize function to transfer datas from the deprecated TObjectPtr -> TSoftObjectPtr */
 	void PostSerialize(const FArchive& Ar);
@@ -105,9 +117,17 @@ struct CHAOSCACHING_API FObservedComponent
 	/** Prepare runtime tick data for a new run */
 	void ResetRuntimeData(const EStartMode ManagerStartMode);
 
+	/** Check if the Observed component is enabled for a specific cache mode */
+	bool IsEnabled(ECacheMode CacheMode) const;
+
 	/** Gets the component from the internal component ref */
 	UPrimitiveComponent* GetComponent();
 	UPrimitiveComponent* GetComponent() const;
+
+private:
+	/** Whether this component is enabled for playback, this allow a cache to hold many component but only replay some of them. */
+	UPROPERTY(EditAnywhere, Category = "Caching")
+	bool bPlaybackEnabled;
 
 private:
 	friend class AChaosCacheManager;
@@ -327,3 +347,8 @@ public:
 	AChaosCachePlayer(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
 
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Adapters/CacheAdapter.h"
+#include "Chaos/Core.h"
+#endif

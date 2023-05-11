@@ -8,6 +8,7 @@
 
 #include "Chaos/Framework/PhysicsSolverBase.h"
 #include "Chaos/PullPhysicsDataImp.h"
+#include "PhysicsProxy/CharacterGroundConstraintProxy.h"
 #include "PhysicsProxy/SingleParticlePhysicsProxy.h"
 #include "PhysicsProxy/GeometryCollectionPhysicsProxy.h"
 #include "PhysicsProxy/JointConstraintProxy.h"
@@ -16,8 +17,8 @@
 namespace Chaos
 {
 	// Pulls physics state for each dirty particle and allows caller to do additional work if needed
-	template <typename RigidLambda, typename ConstraintLambda>
-	void FPhysicsSolverBase::PullPhysicsStateForEachDirtyProxy_External(const RigidLambda& RigidFunc, const ConstraintLambda& ConstraintFunc)
+	template <typename RigidLambda, typename ConstraintLambda, typename GeometryCollectionLambda>
+	void FPhysicsSolverBase::PullPhysicsStateForEachDirtyProxy_External(const RigidLambda& RigidFunc, const ConstraintLambda& ConstraintFunc, const GeometryCollectionLambda& GeometryCollectionFunc)
 	{
 		using namespace Chaos;
 
@@ -33,7 +34,7 @@ namespace Chaos
 			//case 5: prev has no dirty data and next was overwritten. In this case do nothing as the overwritten data wins, and also particle may be deleted
 
 			TArray<const FChaosInterpolationResults*> ResultsPerChannel = PullResultsManager->PullAsyncPhysicsResults_External(ResultsTime);
-			for(int32 ChannelIdx = 0; ChannelIdx < ResultsPerChannel.Num(); ++ChannelIdx)
+			for (int32 ChannelIdx = 0; ChannelIdx < ResultsPerChannel.Num(); ++ChannelIdx)
 			{
 				const FChaosInterpolationResults& Results = *ResultsPerChannel[ChannelIdx];
 				LatestData = Results.Next;
@@ -51,13 +52,16 @@ namespace Chaos
 						}
 					}
 				}
-				
+
 				// geometry collections
 				for (const FChaosGeometryCollectionInterpolationData& GCInterp : Results.GeometryCollectionInterpolations)
 				{
 					if (FGeometryCollectionPhysicsProxy* Proxy = GCInterp.Prev.GetProxy())
 					{
-						Proxy->PullFromPhysicsState(GCInterp.Prev, SolverTimestamp, &GCInterp.Next, &Results.Alpha);
+						if (Proxy->PullFromPhysicsState(GCInterp.Prev, SolverTimestamp, &GCInterp.Next, &Results.Alpha))
+						{
+							GeometryCollectionFunc(Proxy);
+						}
 					}
 				}
 			}
@@ -75,31 +79,34 @@ namespace Chaos
 
 			// Single particles
 			for (const FChaosRigidInterpolationData& RigidInterp : Results.RigidInterpolations)
+			{
+				if (FSingleParticlePhysicsProxy* Proxy = RigidInterp.Prev.GetProxy())
 				{
-					if (FSingleParticlePhysicsProxy* Proxy = RigidInterp.Prev.GetProxy())
+					if (Proxy->PullFromPhysicsState(RigidInterp.Next, SolverTimestamp))
 					{
-						if (Proxy->PullFromPhysicsState(RigidInterp.Next, SolverTimestamp))
-						{
-							RigidFunc(Proxy);
-						}
+						RigidFunc(Proxy);
 					}
 				}
+			}
 
 			// geometry collections
 			for (const FChaosGeometryCollectionInterpolationData& GCInterp : Results.GeometryCollectionInterpolations)
 			{
 				if (FGeometryCollectionPhysicsProxy* Proxy = GCInterp.Prev.GetProxy())
 				{
-					Proxy->PullFromPhysicsState(GCInterp.Next, SolverTimestamp);
+					if (Proxy->PullFromPhysicsState(GCInterp.Next, SolverTimestamp))
+					{
+						GeometryCollectionFunc(Proxy);
+					}
 				}
 			}
-			
+
 		}
 
 		//no interpolation for GC or joints at the moment
-		if(LatestData)
+		if (LatestData)
 		{
-			 const int32 SyncTimestamp = LatestData->SolverTimestamp;
+			const int32 SyncTimestamp = LatestData->SolverTimestamp;
 
 			//
 			// @todo(chaos) : Add Dirty Constraints Support
@@ -123,7 +130,23 @@ namespace Chaos
 
 			//latest data may be used multiple times during interpolation, so for non interpolated joints we clear it
 			LatestData->DirtyJointConstraints.Reset();
+
+			for (const FDirtyCharacterGroundConstraintData& DirtyData : LatestData->DirtyCharacterGroundConstraints)
+			{
+				if (auto Proxy = DirtyData.GetProxy())
+				{
+					// todo: Do we need to add a callback?
+					Proxy->PullFromPhysicsState(DirtyData, SyncTimestamp);
+				}
+			}
+			LatestData->DirtyCharacterGroundConstraints.Reset();
 		}
 	}
 
+	template <typename RigidLambda, typename ConstraintLambda>
+	void FPhysicsSolverBase::PullPhysicsStateForEachDirtyProxy_External(const RigidLambda& RigidFunc, const ConstraintLambda& ConstraintFunc)
+	{
+		auto GeometryCollectionFunc = [](FGeometryCollectionPhysicsProxy* Proxy) {};
+		PullPhysicsStateForEachDirtyProxy_External(RigidFunc, ConstraintFunc, GeometryCollectionFunc);
+	}
 }

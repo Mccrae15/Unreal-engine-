@@ -2,25 +2,10 @@
 
 #pragma once
 
-#include "Components/SkeletalMeshComponent.h"
-#include "Containers/Array.h"
-#include "Containers/Map.h"
-#include "Containers/UnrealString.h"
-#include "Editor/UnrealEdTypes.h"
 #include "EditorViewportClient.h"
-#include "Math/Axis.h"
-#include "Math/BoxSphereBounds.h"
-#include "Math/Color.h"
-#include "Math/Matrix.h"
-#include "Math/Rotator.h"
-#include "Math/Sphere.h"
-#include "Math/UnrealMathSSE.h"
-#include "Math/Vector.h"
 #include "MuCO/CustomizableObjectParameterTypeDefinitions.h"
-#include "Templates/SharedPointer.h"
-#include "UObject/NameTypes.h"
-#include "UObject/WeakObjectPtrTemplates.h"
-#include "UnrealWidgetFwd.h"
+
+namespace EAnimationMode { enum Type : int; }
 
 class FCanvas;
 class FCustomizableObjectWidget;
@@ -418,6 +403,14 @@ public:
 		return FullNameMaterialToDrawInUVs;
 	}
 
+	/** Sets the skeletal mesh bones visibility */
+	void SetShowBones();
+
+	/** Returns true if bones are vibile in viewport */
+	bool IsShowingBones() const;
+
+	/** Draws Mesh Bones in foreground (From: FAnimationViewportClient) */
+	void DrawMeshBones(UDebugSkelMeshComponent* MeshComponent, FPrimitiveDrawInterface* PDI);
 
 private:
 	/** Component for the static/skeletal mesh. */
@@ -519,4 +512,12 @@ private:
 
 	/** bool to return the Camera mode to Orbital when changing the Camera view to Perspective */
 	bool bSetOrbitalOnPerspectiveMode;
+
+	/** Flag to control the bones visibility in the viewport */
+	bool bShowBones;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Components/SkeletalMeshComponent.h"
+#include "Editor/UnrealEdTypes.h"
+#endif

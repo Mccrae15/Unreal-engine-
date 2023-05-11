@@ -475,10 +475,13 @@ FText UNiagaraStackFunctionInput::GetValueToolTip() const
 		{
 		case EValueMode::Data:
 		{
-			FString DataInterfaceDescription = InputValues.DataObject->GetClass()->GetDescription();
-			if (DataInterfaceDescription.Len() > 0)
+			if (InputValues.DataObject.IsValid())
 			{
-				ValueToolTipCache = FText::FromString(DataInterfaceDescription);
+				FString DataInterfaceDescription = InputValues.DataObject->GetClass()->GetDescription();
+				if (DataInterfaceDescription.Len() > 0)
+				{
+					ValueToolTipCache = FText::FromString(DataInterfaceDescription);
+				}
 			}
 			break;
 		}
@@ -1516,6 +1519,12 @@ void UNiagaraStackFunctionInput::GetAvailableParameterHandles(TArray<FNiagaraPar
 							}
 						}
 
+						// as transient variables & output variables are only valid within their current stage, we may want to skip the current parameter handle
+						if(OutputNode != CurrentOutputNode && (AvailableHandle.IsOutputHandle() || AvailableHandle.IsTransientHandle()))
+						{
+							continue;
+						}
+
 						if (bWritten)
 						{
 							if (FNiagaraEditorUtilities::AreTypesAssignable(HistoryVariable.GetType(), InputType))
@@ -2516,6 +2525,7 @@ void UNiagaraStackFunctionInput::ChangeScriptVersion(FGuid NewScriptVersion)
       FCompileConstantResolver(GetEmitterViewModel()->GetEmitter(), FNiagaraStackGraphUtilities::GetOutputNodeUsage(*GetDynamicInputNode())) :
       FCompileConstantResolver(&GetSystemViewModel()->GetSystem(), FNiagaraStackGraphUtilities::GetOutputNodeUsage(*GetDynamicInputNode()));
 	GetDynamicInputNode()->ChangeScriptVersion(NewScriptVersion, UpgradeContext, true);
+	GetDynamicInputNode()->RefreshFromExternalChanges();
 	TSharedRef<FNiagaraSystemViewModel> CachedSysViewModel = GetSystemViewModel();
 	if (CachedSysViewModel->GetSystemStackViewModel())
 		CachedSysViewModel->GetSystemStackViewModel()->InvalidateCachedParameterUsage();
@@ -3021,7 +3031,7 @@ void UNiagaraStackFunctionInput::UpdateValuesFromScriptDefaults(FInputValues& In
 					// Data interfaces are handled differently than other values types so collect them here.
 					GetDefaultDataInterfaceValueFromDefaultPin(DefaultPin, InInputValues);
 				}
-				else
+				else if (InputType.IsUObject() == false)
 				{
 					// Otherwise check for local and linked values.
 					if (DefaultPin->LinkedTo.Num() == 0)

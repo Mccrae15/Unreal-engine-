@@ -5,15 +5,7 @@
 #if TRACE_FILTERING_ENABLED
 
 #include "TraceFilters.h"
-#include "HAL/IConsoleManager.h"
-#include "Algo/Transform.h"
-#include "Containers/Map.h"
 
-#include "UObject/UObjectBase.h"
-#include "Engine/World.h"
-#include "GameFramework/Actor.h"
-#include "Components/ActorComponent.h"
-#include "Logging/LogMacros.h"
 #include "ObjectTrace.h"
 
 struct ENGINE_API FTraceFilterObjectAnnotation
@@ -277,7 +269,8 @@ FAutoConsoleCommand FlushFilterStateCommand(TEXT("TraceFilter.FlushState"), TEXT
 template<>
 bool ENGINE_API FTraceFilter::IsObjectTraceable</*bForceThreadSafe = */ true>(const UObject* InObject)
 {
-	return InObject ? GObjectFilterAnnotations.GetAnnotation(InObject).bIsTraceable : true;
+	// Object not found in the AnnotationMap means that it is at the default value, which is bIsTraceable == true
+	return GObjectFilterAnnotations.GetAnnotationMap().Find(InObject) == nullptr;
 }
 
 template<>

@@ -4,6 +4,7 @@
 
 #include "BaseGizmos/CombinedTransformGizmo.h"
 #include "BaseGizmos/GizmoBaseComponent.h"
+#include "BaseGizmos/TransformGizmoUtil.h"
 #include "ContextObjects/UVToolViewportButtonsAPI.h"
 #include "ContextObjectStore.h"
 #include "DynamicMesh/DynamicMeshChangeTracker.h"
@@ -235,7 +236,7 @@ void UUVSelectTool::Setup()
 	// Gizmo setup
 	UInteractiveGizmoManager* GizmoManager = GetToolManager()->GetPairedGizmoManager();
 	UTransformProxy* TransformProxy = NewObject<UTransformProxy>(this);
-	TransformGizmo = GizmoManager->CreateCustomTransformGizmo(
+	TransformGizmo = UE::TransformGizmoUtil::CreateCustomTransformGizmo(GizmoManager, 
 		ETransformGizmoSubElements::TranslateAxisX | ETransformGizmoSubElements::TranslateAxisY | ETransformGizmoSubElements::TranslatePlaneXY
 		| ETransformGizmoSubElements::ScaleAxisX | ETransformGizmoSubElements::ScaleAxisY | ETransformGizmoSubElements::ScalePlaneXY
 		| ETransformGizmoSubElements::RotateAxisZ,
@@ -625,19 +626,6 @@ void UUVSelectTool::GizmoTransformEnded(UTransformProxy* Proxy)
 void UUVSelectTool::ApplyGizmoTransform()
 {
 	FTransformSRT3d TransformToApply(UnappliedGizmoTransform);
-
-	// TODO: The division here is a bit of a hack. Properly-speaking, the scaling handles should act relative to
-	// gizmo size, not the visible space across which we drag, otherwise it becomes dependent on the units we
-	// use and our absolute distance from the object. Since our UV unwrap is scaled by 1000 to make it
-	// easier to zoom in and out without running into issues, the measure of the distance across which we typically
-	// drag the handles is too high to be convenient. Until we make the scaling invariant to units/distance from
-	// target, we use this hack.
-	// Note: If we're using the snapping feature we don't want to mess with the values on scale here, since the
-	// snapping has already been performed. If we use the hack, we won't have the exact snapped scale the user expects.
-	if (!ViewportButtonsAPI->GetSnapEnabled(UUVToolViewportButtonsAPI::ESnapTypeFlag::Scale))
-	{
-		TransformToApply.SetScale(FVector::One() + (UnappliedGizmoTransform.GetScale3D() - FVector::One()) / 10);
-	}
 
 	for (int32 SelectionIndex = 0; SelectionIndex < CurrentSelections.Num(); ++SelectionIndex)
 	{

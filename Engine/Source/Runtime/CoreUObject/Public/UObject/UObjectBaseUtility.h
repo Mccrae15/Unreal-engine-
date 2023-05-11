@@ -9,7 +9,6 @@
 #include "Containers/StringFwd.h"
 #include "Containers/UnrealString.h"
 #include "Containers/VersePathFwd.h"
-#include "CoreMinimal.h"
 #include "HAL/PlatformMath.h"
 #include "Misc/AssertionMacros.h"
 #include "Misc/EnumClassFlags.h"
@@ -355,7 +354,7 @@ public:
 	{
 		FUObjectItem* ObjectItem = GUObjectArray.IndexToObject(InternalIndex);
 		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		checkf(!(FlagsToSet & (EInternalObjectFlags::PendingKill | EInternalObjectFlags::Garbage)) || int32(FlagsToSet & (EInternalObjectFlags::PendingKill | EInternalObjectFlags::Garbage)) == (ObjectItem->Flags & int32(EInternalObjectFlags::PendingKill | EInternalObjectFlags::Garbage)), TEXT("SetInternalFlags should not set the PendingKill or Garbage flag. Use MarkPendingKill or MarkAsGarbage instead"));
+		checkf(!(FlagsToSet & (EInternalObjectFlags::PendingKill | EInternalObjectFlags::Garbage)) || (FlagsToSet & (EInternalObjectFlags::PendingKill | EInternalObjectFlags::Garbage)) == (ObjectItem->GetFlags() & (EInternalObjectFlags::PendingKill | EInternalObjectFlags::Garbage)), TEXT("SetInternalFlags should not set the PendingKill or Garbage flag. Use MarkPendingKill or MarkAsGarbage instead"));
 		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		ObjectItem->SetFlags(FlagsToSet);
 	}
@@ -392,7 +391,7 @@ public:
 	{
 		FUObjectItem* ObjectItem = GUObjectArray.IndexToObject(InternalIndex);
 		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		checkf(!(FlagsToClear & (EInternalObjectFlags::PendingKill | EInternalObjectFlags::Garbage)) || (ObjectItem->Flags & int32(FlagsToClear & (EInternalObjectFlags::PendingKill | EInternalObjectFlags::Garbage))) == 0, TEXT("ClearInternalFlags should not clear PendingKill or Garbage flag. Use ClearGarbage() instead"));
+		checkf(!(FlagsToClear & (EInternalObjectFlags::PendingKill | EInternalObjectFlags::Garbage)) || (ObjectItem->GetFlags() & (FlagsToClear & (EInternalObjectFlags::PendingKill | EInternalObjectFlags::Garbage))) == EInternalObjectFlags::None, TEXT("ClearInternalFlags should not clear PendingKill or Garbage flag. Use ClearGarbage() instead"));
 		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		ObjectItem->ClearFlags(FlagsToClear);
 	}
@@ -407,7 +406,7 @@ public:
 	{
 		FUObjectItem* ObjectItem = GUObjectArray.IndexToObject(InternalIndex);
 		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		checkf((ObjectItem->Flags & int32(FlagsToClear & (EInternalObjectFlags::PendingKill | EInternalObjectFlags::Garbage))) == 0, TEXT("ClearInternalFlags should not clear PendingKill or Garbage flag. Use ClearGarbage() instead"));
+		checkf((ObjectItem->GetFlags() & (FlagsToClear & (EInternalObjectFlags::PendingKill | EInternalObjectFlags::Garbage))) == EInternalObjectFlags::None, TEXT("ClearInternalFlags should not clear PendingKill or Garbage flag. Use ClearGarbage() instead"));
 		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		return ObjectItem->ThisThreadAtomicallyClearedFlag(FlagsToClear);
 	}
@@ -922,7 +921,8 @@ FORCEINLINE bool IsPossiblyAllocatedUObjectPointer(UObject* Ptr)
 	{
 		int32 Result = 0;
 
-		for (int32 I = 0; I != sizeof(UPTRINT); ++I)
+		// != changed to < because of false positive in MSVC's static analyzer: warning C6295: Ill-defined for-loop.  Loop executes infinitely.
+		for (int32 I = 0; I < sizeof(UPTRINT); ++I)
 		{
 			if ((Val & 0xFF) == ByteVal)
 			{
@@ -1203,4 +1203,8 @@ public:
 	#ifdef PRAGMA_ENABLE_SHADOW_VARIABLE_WARNINGS
 		PRAGMA_ENABLE_SHADOW_VARIABLE_WARNINGS
 	#endif
+#endif
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
 #endif

@@ -7,8 +7,8 @@
 #include "IAnimationProvider.h"
 #include "IGameplayProvider.h"
 #include "Insights/IUnrealInsightsModule.h"
-#include "IGameplayInsightsModule.h"
 #include "Modules/ModuleManager.h"
+#include "Animation/AnimTrace.h"
 #include "ObjectTrace.h"
 #include "TraceServices/Model/Frames.h"
 #include "SLevelViewport.h"
@@ -19,12 +19,15 @@
 #include "RewindDebuggerObjectTrack.h"
 #include "Animation/AnimBlueprint.h"
 #include "Animation/AnimBlueprintGeneratedClass.h"
+#include "EngineUtils.h"
 #include "ToolMenus.h"
 #include "RewindDebuggerSettings.h"
 #include "LevelEditor.h"
 #include "RewindDebuggerModule.h"
 #include "Engine/PoseWatch.h"
 #include "ProfilingDebugging/TraceAuxiliary.h"
+#include "UObject/UObjectIterator.h"
+#include "Engine/World.h"
 
 static void IterateExtensions(TFunction<void(IRewindDebuggerExtension* Extension)> IteratorFunction)
 {
@@ -36,6 +39,16 @@ static void IterateExtensions(TFunction<void(IRewindDebuggerExtension* Extension
 	{
 		IRewindDebuggerExtension* Extension = static_cast<IRewindDebuggerExtension*>(ModularFeatures.GetModularFeatureImplementation(IRewindDebuggerExtension::ModularFeatureName, ExtensionIndex));
 		IteratorFunction(Extension);
+	}
+}
+
+static void TraceSubobjects(UObject* OuterObject)
+{
+	TArray<UObject*> Subobjects;
+	GetObjectsWithOuter(OuterObject, Subobjects, true);
+	for (UObject* Subobject : Subobjects)
+	{
+		TRACE_OBJECT_LIFETIME_BEGIN(Subobject);
 	}
 }
 
@@ -66,7 +79,23 @@ FRewindDebugger::FRewindDebugger()  :
 	FEditorDelegates::EndPIE.AddRaw(this, &FRewindDebugger::OnPIEStopped);
 	FEditorDelegates::SingleStepPIE.AddRaw(this, &FRewindDebugger::OnPIESingleStepped);
 
-	DebugTargetActor.OnPropertyChanged = DebugTargetActor.OnPropertyChanged.CreateLambda([this](FString Target) { RefreshDebugTracks(); });
+	DebugTargetActor.OnPropertyChanged = DebugTargetActor.OnPropertyChanged.CreateLambda([this](FString Target)
+		{
+			TargetObjectIds.SetNum(0);
+			GetTargetObjectIds(TargetObjectIds);
+			// make sure all the SubObjects of the target actor have been traced
+#if OBJECT_TRACE_ENABLED
+			for (uint64 TargetObjectId : TargetObjectIds)
+			{
+				if (UObject* TargetObject = FObjectTrace::GetObjectFromId(TargetObjectId))
+				{
+					TraceSubobjects(TargetObject);
+				}
+			}
+#endif
+
+			RefreshDebugTracks();
+		});
 
 	UnrealInsightsModule = &FModuleManager::LoadModuleChecked<IUnrealInsightsModule>("TraceInsights");
 
@@ -78,9 +107,6 @@ FRewindDebugger::FRewindDebugger()  :
 
 		return true;
 	});
-
-	IGameplayInsightsModule* GameplayInsightsModule = &FModuleManager::LoadModuleChecked<IGameplayInsightsModule>("GameplayInsights");
-	GameplayInsightsModule->StartTrace();
 }
 
 FRewindDebugger::~FRewindDebugger() 
@@ -119,8 +145,6 @@ void FRewindDebugger::OnPIEStarted(bool bSimulating)
 	bPIEStarted = true;
 	bPIESimulating = true;
 
-	UE::Trace::ToggleChannel(TEXT("Object"), true);
-
 	if (ShouldAutoRecordOnPIE())
 	{
 		StartRecording();
@@ -135,7 +159,9 @@ void FRewindDebugger::OnPIEPaused(bool bSimulating)
 	if (bRecording)
 	{
 		UWorld* World = GetWorldToVisualize();
+#if OBJECT_TRACE_ENABLED
 		RecordingDuration.Set(FObjectTrace::GetWorldElapsedTime(World));
+#endif // OBJECT_TRACE_ENABLED
 		SetCurrentScrubTime(RecordingDuration.Get());
 	}
 }
@@ -172,7 +198,9 @@ void FRewindDebugger::OnPIESingleStepped(bool bSimulating)
 	if (bRecording)
 	{
 		UWorld* World = GetWorldToVisualize();
+#if OBJECT_TRACE_ENABLED
 		RecordingDuration.Set(FObjectTrace::GetWorldElapsedTime(World));
+#endif // OBJECT_TRACE_ENABLED
 		SetCurrentScrubTime(RecordingDuration.Get());
 	}
 }
@@ -183,8 +211,6 @@ void FRewindDebugger::OnPIEStopped(bool bSimulating)
 	bPIEStarted = false;
 	bPIESimulating = false;
 	MeshComponentsToReset.Empty();
-
-	UE::Trace::ToggleChannel(TEXT("Object"), false);
 
 	StopRecording();
 	// clear the current recording (until we support playback in the Editor world on spawned actors)
@@ -211,8 +237,7 @@ uint64 FRewindDebugger::GetTargetActorId() const
 	{
 		if (const IGameplayProvider* GameplayProvider = Session->ReadProvider<IGameplayProvider>("GameplayProvider"))
 		{
-			double Time = CurrentTraceTime();
-			GameplayProvider->EnumerateObjects(Time, Time, [this,&TargetActorId](const FObjectInfo& InObjectInfo)
+			GameplayProvider->EnumerateObjects(CurrentTraceRange.GetLowerBoundValue(), CurrentTraceRange.GetUpperBoundValue(), [this, &TargetActorId](const FObjectInfo& InObjectInfo)
 			{
 				if (DebugTargetActor.Get() == InObjectInfo.Name)
 				{
@@ -225,9 +250,66 @@ uint64 FRewindDebugger::GetTargetActorId() const
 	return TargetActorId;
 }
 
+
+void FRewindDebugger::GetTargetObjectIds(TArray<uint64>& OutTargetObjectIds) const
+{
+	OutTargetObjectIds.Empty(2);
+
+	if (DebugTargetActor.Get() == "")
+	{
+		return;
+	}
+
+	if (const TraceServices::IAnalysisSession* Session = GetAnalysisSession())
+	{
+		TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session);
+
+		if (const IGameplayProvider* GameplayProvider = Session->ReadProvider<IGameplayProvider>("GameplayProvider"))
+		{
+			GameplayProvider->EnumerateObjects(CurrentTraceRange.GetLowerBoundValue(), CurrentTraceRange.GetUpperBoundValue(), [this, &OutTargetObjectIds](const FObjectInfo& InObjectInfo)
+				{
+					if (DebugTargetActor.Get() == InObjectInfo.Name)
+					{
+						OutTargetObjectIds.Add(InObjectInfo.Id);
+					}
+				});
+		}
+	}
+
+	// make sure all the SubObjects of the target actor have been traced
+#if OBJECT_TRACE_ENABLED
+	for (uint64 OutTargetObjectId : TargetObjectIds)
+	{
+		if (UObject* TargetObject = FObjectTrace::GetObjectFromId(OutTargetObjectId))
+		{
+			TraceSubobjects(TargetObject);
+		}
+	}
+#endif
+}
+
+
+
 void FRewindDebugger::RefreshDebugTracks()
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FRewindDebugger::RefreshDebugTracks);
+
+	if (TargetObjectIds.Num() == 0)
+	{
+		GetTargetObjectIds(TargetObjectIds);
+
+		if (TargetObjectIds.Num() == 0)
+		{
+			if (DebugTracks.Num() != 0)
+			{
+				// clear tracks so we don't show data from previous recordings
+				DebugTracks.SetNum(0);
+				ComponentListChangedDelegate.ExecuteIfBound();
+			}
+			return;
+		}
+	}
+
 	if (const TraceServices::IAnalysisSession* Session = GetAnalysisSession())
 	{
 		TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session);
@@ -236,31 +318,35 @@ void FRewindDebugger::RefreshDebugTracks()
 
 		if (const IGameplayProvider* GameplayProvider = Session->ReadProvider<IGameplayProvider>("GameplayProvider"))
 		{
-			uint64 TargetActorId = GetTargetActorId();
 
 			bool bChanged = false;
 
-			// add actor (even if it isn't found in the gameplay provider)
-			if (DebugTracks.Num() == 0)
+			// remove any existing tracks that don't match the current list of object ids
+			for (int TrackIndex = DebugTracks.Num()-1; TrackIndex>=0; TrackIndex--)
 			{
-				bChanged = true;
-				const bool bAddController = true;
-				DebugTracks.Add(MakeShared<RewindDebugger::FRewindDebuggerObjectTrack>(TargetActorId, DebugTargetActor.Get(), bAddController));
-			}
-			else
-			{
-				FString DebugTargetActorName = DebugTargetActor.Get();
-
-				if (DebugTracks[0]->GetDisplayName().ToString() != DebugTargetActorName || DebugTracks[0]->GetObjectId() != TargetActorId)
+				uint64* FoundId = TargetObjectIds.FindByPredicate([this, TrackIndex](const uint64& TrackId) { return DebugTracks[TrackIndex]->GetObjectId() == TrackId; });
+				if (!FoundId)
 				{
-					bChanged = true;
-					DebugTracks[0] = MakeShared<RewindDebugger::FRewindDebuggerObjectTrack>(TargetActorId, DebugTargetActorName);
+					DebugTracks.RemoveAt(TrackIndex);
 				}
 			}
 
-			if (TargetActorId != 0 && DebugTracks.Num() > 0)
+			// add new tracks for current list of object ids if they don't already exist
+			for (uint64 TargetObjectId : TargetObjectIds)
 			{
-				bChanged = bChanged || DebugTracks[0]->Update();
+				TSharedPtr<RewindDebugger::FRewindDebuggerTrack>* FoundTrack = DebugTracks.FindByPredicate([TargetObjectId](const TSharedPtr<RewindDebugger::FRewindDebuggerTrack>& Track) { return Track->GetObjectId() == TargetObjectId; });
+
+				if (!FoundTrack)
+				{
+					DebugTracks.Add(MakeShared<RewindDebugger::FRewindDebuggerObjectTrack>(TargetObjectId, DebugTargetActor.Get(), true));
+					bChanged = true;
+				}
+			}
+
+			// update all tracks
+			for (TSharedPtr<RewindDebugger::FRewindDebuggerTrack>& DebugTrack : DebugTracks )
+			{
+				bChanged = bChanged || DebugTrack->Update();
 			}
 
 			if (bChanged)
@@ -271,17 +357,55 @@ void FRewindDebugger::RefreshDebugTracks()
 	}
 }
 
+namespace
+{
+	static void DisableAllTraceChannels()
+	{
+		UE::Trace::EnumerateChannels([](const ANSICHAR* ChannelName, bool bEnabled, void*)
+						{
+							if (bEnabled)
+							{
+								FString ChannelNameFString(ChannelName);
+								UE::Trace::ToggleChannel(ChannelNameFString.GetCharArray().GetData(), false);
+							}
+						}
+						, nullptr);
+	}
+}
+
 void FRewindDebugger::StartRecording()
 {
 	if (!CanStartRecording())
 	{
 		return;
 	}
+	
+	// Clear caches
+#if OBJECT_TRACE_ENABLED
+	FObjectTrace::Reset();
+	FAnimTrace::Reset();
+#endif
+	
+	RecordingDuration.Set(0);
+	// RecordingIndex++;
+	bRecording = true;
 
-	// Enable Object and Animation Trace filters
+	// Disable all trace channels, and then enable only the ones needed by RewindDebugger
+	// for systems with RewindDebugger integration, they should enable their channel(s) in an Extension in "RecordingStarted"
+	DisableAllTraceChannels();
+
+	// Clear all buffered data and prevent data from previous recordings from leaking into the new recording
+	FTraceAuxiliary::FOptions Options;
+	Options.bExcludeTail = true;
+	
+	FTraceAuxiliary::Start(FTraceAuxiliary::EConnectionType::Network, TEXT("127.0.0.1"), TEXT(""), &Options, LogRewindDebugger);
+
+	UE::Trace::ToggleChannel(TEXT("Object"), true);
 	UE::Trace::ToggleChannel(TEXT("ObjectProperties"), true);
 	UE::Trace::ToggleChannel(TEXT("Animation"), true);
 	UE::Trace::ToggleChannel(TEXT("Frame"), true);
+	
+	UnrealInsightsModule->StartAnalysisForLastLiveSession();
 
 	// update extensions
 	IterateExtensions([this](IRewindDebuggerExtension* Extension)
@@ -290,15 +414,27 @@ void FRewindDebugger::StartRecording()
 		}
 	);
 
-	RecordingDuration.Set(0);
-	RecordingIndex++;
-	bRecording = true;
+#if OBJECT_TRACE_ENABLED
+	// trace each play-in-editor world, and all the actors in it.
+	for (TObjectIterator<UWorld> World; World; ++World)
+	{
+		if (World->IsPlayInEditor())
+		{
+			FObjectTrace::ResetWorldElapsedTime(*World);
+			FObjectTrace::SetWorldRecordingIndex(*World, RecordingIndex);
+			
+			TRACE_WORLD(*World);
+				
+			for (TActorIterator<AActor> Iterator(*World); Iterator; ++Iterator)
+			{
+				TRACE_OBJECT_LIFETIME_BEGIN(*Iterator);
+			}
+		}
+	}
+#endif // OBJECT_TRACE_ENABLED
 
-	// setup FObjectTrace to start tracking tracing times from 0
-	// and increment the RecordingIndex so we can use it to distinguish between the latest recording and older ones
-	UWorld* World = GetWorldToVisualize();
-	FObjectTrace::ResetWorldElapsedTime(World);
-	FObjectTrace::SetWorldRecordingIndex(World, RecordingIndex);
+	TargetObjectIds.Empty(2);
+
 }
 
 bool FRewindDebugger::ShouldAutoRecordOnPIE() const
@@ -315,11 +451,6 @@ void FRewindDebugger::StopRecording()
 {
 	if (bRecording)
 	{
-		// Enable Object and Animation Trace filters
-		UE::Trace::ToggleChannel(TEXT("ObjectProperties"), false);
-		UE::Trace::ToggleChannel(TEXT("Animation"), false);
-		UE::Trace::ToggleChannel(TEXT("Frame"), false);
-
 		// update extensions
 		IterateExtensions([this](IRewindDebuggerExtension* Extension)
 			{
@@ -328,6 +459,9 @@ void FRewindDebugger::StopRecording()
 		);
 
 		bRecording = false;
+		
+		DisableAllTraceChannels();
+		FTraceAuxiliary::Stop();
 	}
 }
 
@@ -672,7 +806,9 @@ void FRewindDebugger::Tick(float DeltaTime)
 				if (bRecording)
 				{
 					TRACE_CPUPROFILER_EVENT_SCOPE(FRewindDebugger::Tick_UpdateSimulating);
+#if OBJECT_TRACE_ENABLED
 					RecordingDuration.Set(FObjectTrace::GetWorldElapsedTime(World));
+#endif // OBJECT_TRACE_ENABLED
 					SetCurrentScrubTime(RecordingDuration.Get());
 					TrackCursorDelegate.ExecuteIfBound(false);
 				}
@@ -702,7 +838,7 @@ void FRewindDebugger::Tick(float DeltaTime)
 						
 						const TraceServices::IFrameProvider& FrameProvider = TraceServices::ReadFrameProvider(*Session);
 						TraceServices::FFrame Frame;
-						if(FrameProvider.GetFrameFromTime(ETraceFrameType::TraceFrameType_Game, CurrentTraceTime, Frame))
+						if (FrameProvider.GetFrameFromTime(ETraceFrameType::TraceFrameType_Game, CurrentTraceTime, Frame))
 						{
 							{
 								TRACE_CPUPROFILER_EVENT_SCOPE(FRewindDebugger::Tick_UpdateActorPosition);
@@ -710,6 +846,7 @@ void FRewindDebugger::Tick(float DeltaTime)
 								uint64 TargetActorId = GetTargetActorId();
 								if (TargetActorId != 0)
 								{
+#if OBJECT_TRACE_ENABLED
 									if(UObject* ObjectInstance = FObjectTrace::GetObjectFromId(TargetActorId))
 									{
 										if (AActor* TargetActor = Cast<AActor>(ObjectInstance))
@@ -743,6 +880,7 @@ void FRewindDebugger::Tick(float DeltaTime)
 											}
 										}
 									}
+#endif // OBJECT_TRACE_ENABLED
 								}
 							}
 							
@@ -754,6 +892,7 @@ void FRewindDebugger::Tick(float DeltaTime)
 								TRACE_CPUPROFILER_EVENT_SCOPE(FRewindDebugger::Tick_UpdatePoses);
 								AnimationProvider->EnumerateSkeletalMeshPoseTimelines([this, &Frame, AnimationProvider, GameplayProvider](uint64 ObjectId, const IAnimationProvider::SkeletalMeshPoseTimeline& TimelineData)
 								{
+#if OBJECT_TRACE_ENABLED
 									if(UObject* ObjectInstance = FObjectTrace::GetObjectFromId(ObjectId))
 									{
 										if(USkeletalMeshComponent* MeshComponent = Cast<USkeletalMeshComponent>(ObjectInstance))
@@ -774,25 +913,28 @@ void FRewindDebugger::Tick(float DeltaTime)
 												if (PoseMessage)
 												{
 													FTransform ComponentWorldTransform;
-													const FSkeletalMeshInfo* SkeletalMeshInfo = AnimationProvider->FindSkeletalMeshInfo(PoseMessage->MeshId);
-													AnimationProvider->GetSkeletalMeshComponentSpacePose(*PoseMessage, *SkeletalMeshInfo, ComponentWorldTransform, MeshComponent->GetEditableComponentSpaceTransforms());
-													MeshComponent->ApplyEditedComponentSpaceTransforms();
-
-													if (MeshComponentsToReset.Find(ObjectId) == nullptr)
+													if (const FSkeletalMeshInfo* SkeletalMeshInfo = AnimationProvider->FindSkeletalMeshInfo(PoseMessage->MeshId))
 													{
-														FMeshComponentResetData ResetData;
-														ResetData.Component = MeshComponent;
-														ResetData.RelativeTransform = MeshComponent->GetRelativeTransform();
-														MeshComponentsToReset.Add(ObjectId, ResetData);
-													}
+														AnimationProvider->GetSkeletalMeshComponentSpacePose(*PoseMessage, *SkeletalMeshInfo, ComponentWorldTransform, MeshComponent->GetEditableComponentSpaceTransforms());
+														MeshComponent->ApplyEditedComponentSpaceTransforms();
 
-													MeshComponent->SetWorldTransform(ComponentWorldTransform, false, nullptr, ETeleportType::TeleportPhysics);
-													MeshComponent->SetForcedLOD(PoseMessage->LodIndex + 1);
-													MeshComponent->UpdateChildTransforms(EUpdateTransformFlags::None, ETeleportType::TeleportPhysics);
+														if (MeshComponentsToReset.Find(ObjectId) == nullptr)
+														{
+															FMeshComponentResetData ResetData;
+															ResetData.Component = MeshComponent;
+															ResetData.RelativeTransform = MeshComponent->GetRelativeTransform();
+															MeshComponentsToReset.Add(ObjectId, ResetData);
+														}
+
+														MeshComponent->SetWorldTransform(ComponentWorldTransform, false, nullptr, ETeleportType::TeleportPhysics);
+														MeshComponent->SetForcedLOD(PoseMessage->LodIndex + 1);
+														MeshComponent->UpdateChildTransforms(EUpdateTransformFlags::None, ETeleportType::TeleportPhysics);
+													}
 												}
 											});
 										}
 									}
+#endif // OBJECT_TRACE_ENABLED
 								});
 							}
 
@@ -804,6 +946,7 @@ void FRewindDebugger::Tick(float DeltaTime)
 								// - if it is copy that debug data into the class debug data for the blueprint debugger
 								AnimationProvider->EnumerateAnimGraphTimelines([&Frame, AnimationProvider, GameplayProvider](uint64 ObjectId, const IAnimationProvider::AnimGraphTimeline& AnimGraphTimeline)
 								{
+#if OBJECT_TRACE_ENABLED
 									if(UObject* ObjectInstance = FObjectTrace::GetObjectFromId(ObjectId))
 									{
 										if(UAnimInstance* AnimInstance = Cast<UAnimInstance>(ObjectInstance))
@@ -966,6 +1109,7 @@ void FRewindDebugger::Tick(float DeltaTime)
 											}
 										}
 									}
+#endif // OBJECT_TRACE_ENABLED
 									return TraceServices::EEventEnumerate::Continue;
 								});
 							}
@@ -1037,6 +1181,23 @@ void FRewindDebugger::UpdateDetailsPanel(TSharedRef<SDockTab> DetailsTab)
 	}
 }
 
+void FRewindDebugger::RegisterComponentContextMenu()
+{
+	UToolMenu* Menu = UToolMenus::Get()->FindMenu("RewindDebugger.ComponentContextMenu");
+	
+	FToolMenuSection& Section = Menu->FindOrAddSection("SelectedTrack");
+	
+	FToolMenuEntry& Entry = Section.AddDynamicEntry(NAME_None, FNewToolMenuSectionDelegate::CreateLambda([](FToolMenuSection& InSection)
+	{
+		const UComponentContextMenuContext* Context = InSection.FindContext<UComponentContextMenuContext>();
+
+		if (Context && Context->SelectedTrack.IsValid())
+		{
+			Context->SelectedTrack->BuildContextMenu(InSection);
+		}
+	}));
+}
+
 void FRewindDebugger::ComponentDoubleClicked(TSharedPtr<RewindDebugger::FRewindDebuggerTrack> SelectedObject)
 {
 	if (!SelectedObject.IsValid())
@@ -1048,11 +1209,12 @@ void FRewindDebugger::ComponentDoubleClicked(TSharedPtr<RewindDebugger::FRewindD
 	SelectedTrack->HandleDoubleClick();
 }
 
-TSharedPtr<SWidget> FRewindDebugger::BuildComponentContextMenu()
+TSharedPtr<SWidget> FRewindDebugger::BuildComponentContextMenu() const
 {
 	UComponentContextMenuContext* MenuContext = NewObject<UComponentContextMenuContext>();
 	MenuContext->SelectedObject = GetSelectedComponent();
-
+	MenuContext->SelectedTrack = SelectedTrack;
+	
 	if (SelectedTrack.IsValid())
 	{
 		// build a list of class hierarchy names to make it easier for extensions to enable menu entries by type
@@ -1095,11 +1257,16 @@ TSharedPtr<FDebugObjectInfo> FRewindDebugger::GetSelectedComponent() const
 	}
 }
 
+TSharedPtr<RewindDebugger::FRewindDebuggerTrack> FRewindDebugger::GetSelectedTrack() const
+{
+	return SelectedTrack;
+}
+
 // build a component tree that's compatible with the public api from 5.0 for GetDebugComponents.
 void FRewindDebugger::RefreshDebugComponents(TArray<TSharedPtr<RewindDebugger::FRewindDebuggerTrack>>& InTracks, TArray<TSharedPtr<FDebugObjectInfo>>& OutComponents)
 {
 	OutComponents.SetNum(0);
-	for(auto& Track : InTracks)
+	for(TSharedPtr<RewindDebugger::FRewindDebuggerTrack>& Track : InTracks)
 	{
 		int Index = OutComponents.Num();
 		OutComponents.Add(MakeShared<FDebugObjectInfo>(Track->GetObjectId(), Track->GetDisplayName().ToString()));

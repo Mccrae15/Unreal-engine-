@@ -1,13 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WaveTableBank.h"
+#include "UObject/ObjectSaveContext.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(WaveTableBank)
 
 #define LOCTEXT_NAMESPACE "WaveTable"
 
 
-TUniquePtr<Audio::IProxyData> UWaveTableBank::CreateNewProxyData(const Audio::FProxyDataInitParams& InitParams)
+TSharedPtr<Audio::IProxyData> UWaveTableBank::CreateProxyData(const Audio::FProxyDataInitParams& InitParams)
 {
-	return MakeUnique<FWaveTableBankAssetProxy>(*this);
+	return MakeShared<FWaveTableBankAssetProxy>(*this);
 }
 
 #if WITH_EDITOR
@@ -30,7 +33,10 @@ void UWaveTableBank::RefreshWaveTables()
 		const int32 WaveTableSize = WaveTable::GetWaveTableSize(Resolution, Entry.Transform.Curve, MaxPCMSize);
 		TransformWaveTable.AddZeroed(WaveTableSize);
 
-		Entry.Transform.CreateWaveTable(TransformWaveTable, bBipolar);
+		float FinalValue = Entry.Transform.GetFinalValue();
+		Entry.Transform.CreateWaveTable(TransformWaveTable, FinalValue, bBipolar);
+		Entry.Transform.SetFinalValue(FinalValue);
+
 		WaveTableSizeMB += sizeof(float) * WaveTableSize;
 		WaveTableLengthSec = FMath::Max(WaveTableLengthSec, WaveTableSize / 48000.f);
 	}

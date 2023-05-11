@@ -3,6 +3,7 @@
 #include "PlayerCore.h"
 #include "Player/Manifest.h"
 #include "HTTP/HTTPManager.h"
+#include "Stats/Stats.h"
 #include "SynchronizedClock.h"
 #include "PlaylistReaderDASH.h"
 #include "PlaylistReaderDASH_Internal.h"
@@ -1555,6 +1556,12 @@ void FPlaylistReaderDASH::Timesync_httpiso_Completed(FResourceLoadRequestPtr Req
 		{
 			FTimeValue NewTime;
 			if (ISO8601::ParseDateTime(NewTime, Response))
+			{
+				PlayerSessionServices->GetSynchronizedUTCTime()->SetTime(NewTime);
+			}
+			// If parsing failed then maybe the response is just a number (possibly with frational digits) giving the
+			// current Unix epoch time.
+			else if (UnixEpoch::ParseFloatString(NewTime, Response))
 			{
 				PlayerSessionServices->GetSynchronizedUTCTime()->SetTime(NewTime);
 			}

@@ -2,15 +2,12 @@
 
 #include "StateTreeCompiler.h"
 #include "StateTree.h"
+#include "StateTreeAnyEnum.h"
+#include "StateTreeCompilerLog.h"
 #include "StateTreeEditorData.h"
-#include "StateTreeTypes.h"
-#include "Conditions/StateTreeCommonConditions.h"
 #include "StateTreeEvaluatorBase.h"
 #include "StateTreeTaskBase.h"
 #include "StateTreeConditionBase.h"
-#include "StateTreeState.h"
-#include "StateTreeExecutionContext.h"
-#include "StateTreePropertyBindingCompiler.h"
 
 namespace UE::StateTree::Compiler
 {
@@ -128,12 +125,12 @@ bool FStateTreeCompiler::Compile(UStateTree& InStateTree)
 					Desc.ID
 				};
 			const int32 ExternalStructIndex = BindingsCompiler.AddSourceStruct(ExtDataDesc);
-			if (const auto Validation = UE::StateTree::Compiler::IsValidIndex8(ExternalStructIndex); Validation.DidFail())
+			if (const auto Validation = UE::StateTree::Compiler::IsValidIndex16(ExternalStructIndex); Validation.DidFail())
 			{
 				Validation.Log(Log, TEXT("ExternalStructIndex"), ParametersDesc);
 				return false;
 			}
-			Desc.Handle.DataViewIndex = FStateTreeIndex8(ExternalStructIndex); 
+			Desc.Handle.DataViewIndex = FStateTreeIndex16(ExternalStructIndex); 
 		} 
 	}
 	
@@ -144,6 +141,13 @@ bool FStateTreeCompiler::Compile(UStateTree& InStateTree)
 	}
 
 	if (!CreateEvaluators())
+	{
+		StateTree->ResetCompiled();
+		return false;
+	}
+
+	
+	if (!CreateGlobalTasks())
 	{
 		StateTree->ResetCompiled();
 		return false;
@@ -200,6 +204,8 @@ UStateTreeState* FStateTreeCompiler::GetState(const FGuid& StateID)
 
 bool FStateTreeCompiler::CreateStates()
 {
+	check(EditorData);
+	
 	// Create item for the runtime execution state
 	InstanceStructs.Add(FInstancedStruct::Make<FStateTreeExecutionState>());
 
@@ -241,6 +247,8 @@ bool FStateTreeCompiler::CreateStates()
 
 bool FStateTreeCompiler::CreateStateRecursive(UStateTreeState& State, const FStateTreeStateHandle Parent)
 {
+	check(StateTree);
+
 	FStateTreeCompilerLogStateScope LogStateScope(&State, Log);
 
 	const int32 StateIdx = StateTree->States.AddDefaulted();
@@ -309,6 +317,9 @@ bool FStateTreeCompiler::CreateConditions(UStateTreeState& State, TConstArrayVie
 
 bool FStateTreeCompiler::CreateEvaluators()
 {
+	check(EditorData);
+	check(StateTree);
+
 	const int32 EvaluatorsBegin = Nodes.Num();
 	if (const auto Validation = UE::StateTree::Compiler::IsValidCount16(EvaluatorsBegin); Validation.DidFail())
 	{
@@ -336,8 +347,43 @@ bool FStateTreeCompiler::CreateEvaluators()
 	return true;
 }
 
+bool FStateTreeCompiler::CreateGlobalTasks()
+{
+	check(EditorData);
+	check(StateTree);
+
+	const int32 GlobalTasksBegin = Nodes.Num();
+	if (const auto Validation = UE::StateTree::Compiler::IsValidCount16(GlobalTasksBegin); Validation.DidFail())
+	{
+		Validation.Log(Log, TEXT("GlobalTasksBegin"));
+		return false;
+	}
+	StateTree->GlobalTasksBegin = uint16(GlobalTasksBegin);
+
+	StateTree->bHasGlobalTransitionTasks = false;
+	for (FStateTreeEditorNode& TaskNode : EditorData->GlobalTasks)
+	{
+		if (!CreateTask(nullptr, TaskNode, StateTree->bHasGlobalTransitionTasks))
+		{
+			return false;
+		}
+	}
+	
+	const int32 GlobalTasksNum = Nodes.Num() - GlobalTasksBegin;
+	if (const auto Validation = UE::StateTree::Compiler::IsValidCount16(GlobalTasksNum); Validation.DidFail())
+	{
+		Validation.Log(Log, TEXT("GlobalTasksNum"));
+		return false;
+	}
+	StateTree->GlobalTasksNum = uint16(GlobalTasksNum);
+
+	return true;
+}
+
 bool FStateTreeCompiler::CreateStateTasksAndParameters()
 {
+	check(StateTree);
+
 	for (int32 i = 0; i < StateTree->States.Num(); i++)
 	{
 		FCompactStateTreeState& CompactState = StateTree->States[i];
@@ -434,19 +480,24 @@ bool FStateTreeCompiler::CreateStateTasksAndParameters()
 			return false;
 		}
 		CompactState.TasksBegin = uint16(TasksBegin);
-
+		CompactState.bHasTransitionTasks = false;
+		
 		for (FStateTreeEditorNode& TaskNode : SourceState->Tasks)
 		{
-			if (!CreateTask(*SourceState, TaskNode))
+			bool bHasTransitionTasks = CompactState.bHasTransitionTasks; // bHasTransitionTasks is a bit flag.
+			if (!CreateTask(SourceState, TaskNode, bHasTransitionTasks))
 			{
 				return false;
 			}
+			CompactState.bHasTransitionTasks = bHasTransitionTasks; 
 		}
 
-		if (!CreateTask(*SourceState, SourceState->SingleTask))
+		bool bSingleStateHasTransitionTasks = CompactState.bHasTransitionTasks; // bHasTransitionTasks is a bit flag.
+		if (!CreateTask(SourceState, SourceState->SingleTask, bSingleStateHasTransitionTasks))
 		{
 			return false;
 		}
+		CompactState.bHasTransitionTasks = bSingleStateHasTransitionTasks;
 	
 		const int32 TasksNum = Nodes.Num() - TasksBegin;
 		if (const auto Validation = UE::StateTree::Compiler::IsValidCount8(TasksNum); Validation.DidFail())
@@ -462,6 +513,8 @@ bool FStateTreeCompiler::CreateStateTasksAndParameters()
 
 bool FStateTreeCompiler::CreateStateTransitions()
 {
+	check(StateTree);
+
 	for (int32 i = 0; i < StateTree->States.Num(); i++)
 	{
 		FCompactStateTreeState& CompactState = StateTree->States[i];
@@ -558,15 +611,36 @@ bool FStateTreeCompiler::CreateStateTransitions()
 		{
 			FCompactStateTransition& CompactTransition = StateTree->Transitions.AddDefaulted_GetRef();
 			CompactTransition.Trigger = Transition.Trigger;
+			CompactTransition.Priority = Transition.Priority;
 			CompactTransition.EventTag = Transition.EventTag;
-			CompactTransition.Type = Transition.State.Type;
-			CompactTransition.GateDelay = (uint8)FMath::Clamp(FMath::CeilToInt(Transition.GateDelay * 10.0f), 0, 255);
+			if (Transition.bDelayTransition)
+			{
+				CompactTransition.Delay.Set(Transition.DelayDuration, Transition.DelayRandomVariance);
+			}
+
+			if (EnumHasAnyFlags(Transition.Trigger, EStateTreeTransitionTrigger::OnStateCompleted))
+			{
+				// Completion transitions dont have priority.
+				CompactTransition.Priority = EStateTreeTransitionPriority::None;
+				
+				// Completion transitions cannot have delay.
+				CompactTransition.Delay.Reset();
+
+				// Completion transitions must have valid target state.
+				if (Transition.State.LinkType == EStateTreeTransitionType::None)
+				{
+					Log.Reportf(EMessageSeverity::Error,
+						TEXT("State completion transition to '%s' must have transition to valid state, 'None' not accepted."),
+						*Transition.State.Name.ToString());
+				}
+			}
+			
 			CompactTransition.State = FStateTreeStateHandle::Invalid;
-			if (!ResolveTransitionState(*SourceState, Transition.State, CompactTransition.State))
+			if (!ResolveTransitionState(SourceState, Transition.State, CompactTransition.State))
 			{
 				return false;
 			}
-			// Note: Unset transition is allowed here. It can be used to mask a transition at parent.
+			
 			const int32 ConditionsBegin = Nodes.Num();
 			if (const auto Validation = UE::StateTree::Compiler::IsValidCount16(ConditionsBegin); Validation.DidFail())
 			{
@@ -606,9 +680,9 @@ bool FStateTreeCompiler::CreateStateTransitions()
 	return true;
 }
 
-bool FStateTreeCompiler::ResolveTransitionState(const UStateTreeState& SourceState, const FStateTreeStateLink& Link, FStateTreeStateHandle& OutTransitionHandle) const 
+bool FStateTreeCompiler::ResolveTransitionState(const UStateTreeState* SourceState, const FStateTreeStateLink& Link, FStateTreeStateHandle& OutTransitionHandle) const 
 {
-	if (Link.Type == EStateTreeTransitionType::GotoState)
+	if (Link.LinkType == EStateTreeTransitionType::GotoState)
 	{
 		OutTransitionHandle = GetStateHandle(Link.ID);
 		if (!OutTransitionHandle.IsValid())
@@ -619,10 +693,10 @@ bool FStateTreeCompiler::ResolveTransitionState(const UStateTreeState& SourceSta
 			return false;
 		}
 	}
-	else if (Link.Type == EStateTreeTransitionType::NextState)
+	else if (Link.LinkType == EStateTreeTransitionType::NextState)
 	{
 		// Find next state.
-		const UStateTreeState* NextState = SourceState.GetNextSiblingState();
+		const UStateTreeState* NextState = SourceState ? SourceState->GetNextSiblingState() : nullptr;
 		if (NextState == nullptr)
 		{
 			Log.Reportf(EMessageSeverity::Error,
@@ -637,6 +711,21 @@ bool FStateTreeCompiler::ResolveTransitionState(const UStateTreeState& SourceSta
 				*NextState->Name.ToString());
 			return false;
 		}
+	}
+	else if(Link.LinkType == EStateTreeTransitionType::Failed)
+	{
+		OutTransitionHandle = FStateTreeStateHandle::Failed;
+		return true;
+	}
+	else if(Link.LinkType == EStateTreeTransitionType::Succeeded)
+	{
+		OutTransitionHandle = FStateTreeStateHandle::Succeeded;
+		return true;
+	}
+	else if(Link.LinkType == EStateTreeTransitionType::None)
+	{
+		OutTransitionHandle = FStateTreeStateHandle::Invalid;
+		return true;
 	}
 	
 	return true;
@@ -664,7 +753,7 @@ bool FStateTreeCompiler::CreateCondition(UStateTreeState& State, const FStateTre
 	}
 
 	// Copy the condition
-	const FInstancedStruct& Node = Nodes.Add_GetRef(CondNode.Node);
+	FInstancedStruct& Node = Nodes.Add_GetRef(CondNode.Node);
 	FStateTreeConditionBase& Cond = Node.GetMutable<FStateTreeConditionBase>();
 
 	Cond.Operand = Operand;
@@ -686,6 +775,11 @@ bool FStateTreeCompiler::CreateCondition(UStateTreeState& State, const FStateTre
 		}
 		Cond.InstanceIndex = FStateTreeIndex16(InstanceIndex);
 		Cond.bInstanceIsObject = false;
+
+		if (!CompileAndValidateNode(&State, StructDesc, Node, FStateTreeDataView(SharedInstanceStructs[InstanceIndex])))
+		{
+			return false;
+		}
 	}
 	else
 	{
@@ -706,6 +800,11 @@ bool FStateTreeCompiler::CreateCondition(UStateTreeState& State, const FStateTre
 		}
 		Cond.InstanceIndex = FStateTreeIndex16(InstanceIndex);
 		Cond.bInstanceIsObject = true;
+
+		if (!CompileAndValidateNode(&State, StructDesc, Node, FStateTreeDataView(Instance)))
+		{
+			return false;
+		}
 	}
 
 	// Mark the struct as binding source.
@@ -742,7 +841,64 @@ bool FStateTreeCompiler::CreateCondition(UStateTreeState& State, const FStateTre
 	return true;
 }
 
-bool FStateTreeCompiler::CreateTask(UStateTreeState& State, const FStateTreeEditorNode& TaskNode)
+bool FStateTreeCompiler::CompileAndValidateNode(const UStateTreeState* SourceState, const FStateTreeBindableStructDesc& NodeDesc, FStructView NodeView, const FStateTreeDataView InstanceData) const
+{
+	if (!NodeView.IsValid())
+	{
+		return false;
+	}
+	
+	FStateTreeNodeBase& Node = NodeView.GetMutable<FStateTreeNodeBase>();
+	check(InstanceData.IsValid());
+
+	auto ValidateStateLinks = [this, SourceState](TPropertyValueIterator<FStructProperty> It)
+	{
+		for ( ; It; ++It)
+		{
+			if (It->Key->Struct == TBaseStructure<FStateTreeStateLink>::Get())
+			{
+				FStateTreeStateLink& StateLink = *static_cast<FStateTreeStateLink*>(const_cast<void*>(It->Value));
+
+				if (!ResolveTransitionState(SourceState, StateLink, StateLink.StateHandle))
+				{
+					return false;
+				}
+			}
+		}
+
+		return true;
+	};
+	
+	// Validate any state links.
+	if (!ValidateStateLinks(TPropertyValueIterator<FStructProperty>(InstanceData.GetStruct(), InstanceData.GetMutableMemory())))
+	{
+		return false;
+	}
+	if (!ValidateStateLinks(TPropertyValueIterator<FStructProperty>(NodeView.GetScriptStruct(), NodeView.GetMutableMemory())))
+	{
+		return false;
+	}
+
+	TArray<FText> ValidationErrors;
+	const EDataValidationResult Result = Node.Compile(InstanceData, ValidationErrors);
+
+	if (Result == EDataValidationResult::Invalid && ValidationErrors.IsEmpty())
+	{
+		Log.Report(EMessageSeverity::Error, NodeDesc, TEXT("Node validation failed."));
+	}
+	else
+	{
+		const EMessageSeverity::Type Severity = Result == EDataValidationResult::Invalid ? EMessageSeverity::Error : EMessageSeverity::Warning;
+		for (const FText& Error : ValidationErrors)
+		{
+			Log.Report(Severity, NodeDesc, Error.ToString());
+		}
+	}
+
+	return Result != EDataValidationResult::Invalid;
+}
+
+bool FStateTreeCompiler::CreateTask(UStateTreeState* State, const FStateTreeEditorNode& TaskNode, bool& bOutHasTransitionTasks)
 {
 	// Silently ignore empty nodes.
 	if (!TaskNode.Node.IsValid())
@@ -765,7 +921,7 @@ bool FStateTreeCompiler::CreateTask(UStateTreeState& State, const FStateTreeEdit
 	}
 
 	// Copy the task
-	const FInstancedStruct& Node = Nodes.Add_GetRef(TaskNode.Node);
+	FInstancedStruct& Node = Nodes.Add_GetRef(TaskNode.Node);
 	FStateTreeTaskBase& Task = Node.GetMutable<FStateTreeTaskBase>();
 
 	if (TaskNode.Instance.IsValid())
@@ -784,6 +940,11 @@ bool FStateTreeCompiler::CreateTask(UStateTreeState& State, const FStateTreeEdit
 		}
 		Task.InstanceIndex = FStateTreeIndex16(InstanceIndex);
 		Task.bInstanceIsObject = false;
+
+		if (!CompileAndValidateNode(State, StructDesc, Node,  FStateTreeDataView(InstanceStructs[InstanceIndex])))
+		{
+			return false;
+		}
 	}
 	else
 	{
@@ -804,6 +965,11 @@ bool FStateTreeCompiler::CreateTask(UStateTreeState& State, const FStateTreeEdit
 		}
 		Task.InstanceIndex = FStateTreeIndex16(InstanceIndex);
 		Task.bInstanceIsObject = true;
+
+		if (!CompileAndValidateNode(State, StructDesc, Node,  FStateTreeDataView(Instance)))
+		{
+			return false;
+		}
 	}
 
 	// Mark the instance as binding source.
@@ -837,6 +1003,11 @@ bool FStateTreeCompiler::CreateTask(UStateTreeState& State, const FStateTreeEdit
 	}
 	Task.DataViewIndex = FStateTreeIndex16(SourceStructIndex);
 
+	if (Task.bShouldAffectTransitions)
+	{
+		bOutHasTransitionTasks = true;
+	}
+	
 	return true;
 }
 
@@ -863,7 +1034,7 @@ bool FStateTreeCompiler::CreateEvaluator(const FStateTreeEditorNode& EvalNode)
     }
 
 	// Copy the evaluator
-	const FInstancedStruct& Node = Nodes.Add_GetRef(EvalNode.Node);
+	FInstancedStruct& Node = Nodes.Add_GetRef(EvalNode.Node);
 	FStateTreeEvaluatorBase& Eval = Node.GetMutable<FStateTreeEvaluatorBase>();
 
 	if (EvalNode.Instance.IsValid())
@@ -882,6 +1053,11 @@ bool FStateTreeCompiler::CreateEvaluator(const FStateTreeEditorNode& EvalNode)
 		}
 		Eval.InstanceIndex = FStateTreeIndex16(InstanceIndex);
 		Eval.bInstanceIsObject = false;
+
+		if (!CompileAndValidateNode(nullptr, StructDesc, Node,  FStateTreeDataView(InstanceStructs[InstanceIndex])))
+		{
+			return false;
+		}
 	}
 	else
 	{
@@ -902,6 +1078,11 @@ bool FStateTreeCompiler::CreateEvaluator(const FStateTreeEditorNode& EvalNode)
 		}
 		Eval.InstanceIndex = FStateTreeIndex16(InstanceIndex);
 		Eval.bInstanceIsObject = true;
+
+		if (!CompileAndValidateNode(nullptr, StructDesc, Node,  FStateTreeDataView(Instance)))
+		{
+			return false;
+		}
 	}
 		
 	// Mark the instance as binding source.
@@ -1044,6 +1225,8 @@ bool FStateTreeCompiler::ValidateStructRef(const FStateTreeBindableStructDesc& S
 
 bool FStateTreeCompiler::GetAndValidateBindings(const FStateTreeBindableStructDesc& TargetStruct, TArray<FStateTreeEditorPropertyBinding>& OutBindings) const
 {
+	check(EditorData);
+	
 	if (TargetStruct.Struct == nullptr)
 	{
 		Log.Reportf(EMessageSeverity::Error, TargetStruct,

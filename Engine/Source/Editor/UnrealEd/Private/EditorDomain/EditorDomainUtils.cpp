@@ -21,11 +21,14 @@
 #include "HAL/IConsoleManager.h"
 #include "Hash/Blake3.h"
 #include "Memory/SharedBuffer.h"
+#include "Misc/CommandLine.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/DelayedAutoRegister.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageAccessTracking.h"
+#include "Misc/PackageAccessTrackingOps.h"
 #include "Misc/PackagePath.h"
+#include "Misc/Parse.h"
 #include "Misc/ScopeRWLock.h"
 #include "Misc/StringBuilder.h"
 #include "Serialization/BulkDataRegistry.h"
@@ -38,6 +41,7 @@
 #include "Trace/Trace.h"
 #include "Trace/Trace.inl"
 #include "UObject/CoreRedirects.h"
+#include "UObject/ObjectResource.h"
 #include "UObject/ObjectVersion.h"
 #include "UObject/Package.h"
 #include "UObject/PackageFileSummary.h"
@@ -45,6 +49,7 @@
 #include "UObject/UObjectGlobals.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
+#include "UObject/UObjectIterator.h"
 
 #if !defined(EDITORDOMAINTIMEPROFILERTRACE_ENABLED)
 #if UE_TRACE_ENABLED && !UE_BUILD_SHIPPING
@@ -198,7 +203,7 @@ FBlake3Hash GGlobalConstructClassesHash;
 int64 GMaxBulkDataSize = -1;
 
 // Change to a new guid when EditorDomain needs to be invalidated
-const TCHAR* EditorDomainVersion = TEXT("D0A87D5986BD47479D64C08F70CE9BB2");
+const TCHAR* EditorDomainVersion = TEXT("1F8E29F8458141ADB52D9EBEEA2991F0");
 
 // Identifier of the CacheBuckets for EditorDomain tables
 const TCHAR* EditorDomainPackageBucketName = TEXT("EditorDomainPackage");
@@ -439,7 +444,7 @@ public:
 	FPrecacheClassDigest()
 		: ClassDigestsMap(GetClassDigests())
 		, ClassDigests(ClassDigestsMap.Map)
-		, AssetRegistry(*IAssetRegistry::Get())
+		, AssetRegistry(IAssetRegistry::GetChecked())
 	{
 		ClassDigestsMap.Lock.WriteLock();
 	}
@@ -1132,7 +1137,7 @@ public:
 				return *PackageDigest;
 			}
 		}
-		FPackageDigest PackageDigest = CalculatePackageDigest(*IAssetRegistry::Get(), PackageName);
+		FPackageDigest PackageDigest = CalculatePackageDigest(IAssetRegistry::GetChecked(), PackageName);
 		{
 			FWriteScopeLock ScopeLock(Lock);
 			PackageDigests.AddByHash(TypeHash, PackageName, PackageDigest);
@@ -1564,7 +1569,7 @@ public:
 	/** Deserialize the CustomVersions out of the PackageFileSummary that was serialized into the header */
 	bool TryGetClassesAndVersions(TArray<FName>& OutImportedClasses, FCustomVersionContainer& OutVersions)
 	{
-		FMemoryReaderView HeaderArchive(WritePackageRecord.Buffer.GetView());
+		FMemoryReaderView HeaderArchive(SavedRecord.Packages[0].Buffer.GetView());
 		FPackageReader PackageReader;
 		if (!PackageReader.OpenPackageFile(&HeaderArchive))
 		{
@@ -1623,9 +1628,8 @@ protected:
 		}
 		
 		// EditorDomain save does not support multi package outputs
-		check(Record.Packages.Num() == 1);
+		checkf(Record.Packages.Num() == 1, TEXT("Multioutput not supported"));
 		FPackageWriterRecords::FWritePackage& Package = Record.Packages[0];
-		WritePackageRecord = Package;
 
 		TArray<FSharedBuffer> AttachmentBuffers;
 		for (const FFileRegion& FileRegion : Package.Regions)
@@ -1638,8 +1642,9 @@ protected:
 		BulkDataSize = 0;
 		for (const FBulkDataRecord& BulkRecord : Record.BulkDatas)
 		{
-			checkf(BulkRecord.Info.BulkDataType == IPackageWriter::FBulkDataInfo::AppendToExports,
-				TEXT("Does not support BulkData types other than AppendToExports."));
+			checkf(BulkRecord.Info.BulkDataType == IPackageWriter::FBulkDataInfo::AppendToExports ||
+				BulkRecord.Info.BulkDataType == IPackageWriter::FBulkDataInfo::BulkSegment,
+				TEXT("Does not support BulkData types other than AppendToExports and BulkSegment."));
 
 			const uint8* BufferStart = reinterpret_cast<const uint8*>(BulkRecord.Buffer.GetData());
 			uint64 SizeFromRegions = 0;
@@ -1678,6 +1683,15 @@ protected:
 				TEXT("Expects all LinkerAdditionalData to be in a region."));
 			BulkDataSize += AdditionalRecord.Buffer.GetSize();
 		}
+		checkf(Record.PackageTrailers.Num() <= 1, TEXT("MultiOutput not supported"));
+		if (Record.PackageTrailers.Num() == 1)
+		{
+			FPackageTrailerRecord& PackageTrailer = Record.PackageTrailers[0];
+			const uint8* BufferStart = reinterpret_cast<const uint8*>(PackageTrailer.Buffer.GetData());
+			int64 BufferSize = PackageTrailer.Buffer.GetSize();
+			AttachmentBuffers.Add(FSharedBuffer::MakeView(BufferStart, BufferSize));
+			BulkDataSize += BufferSize;
+		}
 
 		// We use a counter for ValueIds rather than hashes of the Attachments. We do this because
 		// some attachments may be identical, and Attachments are not allowed to have identical ValueIds.
@@ -1704,12 +1718,15 @@ protected:
 			Attachments.Add(FAttachment{ Buffer, IntToValueId(AttachmentIndex++) });
 			FileSize += Buffer.GetSize();
 		}
-		WritePackageRecord = MoveTemp(Package);
+
+		// Our Attachments are views into SharedBuffers that are stored on the Record. Keep those SharedBuffers
+		// alive until we are done with them. We also need access to Record.Packages[0] later.
+		SavedRecord = MoveTemp(Record);
 	}
 
 private:
 	TArray<FAttachment> Attachments;
-	FPackageWriterRecords::FWritePackage WritePackageRecord;
+	FPackageWriterRecords::FPackage SavedRecord;
 	uint64 FileSize = 0;
 	uint64 BulkDataSize = 0;
 };
@@ -1719,6 +1736,9 @@ static FGuid IoHashToGuid(const FIoHash& Hash)
 	const uint32* HashInts = reinterpret_cast<const uint32*>(Hash.GetBytes());
 	return FGuid(HashInts[0], HashInts[1], HashInts[2], HashInts[3]);
 }
+
+void ValidateEditorDomainDeterminism(FName PackageName, bool bStorageResultValid,
+	FEditorDomainPackageWriter* PackageWriter, UE::DerivedData::FCacheGetResponse&& GetResponse);
 
 bool TrySavePackage(UPackage* Package)
 {
@@ -2013,9 +2033,25 @@ bool TrySavePackage(UPackage* Package)
 		StorageResult = ESaveStorageResult::BulkDataTooLarge;
 	}
 
-	ICache& Cache = GetCache();
-
 	bool bStorageResultValid = StorageResult == ESaveStorageResult::Valid;
+	static bool bTestEditorDomainDeterminism = FParse::Param(FCommandLine::Get(), TEXT("testeditordomaindeterminism"));;
+	if (bTestEditorDomainDeterminism)
+	{
+		FPackagePath PackagePath;
+		FRequestOwner GetOwner(EPriority::Blocking);
+		TOptional<FCacheGetResponse> GetResponse;
+		verify(FPackagePath::TryFromPackageName(PackageName, PackagePath));
+		RequestEditorDomainPackage(PackagePath, PackageDigest.Hash, ECachePolicy::None, GetOwner,
+			[&GetResponse](FCacheGetResponse&& Response) { GetResponse.Emplace(MoveTemp(Response)); });
+		GetOwner.Wait();
+		if (!GetResponse || GetResponse->Status != EStatus::Ok)
+		{
+			return true;
+		}
+		ValidateEditorDomainDeterminism(PackageName, bStorageResultValid, PackageWriter, MoveTemp(*GetResponse));
+		return true;
+	}
+
 	TCbWriter<16> MetaData;
 	MetaData.BeginObject();
 	uint64 FileSize = PackageWriter->GetFileSize();
@@ -2033,11 +2069,21 @@ bool TrySavePackage(UPackage* Package)
 	FCacheRecordBuilder RecordBuilder(GetEditorDomainPackageKey(PackageDigest.Hash));
 	if (bStorageResultValid)
 	{
+		COOK_STAT(Timer.AddMiss(FileSize + MetaData.GetSaveSize()));
+
+		uint64 TotalAttachmentSize = 0;
 		for (const FEditorDomainPackageWriter::FAttachment& Attachment : PackageWriter->GetAttachments())
 		{
 			RecordBuilder.AddValue(Attachment.ValueId, Attachment.Buffer);
+			TotalAttachmentSize += Attachment.Buffer.GetSize();
 		}
-		COOK_STAT(Timer.AddMiss(FileSize + MetaData.GetSaveSize()));
+		if (TotalAttachmentSize != FileSize)
+		{
+			UE_LOG(LogEditorDomain, Warning,
+				TEXT("Could not save %s to EditorDomain due to TrySavePackage bug: size of all segments %" UINT64_FMT " is not equal to FileSize in metadata %" UINT64_FMT "."),
+				*Package->GetName(), TotalAttachmentSize, FileSize);
+			return false;
+		}
 	}
 	else
 	{
@@ -2045,7 +2091,7 @@ bool TrySavePackage(UPackage* Package)
 	}
 	RecordBuilder.SetMeta(MetaData.Save().AsObject());
 	FRequestOwner Owner(EPriority::Normal);
-	Cache.Put({ {{Package->GetName()}, RecordBuilder.Build()} }, Owner);
+	GetCache().Put({ {{Package->GetName()}, RecordBuilder.Build()} }, Owner);
 	Owner.KeepAlive();
 
 	if (bStorageResultValid)
@@ -2066,12 +2112,77 @@ bool TrySavePackage(UPackage* Package)
 	return true;
 }
 
+void ValidateEditorDomainDeterminism(FName PackageName, bool bStorageResultValid,
+	FEditorDomainPackageWriter* PackageWriter, UE::DerivedData::FCacheGetResponse&& GetResponse)
+{
+	using namespace UE::DerivedData;
+
+	FCacheRecord& Record = GetResponse.Record;
+
+	const FCbObject& MetaData = Record.GetMeta();
+	bool bPreviousStorageResultValid = MetaData["Valid"].AsBool(false);
+	auto LogHeaderWarning = [PackageName]()
+	{
+		UE_LOG(LogEditorDomain, Warning, TEXT("Indeterminism detected in EditorDomain save of %s."), *PackageName.ToString());
+	};
+
+	if (bPreviousStorageResultValid != bStorageResultValid)
+	{
+		LogHeaderWarning();
+		UE_LOG(LogEditorDomain, Display, TEXT("\tStorageResultValid not equal. Previous: %s, Current: %s"),
+			*LexToString(bPreviousStorageResultValid), *LexToString(bStorageResultValid));
+		return;
+	}
+	if (!bStorageResultValid)
+	{
+		// Nothing further to test; we ignore the PackageWriter data and write an empty record in this case.
+		return;
+	}
+
+	TConstArrayView<FValueWithId> PreviousValues = Record.GetValues();
+	TConstArrayView<FEditorDomainPackageWriter::FAttachment> CurrentValues = PackageWriter->GetAttachments();
+	for (int32 SegmentIndex = 0; SegmentIndex < FMath::Max(PreviousValues.Num(), CurrentValues.Num()); ++SegmentIndex)
+	{
+		if (PreviousValues.Num() <= SegmentIndex || CurrentValues.Num() <= SegmentIndex)
+		{
+			LogHeaderWarning();
+			UE_LOG(LogEditorDomain, Display, TEXT("\tNumber of segments differ. Previous: %d, Current: %d"),
+				PreviousValues.Num(), CurrentValues.Num());
+			return;
+		}
+		FSharedBuffer PreviousValue = PreviousValues[SegmentIndex].GetData().Decompress();
+		FSharedBuffer CurrentValue = CurrentValues[SegmentIndex].Buffer;
+		const uint8* PreviousBytes = reinterpret_cast<const uint8*>(PreviousValue.GetData());
+		const uint8* CurrentBytes = reinterpret_cast<const uint8*>(CurrentValue.GetData());
+		uint64 MinNumBytes = FMath::Min(PreviousValue.GetSize(), CurrentValue.GetSize());
+		for (uint64 ByteIndex = 0; ByteIndex < MinNumBytes; ByteIndex++)
+		{
+			if (PreviousBytes[ByteIndex] != CurrentBytes[ByteIndex])
+			{
+				LogHeaderWarning();
+				UE_LOG(LogEditorDomain, Display, TEXT("\tBytes differ in Segment %d, Offset %" UINT64_FMT ". Previous: %d, Current: %d"),
+					SegmentIndex, ByteIndex, PreviousBytes[ByteIndex], CurrentBytes[ByteIndex]);
+				return;
+			}
+		}
+		if (MinNumBytes < PreviousValue.GetSize() || MinNumBytes < CurrentValue.GetSize())
+		{
+			LogHeaderWarning();
+			UE_LOG(LogEditorDomain, Display, TEXT("\tSegment sizes differ in Segment %d. Previous: %" UINT64_FMT ", Current: %" UINT64_FMT "."),
+				SegmentIndex, PreviousValue.GetSize(), CurrentValue.GetSize());
+			return;
+		}
+	}
+
+	// All bytes identical
+}
+
 void GetBulkDataList(FName PackageName, UE::DerivedData::IRequestOwner& Owner, TUniqueFunction<void(FSharedBuffer Buffer)>&& Callback)
 {
 	IPackageDigestCache* DigestCache = IPackageDigestCache::Get();
 	FPackageDigest PackageDigest = DigestCache
 		? DigestCache->GetPackageDigest(PackageName)
-		: CalculatePackageDigest(*IAssetRegistry::Get(), PackageName);
+		: CalculatePackageDigest(IAssetRegistry::GetChecked(), PackageName);
 	if (!PackageDigest.IsSuccessful())
 	{
 		Callback(FSharedBuffer());
@@ -2099,7 +2210,7 @@ void PutBulkDataList(FName PackageName, FSharedBuffer Buffer)
 	IPackageDigestCache* DigestCache = IPackageDigestCache::Get();
 	FPackageDigest PackageDigest = DigestCache
 		? DigestCache->GetPackageDigest(PackageName)
-		: CalculatePackageDigest(*IAssetRegistry::Get(), PackageName);
+		: CalculatePackageDigest(IAssetRegistry::GetChecked(), PackageName);
 	if (!PackageDigest.IsSuccessful())
 	{
 		return;
@@ -2119,10 +2230,10 @@ void PutBulkDataList(FName PackageName, FSharedBuffer Buffer)
 	Owner.KeepAlive();
 }
 
-FIoHash GetPackageAndGuidHash(FIoHash& EditorDomainHash, const FGuid& BulkDataId)
+FIoHash GetPackageAndGuidHash(const FGuid& PackageGuid, const FGuid& BulkDataId)
 {
 	FBlake3 Builder;
-	Builder.Update(&EditorDomainHash, sizeof(EditorDomainHash));
+	Builder.Update(&PackageGuid, sizeof(PackageGuid));
 	Builder.Update(&BulkDataId, sizeof(BulkDataId));
 	return Builder.Finalize();
 }
@@ -2130,22 +2241,17 @@ FIoHash GetPackageAndGuidHash(FIoHash& EditorDomainHash, const FGuid& BulkDataId
 void GetBulkDataPayloadId(FName PackageName, const FGuid& BulkDataId, UE::DerivedData::IRequestOwner& Owner,
 	TUniqueFunction<void(FSharedBuffer Buffer)>&& Callback)
 {
-	IPackageDigestCache* DigestCache = IPackageDigestCache::Get();
-	FPackageDigest PackageDigest = DigestCache
-		? DigestCache->GetPackageDigest(PackageName)
-		: CalculatePackageDigest(*IAssetRegistry::Get(), PackageName);
-	if (!PackageDigest.IsSuccessful())
+	IAssetRegistry& AssetRegistry = IAssetRegistry::GetChecked();
+	AssetRegistry.WaitForPackage(PackageName.ToString());
+	TOptional<FAssetPackageData> PackageData = AssetRegistry.GetAssetPackageDataCopy(PackageName);
+	if (!PackageData)
 	{
-		Callback(FSharedBuffer());
 		return;
 	}
-
-	if (!EnumHasAnyFlags(PackageDigest.DomainUse, EDomainUse::LoadEnabled))
-	{
-		Callback(FSharedBuffer());
-		return;
-	}
-	FIoHash PackageAndGuidHash = GetPackageAndGuidHash(PackageDigest.Hash, BulkDataId);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
+	const FGuid& PackageGuid = PackageData->PackageGuid;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+	FIoHash PackageAndGuidHash = GetPackageAndGuidHash(PackageGuid, BulkDataId);
 
 	using namespace UE::DerivedData;
 	ICache& Cache = GetCache();
@@ -2160,20 +2266,17 @@ void GetBulkDataPayloadId(FName PackageName, const FGuid& BulkDataId, UE::Derive
 
 void PutBulkDataPayloadId(FName PackageName, const FGuid& BulkDataId, FSharedBuffer Buffer)
 {
-	IPackageDigestCache* DigestCache = IPackageDigestCache::Get();
-	FPackageDigest PackageDigest = DigestCache
-		? DigestCache->GetPackageDigest(PackageName)
-		: CalculatePackageDigest(*IAssetRegistry::Get(), PackageName);
-	if (!PackageDigest.IsSuccessful())
+	IAssetRegistry& AssetRegistry = IAssetRegistry::GetChecked();
+	AssetRegistry.WaitForPackage(PackageName.ToString());
+	TOptional<FAssetPackageData> PackageData = AssetRegistry.GetAssetPackageDataCopy(PackageName);
+	if (!PackageData)
 	{
 		return;
 	}
-
-	if (!EnumHasAnyFlags(PackageDigest.DomainUse, EDomainUse::SaveEnabled))
-	{
-		return;
-	}
-	FIoHash PackageAndGuidHash = GetPackageAndGuidHash(PackageDigest.Hash, BulkDataId);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
+	const FGuid& PackageGuid = PackageData->PackageGuid;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+	FIoHash PackageAndGuidHash = GetPackageAndGuidHash(PackageGuid, BulkDataId);
 
 	using namespace UE::DerivedData;
 	ICache& Cache = GetCache();

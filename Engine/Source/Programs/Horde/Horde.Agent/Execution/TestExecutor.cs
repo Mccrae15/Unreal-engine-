@@ -3,23 +3,27 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Http;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using EpicGames.Core;
-using EpicGames.Perforce;
 using Horde.Agent.Parser;
+using Horde.Agent.Services;
 using Horde.Agent.Utility;
 using HordeCommon;
 using HordeCommon.Rpc;
+using HordeCommon.Rpc.Tasks;
 using Microsoft.Extensions.Logging;
 
 namespace Horde.Agent.Execution
 {
-	class TestExecutor : BuildGraphExecutor
+	class TestExecutor : JobExecutor
 	{
-		public TestExecutor(IRpcConnection rpcClient, string jobId, string batchId, string agentTypeName)
-			: base(rpcClient, jobId, batchId, agentTypeName)
+		public const string Name = "Test";
+
+		public TestExecutor(ISession session, string jobId, string batchId, string agentTypeName, IHttpClientFactory httpClientFactory, ILogger logger)
+			: base(session, jobId, batchId, agentTypeName, httpClientFactory, logger)
 		{
 		}
 
@@ -38,33 +42,38 @@ namespace Horde.Agent.Execution
 			UpdateGraphRequest updateGraph = new UpdateGraphRequest();
 			updateGraph.JobId = _jobId;
 
-			CreateGroupRequest winEditorGroup = CreateGroup("Win64");
+			CreateGroupRequest winEditorGroup = CreateGroup("AnyAgent");
 			winEditorGroup.Nodes.Add(CreateNode("Update Version Files", Array.Empty<string>(), JobStepOutcome.Success));
 			winEditorGroup.Nodes.Add(CreateNode("Compile UnrealHeaderTool Win64", new string[] { "Update Version Files" }, JobStepOutcome.Success));
 			winEditorGroup.Nodes.Add(CreateNode("Compile UE4Editor Win64", new string[] { "Compile UnrealHeaderTool Win64" }, JobStepOutcome.Success));
 			winEditorGroup.Nodes.Add(CreateNode("Compile FortniteEditor Win64", new string[] { "Compile UnrealHeaderTool Win64", "Compile UE4Editor Win64" }, JobStepOutcome.Success));
 			updateGraph.Groups.Add(winEditorGroup);
 
-			CreateGroupRequest winToolsGroup = CreateGroup("Win64"); 
+			CreateGroupRequest winToolsGroup = CreateGroup("AnyAgent"); 
 			winToolsGroup.Nodes.Add(CreateNode("Compile Tools Win64", new string[] { "Compile UnrealHeaderTool Win64" }, JobStepOutcome.Warnings));
 			updateGraph.Groups.Add(winToolsGroup);
 
-			CreateGroupRequest winClientsGroup = CreateGroup("Win64");
+			CreateGroupRequest winClientsGroup = CreateGroup("AnyAgent");
 			winClientsGroup.Nodes.Add(CreateNode("Compile FortniteClient Win64", new string[] { "Compile UnrealHeaderTool Win64" }, JobStepOutcome.Success));
 			updateGraph.Groups.Add(winClientsGroup);
 
-			CreateGroupRequest winCooksGroup = CreateGroup("Win64");
+			CreateGroupRequest winCooksGroup = CreateGroup("AnyAgent");
 			winCooksGroup.Nodes.Add(CreateNode("Cook FortniteClient Win64", new string[] { "Compile FortniteEditor Win64", "Compile Tools Win64" }, JobStepOutcome.Warnings));
 			winCooksGroup.Nodes.Add(CreateNode("Stage FortniteClient Win64", new string[] { "Cook FortniteClient Win64", "Compile Tools Win64" }, JobStepOutcome.Success));
 			winCooksGroup.Nodes.Add(CreateNode("Publish FortniteClient Win64", new string[] { "Stage FortniteClient Win64" }, JobStepOutcome.Success));
 			updateGraph.Groups.Add(winCooksGroup);
+
+			CreateAggregateRequest aggregate = new CreateAggregateRequest();
+			aggregate.Name = "Full Build";
+			aggregate.Nodes.Add("Publish FortniteClient Win64");
+			updateGraph.Aggregates.Add(aggregate);
 
 			Dictionary<string, string[]> dependencyMap = CreateDependencyMap(updateGraph.Groups);
 			updateGraph.Labels.Add(CreateLabel("Editors", "UE4", new string[] { "Compile UE4Editor Win64" }, Array.Empty<string>(), dependencyMap));
 			updateGraph.Labels.Add(CreateLabel("Editors", "Fortnite", new string[] { "Compile FortniteEditor Win64" }, Array.Empty<string>(), dependencyMap));
 			updateGraph.Labels.Add(CreateLabel("Clients", "Fortnite", new string[] { "Cook FortniteClient Win64" }, new string[] { "Publish FortniteClient Win64" }, dependencyMap));
 
-			await _rpcConnection.InvokeAsync(x => x.UpdateGraphAsync(updateGraph, null, null, cancellationToken), new RpcContext(), cancellationToken);
+			await RpcConnection.InvokeAsync((HordeRpc.HordeRpcClient x) => x.UpdateGraphAsync(updateGraph, null, null, cancellationToken), cancellationToken);
 
 			logger.LogInformation("**** FINISH JOB SETUP ****");
 			return true;
@@ -167,7 +176,7 @@ namespace Horde.Agent.Execution
 			}
 
 			FileReference currentFile = new FileReference(Assembly.GetExecutingAssembly().Location);
-			await ArtifactUploader.UploadAsync(_rpcConnection, _jobId, _batchId, step.StepId, currentFile.GetFileName(), currentFile, logger, cancellationToken);
+			await ArtifactUploader.UploadAsync(RpcConnection, _jobId, _batchId, step.StepId, currentFile.GetFileName(), currentFile, logger, cancellationToken);
 
 			logger.LogInformation("**** FINISH NODE {StepName} ****", step.Name);
 
@@ -178,6 +187,25 @@ namespace Horde.Agent.Execution
 		{
 			logger.LogInformation("Finalizing");
 			return Task.CompletedTask;
+		}
+	}
+
+	class TestExecutorFactory : JobExecutorFactory
+	{
+		readonly IHttpClientFactory _httpClientFactory;
+		readonly ILogger<TestExecutor> _logger;
+
+		public override string Name => TestExecutor.Name;
+
+		public TestExecutorFactory(IHttpClientFactory httpClientFactory, ILogger<TestExecutor> logger)
+		{
+			_httpClientFactory = httpClientFactory;
+			_logger = logger;
+		}
+
+		public override JobExecutor CreateExecutor(ISession session, ExecuteJobTask executeJobTask, BeginBatchResponse beginBatchResponse)
+		{
+			return new TestExecutor(session, executeJobTask.JobId, executeJobTask.BatchId, beginBatchResponse.AgentType, _httpClientFactory, _logger);
 		}
 	}
 }

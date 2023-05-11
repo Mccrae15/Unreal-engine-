@@ -3,7 +3,9 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "OpenColorIOColorSpace.h"
 #include "IPropertyTypeCustomization.h"
+#include "Widgets/SOpenColorIOColorSpacePicker.h"
 #include "Widgets/SWidget.h"
 
 /**
@@ -21,31 +23,36 @@ public:
 	virtual void CustomizeHeader(TSharedRef<class IPropertyHandle> InPropertyHandle, class FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& PropertyTypeCustomizationUtils) override;
 	virtual void CustomizeChildren(TSharedRef<class IPropertyHandle> InPropertyHandle, class IDetailChildrenBuilder& StructBuilder, IPropertyTypeCustomizationUtils& PropertyTypeCustomizationUtils) override;
 
+	void OnSourceColorSpaceChanged(const FOpenColorIOColorSpace& NewColorSpace, const FOpenColorIODisplayView& NewDisplayView);
+	void OnDestinationColorSpaceChanged(const FOpenColorIOColorSpace& NewColorSpace, const FOpenColorIODisplayView& NewDisplayView);
+
+protected:
+	/** Read configuration settings into local selection objects.*/
+	void ApplyConfigurationToSelection();
+	/** Apply transform selections onto the configuration object.*/
+	void ApplySelectionToConfiguration();
+
 private:
-	void AddDestinationModeRow(IDetailChildrenBuilder& StructBuilder, IPropertyTypeCustomizationUtils& StructCustomizationUtils);
-	void AddPropertyRow(FDetailWidgetRow& InWidgetRow, TSharedRef<IPropertyHandle> InChildHandle, IPropertyTypeCustomizationUtils& InCustomizationUtils, bool bIsDisplayViewRow) const;
-	
-	TSharedRef<SWidget> HandleColorSpaceComboButtonMenuContent(TSharedPtr<IPropertyHandle> InPropertyHandle) const;
-	TSharedRef<SWidget> HandleDisplayViewComboButtonMenuContent(TSharedPtr<IPropertyHandle> InPropertyHandle) const;
+	/** Callback to reset the configuration in the transform source/destination pickers. */
+	void OnConfigurationReset();
 
-	void SetDestinationMode(bool bInIsDestinationDisplayView);
-	/** Controls visibility for widgets when the destination is a color space. */
-	EVisibility ShouldShowDestinationColorSpace() const;
-
-	/** Controls visibility for widgets when the destination is a display-view. */
-	EVisibility ShouldShowDestinationDisplayView() const;
-
-	/** Pointer to the ColorConversion struct property handle. */
-	TSharedPtr<IPropertyHandle> ColorConversionProperty;
-	
-	/** Pointer to the ColorConversion struct member SourceColorSpace property handle. */
+	/** Pointer to the struct SourceColorSpace property handle. */
 	TSharedPtr<IPropertyHandle> SourceColorSpaceProperty;
 	
-	/** Pointer to the ColorConversion struct member DestinationColorSpace property handle. */
+	/** Pointer to the struct DestinationColorSpace property handle. */
 	TSharedPtr<IPropertyHandle> DestinationColorSpaceProperty;
 
-	/** Pointer to the ColorConversion struct member DestinationColorSpace property handle. */
+	/** Pointer to the struct DestinationDisplayView property handle. */
 	TSharedPtr<IPropertyHandle> DestinationDisplayViewProperty;
 
-	bool bIsDestinationDisplayView = false;
+	/** Pointer to the struct DisplayViewDirection property handle. */
+	TSharedPtr<IPropertyHandle> DisplayViewDirectionProperty;
+
+	/** ColorSpace pickers reference to update them when config asset is changed */
+	TStaticArray<TSharedPtr<SOpenColorIOColorSpacePicker>, 2> TransformPicker;
+	/** Intermediate selection objects. This is done to allow inverted display-view selections (when enabled in settings). */
+	TStaticArray<FOpenColorIOPickerSelection, 2> TransformSelection;
+
+	/** Raw pointer to the conversion settings struct. */
+	struct FOpenColorIOColorConversionSettings* ColorSpaceConversion = nullptr;
 };

@@ -5,9 +5,8 @@
 =============================================================================*/
 
 #include "Rendering/Texture2DArrayResource.h"
+#include "EngineLogs.h"
 #include "Engine/Texture2DArray.h"
-#include "DeviceProfiles/DeviceProfile.h"
-#include "DeviceProfiles/DeviceProfileManager.h"
 #include "RenderUtils.h"
 
 //*****************************************************************************

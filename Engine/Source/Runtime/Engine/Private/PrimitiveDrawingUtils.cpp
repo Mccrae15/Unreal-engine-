@@ -1,20 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "CoreMinimal.h"
 #include "Math/RandomStream.h"
-#include "EngineGlobals.h"
-#include "RHI.h"
-#include "RawIndexBuffer.h"
 #include "MaterialShared.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialRenderProxy.h"
 #include "CanvasItem.h"
 #include "CanvasTypes.h"
-#include "SceneUtils.h"
+#include "Rendering/SkeletalMeshLODRenderData.h"
 #include "UnrealEngine.h"
 #include "DynamicMeshBuilder.h"
-#include "StaticMeshResources.h"
+#include "PrimitiveSceneProxy.h"
 #include "Engine/LightMapTexture2D.h"
-#include "Rendering/SkeletalMeshRenderData.h"
+#include "SceneInterface.h"
+#include "UnrealClient.h"
+#include "SceneManagement.h"
 
 /** Emits draw events for a given FMeshBatch and the FPrimitiveSceneProxy corresponding to that mesh element. */
 #if WANTS_DRAW_MESH_EVENTS
@@ -1643,18 +1642,14 @@ void ApplyViewModeOverrides(
 
 			if (bTextureMapped == false)
 			{
-				// Tessellated geometry cannot use engine debug LevelColorationLitMaterial as it doesn't support tessellation
-				if (!bMaterialModifiesMeshPosition)
-				{
-					FMaterialRenderProxy* RenderProxy = GEngine->LevelColorationLitMaterial->GetRenderProxy();
-					auto LightingOnlyMaterialInstance = new FColoredMaterialRenderProxy(
-						RenderProxy,
-						GEngine->LightingOnlyBrightness
-					);
+				FMaterialRenderProxy* RenderProxy = GEngine->LevelColorationLitMaterial->GetRenderProxy();
+				auto LightingOnlyMaterialInstance = new FColoredMaterialRenderProxy(
+					RenderProxy,
+					GEngine->LightingOnlyBrightness
+				);
 
-					Mesh.MaterialRenderProxy = LightingOnlyMaterialInstance;
-					Collector.RegisterOneFrameMaterialProxy(LightingOnlyMaterialInstance);
-				}
+				Mesh.MaterialRenderProxy = LightingOnlyMaterialInstance;
+				Collector.RegisterOneFrameMaterialProxy(LightingOnlyMaterialInstance);
 			}
 			else
 			{

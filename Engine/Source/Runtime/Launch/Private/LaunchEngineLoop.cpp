@@ -15,9 +15,11 @@
 #include "Misc/FileHelper.h"
 #include "Internationalization/TextLocalizationManagerGlobals.h"
 #include "Logging/LogSuppressionInterface.h"
+#include "Logging/StructuredLog.h"
 #include "Async/TaskGraphInterfaces.h"
 #include "Async/Fundamental/Scheduler.h"
 #include "MemPro/MemProProfiler.h"
+#include "Misc/AsciiSet.h"
 #include "Misc/TimeGuard.h"
 #include "Misc/Paths.h"
 #include "Misc/PathViews.h"
@@ -31,12 +33,16 @@
 #include "Misc/App.h"
 #include "Misc/OutputDeviceConsole.h"
 #include "Misc/ScopeExit.h"
+#include "Misc/StringBuilder.h"
 #include "Misc/TrackedActivity.h"
 #include "HAL/PlatformFileManager.h"
 #include "HAL/PlatformMemoryHelpers.h"
 #include "HAL/FileManagerGeneric.h"
 #include "HAL/ExceptionHandling.h"
 #include "HAL/IPlatformFileManagedStorageWrapper.h"
+#include "Serialization/CompactBinary.h"
+#include "Serialization/CompactBinarySerialization.h"
+#include "Serialization/CompactBinaryWriter.h"
 #include "Stats/StatsMallocProfilerProxy.h"
 #include "Trace/Trace.inl"
 #include "ProfilingDebugging/TraceAuxiliary.h"
@@ -45,6 +51,7 @@
 #if WITH_ENGINE
 #include "HAL/PlatformSplash.h"
 #include "StereoRenderUtils.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #endif
 #if WITH_APPLICATION_CORE
 #include "HAL/PlatformApplicationMisc.h"
@@ -103,6 +110,7 @@
 	#include "Input/Reply.h"
 	#include "Styling/CoreStyle.h"
 	#include "RenderingThread.h"
+	#include "RenderDeferredCleanup.h"
 	#include "Editor/EditorEngine.h"
 	#include "UnrealEdMisc.h"
 	#include "UnrealEdGlobals.h"
@@ -124,6 +132,7 @@
 
 #if WITH_ENGINE
 	#include "Engine/GameEngine.h"
+	#include "Engine/GameViewportClient.h"
 	#include "UnrealClient.h"
 	#include "Engine/LocalPlayer.h"
 	#include "GameFramework/PlayerController.h"
@@ -134,6 +143,7 @@
 	#include "EngineStats.h"
 	#include "EngineGlobals.h"
 	#include "AudioThread.h"
+	#include "AudioDeviceManager.h"
 #if !UE_BUILD_SHIPPING
 	#include "IAutomationControllerModule.h"
 #endif // !UE_BUILD_SHIPPING
@@ -145,7 +155,7 @@
 	#include "Serialization/DerivedData.h"
 	#include "ShaderCompiler.h"
 	#include "DistanceFieldAtlas.h"
-	#include "MeshCardRepresentation.h"
+	#include "MeshCardBuild.h"
 	#include "GlobalShader.h"
 	#include "ShaderCodeLibrary.h"
 	#include "Materials/MaterialInterface.h"
@@ -196,7 +206,7 @@
 	#include "ShaderPipelineCache.h"
 
 #if !UE_BUILD_SHIPPING
-	#include "STaskGraph.h"
+	#include "ProfileVisualizerModule.h"
 	#include "IProfilerServiceModule.h"
 #endif
 
@@ -238,6 +248,7 @@ class FFeedbackContext;
 	#include "Windows/AllowWindowsPlatformTypes.h"
 	#include <ObjBase.h>
 	#include "Windows/HideWindowsPlatformTypes.h"
+	#include <DbgHelp.h>
 #endif
 
 #if WITH_ENGINE
@@ -253,7 +264,7 @@ class FFeedbackContext;
 #if defined(WITH_LAUNCHERCHECK) && WITH_LAUNCHERCHECK
 	#include "ILauncherCheckModule.h"
 #endif
-#include <String/ParseTokens.h>
+#include "String/ParseTokens.h"
 
 #if WITH_COREUOBJECT
 	#ifndef USE_LOCALIZED_PACKAGE_CACHE
@@ -278,6 +289,8 @@ class FFeedbackContext;
 #if PLATFORM_IOS || PLATFORM_TVOS
 #include "IOS/IOSAppDelegate.h"
 #endif
+
+bool GIsConsoleExecutable = false;
 
 int32 GUseDisregardForGCOnDedicatedServers = 1;
 static FAutoConsoleVariableRef CVarUseDisregardForGCOnDedicatedServers(
@@ -351,7 +364,7 @@ private:
 
 // Pipe output to std output
 // This enables UBT to collect the output for it's own use
-class FOutputDeviceStdOutput : public FOutputDevice
+class FOutputDeviceStdOutput final : public FOutputDevice
 {
 public:
 	FOutputDeviceStdOutput()
@@ -359,6 +372,8 @@ public:
 #if PLATFORM_WINDOWS
 		bIsConsoleOutput = IsStdoutAttachedToConsole() && !FParse::Param(FCommandLine::Get(), TEXT("GenericConsoleOutput"));
 #endif
+
+		bIsJsonOutput = FParse::Param(FCommandLine::Get(), TEXT("JsonStdOut"));
 
 		if (FParse::Param(FCommandLine::Get(), TEXT("AllowStdOutLogVerbosity")))
 		{
@@ -376,54 +391,302 @@ public:
 		}
 	}
 
-	virtual bool CanBeUsedOnAnyThread() const override
+	bool CanBeUsedOnAnyThread() const final { return true; }
+	bool CanBeUsedOnPanicThread() const final { return true; }
+
+	void Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const FName& Category) final
 	{
-		return true;
+		Serialize(V, Verbosity, Category, -1.0);
 	}
 
-	virtual bool CanBeUsedOnPanicThread() const override
-	{
-		return true;
-	}
-
-	virtual void Serialize( const TCHAR* V, ELogVerbosity::Type Verbosity, const class FName& Category ) override
+	void Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const FName& Category, double Time) final
 	{
 		if (Verbosity <= AllowedLogVerbosity)
 		{
-			FString line = FOutputDeviceHelper::FormatLogLine(Verbosity, Category, V, GPrintLogTimes);
+			return bIsJsonOutput ? SerializeAsJson(V, Verbosity, Category, Time) : SerializeAsText(V, Verbosity, Category, Time);
+		}
+	}
 
-#if PLATFORM_WINDOWS
-			if (bIsConsoleOutput)
+	void SerializeRecord(const UE::FLogRecord& Record) final
+	{
+		if (Record.GetVerbosity() <= AllowedLogVerbosity)
+		{
+			return bIsJsonOutput ? SerializeRecordAsJson(Record) : SerializeRecordAsText(Record);
+		}
+	}
+
+private:
+	// Several functions below are FORCENOINLINE to reduce total required stack space by limiting
+	// the scope of string builders and compact binary writers.
+
+	FORCENOINLINE void SerializeAsText(const TCHAR* V, ELogVerbosity::Type Verbosity, const FName& Category, double Time)
+	{
+	#if PLATFORM_WINDOWS
+		if (bIsConsoleOutput)
+		{
+			return WriteLine<WIDECHAR>(V, Verbosity, Category, Time);
+		}
+	#endif
+	#if PLATFORM_TCHAR_IS_UTF8CHAR || PLATFORM_TCHAR_IS_CHAR16
+		WriteLine<UTF8CHAR>(V, Verbosity, Category, Time);
+	#else
+		WriteLine<WIDECHAR>(V, Verbosity, Category, Time);
+	#endif
+	}
+
+	FORCENOINLINE void SerializeRecordAsText(const UE::FLogRecord& Record)
+	{
+		TStringBuilder<512> V;
+		Record.FormatMessageTo(V);
+		Serialize(*V, Record.GetVerbosity(), Record.GetCategory(), -1.0);
+	}
+
+	template <typename CharType>
+	FORCENOINLINE void WriteLine(const TCHAR* V, ELogVerbosity::Type Verbosity, const FName& Category, double Time)
+	{
+		TStringBuilderWithBuffer<CharType, 512> Line;
+		FOutputDeviceHelper::AppendFormatLogLine(Line, Verbosity, Category, V, GPrintLogTimes, Time);
+		Line.AppendChar('\n');
+		WriteLine(Line);
+	}
+
+	FORCENOINLINE void SerializeAsJson(const TCHAR* V, ELogVerbosity::Type Verbosity, const FName& Category, double Time)
+	{
+		const bool bShowCategory = GPrintLogCategory && !Category.IsNone();
+		const bool bShowVerbosity = GPrintLogVerbosity && (Verbosity & ELogVerbosity::VerbosityMask) != ELogVerbosity::Log;
+
+		TCbWriter<1024> Writer;
+		Writer.BeginObject();
+		Writer.AddDateTime(ANSITEXTVIEW("time"), FDateTime::UtcNow());
+		Writer.AddString(ANSITEXTVIEW("level"), GetLevel(Verbosity));
+		AddMessage(Writer, V, Verbosity, Category, bShowCategory, bShowVerbosity);
+		if (bShowCategory || bShowVerbosity)
+		{
+			AddFormat(Writer, V, bShowCategory, bShowVerbosity);
+
+			Writer.BeginObject(ANSITEXTVIEW("properties"));
+			if (bShowCategory)
 			{
-				line.AppendChar(TEXT('\n'));
-
-				WriteConsoleW(GetStdHandle(STD_OUTPUT_HANDLE), *line, line.Len(), NULL, NULL);
-
-				return;
+				Writer.BeginObject(ANSITEXTVIEW("_channel"));
+				Writer.AddString(ANSITEXTVIEW("$type"), ANSITEXTVIEW("Channel"));
+				Writer.AddString(ANSITEXTVIEW("$text"), WriteToUtf8String<64>(Category));
+				Writer.EndObject();
 			}
+			if (bShowVerbosity)
+			{
+				Writer.BeginObject(ANSITEXTVIEW("_severity"));
+				Writer.AddString(ANSITEXTVIEW("$type"), ANSITEXTVIEW("Severity"));
+				Writer.AddString(ANSITEXTVIEW("$text"), ToString(Verbosity));
+				Writer.EndObject();
+			}
+			Writer.EndObject();
+		}
+		Writer.EndObject();
 
-			// fall through to standard printf path
+		WriteAsJson(Writer);
+	}
+
+	FORCENOINLINE static void AddMessage(FCbWriter& Writer, const TCHAR* V, ELogVerbosity::Type Verbosity, const FName& Category, bool bShowCategory, bool bShowVerbosity)
+	{
+		TUtf8StringBuilder<512> Message;
+		if (bShowCategory)
+		{
+			Message << Category << ANSITEXTVIEW(": ");
+		}
+		if (bShowVerbosity)
+		{
+			Message << ToString(Verbosity) << ANSITEXTVIEW(": ");
+		}
+		Message << V;
+		Writer.AddString(ANSITEXTVIEW("message"), Message);
+	}
+
+	FORCENOINLINE static void AddFormat(FCbWriter& Writer, const TCHAR* Message, bool bShowCategory, bool bShowVerbosity)
+	{
+		TUtf8StringBuilder<512> Format;
+		if (bShowCategory)
+		{
+			Format << ANSITEXTVIEW("{_channel}: ");
+		}
+		if (bShowVerbosity)
+		{
+			Format << ANSITEXTVIEW("{_severity}: ");
+		}
+
+		// Escape {} in Message
+		for (constexpr FAsciiSet Brackets("{}");;)
+		{
+			const TCHAR* End = FAsciiSet::FindFirstOrEnd(Message, Brackets);
+			Format.Append(Message, UE_PTRDIFF_TO_INT32(End - Message));
+			if (!*End)
+			{
+				break;
+			}
+			Format.AppendChar(*End);
+			Format.AppendChar(*End);
+			Message = End + 1;
+		}
+
+		Writer.AddString(ANSITEXTVIEW("format"), Format);
+	}
+
+	FORCENOINLINE void SerializeRecordAsJson(const UE::FLogRecord& Record)
+	{
+		const bool bShowCategory = GPrintLogCategory && !Record.GetCategory().IsNone();
+		const bool bShowVerbosity = GPrintLogVerbosity && (Record.GetVerbosity() & ELogVerbosity::VerbosityMask) != ELogVerbosity::Log;
+
+		TCbWriter<1024> Writer;
+		Writer.BeginObject();
+		Writer.AddDateTime(ANSITEXTVIEW("time"), Record.GetTime().GetUtcTime());
+		Writer.AddString(ANSITEXTVIEW("level"), GetLevel(Record.GetVerbosity()));
+		AddMessage(Writer, Record, bShowCategory, bShowVerbosity);
+		if (bShowCategory || bShowVerbosity || Record.GetFields())
+		{
+			AddFormat(Writer, Record, bShowCategory, bShowVerbosity);
+
+			Writer.BeginObject(ANSITEXTVIEW("properties"));
+			if (bShowCategory)
+			{
+				Writer.BeginObject(ANSITEXTVIEW("_channel"));
+				Writer.AddString(ANSITEXTVIEW("$type"), ANSITEXTVIEW("Channel"));
+				Writer.AddString(ANSITEXTVIEW("$text"), WriteToUtf8String<64>(Record.GetCategory()));
+				Writer.EndObject();
+			}
+			if (bShowVerbosity)
+			{
+				Writer.BeginObject(ANSITEXTVIEW("_severity"));
+				Writer.AddString(ANSITEXTVIEW("$type"), ANSITEXTVIEW("Severity"));
+				Writer.AddString(ANSITEXTVIEW("$text"), ToString(Record.GetVerbosity()));
+				Writer.EndObject();
+			}
+			if (const TCHAR* TextNamespace = Record.GetTextNamespace())
+			{
+				Writer.AddString(ANSITEXTVIEW("_ns"), TextNamespace);
+			}
+			if (const TCHAR* TextKey = Record.GetTextKey())
+			{
+				Writer.AddString(ANSITEXTVIEW("_key"), TextKey);
+			}
+			for (const FCbField& Field : Record.GetFields())
+			{
+				Writer.AddField(Field.GetName(), Field);
+			}
+			Writer.EndObject();
+		}
+		Writer.EndObject();
+
+		WriteAsJson(Writer);
+	}
+
+	FORCENOINLINE static void AddMessage(FCbWriter& Writer, const UE::FLogRecord& Record, bool bShowCategory, bool bShowVerbosity)
+	{
+		TUtf8StringBuilder<512> Message;
+		if (bShowCategory)
+		{
+			Message << Record.GetCategory() << ANSITEXTVIEW(": ");
+		}
+		if (bShowVerbosity)
+		{
+			Message << ToString(Record.GetVerbosity()) << ANSITEXTVIEW(": ");
+		}
+		Record.FormatMessageTo(Message);
+		Writer.AddString(ANSITEXTVIEW("message"), Message);
+	}
+
+	FORCENOINLINE static void AddFormat(FCbWriter& Writer, const UE::FLogRecord& Record, bool bShowCategory, bool bShowVerbosity)
+	{
+		TUtf8StringBuilder<512> Format;
+		if (bShowCategory)
+		{
+			Format << ANSITEXTVIEW("{_channel}: ");
+		}
+		if (bShowVerbosity)
+		{
+			Format << ANSITEXTVIEW("{_severity}: ");
+		}
+		Format.Append(Record.GetFormat());
+		Writer.AddString(ANSITEXTVIEW("format"), Format);
+	}
+
+	void WriteAsJson(const FCbWriter& Writer)
+	{
+		TArray<uint8, TInlineAllocator64<512>> Buffer;
+		Buffer.AddUninitialized((int64)Writer.GetSaveSize());
+		FCbFieldView Object = Writer.Save(MakeMemoryView(Buffer));
+
+	#if PLATFORM_WINDOWS
+		if (bIsConsoleOutput)
+		{
+			return WriteLine<WIDECHAR>(Object);
+		}
+	#endif
+	#if PLATFORM_TCHAR_IS_UTF8CHAR || PLATFORM_TCHAR_IS_CHAR16
+		WriteLine<UTF8CHAR>(Object);
+	#else
+		WriteLine<WIDECHAR>(Object);
+	#endif
+	}
+
+	template <typename CharType>
+	FORCENOINLINE void WriteLine(const FCbFieldView& Field)
+	{
+		TStringBuilderWithBuffer<CharType, 512> Line;
+		CompactBinaryToCompactJson(Field, Line);
+		Line.AppendChar('\n');
+		WriteLine(Line);
+	}
+
+	void WriteLine(FUtf8StringBuilderBase& Line) const
+	{
+		printf("%s", (const char*)*Line);
+		fflush(stdout);
+	}
+
+#if PLATFORM_WINDOWS || !(PLATFORM_TCHAR_IS_UTF8CHAR || PLATFORM_TCHAR_IS_CHAR16)
+	void WriteLine(FWideStringBuilderBase& Line) const
+	{
+	#if PLATFORM_WINDOWS
+		if (bIsConsoleOutput)
+		{
+			WriteConsoleW(GetStdHandle(STD_OUTPUT_HANDLE), *Line, Line.Len(), nullptr, nullptr);
+			return;
+		}
+	#endif
+
+	#if PLATFORM_USE_LS_SPEC_FOR_WIDECHAR
+		// printf prints wchar_t strings just fine with %ls, while mixing printf()/wprintf() is not recommended (see https://stackoverflow.com/questions/8681623/printf-and-wprintf-in-single-c-code)
+		printf("%ls", *Line);
+	#else
+		wprintf(TEXT("%s"), *Line);
+	#endif
+		fflush(stdout);
+	}
 #endif
 
-#if PLATFORM_TCHAR_IS_UTF8CHAR
-			printf("%s\n", (const char*)*line);
-#elif PLATFORM_TCHAR_IS_CHAR16
-			printf("%s\n", (const char*)StringCast<UTF8CHAR>(*line).Get());
-#elif PLATFORM_USE_LS_SPEC_FOR_WIDECHAR
-			// printf prints wchar_t strings just fine with %ls, while mixing printf()/wprintf() is not recommended (see https://stackoverflow.com/questions/8681623/printf-and-wprintf-in-single-c-code)
-			printf("%ls\n", *line);
-#else
-			static_assert(std::is_same_v<TCHAR, WIDECHAR>, "Assuming wide chars here");
-			wprintf(TEXT("%s\n"), *line);
-#endif
-
-			fflush(stdout);
+	static FAnsiStringView GetLevel(ELogVerbosity::Type Verbosity)
+	{
+		switch (Verbosity & ELogVerbosity::VerbosityMask)
+		{
+		case ELogVerbosity::Fatal:
+			return ANSITEXTVIEW("Critical");
+		case ELogVerbosity::Error:
+			return ANSITEXTVIEW("Error");
+		case ELogVerbosity::Warning:
+			return ANSITEXTVIEW("Warning");
+		case ELogVerbosity::Display:
+		case ELogVerbosity::Log:
+		default:
+			return ANSITEXTVIEW("Information");
+		case ELogVerbosity::Verbose:
+		case ELogVerbosity::VeryVerbose:
+			return ANSITEXTVIEW("Debug");
 		}
 	}
 
 private:
 	ELogVerbosity::Type AllowedLogVerbosity = ELogVerbosity::Display;
 	bool				bIsConsoleOutput = false;
+	bool				bIsJsonOutput = false;
 
 #if PLATFORM_WINDOWS
 	static bool IsStdoutAttachedToConsole()
@@ -518,42 +781,39 @@ void InitializeStdOutDevice()
 
 bool ParseGameProjectFromCommandLine(const TCHAR* InCmdLine, FString& OutProjectFilePath, FString& OutGameName)
 {
+	FString ProjectFilePathOption;
+
+	const TCHAR *CmdLine = InCmdLine;
+	bool ParseProjectOptionResult = FParse::Value(CmdLine, TEXT("project="), ProjectFilePathOption);
+	FString FirstCommandLineToken = FParse::Token(CmdLine, 0);
+
+	// trim any whitespace at edges of string - this can happen if the token was quoted with leading or trailing whitespace
+	// VC++ tends to do this in its "external tools" config
+	FirstCommandLineToken.TrimStartInline();
+
+	// Output parameters
 	OutProjectFilePath = TEXT("");
 	OutGameName = TEXT("");
 
-	const TCHAR *CmdLine = InCmdLine;
-	FString CommandLineToken = FParse::Token(CmdLine, 0);
-
-	// Avoid checking too many arguments
-	int MaxArgsChecked = 10;
-
-	while (!CommandLineToken.IsEmpty() && MaxArgsChecked-- > 0)
+	if ( ( FirstCommandLineToken.Len() && !FirstCommandLineToken.StartsWith(TEXT("-"))) || ParseProjectOptionResult)
 	{
-		// trim any whitespace at edges of string - this can happen if the token was quoted with leading or trailing whitespace
-		// VC++ tends to do this in its "external tools" config
-		CommandLineToken.TrimStartInline();
-
-		if (CommandLineToken.Len() && !CommandLineToken.StartsWith(TEXT("-")))
+		// The first command line argument could be the project file if it exists or the game name if not launching with a project file
+		FString ProjectFilePath = ProjectFilePathOption.IsEmpty() ? FString(FirstCommandLineToken) : ProjectFilePathOption;
+		if ( FPaths::GetExtension(ProjectFilePath) == FProjectDescriptor::GetExtension() )
 		{
-			// This command line argument could be the project file if it exists or the game name if not launching with a project file
-			const FString ProjectFilePath = FString(CommandLineToken);
-			if (FPaths::GetExtension(ProjectFilePath) == FProjectDescriptor::GetExtension())
-			{
-				OutProjectFilePath = CommandLineToken;
-				// Here we derive the game name from the project file
-				OutGameName = FPaths::GetBaseFilename(OutProjectFilePath);
-				return true;
-			}
-			else if (FPaths::IsRelative(CommandLineToken) && FPlatformProperties::IsMonolithicBuild() == false)
-			{
-				// Full game name is assumed to be the first token
-				OutGameName = MoveTemp(CommandLineToken);
-				// Derive the project path from the game name. All games must have a uproject file, even if they are in the root folder.
-				OutProjectFilePath = FPaths::Combine(*FPaths::RootDir(), *OutGameName, *FString(OutGameName + TEXT(".") + FProjectDescriptor::GetExtension()));
-				return true;
-			}
+			OutProjectFilePath = ProjectFilePath;
+			// Here we derive the game name from the project file
+			OutGameName = FPaths::GetBaseFilename(OutProjectFilePath);
+			return true;
 		}
-		CommandLineToken = FParse::Token(CmdLine, 0);
+		else if (FPaths::IsRelative(ProjectFilePath) && FPlatformProperties::IsMonolithicBuild() == false)
+		{
+			// Full game name is assumed to be the first token
+			OutGameName = MoveTemp(ProjectFilePath);
+			// Derive the project path from the game name. All games must have a uproject file, even if they are in the root folder.
+			OutProjectFilePath = FPaths::Combine(*FPaths::RootDir(), *OutGameName, *FString(OutGameName + TEXT(".") + FProjectDescriptor::GetExtension()));
+			return true;
+		}
 	}
 
 #if WITH_EDITOR
@@ -1213,8 +1473,8 @@ private:
 	};
 	friend uint32 GetTypeHash(const FFileInPakFileHistory& H)
 	{
-		uint32 Hash = ::GetTypeHash(H.PakFileName);
-		Hash = HashCombine(Hash, ::GetTypeHash(H.FileName));
+		uint32 Hash = GetTypeHash(H.PakFileName);
+		Hash = HashCombine(Hash, GetTypeHash(H.FileName));
 		return Hash;
 	}
 	friend bool operator==(const FFileInPakFileHistory& A, const FFileInPakFileHistory& B)
@@ -1432,6 +1692,10 @@ static void UpdateCoreCsvStats_BeginFrame()
 	}
 }
 
+#if !UE_BUILD_SHIPPING
+CSV_DEFINE_CATEGORY(GPUUsage, true);
+#endif
+
 static void UpdateCoreCsvStats_EndFrame()
 {
 	if (!IsRunningDedicatedServer())
@@ -1464,6 +1728,14 @@ static void UpdateCoreCsvStats_EndFrame()
 		    TargetFPS = MaxFPSCVar->GetFloat();
 	    }
 	    CSV_CUSTOM_STAT_GLOBAL(MaxFrameTime, 1000.0f / TargetFPS, ECsvCustomStatOp::Set);
+
+		if (GRHISupportsGPUUsage && GNumExplicitGPUsForRendering == 1)
+		{
+			FRHIGPUUsageFractions GPUUsage = RHIGetGPUUsage(/* GPUIndex = */ 0);
+			CSV_CUSTOM_STAT(GPUUsage, Clock, GPUUsage.ClockScaling * 100.0f, ECsvCustomStatOp::Set);
+			CSV_CUSTOM_STAT(GPUUsage, Usage, GPUUsage.CurrentProcess * 100.0f, ECsvCustomStatOp::Set);
+			CSV_CUSTOM_STAT(GPUUsage, External, GPUUsage.ExternalProcesses * 100.0f, ECsvCustomStatOp::Set);
+		}
 #endif
 	}
 }
@@ -1511,6 +1783,102 @@ static void UpdateGInputTime()
 	GInputTime = FPlatformTime::Cycles64();
 }
 
+static TArray<FString> TokenizeCommandline(const TCHAR* CmdLine, bool bRetainQuotes)
+{
+	TArray<FString> TokenArray;
+
+	const TCHAR* ParsedCmdLine = CmdLine;
+
+	while (*ParsedCmdLine)
+	{
+		FString Token;
+				
+		// skip over whitespace to look for a quote
+		while (FChar::IsWhitespace(*ParsedCmdLine))
+		{
+			ParsedCmdLine++;
+		}
+
+		// if we want to keep quotes around the token, and the first character is a quote, then FToken::Parse
+		// will remove the quotes, so put them back
+		if (bRetainQuotes && (*ParsedCmdLine == TEXT('"')))
+		{
+			FParse::Token(ParsedCmdLine, Token, 0);
+			Token = FString::Printf(TEXT("\"%s\""), *Token);
+		}
+		else
+		{
+			FParse::Token(ParsedCmdLine, Token, 0);
+			Token.TrimStartAndEndInline();
+		}
+
+		if (!Token.IsEmpty())
+		{
+			TokenArray.Add(MoveTemp(Token));
+		}
+	}
+
+	return MoveTemp(TokenArray);
+}
+
+/** Enumeration representing the type of the command-line argument representing the game (typically the first argument). */
+enum class EGameStringType
+{
+	GameName,
+	ProjectPath,
+	ProjectShortName,
+	Unknown
+};
+
+/**
+  * Finds a command-line argument representing the game, removes it from the array and returns.
+  *
+ * @param TokenArray    Array of the tokenized command line
+ * @param QuotedTokenArray  Parellel array that maintains quotes around params
+  * @param OutStringType Type of the game string found.
+  * @return String representing the game command-line parameter; empty string if not found (OutStringType == Unknown in such case).
+  */
+static FString ExtractGameStringArgument(TArray<FString>& TokenArray, TArray<FString>& QuotedTokenArray, EGameStringType& OutStringType)
+{
+	for (int32 I = 0; I < TokenArray.Num(); ++I)
+	{
+		FString NormalizedToken = TokenArray[I];
+
+		// Path returned by FPaths::GetProjectFilePath() is normalized, so may have symlinks and ~ resolved and may differ from the original path to .uproject passed in the command line
+		FPaths::NormalizeFilename(NormalizedToken);
+
+		const bool bTokenIsGameName                 = (FApp::HasProjectName()         && TokenArray[I]   == FApp::GetProjectName());
+		const bool bTokenIsGameProjectFilePath      = (FPaths::IsProjectFilePathSet() && NormalizedToken == FPaths::GetProjectFilePath());
+		const bool bTokenIsGameProjectFileShortName = (FPaths::IsProjectFilePathSet() && TokenArray[I]   == FPaths::GetCleanFilename(FPaths::GetProjectFilePath()));
+
+		if (bTokenIsGameName || bTokenIsGameProjectFilePath || bTokenIsGameProjectFileShortName)
+		{
+			if (bTokenIsGameName)
+			{
+				OutStringType = EGameStringType::GameName;
+			}
+			else if (bTokenIsGameProjectFilePath)
+			{
+				OutStringType = EGameStringType::ProjectPath;
+			}
+			else if (bTokenIsGameProjectFileShortName)
+			{
+				OutStringType = EGameStringType::ProjectShortName;
+			}
+
+			FString Result = TokenArray[I];
+
+			TokenArray.RemoveAt(I);
+			QuotedTokenArray.RemoveAt(I);
+
+			return Result;
+		}
+	}
+
+	OutStringType = EGameStringType::Unknown;
+
+	return FString();
+}
 
 
 DECLARE_CYCLE_STAT(TEXT("FEngineLoop::PreInitPreStartupScreen.AfterStats"), STAT_FEngineLoop_PreInitPreStartupScreen_AfterStats, STATGROUP_LoadTime);
@@ -1903,28 +2271,30 @@ int32 FEngineLoop::PreInitPreStartupScreen(const TCHAR* CmdLine)
 	bool bIsRunningAsDedicatedServer = false;
 	bool bIsRegularClient = false;
 
-	const SIZE_T CommandLineSize = FCString::Strlen(CmdLine) + 1;
-	TCHAR* CommandLineCopy = new TCHAR[CommandLineSize];
-	FCString::Strcpy(CommandLineCopy, CommandLineSize, CmdLine);
-	const TCHAR* ParsedCmdLine = CommandLineCopy;
+	FString TokenToForward;
 
-	FString Token = FParse::Token(ParsedCmdLine, 0);
-	// trim any whitespace at edges of string - this can happen if the token was quoted with leading or trailing whitespace
-	// VC++ tends to do this in its "external tools" config
-	Token.TrimStartAndEndInline();
+	// these tokens are use later to restore a single commandline string, so keep a version that has quotes around tokens,
+	// in case there are spaces in a token which will break parsing that single string
+	TArray<FString> TokenArray     		= TokenizeCommandline(CmdLine, false);
+	TArray<FString> QuotedTokenArray    = TokenizeCommandline(CmdLine, true);
+
+	EGameStringType GameStringType = EGameStringType::Unknown;
+	FString         GameString     = ExtractGameStringArgument(TokenArray, QuotedTokenArray, GameStringType);
 
 	auto IsModeSelected = [&bHasCommandletToken, &bHasEditorToken, &bIsRegularClient, &bIsRunningAsDedicatedServer]()
 	{
 		return bHasCommandletToken || bHasEditorToken || bIsRegularClient || bIsRunningAsDedicatedServer;
 	};
 #if UE_EDITOR || WITH_ENGINE || WITH_EDITOR
-	const TCHAR* CommandletCommandLine = nullptr;
-	auto SetIsRunningAsCommandlet = [&CommandletCommandLine, &ParsedCmdLine,
-		&bHasCommandletToken, &bIsRunningAsDedicatedServer, &bHasEditorToken, &bIsRegularClient, &IsModeSelected]
+	FString CommandletCommandLine;
+	auto SetIsRunningAsCommandlet = [&CommandletCommandLine, &QuotedTokenArray,
+		&bHasCommandletToken, &bIsRunningAsDedicatedServer, &bHasEditorToken, &bIsRegularClient, &IsModeSelected, &TokenToForward]
 		(FStringView CommandletName)
 	{
 		checkf(!IsModeSelected(), TEXT("SetIsRunningAsCommandlet should not be called after mode has been selected."));
 		bHasCommandletToken = true;
+
+		TokenToForward = CommandletName;
 
 		GIsClient = true;
 		GIsServer = true;
@@ -1939,7 +2309,7 @@ int32 FEngineLoop::PreInitPreStartupScreen(const TCHAR* CmdLine)
 		}
 #endif
 
-		CommandletCommandLine = ParsedCmdLine;
+		CommandletCommandLine = FString::Join(QuotedTokenArray, TEXT(" "));
 #if WITH_EDITOR
 		if (CommandletName == TEXTVIEW("cookcommandlet"))
 		{
@@ -1955,10 +2325,24 @@ int32 FEngineLoop::PreInitPreStartupScreen(const TCHAR* CmdLine)
 		PRIVATE_GAllowCommandletAudio = FParse::Param(FCommandLine::Get(), TEXT("AllowCommandletAudio"));
 	};
 #endif // UE_EDITOR || WITH_ENGINE || WITH_EDITOR
-	auto SetIsRunningAsRegularClient = [&IsModeSelected, &bIsRegularClient]()
+	auto SetIsRunningAsRegularClient = [&IsModeSelected, &bIsRegularClient, &TokenArray, &TokenToForward]()
 	{
 		checkf(!IsModeSelected(), TEXT("SetIsRunningAsRegularClient should not be called after mode has been selected."));
 		bIsRegularClient = true;
+
+		// Take the first non-switch command-line parameter (i.e. one not starting with a dash) and remember
+		// it to check later as it could be a mistyped commandlet (short name).
+		const FString* NonSwitchParam = TokenArray.FindByPredicate(
+			[](const FString& Token)
+			{
+				return Token[0] != TCHAR('-');
+			}
+		);
+
+		if (NonSwitchParam)
+		{
+			TokenToForward = *NonSwitchParam;
+		}
 
 		GIsClient = true;
 		GIsServer = false;
@@ -2003,8 +2387,8 @@ int32 FEngineLoop::PreInitPreStartupScreen(const TCHAR* CmdLine)
 	{
 		// Header generation is treated as a commandlet
 		checkf(!IsRunningDedicatedServer(), TEXT("GIsUCCMakeStandaloneHeaderGenerator is not supported in a ServerOnly configuration, or with -server on commandline."));
-		Token = TEXT("GIsUCCMakeStandaloneHeaderGenerator");
-		SetIsRunningAsCommandlet(Token);
+
+		SetIsRunningAsCommandlet(TEXT("GIsUCCMakeStandaloneHeaderGenerator"));
 	}
 	else
 #endif
@@ -2018,16 +2402,14 @@ int32 FEngineLoop::PreInitPreStartupScreen(const TCHAR* CmdLine)
 #if UE_EDITOR || WITH_ENGINE || WITH_EDITOR
 	TArray<FString> NonSwitchTokens;
 	TArray<FString> Switches;
-	UCommandlet::ParseCommandLine(CommandLineCopy, NonSwitchTokens, Switches);
+	UCommandlet::ParseCommandLine(CmdLine, NonSwitchTokens, Switches);
 	if (!IsModeSelected())
 	{
 		for (const FString& ParsedToken : NonSwitchTokens)
 		{
 			if (ParsedToken.EndsWith(TEXT("Commandlet")))
 			{
-				Token = ParsedToken;
-				Token.TrimStartAndEndInline();
-				SetIsRunningAsCommandlet(Token);
+				SetIsRunningAsCommandlet(ParsedToken.TrimStartAndEnd());
 				break;
 			}
 		}
@@ -2037,13 +2419,13 @@ int32 FEngineLoop::PreInitPreStartupScreen(const TCHAR* CmdLine)
 			{
 				if (ParsedSwitch.StartsWith(TEXT("RUN=")))
 				{
-					Token = ParsedSwitch.RightChop(4);
-					Token.TrimStartAndEndInline();
-					if (!Token.EndsWith(TEXT("Commandlet")))
+					FString LocalToken = ParsedSwitch.RightChop(4);
+					LocalToken.TrimStartAndEndInline();
+					if (!LocalToken.EndsWith(TEXT("Commandlet")))
 					{
-						Token += TEXT("Commandlet");
+						LocalToken += TEXT("Commandlet");
 					}
-					SetIsRunningAsCommandlet(Token);
+					SetIsRunningAsCommandlet(LocalToken);
 					break;
 				}
 			}
@@ -2055,37 +2437,21 @@ int32 FEngineLoop::PreInitPreStartupScreen(const TCHAR* CmdLine)
 	// In all other cases we should check for the first token being the Project Specifier
 	if (!bHasCommandletToken)
 	{
-		// Path returned by FPaths::GetProjectFilePath() is normalized, so may have symlinks and ~ resolved and may differ from the original path to .uproject passed in the command line
-		FString NormalizedToken = Token;
-		FPaths::NormalizeFilename(NormalizedToken);
-
-		const bool bFirstTokenIsGameName = (FApp::HasProjectName() && Token == FApp::GetProjectName());
-		const bool bFirstTokenIsGameProjectFilePath = (FPaths::IsProjectFilePathSet() && NormalizedToken == FPaths::GetProjectFilePath());
-		const bool bFirstTokenIsGameProjectFileShortName = (FPaths::IsProjectFilePathSet() && Token == FPaths::GetCleanFilename(FPaths::GetProjectFilePath()));
-
-		if (bFirstTokenIsGameName || bFirstTokenIsGameProjectFilePath || bFirstTokenIsGameProjectFileShortName)
+		if (GameStringType != EGameStringType::Unknown)
 		{
-			// The first item on command line was the game name, ignore it and get the next item for the Token
-			FString RemainingCommandline = ParsedCmdLine;
-			FCString::Strcpy(CommandLineCopy, CommandLineSize, *RemainingCommandline);
-			ParsedCmdLine = CommandLineCopy;
+			// Set a new command-line that doesn't include the game name as the first argument.
+			FCommandLine::Set(*FString::Join(QuotedTokenArray, TEXT(" ")));
 
-			// Set a new command-line that doesn't include the game name as the first argument
-			FCommandLine::Set(ParsedCmdLine);
+			// Remove spurious project file tokens (which can happen on some platforms that combine commandlines).
+			// This handles extra .uprojects, but if you run with MyGame MyGame, we can't tell if the second MyGame is a map or not.
+			TokenArray.RemoveAll(
+				[](const FString& Token)
+				{
+					return Token[0] != TCHAR('-') && FPaths::GetExtension(Token) == FProjectDescriptor::GetExtension();
+				}
+			);
 
-			Token = FParse::Token(ParsedCmdLine, 0);
-			Token.TrimStartInline();
-
-			// if the next token is a project file, then we skip it (which can happen on some platforms that combine
-			// commandlines... this handles extra .uprojects, but if you run with MyGame MyGame, we can't tell if
-			// the second MyGame is a map or not)
-			while (FPaths::GetExtension(Token) == FProjectDescriptor::GetExtension())
-			{
-				Token = FParse::Token(ParsedCmdLine, 0);
-				Token.TrimStartInline();
-			}
-
-			if (bFirstTokenIsGameProjectFilePath || bFirstTokenIsGameProjectFileShortName)
+			if (GameStringType == EGameStringType::ProjectPath || GameStringType == EGameStringType::ProjectShortName)
 			{
 				// Convert it to relative if possible...
 				FString RelativeGameProjectFilePath = FFileManagerGeneric::DefaultConvertToRelativePath(*FPaths::GetProjectFilePath());
@@ -2098,18 +2464,24 @@ int32 FEngineLoop::PreInitPreStartupScreen(const TCHAR* CmdLine)
 
 #if UE_EDITOR
 		// Handle the first token being '-game' or '-server'
-		if (Token == TEXT("-GAME") || Token == TEXT("-SERVER"))
+		if (!TokenArray.IsEmpty())
 		{
-			// This isn't necessarily pretty, but many requests have been made to allow
-			//   UnrealEditor.exe <GAMENAME> -game <map>
-			// or
-			//   UnrealEditor.exe <GAMENAME> -game 127.0.0.0
-			// We don't want to remove the -game from the commandline just yet in case
-			// we need it for something later. So, just move it to the end for now...
-			FString RemainingCommandline = ParsedCmdLine;
-			RemainingCommandline.TrimStartInline();
-			RemainingCommandline += FString::Printf(TEXT(" %s"), *Token);
-			FCommandLine::Set(*RemainingCommandline);
+			if (TokenArray[0] == TEXT("-GAME") || TokenArray[0] == TEXT("-SERVER"))
+			{
+				// This isn't necessarily pretty, but many requests have been made to allow
+				//   UnrealEditor.exe <GAMENAME> -game <map>
+				// or
+				//   UnrealEditor.exe <GAMENAME> -game 127.0.0.0
+				// We don't want to remove the -game from the commandline just yet in case
+				// we need it for something later. So, just move it to the end for now...
+				FString LocalToken = TokenArray[0];
+				TokenArray.Add(LocalToken);
+				TokenArray.RemoveAt(0);
+				QuotedTokenArray.Add(LocalToken);
+				QuotedTokenArray.RemoveAt(0);
+
+				FCommandLine::Set(*FString::Join(QuotedTokenArray, TEXT(" ")));
+			}
 		}
 #endif
 	}
@@ -2127,7 +2499,7 @@ int32 FEngineLoop::PreInitPreStartupScreen(const TCHAR* CmdLine)
 #elif WITH_ENGINE && WITH_EDITOR && WITH_EDITORONLY_DATA 
 		// If a non-editor target build w/ WITH_EDITOR and WITH_EDITORONLY_DATA, use the old token check...
 		//@todo. Is this something we need to support?
-		if (Token == TEXT("EDITOR"))
+		if (TokenArray.Contains(TEXT("EDITOR")))
 		{
 			SetIsRunningAsEditor();
 		}
@@ -2163,12 +2535,14 @@ int32 FEngineLoop::PreInitPreStartupScreen(const TCHAR* CmdLine)
 	FApp::SetBenchmarking(false);
 #endif // !UE_BUILD_SHIPPING
 
+#if WITH_FIXED_TIME_STEP_SUPPORT
 	// "-Deterministic" is a shortcut for "-UseFixedTimeStep -FixedSeed"
 	bool bDeterministic = FParse::Param(FCommandLine::Get(), TEXT("Deterministic"));
 
 	FApp::SetUseFixedTimeStep(bDeterministic || FParse::Param(FCommandLine::Get(), TEXT("UseFixedTimeStep")));
 
 	FApp::bUseFixedSeed = bDeterministic || FApp::IsBenchmarking() || FParse::Param(FCommandLine::Get(), TEXT("FixedSeed"));
+#endif
 
 	// Initialize random number generator.
 	{
@@ -2636,7 +3010,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #if !UE_EDITOR
 	// UE_EDITOR doesn't care the meaning of the token except for a few special cases (FooCommandlet, -run=, -game, -server)
 	// But when running without UE_EDITOR, we look up the token as a class to see if it is a commandlet name prefix
-	bool bIsLateCommandletToken = false;
+	FString LateCommandletName;
 	if (!IsModeSelected())
 	{
 		//@hack: We need to set these before calling StaticLoadClass so all required data gets loaded for the commandlets.
@@ -2647,21 +3021,36 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #endif // WITH_EDITOR
 		TGuardValue<bool> ScopedGIsRunningCommandlet(PRIVATE_GIsRunningCommandlet, true);
 
-		bool bIsPossiblyCommandletName = Token.Len() && !Token.Contains(TEXT("-"));
+		// Take the first non-switch command-line parameter (i.e. one not starting with a dash). We will check if it's possibly a commandlet.
+		const FString* NonSwitchParam = TokenArray.FindByPredicate(
+			[](const FString& Token)
+			{
+				return Token[0] != TCHAR('-');
+			}
+		);
+
+		bool bIsPossiblyCommandletName = NonSwitchParam != nullptr;
 		if (bIsPossiblyCommandletName)
 		{
-			UClass* TempCommandletClass = FindFirstObject<UClass>(*(Token + TEXT("Commandlet")), EFindFirstObjectOptions::None, ELogVerbosity::Warning, TEXT("Looking for commandlet class"));
+			FString CommandletName = *NonSwitchParam;
+
+			if (!CommandletName.EndsWith(TEXT("Commandlet")))
+			{
+				CommandletName += TEXT("Commandlet");
+			}
+
+			UClass* TempCommandletClass = FindFirstObject<UClass>(*CommandletName, EFindFirstObjectOptions::None, ELogVerbosity::Warning, TEXT("Looking for commandlet class"));
 			if (TempCommandletClass)
 			{
 				checkf(TempCommandletClass->IsChildOf(UCommandlet::StaticClass()), TEXT("It is not valid to have a class that ends with \"Commandlet\" that is not a UCommandlet subclass."));
-				Token += TEXT("Commandlet");
-				bIsLateCommandletToken = true;
+
+				LateCommandletName = CommandletName;
 			}
 		}
 	}
-	if (bIsLateCommandletToken)
+	if (!LateCommandletName.IsEmpty())
 	{
-		SetIsRunningAsCommandlet(Token);
+		SetIsRunningAsCommandlet(LateCommandletName);
 	}
 
 	// In non-UE_EDITOR configuration this is the point where know enough to finish the mode decision and decide between commandlet or client
@@ -2816,9 +3205,6 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		SCOPED_BOOT_TIMING("RHIInit");
 		// Initialize the RHI.
 		RHIInit(bHasEditorToken);
-#if WITH_EDITOR
-		FGenericDataDrivenShaderPlatformInfo::UpdatePreviewPlatforms();
-#endif
 	}
 
 	{
@@ -2864,8 +3250,8 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			// Ensure that DDC is initialized from the game thread.
 			UE_SCOPED_ENGINE_ACTIVITY(TEXT("Initializing Derived Data Cache"));
 			SCOPED_BOOT_TIMING("InitDerivedData");
-			UE::DerivedData::GetBuild();
 			UE::DerivedData::GetCache();
+			UE::DerivedData::GetBuild();
 			GetDerivedDataCacheRef();
 		}
 #endif
@@ -3047,17 +3433,26 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	PreInitContext.bDisableDisregardForGC = bDisableDisregardForGC;
 	PreInitContext.bIsRegularClient = bIsRegularClient;
 #endif // WITH_ENGINE
-	PreInitContext.bIsPossiblyUnrecognizedCommandlet = bIsRegularClient && Token.Len() && !Token.Contains(TEXT("-"));
+	PreInitContext.bIsPossiblyUnrecognizedCommandlet = bIsRegularClient && TokenToForward.Len() && !TokenToForward.Contains(TEXT("-"));
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
 	PreInitContext.bTokenDoesNotHaveDash = PreInitContext.bIsPossiblyUnrecognizedCommandlet;
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
-	PreInitContext.Token = Token;
+	PreInitContext.Token = TokenToForward;
 #if UE_EDITOR || WITH_ENGINE
 	PreInitContext.CommandletCommandLine = CommandletCommandLine;
 #endif // UE_EDITOR || WITH_ENGINE
-	PreInitContext.CommandLineCopy = CommandLineCopy;
 	
 	return 0;
+}
+
+void ConditionallyEnsureOnCommandletErrors(int32 InNumErrors)
+{
+	bool bEnsureOnError = false;
+	GConfig->GetBool(TEXT("Core.System"), TEXT("EnsureCommandletOnError"), bEnsureOnError, GEngineIni);
+	if (bEnsureOnError)
+	{
+		ensureMsgf(InNumErrors == 0, TEXT("Commandlet generated %s errors!"), InNumErrors);
+	}
 }
 
 int32 FEngineLoop::PreInitPostStartupScreen(const TCHAR* CmdLine)
@@ -3069,6 +3464,23 @@ int32 FEngineLoop::PreInitPostStartupScreen(const TCHAR* CmdLine)
 	{
 		return 0;
 	}
+
+	extern bool GIsConsoleExecutable;
+#if PLATFORM_WINDOWS
+	/*
+	Note - ImageNtHeader must be called after DbgHelp is initialized.Failure to wait before initialization will cause calls to
+	SymFromAddr for monolithic exes to fail. This results in callstacks not being written to the log.
+	From discussion with Microsoft it is unclear when this time is and could be related to large pdbs. At this time here is an appropriate spot.
+	*/
+	if (PIMAGE_NT_HEADERS NtHeaders = ImageNtHeader(GetModuleHandle(nullptr)))
+	{
+		GIsConsoleExecutable = (NtHeaders->OptionalHeader.Subsystem == IMAGE_SUBSYSTEM_WINDOWS_CUI);
+	}
+	else
+	{
+		GIsConsoleExecutable = (GetFileType(GetStdHandle(STD_OUTPUT_HANDLE)) == FILE_TYPE_CHAR);
+	}
+#endif // PLATFORM_WINDOWS
 
 	FScopeCycleCounter CycleCount_AfterStats(GET_STATID(STAT_FEngineLoop_PreInitPostStartupScreen_AfterStats));
 
@@ -3085,9 +3497,8 @@ int32 FEngineLoop::PreInitPostStartupScreen(const TCHAR* CmdLine)
 	bool bIsPossiblyUnrecognizedCommandlet = PreInitContext.bIsPossiblyUnrecognizedCommandlet;
 	FString Token = PreInitContext.Token;
 #if UE_EDITOR || WITH_ENGINE
-	const TCHAR* CommandletCommandLine = PreInitContext.CommandletCommandLine;
+	const TCHAR* CommandletCommandLine = *PreInitContext.CommandletCommandLine;
 #endif // UE_EDITOR || WITH_ENGINE
-	TCHAR* CommandLineCopy = PreInitContext.CommandLineCopy;
 	FScopedSlowTask& SlowTask = *PreInitContext.SlowTaskPtr;
 
 #if WITH_ENGINE
@@ -3579,7 +3990,6 @@ int32 FEngineLoop::PreInitPostStartupScreen(const TCHAR* CmdLine)
 			}
 
 #if PLATFORM_WINDOWS || PLATFORM_MAC || PLATFORM_UNIX
-			extern bool GIsConsoleExecutable;
 			if (GIsConsoleExecutable)
 			{
 				if (GLogConsole != nullptr && GLogConsole->IsAttached())
@@ -3787,6 +4197,9 @@ int32 FEngineLoop::PreInitPostStartupScreen(const TCHAR* CmdLine)
 					}
 				}
 
+				// Allow the caller to request that we issue an ensure when there are any errors from the executed commandlet
+				ConditionallyEnsureOnCommandletErrors(AllErrors.Num());
+
 				UE_LOG(LogInit, Display, TEXT(""));
 
 				if( ErrorLevel != 0 )
@@ -3814,7 +4227,33 @@ int32 FEngineLoop::PreInitPostStartupScreen(const TCHAR* CmdLine)
 			}
 
 			double CommandletExecutionTime = FPlatformTime::Seconds() - CommandletExecutionStartTime;
-			UE_LOG(LogInit, Display, LINE_TERMINATOR TEXT( "Execution of commandlet took:  %.2f seconds"), CommandletExecutionTime );
+			if (CommandletExecutionTime <= 60)
+			{
+				UE_LOG(LogInit, Display, LINE_TERMINATOR TEXT("Execution of commandlet took:  %.2f seconds"), CommandletExecutionTime);
+			}
+			else
+			{
+				FTimespan ExecutionTimeSpan = FTimespan::FromSeconds(CommandletExecutionTime);
+				int32 Hours = (int32)(ExecutionTimeSpan.GetTotalHours());
+				int32 Minutes = ExecutionTimeSpan.GetMinutes();
+				int32 Seconds = ExecutionTimeSpan.GetSeconds();
+				// Tried FText::AsTimespan here but it actually felt harder to visually parse than just explicit labeling. Leaving the
+				// seconds in so that it's easy to subtract between multiple runs.
+				if (Hours)
+				{
+					UE_LOG(LogInit, Display, LINE_TERMINATOR TEXT("Execution of commandlet took:  %dh %dm %ds (%.2f seconds)"), Hours, Minutes, Seconds, CommandletExecutionTime);
+				}
+				else
+				{
+					UE_LOG(LogInit, Display, LINE_TERMINATOR TEXT("Execution of commandlet took:  %dm %ds (%.2f seconds)"), Minutes, Seconds, CommandletExecutionTime);
+				}
+			}
+
+			const bool bShouldPerformFastExit = Commandlet->FastExit || FParse::Param(FCommandLine::Get(), TEXT("fastexit"));
+			if (bShouldPerformFastExit)
+			{
+				FPlatformMisc::RequestExitWithStatus(true, ErrorLevel);
+			}
 
 			// We're ready to exit!
 			return ErrorLevel;
@@ -3885,7 +4324,7 @@ int32 FEngineLoop::PreInitPostStartupScreen(const TCHAR* CmdLine)
 
 	// Initialize profile visualizers.
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-	FModuleManager::Get().LoadModule(TEXT("TaskGraph"));
+	FModuleManager::Get().LoadModule(TEXT("ProfileVisualizer"));
 	if (FPlatformProcess::SupportsMultithreading())
 	{
 		FModuleManager::Get().LoadModule(TEXT("ProfilerService"));
@@ -4029,6 +4468,7 @@ void FEngineLoop::LoadPreInitModules()
 }
 
 
+
 #if WITH_ENGINE
 
 bool FEngineLoop::LoadStartupCoreModules()
@@ -4163,6 +4603,14 @@ bool FEngineLoop::LoadStartupCoreModules()
 	// Required during serialization of AnimSequence which could happen from async loading thread.
 	// See UAnimSequence::UpdateFrameRate().
 	FModuleManager::Get().LoadModule(TEXT("TimeManagement"));
+
+	// Required during construction of UAnimBlueprint which could happen from async loading thread.
+	// See UAnimBlueprint::UAnimBlueprint().
+	FModuleManager::Get().LoadModule(TEXT("AnimGraph"));
+
+	// Required during construction of UWorldPartitionEditorHash which could happen from async loading thread.
+	// See UWorldPartitionEditorHash::UWorldPartitionEditorHash().
+	FModuleManager::Get().LoadModule(TEXT("WorldPartitionEditor"));
 #endif
 
 	FModuleManager::Get().LoadModule(TEXT("PacketHandler"));
@@ -4588,22 +5036,15 @@ void FEngineLoop::Exit()
 #endif // WITH_EDITOR
 	FModuleManager::Get().UnloadModule("WorldBrowser", true);
 
-#if !PLATFORM_ANDROID 	// AppPreExit doesn't work on Android
 	AppPreExit();
 
 	TermGamePhys();
-#endif
 
 #if WITH_COREUOBJECT
 	// PackageResourceManager depends on AssetRegistry, so must be shutdown before we unload the AssetRegistry module
 	IPackageResourceManager::Shutdown();
 #endif
 	FModuleManager::Get().UnloadModule("AssetRegistry", true);
-
-#if PLATFORM_ANDROID
-	// AppPreExit() stops malloc profiler, do it here instead
-	MALLOC_PROFILER( GMalloc->Exec(nullptr, TEXT("MPROF STOP"), *GLog);	);
-#endif // !ANDROID
 
 #if WITH_EDITOR
 	IBulkDataRegistry::Shutdown();
@@ -4614,6 +5055,10 @@ void FEngineLoop::Exit()
 	
 	// Disable the PSO cache
 	FShaderPipelineCache::Shutdown();
+
+	// Free the global shader map, needs to happen before FShaderCodeLibrary::Shutdown to avoid warnings
+	// about leaking RHI references.
+	ShutdownGlobalShaderMap();
 
 	// Close shader code map, if any
 	FShaderCodeLibrary::Shutdown();
@@ -4632,7 +5077,6 @@ void FEngineLoop::Exit()
 	UE::Virtualization::Shutdown();
 #endif //WITH_EDITOR
 
-#if !PLATFORM_ANDROID // UnloadModules doesn't work on Android
 #if WITH_ENGINE
 	// Save the hot reload state
 	IHotReloadInterface* HotReload = IHotReloadInterface::GetPtr();
@@ -4649,7 +5093,6 @@ void FEngineLoop::Exit()
 		SCOPED_BOOT_TIMING("UnloadModulesAtShutdown");
 		FModuleManager::Get().UnloadModulesAtShutdown();
 	}
-#endif // !ANDROID
 
 	IStreamingManager::Shutdown();
 
@@ -6249,7 +6692,7 @@ bool FEngineLoop::AppInit( )
 		FPIEPreviewDeviceModule* PIEPreviewDeviceProfileSelectorModule = FModuleManager::LoadModulePtr<FPIEPreviewDeviceModule>("PIEPreviewDeviceProfileSelector");
 		if (PIEPreviewDeviceProfileSelectorModule)
 		{
-			Scalability::ChangeScalabilityPreviewPlatform(PIEPreviewDeviceProfileSelectorModule->GetPreviewPlatformName());
+			Scalability::ChangeScalabilityPreviewPlatform(PIEPreviewDeviceProfileSelectorModule->GetPreviewPlatformName(), GEditor->GetActiveShaderPlatform());
 		}
 	}
 #endif
@@ -6290,8 +6733,7 @@ void FEngineLoop::AppPreExit( )
 	// which uses async tasks to wait until resources are safe to be deleted (for example, FMediaTextureResource).
 	// To avoid this, we set the frame number to the maximum possible value here, before waiting for the thread pool to die. It's safe to do so
 	// because FlushRenderingCommands() is called multiple times on exit before reaching this point, so there's no way the render thread has any
-	// more frames in flight. Note that simply incrementing the value doesn't work, because FGenericRHIGPUFence::WriteInternal adds
-	// GNumAlternateFrameRenderingGroups to the current frame number to account for multi-GPU, and we don't want to depend on that RHI export here.
+	// more frames in flight.
 	GFrameNumberRenderThread = MAX_uint32;
 
 	if (GIOThreadPool != nullptr)
@@ -6387,29 +6829,11 @@ void FEngineLoop::PostInitRHI()
 	{
 		// perform an early check of hardware capabilities
 		EShaderPlatform ShaderPlatform = GMaxRHIShaderPlatform;
+
 		const UE::StereoRenderUtils::FStereoShaderAspects Aspects(ShaderPlatform);
 
-		// If instanced stereo is enabled, we should also have either multiviewport enabled, or mmv fallback enabled.
-		// Otherwise, exit gracefully with a message box
-		if (Aspects.IsInstancedStereoEnabled() && !Aspects.IsInstancedMultiViewportEnabled() && !Aspects.IsMobileMultiViewEnabled())
-		{
-			UE_LOG(LogInit, Log, TEXT("ShaderPlatform=%d RHISupportsInstancedStereo()=%d GRHISupportsArrayIndexFromAnyShader=%d"),
-				ShaderPlatform, RHISupportsMultiViewport(ShaderPlatform), GRHISupportsArrayIndexFromAnyShader);
-
-			// MessageBoxExt may not yet handle unattended runs itself (see UE-165694), so special-case here to avoid getting stuck in a commandlet with rendering enabled
-			const FText MessageText = NSLOCTEXT("InstancedStereo", "UnableToUseInstancedStereoRenderingText", "Cannot render an Instanced Stereo-enabled project due to a missing functionality on the system. Please check log files for more info.");
-			if (!FApp::IsUnattended())
-			{
-				FPlatformMisc::MessageBoxExt(EAppMsgType::Ok, *MessageText.ToString(),
-					*NSLOCTEXT("InstancedStereo", "UnableToUseInstancedStereoRendering", "Unable to use Instanced Stereo Rendering.").ToString());
-			}
-			else
-			{
-				UE_LOG(LogInit, Error, TEXT("%s"), *MessageText.ToString());					
-			}
-			FPlatformMisc::RequestExitWithStatus(true, 1);
-			// unreachable
-		}
+		UE::StereoRenderUtils::LogISRInit(Aspects);
+		UE::StereoRenderUtils::VerifyISRConfig(Aspects, ShaderPlatform);
 	}
 
 #endif
@@ -6473,10 +6897,6 @@ void FPreInitContext::Cleanup()
 #if WITH_ENGINE && !UE_SERVER
 	SlateRenderer = nullptr;
 #endif // WITH_ENGINE && !UE_SERVER
-	CommandletCommandLine = nullptr;
-
-	delete[] CommandLineCopy;
-	CommandLineCopy = nullptr;
 
 	delete SlowTaskPtr;
 	SlowTaskPtr = nullptr;

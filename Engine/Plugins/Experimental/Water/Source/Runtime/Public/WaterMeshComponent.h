@@ -2,14 +2,11 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/Object.h"
-#include "UObject/Class.h"
-#include "Engine/EngineTypes.h"
 #include "Components/MeshComponent.h"
 #include "WaterQuadTree.h"
 #include "WaterMeshComponent.generated.h"
+
+struct FPSOPrecacheParams;
 
 /**
  * Water Mesh Component responsible for generating and rendering a continuous water mesh on top of all the existing water body actors in the world
@@ -41,7 +38,7 @@ public:
 #endif // WITH_EDITOR
 	//~ End UPrimitiveComponent Interface
 
-	virtual void PrecachePSOs() override;
+	virtual void CollectPSOPrecacheData(const FPSOPrecacheParams& BasePrecachePSOParams, FComponentPSOPrecacheParamsList& OutParams) override;
 
 	void Update();
 
@@ -106,6 +103,10 @@ private:
 	UPROPERTY(Transient, NonPIEDuplicateTransient, TextExportTransient)
 	TSet<TObjectPtr<UMaterialInterface>> UsedMaterials;
 
+	/** Forces the water mesh to always render the far mesh, regardless if there is an ocean or not.*/
+	UPROPERTY(Category = "Rendering|FarDistance", EditAnywhere)
+	bool bUseFarMeshWithoutOcean = false;
+
 	/** Dirty flag which will make sure the water mesh is updated properly */
 	bool bNeedsRebuild = true;
 
@@ -136,3 +137,7 @@ private:
 	//~ Begin USceneComponent Interface
 #endif
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

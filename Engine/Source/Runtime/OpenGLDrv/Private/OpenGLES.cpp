@@ -47,7 +47,7 @@ namespace GLFuncPointers
 	// ES 3.2
 	PFNGLTEXBUFFEREXTPROC					glTexBufferEXT = nullptr;
 	PFNGLTEXBUFFERRANGEEXTPROC				glTexBufferRangeEXT = nullptr;
-	PFNGLCOPYIMAGESUBDATAEXTPROC			glCopyImageSubDataEXT = nullptr;
+	PFNGLCOPYIMAGESUBDATAEXTPROC			glCopyImageSubData = nullptr;
 	PFNGLENABLEIEXTPROC						glEnableiEXT = nullptr;
 	PFNGLDISABLEIEXTPROC					glDisableiEXT = nullptr;
 	PFNGLBLENDEQUATIONIEXTPROC				glBlendEquationiEXT = nullptr;
@@ -55,6 +55,7 @@ namespace GLFuncPointers
 	PFNGLBLENDFUNCIEXTPROC					glBlendFunciEXT = nullptr;
 	PFNGLBLENDFUNCSEPARATEIEXTPROC			glBlendFuncSeparateiEXT = nullptr;
 	PFNGLCOLORMASKIEXTPROC					glColorMaskiEXT = nullptr;
+	PFNGLFRAMEBUFFERTEXTUREPROC				glFramebufferTexture = nullptr;
 
 	PFNGLFRAMEBUFFERTEXTUREMULTIVIEWOVRPROC				glFramebufferTextureMultiviewOVR = NULL;
 	PFNGLFRAMEBUFFERTEXTUREMULTISAMPLEMULTIVIEWOVRPROC	glFramebufferTextureMultisampleMultiviewOVR = NULL;
@@ -297,7 +298,7 @@ void FOpenGLES::ProcessExtensions(const FString& ExtensionsString)
 	{
 		glTexBufferEXT = (PFNGLTEXBUFFEREXTPROC)((void*)eglGetProcAddress("glTexBuffer"));
 		glTexBufferRangeEXT = (PFNGLTEXBUFFERRANGEEXTPROC)((void*)eglGetProcAddress("glTexBufferRange"));
-		glCopyImageSubDataEXT = (PFNGLCOPYIMAGESUBDATAEXTPROC)((void*)eglGetProcAddress("glCopyImageSubData"));
+		glCopyImageSubData = (PFNGLCOPYIMAGESUBDATAEXTPROC)((void*)eglGetProcAddress("glCopyImageSubData"));
 		glEnableiEXT = (PFNGLENABLEIEXTPROC)((void*)eglGetProcAddress("glEnablei"));
 		glDisableiEXT = (PFNGLDISABLEIEXTPROC)((void*)eglGetProcAddress("glDisablei"));
 		glBlendEquationiEXT = (PFNGLBLENDEQUATIONIEXTPROC)((void*)eglGetProcAddress("glBlendEquationi"));
@@ -305,6 +306,7 @@ void FOpenGLES::ProcessExtensions(const FString& ExtensionsString)
 		glBlendFunciEXT = (PFNGLBLENDFUNCIEXTPROC)((void*)eglGetProcAddress("glBlendFunci"));
 		glBlendFuncSeparateiEXT = (PFNGLBLENDFUNCSEPARATEIEXTPROC)((void*)eglGetProcAddress("glBlendFuncSeparatei"));
 		glColorMaskiEXT = (PFNGLCOLORMASKIEXTPROC)((void*)eglGetProcAddress("glColorMaski"));
+		glFramebufferTexture = (PFNGLFRAMEBUFFERTEXTUREPROC)((void*)eglGetProcAddress("glFramebufferTexture"));
 	}
 	
 	if (!glEnableiEXT && ExtensionsString.Contains(TEXT("GL_EXT_draw_buffers_indexed")))
@@ -326,13 +328,6 @@ void FOpenGLES::ProcessExtensions(const FString& ExtensionsString)
 		glTexBufferEXT = (PFNGLTEXBUFFEREXTPROC)((void*)eglGetProcAddress("glTexBufferEXT"));
 		glTexBufferRangeEXT = (PFNGLTEXBUFFERRANGEEXTPROC)((void*)eglGetProcAddress("glTexBufferRangeEXT"));
 	}
-
-	if (!glCopyImageSubDataEXT && ExtensionsString.Contains(TEXT("GL_EXT_copy_image")))
-	{
-		// GL_EXT_copy_image
-		glCopyImageSubDataEXT = (PFNGLCOPYIMAGESUBDATAEXTPROC)((void*)eglGetProcAddress("glCopyImageSubDataEXT"));
-	}
-	bSupportsCopyImage = (glCopyImageSubDataEXT != nullptr);
 }
 
 #endif

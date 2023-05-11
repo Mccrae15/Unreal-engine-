@@ -57,7 +57,7 @@ void FObjectPropertyBase::InstanceSubobjects(void* Data, void const* DefaultData
 		if ( CurrentValue )
 		{
 			UObject *SubobjectTemplate = DefaultData ? GetObjectPropertyValue((uint8*)DefaultData + ArrayIndex * ElementSize): nullptr;
-			UObject* NewValue = InstanceGraph->InstancePropertyValue(SubobjectTemplate, CurrentValue, InOwner, HasAnyPropertyFlags(CPF_Transient), HasAnyPropertyFlags(CPF_InstancedReference));
+			UObject* NewValue = InstanceGraph->InstancePropertyValue(SubobjectTemplate, CurrentValue, InOwner, HasAnyPropertyFlags(CPF_InstancedReference) ? EInstancePropertyValueFlags::CausesInstancing : EInstancePropertyValueFlags::None);
 			SetObjectPropertyValue((uint8*)Data + ArrayIndex * ElementSize, NewValue);
 		}
 	}
@@ -181,7 +181,9 @@ void FObjectPropertyBase::AddReferencedObjects(FReferenceCollector& Collector)
 
 FString FObjectPropertyBase::GetExportPath(FTopLevelAssetPath ClassPathName, const FString& ObjectPathName)
 {
-	return FString::Printf(TEXT("%s.%s'%s'"), *ClassPathName.GetPackageName().ToString(), *ClassPathName.GetAssetName().ToString(), *ObjectPathName);
+	TStringBuilder<256> StringBuilder;
+	StringBuilder << ClassPathName.GetPackageName() << "." << ClassPathName.GetAssetName() << "'" << ObjectPathName << "'";
+	return FString(StringBuilder);
 }
 
 FString FObjectPropertyBase::GetExportPath(const TObjectPtr<const UObject>& Object, const UObject* Parent /*= nullptr*/, const UObject* ExportRootScope /*= nullptr*/, const uint32 PortFlags /*= PPF_None*/)
@@ -241,17 +243,6 @@ void FObjectPropertyBase::ExportText_Internal( FString& ValueStr, const void* Pr
 	else
 	{
 		Temp = GetObjectPtrPropertyValue(PointerToValuePtr(PropertyValueOrContainer, PropertyPointerType));
-	}
-
-	if (0 != (PortFlags & PPF_ExportCpp))
-	{
-		ValueStr += Temp
-			? FString::Printf(TEXT("LoadObject<%s%s>(nullptr, TEXT(\"%s\"))")
-				, PropertyClass->GetPrefixCPP()
-				, *PropertyClass->GetName()
-				, *(Temp->GetPathName().ReplaceCharWithEscapedChar()))
-			: TEXT("nullptr");
-		return;
 	}
 
 	if (!Temp)
@@ -620,16 +611,37 @@ bool FObjectPropertyBase::AllowObjectTypeReinterpretationTo(const FObjectPropert
 
 void FObjectPropertyBase::CheckValidObject(void* ValueAddress, UObject* OldValue) const
 {
-	UObject *Object = GetObjectPropertyValue(ValueAddress);
-	if (Object)
+	const TObjectPtr<UObject> Object = GetObjectPtrPropertyValue(ValueAddress);
+	if (!Object)
 	{
-		//
-		// here we want to make sure the the object value still matches the 
-		// object type expected by the property...
+		return;
+	}
+	//
+	// here we want to make sure the the object value still matches the 
+	// object type expected by the property...
 
-		UClass* ObjectClass = Object->GetClass();
-		UE_CLOG(!ObjectClass, LogProperty, Fatal, TEXT("Object without class referenced by %s, object: 0x%016llx %s"), *GetPathName(), (int64)(PTRINT)Object, *Object->GetPathName());
+	UClass* ObjectClass = Object.GetClass();
+	UE_CLOG(!ObjectClass, LogProperty, Fatal, TEXT("Object without class referenced by %s, object: 0x%016llx %s"), *GetPathName(), (int64)(PTRINT)ValueAddress, *Object.GetPathName());
 
+#if USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
+	auto IsDeferringValueLoad = [&]()
+	{
+		FLinkerLoad* PropertyLinker = GetLinker();
+		return ((PropertyLinker == nullptr) || (PropertyLinker->LoadFlags & LOAD_DeferDependencyLoads)) &&
+			(ObjectClass->IsChildOf<ULinkerPlaceholderExportObject>() || ObjectClass->IsChildOf<ULinkerPlaceholderClass>());
+	};
+
+#if USE_DEFERRED_DEPENDENCY_CHECK_VERIFICATION_TESTS
+	check( IsDeferringValueLoad() || (!Object->IsA<ULinkerPlaceholderExportObject>() && !Object->IsA<ULinkerPlaceholderClass>()) );
+#endif // USE_DEFERRED_DEPENDENCY_CHECK_VERIFICATION_TESTS
+
+#else  // USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING 
+	auto IsDeferringValueLoad = [&]() { return false; };
+#endif // USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
+
+	if ((PropertyClass != nullptr) && !ObjectClass->IsChildOf(PropertyClass) && !ObjectClass->GetAuthoritativeClass()->IsChildOf(PropertyClass))
+	{
+			
 		// we could be in the middle of replacing references to the 
 		// PropertyClass itself (in the middle of an FArchiveReplaceObjectRef 
 		// pass)... if this is the case, then we might have already replaced 
@@ -638,43 +650,29 @@ void FObjectPropertyBase::CheckValidObject(void* ValueAddress, UObject* OldValue
 		// object value (if CLASS_NewerVersionExists is set, then we are likely 
 		// in the middle of an FArchiveReplaceObjectRef pass)
 		bool bIsReplacingClassRefs = PropertyClass && PropertyClass->HasAnyClassFlags(CLASS_NewerVersionExists) != ObjectClass->HasAnyClassFlags(CLASS_NewerVersionExists);
-		
-#if USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
-		FLinkerLoad* PropertyLinker = GetLinker();
-		bool const bIsDeferringValueLoad = ((PropertyLinker == nullptr) || (PropertyLinker->LoadFlags & LOAD_DeferDependencyLoads)) &&
-			(Object->IsA<ULinkerPlaceholderExportObject>() || Object->IsA<ULinkerPlaceholderClass>());
-
-#if USE_DEFERRED_DEPENDENCY_CHECK_VERIFICATION_TESTS
-		check( bIsDeferringValueLoad || (!Object->IsA<ULinkerPlaceholderExportObject>() && !Object->IsA<ULinkerPlaceholderClass>()) );
-#endif // USE_DEFERRED_DEPENDENCY_CHECK_VERIFICATION_TESTS
-
-#else  // USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING 
-		bool const bIsDeferringValueLoad = false;
-#endif // USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
-
-		if ((PropertyClass != nullptr) && !ObjectClass->IsChildOf(PropertyClass) && !ObjectClass->GetAuthoritativeClass()->IsChildOf(PropertyClass) && !bIsReplacingClassRefs && !bIsDeferringValueLoad)
+		if (!bIsReplacingClassRefs && !IsDeferringValueLoad())
 		{
 			if (!HasAnyPropertyFlags(CPF_NonNullable))
 			{
-			UE_LOG(LogProperty, Warning,
-				TEXT("Serialized %s for a property of %s. Reference will be nullptred.\n    Property = %s\n    Item = %s"),
-				*Object->GetClass()->GetFullName(),
-				*PropertyClass->GetFullName(),
-				*GetFullName(),
-				*Object->GetFullName()
-			);
+				UE_LOG(LogProperty, Warning,
+					TEXT("Serialized %s for a property of %s. Reference will be nullptred.\n    Property = %s\n    Item = %s"),
+					*ObjectClass->GetFullName(),
+					*PropertyClass->GetFullName(),
+					*GetFullName(),
+					*Object.GetFullName()
+				);
 				SetObjectPropertyValue(ValueAddress, nullptr);
 			}
 			else
 			{
-				checkf(OldValue, TEXT("CheckValidObject(\"%s\") trying to assign null object value to non-nullable property \"%s\""), *Object->GetFullName(), *GetFullName());
+				checkf(OldValue, TEXT("CheckValidObject(\"%s\") trying to assign null object value to non-nullable property \"%s\""), *Object.GetFullName(), *GetFullName());
 				UE_LOG(LogProperty, Warning,
 					TEXT("Serialized %s for a property of %s. Reference will be reverted back to %s.\n    Property = %s\n    Item = %s"),
-					*Object->GetClass()->GetFullName(),
+					*ObjectClass->GetFullName(),
 					*PropertyClass->GetFullName(),
-					*OldValue->GetFullName(),
+					OldValue ? *OldValue->GetFullName() : TEXT("None"),
 					*GetFullName(),
-					*Object->GetFullName()
+					*Object.GetFullName()
 				);
 				SetObjectPropertyValue(ValueAddress, OldValue);
 			}

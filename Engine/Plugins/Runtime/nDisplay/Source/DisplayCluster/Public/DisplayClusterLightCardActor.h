@@ -11,11 +11,13 @@
 class ADisplayClusterRootActor;
 class UActorComponent;
 class UDisplayClusterLabelComponent;
+class UDisplayClusterStageActorComponent;
 class UMeshComponent;
 class USceneComponent;
 class USpringArmComponent;
 class UStaticMeshComponent;
 class UStaticMesh;
+class UTexture;
 
 UENUM(BlueprintType)
 enum class EDisplayClusterLightCardMask : uint8
@@ -33,36 +35,40 @@ struct FLightCardAlphaGradientSettings
 	GENERATED_BODY()
 
 	/** Enables/disables alpha gradient effect */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appearance")
+	UPROPERTY(EditAnywhere, Interp, BlueprintReadWrite, Category = "Appearance")
 	bool bEnableAlphaGradient = false;
 
 	/** Starting alpha value in the gradient */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appearance", meta = (EditCondition = "bEnableAlphaGradient"))
+	UPROPERTY(EditAnywhere, Interp, BlueprintReadWrite, Category = "Appearance", meta = (EditCondition = "bEnableAlphaGradient"))
 	float StartingAlpha = 0;
 
 	/** Ending alpha value in the gradient */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appearance", meta = (EditCondition = "bEnableAlphaGradient"))
+	UPROPERTY(EditAnywhere, Interp, BlueprintReadWrite, Category = "Appearance", meta = (EditCondition = "bEnableAlphaGradient"))
 	float EndingAlpha = 1;
 
 	/** The angle (degrees) determines the gradient direction. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appearance", meta = (EditCondition = "bEnableAlphaGradient"))
+	UPROPERTY(EditAnywhere, Interp, BlueprintReadWrite, Category = "Appearance", meta = (EditCondition = "bEnableAlphaGradient"))
 	float Angle = 0;
 };
 
-UCLASS(Blueprintable, DisplayName = "Light Card", HideCategories = (Tick, Physics, Collision, Replication, Cooking, Input, Actor))
+UCLASS(Blueprintable, DisplayName = "Light Card", HideCategories = (Tick, Physics, Collision, Networking, Replication, Cooking, Input, Actor, HLOD))
 class DISPLAYCLUSTER_API ADisplayClusterLightCardActor : public AActor, public IDisplayClusterStageActor
 {
 	GENERATED_BODY()
 
 public:
-	/** The default size of the porjection plane UV light cards are rendered to */
+	/** The default size of the projection plane UV light cards are rendered to */
 	static const float UVPlaneDefaultSize;
 
 	/** The default distance from the view of the projection plane UV light cards are rendered to */
 	static const float UVPlaneDefaultDistance;
 
+	/** The name used for the stage actor component */
+	static const FName LightCardStageActorComponentName;
+	
 public:
 	ADisplayClusterLightCardActor(const FObjectInitializer& ObjectInitializer);
+	virtual ~ADisplayClusterLightCardActor() override;
 
 	virtual void PostLoad() override;
 	virtual void OnConstruction(const FTransform& Transform) override;
@@ -80,6 +86,9 @@ public:
 	/** Returns the current static mesh used by this light card */
 	UStaticMesh* GetStaticMesh() const;
 
+	/** Return the label component */
+	UDisplayClusterLabelComponent* GetLabelComponent() const { return LabelComponent; }
+	
 	/** Sets a new static mesh for the light card */
 	void SetStaticMesh(UStaticMesh* InStaticMesh);
 
@@ -95,22 +104,50 @@ public:
 	/** Updates the UV Indicator */
 	void UpdateUVIndicator();
 
+	/** Sync the position to the root actor */
+	void UpdateLightCardPositionToRootActor();
+
+	/** Makes the light card flush to the wall */
+	void MakeFlushToWall();
+
+	/** Configures this light card as a flag */
+	void SetIsLightCardFlag(bool bNewFlagValue);
+
+	/** If this light card is considered a flag */
+	bool IsLightCardFlag() const { return bIsLightCardFlag; }
+
+	/** Configures this light card as a UV actor */
+	void SetIsUVActor(bool bNewUVValue);
+
 	/** Show or hide the light card label  */
 	void ShowLightCardLabel(bool bValue, float ScaleValue, ADisplayClusterRootActor* InRootActor);
 
-	/** Set the current owner of the light card */
+	/** Set a weak root actor owner. This should be used on legacy light cards that don't have StageActorComponent->RootActor set */
+	void SetWeakRootActorOwner(ADisplayClusterRootActor* InRootActor);
+
+	/** Set the root actor of the stage actor component */
 	void SetRootActorOwner(ADisplayClusterRootActor* InRootActor);
 	
-	/** Return the current owner, providing one was set */
-	TWeakObjectPtr<ADisplayClusterRootActor> GetRootActorOwner() const { return RootActorOwner; }
-	
+	/** Return the root actor owner of the light card */
+	ADisplayClusterRootActor* GetRootActorOwner() const;
+
+	/** Retrieve the stage actor component */
+	UDisplayClusterStageActorComponent* GetStageActorComponent() const;
+
 	/** Add this light card to a light card layer on the given root actor */
+	UE_DEPRECATED(5.2, "Layers are no longer used for light cards by default, use 'AddToRootActor' instead")
 	void AddToLightCardLayer(ADisplayClusterRootActor* InRootActor);
+
+	/** Add this light card to a root actor */
+	virtual void AddToRootActor(ADisplayClusterRootActor* InRootActor);
+
+	/** Remove this light card from the root actor */
+	virtual void RemoveFromRootActor();
 	
 	// ~Begin IDisplayClusterStageActor interface
 	/** Updates the Light Card transform based on its positional properties (Lat, Long, etc.) */
 	virtual void UpdateStageActorTransform() override;
-	
+
 	/**
 	 * Gets the transform in world space of the light card component
 	 */
@@ -148,6 +185,8 @@ public:
 	virtual void SetScale(const FVector2D& InScale) override;
 	virtual FVector2D GetScale() const override;
 
+	virtual void SetAlwaysFlushToWall(bool bInAlwaysFlushToWall) override { bAlwaysFlushToWall = bInAlwaysFlushToWall; }
+	virtual bool IsAlwaysFlushToWall() const override { return bAlwaysFlushToWall; }
 	virtual void SetUVCoordinates(const FVector2D& InUVCoordinates) override;
 	virtual FVector2D GetUVCoordinates() const override;
 
@@ -157,84 +196,88 @@ public:
 public:
 
 	/** Radius of light card polar coordinates. Does not include the effect of RadialOffset */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Orientation", meta = (EditCondition = "!bIsUVLightCard", HideEditConditionToggle, EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Interp, Category = "Orientation", meta = (EditCondition = "!bIsUVLightCard", HideEditConditionToggle, EditConditionHides))
 	double DistanceFromCenter;
 
 	/** Related to the Azimuth of light card polar coordinates */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Orientation", meta = (UIMin = 0, ClampMin = 0, UIMax = 360, ClampMax = 360, EditCondition = "!bIsUVLightCard", HideEditConditionToggle, EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Interp, Category = "Orientation", meta = (UIMin = 0, ClampMin = 0, UIMax = 360, ClampMax = 360, EditCondition = "!bIsUVLightCard", HideEditConditionToggle, EditConditionHides))
 	double Longitude;
 
 	/** Related to the Elevation of light card polar coordinates */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Orientation", meta = (UIMin = -90, ClampMin = -90, UIMax = 90, ClampMax = 90, EditCondition = "!bIsUVLightCard", HideEditConditionToggle, EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Interp, Category = "Orientation", meta = (UIMin = -90, ClampMin = -90, UIMax = 90, ClampMax = 90, EditCondition = "!bIsUVLightCard", HideEditConditionToggle, EditConditionHides))
 	double Latitude;
 
 	/** The UV coordinates of the light card, if it is in UV space */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Orientation", meta = (DisplayName = "UV Coodinates", EditCondition = "bIsUVLightCard", HideEditConditionToggle, EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Interp, Category = "Orientation", meta = (DisplayName = "UV Coodinates", EditCondition = "bIsUVLightCard", HideEditConditionToggle, EditConditionHides))
 	FVector2D UVCoordinates = FVector2D(0.5, 0.5);
 
 	/** Roll rotation of light card around its plane axis */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Orientation", meta = (UIMin = -360, ClampMin = -360, UIMax = 360, ClampMax = 360))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Interp, Category = "Orientation", meta = (UIMin = -360, ClampMin = -360, UIMax = 360, ClampMax = 360))
 	double Spin;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Orientation", meta = (UIMin = -360, ClampMin = -360, UIMax = 360, ClampMax = 360, EditCondition = "!bIsUVLightCard", HideEditConditionToggle, EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Interp, Category = "Orientation", meta = (UIMin = -360, ClampMin = -360, UIMax = 360, ClampMax = 360, EditCondition = "!bIsUVLightCard", HideEditConditionToggle, EditConditionHides))
 	double Pitch;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Orientation", meta = (UIMin = -360, ClampMin = -360, UIMax = 360, ClampMax = 360, EditCondition = "!bIsUVLightCard", HideEditConditionToggle, EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Interp, Category = "Orientation", meta = (UIMin = -360, ClampMin = -360, UIMax = 360, ClampMax = 360, EditCondition = "!bIsUVLightCard", HideEditConditionToggle, EditConditionHides))
 	double Yaw;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Orientation")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Interp, Category = "Orientation")
 	FVector2D Scale;
 
 	/** Used by the flush constraint to offset the location of the light card form the wall */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Orientation", meta = (EditCondition = "!bIsUVLightCard", HideEditConditionToggle, EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Interp, Category = "Orientation", meta = (EditCondition = "!bIsUVLightCard", HideEditConditionToggle, EditConditionHides))
 	double RadialOffset;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appearance")
+	/** Indicates whether the light card is always made to be flush to a stage wall or not */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Interp, Category = "Orientation", meta = (EditCondition = "!bIsUVLightCard", HideEditConditionToggle, EditConditionHides))
+	bool bAlwaysFlushToWall;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Interp, Category = "Appearance")
 	EDisplayClusterLightCardMask Mask;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appearance")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Interp, Category = "Appearance")
 	TObjectPtr<UTexture> Texture;
 
 	/** Light card color, before any modifier is applied */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appearance")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Interp, Category = "Appearance")
 	FLinearColor Color;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appearance", meta = (UIMin = 0, ClampMin = 0, UIMax = 10000, ClampMax = 10000))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Interp, Category = "Appearance", meta = (UIMin = 0, ClampMin = 0, UIMax = 10000, ClampMax = 10000))
 	float Temperature;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appearance", meta = (UIMin = -1, ClampMin = -1, UIMax = 1, ClampMax = 1))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Interp, Category = "Appearance", meta = (UIMin = -1, ClampMin = -1, UIMax = 1, ClampMax = 1))
 	float Tint;
 
 	/** 2^Exposure color value multiplier */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appearance", meta = (UIMin = -100, ClampMin = -100, UIMax = 100, ClampMax = 100))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Interp, Category = "Appearance", meta = (UIMin = -100, ClampMin = -100, UIMax = 100, ClampMax = 100))
 	float Exposure;
 
 	/** Linear color value multiplier */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appearance", meta = (UIMin = 0, ClampMin = 0))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Interp, Category = "Appearance", meta = (UIMin = 0, ClampMin = 0))
 	float Gain;
 
 	/** Linear alpha multiplier */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appearance", meta = (UIMin = 0, ClampMin = 0, UIMax = 1, ClampMax = 1))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Interp, Category = "Appearance", meta = (UIMin = 0, ClampMin = 0, UIMax = 1, ClampMax = 1))
 	float Opacity;
 
 	/** Feathers in the alpha from the edges */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appearance", meta = (UIMin = 0, ClampMin = 0))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Interp, Category = "Appearance", meta = (UIMin = 0, ClampMin = 0))
 	float Feathering;
 
 	/** Settings related to an alpha gradient effect */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appearance")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Interp, Category = "Appearance")
 	FLightCardAlphaGradientSettings AlphaGradient;
 
-	/** A flag that controls wether the light card's location and rotation are locked to its "owning" root actor */
+	/** A flag that controls whether the light card's location and rotation are locked to its "owning" root actor */
 	UPROPERTY()
 	bool bLockToOwningRootActor = true;
 
 	/** Indicates if the light card exists in 3D space or in UV space */
-	UPROPERTY()
+	UPROPERTY(Getter = IsUVActor, Setter = SetIsUVActor)
 	bool bIsUVLightCard = false;
 
 	/** Polygon points when using this type of mask */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appearance")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Interp, Category = "Appearance")
 	TArray<FVector2D> Polygon;
 
 	/** Used to flag this light card as a proxy of a "real" light card. Used by the LightCard Editor */
@@ -253,6 +296,12 @@ protected:
 	/** Removes components that were added by IDisplayClusterLightCardActorExtender */
 	void CleanUpComponentsForExtenders();
 
+#if WITH_EDITOR
+	/** Called when a level actor is deleted */
+	void OnLevelActorDeleted(AActor* DeletedActor);
+#endif
+	
+protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Default")
 	TObjectPtr<USceneComponent> DefaultSceneRootComponent;
 
@@ -272,16 +321,28 @@ protected:
 	UPROPERTY(Transient, BlueprintReadOnly, Category = "Default")
 	TObjectPtr<UDisplayClusterLabelComponent> LabelComponent;
 
+	/** Manages stage actor properties */
+	UPROPERTY(VisibleAnywhere, Category = "Default")
+	TObjectPtr<UDisplayClusterStageActorComponent> StageActorComponent;
+
 #if WITH_EDITORONLY_DATA
 	UPROPERTY(Transient, BlueprintReadOnly, Category = "Default")
 	TObjectPtr<UStaticMeshComponent> UVIndicatorComponent;
 #endif
 
-	/** The current owner of the light card */
-	TWeakObjectPtr<ADisplayClusterRootActor> RootActorOwner;
+	/** Indicates this light card should be considered a flag */
+	UPROPERTY(Getter = IsLightCardFlag, Setter = SetIsLightCardFlag, meta = (AllowPrivateAccess))
+	bool bIsLightCardFlag = false;
 
 private:
-	/** Stores the user translucency value when labels are displayed */
-	TOptional<int32> SavedTranslucencySortPriority;
-	
+	/** Set by DCRA during tick. Meant for legacy light cards that don't have a SoftObjectPtr set */
+	TWeakObjectPtr<ADisplayClusterRootActor> WeakRootActorOwner;
+
+	/** Stores the location relative to the root actor's origin that stage actors like light cards can orbit around */
+	FVector LastOrbitLocation = FVector::ZeroVector;
+
+#if WITH_EDITOR
+	/** Set if there was conflicting root actor ownership */
+	bool bHadRootActorMismatch = false;
+#endif
 };

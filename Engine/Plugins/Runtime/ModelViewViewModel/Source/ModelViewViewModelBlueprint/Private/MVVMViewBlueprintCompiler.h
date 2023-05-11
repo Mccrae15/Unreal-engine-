@@ -2,14 +2,12 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Bindings/MVVMCompiledBindingLibraryCompiler.h"
-#include "MVVMBlueprintViewBinding.h"
 #include "MVVMBlueprintViewModelContext.h"
-#include "Templates/ValueOrError.h"
 #include "Types/MVVMFieldVariant.h"
-#include "UObject/Object.h"
 #include "WidgetBlueprintCompiler.h"
+
+struct FMVVMBlueprintPropertyPath;
 
 struct FMVVMViewModelPropertyPath;
 struct FMVVMBlueprintViewBinding;
@@ -25,7 +23,7 @@ namespace UE::MVVM::Private
 struct FMVVMViewBlueprintCompiler
 {
 private:
-	struct FCompilerSourceContext;
+	struct FCompilerUserWidgetPropertyContext;
 	struct FCompilerSourceCreatorContext;
 	struct FCompilerBinding;
 	struct FBindingSourceContext;
@@ -81,7 +79,12 @@ private:
 	bool IsPropertyPathValid(TArrayView<const FMVVMConstFieldVariant> PropertyPath) const;
 
 private:
-	struct FCompilerSourceContext
+	/**
+	 * Describe the Property that is needed to start a PropertyPath on the UserWidget.
+	 * They can be a Widget, a viewmodel, or any object owned by the UserWidget.
+	 * The property will be created if it doesn't exist yet.
+	 */
+	struct FCompilerUserWidgetPropertyContext
 	{
 		UClass* Class = nullptr;
 		FName PropertyName;
@@ -89,11 +92,16 @@ private:
 		FString CategoryName;
 		FString BlueprintSetter;
 		FMVVMConstFieldVariant Field;
+		// If the class is a viewmodel on the userwidget, what is the id of that viewmodel
+		FGuid ViewModelId;
 
 		bool bExposeOnSpawn = false;
 	};
-	TArray<FCompilerSourceContext> CompilerSourceContexts;
+	TArray<FCompilerUserWidgetPropertyContext> CompilerUserWidgetPropertyContexts;
 
+	/** 
+	 * Describe the data initialize the view's properties/viewmodels.
+	 */
 	enum class ECompilerSourceCreatorType
 	{
 		ViewModel,
@@ -108,6 +116,10 @@ private:
 	};
 	TArray<FCompilerSourceCreatorContext> CompilerSourceCreatorContexts;
 
+	/** 
+	 * Describe a binding for the compiler.
+	 * 2 FCompilerBinding will be generated if the binding is TwoWays.
+	 */
 	enum class ECompilerBindingType
 	{
 		PropertyBinding, // normal binding
@@ -115,7 +127,7 @@ private:
 	struct FCompilerBinding
 	{
 		int32 BindingIndex = INDEX_NONE;
-		int32 CompilerSourceContextIndex = INDEX_NONE;
+		int32 UserWidgetPropertyContextIndex = INDEX_NONE;
 		bool bSourceIsUserWidget = false;
 		bool bFieldIdNeeded = false;
 		bool bIsConversionFunctionComplex = false;
@@ -135,21 +147,25 @@ private:
 	};
 	TArray<FCompilerBinding> CompilerBindings;
 
+	/**
+	 * Source path of a binding that contains a FieldId that we can register/bind to
+	 */
 	struct FBindingSourceContext
 	{
 		int32 BindingIndex = INDEX_NONE;
 		bool bIsForwardBinding = false;
 
 		UClass* SourceClass = nullptr;
-		// if its the destination then the Field is not necessary
+		// The property that are registering to.
 		FFieldNotificationId FieldId;
+		// The path always start with the UserWidget as self.
 		// Viewmodel.Field.SubProperty.SubProperty
-		// or Widget.Field.SubProperty
-		// or Field.SubProperty (if the widget is the UserWidget)
+		// or Widget.Field.SubProperty.SubProperty
+		// or Field.SubProperty.SubProperty
 		TArray<UE::MVVM::FMVVMConstFieldVariant> PropertyPath;
 
 		// The source if it's a property
-		int32 CompilerSourceContextIndex = INDEX_NONE;
+		int32 UserWidgetPropertyContextIndex = INDEX_NONE;
 		// The source is the UserWidget itself
 		bool bIsRootWidget = false;
 	};

@@ -2,9 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "Engine/EngineTypes.h"
 #include "Components/MeshComponent.h"
 #include "CableComponent.generated.h"
 
@@ -60,6 +57,9 @@ public:
 	virtual int32 GetNumMaterials() const override;
 	//~ End UMeshComponent Interface.
 
+#if WITH_EDITOR
+	virtual void OnUpdateTransform(EUpdateTransformFlags UpdateTransformFlags, ETeleportType Teleport) override;
+#endif
 
 	/**
 	 *	Should we fix the start to something, or leave it free.
@@ -171,6 +171,8 @@ public:
 
 private:
 
+	/** Initialize the particles */
+	void InitParticles();
 	/** Solve the cable spring constraints */
 	void SolveConstraints();
 	/** Integrate cable point positions */
@@ -191,3 +193,7 @@ private:
 };
 
 
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

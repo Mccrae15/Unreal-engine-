@@ -16,6 +16,19 @@ bool URivermaxMediaSource::GetMediaOption(const FName& Key, bool DefaultValue) c
 	{
 		return bIsSRGBInput;
 	}
+	if (Key == RivermaxMediaOption::UseGPUDirect)
+	{
+		return bUseGPUDirect;
+	}
+	if (Key == RivermaxMediaOption::ZeroLatency)
+	{
+		return bUseZeroLatency;
+	}
+	if (Key == RivermaxMediaOption::OverrideResolution)
+	{
+		return bOverrideResolution;
+	}
+
 	return Super::GetMediaOption(Key, DefaultValue);
 }
 
@@ -45,6 +58,10 @@ int64 URivermaxMediaSource::GetMediaOption(const FName& Key, int64 DefaultValue)
 	{
 		return Resolution.Y;
 	}
+	else if (Key == RivermaxMediaOption::PlayerMode)
+	{
+		return (int64)PlayerMode;
+	}
 	return Super::GetMediaOption(Key, DefaultValue);
 }
 
@@ -72,6 +89,7 @@ bool URivermaxMediaSource::HasMediaOption(const FName& Key) const
 		(Key == RivermaxMediaOption::Port) ||
 		(Key == RivermaxMediaOption::PixelFormat) ||
 		(Key == RivermaxMediaOption::SRGBInput) ||
+		(Key == RivermaxMediaOption::UseGPUDirect) ||
 		(Key == FMediaIOCoreMediaOption::FrameRateNumerator) ||
 		(Key == FMediaIOCoreMediaOption::FrameRateDenominator) ||
 		(Key == FMediaIOCoreMediaOption::ResolutionWidth) ||

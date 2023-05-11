@@ -2,13 +2,14 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "EditorUndoClient.h"
 #include "PropertyEditorDelegates.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SCompoundWidget.h"
-#include "Widgets/Views/SListView.h"
+#include "SequencerPlaylistItem.h"
+#include "Widgets/Views/ITableRow.h"
+#include "Widgets/Views/SListView.h" // IWYU pragma: keep
+#include "Widgets/Views/STableRow.h"
 
+class STableViewBase;
 
 struct FAssetData;
 class SDockTab;
@@ -48,7 +49,7 @@ public:
 	static const FName ColumnName_HoverTransport;
 	static const FName ColumnName_Items;
 	static const FName ColumnName_Offset;
-	static const FName ColumnName_Hold;
+	static const FName ColumnName_Pause;
 	static const FName ColumnName_Loop;
 	static const FName ColumnName_HoverDetails;
 
@@ -89,11 +90,15 @@ private:
 	void OnSearchTextChanged(const FText& InFilterText);
 
 	FReply HandleClicked_PlayAll();
+	FReply HandleClicked_PlayAllReverse();
+	FReply HandleClicked_PauseAll();
 	FReply HandleClicked_StopAll();
 	FReply HandleClicked_ResetAll();
 	FReply HandleClicked_AddSequence();
 
 	FReply HandleClicked_Item_Play(SSequencerPlaylistItemWidget& ItemWidget);
+	FReply HandleClicked_Item_PlayReverse(SSequencerPlaylistItemWidget& ItemWidget);
+	FReply HandleClicked_Item_Pause(SSequencerPlaylistItemWidget& ItemWidget);
 	FReply HandleClicked_Item_Stop(SSequencerPlaylistItemWidget& ItemWidget);
 	FReply HandleClicked_Item_Reset(SSequencerPlaylistItemWidget& ItemWidget);
 	FReply HandleClicked_Item_Remove(SSequencerPlaylistItemWidget& ItemWidget);
@@ -145,15 +150,20 @@ DECLARE_DELEGATE_RetVal_OneParam(FReply, FOnClickedSequencerPlaylistItem, SSeque
 
 class SSequencerPlaylistItemWidget : public SMultiColumnTableRow<TSharedPtr<FSequencerPlaylistRowData>>
 {
+	static const FText PlayReverseItemTooltipText;
 	static const FText PlayItemTooltipText;
+	static const FText PauseItemTooltipText;
 	static const FText StopItemTooltipText;
 	static const FText ResetItemTooltipText;
 
 	SLATE_BEGIN_ARGS(SSequencerPlaylistItemWidget) {}
 		SLATE_ATTRIBUTE(bool, PlayMode)
 		SLATE_ATTRIBUTE(bool, IsPlaying)
+		SLATE_ATTRIBUTE(bool, IsPaused)
 
 		SLATE_EVENT(FOnClickedSequencerPlaylistItem, OnPlayClicked)
+		SLATE_EVENT(FOnClickedSequencerPlaylistItem, OnPlayReverseClicked)
+		SLATE_EVENT(FOnClickedSequencerPlaylistItem, OnPauseClicked)
 		SLATE_EVENT(FOnClickedSequencerPlaylistItem, OnStopClicked)
 		SLATE_EVENT(FOnClickedSequencerPlaylistItem, OnResetClicked)
 		SLATE_EVENT(FOnClickedSequencerPlaylistItem, OnRemoveClicked)
@@ -212,8 +222,11 @@ private:
 
 	TAttribute<bool> PlayMode;
 	TAttribute<bool> IsPlaying;
+	TAttribute<bool> IsPaused;
 
 	FOnClickedSequencerPlaylistItem PlayClickedDelegate;
+	FOnClickedSequencerPlaylistItem PlayReverseClickedDelegate;
+	FOnClickedSequencerPlaylistItem PauseClickedDelegate;
 	FOnClickedSequencerPlaylistItem StopClickedDelegate;
 	FOnClickedSequencerPlaylistItem ResetClickedDelegate;
 	FOnClickedSequencerPlaylistItem RemoveClickedDelegate;

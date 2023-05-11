@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Android/AndroidStats.h"
+#include "Async/TaskGraphInterfaces.h"
 #include "CoreMinimal.h"
 #include "Android/AndroidPlatformMisc.h"
 #include "Stats/Stats.h"
@@ -145,7 +146,7 @@ static hwcpipe::HWCPipe* GHWCPipe = nullptr;
 static void UpdateGPUStats();
 
 
-static float GAndroidCPUStatsUpdateRate = 0.100;
+static float GAndroidCPUStatsUpdateRate = 0.100f;
 static FAutoConsoleVariableRef CVarAndroidCollectCPUStatsRate(
 	TEXT("Android.CPUStatsUpdateRate"),
 	GAndroidCPUStatsUpdateRate,

@@ -34,13 +34,13 @@ protected:
 	void Initialize(const FGuid& InEntityId, URemoteControlPreset* InPreset, const TAttribute<bool>& InbLiveMode);
 	
 	/** Create a widget that displays the rebind button. */
-	TSharedRef<SWidget> CreateInvalidWidget();
+	TSharedRef<SWidget> CreateInvalidWidget(const FText& InErrorText = FText::GetEmpty());
 
 	/** Get the widget's visibility according to the panel's mode. */
 	EVisibility GetVisibilityAccordingToLiveMode(EVisibility NonEditModeVisibility) const;
 
 	/** Create an exposed entity widget with a drag handle and unexpose button. */
-	TSharedRef<SWidget> CreateEntityWidget(TSharedPtr<SWidget> ValueWidget, TSharedPtr<SWidget> ResetWidget = SNullWidget::NullWidget, const FText& OptionalWarningMessage = FText::GetEmpty());
+	TSharedRef<SWidget> CreateEntityWidget(TSharedPtr<SWidget> ValueWidget, TSharedPtr<SWidget> ResetWidget = SNullWidget::NullWidget, const FText& OptionalWarningMessage = FText::GetEmpty(), TSharedRef<SWidget> EditConditionWidget = SNullWidget::NullWidget);
 
 protected:
 	/** Id of the entity. */
@@ -49,8 +49,18 @@ protected:
 	TWeakObjectPtr<URemoteControlPreset> Preset;
 	/** Whether the panel is in live mode or not. */
 	TAttribute<bool> bLiveMode;
+	/** Name of the entity's owner (What actor it's bound to). */
+	FName CachedOwnerName;
+	/** Path from the entity owner to the object holding the exposed property. */
+	FName CachedSubobjectPath;
+	/** Path of the entity's binding. */
+	FName CachedBindingPath;
+	/** Whether the binding is valid at the moment. */
+	bool bValidBinding = false;
 	/** Display name of the entity. */
 	FName CachedLabel;
+	/** Cached entity field path. */
+	FString CachedFieldPath;
 	/** Text to be highlighted while searching. */
 	TAttribute<FText> HighlightText;
 	/** Panel Style reference. */

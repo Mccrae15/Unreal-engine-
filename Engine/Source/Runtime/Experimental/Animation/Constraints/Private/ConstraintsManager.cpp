@@ -8,6 +8,7 @@
 
 #include "Engine/World.h"
 #include "Engine/Level.h"
+#include "Engine/Engine.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ConstraintsManager)
 
@@ -174,9 +175,12 @@ void UConstraintsManager::OnActorDestroyed(AActor* InActor)
 		if (!IndicesToRemove.IsEmpty())
 		{
 			FConstraintsManagerController& Controller = FConstraintsManagerController::Get(InActor->GetWorld());
-			for (int32 Index = IndicesToRemove.Num()-1; Index >= 0; --Index)
+			if (FConstraintsManagerController::bDoNotRemoveConstraint == false)
 			{
-				Controller.RemoveConstraint(Index,/*do not compensate*/ true);
+				for (int32 Index = IndicesToRemove.Num() - 1; Index >= 0; --Index)
+				{
+					Controller.RemoveConstraint(Index,/*do not compensate*/ true);
+				}
 			}
 		}
 	}
@@ -213,6 +217,10 @@ void UConstraintsManager::Init(UWorld* World)
 
 UConstraintsManager* UConstraintsManager::Get(UWorld* InWorld)
 {
+	if (!IsValid(InWorld))
+	{
+		return nullptr;
+	}
 	// look for ConstraintsActor and return its manager
 	if (UConstraintsManager* Manager = Find(InWorld))
 	{
@@ -224,12 +232,16 @@ UConstraintsManager* UConstraintsManager::Get(UWorld* InWorld)
 #if WITH_EDITOR
 	ConstraintsActor->SetActorLabel(TEXT("Constraints Manager"));
 #endif // WITH_EDITOR
-	ConstraintsActor->ConstraintsManager->SetFlags(RF_Transactional);
 	return ConstraintsActor->ConstraintsManager;
 }
 
 UConstraintsManager* UConstraintsManager::Find(const UWorld* InWorld)
 {
+	if (!IsValid(InWorld))
+	{
+		return nullptr;
+	}
+	
 	// should we work with the persistent level?
 	const ULevel* Level = InWorld->GetCurrentLevel();
 
@@ -328,6 +340,13 @@ void UConstraintsManager::Dump() const
 	}
 }
 
+/**
+ * FConstraintsManagerController
+ **/
+
+
+bool FConstraintsManagerController::bDoNotRemoveConstraint = false;
+
 FConstraintsManagerController& FConstraintsManagerController::Get(UWorld* InWorld)
 {
 	static FConstraintsManagerController Singleton;
@@ -335,30 +354,38 @@ FConstraintsManagerController& FConstraintsManagerController::Get(UWorld* InWorl
 	return Singleton;
 }
 
+bool FConstraintsManagerController::DoesExistInAnyWorld(UTickableConstraint* InConstraint) 
+{
+	bool bFound = false;
+	if (InConstraint)
+	{
+		UConstraintsManager* Outer = InConstraint->GetTypedOuter<UConstraintsManager>();
+		if (Outer)
+		{
+			UWorld* CurrentWorld = World; //save current World
+			for (const FWorldContext& Context : GEngine->GetWorldContexts())
+			{
+				World = Context.World();
+				UConstraintsManager* Manager = FindManager();
+				if (Manager)
+				{
+					if (Manager->Constraints.Find(InConstraint) != INDEX_NONE)
+					{
+						bFound = true;
+						break;
+					}
+				}
+			}
+			World = CurrentWorld; //restore current World
+		}
+	}
+	return bFound;
+}
+
+
 UConstraintsManager* FConstraintsManagerController::GetManager() const
 {
-	if (!World)
-	{
-		return nullptr;
-	}
-	
-	// look for ConstraintsActor and return its manager
-	if (UConstraintsManager* Manager = FindManager())
-	{
-		return Manager;
-	}
-
-	// create a new ConstraintsActor
-	AConstraintsActor* ConstraintsActor = World->SpawnActor<AConstraintsActor>();
-#if WITH_EDITOR
-	ConstraintsActor->SetActorLabel(TEXT("Constraints Manager"));
-#endif // WITH_EDITOR
-	ConstraintsActor->ConstraintsManager = NewObject<UConstraintsManager>(ConstraintsActor);
-	ConstraintsActor->ConstraintsManager->Init(World);
-	// ULevel* Level = World->GetCurrentLevel();
-	// ConstraintsActor->ConstraintsManager->Level = Level;
-
-	return ConstraintsActor->ConstraintsManager;
+	return UConstraintsManager::Get(World);
 }
 
 UConstraintsManager* FConstraintsManagerController::FindManager() const
@@ -423,14 +450,7 @@ bool FConstraintsManagerController::AddConstraint(UTickableConstraint* InConstra
 	}
 
 	Manager->Modify();
-	//it's possible this constraint was actually in another ConstraintActor::ConstraintManager so we need to move it over via Rename.
-	//and clear out it ticks function since that may have been registered
-	UConstraintsManager* Outer = InConstraint->GetTypedOuter<UConstraintsManager>();
-	if (Outer && Outer != Manager)
-	{
-		InConstraint->ConstraintTick.UnRegisterTickFunction();
-		InConstraint->Rename(nullptr, Manager, REN_ForceNoResetLoaders | REN_DoNotDirty | REN_DontCreateRedirectors | REN_NonTransactional);
-	}
+
 	Manager->Constraints.Emplace(InConstraint);
 
 	InConstraint->ConstraintTick.RegisterFunction(InConstraint->GetFunction());
@@ -457,6 +477,7 @@ UTickableConstraint* FConstraintsManagerController::AddConstraintFromCopy(UTicka
 	}
 
 	UTickableConstraint* OurCopy = CopyOfConstraint->Duplicate(Manager);
+	OurCopy->SetActive(false); //always set false
 	if (AddConstraint(OurCopy))
 	{
 		return OurCopy;
@@ -479,6 +500,29 @@ int32 FConstraintsManagerController::GetConstraintIndex(const FName& InConstrain
 	} );
 }
 	
+bool FConstraintsManagerController::RemoveConstraint(UTickableConstraint* InConstraint, bool bDoNotCompensate) const
+{
+	if (FConstraintsManagerController::bDoNotRemoveConstraint == false)
+	{
+		return false;
+	}
+	const UConstraintsManager* Manager = FindManager();
+	if (!Manager)
+	{
+		return false;
+	}
+
+	int32 Index = Manager->Constraints.IndexOfByPredicate([InConstraint](const TObjectPtr<UTickableConstraint>& Constraint)
+		{
+			return 	(Constraint && Constraint == InConstraint);
+		});
+	if (Index == INDEX_NONE)
+	{
+		return false;
+	}
+	return RemoveConstraint(Index, bDoNotCompensate);
+}
+
 bool  FConstraintsManagerController::RemoveConstraint(const FName& InConstraintName, bool bDoNotCompensate) const
 {
 	const int32 Index = GetConstraintIndex(InConstraintName);

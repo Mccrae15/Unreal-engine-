@@ -20,9 +20,10 @@ void	Writer_Initialize(const FInitializeDesc&);
 void	Writer_WorkerCreate();
 void	Writer_Shutdown();
 void	Writer_Update();
-bool	Writer_SendTo(const ANSICHAR*, uint32);
-bool	Writer_WriteTo(const ANSICHAR*);
+bool	Writer_SendTo(const ANSICHAR*, uint32, uint32);
+bool	Writer_WriteTo(const ANSICHAR*, uint32);
 bool	Writer_WriteSnapshotTo(const ANSICHAR*);
+bool	Writer_SendSnapshotTo(const ANSICHAR*, uint32);	
 bool	Writer_IsTracing();
 bool	Writer_Stop();
 uint32	Writer_GetThreadId();
@@ -82,19 +83,19 @@ void GetStatistics(FStatistics& Out)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-bool SendTo(const TCHAR* InHost, uint32 Port)
+bool SendTo(const TCHAR* InHost, uint32 Port, uint16 Flags)
 {
 	char Host[256];
 	ToAnsiCheap(Host, InHost);
-	return Private::Writer_SendTo(Host, Port);
+	return Private::Writer_SendTo(Host, Flags, Port);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-bool WriteTo(const TCHAR* InPath)
+bool WriteTo(const TCHAR* InPath, uint16 Flags)
 {
 	char Path[512];
 	ToAnsiCheap(Path, InPath);
-	return Private::Writer_WriteTo(Path);
+	return Private::Writer_WriteTo(Path, Flags);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -103,6 +104,14 @@ bool WriteSnapshotTo(const TCHAR* InPath)
 	char Path[512];
 	ToAnsiCheap(Path, InPath);
 	return Private::Writer_WriteSnapshotTo(Path);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+bool SendSnapshotTo(const TCHAR* InHost, uint32 InPort)
+{
+	char Host[512];
+	ToAnsiCheap(Host, InHost);
+	return Private::Writer_SendSnapshotTo(Host, InPort);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -135,6 +144,27 @@ bool ToggleChannel(const TCHAR* ChannelName, bool bEnabled)
 
 ////////////////////////////////////////////////////////////////////////////////
 void EnumerateChannels(ChannelIterFunc IterFunc, void* User)
+{
+	struct FCallbackDataWrapper
+	{
+		ChannelIterFunc* Func;
+		void* User;
+	};
+
+	FCallbackDataWrapper Wrapper;
+	Wrapper.Func = IterFunc;
+	Wrapper.User = User;
+
+	FChannel::EnumerateChannels([](const FChannelInfo& Info, void* User)
+		{
+			FCallbackDataWrapper* Wrapper = (FCallbackDataWrapper*)User;
+			(*Wrapper).Func(Info.Name, Info.bIsEnabled, (*Wrapper).User);
+			return true;
+		}, &Wrapper);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+void EnumerateChannels(ChannelIterCallback IterFunc, void* User)
 {
 	FChannel::EnumerateChannels(IterFunc, User);
 }

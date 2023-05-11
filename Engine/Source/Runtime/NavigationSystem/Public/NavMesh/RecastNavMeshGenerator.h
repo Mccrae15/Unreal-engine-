@@ -45,7 +45,7 @@ class UNavigationSystemV1;
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 struct FRecastBuildConfig : public rcConfig
 {
-	/** controls whether voxel filterring will be applied (via FRecastTileGenerator::ApplyVoxelFilter) */
+	/** controls whether voxel filtering will be applied (via FRecastTileGenerator::ApplyVoxelFilter) */
 	uint32 bPerformVoxelFiltering:1;
 	/** generate detailed mesh (additional tessellation to match heights of geometry) */
 	uint32 bGenerateDetailedMesh:1;
@@ -80,6 +80,8 @@ struct FRecastBuildConfig : public rcConfig
 	float AgentRadius;
 	/** Agent index for filtering links */
 	int32 AgentIndex;
+	/** Resolution level */ 
+	ENavigationDataResolution TileResolution;
 
 	FRecastBuildConfig()
 	{
@@ -100,16 +102,20 @@ struct FRecastBuildConfig : public rcConfig
 		PolyMaxHeight = 10;
 		MaxPolysPerTile = -1;
 		AgentIndex = 0;
+		TileResolution = ENavigationDataResolution::Default;
 	}
+
+	rcReal GetTileSizeUU() const { return tileSize * cs; }
 };
+
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 struct FRecastVoxelCache
 {
 	struct FTileInfo
 	{
-		int16 TileX;
-		int16 TileY;
+		int32 TileX;
+		int32 TileY;
 		int32 NumSpans;
 		FTileInfo* NextTile;
 		rcSpanCache* SpanData;
@@ -190,16 +196,16 @@ struct FRcTileBox
 			if (FMath::Modf(MaxAsFloat, &UnusedIntPart) == 0)
 			{
 				// Return the lower tile
-				return FMath::Max(FMath::FloorToInt(MaxAsFloat) - 1, MinCoord);
+				return FMath::Max(IntCastChecked<int32>(FMath::FloorToInt(MaxAsFloat) - 1), MinCoord);
 			}
 			// Otherwise use default behaviour
-			return FMath::FloorToInt(MaxAsFloat);
+			return IntCastChecked<int32>(FMath::FloorToInt(MaxAsFloat));
 		};
 
 		const FBox RcAreaBounds = Unreal2RecastBox(UnrealBounds);
-		XMin = FMath::FloorToInt((RcAreaBounds.Min.X - RcNavMeshOrigin.X) / TileSizeInWorldUnits);
+		XMin = IntCastChecked<int32>(FMath::FloorToInt((RcAreaBounds.Min.X - RcNavMeshOrigin.X) / TileSizeInWorldUnits));
 		XMax = CalcMaxCoordExclusive((RcAreaBounds.Max.X - RcNavMeshOrigin.X) / TileSizeInWorldUnits, XMin);
-		YMin = FMath::FloorToInt((RcAreaBounds.Min.Z - RcNavMeshOrigin.Z) / TileSizeInWorldUnits);
+		YMin = IntCastChecked<int32>(FMath::FloorToInt((RcAreaBounds.Min.Z - RcNavMeshOrigin.Z) / TileSizeInWorldUnits));
 		YMax = CalcMaxCoordExclusive((RcAreaBounds.Max.Z - RcNavMeshOrigin.Z) / TileSizeInWorldUnits, YMin);
 	}
 
@@ -438,9 +444,11 @@ protected:
 	void AddVoxelCache(TNavStatArray<uint8>& RawVoxelCache, const rcSpanCache* CachedVoxels, const int32 NumCachedVoxels) const;
 
 	void DumpAsyncData();
+	void DumpSyncData();
 
 #if RECAST_INTERNAL_DEBUG_DATA
-	bool IsTileDebugActive();
+	bool IsTileDebugActive() const;
+	bool IsTileDebugAllowingGeneration() const;
 #endif
 
 protected:
@@ -478,7 +486,7 @@ protected:
 	/** Tile's bounding box, Unreal coords */
 	FBox TileBB;
 
-	/** Tile's bounding box expanded by Agent's radius *2 + CellSize, Unreal coords */
+	/** Tile's bounding box expanded by Agent's radius horizontally, Unreal coords */
 	FBox TileBBExpandedForAgent;
 	
 	/** Layers dirty flags */
@@ -688,6 +696,7 @@ public:
 
 	/** update area data */
 	void OnAreaAdded(const UClass* AreaClass, int32 AreaID);
+	void OnAreaRemoved(const UClass* AreaClass);
 		
 	//--- accessors --- //
 	FORCEINLINE class UWorld* GetWorld() const { return DestNavMesh->GetWorld(); }
@@ -744,6 +753,9 @@ public:
 	const FNavRegenTimeSliceManager* GetTimeSliceManager() const { return SyncTimeSlicedData.TimeSliceManager; }
 	
 	void SetNextTimeSliceRegenActive(bool bRegenState) { SyncTimeSlicedData.bNextTimeSliceRegenActive = bRegenState; }
+
+	/** Update the config according to the resolution */
+	virtual void SetupTileConfig(const ENavigationDataResolution TileResolution, FRecastBuildConfig& OutConfig) const;
 
 protected:
 	// Performs initial setup of member variables so that generator is ready to
@@ -846,6 +858,7 @@ public:
 	void ReAddTiles(const TArray<FIntPoint>& Tiles);
 
 	bool IsBuildingRestrictedToActiveTiles() const { return bRestrictBuildingToActiveTiles; }
+	bool IsInActiveSet(const FIntPoint& Tile) const;
 
 	/** sets a limit to number of asynchronous tile generators running at one time
 	 *	@note if used at runtime will not result in killing tasks above limit count
@@ -855,7 +868,6 @@ public:
 	static void CalcPolyRefBits(ARecastNavMesh* NavMeshOwner, int32& MaxTileBits, int32& MaxPolyBits);
 
 protected:
-	bool IsInActiveSet(const FIntPoint& Tile) const;
 	virtual void RestrictBuildingToActiveTiles(bool InRestrictBuildingToActiveTiles);
 	
 	/** Blocks until build for specified list of tiles is complete and discard results */

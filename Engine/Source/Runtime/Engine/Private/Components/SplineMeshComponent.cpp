@@ -1,22 +1,27 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/SplineMeshComponent.h"
-#include "Serialization/MemoryWriter.h"
+#include "BodySetupEnums.h"
 #include "Modules/ModuleManager.h"
-#include "RenderingThread.h"
-#include "VertexFactory.h"
-#include "LocalVertexFactory.h"
 #include "Engine/CollisionProfile.h"
+#include "Materials/MaterialInterface.h"
 #include "StaticMeshResources.h"
+#include "MeshDrawShaderBindings.h"
 #include "SplineMeshSceneProxy.h"
-#include "ShaderParameterUtils.h"
 #include "AI/NavigationSystemHelpers.h"
 #include "AI/Navigation/NavCollisionBase.h"
 #include "Engine/StaticMeshSocket.h"
 #include "Engine/StaticMesh.h"
+#include "PhysicsEngine/BoxElem.h"
 #include "PhysicsEngine/ConvexElem.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "MeshMaterialShader.h"
+#include "PhysicsEngine/SphylElem.h"
+#include "RenderUtils.h"
+#include "SceneInterface.h"
+#include "UObject/UnrealType.h"
+#include "MaterialDomain.h"
+#include "Materials/Material.h"
 
 #if WITH_EDITOR
 #include "IHierarchicalLODUtilities.h"
@@ -44,7 +49,7 @@ FSplineMeshInstanceData::FSplineMeshInstanceData(const USplineMeshComponent* Sou
 
 void FSplineMeshVertexFactoryShaderParameters::Bind(const FShaderParameterMap& ParameterMap)
 {
-	SplineMeshParams.Bind(ParameterMap, TEXT("SplineParams"), SPF_Mandatory);
+	SplineMeshParams.Bind(ParameterMap, TEXT("SplineParams"), SPF_Optional);
 }
 
 void FSplineMeshVertexFactoryShaderParameters::GetElementShaderBindings(
@@ -106,7 +111,11 @@ void FSplineMeshVertexFactoryShaderParameters::GetElementShaderBindings(
 //////////////////////////////////////////////////////////////////////////
 // SplineMeshVertexFactory
 
-IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FSplineMeshVertexFactory, SF_Vertex, FSplineMeshVertexFactoryShaderParameters);
+IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FSplineMeshVertexFactory, SF_Vertex     , FSplineMeshVertexFactoryShaderParameters);
+#if RHI_RAYTRACING
+IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FSplineMeshVertexFactory, SF_RayHitGroup, FSplineMeshVertexFactoryShaderParameters);
+IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FSplineMeshVertexFactory, SF_Compute    , FSplineMeshVertexFactoryShaderParameters);
+#endif
 
 IMPLEMENT_VERTEX_FACTORY_TYPE(FSplineMeshVertexFactory, "/Engine/Private/LocalVertexFactory.ush",
 	  EVertexFactoryFlags::UsedWithMaterials
@@ -116,7 +125,31 @@ IMPLEMENT_VERTEX_FACTORY_TYPE(FSplineMeshVertexFactory, "/Engine/Private/LocalVe
 	| EVertexFactoryFlags::SupportsPositionOnly
 	| EVertexFactoryFlags::SupportsPrimitiveIdStream
 	| EVertexFactoryFlags::SupportsPSOPrecaching
+	| EVertexFactoryFlags::SupportsRayTracing
+	| EVertexFactoryFlags::SupportsRayTracingDynamicGeometry
+	| EVertexFactoryFlags::SupportsManualVertexFetch
 );
+
+void InitSplineMeshVertexFactoryComponents(
+	FStaticMeshVertexBuffers& VertexBuffers, 
+	FSplineMeshVertexFactory* VertexFactory, 
+	int32 LightMapCoordinateIndex, 
+	bool bOverrideColorVertexBuffer,
+	FLocalVertexFactory::FDataType& OutData)
+{
+	VertexBuffers.PositionVertexBuffer.BindPositionVertexBuffer(VertexFactory, OutData);
+	VertexBuffers.StaticMeshVertexBuffer.BindTangentVertexBuffer(VertexFactory, OutData);
+	VertexBuffers.StaticMeshVertexBuffer.BindPackedTexCoordVertexBuffer(VertexFactory, OutData);
+	VertexBuffers.StaticMeshVertexBuffer.BindLightMapVertexBuffer(VertexFactory, OutData, LightMapCoordinateIndex);
+	if (bOverrideColorVertexBuffer)
+	{
+		FColorVertexBuffer::BindDefaultColorVertexBuffer(VertexFactory, OutData, FColorVertexBuffer::NullBindStride::FColorSizeForComponentOverride);
+	}
+	else
+	{
+		VertexBuffers.ColorVertexBuffer.BindColorVertexBuffer(VertexFactory, OutData);
+	}
+}
 
 //////////////////////////////////////////////////////////////////////////
 // SplineMeshSceneProxy
@@ -163,22 +196,8 @@ void FSplineMeshSceneProxy::InitVertexFactory(USplineMeshComponent* InComponent,
 		[VertexFactory, RenderData2, bOverrideColorVertexBuffer, LightMapCoordinateIndex](FRHICommandListImmediate& RHICmdList)
 	{
 		FLocalVertexFactory::FDataType Data;
-
-		RenderData2->VertexBuffers.PositionVertexBuffer.BindPositionVertexBuffer(VertexFactory, Data);
-		RenderData2->VertexBuffers.StaticMeshVertexBuffer.BindTangentVertexBuffer(VertexFactory, Data);
-		RenderData2->VertexBuffers.StaticMeshVertexBuffer.BindPackedTexCoordVertexBuffer(VertexFactory, Data);
-		RenderData2->VertexBuffers.StaticMeshVertexBuffer.BindLightMapVertexBuffer(VertexFactory, Data, LightMapCoordinateIndex);
-		if (bOverrideColorVertexBuffer)
-		{
-			FColorVertexBuffer::BindDefaultColorVertexBuffer(VertexFactory, Data, FColorVertexBuffer::NullBindStride::FColorSizeForComponentOverride);
-		}
-		else
-		{
-			RenderData2->VertexBuffers.ColorVertexBuffer.BindColorVertexBuffer(VertexFactory, Data);
-		}
-
+		InitSplineMeshVertexFactoryComponents(RenderData2->VertexBuffers, VertexFactory, LightMapCoordinateIndex, bOverrideColorVertexBuffer, Data);
 		VertexFactory->SetData(Data);
-
 		VertexFactory->InitResource();
 	});
 }
@@ -195,6 +214,7 @@ USplineMeshComponent::USplineMeshComponent(const FObjectInitializer& ObjectIniti
 	SetCollisionProfileName(UCollisionProfile::NoCollision_ProfileName);
 	bAllowSplineEditingPerInstance = false;
 	bSmoothInterpRollScale = false;
+	bNeverNeedsCookedCollisionData = false;
 	bHasCustomNavigableGeometry = EHasCustomNavigableGeometry::Yes;
 
 	SplineUpDir.Z = 1.0f;
@@ -461,6 +481,15 @@ void USplineMeshComponent::SetBoundaryMax(float InBoundaryMax, bool bUpdateMesh)
 	}
 }
 
+void USplineMeshComponent::SetbNeverNeedsCookedCollisionData(bool bInValue)
+{
+	bNeverNeedsCookedCollisionData = bInValue;
+	if (BodySetup != nullptr)
+	{
+		BodySetup->bNeverNeedsCookedCollisionData = bInValue;
+	}
+}
+
 void USplineMeshComponent::UpdateMesh()
 {
 	if (bMeshDirty)
@@ -484,8 +513,8 @@ void USplineMeshComponent::CalculateScaleZAndMinZ(float& OutScaleZ, float& OutMi
 		if (FMath::IsNearlyEqual(SplineBoundaryMin, SplineBoundaryMax))
 		{
 			FBoxSphereBounds StaticMeshBounds = GetStaticMesh()->GetBounds();
-			OutScaleZ = 0.5f / USplineMeshComponent::GetAxisValue(StaticMeshBounds.BoxExtent, ForwardAxis); // 1/(2 * Extent)
-			OutMinZ = USplineMeshComponent::GetAxisValue(StaticMeshBounds.Origin, ForwardAxis) * OutScaleZ - 0.5f;
+			OutScaleZ = 0.5f / USplineMeshComponent::GetAxisValueRef(StaticMeshBounds.BoxExtent, ForwardAxis); // 1/(2 * Extent)
+			OutMinZ = USplineMeshComponent::GetAxisValueRef(StaticMeshBounds.Origin, ForwardAxis) * OutScaleZ - 0.5f;
 		}
 		else
 		{
@@ -566,7 +595,7 @@ void USplineMeshComponent::Serialize(FArchive& Ar)
 	}
 
 #if WITH_EDITOR
-	if (BodySetup != NULL)
+	if (BodySetup != nullptr)
 	{
 		BodySetup->SetFlags(RF_Transactional);
 	}
@@ -595,7 +624,7 @@ bool USplineMeshComponent::Modify(bool bAlwaysMarkDirty)
 {
 	bool bSavedToTransactionBuffer = Super::Modify(bAlwaysMarkDirty);
 
-	if (BodySetup != NULL)
+	if (BodySetup != nullptr)
 	{
 		BodySetup->Modify(bAlwaysMarkDirty);
 	}
@@ -604,36 +633,72 @@ bool USplineMeshComponent::Modify(bool bAlwaysMarkDirty)
 }
 #endif
 
-void USplineMeshComponent::PrecachePSOs()
+void USplineMeshComponent::CollectPSOPrecacheData(const FPSOPrecacheParams& BasePrecachePSOParams, FComponentPSOPrecacheParamsList& OutParams)
 {
-	if (!IsComponentPSOPrecachingEnabled() || GetStaticMesh() == nullptr || GetStaticMesh()->GetRenderData() == nullptr)
+	if (GetStaticMesh() == nullptr || GetStaticMesh()->GetRenderData() == nullptr)
 	{
 		return;
 	}
 
+	FVertexFactoryType* VertexFactoryType = &FSplineMeshVertexFactory::StaticType;
+	bool bSupportsManualVertexFetch = VertexFactoryType->SupportsManualVertexFetch(GMaxRHIFeatureLevel);
+
+	// Override color buffer is using same vertex element data as default one
+	bool bOverrideColorVertexBuffer = false;
+	int32 LightMapCoordinateIndex = GetStaticMesh()->GetLightMapCoordinateIndex();
+
 	bool bAnySectionCastsShadows = false;
-	TArray<int16, TInlineAllocator<2>> UsedMaterialIndices;
+	FPSOPrecacheVertexFactoryDataPerMaterialIndexList VFTypesPerMaterialIndex;
 	for (FStaticMeshLODResources& LODRenderData : GetStaticMesh()->GetRenderData()->LODResources)
 	{
+		FVertexDeclarationElementList VertexElements;
+		if (!bSupportsManualVertexFetch)
+		{
+			FLocalVertexFactory::FDataType Data;
+			InitSplineMeshVertexFactoryComponents(LODRenderData.VertexBuffers, nullptr /*VertexFactory*/, LightMapCoordinateIndex, bOverrideColorVertexBuffer, Data);
+			FSplineMeshVertexFactory::GetVertexElements(GMaxRHIFeatureLevel, EVertexInputStreamType::Default, bSupportsManualVertexFetch, Data, VertexElements);						
+		}
+
 		for (FStaticMeshSection& RenderSection : LODRenderData.Sections)
 		{
-			UsedMaterialIndices.AddUnique(RenderSection.MaterialIndex);
 			bAnySectionCastsShadows |= RenderSection.bCastShadow;
+
+			int16 MaterialIndex = RenderSection.MaterialIndex;
+			FPSOPrecacheVertexFactoryDataPerMaterialIndex* VFsPerMaterial = VFTypesPerMaterialIndex.FindByPredicate(
+				[MaterialIndex](const FPSOPrecacheVertexFactoryDataPerMaterialIndex& Other) { return Other.MaterialIndex == MaterialIndex; });
+			if (VFsPerMaterial == nullptr)
+			{
+				VFsPerMaterial = &VFTypesPerMaterialIndex.AddDefaulted_GetRef();
+				VFsPerMaterial->MaterialIndex = RenderSection.MaterialIndex;
+			}
+
+			if (bSupportsManualVertexFetch)
+			{
+				VFsPerMaterial->VertexFactoryDataList.AddUnique(FPSOPrecacheVertexFactoryData(VertexFactoryType));
+			}
+			else
+			{	
+				VFsPerMaterial->VertexFactoryDataList.AddUnique(FPSOPrecacheVertexFactoryData(VertexFactoryType, VertexElements));
+			}			
 		}
 	}
 
-	FPSOPrecacheParams PrecachePSOParams;
-	SetupPrecachePSOParams(PrecachePSOParams);
+	FPSOPrecacheParams PrecachePSOParams = BasePrecachePSOParams;
 	PrecachePSOParams.bCastShadow = bAnySectionCastsShadows;
 	PrecachePSOParams.bReverseCulling = bReverseCulling;
 
-	for (uint16 MaterialIndex : UsedMaterialIndices)
+	for (FPSOPrecacheVertexFactoryDataPerMaterialIndex& VFsPerMaterial : VFTypesPerMaterialIndex)
 	{
-		UMaterialInterface* MaterialInterface = GetMaterial(MaterialIndex);
-		if (MaterialInterface)
+		UMaterialInterface* MaterialInterface = GetMaterial(VFsPerMaterial.MaterialIndex);
+		if (MaterialInterface == nullptr)
 		{
-			MaterialInterface->PrecachePSOs(&FSplineMeshVertexFactory::StaticType, PrecachePSOParams);
+			MaterialInterface = UMaterial::GetDefaultMaterial(MD_Surface);
 		}
+
+		FComponentPSOPrecacheParams& ComponentParams = OutParams[OutParams.AddDefaulted()];
+		ComponentParams.MaterialInterface = MaterialInterface;
+		ComponentParams.VertexFactoryDataList = VFsPerMaterial.VertexFactoryDataList;
+		ComponentParams.PSOPrecacheParams = PrecachePSOParams;
 	}
 }
 
@@ -644,7 +709,8 @@ FPrimitiveSceneProxy* USplineMeshComponent::CreateSceneProxy()
 		// make sure we have an actual staticmesh
 		GetStaticMesh() &&
 		GetStaticMesh()->IsCompiling() == false &&
-		GetStaticMesh()->HasValidRenderData();
+		GetStaticMesh()->HasValidRenderData() &&
+		!IsPSOPrecaching();
 
 	if (bMeshIsValid)
 	{
@@ -652,7 +718,7 @@ FPrimitiveSceneProxy* USplineMeshComponent::CreateSceneProxy()
 	}
 	else
 	{
-		return NULL;
+		return nullptr;
 	}
 }
 
@@ -711,8 +777,8 @@ FBoxSphereBounds USplineMeshComponent::CalcBounds(const FTransform& LocalToWorld
 	if (bHasCustomBoundary)
 	{
 		// If there's a custom boundary, alter the min/max of the spline we need to evaluate
-		const float MeshMin = GetAxisValue(MeshBounds.Origin - MeshBounds.BoxExtent, ForwardAxis);
-		const float MeshMax = GetAxisValue(MeshBounds.Origin + MeshBounds.BoxExtent, ForwardAxis);
+		const float MeshMin = GetAxisValueRef(MeshBounds.Origin - MeshBounds.BoxExtent, ForwardAxis);
+		const float MeshMax = GetAxisValueRef(MeshBounds.Origin + MeshBounds.BoxExtent, ForwardAxis);
 
 		const float MeshMinT = (MeshMin - SplineBoundaryMin) / (SplineBoundaryMax - SplineBoundaryMin);
 		const float MeshMaxT = (MeshMax - SplineBoundaryMin) / (SplineBoundaryMax - SplineBoundaryMin);
@@ -811,7 +877,7 @@ FTransform USplineMeshComponent::GetSocketTransform(FName InSocketName, ERelativ
 		{
 			FTransform SocketTransform;
 			SocketTransform = FTransform(Socket->RelativeRotation, Socket->RelativeLocation * GetAxisMask(ForwardAxis), Socket->RelativeScale);
-			SocketTransform = SocketTransform * CalcSliceTransform(GetAxisValue(Socket->RelativeLocation, ForwardAxis));
+			SocketTransform = SocketTransform * CalcSliceTransform(GetAxisValueRef(Socket->RelativeLocation, ForwardAxis));
 
 			switch (TransformSpace)
 			{
@@ -852,8 +918,8 @@ FTransform USplineMeshComponent::CalcSliceTransform(const float DistanceAlong) c
 	else if (GetStaticMesh())
 	{
 		const FBoxSphereBounds StaticMeshBounds = GetStaticMesh()->GetBounds();
-		const float MeshMinZ = GetAxisValue(StaticMeshBounds.Origin, ForwardAxis) - GetAxisValue(StaticMeshBounds.BoxExtent, ForwardAxis);
-		const float MeshRangeZ = 2.0f * GetAxisValue(StaticMeshBounds.BoxExtent, ForwardAxis);
+		const float MeshMinZ = GetAxisValueRef(StaticMeshBounds.Origin, ForwardAxis) - GetAxisValueRef(StaticMeshBounds.BoxExtent, ForwardAxis);
+		const float MeshRangeZ = 2.0f * GetAxisValueRef(StaticMeshBounds.BoxExtent, ForwardAxis);
 		if (MeshRangeZ > UE_SMALL_NUMBER)
 		{
 			Alpha = (DistanceAlong - MeshMinZ) / MeshRangeZ;
@@ -923,11 +989,11 @@ bool USplineMeshComponent::GetPhysicsTriMeshData(struct FTriMeshCollisionData* C
 		GetStaticMesh()->GetPhysicsTriMeshData(CollisionData, InUseAllTriData);
 
 		FVector3f Mask = FVector3f(1, 1, 1);
-		GetAxisValue(Mask, ForwardAxis) = 0;
+		GetAxisValueRef(Mask, ForwardAxis) = 0;
 
 		for (FVector3f& CollisionVert : CollisionData->Vertices)
 		{
-			CollisionVert = (FVector3f)CalcSliceTransform(GetAxisValue(CollisionVert, ForwardAxis)).TransformPosition(FVector(CollisionVert * Mask));
+			CollisionVert = (FVector3f)CalcSliceTransform(GetAxisValueRef(CollisionVert, ForwardAxis)).TransformPosition(FVector(CollisionVert * Mask));
 		}
 
 		CollisionData->bDeformableMesh = true;
@@ -1022,12 +1088,12 @@ UBodySetup* USplineMeshComponent::GetBodySetup()
 {
 	// Don't return a body setup that has no collision, it means we are interactively moving the spline and don't want to build collision.
 	// Instead we explicitly build collision with USplineMeshComponent::RecreateCollision()
-	if (BodySetup != NULL && (BodySetup->ChaosTriMeshes.Num() || BodySetup->AggGeom.GetElementCount() > 0))
+	if (BodySetup != nullptr && (BodySetup->ChaosTriMeshes.Num() || BodySetup->AggGeom.GetElementCount() > 0))
 	{
 		return BodySetup;
 	}
 
-	return NULL;
+	return nullptr;
 }
 
 bool USplineMeshComponent::DoCustomNavigableGeometryExport(FNavigableGeometryExport& GeomExport) const
@@ -1044,7 +1110,7 @@ bool USplineMeshComponent::DoCustomNavigableGeometryExport(FNavigableGeometryExp
 			if (NavCollision->HasConvexGeometry())
 			{
 				FVector Mask = FVector(1, 1, 1);
-				GetAxisValue(Mask, ForwardAxis) = 0;
+				GetAxisValueRef(Mask, ForwardAxis) = 0;
 
 				TArray<FVector> VertexBuffer;
 				VertexBuffer.Reserve(FMath::Max(NavCollision->GetConvexCollision().VertexBuffer.Num(), NavCollision->GetTriMeshCollision().VertexBuffer.Num()));
@@ -1052,7 +1118,7 @@ bool USplineMeshComponent::DoCustomNavigableGeometryExport(FNavigableGeometryExp
 				for (int32 i = 0; i < NavCollision->GetConvexCollision().VertexBuffer.Num(); ++i)
 				{
 					FVector Vertex = NavCollision->GetConvexCollision().VertexBuffer[i];
-					Vertex = CalcSliceTransform(GetAxisValue(Vertex, ForwardAxis)).TransformPosition(Vertex * Mask);
+					Vertex = CalcSliceTransform(GetAxisValueRef(Vertex, ForwardAxis)).TransformPosition(Vertex * Mask);
 					VertexBuffer.Add(Vertex);
 				}
 				GeomExport.ExportCustomMesh(VertexBuffer.GetData(), VertexBuffer.Num(),
@@ -1063,7 +1129,7 @@ bool USplineMeshComponent::DoCustomNavigableGeometryExport(FNavigableGeometryExp
 				for (int32 i = 0; i < NavCollision->GetTriMeshCollision().VertexBuffer.Num(); ++i)
 				{
 					FVector Vertex = NavCollision->GetTriMeshCollision().VertexBuffer[i];
-					Vertex = CalcSliceTransform(GetAxisValue(Vertex, ForwardAxis)).TransformPosition(Vertex * Mask);
+					Vertex = CalcSliceTransform(GetAxisValueRef(Vertex, ForwardAxis)).TransformPosition(Vertex * Mask);
 					VertexBuffer.Add(Vertex);
 				}
 				GeomExport.ExportCustomMesh(VertexBuffer.GetData(), VertexBuffer.Num(),
@@ -1080,10 +1146,10 @@ bool USplineMeshComponent::DoCustomNavigableGeometryExport(FNavigableGeometryExp
 
 void USplineMeshComponent::DestroyBodySetup()
 {
-	if (BodySetup != NULL)
+	if (BodySetup != nullptr)
 	{
 		BodySetup->MarkAsGarbage();
-		BodySetup = NULL;
+		BodySetup = nullptr;
 #if WITH_EDITORONLY_DATA
 		CachedMeshBodySetupGuid.Invalidate();
 #endif
@@ -1094,7 +1160,7 @@ void USplineMeshComponent::RecreateCollision()
 {
 	if (GetStaticMesh())
 	{
-		if (BodySetup == NULL)
+		if (BodySetup == nullptr)
 		{
 			BodySetup = DuplicateObject<UBodySetup>(GetStaticMesh()->GetBodySetup(), this);
 			BodySetup->SetFlags(RF_Transactional);
@@ -1111,6 +1177,8 @@ void USplineMeshComponent::RecreateCollision()
 		BodySetup->BodySetupGuid = GetStaticMesh()->GetBodySetup()->BodySetupGuid;
 		CachedMeshBodySetupGuid = GetStaticMesh()->GetBodySetup()->BodySetupGuid;
 
+		BodySetup->bNeverNeedsCookedCollisionData = bNeverNeedsCookedCollisionData;
+
 		if (BodySetup->GetCollisionTraceFlag() == CTF_UseComplexAsSimple)
 		{
 			BodySetup->AggGeom.EmptyElements();
@@ -1118,12 +1186,12 @@ void USplineMeshComponent::RecreateCollision()
 		else
 		{
 			FVector Mask = FVector(1, 1, 1);
-			GetAxisValue(Mask, ForwardAxis) = 0;
+			GetAxisValueRef(Mask, ForwardAxis) = 0;
 
 			// distortion of a sphere can't be done nicely, so we just transform the origin and size
 			for (FKSphereElem& SphereElem : BodySetup->AggGeom.SphereElems)
 			{
-				const float Z = GetAxisValue(SphereElem.Center, ForwardAxis);
+				const float Z = GetAxisValueRef(SphereElem.Center, ForwardAxis);
 				FTransform SliceTransform = CalcSliceTransform(Z);
 				SphereElem.Center *= Mask;
 
@@ -1134,7 +1202,7 @@ void USplineMeshComponent::RecreateCollision()
 			// distortion of a sphyl can't be done nicely, so we just transform the origin and size
 			for (FKSphylElem& SphylElem : BodySetup->AggGeom.SphylElems)
 			{
-				const float Z = GetAxisValue(SphylElem.Center, ForwardAxis);
+				const float Z = GetAxisValueRef(SphylElem.Center, ForwardAxis);
 				FTransform SliceTransform = CalcSliceTransform(Z);
 				SphylElem.Center *= Mask;
 
@@ -1175,7 +1243,7 @@ void USplineMeshComponent::RecreateCollision()
 					// pretransform the point by its local transform so we are working in untransformed local space
 					FVector TransformedPoint = TM.TransformPosition(Point);
 					// apply the transform to spline space
-					Point = CalcSliceTransform(GetAxisValue(TransformedPoint, ForwardAxis)).TransformPosition(TransformedPoint * Mask);
+					Point = CalcSliceTransform(GetAxisValueRef(TransformedPoint, ForwardAxis)).TransformPosition(TransformedPoint * Mask);
 				}
 
 				// Set the local transform as an identity as points have already been transformed
@@ -1222,6 +1290,7 @@ void USplineMeshComponent::ApplyComponentInstanceData(FSplineMeshInstanceData* S
 }
 
 
+#include "PhysicsEngine/SphereElem.h"
 #include "StaticMeshLight.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SplineMeshComponent)
@@ -1292,12 +1361,18 @@ void USplineMeshComponent::PostEditChangeProperty(FPropertyChangedEvent& Propert
 
 	UStaticMeshComponent::PostEditChangeProperty(PropertyChangedEvent);
 
-		// If the spline params were changed the actual geometry is, so flag the owning HLOD cluster as dirty
+	// If the spline params were changed the actual geometry is, so flag the owning HLOD cluster as dirty
 	if (bIsSplineParamsChange)
 	{
 		IHierarchicalLODUtilitiesModule& Module = FModuleManager::LoadModuleChecked<IHierarchicalLODUtilitiesModule>("HierarchicalLODUtilities");
 		IHierarchicalLODUtilities* Utilities = Module.GetUtilities();
 		Utilities->HandleActorModified(GetOwner());
+	}
+
+	if (MemberPropertyThatChanged && (MemberPropertyThatChanged->GetFName() == GET_MEMBER_NAME_CHECKED(USplineMeshComponent, bNeverNeedsCookedCollisionData)))
+	{
+		// TODO [jonathan.bard] : this is currently needed because Setter doesn't correctly do its job in the details panel but eventually this could be removed : 
+		SetbNeverNeedsCookedCollisionData(bNeverNeedsCookedCollisionData);
 	}
 }
 #endif

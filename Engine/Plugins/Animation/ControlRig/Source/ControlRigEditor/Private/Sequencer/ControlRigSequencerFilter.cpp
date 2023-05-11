@@ -4,6 +4,7 @@
 #include "ControlRig.h"
 #include "Editor/ControlRigSkeletalMeshComponent.h"
 #include "Sequencer/MovieSceneControlRigParameterTrack.h"
+#include "Styling/AppStyle.h"
 #include "Styling/SlateIconFinder.h"
 #include "Framework/Commands/Commands.h"
 #include "ISequencer.h"
@@ -182,7 +183,7 @@ public:
 					}
 					if (const FRigControlElement* ControlElement = Cast<FRigControlElement>(SelectedControl))
 					{
-						if (ControlElement->Settings.AnimationType == ERigControlAnimationType::ProxyControl)
+						if (ControlElement->CanDriveControls())
 						{
 							const TArray<FRigElementKey>& DrivenControls = ControlElement->Settings.DrivenControls;
 							for (const FRigElementKey& DrivenKey : DrivenControls)

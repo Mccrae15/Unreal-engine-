@@ -2,12 +2,11 @@
 
 #include "Rendering/PositionVertexBuffer.h"
 
-#include "CoreMinimal.h"
-#include "RHI.h"
 #include "Components.h"
-
+#include "DataDrivenShaderPlatformInfo.h"
+#include "LocalVertexFactory.h"
+#include "RHIResourceUpdates.h"
 #include "StaticMeshVertexData.h"
-#include "GPUSkinCache.h"
 
 /*-----------------------------------------------------------------------------
 FPositionVertexBuffer
@@ -109,8 +108,14 @@ void FPositionVertexBuffer::Init(const TArray<FVector3f>& InPositions, bool bInN
 	}
 }
 
-void FPositionVertexBuffer::AppendVertices( const FStaticMeshBuildVertex* Vertices, const uint32 NumVerticesToAppend )
+bool FPositionVertexBuffer::AppendVertices( const FStaticMeshBuildVertex* Vertices, const uint32 NumVerticesToAppend )
 {
+	const uint64 TotalNumVertices = (uint64)NumVertices + (uint64)NumVerticesToAppend;
+	if (!ensureMsgf(TotalNumVertices < INT32_MAX, TEXT("FPositionVertexBuffer::AppendVertices adding %u to %u vertices exceeds INT32_MAX limit"), NumVerticesToAppend, NumVertices))
+	{
+		return false;
+	}
+
 	if (VertexData == nullptr && NumVerticesToAppend > 0)
 	{
 		// Allocate the vertex data storage type if the buffer was never allocated before
@@ -139,6 +144,8 @@ void FPositionVertexBuffer::AppendVertices( const FStaticMeshBuildVertex* Vertic
 			}
 		}
 	}
+
+	return true;
 }
 
 /**
@@ -232,6 +239,29 @@ void FPositionVertexBuffer::CopyRHIForStreaming(const FPositionVertexBuffer& Oth
 	PositionComponentSRV = Other.PositionComponentSRV;
 }
 
+void FPositionVertexBuffer::InitRHIForStreaming(FRHIBuffer* IntermediateBuffer, FRHIResourceUpdateBatcher& Batcher)
+{
+	check(VertexBufferRHI);
+	if (IntermediateBuffer)
+	{
+		Batcher.QueueUpdateRequest(VertexBufferRHI, IntermediateBuffer);
+		if (PositionComponentSRV)
+		{
+			Batcher.QueueUpdateRequest(PositionComponentSRV, VertexBufferRHI, 4, PF_R32_FLOAT);
+		}
+	}
+}
+
+void FPositionVertexBuffer::ReleaseRHIForStreaming(FRHIResourceUpdateBatcher& Batcher)
+{
+	check(VertexBufferRHI);
+	Batcher.QueueUpdateRequest(VertexBufferRHI, nullptr);
+	if (PositionComponentSRV)
+	{
+		Batcher.QueueUpdateRequest(PositionComponentSRV, nullptr, 0, 0);
+	}
+}
+
 void FPositionVertexBuffer::InitRHI()
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FPositionVertexBuffer::InitRHI);
@@ -243,7 +273,7 @@ void FPositionVertexBuffer::InitRHI()
 	if (VertexBufferRHI)
 	{
 		// we have decide to create the SRV based on GMaxRHIShaderPlatform because this is created once and shared between feature levels for editor preview.
-		bool bSRV = RHISupportsManualVertexFetch(GMaxRHIShaderPlatform) || IsGPUSkinCacheAvailable(GMaxRHIShaderPlatform);
+		bool bSRV = RHISupportsManualVertexFetch(GMaxRHIShaderPlatform) || FLocalVertexFactory::IsGPUSkinPassThroughSupported(GMaxRHIShaderPlatform);
 
 		// When bAllowCPUAccess is true, the meshes is likely going to be used for Niagara to spawn particles on mesh surface.
 		// And it can be the case for CPU *and* GPU access: no differenciation today. That is why we create a SRV in this case.

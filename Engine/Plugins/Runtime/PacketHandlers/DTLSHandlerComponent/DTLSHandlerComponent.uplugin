@@ -6,7 +6,7 @@
 	"Description" : "Provides a packet handler component to do DTLS encryption and decryption.",
 	"Category" : "Misc",
 	"CreatedBy" : "Epic Games, Inc.",
-	"CreatedByURL" : "http://epicgames.com",
+	"CreatedByURL" : "https://epicgames.com",
 	"DocsURL" : "",
 	"MarketplaceURL" : "",
 	"SupportURL" : "",
@@ -17,16 +17,9 @@
 	"Modules" :
 	[
 		{
-			"Name" : "DTLSHandlerComponent",
-			"Type" : "Runtime",
-			"LoadingPhase" : "Default",
-			"PlatformAllowList":
-			[
-				"IOS",
-				"Mac",
-				"Win64",
-				"Linux"
-			]
+			"Name": "DTLSHandlerComponent",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
 		}
 	]
 }

@@ -20,6 +20,13 @@ namespace UnrealBuildBase
 				return DirectoryReference.FindCorrectCase(LocationOverride.RootDirectory);
 			}
 
+			string? OverrideArg = Environment.GetCommandLineArgs().FirstOrDefault(x => x?.StartsWith("-rootdirectory=") ?? false, null);
+			if (OverrideArg != null)
+			{
+				string[] Parts = OverrideArg.Split('=', 2);
+				return new DirectoryReference(Path.GetFullPath(Parts[1]));
+			}
+
 			// This base library may be used - and so be launched - from more than one location (at time of writing, UnrealBuildTool and AutomationTool)
 			// Programs that use this assembly must be located under "Engine/Binaries/DotNET" and so we look for that sequence of directories in that path of the executing assembly
 
@@ -86,7 +93,15 @@ namespace UnrealBuildBase
 			string HostDotNetDirectoryName;
 			switch (HostPlatform)
 			{
-				case RuntimePlatform.Type.Windows: HostDotNetDirectoryName = "windows"; break;
+				case RuntimePlatform.Type.Windows:
+					{
+						HostDotNetDirectoryName = "windows";
+						if (RuntimeInformation.ProcessArchitecture == Architecture.Arm64)
+						{
+							HostDotNetDirectoryName = "win-arm64";
+						}
+						break;
+					}
 				case RuntimePlatform.Type.Mac:
 					{
 						HostDotNetDirectoryName = "mac-x64";
@@ -127,6 +142,21 @@ namespace UnrealBuildBase
 		/// The full name of the Engine/Source directory
 		/// </summary>
 		public static readonly DirectoryReference EngineSourceDirectory = DirectoryReference.Combine(EngineDirectory, "Source");
+
+		/// <summary>
+		/// Returns the User Settings Directory path. This matches FPlatformProcess::UserSettingsDir().
+		/// </summary>
+		static public readonly DirectoryReference UserSettingDirectory = GetUserSettingDirectory();
+
+		/// <summary>
+		/// Writable engine directory. Uses the user's settings folder for installed builds.
+		/// </summary>
+		public static readonly DirectoryReference WritableEngineDirectory = IsEngineInstalled() ? DirectoryReference.Combine(UserSettingDirectory, "UnrealEngine") : EngineDirectory;
+
+		/// <summary>
+		/// The engine saved programs directory
+		/// </summary>
+		public static readonly DirectoryReference EngineProgramSavedDirectory = IsEngineInstalled() ? UserSettingDirectory : DirectoryReference.Combine(EngineDirectory, "Programs");
 
 		/// <summary>
 		/// The path to UBT
@@ -306,6 +336,39 @@ namespace UnrealBuildBase
 		public static List<DirectoryReference> GetExtensionDirs(DirectoryReference BaseDir, string SubDir, bool bIncludePlatformDirectories = true, bool bIncludeRestrictedDirectories = true, bool bIncludeBaseDirectory = true)
 		{
 			return GetExtensionDirs(BaseDir, bIncludePlatformDirectories, bIncludeRestrictedDirectories, bIncludeBaseDirectory).Select(x => DirectoryReference.Combine(x, SubDir)).Where(x => DirectoryReference.Exists(x)).ToList();
+		}
+
+		/// <summary>
+		/// Returns the User Settings Directory path. This matches FPlatformProcess::UserSettingsDir().
+		/// </summary>
+		private static DirectoryReference GetUserSettingDirectory()
+		{
+			if (RuntimePlatform.IsMac)
+			{
+				return new DirectoryReference(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Personal), "Library", "Application Support", "Epic"));
+			}
+			else if (RuntimePlatform.IsLinux)
+			{
+				return new DirectoryReference(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Epic"));
+			}
+			else
+			{
+				// Not all user accounts have a local application data directory (eg. SYSTEM, used by Jenkins for builds).
+				List<Environment.SpecialFolder> DataFolders = new List<Environment.SpecialFolder>() {
+					Environment.SpecialFolder.LocalApplicationData,
+					Environment.SpecialFolder.CommonApplicationData
+				};
+				foreach (Environment.SpecialFolder DataFolder in DataFolders)
+				{
+					string DirectoryName = Environment.GetFolderPath(DataFolder);
+					if (!String.IsNullOrEmpty(DirectoryName))
+					{
+						return new DirectoryReference(DirectoryName);
+					}
+				}
+			}
+
+			return DirectoryReference.Combine(EngineDirectory, "Saved");
 		}
 	}
 }

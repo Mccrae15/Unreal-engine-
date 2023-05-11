@@ -5,9 +5,8 @@
 #include "LiveLinkMessages.h"
 #include "LiveLinkSettings.h"
 
-#include "GenericPlatform/GenericPlatformProcess.h"
-#include "HAL/Event.h"
 #include "HAL/RunnableThread.h"
+#include "MessageEndpoint.h"
 
 
 bool FLiveLinkHeartbeatEmitter::FHeartbeatRecipient::operator==(const FLiveLinkHeartbeatEmitter::FHeartbeatRecipient& other) const
@@ -23,6 +22,8 @@ FLiveLinkHeartbeatEmitter::FLiveLinkHeartbeatEmitter()
 {
 
 }
+
+FLiveLinkHeartbeatEmitter::~FLiveLinkHeartbeatEmitter() = default;
 
 void FLiveLinkHeartbeatEmitter::StartHeartbeat(const FMessageAddress& RecipientAddress, const TSharedPtr<FMessageEndpoint, ESPMode::ThreadSafe>& MessageEndpoint)
 {

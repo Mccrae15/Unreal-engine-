@@ -112,8 +112,11 @@ FDataLayerHierarchy::~FDataLayerHierarchy()
 		}
 	}
 
-	UDataLayerEditorSubsystem::Get()->OnDataLayerChanged().RemoveAll(this);
-	UDataLayerEditorSubsystem::Get()->OnActorDataLayersChanged().RemoveAll(this);
+	if (UDataLayerEditorSubsystem* DataLayerEditorSubSystem = UDataLayerEditorSubsystem::Get())
+	{
+		DataLayerEditorSubSystem->OnDataLayerChanged().RemoveAll(this);
+		DataLayerEditorSubSystem->OnActorDataLayersChanged().RemoveAll(this);
+	}
 	FWorldDelegates::LevelAddedToWorld.RemoveAll(this);
 	FWorldDelegates::LevelRemovedFromWorld.RemoveAll(this);
 }
@@ -206,10 +209,36 @@ void FDataLayerHierarchy::CreateItems(TArray<FSceneOutlinerTreeItemPtr>& OutItem
 
 	if (bShowDataLayerActors)
 	{
+		const ULevelInstanceSubsystem* LevelInstanceSubsystem = UWorld::GetSubsystem<ULevelInstanceSubsystem>(GetOwningWorld());
+
+		// Build a set of considered level instances to show nested level instance actors and their child actors
+		TSet<const ILevelInstanceInterface*> ConsideredLevelInstances;		
+		if (bShowLevelInstanceContent && CurrentLevel && LevelInstanceSubsystem)
+		{
+			ILevelInstanceInterface* CurrentLevelInstance = LevelInstanceSubsystem->GetOwningLevelInstance(CurrentLevel);
+			if (LevelInstanceSubsystem->IsEditingLevelInstance(CurrentLevelInstance))
+			{
+				const bool bRecursive = true;
+				LevelInstanceSubsystem->ForEachLevelInstanceChild(CurrentLevelInstance, bRecursive, [&ConsideredLevelInstances](const ILevelInstanceInterface* ChildLevelInstance)
+				{
+					ConsideredLevelInstances.Add(ChildLevelInstance);
+					return true;
+				});
+			}
+		}
+
 		for (AActor* Actor : FActorRange(GetOwningWorld()))
 		{
-			// Only consider actors of current level (if there is one)
-			if (!CurrentLevel || (Actor->GetLevel() == CurrentLevel))
+			// Consider all actors or actors part of current level (if there is one)
+			bool bConsiderActor = !CurrentLevel || (Actor->GetLevel() == CurrentLevel);
+			if (!bConsiderActor && bShowLevelInstanceContent && LevelInstanceSubsystem)
+			{
+				// If current level is referenced by editing level instance, also consider child actors part of any child Level Instances of this level
+				ILevelInstanceInterface* ParentLevelInstance = LevelInstanceSubsystem->GetParentLevelInstance(Actor);
+				bConsiderActor = ParentLevelInstance && ConsideredLevelInstances.Contains(ParentLevelInstance);
+			}
+
+			if (bConsiderActor)
 			{
 				for (const UDataLayerInstance* DataLayerInstance : Actor->GetDataLayerInstances())
 				{
@@ -226,7 +255,6 @@ void FDataLayerHierarchy::CreateItems(TArray<FSceneOutlinerTreeItemPtr>& OutItem
 
 		if (bShowUnloadedActors)
 		{
-			ULevelInstanceSubsystem* LevelInstanceSubsystem = UWorld::GetSubsystem<ULevelInstanceSubsystem>(GetOwningWorld());
 			if (UWorldPartitionSubsystem* WorldPartitionSubsystem = UWorld::GetSubsystem<UWorldPartitionSubsystem>(GetOwningWorld()))
 			{
 				WorldPartitionSubsystem->ForEachWorldPartition([this, CurrentLevel, LevelInstanceSubsystem, DataLayerSubsystem, IsDataLayerShown, &OutItems](UWorldPartition* WorldPartition)

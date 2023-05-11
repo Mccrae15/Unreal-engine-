@@ -3,6 +3,8 @@
 #include "TimingExporter.h"
 #include "HAL/PlatformFileManager.h"
 #include "Logging/MessageLog.h"
+#include "TraceServices/Model/Bookmarks.h"
+#include "TraceServices/Model/Counters.h"
 #include "TraceServices/Model/Threads.h"
 
 // Insights
@@ -10,7 +12,6 @@
 #include "Insights/Log.h"
 #include "Insights/ViewModels/ThreadTimingTrack.h"
 #include "Insights/TimingProfilerManager.h"
-#include "TraceServices/Model/Bookmarks.h"
 
 namespace Insights
 {
@@ -23,13 +24,13 @@ namespace Insights
 
 FTimingExporter::FTimingExporter(const TraceServices::IAnalysisSession& InSession)
 	: Session(InSession)
-{	
+{
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 FTimingExporter::~FTimingExporter()
-{	
+{
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -547,62 +548,157 @@ int32 FTimingExporter::ExportTimingEventsAsText(const FString& Filename, FExport
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-	
+
 int32 FTimingExporter::ExportTimerStatisticsAsText(const FString& Filename, FExportTimerStatisticsParams& Params) const
 {
 	TraceServices::ITable<TraceServices::FTimingProfilerAggregatedStats>* StatsTable;
 
-	double RegionStartTime = 0;
-	double RegionEndTime = std::numeric_limits<double>::max();
-	
+	if (!Params.Region.IsEmpty())
+	{
+		class FRegionNameSpec
+		{
+		public:
+			FRegionNameSpec(FString& InNamePatternList)
+			{
+				InNamePatternList.ParseIntoArray(NamePatterns, TEXT(","), true);
+			}
+
+			bool Match(const FString& InBookmarkName, FString& OutRegionName, bool& bOutIsRegionStart)
+			{
+				if (InBookmarkName.StartsWith(TEXT("RegionStart:")))
+				{
+					bOutIsRegionStart = true;
+					OutRegionName = InBookmarkName.RightChop(12);
+				}
+				else if (InBookmarkName.StartsWith(TEXT("RegionEnd:")))
+				{
+					bOutIsRegionStart = false;
+					OutRegionName = InBookmarkName.RightChop(10);
+				}
+				else
+				{
+					return false;
+				}
+				for (const FString& NamePattern : NamePatterns)
+				{
+					if (OutRegionName.MatchesWildcard(NamePattern))
+					{
+						return true;
+					}
+				}
+				return false;
+			}
+
+		private:
+			TArray<FString> NamePatterns;
+		};
+		FRegionNameSpec RegionNameSpec(Params.Region);
+
+		struct FTimeRegion
+		{
+			double Start;
+			double End;
+		};
+		TMap<FString, FTimeRegion> Regions;
+
+		// Detect regions
+		{
+			TraceServices::FAnalysisSessionReadScope SessionReadScope(Session);
+
+			const TraceServices::IBookmarkProvider& BookmarkProvider = TraceServices::ReadBookmarkProvider(Session);
+
+			UE_LOG(TraceInsights, Log, TEXT("Looking for regions: '%s'"), *Params.Region);
+
+			BookmarkProvider.EnumerateBookmarks(0.0, std::numeric_limits<double>::max(),
+				[&RegionNameSpec, &Regions](const TraceServices::FBookmark& InBookmark)
+				{
+					FString BaseRegionName;
+					bool bIsRegionStart;
+					if (RegionNameSpec.Match(InBookmark.Text, BaseRegionName, bIsRegionStart))
+					{
+						FTimeRegion* Region = nullptr;
+						FString RegionName = BaseRegionName;
+						int32 Index = 2;
+
+						while (true)
+						{
+							Region = Regions.Find(RegionName);
+
+							if (!Region)
+							{
+								Region = &Regions.Add(RegionName);
+								Region->Start = -std::numeric_limits<double>::infinity();
+								Region->End = std::numeric_limits<double>::infinity();
+							}
+
+							if (bIsRegionStart)
+							{
+								if (Region->Start == -std::numeric_limits<double>::infinity() &&
+									InBookmark.Time <= Region->End)
+								{
+									Region->Start = InBookmark.Time;
+									break;
+								}
+							}
+							else
+							{
+								if (Region->End == std::numeric_limits<double>::infinity() &&
+									InBookmark.Time >= Region->Start)
+								{
+									Region->End = InBookmark.Time;
+									break;
+								}
+							}
+
+							RegionName = FString::Printf(TEXT("%s%d"), *BaseRegionName, Index++);
+						}
+					}
+				});
+		}
+
+		if (Regions.Num() == 0)
+		{
+			UE_LOG(TraceInsights, Error, TEXT("Unable to find any region ('RegionStart:' and 'RegionEnd:' bookmarks) with name pattern '%s'."), *Params.Region);
+			return -1;
+		}
+
+		FStopwatch Stopwatch;
+		Stopwatch.Start();
+
+		// Export timing statistics for each region.
+		for (auto& KV : Regions)
+		{
+			FString RegionFilename = Filename.Replace(TEXT("*"), *KV.Key);
+			FExportTimerStatisticsParams RegionParams = Params;
+			RegionParams.Region.Reset();
+			RegionParams.IntervalStartTime = KV.Value.Start;
+			RegionParams.IntervalEndTime = KV.Value.End;
+			UE_LOG(TraceInsights, Display, TEXT("Exporting timing statistics for region '%s' [%f .. %f] to '%s'"), *KV.Key, RegionParams.IntervalStartTime, RegionParams.IntervalEndTime, *RegionFilename);
+			ExportTimerStatisticsAsText(RegionFilename, RegionParams);
+		}
+
+		Stopwatch.Stop();
+		const double TotalTime = Stopwatch.GetAccumulatedTime();
+		UE_LOG(TraceInsights, Log, TEXT("Exported timing statistics for %d regions in %.3fs."), Regions.Num(), TotalTime);
+		return Regions.Num();
+	}
+
+	check(Params.Region.IsEmpty());
+
 	{
 		TraceServices::FAnalysisSessionReadScope SessionReadScope(Session);
-		
+
 		const TraceServices::ITimingProfilerProvider* TimingProfilerProvider = TraceServices::ReadTimingProfilerProvider(Session);
 		if (!TimingProfilerProvider)
 		{
 			UE_LOG(TraceInsights, Error, TEXT("Unable to access TimingProfilerProvider for ExportTimerStatisticsAsText"));
 			return -1;
 		}
-		
-		if (!Params.Region.IsEmpty())
-		{
-			
-			const TraceServices::IBookmarkProvider& BookmarkProvider = TraceServices::ReadBookmarkProvider(Session);
-			const FString RegionStartName = TEXT("RegionStart:") + Params.Region;
-			const FString RegionEndName = TEXT("RegionEnd:") + Params.Region;
-			UE_LOG(TraceInsights, Log, TEXT("Looking for the following bookmarks: '%s' and '%s'"), *RegionStartName, *RegionEndName);
-			
-			BookmarkProvider.EnumerateBookmarks(0, std::numeric_limits<double>::max(),
-				[&RegionStartTime, &RegionEndTime, &RegionStartName, &RegionEndName](const TraceServices::FBookmark& InBookmark){
-					if (RegionStartTime == 0 && RegionStartName.Equals(InBookmark.Text))
-					{
-						RegionStartTime = InBookmark.Time;
-					}
-					if (RegionEndTime == std::numeric_limits<double>::max() && RegionEndName.Equals(InBookmark.Text))
-					{
-						RegionEndTime = InBookmark.Time;
-					}
-			});
-
-			if (RegionStartTime == 0 || RegionEndTime == std::numeric_limits<double>::max())
-			{
-				UE_LOG(TraceInsights, Error, TEXT("Unable to find 'RegionStart:' and 'RegionEnd:' bookmarks for region '%s'"), *Params.Region);
-				return -1;
-			}
-		}
-
-		if (RegionStartTime != 0 && RegionEndTime != std::numeric_limits<double>::max())
-		{
-			Params.IntervalStartTime = RegionStartTime;
-			Params.IntervalEndTime = RegionEndTime;
-			UE_LOG(TraceInsights, Display, TEXT("Limit selection to region '%s' from %f to %f"), *Params.Region, RegionStartTime, RegionEndTime);
-		}
 
 		//@Todo: this does not yet handle the -column and -timers parameters.
 		StatsTable = TimingProfilerProvider->CreateAggregation(Params.IntervalStartTime, Params.IntervalEndTime, Params.ThreadFilter, true);
 	}
-		
+
 	FStopwatch Stopwatch;
 	Stopwatch.Start();
 
@@ -712,7 +808,7 @@ TFunction<bool(uint32)> FTimingExporter::MakeThreadFilterExclusive(const TSet<ui
 			return ThreadId != ExcludedThreadId;
 		};
 	}
-	
+
 	return [&ExcludedThreads](uint32 ThreadId) -> bool
 	{
 		return !ExcludedThreads.Contains(ThreadId);
@@ -729,7 +825,7 @@ FTimingExporter::FTimingEventFilterFunc FTimingExporter::MakeTimingEventFilterBy
 	}
 
 	OutIncludedTimers.Reset();
-	
+
 	TMap<FString, uint32> Timers;
 
 	// Iterate the GPU & CPU timers.
@@ -810,7 +906,7 @@ FTimingExporter::FTimingEventFilterFunc FTimingExporter::MakeTimingEventFilterBy
 	{
 		return nullptr;
 	}
-		
+
 	if (ExcludedTimers.Num() == 1)
 	{
 		const uint32 ExcludedTimerId = ExcludedTimers[FSetElementId::FromInteger(0)];
@@ -824,6 +920,239 @@ FTimingExporter::FTimingEventFilterFunc FTimingExporter::MakeTimingEventFilterBy
 	{
 		return !ExcludedTimers.Contains(Event.TimerIndex);
 	};
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+int32 FTimingExporter::ExportCountersAsText(const FString& Filename, FExportCountersParams& Params) const
+{
+	checkf(Params.Columns == nullptr, TEXT("Custom list of columns is not yet supported!"));
+
+	FStopwatch Stopwatch;
+	Stopwatch.Start();
+
+	IFileHandle* ExportFileHandle = OpenExportFile(*Filename);
+	if (!ExportFileHandle)
+	{
+		return -1;
+	}
+
+	UTF8CHAR Separator = UTF8CHAR('\t');
+	if (Filename.EndsWith(TEXT(".csv")))
+	{
+		Separator = UTF8CHAR(',');
+	}
+	const UTF8CHAR LineEnd = UTF8CHAR('\n');
+
+	FUtf8StringBuilder StringBuilder;
+
+	// Write header.
+	{
+		StringBuilder.Append(UTF8TEXT("Id"));
+		StringBuilder.AppendChar(Separator);
+		StringBuilder.Append(UTF8TEXT("Type"));
+		StringBuilder.AppendChar(Separator);
+		StringBuilder.Append(UTF8TEXT("Name"));
+		StringBuilder.AppendChar(LineEnd);
+
+		ExportFileHandle->Write((const uint8*)StringBuilder.ToString(), StringBuilder.Len() * sizeof(UTF8CHAR));
+	}
+
+	int32 CounterCount = 0;
+
+	// Write values.
+	if (true) // TraceServices::ReadCounterProvider(Session)
+	{
+		TraceServices::FAnalysisSessionReadScope SessionReadScope(Session);
+		const TraceServices::ICounterProvider& CounterProvider = TraceServices::ReadCounterProvider(Session);
+
+		CounterProvider.EnumerateCounters([&](uint32 CounterId, const TraceServices::ICounter& Counter)
+		{
+			StringBuilder.Reset();
+			StringBuilder.Appendf(UTF8TEXT("%u"), CounterId);
+			StringBuilder.AppendChar(Separator);
+			if (Counter.IsFloatingPoint())
+			{
+				StringBuilder.Append(UTF8TEXT("Double"));
+			}
+			else
+			{
+				StringBuilder.Append(UTF8TEXT("Int64"));
+			}
+			if (Counter.IsResetEveryFrame())
+			{
+				StringBuilder.Append(UTF8TEXT("|ResetEveryFrame"));
+			}
+			StringBuilder.AppendChar(Separator);
+			AppendString(StringBuilder, Counter.GetName(), Separator);
+			StringBuilder.AppendChar(LineEnd);
+			ExportFileHandle->Write((const uint8*)StringBuilder.ToString(), StringBuilder.Len() * sizeof(UTF8CHAR));
+			++CounterCount;
+		});
+	}
+
+	ExportFileHandle->Flush();
+	delete ExportFileHandle;
+	ExportFileHandle = nullptr;
+
+	Stopwatch.Stop();
+	const double TotalTime = Stopwatch.GetAccumulatedTime();
+	UE_LOG(TraceInsights, Log, TEXT("Exported %d counters to file in %.3fs (\"%s\")."), CounterCount, TotalTime, *Filename);
+
+	return CounterCount;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+int32 FTimingExporter::ExportCounterAsText(const FString& Filename, uint32 CounterId, FExportCounterParams& Params) const
+{
+	checkf(Params.Columns == nullptr, TEXT("Custom list of columns is not yet supported!"));
+
+	FStopwatch Stopwatch;
+	Stopwatch.Start();
+
+	IFileHandle* ExportFileHandle = OpenExportFile(*Filename);
+	if (!ExportFileHandle)
+	{
+		return -1;
+	}
+
+	UTF8CHAR Separator = UTF8CHAR('\t');
+	if (Filename.EndsWith(TEXT(".csv")))
+	{
+		Separator = UTF8CHAR(',');
+	}
+	const UTF8CHAR LineEnd = UTF8CHAR('\n');
+
+	FUtf8StringBuilder StringBuilder;
+
+	// Write header.
+	if (Params.bExportOps)
+	{
+		StringBuilder.Append(UTF8TEXT("Time"));
+		StringBuilder.AppendChar(Separator);
+		StringBuilder.Append(UTF8TEXT("Op"));
+		StringBuilder.AppendChar(Separator);
+		StringBuilder.Append(UTF8TEXT("Value"));
+		StringBuilder.AppendChar(LineEnd);
+	}
+	else
+	{
+		StringBuilder.Append(UTF8TEXT("Time"));
+		StringBuilder.AppendChar(Separator);
+		StringBuilder.Append(UTF8TEXT("Value"));
+		StringBuilder.AppendChar(LineEnd);
+	}
+	ExportFileHandle->Write((const uint8*)StringBuilder.ToString(), StringBuilder.Len() * sizeof(UTF8CHAR));
+
+	FString CounterName;
+	int32 ValueCount = 0;
+
+	// Write values.
+	if (true) // TraceServices::ReadCounterProvider(Session)
+	{
+		TraceServices::FAnalysisSessionReadScope SessionReadScope(Session);
+		const TraceServices::ICounterProvider& CounterProvider = TraceServices::ReadCounterProvider(Session);
+
+		CounterProvider.ReadCounter(CounterId, [&](const TraceServices::ICounter& Counter)
+		{
+			CounterName = Counter.GetName();
+
+			// Iterate the counter values.
+			if (Params.bExportOps)
+			{
+				if (Counter.IsFloatingPoint())
+				{
+					Counter.EnumerateFloatOps(Params.IntervalStartTime, Params.IntervalEndTime, false, [&](double Time, TraceServices::ECounterOpType Op, double Value)
+						{
+							StringBuilder.Reset();
+							StringBuilder.Appendf(UTF8TEXT("%.9f"), Time);
+							StringBuilder.AppendChar(Separator);
+							switch (Op)
+							{
+							case TraceServices::ECounterOpType::Set:
+								StringBuilder.Append(UTF8TEXT("Set"));
+								break;
+							case TraceServices::ECounterOpType::Add:
+								StringBuilder.Append(UTF8TEXT("Add"));
+								break;
+							default:
+								StringBuilder.Appendf(UTF8TEXT("%d"), int32(Op));
+							}
+							StringBuilder.AppendChar(Separator);
+							StringBuilder.Appendf(UTF8TEXT("%.9f"), Value);
+							StringBuilder.AppendChar(LineEnd);
+							ExportFileHandle->Write((const uint8*)StringBuilder.ToString(), StringBuilder.Len() * sizeof(UTF8CHAR));
+							++ValueCount;
+						});
+				}
+				else
+				{
+					Counter.EnumerateOps(Params.IntervalStartTime, Params.IntervalEndTime, false, [&](double Time, TraceServices::ECounterOpType Op, int64 IntValue)
+						{
+							StringBuilder.Reset();
+							StringBuilder.Appendf(UTF8TEXT("%.9f"), Time);
+							StringBuilder.AppendChar(Separator);
+							switch (Op)
+							{
+							case TraceServices::ECounterOpType::Set:
+								StringBuilder.Append(UTF8TEXT("Set"));
+								break;
+							case TraceServices::ECounterOpType::Add:
+								StringBuilder.Append(UTF8TEXT("Add"));
+								break;
+							default:
+								StringBuilder.Appendf(UTF8TEXT("%d"), int32(Op));
+							}
+							StringBuilder.AppendChar(Separator);
+							StringBuilder.Appendf(UTF8TEXT("%lli"), IntValue);
+							StringBuilder.AppendChar(LineEnd);
+							ExportFileHandle->Write((const uint8*)StringBuilder.ToString(), StringBuilder.Len() * sizeof(UTF8CHAR));
+							++ValueCount;
+						});
+				}
+			}
+			else
+			{
+				if (Counter.IsFloatingPoint())
+				{
+					Counter.EnumerateFloatValues(Params.IntervalStartTime, Params.IntervalEndTime, false, [&](double Time, double Value)
+					{
+						StringBuilder.Reset();
+						StringBuilder.Appendf(UTF8TEXT("%.9f"), Time);
+						StringBuilder.AppendChar(Separator);
+						StringBuilder.Appendf(UTF8TEXT("%.9f"), Value);
+						StringBuilder.AppendChar(LineEnd);
+						ExportFileHandle->Write((const uint8*)StringBuilder.ToString(), StringBuilder.Len() * sizeof(UTF8CHAR));
+						++ValueCount;
+					});
+				}
+				else
+				{
+					Counter.EnumerateValues(Params.IntervalStartTime, Params.IntervalEndTime, false, [&](double Time, int64 IntValue)
+					{
+						StringBuilder.Reset();
+						StringBuilder.Appendf(UTF8TEXT("%.9f"), Time);
+						StringBuilder.AppendChar(Separator);
+						StringBuilder.Appendf(UTF8TEXT("%lli"), IntValue);
+						StringBuilder.AppendChar(LineEnd);
+						ExportFileHandle->Write((const uint8*)StringBuilder.ToString(), StringBuilder.Len() * sizeof(UTF8CHAR));
+						++ValueCount;
+					});
+				}
+			}
+		});
+	}
+
+	ExportFileHandle->Flush();
+	delete ExportFileHandle;
+	ExportFileHandle = nullptr;
+
+	Stopwatch.Stop();
+	const double TotalTime = Stopwatch.GetAccumulatedTime();
+	UE_LOG(TraceInsights, Log, TEXT("Exported counter %d (\"%s\", %d values) to file in %.3fs (\"%s\")."), CounterId, *CounterName, ValueCount, TotalTime, *Filename);
+
+	return 1;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

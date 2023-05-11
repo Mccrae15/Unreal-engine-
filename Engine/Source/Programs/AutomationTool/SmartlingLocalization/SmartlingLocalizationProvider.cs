@@ -125,8 +125,9 @@ namespace EpicGames.SmartlingLocalization
 				string SmartlingFileUri = GetSmartlingFileUri(SmartlingFilename);
 				var DownloadUriBuilder = new UriBuilder(DownloadEndpoint);
 				// Changing the retrieval type to pseudo is a good way to test downloads
-				// @TODOLocalization: Not sure if the retrieval type should be pending or published to get all of the relevant strings 
-				string DownloadQueryString = $"fileUri={SmartlingFileUri}&retrievalType=published&includeOriginalStrings=false";
+				// We use pending as the retrieval type to also download files that are in progress. We need both published and in progress files on Smartling.
+				string DownloadRetrievalType = "pending";
+				string DownloadQueryString = $"fileUri={SmartlingFileUri}&retrievalType={DownloadRetrievalType}&includeOriginalStrings=false";
 				DownloadUriBuilder.Query = DownloadQueryString;
 				var DownloadResponse = await Client.GetAsync(DownloadUriBuilder.Uri);
 				if (DownloadResponse.IsSuccessStatusCode)
@@ -255,6 +256,14 @@ namespace EpicGames.SmartlingLocalization
 					UploadMultipartFormDataContent.Add(UploadFileStreamContent, "file", SmartlingFileUri);	
 					UploadMultipartFormDataContent.Add(new StringContent(SmartlingFileUri, Encoding.UTF8, "application/json"), "fileUri");
 					UploadMultipartFormDataContent.Add(new StringContent("gettext", Encoding.UTF8, "application/json"), "fileType");
+					// We introduce a Smartling namespace to leverage Smartling's string sharing feature
+					// Following Smartling best practices, we make the Smartling namespace the same as the full file path of the file.
+					// https://help.smartling.com/hc/en-us/articles/360008143833-String-Sharing-and-Namespaces-via-Smartling-API
+					UploadMultipartFormDataContent.Add(new StringContent(SmartlingFilename, Encoding.UTF8, "application/json"), "smartling.namespace");
+					// all placeholder values in the source files will raise warnings in Smartling which need to be manually reviewed.
+					// This allows the warnings to be resolved. The regex designates anything within {} to be a placeholder value.
+					// This accounts for the common FText formatted string placeholders of {0} or {MyPlaceholderVariable}
+					UploadMultipartFormDataContent.Add(new StringContent("\\{([^}]+)\\}", Encoding.UTF8, "application/json"), "smartling.placeholder_format_custom");
 					var UploadResponse = await Client.PostAsync(UploadEndpoint, UploadMultipartFormDataContent);
 					if (UploadResponse.IsSuccessStatusCode)
 					{

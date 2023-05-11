@@ -2,6 +2,7 @@
 
 #include "RigEditor/IKRigController.h"
 
+#include "IKRigEditor.h"
 #include "IKRigDefinition.h"
 #include "IKRigProcessor.h"
 #include "IKRigSolver.h"
@@ -13,7 +14,7 @@
 
 #define LOCTEXT_NAMESPACE "IKRigController"
 
-UIKRigController* UIKRigController::GetIKRigController(UIKRigDefinition* InIKRigDefinition)
+UIKRigController* UIKRigController::GetController(const UIKRigDefinition* InIKRigDefinition)
 {
 	if (!InIKRigDefinition)
 	{
@@ -23,8 +24,8 @@ UIKRigController* UIKRigController::GetIKRigController(UIKRigDefinition* InIKRig
 	if (!InIKRigDefinition->Controller)
 	{
 		UIKRigController* Controller = NewObject<UIKRigController>();
-		Controller->Asset = InIKRigDefinition;
-		InIKRigDefinition->Controller = Controller;
+		Controller->Asset = const_cast<UIKRigDefinition*>(InIKRigDefinition);
+		Controller->Asset->Controller = Controller;
 	}
 
 	return Cast<UIKRigController>(InIKRigDefinition->Controller);
@@ -35,112 +36,125 @@ UIKRigDefinition* UIKRigController::GetAsset() const
 	return Asset;
 }
 
-FName UIKRigController::GetAssetIDAsName() const
-{
-	if (!Asset)
-	{
-		return NAME_None;
-	}
-
-	return FName(FString::FromInt(Asset->GetUniqueID()));
-}
-
-void UIKRigController::AddBoneSetting(const FName& BoneName, int32 SolverIndex) const
+bool UIKRigController::AddBoneSetting(const FName BoneName, int32 SolverIndex) const
 {
 	check(Asset->Solvers.IsValidIndex(SolverIndex))
 
 	if (!CanAddBoneSetting(BoneName, SolverIndex))
 	{
-		return; // prerequisites not met
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Bone settings refused by solver. See output for details."));
+		return false; // prerequisites not met
 	}
-
+	
 	FScopedTransaction Transaction(LOCTEXT("AddBoneSetting_Label", "Add Bone Setting"));
 	UIKRigSolver* Solver = Asset->Solvers[SolverIndex];
 	Solver->Modify();
 	Solver->AddBoneSetting(BoneName);
 	BroadcastNeedsReinitialized();
+
+	return true;
 }
 
-bool UIKRigController::CanAddBoneSetting(const FName& BoneName, int32 SolverIndex) const
+bool UIKRigController::CanAddBoneSetting(const FName BoneName, int32 SolverIndex) const
 {
-	const UIKRigSolver* Solver = GetSolver(SolverIndex);
+	const UIKRigSolver* Solver = GetSolverAtIndex(SolverIndex);
 	if (!Solver)
 	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Solver does not exist at index: %d."), SolverIndex);
 		return false; // solver doesn't exist
 	}
 
 	if (Asset->Skeleton.GetBoneIndexFromName(BoneName) == INDEX_NONE)
 	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Bone does not exist, %s."), *BoneName.ToString());
 		return false; // bone doesn't exist
 	}
 
 	if (!Asset->Solvers[SolverIndex]->UsesBoneSettings())
 	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Solver does not support bone settings."));
 		return false; // solver doesn't support per-bone settings
 	}
 
-	// returns true if the solver in question does NOT already have a settings object for this bone 
-	return !static_cast<bool>(Asset->Solvers[SolverIndex]->GetBoneSetting(BoneName));
+	if (Asset->Solvers[SolverIndex]->GetBoneSetting(BoneName))
+	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Solver already has settings on bone, %s."), *BoneName.ToString());
+		return false; // solve already has settings on this bone
+	}
+	
+	return true;
 }
 
-void UIKRigController::RemoveBoneSetting(const FName& BoneName, int32 SolverIndex) const
+bool UIKRigController::RemoveBoneSetting(const FName BoneName, int32 SolverIndex) const
 {
-	check(Asset->Solvers.IsValidIndex(SolverIndex))
+	UIKRigSolver* Solver = GetSolverAtIndex(SolverIndex);
+	if (!Solver)
+	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Solver does not exist at index: %d."), SolverIndex);
+		return false; // solver doesn't exist
+	}
 
 	if (Asset->Skeleton.GetBoneIndexFromName(BoneName) == INDEX_NONE)
 	{
-		return; // bone doesn't exist
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Cannot remove setting on unknown bone, %s."), *BoneName.ToString());
+		return false; // bone doesn't exist
 	}
 
 	FScopedTransaction Transaction(LOCTEXT("RemoveBoneSetting_Label", "Remove Bone Setting"));
-	UIKRigSolver* Solver = Asset->Solvers[SolverIndex];
 	Solver->Modify();
 	Solver->RemoveBoneSetting(BoneName);
 	BroadcastNeedsReinitialized();
+
+	return true;
 }
 
-bool UIKRigController::CanRemoveBoneSetting(const FName& BoneName, int32 SolverIndex) const
+bool UIKRigController::CanRemoveBoneSetting(const FName BoneName, int32 SolverIndex) const
 {
-	const UIKRigSolver* Solver = GetSolver(SolverIndex);
+	const UIKRigSolver* Solver = GetSolverAtIndex(SolverIndex);
 	if (!Solver)
 	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Solver does not exist at index: %d."), SolverIndex);
 		return false; // solver doesn't exist
 	}
 
 	if (!Solver->UsesBoneSettings())
 	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Solver does not support bone settings."));
 		return false; // solver doesn't use bone settings
 	}
 
 	if (Asset->Skeleton.GetBoneIndexFromName(BoneName) == INDEX_NONE)
 	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Bone does not exist, %s."), *BoneName.ToString());
 		return false; // bone doesn't exist
 	}
 
 	if (!Solver->GetBoneSetting(BoneName))
 	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Solver does not have settings on bone, %s."), *BoneName.ToString());
 		return false; // solver doesn't have any settings for this bone
 	}
 
 	return true;
 }
 
-UObject* UIKRigController::GetSettingsForBone(const FName& BoneName, int32 SolverIndex) const
+UObject* UIKRigController::GetBoneSettings(const FName BoneName, int32 SolverIndex) const
 {
-	const UIKRigSolver* Solver = GetSolver(SolverIndex);
+	const UIKRigSolver* Solver = GetSolverAtIndex(SolverIndex);
 	if (!Solver)
 	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Solver does not exist at index: %d."), SolverIndex);
 		return nullptr; // solver doesn't exist
 	}
 	
 	return Solver->GetBoneSetting(BoneName);
 }
 
-bool UIKRigController::DoesBoneHaveSettings(const FName& BoneName) const
+bool UIKRigController::DoesBoneHaveSettings(const FName BoneName) const
 {
 	if (Asset->Skeleton.GetBoneIndexFromName(BoneName) == INDEX_NONE)
 	{
-		return false; // bone doesn't exist
+		return false; // bone doesn't exist (do not spam here)
 	}
 	
 	for (UIKRigSolver* Solver : Asset->Solvers)
@@ -154,11 +168,36 @@ bool UIKRigController::DoesBoneHaveSettings(const FName& BoneName) const
 	return false;
 }
 
+FName UIKRigController::AddRetargetChain(const FName ChainName, const FName StartBoneName, const FName EndBoneName, const FName GoalName) const
+{
+	return AddRetargetChain(FBoneChain(ChainName, StartBoneName, EndBoneName, GoalName));
+}
+
 FName UIKRigController::AddRetargetChain(const FBoneChain& BoneChain) const
 {
-	FBoneChain ChainToAdd = BoneChain;
-	ChainToAdd.ChainName = GetUniqueRetargetChainName(BoneChain.ChainName);
+	if (BoneChain.StartBone.BoneName != NAME_None && Asset->Skeleton.GetBoneIndexFromName(BoneChain.StartBone.BoneName) == INDEX_NONE)
+	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Could not create retarget chain. Start Bone does not exist, %s."), *BoneChain.StartBone.BoneName.ToString());
+		return NAME_None; // bone doesn't exist
+	}
 
+	if (BoneChain.EndBone.BoneName != NAME_None && Asset->Skeleton.GetBoneIndexFromName(BoneChain.EndBone.BoneName) == INDEX_NONE)
+	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Could not create retarget chain. End Bone does not exist, %s."), *BoneChain.EndBone.BoneName.ToString());
+		return NAME_None; // bone doesn't exist
+	}
+	
+	FBoneChain ChainToAdd = BoneChain;
+
+	// if no name specified, use a default
+	if (ChainToAdd.ChainName == NAME_None)
+	{
+		const FName DefaultChainName = FName("DefaultChainName");
+		ChainToAdd.ChainName = DefaultChainName;
+	}
+	
+	ChainToAdd.ChainName = GetUniqueRetargetChainName(BoneChain.ChainName);
+	
 	FScopedTransaction Transaction(LOCTEXT("AddRetargetChain_Label", "Add Retarget Chain"));
 	Asset->Modify();
 	
@@ -170,7 +209,7 @@ FName UIKRigController::AddRetargetChain(const FBoneChain& BoneChain) const
 	return Asset->RetargetDefinition.BoneChains[NewChainIndex].ChainName;
 }
 
-bool UIKRigController::RemoveRetargetChain(const FName& ChainName) const
+bool UIKRigController::RemoveRetargetChain(const FName ChainName) const
 {
 	FScopedTransaction Transaction(LOCTEXT("RemoveRetargetChain_Label", "Remove Retarget Chain"));
 	Asset->Modify();
@@ -192,14 +231,16 @@ bool UIKRigController::RemoveRetargetChain(const FName& ChainName) const
 		return true;
 	}
 
+	UE_LOG(LogIKRigEditor, Warning, TEXT("Retarget chain not found: %s."), *ChainName.ToString());
 	return false;
 }
 
-FName UIKRigController::RenameRetargetChain(const FName& ChainName, const FName& NewChainName) const
+FName UIKRigController::RenameRetargetChain(const FName ChainName, const FName NewChainName) const
 {
 	FBoneChain* Chain = Asset->RetargetDefinition.GetEditableBoneChainByName(ChainName);
 	if (!Chain)
 	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Retarget chain not found: %s."), *ChainName.ToString());
 		return ChainName; // chain doesn't exist to rename
 	}
 
@@ -214,8 +255,14 @@ FName UIKRigController::RenameRetargetChain(const FName& ChainName, const FName&
 	return UniqueChainName;
 }
 
-bool UIKRigController::SetRetargetChainStartBone(const FName& ChainName, const FName& StartBoneName) const
+bool UIKRigController::SetRetargetChainStartBone(const FName ChainName, const FName StartBoneName) const
 {
+	if (Asset->Skeleton.GetBoneIndexFromName(StartBoneName) == INDEX_NONE)
+	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Bone does not exist, %s."), *StartBoneName.ToString());
+		return false; // bone doesn't exist
+	}
+	
 	if (FBoneChain* BoneChain = Asset->RetargetDefinition.GetEditableBoneChainByName(ChainName))
 	{
 		FScopedTransaction Transaction(LOCTEXT("SetRetargetChainStartBone_Label", "Set Retarget Chain Start Bone"));
@@ -225,11 +272,18 @@ bool UIKRigController::SetRetargetChainStartBone(const FName& ChainName, const F
 		return true;
 	}
 
+	UE_LOG(LogIKRigEditor, Warning, TEXT("Retarget chain not found: %s."), *ChainName.ToString());
 	return false; // no bone chain with that name
 }
 
-bool UIKRigController::SetRetargetChainEndBone(const FName& ChainName, const FName& EndBoneName) const
+bool UIKRigController::SetRetargetChainEndBone(const FName ChainName, const FName EndBoneName) const
 {
+	if (Asset->Skeleton.GetBoneIndexFromName(EndBoneName) == INDEX_NONE)
+	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Bone does not exist, %s."), *EndBoneName.ToString());
+		return false; // bone doesn't exist
+	}
+	
 	if (FBoneChain* BoneChain = Asset->RetargetDefinition.GetEditableBoneChainByName(ChainName))
 	{
 		FScopedTransaction Transaction(LOCTEXT("SetRetargetChainEndBone_Label", "Set Retarget Chain End Bone"));
@@ -239,68 +293,83 @@ bool UIKRigController::SetRetargetChainEndBone(const FName& ChainName, const FNa
 		return true;
 	}
 
+	UE_LOG(LogIKRigEditor, Warning, TEXT("Retarget chain not found: %s."), *ChainName.ToString());
 	return false; // no bone chain with that name
 }
 
-bool UIKRigController::SetRetargetChainGoal(const FName& ChainName, const FName& GoalName) const
+bool UIKRigController::SetRetargetChainGoal(const FName ChainName, const FName GoalName) const
 {
+	FBoneChain* BoneChain = Asset->RetargetDefinition.GetEditableBoneChainByName(ChainName);
+	if (!BoneChain)
+	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Retarget chain not found: %s."), *ChainName.ToString());
+		return false; // no bone chain with that name
+	}
+	
 	FName GoalNameToUse = GoalName;
 	if (!GetGoal(GoalName))
 	{
-		GoalNameToUse = NAME_None; // no goal with that name	
-	}
-	
-	if (FBoneChain* BoneChain = Asset->RetargetDefinition.GetEditableBoneChainByName(ChainName))
-	{
-		FScopedTransaction Transaction(LOCTEXT("SetRetargetChainGoal_Label", "Set Retarget Chain Goal"));
-		Asset->Modify();
-		BoneChain->IKGoalName = GoalNameToUse;
-		BroadcastNeedsReinitialized();
-		return true;
+		GoalNameToUse = NAME_None; // no goal with that name, that's ok we set it to None
 	}
 
-	return false; // no bone chain with that name
+	FScopedTransaction Transaction(LOCTEXT("SetRetargetChainGoal_Label", "Set Retarget Chain Goal"));
+	Asset->Modify();
+	BoneChain->IKGoalName = GoalNameToUse;
+	BroadcastNeedsReinitialized();
+	return true;
 }
 
-FName UIKRigController::GetRetargetChainGoal(const FName& ChainName) const
+FName UIKRigController::GetRetargetChainGoal(const FName ChainName) const
 {
 	check(Asset)
-	const FBoneChain* Chain = Asset->GetRetargetChainByName(ChainName);
+	const FBoneChain* Chain = GetRetargetChainByName(ChainName);
 	if (!Chain)
 	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Retarget chain not found: %s."), *ChainName.ToString());
 		return NAME_None;
 	}
 	
 	return Chain->IKGoalName;
 }
 
-FName UIKRigController::GetRetargetChainStartBone(const FName& ChainName) const
+FName UIKRigController::GetRetargetChainStartBone(const FName ChainName) const
 {
 	check(Asset)
-	const FBoneChain* Chain = Asset->GetRetargetChainByName(ChainName);
+	const FBoneChain* Chain = GetRetargetChainByName(ChainName);
 	if (!Chain)
 	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Retarget chain not found: %s."), *ChainName.ToString());
 		return NAME_None;
 	}
 	
 	return Chain->StartBone.BoneName;
 }
 
-FName UIKRigController::GetRetargetChainEndBone(const FName& ChainName) const
+FName UIKRigController::GetRetargetChainEndBone(const FName ChainName) const
 {
 	check(Asset)
-	const FBoneChain* Chain = Asset->GetRetargetChainByName(ChainName);
+	const FBoneChain* Chain = GetRetargetChainByName(ChainName);
 	if (!Chain)
 	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Retarget chain not found: %s."), *ChainName.ToString());
 		return NAME_None;
 	}
 	
 	return Chain->EndBone.BoneName;
 }
 
-const FBoneChain* UIKRigController::GetRetargetChainByName(const FName& ChainName) const
+const FBoneChain* UIKRigController::GetRetargetChainByName(const FName ChainName) const
 {
-	return Asset->GetRetargetChainByName(ChainName);
+	for (const FBoneChain& Chain : Asset->RetargetDefinition.BoneChains)
+	{
+		if (Chain.ChainName == ChainName)
+		{
+			return &Chain;
+		}
+	}
+
+	UE_LOG(LogIKRigEditor, Warning, TEXT("Retarget chain not found: %s."), *ChainName.ToString());
+	return nullptr;
 }
 
 const TArray<FBoneChain>& UIKRigController::GetRetargetChains() const
@@ -309,16 +378,24 @@ const TArray<FBoneChain>& UIKRigController::GetRetargetChains() const
 	return Asset->GetRetargetChains();
 }
 
-void UIKRigController::SetRetargetRoot(const FName& RootBoneName) const
+bool UIKRigController::SetRetargetRoot(const FName RootBoneName) const
 {
 	check(Asset)
+
+	FName NewRootBone = RootBoneName;
+	if (RootBoneName != NAME_None && Asset->Skeleton.GetBoneIndexFromName(RootBoneName) == INDEX_NONE)
+	{
+		NewRootBone = NAME_None;
+	}
 
 	FScopedTransaction Transaction(LOCTEXT("SetRetargetRootBone_Label", "Set Retarget Root Bone"));
 	Asset->Modify();
 	
-	Asset->RetargetDefinition.RootBone = RootBoneName;
+	Asset->RetargetDefinition.RootBone = NewRootBone;
 
 	BroadcastNeedsReinitialized();
+
+	return true;
 }
 
 FName UIKRigController::GetRetargetRoot() const
@@ -343,9 +420,9 @@ void UIKRigController::SortRetargetChains() const
 	});
 }
 
-FName UIKRigController::GetUniqueRetargetChainName(const FName& NameToMakeUnique) const
+FName UIKRigController::GetUniqueRetargetChainName(const FName NameToMakeUnique) const
 {
-	auto IsNameBeingUsed = [this](const FName& NameToTry)->bool
+	auto IsNameBeingUsed = [this](const FName NameToTry)->bool
 	{
 		for (const FBoneChain& Chain : Asset->RetargetDefinition.BoneChains)
 		{
@@ -374,11 +451,11 @@ FName UIKRigController::GetUniqueRetargetChainName(const FName& NameToMakeUnique
 }
 
 bool UIKRigController::ValidateChain(
-	const FName& ChainName,
+	const FName ChainName,
 	const FIKRigSkeleton* OptionalSkeleton,
 	TSet<int32>& OutChainIndices) const
 {
-	const FBoneChain* Chain = Asset->GetRetargetChainByName(ChainName);
+	const FBoneChain* Chain = GetRetargetChainByName(ChainName);
 	if (!Chain)
 	{
 		return false; // chain doesn't exist
@@ -433,7 +510,7 @@ bool UIKRigController::ValidateChain(
 	}
 }
 
-FName UIKRigController::GetRetargetChainFromBone(const FName& BoneName, const FIKRigSkeleton* OptionalSkeleton) const
+FName UIKRigController::GetRetargetChainFromBone(const FName BoneName, const FIKRigSkeleton* OptionalSkeleton) const
 {
 	const FIKRigSkeleton& Skeleton = OptionalSkeleton ? *OptionalSkeleton : GetIKRigSkeleton();
 	const int32 BoneIndex = Skeleton.GetBoneIndexFromName(BoneName);
@@ -460,7 +537,7 @@ FName UIKRigController::GetRetargetChainFromBone(const FName& BoneName, const FI
 	return NAME_None;
 }
 
-FName UIKRigController::GetRetargetChainFromGoal(const FName& GoalName) const
+FName UIKRigController::GetRetargetChainFromGoal(const FName GoalName) const
 {
 	if (GoalName == NAME_None)
 	{
@@ -485,21 +562,15 @@ FName UIKRigController::GetRetargetChainFromGoal(const FName& GoalName) const
 
 bool UIKRigController::SetSkeletalMesh(USkeletalMesh* SkeletalMesh, bool bTransact) const
 {
-	if (!SkeletalMesh)
-	{
-		return false;
-	}
-	
 	// first determine runtime compatibility between the IK Rig asset and the skeleton we're trying to run it on
-	const FIKRigInputSkeleton InputSkeleton = FIKRigInputSkeleton(SkeletalMesh);
-	if (!UIKRigProcessor::IsIKRigCompatibleWithSkeleton(Asset, InputSkeleton, nullptr))
+	if (!IsSkeletalMeshCompatible(SkeletalMesh))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Trying to initialize IKRig with a Skeleton that is missing required bones. See output log. {0}"), *Asset->GetName());
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Trying to initialize IKRig with a Skeleton that is missing required bones. See output log. {0}"), *Asset->GetName());
+		BroadcastNeedsReinitialized();
 		return false;
 	}
-
-	FScopedTransaction Transaction(LOCTEXT("SetSkeletalMesh_Label", "Set Skeletal Mesh"));
 	
+	FScopedTransaction Transaction(LOCTEXT("SetSkeletalMesh_Label", "Set Skeletal Mesh"));
 	if (bTransact)
 	{	
 		Asset->Modify();
@@ -508,22 +579,25 @@ bool UIKRigController::SetSkeletalMesh(USkeletalMesh* SkeletalMesh, bool bTransa
 	// update stored skeletal mesh used for previewing results
 	Asset->PreviewSkeletalMesh = SkeletalMesh;
 	// copy skeleton data from the actual skeleton we want to run on
+	const FIKRigInputSkeleton InputSkeleton = FIKRigInputSkeleton(SkeletalMesh);
 	Asset->Skeleton.SetInputSkeleton(InputSkeleton, GetAsset()->Skeleton.ExcludedBones);
-	// update goal's initial transforms to reflect new
-	for (UIKRigEffectorGoal* Goal : Asset->Goals)
-	{
-		if (bTransact)
-		{
-			Goal->Modify();
-		}
-		
-		const FTransform InitialTransform = GetRefPoseTransformOfBone(Goal->BoneName);
-		Goal->InitialTransform = InitialTransform;
-	}
+	// update goal's initial transforms to reflect new skeleton
+	ResetInitialGoalTransforms();
 
 	BroadcastNeedsReinitialized();
 
 	return true;
+}
+
+bool UIKRigController::IsSkeletalMeshCompatible(USkeletalMesh* SkeletalMeshToCheck) const
+{
+	const FIKRigInputSkeleton InputSkeleton = FIKRigInputSkeleton(SkeletalMeshToCheck);
+	return UIKRigProcessor::IsIKRigCompatibleWithSkeleton(Asset, InputSkeleton, nullptr);
+}
+
+USkeletalMesh* UIKRigController::GetSkeletalMesh() const
+{
+	return Asset->PreviewSkeletalMesh.LoadSynchronous();
 }
 
 const FIKRigSkeleton& UIKRigController::GetIKRigSkeleton() const
@@ -531,22 +605,21 @@ const FIKRigSkeleton& UIKRigController::GetIKRigSkeleton() const
 	return Asset->Skeleton;
 }
 
-USkeleton* UIKRigController::GetSkeleton() const
+bool UIKRigController::SetBoneExcluded(const FName BoneName, const bool bExclude) const
 {
-	if (!Asset->PreviewSkeletalMesh)
-    {
-        return nullptr;
-    }
-    
-    return Asset->PreviewSkeletalMesh->GetSkeleton();
-}
+	// does bone exist?
+	const int32 BoneIndex = Asset->Skeleton.GetBoneIndexFromName(BoneName);
+	if (BoneIndex == INDEX_NONE)
+	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Trying to exclude non-existant bone, %s."), *BoneName.ToString());
+		return false;
+	}
 
-void UIKRigController::SetBoneExcluded(const FName& BoneName, const bool bExclude) const
-{
+	// already excluded?
 	const bool bIsExcluded = Asset->Skeleton.ExcludedBones.Contains(BoneName);
 	if (bIsExcluded == bExclude)
 	{
-		return; // already in the requested state of exclusion
+		return false; // (don't spam warning)
 	}
 
 	FScopedTransaction Transaction(LOCTEXT("SetBoneExcluded_Label", "Set Bone Excluded"));
@@ -562,17 +635,24 @@ void UIKRigController::SetBoneExcluded(const FName& BoneName, const bool bExclud
 	}
 
 	BroadcastNeedsReinitialized();
+
+	return true;
 }
 
-bool UIKRigController::GetBoneExcluded(const FName& BoneName) const
+bool UIKRigController::GetBoneExcluded(const FName BoneName) const
 {
 	return Asset->Skeleton.ExcludedBones.Contains(BoneName);
 }
 
-FTransform UIKRigController::GetRefPoseTransformOfBone(const FName& BoneName) const
+FTransform UIKRigController::GetRefPoseTransformOfBone(const FName BoneName) const
 {	
 	const int32 BoneIndex = Asset->Skeleton.GetBoneIndexFromName(BoneName);
-	check(BoneIndex != INDEX_NONE) // must initialize IK Rig before getting here
+	if (BoneIndex == INDEX_NONE)
+	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Tried to get the ref pose of bone that is not loaded into this rig."));
+		return FTransform::Identity;
+	}
+	
 	return Asset->Skeleton.RefPoseGlobal[BoneIndex];
 }
 
@@ -583,6 +663,12 @@ FTransform UIKRigController::GetRefPoseTransformOfBone(const FName& BoneName) co
 int32 UIKRigController::AddSolver(TSubclassOf<UIKRigSolver> InIKRigSolverClass) const
 {
 	check(Asset)
+
+	if (!InIKRigSolverClass)
+	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Could not add solver to IK Rig. Invalid solver class specified."));
+		return INDEX_NONE;
+	}
 
 	FScopedTransaction Transaction(LOCTEXT("AddSolver_Label", "Add Solver"));
 	Asset->Modify();
@@ -597,32 +683,41 @@ int32 UIKRigController::AddSolver(TSubclassOf<UIKRigSolver> InIKRigSolverClass) 
 	return SolverIndex;
 }
 
-void UIKRigController::RemoveSolver(const int32 SolverIndex) const
+bool UIKRigController::RemoveSolver(const int32 SolverIndex) const
 {
 	check(Asset)
 	
 	if (!Asset->Solvers.IsValidIndex(SolverIndex))
 	{
-		return;
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Solver not removed. Invalid index, %d."), SolverIndex);
+		return false;
 	}
 
 	FScopedTransaction Transaction(LOCTEXT("RemoveSolver_Label", "Remove Solver"));
 	Asset->Modify();
-
 	Asset->Solvers.RemoveAt(SolverIndex);
 
 	BroadcastNeedsReinitialized();
+	return true;
 }
 
 bool UIKRigController::MoveSolverInStack(int32 SolverToMoveIndex, int32 TargetSolverIndex) const
 {
 	if (!Asset->Solvers.IsValidIndex(SolverToMoveIndex))
 	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Solver not moved. Invalid source index, %d."), SolverToMoveIndex);
 		return false;
 	}
 
 	if (!Asset->Solvers.IsValidIndex(TargetSolverIndex))
 	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Solver not moved. Invalid target index, %d."), TargetSolverIndex);
+		return false;
+	}
+
+	if (SolverToMoveIndex == TargetSolverIndex)
+	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Solver not moved. Source and target index cannot be the same."));
 		return false;
 	}
 
@@ -643,6 +738,7 @@ bool UIKRigController::SetSolverEnabled(int32 SolverIndex, bool bIsEnabled) cons
 {
 	if (!Asset->Solvers.IsValidIndex(SolverIndex))
 	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Solver not enabled or disabled. Invalid index, %d."), SolverIndex);
 		return false;
 	}
 	
@@ -658,16 +754,29 @@ bool UIKRigController::SetSolverEnabled(int32 SolverIndex, bool bIsEnabled) cons
 	return true;
 }
 
-void UIKRigController::SetRootBone(const FName& RootBoneName, int32 SolverIndex) const
+bool UIKRigController::GetSolverEnabled(int32 SolverIndex) const
 {
 	if (!Asset->Solvers.IsValidIndex(SolverIndex))
 	{
-		return; // solver doesn't exist
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Invalid solver index, %d."), SolverIndex);
+		return false;
+	}
+
+	return Asset->Solvers[SolverIndex]->IsEnabled();
+}
+
+bool UIKRigController::SetRootBone(const FName RootBoneName, int32 SolverIndex) const
+{
+	if (!Asset->Solvers.IsValidIndex(SolverIndex))
+	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Root bone not set. Invalid solver index, %d."), SolverIndex);
+		return false; // solver doesn't exist
 	}
 
 	if (Asset->Skeleton.GetBoneIndexFromName(RootBoneName) == INDEX_NONE)
 	{
-		return; // bone doesn't exist
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Root bone not set. Invalid bone specified, %s."), *RootBoneName.ToString());
+		return false; // bone doesn't exist
 	}
 
 	FScopedTransaction Transaction(LOCTEXT("SetRootBone_Label", "Set Root Bone"));
@@ -677,18 +786,39 @@ void UIKRigController::SetRootBone(const FName& RootBoneName, int32 SolverIndex)
 	Solver->SetRootBone(RootBoneName);
 
 	BroadcastNeedsReinitialized();
+
+	return true;
 }
 
-void UIKRigController::SetEndBone(const FName& EndBoneName, int32 SolverIndex) const
+FName UIKRigController::GetRootBone(int32 SolverIndex) const
 {
 	if (!Asset->Solvers.IsValidIndex(SolverIndex))
 	{
-		return; // solver doesn't exist
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Could not query root bone. Invalid solver index, %d."), SolverIndex);
+		return NAME_None; // solver doesn't exist
+	}
+
+	return Asset->Solvers[SolverIndex]->GetRootBone();
+}
+
+bool UIKRigController::SetEndBone(const FName EndBoneName, int32 SolverIndex) const
+{
+	if (!Asset->Solvers.IsValidIndex(SolverIndex))
+	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("End bone not set. Invalid solver index, %d."), SolverIndex);
+		return false; // solver doesn't exist
 	}
 
 	if (Asset->Skeleton.GetBoneIndexFromName(EndBoneName) == INDEX_NONE)
 	{
-		return; // bone doesn't exist
+		UE_LOG(LogIKRigEditor, Warning, TEXT("End bone not set. Invalid bone specified, %s."), *EndBoneName.ToString());
+		return false; // bone doesn't exist
+	}
+
+	if (!Asset->Solvers[SolverIndex]->RequiresEndBone())
+	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("End bone not set. Specified solver does not support end bones."));
+		return false; //
 	}
 
 	FScopedTransaction Transaction(LOCTEXT("SetEndBone_Label", "Set End Bone"));
@@ -698,6 +828,19 @@ void UIKRigController::SetEndBone(const FName& EndBoneName, int32 SolverIndex) c
 	Solver->SetEndBone(EndBoneName);
 
 	BroadcastNeedsReinitialized();
+
+	return true;
+}
+
+FName UIKRigController::GetEndBone(int32 SolverIndex) const
+{
+	if (!Asset->Solvers.IsValidIndex(SolverIndex))
+	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("End bone not queried. Invalid solver index, %d."), SolverIndex);
+		return NAME_None; // solver doesn't exist
+	}
+
+	return Asset->Solvers[SolverIndex]->GetEndBone();
 }
 
 const TArray<UIKRigSolver*>& UIKRigController::GetSolverArray() const
@@ -705,7 +848,7 @@ const TArray<UIKRigSolver*>& UIKRigController::GetSolverArray() const
 	return Asset->Solvers;
 }
 
-FString UIKRigController::GetSolverUniqueName(int32 SolverIndex)
+FString UIKRigController::GetSolverUniqueName(int32 SolverIndex) const
 {
 	check(Asset)
 	if (!Asset->Solvers.IsValidIndex(SolverIndex))
@@ -724,7 +867,7 @@ int32 UIKRigController::GetNumSolvers() const
 	return Asset->Solvers.Num();
 }
 
-UIKRigSolver* UIKRigController::GetSolver(int32 Index) const
+UIKRigSolver* UIKRigController::GetSolverAtIndex(int32 Index) const
 {
 	check(Asset)
 
@@ -736,20 +879,31 @@ UIKRigSolver* UIKRigController::GetSolver(int32 Index) const
 	return nullptr;
 }
 
+int32 UIKRigController::GetIndexOfSolver(UIKRigSolver* Solver) const
+{
+	check(Asset)
+	return Asset->Solvers.Find(Solver);
+}
+
 // -------------------------------------------------------
 // GOALS
 //
 
-UIKRigEffectorGoal* UIKRigController::AddNewGoal(const FName& GoalName, const FName& BoneName) const
+FName UIKRigController::AddNewGoal(const FName GoalName, const FName BoneName) const
 {
-	if (GetIKRigSkeleton().GetBoneIndexFromName(BoneName) == INDEX_NONE)
-	{
-		return nullptr; // bone does not exist in the skeleton
-	}
-	
+	// does goal already exist?
 	if (GetGoalIndex(GoalName) != INDEX_NONE)
 	{
-		return nullptr; // goal already exists!
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Trying to create a Goal that already exists, %s."), *GoalName.ToString());
+		return NAME_None;
+	}
+
+	// does this bone exist?
+	const int32 BoneIndex = Asset->Skeleton.GetBoneIndexFromName(BoneName);
+	if (BoneIndex == INDEX_NONE)
+	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Trying to create Goal on unknown bone, %s."), *BoneName.ToString());
+		return NAME_None;
 	}
 	
 	FScopedTransaction Transaction(LOCTEXT("AddNewGoal_Label", "Add New Goal"));
@@ -767,16 +921,16 @@ UIKRigEffectorGoal* UIKRigController::AddNewGoal(const FName& GoalName, const FN
 	// connect the new goal to all the solvers
 	for (int32 SolverIndex=0; SolverIndex<GetNumSolvers(); ++SolverIndex)
 	{
-		ConnectGoalToSolver(*NewGoal, SolverIndex);
+		ConnectGoalToSolver(NewGoal->GoalName, SolverIndex);
 	}
  
 	BroadcastNeedsReinitialized();
 	BroadcastGoalsChange();
 	
-	return NewGoal;
+	return NewGoal->GoalName;
 }
 
-bool UIKRigController::RemoveGoal(const FName& GoalName) const
+bool UIKRigController::RemoveGoal(const FName GoalName) const
 {
 	const int32 GoalIndex = GetGoalIndex(GoalName);
 	if (GoalIndex == INDEX_NONE)
@@ -787,7 +941,7 @@ bool UIKRigController::RemoveGoal(const FName& GoalName) const
 	FScopedTransaction Transaction(LOCTEXT("RemoveGoal_Label", "Remove Goal"));
 
 	// remove from all the solvers
-	const FName& GoalToRemove = Asset->Goals[GoalIndex]->GoalName;
+	const FName GoalToRemove = Asset->Goals[GoalIndex]->GoalName;
 	for (UIKRigSolver* Solver : Asset->Solvers)
 	{
 		Solver->Modify();
@@ -813,7 +967,7 @@ bool UIKRigController::RemoveGoal(const FName& GoalName) const
 	return true;
 }
 
-FName UIKRigController::RenameGoal(const FName& OldName, const FName& PotentialNewName) const
+FName UIKRigController::RenameGoal(const FName OldName, const FName PotentialNewName) const
 {
 	if (OldName == PotentialNewName)
 	{
@@ -861,9 +1015,9 @@ FName UIKRigController::RenameGoal(const FName& OldName, const FName& PotentialN
 	return NewName;
 }
 
-FName UIKRigController::GetUniqueGoalName(const FName& NameToMakeUnique) const
+FName UIKRigController::GetUniqueGoalName(const FName NameToMakeUnique) const
 {
-	auto IsNameBeingUsed = [this](const FName& NameToTry) -> bool
+	auto IsNameBeingUsed = [this](const FName NameToTry) -> bool
 	{
 		// check if this goal already exists (case sensitive)
 		int32 ExistingGoalIndex = GetGoalIndex(NameToTry, ENameCase::IgnoreCase);
@@ -886,7 +1040,7 @@ FName UIKRigController::GetUniqueGoalName(const FName& NameToMakeUnique) const
 	return FName(NameToMakeUnique, Number);
 }
 
-bool UIKRigController::ModifyGoal(const FName& GoalName) const
+bool UIKRigController::ModifyGoal(const FName GoalName) const
 {
 	if (UIKRigEffectorGoal* Goal = GetGoal(GoalName))
 	{
@@ -897,7 +1051,7 @@ bool UIKRigController::ModifyGoal(const FName& GoalName) const
 	return false;
 }
 
-bool UIKRigController::SetGoalBone(const FName& GoalName, const FName& NewBoneName) const
+bool UIKRigController::SetGoalBone(const FName GoalName, const FName NewBoneName) const
 {
 	const int32 GoalIndex = GetGoalIndex(GoalName);
 	if (GoalIndex == INDEX_NONE)
@@ -918,9 +1072,11 @@ bool UIKRigController::SetGoalBone(const FName& GoalName, const FName& NewBoneNa
 	
 	FScopedTransaction Transaction(LOCTEXT("SetGoalBone_Label", "Set Goal Bone"));
 
-	// update goal
-	Asset->Goals[GoalIndex]->Modify();
-	Asset->Goals[GoalIndex]->BoneName = NewBoneName;
+	// update goal's bone name and it's initial transform
+	TObjectPtr<UIKRigEffectorGoal> Goal = Asset->Goals[GoalIndex]; 
+	Goal->Modify();
+	Goal->BoneName = NewBoneName;
+	Goal->InitialTransform = GetRefPoseTransformOfBone(NewBoneName);
 	
 	// update in solvers
 	for (UIKRigSolver* Solver : Asset->Solvers)
@@ -929,15 +1085,12 @@ bool UIKRigController::SetGoalBone(const FName& GoalName, const FName& NewBoneNa
 		Solver->SetGoalBone(GoalName, NewBoneName);
 	}
 
-	// update initial transforms
-	ResetGoalTransforms();
-
 	BroadcastNeedsReinitialized();
 	
 	return true;
 }
 
-FName UIKRigController::GetBoneForGoal(const FName& GoalName) const
+FName UIKRigController::GetBoneForGoal(const FName GoalName) const
 {
 	for (const UIKRigEffectorGoal* Goal : Asset->Goals)
 	{
@@ -950,48 +1103,64 @@ FName UIKRigController::GetBoneForGoal(const FName& GoalName) const
 	return NAME_None;
 }
 
-UIKRigEffectorGoal* UIKRigController::GetGoalForBone(const FName& BoneName) const
+FName UIKRigController::GetGoalNameForBone(const FName BoneName) const
 {
 	TArray<UIKRigEffectorGoal*>& AllGoals = GetAllGoals();
 	for (UIKRigEffectorGoal* Goal : AllGoals)
 	{
 		if (Goal->BoneName == BoneName)
 		{
-			return Goal;
+			return Goal->GoalName;
 		}
 	}
 
-	return nullptr;
+	return NAME_None;
 }
 
-bool UIKRigController::ConnectGoalToSolver(const UIKRigEffectorGoal& Goal, int32 SolverIndex) const
+bool UIKRigController::ConnectGoalToSolver(const FName GoalName, int32 SolverIndex) const
 {
-	// can't add goal that is not present in the core
-	check(GetGoalIndex(Goal.GoalName) != INDEX_NONE);
+	// get index of the goal with this name
+	const int32 GoalIndex = GetGoalIndex(GoalName);
+	
+	// can't add goal that is not present
+	if (GoalIndex == INDEX_NONE)
+	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Trying to connect unknown Goal, {0} to a solver."), *GoalName.ToString());
+		return false;
+	}
+	
 	// can't add goal to a solver with an invalid index
-	check(Asset->Solvers.IsValidIndex(SolverIndex))
+	if (!Asset->Solvers.IsValidIndex(SolverIndex))
+	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Trying to connect Goal, %s to a unknown solver with index, %d."), *GoalName.ToString(), SolverIndex);
+		return false;
+	}
 
 	FScopedTransaction Transaction(LOCTEXT("ConnectGoalSolver_Label", "Connect Goal to Solver"));
+
 	UIKRigSolver* Solver = Asset->Solvers[SolverIndex];
+	const UIKRigEffectorGoal& Goal = *GetGoal(GoalName);
 	Solver->Modify();
-	
 	Solver->AddGoal(Goal);
 
 	BroadcastNeedsReinitialized();
+	
 	return true;
 }
 
-bool UIKRigController::DisconnectGoalFromSolver(const FName& GoalToRemove, int32 SolverIndex) const
+bool UIKRigController::DisconnectGoalFromSolver(const FName GoalToRemove, int32 SolverIndex) const
 {
 	// can't remove goal that is not present in the core
 	if (GetGoalIndex(GoalToRemove) == INDEX_NONE)
 	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Trying to disconnect unknown Goal, %s."), *GoalToRemove.ToString());
 		return false;
 	}
 	
 	// can't remove goal from a solver with an invalid index
 	if (!Asset->Solvers.IsValidIndex(SolverIndex))
 	{
+		UE_LOG(LogIKRigEditor, Warning, TEXT("Trying to disconnect Goal, %s from an unknown solver with index, %d."), *GoalToRemove.ToString(), SolverIndex);
 		return false;
 	}
 
@@ -1005,7 +1174,7 @@ bool UIKRigController::DisconnectGoalFromSolver(const FName& GoalToRemove, int32
 	return true;
 }
 
-bool UIKRigController::IsGoalConnectedToSolver(const FName& GoalName, int32 SolverIndex) const
+bool UIKRigController::IsGoalConnectedToSolver(const FName GoalName, int32 SolverIndex) const
 {
 	if (!Asset->Solvers.IsValidIndex(SolverIndex))
 	{
@@ -1015,7 +1184,7 @@ bool UIKRigController::IsGoalConnectedToSolver(const FName& GoalName, int32 Solv
 	return Asset->Solvers[SolverIndex]->IsGoalConnected(GoalName);
 }
 
-bool UIKRigController::IsGoalConnectedToAnySolver(const FName& GoalName) const
+bool UIKRigController::IsGoalConnectedToAnySolver(const FName GoalName) const
 {
 	for (const TObjectPtr<UIKRigSolver> Solver : Asset->Solvers)
 	{
@@ -1033,17 +1202,7 @@ TArray<UIKRigEffectorGoal*>& UIKRigController::GetAllGoals() const
 	return Asset->Goals;
 }
 
-const UIKRigEffectorGoal* UIKRigController::GetGoal(int32 GoalIndex) const
-{
-	if (!Asset->Goals.IsValidIndex(GoalIndex))
-	{
-		return nullptr;
-	}
-
-	return Asset->Goals[GoalIndex];
-}
-
-UIKRigEffectorGoal* UIKRigController::GetGoal(const FName& GoalName) const
+UIKRigEffectorGoal* UIKRigController::GetGoal(const FName GoalName) const
 {
 	const int32 GoalIndex = GetGoalIndex(GoalName);
 	if (GoalIndex == INDEX_NONE)
@@ -1054,7 +1213,7 @@ UIKRigEffectorGoal* UIKRigController::GetGoal(const FName& GoalName) const
 	return Asset->Goals[GoalIndex];
 }
 
-UObject* UIKRigController::GetGoalSettingsForSolver(const FName& GoalName, int32 SolverIndex) const
+UObject* UIKRigController::GetGoalSettingsForSolver(const FName GoalName, int32 SolverIndex) const
 {
 	const int32 GoalIndex = GetGoalIndex(GoalName);
 	if (GoalIndex == INDEX_NONE)
@@ -1070,7 +1229,7 @@ UObject* UIKRigController::GetGoalSettingsForSolver(const FName& GoalName, int32
 	return Asset->Solvers[SolverIndex]->GetGoalSettings(GoalName);
 }
 
-FTransform UIKRigController::GetGoalCurrentTransform(const FName& GoalName) const
+FTransform UIKRigController::GetGoalCurrentTransform(const FName GoalName) const
 {
 	if(const UIKRigEffectorGoal* Goal = GetGoal(GoalName))
 	{
@@ -1080,7 +1239,7 @@ FTransform UIKRigController::GetGoalCurrentTransform(const FName& GoalName) cons
 	return FTransform::Identity; // no goal with that name
 }
 
-void UIKRigController::SetGoalCurrentTransform(const FName& GoalName, const FTransform& Transform) const
+void UIKRigController::SetGoalCurrentTransform(const FName GoalName, const FTransform& Transform) const
 {
 	UIKRigEffectorGoal* Goal = GetGoal(GoalName);
 	check(Goal);
@@ -1097,8 +1256,22 @@ void UIKRigController::ResetGoalTransforms() const
 		Goal->Modify();
     	const FTransform InitialTransform = GetRefPoseTransformOfBone(Goal->BoneName);
     	Goal->InitialTransform = InitialTransform;
-    	Goal->CurrentTransform = InitialTransform;
+		Goal->CurrentTransform = InitialTransform;
     }
+}
+
+void UIKRigController::ResetInitialGoalTransforms() const
+{
+	for (UIKRigEffectorGoal* Goal : Asset->Goals)
+	{
+		// record the current delta rotation
+		const FQuat DeltaRotation = Goal->CurrentTransform.GetRotation() * Goal->InitialTransform.GetRotation().Inverse();
+		// update the initial transform based on the new ref pose
+		const FTransform InitialTransform = GetRefPoseTransformOfBone(Goal->BoneName);
+		Goal->InitialTransform = InitialTransform;
+		// restore the current transform
+		Goal->CurrentTransform.SetRotation(Goal->InitialTransform.GetRotation() * DeltaRotation);
+	}
 }
 
 void UIKRigController::SanitizeGoalName(FString& InOutName)
@@ -1126,22 +1299,12 @@ void UIKRigController::SanitizeGoalName(FString& InOutName)
 	}
 }
 
-int32 UIKRigController::GetGoalIndex(const FName& InGoalName, const ENameCase CompareMethod) const
+int32 UIKRigController::GetGoalIndex(const FName InGoalName, const ENameCase CompareMethod) const
 {
 	return Asset->Goals.IndexOfByPredicate([&](const TObjectPtr<UIKRigEffectorGoal>& Goal)
 	{
 		return Goal->GoalName.IsEqual(InGoalName, CompareMethod); 
 	});
-}
-
-FName UIKRigController::GetGoalName(const int32& GoalIndex) const
-{
-	if (!Asset->Goals.IsValidIndex(GoalIndex))
-	{
-		return NAME_None;
-	}
-
-	return Asset->Goals[GoalIndex]->GoalName;
 }
 
 void UIKRigController::BroadcastGoalsChange() const
@@ -1155,6 +1318,23 @@ void UIKRigController::BroadcastGoalsChange() const
 			FCoreUObjectDelegates::OnObjectPropertyChanged.Broadcast(Asset, GoalPropertyChangedEvent);
 		}
 	}
+}
+
+void UIKRigController::BroadcastNeedsReinitialized() const
+{
+	// initialize all solvers
+	const FIKRigSkeleton& IKRigSkeleton = GetIKRigSkeleton();
+	const TArray<UIKRigSolver*>& Solvers = GetSolverArray(); 
+	for (UIKRigSolver* Solver: Solvers)
+	{
+		Solver->Initialize(IKRigSkeleton);
+	}
+
+	// ensure goals are using initial transforms from the current mesh 
+	ResetInitialGoalTransforms();
+
+	// inform outside systems
+	IKRigNeedsInitialized.Broadcast(GetAsset());
 }
 
 #undef LOCTEXT_NAMESPACE

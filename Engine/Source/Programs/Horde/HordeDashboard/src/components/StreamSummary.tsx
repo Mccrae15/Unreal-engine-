@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 import { DefaultButton, DetailsList, DetailsListLayoutMode, DetailsRow, FocusZone, FocusZoneDirection, IColumn, IDetailsGroupRenderProps, IDetailsListProps, mergeStyleSets, Pivot, PivotItem, ScrollablePane, ScrollbarVisibility, SelectionMode, Spinner, SpinnerSize, Stack, Text } from '@fluentui/react';
-import { action, observable } from 'mobx';
+import { action, makeObservable, observable } from 'mobx';
 import { observer } from 'mobx-react-lite';
 import moment from 'moment-timezone';
 import React, { useEffect, useState } from 'react';
@@ -20,6 +20,10 @@ import { BuildHealthTestReportPanel } from './TestReportPanel';
 
 
 class SummaryHandler {
+
+   constructor() {
+      makeObservable(this);
+   }
 
    set(streamId: string) {
 
@@ -54,7 +58,9 @@ class SummaryHandler {
 
       try {
 
-         if (!this.streamId || this.updating) {
+         const streamId = this.streamId;
+
+         if (!streamId || this.updating) {
             return;
          }
 
@@ -66,7 +72,12 @@ class SummaryHandler {
          this.updating = true;
          const cancelID = this.cancelID++;
 
-         const values = await Promise.all([backend.getIssuesV2({ streamId: this.streamId, count: 512, resolved: false })]);
+         const values = await Promise.all([backend.getIssuesV2({ streamId: streamId, count: 512, resolved: false })]);
+
+         // early out if has been canceled 
+         if (this.canceled.has(cancelID)) {
+            return;
+         }
 
          let jiraKeys: string[] = [];
          
@@ -91,19 +102,19 @@ class SummaryHandler {
          });
 
          if (jiraKeys.length) {
-            const jiras = await backend.getExternalIssues(this.streamId, jiraKeys);
+            const jiras = await backend.getExternalIssues(streamId, jiraKeys);
             jiras.forEach(j => {
                this.jiraIssues.set(j.key, { issue: j, cacheTime: moment(Date.now()) });
             })
          }
 
-
-         this.issues = values[0].filter(p => p.promoted || jiraIssues.has(p.id));
-         this.unpromoted = values[0].filter(p => !p.promoted && !jiraIssues.has(p.id));
-
+         // early out if has been canceled 
          if (this.canceled.has(cancelID)) {
             return;
          }
+
+         this.issues = values[0].filter(p => p.promoted || jiraIssues.has(p.id));
+         this.unpromoted = values[0].filter(p => !p.promoted && !jiraIssues.has(p.id));
 
          this.intialLoad = false;
          this.updated();

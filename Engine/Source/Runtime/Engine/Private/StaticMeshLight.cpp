@@ -5,12 +5,10 @@
 =============================================================================*/
 
 #include "StaticMeshLight.h"
-#include "UObject/Object.h"
-#include "Engine/EngineTypes.h"
-#include "CollisionQueryParams.h"
-#include "Components/StaticMeshComponent.h"
+#include "Engine/Level.h"
 #include "Misc/ConfigCacheIni.h"
-#include "ComponentReregisterContext.h"
+#include "RenderUtils.h"
+#include "StaticMeshComponentLODInfo.h"
 #include "StaticMeshResources.h"
 #include "LightMap.h"
 #include "Engine/MapBuildDataRegistry.h"

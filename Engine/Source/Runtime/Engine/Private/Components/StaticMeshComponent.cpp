@@ -2,26 +2,28 @@
 
 #include "Components/StaticMeshComponent.h"
 
+#include "BodySetupEnums.h"
 #include "Modules/ModuleManager.h"
-#include "RenderingThread.h"
-#include "Components.h"
 #include "Engine/MapBuildDataRegistry.h"
+#include "MaterialShared.h"
 #include "Materials/Material.h"
 #include "Misc/ConfigCacheIni.h"
+#include "RenderUtils.h"
 #include "UObject/ObjectSaveContext.h"
-#include "UObject/RenderingObjectVersion.h"
+#include "SceneInterface.h"
+#include "UObject/Package.h"
+#include "UObject/FortniteMainBranchObjectVersion.h"
 #include "UObject/FortniteNCBranchObjectVersion.h"
-#include "GameFramework/WorldSettings.h"
 #include "Engine/CollisionProfile.h"
 #include "ContentStreaming.h"
 #include "ComponentReregisterContext.h"
+#include "UObject/UObjectAnnotation.h"
 #include "UnrealEngine.h"
 #include "EngineUtils.h"
+#include "StaticMeshComponentLODInfo.h"
 #include "StaticMeshResources.h"
-#include "NaniteSceneProxy.h"
-#include "PrimitiveSceneInfo.h"
+#include "StaticMeshSceneProxy.h"
 #include "Net/UnrealNetwork.h"
-#include "Logging/TokenizedMessage.h"
 #include "Logging/MessageLog.h"
 #include "Misc/UObjectToken.h"
 #include "Misc/MapErrors.h"
@@ -32,24 +34,15 @@
 #include "HierarchicalLODUtilitiesModule.h"
 #include "Rendering/StaticLightingSystemInterface.h"
 #include "Streaming/ActorTextureStreamingBuildDataComponent.h"
-#include "Misc/Crc.h"
 #endif
 #include "LightMap.h"
 #include "ShadowMap.h"
-#include "Engine/ShadowMapTexture2D.h"
 #include "AI/Navigation/NavCollisionBase.h"
 #include "Engine/StaticMeshSocket.h"
-#include "AI/NavigationSystemHelpers.h"
 #include "AI/NavigationSystemBase.h"
 #include "PhysicsEngine/BodySetup.h"
-#include "EngineGlobals.h"
 #include "ComponentRecreateRenderStateContext.h"
 #include "Engine/StaticMesh.h"
-#include "HAL/LowLevelMemTracker.h"
-#include "HAL/IConsoleManager.h"
-#include "Algo/AllOf.h"
-#include "Algo/Transform.h"
-#include "PipelineStateCache.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(StaticMeshComponent)
 
@@ -205,6 +198,7 @@ UStaticMeshComponent::UStaticMeshComponent(const FObjectInitializer& ObjectIniti
 	bForceNavigationObstacle = true;
 	bDisallowMeshPaintPerInstance = false;
 	bDisallowNanite = false;
+	bForceDisableNanite = false;
 	bEvaluateWorldPositionOffset = true;
 	bEvaluateWorldPositionOffsetInRayTracing = false;
 	bInitialEvaluateWorldPositionOffset = false;
@@ -298,13 +292,14 @@ FString UStaticMeshComponent::GetDetailedInfoInternal() const
 void UStaticMeshComponent::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)
 {	
 	UStaticMeshComponent* This = CastChecked<UStaticMeshComponent>(InThis);
+	FPlatformMisc::Prefetch(This, offsetof(UStaticMeshComponent, LODData));
 	Super::AddReferencedObjects(This, Collector);
 
-	for (int32 LODIndex = 0; LODIndex < This->LODData.Num(); LODIndex++)
+	for (FStaticMeshComponentLODInfo& LodInfo : This->LODData)
 	{
-		if (This->LODData[LODIndex].OverrideMapBuildData)
+		if (LodInfo.OverrideMapBuildData)
 		{
-			This->LODData[LODIndex].OverrideMapBuildData->AddReferencedObjects(Collector);
+			LodInfo.OverrideMapBuildData->AddReferencedObjects(Collector);
 		}
 	}
 }
@@ -1524,9 +1519,9 @@ void UStaticMeshComponent::InitResources()
 	}
 }
 
-void UStaticMeshComponent::PrecachePSOs()
+void UStaticMeshComponent::CollectPSOPrecacheData(const FPSOPrecacheParams& BasePrecachePSOParams, FComponentPSOPrecacheParamsList& OutParams)
 {
-	if (!IsComponentPSOPrecachingEnabled() || StaticMesh == nullptr || StaticMesh->GetRenderData() == nullptr)
+	if (StaticMesh == nullptr || StaticMesh->GetRenderData() == nullptr)
 	{
 		return;
 	}
@@ -1547,10 +1542,9 @@ void UStaticMeshComponent::PrecachePSOs()
 
 	bool bIsLocalToWorldDeterminantNegative = GetRenderMatrix().Determinant() < 0;
 
-	FPSOPrecacheParams PrecachePSOParams;
-	SetupPrecachePSOParams(PrecachePSOParams);
+	FPSOPrecacheParams PrecachePSOParams = BasePrecachePSOParams;
 	PrecachePSOParams.bCastShadow = bAnySectionCastsShadows;
-	PrecachePSOParams.bReverseCulling = bReverseCulling || bIsLocalToWorldDeterminantNegative;
+	PrecachePSOParams.bReverseCulling = bReverseCulling != bIsLocalToWorldDeterminantNegative;
 	PrecachePSOParams.bForceLODModel = ForcedLodModel > 0;
 
 	const FVertexFactoryType* VFType = ShouldCreateNaniteProxy() ? &Nanite::FVertexFactory::StaticType :  &FLocalVertexFactory::StaticType;
@@ -1563,7 +1557,10 @@ void UStaticMeshComponent::PrecachePSOs()
 			PrecachePSOParams.bHasWorldPositionOffsetVelocity = SupportsWorldPositionOffsetVelocity()
 				&& MaterialInterface->GetRelevance_Concurrent(FeatureLevel).bUsesWorldPositionOffset;
 
-			MaterialInterface->PrecachePSOs(VFType, PrecachePSOParams);
+			FComponentPSOPrecacheParams& ComponentParams = OutParams[OutParams.AddDefaulted()];
+			ComponentParams.MaterialInterface = MaterialInterface;
+			ComponentParams.VertexFactoryDataList.Add(FPSOPrecacheVertexFactoryData(VFType));
+			ComponentParams.PSOPrecacheParams = PrecachePSOParams;
 		}
 	}
 }
@@ -1718,7 +1715,7 @@ void UStaticMeshComponent::UpdatePreCulledData(int32 LODIndex, const TArray<uint
 
 bool UStaticMeshComponent::ShouldCreateNaniteProxy() const
 {
-	if (bDisallowNanite || GetScene() == nullptr)
+	if (bDisallowNanite || bForceDisableNanite)
 	{
 		// Regardless of the static mesh asset supporting Nanite, this component does not want Nanite to be used
 		return false;
@@ -2046,6 +2043,7 @@ void UStaticMeshComponent::UpdateCollisionFromStaticMesh()
 
 void UStaticMeshComponent::PostLoad()
 {
+	LLM_SCOPE(ELLMTag::StaticMesh);
 	NotifyIfStaticMeshChanged();
 
 	// need to postload the StaticMesh because super initializes variables based on GetStaticLightingType() which we override and use from the StaticMesh
@@ -2111,8 +2109,12 @@ void UStaticMeshComponent::PostLoad()
 	// Initialize the resources for the freshly loaded component.
 	InitResources();
 
-	// Precache PSOs for the used materials
-	PrecachePSOs();
+	// If currently compiling, those will be called once the static mesh compilation has finished
+	if (GetStaticMesh() && !GetStaticMesh()->IsCompiling())
+	{
+		// Precache PSOs for the used materials
+		PrecachePSOs();
+	}
 }
 
 bool UStaticMeshComponent::IsPostLoadThreadSafe() const
@@ -2195,6 +2197,9 @@ bool UStaticMeshComponent::SetStaticMesh(UStaticMesh* NewMesh)
 		);
 	}
 
+	// Precache the PSOs
+	PrecachePSOs();
+
 	// Need to send this to render thread at some point
 	if (IsRenderStateCreated())
 	{
@@ -2222,9 +2227,6 @@ bool UStaticMeshComponent::SetStaticMesh(UStaticMesh* NewMesh)
 
 	// Mark cached material parameter names dirty
 	MarkCachedMaterialParameterNameIndicesDirty();
-
-	// Precache the PSOs
-	PrecachePSOs();
 
 #if WITH_EDITOR
 	// Broadcast that the static mesh has changed
@@ -2360,6 +2362,17 @@ void UStaticMeshComponent::SetReverseCulling(bool ReverseCulling)
 	if (ReverseCulling != bReverseCulling)
 	{
 		bReverseCulling = ReverseCulling;
+		MarkRenderStateDirty();
+	}
+}
+
+void UStaticMeshComponent::SetForceDisableNanite(bool bInForceDisableNanite)
+{
+	bForceDisableNanite = bInForceDisableNanite;
+
+	// Check if we now need to recreate our scene proxy
+	if (SceneProxy != nullptr && SceneProxy->IsNaniteMesh() != ShouldCreateNaniteProxy())
+	{
 		MarkRenderStateDirty();
 	}
 }
@@ -2985,6 +2998,8 @@ void UStaticMeshComponent::PostStaticMeshCompilation()
 	CachePaintedDataIfNecessary();
 
 	FixupOverrideColorsIfNecessary(true);
+
+	PrecachePSOs();
 
 	UpdateCollisionFromStaticMesh();
 

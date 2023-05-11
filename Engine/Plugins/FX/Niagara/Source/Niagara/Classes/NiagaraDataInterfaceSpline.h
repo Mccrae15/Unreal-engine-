@@ -1,12 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "NiagaraDataInterface.h"
-#include "NiagaraCommon.h"
-#include "VectorVM.h"
-#include "NiagaraParameterStore.h"
 #include "Components/SplineComponent.h"
-#include "Niagara/Private/NiagaraStats.h"
+#include "NiagaraCommon.h"
+#include "NiagaraDataInterface.h"
+#include "NiagaraParameterStore.h"
+#include "NiagaraStats.h"
+#include "VectorVM.h"
 #include "NiagaraDataInterfaceSpline.generated.h"
 
 class UNiagaraDataInterfaceSpline;
@@ -21,6 +21,7 @@ struct FNDISpline_InstanceData_RenderThread
 	
 	FMatrix44f SplineTransform;
 	FMatrix44f SplineTransformRotationMat;
+	FMatrix44f SplineTransformInverse;
 	FMatrix44f SplineTransformInverseTranspose;
 	FQuat4f SplineTransformRotation;
 
@@ -45,9 +46,9 @@ struct FNDISpline_InstanceData_RenderThread
 		SplineScalesLUT.Release();
 		SplineRotationsLUT.Release();
 
-
 		SplineTransform = FMatrix44f::Identity;
 		SplineTransformRotationMat = FMatrix44f::Identity;
+		SplineTransformInverse = FMatrix44f::Identity;
 		SplineTransformInverseTranspose = FMatrix44f::Identity;
 		SplineTransformRotation = FQuat4f::Identity;
 
@@ -154,12 +155,12 @@ struct FNDISpline_InstanceData
 	FVector GetUpVectorAtDistanceAlongSpline(float Distance, ESplineCoordinateSpace::Type CoordinateSpace) const;
 	template<typename UseLUT>
 	FVector GetRightVectorAtDistanceAlongSpline(float Distance, ESplineCoordinateSpace::Type CoordinateSpace) const;
-	
+
+	template<typename UseLUT>
+	float GetFinalKeyTime() const;
+
 	template<typename UseLUT>
 	float FindInputKeyClosestToWorldLocation(const FVector& WorldLocation) const;
-
-
-	FInterpCurveVector& GetSplinePointsPosition() { return SplineCurves.Position; }
 
 private:
 	template<typename UseLUT>
@@ -256,13 +257,12 @@ protected:
 
 	virtual bool AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const override;
 #endif
-	virtual bool UseLegacyShaderBindings() const override { return false; }
 	virtual void BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const override;
 	virtual void SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const override;
 
 private:
 	
-	void WriteTransform(const FMatrix& ToWrite, FVectorVMExternalFunctionContext& Context);
+	void WriteTransform(const FMatrix44f& ToWrite, FVectorVMExternalFunctionContext& Context);
 
 	TMap<FNiagaraSystemInstanceID, FNDISpline_InstanceData*> SystemInstancesToProxyData_GT;
 };

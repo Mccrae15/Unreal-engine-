@@ -2,10 +2,19 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Toolkits/SimpleAssetEditor.h"
+#include "DataRegistryTypes.h"
 #include "DataTableEditorUtils.h"
-#include "DataRegistry.h"
+#include "Toolkits/AssetEditorToolkit.h"
+#include "Widgets/Views/SHeaderRow.h"
+
+class FSpawnTabArgs;
+class FToolBarBuilder;
+class SSearchBox;
+class UDataRegistry;
+template <typename ItemType> class SListView;
+
+class ITableRow;
+class STableViewBase;
 
 // TODO This is heavily based off of FDataTableEditor, could possibly refactor some of this into a parent class
 

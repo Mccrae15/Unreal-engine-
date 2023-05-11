@@ -5,12 +5,12 @@
 =============================================================================*/
 
 #include "Rendering/StreamableTextureResource.h"
-#include "Engine/Texture.h"
 #include "DeviceProfiles/DeviceProfile.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
+#include "Misc/CoreStats.h"
 #include "ProfilingDebugging/LoadTimeTracker.h"
 #include "ProfilingDebugging/ScopedDebugInfo.h"
-#include "RenderUtils.h"
+#include "Stats/StatsTrace.h"
 
 #if STATS
 int64 GUITextureMemory = 0;
@@ -189,6 +189,7 @@ void FStreamableTextureResource::InitRHI()
 	// Update mip-level fading.
 	MipBiasFade.SetNewMipCount( State.NumRequestedLODs, State.NumRequestedLODs, LastRenderTime, MipFadeSetting );
 
+	TextureRHI->SetOwnerName(GetOwnerName());
 	TextureRHI->SetName(TextureName);
 	RHIBindDebugLabelName(TextureRHI, *TextureName.ToString());
 
@@ -229,6 +230,7 @@ void FStreamableTextureResource::FinalizeStreaming(FRHITexture* InTextureRHI)
 	}
 
 	TextureRHI = InTextureRHI;
+	TextureRHI->SetOwnerName(GetOwnerName());
 	if (ensure(TextureReferenceRHI.IsValid()))
 	{
 		RHIUpdateTextureReference(TextureReferenceRHI, TextureRHI);

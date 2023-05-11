@@ -4,8 +4,53 @@
 
 #include "CoreMinimal.h"
 #include "NiagaraEditorUtilities.h"
+#include "PropertyEditorDelegates.h"
 #include "ViewModels/Stack/NiagaraStackFunctionInput.h"
+#include "ToolMenuSection.h"
 #include "NiagaraHierarchyViewModelBase.generated.h"
+
+USTRUCT()
+struct FNiagaraHierarchyIdentity
+{
+	GENERATED_BODY()
+
+	FNiagaraHierarchyIdentity() {}
+	FNiagaraHierarchyIdentity(TArray<FGuid> InGuids, TArray<FName> InNames) : Guids(InGuids), Names(InNames) {}
+	
+	/** An array of guids that have to be satisfied in order to match. */
+	UPROPERTY()
+	TArray<FGuid> Guids;
+
+	/** Optionally, an array of names can be specified in place of guids. If guids & names are present, guids have to be satisfied first, then names. */
+	UPROPERTY()
+	TArray<FName> Names;
+
+	bool operator==(const FNiagaraHierarchyIdentity& OtherIdentity)
+	{
+		if(Guids.Num() != OtherIdentity.Guids.Num() || Names.Num() != OtherIdentity.Names.Num())
+		{
+			return false;
+		}
+
+		for(int32 GuidIndex = 0; GuidIndex < Guids.Num(); GuidIndex++)
+		{
+			if(Guids[GuidIndex] != OtherIdentity.Guids[GuidIndex])
+			{
+				return false;
+			}
+		}
+
+		for(int32 NameIndex = 0; NameIndex < Names.Num(); NameIndex++)
+		{
+			if(!Names[NameIndex].IsEqual(OtherIdentity.Names[NameIndex]))
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
+};
 
 UCLASS()
 class UNiagaraHierarchyItemBase : public UObject
@@ -13,12 +58,15 @@ class UNiagaraHierarchyItemBase : public UObject
 	GENERATED_BODY()
 
 public:
-	UNiagaraHierarchyItemBase() { Guid = FGuid::NewGuid(); }
+	UNiagaraHierarchyItemBase() { Identity.Guids.Add(FGuid::NewGuid()); }
 	virtual ~UNiagaraHierarchyItemBase() override {}
 
 	TArray<UNiagaraHierarchyItemBase*>& GetChildrenMutable() { return Children; }
 	const TArray<UNiagaraHierarchyItemBase*>& GetChildren() const;
 
+	template<class ChildClass>
+	ChildClass* AddChild();
+	
 	template<class ChildClass>
 	bool DoesOneChildExist(bool bRecursive = false) const;
 
@@ -34,9 +82,9 @@ public:
 	void Finalize();
 	bool IsFinalized() const { return bFinalized; }
 
-	/** A guid can be optionally set to create a mapping from previously existing guids to hierarchy items that represent them. */
-	void SetGuid(FGuid InGuid) { Guid = InGuid; }
-	virtual FGuid GetPersistentIdentity() const { return Guid; }
+	/** An identity can be optionally set to create a mapping from previously existing guids or names to hierarchy items that represent them. */
+	void SetIdentity(FNiagaraHierarchyIdentity InIdentity) { Identity = InIdentity; }
+	virtual FNiagaraHierarchyIdentity GetPersistentIdentity() const { return Identity; }
 	
 	virtual bool CanHaveChildren() const { return false; }
 
@@ -47,16 +95,31 @@ protected:
 	/** Called by the public Refresh function. Can be overridden to further customize the refresh process, i.e. refreshing section data in the root. */
 	virtual void RefreshDataInternal() { }
 
+protected:
+	virtual void PostLoad() override;
+
 	UPROPERTY()
 	TArray<TObjectPtr<UNiagaraHierarchyItemBase>> Children;
+
+	UPROPERTY()
+	FNiagaraHierarchyIdentity Identity;
 	
 	/** An optional guid; can be used if hierarchy items represent outside items */
 	UPROPERTY()
-	FGuid Guid;
+	FGuid Guid_DEPRECATED;
 
 	UPROPERTY(Transient)
 	bool bFinalized = false;
 };
+
+template <class ChildClass>
+ChildClass* UNiagaraHierarchyItemBase::AddChild()
+{
+	ChildClass* NewChild = NewObject<ChildClass>(this);
+	GetChildrenMutable().Add(NewChild);
+
+	return NewChild;
+}
 
 template <class ChildClass>
 bool UNiagaraHierarchyItemBase::DoesOneChildExist(bool bRecursive) const
@@ -237,6 +300,17 @@ protected:
 	bool bFromSourceList = false;
 };
 
+UCLASS(BlueprintType)
+class UNiagaraHierarchyMenuContext : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	TArray<TSharedPtr<FNiagaraHierarchyItemViewModelBase>> Items;
+
+	bool bFromHierarchy = false;
+};
+
 UCLASS(Abstract)
 class UNiagaraHierarchyViewModelBase : public UObject, public FEditorUndoClient
 {
@@ -370,7 +444,7 @@ struct NIAGARAEDITOR_API FNiagaraHierarchyItemViewModelBase : TSharedFromThis<FN
 	virtual void Tick(float DeltaTime) override;
 	virtual TStatId GetStatId() const override;
 	
-	FString ToString() const { return ItemBase->ToString(); }
+	virtual FString ToString() const { return ItemBase->ToString(); }
 	
 	void SyncToData();
 	const TArray<TSharedPtr<FNiagaraHierarchyItemViewModelBase>>& GetChildren() const { return Children; }
@@ -431,6 +505,9 @@ struct NIAGARAEDITOR_API FNiagaraHierarchyItemViewModelBase : TSharedFromThis<FN
 			bRenamePending = true;
 		}
 	}
+
+	/** Override this to register dynamic context menu entries when right clicking a hierarchy item */
+	virtual void PopulateDynamicContextMenuSection(FToolMenuSection& DynamicSection) {}
 
 	/** The UObject we display in the details panel when this item is selected. By default it's the item the view model represents. */
 	virtual UObject* GetDataForEditing() { return ItemBase; }

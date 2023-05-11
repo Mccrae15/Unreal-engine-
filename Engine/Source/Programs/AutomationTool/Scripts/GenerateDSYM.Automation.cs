@@ -30,7 +30,7 @@ public class GenerateDSYM : BuildCommand
 				string PlatformName = ParseParamValue("platform");
 				FileReference ProjectFile = ParseProjectParam();
 				string TargetName = ParseOptionalStringParam("target") ?? System.IO.Path.GetFileNameWithoutExtension(ProjectFile?.FullName ?? "");
-				string Architecture = ParseOptionalStringParam("architecture") ?? System.IO.Path.GetFileNameWithoutExtension(ProjectFile?.FullName ?? "");
+				string ArchitectureString = ParseOptionalStringParam("architecture") ?? "";
 				UnrealTargetConfiguration Configuration = ParseOptionalEnumParam<UnrealTargetConfiguration>("config") ?? UnrealTargetConfiguration.Development;
 
 				if (ProjectFile == null || PlatformName == null || TargetName == null)
@@ -51,6 +51,7 @@ public class GenerateDSYM : BuildCommand
 					Log.TraceError("Platform must be one of Mac, IOS, TVOS");
 					return;
 				}
+				UnrealArchitectures Architecture = UnrealArchitectures.FromString(ArchitectureString, Platform);
 
 
 				FileReference ReceiptFile = TargetReceipt.GetDefaultPath(DirectoryReference.FromFile(ProjectFile) ?? Unreal.EngineDirectory, TargetName, Platform, Configuration, Architecture);
@@ -87,7 +88,23 @@ public class GenerateDSYM : BuildCommand
 
 				// put dSYM next to the binary
 				string dSYM = Path.ChangeExtension(Binary, ".dSYM");
-				string Command = string.Format("-c 'rm -rf \"{0}\"; dsymutil -o \"{0}\" {2} \"{1}\"'", dSYM, Binary, bSaveFlat ? "--flat" : "");
+				if (Binary.Contains(".app/"))
+				{
+					// or the .app if the binary is inside one
+					dSYM = Path.Combine(Path.GetDirectoryName(Binary.Substring(0, Binary.LastIndexOf(".app"))), Path.GetFileName(dSYM));
+				}
+
+				Log.TraceInformation("  Generating for {0} -> {1}", Binary, dSYM);
+
+				string Command;
+				if (bSaveFlat)
+				{
+					Command = string.Format("-c 'rm -rf \"{0}\"; dsymutil -o \"{0}\" {2} \"{1}\"'", dSYM, Binary, bSaveFlat ? "--flat" : "");
+				}
+				else 
+				{ 
+					Command = $"-c '{Unreal.EngineDirectory}/Build/BatchFiles/Mac/GenerateUniversalDSYM.sh \"{Binary}\" \"{dSYM}\"'";
+				}	
 
 				DateTime RunStart = DateTime.Now;
 				Run("bash", Command, Options: ERunOptions.NoLoggingOfRunCommand);

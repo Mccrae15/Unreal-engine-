@@ -2,8 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
 #include "GameFramework/Volume.h"
 
 #include "PCGVolume.generated.h"
@@ -18,6 +16,16 @@ class PCG_API APCGVolume : public AVolume
 public:
 	APCGVolume(const FObjectInitializer& ObjectInitializer);
 
+	//~ Begin AActor Interface
+#if WITH_EDITOR
+	virtual bool GetReferencedContentObjects(TArray<UObject*>& Objects) const override;
+#endif // WITH_EDITOR
+	//~ End AActor Interface
+
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = PCG)
 	TObjectPtr<UPCGComponent> PCGComponent;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

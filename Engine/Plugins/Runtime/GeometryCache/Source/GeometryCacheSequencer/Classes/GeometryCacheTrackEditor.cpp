@@ -1,35 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GeometryCacheTrackEditor.h"
-#include "Rendering/DrawElements.h"
+#include "Rendering/SlateRenderer.h"
 #include "Widgets/SBoxPanel.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "GameFramework/Actor.h"
-#include "Modules/ModuleManager.h"
-#include "Layout/WidgetPath.h"
-#include "Framework/Application/MenuStack.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Widgets/Layout/SBox.h"
+#include "ScopedTransaction.h"
 #include "SequencerSectionPainter.h"
-#include "Editor/UnrealEdEngine.h"
-#include "UnrealEdGlobals.h"
 #include "MovieSceneGeometryCacheTrack.h"
 #include "MovieSceneGeometryCacheSection.h"
-#include "CommonMovieSceneTools.h"
-#include "ContentBrowserModule.h"
 #include "SequencerUtilities.h"
-#include "ISectionLayoutBuilder.h"
-#include "Styling/AppStyle.h"
-#include "MovieSceneTimeHelpers.h"
 #include "Fonts/FontMeasure.h"
-#include "SequencerTimeSliderController.h"
-#include "Misc/MessageDialog.h"
-#include "Framework/Notifications/NotificationManager.h"
-#include "Widgets/Notifications/SNotificationList.h"
 #include "GeometryCacheComponent.h"
 #include "GeometryCache.h"
 #include "Styling/SlateIconFinder.h"
 #include "LevelSequence.h"
+#include "TimeToPixel.h"
 
 namespace GeometryCacheEditorConstants
 {
@@ -178,7 +164,7 @@ int32 FGeometryCacheSection::OnPaintSection(FSequencerSectionPainter& Painter) c
 			FSlateDrawElement::MakeBox(
 				Painter.DrawElements,
 				LayerId + 5,
-				Painter.SectionGeometry.ToPaintGeometry(TextOffset - BoxPadding, TextSize + 2.0f * BoxPadding),
+				Painter.SectionGeometry.ToPaintGeometry(TextSize + 2.0f * BoxPadding, FSlateLayoutTransform(TextOffset - BoxPadding)),
 				FAppStyle::GetBrush("WhiteBrush"),
 				ESlateDrawEffect::None,
 				FLinearColor::Black.CopyWithNewOpacity(0.5f)
@@ -187,7 +173,7 @@ int32 FGeometryCacheSection::OnPaintSection(FSequencerSectionPainter& Painter) c
 			FSlateDrawElement::MakeText(
 				Painter.DrawElements,
 				LayerId + 6,
-				Painter.SectionGeometry.ToPaintGeometry(TextOffset, TextSize),
+				Painter.SectionGeometry.ToPaintGeometry(TextSize, FSlateLayoutTransform(TextOffset)),
 				FrameString,
 				SmallLayoutFont,
 				DrawEffects,
@@ -290,12 +276,14 @@ TSharedRef<ISequencerTrackEditor> FGeometryCacheTrackEditor::CreateTrackEditor(T
 
 bool FGeometryCacheTrackEditor::SupportsSequence(UMovieSceneSequence* InSequence) const
 {
-	if (InSequence && InSequence->IsTrackSupported(UMovieSceneGeometryCacheTrack::StaticClass()) == ETrackSupport::NotSupported)
+	ETrackSupport TrackSupported = InSequence ? InSequence->IsTrackSupported(UMovieSceneGeometryCacheTrack::StaticClass()) : ETrackSupport::Default;
+
+	if (TrackSupported == ETrackSupport::NotSupported)
 	{
 		return false;
 	}
 
-	return InSequence && InSequence->IsA(ULevelSequence::StaticClass());
+	return (InSequence && InSequence->IsA(ULevelSequence::StaticClass())) || TrackSupported == ETrackSupport::Supported;
 }
 
 bool FGeometryCacheTrackEditor::SupportsType(TSubclassOf<UMovieSceneTrack> Type) const

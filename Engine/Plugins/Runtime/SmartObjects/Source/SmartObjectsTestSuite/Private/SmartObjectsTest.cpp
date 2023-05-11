@@ -1,52 +1,58 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "CoreMinimal.h"
 #include "AITestsCommon.h"
 #include "GameplayTagsManager.h"
-#include "Engine/World.h"
 #include "MassExecutor.h"
 #include "MassEntityManager.h"
-#include "SmartObjectSubsystem.h"
 #include "SmartObjectComponent.h"
 #include "SmartObjectTestTypes.h"
-#include "MassEntityUtils.h"
+#include "WorldConditions/SmartObjectWorldConditionObjectTagQuery.h"
 
 #define LOCTEXT_NAMESPACE "AITestSuite_SmartObjectsTest"
 
-PRAGMA_DISABLE_OPTIMIZATION
-
 namespace FSmartObjectTest
 {
-	// Helper struct to define some test tags
-	struct FNativeGameplayTags : public FGameplayTagNativeAdder
+const FVector QueryExtent = FVector(5000.f);
+const FBox QueryBounds = FBox(EForceInit::ForceInit).ExpandBy(QueryExtent, QueryExtent);
+
+// Helper struct to define some test tags
+struct FNativeGameplayTags : public FGameplayTagNativeAdder
+{
+	FGameplayTag TestTag1;
+	FGameplayTag TestTag2;
+	FGameplayTag TestTag3;
+
+	virtual void AddTags() override
 	{
-		FGameplayTag TestTag1;
-		FGameplayTag TestTag2;
-		FGameplayTag TestTag3;
+		UGameplayTagsManager& Manager = UGameplayTagsManager::Get();
+		TestTag1 = Manager.AddNativeGameplayTag(TEXT("Test.SmartObject.Tag1"));
+		TestTag2 = Manager.AddNativeGameplayTag(TEXT("Test.SmartObject.Tag2"));
+		TestTag3 = Manager.AddNativeGameplayTag(TEXT("Test.SmartObject.Tag3"));
+	}
 
-		virtual void AddTags() override
-		{
-			UGameplayTagsManager& Manager = UGameplayTagsManager::Get();
-			TestTag1 = Manager.AddNativeGameplayTag(TEXT("Test.SmartObject.Tag1"));
-			TestTag2 = Manager.AddNativeGameplayTag(TEXT("Test.SmartObject.Tag2"));
-			TestTag3 = Manager.AddNativeGameplayTag(TEXT("Test.SmartObject.Tag3"));
-		}
+	FORCEINLINE static const FNativeGameplayTags& Get()
+	{
+		return StaticInstance;
+	}
+	static FNativeGameplayTags StaticInstance;
+};
+FNativeGameplayTags FNativeGameplayTags::StaticInstance;
 
-		FORCEINLINE static const FNativeGameplayTags& Get()
-		{
-			return StaticInstance;
-		}
-		static FNativeGameplayTags StaticInstance;
-	};
-	FNativeGameplayTags FNativeGameplayTags::StaticInstance;
 
 struct FSmartObjectTestBase : FAITestBase
 {
 	FSmartObjectRequestFilter TestFilter;
 	USmartObjectDefinition* Definition = nullptr;
-	USmartObjectSubsystem* Subsystem = nullptr;
+	USmartObjectTestSubsystem* Subsystem = nullptr;
 	TArray<USmartObjectComponent*> SOList;
+	TSharedPtr<FMassEntityManager> EntityManager;
 	int32 NumCreatedSlots = 0;
+
+	FMassEntityManager& GetEntityManagerRef()
+	{
+		check(EntityManager);
+		return *EntityManager.Get();
+	}
 
 	/** Callback that derived classes can override to tweak the SmartObjectDefinition before the runtime gets initialized */
 	virtual bool SetupDefinition() { return true; }
@@ -54,7 +60,12 @@ struct FSmartObjectTestBase : FAITestBase
 	virtual bool SetUp() override
 	{
 		UWorld* World = FAITestHelpers::GetWorld();
-		Subsystem = USmartObjectSubsystem::GetCurrent(World);
+
+		EntityManager = MakeShareable(new FMassEntityManager);
+		EntityManager->SetDebugName(TEXT("MassEntityTestSuite"));
+		EntityManager->Initialize();
+
+		Subsystem = NewAutoDestroyObject<USmartObjectTestSubsystem>(World);
 		if (Subsystem == nullptr)
 		{
 			return false;
@@ -86,8 +97,8 @@ struct FSmartObjectTestBase : FAITestBase
 		TestFilter.BehaviorDefinitionClasses = { USmartObjectTestBehaviorDefinition::StaticClass() };
 
 		// Allow derived classes to tweak the definitions before we initialize the runtime
-		const bool DefinitionValid = SetupDefinition();
-		if (!DefinitionValid)
+		const bool DefinitionSetUp = SetupDefinition();
+		if (!DefinitionSetUp)
 		{
 			return false;
 		}
@@ -110,41 +121,30 @@ struct FSmartObjectTestBase : FAITestBase
 			}
 		}
 
-#if WITH_SMARTOBJECT_DEBUG
-		// SmartObject collection might be setup to be rebuilt on demand so make sure to build it so our test SO are registered
-		Subsystem->DebugRebuildCollection();
+		Subsystem->RebuildAndInitializeForTesting(EntityManager);
 
-		// Force runtime initialization
-		Subsystem->DebugInitializeRuntime();
-#endif
-
-		if (FMassEntityManager* EntityManager = UE::Mass::Utils::GetEntityManager(World))
-		{
-			FMassProcessingContext ProcessingContext(*EntityManager, /* DeltaSeconds */ 0.f);
-			UE::Mass::Executor::RunProcessorsView(TArrayView<UMassProcessor*>(), ProcessingContext);
-		}
+		FMassProcessingContext ProcessingContext(GetEntityManagerRef(), /* DeltaSeconds */ 0.f);
+		UE::Mass::Executor::RunProcessorsView(TArrayView<UMassProcessor*>(), ProcessingContext);
 
 		return true;
 	}
 
 	virtual void TearDown() override
 	{
-		if (Subsystem == nullptr)
+		if (Subsystem != nullptr)
 		{
-			return;
-		}
-
 #if WITH_SMARTOBJECT_DEBUG
-		// Force removal from the runtime simulation
-		Subsystem->DebugCleanupRuntime();
+			// Force removal from the runtime simulation
+			Subsystem->DebugCleanupRuntime();
 #endif
 
-		// Unregister all from the current test
-		for (USmartObjectComponent* SO : SOList)
-		{
-			if (SO != nullptr)
+			// Unregister all from the current test
+			for (USmartObjectComponent* SO : SOList)
 			{
-				Subsystem->UnregisterSmartObject(*SO);
+				if (SO != nullptr)
+				{
+					Subsystem->UnregisterSmartObject(*SO);
+				}
 			}
 		}
 
@@ -156,7 +156,7 @@ struct FFindSmartObject : FSmartObjectTestBase
 {
 	virtual bool InstantTest() override
 	{
-		const FSmartObjectRequest Request(FBox(EForceInit::ForceInit).ExpandBy(FVector(HALF_WORLD_MAX), FVector(HALF_WORLD_MAX)), TestFilter);
+		const FSmartObjectRequest Request(FSmartObjectTest::QueryBounds, TestFilter);
 
 		// Find candidate
 		const FSmartObjectRequestResult FindResult = Subsystem->FindSmartObject(Request);
@@ -171,7 +171,7 @@ struct FFindMultipleSmartObjects : FSmartObjectTestBase
 {
 	virtual bool InstantTest() override
 	{
-		const FSmartObjectRequest Request(FBox(EForceInit::ForceInit).ExpandBy(FVector(HALF_WORLD_MAX), FVector(HALF_WORLD_MAX)), TestFilter);
+		const FSmartObjectRequest Request(FSmartObjectTest::QueryBounds, TestFilter);
 
 		// Find all candidates
 		TArray<FSmartObjectRequestResult> Results;
@@ -186,7 +186,7 @@ struct FClaimAndReleaseSmartObject : FSmartObjectTestBase
 {
 	virtual bool InstantTest() override
 	{
-		const FSmartObjectRequest Request(FBox(EForceInit::ForceInit).ExpandBy(FVector(HALF_WORLD_MAX), FVector(HALF_WORLD_MAX)), TestFilter);
+		const FSmartObjectRequest Request(FSmartObjectTest::QueryBounds, TestFilter);
 
 		// Find candidate
 		const FSmartObjectRequestResult FirstFindResult = Subsystem->FindSmartObject(Request);
@@ -224,7 +224,7 @@ struct FFindAfterClaimSmartObject : FSmartObjectTestBase
 {
 	virtual bool InstantTest() override
 	{
-		const FSmartObjectRequest Request(FBox(EForceInit::ForceInit).ExpandBy(FVector(HALF_WORLD_MAX), FVector(HALF_WORLD_MAX)), TestFilter);
+		const FSmartObjectRequest Request(FSmartObjectTest::QueryBounds, TestFilter);
 
 		// Find first candidate
 		const FSmartObjectRequestResult FirstFindResult = Subsystem->FindSmartObject(Request);
@@ -251,7 +251,7 @@ struct FDoubleClaimSmartObject : FSmartObjectTestBase
 {
 	virtual bool InstantTest() override
 	{
-		const FSmartObjectRequest Request(FBox(EForceInit::ForceInit).ExpandBy(FVector(HALF_WORLD_MAX), FVector(HALF_WORLD_MAX)), TestFilter);
+		const FSmartObjectRequest Request(FSmartObjectTest::QueryBounds, TestFilter);
 
 		// Find candidate
 		const FSmartObjectRequestResult PreClaimResult = Subsystem->FindSmartObject(Request);
@@ -275,7 +275,7 @@ struct FUseAndReleaseSmartObject : FSmartObjectTestBase
 {
 	virtual bool InstantTest() override
 	{
-		const FSmartObjectRequest Request(FBox(EForceInit::ForceInit).ExpandBy(FVector(HALF_WORLD_MAX), FVector(HALF_WORLD_MAX)), TestFilter);
+		const FSmartObjectRequest Request(FSmartObjectTest::QueryBounds, TestFilter);
 
 		// Find candidate
 		const FSmartObjectRequestResult PreClaimResult = Subsystem->FindSmartObject(Request);
@@ -303,7 +303,7 @@ struct FFindAfterUseSmartObject : FSmartObjectTestBase
 {
 	virtual bool InstantTest() override
 	{
-		const FSmartObjectRequest Request(FBox(EForceInit::ForceInit).ExpandBy(FVector(HALF_WORLD_MAX), FVector(HALF_WORLD_MAX)), TestFilter);
+		const FSmartObjectRequest Request(FSmartObjectTest::QueryBounds, TestFilter);
 
 		constexpr uint32 ExpectedNumRegisteredObjects = 2;
 		AITEST_EQUAL("Number of registerd smart objects", SOList.Num(), ExpectedNumRegisteredObjects);
@@ -341,7 +341,7 @@ struct FSlotCustomData : FSmartObjectTestBase
 {
 	virtual bool InstantTest() override
 	{
-		const FSmartObjectRequest Request(FBox(EForceInit::ForceInit).ExpandBy(FVector(HALF_WORLD_MAX), FVector(HALF_WORLD_MAX)), TestFilter);
+		const FSmartObjectRequest Request(FSmartObjectTest::QueryBounds, TestFilter);
 
 		// Find an object
 		const FSmartObjectRequestResult FindResult = Subsystem->FindSmartObject(Request);
@@ -370,11 +370,8 @@ struct FSlotCustomData : FSmartObjectTestBase
 		Subsystem->AddSlotDataDeferred(ClaimHandle, FConstStructView::Make(NewRuntimeData));
 
 		// We need to run Mass to flush deferred commands
-		if (FMassEntityManager* EntityManager = UE::Mass::Utils::GetEntityManager(FAITestHelpers::GetWorld()))
-		{
-			FMassProcessingContext ProcessingContext(*EntityManager, /* DeltaSeconds */ 0.f);
-			UE::Mass::Executor::RunProcessorsView(TArrayView<UMassProcessor*>(), ProcessingContext);
-		}
+		FMassProcessingContext ProcessingContext(GetEntityManagerRef(), /* DeltaSeconds */ 0.f);
+		UE::Mass::Executor::RunProcessorsView(TArrayView<UMassProcessor*>(), ProcessingContext);
 
 		// Fetch a fresh slot view
 		const FSmartObjectSlotView SlotViewAfter = Subsystem->GetSlotView(ClaimHandle.SlotHandle);
@@ -428,7 +425,7 @@ struct FActivityTagsMergingPolicyCombine : FActivityTagsMergingPolicy
 
 	virtual bool InstantTest() override
 	{
-		FSmartObjectRequest DefaultRequest(FBox(EForceInit::ForceInit).ExpandBy(FVector(HALF_WORLD_MAX), FVector(HALF_WORLD_MAX)), TestFilter);
+		FSmartObjectRequest DefaultRequest(FSmartObjectTest::QueryBounds, TestFilter);
 
 		{
 			// No activity requirements, should return registered slots
@@ -498,7 +495,7 @@ struct FActivityTagsMergingPolicyOverride : FActivityTagsMergingPolicy
 
 	virtual bool InstantTest() override
 	{
-		FSmartObjectRequest DefaultRequest(FBox(EForceInit::ForceInit).ExpandBy(FVector(HALF_WORLD_MAX), FVector(HALF_WORLD_MAX)), TestFilter);
+		FSmartObjectRequest DefaultRequest(FSmartObjectTest::QueryBounds, TestFilter);
 
 		{
 			// No activity requirements, should return registered slots
@@ -599,7 +596,7 @@ struct FUserTagsFilterPolicyNoFilter : FUserTagsFilterPolicy
 
 	virtual bool InstantTest() override
 	{
-		FSmartObjectRequest DefaultRequest(FBox(EForceInit::ForceInit).ExpandBy(FVector(HALF_WORLD_MAX), FVector(HALF_WORLD_MAX)), TestFilter);
+		FSmartObjectRequest DefaultRequest(FSmartObjectTest::QueryBounds, TestFilter);
 		{
 			// Providing user tags to the query
 			FSmartObjectRequest ModifiedRequest = DefaultRequest;
@@ -628,7 +625,7 @@ struct FUserTagsFilterPolicyCombine : FUserTagsFilterPolicy
 
 	virtual bool InstantTest() override
 	{
-		FSmartObjectRequest DefaultRequest(FBox(EForceInit::ForceInit).ExpandBy(FVector(HALF_WORLD_MAX), FVector(HALF_WORLD_MAX)), TestFilter);
+		FSmartObjectRequest DefaultRequest(FSmartObjectTest::QueryBounds, TestFilter);
 
 		{
 			// User tags are empty so none should be found
@@ -681,7 +678,7 @@ struct FUserTagsFilterPolicyOverride : FUserTagsFilterPolicy
 
 	virtual bool InstantTest() override
 	{
-		FSmartObjectRequest DefaultRequest(FBox(EForceInit::ForceInit).ExpandBy(FVector(HALF_WORLD_MAX), FVector(HALF_WORLD_MAX)), TestFilter);
+		FSmartObjectRequest DefaultRequest(FSmartObjectTest::QueryBounds, TestFilter);
 
 		{
 			// User tags are empty
@@ -723,29 +720,32 @@ IMPLEMENT_AI_INSTANT_TEST(FUserTagsFilterPolicyOverride, "System.AI.SmartObjects
 
 struct FInstanceTagsFilter : FSmartObjectTestBase
 {
-	virtual bool SetUp() override
+	virtual bool SetupDefinition() override
 	{
-		if (!FSmartObjectTestBase::SetUp())
+		if (!FSmartObjectTestBase::SetupDefinition())
 		{
 			return false;
 		}
 
 		// Tags setup looks like:
-		// Object:	ObjectTagFilter:	NoMatch(TestTag1)
+		// Object:	FSmartObjectWorldConditionObjectTagQuery:	NoMatch(TestTag1)
 
-		// Set first slot user tag filter
-		Definition->SetObjectTagFilter(FGameplayTagQuery::BuildQuery(
+		FWorldConditionQueryDefinition& ConditionQueryDefinition = Definition->GetMutablePreconditions();
+		FSmartObjectWorldConditionObjectTagQuery NewCondition;
+		NewCondition.TagQuery = FGameplayTagQuery::BuildQuery(
 			FGameplayTagQueryExpression()
 			.NoTagsMatch()
-			.AddTag(FNativeGameplayTags::Get().TestTag1)
-		));
+			.AddTag(FNativeGameplayTags::Get().TestTag1));
+		ConditionQueryDefinition.EditableConditions.Emplace(0, EWorldConditionOperator::And, FConstStructView::Make(NewCondition));
+		ConditionQueryDefinition.SchemaClass = Definition->GetWorldConditionSchemaClass();
+		ConditionQueryDefinition.Initialize(*Definition);
 
 		return true;
 	}
 
 	virtual bool InstantTest() override
 	{
-		const FSmartObjectRequest DefaultRequest(FBox(EForceInit::ForceInit).ExpandBy(FVector(HALF_WORLD_MAX), FVector(HALF_WORLD_MAX)), TestFilter);
+		const FSmartObjectRequest DefaultRequest(FSmartObjectTest::QueryBounds, TestFilter);
 
 		FSmartObjectRequestResult SingleResult = Subsystem->FindSmartObject(DefaultRequest);
 		AITEST_TRUE("SingleResult.IsValid()", SingleResult.IsValid());
@@ -785,24 +785,25 @@ struct FInstanceTagsFilter : FSmartObjectTestBase
 		// (Slot 1 & 2 & 3) = 3 matching slots / object
 		AITEST_EQUAL("Results.Num() for 1 objects with instance tags (InstanceTags=TestTag1)", ResultsAfter.Num(), (SOList.Num()-1) * 3);
 
-		// Find candidate slots from deactivate object
+		// Find candidate slots from deactivated object
 		TArray<FSmartObjectSlotHandle> SlotHandlesAfter;
 		Subsystem->FindSlots(ObjectToDeactivate, TestFilter, SlotHandlesAfter);
 		AITEST_EQUAL("Num slot handles from deactivated object", SlotHandlesAfter.Num(), 0);
 
-		// Try to claim 3rd slot with previously valid stored results
-		const FSmartObjectClaimHandle ThirdClaimHandle = Subsystem->Claim(ObjectToDeactivate, SlotHandles[2]);
-		AITEST_FALSE("ThirdClaimHandle.IsValid()", ThirdClaimHandle.IsValid());
-
-		// Try to use previously claimed 1st slot with previously valid claim handle
-		const USmartObjectBehaviorDefinition* BehaviorDefinitionAfter = Subsystem->Use<USmartObjectBehaviorDefinition>(SecondClaimHandle);
-		AITEST_NULL("Behavior definition pointer for second slot after deactivation", BehaviorDefinitionAfter);
+		// @todo SO: enable back the following two tests once Claim & Use methods get updated to allow precondition evaluation. 
+		// // Try to claim 3rd slot with previously valid stored results
+		// const FSmartObjectClaimHandle ThirdClaimHandle = Subsystem->Claim(ObjectToDeactivate, SlotHandles[2]);
+		// AITEST_FALSE("ThirdClaimHandle.IsValid()", ThirdClaimHandle.IsValid());
+		//
+		// // Try to use previously claimed 1st slot with previously valid claim handle
+		// const USmartObjectBehaviorDefinition* BehaviorDefinitionAfter = Subsystem->Use<USmartObjectBehaviorDefinition>(SecondClaimHandle);
+		// AITEST_NULL("Behavior definition pointer for second slot after deactivation", BehaviorDefinitionAfter);
 
 		// Release all valid claim handles
 		const bool bFirstSlotReleaseSuccess = Subsystem->Release(FirstClaimHandle);
-		AITEST_FALSE("bFirstSlotReleaseSuccess", bFirstSlotReleaseSuccess);
+		AITEST_TRUE("bFirstSlotReleaseSuccess", bFirstSlotReleaseSuccess);
 		const bool bSecondSlotReleaseSuccess = Subsystem->Release(SecondClaimHandle);
-		AITEST_FALSE("bSecondSlotReleaseSuccess", bSecondSlotReleaseSuccess);
+		AITEST_TRUE("bSecondSlotReleaseSuccess", bSecondSlotReleaseSuccess);
 
 		// Remove tag
 		Subsystem->RemoveTagFromInstance(ObjectToDeactivate, FNativeGameplayTags::Get().TestTag1);
@@ -813,7 +814,5 @@ struct FInstanceTagsFilter : FSmartObjectTestBase
 IMPLEMENT_AI_INSTANT_TEST(FInstanceTagsFilter, "System.AI.SmartObjects.Filter policy on InstanceTags");
 
 } // namespace FSmartObjectTest
-
-PRAGMA_ENABLE_OPTIMIZATION
 
 #undef LOCTEXT_NAMESPACE

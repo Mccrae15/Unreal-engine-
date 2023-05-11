@@ -1,17 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Perception/AIPerceptionComponent.h"
+#include "Async/TaskGraphInterfaces.h"
 #include "GameFramework/Controller.h"
 #include "AIController.h"
 #include "Perception/AISenseConfig.h"
+#include "Stats/Stats2.h"
 #include "VisualLogger/VisualLogger.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AIPerceptionComponent)
 
-#if WITH_GAMEPLAY_DEBUGGER
+#if WITH_GAMEPLAY_DEBUGGER_MENU
 #include "GameplayDebuggerTypes.h"
 #include "GameplayDebuggerCategory.h"
-#endif
+#endif // WITH_GAMEPLAY_DEBUGGER_MENU
 
 
 
@@ -605,6 +607,15 @@ void UAIPerceptionComponent::ProcessStimuli()
 		ForgetActor(ActorToForget);
 	}
 
+	// notify anyone interested
+	if (OnTargetPerceptionForgotten.IsBound())
+	{
+		for (AActor* ActorToForget : ActorsToForget)
+		{
+			OnTargetPerceptionForgotten.Broadcast(ActorToForget);
+		}
+	}
+
 	// remove perceptual info related to stale actors
 	for (const TObjectKey<AActor>& SourceKey : DataToRemove)
 	{
@@ -830,7 +841,7 @@ void UAIPerceptionComponent::SetSenseEnabled(TSubclassOf<UAISense> SenseClass, c
 //----------------------------------------------------------------------//
 // debug
 //----------------------------------------------------------------------//
-#if WITH_GAMEPLAY_DEBUGGER
+#if WITH_GAMEPLAY_DEBUGGER_MENU
 void UAIPerceptionComponent::DescribeSelfToGameplayDebugger(FGameplayDebuggerCategory* DebuggerCategory) const
 {
 	if (DebuggerCategory == nullptr)
@@ -869,7 +880,7 @@ void UAIPerceptionComponent::DescribeSelfToGameplayDebugger(FGameplayDebuggerCat
 		}
 	}
 }
-#endif // WITH_GAMEPLAY_DEBUGGER
+#endif // WITH_GAMEPLAY_DEBUGGER_MENU
 
 #if ENABLE_VISUAL_LOG
 void UAIPerceptionComponent::DescribeSelfToVisLog(FVisualLogEntry* Snapshot) const

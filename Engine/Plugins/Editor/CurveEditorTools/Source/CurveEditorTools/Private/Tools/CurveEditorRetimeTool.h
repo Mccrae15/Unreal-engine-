@@ -1,13 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
-#include "CoreMinimal.h"
 #include "ICurveEditorToolExtension.h"
-#include "Layout/Geometry.h"
 #include "Framework/DelayedDrag.h"
-#include "Curves/KeyHandle.h"
 #include "CurveDataAbstraction.h"
-#include "CurveEditorTypes.h"
 #include "CurveEditorSelection.h"
 #include "CurveEditorRetimeTool.generated.h"
 
@@ -61,7 +57,7 @@ class UCurveEditorRetimeToolData : public UObject
 	GENERATED_BODY()
 
 public:
-	// List of anchor points. Assumes they're in order from lowest input time time to greatest.
+	// List of anchor points. Assumes they're in order from lowest input time to greatest.
 	UPROPERTY()
 	TArray<FCurveEditorRetimeAnchor> RetimingAnchors;
 };

@@ -74,9 +74,9 @@ public:
 	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override
 	{
 		// Rendering info
-		const float LabelOffsetPx = 2.0f;
-		const float Width = AllottedGeometry.GetLocalSize().X;
-		const float Height = AllottedGeometry.GetLocalSize().Y;
+		constexpr float LabelOffsetPx = 2.0f;
+		const float Width = static_cast<float>(AllottedGeometry.GetLocalSize().X);
+		const float Height = static_cast<float>(AllottedGeometry.GetLocalSize().Y);
 		const FPaintGeometry PaintGeometry  = AllottedGeometry.ToPaintGeometry();
 		const FSlateFontInfo FontInfo = FCoreStyle::GetDefaultFontStyle("Regular", 8);
 		TSharedRef<FSlateFontMeasure> FontMeasureService = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
@@ -203,7 +203,7 @@ TSharedRef<SWidget> FAnimTimelineTrack_Curve::GenerateContainerWidgetForTimeline
 		GetCurveEditInfo(CurveIndex, Name, Type, EditIndex);
 
 		TUniquePtr<FRichCurveEditorModelNamed> NewCurveModel = MakeUnique<FRichCurveEditorModelNamed>(Name, Type, EditIndex, GetModel()->GetAnimSequenceBase());
-		NewCurveModel->SetColor(GetCurveColor(CurveIndex));
+		NewCurveModel->SetColor(GetCurveColor(CurveIndex), false);
 		NewCurveModel->SetIsKeyDrawEnabled(MakeAttributeLambda([](){ return GetDefault<UPersonaOptions>()->bTimelineDisplayCurveKeys; }));
 		CurveEditor->AddCurve(MoveTemp(NewCurveModel));
 	}
@@ -254,7 +254,7 @@ TSharedRef<SWidget> FAnimTimelineTrack_Curve::MakeCurveWidget()
 			.Visibility_Lambda([this]()
 			{  
 				// Dont show curves in parent tracks when children are expanded
-				return !IsExpanded() || GetChildren().Num() == 0 ? EVisibility::Visible : EVisibility::Hidden;
+				return ShowCurves() ? EVisibility::Visible : EVisibility::Hidden;
 			})
 			.CurveThickness_Lambda([this]()
 			{
@@ -268,7 +268,7 @@ TSharedRef<SWidget> FAnimTimelineTrack_Curve::MakeCurveWidget()
 			.Visibility_Lambda([this]()
 			{  
 				// Dont show curves in parent tracks when children are expanded
-				return (!IsExpanded() || GetChildren().Num() == 0) && IsHovered() ? EVisibility::Visible : EVisibility::Hidden;
+				return ShowCurves() && IsHovered() ? EVisibility::Visible : EVisibility::Hidden;
 			})
 		];
 }
@@ -299,6 +299,12 @@ void FAnimTimelineTrack_Curve::AddCurveTrackButton(TSharedPtr<SHorizontalBox> In
 	[
 		PersonaUtils::MakeTrackButton(LOCTEXT("EditCurveButtonText", "Curve"), FOnGetContent::CreateSP(this, &FAnimTimelineTrack_Curve::BuildCurveTrackMenu), MakeAttributeSP(this, &FAnimTimelineTrack_Curve::IsHovered))
 	];
+}
+
+bool FAnimTimelineTrack_Curve::ShowCurves() const
+{
+	// Dont show curves in parent tracks when children are expanded
+	return !IsExpanded() || Children.Num() == 0;
 }
 
 TSharedRef<SWidget> FAnimTimelineTrack_Curve::BuildCurveTrackMenu()

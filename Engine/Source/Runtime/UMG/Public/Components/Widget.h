@@ -168,7 +168,8 @@ enum class EWidgetDesignFlags : uint8
 	None				= 0,
 	Designing			= 1 << 0,
 	ShowOutline			= 1 << 1,
-	ExecutePreConstruct	= 1 << 2
+	ExecutePreConstruct	= 1 << 2,
+	Previewing			= 1 << 3
 };
 
 ENUM_CLASS_FLAGS(EWidgetDesignFlags);
@@ -261,8 +262,8 @@ public:
 	UPROPERTY()
 	FGetBool bIsEnabledDelegate;
 
-	/** Tooltip text to show when the user hovers over the widget with the mouse */
 	UE_DEPRECATED(5.1, "Direct access to ToolTipText is deprecated. Please use the getter or setter.")
+	/** Tooltip text to show when the user hovers over the widget with the mouse */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, BlueprintSetter="SetToolTipText", Category="Behavior", meta=(MultiLine=true))
 	FText ToolTipText;
 
@@ -270,8 +271,8 @@ public:
 	UPROPERTY()
 	FGetText ToolTipTextDelegate;
 
-	/** Tooltip widget to show when the user hovers over the widget with the mouse */
 	UE_DEPRECATED(5.1, "Direct access to ToolTipWidget is deprecated. Please use the getter or setter.")
+	/** Tooltip widget to show when the user hovers over the widget with the mouse */
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Getter="GetToolTip", Setter="SetToolTip", BlueprintSetter="SetToolTip", Category="Behavior", AdvancedDisplay)
 	TObjectPtr<UWidget> ToolTipWidget;
 
@@ -286,22 +287,22 @@ public:
 
 public:
 
-	/** The render transform of the widget allows for arbitrary 2D transforms to be applied to the widget. */
 	UE_DEPRECATED(5.1, "Direct access to RenderTransform is deprecated. Please use the getter or setter.")
+	/** The render transform of the widget allows for arbitrary 2D transforms to be applied to the widget. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, BlueprintSetter="SetRenderTransform", Category="Render Transform", meta = (DisplayName = "Transform"))
 	FWidgetTransform RenderTransform;
 
+	UE_DEPRECATED(5.1, "Direct access to RenderTransformPivot is deprecated. Please use the getter or setter.")
 	/**
 	 * The render transform pivot controls the location about which transforms are applied.  
 	 * This value is a normalized coordinate about which things like rotations will occur.
 	 */
-	UE_DEPRECATED(5.1, "Direct access to RenderTransformPivot is deprecated. Please use the getter or setter.")
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, BlueprintSetter="SetRenderTransformPivot", Category="Render Transform", meta=( DisplayName="Pivot" ))
 	FVector2D RenderTransformPivot;
 
-	/** Allows you to set a new flow direction */
 	UE_DEPRECATED(5.1, "Direct access to FlowDirectionPreference is deprecated. Please use the getter or setter.")
-	UPROPERTY(EditAnywhere, Getter, Setter, Category="Localization")
+	/** Allows you to set a new flow direction */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, Category="Localization")
 	EFlowDirectionPreference FlowDirectionPreference;
 
 	/**
@@ -315,8 +316,8 @@ public:
 	UPROPERTY(Transient)
 	uint8 bCreatedByConstructionScript:1;
 
-	/** Sets whether this widget can be modified interactively by the user */
 	UE_DEPRECATED(5.1, "Direct access to bIsEnabled is deprecated. Please use the getter or setter.")
+	/** Sets whether this widget can be modified interactively by the user */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, FieldNotify, Getter="GetIsEnabled", Setter="SetIsEnabled", BlueprintGetter="GetIsEnabled", BlueprintSetter="SetIsEnabled", Category="Behavior")
 	uint8 bIsEnabled:1;
 
@@ -399,11 +400,12 @@ public:
 	uint8 bLockedInDesigner:1;
 #endif
 
-	/** The cursor to show when the mouse is over the widget */
 	UE_DEPRECATED(5.1, "Direct access to Cursor is deprecated. Please use the getter or setter.")
+	/** The cursor to show when the mouse is over the widget */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, BlueprintSetter="SetCursor", Category="Behavior", AdvancedDisplay, meta = (editcondition = "bOverride_Cursor"))
 	TEnumAsByte<EMouseCursor::Type> Cursor;
 
+	UE_DEPRECATED(5.1, "Direct access to Clipping is deprecated. Please use the getter or setter.")
 	/**
 	 * Controls how the clipping behavior of this widget.  Normally content that overflows the
 	 * bounds of the widget continues rendering.  Enabling clipping prevents that overflowing content
@@ -413,17 +415,16 @@ public:
 	 * performance cost to clipping.  Do not enable clipping unless a panel actually needs to prevent
 	 * content from showing up outside its bounds.
 	 */
-	UE_DEPRECATED(5.1, "Direct access to Clipping is deprecated. Please use the getter or setter.")
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, Category="Clipping")
 	EWidgetClipping Clipping;
 
-	/** The visibility of the widget */
 	UE_DEPRECATED(5.1, "Direct access to Visibility is deprecated. Please use the getter or setter.")
+	/** The visibility of the widget */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, FieldNotify, Getter, Setter, BlueprintGetter="GetVisibility", BlueprintSetter="SetVisibility", Category="Behavior")
 	ESlateVisibility Visibility;
 
-	/** The opacity of the widget */
 	UE_DEPRECATED(5.1, "Direct access to RenderOpacity is deprecated. Please use the getter or setter.")
+	/** The opacity of the widget */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Getter, Setter, BlueprintGetter="GetRenderOpacity", BlueprintSetter="SetRenderOpacity", Category="Behavior")
 	float RenderOpacity;
 
@@ -506,10 +507,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Widget|Transform")
 	void SetRenderTransformPivot(FVector2D Pivot);
 
-	/** */
+	/** Gets the flow direction preference of the widget */
 	EFlowDirectionPreference GetFlowDirectionPreference() const;
 
-	/** */
+	/** Sets the flow direction preference of the widget */
 	void SetFlowDirectionPreference(EFlowDirectionPreference FlowDirection);
 
 	/** Gets the current enabled status of the widget */
@@ -773,7 +774,7 @@ public:
 	/**
 	 * Gets the underlying slate widget or constructs it if it doesn't exist.  If you're looking to replace
 	 * what slate widget gets constructed look for RebuildWidget.  For extremely special cases where you actually
-	 * need to change the the GC Root widget of the constructed User Widget - you need to use TakeDerivedWidget
+	 * need to change the GC Root widget of the constructed User Widget - you need to use TakeDerivedWidget
 	 * you must also take care to not call TakeWidget before calling TakeDerivedWidget, as that would put the wrong
 	 * expected wrapper around the resulting widget being constructed.
 	 */
@@ -918,6 +919,11 @@ public:
 	{
 		return EnumHasAnyFlags(GetDesignerFlags(), FlagsToCheck);
 	}
+	
+	FORCEINLINE bool IsPreviewTime() const 
+	{
+		return HasAnyDesignerFlags(EWidgetDesignFlags::Previewing);
+	}
 
 	/** Returns the friendly name of the widget to display in the editor */
 	const FString& GetDisplayLabel() const
@@ -945,6 +951,7 @@ public:
 	virtual bool Modify(bool bAlwaysMarkDirty = true) override;
 #else
 	FORCEINLINE bool IsDesignTime() const { return false; }
+	FORCEINLINE bool IsPreviewTime() const { return false; }
 #endif
 	
 	/**
@@ -997,9 +1004,12 @@ public:
 	/** Gets the palette category of the widget */
 	virtual const FText GetPaletteCategory();
 
+	/** Called by the palette after constructing a new widget. */
+	void CreatedFromPalette();
+
 	/**
-	 * Called by the palette after constructing a new widget, allows the widget to perform interesting 
-	 * default setup that we don't want to be UObject Defaults.
+	 * Called after constructing a new widget from the palette.
+	 * Allows the widget to perform interesting default setup that we don't want to be UObject Defaults.
 	 */
 	virtual void OnCreationFromPalette() { }
 

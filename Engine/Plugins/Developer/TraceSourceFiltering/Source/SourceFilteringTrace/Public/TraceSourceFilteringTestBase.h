@@ -5,20 +5,15 @@
 #include "Misc/AutomationTest.h"
 
 #if WITH_AUTOMATION_TESTS
-#include "UObject/StrongObjectPtr.h"
-#include "Engine/World.h"
-#include "TraceFilter.h"
-#include "PreviewScene.h"
-
-#include "DataSourceFiltering.h"
-#include "TraceWorldFiltering.h"
+#include "Engine/World.h" // IWYU pragma: keep
 #include "DataSourceFilterSet.h"
-#include "TraceSourceFiltering.h"
 #include "SourceFilterCollection.h"
-#include "DataSourceFilter.h"
-#include "TraceSourceFilteringProjectSettings.h"
+#include "UObject/StrongObjectPtr.h"
 
 class FSourceFilterManager;
+class FPreviewScene;
+class UDataSourceFilter;
+
 
 /** Base class for setting up functional Trace Source Filtering tests */
 class SOURCEFILTERINGTRACE_API FTraceSourceFilteringTestBase : public FAutomationTestBase
@@ -159,3 +154,11 @@ protected:
 };
 
 #endif // WITH_AUTOMATION_TESTS
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "PreviewScene.h"
+#include "TraceFilter.h"
+#include "TraceSourceFiltering.h"
+#include "TraceSourceFilteringProjectSettings.h"
+#include "TraceWorldFiltering.h"
+#endif

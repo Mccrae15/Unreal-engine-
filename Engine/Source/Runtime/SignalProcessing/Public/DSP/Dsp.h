@@ -237,7 +237,7 @@ namespace Audio
 				}
 
 				// Advance phase, range reduce, and store.
-				float PhaseInRadians = LastPhase + BlockSampleCount * PhasePerSample;
+				float PhaseInRadians = LastPhase + (float)BlockSampleCount * PhasePerSample;
 				PhaseInRadians -= FMath::FloorToFloat(PhaseInRadians / (2 * UE_PI)) * (2 * UE_PI);
 				LastPhase = PhaseInRadians;
 
@@ -673,7 +673,7 @@ namespace Audio
 				return CurrentValue;
 			}
 
-			CurrentValue = DeltaValue * (float) CurrentTick / DurationTicks + StartValue;
+			CurrentValue = DeltaValue * (float)CurrentTick / (float)DurationTicks + StartValue;
 
 			++CurrentTick;
 			return CurrentValue;
@@ -689,7 +689,7 @@ namespace Audio
 			}
 
 			CurrentTick = FMath::Min(CurrentTick + NumTicksToJumpAhead, DurationTicks);
-			CurrentValue = DeltaValue * (float)CurrentTick / DurationTicks + StartValue;
+			CurrentValue = DeltaValue * (float)CurrentTick / (float)DurationTicks + StartValue;
 
 			return CurrentValue;
 		}
@@ -1202,7 +1202,7 @@ namespace Audio
 		{
 			CheckValidityOfSampleType<OtherSampleType>();
 
-			if (TIsSame<SampleType, OtherSampleType>::Value)
+			if constexpr (std::is_same_v<SampleType, OtherSampleType>)
 			{
 				Sample = InSample;
 				return *this;
@@ -1391,7 +1391,7 @@ namespace Audio
 		{
 			CheckValidityOfSampleType<OtherSampleType>();
 
-			if (TIsSame<SampleType, OtherSampleType>::Value)
+			if constexpr (std::is_same_v<SampleType, OtherSampleType>)
 			{
 				Sample = InSample;
 				return *this;

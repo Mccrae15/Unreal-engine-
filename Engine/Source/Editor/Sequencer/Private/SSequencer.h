@@ -521,7 +521,11 @@ private:
 	/**
 	 * @return The fill percentage of the animation outliner
 	 */
-	float GetColumnFillCoefficient(int32 ColumnIndex) const;
+	float GetColumnFillCoefficient(int32 ColumnIndex) const
+	{
+		ensure(ColumnIndex == 0 || ColumnIndex == 1);
+		return ColumnFillCoefficients[ColumnIndex];
+	}
 
 	/**
 	 * Called when one or more assets are dropped into the widget
@@ -592,6 +596,8 @@ private:
 
 	/** Called when a column fill percentage is changed by a splitter slot. */
 	void OnColumnFillCoefficientChanged(float FillCoefficient, int32 ColumnIndex);
+
+	void OnSplitterFinishedResizing();
 
 	/** Gets paint options for painting the playback range on sequencer */
 	FPaintPlaybackRangeArgs GetSectionPlaybackRangeArgs() const;
@@ -699,7 +705,12 @@ private:
 	/** Container for the toolbar, so that we can re-create it as needed. */
 	TSharedPtr<SBox> ToolbarContainer;
 
-	/** Whether the active timer is currently registered */ 
+	/** The fill coefficients of each column in the grid. */
+	float ColumnFillCoefficients[2];
+
+	TSharedPtr<class SSequencerSplitterOverlay> TreeViewSplitter;
+
+	/** Whether the active timer is currently registered */
 	bool bIsActiveTimerRegistered;
 
 	/** Whether the user is selecting. Ignore selection changes from the level when the user is selecting. */

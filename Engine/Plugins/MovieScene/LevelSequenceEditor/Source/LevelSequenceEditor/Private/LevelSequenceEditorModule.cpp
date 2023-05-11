@@ -1,33 +1,24 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LevelSequenceEditorModule.h"
-#include "Modules/ModuleManager.h"
-#include "UObject/Class.h"
-#include "LevelSequence.h"
+#include "Blueprint/BlueprintSupport.h"
 #include "Factories/Factory.h"
-#include "AssetRegistry/AssetData.h"
 #include "AssetToolsModule.h"
-#include "Framework/Commands/UICommandList.h"
-#include "Framework/MultiBox/MultiBoxExtender.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 
-#include "IAssetTypeActions.h"
-#include "AssetTools/LevelSequenceActions.h"
+#include "IAssetTools.h"
 #include "LevelSequenceEditorCommands.h"
 #include "Misc/LevelSequenceEditorSettings.h"
 #include "Misc/LevelSequenceEditorHelpers.h"
 #include "Styles/LevelSequenceEditorStyle.h"
+#include "Camera/CameraShakeSourceActor.h"
 #include "CineCameraActor.h"
 #include "CameraRig_Crane.h"
 #include "CameraRig_Rail.h"
 #include "IPlacementModeModule.h"
 #include "ISettingsModule.h"
-#include "ViewportTypeDefinition.h"
 #include "LevelEditor.h"
-#include "LevelSequencePlayer.h"
 #include "LevelSequenceActor.h"
-#include "PropertyEditorModule.h"
-#include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 #include "CinematicViewport/CinematicViewportLayoutEntity.h"
 #include "ISequencerModule.h"
@@ -37,7 +28,6 @@
 #include "SequencerSettings.h"
 #include "Misc/MovieSceneSequenceEditor_LevelSequence.h"
 #include "BlueprintAssetHandler.h"
-#include "Subsystems/AssetEditorSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "LevelSequenceEditor"
 
@@ -66,7 +56,6 @@ public:
 
 		RegisterEditorObjectBindings();
 		RegisterEditorActorSpawner();
-		RegisterAssetTools();
 		RegisterMenuExtensions();
 		RegisterLevelEditorExtensions();
 		RegisterPlacementModeExtensions();
@@ -94,7 +83,6 @@ public:
 	{
 		UnregisterEditorObjectBindings();
 		UnregisterEditorActorSpawner();
-		UnregisterAssetTools();
 		UnregisterMenuExtensions();
 		UnregisterLevelEditorExtensions();
 		UnregisterPlacementModeExtensions();
@@ -118,15 +106,6 @@ protected:
 		EditorActorSpawnerDelegateHandle = LevelSequenceModule.RegisterObjectSpawner(FOnCreateMovieSceneObjectSpawner::CreateStatic(&FLevelSequenceEditorActorSpawner::CreateObjectSpawner));
 	}
 
-	/** Registers asset tool actions. */
-	void RegisterAssetTools()
-	{
-		IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
-		EAssetTypeCategories::Type CinematicAssetCategoryBit = AssetTools.RegisterAdvancedAssetCategory(FName(TEXT("Cinematics")), LOCTEXT("CinematicsAssetCategory", "Cinematics"));
-		LevelSequenceTypeActions = MakeShared<FLevelSequenceActions>(FLevelSequenceEditorStyle::Get(), CinematicAssetCategoryBit);
-		AssetTools.RegisterAssetTypeActions(LevelSequenceTypeActions.ToSharedRef());
-	}
-
 	/** Registers level editor extensions. */
 	void RegisterLevelEditorExtensions()
 	{
@@ -145,8 +124,8 @@ protected:
 		CommandList->MapAction(FLevelSequenceEditorCommands::Get().CreateNewLevelSequenceInLevel,
 			FExecuteAction::CreateStatic(&FLevelSequenceEditorModule::OnCreateActorInLevel)
 		);
-		CommandList->MapAction(FLevelSequenceEditorCommands::Get().CreateNewMasterSequenceInLevel,
-			FExecuteAction::CreateStatic(&FLevelSequenceEditorModule::OnCreateMasterSequenceInLevel)
+		CommandList->MapAction(FLevelSequenceEditorCommands::Get().CreateNewLevelSequenceWithShotsInLevel,
+			FExecuteAction::CreateStatic(&FLevelSequenceEditorModule::OnCreateLevelSequenceWithShotsInLevel)
 		);
 
 		// Create and register the level editor toolbar menu extension
@@ -155,7 +134,7 @@ protected:
 			MenuBuilder.AddMenuEntry(FLevelSequenceEditorCommands::Get().CreateNewLevelSequenceInLevel);
 		}));
 		CinematicsMenuExtender->AddMenuExtension("LevelEditorNewCinematics", EExtensionHook::First, CommandList, FMenuExtensionDelegate::CreateStatic([](FMenuBuilder& MenuBuilder) {
-			MenuBuilder.AddMenuEntry(FLevelSequenceEditorCommands::Get().CreateNewMasterSequenceInLevel);
+			MenuBuilder.AddMenuEntry(FLevelSequenceEditorCommands::Get().CreateNewLevelSequenceWithShotsInLevel);
 		}));
 
 		FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
@@ -174,6 +153,7 @@ protected:
 		);
 
 		IPlacementModeModule::Get().RegisterPlacementCategory(Info);
+		IPlacementModeModule::Get().RegisterPlaceableItem(Info.UniqueHandle, MakeShareable( new FPlaceableItem(nullptr, FAssetData(ACameraShakeSourceActor::StaticClass())) ));
 		IPlacementModeModule::Get().RegisterPlaceableItem(Info.UniqueHandle, MakeShareable( new FPlaceableItem(nullptr, FAssetData(ACineCameraActor::StaticClass())) ));
 		IPlacementModeModule::Get().RegisterPlaceableItem(Info.UniqueHandle, MakeShareable( new FPlaceableItem(nullptr, FAssetData(ACameraRig_Crane::StaticClass())) ));
 		IPlacementModeModule::Get().RegisterPlaceableItem(Info.UniqueHandle, MakeShareable( new FPlaceableItem(nullptr, FAssetData(ACameraRig_Rail::StaticClass())) ));
@@ -227,18 +207,6 @@ protected:
 		if (SequencerModule)
 		{
 			SequencerModule->UnRegisterEditorObjectBinding(ActorBindingDelegateHandle);
-		}
-	}
-
-	/** Unregisters asset tool actions. */
-	void UnregisterAssetTools()
-	{
-		FAssetToolsModule* AssetToolsModule = FModuleManager::GetModulePtr<FAssetToolsModule>("AssetTools");
-
-		if (AssetToolsModule != nullptr)
-		{
-			IAssetTools& AssetTools = AssetToolsModule->Get();
-			AssetTools.UnregisterAssetTypeActions(LevelSequenceTypeActions.ToSharedRef());
 		}
 	}
 
@@ -353,15 +321,15 @@ protected:
 	}
 
 	/** Callback for creating a new level sequence asset in the level. */
-	static void OnCreateMasterSequenceInLevel()
+	static void OnCreateLevelSequenceWithShotsInLevel()
 	{
 		FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor"));
-		LevelSequenceEditorHelpers::OpenMasterSequenceDialog(LevelEditorModule.GetLevelEditorTabManager().ToSharedRef());
+		LevelSequenceEditorHelpers::OpenLevelSequenceWithShotsDialog(LevelEditorModule.GetLevelEditorTabManager().ToSharedRef());
 	}
 
-	FOnMasterSequenceCreated& OnMasterSequenceCreated() override
+	FOnLevelSequenceWithShotsCreated& OnLevelSequenceWithShotsCreated() override
 	{
-		return OnMasterSequenceCreatedEvent;
+		return OnLevelSequenceWithShotsCreatedEvent;
 	}
 
 	FAllowPlaybackContext& OnComputePlaybackContext() override
@@ -390,15 +358,12 @@ protected:
 
 private:
 
-	/** The type actions for interacting with level sequences. */
-	TSharedPtr<FLevelSequenceActions> LevelSequenceTypeActions;
-
 	/** Extender for the cinematics menu */
 	TSharedPtr<FExtender> CinematicsMenuExtender;
 
 	TSharedPtr<FUICommandList> CommandList;
 
-	FOnMasterSequenceCreated OnMasterSequenceCreatedEvent;
+	FOnLevelSequenceWithShotsCreated OnLevelSequenceWithShotsCreatedEvent;
 
 	FAllowPlaybackContext OnComputePlaybackContextDelegate;
 

@@ -2,17 +2,18 @@
 
 #include "Engine/StaticMeshSourceData.h"
 #include "Engine/StaticMesh.h"
-#include "MeshDescription.h"
+#include "Serialization/MemoryReader.h"
+#include "Serialization/MemoryWriter.h"
 #include "StaticMeshDescription.h"
 #include "StaticMeshOperations.h"
 #include "ProfilingDebugging/CookStats.h"
+#include "UObject/EditorObjectVersion.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(StaticMeshSourceData)
 
 #if WITH_EDITOR
 #include "DerivedDataCacheInterface.h"
 #include "RawMesh.h"
-#include "Misc/ScopeLock.h"
 #endif
 
 
@@ -327,10 +328,20 @@ void FStaticMeshSourceModel::CommitMeshDescription(bool bUseHashAsGuid)
 	// as long as no more than one thread is calling it for the same UStaticMesh.
 
 	check(StaticMeshDescriptionBulkData != nullptr);
+
+	//Reset the mesh tris/verts count cache
+	CacheMeshDescriptionTrianglesCount = MAX_uint32;
+	CacheMeshDescriptionVerticesCount = MAX_uint32;
 	if (StaticMeshDescriptionBulkData->HasCachedMeshDescription())
 	{
 		// Package up mesh description into bulk data
 		StaticMeshDescriptionBulkData->CommitMeshDescription(bUseHashAsGuid);
+		//Set the tris/verts count cache
+		if (FMeshDescription* MeshDescription = GetCachedMeshDescription())
+		{
+			CacheMeshDescriptionTrianglesCount = static_cast<uint32>(MeshDescription->Triangles().Num());
+			CacheMeshDescriptionVerticesCount = static_cast<uint32>(FStaticMeshOperations::GetUniqueVertexCount(*MeshDescription));
+		}
 	}
 	else
 	{
@@ -348,6 +359,14 @@ void FStaticMeshSourceModel::ClearMeshDescription()
 	StaticMeshDescriptionBulkData->RemoveMeshDescription();
 }
 
+void FStaticMeshSourceModel::ResetReductionSetting()
+{
+	ReductionSettings.MaxDeviation = 0.0f;
+	ReductionSettings.PercentTriangles = 1.f;
+	ReductionSettings.MaxNumOfTriangles = MAX_uint32;
+	ReductionSettings.PercentVertices = 1.f;
+	ReductionSettings.MaxNumOfVerts = MAX_uint32;
+}
 
 void FStaticMeshSourceModel::SerializeBulkData(FArchive& Ar, UObject* Owner)
 {

@@ -81,6 +81,43 @@ Private::FLookupTableEntry* FindEntryInHeader(FPackageTrailer::FHeader& Header, 
 	return Entry;
 }
 
+/** 
+ * Utility to check if a FLookupTableEntry seems valid for the trailer.
+ * @param	Entry					The entry we are trying to validate
+ * @param	PayloadDataEndPoint		The end point of the payloads stored locally. Anything
+ *									exceeding this point is not valud.
+ * 
+ * @return							True if it looks like the entry could exist in the 
+  *									current trailer, false if 
+ *									there are obvious problems.
+ */
+bool IsEntryValid(const Private::FLookupTableEntry& Entry, uint64 PayloadDataEndPoint)
+{
+	// If the entry is virtualized then we should assume that it is valid.
+	if (Entry.IsVirtualized())
+	{
+		return true;
+	}
+
+	// If not virtualized then the offset should not be negative
+	if (Entry.OffsetInFile < 0)
+	{
+		return false;
+	}
+
+	// PayloadDataEndPoint only applies if the entry is for a locally stored payload
+	if (Entry.IsLocal())
+	{
+		// A locally stored payload must end before PayloadDataEndPoint
+		if ((uint64)Entry.OffsetInFile + Entry.CompressedSize > PayloadDataEndPoint)
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
 } //namespace
 
 namespace Private
@@ -252,6 +289,12 @@ bool FPackageTrailerBuilder::UpdatePayloadAsLocal(const FIoHash& Identifier, FCo
 
 bool FPackageTrailerBuilder::BuildAndAppendTrailer(FLinkerSave* Linker, FArchive& DataArchive)
 {
+	int64 CurrentOffset = DataArchive.Tell();
+	return BuildAndAppendTrailer(Linker, DataArchive, CurrentOffset);
+}
+
+bool FPackageTrailerBuilder::BuildAndAppendTrailer(FLinkerSave* Linker, FArchive& DataArchive, int64& InOutPackageFileOffset)
+{
 	// Note that we do not serialize containers directly as we want a file format that is 
 	// 100% under our control. This will allow people to create external scripts that can
 	// parse and manipulate the trailer without needing to worry that we might change how
@@ -311,34 +354,35 @@ bool FPackageTrailerBuilder::BuildAndAppendTrailer(FLinkerSave* Linker, FArchive
 
 	// Now that we have the complete trailer we can serialize it to the archive
 
-	Trailer.TrailerPositionInFile = DataArchive.Tell();
+	Trailer.TrailerPositionInFile = InOutPackageFileOffset;
 
+	const int64 TrailerPositionInDataArchive = DataArchive.Tell();
 	DataArchive << Trailer.Header;
 
-	checkf((Trailer.TrailerPositionInFile + Trailer.Header.HeaderLength) == DataArchive.Tell(), 
+	checkf((TrailerPositionInDataArchive + Trailer.Header.HeaderLength) == DataArchive.Tell(),
 		TEXT("Header length was calculated as %d bytes but we wrote %" INT64_FMT " bytes!"), 
 		Trailer.Header.HeaderLength, 
-		DataArchive.Tell() - Trailer.TrailerPositionInFile);
+		DataArchive.Tell() - TrailerPositionInDataArchive);
 
-	const int64 PayloadPosInFile = DataArchive.Tell();
+	const int64 PayloadPosInDataArchive = DataArchive.Tell();
 
 	for (TPair<FIoHash, LocalEntry>& It : LocalEntries)
 	{
 		DataArchive << It.Value.Payload;
 	}
 
-	checkf((PayloadPosInFile + Trailer.Header.PayloadsDataLength) == DataArchive.Tell(), 
+	checkf((PayloadPosInDataArchive + Trailer.Header.PayloadsDataLength) == DataArchive.Tell(),
 		TEXT("Total payload length was calculated as %" INT64_FMT " bytes but we wrote %" INT64_FMT " bytes!"), 
 		Trailer.Header.PayloadsDataLength, 
-		DataArchive.Tell() - PayloadPosInFile);
+		DataArchive.Tell() - PayloadPosInDataArchive);
 
 	FPackageTrailer::FFooter Footer = Trailer.CreateFooter();
 	DataArchive << Footer;
 
-	checkf((Trailer.TrailerPositionInFile + Footer.TrailerLength) == DataArchive.Tell(), 
+	checkf((TrailerPositionInDataArchive + Footer.TrailerLength) == DataArchive.Tell(),
 		TEXT("Trailer length was calculated as %" INT64_FMT " bytes but we wrote %" INT64_FMT " bytes!"), 
 		Footer.TrailerLength, 
-		DataArchive.Tell() - Trailer.TrailerPositionInFile);
+		DataArchive.Tell() - TrailerPositionInDataArchive);
 
 	// Invoke any registered callbacks and pass in the trailer, this allows the callbacks to poll where 
 	// in the output archive the payload has been stored.
@@ -351,7 +395,8 @@ bool FPackageTrailerBuilder::BuildAndAppendTrailer(FLinkerSave* Linker, FArchive
 	}
 
 	// Minor sanity check that ::GetTrailerLength works
-	check(CalculateTrailerLength() == (DataArchive.Tell() - Trailer.TrailerPositionInFile) || DataArchive.IsError());
+	check(CalculateTrailerLength() == (DataArchive.Tell() - TrailerPositionInDataArchive) || DataArchive.IsError());
+	InOutPackageFileOffset += DataArchive.Tell() - TrailerPositionInDataArchive;
 
 	return !DataArchive.IsError();
 }
@@ -434,10 +479,10 @@ void FPackageTrailerBuilder::RemoveDuplicateEntries()
 	for (auto Iter = LocalEntries.CreateIterator(); Iter; ++Iter)
 	{
 		if (VirtualizedEntries.Contains(Iter.Key()))
-		{	
-			UE_LOG(LogSerialization, Verbose, 
-				TEXT("Replacing localized payload '%s' with the virtualized version when building the package trailer for '%s'"), 
-				*LexToString(Iter.Key()) , 
+		{
+			UE_LOG(LogSerialization, Verbose,
+				TEXT("Replacing localized payload '%s' with the virtualized version when building the package trailer for '%s'"),
+				*LexToString(Iter.Key()),
 				*DebugContext);
 
 			Iter.RemoveCurrent();
@@ -448,9 +493,9 @@ void FPackageTrailerBuilder::RemoveDuplicateEntries()
 	{
 		if (VirtualizedEntries.Contains(Iter.Key()))
 		{
-			UE_LOG(LogSerialization, Verbose, 
-				TEXT("Replacing localized payload '%s' with the virtualized version when building the package trailer for '%s'"), 
-				*LexToString(Iter.Key()), 
+			UE_LOG(LogSerialization, Verbose,
+				TEXT("Replacing localized payload '%s' with the virtualized version when building the package trailer for '%s'"),
+				*LexToString(Iter.Key()),
 				*DebugContext);
 
 			Iter.RemoveCurrent();
@@ -465,7 +510,7 @@ bool FPackageTrailer::IsEnabled()
 		bool bEnabled = true;
 
 		FUsePackageTrailer()
-		{		
+		{
 			GConfig->GetBool(TEXT("Core.System"), TEXT("UsePackageTrailer"), bEnabled, GEngineIni);
 			UE_LOG(LogSerialization, Log, TEXT("UsePackageTrailer: '%s'"), bEnabled ? TEXT("true") : TEXT("false"));
 		}
@@ -488,7 +533,7 @@ bool FPackageTrailer::TryLoadFromPackage(const FPackagePath& PackagePath, FPacka
 	{
 		LogPackageOpenFailureMessage(PackagePath.GetDebugName());
 		return false;
-	}	
+	}
 }
 
 bool FPackageTrailer::TryLoadFromFile(const FString& Path, FPackageTrailer& OutTrailer)
@@ -519,6 +564,7 @@ bool FPackageTrailer::TryLoad(FArchive& Ar)
 
 	TrailerPositionInFile = Ar.Tell();
 
+	Header.Tag = 0; // Make sure we ignore anything previously loaded
 	Ar << Header.Tag;
 
 	// Make sure that we are parsing a valid FPackageTrailer
@@ -528,9 +574,15 @@ bool FPackageTrailer::TryLoad(FArchive& Ar)
 	}
 
 	Ar << Header.Version;
-
 	Ar << Header.HeaderLength;
 	Ar << Header.PayloadsDataLength;
+
+	// The header and the payloads should not exceed the remaining data in the archive
+	if (TrailerPositionInFile + Header.HeaderLength + Header.PayloadsDataLength > (uint64)Ar.TotalSize())
+	{
+		Ar.SetError();
+		return false;
+	}
 
 	EPayloadAccessMode LegacyAccessMode = EPayloadAccessMode::Local;
 	if (Header.Version < (uint32)EPackageTrailerVersion::ACCESS_PER_PAYLOAD)
@@ -540,6 +592,19 @@ bool FPackageTrailer::TryLoad(FArchive& Ar)
 
 	int32 NumPayloads = 0;
 	Ar << NumPayloads;
+	
+	// Make sure that we serialized a valid value for 'NumPayloads' before we try to allocate memory based off it
+	if (Ar.IsError())
+	{
+		return false; 
+	}
+
+	// Make sure that there is enough data remaining in the archive to load the look up table
+	if (NumPayloads * Private::FLookupTableEntry::SizeOnDisk > Header.HeaderLength)
+	{
+		Ar.SetError();
+		return false;
+	}
 
 	Header.PayloadLookupTable.Reserve(NumPayloads);
 
@@ -547,6 +612,13 @@ bool FPackageTrailer::TryLoad(FArchive& Ar)
 	{
 		Private::FLookupTableEntry& Entry = Header.PayloadLookupTable.AddDefaulted_GetRef();
 		Entry.Serialize(Ar, (EPackageTrailerVersion)Header.Version);
+
+		if (!IsEntryValid(Entry, Header.PayloadsDataLength))
+		{
+			// If an entry is invalid then something is likely up with the data so signal an error
+			Ar.SetError();
+			return false;
+		}
 
 		if (Header.Version < (uint32)EPackageTrailerVersion::ACCESS_PER_PAYLOAD)
 		{
@@ -575,9 +647,16 @@ bool FPackageTrailer::TryLoadBackwards(FArchive& Ar)
 	Ar << Footer.TrailerLength;
 	Ar << Footer.PackageTag;
 
-	// First check the package tag as this indicates if the file is corrupted or not
+	// First make sure that we were able to serialize everything
+	if (Ar.IsError())
+	{
+		return false;
+	}
+
+	// Then check the package tag as this indicates if the data/file is corrupted or not
 	if (Footer.PackageTag != PACKAGE_FILE_TAG)
 	{
+		Ar.SetError();
 		return false;
 	}
 
@@ -588,6 +667,12 @@ bool FPackageTrailer::TryLoadBackwards(FArchive& Ar)
 	}
 
 	Ar.Seek(Ar.Tell() - Footer.TrailerLength);
+
+	// Lastly make sure we were able to see to where we believe the header is before we try to load it
+	if (Ar.IsError())
+	{
+		return false;
+	}
 
 	return TryLoad(Ar);
 }
@@ -627,6 +712,14 @@ bool FPackageTrailer::UpdatePayloadAsVirtualized(const FIoHash& Identifier)
 	else
 	{
 		return false;
+	}
+}
+
+void FPackageTrailer::ForEachPayload(TFunctionRef<void(const FIoHash&, uint64, uint64, EPayloadAccessMode, UE::Virtualization::EPayloadFilterReason)> Callback) const
+{
+	for (const Private::FLookupTableEntry& Entry : Header.PayloadLookupTable)
+	{
+		Callback(Entry.Identifier, Entry.CompressedSize, Entry.RawSize, Entry.AccessMode, Entry.FilterFlags);
 	}
 }
 

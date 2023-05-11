@@ -2,33 +2,37 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
+#include "Math/BoxSphereBounds.h"
 #include "UObject/UObjectGlobals.h"
-#include "UObject/CoreNet.h"
 #if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
 #include "Engine/EngineTypes.h"
 #include "Engine/OverlapInfo.h"
 #include "Engine/ScopedMovementUpdate.h"
 #endif
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "Engine/HitResult.h"
+#endif
 #include "ComponentInstanceDataCache.h"
 #include "Components/ActorComponent.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "RHIDefinitions.h"
+#endif
 #include "SceneComponent.generated.h"
 
 class AActor;
 class APhysicsVolume;
 class USceneComponent;
 class FScopedMovementUpdate;
+struct FHitResult;
 struct FLevelCollection;
 
 struct FOverlapInfo;
 typedef TArrayView<const FOverlapInfo> TOverlapArrayView;
+namespace ERHIFeatureLevel { enum Type : int; }
 
 /** Detail mode for scene component rendering, corresponds with the integer value of UWorld::GetDetailMode() */
 UENUM()
-enum EDetailMode
+enum EDetailMode : int
 {
 	DM_Low UMETA(DisplayName="Low"),
 	DM_Medium UMETA(DisplayName="Medium"),
@@ -38,7 +42,7 @@ enum EDetailMode
 
 /** The space for the transform */
 UENUM()
-enum ERelativeTransformSpace
+enum ERelativeTransformSpace : int
 {
 	/** World space transform. */
 	RTS_World,
@@ -129,18 +133,18 @@ public:
 
 private:
 	/** Location of the component relative to its parent */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, ReplicatedUsing=OnRep_Transform, Category = Transform, meta=(AllowPrivateAccess="true"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, ReplicatedUsing=OnRep_Transform, Category = Transform, meta=(AllowPrivateAccess="true", LinearDeltaSensitivity = "1", Delta = "1.0"))
 	FVector RelativeLocation;
 
 	/** Rotation of the component relative to its parent */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, ReplicatedUsing=OnRep_Transform, Category=Transform, meta=(AllowPrivateAccess="true"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, ReplicatedUsing=OnRep_Transform, Category=Transform, meta=(AllowPrivateAccess="true", UIMin = "0.0", UIMax = "359.999"))
 	FRotator RelativeRotation;
 
 	/**
 	*	Non-uniform scaling of the component relative to its parent.
 	*	Note that scaling is always applied in local space (no shearing etc)
 	*/
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, ReplicatedUsing=OnRep_Transform, Category=Transform, meta=(AllowPrivateAccess="true"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, ReplicatedUsing=OnRep_Transform, Category=Transform, meta=(AllowPrivateAccess="true", LinearDeltaSensitivity = "1", Delta = "0.0025"))
 	FVector RelativeScale3D;
 
 public:
@@ -1764,3 +1768,7 @@ FORCEINLINE_DEBUGGABLE bool USceneComponent::GetShouldUpdatePhysicsVolume() cons
 {
 	return bShouldUpdatePhysicsVolume;
 }
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

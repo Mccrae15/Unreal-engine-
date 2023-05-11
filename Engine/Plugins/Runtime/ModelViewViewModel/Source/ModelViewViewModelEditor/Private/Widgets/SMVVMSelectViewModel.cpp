@@ -2,23 +2,15 @@
 
 #include "Widgets/SMVVMSelectViewModel.h"
 
-#include "Bindings/MVVMBindingHelper.h"
 #include "Components/Widget.h"
-#include "Editor.h"
-#include "FieldNotification/IFieldValueChanged.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Modules/ModuleManager.h"
-#include "MVVMBlueprintViewModelContext.h"
-#include "MVVMEditorSubsystem.h"
-#include "MVVMViewModelBase.h"
 #include "SPrimaryButton.h"
-#include "Styling/MVVMEditorStyle.h"
-#include "Widgets/Input/SButton.h"
+#include "Types/MVVMBindingSource.h"
 #include "Widgets/Layout/SSplitter.h"
+#include "Widgets/SBoxPanel.h"
 #include "Widgets/SMVVMViewModelBindingListWidget.h"
 
 #include "ClassViewerModule.h"
-#include "SClassViewer.h"
 
 #define LOCTEXT_NAMESPACE "SMVVMSelectViewModel"
 
@@ -62,6 +54,7 @@ void SMVVMSelectViewModel::Construct(const FArguments& InArgs, const UWidgetBlue
 	FClassViewerInitializationOptions ClassViewerOptions;
 	ClassViewerOptions.DisplayMode = EClassViewerDisplayMode::TreeView;
 	ClassViewerOptions.Mode = EClassViewerMode::ClassPicker;
+	ClassViewerOptions.NameTypeToDisplay = EClassViewerNameTypeToDisplay::DisplayName;
 	ClassViewerOptions.ClassFilters.Add(MakeShared<FViewModelClassFilter>());
 
 	ClassViewer = FModuleManager::LoadModuleChecked<FClassViewerModule>("ClassViewer")
@@ -99,6 +92,7 @@ void SMVVMSelectViewModel::Construct(const FArguments& InArgs, const UWidgetBlue
 						[
 							SAssignNew(BindingListWidget, SSourceBindingList, WidgetBlueprint)
 							.EnableSelection(false)
+							.FieldVisibilityFlags(EFieldVisibility::None)
 						]
 					]
 				]

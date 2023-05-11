@@ -19,6 +19,90 @@
 
 #include "DisplayClusterConfigurationTypes_ICVFX.generated.h"
 
+USTRUCT(Blueprintable)
+struct DISPLAYCLUSTERCONFIGURATION_API FDisplayClusterConfigurationICVFX_LightcardCustomOCIO
+{
+	GENERATED_BODY()
+
+public:
+	/** Return LightCard OCIO configuration for the specified viewport. Return nullptr if no OCIO. */
+	const FOpenColorIOColorConversionSettings* FindOCIOConfiguration(const FString& InViewportId) const;
+
+public:
+	/** Apply this OpenColorIO configuration to all viewports. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Light Card", meta = (DisplayName = "All Viewports Color Configuration", ConfigurationMode = "Viewports"))
+	FDisplayClusterConfigurationOCIOConfiguration AllViewportsOCIOConfiguration;
+
+	/** Apply an OpenColorIO configuration on a per-viewport or group-of-viewports basis. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Light Card", meta = (DisplayName = "Per-Viewport OCIO Overrides", ConfigurationMode = "Viewports"))
+	TArray<FDisplayClusterConfigurationOCIOProfile> PerViewportOCIOProfiles;
+};
+
+USTRUCT(Blueprintable)
+struct DISPLAYCLUSTERCONFIGURATION_API FDisplayClusterConfigurationICVFX_ViewportOCIO
+{
+	GENERATED_BODY()
+
+public:
+	/** Return OCIO configuration for the specified viewport. Return nullptr if no OCIO. */
+	const FOpenColorIOColorConversionSettings* FindOCIOConfiguration(const FString& InViewportId) const;
+
+public:
+	/** Apply this OpenColorIO configuration to all viewports. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OCIO", meta = (DisplayName = "All Viewports Color Configuration", ConfigurationMode = "Viewports"))
+	FDisplayClusterConfigurationOCIOConfiguration AllViewportsOCIOConfiguration;
+
+	/** Apply an OpenColorIO configuration on a per-viewport or group-of-viewports basis. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OCIO", meta = (DisplayName = "Per-Viewport OCIO Overrides", ConfigurationMode = "Viewports"))
+	TArray<FDisplayClusterConfigurationOCIOProfile> PerViewportOCIOProfiles;
+};
+
+USTRUCT(Blueprintable)
+struct DISPLAYCLUSTERCONFIGURATION_API FDisplayClusterConfigurationICVFX_CameraOCIO
+{
+	GENERATED_BODY()
+
+public:
+	/** Return InCamera OCIO configuration for the specified cluster node. Return nullptr if no OCIO. */
+	const FOpenColorIOColorConversionSettings* FindOCIOConfiguration(const FString& InClusterNodeId) const;
+
+#if WITH_EDITOR
+	/** Returns true if the InCamera OCIO configuration is the same for the input nodes. */
+	bool IsInnerFrustumViewportSettingsEqual_Editor(const FString& InClusterNodeId1, const FString& InClusterNodeId2) const;
+
+	/** Returns true if the Chromakey OCIO configuration is the same for the input nodes. */
+	bool IsChromakeyViewportSettingsEqual_Editor(const FString& InClusterNodeId1, const FString& InClusterNodeId2) const;
+#endif
+
+public:
+	/** OCIO Display look configuration for all nodes */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OCIO", meta = (DisplayName = "All Nodes Color Configuration", ConfigurationMode = "ClusterNodes"))
+	FDisplayClusterConfigurationOCIOConfiguration AllNodesOCIOConfiguration;
+
+	/** Apply an OpenColorIO configuration on a per-node or group-of-nodes basis. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OCIO", meta = (DisplayName = "Per-Node OCIO Overrides", ConfigurationMode = "ClusterNodes"))
+	TArray<FDisplayClusterConfigurationOCIOProfile> PerNodeOCIOProfiles;
+};
+
+USTRUCT(Blueprintable)
+struct DISPLAYCLUSTERCONFIGURATION_API FDisplayClusterConfigurationICVFX_LightcardOCIO
+{
+	GENERATED_BODY()
+
+public:
+	/** Return LightCard OCIO configuration for the specified viewport. Return nullptr if no OCIO. */
+	const FOpenColorIOColorConversionSettings* FindOCIOConfiguration(const FString& InViewportId, const FDisplayClusterConfigurationICVFX_ViewportOCIO& InViewportOCIO) const;
+
+public:
+	/** Light Cards OCIO mode. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Light Card|OCIO", meta = (DisplayName = "Light Cards OCIO"))
+	EDisplayClusterConfigurationViewportLightcardOCIOMode LightcardOCIOMode = EDisplayClusterConfigurationViewportLightcardOCIOMode::nDisplay;
+
+	/** Custom OpenColorIO configuration for Light Cards. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Light Card|OCIO", meta = (DisplayName = "Custom Light Cards OCIO"))
+	FDisplayClusterConfigurationICVFX_LightcardCustomOCIO CustomOCIO;
+};
+
 USTRUCT(Blueprintable, meta = (DefaultSubstitutions = "LayersTooltip = Actor Layers, ActorsTooltip = Actor references"))
 struct DISPLAYCLUSTERCONFIGURATION_API FDisplayClusterConfigurationICVFX_VisibilityList
 {
@@ -36,6 +120,9 @@ public:
 	/** Reference to RootActor components by names */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = NDisplay)
 	TArray<FString> RootActorComponentNames; //@todo change link, now by names
+
+	/** Actors added automatically during a session */
+	TArray<TSoftObjectPtr<AActor>> AutoAddedActors;
 };
 
 USTRUCT(Blueprintable)
@@ -157,7 +244,7 @@ public:
 
 	/** Marker Color */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = NDisplay, meta = (EditCondition = "bEnable"))
-	FLinearColor MarkerColor;
+	FLinearColor MarkerColor = { 0.f, 0.25f, 0.f, 1.f };
 
 	/** Texture to use as the chromakey marker tile. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = NDisplay, meta = (EditCondition = "bEnable"))
@@ -173,7 +260,7 @@ public:
 
 	/** Offset value for the chromakey marker tiles, normalized to the tile distance.  Adjust placement of the chromakey markers within the composition of the camera framing.  Whole numbers will offset chromakey markers by a cyclical amount and have no visual change. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = NDisplay, meta = (EditCondition = "bEnable"))
-	FVector2D MarkerTileOffset;
+	FVector2D MarkerTileOffset = { 0, 0 };
 };
 
 USTRUCT(Blueprintable)
@@ -256,9 +343,9 @@ public:
 	UPROPERTY(BlueprintReadWrite, Category = NDisplay, meta = (EditCondition = "bEnable"))
 	FDisplayClusterConfigurationICVFX_LightcardRenderSettings RenderSettings;
 
-	// Enable using outer viewport OCIO from DCRA for lightcard rendering
-	UPROPERTY()
-	bool bEnableOuterViewportOCIO = false;
+	/** OpenColorIO configuration for the lightcards. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OCIO", meta = (DisplayName = "Lightcard OCIO", EditCondition = "bEnable"))
+	FDisplayClusterConfigurationICVFX_LightcardOCIO LightcardOCIO;
 
 	// Enable using outer viewport Color Grading from DCRA for lightcard rendering
 	UPROPERTY()
@@ -323,7 +410,7 @@ public:
 
 	// Media settings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = NDisplay, meta = (DisplayName = "Media"))
-	FDisplayClusterConfigurationMedia Media;
+	FDisplayClusterConfigurationMediaICVFX Media;
 
 	UPROPERTY()
 	FDisplayClusterConfigurationPostRender_BlurPostprocess PostprocessBlur;
@@ -398,7 +485,7 @@ struct DISPLAYCLUSTERCONFIGURATION_API FDisplayClusterConfigurationICVFX_CameraB
 {
 	GENERATED_BODY()
 
-	/** Enable Innder Frustum Border. */
+	/** Enable Inner Frustum Border. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = NDisplay, meta = (DisplayName = "Enable Inner Frustum Border"))
 	bool Enable = false;
 
@@ -416,22 +503,20 @@ struct DISPLAYCLUSTERCONFIGURATION_API FDisplayClusterConfigurationICVFX_CameraC
 {
 	GENERATED_BODY()
 
-	FDisplayClusterConfigurationICVFX_CameraCustomFrustum();
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = NDisplay)
+	FIntPoint EstimatedOverscanResolution = { 2560, 1440 };
 	
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = NDisplay)
-	FIntPoint EstimatedOverscanResolution;
-	
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = NDisplay)
-	FIntPoint InnerFrustumResolution;
+	FIntPoint InnerFrustumResolution = { 2560, 1440 };
 
 	UPROPERTY(BlueprintReadOnly, Category = NDisplay, meta = (HideInDetailPanel))
-	float OverscanPixelsIncrease;
+	float OverscanPixelsIncrease = 0.f;
 
-	/** Enable Custom Frustum Frustum. */
+	/** Enable Custom Frustum. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = NDisplay, meta = (DisplayName = "Enable Inner Frustum Overscan"))
 	bool bEnable = false;
 
-	/** Enable Custom Frustum Frustum. */
+	/** Enable adaptive resolution. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = NDisplay, meta = (DisplayName = "Adapt Resolution", EditCondition = "bEnable"))
 	bool bAdaptResolution = false;
 
@@ -465,7 +550,19 @@ struct DISPLAYCLUSTERCONFIGURATION_API FDisplayClusterConfigurationICVFX_CameraS
 {
 	GENERATED_BODY()
 
+public:
 	FDisplayClusterConfigurationICVFX_CameraSettings();
+
+	/** Return InCamera OCIO configuration for the specified cluster node. Return nullptr if no OCIO. */
+	const FOpenColorIOColorConversionSettings* FindInnerFrustumOCIOConfiguration(const FString& InClusterNodeId) const;
+	
+	/** Return Chromakey OCIO configuration for the specified cluster node. Return nullptr if no OCIO. */
+	const FOpenColorIOColorConversionSettings* FindChromakeyOCIOConfiguration(const FString& InClusterNodeId) const;
+
+#if WITH_EDITOR
+	bool IsInnerFrustumViewportSettingsEqual_Editor(const FString& InClusterNodeId1, const FString& InClusterNodeId2) const;
+	bool IsChromakeyViewportSettingsEqual_Editor(const FString& InClusterNodeId1, const FString& InClusterNodeId2) const;
+#endif
 
 public:
 	/** Render the inner frustum for this ICVFX camera. */
@@ -511,13 +608,8 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Chromakey, meta = (EditCondition = "bEnable"))
 	FDisplayClusterConfigurationICVFX_ChromakeySettings Chromakey;
 
-	/** OCIO Display look configuration for this camera */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OCIO", meta = (DisplayName = "All Nodes OCIO Configuration", EditCondition = "bEnable"))
-	FDisplayClusterConfigurationOCIOConfiguration AllNodesOCIOConfiguration;
-
-	/** Apply an OpenColorIO configuration on a per-node or group-of-nodes basis. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OCIO", meta = (DisplayName = "Per-Node OCIO Overrides", ConfigurationMode = "ClusterNodes", EditCondition = "bEnable"))
-	TArray<FDisplayClusterConfigurationOCIOProfile> PerNodeOCIOProfiles;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = OCIO, meta = (EditCondition = "bEnable"))
+	FDisplayClusterConfigurationICVFX_CameraOCIO CameraOCIO;
 
 	/** Entire Cluster Color Grading */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inner Frustum Color Grading", meta = (DisplayName = "Enable Inner Frustum Color Grading"))
@@ -544,6 +636,13 @@ USTRUCT(Blueprintable)
 struct DISPLAYCLUSTERCONFIGURATION_API FDisplayClusterConfigurationICVFX_StageSettings
 {
 	GENERATED_BODY()
+
+public:
+	/** Return OCIO configuration for the specified viewport. Return nullptr if no OCIO. */
+	const FOpenColorIOColorConversionSettings* FindViewportOCIOConfiguration(const FString& InViewportId) const;
+
+	/** Return LightCard OCIO configuration for the specified viewport. Return nullptr if no OCIO. */
+	const FOpenColorIOColorConversionSettings* FindLightcardOCIOConfiguration(const FString& InViewportId) const;
 
 public:
 	/** Enable/disable the inner frustum on all ICVFX cameras. */
@@ -582,15 +681,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Viewport Color Grading", meta = (DisplayName = "Per-Viewport Color Grading", ConfigurationMode = "Viewports"))
 	TArray<FDisplayClusterConfigurationViewport_PerViewportColorGrading> PerViewportColorGrading;
 
-	/** Enable the application of an OpenColorIO configuration to all viewports. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OCIO", meta = (DisplayName = "Enable Viewport OCIO"))
-	bool bUseOverallClusterOCIOConfiguration = true;
-
-	/** Apply this OpenColorIO configuration to all viewports. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OCIO", meta = (DisplayName = "All Viewports Color Configuration", EditCondition = "bUseOverallClusterOCIOConfiguration"))
-	FDisplayClusterConfigurationOCIOConfiguration AllViewportsOCIOConfiguration;
-
-	/** Apply an OpenColorIO configuration on a per-viewport or group-of-viewports basis. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OCIO", meta = (DisplayName = "Per-Viewport OCIO Overrides", ConfigurationMode = "Viewports", EditCondition = "bUseOverallClusterOCIOConfiguration"))
-	TArray<FDisplayClusterConfigurationOCIOProfile> PerViewportOCIOProfiles;
+	/** OpenColorIO configuration for the Outer viewports. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OCIO", meta = (DisplayName = "Outer Viewports OCIO"))
+	FDisplayClusterConfigurationICVFX_ViewportOCIO ViewportOCIO;
 };

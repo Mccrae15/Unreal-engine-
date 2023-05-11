@@ -3,11 +3,11 @@
 #include "SocketSubsystemSteam.h"
 #include "Misc/ConfigCacheIni.h"
 #include "SocketsSteam.h"
-#include "IPAddressSteam.h"
-#include "OnlineSubsystemSteam.h"
 #include "OnlineSessionInterfaceSteam.h"
 #include "SocketSubsystemModule.h"
 #include "SteamNetConnection.h"
+#include <steam/isteamgameserver.h>
+#include <steam/isteamuser.h>
 
 FSocketSubsystemSteam* FSocketSubsystemSteam::SocketSingleton = nullptr;
 
@@ -733,7 +733,7 @@ bool FSocketSubsystemSteam::Tick(float DeltaTime)
 	return true;
 }
 
-bool FSocketSubsystemSteam::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
+bool FSocketSubsystemSteam::Exec_Dev(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
 {
 #if !UE_BUILD_SHIPPING
 	if (FParse::Command(&Cmd, TEXT("dumpsteamsessions")))

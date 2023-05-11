@@ -8,6 +8,7 @@
 #include "UObject/Class.h"
 #include "EngineDefines.h"
 #include "Engine/NetSerialization.h"
+#include "Engine/World.h"
 #include "Templates/SubclassOf.h"
 #include "Components/InputComponent.h"
 #include "GameplayTagContainer.h"
@@ -1001,7 +1002,7 @@ void UAbilitySystemComponent::NotifyAbilityEnded(FGameplayAbilitySpecHandle Hand
 	ENetRole OwnerRole = GetOwnerRole();
 
 	// If AnimatingAbility ended, clear the pointer
-	if (LocalAnimMontageInfo.AnimatingAbility == Ability)
+	if (LocalAnimMontageInfo.AnimatingAbility.Get() == Ability)
 	{
 		ClearAnimatingAbility(Ability);
 	}
@@ -2020,6 +2021,7 @@ void UAbilitySystemComponent::ClientActivateAbilityFailed_Implementation(FGamepl
 	{
 		if (Ability->CurrentActivationInfo.GetActivationPredictionKey().Current == PredictionKey)
 		{
+			Ability->CurrentActivationInfo.SetActivationRejected();
 			Ability->K2_EndAbility();
 		}
 	}
@@ -2257,7 +2259,9 @@ int32 UAbilitySystemComponent::HandleGameplayEvent(FGameplayTag EventTag, const 
 
 	if (FGameplayEventMulticastDelegate* Delegate = GenericGameplayEventCallbacks.Find(EventTag))
 	{
-		Delegate->Broadcast(Payload);
+		// Make a copy before broadcasting to prevent memory stomping
+		FGameplayEventMulticastDelegate DelegateCopy = *Delegate;
+		DelegateCopy.Broadcast(Payload);
 	}
 
 	// Make a copy in case it changes due to callbacks
@@ -2695,12 +2699,15 @@ float UAbilitySystemComponent::PlayMontage(UGameplayAbility* InAnimatingAbility,
 		Duration = AnimInstance->Montage_Play(NewAnimMontage, InPlayRate, EMontagePlayReturnType::MontageLength, StartTimeSeconds);
 		if (Duration > 0.f)
 		{
-			if (LocalAnimMontageInfo.AnimatingAbility && LocalAnimMontageInfo.AnimatingAbility != InAnimatingAbility)
+			if (const UGameplayAbility* RawAnimatingAbility = LocalAnimMontageInfo.AnimatingAbility.Get())
 			{
-				// The ability that was previously animating will have already gotten the 'interrupted' callback.
-				// It may be a good idea to make this a global policy and 'cancel' the ability.
-				// 
-				// For now, we expect it to end itself when this happens.
+				if (RawAnimatingAbility != InAnimatingAbility)
+				{
+					// The ability that was previously animating will have already gotten the 'interrupted' callback.
+					// It may be a good idea to make this a global policy and 'cancel' the ability.
+					// 
+					// For now, we expect it to end itself when this happens.
+				}
 			}
 
 			if (NewAnimMontage->HasRootMotion() && AnimInstance->GetOwningActor())
@@ -2726,8 +2733,10 @@ float UAbilitySystemComponent::PlayMontage(UGameplayAbility* InAnimatingAbility,
 				AnimInstance->Montage_JumpToSection(StartSectionName, NewAnimMontage);
 			}
 
-			// Replicate to non owners
-			if (IsOwnerActorAuthoritative())
+			// Replicate for non-owners and for replay recordings
+			// The data we set from GetRepAnimMontageInfo_Mutable() is used both by the server to replicate to clients and by clients to record replays.
+			// We need to set this data for recording clients because there exists network configurations where an abilities montage data will not replicate to some clients (for example: if the client is an autonomous proxy.)
+			if (ShouldRecordMontageReplication())
 			{
 				FGameplayAbilityRepAnimMontage& MutableRepAnimMontageInfo = GetRepAnimMontageInfo_Mutable();
 
@@ -2744,8 +2753,12 @@ float UAbilitySystemComponent::PlayMontage(UGameplayAbility* InAnimatingAbility,
 
 				// Update parameters that change during Montage life time.
 				AnimMontage_UpdateReplicatedData();
+			}
 
-				// Force net update on our avatar actor
+			// Replicate to non-owners
+			if (IsOwnerActorAuthoritative())
+			{
+				// Force net update on our avatar actor.
 				if (AbilityActorInfo->AvatarActor != nullptr)
 				{
 					AbilityActorInfo->AvatarActor->ForceNetUpdate();
@@ -2784,20 +2797,20 @@ float UAbilitySystemComponent::PlayMontageSimulated(UAnimMontage* NewAnimMontage
 
 void UAbilitySystemComponent::AnimMontage_UpdateReplicatedData()
 {
-	check(IsOwnerActorAuthoritative());
+	check(ShouldRecordMontageReplication());
 
 	AnimMontage_UpdateReplicatedData(GetRepAnimMontageInfo_Mutable());
 }
 
 void UAbilitySystemComponent::AnimMontage_UpdateReplicatedData(FGameplayAbilityRepAnimMontage& OutRepAnimMontageInfo)
 {
-	UAnimInstance* AnimInstance = AbilityActorInfo.IsValid() ? AbilityActorInfo->GetAnimInstance() : nullptr;
+	const UAnimInstance* AnimInstance = AbilityActorInfo.IsValid() ? AbilityActorInfo->GetAnimInstance() : nullptr;
 	if (AnimInstance && LocalAnimMontageInfo.AnimMontage)
 	{
 		OutRepAnimMontageInfo.AnimMontage = LocalAnimMontageInfo.AnimMontage;
 
 		// Compressed Flags
-		bool bIsStopped = AnimInstance->Montage_GetIsStopped(LocalAnimMontageInfo.AnimMontage);
+		const bool bIsStopped = AnimInstance->Montage_GetIsStopped(LocalAnimMontageInfo.AnimMontage);
 
 		if (!bIsStopped)
 		{
@@ -3039,7 +3052,7 @@ void UAbilitySystemComponent::StopMontageIfCurrent(const UAnimMontage& Montage, 
 
 void UAbilitySystemComponent::ClearAnimatingAbility(UGameplayAbility* Ability)
 {
-	if (LocalAnimMontageInfo.AnimatingAbility == Ability)
+	if (LocalAnimMontageInfo.AnimatingAbility.Get() == Ability)
 	{
 		Ability->SetCurrentMontage(nullptr);
 		LocalAnimMontageInfo.AnimatingAbility = nullptr;
@@ -3052,7 +3065,10 @@ void UAbilitySystemComponent::CurrentMontageJumpToSection(FName SectionName)
 	if ((SectionName != NAME_None) && AnimInstance && LocalAnimMontageInfo.AnimMontage)
 	{
 		AnimInstance->Montage_JumpToSection(SectionName, LocalAnimMontageInfo.AnimMontage);
-		if (IsOwnerActorAuthoritative())
+
+		// This data is needed for replication on the server and recording replays on clients.
+		// We need to set GetRepAnimMontageInfo_Mutable on replay recording clients because this data is NOT replicated to all clients (for example, it is NOT replicated to autonomous proxy clients.)
+		if (ShouldRecordMontageReplication())
 		{
 			FGameplayAbilityRepAnimMontage& MutableRepAnimMontageInfo = GetRepAnimMontageInfo_Mutable();
 
@@ -3065,7 +3081,9 @@ void UAbilitySystemComponent::CurrentMontageJumpToSection(FName SectionName)
 
 			AnimMontage_UpdateReplicatedData();
 		}
-		else
+		
+		// If we are NOT the authority, then let the server handling jumping the montage.
+		if (!IsOwnerActorAuthoritative())
 		{
 			ServerCurrentMontageJumpToSectionName(LocalAnimMontageInfo.AnimMontage, SectionName);
 		}
@@ -3301,12 +3319,12 @@ void UAbilitySystemComponent::SetMontageRepAnimPositionMethod(ERepAnimPositionMe
 
 bool UAbilitySystemComponent::IsAnimatingAbility(UGameplayAbility* InAbility) const
 {
-	return (LocalAnimMontageInfo.AnimatingAbility == InAbility);
+	return (LocalAnimMontageInfo.AnimatingAbility.Get() == InAbility);
 }
 
 UGameplayAbility* UAbilitySystemComponent::GetAnimatingAbility()
 {
-	return LocalAnimMontageInfo.AnimatingAbility;
+	return LocalAnimMontageInfo.AnimatingAbility.Get();
 }
 
 void UAbilitySystemComponent::ConfirmAbilityTargetData(FGameplayAbilitySpecHandle AbilityHandle, FPredictionKey AbilityOriginalPredictionKey, const FGameplayAbilityTargetDataHandle& TargetData, const FGameplayTag& ApplicationTag)

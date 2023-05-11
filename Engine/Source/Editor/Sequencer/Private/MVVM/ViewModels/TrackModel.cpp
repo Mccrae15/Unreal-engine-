@@ -1,8 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MVVM/ViewModels/TrackModel.h"
+
 #include "MVVM/Extensions/IObjectBindingExtension.h"
 #include "MVVM/Extensions/IRecyclableExtension.h"
+#include "MVVM/Extensions/ITrackExtension.h"
 #include "MVVM/ViewModels/ChannelModel.h"
 #include "MVVM/ViewModels/FolderModel.h"
 #include "MVVM/ViewModels/ViewModelIterators.h"
@@ -21,6 +23,7 @@
 #include "MovieSceneNameableTrack.h"
 #include "Tracks/MovieScene3DTransformTrack.h"
 #include "Tracks/MovieScenePrimitiveMaterialTrack.h"
+#include "EntitySystem/IMovieSceneBlenderSystemSupport.h"
 
 #include "ISequencer.h"
 #include "ISequencerSection.h"
@@ -206,7 +209,7 @@ void FTrackModel::ForceUpdate()
 		for (UMovieSceneSection* Section : Track->GetAllSections())
 		{
 			TSharedPtr<FSectionModel> SectionModel = SectionModelStorage->FindModelForSection(Section);
-			if (!SectionModel)
+			if (!SectionModel && TrackEditor)
 			{
 				TSharedRef<ISequencerSection> SectionInterface = TrackEditor->MakeSectionInterface(*Section, *Track, ObjectBinding);
 				SectionModel = SectionModelStorage->CreateModelForSection(Section, SectionInterface);
@@ -294,7 +297,7 @@ void FTrackModel::ForceUpdate()
 			const int32 RowIndex = Section->GetRowIndex();
 
 			TSharedPtr<FSectionModel> SectionModel = SectionModelStorage->FindModelForSection(Section);
-			if (!SectionModel)
+			if (!SectionModel && TrackEditor)
 			{
 				TSharedRef<ISequencerSection> SectionInterface = TrackEditor->MakeSectionInterface(*Section, *Track, ObjectBinding);
 				SectionModel = SectionModelStorage->CreateModelForSection(Section, SectionInterface);
@@ -530,31 +533,69 @@ FSlateColor FTrackModel::GetLabelColor() const
 		// 3D transform tracks don't map to property bindings as below
 		if (Track->IsA<UMovieScene3DTransformTrack>() || Track->IsA<UMovieScenePrimitiveMaterialTrack>())
 		{
-			return bIsDimmed ? FSlateColor::UseSubduedForeground() : FSlateColor::UseForeground();
+			return FOutlinerItemModel::GetLabelColor();
 		}
 
-		TSharedPtr<FSequenceModel> SequenceModel = FindAncestorOfType<FSequenceModel>();
-		TSharedPtr<ISequencer> Sequencer = SequenceModel->GetSequencer();
-
-		if (TSharedPtr<IObjectBindingExtension> ParentBinding = FindAncestorOfType<IObjectBindingExtension>())
+		// If there is no object binding extension, don't tint it
+		TSharedPtr<IObjectBindingExtension> ParentBinding = FindAncestorOfType<IObjectBindingExtension>();
+		if (!ParentBinding)
 		{
-			for (TWeakObjectPtr<> WeakObject : Sequencer->FindBoundObjects(ParentBinding->GetObjectGuid(), Sequencer->GetFocusedTemplateID()))
-			{
-				if (UObject* Object = WeakObject.Get())
-				{
-					FTrackInstancePropertyBindings PropertyBinding(PropertyTrack->GetPropertyName(), PropertyTrack->GetPropertyPath().ToString());
-					if (PropertyBinding.GetProperty(*Object))
-					{
-						return bIsDimmed ? FSlateColor::UseSubduedForeground() : FSlateColor::UseForeground();
-					}
-				}
-			}
-
-			return bIsDimmed ? FSlateColor(FLinearColor::Red.Desaturate(0.6f)) : FLinearColor::Red;
+			return FOutlinerItemModel::GetLabelColor();
 		}
+
+		// Return a normal colour if we have at least one bound object for which the property binding resolves
+		// correctly. Otherwise, return a red colour indicating a binding issue.
+		TArray<UObject*> BoundObjects;
+		FindBoundObjects(BoundObjects);
+		for (UObject* BoundObject : BoundObjects)
+		{
+			FTrackInstancePropertyBindings PropertyBinding(PropertyTrack->GetPropertyName(), PropertyTrack->GetPropertyPath().ToString());
+			if (PropertyBinding.GetProperty(*BoundObject))
+			{
+				return bIsDimmed ? FSlateColor::UseSubduedForeground() : FSlateColor::UseForeground();
+			}
+		}
+		return bIsDimmed ? FSlateColor(FLinearColor::Red.Desaturate(0.6f)) : FLinearColor::Red;
 	}
 
 	return FOutlinerItemModel::GetLabelColor();
+}
+
+FText FTrackModel::GetLabelToolTipText() const
+{
+	UMovieSceneTrack* Track = GetTrack();
+	if (!Track)
+	{
+		return FText();
+	}
+
+	if (UMovieScenePropertyTrack* PropertyTrack = Cast<UMovieScenePropertyTrack>(Track))
+	{
+		TArray<UObject*> BoundObjects;
+		FindBoundObjects(BoundObjects);
+		for (UObject* BoundObject : BoundObjects)
+		{
+			FTrackInstancePropertyBindings PropertyBinding(PropertyTrack->GetPropertyName(), PropertyTrack->GetPropertyPath().ToString());
+			if (FProperty* BoundProperty = PropertyBinding.GetProperty(*BoundObject))
+			{
+				FString PropertyName = BoundProperty->GetMetaData(TEXT("DisplayName"));
+				if (PropertyName.IsEmpty())
+				{
+					PropertyName = BoundProperty->GetName();
+				}
+
+				FString CategoryName = BoundProperty->GetMetaData(TEXT("Category")).Replace(TEXT("|"), TEXT(" \u00BB "));
+				if (!CategoryName.IsEmpty())
+				{
+					CategoryName.Append(TEXT(" \u00BB "));
+				}
+
+				return FText::FromString(FString::Printf(TEXT("%s%s\n(Path: %s)"), *CategoryName, *PropertyName, *PropertyBinding.GetPropertyPath()));
+			}
+		}
+	}
+	
+	return Track->GetDisplayNameToolTipText();
 }
 
 TSharedRef<SWidget> FTrackModel::CreateOutlinerView(const FCreateOutlinerViewParams& InParams)
@@ -591,7 +632,7 @@ void FTrackModel::Resize(float NewSize)
 
 bool FTrackModel::CanDrag() const
 {
-	// Can only drag master tracks at the moment
+	// Can only drag root tracks at the moment
 	TSharedPtr<IObjectBindingExtension> ObjectBindingExtension = FindAncestorOfType<IObjectBindingExtension>();
 	return ObjectBindingExtension == nullptr;
 }
@@ -604,14 +645,17 @@ void FTrackModel::BuildContextMenu(FMenuBuilder& MenuBuilder)
 		return;
 	}
 
+	TWeakPtr<ISequencer> WeakSequencer = GetEditor()->GetSequencer();
+
 	const int32 TrackRowIndex = GetRowIndex();
 
-	TrackEditor->BuildTrackContextMenu(MenuBuilder, Track);
+	if (TrackEditor)
+	{
+		TrackEditor->BuildTrackContextMenu(MenuBuilder, Track);
+	}
 
 	if (Track && Track->GetSupportedBlendTypes().Num() > 0)
 	{
-		TWeakPtr<ISequencer> WeakSequencer = GetEditor()->GetSequencer();
-
 		MenuBuilder.AddSubMenu(
 			LOCTEXT("AddSection", "Add Section"),
 			FText(),
@@ -621,8 +665,39 @@ void FTrackModel::BuildContextMenu(FMenuBuilder& MenuBuilder)
 		);	
 	}
 
+	// Add menu items for selecting a blender
+	IMovieSceneBlenderSystemSupport* BlenderSystemSupport = Cast<IMovieSceneBlenderSystemSupport>(Track);
+	if (BlenderSystemSupport)
+	{
+		TArray<TSubclassOf<UMovieSceneBlenderSystem>> BlenderTypes;
+		BlenderSystemSupport->GetSupportedBlenderSystems(BlenderTypes);
+
+		if (BlenderTypes.Num() > 1)
+		{
+			MenuBuilder.AddSubMenu(
+				LOCTEXT("BlendingAlgorithmSubMenu", "Blending Algorithm"),
+				FText(),
+				FNewMenuDelegate::CreateLambda([=](FMenuBuilder& SubMenuBuilder){
+					FSequencerUtilities::PopulateMenu_BlenderSubMenu(SubMenuBuilder, Track, WeakSequencer);
+				})
+			);
+		}
+	}
+
 	// Find sections in the track to add batch properties for
 	TArray<TWeakObjectPtr<UObject>> TrackSections;
+
+	for (TWeakPtr<FViewModel> Node : GetEditor()->GetSequencer()->GetSelection().GetSelectedOutlinerItems())
+	{
+		if (ITrackExtension* TrackExtension = ICastable::CastWeakPtr<ITrackExtension>(Node))
+		{
+			for (UMovieSceneSection* Section : TrackExtension->GetSections())
+			{
+				TrackSections.Add(Section);
+			}
+		}
+	}
+
 	for (TSharedPtr<FViewModel> TrackAreaModel : GetTrackAreaModelList())
 	{
 		constexpr bool bIncludeThis = true;
@@ -630,7 +705,7 @@ void FTrackModel::BuildContextMenu(FMenuBuilder& MenuBuilder)
 		{
 			if (UMovieSceneSection* SectionObject = Section->GetSection())
 			{
-				TrackSections.Add(SectionObject);
+				TrackSections.AddUnique(SectionObject);
 			}
 		}
 	}
@@ -673,7 +748,7 @@ void FTrackModel::Delete()
 	if (TViewModelPtr<FFolderModel> ParentFolder = CastParent<FFolderModel>())
 	{
 		ParentFolder->GetFolder()->Modify();
-		ParentFolder->GetFolder()->RemoveChildMasterTrack(Track);
+		ParentFolder->GetFolder()->RemoveChildTrack(Track);
 	}
 
 	TSharedPtr<FSequenceModel> OwnerModel = FindAncestorOfType<FSequenceModel>();
@@ -698,10 +773,36 @@ void FTrackModel::Delete()
 	}
 	else
 	{
-		MovieScene->RemoveMasterTrack(*Track);
+		MovieScene->RemoveTrack(*Track);
 	}
 }
 
+bool FTrackModel::FindBoundObjects(TArray<UObject*>& OutBoundObjects) const
+{
+	TSharedPtr<FSequenceModel> SequenceModel = FindAncestorOfType<FSequenceModel>();
+	TSharedPtr<ISequencer> Sequencer = SequenceModel ? SequenceModel->GetSequencer() : nullptr;
+	if (!Sequencer)
+	{
+		return false;
+	}
+
+	TSharedPtr<IObjectBindingExtension> ParentBinding = FindAncestorOfType<IObjectBindingExtension>();
+	if (!ParentBinding)
+	{
+		return false;
+	}
+
+	TArrayView<TWeakObjectPtr<>> FoundBoundObjects = Sequencer->FindBoundObjects(ParentBinding->GetObjectGuid(), Sequencer->GetFocusedTemplateID());
+	OutBoundObjects.Reserve(OutBoundObjects.Num() + FoundBoundObjects.Num());
+	for (TWeakObjectPtr<> WeakObject : FoundBoundObjects)
+	{
+		if (UObject* Object = WeakObject.Get())
+		{
+			OutBoundObjects.Add(Object);
+		}
+	}
+	return true;
+}
 
 } // namespace Sequencer
 } // namespace UE

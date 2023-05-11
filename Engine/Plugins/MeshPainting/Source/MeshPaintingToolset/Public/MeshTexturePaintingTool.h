@@ -2,18 +2,17 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/NoExportTypes.h"
-#include "InteractiveToolBuilder.h"
 #include "BaseTools/BaseBrushTool.h"
-#include "InteractiveTool.h"
-#include "Delegates/DelegateCombinations.h"
-#include "Components/MeshComponent.h"
 #include "MeshPaintHelpers.h"
+#include "MeshPaintInteractions.h"
 #include "MeshPaintingToolsetTypes.h"
-#include "MeshVertexPaintingTool.h"
-#include "TexturePaintToolset.h"
+#include "Misc/ITransaction.h"
+
 #include "MeshTexturePaintingTool.generated.h"
+
+class UMeshToolManager;
+enum class EToolShutdownType : uint8;
+struct FTexturePaintMeshSectionInfo;
 
 
 struct FToolBuilderState;
@@ -23,6 +22,7 @@ class UTextureRenderTarget2D;
 struct FTextureTargetListInfo;
 enum class EMeshPaintModeAction : uint8;
 class IMeshPaintComponentAdapter;
+class FScopedTransaction;
 
 /**
  *
@@ -158,6 +158,7 @@ protected:
 	void StartPaintingTexture(UMeshComponent* InMeshComponent, const IMeshPaintComponentAdapter& GeometryInfo);
 	void PaintTexture(FMeshPaintParameters& InParams, TArray<FTexturePaintTriangleInfo>& InInfluencedTriangles, const IMeshPaintComponentAdapter& GeometryInfo);
 	void FinishPaintingTexture();
+	void OnTransactionStateChanged(const FTransactionContext& InTransactionContext, const ETransactionStateEventType InTransactionState);
 
 protected:
 	double InitialMeshArea;
@@ -174,7 +175,9 @@ protected:
 
 private:
 	bool PaintInternal(const TArrayView<TPair<FVector, FVector>>& Rays, EMeshPaintModeAction PaintAction, float PaintStrength);
-	
+
+	void AddTextureOverrideToComponent(FPaintTexture2DData& TextureData, UMeshComponent* MeshComponent, const IMeshPaintComponentAdapter* MeshPaintAdapter = nullptr);
+
 private:
 	UPROPERTY(Transient)
 	TObjectPtr<UMeshTexturePaintingToolProperties> TextureProperties;
@@ -211,7 +214,13 @@ private:
 
 	/** Stores data associated with our paint target textures */
 	UPROPERTY(Transient)
-	TMap< TObjectPtr<UTexture2D>, FPaintTexture2DData > PaintTargetData;
+	TMap<TObjectPtr<UTexture2D>, FPaintTexture2DData> PaintTargetData;
+
+	/** Store the component overrides active for each paint target textures
+	 * Note this is not transactional because we use it as cache of the current state of the scene that we can clean/update after each transaction.
+	 */
+	UPROPERTY(Transient, NonTransactional)
+	TMap<TObjectPtr<UTexture2D>, FPaintComponentOverride> PaintComponentsOverride;
 
 	/** Texture paint: Will hold a list of texture items that we can paint on */
 	TArray<FTextureTargetListInfo> TexturePaintTargetList;
@@ -226,4 +235,16 @@ private:
 
 	/** True if we need to generate a texture seam mask used for texture dilation */
 	bool bGenerateSeamMask;
+
+	/** Hold the transaction while we are painting */
+	TUniquePtr<FScopedTransaction> PaintingTransaction;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Components/MeshComponent.h"
+#include "CoreMinimal.h"
+#include "Delegates/DelegateCombinations.h"
+#include "MeshVertexPaintingTool.h"
+#include "TexturePaintToolset.h"
+#include "UObject/NoExportTypes.h"
+#endif

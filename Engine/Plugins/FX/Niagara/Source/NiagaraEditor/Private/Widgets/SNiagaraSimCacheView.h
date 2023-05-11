@@ -19,11 +19,14 @@ public:
 
 	using FBufferSelectionInfo = TPair<int32, FText>;
 
+	bool IsStringFilterEnabled() const;
 	void Construct(const FArguments& InArgs);
 
 	TSharedRef<ITableRow> MakeRowWidget(const TSharedPtr<int32> RowIndexPtr, const TSharedRef<STableViewBase>& OwnerTable) const;
 
-	void UpdateColumns(const bool bRefresh);
+	// Update existing or generate new columns and apply any filters.
+	// @param bReset Weather the columns need a full reset. If true this will destroy existing columns and rebuild new ones. 
+	void UpdateColumns(const bool bReset);
 
 	void UpdateRows(const bool bRefresh);
 
@@ -37,19 +40,21 @@ public:
 
 	void OnComponentFilterChange(const FText& InFilter);
 
-	void OnSimCacheChanged(const FAssetData& InAsset);
+	void OnSimCacheChanged();
 
 	void OnViewDataChanged(const bool bFullRefresh);
+	void OnBufferChanged();
+
+private:
+	void GenerateColumns();
 
 	TArray<TSharedPtr<int32>>					RowItems;
 	TSharedPtr<FNiagaraSimCacheViewModel>		SimCacheViewModel;
 
 	TArray<TSharedPtr<FBufferSelectionInfo>>	BufferSelectionList;
-
-	int32										FrameIndex = 0;
-
+	
 	TSharedPtr<SHeaderRow>						HeaderRowWidget;
 	TSharedPtr<SListView<TSharedPtr<int32>>>	ListViewWidget;
 
-	TArray<FString>								ComponentFilterArray;
+	TArray<FString>								StringFilterArray;
 };

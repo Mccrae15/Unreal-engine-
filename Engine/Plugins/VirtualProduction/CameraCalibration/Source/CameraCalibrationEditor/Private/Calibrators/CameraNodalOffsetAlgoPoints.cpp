@@ -29,7 +29,9 @@
 #include "UI/SFilterableActorPicker.h"
 #include "ScopedTransaction.h"
 #include "UI/CameraCalibrationWidgetHelpers.h"
+#include "UObject/UObjectIterator.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SComboBox.h"
 #include "Widgets/Views/SListView.h"
 #include "Widgets/SWidget.h"
 
@@ -750,7 +752,7 @@ bool UCameraNodalOffsetAlgoPoints::OnViewportClicked(const FGeometry& MyGeometry
 	Row->CalibratorPointData = LastCalibratorPoint;
 
 	// Get the mouse click 2d position
-	if (!StepsController->CalculateNormalizedMouseClickPosition(MyGeometry, MouseEvent, Row->Point2D))
+	if (!StepsController->CalculateNormalizedMouseClickPosition(MyGeometry, MouseEvent, Row->Point2D, ESimulcamViewportPortion::CameraFeed))
 	{
 		return true;
 	}

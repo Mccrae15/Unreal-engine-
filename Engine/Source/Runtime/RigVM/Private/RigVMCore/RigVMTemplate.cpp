@@ -3,6 +3,7 @@
 #include "RigVMCore/RigVMTemplate.h"
 #include "RigVMCore/RigVMRegistry.h"
 #include "RigVMCore/RigVMStruct.h"
+#include "RigVMCore/RigVMDispatchFactory.h"
 #include "RigVMModule.h"
 #include "Algo/Sort.h"
 #include "UObject/UObjectIterator.h"
@@ -30,7 +31,7 @@ FRigVMTemplateArgument::FRigVMTemplateArgument(FProperty* InProperty)
 	FString ExtendedType;
 	const FString CPPType = InProperty->GetCPPType(&ExtendedType);
 	const FName CPPTypeName = *(CPPType + ExtendedType);
-	FRigVMTemplateArgumentType Type(CPPTypeName);
+	UObject* CPPTypeObject = nullptr;
 
 	if (FArrayProperty* ArrayProperty = CastField<FArrayProperty>(InProperty))
 	{
@@ -39,18 +40,18 @@ FRigVMTemplateArgument::FRigVMTemplateArgument(FProperty* InProperty)
 
 	if (FStructProperty* StructProperty = CastField<FStructProperty>(InProperty))
 	{
-		Type.CPPTypeObject = StructProperty->Struct;
+		CPPTypeObject = StructProperty->Struct;
 	}
 	else if (FEnumProperty* EnumProperty = CastField<FEnumProperty>(InProperty))
 	{
-		Type.CPPTypeObject = EnumProperty->GetEnum();
+		CPPTypeObject = EnumProperty->GetEnum();
 	}
 	else if (FByteProperty* ByteProperty = CastField<FByteProperty>(InProperty))
 	{
-		Type.CPPTypeObject = ByteProperty->Enum;
+		CPPTypeObject = ByteProperty->Enum;
 	}
-	Type.CPPType = *RigVMTypeUtils::PostProcessCPPType(Type.CPPType.ToString(), Type.CPPTypeObject);
 
+	const FRigVMTemplateArgumentType Type(CPPTypeName, CPPTypeObject);
 	const TRigVMTypeIndex TypeIndex = FRigVMRegistry::Get().FindOrAddType_Internal(Type, true); 
 
 	TypeIndices.Add(TypeIndex);
@@ -444,7 +445,7 @@ FRigVMTemplate::FRigVMTemplate(UScriptStruct* InStruct, const FString& InTemplat
 			FRigVMTemplateArgument Argument(*It);
 			Argument.Index = Arguments.Num();
 
-			if(IsValidArgumentForTemplate(Argument) && Argument.GetDirection() != ERigVMPinDirection::Hidden)
+			if(!Argument.IsExecute() && IsValidArgumentForTemplate(Argument) && Argument.GetDirection() != ERigVMPinDirection::Hidden)
 			{
 				Arguments.Add(Argument);
 			}
@@ -457,7 +458,7 @@ FRigVMTemplate::FRigVMTemplate(UScriptStruct* InStruct, const FString& InTemplat
 	{
 		if(const FRigVMTemplateArgument* Argument = FindArgument(It->GetFName()))
 		{
-			if(Argument->GetDirection() != ERigVMPinDirection::Hidden)
+			if(!Argument->IsExecute() && Argument->GetDirection() != ERigVMPinDirection::Hidden)
 			{
 				ArgumentNotations.Add(GetArgumentNotation(*Argument));
 			}
@@ -835,7 +836,12 @@ FText FRigVMTemplate::GetDisplayNameForArgument(const FName& InArgumentName, con
 {
 	if(const FRigVMDispatchFactory* Factory = GetDispatchFactory())
 	{
-		return Factory->GetDisplayNameForArgument(InArgumentName);
+		const FName DisplayName = Factory->GetDisplayNameForArgument(InArgumentName);
+		if(DisplayName.IsNone())
+		{
+			return FText();
+		}
+		return FText::FromName(DisplayName);
 	}
 
 	if(const FRigVMTemplateArgument* Argument = FindArgument(InArgumentName))
@@ -963,20 +969,27 @@ FString FRigVMTemplate::GetArgumentMetaData(const FName& InArgumentName, const F
 
 #endif
 
-bool FRigVMTemplate::IsCompatible(const FRigVMTemplate& InOther) const
+bool FRigVMTemplate::Merge(const FRigVMTemplate& InOther)
 {
 	if (!IsValid() || !InOther.IsValid())
 	{
 		return false;
 	}
 
-	return Notation == InOther.Notation;
-}
-
-bool FRigVMTemplate::Merge(const FRigVMTemplate& InOther)
-{
-	if (!IsCompatible(InOther))
+	if(Notation != InOther.Notation)
 	{
+		return false;
+	}
+
+	if(InOther.GetExecuteContextStruct() != GetExecuteContextStruct())
+	{
+		// find the previously defined permutation.
+		UE_LOG(LogRigVM, Display, TEXT("RigVMFunction '%s' cannot be merged into the '%s' template. ExecuteContext Types differ ('%s' vs '%s' from '%s')."),
+			*InOther.GetPrimaryPermutation()->Name,
+			*GetNotation().ToString(),
+			*InOther.GetExecuteContextStruct()->GetStructCPPName(),
+			*GetExecuteContextStruct()->GetStructCPPName(),
+			*GetPrimaryPermutation()->Name);
 		return false;
 	}
 
@@ -1001,7 +1014,7 @@ bool FRigVMTemplate::Merge(const FRigVMTemplate& InOther)
 		{
 			// find the previously defined permutation.
 			UE_LOG(LogRigVM, Display, TEXT("RigVMFunction '%s' cannot be merged into the '%s' template. It collides with '%s'."),
-				*InOther.GetPermutation(0)->Name,
+				*InOther.GetPrimaryPermutation()->Name,
 				*GetNotation().ToString(),
 				*GetPermutation(PermutationIndex)->Name);
 			return false;
@@ -1049,6 +1062,79 @@ const FRigVMTemplateArgument* FRigVMTemplate::FindArgument(const FName& InArgume
 	});
 }
 
+int32 FRigVMTemplate::NumExecuteArguments(const FRigVMDispatchContext& InContext) const
+{
+	return GetExecuteArguments(InContext).Num();
+}
+
+const FRigVMExecuteArgument* FRigVMTemplate::GetExecuteArgument(int32 InIndex, const FRigVMDispatchContext& InContext) const
+{
+	const TArray<FRigVMExecuteArgument>& Args = GetExecuteArguments(InContext);
+	if(Args.IsValidIndex(InIndex))
+	{
+		return &Args[InIndex];
+	}
+	return nullptr;
+}
+
+const FRigVMExecuteArgument* FRigVMTemplate::FindExecuteArgument(const FName& InArgumentName, const FRigVMDispatchContext& InContext) const
+{
+	const TArray<FRigVMExecuteArgument>& Args = GetExecuteArguments(InContext);
+	return Args.FindByPredicate([InArgumentName](const FRigVMExecuteArgument& Arg) -> bool
+	{
+		return Arg.Name == InArgumentName;
+	});
+}
+
+const TArray<FRigVMExecuteArgument>& FRigVMTemplate::GetExecuteArguments(const FRigVMDispatchContext& InContext) const
+{
+	if(ExecuteArguments.IsEmpty())
+	{
+		if(UsesDispatch())
+		{
+			const FRigVMDispatchFactory* Factory = Delegates.GetDispatchFactoryDelegate.Execute();
+			check(Factory);
+
+			ExecuteArguments = Factory->GetExecuteArguments(InContext);
+		}
+		else if(const FRigVMFunction* PrimaryPermutation = GetPrimaryPermutation())
+		{
+			if(PrimaryPermutation->Struct)
+			{
+				TArray<UStruct*> Structs = GetSuperStructs(PrimaryPermutation->Struct, true);
+				for(const UStruct* Struct : Structs)
+				{
+					// only iterate on this struct's fields, not the super structs'
+					for (TFieldIterator<FProperty> It(Struct, EFieldIterationFlags::None); It; ++It)
+					{
+						FRigVMTemplateArgument Argument(*It);
+						if(Argument.IsExecute())
+						{
+							ExecuteArguments.Emplace(Argument.Name, Argument.Direction, Argument.TypeIndices[0]);
+						}
+					}
+				}
+			}
+		}
+	}
+	return ExecuteArguments;
+}
+
+const UScriptStruct* FRigVMTemplate::GetExecuteContextStruct() const
+{
+	if(const FRigVMDispatchFactory* Factory = GetDispatchFactory())
+	{
+		return Factory->GetExecuteContextStruct();
+	}
+	check(!Permutations.IsEmpty());
+	return GetPrimaryPermutation()->GetExecuteContextStruct();
+}
+
+bool FRigVMTemplate::SupportsExecuteContextStruct(const UScriptStruct* InExecuteContextStruct) const
+{
+	return InExecuteContextStruct->IsChildOf(GetExecuteContextStruct());
+}
+
 bool FRigVMTemplate::ArgumentSupportsTypeIndex(const FName& InArgumentName, TRigVMTypeIndex InTypeIndex, TRigVMTypeIndex* OutTypeIndex) const
 {
 	if (const FRigVMTemplateArgument* Argument = FindArgument(InArgumentName))
@@ -1056,6 +1142,15 @@ bool FRigVMTemplate::ArgumentSupportsTypeIndex(const FName& InArgumentName, TRig
 		return Argument->SupportsTypeIndex(InTypeIndex, OutTypeIndex);		
 	}
 	return false;
+}
+
+const FRigVMFunction* FRigVMTemplate::GetPrimaryPermutation() const
+{
+	if (NumPermutations() > 0)
+	{
+		return GetPermutation(0);
+	}
+	return nullptr;
 }
 
 const FRigVMFunction* FRigVMTemplate::GetPermutation(int32 InIndex) const
@@ -1288,6 +1383,51 @@ bool FRigVMTemplate::Resolve(FTypeMap& InOutTypes, TArray<int32>& OutPermutation
 	return !OutPermutationIndices.IsEmpty();
 }
 
+bool FRigVMTemplate::ContainsPermutation(const FTypeMap& InTypes) const
+{
+	const FRigVMRegistry& Registry = FRigVMRegistry::Get();
+	
+	TArray<int32> PossiblePermutations;
+	for (const TPair<FName, TRigVMTypeIndex>& Pair : InTypes)
+	{
+		if (const FRigVMTemplateArgument* Argument = FindArgument(Pair.Key))
+		{
+			if (const TArray<int32>* ArgumentPermutations = Argument->TypeToPermutations.Find(Pair.Value))
+			{
+				// If possible permutations is empty, initialize it
+				if (PossiblePermutations.IsEmpty())
+				{
+					PossiblePermutations = *ArgumentPermutations;
+				}
+				else
+				{
+					// Intersect possible permutations and the permutations found for this argument
+					PossiblePermutations = ArgumentPermutations->FilterByPredicate([PossiblePermutations](const int32& ArgPermutation)
+					{
+						return PossiblePermutations.Contains(ArgPermutation);
+					});
+					if (PossiblePermutations.IsEmpty())
+					{
+						return false;
+					}
+				}
+			}
+			else
+			{
+				// The argument does not support the given type
+				return false;
+			}
+		}
+		else
+		{
+			// The argument cannot be found
+			return false;
+		}
+	}
+	
+	return true;
+}
+
 bool FRigVMTemplate::ResolveArgument(const FName& InArgumentName, const TRigVMTypeIndex InTypeIndex,
 	FTypeMap& InOutTypes) const
 {
@@ -1405,7 +1545,7 @@ FString FRigVMTemplate::GetCategory() const
 	}
 	
 	FString Category;
-	GetPermutation(0)->Struct->GetStringMetaDataHierarchical(FRigVMStruct::CategoryMetaName, &Category);
+	GetPrimaryPermutation()->Struct->GetStringMetaDataHierarchical(FRigVMStruct::CategoryMetaName, &Category);
 
 	if (Category.IsEmpty())
 	{
@@ -1482,13 +1622,9 @@ bool FRigVMTemplate::AddTypeForArgument(const FName& InArgumentName, TRigVMTypeI
 			
 			// make sure this permutation doesn't exist yet
 			FRigVMTemplateTypeMap TempTypes = Types;
-			TArray<int32> ExistingPermutations;
-			if(Resolve(TempTypes, ExistingPermutations, false))
+			if(ContainsPermutation(TempTypes))
 			{
-				if(ExistingPermutations.Num() == 1)
-				{
-					return false;
-				}
+				return false;
 			}
 			
 			for(FRigVMTemplateArgument& Argument : Arguments)
@@ -1506,8 +1642,7 @@ bool FRigVMTemplate::AddTypeForArgument(const FName& InArgumentName, TRigVMTypeI
 
 			// Find if these types were already registered
 			FRigVMTemplateTypeMap TestTypes = Types;
-			TArray<int32> TestPermutations;
-			if (Resolve(TestTypes, TestPermutations, false))
+			if (ContainsPermutation(TestTypes))
 			{
 				return false;
 			}

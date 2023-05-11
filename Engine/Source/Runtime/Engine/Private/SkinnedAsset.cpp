@@ -1,10 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/SkinnedAsset.h"
+#include "Engine/SkinnedAssetAsyncCompileUtils.h"
+#include "Engine/SkinnedAssetCommon.h"
+#include "Engine/World.h"
 #include "SkinnedAssetCompiler.h"
 #include "Animation/AnimStats.h"
+#include "Materials/MaterialInterface.h"
 #include "SkeletalRenderGPUSkin.h"
 #include "PSOPrecache.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(SkinnedAsset)
 
 #if INTEL_ISPC
 #include "SkinnedAsset.ispc.generated.h"
@@ -24,6 +30,22 @@ static FAutoConsoleVariableRef CVarAnimSkinnedAssetISPCEnabled(TEXT("a.SkinnedAs
 #endif
 
 DEFINE_LOG_CATEGORY_STATIC(LogSkinnedAsset, Log, All);
+
+USkinnedAsset::USkinnedAsset(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{}
+
+USkinnedAsset::~USkinnedAsset() {}
+
+bool USkinnedAsset::IsValidMaterialIndex(int32 Index) const
+{
+	return GetMaterials().IsValidIndex(Index);
+}
+
+int32 USkinnedAsset::GetNumMaterials() const
+{
+	return GetMaterials().Num();
+}
 
 void USkinnedAsset::PostLoad()
 {
@@ -63,7 +85,7 @@ void USkinnedAsset::PostLoad()
 		ERHIFeatureLevel::Type FeatureLevel = GetWorld() ? GetWorld()->FeatureLevel.GetValue() : GMaxRHIFeatureLevel;
 		int32 MinLODIndex = GetMinLodIdx();
 		
-		TArray<FSkinnedAssetVertexFactoryTypesPerMaterialData, TInlineAllocator<4>> VFsPerMaterials = GetVertexFactoryTypesPerMaterialIndex(MinLODIndex, bCPUSkin, FeatureLevel);
+		FPSOPrecacheVertexFactoryDataPerMaterialIndexList VFsPerMaterials = GetVertexFactoryTypesPerMaterialIndex(nullptr, MinLODIndex, bCPUSkin, FeatureLevel);
 		bool bAnySectionCastsShadows = GetResourceForRendering()->AnyRenderSectionCastsShadows(MinLODIndex);
 
 		// Precache using default material & PSO precache params but mark movable
@@ -72,21 +94,22 @@ void USkinnedAsset::PostLoad()
 		PrecachePSOParams.SetMobility(EComponentMobility::Movable);
 		PrecachePSOParams.bCastShadow = bAnySectionCastsShadows;
 
+		TArray<FMaterialPSOPrecacheRequestID> MaterialPSOPrecacheRequestIDs;
 		for (auto VFsPerMaterial : VFsPerMaterials)
 		{
 			UMaterialInterface* MaterialInterface = Materials[VFsPerMaterial.MaterialIndex].MaterialInterface;
 			if (MaterialInterface)
 			{
-				MaterialInterface->PrecachePSOs(VFsPerMaterial.VertexFactoryTypes, PrecachePSOParams);
+				MaterialInterface->PrecachePSOs(VFsPerMaterial.VertexFactoryDataList, PrecachePSOParams, EPSOPrecachePriority::Medium, MaterialPSOPrecacheRequestIDs);
 			}
 		}
 	}
 }
 
-TArray<FSkinnedAssetVertexFactoryTypesPerMaterialData, TInlineAllocator<4>> USkinnedAsset::GetVertexFactoryTypesPerMaterialIndex(
-	int32 MinLODIndex, bool bCPUSkin, ERHIFeatureLevel::Type FeatureLevel)
+FPSOPrecacheVertexFactoryDataPerMaterialIndexList USkinnedAsset::GetVertexFactoryTypesPerMaterialIndex(
+	USkinnedMeshComponent* SkinnedMeshComponent, int32 MinLODIndex, bool bCPUSkin, ERHIFeatureLevel::Type FeatureLevel)
 {
-	TArray<FSkinnedAssetVertexFactoryTypesPerMaterialData, TInlineAllocator<4>> VFTypesPerMaterialIndex;
+	FPSOPrecacheVertexFactoryDataPerMaterialIndexList VFTypesPerMaterialIndex;
 
 	FSkeletalMeshRenderData* SkelMeshRenderData = GetResourceForRendering();
 	for (int32 LODIndex = MinLODIndex; LODIndex < SkelMeshRenderData->LODRenderData.Num(); LODIndex++)
@@ -109,8 +132,8 @@ TArray<FSkinnedAssetVertexFactoryTypesPerMaterialData, TInlineAllocator<4>> USki
 				MaterialIndex = FMath::Clamp(MaterialIndex, 0, GetNumMaterials());
 			}
 
-			FSkinnedAssetVertexFactoryTypesPerMaterialData* VFsPerMaterial = VFTypesPerMaterialIndex.FindByPredicate(
-				[MaterialIndex](const FSkinnedAssetVertexFactoryTypesPerMaterialData& Other) { return Other.MaterialIndex == MaterialIndex; });
+			FPSOPrecacheVertexFactoryDataPerMaterialIndex* VFsPerMaterial = VFTypesPerMaterialIndex.FindByPredicate(
+				[MaterialIndex](const FPSOPrecacheVertexFactoryDataPerMaterialIndex& Other) { return Other.MaterialIndex == MaterialIndex; });
 			if (VFsPerMaterial == nullptr)
 			{
 				VFsPerMaterial = &VFTypesPerMaterialIndex.AddDefaulted_GetRef();
@@ -121,12 +144,13 @@ TArray<FSkinnedAssetVertexFactoryTypesPerMaterialData, TInlineAllocator<4>> USki
 			if (bCPUSkin)
 			{
 				// Force static from GPU point of view
-				VFsPerMaterial->VertexFactoryTypes.AddUnique(&FLocalVertexFactory::StaticType);
+				VFsPerMaterial->VertexFactoryDataList.AddUnique(FPSOPrecacheVertexFactoryData(&FLocalVertexFactory::StaticType));
 			}
 			else if (!SkelMeshRenderData->RequiresCPUSkinning(FeatureLevel, LODIndex))
 			{
 				// Add all the vertex factories which can be used for gpu skinning
-				FSkeletalMeshObjectGPUSkin::GetUsedVertexFactories(LODRenderData, RenderSection, FeatureLevel, VFsPerMaterial->VertexFactoryTypes);
+				bool bHasMorphTargets = GetMorphTargets().Num() > 0;
+				FSkeletalMeshObjectGPUSkin::GetUsedVertexFactoryData(SkelMeshRenderData, LODIndex, SkinnedMeshComponent, RenderSection, FeatureLevel, bHasMorphTargets, VFsPerMaterial->VertexFactoryDataList);
 			}
 		}
 	}
@@ -264,6 +288,11 @@ static bool IsISPCEnabled()
 	return bAnim_SkinnedAsset_ISPC_Enabled;
 }
 
+ESkeletalMeshVertexFlags USkinnedAsset::GetVertexBufferFlags() const
+{
+	return GetHasVertexColors() ? ESkeletalMeshVertexFlags::HasVertexColors : ESkeletalMeshVertexFlags::None;
+}
+
 void USkinnedAsset::FillComponentSpaceTransforms(const TArray<FTransform>& InBoneSpaceTransforms,
 												 const TArray<FBoneIndexType>& InFillComponentSpaceTransformsRequiredBones, 
 												 TArray<FTransform>& OutComponentSpaceTransforms) const
@@ -339,4 +368,40 @@ void USkinnedAsset::FillComponentSpaceTransforms(const TArray<FTransform>& InBon
 			checkSlow(!SpaceBase->ContainsNaN());
 		}
 	}
+}
+
+TArray<FSkeletalMeshLODInfo>& USkinnedAsset::GetMeshLodInfoDummyArray()
+{
+	static TArray<FSkeletalMeshLODInfo> Dummy;
+	return Dummy;
+}
+
+TArray<FSkeletalMaterial>& USkinnedAsset::GetSkeletalMaterialDummyArray()
+{
+	static TArray<FSkeletalMaterial> Dummy;
+	return Dummy;
+}
+
+#if WITH_EDITOR
+bool USkinnedAsset::TryCancelAsyncTasks()
+{
+	if (AsyncTask)
+	{
+		if (AsyncTask->IsDone() || AsyncTask->Cancel())
+		{
+			AsyncTask.Reset();
+		}
+	}
+
+	return AsyncTask == nullptr;
+}
+#endif //WITH_EDITOR
+
+FString USkinnedAsset::GetLODPathName(const USkinnedAsset* Mesh, int32 LODIndex)
+{
+#if RHI_ENABLE_RESOURCE_INFO
+	return FString::Printf(TEXT("%s [LOD%d]"), Mesh ? *Mesh->GetPathName() : TEXT("UnknownSkinnedAsset"), LODIndex);
+#else
+	return TEXT("");
+#endif
 }

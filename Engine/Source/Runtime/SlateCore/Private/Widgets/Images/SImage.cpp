@@ -71,7 +71,7 @@ FVector2D SImage::ComputeDesiredSize( float ) const
 	{
 		const TOptional<FVector2D>& CurrentSizeOverride = DesiredSizeOverrideAttribute.Get();
 
-		return CurrentSizeOverride.IsSet() ? CurrentSizeOverride.GetValue() : ImageBrush->ImageSize;
+		return CurrentSizeOverride.IsSet() ? CurrentSizeOverride.GetValue() : FVector2D(ImageBrush->ImageSize.X, ImageBrush->ImageSize.Y);
 	}
 	return FVector2D::ZeroVector;
 }
@@ -91,9 +91,24 @@ void SImage::SetImage(TAttribute<const FSlateBrush*> InImage)
 	ImageAttribute.Assign(*this, MoveTemp(InImage));
 }
 
+
+void SImage::InvalidateImage()
+{
+	Invalidate(EInvalidateWidgetReason::Layout);
+}
+
 void SImage::SetDesiredSizeOverride(TAttribute<TOptional<FVector2D>> InDesiredSizeOverride)
 {
 	DesiredSizeOverrideAttribute.Assign(*this, MoveTemp(InDesiredSizeOverride));
+}
+
+void SImage::FlipForRightToLeftFlowDirection(bool InbFlipForRightToLeftFlowDirection)
+{
+	if (InbFlipForRightToLeftFlowDirection != bFlipForRightToLeftFlowDirection)
+	{
+		bFlipForRightToLeftFlowDirection = InbFlipForRightToLeftFlowDirection;
+		Invalidate(EInvalidateWidgetReason::Paint);
+	}
 }
 
 #if WITH_ACCESSIBILITY

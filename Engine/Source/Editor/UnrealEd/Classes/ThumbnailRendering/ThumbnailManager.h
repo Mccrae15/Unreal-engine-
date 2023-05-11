@@ -10,6 +10,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Delegates/Delegate.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "Templates/SubclassOf.h"
@@ -23,7 +24,7 @@ class FAssetThumbnailPool;
  * Types of primitives for drawing thumbnails of resources.
  */
 UENUM()
-enum EThumbnailPrimType
+enum EThumbnailPrimType : int
 {
 	TPT_None,
 	TPT_Sphere,
@@ -78,6 +79,8 @@ public:
 	}
 
 };
+
+DECLARE_EVENT_OneParam(UThumbnailManager, FOnThumbnailDirtied, const FSoftObjectPath&);
 
 UCLASS(config=Editor)
 class UThumbnailManager : public UObject
@@ -155,6 +158,13 @@ public:
 	 * Unless you are rendering a huge amount of thumbnails at once this shared pool should be used
 	 */
 	UNREALED_API TSharedPtr<FAssetThumbnailPool> GetSharedThumbnailPool() const { return SharedThumbnailPool; }
+
+	/**
+	 * Event that is being broadcasted when a thumbnail gets dirtied.
+	 * Parameter is the object soft object path associated with the thumbnail.
+	 */
+	UNREALED_API FOnThumbnailDirtied& GetOnThumbnailDirtied() { return OnThumbnailDirtied; }
+
 protected:
 	/**
 	 * The array of thumbnail rendering information entries. Each type that supports
@@ -195,9 +205,14 @@ protected:
 	 */
 	bool bMapNeedsUpdate;
 
+	FOnThumbnailDirtied OnThumbnailDirtied;
+
 public:
 	/** Returns the thumbnail manager and creates it if missing */
 	UNREALED_API static UThumbnailManager& Get();
+
+	/** Returns the thumbnail manager if it exists */
+	UNREALED_API static UThumbnailManager* TryGet();
 
 	/** Writes out a png of what is currently in the specified viewport, scaled appropriately */
 	UNREALED_API static bool CaptureProjectThumbnail(FViewport* Viewport, const FString& OutputFilename, bool bUseSCCIfPossible);
@@ -211,6 +226,15 @@ protected:
 private:
 	/** Initialize the checkerboard texture for texture thumbnails */
 	void SetupCheckerboardTexture();
+
+	/** Handler for when an object is edited. Used to dirty its thumbnail. */
+	void OnObjectPropertyChanged(UObject* Asset, FPropertyChangedEvent& PropertyChangedEvent);
+
+	/** Handler for when an actor is moved in a level. Used to update world asset thumbnails. */
+	void OnActorPostEditMove(AActor* Actor);
+
+	/** Handler to dirty cached thumbnails in packages to make sure they are re-rendered later */
+	void DirtyThumbnailForObject(UObject* ObjectBeingModified);
 };
 
 

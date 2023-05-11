@@ -6,35 +6,31 @@
 =============================================================================*/
 
 #include "GameFramework/CharacterMovementComponent.h"
+#include "Animation/AnimMontage.h"
 #include "EngineStats.h"
-#include "Components/PrimitiveComponent.h"
 #include "AI/NavigationSystemBase.h"
 #include "AI/Navigation/NavigationDataInterface.h"
+#include "Engine/NetConnection.h"
+#include "GameFramework/WorldSettings.h"
+#include "Physics/Experimental/PhysScene_Chaos.h"
 #include "UObject/Package.h"
-#include "GameFramework/PlayerController.h"
 #include "GameFramework/PhysicsVolume.h"
 #include "Components/SkeletalMeshComponent.h"
-#include "Engine/NetDriver.h"
 #include "DrawDebugHelpers.h"
 #include "GameFramework/GameNetworkManager.h"
 #include "GameFramework/Character.h"
 #include "Components/CapsuleComponent.h"
 #include "GameFramework/GameStateBase.h"
 #include "Engine/Canvas.h"
-#include "AI/Navigation/PathFollowingAgentInterface.h"
 #include "AI/Navigation/AvoidanceManager.h"
 #include "Components/BrushComponent.h"
-#include "Misc/App.h"
-#include "CharacterMovementComponentAsync.h"
 #include "PBDRigidsSolver.h"
 #include "Engine/NetworkObjectList.h"
 #include "Net/PerfCountersHelpers.h"
-#include "ProfilingDebugging/CsvProfiler.h"
 #if UE_WITH_IRIS
 #include "Net/Iris/ReplicationSystem/ReplicationSystemUtil.h"
 #include "Net/Iris/ReplicationSystem/ActorReplicationBridge.h"
 #endif
-#include "Engine/ScopedMovementUpdate.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(CharacterMovementComponent)
 
@@ -241,12 +237,30 @@ namespace CharacterMovementCVars
 	int32 AsyncCharacterMovement = 0;
 	FAutoConsoleVariableRef CVarAsyncCharacterMovement(
 		TEXT("p.AsyncCharacterMovement"),
-		AsyncCharacterMovement, TEXT("1 enables asynchronous simulation of character movement on physics thread. Toggling this at runtime is not recommended."));
+		AsyncCharacterMovement, TEXT("1 enables asynchronous simulation of character movement on physics thread. Toggling this at runtime is not recommended. This feature is not fully developed, and its use is discouraged."));
 
 	int32 BasedMovementMode = 2;
 	FAutoConsoleVariableRef CVarBasedMovementMode(
 		TEXT("p.BasedMovementMode"),
 		BasedMovementMode, TEXT("0 means always on regular tick (default); 1 means only if not deferring updates; 2 means update and save based movement both on regular ticks and post physics when on a physics base."));
+
+	/**
+	 * Option to handle move acceleration as relative to dynamic movement bases. If disabled, moves are handled in world space.
+	 * Enabling this will produce better motion when walking on highly dynamic / unpredictable movement bases, such as vehicles. However, there is the potential for larger corrections when landing on or jumping off if the base's rotation is not well-sync'd.
+	 * This also may be a good option if using dynamic movement bases that become the player's primary frame of visual reference, such as when walking on a large boat or airship.
+	 * Not compatible with deprecated move RPCs. @see NetUsePackedMovementRPCs
+	 */
+	static int32 NetUseBaseRelativeAcceleration = 1;
+	FAutoConsoleVariableRef CVarNetUseBaseRelativeAcceleration(
+		TEXT("p.NetUseBaseRelativeAcceleration"),
+		NetUseBaseRelativeAcceleration,
+		TEXT("If enabled, character acceleration will be treated as relative to dynamic movement bases."));
+
+	static int32 NetUseBaseRelativeVelocity = 1;
+	FAutoConsoleVariableRef CVarNetUseBaseRelativeVelocity(
+		TEXT("p.NetUseBaseRelativeVelocity"),
+		NetUseBaseRelativeVelocity,
+		TEXT("If enabled, character velocity corrections will be treated as relative to dynamic movement bases."));
 
 	static int32 UseTargetVelocityOnImpact = 1;
 	FAutoConsoleVariableRef CVarUseTargetVelocityOnImpact(
@@ -286,6 +300,13 @@ namespace CharacterMovementCVars
 		TEXT("p.CVarGeometryCollectionImpulseWorkAround"),
 		bGeometryCollectionImpulseWorkAround,
 		TEXT("This enabled a workaround to allow impulses to be applied to geometry collection.\n"),
+		ECVF_Default);
+
+	static int32 bUseLastGoodRotationDuringCorrection = 1;
+	FAutoConsoleVariableRef CVarUseLastGoodRotationDuringCorrection(
+		TEXT("p.UseLastGoodRotationDuringCorrection"),
+		bUseLastGoodRotationDuringCorrection,
+		TEXT("When enabled, during a correction, restore the last good rotation before re-simulating saved moves if the server didn't specify one. This improves visual quality with options like bOrientToMovement or bUseControllerDesiredRotation that rotate over time."),
 		ECVF_Default);
 
 #if !UE_BUILD_SHIPPING
@@ -1491,10 +1512,23 @@ void UCharacterMovementComponent::TickComponent(float DeltaTime, enum ELevelTick
 			}
 		}
 
-		// Allow root motion to move characters that have no controller.
-		if (CharacterOwner->IsLocallyControlled() || (!CharacterOwner->Controller && bRunPhysicsWithNoController) || (!CharacterOwner->Controller && CharacterOwner->IsPlayingRootMotion()))
+		// Perform input-driven move for any locally-controlled character, and also
+		// allow animation root motion or physics to move characters even if they have no controller
+		const bool bShouldPerformControlledCharMove = CharacterOwner->IsLocallyControlled() 
+													  || (!CharacterOwner->Controller && bRunPhysicsWithNoController)		
+													  || (!CharacterOwner->Controller && CharacterOwner->IsPlayingRootMotion());
+		
+		if (bShouldPerformControlledCharMove)
 		{
 			ControlledCharacterMove(InputVector, DeltaTime);
+
+			const bool bIsaListenServerAutonomousProxy = CharacterOwner->IsLocallyControlled()
+													 	 && (CharacterOwner->GetRemoteRole() == ROLE_AutonomousProxy);
+
+			if (bIsaListenServerAutonomousProxy)
+			{
+				ServerAutonomousProxyTick(DeltaTime);
+			}
 		}
 		else if (CharacterOwner->GetRemoteRole() == ROLE_AutonomousProxy)
 		{
@@ -1503,6 +1537,8 @@ void UCharacterMovementComponent::TickComponent(float DeltaTime, enum ELevelTick
 			// otherwise the object will move on intermediate frames and we won't follow it.
 			MaybeUpdateBasedMovement(DeltaTime);
 			MaybeSaveBaseLocation();
+
+			ServerAutonomousProxyTick(DeltaTime);
 
 			// Smooth on listen server for local view of remote clients. We may receive updates at a rate different than our own tick rate.
 			if (CharacterMovementCVars::NetEnableListenServerSmoothing && !bNetworkSmoothingComplete && IsNetMode(NM_ListenServer))
@@ -1989,7 +2025,18 @@ void UCharacterMovementComponent::SimulateMovement(float DeltaSeconds)
 					CurrentFloor.Clear();
 				}
 
-				if (!CurrentFloor.IsWalkableFloor())
+				// Possible for dynamic movement bases, particularly those that align to slopes while the character does not, to encroach the character.
+				// Check to see if we can resolve the penetration in those cases, and if so find the floor.
+				if (CurrentFloor.HitResult.bStartPenetrating && MovementBaseUtility::IsDynamicBase(GetMovementBase()))
+				{
+					// Follows PhysWalking approach for encroachment on floor tests
+					FHitResult Hit(CurrentFloor.HitResult);
+					Hit.TraceEnd = Hit.TraceStart + FVector(0.f, 0.f, MAX_FLOOR_DIST);
+					const FVector RequestedAdjustment = GetPenetrationAdjustment(Hit);
+					const bool bResolved = ResolvePenetration(RequestedAdjustment, Hit, UpdatedComponent->GetComponentQuat());
+					bForceNextFloorCheck |= bResolved;
+				}
+				else if (!CurrentFloor.IsWalkableFloor())
 				{
 					if (!bSimGravityDisabled)
 					{
@@ -2747,7 +2794,7 @@ void UCharacterMovementComponent::SaveBaseLocation()
 		{
 			// Relative Location
 			FVector RelativeLocation;
-			MovementBaseUtility::GetLocalMovementBaseLocation(MovementBase, CharacterOwner->GetBasedMovement().BoneName, UpdatedComponent->GetComponentLocation(), RelativeLocation);
+			MovementBaseUtility::TransformLocationToLocal(MovementBase, CharacterOwner->GetBasedMovement().BoneName, UpdatedComponent->GetComponentLocation(), RelativeLocation);
 
 			// Rotation
 			if (bIgnoreBaseRotation)
@@ -8975,29 +9022,32 @@ void FCharacterNetworkMoveData::ClientFillNetworkMoveData(const FSavedMove_Chara
 	NetworkMoveType = MoveType;
 
 	TimeStamp = ClientMove.TimeStamp;
-	Acceleration = ClientMove.Acceleration;
 	ControlRotation = ClientMove.SavedControlRotation;
 	CompressedMoveFlags = ClientMove.GetCompressedFlags();
 	MovementMode = ClientMove.EndPackedMovementMode;
 
-	// Location, relative movement base, and ending movement mode is only used for error checking, so only fill in the more complex parts if actually required.
-	if (MoveType == ENetworkMoveType::NewMove)
-	{
 		// Determine if we send absolute or relative location
 		UPrimitiveComponent* ClientMovementBase = ClientMove.EndBase.Get();
-		const bool bDynamicBase = MovementBaseUtility::UseRelativeLocation(ClientMovementBase);
-		const FVector SendLocation = bDynamicBase ? ClientMove.SavedRelativeLocation : FRepMovement::RebaseOntoZeroOrigin(ClientMove.SavedLocation, ClientMove.CharacterOwner->GetCharacterMovement());
+
+		const bool bSendBaseRelativeLocation     = MovementBaseUtility::UseRelativeLocation(ClientMovementBase);
+		const bool bSendBaseRelativeAcceleration = CharacterMovementCVars::NetUseBaseRelativeAcceleration && bSendBaseRelativeLocation;
+
+		const FVector SendLocation     = bSendBaseRelativeLocation ? ClientMove.SavedRelativeLocation : FRepMovement::RebaseOntoZeroOrigin(ClientMove.SavedLocation, ClientMove.CharacterOwner->GetCharacterMovement());
+		const FVector SendAcceleration = bSendBaseRelativeAcceleration ? ClientMove.SavedRelativeAcceleration : ClientMove.Acceleration;
 
 		Location = SendLocation;
-		MovementBase = bDynamicBase ? ClientMovementBase : nullptr;
-		MovementBaseBoneName = bDynamicBase ? ClientMove.EndBoneName : NAME_None;
-	}
-	else
-	{
-		Location = ClientMove.SavedLocation;
-		MovementBase = nullptr;
-		MovementBaseBoneName = NAME_None;
-	}
+		Acceleration = SendAcceleration;
+
+		if (bSendBaseRelativeLocation || bSendBaseRelativeAcceleration)
+		{
+			MovementBase = ClientMovementBase;
+			MovementBaseBoneName = ClientMove.EndBoneName;
+		}
+		else
+		{
+			MovementBase = nullptr;
+			MovementBaseBoneName = NAME_None;
+		}
 }
 
 
@@ -9020,13 +9070,9 @@ bool FCharacterNetworkMoveData::Serialize(UCharacterMovementComponent& Character
 
 	SerializeOptionalValue<uint8>(bIsSaving, Ar, CompressedMoveFlags, 0);
 
-	if (MoveType == ENetworkMoveType::NewMove)
-	{
-		// Location, relative movement base, and ending movement mode is only used for error checking, so only save for the final move.
 		SerializeOptionalValue<UPrimitiveComponent*>(bIsSaving, Ar, MovementBase, nullptr);
 		SerializeOptionalValue<FName>(bIsSaving, Ar, MovementBaseBoneName, NAME_None);
 		SerializeOptionalValue<uint8>(bIsSaving, Ar, MovementMode, MOVE_Walking);
-	}
 
 	return !Ar.IsError();
 }
@@ -9129,7 +9175,15 @@ void UCharacterMovementComponent::ServerMove_PerformMovement(const FCharacterNet
 	}	
 
 	const float ClientTimeStamp = MoveData.TimeStamp;
-	FVector_NetQuantize10 ClientAccel = MoveData.Acceleration;
+	
+	FVector ClientAccel = MoveData.Acceleration;
+
+	// Convert the move's acceleration to worldspace if necessary
+	if (CharacterMovementCVars::NetUseBaseRelativeAcceleration && MovementBaseUtility::IsDynamicBase(MoveData.MovementBase))
+	{
+		MovementBaseUtility::TransformDirectionToWorld(MoveData.MovementBase, MoveData.MovementBaseBoneName, MoveData.Acceleration, ClientAccel);
+	}
+
 	const uint8 ClientMoveFlags = MoveData.CompressedMoveFlags;
 	const FRotator ClientControlRotation = MoveData.ControlRotation;
 
@@ -9344,7 +9398,7 @@ void UCharacterMovementComponent::ServerMoveHandleClientError(float ClientTimeSt
 	FVector ClientLoc = RelativeClientLoc;
 	if (MovementBaseUtility::UseRelativeLocation(ClientMovementBase))
 	{
-		MovementBaseUtility::GetLocalMovementBaseLocationInWorldSpace(ClientMovementBase, ClientBaseBoneName, RelativeClientLoc, ClientLoc);
+		MovementBaseUtility::TransformLocationToWorld(ClientMovementBase, ClientBaseBoneName, RelativeClientLoc, ClientLoc);
 	}
 	else
 	{
@@ -9451,7 +9505,7 @@ void UCharacterMovementComponent::ServerMoveHandleClientError(float ClientTimeSt
 				if (MovementBaseUtility::UseRelativeLocation(LastServerMovementBasePtr))
 				{
 					// Relative Location
-					MovementBaseUtility::GetLocalMovementBaseLocation(LastServerMovementBasePtr, LastServerMovementBaseBoneName, UpdatedComponent->GetComponentLocation(), RelativeLocation);
+					MovementBaseUtility::TransformLocationToLocal(LastServerMovementBasePtr, LastServerMovementBaseBoneName, UpdatedComponent->GetComponentLocation(), RelativeLocation);
 					bUseLastBase = true;
 				}
 			}
@@ -9528,9 +9582,11 @@ void UCharacterMovementComponent::ServerMoveHandleClientError(float ClientTimeSt
 		ServerData->PendingAdjustment.NewRot = UpdatedComponent->GetComponentRotation();
 
 		ServerData->PendingAdjustment.bBaseRelativePosition = (bDeferServerCorrectionsWhenFalling && bUseLastBase) || MovementBaseUtility::UseRelativeLocation(MovementBase);
+		ServerData->PendingAdjustment.bBaseRelativeVelocity = false;
+		
+		// Relative location?
 		if (ServerData->PendingAdjustment.bBaseRelativePosition)
 		{
-			// Relative location
 			if (bDeferServerCorrectionsWhenFalling && bUseLastBase)
 			{
 				ServerData->PendingAdjustment.NewVel = RelativeVelocity;
@@ -9541,6 +9597,13 @@ void UCharacterMovementComponent::ServerMoveHandleClientError(float ClientTimeSt
 			else
 			{
 				ServerData->PendingAdjustment.NewLoc = CharacterOwner->GetBasedMovement().Location;
+				if (CharacterMovementCVars::NetUseBaseRelativeVelocity)
+				{
+					// Store world velocity converted to local space of movement base
+					ServerData->PendingAdjustment.bBaseRelativeVelocity = true;
+					const FVector CurrentVelocity = ServerData->PendingAdjustment.NewVel;
+					MovementBaseUtility::TransformDirectionToLocal(MovementBase, MovementBaseBoneName, CurrentVelocity, ServerData->PendingAdjustment.NewVel);
+				}
 			}
 			
 			// TODO: this could be a relative rotation, but all client corrections ignore rotation right now except the root motion one, which would need to be updated.
@@ -9987,6 +10050,7 @@ bool FCharacterMoveResponseDataContainer::Serialize(UCharacterMovementComponent&
 		SerializeOptionalValue<FName>(bIsSaving, Ar, ClientAdjustment.NewBaseBoneName, NAME_None);
 		SerializeOptionalValue<uint8>(bIsSaving, Ar, ClientAdjustment.MovementMode, MOVE_Walking);
 		Ar.SerializeBits(&ClientAdjustment.bBaseRelativePosition, 1);
+		Ar.SerializeBits(&ClientAdjustment.bBaseRelativeVelocity, 1);
 
 		if (bRootMotionMontageCorrection)
 		{
@@ -10305,13 +10369,29 @@ void UCharacterMovementComponent::ClientAdjustPosition_Implementation
 	//  Received Location is relative to dynamic base
 	if (bBaseRelativePosition)
 	{
-		MovementBaseUtility::GetLocalMovementBaseLocationInWorldSpace(NewBase, NewBaseBoneName, NewLocation, WorldShiftedNewLocation); // TODO: error handling if returns false	
+		MovementBaseUtility::TransformLocationToWorld(NewBase, NewBaseBoneName, NewLocation, WorldShiftedNewLocation); // TODO: error handling if returns false	
 	}
 	else
 	{
 		WorldShiftedNewLocation = FRepMovement::RebaseOntoLocalOrigin(NewLocation, this);
 	}
 
+	// Server's world velocity may need to be converted to velocity relative to the movement base orientation, if the base orientations don't match.
+	const FCharacterMoveResponseDataContainer& ResponseDataContainer = GetMoveResponseDataContainer();
+	if (ResponseDataContainer.ClientAdjustment.bBaseRelativeVelocity)
+	{
+		// Convert Relative Velocity -> World Velocity
+		const FVector CurrentVelocity = NewVelocity;
+		MovementBaseUtility::TransformDirectionToWorld(NewBase, NewBaseBoneName, CurrentVelocity, NewVelocity);
+	}
+
+	// Fall back to the last-known good rotation if the server didn't send one
+	if (CharacterMovementCVars::bUseLastGoodRotationDuringCorrection
+		&& (bOrientRotationToMovement || bUseControllerDesiredRotation)
+		&& (!OptionalRotation.IsSet() && ClientData->LastAckedMove.IsValid()))
+	{
+		OptionalRotation = ClientData->LastAckedMove->SavedRotation;
+	}
 
 	// Trigger event
 	OnClientCorrectionReceived(*ClientData, TimeStamp, WorldShiftedNewLocation, NewVelocity, NewBase, NewBaseBoneName, bHasBase, bBaseRelativePosition, ServerMovementMode);
@@ -11606,6 +11686,7 @@ void FSavedMove_Character::Clear()
 	SavedRotation = FRotator::ZeroRotator;
 	SavedRelativeLocation = FVector::ZeroVector;
 	SavedControlRotation = FRotator::ZeroRotator;
+	SavedRelativeAcceleration = FVector::ZeroVector;
 	Acceleration = FVector::ZeroVector;
 	MaxSpeed = 0.0f;
 	AccelMag = 0.0f;
@@ -11745,12 +11826,19 @@ void FSavedMove_Character::PostUpdate(ACharacter* Character, FSavedMove_Characte
 			}
 		}
 #endif
+		// Movement base and base-relative movement
 		UPrimitiveComponent* const MovementBase = Character->GetMovementBase();
 		EndBase = MovementBase;
 		EndBoneName = Character->GetBasedMovement().BoneName;
 		if (MovementBaseUtility::UseRelativeLocation(MovementBase))
 		{
 			SavedRelativeLocation = Character->GetBasedMovement().Location;
+		}
+
+		// Save off movement base-relative acceleration if needed
+		if (CharacterMovementCVars::NetUseBaseRelativeAcceleration && MovementBaseUtility::IsDynamicBase(MovementBase))
+		{
+			MovementBaseUtility::TransformDirectionToLocal(EndBase.Get(), EndBoneName, Acceleration, SavedRelativeAcceleration);
 		}
 
 		// Attachment state
@@ -11772,9 +11860,9 @@ void FSavedMove_Character::PostUpdate(ACharacter* Character, FSavedMove_Characte
 		}
 	}
 
-	// Only save RootMotion params when initially recording
 	if (PostUpdateMode == PostUpdate_Record)
 	{
+		// Only save RootMotion params when initially recording
 		const FAnimMontageInstance* RootMotionMontageInstance = Character->GetRootMotionAnimMontageInstance();
 		if (RootMotionMontageInstance)
 		{
@@ -11878,7 +11966,7 @@ FVector FSavedMove_Character::GetRevertedLocation() const
 	if (MovementBaseUtility::UseRelativeLocation(MovementBase))
 	{
 		FVector WorldSpacePosition;
-		MovementBaseUtility::GetLocalMovementBaseLocationInWorldSpace(MovementBase, StartBoneName, StartRelativeLocation, WorldSpacePosition);
+		MovementBaseUtility::TransformLocationToWorld(MovementBase, StartBoneName, StartRelativeLocation, WorldSpacePosition);
 		return WorldSpacePosition;
 	}
 

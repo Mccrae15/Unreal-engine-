@@ -2,12 +2,12 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "IDetailCustomization.h"
-#include "IDetailCustomNodeBuilder.h"
 #include "IPropertyTypeCustomization.h"
-#include "KeyStructCustomization.h"
 
+class FKeyStructCustomization;
+
+class IDetailPropertyRow;
 class IDetailLayoutBuilder;
 
 class FInputContextDetails : public IDetailCustomization
@@ -38,10 +38,15 @@ private:
 
 	void RemoveMappingButton_OnClick() const;
 	void OnTriggersChanged() const;
+	void AddInputActionProperties(TSharedRef<IPropertyHandle> PropertyHandle, IDetailChildrenBuilder& ChildBuilder);
+	void OnInputActionTriggersChanged() const;
+	void OnInputActionModifiersChanged() const;
 
 	TSharedPtr<IPropertyTypeCustomization> KeyStructInstance;
 	TSharedPtr<IPropertyHandle> MappingPropertyHandle;
 	TSharedPtr<FKeyStructCustomization> KeyStructCustomization;
+	IDetailPropertyRow* InputActionTriggersPropertyRow = nullptr;
+	IDetailPropertyRow* InputActionModifiersPropertyRow = nullptr;
 };
 
 /**
@@ -64,10 +69,13 @@ public:
 	virtual void CustomizeDetails(const TSharedPtr<IDetailLayoutBuilder>& DetailBuilder) override;
 	//~ End IDetailCustomization interface
 	
+	/** Returns true if something inherits from the UClass passed in. Checks BPs and Native */
+	static bool DoesClassHaveSubtypes(UClass* Class);
+
 private:
 
-	/** Gather all of the CDO's for the given class, Native and Blueprint. */
-	static TArray<UObject*> GatherClassDetailsCDOs(UClass* Class);
+	/** Gather all of the native class CDOs for the given class. */
+	static void GatherNativeClassDetailsCDOs(UClass* Class, TArray<UObject*>& CDOs);
 
 	/**
 	 * Called when any Asset is added, removed, or renamed.

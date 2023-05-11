@@ -1,8 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ContextualAnimPreviewScene.h"
+#include "Components/StaticMeshComponent.h"
 #include "ContextualAnimAssetEditorToolkit.h"
-#include "GameFramework/WorldSettings.h"
 #include "EngineUtils.h"
 
 FContextualAnimPreviewScene::FContextualAnimPreviewScene(ConstructionValues CVS, const TSharedRef<FContextualAnimAssetEditorToolkit>& EditorToolkit)
@@ -41,8 +41,5 @@ void FContextualAnimPreviewScene::Tick(float InDeltaTime)
 		PreviewWorld->bBegunPlay = true;
 	}
 
-	if (!GIntraFrameDebuggingGameThread)
-	{
-		GetWorld()->Tick(LEVELTICK_All, InDeltaTime);
-	}
+	GetWorld()->Tick(LEVELTICK_All, InDeltaTime);
 }

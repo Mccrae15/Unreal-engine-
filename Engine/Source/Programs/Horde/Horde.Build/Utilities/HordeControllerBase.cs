@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using EpicGames.Core;
+using EpicGames.Horde.Compute;
+using EpicGames.Horde.Storage;
 using Horde.Build.Acls;
 using Horde.Build.Agents;
 using Horde.Build.Agents.Leases;
@@ -16,11 +18,11 @@ namespace Horde.Build.Utilities
 {
 	using JobId = ObjectId<IJob>;
 	using LeaseId = ObjectId<ILease>;
-	using ProjectId = StringId<IProject>;
+	using ProjectId = StringId<ProjectConfig>;
 	using StreamId = StringId<IStream>;
-	using ToolId = StringId<Tool>;
-	using ToolDeploymentId = ObjectId<ToolDeployment>;
-	using TemplateRefId = StringId<TemplateRef>;
+	using ToolId = StringId<ITool>;
+	using ToolDeploymentId = ObjectId<IToolDeployment>;
+	using TemplateId = StringId<ITemplateRef>;
 
 	/// <summary>
 	/// Base class for Horde controllers
@@ -72,9 +74,27 @@ namespace Horde.Build.Utilities
 		/// Returns a 403 (forbidden) response with the given action and object
 		/// </summary>
 		[NonAction]
+		protected ActionResult Forbid(AclAction action, ClusterId clusterId)
+		{
+			return Forbid(action, "cluster {ClusterId}", clusterId);
+		}
+
+		/// <summary>
+		/// Returns a 403 (forbidden) response with the given action and object
+		/// </summary>
+		[NonAction]
 		protected ActionResult Forbid(AclAction action, JobId jobId)
 		{
 			return Forbid(action, "job {JobId}", jobId);
+		}
+
+		/// <summary>
+		/// Returns a 403 (forbidden) response with the given action and object
+		/// </summary>
+		[NonAction]
+		protected ActionResult Forbid(AclAction action, NamespaceId namespaceId)
+		{
+			return Forbid(action, "namespace {NamespaceId}", namespaceId);
 		}
 
 		/// <summary>
@@ -108,7 +128,7 @@ namespace Horde.Build.Utilities
 		/// Returns a 403 (forbidden) response with the given action and object
 		/// </summary>
 		[NonAction]
-		protected ActionResult Forbid(AclAction action, TemplateRefId templateId)
+		protected ActionResult Forbid(AclAction action, TemplateId templateId)
 		{
 			return Forbid(action, "template {TemplateId}", templateId);
 		}
@@ -147,6 +167,15 @@ namespace Horde.Build.Utilities
 		protected ActionResult NotFound(AgentId agentId, LeaseId leaseId)
 		{
 			return NotFound("Lease {LeaseId} not found for agent {AgentId}", leaseId, agentId);
+		}
+
+		/// <summary>
+		/// Returns a 404 response for the given object
+		/// </summary>
+		[NonAction]
+		protected ActionResult NotFound(ClusterId clusterId)
+		{
+			return NotFound("Cluster {ClusterId} not found", clusterId);
 		}
 
 		/// <summary>
@@ -207,7 +236,7 @@ namespace Horde.Build.Utilities
 		/// Returns a 404 response for the given object
 		/// </summary>
 		[NonAction]
-		protected ActionResult NotFound(StreamId streamId, TemplateRefId templateId)
+		protected ActionResult NotFound(StreamId streamId, TemplateId templateId)
 		{
 			return NotFound("Template {TemplateId} not found on stream {StreamId}", templateId, streamId);
 		}

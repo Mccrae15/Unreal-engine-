@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
+using System.Security.Claims;
 using EpicGames.Core;
 using Horde.Build.Acls;
 using Horde.Build.Agents;
@@ -13,6 +14,7 @@ using Horde.Build.Agents.Sessions;
 using Horde.Build.Jobs.Graphs;
 using Horde.Build.Jobs.Timing;
 using Horde.Build.Logs;
+using Horde.Build.Server;
 using Horde.Build.Streams;
 using Horde.Build.Ugs;
 using Horde.Build.Users;
@@ -30,7 +32,7 @@ namespace Horde.Build.Jobs
 	using ReportPlacement = HordeCommon.Rpc.ReportPlacement;
 	using SessionId = ObjectId<ISession>;
 	using StreamId = StringId<IStream>;
-	using TemplateRefId = StringId<TemplateRef>;
+	using TemplateId = StringId<ITemplateRef>;
 	using UserId = ObjectId<IUser>;
 
 	/// <summary>
@@ -528,7 +530,7 @@ namespace Horde.Build.Jobs
 		/// <summary>
 		/// The template to trigger on success
 		/// </summary>
-		public TemplateRefId TemplateRefId { get; }
+		public TemplateId TemplateRefId { get; }
 
 		/// <summary>
 		/// The triggered job id
@@ -564,7 +566,7 @@ namespace Horde.Build.Jobs
 		/// <summary>
 		/// The template ref id
 		/// </summary>
-		public TemplateRefId TemplateId { get; }
+		public TemplateId TemplateId { get; }
 
 		/// <summary>
 		/// The template that this job was created from
@@ -652,6 +654,11 @@ namespace Horde.Build.Jobs
 		public DateTime CreateTimeUtc { get; }
 
 		/// <summary>
+		/// Executor to use for this job
+		/// </summary>
+		public string? Executor { get; }
+
+		/// <summary>
 		/// Largest value of the CombinedPriority value for batches in the ready state.
 		/// </summary>
 		public int SchedulePriority { get; }
@@ -665,6 +672,11 @@ namespace Horde.Build.Jobs
 		/// Optional user-defined properties for this job
 		/// </summary>
 		public IReadOnlyList<string> Arguments { get; }
+
+		/// <summary>
+		/// Environment variables for the job
+		/// </summary>
+		public IReadOnlyDictionary<string, string> Environment { get; }
 
 		/// <summary>
 		/// Issues associated with this job
@@ -722,11 +734,6 @@ namespace Horde.Build.Jobs
 		public DateTime UpdateTimeUtc { get; }
 
 		/// <summary>
-		/// The ACL for this job.
-		/// </summary>
-		public Acl? Acl { get; }
-
-		/// <summary>
 		/// Update counter for this document. Any updates should compare-and-swap based on the value of this counter, or increment it in the case of server-side updates.
 		/// </summary>
 		public int UpdateIndex { get; }
@@ -737,6 +744,26 @@ namespace Horde.Build.Jobs
 	/// </summary>
 	public static class JobExtensions
 	{
+		/// <summary>
+		/// Determines if the user is authorized to perform an action on a particular stream
+		/// </summary>
+		/// <param name="globalConfig">Current global config instance</param>
+		/// <param name="job">Job to authorize for</param>
+		/// <param name="action">The action being performed</param>
+		/// <param name="user">The principal to authorize</param>
+		/// <returns>True if the action is authorized</returns>
+		public static bool Authorize(this GlobalConfig globalConfig, IJob? job, AclAction action, ClaimsPrincipal user)
+		{
+			if (job != null && globalConfig.TryGetStream(job.StreamId, out StreamConfig? streamConfig))
+			{
+				return streamConfig.Authorize(action, user);
+			}
+			else
+			{
+				return globalConfig.Authorize(action, user);
+			}
+		}
+
 		/// <summary>
 		/// Attempts to get a step with a given ID
 		/// </summary>
@@ -765,7 +792,7 @@ namespace Horde.Build.Jobs
 		/// <returns>Job state</returns>
 		public static JobState GetState(this IJob job)
 		{
-			bool bWaiting = false;
+			bool waiting = false;
 			foreach (IJobStepBatch batch in job.Batches)
 			{
 				foreach (IJobStep step in batch.Steps)
@@ -782,12 +809,12 @@ namespace Horde.Build.Jobs
 						}
 						else
 						{
-							bWaiting = true;
+							waiting = true;
 						}
 					}
 				}
 			}
-			return bWaiting ? JobState.Waiting : JobState.Complete;
+			return waiting ? JobState.Waiting : JobState.Complete;
 		}
 
 		/// <summary>
@@ -858,20 +885,20 @@ namespace Horde.Build.Jobs
 		/// <returns>The step outcome</returns>
 		public static (JobStepState, JobStepOutcome) GetTargetState(IEnumerable<IJobStep> steps)
 		{
-			bool bAnySkipped = false;
-			bool bAnyWarnings = false;
-			bool bAnyFailed = false;
-			bool bAnyPending = false;
+			bool anySkipped = false;
+			bool anyWarnings = false;
+			bool anyFailed = false;
+			bool anyPending = false;
 			foreach (IJobStep step in steps)
 			{
-				bAnyPending |= step.IsPending();
-				bAnySkipped |= step.State == JobStepState.Aborted || step.State == JobStepState.Skipped;
-				bAnyFailed |= (step.Outcome == JobStepOutcome.Failure);
-				bAnyWarnings |= (step.Outcome == JobStepOutcome.Warnings);
+				anyPending |= step.IsPending();
+				anySkipped |= step.State == JobStepState.Aborted || step.State == JobStepState.Skipped;
+				anyFailed |= (step.Outcome == JobStepOutcome.Failure);
+				anyWarnings |= (step.Outcome == JobStepOutcome.Warnings);
 			}
 
-			JobStepState newState = bAnyPending ? JobStepState.Running : JobStepState.Completed;
-			JobStepOutcome newOutcome = bAnyFailed ? JobStepOutcome.Failure : bAnyWarnings ? JobStepOutcome.Warnings : bAnySkipped ? JobStepOutcome.Unspecified : JobStepOutcome.Success;
+			JobStepState newState = anyPending ? JobStepState.Running : JobStepState.Completed;
+			JobStepOutcome newOutcome = anyFailed ? JobStepOutcome.Failure : anyWarnings ? JobStepOutcome.Warnings : anySkipped ? JobStepOutcome.Unspecified : JobStepOutcome.Success;
 			return (newState, newOutcome);
 		}
 
@@ -1307,25 +1334,25 @@ namespace Horde.Build.Jobs
 				if (label.RequiredNodes.Any(x => stepForNodeRef.ContainsKey(x)))
 				{
 					// Combine the state of the steps contributing towards this label
-					bool bAnySkipped = false;
-					bool bAnyWarnings = false;
-					bool bAnyFailed = false;
-					bool bAnyPending = false;
+					bool anySkipped = false;
+					bool anyWarnings = false;
+					bool anyFailed = false;
+					bool anyPending = false;
 					foreach (NodeRef includedNode in label.IncludedNodes)
 					{
 						IJobStep? step;
 						if (stepForNodeRef.TryGetValue(includedNode, out step))
 						{
-							bAnyPending |= step.IsPending();
-							bAnySkipped |= step.State == JobStepState.Aborted || step.State == JobStepState.Skipped;
-							bAnyFailed |= (step.Outcome == JobStepOutcome.Failure);
-							bAnyWarnings |= (step.Outcome == JobStepOutcome.Warnings);
+							anyPending |= step.IsPending();
+							anySkipped |= step.State == JobStepState.Aborted || step.State == JobStepState.Skipped;
+							anyFailed |= (step.Outcome == JobStepOutcome.Failure);
+							anyWarnings |= (step.Outcome == JobStepOutcome.Warnings);
 						}
 					}
 
 					// Figure out the overall label state
-					newState = bAnyPending ? LabelState.Running : LabelState.Complete;
-					newOutcome = bAnyFailed ? LabelOutcome.Failure : bAnyWarnings ? LabelOutcome.Warnings : bAnySkipped? LabelOutcome.Unspecified : LabelOutcome.Success;
+					newState = anyPending ? LabelState.Running : LabelState.Complete;
+					newOutcome = anyFailed ? LabelOutcome.Failure : anyWarnings ? LabelOutcome.Warnings : anySkipped? LabelOutcome.Unspecified : LabelOutcome.Success;
 				}
 
 				states.Add((newState, newOutcome));
@@ -1485,21 +1512,5 @@ namespace Horde.Build.Jobs
 			response.Arguments.Add(job.Arguments);
 			return response;
 		}
-	}
-
-	/// <summary>
-	/// Projection of a job definition to just include permissions info
-	/// </summary>
-	public interface IJobPermissions
-	{
-		/// <summary>
-		/// ACL for the job
-		/// </summary>
-		public Acl? Acl { get; }
-
-		/// <summary>
-		/// The stream containing 
-		/// </summary>
-		public StreamId StreamId { get; }
 	}
 }

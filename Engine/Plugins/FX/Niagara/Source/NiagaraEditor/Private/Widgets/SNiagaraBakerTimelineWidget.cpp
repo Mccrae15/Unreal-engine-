@@ -7,6 +7,7 @@
 //#include "NiagaraSystem.h"
 #include "ViewModels/NiagaraBakerViewModel.h"
 
+#include "Framework/Application/SlateApplication.h"
 #include "Fonts/FontMeasure.h"
 //#include "Modules/ModuleManager.h"
 //#include "Widgets/SBoxPanel.h"
@@ -58,7 +59,7 @@ int32 SNiagaraBakerTimelineWidget::OnPaint(const FPaintArgs& Args, const FGeomet
 				const FVector2D BoxLocation(UStep * float(i), 0.0f);
 				const FVector2D BoxSize(UStep, AllottedGeometry.Size.Y);
 				const FLinearColor& Tint = (i == OutputFrameIndices.FrameIndexA) ? CurrentTint : BoxTints[i & 1];
-				FSlateDrawElement::MakeBox(OutDrawElements, RetLayerId++, AllottedGeometry.ToPaintGeometry(BoxLocation, BoxSize), BoxBrush, ESlateDrawEffect::None, Tint);
+				FSlateDrawElement::MakeBox(OutDrawElements, RetLayerId++, AllottedGeometry.ToPaintGeometry(BoxSize, FSlateLayoutTransform(BoxLocation)), BoxBrush, ESlateDrawEffect::None, Tint);
 			}
 		}
 		else

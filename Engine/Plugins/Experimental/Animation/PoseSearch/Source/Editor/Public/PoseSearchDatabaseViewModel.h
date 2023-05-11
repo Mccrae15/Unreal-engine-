@@ -5,15 +5,16 @@
 #include "CoreMinimal.h"
 #include "UObject/GCObject.h"
 #include "MovieSceneFwd.h"
-
+#include "PoseSearch/PoseSearchAssetSampler.h"
+#include "PoseSearch/PoseSearchIndex.h"
 #include "PoseSearchDatabasePreviewScene.h"
-#include "PoseSearch/PoseSearch.h"
 
 class UWorld;
 class UPoseSearchDatabase;
 struct FPoseSearchIndexAsset;
 class UAnimPreviewInstance;
 class UDebugSkelMeshComponent;
+class UAnimComposite;
 class UAnimSequence;
 class UBlendSpace;
 class UMirrorDataTable;
@@ -25,8 +26,10 @@ namespace UE::PoseSearch
 	enum class EFeaturesDrawMode : uint8
 	{
 		None,
-		All
+		All,
+		Detailed
 	};
+	ENUM_CLASS_FLAGS(EFeaturesDrawMode);
 
 	enum class EAnimationPreviewMode : uint8
 	{
@@ -34,22 +37,25 @@ namespace UE::PoseSearch
 		OriginalOnly,
 		OriginalAndMirrored
 	};
-
+	ENUM_CLASS_FLAGS(EAnimationPreviewMode);
 
 	struct FDatabasePreviewActor
 	{
 	public:
 		TWeakObjectPtr<AActor> Actor = nullptr;
-		TWeakObjectPtr<UDebugSkelMeshComponent> Mesh = nullptr;
-		TWeakObjectPtr<UAnimPreviewInstance> AnimInstance = nullptr;
-		FPoseSearchIndexAsset IndexAsset; // keeping a copy since database index can be invalidated
+		int32 IndexAssetIndex = INDEX_NONE;
 		int32 CurrentPoseIndex = INDEX_NONE;
 
-		bool IsValid()
-		{
-			const bool bIsValid = Actor.IsValid() && Mesh.IsValid() && AnimInstance.IsValid();
-			return  bIsValid;
-		}
+		FSequenceBaseSampler SequenceSampler;
+		FBlendSpaceSampler BlendSpaceSampler;
+		ESearchIndexAssetType Type = ESearchIndexAssetType::Invalid;
+
+		bool IsValid() const;
+		void Process();
+		const IAssetSampler* GetSampler() const;
+		float GetScaledTime(float Time) const;
+		UDebugSkelMeshComponent* GetDebugSkelMeshComponent();
+		UAnimPreviewInstance* GetAnimPreviewInstance();
 	};
 
 	class FDatabaseViewModel : public TSharedFromThis<FDatabaseViewModel>, public FGCObject
@@ -63,9 +69,7 @@ namespace UE::PoseSearch
 		virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
 		virtual FString GetReferencerName() const override { return TEXT("FPoseSearchDatabaseViewModel"); }
 
-		void Initialize(
-			UPoseSearchDatabase* InPoseSearchDatabase,
-			const TSharedRef<FDatabasePreviewScene>& InPreviewScene);
+		void Initialize(UPoseSearchDatabase* InPoseSearchDatabase, const TSharedRef<FDatabasePreviewScene>& InPreviewScene);
 
 		void RemovePreviewActors();
 		void ResetPreviewActors();
@@ -94,22 +98,22 @@ namespace UE::PoseSearch
 		void OnSetAnimationPreviewMode(EAnimationPreviewMode PreviewMode);
 		bool IsAnimationPreviewMode(EAnimationPreviewMode PreviewMode) const;
 
+		void OnToggleDisplayRootMotionSpeed();
+		bool IsDisplayRootMotionSpeedChecked() const { return DisplayRootMotionSpeed; };
+
 		void AddSequenceToDatabase(UAnimSequence* AnimSequence);
 		void AddBlendSpaceToDatabase(UBlendSpace* BlendSpace);
+		void AddAnimCompositeToDatabase(UAnimComposite* AnimComposite);
+		void DeleteFromDatabase(int32 AnimationAssetIndex);
 
-		void DeleteSequenceFromDatabase(int32 SequenceIdx);
-		void DeleteBlendSpaceFromDatabase(int32 BlendSpaceIdx);
+		void SetIsEnabled(int32 AnimationAssetIndex, bool bEnabled);
+		bool IsEnabled(int32 AnimationAssetIndex) const;
 
-		void SetSelectedSequenceEnabled(int32 SequenceIndex, bool bEnabled);
-		void SetSelectedBlendSpaceEnabled(int32 BlendSpaceIndex, bool bEnabled);
-		
-		bool IsSelectedSequenceEnabled(int32 SequenceIndex) const;
-		bool IsSelectedBlendSpaceEnabled(int32 BlendSpaceIndex) const;
-
+		void SetSelectedNode(const TSharedPtr<FDatabaseAssetTreeNode>& InSelectedNode);
 		void SetSelectedNodes(const TArrayView<TSharedPtr<FDatabaseAssetTreeNode>>& InSelectedNodes);
 		void ProcessSelectedActor(AActor* Actor);
 		
-		const FPoseSearchIndexAsset* GetSelectedActorIndexAsset() const { return SelectedActorIndexAsset; }
+		const FPoseSearchIndexAsset* GetSelectedActorIndexAsset() const;
 
 		float GetMaxPreviewPlayLength() const;
 		float GetPlayTime() const;
@@ -127,7 +131,7 @@ namespace UE::PoseSearch
 
 		/** Actors to be displayed in the preview viewport */
 		TArray<FDatabasePreviewActor> PreviewActors;
-
+		
 		/** From zero to the play length of the longest preview */
 		float MaxPreviewPlayLength = 0.0f;
 
@@ -137,17 +141,20 @@ namespace UE::PoseSearch
 		/** What animations to show in the viewport */
 		EAnimationPreviewMode AnimationPreviewMode = EAnimationPreviewMode::OriginalAndMirrored;
 
+		/** Is animation debug draw enabled */
+		bool DisplayRootMotionSpeed = false;
+		
 		TArray<TSharedPtr<FDatabaseAssetTreeNode>> SelectedNodes;
 
-		const FPoseSearchIndexAsset* SelectedActorIndexAsset = nullptr;
+		int32 SelectedActorIndexAssetIndex = INDEX_NONE;
 
 		UWorld* GetWorld() const;
 
 		UObject* GetPlaybackContext() const;
 
-		FDatabasePreviewActor SpawnPreviewActor(const FPoseSearchIndexAsset& IndexAsset);
+		FDatabasePreviewActor SpawnPreviewActor(int32 IndexAssetIndex, const FBoneContainer& BoneContainer);
 
-		void UpdatePreviewActors();
+		void UpdatePreviewActors(bool bInTickPlayTime = false);
 
 		FTransform MirrorRootMotion(FTransform RootMotion, const class UMirrorDataTable* MirrorDataTable);
 	};

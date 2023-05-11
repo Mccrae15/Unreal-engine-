@@ -79,11 +79,6 @@ float EditorNITLevel;
 uint bOutputInHDR;
 float OutputMaxLuminance;
 
-#if EYEADAPTATION_EXPOSURE_FIX != 1
-// Default value used when eye adaptation is disabled (e.g fixed exposure) or not available.
-float DefaultEyeExposure;
-#endif
-
 float4 BloomDirtMaskTint;
 Texture2D BloomDirtMaskTexture;
 SamplerState BloomDirtMaskSampler;
@@ -156,7 +151,10 @@ float ComputeFilmGrainIntensity(float3 LinearColorRGBGamut)
 #endif 
 SamplerState        ColorGradingLUTSampler;
 
-static const float LUTSize = 32;
+float LUTSize;
+float InvLUTSize; // 1 / LUTSize
+float LUTScale; // (LUTSize - 1) / LUTSize
+float LUTOffset; // 0.5 / LUTSize
 
 half3 ColorLookupTable( half3 LinearColor )
 {
@@ -171,12 +169,12 @@ half3 ColorLookupTable( half3 LinearColor )
 
 	#endif
 
-	float3 UVW = LUTEncodedColor * ((LUTSize - 1) / LUTSize) + (0.5f / LUTSize);
+	float3 UVW = LUTEncodedColor * LUTScale + LUTOffset;
 
 #if USE_VOLUME_LUT == 1
 	half3 OutDeviceColor = Texture3DSample( ColorGradingLUT, ColorGradingLUTSampler, UVW ).rgb;
 #else
-	half3 OutDeviceColor = UnwrappedTexture3DSample( ColorGradingLUT, ColorGradingLUTSampler, UVW, LUTSize ).rgb;
+	half3 OutDeviceColor = UnwrappedTexture3DSample( ColorGradingLUT, ColorGradingLUTSampler, UVW, LUTSize, InvLUTSize ).rgb;
 #endif
 	
 	return OutDeviceColor * 1.05;
@@ -200,7 +198,7 @@ float4 ChromaticAberrationParams;
 void TonemapCommonVS(
 	in	float4 Position,
 	in	float2 TexCoord,
-	out	float4 OutExposureScaleVignette,
+	out	float2 OutVignette,
 	out	float4 OutGrainUV,
 	out	float2 OutScreenPos,
 	out	float2 OutFullViewUV
@@ -210,28 +208,13 @@ void TonemapCommonVS(
 	// TODO: Looks to be Ronin specific.. check this:
 	OutFullViewUV.xy = Position.xy * float2(0.5,-0.5) + 0.5;
 
-#if EYEADAPTATION_EXPOSURE_FIX == 1
-	#if FEATURE_LEVEL >= FEATURE_LEVEL_SM5
-		// texture can be GWhiteTexture which is 1x1. It's important we don't read outside bounds.
-		OutExposureScaleVignette.xy = EyeAdaptationTexture.Load(int3(0, 0, 0)).xw;
-	#else
-		OutExposureScaleVignette.xy = EyeAdaptationBuffer[0].xw;
-	#endif
-#else
-	// If eye adaptation is disabled (e.g. fixed exposure level ) or  not available.  
-	OutExposureScaleVignette.xy = DefaultEyeExposure;
-#endif
-
-	// Middle grey lum value adjusted by exposure compensation
-	OutExposureScaleVignette.y = log2(0.18 * OutExposureScaleVignette.y * EyeAdaptation_LocalExposureMiddleGreyExposureCompensation);
-
 	const float AspectRatio = Output_ViewportSize.y * Output_ViewportSizeInverse.x;
 
 	float2 ColorViewportPos = UVToScreenPos(TexCoord, Color_Extent);
 
 	// Scale vignette to always be a circle with consistent corner intensity.
 	float2 LensViewportPos = ConvertScreenViewportSpaceToLensViewportSpace(ColorViewportPos);
-	OutExposureScaleVignette.zw = VignetteSpace(LensViewportPos, AspectRatio);
+	OutVignette = VignetteSpace(LensViewportPos, AspectRatio);
 
 	// Grain
 	OutGrainUV.xy = TexCoord + Color_ExtentInverse * float2(-0.5,0.5);
@@ -246,7 +229,7 @@ void MainVS(
 	in 					float4 InPosition 				: ATTRIBUTE0,
 	in 					float2 InTexCoord 				: ATTRIBUTE1,
 	out noperspective 	float2 OutTexCoord 				: TEXCOORD0,
-	out noperspective 	float4 OutExposureScaleVignette : TEXCOORD1,
+	out noperspective 	float2 OutVignette				: TEXCOORD1,
 	out noperspective 	float4 OutGrainUV 				: TEXCOORD2,
 	out noperspective 	float2 OutScreenPos 			: TEXCOORD3,
 	out noperspective 	float2 OutFullViewUV 			: TEXCOORD4,
@@ -254,7 +237,7 @@ void MainVS(
 	)
 {
 	DrawRectangle(InPosition, InTexCoord, OutPosition, OutTexCoord);
-    TonemapCommonVS(OutPosition, OutTexCoord, OutExposureScaleVignette, OutGrainUV, OutScreenPos, OutFullViewUV);
+    TonemapCommonVS(OutPosition, OutTexCoord, OutVignette, OutGrainUV, OutScreenPos, OutFullViewUV);
 }
 
 // Function graphing
@@ -363,14 +346,17 @@ half3 LookupSceneColor(float2 SceneUV, float2 PixelOffset)
 
 float4 TonemapCommonPS(
 	float2 UV,
-	float4 ExposureScaleVignette,
+	float2 Vignette,
 	float4 GrainUV,
 	float2 ScreenPos, // [-1, 1]x[-1, 1]
 	float2 FullViewUV,
-	float4 SvPosition
+	float4 SvPosition,
+	out float OutLuminance
 	)
 {
 	float4 OutColor = 0;
+	OutLuminance = 0;
+	
 
 #if DEBUG_TONEMAPPER
 	// @param DebugTile 0,0 is center, -1,0 is left, 1,0 is right, ...
@@ -433,7 +419,9 @@ float4 TonemapCommonPS(
 
 	SceneColor.rgb *= View.OneOverPreExposure;
 
-	float ExposureScale = ExposureScaleVignette.x;
+	float2 EyeAdaptationData = EyeAdaptationBuffer[0].xw;
+
+	float ExposureScale = EyeAdaptationData.x;
 
 	float LocalExposureOneOverPreExposure = View.OneOverPreExposure;
 
@@ -441,7 +429,9 @@ float4 TonemapCommonPS(
 	{
 		float LuminanceVal = CalculateEyeAdaptationLuminance(SceneColor.rgb);
 		float LogLuminance = log2(LuminanceVal);
-		float MiddleGreyLumValue = ExposureScaleVignette.y;
+
+		// Middle grey lum value adjusted by exposure compensation
+		float MiddleGreyLumValue = log2(0.18 * EyeAdaptationData.y * EyeAdaptation_LocalExposureMiddleGreyExposureCompensation);
 
 		float BaseLogLum = CalculateBaseLogLuminance(LogLuminance, EyeAdaptation_LocalExposureBlurredLuminanceBlend, ExposureScale, FullViewUV, LumBilateralGrid, BlurredLogLum, LumBilateralGridSampler, BlurredLogLumSampler);
 		float LocalExposure = CalculateLocalExposure(LogLuminance + log2(ExposureScale), BaseLogLum, MiddleGreyLumValue, EyeAdaptation_LocalExposureHighlightContrastScale, EyeAdaptation_LocalExposureShadowContrastScale, EyeAdaptation_LocalExposureDetailStrength);
@@ -533,6 +523,7 @@ float4 TonemapCommonPS(
 		SceneColor.rgb *= ExposureScale;
 
 		OutColor.rgb = pow(SceneColor.rgb, InverseGamma.x);
+		OutLuminance = Luminance(OutColor.rgb);
 
 	#else 
 	{
@@ -595,16 +586,11 @@ float4 TonemapCommonPS(
 			#endif
 		}
 		#endif
-
-		// TODO: doesn't need a shader permutation for a scalar.
-		#if NO_EYEADAPTATION_EXPOSURE_FIX == 1
-			ExposureScale = 1.0;
-		#endif
 		
 		LinearColor *= ExposureScale;
 
 		#if USE_VIGNETTE
-			LinearColor.rgb *= ComputeVignetteMask( ExposureScaleVignette.zw, TonemapperParams.x );
+			LinearColor.rgb *= ComputeVignetteMask( Vignette, TonemapperParams.x );
 		#endif
 
 		#if USE_FILM_GRAIN
@@ -623,6 +609,9 @@ float4 TonemapCommonPS(
 		#endif
 
 		half3 OutDeviceColor = ColorLookupTable(LinearColor);
+		
+		half LuminanceForPostProcessAA = dot(OutDeviceColor, half3(0.299f, 0.587f, 0.114f));
+		OutLuminance = LuminanceForPostProcessAA;
 
 		#if USE_GRAIN_QUANTIZATION
 			half Grain = GrainFromUV(GrainUV.zw);
@@ -703,19 +692,27 @@ float4 TonemapCommonPS(
 // pixel shader entry point
 void MainPS(
 	in noperspective float2 UV : TEXCOORD0,
-	in noperspective float4 InExposureScaleVignette : TEXCOORD1,
+	in noperspective float2 InVignette : TEXCOORD1,
 	in noperspective float4 GrainUV : TEXCOORD2,
 	in noperspective float2 ScreenPos : TEXCOORD3,
 	in noperspective float2 FullViewUV : TEXCOORD4,
 	float4 SvPosition : SV_POSITION,		// after all interpolators
 	out float4 OutColor : SV_Target0
+#if OUTPUT_LUMINANCE
+	, out float OutLuminance: SV_Target1
+#endif
 	)
 {
-    OutColor = TonemapCommonPS(UV, InExposureScaleVignette, GrainUV, ScreenPos, FullViewUV, SvPosition);
+	float Luminance;
+    OutColor = TonemapCommonPS(UV, InVignette, GrainUV, ScreenPos, FullViewUV, SvPosition, Luminance);
+#if OUTPUT_LUMINANCE
+	OutLuminance = Luminance;
+#endif
 }
 
 #if COMPUTESHADER
 RWTexture2D<float4> RWOutputTexture;
+RWTexture2D<float> RWOutputLuminance;
 
 [numthreads(THREADGROUP_SIZEX, THREADGROUP_SIZEY, 1)]
 void MainCS(uint2 DispatchThreadId : SV_DispatchThreadID)
@@ -729,16 +726,20 @@ void MainCS(uint2 DispatchThreadId : SV_DispatchThreadID)
 		return;
 	}
 
-	float4 ExposureScaleVignette;
+	float2 Vignette;
 	float4 GrainUV;
 	float2 FullViewUV, ScreenPos;	
-	TonemapCommonVS(InScreenPos, UV, ExposureScaleVignette, GrainUV, ScreenPos, FullViewUV);
+	TonemapCommonVS(InScreenPos, UV, Vignette, GrainUV, ScreenPos, FullViewUV);
 
-	float4 OutColor = TonemapCommonPS(UV, ExposureScaleVignette, GrainUV, ScreenPos, FullViewUV, SvPosition);
+	float Luminance;
+	float4 OutColor = TonemapCommonPS(UV, Vignette, GrainUV, ScreenPos, FullViewUV, SvPosition, Luminance);
 
 	uint2 PixelPos = DispatchThreadId + Output_ViewportMin;
 
 	RWOutputTexture[PixelPos] = OutColor;
+#if OUTPUT_LUMINANCE
+	RWOutputLuminance[PixelPos] = Luminance;
+#endif
 }
 #endif
 

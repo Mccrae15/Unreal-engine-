@@ -3,29 +3,17 @@
 #include "SStateTreeViewRow.h"
 #include "SStateTreeView.h"
 
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "ScopedTransaction.h"
-#include "Templates/SharedPointer.h"
 
-#include "Styling/AppStyle.h"
 #include "EditorFontGlyphs.h"
 #include "StateTreeEditorStyle.h"
 
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SCompoundWidget.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/Layout/SScrollBorder.h"
-#include "Widgets/Images/SImage.h"
 #include "Widgets/Text/SInlineEditableTextBlock.h"
 #include "Widgets/Layout/SScrollBox.h"
 
-#include "StateTree.h"
 #include "StateTreeState.h"
-#include "StateTreeConditionBase.h"
 #include "StateTreeTaskBase.h"
 #include "StateTreeViewModel.h"
-#include "Algo/ForEach.h"
+#include "Widgets/Views/SListView.h"
 
 #define LOCTEXT_NAMESPACE "StateTreeEditor"
 
@@ -35,85 +23,79 @@ void SStateTreeViewRow::Construct(const FArguments& InArgs, const TSharedRef<STa
 	WeakState = InState;
 
 	STableRow<TWeakObjectPtr<UStateTreeState>>::ConstructInternal(STableRow::FArguments()
-        .Padding(5.0f)
-        .OnDragDetected(this, &SStateTreeViewRow::HandleDragDetected)
-        .OnCanAcceptDrop(this, &SStateTreeViewRow::HandleCanAcceptDrop)
-        .OnAcceptDrop(this, &SStateTreeViewRow::HandleAcceptDrop)
-        .Style(&FStateTreeEditorStyle::Get()->GetWidgetStyle<FTableRowStyle>("StateTree.Selection"))
-    , InOwnerTableView);
+		.Padding(5.0f)
+		.OnDragDetected(this, &SStateTreeViewRow::HandleDragDetected)
+		.OnCanAcceptDrop(this, &SStateTreeViewRow::HandleCanAcceptDrop)
+		.OnAcceptDrop(this, &SStateTreeViewRow::HandleAcceptDrop)
+		.Style(&FStateTreeEditorStyle::Get()->GetWidgetStyle<FTableRowStyle>("StateTree.Selection"))
+	, InOwnerTableView);
 
 	static const FLinearColor TasksBackground = FLinearColor(FColor(17, 117, 131));
 	static const FLinearColor LinkBackground = FLinearColor(FColor(84, 84, 84));
 
 	this->ChildSlot
-    .HAlign(HAlign_Fill)
-    [
-	    SNew(SBox)
-	    .MinDesiredWidth_Lambda([ViewBox]()
-			{
-    			// Make the row at least as wide as the view.
-	    		// The -1 is needed or we'll see a scrollbar. 
-				return ViewBox->GetTickSpaceGeometry().GetLocalSize().X - 1;
-			})
+	.HAlign(HAlign_Fill)
+	[
+		SNew(SBox)
 		[
-	        SNew(SHorizontalBox)
-	        + SHorizontalBox::Slot()
-	        .VAlign(VAlign_Fill)
-	        .HAlign(HAlign_Left)
-	        .AutoWidth()
-	        [
-	            SNew(SExpanderArrow, SharedThis(this))
-	            .ShouldDrawWires(true)
-	            .IndentAmount(32)
-	            .BaseIndentLevel(0)
-	        ]
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.VAlign(VAlign_Fill)
+			.HAlign(HAlign_Left)
+			.AutoWidth()
+			[
+				SNew(SExpanderArrow, SharedThis(this))
+				.ShouldDrawWires(true)
+				.IndentAmount(32)
+				.BaseIndentLevel(0)
+			]
 
-	        // State Box
-	        + SHorizontalBox::Slot()
-	        .VAlign(VAlign_Center)
-	        .Padding(FMargin(0.0f, 4.0f))
-	        .AutoWidth()
-	        [
-	            SNew(SBox)
-	            .HeightOverride(28.0f)
-	            .VAlign(VAlign_Fill)
-	            [
-	                SNew(SBorder)
-	                .BorderImage(FAppStyle::GetBrush("WhiteBrush"))
-	                .BorderBackgroundColor(this, &SStateTreeViewRow::GetTitleColor)
-	                .Padding(FMargin(16.0f, 0.0f, 16.0f, 0.0f))
-	                [
-	                    // Conditions icon
-	                    SNew(SHorizontalBox)
-	                    + SHorizontalBox::Slot()
-	                    .VAlign(VAlign_Center)
-	                    .AutoWidth()
-	                    [
-	                        SNew(SBox)
-	                        .Padding(FMargin(0.0f, 0.0f, 4.0f, 0.0f))
-	                        .Visibility(this, &SStateTreeViewRow::GetConditionVisibility)
-	                        [
-	                            SNew(SImage)
+			// State Box
+			+ SHorizontalBox::Slot()
+			.VAlign(VAlign_Center)
+			.Padding(FMargin(0.0f, 4.0f))
+			.AutoWidth()
+			[
+				SNew(SBox)
+				.HeightOverride(28.0f)
+				.VAlign(VAlign_Fill)
+				[
+					SNew(SBorder)
+					.BorderImage(FAppStyle::GetBrush("WhiteBrush"))
+					.BorderBackgroundColor(this, &SStateTreeViewRow::GetTitleColor)
+					.Padding(FMargin(16.0f, 0.0f, 16.0f, 0.0f))
+					[
+						// Conditions icon
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot()
+						.VAlign(VAlign_Center)
+						.AutoWidth()
+						[
+							SNew(SBox)
+							.Padding(FMargin(0.0f, 0.0f, 4.0f, 0.0f))
+							.Visibility(this, &SStateTreeViewRow::GetConditionVisibility)
+							[
+								SNew(SImage)
 								.Image(FAppStyle::Get().GetBrush("Icons.Help"))
 							]
 						]
 
 						// Selector icon
-	                    + SHorizontalBox::Slot()
-	                    .VAlign(VAlign_Center)
-	                    .AutoWidth()
-	                    [
-	                        SNew(SBox)
-	                        .Padding(FMargin(0.0f, 0.0f, 4.0f, 0.0f))
-	                        .Visibility(this, &SStateTreeViewRow::GetSelectorVisibility)
-	                        [
-	                            SNew(STextBlock)
-	                            .Text(this, &SStateTreeViewRow::GetSelectorDesc)
-	                            .TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Icon")
-	                        ]
-	                    ]
+						+ SHorizontalBox::Slot()
+						.VAlign(VAlign_Center)
+						.AutoWidth()
+						[
+							SNew(SBox)
+							.Padding(FMargin(0.0f, 0.0f, 4.0f, 0.0f))
+							.Visibility(this, &SStateTreeViewRow::GetSelectorVisibility)
+							[
+								SNew(STextBlock)
+								.Text(this, &SStateTreeViewRow::GetSelectorDesc)
+								.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Icon")
+							]
+						]
 
-	                    // State Name
+						// State Name
 						+ SHorizontalBox::Slot()
 						.VAlign(VAlign_Center)
 						.AutoWidth()
@@ -256,7 +238,7 @@ void SStateTreeViewRow::Construct(const FArguments& InArgs, const TSharedRef<STa
 				[
 					SNew(STextBlock)
 					.Text(FEditorFontGlyphs::Check_Circle)
-	                .ColorAndOpacity(FLinearColor(FColor(110,143,67)))
+					.ColorAndOpacity(FLinearColor(FColor(110,143,67)))
 					.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Icon")
 					.Visibility(this, &SStateTreeViewRow::GetSucceededTransitionVisibility)
 				]
@@ -295,7 +277,7 @@ void SStateTreeViewRow::Construct(const FArguments& InArgs, const TSharedRef<STa
 				[
 					SNew(STextBlock)
 					.Text(FEditorFontGlyphs::Times_Circle)
-	                .ColorAndOpacity(FLinearColor(FColor(187,77,42)))
+					.ColorAndOpacity(FLinearColor(FColor(187,77,42)))
 					.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Icon")
 					.Visibility(this, &SStateTreeViewRow::GetFailedTransitionVisibility)
 				]
@@ -333,20 +315,20 @@ void SStateTreeViewRow::Construct(const FArguments& InArgs, const TSharedRef<STa
 				[
 					SNew(SImage)
 					.Image(FAppStyle::Get().GetBrush("Icons.Help"))
-	                .ColorAndOpacity(FLinearColor(FColor(31,151,167)))
+					.ColorAndOpacity(FLinearColor(FColor(31,151,167)))
 					.Visibility(this, &SStateTreeViewRow::GetConditionalTransitionsVisibility)
 				]
-	            + SHorizontalBox::Slot()
-	            .VAlign(VAlign_Center)
-	            .Padding(FMargin(4.0f, 0.0f, 0, 0))
-	            .AutoWidth()
-	            [
-	                SNew(STextBlock)
-	                .Text(FEditorFontGlyphs::Long_Arrow_Right)
-	                .TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Icon")
-	                .Visibility(this, &SStateTreeViewRow::GetConditionalTransitionsVisibility)
-	            ]
-	            + SHorizontalBox::Slot()
+				+ SHorizontalBox::Slot()
+				.VAlign(VAlign_Center)
+				.Padding(FMargin(4.0f, 0.0f, 0, 0))
+				.AutoWidth()
+				[
+					SNew(STextBlock)
+					.Text(FEditorFontGlyphs::Long_Arrow_Right)
+					.TextStyle(FStateTreeEditorStyle::Get(), "StateTree.Icon")
+					.Visibility(this, &SStateTreeViewRow::GetConditionalTransitionsVisibility)
+				]
+				+ SHorizontalBox::Slot()
 				.VAlign(VAlign_Center)
 				.AutoWidth()
 				.Padding(FMargin(4.0f, 0, 0, 0))
@@ -530,9 +512,9 @@ FText SStateTreeViewRow::GetTransitionsDesc(const UStateTreeState& State, const 
 		const bool bMatch = bUseMask ? EnumHasAnyFlags(Transition.Trigger, Trigger) : Transition.Trigger == Trigger;
 		if (bMatch)
 		{
-			switch (Transition.State.Type)
+			switch (Transition.State.LinkType)
 			{
-			case EStateTreeTransitionType::NotSet:
+			case EStateTreeTransitionType::None:
 				DescItems.Add(LOCTEXT("TransitionNoneStyled", "[None]"));
 				break;
 			case EStateTreeTransitionType::Succeeded:
@@ -590,9 +572,9 @@ FText SStateTreeViewRow::GetTransitionsIcon(const UStateTreeState& State, const 
 		const bool bMatch = bUseMask ? EnumHasAnyFlags(Transition.Trigger, Trigger) : Transition.Trigger == Trigger;
 		if (bMatch)
 		{
-			switch (Transition.State.Type)
+			switch (Transition.State.LinkType)
 			{
-			case EStateTreeTransitionType::NotSet:
+			case EStateTreeTransitionType::None:
 				IconType |= IconRightArrow;
 				break;
 			case EStateTreeTransitionType::Succeeded:

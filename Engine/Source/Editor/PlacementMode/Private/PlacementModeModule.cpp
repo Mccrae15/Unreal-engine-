@@ -11,6 +11,7 @@
 #include "UObject/UObjectIterator.h"
 #include "Textures/SlateIcon.h"
 #include "Styling/AppStyle.h"
+#include "Framework/Application/SlateApplication.h"
 #include "GameFramework/Actor.h"
 #include "ActorFactories/ActorFactory.h"
 #include "ActorFactories/ActorFactoryBoxReflectionCapture.h"
@@ -487,7 +488,7 @@ bool FPlacementModeModule::RegisterPlacementCategory(const FPlacementCategoryInf
 
 void FPlacementModeModule::UnregisterPlacementCategory(FName Handle)
 {
-	if (Categories.Remove(Handle))
+	if (Categories.Remove(Handle) && !IsEngineExitRequested())
 	{
 		PlacementModeCategoryListChanged.Broadcast();
 	}

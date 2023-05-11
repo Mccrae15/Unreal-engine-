@@ -1,20 +1,21 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Sequencer/ChaosCacheTrackEditor.h"
-#include "CommonMovieSceneTools.h"
 #include "Fonts/FontMeasure.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "GameFramework/Actor.h"
-#include "Chaos/ChaosCache.h"
 #include "Chaos/CacheManagerActor.h"
 #include "Chaos/CacheCollection.h"
 #include "LevelSequence.h"
 #include "Chaos/Sequencer/MovieSceneChaosCacheTrack.h"
 #include "Chaos/Sequencer/MovieSceneChaosCacheSection.h"
+#include "Rendering/SlateRenderer.h"
 #include "SequencerSectionPainter.h"
+#include "ScopedTransaction.h"
 #include "SequencerUtilities.h"
 #include "Styling/SlateIconFinder.h"
 #include "TimeToPixel.h"
+#include "Widgets/SBoxPanel.h"
 
 namespace ChaosCacheEditorConstants
 {
@@ -150,7 +151,7 @@ int32 FChaosCacheSection::OnPaintSection(FSequencerSectionPainter& Painter) cons
 			FSlateDrawElement::MakeBox(
 				Painter.DrawElements,
 				LayerId + 5,
-				Painter.SectionGeometry.ToPaintGeometry(TextOffset - BoxPadding, TextSize + 2.0f * BoxPadding),
+				Painter.SectionGeometry.ToPaintGeometry(TextSize + 2.0f * BoxPadding, FSlateLayoutTransform(TextOffset - BoxPadding)),
 				FAppStyle::GetBrush("WhiteBrush"),
 				ESlateDrawEffect::None,
 				FLinearColor::Black.CopyWithNewOpacity(0.5f)
@@ -159,7 +160,7 @@ int32 FChaosCacheSection::OnPaintSection(FSequencerSectionPainter& Painter) cons
 			FSlateDrawElement::MakeText(
 				Painter.DrawElements,
 				LayerId + 6,
-				Painter.SectionGeometry.ToPaintGeometry(TextOffset, TextSize),
+				Painter.SectionGeometry.ToPaintGeometry(TextSize, FSlateLayoutTransform(TextOffset)),
 				FrameString,
 				SmallLayoutFont,
 				DrawEffects,

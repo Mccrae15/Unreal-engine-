@@ -2,15 +2,18 @@
 
 #include "MotionWarpingComponent.h"
 
-#include "RootMotionModifier.h"
-#include "Animation/AnimSequenceBase.h"
 #include "Animation/AnimMontage.h"
 #include "Animation/AnimInstance.h"
+#include "Animation/AnimSequence.h"
 #include "Animation/AnimationPoseData.h"
+#include "BonePose.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "DrawDebugHelpers.h"
+#include "Engine/World.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "AnimNotifyState_MotionWarping.h"
+#include "Net/Core/PushModel/PushModel.h"
 #include "Net/UnrealNetwork.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MotionWarpingComponent)
@@ -33,7 +36,7 @@ void UMotionWarpingUtilities::ExtractLocalSpacePose(const UAnimSequenceBase* Ani
 	FBlendedCurve Curve;
 	Curve.InitFrom(BoneContainer);
 
-	FAnimExtractContext Context(Time, bExtractRootMotion);
+	FAnimExtractContext Context(static_cast<double>(Time), bExtractRootMotion);
 
 	UE::Anim::FStackAttributeContainer Attributes;
 	FAnimationPoseData AnimationPoseData(OutPose, Curve, Attributes);
@@ -168,7 +171,7 @@ FTransform UMotionWarpingUtilities::CalculateRootTransformRelativeToWarpPointAtT
 		{
 			const FBoneContainer& FullBoneContainer = AnimInstance->GetRequiredBones();
 			const int32 BoneIndex = FullBoneContainer.GetPoseBoneIndexForBoneName(WarpPointBoneName);
-			if (ensure(BoneIndex != INDEX_NONE))
+			if (BoneIndex != INDEX_NONE)
 			{
 				TArray<FBoneIndexType> RequiredBoneIndexArray = { 0, (FBoneIndexType)BoneIndex };
 				FullBoneContainer.GetReferenceSkeleton().EnsureParentsExistAndSort(RequiredBoneIndexArray);

@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RigVMModel/Nodes/RigVMTemplateNode.h"
+#include "RigVMStringUtils.h"
 #include "RigVMCore/RigVMTemplate.h"
 #include "RigVMModel/RigVMController.h"
 #include "UObject/ObjectSaveContext.h"
@@ -24,19 +25,32 @@ void FRigVMTemplatePreferredType::UpdateIndexFromString()
 		return;
 	}
 
-	FString Left, Right;
-	verify(TypeString.Split(TEXT(","), &Left, &Right));
+	FString OriginalCPPType, CPPTypeObjectPath;
+	verify(TypeString.Split(TEXT(","), &OriginalCPPType, &CPPTypeObjectPath));
+	FString CPPType = OriginalCPPType;
 
 	UObject* CPPTypeObject = nullptr;
 
 	static const FString NoneString = FName(NAME_None).ToString(); 
-	if(Right != NoneString)
+	if(CPPTypeObjectPath != NoneString)
 	{
-		CPPTypeObject = URigVMPin::FindObjectFromCPPTypeObjectPath(Right);
+		CPPTypeObject = RigVMTypeUtils::FindObjectFromCPPTypeObjectPath(CPPTypeObjectPath);
 	}
 
-	const FRigVMTemplateArgumentType Type(*Left, CPPTypeObject);
+	// If we still haven't found the object, try to find it with the CPPType
+	if (!CPPTypeObject && RigVMTypeUtils::RequiresCPPTypeObject(CPPType))
+	{
+		CPPTypeObject = RigVMTypeUtils::ObjectFromCPPType(CPPType, true);
+	}
+
+	const FRigVMTemplateArgumentType Type(*CPPType, CPPTypeObject);
 	TypeIndex = FRigVMRegistry::Get().FindOrAddType(Type);
+
+	// We might have used redirectors. Update the TypeString with the new information.
+	if (TypeIndex != INDEX_NONE && OriginalCPPType != Type.CPPType.ToString())
+	{
+		UpdateStringFromIndex();
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////
@@ -93,6 +107,7 @@ void URigVMTemplateNode::PostLoad()
 			FString ArgName, CPPType;
 			PreferredPermutation.Split(TEXT(":"), &ArgName, &CPPType);
 
+			CPPType = RigVMTypeUtils::PostProcessCPPType(CPPType);
 			const FRigVMTemplateArgumentType Type = Registry.FindTypeFromCPPType(CPPType);
 			PreferredPermutationPairs.Emplace(*ArgName, Registry.GetTypeIndex(Type));
 		}
@@ -102,6 +117,12 @@ void URigVMTemplateNode::PostLoad()
 
 	ConvertPreferredTypesToTypeIndex();
 	InvalidateCache();
+
+	// the template notation may have changed
+	if(const FRigVMTemplate* Template = GetTemplate())
+	{
+		TemplateNotation = Template->GetNotation();
+	}
 }
 
 void URigVMTemplateNode::ConvertPreferredTypesToString()
@@ -565,7 +586,7 @@ const FRigVMFunction* URigVMTemplateNode::GetResolvedFunction() const
 		{
 			if(ResolvedPermutation != INDEX_NONE)
 			{
-				CachedFunction = GetTemplate()->GetPermutation(ResolvedPermutation);
+				CachedFunction = ((FRigVMTemplate*)GetTemplate())->GetOrCreatePermutation(ResolvedPermutation);
 			}
 		}
 	}
@@ -724,11 +745,18 @@ FName URigVMTemplateNode::GetDisplayNameForPin(const FName& InRootPinName,
 		const FText DisplayNameText = Template->GetDisplayNameForArgument(InRootPinName, *PermutationIndicesPtr);
 		if(DisplayNameText.IsEmpty())
 		{
-			return InRootPinName;
+			return NAME_None;
+		}
+
+		FString DefaultDisplayName = InRootPinName.ToString();
+		FString Left, Right;
+		if(RigVMStringUtils::SplitPinPathAtEnd(DefaultDisplayName, Left, Right))
+		{
+			DefaultDisplayName = Right;
 		}
 
 		const FName DisplayName = *DisplayNameText.ToString();
-		if(DisplayName.IsEqual(InRootPinName))
+		if(DisplayName.IsEqual(*DefaultDisplayName))
 		{
 			return NAME_None;
 		}

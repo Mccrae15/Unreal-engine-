@@ -4,6 +4,7 @@ using SolidWorks.Interop.sldworks;
 using SolidWorks.Interop.swconst;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using DatasmithSolidworks.Names;
 
 namespace DatasmithSolidworks
 {
@@ -46,7 +47,6 @@ namespace DatasmithSolidworks
 		}
 	}
 
-	[ComVisible(false)]
 	public class FMetadata
 	{
 		public enum EOwnerType

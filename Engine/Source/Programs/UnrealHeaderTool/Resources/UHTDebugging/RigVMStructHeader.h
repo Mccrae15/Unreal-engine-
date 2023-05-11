@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
+#include "RigVMCore/RigVMExecuteContext.h"
 
 #include "RigVMStructHeader.generated.h"
 
@@ -39,7 +40,19 @@ struct FRigVMStructBase
 	virtual FRigVMStructUpgradeInfo GetUpgradeInfo() const {};
 };
 
-USTRUCT(meta = (Deprecated = "5.0.0"))
+USTRUCT(BlueprintType)
+struct FRigVMExecuteContext
+{
+	GENERATED_BODY()
+};
+
+USTRUCT(BlueprintType)
+struct FUHTTestExecuteContext : public FRigVMExecuteContext
+{
+	GENERATED_BODY()
+};
+
+USTRUCT(meta = (Deprecated = "5.0.0", ExecuteContext = "FUHTTestExecuteContext"))
 struct FRigVMMethodStruct : public FRigVMStructBase
 {
 	GENERATED_BODY()
@@ -48,10 +61,10 @@ struct FRigVMMethodStruct : public FRigVMStructBase
 	void Clear();
 
 	RIGVM_METHOD()
-	virtual void Execute(bool bAdditionalFlag = false, const FString& InString = TEXT("")) override;
+	virtual void Execute() override;
 
 	RIGVM_METHOD()
-	void Compute(float TestFloat);
+	void Compute();
 
 	UPROPERTY(meta = (Input))
 	float A;
@@ -116,6 +129,103 @@ struct CONTROLRIG_API FRigUnit_Control
 	}
 
 	/** The transform of this control */
-	UPROPERTY(EditAnywhere, Category="Control")
+	UPROPERTY(EditAnywhere, Category="Control", meta=(Input))
 	float Factor;
+};
+
+USTRUCT()
+struct CONTROLRIG_API FRigUnit_Mutable
+{
+	GENERATED_BODY()
+
+	FRigUnit_Mutable()
+	{
+	}
+
+	RIGVM_METHOD()
+	virtual void Execute();
+
+	/** The transform of this control */
+	UPROPERTY(EditAnywhere, Category="Control", meta=(Input, Output))
+	FUHTTestExecuteContext ExecuteContext;
+};
+
+USTRUCT()
+struct CONTROLRIG_API FRigUnit_BeginExecution
+{
+	GENERATED_BODY()
+
+	RIGVM_METHOD()
+	virtual void Execute() override;
+
+	// The execution result
+	UPROPERTY(EditAnywhere, Transient, DisplayName = "Execute", Category = "BeginExecution", meta = (Output))
+	FUHTTestExecuteContext ExecuteContext;
+};
+
+USTRUCT()
+struct FRigVMLazyStruct
+{
+	GENERATED_BODY()
+
+	RIGVM_METHOD()
+	void Compute();
+
+	UPROPERTY(meta = (Input, Lazy))
+	float A;
+
+	UPROPERTY(meta = (Input, Lazy))
+	TArray<float> B;
+
+	UPROPERTY(meta = (Input))
+	TArray<float> C;
+
+	UPROPERTY(meta = (Output))
+	float Result;
+};
+
+/**
+ * Executes either the True or False branch based on the condition
+ */
+USTRUCT(meta = (DisplayName = "Branch", Keywords = "If"))
+struct RIGVM_API FRigVMFunction_ControlFlowBranch
+{
+	GENERATED_BODY()
+
+	FRigVMFunction_ControlFlowBranch()
+	{
+		Condition = false;
+		BlockToRun = NAME_None;
+	}
+
+	RIGVM_METHOD()
+	virtual void Execute();
+
+	virtual const TArray<FName>& GetControlFlowBlocks_Impl() const override
+	{
+		static const TArray<FName> Blocks = {
+			GET_MEMBER_NAME_CHECKED(FRigVMFunction_ControlFlowBranch, True),
+			GET_MEMBER_NAME_CHECKED(FRigVMFunction_ControlFlowBranch, False),
+			ForLoopCompletedPinName
+		};
+		return Blocks;
+	}
+
+	UPROPERTY(meta=(Input, DisplayName="Execute"))
+	FRigVMExecuteContext ExecuteContext;
+
+	UPROPERTY(meta=(Input))
+	bool Condition;
+
+	UPROPERTY(meta=(Output))
+	FRigVMExecuteContext True ;
+
+	UPROPERTY(meta=(Output))
+	FRigVMExecuteContext False;
+
+	UPROPERTY(meta=(Output))
+	FRigVMExecuteContext Completed;
+
+	UPROPERTY(meta=(Singleton))
+	FName BlockToRun;
 };

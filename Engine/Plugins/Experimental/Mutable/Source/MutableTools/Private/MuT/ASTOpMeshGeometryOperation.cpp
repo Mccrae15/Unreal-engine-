@@ -3,7 +3,6 @@
 #include "MuT/ASTOpMeshGeometryOperation.h"
 
 #include "HAL/PlatformMath.h"
-#include "MuR/MemoryPrivate.h"
 #include "MuR/ModelPrivate.h"
 #include "MuR/RefCounted.h"
 #include "MuT/StreamsPrivate.h"
@@ -71,7 +70,7 @@ namespace mu
 	}
 
 
-	void ASTOpMeshGeometryOperation::Link(PROGRAM& program, const FLinkerOptions*)
+	void ASTOpMeshGeometryOperation::Link(FProgram& program, const FLinkerOptions*)
 	{
 		// Already linked?
 		if (!linkedAddress)

@@ -5,25 +5,24 @@
 =============================================================================*/
 
 #include "Engine/NetConnection.h"
-#include "Engine/NetworkDelegates.h"
-#include "Misc/CommandLine.h"
+#include "Engine/ReplicationDriver.h"
 #include "EngineStats.h"
-#include "EngineGlobals.h"
+#include "Net/Core/Trace/Private/NetTraceInternal.h"
 #include "UObject/Package.h"
 #include "GameFramework/PlayerController.h"
 #include "Engine/LevelStreaming.h"
 #include "PacketHandlers/StatelessConnectHandlerComponent.h"
 #include "Engine/LocalPlayer.h"
+#include "Stats/StatsTrace.h"
 #include "UnrealEngine.h"
 #include "EngineUtils.h"
-#include "Misc/NetworkVersion.h"
 #include "Net/UnrealNetwork.h"
 #include "Net/NetworkProfiler.h"
 #include "Net/DataReplication.h"
-#include "Net/NetPacketNotify.h"
 #include "Engine/ActorChannel.h"
 #include "Engine/ChildConnection.h"
 #include "Engine/VoiceChannel.h"
+#include "Misc/App.h"
 #include "Net/DataChannel.h"
 #include "Engine/PackageMapClient.h"
 #include "Engine/NetworkObjectList.h"
@@ -31,17 +30,17 @@
 #include "Net/PerfCountersHelpers.h"
 #include "GameDelegates.h"
 #include "Misc/PackageName.h"
+#include "Templates/Greater.h"
 #include "UObject/LinkerLoad.h"
-#include "UObject/ObjectKey.h"
 #include "UObject/UObjectIterator.h"
 #include "Net/Core/Trace/NetTrace.h"
 #include "Net/NetworkGranularMemoryLogging.h"
 #include "SocketSubsystem.h"
-#include "Math/NumericLimits.h"
-#include "UObject/UnrealNames.h"
 #include "HAL/LowLevelMemStats.h"
 #include "Net/NetPing.h"
 #include "LevelUtils.h"
+#include "Net/RPCDoSDetection.h"
+#include "Net/NetConnectionFaultRecovery.h"
 #if UE_WITH_IRIS
 #include "Iris/IrisConfig.h"
 #include "Iris/ReplicationSystem/ReplicationSystem.h"
@@ -306,13 +305,11 @@ UNetConnection::UNetConnection(const FObjectInitializer& ObjectInitializer)
 ,	OutPacketId			( 0 ) // must be initialized as OutAckPacketId + 1 so loss of first packet can be detected
 ,	OutAckPacketId		( -1 )
 ,	bLastHasServerFrameTime( false )
-	, DefaultMaxChannelSize(32767)
+,	DefaultMaxChannelSize(32767)
 ,	InitOutReliable		( 0 )
 ,	InitInReliable		( 0 )
-,	EngineNetworkProtocolVersion( FNetworkVersion::GetEngineNetworkProtocolVersion() )
-,	GameNetworkProtocolVersion( FNetworkVersion::GetGameNetworkProtocolVersion() )
-	, PackageVersionUE( GPackageFileUEVersion )
-	, PackageVersionLicenseeUE( GPackageFileLicenseeUEVersion )
+,	PackageVersionUE( GPackageFileUEVersion )
+,	PackageVersionLicenseeUE( GPackageFileLicenseeUEVersion )
 ,	ResendAllDataState( EResendAllDataState::None )
 #if !UE_BUILD_SHIPPING
 ,	ReceivedRawPacketDel()
@@ -330,7 +327,22 @@ UNetConnection::UNetConnection(const FObjectInitializer& ObjectInitializer)
 ,	bFlushingPacketOrderCache(false)
 ,	ConnectionId(0)
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	EngineNetworkProtocolVersion = FNetworkVersion::GetEngineNetworkProtocolVersion();
+	GameNetworkProtocolVersion = FNetworkVersion::GetGameNetworkProtocolVersion();
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	NetworkCustomVersions = FNetworkVersion::GetNetworkCustomVersions();
 }
+
+UNetConnection::UNetConnection(FVTableHelper& Helper)
+	: Super(Helper)
+{
+}
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+UNetConnection::~UNetConnection() = default;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 void UNetConnection::InitChannelData()
 {
@@ -446,16 +458,17 @@ void UNetConnection::InitBase(UNetDriver* InDriver,class FSocket* InSocket, cons
 	bLoggedFlushNetQueuedBitsOverflow = false;
 
 	// Reset Handler
-	Handler.Reset(NULL);
+	Handler.Reset();
 
 	InitHandler();
 
+	FaultRecovery = MakeUnique<FNetConnectionFaultRecovery>();
 
-	FaultRecovery.InitDefaults((Driver != nullptr ? Driver->GetNetDriverDefinition().ToString() : TEXT("")), this);
+	FaultRecovery->InitDefaults((Driver != nullptr ? Driver->GetNetDriverDefinition().ToString() : TEXT("")), this);
 
 	if (CVarLogUnhandledFaults.GetValueOnAnyThread() != 0)
 	{
-		FaultRecovery.FaultManager.SetUnhandledResultCallback([](FNetResult&& InResult)
+		FaultRecovery->FaultManager.SetUnhandledResultCallback([](FNetResult&& InResult)
 			{
 				static TArray<uint32> LoggedResults;
 
@@ -507,7 +520,9 @@ void UNetConnection::InitBase(UNetDriver* InDriver,class FSocket* InSocket, cons
 
 	if (bIsServer && !bIsReplay)
 	{
-		RPCDoS.Init(Driver->GetNetDriverDefinition(), AnalyticsAggregator,
+		RPCDoS = MakeUnique<FRPCDoSDetection>();
+
+		RPCDoS->Init(Driver->GetNetDriverDefinition(), AnalyticsAggregator,
 			[WorldPtr = TWeakObjectPtr<UWorld>(InDriver->GetWorld())]() -> UWorld*
 			{
 				return WorldPtr.IsValid() ? WorldPtr.Get() : nullptr;
@@ -556,6 +571,13 @@ void UNetConnection::InitConnection(UNetDriver* InDriver, EConnectionState InSta
 
 	InitChannelData();
 
+	// Cache instance id
+#if UE_NET_TRACE_ENABLED
+	NetTraceId = Driver->GetNetTraceId();
+#endif
+
+	SetConnectionId(InDriver->AllocateConnectionId());
+
 	// We won't be sending any packets, so use a default size
 	MaxPacket = (InMaxPacket == 0 || InMaxPacket > MAX_PACKET_SIZE) ? MAX_PACKET_SIZE : InMaxPacket;
 	PacketOverhead = 0;
@@ -589,10 +611,15 @@ void UNetConnection::InitConnection(UNetDriver* InDriver, EConnectionState InSta
 	auto PackageMapClient = NewObject<UPackageMapClient>(this);
 	PackageMapClient->Initialize(this, Driver->GuidCache);
 	PackageMap = PackageMapClient;
+
+	UE_NET_TRACE_CONNECTION_CREATED(NetTraceId, GetConnectionId());
+	UE_NET_TRACE_CONNECTION_STATE_UPDATED(NetTraceId, GetConnectionId(), static_cast<uint8>(GetConnectionState()));
 }
 
 void UNetConnection::InitHandler()
 {
+	using namespace UE::Net;
+
 	LLM_SCOPE_BYTAG(NetConnection);
 
 	check(!Handler.IsValid());
@@ -632,7 +659,18 @@ void UNetConnection::InitHandler()
 
 			if (StatelessConnectComponent.IsValid())
 			{
-				StatelessConnectComponent.Pin()->SetDriver(Driver);
+				StatelessConnectHandlerComponent* CurComponent = StatelessConnectComponent.Pin().Get();
+				
+				CurComponent->SetDriver(Driver);
+
+				CurComponent->SetHandshakeFailureCallback([this](FStatelessHandshakeFailureInfo HandshakeFailureInfo)
+					{
+						if (HandshakeFailureInfo.FailureReason == EHandshakeFailureReason::WrongVersion)
+						{
+							this->HandleReceiveNetUpgrade(HandshakeFailureInfo.RemoteNetworkVersion, HandshakeFailureInfo.RemoteNetworkFeatures,
+															ENetUpgradeSource::StatelessHandshake);
+						}
+					});
 			}
 
 
@@ -841,7 +879,7 @@ void UNetConnection::Serialize( FArchive& Ar )
 		);
 
 		// ObjectReplicators are going to be counted by UNetDriver::Serialize AllOwnedReplicators.
-		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("DormantReplicatorMap", DormantReplicatorMap.CountBytes(Ar));
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("DormantReplicatorSet", DormantReplicatorSet.CountBytes(Ar));
 
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("ClientVisibleLevelNames", ClientVisibleLevelNames.CountBytes(Ar));
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("ClientVisibleActorOuters", ClientVisibleActorOuters.CountBytes(Ar));
@@ -983,7 +1021,11 @@ void UNetConnection::Close(FNetResult&& CloseReason)
 			NetAnalyticsData->CommitAnalytics(AnalyticsVars);
 		}
 
-		RPCDoS.NotifyClose();
+		if (RPCDoS.IsValid())
+		{
+			RPCDoS->NotifyClose();
+		}
+
 		NetPing.Reset();
 
 		if (const uint32 MyConnectionId = GetConnectionId())
@@ -1001,7 +1043,7 @@ void UNetConnection::HandleNetResultOrClose(ENetCloseResult InResult)
 {
 	using namespace UE::Net;
 
-	const EHandleNetResult RecoveryResult = FaultRecovery.HandleNetResult(InResult);
+	const EHandleNetResult RecoveryResult = (FaultRecovery.IsValid() ? FaultRecovery->HandleNetResult(InResult) : EHandleNetResult::NotHandled);
 
 	if (RecoveryResult == EHandleNetResult::NotHandled)
 	{
@@ -1104,6 +1146,36 @@ void UNetConnection::HandleReceiveCloseReason(const FString& CloseReasonList)
 	}
 }
 
+void UNetConnection::HandleReceiveNetUpgrade(uint32 RemoteNetworkVersion, EEngineNetworkRuntimeFeatures RemoteNetworkFeatures,
+												UE::Net::ENetUpgradeSource NetUpgradeSource/*=UE::Net::ENetUpgradeSource::ControlChannel*/)
+{
+	TStringBuilder<128> RemoteFeaturesDescription;
+	TStringBuilder<128> LocalFeaturesDescription;
+
+	FNetworkVersion::DescribeNetworkRuntimeFeaturesBitset(RemoteNetworkFeatures, RemoteFeaturesDescription);
+
+	if (Driver != nullptr)
+	{
+		FNetworkVersion::DescribeNetworkRuntimeFeaturesBitset(Driver->GetNetworkRuntimeFeatures(), LocalFeaturesDescription);
+	}
+
+	UE_LOG(LogNet, Error, TEXT("Server is incompatible with the local version of the game: RemoteNetworkVersion=%u, ")
+			TEXT("RemoteNetworkFeatures=%s vs LocalNetworkVersion=%u, LocalNetworkFeatures=%s"), 
+			RemoteNetworkVersion, RemoteFeaturesDescription.ToString(), FNetworkVersion::GetLocalNetworkVersion(),
+			LocalFeaturesDescription.ToString());
+
+
+	const FString ConnectionError = NSLOCTEXT("Engine", "ClientOutdated",
+		"The match you are trying to join is running an incompatible version of the game.  Please try upgrading your game version.").ToString();
+
+	GEngine->BroadcastNetworkFailure(GetWorld(), Driver, ENetworkFailure::OutdatedClient, ConnectionError);
+
+	if (NetUpgradeSource == UE::Net::ENetUpgradeSource::StatelessHandshake)
+	{
+		Close(ENetCloseResult::OutdatedClient);
+	}
+}
+
 FString UNetConnection::Describe()
 {
 	return FString::Printf( TEXT( "[UNetConnection] RemoteAddr: %s, Name: %s, Driver: %s, IsServer: %s, PC: %s, Owner: %s, UniqueId: %s" ),
@@ -1200,7 +1272,7 @@ void UNetConnection::CleanUp()
 
 	CleanupDormantActorState();
 
-	Handler.Reset(NULL);
+	Handler.Reset();
 
 	SetClientLoginState(EClientLoginState::CleanedUp);
 
@@ -1738,7 +1810,9 @@ void UNetConnection::ReceivedRawPacket( void* InData, int32 Count )
 
 			if (!bErrorNotRecoverable)
 			{
-				const EHandleNetResult RecoveryResult = FaultRecovery.FaultManager.HandleNetResult(MoveTemp(*Traits.ExtendedError));
+				const EHandleNetResult RecoveryResult = (FaultRecovery.IsValid() ?
+					FaultRecovery->FaultManager.HandleNetResult(MoveTemp(*Traits.ExtendedError)) :
+					EHandleNetResult::NotHandled);
 
 				bCloseConnection = RecoveryResult == EHandleNetResult::NotHandled;
 			}
@@ -1835,14 +1909,14 @@ void UNetConnection::PreTickDispatch()
 	{
 		double LastTickDispatchRealtime = Driver->LastTickDispatchRealtime;
 
-		if (bIsServer)
+		if (bIsServer && RPCDoS.IsValid())
 		{
-			RPCDoS.PreTickDispatch(LastTickDispatchRealtime);
+			RPCDoS->PreTickDispatch(LastTickDispatchRealtime);
 		}
 
-		if (FaultRecovery.DoesRequireTick())
+		if (FaultRecovery.IsValid() && FaultRecovery->DoesRequireTick())
 		{
-			FaultRecovery.TickRealtime(LastTickDispatchRealtime);
+			FaultRecovery->TickRealtime(LastTickDispatchRealtime);
 		}
 	}
 }
@@ -1861,9 +1935,9 @@ void UNetConnection::PostTickDispatch()
 		PacketAnalytics.Tick();
 	}
 
-	if (bIsServer && !IsReplay())
+	if (RPCDoS.IsValid() && bIsServer && !IsReplay())
 	{
-		RPCDoS.PostTickDispatch();
+		RPCDoS->PostTickDispatch();
 	}
 }
 
@@ -2506,7 +2580,7 @@ bool UNetConnection::ReadPacketInfo(FBitReader& Reader, bool bHasPacketInfoPaylo
 		bLastHasServerFrameTime = bHasServerFrameTime;
 	}
 
-	if (Reader.EngineNetVer() < HISTORY_JITTER_IN_HEADER)
+	if (Reader.EngineNetVer() < FEngineNetworkCustomVersion::JitterInHeader)
 	{
 		uint8 RemoteInKBytesPerSecondByte = 0;
 		Reader << RemoteInKBytesPerSecondByte;
@@ -2692,7 +2766,7 @@ void UNetConnection::ReceivedPacket( FBitReader& Reader, bool bIsReinjectedPacke
 
 		bool bHasPacketInfoPayload = true;
 
-		if (Reader.EngineNetVer() >= HISTORY_JITTER_IN_HEADER)
+		if (Reader.EngineNetVer() >= FEngineNetworkCustomVersion::JitterInHeader)
 		{
 			bHasPacketInfoPayload = Reader.ReadBit() == 1u;
 
@@ -2892,18 +2966,18 @@ void UNetConnection::ReceivedPacket( FBitReader& Reader, bool bIsReinjectedPacke
 	double PostReceiveTime = 0.0;
 
 	{
-		if (bIsServer && !IsReplay())
+		if (RPCDoS.IsValid() && bIsServer && !IsReplay())
 		{
-			RPCDoS.PreReceivedPacket(CurrentReceiveTimeInS);
+			RPCDoS->PreReceivedPacket(CurrentReceiveTimeInS);
 		}
 
 		ON_SCOPE_EXIT
 		{
 			PostReceiveTime = FPlatformTime::Seconds();
 
-			if (bIsServer && !IsReplay())
+			if (RPCDoS.IsValid() && bIsServer && !IsReplay())
 			{
-				RPCDoS.PostReceivedPacket(PostReceiveTime);
+				RPCDoS->PostReceivedPacket(PostReceiveTime);
 			}
 		};
 
@@ -2911,7 +2985,7 @@ void UNetConnection::ReceivedPacket( FBitReader& Reader, bool bIsReinjectedPacke
 		while( !Reader.AtEnd() && GetConnectionState()!=USOCK_Closed )
 		{
 			// For demo backwards compatibility, old replays still have this bit
-			if (IsInternalAck() && EngineNetworkProtocolVersion < EEngineNetworkVersionHistory::HISTORY_ACKS_INCLUDED_IN_HEADER)
+			if (IsInternalAck() && GetNetworkCustomVersion(FEngineNetworkCustomVersion::Guid) < FEngineNetworkCustomVersion::AcksIncludedInHeader)
 			{
 				const bool IsAckDummy = Reader.ReadBit() == 1u;
 			}
@@ -2929,7 +3003,7 @@ void UNetConnection::ReceivedPacket( FBitReader& Reader, bool bIsReinjectedPacke
 				Bunch.bOpen					= bControl ? Reader.ReadBit() : 0;
 				Bunch.bClose				= bControl ? Reader.ReadBit() : 0;
 			
-				if (Bunch.EngineNetVer() < HISTORY_CHANNEL_CLOSE_REASON)
+				if (Bunch.EngineNetVer() < FEngineNetworkCustomVersion::ChannelCloseReason)
 				{
 					const uint8 bDormant = Bunch.bClose ? Reader.ReadBit() : 0;
 					Bunch.CloseReason = bDormant ? EChannelCloseReason::Dormancy : EChannelCloseReason::Destroyed;
@@ -2943,7 +3017,7 @@ void UNetConnection::ReceivedPacket( FBitReader& Reader, bool bIsReinjectedPacke
 				Bunch.bIsReplicationPaused  = Reader.ReadBit();
 				Bunch.bReliable				= Reader.ReadBit();
 
-				if (Bunch.EngineNetVer() < HISTORY_MAX_ACTOR_CHANNELS_CUSTOMIZATION)
+				if (Bunch.EngineNetVer() < FEngineNetworkCustomVersion::MaxActorChannelsCustomization)
 				{
 					static const int OLD_MAX_ACTOR_CHANNELS = 10240;
 					Bunch.ChIndex = Reader.ReadInt(OLD_MAX_ACTOR_CHANNELS);
@@ -2969,7 +3043,7 @@ void UNetConnection::ReceivedPacket( FBitReader& Reader, bool bIsReinjectedPacke
 
 				// if flag is set, remap channel index values, we're fast forwarding a replay checkpoint
 				// and there should be no bunches for existing channels
-				if (IsInternalAck() && bAllowExistingChannelIndex && (Bunch.EngineNetVer() >= HISTORY_REPLAY_DORMANCY))
+				if (IsInternalAck() && bAllowExistingChannelIndex && (Bunch.EngineNetVer() >= FEngineNetworkCustomVersion::ReplayDormancy))
 				{
 					if (ChannelIndexMap.Contains(Bunch.ChIndex))
 					{
@@ -3048,7 +3122,7 @@ void UNetConnection::ReceivedPacket( FBitReader& Reader, bool bIsReinjectedPacke
 				Bunch.bPartialInitial = Bunch.bPartial ? Reader.ReadBit() : 0;
 				Bunch.bPartialFinal = Bunch.bPartial ? Reader.ReadBit() : 0;
 
-				if (Bunch.EngineNetVer() < HISTORY_CHANNEL_NAMES)
+				if (Bunch.EngineNetVer() < FEngineNetworkCustomVersion::ChannelNames)
 				{
 					uint32 ChType = (Bunch.bReliable || Bunch.bOpen) ? Reader.ReadInt(CHTYPE_MAX) : CHTYPE_None;
 					switch (ChType)
@@ -3226,7 +3300,7 @@ void UNetConnection::ReceivedPacket( FBitReader& Reader, bool bIsReinjectedPacke
 				// In that case, we can generally ignore these bunches.
 				if (IsInternalAck() && bAllowExistingChannelIndex)
 				{
-					if (Bunch.EngineNetVer() < HISTORY_REPLAY_DORMANCY)
+					if (Bunch.EngineNetVer() < FEngineNetworkCustomVersion::ReplayDormancy)
 					{
 						if (Channel)
 						{
@@ -3717,14 +3791,18 @@ void UNetConnection::PrepareWriteBitsToSendBuffer(const int32 SizeInBits, const 
 		FlushNet();
 	}
 
+#if UE_NET_TRACE_ENABLED
+	// If tracing is enabled setup the NetTraceCollector for outgoing data
+	if (SendBuffer.GetNumBits() == 0)
+	{
+		OutTraceCollector = UE_NET_TRACE_CREATE_COLLECTOR(ENetTraceVerbosity::Trace);
+	}
+#endif
+
 	// If this is the start of the queue, make sure to add the packet id
 	if ( SendBuffer.GetNumBits() == 0 && !IsInternalAck() )
 	{
-#if UE_NET_TRACE_ENABLED
-		// If tracing is enabled setup the NetTraceCollector for outgoing data
-		OutTraceCollector = UE_NET_TRACE_CREATE_COLLECTOR(ENetTraceVerbosity::Trace);
 		UE_NET_TRACE_SCOPE(PacketHeaderAndInfo, SendBuffer, OutTraceCollector, ENetTraceVerbosity::Trace);
-#endif
 
 		// Write Packet Header, before sending the packet we will go back and rewrite the data
 		WritePacketHeader(SendBuffer);
@@ -4717,9 +4795,11 @@ void UNetConnection::ResetGameWorldState()
 	ClientVisibleLevelNames.Empty();
 	ClientMakingVisibleLevelNames.Empty();
 	KeepProcessingActorChannelBunchesMap.Empty();
-	DormantReplicatorMap.Empty();
 	CleanupDormantActorState();
 	ClientVisibleActorOuters.Empty();
+
+	// Clear the view target as this may be from an out of date world
+	ViewTarget = nullptr;
 
 	// Update any level visibility requests received during the transition
 	// This can occur if client loads faster than the server
@@ -4732,23 +4812,60 @@ void UNetConnection::ResetGameWorldState()
 
 void UNetConnection::CleanupDormantActorState()
 {
-	DormantReplicatorMap.Empty();
+	ClearDormantReplicatorsReference();
+
+	DormantReplicatorSet.EmptySet();
 }
 
-void UNetConnection::FlushDormancy(class AActor* Actor)
+void UNetConnection::ClearDormantReplicatorsReference()
+{
+	using namespace UE::Net::Private;
+
+#if UE_REPLICATED_OBJECT_REFCOUNTING
+	if (!Driver)
+	{
+		return;
+	}
+
+	TArray<TWeakObjectPtr<UObject>, TInlineAllocator<16>> SubObjectsToRemove;
+
+	// Find all the dormant subobject replicators still held by this connection and remove our reference to them.
+	for (const FActorDormantReplicators& ActorDormantReplicators : DormantReplicatorSet.ActorReplicatorSet)
+	{
+		FObjectKey OwnerKey = ActorDormantReplicators.OwnerActorKey;
+
+		for (const FDormantObjectReplicator& DormantObject : ActorDormantReplicators.DormantReplicators)
+		{
+			// Only if it's a subobject and not the actor itself
+			if (DormantObject.ObjectKey != OwnerKey)
+			{
+				SubObjectsToRemove.Add(DormantObject.Replicator->GetWeakObjectPtr());
+			}
+		}
+
+		if (!SubObjectsToRemove.IsEmpty())
+		{
+			Driver->GetNetworkObjectList().RemoveMultipleSubObjectChannelReference(ActorDormantReplicators.OwnerActorKey, SubObjectsToRemove, this);
+			SubObjectsToRemove.Reset();
+		}
+	}
+#endif
+}
+
+void UNetConnection::FlushDormancy(AActor* Actor)
 {
 	UE_LOG( LogNetDormancy, Verbose, TEXT( "FlushDormancy: %s. Connection: %s" ), *Actor->GetName(), *GetName() );
 	
 	if ( Driver->GetNetworkObjectList().MarkActive( Actor, this, Driver ) )
 	{
-		FlushDormancyForObject( Actor );
+		FlushDormancyForObject( Actor, Actor );
 
 		// TODO: Is this set of objects sufficient? Should we query the dormancy map from the connection instead?
 		for ( UActorComponent* ActorComp : Actor->GetReplicatedComponents() )
 		{
 			if ( ActorComp && ActorComp->GetIsReplicated() )
 			{
-				FlushDormancyForObject( ActorComp );
+				FlushDormancyForObject(Actor, ActorComp );
 			}
 		}
 	}
@@ -4782,29 +4899,49 @@ void UNetConnection::ForcePropertyCompare( AActor* Actor )
 	}
 }
 
-/** Wrapper for validating an objects dormancy state, and to prepare the object for replication again */
-void UNetConnection::FlushDormancyForObject(UObject* Object)
+void UNetConnection::FlushDormancyForObject(AActor* DormantActor, UObject* ReplicatedObject)
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_NetConnection_FlushDormancyForObject)
 
-	TSharedRef<FObjectReplicator>* Replicator = DormantReplicatorMap.Find(Object);
-	if (Replicator)
-	{
-		if (GNetDormancyValidate == 1)
-		{
-			Replicator->Get().ValidateAgainstState( Object );
-		}
+	bool bReuseReplicators = false;
 
-		if (!GbNetReuseReplicatorsForDormantObjects || !Driver || !Driver->IsServer())
+	if (GbNetReuseReplicatorsForDormantObjects && Driver && Driver->IsServer())
+	{
+		bReuseReplicators = true;
+	}
+
+	if (GNetDormancyValidate == 1)
+	{
+		TSharedPtr<FObjectReplicator> Replicator = DormantReplicatorSet.FindReplicator(DormantActor, ReplicatedObject);
+		if (Replicator.IsValid())
 		{
-			Replicator = nullptr;
+			Replicator->ValidateAgainstState(ReplicatedObject);
 		}
 	}
 
-	if (Replicator == nullptr)
+	// If we want to reuse replicators, make sure they exist for this object
+	if (bReuseReplicators)
 	{
-		Replicator = &DormantReplicatorMap.Add(Object, MakeShared<FObjectReplicator>());
-		Replicator->Get().InitWithObject(Object, this, false);		// Init using the objects current state
+		bReuseReplicators = DormantReplicatorSet.DoesReplicatorExist(DormantActor, ReplicatedObject);
+	}
+
+	// If we need to create a new replicator when flushing
+	if (!bReuseReplicators)
+	{
+		bool bOverwroteExistingReplicator = false;
+		const TSharedRef<FObjectReplicator>& ObjectReplicatorRef = DormantReplicatorSet.CreateAndStoreReplicator(DormantActor, ReplicatedObject, bOverwroteExistingReplicator);
+		
+		// Init using the objects current state
+		constexpr bool bUseDefaultState = false; 
+		ObjectReplicatorRef->InitWithObject(ReplicatedObject, this, bUseDefaultState);
+
+#if UE_REPLICATED_OBJECT_REFCOUNTING
+		// Add a refcount only when we did not create a replicator on top of an existing one.
+		if (Driver && DormantActor != ReplicatedObject && !bOverwroteExistingReplicator)
+		{
+			Driver->GetNetworkObjectList().AddSubObjectChannelReference(DormantActor, ReplicatedObject, this);
+		}
+#endif
 
 		// Flush the must be mapped GUIDs, the initialization may add them, but they're phantom and will be remapped when actually sending
 		if (UPackageMapClient* PackageMapClient = CastChecked<UPackageMapClient>(PackageMap))
@@ -4985,54 +5122,99 @@ void UNetConnection::DestroyIgnoredActor(AActor* Actor)
 	}
 }
 
-void UNetConnection::AddDormantReplicator(UObject* Object, const TSharedRef<FObjectReplicator>& Replicator)
+void UNetConnection::StoreDormantReplicator(AActor* OwnerActor, UObject* Object, const TSharedRef<FObjectReplicator>& ObjectReplicator)
 {
-	Replicator->ReleaseStrongReference();
-	DormantReplicatorMap.Add(Object, Replicator);
+	ObjectReplicator->ReleaseStrongReference();
+
+	if (ensureMsgf(OwnerActor, TEXT("StoreDormantReplicator cannot receive a null owner while storing %s"), *GetNameSafe(Object)))
+	{
+		DormantReplicatorSet.StoreReplicator(OwnerActor, Object, ObjectReplicator);
+	}
 }
 
-TSharedPtr<FObjectReplicator> UNetConnection::FindAndRemoveDormantReplicator(UObject* Object)
+TSharedPtr<FObjectReplicator> UNetConnection::FindAndRemoveDormantReplicator(AActor* OwnerActor, UObject* Object)
 {
-	FObjectKey Key(Object);
-	
-	if (DormantReplicatorMap.Contains(Key))
-	{
-		TSharedRef<FObjectReplicator> Ref = DormantReplicatorMap.FindAndRemoveChecked(Key);
+	const FObjectKey ObjectKey(Object);
 
+	TSharedPtr<FObjectReplicator> ReplicatorPtr = DormantReplicatorSet.FindAndRemoveReplicator(OwnerActor, Object);
+
+	if (ReplicatorPtr.IsValid())
+	{
 		// Only return the replicator if the object is still valid, otherwise just remove it from the cache and allow the caller to create a new one
-		if (UObject* StrongPtr = Ref->GetWeakObjectPtr().Get())
+		if (UObject* StrongPtr = ReplicatorPtr->GetWeakObjectPtr().Get())
 		{
 			// Reassign the strong pointer for GC/faster resolve
-			Ref->SetObject(StrongPtr);
-			return Ref;
+			ReplicatorPtr->SetObject(StrongPtr);
+		}
+		else
+		{
+			ReplicatorPtr.Reset();
 		}
 	}
-	return {};
+
+	return ReplicatorPtr;
+}
+
+void UNetConnection::RemoveDormantReplicator(AActor* Actor, UObject* Object)
+{
+	const FObjectKey ObjectKey = Object;
+
+	const bool bWasStored = DormantReplicatorSet.RemoveStoredReplicator(Actor, ObjectKey);
+
+#if UE_REPLICATED_OBJECT_REFCOUNTING
+	// If this is a subobject (and not the main actor) remove the reference
+	if (bWasStored && Object != Actor)
+	{
+		if (Driver)
+		{
+			Driver->GetNetworkObjectList().RemoveSubObjectChannelReference(Actor, Object, this);
+		}
+	}
+#endif
+}
+
+void UNetConnection::ExecuteOnAllDormantReplicators(UE::Net::FExecuteForEachDormantReplicator ExecuteFunction)
+{
+	DormantReplicatorSet.ForEachDormantReplicator(ExecuteFunction);
+}
+
+void UNetConnection::ExecuteOnAllDormantReplicatorsOfActor(AActor* OwnerActor, UE::Net::FExecuteForEachDormantReplicator ExecuteFunction)
+{
+	DormantReplicatorSet.ForEachDormantReplicatorOfActor(OwnerActor, ExecuteFunction);	
 }
 
 void UNetConnection::CleanupDormantReplicatorsForActor(AActor* Actor)
 {
 	if (Actor)
 	{
-		// TODO: The DormantReplicator map contains not only replicated components, but any subobjects
-		// that are replicated (such as Gameplay Attribute Sets).
-		// That means we are likely leaking entries here (at least until CleanupStaleDormantReplicators is called).
-		DormantReplicatorMap.Remove(Actor);
-		for (UActorComponent* const Component : Actor->GetReplicatedComponents())
+#if UE_REPLICATED_OBJECT_REFCOUNTING
+		if (Driver)
 		{
-			DormantReplicatorMap.Remove(Component);
+			TArray<TWeakObjectPtr<UObject>, TInlineAllocator<16>> RemovedObjects;
+			auto ExecuteFunction = [&RemovedObjects](FObjectKey OwnerActorKey, FObjectKey ObjectKey, const TSharedRef<FObjectReplicator>& ReplicatorRef)
+			{
+				// If it's the replicator of a subobject and not the main actor
+				if (OwnerActorKey != ObjectKey)
+				{
+					RemovedObjects.Add(ReplicatorRef->GetWeakObjectPtr());
+				}
+			};
+
+			DormantReplicatorSet.ForEachDormantReplicatorOfActor(Actor, ExecuteFunction);
+
+			Driver->GetNetworkObjectList().RemoveMultipleSubObjectChannelReference(Actor, RemovedObjects, this);
 		}
+#endif
+
+		DormantReplicatorSet.CleanupAllReplicatorsOfActor(Actor);
 	}
 }
 
 void UNetConnection::CleanupStaleDormantReplicators()
 {
-	for (auto It = DormantReplicatorMap.CreateIterator(); It; ++It)
+	if (ensure(Driver))	
 	{
-		if (!It.Value()->GetWeakObjectPtr().IsValid())
-		{
-			It.RemoveCurrent();
-		}
+		DormantReplicatorSet.CleanupStaleObjects(Driver->GetNetworkObjectList(), this);
 	}
 }
 
@@ -5217,13 +5399,35 @@ void UNetConnection::NotifyActorChannelCleanedUp(UActorChannel* Channel, EChanne
 
 void UNetConnection::SetNetVersionsOnArchive(FArchive& Ar) const
 {
-	Ar.SetEngineNetVer(EngineNetworkProtocolVersion);
-	Ar.SetGameNetVer(GameNetworkProtocolVersion);
+	Ar.SetEngineNetVer(GetNetworkCustomVersion(FEngineNetworkCustomVersion::Guid));
+	Ar.SetGameNetVer(GetNetworkCustomVersion(FGameNetworkCustomVersion::Guid));
+
+	const FCustomVersionArray& AllVersions = NetworkCustomVersions.GetAllVersions();
+	for (const FCustomVersion& Version : AllVersions)
+	{
+		Ar.SetCustomVersion(Version.Key, Version.Version, Version.GetFriendlyName());
+	}
+
 	Ar.SetUEVer(PackageVersionUE);
 	Ar.SetLicenseeUEVer(PackageVersionLicenseeUE);
 	// Base archives only store FEngineVersionBase, but net connections store FEngineVersion.
 	// This will slice off the branch name and anything else stored in FEngineVersion.
 	Ar.SetEngineVer(EngineVersion);
+}
+
+uint32 UNetConnection::GetNetworkCustomVersion(const FGuid& VersionGuid) const
+{
+	const FCustomVersion* CustomVer = NetworkCustomVersions.GetVersion(VersionGuid);
+	return CustomVer != nullptr ? CustomVer->Version : 0;
+}
+
+void UNetConnection::SetNetworkCustomVersions(const FCustomVersionContainer& CustomVersions)
+{
+	const FCustomVersionArray& AllVersions = CustomVersions.GetAllVersions();
+	for (const FCustomVersion& Version : AllVersions)
+	{
+		NetworkCustomVersions.SetVersion(Version.Key, Version.Version, Version.GetFriendlyName());
+	}
 }
 
 /*-----------------------------------------------------------------------------
@@ -5537,4 +5741,23 @@ void ConsumeAllChannelRecords(FWrittenChannelsRecord& WrittenChannelsRecord, Fun
 
 }
 
+/**
+ * FScopedRepContext
+ */
+
+FScopedRepContext::FScopedRepContext(UNetConnection* InConnection, AActor* InActor)
+	: Connection(InConnection)
+{
+	if (Connection)
+	{
+		check(!Connection->RepContextActor);
+		check(!Connection->RepContextLevel);
+
+		Connection->RepContextActor = InActor;
+		if (InActor)
+		{
+			Connection->RepContextLevel = InActor->GetLevel();
+		}
+	}
+}
 

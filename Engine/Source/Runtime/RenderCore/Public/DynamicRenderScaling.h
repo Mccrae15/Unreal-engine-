@@ -9,6 +9,7 @@
 #include "CoreTypes.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/AssertionMacros.h"
+#include "Stats/Stats.h"
 
 namespace DynamicRenderScaling
 {
@@ -40,7 +41,6 @@ struct RENDERCORE_API FHeuristicSettings final
 	static constexpr int32 kDefaultFractionQuantization = 0;
 	static constexpr int32 kDefaultUpperBoundQuantization = 0;
 
-
 	EHeuristicModel Model = EHeuristicModel::Unknown;
 	bool bModelScalesWithPrimaryScreenPercentage = false;
 
@@ -53,18 +53,17 @@ struct RENDERCORE_API FHeuristicSettings final
 	int32 FractionQuantization       = kDefaultFractionQuantization;
 	int32 UpperBoundQuantization     = kDefaultUpperBoundQuantization;
 
-
 	/** Returns whether the heuristic is enabled or not. */
 	bool IsEnabled() const;
 
 	/** Returns the desired GPU cost to be targeted to have head room left to not go over budget. */
-	float GetTargetedMs() const;
+	float GetTargetedMs(float BudgetMs) const;
 
 	/** Returns how much the GPU cost scales for a given ResolutionFraction. */
 	float EstimateCostScale(float ResolutionFraction) const;
 
 	/** Returns how much the ResolutionFraction should scale for a GPU timing to fit to target. */
-	float EstimateResolutionFactor(float TimingMs) const;
+	float EstimateResolutionFactor(float TargetMs, float TimingMs) const;
 
 	/** Returns how much the GPU time should scale between two different resolution fraction. */
 	float EstimateTimeFactor(float CurrentResolutionFraction, float NewResolutionFraction) const;
@@ -114,6 +113,33 @@ public:
 		return BudgetId == Other.BudgetId;
 	}
 
+#if STATS
+	inline const TStatId& GetStatId_TargetMs() const
+	{
+		return StatId_TargetMs;
+	}
+
+	inline const TStatId& GetStatId_MeasuredMs() const
+	{
+		return StatId_MeasuredMs;
+	}
+
+	inline const TStatId& GetStatId_MinScaling() const
+	{
+		return StatId_MinScaling;
+	}
+
+	inline const TStatId& GetStatId_MaxScaling() const
+	{
+		return StatId_MaxScaling;
+	}
+
+	inline const TStatId& GetStatId_CurrentScaling() const
+	{
+		return StatId_CurrentScaling;
+	}
+#endif
+
 private:
 	const TCHAR* Name;
 	TArray<char> AnsiName;
@@ -121,6 +147,14 @@ private:
 	TLinkedList<FBudget*> GlobalListLink;
 	FHeuristicSettings CachedSettings;
 	int32 BudgetId = 0;
+
+#if STATS
+	TStatId StatId_TargetMs;
+	TStatId StatId_MeasuredMs;
+	TStatId StatId_MinScaling;
+	TStatId StatId_MaxScaling;
+	TStatId StatId_CurrentScaling;
+#endif
 
 	UE_NONCOPYABLE(FBudget);
 

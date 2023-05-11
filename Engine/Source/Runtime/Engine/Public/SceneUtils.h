@@ -11,10 +11,18 @@
 #pragma once
 
 #include "UObject/ObjectMacros.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "ProfilingDebugging/RealtimeGPUProfiler.h"
 #include "RHIDefinitions.h"
+#endif
+#include "RHIFeatureLevel.h"
+
+#include "SceneUtils.generated.h"
 
 ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogSceneUtils, Log, All);
+
+class FRHICommandListImmediate;
+enum EShaderPlatform : uint16;
 
 enum class EShadingPath
 {
@@ -32,7 +40,7 @@ enum class EMobileHDRMode
 
 /** Used by rendering project settings. */
 UENUM()
-enum EAntiAliasingMethod
+enum EAntiAliasingMethod : int
 {
 	AAM_None UMETA(DisplayName = "None"),
 	AAM_FXAA UMETA(DisplayName = "Fast Approximate Anti-Aliasing (FXAA)"),

@@ -2,12 +2,16 @@
 
 #include "SmartObjectsEditorModule.h"
 
+#include "PropertyEditorModule.h"
 #include "SmartObjectComponent.h"
 #include "SmartObjectComponentVisualizer.h"
 #include "SmartObjectAssetTypeActions.h"
 #include "SmartObjectEditorStyle.h"
 #include "UnrealEdGlobals.h"
 #include "Editor/UnrealEdEngine.h"
+#include "Customizations/SmartObjectSlotDefinitionDetails.h"
+#include "Customizations/SmartObjectSlotReferenceDetails.h"
+#include "Customizations/SmartObjectDefinitionDetails.h"
 
 #define LOCTEXT_NAMESPACE "SmartObjects"
 
@@ -40,6 +44,14 @@ void FSmartObjectsEditorModule::StartupModule()
 	// Register action
 	AssetTools.RegisterAssetTypeActions(AssetActions.ToSharedRef());
 
+	// Register the details customizer
+	FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
+	PropertyModule.RegisterCustomPropertyTypeLayout("SmartObjectSlotDefinition", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FSmartObjectSlotDefinitionDetails::MakeInstance));
+	PropertyModule.RegisterCustomPropertyTypeLayout("SmartObjectSlotReference", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FSmartObjectSlotReferenceDetails::MakeInstance));
+	PropertyModule.RegisterCustomClassLayout("SmartObjectDefinition", FOnGetDetailCustomizationInstance::CreateStatic(&FSmartObjectDefinitionDetails::MakeInstance));
+
+	PropertyModule.NotifyCustomizationModuleChanged();
+
 	// Register component visualizer for SmartObjectComponent
 	RegisterComponentVisualizer(USmartObjectComponent::StaticClass()->GetFName(), MakeShareable(new FSmartObjectComponentVisualizer));
 }
@@ -60,6 +72,15 @@ void FSmartObjectsEditorModule::ShutdownModule()
 	}
 	AssetTypeActions.Empty();
 
+	// Unregister the details customization
+	if (FModuleManager::Get().IsModuleLoaded("PropertyEditor"))
+	{
+		FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
+		PropertyModule.UnregisterCustomPropertyTypeLayout("SmartObjectSlotDefinition");
+		PropertyModule.UnregisterCustomPropertyTypeLayout("SmartObjectSlotReference");
+		PropertyModule.UnregisterCustomClassLayout("SmartObjectDefinition");
+	}
+	
 	// Unregister all component visualizers
 	if (GEngine)
 	{

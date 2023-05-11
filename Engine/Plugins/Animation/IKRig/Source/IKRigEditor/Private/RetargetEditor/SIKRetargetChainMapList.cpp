@@ -17,6 +17,7 @@
 #include "Misc/TextFilterExpressionEvaluator.h"
 #include "Widgets/Input/SSearchBox.h"
 #include "Retargeter/IKRetargetSettings.h"
+#include "RigEditor/IKRigController.h"
 
 #define LOCTEXT_NAMESPACE "SIKRigRetargetChains"
 
@@ -170,7 +171,7 @@ void SIKRetargetChainMapRow::OnSourceChainComboSelectionChanged(TSharedPtr<FStri
 	}
 
 	const FName SourceChainName = FName(*InName.Get());
-	RetargeterController->SetSourceChainForTargetChain(ChainMapElement.Pin()->ChainMap.Get(), SourceChainName);
+	RetargeterController->SetSourceChain(SourceChainName, ChainMapElement.Pin()->ChainMap->TargetChain);
 }
 
 FText SIKRetargetChainMapRow::GetSourceChainName() const
@@ -198,7 +199,8 @@ FText SIKRetargetChainMapRow::GetTargetIKGoalName() const
 		return FText(); 
 	}
 
-	const FBoneChain* Chain = IKRig->GetRetargetChainByName(ChainMapElement.Pin()->ChainMap->TargetChain);
+	const UIKRigController* RigController = UIKRigController::GetController(IKRig);
+	const FBoneChain* Chain = RigController->GetRetargetChainByName(ChainMapElement.Pin()->ChainMap->TargetChain);
 	if (!Chain)
 	{
 		return FText(); 
@@ -303,19 +305,6 @@ void SIKRetargetChainMapList::Construct(
 		.AutoHeight()
 		[
 			SNew(SHorizontalBox)
-
-			+SHorizontalBox::Slot()
-			.AutoWidth()
-			.VAlign(VAlign_Center)
-			.Padding(FMargin(6.f, 0.0))
-			[
-				SNew(SPositiveActionButton)
-				.Visibility(this, &SIKRetargetChainMapList::IsAutoMapButtonVisible)
-				.Icon(FAppStyle::Get().GetBrush("Icons.Refresh"))
-				.Text(LOCTEXT("AutoMapButtonLabel", "Auto-Map Chains"))
-				.ToolTipText(LOCTEXT("AutoMapButtonToolTip", "Automatically assign source chains based on fuzzy string match"))
-				.OnClicked(this, &SIKRetargetChainMapList::OnAutoMapButtonClicked)
-			]
 			
 			+SHorizontalBox::Slot()
 			.FillWidth(1.0f)
@@ -343,6 +332,25 @@ void SIKRetargetChainMapList::Construct(
 					SNew(SImage)
 					.Image(FAppStyle::Get().GetBrush("Icons.Settings"))
 					.ColorAndOpacity(FSlateColor::UseForeground())
+				]
+			]
+
+			+SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(FMargin(6.f, 0.0))
+			[
+				SNew(SComboButton)
+				.ComboButtonStyle(&FAppStyle::Get().GetWidgetStyle<FComboButtonStyle>("SimpleComboButton"))
+				.ForegroundColor(FSlateColor::UseStyle())
+				.ContentPadding(2.0f)
+				.Visibility(this, &SIKRetargetChainMapList::IsAutoMapButtonVisible)
+				.ToolTipText(LOCTEXT("AutoMapButtonToolTip", "Automatically assign source chains based on matching rule."))
+				.OnGetMenuContent( this, &SIKRetargetChainMapList::CreateChainMapMenuWidget )
+				.HasDownArrow(true)
+				.ButtonContent()
+				[
+					SNew(STextBlock).Text(LOCTEXT("AutoMapButtonLabel", "Auto-Map Chains"))
 				]
 			]
 		]
@@ -469,7 +477,8 @@ void SIKRetargetChainMapList::RefreshView()
 			return false;
 		}
 
-		const FBoneChain* Chain = IKRig->GetRetargetChainByName(TargetChainName);
+		const UIKRigController* RigController = UIKRigController::GetController(IKRig);
+		const FBoneChain* Chain = RigController->GetRetargetChainByName(TargetChainName);
 		if (!Chain)
 		{
 			return false;
@@ -483,7 +492,7 @@ void SIKRetargetChainMapList::RefreshView()
 
 	// refresh items
 	ListViewItems.Reset();
-	const TArray<TObjectPtr<URetargetChainSettings>>& ChainMappings = AssetController->GetChainMappings();
+	const TArray<URetargetChainSettings*>& ChainMappings = AssetController->GetAllChainSettings();
 	for (const TObjectPtr<URetargetChainSettings> ChainMap : ChainMappings)
 	{
 		// apply text filter to items
@@ -641,29 +650,126 @@ void SIKRetargetChainMapList::OnItemClicked(TSharedPtr<FRetargetChainMapElement>
 	EditorController.Pin()->EditChainSelection(SelectedChains, ESelectionEdit::Replace, bEditFromChainsView);
 }
 
+TSharedRef<SWidget> SIKRetargetChainMapList::CreateChainMapMenuWidget()
+{
+	const FUIAction MapAllByFuzzyNameAction = FUIAction(
+		FExecuteAction::CreateLambda([this]
+		{
+			constexpr bool bForceRemap = true;
+			AutoMapChains(EAutoMapChainType::Fuzzy, bForceRemap);
+		}),
+		FCanExecuteAction(), FIsActionChecked());
+	
+	const FUIAction MapAllByExactNameAction = FUIAction(
+		FExecuteAction::CreateLambda([this]
+		{
+			constexpr bool bForceRemap = true;
+			AutoMapChains(EAutoMapChainType::Exact, bForceRemap);
+		}),
+		FCanExecuteAction(), FIsActionChecked());
+
+	const FUIAction MapUnmappedByExactNameAction = FUIAction(
+		FExecuteAction::CreateLambda([this]
+		{
+			constexpr bool bForceRemap = false;
+			AutoMapChains(EAutoMapChainType::Exact, bForceRemap);
+		}),
+		FCanExecuteAction(), FIsActionChecked());
+
+	const FUIAction MapUnmappedByFuzzyNameAction = FUIAction(
+		FExecuteAction::CreateLambda([this]
+		{
+			constexpr bool bForceRemap = false;
+			AutoMapChains(EAutoMapChainType::Fuzzy, bForceRemap);
+		}),
+		FCanExecuteAction(), FIsActionChecked());
+
+	const FUIAction ClearAllMappingsAction = FUIAction(
+		FExecuteAction::CreateLambda([this]
+		{
+			constexpr bool bForceRemap = true;
+			AutoMapChains(EAutoMapChainType::Clear, bForceRemap);
+		}),
+		FCanExecuteAction(), FIsActionChecked());
+	
+	static constexpr bool CloseAfterSelection = true;
+	FMenuBuilder MenuBuilder(CloseAfterSelection, CommandList);
+
+	MenuBuilder.BeginSection("Auto-Map Chains Fuzzy", LOCTEXT("FuzzyNameSection", "Fuzzy Name Matching"));
+
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("MapAllByNameFuzzyLabel", "Map All (Fuzzy)"),
+		LOCTEXT("MapAllByNameFuzzyTooltip", "Map all chains to the source chain with the closest name (not necessarily exact)."),
+		FSlateIcon(),
+		MapAllByFuzzyNameAction,
+		NAME_None,
+		EUserInterfaceActionType::Button);
+
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("MapMissingByNameFuzzyLabel", "Map Only Empty (Fuzzy)"),
+		LOCTEXT("MapMissingByNameFuzzyTooltip", "Map all unmapped chains to the source chain with the closest name (not necessarily exact)."),
+		FSlateIcon(),
+		MapUnmappedByFuzzyNameAction,
+		NAME_None,
+		EUserInterfaceActionType::Button);
+
+	MenuBuilder.EndSection();
+	MenuBuilder.BeginSection("Auto-Map Chains Exact", LOCTEXT("ExactNameSection", "Exact Name Matching"));
+
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("MapAllByNameExactLabel", "Map All (Exact)"),
+		LOCTEXT("MapAllByNameExactTooltip", "Map all chains with identical name. If no match found, does not change mapping."),
+		FSlateIcon(),
+		MapAllByExactNameAction,
+		NAME_None,
+		EUserInterfaceActionType::Button);
+	
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("MapMissingByNameExactLabel", "Map Only Empty (Exact)"),
+		LOCTEXT("MapMissingByNameExactTooltip", "Map unmapped chains using identical name. If no match found, does not change mapping."),
+		FSlateIcon(),
+		MapUnmappedByExactNameAction,
+		NAME_None,
+		EUserInterfaceActionType::Button);
+
+	MenuBuilder.EndSection();
+	MenuBuilder.BeginSection("Clear", LOCTEXT("ClearMapSection", "Clear All"));
+	
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("ClearMapLabel", "Clear All Mappings"),
+		LOCTEXT("ClearMapTooltip", "Map all chains to None."),
+		FSlateIcon(),
+		ClearAllMappingsAction,
+		NAME_None,
+		EUserInterfaceActionType::Button);
+
+	MenuBuilder.EndSection();
+	
+	return MenuBuilder.MakeWidget();
+}
+
 EVisibility SIKRetargetChainMapList::IsAutoMapButtonVisible() const
 {
 	return IsChainMapEnabled() ? EVisibility::Visible : EVisibility::Hidden;
 }
 
-FReply SIKRetargetChainMapList::OnAutoMapButtonClicked() const
+void SIKRetargetChainMapList::AutoMapChains(const EAutoMapChainType AutoMapType, const bool bForceRemap)
 {
 	const TSharedPtr<FIKRetargetEditorController> Controller = EditorController.Pin();
 	if (!Controller.IsValid())
 	{
-		return FReply::Unhandled();
+		return;
 	}
 	
 	UIKRetargeterController* RetargeterController = GetRetargetController();
 	if (!RetargeterController)
 	{
-		return FReply::Unhandled();
+		return;
 	}
 
 	Controller->ClearOutputLog();
-	RetargeterController->CleanChainMapping();
-	RetargeterController->AutoMapChains();
-	return FReply::Handled();
+	RetargeterController->AutoMapChains(AutoMapType, bForceRemap);
+	Controller->HandleRetargeterNeedsInitialized();
 }
 
 FReply SIKRetargetChainMapList::OnGlobalSettingsButtonClicked() const
@@ -710,5 +816,5 @@ FReply SIKRetargetChainMapList::OnRootSettingsButtonClicked() const
 }
 
 
-
 #undef LOCTEXT_NAMESPACE
+

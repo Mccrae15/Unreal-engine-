@@ -60,9 +60,6 @@ void FIKRigEditorToolkit::InitAssetEditor(
 	const FPersonaModule& PersonaModule = FModuleManager::LoadModuleChecked<FPersonaModule>("Persona");
 	PersonaToolkit = PersonaModule.CreatePersonaToolkit(IKRigAsset, PersonaToolkitArgs);
 
-	const TSharedRef<IAssetFamily> AssetFamily = PersonaModule.CreatePersonaAssetFamily(IKRigAsset);
-	AssetFamily->RecordAssetOpened(FAssetData(IKRigAsset));
-
 	static constexpr bool bCreateDefaultStandaloneMenu = true;
 	static constexpr bool bCreateDefaultToolbar = true;
 	FAssetEditorToolkit::InitAssetEditor(
@@ -74,15 +71,15 @@ void FIKRigEditorToolkit::InitAssetEditor(
 		bCreateDefaultToolbar, 
 		IKRigAsset);
 
-	AddApplicationMode(
-		IKRigEditorModes::IKRigEditorMode,
-		MakeShareable(new FIKRigMode(SharedThis(this), PersonaToolkit->GetPreviewScene())));
+	TSharedRef<FIKRigMode> IKRigEditMode = MakeShareable(new FIKRigMode(SharedThis(this), PersonaToolkit->GetPreviewScene()));
+	AddApplicationMode(IKRigEditorModes::IKRigEditorMode, IKRigEditMode);
 
 	SetCurrentMode(IKRigEditorModes::IKRigEditorMode);
 
 	GetEditorModeManager().SetDefaultMode(FIKRigEditMode::ModeName);
-	GetEditorModeManager().ActivateMode(FIKRigEditMode::ModeName);
-	static_cast<FIKRigEditMode*>(GetEditorModeManager().GetActiveMode(FIKRigEditMode::ModeName))->SetEditorController(EditorController);
+	GetEditorModeManager().ActivateDefaultMode();
+	FIKRigEditMode* EditMode = GetEditorModeManager().GetActiveModeTyped<FIKRigEditMode>(FIKRigEditMode::ModeName);
+	EditMode->SetEditorController(EditorController);
 
 	ExtendToolbar();
 	RegenerateMenusAndToolbars();
@@ -192,16 +189,12 @@ void FIKRigEditorToolkit::HandleOnPreviewSceneSettingsCustomized(IDetailLayoutBu
 
 void FIKRigEditorToolkit::PostUndo(bool bSuccess)
 {
-	EditorController->ClearOutputLog();
 	EditorController->AssetController->BroadcastNeedsReinitialized();
-	EditorController->RefreshAllViews();
 }
 
 void FIKRigEditorToolkit::PostRedo(bool bSuccess)
 {
-	EditorController->ClearOutputLog();
 	EditorController->AssetController->BroadcastNeedsReinitialized();
-	EditorController->RefreshAllViews();
 }
 
 void FIKRigEditorToolkit::HandlePreviewSceneCreated(const TSharedRef<IPersonaPreviewScene>& InPersonaPreviewScene)
@@ -220,12 +213,11 @@ void FIKRigEditorToolkit::HandlePreviewSceneCreated(const TSharedRef<IPersonaPre
 	EditorController->AnimInstance = AnimInstance;
 	AnimInstance->SetIKRigAsset(EditorController->AssetController->GetAsset());
 	EditorController->SkelMeshComponent->PreviewInstance = AnimInstance;
-	EditorController->OnIKRigNeedsInitialized(EditorController->AssetController->GetAsset());
 	AnimInstance->InitializeAnimation();
 
 	// set the skeletal mesh on the component
 	// NOTE: this must be done AFTER setting the AnimInstance so that the correct root anim node is loaded
-	USkeletalMesh* Mesh = EditorController->AssetController->GetAsset()->GetPreviewMesh();
+	USkeletalMesh* Mesh = EditorController->AssetController->GetSkeletalMesh();
 	EditorController->SkelMeshComponent->SetSkeletalMesh(Mesh);
 
 	// apply mesh to the preview scene

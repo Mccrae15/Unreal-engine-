@@ -1,23 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Misc/LevelSequenceEditorSpawnRegister.h"
-#include "Components/ActorComponent.h"
-#include "GameFramework/Actor.h"
-#include "Engine/Blueprint.h"
-#include "MovieScene.h"
 #include "Modules/ModuleManager.h"
-#include "MovieSceneSequence.h"
-#include "AssetRegistry/AssetData.h"
-#include "Engine/Selection.h"
-#include "ActorFactories/ActorFactory.h"
-#include "Editor.h"
 #include "ISequencer.h"
 #include "LevelEditor.h"
-#include "AssetSelection.h"
 #include "EntitySystem/MovieSceneSpawnablesSystem.h"
 #include "Evaluation/MovieSceneEvaluationTemplateInstance.h"
-#include "Sections/MovieScene3DTransformSection.h"
+#include "MovieSceneSpawnable.h"
 #include "UObject/ObjectSaveContext.h"
+#include "Selection.h"
+#include "TransformData.h"
 
 #define LOCTEXT_NAMESPACE "LevelSequenceEditorSpawnRegister"
 
@@ -262,7 +254,12 @@ void FLevelSequenceEditorSpawnRegister::OnObjectModified(UObject* ModifiedObject
 		ModifiedObject = ModifiedObject->GetOuter();
 	}
 
-	if (TrackedState)
+	// 
+	// When the register is cleaning itself up, there's no need to mark the sequence package dirty because spawnables are just getting removed.
+	// This scenario can happen if SpawnableA is attached to SpawnableB. When Restore State occurs, SpawnableB is destroyed, which causes 
+	// SpawnableA to be marked as modified, resulting in marking the sequencer package dirty without this check. 
+	//
+	if (TrackedState && !bCleaningUp)
 	{
 		TrackedState->bHasBeenModified = true;
 

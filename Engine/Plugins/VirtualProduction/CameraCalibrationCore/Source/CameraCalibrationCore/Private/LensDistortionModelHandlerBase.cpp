@@ -4,7 +4,9 @@
 
 #include "Algo/MaxElement.h"
 #include "CameraCalibrationSettings.h"
+#include "Engine/World.h"
 #include "Kismet/KismetRenderingLibrary.h"
+#include "MaterialShared.h"
 
 bool FLensDistortionState::operator==(const FLensDistortionState& Other) const
 {
@@ -40,6 +42,17 @@ void ULensDistortionModelHandlerBase::SetDistortionState(const FLensDistortionSt
 	}	
 }
 
+void ULensDistortionModelHandlerBase::SetCameraFilmback(const FCameraFilmbackSettings& InCameraFilmback)
+{
+	if (CameraFilmback != InCameraFilmback)
+	{
+		CameraFilmback = InCameraFilmback;
+		InterpretDistortionParameters();
+
+		bIsDirty = true;
+	}
+}
+
 void ULensDistortionModelHandlerBase::PostInitProperties()
 {
 	Super::PostInitProperties();
@@ -54,8 +67,7 @@ void ULensDistortionModelHandlerBase::PostInitProperties()
 	{
 		if (LensModelClass)
 		{
-			const uint32 NumDistortionParameters = LensModelClass->GetDefaultObject<ULensModel>()->GetNumParameters();
-			CurrentState.DistortionInfo.Parameters.Init(0.0f, NumDistortionParameters);
+			LensModelClass->GetDefaultObject<ULensModel>()->GetDefaultParameterArray(CurrentState.DistortionInfo.Parameters);
 		}
 
 		const FIntPoint DisplacementMapResolution = GetDefault<UCameraCalibrationSettings>()->GetDisplacementMapResolution();
@@ -70,6 +82,7 @@ void ULensDistortionModelHandlerBase::CreateDisplacementMaps(const FIntPoint Dis
 	{
 		DisplacementMap->RenderTargetFormat = ETextureRenderTargetFormat::RTF_RG16f;
 		DisplacementMap->ClearColor = FLinearColor::Black;
+		DisplacementMap->Filter = TF_Bilinear;
 		DisplacementMap->AddressX = TA_Clamp;
 		DisplacementMap->AddressY = TA_Clamp;
 		DisplacementMap->bAutoGenerateMips = false;
@@ -231,7 +244,9 @@ bool ULensDistortionModelHandlerBase::IsDisplacementMapMaterialReady(UMaterialIn
 			return true;
 		}
 
+#if WITH_EDITOR
 		MaterialResource->SubmitCompileJobs_GameThread(EShaderCompileJobPriority::ForceLocal);
+#endif
 
 		return MaterialResource->IsGameThreadShaderMapComplete();
 	}

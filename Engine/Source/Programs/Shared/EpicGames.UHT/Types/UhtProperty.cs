@@ -400,6 +400,11 @@ namespace EpicGames.UHT.Types
 		/// True if the property should codegen as an array
 		/// </summary>
 		IsRigVMArray = 1 << 14,
+		
+		/// <summary>
+		/// True if the property should codegen as a byte enumeration
+		/// </summary>
+		IsRigVMEnumAsByte = 1 << 15,
 	}
 
 	/// <summary>
@@ -2213,7 +2218,7 @@ namespace EpicGames.UHT.Types
 			if (hash == 0)
 			{
 				string type = referingType is UhtProperty ? "property" : "object";
-				referingType.LogWarning($"The {type} \"{referingType.SourceName}\" references type \"{obj.SourceName}\" but the code generation hash is zero");
+				referingType.LogError($"The {type} \"{referingType.SourceName}\" references type \"{obj.SourceName}\" but the code generation hash is zero.  Check for circular dependencies or missing includes.");
 			}
 			builder.Append(context.GetTypeHash(obj));
 			return builder;

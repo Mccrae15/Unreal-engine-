@@ -8,19 +8,17 @@ Notes:
 =============================================================================*/
 
 #include "IpConnection.h"
+#include "Async/TaskGraphInterfaces.h"
 #include "IpNetDriver.h"
-#include "SocketSubsystem.h"
 #include "Engine/Engine.h"
-#include "Engine/PendingNetGame.h"
 
-#include "IPAddress.h"
 #include "Sockets.h"
 #include "Net/NetworkProfiler.h"
 #include "Net/DataChannel.h"
 
 #include "Net/Core/Misc/PacketAudit.h"
-#include "Misc/ScopeExit.h"
 #include "NetAddressResolution.h"
+#include "PacketHandler.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(IpConnection)
 

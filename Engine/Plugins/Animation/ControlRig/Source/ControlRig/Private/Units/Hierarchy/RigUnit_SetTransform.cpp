@@ -6,6 +6,7 @@
 #include "Units/Execution/RigUnit_PrepareForExecution.h"
 #include "Units/Execution/RigUnit_BeginExecution.h"
 #include "Units/Hierarchy/RigUnit_SetControlOffset.h"
+#include "Math/ControlRigMathLibrary.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_SetTransform)
 
@@ -27,103 +28,87 @@ FRigUnit_SetTransform_Execute()
 
 	if (URigHierarchy* Hierarchy = ExecuteContext.Hierarchy)
 	{
-		switch (Context.State)
+		if (!CachedIndex.UpdateCache(Item, Hierarchy))
 		{
-			case EControlRigState::Init:
-			{
-				CachedIndex.Reset();
-
-				return;
-			}
-			case EControlRigState::Update:
-			{
-				if (!CachedIndex.UpdateCache(Item, Hierarchy))
-				{
-					UE_CONTROLRIG_RIGUNIT_REPORT_WARNING(TEXT("Item '%s' is not valid."), *Item.ToString());
-				}
-				else
-				{
+			UE_CONTROLRIG_RIGUNIT_REPORT_WARNING(TEXT("Item '%s' is not valid."), *Item.ToString());
+		}
+		else
+		{
 #if WITH_EDITOR
-					if(bInitial)
-					{
-						// provide some user feedback when changing initial transforms during forward solve
-						if(RigVMExecuteContext.GetEventName() == FRigUnit_BeginExecution::EventName)
-						{
-							UE_CONTROLRIG_RIGUNIT_LOG_MESSAGE(TEXT("Changing initial transforms during %s is not recommended."), *RigVMExecuteContext.GetEventName().ToString());
-						}
-					}
+			if(bInitial)
+			{
+				// provide some user feedback when changing initial transforms during forward solve
+				if(ExecuteContext.GetEventName() == FRigUnit_BeginExecution::EventName)
+				{
+					UE_CONTROLRIG_RIGUNIT_LOG_MESSAGE(TEXT("Changing initial transforms during %s is not recommended."), *ExecuteContext.GetEventName().ToString());
+				}
+			}
 #endif
 
-					// for controls - set the control offset transform instead
-					if(bInitial && (CachedIndex.GetKey().Type == ERigElementType::Control))
+			// for controls - set the control offset transform instead
+			if(bInitial && (CachedIndex.GetKey().Type == ERigElementType::Control))
+			{
+				FTransform TransformMutable = Value;
+				FRigUnit_SetControlOffset::StaticExecute(ExecuteContext, CachedIndex.GetKey().Name, TransformMutable, Space, CachedIndex);
+				
+				if (ExecuteContext.GetEventName() == FRigUnit_PrepareForExecution::EventName)
+				{
+					Hierarchy->SetLocalTransformByIndex(CachedIndex, FTransform::Identity, true, bPropagateToChildren);
+					Hierarchy->SetLocalTransformByIndex(CachedIndex, FTransform::Identity, false, bPropagateToChildren);
+				}
+				return;
+			}
+			
+			FTransform WeightedTransform = Value;
+			if (Weight < 1.f - SMALL_NUMBER)
+			{
+				FTransform PreviousTransform = WeightedTransform;
+				switch (Space)
+				{
+					case ERigVMTransformSpace::GlobalSpace:
 					{
-						FTransform TransformMutable = Value;
-						FRigUnit_SetControlOffset::StaticExecute(RigVMExecuteContext, CachedIndex.GetKey().Name, TransformMutable, Space, CachedIndex, ExecuteContext, Context);
-						
-						if (ExecuteContext.GetEventName() == FRigUnit_PrepareForExecution::EventName)
-						{
-							Hierarchy->SetLocalTransformByIndex(CachedIndex, FTransform::Identity, true, bPropagateToChildren);
-							Hierarchy->SetLocalTransformByIndex(CachedIndex, FTransform::Identity, false, bPropagateToChildren);
-						}
-						return;
+						PreviousTransform = Hierarchy->GetGlobalTransformByIndex(CachedIndex, bInitial);
+						break;
 					}
-					
-					FTransform WeightedTransform = Value;
-					if (Weight < 1.f - SMALL_NUMBER)
+					case ERigVMTransformSpace::LocalSpace:
 					{
-						FTransform PreviousTransform = WeightedTransform;
-						switch (Space)
-						{
-							case EBoneGetterSetterMode::GlobalSpace:
-							{
-								PreviousTransform = Hierarchy->GetGlobalTransformByIndex(CachedIndex, bInitial);
-								break;
-							}
-							case EBoneGetterSetterMode::LocalSpace:
-							{
-								PreviousTransform = Hierarchy->GetLocalTransformByIndex(CachedIndex, bInitial);
-								break;
-							}
-							default:
-							{
-								break;
-							}
-						}
-						WeightedTransform = FControlRigMathLibrary::LerpTransform(PreviousTransform, WeightedTransform, Weight);
+						PreviousTransform = Hierarchy->GetLocalTransformByIndex(CachedIndex, bInitial);
+						break;
 					}
-
-					switch (Space)
+					default:
 					{
-						case EBoneGetterSetterMode::GlobalSpace:
-						{
-							Hierarchy->SetGlobalTransformByIndex(CachedIndex, WeightedTransform, bInitial, bPropagateToChildren);
-
-							if (bInitial && ExecuteContext.GetEventName() == FRigUnit_PrepareForExecution::EventName)
-							{
-								Hierarchy->SetGlobalTransformByIndex(CachedIndex, WeightedTransform, false, bPropagateToChildren);
-							}
-							break;
-						}
-						case EBoneGetterSetterMode::LocalSpace:
-						{
-							Hierarchy->SetLocalTransformByIndex(CachedIndex, WeightedTransform, bInitial, bPropagateToChildren);
-
-							if (bInitial && ExecuteContext.GetEventName() == FRigUnit_PrepareForExecution::EventName)
-							{
-								Hierarchy->SetLocalTransformByIndex(CachedIndex, WeightedTransform, false, bPropagateToChildren);
-							}
-							break;
-						}
-						default:
-						{
-							break;
-						}
+						break;
 					}
 				}
+				WeightedTransform = FControlRigMathLibrary::LerpTransform(PreviousTransform, WeightedTransform, Weight);
 			}
-			default:
+
+			switch (Space)
 			{
-				break;
+				case ERigVMTransformSpace::GlobalSpace:
+				{
+					Hierarchy->SetGlobalTransformByIndex(CachedIndex, WeightedTransform, bInitial, bPropagateToChildren);
+
+					if (bInitial && ExecuteContext.GetEventName() == FRigUnit_PrepareForExecution::EventName)
+					{
+						Hierarchy->SetGlobalTransformByIndex(CachedIndex, WeightedTransform, false, bPropagateToChildren);
+					}
+					break;
+				}
+				case ERigVMTransformSpace::LocalSpace:
+				{
+					Hierarchy->SetLocalTransformByIndex(CachedIndex, WeightedTransform, bInitial, bPropagateToChildren);
+
+					if (bInitial && ExecuteContext.GetEventName() == FRigUnit_PrepareForExecution::EventName)
+					{
+						Hierarchy->SetLocalTransformByIndex(CachedIndex, WeightedTransform, false, bPropagateToChildren);
+					}
+					break;
+				}
+				default:
+				{
+					break;
+				}
 			}
 		}
 	}
@@ -138,9 +123,9 @@ FString FRigUnit_SetTranslation::GetUnitLabel() const
 FRigUnit_SetTranslation_Execute()
 {
 	FTransform Transform = FTransform::Identity;
-	FRigUnit_GetTransform::StaticExecute(RigVMExecuteContext, Item, Space, bInitial, Transform, CachedIndex, Context);
+	FRigUnit_GetTransform::StaticExecute(ExecuteContext, Item, Space, bInitial, Transform, CachedIndex);
 	Transform.SetLocation(Value);
-	FRigUnit_SetTransform::StaticExecute(RigVMExecuteContext, Item, Space, bInitial, Transform, Weight, bPropagateToChildren, CachedIndex, ExecuteContext, Context);
+	FRigUnit_SetTransform::StaticExecute(ExecuteContext, Item, Space, bInitial, Transform, Weight, bPropagateToChildren, CachedIndex);
 }
 
 FString FRigUnit_SetRotation::GetUnitLabel() const
@@ -152,9 +137,9 @@ FString FRigUnit_SetRotation::GetUnitLabel() const
 FRigUnit_SetRotation_Execute()
 {
 	FTransform Transform = FTransform::Identity;
-	FRigUnit_GetTransform::StaticExecute(RigVMExecuteContext, Item, Space, bInitial, Transform, CachedIndex, Context);
+	FRigUnit_GetTransform::StaticExecute(ExecuteContext, Item, Space, bInitial, Transform, CachedIndex);
 	Transform.SetRotation(Value);
-	FRigUnit_SetTransform::StaticExecute(RigVMExecuteContext, Item, Space, bInitial, Transform, Weight, bPropagateToChildren, CachedIndex, ExecuteContext, Context);
+	FRigUnit_SetTransform::StaticExecute(ExecuteContext, Item, Space, bInitial, Transform, Weight, bPropagateToChildren, CachedIndex);
 }
 
 FString FRigUnit_SetScale::GetUnitLabel() const
@@ -166,15 +151,15 @@ FString FRigUnit_SetScale::GetUnitLabel() const
 FRigUnit_SetScale_Execute()
 {
 	FTransform Transform = FTransform::Identity;
-	FRigUnit_GetTransform::StaticExecute(RigVMExecuteContext, Item, Space, bInitial, Transform, CachedIndex, Context);
+	FRigUnit_GetTransform::StaticExecute(ExecuteContext, Item, Space, bInitial, Transform, CachedIndex);
 	Transform.SetScale3D(Scale);
-	FRigUnit_SetTransform::StaticExecute(RigVMExecuteContext, Item, Space, bInitial, Transform, Weight, bPropagateToChildren, CachedIndex, ExecuteContext, Context);
+	FRigUnit_SetTransform::StaticExecute(ExecuteContext, Item, Space, bInitial, Transform, Weight, bPropagateToChildren, CachedIndex);
 }
 
 
 FRigUnit_SetTransformArray_Execute()
 {
-	FRigUnit_SetTransformItemArray::StaticExecute(RigVMExecuteContext, Items.Keys, Space, bInitial, Transforms, Weight, bPropagateToChildren, CachedIndex, ExecuteContext, Context);
+	FRigUnit_SetTransformItemArray::StaticExecute(ExecuteContext, Items.Keys, Space, bInitial, Transforms, Weight, bPropagateToChildren, CachedIndex);
 }
 
 FRigVMStructUpgradeInfo FRigUnit_SetTransformArray::GetUpgradeInfo() const
@@ -208,6 +193,6 @@ FRigUnit_SetTransformItemArray_Execute()
 
 	for(int32 Index=0;Index<Items.Num();Index++)
 	{
-		FRigUnit_SetTransform::StaticExecute(RigVMExecuteContext, Items[Index], Space, bInitial, Transforms[Index], Weight, bPropagateToChildren, CachedIndex[Index], ExecuteContext, Context);
+		FRigUnit_SetTransform::StaticExecute(ExecuteContext, Items[Index], Space, bInitial, Transforms[Index], Weight, bPropagateToChildren, CachedIndex[Index]);
 	}
 }

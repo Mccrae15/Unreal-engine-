@@ -6,8 +6,12 @@
 
 #pragma once
 
+#include "LightSceneProxy.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "CoreMinimal.h"
 #include "SceneManagement.h"
+#endif
 
 class ULocalLightComponent;
 
@@ -63,6 +67,5 @@ protected:
 
 	float MaxDrawDistance;
 	float FadeRange;
-
 	float InverseExposureBlend;
 };

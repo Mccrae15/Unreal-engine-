@@ -120,7 +120,7 @@ public:
 	 *
 	 * @returns Size in bytes of array type.
 	 */
-	uint32 GetTypeSize() const
+	static constexpr uint32 GetTypeSize()
 	{
 		return sizeof(T*);
 	}
@@ -230,42 +230,6 @@ public:
 				(*this)[Index].Serialize(Ar, Owner, Index);
 			}
 		}
-	}
-
-	/**
-	 * Serialization operator for TIndirectArray.
-	 *
-	 * @param Ar Archive to serialize with.
-	 * @param A Array to serialize.
-	 * @returns Passing down serializing archive.
-	 */
-	friend FArchive& operator<<(FArchive& Ar, TIndirectArray& A)
-	{
-		A.CountBytes(Ar);
-		if (Ar.IsLoading())
-		{
-			// Load array.
-			int32 NewNum;
-			Ar << NewNum;
-			A.Empty(NewNum);
-			for (int32 Index = 0; Index < NewNum; Index++)
-			{
-				T* NewElement = new T;
-				Ar << *NewElement;
-				A.Add(NewElement);
-			}
-		}
-		else
-		{
-			// Save array.
-			int32 Num = A.Num();
-			Ar << Num;
-			for (int32 Index = 0; Index < Num; Index++)
-			{
-				Ar << A[Index];
-			}
-		}
-		return Ar;
 	}
 
 	/**
@@ -463,27 +427,39 @@ private:
 };
 
 
-template<typename T, typename Allocator>
-struct TContainerTraits<TIndirectArray<T, Allocator> >
-	: public TContainerTraitsBase<TIndirectArray<T, Allocator> >
+/**
+* Serialization operator for TIndirectArray.
+*
+* @param Ar Archive to serialize with.
+* @param A Array to serialize.
+* @returns Passing down serializing archive.
+*/
+template<typename T,typename Allocator>
+FArchive& operator<<(FArchive& Ar, TIndirectArray<T, Allocator>& A)
 {
-	enum { MoveWillEmptyContainer = TContainerTraitsBase<typename TIndirectArray<T, Allocator>::InternalArrayType>::MoveWillEmptyContainer };
-};
-
-template <typename T,typename Allocator>
-UE_DEPRECATED(4.22, "Placement new on TIndirectArray has been deprecated - users should call Add() passing a pointer to an object created with new.")
-void* operator new( size_t Size, TIndirectArray<T,Allocator>& Array )
-{
-	check(Size == sizeof(T));
-	const int32 Index = Array.Add((T*)FMemory::Malloc(Size));
-	return &Array[Index];
-}
-
-template <typename T,typename Allocator>
-UE_DEPRECATED(4.22, "Placement new on TIndirectArray has been deprecated - users should call Insert() passing a pointer to an object created with new.")
-void* operator new( size_t Size, TIndirectArray<T,Allocator>& Array, int32 Index )
-{
-	check(Size == sizeof(T));
-	Array.Insert((T*)FMemory::Malloc(Size), Index);
-	return &Array[Index];
+	A.CountBytes(Ar);
+	if (Ar.IsLoading())
+	{
+		// Load array.
+		int32 NewNum;
+		Ar << NewNum;
+		A.Empty(NewNum);
+		for (int32 Index = 0; Index < NewNum; Index++)
+		{
+			T* NewElement = new T;
+			Ar << *NewElement;
+			A.Add(NewElement);
+		}
+	}
+	else
+	{
+		// Save array.
+		int32 Num = A.Num();
+		Ar << Num;
+		for (int32 Index = 0; Index < Num; Index++)
+		{
+			Ar << A[Index];
+		}
+	}
+	return Ar;
 }

@@ -3,6 +3,7 @@
 #include "VirtualizationSourceControlBackend.h"
 
 #include "Containers/Ticker.h"
+#include "HAL/Event.h"
 #include "HAL/FileManager.h"
 #include "IO/IoHash.h"
 #include "ISourceControlModule.h"
@@ -54,13 +55,21 @@ public:
 		EventFailed
 	};
 
+	enum class EFlags : uint32
+	{
+		None					= 0,
+		PrioritizeGameThread	= 1 << 0
+	};
+
+	FRIEND_ENUM_CLASS_FLAGS(EFlags);
+
 	FSemaphore() = delete;
-	explicit FSemaphore(int32 InitialCount)
+	explicit FSemaphore(int32 InitialCount, EFlags Options)
 		: WaitEvent(EEventMode::ManualReset)
 		, Counter(InitialCount)
 		, DebugCount(0)
 	{
-
+		bPrioritizeGameThread = EnumHasAnyFlags(Options, EFlags::PrioritizeGameThread);
 	}
 
 	~FSemaphore()
@@ -71,8 +80,15 @@ public:
 	/** Will block until the calling thread can pass through the semaphore. Note that it might return an error if the WaitEvent fails */
 	EAcquireResult Acquire()
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FSemaphore::Acquire);
+
 		CriticalSection.Lock();
 		DebugCount++;
+
+		if (bPrioritizeGameThread && IsInGameThread())
+		{
+			return AcquireFromGameThread();
+		}
 
 		while (Counter-- <= 0)
 		{
@@ -105,12 +121,39 @@ public:
 	}
 
 private:
+
+	inline EAcquireResult AcquireFromGameThread()
+	{
+		if (Counter-- > 0)
+		{
+			CriticalSection.Unlock();
+		}
+		else
+		{
+			WaitEvent->Reset();
+
+			CriticalSection.Unlock();
+
+			if (!WaitEvent->Wait())
+			{
+				--DebugCount;
+				return EAcquireResult::EventFailed;
+			}
+		}
+
+		return EAcquireResult::Success;
+	}
+
 	FEventRef WaitEvent;
 	FCriticalSection CriticalSection;
 
 	std::atomic<int32> Counter;
 	std::atomic<int32> DebugCount;
+
+	bool bPrioritizeGameThread;
 };
+
+ENUM_CLASS_FLAGS(FSemaphore::EFlags);
 
 /** Structure to make it easy to acquire/release a FSemaphore for a given scope */
 struct FSemaphoreScopeLock
@@ -204,13 +247,26 @@ static void CreateDescription(const FString& ProjectName, TArrayView<const FPush
 	return SCCProvider.GetState(DepotPaths, OutStates, EStateCacheUsage::Use);
 }
 
-/** Parse all error messages in a FSourceControlResultInfo and return true if the file not found error message is found */
-[[nodiscard]] static bool IsDepotFileMissing(const FSourceControlResultInfo& ResultInfo)
+/** 
+ * If the only reason we failed an operation is because of missing depot files then there
+ * is no point retrying that operation however other kinds of errors, such as connection
+ * problems, might be not be encountered if we try again.
+ * 
+ * @param ResultInfo	The results of a failed operation
+ * @return				True if there were no errors (as we don't really know what went wrong)
+ *						or if there errors not relating to missing files, otherwise false.
+ */
+[[nodiscard]] static bool ShouldRetryOperation(const FSourceControlResultInfo& ResultInfo)
 {
+	if (ResultInfo.ErrorMessages.IsEmpty())
+	{
+		return true;
+	}
+
 	// Ideally we'd parse for this sort of thing in the source control module itself and return an error enum
 	for (const FText& ErrorTest : ResultInfo.ErrorMessages)
 	{
-		if (ErrorTest.ToString().Find(" - no such file(s).") != INDEX_NONE)
+		if (ErrorTest.ToString().Find(" - no such file(s).") == INDEX_NONE)
 		{
 			return true;
 		}
@@ -272,7 +328,7 @@ IVirtualizationBackend::EConnectionStatus FSourceControlBackend::OnConnect()
 	SCCProvider = ISourceControlModule::Get().CreateProvider(FName("Perforce"), TEXT("Virtualization"), SCCSettings);
 	if (!SCCProvider.IsValid())
 	{
-		UE_LOG(LogVirtualization, Error, TEXT("[%s] Failed to create a perforce source control provider"), *GetDebugName());
+		UE_LOG(LogVirtualization, Error, TEXT("[%s] Failed to create a perforce revision control provider"), *GetDebugName());
 		return IVirtualizationBackend::EConnectionStatus::Error;
 	}
 
@@ -291,7 +347,7 @@ IVirtualizationBackend::EConnectionStatus FSourceControlBackend::OnConnect()
 			}
 
 			FMessageLog Log("LogVirtualization");
-			Log.Warning(FText::Format(LOCTEXT("FailedSourceControlConnection", "Failed to connect to source control backend with the following errors:\n{0}\nThe source control backend had trouble connecting!\nTrying logging in with the 'p4 login' command or by using p4vs/UnrealGameSync."),
+			Log.Warning(FText::Format(LOCTEXT("FailedSourceControlConnection", "Failed to connect to revision control backend with the following errors:\n{0}\nThe revision control backend had trouble connecting!\nTrying logging in with the 'p4 login' command or by using p4vs/UnrealGameSync."),
 				Errors.ToText()));
 
 			OnConnectionError();
@@ -309,7 +365,7 @@ IVirtualizationBackend::EConnectionStatus FSourceControlBackend::OnConnect()
 	{
 		FMessageLog Log("LogVirtualization");
 
-		Log.Warning(FText::Format(LOCTEXT("FailedMetaInfo", "Failed to find 'payload_metainfo.txt' in the depot '{0}'\nThe source control backend will be unable to pull payloads, is your source control  config set up correctly?"),
+		Log.Warning(FText::Format(LOCTEXT("FailedMetaInfo", "Failed to find 'payload_metainfo.txt' in the depot '{0}'\nThe revision control backend will be unable to pull payloads, is your revision control config set up correctly?"),
 			FText::FromString(DepotRoot)));
 
 		OnConnectionError();
@@ -321,7 +377,7 @@ IVirtualizationBackend::EConnectionStatus FSourceControlBackend::OnConnect()
 	{
 		FMessageLog Log("LogVirtualization");
 
-		Log.Warning(FText::Format(LOCTEXT("FailedMetaInfo", "Failed to find 'payload_metainfo.txt' in the depot '{0}'\nThe source control backend will be unable to pull payloads, is your source control  config set up correctly?"),
+		Log.Warning(FText::Format(LOCTEXT("FailedMetaInfo", "Failed to find 'payload_metainfo.txt' in the depot '{0}'\nThe revision control backend will be unable to pull payloads, is your revision control config set up correctly?"),
 			FText::FromString(DepotRoot)));
 
 		OnConnectionError();
@@ -334,7 +390,7 @@ IVirtualizationBackend::EConnectionStatus FSourceControlBackend::OnConnect()
 	{
 		FMessageLog Log("LogVirtualization");
 
-		Log.Warning(FText::Format(LOCTEXT("FailedMetaInfo", "Failed to find 'payload_metainfo.txt' in the depot '{0}'\nThe source control backend will be unable to pull payloads, is your source control  config set up correctly?"),
+		Log.Warning(FText::Format(LOCTEXT("FailedMetaInfo", "Failed to find 'payload_metainfo.txt' in the depot '{0}'\nThe revision control backend will be unable to pull payloads, is your revision control config set up correctly?"),
 			FText::FromString(DepotRoot)));
 
 		OnConnectionError();
@@ -352,66 +408,6 @@ bool FSourceControlBackend::PullData(TArrayView<FPullRequest> Requests)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FSourceControlBackend::PullData);
 
-#if 0
-	TRACE_CPUPROFILER_EVENT_SCOPE(FSourceControlBackend::PullData);
-
-	for (FPullRequest& Request : Requests)
-	{
-		TStringBuilder<512> DepotPath;
-		CreateDepotPath(Request.Identifier, DepotPath);
-
-		// TODO: When multiple threads are blocked waiting on this we could gather X payloads together and make a single
-		// batch request on the same connection, which should be a lot faster with less overhead.
-		// Although ideally this backend will not get hit very often.
-		FSemaphoreScopeLock _(ConcurrentConnectionLimit.Get());
-
-		UE_LOG(LogVirtualization, Verbose, TEXT("[%s] Attempting to pull '%s' from source control"), *GetDebugName(), *DepotPath);
-
-		int32 Retries = 0;
-
-		while (Retries < RetryCount)
-		{
-			// Only warn if the backend is configured to retry
-			if (Retries != 0)
-			{
-				UE_LOG(LogVirtualization, Warning, TEXT("[%s] Failed to download '%s' retrying (%d/%d) in %dms..."), *GetDebugName(), DepotPath.ToString(), Retries, RetryCount, RetryWaitTimeMS);
-				FPlatformProcess::SleepNoStats(RetryWaitTimeMS * 0.001f);
-			}
-
-#if IS_SOURCE_CONTROL_THREAD_SAFE
-			TSharedRef<FDownloadFile, ESPMode::ThreadSafe> DownloadCommand = ISourceControlOperation::Create<FDownloadFile>(FDownloadFile::EVerbosity::None);
-			if (SCCProvider->Execute(DownloadCommand, DepotPath.ToString(), EConcurrency::Synchronous) == ECommandResult::Succeeded)
-			{
-				// The payload was created by FCompressedBuffer::Compress so we can return it as a FCompressedBuffer.
-				FSharedBuffer Buffer = DownloadCommand->GetFileData(DepotPath);
-				return FCompressedBuffer::FromCompressed(Buffer);
-			}
-#else
-			TSharedRef<FDownloadFile> DownloadCommand = ISourceControlOperation::Create<FDownloadFile>(FDownloadFile::EVerbosity::None);
-			if (SCCProvider->TryToDownloadFileFromBackgroundThread(DownloadCommand, DepotPath.ToString()))
-			{
-				// The payload was created by FCompressedBuffer::Compress so we can return it as a FCompressedBuffer.
-				Request.Status = FPullRequest::EStatus::Success;
-				Request.Payload = FCompressedBuffer::FromCompressed(DownloadCommand->GetFileData(DepotPath));
-
-				break;
-			}
-#endif
-
-			// If this was the first try then check to see if the error being returns is that the file does not exist
-			// in the depot. If it does not exist then there is no point in us retrying and we can error out at this point.
-			if (Retries == 0 && IsDepotFileMissing(DownloadCommand->GetResultInfo()))
-			{
-				break;
-			}
-
-			Retries++;
-		}
-	}
-
-	return true;
-
-#else
 	TArray<FString> DepotPaths;
 	DepotPaths.Reserve(Requests.Num());
 
@@ -428,8 +424,6 @@ bool FSourceControlBackend::PullData(TArrayView<FPullRequest> Requests)
 	// Although ideally this backend will not get hit very often.
 	FSemaphoreScopeLock _(ConcurrentConnectionLimit.Get());
 
-//	UE_LOG(LogVirtualization, Verbose, TEXT("[%s] Attempting to pull '%s' from source control"), *GetDebugName(), *DepotPath);
-
 	int32 Retries = 0;
 
 	while (Retries < RetryCount)
@@ -443,44 +437,37 @@ bool FSourceControlBackend::PullData(TArrayView<FPullRequest> Requests)
 
 #if IS_SOURCE_CONTROL_THREAD_SAFE
 		TSharedRef<FDownloadFile, ESPMode::ThreadSafe> DownloadCommand = ISourceControlOperation::Create<FDownloadFile>(FDownloadFile::EVerbosity::None);
-		if (SCCProvider->Execute(DownloadCommand, DepotPath.ToString(), EConcurrency::Synchronous) == ECommandResult::Succeeded)
-		{
-			// The payload was created by FCompressedBuffer::Compress so we can return it as a FCompressedBuffer.
-			FSharedBuffer Buffer = DownloadCommand->GetFileData(DepotPath);
-
-			Request.Payload = FCompressedBuffer::FromCompressed(Buffer);
-			Request.Status = FPullRequest::EStatus::Success;
-		}
+		const bool bOperationSuccess = SCCProvider->Execute(DownloadCommand, DepotPaths, EConcurrency::Synchronous) == ECommandResult::Succeeded;
 #else
 		TSharedRef<FDownloadFile> DownloadCommand = ISourceControlOperation::Create<FDownloadFile>(FDownloadFile::EVerbosity::None);
-		if (SCCProvider->TryToDownloadFileFromBackgroundThread(DownloadCommand, DepotPaths))
-		{
-			for(int32 Index = 0; Index < Requests.Num(); ++Index)
-			{
-				// The payload was created by FCompressedBuffer::Compress so we can return it as a FCompressedBuffer.
-				FSharedBuffer Buffer = DownloadCommand->GetFileData(DepotPaths[Index]);
-
-				Requests[Index].SetPayload(FCompressedBuffer::FromCompressed(Buffer));
-			}
-
-			break;
-		}
+		const bool bOperationSuccess = SCCProvider->TryToDownloadFileFromBackgroundThread(DownloadCommand, DepotPaths);
 #endif
+
+		// Check and assign what payloads we did find, even if the download command failed we might have been able to download some
+		// files and since we found them we might as well return them.
+		for(int32 Index = 0; Index < Requests.Num(); ++Index)
+		{
+			// The payload was created by FCompressedBuffer::Compress so we can return it as a FCompressedBuffer.
+			FSharedBuffer Buffer = DownloadCommand->GetFileData(DepotPaths[Index]);
+			Requests[Index].SetPayload(FCompressedBuffer::FromCompressed(Buffer));
+		}
+
+		if (bOperationSuccess)
+		{
+			return true;
+		}
 
 		// If this was the first try then check to see if the error being returns is that the file does not exist
 		// in the depot. If it does not exist then there is no point in us retrying and we can error out at this point.
-		if (Retries == 0 && IsDepotFileMissing(DownloadCommand->GetResultInfo()))
+		if (Retries == 0 && !ShouldRetryOperation(DownloadCommand->GetResultInfo()))
 		{
-			break;
+			return false;
 		}
 
 		Retries++;
 	}
 
-	// TODO -  Should we error here if the payload failed? 
-
-	return true;
-#endif
+	return false;
 }
 
 bool FSourceControlBackend::DoesPayloadExist(const FIoHash& Id)
@@ -584,7 +571,7 @@ bool FSourceControlBackend::PushData(TArrayView<FPushRequest> Requests)
 		}
 	}
 
-	UE_LOG(LogVirtualization, Log, TEXT("[%s] Determined that %d payload(s) require submission to source control"), *GetDebugName(), RequestsToPush.Num());
+	UE_LOG(LogVirtualization, Log, TEXT("[%s] Determined that %d payload(s) require submission to revision control"), *GetDebugName(), RequestsToPush.Num());
 
 	if (RequestsToPush.IsEmpty())
 	{
@@ -655,7 +642,7 @@ bool FSourceControlBackend::PushData(TArrayView<FPushRequest> Requests)
 			CreateWorkspaceCommand->SetType(FCreateWorkspace::EType::Partitioned);
 		}
 
-		CreateWorkspaceCommand->SetDescription(TEXT("This workspace was autogenerated when submitting virtualized payloads to source control"));
+		CreateWorkspaceCommand->SetDescription(TEXT("This workspace was autogenerated when submitting virtualized payloads to revision control"));
 
 		if (SCCProvider->Execute(CreateWorkspaceCommand) != ECommandResult::Succeeded)
 		{
@@ -787,7 +774,7 @@ bool FSourceControlBackend::PushData(TArrayView<FPushRequest> Requests)
 
 			if (SCCProvider->Execute(ISourceControlOperation::Create<FMarkForAdd>(), FilesToSubmit) != ECommandResult::Succeeded)
 			{
-				UE_LOG(LogVirtualization, Error, TEXT("[%s] Failed to mark the payload file for Add in source control"), *GetDebugName());
+				UE_LOG(LogVirtualization, Error, TEXT("[%s] Failed to mark the payload file for Add in revision control"), *GetDebugName());
 				return false;
 			}
 		}
@@ -805,7 +792,7 @@ bool FSourceControlBackend::PushData(TArrayView<FPushRequest> Requests)
 
 			if (SCCProvider->Execute(CheckInOperation, FilesToSubmit) != ECommandResult::Succeeded)
 			{
-				UE_LOG(LogVirtualization, Error, TEXT("[%s] Failed to submit the payload file(s) to source control"), *GetDebugName());
+				UE_LOG(LogVirtualization, Error, TEXT("[%s] Failed to submit the payload file(s) to revision control"), *GetDebugName());
 				return false;
 			}
 		}
@@ -856,7 +843,7 @@ bool FSourceControlBackend::DoPayloadsExist(TArrayView<const FIoHash> PayloadIds
 	ECommandResult::Type Result = GetDepotPathStates(*SCCProvider, DepotPaths, PathStates);
 	if (Result != ECommandResult::Type::Succeeded)
 	{
-		UE_LOG(LogVirtualization, Error, TEXT("[%s] Failed to query the state of files in the source control depot"), *GetDebugName());
+		UE_LOG(LogVirtualization, Error, TEXT("[%s] Failed to query the state of files in the revision control depot"), *GetDebugName());
 		return false;
 	}
 
@@ -950,12 +937,12 @@ bool FSourceControlBackend::TryApplySettingsFromConfigFiles(const FString& Confi
 
 		if (MaxLimit != INDEX_NONE)
 		{
-			ConcurrentConnectionLimit = MakeUnique<FSemaphore>(MaxLimit);
-			UE_LOG(LogVirtualization, Log, TEXT("[%s] Limted to %d concurrent source control connections"), *GetDebugName(), MaxLimit);
+			ConcurrentConnectionLimit = MakeUnique<FSemaphore>(MaxLimit, FSemaphore::EFlags::PrioritizeGameThread);
+			UE_LOG(LogVirtualization, Log, TEXT("[%s] Limted to %d concurrent revision control connections"), *GetDebugName(), MaxLimit);
 		}
 		else
 		{
-			UE_LOG(LogVirtualization, Log, TEXT("[%s] Has no limit to it's concurrent source control connections"), *GetDebugName());
+			UE_LOG(LogVirtualization, Log, TEXT("[%s] Has no limit to it's concurrent revision control connections"), *GetDebugName());
 		}
 	}
 

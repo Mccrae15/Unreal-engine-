@@ -3,20 +3,53 @@
 #pragma once
 
 #include "Components/Widget.h"
+#include "MVVMViewModelBase.h"
 #include "Types/UIFParentWidget.h"
 #include "Types/UIFWidgetId.h"
-#include "UObject/SoftObjectPtr.h"
 
 #include "UIFWidget.generated.h"
 
+template <typename ObjectType> class TNonNullPtr;
+
+class FUIFrameworkModule;
+class UUIFrameworkWidget;
+struct FUIFrameworkWidgetTree;
+class IUIFrameworkWidgetTreeOwner;
+
+/**
+ *
+ */
+UINTERFACE(MinimalAPI)
+class UUIFrameworkWidgetWrapperInterface : public UInterface
+{
+	GENERATED_BODY()
+};
+
+class IUIFrameworkWidgetWrapperInterface
+{
+	GENERATED_BODY()
+
+public:
+	virtual void ReplaceWidget(UUIFrameworkWidget* OldWidget, UUIFrameworkWidget* NewWidget) {}
+};
 
 /**
  * 
  */
 UCLASS(Abstract, BlueprintType)
-class UIFRAMEWORK_API UUIFrameworkWidget : public UObject
+class UIFRAMEWORK_API UUIFrameworkWidget : public UMVVMViewModelBase
 {
 	GENERATED_BODY()
+
+	friend FUIFrameworkModule;
+	friend FUIFrameworkWidgetTree;
+
+private:
+	UPROPERTY(BlueprintReadWrite, ReplicatedUsing = "OnRep_IsEnabled", Getter = "IsEnabled", Setter="SetEnabled", Category = "UI Framework", meta = (AllowPrivateAccess = "true"))
+	bool bIsEnabled = true;
+
+	UPROPERTY(BlueprintReadWrite, ReplicatedUsing = "OnRep_Visibility", Getter, Setter = "SetVisibility", Category = "UI Framework", meta = (AllowPrivateAccess = "true"))
+	ESlateVisibility Visibility = ESlateVisibility::Visible;
 
 public:
 	//~ Begin UObject
@@ -28,15 +61,27 @@ public:
 	virtual bool CallRemoteFunction(UFunction* Function, void* Parameters, FOutParmRec* OutParms, FFrame* Stack) override;
 	//~ End UObject
 
+	TScriptInterface<IUIFrameworkWidgetWrapperInterface> AuthorityGetWrapper() const
+	{
+		return Wrapper;
+	}
+
+	void AuthoritySetWrapper(TScriptInterface<IUIFrameworkWidgetWrapperInterface> InWrapper)
+	{
+		Wrapper = InWrapper;
+	}
+
 	FUIFrameworkWidgetId GetWidgetId() const
 	{
 		return Id;
 	}
 
-	UUIFrameworkPlayerComponent* GetPlayerComponent() const
+	IUIFrameworkWidgetTreeOwner* GetWidgetTreeOwner() const
 	{
-		return OwnerPlayerComponent;
+		return WidgetTreeOwner;
 	}
+
+	FUIFrameworkWidgetTree* GetWidgetTree() const;
 
 	TSoftClassPtr<UWidget> GetUMGWidgetClass() const
 	{
@@ -44,34 +89,55 @@ public:
 	}
 
 	//~ Authority functions
-	void AuthoritySetParent(UUIFrameworkPlayerComponent* Owner, FUIFrameworkParentWidget NewParent);
-
 	FUIFrameworkParentWidget AuthorityGetParent() const
 	{
 		return AuthorityParent;
 	}
 
-	virtual void AuthorityForEachChildren(const TFunctionRef<void(UUIFrameworkWidget*)>& Func) {}
+	virtual void AuthorityForEachChildren(const TFunctionRef<void(UUIFrameworkWidget*)>& Func)
+	{
+	}
 
 	//~ Local functions
+	virtual bool LocalIsReplicationReady() const
+	{
+		return true;
+	}
+
 	UWidget* LocalGetUMGWidget() const
 	{
 		return LocalUMGWidget;
 	}
 
-	void LocalCreateUMGWidget(UUIFrameworkPlayerComponent* Owner);
+	void LocalCreateUMGWidget(TNonNullPtr<IUIFrameworkWidgetTreeOwner> Owner);
 	virtual void LocalAddChild(FUIFrameworkWidgetId ChildId);
 	void LocalDestroyUMGWidget();
 
+	//~ Properties
+	ESlateVisibility GetVisibility() const;
+	void SetVisibility(ESlateVisibility InVisibility);
+
+	bool IsEnabled() const;
+	void SetEnabled(bool bEnabled);
+
 protected:
-	virtual void AuthorityRemoveChild(UUIFrameworkWidget* Widget) {}
-	virtual void LocalOnUMGWidgetCreated() { }
+	virtual void AuthorityRemoveChild(UUIFrameworkWidget* Widget)
+	{
+	}
+	virtual void LocalOnUMGWidgetCreated()
+	{
+	}
+
+	void ForceNetUpdate();
 
 private:
-	void SetParentPlayerOwnerRecursive();
+	UFUNCTION()
+	void OnRep_IsEnabled();
+	UFUNCTION()
+	void OnRep_Visibility();
 
 protected:
-	UPROPERTY(BlueprintReadOnly, EditDefaultsOnly, Category = "UI Framework")
+	UPROPERTY(BlueprintReadOnly, Replicated, EditDefaultsOnly, Category = "UI Framework")
 	TSoftClassPtr<UWidget> WidgetClass; // todo: make this private and use a constructor argument
 
 private:
@@ -79,9 +145,12 @@ private:
 	UPROPERTY(Replicated, Transient, DuplicateTransient)
 	FUIFrameworkWidgetId Id = FUIFrameworkWidgetId::MakeNew();
 
-	//~ Authority and Local
+	//~ Authority
 	UPROPERTY(Transient)
-	TObjectPtr<UUIFrameworkPlayerComponent> OwnerPlayerComponent = nullptr;
+	TScriptInterface<IUIFrameworkWidgetWrapperInterface> Wrapper;
+
+	//~ Authority and Local
+	IUIFrameworkWidgetTreeOwner* WidgetTreeOwner = nullptr;
 
 	//~ AuthorityOnly
 	UPROPERTY(Transient)
@@ -90,10 +159,8 @@ private:
 	//~ LocalOnly
 	UPROPERTY(Transient)
 	TObjectPtr<UWidget> LocalUMGWidget;
-
-	//UPROPERTY(BlueprintReadWrite)
-	//EUIEnability Enablility;
-	//
-	//UPROPERTY(BlueprintReadWrite)
-	//EUIVisibility Visibility;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Templates/NonNullPointer.h"
+#endif

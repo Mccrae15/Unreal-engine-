@@ -111,29 +111,25 @@ public:
 		return EQueryResult::Failure_NotImplemented;
 	}
 
-	virtual EVirtualizationResult TryVirtualizePackages(TConstArrayView<FString> PackagePaths, TArray<FText>& OutDescriptionTags, TArray<FText>& OutErrors) override
+	virtual FVirtualizationResult TryVirtualizePackages(TConstArrayView<FString> PackagePaths, EVirtualizationOptions Options) override
 	{
-		OutDescriptionTags.Reset();
-		OutErrors.Reset();
+		FVirtualizationResult Result;
+		Result.AddError(FText::FromString(TEXT("Calling ::TryVirtualizePackages on FNullVirtualizationSystem")));
 
-		OutErrors.Add(FText::FromString(TEXT("Calling ::TryVirtualizePackages on FNullVirtualizationSystem")));
-
-		return EVirtualizationResult::Failed;
+		return Result;
 	}
 
-	virtual ERehydrationResult TryRehydratePackages(TConstArrayView<FString> PackagePaths, TArray<FText>& OutErrors) override
+	virtual FRehydrationResult TryRehydratePackages(TConstArrayView<FString> PackagePaths, ERehydrationOptions Options) override
 	{
-		OutErrors.Reset();
+		FRehydrationResult Result;
+		Result.AddError(FText::FromString(TEXT("Calling ::TryRehydratePackages on FNullVirtualizationSystem")));
 
-		OutErrors.Add(FText::FromString(TEXT("Calling ::TryRehydratePackages on FNullVirtualizationSystem")));
-
-		return ERehydrationResult::Failed;
+		return Result;
 	}
 
 	virtual ERehydrationResult TryRehydratePackages(TConstArrayView<FString> PackagePaths, uint64 PaddingAlignment, TArray<FText>& OutErrors, TArray<FSharedBuffer>& OutPackages, TArray<FRehydrationInfo>* OutInfo) override
 	{
 		OutErrors.Reset();
-
 		OutErrors.Add(FText::FromString(TEXT("Calling ::TryRehydratePackages on FNullVirtualizationSystem")));
 
 		return ERehydrationResult::Failed;
@@ -152,6 +148,11 @@ public:
 	virtual FPayloadActivityInfo GetAccumualtedPayloadActivityInfo() const override
 	{
 		return FPayloadActivityInfo();
+	}
+
+	virtual void GatherAnalytics(TArray<FAnalyticsEventAttribute>& Attributes) const override
+	{
+		// The null implementation has analytics to capture
 	}
 
 	virtual FOnNotification& GetNotificationEvent() override

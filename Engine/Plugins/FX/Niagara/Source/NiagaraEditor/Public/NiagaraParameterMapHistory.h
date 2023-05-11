@@ -77,9 +77,11 @@ public:
 		Path.Add(Guid);
 	}
 
-	void Push(const UEdGraphNode* Node);
-	void Push(const UEdGraphPin* Pin);
-	void Pop();
+	void PushNode(const UEdGraphNode* Node);
+	void PopNode();
+
+	void PushPin(const UEdGraphPin* Pin);
+	void PopPin();
 
 	bool operator==(const FGraphTraversalHandle& Rhs) const
 	{
@@ -113,6 +115,16 @@ private:
 	TArray<FString> FriendlyPath;
 };
 
+struct FNiagaraStaticVariableSearchContext
+{
+	/** Whether we are running a limited history run where we only care about collecting static variables */
+	bool bCollectingStaticVariablesOnly = false;
+
+	bool bIncludeReferencedGraphs = true;
+
+	using FGraphKey = TTuple<TObjectKey<UNiagaraGraph>, FGuid>;
+	TMap<FGraphKey, bool> CachedResults;
+};
 
 /** Traverses a Niagara node graph to identify the variables that have been written and read from a parameter map. 
 * 	This class is meant to aid in UI and compilation of the graph. There are several main script types and each one interacts
@@ -506,6 +518,9 @@ public:
 	bool GetIgnoreDisabled() const { return bIgnoreDisabled; }
 	void SetIgnoreDisabled(bool bInIgnore) { bIgnoreDisabled = bInIgnore; }
 
+	bool GetIgnoreStaticRapidIterationParameters() const { return bIgnoreStaticRapidIterationParameters; }
+	void SetIgnoreStaticRapidIterationParameters(bool bInIgnore) { bIgnoreStaticRapidIterationParameters = bInIgnore; }
+
 	bool IsInEncounteredFunctionNamespace(const FNiagaraVariable& InVar) const;
 	bool IsInEncounteredEmitterNamespace(const FNiagaraVariable& InVar) const;
 
@@ -516,6 +531,12 @@ public:
 	void RegisterExternalStaticVariables(TConstArrayView<FNiagaraVariable> Variables);
 
 	FCompileConstantResolver ConstantResolver;
+
+	/** An optional emitter handle guid you can register. This will skip parameter map building of all emitters that don't match this one, if set.
+	 * Reason for this is to be able to build parameter map history for a system, while excluding certain emitters.
+	 * Useful for emitter context UI that should retrieve system parameters & emitter parameters, but only emitter parameters of the given emitter.
+	 */
+	TOptional<FGuid> ExclusiveEmitterHandle;
 
 	bool bShouldBuildSubHistories = true;
 
@@ -534,6 +555,14 @@ public:
 		if (ContextuallyVisitedNodes.Num() > 0)
 			OutVistedNodes.Append(ContextuallyVisitedNodes.Last());
 	}
+
+	void IncludeStaticVariablesOnly()
+	{
+		StaticVariableSearchContext.bCollectingStaticVariablesOnly = true;
+	}
+
+	bool ShouldProcessDepthTraversal(const UNiagaraGraph* Graph);
+
 protected:
 	/** Internal helper function to decide whether or not we should use this static variable when merging with other
 		graph traversal static variables, like Emitter graphs merging with System graphs. */
@@ -589,7 +618,13 @@ protected:
 	/** Whether we want to include ParameterCollection information */
 	bool bIncludeParameterCollectionInfo;
 
+	/** Whether or not we want to look up the rapid iteration form of a variable or just the regular form. 
+	see comments in FNiagaraStackGraphUtilities::GetStackFunctionInputPinsWithoutCache for reasoning behind this.*/
+	bool bIgnoreStaticRapidIterationParameters = false;
+
 	TArray<FNiagaraVariable> EncounterableExternalVariables;
+
+	FNiagaraStaticVariableSearchContext StaticVariableSearchContext;
 };
 
 class FNiagaraParameterMapHistoryWithMetaDataBuilder : public FNiagaraParameterMapHistoryBuilder
@@ -606,8 +641,15 @@ public:
 
 struct FNiagaraGraphCachedBuiltHistory : public FNiagaraGraphCachedDataBase
 {
-	virtual ~FNiagaraGraphCachedBuiltHistory() {};
-	virtual void GetStaticVariables(TArray<FNiagaraVariable>& OutVars) { OutVars = StaticVariables; }
+	virtual ~FNiagaraGraphCachedBuiltHistory() = default;
+	virtual void GetStaticVariables(TArray<FNiagaraVariable>& OutVars) override { OutVars = StaticVariables; }
+
+	virtual bool IsValidForSystem(const UNiagaraSystem* InSystem) const override;
+	virtual void SetSourceSystem(const UNiagaraSystem* InSystem) override;
+
+	virtual bool IsValidForEmitter(const FVersionedNiagaraEmitterData* InEmitterData) const override;
+	virtual void SetSourceEmitter(const FVersionedNiagaraEmitterData* InEmitterData) override;
 
 	TArray<FNiagaraVariable> StaticVariables;
+	TArray<FGuid> SourceAssetChangeIds;
 };

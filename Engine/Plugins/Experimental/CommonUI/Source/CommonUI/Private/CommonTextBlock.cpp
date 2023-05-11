@@ -1,14 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CommonTextBlock.h"
-#include "CommonUIPrivate.h"
-#include "Containers/Ticker.h"
 #include "CommonUIEditorSettings.h"
 #include "CommonUIUtils.h"
 #include "CommonWidgetPaletteCategories.h"
+#include "ICommonUIModule.h"
 #include "Widgets/Text/STextBlock.h"
+#include "Layout/ArrangedChildren.h"
 #include "Layout/LayoutUtils.h"
-#include "Types/ReflectionMetadata.h"
 #include "StyleSheet/CommonStyleSheet.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(CommonTextBlock)
@@ -559,6 +558,24 @@ void UCommonTextBlock::SetScrollingEnabled(bool bInIsScrollingEnabled)
 	SynchronizeProperties();
 }
 
+float UCommonTextBlock::GetMobileFontSizeMultiplier() const
+{
+	return MobileFontSizeMultiplier;
+}
+
+void UCommonTextBlock::SetMobileFontSizeMultiplier(float InMobileFontSizeMultiplier)
+{
+	if (MobileFontSizeMultiplier != InMobileFontSizeMultiplier)
+	{
+		MobileFontSizeMultiplier = InMobileFontSizeMultiplier;
+
+		if (CommonUIUtils::ShouldDisplayMobileUISizes())
+		{
+			ApplyFontSizeMultiplier();
+		}
+	}
+}
+
 void UCommonTextBlock::SynchronizeProperties()
 {
 	UpdateFromStyle();
@@ -594,15 +611,18 @@ void UCommonTextBlock::SynchronizeProperties()
 	}
 }
 
-void UCommonTextBlock::SetText(FText InText)
+void UCommonTextBlock::OnTextChanged()
 {
-	Super::SetText(InText);
-	
+	Super::OnTextChanged();
 	if (bAutoCollapseWithEmptyText)
 	{
-		SetVisibility(InText.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::SelfHitTestInvisible);
+		SetVisibility(GetText().IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::SelfHitTestInvisible);
 	}
+}
 
+void UCommonTextBlock::OnFontChanged()
+{
+	Super::OnFontChanged();
 	if (CommonUIUtils::ShouldDisplayMobileUISizes())
 	{
 		ApplyFontSizeMultiplier();
@@ -743,7 +763,7 @@ void UCommonTextBlock::ApplyFontSizeMultiplier() const
 	if (MyTextBlock.IsValid())
 	{
 		FSlateFontInfo FontInfo = GetFont();
-		FontInfo.Size *= MobileFontSizeMultiplier;
+		FontInfo.Size *= GetMobileFontSizeMultiplier();
 		MyTextBlock->SetFont(FontInfo);
 	}
 }

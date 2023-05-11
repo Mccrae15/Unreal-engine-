@@ -27,6 +27,9 @@ public:
 
 	virtual ~URigHierarchyController();
 
+	// UObject interface
+	virtual void Serialize(FArchive& Ar) override;
+
 	// Returns the hierarchy currently linked to this controller
 	UFUNCTION(BlueprintCallable, Category = URigHierarchyController)
 	URigHierarchy* GetHierarchy() const
@@ -53,7 +56,7 @@ public:
 	 * @return Returns true if the selection was applied
 	 */
 	UFUNCTION(BlueprintCallable, Category = URigHierarchyController)
-    FORCEINLINE bool DeselectElement(FRigElementKey InKey)
+    bool DeselectElement(FRigElementKey InKey)
 	{
 		return SelectElement(InKey, false);
 	}
@@ -71,7 +74,7 @@ public:
 	 * @return Returns true if the selection was applied
 	 */
 	UFUNCTION(BlueprintCallable, Category = URigHierarchyController)
-    FORCEINLINE bool ClearSelection()
+    bool ClearSelection()
 	{
 		return SetSelection(TArray<FRigElementKey>());
 	}
@@ -136,7 +139,7 @@ public:
 	 * @return The key for the newly created control.
 	 */
 	UFUNCTION(BlueprintCallable, Category = URigHierarchyController, meta = (DisplayName = "Add Control", ScriptName = "AddControl"))
-    FORCEINLINE FRigElementKey AddControl_ForBlueprint(
+    FRigElementKey AddControl_ForBlueprint(
         FName InName,
         FRigElementKey InParent,
         FRigControlSettings InSettings,
@@ -174,7 +177,7 @@ public:
 	 * @return The key for the newly created animation channel.
 	 */
 	UFUNCTION(BlueprintCallable, Category = URigHierarchyController, meta = (DisplayName = "Add Control", ScriptName = "AddAnimationChannel"))
-    FORCEINLINE FRigElementKey AddAnimationChannel_ForBlueprint(
+    FRigElementKey AddAnimationChannel_ForBlueprint(
         FName InName,
         FRigElementKey InParentControl,
         FRigControlSettings InSettings,
@@ -405,6 +408,17 @@ public:
     FRigElementKey RenameElement(FRigElementKey InElement, FName InName, bool bSetupUndo = false, bool bPrintPythonCommand = false, bool bClearSelection = true);
 
 	/**
+	 * Changes the element's index within its default parent (or the top level)
+	 * @param InElement The key of the element to rename
+	 * @param InIndex The new index of the element to take within its default parent (or the top level)
+	 * @param bSetupUndo If set to true the stack will record the change for undo / redo
+	 * @param bPrintPythonCommand If set to true a python command equivalent to this call will be printed out
+	 * @return Returns true if the element has been reordered accordingly
+	 */
+	UFUNCTION(BlueprintCallable, Category = URigHierarchyController)
+	bool ReorderElement(FRigElementKey InElement, int32 InIndex, bool bSetupUndo = false, bool bPrintPythonCommand = false);
+
+	/**
  	 * Sets the display name on a control
  	 * @param InControl The key of the control to change the display name for
  	 * @param InDisplayName The new display name to set for the control
@@ -495,7 +509,7 @@ public:
 	 * @return The keys of the mirrored items
 	 */
 	UFUNCTION(BlueprintCallable, Category = URigHierarchyController)
-    TArray<FRigElementKey> MirrorElements(TArray<FRigElementKey> InKeys, FRigMirrorSettings InSettings, bool bSelectNewElements = true, bool bSetupUndo = false, bool bPrintPythonCommands = false);
+    TArray<FRigElementKey> MirrorElements(TArray<FRigElementKey> InKeys, FRigVMMirrorSettings InSettings, bool bSelectNewElements = true, bool bSetupUndo = false, bool bPrintPythonCommands = false);
 
 	/**
 	 * Returns the modified event, which can be used to 
@@ -546,7 +560,7 @@ public:
 	/**
 	 * Returns a reference to the suspend notifications flag
 	 */
-	FORCEINLINE bool& GetSuspendNotificationsFlag() { return bSuspendAllNotifications; }
+	bool& GetSuspendNotificationsFlag() { return bSuspendAllNotifications; }
 
 #if WITH_EDITOR
 	UFUNCTION(BlueprintCallable, Category = URigHierarchyController)
@@ -584,7 +598,7 @@ private:
 	 * Returns true if this controller is valid / linked to a valid hierarchy.
 	 * @return Returns true if this controller is valid / linked to a valid hierarchy.
 	 */
-	FORCEINLINE bool IsValid() const { return Hierarchy.IsValid(); }
+	bool IsValid() const { return Hierarchy.IsValid(); }
 
 	/**
 	 * Adds a new element to the hierarchy
@@ -610,6 +624,14 @@ private:
 	 * @return Returns true if successful.
 	 */
     bool RenameElement(FRigBaseElement* InElement, const FName &InName, bool bClearSelection = true);
+
+	/**
+	 * Changes the element's index within its default parent (or the top level)
+	 * @param InElement The key of the element to rename
+	 * @param InIndex The new index of the element to take within its default parent (or the top level)
+	 * @return Returns true if the element has been reordered accordingly
+	 */
+	bool ReorderElement(FRigBaseElement* InElement, int32 InIndex);
 
 	/**
  	 * Sets the display name on a control

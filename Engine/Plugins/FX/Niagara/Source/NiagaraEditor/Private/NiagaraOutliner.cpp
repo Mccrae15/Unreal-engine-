@@ -4,6 +4,7 @@
 #include "NiagaraDebugger.h"
 #include "NiagaraEditorCommon.h"
 #include "NiagaraSimCache.h"
+#include "Serialization/MemoryReader.h"
 #include "Serialization/ObjectAndNameAsStringProxyArchive.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraOutliner)
@@ -37,9 +38,21 @@ void UNiagaraOutliner::OnChanged()
 	OnChangedDelegate.Broadcast();
 }
 
+void UNiagaraOutliner::Reset()
+{
+	Data.WorldData.Reset();
+	SystemSimCaches.Reset();
+	OnChanged();
+}
+
 void UNiagaraOutliner::UpdateData(const FNiagaraOutlinerData& NewData)
 {
 	FNiagaraOutlinerData::StaticStruct()->CopyScriptStruct(&Data, &NewData);
+
+	//Clear out any sim caches when we update the outliner.
+	//TODO: We should keep them all and just track info about when the were taken etc.
+	SystemSimCaches.Reset();
+
 	OnChanged();
 	//TODO: Do some kind of diff on the data and collect any recently removed components etc into their own area.
 	//Possibly keep them in the UI optionally but colour/mark them as dead until the user opts to remove them or on some timed interval.
@@ -59,7 +72,7 @@ void UNiagaraOutliner::UpdateSystemSimCache(const FNiagaraSystemSimCacheCaptureR
 	}
 	else
 	{
-		UE_LOG(LogNiagaraEditor, Warning, TEXT("Niagara Outliner recieved empty sim cache data."));
+		UE_LOG(LogNiagaraEditor, Warning, TEXT("Niagara Outliner received empty sim cache data."));
 	}
 	OnChanged();
 }

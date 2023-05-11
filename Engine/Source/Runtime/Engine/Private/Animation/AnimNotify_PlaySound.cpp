@@ -1,10 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Animation/AnimNotifies/AnimNotify_PlaySound.h"
+#include "Audio.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Engine/World.h"
 #include "Kismet/GameplayStatics.h"
 #include "Sound/SoundBase.h"
-#include "Sound/SoundWaveProcedural.h"
 #include "Animation/AnimSequenceBase.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNotify_PlaySound)

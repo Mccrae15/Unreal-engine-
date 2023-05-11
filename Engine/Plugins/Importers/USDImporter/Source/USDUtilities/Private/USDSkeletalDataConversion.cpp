@@ -2,9 +2,12 @@
 
 #include "USDSkeletalDataConversion.h"
 
+#include "Engine/SkinnedAssetCommon.h"
 #include "UnrealUSDWrapper.h"
+#include "UObject/Package.h"
 #include "USDAssetImportData.h"
 #include "USDAttributeUtils.h"
+#include "USDClassesModule.h"
 #include "USDConversionUtils.h"
 #include "USDErrorUtils.h"
 #include "USDGeomMeshConversion.h"
@@ -23,6 +26,7 @@
 #include "Animation/AnimCurveTypes.h"
 #include "AnimationRuntime.h"
 #include "AnimEncoding.h"
+#include "BoneWeights.h"
 #include "ControlRig.h"
 #include "Evaluation/MovieSceneSequenceTransform.h"
 #include "IMovieScenePlayer.h"
@@ -433,11 +437,11 @@ namespace SkelDataConversionImpl
 		Skeleton->AddSmartNameAndModify( USkeleton::AnimCurveMappingName, CurveName, NewName );
 
 		const bool bShouldTransact = false;
-		const UAnimDataModel* DataModel = Sequence->GetDataModel();
+		const IAnimationDataModel* DataModel = Sequence->GetDataModel();
 		IAnimationDataController& Controller = Sequence->GetController();
 
-		FAnimationCurveIdentifier CurveId( NewName, ERawCurveTrackTypes::RCT_Float );
-		const FFloatCurve* Curve = DataModel->FindFloatCurve( CurveId );
+		FAnimationCurveIdentifier CurveId(NewName, ERawCurveTrackTypes::RCT_Float);
+		const FFloatCurve* Curve = DataModel->FindFloatCurve(CurveId);
 		if ( !Curve )
 		{
 			// If curve doesn't exist, add one
@@ -851,7 +855,7 @@ namespace UnrealToUsdImpl
 								int32 BoneIndex = Section.BoneMap[ Vertex.InfluenceBones[ InfluenceIndex ] ];
 
 								JointIndices.push_back( BoneIndex );
-								JointWeights.push_back( Vertex.InfluenceWeights[ InfluenceIndex ] / 255.0f );
+								JointWeights.push_back( Vertex.InfluenceWeights[ InfluenceIndex ] / UE::AnimationCore::MaxRawBoneWeightFloat );
 							}
 						}
 					}
@@ -1395,27 +1399,54 @@ bool UsdToUnreal::ConvertSkinnedMesh(
 	// We want to combine identical slots for skeletal meshes, which is different to static meshes, where each section gets a slot
 	// Note: This is a different index remapping to the one that happens for LODs, using LODMaterialMap! Here we're combining meshes of the same LOD
 	TMap<UsdUtils::FUsdPrimMaterialSlot, int32> SlotToCombinedMaterialIndex;
-	TMap<int32, int32> LocalToCombinedMaterialIndex;
+
+	// Position 3 in this has the value 6 --> Local material slot #3 is actually the combined material slot #6
+	TArray<int32> LocalToCombinedMaterialIndex;
+	LocalToCombinedMaterialIndex.SetNumZeroed( LocalInfo.Slots.Num() );
+
 	for (int32 Index = 0; Index < MaterialAssignments.Num(); ++Index)
 	{
-		SlotToCombinedMaterialIndex.Add( MaterialAssignments[ Index ], Index );
-	}
-	for (int32 LocalIndex = 0; LocalIndex < LocalInfo.Slots.Num(); ++LocalIndex)
-	{
-		UsdUtils::FUsdPrimMaterialSlot& LocalSlot = LocalInfo.Slots[LocalIndex];
+		const UsdUtils::FUsdPrimMaterialSlot& Slot = MaterialAssignments[ Index ];
 
-		int32 CombinedMaterialIndex = INDEX_NONE;
-		if ( int32* FoundCombinedMaterialIndex = SlotToCombinedMaterialIndex.Find( LocalSlot ) )
+		// Combine entries in this way so that we can append PrimPaths
+		TMap< UsdUtils::FUsdPrimMaterialSlot, int32 >::TKeyIterator KeyIt = SlotToCombinedMaterialIndex.CreateKeyIterator( Slot );
+		if ( KeyIt )
 		{
-			CombinedMaterialIndex = *FoundCombinedMaterialIndex;
+			KeyIt.Key().PrimPaths.Append( Slot.PrimPaths );
+			KeyIt.Value() = Index;
 		}
 		else
 		{
-			CombinedMaterialIndex = MaterialAssignments.Add( LocalSlot );
-			SlotToCombinedMaterialIndex.Add( LocalSlot, CombinedMaterialIndex );
+			SlotToCombinedMaterialIndex.Add( Slot, Index );
 		}
+	}
+	for (int32 LocalIndex = 0; LocalIndex < LocalInfo.Slots.Num(); ++LocalIndex)
+	{
+		const UsdUtils::FUsdPrimMaterialSlot& LocalSlot = LocalInfo.Slots[ LocalIndex ];
 
-		LocalToCombinedMaterialIndex.Add( LocalIndex, CombinedMaterialIndex );
+		// Combine entries in this way so that we can append PrimPaths
+		TMap< UsdUtils::FUsdPrimMaterialSlot, int32 >::TKeyIterator KeyIt = SlotToCombinedMaterialIndex.CreateKeyIterator( LocalSlot );
+		if ( KeyIt )
+		{
+			KeyIt.Key().PrimPaths.Append( LocalSlot.PrimPaths );
+
+			const int32 ExistingCombinedIndex = KeyIt.Value();
+			LocalToCombinedMaterialIndex[ LocalIndex ] = ExistingCombinedIndex;
+		}
+		else
+		{
+			int32 NewIndex = MaterialAssignments.Add( LocalSlot );
+			SlotToCombinedMaterialIndex.Add( LocalSlot, NewIndex );
+			LocalToCombinedMaterialIndex[ LocalIndex ] = NewIndex;
+		}
+	}
+	// Now that we merged all prim paths into they keys of CombinedMaterialSlotsToIndex, let's copy them back into
+	// our output
+	for ( UsdUtils::FUsdPrimMaterialSlot& Slot : MaterialAssignments )
+	{
+		TMap< UsdUtils::FUsdPrimMaterialSlot, int32 >::TKeyIterator KeyIt = SlotToCombinedMaterialIndex.CreateKeyIterator( Slot );
+		ensure( KeyIt );
+		Slot.PrimPaths = KeyIt.Key().PrimPaths;
 	}
 
 	// Retrieve vertex colors
@@ -1760,13 +1791,15 @@ bool UsdToUnreal::ConvertSkinnedMesh(
 	VtArray<float> JointWeights;
 	SkinningQuery.ComputeVaryingJointInfluences(NumPoints, &JointIndices, &JointWeights);
 
-	// Recompute the joint influences if it's above the limit
+	// Recompute the joint influences if we need to
 	uint32 NumInfluencesPerComponent = SkinningQuery.GetNumInfluencesPerComponent();
-	if (NumInfluencesPerComponent > MAX_INFLUENCES_PER_STREAM)
+	const uint32 MaxAllowedInfluences = EXTRA_BONE_INFLUENCES;
+	const bool bUseUnlimitedBoneInfluences = FGPUBaseSkinVertexFactory::UseUnlimitedBoneInfluences( NumInfluencesPerComponent );
+	if ( NumInfluencesPerComponent > MaxAllowedInfluences && !bUseUnlimitedBoneInfluences )
 	{
-		UsdSkelResizeInfluences(&JointIndices, NumInfluencesPerComponent, MAX_INFLUENCES_PER_STREAM);
-		UsdSkelResizeInfluences(&JointWeights, NumInfluencesPerComponent, MAX_INFLUENCES_PER_STREAM);
-		NumInfluencesPerComponent = MAX_INFLUENCES_PER_STREAM;
+		UsdSkelResizeInfluences( &JointIndices, NumInfluencesPerComponent, MaxAllowedInfluences );
+		UsdSkelResizeInfluences( &JointWeights, NumInfluencesPerComponent, MaxAllowedInfluences );
+		NumInfluencesPerComponent = MaxAllowedInfluences;
 	}
 
 	// We keep track of which influences we added because we combine many Mesh prim (each with potentially a different
@@ -2084,6 +2117,7 @@ bool UsdToUnreal::ConvertSkelAnim(
 	// it will also create a transaction when importing into UE assets, and the level sequence assets can emit some warnings about it
 	const bool bShouldTransact = false;
 	Controller.OpenBracket( LOCTEXT( "ImportUSDAnimData_Bracket", "Importing USD Animation Data" ), bShouldTransact );
+	Controller.InitializeModel();
 	Controller.ResetModel( bShouldTransact );
 
 	// Bake the animation for each frame.
@@ -2150,7 +2184,7 @@ bool UsdToUnreal::ConvertSkelAnim(
 
 		for ( int32 BoneIndex = 0; BoneIndex < NumBones; ++BoneIndex )
 		{
-			Controller.AddBoneTrack( BoneInfo[ BoneIndex ].Name, bShouldTransact );
+			Controller.AddBoneCurve( BoneInfo[ BoneIndex ].Name, bShouldTransact );
 			Controller.SetBoneTrackKeys( BoneInfo[ BoneIndex ].Name, JointTracks[ BoneIndex ].PosKeys, JointTracks[ BoneIndex ].RotKeys, JointTracks[ BoneIndex ].ScaleKeys, bShouldTransact );
 		}
 	}
@@ -2339,8 +2373,11 @@ bool UsdToUnreal::ConvertSkelAnim(
 	OutSkeletalAnimationAsset->ImportFileFramerate = LayerTimeCodesPerSecond;
 	OutSkeletalAnimationAsset->ImportResampleFramerate = LayerTimeCodesPerSecond;
 
-	Controller.SetPlayLength( LayerSequenceLengthSeconds, bShouldTransact );
-	Controller.SetFrameRate( FFrameRate( LayerTimeCodesPerSecond, 1 ), bShouldTransact );
+
+	const FFrameRate FrameRate(LayerTimeCodesPerSecond, 1);
+	Controller.SetFrameRate(FrameRate, bShouldTransact);
+	const FFrameNumber FrameNumber = FrameRate.AsFrameNumber(LayerSequenceLengthSeconds);
+	Controller.SetNumberOfFrames(FrameNumber, bShouldTransact);
 	Controller.NotifyPopulated(); // This call is important to get the controller to not use the sampling frequency as framerate
 	Controller.CloseBracket( bShouldTransact );
 
@@ -2494,7 +2531,7 @@ USkeletalMesh* UsdToUnreal::GetSkeletalMeshFromImportData(
 	// For now, create a new USkeletalMesh
 	// Note: Remember to initialize UsedMorphTargetNames with existing morph targets, whenever the SkeletalMesh is reused
 	FName UniqueMeshName = MakeUniqueObjectName( GetTransientPackage(), USkeletalMesh::StaticClass(), MeshName );
-	USkeletalMesh* SkeletalMesh = NewObject<USkeletalMesh>(GetTransientPackage(), UniqueMeshName, ObjectFlags | EObjectFlags::RF_Public);
+	USkeletalMesh* SkeletalMesh = NewObject<USkeletalMesh>(GetTransientPackage(), UniqueMeshName, ObjectFlags | EObjectFlags::RF_Public | EObjectFlags::RF_Transient);
 
 	// Process reference skeleton from import data
 	int32 SkeletalDepth = 0;
@@ -2618,7 +2655,7 @@ USkeletalMesh* UsdToUnreal::GetSkeletalMeshFromImportData(
 
 	// Generate a Skeleton and associate it to the SkeletalMesh
 	FName UniqueSkeletonName = MakeUniqueObjectName( GetTransientPackage(), USkeleton::StaticClass(), SkeletonName );
-	USkeleton* Skeleton = NewObject<USkeleton>( GetTransientPackage(), UniqueSkeletonName, ObjectFlags | EObjectFlags::RF_Public );
+	USkeleton* Skeleton = NewObject<USkeleton>( GetTransientPackage(), UniqueSkeletonName, ObjectFlags | EObjectFlags::RF_Public | EObjectFlags::RF_Transient );
 	Skeleton->MergeAllBonesToBoneTree(SkeletalMesh);
 	Skeleton->SetPreviewMesh(SkeletalMesh);
 	SkeletalMesh->SetSkeleton(Skeleton);
@@ -3267,7 +3304,7 @@ bool UnrealToUsd::ConvertAnimSequence( UAnimSequence* AnimSequence, pxr::UsdPrim
 		pxr::UsdAttribute ScalesAttr = UsdSkelAnim.CreateScalesAttr();
 
 		UDebugSkelMeshComponent* DebugSkelMeshComponent = NewObject< UDebugSkelMeshComponent >();
-		DebugSkelMeshComponent->RegisterComponentWithWorld( GWorld );
+		DebugSkelMeshComponent->RegisterComponentWithWorld( IUsdClassesModule::GetCurrentWorld() );
 		DebugSkelMeshComponent->EmptyOverrideMaterials();
 		DebugSkelMeshComponent->SetSkeletalMesh( SkeletalMesh );
 
@@ -3357,9 +3394,9 @@ bool UnrealToUsd::ConvertControlRigSection(
 
 	double StartTime = FPlatformTime::Cycles64();
 
-	// TODO: This does not seem necessary
 	ControlRig->Initialize();
 	ControlRig->RequestInit();
+	ControlRig->Evaluate_AnyThread(); // Important as it runs the Construction event, which can change topology
 
 	// Record how the topology looks while we setup our arrays and maps. If this changes during
 	// baking we'll just drop everything and return
@@ -3374,11 +3411,22 @@ bool UnrealToUsd::ConvertControlRigSection(
 	// This works because the topology won't change in here, and bone names are unique across the entire skeleton
 	// Its possible we'll be putting INDEX_NONEs into RigIndexToRefSkeletonIndex, but that's alright.
 	TArray<int32> RigJointIndexToRefSkeletonIndex;
-	TArray<FRigBoneElement*> InitialBoneElements = InitialHierarchy->GetBones();
-	for ( FRigBoneElement* RigBone : InitialBoneElements )
-	{
-		RigJointIndexToRefSkeletonIndex.Add( InRefSkeleton.FindBoneIndex( RigBone->GetName() ) );
-	}
+	TFunction<void()> RegenerateRigJointIndexToRefSkeletonIndex =
+		[ControlRig, &RigJointIndexToRefSkeletonIndex, &InRefSkeleton]()
+		{
+			URigHierarchy* Hierarchy = ControlRig->GetHierarchy();
+			if (!Hierarchy)
+			{
+				return;
+			}
+
+			RigJointIndexToRefSkeletonIndex.Reset();
+			for (FRigBoneElement* RigBone : Hierarchy->GetBones())
+			{
+				RigJointIndexToRefSkeletonIndex.Add(InRefSkeleton.FindBoneIndex(RigBone->GetName()));
+			}
+		};
+	RegenerateRigJointIndexToRefSkeletonIndex();
 
 	pxr::UsdAttribute JointsAttr = SkelAnim.CreateJointsAttr();
 	UnrealToUsd::ConvertJointsAttribute( InRefSkeleton, JointsAttr );
@@ -3635,10 +3683,17 @@ bool UnrealToUsd::ConvertControlRigSection(
 		ControlRig->Evaluate_AnyThread();
 
 		URigHierarchy* Hierarchy = ControlRig->GetHierarchy();
-		if ( !Hierarchy || Hierarchy->GetTopologyVersion() != TopologyVersion )
+		if ( !Hierarchy )
 		{
-			UE_LOG( LogUsd, Error, TEXT( "Baking Control Rig tracks for rig '%s' failed because the rig changed topology during baking process" ), *ControlRig->GetPathName() );
+			UE_LOG( LogUsd, Error, TEXT( "Baking Control Rig tracks for rig '%s' failed" ), *ControlRig->GetPathName() );
 			return false;
+		}
+
+		if (Hierarchy->GetTopologyVersion() != TopologyVersion)
+		{
+			UE_LOG(LogUsd, Log, TEXT("Regenerating ControlRig to reference skeleton mapping for rig '%s' as its topology changed"), *ControlRig->GetPathName());
+			RegenerateRigJointIndexToRefSkeletonIndex();
+			TopologyVersion = Hierarchy->GetTopologyVersion();
 		}
 
 		// Sadly we have to fetch these each frame as these are regenerated on each evaluation of the Sequencer

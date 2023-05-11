@@ -2,12 +2,11 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "ContentBrowserItemData.h"
 #include "AssetRegistry/AssetData.h"
 #include "UObject/GCObject.h"
-#include "Containers/Set.h"
 
+class UAssetDefinition;
 class IAssetTypeActions;
 class FAssetThumbnail;
 class UFactory;
@@ -56,6 +55,8 @@ public:
 	UObject* LoadAsset(TSet<FName> LoadTags = {}) const;
 
 	TSharedPtr<IAssetTypeActions> GetAssetTypeActions() const;
+	
+	const UAssetDefinition* GetAssetDefinition() const;
 
 	const FString& GetFilename() const;
 
@@ -72,6 +73,9 @@ private:
 
 	mutable bool bHasCachedAssetTypeActionsPtr = false;
 	mutable TWeakPtr<IAssetTypeActions> CachedAssetTypeActionsPtr;
+
+	mutable bool bHasCachedAssetDefinitionPtr = false;
+	mutable TWeakObjectPtr<const UAssetDefinition> CachedAssetDefinitionPtr;
 
 	mutable bool bHasCachedFilename = false;
 	mutable FString CachedFilename;
@@ -127,3 +131,7 @@ private:
 	/** The context to use when creating the asset. Used when initializing an asset with another related asset. */
 	TWeakObjectPtr<UObject> SourceObject;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

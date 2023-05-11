@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "RigUnit_ProjectTransformToNewParent.h"
-#include "Units/Math/RigUnit_MathTransform.h"
+#include "RigVMFunctions/Math/RigVMFunction_MathTransform.h"
 #include "Units/Hierarchy/RigUnit_GetTransform.h"
 #include "Units/RigUnitContext.h"
 
@@ -16,10 +16,10 @@ FRigUnit_ProjectTransformToNewParent_Execute()
 	FTransform NewParentTransform = FTransform::Identity;
 	FTransform RelativeTransform = FTransform::Identity;
 
-	FRigUnit_GetTransform::StaticExecute(RigVMExecuteContext, Child, EBoneGetterSetterMode::GlobalSpace, bChildInitial, ChildTransform, CachedChild, Context);
-	FRigUnit_GetTransform::StaticExecute(RigVMExecuteContext, OldParent, EBoneGetterSetterMode::GlobalSpace, bOldParentInitial, OldParentTransform, CachedOldParent, Context);
-	FRigUnit_GetTransform::StaticExecute(RigVMExecuteContext, NewParent, EBoneGetterSetterMode::GlobalSpace, bNewParentInitial, NewParentTransform, CachedNewParent, Context);
-	FRigUnit_MathTransformMakeRelative::StaticExecute(RigVMExecuteContext, ChildTransform, OldParentTransform, RelativeTransform, Context);
-	FRigUnit_MathTransformMakeAbsolute::StaticExecute(RigVMExecuteContext, RelativeTransform, NewParentTransform, Transform, Context);
+	FRigUnit_GetTransform::StaticExecute(ExecuteContext, Child, ERigVMTransformSpace::GlobalSpace, bChildInitial, ChildTransform, CachedChild);
+	FRigUnit_GetTransform::StaticExecute(ExecuteContext, OldParent, ERigVMTransformSpace::GlobalSpace, bOldParentInitial, OldParentTransform, CachedOldParent);
+	FRigUnit_GetTransform::StaticExecute(ExecuteContext, NewParent, ERigVMTransformSpace::GlobalSpace, bNewParentInitial, NewParentTransform, CachedNewParent);
+	FRigVMFunction_MathTransformMakeRelative::StaticExecute(ExecuteContext, ChildTransform, OldParentTransform, RelativeTransform);
+	FRigVMFunction_MathTransformMakeAbsolute::StaticExecute(ExecuteContext, RelativeTransform, NewParentTransform, Transform);
 }
 

@@ -72,7 +72,7 @@
 
 // Whether the CPU is x86/x64 (i.e. both 32 and 64-bit variants)
 #ifndef PLATFORM_CPU_X86_FAMILY
-	#if (defined(_M_IX86) || defined(__i386__) || defined(_M_X64) || defined(__amd64__) || defined(__x86_64__))
+	#if (defined(_M_IX86) || defined(__i386__) || defined(_M_X64) || defined(__amd64__) || defined(__x86_64__)) && !defined(_M_ARM64EC)
 		#define PLATFORM_CPU_X86_FAMILY	1
 	#else
 		#define PLATFORM_CPU_X86_FAMILY	0
@@ -81,7 +81,7 @@
 
 // Whether the CPU is AArch32/AArch64 (i.e. both 32 and 64-bit variants)
 #ifndef PLATFORM_CPU_ARM_FAMILY
-	#if (defined(__arm__) || defined(_M_ARM) || defined(__aarch64__) || defined(_M_ARM64))
+	#if (defined(__arm__) || defined(_M_ARM) || defined(__aarch64__) || defined(_M_ARM64) || defined(_M_ARM64EC))
 		#define PLATFORM_CPU_ARM_FAMILY	1
 	#else
 		#define PLATFORM_CPU_ARM_FAMILY	0
@@ -162,12 +162,18 @@
 // If PLATFORM_MAYBE_HAS_### is 1, then ### intrinsics are compilable.
 // This does not guarantee that the intrinsics are runnable on all instances of the platform however; a runtime check such as cpuid may be required to confirm availability.
 // If PLATFORM_ALWAYS_HAS_### is 1, then ## intrinsics will compile and run on all instances of the platform.  PLATFORM_ALWAYS_HAS_### == 1 implies PLATFORM_MAYBE_HAS_### == 1.
+
+// UE5.2+ requires SSE4.2.
 #ifndef PLATFORM_MAYBE_HAS_SSE4_1
-	#define PLATFORM_MAYBE_HAS_SSE4_1			0
+	#define PLATFORM_MAYBE_HAS_SSE4_1			PLATFORM_CPU_X86_FAMILY
 #endif
 #ifndef PLATFORM_ALWAYS_HAS_SSE4_1
-	#define PLATFORM_ALWAYS_HAS_SSE4_1			0
+	#define PLATFORM_ALWAYS_HAS_SSE4_1			PLATFORM_CPU_X86_FAMILY
 #endif
+#ifndef PLATFORM_ALWAYS_HAS_SSE4_2
+	#define PLATFORM_ALWAYS_HAS_SSE4_2			PLATFORM_CPU_X86_FAMILY
+#endif
+
 #ifndef PLATFORM_MAYBE_HAS_AVX
 	#define PLATFORM_MAYBE_HAS_AVX				0
 #endif
@@ -175,7 +181,7 @@
 	#define PLATFORM_ALWAYS_HAS_AVX				0
 #endif
 #ifndef PLATFORM_ALWAYS_HAS_AVX_2
-#define PLATFORM_ALWAYS_HAS_AVX_2				0
+	#define PLATFORM_ALWAYS_HAS_AVX_2			0
 #endif
 #ifndef PLATFORM_ALWAYS_HAS_FMA3
 	#define PLATFORM_ALWAYS_HAS_FMA3			0
@@ -237,6 +243,9 @@
 #endif
 #ifndef PLATFORM_COMPILER_HAS_FOLD_EXPRESSIONS
 	#define PLATFORM_COMPILER_HAS_FOLD_EXPRESSIONS 0
+#endif
+#ifndef PLATFORM_COMPILER_HAS_GENERATED_COMPARISON_OPERATORS
+	#define PLATFORM_COMPILER_HAS_GENERATED_COMPARISON_OPERATORS (__cplusplus >= 202002L)
 #endif
 #ifndef PLATFORM_TCHAR_IS_4_BYTES
 	#define PLATFORM_TCHAR_IS_4_BYTES			0
@@ -498,10 +507,6 @@
 	#define PLATFORM_USE_ANSI_MEMALIGN							0
 #endif
 
-#ifndef PLATFORM_USE_ANSI_POSIX_MALLOC
-	#define PLATFORM_USE_ANSI_POSIX_MALLOC						0
-#endif
-
 #ifndef PLATFORM_IS_ANSI_MALLOC_THREADSAFE
 	#define PLATFORM_IS_ANSI_MALLOC_THREADSAFE					0
 #endif
@@ -514,17 +519,12 @@
 	#define PLATFORM_SUPPORTS_VORBIS_CODEC						1
 #endif
 
-
 #ifndef PLATFORM_USE_MINIMAL_HANG_DETECTION
 	#define PLATFORM_USE_MINIMAL_HANG_DETECTION					0
 #endif
 
 #ifndef PLATFORM_USE_GENERIC_STRING_IMPLEMENTATION
 	#define PLATFORM_USE_GENERIC_STRING_IMPLEMENTATION			1
-#endif
-
-#ifndef PLATFORM_SUPPORTS_LLM
-	#define PLATFORM_SUPPORTS_LLM								1
 #endif
 
 #ifndef PLATFORM_ALLOW_ALLOCATIONS_IN_FASYNCWRITER_SERIALIZEBUFFERTOARCHIVE
@@ -534,6 +534,7 @@
 #ifndef PLATFORM_HAS_FPlatformVirtualMemoryBlock
 	#define	PLATFORM_HAS_FPlatformVirtualMemoryBlock 1
 #endif
+
 #ifndef PLATFORM_BYPASS_PAK_PRECACHE
 	#define PLATFORM_BYPASS_PAK_PRECACHE 0
 #endif
@@ -542,56 +543,12 @@
 	#define PLATFORM_SUPPORTS_FLIP_TRACKING 0
 #endif
 
-#ifndef PLATFORM_USE_FULL_TASK_GRAPH
-	#define PLATFORM_USE_FULL_TASK_GRAPH						1
-#endif
-
-#ifndef PLATFORM_USE_ANSI_POSIX_MALLOC
-	#define PLATFORM_USE_ANSI_POSIX_MALLOC						0
-#endif
-
-#ifndef PLATFORM_USE_ANSI_MEMALIGN
-	#define PLATFORM_USE_ANSI_MEMALIGN							0
-#endif
-
-#ifndef PLATFORM_USE_ANSI_POSIX_MALLOC
-	#define PLATFORM_USE_ANSI_POSIX_MALLOC						0
-#endif
-
-#ifndef PLATFORM_IS_ANSI_MALLOC_THREADSAFE
-	#define PLATFORM_IS_ANSI_MALLOC_THREADSAFE					0
-#endif
-
-#ifndef PLATFORM_SUPPORTS_OPUS_CODEC
-	#define PLATFORM_SUPPORTS_OPUS_CODEC						1
-#endif
-
-#ifndef PLATFORM_SUPPORTS_VORBIS_CODEC
-	#define PLATFORM_SUPPORTS_VORBIS_CODEC						1
-#endif
-
-#ifndef PLATFORM_USE_MINIMAL_HANG_DETECTION
-	#define PLATFORM_USE_MINIMAL_HANG_DETECTION					0
-#endif
-
-#ifndef PLATFORM_USE_GENERIC_STRING_IMPLEMENTATION
-	#define PLATFORM_USE_GENERIC_STRING_IMPLEMENTATION			1
-#endif
-
 #ifndef PLATFORM_USE_SHOWFLAGS_ALWAYS_BITFIELD
 	#define	PLATFORM_USE_SHOWFLAGS_ALWAYS_BITFIELD				1
 #endif
 
-#ifndef PLATFORM_SUPPORTS_LLM
-	#define PLATFORM_SUPPORTS_LLM								1
-#endif
-
-#ifndef PLATFORM_ALLOW_ALLOCATIONS_IN_FASYNCWRITER_SERIALIZEBUFFERTOARCHIVE
-	#define	PLATFORM_ALLOW_ALLOCATIONS_IN_FASYNCWRITER_SERIALIZEBUFFERTOARCHIVE 1
-#endif
-
-#ifndef PLATFORM_HAS_FPlatformVirtualMemoryBlock
-	#define	PLATFORM_HAS_FPlatformVirtualMemoryBlock 1
+#ifndef PLATFORM_USE_CACHED_SLACK_MEMORY_IN_MEMORY_STATS
+	#define	PLATFORM_USE_CACHED_SLACK_MEMORY_IN_MEMORY_STATS	0
 #endif
 
 #ifndef PLATFORM_SUPPORTS_LANDSCAPE_VISUAL_MESH_LOD_STREAMING
@@ -648,6 +605,10 @@
 
 #ifndef PLATFORM_CONSOLE_DYNAMIC_LINK
 	#define PLATFORM_CONSOLE_DYNAMIC_LINK 0
+#endif
+
+#ifndef PLATFORM_MAC_ENABLE_EXPERIMENTAL_NANITE_SUPPORT
+	#define PLATFORM_MAC_ENABLE_EXPERIMENTAL_NANITE_SUPPORT 0
 #endif
 
 // deprecated, do not use
@@ -737,6 +698,11 @@
 	#define FUNCTION_NON_NULL_RETURN_END
 #endif
 
+/* Wrap lifetimebound annotations to indicate that a function argument must outlive a return value or constructed object */
+#ifndef UE_LIFETIMEBOUND
+	#define UE_LIFETIMEBOUND
+#endif
+
 /** Promise expression is true. Compiler can optimize accordingly with undefined behavior if wrong. Static analyzers understand this.  */
 #ifndef UE_ASSUME
 	#if defined(__clang__)
@@ -779,8 +745,8 @@
 #endif
 
 // Enable/disable optimizations for a specific function to improve build times
-#define BEGIN_FUNCTION_BUILD_OPTIMIZATION PRAGMA_DISABLE_OPTIMIZATION
-#define END_FUNCTION_BUILD_OPTIMIZATION   PRAGMA_ENABLE_OPTIMIZATION
+#define BEGIN_FUNCTION_BUILD_OPTIMIZATION UE_DISABLE_OPTIMIZATION_SHIP
+#define END_FUNCTION_BUILD_OPTIMIZATION   UE_ENABLE_OPTIMIZATION_SHIP
 
 #ifndef FORCEINLINE_DEBUGGABLE_ACTUAL
 	#define FORCEINLINE_DEBUGGABLE_ACTUAL inline
@@ -932,8 +898,6 @@ int32 main(int32 ArgC, ANSICHAR* Utf8ArgV[]) \
 int32 tchar_main(int32 ArgC, TCHAR* ArgV[])
 #endif
 
-template<typename,typename> struct TAreTypesEqual;
-
 //--------------------------------------------------------------------------------------------
 // POD types refactor for porting old code:
 //
@@ -1032,16 +996,10 @@ typedef FPlatformTypes::TYPE_OF_NULLPTR	TYPE_OF_NULLPTR;
 namespace TypeTests
 {
 	template <typename A, typename B>
-	struct TAreTypesEqual
-	{
-		static constexpr bool Value = false;
-	};
+	inline constexpr bool TAreTypesEqual_V = false;
 
 	template <typename T>
-	struct TAreTypesEqual<T, T>
-	{
-		static constexpr bool Value = true;
-	};
+	inline constexpr bool TAreTypesEqual_V<T, T> = true;
 
 #if PLATFORM_TCHAR_IS_4_BYTES
 	static_assert(sizeof(TCHAR) == 4, "TCHAR size must be 4 bytes.");
@@ -1061,24 +1019,24 @@ namespace TypeTests
 
 	static_assert(char(-1) < char(0), "Unsigned char type test failed.");
 
-	static_assert((!TAreTypesEqual<ANSICHAR, WIDECHAR>::Value),  "ANSICHAR and WIDECHAR should be different types.");
-	static_assert((!TAreTypesEqual<ANSICHAR, UTF8CHAR>::Value),  "ANSICHAR and UTF8CHAR should be different types.");
+	static_assert((!TAreTypesEqual_V<ANSICHAR, WIDECHAR>),  "ANSICHAR and WIDECHAR should be different types.");
+	static_assert((!TAreTypesEqual_V<ANSICHAR, UTF8CHAR>),  "ANSICHAR and UTF8CHAR should be different types.");
 #if !PLATFORM_UCS2CHAR_IS_UTF16CHAR
 	// We want these types to be different, because we want to be able to determine whether an encoding
 	// is fixed-width (UCS2CHAR) or variable-width (UTF16CHAR) at compile time.
-	static_assert((!TAreTypesEqual<UCS2CHAR, UTF16CHAR>::Value), "UCS2CHAR and UTF16CHAR should be different types.");
+	static_assert((!TAreTypesEqual_V<UCS2CHAR, UTF16CHAR>), "UCS2CHAR and UTF16CHAR should be different types.");
 #else
 	// We don't want these types to be equal, but while this macro exists, they ought to be equal
-	static_assert(TAreTypesEqual<UCS2CHAR, UTF16CHAR>::Value, "UCS2CHAR and UTF16CHAR are expected to be the same type.");
+	static_assert(TAreTypesEqual_V<UCS2CHAR, UTF16CHAR>, "UCS2CHAR and UTF16CHAR are expected to be the same type.");
 #endif
-	static_assert((!TAreTypesEqual<ANSICHAR, UCS2CHAR>::Value),  "ANSICHAR and UCS2CHAR should be different types.");
-	static_assert((!TAreTypesEqual<WIDECHAR, UCS2CHAR>::Value),  "WIDECHAR and UCS2CHAR should be different types.");
-	static_assert(TAreTypesEqual<TCHAR, ANSICHAR>::Value || TAreTypesEqual<TCHAR, WIDECHAR>::Value || TAreTypesEqual<TCHAR, UTF8CHAR>::Value, "TCHAR should either be ANSICHAR, WIDECHAR or UTF8CHAR.");
+	static_assert((!TAreTypesEqual_V<ANSICHAR, UCS2CHAR>),  "ANSICHAR and UCS2CHAR should be different types.");
+	static_assert((!TAreTypesEqual_V<WIDECHAR, UCS2CHAR>),  "WIDECHAR and UCS2CHAR should be different types.");
+	static_assert(TAreTypesEqual_V<TCHAR, ANSICHAR> || TAreTypesEqual_V<TCHAR, WIDECHAR> || TAreTypesEqual_V<TCHAR, UTF8CHAR>, "TCHAR should either be ANSICHAR, WIDECHAR or UTF8CHAR.");
 
 #if PLATFORM_WIDECHAR_IS_CHAR16
-	static_assert(TAreTypesEqual<WIDECHAR, char16_t>::Value, "WIDECHAR should be char16_t");
+	static_assert(TAreTypesEqual_V<WIDECHAR, char16_t>, "WIDECHAR should be char16_t");
 #else
-	static_assert(TAreTypesEqual<WIDECHAR, wchar_t>::Value, "WIDECHAR should be wchar_t");
+	static_assert(TAreTypesEqual_V<WIDECHAR, wchar_t>, "WIDECHAR should be wchar_t");
 #endif
 
 	static_assert(sizeof(uint8) == 1, "uint8 type size test failed.");

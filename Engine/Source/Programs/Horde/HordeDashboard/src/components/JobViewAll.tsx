@@ -69,7 +69,7 @@ const JobFilterPanel: React.FC = () => {
     const { streamId } = useParams<{ streamId: string }>();
 
     return <Stack>
-        <JobFilterBar streamId={streamId} />
+        <JobFilterBar streamId={streamId!} />
     </Stack>
 }
 
@@ -517,7 +517,7 @@ const JobViewAllInner: React.FC<{ filter: JobFilterSimple }> = observer(({ filte
             preflightStartedByUserId = dashboard.userId;
         }
 
-        if (jobHandler.filter(stream, jobFilter.templates?.map(t => t.ref!.id), preflightStartedByUserId)) {
+        if (jobHandler.filter(stream, jobFilter.templates?.map(t => t.id), preflightStartedByUserId)) {
 
         }
     }

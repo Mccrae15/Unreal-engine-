@@ -8,6 +8,9 @@ SkeletalMeshUpdate.h: Helpers to stream in and out skeletal mesh LODs.
 
 #include "CoreMinimal.h"
 #include "Engine/SkeletalMesh.h"
+#include "IO/IoDispatcher.h"
+#include "RenderAssetUpdate.h"
+#include "Rendering/SkinWeightVertexBuffer.h"
 #include "Serialization/BulkData.h"
 
 /**
@@ -80,7 +83,6 @@ protected:
 		FBufferRHIRef ClothVertexBuffer;
 		FBufferRHIRef IndexBuffer;
 		TArray<TPair<FName, FSkinWeightRHIInfo>> AltSkinWeightVertexBuffers;
-		FBufferRHIRef MorphBuffer;
 
 		void CreateFromCPUData_RenderThread(FSkeletalMeshLODRenderData& LODResource);
 		void CreateFromCPUData_Async(FSkeletalMeshLODRenderData& LODResource);
@@ -88,8 +90,7 @@ protected:
 		void SafeRelease();
 
 		/** Transfer ownership of buffers to a LOD resource */
-		template <uint32 MaxNumUpdates>
-		void TransferBuffers(FSkeletalMeshLODRenderData& LODResource, TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher);
+		void TransferBuffers(FSkeletalMeshLODRenderData& LODResource, FRHIResourceUpdateBatcher& Batcher);
 
 		void CheckIsNull() const;
 	};

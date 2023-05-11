@@ -32,6 +32,11 @@ protected:
 	}
 
 public:
+	
+	virtual ~FModel() override
+	{
+		FModel::Empty();
+	}
 
 	virtual void Serialize(FCADKernelArchive& Ar) override
 	{
@@ -85,9 +90,10 @@ public:
 		Bodies.Add(InBody);
 	}
 
-	void Empty()
+	virtual void Empty() override
 	{
 		Bodies.Empty();
+		FTopologicalShapeEntity::Empty();
 	}
 
 	void RemoveBody(TSharedPtr<FBody> InBody)

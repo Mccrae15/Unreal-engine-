@@ -16,7 +16,6 @@
 #include "HAL/Platform.h"
 #include "Misc/EnumClassFlags.h"
 #include "Misc/Optional.h"
-#include "PackageResultsMessage.h"
 #include "Templates/SharedPointer.h"
 #include "UObject/GCObject.h"
 #include "UObject/NameTypes.h"
@@ -147,6 +146,7 @@ public:
 		bool bCookSucceeded : 1;
 		bool bExplored : 1;
 		bool bSaveTimedOut : 1;
+		bool bCookable : 1;
 	};
 
 	FPackageData(FPackageDatas& PackageDatas, const FName& InPackageName, const FName& InFileName);
@@ -207,6 +207,12 @@ public:
 
 	/** Return true if and only if every element of Platforms has been explored. Returns true if Platforms is empty. */
 	bool HasAllExploredPlatforms(const TArrayView<const ITargetPlatform* const>& Platforms) const;
+
+	/**
+	 * Return true if this package is cookable for at least one of the platforms.
+	 * If this package has not been explored will return true
+	 */
+	bool CanCookForPlatforms() const;
 
 	/**
 	 * Get the flag for whether this InProgress PackageData has been marked as an urgent request
@@ -484,8 +490,11 @@ public:
 
 	/** For MultiProcessCooks, Get the id of the worker this Package is assigned to; InvalidId means owned by local. */
 	FWorkerId GetWorkerAssignment() const { return WorkerAssignment; }
-	/** Set the id of the worker this Package is assigned to. */
-	void SetWorkerAssignment(FWorkerId InWorkerAssignment) { WorkerAssignment = InWorkerAssignment; }
+	/**
+	 * Set the id of the worker this Package is assigned to. If value changes from Valid to Invalid and SendFlags
+	 * includes QueueRemove, also calls NotifyRemovedFromWorker.
+	 */
+	void SetWorkerAssignment(FWorkerId InWorkerAssignment, ESendFlags SendFlags = ESendFlags::QueueAddAndRemove);
 	/** Get the workerid that is the only worker allowed to cook this package; InvalidId means no constraint. */
 	FWorkerId GetWorkerAssignmentConstraint() const { return WorkerAssignmentConstraint; }
 	/** Set the workerid that is the only worker allowed to cook this package; default is InvalidId; */
@@ -493,9 +502,6 @@ public:
 
 	/** Marshall this PackageData to a ConstructData that can be used later or on a remote machine to reconstruct it. */
 	FConstructPackageData CreateConstructData();
-
-	FPackageRemoteResult& GetOrAddPackageRemoteResult();
-	TUniquePtr<FPackageRemoteResult>& GetPackageRemoteResult();
 private:
 	friend struct UE::Cook::FPackageDatas;
 
@@ -566,7 +572,6 @@ private:
 	void OnPackageDataFirstRequested(FInstigator&& InInstigator);
 
 	TUniquePtr<FGeneratorPackage> GeneratorPackage;
-	TUniquePtr<FPackageRemoteResult> PackageRemoteResult;
 	FGeneratorPackage* GeneratedOwner;
 	/** Data for each platform that has been interacted with by *this. */
 	TSortedMap<const ITargetPlatform*, FPlatformData> PlatformDatas;
@@ -574,6 +579,14 @@ private:
 	FCompletionCallback CompletionCallback;
 	FName PackageName;
 	FName FileName;
+
+	struct FAsyncRequest
+	{
+		int32 RequestID { 0 };
+		std::atomic<bool> bHasFinished { false };
+	};
+	TSharedPtr<FAsyncRequest> AsyncRequest;
+
 	TWeakObjectPtr<UPackage> Package;
 	/** The one-per-CookOnTheFlyServer owner of this PackageData. */
 	FPackageDatas& PackageDatas;
@@ -850,6 +863,8 @@ struct FPendingCookedPlatformData
 	FPendingCookedPlatformDataCancelManager* CancelManager;
 	/* Saved copy of the ClassName to use for resource releasing. */
 	FName ClassName;
+	/** Polling performance field: how many UpdatePeriods should we wait before polling again. */
+	int32 UpdatePeriodMultiplier = 1;
 	/** Flag for whether we have executed the release. */
 	bool bHasReleased;
 	/**
@@ -953,6 +968,8 @@ public:
 
 	FPackageDataSet& GetUnclusteredRequests() { return UnclusteredRequests; }
 	TRingBuffer<FRequestCluster>& GetRequestClusters() { return RequestClusters; }
+	FPackageDataSet& GetReadyRequestsUrgent() { return UrgentRequests; }
+	FPackageDataSet& GetReadyRequestsNormal() { return NormalRequests; }
 private:
 	FPackageDataSet UnclusteredRequests;
 	TRingBuffer<FRequestCluster> RequestClusters;
@@ -977,6 +994,8 @@ public:
 	FPackageDataQueue PreloadingQueue;
 	FPackageDataQueue EntryQueue;
 };
+
+typedef TArray<FPendingCookedPlatformData> FPendingCookedPlatformDataContainer;
 
 /*
  * Class that manages the list of all PackageDatas for a CookOnTheFlyServer. PackageDatas is an associative
@@ -1175,8 +1194,21 @@ public:
 	/** Remove all request data about the given platform from all PackageDatas and other memory used by *this. */
 	void OnRemoveSessionPlatform(const ITargetPlatform* TargetPlatform);
 
-	/** Return the container that tracks pending calls to BeginCacheForCookedPlatformData. */
-	TArray<FPendingCookedPlatformData>& GetPendingCookedPlatformDatas();
+	/** Enumerate PendingPlatformDatas: the list of pending calls to BeginCacheForCookedPlatformData. */
+	template <typename FunctionType>
+	void ForEachPendingCookedPlatformData(const FunctionType& Function)
+	{
+		for (FPendingCookedPlatformDataContainer& Container : PendingCookedPlatformDataLists)
+		{
+			for (FPendingCookedPlatformData& Data : Container)
+			{
+				Function(Data);
+			}
+		}
+	}
+	int32 GetPendingCookedPlatformDataNum() const { return PendingCookedPlatformDataNum; }
+	void AddPendingCookedPlatformData(FPendingCookedPlatformData&& Data);
+
 	/**
 	 * Iterate over all elements in PendingCookedPlatformDatas and check whether they have completed,
 	 * releasing their resources and pending count if so.
@@ -1212,7 +1244,8 @@ private:
 	FPackageDataMonitor Monitor;
 	TMap<FName, FPackageData*> PackageNameToPackageData;
 	TMap<FName, FPackageData*> FileNameToPackageData;
-	TArray<FPendingCookedPlatformData> PendingCookedPlatformDatas;
+	TRingBuffer<FPendingCookedPlatformDataContainer> PendingCookedPlatformDataLists;
+	int32 PendingCookedPlatformDataNum = 0;
 	FRequestQueue RequestQueue;
 	TFastPointerSet<FPackageData*> AssignedToWorkerSet;
 	FLoadPrepareQueue LoadPrepareQueue;

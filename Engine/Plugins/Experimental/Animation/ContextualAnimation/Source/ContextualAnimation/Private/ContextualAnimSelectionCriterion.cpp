@@ -2,10 +2,6 @@
 
 #include "ContextualAnimSelectionCriterion.h"
 #include "ContextualAnimSceneAsset.h"
-#include "Engine/World.h"
-#include "DrawDebugHelpers.h"
-#include "UObject/ObjectSaveContext.h"
-#include "SceneManagement.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ContextualAnimSelectionCriterion)
 
@@ -76,7 +72,7 @@ bool UContextualAnimSelectionCriterion_TriggerArea::DoesQuerierPassCondition(con
 		bResult = (FMath::Abs(AngleSum) > 0.001f);
 	}
 
-	UE_LOG(LogContextualAnim, Verbose, TEXT("UContextualAnimSelectionCriterion_TriggerArea: Primary: %s Querier: %s Result: %d"),
+	UE_LOG(LogContextualAnim, VeryVerbose, TEXT("UContextualAnimSelectionCriterion_TriggerArea: Primary: %s Querier: %s Result: %d"),
 		*GetNameSafe(Primary.GetActor()), *GetNameSafe(Querier.GetActor()), bResult);
 
 	return bResult;
@@ -113,8 +109,8 @@ bool UContextualAnimSelectionCriterion_Cone::DoesQuerierPassCondition(const FCon
 	}
 	
 
-	UE_LOG(LogContextualAnim, Verbose, TEXT("UContextualAnimSelectionCriterion_Cone: Primary: %s Querier: %s Mode: %s Distance: %.1f HalfAngle: %.1f Offset: %.1f Result: %d"), 
-		*GetNameSafe(Primary.GetActor()), *GetNameSafe(Querier.GetActor()), *UEnum::GetValueAsString(TEXT("ContextualAnimation.EContextualAnimCriterionAngleMode"), Mode), Distance, HalfAngle, Offset, bResult);
+	UE_LOG(LogContextualAnim, VeryVerbose, TEXT("UContextualAnimSelectionCriterion_Cone: Primary: %s Querier: %s Mode: %s Distance: %.1f HalfAngle: %.1f Offset: %.1f Result: %d"), 
+		*GetNameSafe(Primary.GetActor()), *GetNameSafe(Querier.GetActor()), *UEnum::GetValueAsString(TEXT("ContextualAnimation.EContextualAnimCriterionConeMode"), Mode), Distance, HalfAngle, Offset, bResult);
 
 	return bResult;
 }
@@ -139,7 +135,7 @@ bool UContextualAnimSelectionCriterion_Distance::DoesQuerierPassCondition(const 
 
 	const bool bResult = FMath::IsWithinInclusive(Distance, MinDistance, MaxDistance);
 
-	UE_LOG(LogContextualAnim, Verbose, TEXT("UContextualAnimSelectionCriterion_Distance: Primary: %s Querier: %s Mode: %s MaxDistance: %.1f MaxDist: %.1f Dist: %.1f Result: %d"),
+	UE_LOG(LogContextualAnim, VeryVerbose, TEXT("UContextualAnimSelectionCriterion_Distance: Primary: %s Querier: %s Mode: %s MaxDistance: %.1f MaxDist: %.1f Dist: %.1f Result: %d"),
 		*GetNameSafe(Primary.GetActor()), *GetNameSafe(Querier.GetActor()), *UEnum::GetValueAsString(TEXT("ContextualAnimation.EContextualAnimCriterionDistanceMode"), Mode), MinDistance, MaxDistance, Distance, bResult);
 
 	return bResult;

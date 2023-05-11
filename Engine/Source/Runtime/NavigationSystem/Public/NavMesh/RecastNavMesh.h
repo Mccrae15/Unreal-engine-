@@ -20,7 +20,9 @@
 #define RECAST_DEFAULT_AREA			(RECAST_MAX_AREAS - 1)
 #define RECAST_LOW_AREA				(RECAST_MAX_AREAS - 2)
 #define RECAST_NULL_AREA			0
-#define RECAST_UNWALKABLE_POLY_COST	FLT_MAX // LWC_TODO_AI: This should be TNumericLimits<FVector::FReal>::Max() when costs are upgraded to FReals. Not until after 5.0!
+// Note poly costs are still floats in UE so we are using FLT_MAX as unwalkable still. 
+// Path CostLimit and Distance are based on FVector::FReal.
+#define RECAST_UNWALKABLE_POLY_COST	FLT_MAX 
 
 // If set, recast will use async workers for rebuilding tiles in runtime
 // All access to tile data must be guarded with critical sections
@@ -35,6 +37,10 @@
 
 //TIME_SLICE_NAV_REGEN must be 0 if we are async rebuilding recast
 #define TIME_SLICE_NAV_REGEN (ALLOW_TIME_SLICE_NAV_REGEN && !RECAST_ASYNC_REBUILDING)
+
+// LWC_TODO_AI Note we are using int32 here for X and Y which does mean that we could overflow the limit of an int for LWCoords
+// unless fairly large tile sizes are used.As WORLD_MAX is currently in flux until we have a better idea of what we are
+// going to be able to support its probably not worth investing time in this potential issue right now.
 
 class FPImplRecastNavMesh;
 class FRecastQueryFilter;
@@ -57,7 +63,7 @@ namespace ERecastPartitioning
 {
 	// keep in sync with rcRegionPartitioning enum!
 
-	enum Type
+	enum Type : int
 	{
 		Monotone,
 		Watershed,
@@ -107,13 +113,13 @@ public:
 namespace ERecastPathFlags
 {
 	/** If set, path won't be post processed. */
-	const int32 SkipStringPulling = (1 << 0);
+	inline const int32 SkipStringPulling = (1 << 0);
 
 	/** If set, path will contain navigation corridor. */
-	const int32 GenerateCorridor = (1 << 1);
+	inline const int32 GenerateCorridor = (1 << 1);
 
 	/** Make your game-specific flags start at this index */
-	const uint8 FirstAvailableFlag = 2;
+	inline const uint8 FirstAvailableFlag = 2;
 }
 
 #if WITH_RECAST
@@ -121,9 +127,9 @@ struct FRecastDebugPathfindingNode
 {
 	NavNodeRef PolyRef;
 	NavNodeRef ParentRef;
-	float Cost; // LWC_TODO_AI: These should be FVector::FReal in the long run! Not until after 5.0!
-	float TotalCost;
-	float Length;
+	FVector::FReal Cost = 0.;
+	FVector::FReal TotalCost = 0.;
+	FVector::FReal Length = 0.;
 
 	FVector NodePos;
 	TArray<FVector3f, TInlineAllocator<6> > Verts; // LWC_TODO: Precision loss. Issue here is regarding debug rendering needing to work with FVector3f.
@@ -133,14 +139,14 @@ struct FRecastDebugPathfindingNode
 	uint8 bOffMeshLink : 1;
 	uint8 bModified : 1;
 
-	FRecastDebugPathfindingNode() : PolyRef(0), ParentRef(0), NumVerts(0) {}
-	FRecastDebugPathfindingNode(NavNodeRef InPolyRef) : PolyRef(InPolyRef), ParentRef(0), NumVerts(0) {}
+	FRecastDebugPathfindingNode() : PolyRef(0), ParentRef(0), NumVerts(0), bOpenSet(0), bOffMeshLink(0), bModified(0) {}
+	FRecastDebugPathfindingNode(NavNodeRef InPolyRef) : PolyRef(InPolyRef), ParentRef(0), NumVerts(0), bOpenSet(0), bOffMeshLink(0), bModified(0) {}
 
 	FORCEINLINE bool operator==(const NavNodeRef& OtherPolyRef) const { return PolyRef == OtherPolyRef; }
 	FORCEINLINE bool operator==(const FRecastDebugPathfindingNode& Other) const { return PolyRef == Other.PolyRef; }
 	FORCEINLINE friend uint32 GetTypeHash(const FRecastDebugPathfindingNode& Other) { return GetTypeHash(Other.PolyRef); }
 
-	FORCEINLINE float GetHeuristicCost() const { return TotalCost - Cost; }
+	FORCEINLINE FVector::FReal GetHeuristicCost() const { return TotalCost - Cost; }
 };
 
 namespace ERecastDebugPathfindingFlags
@@ -211,10 +217,15 @@ struct FRecastDebugGeometry
 	};
 #endif // WITH_NAVMESH_SEGMENT_LINKS
 
+	static constexpr int32 BuildTimeBucketsCount = 5;
+	
 	TArray<FVector> MeshVerts;
+	
 	TArray<int32> AreaIndices[RECAST_MAX_AREAS];
 	TArray<int32> ForbiddenIndices;
 	TArray<int32> BuiltMeshIndices;
+	TArray<int32> TileBuildTimesIndices[BuildTimeBucketsCount];
+	
 	TArray<FVector> PolyEdges;
 	TArray<FVector> NavMeshEdges;
 	TArray<FOffMeshLink> OffMeshLinks;
@@ -237,8 +248,12 @@ struct FRecastDebugGeometry
 	int32 bGatherPolyEdges : 1;
 	int32 bGatherNavMeshEdges : 1;
 	int32 bMarkForbiddenPolys : 1;
+	int32 bGatherTileBuildTimesHeatMap : 1;
+
+	double MinTileBuildTime = DBL_MAX;
+	double MaxTileBuildTime = 0.;
 	
-	FRecastDebugGeometry() : bGatherPolyEdges(false), bGatherNavMeshEdges(false), bMarkForbiddenPolys(false)
+	FRecastDebugGeometry() : bGatherPolyEdges(false), bGatherNavMeshEdges(false), bMarkForbiddenPolys(false), bGatherTileBuildTimesHeatMap(false)
 	{}
 
 	uint32 NAVIGATIONSYSTEM_API GetAllocatedSize() const;
@@ -300,8 +315,7 @@ struct FNavigationWallEdge
 };
 #endif //WITH_RECAST
 
-
-USTRUCT()
+USTRUCT(meta=(Deprecated = "5.2"))
 struct NAVIGATIONSYSTEM_API FRecastNavMeshGenerationProperties
 {
 	GENERATED_BODY()
@@ -415,6 +429,13 @@ struct NAVIGATIONSYSTEM_API FRecastNavMeshGenerationProperties
 	FRecastNavMeshGenerationProperties(const ARecastNavMesh& RecastNavMesh);
 };
 
+UENUM()
+enum class EHeightFieldRenderMode : uint8
+{
+	Solid = 0,
+	Walkable
+};
+
 USTRUCT()
 struct NAVIGATIONSYSTEM_API FRecastNavMeshTileGenerationDebug
 {
@@ -431,14 +452,29 @@ struct NAVIGATIONSYSTEM_API FRecastNavMeshTileGenerationDebug
 	UPROPERTY(EditAnywhere, Category = Debug)
 	FIntVector TileCoordinate = FIntVector::ZeroValue;
 
+	/** If set, the generator will only generate the tile selected to debug (set in TileCoordinate).*/
 	UPROPERTY(EditAnywhere, Category = Debug)
-	uint32 bHeightfieldSolidFromRasterization : 1;
+	uint32 bGenerateDebugTileOnly : 1;
+
+	/** Display the collision used for the navmesh rasterization.
+	 * Note: The visualization is affected by the DrawOffset of the RecastNavmesh owner*/
+	UPROPERTY(EditAnywhere, Category = Debug)
+	uint32 bCollisionGeometry : 1;
 
 	UPROPERTY(EditAnywhere, Category = Debug)
-	uint32 bHeightfieldSolidPostInclusionBoundsFiltering : 1;
+	EHeightFieldRenderMode HeightFieldRenderMode;
 
 	UPROPERTY(EditAnywhere, Category = Debug)
-	uint32 bHeightfieldSolidPostHeightFiltering : 1;
+	uint32 bHeightfieldFromRasterization : 1;
+
+	UPROPERTY(EditAnywhere, Category = Debug)
+	uint32 bHeightfieldPostInclusionBoundsFiltering : 1;
+
+	UPROPERTY(EditAnywhere, Category = Debug)
+	uint32 bHeightfieldPostHeightFiltering : 1;
+
+	UPROPERTY(EditAnywhere, Category = Debug)
+	uint32 bHeightfieldBounds : 1;
 
 	UPROPERTY(EditAnywhere, Category = Debug)
 	uint32 bCompactHeightfield : 1;
@@ -564,7 +600,22 @@ namespace FNavMeshConfig
 	};
 }
 
-// LWC_TODO_AI: Many of the virtual methods and members should be changed from float to FVector::FReal. Not for 5.0!
+USTRUCT()
+struct NAVIGATIONSYSTEM_API FNavMeshResolutionParam
+{
+	GENERATED_BODY()
+
+	bool IsValid() const { return CellSize > 0.f && CellHeight > 0.f; }
+	
+	/** horizontal size of voxelization cell */
+	UPROPERTY(EditAnywhere, Category = Generation, config, meta = (ClampMin = "1.0", ClampMax = "1024.0"))
+	float CellSize = 25.f;
+
+	/** vertical size of voxelization cell */
+	UPROPERTY(EditAnywhere, Category = Generation, config, meta = (ClampMin = "1.0", ClampMax = "1024.0"))
+	float CellHeight = 10.f;
+};
+
 UCLASS(config=Engine, defaultconfig, hidecategories=(Input,Rendering,Tags,Transformation,Actor,Layers,Replication), notplaceable)
 class NAVIGATIONSYSTEM_API ARecastNavMesh : public ANavigationData
 {
@@ -597,6 +648,10 @@ class NAVIGATIONSYSTEM_API ARecastNavMesh : public ANavigationData
 	/** Draw the tile boundaries */
 	UPROPERTY(EditAnywhere, Category=Display)
 	uint32 bDrawTileBounds:1;
+
+	/** Draw the tile resolutions */
+	UPROPERTY(EditAnywhere, Category=Display)
+	uint32 bDrawTileResolutions:1;
 	
 	/** Draw input geometry passed to the navmesh generator.  Recommend disabling other geometry rendering via viewport showflags in editor. */
 	UPROPERTY(EditAnywhere, Category=Display)
@@ -605,6 +660,12 @@ class NAVIGATIONSYSTEM_API ARecastNavMesh : public ANavigationData
 	UPROPERTY(EditAnywhere, Category=Display)
 	uint32 bDrawTileLabels:1;
 
+	UPROPERTY(EditAnywhere, Category=Display)
+	uint32 bDrawTileBuildTimes:1;
+
+	UPROPERTY(EditAnywhere, Category=Display)
+	uint32 bDrawTileBuildTimesHeatMap:1;
+	
 	/** Draw a label for every poly that indicates its poly and tile indices */
 	UPROPERTY(EditAnywhere, Category=Display, meta = (DisplayName = "Draw Polygon Indices"))
 	uint32 bDrawPolygonLabels:1;
@@ -669,12 +730,20 @@ class NAVIGATIONSYSTEM_API ARecastNavMesh : public ANavigationData
 	float TileSizeUU;
 
 	/** horizontal size of voxelization cell */
-	UPROPERTY(EditAnywhere, Category = Generation, config, meta = (ClampMin = "1.0", ClampMax = "1024.0"))
+	UE_DEPRECATED(5.2, "Set the CellSizes for the required navmesh resolutions in NavMeshResolutionParams.")
+	UPROPERTY(config)
 	float CellSize;
 
 	/** vertical size of voxelization cell */
-	UPROPERTY(EditAnywhere, Category = Generation, config, meta = (ClampMin = "1.0", ClampMax = "1024.0"))
+	UE_DEPRECATED(5.2, "Set the CellHeight for the required navmesh resolutions in NavMeshResolutionParams.")
+	UPROPERTY(config)
 	float CellHeight;
+
+	/** Resolution params 
+	 * If using multiple resolutions, it's recommended to chose the highest resolution first and 
+	 * set it according to the highest desired precision and then the other resolutions. */
+	UPROPERTY(EditAnywhere, Category = Generation, config)
+	FNavMeshResolutionParam NavMeshResolutionParams[(uint8)ENavigationDataResolution::MAX];
 
 	/** Radius of smallest agent to traverse this navmesh */
 	UPROPERTY(EditAnywhere, Category = Generation, config, meta = (ClampMin = "0.0"))
@@ -845,7 +914,7 @@ private:
 	static FNavPolyFlags NavLinkFlag;
 
 	/** Squared draw distance */
-	static float DrawDistanceSq;
+	static FVector::FReal DrawDistanceSq;
 
 	/** MinimumSizeForChaosNavMeshInfluence*/
 	static float MinimumSizeForChaosNavMeshInfluenceSq;
@@ -895,8 +964,8 @@ public:
 	/** broadcast for navmesh updates */
 	FOnNavMeshUpdate OnNavMeshUpdate;
 
-	FORCEINLINE static void SetDrawDistance(float NewDistance) { DrawDistanceSq = NewDistance * NewDistance; }
-	FORCEINLINE static float GetDrawDistanceSq() { return DrawDistanceSq; }
+	FORCEINLINE static void SetDrawDistance(FVector::FReal NewDistance) { DrawDistanceSq = NewDistance * NewDistance; }
+	FORCEINLINE static FVector::FReal GetDrawDistanceSq() { return DrawDistanceSq; }
 
 	FORCEINLINE static void SetMinimumSizeForChaosNavMeshInfluence(float NewSize) { MinimumSizeForChaosNavMeshInfluenceSq = NewSize * NewSize; }
 	FORCEINLINE static float GetMinimumSizeForChaosNavMeshInfluenceSq() { return MinimumSizeForChaosNavMeshInfluenceSq; }
@@ -922,6 +991,7 @@ public:
 	virtual void BeginDestroy() override;
 
 #if WITH_EDITOR
+	virtual void PostEditChangeChainProperty( struct FPropertyChangedChainEvent& PropertyChangedChainEvent) override;
 	virtual void PostEditChangeProperty( struct FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif // WITH_EDITOR
 	//~ End UObject Interface
@@ -956,9 +1026,9 @@ public:
 	 *	@note function will assert if item's FNavigationProjectionWork.ProjectionLimit is invalid */
 	virtual void BatchProjectPoints(TArray<FNavigationProjectionWork>& Workload, FSharedConstNavQueryFilter Filter = NULL, const UObject* Querier = NULL) const override;
 	
-	virtual ENavigationQueryResult::Type CalcPathCost(const FVector& PathStart, const FVector& PathEnd, float& OutPathCost, FSharedConstNavQueryFilter Filter = NULL, const UObject* Querier = NULL) const override;
-	virtual ENavigationQueryResult::Type CalcPathLength(const FVector& PathStart, const FVector& PathEnd, float& OutPathLength, FSharedConstNavQueryFilter QueryFilter = NULL, const UObject* Querier = NULL) const override;
-	virtual ENavigationQueryResult::Type CalcPathLengthAndCost(const FVector& PathStart, const FVector& PathEnd, float& OutPathLength, float& OutPathCost, FSharedConstNavQueryFilter QueryFilter = NULL, const UObject* Querier = NULL) const override;
+	virtual ENavigationQueryResult::Type CalcPathCost(const FVector& PathStart, const FVector& PathEnd, FVector::FReal& OutPathCost, FSharedConstNavQueryFilter Filter = NULL, const UObject* Querier = NULL) const override;
+	virtual ENavigationQueryResult::Type CalcPathLength(const FVector& PathStart, const FVector& PathEnd, FVector::FReal& OutPathLength, FSharedConstNavQueryFilter QueryFilter = NULL, const UObject* Querier = NULL) const override;
+	virtual ENavigationQueryResult::Type CalcPathLengthAndCost(const FVector& PathStart, const FVector& PathEnd, FVector::FReal& OutPathLength, FVector::FReal& OutPathCost, FSharedConstNavQueryFilter QueryFilter = NULL, const UObject* Querier = NULL) const override;
 	virtual bool DoesNodeContainLocation(NavNodeRef NodeRef, const FVector& WorldSpaceLocation) const override;
 
 	virtual UPrimitiveComponent* ConstructRenderingComponent() override;
@@ -997,6 +1067,21 @@ protected:
 	virtual void OnRegistered() override;
 
 public:
+	/** Get the CellSize for the given resolution. */
+	float GetCellSize(const ENavigationDataResolution Resolution) const { return NavMeshResolutionParams[(uint8)Resolution].CellSize; }
+
+	/** Set the CellSize for the given resolution. */
+	void SetCellSize(const ENavigationDataResolution Resolution, const float Size) { NavMeshResolutionParams[(uint8)Resolution].CellSize = Size; }
+
+	/** Get the CellHeight for the given resolution. */
+	float GetCellHeight(const ENavigationDataResolution Resolution) const { return NavMeshResolutionParams[(uint8)Resolution].CellHeight; }
+
+	/** Set the CellHeight for the given resolution. */
+	void SetCellHeight(const ENavigationDataResolution Resolution, const float Height) { NavMeshResolutionParams[(uint8)Resolution].CellHeight = Height; }
+	
+	/** Returns the tile size in world units. */
+	float GetTileSizeUU() const;
+	
 	/** Whether NavMesh should adjust its tile pool size when NavBounds are changed */
 	bool IsResizable() const;
 
@@ -1011,6 +1096,9 @@ public:
 
 	/** Retrieves XY coordinates of tile specified by position */
 	bool GetNavMeshTileXY(const FVector& Point, int32& OutX, int32& OutY) const;
+
+	/** Retrieves the tile resolution */
+	bool GetNavmeshTileResolution(int32 TileIndex, ENavigationDataResolution& OutResolution) const;
 
 	/** Checks the supplied Points tile indicies can fit in the range of an int32 */
 	bool CheckTileIndicesInValidRange(const FVector& Point, bool& bOutInRange) const;
@@ -1103,6 +1191,7 @@ public:
 	//----------------------------------------------------------------------//
 	virtual void OnNavAreaChanged() override;
 	virtual void OnNavAreaAdded(const UClass* NavAreaClass, int32 AgentIndex) override;
+	virtual void OnNavAreaRemoved(const UClass* NavAreaClass) override;
 	virtual int32 GetNewAreaID(const UClass* AreaClass) const override;
 	virtual int32 GetMaxSupportedAreas() const override { return RECAST_MAX_AREAS; }
 
@@ -1123,7 +1212,7 @@ public:
 	FVector GetModifiedQueryExtent(const FVector& QueryExtent) const
 	{
 		// Using HALF_WORLD_MAX instead of BIG_NUMBER, else using the extent for a box will result in NaN.
-		return FVector(QueryExtent.X, QueryExtent.Y, QueryExtent.Z >= (float)HALF_WORLD_MAX ? (float)HALF_WORLD_MAX : (QueryExtent.Z + FMath::Max(0.0f, VerticalDeviationFromGroundCompensation)));
+		return FVector(QueryExtent.X, QueryExtent.Y, QueryExtent.Z >= HALF_WORLD_MAX ? HALF_WORLD_MAX : (QueryExtent.Z + FMath::Max(0., VerticalDeviationFromGroundCompensation)));
 	}
 
 	//----------------------------------------------------------------------//
@@ -1167,13 +1256,13 @@ public:
 
 	/** Finds the polygons along the navigation graph that touch the specified circle. */
 	bool FindPolysAroundCircle(const FVector& CenterPos, const NavNodeRef CenterNodeRef, const FVector::FReal Radius, const FSharedConstNavQueryFilter& Filter, const UObject* QueryOwner, TArray<NavNodeRef>* OutPolys = nullptr, TArray<NavNodeRef>* OutPolysParent = nullptr, TArray<float>* OutPolysCost = nullptr, int32* OutPolysCount = nullptr) const;
-
+	
 	/** Returns nearest navmesh polygon to Loc, or INVALID_NAVMESHREF if Loc is not on the navmesh. */
 	NavNodeRef FindNearestPoly(FVector const& Loc, FVector const& Extent, FSharedConstNavQueryFilter Filter = NULL, const UObject* Querier = NULL) const;
 
 	/** Finds the distance to the closest wall, limited to MaxDistance
 	 *	[out] OutClosestPointOnWall, if supplied, will be set to closest point on closest wall. Will not be set if no wall in the area (return value 0.f) */
-	float FindDistanceToWall(const FVector& StartLoc, FSharedConstNavQueryFilter Filter = nullptr, float MaxDistance = FLT_MAX, FVector* OutClosestPointOnWall = nullptr) const;
+	FVector::FReal FindDistanceToWall(const FVector& StartLoc, FSharedConstNavQueryFilter Filter = nullptr, FVector::FReal MaxDistance = TNumericLimits<FVector::FReal>::Max(), FVector* OutClosestPointOnWall = nullptr) const;
 
 	/** Retrieves center of the specified polygon. Returns false on error. */
 	bool GetPolyCenter(NavNodeRef PolyID, FVector& OutCenter) const;
@@ -1232,7 +1321,7 @@ public:
 	 *	@NOTE query is not using string-pulled path distance (for performance reasons),
 	 *		it measured distance between middles of portal edges, do you might want to 
 	 *		add an extra margin to PathingDistance */
-	bool GetPolysWithinPathingDistance(FVector const& StartLoc, const float PathingDistance, TArray<NavNodeRef>& FoundPolys,
+	bool GetPolysWithinPathingDistance(FVector const& StartLoc, const FVector::FReal PathingDistance, TArray<NavNodeRef>& FoundPolys,
 		FSharedConstNavQueryFilter Filter = nullptr, const UObject* Querier = nullptr, FRecastDebugPathfindingData* DebugData = nullptr) const;
 
 	/** Filters nav polys in PolyRefs with Filter */
@@ -1299,7 +1388,12 @@ public:
 	bool IsUsingActiveTilesGeneration(const UNavigationSystemV1& NavSys) const;
 
 	virtual void ConditionalConstructGenerator() override;
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS	
+	UE_DEPRECATED(5.2, "UpdateGenerationProperties is unused, it will be removed")
 	void UpdateGenerationProperties(const FRecastNavMeshGenerationProperties& GenerationProps);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS	
+	
 	bool ShouldGatherDataOnGameThread() const { return bDoFullyAsyncNavDataGathering == false; }
 	int32 GetTileNumberHardLimit() const { return TileNumberHardLimit; }
 
@@ -1402,11 +1496,12 @@ struct FRecastNavMeshCachedData
 	ARecastNavMesh::FNavPolyFlags FlagsPerArea[RECAST_MAX_AREAS];
 	ARecastNavMesh::FNavPolyFlags FlagsPerOffMeshLinkArea[RECAST_MAX_AREAS];
 	TMap<const UClass*, int32> AreaClassToIdMap;
-	const ARecastNavMesh* ActorOwner;
+	TWeakObjectPtr<const ARecastNavMesh> ActorOwner;
 	uint32 bUseSortFunction : 1;
 
 	static FRecastNavMeshCachedData Construct(const ARecastNavMesh* RecastNavMeshActor);
 	void OnAreaAdded(const UClass* AreaClass, int32 AreaID);
+	void OnAreaRemoved(const UClass* AreaClass);
 };
 
 #endif // WITH_RECAST

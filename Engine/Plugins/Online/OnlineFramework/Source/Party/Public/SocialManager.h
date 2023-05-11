@@ -2,16 +2,17 @@
 
 #pragma once
 
-#include "UObject/Object.h"
-#include "OnlineSubsystem.h"
-#include "OnlineSubsystemTypes.h"
-#include "Engine/EngineBaseTypes.h"
 
 #include "Party/PartyTypes.h"
 #include "Interfaces/OnlinePartyInterface.h"
-#include "Interactions/SocialInteractionHandle.h"
 
+#include "SocialTypes.h"
+#include "Templates/SubclassOf.h"
 #include "SocialManager.generated.h"
+
+class FSocialInteractionHandle;
+class IOnlineSubsystem;
+struct FOnlineError;
 
 class ULocalPlayer;
 class USocialUser;
@@ -23,7 +24,7 @@ class FOnlineSessionSearchResult;
 class FPartyPlatformSessionManager;
 class USocialDebugTools;
 
-enum ETravelType;
+enum ETravelType : int;
 
 #define ABORT_DURING_SHUTDOWN() if (IsEngineExitRequested() || bShutdownPending) { UE_LOG(LogParty, Log, TEXT("%s - Received callback during shutdown: IsEngineExitRequested=%s, bShutdownPending=%s."), ANSI_TO_TCHAR(__FUNCTION__), *LexToString(IsEngineExitRequested()), *LexToString(bShutdownPending)); return; }
 
@@ -290,3 +291,9 @@ private:
 	mutable FOnSocialToolkitCreated OnSocialToolkitCreatedEvent;
 	mutable FOnPartyMembershipChanged OnPartyJoinedEvent;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Engine/EngineBaseTypes.h"
+#include "Interactions/SocialInteractionHandle.h"
+#include "OnlineSubsystem.h"
+#endif

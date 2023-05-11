@@ -26,6 +26,7 @@
 #include "UObject/NameTypes.h"
 
 class FArchive;
+class FModuleManager;
 class FOutputDevice;
 class UClass;
 class UWorld;
@@ -127,6 +128,11 @@ struct FModuleStatus
 	bool bIsGameModule;
 };
 
+namespace UE::Core::Private
+{
+	TOptional<FModuleManager>& GetModuleManagerSingleton();
+}
+
 /**
  * Implements the module manager.
  *
@@ -136,13 +142,13 @@ struct FModuleStatus
 class CORE_API FModuleManager
 	: private FSelfRegisteringExec
 {
+public:
+
 	/**
 	 * Destructor.
 	 */
 	~FModuleManager();
 
-
-public:
 
 	/**
 	 * Gets the singleton instance of the module manager.
@@ -500,24 +506,25 @@ public:
 		return IsPackageLoaded;
 	}
 
-
+protected:
 	// FSelfRegisteringExec interface.
-
-	virtual bool Exec( UWorld* Inworld, const TCHAR* Cmd, FOutputDevice& Ar ) override;
-
+	virtual bool Exec_Dev( UWorld* Inworld, const TCHAR* Cmd, FOutputDevice& Ar ) override;
 
 private:
-	friend struct TOptional<FModuleManager>;
+	friend TOptional<FModuleManager>& UE::Core::Private::GetModuleManagerSingleton();
+	struct FPrivateToken { explicit FPrivateToken() = default; };
 
+public:
 	/**
 	 * Hidden constructor.
 	 *
 	 * Use the static Get function to return the singleton instance.
 	 */
-	FModuleManager();
+	FModuleManager(FPrivateToken);
 	FModuleManager(const FModuleManager&) = delete;
 	FModuleManager& operator=(const FModuleManager&) = delete;
 
+private:
 	/**
 	 * Information about a single module (may or may not be loaded.)
 	 */
@@ -662,8 +669,6 @@ private:
 	/** Critical section object controlling R/W access to Modules. */
 	mutable FCriticalSection ModulesCriticalSection;
 };
-
-FArchive& operator<<( FArchive& Ar, FModuleManager& ModuleManager );
 
 /**
  * Utility class for registering modules that are statically linked.

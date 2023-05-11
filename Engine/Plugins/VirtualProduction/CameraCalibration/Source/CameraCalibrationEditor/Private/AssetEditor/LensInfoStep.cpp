@@ -11,6 +11,7 @@
 #include "ScopedTransaction.h"
 #include "SResetToDefaultMenu.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Text/STextBlock.h"
 
 
 #define LOCTEXT_NAMESPACE "LensInfoStep"
@@ -25,26 +26,35 @@ void ULensInfoStep::Initialize(TWeakPtr<FCameraCalibrationStepsController> InCam
 
 TSharedRef<SWidget> ULensInfoStep::BuildUI()
 {
+	FPropertyEditorModule& PropertyEditor = FModuleManager::Get().LoadModuleChecked<FPropertyEditorModule>(TEXT("PropertyEditor"));
+
+	ULensFile* LensFile = CameraCalibrationStepsController.Pin()->GetLensFile();
+
 	FStructureDetailsViewArgs LensInfoStructDetailsView;
 	FDetailsViewArgs DetailArgs;
 	DetailArgs.bAllowSearch = false;
 	DetailArgs.bShowScrollBar = true;
 
-	FPropertyEditorModule& PropertyEditor = FModuleManager::Get().LoadModuleChecked<FPropertyEditorModule>(TEXT("PropertyEditor"));
+	TSharedRef<FStructOnScope> LensInfoStructOnScope = MakeShared<FStructOnScope>(FLensInfo::StaticStruct(), reinterpret_cast<uint8*>(&LensFile->LensInfo));
+	TSharedPtr<IStructureDetailsView> LensInfoStructureDetailsView = PropertyEditor.CreateStructureDetailView(DetailArgs, LensInfoStructDetailsView, LensInfoStructOnScope);
 
-	ULensFile* LensFile = CameraCalibrationStepsController.Pin()->GetLensFile();
-	TSharedRef<FStructOnScope> StructOnScope = MakeShared<FStructOnScope>(FLensInfo::StaticStruct(), reinterpret_cast<uint8*>(&LensFile->LensInfo));
+	LensInfoStructureDetailsView->GetDetailsView()->OnFinishedChangingProperties().AddUObject(this, &ULensInfoStep::OnLensInfoChanged);
 
-	TSharedPtr<IStructureDetailsView> LensInfoStructureDetailsView = PropertyEditor.CreateStructureDetailView(DetailArgs, LensInfoStructDetailsView, StructOnScope);
+	/** Camera Feed Info Details View */
+	FStructureDetailsViewArgs CameraFeedInfoStructDetailsView;
 
-	LensInfoStructureDetailsView->GetOnFinishedChangingPropertiesDelegate().AddLambda([&](const FPropertyChangedEvent& PropertyChangedEvent)
-	{
-		// Ignore temporary interaction (dragging sliders, etc.)
-		if (PropertyChangedEvent.ChangeType == EPropertyChangeType::ValueSet)
-		{
-			OnSaveLensInformation();
-		}
-	});
+	TSharedRef<FStructOnScope> CameraFeedInfoStructOnScope = MakeShared<FStructOnScope>(FCameraFeedInfo::StaticStruct(), reinterpret_cast<uint8*>(&LensFile->CameraFeedInfo));
+	TSharedPtr<IStructureDetailsView> CameraFeedInfoStructureDetailsView = PropertyEditor.CreateStructureDetailView(DetailArgs, CameraFeedInfoStructDetailsView, CameraFeedInfoStructOnScope);
+
+	CameraFeedInfoStructureDetailsView->GetDetailsView()->OnFinishedChangingProperties().AddUObject(this, &ULensInfoStep::OnCameraFeedInfoChanged);
+
+	/** Simulcam Info Details View */
+	FStructureDetailsViewArgs SimulcamInfoStructDetailsView;
+
+	TSharedRef<FStructOnScope> SimulcamInfoStructOnScope = MakeShared<FStructOnScope>(FSimulcamInfo::StaticStruct(), reinterpret_cast<uint8*>(&LensFile->SimulcamInfo));
+	TSharedPtr<IStructureDetailsView> SimulcamInfoStructureDetailsView = PropertyEditor.CreateStructureDetailView(DetailArgs, SimulcamInfoStructDetailsView, SimulcamInfoStructOnScope);
+
+	SimulcamInfoStructureDetailsView->GetDetailsView()->SetIsPropertyEditingEnabledDelegate(FIsPropertyEditingEnabled::CreateLambda([]() { return false; }));
 
 	TSharedPtr<SWidget> StepWidget = 
 		SNew(SVerticalBox)
@@ -64,6 +74,43 @@ TSharedRef<SWidget> ULensInfoStep::BuildUI()
 				.OnResetToDefault(FSimpleDelegate::CreateUObject(this, &ULensInfoStep::ResetToDefault))
 				.DiffersFromDefault(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateUObject(this, &ULensInfoStep::DiffersFromDefault)))
 			]
+		]
+
+		+ SVerticalBox::Slot() // Camera Feed information structure
+		.AutoHeight()
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			[CameraFeedInfoStructureDetailsView->GetWidget().ToSharedRef() ]
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(2.0f)
+			.VAlign(VAlign_Center)
+			[
+				SNew(SResetToDefaultMenu)
+				.OnResetToDefault(FSimpleDelegate::CreateUObject(this, &ULensInfoStep::ResetCameraFeedInfoToDefault))
+				.DiffersFromDefault(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateUObject(this, &ULensInfoStep::CameraFeedInfoDiffersFromDefault)))
+			]
+		]
+
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(FMargin(4.0f, 4.0f, 4.0f, 4.0f))
+		.HAlign(HAlign_Center)
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("ControllerWarningToolTip", "The aspect ratios of the camera feed and the CG camera do not match."))
+			.ColorAndOpacity(FSlateColor(FLinearColor::Yellow))
+			.Visibility_UObject(this, &ULensInfoStep::HandleAspectRatioWarningVisibility)
+		]
+
+		+ SVerticalBox::Slot() // Simulcam information structure
+		.AutoHeight()
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			[ SimulcamInfoStructureDetailsView->GetWidget().ToSharedRef() ]
 		];
 	
 
@@ -98,14 +145,39 @@ void ULensInfoStep::Deactivate()
 	bIsActive = false;
 }
 
-void ULensInfoStep::OnSaveLensInformation()
+void ULensInfoStep::OnLensInfoChanged(const FPropertyChangedEvent& PropertyChangedEvent)
+{
+	// Ignore temporary interaction (dragging sliders, etc.)
+	if (PropertyChangedEvent.ChangeType != EPropertyChangeType::ValueSet)
+	{
+		return;
+	}
+
+	const FName PropertyName = PropertyChangedEvent.Property->GetFName();
+
+	if (PropertyName == GET_MEMBER_NAME_CHECKED(FLensInfo, LensModel))
+	{
+		if (ULensFile* const LensFile = CameraCalibrationStepsController.Pin()->GetLensFile())
+		{
+			LensFile->OnLensFileModelChanged().Broadcast(LensFile->LensInfo.LensModel);
+		}
+	}
+
+	SaveLensInformation();
+}
+
+void ULensInfoStep::SaveLensInformation()
 {
 	if (!CameraCalibrationStepsController.IsValid())
 	{
 		return;
 	}
 
-	ULensFile* LensFile = CameraCalibrationStepsController.Pin()->GetLensFile();
+	ULensFile* const LensFile = CameraCalibrationStepsController.Pin()->GetLensFile();
+	if (!LensFile)
+	{
+		return;
+	}
 
 	// Validate sensor dimensions
 	constexpr float MinimumSize = 1.0f; // Limit sensor dimension to 1mm
@@ -158,6 +230,90 @@ void ULensInfoStep::OnSaveLensInformation()
 	}
 }
 
+bool ULensInfoStep::OnViewportClicked(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
+{
+	// User interaction is Ctrl + Left Mouse Button
+	if ((MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton) && (MouseEvent.GetModifierKeys().IsControlDown()))
+	{
+		if (TSharedPtr<FCameraCalibrationStepsController> StepsController = CameraCalibrationStepsController.Pin())
+		{
+			const FVector2D LocalInPixels = MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition());
+			StepsController->SetCameraFeedDimensionsFromMousePosition(LocalInPixels);
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void ULensInfoStep::OnCameraFeedInfoChanged(const FPropertyChangedEvent& PropertyChangedEvent)
+{
+	// Ignore temporary interaction (dragging sliders, etc.)
+	if (PropertyChangedEvent.ChangeType == EPropertyChangeType::ValueSet)
+	{
+		if (TSharedPtr<FCameraCalibrationStepsController> StepsController = CameraCalibrationStepsController.Pin())
+		{
+			if (ULensFile* LensFile = StepsController->GetLensFile())
+			{
+				FIntPoint CameraFeedDimensions = LensFile->CameraFeedInfo.GetDimensions();
+				const FIntPoint CompRenderResolution = StepsController->GetCompRenderResolution();
+				CameraFeedDimensions.X = FMath::Clamp(CameraFeedDimensions.X, 0, CompRenderResolution.X);
+				CameraFeedDimensions.Y = FMath::Clamp(CameraFeedDimensions.Y, 0, CompRenderResolution.Y);
+
+				StepsController->SetCameraFeedDimensions(CameraFeedDimensions, true);
+			}
+		}
+	}
+}
+
+void ULensInfoStep::ResetCameraFeedInfoToDefault()
+{
+	if (TSharedPtr<FCameraCalibrationStepsController> StepsController = CameraCalibrationStepsController.Pin())
+	{
+		const FIntPoint DefaultCameraFeedDimensions = StepsController->GetCGRenderResolution();
+		StepsController->SetCameraFeedDimensions(DefaultCameraFeedDimensions, false);
+	}
+}
+
+bool ULensInfoStep::CameraFeedInfoDiffersFromDefault() const
+{
+	if (TSharedPtr<FCameraCalibrationStepsController> StepsController = CameraCalibrationStepsController.Pin())
+	{
+		if (ULensFile* LensFile = StepsController->GetLensFile())
+		{
+			return LensFile->CameraFeedInfo.IsOverridden();
+		}
+	}
+	return false;
+}
+
+EVisibility ULensInfoStep::HandleAspectRatioWarningVisibility() const
+{
+	if (TSharedPtr<FCameraCalibrationStepsController> StepsController = CameraCalibrationStepsController.Pin())
+	{
+		if (ULensFile* LensFile = CameraCalibrationStepsController.Pin()->GetLensFile())
+		{
+			// Do not display the warning if the camera feed info is invalid
+			if (!LensFile->CameraFeedInfo.IsValid())
+			{
+				return EVisibility::Collapsed;
+			}
+
+			const float CameraFeedAspectRatio = LensFile->CameraFeedInfo.GetAspectRatio();
+			const float CGCameraAspectRatio = LensFile->SimulcamInfo.CGLayerAspectRatio;
+
+			// Display the warning if the difference between the two aspect ratios is higher than the acceptable tolerance
+			constexpr float AspectRatioErrorTolerance = 0.01f;
+			if (!FMath::IsNearlyEqual(CameraFeedAspectRatio, CGCameraAspectRatio, AspectRatioErrorTolerance))
+			{
+				return EVisibility::Visible;
+			}
+		}
+	}
+
+	return EVisibility::Collapsed;
+}
+
 bool ULensInfoStep::IsActive() const
 {
 	return bIsActive;
@@ -167,7 +323,7 @@ void ULensInfoStep::ResetToDefault()
 {
 	ULensFile* LensFile = CameraCalibrationStepsController.Pin()->GetLensFile();
 	LensFile->LensInfo = OriginalLensInfo;
-	OnSaveLensInformation();
+	SaveLensInformation();
 }
 
 bool ULensInfoStep::DiffersFromDefault() const

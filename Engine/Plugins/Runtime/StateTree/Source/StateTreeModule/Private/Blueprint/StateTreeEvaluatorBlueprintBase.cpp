@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Blueprint/StateTreeEvaluatorBlueprintBase.h"
+#include "Blueprint/StateTreeNodeBlueprintBase.h"
 #include "StateTreeExecutionContext.h"
 #include "BlueprintNodeHelpers.h"
 
@@ -20,9 +21,11 @@ UStateTreeEvaluatorBlueprintBase::UStateTreeEvaluatorBlueprintBase(const FObject
 
 void UStateTreeEvaluatorBlueprintBase::TreeStart(FStateTreeExecutionContext& Context)
 {
+	// Evaluator became active, cache event queue and owner.
+	SetCachedInstanceDataFromContext(Context);
+
 	if (bHasTreeStart)
 	{
-		FScopedCurrentContext(*this, Context);
 		ReceiveTreeStart();
 	}
 }
@@ -31,16 +34,17 @@ void UStateTreeEvaluatorBlueprintBase::TreeStop(FStateTreeExecutionContext& Cont
 {
 	if (bHasTreeStop)
 	{
-		FScopedCurrentContext(*this, Context);
 		ReceiveTreeStop();
 	}
+
+	// Evaluator became inactive, clear cached event queue and owner.
+	ClearCachedInstanceData();
 }
 
 void UStateTreeEvaluatorBlueprintBase::Tick(FStateTreeExecutionContext& Context, const float DeltaTime)
 {
 	if (bHasTick)
 	{
-		FScopedCurrentContext(*this, Context);
 		ReceiveTick(DeltaTime);
 	}
 }

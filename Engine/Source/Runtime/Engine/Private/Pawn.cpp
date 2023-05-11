@@ -7,20 +7,16 @@
 =============================================================================*/
 
 #include "GameFramework/Pawn.h"
+#include "Engine/Level.h"
+#include "Engine/Player.h"
 #include "GameFramework/DamageType.h"
 #include "Engine/GameInstance.h"
-#include "Engine/World.h"
-#include "GameFramework/Controller.h"
-#include "Components/PrimitiveComponent.h"
 #include "AI/NavigationSystemBase.h"
-#include "Components/InputComponent.h"
-#include "GameFramework/PlayerController.h"
 #include "Engine/Engine.h"
 #include "Engine/Canvas.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Kismet/GameplayStatics.h"
-#include "UnrealEngine.h"
-#include "GameFramework/Character.h"
+#include "Misc/PackageName.h"
 #include "GameFramework/PawnMovementComponent.h"
 #include "Net/UnrealNetwork.h"
 #include "DisplayDebugHelpers.h"
@@ -31,12 +27,14 @@
 #include "GameFramework/GameNetworkManager.h"
 #include "GameFramework/InputSettings.h"
 #include "Engine/DemoNetDriver.h"
-#include "Misc/NetworkVersion.h"
+#include "Misc/EngineNetworkCustomVersion.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(Pawn)
 
 DEFINE_LOG_CATEGORY(LogDamage);
 DEFINE_LOG_CATEGORY_STATIC(LogPawn, Warning, All);
+
+FOnPawnBeginPlay APawn::OnPawnBeginPlay;
 
 APawn::APawn(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -173,6 +171,13 @@ void APawn::PostRegisterAllComponents()
 	UpdateNavAgent();
 }
 
+void APawn::BeginPlay()
+{
+	Super::BeginPlay();
+
+	OnPawnBeginPlay.Broadcast(this);
+}
+
 UPawnMovementComponent* APawn::GetMovementComponent() const
 {
 	return FindComponentByClass<UPawnMovementComponent>();
@@ -237,6 +242,16 @@ bool APawn::IsLocallyControlled() const
 {
 	return ( Controller && Controller->IsLocalController() );
 }
+
+FPlatformUserId APawn::GetPlatformUserId() const
+{
+	if (const APlayerController* PC = Cast<APlayerController>(Controller))
+	{
+		return PC->GetPlatformUserId();
+	}
+	return PLATFORMUSERID_NONE;
+}
+
 bool APawn::IsPlayerControlled() const
 {
 	return PlayerState && !PlayerState->IsABot();
@@ -965,7 +980,7 @@ FRotator APawn::GetBaseAimRotation() const
 			const UWorld* World = GetWorld();
 			const UDemoNetDriver* DemoNetDriver = World ? World->GetDemoNetDriver() : nullptr;
 
-			if (DemoNetDriver && DemoNetDriver->IsPlaying() && (DemoNetDriver->GetPlaybackEngineNetworkProtocolVersion() < EEngineNetworkVersionHistory::HISTORY_PAWN_REMOTEVIEWPITCH))
+			if (DemoNetDriver && DemoNetDriver->IsPlaying() && (DemoNetDriver->GetPlaybackEngineNetworkProtocolVersion() < FEngineNetworkCustomVersion::PawnRemoteViewPitch))
 			{
 				POVRot.Pitch = RemoteViewPitch;
 				POVRot.Pitch = POVRot.Pitch * 360.0f / 255.0f;

@@ -131,7 +131,8 @@ struct FEOSPlatformOptions :
 	FEOSPlatformOptions() :
 		EOS_Platform_Options()
 	{
-		ApiVersion = EOS_PLATFORM_OPTIONS_API_LATEST;
+		ApiVersion = 12;
+		UE_EOS_CHECK_API_MISMATCH(EOS_PLATFORM_OPTIONS_API_LATEST, 12);
 		ProductId = ProductIdAnsi;
 		SandboxId = SandboxIdAnsi;
 		DeploymentId = DeploymentIdAnsi;
@@ -195,13 +196,10 @@ void FOnlineSubsystemEOS::ModuleShutdown()
 /** Common method for creating the EOS platform */
 bool FOnlineSubsystemEOS::PlatformCreate()
 {
-	FString ArtifactName;
-	FParse::Value(FCommandLine::Get(), TEXT("EpicApp="), ArtifactName);
-	// Find the settings for this artifact
 	FEOSArtifactSettings ArtifactSettings;
-	if (!UEOSSettings::GetSettingsForArtifact(ArtifactName, ArtifactSettings))
+	if (!UEOSSettings::GetSelectedArtifactSettings(ArtifactSettings))
 	{
-		UE_LOG_ONLINE(Error, TEXT("FOnlineSubsystemEOS::PlatformCreate() failed to find artifact settings object for artifact (%s)"), *ArtifactName);
+		UE_LOG_ONLINE(Error, TEXT("FOnlineSubsystemEOS::PlatformCreate() GetSelectedArtifactSettings failed"));
 		return false;
 	}
 
@@ -238,13 +236,22 @@ bool FOnlineSubsystemEOS::PlatformCreate()
 	PlatformOptions.Flags = bOverlayAllowed ? OverlayFlags : EOS_PF_DISABLE_OVERLAY;
 	// Make the cache directory be in the user's writable area
 
-	const FString CacheDir = EOSSDKManager->GetCacheDirBase() / ArtifactName / EOSSettings.CacheDir;
-	FCStringAnsi::Strncpy(PlatformOptions.CacheDirectoryAnsi, TCHAR_TO_UTF8(*CacheDir), EOS_OSS_STRING_BUFFER_LENGTH);
+	if (FPlatformMisc::IsCacheStorageAvailable())
+	{
+		const FString CacheDir = EOSSDKManager->GetCacheDirBase() / ArtifactSettings.ArtifactName / EOSSettings.CacheDir;
+		FCStringAnsi::Strncpy(PlatformOptions.CacheDirectoryAnsi, TCHAR_TO_UTF8(*CacheDir), EOS_OSS_STRING_BUFFER_LENGTH);
+	}
+	else
+	{
+		PlatformOptions.CacheDirectory = nullptr;
+	}
+
 	FCStringAnsi::Strncpy(PlatformOptions.EncryptionKeyAnsi, TCHAR_TO_UTF8(*ArtifactSettings.EncryptionKey), EOS_ENCRYPTION_KEY_MAX_BUFFER_LEN);
 
 #if WITH_EOS_RTC
 	EOS_Platform_RTCOptions RtcOptions = { 0 };
-	RtcOptions.ApiVersion = EOS_PLATFORM_RTCOPTIONS_API_LATEST;
+	RtcOptions.ApiVersion = 1;
+	UE_EOS_CHECK_API_MISMATCH(EOS_PLATFORM_RTCOPTIONS_API_LATEST, 1);
 	RtcOptions.PlatformSpecificOptions = nullptr;
 	PlatformOptions.RTCOptions = &RtcOptions;
 #endif
@@ -394,23 +401,32 @@ bool FOnlineSubsystemEOS::Init()
 	}
 
 	// We set the product id
-	FString ArtifactName;
-	FParse::Value(FCommandLine::Get(), TEXT("EpicApp="), ArtifactName);
 	FEOSArtifactSettings ArtifactSettings;
-	if (UEOSSettings::GetSettingsForArtifact(ArtifactName, ArtifactSettings))
+	if (UEOSSettings::GetSelectedArtifactSettings(ArtifactSettings))
 	{
 		ProductId = ArtifactSettings.ProductId;
 	}
 	else
 	{
-		UE_LOG_ONLINE(Warning, TEXT("[FOnlineSubsystemEOS::Init] Failed to find artifact settings object for artifact (%s). ProductIdAnsi not set."), *ArtifactName);
+		// This really should not be possible, if we made it past PlatformCreate.
+		checkNoEntry();
+		UE_LOG_ONLINE(Warning, TEXT("[FOnlineSubsystemEOS::Init] GetSelectedArtifactSettings failed, ProductIdAnsi not set."));
 	}
 
 	UserManager = MakeShareable(new FUserManagerEOS(this));
 	UserManager->Init();
 	SessionInterfacePtr = MakeShareable(new FOnlineSessionEOS(this));
-	// Set the bucket id to use for all sessions based upon the name and version to avoid upgrade issues
-	SessionInterfacePtr->Init(EOSSDKManager->GetProductName() + TEXT("_") + FString::FromInt(GetBuildUniqueId()));
+	// Set the bucket id to use for all sessions based upon the Build Id to avoid upgrade issues
+	FString BucketIdStr = FString::FromInt(GetBuildUniqueId());
+	if (BucketIdStr.Len() > EOS_OSS_BUCKET_ID_STRING_LENGTH)
+	{
+		FString NewBucketIdStr = BucketIdStr.Left(EOS_OSS_BUCKET_ID_STRING_LENGTH);
+
+		UE_LOG_ONLINE(Warning, TEXT("[FOnlineSubsystemEOS::Init] Default BucketId [%s] is too long (%d characters) and will be shortened to fit the limit (%d characters). New BucketId is [%s]"), *BucketIdStr, BucketIdStr.Len(), EOS_OSS_BUCKET_ID_STRING_LENGTH, *NewBucketIdStr);
+
+		BucketIdStr = MoveTemp(NewBucketIdStr);		
+	}
+	SessionInterfacePtr->Init(BucketIdStr);
 	StatsInterfacePtr = MakeShareable(new FOnlineStatsEOS(this));
 	LeaderboardsInterfacePtr = MakeShareable(new FOnlineLeaderboardsEOS(this));
 	AchievementsInterfacePtr = MakeShareable(new FOnlineAchievementsEOS(this));

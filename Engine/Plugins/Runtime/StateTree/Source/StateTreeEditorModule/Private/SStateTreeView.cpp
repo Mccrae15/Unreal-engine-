@@ -2,31 +2,17 @@
 
 #include "SStateTreeView.h"
 
-#include "Framework/Commands/Commands.h"
-#include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "ScopedTransaction.h"
 
-#include "Templates/SharedPointer.h"
-#include "Styling/AppStyle.h"
-#include "EditorFontGlyphs.h"
-#include "StateTreeEditorStyle.h"
 
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SCompoundWidget.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/Layout/SScrollBorder.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Text/SInlineEditableTextBlock.h"
+#include "Framework/Views/TableViewMetadata.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "SPositiveActionButton.h"
 #include "SStateTreeViewRow.h"
-#include "StateTree.h"
 
 #include "StateTreeViewModel.h"
 #include "StateTreeState.h"
+#include "Widgets/Views/STreeView.h"
 
 #define LOCTEXT_NAMESPACE "StateTreeEditor"
 
@@ -79,6 +65,7 @@ void SStateTreeView::Construct(const FArguments& InArgs, TSharedRef<FStateTreeVi
 		.TreeItemsSource(&Subtrees)
 		.ItemHeight(32)
 		.OnSelectionChanged(this, &SStateTreeView::HandleTreeSelectionChanged)
+		.OnExpansionChanged(this, &SStateTreeView::HandleTreeExpansionChanged)
 		.OnContextMenuOpening(this, &SStateTreeView::HandleContextMenuOpening)
 		.AllowOverscroll(EAllowOverscroll::No)
 		.ExternalScrollbar(VerticalScrollBar);
@@ -124,6 +111,7 @@ void SStateTreeView::Construct(const FArguments& InArgs, TSharedRef<FStateTreeVi
 				.Orientation(Orient_Horizontal)
 				.ExternalScrollbar(HorizontalScrollBar)
 				+SScrollBox::Slot()
+				.FillSize(1.0f)
 				[
 					TreeView.ToSharedRef()
 				]
@@ -237,6 +225,11 @@ void SStateTreeView::HandleModelStateAdded(UStateTreeState* ParentState, UStateT
 	bItemsDirty = true;
 
 	HandleRenameState(NewState);
+
+	if (StateTreeViewModel.IsValid())
+	{
+		StateTreeViewModel->SetSelection(NewState);
+	}
 }
 
 void SStateTreeView::HandleModelStatesChanged(const TSet<UStateTreeState*>& AffectedStates, const FPropertyChangedEvent& PropertyChangedEvent)
@@ -303,6 +296,16 @@ void SStateTreeView::HandleTreeSelectionChanged(TWeakObjectPtr<UStateTreeState> 
 	bUpdatingSelection = true;
 	StateTreeViewModel->SetSelection(SelectedItems);
 	bUpdatingSelection = false;
+}
+
+void SStateTreeView::HandleTreeExpansionChanged(TWeakObjectPtr<UStateTreeState> InSelectedItem, bool bExpanded)
+{
+	// Not calling Modify() on the state as we don't want the expansion to dirty the asset.
+	// @todo: this is temporary fix for a bug where adding a state will reset the expansion state. 
+	if (UStateTreeState* State = InSelectedItem.Get())
+	{
+		State->bExpanded = bExpanded;
+	}
 }
 
 TSharedPtr<SWidget> SStateTreeView::HandleContextMenuOpening()

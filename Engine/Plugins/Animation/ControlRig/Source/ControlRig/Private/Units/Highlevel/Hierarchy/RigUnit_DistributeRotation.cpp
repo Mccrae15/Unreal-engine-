@@ -3,6 +3,7 @@
 #include "Units/Highlevel/Hierarchy/RigUnit_DistributeRotation.h"
 #include "Units/RigUnitContext.h"
 #include "AnimationCoreLibrary.h"
+#include "Math/ControlRigMathLibrary.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(RigUnit_DistributeRotation)
 
@@ -49,14 +50,12 @@ FRigUnit_DistributeRotation_Execute()
 	}
 
 	FRigUnit_DistributeRotationForCollection::StaticExecute(
-		RigVMExecuteContext, 
+		ExecuteContext, 
 		Items,
 		Rotations,
 		RotationEaseType,
 		Weight,
-		WorkData,
-		ExecuteContext, 
-		Context);
+		WorkData);
 }
 
 FRigVMStructUpgradeInfo FRigUnit_DistributeRotation::GetUpgradeInfo() const
@@ -67,7 +66,7 @@ FRigVMStructUpgradeInfo FRigUnit_DistributeRotation::GetUpgradeInfo() const
 
 FRigUnit_DistributeRotationForCollection_Execute()
 {
-	FRigUnit_DistributeRotationForItemArray::StaticExecute(RigVMExecuteContext, Items.Keys, Rotations, RotationEaseType, Weight, WorkData, ExecuteContext, Context);
+	FRigUnit_DistributeRotationForItemArray::StaticExecute(ExecuteContext, Items.Keys, Rotations, RotationEaseType, Weight, WorkData);
 }
 
 FRigVMStructUpgradeInfo FRigUnit_DistributeRotationForCollection::GetUpgradeInfo() const
@@ -108,14 +107,13 @@ FRigUnit_DistributeRotationForItemArray_Execute()
 		}
 	}
 
-	if (Context.State == EControlRigState::Init || (CachedItems.Num() > 0 && CachedItems.Num() != Items.Num()))
+	if (CachedItems.Num() > 0 && CachedItems.Num() != Items.Num())
 	{
 		CachedItems.Reset();
 		ItemRotationA.Reset();
 		ItemRotationB.Reset();
 		ItemRotationT.Reset();
 		ItemLocalTransforms.Reset();
-		return;
 	}
 
 	if (CachedItems.Num() == 0)
@@ -297,7 +295,6 @@ IMPLEMENT_RIGUNIT_AUTOMATION_TEST(FRigUnit_DistributeRotation)
 	Rotation.Ratio = 0.5f;
 	Unit.Rotations.Add(Rotation);
 
-	Init();
 	Execute();
 
 	AddErrorIfFalse(Unit.WorkData.ItemRotationA[0] == 0, TEXT("unexpected bone a"));

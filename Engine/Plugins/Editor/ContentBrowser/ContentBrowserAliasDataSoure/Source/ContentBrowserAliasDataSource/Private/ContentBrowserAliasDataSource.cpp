@@ -2,17 +2,17 @@
 
 #include "ContentBrowserAliasDataSource.h"
 
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "ContentBrowserAssetDataCore.h"
 #include "ContentBrowserAssetDataSource.h"
 #include "ContentBrowserDataSubsystem.h"
 #include "ContentBrowserItemPath.h"
 
 #include "AssetToolsModule.h"
-#include "ObjectTools.h"
-#include "Misc/NamePermissionList.h"
-#include "Modules/ModuleManager.h"
 #include "CollectionManagerModule.h"
-#include "ICollectionManager.h"
+#include "IAssetTools.h"
+#include "IContentBrowserDataModule.h"
+#include "Misc/PackageName.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ContentBrowserAliasDataSource)
 
@@ -23,15 +23,17 @@ FName UContentBrowserAliasDataSource::AliasTagName = "ContentBrowserAliases";
 void UContentBrowserAliasDataSource::Initialize(const bool InAutoRegister)
 {
 	Super::Initialize(InAutoRegister);
+	if (GIsEditor && !IsRunningCommandlet())
+	{
+		AssetRegistry = &FModuleManager::LoadModuleChecked<FAssetRegistryModule>(AssetRegistryConstants::ModuleName).Get();
+		AssetTools = &FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools").Get();
 
-	AssetRegistry = &FModuleManager::LoadModuleChecked<FAssetRegistryModule>(AssetRegistryConstants::ModuleName).Get();
-	AssetTools = &FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools").Get();
-
-	AssetRegistry->OnAssetAdded().AddUObject(this, &UContentBrowserAliasDataSource::OnAssetAdded);
-	AssetRegistry->OnAssetRemoved().AddUObject(this, &UContentBrowserAliasDataSource::OnAssetRemoved);
-	AssetRegistry->OnAssetUpdated().AddUObject(this, &UContentBrowserAliasDataSource::OnAssetUpdated);
-	FCoreUObjectDelegates::OnAssetLoaded.AddUObject(this, &UContentBrowserAliasDataSource::OnAssetLoaded);
-	FCoreUObjectDelegates::OnObjectPropertyChanged.AddUObject(this, &UContentBrowserAliasDataSource::OnObjectPropertyChanged);
+		AssetRegistry->OnAssetAdded().AddUObject(this, &UContentBrowserAliasDataSource::OnAssetAdded);
+		AssetRegistry->OnAssetRemoved().AddUObject(this, &UContentBrowserAliasDataSource::OnAssetRemoved);
+		AssetRegistry->OnAssetUpdated().AddUObject(this, &UContentBrowserAliasDataSource::OnAssetUpdated);
+		FCoreUObjectDelegates::OnAssetLoaded.AddUObject(this, &UContentBrowserAliasDataSource::OnAssetLoaded);
+		FCoreUObjectDelegates::OnObjectPropertyChanged.AddUObject(this, &UContentBrowserAliasDataSource::OnObjectPropertyChanged);
+	}
 }
 
 void UContentBrowserAliasDataSource::Shutdown()
@@ -668,7 +670,7 @@ bool UContentBrowserAliasDataSource::CanEditItem(const FContentBrowserItemData& 
 {
 	if (TSharedPtr<const FContentBrowserAliasItemDataPayload> AliasPayload = StaticCastSharedPtr<const FContentBrowserAliasItemDataPayload>(InItem.GetPayload()))
 	{
-		// Both the alias path and asset path must pass the writable folder filter in order to be editable
+		// Both the alias path and asset path must pass the writable folder filter and editable folder filter in order to be editable
 		const TSharedRef<FPathPermissionList>& WritableFolderFilter = AssetTools->GetWritableFolderPermissionList();
 		if (!WritableFolderFilter->PassesStartsWithFilter(AliasPayload->Alias.Value))
 		{
@@ -677,6 +679,16 @@ bool UContentBrowserAliasDataSource::CanEditItem(const FContentBrowserItemData& 
 				*OutErrorMsg = FText::Format(NSLOCTEXT("ContentBrowserAliasDataSource", "Error_FolderIsLocked", "Alias '{0}' is in a locked folder"), FText::FromName(AliasPayload->Alias.Value));
 			}
 			return false;
+		}
+
+		if (UContentBrowserDataSubsystem* ContentBrowserDataSubsystem = IContentBrowserDataModule::Get().GetSubsystem())
+		{
+			const TSharedRef<FPathPermissionList>& EditableFolderFilter = ContentBrowserDataSubsystem->GetEditableFolderPermissionList();
+			if (!EditableFolderFilter->PassesStartsWithFilter(AliasPayload->Alias.Value))
+			{
+				*OutErrorMsg = FText::Format(NSLOCTEXT("ContentBrowserAliasDataSource", "Error_FolderIsNotEditable", "Content in folder '{0}' is not editable"), FText::FromName(AliasPayload->Alias.Value));
+				return false;
+			}
 		}
 	}
 	return ContentBrowserAssetData::CanEditItem(AssetTools, this, InItem, OutErrorMsg);
@@ -690,6 +702,21 @@ bool UContentBrowserAliasDataSource::EditItem(const FContentBrowserItemData& InI
 bool UContentBrowserAliasDataSource::BulkEditItems(TArrayView<const FContentBrowserItemData> InItems)
 {
 	return ContentBrowserAssetData::EditItems(AssetTools, this, InItems);
+}
+
+bool UContentBrowserAliasDataSource::CanViewItem(const FContentBrowserItemData& InItem, FText* OutErrorMsg)
+{
+	return ContentBrowserAssetData::CanViewItem(AssetTools, this, InItem, OutErrorMsg);
+}
+
+bool UContentBrowserAliasDataSource::ViewItem(const FContentBrowserItemData& InItem)
+{
+	return ContentBrowserAssetData::ViewItems(AssetTools, this, MakeArrayView(&InItem, 1));
+}
+
+bool UContentBrowserAliasDataSource::BulkViewItems(TArrayView<const FContentBrowserItemData> InItems)
+{
+	return ContentBrowserAssetData::ViewItems(AssetTools, this, InItems);
 }
 
 bool UContentBrowserAliasDataSource::CanPreviewItem(const FContentBrowserItemData& InItem, FText* OutErrorMsg)
@@ -722,6 +749,21 @@ bool UContentBrowserAliasDataSource::BulkSaveItems(TArrayView<const FContentBrow
 	return ContentBrowserAssetData::SaveItems(AssetTools, this, InItems, InSaveFlags);
 }
 
+bool UContentBrowserAliasDataSource::CanPrivatizeItem(const FContentBrowserItemData& InItem, FText* OutErrorMsg)
+{
+	return ContentBrowserAssetData::CanPrivatizeItem(AssetTools, AssetRegistry, this, InItem, OutErrorMsg);
+}
+
+bool UContentBrowserAliasDataSource::PrivatizeItem(const FContentBrowserItemData& InItem)
+{
+	return ContentBrowserAssetData::PrivatizeItems(AssetTools, AssetRegistry, this, MakeArrayView(&InItem, 1));
+}
+
+bool UContentBrowserAliasDataSource::BulkPrivatizeItems(TArrayView<const FContentBrowserItemData> InItems)
+{
+	return ContentBrowserAssetData::PrivatizeItems(AssetTools, AssetRegistry, this, InItems);
+}
+
 bool UContentBrowserAliasDataSource::AppendItemReference(const FContentBrowserItemData& InItem, FString& InOutStr)
 {
 	return ContentBrowserAssetData::AppendItemReference(AssetRegistry, this, InItem, InOutStr);
@@ -734,14 +776,6 @@ bool UContentBrowserAliasDataSource::UpdateThumbnail(const FContentBrowserItemDa
 
 bool UContentBrowserAliasDataSource::TryGetCollectionId(const FContentBrowserItemData& InItem, FSoftObjectPath& OutCollectionId)
 {
-	if (TSharedPtr<const FContentBrowserAliasItemDataPayload> AliasPayload = StaticCastSharedPtr<const FContentBrowserAliasItemDataPayload>(InItem.GetPayload()))
-	{
-		if (const FAliasData* AliasData = AllAliases.Find(AliasPayload->Alias))
-		{
-			OutCollectionId = FSoftObjectPath(AliasData->ObjectPath);
-			return true;
-		}
-	}
 	return false;
 }
 

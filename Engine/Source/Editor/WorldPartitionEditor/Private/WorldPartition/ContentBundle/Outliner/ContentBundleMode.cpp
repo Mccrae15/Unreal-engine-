@@ -1,14 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WorldPartition/ContentBundle/Outliner/ContentBundleMode.h"
-
 #include "WorldPartition/ContentBundle/Outliner/ContentBundleHierarchy.h"
-#include "ToolMenus.h"
-#include "SceneOutlinerMenuContext.h"
+#include "WorldPartition/ContentBundle/Outliner/ContentBundleTreeItem.h"
 #include "WorldPartition/ContentBundle/ContentBundleEditorSubsystem.h"
 #include "WorldPartition/ContentBundle/ContentBundleEditor.h"
-#include "WorldPartition/ContentBundle/Outliner/ContentBundleTreeItem.h"
+#include "WorldPartition/ContentBundle/ContentBundleDescriptor.h"
+#include "Framework/Commands/UIAction.h"
+#include "Framework/Commands/UICommandList.h"
+#include "Toolkits/GlobalEditorCommonCommands.h"
+#include "SceneOutlinerMenuContext.h"
 #include "Algo/Transform.h"
+#include "Engine/DataAsset.h"
+#include "ScopedTransaction.h"
+#include "ToolMenus.h"
+#include "Editor.h"
 
 #define LOCTEXT_NAMESPACE "ContentBundle"
 
@@ -21,7 +27,11 @@ namespace ContentBundleOutlinerPrivate
 FContentBundleMode::FContentBundleMode(const FContentBundleModeCreationParams& Params)
 	:ISceneOutlinerMode(Params.SceneOutliner)
 {
-
+	Commands = MakeShareable(new FUICommandList());
+	Commands->MapAction(FGlobalEditorCommonCommands::Get().FindInContentBrowser, FUIAction(
+		FExecuteAction::CreateRaw(this, &FContentBundleMode::FindInContentBrowser),
+		FCanExecuteAction::CreateRaw(this, &FContentBundleMode::CanFindInContentBrowser)
+	));
 }
 
 FContentBundleMode::~FContentBundleMode()
@@ -85,6 +95,11 @@ FReply FContentBundleMode::OnKeyDown(const FKeyEvent& InKeyEvent)
 		return FReply::Handled();
 	}
 
+	if (Commands->ProcessCommandBindings(InKeyEvent))
+	{
+		return FReply::Handled();
+	}
+
 	return FReply::Unhandled();
 }
 
@@ -105,6 +120,33 @@ UWorld* FContentBundleMode::GetEditingWorld() const
 	return nullptr;
 }
 
+void FContentBundleMode::FindInContentBrowser()
+{
+	if (SceneOutliner)
+	{
+		TArray<UObject*> Objects;
+		SceneOutliner->GetSelection().ForEachItem<FContentBundleTreeItem>([&Objects](const FContentBundleTreeItem& Item)
+		{
+			if (TSharedPtr<FContentBundleEditor> ContentBundleEditor = Item.GetContentBundleEditorPin())
+			{
+				if (UDataAsset* DataAsset = ContentBundleEditor->GetDescriptor()->GetTypedOuter<UDataAsset>())
+				{
+					Objects.Add(DataAsset);
+				}
+			}
+		});
+		if (!Objects.IsEmpty())
+		{
+			GEditor->SyncBrowserToObjects(Objects);
+		}
+	}
+}
+
+bool FContentBundleMode::CanFindInContentBrowser() const
+{
+	return SceneOutliner && SceneOutliner->GetSelection().Has<FContentBundleTreeItem>();
+}
+
 void FContentBundleMode::RegisterContextMenu()
 {
 	UToolMenus* ToolMenus = UToolMenus::Get();
@@ -122,24 +164,51 @@ void FContentBundleMode::RegisterContextMenu()
 				}
 
 				SSceneOutliner* SceneOutliner = Context->SceneOutliner.Pin().Get();
+
+				{
+					FToolMenuSection& Section = InMenu->AddSection("ContentBundleActorEditorContext", LOCTEXT("ContentBundleActorEditorContext", "Actor Editor Context"));
+
+					Section.AddMenuEntry("MakeCurrentContentBundle", LOCTEXT("MakeCurrentContentBundle", "Make Current Content Bundle"), FText(), FSlateIcon(),
+						FUIAction(
+							FExecuteAction::CreateLambda([this, SceneOutliner]()
+							{
+								TSharedPtr<FContentBundleEditor> SelectedContentBundleEditor = GetSelectedContentBundlePin(SceneOutliner);
+								if (SelectedContentBundleEditor && !SelectedContentBundleEditor->IsBeingEdited())
+								{
+									ToggleContentBundleActivation(SelectedContentBundleEditor);
+								}
+							}),
+							FCanExecuteAction::CreateLambda([this, SceneOutliner]
+							{
+								TSharedPtr<FContentBundleEditor> SelectedContentBundleEditor = GetSelectedContentBundlePin(SceneOutliner);
+								return SelectedContentBundleEditor && !SelectedContentBundleEditor->IsBeingEdited();
+							})
+						));
+
+					Section.AddMenuEntry("ClearCurrentContentBundle", LOCTEXT("ClearCurrentContentBundle", "Clear Current Content Bundle"), FText(), FSlateIcon(),
+						FUIAction(
+							FExecuteAction::CreateLambda([this, SceneOutliner]()
+								{
+									UContentBundleEditorSubsystem* ContentBundleEditorSubsystem = UContentBundleEditorSubsystem::Get();
+									if (ContentBundleEditorSubsystem && ContentBundleEditorSubsystem->IsEditingContentBundle())
+									{
+										if (UContentBundleEditingSubmodule* ContentBundleEditingSubModule = ContentBundleEditorSubsystem->GetEditingSubmodule())
+										{
+											const FScopedTransaction Transaction(LOCTEXT("ClearCurrentContentBundle", "Clear Current Content Bundle"));
+											ContentBundleEditingSubModule->DeactivateCurrentContentBundleEditing();
+										}
+									}
+								}),
+							FCanExecuteAction::CreateLambda([this, SceneOutliner]
+								{
+									UContentBundleEditorSubsystem* ContentBundleEditorSubsystem = UContentBundleEditorSubsystem::Get();
+									return ContentBundleEditorSubsystem && ContentBundleEditorSubsystem->IsEditingContentBundle();
+								})
+						));
+				}
 				
 				{
 					FToolMenuSection& Section = InMenu->AddSection("ContentBundleSection", LOCTEXT("ContentBundle", "Content Bundle"));
-
-					Section.AddMenuEntry("EditContentBundleMenuEntry", LOCTEXT("EditContentBundle", "Edit Content Bundle"), FText(), FSlateIcon(),
-						FUIAction(
-							FExecuteAction::CreateLambda([this, SceneOutliner]
-								{
-									TWeakPtr<FContentBundleEditor> SelectedContentBundleEditor = GetSelectedContentBundle(SceneOutliner);
-									ToggleContentBundleActivation(SelectedContentBundleEditor);
-								}),
-							FCanExecuteAction(),
-							FIsActionChecked::CreateLambda([this, SceneOutliner]
-								{
-									TSharedPtr<FContentBundleEditor> SelectedContentBundleEditor = GetSelectedContentBundlePin(SceneOutliner);
-									return SelectedContentBundleEditor != nullptr && SelectedContentBundleEditor->IsBeingEdited();
-								})
-							));
 
 					Section.AddMenuEntry("InjectBaseContentMenuEntry", LOCTEXT("InjectBaseContent", "Inject Base Content"), FText(), FSlateIcon(),
 						FUIAction(
@@ -155,6 +224,11 @@ void FContentBundleMode::RegisterContextMenu()
 									return false;
 								})
 							));
+				}
+
+				{
+					FToolMenuSection& Section = InMenu->AddSection("AssetOptionsSection", LOCTEXT("AssetOptionsText", "Asset Options"));
+					Section.AddMenuEntryWithCommandList(FGlobalEditorCommonCommands::Get().FindInContentBrowser, Commands);
 				}
 
 				{
@@ -248,17 +322,19 @@ void FContentBundleMode::ToggleContentBundleActivation(const TWeakPtr<FContentBu
 {
 	if (UContentBundleEditorSubsystem* ContentBundleEditorSubsystem = UContentBundleEditorSubsystem::Get())
 	{
-		if (UContentBundleEditionSubmodule* ContentBundleEditionModule = ContentBundleEditorSubsystem->GetEditionSubmodule())
+		if (UContentBundleEditingSubmodule* ContentBundleEditingSubModule = ContentBundleEditorSubsystem->GetEditingSubmodule())
 		{
 			if (TSharedPtr<FContentBundleEditor> ContentBundlePin = ContentBundle.Pin())
 			{
 				if (ContentBundlePin->IsBeingEdited())
 				{
-					ContentBundleEditionModule->DeactivateCurrentContentBundleEditing();
+					const FScopedTransaction Transaction(LOCTEXT("ClearCurrentContentBundle", "Clear Current Content Bundle"));
+					ContentBundleEditingSubModule->DeactivateCurrentContentBundleEditing();
 				}
 				else
 				{
-					ContentBundleEditionModule->ActivateContentBundleEditing(ContentBundlePin);
+					const FScopedTransaction Transaction(LOCTEXT("MakeCurrentContentBundle", "Make Current Content Bundle"));
+					ContentBundleEditingSubModule->ActivateContentBundleEditing(ContentBundlePin);
 				}
 			}
 		}

@@ -5,11 +5,21 @@
 #include "GeometryCollection/GeometryCollectionAlgo.h"
 #include "Containers/Set.h"
 #include "Async/ParallelFor.h"
+#include "GeometryCollection/Facades/CollectionHierarchyFacade.h"
 
 static int32 ChaosValidateResultsOfEditOperations = 0;
 static FAutoConsoleVariableRef CVarChaosStillCheckDistanceThreshold(TEXT("p.fracture.ValidateResultsOfEditOperations"), ChaosValidateResultsOfEditOperations, TEXT("When on this will enable result validation for fracture tool edit operations (can be slow for large geometry collection) [def:0]"));
 
 void FGeometryCollectionClusteringUtility::ClusterBonesUnderNewNode(FGeometryCollection* GeometryCollection, const int32 InsertAtIndex, const TArray<int32>& SelectedBones, bool CalcNewLocalTransform, bool Validate)
+{
+	check(GeometryCollection);
+
+	TManagedArray<int32>& Parents = GeometryCollection->Parent;
+	int32 ParentIdx = InsertAtIndex < Parents.Num() ? Parents[InsertAtIndex] : INDEX_NONE;
+	return ClusterBonesUnderNewNodeWithParent(GeometryCollection, ParentIdx, SelectedBones, CalcNewLocalTransform, Validate);
+}
+
+void FGeometryCollectionClusteringUtility::ClusterBonesUnderNewNodeWithParent(FGeometryCollection* GeometryCollection, const int32 ParentOfNewNode, const TArray<int32>& SelectedBones, bool CalcNewLocalTransform, bool Validate)
 {
 	check(GeometryCollection);
 
@@ -23,9 +33,7 @@ void FGeometryCollectionClusteringUtility::ClusterBonesUnderNewNode(FGeometryCol
 	// insert a new node between the selected bones and their shared parent
 	int NewBoneIndex = GeometryCollection->AddElements(1, FGeometryCollection::TransformGroup);
 
-	// New Bone Setup takes level/parent from the first of the Selected Bones
-	int32 SourceBoneIndex = InsertAtIndex;
-	int32 OriginalParentIndex = Parents[SourceBoneIndex];
+	int32 OriginalParentIndex = ParentOfNewNode;
 	Parents[NewBoneIndex] = OriginalParentIndex;
 	Children[NewBoneIndex] = TSet<int32>(SelectedBones);
 	SimType[NewBoneIndex] = FGeometryCollection::ESimulationTypes::FST_Clustered;
@@ -579,7 +587,7 @@ int32 FGeometryCollectionClusteringUtility::GetParentOfBoneAtSpecifiedLevel(cons
 	const TManagedArray<int32>& Levels = GeometryCollection->GetAttribute<int32>("Level", FGeometryCollection::TransformGroup);
 	const TManagedArray<int32>& SimTypes = GeometryCollection->SimulationType;
 
-	if (SourceBone >= 0)
+	if (SourceBone >= 0 && SourceBone < Parents.Num())
 	{
 		int32 SourceParent = SourceBone;
 		while (Levels[SourceParent] > Level || 
@@ -674,6 +682,13 @@ void FGeometryCollectionClusteringUtility::UpdateHierarchyLevelOfChildren(FGeome
 			RecursivelyUpdateHierarchyLevelOfChildren(Levels, Children, RootBone);
 		}
 	}
+}
+
+void FGeometryCollectionClusteringUtility::UpdateHierarchyLevelOfChildren(FManagedArrayCollection& InCollection, int32 ParentElement)
+{
+	Chaos::Facades::FCollectionHierarchyFacade HierarchyFacade(InCollection);
+
+	HierarchyFacade.GenerateLevelAttribute();
 }
 
 void FGeometryCollectionClusteringUtility::RecursivelyUpdateHierarchyLevelOfChildren(TManagedArray<int32>& Levels, const TManagedArray<TSet<int32>>& Children, int32 ParentElement)

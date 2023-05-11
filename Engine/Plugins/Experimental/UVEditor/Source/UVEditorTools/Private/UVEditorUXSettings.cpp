@@ -13,9 +13,9 @@ const float FUVEditorUXSettings::CameraNearPlaneProportionZ(0.8); // Top layer, 
 // Note: While these are floating point values, they represent percentages and should be separated
 // by at least integer amounts, as they serve double duty in certain cases for translucent primitive
 // sorting order.
-const float FUVEditorUXSettings::ToolLockedPathDepthBias(6.0);
-const float FUVEditorUXSettings::ToolExtendPathDepthBias(6.0);
-const float FUVEditorUXSettings::SewLineDepthOffset(5.0f);
+const float FUVEditorUXSettings::ToolLockedPathDepthBias(8.0);
+const float FUVEditorUXSettings::ToolExtendPathDepthBias(8.0);
+const float FUVEditorUXSettings::SewLineDepthOffset(7.0f);
 const float FUVEditorUXSettings::SelectionHoverWireframeDepthBias(6);
 const float FUVEditorUXSettings::SelectionHoverTriangleDepthBias(5);
 const float FUVEditorUXSettings::SelectionWireframeDepthBias(4.0);
@@ -55,8 +55,10 @@ const FColor FUVEditorUXSettings::SelectionHoverTriangleWireframeColor(FColor::F
 const FColor FUVEditorUXSettings::SewSideLeftColor(FColor::Red);
 const FColor FUVEditorUXSettings::SewSideRightColor(FColor::Green);
 
-const FColor FUVEditorUXSettings::ToolLockedPathColor(FColor::Green);
-const FColor FUVEditorUXSettings::ToolExtendPathColor(FColor::Green);
+const FColor FUVEditorUXSettings::ToolLockedCutPathColor(FColor::Green);
+const FColor FUVEditorUXSettings::ToolExtendCutPathColor(FColor::Green);
+const FColor FUVEditorUXSettings::ToolLockedJoinPathColor(FColor::Turquoise);
+const FColor FUVEditorUXSettings::ToolExtendJoinPathColor(FColor::Turquoise);
 const FColor FUVEditorUXSettings::ToolCompletionPathColor(FColor::Orange);
 
 const FColor FUVEditorUXSettings::LivePreviewExistingSeamColor(FColor::Green);
@@ -126,25 +128,43 @@ FLinearColor FUVEditorUXSettings::GetBoundaryColorByTargetIndex(int32 TargetInde
 	return BoundaryColorHSV.HSVToLinearRGB();
 }
 
+// The mappings here depend on the way we view the unwrap world, set up in UVEditorToolkit.cpp.
+// Currently, we look at the world with Z pointing towards the camera, the positive X axis pointing right,
+// and the positive Y axis pointing down. This means that we have to flip the V coordinate to map it
+// to the up direction.
+FVector3d FUVEditorUXSettings::ExternalUVToUnwrapWorldPosition(const FVector2f& UV)
+{
+	return FVector3d(UV.X * UVMeshScalingFactor, -UV.Y * UVMeshScalingFactor, 0);
+}
+FVector2f FUVEditorUXSettings::UnwrapWorldPositionToExternalUV(const FVector3d& VertPosition)
+{
+	return FVector2f(static_cast<float>(VertPosition.X) / UVMeshScalingFactor, -(static_cast<float>(VertPosition.Y) / UVMeshScalingFactor));
+}
+
+// Unreal stores its UVs with V subtracted from 1.
 FVector2f FUVEditorUXSettings::ExternalUVToInternalUV(const FVector2f& UV)
 {
 	return FVector2f(UV.X, 1-UV.Y);
 }
-
 FVector2f FUVEditorUXSettings::InternalUVToExternalUV(const FVector2f& UV)
 {
 	return FVector2f(UV.X, 1-UV.Y);
 }
 
+// Should be equivalent to converting from unreal's UV to regular (external) and then to unwrap world,
+// i.e. ExternalUVToUnwrapWorldPosition(InternalUVToExternalUV(UV))
 FVector3d FUVEditorUXSettings::UVToVertPosition(const FVector2f& UV)
 {
-	return FVector3d((1 - UV.Y) * UVMeshScalingFactor, UV.X * UVMeshScalingFactor, 0);
+	return FVector3d(UV.X * UVMeshScalingFactor, (UV.Y - 1) * UVMeshScalingFactor, 0);
 }
 
+// Should be equivalent to converting from world to regular (external) UV, and then to unreal's representation,
+// i.e. ExternalUVToInternalUV(UnwrapWorldPositionToExternalUV(VertPosition))
 FVector2f FUVEditorUXSettings::VertPositionToUV(const FVector3d& VertPosition)
 {
-	return FVector2f(static_cast<float>(VertPosition.Y) / UVMeshScalingFactor, 1.0f - (static_cast<float>(VertPosition.X) / UVMeshScalingFactor));
+	return FVector2f(static_cast<float>(VertPosition.X) / UVMeshScalingFactor, 1.0 + (static_cast<float>(VertPosition.Y) / UVMeshScalingFactor));
 };
+
 
 float FUVEditorUXSettings::LocationSnapValue(int32 LocationSnapMenuIndex)
 {

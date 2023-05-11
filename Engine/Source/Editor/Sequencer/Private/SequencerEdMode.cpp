@@ -15,6 +15,7 @@
 #include "MovieSceneSequence.h"
 #include "MovieScene.h"
 #include "IKeyArea.h"
+#include "SceneView.h"
 #include "Sequencer.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Evaluation/MovieSceneEvaluationTrack.h"
@@ -44,6 +45,7 @@
 #include "UnrealEdGlobals.h"
 #include "UnrealEdMisc.h"
 #include "Editor/UnrealEdEngine.h"
+#include "TextureResource.h"
 
 const FEditorModeID FSequencerEdMode::EM_SequencerMode(TEXT("EM_SequencerMode"));
 
@@ -935,7 +937,7 @@ void FSequencerEdMode::DrawAudioTracks(FPrimitiveDrawInterface* PDI)
 		{
 			UMovieSceneAudioTrack* AudioTrack = Cast<UMovieSceneAudioTrack>(Track);
 
-			if (!AudioTrack || !AudioTrack->IsAMasterTrack())
+			if (!AudioTrack)
 			{
 				continue;
 			}

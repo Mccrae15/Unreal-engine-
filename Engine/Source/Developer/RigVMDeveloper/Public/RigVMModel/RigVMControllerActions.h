@@ -332,7 +332,7 @@ private:
 
 #if RIGVM_ACTIONSTACK_VERBOSE_LOG		
 	template<class ActionType>
-	FORCEINLINE void LogAction(const ActionType& InAction, const FString& InPrefix)
+	void LogAction(const ActionType& InAction, const FString& InPrefix)
 	{
 		LogAction(ActionType::StaticStruct(), InAction, InPrefix);
 	}
@@ -515,90 +515,6 @@ public:
 
 	UPROPERTY()
 	FName CustomWidgetName;
-
-	UPROPERTY()
-	FVector2D Position;
-
-	UPROPERTY()
-	FString NodePath;
-};
-
-/**
- * An action adding a branch node to the graph.
- */
-USTRUCT()
-struct FRigVMAddBranchNodeAction : public FRigVMBaseAction
-{
-	GENERATED_BODY()
-
-public:
-
-	FRigVMAddBranchNodeAction();
-	FRigVMAddBranchNodeAction(URigVMBranchNode* InNode);
-	virtual ~FRigVMAddBranchNodeAction() {};
-	virtual UScriptStruct* GetScriptStruct() const override { return FRigVMAddBranchNodeAction::StaticStruct(); }
-	virtual bool Undo(URigVMController* InController) override;
-	virtual bool Redo(URigVMController* InController) override;
-
-	UPROPERTY()
-	FVector2D Position;
-
-	UPROPERTY()
-	FString NodePath;
-};
-
-/**
- * An action adding an if node to the graph.
- */
-USTRUCT()
-struct FRigVMAddIfNodeAction : public FRigVMBaseAction
-{
-	GENERATED_BODY()
-
-public:
-
-	FRigVMAddIfNodeAction();
-	FRigVMAddIfNodeAction(URigVMIfNode* InNode);
-	virtual ~FRigVMAddIfNodeAction() {};
-	virtual UScriptStruct* GetScriptStruct() const override { return FRigVMAddIfNodeAction::StaticStruct(); }
-	virtual bool Undo(URigVMController* InController) override;
-	virtual bool Redo(URigVMController* InController) override;
-
-	UPROPERTY()
-	FString CPPType;
-
-	UPROPERTY()
-	FName CPPTypeObjectPath;
-
-	UPROPERTY()
-	FVector2D Position;
-
-	UPROPERTY()
-	FString NodePath;
-};
-
-/**
- * An action adding a select node to the graph.
- */
-USTRUCT()
-struct FRigVMAddSelectNodeAction : public FRigVMBaseAction
-{
-	GENERATED_BODY()
-
-public:
-
-	FRigVMAddSelectNodeAction();
-	FRigVMAddSelectNodeAction(URigVMSelectNode* InNode);
-	virtual ~FRigVMAddSelectNodeAction() {};
-	virtual UScriptStruct* GetScriptStruct() const override { return FRigVMAddSelectNodeAction::StaticStruct(); }
-	virtual bool Undo(URigVMController* InController) override;
-	virtual bool Redo(URigVMController* InController) override;
-
-	UPROPERTY()
-	FString CPPType;
-
-	UPROPERTY()
-	FName CPPTypeObjectPath;
 
 	UPROPERTY()
 	FVector2D Position;
@@ -1769,39 +1685,6 @@ public:
 };
 
 /**
-* An action adding a array node to the graph.
-*/
-USTRUCT()
-struct FRigVMAddArrayNodeAction : public FRigVMBaseAction
-{
-	GENERATED_BODY()
-
-public:
-
-	FRigVMAddArrayNodeAction();
-	FRigVMAddArrayNodeAction(URigVMArrayNode* InNode);
-	virtual ~FRigVMAddArrayNodeAction() {};
-	virtual UScriptStruct* GetScriptStruct() const override { return FRigVMAddArrayNodeAction::StaticStruct(); }
-	virtual bool Undo(URigVMController* InController) override;
-	virtual bool Redo(URigVMController* InController) override;
-
-	UPROPERTY()
-	ERigVMOpCode OpCode;
-	
-	UPROPERTY()
-	FString CPPType;
-
-	UPROPERTY()
-	FString CPPTypeObjectPath;
-
-	UPROPERTY()
-	FVector2D Position;
-
-	UPROPERTY()
-	FString NodePath;
-};
-
-/**
  * An action to promote a function to collapse node or vice versa
  */
 USTRUCT()
@@ -1853,4 +1736,28 @@ public:
 
 	UPROPERTY()
 	FString NodePath;
+};
+
+/**
+ * An action marking a function as public/private.
+ */
+USTRUCT()
+struct FRigVMMarkFunctionPublicAction : public FRigVMBaseAction
+{
+	GENERATED_BODY()
+
+public:
+
+	FRigVMMarkFunctionPublicAction();
+	FRigVMMarkFunctionPublicAction(const FName& InFunctionName, bool bInIsPublic);
+	virtual ~FRigVMMarkFunctionPublicAction() {};
+	virtual UScriptStruct* GetScriptStruct() const override { return FRigVMMarkFunctionPublicAction::StaticStruct(); }
+	virtual bool Undo(URigVMController* InController) override;
+	virtual bool Redo(URigVMController* InController) override;
+
+	UPROPERTY()
+	FName FunctionName;
+	
+	UPROPERTY()
+	bool bIsPublic;
 };

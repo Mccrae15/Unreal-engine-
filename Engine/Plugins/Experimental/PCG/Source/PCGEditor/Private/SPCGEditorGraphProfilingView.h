@@ -2,12 +2,11 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "PCGElement.h"
-#include "Widgets/Input/SButton.h"
-#include "Widgets/SCompoundWidget.h"
-#include "Widgets/Views/SHeaderRow.h"
-#include "Widgets/Views/SListView.h"
+#include "Utils/PCGExtraCapture.h"
+#include "Widgets/Views/ITableRow.h"
+#include "Widgets/Views/STableRow.h"
+
+class STableViewBase;
 
 class FPCGEditor;
 class UPCGComponent;
@@ -20,13 +19,10 @@ struct FPCGProfilingListViewItem
 	const UPCGNode* PCGNode = nullptr;
 	const UPCGEditorGraphNode* EditorNode = nullptr;
 
-	FName Name = NAME_None;
-	double AvgTime = 0.0;
-	double MinTime = 0.0;
-	double MaxTime = 0.0;
-	double StdTime = 0.0;
-	double TotalTime = 0.0;
-	int32 NbCalls = 0;
+	FString Name;
+
+	PCGUtils::FCallTime CallTime;
+
 	bool HasData = false;
 };
 
@@ -52,10 +48,18 @@ public:
 	SLATE_BEGIN_ARGS(SPCGEditorGraphProfilingView) { }
 	SLATE_END_ARGS()
 
+	~SPCGEditorGraphProfilingView();
+
 	void Construct(const FArguments& InArgs, TSharedPtr<FPCGEditor> InPCGEditor);
 
 private:
 	TSharedRef<SHeaderRow> CreateHeaderRowWidget();
+
+	ECheckBoxState IsSubgraphExpanded() const;
+	void OnSubgraphExpandedChanged(ECheckBoxState InNewState);
+
+	void OnDebugObjectChanged(UPCGComponent* InPCGComponent);
+	void OnGenerateUpdated(UPCGComponent* InPCGComponent);
 	
 	// Callbacks
 	FReply Refresh();
@@ -64,12 +68,16 @@ private:
 	void OnItemDoubleClicked(PCGProfilingListViewItemPtr Item);
 	void OnSortColumnHeader(const EColumnSortPriority::Type SortPriority, const FName& ColumnId, const EColumnSortMode::Type NewSortMode);
 	EColumnSortMode::Type GetColumnSortMode(const FName ColumnId) const;
+	FText GetTotalTimeLabel() const;
 
 	/** Pointer back to the PCG editor that owns us */
 	TWeakPtr<FPCGEditor> PCGEditorPtr;
 
 	/** Cached PCGGraph being viewed */
 	UPCGEditorGraph* PCGEditorGraph = nullptr;
+
+	/** Cached PCGComponent being viewed */
+	TWeakObjectPtr<UPCGComponent> PCGComponent;
 
 	TSharedPtr<SHeaderRow> ListViewHeader;
 	TSharedPtr<SListView<PCGProfilingListViewItemPtr>> ListView;
@@ -78,4 +86,8 @@ private:
 	// To allow sorting
 	FName SortingColumn = NAME_None;
 	EColumnSortMode::Type SortMode = EColumnSortMode::Type::None;
+
+	double TotalTime = 0.0;
+
+	bool bExpandSubgraph = true;
 };

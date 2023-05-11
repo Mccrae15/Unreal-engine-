@@ -32,31 +32,47 @@ namespace UE::Cook { struct FWorkerConnectMessage; }
 namespace UE::Cook
 {
 
+enum class ENotifyRemote
+{
+	NotifyRemote,
+	LocalOnly,
+};
+
 /** Class in a Director process that communicates over a Socket with FCookWorkerClient in a CookWorker process. */
 class FCookWorkerServer : public FThreadSafeRefCountedObject
 {
 public:
-	FCookWorkerServer(FCookDirector& InDirector, FWorkerId InWorkerId);
+	FCookWorkerServer(FCookDirector& InDirector, int32 InProfileId, FWorkerId InWorkerId);
 	~FCookWorkerServer();
 
+	int32 GetProfileId() const { return ProfileId; }
 	FWorkerId GetWorkerId() const { return WorkerId; }
 
 	/** Add the given assignments for the CookWorker. They will be sent during Tick */
 	void AppendAssignments(TArrayView<FPackageData*> Assignments, ECookDirectorThread TickThread);
-	/** Remove assignment of the package from local state and from the connected Client. */
-	void AbortAssignment(FPackageData& PackageData, ECookDirectorThread TickThread);
+	/** Remove assignment of the package from local state and optionally from the connected Client. */
+	void AbortAssignment(FPackageData& PackageData, ECookDirectorThread TickThread,
+		ENotifyRemote NotifyRemote = ENotifyRemote::NotifyRemote);
+	void AbortAssignments(TConstArrayView<FPackageData*> PackageData, ECookDirectorThread TickThread,
+		ENotifyRemote = ENotifyRemote::NotifyRemote);
+
 	/**
-	 * Remove assignment of the all assigned packages from local state and from the connected Client.
-	 * Report all packages that were unassigned.
+	 * Remove assignment of all assigned packages from local state and from the connected Client.
+	 * Report all packages that were removed.
 	 */
-	void AbortAssignments(TSet<FPackageData*>& OutPendingPackages, ECookDirectorThread TickThread);
-	/** AbortAssignments and tell the connected Client to gracefully terminate. Report all packages that were unassigned. */
+	void AbortAllAssignments(TSet<FPackageData*>& OutPendingPackages, ECookDirectorThread TickThread);
+	/** AbortAllAssignments and tell the connected Client to gracefully terminate. Report all packages that were unassigned. */
 	void AbortWorker(TSet<FPackageData*>& OutPendingPackages, ECookDirectorThread TickThread);
 	/** Take over the Socket for a CookWorker that has just connected. */
 	bool TryHandleConnectMessage(FWorkerConnectMessage& Message, FSocket* InSocket, TArray<UE::CompactBinaryTCP::FMarshalledMessage>&& OtherPacketMessages, ECookDirectorThread TickThread);
 
+	/** Send the message immediately to the Socket. If cannot complete immediately, it will be finished during Tick. */
+	void SendMessage(const UE::CompactBinaryTCP::IMessage& Message, ECookDirectorThread TickThread);
+
 	/** Periodic Tick function to send and receive messages to the Client. */
 	void TickCommunication(ECookDirectorThread TickThread);
+	/** Called when the COTFS wants to send a heartbeat message to the Client. */
+	void SignalHeartbeat(ECookDirectorThread TickThread, int32 HeartbeatNumber);
 	/** Called when the COTFS Server has detected all packages are complete. Tell the CookWorker to flush messages and exit. */
 	void SignalCookComplete(ECookDirectorThread TickThread);
 	/**
@@ -65,16 +81,23 @@ public:
 	 */
 	void HandleReceiveMessages(ECookDirectorThread TickThread);
 
+	/** Is this done connecting and not yet shutting down? */
+	bool IsConnected() const;
 	/** Is this either shutting down or completed shutdown of its remote Client? */
 	bool IsShuttingDown() const;
 	/** Is this executing the portion of graceful shutdown where it waits for the CookWorker to transfer remaining messages? */
 	bool IsFlushingBeforeShutdown() const;
 	/** Is this not yet or no longer connected to a remote Client? */
 	bool IsShutdownComplete() const;
-	/** Does this Server have any package assignments the remmote CookWorker is supposed to save but hasn't yet? */
-	bool HasAssignments() const;
+	/** How many package assignments is the remote CookWorker supposed to save but hasn't yet? */
+	int32 NumAssignments() const;
 	/** Does this Server have any ReceivedMessages that need to be processed by the Scheduler thread? */
 	bool HasMessages() const;
+
+	/** Get the LastReceivedHeartbeatNumber. */
+	int32 GetLastReceivedHeartbeatNumber() const;
+	/** Set the LastReceivedHeartbeatNumber. Assumes lock is already entered; can only be called from with a HandleReceivedMessages callback */
+	void SetLastReceivedHeartbeatNumberInLock(int32 InHeartbeatNumber);
 
 private:
 	enum class EConnectStatus
@@ -125,10 +148,10 @@ private:
 	void SendPendingPackages();
 	/** Helper for Tick, pump receive messages from a connected Client. */
 	void PumpReceiveMessages();
-	/** The main implementation of AbortAssignments, only callable from inside the lock. */
-	void AbortAssignmentsInLock(TSet<FPackageData*>& OutPendingPackages);
+	/** The main implementation of AbortAllAssignments, only callable from inside the lock. */
+	void AbortAllAssignmentsInLock(TSet<FPackageData*>& OutPendingPackages);
 	/** Send the message immediately to the Socket. If cannot complete immediately, it will be finished during Tick. */
-	void SendMessage(const UE::CompactBinaryTCP::IMessage& Message);
+	void SendMessageInLock(const UE::CompactBinaryTCP::IMessage& Message);
 	/** Send this into the given state. Update any state-dependent variables. */
 	void SendToState(EConnectStatus TargetStatus);
 	/** Close the connection and connection resources to the remote process. Does not kill the process. */
@@ -160,6 +183,8 @@ private:
 	FProcHandle CookWorkerHandle;
 	FTickState TickState;
 	uint32 CookWorkerProcessId = 0;
+	int32 ProfileId = 0;
+	int32 LastReceivedHeartbeatNumber = 0;
 	double ConnectStartTimeSeconds = 0.;
 	double ConnectTestStartTimeSeconds = 0.;
 	FWorkerId WorkerId = FWorkerId::Invalid();
@@ -186,7 +211,7 @@ public:
 	FAssignPackagesMessage(TArray<FAssignPackageData>&& InPackageDatas);
 
 	virtual void Write(FCbWriter& Writer) const override;
-	virtual bool TryRead(FCbObject&& Object) override;
+	virtual bool TryRead(FCbObjectView Object) override;
 	virtual FGuid GetMessageType() const override { return MessageType; }
 
 public:
@@ -202,7 +227,7 @@ public:
 	FAbortPackagesMessage(TArray<FName>&& InPackageNames);
 
 	virtual void Write(FCbWriter& Writer) const override;
-	virtual bool TryRead(FCbObject&& Object) override;
+	virtual bool TryRead(FCbObjectView Object) override;
 	virtual FGuid GetMessageType() const override { return MessageType; }
 
 public:
@@ -226,7 +251,7 @@ public:
 	};
 	FAbortWorkerMessage(EType InType = EType::Abort);
 	virtual void Write(FCbWriter& Writer) const override;
-	virtual bool TryRead(FCbObject&& Object) override;
+	virtual bool TryRead(FCbObjectView Object) override;
 	virtual FGuid GetMessageType() const override { return MessageType; }
 
 public:
@@ -239,7 +264,7 @@ struct FInitialConfigMessage : public UE::CompactBinaryTCP::IMessage
 {
 public:
 	virtual void Write(FCbWriter& Writer) const override;
-	virtual bool TryRead(FCbObject&& Object) override;
+	virtual bool TryRead(FCbObjectView Object) override;
 	virtual FGuid GetMessageType() const override { return MessageType; }
 
 	void ReadFromLocal(const UCookOnTheFlyServer& COTFS, const TArray<ITargetPlatform*>& InOrderedSessionPlatforms,
@@ -288,7 +313,7 @@ struct FDiscoveredPackagesMessage : public UE::CompactBinaryTCP::IMessage
 {
 public:
 	virtual void Write(FCbWriter& Writer) const override;
-	virtual bool TryRead(FCbObject&& Object) override;
+	virtual bool TryRead(FCbObjectView Object) override;
 	virtual FGuid GetMessageType() const override { return MessageType; }
 
 public:
@@ -319,8 +344,8 @@ public:
 	// IMPCollector
 	virtual FGuid GetMessageType() const override { return MessageType; }
 	virtual const TCHAR* GetDebugName() const override { return TEXT("FLogMessagesMessageHandler"); }
-	virtual void ClientTick(FClientContext& Context) override;
-	virtual void ReceiveMessage(FServerContext& Context, FCbObjectView Message) override;
+	virtual void ClientTick(FMPCollectorClientTickContext& Context) override;
+	virtual void ServerReceiveMessage(FMPCollectorServerMessageContext& Context, FCbObjectView Message) override;
 
 	// FOutputDevice
 	virtual void Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const FName& Category) override;
@@ -334,6 +359,40 @@ private:
 	TArray<FReplicatedLogData> QueuedLogsBackBuffer;
 	bool bRegistered = false;
 
+	static FGuid MessageType;
+};
+
+/**
+ * Message from Director to CookWorker or CookWorker to Director that reports a heartbeat number, in addition to reporting the
+ * machine is still alive just by the presence of the message.
+ * The Director intiates a heartbeat message; the CookWorker always responds to a heartbeat message with its own heartbeat message
+ * in reply, with the same number.
+ */
+struct FHeartbeatMessage : public UE::CompactBinaryTCP::IMessage
+{
+public:
+	FHeartbeatMessage(int32 InHeartbeatNumber=-1);
+	virtual void Write(FCbWriter& Writer) const override;
+	virtual bool TryRead(FCbObjectView Object) override;
+	virtual FGuid GetMessageType() const override { return MessageType; }
+
+public:
+	int32 HeartbeatNumber;
+	static FGuid MessageType;
+};
+
+class FPackageWriterMPCollector : public UE::Cook::IMPCollector
+{
+public:
+	FPackageWriterMPCollector(UCookOnTheFlyServer& InCOTFS);
+	virtual FGuid GetMessageType() const { return MessageType; }
+	virtual const TCHAR* GetDebugName() const { return TEXT("PackageWriter"); }
+
+	virtual void ClientTickPackage(FMPCollectorClientTickPackageContext& Context) override;
+	virtual void ServerReceiveMessage(FMPCollectorServerMessageContext& Context, FCbObjectView Message) override;
+
+private:
+	UCookOnTheFlyServer& COTFS;
 	static FGuid MessageType;
 };
 

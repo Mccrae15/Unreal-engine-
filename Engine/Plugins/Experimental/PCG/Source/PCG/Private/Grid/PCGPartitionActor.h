@@ -2,10 +2,11 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "ActorPartition/PartitionActor.h"
 
 #include "PCGPartitionActor.generated.h"
+
+namespace EEndPlayReason { enum Type : int; }
 
 class UPCGComponent;
 class UPCGSubsystem;
@@ -56,7 +57,10 @@ public:
 	void AddGraphInstance(UPCGComponent* OriginalComponent);
 	void RemapGraphInstance(const UPCGComponent* OldOriginalComponent, UPCGComponent* NewOriginalComponent);
 	bool RemoveGraphInstance(UPCGComponent* OriginalComponent);
-	void CleanupDeadGraphInstances();
+	void CleanupDeadGraphInstances(bool bRemoveNonNullOnly = false);
+
+	// When a local component is destroyed. It calls this function. We make sure we don't keep mappings that are dead.
+	void RemoveLocalComponent(UPCGComponent* LocalComponent);
 
 #if WITH_EDITOR
 	/** To be called after the creation of a new actor to copy the GridSize property (Editor only) into the PCGGridSize property */
@@ -86,12 +90,16 @@ public:
 private:
 	UPCGSubsystem* GetSubsystem() const;
 
-	// TODO: Make these properties editor only (see comment before).
-	UPROPERTY()
-	TMap<TObjectPtr<UPCGComponent>, TObjectPtr<UPCGComponent>> OriginalToLocalMap;
+	// Note: this map is not a property and not serialized since we will rebuild it from the LocalToOriginal
+	TMap<TObjectPtr<UPCGComponent>, TObjectPtr<UPCGComponent>> OriginalToLocal;
 
 	UPROPERTY()
-	TMap<TObjectPtr<UPCGComponent>, TObjectPtr<UPCGComponent>> LocalToOriginalMap;
+	TMap<TObjectPtr<UPCGComponent>, TSoftObjectPtr<UPCGComponent>> LocalToOriginal;
+
+#if WITH_EDITORONLY_DATA
+	UPROPERTY()
+	TMap<TObjectPtr<UPCGComponent>, TWeakObjectPtr<UPCGComponent>> LocalToOriginalMap_DEPRECATED;
+#endif
 
 	UPROPERTY(VisibleAnywhere, Category = WorldPartition)
 	uint32 PCGGridSize;

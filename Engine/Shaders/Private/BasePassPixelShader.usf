@@ -8,7 +8,7 @@
 
 // Reroute SceneTexturesStruct uniform buffer references to the appropriate base pass uniform buffer
 #if MATERIALBLENDING_TRANSLUCENT || MATERIALBLENDING_ADDITIVE || MATERIALBLENDING_MODULATE
-	#define SceneTexturesStruct TranslucentBasePass.SceneTextures 
+	#define SceneTexturesStruct TranslucentBasePass.SceneTextures
 	#define EyeAdaptationStruct TranslucentBasePass
 	#define SceneColorCopyTexture	TranslucentBasePass.SceneColorCopyTexture
 	#define PreIntegratedGF			TranslucentBasePass.PreIntegratedGFTexture
@@ -21,6 +21,7 @@
 	#endif
 	#define UseBasePassSkylight TranslucentBasePass.Shared.UseBasePassSkylight
 	#define StrataStruct TranslucentBasePass.Strata
+	#define BlueNoise TranslucentBasePass.BlueNoise
 #else
 	#define EyeAdaptationStruct OpaqueBasePass
 	#define UseBasePassSkylight OpaqueBasePass.Shared.UseBasePassSkylight
@@ -38,10 +39,20 @@
 	#endif
 #endif
 
+#if MATERIAL_SHADINGMODEL_SINGLELAYERWATER
+#define BlueNoise SingleLayerWater.BlueNoise
+#endif
+
 // Enable Strata. This define & include need to be defined before certains includes (i.e., DBufferDecalShared which uses them internally)
 #if !MATERIAL_IS_STRATA && STRATA_ENABLED
 #undef STRATA_ENABLED
 #define STRATA_ENABLED 0
+#endif
+
+// Is Strata is enabled, only use DBuffer pass after the base pass for simple and single material
+#if STRATA_ENABLED && STRATA_USE_DBUFFER_PASS && USE_DBUFFER && (STRATA_FASTPATH || STRATA_SINGLEPATH)
+#undef USE_DBUFFER
+#define USE_DBUFFER 0
 #endif
 
 #ifndef COMPUTE_SHADED
@@ -89,7 +100,7 @@
 #define GetEffectiveSkySHDiffuse GetSkySHDiffuse
 #endif
 
-#if MATERIALBLENDING_TRANSLUCENT || MATERIALBLENDING_ADDITIVE || MATERIALBLENDING_MODULATE
+#if MATERIALBLENDING_ANY_TRANSLUCENT
 #define LumenGIVolumeStruct TranslucentBasePass
 #define FrontLayerTranslucencyReflectionsStruct TranslucentBasePass
 // Reroute for LumenRadianceCacheInterpolation.ush
@@ -110,6 +121,7 @@
 #ifndef USE_HAIR_COMPLEX_TRANSMITTANCE
 #define USE_HAIR_COMPLEX_TRANSMITTANCE 0
 #endif
+#include "HairStrands/HairStrandsEnvironmentLightingCommon.ush"
 #endif
 
 #ifndef COMPILER_GLSL
@@ -120,6 +132,7 @@
 #define EDITOR_ALPHA2COVERAGE (USE_EDITOR_COMPOSITING && SUPPORTS_PIXEL_COVERAGE)
 #define POST_PROCESS_SUBSURFACE ((MATERIAL_SHADINGMODEL_SUBSURFACE_PROFILE || MATERIAL_SHADINGMODEL_EYE) && USES_GBUFFER)
 #define MATERIAL_WORKS_WITH_DUAL_SOURCE_COLOR_BLENDING (MATERIAL_SHADINGMODEL_THIN_TRANSLUCENT || STRATA_BLENDING_TRANSLUCENT_COLOREDTRANSMITTANCE )
+#define OUTPUTS_COVERAGE (MATERIALBLENDING_MASKED_USING_COVERAGE && !EARLY_Z_PASS_ONLY_MATERIAL_MASKING)
 
 #define OIT_ENABLED (PROJECT_OIT && PLATFORM_SUPPORTS_ROV && (MATERIALBLENDING_TRANSLUCENT || MATERIALBLENDING_ADDITIVE || MATERIAL_WORKS_WITH_DUAL_SOURCE_COLOR_BLENDING))
 
@@ -168,10 +181,6 @@
 #include "/Engine/Private/Strata/StrataExport.ush"
 #endif
 
-// Separate main directional light from scene color buffer if water needs to receive distance field shadows.
-// Sperated dir light should match with FShaderCompileUtilities::FetchGBufferParamsRuntime.
-#define SINGLE_LAYER_WATER_SEPARATED_MAIN_LIGHT  (SINGLE_LAYER_WATER_DF_SHADOW_ENABLED)
-
 #if !FORWARD_SHADING
 
 bool ManualDepthTestEqual(float4 SvPosition, float PSDeviceZWithOffset)
@@ -186,44 +195,6 @@ bool ManualDepthTestEqual(float4 SvPosition, float PSDeviceZWithOffset)
 		(PSDeviceZWithOffset == TexDeviceZWithOffset); 																			// 32 bit float, 1 to 1 mapping.
 
 	return DepthTest_Equal;
-}
-
-void GetVolumeLightingNonDirectional(float4 AmbientLightingVector, float3 DiffuseColor, inout float3 InterpolatedLighting, out float4 VolumeLighting)
-{
-	// Normal is not taken into account with non directional lighting, and only the ambient term of the SH coefficients are needed
-	FOneBandSHVectorRGB TranslucentLighting;
-	TranslucentLighting.R.V.x = AmbientLightingVector.r;
-	TranslucentLighting.G.V.x = AmbientLightingVector.g;
-	TranslucentLighting.B.V.x = AmbientLightingVector.b;
-
-	FOneBandSHVector DiffuseTransferSH = CalcDiffuseTransferSH1(1);
-	VolumeLighting = float4(DotSH1(TranslucentLighting, DiffuseTransferSH), AmbientLightingVector.a);
-	InterpolatedLighting = DiffuseColor * VolumeLighting.rgb;
-}
-
-void GetVolumeLightingDirectional(float4 AmbientLightingVector, float3 DirectionalLightingVector, float3 WorldNormal, float3 DiffuseColor, inout float3 InterpolatedLighting, out float4 VolumeLighting)
-{
-	float DirectionalLightingIntensity = GetMaterialTranslucencyDirectionalLightingIntensity();
-
-	AmbientLightingVector.rgb /= DirectionalLightingIntensity;
-	DirectionalLightingVector.rgb *= DirectionalLightingIntensity;
-
-	// Reconstruct the SH coefficients based on what was encoded
-	FTwoBandSHVectorRGB TranslucentLighting;
-	TranslucentLighting.R.V.x = AmbientLightingVector.r;
-	TranslucentLighting.G.V.x = AmbientLightingVector.g;
-	TranslucentLighting.B.V.x = AmbientLightingVector.b;
-	float3 NormalizedAmbientColor = AmbientLightingVector.rgb / ( Luminance( AmbientLightingVector.rgb ) + 0.00001f );
-
-	// Scale the monocrome directional coefficients with the normalzed ambient color as an approximation to the uncompressed values
-	TranslucentLighting.R.V.yzw = DirectionalLightingVector.rgb * NormalizedAmbientColor.r;
-	TranslucentLighting.G.V.yzw = DirectionalLightingVector.rgb * NormalizedAmbientColor.g;
-	TranslucentLighting.B.V.yzw = DirectionalLightingVector.rgb * NormalizedAmbientColor.b;
-			
-	// Compute diffuse lighting which takes the normal into account
-	FTwoBandSHVector DiffuseTransferSH = CalcDiffuseTransferSH(WorldNormal, 1);
-	VolumeLighting = float4(max(half3(0,0,0), DotSH(TranslucentLighting, DiffuseTransferSH)), AmbientLightingVector.a);
-	InterpolatedLighting += DiffuseColor * VolumeLighting.rgb;
 }
 
 /** Calculates lighting for translucency. */
@@ -715,7 +686,7 @@ uint GetDiffuseIndirectSampleOcclusion(FSharedLocalBases SharedLocalBases, float
 				float LVisibility = saturate(Evaluate(VisibleSG, BxDFSample.L) / Evaluate(HemisphereSG, BxDFSample.L));
 				bool bIsBentNormalOccluded = LVisibility < VisibilityThreshold;
 
-				OcclusionMask |= bIsBentNormalOccluded ? (1 << TracingRayIndex) : 0;
+				OcclusionMask |= bIsBentNormalOccluded ? (1u << TracingRayIndex) : 0u;
 			}
 		}
 
@@ -749,7 +720,7 @@ uint GetDiffuseIndirectSampleOcclusion(FGBufferData GBuffer, float3 V, float3 Wo
 			float LVisibility = saturate(Evaluate(VisibleSG, BxDFSample.L) / Evaluate(HemisphereSG, BxDFSample.L));
 			bool bIsBentNormalOccluded = LVisibility < VisibilityThreshold;
 
-			OcclusionMask |= bIsBentNormalOccluded ? (1 << TracingRayIndex) : 0;
+			OcclusionMask |= bIsBentNormalOccluded ? (1u << TracingRayIndex) : 0u;
 		}
 
 		DiffuseIndirectSampleOcclusion = OcclusionMask;
@@ -837,9 +808,9 @@ void FPixelShaderInOut_MainPS(
 	}
 #elif IS_NANITE_PASS
 	{
-		// TODO: PROG_RASTER - USE_WORLD_POSITION_EXCLUDING_SHADER_OFFSETS
 		float3 TranslatedWorldPosition = MaterialParameters.WorldPosition_CamRelative;
-		CalcMaterialParametersEx(MaterialParameters, PixelMaterialInputs, In.SvPosition, MaterialParameters.ScreenPosition, In.bIsFrontFace, TranslatedWorldPosition, TranslatedWorldPosition);
+		float3 TranslatedWorldPosition_NoOffsets = MaterialParameters.WorldPosition_NoOffsets_CamRelative;
+		CalcMaterialParametersEx(MaterialParameters, PixelMaterialInputs, In.SvPosition, MaterialParameters.ScreenPosition, In.bIsFrontFace, TranslatedWorldPosition, TranslatedWorldPosition_NoOffsets);
 	}
 #else
 	{
@@ -900,12 +871,6 @@ void FPixelShaderInOut_MainPS(
 
 	float MaterialAO = GetMaterialAmbientOcclusion(PixelMaterialInputs);
 
-// Opacity for this model is the coverage of the top layer over the transmission surface. Since the
-// underlying material isn't allowed to be metallic, we are scaling the metallic value by the coverage.
-#if MATERIAL_SHADINGMODEL_THIN_TRANSLUCENT
-	Metallic *= Opacity;
-#endif
-
 	// If we don't use this shading model the color should be black (don't generate shader code for unused data, don't do indirectlighting cache lighting with this color).
 	float3 SubsurfaceColor = 0;
 	// 0..1, SubsurfaceProfileId = int(x * 255)
@@ -915,10 +880,6 @@ void FPixelShaderInOut_MainPS(
 	if (ShadingModel == SHADINGMODELID_SUBSURFACE || ShadingModel == SHADINGMODELID_PREINTEGRATED_SKIN || ShadingModel == SHADINGMODELID_SUBSURFACE_PROFILE || ShadingModel == SHADINGMODELID_TWOSIDED_FOLIAGE || ShadingModel == SHADINGMODELID_CLOTH || ShadingModel == SHADINGMODELID_EYE)
 	{
 		float4 SubsurfaceData = GetMaterialSubsurfaceData(PixelMaterialInputs);
-		
-		// If the subsurface feature is disabled, the subsurface color should be black
-		// This will also ensure that the subsurface profile does not contribute when subsurface scattering is disabled
-		SubsurfaceData *= View.bSubsurfacePostprocessEnabled;
 
 		if (false) // Dummy if to make the ifdef logic play nicely
 		{
@@ -968,7 +929,20 @@ void FPixelShaderInOut_MainPS(
 	Specular = SLW_SPECULAR(SLWBSDF);
 	Roughness = SLW_ROUGHNESS(SLWBSDF);
 	Opacity = SLW_TOPMATERIALOPACITY(SLWBSDF);
+
 	MaterialParameters.WorldNormal = normalize(StrataPixelHeader.SharedLocalBases.Normals[BSDF_GETSHAREDLOCALBASISID(SLWBSDF)]);
+	const float SLWWorldNormalSquaredLen = dot(MaterialParameters.WorldNormal, MaterialParameters.WorldNormal);
+	BRANCH
+	if (!IsFinite(SLWWorldNormalSquaredLen)) // A way to detect that the normalisation process was done on 0-length normal or with NaNs.
+	{
+		// In this case, reset to the world normal to the vertex normal in order to avoid abvious bad bloom on screen.
+		MaterialParameters.WorldNormal = normalize(MaterialParameters.TangentToWorld[2]);
+		#if MATERIAL_TANGENTSPACENORMAL
+		MaterialParameters.WorldNormal *= MaterialParameters.TwoSidedSign;
+		#endif
+		StrataPixelHeader.SharedLocalBases.Normals[BSDF_GETSHAREDLOCALBASISID(SLWBSDF)] = MaterialParameters.WorldNormal;
+	}
+
 	Anisotropy = 0.0f;
 	ShadingModel = MATERIAL_SHADINGMODEL_SINGLELAYERWATER;
 #endif
@@ -976,33 +950,33 @@ void FPixelShaderInOut_MainPS(
 	float DBufferOpacity = 1.0f;
 #if USE_DBUFFER && MATERIALDECALRESPONSEMASK && !MATERIALBLENDING_ANY_TRANSLUCENT && !MATERIAL_SHADINGMODEL_SINGLELAYERWATER
 	// apply decals from the DBuffer
-#if PC_D3D
+	#if PC_D3D
 	//Temporary workaround to avoid crashes on AMD, revert back to BRANCH
 	FLATTEN
-#else
+	#else
 	BRANCH
-#endif
-		if ((GetPrimitiveData(MaterialParameters).Flags & PRIMITIVE_SCENE_DATA_FLAG_DECAL_RECEIVER) != 0 && View.ShowDecalsMask > 0)
-		{
-			uint ValidDBufferTargetMask = GetDBufferTargetMask(uint2(In.SvPosition.xy)) & MATERIALDECALRESPONSEMASK;
+	#endif
+	if ((GetPrimitiveData(MaterialParameters).Flags & PRIMITIVE_SCENE_DATA_FLAG_DECAL_RECEIVER) != 0 && View.ShowDecalsMask > 0)
+	{
+		uint ValidDBufferTargetMask = GetDBufferTargetMask(uint2(In.SvPosition.xy)) & MATERIALDECALRESPONSEMASK;
 
-			BRANCH
-			if (ValidDBufferTargetMask)
-			{
-				float2 BufferUV = SvPositionToBufferUV(In.SvPosition);
-			#if STRATA_ENABLED 
-			   #if STRATA_INLINE_SHADING && !STRATA_OPTIMIZED_UNLIT
-				const FStrataDBuffer StrataBufferData = GetDBufferData(BufferUV, ValidDBufferTargetMask);
-				ApplyDBufferData(StrataBufferData, StrataPixelHeader, StrataData);
-				DBufferOpacity = StrataBufferData.Coverage;
-			   #endif
-			#else
-				FDBufferData DBufferData = GetDBufferData(BufferUV, ValidDBufferTargetMask);
-				ApplyDBufferData(DBufferData, MaterialParameters.WorldNormal, SubsurfaceColor, Roughness, BaseColor, Metallic, Specular);
-				DBufferOpacity = (DBufferData.ColorOpacity + DBufferData.NormalOpacity + DBufferData.RoughnessOpacity) * (1.0f / 3.0f);
-			#endif // STRATA_ENABLED
-			}
+		BRANCH
+		if (ValidDBufferTargetMask)
+		{
+			float2 BufferUV = SvPositionToBufferUV(In.SvPosition);
+		#if STRATA_ENABLED 
+			#if STRATA_INLINE_SHADING && !STRATA_OPTIMIZED_UNLIT
+			const FStrataDBuffer StrataBufferData = GetDBufferData(BufferUV, ValidDBufferTargetMask);
+			ApplyDBufferData(StrataBufferData, StrataPixelHeader, StrataData);
+			DBufferOpacity = StrataBufferData.Coverage;
+			#endif
+		#else
+			FDBufferData DBufferData = GetDBufferData(BufferUV, ValidDBufferTargetMask);
+			ApplyDBufferData(DBufferData, MaterialParameters.WorldNormal, SubsurfaceColor, Roughness, BaseColor, Metallic, Specular);
+			DBufferOpacity = (DBufferData.ColorOpacity + DBufferData.NormalOpacity + DBufferData.RoughnessOpacity) * (1.0f / 3.0f);
+		#endif // STRATA_ENABLED
 		}
+	}
 #endif
 
 	const float BaseMaterialCoverageOverWater = Opacity;
@@ -1104,13 +1078,7 @@ void FPixelShaderInOut_MainPS(
 	GBuffer.SpecularColor = ComputeF0(Specular, BaseColor, Metallic);
 
 #if MATERIAL_NORMAL_CURVATURE_TO_ROUGHNESS
-	// Curvature-to-roughness uses derivatives of the WorldVertexNormal, which is incompatible with centroid interpolation because
-	// the samples are not uniformly distributed. Therefore we use WorldVertexNormal_Center which is guaranteed to be center interpolated.
-#if USE_WORLDVERTEXNORMAL_CENTER_INTERPOLATION
-	float GeometricAARoughness = NormalCurvatureToRoughness(MaterialParameters.WorldVertexNormal_Center);
-#else
-	float GeometricAARoughness = NormalCurvatureToRoughness(MaterialParameters.TangentToWorld[2].xyz);
-#endif
+	const float GeometricAARoughness = GetRoughnessFromNormalCurvature(MaterialParameters);
 	GBuffer.Roughness = max(GBuffer.Roughness, GeometricAARoughness);
 
 #if MATERIAL_SHADINGMODEL_CLEAR_COAT
@@ -1175,7 +1143,6 @@ void FPixelShaderInOut_MainPS(
 	float3 DiffuseIndirectLighting = 0;
 	float3 SubsurfaceIndirectLighting = 0;
 
-	bool bSeparateWaterMainDirLightLuminance = SINGLE_LAYER_WATER_SEPARATED_MAIN_LIGHT > 0 && View.SeparateWaterMainDirLightLuminance > 0.0f; 
 	float3 SeparatedWaterMainDirLightLuminance = float3(0, 0, 0); 
 
 #if !STRATA_ENABLED || STRATA_INLINE_SINGLELAYERWATER
@@ -1204,16 +1171,13 @@ void FPixelShaderInOut_MainPS(
 		#if MATERIAL_SHADINGMODEL_HAIR
 		if (GBuffer.ShadingModelID == SHADINGMODELID_HAIR)
 		{
-			FHairTransmittanceData TransmittanceData = InitHairTransmittanceData(true);
-			float3 N = MaterialParameters.WorldNormal;
-			float3 V = MaterialParameters.CameraVector;
-			float3 L = normalize( V - N * dot(V,N) );
-			DiffuseDir = L;
-			DiffuseColorForIndirect = 2*PI * HairShading( GBuffer, L, V, N, 1, TransmittanceData, 0, 0.2, uint2(0,0));
-
 			#if USE_HAIR_COMPLEX_TRANSMITTANCE
 			GBuffer.CustomData.a = 1.f / 255.f;
 			#endif
+
+			const float3 N = MaterialParameters.WorldNormal;
+			const float3 V = MaterialParameters.CameraVector;
+			DiffuseColorForIndirect = EvaluateEnvHair(GBuffer, V, N, DiffuseDir);
 		}
 		#endif
 
@@ -1276,10 +1240,20 @@ void FPixelShaderInOut_MainPS(
 					}
 					#endif // NEEDS_BASEPASS_PIXEL_FOGGING && PROJECT_SUPPORT_SKY_ATMOSPHERE
 
+					#if MATERIAL_SHADINGMODEL_SINGLELAYERWATER
+					const bool bSkipMainDirLightVirtualShadowMapEvaluation = SingleLayerWater.bMainDirectionalLightVSMFiltering;
+					const bool bSeparateWaterMainDirLightLuminance = (SINGLE_LAYER_WATER_SEPARATED_MAIN_LIGHT > 0) && SingleLayerWater.bSeparateMainDirLightLuminance;
+					#else
+					const bool bSkipMainDirLightVirtualShadowMapEvaluation = false;
+					const bool bSeparateWaterMainDirLightLuminance = false;
+					#endif
+
 					FDeferredLightingSplit ForwardDirectLighting = GetForwardDirectLightingSplit(
+						In.SvPosition,
 						GridIndex, MaterialParameters.WorldPosition_CamRelative, MaterialParameters.CameraVector, GBuffer, NearestResolvedDepthScreenUV, MaterialParameters.PrimitiveId, EyeIndex, Dither, 
 						DirectionalLightCloudShadow, DirectionalLightAtmosphereTransmittance, DirectionalLightShadow,
-						bSeparateWaterMainDirLightLuminance, SeparatedWaterMainDirLightLuminance);
+						bSeparateWaterMainDirLightLuminance, SeparatedWaterMainDirLightLuminance,
+						bSkipMainDirLightVirtualShadowMapEvaluation);
 					
 					#if MATERIAL_SHADINGMODEL_THIN_TRANSLUCENT
 						DiffuseColor += ForwardDirectLighting.DiffuseLighting.rgb;
@@ -1366,7 +1340,7 @@ void FPixelShaderInOut_MainPS(
 			NDCPosition, LWCHackToFloat(MaterialParameters.AbsoluteWorldPosition), LWCHackToFloat(ResolvedView.WorldCameraOrigin),
 			TranslucentBasePass.VolumetricCloudColor, TranslucentBasePass.VolumetricCloudColorSampler,
 			TranslucentBasePass.VolumetricCloudDepth, TranslucentBasePass.VolumetricCloudDepthSampler,
-			OneOverPreExposure, Fogging);
+			OneOverPreExposure, Fogging, TranslucentBasePass.SoftBlendingDistanceKm);
 	}
 
 #endif
@@ -1418,6 +1392,15 @@ void FPixelShaderInOut_MainPS(
 				Emissive = OutOfBoundsMaskLuminance;
 				Opacity = 1;
 			}
+			else if (PrimitiveData.MaxWPODisplacement > 0.0f)
+			{
+				// this highlights pixels that are close to Max WPO Distance boundary (and might be getting clamped)
+				const float3 OffsetAmt = abs(MaterialParameters.WorldPosition_CamRelative - MaterialParameters.WorldPosition_NoOffsets_CamRelative);
+				const float MaxOffsetDim = max3(OffsetAmt.x, OffsetAmt.y, OffsetAmt.z);
+				const float Proximity = 1.0f - saturate(abs(MaxOffsetDim - PrimitiveData.MaxWPODisplacement) / 0.05f);
+				Emissive = Proximity * float3(1, 0 ,1);
+				Opacity = sign(Proximity);
+			}
 		}
 		#endif
 	#endif
@@ -1448,6 +1431,7 @@ void FPixelShaderInOut_MainPS(
 		const bool CameraIsUnderWater = false;	// Fade out the material contribution over to water contribution according to material opacity.
 		const float3 SunIlluminance = ResolvedView.DirectionalLightColor.rgb * PI;	// times PI because it is divided by PI on CPU (=luminance) and we want illuminance here. 
 		const float3 WaterDiffuseIndirectIlluminance = DiffuseIndirectLighting * PI;// DiffuseIndirectLighting is luminance. So we need to multiply by PI to get illuminance.
+		const bool bSeparateWaterMainDirLightLuminance = (SINGLE_LAYER_WATER_SEPARATED_MAIN_LIGHT > 0) && SingleLayerWater.bSeparateMainDirLightLuminance;
 
 		// Evaluate Fresnel effect
 		const float3 N = MaterialParameters.WorldNormal;
@@ -1537,7 +1521,7 @@ void FPixelShaderInOut_MainPS(
 	float3 WorldNormal = 0;
 	float3 EmissiveLuminance = 0;
 
-	FStrataIntegrationSettings Settings = InitStrataIntegrationSettings(true /*bForceFullyRough*/, false /*StrataStruct.bRoughDiffuse*/, StrataStruct.PeelLayersAboveDepth);
+	FStrataIntegrationSettings Settings = InitStrataIntegrationSettings(true /*bForceFullyRough*/, false /*StrataStruct.bRoughDiffuse*/, StrataStruct.PeelLayersAboveDepth, StrataStruct.bRoughnessTracking);
 
 	const float3 SurfaceWorldNormal = MaterialParameters.TangentToWorld[2].xyz;
 	StrataMaterialExportOut(
@@ -1623,8 +1607,9 @@ void FPixelShaderInOut_MainPS(
 	GBuffer.PrecomputedShadowFactors = PrecomputedShadowFactors;
 	GBuffer.Velocity = EncodedVelocity;
 
-#if OUTPUT_PIXEL_DEPTH_OFFSET
+#if OUTPUT_PIXEL_DEPTH_OFFSET && STRATA_INLINE_SINGLELAYERWATER==0
 	// When in deferred, opaque materials with pixel depth offset must execute a custom depth test in order to avoid conflicting UAV writes.
+	// This is however not done for single layer water as the depth will never match. Note: that can lead overlapping SLW polys to cause flicker on screen.
 	if (ManualDepthTestEqual(In.SvPosition, Out.Depth))
 #endif
 	{
@@ -1635,10 +1620,10 @@ void FPixelShaderInOut_MainPS(
 		FStrataSubsurfaceData SSSData = (FStrataSubsurfaceData)0;
 		FStrataTopLayerData TopLayerData = (FStrataTopLayerData)0;
 		FStrataOpaqueRoughRefractionData OpaqueRoughRefractionData = (FStrataOpaqueRoughRefractionData)0;
-		FStrataIntegrationSettings Settings = InitStrataIntegrationSettings(false /*bForceFullyRough*/, StrataStruct.bRoughDiffuse, StrataStruct.PeelLayersAboveDepth);
+		FStrataIntegrationSettings Settings = InitStrataIntegrationSettings(false /*bForceFullyRough*/, StrataStruct.bRoughDiffuse, StrataStruct.PeelLayersAboveDepth, StrataStruct.bRoughnessTracking);
 
 	#if STRATA_ADVANCED_DEBUG_ENABLED
-		Settings.SliceStoringDebugStrataTree = all(uint2(float2(View.CursorPosition) * View.ViewResolutionFraction) == PixelPos) ? StrataStruct.SliceStoringDebugStrataTree : Settings.SliceStoringDebugStrataTree;
+		Settings.SliceStoringDebugStrataTreeData = all(uint2(float2(View.CursorPosition) * View.ViewResolutionFraction) == PixelPos) ? StrataStruct.SliceStoringDebugStrataTreeDataWithoutMRT : Settings.SliceStoringDebugStrataTreeData;
 	#endif
 
 		// Generate the strata material data to write out
@@ -1662,12 +1647,13 @@ void FPixelShaderInOut_MainPS(
 		);
 
 		// Write out MRT data
-	#if STRATA_BASE_PASS_MRT_OUTPUT_COUNT != 2
+	#if STRATA_BASE_PASS_MRT_OUTPUT_COUNT != 3
 	#error Strata STRATA_BASE_PASS_MRT_OUTPUT_COUNT has been update but not StrataOutput
 	#endif
 		Out.StrataOutput[0] = RWStrataMaterialContainer.MaterialRenderTargets[0];
 		Out.StrataOutput[1] = RWStrataMaterialContainer.MaterialRenderTargets[1];
-		Out.StrataOutput[2] = StrataPackTopLayerData(TopLayerData);
+		Out.StrataOutput[2] = RWStrataMaterialContainer.MaterialRenderTargets[2];
+		Out.StrataTopLayerData = StrataPackTopLayerData(TopLayerData);
 	#if STRATA_OUTPUT_ROUGH_REFRACTION
 		OpaqueRoughRefractionData.OpaqueRoughRefractionEnabled = true; // As long as we output to rough refraction, we want it to be enabled for the tiling process.
 	#if STRATA_USES_CONVERSION_FROM_LEGACY
@@ -1718,7 +1704,7 @@ void FPixelShaderInOut_MainPS(
 		const bool bForceFullyRough = View.RenderingReflectionCaptureMask > 0;
 		#endif
 
-		FStrataIntegrationSettings Settings = InitStrataIntegrationSettings(bForceFullyRough, StrataStruct.bRoughDiffuse, StrataStruct.PeelLayersAboveDepth);
+		FStrataIntegrationSettings Settings = InitStrataIntegrationSettings(bForceFullyRough, StrataStruct.bRoughDiffuse, StrataStruct.PeelLayersAboveDepth, StrataStruct.bRoughnessTracking);
 
 		float3 Throughput = 1.0f;
 		Color = StrataForwardLighting(
@@ -1756,6 +1742,7 @@ void FPixelShaderInOut_MainPS(
 
 	// Unlit forces a single BSDF
 	FStrataBSDF UnlitBSDF = PixelMaterialInputs.FrontMaterial.InlinedBSDF;
+	SanitizeStrataUnlit(UnlitBSDF);
 
 #if ((STRATA_OPAQUE_DEFERRED || (STRATA_OPAQUE_MATERIAL && STRATA_FORWARD_SHADING))) && !STRATA_MATERIAL_EXPORT_FROM_TRANSLUCENT
 	Color = BSDF_GETEMISSIVE(UnlitBSDF);
@@ -1866,7 +1853,7 @@ void FPixelShaderInOut_MainPS(
 		#else
 			// Pre multipled alpha blending
 			float AdjustedAlpha = saturate(1 - dot(AdjustedDualBlendMul, float3(1.0f, 1.0f, 1.0f) / 3.0f));
-			#if STRATA_USES_CONVERSION_FROM_LEGACY && MATERIALBLENDING_ADDITIVE
+			#if MATERIALBLENDING_ADDITIVE
 				AdjustedAlpha = 0.0f;
 			#endif
 			// Pre multipled alpha blending
@@ -2053,21 +2040,35 @@ void FPixelShaderInOut_MainPS(
 
 		#if MATERIAL_WORKS_WITH_DUAL_SOURCE_COLOR_BLENDING
 		{
+			#if !STRATA_ENABLED
 			float3 AdjustedDualBlendAdd = Out.MRT[0];
 			float3 AdjustedDualBlendMul = Out.MRT[1];
+			#endif
+
 			// Add early out threshold?
 			AddOITSample(uint2(In.SvPosition.xy), AdjustedDualBlendAdd, AdjustedDualBlendMul, MaterialParameters.ScreenPosition.w);
 			Out.MRT[0] = half4(0, 0, 0, 0);
 			Out.MRT[1] = half4(1, 1, 1, 1);
 		}
+		#elif STRATA_TRANSLUCENT_MATERIAL
+		{
+			#if STRATA_BLENDING_COLOREDTRANSMITTANCEONLY
+			AddOITSample(uint2(In.SvPosition.xy), float3(0, 0, 0), FoggedColor, MaterialParameters.ScreenPosition.w);
+			Out.MRT[0] = half4(1, 1, 1, 1);
+			Out.MRT[1] = half4(0, 0, 0, 0);
+			#else
+			AddOITSample(uint2(In.SvPosition.xy), AdjustedDualBlendAdd, AdjustedDualBlendMul, MaterialParameters.ScreenPosition.w);
+			Out.MRT[0] = half4(0, 0, 0, 0);
+			Out.MRT[1] = half4(1, 1, 1, 1);
+			#endif
+		}
 		#else
 		{
 			float3 WriteColor = Out.MRT[0].rgb;
-			float  Opacity = Out.MRT[0].a;
 		#if MATERIALBLENDING_TRANSLUCENT
 			WriteColor *= Opacity; // WriteColor is premultiplied alpha color
 		#elif MATERIALBLENDING_ADDITIVE
-			Opacity = 1.0f;
+			// NOP
 		#elif MATERIALBLENDING_ALPHACOMPOSITE || MATERIALBLENDING_ALPHAHOLDOUT
 			// Not clear what should be done in this case.
 		#else
@@ -2084,12 +2085,10 @@ void FPixelShaderInOut_MainPS(
 	}
 #endif // OIT_ENABLED
 
-#if MATERIAL_IS_SKY
-	// Sky materials can result in high luminance values, e.g. the sun disk. 
-	// This is so we make sure to at least stay within the boundaries of fp10 and not cause NaN on some platforms.
+	// Sky dome, or any emissive, materials can result in high luminance values, e.g. the sun disk. 
+	// This Min here is to we make sure pre-exposed luminance remains within the boundaries of fp10 and not cause NaN on some platforms.
 	// We also half that range to also make sure we have room for other additive elements such as bloom, clouds or particle visual effects.
 	Out.MRT[0].xyz = min(Out.MRT[0].xyz, Max10BitsFloat.xxx * 0.5f);
-#endif
 
 #if NUM_VIRTUALTEXTURE_SAMPLES || LIGHTMAP_VT_ENABLED
 #if OUTPUT_PIXEL_DEPTH_OFFSET
@@ -2111,6 +2110,18 @@ void FPixelShaderInOut_MainPS(
 	Out.MRT[0] = StrataMaterialExport;
 #endif
 
+// Duplicate coverage bit values in case multiple pixels are written by one invocation (VRS)
+#if OUTPUTS_COVERAGE
+	// If centroids are integers, it means we're at a non-1x1 shading rate
+	if(View.NumSceneColorMSAASamples > 1 && (frac(In.SvPosition.x) == 0 || frac(In.SvPosition.y) == 0)) 
+	{
+		Out.Coverage &= 0xF;
+		Out.Coverage |= (Out.Coverage << 4);
+		Out.Coverage |= (Out.Coverage << 8);
+		Out.Coverage |= (Out.Coverage << 12);
+	}
+#endif
+
 }
 
 #if STRATA_OPAQUE_DEFERRED
@@ -2120,7 +2131,10 @@ void FPixelShaderInOut_MainPS(
 //		- Pixel depth offset prevents the usage of early depth test because the depth is generated in shader. So we can only relay on LateZ in this case.
 //		- DEPTHSTENCIL_EARLYTEST_LATEWRITE does not help in this case due to UAV writes we need to skip.
 //		- In order to avoid UAV writes, we will run in shader manual depth tests.
-#if !OUTPUT_PIXEL_DEPTH_OFFSET
+#if IS_NANITE_PASS
+	// Even with masking and/or pixel depth offset, Nanite never uses actual clip() or SV_Depth
+	#define PIXELSHADER_EARLYDEPTHSTENCIL EARLYDEPTHSTENCIL
+#elif !OUTPUT_PIXEL_DEPTH_OFFSET
 	#define PIXELSHADER_EARLYDEPTHSTENCIL EARLYDEPTHSTENCIL
 #elif COMPILER_SUPPORTS_DEPTHSTENCIL_EARLYTEST_LATEWRITE
 	// If we support early depth test with late write behaviour then use it since we may be using discard, or modifying depth
@@ -2131,7 +2145,10 @@ void FPixelShaderInOut_MainPS(
 
 // If virtual texture is enabled then use early depth test so that UAV feedback buffer writes respect the depth test
 #if NUM_VIRTUALTEXTURE_SAMPLES || LIGHTMAP_VT_ENABLED || OIT_ENABLED
-	#if COMPILER_SUPPORTS_DEPTHSTENCIL_EARLYTEST_LATEWRITE
+	#if IS_NANITE_PASS
+		// Even with masking and/or pixel depth offset, Nanite never uses actual clip() or SV_Depth
+		#define PIXELSHADER_EARLYDEPTHSTENCIL EARLYDEPTHSTENCIL
+	#elif COMPILER_SUPPORTS_DEPTHSTENCIL_EARLYTEST_LATEWRITE
 		// If we support early depth test with late write behaviour then use it since we may be using discard, or modifying depth
 		#define PIXELSHADER_EARLYDEPTHSTENCIL DEPTHSTENCIL_EARLYTEST_LATEWRITE
 	#elif !OUTPUT_PIXEL_DEPTH_OFFSET
@@ -2172,12 +2189,12 @@ void FPixelShaderInOut_MainPS(
 //	#define PIXELSHADEROUTPUT_MRT1 (WRITES_VELOCITY_TO_GBUFFER || (MATERIAL_SHADINGMODEL_THIN_TRANSLUCENT && THIN_TRANSLUCENT_USE_DUAL_BLEND))
 //#endif //USES_GBUFFER
 #define PIXELSHADEROUTPUT_A2C ((EDITOR_ALPHA2COVERAGE) != 0)
-#define PIXELSHADEROUTPUT_COVERAGE (MATERIALBLENDING_MASKED_USING_COVERAGE && !EARLY_Z_PASS_ONLY_MATERIAL_MASKING)
+#define PIXELSHADEROUTPUT_COVERAGE ((OUTPUTS_COVERAGE) != 0)
 
 // all PIXELSHADEROUTPUT_ and "void FPixelShaderInOut_MainPS()" need to be setup before this include
 // this include generates the wrapper code to call MainPS(inout FPixelShaderOutput PixelShaderOutput)
 #if COMPUTE_SHADED
-	#include "ComputeShaderOutputCommon.ush"
+#include "ComputeShaderOutputCommon.ush"
 #else
-	#include "PixelShaderOutputCommon.ush"
+#include "PixelShaderOutputCommon.ush"
 #endif

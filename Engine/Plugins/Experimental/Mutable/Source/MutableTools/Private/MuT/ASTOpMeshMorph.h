@@ -3,7 +3,6 @@
 #pragma once
 
 #include "HAL/Platform.h"
-#include "MuR/MemoryPrivate.h"
 #include "MuR/Operations.h"
 #include "MuR/Ptr.h"
 #include "MuT/AST.h"
@@ -11,7 +10,7 @@
 
 namespace mu
 {
-	struct PROGRAM;
+	struct FProgram;
 
 	//---------------------------------------------------------------------------------------------
 	//! From a source mesh, remove a list of fragments with a condition.
@@ -23,7 +22,7 @@ namespace mu
 		//! Factor selecting what morphs to apply and with what weight.
 		ASTChild Factor;
 
-		//! Base mesh to remove from.
+		//! Base mesh to morph.
 		ASTChild Base;
 
 		//! Targets to apply on the base depending on the factor
@@ -41,8 +40,8 @@ namespace mu
 		void ForEachChild(const TFunctionRef<void(ASTChild&)>) override;
 		bool IsEqual(const ASTOp& otherUntyped) const override;
 		Ptr<ASTOp> Clone(MapChildFuncRef mapChild) const override;
-		void Link(PROGRAM& program, const FLinkerOptions*) override;
-		Ptr<ASTOp> OptimiseSink(const MODEL_OPTIMIZATION_OPTIONS&, OPTIMIZE_SINK_CONTEXT&) const override;
+		void Link(FProgram& program, const FLinkerOptions*) override;
+		Ptr<ASTOp> OptimiseSink(const FModelOptimizationOptions&, FOptimizeSinkContext&) const override;
 
 		// Own interface
 		void AddTarget(const Ptr<ASTOp>&);

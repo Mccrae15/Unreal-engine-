@@ -28,8 +28,10 @@
 
 #include "Async/Fundamental/Task.h"
 
+#include "Async/TaskGraphFwd.h"
 #include "Async/TaskTrace.h"
 #include "Tasks/TaskPrivate.h"
+#include "Async/InheritedContext.h"
 
 #if !defined(STATS)
 #error "STATS must be defined as either zero or one."
@@ -37,22 +39,6 @@
 
 // what level of checking to perform...normally checkSlow but could be ensure or check
 #define checkThreadGraph checkSlow
-
-#if TASKGRAPH_NEW_FRONTEND
-
-class FBaseGraphTask;
-
-using FGraphEvent = FBaseGraphTask;
-using FGraphEventRef = TRefCountPtr<FBaseGraphTask>;
-
-#else
-
-/** Convenience typedef for a reference counted pointer to a graph event **/
-typedef TRefCountPtr<class FGraphEvent> FGraphEventRef;
-
-#endif
-
-
 
 //#define checkThreadGraph(x) ((x)||((*(char*)3) = 0))
 
@@ -69,19 +55,7 @@ namespace ENamedThreads
 	{
 		UnusedAnchor = -1,
 		/** The always-present, named threads are listed next **/
-#if STATS
-#if UE_STATS_THREAD_AS_PIPE
-		StatsThread UE_DEPRECATED(5.0, "`StatsThread` has been removed. Stats system should be used by Stats public API"),
-#else
-		StatsThread,
-#endif
-#endif
 		RHIThread,
-#if UE_AUDIO_THREAD_AS_PIPE
-		AudioThread UE_DEPRECATED(5.0, "`AudioThread` has been removed. Please use `FAudioThread` API"),
-#else
-		AudioThread,
-#endif
 		GameThread,
 		// The render thread is sometimes the game thread and is sometimes the actual rendering thread
 		ActualRenderingThread = GameThread + 1,
@@ -118,15 +92,6 @@ namespace ENamedThreads
 		ThreadPriorityShift = 10,
 
 		/** Combinations **/
-#if STATS
-#if UE_STATS_THREAD_AS_PIPE
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		StatsThread_Local UE_DEPRECATED(5.0, "`StatsThread_Local` has been removed (and has never been supported). Stats system should be used by its public API in `Stats2.h`") = StatsThread | LocalQueue,
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-#else
-		StatsThread_Local = StatsThread | LocalQueue,
-#endif
-#endif
 		GameThread_Local = GameThread | LocalQueue,
 		ActualRenderingThread_Local = ActualRenderingThread | LocalQueue,
 
@@ -590,7 +555,6 @@ public:
 			EExtendedTaskPriority ConversionMap[] =
 			{
 				EExtendedTaskPriority::RHIThreadNormalPri,
-				EExtendedTaskPriority::None, // invalid, maps from ENamedThreads::AudioThread
 				EExtendedTaskPriority::GameThreadNormalPri,
 				EExtendedTaskPriority::RenderThreadNormalPri
 			};
@@ -641,32 +605,15 @@ public:
 
 		return (ENamedThreads::Type)ConversionMap[(int32)Priority - (int32)EExtendedTaskPriority::GameThreadNormalPri];
 	}
-
-	// see Tasks::FTaskHandle::CreateCompletionHandle description
-	FGraphEventRef CreateCompletionHandle()
-	{
-		if (IsCompleted())
-		{
-			return {};
-		}
-
-		// CreateGraphEvent() uses an allocator that doesn't have an issue with long-living allocs
-		FGraphEventRef CompletionHandle = FGraphEvent::CreateGraphEvent();
-		if (!CompletionHandle->AddPrerequisites(*this))
-		{
-			return {}; // too late, the task is already completed
-		}
-
-		// trigger the completion handle so the only thing that holds it from signalling is the task itself
-		CompletionHandle->DispatchSubsequents();
-
-		return CompletionHandle;
-	}
 };
+
+static constexpr int32 SmallTaskSize = 256;
+using FGraphTaskAllocator = TLockFreeFixedSizeAllocator_TLSCache<SmallTaskSize, PLATFORM_CACHE_LINE_SIZE>;
+CORE_API extern FGraphTaskAllocator SmallTaskAllocator;
 
 // the new task implementation integrated into the old task API
 template<typename TTask>
-class TGraphTask : public TConcurrentLinearObject<TGraphTask<TTask>, FTaskGraphBlockAllocationTag>, public FBaseGraphTask
+class TGraphTask : public FBaseGraphTask
 {
 public:
 	/**
@@ -732,10 +679,13 @@ public:
 		return FConstructor(Prerequisites);
 	}
 
-	virtual ~TGraphTask() override
+	FORCENOINLINE virtual ~TGraphTask() override
 	{
 		DestructItem(TaskStorage.GetTypedPtr());
 	}
+
+	static void* operator new(size_t Size);
+	static void operator delete(void* Ptr, size_t Size);
 
 private:
 	explicit TGraphTask(const FGraphEventArray* InPrerequisites)
@@ -748,7 +698,7 @@ private:
 		FBaseGraphTask::Init(TEXT("GraphTask"), InPriority, InExtendedPriority);
 	}
 
-	virtual bool TryExecuteTask() override
+	virtual bool TryExecuteTaskVirtual() override
 	{
 		return TryExecute(
 			[](UE::Tasks::Private::FTaskBase& Task)
@@ -767,6 +717,18 @@ private:
 	TTypeCompatibleBytes<TTask> TaskStorage;
 };
 
+template<typename TTask>
+void* TGraphTask<TTask>::operator new(size_t Size)
+{
+	return Size <= SmallTaskSize ? SmallTaskAllocator.Allocate() : GMalloc->Malloc(sizeof(TGraphTask), PLATFORM_CACHE_LINE_SIZE);
+}
+
+template<typename TTask>
+void TGraphTask<TTask>::operator delete(void* Ptr, size_t Size)
+{
+	Size <= SmallTaskSize ? SmallTaskAllocator.Free(Ptr) : GMalloc->Free(Ptr);
+}
+
 // an adaptation of FBaseGraphTask to be used as a standalone FGraphEvent
 class FGraphEventImpl : public FBaseGraphTask
 {
@@ -781,7 +743,7 @@ public:
 	static void operator delete(void* Ptr);
 
 private:
-	virtual bool TryExecuteTask() override
+	virtual bool TryExecuteTaskVirtual() override
 	{
 		checkNoEntry(); // graph events are never executed
 		return true;
@@ -809,12 +771,23 @@ inline FGraphEventRef FBaseGraphTask::CreateGraphEvent()
 
 #else // TASKGRAPH_NEW_FRONTEND
 
+struct FTaskBlockAllocationTag : FDefaultBlockAllocationTag
+{
+	static constexpr uint32 BlockSize = 64 * 1024;
+	static constexpr bool AllowOversizedBlocks = false;
+	static constexpr bool RequiresAccurateSize = false;
+	static constexpr bool InlineBlockAllocation = true;
+	static constexpr const char* TagName = "TaskLinearAllocator";
+
+	using Allocator = TBlockAllocationCache<BlockSize, FAlignedAllocator>;
+};
+
 /** 
  *	Base class for all tasks. 
  *	Tasks go through a very specific life stage progression, and this is verified.
  **/
 
-class FBaseGraphTask
+class FBaseGraphTask : private UE::FInheritedContextBase
 {
 protected:
 	/** 
@@ -826,13 +799,7 @@ protected:
 		, NumberOfPrerequistitesOutstanding(InNumberOfPrerequistitesOutstanding + 1) // + 1 is not a prerequisite, it is a lock to prevent it from executing while it is getting prerequisites, one it is safe to execute, call PrerequisitesComplete
 	{
 		checkThreadGraph(LifeStage.Increment() == int32(LS_Contructed));
-#if UE_MEMORY_TAGS_TRACE_ENABLED
-		InheritedTraceTag = MemoryTrace_GetActiveTag();
-#endif
-#if UE_TRACE_METADATA_ENABLED
-		InheritedMetadataId = UE_TRACE_METADATA_SAVE_STACK();
-#endif
-		LLM(InheritedLLMTag = FLowLevelMemTracker::bIsDisabled ? nullptr : FLowLevelMemTracker::Get().GetActiveTagData(ELLMTracker::Default));
+		CaptureInheritedContext();
 	}
 	/** 
 	 *	Sets the desired execution thread. This is not part of the constructor because this information may not be known quite yet duiring construction.
@@ -862,7 +829,10 @@ protected:
 	/** destructor, just checks the life stage **/
 	virtual ~FBaseGraphTask()
 	{
-		checkThreadGraph(LifeStage.Increment() == int32(LS_Deconstucted));
+#if DO_GUARD_SLOW
+		int32 Stage = LifeStage.Increment();
+		checkf(Stage == int32(LS_Deconstucted), TEXT("LifeStage was %d"), Stage);
+#endif
 	}
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
@@ -886,7 +856,7 @@ protected:
 	TaskTrace::FId GetTraceId() const
 	{
 #if UE_TASK_TRACE_ENABLED
-		return TraceId;
+		return TraceId.load(std::memory_order_relaxed);
 #else
 		return TaskTrace::InvalidId;
 #endif
@@ -943,10 +913,9 @@ private:
 	 **/
 	FORCEINLINE void Execute(TArray<FBaseGraphTask*>& NewTasks, ENamedThreads::Type CurrentThread, bool bDeleteOnCompletion)
 	{
-		LLM_SCOPE(InheritedLLMTag);
-		UE_MEMSCOPE(InheritedTraceTag);
-		UE_TRACE_METADATA_RESTORE_STACK(InheritedMetadataId);
 		checkThreadGraph(LifeStage.Increment() == int32(LS_Executing));
+
+		UE::FInheritedContextScope InheritedContextScope = RestoreInheritedContext();
 		ExecuteTask(NewTasks, CurrentThread, bDeleteOnCompletion);
 	}
 
@@ -985,16 +954,9 @@ private:
 	FThreadSafeCounter			LifeStage;
 
 #endif
-#if UE_MEMORY_TAGS_TRACE_ENABLED
-	int32 InheritedTraceTag;
-#endif
-#if UE_TRACE_METADATA_ENABLED
-	uint32 InheritedMetadataId;
-#endif
-	LLM(const UE::LLMPrivate::FTagData* InheritedLLMTag);
 
 #if UE_TASK_TRACE_ENABLED
-	TaskTrace::FId TraceId;
+	std::atomic<TaskTrace::FId> TraceId { TaskTrace::InvalidId };
 #endif
 };
 
@@ -1103,7 +1065,7 @@ public:
 	TaskTrace::FId GetTraceId() const
 	{
 #if UE_TASK_TRACE_ENABLED
-		return TraceId;
+		return TraceId.load(std::memory_order_relaxed);
 #else
 		return TaskTrace::InvalidId;
 #endif
@@ -1188,7 +1150,7 @@ private:
 #endif
 
 #if UE_TASK_TRACE_ENABLED
-	TaskTrace::FId TraceId = TaskTrace::GenerateTaskId();
+	std::atomic<TaskTrace::FId> TraceId { TaskTrace::GenerateTaskId() };
 #endif
 };
 

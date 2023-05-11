@@ -9,6 +9,9 @@ StaticMeshUpdate.h: Helpers to stream in and out static mesh LODs.
 #include "CoreMinimal.h"
 #include "Engine/StaticMesh.h"
 #include "Async/AsyncFileHandle.h"
+#include "IO/IoDispatcher.h"
+#include "RenderAssetUpdate.h"
+#include "RayTracingGeometry.h"
 
 /**
 * A context used to update or proceed with the next update step.
@@ -89,8 +92,7 @@ protected:
 		void SafeRelease();
 
 		/** Transfer ownership of buffers to a LOD resource */
-		template <uint32 MaxNumUpdates>
-		void TransferBuffers(FStaticMeshLODResources& LODResource, TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher);
+		void TransferBuffers(FStaticMeshLODResources& LODResource, FRHIResourceUpdateBatcher& Batcher);
 
 		void CheckIsNull() const;
 	};

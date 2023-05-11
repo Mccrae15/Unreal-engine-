@@ -2,49 +2,17 @@
 
 #include "MuCOE/SMutableObjectViewer.h"
 
-#include "Framework/Commands/UIAction.h"
-#include "Framework/Commands/UICommandInfo.h"
-#include "Framework/Docking/TabManager.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Framework/MultiBox/MultiBoxDefs.h"
-#include "Framework/SlateDelegates.h"
-#include "Framework/Views/ITypedTableView.h"
-#include "HAL/PlatformCrt.h"
+#include "Framework/Views/TableViewMetadata.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
-#include "Internationalization/Internationalization.h"
-#include "Internationalization/Text.h"
-#include "Layout/Children.h"
-#include "Layout/Margin.h"
-#include "Layout/Visibility.h"
-#include "Math/Color.h"
-#include "Math/UnrealMathSSE.h"
-#include "Misc/AssertionMacros.h"
-#include "Misc/Attribute.h"
-#include "Misc/CoreMisc.h"
 #include "MuCOE/CustomizableObjectCompileRunnable.h"
-#include "MuCOE/CustomizableObjectCompiler.h"
 #include "MuCOE/CustomizableObjectEditorStyle.h"
 #include "MuCOE/SMutableCodeViewer.h"
 #include "MuCOE/SMutableGraphViewer.h"
-#include "MuT/Node.h"
-#include "SlotBase.h"
-#include "Styling/AppStyle.h"
-#include "Styling/CoreStyle.h"
-#include "Styling/ISlateStyle.h"
-#include "Styling/SlateColor.h"
-#include "Textures/SlateIcon.h"
-#include "UObject/UObjectGlobals.h"
-#include "UObject/UnrealNames.h"
 #include "Widgets/Docking/SDockTab.h"
-#include "Widgets/Images/SImage.h"
 #include "Widgets/Input/STextComboBox.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/SOverlay.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Views/SExpanderArrow.h"
-#include "Widgets/Views/STableRow.h"
+#include "Widgets/Views/STreeView.h"
 
 class FExtender;
 class FUICommandList;
@@ -269,6 +237,30 @@ void SMutableObjectViewer::GenerateMutableGraphPressed()
 
 void SMutableObjectViewer::CompileMutableCodePressed()
 {
+	if (CompileOptions.bForceLargeLODBias)
+	{
+		// Debug compile with many different biasses
+		const int32 MaxBias = 15;
+		for (int32 Bias = 0; Bias < MaxBias; ++Bias)
+		{
+			CompileOptions.DebugBias = Bias;
+				
+			mu::NodePtr RootNode = Compiler.Export(CustomizableObject, CompileOptions);
+			if (!RootNode)
+			{
+				// TODO: Show errors
+				return;
+			}
+
+			// Do the compilation to Mutable Code synchronously.
+			TSharedPtr<FCustomizableObjectCompileRunnable> CompileTask = MakeShareable(new FCustomizableObjectCompileRunnable(RootNode, false));
+			CompileTask->Options = CompileOptions;
+			CompileTask->Init();
+			CompileTask->Run();
+		}
+
+	}
+
 	// Convert from Unreal graph to Mutable graph.
 	mu::NodePtr RootNode = Compiler.Export(CustomizableObject, CompileOptions);
 	if (!RootNode)
@@ -399,6 +391,19 @@ TSharedRef<SWidget> SMutableObjectViewer::GenerateCompileOptionsMenuContent()
 				FExecuteAction::CreateLambda([this]() { CompileOptions.bUseDiskCompilation = !CompileOptions.bUseDiskCompilation; }),
 				FCanExecuteAction(),
 				FIsActionChecked::CreateLambda([this]() { return CompileOptions.bUseDiskCompilation; })),
+			NAME_None,
+			EUserInterfaceActionType::ToggleButton
+		);
+
+		// Debug LODBias
+		MenuBuilder.AddMenuEntry(
+			LOCTEXT("ForceLargeLODBias", "Force a large texture LODBias."),
+			LOCTEXT("ForceLargeLODBiasTooltip", "This is useful to test compilation of special cook modes."),
+			FSlateIcon(),
+			FUIAction(
+				FExecuteAction::CreateLambda([this]() { CompileOptions.bForceLargeLODBias = !CompileOptions.bForceLargeLODBias; }),
+				FCanExecuteAction(),
+				FIsActionChecked::CreateLambda([this]() { return CompileOptions.bForceLargeLODBias; })),
 			NAME_None,
 			EUserInterfaceActionType::ToggleButton
 		);

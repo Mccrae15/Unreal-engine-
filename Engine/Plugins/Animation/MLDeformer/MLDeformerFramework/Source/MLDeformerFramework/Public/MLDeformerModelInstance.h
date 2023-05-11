@@ -6,12 +6,17 @@
 #include "MLDeformerModule.h"
 #include "UObject/ObjectPtr.h"
 #include "RenderCommandFence.h"
+#include "ProfilingDebugging/CsvProfiler.h"
 #include "MLDeformerModelInstance.generated.h"
 
 class UMLDeformerModel;
-class UNeuralNetwork;
 class USkeletalMeshComponent;
+class UMLDeformerComponent;
 
+#if STATS
+DECLARE_STATS_GROUP(TEXT("MLDeformer"), STATGROUP_MLDeformer, STATCAT_Advanced);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("ML Deformer Inference"), STAT_MLDeformerInference, STATGROUP_MLDeformer, );
+#endif
 /**
  * An instance of the ML Deformer model.
  * The ML Deformer model contains shared data, while this instance contains data unique to the actor it is being applied to.
@@ -66,11 +71,11 @@ public:
 	 * Check whether the deformer is compatible with a given skeletal mesh component.
 	 * This internally also edits the value returned by GetCompatibilityErrorText().
 	 * @param InSkelMeshComponent The skeletal mesh component to check compatibility with.
-	 * @param LogIssues Set to true to automatically log any compatibility errors.
+	 * @param bLogIssues Set to true to automatically log any compatibility errors.
 	 * @return Returns the error string. When the returned string is empty, there were no errors and thus
 	 *         the specified skeletal mesh component is compatible.
 	 */
-	virtual FString CheckCompatibility(USkeletalMeshComponent* InSkelMeshComponent, bool LogIssues=false);
+	virtual FString CheckCompatibility(USkeletalMeshComponent* InSkelMeshComponent, bool bLogIssues=false);
 
 	/**
 	 * Check if we are in a valid state for the deformer graph's data provider.
@@ -119,6 +124,12 @@ public:
 	/** Check whether we already called UMLDeformerModel::PostMLDeformerComponentInit. */
 	bool HasPostInitialized() const;
 
+	/**
+	 * Get the ML Deformer component that this instance is part of.
+	 * @return A pointer to the ML Deformer component.
+	 */
+	UMLDeformerComponent* GetMLDeformerComponent() const;
+
 protected:
 	/**
 	 * Update the neural network input values directly inside its input tensor.
@@ -139,15 +150,14 @@ protected:
 	 * @return Returns true when the setup is done correctly and the neural network is ready to be executed. Otherwise false is returned, which 
 	 * can happen when the NeuralNetwork pointer is invalid, when the model is not set, when the network is not compatible, etc.
 	 */
-	virtual bool SetupInputs();
+	virtual bool SetupInputs() { return true; }
 
 	/**
 	 * Execute the model instance, which can run the neural network inference in case the model uses a neural network.
 	 * This already assumes that compatibility checks are done, and that the network inputs are set etc.
-	 * Internally this will typically execute the UNeuralNetwork::Run() method, either on GPU or CPU.
 	 * @param ModelWeight The weight of the model, must be between 0 and 1.
 	 */
-	virtual void Execute(float ModelWeight);
+	virtual void Execute(float ModelWeight) {}
 
 	/**
 	 * Handle when the model weight is zero.
@@ -185,6 +195,13 @@ protected:
 	 * Updates the bone transforms array.
 	 */
 	void UpdateBoneTransforms();
+
+	/** 
+	 * Check whether we have valid transforms in the skeletal mesh component.
+	 * When this returns false, we can't really execute the deformer.
+	 * @return Returns true if the skeletal mesh component, or its leader component has non-empty transform buffers.
+	 */
+	bool HasValidTransforms() const;
 
 protected:
 	/** The fence that let's us wait for all render commands to finish, before we continue. */

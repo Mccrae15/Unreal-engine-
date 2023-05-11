@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NaniteDrawList.h"
+#include "BasePassRendering.h"
 #include "NaniteSceneProxy.h"
 #include "SceneUtils.h"
 #include "ScenePrivate.h"
@@ -17,7 +18,7 @@ static FAutoConsoleVariableRef CVarNaniteMaterialSortMode(
 int32 GNaniteAllowWPODistanceDisable = 1;
 static FAutoConsoleVariableRef CVarNaniteAllowWPODistanceDisable(
 	TEXT("r.Nanite.AllowWPODistanceDisable"),
-	GNaniteMaterialSortMode,
+	GNaniteAllowWPODistanceDisable,
 	TEXT("Whether or not to allow disabling World Position Offset for Nanite instances at a distance from the camera."),
 	ECVF_ReadOnly
 );
@@ -100,8 +101,8 @@ void FNaniteDrawListContext::AddShadingCommand(FPrimitiveSceneInfo& PrimitiveSce
 	check(SectionIndex < uint32(MaterialSlots.Num()));
 
 	FNaniteMaterialSlot& MaterialSlot = MaterialSlots[SectionIndex];
-	check(MaterialSlot.ShadingId == 0xFFFFu);
-	PrimitiveSceneInfo.NaniteMaterialSlots[MeshPass][SectionIndex].ShadingId = uint16(ShadingCommand.GetMaterialSlot());
+	check(MaterialSlot.LegacyShadingId == 0xFFFFu);
+	PrimitiveSceneInfo.NaniteMaterialSlots[MeshPass][SectionIndex].LegacyShadingId = uint16(ShadingCommand.GetMaterialSlot());
 }
 
 void FNaniteDrawListContext::AddShadingBin(FPrimitiveSceneInfo& PrimitiveSceneInfo, const FNaniteShadingBin& ShadingBin, ENaniteMeshPass::Type MeshPass, uint8 SectionIndex)
@@ -112,8 +113,8 @@ void FNaniteDrawListContext::AddShadingBin(FPrimitiveSceneInfo& PrimitiveSceneIn
 	check(SectionIndex < uint32(MaterialSlots.Num()));
 
 	FNaniteMaterialSlot& MaterialSlot = MaterialSlots[SectionIndex];
-	//check(MaterialSlot.ShadingId == 0xFFFFu);
-	// TODO: PrimitiveSceneInfo.NaniteMaterialSlots[MeshPass][SectionIndex].ShadingId = ShadingBin.BinIndex;
+	check(MaterialSlot.ShadingBin == 0xFFFFu);
+	PrimitiveSceneInfo.NaniteMaterialSlots[MeshPass][SectionIndex].ShadingBin = ShadingBin.BinIndex;
 }
 
 void FNaniteDrawListContext::AddRasterBin(
@@ -134,9 +135,9 @@ void FNaniteDrawListContext::AddRasterBin(
 	check(SectionIndex < uint32(MaterialSlots.Num()));
 
 	FNaniteMaterialSlot& MaterialSlot = MaterialSlots[SectionIndex];
-	check(MaterialSlot.RasterId == 0xFFFFu);
-	MaterialSlot.RasterId = PrimaryRasterBin.BinIndex;
-	MaterialSlot.SecondaryRasterId = SecondaryRasterBin.BinIndex;
+	check(MaterialSlot.RasterBin == 0xFFFFu);
+	MaterialSlot.RasterBin = PrimaryRasterBin.BinIndex;
+	MaterialSlot.SecondaryRasterBin = SecondaryRasterBin.BinIndex;
 }
 
 void FNaniteDrawListContext::FinalizeCommand(
@@ -202,10 +203,9 @@ void FNaniteDrawListContext::FinalizeCommand(
 
 void FNaniteDrawListContext::Apply(FScene& Scene)
 {
-	check(IsInRenderingThread());
+	check(IsInParallelRenderingThread());
 
-	static const auto AllowComputeMaterials = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Nanite.AllowComputeMaterial"));
-	const bool bAllowComputeMaterials = (AllowComputeMaterials && AllowComputeMaterials->GetValueOnRenderThread() != 0);
+	static const bool bAllowComputeMaterials = NaniteComputeMaterialsSupported();
 
 	for (int32 MeshPass = 0; MeshPass < ENaniteMeshPass::Num; ++MeshPass)
 	{
@@ -262,6 +262,9 @@ void FNaniteDrawListContext::Apply(FScene& Scene)
 					AddShadingBin(*PrimitiveSceneInfo, ShadingBin, ENaniteMeshPass::Type(MeshPass), uint8(MaterialSectionIndex));
 				}
 			}
+
+			// This will register the primitive's raster bins for custom depth, if necessary
+			PrimitiveSceneInfo->RefreshNaniteRasterBins();
 		}
 	}
 }
@@ -282,7 +285,12 @@ void SubmitNaniteIndirectMaterial(
 #if WANTS_DRAW_MESH_EVENTS
 	FMeshDrawCommand::FMeshDrawEvent MeshEvent(MeshDrawCommand, InstanceFactor, RHICmdList);
 #endif
-	FMeshDrawCommand::SubmitDrawIndirectBegin(MeshDrawCommand, GraphicsMinimalPipelineStateSet, nullptr, 0, InstanceFactor, RHICmdList, StateCache);
+
+	bool bAllowSkipDrawCommand = true;
+	if (!FMeshDrawCommand::SubmitDrawIndirectBegin(MeshDrawCommand, GraphicsMinimalPipelineStateSet, nullptr, 0, InstanceFactor, RHICmdList, StateCache, bAllowSkipDrawCommand))
+	{
+		return;
+	}
 
 	// All Nanite mesh draw commands are using the same vertex shader, which has a material depth parameter we assign at render time.
 	{
@@ -294,7 +302,7 @@ void SubmitNaniteIndirectMaterial(
 	}
 
 	check(MaterialIndirectArgs == nullptr || MaterialSlot != INDEX_NONE);
-	const uint32 IndirectArgSize = sizeof(FRHIDrawIndexedIndirectParameters) + sizeof(FRHIDispatchIndirectParameters);
+	const uint32 IndirectArgSize = sizeof(FRHIDrawIndexedIndirectParameters) + sizeof(FRHIDispatchIndirectParametersNoPadding);
 	const uint32 MaterialSlotIndirectOffset = MaterialIndirectArgs != nullptr ? IndirectArgSize * uint32(MaterialSlot) : 0;
 	FMeshDrawCommand::SubmitDrawIndirectEnd(MeshDrawCommand, InstanceFactor, RHICmdList, MaterialIndirectArgs, MaterialSlotIndirectOffset);
 }
@@ -313,7 +321,11 @@ void SubmitNaniteMultiViewMaterial(
 	FMeshDrawCommand::FMeshDrawEvent MeshEvent(MeshDrawCommand, InstanceFactor, RHICmdList);
 #endif
 
-	FMeshDrawCommand::SubmitDrawBegin(MeshDrawCommand, GraphicsMinimalPipelineStateSet, nullptr, 0, InstanceFactor, RHICmdList, StateCache);
+	bool bAllowSkipDrawCommand = true;
+	if (!FMeshDrawCommand::SubmitDrawBegin(MeshDrawCommand, GraphicsMinimalPipelineStateSet, nullptr, 0, InstanceFactor, RHICmdList, StateCache, bAllowSkipDrawCommand))
+	{
+		return;
+	}
 
 	// All Nanite mesh draw commands are using the same vertex shader, which has a material depth parameter we assign at render time.
 	{
@@ -372,13 +384,13 @@ bool FNaniteMeshProcessor::TryAddMeshBatch(
 	const FMaterial& Material
 )
 {
-	const EBlendMode BlendMode = Material.GetBlendMode();
+	const bool bIsTranslucent = IsTranslucentBlendMode(Material);
 	const FMaterialShadingModelField ShadingModels = Material.GetShadingModels();
 
-	check(Nanite::IsSupportedBlendMode(BlendMode));
+	check(Nanite::IsSupportedBlendMode(Material));
 	check(Nanite::IsSupportedMaterialDomain(Material.GetMaterialDomain()));
 
-	const bool bRenderSkylight = Scene && Scene->ShouldRenderSkylightInBasePass(BlendMode) && ShadingModels != MSM_Unlit;
+	const bool bRenderSkylight = Scene && Scene->ShouldRenderSkylightInBasePass(bIsTranslucent) && ShadingModels != MSM_Unlit;
 	ELightMapPolicyType LightMapPolicyType = FBasePassMeshProcessor::GetUniformLightMapPolicyType(FeatureLevel, Scene, MeshBatch, PrimitiveSceneProxy, Material);
 
 	const EGBufferLayout GBufferLayout = Nanite::GetGBufferLayoutForMaterial(Material);
@@ -437,22 +449,21 @@ bool FNaniteMeshProcessor::TryAddMeshBatch(
 void FNaniteMeshProcessor::CollectPSOInitializers(
 	const FSceneTexturesConfig& SceneTexturesConfig,
 	const FMaterial& Material,
-	const FVertexFactoryType* VertexFactoryType,
+	const FPSOPrecacheVertexFactoryData& VertexFactoryData,
 	const FPSOPrecacheParams& PreCacheParams,
 	TArray<FPSOPrecacheData>& PSOInitializers
 )
 {
 	// Only support for the nanite vertex factory type
-	if (VertexFactoryType != &Nanite::FVertexFactory::StaticType)
+	if (VertexFactoryData.VertexFactoryType != &Nanite::FVertexFactory::StaticType)
 	{
 		return;
 	}
 
 	// Check if Nanite can be used by this material
-	const EBlendMode BlendMode = Material.GetBlendMode();
 	const FMaterialShadingModelField ShadingModels = Material.GetShadingModels();
-	bool bShouldDraw = Nanite::IsSupportedBlendMode(BlendMode) && Nanite::IsSupportedMaterialDomain(Material.GetMaterialDomain());
-	if (!bShouldDraw || !PreCacheParams.bRenderInMainPass)
+	bool bShouldDraw = Nanite::IsSupportedBlendMode(Material) && Nanite::IsSupportedMaterialDomain(Material.GetMaterialDomain());
+	if (!bShouldDraw)
 	{
 		return;
 	}
@@ -460,16 +471,19 @@ void FNaniteMeshProcessor::CollectPSOInitializers(
 	{
 		// generate for both skylight enabled/disabled? Or can this be known already at this point?
 		bool bRenderSkyLight = true;
-		CollectPSOInitializersForSkyLight(SceneTexturesConfig, VertexFactoryType, Material, bRenderSkyLight, PSOInitializers);
+		CollectPSOInitializersForSkyLight(SceneTexturesConfig, VertexFactoryData, Material, bRenderSkyLight, PSOInitializers);
 		
 		bRenderSkyLight = false;
-		CollectPSOInitializersForSkyLight(SceneTexturesConfig, VertexFactoryType, Material, bRenderSkyLight, PSOInitializers);
+		CollectPSOInitializersForSkyLight(SceneTexturesConfig, VertexFactoryData, Material, bRenderSkyLight, PSOInitializers);
 	}
+
+	EShaderPlatform ShaderPlatform = GetFeatureLevelShaderPlatform(FeatureLevel);
+	Nanite::CollectRasterPSOInitializers(SceneTexturesConfig, Material, PreCacheParams, ShaderPlatform, PSOInitializers);
 }
 
 void FNaniteMeshProcessor::CollectPSOInitializersForSkyLight(
 	const FSceneTexturesConfig& SceneTexturesConfig,
-	const FVertexFactoryType* VertexFactoryType,
+	const FPSOPrecacheVertexFactoryData& VertexFactoryData,
 	const FMaterial& RESTRICT Material,
 	const bool bRenderSkylight,
 	TArray<FPSOPrecacheData>& PSOInitializers
@@ -486,7 +500,7 @@ void FNaniteMeshProcessor::CollectPSOInitializersForSkyLight(
 		bool b128BitRequirement = false;
 		bool bShadersValid = GetBasePassShaders<FUniformLightMapPolicy>(
 			Material,
-			VertexFactoryType,
+			VertexFactoryData.VertexFactoryType,
 			FUniformLightMapPolicy(UniformLightMapPolicyType),
 			FeatureLevel,
 			bRenderSkylight,
@@ -515,7 +529,7 @@ void FNaniteMeshProcessor::CollectPSOInitializersForSkyLight(
 		SetupGBufferRenderTargetInfo(SceneTexturesConfig, RenderTargetsInfo, true /*bSetupDepthStencil*/);
 
 		AddGraphicsPipelineStateInitializer(
-			VertexFactoryType,
+			VertexFactoryData,
 			Material,
 			PassDrawRenderState,
 			RenderTargetsInfo,
@@ -524,6 +538,7 @@ void FNaniteMeshProcessor::CollectPSOInitializersForSkyLight(
 			CM_None,
 			PT_TriangleList,
 			EMeshPassFeatures::Default,
+			true /*bRequired*/,
 			PSOInitializers);
 	}
 }
@@ -701,6 +716,7 @@ void BuildNaniteMaterialPassCommands(
 		FNaniteMaterialPassCommand PassCommand(MeshDrawCommand);
 		const int32 MaterialId = Iter.GetElementId().GetIndex();
 
+		PassCommand.MaterialId = FNaniteCommandInfo::GetMaterialId(MaterialId);
 		PassCommand.MaterialDepth = FNaniteCommandInfo::GetDepthId(MaterialId);
 		PassCommand.MaterialSlot  = Command.Value.MaterialSlot;
 

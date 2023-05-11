@@ -166,7 +166,13 @@ UWorldPartitionConvertCommandlet::UWorldPartitionConvertCommandlet(const FObject
 	, WorldExtent(HALF_WORLD_MAX)
 	, LandscapeGridSize(4)
 	, DataLayerFactory(NewObject<UDataLayerFactory>())
-{}
+{
+	if (FParse::Param(FCommandLine::Get(), TEXT("RunningFromUnrealEd")))
+	{
+		ShowErrorCount = false;	// This has the side effect of making the process return code match the return code of the commandlet
+		FastExit = true;		// Faster exit which avoids crash during shutdown. The engine isn't shutdown cleanly.
+	}
+}
 
 UWorld* UWorldPartitionConvertCommandlet::LoadWorld(const FString& LevelToLoad)
 {
@@ -234,14 +240,15 @@ UWorldPartition* UWorldPartitionConvertCommandlet::CreateWorldPartition(AWorldSe
 	{
 		WorldPartition->EditorHash->LoadConfig(*EditorHashClass, *LevelConfigFilename);
 		WorldPartition->RuntimeHash->LoadConfig(*RuntimeHashClass, *LevelConfigFilename);
+
 		// Use specified existing default HLOD layer if valid 
-		if (UHLODLayer* ExistingHLODLayer = LoadObject<UHLODLayer>(NULL, *DefaultHLODLayerAsset))
+		if (UHLODLayer* ExistingHLODLayer = LoadObject<UHLODLayer>(NULL, *DefaultHLODLayerAsset, nullptr, LOAD_NoWarn))
 		{
 			WorldPartition->DefaultHLODLayer = ExistingHLODLayer;
 		}
-		else
+		else if(UHLODLayer* FoundLayer = HLODLayers.FindRef(DefaultHLODLayerName))
 		{
-			WorldPartition->DefaultHLODLayer = HLODLayers.FindRef(DefaultHLODLayerName);
+			WorldPartition->DefaultHLODLayer = FoundLayer;
 		}
 	}
 
@@ -537,7 +544,7 @@ bool UWorldPartitionConvertCommandlet::DetachDependantLevelPackages(ULevel* Leve
 
 	for (AActor* Actor: Level->Actors)
 	{
-		if (Actor && IsValidChecked(Actor) && Actor->IsA<ALODActor>())
+		if (IsValid(Actor) && Actor->IsA<ALODActor>())
 		{
 			Level->GetWorld()->DestroyActor(Actor);
 		}
@@ -748,7 +755,7 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 	FString LevelLongPackageName;
 	if (FPackageName::SearchForPackageOnDisk(Tokens[0], nullptr, &LevelLongPackageName))
 	{
-		LevelConfigFilename = FPaths::ChangeExtension(LevelLongPackageName, TEXT("ini"));
+		LevelConfigFilename = FConfigCacheIni::NormalizeConfigIniPath(FPaths::ChangeExtension(LevelLongPackageName, TEXT("ini")));
 
 		if (FPlatformFileManager::Get().GetPlatformFile().FileExists(*LevelConfigFilename))
 		{
@@ -1000,9 +1007,6 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 						
 			ALandscapeSplineActor* NewSplineActor = LandscapeInfo->CreateSplineActor(NewActorLocation);
 
-			// ULandscapeSplinesComponent doesn't assign SplineEditorMesh when IsCommandlet() is true.
-			NewSplineActor->GetSplinesComponent()->SetDefaultEditorSplineMesh();
-
 			NewSplineActors.Add(NewSplineActor);
 			LandscapeInfo->MoveSpline(ControlPoint, NewSplineActor);
 		};
@@ -1073,7 +1077,7 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 		{
 			AActor* Actor = *Iter;
 
-			if (Actor && IsValidChecked(Actor))
+			if (IsValid(Actor))
 			{
 				check(Actor->GetLevel() == Level);
 
@@ -1363,7 +1367,7 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 
 		for(AActor* Actor: ActorsToConvert)
 		{
-			if(Actor && IsValidChecked(Actor))
+			if(IsValid(Actor))
 			{
 				check(Actor->GetOuter() == SubLevel);
 				check(!ShouldDeleteActor(Actor, false));
@@ -1467,7 +1471,7 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 	// Move child actors at the end of the list
 	for (AActor* Actor: MainLevel->Actors)
 	{
-		if (Actor && IsValidChecked(Actor))
+		if (IsValid(Actor))
 		{
 			check(Actor->GetLevel() == MainLevel);
 			check(Actor->GetActorGuid().IsValid());
@@ -1499,7 +1503,7 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 		TSet<FGuid> ActorGuids;
 		for(AActor* Actor: ActorList)
 		{
-			if (!Actor || !IsValidChecked(Actor) || !Actor->SupportsExternalPackaging())
+			if (!IsValid(Actor) || !Actor->SupportsExternalPackaging())
 			{
 				continue;
 			}
@@ -1645,6 +1649,8 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 					return 1;
 				}
 			}
+			
+			UPackage::WaitForAsyncFileWrites();
 		}
 
 		// Add packages
@@ -1665,8 +1671,6 @@ int32 UWorldPartitionConvertCommandlet::Main(const FString& Params)
 		{
 			GEditor->CleanupPhysicsSceneThatWasInitializedForSave(MainWorld, bForceInitializeWorld);
 		}
-
-		UPackage::WaitForAsyncFileWrites();
 
 		UE_LOG(LogWorldPartitionConvertCommandlet, Log, TEXT("######## CONVERSION COMPLETED SUCCESSFULLY ########"));
 	}

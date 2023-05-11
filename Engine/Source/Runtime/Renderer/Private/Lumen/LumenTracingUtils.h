@@ -6,8 +6,11 @@
 #include "DistanceFieldLightingShared.h"
 #include "LumenSceneData.h"
 #include "IndirectLightRendering.h"
+#include "ReflectionEnvironment.h"
+#include "FogRendering.h"
 
 class FLumenCardUpdateContext;
+namespace LumenRadianceCache { class FRadianceCacheInputs; }
 
 class FHemisphereDirectionSampleGenerator
 {
@@ -30,12 +33,15 @@ public:
 
 BEGIN_SHADER_PARAMETER_STRUCT(FLumenCardTracingParameters, )
 	SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
-	SHADER_PARAMETER_STRUCT_REF(FReflectionUniformParameters, ReflectionStruct)
+	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FReflectionUniformParameters, ReflectionStruct)
 	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FLumenCardScene, LumenCardScene)
 	SHADER_PARAMETER(float, DiffuseColorBoost)
 	SHADER_PARAMETER(float, SkylightLeaking)
 	SHADER_PARAMETER(float, SkylightLeakingRoughness)
 	SHADER_PARAMETER(float, InvFullSkylightLeakingDistance)
+
+	SHADER_PARAMETER(uint32, SampleHeightFog)
+	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FFogUniformParameters, FogUniformParameters)
 
 	// GPU Scene
 	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, GPUSceneInstanceSceneData)
@@ -63,46 +69,13 @@ BEGIN_SHADER_PARAMETER_STRUCT(FLumenCardTracingParameters, )
 	SHADER_PARAMETER(uint32, NumGlobalSDFClipmaps)
 END_SHADER_PARAMETER_STRUCT()
 
-class FLumenCardTracingInputs
-{
-public:
-
-	FLumenCardTracingInputs(FRDGBuilder& GraphBuilder, FLumenSceneData& LumenSceneData, const FLumenSceneFrameTemporaries& FrameTemporaries, bool bSurfaceCacheFeedback = true);
-
-	FRDGTextureRef AlbedoAtlas;
-	FRDGTextureRef OpacityAtlas;
-	FRDGTextureRef NormalAtlas;
-	FRDGTextureRef EmissiveAtlas;
-	FRDGTextureRef DepthAtlas;
-
-	FRDGTextureRef DirectLightingAtlas;
-	FRDGTextureRef IndirectLightingAtlas;
-	FRDGTextureRef RadiosityNumFramesAccumulatedAtlas;
-	FRDGTextureRef FinalLightingAtlas;
-
-	// Feedback
-	FRDGBufferUAVRef CardPageLastUsedBufferUAV;
-	FRDGBufferUAVRef CardPageHighResLastUsedBufferUAV;
-	FRDGBufferUAVRef SurfaceCacheFeedbackBufferAllocatorUAV;
-	FRDGBufferUAVRef SurfaceCacheFeedbackBufferUAV;
-	uint32 SurfaceCacheFeedbackBufferSize;
-	uint32 SurfaceCacheFeedbackBufferTileWrapMask;
-	FIntPoint SurfaceCacheFeedbackBufferTileJitter;
-
-	TRDGUniformBufferRef<FLumenCardScene> LumenCardSceneUniformBuffer;
-};
-
-BEGIN_SHADER_PARAMETER_STRUCT(FOctahedralSolidAngleParameters, )
-	SHADER_PARAMETER(float, OctahedralSolidAngleTextureResolutionSq)
-	SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float>, OctahedralSolidAngleTexture)
-END_SHADER_PARAMETER_STRUCT()
-
 extern void GetLumenCardTracingParameters(
 	FRDGBuilder& GraphBuilder,
-	const FViewInfo& View, 
-	const FLumenCardTracingInputs& TracingInputs,
-	FLumenCardTracingParameters& TracingParameters, 
-	bool bShaderWillTraceCardsOnly = false);
+	const FViewInfo& View,
+	const FLumenSceneData& LumenSceneData,
+	const FLumenSceneFrameTemporaries& FrameTemporaries,
+	bool bSurfaceCacheFeedback,
+	FLumenCardTracingParameters& TracingParameters);
 
 BEGIN_SHADER_PARAMETER_STRUCT(FLumenMeshSDFTracingParameters, )
 	SHADER_PARAMETER_STRUCT_INCLUDE(FDistanceFieldObjectBufferParameters, DistanceFieldObjectBuffers)
@@ -194,7 +167,6 @@ extern void CullForCardTracing(
 	const FScene* Scene,
 	const FViewInfo& View,
 	const FLumenSceneFrameTemporaries& FrameTemporaries,
-	FLumenCardTracingInputs TracingInputs,
 	const FLumenIndirectTracingParameters& IndirectTracingParameters,
 	FLumenMeshSDFGridParameters& MeshSDFGridParameters,
 	ERDGPassFlags ComputePassFlags = ERDGPassFlags::Compute);
@@ -210,12 +182,6 @@ extern FLumenHZBScreenTraceParameters SetupHZBScreenTraceParameters(
 
 extern void UpdateDistantScene(FScene* Scene, FViewInfo& View);
 extern float ComputeMaxCardUpdateDistanceFromCamera(const FViewInfo& View);
-
-extern FRDGTextureRef InitializeOctahedralSolidAngleTexture(
-	FRDGBuilder& GraphBuilder,
-	FGlobalShaderMap* ShaderMap,
-	int32 OctahedralSolidAngleTextureSize,
-	TRefCountPtr<IPooledRenderTarget>& OctahedralSolidAngleTextureRT);
 
 extern int32 GLumenIrradianceFieldGather;
 

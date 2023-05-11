@@ -5,12 +5,13 @@
 =============================================================================*/
 
 #include "Components/PointLightComponent.h"
+#include "RenderUtils.h"
 #include "UObject/ConstructorHelpers.h"
-#include "Misc/LargeWorldRenderPosition.h"
-#include "RenderingThread.h"
 #include "Engine/Texture2D.h"
-#include "SceneManagement.h"
 #include "PointLightSceneProxy.h"
+#include "UObject/UnrealType.h"
+#include "SceneInterface.h"
+#include "SceneView.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(PointLightComponent)
 
@@ -52,8 +53,13 @@ void FPointLightSceneProxy::GetLightShaderParameters(FLightRenderParameters& Lig
 	LightParameters.RectLightAtlasUVOffset = FVector2f::ZeroVector;
 	LightParameters.RectLightAtlasUVScale = FVector2f::ZeroVector;
 	LightParameters.RectLightAtlasMaxLevel = FLightRenderParameters::GetRectLightAtlasInvalidMIPLevel();
-
+	LightParameters.IESAtlasIndex = INDEX_NONE;
 	LightParameters.InverseExposureBlend = InverseExposureBlend;
+
+	if (IESAtlasId != ~0)
+	{
+		GetSceneInterface()->GetLightIESAtlasSlot(this, &LightParameters);
+	}
 }
 
 /**

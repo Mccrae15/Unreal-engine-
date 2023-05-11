@@ -3,6 +3,7 @@
 #include "NaniteDisplacedMeshComponent.h"
 #include "Engine/StaticMesh.h"
 #include "ComponentRecreateRenderStateContext.h"
+#include "NaniteDisplacedMesh.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NaniteDisplacedMeshComponent)
 

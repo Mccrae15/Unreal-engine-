@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "InputActionValue.h"
 #include "InputModifiers.generated.h"
 
@@ -74,11 +73,11 @@ class UInputModifierDeadZone : public UInputModifier
 public:
 
 	// Threshold below which input is ignored
-	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category=Settings, Config)
+	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category=Settings, Config, meta=(ClampMin=0, ClampMax=1))
 	float LowerThreshold = 0.2f;
 
 	// Threshold above which input is clamped to 1
-	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category=Settings, Config)
+	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category=Settings, Config, meta=(ClampMin=0, ClampMax=1))
 	float UpperThreshold = 1.f;
 
 	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category=Settings, Config)
@@ -302,3 +301,7 @@ protected:
 	virtual FInputActionValue ModifyRaw_Implementation(const UEnhancedPlayerInput* PlayerInput, FInputActionValue CurrentValue, float DeltaTime) override;
 	virtual FLinearColor GetVisualizationColor_Implementation(FInputActionValue SampleValue, FInputActionValue FinalValue) const override;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

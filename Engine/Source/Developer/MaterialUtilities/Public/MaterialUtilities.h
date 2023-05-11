@@ -8,12 +8,13 @@
 #include "SceneTypes.h"
 #include "Modules/ModuleInterface.h"
 #include "Engine/TextureStreamingTypes.h"
-#include "UObject/ErrorException.h"
 #include "Engine/Texture.h"
 
 #include "LightMap.h"
 #include "ShadowMap.h"
 #include "ImageUtils.h"
+
+#include "MaterialUtilities.generated.h"
 
 class ALandscapeProxy;
 class Error;
@@ -26,6 +27,7 @@ class UTextureRenderTarget2D;
 class UMaterialOptions;
 struct FMaterialProxySettings;
 struct FMeshDescription;
+class FMaterialUpdateContext;
 class FSkeletalMeshLODRenderData;
 struct FBakeOutput;
 struct FMeshData;
@@ -56,6 +58,7 @@ struct FFlattenMaterial
 	FFlattenMaterial()
 		: RenderSize(0, 0)
 		, bTwoSided(false)
+		, bIsThinSurface(false)
 		, bDitheredLODTransition(false)
 		, BlendMode(BLEND_Opaque)
 		, EmissiveScale(1.0f)
@@ -106,6 +109,8 @@ struct FFlattenMaterial
 
 	/** Flag whether or not the material will have to be two-sided */
 	bool			bTwoSided;
+	/** Flag whether or not the material will have to be thin  */
+	bool			bIsThinSurface;
 	/** Flag whether or not the material will use dithered LOD transitions */
 	bool			bDitheredLODTransition;
 	/** Blend mode for the new material */
@@ -268,7 +273,9 @@ public:
 	/**
 	 * Whether material utilities support exporting specified material blend mode and property 
 	 */
+	UE_DEPRECATED(5.2, "Use SupportsExport(bool bIsOpaque, ...) function instead")
 	static bool SupportsExport(EBlendMode InBlendMode, EMaterialProperty InMaterialProperty);
+	static bool SupportsExport(bool bIsOpaque, EMaterialProperty InMaterialProperty);
 
 	/**
 	 * Flattens specified landscape material

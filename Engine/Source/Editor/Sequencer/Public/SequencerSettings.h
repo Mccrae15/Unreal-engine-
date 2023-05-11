@@ -16,7 +16,7 @@ enum class EKeyGroupMode : uint8;
 enum class EMovieSceneKeyInterpolation : uint8;
 
 UENUM()
-enum ESequencerSpawnPosition
+enum ESequencerSpawnPosition : int
 {
 	/** Origin. */
 	SSP_Origin UMETA(DisplayName="Origin"),
@@ -26,7 +26,7 @@ enum ESequencerSpawnPosition
 };
 
 UENUM()
-enum ESequencerZoomPosition
+enum ESequencerZoomPosition : int
 {
 	/** Current Time. */
 	SZP_CurrentTime UMETA(DisplayName="Playhead"),
@@ -36,7 +36,7 @@ enum ESequencerZoomPosition
 };
 
 UENUM()
-enum ESequencerLoopMode
+enum ESequencerLoopMode : int
 {
 	/** No Looping. */
 	SLM_NoLoop UMETA(DisplayName="No Looping"),
@@ -113,9 +113,9 @@ public:
 	/** Sets which channels are keyed when a channel is keyed */
 	void SetKeyGroupMode(EKeyGroupMode);
 
-	/** Gets default key interpolation. */
+	/** Get the default Interpolation type for newly created keyframes if the channel does not already have keyframes */
 	EMovieSceneKeyInterpolation GetKeyInterpolation() const;
-	/** Sets default key interpolation */
+	/** Sets default key interpolation for creating new keys on empty channels */
 	void SetKeyInterpolation(EMovieSceneKeyInterpolation InKeyInterpolation);
 
 	/** Get initial spawn position. */
@@ -249,6 +249,11 @@ public:
 	/** Sets the loop mode. */
 	void SetLoopMode(ESequencerLoopMode InLoopMode);
 
+	/** @return true if the cursor reset when navigating in and out of subsequences, false otherwise */
+	bool ShouldResetPlayheadWhenNavigating() const;
+	/** Set whether or not the cursor should be reset when navigating in and out of subsequences */
+	void SetResetPlayheadWhenNavigating(bool bInResetPlayheadWhenNavigating);
+
 	/** @return true if the cursor should be kept within the playback range while scrubbing in sequencer, false otherwise */
 	bool ShouldKeepCursorInPlayRangeWhileScrubbing() const;
 	/** Set whether or not the cursor should be kept within the playback range while scrubbing in sequencer */
@@ -284,9 +289,9 @@ public:
 	/** Set whether to show channel colors */
 	void SetInfiniteKeyAreas(bool bInInfiniteKeyAreas);
 
-	/** @return true if showing channel colors */
+	/** @return true if showing channel colors for the key bars */
 	bool GetShowChannelColors() const;
-	/** Set whether to show channel colors */
+	/** Set whether to show channel colors for the key bars */
 	void SetShowChannelColors(bool bInShowChannelColors);
 
 	/** @return true if showing status bar */
@@ -332,6 +337,11 @@ public:
 	bool GetDisableSectionsAfterBaking() const;
 	/** Set whether to disable sections when baking, as opposed to deleting */
 	void SetDisableSectionsAfterBaking(bool bInDisableSectionsAfterBaking);
+
+	/** @return the section color tints */
+	TArray<FColor> GetSectionColorTints() const;
+	/** Set the section color tints */
+	void SetSectionColorTints(const TArray<FColor>& InSectionColorTints);
 
 	/** @return Whether to playback in clean mode (game view, hide viewport UI) */
 	bool GetCleanPlaybackMode() const;
@@ -530,6 +540,10 @@ protected:
 	UPROPERTY( config )
 	TEnumAsByte<ESequencerLoopMode> LoopMode;
 
+	/** Enable or disable resetting the playhead when navigating in and out of subsequences. */
+	UPROPERTY(config, EditAnywhere, Category = Timeline, meta = (DisplayName = "Reset Playhead When Navigating"))
+	bool bResetPlayheadWhenNavigating;
+
 	/** Enable or disable keeping the playhead in the current playback range while scrubbing. */
 	UPROPERTY(config, EditAnywhere, Category = Timeline, meta = (DisplayName = "Keep Playhead in Play Range While Scrubbing"))
 	bool bKeepCursorInPlayRangeWhileScrubbing;
@@ -558,7 +572,7 @@ protected:
 	UPROPERTY( config, EditAnywhere, Category=Timeline )
 	bool bInfiniteKeyAreas;
 
-	/** Enable or disable displaying channel bar colors for vector properties. */
+	/** Enable or disable displaying channel bar colors for the key bars. */
 	UPROPERTY(config, EditAnywhere, Category = Timeline)
 	bool bShowChannelColors;
 
@@ -594,6 +608,10 @@ protected:
 	UPROPERTY(config, EditAnywhere, Category = Timeline)
 	bool bDisableSectionsAfterBaking;
 
+	/** Section color tints */
+	UPROPERTY(config, EditAnywhere, Category = General)
+	TArray<FColor> SectionColorTints;
+
 	/** When enabled, sequencer will playback in clean mode (game view, hide viewport UI) */
 	UPROPERTY(config, EditAnywhere, Category = General)
 	bool bCleanPlaybackMode;
@@ -602,7 +620,7 @@ protected:
 	UPROPERTY(config, EditAnywhere, Category = General)
 	bool bActivateRealtimeViewports;
 
-	/** When enabled, entering a sub sequence will evaluate that sub sequence in isolation, rather than from the master sequence */
+	/** When enabled, entering a sub sequence will evaluate that sub sequence in isolation, rather than from the root sequence */
 	UPROPERTY(config, EditAnywhere, Category=Playback)
 	bool bEvaluateSubSequencesInIsolation;
 

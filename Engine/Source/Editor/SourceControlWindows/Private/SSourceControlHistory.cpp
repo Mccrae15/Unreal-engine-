@@ -9,6 +9,7 @@
 #include "SourceControlWindows.h"
 #include "SourceControlHelpers.h"
 #include "ISourceControlModule.h"
+#include "SSourceControlCommon.h"
 #include "Modules/ModuleManager.h"
 #include "UObject/Object.h"
 #include "UObject/Package.h"
@@ -602,25 +603,11 @@ public:
 		}
 		else if (ColumnName == TEXT("Description"))
 		{
-			// Cut down the description to a single line for the list view
-			FString SingleLineDescription = RevisionListItem->Description;
-			int32 NewLinePos;
-			if (SingleLineDescription.FindChar(TCHAR('\n'), NewLinePos))
-			{
-				SingleLineDescription.LeftInline(NewLinePos, false);
-			}
-
-			// Trim any trailing new-line characters from the description for the tooltip
-			FString TooltipDescription = RevisionListItem->Description;
-			while(TooltipDescription.Len() && FChar::IsLinebreak(TooltipDescription[TooltipDescription.Len() - 1]))
-			{
-				TooltipDescription.RemoveAt(TooltipDescription.Len() - 1, 1, false);
-			}
-
 			return
 				SNew(STextBlock)
-				.Text(FText::FromString(SingleLineDescription))
-				.ToolTipText(FText::FromString(TooltipDescription));
+				.Text(SSourceControlCommon::GetSingleLineChangelistDescription(FText::FromString(RevisionListItem->Description)))
+				.ToolTipText(FText::FromString(RevisionListItem->Description))
+				.OverflowPolicy(ETextOverflowPolicy::Ellipsis);
 		}
 		else
 		{
@@ -1007,10 +994,7 @@ private:
 			static const FNumberFormattingOptions FileSizeFormatOptions = FNumberFormattingOptions()
 				.SetMinimumFractionalDigits(1)
 				.SetMaximumFractionalDigits(1);
-			return FText::Format(
-				NSLOCTEXT("SourceControlHistory", "FileSizeInMBFmt", "{0} MB"), 
-				FText::AsNumber(((float)LastSelectedRevisionItem.Pin()->FileSize) / (1024.f * 1024.f), &FileSizeFormatOptions)
-				);
+			return FText::AsMemory(LastSelectedRevisionItem.Pin()->FileSize, &FileSizeFormatOptions);
 		}
 		return FText::GetEmpty();
 	}
@@ -1166,41 +1150,48 @@ private:
 	/** Called to create a context menu when right-clicking on a history item */
 	TSharedPtr< SWidget > OnCreateContextMenu()
 	{
-		FMenuBuilder MenuBuilder( true, NULL );
-
-		MenuBuilder.AddMenuEntry( 
-			NSLOCTEXT("SourceControl.HistoryWindow.Menu", "DiffAgainstPrev", "Diff Against Previous Revision"), 
-			NSLOCTEXT("SourceControl.HistoryWindow.Menu", "DiffAgainstPrevTooltip", "See changes between this revision and the previous one."), 
-			FSlateIcon(), 
-			FUIAction(
-				FExecuteAction::CreateSP( this, &SSourceControlHistoryWidget::OnDiffAgainstPreviousRev ),
-				FCanExecuteAction::CreateSP(this, &SSourceControlHistoryWidget::CanDiffAgainstPreviousRev)
-				)
-		);
-
-		MenuBuilder.AddMenuEntry(
-			NSLOCTEXT("SourceControl.HistoryWindow.Menu", "DiffAgainstWorkspace", "Diff Against Workspace File"),
-			NSLOCTEXT("SourceControl.HistoryWindow.Menu", "DiffAgainstWorkspaceTooltip", "See changes between this revision and your version of the asset."),
-			FSlateIcon(),
-			FUIAction(
-				FExecuteAction::CreateSP(this, &SSourceControlHistoryWidget::OnDiffAgainstWorkspace),
-				FCanExecuteAction::CreateSP(this, &SSourceControlHistoryWidget::CanDiffAgainstWorkspace)
-			)
-		);
-
-		if (CanDiffSelected())
+		if (CanDiff())
 		{
-			MenuBuilder.AddMenuEntry( 
-				NSLOCTEXT("SourceControl.HistoryWindow.Menu", "DiffSelected", "Diff Selected"), 
-				NSLOCTEXT("SourceControl.HistoryWindow.Menu", "DiffSelectedTooltip", "Diff the two assets that you have selected."), 
-				FSlateIcon(), 
+			FMenuBuilder MenuBuilder(true, NULL);
+
+			MenuBuilder.AddMenuEntry(
+				NSLOCTEXT("SourceControl.HistoryWindow.Menu", "DiffAgainstPrev", "Diff Against Previous Revision"),
+				NSLOCTEXT("SourceControl.HistoryWindow.Menu", "DiffAgainstPrevTooltip", "See changes between this revision and the previous one."),
+				FSlateIcon(),
 				FUIAction(
-					FExecuteAction::CreateSP(this, &SSourceControlHistoryWidget::OnDiffSelected)
+					FExecuteAction::CreateSP(this, &SSourceControlHistoryWidget::OnDiffAgainstPreviousRev),
+					FCanExecuteAction::CreateSP(this, &SSourceControlHistoryWidget::CanDiffAgainstPreviousRev)
 				)
 			);
-		}
 
-		return MenuBuilder.MakeWidget();
+			MenuBuilder.AddMenuEntry(
+				NSLOCTEXT("SourceControl.HistoryWindow.Menu", "DiffAgainstWorkspace", "Diff Against Workspace File"),
+				NSLOCTEXT("SourceControl.HistoryWindow.Menu", "DiffAgainstWorkspaceTooltip", "See changes between this revision and your version of the asset."),
+				FSlateIcon(),
+				FUIAction(
+					FExecuteAction::CreateSP(this, &SSourceControlHistoryWidget::OnDiffAgainstWorkspace),
+					FCanExecuteAction::CreateSP(this, &SSourceControlHistoryWidget::CanDiffAgainstWorkspace)
+				)
+			);
+
+			if (CanDiffSelected())
+			{
+				MenuBuilder.AddMenuEntry(
+					NSLOCTEXT("SourceControl.HistoryWindow.Menu", "DiffSelected", "Diff Selected"),
+					NSLOCTEXT("SourceControl.HistoryWindow.Menu", "DiffSelectedTooltip", "Diff the two assets that you have selected."),
+					FSlateIcon(),
+					FUIAction(
+						FExecuteAction::CreateSP(this, &SSourceControlHistoryWidget::OnDiffSelected)
+					)
+				);
+			}
+
+			return MenuBuilder.MakeWidget();
+		}
+		else
+		{
+			return SNullWidget::NullWidget;
+		}
 	}
 
 	/** See if we should enabled the 'diff against previous' option */
@@ -1419,6 +1410,16 @@ private:
 				}
 			}
 		}
+	}
+
+	/**
+	 * Checks to see if the SourceControl provider supports diffing against depot.
+	 *
+	 * @return True if the SourceControl provider supports diffing, false if not.
+	 */
+	bool CanDiff() const
+	{
+		return ISourceControlModule::Get().GetProvider().AllowsDiffAgainstDepot();
 	}
 
 	/**
@@ -1683,7 +1684,7 @@ bool FSourceControlWindows::DiffAgainstWorkspace(const FString& InFileName)
 
 	if (FPackageName::TryConvertFilenameToLongPackageName(InFileName, AssetPackageName))
 	{
-		UPackage* AssetPackage = LoadPackage(nullptr, *AssetPackageName, LOAD_ForDiff | LOAD_DisableCompileOnLoad);
+		UPackage* AssetPackage = LoadPackage(nullptr, *AssetPackageName, LOAD_None);
 
 		// grab the asset from the package - we assume asset name matches file name
 		FString AssetName = FPaths::GetBaseFilename(InFileName);
@@ -1718,7 +1719,7 @@ bool FSourceControlWindows::DiffAgainstShelvedFile(const FSourceControlStateRef&
 	FString AssetPackageName;
 	if (FPackageName::TryConvertFilenameToLongPackageName(InFileState->GetFilename(), AssetPackageName))
 	{
-		UPackage* AssetPackage = LoadPackage(nullptr, *AssetPackageName, LOAD_ForDiff | LOAD_DisableCompileOnLoad);
+		UPackage* AssetPackage = LoadPackage(nullptr, *AssetPackageName, LOAD_None);
 
 		// grab the asset from the package - we assume asset name matches file name
 		FString AssetName = FPaths::GetBaseFilename(InFileState->GetFilename());

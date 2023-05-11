@@ -124,6 +124,19 @@ FPropertyAccess::Result FPropertyValueImpl::GetValueData( void*& OutAddress ) co
 	return Res;
 }
 
+FPropertyAccess::Result FPropertyValueImpl::GetValueEditStack(FPropertyNodeEditStack& OutStack) const
+{
+	FPropertyAccess::Result Res = FPropertyAccess::Fail;
+
+	TSharedPtr<FPropertyNode> PropertyNodePin = PropertyNode.Pin();
+	if (PropertyNodePin.IsValid())
+	{
+		Res = PropertyNodePin->GetSingleEditStack(OutStack);
+	}
+
+	return Res;
+}
+
 FPropertyAccess::Result FPropertyValueImpl::ImportText( const FString& InValue, EPropertyValueSetFlags::Type Flags )
 {
 	TSharedPtr<FPropertyNode> PropertyNodePin = PropertyNode.Pin();
@@ -1025,58 +1038,67 @@ void FPropertyValueImpl::AddChild()
 
 						if (Array)
 						{
-							FScriptArrayHelper	ArrayHelper(Array, Addr);
-							Index = ArrayHelper.AddValue();
+							Array->PerformOperationWithSetter(Obj, Addr, [Obj, Array, &Index](void* DirectAddress)
+							{								
+								FScriptArrayHelper	ArrayHelper(Array, DirectAddress);
+								Index = ArrayHelper.AddValue();
 
-							// check whether the inner type is flagged as a non-nullable. if so, create it.
-							FObjectProperty* InnerObjectProperty = CastField<FObjectProperty>(Array->Inner);
-							if (InnerObjectProperty && InnerObjectProperty->HasAnyPropertyFlags(CPF_NonNullable))
-							{
-								UObject* NewItem = NewObject<UObject>(Obj, InnerObjectProperty->PropertyClass);
-								InnerObjectProperty->SetObjectPropertyValue(ArrayHelper.GetRawPtr(Index), NewItem);
-							}
+								// check whether the inner type is flagged as a non-nullable. if so, create it.
+								FObjectProperty* InnerObjectProperty = CastField<FObjectProperty>(Array->Inner);
+								if (InnerObjectProperty && InnerObjectProperty->HasAnyPropertyFlags(CPF_NonNullable))
+								{
+									UObject* NewItem = NewObject<UObject>(Obj, InnerObjectProperty->PropertyClass);
+									InnerObjectProperty->SetObjectPropertyValue(ArrayHelper.GetRawPtr(Index), NewItem);
+								}
+							});
 						}
 						else if (Set)
 						{
-							FScriptSetHelper	SetHelper(Set, Addr);
-							Index = SetHelper.AddDefaultValue_Invalid_NeedsRehash();
-
-							// check whether the element type is flagged as a non-nullable. if so, create it.
-							FObjectProperty* ElementObjectProperty = CastField<FObjectProperty>(Set->ElementProp);
-							if (ElementObjectProperty && ElementObjectProperty->HasAnyPropertyFlags(CPF_NonNullable))
+							Set->PerformOperationWithSetter(Obj, Addr, [Obj, Set, &Index](void* DirectAddress)
 							{
-								UObject* NewItem = NewObject<UObject>(Obj, ElementObjectProperty->PropertyClass);
-								ElementObjectProperty->SetObjectPropertyValue(SetHelper.GetElementPtr(Index), NewItem);
-							}
+								FScriptSetHelper	SetHelper(Set, DirectAddress);
+								Index = SetHelper.AddDefaultValue_Invalid_NeedsRehash();
 
-							SetHelper.Rehash();
+								// check whether the element type is flagged as a non-nullable. if so, create it.
+								FObjectProperty* ElementObjectProperty = CastField<FObjectProperty>(Set->ElementProp);
+								if (ElementObjectProperty && ElementObjectProperty->HasAnyPropertyFlags(CPF_NonNullable))
+								{
+									UObject* NewItem = NewObject<UObject>(Obj, ElementObjectProperty->PropertyClass);
+									ElementObjectProperty->SetObjectPropertyValue(SetHelper.GetElementPtr(Index), NewItem);
+								}
+
+								SetHelper.Rehash();
+							});
 						}
 						else if (Map)
 						{
-							FScriptMapHelper	MapHelper(Map, Addr);
-							Index = MapHelper.AddDefaultValue_Invalid_NeedsRehash();
-
-							// check whether the key or value type is flagged as a non-nullable. if so, create it.
+							Map->PerformOperationWithSetter(Obj, Addr, [Obj, Map, &Index, &bAddedMapEntry](void* DirectAddress)
 							{
-								FObjectProperty* KeyObjectProperty = CastField<FObjectProperty>(Map->KeyProp);
-								if (KeyObjectProperty && KeyObjectProperty->HasAnyPropertyFlags(CPF_NonNullable))
-								{
-									UObject* NewItem = NewObject<UObject>(Obj, KeyObjectProperty->PropertyClass);
-									KeyObjectProperty->SetObjectPropertyValue(MapHelper.GetKeyPtr(Index), NewItem);
-								}
-							}
+								FScriptMapHelper	MapHelper(Map, DirectAddress);
+								Index = MapHelper.AddDefaultValue_Invalid_NeedsRehash();
 
-							{
-								FObjectProperty* ValueObjectProperty = CastField<FObjectProperty>(Map->ValueProp);
-								if (ValueObjectProperty && ValueObjectProperty->HasAnyPropertyFlags(CPF_NonNullable))
+								// check whether the key or value type is flagged as a non-nullable. if so, create it.
 								{
-									UObject* NewItem = NewObject<UObject>(Obj, ValueObjectProperty->PropertyClass);
-									ValueObjectProperty->SetObjectPropertyValue(MapHelper.GetValuePtr(Index), NewItem);
+									FObjectProperty* KeyObjectProperty = CastField<FObjectProperty>(Map->KeyProp);
+									if (KeyObjectProperty && KeyObjectProperty->HasAnyPropertyFlags(CPF_NonNullable))
+									{
+										UObject* NewItem = NewObject<UObject>(Obj, KeyObjectProperty->PropertyClass);
+										KeyObjectProperty->SetObjectPropertyValue(MapHelper.GetKeyPtr(Index), NewItem);
+									}
 								}
-							}
 
-							MapHelper.Rehash();
-							bAddedMapEntry = true;
+								{
+									FObjectProperty* ValueObjectProperty = CastField<FObjectProperty>(Map->ValueProp);
+									if (ValueObjectProperty && ValueObjectProperty->HasAnyPropertyFlags(CPF_NonNullable))
+									{
+										UObject* NewItem = NewObject<UObject>(Obj, ValueObjectProperty->PropertyClass);
+										ValueObjectProperty->SetObjectPropertyValue(MapHelper.GetValuePtr(Index), NewItem);
+									}
+								}
+
+								MapHelper.Rehash();
+								bAddedMapEntry = true;
+							});
 						}
 
 						ArrayIndicesPerObject[i].Add(NodeProperty->GetName(), Index);
@@ -2623,8 +2645,13 @@ FProperty* FPropertyHandleBase::GetMetaDataProperty() const
 
 bool FPropertyHandleBase::HasMetaData(const FName& Key) const
 {
-	FProperty* const MetaDataProperty = GetMetaDataProperty();
-	return (MetaDataProperty) ? MetaDataProperty->HasMetaData(Key) : false;
+	if (const FString* InstanceValue = GetInstanceMetaData(Key))
+	{
+		return true;
+	}
+
+	const FProperty* MetaDataProperty = GetMetaDataProperty();
+	return MetaDataProperty ? MetaDataProperty->HasMetaData(Key) : false;
 }
 
 const FString& FPropertyHandleBase::GetMetaData(const FName& Key) const
@@ -2632,34 +2659,50 @@ const FString& FPropertyHandleBase::GetMetaData(const FName& Key) const
 	// if not found, return a static empty string
 	static const FString EmptyString = TEXT("");
 
-	FProperty* const MetaDataProperty = GetMetaDataProperty();
-	return (MetaDataProperty) ? MetaDataProperty->GetMetaData(Key) : EmptyString;
+	if (const FString* InstanceValue = GetInstanceMetaData(Key))
+	{
+		return *InstanceValue;
+	}
+
+	const FProperty* MetaDataProperty = GetMetaDataProperty();
+	return MetaDataProperty ? MetaDataProperty->GetMetaData(Key) : EmptyString;
 }
 
 bool FPropertyHandleBase::GetBoolMetaData(const FName& Key) const
 {
-	FProperty* const MetaDataProperty = GetMetaDataProperty();
-	return (MetaDataProperty) ? MetaDataProperty->GetBoolMetaData(Key) : false;
+	if (!HasMetaData(Key))
+	{
+		return false;
+	}
+
+	const FString& StringValue = GetMetaData(Key);
+	return StringValue.IsEmpty() || StringValue == TEXT("true");
 }
 
 int32 FPropertyHandleBase::GetIntMetaData(const FName& Key) const
 {
-	FProperty* const MetaDataProperty = GetMetaDataProperty();
-	return (MetaDataProperty) ? MetaDataProperty->GetIntMetaData(Key) : 0;
+	const FString& StringValue = GetMetaData(Key);
+	return FCString::Atoi(*StringValue);
 }
 
 float FPropertyHandleBase::GetFloatMetaData(const FName& Key) const
 {
-	FProperty* const MetaDataProperty = GetMetaDataProperty();
-	return (MetaDataProperty) ? MetaDataProperty->GetFloatMetaData(Key) : 0.0f;
+	const FString& StringValue = GetMetaData(Key);
+	return FCString::Atof(*StringValue);
+}
+
+double FPropertyHandleBase::GetDoubleMetaData(const FName& Key) const
+{
+	const FString& StringValue = GetMetaData(Key);
+	return FCString::Atod(*StringValue);
 }
 
 UClass* FPropertyHandleBase::GetClassMetaData(const FName& Key) const
 {
-	FProperty* const MetaDataProperty = GetMetaDataProperty();
-	return (MetaDataProperty) ? MetaDataProperty->GetClassMetaData(Key) : nullptr;
+	const FString& ClassName = GetMetaData(Key);
+	UClass* FoundClass = UClass::TryFindTypeSlow<UClass>(ClassName);
+	return FoundClass;
 }
-
 
 void FPropertyHandleBase::SetInstanceMetaData(const FName& Key, const FString& Value)
 {

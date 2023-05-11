@@ -6,13 +6,16 @@
 #include "AssetRegistry/IAssetRegistry.h"
 #include "Containers/Array.h"
 #include "Containers/UnrealString.h"
-#include "CoreMinimal.h"
 #include "CoreTypes.h"
 #include "Misc/AssetRegistryInterface.h"
 #include "Modules/ModuleInterface.h"
 #include "Modules/ModuleManager.h"
 #include "UObject/NameTypes.h"
 #include "UObject/Object.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif
 
 class UPackage;
 
@@ -74,9 +77,17 @@ public:
 		IAssetRegistry::GetChecked().AssetRenamed(RenamedAsset, OldObjectPath);
 	}
 
+	UE_DEPRECATED(5.2, "Use the new AssetsSaved function that takes FAssetData.")
 	static void AssetSaved(const UObject& SavedAsset)
 	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS;
 		IAssetRegistry::GetChecked().AssetSaved(SavedAsset);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+	}
+
+	static void AssetsSaved(TArray<FAssetData>&& SavedAssets)
+	{
+		IAssetRegistry::GetChecked().AssetsSaved(MoveTemp(SavedAssets));
 	}
 
 	static void PackageDeleted(UPackage* DeletedPackage)

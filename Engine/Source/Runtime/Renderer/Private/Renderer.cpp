@@ -37,6 +37,9 @@
 #include "CanvasRender.h"
 #include "RendererOnScreenNotification.h"
 #include "Lumen/Lumen.h"
+#include "SceneRenderTargetParameters.h"
+#include "EngineModule.h"
+#include "RendererInterface.h"
 
 DEFINE_LOG_CATEGORY(LogRenderer);
 
@@ -191,8 +194,7 @@ void FRendererModule::DrawTileMesh(FCanvasRenderContext& RenderContext, FMeshPas
 					INVALID_LAST_UPDATE_FRAME,
 					0 /* Custom Data Count */,
 					0.0f /* Random ID */,
-					PrimitiveParams.LocalToRelativeWorld,
-					PrimitiveParams.PreviousLocalToRelativeWorld
+					PrimitiveParams.LocalToRelativeWorld
 				);
 
 				// TODO: Payload dummy?
@@ -223,12 +225,8 @@ void FRendererModule::DrawTileMesh(FCanvasRenderContext& RenderContext, FMeshPas
 		const bool bUseVirtualTexturing = UseVirtualTexturing(FeatureLevel) && !MeshMaterial.GetUniformVirtualTextureExpressions().IsEmpty();
 		if (bUseVirtualTexturing)
 		{
-			RDG_GPU_STAT_SCOPE(GraphBuilder, VirtualTextureUpdate);
-			FVirtualTextureSystem::Get().AllocateResources(GraphBuilder, FeatureLevel);
-			FVirtualTextureSystem::Get().CallPendingCallbacks();
-
 			FVirtualTextureUpdateSettings Settings;
-			Settings.DisableThrottling(true);
+			Settings.EnableThrottling(false);
 			FVirtualTextureSystem::Get().Update(GraphBuilder, FeatureLevel, Scene, Settings);
 
 			VirtualTextureFeedbackBegin(GraphBuilder, TArrayView<const FViewInfo>(&View, 1), RenderContext.GetViewportRect().Size());
@@ -251,8 +249,6 @@ void FRendererModule::DrawTileMesh(FCanvasRenderContext& RenderContext, FMeshPas
 		PassParameters->View = View.GetShaderParameters();
 		PassParameters->ReflectionCapture = EmptyReflectionCaptureUniformBuffer;
 		PassParameters->InstanceCulling = FInstanceCullingContext::CreateDummyInstanceCullingUniformBuffer(GraphBuilder);
-
-		const EBlendMode MaterialBlendMode = MeshMaterial.GetBlendMode();
 
 		// handle translucent material blend modes, not relevant in MaterialTexCoordScalesAnalysis since it outputs the scales.
 		if (ViewFamily->GetDebugViewShaderMode() == DVSM_OutputMaterialTextureScales)
@@ -284,7 +280,7 @@ void FRendererModule::DrawTileMesh(FCanvasRenderContext& RenderContext, FMeshPas
 			}
 #endif // WITH_DEBUG_VIEW_MODES
 		}
-		else if (IsTranslucentBlendMode(MaterialBlendMode))
+		else if (IsTranslucentBlendMode(MeshMaterial))
 		{
 			if (ShadingPath == EShadingPath::Deferred)
 			{
@@ -489,6 +485,11 @@ void FRendererModule::GPUBenchmark(FSynthBenchmarkResults& InOut, float WorkScal
 			RendererGPUBenchmark(RHICmdList, *InOutPtr, DummyView, WorkScale);
 		});
 	FlushRenderingCommands();
+}
+
+void FRendererModule::ResetSceneTextureExtentHistory()
+{
+	::ResetSceneTextureExtentHistory();
 }
 
 static void VisualizeTextureExec( const TCHAR* Cmd, FOutputDevice &Ar )

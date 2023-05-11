@@ -1,11 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Elements/PCGPointSampler.h"
-#include "PCGHelpers.h"
+
+#include "PCGContext.h"
+#include "Data/PCGSpatialData.h"
 #include "Data/PCGPointData.h"
 #include "Helpers/PCGAsync.h"
-#include "Helpers/PCGSettingsHelpers.h"
+#include "Helpers/PCGHelpers.h"
+
 #include "Math/RandomStream.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGPointSampler)
+
+#define LOCTEXT_NAMESPACE "PCGPointSamplerElement"
 
 UPCGPointSamplerSettings::UPCGPointSamplerSettings()
 {
@@ -25,21 +32,17 @@ bool FPCGPointSamplerElement::ExecuteInternal(FPCGContext* Context) const
 	check(Settings);
 
 	TArray<FPCGTaggedData> Inputs = Context->InputData.GetInputs();
-	UPCGParamData* Params = Context->InputData.GetParams();
 
 	TArray<FPCGTaggedData>& Outputs = Context->OutputData.TaggedData;
 
-	// Forward any non-input data, excluding params
-	Outputs.Append(Context->InputData.GetAllSettings());
-
-	const float Ratio = PCGSettingsHelpers::GetValue(GET_MEMBER_NAME_CHECKED(UPCGPointSamplerSettings, Ratio), Settings->Ratio, Params);
-#if WITH_EDITORONLY_DATA
-	const bool bKeepZeroDensityPoints = PCGSettingsHelpers::GetValue(GET_MEMBER_NAME_CHECKED(UPCGPointSamplerSettings, bKeepZeroDensityPoints), Settings->bKeepZeroDensityPoints, Params);
+	const float Ratio = Settings->Ratio;
+#if WITH_EDITOR
+	const bool bKeepZeroDensityPoints = Settings->bKeepZeroDensityPoints;
 #else
 	const bool bKeepZeroDensityPoints = false;
 #endif
 
-	const int Seed = PCGSettingsHelpers::ComputeSeedWithOverride(Settings, Context->SourceComponent, Params);
+	const int Seed = Context->GetSeed();
 
 	const bool bNoSampling = (Ratio <= 0.0f);
 	const bool bTrivialSampling = (Ratio >= 1.0f);
@@ -47,7 +50,7 @@ bool FPCGPointSamplerElement::ExecuteInternal(FPCGContext* Context) const
 	// Early exit when nothing will be generated out of this sampler
 	if (bNoSampling && !bKeepZeroDensityPoints)
 	{
-		PCGE_LOG(Verbose, "Skipped - all inputs rejected");
+		PCGE_LOG(Verbose, LogOnly, LOCTEXT("AllInputsRejected", "Skipped - all inputs rejected"));
 		return true;
 	}
 
@@ -58,14 +61,14 @@ bool FPCGPointSamplerElement::ExecuteInternal(FPCGContext* Context) const
 
 		if (!Input.Data || Cast<UPCGSpatialData>(Input.Data) == nullptr)
 		{
-			PCGE_LOG(Error, "Invalid input data");
+			PCGE_LOG(Error, GraphAndLog, LOCTEXT("InvalidInputData", "Invalid input data"));
 			continue;
 		}
 
 		// Skip processing if the transformation would be trivial
 		if (bTrivialSampling)
 		{
-			PCGE_LOG(Verbose, "Skipped - trivial sampling");
+			PCGE_LOG(Verbose, LogOnly, LOCTEXT("SkippedTrivialSampling", "Skipped - trivial sampling"));
 			continue;
 		}
 
@@ -73,7 +76,7 @@ bool FPCGPointSamplerElement::ExecuteInternal(FPCGContext* Context) const
 
 		if (!OriginalData)
 		{
-			PCGE_LOG(Error, "Unable to get point data from input");
+			PCGE_LOG(Error, GraphAndLog, LOCTEXT("NoPointDataInInput", "Unable to get point data from input"));
 			continue;
 		}
 
@@ -87,7 +90,7 @@ bool FPCGPointSamplerElement::ExecuteInternal(FPCGContext* Context) const
 		Output.Data = SampledData;
 
 		// TODO: randomize on the fractional number of points
-#if WITH_EDITORONLY_DATA
+#if WITH_EDITOR
 		int TargetNumPoints = (bKeepZeroDensityPoints ? OriginalPointCount : OriginalPointCount * Ratio);
 #else
 		int TargetNumPoints = OriginalPointCount * Ratio;
@@ -96,7 +99,7 @@ bool FPCGPointSamplerElement::ExecuteInternal(FPCGContext* Context) const
 		// Early out
 		if (TargetNumPoints == 0)
 		{
-			PCGE_LOG(Verbose, "Skipped - all points rejected");
+			PCGE_LOG(Verbose, LogOnly, LOCTEXT("SkippedAllPointsRejected", "Skipped - all points rejected"));
 			continue;
 		}
 		else
@@ -116,7 +119,7 @@ bool FPCGPointSamplerElement::ExecuteInternal(FPCGContext* Context) const
 					OutPoint = Point;
 					return true;
 				}
-#if WITH_EDITORONLY_DATA
+#if WITH_EDITOR
 				else if (bKeepZeroDensityPoints)
 				{
 					OutPoint = Point;
@@ -130,9 +133,11 @@ bool FPCGPointSamplerElement::ExecuteInternal(FPCGContext* Context) const
 				}
 			});
 
-			PCGE_LOG(Verbose, "Generated %d points from %d source points", SampledPoints.Num(), OriginalPointCount);
+			PCGE_LOG(Verbose, LogOnly, FText::Format(LOCTEXT("GenerationInfo", "Generated {0} points from {1} source points"), SampledPoints.Num(), OriginalPointCount));
 		}
 	}
 
 	return true;
 }
+
+#undef LOCTEXT_NAMESPACE

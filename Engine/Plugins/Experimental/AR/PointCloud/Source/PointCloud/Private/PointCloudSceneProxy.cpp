@@ -1,22 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PointCloudSceneProxy.h"
+#include "Engine/Texture.h"
 #include "PointCloud.h"
 #include "PointCloudComponent.h"
 
 #include "PrimitiveViewRelevance.h"
-#include "RHI.h"
-#include "RenderResource.h"
-#include "RenderingThread.h"
-#include "Containers/ResourceArray.h"
-#include "EngineGlobals.h"
-#include "VertexFactory.h"
-#include "MaterialShared.h"
+#include "TextureResource.h"
 #include "Materials/Material.h"
-#include "LocalVertexFactory.h"
+#include "Materials/MaterialRenderProxy.h"
 #include "Engine/Engine.h"
+#include "SceneInterface.h"
 #include "SceneManagement.h"
-#include "DynamicMeshBuilder.h"
 
 DECLARE_CYCLE_STAT(TEXT("Update Point Cloud GT"), STAT_PointCloud_UpdatePointCloud, STATGROUP_PointCloud);
 DECLARE_CYCLE_STAT(TEXT("Get Mesh Elements"), STAT_PointCloud_GetMeshElements, STATGROUP_PointCloud);

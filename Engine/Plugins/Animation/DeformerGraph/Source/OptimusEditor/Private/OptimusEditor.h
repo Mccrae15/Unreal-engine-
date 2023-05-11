@@ -3,6 +3,8 @@
 #pragma once
 
 #include "IOptimusEditor.h"
+#include "OptimusCoreNotify.h"
+#include "OptimusNodeGraph.h"
 
 #include "Misc/NotifyHook.h"
 
@@ -19,6 +21,7 @@ class SOptimusEditorViewport;
 class SOptimusGraphTitleBar;
 class SOptimusNodePalette;
 class UDebugSkelMeshComponent;
+class UEdGraph;
 class UOptimusActionStack;
 class UOptimusDeformer;
 class UOptimusEditorGraph;
@@ -29,6 +32,7 @@ class USkeletalMesh;
 enum class EOptimusGlobalNotifyType;
 struct FGraphAppearanceInfo;
 struct FOptimusCompilerDiagnostic;
+enum class EOptimusGraphNotifyType;
 
 
 class FOptimusEditor :
@@ -168,6 +172,12 @@ private:
 
 public:
 	// ----------------------------------------------------------------------------------------
+	// Utility for other widgets to subscribe to Graph Notifies 
+	DECLARE_DELEGATE_ThreeParams(FOnGraphNotified,  EOptimusGraphNotifyType /* type */, UOptimusNodeGraph*/*graph */, UObject* /* subject */);
+	void SubscribeToGraphNotifies(UOptimusNodeGraph* Graph, const FOnGraphNotified& OnGraphNotifiedDelegate);
+	void UnsubscribeToGraphNotifies(FDelegateHandle DelegateHandle);
+
+	// ----------------------------------------------------------------------------------------
 	// Broadcast Graph Event
 	DECLARE_EVENT_OneParam(FOptimusEditor, FOnSelectedNodesChanged, const TArray<TWeakObjectPtr<UObject>>&);
 	FOnSelectedNodesChanged& OnSelectedNodesChanged() { return SelectedNodesChangedEvent; }
@@ -254,4 +264,6 @@ private:
 	FOnRefreshEvent RefreshEvent;
 	FOnSelectedNodesChanged SelectedNodesChangedEvent;
 	FOnDiagnosticsUpdated DiagnosticsUpdatedEvent;
+	
+	TMap<FDelegateHandle, TSet<TWeakObjectPtr<UOptimusNodeGraph>>> GraphSubscribers;
 };

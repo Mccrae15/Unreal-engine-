@@ -38,7 +38,10 @@ namespace UE::Mass::Debugger::Private
 
 	bool IsSupportedWorldType(const EWorldType::Type WorldType)
 	{
-		return WorldType == EWorldType::Game || WorldType == EWorldType::Editor || WorldType == EWorldType::PIE;
+		return
+			WorldType == EWorldType::Game ||
+			WorldType == EWorldType::Editor ||
+			WorldType == EWorldType::PIE;
 	}
 }
 
@@ -263,7 +266,7 @@ void SMassDebugger::RebuildEnvironmentsList()
 		if (const FMassEntityManager* EntityManagerPtr = WeakEntityManager.Pin().Get())
 		{
 			const UWorld* World = EntityManagerPtr->GetWorld();
-			if (World != nullptr && UE::Mass::Debugger::Private::IsSupportedWorldType(World->WorldType))
+			if (World == nullptr || UE::Mass::Debugger::Private::IsSupportedWorldType(World->WorldType))
 			{
 				EnvironmentsList.Add(MakeShareable(new FMassDebuggerEnvironment(EntityManagerPtr->AsShared())));
 			}

@@ -7,20 +7,25 @@
 #include "Backends/CborStructSerializerBackend.h"
 #include "Components/ActorComponent.h"
 #include "Components/LightComponent.h"
+#include "Components/MeshComponent.h"
+#include "Factories/RCDefaultValueFactories.h"
 #include "Factories/RemoteControlMaskingFactories.h"
 #include "Features/IModularFeatures.h"
 #include "IRemoteControlInterceptionFeature.h"
 #include "IRemoteControlModule.h"
 #include "IStructDeserializerBackend.h"
 #include "IStructSerializerBackend.h"
+#include "Misc/ScopeExit.h"
 #include "RCPropertyUtilities.h"
-#include "RCVirtualPropertyContainer.h"
 #include "RCVirtualProperty.h"
+#include "RCVirtualPropertyContainer.h"
 #include "RemoteControlFieldPath.h"
+#include "RemoteControlInstanceMaterial.h"
 #include "RemoteControlInterceptionHelpers.h"
 #include "RemoteControlInterceptionProcessor.h"
-#include "RemoteControlInstanceMaterial.h"
 #include "RemoteControlPreset.h"
+#include "RemoteControlSettings.h"
+#include "SceneInterface.h"
 #include "Serialization/PropertyMapStructDeserializerBackendWrapper.h"
 #include "StructDeserializer.h"
 #include "StructSerializer.h"
@@ -36,6 +41,8 @@
 #include "HAL/IConsoleManager.h"
 #include "ScopedTransaction.h"
 #include "UnrealEdGlobals.h"
+#else
+#include "Misc/ScopeExit.h"
 #endif
 
 DEFINE_LOG_CATEGORY(LogRemoteControl);
@@ -49,7 +56,9 @@ struct FRCInterceptionPayload
 
 #if WITH_EDITOR
 static TAutoConsoleVariable<int32> CVarRemoteControlEnableOngoingChangeOptimization(TEXT("RemoteControl.EnableOngoingChangeOptimization"), 1, TEXT("Enable an optimization that keeps track of the ongoing remote control change in order to improve performance."));
-#endif
+#endif // WITH_EDITOR
+
+#define REMOTE_CONTROL_LOG_ONCE(Verbosity, Format, ...) (LogOnce(ELogVerbosity::Verbosity, *FString::Printf(Format, ##__VA_ARGS__), FString(__FILE__), __LINE__))
 
 namespace RemoteControlUtil
 {
@@ -60,6 +69,7 @@ namespace RemoteControlUtil
 	const FName NAME_BlueprintGetter(TEXT("BlueprintGetter"));
 	const FName NAME_BlueprintSetter(TEXT("BlueprintSetter"));
 	const FName NAME_AllowPrivateAccess(TEXT("AllowPrivateAccess"));
+	const FName NAME_RelativeLocation(TEXT("RelativeLocation"));
 
 	bool CompareFunctionName(const FString& FunctionName, const FString& ScriptName)
 	{
@@ -73,6 +83,8 @@ namespace RemoteControlUtil
 
 	UFunction* FindFunctionByNameOrMetaDataName(UObject* Object, const FString& FunctionName)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(RemoteControl::FindFunctionByNameOrMetaDataName);
+
 		UFunction* Function = Object->FindFunction(FName(*FunctionName));
 #if WITH_EDITOR
 		// if the function wasn't found through the function map, try finding it through its `ScriptName` or `DisplayName` metadata
@@ -98,13 +110,19 @@ namespace RemoteControlUtil
 
 	bool IsPropertyAllowed(const FProperty* InProperty, ERCAccess InAccessType, bool bObjectInGamePackage)
 	{
+#if WITH_EDITOR
+		URemoteControlSettings* RCSettings = GetMutableDefault<URemoteControlSettings>();
+		// Override this flag to false if we are running in Editor Mode with -game flag.
+		bObjectInGamePackage = false;
+#endif
 		// The property is allowed to be accessed if it exists...
 		return InProperty &&
 				// it doesn't have exposed getter/setter that should be used instead
 #if WITH_EDITOR
-				(!InProperty->HasMetaData(RemoteControlUtil::NAME_BlueprintGetter) || !InProperty->HasMetaData(RemoteControlUtil::NAME_BlueprintSetter)) &&
-				// it isn't private or protected, except if AllowPrivateAccess is true
-				(!InProperty->HasAnyPropertyFlags(CPF_NativeAccessSpecifierProtected | CPF_NativeAccessSpecifierPrivate) || InProperty->GetBoolMetaData(RemoteControlUtil::NAME_AllowPrivateAccess)) &&
+				(!InProperty->HasMetaData(RemoteControlUtil::NAME_BlueprintGetter) || !InProperty->HasMetaData(RemoteControlUtil::NAME_BlueprintSetter) || RCSettings->bIgnoreGetterSetterCheck) &&
+				// it isn't private or protected, except if AllowPrivateAccess is true and if only for Protected whenever it should be ignored
+				(!InProperty->HasAnyPropertyFlags(CPF_NativeAccessSpecifierPrivate) || InProperty->GetBoolMetaData(RemoteControlUtil::NAME_AllowPrivateAccess)) &&
+				(!InProperty->HasAnyPropertyFlags(CPF_NativeAccessSpecifierProtected) || RCSettings->bIgnoreProtectedCheck || InProperty->GetBoolMetaData(RemoteControlUtil::NAME_AllowPrivateAccess)) &&	
 #endif
 				// it isn't blueprint private
 				!InProperty->HasAnyPropertyFlags(CPF_DisableEditOnInstance) &&
@@ -219,18 +237,20 @@ namespace RemoteControlUtil
 		const T BaseValue = Getter(BasePropertyData);
 		const T DeltaValue = Getter(DeltaPropertyData);
 
+		T NewValue;
+
 		switch (Operation)
 		{
 		case ERCModifyOperation::ADD:
-			Setter(DeltaPropertyData, BaseValue + DeltaValue);
+			NewValue = BaseValue + DeltaValue;
 			break;
 
 		case ERCModifyOperation::SUBTRACT:
-			Setter(DeltaPropertyData, BaseValue - DeltaValue);
+			NewValue = BaseValue - DeltaValue;
 			break;
 
 		case ERCModifyOperation::MULTIPLY:
-			Setter(DeltaPropertyData, BaseValue * DeltaValue);
+			NewValue = BaseValue * DeltaValue;
 			break;
 
 		case ERCModifyOperation::DIVIDE:
@@ -238,7 +258,7 @@ namespace RemoteControlUtil
 			{
 				return false;
 			}
-			Setter(DeltaPropertyData, BaseValue / DeltaValue);
+			NewValue = BaseValue / DeltaValue;
 			break;
 
 		default:
@@ -246,6 +266,26 @@ namespace RemoteControlUtil
 			return false;
 		}
 
+#if WITH_EDITORONLY_DATA
+		// Respect property's clamp settings if they exist
+		const FString& ClampMinString = Property->GetMetaData(TEXT("ClampMin"));
+		if (!ClampMinString.IsEmpty())
+		{
+			T ClampMin;
+			TTypeFromString<T>::FromString(ClampMin, *ClampMinString);
+			NewValue = FMath::Max(NewValue, ClampMin);
+		}
+
+		const FString& ClampMaxString = Property->GetMetaData(TEXT("ClampMax"));
+		if (!ClampMaxString.IsEmpty())
+		{
+			T ClampMax;
+			TTypeFromString<T>::FromString(ClampMax, *ClampMaxString);
+			NewValue = FMath::Min(NewValue, ClampMax);
+		}
+#endif
+
+		Setter(DeltaPropertyData,  NewValue);
 		return true;
 	}
 }
@@ -590,8 +630,11 @@ void FRemoteControlModule::StartupModule()
 #if WITH_EDITOR
 	FCoreDelegates::OnPostEngineInit.AddRaw(this, &FRemoteControlModule::HandleEnginePostInit);
 	FCoreUObjectDelegates::PreLoadMap.AddRaw(this, &FRemoteControlModule::HandleMapPreLoad);
-#endif
+#endif // WITH_EDITOR
 	
+	// Register Default Value Factories
+	RegisterDefaultValueFactories();
+
 	// Register Property Factories
 	RegisterEntityFactory(FRemoteControlInstanceMaterial::StaticStruct()->GetFName(), FRemoteControlInstanceMaterialFactory::MakeInstance());
 
@@ -622,6 +665,10 @@ void FRemoteControlModule::ShutdownModule()
 	{
 		// Unregister Property Factories
 		UnregisterEntityFactory(FRemoteControlInstanceMaterial::StaticStruct()->GetFName());
+		
+		// Unregister Default Value & Masking factories.
+		DefaultValueFactories.Empty();
+		MaskingFactories.Empty();
 	}
 }
 
@@ -633,6 +680,11 @@ IRemoteControlModule::FOnPresetRegistered& FRemoteControlModule::OnPresetRegiste
 IRemoteControlModule::FOnPresetUnregistered& FRemoteControlModule::OnPresetUnregistered()
 {
 	return OnPresetUnregisteredDelegate;
+}
+
+IRemoteControlModule::FOnError& FRemoteControlModule::OnError()
+{
+	return OnErrorDelegate;
 }
 
 /** Register the preset with the module, enabling using the preset remotely using its name. */
@@ -725,6 +777,85 @@ void FRemoteControlModule::UnregisterEmbeddedPreset(URemoteControlPreset* Preset
 	EmbeddedPresets.Remove(PresetName);
 }
 
+bool FRemoteControlModule::CanResetToDefaultValue(UObject* InObject, const FRCResetToDefaultArgs& InArgs) const
+{
+	if (!InObject || !InArgs.Property)
+	{
+		return false;
+	}
+
+	// NOTE : Get the owning class to which the property actually belongs.
+	if (UClass* OwningClass = InArgs.Property->GetOwnerClass())
+	{
+		const FString DefaultValueKey = OwningClass->GetName() + TEXT(".") + InArgs.Property->GetName();
+		
+		if (const TSharedPtr<IRCDefaultValueFactory>* DefaultValueFactory = DefaultValueFactories.Find(*DefaultValueKey))
+		{
+			return (*DefaultValueFactory)->CanResetToDefaultValue(InObject, InArgs);
+		}
+	}
+
+	return false;
+}
+
+bool FRemoteControlModule::HasDefaultValueCustomization(const UObject* InObject, const FProperty* InProperty) const
+{
+	if (!InObject || !InProperty)
+	{
+		return false;
+	}
+
+	// NOTE : Get the owning class to which the property actually belongs.
+	if (UClass* OwningClass = InProperty->GetOwnerClass())
+	{
+		const FString DefaultValueKey = OwningClass->GetName() + TEXT(".") + InProperty->GetName();
+
+		if (const TSharedPtr<IRCDefaultValueFactory>* DefaultValueFactory = DefaultValueFactories.Find(*DefaultValueKey))
+		{
+			return (*DefaultValueFactory)->SupportsClass(InObject->GetClass()) && (*DefaultValueFactory)->SupportsProperty(InProperty);
+		}
+	}
+	
+	return false;
+}
+
+void FRemoteControlModule::ResetToDefaultValue(UObject* InObject, FRCResetToDefaultArgs& InArgs)
+{
+	if (!InObject || !InArgs.Property)
+	{
+		return;
+	}
+
+	// NOTE : Get the owning class to which the property actually belongs.
+	if (UClass* OwningClass = InArgs.Property->GetOwnerClass())
+	{
+		const FString DefaultValueKey = OwningClass->GetName() + TEXT(".") + InArgs.Property->GetName();
+
+		if (const TSharedPtr<IRCDefaultValueFactory>* DefaultValueFactory = DefaultValueFactories.Find(*DefaultValueKey))
+		{
+#if WITH_EDITOR
+			
+			if (InArgs.bCreateTransaction && GEditor)
+			{
+				GEditor->BeginTransaction(LOCTEXT("RemoteControlModule","Remote Control Custom Reset To Default"));
+			}
+
+#endif // WITH_EDITOR
+
+			(*DefaultValueFactory)->ResetToDefaultValue(InObject, InArgs);
+
+#if WITH_EDITOR
+
+			if (InArgs.bCreateTransaction && GEditor)
+			{
+				GEditor->EndTransaction();
+			}
+
+#endif // WITH_EDITOR
+		}
+	}
+}
+
 void FRemoteControlModule::PerformMasking(const TSharedRef<FRCMaskingOperation>& InMaskingOperation)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FRemoteControlModule::PerformMasking);
@@ -795,28 +926,36 @@ bool FRemoteControlModule::ResolveCall(const FString& ObjectPath, const FString&
 		UObject* Object = StaticFindObject(UObject::StaticClass(), nullptr, *ObjectPath);
 		if (Object)
 		{
-			// Find the function to call
-			UFunction* Function = RemoteControlUtil::FindFunctionByNameOrMetaDataName(Object, FunctionName);
+			if (CanBeAccessedRemotely(Object))
+			{
+				// Find the function to call
+				UFunction* Function = RemoteControlUtil::FindFunctionByNameOrMetaDataName(Object, FunctionName);
 
-			if (!Function)
-			{
-				ErrorText = FString::Printf(TEXT("Function: %s does not exist on object: %s"), *FunctionName, *ObjectPath);
-				bSuccess = false;
-			}
-			else if ((!Function->HasAllFunctionFlags(FUNC_BlueprintCallable | FUNC_Public) && !Function->HasAllFunctionFlags(FUNC_BlueprintEvent))
-#if WITH_EDITOR
-					|| Function->HasMetaData(RemoteControlUtil::NAME_DeprecatedFunction)
-					|| Function->HasMetaData(RemoteControlUtil::NAME_ScriptNoExport)
-#endif
-			)
-			{
-				ErrorText = FString::Printf(TEXT("Function: %s is deprecated or unavailable remotely on object: %s"), *FunctionName, *ObjectPath);
-				bSuccess = false;
+				if (!Function)
+				{
+					ErrorText = FString::Printf(TEXT("Function: %s does not exist on object: %s"), *FunctionName, *ObjectPath);
+					bSuccess = false;
+				}
+				else if ((!Function->HasAllFunctionFlags(FUNC_BlueprintCallable | FUNC_Public) && !Function->HasAllFunctionFlags(FUNC_BlueprintEvent))
+	#if WITH_EDITOR
+						|| Function->HasMetaData(RemoteControlUtil::NAME_DeprecatedFunction)
+						|| Function->HasMetaData(RemoteControlUtil::NAME_ScriptNoExport)
+	#endif
+				)
+				{
+					ErrorText = FString::Printf(TEXT("Function: %s is deprecated or unavailable remotely on object: %s"), *FunctionName, *ObjectPath);
+					bSuccess = false;
+				}
+				else
+				{
+					OutCallRef.Object = Object;
+					OutCallRef.Function = Function;
+				}
 			}
 			else
 			{
-				OutCallRef.Object = Object;
-				OutCallRef.Function = Function;
+				ErrorText = FString::Printf(TEXT("Object %s cannot be accessed remotely, check remote control project settings."), *Object->GetName());
+				bSuccess = false;
 			}
 		}
 		else
@@ -831,10 +970,16 @@ bool FRemoteControlModule::ResolveCall(const FString& ObjectPath, const FString&
 		bSuccess = false;
 	}
 
+	if (!bSuccess && !ErrorText.IsEmpty())
+	{
+		IRemoteControlModule::BroadcastError(ErrorText);
+	}
+
 	if (OutErrorText && !ErrorText.IsEmpty())
 	{
 		*OutErrorText = MoveTemp(ErrorText);
 	}
+	
 	return bSuccess;
 }
 
@@ -847,7 +992,7 @@ bool FRemoteControlModule::InvokeCall(FRCCall& InCall, ERCPayloadType InPayloadT
 		const bool bGenerateTransaction = InCall.TransactionMode == ERCTransactionMode::AUTOMATIC;
 
 		// Check the replication path before apply property values
-		if (InInterceptPayload.Num() != 0)
+		if (InInterceptPayload.Num() != 0 && CanInterceptFunction(InCall))
 		{
 			FRCIFunctionMetadata FunctionMetadata(InCall.CallRef.Object->GetPathName(), InCall.CallRef.Function->GetPathName(), bGenerateTransaction, ToExternal(InPayloadType), InInterceptPayload);
 
@@ -899,7 +1044,7 @@ bool FRemoteControlModule::InvokeCall(FRCCall& InCall, ERCPayloadType InPayloadT
 		FEditorScriptExecutionGuard ScriptGuard;
 		if (ensureAlways(InCall.CallRef.Object.IsValid()))
 		{
-			if(InCall.CallRef.PropertyWithSetter.IsValid())
+			if (InCall.CallRef.PropertyWithSetter.IsValid())
 			{
 				InCall.CallRef.PropertyWithSetter->CallSetter(InCall.CallRef.Object.Get(), InCall.ParamData.GetData());
 			}
@@ -954,7 +1099,15 @@ bool FRemoteControlModule::ResolveObject(ERCAccess AccessType, const FString& Ob
 		UObject* Object = StaticFindObject(UObject::StaticClass(), nullptr, *ObjectPath);
 		if (Object)
 		{
-			bSuccess = ResolveObjectProperty(AccessType, Object, PropertyName, OutObjectRef, OutErrorText);
+			if (CanBeAccessedRemotely(Object))
+			{
+				bSuccess = ResolveObjectProperty(AccessType, Object, PropertyName, OutObjectRef, OutErrorText);
+			}
+			else
+			{
+				ErrorText = FString::Printf(TEXT("Object %s cannot be accessed remotely, check remote control project settings."), *Object->GetName());
+				bSuccess = false;
+			}
 		}
 		else
 		{
@@ -966,6 +1119,11 @@ bool FRemoteControlModule::ResolveObject(ERCAccess AccessType, const FString& Ob
 	{
 		ErrorText = FString::Printf(TEXT("Can't resolve object: %s while saving or garbage collecting."), *ObjectPath);
 		bSuccess = false;
+	}
+
+	if (!bSuccess && !ErrorText.IsEmpty())
+	{
+		IRemoteControlModule::BroadcastError(ErrorText);
 	}
 
 	if (OutErrorText && !ErrorText.IsEmpty())
@@ -1027,6 +1185,11 @@ bool FRemoteControlModule::ResolveObjectProperty(ERCAccess AccessType, UObject* 
 	{
 		ErrorText = FString::Printf(TEXT("Can't resolve object '%s' properties '%s' : %s while saving or garbage collecting."), *Object->GetPathName(), *PropertyPath.GetFieldName().ToString());
 		bSuccess = false;
+	}
+
+	if (!bSuccess && !ErrorText.IsEmpty())
+	{
+		IRemoteControlModule::BroadcastError(ErrorText);
 	}
 
 	if (OutErrorText && !ErrorText.IsEmpty())
@@ -1384,7 +1547,7 @@ void FRemoteControlModule::RefreshEditorPostSetObjectProperties(const FRCObjectR
 	{
 		if (FProperty* Property = ObjectAccess.Property.Get())
 		{
-			if(Property->GetName() == "RelativeLocation")
+			if(Property->GetFName() == RemoteControlUtil::NAME_RelativeLocation)
 			{
 				if (AActor* Actor = SceneComponent->GetOwner())
 				{
@@ -1407,7 +1570,7 @@ bool FRemoteControlModule::SetPresetController(const FName PresetName, const FNa
 		return false;
 	}
 
-	URCVirtualPropertyBase* VirtualProperty = Preset->GetControllerByDisplayName(ControllerName);
+	URCVirtualPropertyBase* VirtualProperty = Preset->GetController(ControllerName);
 	if (!ensure(VirtualProperty))
 	{
 		return false;
@@ -1518,15 +1681,27 @@ bool FRemoteControlModule::ResetObjectProperties(const FRCObjectReference& Objec
 			ObjectAccess.PropertyPathInfo.ToEditPropertyChain(PreEditChain);
 			Object->PreEditChange(PreEditChain);
 		}
-#endif
 
-		// Copy the value from the field on the CDO.
-		FRCFieldPathInfo FieldPathInfo = ObjectAccess.PropertyPathInfo;
-		void* TargetAddress = FieldPathInfo.GetResolvedData().ContainerAddress;
-		UObject* DefaultObject = Object->GetClass()->GetDefaultObject();
-		FieldPathInfo.Resolve(DefaultObject);
-		FRCFieldResolvedData DefaultObjectResolvedData = FieldPathInfo.GetResolvedData();
-		ObjectAccess.Property->CopyCompleteValue_InContainer(TargetAddress, DefaultObjectResolvedData.ContainerAddress);
+		if(HasDefaultValueCustomization(Object, ObjectAccess.Property.Get()))
+		{
+			FRCResetToDefaultArgs Args;
+			Args.Property = ObjectAccess.Property.Get();
+			Args.Path = ObjectAccess.PropertyPathInfo.ToPathPropertyString();
+			Args.ArrayIndex = ObjectAccess.PropertyPathInfo.Segments[0].ArrayIndex;
+			Args.bCreateTransaction = false;
+			ResetToDefaultValue(Object, Args);
+		}
+		else
+#endif
+		{
+			// Copy the value from the field on the CDO.
+			FRCFieldPathInfo FieldPathInfo = ObjectAccess.PropertyPathInfo;
+			void* TargetAddress = FieldPathInfo.GetResolvedData().ContainerAddress;
+			UObject* DefaultObject = Object->GetClass()->GetDefaultObject();
+			FieldPathInfo.Resolve(DefaultObject);
+			FRCFieldResolvedData DefaultObjectResolvedData = FieldPathInfo.GetResolvedData();
+			ObjectAccess.Property->CopyCompleteValue_InContainer(TargetAddress, DefaultObjectResolvedData.ContainerAddress);
+		}
 
 		// if we are generating a transaction, also generate post edit property event, event if the change ended up unsuccessful
 		// this is to match the pre edit change call that can unregister components for example
@@ -1873,6 +2048,27 @@ int32 FRemoteControlModule::EndManualEditorTransaction(const FGuid& TransactionI
 	return INDEX_NONE;
 }
 
+bool FRemoteControlModule::CanBeAccessedRemotely(UObject* Object) const
+{
+	check(Object);
+		
+	if (!GetDefault<URemoteControlSettings>()->bEnableRemotePythonExecution)
+	{
+		static const FName PythonScriptName = "PythonScriptLibrary"; 
+		if (Object->GetClass()->GetFName() == PythonScriptName)
+		{
+			return false;
+		}
+	}
+
+	if (Object == GetDefault<URemoteControlSettings>())
+	{
+		return false;
+	}
+
+	return true;
+}
+
 void FRemoteControlModule::CachePresets() const
 {
 	TArray<FAssetData> Assets;
@@ -2151,6 +2347,30 @@ bool FRemoteControlModule::DeserializeDeltaModificationData(const FRCObjectRefer
 	return bSuccess;
 }
 
+void FRemoteControlModule::RegisterDefaultValueFactoryForType(UClass* RemoteControlPropertyType, const FName PropertyName, const TSharedPtr<IRCDefaultValueFactory>& InDefaultValueFactory)
+{
+	const FString DefaultValueKey = RemoteControlPropertyType->GetName() + TEXT(".") + PropertyName.ToString();
+
+	if (!DefaultValueFactories.Contains(*DefaultValueKey))
+	{
+		DefaultValueFactories.Add(*DefaultValueKey, InDefaultValueFactory);
+	}
+}
+
+void FRemoteControlModule::UnregisterDefaultValueFactoryForType(UClass* RemoteControlPropertyType, const FName PropertyName)
+{
+	const FString DefaultValueKey = RemoteControlPropertyType->GetName() + TEXT(".") + PropertyName.ToString();
+
+	DefaultValueFactories.Remove(*DefaultValueKey);
+}
+
+void FRemoteControlModule::RegisterDefaultValueFactories()
+{
+	// NOTE : Use the class to which the property actually belongs.
+	RegisterDefaultValueFactoryForType(ULightComponentBase::StaticClass(), GET_MEMBER_NAME_CHECKED(ULightComponentBase, Intensity), FLightIntensityDefaultValueFactory::MakeInstance());
+	RegisterDefaultValueFactoryForType(UMeshComponent::StaticClass(), GET_MEMBER_NAME_CHECKED(UMeshComponent, OverrideMaterials), FOverrideMaterialsDefaultValueFactory::MakeInstance());
+}
+
 void FRemoteControlModule::RegisterMaskingFactories()
 {
 	RegisterMaskingFactoryForType(TBaseStructure<FVector>::Get(), FVectorMaskingFactory::MakeInstance());
@@ -2160,6 +2380,91 @@ void FRemoteControlModule::RegisterMaskingFactories()
 	RegisterMaskingFactoryForType(TBaseStructure<FRotator>::Get(), FRotatorMaskingFactory::MakeInstance());
 	RegisterMaskingFactoryForType(TBaseStructure<FColor>::Get(), FColorMaskingFactory::MakeInstance());
 	RegisterMaskingFactoryForType(TBaseStructure<FLinearColor>::Get(), FLinearColorMaskingFactory::MakeInstance());
+}
+
+bool FRemoteControlModule::CanInterceptFunction(const FRCCall& RCCall) const
+{
+	if (RCCall.IsValid())
+	{
+		for (TFieldIterator<FProperty> It(RCCall.CallRef.Function.Get()); It; ++It)
+		{
+			// At the moment interceptors do not support return values.
+			if (It->HasAnyPropertyFlags(CPF_ReturnParm | CPF_OutParm))
+			{
+				
+#if WITH_EDITOR
+				FString FunctionName = RCCall.CallRef.Function->GetDisplayNameText().ToString();
+#else
+				FString FunctionName = RCCall.CallRef.Function->GetName();
+#endif
+				REMOTE_CONTROL_LOG_ONCE(Warning, TEXT("Function \"%s\" on object \"%s\" could not be intercepted because it contains out parameters."), *FunctionName, *RCCall.CallRef.Object->GetName());
+				return false;
+			}
+		}
+	}
+
+	return true;
+}
+
+void FRemoteControlModule::LogOnce(ELogVerbosity::Type InVerbosity, const FString& LogDetails, const FString& FileName, int32 LineNumber) const
+{
+	// This code was taken from AudioMixer.h
+#if !NO_LOGGING
+	// Log once to avoid Spam.
+	static FCriticalSection Cs;
+	static TSet<uint32> LogHistory;
+
+	FScopeLock Lock(&Cs);
+	const FString MessageToHash = FString::Printf(TEXT("%s (File %s, Line %d)"), *LogDetails, *FileName, LineNumber);
+
+	uint32 Hash = GetTypeHash(MessageToHash);
+	if (!LogHistory.Contains(Hash))
+	{
+		switch (InVerbosity)
+		{
+		case ELogVerbosity::Fatal:
+			UE_LOG(LogRemoteControl, Fatal, TEXT("%s"), *LogDetails);
+			break;
+
+		case ELogVerbosity::Error:
+			UE_LOG(LogRemoteControl, Error, TEXT("%s"), *LogDetails);
+			break;
+
+		case ELogVerbosity::Warning:
+			UE_LOG(LogRemoteControl, Warning, TEXT("%s"), *LogDetails);
+			break;
+
+		case ELogVerbosity::Display:
+			UE_LOG(LogRemoteControl, Display, TEXT("%s"), *LogDetails);
+			break;
+
+		case ELogVerbosity::Log:
+			UE_LOG(LogRemoteControl, Log, TEXT("%s"), *LogDetails);
+			break;
+
+		case ELogVerbosity::Verbose:
+			UE_LOG(LogRemoteControl, Verbose, TEXT("%s"), *LogDetails);
+			break;
+
+		case ELogVerbosity::VeryVerbose:
+			UE_LOG(LogRemoteControl, VeryVerbose, TEXT("%s"), *LogDetails);
+			break;
+
+		default:
+			UE_LOG(LogRemoteControl, Error, TEXT("%s"), *LogDetails);
+			{
+				static_assert(static_cast<uint8>(ELogVerbosity::NumVerbosity) == 8, "Missing ELogVerbosity case coverage");
+			}
+			break;
+		}
+
+		LogHistory.Add(Hash);
+		if (InVerbosity == ELogVerbosity::Fatal || InVerbosity == ELogVerbosity::Error || InVerbosity == ELogVerbosity::Warning)
+		{
+			BroadcastError(LogDetails, InVerbosity);
+		}
+	}
+#endif
 }
 
 #if WITH_EDITOR
@@ -2233,6 +2538,16 @@ void FRemoteControlModule::RegisterEditorDelegates()
 	{
 		GEditor->GetTimerManager()->SetTimer(OngoingChangeTimer, FTimerDelegate::CreateRaw(this, &FRemoteControlModule::TestOrFinalizeOngoingChange, false), SecondsBetweenOngoingChangeCheck, true);
 	}
+	else
+	{
+		FallbackOngoingChangeTimer = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([&](float DeltaTime)
+			{
+				TestOrFinalizeOngoingChange(false);
+
+				return true;
+			}
+		), SecondsBetweenOngoingChangeCheck);
+	}
 }
 	
 void FRemoteControlModule::UnregisterEditorDelegates()
@@ -2240,6 +2555,10 @@ void FRemoteControlModule::UnregisterEditorDelegates()
 	if (GEditor)
 	{ 
 		GEditor->GetTimerManager()->ClearTimer(OngoingChangeTimer);
+	}
+	else
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(FallbackOngoingChangeTimer);
 	}
 }
 
@@ -2252,7 +2571,7 @@ FRemoteControlModule::FOngoingChange::FOngoingChange(FRCCallReference InReferenc
 {
 	Reference.Set<FRCCallReference>(MoveTemp(InReference));
 }
-	
+
 #endif
 
 PRAGMA_ENABLE_DEPRECATION_WARNINGS

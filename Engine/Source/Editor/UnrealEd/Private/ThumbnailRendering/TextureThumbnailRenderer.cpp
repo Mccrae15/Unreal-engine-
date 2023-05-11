@@ -2,6 +2,7 @@
 
 #include "ThumbnailRendering/TextureThumbnailRenderer.h"
 #include "CanvasItem.h"
+#include "Engine/Canvas.h"
 #include "Engine/Engine.h"
 #include "Engine/Texture.h"
 #include "Engine/Texture2D.h"
@@ -16,7 +17,9 @@
 
 #include "CubemapUnwrapUtils.h"
 #include "NormalMapPreview.h"
+#include "CanvasItem.h"
 #include "CanvasTypes.h"
+#include "TextureResource.h"
 
 UTextureThumbnailRenderer::UTextureThumbnailRenderer(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -72,7 +75,7 @@ void UTextureThumbnailRenderer::Draw(UObject* Object, int32 X, int32 Y, uint32 W
 		if(TextureCube || TextureCubeArray || RTTextureCube)
 		{
 			// is released by the render thread when it was rendered
-			BatchedElementParameters = new FMipLevelBatchedElementParameters((float)0, (float)-1, TextureCubeArray != nullptr, FMatrix44f::Identity, true, false);
+			BatchedElementParameters = new FMipLevelBatchedElementParameters((float)0, (float)-1, TextureCubeArray != nullptr, FMatrix44f::Identity, true, false, false);
 			
 			// If the thumbnail is square then make it 2:1 for cubes.
 			if(Width == Height)
@@ -85,7 +88,7 @@ void UTextureThumbnailRenderer::Draw(UObject* Object, int32 X, int32 Y, uint32 W
 		{
 			bool bIsNormalMap = Texture2DArray->IsNormalMap();
 			bool bIsSingleChannel = true;
-			BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters((float)0, (float)0, (float)-1, bIsNormalMap, bIsSingleChannel, false, false, true);
+			BatchedElementParameters = new FBatchedElementTexture2DPreviewParameters((float)0, (float)0, (float)-1, bIsNormalMap, bIsSingleChannel, false, false, true, false);
 		}
 		else if (TextureLightProfile)
 		{

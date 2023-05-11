@@ -3,10 +3,13 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/Ticker.h"
+#include "HAL/CriticalSection.h"
 #include "Templates/SharedPointer.h"
 #include "UObject/ObjectSaveContext.h"
 #include "UnrealEdMisc.h"
 
+class AActor;
 class ISourceControlState;
 class UPackage;
 class UWorld;
@@ -39,6 +42,9 @@ public:
 
 	/** Displays a dialog prompting the user to save the packages. */
 	void PrompToSavePackages();
+
+	/** Check if the input asset is unsaved. */
+	bool IsAssetUnsaved(const FString& FileAbsPathname) const;
 
 private:
 	enum class EWarningTypes
@@ -94,9 +100,13 @@ private:
 	void OnUndo(const FTransactionContext& TransactionContext, bool Succeeded);
 	void OnRedo(const FTransactionContext& TransactionContext, bool Succeeded);
 
-	/**
-	 * Invoked when a world is successfully renamed. Used to track when a temporary 'Untitled' unsaved map is saved with a new name.
-	 */
+	/** Invoked when a package is deleted. */
+	void OnPackageDeleted(UPackage* Package);
+
+	/** Invoked when an actor is deleted. */
+	void OnActorDeleted(AActor* Actor);
+
+	/** Invoked when a world is successfully renamed. Used to track when a temporary 'Untitled' unsaved map is saved with a new name. */
 	void OnWorldPostRename(UWorld* World);
 
 	/** Starts to track an unsaved package.*/
@@ -117,7 +127,19 @@ private:
 	/** Refresh the list of unsaved files from the list returned by FEditorFileUtils::GetDirtyPackages(). */
 	void SyncWithDirtyPackageList();
 
+	/** Invoked by the engine on the game thread. */
+	bool Tick(float DeltaTime);
+
+	/** Whether the specified package should be tracked. */
+	bool ShouldTrackDirtyPackage(const UPackage* Package);
+
 private:
+	/** Supports multithreaded Dirty notifications. */
+	FCriticalSection DirtyNotificationLock;
+
+	/** Keep the packages that were marked/unmarked dirty from a background thread to check the status on the game thread. */
+	TMap<FString, TWeakObjectPtr<UPackage>> DirtyPackageEventsReportedOnBackgroundThread;
+
 	/** Maps the package pathname to the status */
 	TMap<FString, FStatus> UnsavedPackages;
 
@@ -130,6 +152,12 @@ private:
 	/** Sets of warning shown to the user. */
 	TSet<EWarningTypes> ShownWarnings;
 
+	/** Handle to unregister the tick delegate. */
+	FTSTicker::FDelegateHandle TickerHandle;
+
 	/** Whether toast notification should be shown when a warning is detected. */
 	bool bWarningNotificationEnabled = true;
+
+	/** Whether the tracker should sync its dirty packages list with what the engine considers dirty. */
+	bool bSyncWithDirtyPackageList = false;
 };

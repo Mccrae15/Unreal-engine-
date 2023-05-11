@@ -438,7 +438,7 @@ private:
 
 	float upper_bound(const FVector3i& GridDimensions, float DX) const
 	{
-		return (float)((GridDimensions[0] + GridDimensions[1] + GridDimensions[2]) * DX);
+		return float(GridDimensions[0] + GridDimensions[1] + GridDimensions[2]) * DX;
 	}
 
 	// if provided, uses IsInsideFunction to determine sign, otherwise uses a counting method.
@@ -988,7 +988,7 @@ private:
 							if (IsInBlock(LocalCoords))
 							{
 								const int32 local_index = FloatBlockData3Type::ToLinear(LocalCoords.X, LocalCoords.Y, LocalCoords.Z);
-								if (VistedBlock.BitArray[local_index] == false)
+								if ((bool)VistedBlock.BitArray[local_index] == false)
 								{
 									VistedBlock.BitArray[local_index] = true;
 

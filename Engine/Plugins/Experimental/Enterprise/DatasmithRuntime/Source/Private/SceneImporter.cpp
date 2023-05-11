@@ -9,12 +9,12 @@
 #include "DatasmithAssetUserData.h"
 #include "DatasmithNativeTranslator.h"
 #include "DatasmithMaterialElements.h"
-#include "IDatasmithSceneElements.h"
 
 #include "Async/Async.h"
 #include "Materials/MaterialInstanceDynamic.h"
-#include "ProfilingDebugging/MiscTrace.h"
+#include "Misc/Paths.h"
 #include "RenderingThread.h"
+#include "Misc/Paths.h"
 
 namespace DatasmithRuntime
 {

@@ -11,82 +11,6 @@
 
 #define LOCTEXT_NAMESPACE "MovieSceneLensComponentSection"
 
-namespace UE::CameraCalibration::Private::MovieSceneLensComponentSection
-{
-#if WITH_EDITOR
-	void AddChannelForEditor(FMovieSceneChannelProxyData& ChannelProxyData, FMovieSceneFloatChannel& Channel, FText GroupName, FText ChannelName, int32 SortOrder)
-	{
-		FMovieSceneChannelMetaData ChannelEditorData(FName(*(ChannelName.ToString())), ChannelName, GroupName);
-		ChannelEditorData.SortOrder = SortOrder;
-		ChannelEditorData.bCanCollapseToTrack = false;
-
-		ChannelProxyData.Add(Channel, ChannelEditorData, TMovieSceneExternalValue<float>());
-	}
-#endif // WITH_EDITOR
-
-	void UpdateChannelProxy(
-		FMovieSceneChannelProxyData& Channels,
-		TArray<FMovieSceneFloatChannel>& DistortionParameterChannels, 
-		TArray<FMovieSceneFloatChannel>& FxFyChannels,
-		TArray<FMovieSceneFloatChannel>& ImageCenterChannels,
-		TSubclassOf<ULensModel> LensModelClass
-	)
-	{
-		// Add channels for distortion parameters
-		if (LensModelClass)
-		{
-			if (const ULensModel* const LensModel = LensModelClass->GetDefaultObject<ULensModel>())
-			{
-				const int32 ParameterCount = LensModel->GetNumParameters();
-				if (ParameterCount == DistortionParameterChannels.Num())
-				{
-#if WITH_EDITOR
-					TArray<FText> ParameterDisplayNames = LensModel->GetParameterDisplayNames();
-					const FText ParameterGroupName = LOCTEXT("ParameterGroupName", "Distortion Parameters");
-#endif // WITH_EDITOR
-
-					for (int32 Index = 0; Index < ParameterCount; ++Index)
-					{
-#if WITH_EDITOR
-						AddChannelForEditor(Channels, DistortionParameterChannels[Index], ParameterGroupName, ParameterDisplayNames[Index], Index);
-#else
-						Channels.Add(DistortionParameterChannels[Index]);
-#endif // WITH_EDITOR
-					}
-				}
-			}
-		}
-
-		// Add channels for FxFy
-		if (FxFyChannels.Num() == 2)
-		{
-#if WITH_EDITOR
-			const FText FxFyGroupName = LOCTEXT("FxFyGroupName", "FxFy");
-			constexpr int32 FxFySortOrder = 1000;
-			AddChannelForEditor(Channels, FxFyChannels[0], FxFyGroupName, LOCTEXT("FxChannelName", "Fx"), FxFySortOrder + 0);
-			AddChannelForEditor(Channels, FxFyChannels[1], FxFyGroupName, LOCTEXT("FyChannelName", "Fy"), FxFySortOrder + 1);
-#else
-			Channels.Add(FxFyChannels[0]);
-			Channels.Add(FxFyChannels[1]);
-#endif // WITH_EDITOR
-		}
-
-		// Add channels for Image Center
-		if (ImageCenterChannels.Num() == 2)
-		{
-#if WITH_EDITOR
-			const FText ImageCenterGroupName = LOCTEXT("CxCyGroupName", "Image Center");
-			constexpr int32 ImageCenterSortOrder = 2000;
-			AddChannelForEditor(Channels, ImageCenterChannels[0], ImageCenterGroupName, LOCTEXT("CxChannelName", "Cx"), ImageCenterSortOrder + 0);
-			AddChannelForEditor(Channels, ImageCenterChannels[1], ImageCenterGroupName, LOCTEXT("CyChannelName", "Cy"), ImageCenterSortOrder + 1);
-#else
-			Channels.Add(ImageCenterChannels[0]);
-			Channels.Add(ImageCenterChannels[1]);
-#endif // WITH_EDITOR
-		}
-	}
-}
-
 struct FPreAnimatedLensFileTokenProducer : IMovieScenePreAnimatedTokenProducer
 {
 	virtual IMovieScenePreAnimatedTokenPtr CacheExistingState(UObject& Object) const
@@ -130,6 +54,9 @@ void UMovieSceneLensComponentSection::Initialize(ULensComponent* Component)
 	// Cache a pointer to the recorded component to retrieve its data later during RecordFrame()
 	RecordedComponent = Component;
 
+	// Cache the Lens Model used by the recorded lens component
+	LensModelClass = RecordedComponent->GetLensModel();
+
 	// Duplicate the recorded LensFile asset and save the duplicate in this section
  	if (ULensFile* LensFile = Component->GetLensFile())
  	{
@@ -141,38 +68,110 @@ void UMovieSceneLensComponentSection::Initialize(ULensComponent* Component)
 	CreateChannelProxy();
 }
 
+void UMovieSceneLensComponentSection::PostEditImport()
+{
+	Super::PostEditImport();
+
+	UpdateChannelProxy();
+}
+
+void UMovieSceneLensComponentSection::PostLoad()
+{
+	Super::PostLoad();
+
+	UpdateChannelProxy();
+}
+
 #if WITH_EDITOR
 void UMovieSceneLensComponentSection::AddChannelWithEditor(FMovieSceneChannelProxyData& ChannelProxyData, FMovieSceneFloatChannel& Channel, FText GroupName, FText ChannelName, int32 SortOrder)
 {
-	using namespace UE::CameraCalibration::Private::MovieSceneLensComponentSection;
-	AddChannelForEditor(ChannelProxyData, Channel, GroupName, ChannelName, SortOrder);
+	FMovieSceneChannelMetaData ChannelEditorData(FName(*(ChannelName.ToString())), ChannelName, GroupName);
+	ChannelEditorData.SortOrder = SortOrder;
+	ChannelEditorData.bCanCollapseToTrack = false;
+
+	ChannelProxyData.Add(Channel, ChannelEditorData, TMovieSceneExternalValue<float>());
 }
 #endif // WITH_EDITOR
 
 void UMovieSceneLensComponentSection::CreateChannelProxy()
 {
-	using namespace UE::CameraCalibration::Private::MovieSceneLensComponentSection;
-
-	if (const ULensComponent* const LensComponent = RecordedComponent.Get())
+	// Add channels for distortion parameters
+	if (LensModelClass)
 	{
-		TSubclassOf<ULensModel> LensModelClass = LensComponent->GetLensModel();
-
-		if (LensModelClass)
+		if (const ULensModel* const LensModel = LensModelClass->GetDefaultObject<ULensModel>())
 		{
-			if (const ULensModel* const LensModel = LensModelClass->GetDefaultObject<ULensModel>())
+			const int32 ParameterCount = LensModel->GetNumParameters();
+			DistortionParameterChannels.SetNum(ParameterCount);
+		}
+	}
+
+	// Add channels for FxFy
+	FxFyChannels.SetNum(2);
+
+	// Add channels for Image Center
+	ImageCenterChannels.SetNum(2);
+
+	UpdateChannelProxy();
+}
+
+void UMovieSceneLensComponentSection::UpdateChannelProxy()
+{
+	FMovieSceneChannelProxyData Channels;
+
+	// Add channels for distortion parameters
+	if (LensModelClass)
+	{
+		if (const ULensModel* const LensModel = LensModelClass->GetDefaultObject<ULensModel>())
+		{
+			const int32 ParameterCount = LensModel->GetNumParameters();
+			if (ParameterCount == DistortionParameterChannels.Num())
 			{
-				const int32 ParameterCount = LensModel->GetNumParameters();
-				DistortionParameterChannels.SetNum(ParameterCount);
+#if WITH_EDITOR
+				TArray<FText> ParameterDisplayNames = LensModel->GetParameterDisplayNames();
+				const FText ParameterGroupName = LOCTEXT("ParameterGroupName", "Distortion Parameters");
+#endif // WITH_EDITOR
+
+				for (int32 Index = 0; Index < ParameterCount; ++Index)
+				{
+#if WITH_EDITOR
+					AddChannelWithEditor(Channels, DistortionParameterChannels[Index], ParameterGroupName, ParameterDisplayNames[Index], Index);
+#else
+					Channels.Add(DistortionParameterChannels[Index]);
+#endif // WITH_EDITOR
+				}
 			}
 		}
-
-		FxFyChannels.SetNum(2);
-		ImageCenterChannels.SetNum(2);
-
-		FMovieSceneChannelProxyData Channels;
-		UpdateChannelProxy(Channels, DistortionParameterChannels, FxFyChannels, ImageCenterChannels, LensModelClass);
-		ChannelProxy = MakeShared<FMovieSceneChannelProxy>(MoveTemp(Channels));
 	}
+
+	// Add channels for FxFy
+	if (FxFyChannels.Num() == 2)
+	{
+#if WITH_EDITOR
+		const FText FxFyGroupName = LOCTEXT("FxFyGroupName", "FxFy");
+		constexpr int32 FxFySortOrder = 1000;
+		AddChannelWithEditor(Channels, FxFyChannels[0], FxFyGroupName, LOCTEXT("FxChannelName", "Fx"), FxFySortOrder + 0);
+		AddChannelWithEditor(Channels, FxFyChannels[1], FxFyGroupName, LOCTEXT("FyChannelName", "Fy"), FxFySortOrder + 1);
+#else
+		Channels.Add(FxFyChannels[0]);
+		Channels.Add(FxFyChannels[1]);
+#endif // WITH_EDITOR
+	}
+
+	// Add channels for Image Center
+	if (ImageCenterChannels.Num() == 2)
+	{
+#if WITH_EDITOR
+		const FText ImageCenterGroupName = LOCTEXT("CxCyGroupName", "Image Center");
+		constexpr int32 ImageCenterSortOrder = 2000;
+		AddChannelWithEditor(Channels, ImageCenterChannels[0], ImageCenterGroupName, LOCTEXT("CxChannelName", "Cx"), ImageCenterSortOrder + 0);
+		AddChannelWithEditor(Channels, ImageCenterChannels[1], ImageCenterGroupName, LOCTEXT("CyChannelName", "Cy"), ImageCenterSortOrder + 1);
+#else
+		Channels.Add(ImageCenterChannels[0]);
+		Channels.Add(ImageCenterChannels[1]);
+#endif // WITH_EDITOR
+	}
+
+	ChannelProxy = MakeShared<FMovieSceneChannelProxy>(MoveTemp(Channels));
 }
 
 void UMovieSceneLensComponentSection::RecordFrame(FFrameNumber FrameNumber)
@@ -218,8 +217,6 @@ void UMovieSceneLensComponentSection::Finalize()
 
 void UMovieSceneLensComponentSection::Begin(IMovieScenePlayer* Player, const UE::MovieScene::FEvaluationHookParams& Params) const
 {
-	using namespace UE::CameraCalibration::Private::MovieSceneLensComponentSection;
-
 	FScopedPreAnimatedCaptureSource CaptureSource(&Player->PreAnimatedState, this, Params.SequenceID, EvalOptions.CompletionMode == EMovieSceneCompletionMode::RestoreState);
 
 	for (TWeakObjectPtr<> BoundObject : Player->FindBoundObjects(Params.ObjectBindingID, Params.SequenceID))
@@ -232,22 +229,6 @@ void UMovieSceneLensComponentSection::Begin(IMovieScenePlayer* Player, const UE:
 			LensComponent->SetFIZEvaluationMode(EFIZEvaluationMode::UseRecordedValues);
 
 			// TODO: Check that the number of parameters for the lens component's current lens model matches the number of recorded parameter channels. 
-
-			// Note: Putting this fix here for 5.1.1 to initialize the ChannelProxy in order to show the serialized channels in the Sequencer UI in Editor
-			if ((ChannelProxy == nullptr) || (ChannelProxy->GetChannels<FMovieSceneFloatChannel>().Num() == 0))
-			{
-				FMovieSceneChannelProxyData Channels;
-
-				UpdateChannelProxy(
-					Channels,
-					const_cast<TArray<FMovieSceneFloatChannel>&>(DistortionParameterChannels), 
-					const_cast<TArray<FMovieSceneFloatChannel>&>(FxFyChannels),
-					const_cast<TArray<FMovieSceneFloatChannel>&>(ImageCenterChannels),
-					LensComponent->GetLensModel()
-				);
-
-				ChannelProxy = MakeShared<FMovieSceneChannelProxy>(MoveTemp(Channels));
-			}
 		}
 	}
 }

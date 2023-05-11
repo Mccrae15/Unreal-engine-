@@ -1,9 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Elements/PCGDensityFilter.h"
+
+#include "Data/PCGSpatialData.h"
+#include "PCGCustomVersion.h"
 #include "Data/PCGPointData.h"
 #include "Helpers/PCGAsync.h"
-#include "Helpers/PCGSettingsHelpers.h"
+#include "PCGContext.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGDensityFilter)
+
+#define LOCTEXT_NAMESPACE "PCGDensityFilterElement"
 
 FPCGElementPtr UPCGDensityFilterSettings::CreateElement() const
 {
@@ -19,16 +26,12 @@ bool FPCGDensityFilterElement::ExecuteInternal(FPCGContext* Context) const
 
 	TArray<FPCGTaggedData> Inputs = Context->InputData.GetInputs();
 	TArray<FPCGTaggedData>& Outputs = Context->OutputData.TaggedData;
-	UPCGParamData* Params = Context->InputData.GetParams();
 
-	// Forward any non-input data
-	Outputs.Append(Context->InputData.GetAllSettings());
-
-	const bool bInvertFilter = PCGSettingsHelpers::GetValue(GET_MEMBER_NAME_CHECKED(UPCGDensityFilterSettings, bInvertFilter), Settings->bInvertFilter, Params);
-	const float LowerBound = PCGSettingsHelpers::GetValue(GET_MEMBER_NAME_CHECKED(UPCGDensityFilterSettings, LowerBound), Settings->LowerBound, Params);
-	const float UpperBound = PCGSettingsHelpers::GetValue(GET_MEMBER_NAME_CHECKED(UPCGDensityFilterSettings, UpperBound), Settings->UpperBound, Params);
-#if WITH_EDITORONLY_DATA
-	const bool bKeepZeroDensityPoints = PCGSettingsHelpers::GetValue(GET_MEMBER_NAME_CHECKED(UPCGDensityFilterSettings, bKeepZeroDensityPoints), Settings->bKeepZeroDensityPoints, Params);
+	const bool bInvertFilter = Settings->bInvertFilter;
+	const float LowerBound = Settings->LowerBound;
+	const float UpperBound = Settings->UpperBound;
+#if WITH_EDITOR
+	const bool bKeepZeroDensityPoints = Settings->bKeepZeroDensityPoints;
 #else
 	const bool bKeepZeroDensityPoints = false;
 #endif
@@ -41,7 +44,7 @@ bool FPCGDensityFilterElement::ExecuteInternal(FPCGContext* Context) const
 
 	if (bNoResults && !bKeepZeroDensityPoints)
 	{
-		PCGE_LOG(Verbose, "Skipped - all inputs rejected");
+		PCGE_LOG(Verbose, LogOnly, LOCTEXT("AllInputsRejected", "Skipped - all inputs rejected"));
 		return true;
 	}
 
@@ -52,14 +55,14 @@ bool FPCGDensityFilterElement::ExecuteInternal(FPCGContext* Context) const
 
 		if (!Input.Data || Cast<UPCGSpatialData>(Input.Data) == nullptr)
 		{
-			PCGE_LOG(Error, "Invalid input data");
+			PCGE_LOG(Error, GraphAndLog, LOCTEXT("InvalidInputData", "Invalid input data"));
 			continue;
 		}
 
 		// Skip processing if the transformation is trivial
 		if (bTrivialFilter)
 		{
-			PCGE_LOG(Verbose, "Skipped - trivial filter");
+			PCGE_LOG(Verbose, LogOnly, LOCTEXT("TrivialFilter", "Skipped - trivial filter"));
 			continue;
 		}
 
@@ -67,7 +70,7 @@ bool FPCGDensityFilterElement::ExecuteInternal(FPCGContext* Context) const
 
 		if (!OriginalData)
 		{
-			PCGE_LOG(Error, "Unable to get point data from input");
+			PCGE_LOG(Error, GraphAndLog, LOCTEXT("NoPointDataInInput", "Unable to get point data from input"));
 			continue;
 		}
 
@@ -89,7 +92,7 @@ bool FPCGDensityFilterElement::ExecuteInternal(FPCGContext* Context) const
 				OutPoint = Point;
 				return true;
 			}
-#if WITH_EDITORONLY_DATA
+#if WITH_EDITOR
 			else if (bKeepZeroDensityPoints)
 			{
 				OutPoint = Point;
@@ -103,8 +106,10 @@ bool FPCGDensityFilterElement::ExecuteInternal(FPCGContext* Context) const
 			}
 		});
 
-		PCGE_LOG(Verbose, "Generated %d points out of %d source points", FilteredPoints.Num(), Points.Num());
+		PCGE_LOG(Verbose, LogOnly, FText::Format(LOCTEXT("GenerationInfo", "Generated {0} points out of {1} source points"), FilteredPoints.Num(), Points.Num()));
 	}
 
 	return true;
 }
+
+#undef LOCTEXT_NAMESPACE

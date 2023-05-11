@@ -17,7 +17,7 @@ UClass* UInterchangeSkeletonFactory::GetFactoryClass() const
 	return USkeleton::StaticClass();
 }
 
-UObject* UInterchangeSkeletonFactory::CreateEmptyAsset(const FCreateAssetParams& Arguments)
+UObject* UInterchangeSkeletonFactory::ImportAssetObject_GameThread(const FImportAssetObjectParams& Arguments)
 {
 	UObject* Skeleton = nullptr;
 
@@ -59,7 +59,7 @@ UObject* UInterchangeSkeletonFactory::CreateEmptyAsset(const FCreateAssetParams&
 	return Skeleton;
 }
 
-UObject* UInterchangeSkeletonFactory::CreateAsset(const FCreateAssetParams& Arguments)
+UObject* UInterchangeSkeletonFactory::ImportAssetObject_Async(const FImportAssetObjectParams& Arguments)
 {
 #if !WITH_EDITORONLY_DATA
 
@@ -93,9 +93,16 @@ UObject* UInterchangeSkeletonFactory::CreateAsset(const FCreateAssetParams& Argu
 	{
 		//NewObject is not thread safe, the asset registry directory watcher tick on the main thread can trig before we finish initializing the UObject and will crash
 		//The UObject should have been create by calling CreateEmptyAsset on the main thread.
-		check(IsInGameThread());
-		//We should not do a NewObject if we are doing a reimport
-		check(!bIsReImport);
+		if (!IsInGameThread())
+		{
+			UE_LOG(LogInterchangeImport, Error, TEXT("Could not create Skeleton asset [%s] outside of the game thread"), *Arguments.AssetName);
+			return nullptr;
+		}
+		if (bIsReImport)
+		{
+			UE_LOG(LogInterchangeImport, Error, TEXT("Could not create Skeleton asset [%s] when re-importing"), *Arguments.AssetName);
+			return nullptr;
+		}
 		SkeletonObject = NewObject<UObject>(Arguments.Parent, SkeletonClass, *Arguments.AssetName, RF_Public | RF_Standalone);
 	}
 	else if(ExistingAsset->GetClass()->IsChildOf(SkeletonClass))

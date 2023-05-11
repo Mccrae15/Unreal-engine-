@@ -3,12 +3,12 @@
 #pragma once
 
 #include "CommonUserWidget.h"
-#include "Input/UIActionBindingHandle.h"
 #include "CommonInputActionDomain.h"
 #include "CommonActivatableWidget.generated.h"
 
 class FActivatableTreeNode;
 class UCommonInputActionDomain;
+class UInputMappingContext;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnWidgetActivationChanged);
 
@@ -187,6 +187,14 @@ protected:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Input", meta = (InlineEditConditionToggle))
 	bool bOverrideActionDomain = false;
+	
+	/** Optional mapping context to be applied & removed on activation & deactivation respectfully. */
+	UPROPERTY(EditAnywhere, Category="Input", meta = (EditCondition = "CommonInput.CommonInputSettings.IsEnhancedInputSupportEnabled", EditConditionHides))
+	TObjectPtr<UInputMappingContext> InputMapping;
+
+	/** Enhanced Input priority. Higher priority input mappings will be prioritized over mappings with a lower priority. */
+	UPROPERTY(EditAnywhere, Category="Input", meta = (EditCondition = "CommonInput.CommonInputSettings.IsEnhancedInputSupportEnabled", EditConditionHides))
+	int32 InputMappingPriority = 0;
 
 	/**
 	 * Enable to override the inherited ActionDomain from owning CommonActivatableWidget.
@@ -253,3 +261,7 @@ protected:
 	virtual void InternalProcessDeactivation();
 	void Reset();
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Input/UIActionBindingHandle.h"
+#endif

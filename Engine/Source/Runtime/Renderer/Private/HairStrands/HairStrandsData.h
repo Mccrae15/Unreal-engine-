@@ -8,9 +8,11 @@
 
 #include "CoreMinimal.h"
 #include "RendererInterface.h"
+#include "RenderGraphResources.h"
 #include "RHIGPUReadback.h"
 #include "Shader.h"
 #include "ConvexVolume.h"
+#include "HairStrandsDefinitions.h"
 
 class FLightSceneInfo;
 class FPrimitiveSceneProxy;
@@ -57,11 +59,16 @@ BEGIN_SHADER_PARAMETER_STRUCT(FHairStrandsInstanceParameters, )
 	SHADER_PARAMETER(float, HairStrandsVF_Length)
 	SHADER_PARAMETER(uint32, HairStrandsVF_bUseStableRasterization)
 	SHADER_PARAMETER(uint32, HairStrandsVF_VertexCount)
+	SHADER_PARAMETER(uint32, HairStrandsVF_CurveCount)
+	SHADER_PARAMETER_ARRAY(FUintVector4, HairStrandsVF_AttributeOffsets, [HAIR_ATTRIBUTE_OFFSET_COUNT])
 	SHADER_PARAMETER(FVector3f, HairStrandsVF_PositionOffset)
 	SHADER_PARAMETER(FMatrix44f, HairStrandsVF_LocalToWorldPrimitiveTransform)
 	SHADER_PARAMETER(FMatrix44f, HairStrandsVF_LocalToTranslatedWorldPrimitiveTransform)
 	SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, HairStrandsVF_PositionBuffer)
 	SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, HairStrandsVF_PositionOffsetBuffer)
+	SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, HairStrandsVF_CurveBuffer)
+	SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, HairStrandsVF_VertexToCurveBuffer)
+	SHADER_PARAMETER_RDG_BUFFER_SRV(ByteAddressBuffer, HairStrandsVF_AttributeBuffer)
 	SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, HairStrandsVF_CullingIndirectBuffer)
 	SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, HairStrandsVF_CullingIndexBuffer)
 	SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer, HairStrandsVF_CullingRadiusScaleBuffer)
@@ -138,6 +145,12 @@ struct FHairStrandsVisibilityData
 	uint32			NodeGroupSize = 0;
 	FVector4f		HairOnlyDepthHZBParameters = FVector4f::Zero();
 
+	uint32				RasterizedInstanceCount = 0;
+	uint32				MaxControlPointCount = 0;
+	FRDGBufferSRVRef	ControlPointsSRV = nullptr;
+	FRDGTextureRef		ControlPointCount = nullptr;
+	FRDGBufferSRVRef	ControlPointVelocitySRV = nullptr;
+
 	FHairStrandsTiles TileData;
 
 	const static EPixelFormat NodeCoordFormat = PF_R16G16_UINT;
@@ -202,6 +215,7 @@ BEGIN_SHADER_PARAMETER_STRUCT(FHairStrandsVoxelCommonParameters, )
 	SHADER_PARAMETER(float, Raytracing_SkyOcclusionThreshold)
 
 	SHADER_PARAMETER(FVector3f, TranslatedWorldOffset) // For debug purpose
+	SHADER_PARAMETER(FVector3f, TranslatedWorldOffsetStereoCorrection) // PreViewTranslation correction between View0 & View1 when rendering stereo
 
 	SHADER_PARAMETER(uint32, AllocationFeedbackEnable)
 

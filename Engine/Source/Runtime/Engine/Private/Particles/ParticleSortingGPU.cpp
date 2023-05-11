@@ -5,15 +5,14 @@
 ==============================================================================*/
 
 #include "Particles/ParticleSortingGPU.h"
-#include "UniformBuffer.h"
-#include "ShaderParameters.h"
-#include "Shader.h"
-#include "SceneUtils.h"
-#include "ParticleHelper.h"
 #include "Particles/ParticleSimulationGPU.h"
+#include "PipelineStateCache.h"
 #include "ShaderParameterUtils.h"
 #include "GlobalShader.h"
 #include "GPUSort.h"
+#include "DataDrivenShaderPlatformInfo.h"
+#include "RHIContext.h"
+#include "ShaderParameterMacros.h"
 
 /*------------------------------------------------------------------------------
 	Shaders used to generate particle sort keys.
@@ -83,14 +82,8 @@ public:
 	void SetOutput(FRHICommandList& RHICmdList, FRHIUnorderedAccessView* OutKeysUAV, FRHIUnorderedAccessView* OutIndicesUAV )
 	{
 		FRHIComputeShader* ComputeShaderRHI = RHICmdList.GetBoundComputeShader();
-		if ( OutKeys.IsBound() )
-		{
-			RHICmdList.SetUAVParameter(ComputeShaderRHI, OutKeys.GetBaseIndex(), OutKeysUAV);
-		}
-		if ( OutParticleIndices.IsBound() )
-		{
-			RHICmdList.SetUAVParameter(ComputeShaderRHI, OutParticleIndices.GetBaseIndex(), OutIndicesUAV);
-		}
+		SetUAVParameter(RHICmdList, ComputeShaderRHI, OutKeys, OutKeysUAV);
+		SetUAVParameter(RHICmdList, ComputeShaderRHI, OutParticleIndices, OutIndicesUAV);
 	}
 
 	/**
@@ -104,10 +97,7 @@ public:
 	{
 		FRHIComputeShader* ComputeShaderRHI = RHICmdList.GetBoundComputeShader();
 		SetUniformBufferParameter(RHICmdList, ComputeShaderRHI, GetUniformBufferParameter<FParticleKeyGenParameters>(), UniformBuffer );
-		if ( InParticleIndices.IsBound() )
-		{
-			RHICmdList.SetShaderResourceViewParameter(ComputeShaderRHI, InParticleIndices.GetBaseIndex(), InIndicesSRV);
-		}
+		SetSRVParameter(RHICmdList, ComputeShaderRHI, InParticleIndices, InIndicesSRV);
 	}
 
 	/**
@@ -116,10 +106,7 @@ public:
 	void SetPositionTextures(FRHICommandList& RHICmdList, FRHITexture2D* PositionTextureRHI)
 	{
 		FRHIComputeShader* ComputeShaderRHI = RHICmdList.GetBoundComputeShader();
-		if (PositionTexture.IsBound())
-		{
-			RHICmdList.SetShaderTexture(ComputeShaderRHI, PositionTexture.GetBaseIndex(), PositionTextureRHI);
-		}
+		SetTextureParameter(RHICmdList, ComputeShaderRHI, PositionTexture, PositionTextureRHI);
 	}
 
 	/**
@@ -128,18 +115,10 @@ public:
 	void UnbindBuffers(FRHICommandList& RHICmdList)
 	{
 		FRHIComputeShader* ComputeShaderRHI = RHICmdList.GetBoundComputeShader();
-		if ( InParticleIndices.IsBound() )
-		{
-			RHICmdList.SetShaderResourceViewParameter(ComputeShaderRHI, InParticleIndices.GetBaseIndex(), nullptr);
-		}
-		if ( OutKeys.IsBound() )
-		{
-			RHICmdList.SetUAVParameter(ComputeShaderRHI, OutKeys.GetBaseIndex(), nullptr);
-		}
-		if ( OutParticleIndices.IsBound() )
-		{
-			RHICmdList.SetUAVParameter(ComputeShaderRHI, OutParticleIndices.GetBaseIndex(), nullptr);
-		}
+
+		SetSRVParameter(RHICmdList, ComputeShaderRHI, InParticleIndices, nullptr);
+		SetUAVParameter(RHICmdList, ComputeShaderRHI, OutKeys, nullptr);
+		SetUAVParameter(RHICmdList, ComputeShaderRHI, OutParticleIndices, nullptr);
 	}
 
 private:

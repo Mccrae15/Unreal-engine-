@@ -2,14 +2,13 @@
 #include "AudioImpulseResponseAsset.h"
 
 #include "Algo/AnyOf.h"
-#include "AssetRegistry/AssetData.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/Object.h"
+#include "EffectConvolutionReverb.h"
 #include "ToolMenus.h"
 #include "ContentBrowserMenuContexts.h"
-#include "Sound/SoundWave.h"
+#include "Misc/PackageName.h"
 #include "Sound/SoundWaveProcedural.h"
-#include "SubmixEffects/SubmixEffectConvolutionReverb.h"
+#include "ToolMenu.h"
+#include "ToolMenuSection.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AudioImpulseResponseAsset)
 
@@ -110,6 +109,10 @@ UObject* UAudioImpulseResponseFactory::FactoryCreateNew(UClass* Class, UObject* 
 				OutputBuffer[i] = static_cast<float>(InputBuffer[i]) / 32768.0f;
 			}
 		}
+
+#if WITH_EDITORONLY_DATA
+		NewAsset->bIsEvenChannelCount = NewAsset->NumChannels % 2 == 0;
+#endif
 
 		StagedSoundWave.Reset();
 	}

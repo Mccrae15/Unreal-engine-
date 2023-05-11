@@ -3,6 +3,10 @@
 #include "MotionExtractorUtilities.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/AnimationPoseData.h"
+#include "Animation/AttributesRuntime.h"
+#include "BonePose.h"
+#include "EngineLogs.h"
+#include "MotionExtractorTypes.h"
 
 namespace UE::Anim::MotionExtractorUtility
 {
@@ -217,7 +221,7 @@ FTransform UMotionExtractorUtilityLibrary::ExtractBoneTransform(UAnimSequence* A
 	FBlendedCurve Curve;
 	Curve.InitFrom(BoneContainer);
 
-	FAnimExtractContext Context(Time, false);
+	FAnimExtractContext Context(static_cast<double>(Time), false);
 	UE::Anim::FStackAttributeContainer Attributes;
 	FAnimationPoseData AnimationPoseData(Pose, Curve, Attributes);
 

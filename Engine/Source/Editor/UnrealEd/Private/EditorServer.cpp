@@ -42,6 +42,7 @@
 #include "CollisionQueryParams.h"
 #include "WorldCollision.h"
 #include "Engine/World.h"
+#include "MaterialDomain.h"
 #include "Materials/MaterialInterface.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/MeshComponent.h"
@@ -173,6 +174,7 @@
 
 #include "Serialization/StructuredArchive.h"
 #include "Serialization/Formatters/JsonArchiveInputFormatter.h"
+#include "Serialization/LoadTimeTrace.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogEditorServer, Log, All);
 
@@ -1282,8 +1284,10 @@ UTransactor* UEditorEngine::CreateTrans()
 		UndoBufferSize = 16;
 	}
 
+	UE_LOG(LogInit, Log, TEXT("Undo buffer set to %d MB"), UndoBufferSize);
+
 	UTransBuffer* TransBuffer = NewObject<UTransBuffer>();
-	TransBuffer->Initialize(UndoBufferSize * 1024 * 1024);
+	TransBuffer->Initialize((SIZE_T)UndoBufferSize * 1024 * 1024);
 	TransBuffer->OnBeforeRedoUndo().AddUObject(this, &UEditorEngine::HandleTransactorBeforeRedoUndo);
 	TransBuffer->OnRedo().AddUObject(this, &UEditorEngine::HandleTransactorRedo);
 	TransBuffer->OnUndo().AddUObject(this, &UEditorEngine::HandleTransactorUndo);
@@ -1422,7 +1426,7 @@ void UEditorEngine::PostUndo(bool)
 	}
 
 	// Re-instance any actors that need it
-	FBlueprintCompileReinstancer::BatchReplaceInstancesOfClass(OldToNewClassMapToReinstance);
+	FBlueprintCompileReinstancer::BatchReplaceInstancesOfClass(OldToNewClassMapToReinstance, FReplaceInstancesOfClassParameters());
 
 	RedrawLevelEditingViewports();
 }
@@ -1845,11 +1849,10 @@ void UEditorEngine::RebuildModelFromBrushes(UModel* Model, bool bSelectedBrushes
 	TArray<ABrush*> DynamicBrushes;
 	if (!bTreatMovableBrushesAsStatic)
 	{
-	for( auto It(Level->Actors.CreateConstIterator()); It; ++It )
+		for( auto It(Level->Actors.CreateConstIterator()); It; ++It )
 		{
 			ABrush* DynamicBrush = Cast<ABrush>(*It);
-			if (DynamicBrush && DynamicBrush->Brush && !DynamicBrush->IsStaticBrush() &&
-				(!bSelectedBrushesOnly || DynamicBrush->IsSelected()))
+			if (DynamicBrush && DynamicBrush->Brush && !DynamicBrush->IsStaticBrush() && DynamicBrush->IsSelected())
 			{
 				DynamicBrushes.Add(DynamicBrush);
 			}
@@ -2032,7 +2035,10 @@ void UEditorEngine::CheckForWorldGCLeaks( UWorld* NewWorld, UPackage* WorldPacka
 	{
 		UWorld* RemainingWorld = *It;
 		const bool bIsNewWorld = (NewWorld && RemainingWorld == NewWorld);
-		const bool bIsPersistantWorldType = (RemainingWorld->WorldType == EWorldType::Inactive) || (RemainingWorld->WorldType == EWorldType::EditorPreview) || (RemainingWorld->WorldType == EWorldType::GamePreview);
+		const bool bIsPersistantWorldType = (
+			RemainingWorld->WorldType == EWorldType::Inactive) || 
+			(RemainingWorld->WorldType == EWorldType::EditorPreview) || 
+			(RemainingWorld->WorldType == EWorldType::GamePreview);
 		if(!bIsNewWorld && !bIsPersistantWorldType && !WorldHasValidContext(RemainingWorld))
 		{
 			FindAndPrintStaleReferencesToObject(RemainingWorld, EPrintStaleReferencesOptions::Error);
@@ -2445,6 +2451,7 @@ bool UEditorEngine::PackageIsAMapFile( const TCHAR* PackageFilename, FText& OutN
 bool UEditorEngine::Map_Load(const TCHAR* Str, FOutputDevice& Ar)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UEditorEngine::Map_Load);
+	TRACE_LOADTIME_REQUEST_GROUP_SCOPE(TEXT("LoadMap - %s"), Str);
 
 	auto FindWorldInPackageOrFollowRedirector = [](UPackage*& InOutPackage)
 	{
@@ -2481,7 +2488,7 @@ bool UEditorEngine::Map_Load(const TCHAR* Str, FOutputDevice& Ar)
 
 #define LOCTEXT_NAMESPACE "EditorEngine"
 	// We are beginning a map load
-	GIsEditorLoadingPackage = true;
+	TGuardValue<bool> IsEditorLoadingPackageGuard(GIsEditorLoadingPackage, true);
 
 	FWorldContext &Context = GetEditorWorldContext();
 	check(Context.World() == GWorld);
@@ -2510,7 +2517,6 @@ bool UEditorEngine::Map_Load(const TCHAR* Str, FOutputDevice& Ar)
 					FFormatNamedArguments Arguments;
 					Arguments.Add(TEXT("Reason"), NotMapReason);
 					FMessageDialog::Open(EAppMsgType::Ok, FText::Format(LOCTEXT("MapLoadFailed", "Failed to load map!\n{Reason}"), Arguments));
-					GIsEditorLoadingPackage = false;
 					return false;
 				}
 
@@ -2697,7 +2703,7 @@ bool UEditorEngine::Map_Load(const TCHAR* Str, FOutputDevice& Ar)
 						FSoftObjectPath(*WriteToString<256>(WorldPackage->GetName(), TEXT("."), ShortWorldPackageName))
 					);
 
-					WorldPackageInstancingContext.SetRegenerateUniqueBulkDataGuids(true);
+					LoadFlags |= LOAD_RegenerateBulkDataGuids;
 
 					WorldPackage = LoadPackage( WorldPackage, *LongTempFname, LoadFlags, nullptr /* InReaderOverride */, &WorldPackageInstancingContext);
 					WorldPackage->SetPackageFlags(PKG_NewlyCreated);
@@ -2730,7 +2736,6 @@ bool UEditorEngine::Map_Load(const TCHAR* Str, FOutputDevice& Ar)
 				if (WorldPackage == nullptr)
 				{
 					FMessageDialog::Open( EAppMsgType::Ok, NSLOCTEXT("UnrealEd", "MapPackageLoadFailed", "Failed to open map file. This is most likely because the map was saved with a newer version of the engine."));
-					GIsEditorLoadingPackage = false;
 					return false;
 				}
 
@@ -2743,7 +2748,6 @@ bool UEditorEngine::Map_Load(const TCHAR* Str, FOutputDevice& Ar)
 				{
 					FText Message = FText::Format(NSLOCTEXT("UnrealEd", "MapPackageFindWorldFailed", "Failed to find the world in already loaded world package {0}! See log for more details."), FText::FromString(WorldPackage->GetPathName()));
 					FMessageDialog::Open(EAppMsgType::Ok, Message);
-					GIsEditorLoadingPackage = false;
 
 					FReferenceChainSearch RefChainSearch(WorldPackage, EReferenceChainSearchMode::Shortest | EReferenceChainSearchMode::PrintResults);
 					UE_LOG(LogEditorServer, Warning, TEXT("Failed to find the world in already loaded world package %s! Referenced by:") LINE_TERMINATOR TEXT("%s"), *WorldPackage->GetPathName(), *RefChainSearch.GetRootPath());
@@ -2943,7 +2947,6 @@ bool UEditorEngine::Map_Load(const TCHAR* Str, FOutputDevice& Ar)
 	}
 
 	// Done loading a map
-	GIsEditorLoadingPackage = false;
 	return true;
 #undef LOCTEXT_NAMESPACE
 }
@@ -3596,12 +3599,6 @@ void UEditorEngine::CopySelectedActorsToClipboard( UWorld* InWorld, bool bShould
 					delete Job;
 				}
 
-				// Clean-up flag for Landscape Proxy cases...
-				for( TActorIterator<ALandscapeProxy> ProxyIt(InWorld); ProxyIt; ++ProxyIt )
-				{
-					ProxyIt->bIsMovingToLevel = false;
-				}
-
 				BufferLevel->ClearLevelComponents();
 				InWorld->RemoveLevel( BufferLevel );
 				BufferLevel->OwningWorld = NULL;
@@ -3756,8 +3753,18 @@ void UEditorEngine::PasteSelectedActorsFromClipboard( UWorld* InWorld, const FTe
 
 		RedrawLevelEditingViewports();
 
-		// If required, update the Bsp of any levels that received a pasted brush actor
-		RebuildAlteredBSP();
+		for (FSelectionIterator It(GetSelectedActorIterator()); It; ++It)
+		{
+			if (ABrush* Brush = Cast<ABrush>(*It))
+			{
+				if (Brush->IsStaticBrush())
+				{
+					// If required, update the Bsp of any levels that received a pasted brush actor
+					RebuildAlteredBSP();
+					break;
+				}
+			}
+		}
 	}
 	else
 	{
@@ -5673,7 +5680,7 @@ void ListMapPackageDependencies(const TCHAR* InStr)
 
 COREUOBJECT_API void DumpClassSchemas(const TCHAR* Str, FOutputDevice& Ar);
 
-bool UEditorEngine::Exec( UWorld* InWorld, const TCHAR* Stream, FOutputDevice& Ar )
+bool UEditorEngine::Exec_Editor( UWorld* InWorld, const TCHAR* Stream, FOutputDevice& Ar )
 {
 	TCHAR ErrorTemp[256]=TEXT("Setup: ");
 	bool bProcessed=false;
@@ -5938,7 +5945,7 @@ bool UEditorEngine::Exec( UWorld* InWorld, const TCHAR* Stream, FOutputDevice& A
 		// The level handled it.
 		bProcessed = true;
 	}
-	else if( UEngine::Exec( InWorld, Stream, Ar ) )
+	else if( UEngine::Exec_Editor( InWorld, Stream, Ar ) )
 	{
 		// The engine handled it.
 		bProcessed = true;

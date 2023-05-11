@@ -2,23 +2,27 @@
 
 #include "EnhancedInputLibrary.h"
 
-#include "Engine/Engine.h"
+#include "EnhancedActionKeyMapping.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputModule.h"
-#include "EnhancedPlayerInput.h"
-#include "GameFramework/PlayerController.h"
-#include "InputCoreTypes.h"
-#include "InputMappingContext.h"
-#include "InputModifiers.h"
-#include "InputTriggers.h"
+#include "EnhancedInputSubsystems.h"
 #include "UObject/UObjectIterator.h"
+#include "GameFramework/Actor.h"
+#include "EnhancedInputModule.h"	// For LogEnhancedInput
+#include "EnhancedInputDeveloperSettings.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(EnhancedInputLibrary)
 
 void UEnhancedInputLibrary::ForEachSubsystem(TFunctionRef<void(IEnhancedInputSubsystemInterface*)> SubsystemPredicate)
 {
-	// TODO: World subsystem for enhanced input, so that you bind to actions without an owning player controller
-	// This is useful for widgets, main menu situations, or just stuff that isn't dependant on a player.
+	// World subsystem
+	if (GetDefault<UEnhancedInputDeveloperSettings>()->bEnableWorldSubsystem)
+	{
+		for (TObjectIterator<UEnhancedInputWorldSubsystem> It; It; ++It)
+		{
+			SubsystemPredicate(Cast<IEnhancedInputSubsystemInterface>(*It));
+		}
+	}
 
 	// Players
 	for (TObjectIterator<UEnhancedInputLocalPlayerSubsystem> It; It; ++It)
@@ -79,6 +83,22 @@ FInputActionValue UEnhancedInputLibrary::MakeInputActionValue(double X, double Y
 {
 	return FInputActionValue(MatchValueType.GetValueType(), FVector(X, Y, Z));
 }
+
+UPlayerMappableKeySettings* UEnhancedInputLibrary::GetPlayerMappableKeySettings(const FEnhancedActionKeyMapping& ActionKeyMapping)
+{
+	return ActionKeyMapping.GetPlayerMappableKeySettings();
+}
+
+FName UEnhancedInputLibrary::GetMappingName(const FEnhancedActionKeyMapping& ActionKeyMapping)
+{
+	return ActionKeyMapping.GetMappingName();
+}
+
+bool UEnhancedInputLibrary::IsActionKeyMappingPlayerMappable(const FEnhancedActionKeyMapping& ActionKeyMapping)
+{
+	return ActionKeyMapping.IsPlayerMappable();
+}
+
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 FInputActionValue UEnhancedInputLibrary::MakeInputActionValueOfType(double X, double Y, double Z, const EInputActionValueType ValueType)

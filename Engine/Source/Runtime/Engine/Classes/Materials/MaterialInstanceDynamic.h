@@ -74,6 +74,10 @@ class ENGINE_API UMaterialInstanceDynamic : public UMaterialInstance
 	UFUNCTION(BlueprintCallable, Category = "Rendering|Material")
 	void SetRuntimeVirtualTextureParameterValueByInfo(const FMaterialParameterInfo& ParameterInfo, class URuntimeVirtualTexture* Value);
 
+	/** Set an MID texture parameter value */
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Material")
+	void SetSparseVolumeTextureParameterValue(FName ParameterName, class USparseVolumeTexture* Value);
+
 	/** Get the current MID texture parameter value */
 	UFUNCTION(BlueprintCallable, meta=(DisplayName = "Get Texture Parameter Value", ScriptName = "GetTextureParameterValue"), Category="Rendering|Material")
 	class UTexture* K2_GetTextureParameterValue(FName ParameterName);
@@ -182,6 +186,8 @@ class ENGINE_API UMaterialInstanceDynamic : public UMaterialInstance
 	 */
 	void CopyScalarAndVectorParameters(const UMaterialInterface& SourceMaterialToCopyFrom, ERHIFeatureLevel::Type FeatureLevel);
 
+	void SetNaniteOverride(UMaterialInterface* InMaterial);
+
 	virtual bool HasOverridenBaseProperties()const override{ return false; }
 
 	//Material base property overrides. MIDs cannot override these so they just grab from their parent.
@@ -191,9 +197,11 @@ class ENGINE_API UMaterialInstanceDynamic : public UMaterialInstance
 	virtual bool IsShadingModelFromMaterialExpression() const override;
 	virtual EBlendMode GetBlendMode() const override;
 	virtual bool IsTwoSided() const override;
+	virtual bool IsThinSurface() const override;
 	virtual bool IsTranslucencyWritingVelocity() const override;
 	virtual bool IsDitheredLODTransition() const override;
 	virtual bool IsMasked() const override;
+	virtual float GetMaxWorldPositionOffsetDisplacement() const override;
 
 	/**
 	 * In order to remap to the correct texture streaming data, we must keep track of each texture renamed.

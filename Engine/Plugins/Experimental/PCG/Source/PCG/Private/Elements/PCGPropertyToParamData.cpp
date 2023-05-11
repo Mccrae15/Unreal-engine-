@@ -2,184 +2,54 @@
 
 #include "Elements/PCGPropertyToParamData.h"
 
-#include "PCGCommon.h"
+#include "GameFramework/Actor.h"
 #include "PCGContext.h"
 #include "PCGComponent.h"
 #include "PCGParamData.h"
 #include "Helpers/PCGBlueprintHelpers.h"
-#include "Helpers/PCGActorHelpers.h"
-#include "Metadata/PCGMetadata.h"
-#include "Metadata/PCGMetadataAttributeTraits.h"
+#include "Helpers/PCGSettingsHelpers.h"
+#include "Metadata/Accessors/PCGAttributeAccessorHelpers.h"
 
-#include "EngineUtils.h"
-#include "Kismet/GameplayStatics.h"
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGPropertyToParamData)
 
-namespace PCGPropertyToParamDataHelpers
+#define LOCTEXT_NAMESPACE "PCGPropertyToParamDataElement"
+
+#if WITH_EDITOR
+void UPCGPropertyToParamDataSettings::GetTrackedActorTags(FPCGTagToSettingsMap& OutTagToSettings, TArray<TObjectPtr<const UPCGGraph>>& OutVisitedGraphs) const
 {
-	// Need to pass a pointer of pointer to the found actor. The lambda will capture this pointer and modify its value when an actor is found.
-	TFunction<bool(AActor*)> GetFilteringFunction(const UPCGPropertyToParamDataSettings* InSettings, AActor*& InFoundActor)
+	if (ActorSelector.ActorSelection == EPCGActorSelection::ByTag &&
+		ActorSelector.ActorFilter == EPCGActorFilter::AllWorldActors)
 	{
-		check(InSettings);
-
-		switch (InSettings->ActorSelection)
-		{
-		case EPCGActorSelection::ByTag:
-			return [ActorSelectionTag = InSettings->ActorSelectionTag, &InFoundActor](AActor* Actor) -> bool
-				{
-					if (Actor->ActorHasTag(ActorSelectionTag))
-					{
-						InFoundActor = Actor;
-						return false;
-					}
-
-					return true;
-				};
-
-		case EPCGActorSelection::ByName:
-			return [ActorSelectionName = InSettings->ActorSelectionName, &InFoundActor](AActor* Actor) -> bool
-				{
-					if (Actor->GetFName().IsEqual(ActorSelectionName, ENameCase::IgnoreCase, /*bCompareNumber=*/ false))
-					{
-						InFoundActor = Actor;
-						return false;
-					}
-
-					return true;
-				};
-
-		case EPCGActorSelection::ByClass:
-			return [ActorSelectionClass = InSettings->ActorSelectionClass, &InFoundActor](AActor* Actor) -> bool
-				{
-					if (Actor->IsA(ActorSelectionClass))
-					{
-						InFoundActor = Actor;
-						return false;
-					}
-
-					return true;
-				};
-
-		default:
-			break;
-		}
-
-		return [](AActor* Actor) -> bool { return false; };
+		OutTagToSettings.FindOrAdd(ActorSelector.ActorSelectionTag).Emplace({ this, bTrackActorsOnlyWithinBounds });
 	}
 
-	AActor* FindActor(FPCGContext& InContext)
+}
+#endif // WITH_EDITOR
+
+void UPCGPropertyToParamDataSettings::PostLoad()
+{
+	Super::PostLoad();
+
+	// Migrate deprecated actor selection settings to struct if needed
+	if (ActorSelection_DEPRECATED != EPCGActorSelection::ByTag ||
+		ActorSelectionTag_DEPRECATED != NAME_None ||
+		ActorSelectionName_DEPRECATED != NAME_None ||
+		ActorSelectionClass_DEPRECATED != TSubclassOf<AActor>{} ||
+		ActorFilter_DEPRECATED != EPCGActorFilter::Self ||
+		bIncludeChildren_DEPRECATED != false)
 	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(PCGPropertyToParamDataHelpers::FindActor);
+		ActorSelector.ActorSelection = ActorSelection_DEPRECATED;
+		ActorSelector.ActorSelectionTag = ActorSelectionTag_DEPRECATED;
+		ActorSelector.ActorSelectionClass = ActorSelectionClass_DEPRECATED;
+		ActorSelector.ActorFilter = ActorFilter_DEPRECATED;
+		ActorSelector.bIncludeChildren = bIncludeChildren_DEPRECATED;
 
-		AActor* FoundActor = nullptr;
-
-		if (!InContext.SourceComponent.IsValid())
-		{
-			return FoundActor;
-		}
-
-		UPCGComponent* OriginalComponent = UPCGBlueprintHelpers::GetOriginalComponent(InContext);
-		check(OriginalComponent);
-
-		UWorld* World = OriginalComponent->GetWorld();
-		if (!World)
-		{
-			return FoundActor;
-		}
-
-		const UPCGPropertyToParamDataSettings* Settings = InContext.GetInputSettings<UPCGPropertyToParamDataSettings>();
-		check(Settings);
-
-		// Early out if we have not the information necessary
-		if ((Settings->ActorSelection == EPCGActorSelection::ByTag && Settings->ActorSelectionTag == NAME_None) ||
-			(Settings->ActorSelection == EPCGActorSelection::ByName && Settings->ActorSelectionName == NAME_None) ||
-			(Settings->ActorSelection == EPCGActorSelection::ByClass && !Settings->ActorSelectionClass))
-		{
-			return FoundActor;
-		}
-
-		// We pass FoundActor ref, that will be captured by the FilteringFunction
-		// It will modify the FoundActor pointer to the found actor, if found.
-		TFunction<bool(AActor*)> FilteringFunction = PCGPropertyToParamDataHelpers::GetFilteringFunction(Settings, FoundActor);
-
-		// In case of iterating over all actors in the world, call our filtering function and get out.
-		if (Settings->ActorFilter == EPCGActorFilter::AllWorldActors)
-		{
-			UPCGActorHelpers::ForEachActorInWorld<AActor>(World, FilteringFunction);
-
-			// FoundActor is set by the FilteringFunction (captured)
-			return FoundActor;
-		}
-
-		// Otherwise, gather all the actors we need to check
-		TArray<AActor*> ActorsToCheck;
-		switch (Settings->ActorFilter)
-		{
-		case EPCGActorFilter::Self:
-			if (AActor* Owner = OriginalComponent->GetOwner())
-			{
-				ActorsToCheck.Add(Owner);
-			}
-			break;
-
-		case EPCGActorFilter::Parent:
-			if (AActor* Owner = OriginalComponent->GetOwner())
-			{
-				if (AActor* Parent = Owner->GetParentActor())
-				{
-					ActorsToCheck.Add(Parent);
-				}
-				else
-				{
-					// If there is no parent, set the owner as the parent.
-					ActorsToCheck.Add(Owner);
-				}
-			}
-			break;
-
-		case EPCGActorFilter::Root:
-		{
-			AActor* Current = OriginalComponent->GetOwner();
-			while (Current != nullptr)
-			{
-				AActor* Parent = Current->GetParentActor();
-				if (Parent == nullptr)
-				{
-					ActorsToCheck.Add(Current);
-					break;
-				}
-				Current = Parent;
-			}
-
-			break;
-		}
-
-		//case EPCGActorFilter::TrackedActors:
-			//	//TODO
-			//	break;
-
-		default:
-			break;
-		}
-
-		if (Settings->bIncludeChildren)
-		{
-			int32 InitialCount = ActorsToCheck.Num();
-			for (int32 i = 0; i < InitialCount; ++i)
-			{
-				ActorsToCheck[i]->GetAttachedActors(ActorsToCheck, /*bResetArray=*/ false, /*bRecursivelyIncludeAttachedActors=*/ true);
-			}
-		}
-
-		for (AActor* Actor : ActorsToCheck)
-		{
-			// FoundActor is set by the FilteringFunction (captured)
-			if (!FilteringFunction(Actor))
-			{
-				break;
-			}
-		}
-
-		return FoundActor;
+		ActorSelection_DEPRECATED = EPCGActorSelection::ByTag;
+		ActorSelectionTag_DEPRECATED = NAME_None;
+		ActorSelectionName_DEPRECATED = NAME_None;
+		ActorSelectionClass_DEPRECATED = TSubclassOf<AActor>{};
+		ActorFilter_DEPRECATED = EPCGActorFilter::Self;
+		bIncludeChildren_DEPRECATED = false;
 	}
 }
 
@@ -196,7 +66,6 @@ FPCGElementPtr UPCGPropertyToParamDataSettings::CreateElement() const
 	return MakeShared<FPCGPropertyToParamDataElement>();
 }
 
-
 bool FPCGPropertyToParamDataElement::ExecuteInternal(FPCGContext* Context) const
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FPCGPropertyToParamDataElement::Execute);
@@ -209,23 +78,28 @@ bool FPCGPropertyToParamDataElement::ExecuteInternal(FPCGContext* Context) const
 	// Early out if arguments are not specified
 	if (Settings->PropertyName == NAME_None || (Settings->bSelectComponent && !Settings->ComponentClass))
 	{
-		PCGE_LOG(Error, "Some parameters are missing, abort.");
+		PCGE_LOG(Warning, GraphAndLog, LOCTEXT("ParametersMissing", "Some parameters are missing, aborting"));
 		return true;
 	}
 
+#if !WITH_EDITOR
 	// If we have no output connected, nothing to do
+	// Optimization possibly only in non-editor builds, otherwise we could poison the input-driven cache
 	if (!Context->Node || !Context->Node->IsOutputPinConnected(PCGPinConstants::DefaultOutputLabel))
 	{
-		PCGE_LOG(Verbose, "Node is not connected, nothing to do");
+		PCGE_LOG(Verbose, LogOnly, LOCTEXT("UnconnectedNode", "Node is not connected, nothing to do"));
 		return true;
 	}
+#endif
 
 	// First find the actor depending on the selection
-	AActor* FoundActor = PCGPropertyToParamDataHelpers::FindActor(*Context);
+	UPCGComponent* OriginalComponent = UPCGBlueprintHelpers::GetOriginalComponent(*Context);
+	auto NoBoundsCheck = [](const AActor*) -> bool { return true; };
+	AActor* FoundActor = PCGActorSelector::FindActor(Settings->ActorSelector, OriginalComponent, NoBoundsCheck);
 
 	if (!FoundActor)
 	{
-		PCGE_LOG(Error, "No matching actor was found.");
+		PCGE_LOG(Error, GraphAndLog, LOCTEXT("NoActorFound", "No matching actor was found"));
 		return true;
 	}
 
@@ -236,7 +110,7 @@ bool FPCGPropertyToParamDataElement::ExecuteInternal(FPCGContext* Context) const
 		ObjectToInspect = FoundActor->GetComponentByClass(Settings->ComponentClass);
 		if (!ObjectToInspect)
 		{
-			PCGE_LOG(Error, "Component doesn't exist in the found actor.");
+			PCGE_LOG(Error, GraphAndLog, LOCTEXT("ComponentDoesNotExist", "Component does not exist in the found actor"));
 			return true;
 		}
 	}
@@ -245,7 +119,65 @@ bool FPCGPropertyToParamDataElement::ExecuteInternal(FPCGContext* Context) const
 	FProperty* Property = FindFProperty<FProperty>(ObjectToInspect->GetClass(), Settings->PropertyName);
 	if (!Property)
 	{
-		PCGE_LOG(Error, "Property doesn't exist in the found actor.");
+		PCGE_LOG(Error, GraphAndLog, LOCTEXT("PropertyDoesNotExist", "Property does not exist in the found actor"));
+		return true;
+	}
+
+	using ExtractablePropertyTuple = TTuple<FName, const void*, const FProperty*>;
+	TArray<ExtractablePropertyTuple> ExtractableProperties;
+
+	// Special case where the property is a struct/object, that is not supported by our metadata, we will try to break it down to multiple attributes in the resulting param data, if asked.
+	if (!PCGAttributeAccessorHelpers::IsPropertyAccessorSupported(Property) && (Property->IsA<FStructProperty>() || Property->IsA<FObjectProperty>()) && Settings->bExtractObjectAndStruct)
+	{
+		UScriptStruct* UnderlyingStruct = nullptr;
+		UClass* UnderlyingClass = nullptr;
+		const void* ObjectAddress = nullptr;
+
+		if (FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+		{
+			UnderlyingStruct = StructProperty->Struct;
+			ObjectAddress = StructProperty->ContainerPtrToValuePtr<void>(ObjectToInspect);
+		}
+		else if (FObjectProperty* ObjectProperty = CastField<FObjectProperty>(Property))
+		{
+			UnderlyingClass = ObjectProperty->PropertyClass;
+			ObjectAddress = ObjectProperty->GetObjectPropertyValue_InContainer(ObjectToInspect);
+		}
+		
+		check(UnderlyingStruct || UnderlyingClass);
+		check(ObjectAddress);
+
+		// Re-use code from overridable params
+		// Limit ourselves to not recurse into more structs.
+		PCGSettingsHelpers::FPCGGetAllOverridableParamsConfig Config;
+		Config.bUseSeed = true;
+		Config.bExcludeSuperProperties = true;
+		Config.MaxStructDepth = 0;
+		TArray<FPCGSettingsOverridableParam> AllChildProperties = UnderlyingStruct ? PCGSettingsHelpers::GetAllOverridableParams(UnderlyingStruct, Config) : PCGSettingsHelpers::GetAllOverridableParams(UnderlyingClass, Config);
+
+		for (const FPCGSettingsOverridableParam& Param : AllChildProperties)
+		{
+			if (ensure(!Param.PropertiesNames.IsEmpty()))
+			{
+				const FName ChildPropertyName = Param.PropertiesNames[0];
+				if (const FProperty* ChildProperty = (UnderlyingStruct ? UnderlyingStruct->FindPropertyByName(ChildPropertyName) : UnderlyingClass->FindPropertyByName(ChildPropertyName)))
+				{
+					// We use authored name as attribute name to avoid issue with noisy property names, like in UUserDefinedStructs, where some random number is appended to the property name.
+					// By default, it will just return the property name anyway.
+					const FString AuthoredName = UnderlyingStruct ? UnderlyingStruct->GetAuthoredNameForField(ChildProperty) : UnderlyingClass->GetAuthoredNameForField(ChildProperty);
+					ExtractableProperties.Emplace(FName(AuthoredName), ObjectAddress, ChildProperty);
+				}
+			}
+		}
+	}
+	else
+	{
+		ExtractableProperties.Emplace(Settings->OutputAttributeName, ObjectToInspect, Property);
+	}
+
+	if (ExtractableProperties.IsEmpty())
+	{
+		PCGE_LOG(Error, GraphAndLog, LOCTEXT("NoPropertiesFound", "No properties found to extract"));
 		return true;
 	}
 
@@ -254,16 +186,31 @@ bool FPCGPropertyToParamDataElement::ExecuteInternal(FPCGContext* Context) const
 	UPCGMetadata* Metadata = ParamData->MutableMetadata();
 	check(Metadata);
 	PCGMetadataEntryKey EntryKey = Metadata->AddEntry();
+	bool bValidOperation = false;
 
-	if (!Metadata->SetAttributeFromProperty(Settings->OutputAttributeName, EntryKey, ObjectToInspect, Property, /*bCreate=*/ true))
+	for (ExtractablePropertyTuple& ExtractableProperty : ExtractableProperties)
 	{
-		PCGE_LOG(Error, "Error while creating an attribute. Either the property type is not supported by PCG or attribute creation failed.");
-		return true;
+		const FName AttributeName = ExtractableProperty.Get<0>();
+		const void* ContainerPtr = ExtractableProperty.Get<1>();
+		const FProperty* FinalProperty = ExtractableProperty.Get<2>();
+
+		if (!Metadata->SetAttributeFromDataProperty(AttributeName, EntryKey, ContainerPtr, FinalProperty, /*bCreate=*/ true))
+		{
+			PCGE_LOG(Error, GraphAndLog, FText::Format(LOCTEXT("ErrorCreatingAttribute", "Error while creating an attribute for property '{0}'. Either the property type is not supported by PCG or attribute creation failed."), FText::FromString(FinalProperty->GetName())));
+			continue;
+		}
+
+		bValidOperation = true;
 	}
 
-	TArray<FPCGTaggedData>& Outputs = Context->OutputData.TaggedData;
-	FPCGTaggedData& Output = Outputs.Emplace_GetRef();
-	Output.Data = ParamData;
+	if (bValidOperation)
+	{
+		TArray<FPCGTaggedData>& Outputs = Context->OutputData.TaggedData;
+		FPCGTaggedData& Output = Outputs.Emplace_GetRef();
+		Output.Data = ParamData;
+	}
 
 	return true;
 }
+
+#undef LOCTEXT_NAMESPACE

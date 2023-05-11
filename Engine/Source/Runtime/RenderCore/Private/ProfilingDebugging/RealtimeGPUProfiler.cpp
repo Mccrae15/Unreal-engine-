@@ -55,22 +55,6 @@ static TAutoConsoleVariable<int> CVarGPUStatsChildTimesIncluded(
 
 #if WANTS_DRAW_MESH_EVENTS
 
-void FDrawEvent::Start(FRHIComputeCommandList& InRHICmdList, FColor Color, const TCHAR* Fmt, ...)
-{
-	check(IsInParallelRenderingThread() || IsInRHIThread());
-	{
-		va_list ptr;
-		va_start(ptr, Fmt);
-		TCHAR TempStr[256];
-		// Build the string in the temp buffer
-		FCString::GetVarArgs(TempStr, UE_ARRAY_COUNT(TempStr), Fmt, ptr);
-		InRHICmdList.PushEvent(TempStr, Color);
-		RHICmdList = &InRHICmdList;
-		va_end(ptr);
-	}
-	bStarted = true;
-}
-
 void FDrawEvent::Start(FRHIComputeCommandList* InRHICmdList, FColor Color, const TCHAR* Fmt, ...)
 {
 	bool bIsRenderingOrRHIThread = IsInParallelRenderingThread() || IsInRHIThread();
@@ -217,7 +201,7 @@ public:
 		{
 			if (StartResultMicroseconds[GPUIndex] == InvalidQueryResult)
 			{
-				if (!RHICmdList.GetRenderQueryResult(StartQuery.GetQuery(), StartResultMicroseconds[GPUIndex], false, GPUIndex))
+				if (!RHIGetRenderQueryResult(StartQuery.GetQuery(), StartResultMicroseconds[GPUIndex], false, GPUIndex))
 				{
 					StartResultMicroseconds[GPUIndex] = InvalidQueryResult;
 				}
@@ -225,7 +209,7 @@ public:
 
 			if (EndResultMicroseconds[GPUIndex] == InvalidQueryResult)
 			{
-				if (!RHICmdList.GetRenderQueryResult(EndQuery.GetQuery(), EndResultMicroseconds[GPUIndex], false, GPUIndex))
+				if (!RHIGetRenderQueryResult(EndQuery.GetQuery(), EndResultMicroseconds[GPUIndex], false, GPUIndex))
 				{
 					EndResultMicroseconds[GPUIndex] = InvalidQueryResult;
 				}
@@ -972,11 +956,6 @@ FRealtimeGPUProfiler::FRealtimeGPUProfiler()
 	}
 }
 
-void FRealtimeGPUProfiler::Release()
-{
-	Cleanup();
-}
-
 void FRealtimeGPUProfiler::Cleanup()
 {
 	for (int Index = 0; Index < Frames.Num(); Index++)
@@ -1146,48 +1125,41 @@ void FRealtimeGPUProfiler::PopEventOverride()
 	}
 }
 
-void FRealtimeGPUProfiler::PushStat(FRHICommandListImmediate& RHICmdList, const FName& Name, const FName& StatName, const TCHAR* Description, FRHIDrawCallsStatPtr InNumDrawCallsPtr)
+void FRealtimeGPUProfiler::PushStat(FRHICommandListImmediate& RHICmdList, const FName& Name, const FName& StatName, const TCHAR* Description, FDrawCallCategoryName& Category)
 {
-	PushEvent(RHICmdList.GetGPUMask(), Name, StatName, Description).Submit(RHICmdList);
-
-	if (InNumDrawCallsPtr && (**InNumDrawCallsPtr) != -1)
+	if (Category.ShouldCountDraws())
 	{
-		RHICmdList.EnqueueLambda([InNumDrawCallsPtr](FRHICommandListImmediate&)
-		{
-			RHISetCurrentNumDrawCallPtr(InNumDrawCallsPtr);
-		});
+		RHICmdList.SetStatsCategory(&Category);
 	}
+
+	PushEvent(RHICmdList.GetGPUMask(), Name, StatName, Description).Submit(RHICmdList);
 }
 
-void FRealtimeGPUProfiler::PopStat(FRHICommandListImmediate& RHICmdList, FRHIDrawCallsStatPtr InNumDrawCallsPtr)
+void FRealtimeGPUProfiler::PopStat(FRHICommandListImmediate& RHICmdList, FDrawCallCategoryName& Category)
 {
 	PopEvent().Submit(RHICmdList);
 
-	if (InNumDrawCallsPtr && (**InNumDrawCallsPtr) != -1)
+	if (Category.ShouldCountDraws())
 	{
-		RHICmdList.EnqueueLambda([](FRHICommandListImmediate&)
-		{
-			RHISetCurrentNumDrawCallPtr(&GCurrentNumDrawCallsRHI);
-		});
+		RHICmdList.SetStatsCategory(nullptr);
 	}
 }
 
 /*-----------------------------------------------------------------------------
 FScopedGPUStatEvent
 -----------------------------------------------------------------------------*/
-void FScopedGPUStatEvent::Begin(FRHICommandListBase& InRHICmdList, const FName& Name, const FName& StatName, const TCHAR* Description, FRHIDrawCallsStatPtr InNumDrawCallsPtr)
+void FScopedGPUStatEvent::Begin(FRHICommandListBase& InRHICmdList, const FName& Name, const FName& StatName, const TCHAR* Description, FDrawCallCategoryName& InCategory)
 {
 	if (!AreGPUStatsEnabled())
 	{
 		return;
 	}
 
-	// Non-immediate command lists are not supported (silently fail)
-	if (InRHICmdList.IsImmediate())
+	if (InRHICmdList.IsImmediate() && EnumHasAnyFlags(InRHICmdList.GetPipeline(), ERHIPipeline::Graphics))
 	{
-		NumDrawCallsPtr = InNumDrawCallsPtr;
+		Category = &InCategory;
 		RHICmdList = &InRHICmdList;
-		FRealtimeGPUProfiler::Get()->PushStat(InRHICmdList.GetAsImmediate(), Name, StatName, Description, InNumDrawCallsPtr);
+		FRealtimeGPUProfiler::Get()->PushStat(InRHICmdList.GetAsImmediate(), Name, StatName, Description, *Category);
 	}
 }
 
@@ -1200,7 +1172,7 @@ void FScopedGPUStatEvent::End()
 	if (RHICmdList != nullptr)
 	{
 		// Command list is initialized only if it is immediate during Begin() and GetAsImmediate() also internally checks this.
-		FRealtimeGPUProfiler::Get()->PopStat(RHICmdList->GetAsImmediate(), NumDrawCallsPtr);
+		FRealtimeGPUProfiler::Get()->PopStat(RHICmdList->GetAsImmediate(), *Category);
 	}
 }
 #endif // HAS_GPU_STATS

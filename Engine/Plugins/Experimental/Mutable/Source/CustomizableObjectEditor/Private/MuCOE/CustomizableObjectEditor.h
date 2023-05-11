@@ -2,38 +2,17 @@
 
 #pragma once
 
-#include "Containers/Array.h"
-#include "Containers/EnumAsByte.h"
-#include "Containers/Map.h"
-#include "Containers/UnrealString.h"
-#include "Delegates/Delegate.h"
-#include "EdGraph/EdGraphNode.h"
 #include "EditorUndoClient.h"
-#include "Engine/TextureDefines.h"
 #include "GraphEditor.h"
-#include "Internationalization/Text.h"
-#include "Math/Color.h"
-#include "Math/UnrealMathSSE.h"
-#include "Math/Vector.h"
-#include "Math/Vector2D.h"
 #include "Misc/NotifyHook.h"
-#include "MuCO/CustomizableObjectParameterTypeDefinitions.h"
 #include "MuCOE/CustomizableObjectCompiler.h"
 #include "MuCOE/ICustomizableObjectEditor.h"
-#include "PixelFormat.h"
-#include "Stats/Stats2.h"
-#include "Templates/SharedPointer.h"
 #include "TickableEditorObject.h"
-#include "Toolkits/IToolkit.h"
-#include "Types/SlateEnums.h"
-#include "UObject/GCObject.h"
-#include "UObject/NameTypes.h"
-#include "UObject/Object.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/ObjectPtr.h"
-#include "UObject/UObjectGlobals.h"
 
 #include "CustomizableObjectEditor.generated.h"
+
+enum class ECustomizableObjectProjectorType : uint8;
+namespace ESelectInfo { enum Type : int; }
 
 class FCustomizableObjectEditorViewportClient;
 class FProperty;
@@ -209,7 +188,6 @@ public:
 	virtual bool CanPasteNodes() const override;
 	virtual void PasteNodesHere(const FVector2D& Location) override;
 	virtual void SelectNode(const UCustomizableObjectNode* Node) override;
-	virtual void SetPoseAsset(class UPoseAsset* PoseAssetParameter) override;
 	
 	/** Called to undo the last action */
 	void UndoGraphAction();
@@ -434,9 +412,6 @@ private:
 	TSharedPtr<SGraphEditor> GraphEditor;
 	TSharedPtr<class IDetailsView> GraphNodeDetailsView;
 
-	/** This splitter can be used to add more widgets outside the property editor of the currently selected node. */
-	TSharedPtr<class SSplitter> NodeDetailsSplitter;
-
 	/** This widget shows the layout blocks and they can be edited. It is kept alive for some problems re-registering toolbar commands.*/
 	TSharedPtr<class SCustomizableObjectNodeLayoutBlocksEditor> LayoutBlocksEditor;
 	TSharedPtr<class SCustomizableObjectNodeLayoutBlocksSelector> LayoutBlocksSelector;
@@ -499,9 +474,6 @@ private:
 	/** Used together with LaunchRefreshMaterialInAllChildren as a timer to launch the RefreshMaterialNodesInAllChildren method
 	* which will perform the task */
 	float PendingTimeRefreshMaterialInAllChildren = 2.0;
-
-	/** Pose asset when doing drag and drop of an UPoseAsset to the viewport */
-	UPoseAsset* PoseAsset;
 
 	/** Texture Analyzer table widget which shows the information of the transient textures used in the customizable object instance */
 	TSharedPtr<class SCustomizableObjecEditorTextureAnalyzer> TextureAnalyzer;

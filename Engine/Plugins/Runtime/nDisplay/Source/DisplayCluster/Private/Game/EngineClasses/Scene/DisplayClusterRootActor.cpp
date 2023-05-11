@@ -2,6 +2,7 @@
 
 #include "DisplayClusterRootActor.h"
 
+#include "Async/ParallelFor.h"
 #include "Components/SceneComponent.h"
 #include "Components/DisplayClusterOriginComponent.h"
 #include "Components/DisplayClusterCameraComponent.h"
@@ -12,6 +13,7 @@
 #include "Components/DisplayClusterICVFXCameraComponent.h"
 #include "Components/DisplayClusterSceneComponentSyncThis.h"
 #include "CineCameraComponent.h"
+#include "DisplayClusterChromakeyCardActor.h"
 #include "ProceduralMeshComponent.h"
 
 #include "DisplayClusterLightCardActor.h"
@@ -22,7 +24,6 @@
 #include "IDisplayClusterConfiguration.h"
 #include "DisplayClusterConfigurationTypes.h"
 
-#include "DisplayClusterPlayerInput.h"
 #include "Blueprints/DisplayClusterBlueprint.h"
 #include "Blueprints/DisplayClusterBlueprintGeneratedClass.h"
 
@@ -43,20 +44,20 @@
 #include "Game/EngineClasses/Scene/DisplayClusterRootActorInitializer.h"
 
 #include "Algo/MaxElement.h"
+#include "Components/DisplayClusterChromakeyCardStageActorComponent.h"
+#include "Components/DisplayClusterStageActorComponent.h"
+#include "Components/DisplayClusterStageGeometryComponent.h"
+#include "UObject/Package.h"
+
 
 #if WITH_EDITOR
 #include "IConcertSyncClientModule.h"
 #include "IConcertClientWorkspace.h"
 #include "IConcertSyncClient.h"
+
+#include "AssetToolsModule.h"
 #endif
 
-static TAutoConsoleVariable<int32> CVarShowVisualizationComponents(
-	TEXT("nDisplay.render.show.visualizationcomponents"),
-	1,
-	TEXT("Whether to show or hide visualization mesh components \n")
-	TEXT("0 : Hides visualization components \n")
-	TEXT("1 : Shows visualization components\n")
-);
 
 ADisplayClusterRootActor::ADisplayClusterRootActor(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -81,6 +82,8 @@ ADisplayClusterRootActor::ADisplayClusterRootActor(const FObjectInitializer& Obj
 	// A helper component to trigger nDisplay Tick() during Tick phase
 	SyncTickComponent = CreateDefaultSubobject<UDisplayClusterSyncTickComponent>(TEXT("DisplayClusterSyncTick"));
 
+	StageGeometryComponent = CreateDefaultSubobject<UDisplayClusterStageGeometryComponent>(TEXT("DisplayClusterStageGeometry"));
+
 	// Default nDisplay camera
 	DefaultViewPoint = CreateDefaultSubobject<UDisplayClusterCameraComponent>(TEXT("DefaultViewPoint"));
 	DefaultViewPoint->AttachToComponent(GetRootComponent(), FAttachmentTransformRules::KeepRelativeTransform);
@@ -94,6 +97,9 @@ ADisplayClusterRootActor::ADisplayClusterRootActor(const FObjectInitializer& Obj
 	bFindCameraComponentWhenViewTarget = false;
 	bReplicates = false;
 	SpawnCollisionHandlingMethod = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
+
+	// Enabled by default to avoid being active on Stage
+	SetActorHiddenInGame(true);
 
 #if WITH_EDITOR
 	Constructor_Editor();
@@ -393,14 +399,9 @@ int ADisplayClusterRootActor::GetInnerFrustumPriority(const FString& InnerFrustu
 }
 
 template <typename TComp>
-void ImplCollectChildVisualizationOrHiddenComponents(TSet<FPrimitiveComponentId>& OutPrimitives, TComp* pComp, bool bCollectVisualizationComponents = true, bool bCollectHiddenComponents = true)
+void ImplCollectChildHiddenComponents(TSet<FPrimitiveComponentId>& OutPrimitives, TComp* pComp)
 {
 #if WITH_EDITOR
-
-	if (!bCollectVisualizationComponents && !bCollectHiddenComponents)
-	{
-		return;
-	}
 
 	USceneComponent* SceneComp = Cast<USceneComponent>(pComp);
 	if (SceneComp)
@@ -409,8 +410,7 @@ void ImplCollectChildVisualizationOrHiddenComponents(TSet<FPrimitiveComponentId>
 		SceneComp->GetChildrenComponents(false, Childrens);
 		for (USceneComponent* ChildIt : Childrens)
 		{
-			if ((bCollectVisualizationComponents && ChildIt->IsVisualizationComponent()) 
-				|| (bCollectHiddenComponents && ChildIt->bHiddenInGame))
+			if (ChildIt->bHiddenInGame)
 			{
 				UPrimitiveComponent* PrimComp = Cast<UPrimitiveComponent>(ChildIt);
 				if (PrimComp)
@@ -448,7 +448,7 @@ void ADisplayClusterRootActor::GetTypedPrimitives(TSet<FPrimitiveComponentId>& O
 
 						if (bCollectChildrenVisualizationComponent)
 						{
-							ImplCollectChildVisualizationOrHiddenComponents(OutPrimitives, CompIt);
+							ImplCollectChildHiddenComponents(OutPrimitives, CompIt);
 						}
 						break;
 					}
@@ -464,7 +464,7 @@ void ADisplayClusterRootActor::GetTypedPrimitives(TSet<FPrimitiveComponentId>& O
 
 				if (bCollectChildrenVisualizationComponent)
 				{
-					ImplCollectChildVisualizationOrHiddenComponents(OutPrimitives, CompIt);
+					ImplCollectChildHiddenComponents(OutPrimitives, CompIt);
 				}
 			}
 
@@ -482,6 +482,8 @@ bool ADisplayClusterRootActor::FindPrimitivesByName(const TArray<FString>& InNam
 // Gather components not rendered in game
 bool ADisplayClusterRootActor::GetHiddenInGamePrimitives(TSet<FPrimitiveComponentId>& OutPrimitives)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(DCRootActor_GetHiddenInGamePrimitives);
+
 	check(IsInGameThread());
 
 	OutPrimitives.Empty();
@@ -502,8 +504,21 @@ bool ADisplayClusterRootActor::GetHiddenInGamePrimitives(TSet<FPrimitiveComponen
 	GetTypedPrimitives<UDisplayClusterScreenComponent>(OutPrimitives);
 
 #if WITH_EDITOR
-
-	const bool bHideVisualizationComponents = !CVarShowVisualizationComponents.GetValueOnGameThread();
+	// Always hide preview meshes for preview
+	{
+		TArray<UDisplayClusterPreviewComponent*> CurrentPreviewComponents;
+		GetComponents(CurrentPreviewComponents);
+		for (UDisplayClusterPreviewComponent* PreviewComponentIt : CurrentPreviewComponents)
+		{
+			if (UMeshComponent* PreviewMesh = PreviewComponentIt->GetPreviewMesh())
+			{
+				if(UPrimitiveComponent* PrimComp = Cast<UPrimitiveComponent>(PreviewMesh))
+				{
+					OutPrimitives.Add(PrimComp->ComponentId);
+				}
+			}
+		}
+	}
 
 	// Hide visualization and hidden components from RootActor
 	{
@@ -512,40 +527,111 @@ bool ADisplayClusterRootActor::GetHiddenInGamePrimitives(TSet<FPrimitiveComponen
 
 		for (UPrimitiveComponent* CompIt : PrimitiveComponents)
 		{
-			if ((bHideVisualizationComponents && CompIt->IsVisualizationComponent()) || CompIt->bHiddenInGame)
+			if (CompIt->bHiddenInGame)
 			{
 				OutPrimitives.Add(CompIt->ComponentId);
 			}
 
-			ImplCollectChildVisualizationOrHiddenComponents(OutPrimitives, CompIt, bHideVisualizationComponents);
+			ImplCollectChildHiddenComponents(OutPrimitives, CompIt);
 		}
 	}
 
 	// Hide visualization and hidden components from scene
-	if (const UWorld* CurrentWorld = GetWorld())
+
+	const UWorld* CurrentWorld = GetWorld();
+
+	if (CurrentWorld && !CurrentWorld->IsGameWorld()) // Note: We should only have to do this for preview in editor (not already game worlds).
 	{
-		// Iterate over all actors, looking for editor components.
-		for (const TWeakObjectPtr<AActor>& WeakActor : FActorRange(CurrentWorld))
+		TArray<AActor*> Actors;
 		{
-			if (AActor* Actor = WeakActor.Get())
+			int32 NumActors = 0;
+
+			for (const ULevel* Level : CurrentWorld->GetLevels())
 			{
-				// do not render hidden in game actors
-				const bool bActorHideInGame = Actor->IsHidden();
-
-				TArray<UPrimitiveComponent*> PrimitiveComponents;
-				Actor->GetComponents(PrimitiveComponents);
-
-				for (UPrimitiveComponent* PrimComp : PrimitiveComponents)
+				if (Level && Level->bIsVisible)
 				{
-					if ((bHideVisualizationComponents && PrimComp->IsVisualizationComponent()) 
-						|| ((bActorHideInGame || PrimComp->bHiddenInGame) && !PrimComp->bCastHiddenShadow))
-					{
-						OutPrimitives.Add(PrimComp->ComponentId);
-					}
-
-					ImplCollectChildVisualizationOrHiddenComponents(OutPrimitives, PrimComp, bHideVisualizationComponents);
+					NumActors += Level->Actors.Num();
 				}
 			}
+
+			// Presize the array
+			Actors.Reserve(NumActors);
+
+			// Fill the array
+			for (const ULevel* Level : CurrentWorld->GetLevels())
+			{
+				if (Level && Level->bIsVisible)
+				{
+					Actors.Append(Level->Actors);
+				}
+			}
+		}
+
+		// Create as many threads as cores, minus an arbitrary number of reserved cores to avoid starving other subsystems
+		int32 NumIterThreads;
+		{
+			constexpr int32 ReservedCores = 4;
+			static const int32 NumberOfCores = FPlatformMisc::NumberOfCores();
+
+			NumIterThreads = NumberOfCores - ReservedCores;
+
+			// Make sure there are enough actors to make it worth a new thread
+			constexpr int32 MinActorsPerThread = 64;
+			NumIterThreads = FMath::Min(NumIterThreads, Actors.Num() / MinActorsPerThread);
+
+			// There should be at least one thread
+			NumIterThreads = FMath::Max(NumIterThreads, 1);
+		}
+
+		// Allocate primitive sets for each thread
+		TArray<TSet<FPrimitiveComponentId>> PrimitiveComponentsArray;
+		PrimitiveComponentsArray.AddDefaulted(NumIterThreads);
+
+		// Start the iteration parallel threads
+		ParallelFor(NumIterThreads, [NumIterThreads, CurrentWorld, &Actors, &PrimitiveComponentsArray](int32 Index)
+			{
+				// Using inline allocator for efficiency
+				constexpr int32 MaxExpectedComponentsPerActor = 64;
+				TArray<UPrimitiveComponent*, TInlineAllocator<MaxExpectedComponentsPerActor>> PrimitiveComponents;
+
+				// The thread index is our starting actor index
+				int32 ActorIdx = Index;
+
+				while (ActorIdx < Actors.Num())
+				{
+					const AActor* Actor = Actors[ActorIdx];
+
+					if (IsValid(Actor))
+					{
+						Actor->GetComponents(PrimitiveComponents);
+
+						for (UPrimitiveComponent* PrimComp : PrimitiveComponents)
+						{
+							if (((Actor->IsHidden() || PrimComp->bHiddenInGame) && !PrimComp->bCastHiddenShadow)
+#if WITH_EDITOR
+								|| (GIsEditor && PrimComp->bHiddenInSceneCapture /* We are running as a scene capture for preview */)
+#endif
+								)
+							{
+								PrimitiveComponentsArray[Index].Add(PrimComp->ComponentId);
+							}
+
+							ImplCollectChildHiddenComponents(PrimitiveComponentsArray[Index], PrimComp);
+						}
+
+						// Empty w/o ever shrinking, for efficiency
+						PrimitiveComponents.Empty(PrimitiveComponents.Max());
+					}
+
+					// Jump to every other NumIterThreads actors.
+					ActorIdx += NumIterThreads;
+				}
+			});
+
+		// Join all the found primitives arrays
+		for (const TSet<FPrimitiveComponentId>& PrimitiveComponents : PrimitiveComponentsArray)
+		{
+			OutPrimitives.Append(PrimitiveComponents);
 		}
 	}
 
@@ -575,6 +661,8 @@ void ADisplayClusterRootActor::InitializeRootActor()
 	{
 		ViewportManager = MakeUnique<FDisplayClusterViewportManager>();
 	}
+
+	StageGeometryComponent->Invalidate();
 
 	// Packaged, PIE and -game runtime
 	if (IsRunningGameOrPIE())
@@ -633,68 +721,152 @@ bool ADisplayClusterRootActor::BuildHierarchy()
 	return true;
 }
 
-void ADisplayClusterRootActor::UpdateLightCardPositions()
+void ADisplayClusterRootActor::SetLightCardOwnership()
 {
-	// Find a view origin to use as the transform "anchor" of each light card. At the moment, assume the first view origin component
-	// found is the correct view origin (the same assumption is made in the light card editor). If no view origin is found, use the root component
-	USceneComponent* ViewOriginComponent = GetRootComponent();
+	TRACE_CPUPROFILER_EVENT_SCOPE(DCRootActor_SetLightCardOwnership);
 
-	TArray<UDisplayClusterCameraComponent*> ViewOriginComponents;
-	GetComponents(ViewOriginComponents);
-
-	if (ViewOriginComponents.Num())
-	{
-		ViewOriginComponent = ViewOriginComponents[0];
-	}
-
-	const FVector Location = ViewOriginComponent ? ViewOriginComponent->GetComponentLocation() : GetActorLocation();
-	const FRotator Rotation = GetActorRotation();
-
-	// Iterate over all the light cards referenced in the root actor's config data and update their location and rotation to match the view origin
 	if (UDisplayClusterConfigurationData* CurrentData = GetConfigData())
 	{
-		FDisplayClusterConfigurationICVFX_VisibilityList& LightCards = CurrentData->StageSettings.Lightcard.ShowOnlyList;
+		FDisplayClusterConfigurationICVFX_VisibilityList& LightCardVisibilityList = CurrentData->StageSettings.Lightcard.ShowOnlyList;
+		LightCardVisibilityList.AutoAddedActors.Reset();
+		
+		TArray<UDisplayClusterICVFXCameraComponent*> ICVFXComponents;
+		GetComponents(ICVFXComponents);
 
-		for (const TSoftObjectPtr<AActor>& Actor : LightCards.Actors)
+		// Iterate over the VisibilityList.Actors array, looking for legacy cards and set the owner so the
+		// card can look the root actor up in certain situations, like adjusting labels when running as -game.
 		{
-			ADisplayClusterLightCardActor* LightCardActor = Actor.IsValid() ? Cast<ADisplayClusterLightCardActor>(Actor.Get()) : nullptr;
-			if (LightCardActor)
+			for (const TSoftObjectPtr<AActor>& Actor : LightCardVisibilityList.Actors)
 			{
-				// Set the owner so the light card actor can look the root actor up in certain situations, like adjusting labels
-				// when running as -game
-				LightCardActor->SetRootActorOwner(this);
-				if (LightCardActor->bLockToOwningRootActor)
+				if (ADisplayClusterLightCardActor* LightCardActor = Actor.IsValid() ? Cast<ADisplayClusterLightCardActor>(Actor.Get()) : nullptr)
 				{
-					LightCardActor->SetActorLocation(Location);
-					LightCardActor->SetActorRotation(Rotation);
+					LightCardActor->SetWeakRootActorOwner(this);
+				}
+			}
+		
+			for (UDisplayClusterICVFXCameraComponent* Camera : ICVFXComponents)
+			{
+				FDisplayClusterConfigurationICVFX_VisibilityList& ChromakeyCards = Camera->CameraSettings.Chromakey.ChromakeyRenderTexture.ShowOnlyList;
+				ChromakeyCards.AutoAddedActors.Reset();
+				
+				for (const TSoftObjectPtr<AActor>& Actor : ChromakeyCards.Actors)
+				{
+					if (ADisplayClusterChromakeyCardActor* ChromakeyCardActor = Actor.IsValid() ? Cast<ADisplayClusterChromakeyCardActor>(Actor.Get()) : nullptr)
+					{
+						ChromakeyCardActor->SetWeakRootActorOwner(this);
+					}
 				}
 			}
 		}
 
-		if (LightCards.ActorLayers.Num())
+		// Next iterate over all light card world actors looking for 5.2+ light cards that determine the root actor
+		// they belong to, as well as handle legacy layer operations.
+		if (const UWorld* World = GetWorld())
 		{
-			if (UWorld* World = GetWorld())
+			for (TActorIterator<ADisplayClusterLightCardActor> Iter(World); Iter; ++Iter)
 			{
-				for (TActorIterator<ADisplayClusterLightCardActor> Iter(World); Iter; ++Iter)
+				ADisplayClusterLightCardActor* LightCardActor = *Iter;
+				if (ADisplayClusterChromakeyCardActor* ChromakeyCardActor = Cast<ADisplayClusterChromakeyCardActor>(LightCardActor))
 				{
-					ADisplayClusterLightCardActor* LightCardActor = *Iter;
-					for (const FActorLayer& ActorLayer : LightCards.ActorLayers)
+					for (UDisplayClusterICVFXCameraComponent* Camera : ICVFXComponents)
 					{
-						if (LightCardActor->Layers.Contains(ActorLayer.Name))
+						FDisplayClusterConfigurationICVFX_VisibilityList& ChromakeyCards = Camera->CameraSettings.Chromakey.ChromakeyRenderTexture.ShowOnlyList;
+
+						const UDisplayClusterChromakeyCardStageActorComponent* ChromakeyStageActor = Cast<UDisplayClusterChromakeyCardStageActorComponent>(ChromakeyCardActor->GetStageActorComponent());
+						if (ChromakeyStageActor && ChromakeyStageActor->IsReferencedByICVFXCamera(Camera))
 						{
-							LightCardActor->SetRootActorOwner(this);
-							if (LightCardActor->bLockToOwningRootActor)
+							// 5.2+ chromakey cards
+							ChromakeyCards.AutoAddedActors.Add(ChromakeyCardActor);
+						}
+						else
+						{
+							// Legacy chromakey layers
+							for (const FActorLayer& ActorLayer : ChromakeyCards.ActorLayers)
 							{
-								LightCardActor->SetActorLocation(Location);
-								LightCardActor->SetActorRotation(Rotation);
+								if (ChromakeyCardActor->Layers.Contains(ActorLayer.Name))
+								{
+									ChromakeyCardActor->SetWeakRootActorOwner(this);
+									break;
+								}
 							}
-							break;
+						}
+					}
+				}
+				else
+				{
+					if (LightCardActor->GetStageActorComponent() &&
+						LightCardActor->GetStageActorComponent()->GetRootActor() == this)
+					{
+						// 5.2+ light cards
+						LightCardVisibilityList.AutoAddedActors.Add(LightCardActor);
+					}
+					else if (LightCardVisibilityList.ActorLayers.Num() > 0)
+					{
+						// Legacy light card layers
+						for (const FActorLayer& ActorLayer : LightCardVisibilityList.ActorLayers)
+						{
+							if (LightCardActor->Layers.Contains(ActorLayer.Name))
+							{
+								LightCardActor->SetWeakRootActorOwner(this);
+								break;
+							}
 						}
 					}
 				}
 			}
 		}
 	}
+}
+
+bool ADisplayClusterRootActor::GetFlushPositionAndNormal(const FVector& WorldPosition, FVector& OutPosition, FVector& OutNormal)
+{
+	const FVector StagePosition = GetCommonViewPoint()->GetComponentLocation();
+	const FVector Direction = (WorldPosition - StagePosition).GetSafeNormal();
+
+	float Distance;
+	FVector Normal;
+
+	if (StageGeometryComponent->GetStageDistanceAndNormal(Direction, Distance, Normal))
+	{
+		OutPosition = Distance * Direction + GetCommonViewPoint()->GetComponentLocation();
+
+		// Normal is returned in the local "radial basis", meaning that the x axis of the basis points radially inwards.
+		// Convert this to world coordinates using the radial basis made from the world direction (no need to account
+		// for root actor rotation here since Direction is already in world coordinates)
+		const FMatrix RadialBasis = FRotationMatrix::MakeFromX(Direction);
+		OutNormal = RadialBasis.TransformVector(Normal);
+		return true;
+	}
+
+	return false;
+}
+
+bool ADisplayClusterRootActor::MakeStageActorFlushToWall(const TScriptInterface<IDisplayClusterStageActor>& StageActor, double DesiredOffsetFromFlush)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(DCRootActor_MakeStageActorFlushToWall);
+
+	if (StageActor.GetObject() && !StageActor->IsUVActor())
+	{
+		FVector Position;
+		FVector Normal;
+		if (GetFlushPositionAndNormal(StageActor->GetStageActorTransform().GetLocation(), Position, Normal))
+		{
+			const FTransform StageActorTransform = StageActor->GetOrigin();
+			const FVector LocalPosition = StageActorTransform.InverseTransformPosition(Position);
+			const FVector LocalNormal = FRotationMatrix::MakeFromX(LocalPosition.GetSafeNormal()).InverseTransformVector(StageActorTransform.InverseTransformVectorNoScale(Normal));
+			const FRotator Rotation = FRotationMatrix::MakeFromX(-LocalNormal).Rotator();
+			const float Distance = FMath::Max(FMath::Min(LocalPosition.Length(), StageGeometryComponent->GetStageBoundingRadius()) + DesiredOffsetFromFlush, 0);
+
+			StageActor->SetDistanceFromCenter(Distance);
+			StageActor->SetPitch(Rotation.Pitch);
+			StageActor->SetYaw(Rotation.Yaw);
+
+			StageActor->UpdateStageActorTransform();
+			return true;
+		}
+	}
+
+	return false;
 }
 
 bool ADisplayClusterRootActor::IsBlueprint() const
@@ -716,32 +888,6 @@ void ADisplayClusterRootActor::BeginPlay()
 
 	// Store current operation mode
 	OperationMode = GDisplayCluster->GetOperationMode();
-	if (OperationMode == EDisplayClusterOperationMode::Cluster)
-	{
-		FString SyncPolicyType;
-
-		// Read native input synchronization settings
-		IPDisplayClusterConfigManager* const ConfigMgr = GDisplayCluster->GetPrivateConfigMgr();
-		if (ConfigMgr)
-		{
-			UDisplayClusterConfigurationData* ConfigData = ConfigMgr->GetConfig();
-			if (ConfigData)
-			{
-				SyncPolicyType = ConfigData->Cluster->Sync.InputSyncPolicy.Type;
-				UE_LOG(LogDisplayClusterGame, Log, TEXT("Native input sync policy: %s"), *SyncPolicyType);
-			}
-		}
-
-		// Optionally activate native input synchronization
-		if (SyncPolicyType.Equals(DisplayClusterConfigurationStrings::config::cluster::input_sync::InputSyncPolicyReplicatePrimary, ESearchCase::IgnoreCase))
-		{
-			APlayerController* const PlayerController = GetWorld()->GetFirstPlayerController();
-			if (PlayerController)
-			{
-				PlayerController->PlayerInput = NewObject<UDisplayClusterPlayerInput>(PlayerController);
-			}
-		}
-	}
 
 	InitializeRootActor();
 }
@@ -801,13 +947,7 @@ void ADisplayClusterRootActor::Tick(float DeltaSeconds)
 	Tick_Editor(DeltaSeconds);
 #endif
 
-	if (UDisplayClusterConfigurationData* CurrentData = GetConfigData())
-	{
-		if (CurrentData->StageSettings.Lightcard.bEnable)
-		{
-			UpdateLightCardPositions();
-		}
-	}
+	SetLightCardOwnership();
 
 	Super::Tick(DeltaSeconds);
 }
@@ -832,6 +972,27 @@ void ADisplayClusterRootActor::PostActorCreated()
 #endif
 
 	InitializeRootActor();
+}
+
+void ADisplayClusterRootActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+#if WITH_EDITOR
+	EndPlay_Editor(EndPlayReason);
+#endif
+
+	Super::EndPlay(EndPlayReason);
+}
+
+void ADisplayClusterRootActor::Destroyed()
+{
+#if WITH_EDITOR
+	Destroyed_Editor();
+#endif
+
+	// Release viewport manager with resources immediatelly
+	ViewportManager.Reset();
+
+	Super::Destroyed();
 }
 
 void ADisplayClusterRootActor::BeginDestroy()
@@ -894,6 +1055,25 @@ static void PropagateDefaultMapToInstancedMap(const FMapProperty* MapProperty, U
 			ObjectToAdd = NewObject<UObject>(InstanceOwner, ArchetypeToUse->GetClass(),
 			ArchetypeToUse->GetFName(), RF_Transactional, ArchetypeToUse);
 		}
+#if WITH_EDITOR
+		else if (GIsTransacting)
+		{
+			// HACK: Projection policy parameters can become cleared when a VP is deleted, undone, redone, undone.
+			// The policy params are meant to only be set from the DCRA CDO, so resetting them back to the VP archetype is safe.
+			// @todo figure out how the parameters are being cleared between the redo/undo. No other properties seem to be impacted. 
+			if (UDisplayClusterConfigurationViewport* InstanceViewport = Cast<UDisplayClusterConfigurationViewport>(ObjectToAdd))
+			{
+				const UDisplayClusterConfigurationViewport* ArchetypeViewport = CastChecked<UDisplayClusterConfigurationViewport>(ArchetypeToUse);
+				if (InstanceViewport->ProjectionPolicy.Parameters.IsEmpty() && !ArchetypeViewport->ProjectionPolicy.Parameters.IsEmpty())
+				{
+					UE_LOG(LogDisplayClusterBlueprint, Warning, TEXT("Projection Policy mismatch from archetype on viewport, correcting. Instance: %s, Archetype: %s."),
+						*ObjectToAdd->GetName(), *ObjectToAdd->GetArchetype()->GetName());
+
+					InstanceViewport->ProjectionPolicy.Parameters = ArchetypeViewport->ProjectionPolicy.Parameters;
+				}
+			}
+		}
+#endif
 		
 		MapInstanceHelper.AddPair(Key, &ObjectToAdd);
 		
@@ -927,7 +1107,13 @@ static void PropagateDefaultMapToInstancedMap(const FMapProperty* MapProperty, U
 				if (!bArchetypeCorrect)
 				{
 					const ADisplayClusterRootActor* RootActor =
-					CastChecked<ADisplayClusterRootActor>(InstancedObject->GetTypedOuter(ADisplayClusterRootActor::StaticClass()));
+						Cast<ADisplayClusterRootActor>(InstancedObject->GetTypedOuter(ADisplayClusterRootActor::StaticClass()));
+					if (!RootActor)
+					{
+						// Undo transactions can potentially trigger this while an object was renamed to the transient package.
+						check(InstancedObject->GetPackage() == GetTransientPackage());
+						continue;
+					}
 #if WITH_EDITOR
 					if (GEditor)
 					{
@@ -942,7 +1128,7 @@ static void PropagateDefaultMapToInstancedMap(const FMapProperty* MapProperty, U
 						ensure(bArchetypeCorrect || bIsMultiUserSession);
 					}
 #endif
-					UE_LOG(LogDisplayClusterBlueprint, Warning, TEXT("Archetype mismatch on nDisplay config %s. Make sure the config is compiled and saved. Property: %s, Instance: %s, Archetype: %s, Default %s."),
+					UE_LOG(LogDisplayClusterBlueprint, Warning, TEXT("Archetype mismatch on nDisplay config %s. Make sure the config is compiled and saved. Property: %s, Instance: %s, Archetype: %s, Default: %s."),
 						*RootActor->GetName(), *MapProperty->GetName(), *InstancedObject->GetName(), *InstancedObject->GetArchetype()->GetName(), *DefaultObject->GetName());
 				}
 				continue;
@@ -953,7 +1139,7 @@ static void PropagateDefaultMapToInstancedMap(const FMapProperty* MapProperty, U
 	}
 
 	// Look for elements that should be removed.
-	for (FScriptMapHelper::FIterator InstanceIt = MapInstanceHelper.CreateIterator(); InstanceIt;)
+	for (FScriptMapHelper::FIterator InstanceIt = MapInstanceHelper.CreateIterator(); InstanceIt; ++InstanceIt)
 	{
 		uint8* InstancePairPtr = MapInstanceHelper.GetPairPtr(*InstanceIt);
 		check(InstancePairPtr);
@@ -978,10 +1164,6 @@ static void PropagateDefaultMapToInstancedMap(const FMapProperty* MapProperty, U
 			
 			MapInstanceHelper.RemoveAt(*InstanceIt);
 			bHasChanged = true;
-		}
-		else
-		{
-			++InstanceIt;
 		}
 	}
 	
@@ -1137,6 +1319,13 @@ bool ADisplayClusterRootActor::SetReplaceTextureFlagForAllViewports(bool bReplac
 	}
 	else
 	{
+		// No need to set this on a non operational nDisplay root actor.
+		if ((GDisplayCluster->GetOperationMode() == EDisplayClusterOperationMode::Cluster) 
+			&& (this != Display.GetGameMgr()->GetRootActor()))
+		{
+			return false;
+		}
+
 		UDisplayClusterConfigurationClusterNode* Node = ConfigData->Cluster->GetNode(NodeId);
 
 		if (!Node)
@@ -1176,6 +1365,21 @@ bool ADisplayClusterRootActor::SetReplaceTextureFlagForAllViewports(bool bReplac
 			}
 		}
 	}
+
+	return true;
+}
+
+bool ADisplayClusterRootActor::SetFreezeOuterViewports(bool bEnable)
+{
+	UDisplayClusterConfigurationData* ConfigData = GetConfigData();
+
+	if (!ConfigData)
+	{
+		UE_LOG(LogDisplayClusterGame, Warning, TEXT("ADisplayClusterRootActor::SetFreezeOuterViewports failed because ConfigData was null"));
+		return false;
+	}
+
+	ConfigData->StageSettings.bFreezeRenderOuterViewports = bEnable;
 
 	return true;
 }

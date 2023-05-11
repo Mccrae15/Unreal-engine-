@@ -5,44 +5,46 @@
 =============================================================================*/
 
 #include "Components/PrimitiveComponent.h"
-#include "EngineStats.h"
+#include "Engine/Level.h"
+#include "Engine/Texture.h"
 #include "GameFramework/DamageType.h"
+#include "EngineStats.h"
 #include "GameFramework/Pawn.h"
-#include "WorldCollision.h"
+#include "HLOD/HLODBatchingPolicy.h"
+#include "PSOPrecache.h"
 #include "AI/NavigationSystemBase.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/PhysicsVolume.h"
 #include "GameFramework/WorldSettings.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/CollisionProfile.h"
+#include "Engine/SkeletalMesh.h"
+#include "HitProxies.h"
 #include "Materials/MaterialInstanceDynamic.h"
-#include "Engine/Texture2D.h"
 #include "ContentStreaming.h"
-#include "DrawDebugHelpers.h"
+#include "PropertyPairsMap.h"
 #include "UnrealEngine.h"
-#include "PhysicsPublic.h"
 #include "PhysicsEngine/BodySetup.h"
-#include "Logging/TokenizedMessage.h"
 #include "Logging/MessageLog.h"
 #include "Misc/UObjectToken.h"
 #include "Misc/MapErrors.h"
 #include "CollisionDebugDrawingPublic.h"
 #include "GameFramework/CheatManager.h"
+#include "RenderingThread.h"
 #include "Streaming/TextureStreamingHelpers.h"
 #include "PrimitiveSceneProxy.h"
-#include "Algo/Copy.h"
-#include "UObject/RenderingObjectVersion.h"
+#include "SceneInterface.h"
 #include "UObject/FortniteMainBranchObjectVersion.h"
 #include "UObject/UE5PrivateFrostyStreamObjectVersion.h"
-#include "EngineModule.h"
 #include "UObject/ObjectSaveContext.h"
-#include "Engine/OverlapInfo.h"
 #include "Engine/DamageEvents.h"
-#include "Engine/ScopedMovementUpdate.h"
 
 #if WITH_EDITOR
 #include "Engine/LODActor.h"
+#include "Interfaces/ITargetPlatform.h"
 #include "Rendering/StaticLightingSystemInterface.h"
+#else
+#include "Components/InstancedStaticMeshComponent.h"
 #endif // WITH_EDITOR
 
 #if DO_CHECK
@@ -65,14 +67,6 @@ typedef TArray<const FOverlapInfo*, TInlineAllocator<8>> TInlineOverlapPointerAr
 
 DEFINE_LOG_CATEGORY_STATIC(LogPrimitiveComponent, Log, All);
 
-static int32 bAllowCachedOverlapsCVar = 1;
-static FAutoConsoleVariableRef CVarAllowCachedOverlaps(
-	TEXT("p.AllowCachedOverlaps"), 
-	bAllowCachedOverlapsCVar,
-	TEXT("Primitive Component physics\n")
-	TEXT("0: disable cached overlaps, 1: enable (default)"),
-	ECVF_Default);
-
 static int32 AlwaysCreatePhysicsStateConversionHackCVar = 0;
 static FAutoConsoleVariableRef CVarAlwaysCreatePhysicsStateConversionHack(
 	TEXT("p.AlwaysCreatePhysicsStateConversionHack"),
@@ -82,6 +76,14 @@ static FAutoConsoleVariableRef CVarAlwaysCreatePhysicsStateConversionHack(
 
 namespace PrimitiveComponentCVars
 {
+	int32 bAllowCachedOverlapsCVar = 1;
+	static FAutoConsoleVariableRef CVarAllowCachedOverlaps(
+		TEXT("p.AllowCachedOverlaps"),
+		bAllowCachedOverlapsCVar,
+		TEXT("Primitive Component physics\n")
+		TEXT("0: disable cached overlaps, 1: enable (default)"),
+		ECVF_Default);
+
 	float InitialOverlapToleranceCVar = 0.0f;
 	static FAutoConsoleVariableRef CVarInitialOverlapTolerance(
 		TEXT("p.InitialOverlapTolerance"),
@@ -98,6 +100,9 @@ namespace PrimitiveComponentCVars
 		TEXT("Tolerance for hit distance for overlap test in PrimitiveComponent movement.\n")
 		TEXT("Hits that are less than this distance are ignored."),
 		ECVF_Default);
+
+	int32 bEnableFastOverlapCheck = 1;
+	static FAutoConsoleVariableRef CVarEnableFastOverlapCheck(TEXT("p.EnableFastOverlapCheck"), bEnableFastOverlapCheck, TEXT("Enable fast overlap check against sweep hits, avoiding UpdateOverlaps (for the swept component)."));
 }
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
@@ -110,10 +115,9 @@ FAutoConsoleVariableRef CVarRefShowInitialOverlaps(
 	ECVF_Cheat);
 #endif // !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 
-static int32 bEnableFastOverlapCheck = 1;
-static FAutoConsoleVariableRef CVarEnableFastOverlapCheck(TEXT("p.EnableFastOverlapCheck"), bEnableFastOverlapCheck, TEXT("Enable fast overlap check against sweep hits, avoiding UpdateOverlaps (for the swept component)."));
-DECLARE_CYCLE_STAT(TEXT("MoveComponent FastOverlap"), STAT_MoveComponent_FastOverlap, STATGROUP_Game);
-DECLARE_CYCLE_STAT(TEXT("BeginComponentOverlap"), STAT_BeginComponentOverlap, STATGROUP_Game);
+DEFINE_STAT(STAT_BeginComponentOverlap);
+DEFINE_STAT(STAT_MoveComponent_FastOverlap);
+
 DECLARE_CYCLE_STAT(TEXT("EndComponentOverlap"), STAT_EndComponentOverlap, STATGROUP_Game);
 DECLARE_CYCLE_STAT(TEXT("PrimComp DispatchBlockingHit"), STAT_DispatchBlockingHit, STATGROUP_Game);
 
@@ -124,42 +128,6 @@ FOverlapInfo::FOverlapInfo(UPrimitiveComponent* InComponent, int32 InBodyIndex)
 	OverlapInfo.Component = InComponent;
 	OverlapInfo.Item = InBodyIndex;
 }
-
-// Predicate to determine if an overlap is with a certain AActor.
-struct FPredicateOverlapHasSameActor
-{
-	FPredicateOverlapHasSameActor(const AActor& Owner)
-	: MyOwnerPtr(&Owner)
-	{
-	}
-
-	bool operator() (const FOverlapInfo& Info)
-	{
-		// MyOwnerPtr is always valid, so we don't need the IsValid() checks in the WeakObjectPtr comparison operator.
-		return MyOwnerPtr.HasSameIndexAndSerialNumber(Info.OverlapInfo.HitObjectHandle.FetchActor());
-	}
-
-private:
-	const TWeakObjectPtr<const AActor> MyOwnerPtr;
-};
-
-// Predicate to determine if an overlap is *NOT* with a certain AActor.
-struct FPredicateOverlapHasDifferentActor
-{
-	FPredicateOverlapHasDifferentActor(const AActor& Owner)
-	: MyOwnerPtr(&Owner)
-	{
-	}
-
-	bool operator() (const FOverlapInfo& Info)
-	{
-		// MyOwnerPtr is always valid, so we don't need the IsValid() checks in the WeakObjectPtr comparison operator.
-		return !MyOwnerPtr.HasSameIndexAndSerialNumber(Info.OverlapInfo.HitObjectHandle.FetchActor());
-	}
-
-private:
-	const TWeakObjectPtr<const AActor> MyOwnerPtr;
-};
 
 // Helper for finding the index of an FOverlapInfo in an Array using the FFastOverlapInfoCompare predicate, knowing that at least one overlap is valid (non-null).
 template<class AllocatorType>
@@ -303,7 +271,10 @@ FThreadSafeCounter UPrimitiveComponent::NextRegistrationSerialNumber;
 FThreadSafeCounter UPrimitiveComponent::NextComponentId;
 
 UPrimitiveComponent::UPrimitiveComponent(FVTableHelper& Helper) : Super(Helper) { }
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS;
 UPrimitiveComponent::~UPrimitiveComponent() = default;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS;
 
 UPrimitiveComponent::UPrimitiveComponent(const FObjectInitializer& ObjectInitializer /*= FObjectInitializer::Get()*/)
 	: Super(ObjectInitializer)
@@ -326,6 +297,7 @@ UPrimitiveComponent::UPrimitiveComponent(const FObjectInitializer& ObjectInitial
 	bCastVolumetricTranslucentShadow = false;
 	bCastContactShadow = true;
 	IndirectLightingCacheQuality = ILCQ_Point;
+	bStaticWhenNotMoveable = true;
 	bSelectable = true;
 #if WITH_EDITORONLY_DATA
 	bConsiderForActorPlacementWhenHidden = false;
@@ -354,8 +326,12 @@ UPrimitiveComponent::UPrimitiveComponent(const FObjectInitializer& ObjectInitial
 
 	LDMaxDrawDistance = 0.f;
 	CachedMaxDrawDistance = 0.f;
-#if WITH_EDITORONLY_DATA
+
+	bEnableAutoLODGeneration = true;
 	HLODBatchingPolicy = EHLODBatchingPolicy::None;
+	ExcludeFromHLODLevels = 0;
+
+#if WITH_EDITORONLY_DATA
 	bUseMaxLODAsImposter_DEPRECATED = false;
 	bBatchImpostersAsInstances_DEPRECATED = false;
 #endif
@@ -380,13 +356,21 @@ UPrimitiveComponent::UPrimitiveComponent(const FObjectInitializer& ObjectInitial
 	bIgnoreStreamingManagerUpdate = false;
 	bAttachedToCoarseMeshStreamingManager = false;
 	LastCheckedAllCollideableDescendantsTime = 0.f;
+
+	bPSOPrecacheCalled = false;
+	bPSOPrecacheRequestBoosted = false;
 	
 	bApplyImpulseOnDamage = true;
 	bReplicatePhysicsToAutonomousProxy = true;
 
 	bReceiveMobileCSMShadows = true;
+
+#if WITH_EDITOR
+	bIgnoreBoundsForEditorFocus = false;
+	bAlwaysAllowTranslucentSelect = false;
+#endif
+
 #if WITH_EDITORONLY_DATA
-	bEnableAutoLODGeneration = true;
 	HitProxyPriority = HPP_World;
 #endif // WITH_EDITORONLY_DATA
 
@@ -587,7 +571,13 @@ void UPrimitiveComponent::CreateRenderState_Concurrent(FRegisterComponentContext
 	UpdateBounds();
 
 	// If the primitive isn't hidden and the detail mode setting allows it, add it to the scene.
-	if (ShouldComponentAddToScene())
+	if (ShouldComponentAddToScene()
+#ifdef WITH_EDITOR
+		// [HOTFIX] When force deleting an asset, a SceneProxy is set to null from a different thread unsafely, causing the old stale value of SceneProxy being read here from the cache.
+		// We need to better investigate why this happens, but for now this prevents a crash from occurring.
+		&& SceneProxy == nullptr
+#endif
+	)
 	{
 		if (Context != nullptr)
 		{
@@ -1026,6 +1016,14 @@ void UPrimitiveComponent::Serialize(FArchive& Ar)
 			HLODBatchingPolicy = EHLODBatchingPolicy::Instancing;
 		}
 	}
+
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
+	if (Ar.IsLoading() && !ExcludeForSpecificHLODLevels_DEPRECATED.IsEmpty())
+	{
+		SetExcludeForSpecificHLODLevels(ExcludeForSpecificHLODLevels_DEPRECATED);
+		ExcludeForSpecificHLODLevels_DEPRECATED.Empty();
+	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
 #endif
 }
 
@@ -1427,8 +1425,18 @@ void UPrimitiveComponent::PreSave(FObjectPreSaveContext ObjectSaveContext)
 		{
 			if (Texture && Texture->IsCandidateForTextureStreamingOnPlatformDuringCook(ObjectSaveContext.GetTargetPlatform()))
 			{
-				bHasStreamableTextures = true;
-				break;
+				// furthermore refine based on what actually happened with that texture in *this* cook session
+				//	if that texture was serialized out before us
+				// can be false if texture IsCandidate but did not actually make streaming textures
+				// if texture has not serialized yet and set DidSerializeStreamingMipsForPlatform, we must assume it would be true
+				
+				const FString PlatformName = ObjectSaveContext.GetTargetPlatform()->PlatformName();
+				const bool * pBoolDidStream = Texture->DidSerializeStreamingMipsForPlatform.Find(PlatformName);
+				if ( pBoolDidStream == nullptr || *pBoolDidStream == true )
+				{
+					bHasStreamableTextures = true;
+					break;
+				}
 			}
 		}
 
@@ -1718,6 +1726,15 @@ void UPrimitiveComponent::SetTranslucentSortPriority(int32 NewTranslucentSortPri
 	}
 }
 
+void UPrimitiveComponent::SetAffectDistanceFieldLighting(bool NewAffectDistanceFieldLighting)
+{
+	if(NewAffectDistanceFieldLighting != bAffectDistanceFieldLighting)
+	{
+		bAffectDistanceFieldLighting = NewAffectDistanceFieldLighting;
+		MarkRenderStateDirty();
+	}
+}
+
 void UPrimitiveComponent::SetTranslucencySortDistanceOffset(float NewTranslucencySortDistanceOffset)
 {
 	if ( !FMath::IsNearlyEqual(NewTranslucencySortDistanceOffset, TranslucencySortDistanceOffset) )
@@ -1732,6 +1749,34 @@ void UPrimitiveComponent::SetReceivesDecals(bool bNewReceivesDecals)
 	if (bNewReceivesDecals != bReceivesDecals)
 	{
 		bReceivesDecals = bNewReceivesDecals;
+		MarkRenderStateDirty();
+	}
+}
+
+void UPrimitiveComponent::SetHoldout(bool bNewHoldout)
+{
+	if (bHoldout != bNewHoldout)
+	{
+		bHoldout = bNewHoldout;
+		MarkRenderStateDirty();
+	}
+}
+
+void UPrimitiveComponent::SetAffectDynamicIndirectLighting(bool bNewAffectDynamicIndirectLighting)
+{
+	if (bAffectDynamicIndirectLighting != bNewAffectDynamicIndirectLighting)
+	{
+		bAffectDynamicIndirectLighting = bNewAffectDynamicIndirectLighting;
+		MarkRenderStateDirty();
+	}
+}
+
+
+void UPrimitiveComponent::SetAffectIndirectLightingWhileHidden(bool bNewAffectIndirectLightingWhileHidden)
+{
+	if (bAffectIndirectLightingWhileHidden != bNewAffectIndirectLightingWhileHidden)
+	{
+		bAffectIndirectLightingWhileHidden = bNewAffectIndirectLightingWhileHidden;
 		MarkRenderStateDirty();
 	}
 }
@@ -2324,20 +2369,6 @@ static bool ShouldIgnoreHitResult(const UWorld* InWorld, FHitResult const& TestH
 	return false;
 }
 
-
-// Returns true if we should check the GetGenerateOverlapEvents() flag when gathering overlaps, otherwise we'll always just do it.
-static FORCEINLINE_DEBUGGABLE bool ShouldCheckOverlapFlagToQueueOverlaps(const UPrimitiveComponent& ThisComponent)
-{
-	const FScopedMovementUpdate* CurrentUpdate = ThisComponent.GetCurrentScopedMovement();
-	if (CurrentUpdate)
-	{
-		return CurrentUpdate->RequiresOverlapsEventFlag();
-	}
-	// By default we require the GetGenerateOverlapEvents() to queue up overlaps, since we require it to trigger events.
-	return true;
-}
-
-
 static FORCEINLINE_DEBUGGABLE bool ShouldIgnoreOverlapResult(const UWorld* World, const AActor* ThisActor, const UPrimitiveComponent& ThisComponent, const AActor* OtherActor, const UPrimitiveComponent& OtherComponent, bool bCheckOverlapFlags)
 {
 	// Don't overlap with self
@@ -2866,6 +2897,20 @@ bool UPrimitiveComponent::ComponentOverlapComponentImpl(class UPrimitiveComponen
 		return false;
 	}
 
+	// if target is Instanced Static Meshes
+	UInstancedStaticMeshComponent* InstancedStaticMesh = Cast<UInstancedStaticMeshComponent>(PrimComp);
+	if (InstancedStaticMesh)
+	{
+		if (FBodyInstance* ThisBodyInstance = GetBodyInstance())
+		{
+			return ThisBodyInstance->OverlapTestForBodies(Pos, Quat, InstancedStaticMesh->InstanceBodies);
+		}
+		else
+		{
+			return false;
+		}
+	}
+
 	if(FBodyInstance* BI = PrimComp->GetBodyInstance())
 	{
 		if (FBodyInstance* ThisBodyInstance = GetBodyInstance())
@@ -2925,25 +2970,6 @@ bool UPrimitiveComponent::IsOverlappingActor(const AActor* Other) const
 	}
 
 	return false;
-}
-
-template<typename AllocatorType>
-bool UPrimitiveComponent::GetOverlapsWithActor_Template(const AActor* Actor, TArray<FOverlapInfo, AllocatorType>& OutOverlaps) const
-{
-	const int32 InitialCount = OutOverlaps.Num();
-	if (Actor)
-	{
-		for (int32 OverlapIdx=0; OverlapIdx<OverlappingComponents.Num(); ++OverlapIdx)
-		{
-			UPrimitiveComponent const* const PrimComp = OverlappingComponents[OverlapIdx].OverlapInfo.Component.Get();
-			if ( PrimComp && (PrimComp->GetOwner() == Actor) )
-			{
-				OutOverlaps.Add(OverlappingComponents[OverlapIdx]);
-			}
-		}
-	}
-
-	return InitialCount != OutOverlaps.Num();
 }
 
 bool UPrimitiveComponent::GetOverlapsWithActor(const AActor* Actor, TArray<FOverlapInfo>& OutOverlaps) const
@@ -3125,11 +3151,12 @@ void UPrimitiveComponent::EndComponentOverlap(const FOverlapInfo& OtherOverlap, 
 		GlobalOverlapEventsCounter++;
 		OverlappingComponents.RemoveAtSwap(OverlapIdx, 1, false);
 
+		AActor* const MyActor = GetOwner();
 		const UWorld* World = GetWorld();
-		if (bDoNotifies && World && World->HasBegunPlay())
+		const bool bLevelStreamingOverlap = (bDoNotifies && MyActor && MyActor->bGenerateOverlapEventsDuringLevelStreaming && MyActor->IsActorBeginningPlayFromLevelStreaming());
+		if (bDoNotifies && ((World && World->HasBegunPlay()) || bLevelStreamingOverlap))
 		{
 			AActor* const OtherActor = OtherComp->GetOwner();
-			AActor* const MyActor = GetOwner();
 			if (OtherActor)
 			{
 				if (!bSkipNotifySelf && IsPrimCompValidAndAlive(this))
@@ -3258,98 +3285,6 @@ void UPrimitiveComponent::GetOverlappingComponents(TSet<UPrimitiveComponent*>& O
 		}
 	}
 }
-
-template<typename AllocatorType>
-bool UPrimitiveComponent::ConvertSweptOverlapsToCurrentOverlaps(
-	TArray<FOverlapInfo, AllocatorType>& OverlapsAtEndLocation, const TOverlapArrayView& SweptOverlaps, int32 SweptOverlapsIndex,
-	const FVector& EndLocation, const FQuat& EndRotationQuat)
-{
-	checkSlow(SweptOverlapsIndex >= 0);
-
-	bool bResult = false;
-	const bool bForceGatherOverlaps = !ShouldCheckOverlapFlagToQueueOverlaps(*this);
-	if ((GetGenerateOverlapEvents() || bForceGatherOverlaps) && bAllowCachedOverlapsCVar)
-	{
-		const AActor* Actor = GetOwner();
-		if (Actor && Actor->GetRootComponent() == this)
-		{
-			// We know we are not overlapping any new components at the end location. Children are ignored here (see note below).
-			if (bEnableFastOverlapCheck)
-			{
-				SCOPE_CYCLE_COUNTER(STAT_MoveComponent_FastOverlap);
-
-				// Check components we hit during the sweep, keep only those still overlapping
-				const FCollisionQueryParams UnusedQueryParams(NAME_None, FCollisionQueryParams::GetUnknownStatId());
-				const int32 NumSweptOverlaps = SweptOverlaps.Num();
-				OverlapsAtEndLocation.Reserve(OverlapsAtEndLocation.Num() + NumSweptOverlaps);
-				for (int32 Index = SweptOverlapsIndex; Index < NumSweptOverlaps; ++Index)
-				{
-					const FOverlapInfo& OtherOverlap = SweptOverlaps[Index];
-					UPrimitiveComponent* OtherPrimitive = OtherOverlap.OverlapInfo.GetComponent();
-					if (OtherPrimitive && (OtherPrimitive->GetGenerateOverlapEvents() || bForceGatherOverlaps))
-					{
-						if (OtherPrimitive->bMultiBodyOverlap)
-						{
-							// Not handled yet. We could do it by checking every body explicitly and track each body index in the overlap test, but this seems like a rare need.
-							return false;
-						}
-						else if (Cast<USkeletalMeshComponent>(OtherPrimitive) || Cast<USkeletalMeshComponent>(this))
-						{
-							// SkeletalMeshComponent does not support this operation, and would return false in the test when an actual query could return true.
-							return false;
-						}
-						else if (OtherPrimitive->ComponentOverlapComponent(this, EndLocation, EndRotationQuat, UnusedQueryParams))
-						{
-							OverlapsAtEndLocation.Add(OtherOverlap);
-						}
-					}
-				}
-
-				// Note: we don't worry about adding any child components here, because they are not included in the sweep results.
-				// Children test for their own overlaps after we update our own, and we ignore children in our own update.
-				checkfSlow(OverlapsAtEndLocation.FindByPredicate(FPredicateOverlapHasSameActor(*Actor)) == nullptr,
-					TEXT("Child overlaps should not be included in the SweptOverlaps() array in UPrimitiveComponent::ConvertSweptOverlapsToCurrentOverlaps()."));
-
-				bResult = true;
-			}
-			else
-			{
-				if (SweptOverlaps.Num() == 0 && AreAllCollideableDescendantsRelative())
-				{
-					// Add overlaps with components in this actor.
-					GetOverlapsWithActor_Template(Actor, OverlapsAtEndLocation);
-					bResult = true;
-				}
-			}
-		}
-	}
-
-	return bResult;
-}
-
-template<typename AllocatorType>
-bool UPrimitiveComponent::ConvertRotationOverlapsToCurrentOverlaps(TArray<FOverlapInfo, AllocatorType>& OutOverlapsAtEndLocation, const TOverlapArrayView& CurrentOverlaps)
-{
-	bool bResult = false;
-	const bool bForceGatherOverlaps = !ShouldCheckOverlapFlagToQueueOverlaps(*this);
-	if ((GetGenerateOverlapEvents() || bForceGatherOverlaps) && bAllowCachedOverlapsCVar)
-	{
-		const AActor* Actor = GetOwner();
-		if (Actor && Actor->GetRootComponent() == this)
-		{
-			if (bEnableFastOverlapCheck)
-			{
-				// Add all current overlaps that are not children. Children test for their own overlaps after we update our own, and we ignore children in our own update.
-				OutOverlapsAtEndLocation.Reserve(OutOverlapsAtEndLocation.Num() + CurrentOverlaps.Num());
-				Algo::CopyIf(CurrentOverlaps, OutOverlapsAtEndLocation, FPredicateOverlapHasDifferentActor(*Actor));
-				bResult = true;
-			}
-		}
-	}
-
-	return bResult;
-}
-
 
 bool UPrimitiveComponent::AreAllCollideableDescendantsRelative(bool bAllowCachedValue) const
 {
@@ -3527,7 +3462,7 @@ bool UPrimitiveComponent::UpdateOverlapsImpl(const TOverlapArrayView* NewPending
 			if (IsValid(this) && GetGenerateOverlapEvents())
 			{
 				// Might be able to avoid testing for new overlaps at the end location.
-				if (OverlapsAtEndLocation != nullptr && bAllowCachedOverlapsCVar && PrevTransform.Equals(GetComponentTransform()))
+				if (OverlapsAtEndLocation != nullptr && PrimitiveComponentCVars::bAllowCachedOverlapsCVar && PrevTransform.Equals(GetComponentTransform()))
 				{
 					UE_LOG(LogPrimitiveComponent, VeryVerbose, TEXT("%s->%s Skipping overlap test!"), *GetNameSafe(GetOwner()), *GetName());
 					const bool bCheckForInvalid = (NewPendingOverlaps && NewPendingOverlaps->Num() > 0);
@@ -4258,10 +4193,96 @@ void UPrimitiveComponent::SetupPrecachePSOParams(FPSOPrecacheParams& Params)
 	Params.bStaticLighting = HasStaticLighting();
 	Params.bAffectDynamicIndirectLighting = bAffectDynamicIndirectLighting;
 	Params.bCastShadow = CastShadow;
-	Params.bRenderCustomDepth = bRenderCustomDepth;
+	// Custom depth can be toggled at runtime with PSO precache call so assume it might be needed when depth pass is needed
+	// Ideally precache those with lower priority and don't wait on these (UE-174426)
+	Params.bRenderCustomDepth = bRenderCustomDepth;// bRenderInDepthPass;
 	Params.bCastShadowAsTwoSided = bCastShadowAsTwoSided;
 	Params.SetMobility(Mobility);	
 	Params.SetStencilWriteMask(FRendererStencilMaskEvaluation::ToStencilMask(CustomDepthStencilWriteMask));
+}
+
+class FMarkRenderStateDirtyTask
+{
+public:
+	explicit FMarkRenderStateDirtyTask(UPrimitiveComponent* InPrimitiveComponent)
+		: PrimitiveComponent(InPrimitiveComponent)
+	{
+	}
+
+	void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
+	{
+		if (PrimitiveComponent.IsValid())
+		{
+			PrimitiveComponent->MarkRenderStateDirty();
+			PrimitiveComponent = nullptr;
+		}
+	}
+
+public:
+
+	TWeakObjectPtr<UPrimitiveComponent> PrimitiveComponent;
+
+	static ESubsequentsMode::Type	GetSubsequentsMode() { return ESubsequentsMode::TrackSubsequents; }
+	ENamedThreads::Type				GetDesiredThread() { return ENamedThreads::GameThread; }
+	FORCEINLINE TStatId				GetStatId() const { return TStatId(); }
+};
+
+void UPrimitiveComponent::PrecachePSOs()
+{
+	if (!FApp::CanEverRender() || !IsComponentPSOPrecachingEnabled())
+	{
+		return;
+	}
+
+	// clear the current request data
+	MaterialPSOPrecacheRequestIDs.Empty();
+	PSOPrecacheCompileEvent = nullptr;
+	bPSOPrecacheRequestBoosted = false;
+
+	// Collect the data from the derived classes
+	FPSOPrecacheParams PSOPrecacheParams;
+	SetupPrecachePSOParams(PSOPrecacheParams);
+	FComponentPSOPrecacheParamsList PSOPrecacheDataArray;
+	CollectPSOPrecacheData(PSOPrecacheParams, PSOPrecacheDataArray);
+
+	FGraphEventArray GraphEvents;
+	for (FComponentPSOPrecacheParams& ComponentPSOPrecacheData : PSOPrecacheDataArray)
+	{
+		GraphEvents.Append(ComponentPSOPrecacheData.MaterialInterface->PrecachePSOs(ComponentPSOPrecacheData.VertexFactoryDataList, ComponentPSOPrecacheData.PSOPrecacheParams, ComponentPSOPrecacheData.Priority, MaterialPSOPrecacheRequestIDs));
+	}	
+
+	RequestRecreateRenderStateWhenPSOPrecacheFinished(GraphEvents);
+}
+
+void UPrimitiveComponent::RequestRecreateRenderStateWhenPSOPrecacheFinished(const FGraphEventArray& PSOPrecacheCompileEvents)
+{
+	// Mark the render state dirty when all PSOs are compiled so the proxy gets recreated
+	if (ProxyCreationWhenPSOReady() && !PSOPrecacheCompileEvents.IsEmpty())
+	{
+		PSOPrecacheCompileEvent = TGraphTask<FMarkRenderStateDirtyTask>::CreateTask(&PSOPrecacheCompileEvents).ConstructAndDispatchWhenReady(this);
+	}
+
+	bPSOPrecacheCalled = true;
+}
+
+bool UPrimitiveComponent::IsPSOPrecaching()
+{
+	ensure(!IsComponentPSOPrecachingEnabled() || bPSOPrecacheCalled);
+
+	if (PSOPrecacheCompileEvent && !PSOPrecacheCompileEvent->IsComplete())
+	{
+		if (!bPSOPrecacheRequestBoosted)
+		{
+			BoostPSOPriority(MaterialPSOPrecacheRequestIDs);
+			bPSOPrecacheRequestBoosted = true;
+		}
+	}
+	else
+	{
+		PSOPrecacheCompileEvent = nullptr;
+	}
+
+	return PSOPrecacheCompileEvent != nullptr;
 }
 
 #if WITH_EDITOR
@@ -4274,7 +4295,7 @@ const bool UPrimitiveComponent::ShouldGenerateAutoLOD(const int32 HierarchicalLe
 
 	// bAllowSpecificExclusion
 	bool bExcluded = false;
-	if (ExcludeForSpecificHLODLevels.Contains(HierarchicalLevelIndex))
+	if (HierarchicalLevelIndex < CHAR_BIT && IsExcludedFromHLODLevel(EHLODLevelExclusion(1 << HierarchicalLevelIndex)))
 	{
 		const TArray<struct FHierarchicalSimplification>& HLODSetup = GetOwner()->GetLevel()->GetWorldSettings()->GetHierarchicalLODSetup();
 		if (HLODSetup.IsValidIndex(HierarchicalLevelIndex))
@@ -4288,6 +4309,51 @@ const bool UPrimitiveComponent::ShouldGenerateAutoLOD(const int32 HierarchicalLe
 
 	return !bExcluded;
 }
+
 #endif
+
+void UPrimitiveComponent::SetExcludeForSpecificHLODLevels(const TArray<int32>& InExcludeForSpecificHLODLevels)
+{
+	ExcludeFromHLODLevels = 0;
+	for (int32 ExcludeFromLevel : InExcludeForSpecificHLODLevels)
+	{
+		if (ExcludeFromLevel < CHAR_BIT)
+		{
+			SetExcludedFromHLODLevel(EHLODLevelExclusion(1 << ExcludeFromLevel), true);
+		}
+	}
+}
+
+TArray<int32> UPrimitiveComponent::GetExcludeForSpecificHLODLevels() const
+{
+	TArray<int32> ExcludeFromLevels;
+
+	for (int32 ExcludeFromLevel = 0; ExcludeFromLevel < CHAR_BIT; ExcludeFromLevel++)
+	{
+		if (IsExcludedFromHLODLevel(EHLODLevelExclusion(1 << ExcludeFromLevel)))
+		{
+			ExcludeFromLevels.Add(ExcludeFromLevel);
+		}
+	}
+
+	return ExcludeFromLevels;
+}
+
+bool UPrimitiveComponent::IsExcludedFromHLODLevel(EHLODLevelExclusion HLODLevel) const
+{
+	return EnumHasAllFlags((EHLODLevelExclusion)ExcludeFromHLODLevels, HLODLevel);
+}
+
+void UPrimitiveComponent::SetExcludedFromHLODLevel(EHLODLevelExclusion HLODLevel, bool bExcluded)
+{
+	if (bExcluded)
+	{
+		EnumAddFlags((EHLODLevelExclusion&)ExcludeFromHLODLevels, HLODLevel);
+	}
+	else
+	{
+		EnumRemoveFlags((EHLODLevelExclusion&)ExcludeFromHLODLevels, HLODLevel);
+	}
+}
 
 #undef LOCTEXT_NAMESPACE

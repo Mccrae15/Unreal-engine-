@@ -2,18 +2,18 @@
 
 #pragma once
 
+#include "PCGPin.h"
 #include "PCGSettings.h"
-#include "PCGElement.h"
-#include "PCGPoint.h"
+#include "Metadata/PCGAttributePropertySelector.h"
 
 #include "PCGMetadataElement.generated.h"
 
 UENUM()
-enum class EPCGMetadataOperationTarget : uint8
+enum class UE_DEPRECATED(5.2, "Not used anymore") EPCGMetadataOperationTarget : uint8
 {
 	PropertyToAttribute,
 	AttributeToProperty,
-	AttributeToAttribute
+	AttributeToAttribute,
 };
 
 UCLASS(BlueprintType, ClassGroup = (Procedural))
@@ -22,30 +22,47 @@ class PCG_API UPCGMetadataOperationSettings : public UPCGSettings
 	GENERATED_BODY()
 
 public:
+	UPCGMetadataOperationSettings();
+
+	//~Begin UObject interface
+	virtual void PostLoad() override;
+	//~End UObject interface
+
 	//~Begin UPCGSettings interface
 #if WITH_EDITOR
-	virtual FName GetDefaultNodeName() const override { return FName(TEXT("MetadataOperationNode")); }
+	virtual FName GetDefaultNodeName() const override { return FName(TEXT("AttributeOperation")); }
+	virtual FText GetDefaultNodeTitle() const override { return NSLOCTEXT("PCGMetadataOperationSettings", "NodeTitle", "Attribute Operation"); }
 	virtual EPCGSettingsType GetType() const override { return EPCGSettingsType::Metadata; }
 #endif
 
-	virtual TArray<FPCGPinProperties> OutputPinProperties() const override { return Super::DefaultPointOutputPinProperties(); }
-
 protected:
+	virtual TArray<FPCGPinProperties> InputPinProperties() const override { return Super::DefaultPointInputPinProperties(); }
+	virtual TArray<FPCGPinProperties> OutputPinProperties() const override { return Super::DefaultPointOutputPinProperties(); }
 	virtual FPCGElementPtr CreateElement() const override;
 	//~End UPCGSettings interface
 
 public:
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings, meta = (EditCondition = "Target==EPCGMetadataOperationTarget::AttributeToProperty||Target==EPCGMetadataOperationTarget::AttributeToAttribute"))
-	FName SourceAttribute = NAME_None;
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings)
+	FPCGAttributePropertySelector InputSource;
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings)
-	EPCGPointProperties PointProperty = EPCGPointProperties::Density;
+	FPCGAttributePropertySelector OutputTarget;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings, meta = (EditCondition="Target==EPCGMetadataOperationTarget::PropertyToAttribute||Target==EPCGMetadataOperationTarget::AttributeToAttribute"))
-	FName DestinationAttribute = NAME_None;
+#if WITH_EDITORONLY_DATA
+	UPROPERTY()
+	FName SourceAttribute_DEPRECATED = NAME_None;
 
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Settings)
-	EPCGMetadataOperationTarget Target = EPCGMetadataOperationTarget::PropertyToAttribute;
+	UPROPERTY()
+	EPCGPointProperties PointProperty_DEPRECATED = EPCGPointProperties::Density;
+
+	UPROPERTY()
+	FName DestinationAttribute_DEPRECATED = NAME_None;
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	UPROPERTY()
+	EPCGMetadataOperationTarget Target_DEPRECATED = EPCGMetadataOperationTarget::PropertyToAttribute;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+#endif // WITH_EDITORONLY_DATA
 };
 
 class FPCGMetadataOperationElement : public FSimplePCGElement

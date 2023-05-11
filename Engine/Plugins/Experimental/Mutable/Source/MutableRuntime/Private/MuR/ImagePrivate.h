@@ -6,7 +6,6 @@
 
 #include "MuR/SerialisationPrivate.h"
 #include "MuR/MutableMath.h"
-#include "MuR/MemoryPrivate.h"
 
 
 namespace mu
@@ -87,6 +86,8 @@ namespace mu
 	//---------------------------------------------------------------------------------------------
 	MUTABLERUNTIME_API inline EImageFormat GetUncompressedFormat(EImageFormat f )
 	{
+		check(f < EImageFormat::IF_COUNT);
+
 		EImageFormat r = f;
 
 		switch ( r )
@@ -127,6 +128,39 @@ namespace mu
     //---------------------------------------------------------------------------------------------
     //!
     //---------------------------------------------------------------------------------------------
+	inline EImageFormat GetRGBOrRGBAFormat(EImageFormat InFormat)
+    {
+		InFormat = GetUncompressedFormat(InFormat);
+
+		if (InFormat == EImageFormat::IF_NONE)
+		{
+			return InFormat;
+		}
+
+		switch (InFormat)
+		{
+		case EImageFormat::IF_L_UBYTE: 
+		{
+			return EImageFormat::IF_RGB_UBYTE;
+		}
+		case EImageFormat::IF_RGB_UBYTE:
+		case EImageFormat::IF_RGBA_UBYTE:
+		case EImageFormat::IF_BGRA_UBYTE:
+		{
+			return InFormat;
+		}
+		default:
+		{
+			unimplemented();
+		}
+		}
+
+		return EImageFormat::IF_NONE;
+    }
+
+    //---------------------------------------------------------------------------------------------
+    //!
+    //---------------------------------------------------------------------------------------------
     inline bool IsCompressedFormat(EImageFormat f )
     {
         return f!=GetUncompressedFormat(f);
@@ -136,7 +170,7 @@ namespace mu
     //---------------------------------------------------------------------------------------------
     //!
     //---------------------------------------------------------------------------------------------
-    inline void FillPlainColourImage( Image* pImage, vec4<float> c )
+    inline void FillPlainColourImage( Image* pImage, FVector4f c )
     {
         int pixelCount = pImage->GetSizeX() * pImage->GetSizeY();
 
@@ -164,12 +198,13 @@ namespace mu
 			uint8 r = uint8(FMath::Clamp(255.0f * c[0], 0.0f, 255.0f));
 			uint8 g = uint8(FMath::Clamp(255.0f * c[1], 0.0f, 255.0f));
 			uint8 b = uint8(FMath::Clamp(255.0f * c[2], 0.0f, 255.0f));
+			uint8 a = uint8(FMath::Clamp(255.0f * c[3], 0.0f, 255.0f));
 			for ( int p = 0; p < pixelCount; ++p )
             {
                 pData[0] = r;
                 pData[1] = g;
                 pData[2] = b;
-                pData[3] = 255;
+                pData[3] = a;
                 pData += 4;
             }
             break;
@@ -181,12 +216,13 @@ namespace mu
 			uint8 r = uint8(FMath::Clamp(255.0f * c[0], 0.0f, 255.0f));
 			uint8 g = uint8(FMath::Clamp(255.0f * c[1], 0.0f, 255.0f));
 			uint8 b = uint8(FMath::Clamp(255.0f * c[2], 0.0f, 255.0f));
+			uint8 a = uint8(FMath::Clamp(255.0f * c[3], 0.0f, 255.0f));
 			for ( int p = 0; p < pixelCount; ++p )
             {
                 pData[0] = b;
                 pData[1] = g;
                 pData[2] = r;
-                pData[3] = 255;
+                pData[3] = a;
                 pData += 4;
             }
             break;
@@ -214,7 +250,7 @@ namespace mu
     Ptr<T> CloneOrTakeOver( const T* source )
     {
         Ptr<T> result;
-        if (source->GetRefCount()==1)
+        if (source->IsUnique())
         {
             result = const_cast<T*>(source);
         }

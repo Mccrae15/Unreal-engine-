@@ -53,6 +53,14 @@ enum EPropertyHeaderExportFlags
 	PROPEXPORT_Protected	=0x00000004,	// property should be exported as protected
 };
 
+enum EScriptStructExportFlags
+{
+	STRUCTEXPORT_HasDefaults		= 0x00000001,
+	STRUCTEXPORT_HasNoOpConstructor = 0x00000002,
+	STRUCTEXPORT_IsAlwaysAccessible = 0x00000004,
+	STRUCTEXPORT_IsCoreType			= 0x00000008,
+};
+
 struct EPointerType
 {
 	enum Type
@@ -521,7 +529,8 @@ public:
 struct FRigVMParameter
 {
 	FRigVMParameter()
-		: Name()
+		: PropertyDef(nullptr)
+		, Name()
 		, Type()
 		, bConstant(false)
 		, bInput(false)
@@ -532,9 +541,12 @@ struct FRigVMParameter
 		, CastType()
 		, bEditorOnly(false)
 		, bIsEnum(false)
+		, bIsEnumAsByte(false)
+		, bIsLazy(false)
 	{
 	}
 
+	FUnrealPropertyDefinitionInfo* PropertyDef;
 	FString Name;
 	FString Type;
 	bool bConstant;
@@ -546,15 +558,17 @@ struct FRigVMParameter
 	FString CastType;
 	bool bEditorOnly;
 	bool bIsEnum;
+	bool bIsEnumAsByte;
+	bool bIsLazy;
 
 	const FString& NameOriginal(bool bCastName = false) const
 	{
 		return (bCastName && !CastName.IsEmpty()) ? CastName : Name;
 	}
 
-	const FString& TypeOriginal(bool bCastType = false) const
+	FString TypeOriginal(bool bCastType = false, bool bWrapLazyType = true) const
 	{
-		return (bCastType && !CastType.IsEmpty()) ? CastType : Type;
+		return GetLazyType((bCastType && !CastType.IsEmpty()) ? CastType : Type, bWrapLazyType);
 	}
 
 	FString Declaration(bool bCastType = false, bool bCastName = false) const
@@ -564,7 +578,7 @@ struct FRigVMParameter
 
 	FString BaseType(bool bCastType = false) const
 	{
-		const FString& String = TypeOriginal(bCastType);
+		const FString& String = TypeOriginal(bCastType, false);
 		int32 LesserPos = 0;
 		if (String.FindChar(TEXT('<'), LesserPos))
 		{
@@ -575,7 +589,7 @@ struct FRigVMParameter
 
 	FString ExtendedType(bool bCastType = false) const
 	{
-		const FString& String = TypeOriginal(bCastType);
+		const FString& String = TypeOriginal(bCastType, false);
 		int32 LesserPos = 0;
 		if (String.FindChar(TEXT('<'), LesserPos))
 		{
@@ -615,6 +629,16 @@ struct FRigVMParameter
 		return IsConst() ? TypeConstRef(bCastType) : TypeRef(bCastType);
 	}
 
+	FString GetLazyType(const FString& InType, bool bWrapLazyType) const
+	{
+		if(bIsLazy && bWrapLazyType)
+		{
+			static constexpr TCHAR LazyTypeFormat[] = TEXT("TRigVMLazyValue<%s>");
+			return FString::Printf(LazyTypeFormat, *InType);
+		}
+		return InType;
+	}
+
 	FString Variable(bool bCastType = false, bool bCastName = false) const
 	{
 		return FString::Printf(TEXT("%s %s"), *TypeVariableRef(bCastType), *NameOriginal(bCastName));
@@ -634,6 +658,9 @@ struct FRigVMParameter
 	{
 		return !CastType.IsEmpty() && !CastName.IsEmpty();
 	}
+
+	bool IsExecuteContext() const;
+	FString GetExecuteContextTypeName() const; 
 };
 
 /**
@@ -657,7 +684,7 @@ public:
 		return Parameters.Add(InParameter);
 	}
 
-	FString Names(bool bLeadingSeparator = false, const TCHAR* Separator = TEXT(", "), bool bCastType = false, bool bIncludeEditorOnly = true) const
+	FString Names(bool bLeadingSeparator = false, const TCHAR* Separator = TEXT(", "), bool bCastType = false, bool bIncludeEditorOnly = true, bool bIncludeExecuteContext = true) const
 	{
 		if (Parameters.Num() == 0)
 		{
@@ -667,6 +694,10 @@ public:
 		for (const FRigVMParameter& Parameter : Parameters)
 		{
 			if (!bIncludeEditorOnly && Parameter.bEditorOnly)
+			{
+				continue;
+			}
+			if (!bIncludeExecuteContext && Parameter.IsExecuteContext())
 			{
 				continue;
 			}
@@ -686,7 +717,7 @@ public:
 		return Joined;
 	}
 
-	FString Declarations(bool bLeadingSeparator = false, const TCHAR* Separator = TEXT(", "), bool bCastType = false, bool bCastName = false, bool bIncludeEditorOnly = true) const
+	FString Declarations(bool bLeadingSeparator = false, const TCHAR* Separator = TEXT(", "), bool bCastType = false, bool bCastName = false, bool bIncludeEditorOnly = true, bool bIncludeExecuteContext = true) const
 	{
 		if (Parameters.Num() == 0)
 		{
@@ -696,6 +727,10 @@ public:
 		for (const FRigVMParameter& Parameter : Parameters)
 		{
 			if (!bIncludeEditorOnly && Parameter.bEditorOnly)
+			{
+				continue;
+			}
+			if (!bIncludeExecuteContext && Parameter.IsExecuteContext())
 			{
 				continue;
 			}
@@ -745,6 +780,8 @@ struct FRigVMStructInfo
 	bool bHasGetUpgradeInfoMethod = false;
 	bool bHasGetNextAggregateNameMethod = false;
 	FString Name;
+	FString ExecuteContextType;
+	FString ExecuteContextMember;
 	FRigVMParameterArray Members;
 	TArray<FRigVMMethodInfo> Methods;
 };

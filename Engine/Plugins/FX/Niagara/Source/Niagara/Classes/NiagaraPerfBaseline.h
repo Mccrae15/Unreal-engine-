@@ -24,7 +24,7 @@ struct NIAGARA_API FNiagaraPerfBaselineStats
 	UPROPERTY(EditAnywhere, Category="Baseline", config, BlueprintReadWrite)
 	float PerInstanceAvg_GT = 0.0f;
 
-	/** Per instance average time spent on the RenerThread (µs). */
+	/** Per instance average time spent on the RenderThread (µs). */
 	UPROPERTY(EditAnywhere, Category = "Baseline", config, BlueprintReadWrite)
 	float PerInstanceAvg_RT = 0.0f;
 
@@ -155,11 +155,6 @@ public:
 	virtual void BeginPlay();
 	virtual void TickActor(float DeltaTime, enum ELevelTick TickType, FActorTickFunction& ThisTickFunction);
 	//AActor Interface END
-
-	FORCEINLINE bool IsBaselineTestFinished()const { return bDone; }
-
-private:
-	bool bDone = false;
 #endif
 };
 
@@ -181,6 +176,8 @@ public:
 	virtual bool NeedsWorldStats()const override { return false; }
 	virtual bool NeedsSystemStats()const override { return true; }
 	virtual bool NeedsComponentStats()const override { return false; }
+	
+	virtual bool AllowOrphaned()const { return true; }
 
 private:
 	/** The baseline actor controlling the test conditions and which we'll send the completed stats to. */
@@ -237,7 +234,7 @@ public:
 	uint32 TotalTests = 0;
 
 	/** We store the current target world time so we can give an indication of the time range for poor tests in the report. */
-	float CurrentWorldTime = 0.0f;
+	double CurrentWorldTime = 0.0;
 	uint32 CurrentFrameNumber = 0;
 	FString TestNameString;
 
@@ -245,8 +242,8 @@ public:
 	struct FStatTestInfo
 	{
 		uint32 TestIndex = 0;
-		float StartTime = 0.0f;
-		float EndTime = 0.0f;
+		double StartTime = 0.0;
+		double EndTime = 0.0;
 		FAccumulatedParticlePerfStats AccumulatedStats;
 	};
 
@@ -299,7 +296,7 @@ private:
 	};
 	TArray<TWeakObjectPtr<UNiagaraEffectType>> BaselinesToGenerate;
 	EBaselineGenState BaselineGenerationState = EBaselineGenState::Complete;
-	float WorldTimeToGenerate = 0.0f;
+	double WorldTimeToGenerate = 0.0;
 	TWeakObjectPtr<UWorld> BaselineGenWorld;
 };
 

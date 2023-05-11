@@ -218,6 +218,11 @@ public:
 		return Handle;
 	}
 
+	FORCEINLINE uint32 GetWorkload() const
+	{
+		return Workload;
+	}
+
 	bool IsParallelExecuteAllowed() const
 	{
 		return bParallelExecuteAllowed;
@@ -281,18 +286,6 @@ public:
 	const FRDGPassHandleArray& GetProducers() const
 	{
 		return Producers;
-	}
-
-	/** Returns the producer pass on the other pipeline, if it exists. */
-	FRDGPassHandle GetCrossPipelineProducer() const
-	{
-		return CrossPipelineProducer;
-	}
-
-	/** Returns the consumer pass on the other pipeline, if it exists. */
-	FRDGPassHandle GetCrossPipelineConsumer() const
-	{
-		return CrossPipelineConsumer;
 	}
 
 	/** Returns the graphics pass responsible for forking the async interval this pass is in. */
@@ -364,6 +357,7 @@ protected:
 	const ERDGPassFlags Flags;
 	const ERHIPipeline Pipeline;
 	FRDGPassHandle Handle;
+	uint32 Workload = 1;
 
 	union
 	{
@@ -395,9 +389,6 @@ protected:
 
 			/** If set, the pass should set its command list stat. */
 			uint32 bSetCommandListStat : 1;
-
-			/** If set, the pass will wait on the assigned mGPU temporal effect. */
-			uint32 bWaitForTemporalEffect : 1;
 		};
 		uint32 PackedBits1 = 0;
 	};
@@ -429,9 +420,8 @@ protected:
 		uint32 PacketBits2 = 0;
 	};
 
-	/** Handle of the latest cross-pipeline producer and earliest cross-pipeline consumer. */
+	/** Handle of the latest cross-pipeline producer. */
 	FRDGPassHandle CrossPipelineProducer;
-	FRDGPassHandle CrossPipelineConsumer;
 
 	/** (AsyncCompute only) Graphics passes which are the fork / join for async compute interval this pass is in. */
 	FRDGPassHandle GraphicsForkPass;
@@ -441,7 +431,8 @@ protected:
 	FRDGPassHandle PrologueBarrierPass;
 	FRDGPassHandle EpilogueBarrierPass;
 
-	/** Lists of producer passes. */
+	/** Lists of producer passes and the full list of cross-pipeline consumer passes. */
+	FRDGPassHandleArray CrossPipelineConsumers;
 	FRDGPassHandleArray Producers;
 
 	struct FTextureState
@@ -587,9 +578,7 @@ class TRDGLambdaPass
 	using TRDGPass = typename TLambdaTraits<ExecuteLambdaType>::TRDGPass;
 
 public:
-	static const bool kSupportsAsyncCompute = TIsSame<TRHICommandList, FRHIComputeCommandList>::Value;
-	static const bool kSupportsRaster = TIsDerivedFrom<TRHICommandList, FRHICommandList>::IsDerived;
-
+	
 	TRDGLambdaPass(
 		FRDGEventName&& InName,
 		const FShaderParametersMetadata* InParameterMetadata,
@@ -601,29 +590,25 @@ public:
 #if RDG_ENABLE_DEBUG
 		, DebugParameterStruct(InParameterStruct)
 #endif
-	{
-		checkf(kSupportsAsyncCompute || !EnumHasAnyFlags(InPassFlags, ERDGPassFlags::AsyncCompute),
-			TEXT("Pass %s is set to use 'AsyncCompute', but the pass lambda's first argument is not FRHIComputeCommandList&."), GetName());
-
-		bParallelExecuteAllowed = !TIsSame<TRHICommandList, FRHICommandListImmediate>::Value && !EnumHasAnyFlags(InPassFlags, ERDGPassFlags::NeverParallel);
+	{		
+		bParallelExecuteAllowed = !std::is_same_v<TRHICommandList, FRHICommandListImmediate> && !EnumHasAnyFlags(InPassFlags, ERDGPassFlags::NeverParallel);
 	}
 
 private:
 	template<class T>
-	typename TEnableIf<!TIsSame<T, FRDGPass>::Value, void>::Type ExecuteLambdaFunc(FRHIComputeCommandList& RHICmdList)
+	typename TEnableIf<!std::is_same_v<T, FRDGPass>, void>::Type ExecuteLambdaFunc(FRHIComputeCommandList& RHICmdList)
 	{
 		ExecuteLambda(static_cast<TRHICommandList&>(RHICmdList));
 	}
 
 	template<class T>
-	typename TEnableIf<TIsSame<T, FRDGPass>::Value, void>::Type ExecuteLambdaFunc(FRHIComputeCommandList& RHICmdList)
+	typename TEnableIf<std::is_same_v<T, FRDGPass>, void>::Type ExecuteLambdaFunc(FRHIComputeCommandList& RHICmdList)
 	{
 		ExecuteLambda(this, static_cast<TRHICommandList&>(RHICmdList));
 	}
 
 	void Execute(FRHIComputeCommandList& RHICmdList) override
 	{
-		check(!kSupportsRaster || RHICmdList.IsGraphics());
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_FRDGPass_Execute);
 		RHICmdList.SetStaticUniformBuffers(ParameterStruct.GetStaticUniformBuffers());
 		ExecuteLambdaFunc<TRDGPass>(static_cast<TRHICommandList&>(RHICmdList));

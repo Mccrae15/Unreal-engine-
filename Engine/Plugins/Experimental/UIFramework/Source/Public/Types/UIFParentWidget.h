@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "UObject/ObjectPtr.h"
 #include "UIFParentWidget.generated.h"
 
 class UObject;
@@ -42,6 +41,23 @@ public:
 
 	UUIFrameworkWidget* AsWidget() const;
 	UUIFrameworkPlayerComponent* AsPlayerComponent() const;
+
+	bool operator== (const UUIFrameworkWidget* Other) const;
+
+	bool operator!= (const UUIFrameworkWidget* Other) const
+	{
+		return !((*this) == Other);
+	}
+
+	bool operator== (const FUIFrameworkParentWidget& Other) const
+	{
+		return Other.Parent == Parent;
+	}
+
+	bool operator!= (const FUIFrameworkParentWidget& Other) const
+	{
+		return Other.Parent != Parent;
+	}
 
 private:
 	UPROPERTY()

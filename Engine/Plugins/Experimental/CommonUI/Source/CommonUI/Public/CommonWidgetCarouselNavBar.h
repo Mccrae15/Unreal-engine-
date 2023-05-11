@@ -2,14 +2,13 @@
 
 #pragma once
 
-#include "Components/PanelWidget.h"
+#include "Components/Widget.h"
+#include "CommonWidgetCarouselNavBar.generated.h"
 
 class UCommonWidgetCarousel;
 class UCommonButtonBase;
 class UCommonButtonGroupBase;
 class SHorizontalBox;
-
-#include "CommonWidgetCarouselNavBar.generated.h"
 
 /**
  * A Navigation control for a Carousel
@@ -68,3 +67,7 @@ protected:
 	UPROPERTY()
 	TArray<TObjectPtr<UCommonButtonBase>> Buttons;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Components/PanelWidget.h"
+#endif

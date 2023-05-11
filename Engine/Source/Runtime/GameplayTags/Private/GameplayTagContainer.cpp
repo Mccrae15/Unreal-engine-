@@ -1293,13 +1293,16 @@ void FGameplayTag::PostSerialize(const FArchive& Ar)
 
 bool FGameplayTag::ImportTextItem(const TCHAR*& Buffer, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText)
 {
-	FString ImportedTag = TEXT("");
+	FString ImportedTag;
 	const TCHAR* NewBuffer = FPropertyHelpers::ReadToken(Buffer, ImportedTag, true);
 	if (!NewBuffer)
 	{
 		// Failed to read buffer. Maybe normal ImportText will work.
 		return false;
 	}
+	
+	const TCHAR* OriginalBuffer = Buffer;
+	Buffer = NewBuffer;
 
 	if (ImportedTag == TEXT("None") || ImportedTag.IsEmpty())
 	{
@@ -1312,7 +1315,7 @@ bool FGameplayTag::ImportTextItem(const TCHAR*& Buffer, int32 PortFlags, UObject
 	{
 		// Let normal ImportText handle this before handling fixups
 		UScriptStruct* ScriptStruct = FGameplayTag::StaticStruct();
-		Buffer = ScriptStruct->ImportText(Buffer, this, Parent, PortFlags, ErrorText, ScriptStruct->GetName(), false);
+		Buffer = ScriptStruct->ImportText(OriginalBuffer, this, Parent, PortFlags, ErrorText, ScriptStruct->GetName(), false);
 		UGameplayTagsManager::Get().ImportSingleGameplayTag(*this, TagName, !!(PortFlags & PPF_SerializedAsImportText));
 		return true;
 	}
@@ -1393,6 +1396,22 @@ void FGameplayTagQuery::GetQueryExpr(FGameplayTagQueryExpression& OutExpr) const
 	// build the FExpr tree from the token stream and return it
 	FQueryEvaluator QE(*this);
 	QE.Read(OutExpr);
+}
+
+void FGameplayTagQuery::Serialize(FArchive& Ar)
+{
+	Ar << TokenStreamVersion;
+	Ar << TagDictionary;
+	Ar << QueryTokenStream;
+
+#if WITH_EDITOR
+	if (!Ar.IsCooking())
+	{
+		// Descriptions are not needed during runtime
+		Ar << UserDescription;
+		Ar << AutoDescription;
+	}
+#endif
 }
 
 void FGameplayTagQuery::Build(FGameplayTagQueryExpression& RootQueryExpr, FString InUserDescription)

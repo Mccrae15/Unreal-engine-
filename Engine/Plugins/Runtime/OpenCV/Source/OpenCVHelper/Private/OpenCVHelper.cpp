@@ -2,15 +2,16 @@
 
 #include "OpenCVHelper.h"
 
-#include "CoreMinimal.h"
 #include "Engine/Texture2D.h"
+#include "TextureResource.h"
+#include "UObject/Package.h"
 
 #if WITH_OPENCV
 
-#include "PreOpenCVHeaders.h"
+#include "PreOpenCVHeaders.h" // IWYU pragma: keep
 
 #include "opencv2/calib3d.hpp"
-#include "PostOpenCVHeaders.h"
+#include "PostOpenCVHeaders.h" // IWYU pragma: keep
 
 #endif	// WITH_OPENCV
 
@@ -240,7 +241,7 @@ UTexture2D* FOpenCVHelper::TextureFromCvMat(cv::Mat& Mat, UTexture2D* InTexture)
 
 	if ((InTexture->GetSizeX() != Mat.cols) || (InTexture->GetSizeY() != Mat.rows) || (InTexture->GetPixelFormat() != PixelFormat))
 	{
-		return nullptr;
+		return TextureFromCvMat(Mat);
 	}
 
 	// Copy the pixels from the OpenCV Mat to the Texture

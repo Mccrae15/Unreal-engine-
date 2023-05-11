@@ -18,10 +18,6 @@
 #endif	//WITH_DX_PERF
 #include "OneColorShader.h"
 
-#if !UE_BUILD_SHIPPING
-	#include "STaskGraph.h"
-#endif
-
 DEFINE_LOG_CATEGORY(LogD3D11RHI);
 
 extern void UniformBufferBeginFrame();
@@ -335,11 +331,7 @@ void FD3DGPUProfiler::BeginFrame(FD3D11DynamicRHI* InRHI)
 	}
 	bPreviousLatchedGProfilingGPUHitches = bLatchedGProfilingGPUHitches;
 
-	// Skip timing events when using SLI, they will not be accurate anyway
-	if (GNumAlternateFrameRenderingGroups == 1)
-	{
-		FrameTiming.StartTiming();
-	}
+	FrameTiming.StartTiming();
 
 	if (GetEmitDrawEvents())
 	{
@@ -367,15 +359,9 @@ void FD3DGPUProfiler::EndFrame()
 		PopEvent();
 	}
 
-	// Skip timing events when using SLI, they will not be accurate anyway
-	if (GNumAlternateFrameRenderingGroups == 1)
-	{
-		FrameTiming.EndTiming();
-	}
+	FrameTiming.EndTiming();
 
-	// Skip timing events when using SLI, as they will block the GPU and we want maximum throughput
-	// Stat unit GPU time is not accurate anyway with SLI
-	if (FrameTiming.IsSupported() && GNumAlternateFrameRenderingGroups == 1)
+	if (FrameTiming.IsSupported())
 	{
 		uint64 GPUTiming = FrameTiming.GetTiming();
 		uint64 GPUFreq = FrameTiming.GetTimingFrequency();
@@ -793,25 +779,25 @@ ID3D11Buffer* FD3D11DynamicRHI::RHIGetResource(FRHIBuffer* InBuffer) const
 
 ID3D11Resource* FD3D11DynamicRHI::RHIGetResource(FRHITexture* InTexture) const
 {
-	FD3D11Texture* D3D11Texture = GetD3D11TextureFromRHITexture(InTexture);
+	FD3D11Texture* D3D11Texture = ResourceCast(InTexture);
 	return D3D11Texture->GetResource();
 }
 
 int64 FD3D11DynamicRHI::RHIGetResourceMemorySize(FRHITexture* InTexture) const
 {
-	FD3D11Texture* D3D11Texture = GetD3D11TextureFromRHITexture(InTexture);
+	FD3D11Texture* D3D11Texture = ResourceCast(InTexture);
 	return D3D11Texture->GetMemorySize();
 }
 
 ID3D11RenderTargetView* FD3D11DynamicRHI::RHIGetRenderTargetView(FRHITexture* InTexture, int32 InMipIndex, int32 InArraySliceIndex) const
 {
-	FD3D11Texture* D3D11Texture = GetD3D11TextureFromRHITexture(InTexture);
+	FD3D11Texture* D3D11Texture = ResourceCast(InTexture);
 	return D3D11Texture->GetRenderTargetView(InMipIndex, InArraySliceIndex);
 }
 
 ID3D11ShaderResourceView* FD3D11DynamicRHI::RHIGetShaderResourceView(FRHITexture* InTexture) const
 {
-	FD3D11Texture* D3D11Texture = GetD3D11TextureFromRHITexture(InTexture);
+	FD3D11Texture* D3D11Texture = ResourceCast(InTexture);
 	return D3D11Texture->GetShaderResourceView();
 }
 

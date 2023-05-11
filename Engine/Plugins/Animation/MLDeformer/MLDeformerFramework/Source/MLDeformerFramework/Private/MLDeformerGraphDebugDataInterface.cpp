@@ -1,7 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MLDeformerGraphDebugDataInterface.h"
-#include "MLDeformerGraphDataInterface.h"
 #include "MLDeformerModelInstance.h"
 #include "MLDeformerAsset.h"
 #include "MLDeformerComponent.h"
@@ -14,9 +13,13 @@
 #include "RenderGraphUtils.h"
 #include "RenderGraphResources.h"
 #include "Rendering/SkeletalMeshModel.h"
+#include "Rendering/SkeletalMeshLODRenderData.h"
+#include "Rendering/SkeletalMeshRenderData.h"
+#include "ShaderCompilerCore.h"
 #include "ShaderParameterMetadataBuilder.h"
 #include "SkeletalRenderPublic.h"
-#include "NeuralNetwork.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MLDeformerGraphDebugDataInterface)
 
 TArray<FOptimusCDIPinDefinition> UMLDeformerGraphDebugDataInterface::GetPinDefinitions() const
 {
@@ -41,7 +44,7 @@ void UMLDeformerGraphDebugDataInterface::GetSupportedInputs(TArray<FShaderFuncti
 
 	OutFunctions.AddDefaulted_GetRef()
 		.SetName(TEXT("ReadHeatMapMode"))
-		.AddReturnType(EShaderFundamentalType::Uint);
+		.AddReturnType(EShaderFundamentalType::Int);
 
 	OutFunctions.AddDefaulted_GetRef()
 		.SetName(TEXT("ReadHeatMapMax"))
@@ -58,17 +61,36 @@ void UMLDeformerGraphDebugDataInterface::GetSupportedInputs(TArray<FShaderFuncti
 }
 
 BEGIN_SHADER_PARAMETER_STRUCT(FMLDeformerGraphDebugDataInterfaceParameters, )
-	MLDEFORMER_DEBUG_SHADER_PARAMETERS()
+	SHADER_PARAMETER(uint32, NumVertices)
+	SHADER_PARAMETER(uint32, InputStreamStart)
+	SHADER_PARAMETER(int32, HeatMapMode)
+	SHADER_PARAMETER(float, HeatMapMax)
+	SHADER_PARAMETER(float, GroundTruthLerp)
+	SHADER_PARAMETER(uint32, GroundTruthBufferSize)
+	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float>, PositionGroundTruthBuffer)
+	SHADER_PARAMETER_SRV(Buffer<uint>, VertexMapBuffer)
 END_SHADER_PARAMETER_STRUCT()
 
 FString UMLDeformerGraphDebugDataInterface::GetDisplayName() const
 {
-	return TEXT("ML Deformer Debug");
+	return TEXT("MLD Model Debug");
 }
 
 void UMLDeformerGraphDebugDataInterface::GetShaderParameters(TCHAR const* UID, FShaderParametersMetadataBuilder& InOutBuilder, FShaderParametersMetadataAllocations& InOutAllocations) const
 {
 	InOutBuilder.AddNestedStruct<FMLDeformerGraphDebugDataInterfaceParameters>(UID);
+}
+
+TCHAR const* UMLDeformerGraphDebugDataInterface::TemplateFilePath = TEXT("/Plugin/MLDeformerFramework/Private/MLDeformerModelHeatMap.ush");
+
+TCHAR const* UMLDeformerGraphDebugDataInterface::GetShaderVirtualPath() const
+{
+	return TemplateFilePath;
+}
+
+void UMLDeformerGraphDebugDataInterface::GetShaderHash(FString& InOutKey) const
+{
+	GetShaderFileHash(TemplateFilePath, EShaderPlatform::SP_PCD3D_SM5).AppendString(InOutKey);
 }
 
 void UMLDeformerGraphDebugDataInterface::GetHLSL(FString& OutHLSL, FString const& InDataInterfaceName) const
@@ -79,7 +101,7 @@ void UMLDeformerGraphDebugDataInterface::GetHLSL(FString& OutHLSL, FString const
 	};
 
 	FString TemplateFile;
-	LoadShaderSourceFile(TEXT("/Plugin/MLDeformerFramework/Private/MLDeformerGraphHeatMapDataInterface.ush"), EShaderPlatform::SP_PCD3D_SM5, &TemplateFile, nullptr);
+	LoadShaderSourceFile(TemplateFilePath, EShaderPlatform::SP_PCD3D_SM5, &TemplateFile, nullptr);
 	OutHLSL += FString::Format(*TemplateFile, TemplateArgs);
 }
 
@@ -91,45 +113,33 @@ UComputeDataProvider* UMLDeformerGraphDebugDataInterface::CreateDataProvider(TOb
 	{
 		Provider->DeformerAsset = Provider->DeformerComponent->GetDeformerAsset();
 	}
-	MLDEFORMER_EDITORDATA_ONLY(
+
+	#if WITH_EDITORONLY_DATA
 		if (Provider->DeformerAsset != nullptr)
 		{
 			Provider->Init();
 		}
-	,)
+	#endif
+
 	return Provider;
-}
-
-bool UMLDeformerGraphDebugDataProvider::IsValid() const
-{
-#if WITH_EDITORONLY_DATA
-	if (DeformerComponent == nullptr || DeformerComponent->GetDeformerAsset() == nullptr || DeformerComponent->GetModelInstance() == nullptr)
-	{
-		return false;
-	}
-
-	return DeformerComponent->GetModelInstance()->IsValidForDataProvider();
-#else
-	return false; // This data interface is only valid in editor.
-#endif
 }
 
 FComputeDataProviderRenderProxy* UMLDeformerGraphDebugDataProvider::GetRenderProxy()
 {
 #if WITH_EDITORONLY_DATA
-	UE::MLDeformer::FMLDeformerGraphDebugDataProviderProxy* Proxy = new UE::MLDeformer::FMLDeformerGraphDebugDataProviderProxy(DeformerComponent, DeformerAsset, this);
-	if (DeformerAsset)
+	if (DeformerComponent && DeformerAsset && DeformerComponent->GetModelInstance() && DeformerComponent->GetModelInstance()->IsValidForDataProvider())
 	{
+		UE::MLDeformer::FMLDeformerGraphDebugDataProviderProxy* Proxy = new UE::MLDeformer::FMLDeformerGraphDebugDataProviderProxy(DeformerComponent, DeformerAsset, this);
 		const float SampleTime = DeformerComponent->GetModelInstance()->GetSkeletalMeshComponent()->GetPosition();
 		UMLDeformerModel* Model = DeformerAsset->GetModel();
 		Model->SampleGroundTruthPositions(SampleTime, Proxy->GetGroundTruthPositions());
 		Proxy->HandleZeroGroundTruthPositions();
 		return Proxy;
 	}
-	return nullptr;
-#else
-	return nullptr;
 #endif
+
+	// Return default invalid proxy.
+	return new FComputeDataProviderRenderProxy();
 }
 
 #if WITH_EDITORONLY_DATA
@@ -140,7 +150,7 @@ namespace UE::MLDeformer
 	{
 		Provider = InProvider;
 
-		if (DeformerAsset)
+		if (DeformerComponent && DeformerAsset)
 		{
 			const UMLDeformerModel* Model = DeformerAsset->GetModel();	
 			const UMLDeformerVizSettings* VizSettings = Model->GetVizSettings();
@@ -172,6 +182,20 @@ namespace UE::MLDeformer
 		}
 	}
 
+	bool FMLDeformerGraphDebugDataProviderProxy::IsValid(FValidationData const& InValidationData) const
+	{
+		if (InValidationData.ParameterStructSize != sizeof(FMLDeformerGraphDebugDataInterfaceParameters))
+		{
+			return false;
+		}
+		if (SkeletalMeshObject == nullptr || VertexMapBufferSRV == nullptr)
+		{
+			return false;
+		}
+
+		return true;
+	}
+
 	void FMLDeformerGraphDebugDataProviderProxy::AllocateResources(FRDGBuilder& GraphBuilder)
 	{
 		GroundTruthBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(float), 3 * GroundTruthPositions.Num()), TEXT("MLDeformer.GroundTruthPositions"));
@@ -179,11 +203,24 @@ namespace UE::MLDeformer
 		GraphBuilder.QueueBufferUpload(GroundTruthBuffer, GroundTruthPositions.GetData(), sizeof(FVector3f) * GroundTruthPositions.Num(), ERDGInitialDataFlags::None);
 	}
 
-	void FMLDeformerGraphDebugDataProviderProxy::GatherDispatchData(FDispatchSetup const& InDispatchSetup, FCollectedDispatchData& InOutDispatchData)
+	void FMLDeformerGraphDebugDataProviderProxy::GatherDispatchData(FDispatchData const& InDispatchData)
 	{
-		MLDEFORMER_GRAPH_DISPATCH_START(FMLDeformerGraphDebugDataInterfaceParameters, InDispatchSetup, InOutDispatchData)
-		MLDEFORMER_GRAPH_DISPATCH_DEFAULT_DEBUG_PARAMETERS()
-		MLDEFORMER_GRAPH_DISPATCH_END()
+		const FSkeletalMeshRenderData& SkeletalMeshRenderData = SkeletalMeshObject->GetSkeletalMeshRenderData();
+		const FSkeletalMeshLODRenderData* LodRenderData = SkeletalMeshRenderData.GetPendingFirstLOD(0);
+		const TStridedView<FMLDeformerGraphDebugDataInterfaceParameters> ParameterArray = MakeStridedParameterView<FMLDeformerGraphDebugDataInterfaceParameters>(InDispatchData);
+		for (int32 InvocationIndex = 0; InvocationIndex < ParameterArray.Num(); ++InvocationIndex)
+		{
+			const FSkelMeshRenderSection& RenderSection = LodRenderData->RenderSections[InvocationIndex];
+			FMLDeformerGraphDebugDataInterfaceParameters& Parameters = ParameterArray[InvocationIndex];
+			Parameters.NumVertices = InDispatchData.bUnifiedDispatch ? LodRenderData->GetNumVertices() : RenderSection.GetNumVertices();
+			Parameters.InputStreamStart = InDispatchData.bUnifiedDispatch ? 0 : RenderSection.BaseVertexIndex;
+			Parameters.HeatMapMode = HeatMapMode;
+			Parameters.HeatMapMax = HeatMapMax;
+			Parameters.GroundTruthLerp = GroundTruthLerp;
+			Parameters.GroundTruthBufferSize = GroundTruthPositions.Num();
+			Parameters.PositionGroundTruthBuffer = GroundTruthBufferSRV;
+			Parameters.VertexMapBuffer = VertexMapBufferSRV;
+		}
 	}
 }	// namespace UE::MLDeformer
 #endif // WITH_EDITORONLY_DATA

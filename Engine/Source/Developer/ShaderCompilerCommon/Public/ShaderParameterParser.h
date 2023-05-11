@@ -10,6 +10,13 @@ struct FShaderCompilerOutput;
 
 enum class EShaderParameterType : uint8;
 
+enum class EBindlessConversionType : uint8
+{
+	None,
+	Resource,
+	Sampler
+};
+
 /** Validates and moves all the shader loose data parameter defined in the root scope of the shader into the root uniform buffer. */
 class SHADERCOMPILERCOMMON_API FShaderParameterParser
 {
@@ -21,6 +28,7 @@ public:
 		const FShaderParametersMetadata::FMember* Member = nullptr;
 
 		/** Information found about the member when parsing the preprocessed code. */
+		FStringView ParsedName; /** View into FShaderParameterParser::OriginalParsedShader */
 		FStringView ParsedType; /** View into FShaderParameterParser::OriginalParsedShader */
 		FStringView ParsedArraySize; /** View into FShaderParameterParser::OriginalParsedShader */
 
@@ -39,31 +47,43 @@ public:
 			return Member != nullptr;
 		}
 
-	private:
 		int32 ParsedPragmaLineoffset = 0;
 		int32 ParsedLineOffset = 0;
 
 		/** Character position of the start and end of the parameter decelaration in FParsedShaderParameter::OriginalParsedShader */
-		int32 ParsedCharOffsetStart = 0;
-		int32 ParsedCharOffsetEnd = 0;
+		int32 ParsedCharOffsetStart = INDEX_NONE;
+		int32 ParsedCharOffsetEnd = INDEX_NONE;
 
-		EShaderParameterType BindlessConversionType{};
+		EBindlessConversionType BindlessConversionType{};
 		EShaderParameterType ConstantBufferParameterType{};
+
+		bool bGloballyCoherent = false;
 
 		friend class FShaderParameterParser;
 	};
 
 	FShaderParameterParser();
-	FShaderParameterParser(TArrayView<const TCHAR*> InExtraSRVTypes, TArrayView<const TCHAR*> InExtraUAVTypes);
-	~FShaderParameterParser();
+	FShaderParameterParser(const TCHAR* InConstantBufferType);
+	FShaderParameterParser(const TCHAR* InConstantBufferType, TArrayView<const TCHAR* const> InExtraSRVTypes, TArrayView<const TCHAR* const> InExtraUAVTypes);
+	virtual ~FShaderParameterParser();
 
 	/** Parses the preprocessed shader code and applies the necessary modifications to it. */
 	bool ParseAndModify(
 		const FShaderCompilerInput& CompilerInput,
 		FShaderCompilerOutput& CompilerOutput,
-		FString& PreprocessedShaderSource,
-		const TCHAR* ConstantBufferType
+		FString& PreprocessedShaderSource
 	);
+
+	UE_DEPRECATED(5.2, "ParseAndModify doesn't need ConstantBufferType anymore")
+	bool ParseAndModify(
+		const FShaderCompilerInput& CompilerInput,
+		FShaderCompilerOutput& CompilerOutput,
+		FString& PreprocessedShaderSource,
+		const TCHAR* InConstantBufferType
+	)
+	{
+		return ParseAndModify(CompilerInput, CompilerOutput, PreprocessedShaderSource);
+	}
 
 	/** Parses the preprocessed shader code and move the parameters into root constant buffer */
 	UE_DEPRECATED(5.1, "ParseAndModify should be called instead.")
@@ -71,9 +91,9 @@ public:
 		const FShaderCompilerInput& CompilerInput,
 		FShaderCompilerOutput& CompilerOutput,
 		FString& PreprocessedShaderSource,
-		const TCHAR* ConstantBufferType)
+		const TCHAR* InConstantBufferType)
 	{
-		return ParseAndModify(CompilerInput, CompilerOutput, PreprocessedShaderSource, ConstantBufferType);
+		return ParseAndModify(CompilerInput, CompilerOutput, PreprocessedShaderSource);
 	}
 
 	/** Gets parsing information from a parameter binding name. */
@@ -120,7 +140,7 @@ public:
 		return ExtractFileAndLine(ParsedParameter.ParsedPragmaLineoffset, ParsedParameter.ParsedLineOffset, OutFile, OutLine);
 	}
 
-private:
+protected:
 	/** Parses the preprocessed shader code */
 	bool ParseParameters(
 		const FShaderCompilerInput& CompilerInput,
@@ -140,20 +160,26 @@ private:
 	bool MoveShaderParametersToRootConstantBuffer(
 		const FShaderCompilerInput& CompilerInput,
 		FShaderCompilerOutput& CompilerOutput,
-		FString& PreprocessedShaderSource,
-		const TCHAR* ConstantBufferType
+		FString& PreprocessedShaderSource
 	);
 
 	void ExtractFileAndLine(int32 PragamLineoffset, int32 LineOffset, FString& OutFile, FString& OutLine) const;
 
-	TArray<const TCHAR*> ExtraSRVTypes;
-	TArray<const TCHAR*> ExtraUAVTypes;
+	/**
+	* Generates shader source code to declare a bindless resource or sampler (for automatic bindless conversion).
+	* May be overriden to allow custom implementations for different platforms.
+	*/
+	virtual FString GenerateBindlessParameterDeclaration(const FParsedShaderParameter& ParsedParameter) const;
+
+	const TCHAR* const ConstantBufferType = nullptr;
+
+	const TArray<const TCHAR*> ExtraSRVTypes;
+	const TArray<const TCHAR*> ExtraUAVTypes;
 
 	FString OriginalParsedShader;
 
 	TMap<FString, FParsedShaderParameter> ParsedParameters;
 
-	bool bHasRootParameters = false;
 	bool bBindlessResources = false;
 	bool bBindlessSamplers = false;
 

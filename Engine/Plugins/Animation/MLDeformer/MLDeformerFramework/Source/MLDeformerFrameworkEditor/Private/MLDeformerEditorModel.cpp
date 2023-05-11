@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MLDeformerEditorModel.h"
+#include "IDetailsView.h"
 #include "MLDeformerModule.h"
 #include "MLDeformerModel.h"
 #include "MLDeformerEditorStyle.h"
@@ -14,12 +15,14 @@
 #include "MLDeformerSampler.h"
 #include "MLDeformerModelInstance.h"
 #include "AnimationEditorPreviewActor.h"
+#include "AnimationEditorViewportClient.h"
 #include "AnimPreviewInstance.h"
 #include "Animation/MeshDeformer.h"
 #include "Animation/DebugSkelMeshComponent.h"
 #include "Animation/AnimSequence.h"
 #include "Rendering/SkeletalMeshModel.h"
 #include "Rendering/SkeletalMeshLODModel.h"
+#include "Rendering/SkeletalMeshRenderData.h"
 #include "IPersonaPreviewScene.h"
 #include "IPersonaToolkit.h"
 #include "Modules/ModuleManager.h"
@@ -31,7 +34,8 @@
 #include "GeometryCache.h"
 #include "GeometryCacheMeshData.h"
 #include "GeometryCacheTrack.h"
-#include "NeuralNetwork.h"
+#include "BoneContainer.h"
+#include "Misc/ScopedSlowTask.h"
 
 #define LOCTEXT_NAMESPACE "MLDeformerEditorModel"
 
@@ -121,6 +125,10 @@ namespace UE::MLDeformer
 		InPersonaPreviewScene->AddComponent(SkelMeshComponent, FTransform::Identity);
 		InPersonaPreviewScene->SetAdditionalMeshesSelectable(false);
 		InPersonaPreviewScene->SetPreviewMesh(Mesh);
+		if (SkelMeshComponent->GetAnimInstance())
+		{
+			SkelMeshComponent->GetAnimInstance()->GetRequiredBones().SetUseRAWData(true);
+		}
 
 		// Register the editor actor.
 		const FLinearColor LabelColor = FMLDeformerEditorStyle::Get().GetColor("MLDeformer.BaseMesh.LabelColor");
@@ -234,11 +242,10 @@ namespace UE::MLDeformer
 
 	void FMLDeformerEditorModel::ClearWorld()
 	{
-		TSharedRef<IPersonaPreviewScene> PreviewScene = Editor->GetPersonaToolkit()->GetPreviewScene();
-
 		// First remove actors from the world and add them to the destroy list.
 		TArray<AActor*> ActorsToDestroy;
 		ActorsToDestroy.Reserve(EditorActors.Num());
+		TSharedRef<IPersonaPreviewScene> PreviewScene = Editor->GetPersonaToolkit()->GetPreviewScene();
 		UWorld* World = PreviewScene->GetWorld();
 		for (FMLDeformerEditorActor* EditorActor : EditorActors)
 		{
@@ -252,15 +259,27 @@ namespace UE::MLDeformer
 		// Now delete the editor actors, which removes components.
 		DeleteEditorActors();
 
-		PreviewScene->DeselectAll();
-		PreviewScene->SetPreviewAnimationAsset(nullptr);
-		PreviewScene->SetPreviewMeshComponent(nullptr);
-		PreviewScene->SetActor(nullptr);
-
 		for (AActor* Actor : ActorsToDestroy)
 		{
 			Actor->Destroy();
 		}
+	}
+
+	void FMLDeformerEditorModel::ClearPersonaPreviewScene()
+	{
+		TSharedRef<IPersonaPreviewScene> PreviewScene = Editor->GetPersonaToolkit()->GetPreviewScene();
+		UWorld* World = PreviewScene->GetWorld();
+
+		PreviewScene->DeselectAll();
+		PreviewScene->SetPreviewAnimationAsset(nullptr);
+		PreviewScene->SetPreviewMeshComponent(nullptr);
+		PreviewScene->SetActor(nullptr);
+	}
+
+	void FMLDeformerEditorModel::ClearWorldAndPersonaPreviewScene()
+	{
+		ClearWorld();
+		ClearPersonaPreviewScene();
 	}
 
 	FMLDeformerEditorActor* FMLDeformerEditorModel::CreateEditorActor(const FMLDeformerEditorActor::FConstructSettings& Settings) const
@@ -292,13 +311,25 @@ namespace UE::MLDeformer
 
 	void FMLDeformerEditorModel::Tick(FEditorViewportClient* ViewportClient, float DeltaTime)
 	{
-		// Force the training sequence to use Step interpolation and sample raw animation data.
+		// Force the training sequence to use Step interpolation.
 		// We do this in the Tick, as this is reset to false in the engine sometimes.
 		UAnimSequence* TrainingAnimSequence = Model->GetAnimSequence();
 		if (TrainingAnimSequence)
 		{
-			TrainingAnimSequence->bUseRawDataOnly = true;
 			TrainingAnimSequence->Interpolation = EAnimInterpolationType::Step;
+		}
+
+		// Use raw data for everything.
+		for (FMLDeformerEditorActor* Actor : EditorActors)
+		{
+			if (Actor && Actor->GetSkeletalMeshComponent())
+			{
+				USkeletalMeshComponent* SkelMeshComp = Actor->GetSkeletalMeshComponent();
+				if (SkelMeshComp->GetAnimInstance())
+				{
+					SkelMeshComp->GetAnimInstance()->GetRequiredBones().SetUseRAWData(true);
+				}
+			}
 		}
 
 		// Do the same for the test anim sequence.
@@ -306,9 +337,7 @@ namespace UE::MLDeformer
 		{
 			UAnimSequence* TestAnimSequence = VizSettings->GetTestAnimSequence();
 			if (TestAnimSequence)
-			{
-				TestAnimSequence->bUseRawDataOnly = true;
-
+			{			
 				// Enable step interpolation when doing showing a heatmap vs ground truth.
 				if (VizSettings->HasTestGroundTruth() && VizSettings->GetShowHeatMap() && VizSettings->GetHeatMapMode() == EMLDeformerHeatMapMode::GroundTruth)
 				{
@@ -325,14 +354,15 @@ namespace UE::MLDeformer
 		UpdateLabels();
 		CheckTrainingDataFrameChanged();
 
-		// Update the ML Deformer component's weight.
+		// Update the ML Deformer component of the ML Deformed test actor.
 		FMLDeformerEditorActor* EditorActor = FindEditorActor(ActorID_Test_MLDeformed);
 		if (EditorActor)
 		{
 			UMLDeformerComponent* DeformerComponent = EditorActor->GetMLDeformerComponent();
 			if (DeformerComponent)
 			{		
-				DeformerComponent->SetWeight(Model->GetVizSettings()->GetWeight());
+				DeformerComponent->SetWeight(VizSettings->GetWeight());
+				DeformerComponent->SetQualityLevel(VizSettings->GetQualityLevel());
 			}
 		}
 	}
@@ -430,7 +460,6 @@ namespace UE::MLDeformer
 		UAnimSequence* TrainingAnimSequence = Model->GetAnimSequence();
 		if (TrainingAnimSequence)
 		{
-			TrainingAnimSequence->bUseRawDataOnly = true;
 			TrainingAnimSequence->Interpolation = EAnimInterpolationType::Step;
 		}
 
@@ -452,6 +481,10 @@ namespace UE::MLDeformer
 			SkeletalMeshComponent->SetPosition(CurrentPlayTime);
 			SkeletalMeshComponent->SetPlayRate(TestAnimSpeed);
 			SkeletalMeshComponent->Play(true);
+			if (SkeletalMeshComponent->GetAnimInstance())
+			{
+				SkeletalMeshComponent->GetAnimInstance()->GetRequiredBones().SetUseRAWData(true);
+			}
 		}
 
 		// Update the test base model.
@@ -628,7 +661,6 @@ namespace UE::MLDeformer
 			if (PropertyChangedEvent.ChangeType == EPropertyChangeType::ValueSet)
 			{
 				SetResamplingInputOutputsNeeded(true);
-				UpdateEditorInputInfo();
 				UpdateIsReadyForTrainingState();
 				GetEditor()->GetModelDetailsView()->ForceRefresh();
 			}
@@ -639,7 +671,6 @@ namespace UE::MLDeformer
 		{
 			SetResamplingInputOutputsNeeded(true);
 			UpdateEditorInputInfo();
-			GetEditor()->GetModelDetailsView()->ForceRefresh();
 		}
 		else if (Property->GetFName() == UMLDeformerVizSettings::GetAnimPlaySpeedPropertyName())
 		{
@@ -932,9 +963,9 @@ namespace UE::MLDeformer
 		FText Result;
 		if (InSkelMesh && InAnimSeq)
 		{
-			if (!InSkelMesh->GetSkeleton()->IsCompatible(InAnimSeq->GetSkeleton()))
+			if (!InSkelMesh->GetSkeleton()->IsCompatibleForEditor(InAnimSeq->GetSkeleton()))
 			{
-				Result = LOCTEXT("SkeletonMismatch", "The base skeletal mesh and anim sequence use different skeletons. The animation might not play correctly.");
+				Result = LOCTEXT("SkeletonMismatch", "The base skeletal mesh and anim sequence use incompatible skeletons. The animation might not play correctly.");
 			}
 		}
 		return Result;
@@ -964,14 +995,13 @@ namespace UE::MLDeformer
 	{
 		InputInfo->Reset();
 
-		TArray<FString>& BoneNameStrings = InputInfo->GetBoneNameStrings();
-		TArray<FString>& CurveNameStrings = InputInfo->GetCurveNameStrings();
 		TArray<FName>& BoneNames = InputInfo->GetBoneNames();
 		TArray<FName>& CurveNames = InputInfo->GetCurveNames();
+
 		USkeletalMesh* SkeletalMesh = Model->GetSkeletalMesh();
+		InputInfo->SetSkeletalMesh(SkeletalMesh);
 
 		BoneNames.Reset();
-		BoneNameStrings.Reset();
 		CurveNames.Reset();
 
 		InputInfo->SetNumBaseVertices(Model->GetNumBaseMeshVerts());
@@ -990,11 +1020,10 @@ namespace UE::MLDeformer
 			{
 				// Grab all bone names.
 				const int32 NumBones = RefSkeleton.GetNum();
-				BoneNameStrings.Reserve(NumBones);
+				BoneNames.Reserve(NumBones);
 				for (int32 Index = 0; Index < NumBones; ++Index)
 				{
 					const FName BoneName = RefSkeleton.GetBoneName(Index);
-					BoneNameStrings.Add(BoneName.ToString());
 					BoneNames.Add(BoneName);
 				}
 			}
@@ -1011,7 +1040,6 @@ namespace UE::MLDeformer
 							continue;
 						}
 
-						BoneNameStrings.Add(BoneName.ToString());
 						BoneNames.Add(BoneName);
 					}
 				}
@@ -1029,11 +1057,6 @@ namespace UE::MLDeformer
 				if (Model->GetCurveIncludeList().IsEmpty())
 				{
 					SmartNameMapping->FillNameArray(CurveNames);
-					CurveNameStrings.Reserve(CurveNames.Num());
-					for (const FName Name : CurveNames)
-					{
-						CurveNameStrings.Add(Name.ToString());
-					}
 				}
 				else // A list of curve names was provided.
 				{
@@ -1048,13 +1071,16 @@ namespace UE::MLDeformer
 								continue;
 							}
 
-							CurveNameStrings.Add(CurveName.ToString());
 							CurveNames.Add(CurveName);
 						}
 					}
 				}
 			}
 		}
+
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		InputInfo->UpdateNameStrings();
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	void FMLDeformerEditorModel::InitBoneIncludeListToAnimatedBonesOnly()
@@ -1065,7 +1091,7 @@ namespace UE::MLDeformer
 			return;
 		}
 
-		const UAnimDataModel* DataModel = Model->GetAnimSequence()->GetDataModel();
+		const IAnimationDataModel* DataModel = Model->GetAnimSequence()->GetDataModel();
 		if (!DataModel)
 		{
 			UE_LOG(LogMLDeformer, Warning, TEXT("Anim sequence has no data model."));
@@ -1089,25 +1115,28 @@ namespace UE::MLDeformer
 		TArray<FName> AnimatedBoneList;
 		const FReferenceSkeleton& RefSkeleton = Skeleton->GetReferenceSkeleton();
 		const int32 NumBones = RefSkeleton.GetNum();
+
+		TArray<FName> TrackNames;
+		DataModel->GetBoneTrackNames(TrackNames);
+		TArray<FTransform> BoneTransforms;		
 		for (int32 Index = 0; Index < NumBones; ++Index)
 		{
 			const FName BoneName = RefSkeleton.GetBoneName(Index);
-			const int32 BoneTrackIndex = DataModel->GetBoneTrackIndexByName(BoneName);
-			if (BoneTrackIndex == INDEX_NONE)
+			if (!TrackNames.Contains(BoneName))
 			{
 				continue;
 			}
 
 			// Check if there is actually animation data.
-			const FBoneAnimationTrack& BoneAnimTrack = DataModel->GetBoneTrackByIndex(BoneTrackIndex);
-			const TArray<FQuat4f>& Rotations = BoneAnimTrack.InternalTrackData.RotKeys;
+			BoneTransforms.Reset();
+			DataModel->GetBoneTrackTransforms(BoneName, BoneTransforms);
 			bool bIsAnimated = false;
-			if (!Rotations.IsEmpty())
+			if (!BoneTransforms.IsEmpty())
 			{
-				const FQuat4f FirstQuat = Rotations[0];
-				for (const FQuat4f KeyValue : Rotations)
+				const FQuat FirstQuat = BoneTransforms[0].GetRotation();
+				for (const FTransform& KeyValue : BoneTransforms)
 				{
-					if (!KeyValue.Equals(FirstQuat))
+					if (!KeyValue.GetRotation().Equals(FirstQuat))
 					{
 						bIsAnimated = true;
 						break;
@@ -1155,7 +1184,7 @@ namespace UE::MLDeformer
 			return;
 		}
 
-		const UAnimDataModel* DataModel = Model->GetAnimSequence()->GetDataModel();
+		const IAnimationDataModel* DataModel = Model->GetAnimSequence()->GetDataModel();
 		if (!DataModel)
 		{
 			UE_LOG(LogMLDeformer, Warning, TEXT("Anim sequence has no data model."));
@@ -1478,6 +1507,8 @@ namespace UE::MLDeformer
 		Sampler->SetVertexDeltaSpace(EVertexDeltaSpace::PostSkinning);
 		SampleDeltas();
 		Model->InitGPUData();
+
+		UpdateMemoryUsage();
 	}
 
 	FMLDeformerEditorActor* FMLDeformerEditorModel::GetTimelineEditorActor() const
@@ -1491,43 +1522,6 @@ namespace UE::MLDeformer
 		{
 			return FindEditorActor(ActorID_Test_GroundTruth);
 		}
-		return nullptr;
-	}
-
-	UNeuralNetwork* FMLDeformerEditorModel::LoadNeuralNetworkFromOnnx(const FString& Filename) const
-	{
-		const FString OnnxFile = FPaths::ConvertRelativePathToFull(Filename);
-		if (FPaths::FileExists(OnnxFile))
-		{
-			UE_LOG(LogMLDeformer, Display, TEXT("Loading Onnx file '%s'..."), *OnnxFile);
-			UNeuralNetwork* Result = NewObject<UNeuralNetwork>(Model, UNeuralNetwork::StaticClass());		
-			if (Result->Load(OnnxFile))
-			{
-				if (Model->IsNeuralNetworkOnGPU())
-				{
-					Result->SetDeviceType(ENeuralDeviceType::GPU, ENeuralDeviceType::CPU, ENeuralDeviceType::GPU);	
-					if (Result->GetDeviceType() != ENeuralDeviceType::GPU || Result->GetOutputDeviceType() != ENeuralDeviceType::GPU || Result->GetInputDeviceType() != ENeuralDeviceType::CPU)
-					{
-						UE_LOG(LogMLDeformer, Error, TEXT("Neural net in ML Deformer '%s' cannot run on the GPU, it will not be active."), *Model->GetDeformerAsset()->GetName());
-					}
-				}
-				else
-				{
-					Result->SetDeviceType(ENeuralDeviceType::CPU, ENeuralDeviceType::CPU, ENeuralDeviceType::CPU);
-				}
-				UE_LOG(LogMLDeformer, Display, TEXT("Successfully loaded Onnx file '%s'..."), *OnnxFile);
-				return Result;
-			}
-			else
-			{
-				UE_LOG(LogMLDeformer, Error, TEXT("Failed to load Onnx file '%s'"), *OnnxFile);
-			}
-		}
-		else
-		{
-			UE_LOG(LogMLDeformer, Error, TEXT("Onnx file '%s' does not exist!"), *OnnxFile);
-		}
-
 		return nullptr;
 	}
 
@@ -1552,32 +1546,28 @@ namespace UE::MLDeformer
 		return true;
 	}
 
-	bool FMLDeformerEditorModel::LoadTrainedNetwork() const
+	void FMLDeformerEditorModel::UpdateMemoryUsage()
 	{
-		const FString OnnxFile = GetTrainedNetworkOnnxFile();
-		UNeuralNetwork* Network = LoadNeuralNetworkFromOnnx(OnnxFile);
-		if (Network)
-		{
-			Model->SetNeuralNetwork(Network);
-			return true;
-		}
-
-		return false;
-	}
-
-	bool FMLDeformerEditorModel::IsTrained() const
-	{
-		return (Model->GetNeuralNetwork() != nullptr);
+		Model->InvalidateMemUsage();
 	}
 
 	void FMLDeformerEditorModel::TriggerInputAssetChanged(bool bRefreshVizSettings)
 	{
 		OnInputAssetsChanged();
 		OnPostInputAssetChanged();
-		GetEditor()->GetModelDetailsView()->ForceRefresh();
+		UpdateMemoryUsage();
+
+		if (Editor->GetModelDetailsView())
+		{
+			Editor->GetModelDetailsView()->ForceRefresh();
+		}
+
 		if (bRefreshVizSettings)
 		{
-			GetEditor()->GetVizSettingsDetailsView()->ForceRefresh();
+			if (Editor->GetVizSettingsDetailsView())
+			{
+				Editor->GetVizSettingsDetailsView()->ForceRefresh();
+			}
 		}
 	}
 
@@ -1592,7 +1582,77 @@ namespace UE::MLDeformer
 		}
 	}
 
-	void FMLDeformerEditorModel::CreateEngineMorphTargets(TArray<UMorphTarget*>& OutMorphTargets, const TArray<FVector3f>& Deltas, const FString& NamePrefix, int32 LOD, float DeltaThreshold)
+	void FMLDeformerEditorModel::CalcMeshNormals(TArrayView<const FVector3f> VertexPositions, TArrayView<const uint32> IndexArray, TArrayView<const int32> VertexMap, TArray<FVector3f>& OutNormals) const
+	{
+		const int32 NumVertices = VertexPositions.Num();
+		OutNormals.Reset();
+		OutNormals.SetNumZeroed(NumVertices);
+
+		checkf(IndexArray.Num() % 3 == 0, TEXT("Expecting a triangle mesh!"));
+		const int32 NumTriangles = IndexArray.Num() / 3;
+		for (int32 TriangleIndex = 0; TriangleIndex < NumTriangles; ++TriangleIndex)
+		{
+			const int32 ImportedIndices[3]	{ VertexMap[IndexArray[TriangleIndex * 3]], VertexMap[IndexArray[TriangleIndex * 3 + 1]], VertexMap[IndexArray[TriangleIndex * 3 + 2]] };
+			const FVector3f Positions[3]	{ VertexPositions[ImportedIndices[0]], VertexPositions[ImportedIndices[1]], VertexPositions[ImportedIndices[2]] };
+
+			const FVector3f EdgeA = (Positions[1] - Positions[0]).GetSafeNormal();
+			const FVector3f EdgeB = (Positions[2] - Positions[0]).GetSafeNormal();
+			if (EdgeA.SquaredLength() > 0.00001f && EdgeB.SquaredLength() > 0.00001f)
+			{	
+				const FVector3f FaceNormal = EdgeB.Cross(EdgeA);
+				OutNormals[ImportedIndices[0]] += FaceNormal;
+				OutNormals[ImportedIndices[1]] += FaceNormal;
+				OutNormals[ImportedIndices[2]] += FaceNormal;
+			}
+		}
+
+		// Renormalize.
+		for (int32 Index = 0; Index < NumVertices; ++Index)
+		{
+			OutNormals[Index] = OutNormals[Index].GetSafeNormal();
+		}
+	}
+
+	void FMLDeformerEditorModel::GenerateNormalsForMorphTarget(int32 LOD, USkeletalMesh* SkelMesh, int32 MorphTargetIndex, TArrayView<const FVector3f> Deltas, TArrayView<const FVector3f> BaseVertexPositions, TArrayView<FVector3f> BaseNormals, TArray<FVector3f>& OutDeltaNormals)
+	{
+		const FSkeletalMeshModel* ImportedModel = SkelMesh->GetImportedModel();
+		if (ImportedModel == nullptr || !ImportedModel->LODModels.IsValidIndex(LOD))
+		{
+			OutDeltaNormals.Reset();
+			OutDeltaNormals.SetNumZeroed(Model->GetNumBaseMeshVerts());
+			return;
+		}
+		const TArrayView<const uint32> IndexArray = ImportedModel->LODModels[LOD].IndexBuffer;
+		const TArrayView<const int32> VertexMap = ImportedModel->LODModels[LOD].MeshToImportVertexMap;
+
+		// Build the array of displaced vertex positions.
+		TArray<FVector3f> MorphedVertexPositions;
+		const int32 NumBaseMeshVerts = Model->GetNumBaseMeshVerts();
+		MorphedVertexPositions.SetNumUninitialized(NumBaseMeshVerts);
+		for (int32 VertexIndex = 0; VertexIndex < NumBaseMeshVerts; ++VertexIndex)
+		{
+			const int32 DeltaIndex = (MorphTargetIndex * NumBaseMeshVerts) + VertexIndex;
+			MorphedVertexPositions[VertexIndex] = BaseVertexPositions[VertexIndex] + Deltas[DeltaIndex];
+		}
+
+		// Calculate the normals of that displaced mesh.
+		TArray<FVector3f> MorphedNormals;
+		CalcMeshNormals(MorphedVertexPositions, IndexArray, VertexMap, MorphedNormals);
+
+		// Calculate and output the difference between the morphed normal and base normal.
+		OutDeltaNormals.Reset();
+		OutDeltaNormals.SetNumUninitialized(NumBaseMeshVerts);
+		for (int32 VertexIndex = 0; VertexIndex < NumBaseMeshVerts; ++VertexIndex)
+		{
+			OutDeltaNormals[VertexIndex] = MorphedNormals[VertexIndex] - BaseNormals[VertexIndex];
+			if (OutDeltaNormals[VertexIndex].SquaredLength() < 0.00001f)
+			{
+				OutDeltaNormals[VertexIndex] = FVector3f::ZeroVector;
+			}
+		}
+	}
+
+	void FMLDeformerEditorModel::CreateEngineMorphTargets(TArray<UMorphTarget*>& OutMorphTargets, const TArray<FVector3f>& Deltas, const FString& NamePrefix, int32 LOD, float DeltaThreshold, bool bIncludeNormals, EMLDeformerMaskChannel MaskChannel, bool bInvertMaskChannel)
 	{
 		OutMorphTargets.Reset();
 		if (Deltas.IsEmpty())
@@ -1600,11 +1660,23 @@ namespace UE::MLDeformer
 			return;
 		}
 
+		// Used to sort vertices.
+		struct FMLDeformerCompareMorphTargetDeltas
+		{
+			FORCEINLINE bool operator()(const FMorphTargetDelta& A, const FMorphTargetDelta& B) const
+			{
+				return A.SourceIdx < B.SourceIdx;
+			}
+		};
+
 		const int32 NumBaseMeshVerts = Model->GetNumBaseMeshVerts();
 		check(Deltas.Num() % NumBaseMeshVerts == 0);
 		const int32 NumMorphTargets = Deltas.Num() / NumBaseMeshVerts;
 		check((Deltas.Num() / NumMorphTargets) == NumBaseMeshVerts);
 		check(!Model->GetVertexMap().IsEmpty());
+
+		FScopedSlowTask Task(NumMorphTargets, LOCTEXT("CreateEngineMorphTargetProgress", "Creating morph targets"));
+		Task.MakeDialog(false);	
 
 		USkeletalMesh* SkelMesh = Model->GetSkeletalMesh();
 		FSkeletalMeshRenderData* RenderData = SkelMesh->GetResourceForRendering();
@@ -1612,11 +1684,33 @@ namespace UE::MLDeformer
 		check(!RenderData->LODRenderData.IsEmpty());
 		const int32 NumRenderVertices = RenderData->LODRenderData[LOD].GetNumVertices();
 
+		// Calculate the normals for the base mesh.
+		const FSkeletalMeshModel* ImportedModel = SkelMesh->GetImportedModel();
+		check(ImportedModel);
+		check(ImportedModel->LODModels.IsValidIndex(LOD));
+		const TArrayView<const uint32> IndexArray = ImportedModel->LODModels[LOD].IndexBuffer;
+		const TArrayView<const int32> VertexMap = ImportedModel->LODModels[LOD].MeshToImportVertexMap;
+		const TArrayView<const FVector3f> BaseVertexPositions = Sampler->GetUnskinnedVertexPositions();
+
+		TArray<FVector3f> BaseNormals;
+		if (bIncludeNormals)
+		{
+			CalcMeshNormals(BaseVertexPositions, IndexArray, VertexMap, BaseNormals);
+		}
+
+		const FColorVertexBuffer& ColorBuffer = RenderData->LODRenderData[LOD].StaticVertexBuffers.ColorVertexBuffer;
+
 		// Initialize an engine morph target for each model morph target.
 		UE_LOG(LogMLDeformer, Display, TEXT("Initializing %d engine morph targets of %d vertices each"), NumMorphTargets, Deltas.Num() / NumMorphTargets);
-		for (int32 BlendShapeIndex = 0; BlendShapeIndex < NumMorphTargets; ++BlendShapeIndex)
+		TArray<FVector3f> DeltaNormals;
+		for (int32 MorphTargetIndex = 0; MorphTargetIndex < NumMorphTargets; ++MorphTargetIndex)
 		{
-			const FName MorphName = *FString::Printf(TEXT("%s%.3d"), *NamePrefix, BlendShapeIndex);
+			if (bIncludeNormals)
+			{
+				GenerateNormalsForMorphTarget(LOD, SkelMesh, MorphTargetIndex, Deltas, BaseVertexPositions, BaseNormals, DeltaNormals);
+			}
+
+			const FName MorphName = *FString::Printf(TEXT("%s%.3d"), *NamePrefix, MorphTargetIndex);
 			UMorphTarget* MorphTarget = NewObject<UMorphTarget>(SkelMesh, MorphName);
 			MorphTarget->BaseSkelMesh = SkelMesh;
 			OutMorphTargets.Add(MorphTarget);
@@ -1630,42 +1724,66 @@ namespace UE::MLDeformer
 			MorphLODModel.Reset();
 			MorphLODModel.bGeneratedByEngine = true;
 			MorphLODModel.NumBaseMeshVerts = NumRenderVertices;
-			MorphLODModel.NumVertices = NumRenderVertices;
-
-			// Init sections.
-			const int32 NumSections = RenderData->LODRenderData[LOD].RenderSections.Num();
-			MorphLODModel.SectionIndices.AddUninitialized(NumSections);
-			for (int32 SectionIndex = 0; SectionIndex < NumSections; ++SectionIndex)
-			{
-				MorphLODModel.SectionIndices[SectionIndex] = SectionIndex;
-			}
 
 			// Init deltas for this morph target.
-			const TArray<int32>& VertexMap = Model->GetVertexMap();
 			MorphLODModel.Vertices.Reserve(NumRenderVertices);
 			for (int32 VertexIndex = 0; VertexIndex < NumRenderVertices; ++VertexIndex)
 			{
 				const int32 ImportedVertexNumber = VertexMap[VertexIndex];
 				if (ImportedVertexNumber != INDEX_NONE)
 				{
-					const FVector3f Delta = Deltas[ImportedVertexNumber + BlendShapeIndex * NumBaseMeshVerts];
+					float VertexWeight = 1.0f;
+					if (ColorBuffer.GetNumVertices() != 0 && MaskChannel != EMLDeformerMaskChannel::Disabled)
+					{
+						const FLinearColor& VertexColor = ColorBuffer.VertexColor(VertexIndex);
+						switch (MaskChannel)
+						{
+							case EMLDeformerMaskChannel::VertexColorRed:	{ VertexWeight = VertexColor.R; break; }
+							case EMLDeformerMaskChannel::VertexColorGreen:	{ VertexWeight = VertexColor.G; break; }
+							case EMLDeformerMaskChannel::VertexColorBlue:	{ VertexWeight = VertexColor.B; break; }
+							case EMLDeformerMaskChannel::VertexColorAlpha:	{ VertexWeight = VertexColor.A; break; }
+							default: 
+								checkf(false, TEXT("Unexpected mask channel value."));
+								break;
+						};
+
+						if (bInvertMaskChannel)
+						{
+							VertexWeight = FMath::Clamp<float>(1.0f - VertexWeight, 0.0f, 1.0f);
+						}
+					}
+
+					// Update the sections.
+					int32 SectionIndex = INDEX_NONE;
+					int32 SectionVertexIndex = INDEX_NONE;
+					ImportedModel->LODModels[LOD].GetSectionFromVertexIndex(VertexIndex, SectionIndex, SectionVertexIndex);
+
+					const FVector3f Delta = Deltas[ImportedVertexNumber + MorphTargetIndex * NumBaseMeshVerts] * VertexWeight;
 					if (Delta.Length() > DeltaThreshold)
 					{
 						MorphLODModel.Vertices.AddDefaulted();
 						FMorphTargetDelta& MorphTargetDelta = MorphLODModel.Vertices.Last();
 						MorphTargetDelta.PositionDelta = Delta;
 						MorphTargetDelta.SourceIdx = VertexIndex;
-						MorphTargetDelta.TangentZDelta = FVector3f::ZeroVector;
+						MorphTargetDelta.TangentZDelta = bIncludeNormals ? DeltaNormals[ImportedVertexNumber] * VertexWeight : FVector3f::ZeroVector;
+
+						MorphLODModel.SectionIndices.AddUnique(SectionIndex);
 					}
 				}
 			}
 
 			MorphLODModel.Vertices.Shrink();
+			MorphLODModel.Vertices.Sort(FMLDeformerCompareMorphTargetDeltas());
+			MorphLODModel.NumVertices = MorphLODModel.Vertices.Num();
+			Task.EnterProgressFrame();
 		}
 	}
 
 	void FMLDeformerEditorModel::CompressEngineMorphTargets(FMorphTargetVertexInfoBuffers& OutMorphBuffers, const TArray<UMorphTarget*>& MorphTargets, int32 LOD, float MorphErrorTolerance)
 	{
+		FScopedSlowTask Task(2, LOCTEXT("CompressEngineMorphTargetProgress", "Compressing morph targets"));
+		Task.MakeDialog(false);	
+
 		USkeletalMesh* SkelMesh = Model->GetSkeletalMesh();
 		FSkeletalMeshRenderData* RenderData = SkelMesh->GetResourceForRendering();
 		check(RenderData);
@@ -1692,6 +1810,28 @@ namespace UE::MLDeformer
 			LOD,
 			MorphErrorTolerance
 		);
+
+		Task.EnterProgressFrame();
+
+		// Reinit the render resources.
+		if (OutMorphBuffers.IsMorphCPUDataValid() && OutMorphBuffers.GetNumMorphs() > 0 && OutMorphBuffers.GetNumBatches() > 0)
+		{
+			BeginInitResource(&OutMorphBuffers);
+		}
+
+		// Update the editor actor skel mesh components for all the ones that also have an ML Deformer on it.
+		for (FMLDeformerEditorActor* EditorActor : EditorActors)
+		{
+			const UMLDeformerComponent* MLDeformerComponent = EditorActor->GetMLDeformerComponent();
+			USkeletalMeshComponent* SkelMeshComponent = EditorActor->GetSkeletalMeshComponent();
+			if (SkelMeshComponent && MLDeformerComponent)
+			{
+				SkelMeshComponent->RefreshExternalMorphTargetWeights();
+			}
+		}
+
+		UpdateMemoryUsage();
+		Task.EnterProgressFrame();
 	}
 
 	void FMLDeformerEditorModel::DrawMorphTarget(FPrimitiveDrawInterface* PDI, const TArray<FVector3f>& MorphDeltas, float DeltaThreshold, int32 MorphTargetIndex, const FVector& DrawOffset)
@@ -1702,17 +1842,18 @@ namespace UE::MLDeformer
 			const int32 NumVerts = Model->GetNumBaseMeshVerts();
 			check(MorphDeltas.Num() % NumVerts == 0);
 
-			const TArray<FVector3f>& SkinnedPositions = Sampler->GetUnskinnedVertexPositions();
-			check(NumVerts == SkinnedPositions.Num());
+			const TArray<FVector3f>& UnskinnedPositions = Sampler->GetUnskinnedVertexPositions();
+			check(NumVerts == UnskinnedPositions.Num());
 
 			// Draw all deltas.			
 			const int32 NumMorphTargets = MorphDeltas.Num() / NumVerts;
 			const int32 FinalMorphTargetIndex = FMath::Clamp<int32>(MorphTargetIndex, 0, NumMorphTargets - 1);
-			const FLinearColor IncludedColor(1.0f, 0.0f, 1.0f);
-			const FLinearColor ExcludedColor(0.1f, 0.1f, 0.1f);
+
+			const FLinearColor IncludedColor = FMLDeformerEditorStyle::Get().GetColor("MLDeformer.Morphs.IncludedVertexColor");
+			const FLinearColor ExcludedColor = FMLDeformerEditorStyle::Get().GetColor("MLDeformer.Morphs.ExcludedVertexColor");
 			for (int32 VertexIndex = 0; VertexIndex < NumVerts; ++VertexIndex)
 			{
-				const FVector StartPoint = FVector(SkinnedPositions[VertexIndex].X, SkinnedPositions[VertexIndex].Y, SkinnedPositions[VertexIndex].Z) + DrawOffset;
+				const FVector StartPoint = FVector(UnskinnedPositions[VertexIndex]) + DrawOffset;
 				const int32 DeltaArrayOffset = NumVerts * FinalMorphTargetIndex + VertexIndex;
 				const FVector Delta(MorphDeltas[DeltaArrayOffset]);
 
@@ -1975,6 +2116,16 @@ namespace UE::MLDeformer
 	{ 
 		UE_LOG(LogMLDeformer, Warning, TEXT("Please override the FMLDeformerEditorModel::GetNumTrainingFrames() method inside your derived editor model class."));
 		return 0;
+	}
+
+	UMLDeformerComponent* FMLDeformerEditorModel::FindMLDeformerComponent(int32 ActorID) const
+	{
+		const FMLDeformerEditorActor* EditorActor = FindEditorActor(ActorID);
+		if (EditorActor)
+		{
+			return EditorActor->GetMLDeformerComponent();
+		}
+		return nullptr;
 	}
 }	// namespace UE::MLDeformer
 

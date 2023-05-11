@@ -10,7 +10,6 @@
 #include "BoneContainer.h"
 #include "RenderCommandFence.h"
 #include "RenderResource.h"
-#include "NeuralNetwork.h"
 #include "Animation/AnimSequence.h"
 #include "MLDeformerCurveReference.h"
 #include "MLDeformerModel.generated.h"
@@ -20,9 +19,41 @@ class UMLDeformerVizSettings;
 class UMLDeformerModelInstance;
 class UMLDeformerComponent;
 class UMLDeformerInputInfo;
+class UNeuralNetwork;
+
+/** The channel to get the mask data from. */
+UENUM()
+enum class EMLDeformerMaskChannel : uint8
+{
+	/** Disable the weight mask. */
+	Disabled,
+
+	/** The red vertex color channel. */
+	VertexColorRed,
+
+	/** The green vertex color channel. */
+	VertexColorGreen,
+
+	/** The blue vertex color channel. */
+	VertexColorBlue,
+
+	/** The alpha vertex color channel. */
+	VertexColorAlpha
+};
+
 
 namespace UE::MLDeformer
 {
+	/** The memory usage request flags, which you pass UMLDeformer::GetMemUsageInBytes method. */
+	enum class EMemUsageRequestFlags : uint8
+	{
+		/** Get the uncooked memory, so inside the editor. */
+		Uncooked,
+
+		/** Get the memory usage as we if are cooked. */
+		Cooked
+	};
+
 	/**
 	 * The vertex map, but in a GPU buffer. 
 	 * This map basically has a DCC vertex number for every render vertex.
@@ -118,6 +149,15 @@ public:
 	virtual bool DoesSupportCurves() const					{ return true; }
 
 	/**
+	 * Does this model support deformer quality levels?
+	 * For example Morph based models can disable certain morph targets based on this quality level.
+	 * On default this is disabled for models. You can override this method and make it return true to support it.
+	 * Morph based models on enable this on default.
+	 * @return Returns true when Deformer Quality is supported, otherwise false is returned.
+	 */
+	virtual bool DoesSupportQualityLevels() const			{ return false; }
+
+	/**
 	 * Check whether the neural network of this model should run on the GPU or not.
 	 * This is false on default, which makes it a CPU based neural network.
 	 * Some code internally that creates and initializes the neural network will use the return value of this method to mark it to be on CPU or GPU.
@@ -146,6 +186,11 @@ public:
 	 */
 	void SetSkeletalMesh(USkeletalMesh* SkelMesh)			{ SkeletalMesh = SkelMesh; }
 
+	UE_DEPRECATED(5.2, "This method will be deleted. We are moving neural networks into the derived models instead. This method will not do anything.")
+	virtual void SetNeuralNetwork(UNeuralNetwork* InNeuralNetwork) {}
+
+	UE_DEPRECATED(5.2, "This method will be deleted. We are moving neural networks into the derived models instead. A nullptr will be returned.")
+	UNeuralNetwork* GetNeuralNetwork() const				{ return nullptr; }
 
 #if WITH_EDITORONLY_DATA
 	/**
@@ -189,6 +234,31 @@ public:
 	 * @return The number of imported vertices, which is the vertex count as seen in the DCC.
 	 */ 
 	static int32 ExtractNumImportedSkinnedVertices(const USkeletalMesh* SkeletalMesh);
+
+	/** Call this if you want it to recalculate the memory usage again after the tick has completed. */
+	void InvalidateMemUsage();
+
+	/** 
+	 * Check whether we invalidated the memory usage. If this returns true, we need to recompute it.
+	 * @return Returns true when we should make a call to UpdateMemoryUsage.
+	 */
+	bool IsMemUsageInvalidated() const;
+
+	/**
+	 * Get the memory usage for this model.
+	 * @param Flags The memory request flags.
+	 * @return The number of bytes that this model uses.
+	 */
+	uint64 GetMemUsageInBytes(UE::MLDeformer::EMemUsageRequestFlags Flags) const;
+
+	/**
+	 * Get the GPU memory usage for this model.
+	 * @return The number of bytes that this model uses.
+	 */
+	uint64 GetGPUMemUsageInBytes() const;
+
+	/** Force update the cached memory usage. */
+	virtual void UpdateMemoryUsage();
 #endif
 
 	// UObject overrides.
@@ -250,19 +320,6 @@ public:
 	 * @see GetVertexMap
 	 */
 	const UE::MLDeformer::FVertexMapBuffer& GetVertexMapBuffer() const { return VertexMapBuffer; }
-
-	/**
-	 * Get the neural network that we have trained. This can return a nullptr when no network has been trained yet.
-	 * This network is used during inference.
-	 * @return A pointer to the neural network, or nullptr when the network has not yet been trained.
-	 */
-	UNeuralNetwork* GetNeuralNetwork() const					{ return NeuralNetwork.Get(); }
-
-	/**
-	 * Set the neural network object that we use during inference.
-	 * @param InNeuralNetwork The new neural network to use inside this deformer model.
-	 */
-	void SetNeuralNetwork(UNeuralNetwork* InNeuralNetwork);
 
 	/**
 	 * Get the neural network modified delegate.
@@ -443,6 +500,12 @@ public:
 	static FName GetDeltaCutoffLengthPropertyName()		{ return GET_MEMBER_NAME_CHECKED(UMLDeformerModel, DeltaCutoffLength); }
 #endif	// #if WITH_EDITORONLY_DATA
 
+	/** @return The number of floats per bone in network input. */
+	virtual int32 GetNumFloatsPerBone() const { return NumFloatsPerBone; }
+
+	/** @return The number of floats per curve in network input. */
+	virtual int32 GetNumFloatsPerCurve() const { return NumFloatsPerCurve; }
+
 protected:
 	/**
 	 * Set the training input information.
@@ -474,6 +537,21 @@ protected:
 	 * @param NumVerts The number of vertices.
 	 */
 	void SetNumTargetMeshVerts(int32 NumVerts)			{ NumTargetMeshVerts = NumVerts; }
+
+protected:
+#if WITH_EDITOR
+	/** Should we recalculate the memory usage? */
+	bool bInvalidateMemUsage = true;
+
+	/** The computed memory usage. */
+	uint64 MemUsageInBytes = 0;
+
+	/** The cooked memory usage. */
+	uint64 CookedMemUsageInBytes = 0;
+
+	/** GPU memory usage. */
+	uint64 GPUMemUsageInBytes = 0;
+#endif
 
 private:
 	/** The deformer asset that this model is part of. */
@@ -509,13 +587,15 @@ private:
 	UPROPERTY()
 	TArray<int32> VertexMap;
 
-	/** The neural network that is used during inference. */
-	UPROPERTY()
-	TObjectPtr<UNeuralNetwork> NeuralNetwork = nullptr;
-
 	/** The skeletal mesh that represents the linear skinned mesh. */
 	UPROPERTY(EditAnywhere, Category = "Base Mesh")
 	TObjectPtr<USkeletalMesh> SkeletalMesh = nullptr;
+
+	/** The number of floats per bone in network input. */
+	static constexpr int32 NumFloatsPerBone = 6;
+
+	/** The number of floats per curve in network input. */
+	static constexpr int32 NumFloatsPerCurve = 1;
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()

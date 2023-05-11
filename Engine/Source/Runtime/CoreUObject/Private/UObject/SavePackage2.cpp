@@ -2,6 +2,7 @@
 
 
 #include "UObject/SavePackage.h"
+#include "UObject/LinkerLoad.h"
 
 #if UE_WITH_SAVEPACKAGE
 #include "AssetRegistry/AssetData.h"
@@ -10,6 +11,7 @@
 #include "HAL/FileManager.h"
 #include "Internationalization/TextPackageNamespaceUtil.h"
 #include "Internationalization/PackageLocalizationManager.h"
+#include "Interfaces/ITargetPlatform.h"
 #include "IO/IoDispatcher.h"
 #include "Misc/AssetRegistryInterface.h"
 #include "Misc/ConfigCacheIni.h"
@@ -21,6 +23,7 @@
 #include "Misc/ScopedSlowTask.h"
 #include "Misc/SecureHash.h"
 #include "ProfilingDebugging/CookStats.h"
+#include "Serialization/ArchiveProxy.h"
 #include "Serialization/ArchiveUObjectFromStructuredArchive.h"
 #include "Serialization/ArchiveStackTrace.h"
 #include "Serialization/EditorBulkData.h"
@@ -60,7 +63,7 @@ static FAutoConsoleVariableRef CVar_FixupStandaloneFlags(
 	TEXT("If non-zero, when the UAsset of a package is missing RF_Standalone, the flag is added. If zero, the flags are not changed and the save fails.")
 );
 
-ESavePackageResult WriteAdditionalFiles(FSaveContext& SaveContext, FScopedSlowTask& SlowTask, int64 LinkerSize);
+ESavePackageResult WriteAdditionalFiles(FSaveContext& SaveContext, FScopedSlowTask& SlowTask, int64& VirtualExportsFileOffset);
 
 ESavePackageResult ReturnSuccessOrCancel()
 {
@@ -248,7 +251,7 @@ void PreSavePackage(FSaveContext& SaveContext)
 	// if the in memory package filename is different the filename we are saving it to,
 	// regenerate a new persistent id for it.
 	UPackage* Package = SaveContext.GetPackage();
-	if (!SaveContext.IsCooking() && !SaveContext.IsFromAutoSave() && !Package->GetLoadedPath().IsEmpty() && Package->GetLoadedPath() != SaveContext.GetTargetPackagePath())
+	if (!SaveContext.IsProceduralSave() && !SaveContext.IsFromAutoSave() && !Package->GetLoadedPath().IsEmpty() && Package->GetLoadedPath() != SaveContext.GetTargetPackagePath())
 	{
 		Package->SetPersistentGuid(FGuid::NewGuid());
 	}
@@ -272,7 +275,8 @@ ESavePackageResult RoutePresave(FSaveContext& SaveContext)
 		{
 			if (SaveContext.IsCooking() && Object->HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject))
 			{
-				FArchiveObjectCrc32NonEditorProperties CrcArchive;
+				FArchiveObjectCrc32 CrcArchive;
+				CrcArchive.ArIsFilterEditorOnly = true;
 				int32 Before = CrcArchive.Crc32(Object);
 				UE::SavePackageUtilities::CallPreSave(Object, SaveContext.GetObjectSaveContext());
 				int32 After = CrcArchive.Crc32(Object);
@@ -525,25 +529,6 @@ ESavePackageResult ValidateExports(FSaveContext& SaveContext)
 		}
 	}
 
-#if WITH_EDITOR
-	if (GOutputCookingWarnings)
-	{
-		// check the name list for UniqueObjectNameForCooking cooking
-		if (SaveContext.NameExists(NAME_UniqueObjectNameForCookingComparisonIndex))
-		{
-			for (const FTaggedExport& Export : SaveContext.GetExports())
-			{
-				FName NameInUse = Export.Obj->GetFName();
-				if (NameInUse.GetComparisonIndex() == NAME_UniqueObjectNameForCookingComparisonIndex)
-				{
-					UObject* Outer = Export.Obj->GetOuter();
-					UE_LOG(LogSavePackage, Warning, TEXT("Saving object into cooked package %s which was created at cook time, Object Name %s, Full Path %s, Class %s, Outer %s, Outer class %s"), SaveContext.GetFilename(), *NameInUse.ToString(), *Export.Obj->GetFullName(), *Export.Obj->GetClass()->GetName(), Outer ? *Outer->GetName() : TEXT("None"), Outer ? *Outer->GetClass()->GetName() : TEXT("None"));
-				}
-			}
-		}
-	}
-#endif
-
 	// If this is a map package, make sure there is a world or level in the export map.
 	if (SaveContext.GetPackage()->ContainsMap())
 	{
@@ -575,7 +560,42 @@ ESavePackageResult ValidateExports(FSaveContext& SaveContext)
 		}
 	}
 
+	// Validate External Export Rules
+	if (SaveContext.HasExternalExportValidations())
+	{
+		TSet<UObject*> Exports;
+		Algo::Transform(SaveContext.GetExports(), Exports, [](const FTaggedExport& InExport) { return InExport.Obj; });
+
+		for (const TFunction<FSavePackageSettings::ExternalExportValidationFunc>& ValidateExport : SaveContext.GetExternalExportValidations())
+		{
+			SaveContext.Result = ValidateExport({ SaveContext.GetPackage(), Exports, SaveContext.IsGenerateSaveError() ? SaveContext.GetError() : nullptr });
+			if (SaveContext.Result != ESavePackageResult::Success)
+			{
+				return SaveContext.Result;
+			}
+		}
+	}
+
 	// Cooking checks
+#if WITH_EDITOR
+	if (GOutputCookingWarnings)
+	{
+		// check the name list for UniqueObjectNameForCooking cooking
+		if (SaveContext.NameExists(NAME_UniqueObjectNameForCookingComparisonIndex))
+		{
+			for (const FTaggedExport& Export : SaveContext.GetExports())
+			{
+				FName NameInUse = Export.Obj->GetFName();
+				if (NameInUse.GetComparisonIndex() == NAME_UniqueObjectNameForCookingComparisonIndex)
+				{
+					UObject* Outer = Export.Obj->GetOuter();
+					UE_LOG(LogSavePackage, Warning, TEXT("Saving object into cooked package %s which was created at cook time, Object Name %s, Full Path %s, Class %s, Outer %s, Outer class %s"), SaveContext.GetFilename(), *NameInUse.ToString(), *Export.Obj->GetFullName(), *Export.Obj->GetClass()->GetName(), Outer ? *Outer->GetName() : TEXT("None"), Outer ? *Outer->GetClass()->GetName() : TEXT("None"));
+				}
+			}
+		}
+	}
+#endif
+
 	if (SaveContext.IsCooking())
 	{
 		// Add the exports for the cook checker
@@ -699,6 +719,17 @@ ESavePackageResult ValidateImports(FSaveContext& SaveContext)
 
 	auto IsMapReferenceAllowed = [&SaveContext](UObject* InImport) -> bool
 	{
+		// If we have at least one export that is outered to an object in the import's package, consider the reference as allowed.
+		// Ideally, we would like to only allow imports from exports that shares an outer in the same package, but this will be ok
+		// for now.
+		for (const FTaggedExport& Export : SaveContext.GetExports())
+		{
+			if (Export.Obj->GetOuter()->GetPackage() == InImport->GetPackage())
+			{
+				return true;
+			}
+		}
+
 		if (!InImport->HasAnyFlags(RF_Public))
 		{
 			return false;
@@ -816,8 +847,21 @@ ESavePackageResult ValidateImports(FSaveContext& SaveContext)
 		return ValidateIllegalReferences(SaveContext, PrivateObjects, ObjectsInOtherMaps);
 	}
 
-	ISavePackageValidator* Validator = SaveContext.GetPackageValidator();
-	if (Validator)
+	// Validate External Import Rules
+	if (SaveContext.HasExternalImportValidations())
+	{
+		for (const TFunction<FSavePackageSettings::ExternalImportValidationFunc>& ValidateImport : SaveContext.GetExternalImportValidations())
+		{
+			SaveContext.Result = ValidateImport({ SaveContext.GetPackage(), SaveContext.GetImports(), SaveContext.IsGenerateSaveError() ? SaveContext.GetError() : nullptr });
+			if (SaveContext.Result != ESavePackageResult::Success)
+			{
+				return SaveContext.Result;
+			}
+		}
+	}
+
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	if (ISavePackageValidator* Validator = SaveContext.GetPackageValidator())
 	{
 		ESavePackageResult ValidatorResult = Validator->ValidateImports(Package, Imports);
 		if (ValidatorResult != ESavePackageResult::Success)
@@ -825,6 +869,7 @@ ESavePackageResult ValidateImports(FSaveContext& SaveContext)
 			return ValidatorResult;
 		}
 	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	// Cooking checks
 	// Currently do not use the edl checker for the optional context
@@ -903,7 +948,8 @@ ESavePackageResult CreateLinker(FSaveContext& SaveContext)
 			{
 				if (const FLinkerLoad* LinkerLoad = FLinkerLoad::FindExistingLinkerForPackage(SaveContext.GetPackage()))
 				{
-					if (const UE::FPackageTrailer* Trailer = LinkerLoad->GetPackageTrailer())
+					const UE::FPackageTrailer* Trailer = LinkerLoad->GetPackageTrailer();
+					if (Trailer && Trailer->GetNumPayloads(UE::EPayloadStorageType::Any) > 0)
 					{
 						SaveContext.GetLinker()->PackageTrailerBuilder = UE::FPackageTrailerBuilder::CreateReferenceToTrailer(*Trailer, SaveContext.GetPackage()->GetName());
 					}
@@ -997,8 +1043,30 @@ ESavePackageResult BuildLinker(FSaveContext& SaveContext)
 		if (SaveContext.IsCooking())
 		{
 			SaveContext.GetLinker()->SetDebugSerializationFlags(DSF_EnableCookerWarnings | SaveContext.GetLinker()->GetDebugSerializationFlags());
+			SaveContext.GetLinker()->SetSaveBulkDataToSeparateFiles(true);
+
+			if (const ITargetPlatform* TargetPlatform = SaveContext.GetTargetPlatform())
+			{
+				if (TargetPlatform->SupportsFeature(ETargetPlatformFeatures::MemoryMappedFiles))
+				{
+					SaveContext.GetLinker()->SetMemoryMapAlignment(TargetPlatform->GetMemoryMappingAlignment());
+				}
+				SaveContext.GetLinker()->SetFileRegionsEnabled(TargetPlatform->SupportsFeature(ETargetPlatformFeatures::CookFileRegionMetadata));
+			}
+		}
+		else if (SaveContext.GetPackageWriter() && SaveContext.GetSavePackageContext() &&
+			SaveContext.GetSavePackageContext()->PackageWriterCapabilities.bDeclareRegionForEachAdditionalFile)
+		{
+			SaveContext.GetLinker()->SetFileRegionsEnabled(true);
+			SaveContext.GetLinker()->SetDeclareRegionForEachAdditionalFile(true);
 		}
 #endif
+		if (SaveContext.IsCooking() == false)
+		{
+			const bool bSaveBulkDataByReference = (SaveContext.GetSaveArgs().SaveFlags & SAVE_BulkDataByReference) != 0;
+			SaveContext.GetLinker()->SetSaveBulkDataByReference(bSaveBulkDataByReference);
+		}
+
 		// Make sure the package has the same version as the linker
 		SaveContext.UpdatePackageLinkerVersions();
 	}
@@ -1019,6 +1087,13 @@ ESavePackageResult BuildLinker(FSaveContext& SaveContext)
 	SaveContext.GetLinker()->Summary.PersistentGuid = SaveContext.GetPackage()->GetPersistentGuid();
 #endif
 	SaveContext.GetLinker()->Summary.Generations = TArray<FGenerationInfo>{ FGenerationInfo(0, 0) };
+	if (SaveContext.IsProceduralSave())
+	{
+		// Procedural saves should be deterministic, so we have to clear the EngineVersion fields
+		// to avoid indeterminism when it changes
+		SaveContext.GetLinker()->Summary.SavedByEngineVersion = FEngineVersion();
+		SaveContext.GetLinker()->Summary.CompatibleWithEngineVersion = FEngineVersion();
+	}
 
 	FLinkerSave* Linker = SaveContext.GetLinker();
 
@@ -1612,6 +1687,24 @@ void WriteGatherableText(FStructuredArchive::FRecord& StructuredArchiveRoot, FSa
 	}
 }
 
+int64 WriteObjectDataResources(TArray<FObjectDataResource>& DataResources, FStructuredArchive::FRecord& StructuredArchiveRoot, FSaveContext& SaveContext)
+{
+	check(SaveContext.GetLinker());
+	FLinkerSave& Linker = *SaveContext.GetLinker();
+
+	// The data resource table is only saved for cooked output
+	if (Linker.IsCooking() == false || DataResources.IsEmpty())
+	{
+		Linker.Summary.DataResourceOffset = -1; 
+		return 0;
+	}
+	
+	Linker.Summary.DataResourceOffset = (int32)Linker.Tell();
+	FObjectDataResource::Serialize(StructuredArchiveRoot.EnterField(TEXT("DataResources")), DataResources);
+
+	return Linker.Tell() - Linker.Summary.DataResourceOffset;
+}
+
 ESavePackageResult WritePackageHeader(FStructuredArchive::FRecord& StructuredArchiveRoot, FSaveContext& SaveContext)
 {
 	FLinkerSave* Linker = SaveContext.GetLinker();
@@ -1740,7 +1833,9 @@ ESavePackageResult WritePackageHeader(FStructuredArchive::FRecord& StructuredArc
 	{
 		// Save asset registry data so the editor can search for information about assets in this package
 		SCOPED_SAVETIMER(UPackage_Save_SaveAssetRegistryData);
-		UE::AssetRegistry::WritePackageData(StructuredArchiveRoot, SaveContext.IsCooking(), SaveContext.GetPackage(), Linker, SaveContext.GetImportsUsedInGame(), SaveContext.GetSoftPackagesUsedInGame(), SaveContext.GetTargetPlatform());
+		UE::AssetRegistry::WritePackageData(StructuredArchiveRoot, SaveContext.IsCooking(), SaveContext.GetPackage(),
+			Linker, SaveContext.GetImportsUsedInGame(), SaveContext.GetSoftPackagesUsedInGame(),
+			SaveContext.GetTargetPlatform(), &SaveContext.GetSavedAssets());
 	}
 	// Save level information used by World browser
 	{
@@ -1810,6 +1905,77 @@ ESavePackageResult WritePackageTextHeader(FStructuredArchive::FRecord& Structure
 	}
 
 	return ReturnSuccessOrCancel();
+}
+
+[[nodiscard]] ESavePackageResult WriteCookedExports(FArchive& ExportsArchive, FSaveContext& SaveContext)
+{
+	// Used to make any serialized offset during export serialization relative to the beginning of the export.
+	struct FExportProxyArchive
+		: public FArchiveProxy
+	{
+		FExportProxyArchive(FArchive& Inner)
+			: FArchiveProxy(Inner)
+			, Offset(Inner.Tell()) { }
+
+		virtual void Seek(int64 Pos) { InnerArchive.Seek(Offset + Pos); }
+		virtual int64 Tell() { return InnerArchive.Tell() - Offset; }
+		virtual int64 TotalSize() { return InnerArchive.TotalSize() - Offset; }
+		
+		int64 Offset;
+	};
+
+	SCOPED_SAVETIMER(UPackage_Save_SaveExports);
+
+	check(SaveContext.GetLinker() && SaveContext.GetLinker()->IsCooking());
+	FLinkerSave& Linker = *SaveContext.GetLinker();
+	FScopedSlowTask SlowTask((float)Linker.ExportMap.Num(), FText(), SaveContext.IsUsingSlowTask());
+
+	for (int32 ExportIndex = 0; ExportIndex < Linker.ExportMap.Num(); ExportIndex++)
+	{
+		if (GWarn->ReceivedUserCancel())
+		{
+			return ESavePackageResult::Canceled;
+		}
+		SlowTask.EnterProgressFrame();
+
+		FObjectExport& Export = Linker.ExportMap[ExportIndex];
+		if (Export.Object == nullptr)
+		{
+			continue;
+		}
+			
+		SCOPED_SAVETIMER(UPackage_Save_SaveExport);
+		SCOPED_SAVETIMER_TEXT(*WriteToString<128>(GetClassTraceScope(Export.Object), TEXT("_SaveSerialize")));
+
+		Export.SerialOffset = ExportsArchive.Tell();
+		Linker.CurrentlySavingExport = FPackageIndex::FromExport(ExportIndex);
+
+		FExportProxyArchive Ar(ExportsArchive);
+		TGuardValue<FArchive*> GuardSaver(Linker.Saver, &Ar);
+
+		if (Export.Object->HasAnyFlags(RF_ClassDefaultObject))
+		{
+			Export.Object->GetClass()->SerializeDefaultObject(Export.Object, Linker);
+		}
+		else
+		{
+			TGuardValue<UObject*> GuardSerializedObject(SaveContext.GetSerializeContext()->SerializedObject, Export.Object);
+			Export.Object->Serialize(Linker);
+#if WITH_EDITOR
+			Export.Object->CookAdditionalFiles(SaveContext.GetFilename(), SaveContext.GetTargetPlatform(),
+				[&SaveContext](const TCHAR* Filename, void* Data, int64 Size)
+				{
+					FLargeMemoryWriter& Writer = SaveContext.AdditionalFilesFromExports.Emplace_GetRef(0, true, Filename);
+					Writer.Serialize(Data, Size);
+				});
+#endif
+		}
+
+		Linker.CurrentlySavingExport = FPackageIndex();
+		Export.SerialSize = ExportsArchive.Tell() - Export.SerialOffset;
+	}
+
+	return Linker.IsError() ? ESavePackageResult::Error : ReturnSuccessOrCancel();
 }
 
 ESavePackageResult WriteExports(FStructuredArchive::FRecord& StructuredArchiveRoot, FSaveContext& SaveContext)
@@ -1899,7 +2065,120 @@ ESavePackageResult WriteExports(FStructuredArchive::FRecord& StructuredArchiveRo
 	return Linker->IsError() ? ESavePackageResult::Error : ReturnSuccessOrCancel();
 }
 
-[[nodiscard]] ESavePackageResult BuildAndWriteTrailer(FStructuredArchive::FRecord& StructuredArchiveRoot, FSaveContext& SaveContext)
+[[nodiscard]] ESavePackageResult WriteBulkData(FSaveContext& SaveContext, int64& VirtualExportsFileOffset)
+{
+	COOK_STAT(FScopedDurationTimer SaveTimer(FSavePackageStats::SerializeBulkDataTimeSec));
+
+	FLinkerSave& Linker = *SaveContext.GetLinker();
+
+	Linker.Summary.BulkDataStartOffset = Linker.Tell();
+	
+	if (Linker.IsCooking() == false)
+	{
+		VirtualExportsFileOffset += Linker.GetBulkDataArchive().TotalSize();
+	}
+
+	const bool bIsOptionalRealm = SaveContext.GetCurrentHarvestingRealm() == ESaveRealm::Optional;
+
+	IPackageWriter* PackageWriter = SaveContext.GetPackageWriter();
+
+	if (PackageWriter == nullptr)
+	{
+		// Saving non-inline bulk data to the end of the package (Editor)
+
+		check(Linker.IsCooking() == false);
+		check(bIsOptionalRealm == false);
+
+		FFileRegionMemoryWriter& Ar = Linker.GetBulkDataArchive();
+		if (const int64 TotalSize = Ar.TotalSize(); TotalSize > 0)
+		{
+			FIoBuffer Buffer(FIoBuffer::AssumeOwnership, Ar.ReleaseOwnership(), TotalSize);
+			Linker.Serialize(Buffer.GetData(), Buffer.GetSize());
+			SaveContext.TotalPackageSizeUncompressed += TotalSize;
+		}
+
+		return ESavePackageResult::Success;
+	}
+
+	// Saving non-inline bulk data to seperate file(s) (Cooking/EditorDomain)
+
+	if (Linker.IsCooking() == false)
+	{
+		const bool bSaveBulkDataByReference = SaveContext.GetSaveArgs().SaveFlags & SAVE_BulkDataByReference;
+		if (bSaveBulkDataByReference)
+		{
+			if (Linker.bUpdatingLoadedPath)
+			{
+				UE_LOG(LogSavePackage, Error, TEXT("Save bulk data '%s' FAILED, reason '%s'"),
+					SaveContext.GetFilename(), TEXT("SAVE_BulkDataByReference is incompatible with bUpdatingLoadedPath"));
+				return ESavePackageResult::Error;
+			}
+		}
+	}
+
+	const FName PackageName = SaveContext.GetPackage()->GetFName();
+	const FPackageId PackageId = FPackageId::FromName(PackageName);
+	const uint16 MultiOutputIndex = bIsOptionalRealm ? 1 : 0;
+
+	auto GetFilePath = [&SaveContext, bIsOptionalRealm](EPackageExtension Ext) -> FString
+	{
+		FString FileExt = bIsOptionalRealm ? FString(TEXT(".o")) + LexToString(Ext) : LexToString(Ext);
+		return FPathViews::ChangeExtension(SaveContext.GetFilename(), FileExt);
+	};
+
+	auto WriteToPackageWriter = [&SaveContext, PackageWriter, bIsOptionalRealm](FFileRegionMemoryWriter& Ar, IPackageWriter::FBulkDataInfo Info) -> int64
+	{
+		if (int64 TotalSize = Ar.TotalSize(); TotalSize > 0)
+		{
+			checkf(bIsOptionalRealm == false || Info.BulkDataType != IPackageWriter::FBulkDataInfo::Mmap,
+				TEXT("Memory mapped bulk data is currently not supported for optional package '%s'"), *SaveContext.GetPackage()->GetName());
+
+			FIoBuffer Buffer(FIoBuffer::AssumeOwnership, Ar.ReleaseOwnership(), TotalSize);
+			PackageWriter->WriteBulkData(Info, Buffer, Ar.GetFileRegions());
+			return TotalSize;
+		}
+		return 0;
+	};
+
+	FScopedSlowTask Feedback(3.0f);
+	SaveContext.TotalPackageSizeUncompressed += WriteToPackageWriter(Linker.GetBulkDataArchive(), IPackageWriter::FBulkDataInfo
+	{
+		PackageName,
+		IPackageWriter::FBulkDataInfo::BulkSegment,
+		GetFilePath(EPackageExtension::BulkDataDefault),
+		CreateIoChunkId(PackageId.Value(), MultiOutputIndex, EIoChunkType::BulkData),
+		MultiOutputIndex
+	});
+	Feedback.EnterProgressFrame();
+
+	// @note FH: temporarily do not handle optional bulk data into editor optional packages, proper support will be added soon
+	if (bIsOptionalRealm == false)
+	{
+		SaveContext.TotalPackageSizeUncompressed += WriteToPackageWriter(Linker.GetOptionalBulkDataArchive(), IPackageWriter::FBulkDataInfo
+		{
+			PackageName,
+			IPackageWriter::FBulkDataInfo::Optional,
+			GetFilePath(EPackageExtension::BulkDataOptional),
+			CreateIoChunkId(PackageId.Value(), MultiOutputIndex, EIoChunkType::OptionalBulkData),
+			MultiOutputIndex
+		});
+	}
+	Feedback.EnterProgressFrame();
+
+	SaveContext.TotalPackageSizeUncompressed += WriteToPackageWriter(Linker.GetMemoryMappedBulkDataArchive(), IPackageWriter::FBulkDataInfo
+	{
+		PackageName,
+		IPackageWriter::FBulkDataInfo::Mmap,
+		GetFilePath(EPackageExtension::BulkDataMemoryMapped),
+		CreateIoChunkId(PackageId.Value(), MultiOutputIndex, EIoChunkType::MemoryMappedBulkData),
+		MultiOutputIndex
+	});
+	Feedback.EnterProgressFrame();
+
+	return ESavePackageResult::Success;
+}
+
+[[nodiscard]] ESavePackageResult BuildAndWriteTrailer(IPackageWriter* PackageWriter, FStructuredArchive::FRecord& StructuredArchiveRoot, FSaveContext& SaveContext, int64& InOutCurrentOffset)
 {
 	SaveContext.GetLinker()->Summary.PayloadTocOffset = INDEX_NONE;
 
@@ -1915,10 +2194,25 @@ ESavePackageResult WriteExports(FStructuredArchive::FRecord& StructuredArchiveRo
 
 		checkf(SaveContext.IsTextFormat() == false, TEXT("Attempting to build a package trailer for text based asset '%s', this is not supported!"), *SaveContext.GetPackage()->GetName());
 
-		SaveContext.GetLinker()->Summary.PayloadTocOffset = SaveContext.GetLinker()->Tell();
-		if (!SaveContext.GetLinker()->PackageTrailerBuilder->BuildAndAppendTrailer(SaveContext.GetLinker(), *SaveContext.GetLinker()))
+		SaveContext.GetLinker()->Summary.PayloadTocOffset = InOutCurrentOffset;
+		if (!PackageWriter)
 		{
-			return ESavePackageResult::Error;
+			if (!SaveContext.GetLinker()->PackageTrailerBuilder->BuildAndAppendTrailer(SaveContext.GetLinker(), *SaveContext.GetLinker(), InOutCurrentOffset))
+			{
+				return ESavePackageResult::Error;
+			}
+		}
+		else
+		{
+			FLargeMemoryWriter TrailerData(0, true /* IsPersistent */);
+			if (!SaveContext.GetLinker()->PackageTrailerBuilder->BuildAndAppendTrailer(SaveContext.GetLinker(), TrailerData, InOutCurrentOffset))
+			{
+				return ESavePackageResult::Error;
+			}
+
+			IPackageWriter::FPackageTrailerInfo TrailerInfo;
+			TrailerInfo.PackageName = SaveContext.GetPackage()->GetFName();
+			PackageWriter->WritePackageTrailer(TrailerInfo, FIoBuffer(FIoBuffer::AssumeOwnership, TrailerData.ReleaseOwnership(), TrailerData.TotalSize()));
 		}
 
 		SaveContext.GetLinker()->PackageTrailerBuilder.Reset();
@@ -2266,8 +2560,12 @@ void ClearCachedPlatformCookedData(FSaveContext& SaveContext)
 void PostSavePackage(FSaveContext& SaveContext)
 {
 	UPackage* Package = SaveContext.GetPackage();
-	// Package has been saved, so unmark the NewlyCreated flag.
-	Package->ClearPackageFlags(PKG_NewlyCreated);
+
+	if (!SaveContext.IsFromAutoSave() && !SaveContext.IsProceduralSave())
+	{
+		// Package has been saved, so unmark the NewlyCreated flag.
+		Package->ClearPackageFlags(PKG_NewlyCreated);
+	}
 
 	// Copy and modify the output SerializedPackageFlags from the PackageFlags written into the default realm summary
 	uint32 SerializedPackageFlags = SaveContext.GetLinker()->Summary.GetPackageFlags();
@@ -2327,7 +2625,7 @@ ESavePackageResult SaveHarvestedRealms(FSaveContext& SaveContext, ESaveRealm Har
 	FSaveContext::FSetSaveRealmToSaveScope Scope(SaveContext, HarvestingContextToSave);
 
 	// Create slow task dialog if needed
-	const int32 TotalSaveSteps = 11;
+	const int32 TotalSaveSteps = 12;
 	FScopedSlowTask SlowTask(TotalSaveSteps, FText(), SaveContext.IsUsingSlowTask());
 
 	// Validate Exports
@@ -2387,13 +2685,74 @@ ESavePackageResult SaveHarvestedRealms(FSaveContext& SaveContext, ESaveRealm Har
 		}
 	}
 
-	// Write Exports
-	SlowTask.EnterProgressFrame();
-	SaveContext.Result = WriteExports(StructuredArchiveRoot, SaveContext);
-	if (SaveContext.Result != ESavePackageResult::Success)
+	// Write Exports 
 	{
-		return SaveContext.Result;
+		SlowTask.EnterProgressFrame();
+		FLinkerSave& Linker = *SaveContext.GetLinker();
+
+		if (Linker.IsCooking())
+		{
+			// Write the exports into a seperate archive
+			TUniquePtr<FLargeMemoryWriter> ExportsArchive = SaveContext.GetPackageWriter()->CreateLinkerExportsArchive(
+				SaveContext.GetPackage()->GetFName(), SaveContext.GetAsset());
+			ExportsArchive->SetSerializeContext(SaveContext.GetSerializeContext());
+			SaveContext.Result = WriteCookedExports(*ExportsArchive, SaveContext);
+
+			if (SaveContext.Result == ESavePackageResult::Success)
+			{
+				// Write the data resource table to the header section before appending the export(s)
+				const int64 DataResourceSize = WriteObjectDataResources(Linker.DataResourceMap, StructuredArchiveRoot, SaveContext);
+				check(DataResourceSize >= 0);
+
+				Linker.Summary.TotalHeaderSize += DataResourceSize;
+				{
+					// Disables writing stack trace data when appending the exports data
+					FArchiveStackTraceDisabledScope _; 
+					Linker.Serialize(ExportsArchive->GetData(), ExportsArchive->TotalSize());
+				}
+
+				// Adjust the export offsets with the total header size
+				for (FObjectExport& Export : Linker.ExportMap)
+				{
+					if (Export.Object)
+					{
+						Export.SerialOffset += Linker.Summary.TotalHeaderSize;
+					}
+				}
+			}
+		}
+		else
+		{
+			SaveContext.Result = WriteExports(StructuredArchiveRoot, SaveContext);
+		}
+
+		if (SaveContext.Result != ESavePackageResult::Success)
+		{
+			return SaveContext.Result;
+		}
 	}
+
+	const int64 EndOfExportsOffset = SaveContext.GetLinker()->Tell();
+
+	// When not using a PackageWriter, VirtualExportsFileOffset is identical to the offset in the
+	// Exports archive: SaveContext.GetLinker()->Tell. When using a PackageWriter however, additional
+	// blobs such as bulkdata are not written into the exports archive, they are stored as separate archives
+	// in the PackageWriter. But various structs need to know the "offset" in the combined file that would
+	// be created by appending all of these blobs after the exports. VirtualExportsFileOffset holds that value.
+	int64 VirtualExportsFileOffset = EndOfExportsOffset;
+
+	// Write bulk data
+	{
+		SlowTask.EnterProgressFrame();
+
+		SaveContext.Result = WriteBulkData(SaveContext, VirtualExportsFileOffset); 
+		if (SaveContext.Result != ESavePackageResult::Success)
+		{
+			return SaveContext.Result;
+		}
+		SaveContext.GetLinker()->OnPostSaveBulkData();
+	}
+
 	// Get SHA Key
 	{
 		// if we want to generate the SHA key, get it out now that the package has finished saving
@@ -2409,53 +2768,47 @@ ESavePackageResult SaveHarvestedRealms(FSaveContext& SaveContext, ESaveRealm Har
 	}
 
 	IPackageWriter* PackageWriter = SaveContext.GetPackageWriter();
+	SaveContext.Result = WriteAdditionalFiles(SaveContext, SlowTask, VirtualExportsFileOffset /* In/Out */);
+	if (SaveContext.Result != ESavePackageResult::Success)
+	{
+		return SaveContext.Result;
+	}
+
+	// Write out a tag at the end of the exports and AdditionalFiles
 	if (PackageWriter)
 	{
-		const int64 ExportsSize = SaveContext.GetLinker()->Tell();
-		SaveContext.Result = WriteAdditionalFiles(SaveContext, SlowTask, ExportsSize);
-		checkf(SaveContext.GetLinker()->Tell() == ExportsSize, TEXT("The writing of additional files is not allowed to append to the LinkerSave when using a PackageWriter."));
-		if (SaveContext.Result != ESavePackageResult::Success)
-		{
-			return SaveContext.Result;
-		}
+		VirtualExportsFileOffset += PackageWriter->GetExportsFooterSize();
 	}
 	else
 	{
-		// AdditionalFiles are appended to the Linker's archive, and so must be appended before we can calculate the full size of the Package
-		SaveContext.Result = WriteAdditionalFiles(SaveContext, SlowTask, -1);
-		if (SaveContext.Result != ESavePackageResult::Success)
+		if (!SaveContext.IsTextFormat())
 		{
-			return SaveContext.Result;
+			uint32 Tag = PACKAGE_FILE_TAG;
+			StructuredArchiveRoot.GetUnderlyingArchive() << Tag;
+			VirtualExportsFileOffset += sizeof(Tag);
 		}
-	}
-
-	// Write out a tag to the end of the package
-	if (PackageWriter == nullptr && !SaveContext.IsTextFormat())
-	{
-		uint32 Tag = PACKAGE_FILE_TAG;
-		StructuredArchiveRoot.GetUnderlyingArchive() << Tag;
 	}
 
 	// Now that the package is written out we can write the package trailer that is appended
 	// to the file. This should be the last thing written to the file!
 	SlowTask.EnterProgressFrame();
-	SaveContext.Result = BuildAndWriteTrailer(StructuredArchiveRoot, SaveContext);
+	SaveContext.Result = BuildAndWriteTrailer(PackageWriter, StructuredArchiveRoot, SaveContext, VirtualExportsFileOffset);
 	if (SaveContext.Result != ESavePackageResult::Success)
 	{
 		return SaveContext.Result;
 	}	
-
-	int64 ExportsSize = SaveContext.GetLinker()->Tell();
 	if (PackageWriter)
 	{
-		PackageWriter->AddToExportsSize(ExportsSize);
+		checkf(SaveContext.GetLinker()->Tell() == EndOfExportsOffset,
+			TEXT("The writing of additional files is not allowed to append to the LinkerSave when using a PackageWriter."));
 	}
+
 	// Store the package header and export size of the non optional realm
 	if (SaveContext.GetCurrentHarvestingRealm() != ESaveRealm::Optional)
 	{
-		SaveContext.PackageHeaderAndExportSize = ExportsSize;
+		SaveContext.PackageHeaderAndExportSize = VirtualExportsFileOffset;
 	}
-	SaveContext.TotalPackageSizeUncompressed += ExportsSize;
+	SaveContext.TotalPackageSizeUncompressed += VirtualExportsFileOffset;
 	for (const FSavePackageOutputFile& File : SaveContext.AdditionalPackageFiles)
 	{
 		SaveContext.TotalPackageSizeUncompressed += File.DataSize;
@@ -2580,19 +2933,12 @@ ESavePackageResult InnerSave(FSaveContext& SaveContext)
  * @param SaveContext The context for the overall save, including data about the additional payloads
  * @param LinkerSize If the Linker has finished writing, this is the size of the Linker's archive: Linker->Tell(). Otherwise it is -1.
  */
-ESavePackageResult WriteAdditionalFiles(FSaveContext& SaveContext, FScopedSlowTask& SlowTask, int64 LinkerSize)
+ESavePackageResult WriteAdditionalFiles(FSaveContext& SaveContext, FScopedSlowTask& SlowTask, int64& VirtualExportsFileOffset)
 {
-	// Save Bulk Data
 	SlowTask.EnterProgressFrame();
-	int64 DataStartOffset = LinkerSize >= 0 ? LinkerSize : SaveContext.GetLinker()->Tell();
-	SaveContext.Result = SavePackageUtilities::SaveBulkData(SaveContext.GetLinker(), DataStartOffset,
-		SaveContext.GetPackage(), SaveContext.GetFilename(), SaveContext.GetTargetPlatform(),
-		SaveContext.GetSavePackageContext(), SaveContext.GetSaveArgs().SaveFlags, SaveContext.IsTextFormat(),
-		SaveContext.TotalPackageSizeUncompressed,
-		SaveContext.GetCurrentHarvestingRealm() == ESaveRealm::Optional);
 
 	// Add any pending data blobs to the end of the file by invoking the callbacks
-	ESavePackageResult Result = SavePackageUtilities::AppendAdditionalData(*SaveContext.GetLinker(), DataStartOffset, SaveContext.GetSavePackageContext());
+	ESavePackageResult Result = SavePackageUtilities::AppendAdditionalData(*SaveContext.GetLinker(), VirtualExportsFileOffset, SaveContext.GetSavePackageContext());
 	if (Result != ESavePackageResult::Success)
 	{
 		return Result;

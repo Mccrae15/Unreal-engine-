@@ -2,148 +2,10 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "StateTreeTypes.h"
-#include "Misc/Guid.h"
-#include "StructView.h"
 #include "StateTreePropertyBindings.generated.h"
 
 class FProperty;
-
-
-/**
- * Short lived pointer to an UOBJECT() or USTRUCT().
- * The data view expects a type (UStruct) when you pass in a valid memory. In case of null, the type can be empty too.
- */
-struct STATETREEMODULE_API FStateTreeDataView
-{
-	FStateTreeDataView() = default;
-
-	// USTRUCT() constructor.
-	FStateTreeDataView(const UScriptStruct* InScriptStruct, uint8* InMemory) : Struct(InScriptStruct), Memory(InMemory)
-	{
-		// Must have type with valid pointer.
-		check(!Memory || (Memory && Struct));
-	}
-
-	// UOBJECT() constructor.
-	FStateTreeDataView(UObject* Object) : Struct(Object ? Object->GetClass() : nullptr), Memory(reinterpret_cast<uint8*>(Object))
-	{
-		// Must have type with valid pointer.
-		check(!Memory || (Memory && Struct));
-	}
-
-	// USTRUCT() from a StructView.
-	FStateTreeDataView(FStructView StructView) : Struct(StructView.GetScriptStruct()), Memory(StructView.GetMutableMemory())
-	{
-		// Must have type with valid pointer.
-		check(!Memory || (Memory && Struct));
-	}
-
-	/**
-	 * Check is the view is valid (both pointer and type are set). On valid views it is safe to call the Get<>() methods returning a reference.
-	 * @return True if the view is valid.
-	*/
-	bool IsValid() const
-	{
-		return Memory != nullptr && Struct != nullptr;
-	}
-
-	/*
-	 * UOBJECT() getters (reference & pointer, const & mutable)
-	 */
-	template <typename T>
-    typename TEnableIf<TIsDerivedFrom<T, UObject>::IsDerived, const T&>::Type Get() const
-	{
-		check(Memory != nullptr);
-		check(Struct != nullptr);
-		check(Struct->IsChildOf(T::StaticClass()));
-		return *((T*)Memory);
-	}
-
-	template <typename T>
-	typename TEnableIf<TIsDerivedFrom<T, UObject>::IsDerived, T&>::Type GetMutable() const
-	{
-		check(Memory != nullptr);
-		check(Struct != nullptr);
-		check(Struct->IsChildOf(T::StaticClass()));
-		return *((T*)Memory);
-	}
-
-	template <typename T>
-	typename TEnableIf<TIsDerivedFrom<T, UObject>::IsDerived, const T*>::Type GetPtr() const
-	{
-		// If Memory is set, expect Struct too. Otherwise, let nulls pass through.
-		check(!Memory || (Memory && Struct));
-		check(!Struct || Struct->IsChildOf(T::StaticClass()));
-		return ((T*)Memory);
-	}
-
-	template <typename T>
-    typename TEnableIf<TIsDerivedFrom<T, UObject>::IsDerived, T*>::Type GetMutablePtr() const
-	{
-		// If Memory is set, expect Struct too. Otherwise, let nulls pass through.
-		check(!Memory || (Memory && Struct));
-		check(!Struct || Struct->IsChildOf(T::StaticClass()));
-		return ((T*)Memory);
-	}
-
-	/*
-	 * USTRUCT() getters (reference & pointer, const & mutable)
-	 */
-	template <typename T>
-	typename TEnableIf<!TIsDerivedFrom<T, UObject>::IsDerived, const T&>::Type Get() const
-	{
-		check(Memory != nullptr);
-		check(Struct != nullptr);
-		check(Struct->IsChildOf(T::StaticStruct()));
-		return *((T*)Memory);
-	}
-
-	template <typename T>
-    typename TEnableIf<!TIsDerivedFrom<T, UObject>::IsDerived, T&>::Type GetMutable() const
-	{
-		check(Memory != nullptr);
-		check(Struct != nullptr);
-		check(Struct->IsChildOf(T::StaticStruct()));
-		return *((T*)Memory);
-	}
-
-	template <typename T>
-    typename TEnableIf<!TIsDerivedFrom<T, UObject>::IsDerived, const T*>::Type GetPtr() const
-	{
-		// If Memory is set, expect Struct too. Otherwise, let nulls pass through.
-		check(!Memory || (Memory && Struct));
-		check(!Struct || Struct->IsChildOf(T::StaticStruct()));
-		return ((T*)Memory);
-	}
-
-	template <typename T>
-    typename TEnableIf<!TIsDerivedFrom<T, UObject>::IsDerived, T*>::Type GetMutablePtr() const
-	{
-		// If Memory is set, expect Struct too. Otherwise, let nulls pass through.
-		check(!Memory || (Memory && Struct));
-		check(!Struct || Struct->IsChildOf(T::StaticStruct()));
-		return ((T*)Memory);
-	}
-
-	/** @return Struct describing the data type. */
-	const UStruct* GetStruct() const { return Struct; }
-
-	/** @return Raw const pointer to the data. */
-	const uint8* GetMemory() const { return Memory; }
-
-	/** @return Raw mutable pointer to the data. */
-	uint8* GetMutableMemory() const { return Memory; }
-	
-protected:
-	/** UClass or UScriptStruct of the data. */
-	const UStruct* Struct = nullptr;
-
-	/** Memory pointing at the class or struct */
-	uint8* Memory = nullptr;
-};
-
 
 UENUM()
 enum class EStateTreeBindableStructSource : uint8
@@ -154,6 +16,8 @@ enum class EStateTreeBindableStructSource : uint8
 	Parameter,
 	/** Source is StateTree evaluator */
 	Evaluator,
+	/** Source is StateTree global task */
+	GlobalTask,
 	/** Source is State parameter */
 	State,
 	/** Source is State task */
@@ -459,12 +323,15 @@ struct STATETREEMODULE_API FStateTreePropertyBindings
 	 */
 	bool CopyTo(TConstArrayView<FStateTreeDataView> SourceStructViews, const FStateTreeIndex16 TargetBatchIndex, FStateTreeDataView TargetStructView) const;
 
+	bool ResetObjects(const FStateTreeIndex16 TargetBatchIndex, FStateTreeDataView TargetStructView) const;
+
 	void DebugPrintInternalLayout(FString& OutString) const;
 
 protected:
 	[[nodiscard]] bool ResolvePath(const UStruct* Struct, const FStateTreePropertySegment& FirstPathSegment, FStateTreePropertyIndirection& OutFirstIndirection, const FProperty*& OutLeafProperty);
 	[[nodiscard]] bool ValidateCopy(FStateTreePropCopy& Copy) const;
 	void PerformCopy(const FStateTreePropCopy& Copy, uint8* SourceAddress, uint8* TargetAddress) const;
+	void PerformResetObjects(const FStateTreePropCopy& Copy, uint8* TargetAddress) const;
 	uint8* GetAddress(FStateTreeDataView InStructView, const FStateTreePropertyIndirection& FirstIndirection, const FProperty* LeafProperty) const;
 	FString GetPathAsString(const FStateTreePropertySegment& FirstPathSegment, const FStateTreePropertySegment* HighlightedSegment = nullptr, const TCHAR* HighlightPrefix = nullptr, const TCHAR* HighlightPostfix = nullptr);
 
@@ -548,3 +415,7 @@ struct STATETREEMODULE_API IStateTreeBindingLookup
 	/** @return Leaf property based on property path. */
 	virtual const FProperty* GetPropertyPathLeafProperty(const FStateTreeEditorPropertyPath& InPath) const PURE_VIRTUAL(IStateTreeBindingLookup::GetPropertyPathLeafProperty, return nullptr; );
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

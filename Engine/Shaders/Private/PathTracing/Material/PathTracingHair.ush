@@ -45,11 +45,11 @@ float ZinkeHairDiffuse(float3 L)
 }
 
 FMaterialSample Hair_SampleMaterial(
-	float3 RayDirection,
+	float3 V_World,
 	FPathTracingPayload Payload,
-	float4 RandSample)
+	float3 RandSample)
 {
-	float3x3 HairBasis = GetHairBasis(Payload.WorldTangent, -RayDirection);
+	float3x3 HairBasis = GetHairBasis(Payload.WorldTangent, V_World);
 
 	// sample a random position across the width of the fiber
 	float h = 2 * RandSample.x - 1;
@@ -65,22 +65,22 @@ FMaterialSample Hair_SampleMaterial(
 	float3 L_World = mul(L, HairBasis);
 
 	float Pdf = ZinkeHairDiffuse(L);
-	return CreateMaterialSample(L_World, Payload.BaseColor, Pdf, sign(dot(Payload.WorldGeoNormal, L_World)), 1.0);
+	return CreateMaterialSample(L_World, Payload.BaseColor, Pdf, sign(dot(Payload.WorldGeoNormal, L_World)), 1.0, PATHTRACER_SCATTER_DIFFUSE);
 }
 
 FMaterialEval Hair_EvalMaterial(
-	float3 IncomingDirection,
-	float3 OutgoingDirection,
-	FPathTracingPayload Payload
+	float3 V_World,
+	float3 L_World,
+	FPathTracingPayload Payload,
+	float2 DiffuseSpecularScale
 )
 {
-	float3x3 HairBasis = GetHairBasis(Payload.WorldTangent, -IncomingDirection);
+	float3x3 HairBasis = GetHairBasis(Payload.WorldTangent, V_World);
 
-	float3 L_World = OutgoingDirection;
 	float3 L = mul(HairBasis, L_World);
 
 	float Pdf = ZinkeHairDiffuse(L);
-	return CreateMaterialEval(Payload.BaseColor, Pdf);
+	return CreateMaterialEval(Payload.BaseColor * DiffuseSpecularScale.x, Pdf);
 }
 
 
@@ -179,7 +179,8 @@ float TrigInverse(float x)
 
 // precomputed terms for evaluating/sampling the hair bxdf
 // TODO: can we somehow do this stuff only once instead of repeating it in eval and sample?
-struct FHairData {
+struct FHairData
+{
 	// trig that only depends on viewing direction and offset h
 	float4 SinThetaO; // Viewing angles (adjusted by scale tilt per lobe)
 	float GammaO;
@@ -297,17 +298,16 @@ FHairData PrepareHairData(float3 V, float3 Color, float LongitudinalRoughness, f
 }
 
 FMaterialSample Hair_SampleMaterial(
-	float3 RayDirection,
+	float3 V_World,
 	FPathTracingPayload Payload,
-	float4 RandSample)
+	float3 RandSample)
 {
-	float3 V_World = -RayDirection;
-	float3x3 HairBasis = GetHairBasis(Payload.WorldTangent, V_World);
+	const float3x3 HairBasis = GetHairBasis(Payload.WorldTangent, V_World);
 
-	float3 V = mul(HairBasis, V_World); // TODO: simplify this since HairBasis is already sort of aligned with V ?
-	float h = 2 * Payload.CustomData.y - 1; // remap back to [-1,1]
-	float AzimuthalRoughness = lerp(1.0, 0.1, Payload.Metallic);
-	FHairData HairData = PrepareHairData(V, Payload.BaseColor, Payload.Roughness, AzimuthalRoughness, h, Payload.Specular);
+	const float3 V = mul(HairBasis, V_World); // TODO: simplify this since HairBasis is already sort of aligned with V ?
+	const float h = 2 * Payload.GetHairPrimitiveUV().y - 1; // remap back to [-1,1]
+	const float AzimuthalRoughness = lerp(1.0, 0.1, Payload.Metallic);
+	const FHairData HairData = PrepareHairData(V, Payload.BaseColor, Payload.Roughness, AzimuthalRoughness, h, Payload.Specular);
 
 	// 1) Decide which lobe to sample
 	float u = RandSample.z * HairData.LobeCdf.w;
@@ -347,70 +347,69 @@ FMaterialSample Hair_SampleMaterial(
 	u = saturate(u);
 
 	// 2) Sample longitudinal angle
-	float CosTheta = 1 + v * log(RandSample.x + (1 - RandSample.x) * exp(-2 / v));
-	float CosPhi = cos(2 * PI * RandSample.y);
-	float SinThetaI = -CosTheta * SinThetaOp + sqrt((1 - CosTheta * CosTheta) * (1 - SinThetaOp * SinThetaOp)) * CosPhi;
-	float CosThetaI = TrigInverse(SinThetaI);
+	const float CosTheta = 1 + v * log(RandSample.x + (1 - RandSample.x) * exp(-2 / v));
+	const float CosPhi = cos(2 * PI * RandSample.y);
+	const float SinThetaI = -CosTheta * SinThetaOp + sqrt((1 - CosTheta * CosTheta) * (1 - SinThetaOp * SinThetaOp)) * CosPhi;
+	const float CosThetaI = TrigInverse(SinThetaI);
 
 	// 3) Sample Azimuthal angle
-	float PhiI = (p < 3) ? Phi(p, HairData.GammaO, HairData.GammaT) + SampleTrimmedLogistic(u, HairData.s) : 2 * PI * u;
+	const float PhiI = (p < 3) ? Phi(p, HairData.GammaO, HairData.GammaT) + SampleTrimmedLogistic(u, HairData.s) : 2 * PI * u;
 
-	float3 L = float3(CosThetaI * sin(PhiI), CosThetaI * cos(PhiI), SinThetaI);
+	const float3 L = float3(CosThetaI * sin(PhiI), CosThetaI * cos(PhiI), SinThetaI);
 
-	float3 Weight = 0;
-	float Pdf = 0;
-	float InvS = rcp(HairData.s);
-	float Pdf0 = Mp(SinThetaI, HairData.SinThetaO.x, HairData.v0) * Np(PhiI, 0, InvS, HairData.GammaO, HairData.GammaT);
-	float Pdf1 = Mp(SinThetaI, HairData.SinThetaO.y, HairData.v1) * Np(PhiI, 1, InvS, HairData.GammaO, HairData.GammaT);
-	float Pdf2 = Mp(SinThetaI, HairData.SinThetaO.z, HairData.v2) * Np(PhiI, 2, InvS, HairData.GammaO, HairData.GammaT);
-	float Pdf3 = Mp(SinThetaI, HairData.SinThetaO.w, HairData.v3) * (1 / (2 * PI)); // last lobe is isotropic
+	// transform direction into world space
+	const float3 L_World = mul(L, HairBasis);
 
-	AddLobeWithMIS(Weight, Pdf, HairData.A0, Pdf0, HairData.LobePdf.x);
-	AddLobeWithMIS(Weight, Pdf, HairData.A1, Pdf1, HairData.LobePdf.y);
-	AddLobeWithMIS(Weight, Pdf, HairData.A2, Pdf2, HairData.LobePdf.z);
-	AddLobeWithMIS(Weight, Pdf, HairData.A3, Pdf3, HairData.LobePdf.w);
+	FMaterialSample Result = CreateMaterialSample(L_World, 0.0, 0.0, sign(dot(Payload.WorldGeoNormal, L_World)), Payload.Roughness, PATHTRACER_SCATTER_SPECULAR);
 
-	// finally transform into world space
-	float3 L_World = mul(L, HairBasis);
+	const float InvS = rcp(HairData.s);
+	const float Pdf0 = Mp(SinThetaI, HairData.SinThetaO.x, HairData.v0) * Np(PhiI, 0, InvS, HairData.GammaO, HairData.GammaT);
+	const float Pdf1 = Mp(SinThetaI, HairData.SinThetaO.y, HairData.v1) * Np(PhiI, 1, InvS, HairData.GammaO, HairData.GammaT);
+	const float Pdf2 = Mp(SinThetaI, HairData.SinThetaO.z, HairData.v2) * Np(PhiI, 2, InvS, HairData.GammaO, HairData.GammaT);
+	const float Pdf3 = Mp(SinThetaI, HairData.SinThetaO.w, HairData.v3) * (1 / (2 * PI)); // last lobe is isotropic
 
-	return CreateMaterialSample(L_World, Weight, Pdf, sign(dot(Payload.WorldGeoNormal, L_World)), Payload.Roughness);
+	Result.AddLobeWithMIS(HairData.A0, Pdf0, HairData.LobePdf.x);
+	Result.AddLobeWithMIS(HairData.A1, Pdf1, HairData.LobePdf.y);
+	Result.AddLobeWithMIS(HairData.A2, Pdf2, HairData.LobePdf.z);
+	Result.AddLobeWithMIS(HairData.A3, Pdf3, HairData.LobePdf.w);
+
+	return Result;
 }
 
 FMaterialEval Hair_EvalMaterial(
-	float3 IncomingDirection,
-	float3 OutgoingDirection,
-	FPathTracingPayload Payload
+	float3 V_World,
+	float3 L_World,
+	FPathTracingPayload Payload,
+	float2 DiffuseSpecularScale
 )
 {
-	float3 V_World = -IncomingDirection;
-	float3x3 HairBasis = GetHairBasis(Payload.WorldTangent, V_World);
+	const float3x3 HairBasis = GetHairBasis(Payload.WorldTangent, V_World);
 
-	float3 L_World = OutgoingDirection;
-	float3 V = mul(HairBasis, V_World);
-	float3 L = mul(HairBasis, L_World);
+	const float3 V = mul(HairBasis, V_World);
+	const float3 L = mul(HairBasis, L_World);
 
-	float h = 2 * Payload.CustomData.y - 1; // remap back to [-1,1]
-	float AzimuthalRoughness = lerp(1.0, 0.1, Payload.Metallic);
-	FHairData HairData = PrepareHairData(V, Payload.BaseColor, Payload.Roughness, AzimuthalRoughness, h, Payload.Specular);
+	const float h = 2 * Payload.GetHairPrimitiveUV().y - 1; // remap back to [-1,1]
+	const float AzimuthalRoughness = lerp(1.0, 0.1, Payload.Metallic);
+	const FHairData HairData = PrepareHairData(V, Payload.BaseColor, Payload.Roughness, AzimuthalRoughness, h, Payload.Specular);
 
 	// precompute data based of lighting direction
-	float SinThetaI = L.z;
-	float CosThetaI = TrigInverse(SinThetaI);
-	float PhiI = atan2(L.x, L.y); // NOTE: in our coordinate system, PhiO == 0, so we only need to account for L
+	const float SinThetaI = L.z;
+	const float CosThetaI = TrigInverse(SinThetaI);
+	const float PhiI = atan2(L.x, L.y); // NOTE: in our coordinate system, PhiO == 0, so we only need to account for L
 
 	FMaterialEval Result = NullMaterialEval();
 
-	float InvS = rcp(HairData.s);
-	float Pdf0 = Mp(SinThetaI, HairData.SinThetaO.x, HairData.v0) * Np(PhiI, 0, InvS, HairData.GammaO, HairData.GammaT);
-	float Pdf1 = Mp(SinThetaI, HairData.SinThetaO.y, HairData.v1) * Np(PhiI, 1, InvS, HairData.GammaO, HairData.GammaT);
-	float Pdf2 = Mp(SinThetaI, HairData.SinThetaO.z, HairData.v2) * Np(PhiI, 2, InvS, HairData.GammaO, HairData.GammaT);
-	float Pdf3 = Mp(SinThetaI, HairData.SinThetaO.w, HairData.v3) * (1 / (2 * PI)); // last lobe is isotropic
+	const float InvS = rcp(HairData.s);
+	const float Pdf0 = Mp(SinThetaI, HairData.SinThetaO.x, HairData.v0) * Np(PhiI, 0, InvS, HairData.GammaO, HairData.GammaT);
+	const float Pdf1 = Mp(SinThetaI, HairData.SinThetaO.y, HairData.v1) * Np(PhiI, 1, InvS, HairData.GammaO, HairData.GammaT);
+	const float Pdf2 = Mp(SinThetaI, HairData.SinThetaO.z, HairData.v2) * Np(PhiI, 2, InvS, HairData.GammaO, HairData.GammaT);
+	const float Pdf3 = Mp(SinThetaI, HairData.SinThetaO.w, HairData.v3) * (1 / (2 * PI)); // last lobe is isotropic
 
-	AddLobeWithMIS(Result.Weight, Result.Pdf, HairData.A0, Pdf0, HairData.LobePdf.x);
-	AddLobeWithMIS(Result.Weight, Result.Pdf, HairData.A1, Pdf1, HairData.LobePdf.y);
-	AddLobeWithMIS(Result.Weight, Result.Pdf, HairData.A2, Pdf2, HairData.LobePdf.z);
-	AddLobeWithMIS(Result.Weight, Result.Pdf, HairData.A3, Pdf3, HairData.LobePdf.w);
-
+	Result.AddLobeWithMIS(HairData.A0, Pdf0, HairData.LobePdf.x);
+	Result.AddLobeWithMIS(HairData.A1, Pdf1, HairData.LobePdf.y);
+	Result.AddLobeWithMIS(HairData.A2, Pdf2, HairData.LobePdf.z);
+	Result.AddLobeWithMIS(HairData.A3, Pdf3, HairData.LobePdf.w);
+	Result.Weight *= DiffuseSpecularScale.y;
 	return Result;
 }
 

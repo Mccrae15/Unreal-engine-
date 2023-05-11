@@ -6,6 +6,9 @@
 #include "SmartObjectTypes.h"
 #include "SmartObjectHashGrid.generated.h"
 
+struct FInstancedStruct;
+struct FStructView;
+
 struct FSmartObjectHandle;
 
 typedef THierarchicalHashGrid2D<2, 4, FSmartObjectHandle> FSmartObjectHashGrid2D;
@@ -25,7 +28,7 @@ class SMARTOBJECTSMODULE_API USmartObjectHashGrid : public USmartObjectSpacePart
 
 protected:
 	virtual FInstancedStruct Add(const FSmartObjectHandle Handle, const FBox& Bounds) override;
-	virtual void Remove(const FSmartObjectHandle Handle, const FStructView& EntryData) override;
+	virtual void Remove(const FSmartObjectHandle Handle, FStructView EntryData) override;
 	virtual void Find(const FBox& QueryBox, TArray<FSmartObjectHandle>& OutResults) override;
 
 #if UE_ENABLE_DEBUG_DRAWING

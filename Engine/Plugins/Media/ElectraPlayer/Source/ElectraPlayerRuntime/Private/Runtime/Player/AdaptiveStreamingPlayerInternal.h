@@ -21,6 +21,8 @@
 #include "Player/PlayerEntityCache.h"
 #include "Player/AdaptiveStreamingPlayerABR.h"
 
+#include "Utilities/UtilsMP4.h"
+
 #include "ElectraCDM.h"
 
 #include "InfoLog.h"
@@ -193,6 +195,8 @@ struct FPlaybackState
 		CurrentLiveLatency.SetToInvalid();
 		EndPlaybackAtTime.SetToInvalid();
 		LoopState = {};
+		ActivePlaybackRange.Reset();
+		NewPlaybackRange.Reset();
 		bHaveMetadata = false;
 		bHasEnded = false;
 		bIsSeeking = false;
@@ -213,6 +217,8 @@ struct FPlaybackState
 	FTimeValue								CurrentLiveLatency;
 	FTimeValue								EndPlaybackAtTime;
 	IAdaptiveStreamingPlayer::FLoopState	LoopState;
+	FTimeRange								ActivePlaybackRange;
+	FTimeRange								NewPlaybackRange;
 	bool									bHaveMetadata;
 	bool									bHasEnded;
 	bool									bIsSeeking;
@@ -446,16 +452,64 @@ struct FPlaybackState
 		LoopState.bIsEnabled = bEnable;
 	}
 
-	void SetPlayRangeHasChanged(bool bWasChanged)
+	void SetPlayRange(const IAdaptiveStreamingPlayer::FPlaybackRange& InNewRange)
 	{
 		FScopeLock lock(&Lock);
-		bPlayrangeHasChanged = bWasChanged;
+		FTimeValue NewRangeStart = InNewRange.Start.IsSet() ? InNewRange.Start.GetValue() : FTimeValue();
+		FTimeValue NewRangeEnd = InNewRange.End.IsSet() ? InNewRange.End.GetValue() : FTimeValue();
+		if (NewRangeStart != NewPlaybackRange.Start || NewRangeEnd != NewPlaybackRange.End)
+		{
+			NewPlaybackRange.Start = NewRangeStart;
+			NewPlaybackRange.End = NewRangeEnd;
+			bPlayrangeHasChanged = true;
+		}
+	}
+	void SetPlayRange(const FTimeRange& InNewRange)
+	{
+		FScopeLock lock(&Lock);
+		if (InNewRange.Start != NewPlaybackRange.Start || InNewRange.End != NewPlaybackRange.End)
+		{
+			NewPlaybackRange = InNewRange;
+			bPlayrangeHasChanged = true;
+		}
+	}
+	FTimeRange GetPlayRange()
+	{
+		FScopeLock lock(&Lock);
+		return NewPlaybackRange;
+	}
+	void GetPlayRange(IAdaptiveStreamingPlayer::FPlaybackRange& OutRange)
+	{
+		OutRange.Start.Reset();
+		OutRange.End.Reset();
+		FScopeLock lock(&Lock);
+		if (NewPlaybackRange.Start.IsValid())
+		{
+			OutRange.Start = NewPlaybackRange.Start;
+		}
+		if (NewPlaybackRange.End.IsValid())
+		{
+			OutRange.End = NewPlaybackRange.End;
+		}
+	}
+	void ActivateNewPlayRange(const FTimeRange* InTimeRange)
+	{
+		FScopeLock lock(&Lock);
+		ActivePlaybackRange = InTimeRange ? *InTimeRange : NewPlaybackRange;
+		bPlayrangeHasChanged = InTimeRange ? bPlayrangeHasChanged : false;
+	}
+	FTimeRange GetActivePlayRange()
+	{
+		FScopeLock lock(&Lock);
+		return ActivePlaybackRange;
 	}
 	bool GetPlayRangeHasChanged()
 	{
 		FScopeLock lock(&Lock);
 		return bPlayrangeHasChanged;
 	}
+
+
 	void SetLoopStateHasChanged(bool bWasChanged)
 	{
 		FScopeLock lock(&Lock);
@@ -512,6 +566,7 @@ struct FMetricEvent
 		PlaybackJumped,
 		PlaybackStopped,
 		SeekCompleted,
+		MediaMetadataChanged,
 		LicenseKey,
 		Errored,
 		LogMessage,
@@ -548,6 +603,10 @@ struct FMetricEvent
 		{
 			bool bWasAlreadyThere;
 		};
+		struct FMediaMedataDataChanged
+		{
+			TSharedPtrTS<UtilsMP4::FMetadataParser> NewMetadata;
+		};
 		FString								URL;
 		Metrics::EBufferingReason			BufferingReason;
 		Metrics::FBufferStats				BufferStats;
@@ -560,6 +619,7 @@ struct FMetricEvent
 		FStreamCodecInformation				CodecFormatChange;
 		FTimeJumped							TimeJump;
 		FSeekComplete						SeekComplete;
+		FMediaMedataDataChanged				MediaMetadataChange;
 		FErrorDetail						ErrorDetail;
 		FLogMessage							LogMessage;
 	};
@@ -733,6 +793,13 @@ struct FMetricEvent
 		Evt->Param.SeekComplete.bWasAlreadyThere = bWasAlreadyThere;
 		return Evt;
 	}
+	static TSharedPtrTS<FMetricEvent> ReportMediaMetadataChanged(const TSharedPtrTS<UtilsMP4::FMetadataParser>& InNextMetadata)
+	{
+		TSharedPtrTS<FMetricEvent> Evt = MakeSharedTS<FMetricEvent>();
+		Evt->Type = EType::MediaMetadataChanged;
+		Evt->Param.MediaMetadataChange.NewMetadata = InNextMetadata;
+		return Evt;
+	}
 	static TSharedPtrTS<FMetricEvent> ReportError(const FErrorDetail& ErrorDetail)
 	{
 		TSharedPtrTS<FMetricEvent> Evt = MakeSharedTS<FMetricEvent>();
@@ -873,6 +940,7 @@ public:
 
 	void SetInitialStreamAttributes(EStreamType StreamType, const FStreamSelectionAttributes& InitialSelection) override;
 	void EnableFrameAccurateSeeking(bool bEnabled) override;
+	void LoadBlob(TSharedPtr<FHTTPResourceRequest, ESPMode::ThreadSafe> InBlobLoadRequest) override;
 	void LoadManifest(const FString& manifestURL) override;
 
 	void SeekTo(const FSeekParam& NewPosition) override;
@@ -1304,6 +1372,7 @@ private:
 				// Commands
 				Initialize,
 				LoadManifest,
+				LoadBlob,
 				Pause,
 				Resume,
 				Loop,
@@ -1330,6 +1399,10 @@ private:
 				{
 					FString											URL;
 					FString											MimeType;
+				};
+				struct FLoadBlob
+				{
+					TSharedPtrTS<FHTTPResourceRequest>				BlobLoadRequest;
 				};
 				struct FStreamReader
 				{
@@ -1391,6 +1464,7 @@ private:
 				};
 
 				FLoadManifest				ManifestToLoad;
+				FLoadBlob					BlobToLoad;
 				FStreamReader				StreamReader;
 				FEvent						MediaEvent;
 				FLoop						Looping;
@@ -1437,6 +1511,13 @@ private:
 			Msg.Type = FMessage::EType::LoadManifest;
 			Msg.Data.ManifestToLoad.URL = URL;
 			Msg.Data.ManifestToLoad.MimeType = MimeType;
+			TriggerSharedWorkerThread(MoveTemp(Msg));
+		}
+		void SendLoadBlobMessage(TSharedPtr<FHTTPResourceRequest, ESPMode::ThreadSafe> InBlobLoadRequest)
+		{
+			FMessage Msg;
+			Msg.Type = FMessage::EType::LoadBlob;
+			Msg.Data.BlobToLoad.BlobLoadRequest = MoveTemp(InBlobLoadRequest);
 			TriggerSharedWorkerThread(MoveTemp(Msg));
 		}
 		void SendPauseMessage()
@@ -1698,6 +1779,7 @@ private:
 			PendingRequest.Reset();
 			ActiveRequest.Reset();
 			LastFinishedRequest.Reset();
+			PlayrangeOnRequest.Reset();
 			bForScrubbing = false;
 			bScrubPrerollDone = false;
 		}
@@ -1720,9 +1802,10 @@ private:
 		TOptional<FSeekParam> ActiveRequest;
 		TOptional<FSeekParam> LastFinishedRequest;
 
-		FCriticalSection Lock;
+		mutable FCriticalSection Lock;
 		// The pending request must be accessed under lock since it is written to by the main thread and read from the worker thread!
 		TOptional<FSeekParam> PendingRequest;
+		FTimeRange PlayrangeOnRequest;
 	};
 
 	struct FStreamBitrateInfo
@@ -1804,6 +1887,48 @@ private:
 		FTimeValue To;
 	};
 
+
+	struct FMediaMetadataUpdate
+	{
+		FMediaMetadataUpdate()
+		{
+			Reset();
+		}
+		void Reset()
+		{
+			NextEntries.Empty();
+			// Do NOT reset the active metadata, but the time it became valid!
+			ActiveSince.SetToInvalid();
+		}
+		void AddEntry(const FTimeValue& InValidFrom, const TSharedPtrTS<UtilsMP4::FMetadataParser>& InMetadata)
+		{
+			FEntry& e = NextEntries.Emplace_GetRef();
+			e.ValidFrom = InValidFrom.IsValid() ? InValidFrom : FTimeValue::GetZero();
+			e.Metadata = InMetadata;
+			NextEntries.StableSort([](const FEntry& a, const FEntry& b)
+			{
+				const FTimeValue& t1 = a.ValidFrom;
+				const FTimeValue& t2 = b.ValidFrom;
+				const int64 s1 = t1.GetSequenceIndex();
+				const int64 s2 = t2.GetSequenceIndex();
+				return (s1 == s2 && t1 < t2) || (s1 < s2);
+			});
+		}
+		bool Handle(const FTimeValue& InAtTime);
+		TSharedPtrTS<UtilsMP4::FMetadataParser> GetActive() const
+		{ 
+			return ActiveMetadata; 
+		}
+
+		struct FEntry
+		{
+			FTimeValue ValidFrom;
+			TSharedPtrTS<UtilsMP4::FMetadataParser> Metadata;
+		};
+		TArray<FEntry> NextEntries;
+		TSharedPtrTS<UtilsMP4::FMetadataParser> ActiveMetadata;
+		FTimeValue ActiveSince;
+	};
 
 	struct FMetadataHandlingState
 	{
@@ -1922,11 +2047,13 @@ private:
 
 	TSharedPtrTS<FMultiTrackAccessUnitBuffer> GetCurrentOutputStreamBuffer(EStreamType InStreamType)
 	{
+		FScopeLock lock(&DataBuffersCriticalSection);
 		return GetStreamBuffer(InStreamType, ActiveDataOutputBuffers);
 	}
 
 	TSharedPtrTS<FMultiTrackAccessUnitBuffer> GetCurrentReceiveStreamBuffer(EStreamType InStreamType)
 	{
+		FScopeLock lock(&DataBuffersCriticalSection);
 		return GetStreamBuffer(InStreamType, CurrentDataReceiveBuffers);
 	}
 
@@ -1939,7 +2066,7 @@ private:
 	void FeedDecoder(EStreamType Type, IAccessUnitBufferInterface* Decoder, bool bHandleUnderrun);
 	void ClearAllDecoderEODs();
 
-	void InternalStartAt(const FSeekParam& NewPosition);
+	void InternalStartAt(const FSeekParam& NewPosition, const FTimeRange* InTimeRange);
 	void InternalPause();
 	void InternalResume();
 	void InternalRebuffer();
@@ -2061,6 +2188,7 @@ private:
 	TArray<FPeriodInformation>											ActivePeriods;
 	TArray<FPeriodInformation>											UpcomingPeriods;
 	FMetadataHandlingState												MetadataHandlingState;
+	FMediaMetadataUpdate												MediaMetadataUpdates;
 	TSharedPtrTS<IManifest::IPlayPeriod>								InitialPlayPeriod;
 	TSharedPtrTS<IManifest::IPlayPeriod>								CurrentPlayPeriodVideo;
 	TSharedPtrTS<IManifest::IPlayPeriod>								CurrentPlayPeriodAudio;

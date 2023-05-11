@@ -11,6 +11,7 @@
 #include "Misc/MessageDialog.h"
 #include "UI/CameraCalibrationWidgetHelpers.h"
 #include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Views/SListView.h"
 
 #if WITH_OPENCV
 
@@ -203,7 +204,7 @@ bool UCameraNodalOffsetAlgoAruco::PopulatePoints(FText& OutErrorMessage)
 	FIntPoint Size;
 	ETextureRenderTargetFormat PixelFormat;
 
-	if (!StepsController->ReadMediaPixels(Pixels, Size, PixelFormat, OutErrorMessage))
+	if (!StepsController->ReadMediaPixels(Pixels, Size, PixelFormat, OutErrorMessage, ESimulcamViewportPortion::CameraFeed))
 	{
 		return false;
 	}

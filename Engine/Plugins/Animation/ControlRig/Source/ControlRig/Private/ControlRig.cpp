@@ -7,7 +7,7 @@
 #include "IControlRigObjectBinding.h"
 #include "HelperUtil.h"
 #include "ObjectTrace.h"
-#include "ControlRigBlueprintGeneratedClass.h"
+#include "RigVMBlueprintGeneratedClass.h"
 #include "ControlRigObjectVersion.h"
 #include "Rigs/RigHierarchyController.h"
 #include "Units/Execution/RigUnit_BeginExecution.h"
@@ -18,6 +18,7 @@
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimationPoseData.h"
 #include "Internationalization/TextKey.h"
+#include "UObject/Package.h"
 #if WITH_EDITOR
 #include "ControlRigModule.h"
 #include "Modules/ModuleManager.h"
@@ -29,6 +30,8 @@
 #endif// WITH_EDITOR
 #include "ControlRigComponent.h"
 #include "Constraints/ControlRigTransformableHandle.h"
+#include "RigVMCore/RigVMNativized.h"
+#include "UObject/UObjectIterator.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRig)
 
@@ -50,45 +53,18 @@ static TAutoConsoleVariable<int32> CVarControlRigCreateFloatControlsForCurves(
 	TEXT("If nonzero we create a float control for each curve in the curve container, useful for debugging low level controls."),
 	ECVF_Default);
 
-// CVar to disable all control rig execution 
-static TAutoConsoleVariable<int32> CVarControlRigDisableExecutionAll(TEXT("ControlRig.DisableExecutionAll"), 0, TEXT("if nonzero we disable all execution of Control Rigs."));
-
-// CVar to disable swapping to nativized vms 
-static TAutoConsoleVariable<int32> CVarControlRigDisableNativizedVMs(TEXT("ControlRig.DisableNativizedVMs"), 1, TEXT("if nonzero we disable swapping to nativized VMs."));
-
-static bool bControlRigUseVMSnapshots = false;
-static FAutoConsoleVariableRef CVarControlRigUseVMSnapshots(
-	TEXT("ControlRig.UseVMSnapshots"),
-	bControlRigUseVMSnapshots,
-	TEXT("If True the VM will try to reuse previous initializations of the same rig."));
-
 UControlRig::UControlRig(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
-	, DeltaTime(0.0f)
-	, AbsoluteTime(0.0f)
-	, FramesPerSecond(0.0f)
-	, bAccumulateTime(true)
-	, LatestExecutedState(EControlRigState::Invalid)
-#if WITH_EDITOR
-	, ControlRigLog(nullptr)
-	, bEnableControlRigLogging(true)
-#endif
 #if WITH_EDITOR
 	, bEnableAnimAttributeTrace(false)
 #endif 
 	, DataSourceRegistry(nullptr)
-	, EventQueue()
-	, EventQueueToRun()
 #if WITH_EDITOR
 	, PreviewInstance(nullptr)
 #endif
-	, bRequiresInitExecution(false)
-	, bRequiresConstructionEvent(false)
 	, bCopyHierarchyBeforeConstruction(true)
 	, bResetInitialTransformsBeforeConstruction(true)
 	, bManipulationEnabled(false)
-	, InitBracket(0)
-	, UpdateBracket(0)
 	, PreConstructionBracket(0)
 	, PostConstructionBracket(0)
 	, InteractionBracket(0)
@@ -96,19 +72,11 @@ UControlRig::UControlRig(const FObjectInitializer& ObjectInitializer)
 	, ControlUndoBracketIndex(0)
 	, InteractionType((uint8)EControlRigInteractionType::None)
 	, bInteractionJustBegan(false)
-#if WITH_EDITORONLY_DATA
-	, VMSnapshotBeforeExecution(nullptr)
-#endif
 	, DebugBoneRadiusMultiplier(1.f)
 #if WITH_EDITOR
 	, bRecordSelectionPoseForConstructionMode(true)
 	, bIsClearingTransientControls(false)
 #endif
-#if UE_CONTROLRIG_PROFILE_EXECUTE_UNITS_NUM
-	, ProfilingRunsLeft(0)
-	, AccumulatedCycles(0)
-#endif
-
 {
 	EventQueue.Add(FRigUnit_BeginExecution::EventName);
 }
@@ -116,18 +84,11 @@ UControlRig::UControlRig(const FObjectInitializer& ObjectInitializer)
 void UControlRig::BeginDestroy()
 {
 	Super::BeginDestroy();
-	InitializedEvent.Clear();
 	PreConstructionEvent.Clear();
 	PostConstructionEvent.Clear();
 	PreForwardsSolveEvent.Clear();
 	PostForwardsSolveEvent.Clear();
-	ExecutedEvent.Clear();
 	SetInteractionRig(nullptr);
-
-	if (VM)
-	{
-		VM->ExecutionReachedExit().RemoveAll(this);
-	}
 
 #if WITH_EDITOR
 	if (!HasAnyFlags(RF_ClassDefaultObject))
@@ -144,27 +105,6 @@ void UControlRig::BeginDestroy()
 		}
 	}
 #endif
-
-#if WITH_EDITORONLY_DATA
-	if (VMSnapshotBeforeExecution)
-	{
-		VMSnapshotBeforeExecution = nullptr;
-	}
-#endif
-
-	// on destruction clear out the initialized snapshots
-	if (HasAnyFlags(RF_ClassDefaultObject))
-	{
-		for (TPair<uint32, TObjectPtr<URigVM>>& Pair : InitializedVMSnapshots)
-		{
-			if (IsValid(Pair.Value))
-			{
-				TObjectPtr<URigVM> VMSnapshot = Pair.Value;
-				VMSnapshot->RemoveFromRoot();				
-			}
-		}
-		InitializedVMSnapshots.Reset();
-	}
 
 	TRACE_OBJECT_LIFETIME_END(this);
 }
@@ -185,51 +125,17 @@ UWorld* UControlRig::GetWorld() const
 			return Owner->GetWorld();
 		}
 	}
-
-	UObject* Outer = GetOuter();
-	if (Outer)
-	{
-		return Outer->GetWorld();
-	}
-
-	return nullptr;
+	return Super::GetWorld();
 }
 
-void UControlRig::Initialize(bool bInitRigUnits)
+void UControlRig::Initialize(bool bRequestInit)
 {
 	TRACE_OBJECT_LIFETIME_BEGIN(this);
 
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_ControlRig_Initialize);
 
-	if(IsInitializing())
-	{
-		UE_LOG(LogControlRig, Warning, TEXT("%s: Initialize is being called recursively."), *GetPathName());
-		return;
-	}
-
-	// recompute the hash used to differentiate VMs based on their memory layout 
-	if (HasAnyFlags(RF_ClassDefaultObject))
-	{
-		CachedMemoryHash = 0;
-
-		if(VM)
-		{
-			CachedMemoryHash = HashCombine(
-				VM->GetLiteralMemory()->GetMemoryHash(),
-				VM->GetWorkMemory()->GetMemoryHash()
-			);
-		}
-	}
-
-	if (IsTemplate())
-	{
-		// don't initialize template class 
-		return;
-	}
-
-	InitializeFromCDO();
-	InstantiateVMFromCDO();
+	Super::Initialize(bRequestInit);
 
 	// Create the data source registry here to avoid UObject creation from Non-Game Threads
 	GetDataSourceRegistry();
@@ -239,11 +145,6 @@ void UControlRig::Initialize(bool bInitRigUnits)
 	
 	// should refresh mapping 
 	RequestConstruction();
-
-	if (bInitRigUnits)
-	{
-		RequestInit();
-	}
 	
 	GetHierarchy()->OnModified().RemoveAll(this);
 	GetHierarchy()->OnModified().AddUObject(this, &UControlRig::HandleHierarchyModified);
@@ -252,8 +153,42 @@ void UControlRig::Initialize(bool bInitRigUnits)
 	GetHierarchy()->UpdateVisibilityOnProxyControls();
 }
 
+bool UControlRig::InitializeVM(const FName& InEventName)
+{
+	if(!Super::InitializeVM(InEventName))
+	{
+		return false;
+	}
+
+	RequestConstruction();
+
+#if WITH_EDITOR
+	// setup the hierarchy's controller log function
+	if(URigHierarchyController* HierarchyController = GetHierarchy()->GetController(true))
+	{
+		HierarchyController->LogFunction = [this](EMessageSeverity::Type InSeverity, const FString& Message)
+		{
+			const FRigVMExtendedExecuteContext& ExtendedExecuteContext = GetVM()->GetContext();
+			const FRigVMExecuteContext& PublicContext = ExtendedExecuteContext.GetPublicData<>(); 
+			if(RigVMLog)
+			{
+				RigVMLog->Report(InSeverity,PublicContext.GetFunctionName(),PublicContext.GetInstructionIndex(), Message);
+			}
+			else
+			{
+				LogOnce(InSeverity,PublicContext.GetInstructionIndex(), Message);
+			}
+		};
+	}
+#endif
+
+	return true;
+}
+
 void UControlRig::InitializeFromCDO()
 {
+	Super::InitializeFromCDO();
+	
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 
 	// copy CDO property you need to here
@@ -266,8 +201,6 @@ void UControlRig::InitializeFromCDO()
 
 		// copy hierarchy
 		{
-			PostInitInstanceIfRequired();
-
 			FRigHierarchyValidityBracket ValidityBracketA(GetHierarchy());
 			FRigHierarchyValidityBracket ValidityBracketB(CDO->GetHierarchy());
 			
@@ -284,9 +217,6 @@ void UControlRig::InitializeFromCDO()
 		// notify clients that the hierarchy has changed
 		GetHierarchy()->Notify(ERigHierarchyNotification::HierarchyReset, nullptr);
 
-		// copy draw container
-		DrawContainer = CDO->DrawContainer;
-
 		// copy hierarchy settings
 		HierarchySettings = CDO->HierarchySettings;
 		
@@ -295,181 +225,7 @@ void UControlRig::InitializeFromCDO()
 		{
 			HierarchySettings.ProceduralElementLimit += CDOHierarchy->Num();
 		}
-
-		// copy vm settings
-		VMRuntimeSettings = CDO->VMRuntimeSettings;
 	}
-}
-
-void UControlRig::Evaluate_AnyThread()
-{
-	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
-	QUICK_SCOPE_CYCLE_COUNTER(STAT_ControlRig_Evaluate);
-
-	// we can have other systems trying to poke into running instances of Control Rigs
-	// on the anim thread and query data, such as
-	// UControlRigSkeletalMeshComponent::RebuildDebugDrawSkeleton,
-	// using a lock here to prevent them from having an inconsistent view of the rig at some
-	// intermediate stage of evaluation, for example, during evaluate, we can have a call
-	// to copy hierarchy, which empties the hierarchy for a short period of time
-	// and we don't want other systems to see that.
-	FScopeLock EvaluateLock(&GetEvaluateMutex());
-	
-	// create a copy since we need to change it here temporarily,
-	// and UI / the rig may change the event queue while it is running
-	EventQueueToRun = EventQueue;
-
-	if(InteractionType != (uint8)EControlRigInteractionType::None)
-	{
-		if(EventQueueToRun.IsEmpty())
-		{
-			EventQueueToRun.Add(FRigUnit_InteractionExecution::EventName);
-		}
-		else if(!EventQueueToRun.Contains(FRigUnit_PrepareForExecution::EventName))
-		{
-			// insert just before the last event so the interaction runs prior to
-			// forward solve or backwards solve.
-			EventQueueToRun.Insert(FRigUnit_InteractionExecution::EventName, EventQueueToRun.Num() - 1);
-		}
-	}
-
-	// execute the construction event prior to everything else
-	if(bRequiresConstructionEvent)
-	{
-		if(!EventQueueToRun.Contains(FRigUnit_PrepareForExecution::EventName))
-		{
-			EventQueueToRun.Insert(FRigUnit_PrepareForExecution::EventName, 0);
-		}
-	}
-	
-	for (const FName& EventName : EventQueueToRun)
-	{
-		Execute(EControlRigState::Update, EventName);
-
-#if WITH_EDITOR
-		if (VM)
-		{
-			const FRigVMBreakpoint& Breakpoint = VM->GetHaltedAtBreakpoint(); 
-			if (Breakpoint.IsValid())
-			{
-				// make sure that the instruction index for the breakpoint is part
-				// of the current entry.
-				const FRigVMByteCode& ByteCode = VM->GetByteCode();
-				const int32 CurrentEntryIndex = ByteCode.FindEntryIndex(EventName);
-				if(CurrentEntryIndex != INDEX_NONE)
-				{
-					const FRigVMByteCodeEntry& CurrentEntry = ByteCode.GetEntry(CurrentEntryIndex);
-					if(Breakpoint.InstructionIndex >= CurrentEntry.InstructionIndex)
-					{
-						int32 LastInstructionIndexInEntry;
-						if(CurrentEntryIndex == ByteCode.NumEntries() - 1)
-						{
-							LastInstructionIndexInEntry = ByteCode.GetNumInstructions();
-						}
-						else
-						{
-							const int32 NextEntryIndex = CurrentEntryIndex + 1;
-							LastInstructionIndexInEntry = ByteCode.GetEntry(NextEntryIndex).InstructionIndex - 1;
-						}
-
-						if(Breakpoint.InstructionIndex <= LastInstructionIndexInEntry)
-						{
-							break;
-						}
-					}
-				}
-			}
-		}
-#endif
-	}
-
-	EventQueueToRun.Reset();
-}
-
-
-TArray<FRigVMExternalVariable> UControlRig::GetExternalVariables() const
-{
-	return GetExternalVariablesImpl(true);
-}
-
-TArray<FRigVMExternalVariable> UControlRig::GetExternalVariablesImpl(bool bFallbackToBlueprint) const
-{
-	TArray<FRigVMExternalVariable> ExternalVariables;
-
-	for (TFieldIterator<FProperty> PropertyIt(GetClass()); PropertyIt; ++PropertyIt)
-	{
-		FProperty* Property = *PropertyIt;
-		if(Property->IsNative())
-		{
-			continue;
-		}
-
-		FRigVMExternalVariable ExternalVariable = FRigVMExternalVariable::Make(Property, (UObject*)this);
-		if(!ExternalVariable.IsValid())
-		{
-			UE_LOG(LogControlRig, Warning, TEXT("%s: Property '%s' of type '%s' is not supported."), *GetClass()->GetName(), *Property->GetName(), *Property->GetCPPType());
-			continue;
-		}
-
-		ExternalVariables.Add(ExternalVariable);
-	}
-
-#if WITH_EDITOR
-
-	if (bFallbackToBlueprint)
-	{
-		// if we have a difference in the blueprint variables compared to us - let's 
-		// use those instead. the assumption here is that the blueprint is dirty and
-		// hasn't been compiled yet.
-		if (UBlueprint* Blueprint = Cast<UBlueprint>(GetClass()->ClassGeneratedBy))
-		{
-			TArray<FRigVMExternalVariable> BlueprintVariables;
-			for (const FBPVariableDescription& VariableDescription : Blueprint->NewVariables)
-			{
-				FRigVMExternalVariable ExternalVariable = RigVMTypeUtils::ExternalVariableFromBPVariableDescription(VariableDescription);
-				if (ExternalVariable.TypeName.IsNone())
-				{
-					continue;
-				}
-
-				ExternalVariable.Memory = nullptr;
-
-				BlueprintVariables.Add(ExternalVariable);
-			}
-
-			if (ExternalVariables.Num() != BlueprintVariables.Num())
-			{
-				return BlueprintVariables;
-			}
-
-			TMap<FName, int32> NameMap;
-			for (int32 Index = 0; Index < ExternalVariables.Num(); Index++)
-			{
-				NameMap.Add(ExternalVariables[Index].Name, Index);
-			}
-
-			for (FRigVMExternalVariable BlueprintVariable : BlueprintVariables)
-			{
-				const int32* Index = NameMap.Find(BlueprintVariable.Name);
-				if (Index == nullptr)
-				{
-					return BlueprintVariables;
-				}
-
-				FRigVMExternalVariable ExternalVariable = ExternalVariables[*Index];
-				if (ExternalVariable.bIsArray != BlueprintVariable.bIsArray ||
-					ExternalVariable.bIsPublic != BlueprintVariable.bIsPublic ||
-					ExternalVariable.TypeName != BlueprintVariable.TypeName ||
-					ExternalVariable.TypeObject != BlueprintVariable.TypeObject)
-				{
-					return BlueprintVariables;
-				}
-			}
-		}
-	}
-#endif
-
-	return ExternalVariables;
 }
 
 UControlRig::FAnimAttributeContainerPtrScope::FAnimAttributeContainerPtrScope(UControlRig* InControlRig,
@@ -484,96 +240,6 @@ UControlRig::FAnimAttributeContainerPtrScope::~FAnimAttributeContainerPtrScope()
 	// control rig should not hold on to this container since it is stack allocated
 	// and should not be used outside of stack, see FPoseContext
 	ControlRig->ExternalAnimAttributeContainer = nullptr;
-}
-
-TArray<FRigVMExternalVariable> UControlRig::GetPublicVariables() const
-{
-	TArray<FRigVMExternalVariable> PublicVariables;
-	TArray<FRigVMExternalVariable> ExternalVariables = GetExternalVariables();
-	for (const FRigVMExternalVariable& ExternalVariable : ExternalVariables)
-	{
-		if (ExternalVariable.bIsPublic)
-		{
-			PublicVariables.Add(ExternalVariable);
-		}
-	}
-	return PublicVariables;
-}
-
-FRigVMExternalVariable UControlRig::GetPublicVariableByName(const FName& InVariableName) const
-{
-	if (FProperty* Property = GetPublicVariableProperty(InVariableName))
-	{
-		return FRigVMExternalVariable::Make(Property, (UObject*)this);
-	}
-	return FRigVMExternalVariable();
-}
-
-TArray<FName> UControlRig::GetScriptAccessibleVariables() const
-{
-	TArray<FRigVMExternalVariable> PublicVariables = GetPublicVariables();
-	TArray<FName> Names;
-	for (const FRigVMExternalVariable& PublicVariable : PublicVariables)
-	{
-		Names.Add(PublicVariable.Name);
-	}
-	return Names;
-}
-
-FName UControlRig::GetVariableType(const FName& InVariableName) const
-{
-	FRigVMExternalVariable PublicVariable = GetPublicVariableByName(InVariableName);
-	if (PublicVariable.IsValid(true /* allow nullptr */))
-	{
-		return PublicVariable.TypeName;
-	}
-	return NAME_None;
-}
-
-FString UControlRig::GetVariableAsString(const FName& InVariableName) const
-{
-#if WITH_EDITOR
-	if (const FProperty* Property = GetClass()->FindPropertyByName(InVariableName))
-	{
-		FString Result;
-		const uint8* Container = (const uint8*)this;
-		if (FBlueprintEditorUtils::PropertyValueToString(Property, Container, Result, nullptr))
-		{
-			return Result;
-		}
-	}
-#endif
-	return FString();
-}
-
-bool UControlRig::SetVariableFromString(const FName& InVariableName, const FString& InValue)
-{
-#if WITH_EDITOR
-	if (const FProperty* Property = GetClass()->FindPropertyByName(InVariableName))
-	{
-		uint8* Container = (uint8*)this;
-		return FBlueprintEditorUtils::PropertyValueFromString(Property, InValue, Container, nullptr);
-	}
-#endif
-	return false;
-}
-
-bool UControlRig::SupportsEvent(const FName& InEventName) const
-{
-	if (VM)
-	{
-		return VM->ContainsEntry(InEventName);
-	}
-	return false;
-}
-
-TArray<FName> UControlRig::GetSupportedEvents() const
-{
-	if (VM)
-	{
-		return VM->GetEntryNames();
-	}
-	return TArray<FName>();
 }
 
 AActor* UControlRig::GetHostingActor() const
@@ -593,121 +259,33 @@ FText UControlRig::GetToolTipText() const
 }
 #endif
 
-void UControlRig::SetDeltaTime(float InDeltaTime)
-{
-	DeltaTime = InDeltaTime;
-}
-
-void UControlRig::SetAbsoluteTime(float InAbsoluteTime, bool InSetDeltaTimeZero)
-{
-	if(InSetDeltaTimeZero)
-	{
-		DeltaTime = 0.f;
-	}
-	AbsoluteTime = InAbsoluteTime;
-	bAccumulateTime = false;
-}
-
-void UControlRig::SetAbsoluteAndDeltaTime(float InAbsoluteTime, float InDeltaTime)
-{
-	AbsoluteTime = InAbsoluteTime;
-	DeltaTime = InDeltaTime;
-}
-
-void UControlRig::SetFramesPerSecond(float InFramesPerSecond)
-{
-	FramesPerSecond = InFramesPerSecond;	
-}
-
-float UControlRig::GetCurrentFramesPerSecond() const
-{
-	if(FramesPerSecond > SMALL_NUMBER)
-	{
-		return FramesPerSecond;
-	}
-	if(DeltaTime > SMALL_NUMBER)
-	{
-		return 1.f / DeltaTime;
-	}
-	return 60.f;
-}
-
-void UControlRig::InstantiateVMFromCDO()
-{
-	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
-
-	if (!HasAnyFlags(RF_ClassDefaultObject))
-	{
-		SwapVMToNativizedIfRequired();
-
-		UControlRig* CDO = GetClass()->GetDefaultObject<UControlRig>();
-		if (VM && CDO && CDO->VM)
-		{
-			if(!VM->IsNativized())
-			{
-				// reference the literal memory + byte code
-				// only defer if called from worker thread,
-				// which should be unlikely
-				VM->CopyFrom(CDO->VM, !IsInGameThread(), true);
-			}
-		}
-		else if (VM)
-		{
-			VM->Reset();
-		}
-		else
-		{
-			ensure(false);
-		}
-	}
-
-	if(VM)
-	{
-		CachedMemoryHash = HashCombine(
-			VM->GetLiteralMemory()->GetMemoryHash(),
-			VM->GetWorkMemory()->GetMemoryHash()
-		);
-	}
-
-	RequestInit();
-}
-
-void UControlRig::CopyExternalVariableDefaultValuesFromCDO()
-{
-	if (!HasAnyFlags(RF_ClassDefaultObject))
-	{
-		UControlRig* CDO = GetClass()->GetDefaultObject<UControlRig>();
-		TArray<FRigVMExternalVariable> CurrentVariables = GetExternalVariablesImpl(false);
-		TArray<FRigVMExternalVariable> CDOVariables = CDO->GetExternalVariablesImpl(false);
-		if (ensure(CurrentVariables.Num() == CDOVariables.Num()))
-		{
-			for (int32 i=0; i<CurrentVariables.Num(); ++i)
-			{
-				FRigVMExternalVariable& Variable = CurrentVariables[i];
-				FRigVMExternalVariable& CDOVariable = CDOVariables[i];
-				Variable.Property->CopyCompleteValue(Variable.Memory, CDOVariable.Memory);
-			}
-		}
-	}
-}
-
-bool UControlRig::Execute(const EControlRigState InState, const FName& InEventName)
+bool UControlRig::Execute(const FName& InEventName)
 {
 	if(!CanExecute())
 	{
 		return false;
 	}
 
+	bool bJustRanInit = false;
+	if(bRequiresInitExecution)
+	{
+		const TGuardValue<float> AbsoluteTimeGuard(AbsoluteTime, AbsoluteTime);
+		const TGuardValue<float> DeltaTimeGuard(DeltaTime, DeltaTime);
+		if(!InitializeVM(InEventName))
+		{
+			return false;
+		}
+		bJustRanInit = true;
+	}
+
 	if(EventQueueToRun.IsEmpty())
 	{
 		EventQueueToRun = EventQueue;
 	}
-	
+
 	const bool bIsEventInQueue = EventQueueToRun.Contains(InEventName);
 	const bool bIsEventFirstInQueue = !EventQueueToRun.IsEmpty() && EventQueueToRun[0] == InEventName; 
 	const bool bIsEventLastInQueue = !EventQueueToRun.IsEmpty() && EventQueueToRun.Last() == InEventName;
-	const bool bIsInitializingMemory = InState == EControlRigState::Init;
-	const bool bIsExecutingInstructions = InState == EControlRigState::Update;
 	const bool bIsConstructionEvent = InEventName == FRigUnit_PrepareForExecution::EventName;
 	const bool bIsForwardSolve = InEventName == FRigUnit_BeginExecution::EventName;
 	const bool bIsInteractionEvent = InEventName == FRigUnit_InteractionExecution::EventName;
@@ -717,7 +295,11 @@ bool UControlRig::Execute(const EControlRigState InState, const FName& InEventNa
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_ControlRig_Execute);
 	
-	LatestExecutedState = InState;
+	FRigVMExtendedExecuteContext& ExtendedExecuteContext = GetVM()->GetContext();
+	FControlRigExecuteContext& PublicContext = ExtendedExecuteContext.GetPublicDataSafe<FControlRigExecuteContext>();
+	PublicContext.SetDeltaTime(DeltaTime);
+	PublicContext.SetAbsoluteTime(AbsoluteTime);
+	PublicContext.SetFramesPerSecond(GetCurrentFramesPerSecond());
 
 	if (VM)
 	{
@@ -726,35 +308,6 @@ bool UControlRig::Execute(const EControlRigState InState, const FName& InEventNa
 			InstantiateVMFromCDO();
 		}
 
-		if (bIsInitializingMemory)
-		{
-			VM->ClearExternalVariables();
-
-			TArray<FRigVMExternalVariable> ExternalVariables = GetExternalVariablesImpl(false);
-			for (FRigVMExternalVariable ExternalVariable : ExternalVariables)
-			{
-				VM->AddExternalVariable(ExternalVariable);
-			}
-			
-#if WITH_EDITOR
-			// setup the hierarchy's controller log function
-			if(URigHierarchyController* HierarchyController = GetHierarchy()->GetController(true))
-			{
-				HierarchyController->LogFunction = [this](EMessageSeverity::Type InSeverity, const FString& Message)
-				{
-					const FRigVMExtendedExecuteContext& Context = GetVM()->GetContext();
-					if(ControlRigLog)
-					{
-						ControlRigLog->Report(InSeverity, Context.PublicData.FunctionName, Context.PublicData.InstructionIndex, Message);
-					}
-					else
-					{
-						LogOnce(InSeverity, Context.PublicData.InstructionIndex, Message);
-					}
-				};
-			}
-#endif
-		}
 #if WITH_EDITOR
 		// default to always clear data after each execution
 		// only set a valid first entry event later when execution
@@ -765,7 +318,7 @@ bool UControlRig::Execute(const EControlRigState InState, const FName& InEventNa
 	}
 
 #if WITH_EDITOR
-	if (bIsInDebugMode)
+	if (IsInDebugMode())
 	{
 		if (UControlRig* CDO = GetClass()->GetDefaultObject<UControlRig>())
 		{
@@ -790,30 +343,14 @@ bool UControlRig::Execute(const EControlRigState InState, const FName& InEventNa
 	}
 #endif
 
-	bool bJustRanInit = false;
-	if (bRequiresInitExecution)
-	{
-		bRequiresInitExecution = false;
-
-		if (!bIsInitializingMemory)
-		{
-			// if init is required we'll run init on the whole bytecode
-			if(!Execute(EControlRigState::Init, NAME_None))
-			{
-				return false;
-			}
-			bJustRanInit = true;
-		}
-	}
-
-	FRigUnitContext Context;
+	FRigUnitContext& Context = PublicContext.UnitContext;
 
 	// setup the draw interface for debug drawing
 	if(!bIsEventInQueue || bIsEventFirstInQueue)
 	{
 		DrawInterface.Reset();
 	}
-	Context.DrawInterface = &DrawInterface;
+	PublicContext.SetDrawInterface(&DrawInterface);
 
 	// setup the animation attribute container
 	Context.AnimAttributeContainer = ExternalAnimAttributeContainer;
@@ -825,30 +362,19 @@ bool UControlRig::Execute(const EControlRigState InState, const FName& InEventNa
 	{
 		DrawContainer = CDO->DrawContainer;
 	}
-	Context.DrawContainer = &DrawContainer;
+	PublicContext.SetDrawContainer(&DrawContainer);
 
 	// setup the data source registry
 	Context.DataSourceRegistry = GetDataSourceRegistry();
 
-	// reset the time and caches during init
-	if (bIsInitializingMemory)
-	{
-		AbsoluteTime = DeltaTime = 0.f;
-		NameCache.Reset();
-	}
-
 	// setup the context with further fields
-	Context.DeltaTime = DeltaTime;
-	Context.AbsoluteTime = AbsoluteTime;
-	Context.FramesPerSecond = GetCurrentFramesPerSecond();
 	Context.InteractionType = InteractionType;
 	Context.ElementsBeingInteracted = ElementsBeingInteracted;
-	Context.State = InState;
+	PublicContext.Hierarchy = GetHierarchy();
 
 	// allow access to the hierarchy
-	Context.Hierarchy = GetHierarchy();
 	Context.HierarchySettings = HierarchySettings;
-	check(Context.Hierarchy);
+	check(PublicContext.Hierarchy);
 
 	// allow access to the default hierarchy to allow to reset
 	if(!HasAnyFlags(RF_ClassDefaultObject))
@@ -857,76 +383,42 @@ bool UControlRig::Execute(const EControlRigState InState, const FName& InEventNa
 		{
 			if(URigHierarchy* DefaultHierarchy = CDO->GetHierarchy())
 			{
-				Context.Hierarchy->DefaultHierarchyPtr = DefaultHierarchy;
+				PublicContext.Hierarchy->DefaultHierarchyPtr = DefaultHierarchy;
 			}
 		}
 	}
 
 	// disable any controller access outside of the construction event
-	FRigHierarchyEnableControllerBracket DisableHierarchyController(Context.Hierarchy, bIsConstructionEvent);
-
-	// setup the context with further fields
-	Context.ToWorldSpaceTransform = FTransform::Identity;
-	Context.OwningComponent = nullptr;
-	Context.OwningActor = nullptr;
-	Context.World = nullptr;
-	Context.NameCache = &NameCache;
-
-	if (!OuterSceneComponent.IsValid())
-	{
-		USceneComponent* SceneComponentFromRegistry = Context.DataSourceRegistry->RequestSource<USceneComponent>(UControlRig::OwnerComponent);
-		if (SceneComponentFromRegistry)
-		{
-			OuterSceneComponent = SceneComponentFromRegistry;
-		}
-		else
-		{
-			UObject* Parent = this;
-			while (Parent)
-			{
-				Parent = Parent->GetOuter();
-				if (Parent)
-				{
-					if (USceneComponent* SceneComponent = Cast<USceneComponent>(Parent))
-					{
-						OuterSceneComponent = SceneComponent;
-						break;
-					}
-				}
-			}
-		}
-	}
+	FRigHierarchyEnableControllerBracket DisableHierarchyController(PublicContext.Hierarchy, bIsConstructionEvent);
 
 	// given the outer scene component configure
 	// the transform lookups to map transforms from rig space to world space
-	if (OuterSceneComponent.IsValid())
+	if (USceneComponent* SceneComponent = GetOwningSceneComponent())
 	{
-		Context.ToWorldSpaceTransform = OuterSceneComponent->GetComponentToWorld();
-		Context.OwningComponent = OuterSceneComponent.Get();
-		Context.OwningActor = Context.OwningComponent->GetOwner();
-		Context.World = Context.OwningComponent->GetWorld();
+		PublicContext.SetOwningComponent(SceneComponent);
 	}
 	else
 	{
+		PublicContext.SetOwningComponent(nullptr);
+		
 		if (ObjectBinding.IsValid())
 		{
 			AActor* HostingActor = ObjectBinding->GetHostingActor();
 			if (HostingActor)
 			{
-				Context.OwningActor = HostingActor;
-				Context.World = HostingActor->GetWorld();
+				PublicContext.SetOwningActor(HostingActor);
 			}
 			else if (UObject* Owner = ObjectBinding->GetBoundObject())
 			{
-				Context.World = Owner->GetWorld();
+				PublicContext.SetWorld(Owner->GetWorld());
 			}
 		}
 
-		if (Context.World == nullptr)
+		if (PublicContext.GetWorld() == nullptr)
 		{
 			if (UObject* Outer = GetOuter())
 			{
-				Context.World = Outer->GetWorld();
+				PublicContext.SetWorld(Outer->GetWorld());
 			}
 		}
 	}
@@ -934,18 +426,8 @@ bool UControlRig::Execute(const EControlRigState InState, const FName& InEventNa
 	// if we have any referenced elements dirty them
 	if(GetHierarchy())
 	{
-		GetHierarchy()->UpdateReferences(&Context);
+		GetHierarchy()->UpdateReferences(&PublicContext);
 	}
-
-#if WITH_EDITOR
-	// setup the log and VM settings
-	Context.Log = ControlRigLog;
-	if (ControlRigLog != nullptr)
-	{
-		ControlRigLog->Reset();
-		UpdateVMSettings();
-	}
-#endif
 
 	// guard against recursion
 	if(IsExecuting())
@@ -965,7 +447,7 @@ bool UControlRig::Execute(const EControlRigState InState, const FName& InEventNa
 	bool bSuccess = true;
 
 	// we'll special case the construction event here
-	if (bIsConstructionEvent && !bIsInitializingMemory)
+	if (bIsConstructionEvent)
 	{
 		// remember the previous selection
 		const TArray<FRigElementKey> PreviousSelection = GetHierarchy()->GetSelectedKeys();
@@ -977,7 +459,7 @@ bool UControlRig::Execute(const EControlRigState InState, const FName& InEventNa
 			if (PreConstructionForUIEvent.IsBound())
 			{
 				FControlRigBracketScope BracketScope(PreConstructionBracket);
-				PreConstructionForUIEvent.Broadcast(this, EControlRigState::Update, FRigUnit_PrepareForExecution::EventName);
+				PreConstructionForUIEvent.Broadcast(this, FRigUnit_PrepareForExecution::EventName);
 			}
 
 #if WITH_EDITOR
@@ -1043,17 +525,17 @@ bool UControlRig::Execute(const EControlRigState InState, const FName& InEventNa
 					if (PreConstructionEvent.IsBound())
 					{
 						FControlRigBracketScope BracketScope(PreConstructionBracket);
-						PreConstructionEvent.Broadcast(this, EControlRigState::Update, FRigUnit_PrepareForExecution::EventName);
+						PreConstructionEvent.Broadcast(this, FRigUnit_PrepareForExecution::EventName);
 					}
 
-					bSuccess = ExecuteUnits(Context, FRigUnit_PrepareForExecution::EventName);
+					bSuccess = Execute_Internal(FRigUnit_PrepareForExecution::EventName);
 					
 				} // destroy FTransientControlScope
 				
 				if (PostConstructionEvent.IsBound())
 				{
 					FControlRigBracketScope BracketScope(PostConstructionBracket);
-					PostConstructionEvent.Broadcast(this, EControlRigState::Update, FRigUnit_PrepareForExecution::EventName);
+					PostConstructionEvent.Broadcast(this, FRigUnit_PrepareForExecution::EventName);
 				}
 			}
 			
@@ -1101,7 +583,7 @@ bool UControlRig::Execute(const EControlRigState InState, const FName& InEventNa
 #if WITH_EDITOR
 		// only set a valid first entry event when execution
 		// has passed the initialization stage and there are multiple events present
-		if (EventQueueToRun.Num() >= 2 && VM && !bIsInitializingMemory)
+		if (EventQueueToRun.Num() >= 2 && VM)
 		{
 			VM->SetFirstEntryEventInEventQueue(EventQueueToRun[0]);
 		}
@@ -1115,16 +597,16 @@ bool UControlRig::Execute(const EControlRigState InState, const FName& InEventNa
 		}
 #endif
 		
-		if (bIsExecutingInstructions && bIsForwardSolve)
+		if (bIsForwardSolve)
 		{
 			if (PreForwardsSolveEvent.IsBound())
 			{
 				FControlRigBracketScope BracketScope(PreForwardsSolveBracket);
-				PreForwardsSolveEvent.Broadcast(this, EControlRigState::Update, FRigUnit_BeginExecution::EventName);
+				PreForwardsSolveEvent.Broadcast(this, FRigUnit_BeginExecution::EventName);
 			}
 		}
 
-		bSuccess = ExecuteUnits(Context, InEventName);
+		bSuccess = Execute_Internal(InEventName);
 
 #if WITH_EDITOR
 		if (bEnableAnimAttributeTrace && ExternalAnimAttributeContainer != nullptr)
@@ -1133,34 +615,29 @@ bool UControlRig::Execute(const EControlRigState InState, const FName& InEventNa
 		}
 #endif
 
-		if (bIsExecutingInstructions && bIsForwardSolve)
+		if (bIsForwardSolve)
 		{
 			if (PostForwardsSolveEvent.IsBound())
 			{
 				FControlRigBracketScope BracketScope(PostForwardsSolveBracket);
-				PostForwardsSolveEvent.Broadcast(this, EControlRigState::Update, FRigUnit_BeginExecution::EventName);
+				PostForwardsSolveEvent.Broadcast(this, FRigUnit_BeginExecution::EventName);
 			}
-		}
-		
-		if (bIsInitializingMemory && !bIsForwardSolve)
-		{
-			bSuccess = ExecuteUnits(Context, FRigUnit_BeginExecution::EventName);
 		}
 	}
 
 #if WITH_EDITOR
 
 	// for the last event in the queue - clear the log message queue
-	if (ControlRigLog != nullptr && bEnableControlRigLogging && !bIsInitializingMemory)
+	if (RigVMLog != nullptr && bEnableLogging)
 	{
 		if (bJustRanInit)
 		{
-			ControlRigLog->KnownMessages.Reset();
+			RigVMLog->KnownMessages.Reset();
 			LoggedMessages.Reset();
 		}
 		else if(bIsEventLastInQueue)
 		{
-			for (const FControlRigLog::FLogEntry& Entry : ControlRigLog->Entries)
+			for (const FRigVMLog::FLogEntry& Entry : RigVMLog->Entries)
 			{
 				if (Entry.FunctionName == NAME_None || Entry.InstructionIndex == INDEX_NONE || Entry.Message.IsEmpty())
 				{
@@ -1181,26 +658,15 @@ bool UControlRig::Execute(const EControlRigState InState, const FName& InEventNa
 	}
 #endif
 
-	if (bIsInitializingMemory)
+	if(!bIsEventInQueue || bIsEventLastInQueue) 
 	{
-		if (InitializedEvent.IsBound())
-		{
-			FControlRigBracketScope BracketScope(InitBracket);
-			InitializedEvent.Broadcast(this, EControlRigState::Init, InEventName);
-		}
+		DeltaTime = 0.f;
 	}
-	else if (bIsExecutingInstructions)
-	{
-		if(!bIsEventInQueue || bIsEventLastInQueue) 
-		{
-			DeltaTime = 0.f;
-		}
 
-		if (ExecutedEvent.IsBound())
-		{
-			FControlRigBracketScope BracketScope(UpdateBracket);
-			ExecutedEvent.Broadcast(this, EControlRigState::Update, InEventName);
-		}
+	if (ExecutedEvent.IsBound())
+	{
+		FControlRigBracketScope BracketScope(ExecuteBracket);
+		ExecutedEvent.Broadcast(this, InEventName);
 	}
 
 	// close remaining undo brackets from hierarchy
@@ -1209,13 +675,13 @@ bool UControlRig::Execute(const EControlRigState InState, const FName& InEventNa
 		FRigEventContext EventContext;
 		EventContext.Event = ERigEvent::CloseUndoBracket;
 		EventContext.SourceEventName = InEventName;
-		EventContext.LocalTime = Context.AbsoluteTime;
+		EventContext.LocalTime = PublicContext.GetAbsoluteTime();
 		HandleHierarchyEvent(GetHierarchy(), EventContext);
 	}
 
-	if (Context.DrawInterface && Context.DrawContainer && bIsEventLastInQueue && bIsExecutingInstructions) 
+	if (PublicContext.GetDrawInterface() && PublicContext.GetDrawContainer() && bIsEventLastInQueue) 
 	{
-		Context.DrawInterface->Instructions.Append(Context.DrawContainer->Instructions);
+		PublicContext.GetDrawInterface()->Instructions.Append(PublicContext.GetDrawContainer()->Instructions);
 
 		FRigHierarchyValidityBracket ValidityBracket(GetHierarchy());
 		
@@ -1229,7 +695,7 @@ bool UControlRig::Execute(const EControlRigState InState, const FName& InEventNa
 				Settings.LimitEnabled.Contains(FRigControlLimitEnabled(true, true)))
 			{
 				FTransform Transform = GetHierarchy()->GetGlobalControlOffsetTransformByIndex(ControlElement->GetIndex());
-				FControlRigDrawInstruction Instruction(EControlRigDrawSettings::Lines, Settings.ShapeColor, 0.f, Transform);
+				FRigVMDrawInstruction Instruction(ERigVMDrawSettings::Lines, Settings.ShapeColor, 0.f, Transform);
 
 				switch (Settings.ControlType)
 				{
@@ -1316,7 +782,7 @@ bool UControlRig::Execute(const EControlRigState InState, const FName& InEventNa
 							break;
 						}
 
-						Instruction.PrimitiveType = EControlRigDrawSettings::LineStrip;
+						Instruction.PrimitiveType = ERigVMDrawSettings::LineStrip;
 						FVector3f MinPos = Settings.MinimumValue.Get<FVector3f>();
 						FVector3f MaxPos = Settings.MaximumValue.Get<FVector3f>();
 
@@ -1434,7 +900,7 @@ bool UControlRig::Execute(const EControlRigState InState, const FName& InEventNa
 
 				if (Instruction.Positions.Num() > 0)
 				{
-					DrawInterface.Instructions.Add(Instruction);
+					DrawInterface.DrawInstruction(Instruction);
 				}
 			}
 
@@ -1449,13 +915,13 @@ bool UControlRig::Execute(const EControlRigState InState, const FName& InEventNa
 
 	if(bIsConstructionEvent)
 	{
-		bRequiresConstructionEvent = false;
+		RemoveRunOnceEvent(FRigUnit_PrepareForExecution::EventName);
 	}
 
 	return bSuccess;
 }
 
-bool UControlRig::ExecuteUnits(FRigUnitContext& InOutContext, const FName& InEventName)
+bool UControlRig::Execute_Internal(const FName& InEventName)
 {
 	if (VM)
 	{
@@ -1482,131 +948,67 @@ bool UControlRig::ExecuteUnits(FRigUnitContext& InOutContext, const FName& InEve
 			}
 		}
 		
-#if UE_CONTROLRIG_PROFILE_EXECUTE_UNITS_NUM
+#if UE_RIGVM_PROFILE_EXECUTE_UNITS_NUM
 		const uint64 StartCycles = FPlatformTime::Cycles64();
 		if(ProfilingRunsLeft <= 0)
 		{
-			ProfilingRunsLeft = UE_CONTROLRIG_PROFILE_EXECUTE_UNITS_NUM;
+			ProfilingRunsLeft = UE_RIGVM_PROFILE_EXECUTE_UNITS_NUM;
 			AccumulatedCycles = 0;
 		}
 #endif
 		
-		const bool bUseInitializationSnapshots = bControlRigUseVMSnapshots && !VM->IsNativized();
 		const bool bUseDebuggingSnapshots = !VM->IsNativized();
 		
 		TArray<URigVMMemoryStorage*> LocalMemory = VM->GetLocalMemoryArray();
-		TArray<void*> AdditionalArguments;
-		AdditionalArguments.Add(&InOutContext);
 
-		bool bSuccess = true;
-
-		if (InOutContext.State == EControlRigState::Init)
-		{
-			if(IsInGameThread() && bUseInitializationSnapshots)
-			{
-				const uint32 SnapshotHash = GetHashForInitializeVMSnapShot();
-				UControlRig* CDO = Cast<UControlRig>(GetClass()->GetDefaultObject());
-
-				bool bIsValidSnapshot = false;
-				if(SnapshotHash != 0)
-				{
-					TObjectPtr<URigVM>* InitializedVMSnapshotPtr = CDO->InitializedVMSnapshots.Find(SnapshotHash);
-					if(InitializedVMSnapshotPtr && *InitializedVMSnapshotPtr)
-					{
-						const URigVM* InitializedVMSnapshot = InitializedVMSnapshotPtr->Get();
-
-						if(VM->WorkMemoryStorageObject->GetClass() == InitializedVMSnapshot->WorkMemoryStorageObject->GetClass() &&
-							InitializedVMSnapshot->WorkMemoryStorageObject->IsValidLowLevel())
-						{
-							InitializedVMSnapshots.Reset();
-
-							VM->WorkMemoryStorageObject->CopyFrom(InitializedVMSnapshot->WorkMemoryStorageObject);
-							VM->InvalidateCachedMemory();
-							VM->Initialize(LocalMemory, AdditionalArguments, false);
-							bIsValidSnapshot = true;
-						}
-						else
-						{
-							CDO->InitializedVMSnapshots.Remove(SnapshotHash);
-						}
-					}
-				}
-				
-				if(!bIsValidSnapshot)
-				{
-					VM->Initialize(LocalMemory, AdditionalArguments);
-
-					// objects assigned to transient properties need transient flag, otherwise it might get exported during save
-					URigVM* InitializedVMSnapshot = NewObject<URigVM>(CDO, NAME_None, RF_Public | RF_Transient);
-					InitializedVMSnapshot->WorkMemoryStorageObject = NewObject<URigVMMemoryStorage>(InitializedVMSnapshot, VM->GetWorkMemory()->GetClass());
-					InitializedVMSnapshot->WorkMemoryStorageObject->CopyFrom(VM->WorkMemoryStorageObject);
-
-					CDO->InitializedVMSnapshots.Add(SnapshotHash, InitializedVMSnapshot);
-
-					// GC won't consider some subobjects that are created after the constructor as part of the CDO,
-					// so even if CDO is rooted and references these sub objects, 
-					// it is not enough to keep them alive.
-					// Hence, we have to add them to root here.
-					InitializedVMSnapshot->AddToRoot();
-				}
-			}
-			else
-			{
-				bSuccess = VM->Initialize(LocalMemory, AdditionalArguments);
-			}
-			bRequiresConstructionEvent = true;
-		}
-		else
-		{
 #if WITH_EDITOR
-			if(bUseDebuggingSnapshots)
+		if(bUseDebuggingSnapshots)
+		{
+			if(URigVM* SnapShotVM = GetSnapshotVM(false)) // don't create it for normal runs
 			{
-				if(URigVM* SnapShotVM = GetSnapshotVM(false)) // don't create it for normal runs
-				{
-					const bool bIsEventFirstInQueue = !EventQueueToRun.IsEmpty() && EventQueueToRun[0] == InEventName; 
-					const bool bIsEventLastInQueue = !EventQueueToRun.IsEmpty() && EventQueueToRun.Last() == InEventName;
+				const bool bIsEventFirstInQueue = !EventQueueToRun.IsEmpty() && EventQueueToRun[0] == InEventName; 
+				const bool bIsEventLastInQueue = !EventQueueToRun.IsEmpty() && EventQueueToRun.Last() == InEventName;
 
-					if (VM->GetHaltedAtBreakpoint().IsValid())
+				if (VM->GetHaltedAtBreakpoint().IsValid())
+				{
+					if(bIsEventFirstInQueue)
 					{
-						if(bIsEventFirstInQueue)
-						{
-							VM->CopyFrom(SnapShotVM, false, false, false, true, true);
-						}
-					}
-					else if(bIsEventLastInQueue)
-					{
-						SnapShotVM->CopyFrom(VM, false, false, false, true, true);
+						VM->CopyFrom(SnapShotVM, false, false, false, true, true);
 					}
 				}
+				else if(bIsEventLastInQueue)
+				{
+					SnapShotVM->CopyFrom(VM, false, false, false, true, true);
+				}
 			}
+		}
 #endif
 
-			URigHierarchy* Hierarchy = GetHierarchy();
+		URigHierarchy* Hierarchy = GetHierarchy();
 #if WITH_EDITOR
 
-			bool bRecordTransformsAtRuntime = true;
-			if(const UObject* Outer = GetOuter())
+		bool bRecordTransformsAtRuntime = true;
+		if(const UObject* Outer = GetOuter())
+		{
+			if(Outer->IsA<UControlRigComponent>())
 			{
-				if(Outer->IsA<UControlRigComponent>())
-				{
-					bRecordTransformsAtRuntime = false;
-				}
+				bRecordTransformsAtRuntime = false;
 			}
-			TGuardValue<bool> RecordTransformsPerInstructionGuard(Hierarchy->bRecordTransformsAtRuntime, bRecordTransformsAtRuntime);
-			
-			if(Hierarchy->bRecordTransformsAtRuntime)
-			{
-				Hierarchy->ReadTransformsAtRuntime.Reset();
-				Hierarchy->WrittenTransformsAtRuntime.Reset();
-			}
-			
-#endif
-			FRigHierarchyExecuteContextBracket HierarchyContextGuard(Hierarchy, &VM->GetContext());
-
-			bSuccess = VM->Execute(LocalMemory, AdditionalArguments, InEventName);
 		}
+		TGuardValue<bool> RecordTransformsPerInstructionGuard(Hierarchy->bRecordTransformsAtRuntime, bRecordTransformsAtRuntime);
+		
+		if(Hierarchy->bRecordTransformsAtRuntime)
+		{
+			Hierarchy->ReadTransformsAtRuntime.Reset();
+			Hierarchy->WrittenTransformsAtRuntime.Reset();
+		}
+		
+#endif
+		FRigHierarchyExecuteContextBracket HierarchyContextGuard(Hierarchy, &VM->GetContext());
 
-#if UE_CONTROLRIG_PROFILE_EXECUTE_UNITS_NUM
+		const bool bSuccess = VM->Execute(LocalMemory, InEventName) != ERigVMExecuteResult::Failed;
+
+#if UE_RIGVM_PROFILE_EXECUTE_UNITS_NUM
 		const uint64 EndCycles = FPlatformTime::Cycles64();
 		const uint64 Cycles = EndCycles - StartCycles;
 		AccumulatedCycles += Cycles;
@@ -1614,7 +1016,7 @@ bool UControlRig::ExecuteUnits(FRigUnitContext& InOutContext, const FName& InEve
 		if(ProfilingRunsLeft == 0)
 		{
 			const double Milliseconds = FPlatformTime::ToMilliseconds64(AccumulatedCycles);
-			UE_LOG(LogControlRig, Display, TEXT("%s: %d runs took %.03lfms."), *GetClass()->GetName(), UE_CONTROLRIG_PROFILE_EXECUTE_UNITS_NUM, Milliseconds);
+			UE_LOG(LogControlRig, Display, TEXT("%s: %d runs took %.03lfms."), *GetClass()->GetName(), UE_RIGVM_PROFILE_EXECUTE_UNITS_NUM, Milliseconds);
 		}
 #endif
 
@@ -1623,85 +1025,43 @@ bool UControlRig::ExecuteUnits(FRigUnitContext& InOutContext, const FName& InEve
 	return false;
 }
 
-bool UControlRig::ContainsEvent(const FName& InEventName) const
-{
-	if(VM)
-	{
-		return VM->ContainsEntry(InEventName);
-	}
-	return false;
-}
-
-TArray<FName> UControlRig::GetEvents() const
-{
-	if(VM)
-	{
-		return VM->GetEntryNames();
-	}
-	return TArray<FName>();
-}
-
-bool UControlRig::ExecuteEvent(const FName& InEventName)
-{
-	if(ContainsEvent(InEventName))
-	{
-		TGuardValue<TArray<FName>> EventQueueGuard(EventQueue, {InEventName});
-		Evaluate_AnyThread();
-		return true;
-	}
-	return false;
-}
-
 void UControlRig::RequestInit()
 {
-	bRequiresInitExecution = true;
+	Super::RequestInit();
 	RequestConstruction();
 }
 
 void UControlRig::RequestConstruction()
 {
-	bRequiresConstructionEvent = true;
+	RequestRunOnceEvent(FRigUnit_PrepareForExecution::EventName, 0);
 }
 
-void UControlRig::SetEventQueue(const TArray<FName>& InEventNames)
+bool UControlRig::IsConstructionRequired() const
 {
-	EventQueue = InEventNames;
+	return IsRunOnceEvent(FRigUnit_PrepareForExecution::EventName);
 }
 
-void UControlRig::UpdateVMSettings()
+void UControlRig::AdaptEventQueueForEvaluate(TArray<FName>& InOutEventQueueToRun)
 {
-	if(VM)
+	Super::AdaptEventQueueForEvaluate(InOutEventQueueToRun);
+
+	if(InteractionType != (uint8)EControlRigInteractionType::None)
 	{
-#if WITH_EDITOR
-
-		// setup array handling and error reporting on the VM
-		VMRuntimeSettings.SetLogFunction([this](EMessageSeverity::Type InSeverity, const FRigVMExecuteContext* InContext, const FString& Message)
+		static const FName& InteractionEvent = FRigUnit_InteractionExecution::EventName;
+		if(SupportsEvent(InteractionEvent))
 		{
-			check(InContext);
-
-			if(ControlRigLog)
+			if(InOutEventQueueToRun.IsEmpty())
 			{
-				ControlRigLog->Report(InSeverity, InContext->FunctionName, InContext->InstructionIndex, Message);
+				InOutEventQueueToRun.Add(InteractionEvent);
 			}
-			else
+			else if(!InOutEventQueueToRun.Contains(FRigUnit_PrepareForExecution::EventName))
 			{
-				LogOnce(InSeverity, InContext->InstructionIndex, Message);
+				// insert just before the last event so the interaction runs prior to
+				// forward solve or backwards solve.
+				InOutEventQueueToRun.Insert(InteractionEvent, InOutEventQueueToRun.Num() - 1);
 			}
-		});
-#endif
-		
-		VM->SetRuntimeSettings(VMRuntimeSettings);
+		}
 	}
-}
-
-URigVM* UControlRig::GetVM()
-{
-	if (VM == nullptr)
-	{
-		Initialize(true);
-		check(VM);
-	}
-	return VM;
 }
 
 void UControlRig::GetMappableNodeData(TArray<FName>& OutNames, TArray<FNodeItem>& OutNodeItems) const
@@ -1756,27 +1116,6 @@ void UControlRig::PostReinstanceCallback(const UControlRig* Old)
 }
 
 #endif // WITH_EDITORONLY_DATA
-
-void UControlRig::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)
-{
-	DECLARE_SCOPE_HIERARCHICAL_COUNTER_FUNC()
-
-	Super::AddReferencedObjects(InThis, Collector);
-}
-
-#if WITH_EDITOR
-//undo will clear out the transient Operators, need to recreate them
-void UControlRig::PostEditUndo()
-{
-	Super::PostEditUndo();
-}
-
-#endif // WITH_EDITOR
-
-bool UControlRig::CanExecute() const
-{
-	return CVarControlRigDisableExecutionAll->GetInt() == 0;
-}
 
 TArray<UControlRig*> UControlRig::FindControlRigs(UObject* Outer, TSubclassOf<UControlRig> OptionalClass)
 {
@@ -1853,15 +1192,6 @@ void UControlRig::PostLoad()
 			DynamicHierarchy->SetFlags(DynamicHierarchy->GetFlags() | RF_Public | RF_DefaultSubObject);
 		}
 	}
-
-#if WITH_EDITORONLY_DATA
-	if (VMSnapshotBeforeExecution)
-	{
-		// Some VMSnapshots might have been created without the Transient flag.
-		// Assets from that version require the snapshot to be flagged as below.
-		VMSnapshotBeforeExecution->SetFlags(VMSnapshotBeforeExecution->GetFlags() | RF_Transient);
-	}
-#endif
 
 	FRigInfluenceMapPerEvent NewInfluences;
 	for(int32 MapIndex = 0; MapIndex < Influences.Num(); MapIndex++)
@@ -1975,26 +1305,6 @@ void UControlRig::HandleOnControlModified(UControlRig* Subject, FRigControlEleme
 		const FRigControlValue Value = DynamicHierarchy->GetControlValue(Control, IsConstructionModeEnabled() ? ERigControlValueType::Initial : ERigControlValueType::Current);
 		DynamicHierarchy->SetCurveValue(FRigElementKey(Control->GetName(), ERigElementType::Curve), Value.Get<float>());
 	}	
-}
-
-void UControlRig::HandleExecutionReachedExit(const FName& InEventName)
-{
-#if WITH_EDITOR
-	if (EventQueueToRun.Last() == InEventName)
-	{
-		if(URigVM* SnapShotVM = GetSnapshotVM(false))
-		{
-			SnapShotVM->CopyFrom(VM, false, false, false, true, true);
-		}
-		DebugInfo.ResetState();
-		VM->SetBreakpointAction(ERigVMBreakpointAction::None);
-	}
-#endif
-	
-	if (LatestExecutedState != EControlRigState::Init && bAccumulateTime)
-	{
-		AbsoluteTime += DeltaTime;
-	}
 }
 
 bool UControlRig::IsCurveControl(const FRigControlElement* InControlElement) const
@@ -2751,7 +2061,7 @@ void UControlRig::SetInteractionRig(UControlRig* InInteractionRig)
 		InteractionRig->Initialize(true);
 		InteractionRig->CopyPoseFromOtherRig(this);
 		InteractionRig->RequestConstruction();
-		InteractionRig->Execute(EControlRigState::Update, FRigUnit_BeginExecution::EventName);
+		InteractionRig->Execute(FRigUnit_BeginExecution::EventName);
 
 		InteractionRig->ControlModified().AddUObject(this, &UControlRig::HandleInteractionRigControlModified);
 		InteractionRig->OnInitialized_AnyThread().AddUObject(this, &UControlRig::HandleInteractionRigInitialized);
@@ -2762,7 +2072,7 @@ void UControlRig::SetInteractionRig(UControlRig* InInteractionRig)
 		ControlSelected().AddUObject(ToRawPtr(InteractionRig), &UControlRig::HandleInteractionRigControlSelected, true);
 
 		FControlRigBracketScope BracketScope(InterRigSyncBracket);
-		InteractionRig->HandleInteractionRigExecuted(this, EControlRigState::Update, FRigUnit_BeginExecution::EventName);
+		InteractionRig->HandleInteractionRigExecuted(this, FRigUnit_BeginExecution::EventName);
 	}
 }
 
@@ -2831,50 +2141,6 @@ void UControlRig::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedE
 	}
 }
 #endif
-
-void UControlRig::AddAssetUserData(UAssetUserData* InUserData)
-{
-	if (InUserData != NULL)
-	{
-		UAssetUserData* ExistingData = GetAssetUserDataOfClass(InUserData->GetClass());
-		if (ExistingData != NULL)
-		{
-			AssetUserData.Remove(ExistingData);
-		}
-		AssetUserData.Add(InUserData);
-	}
-}
-
-UAssetUserData* UControlRig::GetAssetUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataClass)
-{
-	for (int32 DataIdx = 0; DataIdx < AssetUserData.Num(); DataIdx++)
-	{
-		UAssetUserData* Datum = AssetUserData[DataIdx];
-		if (Datum != NULL && Datum->IsA(InUserDataClass))
-		{
-			return Datum;
-		}
-	}
-	return NULL;
-}
-
-void UControlRig::RemoveUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataClass)
-{
-	for (int32 DataIdx = 0; DataIdx < AssetUserData.Num(); DataIdx++)
-	{
-		UAssetUserData* Datum = AssetUserData[DataIdx];
-		if (Datum != NULL && Datum->IsA(InUserDataClass))
-		{
-			AssetUserData.RemoveAt(DataIdx);
-			return;
-		}
-	}
-}
-
-const TArray<UAssetUserData*>* UControlRig::GetAssetUserDataArray() const
-{
-	return &ToRawPtrTArrayUnsafe(AssetUserData);
-}
 
 void UControlRig::CopyPoseFromOtherRig(UControlRig* Subject)
 {
@@ -2963,7 +2229,7 @@ void UControlRig::HandleInteractionRigControlModified(UControlRig* Subject, FRig
 
 }
 
-void UControlRig::HandleInteractionRigInitialized(UControlRig* Subject, EControlRigState State, const FName& EventName)
+void UControlRig::HandleInteractionRigInitialized(URigVMHost* Subject, const FName& EventName)
 {
 	check(Subject);
 
@@ -2975,9 +2241,10 @@ void UControlRig::HandleInteractionRigInitialized(UControlRig* Subject, EControl
 	RequestInit();
 }
 
-void UControlRig::HandleInteractionRigExecuted(UControlRig* Subject, EControlRigState State, const FName& EventName)
+void UControlRig::HandleInteractionRigExecuted(URigVMHost* Subject, const FName& EventName)
 {
 	check(Subject);
+	UControlRig* SubjectRig = CastChecked<UControlRig>(Subject);
 
 	if (IsSyncingWithOtherRig() || IsExecuting())
 	{
@@ -2985,8 +2252,8 @@ void UControlRig::HandleInteractionRigExecuted(UControlRig* Subject, EControlRig
 	}
 	FControlRigBracketScope BracketScope(InterRigSyncBracket);
 
-	CopyPoseFromOtherRig(Subject);
-	Execute(EControlRigState::Update, FRigUnit_InverseExecution::EventName);
+	CopyPoseFromOtherRig(SubjectRig);
+	Execute(FRigUnit_InverseExecution::EventName);
 
 	FRigControlModifiedContext Context;
 	Context.EventName = FRigUnit_InverseExecution::EventName;
@@ -3086,72 +2353,6 @@ void UControlRig::HandleInteractionRigControlSelected(UControlRig* Subject, FRig
 		}
 	}
 }
-
-#if WITH_EDITOR
-
-URigVM* UControlRig::GetSnapshotVM(bool bCreateIfNeeded)
-{
-#if WITH_EDITOR
-	if ((VMSnapshotBeforeExecution == nullptr) && bCreateIfNeeded)
-	{
-		VMSnapshotBeforeExecution = NewObject<URigVM>(GetTransientPackage(), NAME_None, RF_Transient);
-	}
-	return VMSnapshotBeforeExecution;
-#else
-	return nullptr;
-#endif
-}
-
-void UControlRig::LogOnce(EMessageSeverity::Type InSeverity, int32 InInstructionIndex, const FString& InMessage)
-{
-	if(LoggedMessages.Contains(InMessage))
-	{
-		return;
-	}
-
-	switch (InSeverity)
-	{
-		case EMessageSeverity::Error:
-		{
-			UE_LOG(LogControlRig, Error, TEXT("%s"), *InMessage);
-			break;
-		}
-		case EMessageSeverity::PerformanceWarning:
-		case EMessageSeverity::Warning:
-		{
-			UE_LOG(LogControlRig, Warning, TEXT("%s"), *InMessage);
-			break;
-		}
-		case EMessageSeverity::Info:
-		{
-			UE_LOG(LogControlRig, Display, TEXT("%s"), *InMessage);
-			break;
-		}
-		default:
-		{
-			break;
-		}
-	}
-
-	LoggedMessages.Add(InMessage, true);
-}
-
-void UControlRig::AddBreakpoint(int32 InstructionIndex, URigVMNode* InNode, uint16 InDepth)
-{
-	DebugInfo.AddBreakpoint(InstructionIndex, InNode, InDepth);
-}
-
-bool UControlRig::ExecuteBreakpointAction(const ERigVMBreakpointAction BreakpointAction)
-{
-	if (VM->GetHaltedAtBreakpoint().IsValid())
-	{
-		VM->SetBreakpointAction(BreakpointAction);
-		return true;
-	}
-	return false;
-}
-
-#endif // WITH_EDITOR
 
 void UControlRig::SetBoneInitialTransformsFromAnimInstance(UAnimInstance* InAnimInstance)
 {
@@ -3295,92 +2496,39 @@ void UControlRig::PostInitInstanceIfRequired()
 	}
 }
 
-void UControlRig::SwapVMToNativizedIfRequired(UClass* InNativizedClass)
-{
-	if (HasAnyFlags(RF_NeedPostLoad))
-	{
-		return;
-	}
-	if(VM == nullptr)
-	{
-		return;
-	}
-
-	const bool bNativizedVMDisabled = AreNativizedVMsDisabled();
-
-	// GetNativizedClass can be pretty costly, let's try to skip this if it is not absolutely necessary
-	if(InNativizedClass == nullptr && !bNativizedVMDisabled)
-	{
-		if(!HasAnyFlags(RF_ClassDefaultObject))
-		{
-			if(UControlRig* CDO = GetClass()->GetDefaultObject<UControlRig>())
-			{
-				if(CDO->VM)
-				{
-					if(CDO->VM->IsNativized())
-					{
-						InNativizedClass = CDO->VM->GetClass();
-					}
-					else
-					{
-						InNativizedClass = CDO->VM->GetNativizedClass(GetExternalVariables());
-					}
-				}
-			}
-		}
-		else
-		{
-			InNativizedClass = VM->GetNativizedClass(GetExternalVariablesImpl(true));
-		}
-	}	
-
-	if(VM->IsNativized())
-	{
-		if((InNativizedClass == nullptr) || bNativizedVMDisabled)
-		{
-			const EObjectFlags PreviousFlags = VM->GetFlags();
-			VM->Rename(nullptr, GetTransientPackage(), REN_ForceNoResetLoaders | REN_DoNotDirty | REN_DontCreateRedirectors | REN_NonTransactional);
-			VM->MarkAsGarbage();
-			VM = NewObject<URigVM>(this, TEXT("VM"), PreviousFlags);
-#if UE_CONTROLRIG_PROFILE_EXECUTE_UNITS_NUM
-			ProfilingRunsLeft = 0;
-			AccumulatedCycles = 0;
-#endif
-		}
-	}
-	else
-	{
-		if(InNativizedClass && !bNativizedVMDisabled)
-		{
-			const EObjectFlags PreviousFlags = VM->GetFlags();
-			VM->Rename(nullptr, GetTransientPackage(), REN_ForceNoResetLoaders | REN_DoNotDirty | REN_DontCreateRedirectors | REN_NonTransactional);
-			VM->MarkAsGarbage();
-			VM = NewObject<URigVM>(this, InNativizedClass, TEXT("VM"), PreviousFlags);
-			VM->ExecutionReachedExit().AddUObject(this, &UControlRig::HandleExecutionReachedExit);
-#if UE_CONTROLRIG_PROFILE_EXECUTE_UNITS_NUM
-			ProfilingRunsLeft = 0;
-			AccumulatedCycles = 0;
-#endif
-		}
-	}
-}
-
-bool UControlRig::AreNativizedVMsDisabled()
-{
-	return (CVarControlRigDisableNativizedVMs->GetInt() != 0);
-}
-
 #if WITH_EDITORONLY_DATA
 void UControlRig::DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass)
 {
 	Super::DeclareConstructClasses(OutConstructClasses, SpecificSubclass);
-	OutConstructClasses.Add(FTopLevelAssetPath(URigVM::StaticClass()));
 	OutConstructClasses.Add(FTopLevelAssetPath(URigHierarchy::StaticClass()));
 	OutConstructClasses.Add(FTopLevelAssetPath(UAnimationDataSourceRegistry::StaticClass()));
 }
+
 #endif
 
-void UControlRig::PostInitInstance(UControlRig* InCDO)
+USceneComponent* UControlRig::GetOwningSceneComponent()
+{
+	if(OuterSceneComponent == nullptr)
+	{
+		FRigVMExtendedExecuteContext& ExtendedExecuteContext = GetVM()->GetContext();
+		const FControlRigExecuteContext& PublicContext = ExtendedExecuteContext.GetPublicDataSafe<FControlRigExecuteContext>();
+		const FRigUnitContext& Context = PublicContext.UnitContext;
+
+		USceneComponent* SceneComponentFromRegistry = Context.DataSourceRegistry->RequestSource<USceneComponent>(UControlRig::OwnerComponent);
+		if (SceneComponentFromRegistry)
+		{
+			OuterSceneComponent = SceneComponentFromRegistry;
+		}
+
+		if(OuterSceneComponent == nullptr)
+		{
+			OuterSceneComponent = Super::GetOwningSceneComponent();
+		}
+	}
+	return OuterSceneComponent.Get();
+}
+
+void UControlRig::PostInitInstance(URigVMHost* InCDO)
 {
 	const EObjectFlags SubObjectFlags =
 	HasAnyFlags(RF_ClassDefaultObject) ?
@@ -3389,6 +2537,7 @@ void UControlRig::PostInitInstance(UControlRig* InCDO)
 
 	// set up the VM
 	VM = NewObject<URigVM>(this, TEXT("VM"), SubObjectFlags);
+	VM->SetContextPublicDataStruct(FControlRigExecuteContext::StaticStruct());
 
 	// Cooked platforms will load these pointers from disk.
 	// In certain scenarios RequiresCookedData wil be false but the PKG_FilterEditorOnly will still be set (UEFN)
@@ -3414,7 +2563,7 @@ void UControlRig::PostInitInstance(UControlRig* InCDO)
 	{
 		InCDO->PostInitInstanceIfRequired();
 		VM->CopyFrom(InCDO->GetVM());
-		DynamicHierarchy->CopyHierarchy(InCDO->GetHierarchy());
+		DynamicHierarchy->CopyHierarchy(CastChecked<UControlRig>(InCDO)->GetHierarchy());
 	}
 	else // we are the CDO
 	{
@@ -3431,33 +2580,9 @@ void UControlRig::PostInitInstance(UControlRig* InCDO)
 			VM->AddToRoot();
 			DynamicHierarchy->AddToRoot();
 		}
-
-		// Clear the initialized VM snapshots
-		InitializedVMSnapshots.Reset();
-	}
-}
-
-uint32 UControlRig::GetHashForInitializeVMSnapShot()
-{
-	if(CachedMemoryHash == 0)
-	{
-		return 0;
-	}
-	
-	uint32 Hash = GetHierarchy()->GetNameHash();
-
-	const TArray<FRigVMExternalVariable> ExternalVariables = GetExternalVariablesImpl(false);
-
-	Hash = HashCombine(Hash, GetTypeHash(ExternalVariables.Num()));
-
-	for(const FRigVMExternalVariable& ExternalVariable : ExternalVariables)
-	{
-		Hash = HashCombine(ExternalVariable.GetTypeHash(), Hash);
 	}
 
-	Hash = HashCombine(CachedMemoryHash, Hash);
-
-	return Hash;
+	RequestInit();
 }
 
 UTransformableControlHandle* UControlRig::CreateTransformableControlHandle(
@@ -3488,9 +2613,8 @@ UTransformableControlHandle* UControlRig::CreateTransformableControlHandle(
 		return nullptr;
 	}
 	
-	UTransformableControlHandle* CtrlHandle = NewObject<UTransformableControlHandle>(InOuter);
-	ensure(CtrlHandle);
-	CtrlHandle->SetFlags(RF_Transactional);
+	UTransformableControlHandle* CtrlHandle = NewObject<UTransformableControlHandle>(InOuter, NAME_None, RF_Transactional);
+	check(CtrlHandle);
 	CtrlHandle->ControlRig = this;
 	CtrlHandle->ControlName = InControlName;
 	CtrlHandle->RegisterDelegates();

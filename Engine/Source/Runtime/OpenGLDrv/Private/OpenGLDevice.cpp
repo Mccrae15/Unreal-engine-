@@ -13,6 +13,7 @@
 #include "Misc/ConfigCacheIni.h"
 #include "HAL/IConsoleManager.h"
 #include "RHI.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "Containers/List.h"
 #include "RenderResource.h"
 #include "ShaderCore.h"
@@ -154,7 +155,7 @@ bool IsUniformBufferBound( GLuint Buffer )
 extern void BeginFrame_UniformBufferPoolCleanup();
 extern void BeginFrame_VertexBufferCleanup();
 extern void BeginFrame_QueryBatchCleanup();
-extern void BeginFrame_PollAllFences();
+extern void OpenGL_PollAllFences();
 
 
 FOpenGLContextState& FOpenGLDynamicRHI::GetContextStateForCurrentContext(bool bAssertIfInvalid)
@@ -193,12 +194,18 @@ void FOpenGLDynamicRHI::RHIBeginFrame()
 	PendingState.DepthStencil = 0 ;
 #endif
 
-	BeginFrame_PollAllFences();
+	OpenGL_PollAllFences();
 }
+
+extern void OpenGLCommands_OnEndFrame();
 
 void FOpenGLDynamicRHI::RHIEndFrame()
 {
 	GPUProfilingData.EndFrame();
+
+	OpenGL_PollAllFences();
+
+	OpenGLCommands_OnEndFrame();
 }
 
 void FOpenGLDynamicRHI::RHIPerFrameRHIFlushComplete()
@@ -206,6 +213,10 @@ void FOpenGLDynamicRHI::RHIPerFrameRHIFlushComplete()
 	BeginFrame_UniformBufferPoolCleanup();
 	BeginFrame_VertexBufferCleanup();
 	BeginFrame_QueryBatchCleanup();
+
+	OpenGL_PollAllFences();
+
+	FMemory::Memset(PendingState.BoundUniformBuffers, 0, sizeof(PendingState.BoundUniformBuffers));
 }
 
 
@@ -493,12 +504,191 @@ static void APIENTRY OpenGLDebugMessageCallbackAMD(
 PFNWGLSWAPINTERVALEXTPROC wglSwapIntervalEXT_ProcAddress = NULL;
 #endif
 
+// Information from OpenGLES specification 3.2 Table 8.10
+// Qualcomm Adreno OpenGLES Developer Guide 4.1.4 section and Table 9-1
+enum class EOpenGLFormatCapabilities : uint32
+{
+	None = 0,
+	Texture = 1ull << 0,
+	Render = 1ull << 1,
+	Filterable = 1ull << 2,
+	Image = 1ull << 3,
+	DepthStencil = 1ull << 4,
+};
+ENUM_CLASS_FLAGS(EOpenGLFormatCapabilities);
+
+static EOpenGLFormatCapabilities GetOpenGLFormatCapabilities(const FOpenGLTextureFormat& GLFormat)
+{
+	EOpenGLFormatCapabilities Capabilities = EOpenGLFormatCapabilities::None;
+	
+	switch (GLFormat.InternalFormat[0])
+	{
+	default: checkNoEntry();
+	case GL_NONE:
+		break;
+
+	case GL_R8:
+	case GL_RG8:
+	case GL_RGB8:
+	case GL_RGBA4:
+	case GL_RGB10_A2:
+	case GL_SRGB8_ALPHA8:
+	case GL_R16F:
+	case GL_RG16F:
+	case GL_RGBA16:
+	case GL_RGB565:
+	case GL_RGB5_A1:
+	case GL_R11F_G11F_B10F:
+		Capabilities |= EOpenGLFormatCapabilities::Texture | EOpenGLFormatCapabilities::Render | EOpenGLFormatCapabilities::Filterable;
+		break;
+
+	case GL_RGBA8:
+	case GL_RGBA16F:
+		Capabilities |= EOpenGLFormatCapabilities::Texture | EOpenGLFormatCapabilities::Render | EOpenGLFormatCapabilities::Filterable | EOpenGLFormatCapabilities::Image;
+		break;
+
+	case GL_R16:
+	case GL_RGB10_A2UI:
+	case GL_RG32F:
+	case GL_R8I:
+	case GL_R8UI:
+	case GL_R16I:
+	case GL_R16UI:
+	case GL_RG8I:
+	case GL_RG8UI:
+	case GL_RG16I:
+	case GL_RG16UI:
+	case GL_RG32I:
+	case GL_RG32UI:
+		Capabilities |= EOpenGLFormatCapabilities::Texture | EOpenGLFormatCapabilities::Render;
+		break;
+
+	case GL_R32I:
+	case GL_R32F:
+	case GL_R32UI:
+	case GL_RGBA8I:
+	case GL_RGBA8UI:
+	case GL_RGBA16I:
+	case GL_RGBA16UI:
+	case GL_RGBA32I:
+	case GL_RGBA32F:
+	case GL_RGBA32UI:
+		Capabilities |= EOpenGLFormatCapabilities::Texture | EOpenGLFormatCapabilities::Render | EOpenGLFormatCapabilities::Image;
+		break;
+
+	case GL_RGB32F:
+	case GL_RGB8I:
+	case GL_RGB8UI:
+	case GL_RGB16I:
+	case GL_RGB16UI:
+	case GL_RGB32I:
+	case GL_RGB32UI:
+		Capabilities |= EOpenGLFormatCapabilities::Texture;
+		break;
+
+	case GL_DEPTH24_STENCIL8:
+	case GL_DEPTH_COMPONENT16:
+	case GL_DEPTH_COMPONENT24:
+		Capabilities |= EOpenGLFormatCapabilities::Texture | EOpenGLFormatCapabilities::Render | EOpenGLFormatCapabilities::Filterable | EOpenGLFormatCapabilities::DepthStencil;
+		break;
+
+#if PLATFORM_ANDROID
+	case GL_COMPRESSED_RGB8_ETC2:
+	case GL_COMPRESSED_RGBA8_ETC2_EAC:
+	case GL_COMPRESSED_R11_EAC:
+	case GL_COMPRESSED_RG11_EAC:
+#endif
+
+#if PLATFORM_DESKTOP
+	case GL_COMPRESSED_RG_RGTC2:
+	case GL_COMPRESSED_RED_RGTC1:
+	case GL_RG16:
+	case GL_RG16_SNORM:
+#endif
+
+	case GL_COMPRESSED_RGBA_S3TC_DXT1_EXT:
+	case GL_COMPRESSED_RGBA_S3TC_DXT3_EXT:
+	case GL_COMPRESSED_RGBA_S3TC_DXT5_EXT:
+
+	case GL_COMPRESSED_RGBA_ASTC_4x4_KHR:
+	case GL_COMPRESSED_RGBA_ASTC_6x6_KHR:
+	case GL_COMPRESSED_RGBA_ASTC_8x8_KHR:
+	case GL_COMPRESSED_RGBA_ASTC_10x10_KHR:
+	case GL_COMPRESSED_RGBA_ASTC_12x12_KHR:
+
+	case GL_R8_SNORM:
+	case GL_RG8_SNORM:
+	case GL_RGB8_SNORM:
+	case GL_RGB9_E5:
+	case GL_RGB16F:
+		Capabilities |= EOpenGLFormatCapabilities::Texture | EOpenGLFormatCapabilities::Filterable;
+		break;
+
+	case GL_RGBA8_SNORM:
+		Capabilities |= EOpenGLFormatCapabilities::Texture | EOpenGLFormatCapabilities::Filterable | EOpenGLFormatCapabilities::Image;
+		break;
+	}
+
+	return Capabilities;
+}
 
 static inline void SetupTextureFormat( EPixelFormat Format, const FOpenGLTextureFormat& GLFormat)
 {
 	GOpenGLTextureFormats[Format] = GLFormat;
 	GPixelFormats[Format].Supported = (GLFormat.Format != GL_NONE && (GLFormat.InternalFormat[0] != GL_NONE || GLFormat.InternalFormat[1] != GL_NONE));
 	GPixelFormats[Format].PlatformFormat = GLFormat.InternalFormat[0];
+	
+	if (GPixelFormats[Format].Supported)
+	{
+		EPixelFormatCapabilities& Capabilities = GPixelFormats[Format].Capabilities;
+		EOpenGLFormatCapabilities OpenGLCapabilities = GetOpenGLFormatCapabilities(GLFormat);
+
+		if (EnumHasAllFlags(OpenGLCapabilities, EOpenGLFormatCapabilities::Texture))
+		{
+			EnumAddFlags(Capabilities, EPixelFormatCapabilities::Texture1D);
+			EnumAddFlags(Capabilities, EPixelFormatCapabilities::Texture2D);
+			EnumAddFlags(Capabilities, EPixelFormatCapabilities::Texture3D);
+			EnumAddFlags(Capabilities, EPixelFormatCapabilities::TextureCube);
+
+			EnumAddFlags(Capabilities, EPixelFormatCapabilities::TextureMipmaps);
+			EnumAddFlags(Capabilities, EPixelFormatCapabilities::TextureLoad);
+			EnumAddFlags(Capabilities, EPixelFormatCapabilities::TextureSample);
+			EnumAddFlags(Capabilities, EPixelFormatCapabilities::TextureGather);
+		}
+
+		if (EnumHasAllFlags(OpenGLCapabilities, EOpenGLFormatCapabilities::Filterable))
+		{
+			EnumAddFlags(Capabilities, EPixelFormatCapabilities::TextureFilterable);
+		}
+
+		if (EnumHasAllFlags(OpenGLCapabilities, EOpenGLFormatCapabilities::Render))
+		{
+			EnumAddFlags(Capabilities, EPixelFormatCapabilities::RenderTarget);
+			EnumAddFlags(Capabilities, EPixelFormatCapabilities::TextureBlendable);
+		}
+
+		if (EnumHasAllFlags(OpenGLCapabilities, EOpenGLFormatCapabilities::DepthStencil))
+		{
+			EnumAddFlags(Capabilities, EPixelFormatCapabilities::DepthStencil);
+		}
+
+		if (EnumHasAllFlags(OpenGLCapabilities, EOpenGLFormatCapabilities::Image))
+		{
+			EnumAddFlags(Capabilities, EPixelFormatCapabilities::TextureAtomics);
+			EnumAddFlags(Capabilities, EPixelFormatCapabilities::TextureStore);
+
+			EnumAddFlags(Capabilities, EPixelFormatCapabilities::Buffer);
+			EnumAddFlags(Capabilities, EPixelFormatCapabilities::VertexBuffer);
+			EnumAddFlags(Capabilities, EPixelFormatCapabilities::IndexBuffer);
+			EnumAddFlags(Capabilities, EPixelFormatCapabilities::BufferLoad);
+			EnumAddFlags(Capabilities, EPixelFormatCapabilities::BufferStore);
+			EnumAddFlags(Capabilities, EPixelFormatCapabilities::BufferAtomics);
+
+			EnumAddFlags(Capabilities, EPixelFormatCapabilities::UAV);
+			EnumAddFlags(Capabilities, EPixelFormatCapabilities::TypedUAVLoad);
+			EnumAddFlags(Capabilities, EPixelFormatCapabilities::TypedUAVStore);
+		}
+	}
 }
 
 
@@ -814,6 +1004,9 @@ static void InitRHICapabilitiesForGL()
 		;
 
 	GRHISupportsMultithreadedResources = GRHISupportsRHIThread;
+
+	// OpenGL ES does not support glTextureView
+	GRHISupportsTextureViews = false;
 	
 	// By default use emulated UBs on mobile
 	GUseEmulatedUniformBuffers = IsUsingEmulatedUniformBuffers(GMaxRHIShaderPlatform);
@@ -888,15 +1081,8 @@ static void InitRHICapabilitiesForGL()
 	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::SM4_REMOVED] = SP_NumPlatforms;
 	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::SM5] = SP_NumPlatforms;
 
-	// Disable texture streaming on devices with ES3.1 or lower, unless we have the GL_APPLE_copy_texture_levels extension or support for glCopyImageSubData
-	if (GMaxRHIFeatureLevel <= ERHIFeatureLevel::ES3_1)
-	{
-		GRHISupportsTextureStreaming = FOpenGL::SupportsCopyImage();
-	}
-	else
-	{
-		GRHISupportsTextureStreaming = true;
-	}
+
+	GRHISupportsTextureStreaming = true;
 
 	// Disable texture streaming if forced off by r.OpenGL.DisableTextureStreamingSupport
 	static const auto CVarDisableOpenGLTextureStreamingSupport = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.OpenGL.DisableTextureStreamingSupport"));
@@ -938,9 +1124,13 @@ static void InitRHICapabilitiesForGL()
 	//the last 5 bits of GL_UNSIGNED_SHORT_1_5_5_5_REV is Red, while the last 5 bits of DXGI_FORMAT_B5G5R5A1_UNORM is Blue
 	bool bNeedsToSwizzleRedBlue = GL5551Format != GL_UNSIGNED_SHORT_5_5_5_1;
 	SetupTextureFormat( PF_B5G5R5A1_UNORM,		FOpenGLTextureFormat( GL_RGB5_A1,               GL_RGB5_A1,             GL_RGBA,			GL5551Format,					false,          bNeedsToSwizzleRedBlue));
-
-
+	
+#if PLATFORM_ANDROID
+	// Unfortunatelly most OpenGLES devices do not support R16Unorm pixel format, fallback to a less precise R16F
+	SetupTextureFormat( PF_G16,					FOpenGLTextureFormat( GL_R16F,					GL_R16F,				GL_RED,				GL_HALF_FLOAT,						false,	false));
+#else
 	SetupTextureFormat( PF_G16,					FOpenGLTextureFormat( GL_R16,					GL_R16,					GL_RED,				GL_UNSIGNED_SHORT,					false,	false));
+#endif
 	SetupTextureFormat( PF_R32_FLOAT,			FOpenGLTextureFormat( GL_R32F,					GL_R32F,				GL_RED,				GL_FLOAT,							false,	false));
 	SetupTextureFormat( PF_G16R16F,				FOpenGLTextureFormat( GL_RG16F,					GL_RG16F,				GL_RG,				GL_HALF_FLOAT,						false,	false));
 	SetupTextureFormat( PF_G16R16F_FILTER,		FOpenGLTextureFormat( GL_RG16F,					GL_RG16F,				GL_RG,				GL_HALF_FLOAT,						false,	false));
@@ -1161,7 +1351,7 @@ void FOpenGLDynamicRHI::Init()
 	GRHISupportsMultithreadedShaderCreation = false;
 
 	FOpenGLProgramBinaryCache::Initialize();
-	RegisterSharedShaderCodeDelegates();
+
 	InitializeStateResources();
 
 	// Create a default point sampler state for internal use.
@@ -1231,8 +1421,6 @@ void FOpenGLDynamicRHI::Shutdown()
 
 	DestroyShadersAndPrograms();
 	PlatformDestroyOpenGLDevice(PlatformDevice);
-
-	UnregisterSharedShaderCodeDelegates();
 
 	PrivateOpenGLDevicePtr = NULL;
 }

@@ -20,7 +20,9 @@
 #include "Widgets/Layout/SBox.h"
 #include "Framework/Docking/TabManager.h"
 #include "Framework/Notifications/NotificationManager.h"
+#include "Logging/MessageLog.h"
 #include "Misc/ScopedSlowTask.h"
+#include "Modules/ModuleManager.h"
 #include "Editor.h"
 
 #define LOCTEXT_NAMESPACE "SourceControlChangelist"
@@ -49,6 +51,15 @@ void IChangelistTreeItem::RemoveChild(const TSharedRef<IChangelistTreeItem>& Chi
 	{
 		Child->Parent = nullptr;
 	}
+}
+
+void IChangelistTreeItem::RemoveAllChildren()
+{
+	for (TSharedPtr<IChangelistTreeItem>& Child : Children)
+	{
+		Child->Parent = nullptr;
+	}
+	Children.Reset();
 }
 
 static FString RetrieveAssetName(const FAssetData& InAssetData)
@@ -178,18 +189,26 @@ FDateTime IFileViewTreeItem::DefaultDateTimeValue; // Default is FDateTime::MinV
 
 void IFileViewTreeItem::SetLastModifiedDateTime(const FDateTime& Timestamp)
 {
-	LastModifiedDateTime = Timestamp;
-	if (Timestamp != FDateTime::MinValue())
+	if (Timestamp != LastModifiedDateTime) // Pay the text conversion only if needed.
 	{
-		LastModifiedTimestampText = FText::AsDateTime(Timestamp, EDateTimeStyle::Short);
-	}
-	else
-	{
-		LastModifiedTimestampText = FText::GetEmpty();
+		LastModifiedDateTime = Timestamp;
+		if (Timestamp != FDateTime::MinValue())
+		{
+			LastModifiedTimestampText = FText::AsDateTime(Timestamp, EDateTimeStyle::Short);
+		}
+		else
+		{
+			LastModifiedTimestampText = FText::GetEmpty();
+		}
 	}
 }
 
 //////////////////////////////////////////////////////////////////////////
+
+FString FUnsavedAssetsTreeItem::GetDisplayString() const
+{
+	return "";
+}
 
 FFileTreeItem::FFileTreeItem(FSourceControlStateRef InFileState, bool bBeautifyPaths, bool bIsShelvedFile)
 	: IFileViewTreeItem(bIsShelvedFile ? IChangelistTreeItem::ShelvedFile : IChangelistTreeItem::File)
@@ -278,7 +297,7 @@ FText FFileTreeItem::GetAssetName()
 
 FText FShelvedChangelistTreeItem::GetDisplayText() const
 {
-	return FText::Format(LOCTEXT("SourceControl_ShelvedFiles", "Shelved Items ({0})"), Children.Num());
+	return LOCTEXT("SourceControl_ShelvedFiles", "Shelved Items");
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -365,6 +384,21 @@ FText GetDefaultMultipleAsset()
 	return LOCTEXT("SourceCOntrol_ManyAssetType", "Multiple Assets");
 }
 
+FText GetSingleLineChangelistDescription(const FText& InFullDescription)
+{
+	FString DescriptionTextAsString = InFullDescription.ToString();
+	DescriptionTextAsString.TrimStartInline();
+
+	int32 NewlineStartIndex = INDEX_NONE;
+	DescriptionTextAsString.FindChar(TCHAR('\n'), NewlineStartIndex);
+	if (NewlineStartIndex != INDEX_NONE)
+	{
+		DescriptionTextAsString.LeftInline(NewlineStartIndex);
+	}
+
+	return InFullDescription.IsCultureInvariant() ? FText::AsCultureInvariant(DescriptionTextAsString) : FText::FromString(DescriptionTextAsString);
+}
+
 /** Wraps the execution of a changelist operations with a slow task. */
 void ExecuteChangelistOperationWithSlowTaskWrapper(const FText& Message, const TFunction<void()>& ChangelistTask)
 {
@@ -398,6 +432,8 @@ void DisplaySourceControlOperationNotification(const FText& Message, SNotificati
 		return;
 	}
 
+	FMessageLog("SourceControl").Message(CompletionState == SNotificationItem::ECompletionState::CS_Fail ? EMessageSeverity::Error : EMessageSeverity::Info, Message);
+
 	FNotificationInfo NotificationInfo(Message);
 	NotificationInfo.ExpireDuration = 6.0f;
 	NotificationInfo.Hyperlink = FSimpleDelegate::CreateLambda([]() { FGlobalTabmanager::Get()->TryInvokeTab(FName("OutputLog")); });
@@ -423,7 +459,7 @@ bool OpenConflictDialog(const TArray<FSourceControlStateRef>& InFilesConflicts)
 			 	[
 			 		SAssignNew(SourceControlFileDialog, SSourceControlFileDialog)
 			 		.Message(LOCTEXT("CheckoutPackagesDialogMessage", "Conflict detected in the following assets:"))
-			 		.Warning(LOCTEXT("CheckoutPackagesWarnMessage", "Warning: These assets are locked or not at the head revision. You may lose your changes if you continue, as you will be unable to submit them to source control."))
+			 		.Warning(LOCTEXT("CheckoutPackagesWarnMessage", "Warning: These assets are locked or not at the head revision. You may lose your changes if you continue, as you will be unable to submit them to revision control."))
 			 		.Files(InFilesConflicts)
 			 	]
 			 ];

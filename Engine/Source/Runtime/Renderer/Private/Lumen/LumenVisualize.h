@@ -2,7 +2,18 @@
 
 #pragma once
 
-#include "RendererPrivate.h"
+#include "RenderGraphFwd.h"
+#include "ScreenPass.h"
+#include "ShaderParameterMacros.h"
+#include "Math/IntPoint.h"
+
+class FScene;
+class FSceneTextureParameters;
+class FViewInfo;
+class FLumenCardTracingInputs;
+class FLumenIndirectTracingParameters;
+
+struct FLumenSceneFrameTemporaries;
 
 // r.Lumen.Visualize.Mode
 #define VISUALIZE_MODE_LUMEN_SCENE 1
@@ -10,19 +21,15 @@
 #define VISUALIZE_MODE_SURFACE_CACHE 3
 #define VISUALIZE_MODE_OVERVIEW 4
 
-class FLumenIndirectTracingParameters;
-
 BEGIN_SHADER_PARAMETER_STRUCT(FLumenVisualizeSceneParameters, )
 	SHADER_PARAMETER(FIntPoint, InputViewSize)
 	SHADER_PARAMETER(FIntPoint, InputViewOffset)
 	SHADER_PARAMETER(FIntPoint, OutputViewSize)
 	SHADER_PARAMETER(FIntPoint, OutputViewOffset)
-	SHADER_PARAMETER(float, PreviewConeAngle)
-	SHADER_PARAMETER(float, TanPreviewConeAngle)
 	SHADER_PARAMETER(int32, VisualizeHiResSurface)
 	SHADER_PARAMETER(int32, Tonemap)
 	SHADER_PARAMETER(int32, VisualizeMode)
-	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, EyeAdaptationTexture)
+	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, EyeAdaptationBuffer)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture3D, ColorGradingLUT)
 	SHADER_PARAMETER_SAMPLER(SamplerState, ColorGradingLUTSampler)
 END_SHADER_PARAMETER_STRUCT()
@@ -37,11 +44,15 @@ namespace LumenVisualize
 		const FScene* Scene,
 		const FSceneTextureParameters& SceneTextures,
 		const FViewInfo& View,
-		const FLumenCardTracingInputs& TracingInputs,
+		const FLumenSceneFrameTemporaries& FrameTemporaries,
+		const FLumenCardTracingParameters& TracingParameters,
 		FLumenIndirectTracingParameters& IndirectTracingParameters,
 		FLumenVisualizeSceneParameters& VisualizeParameters,
 		FRDGTextureRef SceneColor,
 		bool bVisualizeModeWithHitLighting);
+
+	bool IsHitLightingForceEnabled(const FViewInfo& View);
+	bool UseSurfaceCacheFeedback(const FEngineShowFlags& ShowFlags);
 };
 
 struct FVisualizeLumenSceneInputs
@@ -56,7 +67,7 @@ struct FVisualizeLumenSceneInputs
 	FScreenPassTexture SceneDepth;
 
 	FRDGTextureRef ColorGradingTexture = nullptr;
-	FRDGTextureRef EyeAdaptationTexture = nullptr;
+	FRDGBufferRef EyeAdaptationBuffer = nullptr;
 
 	// [Required] Used when scene textures are required by the material.
 	FSceneTextureShaderParameters SceneTextures;

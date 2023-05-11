@@ -1,17 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/StateTreeComponent.h"
-#include "GameFramework/Actor.h"
 #include "GameplayTasksComponent.h"
+#include "StateTreeExecutionContext.h"
 #include "VisualLogger/VisualLogger.h"
-#include "StateTree.h"
-#include "StateTreeEvaluatorBase.h"
-#include "Conditions/StateTreeCommonConditions.h"
 #include "AIController.h"
 #include "Components/StateTreeComponentSchema.h"
-#include "GameFramework/CharacterMovementComponent.h"
-#include "Subsystems/WorldSubsystem.h"
 #include "Engine/World.h"
+#include "Tasks/AITask.h"
 
 #define STATETREE_LOG(Verbosity, Format, ...) UE_VLOG(GetOwner(), LogStateTree, Verbosity, Format, ##__VA_ARGS__)
 #define STATETREE_CLOG(Condition, Verbosity, Format, ...) UE_CVLOG((Condition), GetOwner(), LogStateTree, Verbosity, Format, ##__VA_ARGS__)
@@ -176,11 +172,23 @@ void UStateTreeComponent::TickComponent(float DeltaTime, enum ELevelTick TickTyp
 	{
 		return;
 	}
+	
+	if (!StateTreeRef.IsValid())
+	{
+		STATETREE_LOG(Warning, TEXT("%s: Trying to tick State Tree component with invalid asset."), ANSI_TO_TCHAR(__FUNCTION__));
+		return;
+	}
 
 	FStateTreeExecutionContext Context(*GetOwner(), *StateTreeRef.GetStateTree(), InstanceData);
 	if (SetContextRequirements(Context))
 	{
-		Context.Tick(DeltaTime);
+		const EStateTreeRunStatus PreviousRunStatus = Context.GetStateTreeRunStatus();
+		const EStateTreeRunStatus CurrentRunStatus = Context.Tick(DeltaTime);
+
+		if (CurrentRunStatus != PreviousRunStatus)
+		{
+			OnStateTreeRunStatusChanged.Broadcast(CurrentRunStatus);
+		}
 	}
 }
 
@@ -188,12 +196,24 @@ void UStateTreeComponent::StartLogic()
 {
 	STATETREE_LOG(Log, TEXT("%s: Start Logic"), ANSI_TO_TCHAR(__FUNCTION__));
 
+	if (!StateTreeRef.IsValid())
+	{
+		STATETREE_LOG(Warning, TEXT("%s: Trying to start State Tree component with invalid asset."), ANSI_TO_TCHAR(__FUNCTION__));
+		return;
+	}
+
 	FStateTreeExecutionContext Context(*GetOwner(), *StateTreeRef.GetStateTree(), InstanceData);
 	if (SetContextRequirements(Context))
 	{
 		Context.SetParameters(StateTreeRef.GetParameters());
-		Context.Start();
+		const EStateTreeRunStatus PreviousRunStatus = Context.GetStateTreeRunStatus();
+		const EStateTreeRunStatus CurrentRunStatus = Context.Start();
 		bIsRunning = true;
+		
+		if (CurrentRunStatus != PreviousRunStatus)
+		{
+			OnStateTreeRunStatusChanged.Broadcast(CurrentRunStatus);
+		}
 	}
 }
 
@@ -201,12 +221,24 @@ void UStateTreeComponent::RestartLogic()
 {
 	STATETREE_LOG(Log, TEXT("%s: Restart Logic"), ANSI_TO_TCHAR(__FUNCTION__));
 
+	if (!StateTreeRef.IsValid())
+	{
+		STATETREE_LOG(Warning, TEXT("%s: Trying to restart State Tree component with invalid asset."), ANSI_TO_TCHAR(__FUNCTION__));
+		return;
+	}
+
 	FStateTreeExecutionContext Context(*GetOwner(), *StateTreeRef.GetStateTree(), InstanceData);
 	if (SetContextRequirements(Context))
 	{
 		Context.SetParameters(StateTreeRef.GetParameters());
-		Context.Start();
+		const EStateTreeRunStatus PreviousRunStatus = Context.GetStateTreeRunStatus();
+		const EStateTreeRunStatus CurrentRunStatus = Context.Start();
 		bIsRunning = true;
+		
+		if (CurrentRunStatus != PreviousRunStatus)
+		{
+			OnStateTreeRunStatusChanged.Broadcast(CurrentRunStatus);
+		}
 	}
 }
 
@@ -214,11 +246,28 @@ void UStateTreeComponent::StopLogic(const FString& Reason)
 {
 	STATETREE_LOG(Log, TEXT("%s: Stopping, reason: \'%s\'"), ANSI_TO_TCHAR(__FUNCTION__), *Reason);
 
+	if (!bIsRunning)
+	{
+		return;
+	}
+
+	if (!StateTreeRef.IsValid())
+	{
+		STATETREE_LOG(Warning, TEXT("%s: Trying to stop State Tree component with invalid asset."), ANSI_TO_TCHAR(__FUNCTION__));
+		return;
+	}
+
 	FStateTreeExecutionContext Context(*GetOwner(), *StateTreeRef.GetStateTree(), InstanceData);
 	if (SetContextRequirements(Context))
 	{
-		Context.Stop();
+		const EStateTreeRunStatus PreviousRunStatus = Context.GetStateTreeRunStatus();
+		const EStateTreeRunStatus CurrentRunStatus = Context.Stop();
 		bIsRunning = false;
+
+		if (CurrentRunStatus != PreviousRunStatus)
+		{
+			OnStateTreeRunStatusChanged.Broadcast(CurrentRunStatus);
+		}
 	}
 }
 
@@ -322,21 +371,42 @@ void UStateTreeComponent::OnGameplayTaskInitialized(UGameplayTask& Task)
 	}
 }
 
+void UStateTreeComponent::SetStartLogicAutomatically(const bool bInStartLogicAutomatically)
+{
+	bStartLogicAutomatically = bInStartLogicAutomatically;
+}
+
 void UStateTreeComponent::SendStateTreeEvent(const FStateTreeEvent& Event)
+{
+	SendStateTreeEvent(Event.Tag, Event.Payload, Event.Origin);
+}
+
+void UStateTreeComponent::SendStateTreeEvent(const FGameplayTag Tag, const FConstStructView Payload, const FName Origin)
 {
 	if (!bIsRunning)
 	{
-		STATETREE_LOG(Warning, TEXT("%s: Trying to send even to a StateTree that is not started yet."), ANSI_TO_TCHAR(__FUNCTION__));
+		STATETREE_LOG(Warning, TEXT("%s: Trying to send event to a State Tree that is not started yet."), ANSI_TO_TCHAR(__FUNCTION__));
 		return;
 	}
 
-	FStateTreeExecutionContext Context(*GetOwner(), *StateTreeRef.GetStateTree(), InstanceData);
-	if (Context.IsValid())
+	if (!StateTreeRef.IsValid())
 	{
-		Context.SendEvent(Event);
+		STATETREE_LOG(Warning, TEXT("%s: Trying to send event to State Tree component with invalid asset."), ANSI_TO_TCHAR(__FUNCTION__));
+		return;
 	}
+
+	InstanceData.GetMutableEventQueue().SendEvent(this, Tag, Payload, Origin);
 }
 
+EStateTreeRunStatus UStateTreeComponent::GetStateTreeRunStatus() const
+{
+	if (const FStateTreeExecutionState* Exec = InstanceData.GetExecutionState())
+	{
+		return Exec->TreeRunStatus;
+	}
+
+	return EStateTreeRunStatus::Failed;
+}
 
 #if WITH_GAMEPLAY_DEBUGGER
 FString UStateTreeComponent::GetDebugInfoString() const

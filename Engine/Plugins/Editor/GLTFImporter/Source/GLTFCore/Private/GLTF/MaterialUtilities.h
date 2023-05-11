@@ -2,11 +2,11 @@
 
 #pragma once
 
-#include "GLTFMaterial.h"
+#include "GLTFLogger.h"
 #include "JsonUtilities.h"
 
-#include "CoreMinimal.h"
-#include "Dom/JsonObject.h"
+
+namespace GLTF { struct FTexture; }
 
 namespace GLTF
 {

@@ -421,3 +421,31 @@ bool FAdvancedDisplayParameterHandler::CanMarkMore() const
 {
 	return bUseNumber ? (NumberLeaveUnmarked > 0) : (0 != ParametersNames.Num());
 }
+
+bool FRigVMParameter::IsExecuteContext() const
+{
+	if(PropertyDef && PropertyDef->IsStructOrStructStaticArray())
+	{
+		if(const FUnrealStructDefinitionInfo* StructDef = PropertyDef->GetPropertyBase().ScriptStructDef)
+		{
+			while(StructDef != nullptr)
+			{
+				if(StructDef->GetNameCPP() == TEXT("FRigVMExecuteContext"))
+				{
+					return true;
+				}
+				StructDef = StructDef->GetSuperStruct();
+			}
+		}
+	}
+	return false;
+}
+
+FString FRigVMParameter::GetExecuteContextTypeName() const
+{
+	if(IsExecuteContext())
+	{
+		return PropertyDef->GetPropertyBase().ScriptStructDef->GetNameCPP();
+	}
+	return FString();
+}

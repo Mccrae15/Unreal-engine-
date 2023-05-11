@@ -17,6 +17,8 @@
 class FArchive;
 class UDataflow;
 class UObject;
+class UDataflowEdNode;
+class UMaterial;
 namespace Dataflow { class FGraph; }
 
 
@@ -57,18 +59,35 @@ class DATAFLOWENGINE_API UDataflow : public UEdGraph
 {
 	GENERATED_UCLASS_BODY()
 
+	Dataflow::FTimestamp LastModifiedRenderTarget = Dataflow::FTimestamp::Invalid; 
+	TArray<const UDataflowEdNode*> RenderTargets; // Not Serialized
 	TSharedPtr<Dataflow::FGraph, ESPMode::ThreadSafe> Dataflow;
 	void PostEditCallback();
 
 public:
 	UDataflow(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
 
+	/** 
+	* Find all the node of a speific type and evaluate them using a specific UObject
+	*/
+	UE_DEPRECATED(5.1, "Use Blueprint library version of the function")
+	void EvaluateTerminalNodeByName(FName NodeName, UObject* Asset);
+
+	virtual bool IsEditorOnly() const { return true; }
+
+
+public:
 	UPROPERTY(EditAnywhere, Category = "Evaluation")
 	bool bActive = true;
 
 	UPROPERTY(EditAnywhere, Category = "Evaluation", AdvancedDisplay )
 	TArray<TObjectPtr<UObject>> Targets;
 
+	UPROPERTY(EditAnywhere, Category = "Render")
+	TObjectPtr<UMaterial> Material = nullptr;
+
+
+public:
 	/** UObject Interface */
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
@@ -87,5 +106,14 @@ public:
 		UDataflow* ThisNC = const_cast<UDataflow*>(this);
 		return FDataflowAssetEdit(ThisNC, [ThisNC]() {ThisNC->PostEditCallback(); });
 	}
+
+	//
+	// Render Targets
+	//
+	void AddRenderTarget(UDataflowEdNode*);
+	void RemoveRenderTarget(UDataflowEdNode*);
+	const TArray<const UDataflowEdNode*>& GetRenderTargets() const { return RenderTargets; }
+	const Dataflow::FTimestamp& GetRenderingTimestamp() const { return LastModifiedRenderTarget; }
+
 };
 

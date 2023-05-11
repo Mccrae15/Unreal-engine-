@@ -149,10 +149,11 @@ struct CONTROLRIG_API FRigUnit_AimBoneMath : public FRigUnit_HighlevelBase
 		DebugSettings = FRigUnit_AimBone_DebugSettings();
 		PrimaryCachedSpace = FCachedRigElement();
 		SecondaryCachedSpace = FCachedRigElement();
+		bIsInitialized = false;
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/**
 	 * The transform (in global space) before the aim was applied (optional)
@@ -193,6 +194,9 @@ struct CONTROLRIG_API FRigUnit_AimBoneMath : public FRigUnit_HighlevelBase
 
 	UPROPERTY()
 	FCachedRigElement SecondaryCachedSpace;
+
+	UPROPERTY()
+	bool bIsInitialized;
 };
 
 /**
@@ -217,6 +221,7 @@ struct CONTROLRIG_API FRigUnit_AimBone : public FRigUnit_HighlevelBaseMutable
 		CachedBoneIndex = FCachedRigElement();
 		PrimaryCachedSpace = FCachedRigElement();
 		SecondaryCachedSpace = FCachedRigElement();
+		bIsInitialized = false;
 	}
 
 	virtual FRigElementKey DetermineSpaceForPin(const FString& InPinPath, void* InUserContext) const override
@@ -233,7 +238,7 @@ struct CONTROLRIG_API FRigUnit_AimBone : public FRigUnit_HighlevelBaseMutable
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/** 
 	 * The name of the bone to align
@@ -280,6 +285,9 @@ struct CONTROLRIG_API FRigUnit_AimBone : public FRigUnit_HighlevelBaseMutable
 	UPROPERTY()
 	FCachedRigElement SecondaryCachedSpace;
 
+	UPROPERTY()
+	bool bIsInitialized;
+
 	RIGVM_METHOD()
 	virtual FRigVMStructUpgradeInfo GetUpgradeInfo() const override;
 };
@@ -305,6 +313,7 @@ struct CONTROLRIG_API FRigUnit_AimItem: public FRigUnit_HighlevelBaseMutable
 		CachedItem = FCachedRigElement();
 		PrimaryCachedSpace = FCachedRigElement();
 		SecondaryCachedSpace = FCachedRigElement();
+		bIsInitialized = false;
 	}
 
 	virtual FRigElementKey DetermineSpaceForPin(const FString& InPinPath, void* InUserContext) const override
@@ -321,7 +330,7 @@ struct CONTROLRIG_API FRigUnit_AimItem: public FRigUnit_HighlevelBaseMutable
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/** 
 	 * The name of the item to align
@@ -359,6 +368,9 @@ struct CONTROLRIG_API FRigUnit_AimItem: public FRigUnit_HighlevelBaseMutable
 
 	UPROPERTY()
 	FCachedRigElement SecondaryCachedSpace;
+
+	UPROPERTY()
+	bool bIsInitialized;
 };
 
 
@@ -434,12 +446,13 @@ struct CONTROLRIG_API FRigUnit_AimConstraintLocalSpaceOffset: public FRigUnit_Hi
 		, WorldUp(FRigUnit_AimConstraint_WorldUp())
 		, AdvancedSettings(FRigUnit_AimConstraint_AdvancedSettings())
 		, Weight(1.0f)
+		, bIsInitialized(false)
 	{
 		Parents.Add(FConstraintParent());
 	};
 	
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/** 
 	 * The name of the item to apply aim
@@ -496,4 +509,6 @@ struct CONTROLRIG_API FRigUnit_AimConstraintLocalSpaceOffset: public FRigUnit_Hi
 	UPROPERTY()
 	TArray<FCachedRigElement> ParentCaches;
 	
+	UPROPERTY()
+	bool bIsInitialized;
 };

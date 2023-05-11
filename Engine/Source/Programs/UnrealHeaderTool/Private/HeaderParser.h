@@ -16,7 +16,6 @@ enum class EGeneratedCodeVersion : uint8;
 class FFeedbackContext;
 class UPackage;
 struct FManifestModule;
-class IScriptGeneratorPluginInterface;
 class FStringOutputDevice;
 class FUnrealSourceFile;
 class FScope;
@@ -411,7 +410,7 @@ protected:
 	void CompileRigVMMethodDeclaration(FUnrealStructDefinitionInfo& StructDef);
 	void ParseRigVMMethodParameters(FUnrealStructDefinitionInfo& StructDef);
 
-	FUnrealClassDefinitionInfo* ParseInterfaceNameDeclaration(FString& DeclaredInterfaceName, FString& RequiredAPIMacroIfPresent);
+	FUnrealClassDefinitionInfo* ParseInterfaceNameDeclaration(FString& DeclaredInterfaceName, FString& RequiredAPIMacroIfPresent, bool bIsNativeInterface);
 	bool TryParseIInterfaceClass();
 
 	bool CompileStatement(TArray<FUnrealFunctionDefinitionInfo*>& DelegatesToFixup);
@@ -663,6 +662,7 @@ public:
 	static const FName NAME_OutputText;
 	static const FName NAME_ConstantText;
 	static const FName NAME_VisibleText;
+	static const FName NAME_LazyText;
 	static const FName NAME_SingletonText;
 	static const TCHAR* TArrayText;
 	static const TCHAR* TEnumAsByteText;

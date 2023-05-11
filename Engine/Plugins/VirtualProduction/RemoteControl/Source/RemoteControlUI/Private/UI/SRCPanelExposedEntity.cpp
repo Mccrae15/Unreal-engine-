@@ -3,38 +3,42 @@
 #include "SRCPanelExposedEntity.h"
 
 #include "ActorTreeItem.h"
-#include "Components/BillboardComponent.h"
 #include "Commands/RemoteControlCommands.h"
+#include "Components/ActorComponent.h"
+#include "Components/BillboardComponent.h"
 #include "Editor.h"
 #include "EditorFontGlyphs.h"
-#include "EngineUtils.h"
 #include "Engine/Selection.h"
-#include "Engine/Classes/Components/ActorComponent.h"
+#include "EngineUtils.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "GameFramework/Actor.h"
+#include "IRemoteControlModule.h"
 #include "Interfaces/IMainFrameModule.h"
+#include "Modules/ModuleManager.h"
 #include "RemoteControlBinding.h"
 #include "RemoteControlEntity.h"
-#include "RemoteControlPreset.h"
 #include "RemoteControlField.h"
-#include "RemoteControlSettings.h"
 #include "RemoteControlPanelStyle.h"
+#include "RemoteControlPreset.h"
+#include "RemoteControlSettings.h"
 #include "SRCPanelDragHandle.h"
 #include "SceneOutlinerFilters.h"
 #include "SceneOutlinerModule.h"
 #include "ScopedTransaction.h"
+#include "Styling/CoreStyle.h"
 #include "Styling/RemoteControlStyles.h"
 #include "Styling/SlateIconFinder.h"
-#include "Modules/ModuleManager.h"
 #include "UObject/UObjectIterator.h"
 #include "Widgets/Input/SButton.h"
-#include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "Widgets/Layout/SBox.h"
+#include "Widgets/Input/SComboButton.h"
 #include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Notifications/SPopUpErrorText.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/SInlineEditableTextBlock.h"
+#include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "RemoteControlPanel"
 
@@ -149,7 +153,61 @@ void SRCPanelExposedEntity::Initialize(const FGuid& InEntityId, URemoteControlPr
 	{
 		if (const TSharedPtr<FRemoteControlEntity> RCEntity = InPreset->GetExposedEntity(InEntityId).Pin())
 		{
+			const FString BindingPath = RCEntity->GetLastBindingPath().ToString();
 			CachedLabel = RCEntity->GetLabel();
+			CachedBindingPath = *BindingPath;
+
+			if (RCEntity->GetStruct() == FRemoteControlProperty::StaticStruct())
+			{
+				CachedFieldPath = StaticCastSharedPtr<FRemoteControlProperty>(RCEntity)->FieldPathInfo.ToString();
+			}
+
+			FName OwnerFName;
+			// If the binding is valid, display the actor label if possible
+			if (UObject* Object = RCEntity->GetBoundObject())
+			{
+				bValidBinding = true;
+				
+				if (AActor* OwnerActor = Object->GetTypedOuter<AActor>())
+				{
+					CachedOwnerName = *OwnerActor->GetActorLabel();
+					OwnerFName = OwnerActor->GetFName();
+				}
+				else if (AActor* Actor = Cast<AActor>(Object))
+				{
+					CachedOwnerName = *Actor->GetActorLabel();
+					OwnerFName = Object->GetFName();
+				}
+				else
+				{
+					CachedOwnerName = Object->GetFName();
+					OwnerFName = Object->GetFName();
+				}
+			}
+			else
+			{
+				// If not, default to the owner fname
+				bValidBinding = false;
+
+				static const FString PersistentLevelString = TEXT(":PersistentLevel.");
+				int32 PersistentLevelIndex = BindingPath.Find(PersistentLevelString);
+				if (PersistentLevelIndex != INDEX_NONE)
+				{
+					OwnerFName = *BindingPath.RightChop(PersistentLevelIndex + PersistentLevelString.Len());
+					CachedOwnerName = OwnerFName;
+				}
+			}
+			
+			const int32 OwnerNameIndex = BindingPath.Find(OwnerFName.ToString() + TEXT("."));
+			if (OwnerNameIndex != INDEX_NONE)
+			{
+				CachedSubobjectPath = *BindingPath.RightChop(OwnerNameIndex + OwnerFName.GetStringLength() + 1);
+			}
+
+			if (CachedOwnerName.IsNone())
+			{
+				CachedOwnerName = *LOCTEXT("InvalidOwner", "Invalid Owner").ToString();
+			}
 		}
 	}
 }
@@ -262,9 +320,25 @@ TSharedRef<SWidget> SRCPanelExposedEntity::CreateRebindAllPropertiesForActorMenu
 		];
 }
 
-TSharedRef<SWidget> SRCPanelExposedEntity::CreateInvalidWidget()
+TSharedRef<SWidget> SRCPanelExposedEntity::CreateInvalidWidget(const FText& InErrorText)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(SRCPanelExposedEntity::CreateInvalidWidget);
+
+	TSharedRef<SPopupErrorText> ErrorText = SNew(SPopupErrorText)
+		.Visibility(InErrorText.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible);
+
+	ErrorText->SetError(InErrorText);
+
 	return SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		[
+			SNew(SBox)
+			.WidthOverride(20.0)
+			[
+				ErrorText
+			]
+		]
 		+ SHorizontalBox::Slot()
 		.AutoWidth()
 		[
@@ -274,15 +348,15 @@ TSharedRef<SWidget> SRCPanelExposedEntity::CreateInvalidWidget()
 				SNew(STextBlock)
 				.Text(LOCTEXT("RebindLabel", "Rebind"))
 			]
-			.MenuContent()
-			[
-				SNew(SBox)
+			.OnGetMenuContent_Lambda([this]() 
+			{ 
+				return SNew(SBox)
 				.MaxDesiredHeight(400.0f)
 				.WidthOverride(300.0f)
 				[
 					CreateRebindMenuContent()
-				]
-			]
+				];
+			})
 		];
 }
 
@@ -293,6 +367,8 @@ EVisibility SRCPanelExposedEntity::GetVisibilityAccordingToLiveMode(EVisibility 
 
 TSharedRef<SWidget> SRCPanelExposedEntity::CreateRebindMenuContent()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(SRCPanelExposedEntity::CreateRebindMenuContent);
+
 	FSceneOutlinerModule& SceneOutlinerModule = FModuleManager::Get().LoadModuleChecked<FSceneOutlinerModule>("SceneOutliner");
 	FSceneOutlinerInitializationOptions Options;
 	Options.Filters = MakeShared<FSceneOutlinerFilters>();
@@ -315,6 +391,7 @@ bool SRCPanelExposedEntity::OnVerifyItemLabelChanged(const FText& InLabel, FText
 		if (InLabel.ToString() != CachedLabel.ToString() && RCPreset->GetExposedEntityId(*InLabel.ToString()).IsValid())
 		{
 			OutErrorMessage = LOCTEXT("NameAlreadyExists", "This name already exists.");
+			IRemoteControlModule::BroadcastError(OutErrorMessage.ToString());
 			return false;
 		}
 	}
@@ -380,7 +457,7 @@ bool SRCPanelExposedEntity::IsActorSelectable(const AActor* Actor) const
 	return false;
 }
 
-TSharedRef<SWidget> SRCPanelExposedEntity::CreateEntityWidget(TSharedPtr<SWidget> ValueWidget, TSharedPtr<SWidget> ResetWidget, const FText& OptionalWarningMessage)
+TSharedRef<SWidget> SRCPanelExposedEntity::CreateEntityWidget(TSharedPtr<SWidget> ValueWidget, TSharedPtr<SWidget> ResetWidget, const FText& OptionalWarningMessage, TSharedRef<SWidget> EditConditionWidget)
 {
 	FMakeNodeWidgetArgs Args;
 
@@ -393,6 +470,40 @@ TSharedRef<SWidget> SRCPanelExposedEntity::CreateEntityWidget(TSharedPtr<SWidget
 		[
 			SNew(SRCPanelDragHandle<FExposedEntityDragDrop>, GetRCId())
 			.Widget(Widget)
+		];
+
+	const FSlateBrush* TrashBrush = FAppStyle::Get().GetBrush("Icons.Delete");
+
+	Args.OwnerNameWidget = SNew(SBox)
+		.Visibility(this, &SRCPanelExposedEntity::GetVisibilityAccordingToLiveMode, EVisibility::Collapsed)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.Padding(FMargin(0.0, 0.0, 4.0, 0.0))
+			.AutoWidth()
+			[
+				SNew(SImage)
+				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+				.Visibility_Lambda([this]() { return bValidBinding ? EVisibility::Collapsed : EVisibility::Visible; })
+				.Image(TrashBrush)
+			]
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			[
+				SNew(STextBlock)
+				.ColorAndOpacity_Lambda([this]() { return bValidBinding ? FSlateColor::UseForeground() : FSlateColor::UseSubduedForeground(); })
+				.Text(FText::FromName(CachedOwnerName))
+				.ToolTipText(FText::FromName(CachedBindingPath))
+			]
+		];
+
+	Args.SubObjectPathWidget = SNew(SBox)
+		.Visibility(this, &SRCPanelExposedEntity::GetVisibilityAccordingToLiveMode, EVisibility::Collapsed)
+		[
+			SNew(STextBlock)
+			.ColorAndOpacity_Lambda([this]() { return bValidBinding ? FSlateColor::UseForeground() : FSlateColor::UseSubduedForeground(); })
+			.Text(CachedSubobjectPath.IsNone() ? FText::GetEmpty() : FText::FromName(CachedSubobjectPath))
+			.ToolTipText(LOCTEXT("SubobjectPathToolTip", "The path from the owner actor to the uobject holding the exposed property."))
 		];
 
 	Args.NameWidget = SNew(SHorizontalBox)
@@ -410,11 +521,17 @@ TSharedRef<SWidget> SRCPanelExposedEntity::CreateEntityWidget(TSharedPtr<SWidget
             .Text(FEditorFontGlyphs::Exclamation_Triangle)
 		]
 		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		[
+			EditConditionWidget
+		]
+		+ SHorizontalBox::Slot()
 		.Padding(4.f, 0.f, 2.0f, 0.f)
 		.AutoWidth()
 		[
 			SAssignNew(NameTextBox, SInlineEditableTextBlock)
 			.Text(FText::FromName(CachedLabel))
+			.ToolTipText(FText::FromString(CachedFieldPath))
 			.OnTextCommitted(this, &SRCPanelExposedEntity::OnLabelCommitted)
 			.OnVerifyTextChanged(this, &SRCPanelExposedEntity::OnVerifyItemLabelChanged)
 			.IsReadOnly_Lambda([this]() { return bLiveMode.Get(); })

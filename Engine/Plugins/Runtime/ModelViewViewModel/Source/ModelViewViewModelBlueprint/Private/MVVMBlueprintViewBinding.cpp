@@ -3,12 +3,9 @@
 #include "MVVMBlueprintViewBinding.h"
 
 #include "Bindings/MVVMConversionFunctionHelper.h"
-#include "EdGraph/EdGraphPin.h"
 #include "K2Node_CallFunction.h"
 #include "MVVMBlueprintView.h"
 #include "MVVMWidgetBlueprintExtension_View.h"
-#include "WidgetBlueprint.h"
-#include "WidgetBlueprintExtension.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MVVMBlueprintViewBinding)
 
@@ -37,16 +34,11 @@ namespace UE::MVVM::Private
 			PathBuilder << TEXT("<none>");
 		}
 
-		PathBuilder << TEXT(".");
-
 		const FString PropertyPath = ViewModelPath.GetBasePropertyPath();
 		if (!PropertyPath.IsEmpty())
 		{
+			PathBuilder << TEXT(".");
 			PathBuilder << PropertyPath;
-		}
-		else
-		{
-			PathBuilder << TEXT("<none>");
 		}
 	}
 	
@@ -145,16 +137,11 @@ namespace UE::MVVM::Private
 			PathBuilder << WidgetPath.GetWidgetName();
 		}
 
-		PathBuilder << TEXT(".");
-
 		const FString PropertyPath = WidgetPath.GetBasePropertyPath();
 		if (!PropertyPath.IsEmpty())
 		{
+			PathBuilder << TEXT(".");
 			PathBuilder << PropertyPath;
-		}
-		else
-		{
-			PathBuilder << TEXT("<none>");
 		}
 	}
 

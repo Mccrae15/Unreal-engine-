@@ -5,7 +5,10 @@
 =============================================================================*/
 
 #include "Engine/TextureCube.h"
+#include "EngineLogs.h"
+#include "Misc/CoreStats.h"
 #include "RenderUtils.h"
+#include "Stats/StatsTrace.h"
 #include "TextureResource.h"
 #include "EngineUtils.h"
 #include "DeviceProfiles/DeviceProfile.h"
@@ -13,6 +16,7 @@
 #include "Interfaces/ITargetPlatform.h"
 #include "TextureCompiler.h"
 #include "Misc/ScopedSlowTask.h"
+#include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 #include "ImageUtils.h"
 #include "UObject/ReleaseObjectVersion.h"
@@ -455,13 +459,14 @@ public:
 		TextureCubeRHI = RHICreateTexture(Desc);
 
 		TextureRHI = TextureCubeRHI;
+		TextureRHI->SetOwnerName(GetOwnerName());
 		TextureRHI->SetName(Owner->GetFName());
 		RHIBindDebugLabelName(TextureRHI, *Name);
 		RHIUpdateTextureReference(Owner->TextureReference.TextureReferenceRHI,TextureRHI);
 
 		// Read the mip-levels into the RHI texture.
 		int32 NumMips = Owner->GetNumMips();
-		check(NumMips < MAX_TEXTURE_MIP_COUNT);
+		check(NumMips <= MAX_TEXTURE_MIP_COUNT);
 		for( int32 FaceIndex=0; FaceIndex<6; FaceIndex++ )
 		{
 			for(int32 MipIndex=0; MipIndex < NumMips; MipIndex++)

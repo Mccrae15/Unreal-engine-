@@ -7,6 +7,7 @@
 #include "NiagaraSystemInstance.h"
 #include "NiagaraRenderer.h"
 #include "NiagaraShaderParticleID.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraDataInterfaceRasterizationGrid3D)
 
@@ -16,7 +17,7 @@ namespace NDIRasterizationGrid3DLocal
 {
 	BEGIN_SHADER_PARAMETER_STRUCT(FShaderParameters,)
 		SHADER_PARAMETER(FIntVector,						NumCells)
-		SHADER_PARAMETER(FVector3f,							UnitToUVParam)
+		SHADER_PARAMETER(FVector3f,							UnitToUV)
 		SHADER_PARAMETER(float,								Precision)
 		SHADER_PARAMETER(int,								NumAttributes)
 		SHADER_PARAMETER_RDG_TEXTURE_SRV(Texture3D<int>,	IntGrid)
@@ -29,6 +30,7 @@ namespace NDIRasterizationGrid3DLocal
 	static const FString PrecisionName(TEXT("_Precision"));
 
 	static const FName SetNumCellsFunctionName("SetNumCells");
+	static const FName SetNumAttributesFunctionName("SetNumAttributes");
 	static const FName SetFloatResetValueFunctionName("SetFloatResetValue");
 
 	static const FString PerAttributeDataName(TEXT("_PerAttributeData"));
@@ -97,6 +99,23 @@ void UNiagaraDataInterfaceRasterizationGrid3D::GetFunctions(TArray<FNiagaraFunct
 		OutFunctions.Add(Sig);
 	}
 
+	{
+		FNiagaraFunctionSignature Sig;
+		Sig.Name = SetNumAttributesFunctionName;
+		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Grid")));
+		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("NumAttributes")));		
+		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), TEXT("Success")));
+
+		Sig.ModuleUsageBitmask = ENiagaraScriptUsageMask::Emitter | ENiagaraScriptUsageMask::System;
+		Sig.bExperimental = true;
+		Sig.bMemberFunction = true;
+		Sig.bRequiresExecPin = true;
+		Sig.bRequiresContext = false;
+		Sig.bSupportsCPU = true;
+		Sig.bSupportsGPU = false;
+		OutFunctions.Add(Sig);
+	}
+	
 	{
 		FNiagaraFunctionSignature Sig;
 		Sig.Name = SetFloatResetValueFunctionName;
@@ -336,9 +355,8 @@ void UNiagaraDataInterfaceRasterizationGrid3D::GetFunctions(TArray<FNiagaraFunct
 
 		Sig.bSupportsCPU = false;
 		Sig.bSupportsGPU = true;
-
-		Sig.bSupportsCPU = false;
-		Sig.bSupportsGPU = true;
+		Sig.bSoftDeprecatedFunction = true;
+		Sig.bHidden = true;
 #if WITH_EDITORONLY_DATA
 		Sig.Description = NSLOCTEXT("Niagara", "NiagaraDataInterfaceGridColl2D_SetValueFunction", "Set the value at a specific index. Note that this is an older way of working with Grids. Consider using the SetFloat or other typed, named functions or parameter map variables with StackContext namespace instead.");
 #endif
@@ -438,6 +456,11 @@ void UNiagaraDataInterfaceRasterizationGrid3D::GetVMExternalFunction(const FVMEx
 		check(BindingInfo.GetNumInputs() == 4 && BindingInfo.GetNumOutputs() == 1);
 		OutFunc.BindUObject(this, &UNiagaraDataInterfaceRasterizationGrid3D::VMSetNumCells);
 	}
+	else if (BindingInfo.Name == SetNumAttributesFunctionName)
+	{
+		check(BindingInfo.GetNumInputs() == 2 && BindingInfo.GetNumOutputs() == 1);
+		OutFunc.BindUObject(this, &UNiagaraDataInterfaceRasterizationGrid3D::VMSetNumAttributes);
+	}
 	else if (BindingInfo.Name == SetFloatResetValueFunctionName)
 	{
 		check(BindingInfo.GetNumInputs() == 2 && BindingInfo.GetNumOutputs() == 1);
@@ -456,9 +479,9 @@ void UNiagaraDataInterfaceRasterizationGrid3D::VMGetNumCells(FVectorVMExternalFu
 
 	for (int32 InstanceIdx = 0; InstanceIdx < Context.GetNumInstances(); ++InstanceIdx)
 	{
-		NumCellsX.SetAndAdvance(NumCells.X);
-		NumCellsY.SetAndAdvance(NumCells.Y);
-		NumCellsZ.SetAndAdvance(NumCells.Z);
+		NumCellsX.SetAndAdvance(InstData->NumCells.X);
+		NumCellsY.SetAndAdvance(InstData->NumCells.Y);
+		NumCellsZ.SetAndAdvance(InstData->NumCells.Z);
 	}
 }
 
@@ -477,12 +500,10 @@ bool UNiagaraDataInterfaceRasterizationGrid3D::Equals(const UNiagaraDataInterfac
 #if WITH_EDITOR
 bool UNiagaraDataInterfaceRasterizationGrid3D::ShouldCompile(EShaderPlatform ShaderPlatform) const
 {
-	if (!RHISupportsVolumeTextureAtomics(ShaderPlatform))
-	{
-		return false;
-	}
-
-	return UNiagaraDataInterface::ShouldCompile(ShaderPlatform);
+	return
+		RHISupportsVolumeTextureAtomics(ShaderPlatform) &&
+		RHIVolumeTextureRenderingSupportGuaranteed(ShaderPlatform) &&
+		Super::ShouldCompile(ShaderPlatform);
 }
 #endif
 
@@ -813,7 +834,7 @@ void UNiagaraDataInterfaceRasterizationGrid3D::SetShaderParameters(const FNiagar
 	if (InstanceData && InstanceData->RasterizationTexture.IsValid())
 	{
 		ShaderParameters->NumCells = InstanceData->NumCells;
-		ShaderParameters->UnitToUVParam = FVector3f(1.0f) / FVector3f(InstanceData->NumCells);
+		ShaderParameters->UnitToUV = FVector3f(1.0f) / FVector3f(InstanceData->NumCells);
 		ShaderParameters->Precision = InstanceData->Precision;
 		ShaderParameters->NumAttributes = InstanceData->TotalNumAttributes;
 		ShaderParameters->PerAttributeData = InstanceData->PerAttributeData.SRV;
@@ -838,7 +859,7 @@ void UNiagaraDataInterfaceRasterizationGrid3D::SetShaderParameters(const FNiagar
 	else
 	{
 		ShaderParameters->NumCells = FIntVector::ZeroValue;
-		ShaderParameters->UnitToUVParam = FVector3f::ZeroVector;
+		ShaderParameters->UnitToUV = FVector3f::ZeroVector;
 		ShaderParameters->Precision = 0;
 		ShaderParameters->NumAttributes = 0;
 		ShaderParameters->PerAttributeData = FNiagaraRenderer::GetDummyFloat4Buffer();
@@ -893,24 +914,31 @@ bool UNiagaraDataInterfaceRasterizationGrid3D::InitPerInstanceData(void* PerInst
 
 	// Compute number of tiles based on resolution of individual attributes
 	// #todo(dmp): refactor
-	int32 MaxDim = 2048;
-	int32 MaxTilesX = floor(MaxDim / InstanceData->NumCells.X);
-	int32 MaxTilesY = floor(MaxDim / InstanceData->NumCells.Y);
-	int32 MaxTilesZ = floor(MaxDim / InstanceData->NumCells.Z);
-	int32 MaxAttributes = MaxTilesX * MaxTilesY * MaxTilesZ;
+	const float MaxDim = 2048;
+	const int32 MaxTilesX = FMath::FloorToInt(MaxDim / float(InstanceData->NumCells.X));
+	const int32 MaxTilesY = FMath::FloorToInt(MaxDim / float(InstanceData->NumCells.Y));
+	const int32 MaxTilesZ = FMath::FloorToInt(MaxDim / float(InstanceData->NumCells.Z));
+	const int32 MaxAttributes = MaxTilesX * MaxTilesY * MaxTilesZ;
 
 	// need to determine number of tiles in x and y based on number of attributes and max dimension size
-	int32 NumTilesX = FMath::Min<int32>(MaxTilesX, NumAttribChannelsFound);
-	int32 NumTilesY = FMath::Min<int32>(MaxTilesY, ceil(1.0 * NumAttribChannelsFound / NumTilesX));
-	int32 NumTilesZ = FMath::Min<int32>(MaxTilesZ, ceil(1.0 * NumAttribChannelsFound / (NumTilesX * NumTilesY)));
+	const int32 NumTilesX = FMath::Min<int32>(MaxTilesX, NumAttribChannelsFound);
+	const int32 NumTilesY = FMath::Min<int32>(MaxTilesY, FMath::CeilToInt(1.0f * float(NumAttribChannelsFound) / float(NumTilesX)));
+	const int32 NumTilesZ = FMath::Min<int32>(MaxTilesZ, FMath::CeilToInt(1.0f * float(NumAttribChannelsFound) / float(NumTilesX * NumTilesY)));
 
 	InstanceData->NumTiles.X = NumTilesX;
 	InstanceData->NumTiles.Y = NumTilesY;
 	InstanceData->NumTiles.Z = NumTilesZ;
 
-	check(InstanceData->NumTiles.X > 0);
-	check(InstanceData->NumTiles.Y > 0);
-	check(InstanceData->NumTiles.Z > 0);
+	if (NumAttribChannelsFound == 0 && !Proxy->SourceDIName.IsNone())
+	{
+		UE_LOG(LogNiagara, Warning, TEXT("Zero attributes defined on %s"), *Proxy->SourceDIName.ToString());
+	}
+
+//	check(InstanceData->NumTiles.X > 0);
+//	check(InstanceData->NumTiles.Y > 0);
+//	check(InstanceData->NumTiles.Z > 0);
+
+	InstanceData->ClearBeforeNonIterationStage = ClearBeforeNonIterationStage;
 
 	// @todo-threadsafety. This would be a race but I'm taking a ref here. Not ideal in the long term.
 	// Push Updates to Proxy.
@@ -919,6 +947,8 @@ bool UNiagaraDataInterfaceRasterizationGrid3D::InitPerInstanceData(void* PerInst
 	{
 		check(!RT_Proxy->SystemInstancesToProxyData.Contains(InstanceID));
 		RasterizationGrid3DRWInstanceData* TargetData = &RT_Proxy->SystemInstancesToProxyData.Add(InstanceID);
+		
+		TargetData->ClearBeforeNonIterationStage = RT_InstanceData.ClearBeforeNonIterationStage;
 		TargetData->TotalNumAttributes = RT_TotalNumAttributes;
 		TargetData->NumCells = RT_NumCells;		
 		TargetData->NumTiles = RT_InstanceData.NumTiles;
@@ -959,6 +989,29 @@ void UNiagaraDataInterfaceRasterizationGrid3D::VMSetNumCells(FVectorVMExternalFu
 	}
 }
 
+void UNiagaraDataInterfaceRasterizationGrid3D::VMSetNumAttributes(FVectorVMExternalFunctionContext& Context)
+{
+	// This should only be called from a system or emitter script due to a need for only setting up initially.
+	VectorVM::FUserPtrHandler<RasterizationGrid3DRWInstanceData> InstData(Context);
+	VectorVM::FExternalFuncInputHandler<int> InNumAttributes(Context);	
+	VectorVM::FExternalFuncRegisterHandler<FNiagaraBool> OutSuccess(Context);
+
+	for (int32 InstanceIdx = 0; InstanceIdx < Context.GetNumInstances(); ++InstanceIdx)
+	{
+		int NewNumAttributes = InNumAttributes.GetAndAdvance();
+		bool bSuccess = (InstData.Get() != nullptr && Context.GetNumInstances() == 1 && NumCells.X >= 0 && NumCells.Y >= 0 && NumCells.Z >= 0);
+		*OutSuccess.GetDestAndAdvance() = bSuccess;
+		if (bSuccess)
+		{
+			int OldNumAttributes = InstData->TotalNumAttributes;
+
+			InstData->TotalNumAttributes = NewNumAttributes;
+
+			InstData->NeedsRealloc = OldNumAttributes != InstData->TotalNumAttributes;
+		}
+	}
+}
+
 void UNiagaraDataInterfaceRasterizationGrid3D::VMSetFloatResetValue(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<RasterizationGrid3DRWInstanceData> InstData(Context);
@@ -973,7 +1026,7 @@ void UNiagaraDataInterfaceRasterizationGrid3D::VMSetFloatResetValue(FVectorVMExt
 		if (bSuccess)
 		{
 			// Quantize value
-			InstData->ResetValue = NewResetValue * InstData->Precision;
+			InstData->ResetValue = FMath::FloorToInt(NewResetValue * InstData->Precision);
 		}
 	}
 }
@@ -983,26 +1036,32 @@ bool UNiagaraDataInterfaceRasterizationGrid3D::PerInstanceTickPostSimulate(void*
 	RasterizationGrid3DRWInstanceData* InstanceData = static_cast<RasterizationGrid3DRWInstanceData*>(PerInstanceData);
 	bool bNeedsReset = false;
 
-	if (InstanceData->NeedsRealloc && InstanceData->NumCells.X > 0 && InstanceData->NumCells.Y > 0 && InstanceData->NumCells.Z > 0)
+	if (InstanceData->NeedsRealloc && InstanceData->NumCells.X > 0 && InstanceData->NumCells.Y > 0 && InstanceData->NumCells.Z > 0 && InstanceData->TotalNumAttributes > 0)
 	{
 		InstanceData->NeedsRealloc = false;
 		
 		// Compute number of tiles based on resolution of individual attributes
 		// #todo(dmp): refactor
-		int32 MaxDim = 2048;
-		int32 MaxTilesX = floor(MaxDim / InstanceData->NumCells.X);
-		int32 MaxTilesY = floor(MaxDim / InstanceData->NumCells.Y);
-		int32 MaxTilesZ = floor(MaxDim / InstanceData->NumCells.Z);
-		int32 MaxAttributes = MaxTilesX * MaxTilesY * MaxTilesZ;
+		const float MaxDim = 2048;
+		const int32 MaxTilesX = FMath::FloorToInt(MaxDim / float(InstanceData->NumCells.X));
+		const int32 MaxTilesY = FMath::FloorToInt(MaxDim / float(InstanceData->NumCells.Y));
+		const int32 MaxTilesZ = FMath::FloorToInt(MaxDim / float(InstanceData->NumCells.Z));
+		const int32 MaxAttributes = MaxTilesX * MaxTilesY * MaxTilesZ;
 
 		// need to determine number of tiles in x and y based on number of attributes and max dimension size
-		int32 NumTilesX = FMath::Min<int32>(MaxTilesX, InstanceData->TotalNumAttributes);
-		int32 NumTilesY = FMath::Min<int32>(MaxTilesY, ceil(1.0 * InstanceData->TotalNumAttributes / NumTilesX));
-		int32 NumTilesZ = FMath::Min<int32>(MaxTilesZ, ceil(1.0 * InstanceData->TotalNumAttributes / (NumTilesX * NumTilesY)));
+		const int32 NumTilesX = FMath::Min<int32>(MaxTilesX, InstanceData->TotalNumAttributes);
+		const int32 NumTilesY = FMath::Min<int32>(MaxTilesY, FMath::CeilToInt(1.0f * float(InstanceData->TotalNumAttributes) / float(NumTilesX)));
+		const int32 NumTilesZ = FMath::Min<int32>(MaxTilesZ, FMath::CeilToInt(1.0f * float(InstanceData->TotalNumAttributes) / float(NumTilesX * NumTilesY)));
 
 		InstanceData->NumTiles.X = NumTilesX;
 		InstanceData->NumTiles.Y = NumTilesY;
 		InstanceData->NumTiles.Z = NumTilesZ;
+
+		if (InstanceData->TotalNumAttributes <= 0)
+		{
+			UE_LOG(LogNiagara, Warning, TEXT("Invalid number of attributes defined on %s... max is %d, num defined is %d"), *Proxy->SourceDIName.ToString(), MaxAttributes, InstanceData->TotalNumAttributes);
+			return false;
+		}
 
 		check(InstanceData->NumTiles.X > 0);
 		check(InstanceData->NumTiles.Y > 0);
@@ -1047,20 +1106,37 @@ void UNiagaraDataInterfaceRasterizationGrid3D::DestroyPerInstanceData(void* PerI
 	);
 }
 
+void FNiagaraDataInterfaceProxyRasterizationGrid3D::ResetData(const FNDIGpuComputeResetContext& Context)
+{	
+	RasterizationGrid3DRWInstanceData* ProxyData = SystemInstancesToProxyData.Find(Context.GetSystemInstanceID());
+	if (!ProxyData)
+	{
+		return;
+	}
+
+	FRDGBuilder& GraphBuilder = Context.GetGraphBuilder();
+	const FUintVector4 ResetValue(ProxyData->ResetValue, ProxyData->ResetValue, ProxyData->ResetValue, ProxyData->ResetValue);
+	AddClearUAVPass(GraphBuilder, ProxyData->RasterizationTexture.GetOrCreateUAV(GraphBuilder), ResetValue);
+}
+
 void FNiagaraDataInterfaceProxyRasterizationGrid3D::PreStage(const FNDIGpuComputePreStageContext& Context)
 {
 	using namespace NDIRasterizationGrid3DLocal;
 
 	RasterizationGrid3DRWInstanceData& InstanceData = SystemInstancesToProxyData.FindChecked(Context.GetSystemInstanceID());
 
+	const uint32 NumTotalCells = InstanceData.NumCells.X * InstanceData.NumCells.Y * InstanceData.NumCells.Z * InstanceData.TotalNumAttributes;
+
 	// Resize was requested
 	if (InstanceData.NeedsRealloc)
 	{
 		InstanceData.NeedsRealloc = false;
-
-		const uint32 NumTotalCells = InstanceData.NumCells.X * InstanceData.NumCells.Y * InstanceData.NumCells.Z;
-		if (NumTotalCells <= (uint32)GMaxNiagaraRasterizationGridCells)
+		
+		
+		if (NumTotalCells <= (uint32)GMaxNiagaraRasterizationGridCells && NumTotalCells > 0)
 		{
+			InstanceData.PerAttributeData.Release();
+
 			const FIntVector TextureSize(InstanceData.NumCells.X * InstanceData.NumTiles.X, InstanceData.NumCells.Y * InstanceData.NumTiles.Y, InstanceData.NumCells.Z * InstanceData.NumTiles.Z);
 			const FRDGTextureDesc TextureDesc = FRDGTextureDesc::Create3D(TextureSize, PF_R32_SINT, FClearValueBinding::Black, ETextureCreateFlags::ShaderResource | ETextureCreateFlags::UAV);
 			InstanceData.RasterizationTexture.Initialize(Context.GetGraphBuilder(), TEXT("NiagaraRasterizationGrid3D::IntGrid"), TextureDesc);
@@ -1076,15 +1152,15 @@ void FNiagaraDataInterfaceProxyRasterizationGrid3D::PreStage(const FNDIGpuComput
 		{
 			const FIntVector AttributeTileIndex(iAttribute % InstanceData.NumTiles.X, (iAttribute / InstanceData.NumTiles.X) % InstanceData.NumTiles.Y, iAttribute / (InstanceData.NumTiles.X * InstanceData.NumTiles.Y));
 			PerAttributeData[iAttribute] = FVector4f(
-				AttributeTileIndex.X * InstanceData.NumCells.X,
-				AttributeTileIndex.Y * InstanceData.NumCells.Y,
-				AttributeTileIndex.Z * InstanceData.NumCells.Z,
-				0
+				float(AttributeTileIndex.X * InstanceData.NumCells.X),
+				float(AttributeTileIndex.Y * InstanceData.NumCells.Y),
+				float(AttributeTileIndex.Z * InstanceData.NumCells.Z),
+				0.0f
 			);
 			PerAttributeData[iAttribute + InstanceData.TotalNumAttributes] = FVector4f(
-				(1.0f / InstanceData.NumTiles.X) * float(AttributeTileIndex.X),
-				(1.0f / InstanceData.NumTiles.Y) * float(AttributeTileIndex.Y),
-				(1.0f / InstanceData.NumTiles.Z) * float(AttributeTileIndex.Z),
+				(1.0f / float(InstanceData.NumTiles.X)) * float(AttributeTileIndex.X),
+				(1.0f / float(InstanceData.NumTiles.Y)) * float(AttributeTileIndex.Y),
+				(1.0f / float(InstanceData.NumTiles.Z)) * float(AttributeTileIndex.Z),
 				0.0f
 			);
 		}
@@ -1092,7 +1168,7 @@ void FNiagaraDataInterfaceProxyRasterizationGrid3D::PreStage(const FNDIGpuComput
 		InstanceData.PerAttributeData.Initialize(TEXT("Grid3D::PerAttributeData"), sizeof(FVector4f), PerAttributeData.Num(), EPixelFormat::PF_A32B32G32R32F, BUF_Static, &PerAttributeData);
 	}
 
-	if (Context.IsOutputStage())
+	if (Context.IsOutputStage() && NumTotalCells > 0 && InstanceData.ClearBeforeNonIterationStage)
 	{
 		FRDGBuilder& GraphBuilder = Context.GetGraphBuilder();
 		const FUintVector4 ResetValue(InstanceData.ResetValue, InstanceData.ResetValue, InstanceData.ResetValue, InstanceData.ResetValue);

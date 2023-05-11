@@ -1,21 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/UserDefinedStruct.h"
-#include "UObject/UObjectHash.h"
-#include "UObject/StructOnScope.h"
+#include "Templates/SubclassOf.h"
+#include "UObject/Package.h"
+#include "UObject/Package.h"
 #include "UObject/UnrealType.h"
 #include "UObject/LinkerLoad.h"
 #include "UObject/ObjectSaveContext.h"
 #include "CookedMetaData.h"
 #include "UObject/FrameworkObjectVersion.h"
-#include "Misc/SecureHash.h"
-#include "UObject/PropertyPortFlags.h"
 #include "Misc/PackageName.h"
 #include "Blueprint/BlueprintSupport.h"
 
 #if WITH_EDITOR
 #include "UserDefinedStructure/UserDefinedStructEditorData.h"
-#include "Kismet2/StructureEditorUtils.h"
 #endif //WITH_EDITOR
 
 FUserStructOnScopeIgnoreDefaults::FUserStructOnScopeIgnoreDefaults(const UUserDefinedStruct* InUserStruct)
@@ -162,15 +160,6 @@ void UUserDefinedStruct::PostDuplicate(bool bDuplicateForPIE)
 void UUserDefinedStruct::PostLoad()
 {
 	Super::PostLoad();
-
-	if (GetPackage()->HasAnyPackageFlags(PKG_Cooked))
-	{
-		if (const UStructCookedMetaData* CookedMetaData = FindCookedMetaData())
-		{
-			CookedMetaData->ApplyMetaData(this);
-			PurgeCookedMetaData();
-		}
-	}
 
 	ValidateGuid();
 }
@@ -474,13 +463,11 @@ const uint8* UUserDefinedStruct::GetDefaultInstance() const
 void UUserDefinedStruct::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)
 {
 	UUserDefinedStruct* This = CastChecked<UUserDefinedStruct>(InThis);
-
 	ensure(!This->DefaultStructInstance.IsValid() || This->DefaultStructInstance.GetStruct() == This);
-	uint8* StructData = This->DefaultStructInstance.GetStructMemory();
-	if (StructData)
+
+	if (uint8* StructData = This->DefaultStructInstance.GetStructMemory())
 	{
-		FVerySlowReferenceCollectorArchiveScope CollectorScope(Collector.GetVerySlowReferenceCollectorArchive(), This);
-		This->SerializeBin(FStructuredArchiveFromArchive(CollectorScope.GetArchive()).GetSlot(), StructData);
+		Collector.AddPropertyReferences(This, StructData, This);
 	}
 
 	Super::AddReferencedObjects(This, Collector);

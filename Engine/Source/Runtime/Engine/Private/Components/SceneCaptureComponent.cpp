@@ -5,17 +5,16 @@
 =============================================================================*/
 
 #include "Components/SceneCaptureComponent.h"
-#include "Misc/ScopeLock.h"
-#include "UObject/RenderingObjectVersion.h"
+#include "Camera/CameraTypes.h"
 #include "UObject/EditorObjectVersion.h"
+#include "SceneInterface.h"
 #include "UObject/ConstructorHelpers.h"
-#include "GameFramework/Actor.h"
-#include "RenderingThread.h"
 #include "Components/StaticMeshComponent.h"
 #include "Materials/Material.h"
 #include "Components/BillboardComponent.h"
 #include "Engine/CollisionProfile.h"
 #include "Engine/Texture2D.h"
+#include "Engine/World.h"
 #include "SceneManagement.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/SceneCapture.h"
@@ -29,8 +28,6 @@
 #include "PlanarReflectionSceneProxy.h"
 #include "Components/BoxComponent.h"
 #include "Logging/MessageLog.h"
-#include "Engine/BlueprintGeneratedClass.h"
-#include "Engine/SimpleConstructionScript.h"
 #include "Engine/SCS_Node.h"
 #include "Engine/TextureRenderTarget2D.h"
 
@@ -169,9 +166,38 @@ USceneCaptureComponent::USceneCaptureComponent(const FObjectInitializer& ObjectI
 	ShowFlags.SetHMDDistortion(0);
 	ShowFlags.SetOnScreenDebug(0);
 
-	if (!HasAnyFlags(RF_ClassDefaultObject))
+	if (!IsTemplate())
 	{
-		FCoreUObjectDelegates::GetPreGarbageCollectDelegate().AddUObject(this, &USceneCaptureComponent::ReleaseGarbageReferences);
+		if (HasAnyFlags(RF_NeedPostLoad) || GetOuter()->HasAnyFlags(RF_NeedPostLoad))
+		{
+			// Delegate registration is not thread-safe, so we postpone it on PostLoad when coming from loading which could be on another thread
+		}
+		else
+		{
+			RegisterDelegates();
+		}
+}
+}
+
+void USceneCaptureComponent::RegisterDelegates()
+{
+	ensureMsgf(IsInGameThread(), TEXT("Potential race condition in USceneCaptureComponent registering to a delegate from non game-thread"));
+	FCoreUObjectDelegates::GetPreGarbageCollectDelegate().AddUObject(this, &USceneCaptureComponent::ReleaseGarbageReferences);
+}
+
+void USceneCaptureComponent::UnregisterDelegates()
+{
+	ensureMsgf(IsInGameThread(), TEXT("Potential race condition in USceneCaptureComponent unregistering to a delegate from non game-thread"));
+	FCoreUObjectDelegates::GetPreGarbageCollectDelegate().RemoveAll(this);
+}
+
+void USceneCaptureComponent::PostLoad()
+{
+	Super::PostLoad();
+
+	if (!IsTemplate())
+	{
+		RegisterDelegates();
 	}
 }
 
@@ -179,7 +205,10 @@ void USceneCaptureComponent::BeginDestroy()
 {
 	Super::BeginDestroy();
 
-	FCoreUObjectDelegates::GetPreGarbageCollectDelegate().RemoveAll(this);
+	if (!IsTemplate())
+	{
+		UnregisterDelegates();
+	}
 }
 
 // Because HiddenActors and ShowOnlyActors are serialized they are not easily refactored into weak pointers.

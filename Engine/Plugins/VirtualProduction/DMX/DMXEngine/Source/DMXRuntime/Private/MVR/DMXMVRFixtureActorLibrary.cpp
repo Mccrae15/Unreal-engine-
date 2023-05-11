@@ -2,8 +2,11 @@
 
 #include "MVR/DMXMVRFixtureActorLibrary.h"
 
+#include "AssetRegistry/AssetData.h"
 #include "DMXMVRFixtureActorInterface.h"
 #include "DMXRuntimeLog.h"
+#include "Engine/Blueprint.h"
+#include "Engine/BlueprintGeneratedClass.h"
 #include "Library/DMXEntityFixturePatch.h"
 
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -11,6 +14,7 @@
 #include "Engine/SkeletalMesh.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/ScopedSlowTask.h"
+#include "UObject/UObjectIterator.h"
 
 
 class FDMXMVRFixtureActorAssetHierarchy

@@ -21,6 +21,7 @@
 #include "DatasmithStaticMeshImporter.h"
 #include "DatasmithTextureImporter.h"
 #include "DatasmithTranslator.h"
+#include "Engine/Texture2D.h"
 #include "IDatasmithSceneElements.h"
 #include "ObjectTemplates/DatasmithObjectTemplate.h"
 #include "Utility/DatasmithImporterUtils.h"
@@ -369,7 +370,7 @@ void FDatasmithImporterImpl::CompileMaterial( UObject* Material, FMaterialUpdate
 			FStaticParameterSet StaticParameters;
 			ConstantMaterialInstance->GetStaticParameterValues( StaticParameters );
 
-			for ( FStaticSwitchParameter& Switch : StaticParameters.EditorOnly.StaticSwitchParameters )
+			for ( FStaticSwitchParameter& Switch : StaticParameters.StaticSwitchParameters )
 			{
 				if ( Switch.bOverride )
 				{

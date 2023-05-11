@@ -1,12 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraBakerSettings.h"
+#include "Framework/Application/SlateApplication.h"
 #include "NiagaraBakerOutputTexture2D.h"
 #include "NiagaraCustomVersion.h"
+#include "NiagaraEffectType.h"
 #include "NiagaraSystem.h"
-
 #include "Engine/Texture2D.h"
 #include "Misc/PathViews.h"
+#include "UObject/Package.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraBakerSettings)
 

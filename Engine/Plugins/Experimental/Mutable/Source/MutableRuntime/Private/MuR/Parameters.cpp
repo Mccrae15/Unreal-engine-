@@ -7,7 +7,6 @@
 #include "HAL/PlatformMath.h"
 #include "HAL/UnrealMemory.h"
 #include "Misc/AssertionMacros.h"
-#include "MuR/MemoryPrivate.h"
 #include "MuR/Model.h"
 #include "MuR/ModelPrivate.h"
 #include "MuR/ParametersPrivate.h"
@@ -53,13 +52,6 @@ namespace mu
 	}
 
 
-	//---------------------------------------------------------------------------------------------
-	void Parameters::SetUnserialisedModel( Model* pModel )
-	{
-		m_pD->m_pModel = pModel;
-	}
-
-
     //---------------------------------------------------------------------------------------------
     void Parameters::SerialisePortable( const Parameters* params, OutputArchive& arch )
     {
@@ -71,7 +63,7 @@ namespace mu
 
         for (size_t p=0; p<valueCount; ++p)
         {
-            const PARAMETER_DESC& desc = params->GetPrivate()->m_pModel->GetPrivate()->m_program.m_parameters[p];
+            const FParameterDesc& desc = params->GetPrivate()->m_pModel->GetPrivate()->m_program.m_parameters[p];
             arch << desc.m_name;
             arch << desc.m_uid;
             arch << desc.m_type;
@@ -81,11 +73,11 @@ namespace mu
 
 
     //---------------------------------------------------------------------------------------------
-    ParametersPtr Parameters::UnserialisePortable( InputArchive& arch, const Model* pModel )
+    ParametersPtr Parameters::UnserialisePortable( InputArchive& arch, TSharedPtr<const Model> pModel )
     {
 		LLM_SCOPE_BYNAME(TEXT("MutableRuntime"));
 
-        ParametersPtr pResult = pModel->NewParameters();
+        ParametersPtr pResult = Model::NewParameters(pModel);
         size_t modelParameters = pModel->GetPrivate()->m_program.m_parameters.Num();
 
         int32_t ver;
@@ -117,7 +109,7 @@ namespace mu
             {
                 for (size_t mp=0; mp<modelParameters; ++mp)
                 {
-                    const PARAMETER_DESC& desc = pModel->GetPrivate()->m_program.m_parameters[mp];
+                    const FParameterDesc& desc = pModel->GetPrivate()->m_program.m_parameters[mp];
                     if (desc.m_uid==uid)
                     {
                         modelParam = int(mp);
@@ -131,7 +123,7 @@ namespace mu
             {
                 for (size_t mp=0; mp<modelParameters; ++mp)
                 {
-                    const PARAMETER_DESC& desc = pModel->GetPrivate()->m_program.m_parameters[mp];
+                    const FParameterDesc& desc = pModel->GetPrivate()->m_program.m_parameters[mp];
                     if (desc.m_name==name && desc.m_type==type)
                     {
                         modelParam = int(mp);
@@ -145,7 +137,7 @@ namespace mu
             {
                 for (size_t mp=0; mp<modelParameters; ++mp)
                 {
-                    const PARAMETER_DESC& desc = pModel->GetPrivate()->m_program.m_parameters[mp];
+                    const FParameterDesc& desc = pModel->GetPrivate()->m_program.m_parameters[mp];
                     if (desc.m_name==name)
                     {
                         modelParam = int(mp);
@@ -197,7 +189,7 @@ namespace mu
 	//---------------------------------------------------------------------------------------------
 	const char* Parameters::GetName( int index ) const
 	{
-		const PROGRAM& program = m_pD->m_pModel->GetPrivate()->m_program;
+		const FProgram& program = m_pD->m_pModel->GetPrivate()->m_program;
 		check( index>=0 && index<(int)program.m_parameters.Num() );
 
 		return program.m_parameters[index].m_name.c_str();
@@ -207,7 +199,7 @@ namespace mu
 	//---------------------------------------------------------------------------------------------
 	const char* Parameters::GetUid( int index ) const
 	{
-		const PROGRAM& program = m_pD->m_pModel->GetPrivate()->m_program;
+		const FProgram& program = m_pD->m_pModel->GetPrivate()->m_program;
 		check( index>=0 && index<(int)program.m_parameters.Num() );
 
 		return program.m_parameters[index].m_uid.c_str();
@@ -224,7 +216,7 @@ namespace mu
 	//---------------------------------------------------------------------------------------------
 	PARAMETER_TYPE Parameters::GetType( int index ) const
 	{
-		const PROGRAM& program = m_pD->m_pModel->GetPrivate()->m_program;
+		const FProgram& program = m_pD->m_pModel->GetPrivate()->m_program;
 		check( index>=0 && index<(int)program.m_parameters.Num() );
 
 		return program.m_parameters[index].m_type;
@@ -234,7 +226,7 @@ namespace mu
 	//---------------------------------------------------------------------------------------------
 	PARAMETER_DETAILED_TYPE Parameters::GetDetailedType( int index ) const
 	{
-		const PROGRAM& program = m_pD->m_pModel->GetPrivate()->m_program;
+		const FProgram& program = m_pD->m_pModel->GetPrivate()->m_program;
 		check( index>=0 && index<(int)program.m_parameters.Num() );
 
 		return program.m_parameters[index].m_detailedType;
@@ -246,7 +238,7 @@ namespace mu
     {
 		LLM_SCOPE_BYNAME(TEXT("MutableRuntime"));
 
-        const PROGRAM& program = m_pD->m_pModel->GetPrivate()->m_program;
+        const FProgram& program = m_pD->m_pModel->GetPrivate()->m_program;
         check( paramIndex>=0 && paramIndex<int(program.m_parameters.Num()) );
         Ptr<RangeIndex> range;
 
@@ -319,7 +311,7 @@ namespace mu
 	//---------------------------------------------------------------------------------------------
 	int Parameters::GetAdditionalImageCount( int index ) const
 	{
-		const PROGRAM& program = m_pD->m_pModel->GetPrivate()->m_program;
+		const FProgram& program = m_pD->m_pModel->GetPrivate()->m_program;
 		check( index>=0 && index<(int)program.m_parameters.Num() );
 		return (int)program.m_parameters[index].m_descImages.Num();
 	}
@@ -416,7 +408,7 @@ namespace mu
 	//---------------------------------------------------------------------------------------------
 	int Parameters::GetIntPossibleValueCount( int paramIndex ) const
 	{
-		const PROGRAM& program = m_pD->m_pModel->GetPrivate()->m_program;
+		const FProgram& program = m_pD->m_pModel->GetPrivate()->m_program;
 		check( paramIndex>=0 && paramIndex<(int)program.m_parameters.Num() );
 		return (int)program.m_parameters[paramIndex].m_possibleValues.Num();
 	}
@@ -425,7 +417,7 @@ namespace mu
 	//---------------------------------------------------------------------------------------------
 	int Parameters::GetIntPossibleValue( int paramIndex, int valueIndex ) const
 	{
-		const PROGRAM& program = m_pD->m_pModel->GetPrivate()->m_program;
+		const FProgram& program = m_pD->m_pModel->GetPrivate()->m_program;
 		check( paramIndex>=0
 				&& paramIndex<(int)program.m_parameters.Num() );
 		check( valueIndex>=0
@@ -438,7 +430,7 @@ namespace mu
 	//---------------------------------------------------------------------------------------------
 	int Parameters::GetIntValueIndex(int paramIndex, const char* valueName) const
 	{
-		const PROGRAM& program = m_pD->m_pModel->GetPrivate()->m_program;
+		const FProgram& program = m_pD->m_pModel->GetPrivate()->m_program;
 		check(paramIndex >= 0
 			&& paramIndex < (int)program.m_parameters.Num());
 
@@ -458,7 +450,7 @@ namespace mu
 	//---------------------------------------------------------------------------------------------
 	int Parameters::GetIntValueIndex(int paramIndex, int32 Value) const
 	{
-		const PROGRAM& program = m_pD->m_pModel->GetPrivate()->m_program;
+		const FProgram& program = m_pD->m_pModel->GetPrivate()->m_program;
 		check(paramIndex >= 0
 			&& paramIndex < (int)program.m_parameters.Num());
 
@@ -476,7 +468,7 @@ namespace mu
 	//---------------------------------------------------------------------------------------------
 	const char* Parameters::GetIntPossibleValueName( int paramIndex, int valueIndex ) const
 	{
-		const PROGRAM& program = m_pD->m_pModel->GetPrivate()->m_program;
+		const FProgram& program = m_pD->m_pModel->GetPrivate()->m_program;
 		check( paramIndex>=0
 				&& paramIndex<(int)program.m_parameters.Num() );
 		check( valueIndex>=0
@@ -910,11 +902,11 @@ namespace mu
 
 
     //---------------------------------------------------------------------------------------------
-    PROJECTOR Parameters::Private::GetProjectorValue( int index,
+    FProjector Parameters::Private::GetProjectorValue( int index,
                                                       const Ptr<const RangeIndex>& pos ) const
     {
 
-        const PROGRAM& program = m_pModel->GetPrivate()->m_program;
+        const FProgram& program = m_pModel->GetPrivate()->m_program;
 
         // Early out in case of invalid parameters
         if ( index < 0
@@ -926,10 +918,10 @@ namespace mu
              program.m_parameters[index].m_type != PARAMETER_TYPE::T_PROJECTOR )
         {
 			check(false);
-            return PROJECTOR();
+            return FProjector();
         }
 
-        const PROJECTOR* result = nullptr;
+        const FProjector* result = nullptr;
 
         // Single value case
         if (!pos)
@@ -964,101 +956,90 @@ namespace mu
 
 
 	//---------------------------------------------------------------------------------------------
-	void Parameters::GetProjectorValue( int index,
-                                        PROJECTOR_TYPE* pType,
-										float* pPosX, float* pPosY, float* pPosZ,
-										float* pDirX, float* pDirY, float* pDirZ,
-										float* pUpX, float* pUpY, float* pUpZ,
-                                        float* pScaleX, float* pScaleY, float* pScaleZ,
-                                        float* pProjectionAngle,
-                                        const Ptr<const RangeIndex>& pos ) const
+	void Parameters::GetProjectorValue( int ParameterIndex,
+		PROJECTOR_TYPE* OutType,
+		FVector3f* OutPos,
+		FVector3f* OutDir,
+		FVector3f* OutUp,
+		FVector3f* OutScale,
+		float* OutProjectionAngle,
+		const Ptr<const RangeIndex>& pos ) const
 	{
-		check( index>=0 && index<(int)m_pD->m_values.Num() );
-		check( GetType(index)== PARAMETER_TYPE::T_PROJECTOR );
+		check(ParameterIndex >=0 && ParameterIndex <m_pD->m_values.Num() );
+		check( GetType(ParameterIndex)== PARAMETER_TYPE::T_PROJECTOR );
 
         // Early out in case of invalid parameters
-        if ( index < 0
+        if (ParameterIndex < 0
              ||
-             index >= (int)m_pD->m_values.Num()
+			ParameterIndex >= m_pD->m_values.Num()
              ||
-             GetType(index) != PARAMETER_TYPE::T_PROJECTOR )
+             GetType(ParameterIndex) != PARAMETER_TYPE::T_PROJECTOR )
         {
             return;
         }
 
-        PROJECTOR result = m_pD->GetProjectorValue( index, pos );
+        FProjector result = m_pD->GetProjectorValue(ParameterIndex, pos );
 
         // Copy results
-        if (pType) *pType = result.type;
+        if (OutType) *OutType = result.type;
 
-        if (pPosX) *pPosX = result.position[0];
-        if (pPosY) *pPosY = result.position[1];
-        if (pPosZ) *pPosZ = result.position[2];
+        if (OutPos) *OutPos = result.position;
+        if (OutDir) *OutDir = result.direction;
+        if (OutUp) *OutUp = result.up;
+        if (OutScale) *OutScale = result.scale;
 
-        if (pDirX) *pDirX = result.direction[0];
-        if (pDirY) *pDirY = result.direction[1];
-        if (pDirZ) *pDirZ = result.direction[2];
-
-        if (pUpX) *pUpX = result.up[0];
-        if (pUpY) *pUpY = result.up[1];
-        if (pUpZ) *pUpZ = result.up[2];
-
-        if (pScaleX) *pScaleX = result.scale[0];
-        if (pScaleY) *pScaleY = result.scale[1];
-        if (pScaleZ) *pScaleZ = result.scale[2];
-
-        if (pProjectionAngle) *pProjectionAngle = result.projectionAngle;
+        if (OutProjectionAngle) *OutProjectionAngle = result.projectionAngle;
     }
 
 
 	//---------------------------------------------------------------------------------------------
-	void Parameters::SetProjectorValue( int index,
-										float posX, float posY, float posZ,
-										float dirX, float dirY, float dirZ,
-										float upX, float upY, float upZ,
-                                        float scaleX, float scaleY, float scaleZ,
-                                        float projectionAngle,
-                                        const Ptr<const RangeIndex>& pos )
+	void Parameters::SetProjectorValue( int ParameterIndex,
+		const FVector3f& pos,
+		const FVector3f& dir,
+		const FVector3f& up,
+		const FVector3f& scale,
+        float projectionAngle,
+        const Ptr<const RangeIndex>& RangePosition)
 	{
-		check( index>=0 && index<(int)m_pD->m_values.Num() );
-		check( GetType(index)== PARAMETER_TYPE::T_PROJECTOR );
+		check(ParameterIndex >=0 && ParameterIndex <m_pD->m_values.Num() );
+		check( GetType(ParameterIndex)== PARAMETER_TYPE::T_PROJECTOR );
 
         // Early out in case of invalid parameters
-        if ( index < 0
+        if (ParameterIndex < 0
              ||
-             index >= (int)m_pD->m_values.Num()
+			ParameterIndex >= m_pD->m_values.Num()
              ||
-             GetType(index) != PARAMETER_TYPE::T_PROJECTOR )
+             GetType(ParameterIndex) != PARAMETER_TYPE::T_PROJECTOR )
         {
             return;
         }
 
-        PROJECTOR* result = nullptr;
+        FProjector* result = nullptr;
 
         // Single value case
-        if (!pos)
+        if (!RangePosition)
         {
             // Clear multivalue, if set.
-            if (index<int(m_pD->m_multiValues.Num()))
+            if (ParameterIndex<m_pD->m_multiValues.Num())
             {
-                m_pD->m_multiValues[index].Empty();
+                m_pD->m_multiValues[ParameterIndex].Empty();
             }
 
-            result = &m_pD->m_values[index].m_projector;
+            result = &m_pD->m_values[ParameterIndex].m_projector;
         }
 
         // Multivalue case
         else
         {
-            check( pos->m_pD->m_parameter==index );
+            check(RangePosition->m_pD->m_parameter== ParameterIndex);
 
-            if ( index>=int(m_pD->m_multiValues.Num()))
+            if (ParameterIndex >=m_pD->m_multiValues.Num())
             {
-                m_pD->m_multiValues.SetNum(index+1);
+                m_pD->m_multiValues.SetNum(ParameterIndex+1);
             }
 
-			TMap< TArray<int32_t>, PARAMETER_VALUE >& m = m_pD->m_multiValues[index];
-			PARAMETER_VALUE& it = m.FindOrAdd(pos->m_pD->m_values);
+			TMap< TArray<int32_t>, PARAMETER_VALUE >& m = m_pD->m_multiValues[ParameterIndex];
+			PARAMETER_VALUE& it = m.FindOrAdd(RangePosition->m_pD->m_values);
             result = &it.m_projector;
         }
 
@@ -1068,25 +1049,14 @@ namespace mu
         result->type = PROJECTOR_TYPE::COUNT;
         if (m_pD->m_pModel)
         {
-            const PROGRAM& program = m_pD->m_pModel->GetPrivate()->m_program;
-            result->type = program.m_parameters[index].m_defaultValue.m_projector.type;
+            const FProgram& program = m_pD->m_pModel->GetPrivate()->m_program;
+            result->type = program.m_parameters[ParameterIndex].m_defaultValue.m_projector.type;
         }
 
-        result->position[0] = posX;
-        result->position[1] = posY;
-        result->position[2] = posZ;
-
-        result->direction[0] = dirX;
-        result->direction[1] = dirY;
-        result->direction[2] = dirZ;
-
-        result->up[0] = upX;
-        result->up[1] = upY;
-        result->up[2] = upZ;
-
-        result->scale[0] = scaleX;
-        result->scale[1] = scaleY;
-        result->scale[2] = scaleZ;
+        result->position = pos;
+        result->direction = dir;
+        result->up = up;        
+        result->scale = scale;
 
         result->projectionAngle = projectionAngle;
     }
@@ -1142,13 +1112,13 @@ namespace mu
 	//---------------------------------------------------------------------------------------------
 	int Parameters::Private::Find( const char* strName ) const
 	{
-		const PROGRAM& program = m_pModel->GetPrivate()->m_program;
+		const FProgram& program = m_pModel->GetPrivate()->m_program;
 
 		int result = -1;
 
 		for( int i=0; result<0 && i<(int)program.m_parameters.Num(); ++i )
 		{
-			const PARAMETER_DESC& p = program.m_parameters[i];
+			const FParameterDesc& p = program.m_parameters[i];
 
 			if ( p.m_name == strName )
 			{
@@ -1197,11 +1167,11 @@ namespace mu
     {
         check( index >= 0 && index < GetRangeCount() );
         check( index < int(m_pD->m_pParameters->GetPrivate()->m_values.Num()) );
-        ModelPtrConst m_pModel = m_pD->m_pParameters->GetPrivate()->m_pModel;
-        check( m_pModel );
-        check( index < int(m_pModel->GetPrivate()->m_program.m_ranges.Num()) );
+        TSharedPtr<const Model> pModel = m_pD->m_pParameters->GetPrivate()->m_pModel;
+        check(pModel);
+        check( index < int(pModel->GetPrivate()->m_program.m_ranges.Num()) );
 
-        return m_pModel->GetPrivate()->m_program.m_ranges[index].m_name.c_str();
+        return pModel->GetPrivate()->m_program.m_ranges[index].m_name.c_str();
     }
 
 
@@ -1210,11 +1180,11 @@ namespace mu
     {
         check( index >= 0 && index < GetRangeCount() );
         check( index < int(m_pD->m_pParameters->GetPrivate()->m_values.Num()) );
-        ModelPtrConst m_pModel = m_pD->m_pParameters->GetPrivate()->m_pModel;
-        check( m_pModel );
-        check( index < int(m_pModel->GetPrivate()->m_program.m_ranges.Num()) );
+		TSharedPtr<const Model> pModel = m_pD->m_pParameters->GetPrivate()->m_pModel;
+		check(pModel);
+        check( index < int(pModel->GetPrivate()->m_program.m_ranges.Num()) );
 
-        return m_pModel->GetPrivate()->m_program.m_ranges[index].m_uid.c_str();
+        return pModel->GetPrivate()->m_program.m_ranges[index].m_uid.c_str();
     }
 
 

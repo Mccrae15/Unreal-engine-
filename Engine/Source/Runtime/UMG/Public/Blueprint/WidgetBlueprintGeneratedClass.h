@@ -105,6 +105,12 @@ public:
 	UPROPERTY()
 	TArray<FName> NamedSlots;
 
+#if WITH_EDITORONLY_DATA
+	/** All named slots mapped the assigned GUID of their UNamedSlot widget. **/
+	UPROPERTY()
+	TMap<FName, FGuid> NamedSlotsWithID;
+#endif
+
 	/**
 	 * Available Named Slots for content in a subclass.  These are slots that are accumulated from all super
 	 * classes on compile.  They will exclude any named slots that are filled by a parent class.
@@ -131,7 +137,7 @@ public:
 	UWidgetBlueprintGeneratedClass* FindWidgetTreeOwningClass() const;
 
 	// Execute the callback for every FieldId defined in the BP class
-	void ForEachField(TFunctionRef<bool(::UE::FieldNotification::FFieldId FielId)> Callback) const;
+	void ForEachField(TFunctionRef<bool(::UE::FieldNotification::FFieldId FielId)> Callback, bool bIncludeSuper = true) const;
 
 	//~ Begin UObject interface
 	virtual void Serialize(FArchive& Ar) override;
@@ -166,28 +172,37 @@ public:
 
 	/** Find the first extension of the requested type. */
 	template<typename ExtensionType>
-	ExtensionType* GetExtension()
+	ExtensionType* GetExtension(bool bIncludeSuper = true)
 	{
-		return Cast<ExtensionType>(GetExtension(ExtensionType::StaticClass()));
+		return Cast<ExtensionType>(GetExtension(ExtensionType::StaticClass(), bIncludeSuper));
 	}
 
 	/** Find the first extension of the requested type. */
-	UWidgetBlueprintGeneratedClassExtension* GetExtension(TSubclassOf<UWidgetBlueprintGeneratedClassExtension> InExtensionType);
+	UWidgetBlueprintGeneratedClassExtension* GetExtension(TSubclassOf<UWidgetBlueprintGeneratedClassExtension> InExtensionType, bool bIncludeSuper = true);
 
 	/** Find the extensions of the requested type. */
-	TArray<UWidgetBlueprintGeneratedClassExtension*> GetExtensions(TSubclassOf<UWidgetBlueprintGeneratedClassExtension> InExtensionType);
+	TArray<UWidgetBlueprintGeneratedClassExtension*> GetExtensions(TSubclassOf<UWidgetBlueprintGeneratedClassExtension> InExtensionType, bool bIncludeSuper = true);
 
 	template<typename Predicate>
-	void ForEachExtension(Predicate Pred) const
+	void ForEachExtension(Predicate Pred, bool bIncludeSuper = true) const
 	{
 		for (UWidgetBlueprintGeneratedClassExtension* Extension : Extensions)
 		{
 			check(Extension);
 			Pred(Extension);
 		}
+		if (bIncludeSuper)
+		{
+			if (UWidgetBlueprintGeneratedClass* ParentClass = Cast<UWidgetBlueprintGeneratedClass>(GetSuperClass()))
+			{
+				ParentClass->ForEachExtension(MoveTemp(Pred));
+			}
+		}
 	}
 
 private:
 	static void InitializeBindingsStatic(UUserWidget* UserWidget, const TArrayView<const FDelegateRuntimeBinding> InBindings, const TMap<FName, FObjectPropertyBase*>& InPropertyMap);
 	static void BindAnimationsStatic(UUserWidget* Instance, const TArrayView<UWidgetAnimation*> InAnimations, const TMap<FName, FObjectPropertyBase*>& InPropertyMap);
+
+	void GetExtensions(TArray<UWidgetBlueprintGeneratedClassExtension*>& OutExtensions, TSubclassOf<UWidgetBlueprintGeneratedClassExtension> InExtensionType, bool bIncludeSuper);
 };

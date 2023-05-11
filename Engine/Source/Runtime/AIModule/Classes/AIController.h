@@ -13,7 +13,9 @@
 #include "GameplayTask.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/Controller.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "Navigation/PathFollowingComponent.h"
+#endif
 #include "Perception/AIPerceptionListenerInterface.h"
 #include "GenericTeamAgentInterface.h"
 #include "VisualLogger/VisualLoggerDebugSnapshotInterface.h"
@@ -28,14 +30,20 @@ class UBrainComponent;
 class UCanvas;
 class UGameplayTaskResource;
 class UGameplayTasksComponent;
-class UPawnAction;
-class UPawnActionsComponent;
-struct FVisualLogEntry;
+class UPathFollowingComponent;
+class UDEPRECATED_PawnAction;
+class UDEPRECATED_PawnActionsComponent;
+
+namespace EPathFollowingRequestResult {	enum Type : int; }
+namespace EPathFollowingResult { enum Type : int; }
+namespace EPathFollowingStatus { enum Type : int; }
 
 #if ENABLE_VISUAL_LOG
 struct FVisualLogEntry;
 #endif // ENABLE_VISUAL_LOG
 struct FPathFindingQuery;
+struct FPathFollowingRequestResult;
+struct FPathFollowingResult;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FAIMoveCompletedSignature, FAIRequestID, RequestID, EPathFollowingResult::Type, Result);
 
@@ -46,11 +54,11 @@ namespace EAIFocusPriority
 {
 	typedef uint8 Type;
 
-	const Type Default = 0;
-	const Type Move = 1;
-	const Type Gameplay = 2;
+	inline const Type Default = 0;
+	inline const Type Move = 1;
+	inline const Type Gameplay = 2;
 
-	const Type LastFocusPriority = Gameplay;
+	inline const Type LastFocusPriority = Gameplay;
 }
 
 struct FFocusKnowledge
@@ -137,8 +145,8 @@ public:
 	TObjectPtr<UAIPerceptionComponent> PerceptionComponent;
 
 private:
-	UPROPERTY(BlueprintReadOnly, Category = AI, meta = (AllowPrivateAccess = "true"))
-	TObjectPtr<UPawnActionsComponent> ActionsComp;
+	UPROPERTY(Category = AI, BlueprintGetter = GetDeprecatedActionsComponent)
+	TObjectPtr<UDEPRECATED_PawnActionsComponent> ActionsComp_DEPRECATED;
 
 protected:
 	/** blackboard */
@@ -228,7 +236,7 @@ public:
 	virtual void OnMoveCompleted(FAIRequestID RequestID, EPathFollowingResult::Type Result);
 
 	/** Returns the Move Request ID for the current move */
-	FORCEINLINE FAIRequestID GetCurrentMoveRequestID() const { return GetPathFollowingComponent() ? GetPathFollowingComponent()->GetCurrentRequestId() : FAIRequestID::InvalidRequest; }
+	FAIRequestID GetCurrentMoveRequestID() const;
 
 	/** Blueprint notification that we've completed the current movement request */
 	UPROPERTY(BlueprintAssignable, meta = (DisplayName = "MoveCompleted"))
@@ -385,7 +393,7 @@ public:
 	// INavAgentInterface
 	//----------------------------------------------------------------------//
 	virtual bool IsFollowingAPath() const override;
-	virtual IPathFollowingAgentInterface* GetPathFollowingAgent() const override { return PathFollowingComponent; }
+	virtual IPathFollowingAgentInterface* GetPathFollowingAgent() const override;
 
 	//----------------------------------------------------------------------//
 	// IGenericTeamAgentInterface
@@ -415,11 +423,6 @@ public:
 	virtual void OnGameplayTaskResourcesClaimed(FGameplayResourceSet NewlyClaimed, FGameplayResourceSet FreshlyReleased);
 
 	//----------------------------------------------------------------------//
-	// Actions
-	//----------------------------------------------------------------------//
-	bool PerformAction(UPawnAction& Action, EAIRequestPriority::Type Priority, UObject* const Instigator = NULL);
-
-	//----------------------------------------------------------------------//
 	// debug/dev-time 
 	//----------------------------------------------------------------------//
 	virtual FString GetDebugIcon() const;
@@ -435,8 +438,6 @@ public:
 	/** Returns PathFollowingComponent subobject **/
 	UFUNCTION(BlueprintCallable, Category="AI|Navigation")
 	UPathFollowingComponent* GetPathFollowingComponent() const { return PathFollowingComponent; }
-	/** Returns ActionsComp subobject **/
-	UPawnActionsComponent* GetActionsComp() const { return ActionsComp; }
 	UFUNCTION(BlueprintPure, Category = "AI|Perception")
 	UAIPerceptionComponent* GetAIPerceptionComponent() { return PerceptionComponent; }
 
@@ -450,6 +451,18 @@ public:
 	 *	Intended to be called as part of initialization/setup process */
 	UFUNCTION(BlueprintCallable, Category = "AI|Navigation")
 	void SetPathFollowingComponent(UPathFollowingComponent* NewPFComponent);
+
+	//----------------------------------------------------------------------//
+	// DEPRECATED
+	//----------------------------------------------------------------------//
+	UE_DEPRECATED(5.2, "PawnActions have been deprecated and are no longer being supported. It will get removed in following UE5 releases. Use GameplayTasks or AITasks instead.")
+	UDEPRECATED_PawnActionsComponent* GetActionsComp() const { return ActionsComp_DEPRECATED; }
+	
+	UE_DEPRECATED(5.2, "PawnActions have been deprecated and are no longer being supported. It will get removed in following UE5 releases. Use GameplayTasks or AITasks instead.")
+	bool PerformAction(UDEPRECATED_PawnAction& Action, EAIRequestPriority::Type Priority, UObject* const Instigator = NULL);
+
+	UFUNCTION(BlueprintGetter, meta = (DeprecatedFunction, DeprecationMessage = "PawnActions have been deprecated and are no longer being supported. It will get removed in following UE5 releases. Use GameplayTasks or AITasks instead."))
+	UDEPRECATED_PawnActionsComponent* GetDeprecatedActionsComponent() const { return ActionsComp_DEPRECATED; }
 };
 
 //----------------------------------------------------------------------//

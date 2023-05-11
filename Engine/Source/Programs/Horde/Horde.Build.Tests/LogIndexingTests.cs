@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Horde.Build.Compute.Tests.Properties;
 using Horde.Build.Logs;
@@ -18,6 +19,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Horde.Build.Logs.Data;
+using EpicGames.Horde.Logs;
 
 namespace Horde.Build.Tests
 {
@@ -48,7 +50,8 @@ namespace Horde.Build.Tests
 			ILogBuilder logBuilder = new LocalLogBuilder();
 			_nullLogStorage = new NullLogStorage();
 			_logStorage = new LocalLogStorage(20, _nullLogStorage);
-			_logFileService = new LogFileService(logFileCollection, null!, logBuilder, _logStorage, new FakeClock(), logger);
+			TestOptions<ServerSettings> settingsOpts = new (new ServerSettings());
+			_logFileService = new LogFileService(logFileCollection, null!, logBuilder, _logStorage, new FakeClock(), null!, null!, settingsOpts, logger);
 		}
 
 		protected override void Dispose(bool disposing)
@@ -91,7 +94,7 @@ namespace Horde.Build.Tests
 
 			// Read the data back out and check it's the same
 			byte[] readData = new byte[_data.Length];
-			using (Stream stream = await _logFileService.OpenRawStreamAsync(logFile, 0, _data.Length))
+			using (Stream stream = await _logFileService.OpenRawStreamAsync(logFile))
 			{
 				int readSize = await stream.ReadAsync(readData, 0, readData.Length);
 				Assert.AreEqual(readData.Length, readSize);
@@ -159,8 +162,8 @@ namespace Horde.Build.Tests
 					{
 						string str = lines[lineIdx].Substring(strOfs, strLen);
 
-						LogSearchStats stats = new LogSearchStats();
-						List<int> results = await _logFileService.SearchLogDataAsync(logFile, str, 0, 5, stats);
+						SearchStats stats = new SearchStats();
+						List<int> results = await _logFileService.SearchLogDataAsync(logFile, str, 0, 5, stats, CancellationToken.None);
 						Assert.AreEqual(1, results.Count);
 						Assert.AreEqual(lineIdx, results[0]);
 
@@ -185,8 +188,8 @@ namespace Horde.Build.Tests
 			await ((LogFileService)_logFileService).FlushPendingWritesAsync();
 
 			{
-				LogSearchStats stats = new LogSearchStats();
-				List<int> results = await _logFileService.SearchLogDataAsync(logFile, "abc", 0, 5, stats);
+				SearchStats stats = new SearchStats();
+				List<int> results = await _logFileService.SearchLogDataAsync(logFile, "abc", 0, 5, stats, CancellationToken.None);
 				Assert.AreEqual(1, results.Count);
 				Assert.AreEqual(0, results[0]);
 
@@ -195,8 +198,8 @@ namespace Horde.Build.Tests
 				Assert.AreEqual(0, stats.NumFalsePositiveBlocks);
 			}
 			{
-				LogSearchStats stats = new LogSearchStats();
-				List<int> results = await _logFileService.SearchLogDataAsync(logFile, "def", 0, 5, stats);
+				SearchStats stats = new SearchStats();
+				List<int> results = await _logFileService.SearchLogDataAsync(logFile, "def", 0, 5, stats, CancellationToken.None);
 				Assert.AreEqual(1, results.Count);
 				Assert.AreEqual(1, results[0]);
 
@@ -205,8 +208,8 @@ namespace Horde.Build.Tests
 				Assert.AreEqual(0, stats.NumFalsePositiveBlocks);
 			}
 			{
-				LogSearchStats stats = new LogSearchStats();
-				List<int> results = await _logFileService.SearchLogDataAsync(logFile, "ghi", 0, 5, stats);
+				SearchStats stats = new SearchStats();
+				List<int> results = await _logFileService.SearchLogDataAsync(logFile, "ghi", 0, 5, stats, CancellationToken.None);
 				Assert.AreEqual(1, results.Count);
 				Assert.AreEqual(2, results[0]);
 
@@ -237,8 +240,8 @@ namespace Horde.Build.Tests
 
 		async Task SearchLogDataTestAsync(ILogFile logFile, string text, int firstLine, int count, int[] expectedLines)
 		{
-			LogSearchStats stats = new LogSearchStats();
-			List<int> lines = await _logFileService.SearchLogDataAsync(logFile, text, firstLine, count, stats);
+			SearchStats stats = new SearchStats();
+			List<int> lines = await _logFileService.SearchLogDataAsync(logFile, text, firstLine, count, stats, CancellationToken.None);
 			Assert.IsTrue(lines.SequenceEqual(expectedLines));
 		}
 	}

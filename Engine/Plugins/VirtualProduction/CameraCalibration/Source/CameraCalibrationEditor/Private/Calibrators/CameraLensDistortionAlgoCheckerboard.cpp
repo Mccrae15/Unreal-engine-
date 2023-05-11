@@ -5,6 +5,7 @@
 #include "AssetEditor/CameraCalibrationStepsController.h"
 #include "AssetEditor/LensDistortionTool.h"
 #include "AssetEditor/SSimulcamViewport.h"
+#include "AssetRegistry/AssetData.h"
 #include "CameraCalibrationCheckerboard.h"
 #include "CameraCalibrationEditorLog.h"
 #include "Dom/JsonObject.h"
@@ -19,6 +20,8 @@
 #include "UI/CameraCalibrationWidgetHelpers.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Views/SListView.h"
+#include "Widgets/Views/STableRow.h"
 
 
 #define LOCTEXT_NAMESPACE "CameraLensDistortionAlgoCheckerboard"
@@ -117,7 +120,7 @@ void UCameraLensDistortionAlgoCheckerboard::Initialize(ULensDistortionTool* InTo
 		return;
 	}
 
-	FIntPoint Size = StepsController->GetCompRenderTargetSize();
+	FIntPoint Size = StepsController->GetCompRenderResolution();
 	CvCoverage = cv::Mat(cv::Size(Size.X, Size.Y), CV_8UC4);
 	CoverageTexture = FOpenCVHelper::TextureFromCvMat(CvCoverage, CoverageTexture);
 #endif
@@ -132,6 +135,11 @@ void UCameraLensDistortionAlgoCheckerboard::Shutdown()
 {
 	Tool.Reset();
 	CalibrationRows.Reset();
+}
+
+bool UCameraLensDistortionAlgoCheckerboard::SupportsModel(const TSubclassOf<ULensModel>& LensModel) const
+{
+	return (LensModel == USphericalLensModel::StaticClass());
 }
 
 void UCameraLensDistortionAlgoCheckerboard::Tick(float DeltaTime)
@@ -244,7 +252,7 @@ bool UCameraLensDistortionAlgoCheckerboard::AddCalibrationRow(FText& OutErrorMes
 	FIntPoint Size;
 	ETextureRenderTargetFormat PixelFormat;
 
-	if (!StepsController->ReadMediaPixels(Pixels, Size, PixelFormat, OutErrorMessage))
+	if (!StepsController->ReadMediaPixels(Pixels, Size, PixelFormat, OutErrorMessage, ESimulcamViewportPortion::CameraFeed))
 	{
 		return false;
 	}
@@ -301,7 +309,7 @@ bool UCameraLensDistortionAlgoCheckerboard::AddCalibrationRow(FText& OutErrorMes
 			cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE
 		);
 
-		if (!bCornersFound)
+		if (!bCornersFound || Corners.empty())
 		{
 			OutErrorMessage = FText::FromString(FString::Printf(TEXT(
 				"Could not identify the expected checkerboard points of interest. "
@@ -317,23 +325,14 @@ bool UCameraLensDistortionAlgoCheckerboard::AddCalibrationRow(FText& OutErrorMes
 		cv::TermCriteria Criteria(cv::TermCriteria::Type::EPS | cv::TermCriteria::Type::COUNT, 30, 0.001);
 		cv::cornerSubPix(CvGray, Corners, cv::Size(11, 11), cv::Size(-1, -1), Criteria);
 
-		if (!Corners.empty())
+		for (const cv::Point2f& Corner : Corners)
 		{
-			for (cv::Point2f& Corner : Corners)
-			{
-				Row->Points2d.Add(FVector2D(Corner.x, Corner.y));
-			}
+			Row->Points2d.Add(FVector2D(Corner.x, Corner.y));
 		}
 
 		// Save an image view of the captured frame with the corners overlaid on it (for exporting)
 		FImageView ImageView = FImageView(CvFrame.data, CvFrame.cols, CvFrame.rows, ERawImageFormat::BGRA8);
 		Row->ImageView = ImageView;
-
-		// Update the coverage overlay image with information from the newly added row
-		cv::drawChessboardCorners(CvCoverage, CheckerboardSize, Corners, true);
-
-		CoverageTexture = FOpenCVHelper::TextureFromCvMat(CvCoverage, CoverageTexture);
-		StepsController->RefreshOverlay();
 
 		// Show the detection to the user
 		if (bShouldShowDetectionWindow)
@@ -347,6 +346,31 @@ bool UCameraLensDistortionAlgoCheckerboard::AddCalibrationRow(FText& OutErrorMes
 				LOCTEXT("CheckerboardDetection", "Checkerboard Detection")
 			);
 		}
+
+		// The corners were found using only the camera feed, but the coverage overlay will be drawn over the entire comp
+		// Before updating the overlay texture, shift all the camera feed corner pixels to represent the correct position in the overlay texture
+		const FIntPoint CompSize = StepsController->GetCompRenderResolution();
+		const FIntPoint CameraFeedSize = StepsController->GetCameraFeedSize();
+
+		const FIntPoint TopLeftCorner = (CompSize - CameraFeedSize) / 2;
+
+		for (cv::Point2f& Corner : Corners)
+		{
+			Corner.x += TopLeftCorner.X;
+			Corner.y += TopLeftCorner.Y;
+		}
+
+		// Refresh the coverage overlay if the comp resolution has changed since the last image was taken
+		if ((CvCoverage.cols != CompSize.X) || (CvCoverage.rows != CompSize.Y))
+		{
+			RefreshCoverage();
+		}
+
+		// Update the coverage overlay image with information from the newly added row
+		cv::drawChessboardCorners(CvCoverage, CheckerboardSize, Corners, true);
+
+		CoverageTexture = FOpenCVHelper::TextureFromCvMat(CvCoverage, CoverageTexture);
+		StepsController->RefreshOverlay();
 	}
 
 	// Create thumbnail and add it to the row
@@ -956,7 +980,7 @@ void UCameraLensDistortionAlgoCheckerboard::RefreshCoverage()
 		return;
 	}
 
-	FIntPoint Size = StepsController->GetCompRenderTargetSize();
+	FIntPoint Size = StepsController->GetCompRenderResolution();
 
 	CvCoverage.release();
 	CvCoverage = cv::Mat(cv::Size(Size.X, Size.Y), CV_8UC4);
@@ -976,6 +1000,16 @@ void UCameraLensDistortionAlgoCheckerboard::RefreshCoverage()
 	}
 
 	CoverageTexture = FOpenCVHelper::TextureFromCvMat(CvCoverage, CoverageTexture);
+
+	// The coverage texture may have changed as a result of a change in size or pixel format.
+	// Therefore, the material parameter should be updated to ensure it is up to date.
+	if (CoverageTexture)
+	{
+		if (UMaterialInstanceDynamic* OverlayMID = Tool->GetOverlayMID())
+		{
+			OverlayMID->SetTextureParameterValue(FName(TEXT("CoverageTexture")), CoverageTexture);
+		}
+	}
 
 	StepsController->RefreshOverlay();
 #endif

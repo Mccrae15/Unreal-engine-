@@ -1,12 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TileMapEditing/TileMapEditorViewportClient.h"
-#include "Components/PrimitiveComponent.h"
+#include "Materials/MaterialInterface.h"
+#include "MaterialShared.h"
 #include "PaperTileMapComponent.h"
+#include "SceneView.h"
 #include "ScopedTransaction.h"
 #include "CanvasItem.h"
-#include "Engine/Selection.h"
 #include "AssetEditorModeManager.h"
+#include "Selection.h"
 #include "TileMapEditing/EdModeTileMap.h"
 #include "PaperEditorShared/SpriteGeometryEditMode.h"
 #include "PaperTileMap.h"
@@ -181,21 +183,17 @@ void FTileMapEditorViewportClient::DrawCanvas(FViewport& InViewport, FSceneView&
 				FText MaterialType = LOCTEXT("NoMaterial", "No material set!");
 				if (TileMap->Material != nullptr)
 				{
-					switch (TileMap->Material->GetBlendMode())
+					if (IsOpaqueBlendMode(*TileMap->Material))
 					{
-					case EBlendMode::BLEND_Opaque:
 						MaterialType = Opaque;
-						break;
-					case EBlendMode::BLEND_Translucent:
-					case EBlendMode::BLEND_Additive:
-					case EBlendMode::BLEND_Modulate:
-					case EBlendMode::BLEND_AlphaComposite:
-					case EBlendMode::BLEND_AlphaHoldout:
-						MaterialType = Translucent;
-						break;
-					case EBlendMode::BLEND_Masked:
+					}
+					else if (IsMaskedBlendMode(*TileMap->Material))
+					{
 						MaterialType = Masked;
-						break;
+					}
+					else
+					{
+						MaterialType = Translucent;
 					}
 				}
 
@@ -217,10 +215,7 @@ void FTileMapEditorViewportClient::Tick(float DeltaSeconds)
 {
 	FPaperEditorViewportClient::Tick(DeltaSeconds);
 
-	if (!GIntraFrameDebuggingGameThread)
-	{
-		OwnedPreviewScene.GetWorld()->Tick(LEVELTICK_All, DeltaSeconds);
-	}
+	OwnedPreviewScene.GetWorld()->Tick(LEVELTICK_All, DeltaSeconds);
 }
 
 FLinearColor FTileMapEditorViewportClient::GetBackgroundColor() const

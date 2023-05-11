@@ -1,14 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ConversationRegistry.h"
+#include "AssetRegistry/AssetData.h"
 #include "CommonConversationRuntimeLogging.h"
-#include "AssetRegistry/AssetRegistryModule.h"
+#include "ConversationDatabase.h"
 #include "Engine/AssetManager.h"
-#include "Stats/StatsMisc.h"
-#include "ConversationNode.h"
-#include "ConversationParticipantComponent.h"
 #include "UObject/UObjectIterator.h"
-#include "Engine/World.h"
 #include "ConversationContext.h"
 #include "Engine/StreamableManager.h"
 #include "GameFeaturesSubsystem.h"
@@ -370,6 +367,7 @@ void UConversationRegistry::BuildDependenciesGraph()
 		return;
 	}
 
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_UConversationRegistry_BuildDependenciesGraph);
 	UE_LOG(LogCommonConversationRuntime, Verbose, TEXT("Registry Building Graph"));
 
 	TArray<FAssetData> AllActiveConversationAssets;

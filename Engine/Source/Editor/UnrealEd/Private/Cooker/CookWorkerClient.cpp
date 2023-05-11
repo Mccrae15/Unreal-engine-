@@ -12,6 +12,7 @@
 #include "CoreGlobals.h"
 #include "HAL/PlatformTime.h"
 #include "PackageResultsMessage.h"
+#include "PackageTracker.h"
 #include "Sockets.h"
 #include "SocketSubsystem.h"
 #include "WorkerRequestsRemote.h"
@@ -30,6 +31,23 @@ FCookWorkerClient::FCookWorkerClient(UCookOnTheFlyServer& InCOTFS)
 	FLogMessagesMessageHandler* Handler = new FLogMessagesMessageHandler();
 	Handler->InitializeClient();
 	Register(Handler);
+	Register(new IMPCollectorCbClientMessage<FRetractionRequestMessage>([this]
+	(FMPCollectorClientMessageContext& Context, bool bReadSuccessful, FRetractionRequestMessage&& Message)
+		{
+			HandleRetractionMessage(Context, bReadSuccessful, MoveTemp(Message));
+		}, TEXT("HandleRetractionMessage")));
+	Register(new IMPCollectorCbClientMessage<FAbortPackagesMessage>([this]
+	(FMPCollectorClientMessageContext& Context, bool bReadSuccessful, FAbortPackagesMessage&& Message)
+		{
+			HandleAbortPackagesMessage(Context, bReadSuccessful, MoveTemp(Message));
+		}, TEXT("HandleAbortPackagesMessage")));
+	Register(new IMPCollectorCbClientMessage<FHeartbeatMessage>([this]
+	(FMPCollectorClientMessageContext& Context, bool bReadSuccessful, FHeartbeatMessage&& Message)
+		{
+			HandleHeartbeatMessage(Context, bReadSuccessful, MoveTemp(Message));
+		}, TEXT("HandleHeartbeatMessage")));
+	Register(new FAssetRegistryMPCollector(COTFS));
+	Register(new FPackageWriterMPCollector(COTFS));
 }
 
 FCookWorkerClient::~FCookWorkerClient()
@@ -37,9 +55,24 @@ FCookWorkerClient::~FCookWorkerClient()
 	if (ConnectStatus == EConnectStatus::Connected ||
 		(EConnectStatus::FlushAndAbortFirst <= ConnectStatus && ConnectStatus <= EConnectStatus::FlushAndAbortLast))
 	{
-		UE_LOG(LogCook, Warning, TEXT("CookWorkerServer %d was destroyed before it finished Disconnect. The CookDirector may be missing some information."));
+		UE_LOG(LogCook, Warning, TEXT("CookWorker was destroyed before it finished Disconnect. The CookDirector may be missing some information."));
 	}
 	Sockets::CloseSocket(ServerSocket);
+
+	// Before destructing, wait on all of the Futures that could have async access to *this from a TaskThread
+	TArray<FPendingResultNeedingAsyncWork> LocalPendingResultsNeedingAsyncWork;
+	{
+		FScopeLock PendingResultsScopeLock(&PendingResultsLock);
+		for (TPair<FPackageRemoteResult*, FPendingResultNeedingAsyncWork>& Pair : PendingResultsNeedingAsyncWork)
+		{
+			LocalPendingResultsNeedingAsyncWork.Add(MoveTemp(Pair.Value));
+		}
+		PendingResultsNeedingAsyncWork.Empty();
+	}
+	for (FPendingResultNeedingAsyncWork& PendingResult : LocalPendingResultsNeedingAsyncWork)
+	{
+		PendingResult.CompletionFuture.Get();
+	}
 }
 
 bool FCookWorkerClient::TryConnect(FDirectorConnectionInfo&& ConnectInfo)
@@ -92,6 +125,13 @@ ECookInitializationFlags FCookWorkerClient::GetCookInitializationFlags()
 	check(InitialConfigMessage); // Should only be called after TryConnect and before DoneWithInitialSettings
 	return InitialConfigMessage->GetCookInitializationFlags();
 }
+
+bool FCookWorkerClient::GetInitializationIsZenStore()
+{
+	check(InitialConfigMessage); // Should only be called after TryConnect and before DoneWithInitialSettings
+	return InitialConfigMessage->IsZenStore();
+}
+
 FInitializeConfigSettings&& FCookWorkerClient::ConsumeInitializeConfigSettings()
 {
 	check(InitialConfigMessage); // Should only be called after TryConnect and before DoneWithInitialSettings
@@ -128,66 +168,123 @@ void FCookWorkerClient::DoneWithInitialSettings()
 
 void FCookWorkerClient::ReportDemoteToIdle(const FPackageData& PackageData, ESuppressCookReason Reason)
 {
-	FPackageRemoteResult& Result = PendingResults.Emplace_GetRef();
-	Result.PackageName = PackageData.GetPackageName();
-	Result.SuppressCookReason = Reason;
+	if (Reason == ESuppressCookReason::RetractedByCookDirector)
+	{
+		return;
+	}
+	TUniquePtr<FPackageRemoteResult> ResultOwner(new FPackageRemoteResult());
+	FName PackageName = PackageData.GetPackageName();
+	ResultOwner->SetPackageName(PackageName);
+	ResultOwner->SetSuppressCookReason(Reason);
+	// Set the platforms, use the default values for each platform (e.g. bSuccessful=false)
+	ResultOwner->SetPlatforms(OrderedSessionPlatforms);
+
+	ReportPackageMessage(PackageName, MoveTemp(ResultOwner));
 }
 
 void FCookWorkerClient::ReportPromoteToSaveComplete(FPackageData& PackageData)
 {
-	TUniquePtr<FPackageRemoteResult> MovedResult = MoveTemp(PackageData.GetPackageRemoteResult());
-	FPackageRemoteResult* Result;
-	if (MovedResult)
-	{
-		Result = &PendingResults.Emplace_GetRef(MoveTemp(*MovedResult));
-	} 
-	else
-	{
-		Result = &PendingResults.Emplace_GetRef();
-	}
+	TUniquePtr<FPackageRemoteResult> ResultOwner(new FPackageRemoteResult());
+	FPackageRemoteResult* Result = ResultOwner.Get();
 
-	Result->PackageName = PackageData.GetPackageName();
-	Result->SuppressCookReason = ESuppressCookReason::InvalidSuppressCookReason;
+	FName PackageName = PackageData.GetPackageName();
+	Result->SetPackageName(PackageName);
+	Result->SetSuppressCookReason(ESuppressCookReason::InvalidSuppressCookReason);
+	Result->SetPlatforms(OrderedSessionPlatforms);
 
-	// Sort the platforms to match the OrderedSessionPlatforms order, and add any missing platforms
 	int32 NumPlatforms = OrderedSessionPlatforms.Num();
-	bool bAlreadySorted = true;
-	for (int32 PlatformIndex = 0; PlatformIndex < NumPlatforms; ++PlatformIndex)
-	{
-		if (OrderedSessionPlatforms[PlatformIndex] != Result->Platforms[PlatformIndex].Platform)
-		{
-			bAlreadySorted = false;
-			break;
-		}
-	}
-	if (!bAlreadySorted)
-	{
-		TArray<FPackageRemoteResult::FPlatformResult, TInlineAllocator<1>> SortedPlatforms;
-		SortedPlatforms.SetNum(NumPlatforms);
-		for (FPackageRemoteResult::FPlatformResult& ExistingResult : Result->Platforms)
-		{
-			int32 PlatformIndex = OrderedSessionPlatforms.IndexOfByKey(ExistingResult.Platform);
-			check(PlatformIndex != INDEX_NONE && SortedPlatforms[PlatformIndex].Platform == nullptr); // Only platforms in the session platforms should have been added, and there should not be duplicates
-			SortedPlatforms[PlatformIndex] = MoveTemp(ExistingResult);
-		}
-		for (int32 PlatformIndex = 0; PlatformIndex < NumPlatforms; ++PlatformIndex)
-		{
-			FPackageRemoteResult::FPlatformResult& Sorted = SortedPlatforms[PlatformIndex];
-			if (!Sorted.Platform)
-			{
-				Sorted.Platform = OrderedSessionPlatforms[PlatformIndex];
-				Sorted.bSuccessful = false;
-			}
-		}
-		Swap(Result->Platforms, SortedPlatforms);
-	}
-
 	for (int32 PlatformIndex = 0; PlatformIndex < NumPlatforms; ++PlatformIndex)
 	{
 		ITargetPlatform* TargetPlatform = OrderedSessionPlatforms[PlatformIndex];
-		FPackageRemoteResult::FPlatformResult& PlatformResults = Result->Platforms[PlatformIndex];
+		FPackageRemoteResult::FPlatformResult& PlatformResults = Result->GetPlatforms()[PlatformIndex];
 		FPackageData::FPlatformData& PackagePlatformData = PackageData.FindOrAddPlatformData(TargetPlatform);
-		PlatformResults.bSuccessful = PackagePlatformData.bCookSucceeded;
+		PlatformResults.SetSuccessful(PackagePlatformData.bCookSucceeded);
+	}
+
+	ReportPackageMessage(PackageName, MoveTemp(ResultOwner));
+}
+
+void FCookWorkerClient::ReportPackageMessage(FName PackageName, TUniquePtr<FPackageRemoteResult>&& ResultOwner)
+{
+	FPackageRemoteResult* Result = ResultOwner.Get();
+
+	TArray<FMPCollectorClientTickPackageContext::FPlatformData, TInlineAllocator<1>> ContextPlatformDatas;
+	ContextPlatformDatas.Reserve(Result->GetPlatforms().Num());
+	for (FPackageRemoteResult::FPlatformResult& PlatformResult : Result->GetPlatforms())
+	{
+		ContextPlatformDatas.Add(FMPCollectorClientTickPackageContext::FPlatformData
+			{ PlatformResult.GetPlatform(), PlatformResult.IsSuccessful() });
+	}
+	FMPCollectorClientTickPackageContext Context;
+	Context.PackageName = PackageName;
+	Context.Platforms = OrderedSessionPlatforms;
+	Context.PlatformDatas = ContextPlatformDatas;
+
+	for (const TPair<FGuid, TRefCountPtr<IMPCollector>>& CollectorPair : Collectors)
+	{
+		IMPCollector* Collector = CollectorPair.Value.GetReference();
+		Collector->ClientTickPackage(Context);
+		const FGuid& MessageType = CollectorPair.Key;
+		for (TPair<const ITargetPlatform*, FCbObject>& MessagePair : Context.Messages)
+		{
+			const ITargetPlatform* TargetPlatform = MessagePair.Key;
+			FCbObject Object = MoveTemp(MessagePair.Value);
+			if (!TargetPlatform)
+			{
+				Result->AddPackageMessage(MessageType, MoveTemp(Object));
+			}
+			else
+			{
+				Result->AddPlatformMessage(TargetPlatform, MessageType, MoveTemp(Object));
+			}
+		}
+		Context.Messages.Reset();
+		for (TPair<const ITargetPlatform*, TFuture<FCbObject>>& MessagePair : Context.AsyncMessages)
+		{
+			const ITargetPlatform* TargetPlatform = MessagePair.Key;
+			TFuture<FCbObject> ObjectFuture = MoveTemp(MessagePair.Value);
+			if (!TargetPlatform)
+			{
+				Result->AddAsyncPackageMessage(MessageType, MoveTemp(ObjectFuture));
+			}
+			else
+			{
+				Result->AddAsyncPlatformMessage(TargetPlatform, MessageType, MoveTemp(ObjectFuture));
+			}
+		}
+		Context.AsyncMessages.Reset();
+	}
+
+	++(Result->GetUserRefCount()); // Used to test whether the async Future still needs to access *this
+	TFuture<void> CompletionFuture = Result->GetCompletionFuture().Then(
+	[this, Result](TFuture<int>&& OldFuture)
+	{
+		FScopeLock PendingResultsScopeLock(&PendingResultsLock);
+		FPendingResultNeedingAsyncWork PendingResult;
+		PendingResultsNeedingAsyncWork.RemoveAndCopyValue(Result, PendingResult);
+
+		// Result might have not been added into PendingResultsNeedingAsyncWork yet, and also could have
+		// been removed by cancellation from e.g. CookWorkerClient destructor.
+		if (PendingResult.PendingResult)
+		{
+			PendingResults.Add(MoveTemp(PendingResult.PendingResult));
+		}
+		--(Result->GetUserRefCount());
+	});
+
+	{
+		FScopeLock PendingResultsScopeLock(&PendingResultsLock);
+		if (Result->GetUserRefCount() == 0)
+		{
+			// Result->GetCompletionFuture() has already been called
+			check(Result->IsComplete());
+			PendingResults.Add(MoveTemp(ResultOwner));
+		}
+		else
+		{
+			PendingResultsNeedingAsyncWork.Add(Result,
+				FPendingResultNeedingAsyncWork{ MoveTemp(ResultOwner), MoveTemp(CompletionFuture) });
+		}
 	}
 }
 
@@ -354,7 +451,7 @@ void FCookWorkerClient::PollReceiveConfigMessage()
 	}
 	check(!InitialConfigMessage);
 	InitialConfigMessage = MakeUnique<FInitialConfigMessage>();
-	if (!InitialConfigMessage->TryRead(MoveTemp(Messages[0].Object)))
+	if (!InitialConfigMessage->TryRead(Messages[0].Object))
 	{
 		UE_LOG(LogCook, Warning, TEXT("CookWorker initialization failure: Director sent an invalid InitialConfigMessage."));
 		SendToState(EConnectStatus::LostConnection);
@@ -386,18 +483,29 @@ void FCookWorkerClient::PumpSendMessages()
 
 void FCookWorkerClient::SendPendingResults()
 {
-	if (!PendingResults.IsEmpty())
+	FPackageResultsMessage Message;
 	{
-		FPackageResultsMessage Message;
-		Message.Results = MoveTemp(PendingResults);
-		SendMessage(Message);
-		PendingResults.Reset();
+		FScopeLock PendingResultsScopeLock(&PendingResultsLock);
+		if (!PendingResults.IsEmpty())
+		{
+			Message.Results.Reserve(PendingResults.Num());
+			for (TUniquePtr<FPackageRemoteResult>& Result : PendingResults)
+			{
+				Message.Results.Add(MoveTemp(*Result));
+			}
+			PendingResults.Reset();
+		}
 	}
+	if (!Message.Results.IsEmpty())
+	{
+		SendMessage(Message);
+	}
+
 	if (!PendingDiscoveredPackages.IsEmpty())
 	{
-		FDiscoveredPackagesMessage Message;
-		Message.Packages = MoveTemp(PendingDiscoveredPackages);
-		SendMessage(Message);
+		FDiscoveredPackagesMessage DiscoveredMessage;
+		DiscoveredMessage.Packages = MoveTemp(PendingDiscoveredPackages);
+		SendMessage(DiscoveredMessage);
 		PendingDiscoveredPackages.Reset();
 	}
 }
@@ -436,7 +544,7 @@ void FCookWorkerClient::HandleReceiveMessages(TArray<UE::CompactBinaryTCP::FMars
 			if (Message.MessageType == FAbortWorkerMessage::MessageType)
 			{
 				FAbortWorkerMessage AbortMessage;
-				AbortMessage.TryRead(MoveTemp(Message.Object));
+				AbortMessage.TryRead(Message.Object);
 				if (AbortMessage.Type == FAbortWorkerMessage::EType::CookComplete)
 				{
 					UE_LOG(LogCook, Display, TEXT("CookWorkerClient received CookComplete message from Director. Flushing messages and shutting down."));
@@ -456,13 +564,29 @@ void FCookWorkerClient::HandleReceiveMessages(TArray<UE::CompactBinaryTCP::FMars
 			else if (Message.MessageType == FAssignPackagesMessage::MessageType)
 			{
 				FAssignPackagesMessage AssignPackagesMessage;
-				if (!AssignPackagesMessage.TryRead(MoveTemp(Message.Object)))
+				if (!AssignPackagesMessage.TryRead(Message.Object))
 				{
 					LogInvalidMessage(TEXT("FAssignPackagesMessage"));
 				}
 				else
 				{
 					AssignPackages(AssignPackagesMessage);
+				}
+			}
+			else
+			{
+				TRefCountPtr<IMPCollector>* Collector = Collectors.Find(Message.MessageType);
+				if (Collector)
+				{
+					check(*Collector);
+					FMPCollectorClientMessageContext Context;
+					Context.Platforms = OrderedSessionPlatforms;
+					(*Collector)->ClientReceiveMessage(Context, Message.Object);
+				}
+				else
+				{
+					UE_LOG(LogCook, Error, TEXT("CookWorkerClient received message of unknown type %s from CookDirector. Ignoring it."),
+						*Message.MessageType.ToString());
 				}
 			}
 		}
@@ -479,6 +603,7 @@ void FCookWorkerClient::PumpDisconnect(FTickStackData& StackData)
 		{
 			TickCollectors(StackData, true /* bFlush */);
 			// Add code here for any waiting we need to do for the local CookOnTheFlyServer to gracefully shutdown
+			COTFS.CookAsCookWorkerFinished();
 			SendMessage(FAbortWorkerMessage(FAbortWorkerMessage::EType::Abort));
 			SendToState(EConnectStatus::WaitForAbortAcknowledge);
 			break;
@@ -497,14 +622,20 @@ void FCookWorkerClient::PumpDisconnect(FTickStackData& StackData)
 					UE_LOG(LogCook, Warning, TEXT("Timedout after %.0fs waiting to send disconnect message to CookDirector."),
 						WaitForDisconnectTimeout);
 					SendToState(EConnectStatus::LostConnection);
-					return;
+					check(ConnectStatus == EConnectStatus::LostConnection);
+					// Fall through to LostConnection
+					break;
 				}
-				return; // Exit the Pump loop for now and keep waiting
+				else
+				{
+					return; // Exit the Pump loop for now and keep waiting
+				}
 			}
 			else
 			{
 				check(ConnectStatus == EConnectStatus::LostConnection);
-				return;
+				// Fall through to LostConnection
+				break;
 			}
 		}
 		case EConnectStatus::LostConnection:
@@ -568,16 +699,37 @@ void FCookWorkerClient::AssignPackages(FAssignPackagesMessage& Message)
 			FInstigator(AssignData.Instigator));
 		PackageData.SendToState(EPackageState::Request, ESendFlags::QueueAddAndRemove);
 	}
+
+	if (!Message.PackageDatas.IsEmpty())
+	{
+		// Clear the SoftGC diagnostic ExpectedNeverLoadPackages because we have new assigned packages
+		// that we didn't consider during SoftGC
+		COTFS.PackageTracker->ClearExpectedNeverLoadPackages();
+	}
 }
 
 void FCookWorkerClient::Register(IMPCollector* Collector)
 {
-	CollectorsToTick.AddUnique(Collector);
+	TRefCountPtr<IMPCollector>& Existing = Collectors.FindOrAdd(Collector->GetMessageType());
+	if (Existing)
+	{
+		UE_LOG(LogCook, Error, TEXT("Duplicate IMPCollectors registered. Guid: %s, Existing: %s, Registering: %s. Keeping the Existing."),
+			*Collector->GetMessageType().ToString(), Existing->GetDebugName(), Collector->GetDebugName());
+		return;
+	}
+	Existing = Collector;
 }
 
 void FCookWorkerClient::Unregister(IMPCollector* Collector)
 {
-	CollectorsToTick.RemoveSwap(Collector);
+	TRefCountPtr<IMPCollector> Existing;
+	Collectors.RemoveAndCopyValue(Collector->GetMessageType(), Existing);
+	if (Existing && Existing.GetReference() != Collector)
+	{
+		UE_LOG(LogCook, Error, TEXT("Duplicate IMPCollector during Unregister. Guid: %s, Existing: %s, Unregistering: %s. Ignoring the Unregister."),
+			*Collector->GetMessageType().ToString(), Existing->GetDebugName(), Collector->GetDebugName());
+		Collectors.Add(Collector->GetMessageType(), MoveTemp(Existing));
+	}
 }
 
 void FCookWorkerClient::TickCollectors(FTickStackData& StackData, bool bFlush)
@@ -587,15 +739,16 @@ void FCookWorkerClient::TickCollectors(FTickStackData& StackData, bool bFlush)
 		return;
 	}
 
-	if (!CollectorsToTick.IsEmpty())
+	if (!Collectors.IsEmpty())
 	{
-		IMPCollector::FClientContext Context;
+		FMPCollectorClientTickContext Context;
 		Context.Platforms = OrderedSessionPlatforms;
 		Context.bFlush = bFlush;
 		TArray<UE::CompactBinaryTCP::FMarshalledMessage> MarshalledMessages;
 
-		for (IMPCollector* Collector : CollectorsToTick)
+		for (const TPair<FGuid, TRefCountPtr<IMPCollector>>& Pair: Collectors)
 		{
+			IMPCollector* Collector = Pair.Value.GetReference();
 			Collector->ClientTick(Context);
 			if (!Context.Messages.IsEmpty())
 			{
@@ -618,4 +771,56 @@ void FCookWorkerClient::TickCollectors(FTickStackData& StackData, bool bFlush)
 	NextTickCollectorsTimeSeconds = FPlatformTime::Seconds() + TickCollectorsPeriodSeconds;
 }
 
+void FCookWorkerClient::HandleAbortPackagesMessage(FMPCollectorClientMessageContext& Context, bool bReadSuccessful,
+	FAbortPackagesMessage&& Message)
+{
+	if (!bReadSuccessful)
+	{
+		LogInvalidMessage(TEXT("AbortPackagesMessage"));
+	}
+	for (FName PackageName : Message.PackageNames)
+	{
+		FPackageData* PackageData = COTFS.PackageDatas->FindPackageDataByPackageName(PackageName);
+		if (PackageData)
+		{
+			COTFS.DemoteToIdle(*PackageData, ESendFlags::QueueAddAndRemove, ESuppressCookReason::RetractedByCookDirector);
+		}
+	}
 }
+
+void FCookWorkerClient::HandleRetractionMessage(FMPCollectorClientMessageContext& Context, bool bReadSuccessful,
+	FRetractionRequestMessage&& Message)
+{
+	if (!bReadSuccessful)
+	{
+		LogInvalidMessage(TEXT("RetractionRequestMessage"));
+		return;
+	}
+
+	TArray<FName> PackageNames;
+	COTFS.GetPackagesToRetract(Message.RequestedCount, PackageNames);
+	for (FName PackageName : PackageNames)
+	{
+		FPackageData* PackageData = COTFS.PackageDatas->FindPackageDataByPackageName(PackageName);
+		check(PackageData);
+		COTFS.DemoteToIdle(*PackageData, ESendFlags::QueueAddAndRemove, ESuppressCookReason::RetractedByCookDirector);
+	}
+
+	FRetractionResultsMessage ResultsMessage;
+	ResultsMessage.ReturnedPackages = MoveTemp(PackageNames);
+	SendMessage(ResultsMessage);
+}
+
+void FCookWorkerClient::HandleHeartbeatMessage(FMPCollectorClientMessageContext& Context, bool bReadSuccessful,
+	FHeartbeatMessage&& Message)
+{
+	if (!bReadSuccessful)
+	{
+		LogInvalidMessage(TEXT("HeartbeatMessage"));
+		return;
+	}
+
+	SendMessage(FHeartbeatMessage(Message.HeartbeatNumber));
+}
+
+} // namespace UE::Cook

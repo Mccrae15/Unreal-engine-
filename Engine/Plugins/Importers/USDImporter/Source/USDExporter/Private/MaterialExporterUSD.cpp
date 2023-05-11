@@ -3,9 +3,13 @@
 #include "MaterialExporterUSD.h"
 
 #include "MaterialExporterUSDOptions.h"
+#include "Materials/Material.h"
+#include "MaterialShared.h"
+#include "Misc/EngineVersion.h"
 #include "UnrealUSDWrapper.h"
 #include "USDClassesModule.h"
 #include "USDConversionUtils.h"
+#include "USDExporterModule.h"
 #include "USDGeomMeshConversion.h"
 #include "USDLog.h"
 #include "USDMemory.h"
@@ -177,6 +181,11 @@ namespace UE::MaterialExporterUSD::Private
 		);
 
 		VersionHash.Update(
+			reinterpret_cast<const uint8*>(&Options.bConstantColorAsSingleValue),
+			sizeof(Options.bConstantColorAsSingleValue)
+		);
+
+		VersionHash.Update(
 			reinterpret_cast< const uint8* >( Options.Properties.GetData() ),
 			Options.Properties.Num() * Options.Properties.GetTypeSize()
 		);
@@ -285,6 +294,11 @@ bool UMaterialExporterUsd::ExportMaterial(
 	SHA1.GetHash( &Hash.Hash[ 0 ] );
 	FString MaterialHashString = Hash.ToString();
 
+	if ( !IUsdExporterModule::CanExportToLayer( FilePath.FilePath ) )
+	{
+		return false;
+	}
+
 	// Check if we already have exported what we plan on exporting anyway
 	if ( FPaths::FileExists( FilePath.FilePath ) )
 	{
@@ -354,7 +368,8 @@ bool UMaterialExporterUsd::ExportMaterial(
 		Options.Properties,
 		Options.DefaultTextureSize,
 		Options.TexturesDir,
-		RootPrim
+		RootPrim,
+		Options.bConstantColorAsSingleValue
 	);
 
 	// Write asset info now that we finished exporting
@@ -401,7 +416,6 @@ bool UMaterialExporterUsd::ExportMaterialsForStage(
 	const FString& StageRootLayerPath,
 	bool bIsAssetLayer,
 	bool bUsePayload,
-	bool bRemoveUnrealMaterials,
 	bool bReplaceIdentical,
 	bool bReExportIdenticalAssets,
 	bool bIsAutomated
@@ -492,8 +506,7 @@ bool UMaterialExporterUsd::ExportMaterialsForStage(
 		RootLayer,
 		MaterialPathNameToFilePath,
 		bIsAssetLayer,
-		bUsePayload,
-		bRemoveUnrealMaterials
+		bUsePayload
 	);
 
 	RootLayer.Save();

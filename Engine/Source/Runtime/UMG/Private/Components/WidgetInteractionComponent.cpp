@@ -1,8 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/WidgetInteractionComponent.h"
+#include "UMGPrivate.h"
 #include "CollisionQueryParams.h"
 #include "Components/PrimitiveComponent.h"
+#include "Engine/GameViewportClient.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Components/ArrowComponent.h"
 #include "Framework/Application/SlateApplication.h"
@@ -161,7 +163,13 @@ UWidgetInteractionComponent::FWidgetTraceResult UWidgetInteractionComponent::Per
 			FCollisionQueryParams Params(SCENE_QUERY_STAT(WidgetInteractionComponentTrace));
 			Params.AddIgnoredComponents(PrimitiveChildren);
 
-			APlayerController* PlayerController = GetWorld()->GetFirstPlayerController();
+			const UWorld* World = GetWorld();
+			APlayerController* PlayerController = World ? World->GetFirstPlayerController():nullptr;
+			if (!PlayerController)
+			{
+				UE_LOG(LogUMG, Warning, TEXT("Widget Interaction Component cannot perform trace without a valid PlayerController."));
+				return FWidgetTraceResult();
+			}
 			ULocalPlayer* LocalPlayer = PlayerController->GetLocalPlayer();
 			
 			if ( LocalPlayer && LocalPlayer->ViewportClient )
@@ -450,29 +458,49 @@ void UWidgetInteractionComponent::PressPointerKey(FKey Key)
 	ensure(PointerIndex >= 0);
 
 	FPointerEvent PointerEvent;
+
+	// Find the primary input device for this Slate User
+	FInputDeviceId InputDeviceId = INPUTDEVICEID_NONE;
+	if (TSharedPtr<FSlateUser> SlateUser = FSlateApplication::Get().GetUser(VirtualUser->GetUserIndex()))
+	{
+		FPlatformUserId PlatUser = SlateUser->GetPlatformUserId();
+		InputDeviceId = IPlatformInputDeviceMapper::Get().GetPrimaryInputDeviceForUser(PlatUser);
+	}
+
+	// Just in case there was no input device assigned to this virtual user, get the default platform
+	// input device
+	if (!InputDeviceId.IsValid())
+	{
+		InputDeviceId = IPlatformInputDeviceMapper::Get().GetDefaultInputDevice();
+	}
 	
 	if (Key.IsTouch())
 	{
 		PointerEvent = FPointerEvent(
-			VirtualUser->GetUserIndex(),
+			InputDeviceId,
 			(uint32)PointerIndex,
 			LocalHitLocation,
 			LastLocalHitLocation,
 			1.0f,
-			false);
-		
+			false,
+			false,
+			false,
+			FModifierKeysState(),
+			0,
+			VirtualUser->GetUserIndex());		
 	}
 	else
 	{
 		PointerEvent = FPointerEvent(
-			VirtualUser->GetUserIndex(),
+			InputDeviceId,
 			(uint32)PointerIndex,
 			LocalHitLocation,
 			LastLocalHitLocation,
 			PressedKeys,
 			Key,
 			0.0f,
-			ModifierKeys);
+			ModifierKeys,
+			VirtualUser->GetUserIndex());
 	}
 	
 		
@@ -503,27 +531,49 @@ void UWidgetInteractionComponent::ReleasePointerKey(FKey Key)
 
 	ensure(PointerIndex >= 0);
 	FPointerEvent PointerEvent;
+
+	// Find the primary input device for this Slate User
+	FInputDeviceId InputDeviceId = INPUTDEVICEID_NONE;
+	if (TSharedPtr<FSlateUser> SlateUser = FSlateApplication::Get().GetUser(VirtualUser->GetUserIndex()))
+	{
+		FPlatformUserId PlatUser = SlateUser->GetPlatformUserId();
+		InputDeviceId = IPlatformInputDeviceMapper::Get().GetPrimaryInputDeviceForUser(PlatUser);
+	}
+
+	// Just in case there was no input device assigned to this virtual user, get the default platform
+	// input device
+	if (!InputDeviceId.IsValid())
+	{
+		InputDeviceId = IPlatformInputDeviceMapper::Get().GetDefaultInputDevice();
+	}
+
 	if (Key.IsTouch())
 	{
 		PointerEvent = FPointerEvent(
-			VirtualUser->GetUserIndex(),
+			InputDeviceId,
 			(uint32)PointerIndex,
 			LocalHitLocation,
 			LastLocalHitLocation,
-			1.0f,
-			false);
+			0.0f,
+			false,
+			false,
+			false,
+			FModifierKeysState(),
+			0,
+			VirtualUser->GetUserIndex());
 	}
 	else
 	{
 		PointerEvent = FPointerEvent(
-			VirtualUser->GetUserIndex(),
+			InputDeviceId,
 			(uint32)PointerIndex,
 			LocalHitLocation,
 			LastLocalHitLocation,
 			PressedKeys,
 			Key,
 			0.0f,
-			ModifierKeys);
+			ModifierKeys,
+			VirtualUser->GetUserIndex());
 	}
 		
 	FReply Reply = FSlateApplication::Get().RoutePointerUpEvent(WidgetPathUnderFinger, PointerEvent);

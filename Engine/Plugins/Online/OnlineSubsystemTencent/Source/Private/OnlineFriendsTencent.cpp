@@ -1,13 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "OnlineFriendsTencent.h"
-#include "OnlineSubsystemTencentPrivate.h"
-#include "OnlineIdentityTencent.h"
-#include "OnlinePresenceTencent.h"
-#include "OnlineAsyncTasksTencent.h"
 
 #if WITH_TENCENTSDK
 #if WITH_TENCENT_RAIL_SDK
+
+#include "Interfaces/OnlineIdentityInterface.h"
+#include "Interfaces/OnlineUserInterface.h"
+#include "Online/OnlineBase.h"
+#include "OnlineIdentityTencent.h"
+#include "OnlinePresenceTencent.h"
+#include "OnlineSubsystemTencent.h"
 
 FOnlineFriendTencent::FOnlineFriendTencent(FOnlineSubsystemTencent* InTencentSubsystem, const FUniqueNetIdRailRef InUserId)
 	: TencentSubsystem(InTencentSubsystem)

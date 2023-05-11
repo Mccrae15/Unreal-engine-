@@ -14,7 +14,7 @@ private:
 	FUniqueNetIdOculus PlayerId;
 	FOnlineAchievementsWriteRef WriteObject;
 	FOnAchievementsWrittenDelegate AchievementDelegate;
-
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	// private to force the use of FOnlineMessageMultiTaskOculusWriteAchievements::Create()
 	FOnlineMessageMultiTaskOculusWriteAchievements(FOnlineSubsystemOculus& InOculusSubsystem, const FUniqueNetIdOculus& InPlayerId, FOnlineAchievementsWriteRef& InWriteObject, const FOnAchievementsWrittenDelegate& InAchievementDelegate)
 		: FOnlineMessageMultiTaskOculus(InOculusSubsystem, FOnlineMessageMultiTaskOculus::FFinalizeDelegate::CreateRaw(this, &FOnlineMessageMultiTaskOculusWriteAchievements::Finalize))
@@ -22,11 +22,12 @@ private:
 		, WriteObject(InWriteObject)
 		, AchievementDelegate(InAchievementDelegate)
 	{}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	static TSet< TSharedRef<FOnlineMessageMultiTaskOculusWriteAchievements> > ActiveAchievementWriteTasks;
 
 PACKAGE_SCOPE:
-
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	static TSharedRef<FOnlineMessageMultiTaskOculusWriteAchievements> Create(
 		FOnlineSubsystemOculus& InOculusSubsystem,
 		const FUniqueNetIdOculus& InPlayerId,
@@ -38,6 +39,7 @@ PACKAGE_SCOPE:
 
 		return NewTask;
 	}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	void Finalize()
 	{
@@ -55,10 +57,12 @@ PACKAGE_SCOPE:
 };
 TSet< TSharedRef<FOnlineMessageMultiTaskOculusWriteAchievements> > FOnlineMessageMultiTaskOculusWriteAchievements::ActiveAchievementWriteTasks;
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 FOnlineAchievementsOculus::FOnlineAchievementsOculus(class FOnlineSubsystemOculus& InSubsystem)
 : OculusSubsystem(InSubsystem)
 {
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 FOnlineAchievementsOculus::~FOnlineAchievementsOculus()
 {
@@ -74,8 +78,9 @@ void FOnlineAchievementsOculus::WriteAchievements(const FUniqueNetId& PlayerId, 
 		Delegate.ExecuteIfBound(PlayerId, false);
 		return;
 	}
-
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	auto LoggedInPlayerId = OculusSubsystem.GetIdentityInterface()->GetUniquePlayerId(0);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	if (!(LoggedInPlayerId.IsValid() && PlayerId == *LoggedInPlayerId))
 	{
 		UE_LOG_ONLINE_ACHIEVEMENTS(Error, TEXT("Can only write achievements for logged in player id"));
@@ -150,7 +155,9 @@ void FOnlineAchievementsOculus::WriteAchievements(const FUniqueNetId& PlayerId, 
 
 void FOnlineAchievementsOculus::QueryAchievements(const FUniqueNetId& PlayerId, const FOnQueryAchievementsCompleteDelegate& Delegate)
 {
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	auto LoggedInPlayerId = OculusSubsystem.GetIdentityInterface()->GetUniquePlayerId(0);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	if (!(LoggedInPlayerId.IsValid() && PlayerId == *LoggedInPlayerId))
 	{
 		UE_LOG_ONLINE_ACHIEVEMENTS(Error, TEXT("Can only query for logged in player id"));
@@ -159,6 +166,7 @@ void FOnlineAchievementsOculus::QueryAchievements(const FUniqueNetId& PlayerId, 
 	}
 
 	const FUniqueNetIdOculus& OculusPlayerId = FUniqueNetIdOculus::Cast(PlayerId);
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	OculusSubsystem.AddRequestDelegate(
 		ovr_Achievements_GetAllProgress(),
 		FOculusMessageOnCompleteDelegate::CreateLambda([this, OculusPlayerId, Delegate](ovrMessageHandle Message, bool bIsError)
@@ -205,11 +213,13 @@ void FOnlineAchievementsOculus::QueryAchievements(const FUniqueNetId& PlayerId, 
 
 		Delegate.ExecuteIfBound(OculusPlayerId, true);
 	}));
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void FOnlineAchievementsOculus::QueryAchievementDescriptions(const FUniqueNetId& PlayerId, const FOnQueryAchievementsCompleteDelegate& Delegate)
 {
 	const FUniqueNetIdOculus& OculusPlayerId = FUniqueNetIdOculus::Cast(PlayerId);
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	OculusSubsystem.AddRequestDelegate(
 		ovr_Achievements_GetAllDefinitions(),
 		FOculusMessageOnCompleteDelegate::CreateLambda([this, OculusPlayerId, Delegate](ovrMessageHandle Message, bool bIsError)
@@ -239,6 +249,7 @@ void FOnlineAchievementsOculus::QueryAchievementDescriptions(const FUniqueNetId&
 
 		Delegate.ExecuteIfBound(OculusPlayerId, true);
 	}));
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 EOnlineCachedResult::Type FOnlineAchievementsOculus::GetCachedAchievement(const FUniqueNetId& PlayerId, const FString& AchievementId, FOnlineAchievement& OutAchievement)

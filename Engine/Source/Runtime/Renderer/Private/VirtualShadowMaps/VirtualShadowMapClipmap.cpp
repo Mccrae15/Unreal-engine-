@@ -7,7 +7,11 @@ VirtualShadowMapClipmap.cpp
 #include "VirtualShadowMapClipmap.h"
 #include "CoreMinimal.h"
 #include "HAL/IConsoleManager.h"
+#include "LightSceneInfo.h"
+#include "LightSceneProxy.h"
 #include "RendererModule.h"
+#include "ScenePrivate.h"
+#include "SceneRendering.h"
 #include "VirtualShadowMapArray.h"
 #include "VirtualShadowMapCacheManager.h"
 #include "VirtualShadowMapDefinitions.h"
@@ -54,6 +58,14 @@ TAutoConsoleVariable<float> CVarVirtualShadowMapClipmapZRangeScale(
 	ECVF_RenderThreadSafe
 );
 
+TAutoConsoleVariable<int32> CVarVirtualShadowMapClipmapMinCameraViewportWidth(
+	TEXT("r.Shadow.Virtual.Clipmap.MinCameraViewportWidth"),
+	0,
+	TEXT("If greater than zero, clamps the camera viewport dimensions used to adjust the clipmap resolution.\n")
+	TEXT("This can be useful to avoid dynamic resolution indirectly dropping the shadow resolution far too low."),
+	ECVF_RenderThreadSafe
+);
+
 // "Virtual" clipmap level to clipmap radius
 // NOTE: This is the radius of around the clipmap origin that this level must cover
 // The actual clipmap dimensions will be larger due to snapping and other accomodations
@@ -90,10 +102,14 @@ FVirtualShadowMapClipmap::FVirtualShadowMapClipmap(
 	// Pure rotation matrix
 	FMatrix ViewToWorldRotationMatrix = WorldToLightViewRotationMatrix.GetTransposed();
 	
+	// Optionally clamp camera viewport to avoid excessively low resolution shadows with dynamic resolution
+	const int32 MinCameraViewportWidth = CVarVirtualShadowMapClipmapMinCameraViewportWidth.GetValueOnRenderThread();
+	const int32 CameraViewportWidth = FMath::Max(MinCameraViewportWidth, CameraViewRectSize.X);
+
 	// NOTE: Rotational (roll) invariance of the directional light depends on square pixels so we just base everything on the camera X scales/resolution
 	// NOTE: 0.5 because we double the size of the clipmap region below to handle snapping
 	float LodScale = 0.5f / CameraViewMatrices.GetProjectionScale().X;
-	LodScale *= float(FVirtualShadowMap::VirtualMaxResolutionXY) / float(CameraViewRectSize.X);
+	LodScale *= float(FVirtualShadowMap::VirtualMaxResolutionXY) / float(CameraViewportWidth);
 	
 	// For now we adjust resolution by just biasing the page we look up in. This is wasteful in terms of page table vs.
 	// just resizing the virtual shadow maps for each clipmap, but convenient for now. This means we need to additionally bias
@@ -265,6 +281,14 @@ FViewMatrices FVirtualShadowMapClipmap::GetViewMatrices(int32 ClipmapIndex) cons
 	return FViewMatrices(Initializer);
 }
 
+int32 FVirtualShadowMapClipmap::GetHZBKey(int32 ClipmapLevelIndex) const
+{
+	int32 AbsoluteClipmapLevel = GetClipmapLevel(ClipmapLevelIndex);		// NOTE: Can be negative!
+	int32 ClipmapLevelKey = AbsoluteClipmapLevel + 128;
+	check(ClipmapLevelKey > 0 && ClipmapLevelKey < 256);
+	return GetLightSceneInfo().Id + (ClipmapLevelKey << 24);
+}
+
 FVirtualShadowMapProjectionShaderData FVirtualShadowMapClipmap::GetProjectionShaderData(int32 ClipmapIndex) const
 {
 	check(ClipmapIndex >= 0 && ClipmapIndex < LevelData.Num());
@@ -339,7 +363,7 @@ void FVirtualShadowMapClipmap::OnPrimitiveRendered(const FPrimitiveSceneInfo* Pr
 	if (PerLightCacheEntry.IsValid())
 	{
 		FPersistentPrimitiveIndex PersistentPrimitiveId = PrimitiveSceneInfo->GetPersistentIndex();
-		check(PersistentPrimitiveId.Index >= 0);
+		check(PersistentPrimitiveId.IsValid());
 		check(PersistentPrimitiveId.Index < PerLightCacheEntry->RenderedPrimitives.Num());
 
 		// Check previous-frame state to detect transition from hidden->visible

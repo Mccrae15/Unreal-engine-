@@ -2,6 +2,7 @@
 
 #include "PostProcess/PostProcessWeightedSampleSum.h"
 #include "PixelShaderUtils.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 // maximum number of sample using the shader that has the dynamic loop
 #define MAX_FILTER_SAMPLES	128
@@ -384,7 +385,7 @@ FScreenPassTexture AddGaussianBlurPass(
 	FRDGTextureDesc OutputDesc = Filter.Texture->Desc;
 	OutputDesc.Reset();
 	OutputDesc.Extent = OutputViewport.Extent;
-	OutputDesc.Flags |= bIsComputePass ? TexCreate_UAV : TexCreate_None;
+	OutputDesc.Flags |= bIsComputePass ? TexCreate_UAV : TexCreate_NoFastClear;
 	OutputDesc.ClearValue = FClearValueBinding(FLinearColor::Transparent);
 
 	const FScreenPassRenderTarget Output(GraphBuilder.CreateTexture(OutputDesc, Name), OutputViewport.Rect, ERenderTargetLoadAction::ENoAction);

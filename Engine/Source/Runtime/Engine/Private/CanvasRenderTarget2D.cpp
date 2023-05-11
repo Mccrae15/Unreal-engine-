@@ -1,14 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/CanvasRenderTarget2D.h"
-#include "Misc/App.h"
+#include "Engine/World.h"
 #include "UObject/Package.h"
-#include "EngineGlobals.h"
 #include "Engine/Engine.h"
-#include "CanvasTypes.h"
 #include "Engine/Canvas.h"
+#include "RHI.h" // IWYU pragma: keep
+#include "RHIContext.h"
 #include "UObject/UObjectThreadContext.h"
 #include "TextureResource.h"
+#include "RenderingThread.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(CanvasRenderTarget2D)
 

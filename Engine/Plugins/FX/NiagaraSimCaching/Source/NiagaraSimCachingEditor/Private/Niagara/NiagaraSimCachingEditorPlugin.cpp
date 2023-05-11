@@ -1,22 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Niagara/NiagaraSimCachingEditorPlugin.h"
-#include "Sequencer/TakeRecorderNiagaraCacheSource.h"
+#include "Features/IModularFeatures.h"
 #include "CoreMinimal.h"
-#include "Engine/Selection.h"
 #include "Modules/ModuleManager.h"
 #include "ISequencerModule.h"
 #include "Sequencer/NiagaraCacheTrackEditor.h"
-#include "ITakeRecorderModule.h"
 
 IMPLEMENT_MODULE(INiagaraSimCachingEditorPlugin, NiagaraSimCachingEditor)
+
+DEFINE_LOG_CATEGORY(LogNiagaraSimCachingEditor);
 
 #define LOCTEXT_NAMESPACE "CacheEditorPlugin"
 
 static const FName MovieSceneTrackRecorderFactoryName("MovieSceneTrackRecorderFactory");
 
 void INiagaraSimCachingEditorPlugin::StartupModule()
-{	
+{
 	ISequencerModule& SequencerModule = FModuleManager::Get().LoadModuleChecked<ISequencerModule>("Sequencer");
 	TrackEditorBindingHandle = SequencerModule.RegisterTrackEditor(FOnCreateTrackEditor::CreateStatic(&FNiagaraCacheTrackEditor::CreateTrackEditor));
 		

@@ -5,9 +5,11 @@
 #include "UObject/ConstructorHelpers.h"
 #include "UObject/LinkerLoad.h"
 #include "UObject/ObjectResource.h"
+#include "UObject/ObjectPathId.h"
 #include "UObject/Package.h"
 #include "Misc/AssetRegistryInterface.h"
 #include "Misc/CommandLine.h"
+#include "Misc/ConfigCacheIni.h"
 
 #if UE_WITH_OBJECT_HANDLE_LATE_RESOLVE
 
@@ -16,7 +18,7 @@ namespace UE::LinkerLoad
 
 /// @brief Finds LoadBehavior meta data recursively
 /// @return Eager by default in not found
-static EImportBehavior FindLoadBehavior(const UClass& Class)
+EImportBehavior FindLoadBehavior(const UClass& Class)
 {
 	//Package class can't have meta data because of UHT
 	if (&Class == UPackage::StaticClass())
@@ -24,10 +26,10 @@ static EImportBehavior FindLoadBehavior(const UClass& Class)
 		return EImportBehavior::LazyOnDemand;
 	}
 
-	static const FName Name_LoadBehavior("LoadBehavior");
+	static const FName Name_LoadBehavior(TEXT("LoadBehavior"));
 	if (const FString* LoadBehaviorMeta = Class.FindMetaData(Name_LoadBehavior))
 	{
-		if (*LoadBehaviorMeta == "LazyOnDemand")
+		if (*LoadBehaviorMeta == TEXT("LazyOnDemand"))
 		{
 			return EImportBehavior::LazyOnDemand;
 		}
@@ -79,6 +81,8 @@ EImportBehavior GetPropertyImportLoadBehavior(const FObjectImport& Import, const
 // recursively handles FAssetData redirectors
 static bool HandleRedirector(const IAssetRegistryInterface& AssetRegistry, const FAssetData& InAssetData, TSet<FSoftObjectPath>& SeenPaths, FObjectPtr& OutObjectPtr)
 {
+	using namespace UE::CoreUObject::Private;
+
 	FString RedirectedPath;
 	if (!InAssetData.GetTagValue("DestinationObject", RedirectedPath))
 	{
@@ -115,14 +119,16 @@ static bool HandleRedirector(const IAssetRegistryInterface& AssetRegistry, const
 
 	FNameBuilder NameBuilder;
 	AssetData.AssetName.AppendString(NameBuilder);
-	FObjectRef ImportRef = { AssetData.PackageName, AssetData.AssetClassPath.GetPackageName(), AssetData.AssetClassPath.GetAssetName(), FObjectPathId(NameBuilder) };
-	FObjectPtr Ptr(ImportRef);
+	FObjectRef ImportRef( AssetData.PackageName, AssetData.AssetClassPath.GetPackageName(), AssetData.AssetClassPath.GetAssetName(), FObjectPathId(NameBuilder) );
+	FPackedObjectRef PackedObjectRef = MakePackedObjectRef(ImportRef);
+	FObjectPtr Ptr({ PackedObjectRef.EncodedRef });
 	OutObjectPtr = Ptr;
 	return true;
 }
 
 static bool TryLazyLoad(const IAssetRegistryInterface& AssetRegistry, const FSoftObjectPath& ObjectPath, FObjectPtr& OutObjectPtr)
 {
+	using namespace UE::CoreUObject::Private;
 	OutObjectPtr = nullptr;
 	
 	FAssetData AssetData;
@@ -145,13 +151,15 @@ static bool TryLazyLoad(const IAssetRegistryInterface& AssetRegistry, const FSof
 	AssetData.AssetName.AppendString(NameBuilder);
 
 	FObjectRef ImportRef = { AssetData.PackageName, AssetData.AssetClassPath.GetPackageName(), AssetData.AssetClassPath.GetAssetName(), FObjectPathId(NameBuilder) };
-	FObjectPtr Ptr(ImportRef);
+	FPackedObjectRef PackedObjectRef = MakePackedObjectRef(ImportRef);
+	FObjectPtr Ptr({ PackedObjectRef.EncodedRef });
 	OutObjectPtr = Ptr;
 	return true;
 }
 
 bool TryLazyImport(const IAssetRegistryInterface& AssetRegistry, const FObjectImport& Import, const FLinkerLoad& LinkerLoad, FObjectPtr& ObjectPtr)
 {
+	using namespace UE::CoreUObject::Private;
 	EImportBehavior Behavior = GetPropertyImportLoadBehavior(Import, LinkerLoad);
 	if (Behavior != EImportBehavior::LazyOnDemand)
 	{
@@ -178,15 +186,16 @@ bool TryLazyImport(const IAssetRegistryInterface& AssetRegistry, const FObjectIm
 		}
 
 		FObjectPathId ObjectPath;
-		FObjectRef ImportRef{ Import.ObjectName, Import.ClassPackage, Import.ClassName, ObjectPath };
-		ObjectPtr = FObjectPtr(ImportRef);
+		FObjectRef ImportRef(Import.ObjectName, Import.ClassPackage, Import.ClassName, ObjectPath);
+		FPackedObjectRef PackedObjectRef = MakePackedObjectRef(ImportRef);
+		ObjectPtr = FObjectPtr({ PackedObjectRef.EncodedRef });
 		return true;
 	}
 
 	//build the a full objectpath for the AssetRegistry
 	FObjectPathId ObjectPath;
 	FName PackageName = FObjectPathId::MakeImportPathIdAndPackageName(Import, LinkerLoad, ObjectPath);
-	FObjectRef ImportRef{ PackageName, Import.ClassPackage, Import.ClassName, ObjectPath };
+	FObjectRef ImportRef(PackageName, Import.ClassPackage, Import.ClassName, ObjectPath);
 
 	TStringBuilder<FName::StringBufferSize> PathName;
 	ImportRef.AppendPathName(PathName);
@@ -214,6 +223,30 @@ bool TryLazyLoad(const UClass& Class, const FSoftObjectPath& ObjectPath, TObject
 	}
 	FObjectPtr& ObjectPtr = reinterpret_cast<FObjectPtr&>(OutObjectPtr);
 	return TryLazyLoad(*AssetRegistry, ObjectPath, ObjectPtr);
+}
+
+bool IsImportLazyLoadEnabled()
+{
+#if WITH_LOW_LEVEL_TESTS //not ideal but need a way to force lazyload on for tests
+	return true;
+#else
+	auto ImportLazyLoadEnabled = []()
+	{
+		if (FParse::Param(FCommandLine::Get(), TEXT("LazyLoadImports")))
+		{
+			return true;
+		}
+		else if (GConfig)
+		{
+			bool bLazyLoadImportsConfig = false;
+			GConfig->GetBool(TEXT("Core.System.Experimental"), TEXT("LazyLoadImports"), bLazyLoadImportsConfig, GEngineIni);
+			return bLazyLoadImportsConfig;
+		}
+		return false;
+	};
+	static const bool bImportLazyLoadEnabled = ImportLazyLoadEnabled();
+	return bImportLazyLoadEnabled;
+#endif
 }
 
 }

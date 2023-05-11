@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MovieSceneCapture.h"
+#include "AssetRegistry/AssetData.h"
 #include "Dom/JsonValue.h"
 #include "Dom/JsonObject.h"
 #include "HAL/PlatformFileManager.h"
@@ -25,6 +26,7 @@
 #include "UObject/UObjectIterator.h"
 #include "Protocols/AudioCaptureProtocol.h"
 #include "Misc/DateTime.h"
+#include "RenderUtils.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneCapture)
 

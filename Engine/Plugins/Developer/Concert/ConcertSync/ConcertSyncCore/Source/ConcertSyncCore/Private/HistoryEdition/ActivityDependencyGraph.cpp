@@ -3,6 +3,7 @@
 #include "HistoryEdition/ActivityDependencyGraph.h"
 
 #include "ConcertLogGlobal.h"
+#include "CoreGlobals.h"
 #include "HistoryEdition/ActivityDependencyEdge.h"
 #include "HistoryEdition/ActivityNode.h"
 

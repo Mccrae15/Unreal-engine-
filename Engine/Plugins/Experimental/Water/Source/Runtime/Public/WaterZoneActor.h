@@ -2,11 +2,13 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Components/BoxComponent.h"
 #include "GameFramework/Actor.h"
-#include "Engine/TextureRenderTarget2D.h"
 #include "WaterZoneActor.generated.h"
+
+class UBillboardComponent;
+class UTexture2D;
+class UTextureRenderTarget2D;
+namespace EEndPlayReason { enum Type : int; }
 
 class UWaterMeshComponent;
 class UBoxComponent;
@@ -43,14 +45,21 @@ public:
 	FVector2D GetZoneExtent() const { return ZoneExtent; }
 	void SetZoneExtent(FVector2D NewExtents);
 
+	FBox2D GetZoneBounds2D() const;
+	FBox GetZoneBounds() const;
+
 	void SetRenderTargetResolution(FIntPoint NewResolution);
 	FIntPoint GetRenderTargetResolution() const { return RenderTargetResolution; }
 
 	uint32 GetVelocityBlurRadius() const { return VelocityBlurRadius; }
 
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void PostLoadSubobjects(FObjectInstancingGraph* OuterInstanceGraph) override;
 	virtual void PostLoad() override;
+#if WITH_EDITORONLY_DATA
+	static void DeclareConstructClasses(TArray<FTopLevelAssetPath>& OutConstructClasses, const UClass* SpecificSubclass);
+#endif
 	virtual void PostRegisterAllComponents() override;
 
 	FVector2f GetWaterHeightExtents() const { return WaterHeightExtents; }
@@ -71,6 +80,11 @@ public:
 
 	bool IsNonTessellatedLODMeshEnabled() const { return bEnableNonTessellatedLODMesh; }
 
+#if WITH_EDITOR
+	virtual TUniquePtr<class FWorldPartitionActorDesc> CreateClassActorDesc() const override;
+	virtual FBox GetStreamingBounds() const override;
+#endif //WITH_EDITOR
+
 private:
 
 	/**
@@ -86,6 +100,19 @@ private:
 	bool UpdateOverlappingWaterBodies();
 
 	void OnExtentChanged();
+
+	/** Delegates called when levels are added or removed from world. */
+	void OnLevelAddedToWorld(ULevel* InLevel, UWorld* InWorld);
+	void OnLevelRemovedFromWorld(ULevel* InLevel, UWorld* InWorld);
+	void OnLevelChanged(ULevel* InLevel, UWorld* InWorld);
+
+	/** Returns true if the provided actor can affect waterzone resources.
+	 *
+	 * @param	InWaterZoneBounds	The bounds of this waterzone.
+	 * @param	InActor		The Actor to check
+	 * @return true if the provided actor can affect waterzone resources.
+	 */
+	bool IsAffectingWaterZone(const FBox& InWaterZoneBounds, const AActor* InActor) const;
 
 #if WITH_EDITOR
 	void OnActorSelectionChanged(const TArray<UObject*>& NewSelection, bool bForceRefresh);
@@ -169,3 +196,12 @@ private:
 	TObjectPtr<UTexture2D> WaterVelocityTexture_DEPRECATED;
 #endif // WITH_EDITORONLY_DATA
 };
+DEFINE_ACTORDESC_TYPE(AWaterZone, FWaterZoneActorDesc);
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Components/BoxComponent.h"
+#include "CoreMinimal.h"
+#include "Engine/TextureRenderTarget2D.h"
+#include "MaterialShared.h"
+#include "WorldPartition/WorldPartitionActorDesc.h"
+#endif

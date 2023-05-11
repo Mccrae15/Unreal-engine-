@@ -6,7 +6,8 @@
 #include "ObjectFilter/ObjectMixerEditorObjectFilter.h"
 #include "Widgets/Docking/SDockTab.h"
 
-class FObjectMixerEditorMainPanel;
+class FObjectMixerEditorList;
+class FObjectMixerEditorList;
 
 class OBJECTMIXEREDITOR_API FObjectMixerEditorModule : public IModuleInterface
 {
@@ -17,6 +18,8 @@ public:
 	virtual void ShutdownModule() override;
 	//~ End IModuleInterface
 
+	virtual UWorld* GetWorld();
+
 	virtual void Initialize();
 	virtual void Teardown();
 
@@ -24,9 +27,10 @@ public:
 
 	static void OpenProjectSettings();
 
-	virtual FName GetModuleName();
+	virtual FName GetModuleName() const;
 	
-	virtual TSharedPtr<SWidget> MakeObjectMixerDialog() const;
+	virtual TSharedPtr<SWidget> MakeObjectMixerDialog(
+		TSubclassOf<UObjectMixerObjectFilter> InDefaultFilterClass = nullptr);
 
 	/**
 	 * Regenerate the list items and refresh the list. Call when adding or removing variables.
@@ -38,9 +42,10 @@ public:
 	 * Useful for when the list state has gone stale but the variable count has not changed.
 	 */
 	virtual void RefreshList() const;
-	
-	void RequestSyncEditorSelectionToListSelection();
 
+	/** Called when the Rename command is executed from the UI or hotkey. */
+	virtual void OnRenameCommand();
+	
 	void RegisterMenuGroup();
 	void UnregisterMenuGroup();
 	virtual void SetupMenuItemVariables();
@@ -61,16 +66,23 @@ public:
 
 	TSharedPtr<FWorkspaceItem> GetWorkspaceGroup();
 
+	/**
+	 * This is the filter class used to initialize the ListModel.
+	 * This filter class cannot be turned off by the end user.
+	 */
+	const TSubclassOf<UObjectMixerObjectFilter>& GetDefaultFilterClass() const;
+
 	const static FName BaseObjectMixerModuleName;
 
 protected:
 
-	virtual TSharedRef<SDockTab> SpawnMainPanelTab();
-
 	virtual void BindDelegates();
+
+	/** If a property is changed that has a name found in this set, the panel will be refreshed. */
+	TSet<FName> GetPropertiesThatRequireRefresh() const;
 	
 	/** Lives for as long as the module is loaded. */
-	TSharedPtr<FObjectMixerEditorMainPanel> MainPanel;
+	TSharedPtr<FObjectMixerEditorList> ListModel;
 
 	/** The text that appears on the spawned nomad tab */
 	FText TabLabel;
@@ -81,7 +93,10 @@ protected:
 	FText MenuItemTooltip;
 	ETabSpawnerMenuType::Type TabSpawnerType = ETabSpawnerMenuType::Enabled;
 
-	// If set, this is the filter class used to initialize the MainPanel
+	/**
+	 * If set, this is the filter class used to initialize the ListModel.
+	 * This filter class cannot be turned off by the end user.
+	 */
 	TSubclassOf<UObjectMixerObjectFilter> DefaultFilterClass;
 	
 	TSet<FDelegateHandle> DelegateHandles;

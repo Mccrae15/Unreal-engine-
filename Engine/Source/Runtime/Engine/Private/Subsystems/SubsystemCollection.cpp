@@ -48,6 +48,14 @@ FSubsystemCollectionBase::FSubsystemCollectionBase(UClass* InBaseType)
 
 USubsystem* FSubsystemCollectionBase::GetSubsystemInternal(UClass* SubsystemClass) const
 {
+#if WITH_EDITOR && UE_BUILD_SHIPPING
+	TStringBuilder<200> DebugSubsystemClassName;
+	if (SubsystemClass && IsEngineExitRequested())
+	{
+		SubsystemClass->GetFName().AppendString(DebugSubsystemClassName);
+	}
+#endif
+
 	USubsystem* SystemPtr = SubsystemMap.FindRef(SubsystemClass);
 
 	if (SystemPtr)
@@ -219,7 +227,7 @@ USubsystem* FSubsystemCollectionBase::InitializeDependency(TSubclassOf<USubsyste
 
 void FSubsystemCollectionBase::AddReferencedObjects(UObject* Referencer, FReferenceCollector& Collector)
 {
-	Collector.AddReferencedObjects(SubsystemMap, Referencer);
+	Collector.AddStableReferenceMap(SubsystemMap);
 }
 
 USubsystem* FSubsystemCollectionBase::AddAndInitializeSubsystem(UClass* SubsystemClass)

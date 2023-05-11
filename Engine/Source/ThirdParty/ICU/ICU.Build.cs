@@ -100,8 +100,14 @@ public class ICU : ModuleRules
 		// Libs
 		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
-			string VSVersionFolderName = "VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName();
-			PublicAdditionalLibraries.Add(Path.Combine(ICULibPath, VSVersionFolderName, UseDebugLibs ? "Debug" : "Release", "icu.lib"));
+			string LibraryPath = Path.Combine(ICULibPath, "VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName());
+			
+			if (!Target.Architecture.bIsX64)
+			{
+				LibraryPath = Path.Combine(LibraryPath, Target.Architecture.WindowsName);
+			}
+
+			PublicAdditionalLibraries.Add(Path.Combine(LibraryPath, UseDebugLibs ? "Debug" : "Release", "icu.lib"));
 		}
 		else if (Target.Platform == UnrealTargetPlatform.Mac)
 		{
@@ -123,7 +129,7 @@ public class ICU : ModuleRules
 		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 		{
 			string ICULibName = UseDebugLibs ? "libicud_fPIC.a" : "libicu_fPIC.a";
-			PublicAdditionalLibraries.Add(Path.Combine(ICULibPath, Target.Architecture, ICULibName));
+			PublicAdditionalLibraries.Add(Path.Combine(ICULibPath, Target.Architecture.LinuxName, ICULibName));
 		}
 
 		// DLL Definitions

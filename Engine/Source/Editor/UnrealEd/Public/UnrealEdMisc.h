@@ -33,17 +33,6 @@ class UNREALED_API FUnrealEdMisc
 {
 public:
 
-	/** The various autosave states that exist */
-	struct EAutosaveState
-	{
-		enum Type
-		{
-			Inactive,
-			Saving,
-			Cancelled
-		};
-	};
-
 	/** Singleton accessor */
 	static FUnrealEdMisc& Get();
 
@@ -61,26 +50,6 @@ public:
 
 	/** Performs any required cleanup in the case of a fatal error. */
 	virtual void ShutdownAfterError();
-
-	/**
-	 *	Fetches the current state of the autosave in progress
-	 *
-	 *	@return	enum		the current state of the autosave
-	 */
-	EAutosaveState::Type GetAutosaveState() const
-	{
-		return AutosaveState;
-	}
-
-	/**
-	 * Sets the new state for the autosave
-	 *
-	 * @param InState		New state for the autosave
-	 */
-	void SetAutosaveState( const EAutosaveState::Type InState )
-	{
-		AutosaveState = InState;
-	}
 
 	/**
 	 *	Whether or not the map build in progressed was cancelled by the user. 
@@ -126,6 +95,7 @@ public:
 	void ClearPendingProjectName( )
 	{
 		PendingProjectName.Empty();
+		PendingCommandLine.Reset();
 	}
 
 	/**
@@ -190,10 +160,10 @@ public:
 	}
 
 	/** Opens the specified project file or game. Restarts the editor */
-	void SwitchProject(const FString& GameOrProjectFileName, bool bWarn = true);
+	void SwitchProject(const FString& GameOrProjectFileName, bool bWarn = true, const TOptional<FString>& NewCommandLine = TOptional<FString>());
 
 	/** Restarts the editor, reopening the current project, if any */
-	void RestartEditor(bool bWarn = true);
+	void RestartEditor(bool bWarn = true, const TOptional<FString>& NewCommandLine = TOptional<FString>());
 
 	/** Ticks the performance analytics used by the analytics heartbeat */
 	void TickPerformanceAnalytics();
@@ -315,9 +285,6 @@ private:
 
 	void PreSaveWorld(class UWorld* World, FObjectPreSaveContext ObjectSaveContext);
 
-	/** The current state of the autosave */
-	EAutosaveState::Type AutosaveState;
-
 	/** Stores whether or not the current map build was cancelled. */
 	bool bCancelBuild;
 
@@ -326,6 +293,9 @@ private:
 
 	/** The name of a pending project.  When the editor shuts down it will switch to this project if not empty */ 
 	FString PendingProjectName;
+
+	/** Optional alt command-line to use when the editor shuts down and switches projects (if unset, the restart will use the same command-line as the current process). */
+	TOptional<FString> PendingCommandLine;
 
 	/** Map of config->backup filenames to restore on shutdown of the editor */
 	TMap<FString, FString> RestoreConfigFiles;

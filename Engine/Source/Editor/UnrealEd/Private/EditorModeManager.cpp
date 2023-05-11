@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "EditorModeManager.h"
+#include "Components/StaticMeshComponent.h"
 #include "Engine/Selection.h"
 #include "Misc/MessageDialog.h"
 #include "Editor/EditorPerProjectUserSettings.h"
@@ -11,7 +12,11 @@
 #include "EditorModes.h"
 #include "EditorSupportDelegates.h"
 #include "EdMode.h"
+#include "Rendering/PositionVertexBuffer.h"
+#include "SceneView.h"
+#include "StaticMeshResources.h"
 #include "Toolkits/IToolkitHost.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Widgets/Input/SButton.h"
@@ -36,13 +41,16 @@
 #include "CanvasTypes.h"
 #include "CanvasItem.h"
 #include "Engine/StaticMeshActor.h"
+#include "Engine/Texture2D.h"
 #include "EngineUtils.h"
 #include "Tools/AssetEditorContextObject.h"
 #include "ContextObjectStore.h"
 #include "UObject/GCObjectScopeGuard.h"
+#include "Settings/LevelEditorViewportSettings.h"
 #include "Subsystems/EditorElementSubsystem.h"
 
 #include "Elements/Interfaces/TypedElementWorldInterface.h"
+#include "TextureResource.h"
 
 /*------------------------------------------------------------------------------
 	FEditorModeTools.

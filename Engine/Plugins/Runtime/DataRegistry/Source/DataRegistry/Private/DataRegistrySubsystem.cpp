@@ -2,21 +2,22 @@
 
 #include "DataRegistrySubsystem.h"
 #include "UObject/UObjectIterator.h"
+#include "Engine/AssetManagerTypes.h"
 #include "GameplayTagsManager.h"
 #include "Engine/AssetManager.h"
 #include "DataRegistrySettings.h"
-#include "Stats/StatsMisc.h"
-#include "AssetRegistry/AssetData.h"
-#include "AssetRegistry/ARFilter.h"
-#include "UnrealEngine.h"
-#include "Misc/WildcardString.h"
 #include "Curves/RealCurve.h"
+#include "Engine/StreamableManager.h"
 #include "Misc/CoreDelegates.h"
+#include "UObject/EnumProperty.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(DataRegistrySubsystem)
 
 #if WITH_EDITOR
 #include "Editor.h"
+#else
+#include "AssetRegistry/AssetData.h"
+#include "Engine/Engine.h"
 #endif
 
 UDataRegistrySubsystem* UDataRegistrySubsystem::Get()

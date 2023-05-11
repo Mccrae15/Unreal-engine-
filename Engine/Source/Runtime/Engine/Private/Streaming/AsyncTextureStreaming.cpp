@@ -5,9 +5,9 @@ AsyncTextureStreaming.cpp: Definitions of classes used for texture streaming asy
 =============================================================================*/
 
 #include "Streaming/AsyncTextureStreaming.h"
-#include "Misc/App.h"
+#include "RHI.h"
 #include "Streaming/StreamingManagerTexture.h"
-#include "Engine/World.h"
+#include "Engine/Level.h"
 
 void FAsyncRenderAssetStreamingData::Init(
 	TArray<FStreamingViewInfo> InViewInfos,
@@ -220,13 +220,13 @@ void FAsyncRenderAssetStreamingData::UpdatePerfectWantedMips_Async(FStreamingRen
 			&& MaxSize != FLT_MAX
 			&& MaxSize_VisibleOnly != FLT_MAX)
 		{
-			const float CumBoostFactor = StreamingRenderAsset.BoostFactor * StreamingRenderAsset.DynamicBoostFactor;
+			const float FinalBoostFactor = StreamingRenderAsset.BoostFactor * StreamingRenderAsset.DynamicBoostFactor;
 
 			// If there is not enough resolution in the texture to fix the required quality, save this information to prevent degrading this texture before other ones.
-			bLooksLowRes = FMath::Max3(MaxSize_VisibleOnly, MaxSize, MaxAllowedSize) / MaxAllowedSize >= CumBoostFactor * 2.f;
+			bLooksLowRes = FMath::Max3(MaxSize_VisibleOnly, MaxSize, MaxAllowedSize) / MaxAllowedSize >= FinalBoostFactor * 2.f;
 
-			MaxSize *=  CumBoostFactor;
-			MaxSize_VisibleOnly *= CumBoostFactor;
+			MaxSize *= FinalBoostFactor;
+			MaxSize_VisibleOnly *= FinalBoostFactor;
 		}
 
 		// Last part checks that it has been used since the last reference was removed.

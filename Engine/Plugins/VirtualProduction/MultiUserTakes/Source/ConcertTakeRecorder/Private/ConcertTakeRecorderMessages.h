@@ -2,8 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Misc/Guid.h"
 #include "Recorder/TakeRecorderParameters.h"
 #include "IdentifierTable/ConcertIdentifierTableData.h"
 
@@ -101,6 +99,9 @@ struct FConcertTakeInitializedEvent
 
 	UPROPERTY()
 	TArray<uint8> TakeData;
+
+	UPROPERTY()
+	FString TakeMetaDataPath;
 
 	UPROPERTY()
 	FConcertLocalIdentifierState IdentifierState;

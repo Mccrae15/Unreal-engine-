@@ -2,6 +2,8 @@
 
 #pragma once
 
+// HEADER_UNIT_SKIP - Not included directly
+
 #include "Templates/SharedPointer.h"
 
 class FControlFlowContainerBase : public TSharedFromThis<FControlFlowContainerBase>
@@ -59,7 +61,7 @@ public:
 	FControlFlowContainerInternal() = delete;
 	FControlFlowContainerInternal(OwningObjectT* InOwner, TSharedRef<FControlFlow> InFlow, const FString& FlowId)
 		: FControlFlowContainerBase(InFlow, FlowId)
-		, OwningObject(InOwner->AsShared())
+		, OwningObject(StaticCastSharedRef<OwningObjectT>(InOwner->AsShared()))
 	{}
 protected:
 	virtual const void* const GetOwningObject() const override { return OwningObject.IsValid() ? OwningObject.Pin().Get() : nullptr; }
@@ -67,7 +69,7 @@ private:
 	TWeakPtr<const OwningObjectT> OwningObject;
 };
 
-#define FControlFlowContainerInternal_Decl FControlFlowContainerInternal<ExternalObjectT, TIsDerivedFrom<ExternalObjectT, UObject>::IsDerived, TIsDerivedFrom<ExternalObjectT, TSharedFromThis<ExternalObjectT>>::IsDerived>
+#define FControlFlowContainerInternal_Decl FControlFlowContainerInternal<ExternalObjectT, TIsDerivedFrom<ExternalObjectT, UObject>::IsDerived, IsDerivedFromSharedFromThis<ExternalObjectT>()>
 
 template<typename ExternalObjectT>
 class TControlFlowContainer : public FControlFlowContainerInternal_Decl

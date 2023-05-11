@@ -2,8 +2,9 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "Delegates/Delegate.h"
 
+class FUniqueNetId;
 struct FOnlineError;
 
 class FCodeLockInfo
@@ -82,3 +83,7 @@ public:
 	 */
 	virtual void EvaluateCode(const FUniqueNetId& UserId, const FString& CodeId, const FOnProductCodeEvaluateComplete& Delegate) = 0;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

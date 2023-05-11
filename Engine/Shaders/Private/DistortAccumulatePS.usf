@@ -49,7 +49,9 @@ void Main(
 	out float4 OutColor		: SV_Target0
 #if STRATA_ENABLED
 	,
-	out float4 OutVariance	: SV_Target1
+	out float2 OutVarianceCoverage : SV_Target1
+	,
+	out float  OutClosestDepthMeter : SV_Target2
 #endif
 	)
 {
@@ -81,8 +83,7 @@ void Main(
 	float2 NDC = (MaterialParameters.ScreenPosition.xy / MaterialParameters.ScreenPosition.w);
 	float2 ScreenUV = NDC * ResolvedView.ScreenPositionScaleBias.xy + ResolvedView.ScreenPositionScaleBias.wz;
 
-	// X = IOR, Y = Refraction Bias
-	float2 Refraction = GetMaterialRefraction(PixelMaterialInputs);
+	FMaterialRefractionData RefractionData = GetMaterialRefraction(PixelMaterialInputs);
 
 
 #if STRATA_ENABLED
@@ -105,7 +106,7 @@ void Main(
 		const float3 V = MaterialParameters.CameraVector;
 
 		// Update tree (coverage/transmittance/luminace weights)
-		const FStrataIntegrationSettings Settings = InitStrataIntegrationSettings(false /*bForceFullyRough*/, Strata.bRoughDiffuse /*bRoughDiffuseEnabled*/, Strata.PeelLayersAboveDepth);
+		const FStrataIntegrationSettings Settings = InitStrataIntegrationSettings(false /*bForceFullyRough*/, Strata.bRoughDiffuse /*bRoughDiffuseEnabled*/, Strata.PeelLayersAboveDepth, Strata.bRoughnessTracking);
 		StrataUpdateTree(NullStrataAddressing, StrataPixelHeader, StrataTree, V, Settings);
 
 		RefractionWorldNormal = StrataTree.Operators[StrataData.OperatorIndex].TopDownRefractionWorldNormal;
@@ -115,27 +116,55 @@ void Main(
 		Sigma = RefractionLobeStat.Sigma;
 	}
 
-	// Write out variance (as this is more linear to accumulate than roughness)
-	OutVariance = float4(Sigma, 0.0f, 0.0f, 0.0f);
+	// We accumulate F0 only from the top layer to evaluate the material F0 used to evaluate distortion
+	float3 TopF0 = 0.0f;
+	STRATA_UNROLL_N(STRATA_CLAMPED_BSDF_COUNT)
+	for (int BSDFIdx = 0; BSDFIdx < StrataTree.BSDFCount; ++BSDFIdx)
+	{
+	#define BSDF StrataTree.BSDFs[BSDFIdx]
+		const bool bIsVisible = StrataIsBSDFVisible(BSDF);
+		if (bIsVisible)
+		{
+			TopF0 += BSDF.TopLayerDataWeight * StrataGetBSDFSpecularF0(BSDF);
+		}
+	#undef BSDF
+	}
+	TopF0 = SanitizeF0(TopF0);	// Sanitize, in case a Add node has been used
+
+	const FStrataOperator RootOperator	= StrataTree.Operators[StrataData.OperatorIndex];
+	const float RefractionCoverage		= RootOperator.Coverage;														// Coverage of the material
+	const float RefractionDepthMeter	= length(MaterialParameters.WorldPosition_CamRelative) * CENTIMETER_TO_METER;	// Distance for camera in meters
+	const float RefractionLobeVariance	= Sigma;																		// The lobe variance that can be added to in the en recover a single lobe.
+
+	// Write out variance (as this is more linear to accumulate than roughness).
+	OutVarianceCoverage = float2(RefractionLobeVariance, RefractionCoverage);
+	OutClosestDepthMeter = RefractionDepthMeter;
 
 	// Only allow clipping if roughness is close to 0.
-	const bool TryToClip = OutVariance.x < 0.01f;
+	const bool TryToClip = false;  //OutVarianceCoverage.x < 0.01f; // STRATA_TODO || RefractionCoverage <= 0.0f;	// Have an option to account for coverage or not?, ignored by default
 
 	// Compute UV distortion
 	float2 BufferUVDistortion = ComputeBufferUVDistortion(
 		MaterialParameters, PixelMaterialInputs, ResolvedView,
-		RefractionWorldNormal, DistortionParams, ScreenUV, Refraction, TryToClip, EyeIndex);
+		RefractionWorldNormal, DielectricF0RGBToIor(TopF0),
+		DistortionParams, ScreenUV, RefractionData, TryToClip, EyeIndex);
 
 	// Sample depth at distortion offset
 	float2 DistortBufferUV = ScreenUV + BufferUVDistortion;
 
 #else // STRATA_ENABLED
 
+	float3 BaseColor = GetMaterialBaseColor(PixelMaterialInputs);
+	float  Metallic = GetMaterialMetallic(PixelMaterialInputs);
+	float  Specular = GetMaterialSpecular(PixelMaterialInputs);
+	float3 F0 = ComputeF0(Specular, BaseColor, Metallic);
+	float MaterialIOR = DielectricF0RGBToIor(F0);
 
 	// Compute UV distortion
 	float2 BufferUVDistortion = ComputeBufferUVDistortion(
 		MaterialParameters, PixelMaterialInputs, ResolvedView,
-		MaterialParameters.WorldNormal, DistortionParams, ScreenUV, Refraction, true, EyeIndex);
+		MaterialParameters.WorldNormal, MaterialIOR,
+		DistortionParams, ScreenUV, RefractionData, true, EyeIndex);
 
 	// Sample depth at distortion offset
 	float2 DistortBufferUV = ScreenUV + BufferUVDistortion;
@@ -143,16 +172,10 @@ void Main(
 
 #endif // STRATA_ENABLED
 
-
-#if SHADING_PATH_MOBILE
-	// sample depth from SceneColor.A on Mobile
-	float DistortSceneDepth = ConvertFromDeviceZ(LookupDeviceZ(DistortBufferUV)); 
-#else
 	float DistortSceneDepth = CalcSceneDepth(DistortBufferUV);
-#endif
 
 	// Post process UV distortion according to depth
-	PostProcessUVDistortion(MaterialParameters, PixelMaterialInputs, DistortSceneDepth, BufferUVDistortion, Refraction);
+	PostProcessUVDistortion(MaterialParameters, PixelMaterialInputs, DistortSceneDepth, BufferUVDistortion, RefractionData);
 
 	// store positive and negative offsets separately
 	float2 PosOffset = max(BufferUVDistortion,0);

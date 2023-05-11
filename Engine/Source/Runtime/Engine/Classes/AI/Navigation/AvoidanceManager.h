@@ -45,7 +45,7 @@ struct FNavAvoidanceData
 	float Weight;
 
 	/** Weight is treated as a hard 1.0 while this is active. This is set by code. */
-	float OverrideWeightTime;
+	double OverrideWeightTime;
 
 	/** Group data */
 	int32 GroupMask;
@@ -173,16 +173,15 @@ class ENGINE_API UAvoidanceManager : public UObject, public FSelfRegisteringExec
 	void HandleToggleAvoidance( const TCHAR* Cmd, FOutputDevice& Ar );
 #endif
 
-	//~ Begin FExec Interface
-	virtual bool Exec(UWorld* Inworld, const TCHAR* Cmd, FOutputDevice& Ar) override;
-	//~ End FExec Interface
-
 	void SetNavEdgeProvider(INavEdgeProviderInterface* InEdgeProvider);
 
 	/** Used to manually mark data associated with given ID as 'dead' (and reusable) */
 	void RemoveAvoidanceObject(const int32 AvoidanceUID);
 
 protected:
+	//~ Begin FExec Interface
+	virtual bool Exec_Dev(UWorld* Inworld,const TCHAR* Cmd,FOutputDevice& Ar) override;
+	//~ End FExec Interface
 
 	/** Handle for efficient management of RemoveOutdatedObjects timer */
 	FTimerHandle TimerHandle_RemoveOutdatedObjects;

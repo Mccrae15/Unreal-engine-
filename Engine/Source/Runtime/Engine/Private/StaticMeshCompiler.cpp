@@ -5,30 +5,18 @@
 #if WITH_EDITOR
 
 #include "Algo/NoneOf.h"
-#include "AssetCompilingManager.h"
+#include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
+#include "Editor.h"
 #include "ObjectCacheContext.h"
+#include "EngineLogs.h"
 #include "Settings/EditorExperimentalSettings.h"
+#include "GameFramework/Pawn.h"
 #include "Misc/QueuedThreadPoolWrapper.h"
-#include "Misc/Optional.h"
-#include "EngineModule.h"
-#include "Misc/ScopedSlowTask.h"
-#include "UObject/StrongObjectPtr.h"
-#include "Misc/IQueuedWork.h"
 #include "ProfilingDebugging/CountersTrace.h"
-#include "Components/HierarchicalInstancedStaticMeshComponent.h"
-#include "LevelEditor.h"
-#include "SLevelViewport.h"
-#include "Components/PrimitiveComponent.h"
 #include "TextureCompiler.h"
 #include "ShaderCompiler.h"
 #include "ContentStreaming.h"
-#include "DrawDebugHelpers.h"
-#include "GameFramework/PlayerController.h"
-#include "GameFramework/Character.h"
-#include "Components/CapsuleComponent.h"
-#include "Rendering/StaticLightingSystemInterface.h"
-#include "AI/NavigationSystemBase.h"
 #include "EngineUtils.h"
 
 #define LOCTEXT_NAMESPACE "StaticMeshCompiler"
@@ -588,6 +576,32 @@ void FStaticMeshCompilingManager::FinishAllCompilation()
 	}
 }
 
+void FStaticMeshCompilingManager::FinishCompilationForObjects(TArrayView<UObject* const> InObjects)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(FStaticMeshCompilingManager::FinishCompilationForObjects);
+
+	TSet<UStaticMesh*> StaticMeshes;
+	for (UObject* Object : InObjects)
+	{
+		if (UStaticMesh* StaticMesh = Cast<UStaticMesh>(Object))
+		{
+			StaticMeshes.Add(StaticMesh);
+		}
+		else if (UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(Object))
+		{
+			if (StaticMeshComponent->GetStaticMesh())
+			{
+				StaticMeshes.Add(StaticMeshComponent->GetStaticMesh());
+			}
+		}
+	}
+
+	if (StaticMeshes.Num())
+	{
+		FinishCompilation(StaticMeshes.Array());
+	}
+}
+
 void FStaticMeshCompilingManager::Reschedule()
 {
 	if (RegisteredStaticMesh.Num() > 1)
@@ -673,6 +687,7 @@ void FStaticMeshCompilingManager::Reschedule()
 void FStaticMeshCompilingManager::ProcessStaticMeshes(bool bLimitExecutionTime, int32 MinBatchSize)
 {
 	using namespace StaticMeshCompilingManagerImpl;
+	LLM_SCOPE(ELLMTag::StaticMesh);
 	TRACE_CPUPROFILER_EVENT_SCOPE(FStaticMeshCompilingManager::ProcessStaticMeshes);
 	const int32 NumRemainingMeshes = GetNumRemainingMeshes();
 	// Spread out the load over multiple frames but if too many meshes, convergence is more important than frame time

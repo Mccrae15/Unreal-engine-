@@ -11,6 +11,8 @@
 #include "Modules/ModuleManager.h"
 #include "OpenColorIOColorTransform.h"
 #include "OpenColorIOModule.h"
+#include "OpenColorIONativeConfiguration.h"
+#include "OpenColorIOSettings.h"
 #include "TextureResource.h"
 #include "Widgets/Notifications/SNotificationList.h"
 
@@ -48,7 +50,9 @@ namespace OCIODirectoryWatcher
 
 UOpenColorIOConfiguration::UOpenColorIOConfiguration(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
+	, NativeConfig(MakePimpl<FOpenColorIONativeConfiguration>())
 {
+	
 }
 
 void UOpenColorIOConfiguration::BeginDestroy()
@@ -57,30 +61,24 @@ void UOpenColorIOConfiguration::BeginDestroy()
 	Super::BeginDestroy();
 }
 
-bool UOpenColorIOConfiguration::GetRenderResources(ERHIFeatureLevel::Type InFeatureLevel, const FOpenColorIOColorConversionSettings& InSettings, FOpenColorIOTransformResource*& OutShaderResource, TSortedMap<int32, FTextureResource*>& OutTextureResources)
+bool UOpenColorIOConfiguration::IsTransformReady(const FOpenColorIOColorConversionSettings& InSettings)
 {
-	TObjectPtr<UOpenColorIOColorTransform>* TransformPtr = ColorTransforms.FindByPredicate([&](const UOpenColorIOColorTransform* InTransform)
+	if (const TObjectPtr<UOpenColorIOColorTransform>* TransformPtr = FindTransform(InSettings))
 	{
-		EOpenColorIOViewTransformDirection DisplayViewDirection;
-
-		if (InTransform->GetDisplayViewDirection(DisplayViewDirection))
-		{
-			return InTransform->SourceColorSpace == InSettings.SourceColorSpace.ColorSpaceName && InTransform->Display == InSettings.DestinationDisplayView.Display && InTransform->View == InSettings.DestinationDisplayView.View && InSettings.DisplayViewDirection == DisplayViewDirection;
-		}
-		else
-		{
-			return InTransform->SourceColorSpace == InSettings.SourceColorSpace.ColorSpaceName && InTransform->DestinationColorSpace == InSettings.DestinationColorSpace.ColorSpaceName;
-		}
-	});
-
-	if (TransformPtr == nullptr)
-	{
-		UE_LOG(LogOpenColorIO, Warning, TEXT("Color transform [%s] was not found."), *InSettings.ToString());
-		return false;
+		return (*TransformPtr)->AreRenderResourcesReady();
 	}
 
-	UOpenColorIOColorTransform* Transform = *TransformPtr;
-	return Transform->GetRenderResources(InFeatureLevel, OutShaderResource, OutTextureResources);
+	return false;
+}
+
+bool UOpenColorIOConfiguration::GetRenderResources(ERHIFeatureLevel::Type InFeatureLevel, const FOpenColorIOColorConversionSettings& InSettings, FOpenColorIOTransformResource*& OutShaderResource, TSortedMap<int32, FTextureResource*>& OutTextureResources)
+{
+	if (const TObjectPtr<UOpenColorIOColorTransform>* TransformPtr = FindTransform(InSettings))
+	{
+		return (*TransformPtr)->GetRenderResources(InFeatureLevel, OutShaderResource, OutTextureResources);
+	}
+
+	return false;
 }
 
 bool UOpenColorIOConfiguration::GetShaderAndLUTResources(ERHIFeatureLevel::Type InFeatureLevel, const FString& InSourceColorSpace, const FString& InDestinationColorSpace, FOpenColorIOTransformResource*& OutShaderResource, FTextureResource*& OutLUT3dResource)
@@ -149,7 +147,7 @@ bool UOpenColorIOConfiguration::Validate() const
 	if (!ConfigurationFile.FilePath.IsEmpty())
 	{
 		//When loading the configuration file, if any errors are detected, it will throw an exception. Thus, our pointer won't be valid.
-		return LoadedConfig != nullptr;
+		return NativeConfig->Get() != nullptr;
 	}
 
 	return false;
@@ -170,8 +168,9 @@ void UOpenColorIOConfiguration::ReloadExistingColorspaces()
 	DesiredColorSpaces.Reset();
 	DesiredDisplayViews.Reset();
 	CleanupTransforms();
-	LoadConfigurationFile();
+	LoadConfiguration();
 
+	OCIO_NAMESPACE::ConstConfigRcPtr LoadedConfig = NativeConfig->Get();
 	if (!LoadedConfig)
 	{
 		return;
@@ -209,6 +208,8 @@ void UOpenColorIOConfiguration::ReloadExistingColorspaces()
 		DesiredDisplayViews.Add(ExistingDisplayView);
 	}
 
+	const UOpenColorIOSettings* Settings = GetDefault<UOpenColorIOSettings>();
+
 	// Genereate new shaders.
 	for (int32 indexTop = 0; indexTop < DesiredColorSpaces.Num(); ++indexTop)
 	{
@@ -224,8 +225,12 @@ void UOpenColorIOConfiguration::ReloadExistingColorspaces()
 
 		for (const FOpenColorIODisplayView& DisplayView : DesiredDisplayViews)
 		{
-			// note: we only support display-view transforms in the forward direction currently.
 			CreateColorTransform(TopColorSpace.ColorSpaceName, DisplayView.Display, DisplayView.View, EOpenColorIOViewTransformDirection::Forward);
+
+			if (Settings->bSupportInverseViewTransforms)
+			{
+				CreateColorTransform(TopColorSpace.ColorSpaceName, DisplayView.Display, DisplayView.View, EOpenColorIOViewTransformDirection::Inverse);
+			}
 		}
 	}
 #endif
@@ -280,6 +285,11 @@ void UOpenColorIOConfiguration::ConfigPathChangedEvent(const TArray<FFileChangeD
 #endif
 }
 
+FOpenColorIONativeConfiguration* UOpenColorIOConfiguration::GetNativeConfig_Internal() const
+{
+	return NativeConfig.Get();
+}
+
 void UOpenColorIOConfiguration::StartDirectoryWatch(const FString& FilePath)
 {
 #if WITH_EDITOR && WITH_OCIO
@@ -316,6 +326,23 @@ void UOpenColorIOConfiguration::StopDirectoryWatch()
 		}
 	}
 #endif
+}
+
+const TObjectPtr<UOpenColorIOColorTransform>* UOpenColorIOConfiguration::FindTransform(const FOpenColorIOColorConversionSettings& InSettings) const
+{
+	return ColorTransforms.FindByPredicate([&](const UOpenColorIOColorTransform* InTransform)
+		{
+			EOpenColorIOViewTransformDirection DisplayViewDirection;
+			
+			if (InTransform->GetDisplayViewDirection(DisplayViewDirection))
+			{
+				return InTransform->SourceColorSpace == InSettings.SourceColorSpace.ColorSpaceName && InTransform->Display == InSettings.DestinationDisplayView.Display && InTransform->View == InSettings.DestinationDisplayView.View && InSettings.DisplayViewDirection == DisplayViewDirection;
+			}
+			else
+			{
+				return InTransform->SourceColorSpace == InSettings.SourceColorSpace.ColorSpaceName && InTransform->DestinationColorSpace == InSettings.DestinationColorSpace.ColorSpaceName;
+			}
+		});
 }
 
 void UOpenColorIOConfiguration::CreateColorTransform(const FString& InSourceColorSpace, const FString& InDestinationColorSpace)
@@ -414,6 +441,20 @@ void UOpenColorIOConfiguration::CleanupTransforms()
 		});
 }
 
+
+void UOpenColorIOConfiguration::PostInitProperties()
+{
+	Super::PostInitProperties();
+
+	if (!HasAnyFlags(RF_NeedLoad | RF_ClassDefaultObject))
+	{
+		ConfigurationFile.FilePath = TEXT("ocio://default");
+
+		// Ensure the default built-in configuration is loaded.
+		LoadConfiguration();
+	}
+}
+
 void UOpenColorIOConfiguration::PostLoad()
 {
 	Super::PostLoad();
@@ -423,6 +464,27 @@ void UOpenColorIOConfiguration::PostLoad()
 	{
 		Transform->ConditionalPostLoad();
 	}
+}
+
+void UOpenColorIOConfiguration::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
+{
+	Super::GetAssetRegistryTags(OutTags);
+
+	FString Description;
+	if (ConfigurationFile.FilePath.IsEmpty())
+	{
+		Description = TEXT("No configuration selected.");
+	}
+	else if (!Validate())
+	{
+		Description = TEXT("Warning: Configuration is invalid. Verify the selected configuration file.");
+	}
+	else
+	{
+		Description = TEXT("Configuration: ") + ConfigurationFile.FilePath;
+	}
+
+	OutTags.Add(FAssetRegistryTag(TEXT("ConfigurationFile"), Description, FAssetRegistryTag::TT_Hidden));
 }
 
 #if WITH_EDITORONLY_DATA
@@ -461,9 +523,11 @@ void UOpenColorIOConfiguration::PreSave(FObjectPreSaveContext SaveContext)
 
 void UOpenColorIOConfiguration::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
+	const UOpenColorIOSettings* Settings = GetDefault<UOpenColorIOSettings>();
+
 	if (PropertyChangedEvent.MemberProperty && PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UOpenColorIOConfiguration, ConfigurationFile))
 	{
-		LoadConfigurationFile();
+		LoadConfiguration();
 	}
 	else if (PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UOpenColorIOConfiguration, DesiredColorSpaces))
 	{
@@ -483,8 +547,12 @@ void UOpenColorIOConfiguration::PostEditChangeProperty(FPropertyChangedEvent& Pr
 
 				for (const FOpenColorIODisplayView& DisplayView : DesiredDisplayViews)
 				{
-					// note: we only support display-view transforms in the forward direction currently.
 					CreateColorTransform(TopColorSpace.ColorSpaceName, DisplayView.Display, DisplayView.View, EOpenColorIOViewTransformDirection::Forward);
+
+					if (Settings->bSupportInverseViewTransforms)
+					{
+						CreateColorTransform(TopColorSpace.ColorSpaceName, DisplayView.Display, DisplayView.View, EOpenColorIOViewTransformDirection::Inverse);
+					}
 				}
 			}
 		}
@@ -502,8 +570,12 @@ void UOpenColorIOConfiguration::PostEditChangeProperty(FPropertyChangedEvent& Pr
 			{
 				for (const FOpenColorIOColorSpace& SourceColorSpace : DesiredColorSpaces)
 				{
-					// note: we only support display-view transforms in the forward direction currently.
 					CreateColorTransform(SourceColorSpace.ColorSpaceName, DisplayView.Display, DisplayView.View, EOpenColorIOViewTransformDirection::Forward);
+
+					if (Settings->bSupportInverseViewTransforms)
+					{
+						CreateColorTransform(SourceColorSpace.ColorSpaceName, DisplayView.Display, DisplayView.View, EOpenColorIOViewTransformDirection::Inverse);
+					}
 				}
 			}
 		}
@@ -517,7 +589,7 @@ void UOpenColorIOConfiguration::PostEditChangeProperty(FPropertyChangedEvent& Pr
 }
 #endif //WITH_EDITOR
 
-void UOpenColorIOConfiguration::LoadConfigurationFile()
+void UOpenColorIOConfiguration::LoadConfiguration()
 {
 #if WITH_EDITOR && WITH_OCIO
 	if (!ConfigurationFile.FilePath.IsEmpty())
@@ -526,41 +598,50 @@ void UOpenColorIOConfiguration::LoadConfigurationFile()
 		try
 #endif
 		{
-			LoadedConfig.reset();
-
-			FString FullPath;
 			FString ConfigurationFilePath = ConfigurationFile.FilePath;
-			if (ConfigurationFilePath.Contains(TEXT("{Engine}")))
+			if (ConfigurationFilePath.StartsWith(TEXT("ocio://")))
 			{
-				ConfigurationFilePath = FPaths::ConvertRelativePathToFull(ConfigurationFilePath.Replace(TEXT("{Engine}"), *FPaths::EngineDir()));
-			}    
-
-			if (!FPaths::IsRelative(ConfigurationFilePath))
-			{
-				FullPath = ConfigurationFilePath;
+				NativeConfig->Set(OCIO_NAMESPACE::Config::CreateFromFile(StringCast<ANSICHAR>(*ConfigurationFilePath).Get()));
+				UE_LOG(LogOpenColorIO, Verbose, TEXT("Loaded built-in OCIO configuration file %s"), *ConfigurationFilePath);
 			}
 			else
 			{
-				const FString AbsoluteGameDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
-				FullPath = FPaths::ConvertRelativePathToFull(FPaths::Combine(AbsoluteGameDir, ConfigurationFilePath));
-			}
+				FString FullPath;
+				if (ConfigurationFilePath.Contains(TEXT("{Engine}")))
+				{
+					ConfigurationFilePath = FPaths::ConvertRelativePathToFull(ConfigurationFilePath.Replace(TEXT("{Engine}"), *FPaths::EngineDir()));
+				}
 
-			OCIO_NAMESPACE::ConstConfigRcPtr NewConfig = OCIO_NAMESPACE::Config::CreateFromFile(StringCast<ANSICHAR>(*FullPath).Get());
-			if (NewConfig)
-			{
-				UE_LOG(LogOpenColorIO, Verbose, TEXT("Loaded OCIO configuration file %s"), *FullPath);
-				LoadedConfig = NewConfig;
-				StartDirectoryWatch(FullPath);
-			}
-			else
-			{
-				UE_LOG(LogOpenColorIO, Error, TEXT("Could not load OCIO configuration file %s. Verify that the path is good or that the file is valid."), *ConfigurationFile.FilePath);
+				if (!FPaths::IsRelative(ConfigurationFilePath))
+				{
+					FullPath = ConfigurationFilePath;
+				}
+				else
+				{
+					const FString AbsoluteGameDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+					FullPath = FPaths::ConvertRelativePathToFull(FPaths::Combine(AbsoluteGameDir, ConfigurationFilePath));
+				}
+
+				OCIO_NAMESPACE::ConstConfigRcPtr NewConfig = OCIO_NAMESPACE::Config::CreateFromFile(StringCast<ANSICHAR>(*FullPath).Get());
+				if (NewConfig)
+				{
+					UE_LOG(LogOpenColorIO, Verbose, TEXT("Loaded OCIO configuration file %s"), *FullPath);
+					NativeConfig->Set(NewConfig);
+					
+					StartDirectoryWatch(FullPath);
+				}
+				else
+				{
+					NativeConfig->Set(nullptr);
+
+					UE_LOG(LogOpenColorIO, Error, TEXT("Could not load OCIO configuration file %s. Verify that the path is good or that the file is valid."), *ConfigurationFile.FilePath);
+				}
 			}
 		}
 #if !PLATFORM_EXCEPTIONS_DISABLED
 		catch (OCIO_NAMESPACE::Exception& exception)
 		{
-			UE_LOG(LogOpenColorIO, Error, TEXT("Could not load OCIO configuration file %s. Error message: %s."), *ConfigurationFile.FilePath, StringCast<TCHAR>(exception.what()).Get());
+			UE_LOG(LogOpenColorIO, Error, TEXT("Could not create OCIO configuration file for %s. Error message: %s."), *ConfigurationFile.FilePath, StringCast<TCHAR>(exception.what()).Get());
 		}
 #endif
 	}

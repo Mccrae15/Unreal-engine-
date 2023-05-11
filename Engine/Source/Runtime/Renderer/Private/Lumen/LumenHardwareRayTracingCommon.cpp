@@ -6,6 +6,7 @@
 #include "SceneUtils.h"
 #include "PipelineStateCache.h"
 #include "ShaderParameterStruct.h"
+#include "ComponentRecreateRenderStateContext.h"
 
 static TAutoConsoleVariable<int32> CVarLumenUseHardwareRayTracing(
 	TEXT("r.Lumen.HardwareRayTracing"),
@@ -14,7 +15,12 @@ static TAutoConsoleVariable<int32> CVarLumenUseHardwareRayTracing(
 	TEXT("Lumen will fall back to Software Ray Tracing otherwise.\n")
 	TEXT("Note: Hardware ray tracing has significant scene update costs for\n")
 	TEXT("scenes with more than 100k instances."),
-	ECVF_RenderThreadSafe
+	FConsoleVariableDelegate::CreateLambda([](IConsoleVariable* InVariable)
+	{
+		// Recreate proxies so that FPrimitiveSceneProxy::UpdateVisibleInLumenScene() can pick up any changed state
+		FGlobalComponentRecreateRenderStateContext Context;
+	}),
+	ECVF_Scalability | ECVF_RenderThreadSafe
 );
 
 // Note: Driven by URendererSettings and must match the enum exposed there
@@ -66,6 +72,13 @@ static TAutoConsoleVariable<int32> CVarLumenHardwareRayTracingMaxTranslucentSkip
 	ECVF_RenderThreadSafe
 );
 
+TAutoConsoleVariable<float> CVarLumenHardwareRayTracingMinTraceDistanceToSampleSurfaceCache(
+	TEXT("r.Lumen.HardwareRayTracing.MinTraceDistanceToSampleSurfaceCache"),
+	10.0f,
+	TEXT("Ray hit distance from which we can start sampling surface cache in order to fix feedback loop where surface cache texel hits itself and propagates lighting."),
+	ECVF_Scalability | ECVF_RenderThreadSafe
+);
+
 bool Lumen::UseHardwareRayTracing(const FSceneViewFamily& ViewFamily)
 {
 #if RHI_RAYTRACING
@@ -82,6 +95,11 @@ bool Lumen::UseHardwareRayTracing(const FSceneViewFamily& ViewFamily)
 int32 Lumen::GetMaxTranslucentSkipCount()
 {
 	return CVarLumenHardwareRayTracingMaxTranslucentSkipCount.GetValueOnRenderThread();
+}
+
+float LumenHardwareRayTracing::GetMinTraceDistanceToSampleSurfaceCache()
+{
+	return CVarLumenHardwareRayTracingMinTraceDistanceToSampleSurfaceCache.GetValueOnRenderThread();
 }
 
 Lumen::EHardwareRayTracingLightingMode Lumen::GetHardwareRayTracingLightingMode(const FViewInfo& View)
@@ -146,7 +164,71 @@ uint32 LumenHardwareRayTracing::GetMaxTraversalIterations()
 
 #if RHI_RAYTRACING
 
-#include "LumenHardwareRayTracingCommon.h"
+FLumenHardwareRayTracingShaderBase::FLumenHardwareRayTracingShaderBase() = default;
+FLumenHardwareRayTracingShaderBase::FLumenHardwareRayTracingShaderBase(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
+	: FGlobalShader(Initializer)
+{
+}
+
+void FLumenHardwareRayTracingShaderBase::ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, Lumen::ERayTracingShaderDispatchType ShaderDispatchType, Lumen::ESurfaceCacheSampling SurfaceCacheSampling, FShaderCompilerEnvironment& OutEnvironment)
+{
+	OutEnvironment.SetDefine(TEXT("SURFACE_CACHE_FEEDBACK"), SurfaceCacheSampling == Lumen::ESurfaceCacheSampling::AlwaysResidentPagesWithoutFeedback ? 0 : 1);
+	OutEnvironment.SetDefine(TEXT("SURFACE_CACHE_HIGH_RES_PAGES"), SurfaceCacheSampling == Lumen::ESurfaceCacheSampling::HighResPages ? 1 : 0);
+	OutEnvironment.SetDefine(TEXT("LUMEN_HARDWARE_RAYTRACING"), 1);
+
+	// GPU Scene definitions
+	OutEnvironment.SetDefine(TEXT("VF_SUPPORTS_PRIMITIVE_SCENE_DATA"), 1);
+	OutEnvironment.SetDefine(TEXT("USE_GLOBAL_GPU_SCENE_DATA"), 1);
+
+	// Inline
+	const bool bInlineRayTracing = ShaderDispatchType == Lumen::ERayTracingShaderDispatchType::Inline;
+	if (bInlineRayTracing)
+	{
+		OutEnvironment.SetDefine(TEXT("LUMEN_HARDWARE_INLINE_RAYTRACING"), 1);
+		OutEnvironment.CompilerFlags.Add(CFLAG_Wave32);
+		OutEnvironment.CompilerFlags.Add(CFLAG_InlineRayTracing);
+	}
+}
+
+void FLumenHardwareRayTracingShaderBase::ModifyCompilationEnvironmentInternal(Lumen::ERayTracingShaderDispatchSize Size, FShaderCompilerEnvironment& OutEnvironment)
+{
+	if (DispatchSize == Lumen::ERayTracingShaderDispatchSize::DispatchSize1D)
+	{
+		OutEnvironment.SetDefine(TEXT("UE_RAY_TRACING_DISPATCH_1D"), 1);
+	}
+}
+
+FIntPoint FLumenHardwareRayTracingShaderBase::GetThreadGroupSizeInternal(Lumen::ERayTracingShaderDispatchType ShaderDispatchType, Lumen::ERayTracingShaderDispatchSize ShaderDispatchSize)
+{
+	// Current inline ray tracing implementation requires 1:1 mapping between thread groups and waves and only supports wave32 mode.
+	const bool bInlineRayTracing = ShaderDispatchType == Lumen::ERayTracingShaderDispatchType::Inline;
+	if (bInlineRayTracing)
+	{
+		switch (ShaderDispatchSize)
+		{
+		case Lumen::ERayTracingShaderDispatchSize::DispatchSize2D: return FIntPoint(8, 4);
+		case Lumen::ERayTracingShaderDispatchSize::DispatchSize1D: return FIntPoint(32, 1);
+		default:
+			checkNoEntry();
+		}
+	}
+
+	return FIntPoint(1, 1);
+}
+
+bool FLumenHardwareRayTracingShaderBase::ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters, Lumen::ERayTracingShaderDispatchType ShaderDispatchType)
+{
+	const bool bInlineRayTracing = ShaderDispatchType == Lumen::ERayTracingShaderDispatchType::Inline;
+	if (bInlineRayTracing)
+	{
+		return IsRayTracingEnabledForProject(Parameters.Platform) && DoesPlatformSupportLumenGI(Parameters.Platform) && RHISupportsRayTracing(Parameters.Platform) && RHISupportsInlineRayTracing(Parameters.Platform);
+	}
+	else
+	{
+		return ShouldCompileRayTracingShadersForProject(Parameters.Platform) && DoesPlatformSupportLumenGI(Parameters.Platform);
+	}
+}
+
 
 namespace Lumen
 {
@@ -170,9 +252,8 @@ void SetLumenHardwareRayTracingSharedParameters(
 	FRDGBuilder& GraphBuilder,
 	const FSceneTextureParameters& SceneTextures,
 	const FViewInfo& View,
-	const FLumenCardTracingInputs& TracingInputs,
-	FLumenHardwareRayTracingShaderBase::FSharedParameters* SharedParameters
-)
+	const FLumenCardTracingParameters& TracingParameters,
+	FLumenHardwareRayTracingShaderBase::FSharedParameters* SharedParameters)
 {
 	SharedParameters->SceneTextures = SceneTextures;
 	SharedParameters->SceneTexturesStruct = View.GetSceneTextures().UniformBuffer;
@@ -186,11 +267,11 @@ void SetLumenHardwareRayTracingSharedParameters(
 	SharedParameters->LightDataPacked = View.RayTracingLightDataUniformBuffer;
 
 	// Inline
-	SharedParameters->HitGroupData = View.LumenHardwareRayTracingHitDataBufferSRV;
+	SharedParameters->HitGroupData = View.LumenHardwareRayTracingHitDataBuffer ? GraphBuilder.CreateSRV(View.LumenHardwareRayTracingHitDataBuffer) : nullptr;
 	SharedParameters->RayTracingSceneMetadata = View.GetRayTracingSceneChecked()->GetMetadataBufferSRV();
 
 	// Use surface cache, instead
-	GetLumenCardTracingParameters(GraphBuilder, View, TracingInputs, SharedParameters->TracingParameters);
+	SharedParameters->TracingParameters = TracingParameters;
 }
 
 class FLumenHWRTCompactRaysIndirectArgsCS : public FGlobalShader
@@ -335,7 +416,8 @@ void LumenHWRTCompactRays(
 	const FRDGBufferRef& RayAllocatorBuffer,
 	const FRDGBufferRef& TraceDataPackedBuffer,
 	FRDGBufferRef& OutputRayAllocatorBuffer,
-	FRDGBufferRef& OutputTraceDataPackedBuffer
+	FRDGBufferRef& OutputTraceDataPackedBuffer,
+	ERDGPassFlags ComputePassFlags
 )
 {
 	FRDGBufferRef CompactRaysIndirectArgsBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc<FRHIDispatchIndirectParameters>(1), TEXT("Lumen.HWRT.CompactTracingIndirectArgs"));
@@ -350,6 +432,7 @@ void LumenHWRTCompactRays(
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
 			RDG_EVENT_NAME("CompactRaysIndirectArgs"),
+			ComputePassFlags,
 			ComputeShader,
 			PassParameters,
 			FIntVector(1, 1, 1));
@@ -376,6 +459,7 @@ void LumenHWRTCompactRays(
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
 			RDG_EVENT_NAME("CompactRays"),
+			ComputePassFlags,
 			ComputeShader,
 			PassParameters,
 			PassParameters->CompactRaysIndirectArgs,
@@ -389,7 +473,8 @@ void LumenHWRTBucketRaysByMaterialID(
 	const FViewInfo& View,
 	int32 RayCount,
 	FRDGBufferRef& RayAllocatorBuffer,
-	FRDGBufferRef& TraceDataPackedBuffer
+	FRDGBufferRef& TraceDataPackedBuffer,
+	ERDGPassFlags ComputePassFlags
 )
 {
 	FRDGBufferRef BucketRaysByMaterialIdIndirectArgsBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc<FRHIDispatchIndirectParameters>(1), TEXT("Lumen.HWRT.BucketRaysByMaterialIdIndirectArgsBuffer"));
@@ -404,6 +489,7 @@ void LumenHWRTBucketRaysByMaterialID(
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
 			RDG_EVENT_NAME("BucketRaysByMaterialIdIndirectArgs"),
+			ComputePassFlags,
 			ComputeShader,
 			PassParameters,
 			FIntVector(1, 1, 1));
@@ -430,6 +516,7 @@ void LumenHWRTBucketRaysByMaterialID(
 		FComputeShaderUtils::AddPass(
 			GraphBuilder,
 			RDG_EVENT_NAME("BucketRaysByMaterialId"),
+			ComputePassFlags,
 			ComputeShader,
 			PassParameters,
 			PassParameters->BucketRaysByMaterialIdIndirectArgs,

@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "StateTreeTypes.h"
 #include "StateTreeNodeBase.h"
 #include "StateTreeTaskBase.generated.h"
 
@@ -19,6 +18,11 @@ struct STATETREEMODULE_API FStateTreeTaskBase : public FStateTreeNodeBase
 
 	FStateTreeTaskBase()
 		: bShouldStateChangeOnReselect(true)
+		, bShouldCallTick(true)
+		, bShouldCallTickOnlyOnEvents(false)
+		, bShouldCopyBoundPropertiesOnTick(true)
+		, bShouldCopyBoundPropertiesOnExitState(true)
+		, bShouldAffectTransitions(false)
 	{
 	}
 	
@@ -57,11 +61,20 @@ struct STATETREEMODULE_API FStateTreeTaskBase : public FStateTreeNodeBase
 
 	/**
 	 * Called during state tree tick when the task is on active state.
+	 * Note: The method is called only if bShouldCallTick or bShouldCallTickOnlyOnEvents is set.
 	 * @param Context Reference to current execution context.
 	 * @param DeltaTime Time since last StateTree tick.
 	 * @return Running status of the state: Running if still in progress, Succeeded if execution is done and succeeded, Failed if execution is done and failed.
 	 */
 	virtual EStateTreeRunStatus Tick(FStateTreeExecutionContext& Context, const float DeltaTime) const { return EStateTreeRunStatus::Running; };
+
+	/**
+	 * Called when state tree triggers transitions. This method is called during transition handling, before state's tick and event transitions are handled.
+	 * Note: the method is called only if bShouldAffectTransitions is set.
+	 * @param Context Reference to current execution context.
+	 */
+	virtual void TriggerTransitions(FStateTreeExecutionContext& Context) const {};
+
 
 #if WITH_GAMEPLAY_DEBUGGER
 	virtual void AppendDebugInfoString(FString& DebugString, const FStateTreeExecutionContext& Context) const;
@@ -73,6 +86,19 @@ struct STATETREEMODULE_API FStateTreeTaskBase : public FStateTreeNodeBase
 	 * and false on state like tasks like claiming a resource that is expected to be acquired on child states.
 	 * Default value is true. */
 	uint8 bShouldStateChangeOnReselect : 1;
+
+	/** If set to true, Tick() is called. Not ticking implies no property copy. Default true. */
+	uint8 bShouldCallTick : 1;
+	/** If set to true, Tick() is called only when there are events. No effect if bShouldCallTickState is true. Not ticking implies no property copy. Default false. */
+	uint8 bShouldCallTickOnlyOnEvents : 1;
+
+	/** If set to true, copy the values of bound properties before calling Tick(). Default true. */
+	uint8 bShouldCopyBoundPropertiesOnTick : 1;
+	/** If set to true, copy the values of bound properties before calling ExitState(). Default true. */
+	uint8 bShouldCopyBoundPropertiesOnExitState : 1;
+
+	/** If set to true, TriggerTransitions() is called during transition handling. Default false. */
+	uint8 bShouldAffectTransitions : 1;
 };
 
 /**

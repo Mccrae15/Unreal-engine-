@@ -3,13 +3,17 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Algo/Copy.h"
+#include "EngineStats.h"
 #include "HAL/ThreadSafeCounter.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/UObjectGlobals.h"
 #include "Misc/Guid.h"
 #include "InputCoreTypes.h"
+#include "Interfaces/IPhysicsComponent.h"
 #include "Templates/SubclassOf.h"
 #include "Engine/EngineTypes.h"
+#include "Engine/ScopedMovementUpdate.h"
 #include "Components/SceneComponent.h"
 #include "RenderCommandFence.h"
 #include "GameFramework/Actor.h"
@@ -23,10 +27,16 @@
 #include "HitProxies.h"
 #include "Interfaces/Interface_AsyncCompilation.h"
 #include "HLOD/HLODBatchingPolicy.h"
+#include "HLOD/HLODLevelExclusion.h"
+#include "Stats/Stats2.h"
+#include "PSOPrecache.h"
 #if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
 #include "Engine/OverlapInfo.h"
 #endif
 #include "PrimitiveComponent.generated.h"
+
+DECLARE_CYCLE_STAT_EXTERN(TEXT("BeginComponentOverlap"), STAT_BeginComponentOverlap, STATGROUP_Game, ENGINE_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("MoveComponent FastOverlap"), STAT_MoveComponent_FastOverlap, STATGROUP_Game, ENGINE_API);
 
 class AController;
 class FPrimitiveSceneProxy;
@@ -44,11 +54,13 @@ namespace PrimitiveComponentCVars
 {
 	extern float HitDistanceToleranceCVar;
 	extern float InitialOverlapToleranceCVar;
+	extern int32 bAllowCachedOverlapsCVar;
+	extern int32 bEnableFastOverlapCheck;
 }
 
 /** Determines whether a Character can attempt to step up onto a component when they walk in to it. */
 UENUM()
-enum ECanBeCharacterBase
+enum ECanBeCharacterBase : int
 {
 	/** Character cannot step up onto this Component. */
 	ECB_No UMETA(DisplayName="No"),
@@ -66,7 +78,7 @@ enum ECanBeCharacterBase
 UENUM()
 namespace EHasCustomNavigableGeometry
 {
-	enum Type
+	enum Type : int
 	{
 		/** Primitive doesn't have custom navigation geometry, if collision is enabled then its convex/trimesh collision will be used for generating the navmesh */
 		No,
@@ -167,6 +179,42 @@ struct FRendererStencilMaskEvaluation
 	}
 };
 
+// Predicate to determine if an overlap is with a certain AActor.
+struct FPredicateOverlapHasSameActor
+{
+	FPredicateOverlapHasSameActor(const AActor& Owner)
+		: MyOwnerPtr(&Owner)
+	{
+	}
+
+	bool operator() (const FOverlapInfo& Info)
+	{
+		// MyOwnerPtr is always valid, so we don't need the IsValid() checks in the WeakObjectPtr comparison operator.
+		return MyOwnerPtr.HasSameIndexAndSerialNumber(Info.OverlapInfo.HitObjectHandle.FetchActor());
+	}
+
+private:
+	const TWeakObjectPtr<const AActor> MyOwnerPtr;
+};
+
+// Predicate to determine if an overlap is *NOT* with a certain AActor.
+struct FPredicateOverlapHasDifferentActor
+{
+	FPredicateOverlapHasDifferentActor(const AActor& Owner)
+		: MyOwnerPtr(&Owner)
+	{
+	}
+
+	bool operator() (const FOverlapInfo& Info)
+	{
+		// MyOwnerPtr is always valid, so we don't need the IsValid() checks in the WeakObjectPtr comparison operator.
+		return !MyOwnerPtr.HasSameIndexAndSerialNumber(Info.OverlapInfo.HitObjectHandle.FetchActor());
+	}
+
+private:
+	const TWeakObjectPtr<const AActor> MyOwnerPtr;
+};
+
 // TODO: Add sleep and wake state change types to this enum, so that the
 // OnComponentWake and OnComponentSleep delegates may be deprecated.
 // Doing so would save a couple bytes per primitive component.
@@ -210,7 +258,7 @@ DECLARE_DYNAMIC_MULTICAST_SPARSE_DELEGATE_TwoParams( FComponentEndTouchOverSigna
  * ShapeComponents generate geometry that is used for collision detection but are not rendered, while StaticMeshComponents and SkeletalMeshComponents contain pre-built geometry that is rendered, but can also be used for collision detection.
  */
 UCLASS(abstract, HideCategories=(Mobility, VirtualTexture), ShowCategories=(PhysicsVolume))
-class ENGINE_API UPrimitiveComponent : public USceneComponent, public INavRelevantInterface, public IInterface_AsyncCompilation
+class ENGINE_API UPrimitiveComponent : public USceneComponent, public INavRelevantInterface, public IInterface_AsyncCompilation, public IPhysicsComponent
 {
 	GENERATED_BODY()
 
@@ -259,34 +307,25 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=Lighting)
 	ELightmapType LightmapType;
 
-#if WITH_EDITORONLY_DATA
-	/** Whether to include this component in HLODs or not. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=HLOD, meta=(DisplayName="Include Component in HLOD"))
-	uint8 bEnableAutoLODGeneration : 1;
-
-	/** Which specific HLOD levels this component should be excluded from */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category=HLOD, meta=(DisplayName="Exclude from HLOD Levels", EditConditionHides, EditCondition="bEnableAutoLODGeneration"))
-	TArray<int32> ExcludeForSpecificHLODLevels;
-
 	/** Determines how the geometry of a component will be incorporated in proxy (simplified) HLODs. */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category=HLOD, meta=(DisplayName="HLOD Batching Policy", EditConditionHides, EditCondition="bEnableAutoLODGeneration"))
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category=HLOD, meta=(DisplayName="HLOD Batching Policy", DisplayAfter="bEnableAutoLODGeneration", EditConditionHides, EditCondition="bEnableAutoLODGeneration"))
 	EHLODBatchingPolicy HLODBatchingPolicy;
 
+	/** Whether to include this component in HLODs or not. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = HLOD, meta=(DisplayName="Include Component in HLOD"))
+	uint8 bEnableAutoLODGeneration : 1;
 
 	/** Indicates that the texture streaming built data is local to the Actor (see UActorTextureStreamingBuildDataComponent). */
 	UPROPERTY()
 	uint8 bIsActorTextureStreamingBuiltData : 1;
-#endif 
 
 	/** Indicates to the texture streaming wether it can use the pre-built texture streaming data (even if empty). */
 	UPROPERTY()
 	uint8 bIsValidTextureStreamingBuiltData : 1;
 
-	/**
-	 * When enabled this object will not be culled by distance. This is ignored if a child of a HLOD.
-	 */
+	/** When enabled this object will not be culled by distance. This is ignored if a child of a HLOD. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=LOD)
-	uint8 bNeverDistanceCull:1;
+	uint8 bNeverDistanceCull : 1;
 
 	/** Whether this primitive is referenced by a FLevelRenderAssetManager  */
 	mutable uint8 bAttachedToStreamingManagerAsStatic : 1;
@@ -392,6 +431,10 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=Rendering)
 	uint8 bReceivesDecals:1;
 
+	/** If this is True, this primitive will render black with an alpha of 0, but all secondary effects (shadows, reflections, indirect lighting) remain. This feature is currently only implemented in the Path Tracer. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = PathTracing, Interp)
+	uint8 bHoldout : 1;
+
 	/** If this is True, this component won't be visible when the view actor is the component's owner, directly or indirectly. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = Rendering)
 	uint8 bOwnerNoSee:1;
@@ -433,19 +476,19 @@ public:
 	// Lighting flags
 	
 	/** Controls whether the primitive component should cast a shadow or not. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Lighting)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Lighting, Interp)
 	uint8 CastShadow:1;
 
 	/** Whether the primitive will be used as an emissive light source. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Lighting, AdvancedDisplay)
 	uint8 bEmissiveLightSource:1;
 
-	/** Controls whether the primitive should inject light into the Light Propagation Volume.  This flag is only used if CastShadow is true. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Lighting, AdvancedDisplay, meta=(EditCondition="CastShadow"))
+	/** Controls whether the primitive should influence indirect lighting. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Lighting, AdvancedDisplay, Interp)
 	uint8 bAffectDynamicIndirectLighting:1;
 
 	/** Controls whether the primitive should affect indirect lighting when hidden. This flag is only used if bAffectDynamicIndirectLighting is true. */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=Lighting, meta=(EditCondition="bAffectDynamicIndirectLighting", DisplayName = "Affect Indirect Lighting While Hidden"))
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=Lighting, meta=(EditCondition="bAffectDynamicIndirectLighting", DisplayName = "Affect Indirect Lighting While Hidden"), Interp)
 	uint8 bAffectIndirectLightingWhileHidden:1;
 
 	/** Controls whether the primitive should affect dynamic distance field lighting methods.  This flag is only used if CastShadow is true. **/
@@ -507,7 +550,7 @@ public:
 	 *	Controls whether the primitive should cast shadows when hidden.
 	 *	This flag is only used if CastShadow is true.
 	 */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=Lighting, meta=(EditCondition="CastShadow", DisplayName = "Hidden Shadow"))
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=Lighting, meta=(EditCondition="CastShadow", DisplayName = "Hidden Shadow"), Interp)
 	uint8 bCastHiddenShadow:1;
 
 	/** Whether this primitive should cast dynamic shadows as if it were a two sided material. */
@@ -611,8 +654,36 @@ protected:
 	UPROPERTY()
 	uint8 bHasNoStreamableTextures : 1;
 
+	/** When mobility is stationary, use a static underlying physics body. Static bodies do not have
+		physical data like mass. If false, even stationary bodies will be generated with all data
+		necessary for simulating.
+		
+		If you need this body's physical parameters on the physics thread (eg, in a sim callback)
+		then set this to false. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Lighting, AdvancedDisplay, meta=(
+		DisplayName = "Static When Not Moveable",
+		ToolTip = "When false, the underlying physics body will contain all sim data (mass, inertia tensor, etc) even if mobility is not set to Moveable"))
+	uint8 bStaticWhenNotMoveable:1;
+
+	/** Helper flag to check if PSOs have been precached already */
+	uint8 bPSOPrecacheCalled : 1;
+
+	/** Have the PSO requests already been priority boosted? */
+	uint8 bPSOPrecacheRequestBoosted : 1;
+
+	/** Cached array of material PSO requests which can be used to boost the priority */
+	TArray<FMaterialPSOPrecacheRequestID> MaterialPSOPrecacheRequestIDs;
+
+	/** Graph event used to track all the PSO precache events */
+	FGraphEventRef PSOPrecacheCompileEvent;
+
+protected:
+
 #if WITH_EDITOR
-	bool bIgnoreBoundsForEditorFocus = false;
+	uint8 bIgnoreBoundsForEditorFocus : 1;
+
+public:
+	uint8 bAlwaysAllowTranslucentSelect : 1;
 #endif
 
 public:
@@ -624,9 +695,29 @@ public:
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()
 	TEnumAsByte<enum EHitProxyPriority> HitProxyPriority;
+
+	UE_DEPRECATED(5.2, "Use SetExcludedFromHLODLevel/IsExcludedFromHLODLevel")
+	UPROPERTY(BlueprintReadWrite, Category = HLOD, BlueprintGetter=GetExcludeForSpecificHLODLevels, BlueprintSetter=SetExcludeForSpecificHLODLevels, meta = (DeprecatedProperty, DeprecationMessage = "WARNING: This property has been deprecated, use the SetExcludedFromHLODLevel/IsExcludedFromHLODLevel functions instead"))
+	TArray<int32> ExcludeForSpecificHLODLevels_DEPRECATED;
 #endif
 
+	/** Whether this primitive is excluded from the specified HLOD level */
+	UFUNCTION(BlueprintCallable, Category = "HLOD", meta = (DisplayName="Is Excluded From HLOD Level"))
+	bool IsExcludedFromHLODLevel(EHLODLevelExclusion HLODLevel) const;
+
+	/** Exclude this primitive from the specified HLOD level */
+	UFUNCTION(BlueprintCallable, Category = "HLOD", meta = (DisplayName = "Set Excluded From HLOD Level"))
+	void SetExcludedFromHLODLevel(EHLODLevelExclusion HLODLevel, bool bExcluded);
+
 private:
+	UE_DEPRECATED("5.2", "Use SetExcludedFromHLODLevel instead")
+	UFUNCTION(BlueprintCallable, BlueprintSetter, Category = "HLOD", meta = (BlueprintInternalUseOnly="true"))
+	void SetExcludeForSpecificHLODLevels(const TArray<int32>& InExcludeForSpecificHLODLevels);
+
+	UE_DEPRECATED("5.2", "Use IsExcludedFromHLODLevel instead")
+	UFUNCTION(BlueprintCallable, BlueprintGetter, Category = "HLOD", meta = (BlueprintInternalUseOnly="true"))
+	TArray<int32> GetExcludeForSpecificHLODLevels() const;
+
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()
 	TEnumAsByte<enum ECanBeCharacterBase> CanBeCharacterBase_DEPRECATED;
@@ -831,7 +922,7 @@ public:
 	 * @return Whether this actor was recently rendered.
 	 */
 	UFUNCTION(Category = "Rendering", BlueprintCallable, meta=(DisplayName="Was Component Recently Rendered", Keywords="scene visible"))
-	bool WasRecentlyRendered(float Tolerance = 0.2) const;
+	bool WasRecentlyRendered(float Tolerance = 0.2f) const;
 
 	void SetLastRenderTime(float InLastRenderTime);
 	float GetLastRenderTime() const { return LastRenderTime; }
@@ -842,6 +933,28 @@ public:
 	 * Precaching uses certain component attributes to derive the shader or state used to render the component such as static lighting, cast shadows, ...
 	 */
 	virtual void SetupPrecachePSOParams(FPSOPrecacheParams& Params);
+
+	/**
+	 * Collect all the data required for PSO precaching 
+	 */
+	struct FComponentPSOPrecacheParams
+	{
+		EPSOPrecachePriority Priority = EPSOPrecachePriority::Medium;
+		UMaterialInterface* MaterialInterface = nullptr;
+		FPSOPrecacheVertexFactoryDataList VertexFactoryDataList;
+		FPSOPrecacheParams PSOPrecacheParams;
+	};
+	typedef TArray<FComponentPSOPrecacheParams, TInlineAllocator<2> > FComponentPSOPrecacheParamsList;
+	virtual void CollectPSOPrecacheData(const FPSOPrecacheParams& BasePrecachePSOParams, FComponentPSOPrecacheParamsList& OutParams) {}
+
+	/** Precache all PSOs which can be used by the primitive component */
+	virtual void PrecachePSOs();
+
+	/** Schedule task to mark render state dirty when the PSO precaching tasks are done */
+	void RequestRecreateRenderStateWhenPSOPrecacheFinished(const FGraphEventArray& PSOPrecacheCompileEvents);
+
+	/** Check if PSOs are still precaching and boost priority if not done yet */
+	bool IsPSOPrecaching();
 
 	/**
 	 * Set of actors to ignore during component sweeps in MoveComponent().
@@ -1352,6 +1465,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Physics")
 	virtual void SetSimulatePhysics(bool bSimulate);
 
+	/*
+	 *	
+	 */
+	UFUNCTION(BlueprintCallable, Category="Physics")
+	void SetStaticWhenNotMoveable(bool bInStaticWhenNotMoveable);
+
+	UFUNCTION(BlueprintCallable, Category="Physics")
+	bool GetStaticWhenNotMoveable() const { return bStaticWhenNotMoveable; }
+
 	/**
 	 * Determines whether or not the simulate physics setting can be edited interactively on this component
 	 */
@@ -1683,9 +1805,26 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Rendering")
 	void SetTranslucencySortDistanceOffset(float NewTranslucencySortDistanceOffset);
 
+	/** Changes the value of Affect Distance Field Lighting */
+	UFUNCTION(BlueprintCallable, Category = "Rendering")
+	void SetAffectDistanceFieldLighting(bool NewAffectDistanceFieldLighting);
+
 	/** Changes the value of bReceivesDecals. */
 	UFUNCTION(BlueprintCallable, Category = "Rendering")
 	void SetReceivesDecals(bool bNewReceivesDecals);
+
+    /** Changes the value of bHoldout (Path Tracing only feature)*/
+	UFUNCTION(BlueprintCallable, Category = "Rendering")
+	void SetHoldout(bool bNewHoldout);
+
+    /** Changes the value of bAffectDynamicIndirectLighting */
+	UFUNCTION(BlueprintCallable, Category = "Rendering")
+	void SetAffectDynamicIndirectLighting(bool bNewAffectDynamicIndirectLighting);
+
+    /** Changes the value of bAffectIndirectLightingWhileHidden */
+	UFUNCTION(BlueprintCallable, Category = "Rendering")
+	void SetAffectIndirectLightingWhileHidden(bool bNewAffectIndirectLightingWhileHidden);
+
 
 	/** Controls what kind of collision is enabled for this body */
 	UFUNCTION(BlueprintCallable, Category="Collision")
@@ -1795,6 +1934,10 @@ public:
 	FRenderCommandFence DetachFence;
 
 private:
+	/** Which specific HLOD levels this component should be excluded from */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = HLOD, meta = (Bitmask, BitmaskEnum = "/Script/Engine.EHLODLevelExclusion", DisplayName = "Exclude from HLOD Levels", DisplayAfter = "bEnableAutoLODGeneration", EditConditionHides, EditCondition = "bEnableAutoLODGeneration"))
+	uint8 ExcludeFromHLODLevels;
+
 	/** LOD parent primitive to draw instead of this one (multiple UPrim's will point to the same LODParent ) */
 	UPROPERTY(NonPIEDuplicateTransient)
 	TObjectPtr<class UPrimitiveComponent> LODParentPrimitive;
@@ -2671,6 +2814,9 @@ public:
 	/** If true then DoCustomNavigableGeometryExport will be called to collect navigable geometry of this component. */
 	FORCEINLINE EHasCustomNavigableGeometry::Type HasCustomNavigableGeometry() const { return bHasCustomNavigableGeometry; }
 
+	// Returns true if we should check the GetGenerateOverlapEvents() flag when gathering overlaps, otherwise we'll always just do it.
+	FORCEINLINE_DEBUGGABLE bool ShouldCheckOverlapFlagToQueueOverlaps(const UPrimitiveComponent& ThisComponent) const;
+
 	/** Set value of HasCustomNavigableGeometry */
 	void SetCustomNavigableGeometry(const EHasCustomNavigableGeometry::Type InType);
 
@@ -2684,6 +2830,13 @@ public:
 	void DispatchOnReleased(FKey ButtonReleased = EKeys::LeftMouseButton);
 	void DispatchOnInputTouchBegin(const ETouchIndex::Type Key);
 	void DispatchOnInputTouchEnd(const ETouchIndex::Type Key);
+
+	//~ Begin IPhysicsComponent Interface.
+public:
+	virtual Chaos::FPhysicsObject* GetPhysicsObjectById(int32 Id) const override;
+	virtual Chaos::FPhysicsObject* GetPhysicsObjectByName(const FName& Name) const override;
+	virtual TArray<Chaos::FPhysicsObject*> GetAllPhysicsObjects() const override;
+	//~ End IPhysicsComponent Interface.
 };
 
 /** 
@@ -2765,4 +2918,128 @@ FORCEINLINE_DEBUGGABLE bool UPrimitiveComponent::K2_IsPhysicsCollisionEnabled() 
 FORCEINLINE_DEBUGGABLE bool UPrimitiveComponent::GetGenerateOverlapEvents() const
 {
 	return bGenerateOverlapEvents;
+}
+
+FORCEINLINE_DEBUGGABLE bool UPrimitiveComponent::ShouldCheckOverlapFlagToQueueOverlaps(const UPrimitiveComponent& ThisComponent) const
+{
+	const FScopedMovementUpdate* CurrentUpdate = ThisComponent.GetCurrentScopedMovement();
+	if (CurrentUpdate)
+	{
+		return CurrentUpdate->RequiresOverlapsEventFlag();
+	}
+	// By default we require the GetGenerateOverlapEvents() to queue up overlaps, since we require it to trigger events.
+	return true;
+}
+
+//////////////////////////////////////////////////////////////////////////
+// PrimitiveComponent templates
+
+template<typename AllocatorType>
+bool UPrimitiveComponent::ConvertSweptOverlapsToCurrentOverlaps(
+	TArray<FOverlapInfo, AllocatorType>& OverlapsAtEndLocation, const TOverlapArrayView& SweptOverlaps, int32 SweptOverlapsIndex,
+	const FVector& EndLocation, const FQuat& EndRotationQuat)
+{
+	checkSlow(SweptOverlapsIndex >= 0);
+
+	bool bResult = false;
+	const bool bForceGatherOverlaps = !ShouldCheckOverlapFlagToQueueOverlaps(*this);
+	if ((GetGenerateOverlapEvents() || bForceGatherOverlaps) && PrimitiveComponentCVars::bAllowCachedOverlapsCVar)
+	{
+		const AActor* Actor = GetOwner();
+		if (Actor && Actor->GetRootComponent() == this)
+		{
+			// We know we are not overlapping any new components at the end location. Children are ignored here (see note below).
+			if (PrimitiveComponentCVars::bEnableFastOverlapCheck)
+			{
+				SCOPE_CYCLE_COUNTER(STAT_MoveComponent_FastOverlap);
+
+				// Check components we hit during the sweep, keep only those still overlapping
+				const FCollisionQueryParams UnusedQueryParams(NAME_None, FCollisionQueryParams::GetUnknownStatId());
+				const int32 NumSweptOverlaps = SweptOverlaps.Num();
+				OverlapsAtEndLocation.Reserve(OverlapsAtEndLocation.Num() + NumSweptOverlaps);
+				for (int32 Index = SweptOverlapsIndex; Index < NumSweptOverlaps; ++Index)
+				{
+					const FOverlapInfo& OtherOverlap = SweptOverlaps[Index];
+					UPrimitiveComponent* OtherPrimitive = OtherOverlap.OverlapInfo.GetComponent();
+					if (OtherPrimitive && (OtherPrimitive->GetGenerateOverlapEvents() || bForceGatherOverlaps))
+					{
+						if (OtherPrimitive->bMultiBodyOverlap)
+						{
+							// Not handled yet. We could do it by checking every body explicitly and track each body index in the overlap test, but this seems like a rare need.
+							return false;
+						}
+						else if (Cast<USkeletalMeshComponent>(OtherPrimitive) || Cast<USkeletalMeshComponent>(this))
+						{
+							// SkeletalMeshComponent does not support this operation, and would return false in the test when an actual query could return true.
+							return false;
+						}
+						else if (OtherPrimitive->ComponentOverlapComponent(this, EndLocation, EndRotationQuat, UnusedQueryParams))
+						{
+							OverlapsAtEndLocation.Add(OtherOverlap);
+						}
+					}
+				}
+
+				// Note: we don't worry about adding any child components here, because they are not included in the sweep results.
+				// Children test for their own overlaps after we update our own, and we ignore children in our own update.
+				checkfSlow(OverlapsAtEndLocation.FindByPredicate(FPredicateOverlapHasSameActor(*Actor)) == nullptr,
+					TEXT("Child overlaps should not be included in the SweptOverlaps() array in UPrimitiveComponent::ConvertSweptOverlapsToCurrentOverlaps()."));
+
+				bResult = true;
+			}
+			else
+			{
+				if (SweptOverlaps.Num() == 0 && AreAllCollideableDescendantsRelative())
+				{
+					// Add overlaps with components in this actor.
+					GetOverlapsWithActor_Template(Actor, OverlapsAtEndLocation);
+					bResult = true;
+				}
+			}
+		}
+	}
+
+	return bResult;
+}
+
+template<typename AllocatorType>
+bool UPrimitiveComponent::ConvertRotationOverlapsToCurrentOverlaps(TArray<FOverlapInfo, AllocatorType>& OutOverlapsAtEndLocation, const TOverlapArrayView& CurrentOverlaps)
+{
+	bool bResult = false;
+	const bool bForceGatherOverlaps = !ShouldCheckOverlapFlagToQueueOverlaps(*this);
+	if ((GetGenerateOverlapEvents() || bForceGatherOverlaps) && PrimitiveComponentCVars::bAllowCachedOverlapsCVar)
+	{
+		const AActor* Actor = GetOwner();
+		if (Actor && Actor->GetRootComponent() == this)
+		{
+			if (PrimitiveComponentCVars::bEnableFastOverlapCheck)
+			{
+				// Add all current overlaps that are not children. Children test for their own overlaps after we update our own, and we ignore children in our own update.
+				OutOverlapsAtEndLocation.Reserve(OutOverlapsAtEndLocation.Num() + CurrentOverlaps.Num());
+				Algo::CopyIf(CurrentOverlaps, OutOverlapsAtEndLocation, FPredicateOverlapHasDifferentActor(*Actor));
+				bResult = true;
+			}
+		}
+	}
+
+	return bResult;
+}
+
+template<typename AllocatorType>
+bool UPrimitiveComponent::GetOverlapsWithActor_Template(const AActor* Actor, TArray<FOverlapInfo, AllocatorType>& OutOverlaps) const
+{
+	const int32 InitialCount = OutOverlaps.Num();
+	if (Actor)
+	{
+		for (int32 OverlapIdx = 0; OverlapIdx < OverlappingComponents.Num(); ++OverlapIdx)
+		{
+			UPrimitiveComponent const* const PrimComp = OverlappingComponents[OverlapIdx].OverlapInfo.Component.Get();
+			if (PrimComp && (PrimComp->GetOwner() == Actor))
+			{
+				OutOverlaps.Add(OverlappingComponents[OverlapIdx]);
+			}
+		}
+	}
+
+	return InitialCount != OutOverlaps.Num();
 }

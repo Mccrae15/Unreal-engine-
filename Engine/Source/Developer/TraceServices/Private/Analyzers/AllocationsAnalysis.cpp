@@ -7,6 +7,7 @@
 
 // TraceServices
 #include "Common/ProviderLock.h"
+#include "Common/Utils.h"
 #include "Model/AllocationsProvider.h"
 #include "Model/MetadataProvider.h"
 #include "TraceServices/Model/AnalysisSession.h"
@@ -15,8 +16,15 @@
 namespace TraceServices
 {
 
-#define INSIGHTS_MEM_TRACE_LEGACY_FORMAT 1 // backward compatibility with legacy memory trace format (5.0-EA)
 #define INSIGHTS_MEM_TRACE_METADATA_TEST 0
+
+namespace AllocationsAnalyzer::Private
+{
+	// version 1: UE 5.0
+	// version 2: UE 5.2
+	constexpr int32 MinSupportedVersion = 1;
+	constexpr int32 MaxSupportedVersion = 2;
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -55,8 +63,8 @@ void FAllocationsAnalyzer::OnAnalysisBegin(const FOnAnalysisContext& Context)
 	Builder.RouteEvent(RouteId_HeapSpec,            "Memory", "HeapSpec");
 	Builder.RouteEvent(RouteId_HeapMarkAlloc,       "Memory", "HeapMarkAlloc");
 	Builder.RouteEvent(RouteId_HeapUnmarkAlloc,     "Memory", "HeapUnmarkAlloc");
-	Builder.RouteEvent(RouteId_MemScopeTag,			"Memory", "MemoryScope", true);
-	Builder.RouteEvent(RouteId_MemScopePtr,			"Memory", "MemoryScopePtr", true);
+	Builder.RouteEvent(RouteId_MemScopeTag,         "Memory", "MemoryScope", true);
+	Builder.RouteEvent(RouteId_MemScopePtr,         "Memory", "MemoryScopePtr", true);
 
 #if INSIGHTS_MEM_TRACE_METADATA_TEST
 	{
@@ -98,21 +106,16 @@ bool FAllocationsAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventC
 	{
 		case RouteId_Init:
 		{
-#if !INSIGHTS_MEM_TRACE_LEGACY_FORMAT
-			const uint8 Version = EventData.GetValue<uint8>("Version");
+			const uint32 Version = EventData.GetValue<uint32>("Version", 0);
 
-			constexpr uint8 MinSupportedVersion = 1; // UE 5.0
-			constexpr uint8 MaxSupportedVersion = 1; // UE 5.0
+			using namespace AllocationsAnalyzer::Private;
 			if (Version < MinSupportedVersion || Version > MaxSupportedVersion)
 			{
+				UE_LOG(LogTraceServices, Error, TEXT("[MemAlloc] Version %u for Memory trace events is not supported by the current analyzer. Supported versions: [%u .. %u]"), Version, MinSupportedVersion, MaxSupportedVersion);
 				break;
 			}
-#endif // !INSIGHTS_MEM_TRACE_LEGACY_FORMAT
 
 			const double Time = GetCurrentTime();
-#if INSIGHTS_MEM_TRACE_LEGACY_FORMAT
-			BaseCycle = EventData.GetValue<uint64>("BaseCycle", 0);
-#endif // INSIGHTS_MEM_TRACE_LEGACY_FORMAT
 			MarkerPeriod = EventData.GetValue<uint32>("MarkerPeriod");
 
 			const uint8 MinAlignment = EventData.GetValue<uint8>("MinAlignment");
@@ -156,43 +159,18 @@ bool FAllocationsAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventC
 			const double Time = GetCurrentTime();
 
 			// CallstackId is optional. If the field is not present CallstackId will be 0 (i.e. "no callstack").
-			uint32 CallstackId = EventData.GetValue<uint32>("CallstackId", 0);
-#if INSIGHTS_MEM_TRACE_LEGACY_FORMAT
-			if (!CallstackId)
-			{
-				const ICallstacksProvider* CallstacksProvider = ReadCallstacksProvider(Session);
-				if (CallstacksProvider)
-				{
-					// Legacy format of sending the hash value
-					const uint64 CallstackHash = EventData.GetValue<uint64>("Owner");
-					CallstackId = CallstacksProvider->GetCallstackIdForHash(CallstackHash);
-				}
-			}
-#endif // INSIGHTS_MEM_TRACE_LEGACY_FORMAT
+			const uint32 CallstackId = EventData.GetValue<uint32>("CallstackId", 0);
 
-			uint64 Address = EventData.GetValue<uint64>("Address");
+			const uint64 Address = EventData.GetValue<uint64>("Address");
 
 			RootHeap = EventData.GetValue<uint8>("RootHeap", static_cast<uint8>(RootHeap));
 
 			uint64 SizeUpper = EventData.GetValue<uint32>("Size");
-			const uint8 SizeLowerMask = ((1 << SizeShift) - 1);
+			const uint8 SizeLowerMask = static_cast<uint8>((1u << SizeShift) - 1u);
 			const uint8 AlignmentMask = ~SizeLowerMask;
-			uint64 Size = 0;
-			uint32 Alignment = 0;
-#if INSIGHTS_MEM_TRACE_LEGACY_FORMAT
-			const uint8 Alignment_SizeLower = EventData.GetValue<uint8>("Alignment_SizeLower");
-			if (Alignment_SizeLower)
-			{
-				Size = SizeUpper << SizeShift | static_cast<uint64>(Alignment_SizeLower & SizeLowerMask);
-				Alignment = Alignment_SizeLower & AlignmentMask;
-			}
-			else
-#endif // INSIGHTS_MEM_TRACE_LEGACY_FORMAT
-			{
-				const uint8 AlignmentPow2_SizeLower = EventData.GetValue<uint8>("AlignmentPow2_SizeLower");
-				Size = SizeUpper << SizeShift | static_cast<uint64>(AlignmentPow2_SizeLower & SizeLowerMask);
-				Alignment = 1 << (AlignmentPow2_SizeLower >> SizeShift);
-			}
+			const uint8 AlignmentPow2_SizeLower = EventData.GetValue<uint8>("AlignmentPow2_SizeLower");
+			const uint64 Size = (SizeUpper << SizeShift) | static_cast<uint64>(AlignmentPow2_SizeLower & SizeLowerMask);
+			const uint32 Alignment = 1u << (AlignmentPow2_SizeLower >> SizeShift);
 
 			const uint32 TraceThreadId = Context.ThreadInfo.GetId();
 			const uint32 SystemThreadId = Context.ThreadInfo.GetSystemId();
@@ -221,20 +199,9 @@ bool FAllocationsAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventC
 			const double Time = GetCurrentTime();
 
 			// CallstackId is optional. If the field is not present CallstackId will be 0 (i.e. "no callstack").
-			uint32 CallstackId = EventData.GetValue<uint32>("CallstackId", 0);
+			const uint32 CallstackId = EventData.GetValue<uint32>("CallstackId", 0);
 
-			uint64 Address = EventData.GetValue<uint64>("Address");
-#if INSIGHTS_MEM_TRACE_LEGACY_FORMAT
-			if (Address == 0)
-			{
-				// Legacy format of sending Address and RootHeap packed togather (after 5.0-EA).
-				constexpr uint32 HeapShift = 60;
-				constexpr uint64 RootHeapMask = uint64(0xF) << HeapShift;
-				const uint64 Address_RootHeap = EventData.GetValue<uint64>("Address_RootHeap");
-				Address = Address_RootHeap & ~RootHeapMask;
-				RootHeap = (Address_RootHeap & RootHeapMask) >> HeapShift;
-			}
-#endif // INSIGHTS_MEM_TRACE_LEGACY_FORMAT
+			const uint64 Address = EventData.GetValue<uint64>("Address");
 
 			RootHeap = EventData.GetValue<uint8>("RootHeap", static_cast<uint8>(RootHeap));
 
@@ -255,6 +222,10 @@ bool FAllocationsAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventC
 		case RouteId_HeapMarkAlloc:
 		{
 			const double Time = GetCurrentTime();
+
+			// CallstackId is optional. If the field is not present CallstackId will be 0 (i.e. "no callstack").
+			const uint32 CallstackId = EventData.GetValue<uint32>("CallstackId", 0);
+
 			const uint64 Address = EventData.GetValue<uint64>("Address");
 			const HeapId Heap = EventData.GetValue<uint16>("Heap", 0);
 			const EMemoryTraceHeapAllocationFlags Flags = EventData.GetValue<EMemoryTraceHeapAllocationFlags>("Flags");
@@ -264,13 +235,17 @@ bool FAllocationsAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventC
 
 			FProviderEditScopeLock _(AllocationsProvider);
 			AllocationsProvider.SetCurrentThreadId(TraceThreadId, SystemThreadId);
-			AllocationsProvider.EditMarkAllocationAsHeap(Time, Address, Heap, Flags);
+			AllocationsProvider.EditMarkAllocationAsHeap(Time, /*CallstackId,*/ Address, Heap, Flags);
 			break;
 		}
 
 		case RouteId_HeapUnmarkAlloc:
 		{
 			const double Time = GetCurrentTime();
+
+			// CallstackId is optional. If the field is not present CallstackId will be 0 (i.e. "no callstack").
+			const uint32 CallstackId = EventData.GetValue<uint32>("CallstackId", 0);
+
 			const uint64 Address = EventData.GetValue<uint64>("Address");
 			const HeapId Heap = EventData.GetValue<uint16>("Heap", 0);
 
@@ -279,7 +254,7 @@ bool FAllocationsAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventC
 
 			FProviderEditScopeLock _(AllocationsProvider);
 			AllocationsProvider.SetCurrentThreadId(TraceThreadId, SystemThreadId);
-			AllocationsProvider.EditUnmarkAllocationAsHeap(Time, Address, Heap);
+			AllocationsProvider.EditUnmarkAllocationAsHeap(Time, /*CallstackId,*/ Address, Heap);
 			break;
 		}
 
@@ -361,7 +336,7 @@ bool FAllocationsAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventC
 #endif
 				}
 			}
-			else // EStyle::LeaveScope
+			else if (ensure(Style == EStyle::LeaveScope))
 			{
 				if (RouteId == RouteId_MemScopeTag) // "MemoryScope"
 				{
@@ -398,6 +373,5 @@ double FAllocationsAnalyzer::GetCurrentTime() const
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #undef INSIGHTS_MEM_TRACE_METADATA_TEST
-#undef INSIGHTS_MEM_TRACE_LEGACY_FORMAT
 
 } // namespace TraceServices

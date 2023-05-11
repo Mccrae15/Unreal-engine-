@@ -61,7 +61,7 @@ struct FRawSkinWeight
 {
 	// MAX_TOTAL_INFLUENCES for now
 	FBoneIndexType InfluenceBones[MAX_TOTAL_INFLUENCES];
-	uint8 InfluenceWeights[MAX_TOTAL_INFLUENCES];
+	uint16 InfluenceWeights[MAX_TOTAL_INFLUENCES];
 
 	friend FArchive& operator<<(FArchive& Ar, FRawSkinWeight& OverrideEntry);
 };
@@ -95,7 +95,7 @@ struct FRuntimeSkinWeightProfileData
 		friend FArchive& operator<<(FArchive& Ar, FSkinWeightOverrideInfo& OverrideInfo);
 	};
 
-	void ApplyOverrides(FSkinWeightVertexBuffer* OverrideBuffer, const void* DataBuffer, const int32 NumVerts) const;	
+	void ApplyOverrides(FSkinWeightVertexBuffer* OverrideBuffer, const uint8* DataBuffer, const int32 NumVerts) const;	
 	void ApplyDefaultOverride(FSkinWeightVertexBuffer* Buffer) const;
 
 #if WITH_EDITORONLY_DATA
@@ -148,10 +148,8 @@ struct ENGINE_API FSkinWeightProfilesData
 	FSkinWeightVertexBuffer* GetOverrideBuffer(const FName& ProfileName) const;
 	bool ContainsOverrideBuffer(const FName& ProfileName) const;
 	
-#if WITH_EDITOR
 	const FRuntimeSkinWeightProfileData* GetOverrideData(const FName& ProfileName) const;
 	FRuntimeSkinWeightProfileData& AddOverrideData(const FName& ProfileName);
-#endif // WITH_EDITOR
 	
 	void ReleaseBuffer(const FName& ProfileName, bool bForceRelease = false);
 	void ReleaseResources();
@@ -168,25 +166,8 @@ struct ENGINE_API FSkinWeightProfilesData
 	void CreateRHIBuffers_RenderThread(TArray<TPair<FName, FSkinWeightRHIInfo>>& OutBuffers);
 	void CreateRHIBuffers_Async(TArray<TPair<FName, FSkinWeightRHIInfo>>& OutBuffers);
 
-	template <uint32 MaxNumUpdates>
-	void InitRHIForStreaming(const TArray<TPair<FName, FSkinWeightRHIInfo>>& IntermediateBuffers, TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
-	{
-		for (int32 Idx = 0; Idx < IntermediateBuffers.Num(); ++Idx)
-		{
-			const FName& ProfileName = IntermediateBuffers[Idx].Key;
-			const FSkinWeightRHIInfo& IntermediateBuffer = IntermediateBuffers[Idx].Value;
-			ProfileNameToBuffer.FindChecked(ProfileName)->InitRHIForStreaming(IntermediateBuffer, Batcher);
-		}
-	}
-	
-	template <uint32 MaxNumUpdates>
-	void ReleaseRHIForStreaming(TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
-	{
-		for (TMap<FName, FSkinWeightVertexBuffer*>::TIterator It(ProfileNameToBuffer); It; ++It)
-		{
-			It->Value->ReleaseRHIForStreaming(Batcher);
-		}
-	}
+	void InitRHIForStreaming(const TArray<TPair<FName, FSkinWeightRHIInfo>>& IntermediateBuffers, FRHIResourceUpdateBatcher& Batcher);
+	void ReleaseRHIForStreaming(FRHIResourceUpdateBatcher& Batcher);
 
 	bool IsPendingReadback() const;
 	void EnqueueGPUReadback();

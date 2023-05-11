@@ -16,6 +16,7 @@ LandscapeRender.h: New terrain rendering
 #include "UniformBuffer.h"
 #include "VertexFactory.h"
 #include "MaterialShared.h"
+#include "Materials/MaterialRenderProxy.h"
 #include "LandscapeProxy.h"
 #include "RendererInterface.h"
 #include "MeshBatch.h"
@@ -26,6 +27,7 @@ LandscapeRender.h: New terrain rendering
 #include "PrimitiveViewRelevance.h"
 #include "PrimitiveSceneProxy.h"
 #include "StaticMeshResources.h"
+#include "StaticMeshSceneProxy.h"
 #include "SceneViewExtension.h"
 #include "Tasks/Task.h"
 
@@ -37,6 +39,10 @@ LandscapeRender.h: New terrain rendering
 
 class FLandscapeComponentSceneProxy;
 enum class ERuntimeVirtualTextureMaterialType : uint8;
+
+#if RHI_RAYTRACING
+struct FLandscapeRayTracingImpl;
+#endif
 
 #if WITH_EDITOR
 namespace ELandscapeViewMode
@@ -95,7 +101,9 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeUniformShaderParameters, LANDSCAP
 	SHADER_PARAMETER(int32, SubsectionSizeVerts)
 	SHADER_PARAMETER(int32, NumSubsections)
 	SHADER_PARAMETER(int32, LastLOD)
-    SHADER_PARAMETER(FVector4f, HeightmapUVScaleBias)
+	SHADER_PARAMETER(uint32, VirtualTexturePerPixelHeight)
+	SHADER_PARAMETER(FVector4f, HeightmapTextureSize)
+	SHADER_PARAMETER(FVector4f, HeightmapUVScaleBias)
     SHADER_PARAMETER(FVector4f, WeightmapUVScaleBias)
     SHADER_PARAMETER(FVector4f, LandscapeLightmapScaleBias)
     SHADER_PARAMETER(FVector4f, SubsectionSizeVertsLayerUVPan)
@@ -487,16 +495,18 @@ public:
 	FLandscapeSceneViewExtension(const FAutoRegister& AutoReg);
 	virtual ~FLandscapeSceneViewExtension();
 
+	void EndFrame_GameThread();
 	void EndFrame_RenderThread();
 
 	virtual void SetupViewFamily(FSceneViewFamily& InViewFamily) override {}
 	virtual void SetupView(FSceneViewFamily& InViewFamily, FSceneView& InView) override {}
-	virtual void BeginRenderViewFamily(FSceneViewFamily& InViewFamily) override {}
+	virtual void BeginRenderViewFamily(FSceneViewFamily& InViewFamily) override;
 
 	virtual void PreRenderView_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView) override;
 	virtual void PreInitViews_RenderThread(FRDGBuilder& GraphBuilder) override;
 
 	LANDSCAPE_API const TMap<uint32, FLandscapeRenderSystem*>& GetLandscapeRenderSystems() const;
+	LANDSCAPE_API int32 GetNumViewsWithShowCollision() const { return NumViewsWithShowCollision; }
 private:
 	FBufferRHIRef LandscapeLODDataBuffer;
 	FBufferRHIRef LandscapeIndirectionBuffer;
@@ -516,6 +526,8 @@ private:
 
 	TArray<FLandscapeViewData> LandscapeViews;
 	UE::Tasks::FTask LandscapeSetupTask;
+	int32 NumViewsWithShowCollision = 0;    // Last frame number of views with collision enabled.
+	int32 NumViewsWithShowCollisionAcc = 0; // Accumulate the number of views with collision
 };
 
 
@@ -631,25 +643,7 @@ public:
 	static const int8 MAX_SUBSECTION_COUNT = 2*2;
 
 #if RHI_RAYTRACING
-	struct FLandscapeSectionRayTracingState
-	{
-		int8 CurrentLOD;
-		float FractionalLOD;
-		float HeightmapLODBias;
-		uint32 ReferencedTextureRHIHash;
-
-		FRayTracingGeometry Geometry;
-		FRWBuffer RayTracingDynamicVertexBuffer;
-		FLandscapeVertexFactoryMVFUniformBufferRef UniformBuffer;
-
-		FLandscapeSectionRayTracingState() 
-			: CurrentLOD(-1)
-			, FractionalLOD(-1000.0f)
-			, HeightmapLODBias(-1000.0f)
-			, ReferencedTextureRHIHash(0) {}
-	};
-
-	TStaticArray<FLandscapeSectionRayTracingState, MAX_SUBSECTION_COUNT> SectionRayTracingStates;
+	TPimplPtr<FLandscapeRayTracingImpl> RayTracingImpl;
 #endif
 
 	friend FLandscapeRenderSystem;
@@ -663,6 +657,7 @@ protected:
 	int8						MaxLOD;		// Maximum LOD level, user override possible
 	int8						NumWeightmapLayerAllocations;
 	uint8						StaticLightingLOD;
+	uint8						VirtualTexturePerPixelHeight;
 	float						WeightmapSubsectionOffset;
 	TArray<float>				LODScreenRatioSquared;		// Table of valid screen size -> LOD index
 	int32						FirstLOD;	// First LOD we have batch elements for
@@ -736,7 +731,7 @@ protected:
 	FLandscapeVertexFactory*	FixedGridVertexFactory;
 
 	/** All available materials, including LOD Material, Tessellation generated materials*/
-	TArray<UMaterialInterface*> AvailableMaterials;
+	TArray<FMaterialRenderProxy*> AvailableMaterials;
 
 	// FLightCacheInterface
 	TUniquePtr<FLandscapeLCI> ComponentLightInfo;
@@ -785,7 +780,7 @@ protected:
 	
 	int8 GetLODFromScreenSize(float InScreenSizeSquared, float InViewLODScale) const;
 
-	bool GetMeshElementForVirtualTexture(int32 InLodIndex, ERuntimeVirtualTextureMaterialType MaterialType, UMaterialInterface* InMaterialInterface, FMeshBatch& OutMeshBatch, TArray<FLandscapeBatchElementParams>& OutStaticBatchParamArray) const;
+	bool GetMeshElementForVirtualTexture(int32 InLodIndex, ERuntimeVirtualTextureMaterialType MaterialType, FMaterialRenderProxy* InMaterialInterface, FMeshBatch& OutMeshBatch, TArray<FLandscapeBatchElementParams>& OutStaticBatchParamArray) const;
 	template<class ArrayType> bool GetStaticMeshElement(int32 LODIndex, bool bForToolMesh, FMeshBatch& MeshBatch, ArrayType& OutStaticBatchParamArray) const;
 	
 	virtual void ApplyMeshElementModifier(FMeshBatchElement& InOutMeshElement, int32 InLodIndex) const {}

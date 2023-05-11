@@ -6,7 +6,11 @@
 
 #pragma once
 
+#include "Math/Float16Color.h"
 #include "Math/PackedVector.h"
+#include "Math/Plane.h"
+#include "Math/UnrealMathUtility.h"
+#include "RHI.h"
 
 /** Helper for accessing R10G10B10A2 colors. */
 struct FRHIR10G10B10A2

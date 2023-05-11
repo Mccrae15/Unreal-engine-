@@ -2,10 +2,13 @@
 
 #include "Data/PCGDifferenceData.h"
 #include "Data/PCGPointData.h"
+#include "Data/PCGSpatialData.h"
 #include "Data/PCGUnionData.h"
 #include "Helpers/PCGAsync.h"
-#include "PCGHelpers.h"
-#include "Metadata/PCGMetadataAccessor.h"
+
+#include "Serialization/ArchiveCrc32.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(PCGDifferenceData)
 
 namespace PCGDifferenceDataUtils
 {
@@ -32,6 +35,10 @@ void UPCGDifferenceData::Initialize(const UPCGSpatialData* InData)
 	Source = InData;
 	TargetActor = InData->TargetActor;
 
+#if WITH_EDITOR
+	RawPointerSource = Source;
+#endif
+
 	check(Metadata);
 	Metadata->Initialize(Source->Metadata);
 }
@@ -50,15 +57,24 @@ void UPCGDifferenceData::AddDifference(const UPCGSpatialData* InDifference)
 	if (!Difference)
 	{
 		Difference = InDifference;
+
+#if WITH_EDITOR
+		RawPointerDifference = InDifference;
+#endif
 	}
 	else
 	{
 		if (!DifferencesUnion)
 		{
-			DifferencesUnion = NewObject<UPCGUnionData>(this);
+			DifferencesUnion = NewObject<UPCGUnionData>();
 			DifferencesUnion->AddData(Difference);
 			DifferencesUnion->SetDensityFunction(PCGDifferenceDataUtils::ToUnionDensityFunction(DensityFunction));
 			Difference = DifferencesUnion;
+
+#if WITH_EDITOR
+			RawPointerDifference = Difference;
+			RawPointerDifferencesUnion = DifferencesUnion;
+#endif
 		}
 
 		check(Difference == DifferencesUnion);
@@ -70,9 +86,9 @@ void UPCGDifferenceData::SetDensityFunction(EPCGDifferenceDensityFunction InDens
 {
 	DensityFunction = InDensityFunction;
 
-	if (DifferencesUnion)
+	if (GetDifferencesUnion())
 	{
-		DifferencesUnion->SetDensityFunction(PCGDifferenceDataUtils::ToUnionDensityFunction(DensityFunction));
+		GetDifferencesUnion()->SetDensityFunction(PCGDifferenceDataUtils::ToUnionDensityFunction(DensityFunction));
 	}
 }
 
@@ -86,30 +102,86 @@ void UPCGDifferenceData::PostEditChangeProperty(FPropertyChangedEvent& PropertyC
 
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 }
+
+void UPCGDifferenceData::PostLoad()
+{
+	Super::PostLoad();
+
+	RawPointerSource = Source;
+	RawPointerDifference = Difference;
+	RawPointerDifferencesUnion = DifferencesUnion;
+}
 #endif
+
+void UPCGDifferenceData::VisitDataNetwork(TFunctionRef<void(const UPCGData*)> Action) const
+{
+	check(GetSource());
+	GetSource()->VisitDataNetwork(Action);
+
+	if (GetDifference())
+	{
+		GetDifference()->VisitDataNetwork(Action);
+	}
+}
+
+FPCGCrc UPCGDifferenceData::ComputeCrc(bool bFullDataCrc) const
+{
+	FArchiveCrc32 Ar;
+
+	if (PropagateCrcThroughBooleanData())
+	{
+		AddToCrc(Ar, bFullDataCrc);
+
+		// Chain together CRCs of operands
+		check(GetSource());
+		uint32 SourceCrc = GetSource()->GetOrComputeCrc(bFullDataCrc).GetValue();
+		Ar << SourceCrc;
+
+		if (GetDifference())
+		{
+			uint32 DifferenceCrc = GetDifference()->GetOrComputeCrc(bFullDataCrc).GetValue();
+			Ar << DifferenceCrc;
+		}
+	}
+	else
+	{
+		UPCGData::AddToCrc(Ar, bFullDataCrc);
+	}
+
+	return FPCGCrc(Ar.GetCrc());
+}
+
+void UPCGDifferenceData::AddToCrc(FArchiveCrc32& Ar, bool bFullDataCrc) const
+{
+	uint32 UniqueTypeID = StaticClass()->GetDefaultObject()->GetUniqueID();
+	Ar << UniqueTypeID;
+
+	uint32 DensityFunctionValue = static_cast<uint32>(DensityFunction);
+	Ar << DensityFunctionValue;
+}
 
 int UPCGDifferenceData::GetDimension() const
 {
-	return Source->GetDimension();
+	return GetSource()->GetDimension();
 }
 
 FBox UPCGDifferenceData::GetBounds() const
 {
-	return Source->GetBounds();
+	return GetSource()->GetBounds();
 }
 
 FBox UPCGDifferenceData::GetStrictBounds() const
 {
-	return Difference ? FBox(EForceInit::ForceInit) : Source->GetStrictBounds();
+	return GetDifference() ? FBox(EForceInit::ForceInit) : GetSource()->GetStrictBounds();
 }
 
 bool UPCGDifferenceData::SamplePoint(const FTransform& InTransform, const FBox& InBounds, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const
 {
 	//TRACE_CPUPROFILER_EVENT_SCOPE(UPCGDifferenceData::SamplePoint);
-	check(Source);
+	check(GetSource());
 
 	FPCGPoint PointFromSource;
-	if(!Source->SamplePoint(InTransform, InBounds, PointFromSource, OutMetadata))
+	if(!GetSource()->SamplePoint(InTransform, InBounds, PointFromSource, OutMetadata))
 	{
 		return false;
 	}
@@ -118,7 +190,7 @@ bool UPCGDifferenceData::SamplePoint(const FTransform& InTransform, const FBox& 
 
 	FPCGPoint PointFromDiff;
 	// Important note: here we will not use the point we got from the source, otherwise we are introducing severe bias
-	if (Difference && Difference->SamplePoint(InTransform, InBounds, PointFromDiff, (bDiffMetadata ? OutMetadata : nullptr)))
+	if (GetDifference() && GetDifference()->SamplePoint(InTransform, InBounds, PointFromDiff, (bDiffMetadata ? OutMetadata : nullptr)))
 	{
 		const bool bBinaryDensity = (DensityFunction == EPCGDifferenceDensityFunction::Binary);
 		
@@ -127,7 +199,8 @@ bool UPCGDifferenceData::SamplePoint(const FTransform& InTransform, const FBox& 
 		// Color?
 		if (bDiffMetadata && OutMetadata && OutPoint.Density > 0 && PointFromDiff.MetadataEntry != PCGInvalidEntryKey)
 		{
-			OutMetadata->MergePointAttributesSubset(PointFromSource, OutMetadata, Source->Metadata, PointFromDiff, OutMetadata, Difference->Metadata, OutPoint, EPCGMetadataOp::Sub);
+			// Safe to also cache GetSource()->Metadata ? I'm not sure it is, but if it is it could also benefit UnionData which sometimes accesses input metadata, and also intersection data
+			OutMetadata->MergePointAttributesSubset(PointFromSource, OutMetadata, GetSource()->Metadata, PointFromDiff, OutMetadata, GetDifference()->Metadata, OutPoint, EPCGMetadataOp::Sub);
 		}
 
 		return OutPoint.Density > 0;
@@ -140,8 +213,8 @@ bool UPCGDifferenceData::SamplePoint(const FTransform& InTransform, const FBox& 
 
 bool UPCGDifferenceData::HasNonTrivialTransform() const
 {
-	check(Source);
-	return Source->HasNonTrivialTransform();
+	check(GetSource());
+	return GetSource()->HasNonTrivialTransform();
 }
 
 const UPCGPointData* UPCGDifferenceData::CreatePointData(FPCGContext* Context) const
@@ -149,7 +222,7 @@ const UPCGPointData* UPCGDifferenceData::CreatePointData(FPCGContext* Context) c
 	TRACE_CPUPROFILER_EVENT_SCOPE(UPCGDifferenceData::CreatePointData);
 	
 	// This is similar to what we are doing in UPCGUnionData::CreatePointData
-	const UPCGPointData* SourcePointData = Source->ToPointData(Context);
+	const UPCGPointData* SourcePointData = GetSource()->ToPointData(Context);
 
 	if (!SourcePointData)
 	{
@@ -157,44 +230,48 @@ const UPCGPointData* UPCGDifferenceData::CreatePointData(FPCGContext* Context) c
 		return SourcePointData;
 	}
 
-	if (!Difference)
+	if (!GetDifference())
 	{
 		UE_LOG(LogPCG, Verbose, TEXT("Difference is trivial"));
 		return SourcePointData;
 	}
 
+	const UPCGMetadata* SourceMetadata = SourcePointData->Metadata;
+
 	UPCGPointData* Data = NewObject<UPCGPointData>();
-	Data->InitializeFromData(this, SourcePointData->Metadata);
+	Data->InitializeFromData(this, SourceMetadata);
+	
+	UPCGMetadata* OutMetadata = Data->Metadata;
 
 	const TArray<FPCGPoint>& SourcePoints = SourcePointData->GetPoints();
 	TArray<FPCGPoint>& TargetPoints = Data->GetMutablePoints();
 
+	const UPCGMetadata* DifferenceMetadata = GetDifference()->Metadata;
 	UPCGMetadata* TempDiffMetadata = nullptr;
-	if (bDiffMetadata && Data->Metadata && Difference->Metadata)
+	if (bDiffMetadata && OutMetadata && DifferenceMetadata)
 	{
 		TempDiffMetadata = NewObject<UPCGMetadata>();
-		TempDiffMetadata->Initialize(Difference->Metadata);
+		TempDiffMetadata->Initialize(DifferenceMetadata);
 	}
 
-	FPCGAsync::AsyncPointProcessing(Context, SourcePoints.Num(), TargetPoints, [this, Data, SourcePointData, TempDiffMetadata, &SourcePoints](int32 Index, FPCGPoint& OutPoint)
+	FPCGAsync::AsyncPointProcessing(Context, SourcePoints.Num(), TargetPoints, [this, Data, OutMetadata, SourcePointData, SourceMetadata, TempDiffMetadata, &SourcePoints](int32 Index, FPCGPoint& OutPoint)
 	{
 		const FPCGPoint& Point = SourcePoints[Index];
 
 		FPCGPoint PointFromDiff;
-		if (Difference && Difference->SamplePoint(Point.Transform, Point.GetLocalBounds(), PointFromDiff, TempDiffMetadata))
+		if (GetDifference() && GetDifference()->SamplePoint(Point.Transform, Point.GetLocalBounds(), PointFromDiff, TempDiffMetadata))
 		{
 			const bool bBinaryDensity = (DensityFunction == EPCGDifferenceDensityFunction::Binary);
 
 			OutPoint = Point;
-			//UPCGMetadataAccessorHelpers::InitializeMetadata(OutPoint, Data->Metadata, Point);
 			OutPoint.Density = bBinaryDensity ? 0 : FMath::Max(0, Point.Density - PointFromDiff.Density);
 
 			if (TempDiffMetadata && OutPoint.Density > 0 && PointFromDiff.MetadataEntry != PCGInvalidEntryKey)
 			{
-				Data->Metadata->MergePointAttributesSubset(Point, SourcePointData->Metadata, SourcePointData->Metadata, PointFromDiff, TempDiffMetadata, TempDiffMetadata, OutPoint, EPCGMetadataOp::Sub);
+				OutMetadata->MergePointAttributesSubset(Point, SourceMetadata, SourceMetadata, PointFromDiff, TempDiffMetadata, TempDiffMetadata, OutPoint, EPCGMetadataOp::Sub);
 			}
 
-#if WITH_EDITORONLY_DATA
+#if WITH_EDITOR
 			return OutPoint.Density > 0 || bKeepZeroDensityPoints;
 #else
 			return OutPoint.Density > 0;
@@ -203,7 +280,6 @@ const UPCGPointData* UPCGDifferenceData::CreatePointData(FPCGContext* Context) c
 		else
 		{
 			OutPoint = Point;
-			//UPCGMetadataAccessorHelpers::InitializeMetadata(OutPoint, Data->Metadata, Point);
 			return true;
 		}
 	});
@@ -211,4 +287,28 @@ const UPCGPointData* UPCGDifferenceData::CreatePointData(FPCGContext* Context) c
 	UE_LOG(LogPCG, Verbose, TEXT("Difference generated %d points from %d source points"), TargetPoints.Num(), SourcePointData->GetPoints().Num());
 
 	return Data;
+}
+
+UPCGSpatialData* UPCGDifferenceData::CopyInternal() const
+{
+	UPCGDifferenceData* NewDifferenceData = NewObject<UPCGDifferenceData>();
+
+	NewDifferenceData->Source = Source;
+	NewDifferenceData->Difference = Difference;
+	NewDifferenceData->DensityFunction = DensityFunction;
+	if (DifferencesUnion)
+	{
+		NewDifferenceData->DifferencesUnion = static_cast<UPCGUnionData*>(DifferencesUnion->DuplicateData());
+
+#if WITH_EDITOR
+		NewDifferenceData->RawPointerDifferencesUnion = NewDifferenceData->DifferencesUnion;
+#endif
+	}
+
+#if WITH_EDITOR
+	NewDifferenceData->RawPointerSource = NewDifferenceData->Source;
+	NewDifferenceData->RawPointerDifference = NewDifferenceData->Difference;
+#endif
+
+	return NewDifferenceData;
 }

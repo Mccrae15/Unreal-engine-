@@ -4,34 +4,36 @@
 #include "ProfilingDebugging/LoadTimeTracker.h"
 #include "Rendering/SkeletalMeshLODRenderData.h"
 #include "Animation/MorphTarget.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 extern int32 GSkinCacheRecomputeTangents;
+
+FMorphTargetVertexInfoBuffers::FMorphTargetVertexInfoBuffers() = default;
+FMorphTargetVertexInfoBuffers::~FMorphTargetVertexInfoBuffers() = default;
 
 void FMorphTargetVertexInfoBuffers::InitRHI()
 {
 	SCOPED_LOADTIMER(FFMorphTargetVertexInfoBuffers_InitRHI);
 
+	check(NumTotalBatches > 0);
 	check(!bRHIIntialized);
 
 	const uint32 BufferSize = MorphData.Num() * sizeof(uint32);
 	FRHIResourceCreateInfo CreateInfo(TEXT("MorphData"));
-	CreateInfo.bWithoutNativeResource = (BufferSize == 0);
 	MorphDataBuffer = RHICreateStructuredBuffer(sizeof(uint32), BufferSize, BUF_Static | BUF_ByteAddressBuffer | BUF_ShaderResource, ERHIAccess::SRVMask, CreateInfo);
+	MorphDataBuffer->SetOwnerName(GetOwnerName());
 	
-	if (BufferSize > 0)
-	{
-		void* BufferPtr = RHILockBuffer(MorphDataBuffer, 0, BufferSize, RLM_WriteOnly);
-		FMemory::ParallelMemcpy(BufferPtr, MorphData.GetData(), BufferSize, EMemcpyCachePolicy::StoreUncached);
-		RHIUnlockBuffer(MorphDataBuffer);
-	}
+	void* BufferPtr = RHILockBuffer(MorphDataBuffer, 0, BufferSize, RLM_WriteOnly);
+	FMemory::ParallelMemcpy(BufferPtr, MorphData.GetData(), BufferSize, EMemcpyCachePolicy::StoreUncached);
+	RHIUnlockBuffer(MorphDataBuffer);
+	MorphDataSRV = RHICreateShaderResourceView(MorphDataBuffer);
 
-	MorphDataSRV = RHICreateShaderResourceView(FShaderResourceViewInitializer((BufferSize > 0) ? MorphDataBuffer : nullptr));
-
-	if (bEmptyMorphCPUDataOnInitRHI && BufferSize > 0)
+	if (bEmptyMorphCPUDataOnInitRHI)
 	{
 		MorphData.Empty();
 		bIsMorphCPUDataValid = false;
 	}
+
 	bRHIIntialized = true;
 }
 
@@ -42,10 +44,31 @@ void FMorphTargetVertexInfoBuffers::ReleaseRHI()
 	bRHIIntialized = false;
 }
 
+uint32 FMorphTargetVertexInfoBuffers::GetMaximumThreadGroupSize()
+{
+	//D3D11 there can be at most 65535 Thread Groups in each dimension of a Dispatch call.
+	uint64 MaximumThreadGroupSize = uint64(GMaxComputeDispatchDimension) * 32ull;
+	return uint32(FMath::Min<uint64>(MaximumThreadGroupSize, UINT32_MAX));
+}
+
 const float FMorphTargetVertexInfoBuffers::CalculatePositionPrecision(float TargetPositionErrorTolerance)
 {
 	const float UnrealUnitPerMeter = 100.0f;
 	return TargetPositionErrorTolerance * 2.0f * 1e-6f * UnrealUnitPerMeter;	// * 2.0 because correct rounding guarantees error is at most half of the cell size.
+}
+
+void FMorphTargetVertexInfoBuffers::ResetCPUData()
+{
+	MorphData.Empty();
+	MaximumValuePerMorph.Empty();
+	MinimumValuePerMorph.Empty();
+	BatchStartOffsetPerMorph.Empty();
+	BatchesPerMorph.Empty();
+	NumTotalBatches = 0;
+	PositionPrecision = 0.0f;
+	TangentZPrecision = 0.0f;
+	bResourcesInitialized = false;
+	bIsMorphCPUDataValid = false;
 }
 
 void FMorphTargetVertexInfoBuffers::ValidateVertexBuffers(bool bMorphTargetsShouldBeValid)
@@ -467,41 +490,4 @@ void FMorphTargetVertexInfoBuffers::InitMorphResources(EShaderPlatform ShaderPla
 bool FMorphTargetVertexInfoBuffers::IsPlatformShaderSupported(EShaderPlatform ShaderPlatform)
 {
 	return IsFeatureLevelSupported(ShaderPlatform, ERHIFeatureLevel::SM5);
-}
-
-template <bool bRenderThread>
-FBufferRHIRef FMorphTargetVertexInfoBuffers::CreateMorphRHIBuffer_Internal()
-{
-	uint32 SizeInBytes = MorphData.Num() * sizeof(uint32);
-
-	if(SizeInBytes > 0)
-	{
-		const EBufferUsageFlags BufferFlags = BUF_Static | BUF_ByteAddressBuffer | BUF_ShaderResource;
-
-		// Create the index buffer.
-		FRHIResourceCreateInfo CreateInfo(TEXT("MorphData"), &MorphData);
-		if (bRenderThread)
-		{
-			FBufferRHIRef BufferRHIRef;
-			BufferRHIRef = RHICreateStructuredBuffer(sizeof(uint32), SizeInBytes, BufferFlags, ERHIAccess::SRVMask, CreateInfo);
-
-			return BufferRHIRef;
-		}
-		else
-		{
-			FRHIAsyncCommandList CommandList;
-			return CommandList->CreateBuffer(SizeInBytes, BufferFlags, sizeof(uint32), ERHIAccess::SRVMask, CreateInfo);
-		}
-	}
-	return nullptr;
-}
-
-FBufferRHIRef FMorphTargetVertexInfoBuffers::CreateMorphRHIBuffer_RenderThread()
-{
-	return CreateMorphRHIBuffer_Internal<true>();
-}
-
-FBufferRHIRef FMorphTargetVertexInfoBuffers::CreateMorphRHIBuffer_Async()
-{
-	return CreateMorphRHIBuffer_Internal<false>();
 }

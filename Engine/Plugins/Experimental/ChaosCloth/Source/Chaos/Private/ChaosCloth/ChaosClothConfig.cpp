@@ -5,26 +5,14 @@
 #include "ChaosClothConfigCustomVersion.h"
 #include "ChaosClothSharedConfigCustomVersion.h"
 #include "ClothingSimulationInteractor.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "UObject/PhysicsObjectVersion.h"
 #include "UObject/FortniteMainBranchObjectVersion.h"
 #include "UObject/UE5ReleaseStreamObjectVersion.h"
+#include "UObject/UObjectIterator.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ChaosClothConfig)
 
-// Legacy parameters not yet migrated to Chaos parameters:
-//  VerticalConstraintConfig.CompressionLimit
-//  VerticalConstraintConfig.StretchLimit
-//  HorizontalConstraintConfig.CompressionLimit
-//  HorizontalConstraintConfig.StretchLimit
-//  BendConstraintConfig.CompressionLimit
-//  BendConstraintConfig.StretchLimit
-//  ShearConstraintConfig.CompressionLimit
-//  ShearConstraintConfig.StretchLimit
-//  SelfCollisionStiffness
-//  SelfCollisionCullScale
-//  LinearDrag
-//  AngularDrag
-//  StiffnessFrequency
 
 UChaosClothConfig::UChaosClothConfig()
 {}
@@ -35,6 +23,21 @@ UChaosClothConfig::~UChaosClothConfig()
 void UChaosClothConfig::MigrateFrom(const FClothConfig_Legacy& ClothConfig)
 {
 #if WITH_EDITORONLY_DATA
+	// Legacy PhysX parameters never migrated to Chaos Cloth Config parameters:
+	//  VerticalConstraintConfig.CompressionLimit
+	//  VerticalConstraintConfig.StretchLimit
+	//  HorizontalConstraintConfig.CompressionLimit
+	//  HorizontalConstraintConfig.StretchLimit
+	//  BendConstraintConfig.CompressionLimit
+	//  BendConstraintConfig.StretchLimit
+	//  ShearConstraintConfig.CompressionLimit
+	//  ShearConstraintConfig.StretchLimit
+	//  SelfCollisionStiffness
+	//  SelfCollisionCullScale
+	//  LinearDrag
+	//  AngularDrag
+	//  StiffnessFrequency
+
 	const float VerticalStiffness =
 		ClothConfig.VerticalConstraintConfig.Stiffness;
 	const float HorizontalStiffness =

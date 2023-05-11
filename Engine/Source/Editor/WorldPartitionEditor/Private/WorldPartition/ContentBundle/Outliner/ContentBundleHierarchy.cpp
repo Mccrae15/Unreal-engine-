@@ -18,9 +18,12 @@ FContentBundleHiearchy::FContentBundleHiearchy(FContentBundleMode* Mode)
 
 FContentBundleHiearchy::~FContentBundleHiearchy()
 {
-	UContentBundleEditorSubsystem::Get()->OnContentBundleChanged().RemoveAll(this);
-	UContentBundleEditorSubsystem::Get()->OnContentBundleAdded().RemoveAll(this);
-	UContentBundleEditorSubsystem::Get()->OnContentBundleRemoved().RemoveAll(this);
+	if (UContentBundleEditorSubsystem* ContentBundleEditorSubsystem = UContentBundleEditorSubsystem::Get())
+	{
+		ContentBundleEditorSubsystem->OnContentBundleChanged().RemoveAll(this);
+		ContentBundleEditorSubsystem->OnContentBundleAdded().RemoveAll(this);
+		ContentBundleEditorSubsystem->OnContentBundleRemoved().RemoveAll(this);
+	}
 }
 
 TUniquePtr<FContentBundleHiearchy> FContentBundleHiearchy::Create(FContentBundleMode* Mode)
@@ -76,7 +79,7 @@ void FContentBundleHiearchy::OnContentBundleChanged(const FContentBundleEditor* 
 {
 	FSceneOutlinerHierarchyChangedData EventData;
 	EventData.Type = FSceneOutlinerHierarchyChangedData::FullRefresh;
-	EventData.ItemIDs.Emplace(ContentBundle->GetGuid());
+	EventData.ItemIDs.Emplace(ContentBundle->GetTreeItemID());
 	HierarchyChangedEvent.Broadcast(EventData);
 }
 

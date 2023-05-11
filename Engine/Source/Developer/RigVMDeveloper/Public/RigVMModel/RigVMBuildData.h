@@ -17,10 +17,10 @@ struct RIGVMDEVELOPER_API FRigVMFunctionReferenceArray
 	bool IsValidIndex(int32 InIndex) const { return FunctionReferences.IsValidIndex(InIndex); }
 
 	// Returns the number of reference functions
-	FORCEINLINE int32 Num() const { return FunctionReferences.Num(); }
+	int32 Num() const { return FunctionReferences.Num(); }
 
 	// const accessor for an function reference given its index
-	FORCEINLINE const TSoftObjectPtr<URigVMFunctionReferenceNode>& operator[](int32 InIndex) const { return FunctionReferences[InIndex]; }
+	const TSoftObjectPtr<URigVMFunctionReferenceNode>& operator[](int32 InIndex) const { return FunctionReferences[InIndex]; }
 
 	UPROPERTY(VisibleAnywhere, Category = "BuildData")
 	TArray< TSoftObjectPtr<URigVMFunctionReferenceNode> > FunctionReferences;
@@ -35,7 +35,6 @@ public:
 	
 	FRigVMReferenceNodeData()
 		:ReferenceNodePath()
-		,ReferencedFunctionPath()
 	{}
 
 	FRigVMReferenceNodeData(URigVMFunctionReferenceNode* InReferenceNode);
@@ -43,18 +42,18 @@ public:
 	UPROPERTY()
 	FString ReferenceNodePath;
 
+	UPROPERTY(meta=(DeprecatedProperty))
+	FString ReferencedFunctionPath_DEPRECATED;
+	
 	UPROPERTY()
-	FString ReferencedFunctionPath;
+	FRigVMGraphFunctionHeader ReferencedHeader;
 
 	TSoftObjectPtr<URigVMFunctionReferenceNode> GetReferenceNodeObjectPath();
-	TSoftObjectPtr<URigVMLibraryNode> GetReferencedFunctionObjectPath();
 	URigVMFunctionReferenceNode* GetReferenceNode();
-	URigVMLibraryNode* GetReferencedFunction();
 
 private:
 
 	TSoftObjectPtr<URigVMFunctionReferenceNode> ReferenceNodePtr;
-	TSoftObjectPtr<URigVMLibraryNode> LibraryNodePtr;
 };
 
 /**
@@ -69,43 +68,44 @@ class RIGVMDEVELOPER_API URigVMBuildData : public UObject
 
 public:
 
-	// Default constructor
-	URigVMBuildData();
+	// Returns the singleton build data
+	static URigVMBuildData* Get();
+	
+	// Looks for all function references (in RigVMClientHost metadata) and initializes the URigVMBuildData
+	void InitializeIfNeeded();
 
 	// Returns the list of references for a given function definition
-	const FRigVMFunctionReferenceArray* FindFunctionReferences(const URigVMLibraryNode* InFunction) const;
+	const FRigVMFunctionReferenceArray* FindFunctionReferences(const FRigVMGraphFunctionIdentifier& InFunction) const;
 
 	/**
 	 * Iterator function to invoke a lambda / TFunction for each reference of a function
 	 * @param InFunction The function to iterate all references for
 	 * @param PerReferenceFunction The function to invoke for each reference
 	 */
-	void ForEachFunctionReference(const URigVMLibraryNode* InFunction, TFunction<void(URigVMFunctionReferenceNode*)> PerReferenceFunction) const;
+	void ForEachFunctionReference(const FRigVMGraphFunctionIdentifier& InFunction, TFunction<void(URigVMFunctionReferenceNode*)> PerReferenceFunction) const;
 
 	/**
 	* Iterator function to invoke a lambda / TFunction for each reference of a function
 	* @param InFunction The function to iterate all references for
 	* @param PerReferenceFunction The function to invoke for each reference
 	*/
-	void ForEachFunctionReferenceSoftPtr(const URigVMLibraryNode* InFunction, TFunction<void(TSoftObjectPtr<URigVMFunctionReferenceNode>)> PerReferenceFunction) const;
-
-	// Update the references list for a given reference node
-	void UpdateReferencesForFunctionReferenceNode(URigVMFunctionReferenceNode* InReferenceNode);
+	void ForEachFunctionReferenceSoftPtr(const FRigVMGraphFunctionIdentifier& InFunction, TFunction<void(TSoftObjectPtr<URigVMFunctionReferenceNode>)>
+	                                     PerReferenceFunction) const;
 
 	// registers a new reference node for a given function
-	void RegisterFunctionReference(URigVMLibraryNode* InFunction, URigVMFunctionReferenceNode* InReference);
+	void RegisterFunctionReference(const FRigVMGraphFunctionIdentifier& InFunction, URigVMFunctionReferenceNode* InReference);
 
 	// registers a new reference node for a given function
-	void RegisterFunctionReference(TSoftObjectPtr<URigVMLibraryNode> InFunction, TSoftObjectPtr<URigVMFunctionReferenceNode> InReference);
+	void RegisterFunctionReference(const FRigVMGraphFunctionIdentifier& InFunction, TSoftObjectPtr<URigVMFunctionReferenceNode> InReference);
 
 	// registers a new reference node for a given function
 	void RegisterFunctionReference(FRigVMReferenceNodeData InReferenceNodeData);
 
 	// unregisters a new reference node for a given function
-	void UnregisterFunctionReference(URigVMLibraryNode* InFunction, URigVMFunctionReferenceNode* InReference);
+	void UnregisterFunctionReference(const FRigVMGraphFunctionIdentifier& InFunction, URigVMFunctionReferenceNode* InReference);
 
 	// unregisters a new reference node for a given function
-	void UnregisterFunctionReference(TSoftObjectPtr<URigVMLibraryNode> InFunction, TSoftObjectPtr<URigVMFunctionReferenceNode> InReference);
+	void UnregisterFunctionReference(const FRigVMGraphFunctionIdentifier& InFunction, TSoftObjectPtr<URigVMFunctionReferenceNode> InReference);
 
 	// Clear references to temp assets
 	void ClearInvalidReferences();
@@ -115,12 +115,21 @@ public:
 
 private:
 
+	// disable default constructor
+	URigVMBuildData();
+	
+	static bool bInitialized;
+
+	UPROPERTY(meta=(DeprecatedProperty))
+	TMap< TSoftObjectPtr<URigVMLibraryNode>, FRigVMFunctionReferenceArray > FunctionReferences_DEPRECATED;
+
 	UPROPERTY(VisibleAnywhere, Category = "BuildData")
-	TMap< TSoftObjectPtr<URigVMLibraryNode>, FRigVMFunctionReferenceArray > FunctionReferences;
+	TMap< FRigVMGraphFunctionIdentifier, FRigVMFunctionReferenceArray > GraphFunctionReferences;
 
 	bool bIsRunningUnitTest;
 
 	friend class URigVMController;
+	friend struct FRigVMClient;
 	friend class URigVMCompiler;
 };
 

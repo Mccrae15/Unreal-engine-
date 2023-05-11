@@ -3,8 +3,11 @@
 #include "Widgets/SMediaImage.h"
 
 #include "Styling/AppStyle.h"
+#include "MaterialDomain.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialExpressionTextureSample.h"
 #include "Styling/SlateBrush.h"
+#include "UObject/Package.h"
 #include "Widgets/Layout/SScaleBox.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"

@@ -516,7 +516,7 @@ namespace BlueprintSearchMetaDataHelpers
 
 			WriteTextValue( Identifier );
 			PrintPolicy::WriteChar(this->Stream, TCHAR(':'));
-			}
+		}
 
 	public:
 		/** Cached mapping of all searchable properties that have been discovered while gathering searchable data for the current Blueprint */
@@ -558,11 +558,16 @@ namespace BlueprintSearchMetaDataHelpers
 			WriteTextValue(FText::FromString(String));
 		}
 
+		virtual void WriteStringValue(FStringView String) override
+		{
+			// We just want to make sure all strings are converted into FText hex strings, used by the FiB system
+			WriteTextValue(FText::FromStringView(String));
+		}
+		
 		virtual void WriteTextValue(const FText& Text) override
 		{
 			// Check to see if the value has already been added.
-			int32* TableLookupValuePtr = ReverseLookupTable.Find(FLookupTableItem(Text));
-			if (TableLookupValuePtr)
+			if (int32* TableLookupValuePtr = ReverseLookupTable.Find(FLookupTableItem(Text)))
 			{
 				TFindInBlueprintJsonStringWriter<TCondensedJsonPrintPolicy<TCHAR>>::WriteStringValue(FString::FromInt(*TableLookupValuePtr));
 			}
@@ -3654,7 +3659,7 @@ TStatId FFindInBlueprintSearchManager::GetStatId() const
 
 class FFiBDumpIndexCacheToFileExecHelper : public FSelfRegisteringExec
 {
-	virtual bool Exec(class UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
+	virtual bool Exec_Editor(class UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
 	{
 		if (FParse::Command(&Cmd, TEXT("DUMPFIBINDEXCACHE")))
 		{

@@ -14,7 +14,9 @@
 #include "OverlayRendering.h"
 #include "ScopedTransaction.h"
 #include "UI/CameraCalibrationWidgetHelpers.h"
+#include "UObject/Package.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SComboBox.h"
 #include "Widgets/Input/SNumericEntryBox.h"
 
 #include <vector>
@@ -44,7 +46,7 @@ void UCameraNodalOffsetAlgoOpticalAxis::Initialize(UNodalOffsetTool* InNodalOffs
 	}
 
 	// Create the render target for the crosshair overlay
-	const FIntPoint OverlaySize = StepsController->GetCompRenderTargetSize();
+	const FIntPoint OverlaySize = StepsController->GetCompRenderResolution();
 
 	OverlayTexture = NewObject<UTextureRenderTarget2D>(GetTransientPackage(), MakeUniqueObjectName(GetTransientPackage(), UTextureRenderTarget2D::StaticClass()));
 

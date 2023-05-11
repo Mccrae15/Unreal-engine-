@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Chaos/Declares.h"
+#include "Chaos/PhysicsObject.h"
 #include "PhysicsInterfaceDeclaresCore.h"
 #include "PhysicsInterfaceWrapperShared.h"
 #include "PhysicsInterfaceTypesCore.h"
@@ -85,7 +86,7 @@ enum EPhysicalSurface : int
 
 /** Enum for controlling the falloff of strength of a radial impulse as a function of distance from Origin. */
 UENUM()
-enum ERadialImpulseFalloff
+enum ERadialImpulseFalloff : int
 {
 	/** Impulse is a constant strength, up to the limit of its range. */
 	RIF_Constant,
@@ -108,7 +109,7 @@ enum class ESleepFamily: uint8
 
 /** Specifies angular degrees of freedom */
 UENUM()
-enum EAngularConstraintMotion
+enum EAngularConstraintMotion : int
 {
 	/** No constraint against this axis. */
 	ACM_Free		UMETA(DisplayName="Free"),
@@ -124,7 +125,7 @@ enum EAngularConstraintMotion
 UENUM()
 namespace EConstraintFrame
 {
-enum Type
+enum Type : int
 {
 	Frame1,
 	Frame2
@@ -167,7 +168,7 @@ namespace PhysicsInterfaceTypes
 
 // LINEAR CCPT
 UENUM()
-enum EConstraintPlasticityType
+enum EConstraintPlasticityType : int
 {
 	/** */
 	CCPT_Free	UMETA(DisplayName = "Free"),
@@ -181,7 +182,7 @@ enum EConstraintPlasticityType
 
 // LINEAR DOF
 UENUM()
-enum ELinearConstraintMotion
+enum ELinearConstraintMotion : int
 {
 	/** No constraint against this axis. */
 	LCM_Free	UMETA(DisplayName="Free"),
@@ -270,6 +271,11 @@ public:
 
 	Chaos::FPerShapeData* Shape;
     FPhysicsActorHandle ActorRef;
+
+	friend FORCEINLINE uint32 GetTypeHash(const FPhysicsShapeReference_Chaos& InShapeReference)
+	{
+		return PointerHash(InShapeReference.Shape);
+	}
 };
 
 class PHYSICSCORE_API FPhysicsShapeAdapter_Chaos
@@ -286,11 +292,6 @@ private:
 	TUniquePtr<FPhysicsGeometry> Geometry;
 	FQuat GeometryRotation;
 };
-
-FORCEINLINE uint32 GetTypeHash(const FPhysicsShapeReference_Chaos& InShapeReference)
-{
-    return PointerHash(InShapeReference.Shape);
-}
 
 /**
  Wrapper around geometry. This is really just needed to make the physx chaos abstraction easier
@@ -478,7 +479,9 @@ public:
 
 	static SIZE_T GetResourceSizeEx(const FPhysicsActorHandle& InActorRef);
 
+	static FPhysicsConstraintHandle CreateConstraint(Chaos::FPhysicsObject* Body1, Chaos::FPhysicsObject* Body2, const FTransform& InLocalFrame1, const FTransform& InLocalFrame2);
 	static FPhysicsConstraintHandle CreateConstraint(const FPhysicsActorHandle& InActorRef1,const FPhysicsActorHandle& InActorRef2,const FTransform& InLocalFrame1,const FTransform& InLocalFrame2);
+
 	static FPhysicsConstraintHandle CreateSuspension(const FPhysicsActorHandle& InActorRef, const FVector& InLocalFrame);
 	static void SetConstraintUserData(const FPhysicsConstraintHandle& InConstraintRef,void* InUserData);
 	static void ReleaseConstraint(FPhysicsConstraintHandle& InConstraintRef);
@@ -498,7 +501,8 @@ public:
 	static void SetCollisionEnabled(const FPhysicsConstraintHandle& InConstraintRef,bool bInCollisionEnabled);
 	static void SetProjectionEnabled_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef,bool bInProjectionEnabled,float InLinearAlpha = 1.0f,float InAngularAlpha = 0.0f, float InLinearTolerance = 0.0f, float InAngularToleranceDeg = 0.0f);
 	static void SetShockPropagationEnabled_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef, bool bInShockPropagationEnabled, float InShockPropagationAlpha);
-	static void SetParentDominates_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef,bool bInParentDominates);
+	static void SetParentDominates_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef, bool bInParentDominates);
+	static void SetMassConditioningEnabled_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef, bool bInMassConditioningEnabled);
 	static void SetBreakForces_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef,float InLinearBreakForce,float InAngularBreakForce);
 	static void SetPlasticityLimits_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef, float InLinearPlasticityLimit, float InAngularPlasticityLimit, EConstraintPlasticityType InLinearPlasticityType);
 	static void SetContactTransferScale_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef, float InContactTransferScale);

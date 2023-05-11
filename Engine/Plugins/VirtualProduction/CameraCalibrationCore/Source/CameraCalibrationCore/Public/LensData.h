@@ -47,13 +47,110 @@ public:
 	TSubclassOf<ULensModel> LensModel;
 
 	/** Width and height of the calibrated camera's sensor, in millimeters */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lens Info")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera Info")
 	FVector2D SensorDimensions = FVector2D(23.76f, 13.365f);
 
-	/** Camera image size, in pixels */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lens Info")
+	/** 
+	  * Resolution of the original footage that was captured by the camera (not necessarily the resolution of the media source).
+	  * For example, the original footage might have been 4320x1746, but to transmit that image over SDI, it might have been scaled and fit into a 4096x2160 frame.
+	  * In this case, the "Image Resolution" should be set to 4320x1746, while the "Media Resolution" will read 4096x2160.
+	  */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera Info", meta = (DisplayName = "Image Resolution"))
 	FIntPoint ImageDimensions = FIntPoint(1920, 1080);
 
+};
+
+/**
+ * Information about a camera feed, including its dimensions and aspect ratio.
+ * The camera feed represents (potentially) an inner rect of a media input, excluding any masks / extractions that may surround it.
+ */
+USTRUCT(BlueprintType)
+struct CAMERACALIBRATIONCORE_API FCameraFeedInfo
+{
+	GENERATED_BODY()
+
+public:
+	FIntPoint GetDimensions() const
+	{
+		return Dimensions;
+	}
+
+	void SetDimensions(FIntPoint InDimensions, bool bMarkAsOverridden = false)
+	{
+		Dimensions = InDimensions;
+		bIsOverridden = bMarkAsOverridden;
+
+		// If one of the dimensions is set to 0, the description of the feed is invalid
+		if (Dimensions.X == 0 || Dimensions.Y == 0)
+		{
+			AspectRatio = 0.0f;
+			bIsValid = false;
+		}
+		else
+		{
+			AspectRatio = Dimensions.X / (float)Dimensions.Y;
+			bIsValid = true;
+		}
+	}
+
+	float GetAspectRatio() const
+	{
+		return AspectRatio;
+	}
+
+	void Invalidate()
+	{
+		Dimensions = FIntPoint(0, 0);
+		AspectRatio = 0.0f;
+		bIsValid = false;
+	}
+
+	bool IsValid() const
+	{
+		return bIsValid;
+	}
+
+	bool IsOverridden() const
+	{
+		return bIsOverridden;
+	}
+
+private:
+	/** Dimensions of the Camera Feed */
+	UPROPERTY(EditAnywhere, Category = "Camera Feed Info")
+	FIntPoint Dimensions = FIntPoint(0, 0);
+
+	/** Aspect Ratio of the Camera Feed */
+	UPROPERTY(VisibleAnywhere, Category = "Camera Feed Info")
+	float AspectRatio = 0.0f;
+
+	/** Whether the dimensions of the feed are valid (false if either X or Y is 0) */
+	bool bIsValid = false;
+
+	/** Whether the dimensions of the feed were overridden by the user */
+	bool bIsOverridden = false;
+};
+
+/**
+ * Information about the simulcam composition
+ */
+USTRUCT(BlueprintType)
+struct CAMERACALIBRATIONCORE_API FSimulcamInfo
+{
+	GENERATED_BODY()
+
+public:
+	/** Resolution of the selected Media Source */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Media Info")
+	FIntPoint MediaResolution = FIntPoint(0, 0);
+
+	/** Aspect ratio of the media plate in the simulcam composition, which was set to match the aspect ratio of the selected Media Source */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulcam Info")
+	float MediaPlateAspectRatio = 0.0f;
+
+	/** Aspect ratio of the CG layer in the simulcam composition, which was set to match the aspect ratio of the selected Camera Actor */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulcam Info", meta = (DisplayName = "CG Layer Aspect Ratio"))
+	float CGLayerAspectRatio = 0.0f;
 };
 
 /**
@@ -66,7 +163,7 @@ struct CAMERACALIBRATIONCORE_API FDistortionInfo
 
 public:
 	/** Generic array of floating-point lens distortion parameters */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Distortion")
+	UPROPERTY(Interp, EditAnywhere, BlueprintReadWrite, Category = "Distortion")
 	TArray<float> Parameters;
 };
 
@@ -83,7 +180,7 @@ struct CAMERACALIBRATIONCORE_API FFocalLengthInfo
 public:
 
 	/** Value expected to be normalized (unitless) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera")
+	UPROPERTY(Interp, EditAnywhere, BlueprintReadWrite, Category = "Camera")
 	FVector2D FxFy = FVector2D(1.0f, (16.0f / 9.0f));
 };
 
@@ -115,7 +212,7 @@ struct CAMERACALIBRATIONCORE_API FImageCenterInfo
 
 public:
 	/** Value expected to be normalized [0,1] */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera", meta = (DisplayName = "Image Center"))
+	UPROPERTY(Interp, EditAnywhere, BlueprintReadWrite, Category = "Camera", meta = (DisplayName = "Image Center"))
 	FVector2D PrincipalPoint = FVector2D(0.5f, 0.5f);
 };
 

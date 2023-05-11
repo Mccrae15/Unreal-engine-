@@ -25,6 +25,8 @@
 #include "Styling/AppStyle.h"
 #include "MovieSceneCopyableBinding.h"
 #include "MovieSceneCopyableTrack.h"
+#include "EntitySystem/MovieSceneBlenderSystem.h"
+#include "EntitySystem/IMovieSceneBlenderSystemSupport.h"
 #include "MovieSceneFolder.h"
 #include "MovieSceneSection.h"
 #include "MovieSceneSpawnRegister.h"
@@ -36,6 +38,7 @@
 #include "Tracks/MovieSceneSpawnTrack.h"
 #include "Compilation/MovieSceneCompiledDataManager.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Styling/SlateIconFinder.h"
 #include "ISequencerTrackEditor.h"
 #include "ISequencer.h"
 #include "Sequencer.h"
@@ -68,6 +71,17 @@ static EVisibility GetRolloverVisibility(TAttribute<bool> HoverState, TWeakPtr<S
 	else
 	{
 		return EVisibility::Collapsed;
+	}
+}
+
+static void ResetCopiedTracksFlags(UMovieSceneTrack* Track)
+{
+	TArray<UObject*> SectionSubObjects;
+	Track->ClearFlags(RF_Transient);
+	for (UMovieSceneSection* Section : Track->GetAllSections())
+	{
+		Section->ClearFlags(RF_Transient);
+		Section->PostPaste();
 	}
 }
 
@@ -246,7 +260,54 @@ void FSequencerUtilities::PopulateMenu_CreateNewSection(FMenuBuilder& MenuBuilde
 			NameOverride.IsEmpty() ? DisplayName : NameOverride,
 			TooltipOverride.IsEmpty() ? FText::Format(LOCTEXT("AddSectionFormatToolTip", "Adds a new {0} section at the current time"), DisplayName) : TooltipOverride,
 			FSlateIcon(FAppStyle::GetAppStyleSetName(), EnumValueName),
-			FUIAction(FExecuteAction::CreateLambda(CreateNewSection, BlendType))
+			FUIAction(
+				FExecuteAction::CreateLambda(CreateNewSection, BlendType),
+				FCanExecuteAction::CreateLambda([InSequencer] { return InSequencer.IsValid() && !InSequencer.Pin()->IsReadOnly(); })
+			)
+		);
+	}
+}
+
+void FSequencerUtilities::PopulateMenu_BlenderSubMenu(FMenuBuilder& MenuBuilder, UMovieSceneTrack* Track, TWeakPtr<ISequencer> InSequencer)
+{
+	IMovieSceneBlenderSystemSupport* BlenderSystemSupport = Cast<IMovieSceneBlenderSystemSupport>(Track);
+	// Shouldn't have been called with a track that does not implement this interface
+	check(BlenderSystemSupport);
+
+	TArray<TSubclassOf<UMovieSceneBlenderSystem>> BlenderTypes;
+	BlenderSystemSupport->GetSupportedBlenderSystems(BlenderTypes);
+
+	// Ensure no nulls
+	BlenderTypes.Remove(TSubclassOf<UMovieSceneBlenderSystem>());
+
+	// Sort alphabetically
+	Algo::Sort(BlenderTypes,
+		[](TSubclassOf<UMovieSceneBlenderSystem> A, TSubclassOf<UMovieSceneBlenderSystem> B)
+		{
+			return A->GetDisplayNameText().CompareTo(B->GetDisplayNameText()) < 0;
+		}
+	);
+
+	for (TSubclassOf<UMovieSceneBlenderSystem> SystemClass : BlenderTypes)
+	{
+		MenuBuilder.AddMenuEntry(
+			SystemClass->GetDisplayNameText(),
+			SystemClass->GetToolTipText(),
+			FSlateIconFinder::FindIconForClass(SystemClass.Get()),
+			FUIAction(
+				FExecuteAction::CreateLambda([Track, BlenderSystemSupport, SystemClass]{
+					FScopedTransaction Transaction(FText::Format(LOCTEXT("ChangeBlenderType", "Change blender to '{0}'"), SystemClass.Get()->GetDisplayNameText()));
+
+					Track->Modify();
+					BlenderSystemSupport->SetBlenderSystem(SystemClass);
+				}),
+				FCanExecuteAction::CreateLambda([InSequencer] { return InSequencer.IsValid() && !InSequencer.Pin()->IsReadOnly(); }),
+				FIsActionChecked::CreateLambda([BlenderSystemSupport, SystemClass]
+				{
+					return BlenderSystemSupport->GetBlenderSystem() == SystemClass;
+				})),
+			NAME_None,
+			EUserInterfaceActionType::RadioButton
 		);
 	}
 }
@@ -355,7 +416,7 @@ void FSequencerUtilities::PopulateMenu_SetBlendType(FMenuBuilder& MenuBuilder, c
 			FSlateIcon(FAppStyle::GetAppStyleSetName(), EnumValueName),
 			FUIAction(
 				FExecuteAction::CreateLambda(Execute, BlendType),
-				FCanExecuteAction(),
+				FCanExecuteAction::CreateLambda([InSequencer] { return InSequencer.IsValid() && !InSequencer.Pin()->IsReadOnly(); }),
 				FIsActionChecked::CreateLambda([InSections, BlendType]
 				{
 					int32 NumActiveBlendTypes = 0;
@@ -400,22 +461,27 @@ FName FSequencerUtilities::GetUniqueName( FName CandidateName, const TArray<FNam
 	return UniqueName;
 }
 
-TArray<FString> FSequencerUtilities::GetAssociatedMapPackages(const ULevelSequence* InSequence)
+TArray<FString> FSequencerUtilities::GetAssociatedLevelSequenceMapPackages(const ULevelSequence* InSequence)
 {
 	if (!InSequence)
 	{
 		return TArray<FString>();
 	}
 
-	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
 	const FName LSMapPathName = *InSequence->GetOutermost()->GetPathName();
+	return GetAssociatedLevelSequenceMapPackages(LSMapPathName);
+}
+
+TArray<FString> FSequencerUtilities::GetAssociatedLevelSequenceMapPackages(FName LevelSequencePackageName)
+{
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
 
 	TArray<FString> AssociatedMaps;
 	TArray<FAssetIdentifier> AssociatedAssets;
 
 	// This makes the assumption these functions will append the array, and not clear it.
-	AssetRegistryModule.Get().GetReferencers(LSMapPathName, AssociatedAssets);
-	AssetRegistryModule.Get().GetDependencies(LSMapPathName, AssociatedAssets);
+	AssetRegistryModule.Get().GetReferencers(LevelSequencePackageName, AssociatedAssets);
+	AssetRegistryModule.Get().GetDependencies(LevelSequencePackageName, AssociatedAssets);
 
 	for (FAssetIdentifier& AssociatedMap : AssociatedAssets)
 	{
@@ -1334,7 +1400,7 @@ bool FSequencerUtilities::PasteFolders(const FString& TextToImport, FMovieSceneP
 		OutFolders.Add(CopiedFolder);
 
 		// Clear the folder contents, those relationships will be made when the tracks are pasted
-		CopiedFolder->ClearChildMasterTracks();
+		CopiedFolder->ClearChildTracks();
 		CopiedFolder->ClearChildObjectBindings();
 
 		bool bHasParent = false;
@@ -1390,8 +1456,8 @@ void FSequencerUtilities::CopyTracks(const TArray<UMovieSceneTrack*>& Tracks, co
 
 		UMovieSceneTrack* DuplicatedTrack = Cast<UMovieSceneTrack>(StaticDuplicateObject(Track, CopyableTrack));
 		CopyableTrack->Track = DuplicatedTrack;
-		CopyableTrack->bIsAMasterTrack = MovieScene->IsAMasterTrack(*Track);
-		CopyableTrack->bIsACameraCutTrack = Track->IsA<UMovieSceneCameraCutTrack>();
+		CopyableTrack->bIsRootTrack = MovieScene->ContainsTrack(*Track);
+		CopyableTrack->bIsCameraCutTrack = Track->IsA<UMovieSceneCameraCutTrack>();
 
 		UMovieSceneFolder* Folder = nullptr;
 		for (UMovieSceneFolder* RootFolder : MovieScene->GetRootFolders())
@@ -1465,14 +1531,14 @@ bool FSequencerUtilities::PasteTracks(const FString& TextToImport, FMovieScenePa
 
 	const FScopedTransaction Transaction(LOCTEXT("PasteTracks", "Paste Tracks"));
 
-	int32 NumMasterOrCameraCutTracks = 0;
+	int32 NumRootOrCameraCutTracks = 0;
 	int32 NumTracks = 0;
 
 	for (UMovieSceneCopyableTrack* CopyableTrack : ImportedTracks)
 	{
-		if (CopyableTrack->bIsAMasterTrack || CopyableTrack->bIsACameraCutTrack)
+		if (CopyableTrack->bIsRootTrack || CopyableTrack->bIsCameraCutTrack)
 		{
-			++NumMasterOrCameraCutTracks;
+			++NumRootOrCameraCutTracks;
 		}
 		else
 		{
@@ -1481,7 +1547,7 @@ bool FSequencerUtilities::PasteTracks(const FString& TextToImport, FMovieScenePa
 	}
 
 	int32 NumTracksPasted = 0;
-	int32 NumMasterOrCameraCutTracksPasted = 0;
+	int32 NumRootOrCameraCutTracksPasted = 0;
 
 	for (const FMovieSceneBindingProxy& ObjectBinding : PasteTracksParams.Bindings)
 	{
@@ -1496,14 +1562,10 @@ bool FSequencerUtilities::PasteTracks(const FString& TextToImport, FMovieScenePa
 
 		for (UMovieSceneCopyableTrack* CopyableTrack : NewTracks)
 		{
-			if (!CopyableTrack->bIsAMasterTrack && !CopyableTrack->bIsACameraCutTrack)
+			if (!CopyableTrack->bIsRootTrack && !CopyableTrack->bIsCameraCutTrack)
 			{
 				UMovieSceneTrack* NewTrack = CopyableTrack->Track;
-				NewTrack->ClearFlags(RF_Transient);
-				for (UMovieSceneSection* Section : NewTrack->GetAllSections())
-				{
-					Section->ClearFlags(RF_Transient);
-				}
+				ResetCopiedTracksFlags(NewTrack);
 
 				// Remove tracks with the same name before adding
 				for (const FMovieSceneBinding& Binding : MovieScene->GetBindings())
@@ -1539,17 +1601,13 @@ bool FSequencerUtilities::PasteTracks(const FString& TextToImport, FMovieScenePa
 	UMovieScene* MovieScene = PasteTracksParams.Sequence ? PasteTracksParams.Sequence->GetMovieScene() : nullptr;
 	if (MovieScene)
 	{
-		// Add as master track or set camera cut track
+		// Add as root track or set camera cut track
 		for (UMovieSceneCopyableTrack* CopyableTrack : ImportedTracks)
 		{
-			if (CopyableTrack->bIsAMasterTrack || CopyableTrack->bIsACameraCutTrack)
+			if (CopyableTrack->bIsRootTrack || CopyableTrack->bIsCameraCutTrack)
 			{
 				UMovieSceneTrack* NewTrack = CopyableTrack->Track;
-				NewTrack->ClearFlags(RF_Transient);
-				for (UMovieSceneSection* Section : NewTrack->GetAllSections())
-				{
-					Section->ClearFlags(RF_Transient);
-				}
+				ResetCopiedTracksFlags(NewTrack);
 
 				UMovieSceneFolder* ParentFolder = PasteTracksParams.ParentFolder;
 
@@ -1563,22 +1621,22 @@ bool FSequencerUtilities::PasteTracks(const FString& TextToImport, FMovieScenePa
 					MovieScene->SetCameraCutTrack(NewTrack);
 					if (ParentFolder != nullptr)
 					{
-						ParentFolder->AddChildMasterTrack(NewTrack);
+						ParentFolder->AddChildTrack(NewTrack);
 					}
 
-					++NumMasterOrCameraCutTracksPasted;
+					++NumRootOrCameraCutTracksPasted;
 				}
 				else
 				{
-					if (MovieScene->AddGivenMasterTrack(NewTrack))
+					if (MovieScene->AddGivenTrack(NewTrack))
 					{
 						if (ParentFolder != nullptr)
 						{
-							ParentFolder->AddChildMasterTrack(NewTrack);
+							ParentFolder->AddChildTrack(NewTrack);
 						}
 					}
 
-					++NumMasterOrCameraCutTracksPasted;
+					++NumRootOrCameraCutTracksPasted;
 				}
 
 				OutTracks.Add(NewTrack);
@@ -1586,9 +1644,9 @@ bool FSequencerUtilities::PasteTracks(const FString& TextToImport, FMovieScenePa
 		}
 	}
 	
-	if (NumMasterOrCameraCutTracksPasted < NumMasterOrCameraCutTracks)
+	if (NumRootOrCameraCutTracksPasted < NumRootOrCameraCutTracks)
 	{
-		FNotificationInfo Info(LOCTEXT("PasteTracks_NoMasterTracks", "Can't paste track. Master track could not be pasted"));
+		FNotificationInfo Info(LOCTEXT("PasteTracks_NoTracks", "Can't paste track. Root track could not be pasted"));
 		OutErrors.Add(Info);
 	}
 
@@ -1598,7 +1656,7 @@ bool FSequencerUtilities::PasteTracks(const FString& TextToImport, FMovieScenePa
 		OutErrors.Add(Info);
 	}
 
-	return (NumMasterOrCameraCutTracksPasted + NumTracksPasted) > 0;
+	return (NumRootOrCameraCutTracksPasted + NumTracksPasted) > 0;
 }
 
 bool FSequencerUtilities::CanPasteTracks(const FString& TextToImport)
@@ -1736,7 +1794,19 @@ bool FSequencerUtilities::PasteSections(const FString& TextToImport, FMovieScene
 			Track->Modify();
 
 			Section->ClearFlags(RF_Transient);
+			Section->PostPaste();
 			Section->Rename(nullptr, Track);
+
+			if (Track->SupportsMultipleRows())
+			{
+				Section->SetRowIndex(RowIndex);
+			}
+			else if (!Section->HasStartFrame() && !Section->HasEndFrame())
+			{
+				// If the track doesn't support multiple rows and the pasted section is infinite, it should win out over existing sections
+				Track->RemoveAllAnimationData();
+			}
+
 			Track->AddSection(*Section);
 			if (Section->HasStartFrame())
 			{
@@ -1744,10 +1814,6 @@ bool FSequencerUtilities::PasteSections(const FString& TextToImport, FMovieScene
 				Section->MoveSection(NewStartFrame - Section->GetInclusiveStartFrame());
 			}
 
-			if (Track->SupportsMultipleRows())
-			{
-				Section->SetRowIndex(RowIndex);
-			}
 			OutSections.Add(Section);
 		}
 
@@ -2022,10 +2088,6 @@ bool FSequencerUtilities::PasteBindings(const FString& TextToImport, TSharedRef<
 	}
 
 	UWorld* World = Cast<UWorld>(Sequencer->GetPlaybackContext());
-	if (!World)
-	{
-		return false;
-	}
 
 	const FScopedTransaction Transaction(LOCTEXT("PasteBindings", "Paste Bindings"));
 
@@ -2049,16 +2111,13 @@ bool FSequencerUtilities::PasteBindings(const FString& TextToImport, TSharedRef<
 			return false;
 		}
 
+		TArray<UObject*> SectionSubObjects;
 		for (UMovieSceneCopyableBinding* CopyableBinding : ImportedBindings)
 		{
 			// Clear transient flags on the imported tracks
 			for (UMovieSceneTrack* CopiedTrack : CopyableBinding->Tracks)
 			{
-				CopiedTrack->ClearFlags(RF_Transient);
-				for (UMovieSceneSection* Section : CopiedTrack->GetAllSections())
-                {
-					Section->ClearFlags(RF_Transient);
-                }
+				ResetCopiedTracksFlags(CopiedTrack);
 			}
 
 			UMovieSceneFolder* ParentFolder = PasteBindingsParams.ParentFolder;
@@ -2098,51 +2157,63 @@ bool FSequencerUtilities::PasteBindings(const FString& TextToImport, TSharedRef<
 					}
 				}
 
-				TArray<AActor*> ActorsToDuplicate;
-				for (TActorIterator<AActor> ActorItr(World); ActorItr; ++ActorItr)
+				// Find the actors that this pasted binding should bind to
+				TArray<AActor*> ActorsToRebind;
+				if (World)
 				{
-					AActor* Actor = *ActorItr;
-					if (Actor && CopyableBinding->BoundObjectNames.Contains(Actor->GetName()))
+					for (TActorIterator<AActor> ActorItr(World); ActorItr; ++ActorItr)
 					{
-						ActorsToDuplicate.Add(Actor);
-						CopyableBinding->BoundObjectNames.Remove(Actor->GetName());
+						AActor* Actor = *ActorItr;
+						if (Actor && CopyableBinding->BoundObjectNames.Contains(Actor->GetName()))
+						{
+							// If this actor is already bound and we're not duplicating actors, don't bind to anything
+							if (!PasteBindingsParams.bDuplicateExistingActors && Sequencer->FindObjectId(*Actor, Sequencer->GetFocusedTemplateID()).IsValid())
+							{
+								continue;
+							}
+
+							ActorsToRebind.Add(Actor);
+							CopyableBinding->BoundObjectNames.Remove(Actor->GetName());
+						}
 					}
 				}
 
-				TArray<AActor*> DuplicatedActors;
-				if (ActorsToDuplicate.Num() != 0)
+				if (ActorsToRebind.Num() != 0)
 				{
-					GEditor->SelectNone(false, true);
-					for (AActor* ActorToDuplicate : ActorsToDuplicate)
+					if (PasteBindingsParams.bDuplicateExistingActors)
 					{
-						GEditor->SelectActor(ActorToDuplicate, true, false, false);
-					}
-
-					// Duplicate the bound actors
-					GEditor->edactDuplicateSelected(World->GetCurrentLevel(), false);
-
-					// Duplicating the bound actor through GEditor, edits the copy/paste clipboard. This is not desired from the user's 
-					// point of view since the user didn't explicitly invoke the copy operation. Instead, restore the copied contents
-					// of the clipboard after duplicating the actor
-					FPlatformApplicationMisc::ClipboardCopy(*TextToImport);
-
-					USelection* ActorSelection = GEditor->GetSelectedActors();
-					TArray<TWeakObjectPtr<AActor> > SelectedActors;
-					for (FSelectionIterator Iter(*ActorSelection); Iter; ++Iter)
-					{
-						AActor* Actor = Cast<AActor>(*Iter);
-						if (Actor)
+						GEditor->SelectNone(false, true);
+						for (AActor* ActorToRebind : ActorsToRebind)
 						{
-							DuplicatedActors.Add(Actor);
+							GEditor->SelectActor(ActorToRebind, true, false, false);
+						}
+							
+						// Duplicate the bound actors
+						GEditor->edactDuplicateSelected(World->GetCurrentLevel(), false);
 
-							CopyableBinding->BoundObjectNames.Add(Actor->GetName());
+						// Duplicating the bound actor through GEditor, edits the copy/paste clipboard. This is not desired from the user's 
+						// point of view since the user didn't explicitly invoke the copy operation. Instead, restore the copied contents
+						// of the clipboard after duplicating the actor
+						FPlatformApplicationMisc::ClipboardCopy(*TextToImport);
+
+						ActorsToRebind.Empty();
+						USelection* ActorSelection = GEditor->GetSelectedActors();
+						for (FSelectionIterator Iter(*ActorSelection); Iter; ++Iter)
+						{
+							AActor* Actor = Cast<AActor>(*Iter);
+							if (Actor)
+							{
+								ActorsToRebind.Add(Actor);
+
+								CopyableBinding->BoundObjectNames.Add(Actor->GetName());
+							}
 						}
 					}
 
-					// Bind the duplicated actors
-					if (DuplicatedActors.Num())
+					// Bind the actors
+					if (ActorsToRebind.Num())
 					{
-						AddActorsToBinding(Sequencer, DuplicatedActors, FMovieSceneBindingProxy(NewGuid, Sequence));
+						AddActorsToBinding(Sequencer, ActorsToRebind, FMovieSceneBindingProxy(NewGuid, Sequence));
 					}
 				}
 
@@ -2182,11 +2253,7 @@ bool FSequencerUtilities::PasteBindings(const FString& TextToImport, TSharedRef<
 				// Clear the transient flags on the copyable binding before assigning to the new spawnable
 				for (auto Track : NewBinding.GetTracks())
 				{
-					Track->ClearFlags(RF_Transient);
-					for (auto Section : Track->GetAllSections())
-					{
-						Section->ClearFlags(RF_Transient);
-					}
+					ResetCopiedTracksFlags(Track);
 				}
 
 				// Replace the auto-generated binding with our deserialized bindings (which has our tracks)
@@ -2355,6 +2422,27 @@ bool FSequencerUtilities::CanPasteBindings(TSharedRef<ISequencer> Sequencer, con
 {
 	FObjectBindingTextFactory ObjectBindingFactory(Sequencer.Get());
 	return ObjectBindingFactory.CanCreateObjectsFromText(TextToImport);
+}
+
+TArray<FString> FSequencerUtilities::GetPasteBindingsObjectNames(TSharedRef<ISequencer> Sequencer, const FString& TextToImport)
+{
+	TArray<FString> ObjectNames;
+
+	TArray<UMovieSceneCopyableBinding*> ImportedBindings;
+	ImportObjectBindingsFromText(Sequencer.Get(), TextToImport, ImportedBindings);
+
+	for (UMovieSceneCopyableBinding* CopyableBinding : ImportedBindings)
+	{
+		if (CopyableBinding)
+		{
+			for (const FString& BoundObjectName : CopyableBinding->BoundObjectNames)
+			{
+				ObjectNames.Add(BoundObjectName);
+			}
+		}
+	}
+
+	return ObjectNames;
 }
 
 FGuid FSequencerUtilities::CreateBinding(TSharedRef<ISequencer> Sequencer, UObject& InObject, const FString& InName)
@@ -2703,7 +2791,10 @@ void FSequencerUtilities::AddActorsToBinding(TSharedRef<ISequencer> Sequencer, c
 				}
 
 				ActorToAdd->Modify();
-				Sequence->BindPossessableObject(Guid, *ActorToAdd, Sequencer->GetPlaybackContext());
+				if (!MovieScene->FindPossessable(Guid)->BindSpawnableObject(Sequencer->GetFocusedTemplateID(), ActorToAdd, &Sequencer.Get()))
+				{
+					Sequence->BindPossessableObject(Guid, *ActorToAdd, Sequencer->GetPlaybackContext());
+				}
 				++NumObjectsAdded;
 			}
 			else

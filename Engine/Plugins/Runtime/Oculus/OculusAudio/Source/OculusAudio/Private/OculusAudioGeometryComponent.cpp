@@ -1,14 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "OculusAudioGeometryComponent.h"
-#include "OculusAudioMaterialComponent.h"
-#include "OculusAudioContextManager.h"
-#include "OculusAudio.h"
 #include "AudioDevice.h"
-#include "IOculusAudioPlugin.h"
-#include "Engine/StaticMeshActor.h"
+#include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
-#include "Runtime/Core/Public/Serialization/CustomVersion.h"
+#include "Engine/StaticMeshActor.h"
+#include "IOculusAudioPlugin.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "OculusAudio.h"
+#include "OculusAudioContextManager.h"
+#include "OculusAudioMaterialComponent.h"
+#include "Serialization/CustomVersion.h"
+#include "StaticMeshResources.h"
 
 
 #define COMPILE_AS_DEBUG_MODE 0

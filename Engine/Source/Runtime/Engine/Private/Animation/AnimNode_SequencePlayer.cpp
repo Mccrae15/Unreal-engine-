@@ -2,11 +2,11 @@
 
 #include "Animation/AnimNode_SequencePlayer.h"
 
-#include "AnimEncoding.h"
+#include "Animation/AnimMontage.h"
 #include "Animation/AnimInstanceProxy.h"
-#include "Animation/AnimTrace.h"
-#include "Animation/AnimPoseSearchProvider.h"
-#include "Animation/AnimSyncScope.h"
+#include "Animation/AnimationPoseData.h"
+#include "Animation/ExposedValueHandler.h"
+#include "Logging/TokenizedMessage.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(AnimNode_SequencePlayer)
 
@@ -61,14 +61,12 @@ void FAnimNode_SequencePlayerBase::Initialize_AnyThread(const FAnimationInitiali
 
 	if (CurrentSequence != nullptr)
 	{
-		const float EffectiveStartPosition = GetEffectiveStartPosition(Context);
 		const float CurrentPlayRate = GetPlayRate();
 		const float CurrentPlayRateBasis = GetPlayRateBasis();
 
-		InternalTimeAccumulator = FMath::Clamp(EffectiveStartPosition, 0.f, CurrentSequence->GetPlayLength());
 		const float AdjustedPlayRate = PlayRateScaleBiasClampState.ApplyTo(GetPlayRateScaleBiasClampConstants(), FMath::IsNearlyZero(CurrentPlayRateBasis) ? 0.f : (CurrentPlayRate / CurrentPlayRateBasis), 0.f);
 		const float EffectivePlayrate = CurrentSequence->RateScale * AdjustedPlayRate;
-		if ((EffectiveStartPosition == 0.f) && (EffectivePlayrate < 0.f))
+		if ((InternalTimeAccumulator == 0.f) && (EffectivePlayrate < 0.f))
 		{
 			InternalTimeAccumulator = CurrentSequence->GetPlayLength();
 		}
@@ -92,45 +90,14 @@ void FAnimNode_SequencePlayerBase::UpdateAssetPlayer(const FAnimationUpdateConte
 		CurrentSequence = nullptr;
 	}
 
-	if ((CurrentSequence != nullptr) && (Context.AnimInstanceProxy->IsSkeletonCompatible(CurrentSequence->GetSkeleton())))
+	if (CurrentSequence != nullptr && CurrentSequence->GetSkeleton() != nullptr)
 	{
-		// HACK for 5.1.1 do allow us to fix UE-170739 without altering public API
-		auto HACK_CreateTickRecordForNode = [this]( const FAnimationUpdateContext& Context, UAnimSequenceBase* Sequence, bool bLooping, float PlayRate)
-		{
-			// Create a tick record and push into the closest scope
-			const float FinalBlendWeight = Context.GetFinalBlendWeight();
-
-			UE::Anim::FAnimSyncGroupScope& SyncScope = Context.GetMessageChecked<UE::Anim::FAnimSyncGroupScope>();
-
-			const EAnimGroupRole::Type SyncGroupRole = GetGroupRole();
-			const FName SyncGroupName = GetGroupName();
-
-			const FName GroupNameToUse = ((SyncGroupRole < EAnimGroupRole::TransitionLeader) || bHasBeenFullWeight) ? SyncGroupName : NAME_None;
-			EAnimSyncMethod MethodToUse = GetGroupMethod();
-			if(GroupNameToUse == NAME_None && MethodToUse == EAnimSyncMethod::SyncGroup)
-			{
-				MethodToUse = EAnimSyncMethod::DoNotSync;
-			}
-
-			const UE::Anim::FAnimSyncParams SyncParams(GroupNameToUse, SyncGroupRole, MethodToUse);
-			FAnimTickRecord TickRecord(Sequence, bLooping, PlayRate, FinalBlendWeight, /*inout*/ InternalTimeAccumulator, MarkerTickRecord);
-			TickRecord.GatherContextData(Context);
-
-			TickRecord.RootMotionWeightModifier = Context.GetRootMotionWeightModifier();
-			TickRecord.DeltaTimeRecord = &DeltaTimeRecord;
-			TickRecord.BlendSpace.bIsEvaluator = false;
-
-			SyncScope.AddTickRecord(TickRecord, SyncParams, UE::Anim::FAnimSyncDebugInfo(Context));
-
-			TRACE_ANIM_TICK_RECORD(Context, TickRecord);
-		};
-		
 		const float CurrentPlayRate = GetPlayRate();
 		const float CurrentPlayRateBasis = GetPlayRateBasis();
 
 		InternalTimeAccumulator = FMath::Clamp(InternalTimeAccumulator, 0.f, CurrentSequence->GetPlayLength());
 		const float AdjustedPlayRate = PlayRateScaleBiasClampState.ApplyTo(GetPlayRateScaleBiasClampConstants(), FMath::IsNearlyZero(CurrentPlayRateBasis) ? 0.f : (CurrentPlayRate / CurrentPlayRateBasis), Context.GetDeltaTime());
-		HACK_CreateTickRecordForNode(Context, CurrentSequence, GetLoopAnimation(), AdjustedPlayRate);
+		CreateTickRecordForNode(Context, CurrentSequence, GetLoopAnimation(), AdjustedPlayRate, false);
 	}
 
 #if WITH_EDITORONLY_DATA
@@ -151,7 +118,7 @@ void FAnimNode_SequencePlayerBase::Evaluate_AnyThread(FPoseContext& Output)
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Evaluate_AnyThread);
 
 	UAnimSequenceBase* CurrentSequence = GetSequence();
-	if ((CurrentSequence != nullptr) && (Output.AnimInstanceProxy->IsSkeletonCompatible(CurrentSequence->GetSkeleton())))
+	if (CurrentSequence != nullptr && CurrentSequence->GetSkeleton() != nullptr)
 	{
 		const bool bExpectedAdditive = Output.ExpectsAdditivePose();
 		const bool bIsAdditive = CurrentSequence->IsValidAdditive();
@@ -163,7 +130,7 @@ void FAnimNode_SequencePlayerBase::Evaluate_AnyThread(FPoseContext& Output)
 		}
 
 		FAnimationPoseData AnimationPoseData(Output);
-		CurrentSequence->GetAnimationPose(AnimationPoseData, FAnimExtractContext(InternalTimeAccumulator, Output.AnimInstanceProxy->ShouldExtractRootMotion(), DeltaTimeRecord, GetLoopAnimation()));
+		CurrentSequence->GetAnimationPose(AnimationPoseData, FAnimExtractContext(static_cast<double>(InternalTimeAccumulator), Output.AnimInstanceProxy->ShouldExtractRootMotion(), DeltaTimeRecord, GetLoopAnimation()));
 	}
 	else
 	{
@@ -188,21 +155,6 @@ float FAnimNode_SequencePlayerBase::GetTimeFromEnd(float CurrentNodeTime) const
 
 float FAnimNode_SequencePlayerBase::GetEffectiveStartPosition(const FAnimationBaseContext& Context) const
 {
-	// Override the start position if pose matching is enabled
-	UAnimSequenceBase* CurrentSequence = GetSequence();
-	if (CurrentSequence != nullptr && GetStartFromMatchingPose())
-	{
-		UE::Anim::IPoseSearchProvider* PoseSearchProvider = UE::Anim::IPoseSearchProvider::Get();
-		if (PoseSearchProvider)
-		{
-			UE::Anim::IPoseSearchProvider::FSearchResult Result = PoseSearchProvider->Search(Context, CurrentSequence);
-			if (Result.PoseIdx >= 0)
-			{
-				return Result.TimeOffsetSeconds;
-			}
-		}
-	}
-
 	return GetStartPosition();
 }
 

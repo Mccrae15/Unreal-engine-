@@ -6,6 +6,8 @@
 
 #pragma once
 
+// HEADER_UNIT_SKIP - Not included directly
+
 #include "HAL/UnrealMemory.h"
 #include "Templates/UnrealTemplate.h"
 #include "Containers/Array.h"
@@ -32,35 +34,6 @@ enum
 	OGL_FIRST_UNIFORM_BUFFER = 0,			// @todo-mobile: Remove me
 	OGL_UAV_NOT_SUPPORTED_FOR_GRAPHICS_UNIT = -1, // for now, only CS and PS supports UAVs/ images
 };
-
-struct FOpenGLShaderResourceTable : public FBaseShaderResourceTable
-{
-	/** Mapping of bound Textures to their location in resource tables. */
-	TArray<uint32> TextureMap;
-	friend bool operator==(const FOpenGLShaderResourceTable &A, const FOpenGLShaderResourceTable& B)
-	{
-		if (!(((FBaseShaderResourceTable&)A) == ((FBaseShaderResourceTable&)B)))
-		{
-			return false;
-		}
-		if (A.TextureMap.Num() != B.TextureMap.Num())
-		{
-			return false;
-		}
-		if (FMemory::Memcmp(A.TextureMap.GetData(), B.TextureMap.GetData(), A.TextureMap.GetTypeSize()*A.TextureMap.Num()) != 0)
-		{
-			return false;
-		}
-		return true;
-	}
-};
-
-inline FArchive& operator<<(FArchive& Ar, FOpenGLShaderResourceTable& SRT)
-{
-	Ar << ((FBaseShaderResourceTable&)SRT);
-	Ar << SRT.TextureMap;
-	return Ar;
-}
 
 struct FOpenGLShaderVarying
 {
@@ -100,7 +73,7 @@ struct FOpenGLShaderBindings
 	TArray<CrossCompiler::FPackedArrayInfo>			PackedGlobalArrays;
 	TArray<FOpenGLShaderVarying>					InputVaryings;
 	TArray<FOpenGLShaderVarying>					OutputVaryings;
-	FOpenGLShaderResourceTable						ShaderResourceTable;
+	FShaderResourceTable							ShaderResourceTable;
 	CrossCompiler::FShaderBindingInOutMask			InOutMask;
 
 	uint8	NumSamplers;
@@ -389,7 +362,7 @@ public:
 	 */
 	void CommitPackedGlobals(const FOpenGLLinkedProgram* LinkedProgram, int32 Stage);
 
-	void CommitPackedUniformBuffers(FOpenGLLinkedProgram* LinkedProgram, int32 Stage, FUniformBufferRHIRef* UniformBuffers, const TArray<CrossCompiler::FUniformBufferCopyInfo>& UniformBuffersCopyInfo);
+	void CommitPackedUniformBuffers(FOpenGLLinkedProgram* LinkedProgram, int32 Stage, FRHIUniformBuffer** UniformBuffers, const TArray<CrossCompiler::FUniformBufferCopyInfo>& UniformBuffersCopyInfo);
 
 private:
 
@@ -420,8 +393,9 @@ struct FOpenGLBindlessSamplerInfo
 };
 
 // unique identifier for a program. (composite of shader keys)
-struct FOpenGLProgramKey
+class FOpenGLProgramKey
 {
+public:
 	FOpenGLProgramKey() {}
 
 	friend bool operator == (const FOpenGLProgramKey& A, const FOpenGLProgramKey& B)
@@ -432,6 +406,11 @@ struct FOpenGLProgramKey
 			bHashMatch = A.ShaderHashes[i] == B.ShaderHashes[i];
 		}
 		return bHashMatch;
+	}
+
+	friend bool operator != (const FOpenGLProgramKey& A, const FOpenGLProgramKey& B)
+	{
+		return !(A==B);
 	}
 
 	friend uint32 GetTypeHash(const FOpenGLProgramKey& Key)

@@ -1,11 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MeshMaterialShader.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "ScenePrivate.h"
 #include "RayTracingDynamicGeometryCollection.h"
 #include "RayTracingInstance.h"
+#include "RayTracingGeometry.h"
 
 #if RHI_RAYTRACING
+
+#include "Materials/MaterialRenderProxy.h"
 
 static int32 GRTDynGeomSharedVertexBufferSizeInMB = 4;
 static FAutoConsoleVariableRef CVarRTDynGeomSharedVertexBufferSizeInMB(
@@ -118,12 +122,17 @@ FRayTracingDynamicGeometryCollection::~FRayTracingDynamicGeometryCollection()
 	VertexPositionBuffers.Empty();
 }
 
-int64 FRayTracingDynamicGeometryCollection::BeginUpdate()
+void FRayTracingDynamicGeometryCollection::Clear()
 {
 	// Clear working arrays - keep max size allocated
 	DispatchCommands.Empty(DispatchCommands.Max());
 	BuildParams.Empty(BuildParams.Max());
 	Segments.Empty(Segments.Max());
+}
+
+int64 FRayTracingDynamicGeometryCollection::BeginUpdate()
+{
+	Clear();
 
 	// Vertex buffer data can be immediatly reused the next frame, because it's already 'consumed' for building the AccelerationStructure data
 	// Garbage collect unused buffers for n generations
@@ -150,7 +159,7 @@ void FRayTracingDynamicGeometryCollection::AddDynamicMeshBatchForGeometryUpdate(
 	const FScene* Scene,
 	const FSceneView* View,
 	const FPrimitiveSceneProxy* PrimitiveSceneProxy,
-	FRayTracingDynamicGeometryUpdateParams UpdateParams,
+	const FRayTracingDynamicGeometryUpdateParams& UpdateParams,
 	uint32 PrimitiveId
 )
 {
@@ -338,16 +347,16 @@ void FRayTracingDynamicGeometryCollection::AddDynamicMeshBatchForGeometryUpdate(
 	{
 		checkf(Geometry.Initializer.OfflineData == nullptr, TEXT("Dynamic geometry is not expected to have offline acceleration structure data"));
 		Geometry.RayTracingGeometryRHI = RHICreateRayTracingGeometry(Geometry.Initializer);
-		Geometry.bRequiresBuild = true;
+		Geometry.SetRequiresBuild(true);
 	}
 
 	FRayTracingGeometryBuildParams Params;
 	Params.Geometry = Geometry.RayTracingGeometryRHI;
-	Params.BuildMode = Geometry.bRequiresBuild
+	Params.BuildMode = Geometry.GetRequiresBuild()
 		? EAccelerationStructureBuildMode::Build
 		: EAccelerationStructureBuildMode::Update;
 
-	Geometry.bRequiresBuild = false;
+	Geometry.SetRequiresBuild(false);
 
 	if (bUseSharedVertexBuffer)
 	{

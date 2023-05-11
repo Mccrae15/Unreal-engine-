@@ -2,6 +2,7 @@
 
 #include "OptimusDataTypeRegistry.h"
 
+#include "AssetRegistry/AssetData.h"
 #include "OptimusCoreModule.h"
 #include "OptimusHelpers.h"
 #include "OptimusComponentSource.h"
@@ -574,6 +575,15 @@ bool FOptimusDataTypeRegistry::RegisterStructType(UScriptStruct* InStructType)
 			}
 
 			DataType = FindType(*PropertyForValidation);
+
+			// Special logic for things like StructuredBuffer<float3> which should be packed as buffer of float4 in Vulkan
+			if (bIsArrayMember)
+			{
+				if (DataType->ShaderValueType->Type != EShaderFundamentalType::Struct && DataType->ShaderValueType->VectorElemCount == 3)
+				{
+					DataType = FindType(FShaderValueType::Get(DataType->ShaderValueType->Type, 4));
+				}
+			}
 			
 			if (DataType->GetNumArrays() > 0)
 			{
@@ -959,20 +969,25 @@ bool FOptimusDataTypeRegistry::RegisterType(
 				FShaderValueType::FValueView OutShaderValue
 				) -> bool
 			{
-				if (ensure(InRawValue.Num() == ExpectedPropertySize) &&
+				// we can be copying a smaller property into a larger shader side array element
+				// for example, FVector3 -> StructuredBuffer<float4>, see special logic in RegisterStructType
+				if (ensure(InRawValue.Num() <= ExpectedPropertySize) && 
 					ensure(OutShaderValue.ShaderValue.Num() == ExpectedShaderValueSize))
 				{
 					uint8* ShaderValuePtr = OutShaderValue.ShaderValue.GetData();
 					for (const FPropertyConversionInfo& ConversionInfo: ConversionEntries)
 					{
-						TArrayView<const uint8> PropertyData(InRawValue.GetData() + ConversionInfo.PropertyOffset, ConversionInfo.PropertySize);
-						TArrayView<uint8> ShaderValueData(ShaderValuePtr, ConversionInfo.ShaderValueSize);
-						if (!ConversionInfo.ConversionFunc(PropertyData, ShaderValueData))
+						if (ConversionInfo.PropertyOffset + ConversionInfo.PropertySize <= InRawValue.Num())
 						{
-							return false;
-						}
+							TArrayView<const uint8> PropertyData(InRawValue.GetData() + ConversionInfo.PropertyOffset, ConversionInfo.PropertySize);
+							TArrayView<uint8> ShaderValueData(ShaderValuePtr, ConversionInfo.ShaderValueSize);
+							if (!ConversionInfo.ConversionFunc(PropertyData, ShaderValueData))
+							{
+								return false;
+							}
 
-						ShaderValuePtr += ConversionInfo.ShaderValueSize;
+							ShaderValuePtr += ConversionInfo.ShaderValueSize;
+						}
 					}
 					return true;
 				}
@@ -1435,17 +1450,17 @@ FOptimusDataTypeRegistry::PropertyValueConvertFuncT FOptimusDataTypeRegistry::Fi
 	return InfoPtr->PropertyValueConvertFunc;
 }
 
-const TArray<FOptimusDataTypeRegistry::FArrayMetadata>* FOptimusDataTypeRegistry::FindArrayMetadata(
+TArray<FOptimusDataTypeRegistry::FArrayMetadata> FOptimusDataTypeRegistry::FindArrayMetadata(
 	FName InTypeName) const
 {
 	const FTypeInfo* InfoPtr = RegisteredTypes.Find(InTypeName);
 	if (!InfoPtr)
 	{
 		UE_LOG(LogOptimusCore, Fatal, TEXT("CreateProperty: Invalid type name."));
-		return nullptr;
+		return {};
 	}
 
-	return &InfoPtr->ArrayMetadata;
+	return InfoPtr->ArrayMetadata;
 }
 
 UScriptStruct* FOptimusDataTypeRegistry::FindAttributeType(FName InTypeName) const

@@ -1,20 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ReferenceViewer/EdGraph_ReferenceViewer.h"
+#include "Misc/FilterCollection.h"
 #include "ReferenceViewer/EdGraphNode_Reference.h"
+#include "Misc/IFilter.h"
 #include "ReferenceViewer/ReferenceViewerSettings.h"
 #include "EdGraph/EdGraphPin.h"
-#include "AssetRegistry/ARFilter.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetThumbnail.h"
 #include "SReferenceViewer.h"
-#include "SReferenceNode.h"
-#include "GraphEditor.h"
 #include "ICollectionManager.h"
 #include "CollectionManagerModule.h"
 #include "AssetManagerEditorModule.h"
 #include "Engine/AssetManager.h"
-#include "Settings/EditorProjectSettings.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(EdGraph_ReferenceViewer)
 
@@ -45,7 +43,10 @@ int32 FReferenceNodeInfo::ProvisionSize(const FAssetIdentifier& InParentId) cons
 UEdGraph_ReferenceViewer::UEdGraph_ReferenceViewer(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	AssetThumbnailPool = MakeShareable( new FAssetThumbnailPool(1024) );
+	if (!IsTemplate())
+	{
+		AssetThumbnailPool = MakeShareable( new FAssetThumbnailPool(1024) );
+	}
 
 	Settings = GetMutableDefault<UReferenceViewerSettings>();
 }
@@ -121,8 +122,16 @@ bool UEdGraph_ReferenceViewer::GetSelectedAssetsForMenuExtender(const class UEdG
 UEdGraphNode_Reference* UEdGraph_ReferenceViewer::RebuildGraph()
 {
 	RemoveAllNodes();
-	UEdGraphNode_Reference* NewRootNode = ConstructNodes(CurrentGraphRootIdentifiers, CurrentGraphRootOrigin);
-	NotifyGraphChanged();
+	UEdGraphNode_Reference* NewRootNode = nullptr;
+
+	if (Settings->GetFindPathEnabled())
+	{
+		NewRootNode = FindPath(CurrentGraphRootIdentifiers[0], TargetIdentifier);
+	}
+	else
+	{
+		NewRootNode = ConstructNodes(CurrentGraphRootIdentifiers, CurrentGraphRootOrigin);
+	}
 
 	return NewRootNode;
 }
@@ -172,7 +181,7 @@ FAssetManagerDependencyQuery UEdGraph_ReferenceViewer::GetReferenceSearchFlags(b
 
 UEdGraphNode_Reference* UEdGraph_ReferenceViewer::ConstructNodes(const TArray<FAssetIdentifier>& GraphRootIdentifiers, const FIntPoint& GraphRootOrigin )
 {
-	UEdGraphNode_Reference* RootNode = NULL;
+	UEdGraphNode_Reference* RootNode = nullptr;
 	if (GraphRootIdentifiers.Num() > 0)
 	{
 		// It both were false, nothing (other than the GraphRootIdentifiers) would be displayed
@@ -196,14 +205,26 @@ UEdGraphNode_Reference* UEdGraph_ReferenceViewer::ConstructNodes(const TArray<FA
 		// Note to add an empty parent to the root so that if the root node again gets found again as a duplicate, that next parent won't be 
 		// identified as the primary root and also it will appear as having multiple parents.
 		TMap<FAssetIdentifier, FReferenceNodeInfo> NewReferenceNodeInfos;
-		FReferenceNodeInfo& RootNodeInfo = NewReferenceNodeInfos.FindOrAdd( GraphRootIdentifiers[0], FReferenceNodeInfo(GraphRootIdentifiers[0], true));
-		RootNodeInfo.Parents.Emplace(FAssetIdentifier(NAME_None));
-		RecursivelyPopulateNodeInfos(true, GraphRootIdentifiers, NewReferenceNodeInfos, 0, Settings->GetSearchReferencerDepthLimit());
+		for (const FAssetIdentifier& RootIdentifier : GraphRootIdentifiers)
+		{
+			FReferenceNodeInfo& RootNodeInfo = NewReferenceNodeInfos.FindOrAdd(RootIdentifier, FReferenceNodeInfo(RootIdentifier, true));
+			RootNodeInfo.Parents.Emplace(FAssetIdentifier(NAME_None));
+		}
+		if (!Settings->GetFindPathEnabled())
+		{
+			RecursivelyPopulateNodeInfos(true, GraphRootIdentifiers, NewReferenceNodeInfos, 0, Settings->GetSearchReferencerDepthLimit());
+		}
 
 		TMap<FAssetIdentifier, FReferenceNodeInfo> NewDependencyNodeInfos;
-		FReferenceNodeInfo& DRootNodeInfo = NewDependencyNodeInfos.FindOrAdd( GraphRootIdentifiers[0], FReferenceNodeInfo(GraphRootIdentifiers[0], false));
-		DRootNodeInfo.Parents.Emplace(FAssetIdentifier(NAME_None));
-		RecursivelyPopulateNodeInfos(false, GraphRootIdentifiers, NewDependencyNodeInfos, 0, Settings->GetSearchDependencyDepthLimit());
+		for (const FAssetIdentifier& RootIdentifier : GraphRootIdentifiers)
+		{
+			FReferenceNodeInfo& DRootNodeInfo = NewDependencyNodeInfos.FindOrAdd(RootIdentifier, FReferenceNodeInfo(RootIdentifier, false));
+			DRootNodeInfo.Parents.Emplace(FAssetIdentifier(NAME_None));
+		}
+		if (!Settings->GetFindPathEnabled())
+		{
+			RecursivelyPopulateNodeInfos(false, GraphRootIdentifiers, NewDependencyNodeInfos, 0, Settings->GetSearchDependencyDepthLimit());
+		}
 
 		TSet<FName> AllPackageNames;
 		auto AddPackage = [](const FAssetIdentifier& AssetId, TSet<FName>& PackageNames)
@@ -233,7 +254,7 @@ UEdGraphNode_Reference* UEdGraph_ReferenceViewer::ConstructNodes(const TArray<FA
 
 		// Store the AssetData in the NodeInfos
 		TMap<FName, FAssetData> PackagesToAssetDataMap;
-		GatherAssetData(AllPackageNames, PackagesToAssetDataMap);
+		UE::AssetRegistry::GetAssetForPackages(AllPackageNames.Array(), PackagesToAssetDataMap);
 
 		// Store the AssetData in the NodeInfos and collect Asset Type UClasses to populate the filters
 		TSet<FTopLevelAssetPath> AllClasses;
@@ -271,11 +292,80 @@ UEdGraphNode_Reference* UEdGraph_ReferenceViewer::ConstructNodes(const TArray<FA
 	return RefilterGraph();
 }
 
+UEdGraphNode_Reference* UEdGraph_ReferenceViewer::FindPath(const FAssetIdentifier& RootId, const FAssetIdentifier& TargetId)
+{
+
+	TargetIdentifier = TargetId;
+
+	RemoveAllNodes();
+
+	// Check for the target in the dependencies
+	TMap<FAssetIdentifier, FReferenceNodeInfo> NewNodeInfos;
+	TSet<FAssetIdentifier> Visited;
+	FReferenceNodeInfo& RootNodeInfo = NewNodeInfos.FindOrAdd( RootId, FReferenceNodeInfo(RootId, false));
+	if (TargetId.IsValid())
+	{
+		FindPath_Recursive(false, RootId, TargetId, NewNodeInfos, Visited);
+	}
+	GatherAssetData(NewNodeInfos);
+	DependencyNodeInfos = NewNodeInfos;
+
+	// Check for the target in the references
+	Visited.Empty();
+	TMap<FAssetIdentifier, FReferenceNodeInfo> NewRefNodeInfos;
+	FReferenceNodeInfo& RootRefNodeInfo = NewRefNodeInfos.FindOrAdd( RootId, FReferenceNodeInfo(RootId, true));
+	if (TargetId.IsValid())
+	{
+		FindPath_Recursive(true, RootId, TargetId, NewRefNodeInfos, Visited);
+	}
+	GatherAssetData(NewRefNodeInfos);
+	ReferencerNodeInfos = NewRefNodeInfos;
+
+	UEdGraphNode_Reference* NewRootNode = RefilterGraph();
+
+	NotifyGraphChanged();
+
+	return NewRootNode;
+}
+
+bool UEdGraph_ReferenceViewer::FindPath_Recursive(bool bInReferencers, const FAssetIdentifier& InAssetId, const FAssetIdentifier& TargetId, TMap<FAssetIdentifier, FReferenceNodeInfo>& InNodeInfos, TSet<FAssetIdentifier>& Visited )
+{
+	bool bFound = false;
+
+	if (InAssetId == TargetId)
+	{
+		FReferenceNodeInfo& NewNodeInfo = InNodeInfos.FindOrAdd(InAssetId, FReferenceNodeInfo(InAssetId, bInReferencers));
+		bFound = true;
+	}
+
+	// check if any decedents are the target and if any are found, add a node info for this asset as well 
+	else 
+	{
+		Visited.Add(InAssetId);
+		TMap<FAssetIdentifier, EDependencyPinCategory> ReferenceLinks;
+		GetSortedLinks({InAssetId}, bInReferencers, GetReferenceSearchFlags(false), ReferenceLinks);
+
+		for (const TPair<FAssetIdentifier, EDependencyPinCategory>& Pair : ReferenceLinks)
+		{
+			FAssetIdentifier ChildId = Pair.Key;
+			if (!Visited.Contains(ChildId) && FindPath_Recursive(bInReferencers, ChildId, TargetId, InNodeInfos, Visited))
+			{
+				FReferenceNodeInfo& NewNodeInfo = InNodeInfos.FindOrAdd(InAssetId, FReferenceNodeInfo(InAssetId, bInReferencers));
+
+				InNodeInfos[ChildId].Parents.AddUnique(InAssetId);
+				InNodeInfos[InAssetId].Children.AddUnique(Pair);
+				bFound = true;
+			}
+		}
+	}
+
+	return bFound;
+}
 
 UEdGraphNode_Reference* UEdGraph_ReferenceViewer::RefilterGraph()
 {
 	RemoveAllNodes();
-	UEdGraphNode_Reference* RootNode = NULL;
+	UEdGraphNode_Reference* RootNode = nullptr;
 
 	bBreadthLimitReached = false;
 	if (CurrentGraphRootIdentifiers.Num() > 0 && (!ReferencerNodeInfos.IsEmpty() || !DependencyNodeInfos.IsEmpty()))
@@ -283,8 +373,13 @@ UEdGraphNode_Reference* UEdGraph_ReferenceViewer::RefilterGraph()
 		FAssetIdentifier FirstGraphRootIdentifier = CurrentGraphRootIdentifiers[0];
 
 		// Create the root node
-		bool bRootIsDuplicated = (Settings->IsShowDependencies() && DependencyNodeInfos.Contains(FirstGraphRootIdentifier) && DependencyNodeInfos[FirstGraphRootIdentifier].IsADuplicate()) || 
-								  (Settings->IsShowReferencers() && ReferencerNodeInfos.Contains(FirstGraphRootIdentifier) && ReferencerNodeInfos[FirstGraphRootIdentifier].IsADuplicate());
+		bool bRootIsDuplicated = false;
+
+		for (const FAssetIdentifier& RootID : CurrentGraphRootIdentifiers)
+		{
+			bRootIsDuplicated |= (Settings->IsShowDependencies() && DependencyNodeInfos.Contains(RootID) && DependencyNodeInfos[RootID].IsADuplicate()) ||
+				(Settings->IsShowReferencers() && ReferencerNodeInfos.Contains(RootID) && ReferencerNodeInfos[RootID].IsADuplicate());
+		}
 		const FReferenceNodeInfo& NodeInfo = Settings->IsShowReferencers() ? ReferencerNodeInfos[FirstGraphRootIdentifier] : DependencyNodeInfos[FirstGraphRootIdentifier];
 		RootNode = CreateReferenceNode();
 		RootNode->SetupReferenceNode(CurrentGraphRootOrigin, CurrentGraphRootIdentifiers, NodeInfo.AssetData, /*bInAllowThumbnail = */ !Settings->IsCompactMode(), /*bIsDuplicate*/ bRootIsDuplicated);
@@ -301,7 +396,6 @@ UEdGraphNode_Reference* UEdGraph_ReferenceViewer::RefilterGraph()
 			RecursivelyFilterNodeInfos(FirstGraphRootIdentifier, DependencyNodeInfos, 0, Settings->GetSearchDependencyDepthLimit());
 			RecursivelyCreateNodes(false, FirstGraphRootIdentifier, CurrentGraphRootOrigin, FirstGraphRootIdentifier, RootNode, DependencyNodeInfos, 0, Settings->GetSearchDependencyDepthLimit(), /*bIsRoot*/ true);
 		}
-
 	}
 
 	NotifyGraphChanged();
@@ -310,13 +404,13 @@ UEdGraphNode_Reference* UEdGraph_ReferenceViewer::RefilterGraph()
 
 void UEdGraph_ReferenceViewer::RecursivelyFilterNodeInfos(const FAssetIdentifier& InAssetId, TMap<FAssetIdentifier, FReferenceNodeInfo>& InNodeInfos, int32 InCurrentDepth, int32 InMaxDepth)
 {
-	// Filters and Reprovisions the NodeInfo counts 
+	// Filters and Re-provisions the NodeInfo counts 
 	int32 NewProvisionSize = 0;
 
 	int32 Breadth = 0;
 
 	InNodeInfos[InAssetId].OverflowCount = 0;
-	if (InMaxDepth > 0 && InCurrentDepth < InMaxDepth)
+	if (!ExceedsMaxSearchDepth(InCurrentDepth, InMaxDepth))
 	{
 		for (const TPair<FAssetIdentifier, EDependencyPinCategory>& Pair : InNodeInfos[InAssetId].Children)
 		{
@@ -327,6 +421,10 @@ void UEdGraph_ReferenceViewer::RecursivelyFilterNodeInfos(const FAssetIdentifier
 			{
 				RecursivelyFilterNodeInfos(ChildId, InNodeInfos, InCurrentDepth + 1, InMaxDepth);
 				ChildProvSize = InNodeInfos[ChildId].ProvisionSize(InAssetId);
+			}
+			else if (Settings->GetFindPathEnabled())
+			{
+				ChildProvSize = 1;
 			}
 			else if (InNodeInfos[ChildId].PassedFilters && Settings->IsShowDuplicates())
 			{
@@ -360,7 +458,8 @@ void UEdGraph_ReferenceViewer::RecursivelyFilterNodeInfos(const FAssetIdentifier
 	bool PassedAssetTypeFilter = FilterCollection && Settings->GetFiltersEnabled() ? FilterCollection->PassesAllFilters(InNodeInfos[InAssetId]) : true;
 	bool PassedSearchTextFilter = IsAssetPassingSearchTextFilter(InAssetId);
 
-	bool PassedAllFilters = PassedAssetTypeFilter && PassedSearchTextFilter;	
+	// Don't apply filters in Find Path Mode. Otherwise, check the type and search filters, and also don't include any assets in the central selection (where InCurrentDepth == 0)
+	bool PassedAllFilters = Settings->GetFindPathEnabled() || (PassedAssetTypeFilter && PassedSearchTextFilter && (InCurrentDepth == 0 || !CurrentGraphRootIdentifiers.Contains(InAssetId)));
 
 	InNodeInfos[InAssetId].ChildProvisionSize = NewProvisionSize > 0 ? NewProvisionSize : (PassedAllFilters ? 1 : 0);
 	InNodeInfos[InAssetId].PassedFilters = PassedAllFilters;
@@ -434,7 +533,7 @@ void UEdGraph_ReferenceViewer::GetSortedLinks(const TArray<FAssetIdentifier>& Id
 		{
 			EDependencyPinCategory& Category = OutLinks.FindOrAdd(LinkToAsset.AssetId, EDependencyPinCategory::LinkEndActive);
 			bool bIsHard = IsHard(LinkToAsset.Properties);
-			bool bIsUsedInGame = (LinkToAsset.Category != EDependencyCategory::Package) | ((LinkToAsset.Properties & EDependencyProperty::Game) != EDependencyProperty::None);
+			bool bIsUsedInGame = (LinkToAsset.Category != EDependencyCategory::Package) || ((LinkToAsset.Properties & EDependencyProperty::Game) != EDependencyProperty::None);
 			Category |= EDependencyPinCategory::LinkEndActive;
 			Category |= bIsHard ? EDependencyPinCategory::LinkTypeHard : EDependencyPinCategory::LinkTypeNone;
 			Category |= bIsUsedInGame ? EDependencyPinCategory::LinkTypeUsedInGame : EDependencyPinCategory::LinkTypeNone;
@@ -496,7 +595,7 @@ UEdGraph_ReferenceViewer::RecursivelyPopulateNodeInfos(bool bInReferencers, cons
 	check(Identifiers.Num() > 0);
 	int32 ProvisionSize = 0;
 	const FAssetIdentifier& InAssetId = Identifiers[0];
-	if (InMaxDepth > 0 && InCurrentDepth < InMaxDepth)
+	if (!ExceedsMaxSearchDepth(InCurrentDepth, InMaxDepth))
 	{
 		TMap<FAssetIdentifier, EDependencyPinCategory> ReferenceLinks;
 		GetSortedLinks(Identifiers, bInReferencers, GetReferenceSearchFlags(false), ReferenceLinks);
@@ -533,9 +632,29 @@ UEdGraph_ReferenceViewer::RecursivelyPopulateNodeInfos(bool bInReferencers, cons
 	InNodeInfos[InAssetId].ChildProvisionSize = ProvisionSize > 0 ? ProvisionSize : 1;
 }
 
-void UEdGraph_ReferenceViewer::GatherAssetData(const TSet<FName>& AllPackageNames, TMap<FName, FAssetData>& OutPackageToAssetDataMap) const
+void UEdGraph_ReferenceViewer::GatherAssetData(TMap<FAssetIdentifier, FReferenceNodeInfo>& InNodeInfos)
 {
-	UE::AssetRegistry::GetAssetForPackages(AllPackageNames.Array(), OutPackageToAssetDataMap);
+	// Grab the list of packages
+	TSet<FName> PackageNames;
+	for (TPair<FAssetIdentifier, FReferenceNodeInfo>&  InfoPair : InNodeInfos)
+	{
+		FAssetIdentifier& AssetId = InfoPair.Key;
+		if (!AssetId.IsValue() && !AssetId.PackageName.IsNone())
+		{
+			PackageNames.Add(AssetId.PackageName);
+		}
+	}
+
+	// Retrieve the AssetData from the Registry
+	TMap<FName, FAssetData> PackagesToAssetDataMap;
+	UE::AssetRegistry::GetAssetForPackages(PackageNames.Array(), PackagesToAssetDataMap);
+
+
+	// Populate the AssetData back into the NodeInfos
+	for (TPair<FAssetIdentifier, FReferenceNodeInfo>&  InfoPair : InNodeInfos)
+	{
+		InfoPair.Value.AssetData = PackagesToAssetDataMap.FindRef(InfoPair.Key.PackageName);
+	}
 }
 
 UEdGraphNode_Reference* UEdGraph_ReferenceViewer::RecursivelyCreateNodes(bool bInReferencers, const FAssetIdentifier& InAssetId, const FIntPoint& InNodeLoc, const FAssetIdentifier& InParentId, UEdGraphNode_Reference* InParentNode, TMap<FAssetIdentifier, FReferenceNodeInfo>& InNodeInfos, int32 InCurrentDepth, int32 InMaxDepth, bool bIsRoot)
@@ -545,7 +664,7 @@ UEdGraphNode_Reference* UEdGraph_ReferenceViewer::RecursivelyCreateNodes(bool bI
 	const FReferenceNodeInfo& NodeInfo = InNodeInfos[InAssetId];
 	int32 NodeProvSize = 1;
 
-	UEdGraphNode_Reference* NewNode = NULL;
+	UEdGraphNode_Reference* NewNode = nullptr;
 	if (bIsRoot)
 	{
 		NewNode = InParentNode;
@@ -562,7 +681,7 @@ UEdGraphNode_Reference* UEdGraph_ReferenceViewer::RecursivelyCreateNodes(bool bI
 
 	bool bIsFirstOccurance = bIsRoot || NodeInfo.IsFirstParent(InParentId);
 	FIntPoint ChildLoc = InNodeLoc;
-	if (InMaxDepth > 0 && (InCurrentDepth < InMaxDepth) && bIsFirstOccurance) // Only expand the first parent
+	if (!ExceedsMaxSearchDepth(InCurrentDepth, InMaxDepth) && bIsFirstOccurance) // Only expand the first parent
 	{
 
 		// position the children nodes
@@ -575,9 +694,10 @@ UEdGraphNode_Reference* UEdGraph_ReferenceViewer::RecursivelyCreateNodes(bool bI
 		ChildLoc.Y -= (NodeProvSize - 1) * NodeSizeY * 0.5 ;
 
 		int32 Breadth = 0;
-
-		for (const TPair<FAssetIdentifier, EDependencyPinCategory>& Pair : InNodeInfos[InAssetId].Children)
+		int32 ChildIdx = 0;
+		for (; ChildIdx < InNodeInfos[InAssetId].Children.Num(); ChildIdx++)
 		{
+			const TPair<FAssetIdentifier, EDependencyPinCategory>& Pair = InNodeInfos[InAssetId].Children[ChildIdx];
 			if (ExceedsMaxSearchBreadth(Breadth) && !InNodeInfos[InAssetId].bExpandAllChildren)
 			{
 				break;
@@ -588,6 +708,10 @@ UEdGraphNode_Reference* UEdGraph_ReferenceViewer::RecursivelyCreateNodes(bool bI
 		    if (InNodeInfos[ChildId].IsFirstParent(InAssetId))
 		   	{
 		   		ChildProvSize = InNodeInfos[ChildId].ProvisionSize(InAssetId);
+		   	}
+		   	else if (Settings->GetFindPathEnabled())
+		   	{
+		   		ChildProvSize = 1;
 		   	}
 		   	else if (InNodeInfos[ChildId].PassedFilters && Settings->IsShowDuplicates())
 		   	{
@@ -628,7 +752,14 @@ UEdGraphNode_Reference* UEdGraph_ReferenceViewer::RecursivelyCreateNodes(bool bI
 			if ( ensure(OverflowNode) )
 			{
 				OverflowNode->SetAllowThumbnail(!Settings->IsCompactMode());
-				OverflowNode->SetReferenceNodeCollapsed(RefNodeLoc, NodeInfo.OverflowCount);
+
+				TArray<FAssetIdentifier> CollapsedNodeIdentifiers;
+				for (; ChildIdx < InNodeInfos[InAssetId].Children.Num(); ChildIdx++)
+				{
+					const TPair<FAssetIdentifier, EDependencyPinCategory>& Pair = InNodeInfos[InAssetId].Children[ChildIdx];
+					CollapsedNodeIdentifiers.Add(Pair.Key);
+				}
+				OverflowNode->SetReferenceNodeCollapsed(RefNodeLoc, NodeInfo.OverflowCount, CollapsedNodeIdentifiers);
 
 				if ( bInReferencers )
 				{
@@ -667,12 +798,28 @@ const TSharedPtr<FAssetThumbnailPool>& UEdGraph_ReferenceViewer::GetAssetThumbna
 
 bool UEdGraph_ReferenceViewer::ExceedsMaxSearchDepth(int32 Depth, int32 MaxDepth) const
 {
-	// ExceedsMaxSearchDepth requires only greater (not equal than) because, even though the Depth is 1-based indexed (similarly to Breadth), the first index (index 0) corresponds to the root object 
-	return Settings->IsSearchDepthLimited() && Depth > MaxDepth;
+	// the FindPath feature is not depth limited
+ 	if (Settings->GetFindPathEnabled())
+ 	{
+ 		return false;
+ 	}
+
+ 	else if (Settings->IsSearchDepthLimited() && (Depth > MaxDepth || MaxDepth < 1))
+ 	{
+ 		return true;
+ 	}
+
+ 	return false;
 }
 
 bool UEdGraph_ReferenceViewer::ExceedsMaxSearchBreadth(int32 Breadth) const
 {
+	// the FindPath feature is not breadth limited
+	if (Settings->GetFindPathEnabled())
+	{
+		return false;
+	}
+
 	// ExceedsMaxSearchBreadth requires greater or equal than because the Breadth is 1-based indexed
 	return Settings->IsSearchBreadthLimited() && (Breadth >=  Settings->GetSearchBreadthLimit());
 }

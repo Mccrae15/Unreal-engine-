@@ -1,20 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/GameInstance.h"
+#include "AnalyticsEventAttribute.h"
+#include "GameFramework/WorldSettings.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/CommandLine.h"
 #include "GameMapsSettings.h"
-#include "EngineGlobals.h"
-#include "Engine/EngineTypes.h"
-#include "TimerManager.h"
-#include "Engine/LatentActionManager.h"
-#include "Engine/World.h"
 #include "AI/NavigationSystemBase.h"
 #include "Misc/Paths.h"
-#include "Online/CoreOnline.h"
-#include "GameFramework/PlayerController.h"
-#include "Engine/Engine.h"
 #include "Engine/Console.h"
+#include "Engine/GameViewportClient.h"
 #include "Misc/ScopedSlowTask.h"
 #include "Engine/GameEngine.h"
 #include "GameFramework/GameModeBase.h"
@@ -24,22 +19,34 @@
 #include "GameFramework/PlayerState.h"
 #include "GameFramework/GameSession.h"
 #include "Net/OnlineEngineInterface.h"
-#include "Kismet/GameplayStatics.h"
 #include "Framework/Application/SlateApplication.h"
-#include "GenericPlatform/GenericApplication.h"
 #include "Misc/PackageName.h"
 #include "Net/ReplayPlaylistTracker.h"
 #include "ReplaySubsystem.h"
-#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
-#include "ProfilingDebugging/CpuProfilerTrace.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(GameInstance)
 
 #if WITH_EDITOR
+#include "Settings/LevelEditorPlayNetworkEmulationSettings.h"
 #include "Settings/LevelEditorPlaySettings.h"
 #include "Editor/EditorEngine.h"
-#include "EngineAnalytics.h"
 #include "StudioAnalytics.h"
+#else
+#include "TimerManager.h"
+#include "UObject/Package.h"
+#endif
+
+#if WITH_EDITOR
+FGameInstancePIEParameters::FGameInstancePIEParameters()
+	: bSimulateInEditor(false)
+	, bAnyBlueprintErrors(false)
+	, bStartInSpectatorMode(false)
+	, bRunAsDedicated(false)
+	, bIsPrimaryPIEClient(false)
+	, WorldFeatureLevel(ERHIFeatureLevel::Num)
+	, EditorPlaySettings(nullptr)
+	, NetMode(EPlayNetMode::PIE_Standalone)
+{}
 #endif
 
 UGameInstance::UGameInstance(const FObjectInitializer& ObjectInitializer)
@@ -623,7 +630,7 @@ void UGameInstance::StartGameInstance()
 	const FString& DefaultMap = GameMapsSettings->GetGameDefaultMap();
 
 	FString PackageName;
-	if (!FParse::Token(Tmp, PackageName, 0) || **PackageName == '-')
+	if (!GetMapOverrideName(Tmp, PackageName))
 	{
 		PackageName = DefaultMap + GameMapsSettings->LocalMapOptions;
 	}
@@ -686,6 +693,34 @@ void UGameInstance::BroadcastOnStart()
 void UGameInstance::OnStart()
 {
 
+}
+
+bool UGameInstance::GetMapOverrideName(const TCHAR* CmdLine, FString& OverrideMapName)
+{
+	const TCHAR* ParsedCmdLine = CmdLine;
+
+	while (*ParsedCmdLine)
+	{
+		FString Token = FParse::Token(ParsedCmdLine, 0);
+
+		if (Token.IsEmpty())
+		{
+			continue;
+		}
+
+		if (Token[0] != TCHAR('-'))
+		{
+			OverrideMapName = Token;
+
+			return true;
+		}
+		else if (FParse::Value(*Token, TEXT("-map="), OverrideMapName))
+		{
+			return true;
+		}
+	}
+
+	return false;
 }
 
 bool UGameInstance::HandleOpenCommand(const TCHAR* Cmd, FOutputDevice& Ar, UWorld* InWorld)
@@ -763,8 +798,18 @@ ULocalPlayer* UGameInstance::CreateLocalPlayer(FPlatformUserId UserId, FString& 
 
 	ULocalPlayer* NewPlayer = NULL;
 	int32 InsertIndex = INDEX_NONE;
+	UGameViewportClient* GameViewport = GetGameViewportClient();
 
-	const int32 MaxSplitscreenPlayers = (GetGameViewportClient() != NULL) ? GetGameViewportClient()->MaxSplitscreenPlayers : 1;
+	if (GameViewport == nullptr)
+	{
+		if (ensure(IsDedicatedServerInstance()))
+		{
+			OutError = FString::Printf(TEXT("Dedicated servers cannot have local players"));
+			return nullptr;
+		}
+	}
+
+	const int32 MaxSplitscreenPlayers = GameViewport ? GameViewport->MaxSplitscreenPlayers : 1;
 
 	if (FindLocalPlayerFromPlatformUserId(UserId) != NULL)
 	{
@@ -863,7 +908,7 @@ int32 UGameInstance::AddLocalPlayer(ULocalPlayer* NewLocalPlayer, FPlatformUserI
 		GetGameViewportClient()->NotifyPlayerAdded(InsertIndex, NewLocalPlayer);
 	}
 
-	UE_LOG(LogPlayerManagement, Log, TEXT("UGameInstance::AddLocalPlayer: Added player %s with PlatformUserId %d at index %d (%d remaining players)"), *NewLocalPlayer->GetName(), NewLocalPlayer->GetPlatformUserId(), InsertIndex, LocalPlayers.Num());
+	UE_LOG(LogPlayerManagement, Log, TEXT("UGameInstance::AddLocalPlayer: Added player %s with PlatformUserId %d at index %d (%d remaining players)"), *NewLocalPlayer->GetName(), NewLocalPlayer->GetPlatformUserId().GetInternalId(), InsertIndex, LocalPlayers.Num());
 
 	OnLocalPlayerAddedEvent.Broadcast(NewLocalPlayer);
 

@@ -10,7 +10,10 @@
 #include "Rendering/SkeletalMeshLODRenderData.h"
 #include "ShaderParameterMetadataBuilder.h"
 #include "SkeletalRenderPublic.h"
+#include "ShaderCompilerCore.h"
 #include "ComponentSources/OptimusSkinnedMeshComponentSource.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(OptimusDataInterfaceRawBuffer)
 
 
 const UOptimusComponentSource* UOptimusRawBufferDataInterface::GetComponentSource() const
@@ -132,9 +135,16 @@ void UOptimusPersistentBufferDataInterface::GetShaderParameters(TCHAR const* UID
 	InOutBuilder.AddNestedStruct<FPersistentBufferDataInterfaceParameters>(UID);
 }
 
+TCHAR const* UOptimusRawBufferDataInterface::TemplateFilePath = TEXT("/Plugin/Optimus/Private/DataInterfaceRawBuffer.ush");
+
+TCHAR const* UOptimusRawBufferDataInterface::GetShaderVirtualPath() const
+{
+	return TemplateFilePath;
+}
+
 void UOptimusRawBufferDataInterface::GetShaderHash(FString& InOutKey) const
 {
-	GetShaderFileHash(TEXT("/Plugin/Optimus/Private/DataInterfaceRawBuffer.ush"), EShaderPlatform::SP_PCD3D_SM5).AppendString(InOutKey);
+	GetShaderFileHash(TemplateFilePath, EShaderPlatform::SP_PCD3D_SM5).AppendString(InOutKey);
 }
 
 void UOptimusRawBufferDataInterface::GetHLSL(FString& OutHLSL, FString const& InDataInterfaceName) const
@@ -154,7 +164,7 @@ void UOptimusRawBufferDataInterface::GetHLSL(FString& OutHLSL, FString const& In
 	};
 
 	FString TemplateFile;
-	LoadShaderSourceFile(TEXT("/Plugin/Optimus/Private/DataInterfaceRawBuffer.ush"), EShaderPlatform::SP_PCD3D_SM5, &TemplateFile, nullptr);
+	LoadShaderSourceFile(TemplateFilePath, EShaderPlatform::SP_PCD3D_SM5, &TemplateFile, nullptr);
 	OutHLSL += FString::Format(*TemplateFile, TemplateArgs);
 }
 
@@ -189,48 +199,6 @@ UComputeDataProvider* UOptimusPersistentBufferDataInterface::CreateDataProvider(
 	Provider->ResourceName = ResourceName;
 
 	return Provider;
-}
-
-
-bool UOptimusRawBufferDataProvider::IsValid() const
-{
-	if (!Component.IsValid())
-	{
-		return false;
-	}
-	
-	const UOptimusComponentSource* ComponentSourcePtr = ComponentSource.Get();
-	if (!ComponentSourcePtr)
-	{
-		return false;
-	}
-
-	switch(DataDomain.Type)
-	{
-	case EOptimusDataDomainType::Dimensional:
-		{
-			if (DataDomain.DimensionNames.IsEmpty())
-			{
-				return false;
-			}
-			return ComponentSourcePtr->GetExecutionDomains().Contains(DataDomain.DimensionNames[0]); 
-		}
-	case EOptimusDataDomainType::Expression:
-		{
-			using namespace Optimus::Expression;
-			TMap<FName, int32> DomainNames;
-
-			for (FName DomainName: ComponentSourcePtr->GetExecutionDomains())
-			{
-				DomainNames.Add(DomainName, 0);
-			}
-
-			// Return true if there was no error. Verify returns a TOptional.
-			return !FEngine{DomainNames}.Verify(DataDomain.Expression).IsSet();
-		}
-	}
-
-	return false;
 }
 
 
@@ -328,17 +296,6 @@ FComputeDataProviderRenderProxy* UOptimusTransientBufferDataProvider::GetRenderP
 }
 
 
-bool UOptimusPersistentBufferDataProvider::IsValid() const
-{
-	if (!BufferPool.IsValid())
-	{
-		return false;
-	}
-
-	return UOptimusRawBufferDataProvider::IsValid();
-}
-
-
 FComputeDataProviderRenderProxy* UOptimusPersistentBufferDataProvider::GetRenderProxy()
 {
 	int32 LodIndex = 0;
@@ -352,14 +309,31 @@ FComputeDataProviderRenderProxy* UOptimusPersistentBufferDataProvider::GetRender
 FOptimusTransientBufferDataProviderProxy::FOptimusTransientBufferDataProviderProxy(
 	TArray<int32> InInvocationElementCounts,
 	int32 InElementStride,
-	int32 InRawStride
-	) :
-	InvocationElementCounts(InInvocationElementCounts),
-	ElementStride(InElementStride),
-	RawStride(InRawStride)
+	int32 InRawStride) 
+	: InvocationElementCounts(InInvocationElementCounts)
+	, TotalElementCount(0)
+	, ElementStride(InElementStride)
+	, RawStride(InRawStride)
 {
+	for (int32 NumElements : InvocationElementCounts)
+	{
+		TotalElementCount += NumElements;
+	}
 }
 
+bool FOptimusTransientBufferDataProviderProxy::IsValid(FValidationData const& InValidationData) const
+{
+	if (InValidationData.ParameterStructSize != sizeof(FParameters))
+	{
+		return false;
+	}
+	if (InValidationData.NumInvocations != InvocationElementCounts.Num())
+	{
+		return false;
+	}
+
+	return true;
+}
 
 void FOptimusTransientBufferDataProviderProxy::AllocateResources(FRDGBuilder& GraphBuilder)
 {
@@ -368,32 +342,25 @@ void FOptimusTransientBufferDataProviderProxy::AllocateResources(FRDGBuilder& Gr
 	const int32 Stride = RawStride ? RawStride : ElementStride;
 	const int32 ElementStrideMultiplier = RawStride ? ElementStride / RawStride : 1;
 
-	for (const int32 NumElements: InvocationElementCounts)
-	{
-		Buffer.Add(GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(Stride, NumElements * ElementStrideMultiplier), TEXT("TransientBuffer"), ERDGBufferFlags::None));
-		BufferSRV.Add(GraphBuilder.CreateSRV(Buffer.Last()));
-		BufferUAV.Add(GraphBuilder.CreateUAV(Buffer.Last()));
-	}
+	Buffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(Stride, TotalElementCount * ElementStrideMultiplier), TEXT("TransientBuffer"), ERDGBufferFlags::None);
+	BufferSRV = GraphBuilder.CreateSRV(Buffer);
+	BufferUAV = GraphBuilder.CreateUAV(Buffer, ERDGUnorderedAccessViewFlags::SkipBarrier);
 }
 
-void FOptimusTransientBufferDataProviderProxy::GatherDispatchData(FDispatchSetup const& InDispatchSetup, FCollectedDispatchData& InOutDispatchData)
+void FOptimusTransientBufferDataProviderProxy::GatherDispatchData(FDispatchData const& InDispatchData)
 {
-	if (!ensure(InDispatchSetup.ParameterStructSizeForValidation == sizeof(FTransientBufferDataInterfaceParameters)))
+	TStridedView<FParameters> ParameterArray = MakeStridedParameterView<FParameters>(InDispatchData);
+	for (int32 InvocationIndex = 0, StartOffset = 0; InvocationIndex < ParameterArray.Num(); ++InvocationIndex)
 	{
-		return;
-	}
-
-	for (int32 InvocationIndex = 0; InvocationIndex < InvocationElementCounts.Num(); ++InvocationIndex)
-	{
-		FTransientBufferDataInterfaceParameters* Parameters =
-			reinterpret_cast<FTransientBufferDataInterfaceParameters*>(InOutDispatchData.ParameterBuffer + InDispatchSetup.ParameterBufferOffset + InDispatchSetup.ParameterBufferStride * InvocationIndex);
-		Parameters->StartOffset = 0;
-		Parameters->BufferSize = InvocationElementCounts[InvocationIndex];
-		Parameters->BufferSRV = BufferSRV[InvocationIndex];
-		Parameters->BufferUAV = BufferUAV[InvocationIndex];
+		FParameters& Parameters = ParameterArray[InvocationIndex];
+		Parameters.StartOffset = InDispatchData.bUnifiedDispatch ? 0 : StartOffset;
+		Parameters.BufferSize = InDispatchData.bUnifiedDispatch ? TotalElementCount : InvocationElementCounts[InvocationIndex];
+		Parameters.BufferSRV = BufferSRV;
+		Parameters.BufferUAV = BufferUAV;
+		
+		StartOffset += InvocationElementCounts[InvocationIndex];
 	}
 }
-
 
 
 FOptimusPersistentBufferDataProviderProxy::FOptimusPersistentBufferDataProviderProxy(
@@ -402,55 +369,58 @@ FOptimusPersistentBufferDataProviderProxy::FOptimusPersistentBufferDataProviderP
 	int32 InRawStride,
 	TSharedPtr<FOptimusPersistentBufferPool> InBufferPool,
 	FName InResourceName,
-	int32 InLODIndex
-	) :
-	InvocationElementCounts(InInvocationElementCounts),
-	ElementStride(InElementStride),
-	RawStride(InRawStride),
-	BufferPool(InBufferPool),
-	ResourceName(InResourceName),
-	LODIndex(InLODIndex)
+	int32 InLODIndex)
+	: InvocationElementCounts(InInvocationElementCounts)
+	, TotalElementCount(0)
+	, ElementStride(InElementStride)
+	, RawStride(InRawStride)
+	, BufferPool(InBufferPool)
+	, ResourceName(InResourceName)
+	, LODIndex(InLODIndex)
 {
-}
-
-
-void FOptimusPersistentBufferDataProviderProxy::AllocateResources(
-	FRDGBuilder& GraphBuilder
-	)
-{
-	BufferPool->GetResourceBuffers(GraphBuilder, ResourceName, LODIndex, ElementStride, RawStride, InvocationElementCounts, Buffers);
-	BufferUAVs.Reserve(Buffers.Num());
-	for (FRDGBufferRef BufferRef : Buffers)
+	for (int32 NumElements : InvocationElementCounts)
 	{
-		BufferUAVs.Add(GraphBuilder.CreateUAV(BufferRef));
+		TotalElementCount += NumElements;
 	}
 }
 
-
-void FOptimusPersistentBufferDataProviderProxy::GatherDispatchData(
-	FDispatchSetup const& InDispatchSetup,
-	FCollectedDispatchData& InOutDispatchData
-	)
+bool FOptimusPersistentBufferDataProviderProxy::IsValid(FValidationData const& InValidationData) const
 {
-	if (!ensure(InDispatchSetup.ParameterStructSizeForValidation == sizeof(FPersistentBufferDataInterfaceParameters)))
+	if (InValidationData.ParameterStructSize != sizeof(FParameters))
 	{
-		return;
+		return false;
+	}
+	if (InValidationData.NumInvocations != InvocationElementCounts.Num())
+	{
+		return false;
 	}
 
-	if (!ensure(Buffers.Num() == InvocationElementCounts.Num()))
-	{
-		return;
-	}
-	
-	for (int32 InvocationIndex = 0; InvocationIndex < InvocationElementCounts.Num(); ++InvocationIndex)
-	{
-		FPersistentBufferDataInterfaceParameters* Parameters =
-			reinterpret_cast<FPersistentBufferDataInterfaceParameters*>(InOutDispatchData.ParameterBuffer + InDispatchSetup.ParameterBufferOffset + InDispatchSetup.ParameterBufferStride * InvocationIndex);
-		
-		Parameters->StartOffset = 0;
-		Parameters->BufferSize = InvocationElementCounts[InvocationIndex];
-		Parameters->BufferUAV = BufferUAVs[InvocationIndex];
-	}
+	return true;
+}
 
-	FComputeDataProviderRenderProxy::GatherDispatchData(InDispatchSetup, InOutDispatchData);
+void FOptimusPersistentBufferDataProviderProxy::AllocateResources(FRDGBuilder& GraphBuilder)
+{
+	TArray<int32> Count;
+	Count.Add(TotalElementCount);
+	TArray<FRDGBufferRef> Buffers;
+	BufferPool->GetResourceBuffers(GraphBuilder, ResourceName, LODIndex, ElementStride, RawStride, Count, Buffers);
+
+	ensure(Buffers.Num() == 1);
+	Buffer = Buffers[0];
+
+	BufferUAV = GraphBuilder.CreateUAV(Buffer, ERDGUnorderedAccessViewFlags::SkipBarrier);
+}
+
+void FOptimusPersistentBufferDataProviderProxy::GatherDispatchData(FDispatchData const& InDispatchData)
+{
+	TStridedView<FParameters> ParameterArray = MakeStridedParameterView<FParameters>(InDispatchData);
+	for (int32 InvocationIndex = 0, StartOffset = 0; InvocationIndex < ParameterArray.Num(); ++InvocationIndex)
+	{
+		FParameters& Parameters = ParameterArray[InvocationIndex];
+		Parameters.StartOffset = InDispatchData.bUnifiedDispatch ? 0 : StartOffset;
+		Parameters.BufferSize = InDispatchData.bUnifiedDispatch ? TotalElementCount : InvocationElementCounts[InvocationIndex];
+		Parameters.BufferUAV = BufferUAV;
+
+		StartOffset += InvocationElementCounts[InvocationIndex];
+	}
 }

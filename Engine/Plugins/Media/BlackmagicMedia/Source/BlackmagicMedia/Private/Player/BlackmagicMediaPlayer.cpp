@@ -2,7 +2,6 @@
 
 #include "BlackmagicMediaPlayer.h"
 
-#include "Blackmagic.h"
 #include "BlackmagicMediaPrivate.h"
 #include "BlackmagicMediaSource.h"
 
@@ -356,11 +355,6 @@ namespace BlackmagicMediaPlayerHelpers
 					else
 					{
 						bool bEven = true;
-
-						if (FMediaIOCorePlayerBase::CVarExperimentalFieldFlipFix.GetValueOnAnyThread())
-						{
-							bEven = GFrameCounterRenderThread % 2 != FMediaIOCorePlayerBase::CVarFlipInterlaceFields.GetValueOnAnyThread();
-						}
 
 						auto TextureSampleEven = MediaPlayer->TextureSamplePool->AcquireShared();
 

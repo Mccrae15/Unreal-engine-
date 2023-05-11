@@ -5,6 +5,7 @@
 #include "Sound/SoundBase.h"
 #include "UObject/SequencerObjectVersion.h"
 #include "Channels/MovieSceneChannelProxy.h"
+#include "GameFramework/Actor.h"
 #include "MovieScene.h"
 #include "MovieSceneCommonHelpers.h"
 #include "Misc/FrameRate.h"
@@ -103,6 +104,8 @@ EMovieSceneChannelProxyType  UMovieSceneAudioSection::CacheChannelProxy()
 	FMovieSceneChannelProxyData Channels;
 
 	UMovieSceneAudioTrack* AudioTrack = Cast<UMovieSceneAudioTrack>(GetOuter());
+	UMovieScene* MovieScene = AudioTrack ? Cast<UMovieScene>(AudioTrack->GetOuter()) : nullptr;
+	const bool bHasAttachData = MovieScene && MovieScene->ContainsTrack(*AudioTrack);
 
 #if WITH_EDITOR
 
@@ -110,7 +113,7 @@ EMovieSceneChannelProxyType  UMovieSceneAudioSection::CacheChannelProxy()
 	Channels.Add(SoundVolume,     EditorData.Data[0], TMovieSceneExternalValue<float>());
 	Channels.Add(PitchMultiplier, EditorData.Data[1], TMovieSceneExternalValue<float>());
 
-	if (AudioTrack && AudioTrack->IsAMasterTrack())
+	if (bHasAttachData)
 	{
 		Channels.Add(AttachActorData, EditorData.Data[2]);
 	}
@@ -119,7 +122,7 @@ EMovieSceneChannelProxyType  UMovieSceneAudioSection::CacheChannelProxy()
 
 	Channels.Add(SoundVolume);
 	Channels.Add(PitchMultiplier);
-	if (AudioTrack && AudioTrack->IsAMasterTrack())
+	if (bHasAttachData)
 	{
 		Channels.Add(AttachActorData);
 	}
@@ -149,25 +152,21 @@ void UMovieSceneAudioSection::SetupSoundInputParameters(const USoundBase* InSoun
 
 		for (const FAudioParameter& Param : DefaultParams)
 		{
-			switch(Param.ParamType)
+			switch (Param.ParamType)
 			{
 			case EAudioParameterType::Float:
 			{
 				Inputs_Float.FindOrAdd(Param.ParamName, FMovieSceneFloatChannel{}).SetDefault(Param.FloatParam);
 				break;
 			}
+			case EAudioParameterType::Trigger:
+			{
+				Inputs_Trigger.FindOrAdd(Param.ParamName, FMovieSceneAudioTriggerChannel{});
+				break;
+			}
 			case EAudioParameterType::Boolean:
 			{
-				// Triggers are fundamentally just booleans outside of Metasound.
-				static const FName TriggerName = FName(TEXT("Trigger")); // MOVE ME.
-				if (Param.TypeName == TriggerName)
-				{
-					Inputs_Trigger.FindOrAdd(Param.ParamName, FMovieSceneAudioTriggerChannel{});
-				}
-				else
-				{
-					Inputs_Bool.FindOrAdd(Param.ParamName, FMovieSceneBoolChannel{}).SetDefault(Param.BoolParam);
-				}
+				Inputs_Bool.FindOrAdd(Param.ParamName, FMovieSceneBoolChannel{}).SetDefault(Param.BoolParam);
 				break;
 			}
 			case EAudioParameterType::Integer:

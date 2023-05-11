@@ -2,11 +2,16 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "K2Node.h"
 #include "K2Node_AddPinInterface.h"
 
 #include "K2Node_MakeRequestHeader.generated.h"
+
+namespace ENodeTitleType { enum Type : int; }
+class FCompilerResultsLog;
+struct FEdGraphPinReference;
+class UGraphNodeContextMenuContext;
+class UToolMenu;
 
 USTRUCT()
 struct FOptionalPin
@@ -18,6 +23,10 @@ struct FOptionalPin
 
 	UPROPERTY()
 	FString PinDefaultValue;
+
+	/** Optional, use if something was previously linked to the pin. */
+	UPROPERTY()
+	FEdGraphPinReference LinkedTo;
 };
 
 UCLASS(MinimalAPI)
@@ -32,9 +41,8 @@ public:
 
 	/** Begin UEdGraphNode Interface */
 	virtual void AllocateDefaultPins() override;
-	virtual FText GetTooltipText() const override;
 	virtual FText GetNodeTitle(ENodeTitleType::Type TitleType) const override;
-	virtual void ValidateNodeDuringCompilation(FCompilerResultsLog& MessageLog) const override;
+	virtual FText GetTooltipText() const override;
 	virtual void PinDefaultValueChanged(UEdGraphPin* Pin) override;
 	/** End UEdGraphNode Interface */
 
@@ -65,6 +73,7 @@ protected:
 
 	void SyncPinNames();
 	static FName GetPinName(const int32& PinIndex);
+	virtual void GetKeyAndValuePins(TArray<UEdGraphPin*>& KeyPins, TArray<UEdGraphPin*>& ValuePins) const;
 
 private:
 	TObjectPtr<UEnum> PresetEnum;

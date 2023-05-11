@@ -109,9 +109,9 @@ public:
 	/** Create graph tracked UAV for a texture from a descriptor. */
 	FRDGTextureUAVRef CreateUAV(const FRDGTextureUAVDesc& Desc, ERDGUnorderedAccessViewFlags Flags = ERDGUnorderedAccessViewFlags::None);
 
-	FORCEINLINE FRDGTextureUAVRef CreateUAV(FRDGTextureRef Texture, ERDGUnorderedAccessViewFlags Flags = ERDGUnorderedAccessViewFlags::None)
+	FORCEINLINE FRDGTextureUAVRef CreateUAV(FRDGTextureRef Texture, ERDGUnorderedAccessViewFlags Flags = ERDGUnorderedAccessViewFlags::None, EPixelFormat Format = PF_Unknown)
 	{
-		return CreateUAV(FRDGTextureUAVDesc(Texture), Flags);
+		return CreateUAV(FRDGTextureUAVDesc(Texture, /* MipLevel */ 0, Format), Flags);
 	}
 
 	/** Create graph tracked UAV for a buffer from a descriptor. */
@@ -201,12 +201,14 @@ public:
 	template <typename ExecuteLambdaType>
 	FRDGPassRef AddPass(FRDGEventName&& Name, ERDGPassFlags Flags, ExecuteLambdaType&& ExecuteLambda);
 
-#if WITH_MGPU
-	void SetNameForTemporalEffect(FName InNameForTemporalEffect)
-	{
-		NameForTemporalEffect = InNameForTemporalEffect;
-	}
-#endif
+	/** Sets the expected workload of the pass execution lambda. The default workload is 1 and is more or less the 'average cost' of a pass.
+	 *  Recommended usage is to set a workload equal to the number of complex draw / dispatch calls (each with its own parameters, etc), and
+	 *  only as a performance tweak if a particular pass is very expensive relative to other passes.
+	 */
+	void SetPassWorkload(FRDGPass* Pass, uint32 Workload);
+
+	/** Adds a user-defined dependency between two passes. This can be used to fine-tune async compute overlap by forcing a sync point. */
+	void AddPassDependency(FRDGPass* Producer, FRDGPass* Consumer);
 
 	/** Sets the current command list stat for all subsequent passes. */
 	void SetCommandListStat(TStatId StatId);
@@ -216,11 +218,11 @@ public:
 
 	/** Launches a task that is synced prior to graph execution. If parallel execution is not enabled, the lambda is run immediately. */
 	template <typename TaskLambda>
-	void AddSetupTask(TaskLambda&& Task);
+	UE::Tasks::FTask AddSetupTask(TaskLambda&& Task, bool bCondition = true);
 
 	/** Launches a task that is synced prior to graph execution. If parallel execution is not enabled, the lambda is run immediately. */
 	template <typename TaskLambda>
-	void AddCommandListSetupTask(TaskLambda&& Task);
+	UE::Tasks::FTask AddCommandListSetupTask(TaskLambda&& Task, bool bCondition = true);
 
 	/** Tells the builder to delete unused RHI resources. The behavior of this method depends on whether RDG immediate mode is enabled:
 	 *   Deferred:  RHI resource flushes are performed prior to execution.
@@ -272,6 +274,12 @@ public:
 	 */
 	const TRefCountPtr<IPooledRenderTarget>& ConvertToExternalTexture(FRDGTextureRef Texture);
 	const TRefCountPtr<FRDGPooledBuffer>& ConvertToExternalBuffer(FRDGBufferRef Buffer);
+	/** For a graph-created uniform buffer, this forces immediate allocation of the underlying resource, effectively promoting it
+	 *  to an external resource. This will increase memory pressure, but allows access to the RHI resource.
+	 *  Graph resources that are referenced in the buffer will be converted to external.
+	 *  This is primarily used as an aid for porting code incrementally to RDG.
+	 */
+	FRHIUniformBuffer* ConvertToExternalUniformBuffer(FRDGUniformBufferRef UniformBuffer);
 
 	/** Performs an immediate query for the underlying pooled resource. This is only allowed for external or extracted resources. */
 	const TRefCountPtr<IPooledRenderTarget>& GetPooledTexture(FRDGTextureRef Texture) const;
@@ -370,42 +378,6 @@ public:
 
 	//////////////////////////////////////////////////////////////////////////
 	// Deprecated Functions
-	UE_DEPRECATED(5.0, "PreallocateTexture has been renamed to ConvertToExternalTexture")
-	inline void PreallocateTexture(FRDGTextureRef Texture) { ConvertToExternalTexture(Texture); }
-
-	UE_DEPRECATED(5.0, "PreallocateBuffer has been renamed to ConvertToExternalBuffer")
-	inline void PreallocateBuffer(FRDGBufferRef Buffer) { ConvertToExternalBuffer(Buffer); }
-
-	UE_DEPRECATED(5.0, "RegisterExternalTexture with ERenderTargetTexture is deprecated. Use the variant without instead.")
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	inline FRDGTextureRef RegisterExternalTexture(
-		const TRefCountPtr<IPooledRenderTarget>& ExternalPooledTexture,
-		ERenderTargetTexture Texture,
-		ERDGTextureFlags Flags = ERDGTextureFlags::None)
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	{
-		return RegisterExternalTexture(ExternalPooledTexture, Flags);
-	}
-
-	UE_DEPRECATED(5.0, "RegisterExternalTexture with ERenderTargetTexture is deprecated. Use the variant without instead.")
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	inline FRDGTextureRef RegisterExternalTexture(
-		const TRefCountPtr<IPooledRenderTarget>& ExternalPooledTexture,
-		const TCHAR* NameIfNotRegistered,
-		ERenderTargetTexture RenderTargetTexture,
-		ERDGTextureFlags Flags = ERDGTextureFlags::None)
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	{
-		return RegisterExternalTexture(ExternalPooledTexture, NameIfNotRegistered, Flags);
-	}
-
-	UE_DEPRECATED(5.0, "FindExternalTexture with ERenderTargetTexture is deprecated. Use the variant without instead.")
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	FRDGTextureRef FindExternalTexture(IPooledRenderTarget* ExternalPooledTexture, ERenderTargetTexture Texture) const
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	{
-		return FindExternalTexture(ExternalPooledTexture);
-	}
 
 	UE_DEPRECATED(5.1, "FinalizeResourceAccess has been replaced by UseExternalAccessMode")
 	inline void FinalizeResourceAccess(FRDGTextureAccessArray&& InTextures, FRDGBufferAccessArray&& InBuffers)
@@ -468,7 +440,7 @@ private:
 		ERDGPassFlags Flags,
 		ExecuteLambdaType&& ExecuteLambda);
 
-	static ERDGPassFlags OverridePassFlags(const TCHAR* PassName, ERDGPassFlags Flags, bool bAsyncComputeSupported);
+	static ERDGPassFlags OverridePassFlags(const TCHAR* PassName, ERDGPassFlags Flags);
 
 	void AddProloguePass();
 
@@ -708,6 +680,7 @@ private:
 		IF_RHI_WANT_BREADCRUMB_EVENTS(FRDGBreadcrumbState* BreadcrumbStateEnd{});
 		int8 bInitialized = 0;
 		bool bDispatchAfterExecute = false;
+		bool bParallelTranslate = false;
 	};
 
 	TArray<FParallelPassSet, FRDGArrayAllocator> ParallelPassSets;
@@ -744,6 +717,7 @@ private:
 	bool bFlushResourcesRHI = false;
 	bool bParallelExecuteEnabled = false;
 	bool bParallelSetupEnabled = false;
+	bool bFinalEventScopeActive = false;
 
 #if RDG_ENABLE_DEBUG
 	FRDGUserValidation UserValidation;
@@ -768,12 +742,6 @@ private:
 	} AuxiliaryPasses;
 
 #if WITH_MGPU
-	/** Name for the temporal effect used to synchronize multi-frame resources. */
-	FName NameForTemporalEffect;
-
-	/** Whether we performed the wait for the temporal effect yet. */
-	bool bWaitedForTemporalEffect = false;
-
 	/** Copy all cross GPU external resources (not marked MultiGPUGraphIgnore) at the end of execution (bad for perf, but useful for debugging). */
 	bool bForceCopyCrossGPU = false;
 #endif
@@ -785,6 +753,8 @@ private:
 	IF_RDG_CMDLIST_STATS(TStatId CommandListStatState);
 
 	IRHITransientResourceAllocator* TransientResourceAllocator = nullptr;
+
+	FRHICommandListScopedExtendResourceLifetime ExtendResourceLifetimeScope;
 
 	void MarkResourcesAsProduced(FRDGPass* Pass);
 
@@ -841,8 +811,6 @@ private:
 
 	UE::Tasks::FTask CreateUniformBuffers();
 
-	void AddPassDependency(FRDGPassHandle ProducerHandle, FRDGPassHandle ConsumerHandle);
-	void AddPassDependency(FRDGPass* Producer, FRDGPass* Consumer);
 	void AddCullingDependency(FRDGProducerStatesByPipeline& LastProducers, const FRDGProducerState& NextState, ERHIPipeline NextPipeline);
 
 	void AddEpilogueTransition(FRDGTextureRef Texture);

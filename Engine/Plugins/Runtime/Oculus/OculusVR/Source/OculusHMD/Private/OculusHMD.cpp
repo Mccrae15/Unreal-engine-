@@ -30,6 +30,7 @@
 #include "OculusHMDRuntimeSettings.h"
 #include "OculusDelegates.h"
 #include "Engine/RendererSettings.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 #if PLATFORM_ANDROID
 #include "Android/AndroidJNI.h"
@@ -42,7 +43,7 @@
 #include "IOculusMRModule.h"
 
 #if WITH_EDITOR
-#include "Editor/UnrealEd/Classes/Editor/EditorEngine.h"
+#include "Editor/EditorEngine.h"
 #endif
 
 #if !UE_BUILD_SHIPPING
@@ -1662,7 +1663,7 @@ namespace OculusHMD
 
 		if (bUseSeparateRenderTarget && Frame.IsValid())
 		{
-			CachedWindowSize = (Window.IsValid()) ? Window->GetSizeInScreen() : Viewport.GetSizeXY();
+			CachedWindowSize = (Window.IsValid()) ? FVector2D(Window->GetSizeInScreen()) : FVector2D(Viewport.GetSizeXY());
 		}
 	}
 

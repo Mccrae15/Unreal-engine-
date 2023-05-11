@@ -2,15 +2,14 @@
 
 #include "Components/StereoLayerComponent.h"
 #include "UObject/VRObjectVersion.h"
-#include "EngineGlobals.h"
 #include "Engine/Engine.h"
 #include "TextureResource.h"
 #include "Engine/Texture.h"
-#include "IStereoLayers.h"
-#include "StereoLayerShapes.h"
 #include "StereoRendering.h"
 #if WITH_EDITOR
 #include "SceneManagement.h"
+#else
+#include "StereoRendering.h"
 #endif
 
 UStereoLayerComponent::UStereoLayerComponent(const FObjectInitializer& ObjectInitializer)

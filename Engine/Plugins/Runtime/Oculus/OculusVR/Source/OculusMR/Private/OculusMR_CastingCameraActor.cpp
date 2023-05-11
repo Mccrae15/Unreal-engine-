@@ -2,6 +2,7 @@
 
 #include "OculusMR_CastingCameraActor.h"
 
+#include "Materials/Material.h"
 #include "OculusMRPrivate.h"
 #include "OculusHMD_Settings.h"
 #include "OculusHMD.h"
@@ -24,6 +25,7 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "VRNotificationsComponent.h"
 #include "RenderUtils.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "AudioDevice.h"
 
 #define LOCTEXT_NAMESPACE "OculusMR_CastingCameraActor"

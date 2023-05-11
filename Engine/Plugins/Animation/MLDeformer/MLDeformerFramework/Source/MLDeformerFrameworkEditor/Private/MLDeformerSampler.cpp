@@ -1,16 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MLDeformerSampler.h"
+
 #include "MLDeformerInputInfo.h"
-#include "MLDeformerEditorModule.h"
 #include "MLDeformerModel.h"
 #include "MLDeformerEditorToolkit.h"
+
 #include "Animation/DebugSkelMeshComponent.h"
 #include "Animation/AnimSequence.h"
+#include "Animation/AnimInstance.h"
+#include "BoneContainer.h"
+#include "BoneWeights.h"
 #include "Engine/SkeletalMesh.h"
 #include "Rendering/SkeletalMeshModel.h"
 #include "Rendering/SkeletalMeshLODModel.h"
 #include "Rendering/SkeletalMeshLODRenderData.h"
+#include "Rendering/SkeletalMeshRenderData.h"
 
 namespace UE::MLDeformer
 {
@@ -43,6 +48,7 @@ namespace UE::MLDeformer
 		NumImportedVertices = UMLDeformerModel::ExtractNumImportedSkinnedVertices(Model->GetSkeletalMesh());
 		AnimFrameIndex = 0;
 		SampleTime = 0.0f;
+		NumFloatsPerCurve = 1;
 
 		// Create the actors and components.
 		// This internally skips creating them if they already exist.
@@ -69,6 +75,10 @@ namespace UE::MLDeformer
 			SkeletalMeshComponent->bPauseAnims = true;
 			SkeletalMeshComponent->RefreshBoneTransforms();
 			SkeletalMeshComponent->CacheRefToLocalMatrices(BoneMatrices);
+			if (SkeletalMeshComponent->GetAnimInstance())
+			{
+				SkeletalMeshComponent->GetAnimInstance()->GetRequiredBones().SetUseRAWData(true);
+			}
 		}
 	}
 
@@ -80,14 +90,14 @@ namespace UE::MLDeformer
 
 	void FMLDeformerSampler::UpdateBoneRotations()
 	{
-		const UMLDeformerInputInfo* InputInfo = Model->GetInputInfo();
+		const UMLDeformerInputInfo* InputInfo = EditorModel->GetEditorInputInfo();
 		InputInfo->ExtractBoneRotations(SkeletalMeshComponent, BoneRotations);
 	}
 
 	void FMLDeformerSampler::UpdateCurveValues()
 	{
-		const UMLDeformerInputInfo* InputInfo = Model->GetInputInfo();
-		InputInfo->ExtractCurveValues(SkeletalMeshComponent, CurveValues);
+		const UMLDeformerInputInfo* InputInfo = EditorModel->GetEditorInputInfo();
+		InputInfo->ExtractCurveValues(SkeletalMeshComponent, CurveValues, NumFloatsPerCurve);
 	}
 
 	void FMLDeformerSampler::Sample(int32 InAnimFrameIndex)
@@ -135,11 +145,11 @@ namespace UE::MLDeformer
 		for (int32 InfluenceIndex = 0; InfluenceIndex < NumInfluences; ++InfluenceIndex)
 		{
 			const int32 BoneIndex = SkinWeightBuffer.GetBoneIndex(VertexIndex, InfluenceIndex);
-			const uint8 WeightByte = SkinWeightBuffer.GetBoneWeight(VertexIndex, InfluenceIndex);
+			const uint16 WeightByte = SkinWeightBuffer.GetBoneWeight(VertexIndex, InfluenceIndex);
 			if (WeightByte > 0)
 			{
 				const int32 RealBoneIndex = LODData.RenderSections[SectionIndex].BoneMap[BoneIndex];
-				const float	Weight = static_cast<float>(WeightByte) / 255.0f;
+				const float	Weight = static_cast<float>(WeightByte) * UE::AnimationCore::InvMaxRawBoneWeightFloat;
 				const FMatrix44f& SkinningTransform = BoneMatrices[RealBoneIndex];
 				InvSkinningTransform += SkinningTransform * Weight;
 			}
@@ -220,7 +230,7 @@ namespace UE::MLDeformer
 
 	int32 FMLDeformerSampler::GetNumBones() const
 	{
-		const UMLDeformerInputInfo* InputInfo = Model->GetInputInfo();
+		const UMLDeformerInputInfo* InputInfo = EditorModel->GetEditorInputInfo();
 		return InputInfo->GetNumBones();
 	}
 
@@ -250,6 +260,10 @@ namespace UE::MLDeformer
 		SkeletalMeshComponent->Play(false);
 		SkeletalMeshComponent->SetVisibility(false);
 		SkeletalMeshComponent->RefreshBoneTransforms();
+		if (SkeletalMeshComponent->GetAnimInstance())
+		{
+			SkeletalMeshComponent->GetAnimInstance()->GetRequiredBones().SetUseRAWData(true);
+		}
 
 		if (TargetMeshActor.Get() == nullptr)
 		{

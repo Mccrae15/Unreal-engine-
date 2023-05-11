@@ -19,6 +19,7 @@ using HordeCommon;
 using HordeCommon.Rpc.Tasks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using MongoDB.Bson.Serialization.Attributes;
 using MongoDB.Driver;
 
@@ -130,27 +131,31 @@ namespace Horde.Build.Perforce
 		/// <summary>
 		/// 
 		/// </summary>
-		[SingletonDocument("6046aec374a9283100967ee7")]
+		[SingletonDocument("perforce-server-list", "6046aec374a9283100967ee7")]
 		class PerforceServerList : SingletonBase
 		{
 			public List<PerforceServerEntry> Servers { get; set; } = new List<PerforceServerEntry>();
 		}
 
 		readonly MongoService _mongoService;
+		readonly GlobalsService _globalsService;
 		readonly ILeaseCollection _leaseCollection;
 		readonly SingletonDocument<PerforceServerList> _serverListSingleton;
 		readonly Random _random = new Random();
+		readonly IOptionsMonitor<GlobalConfig> _globalConfig;
 		readonly ILogger _logger;
 		readonly ITicker _ticker;
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		public PerforceLoadBalancer(MongoService mongoService, ILeaseCollection leaseCollection, IClock clock, ILogger<PerforceLoadBalancer> logger)
+		public PerforceLoadBalancer(MongoService mongoService, GlobalsService globalsService, ILeaseCollection leaseCollection, IClock clock, IOptionsMonitor<GlobalConfig> globalConfig, ILogger<PerforceLoadBalancer> logger)
 		{
 			_mongoService = mongoService;
+			_globalsService = globalsService;
 			_leaseCollection = leaseCollection;
 			_serverListSingleton = new SingletonDocument<PerforceServerList>(mongoService);
+			_globalConfig = globalConfig;
 			_logger = logger;
 			if (mongoService.ReadOnlyMode)
 			{
@@ -256,7 +261,7 @@ namespace Horde.Build.Perforce
 			}
 			if (properties == null)
 			{
-				throw new ArgumentException(nameof(properties));
+				throw new ArgumentException("Properties argument to EvaluateCondition may not be null", nameof(properties));
 			}
 			return condition.Evaluate(x => GetPropertyValues(properties, x));
 		}
@@ -356,13 +361,13 @@ namespace Horde.Build.Perforce
 		/// <inheritdoc/>
 		async ValueTask TickInternalAsync(CancellationToken cancellationToken)
 		{
-			Globals globals = await _mongoService.GetGlobalsAsync();
+			GlobalConfig globalConfig = _globalConfig.CurrentValue;
 
 			// Set of new server entries
 			List<PerforceServerEntry> newServers = new List<PerforceServerEntry>();
 
 			// Update the state of all the valid servers
-			foreach (PerforceCluster cluster in globals.PerforceClusters)
+			foreach (PerforceCluster cluster in globalConfig.PerforceClusters)
 			{
 				foreach (PerforceServer server in cluster.Servers)
 				{

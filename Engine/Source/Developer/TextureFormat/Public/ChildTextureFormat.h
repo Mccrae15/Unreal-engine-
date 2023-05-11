@@ -2,6 +2,8 @@
 
 #pragma once
 
+// HEADER_UNIT_SKIP - Bad include TextureCompressorModule.h
+
 #include "Interfaces/ITextureFormat.h"
 #include "Interfaces/ITextureFormatModule.h"
 #include "Interfaces/ITextureFormatManagerModule.h"
@@ -169,6 +171,11 @@ public:
 		return GetBaseFormatObject(Format)->SupportsEncodeSpeed(Format);
 	}
 
+	virtual bool CanAcceptNonF32Source(FName Format) const override
+	{
+		return GetBaseFormatObject(Format)->CanAcceptNonF32Source(Format);
+	}
+
 	virtual FName GetEncoderName(FName Format) const override
 	{
 		return GetBaseFormatObject(Format)->GetEncoderName(Format);
@@ -204,6 +211,8 @@ public:
 	bool CompressBaseImage(
 		FImage& InImage,
 		const FTextureBuildSettings& BuildSettings,
+		const FIntVector3& InMip0Dimensions, 
+		int32 InMip0NumSlicesNoDepth,
 		FStringView DebugTexturePathName,
 		bool bImageHasAlphaChannel,
 		FCompressedImage2D& OutCompressedImage
@@ -212,7 +221,7 @@ public:
 		FTextureBuildSettings BaseSettings = GetBaseTextureBuildSettings(BuildSettings);
 
 		// pass along the compression to the base format
-		if (GetBaseFormatObject(BuildSettings.TextureFormatName)->CompressImage(InImage, BaseSettings, DebugTexturePathName, bImageHasAlphaChannel, OutCompressedImage) == false)
+		if (GetBaseFormatObject(BuildSettings.TextureFormatName)->CompressImage(InImage, BaseSettings, InMip0Dimensions, InMip0NumSlicesNoDepth, DebugTexturePathName, bImageHasAlphaChannel, OutCompressedImage) == false)
 		{
 			UE_LOG(LogTemp, Error, TEXT("Failed to compress with base compressor [format %s]"), *BaseSettings.TextureFormatName.ToString());
 			return false;

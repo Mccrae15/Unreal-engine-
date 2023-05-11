@@ -3,33 +3,11 @@
 #include "MuCOE/SCustomizableObjectEditorViewportToolBar.h"
 
 #include "AssetViewerSettings.h"
-#include "Containers/UnrealString.h"
-#include "Delegates/Delegate.h"
-#include "Editor.h"
-#include "Editor/EditorEngine.h"
 #include "Editor/EditorPerProjectUserSettings.h"
 #include "Editor/UnrealEdEngine.h"
-#include "Editor/UnrealEdTypes.h"
 #include "EditorViewportCommands.h"
-#include "Engine/Engine.h"
-#include "Fonts/SlateFontInfo.h"
-#include "Framework/Commands/UIAction.h"
-#include "Framework/Commands/UICommandInfo.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Framework/MultiBox/MultiBoxDefs.h"
-#include "Framework/MultiBox/MultiBoxExtender.h"
-#include "Framework/Text/TextLayout.h"
-#include "GenericPlatform/ICursor.h"
-#include "HAL/Platform.h"
-#include "HAL/PlatformCrt.h"
-#include "Internationalization/Internationalization.h"
-#include "Layout/Children.h"
-#include "Layout/Margin.h"
 #include "LevelEditor.h"
-#include "Math/Color.h"
-#include "Math/Rotator.h"
-#include "Misc/AssertionMacros.h"
-#include "Misc/Attribute.h"
 #include "Modules/ModuleManager.h"
 #include "MuCO/CustomizableObjectInstance.h"
 #include "MuCOE/CustomizableObjectEditorViewportClient.h"
@@ -38,28 +16,16 @@
 #include "MuCOE/ICustomizableObjectInstanceEditor.h"
 #include "MuCOE/SCustomizableObjectEditorViewport.h"
 #include "Preferences/PersonaOptions.h"
-#include "SEditorViewportToolBarMenu.h"
 #include "SEditorViewportViewMenu.h"
 #include "SViewportToolBarComboMenu.h"
 #include "Settings/LevelEditorViewportSettings.h"
-#include "SlotBase.h"
-#include "Styling/AppStyle.h"
-#include "Textures/SlateIcon.h"
-#include "Types/ISlateMetaData.h"
-#include "Types/SlateStructs.h"
-#include "UObject/UObjectGlobals.h"
-#include "UObject/UnrealNames.h"
 #include "UnrealEdGlobals.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SMenuAnchor.h"
 #include "Widgets/Input/SSpinBox.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SScaleBox.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/SCompoundWidget.h"
-#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Input/SSlider.h"
 
 class SWidget;
 struct FSlateBrush;
@@ -391,16 +357,16 @@ void SCustomizableObjectEditorViewportToolBar::Construct(const FArguments& InArg
 				.OnGetMenuContent(this, &SCustomizableObjectEditorViewportToolBar::GenerateLODMenu)
 		]
 
-	// Camera Mode menu (Free or Orbital camera)
-	+ SHorizontalBox::Slot()
+	// View Options Menu (Camera options, Bones...)
+	+SHorizontalBox::Slot()
 		.AutoWidth()
 		.Padding(2.0f, 2.0f)
 		[
-			//Camera Mode
+			//Show Bones
 			SNew(SEditorViewportToolbarMenu)
-				.ParentToolBar(SharedThis(this))
-				.Label(this, &SCustomizableObjectEditorViewportToolBar::GetCameraModeMenuLabel)
-				.OnGetMenuContent(this, &SCustomizableObjectEditorViewportToolBar::GenerateCameraModeMenu)
+			.ParentToolBar(SharedThis(this))
+			.Label(LOCTEXT("ViewOptionsMenuLabel","View Options"))
+			.OnGetMenuContent(this, &SCustomizableObjectEditorViewportToolBar::GenerateViewportOptionsMenu)
 		];
 	
 	TSharedRef<SWidget> RTSButtons = GenerateRTSButtons();
@@ -827,7 +793,7 @@ TSharedRef<SWidget> SCustomizableObjectEditorViewportToolBar::GenerateViewMenu()
 //	}
 //	MenuBuilder.EndSection();
 //}
-//
+
 //void SCustomizableObjectEditorViewportToolBar::FillShowOverlayDrawMenu(FMenuBuilder& MenuBuilder) const
 //{
 //	const FAnimViewportShowCommands& Actions = FAnimViewportShowCommands::Get();
@@ -1090,7 +1056,7 @@ void SCustomizableObjectEditorViewportToolBar::GenerateSceneSetupMenu(FMenuBuild
 	//MenuBuilder.AddWidget(DetailsView, FText(), true);
 }
 
-TSharedRef<SWidget> SCustomizableObjectEditorViewportToolBar::GenerateCameraModeMenu() const
+TSharedRef<SWidget> SCustomizableObjectEditorViewportToolBar::GenerateViewportOptionsMenu() const
 {
 	const FCustomizableObjectEditorViewportLODCommands& Actions = FCustomizableObjectEditorViewportLODCommands::Get();
 
@@ -1098,36 +1064,64 @@ TSharedRef<SWidget> SCustomizableObjectEditorViewportToolBar::GenerateCameraMode
 
 	FMenuBuilder ShowMenuBuilder(bInShouldCloseWindowAfterMenuSelection, Viewport.Pin()->GetCommandList());
 	{
-		// LOD Models
-		ShowMenuBuilder.BeginSection("NAME_None");
+		ShowMenuBuilder.AddSubMenu(LOCTEXT("OptionsMenu_CameraOptions", "Camera Mode"),
+			LOCTEXT("OptionsMenu_CameraOptionsTooltip", "Select the camera mode"),
+		FNewMenuDelegate::CreateLambda([this, &Actions](FMenuBuilder& SubMenuBuilder)
 		{
-			ShowMenuBuilder.AddMenuEntry(Actions.OrbitalCamera);
-			ShowMenuBuilder.AddMenuEntry(Actions.FreeCamera);
-		}
-		ShowMenuBuilder.EndSection();
+			SubMenuBuilder.BeginSection("Camera");
+			{
+				TSharedPtr<SWidget> BoneSizeWidget = SNew(SVerticalBox)
+				+ SVerticalBox::Slot().AutoHeight()
+				.HAlign(HAlign_Left)
+				.Padding(FMargin(20.0f, 5.0f, 0.0f, 0.0f))
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("OptionsMenu_CameraOptions_CameraSpeed_Text", "Camera Speed"))
+					.Font(FAppStyle::GetFontStyle(TEXT("MenuItem.Font")))
+				]
+
+				+SVerticalBox::Slot().AutoHeight()
+				.HAlign(HAlign_Left)
+				.Padding(FMargin(20.0f, 0.0f, 0.0f, 0.0f))
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot().AutoWidth()
+					[
+						SNew(SBox).WidthOverride(100.0f)
+						[
+							SNew(SSlider)
+							.Value_Lambda([=]() {return Viewport.Pin().Get()->GetViewportCameraSpeed(); })
+							.MinValue(1).MaxValue(4)
+							.OnValueChanged_Lambda([=](int32 Value) { Viewport.Pin().Get()->SetViewportCameraSpeed(Value); })
+						]
+					]
+					+ SHorizontalBox::Slot().AutoWidth()
+					[
+						SNew(STextBlock).Text_Lambda([=]() { return FText::AsNumber(Viewport.Pin().Get()->GetViewportCameraSpeed()); })
+					]
+				];
+				
+				SubMenuBuilder.AddMenuEntry(Actions.OrbitalCamera);
+				SubMenuBuilder.AddMenuEntry(Actions.FreeCamera);
+				SubMenuBuilder.AddWidget(BoneSizeWidget.ToSharedRef(), LOCTEXT("OptionMenu_CameraOptions_CameraSpeed", ""));
+			}
+			SubMenuBuilder.EndSection();
+		}));
+
+		ShowMenuBuilder.AddSubMenu(LOCTEXT("OptionsMenu_BoneOptions", "Bones"), LOCTEXT("OptionsMenu_BoneOptionsTooltip", "Show/hide bone hierarchy"),
+		FNewMenuDelegate::CreateLambda([&Actions](FMenuBuilder& SubMenuBuilder)
+		{
+			SubMenuBuilder.BeginSection("Bones");
+			{
+				SubMenuBuilder.AddMenuEntry(Actions.ShowBones);
+			}
+			SubMenuBuilder.EndSection();
+		}));
 	}
 
 	return ShowMenuBuilder.MakeWidget();
 }
 
-FText SCustomizableObjectEditorViewportToolBar::GetCameraModeMenuLabel() const
-{
-	FText Label = FText::FromString("Camera Mode");
-	if (Viewport.IsValid())
-	{
-		bool CameraMode = Viewport.Pin()->GetViewportClient()->IsOrbitalCameraActive();
-
-		if (CameraMode)
-		{
-			Label = FText::FromString("Camera Mode: Orbital");
-		}
-		else
-		{
-			Label = FText::FromString("Camera Mode: Free");
-		}
-	}
-	return Label;
-}
 
 //TSharedRef<class IDetailCustomization> SCustomizableObjectEditorViewportToolBar::CustomizePreviewSceneDescription()
 //{

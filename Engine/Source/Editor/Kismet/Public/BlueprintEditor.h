@@ -276,6 +276,7 @@ public:
 	virtual void JumpToPin(const class UEdGraphPin* Pin) override;
 	virtual void SummonSearchUI(bool bSetFindWithinBlueprint, FString NewSearchTerms = FString(), bool bSelectFirstResult = false) override;
 	virtual void SummonFindAndReplaceUI() override;
+	virtual UEdGraph* GetFocusedGraph() const override;
 	virtual TSharedPtr<SGraphEditor> OpenGraphAndBringToFront(UEdGraph* Graph, bool bSetFocus = true) override;
 
 	UE_DEPRECATED(5.0, "GetSelectedSCSEditorTreeNodes has been deprecated. Use GetSelectedSubobjectEditorTreeNodes instead.")
@@ -329,7 +330,7 @@ public:
 	/** Getters for the various Kismet2 widgets */
 	TSharedRef<SKismetInspector> GetInspector() const { return Inspector.ToSharedRef(); }
 	TSharedRef<SKismetInspector> GetDefaultEditor() const { return DefaultEditor.ToSharedRef(); }
-	TSharedRef<SBlueprintPalette> GetPalette() const { return Palette.ToSharedRef(); }
+	TSharedRef<SBlueprintPalette> GetPalette();
 	TSharedRef<SBlueprintBookmarks> GetBookmarksWidget() const { return BookmarksWidget.ToSharedRef(); }
 	TSharedRef<SWidget> GetCompilerResults() const { return CompilerResults.ToSharedRef(); }
 	TSharedRef<SFindInBlueprints> GetFindResults() const { return FindResults.ToSharedRef(); }
@@ -447,7 +448,7 @@ public:
 	bool IsParentClassNative() const;
 
 	/** Returns true if the parent class is native and the link to it's header can be shown*/
-	bool IsNativeParentClassCodeLinkEnabled() const;
+	virtual bool IsNativeParentClassCodeLinkEnabled() const;
 
 	/** Handles opening the header file of native parent class */
 	void OnEditParentClassNativeCodeClicked();
@@ -592,7 +593,7 @@ public:
 
 	/** Reparent the current blueprint */
 	void ReparentBlueprint_Clicked();
-	bool ReparentBlueprint_IsVisible() const;
+	virtual bool ReparentBlueprint_IsVisible() const;
 	void ReparentBlueprint_NewParentChosen(UClass* ChosenClass);
 
 	/** Utility function to handle all steps required to rename a newly added action */
@@ -722,11 +723,6 @@ public:
 	{
 		return CustomizeSubobjectEditor(InComponentToCustomize);
 	}
-
-	/**
-	 * Returns the currently focused graph in the Blueprint editor
-	 */
-	UEdGraph* GetFocusedGraph() const;
 
 	/** Adds to a list of custom objects for debugging beyond what will automatically be found/used */
 	virtual void GetCustomDebugObjects(TArray<FCustomDebugObject>& DebugList) const { }

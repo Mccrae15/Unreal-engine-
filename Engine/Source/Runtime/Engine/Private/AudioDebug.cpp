@@ -1,42 +1,22 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "Audio/AudioDebug.h"
 
-#include "ActiveSound.h"
-#include "Audio.h"
 #include "AudioDevice.h"
-#include "AudioDeviceManager.h"
 #include "AudioEffect.h"
-#include "AudioVirtualLoop.h"
 #include "CanvasTypes.h"
-#include "Components/AudioComponent.h"
 #include "DrawDebugHelpers.h"
-#include "DSP/Dsp.h"
 #include "Engine/Font.h"
-#include "Engine/World.h"
-#include "GameFramework/GameUserSettings.h"
-#include "HAL/IConsoleManager.h"
-#include "IAudioModulation.h"
-#include "Misc/CommandLine.h"
-#include "Misc/ConfigCacheIni.h"
-#include "Misc/Parse.h"
-#include "Serialization/Archive.h"
-#include "Sound/AudioSettings.h"
-#include "Sound/AudioVolume.h"
+#include "Engine/GameViewportClient.h"
 #include "Sound/ReverbEffect.h"
-#include "Sound/SoundAttenuation.h"
-#include "Sound/SoundClass.h"
-#include "Sound/SoundConcurrency.h"
 #include "Sound/SoundCue.h"
 #include "Sound/SoundNodeWavePlayer.h"
-#include "Sound/SoundMix.h"
-#include "Sound/SoundSourceBus.h"
-#include "Sound/SoundWave.h"
+#include "Stats/StatsTrace.h"
 #include "UnrealEngine.h"
 
 #if WITH_EDITOR
-#include "Editor.h"
 #include "Engine/GameViewportClient.h"
 #include "LevelEditorViewport.h"
+#else
 #include "UnrealClient.h"
 #endif // WITH_EDITOR
 
@@ -784,8 +764,8 @@ static FAutoConsoleCommandWithWorldAndArgs GAudioDebugSoundReverb
 
 static FAutoConsoleCommandWithWorldAndArgs GAudioDebugSoundModulation
 (
-	TEXT("au.Debug.SoundModulators"),
-	TEXT("Post SoundModulation information to viewport(s).\n")
+	TEXT("au.Debug.Modulation"),
+	TEXT("Post Audio Modulation information to viewport(s).\n")
 		TEXT("0: Disable, 1: Enable\n")
 		TEXT("(Optional) -AllViews: Enables/Disables for all viewports, not just those associated with the current world"),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic([](const TArray<FString>& Args, UWorld* InWorld)
@@ -863,6 +843,11 @@ namespace Audio
 	void FAudioDebugger::ToggleVisualizeDebug3dEnabled()
 	{
 		bVisualize3dDebug = !bVisualize3dDebug;
+	}
+
+	bool FAudioDebugger::IsVirtualLoopVisualizeEnabled()
+	{
+		return static_cast<bool>(VirtualLoopsVisualizeEnabledCVar);
 	}
 
 	#if WITH_EDITOR
@@ -1750,9 +1735,13 @@ namespace Audio
 			else if (ActivatedReverbs.Num() == 1)
 			{
 				auto It = ActivatedReverbs.CreateConstIterator();
-				TheString = FString::Printf(TEXT("  Activated Reverb Effect: %s (Priority: %g Tag: '%s')"), *It.Value().ReverbSettings.ReverbEffect->GetName(), It.Value().Priority, *It.Key().ToString());
-				Canvas->DrawShadowedString(X, Y, *TheString, GetStatsFont(), LinearBodyColor);
-				Y += Height;
+				const FActivatedReverb& ActiveReverb = It.Value();
+				if (ActiveReverb.ReverbSettings.ReverbEffect)
+				{
+					TheString = FString::Printf(TEXT("  Activated Reverb Effect: %s (Priority: %g Tag: '%s')"), *ActiveReverb.ReverbSettings.ReverbEffect->GetName(), ActiveReverb.Priority, *It.Key().ToString());
+					Canvas->DrawShadowedString(X, Y, *TheString, GetStatsFont(), LinearBodyColor);
+					Y += Height;
+				}
 			}
 			else
 			{
@@ -1761,8 +1750,12 @@ namespace Audio
 				TMap<int32, FString> PrioritySortedActivatedReverbs;
 				for (auto It = ActivatedReverbs.CreateConstIterator(); It; ++It)
 				{
-					TheString = FString::Printf(TEXT("    %s (Priority: %g Tag: '%s')"), *It.Value().ReverbSettings.ReverbEffect->GetName(), It.Value().Priority, *It.Key().ToString());
-					PrioritySortedActivatedReverbs.Add(It.Value().Priority, TheString);
+					const FActivatedReverb& ActiveReverb = It.Value();
+					if (ActiveReverb.ReverbSettings.ReverbEffect)
+					{
+						TheString = FString::Printf(TEXT("    %s (Priority: %g Tag: '%s')"), *ActiveReverb.ReverbSettings.ReverbEffect->GetName(), ActiveReverb.Priority, *It.Key().ToString());
+						PrioritySortedActivatedReverbs.Add(ActiveReverb.Priority, TheString);
+					}
 				}
 				for (auto It = PrioritySortedActivatedReverbs.CreateConstIterator(); It; ++It)
 				{

@@ -25,12 +25,18 @@
 #include "Misc/DefaultValueHelper.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "HAL/FileManager.h"
+#include "UObject/Package.h"
 #include "UObject/UnrealType.h"
 #include "UObject/EnumProperty.h"
 #include "UObject/TextProperty.h"
 #include "UObject/StructOnScope.h"
 #include "UObject/PropertyPortFlags.h"
+#include "Subsystems/EngineSubsystem.h"
 #include "Templates/Casts.h"
+
+#if WITH_EDITOR
+#include "EditorSubsystem.h"
+#endif // WITH_EDITOR
 
 DEFINE_LOG_CATEGORY(LogPython);
 
@@ -660,6 +666,27 @@ UObject* NewObject(UClass* InObjClass, UObject* InObjectOuter, const FName InObj
 {
 	if (InObjClass)
 	{
+		if (InObjClass->IsChildOf(UEngineSubsystem::StaticClass()))
+		{
+			// Starting with UE 5.2, generates a warning/deprecation message.
+			SetPythonWarning(PyExc_DeprecationWarning, InErrorCtxt, *FString::Printf(TEXT("Engine subsystems creation is deprecated and will be removed in UE 5.3. Use 'unreal.get_engine_subsystem(unreal.%s)' to get an instance of the subsystem."), *PyGenUtil::GetClassPythonName(InObjClass)));
+
+			// For UE 5.3 or later, generate an hard error.
+			//SetPythonError(PyExc_Exception, InErrorCtxt, *FString::Printf(TEXT("Engine subsystems cannot be created. Use 'unreal.get_engine_subsystem(unreal.%s)' to get an instance of the subsystem."), *PyGenUtil::GetClassPythonName(InObjClass)));
+			//return nullptr;
+		}
+#if WITH_EDITOR
+		else if (InObjClass->IsChildOf(UEditorSubsystem::StaticClass()))
+		{
+			// Starting with UE 5.2, generates a warning/deprecation message.
+			SetPythonWarning(PyExc_DeprecationWarning, InErrorCtxt, *FString::Printf(TEXT("Editor subsystems creation is deprecated and will be removed in UE 5.3. Use 'unreal.get_editor_subsystem(unreal.%s)' to get an instance of the subsystem."), *PyGenUtil::GetClassPythonName(InObjClass)));
+
+			// For UE 5.3 or later, generate an hard error.
+			//SetPythonError(PyExc_Exception, InErrorCtxt, *FString::Printf(TEXT("Editor subsystems cannot be created. Use 'unreal.get_editor_subsystem(unreal.%s)' to get an instance of the subsystem."), *PyGenUtil::GetClassPythonName(InObjClass)));
+			//return nullptr;
+		}
+#endif
+
 		if (InObjClass == UPackage::StaticClass())
 		{
 			if (InObjectName.IsNone())
@@ -1401,6 +1428,30 @@ bool FetchPythonError(FString& OutError)
 		{
 			FPyObjectPtr PyExceptionTypeName = FPyObjectPtr::StealReference(PyObject_GetAttrString(PyExceptionType, "__name__"));
 			OutError = FString::Printf(TEXT("%s: %s"), PyExceptionTypeName ? *PyObjectToUEString(PyExceptionTypeName) : *PyObjectToUEString(PyExceptionType), *PyObjectToUEString(PyExceptionValue));
+
+			// Syntax errors require special handling to get the extended error information out of them (their str() only returns the error message and not the context info)
+			if (PyObject_IsInstance(PyExceptionValue, PyExc_SyntaxError))
+			{
+				FPyObjectPtr PySyntaxErrorText = FPyObjectPtr::StealReference(PyObject_GetAttrString(PyExceptionValue, "text"));
+				FPyObjectPtr PySyntaxErrorOffset = FPyObjectPtr::StealReference(PyObject_GetAttrString(PyExceptionValue, "offset"));
+				if (PySyntaxErrorText && PySyntaxErrorOffset)
+				{
+					OutError += TEXT("\n  ");
+					OutError += PyObjectToUEString(PySyntaxErrorText);
+
+					int32 OffsetInt = 0;
+					PyConversion::Nativize(PySyntaxErrorOffset, OffsetInt, PyConversion::ESetErrorState::No);
+					if (OffsetInt > 0)
+					{
+						OutError += TEXT("\n  ");
+						for (int32 OffsetIndex = 1; OffsetIndex < OffsetInt; ++OffsetIndex)
+						{
+							OutError += TEXT(" ");
+						}
+						OutError += TEXT("^");
+					}
+				}
+			}
 		}
 		else
 		{

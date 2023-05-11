@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Misc/AutomationTest.h"
+#include "UObject/Package.h"
 #include "UObject/StrongObjectPtr.h"
 
 #include "Components/StaticMeshComponent.h"
@@ -9,8 +10,6 @@
 #include "IRemoteControlPropertyHandle.h"
 #include "RemoteControlPropertyHandleTestData.h"
 #include "RemoteControlPreset.h"
-
-PRAGMA_DISABLE_OPTIMIZATION
 
 #define PROP_NAME(Class, Name) GET_MEMBER_NAME_CHECKED(Class, Name)
 #define GET_TEST_PROP(PropName) URemoteControlAPITestObject::StaticClass()->FindPropertyByName(PROP_NAME(URemoteControlAPITestObject, PropName))
@@ -1084,5 +1083,3 @@ bool FRemoteControlAPIIntegrationTest::RunTest(const FString& Parameters)
 
 #undef GET_TEST_PROP
 #undef PROP_NAME
-
-PRAGMA_ENABLE_OPTIMIZATION

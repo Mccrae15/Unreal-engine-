@@ -115,7 +115,8 @@ static void VerifyMetalCompiler()
 		
 		if(!bFoundXCode)
 		{
-			FMessageDialog::Open(EAppMsgType::Ok, FText(NSLOCTEXT("MetalRHI", "XCodeMissingInstall", "Can't find Xcode install for Metal compiler. Please install Xcode and run Xcode.app to accept license or ensure active developer directory is set to current Xcode installation using xcode-select.")));
+			const FText Title = NSLOCTEXT("MetalRHI", "XCodeMissingInstallTitle", "Xcode Not Found");
+			FMessageDialog::Open(EAppMsgType::Ok, NSLOCTEXT("MetalRHI", "XCodeMissingInstall", "Unreal Engine requires Xcode to compile shaders for Metal. To continue, install Xcode and open it to accept the license agreement. If you install Xcode to any location other than Applications/Xcode, also run the xcode-select command-line tool to specify its location."), &Title);
 			FPlatformMisc::RequestExit(true);
 			return;
 		}
@@ -378,6 +379,42 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 		GRHISupportsWaveOperations = true;
 		GRHIMinimumWaveSize = 32;
 		GRHIMaximumWaveSize = 32;
+
+#if PLATFORM_MAC_ENABLE_EXPERIMENTAL_NANITE_SUPPORT
+        // Int64 atomic support was introduced with M2 devices.
+        GRHISupportsAtomicUInt64 = !GRHIAdapterName.Contains("M1");
+        GRHIPersistentThreadGroupCount = 1024;
+
+        // Disable persistent threads on Apple Silicon (as it doesn't support forward progress guarantee).
+        IConsoleVariable* NanitePersistentThreadCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Nanite.PersistentThreadsCulling"));
+        if (NanitePersistentThreadCVar != nullptr && NanitePersistentThreadCVar->GetInt() == 1)
+        {
+            NanitePersistentThreadCVar->Set(0);
+        }
+
+        // Switch back to single page allocation for VSM (Metal does not support atomic operations on Texture2DArrays...).
+        IConsoleVariable* VSMCacheStaticSeparateCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shadow.Virtual.Cache.StaticSeparate"));
+        if (VSMCacheStaticSeparateCVar != nullptr)
+        {
+            VSMCacheStaticSeparateCVar->Set(0);
+        }
+
+        // TODO: FIXME: Workaround to fix visual artifacts on the CitySample demo (has a severe performance cost 
+		// compared to non-compute materials. This is highly experimental).
+#if 1
+        IConsoleVariable* NaniteAllowComputeMatsCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Nanite.AllowComputeMaterials"));
+        if (NaniteAllowComputeMatsCVar != nullptr)
+        {
+            NaniteAllowComputeMatsCVar->Set(1);
+        }
+
+        IConsoleVariable* NaniteComputeMatsCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Nanite.ComputeMaterials"));
+        if (NaniteComputeMatsCVar != nullptr)
+        {
+            NaniteComputeMatsCVar->Set(1);
+        }
+#endif
+#endif // PLATFORM_MAC_ENABLE_EXPERIMENTAL_NANITE_SUPPORT
 	}
 
 	bool const bRequestedSM5 = (RequestedFeatureLevel == ERHIFeatureLevel::SM5 || (!bRequestedFeatureLevel && (FParse::Param(FCommandLine::Get(),TEXT("metalsm5")) || FParse::Param(FCommandLine::Get(),TEXT("metalmrt")))));
@@ -568,6 +605,13 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	GSupportsSeparateRenderTargetBlendState = (GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM5);
 
 	GRHISupportsPipelineFileCache = true;
+	
+	// Appears to be no queryable value for max texture_buffer size and its not specified in the docs.  However,
+	// current testing across Apple Silicon macs, AMD and iPhone all quote a max value of 268435456 (1 << 28)
+	// from the Metal validation layer.  For certain pixel formats this appears to be larger than max buffer
+	// size on some devices.  Due to the way we are using texture_buffers allocated from a backing buffer,
+	// keep this safe by using a step down.  This is the current default value anyway but set here too in case that changes.
+	GMaxBufferDimensions = 1 << 27;
 
 #if PLATFORM_MAC
 	check(Device.SupportsFeatureSet(mtlpp::FeatureSet::macOS_GPUFamily1_v1));
@@ -717,7 +761,8 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	GMetalBufferFormats[PF_R8_SINT				] = { mtlpp::PixelFormat::R8Sint, (uint8)EMetalBufferFormat::R8Sint };
 	GMetalBufferFormats[PF_R64_UINT				] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
 	GMetalBufferFormats[PF_R9G9B9EXP5			] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
-	static_assert(PF_MAX == 86, "Please setup GMetalBufferFormats properly for the new pixel format");
+	GMetalBufferFormats[PF_P010					] = { mtlpp::PixelFormat::Invalid, (uint8)EMetalBufferFormat::Unknown };
+	static_assert(PF_MAX == 87, "Please setup GMetalBufferFormats properly for the new pixel format");
 
 	// Initialize the platform pixel format map.
 	GPixelFormats[PF_Unknown			].PlatformFormat	= (uint32)mtlpp::PixelFormat::Invalid;
@@ -736,8 +781,14 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	GPixelFormats[PF_DXT3				].Supported			= false;
     GPixelFormats[PF_DXT5				].PlatformFormat	= (uint32)mtlpp::PixelFormat::Invalid;
 	GPixelFormats[PF_DXT5				].Supported			= false;
+	GPixelFormats[PF_BC4				].PlatformFormat	= (uint32)mtlpp::PixelFormat::Invalid;
+	GPixelFormats[PF_BC4				].Supported			= false;
 	GPixelFormats[PF_BC5				].PlatformFormat	= (uint32)mtlpp::PixelFormat::Invalid;
 	GPixelFormats[PF_BC5				].Supported			= false;
+	GPixelFormats[PF_BC6H				].PlatformFormat	= (uint32)mtlpp::PixelFormat::Invalid;
+	GPixelFormats[PF_BC6H				].Supported			= false;
+	GPixelFormats[PF_BC7				].PlatformFormat	= (uint32)mtlpp::PixelFormat::Invalid;
+	GPixelFormats[PF_BC7				].Supported			= false;
 	GPixelFormats[PF_PVRTC2				].PlatformFormat	= (uint32)mtlpp::PixelFormat::PVRTC_RGBA_2BPP;
 	GPixelFormats[PF_PVRTC2				].Supported			= true;
 	GPixelFormats[PF_PVRTC4				].PlatformFormat	= (uint32)mtlpp::PixelFormat::PVRTC_RGBA_4BPP;
@@ -817,6 +868,8 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	GPixelFormats[PF_ShadowDepth		].PlatformFormat	= (uint32)mtlpp::PixelFormat::Depth32Float;
 	GPixelFormats[PF_ShadowDepth		].BlockBytes		= 4;
 	GPixelFormats[PF_ShadowDepth		].Supported			= true;
+	GPixelFormats[PF_D24				].PlatformFormat	= (uint32)mtlpp::PixelFormat::Depth32Float;
+	GPixelFormats[PF_D24				].Supported			= true;
 		
 	GPixelFormats[PF_BC5				].PlatformFormat	= (uint32)mtlpp::PixelFormat::Invalid;
 	GPixelFormats[PF_R5G6B5_UNORM		].PlatformFormat	= (uint32)mtlpp::PixelFormat::B5G6R5Unorm;
@@ -894,10 +947,26 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 	GPixelFormats[PF_FloatRGBA			].BlockBytes		= 8;
     GPixelFormats[PF_X24_G8				].PlatformFormat	= (uint32)mtlpp::PixelFormat::Stencil8;
     GPixelFormats[PF_X24_G8				].BlockBytes		= 1;
-	GPixelFormats[PF_R32_FLOAT			].PlatformFormat	= (uint32)mtlpp::PixelFormat::R32Float;
+	
+    GPixelFormats[PF_R32_FLOAT			].PlatformFormat	= (uint32)mtlpp::PixelFormat::R32Float;
+#if PLATFORM_MAC
+    if(Device.SupportsFeatureSet(mtlpp::FeatureSet::macOS_GPUFamily2_v1))
+    {
+        EnumAddFlags(GPixelFormats[PF_R32_FLOAT].Capabilities, EPixelFormatCapabilities::TextureFilterable);
+    }
+#endif
+        
 	GPixelFormats[PF_G16R16				].PlatformFormat	= (uint32)mtlpp::PixelFormat::RG16Unorm;
 	GPixelFormats[PF_G16R16				].Supported			= true;
-	GPixelFormats[PF_G16R16F			].PlatformFormat	= (uint32)mtlpp::PixelFormat::RG16Float;
+#if PLATFORM_MAC
+    if(Device.SupportsFeatureSet(mtlpp::FeatureSet::macOS_GPUFamily2_v1))
+    {
+        EnumAddFlags(GPixelFormats[PF_G16R16].Capabilities, EPixelFormatCapabilities::TextureFilterable);
+    }
+#endif
+        
+    GPixelFormats[PF_G16R16F			].PlatformFormat	= (uint32)mtlpp::PixelFormat::RG16Float;
+        
 	GPixelFormats[PF_G16R16F_FILTER		].PlatformFormat	= (uint32)mtlpp::PixelFormat::RG16Float;
 	GPixelFormats[PF_G32R32F			].PlatformFormat	= (uint32)mtlpp::PixelFormat::RG32Float;
 	GPixelFormats[PF_A2B10G10R10		].PlatformFormat    = (uint32)mtlpp::PixelFormat::RGB10A2Unorm;
@@ -1009,6 +1078,31 @@ FMetalDynamicRHI::FMetalDynamicRHI(ERHIFeatureLevel::Type RequestedFeatureLevel)
 #endif
 
 	((FMetalDeviceContext&)ImmediateContext.GetInternalContext()).Init();
+
+#if METAL_RHI_RAYTRACING
+	if (ImmediateContext.Context->GetDevice().IsRayTracingSupported())
+	{
+		if (!FParse::Param(FCommandLine::Get(), TEXT("noraytracing")))
+		{
+			GRHISupportsRayTracing = RHISupportsRayTracing(GMaxRHIShaderPlatform);
+			GRHISupportsRayTracingShaders = RHISupportsRayTracingShaders(GMaxRHIShaderPlatform);
+
+			GRHISupportsRayTracingPSOAdditions = false;
+			GRHISupportsRayTracingAMDHitToken = false;
+
+			GRHISupportsInlineRayTracing = GRHISupportsRayTracing && RHISupportsInlineRayTracing(GMaxRHIShaderPlatform);
+		}
+		else
+		{
+			GRHISupportsRayTracing = false;
+		}
+
+		GRHISupportsRayTracingDispatchIndirect = true;
+		GRHIRayTracingAccelerationStructureAlignment = 16;
+		GRHIRayTracingScratchBufferAlignment = 4;
+		GRHIRayTracingInstanceDescriptorSize = uint32(sizeof(MTLAccelerationStructureUserIDInstanceDescriptor));
+	}
+#endif
 		
 	GDynamicRHI = this;
 	GIsMetalInitialized = true;
@@ -1304,11 +1398,6 @@ uint32 FMetalDynamicRHI::RHIGetGPUFrameCycles(uint32 GPUIndex)
 {
 	check(GPUIndex == 0);
 	return GGPUFrameTime;
-}
-
-void FMetalDynamicRHI::RHIExecuteCommandList(FRHICommandList* RHICmdList)
-{
-	NOT_SUPPORTED("RHIExecuteCommandList");
 }
 
 IRHICommandContext* FMetalDynamicRHI::RHIGetDefaultContext()

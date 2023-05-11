@@ -7,6 +7,8 @@ public class OpenGLDrv : ModuleRules
 {
 	public OpenGLDrv(ReadOnlyTargetRules Target) : base(Target)
 	{
+		IWYUSupport = IWYUSupport.None;
+
 		PublicDependencyModuleNames.AddRange(new string[] {
 			"Core",
 			"RHI",
@@ -30,11 +32,6 @@ public class OpenGLDrv : ModuleRules
 		if (Target.IsInPlatformGroup(UnrealPlatformGroup.Linux))
 		{
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "SDL2");
-		}
-
-		if (Target.Configuration != UnrealTargetConfiguration.Shipping)
-		{
-			PrivateIncludePathModuleNames.Add("TaskGraph");
 		}
 
 		if (Target.Platform == UnrealTargetPlatform.Android)

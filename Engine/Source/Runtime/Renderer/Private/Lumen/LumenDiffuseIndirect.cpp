@@ -147,20 +147,25 @@ FAutoConsoleVariableRef CVarCardGridDistributionZScale(
 	ECVF_Scalability | ECVF_RenderThreadSafe
 );
 
-int32 GLumenDiffuseIndirectAsyncCompute = 0;
-static FAutoConsoleVariableRef CVarLumenDiffuseIndirectAsyncCompute(
+static TAutoConsoleVariable<int32> CVarLumenDiffuseIndirectAsyncCompute(
 	TEXT("r.Lumen.DiffuseIndirect.AsyncCompute"),
-	GLumenDiffuseIndirectAsyncCompute,
-	TEXT("Whether to run lumen diffuse indirect passes on the compute pipe if possible."),
-	ECVF_Scalability | ECVF_RenderThreadSafe);
+	1,
+	TEXT("Whether to run Lumen diffuse indirect passes on the compute pipe if possible."),
+	ECVF_Scalability | ECVF_RenderThreadSafe
+);
 
 int32 GLumenDiffuseIndirectApplySSAO = 0;
 FAutoConsoleVariableRef CVarLumenDiffuseIndirectApplySSAO(
 	TEXT("r.Lumen.DiffuseIndirect.SSAO"),
 	GLumenDiffuseIndirectApplySSAO,
-	TEXT("Whether to render and apply SSAO to Lumen GI, only when r.Lumen.ScreenProbeGather.ScreenSpaceBentNormal is disabled.  This is useful for providing short range occlusion when Lumen's Screen Bent Normal is disabled due to scalability, however SSAO settings like screen radius come from the user's post process settings."),
+	TEXT("Whether to render and apply SSAO to Lumen GI, only when r.Lumen.ScreenProbeGather.ShortRangeAO is disabled.  This is useful for providing short range occlusion when Lumen's Screen Bent Normal is disabled due to scalability, however SSAO settings like screen radius come from the user's post process settings."),
 	ECVF_Scalability | ECVF_RenderThreadSafe
 );
+
+bool LumenDiffuseIndirect::UseAsyncCompute(const FViewFamilyInfo& ViewFamily)
+{
+	return Lumen::UseAsyncCompute(ViewFamily) && CVarLumenDiffuseIndirectAsyncCompute.GetValueOnRenderThread() != 0;
+}
 
 bool Lumen::UseMeshSDFTracing(const FSceneViewFamily& ViewFamily)
 {
@@ -177,6 +182,11 @@ bool Lumen::UseGlobalSDFTracing(const FSceneViewFamily& ViewFamily)
 float Lumen::GetMaxTraceDistance(const FViewInfo& View)
 {
 	return FMath::Clamp(View.FinalPostProcessSettings.LumenMaxTraceDistance * GLumenTraceDistanceScale, .01f, Lumen::MaxTraceDistance);
+}
+
+bool Lumen::ShouldPrecachePSOs(EShaderPlatform Platform)
+{
+	return DoesPlatformSupportLumenGI(Platform) && CVarLumenGlobalIllumination.GetValueOnAnyThread();
 }
 
 void FHemisphereDirectionSampleGenerator::GenerateSamples(int32 TargetNumSamples, int32 InPowerOfTwoDivisor, int32 InSeed, bool bInFullSphere, bool bInCosineDistribution)
@@ -250,8 +260,8 @@ bool ShouldRenderLumenDirectLighting(const FScene* Scene, const FSceneView& View
 
 bool ShouldRenderAOWithLumenGI()
 {
-	extern int32 GLumenScreenSpaceBentNormal;
-	return GLumenDiffuseIndirectApplySSAO != 0 && GLumenScreenSpaceBentNormal == 0;
+	extern int32 GLumenShortRangeAmbientOcclusion;
+	return GLumenDiffuseIndirectApplySSAO != 0 && GLumenShortRangeAmbientOcclusion == 0;
 }
 
 void SetupLumenDiffuseTracingParameters(const FViewInfo& View, FLumenIndirectTracingParameters& OutParameters)
@@ -300,7 +310,6 @@ void CullForCardTracing(
 	const FScene* Scene,
 	const FViewInfo& View,
 	const FLumenSceneFrameTemporaries& FrameTemporaries,
-	FLumenCardTracingInputs TracingInputs,
 	const FLumenIndirectTracingParameters& IndirectTracingParameters,
 	FLumenMeshSDFGridParameters& MeshSDFGridParameters,
 	ERDGPassFlags ComputePassFlags)

@@ -2,6 +2,8 @@
 
 #include "GroomToMeshTool.h"
 #include "InteractiveToolManager.h"
+#include "MaterialDomain.h"
+#include "Materials/Material.h"
 #include "ToolBuilderUtil.h"
 
 #include "DynamicMesh/DynamicMesh3.h"
@@ -43,9 +45,9 @@
 
 #include "ParameterizationOps/UVLayoutOp.h"
 
-#include "Engine/Classes/Engine/StaticMesh.h"
-#include "Engine/Classes/Components/StaticMeshComponent.h"
-#include "Engine/Classes/Engine/StaticMeshActor.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/StaticMeshActor.h"
 #include "MeshDescriptionToDynamicMesh.h"
 
 using namespace UE::Geometry;

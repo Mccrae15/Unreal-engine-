@@ -2,7 +2,7 @@
 
 #include "GameplayDebugger/GameplayDebuggerCategory_AI.h"
 
-#if WITH_GAMEPLAY_DEBUGGER
+#if WITH_GAMEPLAY_DEBUGGER_MENU
 
 #include "GameFramework/Pawn.h"
 #include "ShowFlags.h"
@@ -12,6 +12,7 @@
 #include "GameFramework/PlayerController.h"
 #include "Engine/Engine.h"
 #include "EngineGlobals.h"
+#include "Navigation/PathFollowingComponent.h"
 #include "NavMesh/RecastNavMesh.h"
 #include "Engine/Canvas.h"
 #include "AIController.h"
@@ -44,7 +45,7 @@ FGameplayDebuggerCategory_AI::FGameplayDebuggerCategory_AI()
 {
 	bShowOnlyWithDebugActor = false;
 	RawLastPath = nullptr;
-	LastPathUpdateTime = 0.0f;
+	LastPathUpdateTime = 0.;
 
 	SetDataPackReplication<FRepData>(&DataPack);
 	PathDataPackId = SetDataPackReplication<FRepDataPath>(&PathDataPack, EGameplayDebuggerDataPack::ResetOnActorChange);
@@ -281,7 +282,7 @@ void FGameplayDebuggerCategory_AI::CollectPathData(AAIController* DebugAI)
 						NavData->GetPolyVerts(NavMeshPath->PathCorridor[Idx], PolyData.Points);
 						
 						const uint32 AreaId = NavData->GetPolyAreaID(NavMeshPath->PathCorridor[Idx]);
-						PolyData.Color = NavData->GetAreaIDColor(AreaId);
+						PolyData.Color = NavData->GetAreaIDColor(IntCastChecked<uint8>(AreaId));
 
 						PathDataPack.PathCorridor.Add(PolyData);
 					}
@@ -487,7 +488,7 @@ void FGameplayDebuggerCategory_AI::DrawOverheadInfo(AActor& DebugActor, FGamepla
 
 		float SizeX = 0.0f, SizeY = 0.0f;
 		OverheadContext.MeasureString(ActorDesc, SizeX, SizeY);
-		OverheadContext.PrintAt(ScreenLoc.X - (SizeX * 0.5f), ScreenLoc.Y - (SizeY * 1.2f), ActorDesc);
+		OverheadContext.PrintAt(static_cast<float>(ScreenLoc.X - (SizeX * 0.5f)), static_cast<float>(ScreenLoc.Y - (SizeY * 1.2f)), ActorDesc);
 	}
 }
 
@@ -511,11 +512,11 @@ void FGameplayDebuggerCategory_AI::DrawPawnIcons(UWorld* World, AActor* DebugAct
 					const FVector2D ScreenLoc = CanvasContext.ProjectLocation(IconLocation);
 					const float IconSize = (DebugActor == ItPawn) ? 32.0f : 16.0f;
 
-					CanvasContext.DrawIcon(FColor::White, CanvasIcon, ScreenLoc.X, ScreenLoc.Y - IconSize, IconSize / CanvasIcon.Texture->GetSurfaceWidth());
+					CanvasContext.DrawIcon(FColor::White, CanvasIcon, static_cast<float>(ScreenLoc.X), static_cast<float>(ScreenLoc.Y - IconSize), IconSize / CanvasIcon.Texture->GetSurfaceWidth());
 				}
 			}
 		}
 	}
 }
 
-#endif // WITH_GAMEPLAY_DEBUGGER
+#endif // WITH_GAMEPLAY_DEBUGGER_MENU

@@ -7,22 +7,26 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using EpicGames.Core;
+using EpicGames.Horde.Logs;
+using EpicGames.Horde.Storage;
 using Horde.Build.Agents.Sessions;
 using Horde.Build.Jobs;
 using Horde.Build.Logs.Data;
+using Horde.Build.Storage;
 using Horde.Build.Utilities;
 using HordeCommon;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using MongoDB.Bson;
-using MongoDB.Driver;
 using OpenTracing;
 using OpenTracing.Util;
 using Stream = System.IO.Stream;
@@ -60,30 +64,45 @@ namespace Horde.Build.Logs
 		/// <param name="jobId">Unique id of the job that owns this log file</param>
 		/// <param name="sessionId">Agent session allowed to update the log</param>
 		/// <param name="type">Type of events to be stored in the log</param>
+		/// <param name="cancellationToken">Cancellation token for the call</param>
+		/// <param name="logId">ID of the log file (optional)</param>
 		/// <returns>The new log file document</returns>
-		Task<ILogFile> CreateLogFileAsync(JobId jobId, SessionId? sessionId, LogType type);
+		Task<ILogFile> CreateLogFileAsync(JobId jobId, SessionId? sessionId, LogType type, LogId? logId = null, CancellationToken cancellationToken = default);
 
 		/// <summary>
 		/// Gets a logfile by ID
 		/// </summary>
 		/// <param name="logFileId">Unique id of the log file</param>
+		/// <param name="cancellationToken">Cancellation token for the call</param>
 		/// <returns>The logfile document</returns>
-		Task<ILogFile?> GetLogFileAsync(LogId logFileId);
+		Task<ILogFile?> GetLogFileAsync(LogId logFileId, CancellationToken cancellationToken);
 
 		/// <summary>
 		/// Gets a logfile by ID, returning a cached copy if available. This should only be used to retrieve constant properties set at creation, such as the session or job it's associated with.
 		/// </summary>
 		/// <param name="logFileId">Unique id of the log file</param>
+		/// <param name="cancellationToken">Cancellation token for the call</param>
 		/// <returns>The logfile document</returns>
-		Task<ILogFile?> GetCachedLogFileAsync(LogId logFileId);
+		Task<ILogFile?> GetCachedLogFileAsync(LogId logFileId, CancellationToken cancellationToken);
 
 		/// <summary>
 		/// Returns a list of log files
 		/// </summary>
 		/// <param name="index">Index of the first result to return</param>
 		/// <param name="count">Number of results to return</param>
+		/// <param name="cancellationToken">Cancellation token for the call</param>
 		/// <returns>List of logfile documents</returns>
-		Task<List<ILogFile>> GetLogFilesAsync(int? index = null, int? count = null);
+		Task<List<ILogFile>> GetLogFilesAsync(int? index = null, int? count = null, CancellationToken cancellationToken = default);
+
+		/// <summary>
+		/// Read a set of lines from the given log file
+		/// </summary>
+		/// <param name="logFile">Log file to read</param>
+		/// <param name="index">Index of the first line to read</param>
+		/// <param name="count">Maximum number of lines to return</param>
+		/// <param name="cancellationToken">Cancellation token for the operation</param>
+		/// <returns>List of lines</returns>
+		Task<List<Utf8String>> ReadLinesAsync(ILogFile logFile, int index, int count, CancellationToken cancellationToken = default);
 
 		/// <summary>
 		/// Writes out chunk data and assigns to a file
@@ -95,22 +114,25 @@ namespace Horde.Build.Logs
 		/// <param name="flush">Whether the current chunk is complete and should be flushed</param>
 		/// <param name="maxChunkLength">The maximum chunk length. Defaults to 128kb.</param>
 		/// <param name="maxSubChunkLineCount">Maximum number of lines in each sub-chunk.</param>
+		/// <param name="cancellationToken">Cancellation token for the call</param>
 		/// <returns></returns>
-		Task<ILogFile?> WriteLogDataAsync(ILogFile logFile, long offset, int lineIndex, ReadOnlyMemory<byte> data, bool flush, int maxChunkLength = 256 * 1024, int maxSubChunkLineCount = 128);
+		Task<ILogFile?> WriteLogDataAsync(ILogFile logFile, long offset, int lineIndex, ReadOnlyMemory<byte> data, bool flush, int maxChunkLength = 256 * 1024, int maxSubChunkLineCount = 128, CancellationToken cancellationToken = default);
 
 		/// <summary>
 		/// Gets metadata about the log file
 		/// </summary>
 		/// <param name="logFile">The log file to query</param>
+		/// <param name="cancellationToken">Cancellation token for the call</param>
 		/// <returns>Metadata about the log file</returns>
-		Task<LogMetadata> GetMetadataAsync(ILogFile logFile);
+		Task<LogMetadata> GetMetadataAsync(ILogFile logFile, CancellationToken cancellationToken);
 
 		/// <summary>
 		/// Creates new log events
 		/// </summary>
 		/// <param name="newEvents">List of events</param>
+		/// <param name="cancellationToken">Cancellation token for the call</param>
 		/// <returns>Async task</returns>
-		Task CreateEventsAsync(List<NewLogEventData> newEvents);
+		Task CreateEventsAsync(List<NewLogEventData> newEvents, CancellationToken cancellationToken);
 
 		/// <summary>
 		/// Find events for a particular log file
@@ -119,16 +141,18 @@ namespace Horde.Build.Logs
 		/// <param name="spanId">Issue span to return events for</param>
 		/// <param name="index">Index of the first event to retrieve</param>
 		/// <param name="count">Number of events to retrieve</param>
+		/// <param name="cancellationToken">Cancellation token for the call</param>
 		/// <returns>List of log events</returns>
-		Task<List<ILogEvent>> FindEventsAsync(ILogFile logFile, ObjectId? spanId = null, int? index = null, int? count = null);
+		Task<List<ILogEvent>> FindEventsAsync(ILogFile logFile, ObjectId? spanId = null, int? index = null, int? count = null, CancellationToken cancellationToken = default);
 
 		/// <summary>
 		/// Adds events to a log span
 		/// </summary>
 		/// <param name="events">The events to add</param>
 		/// <param name="spanId">The span id</param>
+		/// <param name="cancellationToken">Cancellation token for the call</param>
 		/// <returns>Async task</returns>
-		Task AddSpanToEventsAsync(IEnumerable<ILogEvent> events, ObjectId spanId);
+		Task AddSpanToEventsAsync(IEnumerable<ILogEvent> events, ObjectId spanId, CancellationToken cancellationToken = default);
 
 		/// <summary>
 		/// Find events for an issue
@@ -137,8 +161,9 @@ namespace Horde.Build.Logs
 		/// <param name="logIds">Log ids to include</param>
 		/// <param name="index">Index within the events for results to return</param>
 		/// <param name="count">Number of results to return</param>
+		/// <param name="cancellationToken">Cancellation token for the call</param>
 		/// <returns>Async task</returns>
-		Task<List<ILogEvent>> FindEventsForSpansAsync(IEnumerable<ObjectId> spanIds, LogId[]? logIds, int index, int count);
+		Task<List<ILogEvent>> FindEventsForSpansAsync(IEnumerable<ObjectId> spanIds, LogId[]? logIds, int index, int count, CancellationToken cancellationToken = default);
 
 		/// <summary>
 		/// Gets the data for an event
@@ -146,35 +171,26 @@ namespace Horde.Build.Logs
 		/// <param name="logFile">The log file instance</param>
 		/// <param name="lineIndex">Index of the line in the file</param>
 		/// <param name="lineCount">Number of lines in the event</param>
+		/// <param name="cancellationToken">Cancellation token for the call</param>
 		/// <returns>New event data instance</returns>
-		Task<ILogEventData> GetEventDataAsync(ILogFile logFile, int lineIndex, int lineCount);
+		Task<ILogEventData> GetEventDataAsync(ILogFile logFile, int lineIndex, int lineCount, CancellationToken cancellationToken = default);
 
 		/// <summary>
 		/// Gets lines from the given log 
 		/// </summary>
 		/// <param name="logFile">The log file</param>
-		/// <param name="offset">Offset of the data to return</param>
-		/// <param name="length">Length of the data to return</param>
+		/// <param name="cancellationToken">Cancellation token for the call</param>
 		/// <returns>Data for the requested range</returns>
-		Task<Stream> OpenRawStreamAsync(ILogFile logFile, long offset, long length);
+		Task<Stream> OpenRawStreamAsync(ILogFile logFile, CancellationToken cancellationToken = default);
 
 		/// <summary>
 		/// Parses a stream of json text and outputs plain text
 		/// </summary>
 		/// <param name="logFile">The log file to query</param>
-		/// <param name="offset">Offset within the data to copy from</param>
-		/// <param name="length">Length of the data to copy</param>
 		/// <param name="outputStream">Output stream to receive the text data</param>
+		/// <param name="cancellationToken">Cancellation token for the call</param>
 		/// <returns>Async text</returns>
-		Task CopyPlainTextStreamAsync(ILogFile logFile, long offset, long length, Stream outputStream);
-
-		/// <summary>
-		/// Gets the offset of the given line number
-		/// </summary>
-		/// <param name="logFile">The log file to search</param>
-		/// <param name="lineIdx">The line index to retrieve the offset for</param>
-		/// <returns>The actual clamped line number and offset</returns>
-		Task<(int, long)> GetLineOffsetAsync(ILogFile logFile, int lineIdx);
+		Task CopyPlainTextStreamAsync(ILogFile logFile, Stream outputStream, CancellationToken cancellationToken = default);
 
 		/// <summary>
 		/// Search for the specified text in a log file
@@ -184,8 +200,9 @@ namespace Horde.Build.Logs
 		/// <param name="firstLine">Line to start search from</param>
 		/// <param name="count">Number of results to return</param>
 		/// <param name="stats">Receives stats for the search</param>
+		/// <param name="cancellationToken">Cancellation token for the call</param>
 		/// <returns>List of line numbers containing the given term</returns>
-		Task<List<int>> SearchLogDataAsync(ILogFile logFile, string text, int firstLine, int count, LogSearchStats stats);
+		Task<List<int>> SearchLogDataAsync(ILogFile logFile, string text, int firstLine, int count, SearchStats stats, CancellationToken cancellationToken);
 	}
 
 	/// <summary>
@@ -198,16 +215,13 @@ namespace Horde.Build.Logs
 		/// </summary>
 		/// <param name="logFileService">The log file service</param>
 		/// <param name="logFile">The log file to query</param>
-		/// <param name="offset">Offset within the log file to copy</param>
-		/// <param name="length">Length of the data to copy</param>
 		/// <param name="outputStream">Output stream to receive the text data</param>
+		/// <param name="cancellationToken">Cancellation token for the call</param>
 		/// <returns>Async text</returns>
-		public static async Task CopyRawStreamAsync(this ILogFileService logFileService, ILogFile logFile, long offset, long length, Stream outputStream)
+		public static async Task CopyRawStreamAsync(this ILogFileService logFileService, ILogFile logFile, Stream outputStream, CancellationToken cancellationToken)
 		{
-			using (Stream stream = await logFileService.OpenRawStreamAsync(logFile, offset, length))
-			{
-				await stream.CopyToAsync(outputStream);
-			}
+			await using Stream stream = await logFileService.OpenRawStreamAsync(logFile, cancellationToken);
+			await stream.CopyToAsync(outputStream, cancellationToken);
 		}
 	}
 	
@@ -216,11 +230,15 @@ namespace Horde.Build.Logs
 	/// </summary>
 	public sealed class LogFileService : IHostedService, ILogFileService, IDisposable
 	{
+		private const int MaxConcurrentChunkWrites = 10;
+		
 		private readonly ILogger<LogFileService> _logger;
 		private readonly ILogFileCollection _logFiles;
 		private readonly ILogEventCollection _logEvents;
 		private readonly ILogStorage _storage;
 		private readonly ILogBuilder _builder;
+		private readonly StorageService _storageService;
+		private readonly IOptions<ServerSettings> _settings;
 
 		// Lock object for the <see cref="_writeTasks"/> and <see cref="_writeChunks"/> members
 		private readonly object _writeLock = new object();
@@ -391,19 +409,170 @@ namespace Horde.Build.Logs
 			public override void Write(byte[] buffer, int offset, int count) => throw new NotImplementedException();
 		}
 
+		/// <summary>
+		/// Streams log data to a caller
+		/// </summary>
+		class NewLoggerResponseStream : Stream
+		{
+			readonly TreeReader _reader;
+			readonly LogNode _rootNode;
+
+			/// <summary>
+			/// Starting offset within the file of the data to return 
+			/// </summary>
+			readonly long _responseOffset;
+
+			/// <summary>
+			/// Length of data to return
+			/// </summary>
+			readonly long _responseLength;
+
+			/// <summary>
+			/// Current offset within the stream
+			/// </summary>
+			long _currentOffset;
+
+			/// <summary>
+			/// The current chunk index
+			/// </summary>
+			int _chunkIdx;
+
+			/// <summary>
+			/// Buffer containing a message for missing data
+			/// </summary>
+			ReadOnlyMemory<byte> _sourceBuffer;
+
+			/// <summary>
+			/// Offset within the source buffer
+			/// </summary>
+			int _sourcePos;
+
+			/// <summary>
+			/// Length of the source buffer being copied from
+			/// </summary>
+			int _sourceEnd;
+
+			/// <summary>
+			/// Constructor
+			/// </summary>
+			public NewLoggerResponseStream(TreeReader reader, LogNode rootNode, long offset, long length)
+			{
+				_reader = reader;
+				_rootNode = rootNode;
+
+				_responseOffset = offset;
+				_responseLength = length;
+
+				_currentOffset = offset;
+
+				_chunkIdx = rootNode.TextChunkRefs.GetChunkForOffset(offset);
+				_sourceBuffer = null!;
+			}
+
+			/// <inheritdoc/>
+			public override bool CanRead => true;
+
+			/// <inheritdoc/>
+			public override bool CanSeek => false;
+
+			/// <inheritdoc/>
+			public override bool CanWrite => false;
+
+			/// <inheritdoc/>
+			public override long Length => _responseLength;
+
+			/// <inheritdoc/>
+			public override long Position
+			{
+				get => _currentOffset - _responseOffset;
+				set => throw new NotImplementedException();
+			}
+
+			/// <inheritdoc/>
+			public override void Flush()
+			{
+			}
+
+			/// <inheritdoc/>
+			public override int Read(byte[] buffer, int offset, int count)
+			{
+				return ReadAsync(buffer, offset, count, CancellationToken.None).Result;
+			}
+
+			/// <inheritdoc/>
+			public override async Task<int> ReadAsync(byte[] buffer, int offset, int length, CancellationToken cancellationToken)
+			{
+				return await ReadAsync(buffer.AsMemory(offset, length), cancellationToken);
+			}
+
+			/// <inheritdoc/>
+			public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken)
+			{
+				int readBytes = 0;
+				while (readBytes < buffer.Length)
+				{
+					if (_sourcePos < _sourceEnd)
+					{
+						// Try to copy from the current buffer
+						int blockSize = Math.Min(_sourceEnd - _sourcePos, buffer.Length - readBytes);
+						_sourceBuffer.Slice(_sourcePos, blockSize).Span.CopyTo(buffer.Slice(readBytes).Span);
+						_currentOffset += blockSize;
+						readBytes += blockSize;
+						_sourcePos += blockSize;
+					}
+					else if (_currentOffset < _responseOffset + _responseLength)
+					{
+						// Move to the right chunk
+						while (_chunkIdx + 1 < _rootNode.TextChunkRefs.Count && _currentOffset >= _rootNode.TextChunkRefs[_chunkIdx + 1].Offset)
+						{
+							_chunkIdx++;
+						}
+
+						// Get the chunk data
+						LogChunkRef chunk = _rootNode.TextChunkRefs[_chunkIdx];
+						LogChunkNode chunkNode = await chunk.ExpandCopyAsync(_reader, cancellationToken);
+
+						// Get the source data
+						_sourceBuffer = chunkNode.Data;
+						_sourcePos = (int)(_currentOffset - chunk.Offset);
+						_sourceEnd = (int)Math.Min(_sourceBuffer.Length, (_responseOffset + _responseLength) - chunk.Offset);
+					}
+					else
+					{
+						// End of the log
+						break;
+					}
+				}
+				return readBytes;
+			}
+
+			/// <inheritdoc/>
+			public override long Seek(long offset, SeekOrigin origin) => throw new NotImplementedException();
+
+			/// <inheritdoc/>
+			public override void SetLength(long value) => throw new NotImplementedException();
+
+			/// <inheritdoc/>
+			public override void Write(byte[] buffer, int offset, int count) => throw new NotImplementedException();
+		}
+
+		readonly LogTailService _logTailService;
 		readonly ITicker _ticker;
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		public LogFileService(ILogFileCollection logFiles, ILogEventCollection logEvents, ILogBuilder builder, ILogStorage storage, IClock clock, ILogger<LogFileService> logger)
+		public LogFileService(ILogFileCollection logFiles, ILogEventCollection logEvents, ILogBuilder builder, ILogStorage storage, IClock clock, LogTailService logTailService, StorageService storageService, IOptions<ServerSettings> settings, ILogger<LogFileService> logger)
 		{
 			_logFiles = logFiles;
 			_logEvents = logEvents;
 			_logFileCache = new MemoryCache(new MemoryCacheOptions());
 			_builder = builder;
 			_storage = storage;
-			_ticker = clock.AddTicker<LogFileService>(TimeSpan.FromSeconds(30.0), TickAsync, logger);
+			_ticker = clock.AddSharedTicker<LogFileService>(TimeSpan.FromSeconds(30.0), TickAsync, logger);
+			_logTailService = logTailService;
+			_storageService = storageService;
+			_settings = settings;
 			_logger = logger;
 		}
 
@@ -431,15 +600,15 @@ namespace Horde.Build.Logs
 		}
 
 		/// <inheritdoc/>
-		public Task<ILogFile> CreateLogFileAsync(JobId jobId, SessionId? sessionId, LogType type)
+		public Task<ILogFile> CreateLogFileAsync(JobId jobId, SessionId? sessionId, LogType type, LogId? logId, CancellationToken cancellationToken)
 		{
-			return _logFiles.CreateLogFileAsync(jobId, sessionId, type);
+			return _logFiles.CreateLogFileAsync(jobId, sessionId, type, logId, cancellationToken);
 		}
 
 		/// <inheritdoc/>
-		public async Task<ILogFile?> GetLogFileAsync(LogId logFileId)
+		public async Task<ILogFile?> GetLogFileAsync(LogId logFileId, CancellationToken cancellationToken)
 		{
-			ILogFile? logFile = await _logFiles.GetLogFileAsync(logFileId);
+			ILogFile? logFile = await _logFiles.GetLogFileAsync(logFileId, cancellationToken);
 			if(logFile != null)
 			{
 				AddCachedLogFile(logFile);
@@ -457,25 +626,89 @@ namespace Horde.Build.Logs
 			_logFileCache.Set(logFile.Id, logFile, options);
 		}
 
-		/// <summary>
-		/// Gets a cached log file by id
-		/// </summary>
-		/// <param name="logFileId">The log file id</param>
-		/// <returns>New log file, or null if not found</returns>
-		public async Task<ILogFile?> GetCachedLogFileAsync(LogId logFileId)
+
+		/// <inheritdoc />
+		public async Task<ILogFile?> GetCachedLogFileAsync(LogId logFileId, CancellationToken cancellationToken)
 		{
 			object? logFile;
 			if (!_logFileCache.TryGetValue(logFileId, out logFile))
 			{
-				logFile = await GetLogFileAsync(logFileId);
+				logFile = await GetLogFileAsync(logFileId, cancellationToken);
 			}
 			return (ILogFile?)logFile;
 		}
 
 		/// <inheritdoc/>
-		public Task<List<ILogFile>> GetLogFilesAsync(int? index = null, int? count = null)
+		public Task<List<ILogFile>> GetLogFilesAsync(int? index = null, int? count = null, CancellationToken cancellationToken = default)
 		{
-			return _logFiles.GetLogFilesAsync(index, count);
+			return _logFiles.GetLogFilesAsync(index, count, cancellationToken);
+		}
+
+		/// <inheritdoc/>
+		public async Task<List<Utf8String>> ReadLinesAsync(ILogFile logFile, int index, int count, CancellationToken cancellationToken)
+		{
+			List<Utf8String> lines = new List<Utf8String>();
+
+			if (_settings.Value.FeatureFlags.EnableNewLogger)
+			{
+				TreeReader reader = await GetTreeReaderAsync(cancellationToken);
+
+				int maxIndex = index + count;
+
+				LogNode? root = await reader.TryReadNodeAsync<LogNode>(logFile.RefName, cancellationToken: cancellationToken);
+				if (root != null)
+				{
+					int chunkIdx = root.TextChunkRefs.GetChunkForLine(index);
+					for (; index < maxIndex && chunkIdx < root.TextChunkRefs.Count; chunkIdx++)
+					{
+						LogChunkRef chunk = root.TextChunkRefs[chunkIdx];
+						LogChunkNode chunkData = await chunk.ExpandAsync(reader, cancellationToken);
+
+						for (; index < maxIndex && index < chunk.LineIndex; index++)
+						{
+							lines.Add($"Internal error; missing data for line {index}\n");
+						}
+
+						for (; index < maxIndex && index < chunk.LineIndex + chunk.LineCount; index++)
+						{
+							lines.Add(chunkData.GetLine(index - chunk.LineIndex));
+						}
+					}
+				}
+
+				if (root == null || !root.Complete)
+				{
+					await _logTailService.EnableTailingAsync(logFile.Id, root?.LineCount ?? 0);
+					if (index < maxIndex)
+					{
+						await _logTailService.ReadAsync(logFile.Id, index, maxIndex - index, lines);
+					}
+				}
+			}
+			else
+			{
+				(_, long minOffset) = await GetLineOffsetAsync(logFile, index, cancellationToken);
+				(_, long maxOffset) = await GetLineOffsetAsync(logFile, index + Math.Min(count, Int32.MaxValue - index), cancellationToken);
+
+				byte[] result;
+				using (System.IO.Stream stream = await OpenRawStreamAsync(logFile, minOffset, maxOffset - minOffset, cancellationToken))
+				{
+					result = new byte[stream.Length];
+					await stream.ReadFixedSizeDataAsync(result, 0, result.Length);
+				}
+
+				int offset = 0;
+				for (int idx = 0; idx < result.Length; idx++)
+				{
+					if (result[idx] == (byte)'\n')
+					{
+						lines.Add(new Utf8String(result.AsMemory(offset, idx - offset)));
+						offset = idx + 1;
+					}
+				}
+			}
+
+			return lines;
 		}
 
 		class WriteState
@@ -493,7 +726,7 @@ namespace Horde.Build.Logs
 		}
 
 		/// <inheritdoc/>
-		public async Task<ILogFile?> WriteLogDataAsync(ILogFile logFile, long offset, int lineIndex, ReadOnlyMemory<byte> data, bool flush, int maxChunkLength, int maxSubChunkLineCount)
+		public async Task<ILogFile?> WriteLogDataAsync(ILogFile logFile, long offset, int lineIndex, ReadOnlyMemory<byte> data, bool flush, int maxChunkLength, int maxSubChunkLineCount, CancellationToken cancellationToken)
 		{
 			using IScope scope = GlobalTracer.Instance.BuildSpan("WriteLogDataAsync").StartActive();
 			scope.Span.SetTag("LogId", logFile.Id.ToString());
@@ -525,7 +758,7 @@ namespace Horde.Build.Logs
 				if (chunkIdx >= 0)
 				{
 					ILogChunk chunk = logFile.Chunks[chunkIdx];
-					if (await WriteLogChunkDataAsync(logFile, chunk, state, completeOffsets, maxChunkLength, maxSubChunkLineCount))
+					if (await WriteLogChunkDataAsync(logFile, chunk, state, completeOffsets, maxChunkLength, maxSubChunkLineCount, cancellationToken))
 					{
 						continue;
 					}
@@ -535,17 +768,17 @@ namespace Horde.Build.Logs
 				ILogFile? newLogFile;
 				if (logFile.Chunks.Count == 0)
 				{
-					newLogFile = await _logFiles.TryAddChunkAsync(logFile, 0, 0);
+					newLogFile = await _logFiles.TryAddChunkAsync(logFile, 0, 0, cancellationToken);
 				}
 				else
 				{
-					newLogFile = await _logFiles.TryAddChunkAsync(logFile, state._offset, state._lineIndex);
+					newLogFile = await _logFiles.TryAddChunkAsync(logFile, state._offset, state._lineIndex, cancellationToken);
 				}
 
 				// Try to add a new chunk at the new location
 				if (newLogFile == null)
 				{
-					newLogFile = await _logFiles.GetLogFileAsync(logFile.Id);
+					newLogFile = await _logFiles.GetLogFileAsync(logFile.Id, cancellationToken);
 					if (newLogFile == null)
 					{
 						_logger.LogError("Unable to update log file {LogId}", logFile.Id);
@@ -576,7 +809,7 @@ namespace Horde.Build.Logs
 			// Write all the chunks
 			if (completeOffsets.Count > 0 || flush)
 			{
-				ILogFile? newLogFile = await WriteCompleteChunksForLogAsync(logFile, completeOffsets, flush);
+				ILogFile? newLogFile = await WriteCompleteChunksForLogAsync(logFile, completeOffsets, flush, cancellationToken);
 				if (newLogFile == null)
 				{
 					return null;
@@ -595,8 +828,9 @@ namespace Horde.Build.Logs
 		/// <param name="completeOffsets">List of complete chunks</param>
 		/// <param name="maxChunkLength">Maximum length of each chunk</param>
 		/// <param name="maxSubChunkLineCount">Maximum number of lines in each subchunk</param>
+		/// <param name="cancellationToken">Cancellation token for the call</param> 
 		/// <returns>True if data was appended to </returns>
-		private async Task<bool> WriteLogChunkDataAsync(ILogFile logFile, ILogChunk chunk, WriteState state, List<long> completeOffsets, int maxChunkLength, int maxSubChunkLineCount)
+		private async Task<bool> WriteLogChunkDataAsync(ILogFile logFile, ILogChunk chunk, WriteState state, List<long> completeOffsets, int maxChunkLength, int maxSubChunkLineCount, CancellationToken cancellationToken)
 		{
 			// Don't allow data to be appended if the chunk is complete
 			if(chunk.Length > 0)
@@ -605,7 +839,7 @@ namespace Horde.Build.Logs
 			}
 
 			// Otherwise keep appending subchunks
-			bool bResult = false;
+			bool result = false;
 			for (; ; )
 			{
 				// Flush the current sub-chunk if we're on a boundary
@@ -638,7 +872,7 @@ namespace Horde.Build.Logs
 					state._offset += length;
 					state._lineIndex += lineCount;
 					state._memory = state._memory.Slice(length);
-					bResult = true;
+					result = true;
 
 					// If this is the end of the data, bail out
 					if(state._memory.Length == 0)
@@ -656,7 +890,7 @@ namespace Horde.Build.Logs
 					break;
 				}
 			}
-			return bResult;
+			return result;
 		}
 
 		/// <summary>
@@ -665,19 +899,19 @@ namespace Horde.Build.Logs
 		/// <param name="span">Data to write</param>
 		/// <param name="maxLength">Maximum length of the data to write</param>
 		/// <param name="maxLineCount">Maximum number of lines to write</param>
-		/// <param name="bIsEmptyChunk">Whether the current chunk is empty</param>
+		/// <param name="isEmptyChunk">Whether the current chunk is empty</param>
 		/// <returns>A tuple consisting of the amount of data to write and number of lines in it</returns>
-		private static (int, int) GetWriteLength(ReadOnlySpan<byte> span, int maxLength, int maxLineCount, bool bIsEmptyChunk)
+		private static (int, int) GetWriteLength(ReadOnlySpan<byte> span, int maxLength, int maxLineCount, bool isEmptyChunk)
 		{
 			int length = 0;
 			int lineCount = 0;
-			for (int idx = 0; idx < maxLength || bIsEmptyChunk; idx++)
+			for (int idx = 0; idx < maxLength || isEmptyChunk; idx++)
 			{
 				if (span[idx] == '\n')
 				{
 					length = idx + 1;
 					lineCount++;
-					bIsEmptyChunk = false;
+					isEmptyChunk = false;
 
 					if (lineCount >= maxLineCount)
 					{
@@ -689,35 +923,48 @@ namespace Horde.Build.Logs
 		}
 
 		/// <inheritdoc/>
-		public async Task<LogMetadata> GetMetadataAsync(ILogFile logFile)
+		public async Task<LogMetadata> GetMetadataAsync(ILogFile logFile, CancellationToken cancellationToken)
 		{
 			LogMetadata metadata = new LogMetadata();
-			if (logFile.Chunks.Count > 0)
+			if (_settings.Value.FeatureFlags.EnableNewLogger)
 			{
-				ILogChunk chunk = logFile.Chunks[logFile.Chunks.Count - 1];
-				if (logFile.MaxLineIndex == null || chunk.Length == 0)
+				metadata.MaxLineIndex = logFile.LineCount;
+
+				int nextIdx = await _logTailService.GetTailNextAsync(logFile.Id);
+				if (nextIdx != -1)
 				{
-					LogChunkData chunkData = await ReadChunkAsync(logFile, logFile.Chunks.Count - 1);
-					metadata.Length = chunk.Offset + chunkData.Length;
-					metadata.MaxLineIndex = chunk.LineIndex + chunkData.LineCount;
+					metadata.MaxLineIndex = nextIdx;
 				}
-				else
+			}
+			else
+			{
+				if (logFile.Chunks.Count > 0)
 				{
-					metadata.Length = chunk.Offset + chunk.Length;
-					metadata.MaxLineIndex = logFile.MaxLineIndex.Value;
+					ILogChunk chunk = logFile.Chunks[logFile.Chunks.Count - 1];
+					if (logFile.MaxLineIndex == null || chunk.Length == 0)
+					{
+						LogChunkData chunkData = await ReadChunkAsync(logFile, logFile.Chunks.Count - 1);
+						metadata.Length = chunk.Offset + chunkData.Length;
+						metadata.MaxLineIndex = chunk.LineIndex + chunkData.LineCount;
+					}
+					else
+					{
+						metadata.Length = chunk.Offset + chunk.Length;
+						metadata.MaxLineIndex = logFile.MaxLineIndex.Value;
+					}
 				}
 			}
 			return metadata;
 		}
 
 		/// <inheritdoc/>
-		public Task CreateEventsAsync(List<NewLogEventData> newEvents)
+		public Task CreateEventsAsync(List<NewLogEventData> newEvents, CancellationToken cancellationToken)
 		{
 			return _logEvents.AddManyAsync(newEvents);
 		}
 
 		/// <inheritdoc/>
-		public Task<List<ILogEvent>> FindEventsAsync(ILogFile logFile, ObjectId? spanId = null, int? index = null, int? count = null)
+		public Task<List<ILogEvent>> FindEventsAsync(ILogFile logFile, ObjectId? spanId = null, int? index = null, int? count = null, CancellationToken cancellationToken = default)
 		{
 			return _logEvents.FindAsync(logFile.Id, spanId, index, count);
 		}
@@ -783,123 +1030,135 @@ namespace Horde.Build.Logs
 		}
 
 		/// <inheritdoc/>
-		public Task AddSpanToEventsAsync(IEnumerable<ILogEvent> events, ObjectId spanId)
+		public Task AddSpanToEventsAsync(IEnumerable<ILogEvent> events, ObjectId spanId, CancellationToken cancellationToken)
 		{
 			return _logEvents.AddSpanToEventsAsync(events, spanId);
 		}
 
 		/// <inheritdoc/>
-		public Task<List<ILogEvent>> FindEventsForSpansAsync(IEnumerable<ObjectId> spanIds, LogId[]? logIds, int index, int count)
+		public Task<List<ILogEvent>> FindEventsForSpansAsync(IEnumerable<ObjectId> spanIds, LogId[]? logIds, int index, int count, CancellationToken cancellationToken)
 		{
 			return _logEvents.FindEventsForSpansAsync(spanIds, logIds, index, count);
 		}
 
 		/// <inheritdoc/>
-		public async Task<ILogEventData> GetEventDataAsync(ILogFile logFile, int lineIndex, int lineCount)
+		public async Task<ILogEventData> GetEventDataAsync(ILogFile logFile, int lineIndex, int lineCount, CancellationToken cancellationToken)
 		{
 			using IScope scope = GlobalTracer.Instance.BuildSpan("GetEventDataAsync").StartActive();
 			scope.Span.SetTag("LogId", logFile.Id.ToString());
 			scope.Span.SetTag("LineIndex", lineIndex.ToString(CultureInfo.InvariantCulture));
 			scope.Span.SetTag("LineCount", lineCount.ToString(CultureInfo.InvariantCulture));
 
-			(_, long minOffset) = await GetLineOffsetAsync(logFile, lineIndex);
-			(_, long maxOffset) = await GetLineOffsetAsync(logFile, lineIndex + lineCount);
+			List<Utf8String> lines = await ReadLinesAsync(logFile, lineIndex, lineCount, cancellationToken);
+			List<LogEventLine> eventLines = new List<LogEventLine>(lines.Count);
 
-			byte[] data = new byte[maxOffset - minOffset];
-			using (Stream stream = await OpenRawStreamAsync(logFile, minOffset, maxOffset - minOffset))
+			foreach (Utf8String line in lines)
 			{
-				int length = await stream.ReadAsync(data.AsMemory());
-				if(length != data.Length)
-				{
-					_logger.LogWarning("Read less than expected from log stream (Expected {Expected}, Got {Got})", data.Length, length);
-				}
-				return ParseEventData(data.AsSpan(0, length));
-			}
-		}
-
-		/// <summary>
-		/// Parses event data from a buffer
-		/// </summary>
-		/// <param name="data">Data to parse</param>
-		/// <returns>Parsed event data</returns>
-		private ILogEventData ParseEventData(ReadOnlySpan<byte> data)
-		{
-			List<LogEventLine> lines = new List<LogEventLine>();
-
-			ReadOnlySpan<byte> remainingData = data;
-			while(remainingData.Length > 0)
-			{
-				int endOfLine = remainingData.IndexOf((byte)'\n');
-				if(endOfLine == -1)
-				{
-					break;
-				}
-
-				ReadOnlySpan<byte> lineData = remainingData.Slice(0, endOfLine);
 				try
 				{
-					lines.Add(new LogEventLine(lineData));
+					eventLines.Add(new LogEventLine(line.Span));
 				}
-				catch(JsonException ex)
+				catch (JsonException ex)
 				{
-					_logger.LogWarning(ex, "Unable to parse line from log file: {Line}", Encoding.UTF8.GetString(lineData));
+					_logger.LogWarning(ex, "Unable to parse line from log file: {Line}", line);
 				}
-				remainingData = remainingData.Slice(endOfLine + 1);
 			}
 
-			return new LogEventData(lines);
+			return new LogEventData(eventLines);
 		}
 
 		/// <inheritdoc/>
-		public async Task<Stream> OpenRawStreamAsync(ILogFile logFile, long offset, long length)
+		public Task<Stream> OpenRawStreamAsync(ILogFile logFile, CancellationToken cancellationToken)
 		{
-			if (logFile.Chunks.Count == 0)
+			return OpenRawStreamAsync(logFile, 0, Int64.MaxValue, cancellationToken);
+		}
+
+		/// <inheritdoc/>
+		public async Task<Stream> OpenRawStreamAsync(ILogFile logFile, long offset, long length, CancellationToken cancellationToken)
+		{
+			if (_settings.Value.FeatureFlags.EnableNewLogger)
 			{
-				return new MemoryStream(Array.Empty<byte>(), false);
+				TreeReader reader = await GetTreeReaderAsync(cancellationToken);
+
+				LogNode? root = await reader.TryReadNodeAsync<LogNode>(logFile.RefName, cancellationToken: cancellationToken);
+				if (root == null || root.TextChunkRefs.Count == 0)
+				{
+					return new MemoryStream(Array.Empty<byte>(), false);
+				}
+				else
+				{
+					int lastChunkIdx = root.TextChunkRefs.Count - 1;
+
+					// Clamp the length of the request
+					LogChunkRef lastChunk = root.TextChunkRefs[lastChunkIdx];
+					if (length > lastChunk.Offset)
+					{
+						long lastChunkLength = lastChunk.Length;
+						if (lastChunkLength <= 0)
+						{
+							LogChunkNode lastChunkNode = await lastChunk.ExpandAsync(reader, cancellationToken);
+							lastChunkLength = lastChunkNode.Length;
+						}
+						length = Math.Min(length, (lastChunk.Offset + lastChunkLength) - offset);
+					}
+
+					// Create the new stream
+					return new NewLoggerResponseStream(reader, root, offset, length);
+				}
 			}
 			else
 			{
-				int lastChunkIdx = logFile.Chunks.Count - 1;
-
-				// Clamp the length of the request
-				ILogChunk lastChunk = logFile.Chunks[lastChunkIdx];
-				if (length > lastChunk.Offset)
+				if (logFile.Chunks.Count == 0)
 				{
-					long lastChunkLength = lastChunk.Length;
-					if (lastChunkLength <= 0)
-					{
-						LogChunkData lastChunkData = await ReadChunkAsync(logFile, lastChunkIdx);
-						lastChunkLength = lastChunkData.Length;
-					}
-					length = Math.Min(length, (lastChunk.Offset + lastChunkLength) - offset);
+					return new MemoryStream(Array.Empty<byte>(), false);
 				}
+				else
+				{
+					int lastChunkIdx = logFile.Chunks.Count - 1;
 
-				// Create the new stream
-				return new ResponseStream(this, logFile, offset, length);
+					// Clamp the length of the request
+					ILogChunk lastChunk = logFile.Chunks[lastChunkIdx];
+					if (length > lastChunk.Offset)
+					{
+						long lastChunkLength = lastChunk.Length;
+						if (lastChunkLength <= 0)
+						{
+							LogChunkData lastChunkData = await ReadChunkAsync(logFile, lastChunkIdx);
+							lastChunkLength = lastChunkData.Length;
+						}
+						length = Math.Min(length, (lastChunk.Offset + lastChunkLength) - offset);
+					}
+
+					// Create the new stream
+					return new ResponseStream(this, logFile, offset, length);
+				}
 			}
 		}
 
 		/// <summary>
 		/// Helper method for catching exceptions in <see cref="LogText.ConvertToPlainText(ReadOnlySpan{Byte}, Byte[], Int32)"/>
 		/// </summary>
-		public static int GuardedConvertToPlainText(ReadOnlySpan<byte> input, byte[] output, int outputOffset, ILogger Logger)
+		public static int GuardedConvertToPlainText(ReadOnlySpan<byte> input, byte[] output, int outputOffset, ILogger logger)
 		{
 			try
 			{
 				return LogText.ConvertToPlainText(input, output, outputOffset);
 			}
-			catch (Exception Ex)
+			catch (Exception ex)
 			{
-				Logger.LogWarning(Ex, "Unable to convert log line to plain text: {Line}", Encoding.UTF8.GetString(input));
+				logger.LogWarning(ex, "Unable to convert log line to plain text: {Line}", Encoding.UTF8.GetString(input));
 				output[outputOffset] = (byte)'\n';
 				return outputOffset + 1;
 			}
 		}
 
 		/// <inheritdoc/>
-		public async Task CopyPlainTextStreamAsync(ILogFile logFile, long offset, long length, Stream outputStream)
+		public async Task CopyPlainTextStreamAsync(ILogFile logFile, Stream outputStream, CancellationToken cancellationToken)
 		{
-			using (Stream stream = await OpenRawStreamAsync(logFile, 0, Int64.MaxValue))
+			long offset = 0;
+			long length = Int64.MaxValue;
+
+			using (Stream stream = await OpenRawStreamAsync(logFile, 0, Int64.MaxValue, cancellationToken))
 			{
 				byte[] readBuffer = new byte[4096];
 				int readBufferLength = 0;
@@ -910,7 +1169,7 @@ namespace Horde.Build.Logs
 				while (length > 0)
 				{
 					// Add more data to the buffer
-					int readBytes = await stream.ReadAsync(readBuffer.AsMemory(readBufferLength, readBuffer.Length - readBufferLength));
+					int readBytes = await stream.ReadAsync(readBuffer.AsMemory(readBufferLength, readBuffer.Length - readBufferLength), cancellationToken);
 					readBufferLength += readBytes;
 
 					// Copy as many lines as possible to the output
@@ -930,7 +1189,7 @@ namespace Horde.Build.Logs
 						if (offset < writeBufferLength)
 						{
 							int writeLength = (int)Math.Min((long)writeBufferLength - offset, length);
-							await outputStream.WriteAsync(writeBuffer.AsMemory((int)offset, writeLength));
+							await outputStream.WriteAsync(writeBuffer.AsMemory((int)offset, writeLength), cancellationToken);
 							length -= writeLength;
 						}
 						offset = Math.Max(offset - writeBufferLength, 0);
@@ -958,27 +1217,64 @@ namespace Horde.Build.Logs
 			}
 		}
 
-		/// <inheritdoc/>
-		public async Task<(int, long)> GetLineOffsetAsync(ILogFile logFile, int lineIdx)
+		async Task<TreeReader> GetTreeReaderAsync(CancellationToken cancellationToken)
 		{
-			int chunkIdx = logFile.Chunks.GetChunkForLine(lineIdx);
+			IStorageClient store = await _storageService.GetClientAsync(Namespace.Logs, cancellationToken);
+			return new TreeReader(store, _logFileCache, _logger);
+		}
 
-			ILogChunk chunk = logFile.Chunks[chunkIdx];
-			LogChunkData chunkData = await ReadChunkAsync(logFile, chunkIdx);
-
-			if (lineIdx < chunk.LineIndex)
+		/// <inheritdoc/>
+		public async Task<(int, long)> GetLineOffsetAsync(ILogFile logFile, int lineIdx, CancellationToken cancellationToken)
+		{
+			if (_settings.Value.FeatureFlags.EnableNewLogger)
 			{
-				lineIdx = chunk.LineIndex;
-			}
+				TreeReader reader = await GetTreeReaderAsync(cancellationToken);
 
-			int maxLineIndex = chunk.LineIndex + chunkData.LineCount;
-			if (lineIdx >= maxLineIndex)
+				LogNode? root = await reader.TryReadNodeAsync<LogNode>(logFile.RefName, cancellationToken: cancellationToken);
+				if (root == null)
+				{
+					return (0, 0);
+				}
+
+				int chunkIdx = root.TextChunkRefs.GetChunkForLine(lineIdx);
+				LogChunkRef chunk = root.TextChunkRefs[chunkIdx];
+				LogChunkNode chunkData = await chunk.ExpandAsync(reader, cancellationToken);
+
+				if (lineIdx < chunk.LineIndex)
+				{
+					lineIdx = chunk.LineIndex;
+				}
+
+				int maxLineIndex = chunk.LineIndex + chunkData.LineCount;
+				if (lineIdx >= maxLineIndex)
+				{
+					lineIdx = maxLineIndex;
+				}
+
+				long offset = chunk.Offset + chunkData.LineOffsets[lineIdx - chunk.LineIndex];
+				return (lineIdx, offset);
+			}
+			else
 			{
-				lineIdx = maxLineIndex;
-			}
+				int chunkIdx = logFile.Chunks.GetChunkForLine(lineIdx);
 
-			long offset = chunk.Offset + chunkData.GetLineOffsetWithinChunk(lineIdx - chunk.LineIndex);
-			return (lineIdx, offset);
+				ILogChunk chunk = logFile.Chunks[chunkIdx];
+				LogChunkData chunkData = await ReadChunkAsync(logFile, chunkIdx);
+
+				if (lineIdx < chunk.LineIndex)
+				{
+					lineIdx = chunk.LineIndex;
+				}
+
+				int maxLineIndex = chunk.LineIndex + chunkData.LineCount;
+				if (lineIdx >= maxLineIndex)
+				{
+					lineIdx = maxLineIndex;
+				}
+
+				long offset = chunk.Offset + chunkData.GetLineOffsetWithinChunk(lineIdx - chunk.LineIndex);
+				return (lineIdx, offset);
+			}
 		}
 
 		/// <summary>
@@ -987,6 +1283,8 @@ namespace Horde.Build.Logs
 		/// <param name="stoppingToken">Cancellation token</param>
 		async ValueTask TickAsync(CancellationToken stoppingToken)
 		{
+			using IScope scope = GlobalTracer.Instance.BuildSpan("LogFileService.TickAsync").StartActive();
+			
 			lock (_writeLock)
 			{
 				try
@@ -998,18 +1296,21 @@ namespace Horde.Build.Logs
 					_logger.LogError(ex, "Exception while waiting for write tasks to complete");
 				}
 			}
-			await IncrementalFlush();
+			await IncrementalFlushAsync(stoppingToken);
 		}
 				
 		/// <summary>
 		/// Flushes complete chunks to the storage provider
 		/// </summary>
 		/// <returns>Async task</returns>
-		private async Task IncrementalFlush()
+		private async Task IncrementalFlushAsync(CancellationToken cancellationToken)
 		{
+			using IScope scope = GlobalTracer.Instance.BuildSpan("LogFileService.IncrementalFlush").StartActive();
+			
 			// Get all the chunks older than 20 minutes
 			List<(LogId, long)> flushChunks = await _builder.TouchChunksAsync(TimeSpan.FromMinutes(10.0));
-			_logger.LogDebug("Performing incremental flush of log builder ({NumChunks} chunks)", flushChunks.Count);
+
+			scope.Span.SetTag("numChunks", flushChunks.Count);
 
 			// Mark them all as complete
 			foreach ((LogId logId, long offset) in flushChunks)
@@ -1017,8 +1318,8 @@ namespace Horde.Build.Logs
 				await _builder.CompleteChunkAsync(logId, offset);
 			}
 
-			// Add tasks for flushing all the chunks
-			WriteCompleteChunks(flushChunks, true);
+			// Flush all the chunks and await completion instead of running them async
+			await WriteCompleteChunksV2Async(flushChunks, true, cancellationToken);
 		}
 
 		/// <summary>
@@ -1027,6 +1328,7 @@ namespace Horde.Build.Logs
 		/// <returns>Async task</returns>
 		public async Task FlushAsync()
 		{
+			using IScope scope = GlobalTracer.Instance.BuildSpan("LogFileService.FlushAsync").StartActive();
 			_logger.LogInformation("Forcing flush of pending log chunks...");
 
 			// Mark everything in the cache as complete
@@ -1067,9 +1369,12 @@ namespace Horde.Build.Logs
 		/// Adds tasks for writing a list of complete chunks
 		/// </summary>
 		/// <param name="chunksToWrite">List of chunks to write</param>
-		/// <param name="bCreateIndex">Create an index for the log</param>
-		private void WriteCompleteChunks(List<(LogId, long)> chunksToWrite, bool bCreateIndex)
+		/// <param name="createIndex">Create an index for the log</param>
+		private void WriteCompleteChunks(List<(LogId, long)> chunksToWrite, bool createIndex)
 		{
+			using IScope scope = GlobalTracer.Instance.BuildSpan("LogFileService.WriteCompleteChunks").StartActive();
+			int numTasksCreated = 0;
+			
 			foreach (IGrouping<LogId, long> group in chunksToWrite.GroupBy(x => x.Item1, x => x.Item2))
 			{
 				LogId logId = group.Key;
@@ -1090,13 +1395,60 @@ namespace Horde.Build.Logs
 				// Create the write task
 				if (offsets.Count > 0)
 				{
-					Task task = Task.Run(() => WriteCompleteChunksForLogAsync(logId, offsets, bCreateIndex));
+					Task task = Task.Run(() => WriteCompleteChunksForLogAsync(logId, offsets, createIndex));
+					numTasksCreated++;
 					lock (_writeLock)
 					{
 						_writeTasks.Add(task);
 					}
 				}
 			}
+
+			scope.Span.SetTag("numWriteTasksCreated", numTasksCreated);
+			_logger.LogInformation("{NumWriteTasksCreated} write tasks created", numTasksCreated);
+		}
+		
+		/// <summary>
+		/// Writes list of complete chunks
+		/// </summary>
+		/// <param name="chunksToWrite">List of chunks to write</param>
+		/// <param name="createIndex">Create an index for the log</param>
+		/// <param name="cancellationToken">Cancellation token</param>
+		private async Task WriteCompleteChunksV2Async(List<(LogId, long)> chunksToWrite, bool createIndex, CancellationToken cancellationToken)
+		{
+			using IScope scope = GlobalTracer.Instance.BuildSpan("LogFileService.WriteCompleteChunksV2Async").StartActive();
+			
+			HashSet<(LogId, long)> writeChunks = new ();
+			List<(LogId, List<long>)> offsetsToWrite = new();
+			
+			foreach (IGrouping<LogId, long> group in chunksToWrite.GroupBy(x => x.Item1, x => x.Item2))
+			{
+				LogId logId = group.Key;
+
+				// Find offsets of new chunks to write
+				List<long> offsets = new ();
+				foreach (long offset in group.OrderBy(x => x))
+				{
+					if (writeChunks.Add((logId, offset)))
+					{
+						offsets.Add(offset);
+					}
+				}
+				
+				// Create the write task
+				if (offsets.Count > 0)
+				{
+					offsetsToWrite.Add((logId, offsets));
+				}
+			}
+
+			scope.Span.SetTag("numOffsetsToWrite", offsetsToWrite.Count);
+			ParallelOptions opts = new() { MaxDegreeOfParallelism = MaxConcurrentChunkWrites, CancellationToken = cancellationToken };
+			await Parallel.ForEachAsync(offsetsToWrite, opts, async (x, innerCt) =>
+			{
+				(LogId logId, List<long> offsets) = x;
+				await WriteCompleteChunksForLogAsync(logId, offsets, createIndex, innerCt);
+			});
 		}
 
 		/// <summary>
@@ -1104,14 +1456,15 @@ namespace Horde.Build.Logs
 		/// </summary>
 		/// <param name="logId">Log file to update</param>
 		/// <param name="offsets">Chunks to write</param>
-		/// <param name="bCreateIndex">Whether to create the index for this log</param>
+		/// <param name="createIndex">Whether to create the index for this log</param>
+		/// <param name="cancellationToken">Cancellation token for the call</param>
 		/// <returns>Async task</returns>
-		private async Task<ILogFile?> WriteCompleteChunksForLogAsync(LogId logId, List<long> offsets, bool bCreateIndex)
+		private async Task<ILogFile?> WriteCompleteChunksForLogAsync(LogId logId, List<long> offsets, bool createIndex, CancellationToken cancellationToken = default)
 		{
-			ILogFile? logFile = await _logFiles.GetLogFileAsync(logId);
+			ILogFile? logFile = await _logFiles.GetLogFileAsync(logId, cancellationToken);
 			if(logFile != null)
 			{
-				logFile = await WriteCompleteChunksForLogAsync(logFile, offsets, bCreateIndex);
+				logFile = await WriteCompleteChunksForLogAsync(logFile, offsets, createIndex, cancellationToken);
 			}
 			return logFile;
 		}
@@ -1121,14 +1474,15 @@ namespace Horde.Build.Logs
 		/// </summary>
 		/// <param name="logFileInterface">Log file to update</param>
 		/// <param name="offsets">Chunks to write</param>
-		/// <param name="bCreateIndex">Whether to create the index for this log</param>
+		/// <param name="createIndex">Whether to create the index for this log</param>
+		/// <param name="cancellationToken">Cancellation token for the call</param>
 		/// <returns>Async task</returns>
-		private async Task<ILogFile?> WriteCompleteChunksForLogAsync(ILogFile logFileInterface, List<long> offsets, bool bCreateIndex)
+		private async Task<ILogFile?> WriteCompleteChunksForLogAsync(ILogFile logFileInterface, List<long> offsets, bool createIndex, CancellationToken cancellationToken = default)
 		{
 			using IScope scope = GlobalTracer.Instance.BuildSpan("WriteCompleteChunksForLogAsync").StartActive();
 			scope.Span.SetTag("LogId", logFileInterface.Id.ToString());
 			scope.Span.SetTag("NumOffsets", offsets.Count);
-			scope.Span.SetTag("CreateIndex", bCreateIndex);
+			scope.Span.SetTag("CreateIndex", createIndex);
 			
 			// Write the data to the storage provider
 			List<Task<LogChunkData?>> chunkWriteTasks = new List<Task<LogChunkData?>>();
@@ -1142,6 +1496,8 @@ namespace Horde.Build.Logs
 					chunkWriteTasks.Add(Task.Run(() => WriteChunkAsync(logFileInterface.Id, offset, lineIndex)));
 				}
 			}
+			
+			scope.Span.SetTag("NumWriteTasks", chunkWriteTasks.Count);
 
 			// Wait for the tasks to complete, periodically updating the log file object
 			ILogFile? logFile = logFileInterface;
@@ -1150,7 +1506,7 @@ namespace Horde.Build.Logs
 				// Wait for all tasks to be complete OR (any task has completed AND 30 seconds has elapsed)
 				Task allCompleteTask = Task.WhenAll(chunkWriteTasks);
 				Task anyCompleteTask = Task.WhenAny(chunkWriteTasks);
-				await Task.WhenAny(allCompleteTask, Task.WhenAll(anyCompleteTask, Task.Delay(TimeSpan.FromSeconds(30.0))));
+				await Task.WhenAny(allCompleteTask, Task.WhenAll(anyCompleteTask, Task.Delay(TimeSpan.FromSeconds(30.0), cancellationToken)));
 
 				// Update the log file with the written chunks
 				List<LogChunkData?> writtenChunks = chunkWriteTasks.RemoveCompleteTasks();
@@ -1176,7 +1532,7 @@ namespace Horde.Build.Logs
 					}
 
 					// Try to apply the updates
-					ILogFile? newLogFile = await _logFiles.TryCompleteChunksAsync(logFile, updates);
+					ILogFile? newLogFile = await _logFiles.TryCompleteChunksAsync(logFile, updates, cancellationToken);
 					if (newLogFile != null)
 					{
 						logFile = newLogFile;
@@ -1184,16 +1540,16 @@ namespace Horde.Build.Logs
 					}
 
 					// Update the log file
-					logFile = await GetLogFileAsync(logFile.Id);
+					logFile = await GetLogFileAsync(logFile.Id, cancellationToken);
 				}
 			}
 
 			// Create the index if necessary
-			if (bCreateIndex && logFile != null)
+			if (createIndex && logFile != null)
 			{
 				try
 				{
-					logFile = await CreateIndexAsync(logFile);
+					logFile = await CreateIndexAsync(logFile, cancellationToken);
 				}
 				catch(Exception ex)
 				{
@@ -1208,8 +1564,9 @@ namespace Horde.Build.Logs
 		/// Creates an index for the given log file
 		/// </summary>
 		/// <param name="logFile">The log file object</param>
+		/// <param name="cancellationToken">Cancellation token for the call</param>
 		/// <returns>Updated log file</returns>
-		private async Task<ILogFile?> CreateIndexAsync(ILogFile logFile)
+		private async Task<ILogFile?> CreateIndexAsync(ILogFile logFile, CancellationToken cancellationToken)
 		{
 			if(logFile.Chunks.Count == 0)
 			{
@@ -1293,12 +1650,12 @@ namespace Horde.Build.Logs
 
 				while(newLogFile != null && newLength > (newLogFile.IndexLength ?? 0))
 				{
-					newLogFile = await _logFiles.TryUpdateIndexAsync(newLogFile, newLength);
+					newLogFile = await _logFiles.TryUpdateIndexAsync(newLogFile, newLength, cancellationToken);
 					if(newLogFile != null)
 					{
 						break;
 					}
-					newLogFile = await _logFiles.GetLogFileAsync(logFile.Id);
+					newLogFile = await _logFiles.GetLogFileAsync(logFile.Id, cancellationToken);
 				}
 			}
 			return newLogFile;
@@ -1325,10 +1682,7 @@ namespace Horde.Build.Logs
 				}
 
 				// Otherwise go directly to the log storage
-				if (chunkData == null)
-				{
-					chunkData = await _storage.ReadChunkAsync(logFile.Id, chunk.Offset, chunk.LineIndex);
-				}
+				chunkData ??= await _storage.ReadChunkAsync(logFile.Id, chunk.Offset, chunk.LineIndex);
 			}
 			catch (Exception ex)
 			{
@@ -1347,9 +1701,9 @@ namespace Horde.Build.Logs
 				{
 					chunkData = await RepairChunkDataAsync(logFile, chunkIdx, chunkData, chunk.Length, logFile.MaxLineIndex.Value - chunk.LineIndex);
 				}
-				else if(chunkData == null)
+				else
 				{
-					chunkData = await RepairChunkDataAsync(logFile, chunkIdx, chunkData, 1024, 1);
+					chunkData ??= await RepairChunkDataAsync(logFile, chunkIdx, chunkData, 1024, 1);
 				}
 			}
 
@@ -1502,7 +1856,7 @@ namespace Horde.Build.Logs
 		}
 
 		/// <inheritdoc/>
-		public async Task<List<int>> SearchLogDataAsync(ILogFile logFile, string text, int firstLine, int count, LogSearchStats searchStats)
+		public async Task<List<int>> SearchLogDataAsync(ILogFile logFile, string text, int firstLine, int count, SearchStats searchStats, CancellationToken cancellationToken)
 		{
 			Stopwatch timer = Stopwatch.StartNew();
 
@@ -1514,7 +1868,11 @@ namespace Horde.Build.Logs
 			List<int> results = new List<int>();
 			if (count > 0)
 			{
-				IAsyncEnumerator<int> enumerator = SearchLogDataInternalAsync(logFile, text, firstLine, searchStats).GetAsyncEnumerator();
+				IAsyncEnumerable<int> enumerable =_settings.Value.FeatureFlags.EnableNewLogger ?
+						SearchLogDataInternalNewAsync(logFile, text, firstLine, searchStats, cancellationToken) :
+						SearchLogDataInternalAsync(logFile, text, firstLine, searchStats);
+
+				await using IAsyncEnumerator<int> enumerator = enumerable.GetAsyncEnumerator(cancellationToken);
 				while (await enumerator.MoveNextAsync() && results.Count < count)
 				{
 					results.Add(enumerator.Current);
@@ -1525,8 +1883,87 @@ namespace Horde.Build.Logs
 			return results;
 		}
 
-		/// <inheritdoc/>
-		public async IAsyncEnumerable<int> SearchLogDataInternalAsync(ILogFile logFile, string text, int firstLine, LogSearchStats searchStats)
+		async IAsyncEnumerable<int> SearchLogDataInternalNewAsync(ILogFile logFile, string text, int firstLine, SearchStats searchStats, [EnumeratorCancellation] CancellationToken cancellationToken)
+		{
+			SearchTerm searchText = new SearchTerm(text);
+			TreeReader reader = await GetTreeReaderAsync(cancellationToken);
+
+			// Search the index
+			if (logFile.LineCount > 0)
+			{
+				LogNode? root = await reader.ReadNodeAsync<LogNode>(logFile.RefName, cancellationToken: cancellationToken);
+				if(root != null)
+				{
+					LogIndexNode index = await root.IndexRef.ExpandAsync(reader, cancellationToken);
+					await foreach (int lineIdx in index.Search(reader, firstLine, searchText, searchStats, cancellationToken))
+					{
+						yield return lineIdx;
+					}
+					if (root.Complete)
+					{
+						yield break;
+					}
+					firstLine = root.LineCount;
+				}
+			}
+
+			// Search any tail data we have
+			for (; ; )
+			{
+				Utf8String[] lines = await ReadTailAsync(logFile, firstLine, cancellationToken);
+				if (lines.Length == 0)
+				{
+					break;
+				}
+
+				for (int idx = 0; idx < lines.Length; idx++)
+				{
+					if (SearchTerm.FindNextOcurrence(lines[idx].Span, 0, searchText) != -1)
+					{
+						yield return firstLine + idx;
+					}
+				}
+
+				firstLine += lines.Length;
+			}
+		}
+
+		async Task<Utf8String[]> ReadTailAsync(ILogFile logFile, int index, CancellationToken cancellationToken)
+		{
+			const int BatchSize = 128;
+
+			string cacheKey = $"{logFile.Id}@{index}";
+			if (_logFileCache.TryGetValue(cacheKey, out Utf8String[]? lines))
+			{
+				return lines!;
+			}
+
+			lines = (await _logTailService.ReadAsync(logFile.Id, index, BatchSize)).ToArray();
+			if (logFile.Type == LogType.Json)
+			{
+				LogChunkBuilder builder = new LogChunkBuilder(lines.Sum(x => x.Length));
+				foreach (Utf8String line in lines)
+				{
+					builder.AppendJsonAsPlainText(line.Span, _logger);
+				}
+				lines = lines.ToArray();
+			}
+
+			if (lines.Length == BatchSize)
+			{
+				int length = lines.Sum(x => x.Length);
+				using (ICacheEntry entry = _logFileCache.CreateEntry(cacheKey))
+				{
+					entry.SetSlidingExpiration(TimeSpan.FromMinutes(1.0));
+					entry.SetSize(length);
+					entry.SetValue(lines);
+				}
+			}
+
+			return lines;
+		}
+
+		async IAsyncEnumerable<int> SearchLogDataInternalAsync(ILogFile logFile, string text, int firstLine, SearchStats searchStats)
 		{
 			SearchText searchText = new SearchText(text);
 

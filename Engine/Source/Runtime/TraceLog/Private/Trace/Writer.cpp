@@ -74,9 +74,9 @@ UE_TRACE_EVENT_END()
 
 
 ////////////////////////////////////////////////////////////////////////////////
-static bool						GInitialized;		// = false;
+static volatile bool			GInitialized;		// = false;
 FStatistics						GTraceStatistics;	// = {};
-uint64							GStartCycle;		// = 0;
+TRACELOG_API uint64				GStartCycle;		// = 0;
 TRACELOG_API uint32 volatile	GLogSerial;			// = 0;
 // Counter of calls to Writer_WorkerUpdate to enable regular flushing of output buffers
 static uint32					GUpdateCounter;		// = 0;
@@ -110,7 +110,7 @@ private:
 ////////////////////////////////////////////////////////////////////////////////
 FWriteTlsContext::~FWriteTlsContext()
 {
-	if (GInitialized)
+	if (AtomicLoadRelaxed(&GInitialized))
 	{
 		Writer_EndThreadBuffer();
 	}
@@ -261,7 +261,7 @@ void Writer_MemoryFree(void* Address, uint32 Size)
 
 ////////////////////////////////////////////////////////////////////////////////
 static UPTRINT					GDataHandle;		// = 0
-UPTRINT							GPendingDataHandle;	// = 0
+static volatile UPTRINT			GPendingDataHandle;	// = 0
 
 ////////////////////////////////////////////////////////////////////////////////
 #if TRACE_PRIVATE_BUFFER_SEND
@@ -466,37 +466,45 @@ static void Writer_Close()
 ////////////////////////////////////////////////////////////////////////////////
 static bool Writer_UpdateConnection()
 {
-	if (!GPendingDataHandle)
+	UPTRINT PendingDataHandle = AtomicLoadRelaxed(&GPendingDataHandle);
+
+	if (!PendingDataHandle)
 	{
 		return false;
 	}
 
 	// Is this a close request? So that we capture some of the events around
 	// the closure we will add some inertia before enacting the close.
-	static const uint32 CloseInertia = 2;
-	if (GPendingDataHandle >= (~0ull - CloseInertia))
+	static int32 CloseInertia = 0;
+	if (PendingDataHandle == ~UPTRINT(0))
 	{
-		--GPendingDataHandle;
+		if (CloseInertia <= 0)
+			CloseInertia = 2;
 
-		if (GPendingDataHandle == (~0ull - CloseInertia))
+		--CloseInertia;
+		if (CloseInertia <= 0)
 		{
 			Writer_Close();
-			GPendingDataHandle = 0;
+			AtomicStoreRelaxed(&GPendingDataHandle, UPTRINT(0));
 		}
 
 		return true;
 	}
 
+	AtomicStoreRelaxed(&GPendingDataHandle, UPTRINT(0));
+
+	// Extract send flags
+	uint32 SendFlags = uint32(PendingDataHandle >> 48ull);
+	PendingDataHandle &= 0x0000'ffff'ffff'ffffull;
+
 	// Reject the pending connection if we've already got a connection
 	if (GDataHandle)
 	{
-		IoClose(GPendingDataHandle);
-		GPendingDataHandle = 0;
+		IoClose(PendingDataHandle);
 		return false;
 	}
 
-	GDataHandle = GPendingDataHandle;
-	GPendingDataHandle = 0;
+	GDataHandle = PendingDataHandle;
 	if (!Writer_SessionPrologue())
 	{
 		return false;
@@ -518,7 +526,10 @@ static bool Writer_UpdateConnection()
 	Writer_CallbackOnConnect();
 
 	// Finally write the events in the tail buffer
-	Writer_TailOnConnect();
+	if ((SendFlags & FSendFlags::ExcludeTail) == 0)
+	{
+		Writer_TailOnConnect();
+	}
 
 	// See Writer_SendSync() for details.
 	GSyncPacketCountdown = GNumSyncPackets;
@@ -601,7 +612,7 @@ void Writer_CallbackOnConnect()
 static UPTRINT			GWorkerThread;		// = 0;
 static volatile bool	GWorkerThreadQuit;	// = false;
 static uint32			GSleepTimeInMS = 17;
-static volatile unsigned int	GUpdateInProgress = 1;	// Don't allow updates until initialized
+static volatile uint32	GUpdateInProgress = 1;	// Don't allow updates until initialized
 
 ////////////////////////////////////////////////////////////////////////////////
 static void Writer_WorkerUpdateInternal()
@@ -640,7 +651,7 @@ static void Writer_WorkerThread()
 {
 	ThreadRegister(TEXT("Trace"), 0, INT_MAX);
 
-	while (!GWorkerThreadQuit)
+	while (!AtomicLoadRelaxed(&GWorkerThreadQuit))
 	{
 		Writer_WorkerUpdate();
 
@@ -667,7 +678,8 @@ static void Writer_WorkerJoin()
 		return;
 	}
 
-	GWorkerThreadQuit = true;
+	AtomicStoreRelaxed(&GWorkerThreadQuit, true);
+
 	ThreadJoin(GWorkerThread);
 	ThreadDestroy(GWorkerThread);
 
@@ -681,7 +693,7 @@ static void Writer_WorkerJoin()
 ////////////////////////////////////////////////////////////////////////////////
 static void Writer_InternalInitializeImpl()
 {
-	if (GInitialized)
+	if (AtomicLoadRelaxed(&GInitialized))
 	{
 		return;
 	}
@@ -692,7 +704,7 @@ static void Writer_InternalInitializeImpl()
 	Writer_InitializePool();
 	Writer_InitializeControl();
 
-	GInitialized = true;
+	AtomicStoreRelaxed(&GInitialized, true);
 
 	UE_TRACE_LOG($Trace, NewTrace, TraceLogChannel)
 		<< NewTrace.StartCycle(GStartCycle)
@@ -704,7 +716,7 @@ static void Writer_InternalInitializeImpl()
 ////////////////////////////////////////////////////////////////////////////////
 static void Writer_InternalShutdown()
 {
-	if (!GInitialized)
+	if (!AtomicLoadRelaxed(&GInitialized))
 	{
 		return;
 	}
@@ -733,7 +745,7 @@ static void Writer_InternalShutdown()
 	}
 #endif
 
-	GInitialized = false;
+	AtomicStoreRelaxed(&GInitialized, false);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -741,25 +753,27 @@ void Writer_InternalInitialize()
 {
 	using namespace Private;
 
-	if (!GInitialized)
+	if (AtomicLoadRelaxed(&GInitialized))
 	{
-		static struct FInitializer
-		{
-			FInitializer()
-			{
-				Writer_InternalInitializeImpl();
-			}
-			~FInitializer()
-			{
-				/* We'll not shut anything down here so we can hopefully capture
-				 * any subsequent events. However, we will shutdown the worker
-				 * thread and leave it for something else to call update() (mem
-				 * tracing at time of writing). Windows will have already done
-				 * this implicitly in ExitProcess() anyway. */
-				Writer_WorkerJoin();
-			}
-		} Initializer;
+		return;
 	}
+
+	static struct FInitializer
+	{
+		FInitializer()
+		{
+			Writer_InternalInitializeImpl();
+		}
+		~FInitializer()
+		{
+			/* We'll not shut anything down here so we can hopefully capture
+			 * any subsequent events. However, we will shutdown the worker
+			 * thread and leave it for something else to call update() (mem
+			 * tracing at time of writing). Windows will have already done
+			 * this implicitly in ExitProcess() anyway. */
+			Writer_WorkerJoin();
+		}
+	} Initializer;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -786,7 +800,7 @@ void Writer_Initialize(const FInitializeDesc& Desc)
 	GOnConnection = Desc.OnConnectionFunc;
 
 	// Allow the worker thread to start updating 
-	GUpdateInProgress = 0;
+	AtomicStoreRelease(&GUpdateInProgress, uint32(0));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -805,9 +819,28 @@ void Writer_Update()
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-bool Writer_SendTo(const ANSICHAR* Host, uint32 Port)
+static UPTRINT Writer_PackSendFlags(UPTRINT DataHandle, uint32 Flags)
 {
-	if (GPendingDataHandle || GDataHandle)
+	// Passing ownership of IO to the worker thread via a single 64 bit value is
+	// convenient and saves a lot of machinery for something that mostly never
+	// happens, or perhaps just once or twice. Here we make the assumption that
+	// our supported platforms' handles are low integer file descriptor IDs or
+	// addresses and thus we have some most-significant bits to use for flags.
+
+	// Guard against the assumption being wrong.
+	if (DataHandle & 0xffff'0000'0000'0000ull)
+	{
+		IoClose(DataHandle);
+		return 0;
+	}
+
+	return DataHandle | (UPTRINT(Flags) << 48ull);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+bool Writer_SendTo(const ANSICHAR* Host, uint32 Flags, uint32 Port)
+{
+	if (AtomicLoadRelaxed(&GPendingDataHandle))
 	{
 		return false;
 	}
@@ -821,14 +854,20 @@ bool Writer_SendTo(const ANSICHAR* Host, uint32 Port)
 		return false;
 	}
 
-	GPendingDataHandle = DataHandle;
+	DataHandle = Writer_PackSendFlags(DataHandle, Flags);
+	if (!DataHandle)
+	{
+		return false;
+	}
+
+	AtomicStoreRelaxed(&GPendingDataHandle, DataHandle);
 	return true;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-bool Writer_WriteTo(const ANSICHAR* Path)
+bool Writer_WriteTo(const ANSICHAR* Path, uint32 Flags)
 {
-	if (GPendingDataHandle || GDataHandle)
+	if (AtomicLoadRelaxed(&GPendingDataHandle))
 	{
 		return false;
 	}
@@ -841,7 +880,13 @@ bool Writer_WriteTo(const ANSICHAR* Path)
 		return false;
 	}
 
-	GPendingDataHandle = DataHandle;
+	DataHandle = Writer_PackSendFlags(DataHandle, Flags);
+	if (!DataHandle)
+	{
+		return false;
+	}
+
+	AtomicStoreRelaxed(&GPendingDataHandle, DataHandle);
 	return true;
 }
 
@@ -914,7 +959,26 @@ private:
 };
 
 ////////////////////////////////////////////////////////////////////////////////
-bool Writer_WriteSnapshotTo(const ANSICHAR* Path)
+struct FSnapshotTarget
+{
+	enum EType { FileTarget, HostTarget };
+	EType Type;
+	union
+	{
+		 struct
+		 {
+			 const ANSICHAR* Path;
+		 } File;
+		 struct
+		 {
+			 const ANSICHAR* Host;
+			 uint32 Port;
+		 } Host;
+	};
+};
+
+////////////////////////////////////////////////////////////////////////////////
+bool Writer_WriteSnapshot(const FSnapshotTarget& Target)
 {
 	if (!Writer_IsTailing())
 	{
@@ -951,8 +1015,24 @@ bool Writer_WriteSnapshotTo(const ANSICHAR* Path)
 		TStashGlobal SyncPacketCountdown(GSyncPacketCountdown, GNumSyncPackets);
 		TStashGlobal TraceStatistics(GTraceStatistics);
 
-		// Open the snapshot file and write the file header
-		GDataHandle = FileOpen(Path);
+		if (Target.Type == FSnapshotTarget::EType::FileTarget)
+		{
+			// Open the snapshot file 
+			GDataHandle = FileOpen(Target.File.Path);
+		}
+		else
+		{
+			// Open the snapshot connection and write 
+			const uint32 Port = Target.Host.Port ? Target.Host.Port : 1981;
+			GDataHandle = TcpSocketConnect(Target.Host.Host, uint16(Port));
+			if (!GDataHandle)
+			{
+				return false;
+			}
+			GDataHandle = Writer_PackSendFlags(GDataHandle, 0);
+		}
+
+		// Write the file header
 		if (!GDataHandle || !Writer_SessionPrologue())
 		{
 			return false;
@@ -983,7 +1063,26 @@ bool Writer_WriteSnapshotTo(const ANSICHAR* Path)
 
 	return true;
 }
+	
+////////////////////////////////////////////////////////////////////////////////
+bool Writer_WriteSnapshotTo(const ANSICHAR* Path)
+{
+	FSnapshotTarget Target;
+	Target.Type = FSnapshotTarget::EType::FileTarget;
+	Target.File.Path = Path;
+	return Writer_WriteSnapshot(Target);
+}
 
+////////////////////////////////////////////////////////////////////////////////
+bool Writer_SendSnapshotTo(const ANSICHAR* Host, uint32 Port)
+{
+	FSnapshotTarget Target;
+	Target.Type = FSnapshotTarget::EType::HostTarget;
+	Target.Host.Host = Host;
+	Target.Host.Port = Port;
+	return Writer_WriteSnapshot(Target);
+}
+	
 ////////////////////////////////////////////////////////////////////////////////
 bool Writer_IsTracing()
 {
@@ -998,7 +1097,7 @@ bool Writer_Stop()
 		return false;
 	}
 
-	GPendingDataHandle = ~UPTRINT(0);
+	AtomicStoreRelaxed(&GPendingDataHandle, ~UPTRINT(0));
 	return true;
 }
 

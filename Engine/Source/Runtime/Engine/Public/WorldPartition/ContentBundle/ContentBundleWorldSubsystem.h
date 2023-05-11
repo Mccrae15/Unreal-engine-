@@ -14,6 +14,7 @@ class UContentBundleDescriptor;
 class FContentBundleClient;
 class FContentBundleEditor;
 class UWorldPartition;
+class UCanvas;
 
 #if WITH_EDITOR
 class URuntimeHashExternalStreamingObjectBase;
@@ -25,23 +26,37 @@ class ENGINE_API UContentBundleManager : public UObject
 {
 	GENERATED_BODY()
 
+	friend class FContentBundleClient;
+
 public:
 	UContentBundleManager();
 
 	void Initialize();
 	void Deinitialize();
 
+	bool CanInject() const;
+
 	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
 
 #if WITH_EDITOR
 	bool GetEditorContentBundle(TArray<TSharedPtr<FContentBundleEditor>>& OutContentBundles);
 	TSharedPtr<FContentBundleEditor> GetEditorContentBundle(const UContentBundleDescriptor* Descriptor, const UWorld* ContentBundleWorld) const;
+	TSharedPtr<FContentBundleEditor> GetEditorContentBundle(const FGuid& ContentBundleGuid) const;
 
 	UContentBundleDuplicateForPIEHelper* GetPIEDuplicateHelper() const { return PIEDuplicateHelper; }
 #endif
 
+	const FContentBundleBase* GetContentBundle(const UWorld* InWorld, const FGuid& Guid) const;
+	void DrawContentBundlesStatus(const UWorld* InWorld, UCanvas* Canvas, FVector2D& Offset) const;
+
 private:
-	uint32 GetContentBundleContainerIndex(const UWorld* InjectedWorld);
+#if WITH_EDITOR
+	bool TryInject(FContentBundleClient& Client);
+	void Remove(FContentBundleClient& Client);
+#endif
+
+	uint32 GetContentBundleContainerIndex(const UWorld* InjectedWorld) const;
+	const TUniquePtr<FContentBundleContainer>* GetContentBundleContainer(const UWorld* InjectedWorld) const;
 	TUniquePtr<FContentBundleContainer>* GetContentBundleContainer(const UWorld* InjectedWorld);
 
 	void OnWorldPartitionInitialized(UWorldPartition* WorldPartition);

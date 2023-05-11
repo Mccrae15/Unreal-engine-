@@ -6,9 +6,10 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+// IWYU pragma: begin_keep
 #include "Misc/EnumClassFlags.h"
 #include "UObject/Script.h"
+// IWYU pragma: end_keep
 
 class FObjectInitializer;
 class FReferenceCollector;
@@ -24,9 +25,7 @@ typedef	uint64 ScriptPointerType;
 #error "not supported in UE"
 #endif
 
-#if HACK_HEADER_GENERATOR 
-#define USE_COMPILED_IN_NATIVES	0
-#else
+#ifndef USE_COMPILED_IN_NATIVES
 #define USE_COMPILED_IN_NATIVES	1
 #endif
 
@@ -38,7 +37,7 @@ typedef	uint64 ScriptPointerType;
 #define USTRUCT_ISCHILDOF_STRUCTARRAY 2 // stores an array of parents per struct and uses this to compare - faster than 1 and thread-safe but can have issues with BP reinstancing and hot reload
 
 // USTRUCT_FAST_ISCHILDOF_IMPL sets which implementation of IsChildOf to use.
-#if UE_EDITOR || HACK_HEADER_GENERATOR
+#if UE_EDITOR
 	// On editor, we use the outerwalk implementation because BP reinstancing and hot reload
 	// mess up the struct array
 	#define USTRUCT_FAST_ISCHILDOF_IMPL USTRUCT_ISCHILDOF_OUTERWALK
@@ -64,22 +63,22 @@ enum ELoadFlags
 	LOAD_Verify						= 0x00000010,	///< Only verify existance; don't actually load.
 //	LOAD_Unused						= 0x00000020,	///< Allow plain DLLs.
 //	LOAD_Unused						= 0x00000040
-	LOAD_NoVerify					= 0x00000080,   ///< Don't verify imports yet.
+	LOAD_NoVerify					= 0x00000080,	///< Don't verify imports yet.
 	LOAD_IsVerifying				= 0x00000100,	///< Is verifying imports
 	LOAD_SkipLoadImportedPackages	= 0x00000200,	///< Assume that all import packages are already loaded and don't call LoadPackage when creating imports 
-//	LOAD_Unused						= 0x00000400,
+	LOAD_RegenerateBulkDataGuids	= 0x00000400,	///< BulkData identifiers should be regenerated as they are loaded 
 //	LOAD_Unused						= 0x00000800,
 	LOAD_DisableDependencyPreloading = 0x00001000,	///< Bypass dependency preloading system
-	LOAD_Quiet						= 0x00002000,   ///< No log warnings.
+	LOAD_Quiet						= 0x00002000,	///< No log warnings.
 	LOAD_FindIfFail					= 0x00004000,	///< Tries FindObject if a linker cannot be obtained (e.g. package is currently being compiled)
 	LOAD_MemoryReader				= 0x00008000,	///< Loads the file into memory and serializes from there.
 	LOAD_NoRedirects				= 0x00010000,	///< Never follow redirects when loading objects; redirected loads will fail
 	LOAD_ForDiff					= 0x00020000,	///< Loading for diffing in the editor
-	LOAD_PackageForPIE				= 0x00080000,   ///< This package is being loaded for PIE, it must be flagged as such immediately
-	LOAD_DeferDependencyLoads       = 0x00100000,   ///< Do not load external (blueprint) dependencies (instead, track them for deferred loading)
+	LOAD_PackageForPIE				= 0x00080000,	///< This package is being loaded for PIE, it must be flagged as such immediately
+	LOAD_DeferDependencyLoads       = 0x00100000,	///< Do not load external (blueprint) dependencies (instead, track them for deferred loading)
 	LOAD_ForFileDiff				= 0x00200000,	///< Load the package (not for diffing in the editor), instead verify at the two packages serialized output are the same, if they are not then debug break so that you can get the callstack and object information
 	LOAD_DisableCompileOnLoad		= 0x00400000,	///< Prevent this load call from running compile on load for the loaded blueprint (intentionally not recursive, dependencies will still compile on load)
-	LOAD_DisableEngineVersionChecks = 0x00800000,   ///< Prevent this load call from running engine version checks
+	LOAD_DisableEngineVersionChecks = 0x00800000,	///< Prevent this load call from running engine version checks
 };
 
 /** Flags for saving objects/packages, passed into UPackage::SavePackage() as a uint32 */
@@ -409,7 +408,7 @@ enum EPropertyFlags : uint64
 	CPF_NonNullable						= 0x0000000000001000,	///< Object property can never be null
 	CPF_Transient   					= 0x0000000000002000,	///< Property is transient: shouldn't be saved or loaded, except for Blueprint CDOs.
 	CPF_Config      					= 0x0000000000004000,	///< Property should be loaded/saved as permanent profile.
-	//CPF_								= 0x0000000000008000,	///< 
+	CPF_RequiredParm					= 0x0000000000008000,	///< Parameter must be linked explicitly in blueprint. Leaving the parameter out results in a compile error. 
 	CPF_DisableEditOnInstance			= 0x0000000000010000,	///< Disable editing on an instance of this class
 	CPF_EditConst   					= 0x0000000000020000,	///< Property is uneditable in the editor.
 	CPF_GlobalConfig					= 0x0000000000040000,	///< Load config from base class, not subclass.
@@ -456,7 +455,7 @@ enum EPropertyFlags : uint64
 #define CPF_NativeAccessSpecifiers	(CPF_NativeAccessSpecifierPublic | CPF_NativeAccessSpecifierProtected | CPF_NativeAccessSpecifierPrivate)
 
 /** All parameter flags */
-#define CPF_ParmFlags				(CPF_Parm | CPF_OutParm | CPF_ReturnParm | CPF_ReferenceParm | CPF_ConstParm)
+#define CPF_ParmFlags				(CPF_Parm | CPF_OutParm | CPF_ReturnParm | CPF_RequiredParm | CPF_ReferenceParm | CPF_ConstParm )
 
 /** Flags that are propagated to properties inside containers */
 #define CPF_PropagateToArrayInner	(CPF_ExportObject | CPF_PersistentInstance | CPF_InstancedReference | CPF_ContainsInstancedReference | CPF_Config | CPF_EditConst | CPF_Deprecated | CPF_EditorOnly | CPF_AutoWeak | CPF_UObjectWrapper )
@@ -558,9 +557,9 @@ enum EObjectFlags
 };
 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
-constexpr EObjectFlags RF_InternalPendingKill = RF_PendingKill;
-constexpr EObjectFlags RF_InternalGarbage = RF_Garbage;
-constexpr EObjectFlags RF_InternalMirroredFlags = (EObjectFlags)(RF_PendingKill | RF_Garbage);
+inline constexpr EObjectFlags RF_InternalPendingKill = RF_PendingKill;
+inline constexpr EObjectFlags RF_InternalGarbage = RF_Garbage;
+inline constexpr EObjectFlags RF_InternalMirroredFlags = (EObjectFlags)(RF_PendingKill | RF_Garbage);
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 /** Mask for all object flags */
@@ -586,7 +585,6 @@ enum class EInternalObjectFlags : int32
 
 	LoaderImport = 1 << 20, ///< Object is ready to be imported by another package during loading
 	Garbage = 1 << 21, ///< Garbage from logical point of view and should not be referenced. This flag is mirrored in EObjectFlags as RF_Garbage for performance
-	PersistentGarbage = 1 << 22, ///< Same as above but referenced through a persistent reference so it can't be GC'd
 	ReachableInCluster = 1 << 23, ///< External reference to object in cluster exists
 	ClusterRoot = 1 << 24, ///< Root of a cluster
 	Native = 1 << 25, ///< Native (UClass only). 
@@ -602,7 +600,7 @@ enum class EInternalObjectFlags : int32
 	MirroredFlags = Garbage | PendingKill, /// Flags mirrored in EObjectFlags
 
 	//~ Make sure this is up to date!
-	AllFlags = LoaderImport | Garbage | PersistentGarbage | ReachableInCluster | ClusterRoot | Native | Async | AsyncLoading | Unreachable | PendingKill | RootSet | PendingConstruction
+	AllFlags = LoaderImport | Garbage | ReachableInCluster | ClusterRoot | Native | Async | AsyncLoading | Unreachable | PendingKill | RootSet | PendingConstruction
 	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 };
 ENUM_CLASS_FLAGS(EInternalObjectFlags);
@@ -1556,8 +1554,11 @@ namespace UM
 		/// The value is optional, and may specify a name override for the method. May include deprecated names as additional semi-colon separated entries.
 		ScriptMethod,
 
-		/// [FunctionMetadata] Used with ScriptMethod to denote that the return value of the function should overwrite the value of the instance that made the call (structs only, equivalent to using UPARAM(self) on the struct argument).
+		/// [FunctionMetadata] Used with ScriptMethod to denote that the return value of the function should overwrite the value of the instance that made the call (structs only, equivalent to using UPARAM(ref) on the struct argument).
 		ScriptMethodSelfReturn,
+
+		/// [FunctionMetadata] Used with ScriptMethod to denote that the first argument of the function should be considered mutable even if passed as a const reference (structs only, equivalent to using UPARAM(ref) on the struct argument).
+		ScriptMethodMutable,
 
 		/// [FunctionMetadata] Flags a static function taking a struct as its first argument so that it "hoists" the function to be an operator of the struct when exporting it to a scripting language.
 		/// The value describes the kind of operator using C++ operator syntax (see below), and may contain multiple semi-colon separated values.
@@ -1706,7 +1707,7 @@ private: \
 	TRequiredAPI static UClass* GetPrivateStaticClass(); \
 public: \
 	/** Bitwise union of #EClassFlags pertaining to this class.*/ \
-	enum {StaticClassFlags=TStaticFlags}; \
+	static constexpr EClassFlags StaticClassFlags=EClassFlags(TStaticFlags); \
 	/** Typedef for the base class ({{ typedef-type }}) */ \
 	typedef TSuperClass Super;\
 	/** Typedef for {{ typedef-type }}. */ \
@@ -2015,7 +2016,7 @@ private:
 				StaticRegisterNatives##TClass, \
 				sizeof(TClass), \
 				alignof(TClass), \
-				(EClassFlags)TClass::StaticClassFlags, \
+				TClass::StaticClassFlags, \
 				TClass::StaticClassCastFlags(), \
 				TClass::StaticConfigName(), \
 				(UClass::ClassConstructorType)InternalConstructor<TClass>, \
@@ -2149,12 +2150,12 @@ namespace UE4
 {
 	using ELoadConfigPropagationFlags UE_DEPRECATED(5.0, "Use UE namespace instead of UE4") = UE::ELoadConfigPropagationFlags;
 
-	UE_DEPRECATED(5.0, "Use UE namespace instead of UE4") static constexpr UE::ELoadConfigPropagationFlags LCPF_None							= UE::ELoadConfigPropagationFlags::LCPF_None;
-	UE_DEPRECATED(5.0, "Use UE namespace instead of UE4") static constexpr UE::ELoadConfigPropagationFlags LCPF_ReadParentSections				= UE::ELoadConfigPropagationFlags::LCPF_ReadParentSections;
-	UE_DEPRECATED(5.0, "Use UE namespace instead of UE4") static constexpr UE::ELoadConfigPropagationFlags LCPF_PropagateToChildDefaultObjects	= UE::ELoadConfigPropagationFlags::LCPF_PropagateToChildDefaultObjects;
-	UE_DEPRECATED(5.0, "Use UE namespace instead of UE4") static constexpr UE::ELoadConfigPropagationFlags LCPF_PropagateToInstances			= UE::ELoadConfigPropagationFlags::LCPF_PropagateToInstances;
-	UE_DEPRECATED(5.0, "Use UE namespace instead of UE4") static constexpr UE::ELoadConfigPropagationFlags LCPF_ReloadingConfigData				= UE::ELoadConfigPropagationFlags::LCPF_ReloadingConfigData;
-	UE_DEPRECATED(5.0, "Use UE namespace instead of UE4") static constexpr UE::ELoadConfigPropagationFlags LCPF_PersistentFlags					= UE::ELoadConfigPropagationFlags::LCPF_PersistentFlags;
+	UE_DEPRECATED(5.0, "Use UE namespace instead of UE4") inline constexpr UE::ELoadConfigPropagationFlags LCPF_None							= UE::ELoadConfigPropagationFlags::LCPF_None;
+	UE_DEPRECATED(5.0, "Use UE namespace instead of UE4") inline constexpr UE::ELoadConfigPropagationFlags LCPF_ReadParentSections				= UE::ELoadConfigPropagationFlags::LCPF_ReadParentSections;
+	UE_DEPRECATED(5.0, "Use UE namespace instead of UE4") inline constexpr UE::ELoadConfigPropagationFlags LCPF_PropagateToChildDefaultObjects	= UE::ELoadConfigPropagationFlags::LCPF_PropagateToChildDefaultObjects;
+	UE_DEPRECATED(5.0, "Use UE namespace instead of UE4") inline constexpr UE::ELoadConfigPropagationFlags LCPF_PropagateToInstances			= UE::ELoadConfigPropagationFlags::LCPF_PropagateToInstances;
+	UE_DEPRECATED(5.0, "Use UE namespace instead of UE4") inline constexpr UE::ELoadConfigPropagationFlags LCPF_ReloadingConfigData				= UE::ELoadConfigPropagationFlags::LCPF_ReloadingConfigData;
+	UE_DEPRECATED(5.0, "Use UE namespace instead of UE4") inline constexpr UE::ELoadConfigPropagationFlags LCPF_PersistentFlags					= UE::ELoadConfigPropagationFlags::LCPF_PersistentFlags;
 }
 
 
@@ -2171,3 +2172,7 @@ public:
 	**/
 	virtual void Restore() const=0;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

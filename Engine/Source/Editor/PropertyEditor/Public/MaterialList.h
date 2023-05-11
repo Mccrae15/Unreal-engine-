@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "Components/ActorComponent.h"
 #include "IDetailCustomNodeBuilder.h"
 #include "DetailWidgetRow.h"
 #include "Materials/MaterialInterface.h"
@@ -216,6 +217,16 @@ private:
 	 * Generate list of the textures for material selection list
 	 */
 	TSharedRef<SWidget> OnGetTexturesMenuForMaterial();
+
+	/**
+	 * Create button for browse to nanite override material
+	 */
+	TSharedRef<SWidget> MakeBrowseNaniteOverrideMaterialButton() const;
+
+	/**
+	 * @return The tool tip for the textures menuuuuu
+	 */
+	FText GetTexturesMenuToolTipText() const;
 
 	/**
 	 * On Get object path handler

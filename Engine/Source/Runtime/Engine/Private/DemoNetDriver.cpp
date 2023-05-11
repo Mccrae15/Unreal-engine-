@@ -4,39 +4,31 @@
 	UDemoNetDriver.cpp: Simulated network driver for recording and playing back game sessions.
 =============================================================================*/
 
-
-// @todo: LowLevelSend now includes the packet size in bits, but this is ignored locally.
-//			Tracking of this must be added, if demos are to support PacketHandler's in the future (not presently needed).
-
-
 #include "Engine/DemoNetDriver.h"
-#include "EngineGlobals.h"
-#include "Engine/World.h"
+#include "Async/TaskGraphInterfaces.h"
+#include "Engine/DemoNetConnection.h"
+#include "Engine/GameInstance.h"
+#include "Engine/LevelStreaming.h"
 #include "UObject/Package.h"
-#include "GameFramework/GameModeBase.h"
+#include "Engine/NetConnection.h"
 #include "GameFramework/PlayerStart.h"
 #include "Engine/LocalPlayer.h"
+#include "Engine/PendingNetGame.h"
 #include "EngineUtils.h"
-#include "Engine/Engine.h"
 #include "Engine/DemoPendingNetGame.h"
+#include "Engine/ReplicationDriver.h"
 #include "Net/DataReplication.h"
 #include "Engine/ActorChannel.h"
 #include "Engine/NetworkObjectList.h"
-#include "Net/RepLayout.h"
 #include "GameFramework/SpectatorPawn.h"
-#include "Engine/LevelStreamingDynamic.h"
 #include "GameFramework/SpectatorPawnMovement.h"
+#include "Math/Interval.h"
 #include "Net/UnrealNetwork.h"
 #include "UnrealEngine.h"
 #include "Net/NetworkProfiler.h"
 #include "GameFramework/GameStateBase.h"
-#include "GameFramework/PlayerState.h"
-#include "HAL/LowLevelMemTracker.h"
+#include "Misc/CommandLine.h"
 #include "Stats/StatsMisc.h"
-#include "Kismet/GameplayStatics.h"
-#include "ProfilingDebugging/CsvProfiler.h"
-#include "Misc/EngineVersion.h"
-#include "Stats/Stats2.h"
 #include "Engine/ChildConnection.h"
 #include "Net/ReplayPlaylistTracker.h"
 #include "Net/NetworkGranularMemoryLogging.h"
@@ -293,7 +285,7 @@ struct FDemoBudgetLogHelper
 
 		if (DemoNetDriverRecordingPrivate::WarningTimeInterval == 0.f)
 		{
-			UE_LOG(LogDemo, Log, Format, Args...);
+			UE_LOG(LogDemo, Log, TEXT("%s"), *FString::Printf(Format, Args...));
 			return;
 		}
 
@@ -709,6 +701,8 @@ void UDemoNetDriver::InitDefaults()
 	if (!HasAnyFlags(RF_ClassDefaultObject))
 	{
 		LevelIntervals.Reserve(512);
+
+		ReplayHelper.PlaybackDemoHeader.SetDefaultNetworkVersions();
 	}
 
 	RecordBuildConsiderAndPrioritizeTimeSlice = CVarDemoMaximumRepPrioritizeTime.GetValueOnGameThread();
@@ -827,7 +821,7 @@ bool UDemoNetDriver::InitBase(bool bInitAsClient, FNetworkNotify* InNotify, cons
 		bIsFastForwardingForCheckpoint	= false;
 		bIsRestoringStartupActors		= false;
 		bWasStartStreamingSuccessful	= true;
-		SavedReplicatedWorldTimeSeconds	= 0.0f;
+		SavedReplicatedWorldTimeSeconds	= 0.0;
 		SavedSecondsToSkip				= 0.0f;
 		MaxDesiredRecordTimeMS			= -1.0f;
 		ViewerOverride					= nullptr;
@@ -1099,6 +1093,8 @@ bool UDemoNetDriver::InitListen(FNetworkNotify* InNotify, FURL& ListenURL, bool 
 	Connection->InitConnection(this, USOCK_Open, ListenURL, 1000000);
 
 	AddClientConnection(Connection);
+
+	Connection->SetClientWorldPackageName(World->GetOutermost()->GetFName());
 
 	// Technically, NetDriver's can be renamed so this could become stale.
 	// However, it's only used for logging and DemoNetDriver's are typically given a special name.
@@ -2738,7 +2734,8 @@ void UDemoNetDriver::TickDemoPlayback(float DeltaSeconds)
 	{
 		return;
 	}
-	
+	CSV_CUSTOM_STAT(Demo, Time, GetDemoCurrentTime()+DeltaSeconds, ECsvCustomStatOp::Set);
+
 	// This will be true when watching a live replay and we're grabbing an up to date header.
 	// In that case, we want to pause playback until we can actually travel.
 	if (bIsWaitingForHeaderDownload)
@@ -2966,12 +2963,12 @@ void UDemoNetDriver::FinalizeFastForward(const double StartTime)
 	{
 		if (bIsFastForwardingForCheckpoint)
 		{
-			const float PostCheckpointServerTime = SavedReplicatedWorldTimeSeconds + SavedSecondsToSkip;
-			GameState->ReplicatedWorldTimeSeconds = PostCheckpointServerTime;
+			const double PostCheckpointServerTime = SavedReplicatedWorldTimeSeconds + SavedSecondsToSkip;
+			GameState->ReplicatedWorldTimeSecondsDouble = PostCheckpointServerTime;
 		}
 
 		// Correct the ServerWorldTimeSecondsDelta
-		GameState->OnRep_ReplicatedWorldTimeSeconds();
+		GameState->OnRep_ReplicatedWorldTimeSecondsDouble();
 	}
 
 	if (ServerConnection != nullptr && bIsFastForwardingForCheckpoint)
@@ -3014,10 +3011,12 @@ void UDemoNetDriver::FinalizeFastForward(const double StartTime)
 			}
 		}
 
-		for (auto& DormantPair : ServerConnection->DormantReplicatorMap)
+		auto CallRepNotifies = [](FObjectKey OwnerActorKey, FObjectKey ObjectKey, const TSharedRef<FObjectReplicator>& ReplicatorRef)
 		{
-			DormantPair.Value->CallRepNotifies(true);
-		}
+			ReplicatorRef->CallRepNotifies(true);
+		};
+
+		ServerConnection->ExecuteOnAllDormantReplicators(CallRepNotifies);
 	}
 
 	// We may have been fast-forwarding immediately after loading a checkpoint
@@ -3232,7 +3231,7 @@ void UDemoNetDriver::ReplayStreamingReady(const FStartStreamingResult& Result)
 			UE_LOG(LogDemo, Log, TEXT("ReplayStreamingReady: playing back replay [%s] %s, which was recorded on engine version %s with flags [%s]"),
 				*ReplayHelper.GetPlaybackGuid().ToString(EGuidFormats::Digits), *ReplayHelper.DemoURL.Map, *ReplayHelper.PlaybackDemoHeader.EngineVersion.ToString(), *HeaderFlags);
 
-			if (ReplayHelper.PlaybackDemoHeader.Version >= ENetworkVersionHistory::HISTORY_RECORDING_METADATA)
+			if (GetPlaybackReplayVersion() >= FReplayCustomVersion::RecordingMetadata)
 			{
 				UE_LOG(LogDemo, Log, TEXT("ReplayStreamingReady: replay was recorded with: MinHz: %0.2f MaxHz: %0.2f FrameMS: %0.2f CheckpointMS: %0.2f Platform: [%s] Config: [%s] Target: [%s]"),
 					ReplayHelper.PlaybackDemoHeader.MinRecordHz, ReplayHelper.PlaybackDemoHeader.MaxRecordHz,
@@ -3269,6 +3268,24 @@ bool UDemoNetDriver::SetExternalDataForObject(UObject* OwningObject, const uint8
 	}
 
 	return false;
+}
+
+void UDemoNetDriver::RestoreComponentState(UActorComponent* ActorComp, FRollbackNetStartupActorInfo& RollbackActor)
+{
+	TSharedPtr<FRepLayout> SubObjLayout = GetObjectClassRepLayout(ActorComp->GetClass());
+	if (SubObjLayout.IsValid())
+	{
+		TSharedPtr<FRepState> RepState = RollbackActor.SubObjRepState.FindRef(ActorComp->GetFullName());
+		FReceivingRepState* SubObjReceivingRepState = RepState.IsValid() ? RepState->GetReceivingRepState() : nullptr;
+
+		if (SubObjReceivingRepState)
+		{
+			FRepObjectDataBuffer ActorCompData(ActorComp);
+			FConstRepShadowDataBuffer ShadowData(SubObjReceivingRepState->StaticBuffer.GetData());
+
+			SubObjLayout->DiffStableProperties(&SubObjReceivingRepState->RepNotifies, nullptr, ActorCompData, ShadowData);
+		}
+	}
 }
 
 void UDemoNetDriver::RespawnNecessaryNetStartupActors(TArray<AActor*>& SpawnedActors, ULevel* Level /* = nullptr */)
@@ -3337,7 +3354,7 @@ void UDemoNetDriver::RespawnNecessaryNetStartupActors(TArray<AActor*>& SpawnedAc
 
 		const FTransform SpawnTransform = FTransform(RollbackActor.Rotation, RollbackActor.Location, RollbackActor.Scale3D);
 
-		AActor* Actor = World->SpawnActorAbsolute(RollbackActor.Archetype->GetClass(), SpawnTransform, SpawnInfo);
+		AActor* Actor = World->SpawnActor(RollbackActor.Archetype->GetClass(), &SpawnTransform, SpawnInfo);
 		if (Actor)
 		{
 			if (!ensure( Actor->GetFullName() == RollbackIt.Key()))
@@ -3345,13 +3362,13 @@ void UDemoNetDriver::RespawnNecessaryNetStartupActors(TArray<AActor*>& SpawnedAc
 				UE_LOG(LogDemo, Log, TEXT("RespawnNecessaryNetStartupActors: NetStartupRollbackActor name doesn't match original: %s, %s"), *Actor->GetFullName(), *RollbackIt.Key());
 			}
 
-			bool bSanityCheckReferences = true;
+			bool bValidObjReferences = true;
 
 			for (UObject* ObjRef : RollbackActor.ObjReferences)
 			{
-				if (ObjRef == nullptr)
+				if (!IsValid(ObjRef))
 				{
-					bSanityCheckReferences = false;
+					bValidObjReferences = false;
 					UE_LOG(LogDemo, Warning, TEXT("RespawnNecessaryNetStartupActors: Rollback actor reference was gc'd, skipping state restore: %s"), *GetFullNameSafe(Actor));
 					break;
 				}
@@ -3360,7 +3377,8 @@ void UDemoNetDriver::RespawnNecessaryNetStartupActors(TArray<AActor*>& SpawnedAc
 			TSharedPtr<FRepLayout> RepLayout = GetObjectClassRepLayout(Actor->GetClass());
 			FReceivingRepState* ReceivingRepState = RollbackActor.RepState.IsValid() ? RollbackActor.RepState->GetReceivingRepState() : nullptr;
 
-			if (RepLayout.IsValid() && ReceivingRepState && bSanityCheckReferences)
+			// Restore saved actor state
+			if (RepLayout.IsValid() && ReceivingRepState && bValidObjReferences)
 			{
 				const ENetRole SavedRole = Actor->GetLocalRole();
 
@@ -3381,10 +3399,49 @@ void UDemoNetDriver::RespawnNecessaryNetStartupActors(TArray<AActor*>& SpawnedAc
 				Actor->SwapRoles();
 			}
 
-			UGameplayStatics::FinishSpawningActor(Actor, SpawnTransform);
+			TSet<UActorComponent*> DiffedComponents;
 
+			if (bValidObjReferences)
+			{
+				// Restore replicated component state for any objects that exist prior to construction (default subobjects)
+				for (UActorComponent* ActorComp : Actor->GetComponents())
+				{
+					if (ActorComp)
+					{
+						RestoreComponentState(ActorComp, RollbackActor);
+
+						DiffedComponents.Add(ActorComp);
+					}
+				}
+			}
+			
+			// Update transforms based on restored state
+			Actor->UpdateComponentTransforms();
+
+			// Finish spawning/construction
+			Actor->FinishSpawning(SpawnTransform, true);
+
+			if (bValidObjReferences)
+			{
+				// Restore replicated component state of anything new (created during construction)
+				for (UActorComponent* ActorComp : Actor->GetComponents())
+				{
+					// Could have been created by FinishSpawning (construction script)
+					if (ActorComp && !DiffedComponents.Contains(ActorComp))
+					{
+						RestoreComponentState(ActorComp, RollbackActor);
+					}
+				}
+			}
+
+			// Update transforms based on restored state, and dirty render state
+			Actor->UpdateComponentTransforms();
+			Actor->MarkComponentsRenderStateDirty();
+
+			// BeginPlay
 			Actor->PostNetInit();
 
+			// Call actor rep notifies
 			if (RepLayout.IsValid() && ReceivingRepState)
 			{
 				if (ReceivingRepState->RepNotifies.Num() > 0)
@@ -3395,24 +3452,20 @@ void UDemoNetDriver::RespawnNecessaryNetStartupActors(TArray<AActor*>& SpawnedAc
 				}
 			}
 
-			for (UActorComponent* ActorComp : Actor->GetComponents())
+			if (bValidObjReferences)
 			{
-				if (ActorComp)
+				// Call component rep notifies
+				for (UActorComponent* ActorComp : Actor->GetComponents())
 				{
-					TSharedPtr<FRepLayout> SubObjLayout = GetObjectClassRepLayout(ActorComp->GetClass());
-					if (SubObjLayout.IsValid() && bSanityCheckReferences)
+					if (ActorComp)
 					{
-						TSharedPtr<FRepState> RepState = RollbackActor.SubObjRepState.FindRef(ActorComp->GetFullName());
-						FReceivingRepState* SubObjReceivingRepState = RepState.IsValid() ? RepState->GetReceivingRepState() : nullptr;
-
-						if (SubObjReceivingRepState)
+						TSharedPtr<FRepLayout> SubObjLayout = GetObjectClassRepLayout(ActorComp->GetClass());
+						if (SubObjLayout.IsValid())
 						{
-							FRepObjectDataBuffer ActorCompData(ActorComp);
-							FConstRepShadowDataBuffer ShadowData(SubObjReceivingRepState->StaticBuffer.GetData());
+							TSharedPtr<FRepState> RepState = RollbackActor.SubObjRepState.FindRef(ActorComp->GetFullName());
+							FReceivingRepState* SubObjReceivingRepState = RepState.IsValid() ? RepState->GetReceivingRepState() : nullptr;
 
-							SubObjLayout->DiffStableProperties(&SubObjReceivingRepState->RepNotifies, nullptr, ActorCompData, ShadowData);
-
-							if (SubObjReceivingRepState->RepNotifies.Num() > 0)
+							if (SubObjReceivingRepState && SubObjReceivingRepState->RepNotifies.Num() > 0)
 							{
 								SubObjLayout->CallRepNotifies(SubObjReceivingRepState, ActorComp);
 
@@ -3625,7 +3678,7 @@ bool UDemoNetDriver::FastForwardLevels(const FGotoResult& GotoResult)
 
 			TGuardValue<bool> LoadingCheckpointGuard(ReplayHelper.bIsLoadingCheckpoint, true);
 
-			uint32 PlaybackVersion = GetPlaybackDemoVersion();
+			FReplayCustomVersion::Type PlaybackReplayVersion = GetPlaybackReplayVersion();
 
 			do 
 			{
@@ -3861,10 +3914,12 @@ bool UDemoNetDriver::FastForwardLevels(const FGotoResult& GotoResult)
 			}
 		}
 
-		for (auto& DormantPair : ServerConnection->DormantReplicatorMap)
+		auto CallRepNotifies = [](FObjectKey OwnerActorKey, FObjectKey ObjectKey, const TSharedRef<FObjectReplicator>& ReplicatorRef)
 		{
-			DormantPair.Value->CallRepNotifies( true );
-		}
+			ReplicatorRef->CallRepNotifies(true);
+		};
+
+		ServerConnection->ExecuteOnAllDormantReplicators(CallRepNotifies);
 	}
 
 	return true;
@@ -3914,7 +3969,7 @@ bool UDemoNetDriver::LoadCheckpoint(const FGotoResult& GotoResult)
 	LastProcessedPacketTime = 0.f;
 	ReplayHelper.LatestReadFrameTime = 0.f;
 
-	uint32 PlaybackVersion = GetPlaybackDemoVersion();
+	FReplayCustomVersion::Type PlaybackReplayVersion = GetPlaybackReplayVersion();
 
 	if (GotoCheckpointArchive->TotalSize() > 0)
 	{
@@ -4275,7 +4330,7 @@ bool UDemoNetDriver::LoadCheckpoint(const FGotoResult& GotoResult)
 
 			FString PathName;
 
-			if (PlaybackVersion < HISTORY_GUID_NAMETABLE)
+			if (PlaybackReplayVersion < FReplayCustomVersion::GuidNameTable)
 			{
 				*GotoCheckpointArchive << PathName;
 			}
@@ -4313,7 +4368,7 @@ bool UDemoNetDriver::LoadCheckpoint(const FGotoResult& GotoResult)
 
 			CacheObject.PathName = FName(*PathName);
 
-			if (PlaybackVersion < HISTORY_GUIDCACHE_CHECKSUMS)
+			if (PlaybackReplayVersion < FReplayCustomVersion::GuidCacheChecksums)
 			{
 				*GotoCheckpointArchive << CacheObject.NetworkChecksum;
 			}
@@ -4460,7 +4515,7 @@ bool UDemoNetDriver::LoadCheckpoint(const FGotoResult& GotoResult)
 		const AGameStateBase* const GameState = World->GetGameState();
 		if (GameState != nullptr)
 		{
-			SavedReplicatedWorldTimeSeconds = GameState->ReplicatedWorldTimeSeconds;
+			SavedReplicatedWorldTimeSeconds = GameState->ReplicatedWorldTimeSecondsDouble;
 		}
 	}
 
@@ -5039,7 +5094,7 @@ void UDemoNetDriver::NotifyActorDestroyed(AActor* Actor, bool IsSeamlessTravel)
 					Channel->ReleaseReferences(false);
 				}
 
-				Connection->DormantReplicatorMap.Remove(Actor);
+				Connection->CleanupDormantReplicatorsForActor(Actor);
 			}
 
 			GetNetworkObjectList().Remove(Actor);
@@ -5060,6 +5115,8 @@ void UDemoNetDriver::NotifyActorTornOff(AActor* Actor)
 {
 	if (IsRecording() && IsValid(Actor))
 	{
+		ForcePropertyCompare(Actor);
+
 		// Replicate one last time to the replay stream
 		ReplayHelper.ReplicateActor(Actor, ClientConnections[0], true);
 
@@ -5211,6 +5268,7 @@ void UDemoNetDriver::QueueNetStartupActorForRollbackViaDeletion(AActor* Actor)
 
 	if (GDemoSaveRollbackActorState != 0)
 	{
+		// Save actor state
 		{
 			TSharedPtr<FObjectReplicator> NewReplicator = MakeShared<FObjectReplicator>();
 			NewReplicator->InitWithObject(Actor->GetArchetype(), ServerConnection, false);
@@ -5228,6 +5286,7 @@ void UDemoNetDriver::QueueNetStartupActorForRollbackViaDeletion(AActor* Actor)
 			}
 		}
 
+		// Save component state
 		for (UActorComponent* ActorComp : Actor->GetComponents())
 		{
 			if (ActorComp)

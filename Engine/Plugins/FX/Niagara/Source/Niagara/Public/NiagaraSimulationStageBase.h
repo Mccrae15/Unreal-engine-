@@ -64,33 +64,6 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Simulation Stage")
 	FNiagaraVariableAttributeBinding EnabledBinding;
 
-	UPROPERTY()
-	FNiagaraVariableAttributeBinding ElementCountBinding_DEPRECATED;
-
-	/**
-	Integer binding to override the number of elements the stage will execute along X.
-	For example, if you want to iterate over a custom source such as triangles on a mesh you can
-	set an int to the triangle count in an emitter script and bind that as the element count.
-	*/
-	UPROPERTY(EditAnywhere, Category = "Simulation Stage", meta = (DisplayName = "ElementCount X"))
-	FNiagaraVariableAttributeBinding ElementCountXBinding;
-
-	/**
-	Integer binding to override the number of elements the stage will execute along Y.
-	For example, if you want to iterate over a 2D texture you can set an int to the texture height
-	in an emitter script and bind that as the element count.
-	*/
-	UPROPERTY(EditAnywhere, Category = "Simulation Stage", meta = (DisplayName = "ElementCount Y"))
-	FNiagaraVariableAttributeBinding ElementCountYBinding;
-
-	/**
-	Integer binding to override the number of elements the stage will execute along Z.
-	For example, if you want to iterate over a 3D texture you can set an int to the texture depth
-	in an emitter script and bind that as the element count.
-	*/
-	UPROPERTY(EditAnywhere, Category = "Simulation Stage", meta = (DisplayName = "ElementCount Z"))
-	FNiagaraVariableAttributeBinding ElementCountZBinding;
-	
 	/**
 	Select what we should be iterating over, particles or data interfaces.
 	The source provides things such as element count (when not overriden) and stack context variables (i.e. attributes on grids)
@@ -111,24 +84,21 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Simulation Stage")
 	FNiagaraVariableAttributeBinding NumIterationsBinding;
 
-	UPROPERTY()
-	uint32 bSpawnOnly_DEPRECATED : 1;
-
 	/**
 	Controls when the simulation stage should execute, only valid for data interface iteration stages
 	*/
-	UPROPERTY(EditAnywhere, Category = "Simulation Stage", meta = (EditCondition = "IterationSource == ENiagaraIterationSource::DataInterface"))
+	UPROPERTY(EditAnywhere, Category = "Simulation Stage")
 	ENiagaraSimStageExecuteBehavior ExecuteBehavior = ENiagaraSimStageExecuteBehavior::Always;
 
 	/**
 	Disables the ability to read / write from the same particle buffer, i.e. only update position and no other attributes.
 	By default this should not be changed, but can be used to debug issues.
 	*/
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Simulation Stage", meta = (EditCondition = "IterationSource == ENiagaraIterationSource::Particles"))
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Simulation Stage")
 	uint32 bDisablePartialParticleUpdate : 1;
 
 	/** Source data interface to use for the simulation stage. The data interface needs to be a subclass of UNiagaraDataInterfaceRWBase, for example the Grid2D and Grid3D data interfaces. */
-	UPROPERTY(EditAnywhere, Category = "Simulation Stage", meta = (editcondition = "IterationSource == ENiagaraIterationSource::DataInterface"))
+	UPROPERTY(EditAnywhere, Category = "Simulation Stage")
 	FNiagaraVariableDataInterfaceBinding DataInterface;
 
 	/**
@@ -136,34 +106,23 @@ public:
 	For example, if the binding was set to Particles.MyStateIndex and the range was 1-3 only the particles
 	with values of 1, 2 or 3 for Particles.MyStateIndex would run the script, all others would be ignored.
 	*/
-	UPROPERTY(EditAnywhere, Category = "Simulation Stage", meta = (editcondition = "IterationSource == ENiagaraIterationSource::Particles"))
+	UPROPERTY(EditAnywhere, Category = "Simulation Stage")
 	uint32 bParticleIterationStateEnabled : 1;
 
 	/** Particle state attribute binding, when enabled we will only allow particles who pass the state range check to be processed. */
-	UPROPERTY(EditAnywhere, Category = "Simulation Stage", meta = (editcondition = "IterationSource == ENiagaraIterationSource::Particles"))
+	UPROPERTY(EditAnywhere, Category = "Simulation Stage")
 	FNiagaraVariableAttributeBinding ParticleIterationStateBinding;
 
 	/** The inclusive range used to check particle state binding against when enabled. */
-	UPROPERTY(EditAnywhere, Category = "Simulation Stage", meta = (editcondition = "IterationSource == ENiagaraIterationSource::Particles"))
+	UPROPERTY(EditAnywhere, Category = "Simulation Stage")
 	FIntPoint ParticleIterationStateRange = FIntPoint(0, 0);
 
 	/**
 	When enabled we force the dispatch to be linear (i.e. one dimension is used).
 	NOTE: Cannot be used with OverrideGpuDispatchType.
 	*/
-	UPROPERTY(EditAnywhere, Category = "Simulation Stage", meta = (editcondition = "!bOverrideGpuDispatchType"))
+	UPROPERTY(EditAnywhere, Category = "Simulation Stage")
 	uint32 bGpuDispatchForceLinear : 1;
-
-	/**
-	When enabled we use a custom number of element count for the dispatch.
-	NOTE: Cannot be used with GpuDispatchForceLinear.
-	*/
-	UPROPERTY(EditAnywhere, Category = "Simulation Stage", meta = (editcondition = "!bGpuDispatchForceLinear"))
-	uint32 bOverrideGpuDispatchType : 1;
-
-	/** Dimensions to use for dispatch. */
-	UPROPERTY(EditAnywhere, Category = "Simulation Stage", meta = (DisplayName = "Gpu Dispatch Type"))
-	ENiagaraGpuDispatchType OverrideGpuDispatchType = ENiagaraGpuDispatchType::OneD;
 
 	/** When enabled we use a custom number of threads for the dispatch. */
 	UPROPERTY(EditAnywhere, Category = "Simulation Stage")
@@ -171,6 +130,55 @@ public:
 
 	UPROPERTY(EditAnywhere, Category = "Simulation Stage")
 	FIntVector OverrideGpuDispatchNumThreads = FIntVector(64, 1, 1);
+
+	/** Dimensions to use for dispatch. */
+	UPROPERTY(EditAnywhere, Category = "Simulation Stage")
+	ENiagaraGpuDispatchType DirectDispatchType = ENiagaraGpuDispatchType::OneD;
+
+	/** Customizes what the element count means for a direct dispatch. */
+	UPROPERTY(EditAnywhere, Category = "Simulation Stage")
+	ENiagaraDirectDispatchElementType DirectDispatchElementType = ENiagaraDirectDispatchElementType::NumThreads;
+
+	/**
+	Integer binding to override the number of elements the stage will execute along X.
+	For example, if you want to iterate over a custom source such as triangles on a mesh you can
+	set an int to the triangle count in an emitter script and bind that as the element count.
+	*/
+	UPROPERTY(EditAnywhere, Category = "Simulation Stage", meta = (DisplayName = "ElementCount X"))
+	FNiagaraVariableAttributeBinding ElementCountXBinding;
+
+	/**
+	Integer binding to override the number of elements the stage will execute along Y.
+	For example, if you want to iterate over a 2D texture you can set an int to the texture height
+	in an emitter script and bind that as the element count.
+	*/
+	UPROPERTY(EditAnywhere, Category = "Simulation Stage", meta = (DisplayName = "ElementCount Y", EditCondition = "DirectDispatchType == ENiagaraGpuDispatchType::TwoD || DirectDispatchType == ENiagaraGpuDispatchType::ThreeD"))
+	FNiagaraVariableAttributeBinding ElementCountYBinding;
+
+	/**
+	Integer binding to override the number of elements the stage will execute along Z.
+	For example, if you want to iterate over a 3D texture you can set an int to the texture depth
+	in an emitter script and bind that as the element count.
+	*/
+	UPROPERTY(EditAnywhere, Category = "Simulation Stage", meta = (DisplayName = "ElementCount Z", EditCondition = "DirectDispatchType == ENiagaraGpuDispatchType::ThreeD"))
+	FNiagaraVariableAttributeBinding ElementCountZBinding;
+
+#if WITH_EDITORONLY_DATA
+	// Deprecated Properties
+	UPROPERTY()
+	FNiagaraVariableAttributeBinding ElementCountBinding_DEPRECATED;
+
+	UPROPERTY()
+	uint32 bSpawnOnly_DEPRECATED : 1;
+	
+	UPROPERTY()
+	uint32 bOverrideGpuDispatchType_DEPRECATED : 1;
+
+	UPROPERTY()
+	ENiagaraGpuDispatchType OverrideGpuDispatchType_DEPRECATED = ENiagaraGpuDispatchType::OneD;
+#endif
+	//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 
 	virtual void PostInitProperties() override;
 	virtual void PostLoad() override;

@@ -11,13 +11,18 @@
 #include "HAL/PlatformFileManager.h"
 #include "ImageUtils.h"
 #include "LegacyScreenPercentageDriver.h"
-#include "Rendering/Texture2DResource.h"
-#include "RenderUtils.h"
+#include "Math/InverseRotationMatrix.h"
+#include "SceneInterface.h"
+#include "RenderingThread.h"
+#include "TextureResource.h"
 
 #if WITH_EDITOR
+#include "Editor.h"
+#include "RendererInterface.h"
 #include "TextureCompiler.h"
 #include "ObjectTools.h"
-#include "LevelEditor.h"
+#else
+#include "Engine/World.h"
 #endif
 
 namespace ThumbnailGeneratorImpl

@@ -4,9 +4,13 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DeveloperSettings.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "RHIDefinitions.h"
+#endif
 #include "OptimusSettings.generated.h"
 
 class UMeshDeformer;
+enum EShaderPlatform : uint16;
 
 UENUM()
 enum class EOptimusDefaultDeformerMode : uint8
@@ -43,3 +47,12 @@ class OPTIMUSSETTINGS_API UOptimusSettings : public UDeveloperSettings
 	void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif // WITH_EDITOR
 };
+
+namespace Optimus
+{
+	/** Returns true if DeformerGraph is supported on a platform. */
+	OPTIMUSSETTINGS_API bool IsSupported(EShaderPlatform Platform);
+
+	/** Returns true if DeformerGraph is currently enabled. */
+	OPTIMUSSETTINGS_API bool IsEnabled();
+}

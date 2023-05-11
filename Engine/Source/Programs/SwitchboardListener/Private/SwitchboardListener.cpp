@@ -3,6 +3,7 @@
 #include "SwitchboardListener.h"
 
 #include "CpuUtilizationMonitor.h"
+#include "SBLHelperClient.h"
 #include "SwitchboardListenerApp.h"
 #include "SwitchboardMessageFuture.h"
 #include "SwitchboardPacket.h"
@@ -89,12 +90,15 @@ namespace
 
 struct FRunningProcess
 {
-	uint32 PID;
+	uint32 PID = 0;
 	FGuid UUID;
 	FProcHandle Handle;
 
-	void* WritePipe;
-	void* ReadPipe;
+	void* StdoutParentReadPipe = nullptr;
+	void* StdoutChildWritePipe = nullptr;
+	void* StdinChildReadPipe = nullptr;
+	void* StdinParentWritePipe = nullptr;
+
 	TArray<uint8> Output;
 
 	FIPv4Endpoint Recipient;
@@ -102,29 +106,31 @@ struct FRunningProcess
 	FString Name;
 	FString Caller;
 
-	std::atomic<bool> bPendingKill;
-	bool bUpdateClientsWithStdout;
+	std::atomic<bool> bPendingKill = false;
+	bool bUpdateClientsWithStdout = false;
+	bool bLockGpuClock = false;
 
-	FRunningProcess()
-		: bPendingKill(false)
-	{}
-
-	FRunningProcess(const FRunningProcess& InProcess)
+	bool CreatePipes()
 	{
-		PID       = InProcess.PID;
-		UUID      = InProcess.UUID;
-		Handle    = InProcess.Handle;
-		WritePipe = InProcess.WritePipe;
-		ReadPipe  = InProcess.ReadPipe;
-		Output    = InProcess.Output;
-		Recipient = InProcess.Recipient;
-		Path      = InProcess.Path;
-		Name      = InProcess.Name;
-		Caller    = InProcess.Caller;
+		if (!FPlatformProcess::CreatePipe(StdoutParentReadPipe, StdoutChildWritePipe))
+		{
+			UE_LOG(LogSwitchboard, Error, TEXT("Could not create pipe to read process output!"));
+			return false;
+		}
 
-		bUpdateClientsWithStdout = InProcess.bUpdateClientsWithStdout;
+		if (!FPlatformProcess::CreatePipe(StdinChildReadPipe, StdinParentWritePipe, true))
+		{
+			UE_LOG(LogSwitchboard, Error, TEXT("Could not create pipe to write process input!"));
+			return false;
+		}
 
-		bPendingKill.store(InProcess.bPendingKill);
+		return true;
+	}
+
+	void ClosePipes()
+	{
+		FPlatformProcess::ClosePipe(StdoutParentReadPipe, StdoutChildWritePipe);
+		FPlatformProcess::ClosePipe(StdinChildReadPipe, StdinParentWritePipe);
 	}
 };
 
@@ -212,10 +218,11 @@ FString FSwitchboardCommandLineOptions::ToString(bool bIncludeRedeploy /* = fals
 FSwitchboardListener::FSwitchboardListener(const FSwitchboardCommandLineOptions& InOptions)
 	: Options(InOptions)
 	, SocketListener(nullptr)
-	, CpuMonitor(MakeShared<FCpuUtilizationMonitor, ESPMode::ThreadSafe>())
+	, CpuMonitor(MakeShared<FCpuUtilizationMonitor>())
+	, SBLHelper(MakeShared<FSBLHelperClient>())
 	, bIsNvAPIInitialized(false)
-	, CachedMosaicToposLock(MakeShared<FRWLock, ESPMode::ThreadSafe>())
-	, CachedMosaicTopos(MakeShared<TArray<FMosaicTopo>, ESPMode::ThreadSafe>())
+	, CachedMosaicToposLock(MakeShared<FRWLock>())
+	, CachedMosaicTopos(MakeShared<TArray<FMosaicTopo>>())
 {
 #if PLATFORM_WINDOWS
 	// initialize NvAPI
@@ -309,7 +316,7 @@ bool FSwitchboardListener::Tick()
 				StatePacket.TotalPhysicalMemory = FPlatformMemory::GetConstants().TotalPhysical;
 				StatePacket.PlatformBinaryDirectory = FPlatformProcess::GetBinariesSubdirectory();
 
-				for (const auto& RunningProcess : RunningProcesses)
+				for (const TSharedPtr<FRunningProcess>& RunningProcess : RunningProcesses)
 				{
 					check(RunningProcess.IsValid());
 
@@ -374,6 +381,7 @@ bool FSwitchboardListener::Tick()
 	HandleRunningProcesses(RunningProcesses, true);
 	HandleRunningProcesses(FlipModeMonitors, false);
 	SendMessageFutures();
+	SBLHelper->Tick();
 
 	if (IsEngineExitRequested())
 	{
@@ -493,6 +501,11 @@ bool FSwitchboardListener::RunScheduledTask(const FSwitchboardTask& InTask)
 		{
 			const FSwitchboardSetInactiveTimeoutTask& Task = static_cast<const FSwitchboardSetInactiveTimeoutTask&>(InTask);
 			return Task_SetInactiveTimeout(Task);
+		}
+		case ESwitchboardTaskType::FreeListenerBinary:
+		{
+			const FSwitchboardFreeListenerBinaryTask& Task = static_cast<const FSwitchboardFreeListenerBinaryTask&>(InTask);
+			return Task_FreeListenerBinary(Task);
 		}
 		default:
 		{
@@ -630,19 +643,19 @@ bool FSwitchboardListener::Task_StartProcess(const FSwitchboardStartTask& InRunT
 {
 	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FSwitchboardListener::Task_StartProcess);
 
-	auto NewProcess = MakeShared<FRunningProcess, ESPMode::ThreadSafe>();
+	TSharedRef<FRunningProcess> NewProcess = MakeShared<FRunningProcess>();
 
 	NewProcess->Recipient = InRunTask.Recipient;
 	NewProcess->Path = InRunTask.Command;
 	NewProcess->Name = InRunTask.Name;
 	NewProcess->Caller = InRunTask.Caller;
 	NewProcess->bUpdateClientsWithStdout = InRunTask.bUpdateClientsWithStdout;
+	NewProcess->bLockGpuClock = InRunTask.bLockGpuClock;
 	NewProcess->UUID = InRunTask.TaskID; // Process ID is the same as the message ID.
 	NewProcess->PID = 0; // default value
 
-	if (!FPlatformProcess::CreatePipe(NewProcess->ReadPipe, NewProcess->WritePipe))
+	if (!NewProcess->CreatePipes())
 	{
-		UE_LOG(LogSwitchboard, Error, TEXT("Could not create pipe to read process output!"));
 		return false;
 	}
 	
@@ -661,8 +674,8 @@ bool FSwitchboardListener::Task_StartProcess(const FSwitchboardStartTask& InRunT
 		&NewProcess->PID, 
 		PriorityModifier, 
 		WorkingDirectory, 
-		NewProcess->WritePipe,
-		NewProcess->ReadPipe
+		NewProcess->StdoutChildWritePipe,
+		NewProcess->StdinChildReadPipe
 	);
 
 	if (!NewProcess->Handle.IsValid())
@@ -671,7 +684,7 @@ bool FSwitchboardListener::Task_StartProcess(const FSwitchboardStartTask& InRunT
 		FPlatformProcess::CloseProc(NewProcess->Handle);
 
 		// close pipes
-		FPlatformProcess::ClosePipe(NewProcess->ReadPipe, NewProcess->WritePipe);
+		NewProcess->ClosePipes();
 
 		// log error
 		const FString ErrorMsg = FString::Printf(TEXT("Could not start program %s"), *InRunTask.Command);
@@ -690,6 +703,55 @@ bool FSwitchboardListener::Task_StartProcess(const FSwitchboardStartTask& InRunT
 		);
 
 		return false;
+	}
+
+	// Lock Gpu Clocks for the lifetime of this PID, if requested
+	if (InRunTask.bLockGpuClock && SBLHelper.IsValid())
+	{
+		// Try to connect to the SBLHelper server if we haven't already
+		if (!SBLHelper->IsConnected())
+		{
+			FSBLHelperClient::FConnectionParams ConnectionParams;
+
+			uint16 Port = 8010; // Default tcp port
+
+			// Apply command line port number override, if present
+			{
+				static uint16 CmdLinePortOverride = 0;
+				static bool bCmdLinePortOverrideParsed = false;
+				static bool bCmdLinePortOverrideValid = false;
+
+				if (!bCmdLinePortOverrideParsed)
+				{
+					bCmdLinePortOverrideParsed = true;
+
+					bCmdLinePortOverrideValid = FParse::Value(FCommandLine::Get(), TEXT("sblhport="), CmdLinePortOverride);
+				}
+
+				if (bCmdLinePortOverrideValid)
+				{
+					Port = CmdLinePortOverride;
+				}
+			}
+
+			const FString HostName = FString::Printf(TEXT("localhost:%d"), Port);
+			FIPv4Endpoint::FromHostAndPort(*HostName, ConnectionParams.Endpoint);
+
+			SBLHelper->Connect(ConnectionParams);
+		}
+
+		if (SBLHelper->IsConnected())
+		{
+			const bool bSentMessage = SBLHelper->LockGpuClock(NewProcess->PID);
+
+			if (!bSentMessage)
+			{
+				UE_LOG(LogSwitchboard, Error, TEXT("Failed to send message to SBLHelper server to request gpu clock locking"));
+			}
+
+			// We disconnect right away because launches happen only far and in between.
+			SBLHelper->Disconnect();
+		}
 	}
 
 	UE_LOG(LogSwitchboard, Display, TEXT("Started process %d: %s %s"), NewProcess->PID, *InRunTask.Command, *InRunTask.Arguments);
@@ -737,9 +799,9 @@ bool FSwitchboardListener::Task_KillProcess(const FSwitchboardKillTask& KillTask
 	}
 
 	// Look in RunningProcesses
-	TSharedPtr<FRunningProcess, ESPMode::ThreadSafe> Process;
+	TSharedPtr<FRunningProcess> Process;
 	{
-		auto* ProcessPtr = RunningProcesses.FindByPredicate([&KillTask](const TSharedPtr<FRunningProcess, ESPMode::ThreadSafe>& InProcess)
+		TSharedPtr<FRunningProcess>* ProcessPtr = RunningProcesses.FindByPredicate([&KillTask](const TSharedPtr<FRunningProcess>& InProcess)
 		{
 			check(InProcess.IsValid());
 			return !InProcess->bPendingKill && (InProcess->UUID == KillTask.ProgramID);
@@ -753,9 +815,9 @@ bool FSwitchboardListener::Task_KillProcess(const FSwitchboardKillTask& KillTask
 	}
 
 	// Look in FlipModeMonitors
-	TSharedPtr<FRunningProcess, ESPMode::ThreadSafe> FlipModeMonitor;
+	TSharedPtr<FRunningProcess> FlipModeMonitor;
 	{
-		auto* FlipModeMonitorPtr = FlipModeMonitors.FindByPredicate([&](const TSharedPtr<FRunningProcess, ESPMode::ThreadSafe>& FlipMonitor)
+		TSharedPtr<FRunningProcess>* FlipModeMonitorPtr = FlipModeMonitors.FindByPredicate([&](const TSharedPtr<FRunningProcess>& FlipMonitor)
 		{
 			check(FlipMonitor.IsValid());
 			return !FlipMonitor->bPendingKill && (FlipMonitor->UUID == KillTask.ProgramID);
@@ -852,9 +914,9 @@ bool FSwitchboardListener::Task_FixExeFlags(const FSwitchboardFixExeFlagsTask& T
 	}
 
 	// Look in RunningProcesses
-	TSharedPtr<FRunningProcess, ESPMode::ThreadSafe> Process;
+	TSharedPtr<FRunningProcess> Process;
 	{
-		auto* ProcessPtr = RunningProcesses.FindByPredicate([&Task](const TSharedPtr<FRunningProcess, ESPMode::ThreadSafe>& InProcess)
+		TSharedPtr<FRunningProcess>* ProcessPtr = RunningProcesses.FindByPredicate([&Task](const TSharedPtr<FRunningProcess>& InProcess)
 			{
 				check(InProcess.IsValid());
 				return !InProcess->bPendingKill && (InProcess->UUID == Task.ProgramID);
@@ -935,7 +997,14 @@ bool FSwitchboardListener::Task_ReceiveFileFromClient(const FSwitchboardReceiveF
 
 	if (Destination.Contains(TEXT("%TEMP%")))
 	{
-		Destination.ReplaceInline(TEXT("%TEMP%"), FPlatformProcess::UserTempDir());
+		FString TempDir = FPlatformProcess::UserTempDir();
+
+		if (TempDir.EndsWith(TEXT("/")) || TempDir.EndsWith(TEXT("\\")))
+		{
+			TempDir.LeftChopInline(1, false);
+		}
+
+		Destination.ReplaceInline(TEXT("%TEMP%"), *TempDir);
 	}
 	if (Destination.Contains(TEXT("%RANDOM%")))
 	{
@@ -1500,7 +1569,7 @@ FRunningProcess* FSwitchboardListener::FindOrStartFlipModeMonitorForUUID(const F
 
 	// See if the associated FlipModeMonitor is running
 	{
-		auto* FlipModeMonitorPtr = FlipModeMonitors.FindByPredicate([&](const TSharedPtr<FRunningProcess, ESPMode::ThreadSafe>& FlipMonitor)
+		TSharedPtr<FRunningProcess>* FlipModeMonitorPtr = FlipModeMonitors.FindByPredicate([&](const TSharedPtr<FRunningProcess>& FlipMonitor)
 		{
 			check(FlipMonitor.IsValid());
 			return FlipMonitor->UUID == UUID;
@@ -1514,9 +1583,9 @@ FRunningProcess* FSwitchboardListener::FindOrStartFlipModeMonitorForUUID(const F
 
 	// It wasn't in there, so let's find our target process
 
-	TSharedPtr<FRunningProcess, ESPMode::ThreadSafe> Process;
+	TSharedPtr<FRunningProcess> Process;
 	{
-		auto* ProcessPtr = RunningProcesses.FindByPredicate([&](const TSharedPtr<FRunningProcess, ESPMode::ThreadSafe>& InProcess)
+		TSharedPtr<FRunningProcess>* ProcessPtr = RunningProcesses.FindByPredicate([&](const TSharedPtr<FRunningProcess>& InProcess)
 		{
 			check(InProcess.IsValid());
 			return InProcess->UUID == UUID;
@@ -1535,10 +1604,9 @@ FRunningProcess* FSwitchboardListener::FindOrStartFlipModeMonitorForUUID(const F
 	}
 
 	// Ok, we need to create our monitor.
+	TSharedRef<FRunningProcess> MonitorProcess = MakeShared<FRunningProcess>();
 
-	auto MonitorProcess = MakeShared<FRunningProcess, ESPMode::ThreadSafe>();
-
-	if (!FPlatformProcess::CreatePipe(MonitorProcess->ReadPipe, MonitorProcess->WritePipe))
+	if (!MonitorProcess->CreatePipes())
 	{
 		UE_LOG(LogSwitchboard, Error, TEXT("Could not create pipe to read MonitorProcess output!"));
 		return nullptr;
@@ -1550,7 +1618,7 @@ FRunningProcess* FSwitchboardListener::FindOrStartFlipModeMonitorForUUID(const F
 	const int32 PriorityModifier = 0;
 	const TCHAR* WorkingDirectory = nullptr;
 
-	MonitorProcess->Path = FPaths::EngineDir() / TEXT("Binaries") / TEXT("ThirdParty") / TEXT("PresentMon") / TEXT("Win64") / TEXT("PresentMon64-1.5.2.exe");
+	MonitorProcess->Path = FPaths::EngineDir() / TEXT("Binaries") / TEXT("ThirdParty") / TEXT("PresentMon") / TEXT("Win64") / TEXT("PresentMon-1.8.0-x64.exe");
 
 	FString Arguments = 
 		FString::Printf(TEXT("-session_name session_%d -output_stdout -dont_restart_as_admin -terminate_on_proc_exit -stop_existing_session -process_id %d"), 
@@ -1565,8 +1633,8 @@ FRunningProcess* FSwitchboardListener::FindOrStartFlipModeMonitorForUUID(const F
 		&MonitorProcess->PID,
 		PriorityModifier,
 		WorkingDirectory,
-		MonitorProcess->WritePipe,
-		MonitorProcess->ReadPipe
+		MonitorProcess->StdoutChildWritePipe,
+		MonitorProcess->StdinChildReadPipe
 	);
 
 	if (!MonitorProcess->Handle.IsValid() || !FPlatformProcess::IsProcRunning(MonitorProcess->Handle))
@@ -1575,7 +1643,7 @@ FRunningProcess* FSwitchboardListener::FindOrStartFlipModeMonitorForUUID(const F
 		FPlatformProcess::CloseProc(MonitorProcess->Handle);
 
 		// Close unused pipes
-		FPlatformProcess::ClosePipe(MonitorProcess->ReadPipe, MonitorProcess->WritePipe);
+		MonitorProcess->ClosePipes();
 
 		// Log error
 		const FString ErrorMsg = FString::Printf(TEXT("Could not start FlipMode monitor  %s"), *MonitorProcess->Path);
@@ -1591,6 +1659,7 @@ FRunningProcess* FSwitchboardListener::FindOrStartFlipModeMonitorForUUID(const F
 	// The monitor auto-closes when monitored program closes.
 	MonitorProcess->UUID = Process->UUID;
 	MonitorProcess->bUpdateClientsWithStdout = false;
+	MonitorProcess->bLockGpuClock = false;
 	MonitorProcess->Recipient = InvalidEndpoint;
 	MonitorProcess->Name = TEXT("flipmode_monitor");
 
@@ -1626,11 +1695,14 @@ static void FillOutFlipMode(FSyncStatus& SyncStatus, FRunningProcess* FlipModeMo
 
 	// Interpret the output as follows:
 	//
-	// Application,ProcessID,SwapChainAddress,Runtime,SyncInterval,PresentFlags,AllowsTearing,PresentMode,Dropped,
-	// TimeInSeconds,MsBetweenPresents,MsBetweenDisplayChange,MsInPresentAPI,MsUntilRenderComplete,MsUntilDisplayed
+	// Application,ProcessID,SwapChainAddress,Runtime,
+	// SyncInterval,PresentFlags,AllowsTearing,
+	// TimeInSeconds,MsBetweenPresents,MsBetweenDisplayChange,Dropped,
+	// PresentMode,
+	// MsInPresentAPI,MsUntilRenderComplete,MsUntilDisplayed
 	//
 	// e.g.
-	//   "UnrealEditor.exe,10916,0x0000022096A0F830,DXGI,0,512,0,Composed: Flip,1,3.753577,22.845,0.000,0.880,0.946,0.000"
+	//   "UnrealEditor.exe,23256,0x000002DFBFE603A0,DXGI,1,0  ,0,35.65057220000000,1.91800000000000,30735.98660000000018,0,Composed: Flip,1.91820000000000,32.67810000000000,30700.80250000000160"
 
 	TArray<FString> Fields;
 
@@ -1643,7 +1715,7 @@ static void FillOutFlipMode(FSyncStatus& SyncStatus, FRunningProcess* FlipModeMo
 			continue;
 		}
 
-		const int32 PresentMonIdx = 7;
+		const int32 PresentMonIdx = 11;
 
 		SyncStatus.FlipModeHistory.Add(Fields[PresentMonIdx]); // The first one will be "PresentMode". This is ok. 
 	}
@@ -1843,14 +1915,14 @@ bool FSwitchboardListener::Task_GetSyncStatus(const FSwitchboardGetSyncStatusTas
 		return false;
 	}
 
-	TSharedRef<FSyncStatus, ESPMode::ThreadSafe> SyncStatus = MakeShared<FSyncStatus, ESPMode::ThreadSafe>(); // Smart pointer to avoid potentially bigger copy to lambda below.
+	TSharedRef<FSyncStatus> SyncStatus = MakeShared<FSyncStatus>(); // Smart pointer to avoid potentially bigger copy to lambda below.
 
 	// We need to run these on this thread to avoid threading issues.
 	FillOutFlipMode(SyncStatus.Get(), FindOrStartFlipModeMonitorForUUID(InGetSyncStatusTask.ProgramID));
 
 	// Fill out fullscreen optimization setting
 	{
-		auto* ProcessPtr = RunningProcesses.FindByPredicate([&](const TSharedPtr<FRunningProcess, ESPMode::ThreadSafe>& InProcess)
+		TSharedPtr<FRunningProcess>* ProcessPtr = RunningProcesses.FindByPredicate([&](const TSharedPtr<FRunningProcess>& InProcess)
 		{
 			check(InProcess.IsValid());
 			return !InProcess->bPendingKill && (InProcess->UUID == InGetSyncStatusTask.ProgramID);
@@ -2040,6 +2112,44 @@ bool FSwitchboardListener::Task_SetInactiveTimeout(const FSwitchboardSetInactive
 	return true;
 }
 
+bool FSwitchboardListener::Task_FreeListenerBinary(const FSwitchboardFreeListenerBinaryTask& InFreeListenerBinaryTask)
+{
+	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FSwitchboardListener::Task_FreeListenerBinary);
+
+	const uint32 CurrentPid = FPlatformProcess::GetCurrentProcessId();
+
+	// NOTE: FPlatformProcess::ExecutablePath() is stale if we were moved while running.
+	const FString OriginalThisExePath = FPlatformProcess::GetApplicationName(CurrentPid);
+	const FString ThisExeDir = FPaths::GetPath(OriginalThisExePath);
+	const FString ThisExeFilename = FPaths::GetCleanFilename(OriginalThisExePath);
+	
+	const FString MovedListenerPath = FPaths::EngineIntermediateDir() / TEXT("Switchboard") / TEXT("old_") + ThisExeFilename;
+
+	//
+	// Weird hackery to get around Windows locking down an executable file on disk whilst running.
+	// We move the (locked) file (which is allowed), and then make a copy (which is no longer linked to the running process)
+
+	if (!IFileManager::Get().Move(*MovedListenerPath, *OriginalThisExePath, true))
+	{
+		const uint32 LastError = FPlatformMisc::GetLastError();
+		const FString ErrorMsg = FString::Printf(TEXT("Unable to move listener exe to \"%s\" (error code %u)"), *MovedListenerPath, LastError);
+		UE_LOG(LogSwitchboard, Error, TEXT("Free listener binary: %s"), *ErrorMsg);
+		SendMessage(CreateTaskDeclinedMessage(InFreeListenerBinaryTask, ErrorMsg, {}), InFreeListenerBinaryTask.Recipient);
+		return false;
+	}
+
+	if (IFileManager::Get().Copy(*OriginalThisExePath, *MovedListenerPath, true, true) != ECopyResult::COPY_OK)
+	{
+		const uint32 LastError = FPlatformMisc::GetLastError();
+		const FString ErrorMsg = FString::Printf(TEXT("Unable to copy listener exe back to \"%s\" (error code %u)"), *OriginalThisExePath, LastError);
+		UE_LOG(LogSwitchboard, Error, TEXT("Free listener binary: %s"), *ErrorMsg);
+		SendMessage(CreateTaskDeclinedMessage(InFreeListenerBinaryTask, ErrorMsg, {}), InFreeListenerBinaryTask.Recipient);
+		return false;
+	}
+
+	return true;
+}
+
 void FSwitchboardListener::CleanUpDisconnectedSockets()
 {
 	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FSwitchboardListener::CleanUpDisconnectedSockets);
@@ -2084,12 +2194,12 @@ void FSwitchboardListener::DisconnectClient(const FIPv4Endpoint& InClientEndpoin
 	ReceiveBuffer.Remove(InClientEndpoint);
 }
 
-void FSwitchboardListener::HandleStdout(const TSharedPtr<FRunningProcess, ESPMode::ThreadSafe>& Process)
+void FSwitchboardListener::HandleStdout(const TSharedPtr<FRunningProcess>& Process)
 {
 	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FSwitchboardListener::HandleStdout);
 
 	TArray<uint8> Output;
-	if (FPlatformProcess::ReadPipeToArray(Process->ReadPipe, Output))
+	if (FPlatformProcess::ReadPipeToArray(Process->StdoutParentReadPipe, Output))
 	{
 		Process->Output.Append(Output);
 	}
@@ -2115,14 +2225,14 @@ void FSwitchboardListener::HandleStdout(const TSharedPtr<FRunningProcess, ESPMod
 	}
 }
 
-void FSwitchboardListener::HandleRunningProcesses(TArray<TSharedPtr<FRunningProcess, ESPMode::ThreadSafe>>& Processes, bool bNotifyThatProgramEnded)
+void FSwitchboardListener::HandleRunningProcesses(TArray<TSharedPtr<FRunningProcess>>& Processes, bool bNotifyThatProgramEnded)
 {
 	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FSwitchboardListener::HandleRunningProcesses);
 
 	// Reads pipe and cleans up dead processes from the array.
 	for (auto Iter = Processes.CreateIterator(); Iter; ++Iter)
 	{
-		TSharedPtr<FRunningProcess, ESPMode::ThreadSafe> Process = *Iter;
+		TSharedPtr<FRunningProcess> Process = *Iter;
 
 		check(Process.IsValid());
 
@@ -2172,7 +2282,7 @@ void FSwitchboardListener::HandleRunningProcesses(TArray<TSharedPtr<FRunningProc
 
 					// Kill its monitor to avoid potential zombies (unless it is already pending kill)
 					{
-						auto* FlipModeMonitorPtr = FlipModeMonitors.FindByPredicate([&](const TSharedPtr<FRunningProcess, ESPMode::ThreadSafe>& FlipMonitor)
+						TSharedPtr<FRunningProcess>* FlipModeMonitorPtr = FlipModeMonitors.FindByPredicate([&](const TSharedPtr<FRunningProcess>& FlipMonitor)
 						{
 							check(FlipMonitor.IsValid());
 							return !FlipMonitor->bPendingKill && (FlipMonitor->UUID == Process->UUID);
@@ -2189,7 +2299,7 @@ void FSwitchboardListener::HandleRunningProcesses(TArray<TSharedPtr<FRunningProc
 				}
 
 				FPlatformProcess::CloseProc(Process->Handle);
-				FPlatformProcess::ClosePipe(Process->ReadPipe, Process->WritePipe);
+				Process->ClosePipes();
 
 				Iter.RemoveCurrent();
 			}

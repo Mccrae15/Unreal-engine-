@@ -16,7 +16,7 @@
 
 #include "GeometryCollection/GeometryCollection.h"
 #include "GeometryCollection/GeometryCollectionComponent.h"
-#include "GeometryCollection/GeometryCollectionEngineRemoval.h"
+#include "GeometryCollection/Facades/CollectionRemoveOnBreakFacade.h"
 
 #include "SGeometryCollectionOutliner.generated.h"
 
@@ -24,6 +24,7 @@ class FGeometryCollection;
 class FGeometryCollectionTreeItem;
 class FGeometryCollectionTreeItemBone;
 class SGeometryCollectionOutliner;
+class UToolMenu;
 
 typedef TArray<TSharedPtr<FGeometryCollectionTreeItem>> FGeometryCollectionTreeItemList;
 typedef TSharedPtr<FGeometryCollectionTreeItem> FGeometryCollectionTreeItemPtr;
@@ -39,10 +40,11 @@ enum class EOutlinerItemNameEnum : uint8
 UENUM(BlueprintType)
 enum class EOutlinerColumnMode : uint8
 {
-	StateAndSize = 0		UMETA(DisplayName = "State And Size"),
+	State = 0				UMETA(DisplayName = "State"),
 	Damage = 1				UMETA(DisplayName = "Damage"),
 	Removal = 2				UMETA(DisplayName = "Removal"),
 	Collision = 3			UMETA(DisplayName = "Collision"),
+	Size = 4				UMETA(DisplayName = "Size"),
 };
 
 /** Settings for Outliner configuration. **/
@@ -53,10 +55,6 @@ class UOutlinerSettings : public UObject
 	GENERATED_BODY()
 public:
 	UOutlinerSettings(const FObjectInitializer& ObjInit);
-
-	/** What is displayed in Outliner text */
-	UPROPERTY(EditAnywhere, Category = OutlinerSettings, meta = (DisplayName = "Item Text"))
-	EOutlinerItemNameEnum ItemText;
 
 	/** whether to use level coloring */
 	UPROPERTY(EditAnywhere, Category = OutlinerSettings, meta = (DisplayName = "Color By Level"))
@@ -90,12 +88,62 @@ public:
 	static FColor GetColorPerDepth(uint32 Depth);
 };
 
+using FRemoveOnBreakData = GeometryCollection::Facades::FRemoveOnBreakData;
+
+class FGeometryCollectionItemDataFacade
+{
+public:
+	FGeometryCollectionItemDataFacade(FManagedArrayCollection& InCollection);
+
+	void FillFromGeometryCollectionComponent(const UGeometryCollectionComponent& GeometryCollectionComponent, EOutlinerColumnMode ColumnMode);
+
+	bool IsLevelAttributeValid() const { return LevelAttribute.IsValid(); }
+	bool IsSimulationtypeAttributeValid() const { return SimulationTypeAttribute.IsValid(); }
+	bool IsVisibleAttributeValid() const { return VisibleAttribute.IsValid(); }
+	bool IsRemoveOnBreakAttributeValid() const { return RemoveOnBreakAttribute.IsValid(); }
+
+	const TManagedArray<int32>& GetLevel() const { return LevelAttribute.Get(); }
+	const TManagedArray<int32>& GetSimulationType() const { return SimulationTypeAttribute.Get(); }
+	const TManagedArray<bool>& GetVisible() const { return VisibleAttribute.Get(); }
+
+	FString GetBoneName(int32 Index) const;
+	float GetRelativeSize(int32 Index) const;
+	float GetVolumetricUnit(int32 Index) const;
+	int32 GetInitialState(int32 Index) const;
+	bool IsAnchored(int32 Index) const;
+	float GetDamage(int32 Index) const;
+	float GetDamageThreshold(int32 Index) const;
+	bool IsBroken(int32 Index) const;
+	FRemoveOnBreakData GetRemoveOnBreakData(int32 Index) const;
+	bool HasSourceCollision(int32 Index) const;
+	bool IsSourceCollisionUsed(int32 Index) const;
+
+private:
+	FManagedArrayCollection&			DataCollection;
+	TManagedArrayAccessor<FString>		BoneNameAttribute;
+	TManagedArrayAccessor<int32>		LevelAttribute;
+	//TManagedArrayAccessor<TArray<int32>>ChildrenAttribute;
+	TManagedArrayAccessor<bool>			VisibleAttribute;
+	TManagedArrayAccessor<int32>		InitialStateAttribute;
+	TManagedArrayAccessor<float>		RelativeSizeAttribute;
+	TManagedArrayAccessor<float>		VolumetricUnitAttribute;
+	TManagedArrayAccessor<bool>			AnchoredAttribute;
+	TManagedArrayAccessor<float>		DamageAttribute;
+	TManagedArrayAccessor<float>		DamageThresholdAttribute;
+	TManagedArrayAccessor<bool>			BrokenStateAttribute;
+	TManagedArrayAccessor<FVector4f>	RemoveOnBreakAttribute;
+	TManagedArrayAccessor<int32>		SimulationTypeAttribute;
+	TManagedArrayAccessor<bool>			HasSourceCollisionAttribute;
+	TManagedArrayAccessor<bool>			SourceCollisionUsedAttribute;
+};
+
 class FGeometryCollectionTreeItemComponent : public FGeometryCollectionTreeItem
 {
 public:
 	FGeometryCollectionTreeItemComponent(UGeometryCollectionComponent* InComponent, TSharedPtr<STreeView<FGeometryCollectionTreeItemPtr>> InTreeView)
 		: Component(InComponent)
 		, TreeView(InTreeView)
+		, DataCollectionFacade(DataCollection)
 	{
 		RegenerateChildren();
 	}
@@ -110,13 +158,15 @@ public:
 	 
 	void GetChildrenForBone(FGeometryCollectionTreeItemBone& BoneItem, FGeometryCollectionTreeItemList& OutChildren) const;
 	bool HasChildrenForBone(const FGeometryCollectionTreeItemBone& BoneItem) const;
-	FText GetDisplayNameForBone(const FGuid& Guid) const;
 
 	void ExpandAll();
+	void GenerateDataCollection();
 	void RegenerateChildren();
 	void RequestTreeRefresh();
 
 	void SetHistogramSelection(TArray<int32>& SelectedBones);
+
+	FGeometryCollectionItemDataFacade& GetDataCollectionFacade() { return DataCollectionFacade; }
 
 private:
 	bool FilterBoneIndex(int32 BoneIndex) const;
@@ -127,41 +177,34 @@ private:
 	TSharedPtr<STreeView<FGeometryCollectionTreeItemPtr>> TreeView;
 
 	/** The direct children under this component */
-	TArray<FGeometryCollectionTreeItemPtr> MyChildren;
-
-	TMap<FGuid, FGeometryCollectionTreeItemPtr> NodesMap;
-	TMap<FGuid, int32> GuidIndexMap;
-	FGuid RootGuid;
+	TArray<FGeometryCollectionTreeItemPtr> ChildItems;
+	TMap<int32, FGeometryCollectionTreeItemPtr> ItemsByBoneIndex;
 	int32 RootIndex;
 
 	TArray<int32> HistogramSelection;
+
+	// collection used to store the displayed information
+	FManagedArrayCollection DataCollection;
+	FGeometryCollectionItemDataFacade DataCollectionFacade;
+
 };
 
 class FGeometryCollectionTreeItemBone : public FGeometryCollectionTreeItem
 {
 
 public:
-	FGeometryCollectionTreeItemBone(const FGuid NewGuid, const int32 InBoneIndex, FGeometryCollectionTreeItemComponent* InParentComponentItem)
-		: Guid(NewGuid)
-		, BoneIndex(InBoneIndex)
+	FGeometryCollectionTreeItemBone(const int32 InBoneIndex, FGeometryCollectionTreeItemComponent* InParentComponentItem)
+		: BoneIndex(InBoneIndex)
 		, ParentComponentItem(InParentComponentItem)
 		, ItemColor(FSlateColor::UseForeground())
-		, RelativeSize(0)
-		, InitialState(INDEX_NONE)
-		, Anchored(false)
-		, Damage(0)
-		, DamageThreshold(0)
-		, Broken(false)
-		, RemoveOnBreakAvailable(false)
-		, RemoveOnBreak(FRemoveOnBreakData::DisabledPackedData)
-		, ImportedCollisionsAvailable(false)
-		, ImportedCollisionsUsed(false)
 	{}
 
 	/** FGeometryCollectionTreeItem interface */
 	TSharedRef<ITableRow> MakeTreeRowWidget(const TSharedRef<STableViewBase>& InOwnerTable, bool bIsPinned = false);
-	TSharedRef<SWidget> MakeNameColumnWidget() const;
+	TSharedRef<SWidget> MakeBoneIndexColumnWidget() const;
+	TSharedRef<SWidget> MakeBoneNameColumnWidget() const;
 	TSharedRef<SWidget> MakeRelativeSizeColumnWidget() const;
+	TSharedRef<SWidget> MakeVolumeColumnWidget() const;
 	TSharedRef<SWidget> MakeDamagesColumnWidget() const;
 	TSharedRef<SWidget> MakeDamageThresholdColumnWidget() const;
 	TSharedRef<SWidget> MakeBrokenColumnWidget() const;
@@ -174,7 +217,6 @@ public:
 	virtual void GetChildren(FGeometryCollectionTreeItemList& OutChildren) override;
 	virtual int32 GetBoneIndex() const override { return BoneIndex; }
 	virtual UGeometryCollectionComponent* GetComponent() const { return ParentComponentItem->GetComponent(); }
-	const FGuid& GetGuid() const { return Guid; }
 	bool HasChildren() const;
 	
 protected:
@@ -184,34 +226,24 @@ protected:
 
 private:
 	void UpdateItemFromCollection();
+
+	const FGeometryCollectionItemDataFacade& GetDataCollectionFacade() const;
 	
 private:
-	const FGuid Guid;
 	const int32 BoneIndex;
 	FGeometryCollectionTreeItemComponent* ParentComponentItem;
-	
 	FSlateColor ItemColor;
-	FText ItemText;
-	float RelativeSize;
-	int32 InitialState;
-	bool Anchored;
-	float Damage;
-	float DamageThreshold;
-	bool Broken;
-	bool RemoveOnBreakAvailable;
-	bool IsCluster;
-	FRemoveOnBreakData RemoveOnBreak;
-	bool ImportedCollisionsAvailable;
-	bool ImportedCollisionsUsed;
 };
 
 typedef TSharedPtr<class FGeometryCollectionTreeItemBone> FGeometryCollectionTreeItemBonePtr;
 
 namespace SGeometryCollectionOutlinerColumnID
 {
-	const FName Bone("Bone");
+	const FName BoneIndex("Index");
+	const FName BoneName("Name");
 	// State and Size column mode
 	const FName RelativeSize("Relative Size");
+	const FName Volume("Volume");
 	const FName InitialState("Initial State");
 	const FName Anchored("Anchored");
 	// Damage Column Mode
@@ -265,6 +297,7 @@ public:
 
 	void RegenerateItems();
 	void RegenerateHeader();
+	void RegenerateRootData();
 
 	TSharedRef<ITableRow> MakeTreeRowWidget(FGeometryCollectionTreeItemPtr InInfo, const TSharedRef<STableViewBase>& OwnerTable);
 	TSharedRef<ITableRow> OnGeneratePinnedRowWidget(FGeometryCollectionTreeItemPtr InItem, const TSharedRef<STableViewBase>& InOwnerTable, bool bPinned);

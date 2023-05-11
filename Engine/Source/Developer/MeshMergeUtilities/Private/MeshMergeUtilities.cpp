@@ -4,6 +4,7 @@
 
 #include "Engine/MapBuildDataRegistry.h"
 #include "Engine/MeshMerging.h"
+#include "Engine/StaticMeshSocket.h"
 
 #include "MaterialOptions.h"
 #include "IMaterialBakingModule.h"
@@ -48,6 +49,7 @@
 #include "ProxyGenerationProcessor.h"
 #include "IMaterialBakingAdapter.h"
 #include "StaticMeshComponentAdapter.h"
+#include "StaticMeshComponentLODInfo.h"
 #include "SkeletalMeshAdapter.h"
 #include "StaticMeshAdapter.h"
 
@@ -79,6 +81,7 @@
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Framework/Notifications/NotificationManager.h"
 
+#include "ISMPartition/ISMComponentBatcher.h"
 #include "ISMPartition/ISMComponentDescriptor.h"
 
 #define LOCTEXT_NAMESPACE "MeshMergeUtils"
@@ -2297,7 +2300,47 @@ void FMeshMergeUtilities::MergeComponentsToStaticMesh(const TArray<UPrimitiveCom
 	TArray<FKAggregateGeom> PhysicsGeometry;
 	if (InSettings.bMergePhysicsData)
 	{
-		ExtractPhysicsDataFromComponents(ComponentsToMerge, PhysicsGeometry, BodySetupSource);
+		RetrievePhysicsData(ComponentsToMerge, PhysicsGeometry, BodySetupSource);
+	}
+
+	// Merge sockets
+	TMap<FName, UStaticMeshSocket*> MergedSockets;
+	if (InSettings.bMergeMeshSockets)
+	{
+		const FTransform PivotTransform = FTransform(MergedAssetPivot);
+		for (UPrimitiveComponent* PrimitiveComponent : ComponentsToMerge)
+		{
+			if (UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(PrimitiveComponent))
+			{
+				if (UStaticMesh* StaticMesh = StaticMeshComponent->GetStaticMesh())
+				{
+					for (UStaticMeshSocket* Socket : StaticMesh->Sockets)
+					{
+						if (Socket)
+						{
+							UStaticMeshSocket* SocketCopy = DuplicateObject<UStaticMeshSocket>(Socket, nullptr);
+
+						    // Fix name - rename if duplicates are found
+							FString PlainName = SocketCopy->SocketName.GetPlainNameString();
+						    int32 CurrentNumber = SocketCopy->SocketName.GetNumber();
+						    while (MergedSockets.Contains(SocketCopy->SocketName))
+						    {
+							    SocketCopy->SocketName = FName(PlainName, CurrentNumber++);
+						    }
+    
+						    // Fix transform - make relative to pivot
+						    FTransform SocketTransformWorldSpace = StaticMeshComponent->GetSocketTransform(Socket->SocketName, RTS_World);
+						    FTransform SocketTransformPivotSpace = SocketTransformWorldSpace.GetRelativeTransform(PivotTransform);
+						    SocketCopy->RelativeLocation = SocketTransformPivotSpace.GetLocation();
+						    SocketCopy->RelativeRotation = FRotator(SocketTransformPivotSpace.GetRotation());
+						    SocketCopy->RelativeScale = SocketTransformPivotSpace.GetScale3D();
+
+							MergedSockets.Add(SocketCopy->SocketName, SocketCopy);
+						}
+					}
+				}
+			}
+		}
 	}
 
 	// Find all unique materials and remap section to unique materials
@@ -3064,6 +3107,16 @@ void FMeshMergeUtilities::MergeComponentsToStaticMesh(const TArray<UPrimitiveCom
 			}
 		}
 
+		// Add merged sockets
+		if (InSettings.bMergeMeshSockets)
+		{
+			for (auto& [SocketName, Socket] : MergedSockets)
+			{
+				Socket->Rename(nullptr, StaticMesh);
+				StaticMesh->AddSocket(Socket);
+			}
+		}
+
 		StaticMesh->GetSectionInfoMap().CopyFrom(SectionInfoMap);
 		StaticMesh->GetOriginalSectionInfoMap().CopyFrom(SectionInfoMap);
 
@@ -3492,7 +3545,7 @@ void FMeshMergeUtilities::MergeComponentsToInstances(const TArray<UPrimitiveComp
 			{
 				// Create our actors
 				const FScopedTransaction Transaction(LOCTEXT("PlaceInstancedActors", "Place Instanced Actor(s)"));
-				Level->Modify();
+				Level->Modify(false);
 
  				FActorSpawnParameters Params;
  				Params.OverrideLevel = Level;
@@ -3545,10 +3598,10 @@ void FMeshMergeUtilities::MergeComponentsToInstances(const TArray<UPrimitiveComp
 						NewComponent->SetCollisionProfileName(ComponentEntry.CollisionProfileName);
 						NewComponent->SetCollisionEnabled(ComponentEntry.CollisionEnabled);
 						NewComponent->SetMobility(EComponentMobility::Static);
-						for(UStaticMeshComponent* OriginalComponent : ComponentEntry.OriginalComponents)
-						{
-							NewComponent->AddInstance(OriginalComponent->GetComponentTransform());
-						}
+
+						FISMComponentBatcher ISMComponentBatcher;
+						ISMComponentBatcher.Append(ComponentEntry.OriginalComponents);
+						ISMComponentBatcher.InitComponent(NewComponent);						
 
 						NewComponent->RegisterComponent();
 					}
@@ -3645,16 +3698,52 @@ UMaterialInterface* FMeshMergeUtilities::CreateProxyMaterial(const FString &InBa
 	return MergedMaterial;
 }
 
-void FMeshMergeUtilities::ExtractPhysicsDataFromComponents(const TArray<UPrimitiveComponent*>& ComponentsToMerge, TArray<FKAggregateGeom>& InOutPhysicsGeometry, UBodySetup*& OutBodySetupSource) const
+void FMeshMergeUtilities::RetrievePhysicsData(const TArray<UPrimitiveComponent*>& ComponentsToMerge, TArray<FKAggregateGeom>& InOutPhysicsGeometry, UBodySetup*& OutBodySetupSource) const
 {
 	InOutPhysicsGeometry.AddDefaulted(ComponentsToMerge.Num());
-	for (int32 ComponentIndex = 0; ComponentIndex < ComponentsToMerge.Num(); ++ComponentIndex)
+	for (int32 ComponentIndex = 0, PhysicsGeometryIndex = 0; ComponentIndex < ComponentsToMerge.Num(); ++ComponentIndex)
 	{
 		UPrimitiveComponent* PrimComp = ComponentsToMerge[ComponentIndex];
 		UBodySetup* BodySetup = nullptr;
 		FTransform ComponentToWorld = FTransform::Identity;
 
-		if (UStaticMeshComponent* StaticMeshComp = Cast<UStaticMeshComponent>(PrimComp))
+		auto ExtractPhysicGeometry = [&BodySetup, &ComponentToWorld, &OutBodySetupSource, &InOutPhysicsGeometry, PrimComp](int32 PhysicsIndex) {
+				USplineMeshComponent* SplineMeshComponent = Cast<USplineMeshComponent>(PrimComp);
+				FMeshMergeHelpers::ExtractPhysicsGeometry(BodySetup, ComponentToWorld, SplineMeshComponent != nullptr, InOutPhysicsGeometry[PhysicsIndex]);
+				if (SplineMeshComponent)
+				{
+					FMeshMergeHelpers::PropagateSplineDeformationToPhysicsGeometry(SplineMeshComponent, InOutPhysicsGeometry[PhysicsIndex]);
+				}
+
+				// We will use first valid BodySetup as a source of physics settings
+				if (OutBodySetupSource == nullptr)
+				{
+					OutBodySetupSource = BodySetup;
+				}
+			};
+
+		if (UInstancedStaticMeshComponent* ISMComp = Cast<UInstancedStaticMeshComponent>(PrimComp))
+		{
+			const int32 NumberOfInstances = ISMComp->PerInstanceSMData.Num();
+			const UStaticMesh* SrcMesh = ISMComp->GetStaticMesh();
+			
+			if (NumberOfInstances > 1)
+			{
+				InOutPhysicsGeometry.AddDefaulted(NumberOfInstances - 1);
+			}
+
+			if (SrcMesh)
+			{
+				BodySetup = SrcMesh->GetBodySetup();
+			}
+
+			for (const FInstancedStaticMeshInstanceData& InstanceData : ISMComp->PerInstanceSMData)
+			{
+				ComponentToWorld = FTransform(InstanceData.Transform) * ISMComp->GetComponentToWorld();
+				ExtractPhysicGeometry(PhysicsGeometryIndex++);
+			}
+		}
+		else if (UStaticMeshComponent* StaticMeshComp = Cast<UStaticMeshComponent>(PrimComp))
 		{
 			UStaticMesh* SrcMesh = StaticMeshComp->GetStaticMesh();
 			if (SrcMesh)
@@ -3662,25 +3751,15 @@ void FMeshMergeUtilities::ExtractPhysicsDataFromComponents(const TArray<UPrimiti
 				BodySetup = SrcMesh->GetBodySetup();
 			}
 			ComponentToWorld = StaticMeshComp->GetComponentToWorld();
+			ExtractPhysicGeometry(PhysicsGeometryIndex++);
 		}
 		else if (UShapeComponent* ShapeComp = Cast<UShapeComponent>(PrimComp))
 		{
 			BodySetup = ShapeComp->GetBodySetup();
 			ComponentToWorld = ShapeComp->GetComponentToWorld();
+			ExtractPhysicGeometry(PhysicsGeometryIndex++);
 		}
 
-		USplineMeshComponent* SplineMeshComponent = Cast<USplineMeshComponent>(PrimComp);
-		FMeshMergeHelpers::ExtractPhysicsGeometry(BodySetup, ComponentToWorld, SplineMeshComponent != nullptr, InOutPhysicsGeometry[ComponentIndex]);
-		if (SplineMeshComponent)
-		{
-			FMeshMergeHelpers::PropagateSplineDeformationToPhysicsGeometry(SplineMeshComponent, InOutPhysicsGeometry[ComponentIndex]);
-		}
-
-		// We will use first valid BodySetup as a source of physics settings
-		if (OutBodySetupSource == nullptr)
-		{
-			OutBodySetupSource = BodySetup;
-		}
 	}
 }
 

@@ -6,14 +6,21 @@
 #include "Containers/Array.h"
 #include "CookOnTheSide/CookOnTheFlyServer.h"
 #include "CookTypes.h"
+#include "HAL/CriticalSection.h"
 #include "IPAddress.h"
+#include "Misc/Guid.h"
+#include "Templates/UniquePtr.h"
 
+namespace UE::Cook { class FMPCollectorClientMessageContext; }
 namespace UE::Cook { class IMPCollector; }
+namespace UE::Cook { struct FAbortPackagesMessage; }
 namespace UE::Cook { struct FAssignPackagesMessage; }
 namespace UE::Cook { struct FDirectorConnectionInfo; }
 namespace UE::Cook { struct FDiscoveredPackage; }
+namespace UE::Cook { struct FHeartbeatMessage; }
 namespace UE::Cook { struct FInitialConfigMessage; }
 namespace UE::Cook { struct FPackageRemoteResult; }
+namespace UE::Cook { struct FRetractionRequestMessage; }
 
 namespace UE::Cook
 {
@@ -40,6 +47,7 @@ public:
 	const TArray<ITargetPlatform*>& GetTargetPlatforms() const;
 	/** Consumes the initialization settings from the Director. Only available during initialization. */
 	ECookInitializationFlags GetCookInitializationFlags();
+	bool GetInitializationIsZenStore();
 	FInitializeConfigSettings&& ConsumeInitializeConfigSettings();
 	FBeginCookConfigSettings&& ConsumeBeginCookConfigSettings();
 	FCookByTheBookOptions&& ConsumeCookByTheBookOptions();
@@ -47,6 +55,8 @@ public:
 	FCookOnTheFlyOptions&& ConsumeCookOnTheFlyOptions();
 	/** Mark that initialization is complete and we can free the memory for initialization settings. */
 	void DoneWithInitialSettings();
+	bool HasRunFinished() const { return bHasRunFinished; }
+	void SetHasRunFinished(bool Value) { bHasRunFinished = Value; }
 
 	/** Queue a message to the server that the Package was cook-suppressed. Will be sent during Tick. */
 	void ReportDemoteToIdle(const FPackageData& PackageData, ESuppressCookReason Reason);
@@ -102,15 +112,37 @@ private:
 	void AssignPackages(FAssignPackagesMessage& Message);
 	/** Tick the registered collectors. */
 	void TickCollectors(FTickStackData& StackData, bool bFlush);
-
+	/** Helper for ReportDemote/ReportPromote: Collect IMPCollectors and asynchronously add the message to pending. */
+	void ReportPackageMessage(FName PackageName, TUniquePtr<FPackageRemoteResult>&& ResultOwner);
+	
+	void HandleAbortPackagesMessage(FMPCollectorClientMessageContext& Context, bool bReadSuccessful,
+		FAbortPackagesMessage&& Message);
+	void HandleRetractionMessage(FMPCollectorClientMessageContext& Context, bool bReadSuccessful,
+		FRetractionRequestMessage&& Message);
+	void HandleHeartbeatMessage(FMPCollectorClientMessageContext& Context, bool bReadSuccessful,
+		FHeartbeatMessage&& Message);
 
 private:
+	/**
+	 * A PendingResult constructed during ReportPromoteToSaveComplete that is not yet ready to 
+	 * send because it has some asynchronous messages still pending.
+	 */
+	struct FPendingResultNeedingAsyncWork
+	{
+		FPendingResultNeedingAsyncWork() = default;
+		FPendingResultNeedingAsyncWork(FPendingResultNeedingAsyncWork&&) = default;
+		FPendingResultNeedingAsyncWork& operator=(FPendingResultNeedingAsyncWork&&) = default;
+
+		TUniquePtr<FPackageRemoteResult> PendingResult;
+		TFuture<void> CompletionFuture;
+	};
+private:
+	// Variables Read/Write only from the Scheduler thread
 	TSharedPtr<FInternetAddr> DirectorAddr;
 	TUniquePtr<FInitialConfigMessage> InitialConfigMessage;
 	TArray<ITargetPlatform*> OrderedSessionPlatforms;
-	TArray<FPackageRemoteResult> PendingResults;
 	TArray<FDiscoveredPackage> PendingDiscoveredPackages;
-	TArray<TRefCountPtr<IMPCollector>> CollectorsToTick;
+	TMap<FGuid, TRefCountPtr<IMPCollector>> Collectors;
 	UE::CompactBinaryTCP::FSendBuffer SendBuffer;
 	UE::CompactBinaryTCP::FReceiveBuffer ReceiveBuffer;
 	FString DirectorURI;
@@ -120,6 +152,12 @@ private:
 	double NextTickCollectorsTimeSeconds = 0.;
 	EConnectStatus ConnectStatus = EConnectStatus::Uninitialized;
 	ECookMode::Type DirectorCookMode = ECookMode::CookByTheBook;
+	bool bHasRunFinished = false;
+
+	// Variables Read/Write only within PendingResultsLock
+	FCriticalSection PendingResultsLock;
+	TArray<TUniquePtr<FPackageRemoteResult>> PendingResults;
+	TMap<FPackageRemoteResult*, FPendingResultNeedingAsyncWork> PendingResultsNeedingAsyncWork;
 };
 
 }

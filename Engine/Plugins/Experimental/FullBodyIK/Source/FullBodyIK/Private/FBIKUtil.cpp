@@ -2,12 +2,18 @@
 
 #include "FBIKUtil.h"
 #include "Rigs/RigHierarchy.h"
+#include "Rigs/RigHierarchyDefines.h"
 
 // in the future, we expose rotation axis 
 namespace FBIKUtil
 {
 	bool CanCrossProduct(const FVector& Vector1, const FVector& Vector2)
 	{
+		// zero vectors produce NANs below
+		if (Vector1.IsNearlyZero() || Vector2.IsNearlyZero())
+		{
+			return false;
+		}
 		// here we test their parallelism, and we normalize vectors
 		float Cosine = FVector::DotProduct(Vector1.GetUnsafeNormal(), Vector2.GetUnsafeNormal());
 		// if they're parallel, we need to find other axis

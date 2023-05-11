@@ -2,24 +2,19 @@
 
 #include "NaniteDisplacedMeshFactory.h"
 
+#include "Misc/Paths.h"
 #include "NaniteDisplacedMesh.h"
 #include "NaniteDisplacedMeshEditorModule.h"
 #include "NaniteDisplacedMeshLog.h"
 
-#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
-#include "CookOnTheSide/CookOnTheFlyServer.h"
 #include "DerivedDataBuildVersion.h"
 #include "Editor.h"
-#include "Editor/EditorEngine.h"
-#include "Engine/Selection.h"
 #include "Engine/StaticMesh.h"
+#include "Engine/Texture2D.h"
 #include "FileHelpers.h"
 #include "IAssetTools.h"
-#include "Misc/StringBuilder.h"
-#include "Subsystems/EditorAssetSubsystem.h"
 #include "UObject/LinkerLoad.h"
-#include "UObject/Package.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NaniteDisplacedMeshFactory)
 
@@ -281,6 +276,8 @@ FGuid GetAggregatedId(const FNaniteDisplacedMeshParams& DisplacedMeshParams)
 		if (IsValid(DisplacementMap.Texture))
 		{
 			IdBuilder << DisplacementMap.Texture->GetPackage()->GetPersistentGuid();
+			IdBuilder << DisplacementMap.Texture->AddressX;
+			IdBuilder << DisplacementMap.Texture->AddressY;
 		}
 
 		IdBuilder << DisplacementMap.Magnitude;

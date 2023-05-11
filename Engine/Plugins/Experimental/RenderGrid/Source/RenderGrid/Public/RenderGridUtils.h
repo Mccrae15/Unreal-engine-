@@ -7,6 +7,7 @@
 #include "RenderGridUtils.generated.h"
 
 
+class URenderGrid;
 class UTexture2D;
 
 
@@ -54,7 +55,7 @@ namespace UE::RenderGrid::Private
 	/**
 	 * A class containing static utility functions for the RenderGrid module.
 	 */
-	class FRenderGridUtils
+	class RENDERGRID_API FRenderGridUtils
 	{
 	public:
 		/**
@@ -133,6 +134,49 @@ namespace UE::RenderGrid::Private
 		 * Returns a normalized directory path.
 		 */
 		static FString NormalizeOutputDirectory(const FString& OutputDirectory);
+
+
+		/**
+		 * Returns a job ID with all invalid characters removed from it. Returns an empty string if it contains no valid characters.
+		 */
+		static FString PurgeJobIdOrReturnEmptyString(const FString& JobId);
+
+		/**
+		 * Returns a job ID with all invalid characters removed from it. Returns string "0" if it contains no valid characters.
+		 */
+		static FString PurgeJobId(const FString& JobId);
+
+		/**
+		 * Returns a job ID with all invalid characters removed from it. Returns a newly generated unique ID if it contains no valid characters.
+		 * The generated string is only unique relative to the job IDs that currently exist in the given RenderGrid.
+		 */
+		static FString PurgeJobIdOrGenerateUniqueId(URenderGrid* Grid, const FString& JobId);
+
+		/**
+		 * Returns a job name with all invalid characters removed from it. Returns an empty string if it contains no valid characters.
+		 */
+		static FString PurgeJobName(const FString& JobName);
+
+		/**
+		 * Returns a job output directory that's converted to a full path (if it's currently relative) and that also has the project directory path replaced by "{project_dir}" (if the given path contains that string).
+		 */
+		static FString NormalizeJobOutputDirectory(const FString& NewOutputDirectory);
+
+		/**
+		 * Returns a job output directory that's a usable valid filesystem path. Replaces string "{project_dir}" by the project directory.
+		 */
+		static FString DenormalizeJobOutputDirectory(const FString& NormalizedOutputDirectory);
+
+
+		/**
+		 * Converts the given bytes to a UTF-16 string, parses it as JSON, obtains the value from it, converts it to a string, and returns that string.
+		 */
+		static FString GetRemoteControlValueJsonFromBytes(const TArray<uint8>& ValueBytes, const bool PrettyPrint = false);
+		
+		/**
+		 * Converts the given bytes to a UTF-16 string, parses it as JSON, and obtains the key from it. Then it wraps the given json to insert the key (found in the given bytes), converts the json to bytes (UTF-16), and then return those bytes.
+		 */
+		static TArray<uint8> GetRemoteControlValueBytesFromJson(const TArray<uint8>& OldValueBytes, const FString& NewValueJson);
 
 
 		/**

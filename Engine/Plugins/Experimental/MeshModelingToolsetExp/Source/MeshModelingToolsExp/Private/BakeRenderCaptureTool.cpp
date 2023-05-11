@@ -1,7 +1,8 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BakeRenderCaptureTool.h"
-
+#include "Components/StaticMeshComponent.h"
+#include "Materials/Material.h"
 #include "TargetInterfaces/MaterialProvider.h"
 #include "TargetInterfaces/MeshDescriptionProvider.h"
 #include "TargetInterfaces/PrimitiveComponentBackedTarget.h"
@@ -10,18 +11,18 @@
 
 #include "DynamicMesh/MeshTransforms.h"
 
+#include "BakeToolUtils.h"
+#include "ToolSetupUtil.h"
 #include "ModelingToolTargetUtil.h"
 
 #include "ModelingObjectsCreationAPI.h"
 
 #include "EngineAnalytics.h"
 
+#include "Baking/BakingTypes.h"
 #include "Sampling/MeshImageBakingCache.h"
 #include "Sampling/MeshMapBaker.h"
 #include "Sampling/RenderCaptureMapEvaluator.h"
-#include "Image/ImageInfilling.h"
-#include "Algo/NoneOf.h"
-#include "Misc/ScopedSlowTask.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(BakeRenderCaptureTool)
 
@@ -30,283 +31,46 @@ using namespace UE::Geometry;
 
 #define LOCTEXT_NAMESPACE "UBakeRenderCaptureTool"
 
-//
-// Implementation details
-//
-
-
-
-class FSceneCapturePhotoSetSampler : public FMeshBakerDynamicMeshSampler
-{
-public:
-	FSceneCapturePhotoSetSampler(
-		FSceneCapturePhotoSet* SceneCapture,
-		float ValidSampleDepthThreshold,
-		TFunctionRef<bool(const FVector3d&, const FVector3d&)> VisibilityFunction,
-		const FDynamicMesh3* Mesh,
-		const FDynamicMeshAABBTree3* Spatial,
-		const FMeshTangentsd* Tangents)
-	:
-		FMeshBakerDynamicMeshSampler(Mesh, Spatial, Tangents),
-		SceneCapture(SceneCapture),
-		ValidSampleDepthThreshold(ValidSampleDepthThreshold),
-		VisibilityFunction(VisibilityFunction)
-	{
-		check(SceneCapture != nullptr);
-		check(Mesh != nullptr);
-		check(Spatial != nullptr);
-		check(Tangents != nullptr);
-
-		bool bHasDepth = SceneCapture->GetCaptureTypeEnabled(ERenderCaptureType::DeviceDepth);
-		if (bHasDepth)
-		{
-			ensure(ValidSampleDepthThreshold > 0); // We only need the depth capture if this threshold is positive
-		}
-	}
-
-	virtual bool SupportsCustomCorrespondence() const override
-	{
-		return true;
-	}
-
-	// Warning: Expects that Sample.BaseSample.SurfacePoint and Sample.BaseNormal are set when the function is called
-	virtual void* ComputeCustomCorrespondence(const FMeshUVSampleInfo& SampleInfo, FMeshMapEvaluator::FCorrespondenceSample& Sample) const override
-	{
-		// Perform a ray-cast to determine which photo/coordinate, if any, should be sampled
-		int PhotoIndex;
-		FVector2d PhotoCoords;
-		SceneCapture->ComputeSampleLocation(
-			Sample.BaseSample.SurfacePoint,
-			Sample.BaseNormal,
-			ValidSampleDepthThreshold,
-			VisibilityFunction,
-			PhotoIndex,
-			PhotoCoords);
-
-		// Store the photo coordinates and index in the correspondence sample
-		Sample.DetailMesh = SceneCapture;
-		Sample.DetailTriID = PhotoIndex;
-		Sample.DetailBaryCoords.X = PhotoCoords.X;
-		Sample.DetailBaryCoords.Y = PhotoCoords.Y;
-
-		// This will be set to Sample.DetailMesh but we can already do that internally so it's kindof redundant
-		return SceneCapture;
-	}
-
-	virtual bool IsValidCorrespondence(const FMeshMapEvaluator::FCorrespondenceSample& Sample) const override
-	{
-		return Sample.DetailTriID != IndexConstants::InvalidID;
-	}
-
-public:
-	FSceneCapturePhotoSet* SceneCapture = nullptr;
-	float ValidSampleDepthThreshold = 0;
-	TFunctionRef<bool(const FVector3d&, const FVector3d&)> VisibilityFunction;
-};
-
-
 
 static FString BaseColorTexParamName = TEXT("BaseColor");
 static FString RoughnessTexParamName = TEXT("Roughness");
 static FString MetallicTexParamName = TEXT("Metallic");
 static FString SpecularTexParamName = TEXT("Specular");
 static FString EmissiveTexParamName = TEXT("Emissive");
+static FString OpacityTexParamName  = TEXT("Opacity");
+static FString SubsurfaceColorTexParamName = TEXT("SubsurfaceColor");
 static FString NormalTexParamName = TEXT("NormalMap");
 static FString PackedMRSTexParamName = TEXT("PackedMRS");
 
-class FRenderCaptureSettings
+
+FRenderCaptureOptions
+MakeRenderCaptureOptions(const URenderCaptureProperties& RenderCaptureProperties)
 {
-public:
-	enum class ETextureSizePolicy : uint8
-	{
-		TextureSize = 0,
-		TexelDensity = 1
-	};
+	FRenderCaptureOptions Options;
 
-	/**
-	 * Input options to Actor Approximation process
-	 */
-	struct FOptions
-	{
-		//
-		// Material approximation settings
-		//
-		int32 RenderCaptureImageSize = 1024;
-		bool bAntiAliasing = false;
+	Options.bBakeBaseColor = RenderCaptureProperties.bBaseColorMap;
+	Options.bBakeNormalMap = RenderCaptureProperties.bNormalMap;
+	Options.bBakeEmissive =  RenderCaptureProperties.bEmissiveMap;
+	Options.bBakeOpacity = RenderCaptureProperties.bOpacityMap;
+	Options.bBakeSubsurfaceColor = RenderCaptureProperties.bSubsurfaceColorMap;
+	Options.bBakeDeviceDepth = RenderCaptureProperties.bDeviceDepthMap;
+	
+	// Enforce the PackedMRS precondition here so we don't have to check it at each usage site.  Note: We don't
+	// apply this precondition on the RenderCaptureProperties because we don't want the user to have to re-enable
+	// options which enabling PackedMRS disabled.
+	Options.bUsePackedMRS =  RenderCaptureProperties.bPackedMRSMap;
+	Options.bBakeMetallic =  RenderCaptureProperties.bPackedMRSMap ? false : RenderCaptureProperties.bMetallicMap;
+	Options.bBakeRoughness = RenderCaptureProperties.bPackedMRSMap ? false : RenderCaptureProperties.bRoughnessMap;
+	Options.bBakeSpecular =  RenderCaptureProperties.bPackedMRSMap ? false : RenderCaptureProperties.bSpecularMap;
 
-		// render capture parameters
-		double FieldOfViewDegrees = 45.0;
-		double NearPlaneDist = 1.0;
-		double ValidSampleDepthThreshold = 0;
+	Options.RenderCaptureImageSize = static_cast<int32>(RenderCaptureProperties.Resolution);
+	Options.bAntiAliasing = RenderCaptureProperties.bAntiAliasing;
+	Options.FieldOfViewDegrees = RenderCaptureProperties.CaptureFieldOfView;
+	Options.NearPlaneDist = RenderCaptureProperties.NearPlaneDist;
 
-		//
-		// Material output settings
-		//
-
-		// A new MIC derived from this material will be created and assigned to the generated mesh
-		UMaterialInterface* BakeMaterial = nullptr;		// if null, will use /MeshModelingToolsetExp/Materials/FullMaterialBakePreviewMaterial_PackedMRS instead
-		bool bBakeBaseColor = true;
-		bool bBakeRoughness = true;
-		bool bBakeMetallic = true;
-		bool bBakeSpecular = true;
-		bool bBakeEmissive = true;
-		bool bBakeNormalMap = true;
-		bool bBakeDeviceDepth = true;
-		
-		bool bUsePackedMRS = true;
-
-		//
-		// Mesh settings
-		//
-
-		//  Which UV layer of the Target mesh (the one we're baking to) should be used
-		int32 TargetUVLayer = 0;
-	};
-
-	/**
-	 * Construct an FOptions from the provided FMeshApproximationSettings.
-	 */
-	static FOptions ConstructOptions(
-		const URenderCaptureProperties& RenderCaptureProperties,
-		const UBakeRenderCaptureToolProperties& ToolProperties,
-		const UBakeRenderCaptureInputToolProperties& InputMeshSettings)
-	{
-		//
-		// Construct options for ApproximateActors operation
-		//
-		FOptions Options;
-
-		Options.TargetUVLayer = InputMeshSettings.GetTargetUVLayerIndex();
-
-		Options.RenderCaptureImageSize = static_cast<int32>(RenderCaptureProperties.Resolution);
-		Options.ValidSampleDepthThreshold = ToolProperties.ValidSampleDepthThreshold;
-
-		Options.bBakeBaseColor = RenderCaptureProperties.bBaseColorMap;
-		Options.bBakeNormalMap = RenderCaptureProperties.bNormalMap;
-		Options.bBakeEmissive =  RenderCaptureProperties.bEmissiveMap;
-		Options.bBakeDeviceDepth = RenderCaptureProperties.bDeviceDepthMap;
-		
-		// Enforce the PackedMRS precondition here so we don't have to check it at each usage site.  Note: We don't
-		// apply this precondition on the RenderCaptureProperties because we don't want the user to have to re-enable
-		// options which enabling PackedMRS disabled.
-		Options.bUsePackedMRS =  RenderCaptureProperties.bPackedMRSMap;
-		Options.bBakeMetallic =  RenderCaptureProperties.bPackedMRSMap ? false : RenderCaptureProperties.bMetallicMap;
-		Options.bBakeRoughness = RenderCaptureProperties.bPackedMRSMap ? false : RenderCaptureProperties.bRoughnessMap;
-		Options.bBakeSpecular =  RenderCaptureProperties.bPackedMRSMap ? false : RenderCaptureProperties.bSpecularMap;
-
-		Options.bAntiAliasing = RenderCaptureProperties.bAntiAliasing;
-		Options.FieldOfViewDegrees = RenderCaptureProperties.CaptureFieldOfView;
-		Options.NearPlaneDist = RenderCaptureProperties.NearPlaneDist;
-
-		return Options;
-	}
-};
-
-static TUniquePtr<FSceneCapturePhotoSet> CapturePhotoSet(
-	const TArray<TObjectPtr<AActor>>& Actors,
-	const FRenderCaptureSettings::FOptions& Options,
-	bool bAllowCancel
-)
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(CapturePhotoSet);
-
-	FScopedSlowTask Progress(1.f, LOCTEXT("CapturingScene", "Capturing Scene..."));
-	Progress.EnterProgressFrame(1.f);
-	Progress.MakeDialog(bAllowCancel);
-
-	double FieldOfView = Options.FieldOfViewDegrees;
-	double NearPlaneDist = Options.NearPlaneDist;
-
-	FImageDimensions CaptureDimensions(Options.RenderCaptureImageSize, Options.RenderCaptureImageSize);
-
-	TUniquePtr<FSceneCapturePhotoSet> SceneCapture = MakeUnique<FSceneCapturePhotoSet>();
-	SceneCapture->SetAllowCancel(bAllowCancel);
-
-	SceneCapture->SetCaptureTypeEnabled(ERenderCaptureType::DeviceDepth, Options.bBakeDeviceDepth);
-	SceneCapture->SetCaptureTypeEnabled(ERenderCaptureType::BaseColor,   Options.bBakeBaseColor);
-	SceneCapture->SetCaptureTypeEnabled(ERenderCaptureType::WorldNormal, Options.bBakeNormalMap);
-	SceneCapture->SetCaptureTypeEnabled(ERenderCaptureType::Emissive,    Options.bBakeEmissive);
-	SceneCapture->SetCaptureTypeEnabled(ERenderCaptureType::CombinedMRS, Options.bUsePackedMRS);
-	SceneCapture->SetCaptureTypeEnabled(ERenderCaptureType::Metallic,    Options.bBakeMetallic);
-	SceneCapture->SetCaptureTypeEnabled(ERenderCaptureType::Roughness,   Options.bBakeRoughness);
-	SceneCapture->SetCaptureTypeEnabled(ERenderCaptureType::Specular,    Options.bBakeSpecular);
-
-	FRenderCaptureConfig Config;
-	Config.bAntiAliasing = Options.bAntiAliasing;
-	SceneCapture->SetCaptureConfig(ERenderCaptureType::BaseColor,   Config);
-	SceneCapture->SetCaptureConfig(ERenderCaptureType::WorldNormal, Config);
-	SceneCapture->SetCaptureConfig(ERenderCaptureType::CombinedMRS, Config);
-	SceneCapture->SetCaptureConfig(ERenderCaptureType::Metallic,    Config);
-	SceneCapture->SetCaptureConfig(ERenderCaptureType::Roughness,   Config);
-	SceneCapture->SetCaptureConfig(ERenderCaptureType::Specular,    Config);
-	SceneCapture->SetCaptureConfig(ERenderCaptureType::Emissive,    Config);
-
-	SceneCapture->SetCaptureSceneActors(Actors[0]->GetWorld(), Actors);
-
-	// SceneCapture->SetEnableWriteDebugImages(true);
-
-	SceneCapture->AddStandardExteriorCapturesFromBoundingBox(
-		CaptureDimensions, FieldOfView, NearPlaneDist,
-		true, true, true, true, true);
-
-	return SceneCapture;
+	return Options;
 }
 
-template <ERenderCaptureType CaptureType>
-TSharedPtr<FRenderCaptureMapEvaluator<FVector4f>>
-MakeColorEvaluator(
-	const FSceneCapturePhotoSet::FSceneSample& DefaultSample,
-	const FSceneCapturePhotoSet* SceneCapture,
-	const FImageDimensions& CaptureDimensions)
-{
-	TSharedPtr<FRenderCaptureMapEvaluator<FVector4f>> Evaluator = MakeShared<FRenderCaptureMapEvaluator<FVector4f>>();
-
-	switch (CaptureType) {
-	case ERenderCaptureType::BaseColor:
-		Evaluator->Channel = ERenderCaptureChannel::BaseColor;
-		break;
-	case ERenderCaptureType::Roughness:
-		Evaluator->Channel = ERenderCaptureChannel::Roughness;
-		break;
-	case ERenderCaptureType::Metallic:
-		Evaluator->Channel = ERenderCaptureChannel::Metallic;
-		break;
-	case ERenderCaptureType::Specular:
-		Evaluator->Channel = ERenderCaptureChannel::Specular;
-		break;
-	case ERenderCaptureType::Emissive:
-		Evaluator->Channel = ERenderCaptureChannel::Emissive;
-		break;
-	case ERenderCaptureType::WorldNormal:
-		Evaluator->Channel = ERenderCaptureChannel::WorldNormal;
-		break;
-	case ERenderCaptureType::CombinedMRS:
-		Evaluator->Channel = ERenderCaptureChannel::CombinedMRS;
-		break;
-	case ERenderCaptureType::DeviceDepth:
-		Evaluator->Channel = ERenderCaptureChannel::DeviceDepth;
-		break;
-	}
-
-	Evaluator->DefaultResult = DefaultSample.GetValue4f(CaptureType);
-
-	Evaluator->EvaluateSampleCallback = [&DefaultSample, SceneCapture, &CaptureDimensions](const FMeshMapEvaluator::FCorrespondenceSample& Sample)
-	{
-		const int PhotoIndex = Sample.DetailTriID;
-		const FVector2d PhotoCoords(Sample.DetailBaryCoords.X, Sample.DetailBaryCoords.Y);
-		const FVector4f SampleColor = SceneCapture->ComputeSampleNearest<CaptureType>(PhotoIndex, PhotoCoords, DefaultSample);
-		return SampleColor;
-	};
-
-	Evaluator->EvaluateColorCallback = [](const int DataIdx, float*& In)
-	{
-		const FVector4f Out(In[0], In[1], In[2], In[3]);
-		In += 4;
-		return Out;
-	};
-
-	return Evaluator;
-}
 
 //
 // Tool Operator
@@ -316,11 +80,17 @@ class FRenderCaptureMapBakerOp : public TGenericDataOperator<FMeshMapBaker>
 {
 public:
 	UE::Geometry::FDynamicMesh3* BaseMesh = nullptr;
+	UE::Geometry::FDynamicMeshAABBTree3* BaseMeshSpatial = nullptr;
 	TSharedPtr<UE::Geometry::FMeshTangentsd, ESPMode::ThreadSafe> BaseMeshTangents;
-	FRenderCaptureSettings::FOptions Options;
-	int32 TextureImageSize;
+	TSharedPtr<TArray<int32>, ESPMode::ThreadSafe> BaseMeshUVCharts;
+	int32 TargetUVLayer;
+	double ValidSampleDepthThreshold;
+	EBakeTextureResolution TextureImageSize;
 	EBakeTextureSamplesPerPixel SamplesPerPixel;
 	FSceneCapturePhotoSet* SceneCapture = nullptr;
+
+	// Used to pass the channels which need baking via the bBakeXXX and bUsePackedMRS members
+	FRenderCaptureOptions PendingBake;
 
 	// Begin TGenericDataOperator interface
 	virtual void CalculateResult(FProgressCancel* Progress) override;
@@ -330,250 +100,30 @@ public:
 // Bake textures onto the base/target mesh by projecting/sampling the set of captured photos
 void FRenderCaptureMapBakerOp::CalculateResult(FProgressCancel*)
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE(FRenderCaptureMapBakerOp_CalculateResult);
+	FSceneCapturePhotoSetSampler Sampler(
+		SceneCapture,
+		ValidSampleDepthThreshold,
+		BaseMesh,
+		BaseMeshSpatial,
+		BaseMeshTangents.Get());
 
-	check(BaseMesh != nullptr);
-	check(BaseMeshTangents.IsValid());
-	check(SceneCapture != nullptr);
+	const FImageDimensions TextureDimensions(
+		static_cast<int32>(TextureImageSize),
+		static_cast<int32>(TextureImageSize));
 
-	FDynamicMeshAABBTree3 BaseMeshSpatial(BaseMesh, true);
+	FRenderCaptureOcclusionHandler OcclusionHandler(TextureDimensions);
 
-	// Compute an offset shift surface positions toward the render camera position so we don't immediately self intersect
-	// The Max expression ensures the code works when the base mesh is 2D along one coordinate direction
-	const double RayOffsetHackDist = (double)(100.0 * FMathf::ZeroTolerance * FMath::Max(BaseMesh->GetBounds().MinDim(), 0.01));
-
-	auto VisibilityFunction = [&BaseMeshSpatial, RayOffsetHackDist](const FVector3d& SurfPos, const FVector3d& ViewPos)
-	{
-		FVector3d RayDir = ViewPos - SurfPos;
-		double Dist = Normalize(RayDir);
-		FVector3d RayOrigin = SurfPos + RayOffsetHackDist * RayDir;
-		int32 HitTID = BaseMeshSpatial.FindNearestHitTriangle(FRay3d(RayOrigin, RayDir), IMeshSpatial::FQueryOptions(Dist));
-		return (HitTID == IndexConstants::InvalidID);
-	};
-
-	struct FInfillData
-	{
-		struct FSampleStats {
-			uint16 NumValid = 0;
-			uint16 NumInvalid = 0;
-
-			// The ==, !=, += operators and the Zero() function are required by the TMarchingPixelInfill implementation
-
-			bool operator==(const FSampleStats& Other) const
-			{
-				return (NumValid == Other.NumValid) && (NumInvalid == Other.NumInvalid);
-			}
-
-			bool operator!=(const FSampleStats& Other) const
-			{
-				return !(*this == Other);
-			}
-
-			FSampleStats& operator+=(const FSampleStats& Other)
-			{
-				NumValid += Other.NumValid;
-				NumInvalid += Other.NumInvalid;
-				return *this;
-			}
-
-			static FSampleStats Zero()
-			{
-				return FSampleStats{0, 0};
-			}
-		};
-
-		// Collect some sample stats per pixel, used to determine if a pixel requires infill or not
-		TImageBuilder<FSampleStats> SampleStats;
-
-		// The i-th element of this array indicates if the i-th evaluator needs infill
-		TArray<bool> EvaluatorNeedsInfill;
-	} InfillData;
-
-	InfillData.SampleStats.SetDimensions(FImageDimensions(TextureImageSize, TextureImageSize));
-	InfillData.SampleStats.Clear(FInfillData::FSampleStats{});
-
-	auto RegisterSampleStats = [&InfillData](bool bSampleValid, const FMeshMapEvaluator::FCorrespondenceSample& Sample, const FVector2d& UVPosition, const FVector2i& ImageCoords)
-	{
-		checkSlow(InfillData.SampleStats.GetDimensions().IsValidCoords(ImageCoords));
-		if (bSampleValid)
-		{
-			InfillData.SampleStats.GetPixel(ImageCoords).NumValid += 1;
-		}
-		else
-		{
-			InfillData.SampleStats.GetPixel(ImageCoords).NumInvalid += 1;
-		}
-	};
-
-	auto ComputeAndApplyInfill = [&InfillData](TArray<TUniquePtr<TImageBuilder<FVector4f>>>& BakeResults)
-	{
-		check(BakeResults.Num() == InfillData.EvaluatorNeedsInfill.Num());
-
-		if (BakeResults.IsEmpty() || Algo::NoneOf(InfillData.EvaluatorNeedsInfill))
-		{
-			return;
-		}
-
-		// Find pixels that need infill
-		TArray<FVector2i> MissingPixels;
-		FCriticalSection MissingPixelsLock;
-		ParallelFor(InfillData.SampleStats.GetDimensions().GetHeight(), [&MissingPixels, &MissingPixelsLock, &InfillData](int32 Y)
-		{
-			for (int32 X = 0; X < InfillData.SampleStats.GetDimensions().GetWidth(); X++)
-			{
-				const FInfillData::FSampleStats& Stats = InfillData.SampleStats.GetPixel(X, Y);
-				// TODO experiment with other classifications
-				if (Stats.NumInvalid > 0 && Stats.NumValid == 0)
-				{
-					MissingPixelsLock.Lock();
-					MissingPixels.Add(FVector2i(X, Y));
-					MissingPixelsLock.Unlock();
-				}
-			}
-		});
-
-		auto NormalizeFunc = [](FVector4f SumValue, int32 Count)
-		{
-			float InvSum = (Count == 0) ? 1.0f : (1.0f / Count);
-			return FVector4f(SumValue.X * InvSum, SumValue.Y * InvSum, SumValue.Z * InvSum, 1.0f);
-		};
-		
-		auto DummyNormalizeStatsFunc = [](FInfillData::FSampleStats SumValue, int32 Count)
-		{
-			// The return value must be different from MissingValue below so that ComputeInfill works correctly
-			return FInfillData::FSampleStats{TNumericLimits<uint16>::Max(), TNumericLimits<uint16>::Max()};
-		};
-
-		TMarchingPixelInfill<FInfillData::FSampleStats> Infill;
-		// This must be the same as the value of exterior pixels, otherwise infill will spread the exterior values into the texture
-		FInfillData::FSampleStats MissingValue{0, 0};
-		Infill.ComputeInfill(InfillData.SampleStats, MissingPixels, MissingValue, DummyNormalizeStatsFunc);
-		for (int EvaluatorIndex = 0; EvaluatorIndex < BakeResults.Num(); EvaluatorIndex++)
-		{
-			if (InfillData.EvaluatorNeedsInfill[EvaluatorIndex])
-			{
-				Infill.ApplyInfill<FVector4f>(*BakeResults[EvaluatorIndex], NormalizeFunc);
-			}
-		}
-	};
-
-	Result->SetTargetMesh(BaseMesh);
-	Result->SetTargetMeshTangents(BaseMeshTangents);
-	Result->SetDimensions(FImageDimensions(TextureImageSize, TextureImageSize));
-	Result->SetSamplesPerPixel(static_cast<int32>(SamplesPerPixel));
-	Result->SetFilter(FMeshMapBaker::EBakeFilterType::BSpline);
-	Result->SetTargetMeshUVLayer(Options.TargetUVLayer);
-	Result->InteriorSampleCallback = RegisterSampleStats;
-	Result->PostWriteToImageCallback = ComputeAndApplyInfill;
-
-	FSceneCapturePhotoSetSampler Sampler(SceneCapture, Options.ValidSampleDepthThreshold, VisibilityFunction, BaseMesh, &BaseMeshSpatial, BaseMeshTangents.Get());
-	Result->SetDetailSampler(&Sampler);
-	Result->SetCorrespondenceStrategy(FMeshMapBaker::ECorrespondenceStrategy::Custom);
-
-	// Pixels in the output textures which don't map onto the mesh have a light grey color (except the normal map which
-	// will show a color corresponding to a unit z tangent space normal)
-	const FVector4f InvalidColor(.42, .42, .42, 1);
-	const FVector3f DefaultNormal = FVector3f::UnitZ();
-
-	FSceneCapturePhotoSet::FSceneSample DefaultColorSample;
-	DefaultColorSample.BaseColor = FVector3f(InvalidColor.X, InvalidColor.Y, InvalidColor.Z);
-	DefaultColorSample.Roughness = InvalidColor.X;
-	DefaultColorSample.Specular = InvalidColor.X;
-	DefaultColorSample.Metallic = InvalidColor.X;
-	DefaultColorSample.Emissive = FVector3f(InvalidColor.X, InvalidColor.Y, InvalidColor.Z);
-	DefaultColorSample.WorldNormal = FVector4f((DefaultNormal + FVector3f::One()) * .5f, InvalidColor.W);
-	
-	// We use 0 here since this corresponds to the infinite far plane value. Also, we don't preview the depth texture
-	DefaultColorSample.DeviceDepth = 0;
-
-	auto AddColorEvaluator = [this, &InfillData] (const TSharedPtr<FRenderCaptureMapEvaluator<FVector4f>>& Evaluator)
-	{
-		Result->AddEvaluator(Evaluator);
-		InfillData.EvaluatorNeedsInfill.Add(true);
-	};
-	
-	const FImageDimensions CaptureDimensions(Options.RenderCaptureImageSize, Options.RenderCaptureImageSize);
-
-	if (Options.bBakeDeviceDepth)
-	{
-		AddColorEvaluator(MakeColorEvaluator<ERenderCaptureType::DeviceDepth>(DefaultColorSample, SceneCapture, CaptureDimensions));
-	}
-	if (Options.bBakeBaseColor)
-	{
-		AddColorEvaluator(MakeColorEvaluator<ERenderCaptureType::BaseColor>(DefaultColorSample, SceneCapture, CaptureDimensions));
-	}
-	if (Options.bUsePackedMRS)
-	{
-		AddColorEvaluator(MakeColorEvaluator<ERenderCaptureType::CombinedMRS>(DefaultColorSample, SceneCapture, CaptureDimensions));
-	}
-	if (Options.bBakeRoughness)
-	{
-		AddColorEvaluator(MakeColorEvaluator<ERenderCaptureType::Roughness>(DefaultColorSample, SceneCapture, CaptureDimensions));
-	}
-	if (Options.bBakeMetallic)
-	{
-		AddColorEvaluator(MakeColorEvaluator<ERenderCaptureType::Metallic>(DefaultColorSample, SceneCapture, CaptureDimensions));
-	}
-	if (Options.bBakeSpecular)
-	{
-		AddColorEvaluator(MakeColorEvaluator<ERenderCaptureType::Specular>(DefaultColorSample, SceneCapture, CaptureDimensions));
-	}
-	if (Options.bBakeEmissive)
-	{
-		AddColorEvaluator(MakeColorEvaluator<ERenderCaptureType::Emissive>(DefaultColorSample, SceneCapture, CaptureDimensions));
-	}
-	if (Options.bBakeNormalMap)
-	{
-		TSharedPtr<FRenderCaptureMapEvaluator<FVector3f>> Evaluator = MakeShared<FRenderCaptureMapEvaluator<FVector3f>>();
-
-		Evaluator->Channel = ERenderCaptureChannel::WorldNormal;
-
-		Evaluator->DefaultResult = DefaultNormal;
-
-		Evaluator->EvaluateSampleCallback = [this, &DefaultColorSample, &CaptureDimensions](const FMeshMapEvaluator::FCorrespondenceSample& Sample)
-		{
-			const int32 TriangleID = Sample.BaseSample.TriangleIndex;
-			const FVector3d BaryCoords = Sample.BaseSample.BaryCoords;
-			const int PhotoIndex = Sample.DetailTriID;
-			const FVector2d PhotoCoords(Sample.DetailBaryCoords.X, Sample.DetailBaryCoords.Y);
-
-			const FVector4f NormalColor = SceneCapture->ComputeSampleNearest<ERenderCaptureType::WorldNormal>(PhotoIndex, PhotoCoords, DefaultColorSample);
-
-			// Map from color components [0,1] to normal components [-1,1]
-			const FVector3f WorldSpaceNormal(
-				(NormalColor.X - 0.5f) * 2.0f,
-				(NormalColor.Y - 0.5f) * 2.0f,
-				(NormalColor.Z - 0.5f) * 2.0f);
-
-			// Get tangents on base mesh
-			FVector3d BaseTangentX, BaseTangentY;
-			BaseMeshTangents->GetInterpolatedTriangleTangent(TriangleID, BaryCoords, BaseTangentX, BaseTangentY);
-
-			// Compute normal in tangent space
-			const FVector3f TangentSpaceNormal(
-					(float)WorldSpaceNormal.Dot(FVector3f(BaseTangentX)),
-					(float)WorldSpaceNormal.Dot(FVector3f(BaseTangentY)),
-					(float)WorldSpaceNormal.Dot(FVector3f(Sample.BaseNormal)));
-
-			return TangentSpaceNormal;
-		};
-
-		Evaluator->EvaluateColorCallback = [](const int DataIdx, float*& In)
-		{
-			// Map normal space [-1,1] to color space [0,1]
-			const FVector3f Normal(In[0], In[1], In[2]);
-			const FVector3f Color = (Normal + FVector3f::One()) * 0.5f;
-			const FVector4f Out(Color.X, Color.Y, Color.Z, 1.0f);
-			In += 3;
-			return Out;
-		};
-
-		Result->AddEvaluator(Evaluator);
-
-		// Note: No infill on normal map for now, doesn't make sense to do after mapping to tangent space!
-		//  (should we build baked normal map in world space, and then resample to tangent space??)
-		InfillData.EvaluatorNeedsInfill.Add(false);
-	}
+	Result = MakeRenderCaptureBaker(
+		BaseMesh,
+		BaseMeshTangents,
+		BaseMeshUVCharts,
+		SceneCapture,
+		&Sampler,
+		PendingBake,
+		TargetUVLayer,
+		TextureImageSize,
+		SamplesPerPixel,
+		&OcclusionHandler);
 
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(FRenderCaptureMapBakerOp_CalculateResult_Bake);
@@ -585,7 +135,6 @@ void FRenderCaptureMapBakerOp::CalculateResult(FProgressCancel*)
 //
 // Tool Builder
 //
-
 
 
 const FToolTargetTypeRequirements& UBakeRenderCaptureToolBuilder::GetTargetRequirements() const
@@ -618,25 +167,38 @@ UMultiSelectionMeshEditingTool* UBakeRenderCaptureToolBuilder::CreateNewTool(con
 
 
 
+
 void UBakeRenderCaptureTool::Setup()
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UBakeRenderCaptureTool::Setup);
 
 	Super::Setup();
 
+	UE::ToolTarget::HideSourceObject(Targets[0]);
+
+	// Initialize materials and textures for background compute, error feedback and previewing the results
 	InitializePreviewMaterials();
 
-	// Initialize base mesh
-	const FTransformSRT3d BaseToWorld = UE::ToolTarget::GetLocalToWorldTransform(Targets[0]);
-	PreviewMesh->ProcessMesh([this, BaseToWorld](const FDynamicMesh3& Mesh)
+	// Initialize the PreviewMesh, which displays intermediate results
+	PreviewMesh = CreateBakePreviewMesh(this, Targets[0], GetTargetWorld());
+
+	// Initialize the datastructures used by the bake background compute/tool operator
+	PreviewMesh->ProcessMesh([this](const FDynamicMesh3& Mesh)
 	{
 		TargetMesh.Copy(Mesh);
-		TargetMeshTangents = MakeShared<FMeshTangentsd, ESPMode::ThreadSafe>(&TargetMesh);
-		TargetMeshTangents->CopyTriVertexTangents(Mesh);
-		
-		// FMeshSceneAdapter operates in world space, so ensure our mesh transformed to world.
+		const FTransformSRT3d BaseToWorld = UE::ToolTarget::GetLocalToWorldTransform(Targets[0]);
 		MeshTransforms::ApplyTransform(TargetMesh, BaseToWorld, true);
-		TargetSpatial.SetMesh(&TargetMesh, true);
+
+		// Initialize UV charts
+		TargetMeshUVCharts = MakeShared<TArray<int32>, ESPMode::ThreadSafe>();
+		FMeshMapBaker::ComputeUVCharts(TargetMesh, *TargetMeshUVCharts);
+
+		// Initialize tangents
+		TargetMeshTangents = MakeShared<FMeshTangentsd, ESPMode::ThreadSafe>(&TargetMesh);
+		TargetMeshTangents->CopyTriVertexTangents(TargetMesh);
+
+		// Initialize spatial index
+		TargetMeshSpatial.SetMesh(&TargetMesh, true);
 	});
 
 	// Initialize actors
@@ -659,7 +221,7 @@ void UBakeRenderCaptureTool::Setup()
 	AddToolPropertySource(Settings);
 
 	Settings->MapPreview = BaseColorTexParamName;
-	Settings->WatchProperty(Settings->MapPreview, [this](FString) { UpdateVisualization(); GetToolManager()->PostInvalidation(); });
+	Settings->WatchProperty(Settings->MapPreview, [this](FString) { UpdateVisualization(); });
 	Settings->WatchProperty(Settings->SamplesPerPixel, [this](EBakeTextureSamplesPerPixel) { OpState |= EBakeOpState::Evaluate; });
 	Settings->WatchProperty(Settings->TextureSize, [this](EBakeTextureResolution) { OpState |= EBakeOpState::Evaluate; });
 	Settings->WatchProperty(Settings->ValidSampleDepthThreshold, [this](float ValidSampleDepthThreshold)
@@ -671,6 +233,8 @@ void UBakeRenderCaptureTool::Setup()
 			RenderCaptureProperties->bBaseColorMap ||
 			RenderCaptureProperties->bNormalMap    ||
 			RenderCaptureProperties->bEmissiveMap  ||
+			RenderCaptureProperties->bOpacityMap   ||
+			RenderCaptureProperties->bSubsurfaceColorMap ||
 			RenderCaptureProperties->bPackedMRSMap ||
 			RenderCaptureProperties->bMetallicMap  ||
 			RenderCaptureProperties->bRoughnessMap ||
@@ -692,6 +256,8 @@ void UBakeRenderCaptureTool::Setup()
 	RenderCaptureProperties->WatchProperty(RenderCaptureProperties->bSpecularMap, [this](bool) { OpState |= EBakeOpState::Evaluate; });
 	RenderCaptureProperties->WatchProperty(RenderCaptureProperties->bPackedMRSMap, [this](bool) { OpState |= EBakeOpState::Evaluate; });
 	RenderCaptureProperties->WatchProperty(RenderCaptureProperties->bEmissiveMap, [this](bool) { OpState |= EBakeOpState::Evaluate; });
+	RenderCaptureProperties->WatchProperty(RenderCaptureProperties->bOpacityMap, [this](bool) { OpState |= EBakeOpState::Evaluate; });
+	RenderCaptureProperties->WatchProperty(RenderCaptureProperties->bSubsurfaceColorMap, [this](bool) { OpState |= EBakeOpState::Evaluate; });
 	RenderCaptureProperties->WatchProperty(RenderCaptureProperties->bAntiAliasing, [this](bool) { OpState |= EBakeOpState::Evaluate; });
 	// These are not exposed to the UI, but we watch them anyway because we might change that later
 	RenderCaptureProperties->WatchProperty(RenderCaptureProperties->CaptureFieldOfView, [this](float) { OpState |= EBakeOpState::Evaluate; });
@@ -700,7 +266,7 @@ void UBakeRenderCaptureTool::Setup()
 	InputMeshSettings = NewObject<UBakeRenderCaptureInputToolProperties>(this);
 	InputMeshSettings->RestoreProperties(this);
 	AddToolPropertySource(InputMeshSettings);
-	InputMeshSettings->TargetStaticMesh = GetStaticMeshTarget(Target);
+	InputMeshSettings->TargetStaticMesh = UE::ToolTarget::GetStaticMeshFromTargetIfAvailable(Target);
 	UpdateUVLayerNames(InputMeshSettings->TargetUVLayer, InputMeshSettings->TargetUVLayerNamesList, TargetMesh);
 	InputMeshSettings->WatchProperty(InputMeshSettings->TargetUVLayer, [this](FString) { OpState |= EBakeOpState::Evaluate; });
 	
@@ -712,6 +278,8 @@ void UBakeRenderCaptureTool::Setup()
 		Settings->MapPreviewNamesList.Add(RoughnessTexParamName);
 		Settings->MapPreviewNamesList.Add(SpecularTexParamName);
 		Settings->MapPreviewNamesList.Add(EmissiveTexParamName);
+		Settings->MapPreviewNamesList.Add(OpacityTexParamName);
+		Settings->MapPreviewNamesList.Add(SubsurfaceColorTexParamName);
 	}
 
 	ResultSettings = NewObject<UBakeRenderCaptureResults>(this);
@@ -719,10 +287,12 @@ void UBakeRenderCaptureTool::Setup()
 	AddToolPropertySource(ResultSettings);
 	SetToolPropertySourceEnabled(ResultSettings, true);
 
-	TargetUVLayerToError.Reset();
+	VisualizationProps = NewObject<UBakeRenderCaptureVisualizationProperties>(this);
+	VisualizationProps->RestoreProperties(this);
+	AddToolPropertySource(VisualizationProps);
+	VisualizationProps->WatchProperty(VisualizationProps->bPreviewAsMaterial, [this](bool) { UpdateVisualization(); });
 
-	// Used to implement SceneCapture cancellation
-	ComputedRenderCaptureProperties = NewObject<URenderCaptureProperties>(this);
+	TargetUVLayerToError.Reset();
 
 	// Hide the render capture meshes since this baker operates solely in world space which will occlude the preview of
 	// the target mesh.
@@ -733,14 +303,13 @@ void UBakeRenderCaptureTool::Setup()
 
 	// Make sure we trigger SceneCapture computation in UpdateResult
 	OpState |= EBakeOpState::Evaluate;
-	ComputedRenderCaptureProperties->NearPlaneDist = 0.f; // Arbitrary invalid value
 
 	SetToolDisplayName(LOCTEXT("ToolName", "Bake Render Capture"));
 	GetToolManager()->DisplayMessage(
 		LOCTEXT("OnStartTool", "Bake Render Capture. Select Bake Mesh (LowPoly) first, then select Detail Meshes (HiPoly) to bake. Assets will be created on Accept."),
 		EToolMessageLevel::UserNotification);
 
-	PostSetup();
+	GatherAnalytics(BakeAnalytics.MeshSettings);
 }
 
 
@@ -749,26 +318,76 @@ void UBakeRenderCaptureTool::Setup()
 
 void UBakeRenderCaptureTool::Render(IToolsContextRenderAPI* RenderAPI)
 {
-	Super::Render(RenderAPI);
+	// This block contains things we want to update every frame to respond to sliders in the UI
+	{
+		const float Brightness = VisualizationProps->Brightness;
+		const FVector BaseColorBrightness(Brightness, Brightness, Brightness);
 
-	const float Brightness = VisualizationProps->Brightness;
-	const FVector BrightnessColor(Brightness, Brightness, Brightness);
-	PreviewMaterialRC->SetVectorParameterValue(TEXT("Brightness"), BrightnessColor);
-	PreviewMaterialPackedRC->SetVectorParameterValue(TEXT("Brightness"), BrightnessColor);
+		PreviewMaterialRC->SetVectorParameterValue(TEXT("Brightness"), BaseColorBrightness);
+		PreviewMaterialPackedRC->SetVectorParameterValue(TEXT("Brightness"), BaseColorBrightness);
+		PreviewMaterialRC_Subsurface->SetVectorParameterValue(TEXT("Brightness"), BaseColorBrightness);
+		PreviewMaterialPackedRC_Subsurface->SetVectorParameterValue(TEXT("Brightness"), BaseColorBrightness);
+
+		const float EmissiveScale = VisualizationProps->EmissiveScale;
+
+		PreviewMaterialRC->SetScalarParameterValue(TEXT("EmissiveScale"), EmissiveScale);
+		PreviewMaterialPackedRC->SetScalarParameterValue(TEXT("EmissiveScale"), EmissiveScale);
+		PreviewMaterialRC_Subsurface->SetScalarParameterValue(TEXT("EmissiveScale"), EmissiveScale);
+		PreviewMaterialPackedRC_Subsurface->SetScalarParameterValue(TEXT("EmissiveScale"), EmissiveScale);
+
+		const float SSBrightness = VisualizationProps->SSBrightness;
+		const FVector SubsurfaceColorBrightness(SSBrightness, SSBrightness, SSBrightness);
+
+		PreviewMaterialRC_Subsurface->SetVectorParameterValue(TEXT("BrightnessSubsurface"), SubsurfaceColorBrightness);
+		PreviewMaterialPackedRC_Subsurface->SetVectorParameterValue(TEXT("BrightnessSubsurface"), SubsurfaceColorBrightness);
+	}
+
+	// This is a no-op if OpState == EBakeOpState::Clean
+	UpdateResult();
 }
 
 
+void UBakeRenderCaptureTool::OnTick(float DeltaTime)
+{
+	if (Compute)
+	{
+		Compute->Tick(DeltaTime);
+
+		if (static_cast<bool>(OpState & EBakeOpState::Invalid))
+		{
+			PreviewMesh->SetOverrideRenderMaterial(ErrorPreviewMaterial);
+		}
+		else
+		{
+			const float ElapsedComputeTime = Compute->GetElapsedComputeTime();
+			if (!CanAccept() && ElapsedComputeTime > SecondsBeforeWorkingMaterial)
+			{
+				PreviewMesh->SetOverrideRenderMaterial(WorkingPreviewMaterial);
+			}
+		}
+	}
+	else if (static_cast<bool>(OpState & EBakeOpState::Invalid))
+	{
+		PreviewMesh->SetOverrideRenderMaterial(ErrorPreviewMaterial);
+	} 
+}
 
 
 void UBakeRenderCaptureTool::OnShutdown(EToolShutdownType ShutdownType)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UBakeRenderCaptureTool::Shutdown);
-	
-	Super::OnShutdown(ShutdownType);
-	
+
 	Settings->SaveProperties(this);
 	RenderCaptureProperties->SaveProperties(this);
 	InputMeshSettings->SaveProperties(this);
+	VisualizationProps->SaveProperties(this);
+
+	if (PreviewMesh != nullptr)
+	{
+		PreviewMesh->SetVisible(false);
+		PreviewMesh->Disconnect();
+		PreviewMesh = nullptr;
+	}
 
 	if (Compute)
 	{
@@ -784,17 +403,20 @@ void UBakeRenderCaptureTool::OnShutdown(EToolShutdownType ShutdownType)
 	
 	if (ShutdownType == EToolShutdownType::Accept)
 	{
+		// TODO Support skeletal meshes here---see BakeMeshAttributeMapsTool::OnShutdown
 		IStaticMeshBackedTarget* StaticMeshTarget = Cast<IStaticMeshBackedTarget>(Targets[0]);
 		UObject* SourceAsset = StaticMeshTarget ? StaticMeshTarget->GetStaticMesh() : nullptr;
 		const UPrimitiveComponent* SourceComponent = UE::ToolTarget::GetTargetComponent(Targets[0]);
-		CreateTextureAssetsRC(SourceComponent->GetWorld(), SourceAsset);
+		CreateTextureAssets(SourceComponent->GetWorld(), SourceAsset);
 	}
 
 	// Clear actors on shutdown so that their lifetime is not tied to the lifetime of the tool
 	Actors.Empty();
+
+	UE::ToolTarget::ShowSourceObject(Targets[0]);
 }
 
-void UBakeRenderCaptureTool::CreateTextureAssetsRC(UWorld* SourceWorld, UObject* SourceAsset)
+void UBakeRenderCaptureTool::CreateTextureAssets(UWorld* SourceWorld, UObject* SourceAsset)
 {
 	bool bCreatedAssetOK = true;
 	const FString BaseName = UE::ToolTarget::GetTargetActor(Targets[0])->GetActorNameOrLabel();
@@ -834,6 +456,18 @@ void UBakeRenderCaptureTool::CreateTextureAssetsRC(UWorld* SourceWorld, UObject*
 	{
 		const FString TexName = FString::Printf(TEXT("%s_%s"), *BaseName, *EmissiveTexParamName);
 		CreateTextureAsset(TexName, FTexture2DBuilder::ETextureType::EmissiveHDR, ResultSettings->EmissiveMap);
+	}
+
+	if (RenderCaptureProperties->bOpacityMap && ResultSettings->OpacityMap != nullptr)
+	{
+		const FString TexName = FString::Printf(TEXT("%s_%s"), *BaseName, *OpacityTexParamName);
+		CreateTextureAsset(TexName, FTexture2DBuilder::ETextureType::ColorLinear, ResultSettings->OpacityMap);
+	}
+
+	if (RenderCaptureProperties->bSubsurfaceColorMap && ResultSettings->SubsurfaceColorMap != nullptr)
+	{
+		const FString TexName = FString::Printf(TEXT("%s_%s"), *BaseName, *SubsurfaceColorTexParamName);
+		CreateTextureAsset(TexName, FTexture2DBuilder::ETextureType::Color, ResultSettings->SubsurfaceColorMap);
 	}
 
 	// We need different code paths based on PackedMRS here because we don't want to uncheck the separate channels
@@ -892,6 +526,14 @@ bool UBakeRenderCaptureTool::CanAccept() const
 	{
 		return false;
 	}
+	if (RenderCaptureProperties->bOpacityMap && ResultSettings->OpacityMap == nullptr)
+	{
+		return false;
+	}
+	if (RenderCaptureProperties->bSubsurfaceColorMap && ResultSettings->SubsurfaceColorMap == nullptr)
+	{
+		return false;
+	}
 	
 	// We need different code paths based on PackedMRS here because we don't want to uncheck the separate channels
 	// when PackedMRS is enabled to give the user a better UX (they don't have to re-check them after disabling
@@ -927,148 +569,151 @@ bool UBakeRenderCaptureTool::CanAccept() const
 
 TUniquePtr<TGenericDataOperator<FMeshMapBaker>> UBakeRenderCaptureTool::MakeNewOperator()
 {
+	// We should not have requested a bake if we don't have a SceneCapture
+	check(SceneCapture.IsValid());
+
 	TUniquePtr<FRenderCaptureMapBakerOp> Op = MakeUnique<FRenderCaptureMapBakerOp>();
 	Op->BaseMesh = &TargetMesh;
+	Op->BaseMeshSpatial = &TargetMeshSpatial;
 	Op->BaseMeshTangents = TargetMeshTangents;
-	Op->Options = FRenderCaptureSettings::ConstructOptions(*RenderCaptureProperties, *Settings, *InputMeshSettings);
-	Op->TextureImageSize = static_cast<int32>(Settings->TextureSize);
+	Op->BaseMeshUVCharts = TargetMeshUVCharts;
+	Op->TargetUVLayer = InputMeshSettings->GetTargetUVLayerIndex();
+	Op->ValidSampleDepthThreshold = Settings->ValidSampleDepthThreshold;
+	Op->TextureImageSize = Settings->TextureSize;
 	Op->SamplesPerPixel = Settings->SamplesPerPixel;
 	Op->SceneCapture = SceneCapture.Get();
+
+	auto IsPendingBake = [this](UTexture *CurrentResult, ERenderCaptureType CaptureType) -> bool
+	{
+		const bool bRequested = SceneCapture->GetCaptureTypeEnabled(CaptureType);
+		const bool bBaked = (CurrentResult != nullptr);
+		return (bRequested && !bBaked);
+	};
+
+	Op->PendingBake.bBakeBaseColor = IsPendingBake(ResultSettings->BaseColorMap, ERenderCaptureType::BaseColor);
+	Op->PendingBake.bBakeRoughness = IsPendingBake(ResultSettings->RoughnessMap, ERenderCaptureType::Roughness);
+	Op->PendingBake.bBakeMetallic =  IsPendingBake(ResultSettings->MetallicMap,  ERenderCaptureType::Metallic);
+	Op->PendingBake.bBakeSpecular =  IsPendingBake(ResultSettings->SpecularMap,  ERenderCaptureType::Specular);
+	Op->PendingBake.bUsePackedMRS =  IsPendingBake(ResultSettings->PackedMRSMap, ERenderCaptureType::CombinedMRS);
+	Op->PendingBake.bBakeEmissive =  IsPendingBake(ResultSettings->EmissiveMap,  ERenderCaptureType::Emissive);
+	Op->PendingBake.bBakeNormalMap = IsPendingBake(ResultSettings->NormalMap,    ERenderCaptureType::WorldNormal);
+	Op->PendingBake.bBakeOpacity =   IsPendingBake(ResultSettings->OpacityMap,   ERenderCaptureType::Opacity);
+	Op->PendingBake.bBakeSubsurfaceColor = IsPendingBake(ResultSettings->SubsurfaceColorMap, ERenderCaptureType::SubsurfaceColor);
+
 	return Op;
 }
 
 
 
-void UBakeRenderCaptureTool::OnMapsUpdatedRC(const TUniquePtr<FMeshMapBaker>& NewResult)
+void UBakeRenderCaptureTool::OnMapsUpdated(const TUniquePtr<FMeshMapBaker>& NewResult)
 {
-	// We do this to defer work I guess, it was like this in the original ApproximateActors implementation :DeferredPopulateSourceData 
-	constexpr bool bPopulateSourceData = false;
-
 	TRACE_CPUPROFILER_EVENT_SCOPE(BakeRenderCaptureTool_Textures_BuildTextures);
 
-	const int32 NumEval = NewResult->NumEvaluators();
-	for (int32 EvalIdx = 0; EvalIdx < NumEval; ++EvalIdx)
+	FRenderCaptureTextures TexturesOut;
+	GetTexturesFromRenderCaptureBaker(NewResult, TexturesOut);
+
+	// The NewResult will contain the newly baked textures so we only update those and not overwrite any already baked
+	// valid results. Note that if results are invalidated by some parameter change they are cleared by the
+	// InvalidateResults function, by comparing/syncing with the enabled capture types in SceneCapture
+	if (TexturesOut.BaseColorMap)
 	{
-		FMeshMapEvaluator* BaseEval = NewResult->GetEvaluator(EvalIdx);
-
-		check(BaseEval->DataLayout().Num() == 1);
-
-		switch (BaseEval->DataLayout()[0])
-		{
-		case FMeshMapEvaluator::EComponents::Float4:
-
-			{
-				FRenderCaptureMapEvaluator<FVector4f>* Eval = static_cast<FRenderCaptureMapEvaluator<FVector4f>*>(BaseEval);
-				TUniquePtr<TImageBuilder<FVector4f>> ImageBuilder = MoveTemp(NewResult->GetBakeResults(EvalIdx)[0]);
-				
-				if (ensure(ImageBuilder.IsValid()) == false) return;
-
-				switch (Eval->Channel)
-				{
-				case ERenderCaptureChannel::BaseColor:
-
-					ResultSettings->BaseColorMap = FTexture2DBuilder::BuildTextureFromImage(
-						*ImageBuilder,
-						FTexture2DBuilder::ETextureType::Color,
-						true,
-						bPopulateSourceData);
-					break;
-
-				case ERenderCaptureChannel::Roughness:
-
-					ResultSettings->RoughnessMap = FTexture2DBuilder::BuildTextureFromImage(
-						*ImageBuilder,
-						FTexture2DBuilder::ETextureType::Roughness,
-						false,
-						bPopulateSourceData);
-					break;
-
-				case ERenderCaptureChannel::Metallic:
-
-					ResultSettings->MetallicMap = FTexture2DBuilder::BuildTextureFromImage(
-						*ImageBuilder,
-						FTexture2DBuilder::ETextureType::Metallic,
-						false,
-						bPopulateSourceData);
-					break;
-
-				case ERenderCaptureChannel::Specular:
-
-					ResultSettings->SpecularMap = FTexture2DBuilder::BuildTextureFromImage(
-						*ImageBuilder,
-						FTexture2DBuilder::ETextureType::Specular,
-						false,
-						bPopulateSourceData);
-					break;
-
-				case ERenderCaptureChannel::Emissive:
-
-					ResultSettings->EmissiveMap = FTexture2DBuilder::BuildTextureFromImage(
-						*ImageBuilder,
-						FTexture2DBuilder::ETextureType::EmissiveHDR,
-						false,
-						bPopulateSourceData);
-					ResultSettings->EmissiveMap->CompressionSettings = TC_HDR_Compressed;
-					break;
-
-				case ERenderCaptureChannel::CombinedMRS:
-
-					ResultSettings->PackedMRSMap = FTexture2DBuilder::BuildTextureFromImage(
-						*ImageBuilder,
-						FTexture2DBuilder::ETextureType::ColorLinear,
-						false,
-						bPopulateSourceData);
-					break;
-
-				case ERenderCaptureChannel::DeviceDepth:
-					// Do nothing, the depth capture is used internally and not presented to the user
-					break;
-
-				default:
-					ensure(false);
-					return;
-				}
-
-			} break; // Float4
-
-		case FMeshMapEvaluator::EComponents::Float3:
-
-			{
-				FRenderCaptureMapEvaluator<FVector3f>* Eval = static_cast<FRenderCaptureMapEvaluator<FVector3f>*>(BaseEval);
-				TUniquePtr<TImageBuilder<FVector4f>> ImageBuilder = MoveTemp(NewResult->GetBakeResults(EvalIdx)[0]);
-				
-				if (ensure(ImageBuilder.IsValid()) == false) return;
-				if (ensure(Eval->Channel == ERenderCaptureChannel::WorldNormal) == false) return;
-
-				ResultSettings->NormalMap = FTexture2DBuilder::BuildTextureFromImage(
-					*ImageBuilder,
-					FTexture2DBuilder::ETextureType::NormalMap,
-					false,
-					bPopulateSourceData);
-
-			} break; // Float3
-			
-		default:
-			ensure(false);
-			return;
-		}
+		ResultSettings->BaseColorMap = TexturesOut.BaseColorMap;
+	}
+	if (TexturesOut.NormalMap)
+	{
+		ResultSettings->NormalMap = TexturesOut.NormalMap;
+	}
+	if (TexturesOut.PackedMRSMap)
+	{
+		ResultSettings->PackedMRSMap = TexturesOut.PackedMRSMap;
+	}
+	if (TexturesOut.MetallicMap)
+	{
+		ResultSettings->MetallicMap = TexturesOut.MetallicMap;
+	}
+	if (TexturesOut.RoughnessMap)
+	{
+		ResultSettings->RoughnessMap = TexturesOut.RoughnessMap;
+	}
+	if (TexturesOut.SpecularMap)
+	{
+		ResultSettings->SpecularMap = TexturesOut.SpecularMap;
+	}
+	if (TexturesOut.EmissiveMap)
+	{
+		ResultSettings->EmissiveMap = TexturesOut.EmissiveMap;
+	}
+	if (TexturesOut.OpacityMap)
+	{
+		ResultSettings->OpacityMap = TexturesOut.OpacityMap;
+	}
+	if (TexturesOut.SubsurfaceColorMap)
+	{
+		ResultSettings->SubsurfaceColorMap = TexturesOut.SubsurfaceColorMap;
 	}
 
 	GatherAnalytics(*NewResult);
 	UpdateVisualization();
-	GetToolManager()->PostInvalidation();
 }
 
+bool UBakeRenderCaptureTool::ValidTargetMeshTangents()
+{
+	if (bCheckTargetMeshTangents)
+	{
+		bValidTargetMeshTangents = TargetMeshTangents ? FDynamicMeshTangents(&TargetMesh).HasValidTangents(true) : false;
+		bCheckTargetMeshTangents = false;
+	}
+	return bValidTargetMeshTangents;
+}
 
 void UBakeRenderCaptureTool::InitializePreviewMaterials()
 {
-	// EmptyColorMapWhite, EmptyColorMapBlack and EmptyNormalMap are defined in the base tool
+	{
+		FTexture2DBuilder Builder;
+		Builder.Initialize(FTexture2DBuilder::ETextureType::NormalMap, FImageDimensions(16, 16));
+		Builder.Commit(false);
+		EmptyNormalMap = Builder.GetTexture2D();
+	}
+
+	{
+		FTexture2DBuilder Builder;
+		Builder.Initialize(FTexture2DBuilder::ETextureType::Color, FImageDimensions(16, 16));
+		Builder.Clear(FColor(0,0,0));
+		Builder.Commit(false);
+		EmptyColorMapBlack = Builder.GetTexture2D();
+	}
+
+	{
+		FTexture2DBuilder Builder;
+		Builder.Initialize(FTexture2DBuilder::ETextureType::Color, FImageDimensions(16, 16));
+		Builder.Clear(FColor::White);
+		Builder.Commit(false);
+		EmptyColorMapWhite = Builder.GetTexture2D();
+	}
 
 	{
 		FTexture2DBuilder Builder;
 		Builder.Initialize(FTexture2DBuilder::ETextureType::EmissiveHDR, FImageDimensions(16, 16));
 		Builder.Commit(false);
 		EmptyEmissiveMap = Builder.GetTexture2D();
+	}
+
+	{
+		FTexture2DBuilder Builder;
+		Builder.Initialize(FTexture2DBuilder::ETextureType::ColorLinear, FImageDimensions(16, 16));
+		// The Opacity texture is passed to the Material's Opacity pin as well as the Opacity Mask pin, so set white
+		// here so we see something when previewing the subsurface material when opacity is not baked
+		Builder.Clear(FColor::White);
+		Builder.Commit(false);
+		EmptyOpacityMap = Builder.GetTexture2D();
+	}
+
+	{
+		FTexture2DBuilder Builder;
+		Builder.Initialize(FTexture2DBuilder::ETextureType::Color, FImageDimensions(16, 16));
+		Builder.Clear(FColor::Black);
+		Builder.Commit(false);
+		EmptySubsurfaceColorMap = Builder.GetTexture2D();
 	}
 
 	{
@@ -1099,130 +744,165 @@ void UBakeRenderCaptureTool::InitializePreviewMaterials()
 		Builder.Commit(false);
 		EmptySpecularMap = Builder.GetTexture2D();
 	}
-	
+
+	WorkingPreviewMaterial = ToolSetupUtil::GetDefaultWorkingMaterialInstance(GetToolManager());
+
+	ErrorPreviewMaterial = ToolSetupUtil::GetDefaultErrorMaterial(GetToolManager());
+
 	{
-		UMaterial* Material = LoadObject<UMaterial>(nullptr, TEXT("/MeshModelingToolsetExp/Materials/BakeRenderCapturePreviewMaterial"));
+		UMaterial* Material = LoadObject<UMaterial>(nullptr,
+			TEXT("/MeshModelingToolsetExp/Materials/BakeRenderCapturePreviewMaterial"));
 		check(Material);
 		if (Material != nullptr)
 		{
 			PreviewMaterialRC = UMaterialInstanceDynamic::Create(Material, GetToolManager());
-			PreviewMaterialRC->SetTextureParameterValue(TEXT("BaseColor"), EmptyColorMapWhite);
-			PreviewMaterialRC->SetTextureParameterValue(TEXT("Roughness"), EmptyRoughnessMap);
-			PreviewMaterialRC->SetTextureParameterValue(TEXT("Metallic"), EmptyMetallicMap);
-			PreviewMaterialRC->SetTextureParameterValue(TEXT("Specular"), EmptySpecularMap);
-			PreviewMaterialRC->SetTextureParameterValue(TEXT("Emissive"), EmptyEmissiveMap);
-			PreviewMaterialRC->SetTextureParameterValue(TEXT("NormalMap"), EmptyNormalMap);
+			PreviewMaterialRC->SetTextureParameterValue(FName(*BaseColorTexParamName), EmptyColorMapWhite);
+			PreviewMaterialRC->SetTextureParameterValue(FName(*RoughnessTexParamName), EmptyRoughnessMap);
+			PreviewMaterialRC->SetTextureParameterValue(FName(*MetallicTexParamName), EmptyMetallicMap);
+			PreviewMaterialRC->SetTextureParameterValue(FName(*SpecularTexParamName), EmptySpecularMap);
+			PreviewMaterialRC->SetTextureParameterValue(FName(*EmissiveTexParamName), EmptyEmissiveMap);
+			PreviewMaterialRC->SetTextureParameterValue(FName(*NormalTexParamName), EmptyNormalMap);
 		}
 	}
-	
+
 	{
-		UMaterial* Material = LoadObject<UMaterial>(nullptr, TEXT("/MeshModelingToolsetExp/Materials/FullMaterialBakePreviewMaterial_PackedMRS"));
+		UMaterial* Material = LoadObject<UMaterial>(nullptr,
+			TEXT("/MeshModelingToolsetExp/Materials/BakeRenderCapturePreviewSubsurfaceMaterial"));
+		check(Material);
+		if (Material != nullptr)
+		{
+			ensure(Material->GetShadingModels().HasShadingModel(EMaterialShadingModel::MSM_Subsurface));
+			PreviewMaterialRC_Subsurface = UMaterialInstanceDynamic::Create(Material, GetToolManager());
+			PreviewMaterialRC_Subsurface->SetTextureParameterValue(FName(*BaseColorTexParamName), EmptyColorMapWhite);
+			PreviewMaterialRC_Subsurface->SetTextureParameterValue(FName(*RoughnessTexParamName), EmptyRoughnessMap);
+			PreviewMaterialRC_Subsurface->SetTextureParameterValue(FName(*MetallicTexParamName), EmptyMetallicMap);
+			PreviewMaterialRC_Subsurface->SetTextureParameterValue(FName(*SpecularTexParamName), EmptySpecularMap);
+			PreviewMaterialRC_Subsurface->SetTextureParameterValue(FName(*EmissiveTexParamName), EmptyEmissiveMap);
+			PreviewMaterialRC_Subsurface->SetTextureParameterValue(FName(*NormalTexParamName), EmptyNormalMap);
+			PreviewMaterialRC_Subsurface->SetTextureParameterValue(FName(*OpacityTexParamName), EmptyOpacityMap);
+			PreviewMaterialRC_Subsurface->SetTextureParameterValue(FName(*SubsurfaceColorTexParamName), EmptySubsurfaceColorMap);
+		}
+	}
+
+	{
+		UMaterial* Material = LoadObject<UMaterial>(nullptr,
+			TEXT("/MeshModelingToolsetExp/Materials/FullMaterialBakePreviewMaterial_PackedMRS"));
 		check(Material);
 		if (Material != nullptr)
 		{
 			PreviewMaterialPackedRC = UMaterialInstanceDynamic::Create(Material, GetToolManager());
-			PreviewMaterialPackedRC->SetTextureParameterValue(TEXT("BaseColor"), EmptyColorMapWhite);
-			PreviewMaterialPackedRC->SetTextureParameterValue(TEXT("PackedMRS"), EmptyPackedMRSMap);
-			PreviewMaterialPackedRC->SetTextureParameterValue(TEXT("Emissive"), EmptyEmissiveMap);
-			PreviewMaterialPackedRC->SetTextureParameterValue(TEXT("NormalMap"), EmptyNormalMap);
+			PreviewMaterialPackedRC->SetTextureParameterValue(FName(*BaseColorTexParamName), EmptyColorMapWhite);
+			PreviewMaterialPackedRC->SetTextureParameterValue(FName(*PackedMRSTexParamName), EmptyPackedMRSMap);
+			PreviewMaterialPackedRC->SetTextureParameterValue(FName(*EmissiveTexParamName), EmptyEmissiveMap);
+			PreviewMaterialPackedRC->SetTextureParameterValue(FName(*NormalTexParamName), EmptyNormalMap);
+		}
+	}
+
+	{
+		UMaterial* Material = LoadObject<UMaterial>(nullptr,
+			TEXT("/MeshModelingToolsetExp/Materials/FullMaterialBakePreviewSubsurfaceMaterial_PackedMRS"));
+		check(Material);
+		if (Material != nullptr)
+		{
+			ensure(Material->GetShadingModels().HasShadingModel(EMaterialShadingModel::MSM_Subsurface));
+			PreviewMaterialPackedRC_Subsurface = UMaterialInstanceDynamic::Create(Material, GetToolManager());
+			PreviewMaterialPackedRC_Subsurface->SetTextureParameterValue(FName(*BaseColorTexParamName), EmptyColorMapWhite);
+			PreviewMaterialPackedRC_Subsurface->SetTextureParameterValue(FName(*PackedMRSTexParamName), EmptyPackedMRSMap);
+			PreviewMaterialPackedRC_Subsurface->SetTextureParameterValue(FName(*EmissiveTexParamName), EmptyEmissiveMap);
+			PreviewMaterialPackedRC_Subsurface->SetTextureParameterValue(FName(*NormalTexParamName), EmptyNormalMap);
+			PreviewMaterialPackedRC_Subsurface->SetTextureParameterValue(FName(*OpacityTexParamName), EmptyOpacityMap);
+			PreviewMaterialPackedRC_Subsurface->SetTextureParameterValue(FName(*SubsurfaceColorTexParamName), EmptySubsurfaceColorMap);
 		}
 	}
 }
 
 
-void UBakeRenderCaptureTool::InvalidateComputeRC()
+void UBakeRenderCaptureTool::InvalidateCompute()
 {
-	// Note: This implementation is identical to UBakeMeshAttributeMapsToolBase::InvalidateCompute but calls
-	// OnMapsUpdatedRC rather than OnMapsUpdated
 	if (!Compute)
 	{
 		// Initialize background compute
 		Compute = MakeUnique<TGenericDataBackgroundCompute<FMeshMapBaker>>();
 		Compute->Setup(this);
-		Compute->OnResultUpdated.AddLambda([this](const TUniquePtr<FMeshMapBaker>& NewResult) { OnMapsUpdatedRC(NewResult); });
+		Compute->OnResultUpdated.AddLambda([this](const TUniquePtr<FMeshMapBaker>& NewResult) { OnMapsUpdated(NewResult); });
 	}
 	Compute->InvalidateResult();
+	OpState = EBakeOpState::Clean;
 }
 
-
-void UBakeRenderCaptureTool::UpdateResult()
+FRenderCaptureUpdate UBakeRenderCaptureTool::UpdateSceneCapture()
 {
-	if (OpState == EBakeOpState::Clean)
+	for (int Idx = 1; Idx < Targets.Num(); ++Idx)
 	{
-		// Evaluation already launched/complete. Note that the Compute background compute updates ResultSettings when
-		// they are available by calling OnMapsUpdatedRC in its OnResultUpdated delegate.
-		return;
+		UE::ToolTarget::ShowSourceObject(Targets[Idx]);
 	}
 
-	//
-	// create a set of spatially located render captures of the scene ("photo set"). We need to recompute this if the
-	// render capture properties changed. Note we only compare the URenderCaptureProperties only, and not the
-	// ValidSampleDepthThreshold, this is intentional so that we only trigger a scene capture recompute when we go from
-	// a zero to a positive threshold (we need to compute the depth capture), or a positive to a zero threshold (we can
-	// save memory and not compute the depth capture), we don't need to recompute the scene capture when the user is
-	// changing between positive threshold values.
-	//
-	if (*RenderCaptureProperties != *ComputedRenderCaptureProperties)
+	FRenderCaptureUpdate Update;
+
+	if (!SceneCapture)
 	{
-		for (int Idx = 1; Idx < Targets.Num(); ++Idx)
-		{
-			UE::ToolTarget::ShowSourceObject(Targets[Idx]);
-		}
+		const FRenderCaptureOptions Options = MakeRenderCaptureOptions(*RenderCaptureProperties);
 
-		// Do not allow user-cancellation on the call that occurs when the Render Capture Tool starts up
-		const bool bAllowCancel = (bFirstEverSceneCapture == false);
+		constexpr bool bAllowCancel = false;
+		SceneCapture = CapturePhotoSet(Actors, Options, Update, bAllowCancel);
+	}
+	else
+	{
+		// Get already computed options from the existing SceneCapture so we can restore them if the capture is cancelled
+		const FRenderCaptureOptions ComputedOptions = GetComputedPhotoSetOptions(SceneCapture);
 
-		SceneCapture.Reset();
-		FRenderCaptureSettings::FOptions Options = FRenderCaptureSettings::ConstructOptions(*RenderCaptureProperties, *Settings, *InputMeshSettings);
-		SceneCapture = CapturePhotoSet(Actors, Options, bAllowCancel);
+		const FRenderCaptureOptions Options = MakeRenderCaptureOptions(*RenderCaptureProperties);
 
-		for (int Idx = 1; Idx < Targets.Num(); ++Idx)
-		{
-			UE::ToolTarget::HideSourceObject(Targets[Idx]);
-		}
+		constexpr bool bAllowCancel = true;
+		Update = UpdatePhotoSets(SceneCapture, Actors, Options, bAllowCancel);
 
 		if (SceneCapture->Cancelled())
 		{
 			// Restore the settings present before the change that invoked the scene capture recompute
-			RenderCaptureProperties->Resolution         = ComputedRenderCaptureProperties->Resolution;
-			RenderCaptureProperties->bBaseColorMap      = ComputedRenderCaptureProperties->bBaseColorMap;
-			RenderCaptureProperties->bNormalMap         = ComputedRenderCaptureProperties->bNormalMap;
-			RenderCaptureProperties->bMetallicMap       = ComputedRenderCaptureProperties->bMetallicMap;
-			RenderCaptureProperties->bRoughnessMap      = ComputedRenderCaptureProperties->bRoughnessMap;
-			RenderCaptureProperties->bSpecularMap       = ComputedRenderCaptureProperties->bSpecularMap;
-			RenderCaptureProperties->bPackedMRSMap      = ComputedRenderCaptureProperties->bPackedMRSMap;
-			RenderCaptureProperties->bEmissiveMap       = ComputedRenderCaptureProperties->bEmissiveMap;
-			RenderCaptureProperties->bAntiAliasing      = ComputedRenderCaptureProperties->bAntiAliasing;
-			RenderCaptureProperties->bDeviceDepthMap    = ComputedRenderCaptureProperties->bDeviceDepthMap;
-			RenderCaptureProperties->CaptureFieldOfView = ComputedRenderCaptureProperties->CaptureFieldOfView;
-			RenderCaptureProperties->NearPlaneDist      = ComputedRenderCaptureProperties->NearPlaneDist;
-			Settings->ValidSampleDepthThreshold = ComputedValidDepthThreshold;
+			// Note UpdatePhotoSets will have restored the SceneCapture settings to their values prior to the cancel
+			RenderCaptureProperties->bBaseColorMap      = ComputedOptions.bBakeBaseColor;
+			RenderCaptureProperties->bNormalMap         = ComputedOptions.bBakeNormalMap;
+			RenderCaptureProperties->bMetallicMap       = ComputedOptions.bBakeMetallic;
+			RenderCaptureProperties->bRoughnessMap      = ComputedOptions.bBakeRoughness;
+			RenderCaptureProperties->bSpecularMap       = ComputedOptions.bBakeSpecular;
+			RenderCaptureProperties->bPackedMRSMap      = ComputedOptions.bUsePackedMRS;
+			RenderCaptureProperties->bEmissiveMap       = ComputedOptions.bBakeEmissive;
+			RenderCaptureProperties->bOpacityMap        = ComputedOptions.bBakeOpacity;
+			RenderCaptureProperties->bSubsurfaceColorMap = ComputedOptions.bBakeSubsurfaceColor;
+			RenderCaptureProperties->bDeviceDepthMap    = ComputedOptions.bBakeDeviceDepth;
+			RenderCaptureProperties->bAntiAliasing      = ComputedOptions.bAntiAliasing;
+			RenderCaptureProperties->CaptureFieldOfView = ComputedOptions.FieldOfViewDegrees;
+			RenderCaptureProperties->NearPlaneDist      = ComputedOptions.NearPlaneDist;
+			RenderCaptureProperties->Resolution         = static_cast<EBakeTextureResolution>(ComputedOptions.RenderCaptureImageSize);
 
 			// Silently make the above updates so we don't overwrite the change to OpState below and call this function again
 			RenderCaptureProperties->SilentUpdateWatched();
 			Settings->SilentUpdateWatched();
-
-			OpState = EBakeOpState::Clean;
-
-			return;
 		}
+	}
 
-		// Cache Settings used to compute this SceneCapture so we can restore them if the user cancels a SceneCapture recompute
-		ComputedRenderCaptureProperties->Resolution         = RenderCaptureProperties->Resolution;
-		ComputedRenderCaptureProperties->bBaseColorMap      = RenderCaptureProperties->bBaseColorMap;
-		ComputedRenderCaptureProperties->bNormalMap         = RenderCaptureProperties->bNormalMap;
-		ComputedRenderCaptureProperties->bMetallicMap       = RenderCaptureProperties->bMetallicMap;
-		ComputedRenderCaptureProperties->bRoughnessMap      = RenderCaptureProperties->bRoughnessMap;
-		ComputedRenderCaptureProperties->bSpecularMap       = RenderCaptureProperties->bSpecularMap;
-		ComputedRenderCaptureProperties->bPackedMRSMap      = RenderCaptureProperties->bPackedMRSMap;
-		ComputedRenderCaptureProperties->bEmissiveMap       = RenderCaptureProperties->bEmissiveMap;
-		ComputedRenderCaptureProperties->bAntiAliasing      = RenderCaptureProperties->bAntiAliasing;
-		ComputedRenderCaptureProperties->bDeviceDepthMap    = RenderCaptureProperties->bDeviceDepthMap;
-		ComputedRenderCaptureProperties->CaptureFieldOfView = RenderCaptureProperties->CaptureFieldOfView;
-		ComputedRenderCaptureProperties->NearPlaneDist      = RenderCaptureProperties->NearPlaneDist;
-		ComputedValidDepthThreshold = Settings->ValidSampleDepthThreshold;
+	for (int Idx = 1; Idx < Targets.Num(); ++Idx)
+	{
+		UE::ToolTarget::HideSourceObject(Targets[Idx]);
+	}
 
-		bFirstEverSceneCapture = false;
+	return Update;
+}
+
+// Process dirty props and update background compute. Called by Render
+void UBakeRenderCaptureTool::UpdateResult()
+{
+	// Return if the bake is already launched/complete.
+	if (OpState == EBakeOpState::Clean)
+	{
+		return;
+	}
+
+	// The bake operation, Compute, stores a pointer to the SceneCapture so that must not be modified while baking
+	const bool bComputeInProgress = (Compute && (Compute->GetElapsedComputeTime() > 0.f));
+	if (bComputeInProgress)
+	{
+		return;
 	}
 
 	FText ErrorMessage; // Empty message indicates no error
@@ -1273,24 +953,48 @@ void UBakeRenderCaptureTool::UpdateResult()
 	// Calling DisplayMessage with an empty string will clear existing messages
 	GetToolManager()->DisplayMessage(ErrorMessage, EToolMessageLevel::UserWarning);
 
-	InvalidateResults();
-
 	const bool bIsInvalid = (ErrorMessage.IsEmpty() == false);
 	if (bIsInvalid)
 	{
+		// Clear all results and wait for user to fix the invalid tool inputs
+		InvalidateResults(FRenderCaptureUpdate{});
+
+		// Only call UpdateVisualization when we first detect the invalid inputs
 		const bool bWasValid = static_cast<bool>(OpState & EBakeOpState::Invalid) == false;
 		if (bWasValid)
 		{
-			UpdateVisualization(); // Clear the preview mesh material inputs
+			UpdateVisualization();
 		}
+
+		// Set an invalid op state so we re-enter this function until the inputs are valid
 		OpState = EBakeOpState::Invalid;
-		return;
 	}
+	else
+	{
+		FRenderCaptureUpdate Update = UpdateSceneCapture();
 
-	InvalidateComputeRC();
+		const bool bInvalidateAll =
+			ComputedTextureSize != Settings->TextureSize ||
+			ComputedSamplesPerPixel != Settings->SamplesPerPixel ||
+			ComputedValidDepthThreshold != Settings->ValidSampleDepthThreshold;
 
-	OpState = EBakeOpState::Clean;
+		// Invalidate any results which need re-baking because the SceneCapture was updated, or
+		// Invalidate all results if the any baking parameters were changed
+		InvalidateResults(bInvalidateAll ? FRenderCaptureUpdate{} : Update);
+
+		// Update the preview mesh material with the (possibly invalidated) bake results
+		UpdateVisualization();
+
+		// Start another bake operation
+		InvalidateCompute();
+
+		// Cache computed parameters which are used to determine if results need re-baking
+		ComputedTextureSize = Settings->TextureSize;
+		ComputedSamplesPerPixel = Settings->SamplesPerPixel;
+		ComputedValidDepthThreshold = Settings->ValidSampleDepthThreshold;
+	}
 }
+
 
 
 void UBakeRenderCaptureTool::UpdateVisualization()
@@ -1300,114 +1004,127 @@ void UBakeRenderCaptureTool::UpdateVisualization()
 		return;
 	}
 
-	if (ResultSettings->PackedMRSMap)
+	const bool bSubsurfaceMaterial = ResultSettings->SubsurfaceColorMap || ResultSettings->OpacityMap;
+	const bool bPackedMRS = ResultSettings->PackedMRSMap != nullptr;
+
+	// Choose the material
+	TObjectPtr<UMaterialInstanceDynamic> Material = bPackedMRS ? PreviewMaterialPackedRC : PreviewMaterialRC;
+	if (bSubsurfaceMaterial)
 	{
-		TObjectPtr<UMaterialInstanceDynamic> Material = PreviewMaterialPackedRC;
-		PreviewMesh->SetOverrideRenderMaterial(Material);
+		Material = bPackedMRS ? PreviewMaterialPackedRC_Subsurface : PreviewMaterialRC_Subsurface;
+		ensure(Material->GetShadingModels().HasShadingModel(EMaterialShadingModel::MSM_Subsurface));
+		ensure(Material->GetBlendMode() == EBlendMode::BLEND_Masked);
+	}
 
-		if (VisualizationProps->bPreviewAsMaterial)
+	if (VisualizationProps->bPreviewAsMaterial)
+	{
+		const auto TrySetTexture =
+			[Material](const FString& TextureName, TObjectPtr<UTexture2D> Texture, TObjectPtr<UTexture2D> Fallback, bool bMaterialHasTexture = true)
 		{
-			// We set all textures which were computed in the corresponding texture channels
-			Material->SetTextureParameterValue(FName(BaseColorTexParamName), ResultSettings->BaseColorMap ? ResultSettings->BaseColorMap : EmptyColorMapWhite);
-			Material->SetTextureParameterValue(FName(EmissiveTexParamName),  ResultSettings->EmissiveMap  ? ResultSettings->EmissiveMap  : EmptyEmissiveMap);
-			Material->SetTextureParameterValue(FName(NormalTexParamName),    ResultSettings->NormalMap    ? ResultSettings->NormalMap    : EmptyNormalMap);
-			Material->SetTextureParameterValue(FName(PackedMRSTexParamName), ResultSettings->PackedMRSMap);
-		}
-		else
-		{
-			// The BaseColor texture channel will be set according to the selected MapPreview
-			TObjectPtr<UTexture2D> BaseColorMap = EmptyColorMapWhite;
-			if (ResultSettings->BaseColorMap && Settings->MapPreview == BaseColorTexParamName)
+			if (bMaterialHasTexture)
 			{
-				BaseColorMap = ResultSettings->BaseColorMap;
+				Material->SetTextureParameterValue(FName(TextureName), Texture ? Texture : Fallback);
 			}
-			else if (ResultSettings->EmissiveMap && Settings->MapPreview == EmissiveTexParamName)
-			{
-				BaseColorMap = ResultSettings->EmissiveMap;
-			}
-			else if (ResultSettings->NormalMap && Settings->MapPreview == NormalTexParamName)
-			{
-				BaseColorMap = ResultSettings->NormalMap;
-			}
-			else if (ResultSettings->PackedMRSMap && Settings->MapPreview == PackedMRSTexParamName)
-			{
-				BaseColorMap = ResultSettings->PackedMRSMap;
-			}
-			Material->SetTextureParameterValue(FName(BaseColorTexParamName), BaseColorMap);
-			Material->SetTextureParameterValue(FName(EmissiveTexParamName),  EmptyEmissiveMap);
-			Material->SetTextureParameterValue(FName(NormalTexParamName), EmptyNormalMap);
-			Material->SetTextureParameterValue(FName(PackedMRSTexParamName), EmptyPackedMRSMap);
-		}
+		};
 
-		Material->SetScalarParameterValue(TEXT("UVChannel"), InputMeshSettings->GetTargetUVLayerIndex());
+		// Set all computed textures or fallback to the empty texture map
+		TrySetTexture(BaseColorTexParamName, ResultSettings->BaseColorMap, EmptyColorMapWhite);
+		TrySetTexture(EmissiveTexParamName,  ResultSettings->EmissiveMap,  EmptyEmissiveMap);
+		TrySetTexture(NormalTexParamName,    ResultSettings->NormalMap,    EmptyNormalMap);
+		TrySetTexture(PackedMRSTexParamName, ResultSettings->PackedMRSMap, EmptyPackedMRSMap,  bPackedMRS);
+		TrySetTexture(RoughnessTexParamName, ResultSettings->RoughnessMap, EmptyRoughnessMap, !bPackedMRS);
+		TrySetTexture(MetallicTexParamName,  ResultSettings->MetallicMap,  EmptyMetallicMap,  !bPackedMRS);
+		TrySetTexture(SpecularTexParamName,  ResultSettings->SpecularMap,  EmptySpecularMap,  !bPackedMRS);
+		TrySetTexture(OpacityTexParamName,   ResultSettings->OpacityMap,   EmptyOpacityMap,    bSubsurfaceMaterial);
+		TrySetTexture(SubsurfaceColorTexParamName, ResultSettings->SubsurfaceColorMap, EmptySubsurfaceColorMap, bSubsurfaceMaterial);
 	}
 	else
 	{
-		TObjectPtr<UMaterialInstanceDynamic> Material = PreviewMaterialRC;
-		PreviewMesh->SetOverrideRenderMaterial(Material);
+		const auto TrySetTexture =
+			[Material, this](const FString& TextureName, TObjectPtr<UTexture2D> Texture, TObjectPtr<UTexture2D> Fallback, bool bMaterialHasTexture = true)
+		{
+			// Set the BaseColor texture to the MapPreview texture if it exists and use white otherwise
+			if (TextureName == Settings->MapPreview)
+			{
+				if (bMaterialHasTexture && Texture)
+				{
+					Material->SetTextureParameterValue(FName(BaseColorTexParamName), Texture);
+				}
+				else
+				{
+					Material->SetTextureParameterValue(FName(BaseColorTexParamName), EmptyColorMapWhite);
+				}
+			}
 
-		if (VisualizationProps->bPreviewAsMaterial)
-		{
-			// We set all textures which were computed in the corresponding texture channels
-			Material->SetTextureParameterValue(FName(BaseColorTexParamName), ResultSettings->BaseColorMap ? ResultSettings->BaseColorMap : EmptyColorMapWhite);
-			Material->SetTextureParameterValue(FName(RoughnessTexParamName), ResultSettings->RoughnessMap ? ResultSettings->RoughnessMap : EmptyRoughnessMap);
-			Material->SetTextureParameterValue(FName(MetallicTexParamName),  ResultSettings->MetallicMap  ? ResultSettings->MetallicMap  : EmptyMetallicMap);
-			Material->SetTextureParameterValue(FName(SpecularTexParamName),  ResultSettings->SpecularMap  ? ResultSettings->SpecularMap  : EmptySpecularMap);
-			Material->SetTextureParameterValue(FName(EmissiveTexParamName),  ResultSettings->EmissiveMap  ? ResultSettings->EmissiveMap  : EmptyEmissiveMap);
-			Material->SetTextureParameterValue(FName(NormalTexParamName),    ResultSettings->NormalMap    ? ResultSettings->NormalMap    : EmptyNormalMap);
-		}
-		else
-		{
-			// The BaseColor texture channel will be set according to the selected MapPreview
-			TObjectPtr<UTexture2D> BaseColorMap = EmptyColorMapWhite;
-			if (ResultSettings->BaseColorMap && Settings->MapPreview == BaseColorTexParamName)
+			// Set the non-BaseColor texture parameters to empty fallback textures
+			if (TextureName != BaseColorTexParamName)
 			{
-				BaseColorMap = ResultSettings->BaseColorMap;
+				if (bMaterialHasTexture)
+				{
+					Material->SetTextureParameterValue(FName(TextureName), Fallback);
+				}
 			}
-			else if (ResultSettings->RoughnessMap && Settings->MapPreview == RoughnessTexParamName)
-			{
-				BaseColorMap = ResultSettings->RoughnessMap;
-			}
-			else if (ResultSettings->MetallicMap && Settings->MapPreview == MetallicTexParamName)
-			{
-				BaseColorMap = ResultSettings->MetallicMap;
-			}
-			else if (ResultSettings->SpecularMap && Settings->MapPreview == SpecularTexParamName)
-			{
-				BaseColorMap = ResultSettings->SpecularMap;
-			}
-			else if (ResultSettings->EmissiveMap && Settings->MapPreview == EmissiveTexParamName)
-			{
-				BaseColorMap = ResultSettings->EmissiveMap;
-			}
-			else if (ResultSettings->NormalMap && Settings->MapPreview == NormalTexParamName)
-			{
-				BaseColorMap = ResultSettings->NormalMap;
-			}
-			Material->SetTextureParameterValue(TEXT("BaseColor"), BaseColorMap);
-			
-			Material->SetTextureParameterValue(TEXT("Roughness"), EmptyRoughnessMap);
-			Material->SetTextureParameterValue(TEXT("Metallic"),  EmptyMetallicMap);
-			Material->SetTextureParameterValue(TEXT("Specular"),  EmptySpecularMap);
-			Material->SetTextureParameterValue(TEXT("Emissive"),  EmptyEmissiveMap);
-			Material->SetTextureParameterValue(TEXT("NormalMap"), EmptyNormalMap);
-		}
-		
-		Material->SetScalarParameterValue(TEXT("UVChannel"), InputMeshSettings->GetTargetUVLayerIndex());
+		};
+
+		TrySetTexture(BaseColorTexParamName, ResultSettings->BaseColorMap, EmptyColorMapWhite);
+		TrySetTexture(EmissiveTexParamName,  ResultSettings->EmissiveMap,  EmptyEmissiveMap);
+		TrySetTexture(NormalTexParamName,    ResultSettings->NormalMap,    EmptyNormalMap);
+		TrySetTexture(PackedMRSTexParamName, ResultSettings->PackedMRSMap, EmptyPackedMRSMap,  bPackedMRS);
+		TrySetTexture(RoughnessTexParamName, ResultSettings->RoughnessMap, EmptyRoughnessMap, !bPackedMRS);
+		TrySetTexture(MetallicTexParamName,  ResultSettings->MetallicMap,  EmptyMetallicMap,  !bPackedMRS);
+		TrySetTexture(SpecularTexParamName,  ResultSettings->SpecularMap,  EmptySpecularMap,  !bPackedMRS);
+		TrySetTexture(OpacityTexParamName,   ResultSettings->OpacityMap,   EmptyOpacityMap,    bSubsurfaceMaterial);
+		TrySetTexture(SubsurfaceColorTexParamName, ResultSettings->SubsurfaceColorMap, EmptySubsurfaceColorMap, bSubsurfaceMaterial);
 	}
+
+	Material->SetScalarParameterValue(TEXT("UVChannel"), InputMeshSettings->GetTargetUVLayerIndex());
+	PreviewMesh->SetOverrideRenderMaterial(Material);
+
+	GetToolManager()->PostInvalidation();
 }
 
 
-
-void UBakeRenderCaptureTool::InvalidateResults()
+void UBakeRenderCaptureTool::InvalidateResults(FRenderCaptureUpdate Update)
 {
-	ResultSettings->BaseColorMap = nullptr;
-	ResultSettings->RoughnessMap = nullptr;
-	ResultSettings->MetallicMap = nullptr;
-	ResultSettings->SpecularMap = nullptr;
-	ResultSettings->PackedMRSMap = nullptr;
-	ResultSettings->EmissiveMap = nullptr;
-	ResultSettings->NormalMap = nullptr;
+	// Note that the bake operation, Compute, updates ResultSettings when results are available via the
+	// Compute->OnResultUpdated delegate.
+
+	if (Update.bUpdatedBaseColor)
+	{
+		ResultSettings->BaseColorMap = nullptr;
+	}
+	if (Update.bUpdatedRoughness)
+	{
+		ResultSettings->RoughnessMap = nullptr;
+	}
+	if (Update.bUpdatedMetallic)
+	{
+		ResultSettings->MetallicMap = nullptr;
+	}
+	if (Update.bUpdatedSpecular)
+	{
+		ResultSettings->SpecularMap = nullptr;
+	}
+	if (Update.bUpdatedEmissive)
+	{
+		ResultSettings->EmissiveMap = nullptr;
+	}
+	if (Update.bUpdatedNormalMap)
+	{
+		ResultSettings->NormalMap = nullptr;
+	}
+	if (Update.bUpdatedOpacity)
+	{
+		ResultSettings->OpacityMap = nullptr;
+	}
+	if (Update.bUpdatedSubsurfaceColor)
+	{
+		ResultSettings->SubsurfaceColorMap = nullptr;
+	}
+	if (Update.bUpdatedPackedMRS)
+	{
+		ResultSettings->PackedMRSMap = nullptr;
+	}
 }
 
 
@@ -1449,6 +1166,8 @@ void UBakeRenderCaptureTool::RecordAnalytics() const
 	Attributes.Add(FAnalyticsEventAttribute(TEXT("Settings.RenderCapture.SpecularMap.Enabled"), RenderCaptureProperties->bSpecularMap));
 	Attributes.Add(FAnalyticsEventAttribute(TEXT("Settings.RenderCapture.PackedMRSMap.Enabled"), RenderCaptureProperties->bPackedMRSMap));
 	Attributes.Add(FAnalyticsEventAttribute(TEXT("Settings.RenderCapture.EmissiveMap.Enabled"), RenderCaptureProperties->bEmissiveMap));
+	Attributes.Add(FAnalyticsEventAttribute(TEXT("Settings.RenderCapture.OpacityMap.Enabled"), RenderCaptureProperties->bOpacityMap));
+	Attributes.Add(FAnalyticsEventAttribute(TEXT("Settings.RenderCapture.SubsurfaceColorMap.Enabled"), RenderCaptureProperties->bSubsurfaceColorMap));
 	Attributes.Add(FAnalyticsEventAttribute(TEXT("Settings.RenderCapture.CaptureFieldOfView"), RenderCaptureProperties->CaptureFieldOfView));
 	Attributes.Add(FAnalyticsEventAttribute(TEXT("Settings.RenderCapture.NearPlaneDistance"), RenderCaptureProperties->NearPlaneDist));
 

@@ -38,8 +38,8 @@ public:
 	UAnimationModifier();
 
 	/** Applying and reverting the modifier for the given Animation Sequence */
-	void ApplyToAnimationSequence(class UAnimSequence* InAnimationSequence);
-	void RevertFromAnimationSequence(class UAnimSequence* InAnimationSequence);
+	void ApplyToAnimationSequence(UAnimSequence* AnimSequence) const;
+	void RevertFromAnimationSequence(UAnimSequence* AnimSequence) const;
 
 	/** Executed when the Animation is initialized (native event for debugging / testing purposes) */
 	UFUNCTION(BlueprintNativeEvent)
@@ -50,11 +50,27 @@ public:
 	void OnRevert(UAnimSequence* AnimationSequence);
 	virtual void OnRevert_Implementation(UAnimSequence* AnimationSequence) {}
 
-	/** Returns whether or not this modifier can be reverted, which means it will have to been applied (PreviouslyAppliedModifier != nullptr) */
-	bool CanRevert() const { return PreviouslyAppliedModifier != nullptr; };
+	/** Returns whether or not this modifier can be reverted, which means it will have to been applied to the given AnimationSequence */
+	bool CanRevert(IInterface_AssetUserData* AssetUserDataInterface) const;
 
 	/** Whether or not the latest compiled version of the blueprint is applied for this instance */
-	bool IsLatestRevisionApplied() const;
+	bool IsLatestRevisionApplied(IInterface_AssetUserData* AssetUserDataInterface) const;
+
+	//! @brief Get the latest revision GUID of this modifier class
+	FGuid GetLatestRevisionGuid() const;
+
+	//! @brief Get Asset Registry tags for applied modifiers from _skeleton_
+	//! @param[out] OutTags AnimationModifiers = %PATH%=%REVISION%;...
+	static void GetAssetRegistryTagsForAppliedModifiersFromSkeleton(const UObject* Object, TArray<UObject::FAssetRegistryTag>& OutTags);
+
+	static const FName AnimationModifiersTag;
+	static constexpr TCHAR AnimationModifiersDelimiter = ';';
+	static constexpr TCHAR AnimationModifiersAssignment = '=';
+
+	//! @brief Check if this Modifier On Skeleton has PreviouslyAppliedModifier_DEPRECATED from previous version
+	bool HasLegacyPreviousAppliedModifierOnSkeleton() const { return GetLegacyPreviouslyAppliedModifierForModifierOnSkeleton() != nullptr; }
+	//! @brief Mark this modifier on skeleton as reverted (affect CanRevert, IsLatestRevisionApplied)
+	void RemoveLegacyPreviousAppliedModifierOnSkeleton(USkeleton* Skeleton);
 
 	// Begin UObject Overrides
 	virtual void PostInitProperties() override;
@@ -84,24 +100,40 @@ protected:
 	void UpdateRevisionGuid(UClass* ModifierClass);
 	void UpdateNativeRevisionGuid();
 
+	void ExecuteOnRevert(UAnimSequence* InAnimSequence);
+	void ExecuteOnApply(UAnimSequence* InAnimSequence);
+	
 	/** Applies all instances of the provided Modifier class to its outer Animation Sequence*/
 	static void ApplyToAll(TSubclassOf<UAnimationModifier> ModifierSubClass, bool bForceApply = true);
 	static void LoadModifierReferencers(TSubclassOf<UAnimationModifier> ModifierSubClass);
 private:
-	UAnimSequence* CurrentAnimSequence;
-	USkeleton* CurrentSkeleton;
+	// These value were not set during OnRevert, prefer to use the input from OnApply() or OnRevert()
+	UAnimSequence* CurrentAnimSequence = nullptr;
+	USkeleton* CurrentSkeleton = nullptr;
 
-	void UpdateStoredRevisions();
-	void ResetStoredRevisions();
-	void SetInstanceRevisionGuid(FGuid Guid);
+	//! @brief Try get the applied modifier instance (associated with this modifier) on the animation sequence, null if not applied on the sequence
+	UAnimationModifier* GetAppliedModifier(IInterface_AssetUserData* AssetUserDataInterface) const;
 
-	// This holds the GUID representing the latest version of the modifier
+	//! @brief Set the applied modifier instance on the Animation Sequence
+	void SetAppliedModifier(TScriptInterface<IInterface_AssetUserData> AssetUserDataInterface, UAnimationModifier* AppliedModifier) const;
+	//! @brief Remove the applied modifier instance (associated with this modifier) from the Animation Sequence
+	//! @return The modifier instance removed
+	UAnimationModifier* FindAndRemoveAppliedModifier(TScriptInterface<IInterface_AssetUserData> AssetUserDataInterface) const;
+	//! @brief Get the applied modifier instance for modifier on skeleton read from _legacy_ version
+	//! @note This function is only intended for backward compatibility with existing asset
+	//!	@return PreviouslyAppliedModifier_DEPRECATED on Modifier on Skeleton, _before_ upgrade
+	UAnimationModifier* GetLegacyPreviouslyAppliedModifierForModifierOnSkeleton() const;
+
+
+	// - On class-default-objects, this is the latest revision GUID
+	// - On applied modifier instances, this is the revision applied
+	// - Not used for other instances
 	UPROPERTY(/*VisibleAnywhere for testing, Category = Revision*/)
 	FGuid RevisionGuid;
 
 	// This indicates whether or not the modifier is newer than what has been applied
 	UPROPERTY(/*VisibleAnywhere for testing, Category = Revision */)
-	FGuid AppliedGuid;
+	FGuid AppliedGuid_DEPRECATED;
 
 	// This holds the latest value returned by UpdateNativeRevisionGuid during the last PostLoad (changing this value will invalidate the GUIDs for all instances)
 	UPROPERTY(config)
@@ -109,41 +141,74 @@ private:
 
 	/** Serialized version of the modifier that has been previously applied to the Animation Asset */
 	UPROPERTY()
-	TObjectPtr<UAnimationModifier> PreviouslyAppliedModifier;
-
-	static const FName RevertModifierObjectName;
+	TObjectPtr<UAnimationModifier> PreviouslyAppliedModifier_DEPRECATED = nullptr;
 };
 
 namespace UE
 {
 	namespace Anim
 	{
-		struct FApplyModifiersScope
+		// RAII object to determine how Animation Modifier warning/errors are handled (ignore, user dialog, etc.)
+		struct ANIMATIONMODIFIERS_API FApplyModifiersScope
 		{
-			FApplyModifiersScope()
+			friend UAnimationModifier;
+
+			enum ESuppressionMode : uint8
 			{
-				if (ScopesOpened == 0)
-				{				
-					PerClassReturnTypeValues.Empty();
-				}
-				++ScopesOpened;
+				// Do not change the error handling mode on this scope
+				// Use the mode set by parent scope or default (ShowDialog)
+				NoChange,
+				// Suppress error dialogs
+				// Suppress warnings dialogs, always apply modifiers
+				// No user interaction required
+				SuppressWarningAndError,
+				// Show error dialogs
+				// Suppress warnings dialogs, always apply modifiers
+				SuppressWarning,
+				// Show warning and error dialogs for first encounter
+				// Error dialog for each modifier class will only be showed once
+				ShowDialog,
+				// Always show the error or warning dialog
+				// Default behavior when no scope was open
+				ForceDialog,
+				// Suppress error dialogs
+				// Suppress warnings dialogs, always revert modifiers
+				// No user interaction required
+				RevertAtWarning,
+			};
+
+			FApplyModifiersScope(const FApplyModifiersScope&) = delete;
+			explicit FApplyModifiersScope(ESuppressionMode Mode = NoChange)
+			{
+				Open(Mode);
 			}
 
 			~FApplyModifiersScope()
 			{
-				--ScopesOpened;
-				check(ScopesOpened >= 0);
-				if(ScopesOpened == 0)
-				{
-					PerClassReturnTypeValues.Empty();
-				}
+				Close();
 			}
 
-			static TOptional<EAppReturnType::Type> GetReturnType(const UAnimationModifier* InModifier);			
-			static void SetReturnType(const class UAnimationModifier* InModifier, EAppReturnType::Type InReturnType);
+protected:
+			/** Determine how to handle an Animation Modifier error, and execute accordingly */
+			static void HandleError(const UAnimationModifier* Modifier, const FText& Message, const FText* OptTitle = nullptr);
 
-			static TMap<FObjectKey, TOptional<EAppReturnType::Type>> PerClassReturnTypeValues;
-			static int32 ScopesOpened;
+			/** Determine how to handle an Animation Modifier warning, and execute accordingly. Returns whether or not the warning was handled (true) or warrants reverting the applied Animation Modifier (false) */
+			static bool HandleWarning(const UAnimationModifier* Modifier, const FText& Message, const FText* OptTitle = nullptr);
+
+private:
+			// Open a scope to control error handling when batch applying animation modifiers
+			static ESuppressionMode Open(ESuppressionMode Mode = NoChange);
+			// Close the most recent scope
+			static void Close();
+
+			static ESuppressionMode CurrentMode();
+
+			/** Errors already acknowledged */
+			static TSet<FObjectKey> ErrorResponse;
+			/** Warnings already ignored or treated as error */
+			static TMap<FObjectKey, EAppReturnType::Type> WarningResponse;
+			/** Error handle mode stack for scopes */
+			static TArray<ESuppressionMode, TInlineAllocator<4>> ScopeModeStack;
 		};
 	}
 }

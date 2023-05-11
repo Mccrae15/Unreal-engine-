@@ -27,17 +27,38 @@ FName UFKControlRig::GetControlName(const FName& InName, const ERigElementType& 
 {
 	if (InName != NAME_None)
 	{
-		const FString& PostFix = [InType]()
+		if((InType == ERigElementType::Bone || InType == ERigElementType::Curve))
 		{
-			if (InType == ERigElementType::Curve)
+			static thread_local TMap<FName, FName> NameToControlMappings[2];
+			TMap<FName, FName>& NameToControlMapping = NameToControlMappings[InType == ERigElementType::Bone ? 0 : 1];
+			if (const FName* CachedName = NameToControlMapping.Find(InName))
 			{
-				return TEXT("_CURVE");
+				return *CachedName;
 			}
+			else
+			{
+				static thread_local FStringBuilderBase ScratchString;		
 
-			return TEXT("");
-		}();
+				// ToString performs ScratchString.Reset() internally
+				InName.ToString(ScratchString);
+
+				if (InType == ERigElementType::Curve)
+				{
+					static const TCHAR* CurvePostFix = TEXT("_CURVE");
+					ScratchString.Append(CurvePostFix);
+				}
+
+				static FString ControlPostFix = TEXT("_CONTROL");
 		
-		return FName(*(InName.ToString() + PostFix + TEXT("_CONTROL")));
+				ScratchString.Append(ControlPostFix);
+				return NameToControlMapping.Add(InName, FName(*ScratchString));
+			}
+		}
+		else if (InType == ERigElementType::Control)
+		{
+			checkSlow(InName.ToString().Contains(TEXT("_CONTROL")));
+			return InName;
+		}	
 	}
 
 	// if control name is coming as none, we don't append the postfix
@@ -48,37 +69,43 @@ FName UFKControlRig::GetControlTargetName(const FName& InName, const ERigElement
 {
 	if (InName != NAME_None)
 	{
-		const FString& PostFix = [InType]()
+		check(InType == ERigElementType::Bone || InType == ERigElementType::Curve);
+		static thread_local TMap<FName, FName> NameToTargetMappings[2];
+		TMap<FName, FName>& NameToTargetMapping = NameToTargetMappings[InType == ERigElementType::Bone ? 0 : 1];
+		if (const FName* CachedName = NameToTargetMapping.Find(InName))
 		{
+			return *CachedName;
+		}
+		else
+		{
+			static thread_local FString ScratchString;
+			
+			// ToString performs ScratchString.Reset() internally
+			InName.ToString(ScratchString);
+
+			int32 StartPostFix;
 			if (InType == ERigElementType::Curve)
 			{
-				return TEXT("_CURVE_CONTROL");
+				static const TCHAR* CurvePostFix = TEXT("_CURVE_CONTROL");
+				StartPostFix = ScratchString.Find(CurvePostFix, ESearchCase::CaseSensitive);
+			}
+			else
+			{
+				static const TCHAR* ControlPostFix = TEXT("_CONTROL");
+				StartPostFix = ScratchString.Find(ControlPostFix, ESearchCase::CaseSensitive);
 			}
 
-			return TEXT("_CONTROL");
-		}();
-
-		FString StringName = InName.ToString();
-		if (StringName.EndsWith(PostFix, ESearchCase::CaseSensitive))
-		{
-			StringName.RemoveFromEnd(PostFix);
-			return FName(*StringName);
-		}		
+			const FStringView ControlTargetString(*ScratchString, StartPostFix != INDEX_NONE ? StartPostFix : ScratchString.Len());
+			return NameToTargetMapping.Add(InName, FName(ControlTargetString));
+		}
 	}
 
 	// If incoming name is NONE, or not correctly formatted according to expected post-fix return NAME_None
 	return NAME_None;
 }
 
-bool UFKControlRig::ExecuteUnits(FRigUnitContext& InOutContext, const FName& InEventName)
+bool UFKControlRig::Execute_Internal(const FName& InEventName)
 {
-	if (InOutContext.State != EControlRigState::Update)
-	{
-		// we don't need any initialization so
-		// it's fine to consider this done here and return true.
-		return true;
-	}
-
 #if WITH_EDITOR
 	if(URigHierarchy* Hierarchy = GetHierarchy())
 	{
@@ -257,25 +284,20 @@ void UFKControlRig::Initialize(bool bInitRigUnits /*= true*/)
 
 	Super::Initialize(bInitRigUnits);
 
-	if (GetObjectBinding() == nullptr)
+	if(const TSharedPtr<IControlRigObjectBinding> Binding = GetObjectBinding())
 	{
-		return;
+		// we do this after Initialize because Initialize will copy from CDO. 
+		// create hierarchy from the incoming skeleton
+		if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(Binding->GetBoundObject()))
+		{
+			CreateRigElements(SkeletalMeshComponent->GetSkeletalMeshAsset());
+		}
+		else if (USkeleton* Skeleton = Cast<USkeleton>(Binding->GetBoundObject()))
+		{
+			const FReferenceSkeleton& RefSkeleton = Skeleton->GetReferenceSkeleton();
+			CreateRigElements(RefSkeleton, (Skeleton) ? Skeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName) : nullptr);
+		}
 	}
-
-	// we do this after Initialize because Initialize will copy from CDO. 
-	// create hierarchy from the incoming skeleton
-	if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(GetObjectBinding()->GetBoundObject()))
-	{
-		CreateRigElements(SkeletalMeshComponent->GetSkeletalMeshAsset());
-	}
-	else if (USkeleton* Skeleton = Cast<USkeleton>(GetObjectBinding()->GetBoundObject()))
-	{
-		const FReferenceSkeleton& RefSkeleton = Skeleton->GetReferenceSkeleton();
-		CreateRigElements(RefSkeleton, (Skeleton) ? Skeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName) : nullptr);
-	}
-
-	// execute init
-	Execute(EControlRigState::Init, FRigUnit_BeginExecution::EventName);
 }
 
 TArray<FName> UFKControlRig::GetControlNames()
@@ -421,7 +443,7 @@ void UFKControlRig::SetControlOffsetsFromBoneInitials()
 			return;
 		}
 
-		FRigBoneElement* BoneElement = CastChecked<FRigBoneElement>(InElement);
+		const FRigBoneElement* BoneElement = CastChecked<FRigBoneElement>(InElement);
 		const FName BoneName = BoneElement->GetName();
 		const FName ControlName = GetControlName(BoneName, BoneElement->GetType());
 
@@ -454,13 +476,17 @@ void UFKControlRig::SetControlOffsetsFromBoneInitials()
 
 void UFKControlRig::RefreshActiveControls()
 {
-	if (IsControlActive.Num() != GetHierarchy()->Num())
+	if (const URigHierarchy* Hierarchy = GetHierarchy())
 	{
-		IsControlActive.Empty(GetHierarchy()->Num());
-		IsControlActive.SetNum(GetHierarchy()->Num());
-		for (bool& bIsActive : IsControlActive)
+		const int32 NumControls = Hierarchy->Num();
+		if (IsControlActive.Num() != NumControls)
 		{
-			bIsActive = true;
+			IsControlActive.Empty(NumControls);
+			IsControlActive.SetNum(NumControls);
+			for (bool& bIsActive : IsControlActive)
+			{
+				bIsActive = true;
+			}
 		}
 	}
 }

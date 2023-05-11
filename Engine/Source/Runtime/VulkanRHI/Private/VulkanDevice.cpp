@@ -15,7 +15,9 @@
 #include "VulkanLLM.h"
 #include "VulkanTransientResourceAllocator.h"
 #include "VulkanExtensions.h"
+#include "VulkanRenderpass.h"
 #include "VulkanRayTracing.h"
+#include "VulkanDescriptorSets.h"
 
 TAutoConsoleVariable<int32> GRHIAllowAsyncComputeCvar(
 	TEXT("r.Vulkan.AllowAsyncCompute"),
@@ -31,7 +33,7 @@ TAutoConsoleVariable<int32> GAllowPresentOnComputeQueue(
 	TEXT("1 to allow presenting on the compute queue if available")
 );
 
-static TAutoConsoleVariable<int32> GCVarRobustBufferAccess(
+TAutoConsoleVariable<int32> GCVarRobustBufferAccess(
 	TEXT("r.Vulkan.RobustBufferAccess"),
 	1,
 	TEXT("0 to disable robust buffer access")
@@ -52,10 +54,14 @@ static TAutoConsoleVariable<int32> CVarVulkanUseD24(
 void AftermathGpuCrashDumpCallback(const void* pGpuCrashDump, const uint32 gpuCrashDumpSize, void* pUserData);
 void AftermathShaderDebugInfoCallback(const void* pShaderDebugInfo, const uint32 shaderDebugInfoSize, void* pUserData);
 void AftermathCrashDumpDescriptionCallback(PFN_GFSDK_Aftermath_AddGpuCrashDumpDescription addDescription, void* pUserData);
+void AftermathResolveMarkerCallback(const void* pMarker, void* pUserData, void** resolvedMarkerData, uint32_t* markerSize);
 #endif
 
 // Mirror GPixelFormats with format information for buffers
 VkFormat GVulkanBufferFormat[PF_MAX];
+
+// Mirror GPixelFormats with format information for buffers
+VkFormat GVulkanSRGBFormat[PF_MAX];
 
 EDelayAcquireImageType GVulkanDelayAcquireImage = EDelayAcquireImageType::DelayAcquire;
 
@@ -158,6 +164,41 @@ static void LoadValidationCache(VkDevice Device, VkValidationCacheEXT& OutValida
 			UE_LOG(LogVulkanRHI, Warning, TEXT("Failed to create Vulkan validation cache, VkResult=%d"), Result);
 		}
 	}
+}
+#endif
+
+#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
+static VkExtent2D GetBestMatchedShadingRateExtents(uint32 ShadingRate, const TArray<VkPhysicalDeviceFragmentShadingRateKHR>& FragmentShadingRates)
+{
+	// Given that for Vulkan we need to query available device shading rates, we're not guaranteed to have everything that's in our enum;
+	// This function walks the list of supported fragment rates returned by the device, and returns the closest match to the rate requested.
+	const VkExtent2D DirectMappedExtent = { 
+		1u << (ShadingRate >> 2), 
+		1u << (ShadingRate & 0x03) 
+	};
+	VkExtent2D BestMatchedExtent = { 1, 1 };
+
+	if (BestMatchedExtent.width != DirectMappedExtent.width || 
+		BestMatchedExtent.height != DirectMappedExtent.height)
+	{
+		for (auto const& Rate : FragmentShadingRates)
+		{
+			if (Rate.fragmentSize.width == DirectMappedExtent.width && 
+				Rate.fragmentSize.height == DirectMappedExtent.height)
+			{
+				BestMatchedExtent = DirectMappedExtent;
+				break;
+			}
+
+			if ((Rate.fragmentSize.width >= BestMatchedExtent.width && Rate.fragmentSize.width <= DirectMappedExtent.width && Rate.fragmentSize.height <= DirectMappedExtent.height && Rate.fragmentSize.height >= BestMatchedExtent.height) ||
+				(Rate.fragmentSize.height >= BestMatchedExtent.height && Rate.fragmentSize.height <= DirectMappedExtent.height && Rate.fragmentSize.width <= DirectMappedExtent.width && Rate.fragmentSize.width >= BestMatchedExtent.width))
+			{
+				BestMatchedExtent = Rate.fragmentSize;
+			}
+		}
+	}
+
+	return BestMatchedExtent;
 }
 #endif
 
@@ -360,9 +401,10 @@ void FVulkanDevice::CreateDevice(TArray<const ANSICHAR*>& DeviceLayers, FVulkanD
 		GFSDK_Aftermath_Result Result = GFSDK_Aftermath_EnableGpuCrashDumps(GFSDK_Aftermath_Version_API, 
 			GFSDK_Aftermath_GpuCrashDumpWatchedApiFlags_Vulkan,
 			GFSDK_Aftermath_GpuCrashDumpFeatureFlags_DeferDebugInfoCallbacks, 
-			AftermathGpuCrashDumpCallback,
-			AftermathShaderDebugInfoCallback,
-			AftermathCrashDumpDescriptionCallback,
+			&AftermathGpuCrashDumpCallback,
+			&AftermathShaderDebugInfoCallback,
+			&AftermathCrashDumpDescriptionCallback,
+			&AftermathResolveMarkerCallback,
 			this);
 		if (Result != GFSDK_Aftermath_Result_Success)
 		{
@@ -434,6 +476,12 @@ void FVulkanDevice::CreateDevice(TArray<const ANSICHAR*>& DeviceLayers, FVulkanD
 				ZeroVulkanStruct(FragmentShadingRates[i], VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_KHR);
 			}
 			VulkanRHI::vkGetPhysicalDeviceFragmentShadingRatesKHR(Gpu, &FragmentShadingRateCount, FragmentShadingRates.GetData());
+
+			// Build a map from EVRSShadingRate to fragment size
+			for (uint32 ShadingRate = 0u; ShadingRate < (uint32)FragmentSizeMap.Num(); ++ShadingRate)
+			{
+				FragmentSizeMap[ShadingRate] = GetBestMatchedShadingRateExtents(ShadingRate, FragmentShadingRates);
+			}
 		}
 	}
 #endif // VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
@@ -555,7 +603,6 @@ void FVulkanDevice::SetupFormats()
 	// Default formats
 	MapFormatSupport(PF_B8G8R8A8, { VK_FORMAT_B8G8R8A8_UNORM }, ComponentMappingRGBA);
 	MapFormatSupport(PF_G8, { VK_FORMAT_R8_UNORM }, ComponentMappingR001);
-	MapFormatSupport(PF_G16, { VK_FORMAT_R16_UNORM, VK_FORMAT_R16_SFLOAT }, ComponentMappingR001);
 	MapFormatSupport(PF_FloatRGB, { VK_FORMAT_B10G11R11_UFLOAT_PACK32, VK_FORMAT_R16G16B16_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT }, ComponentMappingRGB1, ColorRenderTargetRequiredCapabilities);
 	MapFormatSupport(PF_FloatRGBA, { VK_FORMAT_R16G16B16A16_SFLOAT }, ComponentMappingRGBA, 8);
 	MapFormatSupport(PF_ShadowDepth, { VK_FORMAT_D16_UNORM }, ComponentMappingRIII);
@@ -659,6 +706,14 @@ void FVulkanDevice::SetupFormats()
 		MapFormatSupport(PF_ETC2_R11_EAC,  { VK_FORMAT_EAC_R11_UNORM_BLOCK },       ComponentMappingR001);
 		MapFormatSupport(PF_ETC2_RG11_EAC, { VK_FORMAT_EAC_R11G11_UNORM_BLOCK },    ComponentMappingRG01);
 	}
+	if (FVulkanPlatform::SupportsR16UnormTextureFormat())
+	{
+		MapFormatSupport(PF_G16, { VK_FORMAT_R16_UNORM, VK_FORMAT_R16_SFLOAT }, ComponentMappingR001);
+	}
+	else
+	{
+		MapFormatSupport(PF_G16, { VK_FORMAT_R16_SFLOAT, VK_FORMAT_R16_UNORM }, ComponentMappingR001);
+	}
 
 	if (GetOptionalExtensions().HasEXTASTCDecodeMode)
 	{
@@ -685,7 +740,78 @@ void FVulkanDevice::SetupFormats()
 		}
 	}
 
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	// Verify the potential SRGB formats and fill GVulkanSRGBFormat
+	{
+		auto GetSRGBMapping = [this](const VkFormat InFormat)
+		{
+			VkFormat SRGBFormat = InFormat;
+			switch (InFormat)
+			{
+			case VK_FORMAT_B8G8R8A8_UNORM:				SRGBFormat = VK_FORMAT_B8G8R8A8_SRGB; break;
+			case VK_FORMAT_A8B8G8R8_UNORM_PACK32:		SRGBFormat = VK_FORMAT_A8B8G8R8_SRGB_PACK32; break;
+			case VK_FORMAT_R8_UNORM:					SRGBFormat = ((GMaxRHIFeatureLevel <= ERHIFeatureLevel::ES3_1) ? VK_FORMAT_R8_UNORM : VK_FORMAT_R8_SRGB); break;
+			case VK_FORMAT_R8G8_UNORM:					SRGBFormat = VK_FORMAT_R8G8_SRGB; break;
+			case VK_FORMAT_R8G8B8_UNORM:				SRGBFormat = VK_FORMAT_R8G8B8_SRGB; break;
+			case VK_FORMAT_R8G8B8A8_UNORM:				SRGBFormat = VK_FORMAT_R8G8B8A8_SRGB; break;
+			case VK_FORMAT_BC1_RGB_UNORM_BLOCK:			SRGBFormat = VK_FORMAT_BC1_RGB_SRGB_BLOCK; break;
+			case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:		SRGBFormat = VK_FORMAT_BC1_RGBA_SRGB_BLOCK; break;
+			case VK_FORMAT_BC2_UNORM_BLOCK:				SRGBFormat = VK_FORMAT_BC2_SRGB_BLOCK; break;
+			case VK_FORMAT_BC3_UNORM_BLOCK:				SRGBFormat = VK_FORMAT_BC3_SRGB_BLOCK; break;
+			case VK_FORMAT_BC7_UNORM_BLOCK:				SRGBFormat = VK_FORMAT_BC7_SRGB_BLOCK; break;
+			case VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK:		SRGBFormat = VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK; break;
+			case VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK:	SRGBFormat = VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK; break;
+			case VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK:	SRGBFormat = VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK; break;
+			case VK_FORMAT_ASTC_4x4_UNORM_BLOCK:		SRGBFormat = VK_FORMAT_ASTC_4x4_SRGB_BLOCK; break;
+			case VK_FORMAT_ASTC_5x4_UNORM_BLOCK:		SRGBFormat = VK_FORMAT_ASTC_5x4_SRGB_BLOCK; break;
+			case VK_FORMAT_ASTC_5x5_UNORM_BLOCK:		SRGBFormat = VK_FORMAT_ASTC_5x5_SRGB_BLOCK; break;
+			case VK_FORMAT_ASTC_6x5_UNORM_BLOCK:		SRGBFormat = VK_FORMAT_ASTC_6x5_SRGB_BLOCK; break;
+			case VK_FORMAT_ASTC_6x6_UNORM_BLOCK:		SRGBFormat = VK_FORMAT_ASTC_6x6_SRGB_BLOCK; break;
+			case VK_FORMAT_ASTC_8x5_UNORM_BLOCK:		SRGBFormat = VK_FORMAT_ASTC_8x5_SRGB_BLOCK; break;
+			case VK_FORMAT_ASTC_8x6_UNORM_BLOCK:		SRGBFormat = VK_FORMAT_ASTC_8x6_SRGB_BLOCK; break;
+			case VK_FORMAT_ASTC_8x8_UNORM_BLOCK:		SRGBFormat = VK_FORMAT_ASTC_8x8_SRGB_BLOCK; break;
+			case VK_FORMAT_ASTC_10x5_UNORM_BLOCK:		SRGBFormat = VK_FORMAT_ASTC_10x5_SRGB_BLOCK; break;
+			case VK_FORMAT_ASTC_10x6_UNORM_BLOCK:		SRGBFormat = VK_FORMAT_ASTC_10x6_SRGB_BLOCK; break;
+			case VK_FORMAT_ASTC_10x8_UNORM_BLOCK:		SRGBFormat = VK_FORMAT_ASTC_10x8_SRGB_BLOCK; break;
+			case VK_FORMAT_ASTC_10x10_UNORM_BLOCK:		SRGBFormat = VK_FORMAT_ASTC_10x10_SRGB_BLOCK; break;
+			case VK_FORMAT_ASTC_12x10_UNORM_BLOCK:		SRGBFormat = VK_FORMAT_ASTC_12x10_SRGB_BLOCK; break;
+			case VK_FORMAT_ASTC_12x12_UNORM_BLOCK:		SRGBFormat = VK_FORMAT_ASTC_12x12_SRGB_BLOCK; break;
+				//		case VK_FORMAT_PVRTC1_2BPP_UNORM_BLOCK_IMG:	Format = VK_FORMAT_PVRTC1_2BPP_SRGB_BLOCK_IMG; break;
+				//		case VK_FORMAT_PVRTC1_4BPP_UNORM_BLOCK_IMG:	Format = VK_FORMAT_PVRTC1_4BPP_SRGB_BLOCK_IMG; break;
+				//		case VK_FORMAT_PVRTC2_2BPP_UNORM_BLOCK_IMG:	Format = VK_FORMAT_PVRTC2_2BPP_SRGB_BLOCK_IMG; break;
+				//		case VK_FORMAT_PVRTC2_4BPP_UNORM_BLOCK_IMG:	Format = VK_FORMAT_PVRTC2_4BPP_SRGB_BLOCK_IMG; break;
+			default:	break;
+			}
+
+			// If we're introducing a new format, make sure it's supported
+			if (InFormat != SRGBFormat)
+			{
+				const VkFormatProperties& SRGBFormatProperties = GetFormatProperties(SRGBFormat);
+				if (!VKHasAnyFlags(SRGBFormatProperties.optimalTilingFeatures, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT))
+				{
+					// If we can't even sample from it, then reject the suggested SRGB format
+					SRGBFormat = InFormat;
+				}
+			}
+
+			return SRGBFormat;
+		};
+
+		for (int32 PixelFormatIndex = 0; PixelFormatIndex < PF_MAX; ++PixelFormatIndex)
+		{
+			const FPixelFormatInfo& PixelFormatInfo = GPixelFormats[PixelFormatIndex];
+			if (PixelFormatInfo.Supported)
+			{
+				const VkFormat OriginalFormat = (VkFormat)PixelFormatInfo.PlatformFormat;
+				GVulkanSRGBFormat[PixelFormatIndex] = GetSRGBMapping(OriginalFormat);
+			}
+			else
+			{
+				GVulkanSRGBFormat[PixelFormatIndex] = VK_FORMAT_UNDEFINED;
+			}
+		}
+	}
+
+#if UE_BUILD_DEBUG || UE_BUILD_DEVELOPMENT
 
 	// Print the resulting pixel format support
 	if (FParse::Param(FCommandLine::Get(), TEXT("PrintVulkanPixelFormatMappings")))
@@ -714,62 +840,52 @@ void FVulkanDevice::SetupFormats()
 		};
 
 		UE_LOG(LogVulkanRHI, Warning, TEXT("Pixel Format Mappings for Vulkan:"));
-		UE_LOG(LogVulkanRHI, Warning, TEXT("%24s | VulkanFormat | BlockBytes | Components | ComponentMapping | BufferFormat | Capabilities "), TEXT("PixelFormatName"));
+		UE_LOG(LogVulkanRHI, Warning, TEXT("%24s | %24s | BlockBytes | Components | ComponentMapping | BufferFormat | Capabilities | SRGBFormat"), 
+			TEXT("PixelFormatName"), TEXT("VulkanFormat"));
 		for (int32 PixelFormatIndex = 0; PixelFormatIndex < PF_MAX; ++PixelFormatIndex)
 		{
 			if (GPixelFormats[PixelFormatIndex].Supported)
 			{
 				const VkComponentMapping& ComponentMapping = PixelFormatComponentMapping[PixelFormatIndex];
 
-				FString CapabilitiesString = GetFormatCapabilities(GPixelFormats[PixelFormatIndex].Capabilities);
+				const VkFormat VulkanFormat = (VkFormat)GPixelFormats[PixelFormatIndex].PlatformFormat;
+				FString VulkanFormatStr(VK_TYPE_TO_STRING(VkFormat, VulkanFormat));
+				VulkanFormatStr.RightChopInline(10);  // Chop the VK_FORMAT_
 
-				UE_LOG(LogVulkanRHI, Warning, TEXT("%24s | %12d | %10d | %10d | %10d,%d,%d,%d | %12d | 0x%08X (%s)"),
+				FString SRGBFormat;
+				if (VulkanFormat != GVulkanSRGBFormat[PixelFormatIndex])
+				{
+					SRGBFormat = VK_TYPE_TO_STRING(VkFormat, GVulkanSRGBFormat[PixelFormatIndex]);
+					SRGBFormat.RightChopInline(10);  // Chop the VK_FORMAT_
+				}
+
+				UE_LOG(LogVulkanRHI, Warning, TEXT("%24s | %24s | %10d | %10d | %10d,%d,%d,%d | %12d |  0x%08X  | %s"),
 					GPixelFormats[PixelFormatIndex].Name,
-					GPixelFormats[PixelFormatIndex].PlatformFormat,
+					*VulkanFormatStr,
 					GPixelFormats[PixelFormatIndex].BlockBytes,
 					GPixelFormats[PixelFormatIndex].NumComponents,
 					ComponentMapping.r, ComponentMapping.g, ComponentMapping.b, ComponentMapping.a,
 					(int32)GVulkanBufferFormat[PixelFormatIndex],
 					(uint32)GPixelFormats[PixelFormatIndex].Capabilities,
-					*CapabilitiesString
+					*SRGBFormat
 					);
 			}
 		}
-
-#define VULKAN_CHECK_FORMAT_CAPABILITY(PF_Name) if (EnumHasAllFlags(GPixelFormats[PixelFormatIndex].Capabilities, EPixelFormatCapabilities::PF_Name)) { CapabilitiesString += TEXT(#PF_Name) TEXT(", ");}
 
 		UE_LOG(LogVulkanRHI, Warning, TEXT("Pixel Format Capabilities for Vulkan:"));
 		for (int32 PixelFormatIndex = 0; PixelFormatIndex < PF_MAX; ++PixelFormatIndex)
 		{
 			if (GPixelFormats[PixelFormatIndex].Supported)
 			{
-				FString CapabilitiesString;
-
-				VULKAN_CHECK_FORMAT_CAPABILITY(TextureSample);
-				VULKAN_CHECK_FORMAT_CAPABILITY(TextureCube);
-				VULKAN_CHECK_FORMAT_CAPABILITY(RenderTarget);
-				VULKAN_CHECK_FORMAT_CAPABILITY(DepthStencil);
-				VULKAN_CHECK_FORMAT_CAPABILITY(TextureBlendable);
-				VULKAN_CHECK_FORMAT_CAPABILITY(TextureAtomics);
-				
-				VULKAN_CHECK_FORMAT_CAPABILITY(Buffer);
-				VULKAN_CHECK_FORMAT_CAPABILITY(VertexBuffer);
-				VULKAN_CHECK_FORMAT_CAPABILITY(IndexBuffer);
-				VULKAN_CHECK_FORMAT_CAPABILITY(BufferAtomics);
-
-				VULKAN_CHECK_FORMAT_CAPABILITY(UAV);
-
+				const FString CapabilitiesString = GetFormatCapabilities(GPixelFormats[PixelFormatIndex].Capabilities);
 				UE_LOG(LogVulkanRHI, Warning, TEXT("%24s : %s"), GPixelFormats[PixelFormatIndex].Name, *CapabilitiesString);
 			}
 		}
-
-#undef VULKAN_CHECK_FORMAT_CAPABILITY
-
 	}
-#endif
+#endif  // UE_BUILD_DEBUG || UE_BUILD_DEVELOPMENT
 }
 
-const VkFormatProperties& FVulkanDevice::GetFormatProperties(VkFormat InFormat)
+const VkFormatProperties& FVulkanDevice::GetFormatProperties(VkFormat InFormat) const
 {
 	if (InFormat >= 0 && InFormat < VK_FORMAT_RANGE_SIZE)
 	{
@@ -873,6 +989,7 @@ void FVulkanDevice::MapImageFormatSupport(FPixelFormatInfo& PixelFormatInfo, con
 		ConvertImageCap(LocalFormatProperties, EPixelFormatCapabilities::AllUAVFlags | EPixelFormatCapabilities::TextureStore, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT);
 
 		ConvertImageCap(LocalFormatProperties, EPixelFormatCapabilities::TextureAtomics, VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT);
+		ConvertImageCap(LocalFormatProperties, EPixelFormatCapabilities::TextureFilterable, VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT);
 
 		if (EnumHasAllFlags(Capabilities, EPixelFormatCapabilities::AnyTexture))
 		{
@@ -947,6 +1064,12 @@ void FVulkanDevice::MapFormatSupport(EPixelFormat UEFormat, std::initializer_lis
 void FVulkanDevice::MapFormatSupport(EPixelFormat UEFormat, std::initializer_list<VkFormat> PrioritizedFormats, const VkComponentMapping& ComponentMapping, EPixelFormatCapabilities RequiredCapabilities)
 {
 	MapFormatSupport(UEFormat, PrioritizedFormats, ComponentMapping, RequiredCapabilities, kDefaultBlockBytes);
+}
+
+bool FVulkanDevice::SupportsBindless() const
+{
+	checkSlow(BindlessDescriptorManager != nullptr);
+	return BindlessDescriptorManager->IsSupported();
 }
 
 void FVulkanDevice::InitGPU()
@@ -1024,6 +1147,8 @@ void FVulkanDevice::InitGPU()
 
 	CreateDevice(DeviceLayers, UEExtensions);
 
+	FVulkanPlatform::InitDevice(this);
+
 	SetupFormats();
 
 	DeviceMemoryManager.Init(this);
@@ -1070,6 +1195,8 @@ void FVulkanDevice::InitGPU()
 	}
 #endif
 
+	RenderPassManager = new FVulkanRenderPassManager(this);
+
 	if (UseVulkanDescriptorCache())
 	{
 		DescriptorSetCache = new FVulkanDescriptorSetCache(this);
@@ -1077,6 +1204,9 @@ void FVulkanDevice::InitGPU()
 	
 	DescriptorPoolsManager = new FVulkanDescriptorPoolsManager();
 	DescriptorPoolsManager->Init(this);
+
+	BindlessDescriptorManager = new FVulkanBindlessDescriptorManager(this);
+	BindlessDescriptorManager->Init();
 
 	PipelineStateCache = new FVulkanPipelineStateCacheManager(this);
 
@@ -1207,6 +1337,9 @@ void FVulkanDevice::Destroy()
 	delete ImmediateContext;
 	ImmediateContext = nullptr;
 
+	delete RenderPassManager;
+	RenderPassManager = nullptr;
+
 	for (FVulkanOcclusionQueryPool* Pool : UsedOcclusionQueryPools)
 	{
 		delete Pool;
@@ -1245,6 +1378,10 @@ void FVulkanDevice::Destroy()
 
 	DeferredDeletionQueue.Clear();
 
+	BindlessDescriptorManager->Deinit();
+	delete BindlessDescriptorManager;
+	BindlessDescriptorManager = nullptr;
+
 	MemoryManager.Deinit();
 
 	delete TransferQueue;
@@ -1272,44 +1409,17 @@ const VkComponentMapping& FVulkanDevice::GetFormatComponentMapping(EPixelFormat 
 	return PixelFormatComponentMapping[UEFormat];
 }
 
-#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
-VkExtent2D FVulkanDevice::GetBestMatchedShadingRateExtents(EVRSShadingRate ShadingRate) const
-{
-	// Given that for Vulkan we need to query available device shading rates, we're not guaranteed to have everything that's in our enum;
-	// This function walks the list of supported fragment rates returned by the device, and returns the closest match to the rate requested.
-	const VkExtent2D DirectMappedExtent = { (uint32)(ShadingRate >> 2) + 1, (uint32)((ShadingRate & 0x03) + 1) };
-	VkExtent2D BestMatchedExtent = { 1, 1 };
-	
-	if (BestMatchedExtent.width != DirectMappedExtent.width && BestMatchedExtent.height != DirectMappedExtent.height)
-	{
-		for (auto const& Rate : FragmentShadingRates)
-		{
-			if (Rate.fragmentSize.width == DirectMappedExtent.width && Rate.fragmentSize.height == DirectMappedExtent.height)
-			{
-				BestMatchedExtent = DirectMappedExtent;
-				break;
-			}
-
-			if ((Rate.fragmentSize.width >= BestMatchedExtent.width && Rate.fragmentSize.width <= DirectMappedExtent.width && Rate.fragmentSize.height <= DirectMappedExtent.height && Rate.fragmentSize.height >= BestMatchedExtent.height) ||
-				(Rate.fragmentSize.height >= BestMatchedExtent.height && Rate.fragmentSize.height <= DirectMappedExtent.height && Rate.fragmentSize.width <= DirectMappedExtent.width && Rate.fragmentSize.width >= BestMatchedExtent.width))
-			{
-				BestMatchedExtent = Rate.fragmentSize;
-			}
-		}
-	}
-
-	return BestMatchedExtent;
-}
-#endif
-
 void FVulkanDevice::NotifyDeletedImage(VkImage Image, bool bRenderTarget)
 {
 	if (bRenderTarget)
 	{
+		// Contexts first, as it may clear the current framebuffer
 		GetImmediateContext().NotifyDeletedRenderTarget(Image);
+		// Delete framebuffers using this image
+		GetRenderPassManager().NotifyDeletedRenderTarget(Image);
 	}
 
-	//#todo-rco: Loop through all contexts!
+	//#todo-jn: Loop through all contexts!  And all queues!
 	GetImmediateContext().NotifyDeletedImage(Image);
 }
 
@@ -1421,4 +1531,31 @@ FVulkanTransientHeapCache& FVulkanDevice::GetOrCreateTransientHeapCache()
 		TransientHeapCache = FVulkanTransientHeapCache::Create(this);
 	}
 	return *TransientHeapCache;
+}
+
+FGPUTimingCalibrationTimestamp FVulkanDevice::GetCalibrationTimestamp()
+{
+	auto ToMicroseconds = [](uint64_t Timestamp)
+	{
+		const double Frequency = double(FVulkanGPUTiming::GetTimingFrequency());
+		uint64 Microseconds = (uint64)((double(Timestamp) / Frequency) * 1000.0 * 1000.0);
+		return Microseconds;
+	};
+
+	FGPUTimingCalibrationTimestamp CalibrationTimestamp;
+	if (OptionalDeviceExtensions.HasEXTCalibratedTimestamps)
+	{
+		VkCalibratedTimestampInfoEXT TimestampInfo;
+		ZeroVulkanStruct(TimestampInfo, VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT);
+		TimestampInfo.timeDomain = VK_TIME_DOMAIN_DEVICE_EXT;
+
+		uint64_t GPUTimestamp = 0;
+		uint64_t MaxDeviation = 0;
+		VERIFYVULKANRESULT(VulkanRHI::vkGetCalibratedTimestampsEXT(Device, 1, &TimestampInfo, &GPUTimestamp, &MaxDeviation));
+		CalibrationTimestamp.GPUMicroseconds = ToMicroseconds(GPUTimestamp);
+
+		const uint64 CPUTimestamp = FPlatformTime::Cycles64();
+		CalibrationTimestamp.CPUMicroseconds = uint64(FPlatformTime::ToSeconds64(CPUTimestamp) * 1e6);
+	}
+	return CalibrationTimestamp;
 }

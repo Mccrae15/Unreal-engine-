@@ -4,6 +4,7 @@
 
 #if RHI_RAYTRACING
 
+#include "LightSceneProxy.h"
 #include "RayTracingSkyLight.h"
 #include "ScenePrivate.h"
 #include "PostProcess/SceneRenderTargets.h"
@@ -245,6 +246,13 @@ DECLARE_GPU_STAT_NAMED(RayTracingGIBruteForce, TEXT("Ray Tracing GI: Brute Force
 DECLARE_GPU_STAT_NAMED(RayTracingGIFinalGather, TEXT("Ray Tracing GI: Final Gather"));
 DECLARE_GPU_STAT_NAMED(RayTracingGICreateGatherPoints, TEXT("Ray Tracing GI: Create Gather Points"));
 
+// TODO: Move this to a common header
+static uint32 RTEncodeToF16x2(const FVector2f& In)
+{
+	return FFloat16(In.X).Encoded | (FFloat16(In.Y).Encoded << 16);
+}
+
+// TODO: Share this logic with the path tracer code
 static void SetupLightParameters(
 	FScene* Scene,
 	const FViewInfo& View, FRDGBuilder& GraphBuilder,
@@ -297,8 +305,9 @@ static void SetupLightParameters(
 		DestLight.Flags |= Light.LightSceneInfo->Proxy->IsInverseSquared() ? 0 : PATHTRACER_FLAG_NON_INVERSE_SQUARE_FALLOFF_MASK;
 
 		DestLight.FalloffExponent = LightShaderParameters.FalloffExponent;
+		DestLight.SpecularScale = LightShaderParameters.SpecularScale;
 		DestLight.Attenuation = LightShaderParameters.InvRadius;
-		DestLight.IESTextureSlice = -1; // not used by this path at the moment
+		DestLight.IESAtlasIndex = LightShaderParameters.IESAtlasIndex;
 
 		ELightComponentType LightComponentType = (ELightComponentType)Light.LightSceneInfo->Proxy->GetLightType();
 		switch (LightComponentType)
@@ -322,7 +331,7 @@ static void SetupLightParameters(
 			DestLight.dPdv = LightShaderParameters.Tangent;
 			DestLight.Color = FVector3f(LightShaderParameters.Color);
 			DestLight.Dimensions = FVector2f(2.0f * LightShaderParameters.SourceRadius, 2.0f * LightShaderParameters.SourceLength);
-			DestLight.Shaping = FVector2f(LightShaderParameters.RectLightBarnCosAngle, LightShaderParameters.RectLightBarnLength);
+			DestLight.Shaping = RTEncodeToF16x2(FVector2f(LightShaderParameters.RectLightBarnCosAngle, LightShaderParameters.RectLightBarnLength));
 			DestLight.Flags |= PATHTRACING_LIGHT_RECT;
 			break;
 		}
@@ -349,7 +358,7 @@ static void SetupLightParameters(
 			DestLight.Color = FVector3f(LightShaderParameters.Color);
 			float SourceRadius = 0.0; // LightShaderParameters.SourceRadius causes too much noise for little pay off at this time
 			DestLight.Dimensions = FVector2f(SourceRadius, 0.0);
-			DestLight.Shaping = LightShaderParameters.SpotAngles;
+			DestLight.Shaping = RTEncodeToF16x2(LightShaderParameters.SpotAngles);
 			DestLight.Flags |= PATHTRACING_LIGHT_SPOT;
 			break;
 		}
@@ -433,6 +442,11 @@ class FGlobalIlluminationRGS : public FGlobalShader
 		OutEnvironment.SetDefine(TEXT("PATHTRACING_SKY_MIS"), 1);
 	}
 
+	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
+	{
+		return ERayTracingPayloadType::RayTracingMaterial;
+	}
+
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER(uint32, SamplesPerPixel)
 		SHADER_PARAMETER(uint32, MaxBounces)
@@ -492,6 +506,21 @@ class FRayTracingGlobalIlluminationCreateGatherPointsRGS : public FGlobalShader
 	{
 		// We need the skylight to do its own form of MIS because RTGI doesn't do its own
 		OutEnvironment.SetDefine(TEXT("PATHTRACING_SKY_MIS"), 1);
+	}
+
+	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
+	{
+		FPermutationDomain PermutationVector(PermutationId);
+		if (PermutationVector.Get<FDeferredMaterialMode>() == EDeferredMaterialMode::Gather)
+		{
+			// gather phase uses a smaller payload
+			return ERayTracingPayloadType::Deferred;
+		}
+		else
+		{
+			// shading phase (or None) uses the full material
+			return ERayTracingPayloadType::RayTracingMaterial;
+		}
 	}
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
@@ -559,6 +588,21 @@ class FRayTracingGlobalIlluminationCreateGatherPointsTraceRGS : public FGlobalSh
 		return ShouldCompileRayTracingShadersForProject(Parameters.Platform);
 	}
 
+	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
+	{
+		FPermutationDomain PermutationVector(PermutationId);
+		if (PermutationVector.Get<FDeferredMaterialMode>() == EDeferredMaterialMode::Gather)
+		{
+			// gather phase uses a smaller payload
+			return ERayTracingPayloadType::Deferred;
+		}
+		else
+		{
+			// shading phase (or None) uses the full material
+			return ERayTracingPayloadType::RayTracingMaterial;
+		}
+	}
+
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER(uint32, GatherSamplesPerPixel)
 		SHADER_PARAMETER(uint32, SamplesPerPixel)
@@ -597,7 +641,7 @@ class FRayTracingGlobalIlluminationCreateGatherPointsTraceRGS : public FGlobalSh
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<GatherPoints>, RWGatherPointsBuffer)
 		// Optional indirection buffer used for sorted materials
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<FDeferredMaterialPayload>, MaterialBuffer)
-		END_SHADER_PARAMETER_STRUCT()
+	END_SHADER_PARAMETER_STRUCT()
 };
 
 IMPLEMENT_GLOBAL_SHADER(FRayTracingGlobalIlluminationCreateGatherPointsTraceRGS, "/Engine/Private/RayTracing/RayTracingCreateGatherPointsRGS.usf", "RayTracingCreateGatherPointsTraceRGS", SF_RayGen);
@@ -615,6 +659,11 @@ class FRayTracingGlobalIlluminationFinalGatherRGS : public FGlobalShader
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
 		return ShouldCompileRayTracingShadersForProject(Parameters.Platform);
+	}
+
+	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
+	{
+		return ERayTracingPayloadType::RayTracingMaterial;
 	}
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
@@ -649,7 +698,7 @@ class FRayTracingGlobalIlluminationFinalGatherRGS : public FGlobalShader
 		// Output
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, RWGlobalIlluminationUAV)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float2>, RWGlobalIlluminationRayDistanceUAV)
-		END_SHADER_PARAMETER_STRUCT()
+	END_SHADER_PARAMETER_STRUCT()
 };
 
 IMPLEMENT_GLOBAL_SHADER(FRayTracingGlobalIlluminationFinalGatherRGS, "/Engine/Private/RayTracing/RayTracingFinalGatherRGS.usf", "RayTracingFinalGatherRGS", SF_RayGen);
@@ -675,15 +724,6 @@ void FDeferredShadingSceneRenderer::PrepareRayTracingGlobalIllumination(const FV
 
 		if (bSortMaterials)
 		{
-			// Gather
-			{
-				FRayTracingGlobalIlluminationCreateGatherPointsTraceRGS::FPermutationDomain CreateGatherPointsPermutationVector;
-				CreateGatherPointsPermutationVector.Set<FRayTracingGlobalIlluminationCreateGatherPointsTraceRGS::FEnableTwoSidedGeometryDim>(EnableTwoSidedGeometry == 1);
-				CreateGatherPointsPermutationVector.Set<FRayTracingGlobalIlluminationCreateGatherPointsTraceRGS::FDeferredMaterialMode>(EDeferredMaterialMode::Gather);
-				TShaderMapRef<FRayTracingGlobalIlluminationCreateGatherPointsTraceRGS> CreateGatherPointsRayGenerationShader(View.ShaderMap, CreateGatherPointsPermutationVector);
-				OutRayGenShaders.Add(CreateGatherPointsRayGenerationShader.GetRayTracingShader());
-			}
-
 			// Shade
 			{
 				FRayTracingGlobalIlluminationCreateGatherPointsRGS::FPermutationDomain CreateGatherPointsPermutationVector;
@@ -733,12 +773,6 @@ void FDeferredShadingSceneRenderer::PrepareRayTracingGlobalIlluminationDeferredM
 	// Declare all RayGen shaders that require material closest hit shaders to be bound
 	for (int EnableTwoSidedGeometry = 0; EnableTwoSidedGeometry < 2; ++EnableTwoSidedGeometry)
 	{
-		FGlobalIlluminationRGS::FPermutationDomain PermutationVector;
-		PermutationVector.Set<FGlobalIlluminationRGS::FEnableTwoSidedGeometryDim>(EnableTwoSidedGeometry == 1);
-		PermutationVector.Set<FGlobalIlluminationRGS::FEnableTransmissionDim>(EnableTransmission);
-		TShaderMapRef<FGlobalIlluminationRGS> RayGenerationShader(View.ShaderMap, PermutationVector);
-		OutRayGenShaders.Add(RayGenerationShader.GetRayTracingShader());
-
 		// Gather
 		{
 			FRayTracingGlobalIlluminationCreateGatherPointsTraceRGS::FPermutationDomain CreateGatherPointsPermutationVector;

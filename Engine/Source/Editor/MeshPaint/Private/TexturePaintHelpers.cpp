@@ -7,7 +7,10 @@
 #include "StaticMeshResources.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/Texture2D.h"
 #include "Rendering/SkeletalMeshRenderData.h"
+#include "TextureResource.h"
+#include "MaterialShared.h"
 
 #include "IMeshPaintGeometryAdapter.h"
 
@@ -15,6 +18,7 @@
 #include "CanvasTypes.h"
 #include "CanvasItem.h"
 #include "MeshPaintTypes.h"
+#include "PixelFormat.h"
 
 void TexturePaintHelpers::CopyTextureToRenderTargetTexture(UTexture* SourceTexture, UTextureRenderTarget2D* RenderTargetTexture, ERHIFeatureLevel::Type FeatureLevel)
 {
@@ -310,6 +314,16 @@ bool TexturePaintHelpers::GenerateSeamMask(UMeshComponent* MeshComponent, int32 
 	}
 
 	return RetVal;
+}
+
+int32 TexturePaintHelpers::GetMaxSupportedBytesPerPixelForPainting()
+{
+	return GPixelFormats[GetTempUncompressedTexturePixelFormat()].BlockBytes;
+}
+
+EPixelFormat TexturePaintHelpers::GetTempUncompressedTexturePixelFormat()
+{
+	return EPixelFormat::PF_B8G8R8A8;
 }
 
 UTexture2D* TexturePaintHelpers::CreateTempUncompressedTexture(UTexture2D* SourceTexture)

@@ -1,12 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Commandlets/StateTreeCompileAllCommandlet.h"
+#include "Modules/ModuleManager.h"
 #include "StateTree.h"
 #include "PackageHelperFunctions.h"
 #include "AssetRegistry/AssetRegistryModule.h"
-#include "ISourceControlOperation.h"
 #include "SourceControlOperations.h"
 #include "SourceControlHelpers.h"
+#include "StateTreeCompilerLog.h"
 #include "StateTreeEditor.h"
 #include "StateTreeCompiler.h"
 #include "StateTreeDelegates.h"
@@ -125,7 +126,7 @@ bool UStateTreeCompileAllCommandlet::CompileAndSaveStateTree(UStateTree& StateTr
 			}
 			else if (SourceControlState->IsSourceControlled())
 			{
-				UE_LOG(LogStateTreeCompile, Log, TEXT("Checking out package %s from source control"), *PackageFileName);
+				UE_LOG(LogStateTreeCompile, Log, TEXT("Checking out package %s from revision control"), *PackageFileName);
 				return SourceControlProvider->Execute(ISourceControlOperation::Create<FCheckOut>(), PackageFileName) == ECommandResult::Succeeded;
 			}
 		}

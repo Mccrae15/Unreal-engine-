@@ -7,6 +7,7 @@
 #include "WorldPartition/WorldPartitionActorDescView.h"
 #include "WorldPartition/WorldPartitionStreamingSource.h"
 #include "WorldPartition/WorldPartitionActorContainerID.h"
+#include "WorldPartition/WorldPartitionRuntimeCellData.h"
 #include "WorldPartition/WorldPartitionRuntimeCellInterface.h"
 #include "WorldPartition/WorldPartitionRuntimeCellOwner.h"
 #include "ProfilingDebugging/ProfilingHelpers.h"
@@ -152,6 +153,10 @@ class ENGINE_API UWorldPartitionRuntimeCell : public UObject, public IWorldParti
 {
 	GENERATED_UCLASS_BODY()
 
+#if WITH_EDITOR
+	virtual void PostDuplicate(bool bDuplicateForPIE) override;
+#endif
+
 	virtual void Load() const PURE_VIRTUAL(UWorldPartitionRuntimeCell::Load,);
 	virtual void Unload() const PURE_VIRTUAL(UWorldPartitionRuntimeCell::Unload,);
 	virtual bool CanUnload() const PURE_VIRTUAL(UWorldPartitionRuntimeCell::CanUnload, return true;);
@@ -170,22 +175,19 @@ class ENGINE_API UWorldPartitionRuntimeCell : public UObject, public IWorldParti
 	virtual bool IsLoading() const { return false; }
 	virtual const FString& GetDebugName() const { return DebugInfo.Name; }
 	virtual bool IsDebugShown() const;
-	virtual int32 SortCompare(const UWorldPartitionRuntimeCell* Other) const;
 	virtual FName GetGridName() const { return DebugInfo.GridName; }
 	bool GetClientOnlyVisible() const { return bClientOnlyVisible; }
 	virtual FGuid const& GetContentBundleID() const { return ContentBundleID; }
-
-	IWorldPartitionRuntimeCellOwner* GetCellOwner() const { return CastChecked<IWorldPartitionRuntimeCellOwner>(GetOuter()); }
+	virtual TArray<FName> GetActors() const PURE_VIRTUAL(UWorldPartitionRuntimeCell::GetActors, return TArray<FName>(););
 
 	/** Caches information on streaming source that will be used later on to sort cell. */
 	bool ShouldResetStreamingSourceInfo() const;
-	virtual void ResetStreamingSourceInfo() const;
-	virtual void AppendStreamingSourceInfo(const FWorldPartitionStreamingSource& Source, const FSphericalSector& SourceShape) const;
-	virtual void MergeStreamingSourceInfo() const;
+	void ResetStreamingSourceInfo() const;
+	void AppendStreamingSourceInfo(const FWorldPartitionStreamingSource& Source, const FSphericalSector& SourceShape) const;
+	void MergeStreamingSourceInfo() const;
+	int32 SortCompare(const UWorldPartitionRuntimeCell* Other, bool bCanUseSortingCache = true) const;
 
-	static void DirtyStreamingSourceCacheEpoch() { ++UWorldPartitionRuntimeCell::StreamingSourceCacheEpoch; }
-
-	// IWorldPartitionCell Interface begin
+	//~Begin IWorldPartitionCell Interface
 	virtual TArray<const UDataLayerInstance*> GetDataLayerInstances() const override;
 	virtual bool ContainsDataLayer(const UDataLayerAsset* DataLayerAsset) const override;
 	virtual bool ContainsDataLayer(const UDataLayerInstance* DataLayerInstance) const override;
@@ -195,24 +197,26 @@ class ENGINE_API UWorldPartitionRuntimeCell : public UObject, public IWorldParti
 	{
 		return Algo::AnyOf(DataLayers, [&InDataLayers](const FName& DataLayer) { return InDataLayers.Contains(DataLayer); });
 	}
-	virtual const FBox& GetContentBounds() const override { return ContentBounds; }
-	virtual FBox GetCellBounds() const override { return FBox(ForceInit); }
-	// IWorldPartitionCell Interface end
-
-	const FVector2D GetMinMaxZ() const { return FVector2D(ContentBounds.Min.Z, ContentBounds.Max.Z); }
+	virtual const FBox& GetContentBounds() const override;
+	virtual FBox GetCellBounds() const override;
+	virtual FName GetLevelPackageName() const override;
+	virtual IWorldPartitionRuntimeCellOwner* GetCellOwner() const override { return CastChecked<IWorldPartitionRuntimeCellOwner>(GetOuter()); }
+	//~End IWorldPartitionCell Interface
 
 	bool GetBlockOnSlowLoading() const { return bBlockOnSlowLoading; }
 #if WITH_EDITOR
 	bool NeedsActorToCellRemapping() const;
 	void SetBlockOnSlowLoading(bool bInBlockOnSlowLoading) { bBlockOnSlowLoading = bInBlockOnSlowLoading; }
-
 	void SetClientOnlyVisible(bool bInClientOnlyVisible) { bClientOnlyVisible = bInClientOnlyVisible; }
-
 	void SetDataLayers(const TArray<const UDataLayerInstance*>& InDataLayerInstances);
 	void SetContentBundleUID(const FGuid& InContentBundleID) { ContentBundleID = InContentBundleID; }
-	void SetContentBounds(const FBox& InBounds) { ContentBounds = InBounds; }
 	void SetDebugInfo(int64 InCoordX, int64 InCoordY, int64 InCoordZ, FName InGridName);
-	void SetGridName(FName InGridName);
+	void SetLevelPackageName(const FName& InLevelPackageName) { LevelPackageName = InLevelPackageName; }
+	
+	//~Begin IWorldPartitionCell Interface
+	virtual TSet<FName> GetActorPackageNames() const override { return TSet<FName>(); }
+	//~End IWorldPartitionCell Interface
+
 	virtual void AddActorToCell(const FWorldPartitionActorDescView& ActorDescView, const FActorContainerID& InContainerID, const FTransform& InContainerTransform, const UActorDescContainer* InContainer) PURE_VIRTUAL(UWorldPartitionRuntimeCell::AddActorToCell,);
 	virtual int32 GetActorCount() const PURE_VIRTUAL(UWorldPartitionRuntimeCell::GetActorCount, return 0;);
 
@@ -228,9 +232,17 @@ class ENGINE_API UWorldPartitionRuntimeCell : public UObject, public IWorldParti
 #endif
 	
 	bool GetIsHLOD() const { return bIsHLOD; }
+	
+	FGuid GetGuid() const { return CellGuid; }
+	void SetGuid(const FGuid& InCellGuid) { CellGuid = InCellGuid; }
 
 #if !UE_BUILD_SHIPPING
 	void SetDebugStreamingPriority(float InDebugStreamingPriority) { DebugStreamingPriority = InDebugStreamingPriority; }
+#endif
+
+#if WITH_EDITORONLY_DATA
+	UPROPERTY()
+	TObjectPtr<UActorContainer> UnsavedActorsContainer;
 #endif
 
 protected:
@@ -246,9 +258,6 @@ protected:
 private:
 	UPROPERTY()
 	TArray<FName> DataLayers;
-
-	UPROPERTY()
-	FBox ContentBounds;
 
 	// Debug Info
 	UPROPERTY()
@@ -271,19 +280,19 @@ private:
 	FGuid ContentBundleID;
 
 protected:
-	// Source Priority
-	mutable uint8 CachedMinSourcePriority;
-
-	// Source Priorities
-	mutable TArray<float> CachedSourcePriorityWeights;
-
-	// Epoch used to dirty cache
-	mutable int32 CachedSourceInfoEpoch;
-
-	static int32 StreamingSourceCacheEpoch;
+	UPROPERTY()
+	FGuid CellGuid;
 
 #if !UE_BUILD_SHIPPING
 	// Represents the streaming priority relative to other cells
 	float DebugStreamingPriority;
 #endif
+
+#if WITH_EDITOR
+	FName LevelPackageName;
+#endif
+
+public:
+	UPROPERTY()
+	TObjectPtr<UWorldPartitionRuntimeCellData> RuntimeCellData;
 };

@@ -580,7 +580,7 @@ namespace AutomationTool
 			Properties.RawProjectPath = RawProjectPath;
 
 			// detect if the project is content only, but has non-default build settings
-			List<string> ExtraSearchPaths = null;
+			List<string> ExtraSearchPaths = new();
 			if (RawProjectPath != null)
 			{
 				// no Target file, now check to see if build settings have changed
@@ -614,7 +614,6 @@ namespace AutomationTool
 				{
 					GenerateTempTarget(RawProjectPath);
 					Properties.bWasGenerated = true;
-					ExtraSearchPaths = new List<string>();
                     ExtraSearchPaths.Add(TempTargetDir);
 				}
 				else if (File.Exists(Path.Combine(Path.GetDirectoryName(RawProjectPath.FullName), "Intermediate", "Source", Path.GetFileNameWithoutExtension(RawProjectPath.FullName) + ".Target.cs")))
@@ -745,7 +744,15 @@ namespace AutomationTool
 
 				TargetsDllFilename = FileReference.Combine(RulesFolder, String.Format("UATRules-{0}.dll", ContentHash.MD5(Properties.RawProjectPath.FullName.ToUpperInvariant()).ToString()));
 
-				FullProjectPath = CommandUtils.GetDirectoryName(Properties.RawProjectPath.FullName);
+				FullProjectPath = CommandUtils.GetDirectoryName(Properties.RawProjectPath.FullName).Replace("\\", "/");
+
+				// there is a special case of Programs, where the uproject doesn't align with the Source directory, so we redirect to where
+				// the program's target.cs file(s) are
+				if (FullProjectPath.Contains("/Programs/"))
+				{
+					FullProjectPath = FullProjectPath.Replace("/Programs/", "/Source/Programs/");
+				}
+
 				GameFolders.Add(new DirectoryReference(FullProjectPath));
 				CommandUtils.LogVerbose("Searching for target rule files in {0}", FullProjectPath);
 			}
@@ -777,9 +784,12 @@ namespace AutomationTool
 				{
 					if (FullProjectPath == null || TargetScript.IsUnderDirectory(new DirectoryReference(FullProjectPath)))
 					{
-						// skip target rules that are platform extension or platform group specializations
+						// skip target rules that are platform extension or platform group specializations (don't treat _<Platform> targets as extensions if not under a <Platform> directory)
 						string[] TargetPathSplit = TargetScript.GetFileNameWithoutAnyExtensions().Split(new char[]{'_'}, StringSplitOptions.RemoveEmptyEntries );
-						if (TargetPathSplit.Length > 1 && (UnrealTargetPlatform.IsValidName(TargetPathSplit.Last()) || UnrealPlatformGroup.IsValidName(TargetPathSplit.Last()) ) )
+						if (TargetPathSplit.Length > 1 && 
+							(UnrealTargetPlatform.IsValidName(TargetPathSplit.Last()) || UnrealPlatformGroup.IsValidName(TargetPathSplit.Last())) &&
+							// platform extension targets will always be under a directory of that platform/group name
+							TargetScript.ContainsName(TargetPathSplit.Last(), 0))
 						{
 							continue;
 						}
@@ -846,11 +856,11 @@ namespace AutomationTool
 				{
 					string TargetName = GetTargetName(TargetType);
 
-					TargetInfo DummyTargetInfo = new TargetInfo(TargetName, BuildHostPlatform.Current.Platform, UnrealTargetConfiguration.Development, "", Properties.RawProjectPath, null);
+					TargetInfo DummyTargetInfo = new TargetInfo(TargetName, BuildHostPlatform.Current.Platform, UnrealTargetConfiguration.Development, null, Properties.RawProjectPath, null);
 
 					// Create an instance of this type
 					CommandUtils.LogVerbose("Creating target rules object: {0}", TargetType.Name);
-					TargetRules Rules = TargetRules.Create(TargetType, DummyTargetInfo, null, null, null, Log.Logger);
+					TargetRules Rules = TargetRules.Create(TargetType, DummyTargetInfo, null, null, null, null, Log.Logger);
 					CommandUtils.LogVerbose("Adding target: {0} ({1})", TargetType.Name, Rules.Type);
 
 					SingleTargetProperties TargetData = new SingleTargetProperties();
@@ -1028,7 +1038,7 @@ namespace AutomationTool
 					break;
 			}
 
-			FileReference TargetReceiptFileName = UnrealBuildTool.TargetReceipt.GetDefaultPath(ProjectFile.Directory, TargetName, TargetPlatform, TargetConfiguration, "");
+			FileReference TargetReceiptFileName = UnrealBuildTool.TargetReceipt.GetDefaultPath(ProjectFile.Directory, TargetName, TargetPlatform, TargetConfiguration, null);
 			UnrealBuildTool.TargetReceipt TargetReceipt = UnrealBuildTool.TargetReceipt.Read(TargetReceiptFileName);
 
 			if (Cmd)

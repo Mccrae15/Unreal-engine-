@@ -2,14 +2,17 @@
 
 #include "ShaderCompilerCommon.h"
 #include "ShaderParameterParser.h"
+#include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/PathViews.h"
 #include "Modules/ModuleManager.h"
 #include "HlslccDefinitions.h"
 #include "HAL/FileManager.h"
 #include "String/RemoveFrom.h"
+#include "ShaderSymbolExport.h"
+#include "ShaderMinifier.h"
 
 IMPLEMENT_MODULE(FDefaultModuleImpl, ShaderCompilerCommon);
-
 
 int16 GetNumUniformBuffersUsed(const FShaderCompilerResourceTable& InSRT)
 {
@@ -471,6 +474,18 @@ TCHAR* FindNextUniformBufferReference(TCHAR* SearchPtr, const TCHAR* SearchStrin
 	return nullptr;
 }
 
+bool UE::ShaderCompilerCommon::ShouldUseStableConstantBuffer(const FShaderCompilerInput& Input)
+{
+	// stable constant buffer is for the FShaderParameterBindings::BindForLegacyShaderParameters() code path.
+	// Ray tracing shaders use FShaderParameterBindings::BindForRootShaderParameters instead.
+	if (Input.IsRayTracingShader())
+	{
+		return false;
+	}
+
+	return Input.RootParametersStructure != nullptr;
+}
+
 static const TCHAR* const s_AllSRVTypes[] =
 {
 	TEXT("Texture1D"),
@@ -512,8 +527,8 @@ static const TCHAR* const s_AllSamplerTypes[] =
 
 EShaderParameterType UE::ShaderCompilerCommon::ParseParameterType(
 	FStringView InType,
-	TArrayView<const TCHAR*> InExtraSRVTypes,
-	TArrayView<const TCHAR*> InExtraUAVTypes)
+	TArrayView<const TCHAR* const> InExtraSRVTypes,
+	TArrayView<const TCHAR* const> InExtraUAVTypes)
 {
 	TArrayView<const TCHAR* const> AllSamplerTypes(s_AllSamplerTypes);
 	TArrayView<const TCHAR* const> AllSRVTypes(s_AllSRVTypes);
@@ -527,8 +542,9 @@ EShaderParameterType UE::ShaderCompilerCommon::ParseParameterType(
 	FStringView UntemplatedType = InType;
 	if (int32 Index = InType.Find(TEXT("<")); Index != INDEX_NONE)
 	{
+		// Remove the template argument but don't forget to clean up the type name
 		const int32 NumChars = InType.Len() - Index;
-		UntemplatedType = InType.LeftChop(NumChars);
+		UntemplatedType = InType.LeftChop(NumChars).TrimEnd();
 	}
 
 	if (AllSRVTypes.Contains(UntemplatedType) || InExtraSRVTypes.Contains(UntemplatedType))
@@ -654,6 +670,56 @@ void UE::ShaderCompilerCommon::ParseRayTracingEntryPoint(const FString& Input, F
 	{
 		OutMain = Input;
 	}
+}
+
+bool UE::ShaderCompilerCommon::RemoveDeadCode(FString& InOutPreprocessedShaderSource, TConstArrayView<FStringView> RequiredSymbols, TArray<FShaderCompilerError>& OutErrors)
+{
+	UE::ShaderMinifier::EMinifyShaderFlags ExtraFlags = UE::ShaderMinifier::EMinifyShaderFlags::None;
+
+#if 0 // Extra features that may be useful during development / debugging
+	ExtraFlags |= UE::ShaderMinifier::EMinifyShaderFlags::OutputReasons // Output a comment every struct/function describing why it was included (i.e. which code block uses it)
+	           |  UE::ShaderMinifier::EMinifyShaderFlags::OutputStats;  // Output a comment detailing how many blocks of each type (functions/structs/etc.) were emitted
+#endif
+
+	UE::ShaderMinifier::FMinifiedShader Minified  = UE::ShaderMinifier::Minify(InOutPreprocessedShaderSource, RequiredSymbols,
+		  UE::ShaderMinifier::EMinifyShaderFlags::OutputCommentLines // Preserve comments that were left after preprocessing
+		| UE::ShaderMinifier::EMinifyShaderFlags::OutputLines        // Emit #line directives
+		| ExtraFlags);
+
+	if (Minified.Success())
+	{
+		Swap(InOutPreprocessedShaderSource, Minified.Code);
+		return true;
+	}
+	else
+	{
+		OutErrors.Add(TEXT("warning: Shader minification failed."));
+		return false;
+	}
+}
+
+bool UE::ShaderCompilerCommon::RemoveDeadCode(FString& InOutPreprocessedShaderSource, const FString& EntryPoint, TArray<FShaderCompilerError>& OutErrors)
+{
+	TArray<FStringView> RequiredSymbols;
+
+	FString EntryMain;
+	FString EntryAnyHit;
+	FString EntryIntersection;
+	UE::ShaderCompilerCommon::ParseRayTracingEntryPoint(EntryPoint, EntryMain, EntryAnyHit, EntryIntersection);
+
+	RequiredSymbols.Add(EntryMain);
+
+	if (!EntryAnyHit.IsEmpty())
+	{
+		RequiredSymbols.Add(EntryAnyHit);
+	}
+
+	if (!EntryIntersection.IsEmpty())
+	{
+		RequiredSymbols.Add(EntryIntersection);
+	}
+
+	return UE::ShaderCompilerCommon::RemoveDeadCode(InOutPreprocessedShaderSource, RequiredSymbols, OutErrors);
 }
 
 void HandleReflectedGlobalConstantBufferMember(
@@ -1376,25 +1442,23 @@ void CompileOfflineMali(const FShaderCompilerInput& Input, FShaderCompilerOutput
 
 FString GetDumpDebugUSFContents(const FShaderCompilerInput& Input, const FString& Source, uint32 HlslCCFlags)
 {
-	FString Contents = Source;
-	Contents += TEXT("\n");
-	Contents += CrossCompiler::CreateResourceTableFromEnvironment(Input.Environment);
-	Contents += TEXT("#if 0 /*DIRECT COMPILE*/\n");
-	Contents += CreateShaderCompilerWorkerDirectCommandLine(Input, HlslCCFlags);
-	Contents += TEXT("\n#endif /*DIRECT COMPILE*/\n");
-
-	return Contents;
+	UE::ShaderCompilerCommon::FDebugShaderDataOptions DebugDataOptions;
+	DebugDataOptions.HlslCCFlags = HlslCCFlags;
+	return UE::ShaderCompilerCommon::GetDebugShaderContents(Input, Source, DebugDataOptions);
 }
 
 void DumpDebugUSF(const FShaderCompilerInput& Input, const ANSICHAR* Source, uint32 HlslCCFlags, const TCHAR* OverrideBaseFilename)
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	FString NewSource = Source ? Source : "";
 	FString Contents = GetDumpDebugUSFContents(Input, NewSource, HlslCCFlags);
 	DumpDebugUSF(Input, NewSource, HlslCCFlags, OverrideBaseFilename);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void DumpDebugUSF(const FShaderCompilerInput& Input, const FString& Source, uint32 HlslCCFlags, const TCHAR* OverrideBaseFilename)
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	FString BaseSourceFilename = (OverrideBaseFilename && *OverrideBaseFilename) ? OverrideBaseFilename : *Input.GetSourceFilename();
 	FString Filename = Input.DumpDebugInfoPath / BaseSourceFilename;
 
@@ -1403,6 +1467,65 @@ void DumpDebugUSF(const FShaderCompilerInput& Input, const FString& Source, uint
 		FString Contents = GetDumpDebugUSFContents(Input, Source, HlslCCFlags);
 		FileWriter->Serialize(TCHAR_TO_ANSI(*Contents), Contents.Len());
 		FileWriter->Close();
+	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+namespace UE::ShaderCompilerCommon
+{
+	void DumpDebugShaderData(const FShaderCompilerInput& Input, const FString& PreprocessedSource, const FDebugShaderDataOptions& Options)
+	{
+		if (Input.DumpDebugInfoEnabled())
+		{
+			FString Prefix = (Options.FilenamePrefix && *Options.FilenamePrefix) ? Options.FilenamePrefix : FString();
+			FString BaseSourceFilename = Prefix + ((Options.OverrideBaseFilename && *Options.OverrideBaseFilename) ? Options.OverrideBaseFilename : *Input.GetSourceFilename());
+
+			FString ModifiedPreprocessedSource = GetDebugShaderContents(Input, PreprocessedSource, Options);
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			// note: DumpDebugUSF should be internalized once the deprecation window ends 
+			// (i.e. still should remain in this file but not be declared in the header)
+			// until that time we need to disable deprecation warnings here.
+			DumpDebugUSF(Input, ModifiedPreprocessedSource, Options.HlslCCFlags, *BaseSourceFilename);
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+			if (Input.bGenerateDirectCompileFile && !Options.bSkipDirectCompileTxt)
+			{
+				// note: CreateShaderCompileWorkerDirectCommandLine should be internalized once the deprecation window ends
+				// (i.e. still should remain in this file but not be declared in the header)
+				// until that time we need to disable deprecation warnings here.
+				PRAGMA_DISABLE_DEPRECATION_WARNINGS
+				FFileHelper::SaveStringToFile(CreateShaderCompilerWorkerDirectCommandLine(Input), *(Input.DumpDebugInfoPath / FString::Printf(TEXT("%sDirectCompile.txt"), *Prefix)));
+				PRAGMA_ENABLE_DEPRECATION_WARNINGS
+			}
+		}
+	}
+
+	FString GetDebugShaderContents(const FShaderCompilerInput& Input, const FString& PreprocessedSource, const FDebugShaderDataOptions& Options)
+	{
+		FString Contents = Options.AppendPreSource ? Options.AppendPreSource() : FString();
+		Contents += PreprocessedSource;
+		if (Options.AppendPostSource)
+		{
+			Contents += Options.AppendPostSource();
+		}
+		Contents += TEXT("\n");
+		Contents += CrossCompiler::CreateResourceTableFromEnvironment(Input.Environment);
+		Contents += TEXT("#if 0 /*DIRECT COMPILE*/\n");
+		// note: CreateShaderCompileWorkerDirectCommandLine should be internalized once the deprecation window ends
+		// (i.e. still should remain in this file but not be declared in the header)
+		// until that time we need to disable deprecation warnings here.
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS	
+		Contents += CreateShaderCompilerWorkerDirectCommandLine(Input, Options.HlslCCFlags);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		Contents += TEXT("\n#endif /*DIRECT COMPILE*/\n");
+		if (!Input.DebugDescription.IsEmpty())
+		{
+			Contents += TEXT("//");
+			Contents += Input.DebugDescription;
+			Contents += TEXT("\n");
+		}
+
+		return Contents;
 	}
 }
 

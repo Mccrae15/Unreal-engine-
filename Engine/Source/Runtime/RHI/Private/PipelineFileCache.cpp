@@ -5,24 +5,25 @@ PipelineFileCache.cpp: Pipeline state cache implementation.
 =============================================================================*/
 
 #include "PipelineFileCache.h"
+#include "Containers/List.h"
 #include "PipelineStateCache.h"
-#include "HAL/FileManager.h"
+#include "HAL/IConsoleManager.h"
 #include "Misc/EngineVersion.h"
-#include "Serialization/Archive.h"
+#include "HAL/PlatformFile.h"
 #include "Serialization/MemoryReader.h"
+#include "Misc/CommandLine.h"
 #include "Serialization/MemoryWriter.h"
-#include "RHI.h"
-#include "RHIResources.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "Misc/ScopeRWLock.h"
 #include "Misc/Paths.h"
 #include "Async/AsyncFileHandle.h"
 #include "HAL/PlatformFileManager.h"
 #include "Misc/FileHelper.h"
 #include "ProfilingDebugging/CsvProfiler.h"
+#include "RHIStrings.h"
 #include "String/LexFromString.h"
 #include "String/ParseTokens.h"
 #include "Misc/ScopeExit.h"
-#include <Misc/ConfigCacheIni.h>
 #include <Algo/ForEach.h>
 
 static FString JOURNAL_FILE_EXTENSION(TEXT(".jnl"));
@@ -112,11 +113,11 @@ static TAutoConsoleVariable<int32> CVarPSOFileCacheReportPSO(
 														   ECVF_Default | ECVF_RenderThreadSafe
 														   );
 
-static int32 GPSOFileCachePrintNewPSODescriptors = UE_BUILD_SHIPPING ? 0 : 1;
+static int32 GPSOFileCachePrintNewPSODescriptors = 0;
 static FAutoConsoleVariableRef CVarPSOFileCachePrintNewPSODescriptors(
 														   TEXT("r.ShaderPipelineCache.PrintNewPSODescriptors"),
 														   GPSOFileCachePrintNewPSODescriptors,
-														   TEXT("1 prints descriptions for all new PSO entries to the log/console while 0 does not. 2 prints additional details about the PSO. Defaults to 0 in *Shipping* builds, otherwise 1."),
+														   TEXT("1 prints descriptions for all new PSO entries to the log/console while 0 does not. 2 prints additional details about graphics PSO. Defaults to 0."),
 														   ECVF_Default
 														   );
 
@@ -758,7 +759,7 @@ ETextureCreateFlags FPipelineCacheFileFormatPSO::GraphicsDescriptor::ReduceRTFla
 {
 	// We care about flags that influence RT formats (which is the only thing the underlying API cares about).
 	// In most RHIs, the format is only influenced by TexCreate_SRGB. D3D12 additionally uses TexCreate_Shared in its format selection logic.
-	return (InFlags & (TexCreate_SRGB | TexCreate_Shared));
+	return (InFlags & FGraphicsPipelineStateInitializer::RelevantRenderTargetFlagMask);
 }
 
 FString FPipelineCacheFileFormatPSO::GraphicsDescriptor::StateHeaderLine()
@@ -939,25 +940,29 @@ bool FPipelineCacheFileFormatPSO::Verify() const
 		}
 
 #if PLATFORM_SUPPORTS_MESH_SHADERS
-		if (GraphicsDesc.VertexShader != FSHAHash() && GraphicsDesc.MeshShader != FSHAHash())
+		if (GraphicsDesc.MeshShader != FSHAHash())
 		{
-			// Vertex shader and mesh shader are mutually exclusive
-			return false;
-		}
+			// this check is also done in commandlets, which don't set RHI settings properly. Exempt them.
+			if (!IsRunningCommandlet() && !GRHISupportsMeshShadersTier0)
+			{
+				// do not allow precompilation of mesh shaders if runtime doesn't support them
+				return false;
+			}
 
-		if (GraphicsDesc.MeshShader != FSHAHash() && GraphicsDesc.VertexDescriptor.Num() > 0)
-		{
-			// mesh shader should not have descriptors
-			return false;
+			if (GraphicsDesc.VertexShader != FSHAHash())
+			{
+				// Vertex shader and mesh shader are mutually exclusive
+				return false;
+			}
+
+			if (GraphicsDesc.VertexDescriptor.Num() > 0)
+			{
+				// mesh shader should not have descriptors
+				return false;
+			}
 		}
 #endif
 		
-		if(GraphicsDesc.PrimitiveType >= PT_1_ControlPointPatchList && GraphicsDesc.PrimitiveType <= PT_32_ControlPointPatchList)
-		{
-			// Define says we don't support tessellation - can't draw patches - not a valid PSO for target platform
-			return false;
-		}
-
 #if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
 		// Is there anything to actually test here?
 #endif
@@ -3192,6 +3197,7 @@ void FPipelineFileCacheManager::Shutdown()
 		NewPSOHashes.Empty();
         NumNewPSOs = 0;
 		
+		FileCacheMap.Empty();
 		FileCacheEnabled = false;
 		
 		SET_MEMORY_STAT(STAT_NewCachedPSOMemory, 0);
@@ -3326,8 +3332,7 @@ bool FPipelineFileCacheManager::SavePipelineFileCache(SaveMode Mode)
 		FRWScopeLock Lock(FileCacheLock, SLT_Write);
 
 		FPipelineCacheFile* UserCache = GetPipelineCacheFileFromKey(UserCacheKey);
-		check(UserCache);
-		bOk = UserCache->SavePipelineFileCache(Mode, Stats, NewPSOs, RequestedOrder, NewPSOUsage);
+		bOk = (UserCache != nullptr) && UserCache->SavePipelineFileCache(Mode, Stats, NewPSOs, RequestedOrder, NewPSOUsage);
 		// If successful clear new PSO's as they should have been saved out
 		// Leave everything else in-tact (e.g stats) for subsequent in place save operations
 		if (bOk)
@@ -3379,16 +3384,13 @@ void FPipelineFileCacheManager::CacheGraphicsPSO(uint32 RunTimeHash, FGraphicsPi
 					{
 						CSV_EVENT(PSO, TEXT("Encountered new graphics PSO"));
 						UE_LOG(LogRHI, Display, TEXT("Encountered a new graphics PSO: %u"), PSOHash);
-						if (GPSOFileCachePrintNewPSODescriptors > 0)
+						int32 LogDetailLevel = LogPSODetails() ? 2 : GPSOFileCachePrintNewPSODescriptors;
+						if (LogDetailLevel > 0)
 						{
 							UE_LOG(LogRHI, Display, TEXT("New Graphics PSO (%u)"), PSOHash);
-							if (LogPSODetails() || GPSOFileCachePrintNewPSODescriptors > 1)
+							if (LogDetailLevel > 1)
 							{
 								UE_LOG(LogRHI, Display, TEXT("%s"), *NewEntry.ToStringReadable());
-							}
-							else
-							{
-								UE_LOG(LogRHI, Display, TEXT("%s"), *NewEntry.GraphicsDesc.ToString());
 							}
 						}
 						if (LogPSOtoFileCache())
@@ -3501,7 +3503,7 @@ void FPipelineFileCacheManager::CacheComputePSO(uint32 RunTimeHash, FRHIComputeS
 	}
 }
 
-void FPipelineFileCacheManager::CacheRayTracingPSO(const FRayTracingPipelineStateInitializer& Initializer)
+void FPipelineFileCacheManager::CacheRayTracingPSO(const FRayTracingPipelineStateInitializer& Initializer, ERayTracingPipelineCacheFlags Flags)
 {
 	if (!IsPipelineFileCacheEnabled() || !(LogPSOtoFileCache() || ReportNewPSOs()))
 	{
@@ -3515,6 +3517,9 @@ void FPipelineFileCacheManager::CacheRayTracingPSO(const FRayTracingPipelineStat
 		Initializer.GetHitGroupTable(),
 		Initializer.GetCallableTable()
 	};
+
+	// When non-blocking creation is used, encountering a non-cached RTPSO is not likely to cause a hitch and so the logging is not useful/actionable.
+	const bool bShouldReportNewRTPSOToLog = !EnumHasAnyFlags(Flags, ERayTracingPipelineCacheFlags::NonBlocking);
 
 	FRWScopeLock Lock(FileCacheLock, SLT_ReadOnly);
 
@@ -3542,11 +3547,15 @@ void FPipelineFileCacheManager::CacheRayTracingPSO(const FRayTracingPipelineStat
 					if (!FPipelineFileCacheManager::IsPSOEntryCached(NewEntry, &CurrentUsageData))
 					{
 						//CSV_EVENT(PSO, TEXT("Encountered new ray tracing PSO"));
-						UE_LOG(LogRHI, Display, TEXT("Encountered a new ray tracing PSO: %u"), PSOHash);
-						if (GPSOFileCachePrintNewPSODescriptors > 0)
+						if (bShouldReportNewRTPSOToLog)
 						{
-							UE_LOG(LogRHI, Display, TEXT("New ray tracing PSO (%u) Description: %s"), PSOHash, *NewEntry.RayTracingDesc.ToString());
+							UE_LOG(LogRHI, Display, TEXT("Encountered a new ray tracing PSO: %u"), PSOHash);
+							if (GPSOFileCachePrintNewPSODescriptors > 0)
+							{
+								UE_LOG(LogRHI, Display, TEXT("New ray tracing PSO (%u) Description: %s"), PSOHash, *NewEntry.RayTracingDesc.ToString());
+							}
 						}
+
 						if (LogPSOtoFileCache())
 						{
 							NewPSOs.Add(NewEntry);

@@ -2,6 +2,8 @@
 
 #include "DynamicShadowMapChannelBindingHelper.h"
 #include "LightSceneInfo.h"
+#include "LightSceneProxy.h"
+#include "SceneManagement.h"
 
 void FDynamicShadowMapChannelBindingHelper::DisableChannel(int32 ChannelIndex)
 {
@@ -35,7 +37,7 @@ void FDynamicShadowMapChannelBindingHelper::UpdateAvailableChannels(const TSpars
 		for (auto It = Lights.CreateConstIterator(); It; ++It)
 		{
 			FLightSceneInfo* OtherLightInfo = It->LightSceneInfo;
-			if (OtherLightInfo && OtherLightInfo != LightInfo)
+			if (OtherLightInfo && (OtherLightInfo->Proxy->CastsDynamicShadow() || OtherLightInfo->Proxy->GetLightFunctionMaterial()) && OtherLightInfo != LightInfo)
 			{
 				const int32 OtherLightChannel = OtherLightInfo->GetDynamicShadowMapChannel();
 				if (OtherLightChannel != INDEX_NONE && IsChannelEnabled(OtherLightChannel))

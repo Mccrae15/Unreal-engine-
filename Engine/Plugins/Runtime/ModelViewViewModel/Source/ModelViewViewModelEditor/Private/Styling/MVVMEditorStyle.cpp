@@ -1,10 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Styling/MVVMEditorStyle.h"
+#include "Brushes/SlateColorBrush.h"
+#include "Brushes/SlateImageBrush.h"
 #include "Styling/SlateStyleMacros.h"
 #include "Brushes/SlateRoundedBoxBrush.h"
-#include "Styling/AppStyle.h"
 #include "Styling/CoreStyle.h"
+#include "Styling/SlateStyleRegistry.h"
 #include "Styling/SlateTypes.h"
 #include "Styling/StyleColors.h"
 #include "Interfaces/IPluginManager.h"
@@ -38,10 +40,29 @@ FMVVMEditorStyle::FMVVMEditorStyle()
 
 	Set("BlueprintView.TabIcon", new IMAGE_BRUSH_SVG("Slate/ViewModel", Icon16x16));
 
-	Set("BindingView.ManageViewModels", new IMAGE_BRUSH_SVG("Slate/ViewModel", Icon16x16));
 	Set("BindingView.AddBinding", new IMAGE_BRUSH_SVG("Slate/ViewModel_AddBinding", Icon16x16));
 	Set("BindingView.Background", new FSlateRoundedBoxBrush(FStyleColors::Recessed, 0.0f, FStyleColors::Panel, 4.0f));
 	Set("BindingView.ViewModelWarning", new FSlateRoundedBoxBrush(FStyleColors::Transparent, 4.0f, FStyleColors::Hover, 1.0f));
+	Set("BindingView.WidgetRow", FTableRowStyle(FAppStyle::Get().GetWidgetStyle<FTableRowStyle>("TableView.Row"))
+		.SetEvenRowBackgroundBrush(*FAppStyle::Get().GetBrush("Brushes.Header"))
+		.SetOddRowBackgroundBrush(*FAppStyle::Get().GetBrush("Brushes.Header"))
+		.SetEvenRowBackgroundHoveredBrush(*FAppStyle::Get().GetBrush("Brushes.Dropdown"))
+		.SetOddRowBackgroundHoveredBrush(*FAppStyle::Get().GetBrush("Brushes.Dropdown"))
+	);
+
+	Set("BindingView.BindingRow", FTableRowStyle(FAppStyle::Get().GetWidgetStyle<FTableRowStyle>("TableView.Row"))
+		.SetEvenRowBackgroundBrush(*FAppStyle::Get().GetBrush("Brushes.Panel"))
+		.SetOddRowBackgroundBrush(*FAppStyle::Get().GetBrush("Brushes.Panel"))
+		.SetEvenRowBackgroundHoveredBrush(*FAppStyle::Get().GetBrush("Brushes.Header"))
+		.SetOddRowBackgroundHoveredBrush(*FAppStyle::Get().GetBrush("Brushes.Header"))
+	);
+
+	Set("BindingView.ParameterRow", FTableRowStyle(FAppStyle::Get().GetWidgetStyle<FTableRowStyle>("TableView.Row"))
+		.SetEvenRowBackgroundBrush(*FAppStyle::Get().GetBrush("Brushes.Panel"))
+		.SetOddRowBackgroundBrush(*FAppStyle::Get().GetBrush("Brushes.Panel"))
+		.SetEvenRowBackgroundHoveredBrush(*FAppStyle::Get().GetBrush("Brushes.Header"))
+		.SetOddRowBackgroundHoveredBrush(*FAppStyle::Get().GetBrush("Brushes.Header"))
+	);
 
 	// ViewModelSelectionWidget Icons
 	{
@@ -62,6 +83,9 @@ FMVVMEditorStyle::FMVVMEditorStyle()
 	Set("BindingMode.OneWayToSource", new IMAGE_BRUSH_SVG("Slate/BindingMode_OneWayToSource", Icon16x16));
 	Set("BindingMode.TwoWay", new IMAGE_BRUSH_SVG("Slate/BindingMode_TwoWay", Icon16x16));
 	Set("BindingMode.OneTime", new IMAGE_BRUSH_SVG("Slate/BindingMode_OneTime", Icon16x16));
+	Set("BindingMode.OneTimeOneWay", new IMAGE_BRUSH_SVG("Slate/BindingMode_OneTimeOneWayToSource", Icon16x16));
+	Set("BindingMode.OneTimeOneWayToSource", new IMAGE_BRUSH_SVG("Slate/BindingMode_OneTimeOneWay", Icon16x16));
+	Set("BindingMode.OneTimeTwoWay", new IMAGE_BRUSH_SVG("Slate/BindingMode_OneTimeTwoWay", Icon16x16));
 
 	Set("ConversionFunction.DestToSource", new IMAGE_BRUSH_SVG("Slate/ConversionFunction_DestToSource", Icon16x16));
 	Set("ConversionFunction.SourceToDest", new IMAGE_BRUSH_SVG("Slate/ConversionFunction_SourceToDest", Icon16x16));
@@ -69,6 +93,8 @@ FMVVMEditorStyle::FMVVMEditorStyle()
 	Set("FieldSelector.ComboButton", 
 		FComboButtonStyle(FAppStyle::Get().GetWidgetStyle<FComboButtonStyle>("ComboButton"))
 		.SetDownArrowImage(*FCoreStyle::Get().GetBrush("Icons.Edit")));
+
+	Set("FunctionParameter.Border", new FSlateColorBrush(FStyleColors::Input));
 
 	FSlateStyleRegistry::RegisterSlateStyle(*this);
 }

@@ -341,9 +341,9 @@ bool FStaticMeshBuilder::Build(FStaticMeshRenderData& StaticMeshRenderData, USta
 
 	// If we want Nanite built, and have not already done it, do it based on LOD0 built render data.
 	// This will replace the output VertexBuffers/etc with the fractional Nanite cut to be stored as LOD0 RenderData.
-	// NOTE: We still want to do this for targets that do not support Nanite so that it generates the fallback,
-	// in which case the Nanite bulk will be stripped
-	if (!bNaniteDataBuilt && bNaniteBuildEnabled)
+	// NOTE: We still want to do this for targets that do not support Nanite (if no hi-res source model was provided)
+	// so that it generates the fallback, in which case the Nanite bulk will be stripped
+	if (bNaniteBuildEnabled && ((bTargetSupportsNanite && !bNaniteDataBuilt) || (!bTargetSupportsNanite && !bHaveHiResSourceModel)))
 	{
 		TArray< float, TInlineAllocator<4> > PercentTriangles;
 		for (int32 LodIndex = 0; LodIndex < NumSourceModels; ++LodIndex)
@@ -407,6 +407,17 @@ bool FStaticMeshBuilder::Build(FStaticMeshRenderData& StaticMeshRenderData, USta
 		if (bIsMeshDescriptionValid)
 		{
 			MeshDescriptionHelper.SetupRenderMeshDescription(StaticMesh, MeshDescriptions[LodIndex], false, true);
+			//Make sure the cache is good before looking for the active reduction
+			if (SrcModel.CacheMeshDescriptionTrianglesCount == MAX_uint32)
+			{
+				SrcModel.CacheMeshDescriptionTrianglesCount = static_cast<uint32>(MeshDescriptions[LodIndex].Triangles().Num());
+			}
+			if (SrcModel.CacheMeshDescriptionVerticesCount == MAX_uint32)
+			{
+				SrcModel.CacheMeshDescriptionVerticesCount = static_cast<uint32>(FStaticMeshOperations::GetUniqueVertexCount(MeshDescriptions[LodIndex], MeshDescriptionHelper.GetOverlappingCorners()));
+			}
+			//Get back the reduction status once we apply all build settings, vertex count can change depending on the build settings
+			bUseReduction = StaticMesh->IsReductionActive(LodIndex);
 		}
 		else
 		{
@@ -462,15 +473,32 @@ bool FStaticMeshBuilder::Build(FStaticMeshRenderData& StaticMeshRenderData, USta
 
 			int32 OldSectionInfoMapCount = StaticMesh->GetSectionInfoMap().GetSectionNumber(LodIndex);
 
+			TFunction<void(const FMeshDescription&, const FMeshDescription&)> CheckReduction = [&](const FMeshDescription& InitMesh, const FMeshDescription& ReducedMesh)
+			{
+				FBox BBoxInitMesh = InitMesh.ComputeBoundingBox();
+				double BBoxInitMeshSize = (BBoxInitMesh.Max - BBoxInitMesh.Min).Length();
+
+				FBox BBoxReducedMesh = ReducedMesh.ComputeBoundingBox();
+				double BBoxReducedMeshSize = (BBoxReducedMesh.Max - BBoxReducedMesh.Min).Length();
+
+				constexpr double ThresholdForAbnormalGrowthOfBBox = UE_DOUBLE_SQRT_3; // the reduced mesh must stay in the bounding sphere 
+				if (BBoxReducedMeshSize > BBoxInitMeshSize * ThresholdForAbnormalGrowthOfBBox)
+				{
+					UE_LOG(LogStaticMeshBuilder, Warning, TEXT("The generation of LOD could have generated spikes on the mesh for %s"), *StaticMesh->GetName());
+				}
+			};
+
 			if (LodIndex == BaseReduceLodIndex)
 			{
 				//When using LOD 0, we use a copy of the mesh description since reduce do not support inline reducing
 				FMeshDescription BaseMeshDescription = MeshDescriptions[BaseReduceLodIndex];
 				MeshDescriptionHelper.ReduceLOD(BaseMeshDescription, MeshDescriptions[LodIndex], ReductionSettings, OverlappingCorners, MaxDeviation);
+				CheckReduction(BaseMeshDescription, MeshDescriptions[LodIndex]);
 			}
 			else
 			{
 				MeshDescriptionHelper.ReduceLOD(MeshDescriptions[BaseReduceLodIndex], MeshDescriptions[LodIndex], ReductionSettings, OverlappingCorners, MaxDeviation);
+				CheckReduction(MeshDescriptions[BaseReduceLodIndex], MeshDescriptions[LodIndex]);
 			}
 			
 
@@ -643,7 +671,8 @@ bool FStaticMeshBuilder::BuildMeshVertexPositions(
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FStaticMeshBuilder::BuildMeshVertexPositions);
 
-	if (!StaticMesh->IsMeshDescriptionValid(0))
+	FStaticMeshSourceModel& SourceModel = StaticMesh->IsHiResMeshDescriptionValid() ? StaticMesh->GetHiResSourceModel() : StaticMesh->GetSourceModel(0);
+	if (!SourceModel.IsMeshDescriptionValid())
 	{
 		//Warn the user that there is no mesh description data
 		UE_LOG(LogStaticMeshBuilder, Error, TEXT("Cannot find a valid mesh description to build the asset."));
@@ -654,10 +683,13 @@ bool FStaticMeshBuilder::BuildMeshVertexPositions(
 	if (NumSourceModels > 0)
 	{
 		FMeshDescription MeshDescription;
-		const bool bIsMeshDescriptionValid = StaticMesh->CloneMeshDescription(/*LodIndex*/ 0, MeshDescription);
+		const bool bIsMeshDescriptionValid = SourceModel.CloneMeshDescription(MeshDescription);
 		if (bIsMeshDescriptionValid)
 		{
-			const FMeshBuildSettings& BuildSettings = StaticMesh->GetSourceModel(0).BuildSettings;
+			FElementIDRemappings Remappings;
+			MeshDescription.Compact(Remappings);
+
+			const FMeshBuildSettings& BuildSettings = SourceModel.BuildSettings;
 
 			const FStaticMeshConstAttributes Attributes(MeshDescription);
 			TArrayView<const FVector3f> VertexPositions = Attributes.GetVertexPositions().GetRawArray();
@@ -705,9 +737,9 @@ bool FStaticMeshBuilder::BuildMeshVertexPositions(
 bool AreVerticesEqual(FStaticMeshBuildVertex const& A, FStaticMeshBuildVertex const& B, float ComparisonThreshold)
 {
 	if (   !A.Position.Equals(B.Position, ComparisonThreshold)
-		|| !NormalsEqual((FVector)A.TangentX, (FVector)B.TangentX)
-		|| !NormalsEqual((FVector)A.TangentY, (FVector)B.TangentY)
-		|| !NormalsEqual((FVector)A.TangentZ, (FVector)B.TangentZ)
+		|| !NormalsEqual(A.TangentX, B.TangentX)
+		|| !NormalsEqual(A.TangentY, B.TangentY)
+		|| !NormalsEqual(A.TangentZ, B.TangentZ)
 		|| A.Color != B.Color)
 	{
 		return false;
@@ -761,7 +793,7 @@ void BuildVertexBuffer(
 	const bool bHasColors = VertexInstanceColors.IsValid();
 
 	const uint32 NumTextureCoord = VertexInstanceUVs.IsValid() ? VertexInstanceUVs.GetNumChannels() : 0;
-	const FMatrix ScaleMatrix = FScaleMatrix(BuildSettings.BuildScale3D).Inverse().GetTransposed();
+	const FVector3f BuildScale(BuildSettings.BuildScale3D);
 
 	TMap<FPolygonGroupID, int32> PolygonGroupToSectionIndex;
 
@@ -801,10 +833,10 @@ void BuildVertexBuffer(
 
 		TArrayView<const FVertexID> VertexIDs = MeshDescription.GetTriangleVertices(TriangleID);
 
-		FVector CornerPositions[3];
+		FVector3f CornerPositions[3];
 		for (int32 TriVert = 0; TriVert < 3; ++TriVert)
 		{
-			CornerPositions[TriVert] = (FVector)VertexPositions[VertexIDs[TriVert]];
+			CornerPositions[TriVert] = VertexPositions[VertexIDs[TriVert]];
 		}
 		FOverlappingThresholds OverlappingThresholds;
 		OverlappingThresholds.ThresholdPosition = VertexComparisonThreshold;
@@ -821,25 +853,28 @@ void BuildVertexBuffer(
 		for (int32 TriVert = 0; TriVert < 3; ++TriVert, ++WedgeIndex)
 		{
 			const FVertexInstanceID VertexInstanceID = VertexInstanceIDs[TriVert];
-			const FVector& VertexPosition = CornerPositions[TriVert];
-			const FVector& VertexInstanceNormal = (FVector)VertexInstanceNormals[VertexInstanceID];
-			const FVector& VertexInstanceTangent = (FVector)VertexInstanceTangents[VertexInstanceID];
+			const FVector3f& VertexPosition = CornerPositions[TriVert];
+			const FVector3f& VertexInstanceNormal = VertexInstanceNormals[VertexInstanceID];
+			const FVector3f& VertexInstanceTangent = VertexInstanceTangents[VertexInstanceID];
 			const float VertexInstanceBinormalSign = VertexInstanceBinormalSigns[VertexInstanceID];
 
 			FStaticMeshBuildVertex StaticMeshVertex;
 
-			StaticMeshVertex.Position = FVector3f(VertexPosition * BuildSettings.BuildScale3D);
+			StaticMeshVertex.Position = VertexPosition * BuildScale;
 			if (bNeedTangents)
 			{
-				StaticMeshVertex.TangentX = (FVector4f)ScaleMatrix.TransformVector(VertexInstanceTangent).GetSafeNormal();
-				StaticMeshVertex.TangentY = (FVector4f)ScaleMatrix.TransformVector(FVector::CrossProduct(VertexInstanceNormal, VertexInstanceTangent) * VertexInstanceBinormalSign).GetSafeNormal();
+				StaticMeshVertex.TangentX = VertexInstanceTangent / BuildScale;
+				StaticMeshVertex.TangentY = ( (VertexInstanceNormal ^ VertexInstanceTangent) * VertexInstanceBinormalSign ) / BuildScale;
+				StaticMeshVertex.TangentX.Normalize();
+				StaticMeshVertex.TangentY.Normalize();
 			}
 			else
 			{
 				StaticMeshVertex.TangentX = FVector3f(1.0f, 0.0f, 0.0f);
 				StaticMeshVertex.TangentY = FVector3f(0.0f, 1.0f, 0.0f);
 			}
-			StaticMeshVertex.TangentZ = (FVector4f)ScaleMatrix.TransformVector(VertexInstanceNormal).GetSafeNormal();
+			StaticMeshVertex.TangentZ = VertexInstanceNormal / BuildScale;
+			StaticMeshVertex.TangentZ.Normalize();
 
 			if (bHasColors)
 			{

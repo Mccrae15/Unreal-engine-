@@ -8,6 +8,7 @@
 #include "IRemoteControlModule.h"
 #include "RCVirtualPropertyContainer.h"
 #include "RCVirtualProperty.h"
+#include "RemoteControlDefaultPreprocessors.h"
 #include "RemoteControlReflectionUtils.h"
 #include "RemoteControlRoute.h"
 #include "RemoteControlSettings.h"
@@ -58,6 +59,7 @@
 // Miscelleanous
 #include "Blueprint/BlueprintSupport.h"
 #include "Misc/App.h"
+#include "Misc/WildcardString.h"
 #include "UObject/UnrealType.h"
 #include "Templates/UnrealTemplate.h"
 
@@ -275,8 +277,8 @@ void FWebRemoteControlModule::StartupModule()
 		return;
 	}
 
-	// By default, disable web remote control in -game and packaged game.
-	if (!WebRemoteControl::IsWebControlEnabledInEditor())
+	// By default, disable web remote control in -game, packaged game and on build machines
+	if (!WebRemoteControl::IsWebControlEnabledInEditor() || GIsBuildMachine)
 	{
 		UE_LOG(LogRemoteControl, Display, TEXT("Web remote control is disabled by default when running outside the editor. Use the -RCWebControlEnable flag when launching in order to use it."));
 		return;
@@ -290,35 +292,12 @@ void FWebRemoteControlModule::StartupModule()
 
 	HttpServerPort = GetDefault<URemoteControlSettings>()->RemoteControlHttpServerPort;
 	WebSocketServerPort = GetDefault<URemoteControlSettings>()->RemoteControlWebSocketServerPort;
+	WebsocketServerBindAddress = GetDefault<URemoteControlSettings>()->RemoteControlWebsocketServerBindAddress;
 
 	WebSocketHandler = MakeUnique<FWebSocketMessageHandler>(&WebSocketServer, ActingClientId);
 
 	RegisterConsoleCommands();
 	RegisterRoutes();
-
-	WebSocketRouter->AddPreDispatch([this](const struct FRemoteControlWebSocketMessage& Message)
-	{
-		const TArray<FString>* InPassphrase = Message.Header.Find(WebRemoteControlInternalUtils::PassphraseHeader);
-		const FString Passphrase = InPassphrase ? InPassphrase->Last() : FString("");
-		
-		const bool bCanBeDispatched = CheckPassphrase(Passphrase);
-
-		if (!bCanBeDispatched)
-		{
-			TArray<uint8> Response;
-			FRCRequestWrapper Wrapper;
-			Wrapper.RequestId = Message.MessageId;
-			Wrapper.Passphrase = Passphrase;
-			Wrapper.Verb = "401";
-			
-			WebRemoteControlInternalUtils::CreateUTF8ErrorMessage(FString::Printf(TEXT("Given Passphrase is not correct!")), Wrapper.TCHARBody);
-			WebRemoteControlUtils::SerializeMessage(Wrapper, Response);
-
-			WebSocketServer.Send(Message.ClientId, MoveTemp(Response));
-		}
-
-		return bCanBeDispatched;
-	});
 
 	if (GetDefault<URemoteControlSettings>()->bAutoStartWebServer || CVarWebControlStartOnBoot.GetValueOnAnyThread() > 0)
 	{
@@ -329,6 +308,9 @@ void FWebRemoteControlModule::StartupModule()
 	{
 		StartWebSocketServer();
 	}
+
+	RegisterDefaultPreprocessors();
+	RegisterExternalPreprocesors();
 }
 
 void FWebRemoteControlModule::ShutdownModule()
@@ -451,46 +433,7 @@ void FWebRemoteControlModule::StartHttpServer()
 		{
 			StartRoute(Route);
 		}
-
-		const FHttpRequestHandler ValidationRequestHandler = FHttpRequestHandler([this](const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
-		{
-			TUniquePtr<FHttpServerResponse> Response = WebRemoteControlInternalUtils::CreateHttpResponse();
-
-			TArray<FString> ValueArray = {};
-			if (Request.Headers.Find(WebRemoteControlInternalUtils::PassphraseHeader))
-			{
-				ValueArray = Request.Headers[WebRemoteControlInternalUtils::PassphraseHeader];
-			}
-			
-			const FString Passphrase = !ValueArray.IsEmpty() ? ValueArray.Last() : "";
-
-			if (!CheckPassphrase(Passphrase))
-			{
-				WebRemoteControlInternalUtils::CreateUTF8ErrorMessage(FString::Printf(TEXT("Given Passphrase is not correct!")), Response->Body);
-				Response->Code = EHttpServerResponseCodes::Denied;
-				OnComplete(MoveTemp(Response));
-				return true;
-			}
-
-			return false;
-		});
-
-		HttpRouter->RegisterRequestPreprocessor(ValidationRequestHandler);
 		
-		// Go through externally registered request pre-processors and register them with the http router.
-		for (const TPair<FDelegateHandle, FHttpRequestHandler>& Handler : PreprocessorsToRegister)
-		{
-			// Find the pre-processors HTTP-handle from the one we generated.
-			FDelegateHandle& Handle = PreprocessorsHandleMappings.FindChecked(Handler.Key);
-			if (Handle.IsValid())
-			{
-				HttpRouter->UnregisterRequestPreprocessor(Handle);
-			}
-
-			// Update the preprocessor handle mapping.
-			Handle = HttpRouter->RegisterRequestPreprocessor(Handler.Value);
-		}
-
 		FHttpServerModule::Get().StartAllListeners();
 
 		bIsHttpServerRunning = true;
@@ -517,6 +460,8 @@ void FWebRemoteControlModule::StopHttpServer()
 
 		ActiveRouteHandles.Reset();
 	}
+
+	UnregisterAllPreprocessors();
 
 	HttpRouter.Reset();
 	bIsHttpServerRunning = false;
@@ -1735,7 +1680,7 @@ bool FWebRemoteControlModule::HandlePassphraseRoute(const FHttpServerRequest& Re
 		Passphrase = PassphraseHeader->Last();
 	}
 	
-	if (bool bIsCorrect = CheckPassphrase(Passphrase))
+	if (bool bIsCorrect = WebRemoteControlInternalUtils::CheckPassphrase(Passphrase))
 	{
 		WebRemoteControlUtils::SerializeMessage(FCheckPassphraseResponse{ bIsCorrect}, Response->Body);
 		Response->Code = EHttpServerResponseCodes::Ok;
@@ -2018,34 +1963,6 @@ bool FWebRemoteControlModule::HandleEntityMetadataOperationsRoute(const FHttpSer
 
 	OnComplete(MoveTemp(Response));
 	return true;
-}
-
-bool FWebRemoteControlModule::CheckPassphrase(const FString& HashedPassphrase) const
-{
-	bool bOutResult = !(GetMutableDefault<URemoteControlSettings>()->bUseRemoteControlPassphrase);
-
-	if (bOutResult)
-	{
-		return true;
-	}
-
-	TArray<FString> HashedPassphrases = GetMutableDefault<URemoteControlSettings>()->GetHashedPassphrases();
-	if (HashedPassphrases.IsEmpty())
-	{
-		return true;
-	}
-	
-	for (const FString& InPassphrase : HashedPassphrases)
-	{
-		bOutResult = bOutResult || InPassphrase == HashedPassphrase;
-
-		if (bOutResult)
-		{
-			break;
-		}
-	}
-	
-	return bOutResult;
 }
 
 bool FWebRemoteControlModule::HandleEntitySetLabelRoute(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
@@ -2370,6 +2287,96 @@ void FWebRemoteControlModule::InvokeWrappedRequest(const FRCRequestWrapper& Wrap
 	}
 }
 
+void FWebRemoteControlModule::RegisterDefaultPreprocessors()
+{
+	using namespace UE::WebRemoteControl;
+
+	auto MakeWebsocketPreDispatch = [this](FRCPreprocessorHandler PreprocessorHandler)
+	{
+		return [this, PreprocessorHandler](const FRemoteControlWebSocketMessage& Message) -> bool
+		{
+			FHttpServerRequest Request;
+			Request.Headers = Message.Header;
+			Request.PeerAddress = Message.PeerAddress;
+
+			FPreprocessorResult Result = PreprocessorHandler(Request);
+			if (Result.Result == EPreprocessorResult::RequestPassthrough)
+			{
+				return true;
+			}
+			else
+			{
+				TArray<uint8> Response;
+
+				const TArray<FString>* InPassphrase = Message.Header.Find(WebRemoteControlInternalUtils::PassphraseHeader);
+				const FString Passphrase = InPassphrase ? InPassphrase->Last() : FString("");
+
+				FRCRequestWrapper Wrapper;
+				Wrapper.RequestId = Message.MessageId;
+				Wrapper.Passphrase = Passphrase;
+				Wrapper.Verb = "401";
+
+				// Not ideal, we're re-converting to tchar, this should be removed once the WebRC pipeline is cleaned up.
+				WebRemoteControlUtils::ConvertToTCHAR(Result.OptionalResponse->Body, Wrapper.TCHARBody);
+				WebRemoteControlUtils::SerializeMessage(Wrapper, Response);
+
+				WebSocketServer.Send(Message.ClientId, MoveTemp(Response));
+
+				return false;
+			}
+		};
+	};
+
+	auto RegisterInternalPreprocessor = [this, MakeWebsocketPreDispatch](FRCPreprocessorHandler PreprocessorHandler)
+	{
+		if (HttpRouter)
+		{
+			AllRegisteredPreprocessorHandlers.Add(HttpRouter->RegisterRequestPreprocessor(MakeHttpRequestHandler(PreprocessorHandler)));
+		}
+
+		if (WebSocketRouter)
+		{
+			WebSocketRouter->AddPreDispatch(MakeWebsocketPreDispatch(PreprocessorHandler));
+		}
+	};
+
+	RegisterInternalPreprocessor(&RemotePassphraseEnforcementPreprocessor);
+	RegisterInternalPreprocessor(&PassphrasePreprocessor);
+	RegisterInternalPreprocessor(&IPValidationPreprocessor);
+}
+
+void FWebRemoteControlModule::UnregisterAllPreprocessors()
+{
+	if (HttpRouter)
+	{
+		for (const FDelegateHandle& Handle : AllRegisteredPreprocessorHandlers)
+		{
+			HttpRouter->UnregisterRequestPreprocessor(Handle);
+		}
+	}
+}
+
+void FWebRemoteControlModule::RegisterExternalPreprocesors()
+{
+	if (HttpRouter)
+	{
+		for (const TPair<FDelegateHandle, FHttpRequestHandler>& Handler : PreprocessorsToRegister)
+		{
+			// Find the pre-processors HTTP-handle from the one we generated.
+			FDelegateHandle& Handle = PreprocessorsHandleMappings.FindChecked(Handler.Key);
+			if (Handle.IsValid())
+			{
+				HttpRouter->UnregisterRequestPreprocessor(Handle);
+				AllRegisteredPreprocessorHandlers.RemoveAtSwap(AllRegisteredPreprocessorHandlers.IndexOfByKey(Handle));
+			}
+
+			// Update the preprocessor handle mapping.
+			Handle = HttpRouter->RegisterRequestPreprocessor(Handler.Value);
+			AllRegisteredPreprocessorHandlers.Add(Handle);
+		}
+	}
+}
+
 #if WITH_EDITOR
 void FWebRemoteControlModule::RegisterSettings()
 {
@@ -2390,28 +2397,33 @@ void FWebRemoteControlModule::OnSettingsModified(UObject* Settings, FPropertyCha
 	const bool bIsWebServerStarted = HttpRouter.IsValid();
 	const bool bIsWebSocketServerStarted = WebSocketServer.IsRunning();
 	const bool bRestartHttpServer = RCSettings->RemoteControlHttpServerPort != HttpServerPort;
-	const bool bRestartWebSocketServer = RCSettings->RemoteControlWebSocketServerPort != WebSocketServerPort;
+	const bool bRestartWebSocketServer = RCSettings->RemoteControlWebSocketServerPort != WebSocketServerPort || RCSettings->RemoteControlWebsocketServerBindAddress != WebsocketServerBindAddress;
 
-	if ((bIsWebServerStarted && bRestartHttpServer)
-		|| (!bIsWebServerStarted && RCSettings->bAutoStartWebServer))
+	if (PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
 	{
-		HttpServerPort = RCSettings->RemoteControlHttpServerPort;
-		StopHttpServer();
-		StartHttpServer();
-	}
 
-	if ((bIsWebSocketServerStarted && bRestartWebSocketServer)
-		|| (!bIsWebSocketServerStarted && RCSettings->bAutoStartWebSocketServer))
-	{
-		WebSocketServerPort = RCSettings->RemoteControlWebSocketServerPort;
-		StopWebSocketServer();
-		StartWebSocketServer();
+		if ((bIsWebServerStarted && bRestartHttpServer)
+			|| (!bIsWebServerStarted && RCSettings->bAutoStartWebServer))
+		{
+			HttpServerPort = RCSettings->RemoteControlHttpServerPort;
+			StopHttpServer();
+			StartHttpServer();
+		}
+
+		if ((bIsWebSocketServerStarted && bRestartWebSocketServer)
+			|| (!bIsWebSocketServerStarted && RCSettings->bAutoStartWebSocketServer))
+		{
+			WebSocketServerPort = RCSettings->RemoteControlWebSocketServerPort;
+			WebsocketServerBindAddress = RCSettings->RemoteControlWebsocketServerBindAddress;
+			StopWebSocketServer();
+			StartWebSocketServer();
+		}
 	}
 
 	/** Letting the Server know what the current state of the Passphrase Usage is. */
 	if (bIsWebSocketServerStarted && bIsWebServerStarted)
 	{
-		const bool bIsOpen = RCSettings->bUseRemoteControlPassphrase;
+		const bool bIsOpen = RCSettings->bEnforcePassphraseForRemoteClients;
 		
 		TArray<uint8> Response;
 		const FCheckPassphraseResponse BoolResponse = FCheckPassphraseResponse(!bIsOpen);

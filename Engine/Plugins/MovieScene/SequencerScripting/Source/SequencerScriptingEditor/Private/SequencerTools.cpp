@@ -1,27 +1,26 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SequencerTools.h"
-#include "SequencerScriptingEditor.h"
-#include "MovieSceneCapture.h"
-#include "MovieSceneCaptureDialogModule.h"
+#include "Animation/AnimSequence.h"
+#include "Engine/SkeletalMesh.h"
 #include "AutomatedLevelSequenceCapture.h"
-#include "MovieSceneTimeHelpers.h"
-#include "UObject/Stack.h"
-#include "UObject/Package.h"
+#include "Channels/MovieSceneBoolChannel.h"
 #include "LevelSequenceActor.h"
-#include "LevelSequencePlayer.h"
+#include "Channels/MovieSceneEvent.h"
 #include "FbxExporter.h"
-#include "FbxImporter.h"
+#include "Channels/MovieSceneFloatChannel.h"
 #include "MovieSceneToolsUserSettings.h"
+#include "Channels/MovieSceneIntegerChannel.h"
 #include "MovieSceneToolHelpers.h"
+#include "Engine/World.h"
 #include "MovieSceneEventUtils.h"
+#include "INodeAndChannelMappings.h"
 #include "MovieSceneSequenceEditor.h"
+#include "LevelSequence.h"
 #include "Sections/MovieSceneEventSectionBase.h"
 #include "CineCameraActor.h"
-#include "CineCameraComponent.h"
-#include "MovieSceneCommonHelpers.h"
 #include "Components/SkeletalMeshComponent.h"
-#include "Animation/AnimSequenceBase.h"
+#include "MovieScenePossessable.h"
 #include "ScopedTransaction.h"
 #include "Exporters/AnimSeqExportOption.h"
 
@@ -30,11 +29,12 @@
 #include "BlueprintActionMenuItem.h"
 #include "EdGraphSchema_K2.h"
 
-#include "AssetRegistry/AssetData.h"
 #include "LevelSequenceAnimSequenceLink.h"
 #include "AnimSequenceLevelSequenceLink.h"
 
 #include "Compilation/MovieSceneCompiledDataManager.h"
+#include "MovieSceneSpawnable.h"
+#include "SequencerScriptingRange.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SequencerTools)
 
@@ -201,9 +201,19 @@ bool ExportFBXInternal(const FSequencerExportFBXParams& InParams, UMovieSceneSeq
 	UMovieSceneSequence* Sequence = InParams.Sequence;
 	UMovieSceneSequence* RootSequence = InParams.RootSequence;
 	TArray<FMovieSceneBindingProxy> BindingProxies = InParams.Bindings;
-	TArray<UMovieSceneTrack*> MasterTracks = InParams.MasterTracks;
+	TArray<UMovieSceneTrack*> Tracks = InParams.Tracks;
 	UFbxExportOption* OverrideOptions = InParams.OverrideOptions;
 	FString FBXFileName = InParams.FBXFileName;
+
+	if (!RootSequence)
+	{
+		RootSequence = Sequence;
+	}
+
+	if (!RootSequence)
+	{
+		return false;
+	}
 
 	UnFbx::FFbxExporter* Exporter = UnFbx::FFbxExporter::GetInstance();
 	//Show the fbx export dialog options
@@ -257,7 +267,7 @@ bool ExportFBXInternal(const FSequencerExportFBXParams& InParams, UMovieSceneSeq
 			Player->SetPlaybackPosition(FMovieSceneSequencePlaybackParams(StartTime, EUpdatePositionMethod::Play));
 		}
 
-		bDidExport = MovieSceneToolHelpers::ExportFBX(World, MovieScene, Player, Bindings, MasterTracks, NodeNameAdapter, Template, FBXFileName, RootToLocalTransform);
+		bDidExport = MovieSceneToolHelpers::ExportFBX(World, MovieScene, Player, Bindings, Tracks, NodeNameAdapter, Template, FBXFileName, RootToLocalTransform);
 	}
 
 	Player->Stop();
@@ -271,7 +281,20 @@ bool USequencerToolsFunctionLibrary::ExportLevelSequenceFBX(const FSequencerExpo
 	ALevelSequenceActor* OutActor;
 	FMovieSceneSequencePlaybackSettings Settings;
 	FLevelSequenceCameraSettings CameraSettings;
-	ULevelSequencePlayer* Player = ULevelSequencePlayer::CreateLevelSequencePlayer(InParams.World, InParams.RootSequence, Settings, OutActor);
+
+	ULevelSequence* RootSequence = InParams.RootSequence;
+	if (!RootSequence)
+	{
+		RootSequence = InParams.Sequence;
+	}
+
+	if (!RootSequence)
+	{
+		FFrame::KismetExecutionMessage(TEXT("Cannot export level sequence. Sequence is invalid."), ELogVerbosity::Error);
+		return false;
+	}
+
+	ULevelSequencePlayer* Player = ULevelSequencePlayer::CreateLevelSequencePlayer(InParams.World, RootSequence, Settings, OutActor);
 
 	bool bSuccess = ExportFBXInternal(InParams, Player);
 	InParams.World->DestroyActor(OutActor);
@@ -331,6 +354,9 @@ bool USequencerToolsFunctionLibrary::ExportAnimSequence(UWorld* World, ULevelSeq
 			// Evaluate at the beginning of the subscene time to ensure that spawnables are created before export
 			FFrameTime StartTime = FFrameRate::TransformTime(UE::MovieScene::DiscreteInclusiveLower(MovieScene->GetPlaybackRange()).Value, MovieScene->GetTickResolution(), MovieScene->GetDisplayRate());
 			Player->SetPlaybackPosition(FMovieSceneSequencePlaybackParams(StartTime, EUpdatePositionMethod::Play));
+
+			// Cannot transact changes due to in-flight spawnable transaction
+			ExportOptions->bTransactRecording = false;
 		}
  
 		USkeletalMeshComponent* SkeletalMeshComp =  GetSkelMeshComponent(Player, Binding);

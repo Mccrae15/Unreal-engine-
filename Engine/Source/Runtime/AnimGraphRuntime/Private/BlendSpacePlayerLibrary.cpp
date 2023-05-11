@@ -4,6 +4,8 @@
 #include "Animation/AnimNode_Inertialization.h"
 #include "AnimNodes/AnimNode_BlendSpacePlayer.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(BlendSpacePlayerLibrary)
+
 DEFINE_LOG_CATEGORY_STATIC(LogBlendSpacePlayerLibrary, Verbose, All);
 
 FBlendSpacePlayerReference UBlendSpacePlayerLibrary::ConvertToBlendSpacePlayer(const FAnimNodeReference& Node,
@@ -183,4 +185,16 @@ bool UBlendSpacePlayerLibrary::ShouldResetPlayTimeWhenBlendSpaceChanges(
 			bResetPlayTimeWhenBlendSpaceChanges = InBlendSpacePlayer.ShouldResetPlayTimeWhenBlendSpaceChanges();
 		});
 	return bResetPlayTimeWhenBlendSpaceChanges;
+}
+
+void UBlendSpacePlayerLibrary::SnapToPosition(
+	const FBlendSpacePlayerReference& BlendSpacePlayer,
+	FVector NewPosition)
+{
+	BlendSpacePlayer.CallAnimNodeFunction<FAnimNode_BlendSpacePlayer>(
+		TEXT("SnapToPosition"),
+		[&NewPosition](FAnimNode_BlendSpacePlayer& InBlendSpacePlayer)
+		{
+			InBlendSpacePlayer.SnapToPosition(NewPosition);
+		});
 }

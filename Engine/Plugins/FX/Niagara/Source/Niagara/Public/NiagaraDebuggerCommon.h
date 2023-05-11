@@ -465,7 +465,7 @@ struct NIAGARA_API FNiagaraDebugHUDSettingsData
 
 	/** Overview display location. */
 	UPROPERTY(EditAnywhere, Category = "Debug Overview", meta = (DisplayName = "Debug Overview Text Location", EditCondition = "bOverviewEnabled"))
-	FVector2D OverviewLocation = FIntPoint(30.0f, 150.0f);
+	FVector2D OverviewLocation = FVector2D(30.0f, 150.0f);
 
 	/** Overview display font to use. */
 	UPROPERTY(EditAnywhere, Category = "Debug Overview", meta = (EditCondition = "bOverviewEnabled && OverviewMode == ENiagaraDebugHUDOverviewMode::Overview"))
@@ -530,6 +530,10 @@ struct NIAGARA_API FNiagaraDebugHUDSettingsData
 	/** When enabled will show the system bounds for all filtered systems. */
 	UPROPERTY(Config, EditAnywhere, Category = "Debug System")
 	bool bSystemShowBounds = false;
+
+	/** When bounds display is enabled allows you to draw a solid box if alpha is > 0. */
+	UPROPERTY(Config, EditAnywhere, Category = "Debug System", meta = (EditCondition = "bSystemShowBounds"))
+	float SystemBoundsSolidBoxAlpha = 0.0f;
 
 	/** When disabled in world rendering will show systems deactivated by scalability. */
 	UPROPERTY(Config, EditAnywhere, Category = "Debug System", meta = (EditCondition = "SystemDebugVerbosity != ENiagaraDebugHudVerbosity::None"))

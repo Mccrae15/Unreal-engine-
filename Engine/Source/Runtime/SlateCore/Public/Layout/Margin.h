@@ -80,11 +80,11 @@ public:
 	{ }
 	
 	/** Construct a Margin where the spacing on each side is individually specified. */
-	FMargin(float InLeft, float InTop, float InRight, float InBottom)
-		: Left(InLeft)
-		, Top(InTop)
-		, Right(InRight)
-		, Bottom(InBottom)
+	FMargin(double InLeft, double InTop, double InRight, double InBottom)
+		: Left((float)InLeft)
+		, Top((float)InTop)
+		, Right((float)InRight)
+		, Bottom((float)InBottom)
 	{ }
 
 	/** Construct a Margin where the margins are coming from a FVector4 */
@@ -178,9 +178,9 @@ public:
 	 *
 	 * @return The top left offset.
 	 */
-	UE::Slate::FDeprecateVector2D GetTopLeft() const
+	UE::Slate::FDeprecateVector2DResult GetTopLeft() const
 	{
-		return UE::Slate::FDeprecateVector2D(Left, Top);
+		return UE::Slate::FDeprecateVector2DResult(Left, Top);
 	}
 	FVector2f GetTopLeft2f() const
 	{
@@ -192,9 +192,9 @@ public:
 	 *
 	 * @return Cumulative margin size.
 	 */
-	UE::Slate::FDeprecateVector2D GetDesiredSize() const
+	UE::Slate::FDeprecateVector2DResult GetDesiredSize() const
 	{
-		return UE::Slate::FDeprecateVector2D(GetDesiredSize2f());
+		return UE::Slate::FDeprecateVector2DResult(GetDesiredSize2f());
 	}
 	FVector2f GetDesiredSize2f() const
 	{

@@ -2,13 +2,10 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Factories/Factory.h"
-#include "AssetTypeCategories.h"
 #include "IAssetTools.h"
 #include "IAssetTypeActions.h"
 #include "TickableEditorObject.h"
-#include "IDetailsView.h"
 
 #include "InputEditorModule.generated.h"
 
@@ -43,7 +40,7 @@ private:
 		CreatedAssetTypeActions.Add(Action);
 	}
 
-	void OnMainFrameCreationFinished(TSharedPtr<SWindow> InRootWindow, bool bIsNewProjectWindow);
+	void OnMainFrameCreationFinished(TSharedPtr<SWindow> InRootWindow, bool bIsRunningStartupDialog);
 	
 	/** Automatically upgrade the current project to use Enhanced Input if it is currently set to the legacy input classes. */
 	void AutoUpgradeDefaultInputClasses();
@@ -63,6 +60,10 @@ class INPUTEDITOR_API UInputMappingContext_Factory : public UFactory
 {
 	GENERATED_UCLASS_BODY()
 public:
+	UPROPERTY(EditAnywhere, Category=InputMappingContext)
+	TSubclassOf<class UInputMappingContext> InputMappingContextClass;
+
+	virtual bool ConfigureProperties() override;
 	virtual UObject* FactoryCreateNew(UClass* Class, UObject* InParent, FName Name, EObjectFlags Flags, UObject* Context, FFeedbackContext* Warn) override;
 
 	/** Set the array of initial actions that the resulting IMC should be populated with */
@@ -80,6 +81,10 @@ class INPUTEDITOR_API UInputAction_Factory : public UFactory
 {
 	GENERATED_UCLASS_BODY()
 public:
+	UPROPERTY(EditAnywhere, Category=InputAction)
+	TSubclassOf<UInputAction> InputActionClass;
+
+	virtual bool ConfigureProperties() override;
 	virtual UObject* FactoryCreateNew(UClass* Class, UObject* InParent, FName Name, EObjectFlags Flags, UObject* Context, FFeedbackContext* Warn) override;
 };
 
@@ -107,3 +112,8 @@ public:
 //	UPROPERTY(EditAnywhere, Category = DataAsset)
 //	TSubclassOf<UDataAsset> DataAssetClass;
 //};
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "IDetailsView.h"
+#endif

@@ -5,26 +5,27 @@
 #include "RenderGrid/RenderGrid.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "SlateOptMacros.h"
+#include "Blueprints/RenderGridBlueprint.h"
+#include "ScopedTransaction.h"
 
 #define LOCTEXT_NAMESPACE "SRenderGrid"
 
 
 void UE::RenderGrid::Private::SRenderGrid::Tick(const FGeometry&, const double, const float)
 {
-	if (DetailsView.IsValid())
+	if (RenderGridDetailsView.IsValid())
 	{
 		if (const TSharedPtr<IRenderGridEditor> BlueprintEditor = BlueprintEditorWeakPtr.Pin())
 		{
 			if (URenderGrid* Grid = BlueprintEditor->GetInstance())
 			{
-				if (!IsValid(Grid) || BlueprintEditor->IsBatchRendering())
+				if (!IsValid(Grid) || BlueprintEditor->ShouldHideUI())
 				{
 					Grid = nullptr;
 				}
-				if (DetailsViewRenderGridWeakPtr != Grid)
+				if (RenderGridWeakPtr != Grid)
 				{
-					DetailsViewRenderGridWeakPtr = Grid;
-					DetailsView->SetObject(Grid);
+					SetRenderGrid(Grid);
 				}
 			}
 		}
@@ -36,20 +37,43 @@ BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 void UE::RenderGrid::Private::SRenderGrid::Construct(const FArguments& InArgs, TSharedPtr<IRenderGridEditor> InBlueprintEditor)
 {
 	BlueprintEditorWeakPtr = InBlueprintEditor;
-	DetailsViewRenderGridWeakPtr = InBlueprintEditor->GetInstance();
+	RenderGridWeakPtr = nullptr;
 
 	FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
+
 	FDetailsViewArgs DetailsViewArgs;
 	DetailsViewArgs.bAllowSearch = false;
 	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
 	DetailsViewArgs.DefaultsOnlyVisibility = EEditDefaultsOnlyNodeVisibility::Hide;
 	DetailsViewArgs.NotifyHook = this;
-	DetailsView = PropertyEditorModule.CreateDetailView(DetailsViewArgs);
-	DetailsView->SetObject(DetailsViewRenderGridWeakPtr.Get());
+
+	RenderGridDetailsView = PropertyEditorModule.CreateDetailView(DetailsViewArgs);
+	RenderGridSettingsDetailsView = PropertyEditorModule.CreateDetailView(DetailsViewArgs);
+	RenderGridDefaultsDetailsView = PropertyEditorModule.CreateDetailView(DetailsViewArgs);
+
+	SetRenderGrid(InBlueprintEditor->GetInstance());
 
 	ChildSlot
 	[
-		DetailsView->AsShared()
+		SNew(SVerticalBox)
+
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		[
+			RenderGridDetailsView->AsShared()
+		]
+
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		[
+			RenderGridSettingsDetailsView->AsShared()
+		]
+
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		[
+			RenderGridDefaultsDetailsView->AsShared()
+		]
 	];
 }
 
@@ -61,9 +85,19 @@ void UE::RenderGrid::Private::SRenderGrid::NotifyPostChange(const FPropertyChang
 {
 	if (const TSharedPtr<IRenderGridEditor> BlueprintEditor = BlueprintEditorWeakPtr.Pin())
 	{
+		FScopedTransaction Transaction(LOCTEXT("RenderGridParameterChanged", "RenderGrid Parameter Changed"));
 		BlueprintEditor->MarkAsModified();
+		BlueprintEditor->GetRenderGridBlueprint()->PropagateAllPropertiesExceptJobsToAsset(BlueprintEditor->GetInstance());
 		BlueprintEditor->OnRenderGridChanged().Broadcast();
 	}
+}
+
+void UE::RenderGrid::Private::SRenderGrid::SetRenderGrid(URenderGrid* RenderGrid)
+{
+	RenderGridWeakPtr = RenderGrid;
+	RenderGridDetailsView->SetObject(RenderGrid);
+	RenderGridSettingsDetailsView->SetObject(IsValid(RenderGrid) ? RenderGrid->GetSettingsObject() : nullptr);
+	RenderGridDefaultsDetailsView->SetObject(IsValid(RenderGrid) ? RenderGrid->GetDefaultsObject() : nullptr);
 }
 
 

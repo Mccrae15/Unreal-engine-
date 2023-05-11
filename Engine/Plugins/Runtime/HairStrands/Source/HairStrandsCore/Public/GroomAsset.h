@@ -94,10 +94,9 @@ struct HAIRSTRANDSCORE_API FHairGroupData
 		{
 			uint32 Total = 0;
 			Total += BulkData.Positions.IsBulkDataLoaded() 		? BulkData.Positions.GetBulkDataSize()   : 0;
-			Total += BulkData.Attributes0.IsBulkDataLoaded() 	? BulkData.Attributes0.GetBulkDataSize() : 0;
-			Total += BulkData.Attributes1.IsBulkDataLoaded() 	? BulkData.Attributes1.GetBulkDataSize() : 0;
-			Total += BulkData.Materials.IsBulkDataLoaded() 		? BulkData.Materials.GetBulkDataSize()   : 0;
-			Total += BulkData.CurveOffsets.IsBulkDataLoaded() 	? BulkData.CurveOffsets.GetBulkDataSize(): 0;
+			Total += BulkData.Attributes.IsBulkDataLoaded()		? BulkData.Attributes.GetBulkDataSize() : 0;
+			Total += BulkData.Curves.IsBulkDataLoaded() 		? BulkData.Curves.GetBulkDataSize(): 0;
+			Total += BulkData.VertexToCurve.IsBulkDataLoaded()	? BulkData.VertexToCurve.GetBulkDataSize() : 0;
 			return Total;
 		}
 
@@ -407,7 +406,7 @@ struct FHairVertexFactoryTypesPerMaterialData
 {
 	int16 MaterialIndex;
 	EHairGeometryType HairGeometryType;
-	TArray<const FVertexFactoryType*, TInlineAllocator<2>> VertexFactoryTypes;
+	FPSOPrecacheVertexFactoryDataList VertexFactoryDataList;
 };
 
 /**
@@ -582,6 +581,9 @@ public:
 
 	/** Used for PSO precaching of used materials and vertex factories */
 	TArray<FHairVertexFactoryTypesPerMaterialData> CollectVertexFactoryTypesPerMaterialData(EShaderPlatform ShaderPlatform);
+
+	/** Helper function to return the asset path name, optionally joined with the LOD index if LODIndex > -1. */
+	FName GetAssetPathName(int32 LODIndex = -1);
 
 //private :
 #if WITH_EDITOR

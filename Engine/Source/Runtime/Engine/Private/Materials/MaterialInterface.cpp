@@ -6,31 +6,35 @@
 
 #include "Materials/MaterialInterface.h"
 
+#include "MeshUVChannelInfo.h"
 #include "RenderingThread.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "PrimitiveViewRelevance.h"
 #include "MaterialShared.h"
 #include "Materials/Material.h"
 #include "UObject/ObjectSaveContext.h"
-#include "UObject/UObjectHash.h"
+#include "UObject/PropertyPortFlags.h"
 #include "UObject/UObjectIterator.h"
 #include "UObject/UE5ReleaseStreamObjectVersion.h"
 #include "EditorFramework/AssetImportData.h"
 #include "Engine/AssetUserData.h"
 #include "Engine/Texture2D.h"
+#include "Engine/World.h"
 #include "ObjectCacheEventSink.h"
 #include "Engine/SubsurfaceProfile.h"
-#include "Engine/TextureStreamingTypes.h"
-#include "Algo/BinarySearch.h"
 #include "Interfaces/ITargetPlatform.h"
-#include "Components.h"
+#include "Components/PrimitiveComponent.h"
 #include "ContentStreaming.h"
 #include "MeshBatch.h"
+#include "Engine/Scene.h"
+#include "RenderUtils.h"
 #include "TextureCompiler.h"
+#include "MaterialDomain.h"
 #include "MaterialShaderQualitySettings.h"
+#include "Materials/MaterialRenderProxy.h"
 #include "ShaderPlatformQualitySettings.h"
 #include "ObjectCacheContext.h"
 #include "MaterialCachedData.h"
-#include "Misc/ScopedSlowTask.h"
 #include "Components/DecalComponent.h"
 
 #if WITH_EDITOR
@@ -81,7 +85,7 @@ bool IsCompatibleWithHairStrands(const FMaterial* Material, const ERHIFeatureLev
 	return
 		ERHIFeatureLevel::SM5 <= FeatureLevel &&
 		Material && Material->IsUsedWithHairStrands() && 
-		(Material->GetBlendMode() == BLEND_Opaque || Material->GetBlendMode() == BLEND_Masked);
+		IsOpaqueOrMaskedBlendMode(*Material);
 }
 
 bool IsCompatibleWithHairStrands(EShaderPlatform Platform, const FMaterialShaderParameters& Parameters)
@@ -89,7 +93,7 @@ bool IsCompatibleWithHairStrands(EShaderPlatform Platform, const FMaterialShader
 	return
 		IsHairStrandsGeometrySupported(Platform) &&
 		Parameters.bIsUsedWithHairStrands &&
-		(Parameters.BlendMode == BLEND_Opaque || Parameters.BlendMode == BLEND_Masked);
+		IsOpaqueOrMaskedBlendMode(Parameters);
 }
 
 static EMaterialGetParameterValueFlags MakeParameterValueFlags(bool bOveriddenOnly)
@@ -259,6 +263,22 @@ bool UMaterialInterface::IsUsingNewHLSLGenerator() const
 	return BaseMaterial ? BaseMaterial->bEnableNewHLSLGenerator : false;
 }
 
+const FStrataCompilationConfig& UMaterialInterface::GetStrataCompilationConfig() const
+{
+	const UMaterial* BaseMaterial = GetMaterial_Concurrent();
+	static FStrataCompilationConfig DefaultFStrataCompilationConfig = FStrataCompilationConfig();
+	return BaseMaterial ? BaseMaterial->StrataCompilationConfig : DefaultFStrataCompilationConfig;
+}
+
+ENGINE_API void UMaterialInterface::SetStrataCompilationConfig(FStrataCompilationConfig& StrataCompilationConfig)
+{
+	UMaterial* BaseMaterial = GetMaterial();
+	if (BaseMaterial)
+	{
+		BaseMaterial->StrataCompilationConfig = StrataCompilationConfig;
+	}
+}
+
 void UMaterialInterface::GetQualityLevelUsage(TArray<bool, TInlineAllocator<EMaterialQualityLevel::Num> >& OutQualityLevelsUsed, EShaderPlatform ShaderPlatform, bool bCooking)
 {
 	OutQualityLevelsUsed = GetCachedExpressionData().QualityLevelsUsed;
@@ -361,19 +381,20 @@ FMaterialRelevance UMaterialInterface::GetRelevance_Internal(const UMaterial* Ma
 		const FMaterialResource* MaterialResource = GetMaterialResource(InFeatureLevel);
 
 		// If material is invalid e.g. unparented instance, fallback to the passed in material
-		if (!MaterialResource && Material)
+		bool bIsValidMaterialResource = (MaterialResource != nullptr) && (MaterialResource->GetMaterial() != nullptr);
+		if (!bIsValidMaterialResource && (Material != nullptr))
 		{
-			MaterialResource = Material->GetMaterialResource(InFeatureLevel);	
+			MaterialResource = Material->GetMaterialResource(InFeatureLevel);
 		}
 
-		if (!MaterialResource)
+		if (MaterialResource == nullptr)
 		{
 			return FMaterialRelevance();
 		}
 
 		const bool bIsMobile = InFeatureLevel <= ERHIFeatureLevel::ES3_1;
 		const bool bUsesSingleLayerWaterMaterial = MaterialResource->GetShadingModels().HasShadingModel(MSM_SingleLayerWater);
-		const bool IsSinglePassWaterTranslucent = bIsMobile && bUsesSingleLayerWaterMaterial;
+		const bool bIsSinglePassWaterTranslucent = bIsMobile && bUsesSingleLayerWaterMaterial;
 		const bool bIsMobilePixelProjectedTranslucent = MaterialResource->IsUsingPlanarForwardReflections() 
 														&& IsUsingMobilePixelProjectedReflection(GetFeatureLevelShaderPlatform(InFeatureLevel));
 
@@ -383,8 +404,7 @@ FMaterialRelevance UMaterialInterface::GetRelevance_Internal(const UMaterial* Ma
 			MaterialResource->MaterialUsesAnisotropy_GameThread();
 
 		const EBlendMode BlendMode = (EBlendMode)GetBlendMode();
-		const EStrataBlendMode StrataBlendMode = (EStrataBlendMode)GetStrataBlendMode();
-		const bool bIsTranslucent = IsTranslucentBlendMode(BlendMode) || IsSinglePassWaterTranslucent || bIsMobilePixelProjectedTranslucent; // We want meshes with water materials to be scheduled for translucent pass on mobile. And we also have to render the meshes used for mobile pixel projection reflection in translucent pass.
+		const bool bIsTranslucent = IsTranslucentBlendMode(BlendMode) || bIsSinglePassWaterTranslucent || bIsMobilePixelProjectedTranslucent; // We want meshes with water materials to be scheduled for translucent pass on mobile. And we also have to render the meshes used for mobile pixel projection reflection in translucent pass.
 
 		EMaterialDomain Domain = (EMaterialDomain)MaterialResource->GetMaterialDomain();
 		bool bDecal = (Domain == MD_DeferredDecal);
@@ -416,17 +436,20 @@ FMaterialRelevance UMaterialInterface::GetRelevance_Internal(const UMaterial* Ma
 
 		// If dual blending is supported, and we are rendering post-DOF translucency, then we also need to render a second pass to the modulation buffer.
 		// The modulation buffer can also be used for regular modulation shaders after DoF.
-		const bool bMaterialSeparateModulation =
-			(MaterialResource->IsDualBlendingEnabled(GShaderPlatformForFeatureLevel[InFeatureLevel]) || BlendMode == BLEND_Modulate)
-			&& TranslucencyPass == MTP_AfterDOF;
+		const bool bMaterialSeparateModulation = MaterialResource->IsDualBlendingEnabled(GShaderPlatformForFeatureLevel[InFeatureLevel]) || IsModulateBlendMode(BlendMode);
+
+		// Encode Strata BSDF into a mask where each bit correspond to a number of BSDF (1-8)
+		const uint8 StrataBSDFCount = FMath::Max(MaterialResource->MaterialGetStrataBSDFCount_GameThread(), uint8(1u));
+		const uint8 StrataBSDFCountMask = 1u << uint8(FMath::Min(StrataBSDFCount - 1, 8));
+		const uint8 StrataUintPerPixel = FMath::Max(MaterialResource->MaterialGetStrataUintPerPixel_GameThread(), uint8(1u));
 
 		MaterialRelevance.bOpaque = !bIsTranslucent;
 		MaterialRelevance.bMasked = IsMasked();
 		MaterialRelevance.bDistortion = MaterialResource->IsDistorted();
 		MaterialRelevance.bHairStrands = IsCompatibleWithHairStrands(MaterialResource, InFeatureLevel);
 		MaterialRelevance.bTwoSided = MaterialResource->IsTwoSided();
-		MaterialRelevance.bSeparateTranslucency = (TranslucencyPass == MTP_AfterDOF) && StrataBlendMode != SBM_ColoredTransmittanceOnly;
-		MaterialRelevance.bSeparateTranslucencyModulate = bMaterialSeparateModulation || StrataBlendMode == SBM_ColoredTransmittanceOnly;
+		MaterialRelevance.bSeparateTranslucency = bIsTranslucent && (TranslucencyPass == MTP_AfterDOF);
+		MaterialRelevance.bTranslucencyModulate = bMaterialSeparateModulation;
 		MaterialRelevance.bPostMotionBlurTranslucency = (TranslucencyPass == MTP_AfterMotionBlur);
 		MaterialRelevance.bNormalTranslucency = bIsTranslucent && (TranslucencyPass == MTP_BeforeDOF);
 		MaterialRelevance.bDisableDepthTest = bIsTranslucent && Material->bDisableDepthTest;		
@@ -443,7 +466,8 @@ FMaterialRelevance UMaterialInterface::GetRelevance_Internal(const UMaterial* Ma
 		MaterialRelevance.bUsesSkyMaterial = Material->bIsSky;
 		MaterialRelevance.bUsesSingleLayerWaterMaterial = bUsesSingleLayerWaterMaterial;
 		MaterialRelevance.bUsesAnisotropy = bUsesAnisotropy;
-
+		MaterialRelevance.StrataBSDFCountMask = StrataBSDFCountMask;
+		MaterialRelevance.StrataUintPerPixel = StrataUintPerPixel;
 		return MaterialRelevance;
 	}
 	else
@@ -847,6 +871,17 @@ bool UMaterialInterface::GetRuntimeVirtualTextureParameterValue(const FHashedMat
 	return false;
 }
 
+bool UMaterialInterface::GetSparseVolumeTextureParameterValue(const FHashedMaterialParameterInfo& ParameterInfo, USparseVolumeTexture*& OutValue, bool bOveriddenOnly) const
+{
+	FMaterialParameterMetadata Result;
+	if (GetParameterValue(EMaterialParameterType::SparseVolumeTexture, ParameterInfo, Result, MakeParameterValueFlags(bOveriddenOnly)))
+	{
+		OutValue = Result.Value.SparseVolumeTexture;
+		return true;
+	}
+	return false;
+}
+
 #if WITH_EDITOR
 bool UMaterialInterface::GetTextureParameterChannelNames(const FHashedMaterialParameterInfo& ParameterInfo, FParameterChannelNames& OutValue) const
 {
@@ -933,10 +968,21 @@ bool UMaterialInterface::GetRuntimeVirtualTextureParameterDefaultValue(const FHa
 	return false;
 }
 
+bool UMaterialInterface::GetSparseVolumeTextureParameterDefaultValue(const FHashedMaterialParameterInfo& ParameterInfo, class USparseVolumeTexture*& OutValue) const
+{
+	FMaterialParameterMetadata Result;
+	if (GetParameterDefaultValue(EMaterialParameterType::SparseVolumeTexture, ParameterInfo, Result))
+	{
+		OutValue = Result.Value.SparseVolumeTexture;
+		return true;
+	}
+	return false;
+}
+
 bool UMaterialInterface::GetFontParameterDefaultValue(const FHashedMaterialParameterInfo& ParameterInfo, class UFont*& OutFontValue, int32& OutFontPage) const
 {
 	FMaterialParameterMetadata Result;
-	if (GetParameterDefaultValue(EMaterialParameterType::RuntimeVirtualTexture, ParameterInfo, Result))
+	if (GetParameterDefaultValue(EMaterialParameterType::Font, ParameterInfo, Result))
 	{
 		OutFontValue = Result.Value.Font.Value;
 		OutFontPage = Result.Value.Font.Page;
@@ -1012,6 +1058,11 @@ void UMaterialInterface::GetAllTextureParameterInfo(TArray<FMaterialParameterInf
 void UMaterialInterface::GetAllRuntimeVirtualTextureParameterInfo(TArray<FMaterialParameterInfo>& OutParameterInfo, TArray<FGuid>& OutParameterIds) const
 {
 	GetAllParameterInfoOfType(EMaterialParameterType::RuntimeVirtualTexture, OutParameterInfo, OutParameterIds);
+}
+
+void UMaterialInterface::GetAllSparseVolumeTextureParameterInfo(TArray<FMaterialParameterInfo>& OutParameterInfo, TArray<FGuid>& OutParameterIds) const
+{
+	GetAllParameterInfoOfType(EMaterialParameterType::SparseVolumeTexture, OutParameterInfo, OutParameterIds);
 }
 
 void UMaterialInterface::GetAllFontParameterInfo(TArray<FMaterialParameterInfo>& OutParameterInfo, TArray<FGuid>& OutParameterIds) const
@@ -1115,12 +1166,12 @@ EBlendMode UMaterialInterface::GetBlendMode() const
 	return BLEND_Opaque;
 }
 
-EStrataBlendMode UMaterialInterface::GetStrataBlendMode() const
+bool UMaterialInterface::IsTwoSided() const
 {
-	return SBM_Opaque;
+	return false;
 }
 
-bool UMaterialInterface::IsTwoSided() const
+bool UMaterialInterface::IsThinSurface() const
 {
 	return false;
 }
@@ -1140,9 +1191,19 @@ bool UMaterialInterface::IsTranslucencyWritingVelocity() const
 	return false;
 }
 
+bool UMaterialInterface::IsTranslucencyWritingFrontLayerTransparency() const
+{
+	return false;
+}
+
 bool UMaterialInterface::IsMasked() const
 {
 	return false;
+}
+
+float UMaterialInterface::GetMaxWorldPositionOffsetDisplacement() const
+{
+	return 0.0f;
 }
 
 bool UMaterialInterface::IsDeferredDecal() const
@@ -1379,6 +1440,11 @@ float UMaterialInterface::GetTextureDensity(FName TextureName, const FMeshUVChan
 	return 0;
 }
 
+uint32 UMaterialInterface::GetFeatureLevelsToCompileForAllMaterials()
+{
+	return FeatureLevelsForAllMaterials | (1 << GMaxRHIFeatureLevel);
+}
+
 bool UMaterialInterface::UseAnyStreamingTexture() const
 {
 	TArray<UTexture*> Textures;
@@ -1480,8 +1546,9 @@ void UMaterialInterface::EnsureIsComplete()
 #endif
 }
 
-void UMaterialInterface::FilterOutPlatformShadingModels(const FStaticShaderPlatform Platform, FMaterialShadingModelField& ShadingModels)
+void UMaterialInterface::FilterOutPlatformShadingModels(const EShaderPlatform InPlatform, FMaterialShadingModelField& ShadingModels)
 {
+	const FStaticShaderPlatform Platform(InPlatform);
 	if (ShadingModels.CountShadingModels() > 1 && !AllowPerPixelShadingModels(Platform))
 	{
 		ShadingModels = FMaterialShadingModelField(ShadingModels.GetFirstShadingModel());
@@ -1514,7 +1581,6 @@ const UClass* UMaterialInterface::GetEditorOnlyDataClass() const
 	return UMaterialInterfaceEditorOnlyData::StaticClass();
 }
 
-#include "Materials/MaterialInstanceDynamic.h"
 
 UMaterialInterfaceEditorOnlyData* UMaterialInterface::CreateEditorOnlyData()
 {

@@ -2,12 +2,13 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 
-#include "Grid/PCGLandscapeCache.h"
 
 #include "PCGWorldActor.generated.h"
+
+class UPCGLandscapeCache;
+namespace EEndPlayReason { enum Type : int; }
 
 UCLASS(MinimalAPI, NotBlueprintable, NotPlaceable)
 class APCGWorldActor : public AActor
@@ -18,8 +19,8 @@ public:
 	APCGWorldActor(const FObjectInitializer& ObjectInitializer);
 
 	//~Begin AActor Interface
-	virtual void PostLoad() override;
-	virtual void BeginDestroy() override;
+	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 #if WITH_EDITOR	
 	virtual bool CanChangeIsSpatiallyLoadedFlag() const { return false; }
@@ -48,7 +49,7 @@ public:
 
 	/** Disable creation of Partition Actors on the Z axis. Can improve performances if 3D partitioning is not needed. */
 	UPROPERTY(config, EditAnywhere, Category = WorldPartition)
-	bool bUse2DGrid = false;
+	bool bUse2DGrid = true;
 
 private:
 	void RegisterToSubsystem();
@@ -58,3 +59,8 @@ private:
 	void OnPartitionGridSizeChanged();
 #endif
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "Grid/PCGLandscapeCache.h"
+#endif

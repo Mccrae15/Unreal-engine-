@@ -7,7 +7,7 @@
 #include "Chaos/Collision/CollisionContext.h"
 #include "Chaos/Collision/PBDCollisionConstraint.h"
 #include "Chaos/Collision/PBDCollisionConstraintHandle.h"
-#include "Chaos/Collision/SolverCollisionContainer.h"
+#include "Chaos/Collision/PBDCollisionSolverSettings.h"
 #include "Chaos/PBDConstraintContainer.h"
 #include "Framework/BufferedData.h"
 
@@ -27,6 +27,18 @@ class FPBDCollisionConstraint;
 using FRigidBodyContactConstraintsPostComputeCallback = TFunction<void()>;
 using FRigidBodyContactConstraintsPostApplyCallback = TFunction<void(const FReal Dt, const TArray<FPBDCollisionConstraintHandle*>&)>;
 using FRigidBodyContactConstraintsPostApplyPushOutCallback = TFunction<void(const FReal Dt, const TArray<FPBDCollisionConstraintHandle*>&, bool)>;
+
+
+namespace Private
+{
+	// The type of solver to use for collisions
+	enum class ECollisionSolverType
+	{
+		GaussSeidel,
+		GaussSeidelSimd,
+		PartialJacobi,
+	};
+}
 
 /**
  * A container and solver for collision constraints.
@@ -104,6 +116,11 @@ public:
 	void DetectProbeCollisions(FReal Dt);
 
 	/**
+	 * Apply modifiers to particle pair midphases
+	 */
+	void ApplyMidPhaseModifier(const TArray<ISimCallbackObject*>& MidPhaseModifiers, FReal Dt);
+
+	/**
 	 * Apply modifiers to the constraints and specify which constraints should be disabled.
 	 * You would probably call this in the PostComputeCallback. Prefer this to calling RemoveConstraints in a loop,
 	 * so you don't have to worry about constraint iterator/indices changing.
@@ -132,20 +149,25 @@ public:
 	//
 	virtual int32 GetNumConstraints() const override final { return NumConstraints(); }
 	virtual void ResetConstraints() override final { Reset(); }
-	virtual void AddConstraintsToGraph(FPBDIslandManager& IslandManager) override final;
+	virtual void AddConstraintsToGraph(Private::FPBDIslandManager& IslandManager) override final;
 	virtual void PrepareTick() override final {}
 	virtual void UnprepareTick() override final {}
 
-	virtual TUniquePtr<FConstraintContainerSolver> CreateSceneSolver(const int32 Priority) override final
+	virtual TUniquePtr<FConstraintContainerSolver> CreateSceneSolver(const int32 Priority) override final;
+
+	virtual TUniquePtr<FConstraintContainerSolver> CreateGroupSolver(const int32 Priority) override final;
+
+	// The type of solver we are creating
+	Private::ECollisionSolverType GetSolverType() const
 	{
-		return MakeUnique<FPBDCollisionContainerSolver>(*this, Priority);
+		return CollisionSolverType;
 	}
 
-	virtual TUniquePtr<FConstraintContainerSolver> CreateGroupSolver(const int32 Priority) override final
+	// Set the solver type. NOTE: Any previously created solvers will not be recreated at this level. (See FPBDRigidsEvolutionGBF::UpdateCollisionSolverType)
+	void SetSolverType(const Private::ECollisionSolverType InSolverType)
 	{
-		return MakeUnique<FPBDCollisionContainerSolver>(*this, Priority);
+		CollisionSolverType = InSolverType;
 	}
-
 
 	//
 	// Member Access
@@ -247,11 +269,23 @@ public:
 
 	const FPBDCollisionConstraint& GetConstraint(int32 Index) const;
 
-	FCollisionConstraintAllocator& GetConstraintAllocator() { return ConstraintAllocator; }
+	Private::FCollisionConstraintAllocator& GetConstraintAllocator() { return ConstraintAllocator; }
 
 	void UpdateConstraintMaterialProperties(FPBDCollisionConstraint& Contact);
 
 	const FPBDCollisionSolverSettings& GetSolverSettings() const { return SolverSettings; }
+
+	const FCollisionDetectorSettings& GetDetectorSettings() const { return DetectorSettings; }
+
+	void SetDetectorSettings(const FCollisionDetectorSettings& InSettings)
+	{
+		DetectorSettings = InSettings;
+	}
+
+	void SetCullDistance(const FReal InCullDistance)
+	{
+		DetectorSettings.BoundsExpansion = InCullDistance;
+	}
 
 protected:
 	FPBDCollisionConstraint& GetConstraint(int32 Index);
@@ -260,10 +294,9 @@ protected:
 	void PruneEdgeCollisions();
 
 private:
-
 	const FPBDRigidsSOAs& Particles;
 
-	FCollisionConstraintAllocator ConstraintAllocator;
+	Private::FCollisionConstraintAllocator ConstraintAllocator;
 	int32 NumActivePointConstraints;
 	TArray<FPBDCollisionConstraintHandle*> TempCollisions;	// Reused from tick to tick to build contact lists
 
@@ -284,12 +317,17 @@ private:
 	// This improves performance, but can decrease stability if contacts are culled prematurely.
 	bool bCanDisableContacts;
 
+	Private::ECollisionSolverType CollisionSolverType;
+
 	// Used to determine constraint directions
 	FVec3 GravityDirection;
 	FReal GravitySize;
 
 	// Settings for the low-level collision solvers
 	FPBDCollisionSolverSettings SolverSettings;
+
+	// Settings for collision detection
+	FCollisionDetectorSettings DetectorSettings;
 };
 
 //

@@ -98,6 +98,11 @@ void FPersonaToolkit::Initialize(UAnimBlueprint* InAnimBlueprint, const FPersona
 	FindCounterpartAssets(InAnimBlueprint, Skeleton, Mesh);
 
 	CommonInitialSetup(PersonaToolkitArgs);
+
+	if (InAnimBlueprint->bIsTemplate)
+	{
+		bPreviewMeshCanUseDifferentSkeleton = true;
+	}
 }
 
 void FPersonaToolkit::Initialize(UPhysicsAsset* InPhysicsAsset, const FPersonaToolkitArgs& PersonaToolkitArgs)
@@ -119,6 +124,7 @@ void FPersonaToolkit::CommonInitialSetup(const FPersonaToolkitArgs& PersonaToolk
 	}
 
 	OnPreviewSceneSettingsCustomized = PersonaToolkitArgs.OnPreviewSceneSettingsCustomized;
+	bPreviewMeshCanUseDifferentSkeleton = PersonaToolkitArgs.bPreviewMeshCanUseDifferentSkeleton;
 }
 
 void FPersonaToolkit::CreatePreviewScene(const FPersonaToolkitArgs& PersonaToolkitArgs)
@@ -240,7 +246,7 @@ void FPersonaToolkit::SetAnimationAsset(class UAnimationAsset* InAnimationAsset)
 {
 	if (InAnimationAsset != nullptr)
 	{
-		check(Skeleton->IsCompatible(InAnimationAsset->GetSkeleton()));
+		ensure(Skeleton->IsCompatibleForEditor(InAnimationAsset->GetSkeleton()));
 	}
 
 	AnimationAsset = InAnimationAsset;
@@ -417,4 +423,10 @@ FName FPersonaToolkit::GetContext() const
 	}
 
 	return NAME_None;
+}
+
+
+bool FPersonaToolkit::CanPreviewMeshUseDifferentSkeleton() const
+{
+	return bPreviewMeshCanUseDifferentSkeleton;
 }

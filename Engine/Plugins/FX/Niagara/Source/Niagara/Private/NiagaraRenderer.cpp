@@ -1,8 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraRenderer.h"
+#include "Engine/Texture.h"
 #include "ParticleResources.h"
+#include "MaterialDomain.h"
 #include "NiagaraDataSet.h"
+#include "NiagaraSceneProxy.h"
 #include "NiagaraStats.h"
 #include "NiagaraComponent.h"
 #include "DynamicBufferAllocator.h"
@@ -493,6 +496,17 @@ bool FNiagaraRenderer::UseLocalSpace(const FNiagaraSceneProxy* Proxy)const
 	return bLocalSpace || Proxy->GetProxyDynamicData().bUseCullProxy;
 }
 
+bool FNiagaraRenderer::ViewFamilySupportLowLatencyTranslucency(const FSceneViewFamily& ViewFamily)
+{
+	// when underwater, single layer water will render translucency before opaque
+	const bool bIncludesUnderwaterView = ViewFamily.Views.ContainsByPredicate([](const FSceneView* SceneView)
+	{
+		return SceneView->IsUnderwater();
+	});
+
+	return !bIncludesUnderwaterView;
+}
+
 void FNiagaraRenderer::ProcessMaterialParameterBindings(const FNiagaraRendererMaterialParameters& MaterialParameters, const FNiagaraEmitterInstance* InEmitter, TConstArrayView<UMaterialInterface*> InMaterials) const
 {
 	if (MaterialParameters.HasAnyBindings() == false || !InEmitter)
@@ -514,7 +528,6 @@ void FNiagaraRenderer::ProcessMaterialParameterBindings(const FNiagaraRendererMa
 				{
 					for (const FNiagaraMaterialAttributeBinding& Binding : MaterialParameters.AttributeBindings)
 					{
-
 						if (Binding.GetParamMapBindableVariable().GetType() == FNiagaraTypeDefinition::GetVec4Def() ||
 							(Binding.GetParamMapBindableVariable().GetType().IsDataInterface() && Binding.NiagaraChildVariable.GetType() == FNiagaraTypeDefinition::GetVec4Def()))
 						{
@@ -541,10 +554,10 @@ void FNiagaraRenderer::ProcessMaterialParameterBindings(const FNiagaraRendererMa
 						{
 							FNiagaraPosition Var(ForceInitToZero);
 							InEmitter->GetBoundRendererValue_GT(Binding.GetParamMapBindableVariable(), Binding.NiagaraChildVariable, &Var);
-							FNiagaraLWCConverter LwcConverter = SystemInstance->GetLWCConverter(InEmitter->GetCachedEmitterData() ? InEmitter->GetCachedEmitterData()->bLocalSpace : false);
-							FVector WorldPos = LwcConverter.ConvertSimulationPositionToWorld(Var);
+							const FNiagaraLWCConverter LwcConverter = SystemInstance->GetLWCConverter(false);
+							const FVector WorldPos = LwcConverter.ConvertSimulationPositionToWorld(Var);
 
-							//TODO: should we use SetDoubleVectorParamValue() instead to prevent accuracy loss? 
+							MatDyn->SetDoubleVectorParameterValue(Binding.MaterialParameterName, WorldPos);
 							MatDyn->SetVectorParameterValue(Binding.MaterialParameterName, WorldPos);
 						}
 						else if (Binding.GetParamMapBindableVariable().GetType() == FNiagaraTypeDefinition::GetVec2Def() ||
@@ -638,14 +651,14 @@ void FNiagaraRenderer::SortIndices(const FNiagaraGPUSortInfo& SortInfo, const FN
 			{
 				for (uint32 i = 0; i < NumInstances; ++i)
 				{
-					ParticleOrder[i].SetAsUint<true, false>(i, FVector::DotProduct(GetPos(i) - SortInfo.ViewOrigin, SortInfo.ViewDirection));
+					ParticleOrder[i].SetAsUint<true, false>(i, float(FVector::DotProduct(GetPos(i) - SortInfo.ViewOrigin, SortInfo.ViewDirection)));
 				}
 			}
 			else
 			{
 				for (uint32 i = 0; i < NumInstances; ++i)
 				{
-					ParticleOrder[i].SetAsUint<true, false>(i, (GetPos(i) - SortInfo.ViewOrigin).SizeSquared());
+					ParticleOrder[i].SetAsUint<true, false>(i, float((GetPos(i) - SortInfo.ViewOrigin).SizeSquared()));
 				}
 			}
 		}
@@ -664,14 +677,14 @@ void FNiagaraRenderer::SortIndices(const FNiagaraGPUSortInfo& SortInfo, const FN
 			{
 				for (uint32 i = 0; i < NumInstances; ++i)
 				{
-					ParticleOrder[i].SetAsUint<true, false>(i, FVector::DotProduct(GetPos(i) - SortInfo.ViewOrigin, SortInfo.ViewDirection));
+					ParticleOrder[i].SetAsUint<true, false>(i, float(FVector::DotProduct(GetPos(i) - SortInfo.ViewOrigin, SortInfo.ViewDirection)));
 				}
 			}
 			else
 			{
 				for (uint32 i = 0; i < NumInstances; ++i)
 				{
-					ParticleOrder[i].SetAsUint<true, false>(i, (GetPos(i) - SortInfo.ViewOrigin).SizeSquared());
+					ParticleOrder[i].SetAsUint<true, false>(i, float((GetPos(i) - SortInfo.ViewOrigin).SizeSquared()));
 				}
 			}
 		}
@@ -779,7 +792,7 @@ private:
 		{
 			if (IsVisibile(i))
 			{
-				ParticleOrder[OutInstances++].SetAsUint<bStrictlyPositive, bAscending>(i, GetSortKey(i));
+				ParticleOrder[OutInstances++].SetAsUint<bStrictlyPositive, bAscending>(i, float(GetSortKey(i)));
 			}
 		}
 		return OutInstances;

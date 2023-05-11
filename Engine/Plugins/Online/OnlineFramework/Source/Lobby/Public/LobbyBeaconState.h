@@ -2,15 +2,11 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/Class.h"
-#include "Templates/SubclassOf.h"
-#include "Engine/NetSerialization.h"
-#include "Engine/EngineTypes.h"
+#include "Net/Serialization/FastArraySerializer.h"
 #include "GameFramework/Info.h"
-#include "LobbyBeaconHost.h"
 #include "LobbyBeaconState.generated.h"
+
+class ALobbyBeaconHost;
 
 class ALobbyBeaconPlayerState;
 class ALobbyBeaconState;
@@ -356,3 +352,8 @@ protected:
 	friend ALobbyBeaconHost;
 	friend FLobbyPlayerStateInfoArray;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "LobbyBeaconHost.h"
+#endif

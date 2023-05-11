@@ -33,9 +33,10 @@ uint2 OutputThreadGroupSize;
 [numthreads(1, 1, 1)]
 void LumenDirectLightingHardwareRayTracingIndirectArgsCS()
 {
-	RWHardwareRayTracingIndirectArgs[0] = (CARD_TILE_SIZE * CARD_TILE_SIZE + OutputThreadGroupSize.x - 1) / OutputThreadGroupSize.x;
-	RWHardwareRayTracingIndirectArgs[1] = (DispatchLightTilesIndirectArgs[0] + OutputThreadGroupSize.y - 1) / OutputThreadGroupSize.y;
-	RWHardwareRayTracingIndirectArgs[2] = 1;
+	WriteDispatchIndirectArgs(RWHardwareRayTracingIndirectArgs, 0,
+		(CARD_TILE_SIZE * CARD_TILE_SIZE + OutputThreadGroupSize.x - 1) / OutputThreadGroupSize.x,
+		(DispatchLightTilesIndirectArgs[0] + OutputThreadGroupSize.y - 1) / OutputThreadGroupSize.y,
+		1);
 }
 
 #if LUMEN_HARDWARE_RAYTRACING || LUMEN_HARDWARE_INLINE_RAYTRACING
@@ -149,14 +150,15 @@ LUMEN_HARDWARE_RAY_TRACING_ENTRY(LumenSceneDirectLightingHardwareRayTracing)
 				#if !ENABLE_HEIGHTFIELD_PROJECTION_BIAS
 				if (Card.bHeightfield)
 				{
-					float3 WorldCameraOrigin = LWCHackToFloat(PrimaryView.WorldCameraOrigin);
-					ReceiverBias = CalculateDistanceBasedHeightfieldBias(HeightfieldShadowReceiverBias, WorldPosition, WorldCameraOrigin);
+					ReceiverBias = CalculateDistanceBasedHeightfieldBias(HeightfieldShadowReceiverBias, TranslatedWorldPosition, PrimaryView.TranslatedWorldCameraOrigin);
 				}
 				#endif
 
-				Ray.Origin = GetCardWorldPositionForShadowing(WorldPosition, L, WorldNormal, HardwareRayTracingShadowRayBias + ReceiverBias) + LWCHackToFloat(PrimaryView.PreViewTranslation); // LUMEN_LWC_TODO
+				Ray.Origin = GetCardWorldPositionForShadowing(TranslatedWorldPosition, L, WorldNormal, HardwareRayTracingShadowRayBias + ReceiverBias);
 				Ray.Direction = L;
 #endif
+				Ray.TMin = 0;
+				Ray.TMax = NearFieldTMax;
 
 				{
 					FRayCone RayCone = (FRayCone)0;
@@ -182,20 +184,12 @@ LUMEN_HARDWARE_RAY_TRACING_ENTRY(LumenSceneDirectLightingHardwareRayTracing)
 
 #if ENABLE_FAR_FIELD_TRACING
 					{
-						// Rebase origin and point-source direction for far-field rays
-						FRayDesc FarFieldRay;
-						FarFieldRay.Origin = TranslatedWorldPosition;
-						FarFieldRay.Direction = Ray.Direction;
-						FarFieldRay.TMin = NearFieldTMax;
-						FarFieldRay.TMax = FarFieldTMax;
-
-						Context.InstanceMask = RAY_TRACING_MASK_FAR_FIELD;
 						Context.bSkipClosestHitShader = true;
 						Context.TranslucentSkipCountMax = 0;
 						Context.FarFieldReferencePos = FarFieldReferencePos;
 						Context.FarFieldMaxTraceDistance = FarFieldTMax;
 						
-						FRayTracedLightingResult RayResult = TraceSurfaceCacheFarFieldRay(FarFieldRay, Context);
+						FRayTracedLightingResult RayResult = TraceSurfaceCacheFarFieldRay(Ray, Context);
 						bRayOccluded = IsRayOccluded(RayResult);
 
 						Context.bSkipClosestHitShader = false;
@@ -227,11 +221,10 @@ LUMEN_HARDWARE_RAY_TRACING_ENTRY(LumenSceneDirectLightingHardwareRayTracing)
 #endif // ENABLE_HEIGHTFIELD_PROJECTION_BIAS
 
 					if (!bRayOccluded)
-					{
-						Ray.TMin = 0;
-						Ray.TMax = NearFieldTMax;
+					{						
 						Context.InstanceMask = RAY_TRACING_MASK_OPAQUE;
 						Context.TranslucentSkipCountMax = MaxTranslucentSkipCount;
+						Context.bSkipClosestHitShader = false;
 
 						FRayTracedLightingResult RayResult = TraceSurfaceCacheRay(Ray, Context);
 						bRayOccluded = IsRayOccluded(RayResult);

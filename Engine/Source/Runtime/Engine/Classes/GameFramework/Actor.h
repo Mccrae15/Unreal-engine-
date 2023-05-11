@@ -2,26 +2,29 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Stats/Stats.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/UObjectBaseUtility.h"
 #include "UObject/Object.h"
 #include "InputCoreTypes.h"
 #include "Templates/SubclassOf.h"
-#include "UObject/CoreNet.h"
 #include "Engine/EngineTypes.h"
 #include "Engine/EngineBaseTypes.h"
 #include "PropertyPairsMap.h"
 #include "Components/ChildActorComponent.h"
 #include "RenderCommandFence.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "Engine/Level.h"
-#include "Net/Core/Misc/NetSubObjectRegistry.h"
 #include "Engine/HitResult.h"
+#include "UObject/CoreNet.h"
+#if WITH_EDITOR
+#include "WorldPartition/DataLayer/ActorDataLayer.h"
+#endif
+#endif
+#include "Net/Core/Misc/NetSubObjectRegistry.h"
 #include "Engine/ReplicatedState.h"
 
 #if WITH_EDITOR
-#include "WorldPartition/DataLayer/ActorDataLayer.h"
 #include "Folder.h"
 #endif
 
@@ -50,6 +53,13 @@ class AWorldDataLayers;
 struct FActorBeginReplicationParams;
 #endif // UE_WITH_IRIS
 class UActorFolder;
+struct FActorDataLayer;
+struct FHitResult;
+
+namespace UE::Net
+{
+	class FTearOffSetter;
+}
 
 // By default, debug and development builds (even cooked) will keep actor labels. Manually define this if you want to make a local build
 // that keep actor labels for Test or Shipping builds.
@@ -67,6 +77,17 @@ enum class EActorUpdateOverlapsMethod : uint8
 	OnlyUpdateMovable,
 	// Never update overlap state on initialization.
 	NeverUpdate
+};
+
+/** Determines how the transform being passed into actor spawning methods interact with the actor's default root component */
+UENUM(BlueprintType)
+enum class ESpawnActorScaleMethod : uint8
+{
+	/** Ignore the default scale in the actor's root component and hard-set it to the value of SpawnTransform Parameter */
+	OverrideRootScale						UMETA(DisplayName = "Override Root Component Scale"),
+	/** Multiply value of the SpawnTransform Parameter with the default scale in the actor's root component */
+	MultiplyWithRoot						UMETA(DisplayName = "Multiply Scale With Root Component Scale"),
+	SelectDefaultAtRuntime					UMETA(Hidden),
 };
 
 #if WITH_EDITORONLY_DATA
@@ -89,7 +110,7 @@ ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogActor, Log, Warning);
 // Delegate signatures
 DECLARE_DYNAMIC_MULTICAST_SPARSE_DELEGATE_FiveParams( FTakeAnyDamageSignature, AActor, OnTakeAnyDamage, AActor*, DamagedActor, float, Damage, const class UDamageType*, DamageType, class AController*, InstigatedBy, AActor*, DamageCauser );
 DECLARE_DYNAMIC_MULTICAST_SPARSE_DELEGATE_NineParams( FTakePointDamageSignature, AActor, OnTakePointDamage, AActor*, DamagedActor, float, Damage, class AController*, InstigatedBy, FVector, HitLocation, class UPrimitiveComponent*, FHitComponent, FName, BoneName, FVector, ShotFromDirection, const class UDamageType*, DamageType, AActor*, DamageCauser );
-DECLARE_DYNAMIC_MULTICAST_SPARSE_DELEGATE_SevenParams( FTakeRadialDamageSignature, AActor, OnTakeRadialDamage, AActor*, DamagedActor, float, Damage, const class UDamageType*, DamageType, FVector, Origin, FHitResult, HitInfo, class AController*, InstigatedBy, AActor*, DamageCauser );
+DECLARE_DYNAMIC_MULTICAST_SPARSE_DELEGATE_SevenParams( FTakeRadialDamageSignature, AActor, OnTakeRadialDamage, AActor*, DamagedActor, float, Damage, const class UDamageType*, DamageType, FVector, Origin, const FHitResult&, HitInfo, class AController*, InstigatedBy, AActor*, DamageCauser );
 DECLARE_DYNAMIC_MULTICAST_SPARSE_DELEGATE_TwoParams( FActorBeginOverlapSignature, AActor, OnActorBeginOverlap, AActor*, OverlappedActor, AActor*, OtherActor );
 DECLARE_DYNAMIC_MULTICAST_SPARSE_DELEGATE_TwoParams( FActorEndOverlapSignature, AActor, OnActorEndOverlap, AActor*, OverlappedActor, AActor*, OtherActor );
 DECLARE_DYNAMIC_MULTICAST_SPARSE_DELEGATE_FourParams( FActorHitSignature, AActor, OnActorHit, AActor*, SelfActor, AActor*, OtherActor, FVector, NormalImpulse, const FHitResult&, Hit );
@@ -244,6 +265,8 @@ private:
 
 	UPROPERTY(Replicated)
 	uint8 bTearOff:1;
+
+	friend class UE::Net::FTearOffSetter;
 
 	/** When set, indicates that external guarantees ensure that this actor's name is deterministic between server and client, and as such can be addressed by its full path */
 	UPROPERTY()
@@ -1150,6 +1173,13 @@ public:
 	virtual void EnableInput(class APlayerController* PlayerController);
 
 	/** 
+	 * Creates an input component from the input component passed in
+	 * @param InputComponentToCreate The UInputComponent to create.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Input")
+	virtual void CreateInputComponent(TSubclassOf<UInputComponent> InputComponentToCreate);
+
+	/** 
 	 * Removes this actor from the stack of input being handled by a PlayerController.
 	 * @param PlayerController The PlayerController whose input events we no longer want to receive. If null, this actor will stop receiving input from all PlayerControllers.
 	 */
@@ -1681,17 +1711,19 @@ public:
 	 * @param RotationRule				How to handle rotation when attaching.
 	 * @param ScaleRule					How to handle scale when attaching.
 	 * @param bWeldSimulatedBodies		Whether to weld together simulated physics bodies.
+	 * @return							Whether the attachment was successful or not
 	 */
 	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Attach Actor To Component", ScriptName = "AttachToComponent", bWeldSimulatedBodies = true), Category = "Transformation")
-	void K2_AttachToComponent(USceneComponent* Parent, FName SocketName, EAttachmentRule LocationRule, EAttachmentRule RotationRule, EAttachmentRule ScaleRule, bool bWeldSimulatedBodies);
+	bool K2_AttachToComponent(USceneComponent* Parent, FName SocketName, EAttachmentRule LocationRule, EAttachmentRule RotationRule, EAttachmentRule ScaleRule, bool bWeldSimulatedBodies);
 
 	/**
 	 * Attaches the RootComponent of this Actor to the supplied component, optionally at a named socket. It is not valid to call this on components that are not Registered.
 	 * @param  Parent					Parent to attach to.
 	 * @param  AttachmentRules			How to handle transforms and welding when attaching.
 	 * @param  SocketName				Optional socket to attach to on the parent.
+	 * @return							Whether the attachment was successful or not
 	 */
-	void AttachToComponent(USceneComponent* Parent, const FAttachmentTransformRules& AttachmentRules, FName SocketName = NAME_None);
+	bool AttachToComponent(USceneComponent* Parent, const FAttachmentTransformRules& AttachmentRules, FName SocketName = NAME_None);
 
 	/** DEPRECATED - Use AttachToActor() instead */
 	UE_DEPRECATED(4.17, "Use AttachToActor() instead.")
@@ -1703,8 +1735,9 @@ public:
 	 * @param ParentActor				Actor to attach this actor's RootComponent to
 	 * @param AttachmentRules			How to handle transforms and modification when attaching.
 	 * @param SocketName				Socket name to attach to, if any
+	 * @return							Whether the attachment was successful or not
 	 */
-	void AttachToActor(AActor* ParentActor, const FAttachmentTransformRules& AttachmentRules, FName SocketName = NAME_None);
+	bool AttachToActor(AActor* ParentActor, const FAttachmentTransformRules& AttachmentRules, FName SocketName = NAME_None);
 
 	/**
 	 * Attaches the RootComponent of this Actor to the supplied actor, optionally at a named socket.
@@ -1714,9 +1747,10 @@ public:
 	 * @param RotationRule				How to handle rotation when attaching.
 	 * @param ScaleRule					How to handle scale when attaching.
 	 * @param bWeldSimulatedBodies		Whether to weld together simulated physics bodies.
+	 * @return							Whether the attachment was successful or not
 	 */
 	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Attach Actor To Actor", ScriptName = "AttachToActor", bWeldSimulatedBodies=true), Category = "Transformation")
-	void K2_AttachToActor(AActor* ParentActor, FName SocketName, EAttachmentRule LocationRule, EAttachmentRule RotationRule, EAttachmentRule ScaleRule, bool bWeldSimulatedBodies);
+	bool K2_AttachToActor(AActor* ParentActor, FName SocketName, EAttachmentRule LocationRule, EAttachmentRule RotationRule, EAttachmentRule ScaleRule, bool bWeldSimulatedBodies);
 
 	/** DEPRECATED - Use DetachFromActor() instead */
 	UE_DEPRECATED(4.17, "Use DetachFromActor() instead")
@@ -2266,10 +2300,7 @@ public:
 	virtual bool SupportsLayers() const;
 
 	/** Returns if level should keep a reference to the external actor for PIE (used for always loaded actors). */
-	bool IsForceExternalActorLevelReferenceForPIE() const
-	{
-		return bForceExternalActorLevelReferenceForPIE;
-	}
+	bool IsForceExternalActorLevelReferenceForPIE() const;
 
 	void SetForceExternalActorLevelReferenceForPIE(bool bValue)
 	{
@@ -2280,7 +2311,7 @@ public:
 	}
 
 	/** Returns true if this actor is spatially loaded. */
-	bool GetIsSpatiallyLoaded() const { return bIsSpatiallyLoaded; }
+	bool GetIsSpatiallyLoaded() const;
 	
 	/** Set if this actor should be spatially loaded or not. */
 	void SetIsSpatiallyLoaded(bool bInIsSpatiallyLoaded)
@@ -2293,7 +2324,7 @@ public:
 	}
 
 	/** Returns true if this actor allows changing the spatially loaded flag.  */
-	virtual bool CanChangeIsSpatiallyLoadedFlag() const { return true; }
+	virtual bool CanChangeIsSpatiallyLoadedFlag() const;
 
 	/** Gets the property name for bIsSpatiallyLoaded. */
 	static const FName GetIsSpatiallyLoadedPropertyName() { return GET_MEMBER_NAME_CHECKED(AActor, bIsSpatiallyLoaded); }
@@ -2329,7 +2360,11 @@ public:
 	virtual bool ShouldExport() { return true; }
 
 	/** Called before editor paste, true allow import */
-	virtual bool ShouldImport(FString* ActorPropString, bool IsMovingLevel) { return true; }
+	UE_DEPRECATED(5.2, "Use the override that takes a StringView instead")
+	virtual bool ShouldImport(FString* ActorPropString, bool IsMovingLevel) { return ActorPropString ? ShouldImport(FStringView(*ActorPropString), IsMovingLevel) : ShouldImport(FStringView(), IsMovingLevel); }
+
+	/** Called before editor paste, true allow import */
+	virtual bool ShouldImport(FStringView ActorPropString, bool IsMovingLevel) { return true; }
 
 	/** Called by InputKey when an unhandled key is pressed with a selected actor */
 	virtual void EditorKeyPressed(FKey Key, EInputEvent Event) {}
@@ -2728,10 +2763,10 @@ public:
 	virtual bool IsRelevancyOwnerFor(const AActor* ReplicatedActor, const AActor* ActorOwner, const AActor* ConnectionActor) const;
 
 	/** Called after the actor is spawned in the world.  Responsible for setting up actor for play. */
-	void PostSpawnInitialize(FTransform const& SpawnTransform, AActor* InOwner, APawn* InInstigator, bool bRemoteOwned, bool bNoFail, bool bDeferConstruction);
+	void PostSpawnInitialize(FTransform const& SpawnTransform, AActor* InOwner, APawn* InInstigator, bool bRemoteOwned, bool bNoFail, bool bDeferConstruction, ESpawnActorScaleMethod TransformScaleMethod = ESpawnActorScaleMethod::MultiplyWithRoot);
 
 	/** Called to finish the spawning process, generally in the case of deferred spawning */
-	void FinishSpawning(const FTransform& Transform, bool bIsDefaultTransform = false, const FComponentInstanceDataCache* InstanceDataCache = nullptr);
+	void FinishSpawning(const FTransform& Transform, bool bIsDefaultTransform = false, const FComponentInstanceDataCache* InstanceDataCache = nullptr, ESpawnActorScaleMethod TransformScaleMethod = ESpawnActorScaleMethod::OverrideRootScale);
 
 	/** Called after the actor has run its construction. Responsible for finishing the actor spawn process. */
 	void PostActorConstruction();
@@ -3041,7 +3076,7 @@ public:
 	 *
 	 * @return Returns false if the hierarchy was not error free and we've put the Actor is disaster recovery mode
 	 */
-	bool ExecuteConstruction(const FTransform& Transform, const struct FRotationConversionCache* TransformRotationCache, const class FComponentInstanceDataCache* InstanceDataCache, bool bIsDefaultTransform = false);
+	bool ExecuteConstruction(const FTransform& Transform, const struct FRotationConversionCache* TransformRotationCache, const class FComponentInstanceDataCache* InstanceDataCache, bool bIsDefaultTransform = false, ESpawnActorScaleMethod TransformScaleMethod = ESpawnActorScaleMethod::OverrideRootScale);
 
 	/**
 	 * Called when an instance of this class is placed (in editor) or spawned.
@@ -3280,7 +3315,7 @@ public:
 	 * @return Whether this actor was recently rendered.
 	 */
 	UFUNCTION(Category="Rendering", BlueprintCallable, meta=(DisplayName="Was Actor Recently Rendered", Keywords="scene visible"))
-	bool WasRecentlyRendered(float Tolerance = 0.2) const;
+	bool WasRecentlyRendered(float Tolerance = 0.2f) const;
 
 	/** Returns the most recent time any of this actor's components were rendered */
 	virtual float GetLastRenderTime() const;
@@ -3360,6 +3395,13 @@ public:
 	/** Searches components array and returns first encountered component of the specified class */
 	UFUNCTION(BlueprintCallable, Category = "Actor", meta = (ComponentClass = "/Script/Engine.ActorComponent"), meta = (DeterminesOutputType = "ComponentClass"))
 	UActorComponent* GetComponentByClass(TSubclassOf<UActorComponent> ComponentClass) const;
+
+	/** Templated version of GetComponentByClass */
+	template<class T>
+	T* GetComponentByClass() const
+	{
+		return FindComponentByClass<T>();
+	}
 
 	/**
 	 * Gets all the components that inherit from the given class.
@@ -3698,10 +3740,32 @@ public:
 	void AddReplicatedSubObject(UObject* SubObject, ELifetimeCondition NetCondition = COND_None);
 
 	/**
-	* Unregister a SubObject so it stops being replicated.
+	* Unregister a SubObject to stop replicating it's properties to clients.
+	* This does not remove or delete it from connections where it was already replicated.
+	* By default a replicated subobject gets deleted on clients when the original pointer on the authority becomes invalid.
+	* If you want to immediately remove it from client use the DestroyReplicatedSubObjectOnRemotePeers or TearOffReplicatedSubObject functions instead of this one.
 	* @param SubObject The SubObject to remove
 	*/
 	void RemoveReplicatedSubObject(UObject* SubObject);
+
+	/**
+	* Stop replicating a subobject and tell actor channels to delete the replica of this subobject next time the Actor gets replicated.
+	* Note it is up to the caller to delete the local object on the authority.
+	* If you are using the legacy subobject replication method (ReplicateSubObjects() aka bReplicateUsingRegisteredSubObjectList=false) make sure the
+	* subobject doesn't get replicated there either.
+	* @param SubObject THe SubObject to delete
+	*/
+	void DestroyReplicatedSubObjectOnRemotePeers(UObject* SubObject);
+
+	/**
+	* Stop replicating a subobject and tell actor channels who spawned a replica of this subobject to release ownership over it.
+	* This means that on the remote connection the network engine will stop holding a reference to the subobject and it's up to other systems 
+	* to keep that reference active or the subobject will get garbage collected.
+	* If you are using the legacy subobject replication method (ReplicateSubObjects() aka bReplicateUsingRegisteredSubObjectList=false) make sure the
+	* subobject doesn't get replicated there either.
+	* @param SubObject The SubObject to tear off
+	*/
+	void TearOffReplicatedSubObjectOnRemotePeers(UObject* SubObject);
 
 	/**
 	* Register a SubObject that will get replicated along with the actor component owning it.
@@ -4341,3 +4405,7 @@ DEFINE_ACTORDESC_TYPE(AActor, FWorldPartitionActorDesc);
 	void SetActorRelativeRotation(FRotator NewRelativeRotation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None) { Super::SetActorRelativeRotation(NewRelativeRotation, bSweep, OutSweepHitResult, Teleport); } \
 	void SetActorRelativeRotation(const FQuat& NewRelativeRotation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None) { Super::SetActorRelativeRotation(NewRelativeRotation, bSweep, OutSweepHitResult, Teleport); } \
 	void SetActorRelativeTransform(const FTransform& NewRelativeTransform, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None) { Super::SetActorRelativeTransform(NewRelativeTransform, bSweep, OutSweepHitResult, Teleport); }
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

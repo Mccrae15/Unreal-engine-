@@ -1,9 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Drawing/BasicPointSetComponent.h"
+#include "Async/ParallelFor.h"
+#include "Engine/CollisionProfile.h"
 #include "PrimitiveSceneProxy.h"
+#include "MaterialDomain.h"
 #include "Materials/Material.h"
 #include "DynamicMeshBuilder.h"
+#include "SceneInterface.h"
 #include "StaticMeshResources.h"
 
 

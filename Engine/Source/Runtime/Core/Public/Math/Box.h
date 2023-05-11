@@ -19,6 +19,8 @@
 namespace UE {
 namespace Math {
 
+struct TBoxConstInit {};
+
 template<typename T>
 struct TBox
 {
@@ -49,25 +51,26 @@ public:
 		Init();
 	}
 
+	constexpr TBox(EForceInit, TBoxConstInit)
+		: Min(0, TVectorConstInit{}), Max(0, TVectorConstInit{}), IsValid(0)
+	{
+	}
+
 	/**
 	 * Creates and initializes a new box from the specified extents.
 	 *
 	 * @param InMin The box's minimum point.
 	 * @param InMax The box's maximum point.
 	 */
-	TBox( const TVector<T>& InMin, const TVector<T>& InMax )
-		: Min(InMin)
-		, Max(InMax)
-		, IsValid(1)
-	{ }
-
-	// double box taking float params
-	template<typename FArg, TEMPLATE_REQUIRES(TAnd<TIsSame<T, double>, TIsSame<FArg, float>>::Value)>
+	template<typename FArg>
 	TBox(const TVector<FArg>& InMin, const TVector<FArg>& InMax)
 		: Min(InMin)
 		, Max(InMax)
 		, IsValid(1)
-	{ }
+	{
+		// Intended to catch TBox<float>(TVector<double>(), TVector<double>())
+		static_assert(sizeof(FArg) <= sizeof(T), "Losing precision when constructing a box of floats from vectors of doubles");
+	}
 
 	TBox(const TVector4<T>& InMin, const TVector4<T>& InMax)
 		: Min(InMin)
@@ -97,7 +100,7 @@ public:
 	TBox(const TArray<TVector<T>>& Points) : TBox<T>(&Points[0], Points.Num()) {};
 
 	// Conversion from other type.
-	template<typename FArg, TEMPLATE_REQUIRES(!TIsSame<T, FArg>::Value)>
+	template<typename FArg, TEMPLATE_REQUIRES(!std::is_same_v<T, FArg>)>
 	explicit TBox(const TBox<FArg>& From) : TBox<T>(TVector<T>(From.Min), TVector<T>(From.Max)) {}
 
 public:

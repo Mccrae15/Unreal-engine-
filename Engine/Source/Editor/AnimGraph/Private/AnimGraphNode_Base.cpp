@@ -7,6 +7,7 @@
 #include "AnimationGraphSchema.h"
 #include "BlueprintNodeSpawner.h"
 #include "BlueprintActionDatabaseRegistrar.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "AnimBlueprintNodeOptionalPinManager.h"
 #include "IAnimNodeEditMode.h"
 #include "AnimNodeEditModes.h"
@@ -32,7 +33,9 @@
 #include "Algo/Accumulate.h"
 #include "Fonts/FontMeasure.h"
 #include "UObject/ReleaseObjectVersion.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SSpacer.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/SOverlay.h"
@@ -721,18 +724,15 @@ FAnimNode_Base* UAnimGraphNode_Base::FindDebugAnimNode(USkeletalMeshComponent* I
 			{
 				return nullptr;
 			}
-			
-			FAnimBlueprintDebugData& DebugData = AnimBlueprintClass->GetAnimBlueprintDebugData();
-			int32* IndexPtr = DebugData.NodePropertyToIndexMap.Find(this);
-			if (!IndexPtr)
+
+			// Search for the node by GUID, since we can have multiple instantiations of this node, and therefore
+			// different pointers from ourselves even though they represent the same node in the graph.
+			const int32 AnimNodeIndex = AnimBlueprintClass->GetNodeIndexFromGuid(NodeGuid, EPropertySearchMode::Hierarchy);
+			if (AnimNodeIndex == INDEX_NONE)
 			{
 				return nullptr;
 			}
 			
-			int32 AnimNodeIndex = *IndexPtr;
-			// reverse node index temporarily because of a bug in NodeGuidToIndexMap
-			AnimNodeIndex = AnimBlueprintClass->GetAnimNodeProperties().Num() - AnimNodeIndex - 1;
-
 			return AnimBlueprintClass->GetAnimNodeProperties()[AnimNodeIndex]->ContainerPtrToValuePtr<FAnimNode_Base>(InAnimInstance);
 		};
 	

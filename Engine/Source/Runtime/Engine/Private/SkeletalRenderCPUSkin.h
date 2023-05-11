@@ -9,6 +9,7 @@
 #include "CoreMinimal.h"
 #include "ProfilingDebugging/ResourceSize.h"
 #include "RenderResource.h"
+#include "RayTracingGeometry.h"
 #include "LocalVertexFactory.h"
 #include "Components/SkinnedMeshComponent.h"
 #include "SkeletalRenderPublic.h"
@@ -81,6 +82,7 @@ public:
  	}
 
 	/** Update Simulated Positions & Normals from Clothing actor */
+	UE_DEPRECATED(5.2, "Use USkinnedMeshComponent::GetUpdateClothSimulationData_AnyThread() instead.")
 	bool UpdateClothSimulationData(USkinnedMeshComponent* InMeshComponent);
 };
 

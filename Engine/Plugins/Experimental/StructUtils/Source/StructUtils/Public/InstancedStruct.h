@@ -18,7 +18,7 @@ struct FConstSharedStruct;
  *	UPROPERTY(EditAnywhere, Category = Foo, meta = (BaseStruct = "/Script/ModuleName.TestStructBase"))
  *	TArray<FInstancedStruct> TestArray;
  */
-USTRUCT(BlueprintType)
+USTRUCT(BlueprintType, meta = (HasNativeMake = "/Script/StructUtils.StructUtilsFunctionLibrary.MakeInstancedStruct"))
 struct STRUCTUTILS_API FInstancedStruct
 {
 	GENERATED_BODY()
@@ -29,7 +29,11 @@ public:
 
 	explicit FInstancedStruct(const UScriptStruct* InScriptStruct);
 
-	FInstancedStruct(const FConstStructView InOther);
+	/**
+	 * This constructor is explicit to avoid accidentally converting struct views to instanced structs (which would result in costly copy of the struct to be made).
+	 * Implicit conversion could happen e.g. when comparing FInstancedStruct to FConstStructView.
+	 */
+	explicit FInstancedStruct(const FConstStructView InOther);
 
 	FInstancedStruct(const FInstancedStruct& InOther)
 	{
@@ -64,7 +68,7 @@ public:
 		{
 			Reset();
 
-			SetStructData(InOther.GetScriptStruct(), InOther.GetMemory());
+			SetStructData(InOther.GetScriptStruct(), InOther.GetMutableMemory());
 			InOther.SetStructData(nullptr,nullptr);
 		}
 		return *this;
@@ -145,6 +149,7 @@ public:
 	bool ImportTextItem(const TCHAR*& Buffer, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText, FArchive* InSerializingArchive = nullptr);
 	bool SerializeFromMismatchedTag(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot);
 	void GetPreloadDependencies(TArray<UObject*>& OutDeps);
+	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess);
 
 	/** Returns struct type. */
 	const UScriptStruct* GetScriptStruct() const
@@ -186,16 +191,15 @@ public:
 		return nullptr;
 	}
 
-	/** Returns a mutable pointer to struct memory. This const_cast here is safe as a ClassName can only be setup from mutable non const memory. */
-	uint8* GetMutableMemory() const
+	/** Returns a mutable pointer to struct memory. */
+	uint8* GetMutableMemory()
 	{
-		const uint8* Memory = GetMemory();
-		return const_cast<uint8*>(Memory);
+		return StructMemory;
 	}
 
 	/** Returns mutable reference to the struct, this getter assumes that all data is valid. */
 	template<typename T>
-	T& GetMutable() const
+	T& GetMutable()
 	{
 		uint8* Memory = GetMutableMemory();
 		const UScriptStruct* Struct = GetScriptStruct();
@@ -207,7 +211,7 @@ public:
 
 	/** Returns mutable pointer to the struct, or nullptr if cast is not valid. */
 	template<typename T>
-	T* GetMutablePtr() const
+	T* GetMutablePtr()
 	{
 		uint8* Memory = GetMutableMemory();
 		const UScriptStruct* Struct = GetScriptStruct();
@@ -235,35 +239,9 @@ public:
 		return !Identical(&Other, PPF_None);
 	}
 
-	/** Comparison operators. Note: it does not compare the internal structure itself*/
-	template <typename OtherType>
-	bool operator==(const OtherType& Other) const
-	{
-		if ((GetScriptStruct() != Other.GetScriptStruct()) || (GetMemory() != Other.GetMemory()))
-		{
-			return false;
-		}
-		return true;
-	}
-
-	template <typename OtherType>
-	bool operator!=(const OtherType& Other) const
-	{
-		return !operator==(Other);
-	}
-
 protected:
 
-	void DestroyScriptStruct() const
-	{
-		check(StructMemory != nullptr);
-		if (ScriptStruct != nullptr)
-		{
-			ScriptStruct->DestroyStruct(GetMutableMemory());
-		}
-	}
-
-	FInstancedStruct(const UScriptStruct* InScriptStruct, const uint8* InStructMemory)
+	FInstancedStruct(const UScriptStruct* InScriptStruct, uint8* InStructMemory)
 		: ScriptStruct(InScriptStruct)
 		, StructMemory(InStructMemory)
 	{}
@@ -272,15 +250,14 @@ protected:
 		StructMemory = nullptr;
 		ScriptStruct = nullptr;
 	}
-	void SetStructData(const UScriptStruct* InScriptStruct, const uint8* InStructMemory)
+	void SetStructData(const UScriptStruct* InScriptStruct, uint8* InStructMemory)
 	{
 		ScriptStruct = InScriptStruct;
 		StructMemory = InStructMemory;
 	}
 
-
 	const UScriptStruct* ScriptStruct = nullptr;
-	const uint8* StructMemory = nullptr;
+	uint8* StructMemory = nullptr;
 };
 
 template<>
@@ -295,5 +272,13 @@ struct TStructOpsTypeTraits<FInstancedStruct> : public TStructOpsTypeTraitsBase2
 		WithAddStructReferencedObjects = true,
 		WithStructuredSerializeFromMismatchedTag = true,
 		WithGetPreloadDependencies = true,
+		WithNetSerializer = true,
 	};
 };
+
+#if WITH_EDITORONLY_DATA
+namespace UE::StructUtils::Private
+{
+void RegisterInstancedStructForLocalization();
+}
+#endif // WITH_EDITORONLY_DATA

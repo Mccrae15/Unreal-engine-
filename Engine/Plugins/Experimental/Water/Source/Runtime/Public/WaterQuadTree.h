@@ -3,7 +3,9 @@
 #pragma once
 
 #include "ConvexVolume.h"
-#include "Templates/RefCounting.h"
+#include "HitProxies.h"
+#include "Math/Box.h"
+#include "Math/Box2D.h"
 
 class FMaterialRenderProxy;
 class UMaterialInterface;

@@ -81,7 +81,7 @@ FUObjectArray::FUObjectArray()
 : ObjFirstGCIndex(0)
 , ObjLastNonGCIndex(INDEX_NONE)
 , MaxObjectsNotConsideredByGC(0)
-, OpenForDisregardForGC(!HACK_HEADER_GENERATOR)
+, OpenForDisregardForGC(true)
 , PrimarySerialNumber(START_SERIAL_NUMBER)
 {
 	GCoreObjectArrayForDebugVisualizers = &GUObjectArray.ObjObjects;
@@ -186,15 +186,19 @@ void FUObjectArray::DisableDisregardForGC()
 	}
 }
 
-void FUObjectArray::AllocateUObjectIndex(UObjectBase* Object, bool bMergingThreads /*= false*/)
+void FUObjectArray::AllocateUObjectIndex(UObjectBase* Object, int32 AlreadyAllocatedIndex, int32 SerialNumber)
 {
 	int32 Index = INDEX_NONE;
-	check(Object->InternalIndex == INDEX_NONE || bMergingThreads);
+	check(Object->InternalIndex == INDEX_NONE);
 
 	LockInternalArray();
 
+	if (AlreadyAllocatedIndex >= 0)
+	{
+		Index = AlreadyAllocatedIndex;
+	}
 	// Special non- garbage collectable range.
-	if (OpenForDisregardForGC && DisregardForGCEnabled())
+	else if (OpenForDisregardForGC && DisregardForGCEnabled())
 	{
 		Index = ++ObjLastNonGCIndex;
 		// Check if we're not out of bounds, unless there hasn't been any gc objects yet
@@ -229,10 +233,11 @@ void FUObjectArray::AllocateUObjectIndex(UObjectBase* Object, bool bMergingThrea
 	// Add to global table.
 	FUObjectItem* ObjectItem = IndexToObject(Index);
 	UE_CLOG(ObjectItem->Object != nullptr, LogUObjectArray, Fatal, TEXT("Attempting to add %s at index %d but another object (0x%016llx) exists at that index!"), *Object->GetFName().ToString(), Index, (int64)(PTRINT)ObjectItem->Object);
-	ObjectItem->ResetSerialNumberAndFlags();
+	ObjectItem->Object = Object;
 	// At this point all not-compiled-in objects are not fully constructed yet and this is the earliest we can mark them as such
-	ObjectItem->SetFlags(EInternalObjectFlags::PendingConstruction);
-	ObjectItem->Object = Object;		
+	ObjectItem->Flags = (int32)EInternalObjectFlags::PendingConstruction;
+	ObjectItem->ClusterRootIndex = 0;
+	ObjectItem->SerialNumber = SerialNumber;
 	Object->InternalIndex = Index;
 
 	UnlockInternalArray();
@@ -292,11 +297,13 @@ void FUObjectArray::FreeUObjectIndex(UObjectBase* Object)
 	FUObjectItem* ObjectItem = IndexToObject(Index);
 	UE_CLOG(ObjectItem->Object != Object, LogUObjectArray, Fatal, TEXT("Removing object (0x%016llx) at index %d but the index points to a different object (0x%016llx)!"), (int64)(PTRINT)Object, Index, (int64)(PTRINT)ObjectItem->Object);
 	ObjectItem->Object = nullptr;
-	ObjectItem->ResetSerialNumberAndFlags();
+	ObjectItem->Flags = 0;
+	ObjectItem->ClusterRootIndex = 0;
+	ObjectItem->SerialNumber = 0;
 
 	// You cannot safely recycle indicies in the non-GC range
 	// No point in filling this list when doing exit purge. Nothing should be allocated afterwards anyway.
-	if (Index > ObjLastNonGCIndex && !GExitPurge)  
+	if (Index > ObjLastNonGCIndex && !GExitPurge && bShouldRecycleObjectIndices)
 	{
 		ObjAvailableList.Add(Index);
 #if UE_GC_TRACK_OBJ_AVAILABLE

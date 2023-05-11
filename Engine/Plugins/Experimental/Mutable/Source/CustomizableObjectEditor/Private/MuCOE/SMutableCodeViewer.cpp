@@ -2,33 +2,12 @@
 
 #include "MuCOE/SMutableCodeViewer.h"
 
-#include "Containers/StringConv.h"
-#include "CoreGlobals.h"
 #include "DesktopPlatformModule.h"
 #include "EditorDirectories.h"
-#include "Framework/Application/SlateApplication.h"
-#include "Framework/Commands/UIAction.h"
-#include "Framework/Commands/UICommandInfo.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Framework/MultiBox/MultiBoxDefs.h"
-#include "Framework/Text/TextLayout.h"
-#include "Framework/Views/ITypedTableView.h"
-#include "HAL/PlatformCrt.h"
-#include "HAL/UnrealMemory.h"
+#include "Framework/Views/TableViewMetadata.h"
 #include "IDesktopPlatform.h"
-#include "Internationalization/Internationalization.h"
-#include "Internationalization/Text.h"
-#include "Layout/BasicLayoutWidgetSlot.h"
-#include "Layout/Children.h"
-#include "Layout/Margin.h"
-#include "Logging/LogCategory.h"
-#include "Logging/LogMacros.h"
-#include "Math/Color.h"
-#include "Math/IntPoint.h"
-#include "Math/UnrealMathSSE.h"
-#include "Math/Vector2D.h"
-#include "Misc/AssertionMacros.h"
-#include "Misc/Attribute.h"
+#include "Misc/Paths.h"
 #include "MuCO/CustomizableObject.h"
 #include "MuCOE/SMutableBoolViewer.h"
 #include "MuCOE/SMutableColorPreviewBox.h"
@@ -44,51 +23,26 @@
 #include "MuCOE/SMutableScalarViewer.h"
 #include "MuCOE/SMutableSkeletonViewer.h"
 #include "MuCOE/SMutableStringViewer.h"
-#include "MuR/Mesh.h"
-#include "MuR/ModelPrivate.h"
-#include "MuR/MutableString.h"
-#include "MuR/Ptr.h"
-#include "MuR/RefCounted.h"
-#include "MuR/Serialisation.h"
-#include "MuR/Settings.h"
 #include "MuR/SystemPrivate.h"
 #include "MuT/ErrorLogPrivate.h"
 #include "MuT/Streams.h"
 #include "MuT/Table.h"
-#include "SlotBase.h"
-#include "Styling/AppStyle.h"
-#include "Styling/CoreStyle.h"
-#include "Styling/ISlateStyle.h"
-#include "Styling/SlateColor.h"
-#include "Templates/UnrealTemplate.h"
-#include "Textures/SlateIcon.h"
-#include "Trace/Detail/Channel.h"
-#include "UObject/NameTypes.h"
-#include "UObject/UnrealNames.h"
-#include "Widgets/Images/SImage.h"
+#include "MuT/TypeInfo.h"
+#include "Widgets/Colors/SColorBlock.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SNumericEntryBox.h"
-#include "Widgets/Input/STextComboBox.h"
-#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Input/SComboBox.h"
 #include "Widgets/Layout/SScrollBox.h"
-#include "Widgets/Layout/SSplitter.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/SNullWidget.h"
-#include "Widgets/SOverlay.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Views/ITableRow.h"
-#include "Widgets/Views/SExpanderArrow.h"
-#include "Widgets/Views/SHeaderRow.h"
-#include "Widgets/Views/STableRow.h"
 #include "Widgets/Views/STreeView.h"
+#include "Widgets/SNullWidget.h"
 
 class FExtender;
 class FReferenceCollector;
 class FUICommandList;
 class SWidget;
 namespace mu { struct Curve; }
-namespace mu { struct PROJECTOR; }
-namespace mu { struct SHAPE; }
+namespace mu { struct FProjector; }
+namespace mu { struct FShape; }
 struct FGeometry;
 struct FSlateBrush;
 
@@ -99,7 +53,7 @@ struct FSlateBrush;
 namespace MutableCodeTreeViewColumns
 {
 	static const FName OperationsColumnID("Operations");
-	static const FName AdditionalDataColumnID("Additional Data");
+	static const FName AdditionalDataColumnID("Flags");
 };
 
 /**
@@ -120,18 +74,160 @@ public:
 		);
 	}
 
+	FLinearColor OnGetExtraDataBoxColor() const
+	{
+		if (RowItem->bIsDynamicResource)
+		{
+			return DynamicResourceBoxColor;
+		}
+		else if (RowItem->bIsStateConstant)
+		{
+			return StateConstantBoxColor;
+		}
+		else
+		{
+			return ExtraDataBackgroundBoxDefaultColor;
+		}
+	}
+
+	FText OnGetExtraDataText() const
+	{
+		// DEBUG :Uncomment the next line in order to debug the current state being used by the element
+		// return FText::FromString(FString::FromInt(RowItem->GetStateIndex()));
+		
+		if (RowItem->bIsDynamicResource)
+		{
+			return  DynamicResourceText;
+		}
+		else if (RowItem->bIsStateConstant)
+		{
+			return StateConstantText;
+		}
+		else
+		{
+			return FText::FromString(FString(""));
+		}
+	}
+
 	/** Method intended with the generation of the wanted objects for each column*/
 	virtual TSharedRef<SWidget> GenerateWidgetForColumn(const FName& ColumnName) override
 	{
 		// Primary column showing the name of the operation and tye type
 		if (ColumnName == MutableCodeTreeViewColumns::OperationsColumnID)
 		{
-			const mu::PROGRAM& Program = RowItem->MutableModel->GetPrivate()->m_program;
+			const mu::FProgram& Program = RowItem->MutableModel->GetPrivate()->m_program;
 			const mu::OP_TYPE Type = Program.GetOpType(RowItem->MutableOperation);
-			const TCHAR* OpName = mu::s_opNames[int32(Type)];
+			FString OpName = mu::s_opNames[int32(Type)];
+			OpName.TrimEndInline();
+
+			// See if the operation type accepts additional information in the label
+			switch ( Type )
+			{
+			case mu::OP_TYPE::NU_PARAMETER:
+			{
+				mu::OP::ParameterArgs Args = Program.GetOpArgs<mu::OP::ParameterArgs>(RowItem->MutableOperation);
+				OpName += TEXT(" ");
+				OpName += ANSI_TO_TCHAR(Program.m_parameters[int32(Args.variable)].m_name.c_str());
+				break;
+			}
+
+			case mu::OP_TYPE::IM_SWIZZLE:
+			{
+				mu::OP::ImageSwizzleArgs Args = Program.GetOpArgs<mu::OP::ImageSwizzleArgs>(RowItem->MutableOperation);
+				OpName += TEXT(" ");
+				OpName += ANSI_TO_TCHAR(mu::TypeInfo::s_imageFormatName[int32(Args.format)]);
+				break;
+			}
+
+			case mu::OP_TYPE::IM_PIXELFORMAT:
+			{
+				mu::OP::ImagePixelFormatArgs Args = Program.GetOpArgs<mu::OP::ImagePixelFormatArgs>(RowItem->MutableOperation);
+				OpName += TEXT(" ");
+				OpName += ANSI_TO_TCHAR(mu::TypeInfo::s_imageFormatName[int32(Args.format)]);
+				OpName += TEXT(" or ");
+				OpName += ANSI_TO_TCHAR(mu::TypeInfo::s_imageFormatName[int32(Args.formatIfAlpha)]);
+				break;
+			}
+
+			case mu::OP_TYPE::IM_MIPMAP:
+			{
+				mu::OP::ImageMipmapArgs Args = Program.GetOpArgs<mu::OP::ImageMipmapArgs>(RowItem->MutableOperation);
+				OpName += FString::Printf(TEXT(" levels: %d-%d tail: %d"), Args.levels, Args.blockLevels, int32(Args.onlyTail));
+				break;
+			}
+
+			case mu::OP_TYPE::IM_RESIZE:
+			{
+				mu::OP::ImageResizeArgs Args = Program.GetOpArgs<mu::OP::ImageResizeArgs>(RowItem->MutableOperation);
+				OpName += FString::Printf(TEXT(" %d x %d"), int32(Args.size[0]), int32(Args.size[1]));
+				break;
+			}
+
+			case mu::OP_TYPE::IM_RESIZEREL:
+			{
+				mu::OP::ImageResizeRelArgs Args = Program.GetOpArgs<mu::OP::ImageResizeRelArgs>(RowItem->MutableOperation);
+				OpName += FString::Printf(TEXT(" %.3f x %.3f"), Args.factor[0], Args.factor[1]);
+				break;
+			}
+
+			case mu::OP_TYPE::IM_MULTILAYER:
+			{
+				mu::OP::ImageMultiLayerArgs Args = Program.GetOpArgs<mu::OP::ImageMultiLayerArgs>(RowItem->MutableOperation);
+				OpName += TEXT(" rgb: ");
+				OpName += mu::TypeInfo::s_blendModeName[int32(Args.blendType)];
+				if (Args.blendTypeAlpha != int8(mu::EBlendType::BT_NONE))
+				{
+					OpName += TEXT(", a: ");
+					OpName += mu::TypeInfo::s_blendModeName[int32(Args.blendTypeAlpha)];
+				}
+				OpName += FString::Printf(TEXT(" range-id: %d"), Args.rangeId);
+				OpName += FString::Printf(TEXT(" mask-from-alpha: %d"), int32(Args.bUseMaskFromBlended));
+				break;
+			}
+
+			case mu::OP_TYPE::IM_LAYER:
+			{
+				mu::OP::ImageLayerArgs Args = Program.GetOpArgs<mu::OP::ImageLayerArgs>(RowItem->MutableOperation);
+				OpName += TEXT(" rgb: ");
+				OpName += mu::TypeInfo::s_blendModeName[int32(Args.blendType)];
+				if (Args.blendTypeAlpha != int8(mu::EBlendType::BT_NONE))
+				{
+					OpName += TEXT(", a: ");
+					OpName += mu::TypeInfo::s_blendModeName[int32(Args.blendTypeAlpha)];
+				}
+				OpName += FString::Printf(TEXT(" flags %d"),Args.flags);
+				break;
+			}
+
+			case mu::OP_TYPE::IM_LAYERCOLOUR:
+			{
+				mu::OP::ImageLayerColourArgs Args = Program.GetOpArgs<mu::OP::ImageLayerColourArgs>(RowItem->MutableOperation);
+				OpName += TEXT(" rgb: ");
+				OpName += mu::TypeInfo::s_blendModeName[int32(Args.blendType)];
+				OpName += TEXT(" a: ");
+				OpName += mu::TypeInfo::s_blendModeName[int32(Args.blendTypeAlpha)];
+				OpName += FString::Printf(TEXT(" flags %d"), Args.flags);
+				break;
+			}
+
+			default:
+				break;
+			}
 
 			// Prepare the text shown on the UI side of the operation tree
-			FString MainLabel = FString::Printf(TEXT("%s (%d) : %s"), *RowItem->Caption, int32(RowItem->MutableOperation), OpName);
+			FString MainLabel = FString::Printf(TEXT("%s %d : %s"), *RowItem->Caption, int32(RowItem->MutableOperation), *OpName);
+
+			// DEBUG : 
+			// FString IndexOnTree = FString::FromInt(RowItem->IndexOnTree);
+			// IndexOnTree.Append(TEXT("- "));
+			// MainLabel.InsertAt(0,IndexOnTree);
+
+			// DEBUG : 
+			// FString RowStateIndex = FString::FromInt(RowItem->GetStateIndex());
+			// RowStateIndex.Append(TEXT(" st "));
+			// MainLabel.InsertAt(0,RowStateIndex);
+
+			
 			if (RowItem->DuplicatedOf)
 			{
 				MainLabel.Append(TEXT(" (duplicated)"));
@@ -183,6 +279,7 @@ public:
 					[
 						SNew(STextBlock)
 						.Text(FText::FromString(MainLabel))
+						.ColorAndOpacity(RowItem->LabelColor)
 					]
 				]
 			];
@@ -193,20 +290,6 @@ public:
 		// Second column showing some extra data related with the operation being displayed
 		if (ColumnName == MutableCodeTreeViewColumns::AdditionalDataColumnID)
 		{
-			// Determine what text will be shown on the extra data column alongside with the background color used for it
-			FText OperationExtraData = FText::FromString(FString(""));
-			const FSlateColor* OperationDataBoxColor = &ExtraDataBackgroundBoxDefaultColor;
-			if (RowItem->bIsDynamicResource)
-			{
-				OperationExtraData = DynamicResourceText;
-				OperationDataBoxColor = &DynamicResourceBoxColor;
-			}
-			else if (RowItem->bIsStateConstant)
-			{
-				OperationExtraData = StateConstantText;
-				OperationDataBoxColor = &StateConstantBoxColor;
-			}
-			
 			TSharedRef<SHorizontalBox> RowContainer =  SNew(SHorizontalBox)
 			
 			+ SHorizontalBox::Slot()
@@ -214,31 +297,19 @@ public:
 			[
 				SNew(SHorizontalBox)
 
-				// Cheap way of doing a fixed space with a color
 				+SHorizontalBox::Slot()
-				.AutoWidth()
+				.MaxWidth(4.0f)
 				[
-					 SNew(SOverlay)
-					 +SOverlay::Slot()
-					 [
-						SNew(SMutableColorPreviewBox)
-						.BoxColor(*OperationDataBoxColor)
-					 ]
-
-					 // Hacky way of setting a fixed size for the color box
-					 + SOverlay::Slot()
-					 [
-						SNew(STextBlock)
-						.Text(EmptyText)
-					 ]
+					SNew(SColorBlock)
+					.Color(this,&SMutableCodeTreeRow::OnGetExtraDataBoxColor)
 				]
 
 				+ SHorizontalBox::Slot()
 				.Padding(4,1)
-				.FillWidth(0.9f)
+				.AutoWidth()
 				[
 					SNew(STextBlock)
-					.Text(OperationExtraData)
+					.Text(this,&SMutableCodeTreeRow::OnGetExtraDataText)
 				]
 			];
 			
@@ -306,20 +377,19 @@ private:
 	const FText EmptyText = FText(INVTEXT(" "));
 	
 	/** String printed on the UI when the operation is shown to be dynamic resource */
-	const FText DynamicResourceText = FText::FromString(FString("DYNAMIC RESOURCE"));
+	const FText DynamicResourceText = FText::FromString(FString("dyn"));
 
 	/** String printed on the UI when the operation is shown to be state constant */
-	const FText StateConstantText = FText::FromString(FString("STATE CONSTANT"));
+	const FText StateConstantText = FText::FromString(FString("const"));
 	
 	/** Color used on the extra data column when no extra data is shown */
-	const FSlateColor ExtraDataBackgroundBoxDefaultColor =  FSlateColor(TransparentColor);
+	const FLinearColor ExtraDataBackgroundBoxDefaultColor =  TransparentColor;
 
 	/** Color shown on the extra data column when the resource is found to be Dynamic */
-	const FSlateColor DynamicResourceBoxColor = FSlateColor(FLinearColor(0,0,1,0.8));
+	const FLinearColor DynamicResourceBoxColor = FLinearColor(0,0,1,0.8);
 
 	/** Color shown on the extra data column when the resource is found to be State Constant */
-	const FSlateColor StateConstantBoxColor = FSlateColor(FLinearColor(1,0,0,0.8));
-
+	const FLinearColor StateConstantBoxColor = FLinearColor(1,0,0,0.8);
 };
 
 
@@ -336,39 +406,53 @@ FString SMutableCodeViewer::GetReferencerName() const
 }
 
 
-void SMutableCodeViewer::Construct(const FArguments& InArgs, const mu::ModelPtr& InMutableModel/*, const TSharedPtr<SDockTab>& ConstructUnderMajorTab*/)
+void SMutableCodeViewer::SetCurrentModel(const TSharedPtr<mu::Model, ESPMode::ThreadSafe>& InMutableModel)
 {
 	MutableModel = InMutableModel;
-	PreviewParameters = MutableModel->NewParameters();
-	
-	// Min width allowed for the column. Needed to avoid having issues with the constants space being to small
-	// and then getting too tall on the y axis crashing the drawer.
-	constexpr float MinParametersCollWidth = 400;
-	
-	// create & initialize tab manager
-	//TabManager = FGlobalTabmanager::Get()->NewTabManager(ConstructUnderMajorTab.ToSharedRef());
+	PreviewParameters = mu::Model::NewParameters(MutableModel);
 
-	const mu::Model::Private* ModelPrivate = MutableModel->GetPrivate();
-	const int32 StateCount = ModelPrivate->m_program.m_states.Num();
-	for ( int32 StateIndex=0; StateIndex<StateCount; ++StateIndex )
-	{
-		const mu::PROGRAM::STATE& State = ModelPrivate->m_program.m_states[StateIndex];
-		FString Caption = FString::Printf( TEXT("state [%s]"), ANSI_TO_TCHAR(State.m_name.c_str()) );
-		RootNodes.Add(MakeShareable(new FMutableCodeTreeElement(MutableModel, State.m_root, Caption)));
-	}
+	RootNodes.Empty();
+	RootNodeAddresses.Empty();
+	ItemCache.Empty();
+	MainItemPerOp.Empty();
+	TreeElements.Empty();
+	ExpandedElements.Empty();
+	FoundModelOperationTypeElements.Empty();
+	ModelOperationTypes.Empty();
+	ModelOperationTypeNames.Empty();
+	NavigationElements.Empty();
+
+	// Generate all elements before starting the tree UI so we have a deterministic set of unique and duplicated elements
+	GenerateAllTreeElements();
 
 	// Setup Navigation system
 	{
-		// Store the addresses of the root nodes for later search operations
+		// Store the addresses of the root nodes so they can be used by operation search methods
 		CacheRootNodeAddresses();
 
 		// Cache the operation types that are present on the model
 		CacheOperationTypesPresentOnModel();
-	
+
 		// Get an array of mutable types as an array of FStrings for the UI
 		GenerateNavigationOpTypeStrings();
-	}
 
+		// Generate list elements for the found operation types so we are able to search over them on our type dropdown
+		GenerateNavigationDropdownElements();
+
+		// Check we did find types (witch should always happen in a normal run) and select the NONE option as the default value
+		check(FoundModelOperationTypeElements.Num())
+		CurrentlySelectedOperationTypeElement = NoneOperationEntry;
+	}
+}
+
+
+void SMutableCodeViewer::Construct(const FArguments& InArgs, const TSharedPtr<mu::Model, ESPMode::ThreadSafe>& InMutableModel/*, const TSharedPtr<SDockTab>& ConstructUnderMajorTab*/)
+{
+	// Min width allowed for the column. Needed to avoid having issues with the constants space being to small
+	// and then getting too tall on the y axis crashing the UI drawer.
+	constexpr float MinParametersCollWidth = 400;
+
+	SetCurrentModel(InMutableModel);
 	
 	FToolBarBuilder ToolbarBuilder(TSharedPtr<const FUICommandList>(), FMultiBoxCustomization::None, TSharedPtr<FExtender>(), true);
 	ToolbarBuilder.SetLabelVisibility(EVisibility::Visible);
@@ -377,8 +461,8 @@ void SMutableCodeViewer::Construct(const FArguments& InArgs, const mu::ModelPtr&
 	ToolbarBuilder.BeginSection("Export");
 
 	// Tree Sizes
-	constexpr float OperationsColumnWidth = 0.75f;
-	constexpr float ExtraDataColumnWidth = 0.25f;
+	constexpr float OperationsColumnWidth = 0.90f;
+	constexpr float ExtraDataColumnWidth = 0.10f;
 	
 	// Export
 	ToolbarBuilder.AddToolBarButton(
@@ -410,7 +494,7 @@ void SMutableCodeViewer::Construct(const FArguments& InArgs, const mu::ModelPtr&
 						mu::OutputFileStream Stream(TCHAR_TO_ANSI(*SaveFileName));
 						Stream.Write(MUTABLE_COMPILED_MODEL_FILETAG, 4);
 						mu::OutputArchive Archive(&Stream);
-						mu::Model::Serialise(InMutableModel.get(), Archive);
+						mu::Model::Serialise(InMutableModel.Get(), Archive);
 						const uint32_t CodeVersion = MUTABLE_COMPILED_MODEL_CODE_VERSION;
 						Stream.Write((const uint8*)&CodeVersion, sizeof(uint32_t));
 						Stream.Flush();
@@ -455,73 +539,74 @@ void SMutableCodeViewer::Construct(const FArguments& InArgs, const mu::ModelPtr&
 				.AutoHeight()
 				.HAlign(HAlign_Right)
 				[
-					// Border containing navigation elements
-					SNew(SBorder)
-					.HAlign(HAlign_Right)
-					[
-						SNew(SVerticalBox)
+					// Box containing navigation elements
+					SNew(SVerticalBox)
 
-						+ SVerticalBox::Slot()
-						.Padding(2,4)
-						.AutoHeight()
+					+ SVerticalBox::Slot()
+					.Padding(2,4)
+					.AutoHeight()
+					[
+						SNew(SHorizontalBox)
+	
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
 						[
 							SNew(SHorizontalBox)
-						
+
 							+ SHorizontalBox::Slot()
 							.AutoWidth()
 							[
-								SNew(SHorizontalBox)
+								SNew(STextBlock)
+								.Text(LOCTEXT("SelectedOperationTypeLabel","Search Operation Type :"))
+							]
 
-								+ SHorizontalBox::Slot()
-								.AutoWidth()
+							// ComboBox used to select one or another Op_Type for tree navigation purposes
+							+SHorizontalBox::Slot()
+							.AutoWidth()
+							[
+								SAssignNew(TargetedTypeSelector,SComboBox<TSharedPtr<const FMutableOperationElement>>)
+								.OptionsSource(&FoundModelOperationTypeElements)
+								.InitiallySelectedItem(CurrentlySelectedOperationTypeElement)
 								[
 									SNew(STextBlock)
-									.Text(LOCTEXT("SelectedOperationTypeLabel","Search Operation Type :"))
+									.Text(this,&SMutableCodeViewer::GetCurrentNavigationOpTypeText)
+									.ColorAndOpacity(this,&SMutableCodeViewer::GetCurrentNavigationOpTypeColor)
 								]
-
-								+ SHorizontalBox::Slot()
-								.AutoWidth()
-								[
-									// TODO: Try to use a SComboButton so you are able to use a search box (Max)
-									SAssignNew(TargetedTypeSelector, STextComboBox)
-									.OptionsSource(&OperationTypesStrings)
-									.InitiallySelectedItem(OperationTypesStrings[0])	
-									.OnSelectionChanged(this,&SMutableCodeViewer::OnOptionTypeSelectionChanged)
-								]
-							]
-
-							+ SHorizontalBox::Slot()
-							.Padding(4,0)
-							.AutoWidth()
-							[
-								SNew(SButton)
-								.Text(LOCTEXT("GoToPreviousOperationButton"," < "))
-								.OnClicked(this,&SMutableCodeViewer::OnGoToPreviousOperationButtonPressed)
-								.IsEnabled(this,&SMutableCodeViewer::CanInteractWithPreviousOperationButton)
-							]
-
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							[
-								SNew(SButton)
-								.Text(LOCTEXT("GoToNextOperationButton"," > "))
-								.OnClicked(this,&SMutableCodeViewer::OnGoToNextOperationButtonPressed)
-								.IsEnabled(this,&SMutableCodeViewer::CanInteractWithNextOperationButton)
+								.OnGenerateWidget(this,&SMutableCodeViewer::OnGenerateOpNavigationDropDownWidget)
+								.OnSelectionChanged(this,&SMutableCodeViewer::OnNavigationSelectedOperationChanged)
 							]
 						]
 
-						+ SVerticalBox::Slot()
-						.AutoHeight()
-						.Padding(0,4)
+						+ SHorizontalBox::Slot()
+						.Padding(4,0)
+						.AutoWidth()
+						[
+							SNew(SButton)
+							.Text(LOCTEXT("GoToPreviousOperationButton"," < "))
+							.OnClicked(this,&SMutableCodeViewer::OnGoToPreviousOperationButtonPressed)
+							.IsEnabled(this,&SMutableCodeViewer::CanInteractWithPreviousOperationButton)
+						]
+
+						+ SHorizontalBox::Slot()
+						.Padding(4,0)
+						.AutoWidth()
 						[
 							SNew(STextBlock)
 							.Text(this,&SMutableCodeViewer::OnPrintNavigableObjectAddressesCount)
 							.Justification(ETextJustify::Right)
 						]
+		
+						+ SHorizontalBox::Slot()
+						.Padding(4,0)
+						.AutoWidth()
+						[
+							SNew(SButton)
+							.Text(LOCTEXT("GoToNextOperationButton"," > "))
+							.OnClicked(this,&SMutableCodeViewer::OnGoToNextOperationButtonPressed)
+							.IsEnabled(this,&SMutableCodeViewer::CanInteractWithNextOperationButton)
+						]
 					]
-					
 				]
-					
 				
 				// Tree operations slot
 				+ SVerticalBox::Slot()
@@ -550,7 +635,7 @@ void SMutableCodeViewer::Construct(const FArguments& InArgs, const mu::ModelPtr&
 								.FillWidth(OperationsColumnWidth)
 								
 							+ SHeaderRow::Column(MutableCodeTreeViewColumns::AdditionalDataColumnID)
-								.DefaultLabel(LOCTEXT("AdditionalData", "Additional Data"))
+								.DefaultLabel(LOCTEXT("OperationFlags", "Flags"))
 								.FillWidth(ExtraDataColumnWidth)
 						)
 					]
@@ -616,7 +701,7 @@ void SMutableCodeViewer::Construct(const FArguments& InArgs, const mu::ModelPtr&
 					[
 						// Generate a new Constants panel to show the data stored on the current mutable program
 						SAssignNew(ConstantsWidget, SMutableConstantsWidget,
-							&(ModelPrivate->m_program),
+							&(MutableModel->GetPrivate()->m_program),
 							SharedThis(this))
 					]
 
@@ -633,7 +718,14 @@ void SMutableCodeViewer::Construct(const FArguments& InArgs, const mu::ModelPtr&
 	];
 	
 	// Set the tree expanded by default
+	// It does not recalculate states since the expansion of the instance will NOT expand duplicates witch means the widget position
+	// of the children of duplicated (or the original of an operation with duplicates) will not change.
 	TreeExpandInstance();
+
+	// Enable the recalculation of states once the tree has already been initially expanded since now we do not control
+	// how the user is point to interact with the view.
+	bShouldRecalculateStates = true;
+	// Now, on expansion or contraction the states will get recalculated
 } 
 
 
@@ -658,18 +750,123 @@ void SMutableCodeViewer::OnCurrentMipSkipChanged(int32 NewValue)
 
 #pragma region CodeTree operation search
 
+FText SMutableCodeViewer::GetCurrentNavigationOpTypeText() const
+{
+	check (CurrentlySelectedOperationTypeElement);
+	
+	return CurrentlySelectedOperationTypeElement->OperationTypeText;
+}
+
+FSlateColor SMutableCodeViewer::GetCurrentNavigationOpTypeColor() const
+{
+	check (CurrentlySelectedOperationTypeElement);
+
+	return CurrentlySelectedOperationTypeElement->OperationTextColor;
+}
+
+void SMutableCodeViewer::GenerateNavigationDropdownElements()
+{
+	const int32 OperationTypesCount = ModelOperationTypes.Num();
+	
+	// It must have at least one type, if not may be because we are running this before filling ModelOperationTypes
+	check(OperationTypesCount);
+	FoundModelOperationTypeElements.Empty(OperationTypesCount);
+	
+	for	(int32 OperationTypeIndex = 0; OperationTypeIndex < OperationTypesCount;  OperationTypeIndex++)
+	{
+		// Get the type as a string to be able to print it on the UI
+		const FText OperationTypeName = FText::FromString(ModelOperationTypeNames[OperationTypeIndex]);
+
+		const mu::OP_TYPE RepresentedType = ModelOperationTypes[OperationTypeIndex].Key;
+		const uint32 OperationTypeInstancesCount = ModelOperationTypes[OperationTypeIndex].Value;
+		
+		// Get the Color to be used on the text that will represent the operation on the dropdown
+		const FSlateColor OperationColor = ColorPerComputationalCost[StaticCast<uint8>(GetOperationTypeComputationalCost(RepresentedType))];
+		
+		// Generate an element to be used by the ComboBox handling the selection of the type to be used during navigation
+		TSharedPtr<FMutableOperationElement> OperationElement = MakeShared<FMutableOperationElement>(RepresentedType, OperationTypeName,OperationTypeInstancesCount,OperationColor);
+		FoundModelOperationTypeElements.Add(OperationElement);
+	}
+
+	// Add an entry for the NONE type of operation
+	{
+		const FText EntryName = FText::FromString("NONE");
+		const FSlateColor EntryColor = ColorPerComputationalCost[StaticCast<uint8>(EOperationComputationalCost::Standard)];
+		NoneOperationEntry = MakeShared<FMutableOperationElement>(mu::OP_TYPE::NONE,EntryName,0,EntryColor);
+
+		// @warn While not visible this element must be part of the collection for the ComboBox to be able to work
+		// properly
+		FoundModelOperationTypeElements.Add(NoneOperationEntry);
+	}
+	
+	// Add an extra operation type that will represent the constant resource based navigation type
+	{
+		const FText EntryName = FText::FromString("CONST_RESOURCE_BASED_NAV");	
+		const FSlateColor EntryColor = FSlateColor(FLinearColor(0.35f ,0.35f,1.0f,1));
+		ConstantBasedNavigationEntry = MakeShared<FMutableOperationElement>(mu::OP_TYPE::NONE,EntryName,0,EntryColor);
+		
+		// @warn While not visible this element must be part of the collection for the ComboBox to be able to work
+		// properly
+		FoundModelOperationTypeElements.Add(ConstantBasedNavigationEntry);
+	}
+}
+
+TSharedRef<SWidget> SMutableCodeViewer::OnGenerateOpNavigationDropDownWidget(
+	TSharedPtr<const FMutableOperationElement> MutableOperationElement) const
+{
+	TSharedRef<STextBlock> NewSlateObject = SNew(STextBlock)
+		.Text(MutableOperationElement->OperationTypeText)
+		.ColorAndOpacity(MutableOperationElement->OperationTextColor);
+
+	// Set the visibility type for the UI object (currently will be hidden for the NONE type)
+	NewSlateObject->SetVisibility(MutableOperationElement->GetEntryVisibility());
+	
+	return NewSlateObject;
+}
+
+void SMutableCodeViewer::OnNavigationSelectedOperationChanged(
+	TSharedPtr<const FMutableOperationElement, ESPMode::ThreadSafe> MutableOperationElement, ESelectInfo::Type Arg)
+{
+	check (MutableOperationElement.IsValid());
+
+	// Cache the currently selected operation set on the UI by the user
+	const mu::OP_TYPE NewOperationType = MutableOperationElement->OperationType;
+	OperationTypeToSearch = NewOperationType;
+	CurrentlySelectedOperationTypeElement = MutableOperationElement;
+	
+	// Only do the internal work if the type is one that makes sense searching
+	if (OperationTypeToSearch != mu::OP_TYPE::NONE)
+	{
+		// Locate all operations on the mutable operations tree (not the visual one) that do share the same operation type
+		// as the one selected. This will fill the array with the elements we should be looking for during the navigation operation
+		CacheAddressesOfOperationsOfType();
+	}
+	// None can be set by the user or be an indication that we are navigating over constant related operations
+	// todo: Separate both operations in some way on the UI to avoid complications in the code and in the UI's UX
+	else
+	{
+		// Clear all the elements on the navigation addresses 
+		NavigationElements.Empty();
+	}
+	
+}
+
+
 void SMutableCodeViewer::GenerateNavigationOpTypeStrings()
 {
 	// Grab only the names from the operation types located during the caching of operation types of the model
-	for (const mu::OP_TYPE LocatedOperationType : ModelOperationTypes)
+	for (const TTuple<mu::OP_TYPE, uint32>& LocatedOperationType : ModelOperationTypes)
 	{
-		// Find the name
-		const uint16 OperationIndex = static_cast<uint16>(LocatedOperationType);
+		// Find the name of the Operation type
+		const uint16 OperationIndex = static_cast<uint16>(LocatedOperationType.Key);
 		const TCHAR* OpName = mu::s_opNames[OperationIndex];
-		
-		// Operation name to be saved
-		TSharedPtr<FString> OperationNamePointer = MakeShared<FString>(OpName);
-		OperationTypesStrings.Add( OperationNamePointer);
+
+		// Remove trailing whitespaces adding noise and messing up concatenations with other strings
+		FString OperationNameString{OpName};
+		OperationNameString.RemoveSpacesInline();
+
+		// Save the name
+		ModelOperationTypeNames.Add( OperationNameString);
 	}
 }
 
@@ -682,131 +879,153 @@ void SMutableCodeViewer::OnSelectedOperationTypeFromTree()
 	
 	const mu::OP_TYPE OperationType =
 		MutableModel->GetPrivate()->m_program.GetOpType(ReferenceOperationElement->MutableOperation);
-	const int32 OperationIndex = ModelOperationTypes.IndexOfByKey(OperationType);
 
-	// Failing the next check would mean that we are not caching all the types present on the current operation's tree
-	check (OperationIndex != -1);
-	
-	const TSharedPtr<FString> NewOperationString = OperationTypesStrings[OperationIndex];
-
-	// Set the type operation type to be looking for -> Will invoke OnOptionTypeSelectionChanged
-	TargetedTypeSelector->SetSelectedItem(NewOperationString);
-}
-
-void SMutableCodeViewer::OnOptionTypeSelectionChanged(TSharedPtr<FString, ESPMode::ThreadSafe> NesSelectedOperationString,
-	ESelectInfo::Type SelectionType)
-{
-	// Cache the currently selected operation set on the UI by the user
-	const int32 NewOperationIndex = OperationTypesStrings.IndexOfByKey(NesSelectedOperationString);
-	const mu::OP_TYPE NewOperationType = ModelOperationTypes[NewOperationIndex];
-	if (NewOperationType == OperationTypeToSearch)
-	{
-		return;
-	}
-	OperationTypeToSearch = NewOperationType;
-	
-	// Only do the internal work if the type is one that makes sense searching
-	if (OperationTypeToSearch != mu::OP_TYPE::NONE)
-	{
-		// Reset the navigation element
-		SetCurrentNavigationElement(nullptr);
-		
-		// Locate all operations on the mutable operations tree (not the visual one) that do share the same operation type
-		// as the one selected. This will fill the array with the elements we should be looking for during the navigation operation
-		CacheAddressesOfOperationsOfType(OperationTypeToSearch);
-		
-		// Experimental
-		TreeView->ScrollToTop();
-	}
-	// None can be set by the user or be an indication that we are navigating over constant related operations
-	// todo: Separate both operations in some way on the UI to avoid complications in the code and in the UI's UX
-	else
-	{
-		// Clear all the elements on the navigation addresses 
-		NavigationOPAddresses.Empty();
-	}
-	
-}
-
-void SMutableCodeViewer::CacheAddressesOfOperationsOfType(mu::OP_TYPE TargetedOperationType)
-{
-	// Clear previous data
-	NavigationOPAddresses.Empty();
-	
-	// Locate all addresses of operations of the provided operation type
-	TSet<mu::OP::ADDRESS> ProcessedAddresses;
-	TSet<mu::OP::ADDRESS> OperationsWithTargetedType;
-
-	// Main update procedure run for the targeted state and the targeted parameter values
-	const mu::PROGRAM& Program = MutableModel->GetPrivate()->m_program;
-	for	(const mu::OP::ADDRESS& RootNodeAddress : RootNodeAddresses)
-	{
-		GetOperationsOfType(TargetedOperationType,RootNodeAddress,Program,OperationsWithTargetedType,ProcessedAddresses);
-	}
-	
-	if (!OperationsWithTargetedType.IsEmpty())
-	{
-		// Cache the navigation addresses so we are able to navigate over them
-		NavigationOPAddresses = OperationsWithTargetedType.Array();
-
-		// Tell the system changes have been made over Navigation Addresses
-		bUpdatedNavigationAddresses = true;
-	}
-
-}
-
-void SMutableCodeViewer::GetOperationsOfType ( const mu::OP_TYPE& TargetOperationType, const mu::OP::ADDRESS& InParentAddress,const mu::PROGRAM& InProgram,
-	TSet<mu::OP::ADDRESS>& OutAddressesOfType,
-	TSet<mu::OP::ADDRESS>& AlreadyProcessedAddresses)
-{
-	// Generic case for unnamed children traversal.
-	mu::ForEachReference(InProgram, InParentAddress, [this, &InProgram, &OutAddressesOfType, &AlreadyProcessedAddresses, &TargetOperationType]( mu::OP::ADDRESS ChildAddress)
-	{
-		// If the parent does have a child then process it 
-		if (ChildAddress && !AlreadyProcessedAddresses.Contains(ChildAddress))
+	// Find the operation type directly in our array of operation elements (from the drop down)
+	const TSharedPtr<const FMutableOperationElement>* RepresentativeElement = FoundModelOperationTypeElements.
+		FindByPredicate([OperationType](const TSharedPtr<const FMutableOperationElement> Other)
 		{
-			// Cache if same data type and we share the same address (means this op is pointing at the provided resource)
-			if (InProgram.GetOpType(ChildAddress) == TargetOperationType)
-			{
-				OutAddressesOfType.Add(ChildAddress);
-			}
-		
-			// Cache to avoid processing it again later
-			AlreadyProcessedAddresses.Add(ChildAddress);
-		
-			// Process the children of this object
-			GetOperationsOfType(TargetOperationType,ChildAddress,InProgram,OutAddressesOfType,AlreadyProcessedAddresses);
-		}
+			return Other->OperationType == OperationType;
+		});
+
+	// Ensure an element was found. Failing the next check would mean that we are not caching all the types present on
+	// the current operation's tree
+	check(RepresentativeElement != nullptr);
+	
+	// Set the type operation type to be looking for -> Will invoke OnOptionTypeSelectionChanged
+	TargetedTypeSelector->SetSelectedItem(*RepresentativeElement);
+	
+	// Reset the navigation index so it starts from scratch
+	NavigationIndex = -1;
+}
+
+
+void SMutableCodeViewer::SortNavigationElements()
+{
+	// Sort the array from lower index to bigger index (0 , 1 , 2 ...)
+	NavigationElements.Sort([](const TSharedPtr<FMutableCodeTreeElement> A , const TSharedPtr<FMutableCodeTreeElement> B)
+	{
+		return A->IndexOnTree < B->IndexOnTree;
 	});
 }
 
+
+void SMutableCodeViewer::CacheAddressesOfOperationsOfType()
+{
+	// Clear previous data
+	NavigationElements.Empty();
+	check(RootNodeAddresses.Num());
+
+	// Object containing all data required by the search operation to be able to be called recursively
+	FElementsSearchCache SearchPayload;
+	// Initialize the Search Payload with the root node addresses. This way the search will use them as the root nodes where
+	// to start searching
+	SearchPayload.SetupRootBatch(RootNodeAddresses);
+	
+	// Main update procedure run for the targeted state and the targeted parameter values
+	const mu::FProgram& Program = MutableModel->GetPrivate()->m_program;
+	GetOperationsOfType(OperationTypeToSearch,SearchPayload, Program);
+	
+	if (!SearchPayload.FoundElements.IsEmpty())
+	{
+		// Cache the navigation addresses so we are able to navigate over them
+		NavigationElements = MoveTemp(SearchPayload.FoundElements);
+		SortNavigationElements();
+		
+		// Reset the navigation index
+		NavigationIndex = -1;
+	}
+}
+
+void SMutableCodeViewer::GetOperationsOfType(const mu::OP_TYPE& TargetOperationType,
+                                             FElementsSearchCache& InSearchPayload,
+                                             const mu::FProgram& InProgram)
+{
+	// next batch of addresses to be explored 
+	TArray<FItemCacheKey> NextBatchAddressesData;
+	
+	// uint32 CurrentParentBeingScanned = 0;
+	for	(int32 ParentIndex = 0 ; ParentIndex < InSearchPayload.BatchData.Num(); ParentIndex++)
+	{
+		// Get one of the previous run "children" and treat as a parent to get it's children and process them
+		const mu::OP::ADDRESS& CurrentAddress = InSearchPayload.BatchData[ParentIndex].Child;
+		
+		// Cache if same data type and we share the same address (means this op is pointing at the provided resource)
+		// It will cache duplicated entries
+		if ( InProgram.GetOpType(CurrentAddress) == TargetOperationType)
+		{
+			// Since this element is of the type we are looking for then cache it on InSearchPayload.FoundElements
+			InSearchPayload.AddToFoundElements(CurrentAddress,ParentIndex,ItemCache);
+		}
+		
+		// Get all NON PROCESSED the children of this operation to later be able to process them (on next recursive call)
+		InSearchPayload.CacheChildrenOfAddressIfNotProcessed(CurrentAddress, InProgram, NextBatchAddressesData);
+	}
+
+	// Explore children if found 
+	if (NextBatchAddressesData.Num())
+	{
+		// Cache next batch data so the next invocations are able to locate the provided addresses on the itemsCache
+		InSearchPayload.BatchData = MoveTemp(NextBatchAddressesData);
+		
+		// Process the children of this object
+		GetOperationsOfType(TargetOperationType, InSearchPayload, InProgram);
+	}
+ }
 
 
 void SMutableCodeViewer::CacheOperationTypesPresentOnModel()
 {
 	check(MutableModel)
-	check(RootNodeAddresses.Num());
 
-	// Set of operation types to be filed 
-	TSet<mu::OP_TYPE> OperationTypes;
-	
-	const mu::PROGRAM& Program = MutableModel->GetPrivate()->m_program;
-	TSet<mu::OP::ADDRESS> AlreadyVisitedAddresses;
-	for	(const mu::OP::ADDRESS& RootOperationAddress : RootNodeAddresses)
+	// Initialize NodeOperationTypes with empty TPair for each possible mutable operation type
 	{
-		GetOperationTypesPresentOnModel(RootOperationAddress,Program,OperationTypes,AlreadyVisitedAddresses);
+		constexpr uint32 OperationTypesCount = static_cast<uint16>(mu::OP_TYPE::COUNT);
+		ModelOperationTypes.Empty(OperationTypesCount);
+		for (uint32 Index = 0; Index < OperationTypesCount ; Index++)
+		{
+			mu::OP_TYPE TargetType = StaticCast<mu::OP_TYPE>(Index);
+			ModelOperationTypes.Add(TPair<mu::OP_TYPE,uint32>{TargetType,0});
+		}
 	}
-
-	// After using the set object save it as an array for later reference
-	ModelOperationTypes = OperationTypes.Array();
 	
-	// Sort the contents of the array alphabetically
-	ModelOperationTypes.StableSort([&](const mu::OP_TYPE& A, const mu::OP_TYPE& B)
+	// Locate all operation types found on the provided model program data structure and count how many instances of each
+	// there are
+	{
+		// Get the types and the amount of instances of each unique operation on the mutable model
+		const mu::FProgram& Program = MutableModel->GetPrivate()->m_program;
+		const uint32 ProgramAddressesCount = Program.m_opAddress.Num();
+		
+		// Ensure first operation type is NONE since we are skipping it due to it having to have that type
+		check (Program.GetOpType(Program.m_opAddress[0]) == mu::OP_TYPE::NONE);
+
+		// Iterate over the addresses of the program and count how many instances each type has.
+		for (uint32 ProgramAddressesIndex = 1 ; ProgramAddressesIndex < ProgramAddressesCount; ProgramAddressesIndex++)
+		{
+			// Locate what is the position (index) of the operation type of the address on our collection of types found until now
+			const mu::OP_TYPE OperationType = Program.GetOpType(ProgramAddressesIndex);
+			
+			// Increase the counter for this operation type
+			const uint16 TypeAsInteger = StaticCast<uint16>(OperationType);;
+			ModelOperationTypes[TypeAsInteger].Value++;
+		}
+	}
+	
+	// Remove all operation types that do have no operations present on the model
+	{
+		ModelOperationTypes.RemoveAll(
+		[](const TPair<mu::OP_TYPE, uint32>& Current)
+			{
+				return Current.Value == 0;
+			});
+	}
+	
+	// Sort the contents of the array of mutable operation types alphabetically
+	ModelOperationTypes.StableSort([&](const TPair<mu::OP_TYPE,uint32>& A, const TPair<mu::OP_TYPE,uint32>& B)
 	{
 		// Find the name
 		FString AString;
 		{
-			const uint16 OperationIndex = static_cast<uint16>(A);
+			const uint16 OperationIndex = static_cast<uint16>(A.Key);
 			const TCHAR* OpName = mu::s_opNames[OperationIndex];
 			AString = FString(OpName);
 		}
@@ -814,7 +1033,7 @@ void SMutableCodeViewer::CacheOperationTypesPresentOnModel()
 		// Find out the name of the first element
 		FString BString;
 		{
-			const uint16 OperationIndex = static_cast<uint16>(B);
+			const uint16 OperationIndex = static_cast<uint16>(B.Key);
 			const TCHAR* OpName = mu::s_opNames[OperationIndex];
 			BString = FString(OpName);
 		}
@@ -822,451 +1041,333 @@ void SMutableCodeViewer::CacheOperationTypesPresentOnModel()
 		// Then the name of the second element
 		return AString < BString;
 	});	
-
-	// Add the "None" option as a default value at index 0 to the sorted array.
-	// the NONE option serves as a way of telling the user "hey, you are not navigating over a type of operation".
-	// We currently use it to also tell the user that if he is navigating it is over constant related operations
-	ModelOperationTypes.Insert(mu::OP_TYPE::NONE,0);
-
-	// ModelOperationTypes is now an array starting with None and all the types found on the operations tree in alphabetical order
-}
-
-
-void SMutableCodeViewer::GetOperationTypesPresentOnModel(
-	const mu::OP::ADDRESS& InParentAddress, const mu::PROGRAM& InProgram, TSet<mu::OP_TYPE>& OutLocatedOperations,
-	TSet<mu::OP::ADDRESS>& AlreadyProcessedAddresses)
-{
-	// Generic case for unnamed children traversal.
-	mu::ForEachReference(InProgram, InParentAddress, [this, &InProgram, &OutLocatedOperations, &AlreadyProcessedAddresses]( mu::OP::ADDRESS ChildAddress)
-	{
-		// Avoid processing items more than once
-		if (ChildAddress && !AlreadyProcessedAddresses.Contains(ChildAddress))
-		{
-			// Cache the operation type for later usage
-			OutLocatedOperations.Add(InProgram.GetOpType(ChildAddress));
-			
-			// Cache to avoid processing it again later
-			AlreadyProcessedAddresses.Add(ChildAddress);
-		
-			// Process the children of this object
-			GetOperationTypesPresentOnModel(ChildAddress,InProgram,OutLocatedOperations,AlreadyProcessedAddresses);
-		}
-	});
-}
-
-
-void SMutableCodeViewer::LocateNavigationElements()
-{
-	NavigationFoundElements.Empty();
-	NavigationFoundElements.Reserve(TreeElements.Num());
 	
-	for (TSharedPtr<FMutableCodeTreeElement> TreeElement : TreeElements)
-	{
-		// Consider that you have found elements if their address corresponds to the address on our cached navigation items
-		const bool bIsNavigableElement = NavigationOPAddresses.Contains(TreeElement->MutableOperation);
-		if (bIsNavigableElement && !TreeElement->DuplicatedOf)
-		{
-			// Add the element to our list of elements we want to navigate over
-			NavigationFoundElements.Add(TreeElement);
-		}
-	}
-	
-	NavigationFoundElements.Shrink();
-
-#if UE_BUILD_DEBUG
-	UE_LOG(LogTemp, Log, TEXT("Located %d elements of %d for the current operation type"), NavigationFoundElements.Num(),TreeElements.Num());
-#endif
-
-	if (NavigationFoundElements.IsEmpty())
-	{
-		// No elements have been found for the newly selected type, set the selected element to be null.
-		SetCurrentNavigationElement(nullptr);
-	}
+	// ModelOperationTypes is now an array with all the types found on the operations tree in alphabetical order
 }
+
+
 
 FText SMutableCodeViewer::OnPrintNavigableObjectAddressesCount() const
 {
-	// Depending on the amount of navigable objects (addresses, not actual elements) display the amount there are
-	return FText::Format(LOCTEXT("AmountOfNavigableOps"," Found Operations : {0} "), NavigationOPAddresses.Num());
-}
-
-void SMutableCodeViewer::SetCurrentNavigationElement(TSharedPtr<FMutableCodeTreeElement> NewelyFoundElement)
-{
-	if (CurrentNavigationElement && NewelyFoundElement)
+	FString OutputString = "";
+	if (const int32 NavigationElementsCount = NavigationElements.Num())
 	{
-		// Avoid operating if the new selected element is the same than before
-		if (CurrentNavigationElement->MutableOperation == NewelyFoundElement->MutableOperation)
+		// Show the index if the index showing adds information
+		if (NavigationIndex >= 0)
 		{
-#if UE_BUILD_DEBUG
-			UE_LOG(LogTemp,Warning,TEXT("Skipping CurrentSelectedElement update since it is the same as previously set."));
-#endif
-			return;
+			OutputString.Append( FString::FromInt( NavigationIndex+1));
+			OutputString.Append(" / ");
 		}
-	}
-
-	// Internally change the selected element for the navigation system to use as starting point for the next movement
-	// operation
-	CurrentNavigationElement = NewelyFoundElement;
-	
-	// Clear the selection and select the new object
-	// TreeView->ClearSelection();
-	if (CurrentNavigationElement)
-	{
-		// Perform the UI selection operation so the viewer gets triggered as if the user did select it manually
-		TreeView->SetSelection(CurrentNavigationElement);
-
-#if UE_BUILD_DEBUG 
-		// Report currently selected one (not actually selected in UI, only internally at the moment)
-		const int32 SelectedOperationIndex = NavigationFoundElements.IndexOfByKey(CurrentNavigationElement);
-		UE_LOG(LogTemp,Log,TEXT("\tSelected element %d of %d"),SelectedOperationIndex +1,NavigationFoundElements.Num());
-#endif
-
-		// TODO: Mind making the system automatically focus on the selected object. Currently is not always on the view
-		// and that could be improved. Scrolling over the tree may require a tree refresh, this means you may need to
-		// wait until that refresh is performed.
 		
+		OutputString.Append( FString::FromInt(NavigationElementsCount));
+
+		// Format : 1 / 12 or 12
 	}
-#if UE_BUILD_DEBUG 
-	else
-	{
-		UE_LOG(LogTemp,Log,TEXT("\tNo selected element has been found"));
-	}
-#endif
 	
+	// Depending on the amount of navigable objects (addresses, not actual elements) display the amount there are
+	return FText::FromString(OutputString);
 }
 
 
 bool SMutableCodeViewer::CanInteractWithPreviousOperationButton() const
 {
 	// Only navigable if there are more than 0 elements to traverse and we are not scrolling
-	return !bIsScrolling && NavigationOPAddresses.Num() > 0;
+	return NavigationElements.Num() > 0 && NavigationIndex > 0 && (!bWasScrollToTargetRequested && !bWasUniqueExpansionInvokedForNavigation);
 }
 
 bool SMutableCodeViewer::CanInteractWithNextOperationButton() const
 {
 	// Only navigable if there are more than 0 elements to traverse and we are not scrolling
-	return !bIsScrolling && NavigationOPAddresses.Num() > 0;
-}
-
-
-void SMutableCodeViewer::SortNavigationElementsArray()
-{
-	// Do not waste time sorting an empty array of elements
-	// If only one element is present there is no reason for performing a sort operation
-	if (NavigationFoundElements.Num() < 2)
-	{
-		return;
-	}
-
-	// Cache the position on the tree for each of the navigation elements on view
-	TMap<int32,TSharedPtr<FMutableCodeTreeElement>> PositionPerElement;
-	PositionPerElement.Reserve(NavigationFoundElements.Num());
-	for	(int32 i = 0; i < NavigationFoundElements.Num(); i++)
-	{
-		const int32 PositionOnTree = TreeView->WidgetFromItem(NavigationFoundElements[i])->GetIndexInList();
-		PositionPerElement.Add(PositionOnTree, NavigationFoundElements[i]);
-	}
-
-	// By working with a TMap we can ensure the indices provided get automatically sorted on Addition.
-	
-	// Grab the values as an array to be later be used as the new array for NavigationElements
-	TArray<TSharedPtr< FMutableCodeTreeElement>> SortedNavigationElements;
-	PositionPerElement.GenerateValueArray(SortedNavigationElements);
-
-	// Make the targeted elements of type the new array with the correct values but sorted out
-	NavigationFoundElements = MoveTemp(SortedNavigationElements);
+	return NavigationElements.Num() > 0 && NavigationIndex < NavigationElements.Num() -1 && (!bWasScrollToTargetRequested && !bWasUniqueExpansionInvokedForNavigation);
 }
 
 
 FReply SMutableCodeViewer::OnGoToPreviousOperationButtonPressed()
 {
-	// Filter out not valid type
-	if (NavigationOPAddresses.IsEmpty())
-	{
-		return FReply::Handled();
-	}
-
-	// Sort the array of navigation elements just in case the order of the elements on the view changed
-	// This can happen if the user scrolls the view and new elements of the targeted type come to view
-	SortNavigationElementsArray();
+	// Focus on previous target
+	NavigationIndex = NavigationIndex<=0 ? 0 : NavigationIndex - 1;
+	FocusViewOnNavigationTarget();
 	
-	// Make a copy of the array to later be able to compare it to look for new elements of the targeted type
-	NavigationPreviouslyFoundElements = NavigationFoundElements;
-
-	// Fully expand tree if required to uncover all possible elements of the targeted type.
-	// The expansion does not discern between element types, all non duplicated elements will be expanded
-	if (bTreeWasExpanded == false && !bIsScrolling)
-	{
-		// Expand all the elements by calling the standard expansion operation (ignoring duplicates of course)
-		TreeExpandElements(RootNodes,false);
-
-		// Notify the navigation system that we just expanded the tree
-		bTreeWasExpanded = true;
-
-		// It will trigger an automatic scroll operation if possible depending on the tree
-		bIsSearchingForPreviousElement = true;
-			
-		return FReply::Handled();
-	}
-
-	// At this point we know the tree has been fully expanded and we should be able to traverse it without the
-	// need of expanding it again unless we get to another object of the targeted type with should, if used as
-	// start for another search, perform another cautionary tree expansion.
-	
-	// Get the index of the currently selected element on the array of operations of the current type
-	// If it is < 0 means that the current object is not part of the actual elements of the targeted type
-	int32 SelectedOperationIndex = NavigationFoundElements.IndexOfByKey(CurrentNavigationElement);
-
-	if ( CurrentNavigationElement )
-	{
-		// A current element is selected and is not the first one. Select the previous element
-		if ( SelectedOperationIndex > 0)
-		{
-			// Get the previous element on the array (the one on top of the current one on the tree structure)
-			SetCurrentNavigationElement(NavigationFoundElements[SelectedOperationIndex - 1]);
-			return FReply::Handled();
-		}
-	}
-	// No current element is currently selected
-	else
-	{
-		// We have no current element selected but there are elements there to be used. Select the last one
-		if ( !NavigationFoundElements.IsEmpty() )
-		{
-			// Get the last object and use it as the current object
-			SelectedOperationIndex = NavigationFoundElements.Num() -1;
-			SetCurrentNavigationElement(NavigationFoundElements[SelectedOperationIndex]);
-			return FReply::Handled();
-		}
-	}
-
-	// If no other element of the type we want is found it means we should look for other elements by
-	// scrolling the view up to the top or until we find another element
-	{
-		// It will trigger an automatic scroll operation if possible depending on the tree.
-		bIsSearchingForPreviousElement = true;
-	}
-
 	return FReply::Handled();
 }
-
-void SMutableCodeViewer::GoToPreviousOperationAfterRefresh()
-{
-	// Is mandatory for this system to be stable to operate after the tree refresh
-	check(TreeView->IsPendingRefresh() == false);
-	
-	// Required for all the possible contexts where this method could  partake
-	check(bIsSearchingForPreviousElement);
-	
-	// Check that we did change the amount of elements of our current targeted type.
-	// If the tree was fully expanded on the previous update then check the changes by entering the if block
-	const bool bNewElementFound = HaveNewElementsBeenFound();
-	if ( bNewElementFound || bTreeWasExpanded)
-	{
-		// Reset the flag since we are already being run after the tree refresh
-		bIsSearchingForPreviousElement = false;
-		
-		// Continue the operation now that the tree view has been refreshes and the new rows are there to be used
-		OnGoToPreviousOperationButtonPressed();
-		
-		// Reset the just expanded flag if found to be true
-		bTreeWasExpanded = false;
-		
-		// Reset the scrolling flag in case it was active
-		bIsScrolling = false;
-		return;
-	}
-
-	// We do know that no element of the targeted type has been found. So, we should start searching
-	
-	// If scrollable try to scroll over the tree to locate new elements
-	if (TreeView->IsScrollbarNeeded() &&
-		TreeView->GetScrollOffset() > 0 )
-	{
-		// Flag the system so it is able to tell if the scrolling is being performed or not
-		bIsScrolling = true;
-
-		// Add the max possible offset to be fast but secure on the translation process over the graph
-		ComputedMaxViewScrollStep = FMath::Max( TreeElements.Num() - 1,MinTreeScrollStep);
-		TreeView->AddScrollOffset(-ComputedMaxViewScrollStep,true);
-
-		// Check to avoid children drawing crash when having negative offset values
-		if (TreeView->GetScrollOffset() < 0)
-		{
-			TreeView->ScrollToTop();
-		}
-			
-		return;
-	}
-
-	// If not scrollable then just ignore this operation since it means no new elements have been added and
-	// no targeted elements can be retrieved from the graph
-	bIsSearchingForPreviousElement = false;
-	bIsScrolling = false;
-}
-
 
 FReply SMutableCodeViewer::OnGoToNextOperationButtonPressed()
 {
-	// Go forward one index on the array TargetedElementsOfType.
-	// If in last index try to expand other rows
-	
-	// Filter out not valid type
-	if (NavigationOPAddresses.IsEmpty())
-	{
-		return FReply::Handled();
-	}
-
-	// Sort the array of navigation elements just in case the order of the elements on the view changed
-	// This can happen if the user scrolls the view and new elements of the targeted type come to view
-	SortNavigationElementsArray();
-
-	// Make a copy of the array to be able to later compare it to the tree with the element expanded
-	NavigationPreviouslyFoundElements = NavigationFoundElements;
-
-	// Fully expand tree if required to uncover all possible elements of the targeted type.
-	// The expansion does not discern between element types, all non duplicated elements will be expanded
-	if (bTreeWasExpanded == false && !bIsScrolling)
-	{
-		// Expand all elements to avoid leaving any of them behind when searching for the next element
-		TreeExpandElements(RootNodes,false);
-
-		// Tell the system to continue operating after the tree refresh
-		bIsSearchingForNextElement = true;
-
-		// Save a flag to avoid redoing this again later (only required once per selected object)
-		bTreeWasExpanded = true;
-			
-		return FReply::Handled();
-	}
-
-	// At this point we know the tree has been fully expanded and we should be able to traverse it without the
-	// need of expanding it again unless we get to another object of the targeted type with should, if used as
-	// start for another search, perform another cautionary tree expansion.
-	
-	// Get the index of the currently selected element on the array of operations of the current type
-	// If it is < 0 means that the current object is not part of the actual elements of the targeted type
-	int32 SelectedOperationIndex = NavigationFoundElements.IndexOfByKey(CurrentNavigationElement);
-	
-	// If we have an element already set then use it to compute the values
-	if (CurrentNavigationElement)
-	{
-		// If we are not the last element of the array then move on to the next one normally
-		// Since we have expanded the current element we should be able to access contents inside of it (children of it)
-		if (SelectedOperationIndex < NavigationFoundElements.Num() - 1)
-		{
-			// Select the new element
-			SetCurrentNavigationElement(NavigationFoundElements[SelectedOperationIndex + 1]);
-			return FReply::Handled();
-		}
-	}
-	// We do not have a current element to use as starting point for our search.
-	else
-	{
-		// Since we are moving downwards, grab the first element visible to make it be the current object.
-		if (NavigationFoundElements.Num() > 0)
-		{
-			// Get the first object and store its direction
-			SelectedOperationIndex = 0;
-			SetCurrentNavigationElement(NavigationFoundElements[SelectedOperationIndex]);
-			return FReply::Handled();
-		}
-	}
-
-	// At this point we are not able to reach any other element of the current type. We must then
-	// start scrolling down in order to get to the next element or the end of the tree view.
-	{
-		// Enable this flag to make the system search for new elements on the tree on the next tick
-		bIsSearchingForNextElement = true;
-	}
+	// Focus on next target
+	NavigationIndex = NavigationIndex>=NavigationElements.Num() -1 ? NavigationElements.Num() -1 : NavigationIndex + 1;
+	FocusViewOnNavigationTarget();
 	
 	return FReply::Handled();
 }
 
-
-void SMutableCodeViewer::GoToNextOperationAfterRefresh()
+void SMutableCodeViewer::FocusViewOnNavigationTarget()
 {
-	// Is mandatory for this system to be stable to operate after the tree refresh
-	check(TreeView->IsPendingRefresh() == false);
-	
-	// Required for all the possible contexts where this method could  partake
-	check(bIsSearchingForNextElement);
-	
-	// Check if the new CurrentArray does have elements not already set on the previous array
-	// and also check if we expanded the tree on the previous tick. If so, enter the if block
-	const bool bNewElementFound = HaveNewElementsBeenFound();
-	if (bNewElementFound || bTreeWasExpanded)
+	// Stage 1 : Expand all tree so all navigable elements get to be reachable
+	if (!bWasUniqueExpansionInvokedForNavigation && !bWasScrollToTargetRequested)
 	{
-		// Reset the flag since we are already being run after the tree refresh
-		bIsSearchingForNextElement = false;
+		TreeExpandUnique();
+		bWasUniqueExpansionInvokedForNavigation = true;
+		// Early exit, this method will get called again later after tree update
+		return;		
+	}
+	
+	// Stage 2 : Try to get to the targeted element. if not visible scroll into view
+	
+	// Locate the element on our map of elements
+	const TSharedPtr<FMutableCodeTreeElement> TargetElement = NavigationElements[NavigationIndex];
+	check (TargetElement.IsValid());
+	
+	// If required scroll to the area where we know the element is going to be in view
+	// a way to ensure this happens is by calling 
+	if (TreeView->IsItemVisible(TargetElement))
+	{
+		// Stage 3-b : Select the element we have provided since now is sure to be in view
 		
-		// Recreate the button press to move to the next element after expanding the tree
-		OnGoToNextOperationButtonPressed();
+		// This line selects the element with at the same time updates the UI to show the row representing this element selected
+		TreeView->SetSelection(TargetElement);
+	
+		// Done!
+		// We have the element in view and we have selected it!
+	}
+	else
+	{
+		// Stage 3-a (optional) : Ask for the provided element to be scrolled into view.
 		
-		// Reset the just expanded flag
-		// Setting this to false makes the system able to fully expand the tree later when we start searching again
-		bTreeWasExpanded = false;
+		// Failing this check would mean we have performed a scroll but we are still not able to view the element
+		check (!bWasScrollToTargetRequested);
 		
-		// Reset the scrolling flag in case it was active
-		bIsScrolling = false;
+		// Amount of elements that can be shown by the UI at any given time (search for better way of knowing this)
+		TreeView->RequestScrollIntoView(TargetElement);
+		
+		// Read this variable after the update and then select the object (easy at this point)
+		// You may want to just call again this method after refresh since the element will be on view
+		bWasScrollToTargetRequested = true;
+
+		// Early exit, this method will get called again later after tree update once the scroll has been completed
 		return;
 	}
 
-	// We do know that no element of the targeted type has been found. So, we should start searching
-	
-	// If scrollable try to scroll over the tree to locate new elements
-	if (TreeView->IsScrollbarNeeded()
-		&& TreeView->GetScrollDistanceRemaining().Y > 0)
-	{
-		// Flag the system so it is able to tell if the scrolling is being performed or not
-		bIsScrolling = true;
-			
-		// Add a bit of scroll
-		ComputedMaxViewScrollStep = FMath::Max( TreeElements.Num() - 1,MinTreeScrollStep);
-		TreeView->AddScrollOffset(ComputedMaxViewScrollStep,true);
-
-		// Do not trust the tree to be able to handle this kind of artificial scrolling and avoid surpassing the end
-		if (TreeView->GetScrollDistanceRemaining().Y < 0 )
-		{
-			TreeView->ScrollToBottom();
-		}
-			
-		return;
-	}
-
-	// If not scrollable then just ignore this operation since it means no new elements have been added and
-	// no targeted elements can be retrieved from the graph
-	bIsSearchingForNextElement = false;
-	bIsScrolling = false;
+	// Reset the control flag so we do not expand all tree again if not required
+	bWasUniqueExpansionInvokedForNavigation = false;
+	bWasScrollToTargetRequested = false;
 }
-
-bool SMutableCodeViewer::HaveNewElementsBeenFound() const
-{
-	// Check if the new CurrentArray does have elements not already set on the previous array
-	bool NewElementAdded = false;
-
-	// If the current array does have data and the old not then we directly know that new elements have been added.
-	if (NavigationFoundElements.Num() && NavigationPreviouslyFoundElements.IsEmpty())
-	{
-		return true;
-	}
-	
-	// Iterate the current array to 
-	for (int32 CurrentArrayIndex = 0; CurrentArrayIndex < NavigationFoundElements.Num(); CurrentArrayIndex++)
-	{
-		// If the element is not found on the previous array it means it is new, and therefore a valid element to select
-		if (!NavigationPreviouslyFoundElements.Contains(NavigationFoundElements[CurrentArrayIndex]))
-		{
-			NewElementAdded = true;
-			break; 
-		}
-	}
-
-	return NewElementAdded;
-}
-
 
 #pragma endregion 
+
+#pragma region Operation Cost Color Hints
+
+void SMutableCodeViewer::GenerateAllTreeElements()
+{
+	// By generating all tree elements prior to usage we are able to :
+	//	- Compute the index of each one to aid on navigation
+	//	- Remove non-deterministic assignation of the "Duplicated" state of elements. It was due to user interaction with the tree
+	//	Only unique elements, their children and duplicated elements will be generated. Children of duplicates will
+	// 	be ignored due to how we handle them when expanding and contracting elements (OnExpansionChanged)
+
+	// Generate all root nodes
+	const mu::Model::Private* ModelPrivate = MutableModel->GetPrivate();
+	const mu::FProgram& Program = ModelPrivate->m_program;
+	const uint32 StateCount = ModelPrivate->m_program.m_states.Num();
+	for ( uint32 StateIndex=0; StateIndex<StateCount; ++StateIndex )
+	{
+		const mu::FProgram::FState& State = ModelPrivate->m_program.m_states[StateIndex];
+		FString Caption = FString::Printf( TEXT("state [%s]"), ANSI_TO_TCHAR(State.m_name.c_str()) );
+
+		const FSlateColor LabelColor = ColorPerComputationalCost[StaticCast<uint8>(GetOperationTypeComputationalCost(
+			ModelPrivate->m_program.GetOpType(State.m_root)))];
+
+		RootNodes.Add(MakeShareable(new FMutableCodeTreeElement(ItemCache.Num(),StateIndex, MutableModel, State.m_root, Caption,LabelColor)));
+
+		// Iterate over each root node and generate all the elements in a human readable pattern (Z Pattern)
+
+		constexpr  mu::OP::ADDRESS CommonParent = 0;
+		const FItemCacheKey Key = { CommonParent, State.m_root, StateIndex };
+
+		// Add the element to the cache so we keep the indices straight.
+		ItemCache.Add(Key, RootNodes.Last());
+		GenerateElementRecursive(StateIndex,State.m_root,Program);
+	}
+	
+}
+
+void SMutableCodeViewer::GenerateElementRecursive(const int32& InStateIndex, mu::OP::ADDRESS InParentAddress,  const mu::FProgram& InProgram)
+{
+	// This will be used to add operations
+	uint32 ChildIndex = 0;
+	auto AddOpFunc = [this, InParentAddress, &InProgram, &ChildIndex, &InStateIndex](mu::OP::ADDRESS ChildAddress, const FString& Caption)
+		{
+			if (ChildAddress)
+			{
+				const FItemCacheKey Key = { InParentAddress, ChildAddress, ChildIndex };
+				const TSharedPtr<FMutableCodeTreeElement>* CachedItem = ItemCache.Find(Key);
+
+				// Will this ever really hit?
+				check(!CachedItem);
+
+				if (!CachedItem)
+				{
+					// Locate the "original" tree element
+					const TSharedPtr<FMutableCodeTreeElement>* MainItemPtr = MainItemPerOp.Find(ChildAddress);
+
+					const FSlateColor LabelColor = ColorPerComputationalCost[StaticCast<uint8>(GetOperationTypeComputationalCost(InProgram.GetOpType(ChildAddress)))];
+
+					// No caption for the generic tree
+					const TSharedPtr<FMutableCodeTreeElement> Item = MakeShareable(new FMutableCodeTreeElement(ItemCache.Num(),InStateIndex, MutableModel, ChildAddress, Caption, LabelColor, MainItemPtr));
+
+					// Cache this element for later access
+					ItemCache.Add(Key, Item);
+
+					// It is not a duplicated of another one, then we can continue searching
+					if (!MainItemPtr)
+					{
+						MainItemPerOp.Add(ChildAddress, Item);
+
+						GenerateElementRecursive(InStateIndex,ChildAddress, InProgram);
+					}
+				}
+			}
+			++ChildIndex;
+		};
+
+	
+	// For some specific parent operation types we create more detailed subtrees.
+	const mu::OP_TYPE ParentOperationType = InProgram.GetOpType(InParentAddress);
+	switch (ParentOperationType)
+	{
+	case mu::OP_TYPE::IM_SWITCH:
+	case mu::OP_TYPE::LA_SWITCH:
+	case mu::OP_TYPE::ME_SWITCH:
+	case mu::OP_TYPE::CO_SWITCH:
+	case mu::OP_TYPE::SC_SWITCH:
+	case mu::OP_TYPE::NU_SWITCH:
+	case mu::OP_TYPE::IN_SWITCH:
+	{
+		const uint8* OpData = InProgram.GetOpArgsPointer(InParentAddress);
+
+		mu::OP::ADDRESS VarAddress;
+		FMemory::Memcpy(&VarAddress, OpData, sizeof(mu::OP::ADDRESS));
+		OpData += sizeof(mu::OP::ADDRESS);
+		AddOpFunc(VarAddress, TEXT("var "));
+
+		mu::OP::ADDRESS DefAddress;
+		FMemory::Memcpy(&DefAddress, OpData, sizeof(mu::OP::ADDRESS));
+		OpData += sizeof(mu::OP::ADDRESS);
+		AddOpFunc(DefAddress, TEXT("def "));
+
+		uint32 CaseCount;
+		FMemory::Memcpy(&CaseCount, OpData, sizeof(uint32));
+		OpData += sizeof(uint32);
+
+		for (uint32 C = 0; C < CaseCount; ++C)
+		{
+			int32 Condition;
+			FMemory::Memcpy(&Condition, OpData, sizeof(int32));
+			OpData += sizeof(int32);
+
+			mu::OP::ADDRESS At;
+			FMemory::Memcpy(&At, OpData, sizeof(mu::OP::ADDRESS));
+			OpData += sizeof(mu::OP::ADDRESS);
+
+			FString Caption = FString::Printf(TEXT("case %d "),Condition);
+			AddOpFunc(At, Caption);
+		}
+
+		break;
+	}
+
+	case mu::OP_TYPE::IM_SWIZZLE:
+	{
+		mu::OP::ImageSwizzleArgs Args = InProgram.GetOpArgs<mu::OP::ImageSwizzleArgs>(InParentAddress);
+		for (int32 Channel = 0; Channel < 4; ++Channel)
+		{
+			FString Caption = FString::Printf(TEXT("%d is %d from "), Channel, Args.sourceChannels[Channel]);
+			AddOpFunc(Args.sources[Channel], Caption);
+		}
+		break;
+	}
+
+	case mu::OP_TYPE::CO_SWIZZLE:
+	{
+		mu::OP::ColourSwizzleArgs Args = InProgram.GetOpArgs<mu::OP::ColourSwizzleArgs>(InParentAddress);
+		for (int32 Channel = 0; Channel < 4; ++Channel)
+		{
+			FString Caption = FString::Printf(TEXT("%d is %d from "), Channel, Args.sourceChannels[Channel]);
+			AddOpFunc(Args.sources[Channel], Caption);
+		}
+		break;
+	}
+
+	case mu::OP_TYPE::IM_LAYER:
+	{
+		mu::OP::ImageLayerArgs Args = InProgram.GetOpArgs<mu::OP::ImageLayerArgs>(InParentAddress);
+		AddOpFunc(Args.base, TEXT("base "));
+		if (Args.mask)
+		{
+			AddOpFunc(Args.mask, TEXT("mask "));
+		}
+		AddOpFunc(Args.blended, TEXT("blended "));
+		break;
+	}
+
+	case mu::OP_TYPE::IM_LAYERCOLOUR:
+	{
+		mu::OP::ImageLayerColourArgs Args = InProgram.GetOpArgs<mu::OP::ImageLayerColourArgs>(InParentAddress);
+		AddOpFunc(Args.base, TEXT("base "));
+		if (Args.mask)
+		{
+			AddOpFunc(Args.mask, TEXT("mask "));
+		}
+		AddOpFunc(Args.colour, TEXT("colour "));
+		break;
+	}
+
+	case mu::OP_TYPE::IM_MULTILAYER:
+	{
+		mu::OP::ImageMultiLayerArgs Args = InProgram.GetOpArgs<mu::OP::ImageMultiLayerArgs>(InParentAddress);
+		AddOpFunc(Args.rangeSize, TEXT("range "));
+		AddOpFunc(Args.base, TEXT("base "));
+		if (Args.mask)
+		{
+			AddOpFunc(Args.mask, TEXT("mask "));
+		}
+		AddOpFunc(Args.blended, TEXT("blended "));
+		break;
+	}
+
+	default:
+	{
+		// Generic list of child operations
+
+		// Find children of the provided element
+		mu::ForEachReference(InProgram, InParentAddress, [this, &InProgram, AddOpFunc](mu::OP::ADDRESS ChildAddress)
+			{
+				AddOpFunc(ChildAddress,TEXT(""));
+			});
+		break;
+	}
+
+	}
+}
+
+SMutableCodeViewer::EOperationComputationalCost SMutableCodeViewer::GetOperationTypeComputationalCost(mu::OP_TYPE OperationType) const
+{
+	if (VeryExpensiveOperationTypes.Contains(OperationType))
+	{
+		return EOperationComputationalCost::VeryExpensive;
+	}
+	else if (ExpensiveOperationTypes.Contains(OperationType))
+	{
+		return EOperationComputationalCost::Expensive;
+	}
+	else
+	{
+		return EOperationComputationalCost::Standard;
+	}
+}
+
+#pragma endregion 
+
+
 
 #pragma region CodeTree Callbacks
 
@@ -1278,16 +1379,6 @@ TSharedRef<ITableRow> SMutableCodeViewer::GenerateRowForNodeTree(TSharedPtr<FMut
 	
 	// Generate a row element
 	TSharedRef<SMutableCodeTreeRow> Row = SNew(SMutableCodeTreeRow, InOwnerTable, InTreeNode);
-	
-	// Only add it to our collection of navigation elements if we know it has an address we want to be able to navigate to
-	if (NavigationOPAddresses.Contains(InTreeNode->MutableOperation))
-	{
-		// Ignore duplicates
-		if (!InTreeNode->DuplicatedOf)
-		{
-			NavigationFoundElements.Add(InTreeNode);
-		}
-	}
 	
 	// Determine if a row should be painted as highlighted based on the selected item
 	if (TreeView->GetNumItemsSelected())
@@ -1310,13 +1401,8 @@ void SMutableCodeViewer::GetChildrenForInfo(TSharedPtr<FMutableCodeTreeElement> 
 		return;
 	}
 
-	// If this is a duplicated of another row, don't provide its children.
-	//if (InInfo->DuplicatedOf)
-	//{
-	//	return;
-	//}
-
-	const mu::PROGRAM& Program = MutableModel->GetPrivate()->m_program;
+	check(MutableModel);
+	const mu::FProgram& Program = MutableModel->GetPrivate()->m_program;
 
 	mu::OP::ADDRESS ParentAddress = InInfo->MutableOperation;
 
@@ -1335,16 +1421,8 @@ void SMutableCodeViewer::GetChildrenForInfo(TSharedPtr<FMutableCodeTreeElement> 
 			}
 			else
 			{
-				const TSharedPtr<FMutableCodeTreeElement>* MainItemPtr = MainItemPerOp.Find(ChildAddress);
-				const TSharedPtr<FMutableCodeTreeElement> Item = MakeShareable(new FMutableCodeTreeElement(MutableModel, ChildAddress, TEXT(""), MainItemPtr));
-
-				OutChildren.Add(Item);
-				ItemCache.Add(Key, Item);
-
-				if (!MainItemPtr)
-				{
-					MainItemPerOp.Add(ChildAddress, Item);
-				}
+				// if all elements have been already cached this should never happen
+				checkNoEntry();
 			}
 		}
 		++ChildIndex;
@@ -1353,22 +1431,89 @@ void SMutableCodeViewer::GetChildrenForInfo(TSharedPtr<FMutableCodeTreeElement> 
 
 void SMutableCodeViewer::OnExpansionChanged(TSharedPtr<FMutableCodeTreeElement> InItem, bool bInExpanded)
 {
+	// Update expanded state of the provided element
+	InItem->bIsExpanded = bInExpanded;
+	
 	// If an element gets expanded then contract (if found) the other element that uses the same address
 	if (bInExpanded)
 	{
 		const mu::OP::ADDRESS MutableOperation = InItem->MutableOperation;
-		const TSharedPtr<FMutableCodeTreeElement>* ExpandedElement = ExpandedElements.Find(MutableOperation);
-		if (ExpandedElement)
+		const TSharedPtr<FMutableCodeTreeElement>* PreviouslyExpandedElement = ExpandedElements.Find(MutableOperation);
+		if (PreviouslyExpandedElement)
 		{
-			TreeView->SetItemExpansion(*ExpandedElement, false);
+			TreeView->SetItemExpansion(*PreviouslyExpandedElement, false);
+		}
+
+		// Only do this if in a situation where it may be required (do not do it if the tree has not been interacted with yet)
+		if (bShouldRecalculateStates)
+		{
+			// Find all the children (recursive) of this item.
+			TSet<TSharedPtr<FMutableCodeTreeElement>> FoundChildren;
+			GetVisibleChildren(InItem, FoundChildren);
+			for (const TSharedPtr<FMutableCodeTreeElement>& Child : FoundChildren)
+			{
+				// For each of the children found set it's state to be the one found on the expanded element
+				Child->SetElementCurrentState(InItem->GetStateIndex());
+			}
 		}
 		
+		// Cache this element as one currently expanded
 		ExpandedElements.Add(MutableOperation, InItem);
 	}
 	else
 	{
+		// Remove this element from the cache of expanded elements
 		ExpandedElements.Remove(InItem->MutableOperation);
 	}
+}
+
+void SMutableCodeViewer::GetVisibleChildren(TSharedPtr<FMutableCodeTreeElement> InInfo, TSet<TSharedPtr<FMutableCodeTreeElement>>& OutChildren)
+{
+	check(MutableModel);
+	const mu::FProgram MutableProgram = MutableModel->GetPrivate()->m_program;
+	
+	TArray<TSharedPtr<FMutableCodeTreeElement>> ToSearchForChildren;
+	ToSearchForChildren.Add(InInfo);
+	while (!ToSearchForChildren.IsEmpty())
+	{
+		// Grab the first element in order to check for it's children
+		const TSharedPtr<FMutableCodeTreeElement> ToCheck = ToSearchForChildren[0];
+		ToSearchForChildren.RemoveAt(0);
+		
+		const mu::OP::ADDRESS ParentAddress = ToCheck->MutableOperation;
+	
+		// Generic case for unnamed children traversal.
+		uint32 ChildIndex = 0;
+		mu::ForEachReference(MutableProgram, ParentAddress, [this, ParentAddress, &ChildIndex, &OutChildren, &ToSearchForChildren ](mu::OP::ADDRESS ChildAddress)
+		{
+			if (ChildAddress)
+			{
+				const FItemCacheKey Key = { ParentAddress, ChildAddress, ChildIndex };
+				const TSharedPtr<FMutableCodeTreeElement> CachedItem = *ItemCache.Find(Key);
+
+				// Since we have already generated all elements CachedItem should be therefore always a valid pointer
+				check (CachedItem);
+				
+				// If the address has not been yet found then save it as one of the children affected
+				if (!OutChildren.Contains(CachedItem))
+				{
+					OutChildren.Add(CachedItem);
+
+					// And if the children is found to be expanded then also process it later to later return only the
+					// elements that are expanded in the tree view (using data manually set on each tree element)
+					if (CachedItem->bIsExpanded )
+					{
+						// Add for processing
+						ToSearchForChildren.Add(CachedItem);
+					}
+				}
+			}
+			++ChildIndex;
+		});
+	}
+
+	// Debug
+	// UE_LOG(LogTemp,Warning,TEXT("Found a total of %i children elements "),OutChildren.Num());
 }
 
 
@@ -1563,16 +1708,6 @@ void SMutableCodeViewer::OnRowReleased(const TSharedRef<ITableRow>& InTreeRow)
 	SMutableCodeTreeRow* CastedTableRow = static_cast<SMutableCodeTreeRow*>(&InTreeRow.Get());
 	const TSharedPtr<FMutableCodeTreeElement>& RowElement = CastedTableRow->GetItem();
 	TreeElements.Remove(RowElement);
-	
-	// Remove the element from the array of elements of the current type
-	if (NavigationFoundElements.Contains(RowElement))
-	{
-		NavigationFoundElements.Remove(RowElement);
-		if (CurrentNavigationElement == RowElement)
-		{
-			SetCurrentNavigationElement(nullptr);
-		}
-	}
 }
 #pragma endregion
 
@@ -1797,6 +1932,7 @@ void SMutableCodeViewer::TreeExpandInstance()
 	// Expand only the items that match the datatype provided
 	TreeExpandElements(RootNodes,false, mu::DT_INSTANCE);
 }
+
 #pragma endregion
 
 #pragma region Caching of operations related to constant resource
@@ -1812,7 +1948,7 @@ void SMutableCodeViewer::CacheRootNodeAddresses()
 	const int32 StateCount = ModelPrivate->m_program.m_states.Num();
 	for ( int32 StateIndex=0; StateIndex < StateCount; ++StateIndex )
 	{
-		const mu::PROGRAM::STATE& State = ModelPrivate->m_program.m_states[StateIndex];
+		const mu::FProgram::FState& State = ModelPrivate->m_program.m_states[StateIndex];
 		FoundRootNodeAddresses.Add(State.m_root);
 	}
 
@@ -1823,88 +1959,86 @@ void SMutableCodeViewer::CacheRootNodeAddresses()
 	const int32 IndexOnConstantsArray)
 {
 	check(MutableModel);
+	check(RootNodeAddresses.Num());
+
 	if (IndexOnConstantsArray < 0)
 	{
 		// Not valid index.
 		UE_LOG(LogTemp,Error,TEXT("The provided index [%d] is not valid."),IndexOnConstantsArray );
 		return;
 	}
-	
-	// Iterate over all the operations found on this model. For that use as start the root elements of this graph and 
-	// move deeper in it
-	
-	TSet<mu::OP::ADDRESS> ProcessedAddresses;
-	TSet<mu::OP::ADDRESS> ConstantResourcesAddresses; 
 
+	// Object containing all data required by the search operation to be able to be called recursively
+	FElementsSearchCache SearchPayload;
+	// Initialize the Search Payload with the root node addresses. This way the search will use them as the root nodes where
+	// to start searching
+	SearchPayload.SetupRootBatch(RootNodeAddresses);
+	
 	// Main update procedure run for the targeted state and the targeted parameter values
-	const mu::PROGRAM& Program = MutableModel->GetPrivate()->m_program;
-	for (const mu::OP::ADDRESS& RootOperationAddress : RootNodeAddresses)
-	{
-		GetOperationsReferencingConstantResource(ConstantDataType, IndexOnConstantsArray,Program, RootOperationAddress,
-											 ConstantResourcesAddresses,ProcessedAddresses);
-	}
+	const mu::FProgram& Program = MutableModel->GetPrivate()->m_program; 
+	GetOperationsReferencingConstantResource(ConstantDataType,IndexOnConstantsArray,SearchPayload, Program);
 	
 	// At this point we did get all the addresses of operations that do involve the usage of our resource
-	if (ConstantResourcesAddresses.Num() > 0)
+	if (SearchPayload.FoundElements.Num() > 0)
 	{
-		// Managed by TargetedTypeSelector->SetSelectedItem callback method
-		// SetCurrentNavigationElement(nullptr);
-		
-		// Reset operation selection object to show no element to navigate to since we are not navigating over op types
-		{
-			// When setting it to none we are telling the system to not navigate over the operations
-			const int32 OperationIndex =  StaticCast<int32>(mu::OP_TYPE::NONE);
-			const TSharedPtr<FString> NewOperationString = OperationTypesStrings[OperationIndex];
-
-			// Set the type operation type to be looking for to be none.
-			TargetedTypeSelector->SetSelectedItem(NewOperationString);
-		}
+		// Set the type operation type to CONST_BASED_NAVIGATION (used to tell the user what is happening)
+		TargetedTypeSelector->SetSelectedItem(ConstantBasedNavigationEntry);
 
 		// Dump the located resources array onto the navigation array since we have content to navigate over
-		NavigationOPAddresses = ConstantResourcesAddresses.Array();
-
-		// Move the view to the top if possible
-		// this will take some time to finish -> wait until update end
-		TreeView->ScrollToTop();
+		NavigationElements = MoveTemp(SearchPayload.FoundElements);
+		SortNavigationElements();
 		
-		// Tell the system changes have been made over Navigation Addresses
-		bUpdatedNavigationAddresses = true;
+		// Reset the navigation index
+		NavigationIndex = -1;
 	}
 	else
 	{
 		UE_LOG(LogTemp,Error,TEXT("The provided constant index does not seem to be used anywere : Make sure the index is valid and that IsConstantResourceUsedByOperation() switch is up to date"));
 	}
-
 }
 
-void SMutableCodeViewer::GetOperationsReferencingConstantResource(const mu::DATATYPE ConstantDataType, const int32 IndexOnConstantsArray, const mu::PROGRAM& InProgram,
-	const mu::OP::ADDRESS& InParentAddress,
-	TSet<mu::OP::ADDRESS>& OutAddressesWithPresence,
-	TSet<mu::OP::ADDRESS>& AlreadyProcessedAddresses)
+
+void SMutableCodeViewer::GetOperationsReferencingConstantResource(
+	const mu::DATATYPE ConstantDataType,
+	const int32 IndexOnConstantsArray,
+	FElementsSearchCache& InSearchPayload,
+	const mu::FProgram& InProgram)
 {
-	// Generic case for unnamed children traversal.
-	mu::ForEachReference(InProgram, InParentAddress, [this, &OutAddressesWithPresence, &ConstantDataType, &IndexOnConstantsArray, &AlreadyProcessedAddresses, &InProgram]( mu::OP::ADDRESS ChildAddress)
+	// next batch of addresses to be explored 
+	TArray<FItemCacheKey> NextBatchAddressesData;
+	
+	for	(int32 ParentIndex = 0 ; ParentIndex < InSearchPayload.BatchData.Num(); ParentIndex++)
 	{
-		// If the parent does have a child then process it 
-		if (ChildAddress && !AlreadyProcessedAddresses.Contains(ChildAddress))
+		// Get one of the previous run "children" and treat as a parent to get it's children and process them
+		const mu::OP::ADDRESS& ParentAddress = InSearchPayload.BatchData[ParentIndex].Child;
+		
+		// Cache if same data type and we share the same address (means this op is pointing at the provided resource)
+		// It will cache duplicated entries
+		if (IsConstantResourceUsedByOperation(IndexOnConstantsArray, ConstantDataType, ParentAddress,InProgram))
 		{
-			// Cache if same data type and we share the same address (means this op is pointing at the provided resource)
-			if (IsConstantResourceUsedByOperation(IndexOnConstantsArray,ConstantDataType,ChildAddress,InProgram))
-			{
-				OutAddressesWithPresence.Add(ChildAddress);
-			}
-		
-			// Cache to avoid processing it again later
-			AlreadyProcessedAddresses.Add(ChildAddress);
-		
-			// Process the children of this object
-			GetOperationsReferencingConstantResource(ConstantDataType,IndexOnConstantsArray,InProgram,ChildAddress,OutAddressesWithPresence,AlreadyProcessedAddresses);
+			// Since this element is related with the provided constant resource cache it on InSearchPayload.FoundElements
+			InSearchPayload.AddToFoundElements(ParentAddress,ParentIndex,ItemCache);
 		}
-	});
+		
+		// Get all NON PROCESSED the children of this operation to later be able to process them (on next recursive call)
+		InSearchPayload.CacheChildrenOfAddressIfNotProcessed(ParentAddress, InProgram, NextBatchAddressesData);
+	}
+
+	// At this point all the addresses to be computed on the next batch have already been set and will be computed on
+	// the next recursive call
+	
+	// Explore children if found 
+	if (NextBatchAddressesData.Num())
+	{
+		// Cache next batch data so the next invocations is able to locate the provided addresses on the itemsCache
+		InSearchPayload.BatchData = MoveTemp(NextBatchAddressesData);
+		
+		GetOperationsReferencingConstantResource(ConstantDataType, IndexOnConstantsArray, InSearchPayload, InProgram);
+	}
 }
 
 bool SMutableCodeViewer::IsConstantResourceUsedByOperation(const int32 IndexOnConstantsArray,
-	const mu::DATATYPE ConstantDataType, const mu::OP::ADDRESS OperationAddress, const mu::PROGRAM& InProgram) const
+	const mu::DATATYPE ConstantDataType, const mu::OP::ADDRESS OperationAddress, const mu::FProgram& InProgram) const
 {
 	// Cache the current operation type to know where to look and what to check
 	const mu::OP_TYPE OperationType = InProgram.GetOpType(OperationAddress);
@@ -2100,6 +2234,60 @@ bool SMutableCodeViewer::IsConstantResourceUsedByOperation(const int32 IndexOnCo
 #pragma endregion 
 
 
+namespace
+{
+	/** Test implementation to provide image parameters. It will generate some images of a fixed size and format. */
+	class TestImageProvider : public mu::ImageParameterGenerator
+	{
+		static inline const mu::FImageDesc IMAGE_DESC = 
+			mu::FImageDesc(mu::FImageSize(1024, 1024), mu::EImageFormat::IF_RGBA_UBYTE, 1);
+		
+	public:
+		TTuple<FGraphEventRef, TFunction<void()>> GetImageAsync(mu::EXTERNAL_IMAGE_ID id, uint8 MipmapsToSkip, TFunction<void (mu::Ptr<mu::Image>)>& ResultCallback) override
+		{
+			MUTABLE_CPUPROFILER_SCOPE(TestImageProvider_GetImage);
+
+			int32 Size = IMAGE_DESC.m_size[0];
+			Size = FMath::Max(4, Size / (1 << MipmapsToSkip));
+
+			mu::Ptr<mu::Image> Image = 
+					new mu::Image(IMAGE_DESC.m_size[0], IMAGE_DESC.m_size[1], IMAGE_DESC.m_lods, IMAGE_DESC.m_format);
+
+			// Generate an alphatested circle with an horizontal gradient color.
+			uint8* Data = Image->GetData();
+			int32 CircleRadius = (Size * 2) / 5;
+			int32 CircleRadius2 = CircleRadius * CircleRadius;
+			int32 Color[3] = { 255,128,0 };
+
+			for (int y = 0; y < Size; ++y)
+			{
+				for (int x = 0; x < Size; ++x)
+				{
+					float R2 = (x - Size / 2) * (x - Size / 2) + (y - Size / 2) * (y - Size / 2);
+					int32 Opacity = FMath::Clamp( (CircleRadius2-R2)/CircleRadius2 * 512 - 64, 0, 255 );
+					Data[0] = (Color[0] * x) / Size;
+					Data[1] = (Color[1] * x) / Size;
+					Data[2] = (Color[2] * x) / Size;
+					Data[3] = uint8(Opacity);
+					Data += 4;
+				}
+			}
+
+			ResultCallback(Image);
+			FGraphEventRef CompletionEvent = FGraphEvent::CreateGraphEvent();
+			CompletionEvent->DispatchSubsequents();
+
+			return MakeTuple(CompletionEvent, []() -> void {});
+		}
+
+		mu::FImageDesc GetImageDesc(mu::EXTERNAL_IMAGE_ID Id, uint8 MipmapsToSkip) override
+		{
+			return IMAGE_DESC;
+		}
+	};
+}
+
+
 void SMutableCodeViewer::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
 {
 	SCompoundWidget::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
@@ -2109,39 +2297,10 @@ void SMutableCodeViewer::Tick(const FGeometry& AllottedGeometry, const double In
 	// there to be selected or inspected.
 	if (!TreeView->IsPendingRefresh())
 	{
-		// If the addresses set have changed then start looking for the first element that matches the first element on
-		// the addresses array
-		if ( bUpdatedNavigationAddresses)
+		/** If we have expanded the tree elements in order to reach one of them then continue the operation */
+		if (bWasUniqueExpansionInvokedForNavigation || bWasScrollToTargetRequested)
 		{
-			// Reset the flag
-			bUpdatedNavigationAddresses = false;
-
-			// Locate the elements that can be currently navigated over.
-			LocateNavigationElements();
-
-			// Simulate a button press to go to the next operation. At this point we should have no operation set so it
-			// will find and select the first one
-			// Commented out to avoid the jumping around behaviour of the tree view when selecting a constant resource.
-			// It also avoids situations where we select one constant that invokes a viewer (of type StringViewport for example) and close after, due
-			// to the operation that hosts that resource being selected automatically its that operation previewer witch gets open therefore
-			// clouding the initial viewport we were using.
-			// OnGoToNextOperationButtonPressed();
-
-			return;
-		}
-
-		// Are we searching upwards?
-		if (bIsSearchingForPreviousElement)
-		{
-			GoToPreviousOperationAfterRefresh();
-			return;
-		}
-
-		// Are we searching downwards?
-		if (bIsSearchingForNextElement)
-		{
-			GoToNextOperationAfterRefresh();
-			return;
+			FocusViewOnNavigationTarget();
 		}
 	}
 	
@@ -2156,8 +2315,12 @@ void SMutableCodeViewer::Tick(const FGeometry& AllottedGeometry, const double In
 	const mu::OP_TYPE OperationType = MutableModel->GetPrivate()->m_program.GetOpType(SelectedOperationAddress);
 	const mu::DATATYPE OperationDataType = mu::GetOpDataType(OperationType);
 
-	const mu::SettingsPtr Settings = new mu::Settings();
-	const mu::SystemPtr System = new mu::System(Settings);
+	const mu::Ptr<mu::Settings> Settings = new mu::Settings();
+	const mu::Ptr<mu::System> System = new mu::System(Settings);
+
+	TestImageProvider* ImageProvider = new TestImageProvider;
+	System->SetImageParameterGenerator(ImageProvider);
+
 	System->GetPrivate()->BeginBuild(MutableModel);
 
 	switch (OperationDataType)
@@ -2225,8 +2388,9 @@ void SMutableCodeViewer::Tick(const FGeometry& AllottedGeometry, const double In
 		float RedValue;
 		float GreenValue;
 		float BlueValue;
-		System->GetPrivate()->BuildColour(MutableModel, PreviewParameters.get(), SelectedOperationAddress, &RedValue, &GreenValue, &BlueValue);
-		PreviewColorViewer->SetColor(RedValue, GreenValue, BlueValue);
+		float AlphaValue;
+		System->GetPrivate()->BuildColour(MutableModel, PreviewParameters.get(), SelectedOperationAddress, &RedValue, &GreenValue, &BlueValue, &AlphaValue);
+		PreviewColorViewer->SetColor(RedValue, GreenValue, BlueValue, AlphaValue);
 		break;
 	}
 
@@ -2349,7 +2513,7 @@ void SMutableCodeViewer::PreviewMutableLayout(mu::LayoutPtrConst Layout)
 }
 
 
-void SMutableCodeViewer::PreviewMutableProjector(const mu::PROJECTOR* Projector)
+void SMutableCodeViewer::PreviewMutableProjector(const mu::FProjector* Projector)
 {
 	if (!Projector)
 	{
@@ -2400,9 +2564,85 @@ void SMutableCodeViewer::PreviewMutableMatrix(const mu::mat4f* Mat)
 }
 
 // TODO: Implement shape viewer
-void SMutableCodeViewer::PreviewMutableShape(const mu::SHAPE* Shape)
+void SMutableCodeViewer::PreviewMutableShape(const mu::FShape* Shape)
 {
 	UE_LOG(LogMutable,Warning,TEXT("Previewer for Mutable Shapes not yet implemented"))
 }
 
-#undef LOCTEXT_NAMESPACE 
+
+
+FReply SMutableCodeViewer::OnDragOver(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent)
+{
+	if (TSharedPtr<FExternalDragOperation> DragDropOp = DragDropEvent.GetOperationAs<FExternalDragOperation>())
+	{
+		if (DragDropOp->HasFiles())
+		{
+			// For now, only allow a single file.
+			const TArray<FString>& Files = DragDropOp->GetFiles();
+			if (Files.Num() == 1)
+			{
+				const FString DraggedFileExtension = FPaths::GetExtension(Files[0], true);
+				if (DraggedFileExtension == TEXT(".mutable_compiled"))
+				{
+					// Dump source model to a file.
+					mu::InputFileStream stream(TCHAR_TO_ANSI(*Files[0]));
+
+					char MutableSourceTag[4] = {};
+					stream.Read(MutableSourceTag, 4);
+
+					if (!FMemory::Memcmp(MutableSourceTag, MUTABLE_COMPILED_MODEL_FILETAG, 4))
+					{
+						return FReply::Handled();
+					}
+
+					return FReply::Unhandled();
+				}
+			}
+		}
+	}
+
+	return FReply::Unhandled();
+}
+
+
+FReply SMutableCodeViewer::OnDrop(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent)
+{
+	SCompoundWidget::OnDrop(MyGeometry, DragDropEvent);
+
+	if (TSharedPtr<FExternalDragOperation> DragDropOp = DragDropEvent.GetOperationAs<FExternalDragOperation>())
+	{
+		if (DragDropOp->HasFiles())
+		{
+			// For now, only allow a single file.
+			const TArray<FString>& Files = DragDropOp->GetFiles();
+			if (Files.Num() == 1)
+			{
+				const FString DraggedFileExtension = FPaths::GetExtension(Files[0], true);
+				if (DraggedFileExtension == TEXT(".mutable_compiled"))
+				{
+					// Read a mutable compiled model file.
+					mu::InputFileStream stream(TCHAR_TO_ANSI(*Files[0]));
+
+					char MutableSourceTag[4] = {};
+					stream.Read(MutableSourceTag, 4);
+
+					if (!FMemory::Memcmp(MutableSourceTag, MUTABLE_COMPILED_MODEL_FILETAG, 4))
+					{
+						mu::InputArchive arch(&stream);
+						TSharedPtr<mu::Model, ESPMode::ThreadSafe> Model = mu::Model::StaticUnserialise(arch);
+						SetCurrentModel(Model);
+
+						TreeView->RequestTreeRefresh();
+
+						return FReply::Handled();
+					}
+				}
+			}
+		}
+	}
+
+	return FReply::Unhandled();
+}
+
+
+#undef LOCTEXT_NAMESPACE

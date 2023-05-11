@@ -5,20 +5,34 @@
 =============================================================================*/
 
 #include "FXSystem.h"
-#include "RenderingThread.h"
-#include "VectorField.h"
 #include "Particles/FXSystemPrivate.h"
 #include "Particles/FXSystemSet.h"
 #include "GPUSort.h"
 #include "Particles/ParticleCurveTexture.h"
+#include "Particles/ParticleSortingGPU.h"
 #include "VectorField/VectorField.h"
 #include "Components/VectorFieldComponent.h"
-#include "SceneUtils.h"
+#include "SceneInterface.h"
 #include "SceneRendering.h" // needed for STATGROUP_CommandListMarkers
-#include "GPUSortManager.h"
+#include "DataDrivenShaderPlatformInfo.h"
 
 
 TMap<FName, FCreateCustomFXSystemDelegate> FFXSystemInterface::CreateCustomFXDelegates;
+
+bool IsParticleCollisionModeSupported(EShaderPlatform InPlatform, EParticleCollisionShaderMode InCollisionShaderMode)
+{
+	switch (InCollisionShaderMode)
+	{
+	case PCM_None:
+		return true;
+	case PCM_DepthBuffer:
+		return IsFeatureLevelSupported(InPlatform, ERHIFeatureLevel::SM5);
+	case PCM_DistanceField:
+		return IsFeatureLevelSupported(InPlatform, ERHIFeatureLevel::SM5);
+	}
+	check(0);
+	return IsFeatureLevelSupported(InPlatform, ERHIFeatureLevel::SM5);
+}
 
 /*-----------------------------------------------------------------------------
 	External FX system interface.
@@ -493,7 +507,7 @@ void FFXSystem::PreRender(FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> 
 		RDG_GPU_STAT_SCOPE(GraphBuilder, FXSystemPreRender);
 		RDG_CSV_STAT_EXCLUSIVE_SCOPE(GraphBuilder, FXSystem);
 
-		FRHIUniformBuffer* ViewUniformBuffer = GetReferenceViewUniformBuffer(Views);
+		TUniformBufferRef<FViewUniformShaderParameters> ViewUniformBuffer = GetReferenceViewUniformBuffer(Views);
 		const FGlobalDistanceFieldParameterData* GlobalDistanceFieldParameterData = GetReferenceGlobalDistanceFieldData(Views);
 
 		AddPass(
@@ -510,7 +524,7 @@ void FFXSystem::PreRender(FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> 
 				PrepareGPUSimulation(RHICmdList);
 
 				RHICmdList.SetCurrentStat(GET_STATID(STAT_CLM_FXPreRender_Simulate));
-				SimulateGPUParticles(RHICmdList, EParticleSimulatePhase::Main, nullptr, nullptr);
+				SimulateGPUParticles(RHICmdList, EParticleSimulatePhase::Main, {}, nullptr);
 
 				RHICmdList.SetCurrentStat(GET_STATID(STAT_CLM_FXPreRender_Finalize));
 				FinalizeGPUSimulation(RHICmdList);
@@ -540,7 +554,7 @@ void FFXSystem::PostRenderOpaque(FRDGBuilder& GraphBuilder, TConstArrayView<FVie
 		RDG_GPU_STAT_SCOPE(GraphBuilder, FXSystemPostRenderOpaque);
 		RDG_CSV_STAT_EXCLUSIVE_SCOPE(GraphBuilder, FXSystem);
 
-		FRHIUniformBuffer* ViewUniformBuffer = GetReferenceViewUniformBuffer(Views);
+		TUniformBufferRef<FViewUniformShaderParameters> ViewUniformBuffer = GetReferenceViewUniformBuffer(Views);
 
 		AddPass(GraphBuilder, RDG_EVENT_NAME("FFXSystem::PostRenderOpaque"), 
 			[this, ViewUniformBuffer](FRHICommandListImmediate& RHICmdList)

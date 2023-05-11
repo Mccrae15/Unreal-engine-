@@ -1,11 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraComponentRendererProperties.h"
+#include "NiagaraEmitterInstance.h"
 #include "NiagaraRenderer.h"
 #include "NiagaraConstants.h"
 #include "NiagaraRendererComponents.h"
 #include "NiagaraComponent.h"
 #include "Modules/ModuleManager.h"
+#include "UObject/Package.h"
 #if WITH_EDITOR
 #include "Widgets/Images/SImage.h"
 #include "Styling/SlateIconFinder.h"
@@ -45,6 +47,7 @@ bool UNiagaraComponentRendererProperties::IsConvertible(const FNiagaraTypeDefini
 		(SourceType == FNiagaraTypeDefinition::GetQuatDef() && TargetType.GetStruct() == GetFQuatDef().GetStruct()) ||
 		(SourceType == FNiagaraTypeDefinition::GetPositionDef() && TargetType.GetStruct() == GetFVectorDef().GetStruct()) ||
 		(SourceType == FNiagaraTypeDefinition::GetPositionDef() && TargetType.GetStruct() == GetFVector3fDef().GetStruct()) ||
+		(SourceType == FNiagaraTypeDefinition::GetFloatDef() && TargetType.GetStruct() == GetDoubleDef().GetStruct()) ||
 		(SourceType == FNiagaraTypeDefinition::GetQuatDef() && TargetType.GetStruct() == GetFRotatorDef().GetStruct()))
 	{
 		return true;
@@ -66,6 +69,10 @@ NIAGARA_API FNiagaraTypeDefinition UNiagaraComponentRendererProperties::ToNiagar
 	if (FieldClass->IsChildOf(FFloatProperty::StaticClass()))
 	{
 		return FNiagaraTypeDefinition::GetFloatDef();
+	}
+	if (FieldClass->IsChildOf(FDoubleProperty::StaticClass()))
+	{
+		return GetDoubleDef();
 	}
 	if (FieldClass->IsChildOf(FStructProperty::StaticClass()))
 	{
@@ -168,6 +175,13 @@ FNiagaraTypeDefinition UNiagaraComponentRendererProperties::GetFQuatDef()
 	static UPackage* CoreUObjectPkg = FindObjectChecked<UPackage>(nullptr, TEXT("/Script/CoreUObject"));
 	static UScriptStruct* Struct = FindObjectChecked<UScriptStruct>(CoreUObjectPkg, TEXT("Quat"));
 	return FNiagaraTypeDefinition(Struct, FNiagaraTypeDefinition::EAllowUnfriendlyStruct::Allow);
+}
+
+FNiagaraTypeDefinition UNiagaraComponentRendererProperties::GetDoubleDef()
+{
+	static UPackage* NiagaraPkg = FindObjectChecked<UPackage>(nullptr, TEXT("/Script/Niagara"));
+	static UScriptStruct* DoubleStruct = FindObjectChecked<UScriptStruct>(NiagaraPkg, TEXT("NiagaraDouble"));
+	return FNiagaraTypeDefinition(DoubleStruct, FNiagaraTypeDefinition::EAllowUnfriendlyStruct::Allow);
 }
 
 TArray<TWeakObjectPtr<UNiagaraComponentRendererProperties>> UNiagaraComponentRendererProperties::ComponentRendererPropertiesToDeferredInit;
@@ -338,16 +352,14 @@ void UNiagaraComponentRendererProperties::CacheFromCompiledData(const FNiagaraDa
 #if WITH_EDITORONLY_DATA
 bool UNiagaraComponentRendererProperties::IsSupportedVariableForBinding(const FNiagaraVariableBase& InSourceForBinding, const FName& InTargetBindingName) const
 {
-	if ( InTargetBindingName == GET_MEMBER_NAME_CHECKED(UNiagaraComponentRendererProperties, RendererEnabledBinding) )
+	if (InTargetBindingName == GET_MEMBER_NAME_CHECKED(UNiagaraRendererProperties, RendererEnabledBinding))
 	{
-		if (
+		return
 			InSourceForBinding.IsInNameSpace(FNiagaraConstants::UserNamespace) ||
 			InSourceForBinding.IsInNameSpace(FNiagaraConstants::SystemNamespace) ||
-			InSourceForBinding.IsInNameSpace(FNiagaraConstants::EmitterNamespace))
-		{
-			return true;
-		}
+			InSourceForBinding.IsInNameSpace(FNiagaraConstants::EmitterNamespace);
 	}
+
 	return false;
 }
 #endif

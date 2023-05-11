@@ -7,24 +7,11 @@
 #include "RenderResource.h"
 #include "RenderingThread.h"
 #include "RHIUtilities.h"
+#include "Containers/DynamicRHIResourceArray.h"
 
 // Static buffers shared between all instances built once on load
 struct FNiagaraSystemStaticBuffers
 {
-public:
-	struct FDeletor
-	{
-		void operator()(FNiagaraSystemStaticBuffers* Ptr) const
-		{
-			ENQUEUE_RENDER_COMMAND(ScriptSafeDelete)(
-				[RT_Ptr=Ptr](FRHICommandListImmediate& RHICmdList)
-				{
-					delete RT_Ptr;
-				}
-			);
-		}
-	};
-
 public:
 	FNiagaraSystemStaticBuffers() {}
 	~FNiagaraSystemStaticBuffers();

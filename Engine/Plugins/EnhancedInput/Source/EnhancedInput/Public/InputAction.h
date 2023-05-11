@@ -2,14 +2,15 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Engine/DataAsset.h"
-#include "InputActionValue.h"
-#include "InputMappingQuery.h"
 #include "InputModifiers.h"
 #include "InputTriggers.h"
 
 #include "InputAction.generated.h"
+
+struct FPropertyChangedEvent;
+
+class UPlayerMappableKeySettings;
 
 enum class ETriggerEventInternal : uint8;
 
@@ -27,13 +28,25 @@ public:
 	virtual EDataValidationResult IsDataValid(TArray<FText>& ValidationErrors) override;
 	
 	static TSet<const UInputAction*> ActionsWithModifiedValueTypes;
+	static TSet<const UInputAction*> ActionsWithModifiedTriggers;
 	
 	/**
 	 * Returns a bitmask of supported trigger events that is built from each UInputTrigger on this Action.
 	 */
 	ETriggerEventsSupported GetSupportedTriggerEvents() const;
-#endif
+
+	DECLARE_MULTICAST_DELEGATE(FTriggersChanged);
+	DECLARE_MULTICAST_DELEGATE(FModifiersChanged);
+
+	FTriggersChanged OnTriggersChanged;
+	FModifiersChanged OnModifiersChanged;
+#endif // WITH_EDITOR
 	
+	/**
+	* Returns the Player Mappable Key Settings for this Input Action.
+	*/
+	const TObjectPtr<UPlayerMappableKeySettings>& GetPlayerMappableKeySettings() const { return PlayerMappableKeySettings; }
+
 	// A localized descriptor of this input action
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Description")
 	FText ActionDescription = FText::GetEmpty();
@@ -69,6 +82,14 @@ public:
 	*/
 	UPROPERTY(EditAnywhere, Instanced, BlueprintReadWrite, Category = Action, meta=(DisplayAfter="Triggers"))
 	TArray<TObjectPtr<UInputModifier>> Modifiers;
+
+private:
+
+	/**
+	* Holds setting information about this Action Input for setting screen and save purposes.
+	*/
+	UPROPERTY(EditAnywhere, Instanced, BlueprintReadWrite, Category = "Input|Settings", meta=(AllowPrivateAccess))
+	TObjectPtr<UPlayerMappableKeySettings> PlayerMappableKeySettings;
 };
 
 // Calculate a collective representation of trigger state from evaluations of all triggers in one or more trigger groups.
@@ -182,3 +203,8 @@ public:
 	// The source action that this instance is created from
 	const UInputAction* GetSourceAction() const { return SourceAction; }
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "InputMappingQuery.h"
+#endif

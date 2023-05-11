@@ -3,6 +3,7 @@
 #include "GoogleARCorePassthroughCameraRenderer.h"
 #include "ScreenRendering.h"
 #include "RendererInterface.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "EngineModule.h"
 #include "PipelineStateCache.h"
 #include "ClearQuad.h"
@@ -13,12 +14,15 @@
 #include "Engine/TextureRenderTarget2D.h"
 #include "PostProcess/SceneFilterRendering.h"
 #include "PostProcess/PostProcessMaterial.h"
+#include "Materials/MaterialRenderProxy.h"
+#include "MaterialDomain.h"
 #include "MaterialShader.h"
 #include "MaterialShaderType.h"
 #include "GoogleARCoreAndroidHelper.h"
 #include "CommonRenderResources.h"
 #include "ARUtilitiesFunctionLibrary.h"
 #include "HAL/IConsoleManager.h"
+#include "UObject/Package.h"
 
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)

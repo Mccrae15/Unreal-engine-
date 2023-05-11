@@ -1,11 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MeshPaintGeometryCollectionAdapter.h"
+#include "GeometryCollection/GeometryCollection.h"
 #include "GeometryCollection/GeometryCollectionComponent.h"
-#include "MeshPaintHelpers.h"
-#include "MeshPaintingToolsetTypes.h"
-#include "ComponentReregisterContext.h"
-#include "IndexTypes.h"
+#include "GeometryCollection/GeometryCollectionObject.h"
+#include "RenderingThread.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogMeshPaintGeometryCollectionComponentAdapter, Log, All);
 //////////////////////////////////////////////////////////////////////////
@@ -250,10 +249,10 @@ void FMeshPaintGeometryCollectionComponentAdapter::ApplyOrRemoveTextureOverride(
 
 void FMeshPaintGeometryCollectionComponentAdapter::GetTextureCoordinate(int32 VertexIndex, int32 ChannelIndex, FVector2D& OutTextureCoordinate) const
 {
-	const TArray<FVector2f>& UV = GetGeometryCollectionObject()->GetGeometryCollection()->UVs[VertexIndex];
-	if (ChannelIndex < UV.Num())
+	const TManagedArray<FVector2f>* UVLayer = GetGeometryCollectionObject()->GetGeometryCollection()->FindUVLayer(ChannelIndex);
+	if (UVLayer)
 	{
-		OutTextureCoordinate = (FVector2D)UV[ChannelIndex];
+		OutTextureCoordinate = (FVector2D)(*UVLayer)[VertexIndex];
 	}
 }
 

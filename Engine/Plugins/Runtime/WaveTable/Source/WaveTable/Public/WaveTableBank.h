@@ -1,15 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "Algo/Transform.h"
 #include "IAudioProxyInitializer.h"
-#include "UObject/Object.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/ObjectSaveContext.h"
 #include "WaveTable.h"
 #include "WaveTableTransform.h"
 
 #include "WaveTableBank.generated.h"
+
+struct FPropertyChangedEvent;
 
 
 USTRUCT()
@@ -27,13 +25,13 @@ class WAVETABLE_API UWaveTableBank : public UObject, public IAudioProxyDataFacto
 	GENERATED_BODY()
 
 public:
-	// Number of sampled cached for each curve in the given bank.
+	// Number of samples cached for each curve in the given bank.
 	UPROPERTY(EditAnywhere, Category = Options)
 	EWaveTableResolution Resolution = EWaveTableResolution::Res_256;
 
-	// Determines if output from curve/wavetable are to be clamped between [-1.0f, 1.0f]
-	// (i.e. for waveform generation, oscillation, etc.) or between [0.0f, 1.0f]
-	// (i.e. for enveloping) when sampling curve/wavetable
+	// Determines if output from curve/wavetable are to be clamped between 
+	// [-1.0f, 1.0f] (i.e. for waveform generation, oscillation, etc.)
+	// or [0.0f, 1.0f] (i.e. for enveloping) when sampling curve/wavetable
 	UPROPERTY(EditAnywhere, Category = Options)
 	bool bBipolar = true;
 
@@ -52,7 +50,7 @@ public:
 	TArray<FWaveTableBankEntry> Entries;
 
 	/* IAudioProxyDataFactory Implementation */
-	virtual TUniquePtr<Audio::IProxyData> CreateNewProxyData(const Audio::FProxyDataInitParams& InitParams) override;
+	virtual TSharedPtr<Audio::IProxyData> CreateProxyData(const Audio::FProxyDataInitParams& InitParams) override;
 
 #if WITH_EDITOR
 	void RefreshWaveTables();
@@ -77,13 +75,8 @@ public:
 	{
 		Algo::Transform(InWaveTableBank.Entries, WaveTables, [](const FWaveTableBankEntry& Entry)
 		{
-			return Entry.Transform.WaveTable;
+			return WaveTable::FWaveTable(Entry.Transform.WaveTable, Entry.Transform.GetFinalValue());
 		});
-	}
-
-	virtual Audio::IProxyDataPtr Clone() const
-	{
-		return MakeUnique<FWaveTableBankAssetProxy>(*this);
 	}
 
 	virtual const TArray<WaveTable::FWaveTable>& GetWaveTables() const
@@ -95,3 +88,7 @@ protected:
 	TArray<WaveTable::FWaveTable> WaveTables;
 };
 using FWaveTableBankAssetProxyPtr = TSharedPtr<FWaveTableBankAssetProxy, ESPMode::ThreadSafe>;
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "UObject/ObjectSaveContext.h"
+#endif

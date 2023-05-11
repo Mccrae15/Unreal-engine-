@@ -1,7 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WaterBodyActorFactory.h"
-#include "WaterBodyActor.h"
 #include "WaterEditorSettings.h"
 #include "WaterBodyRiverActor.h"
 #include "WaterBodyOceanActor.h"
@@ -10,7 +9,7 @@
 #include "WaterBodyOceanComponent.h"
 #include "WaterBodyRiverComponent.h"
 #include "WaterSplineComponent.h"
-#include "WaterWaves.h"
+#include "WaterZoneActor.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(WaterBodyActorFactory)
 
@@ -130,6 +129,15 @@ void UWaterBodyOceanActorFactory::PostSpawnActor(UObject* Asset, AActor* NewActo
 
 	UWaterSplineComponent* WaterSpline = WaterBodyComponent->GetWaterSpline();
 	WaterSpline->ResetSpline({ FVector(10000, -10000, 0), FVector(10000,  10000, 0), FVector(-10000,  10000, 0), FVector(-10000, -10000, 0) });
+
+	if (const AWaterZone* OwningWaterZone = WaterBodyComponent->GetWaterZone())
+	{
+		if (UWaterBodyOceanComponent* OceanComponent = Cast<UWaterBodyOceanComponent>(WaterBodyComponent))
+		{
+			const double ExistingCollisionHeight = OceanComponent->GetCollisionExtents().Z;
+			OceanComponent->SetCollisionExtents(FVector(OwningWaterZone->GetZoneExtent() / 2.0, ExistingCollisionHeight));
+		}
+	}
 }
 
 // --------------------------------------------------

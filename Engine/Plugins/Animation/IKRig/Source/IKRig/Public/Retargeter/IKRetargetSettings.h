@@ -40,7 +40,7 @@ struct IKRIG_API FTargetChainSpeedPlantSettings
 
 	/** Range 0 to 1000. Default 15. The maximum speed a source bone can be moving while being considered 'planted'.
 	*  The target IK goal will not be allowed to move whenever the source bone speed drops below this threshold speed. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Plant IK by Speed", meta = (ClampMin = "0.0", ClampMax = "100.0", UIMin = "0.0", UIMax = "100.0"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Plant IK by Speed", meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "100.0"))
 	float SpeedThreshold = 15.0f;
 
 	// How stiff the spring model is that smoothly pulls the IK position after unplanting (more stiffness means more oscillation around the target value)
@@ -138,6 +138,10 @@ struct IKRIG_API FTargetChainIKSettings
 	/** Default 0, 0, 0. Apply a static local-space offset to IK goal rotation. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "IK Adjustments")
 	FRotator StaticRotationOffset = FRotator::ZeroRotator;
+
+	/** Range +-Infinity. Default 1. Scales the vertical component of the IK goal's position.*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "IK Adjustments", meta = (UIMin = "0.0", UIMax = "5.0"))
+	float ScaleVertical = 1.0f;
 	
 	/** Range 0 to 5. Default 1. Brings IK goal closer (0) or further (1+) from origin of chain.
 	*  At 0 the effector is placed at the origin of the chain (ie Shoulder, Hip etc).

@@ -16,7 +16,9 @@
 #include "HairStrandsImporter.h"
 #include "HairStrandsTranslator.h"
 #include "Logging/LogMacros.h"
+#include "Misc/PackageName.h"
 #include "Misc/ScopedSlowTask.h"
+#include "UObject/Package.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ReimportHairStrandsFactory)
 
@@ -226,7 +228,11 @@ namespace ReimportGroomCacheHelpers
 			{
 				HairImportContext.Parent = SourceGroomCache;
 			}
-			TArray<UGroomCache*> GroomCaches = FGroomCacheImporter::ImportGroomCache(SourceFilename, Translator, AnimInfo, HairImportContext, GroomAsset);
+			if (Settings.bOverrideConversionSettings)
+			{
+				HairImportContext.ImportOptions->ConversionSettings = Settings.ConversionSettings;
+			}
+			TArray<UGroomCache*> GroomCaches = FGroomCacheImporter::ImportGroomCache(SourceFilename, Translator, AnimInfo, HairImportContext, GroomAsset, Settings.ImportType);
 
 			// Update asset import data
 			for (UGroomCache* GroomCache : GroomCaches)

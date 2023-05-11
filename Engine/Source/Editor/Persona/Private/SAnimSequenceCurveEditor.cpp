@@ -17,7 +17,7 @@
 #include "Editor.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Styling/AppStyle.h"
-#include "Animation/AnimData/AnimDataModel.h"
+#include "Animation/AnimData/IAnimationDataModel.h"
 #include "ToolMenus.h"
 
 #define LOCTEXT_NAMESPACE "SAnimSequenceCurveEditor"
@@ -130,7 +130,7 @@ void FRichCurveEditorModelNamed::CurveHasChanged()
 	}
 }
 
-void FRichCurveEditorModelNamed::OnModelHasChanged(const EAnimDataModelNotifyType& NotifyType, UAnimDataModel* Model, const FAnimDataModelNotifPayload& Payload)
+void FRichCurveEditorModelNamed::OnModelHasChanged(const EAnimDataModelNotifyType& NotifyType, IAnimationDataModel* Model, const FAnimDataModelNotifPayload& Payload)
 {
 	NotifyCollector.Handle(NotifyType);
 
@@ -375,7 +375,7 @@ SAnimSequenceCurveEditor::~SAnimSequenceCurveEditor()
 {
 	if(AnimSequence)
 	{
-		AnimSequence->GetDataModel()->GetModifiedEvent().RemoveAll(this);		
+		AnimSequence->GetDataModel()->GetModifiedEvent().RemoveAll(this);
 	}
 }
 
@@ -400,8 +400,6 @@ void SAnimSequenceCurveEditor::Construct(const FArguments& InArgs, const TShared
 		.GridLineTint(FLinearColor(0.f, 0.f, 0.f, 0.3f))
 		.ExternalTimeSliderController(InArgs._ExternalTimeSliderController)
 		.TabManager(InArgs._TabManager)
-		.TreeSplitterWidth(0.2f)
-		.ContentSplitterWidth(0.8f)
 		.TreeContent()
 		[
 			SNew(SVerticalBox)
@@ -447,7 +445,7 @@ void SAnimSequenceCurveEditor::Construct(const FArguments& InArgs, const TShared
 	];
 }
 
-void SAnimSequenceCurveEditor::OnModelHasChanged(const EAnimDataModelNotifyType& NotifyType, UAnimDataModel* Model, const FAnimDataModelNotifPayload& Payload)
+void SAnimSequenceCurveEditor::OnModelHasChanged(const EAnimDataModelNotifyType& NotifyType, IAnimationDataModel* Model, const FAnimDataModelNotifPayload& Payload)
 {
 	auto StopEditingCurve = [this, NotifyType, &Payload, Model]()
 	{
@@ -484,7 +482,6 @@ void SAnimSequenceCurveEditor::OnModelHasChanged(const EAnimDataModelNotifyType&
 TSharedRef<SWidget> SAnimSequenceCurveEditor::MakeToolbar(TSharedRef<SCurveEditorPanel> InEditorPanel)
 {
 	FToolBarBuilder ToolBarBuilder(InEditorPanel->GetCommands(), FMultiBoxCustomization::None, InEditorPanel->GetToolbarExtender(), true);
-	ToolBarBuilder.SetStyle(&FAppStyle::Get(), "Sequencer.ToolBar");
 	ToolBarBuilder.BeginSection("Asset");
 	ToolBarBuilder.EndSection();
 	// We just use all of the extenders as our toolbar, we don't have a need to create a separate toolbar.
@@ -572,15 +569,24 @@ void SAnimSequenceCurveEditor::AddCurve(const FText& InCurveDisplayName, const F
 
 void SAnimSequenceCurveEditor::RemoveCurve(const FSmartName& InName, ERawCurveTrackTypes InType, int32 InCurveIndex)
 {
+	for(const FCurveEditorTreeItemID& TreeItemID : CurveEditor->GetRootTreeItems())
+	{
+		FCurveEditorTreeItem& TreeItem = CurveEditor->GetTreeItem(TreeItemID);
+		TSharedPtr<FAnimSequenceCurveEditorItem> CurveItem = StaticCastSharedPtr<FAnimSequenceCurveEditorItem>(TreeItem.GetItem());
+		if(CurveItem->Name == InName && CurveItem->Type == InType && CurveItem->CurveIndex == InCurveIndex)
+		{
+			CurveEditor->RemoveTreeItem(TreeItemID);
+			break;
+		}
+	}
+	
 	for(const auto& CurvePair : CurveEditor->GetCurves())
 	{
 		FRichCurveEditorModelNamed* Model = static_cast<FRichCurveEditorModelNamed*>(CurvePair.Value.Get());
 		if(Model->Name == InName && Model->Type == InType && Model->CurveIndex == InCurveIndex)
 		{
 			// Cache ID to prevent use after release
-			const FCurveEditorTreeItemID TreeId = Model->TreeId; 
 			CurveEditor->RemoveCurve(CurvePair.Key);
-			CurveEditor->RemoveTreeItem(TreeId);
 			break;
 		}
 	}

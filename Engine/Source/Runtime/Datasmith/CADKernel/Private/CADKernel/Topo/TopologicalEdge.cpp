@@ -356,15 +356,20 @@ void FTopologicalEdge::Link(FTopologicalEdge& Twin)
 	MakeLink(Twin);
 }
 
-void FTopologicalEdge::Delete()
+void FTopologicalEdge::Empty()
 {
-	StartVertex->RemoveConnectedEdge(*this);
-	StartVertex->DeleteIfIsolated();
-	EndVertex->RemoveConnectedEdge(*this);
-	EndVertex->DeleteIfIsolated();
-
-	StartVertex.Reset();
-	EndVertex.Reset();
+	if (StartVertex.IsValid())
+	{
+		StartVertex->RemoveConnectedEdge(*this);
+		StartVertex->DeleteIfIsolated();
+		StartVertex.Reset();
+	}
+	if (EndVertex.IsValid())
+	{
+		EndVertex->RemoveConnectedEdge(*this);
+		EndVertex->DeleteIfIsolated();
+		EndVertex.Reset();
+	}
 
 	if (TopologicalLink.IsValid())
 	{
@@ -374,7 +379,8 @@ void FTopologicalEdge::Delete()
 	Curve.Reset();
 	Loop = nullptr;
 	Mesh.Reset();
-	SetDeleted();
+
+	TLinkable<FTopologicalEdge, FEdgeLink>::Empty();
 }
 
 FTopologicalFace* FTopologicalEdge::GetFace() const
@@ -693,17 +699,6 @@ TSharedRef<FEdgeMesh> FTopologicalEdge::GetOrCreateMesh(FModelMesh& ShellMesh)
 	return Mesh.ToSharedRef();
 }
 
-void FTopologicalEdge::ChooseFinalDeltaUs()
-{
-	for (int32 Index = 0; Index < CrossingPointDeltaUMins.Num(); ++Index)
-	{
-		if (CrossingPointDeltaUMins[Index] > CrossingPointDeltaUMaxs[Index])
-		{
-			CrossingPointDeltaUMaxs[Index] = CrossingPointDeltaUMins[Index];
-		}
-	}
-}
-
 TSharedPtr<FTopologicalEdge> FTopologicalEdge::CreateEdgeByMergingEdges(TArray<FOrientedEdge>& Edges, const TSharedRef<FTopologicalVertex> StartVertex, const TSharedRef<FTopologicalVertex> EndVertex)
 {
 	// Make merged 2d Nurbs ===================================================
@@ -955,7 +950,10 @@ void FTopologicalEdge::ReplaceEdgeVertex(bool bIsStartVertex, TSharedRef<FTopolo
 	NewVertex->AddConnectedEdge(*this);
 
 	TSharedPtr<FTopologicalVertex>& OldVertex = bIsStartVertex ? StartVertex : EndVertex;
-	OldVertex->Link(*NewVertex);
+	if (OldVertex->GetTwinEntityCount() > 1)
+	{
+		OldVertex->Link(*NewVertex);
+	}
 
 	OldVertex->RemoveConnectedEdge(*this);
 
@@ -1008,12 +1006,12 @@ void FTopologicalEdge::ComputeEdge2DProperties(FEdge2DProperties& EdgeCharacteri
 
 	for (int32 Index = StartIndex; Index <= EndIndex; ++Index)
 	{
-		double Slop = ComputeUnorientedSlope(Polyline2D[Index], Polyline2D[Index + 1], 0);
-		if (Slop > 2.)
+		double Slope = ComputeUnorientedSlope(Polyline2D[Index], Polyline2D[Index + 1], 0);
+		if (Slope > 2.)
 		{
-			Slop = 4. - Slop;
+			Slope = 4. - Slope;
 		}
-		EdgeCharacteristics.Add(Slop, Polyline3D[Index].Distance(Polyline3D[Index + 1]));
+		EdgeCharacteristics.Add(Slope, Polyline3D[Index].Distance(Polyline3D[Index + 1]));
 	}
 }
 
@@ -1180,6 +1178,32 @@ bool FTopologicalEdge::IsSharpEdge() const
 void FTopologicalEdge::Offset2D(const FPoint2D& OffsetDirection)
 {
 	Curve->Offset2D(OffsetDirection);
+}
+
+bool FTopologicalEdge::IsConnectedTo(const FTopologicalFace* Face) const
+{
+	for (FTopologicalEdge* TwinEdge : GetTwinEntities())
+	{
+		if (TwinEdge->GetFace() == Face)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+TArray<FTopologicalFace*> FTopologicalEdge::GetLinkedFaces() const
+{
+	TArray<FTopologicalFace*> NeighborFaces;
+	NeighborFaces.Reserve(GetTwinEntities().Num());
+
+	for (FTopologicalEdge* TwinEdge : GetTwinEntities())
+	{
+		FTopologicalFace* NeighborFace = TwinEdge->GetFace();
+		NeighborFaces.Add(NeighborFace);
+	}
+
+	return MoveTemp(NeighborFaces);
 }
 
 #ifdef CADKERNEL_DEV

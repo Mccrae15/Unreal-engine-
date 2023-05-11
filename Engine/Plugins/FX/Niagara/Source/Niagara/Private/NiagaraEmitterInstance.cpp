@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraEmitterInstance.h"
+#include "Engine/Engine.h"
 #include "NiagaraStats.h"
 #include "NiagaraConstants.h"
 #include "NiagaraRenderer.h"
@@ -234,6 +235,11 @@ bool FNiagaraEmitterInstance::IsAllowedToExecute() const
 			return false;
 		}
 
+		if (EmitterData->DidPSOPrecacheFail() == true)
+		{
+			return false;
+		}
+
 		if (const UNiagaraScript* GPUComputeScript = EmitterData->GetGPUComputeScript())
 		{
 			if (const FNiagaraShaderScript* ShaderScript = GPUComputeScript->GetRenderThreadScript())
@@ -251,12 +257,8 @@ bool FNiagaraEmitterInstance::IsAllowedToExecute() const
 		}
 	}
 
-	if (UNiagaraComponentSettings::ShouldSuppressEmitterActivation(this))
-	{
-		return false;
-	}
-
-	return true;
+	// Do we allow the emitter to run or not?
+	return FNiagaraComponentSettings::IsEmitterAllowedToRun(this);
 }
 
 void FNiagaraEmitterInstance::Init(int32 InEmitterIdx, FNiagaraSystemInstanceID InSystemInstanceID)
@@ -415,6 +417,10 @@ void FNiagaraEmitterInstance::Init(int32 InEmitterIdx, FNiagaraSystemInstanceID 
 			GPUExecContext->ProfilingEmitterPtr = CachedEmitter.ToWeakPtr();
 			GPUExecContext->MainDataSet = ParticleDataSet;
 			GPUExecContext->GPUScript_RT = EmitterData->GetGPUComputeScript()->GetRenderThreadScript();
+		#if STATS
+			GPUExecContext->SystemStatID = ParentSystemInstance->GetSystem()->GetStatID(false, false);
+			GPUExecContext->EmitterStatID = CachedEmitter.Emitter->GetStatID(false, false);
+		#endif
 		}
 	}
 
@@ -914,7 +920,7 @@ float FNiagaraEmitterInstance::GetTotalCPUTimeMS()
 int64 FNiagaraEmitterInstance::GetTotalBytesUsed()
 {
 	check(ParticleDataSet);
-	int32 BytesUsed = ParticleDataSet->GetSizeBytes();
+	int64 BytesUsed = ParticleDataSet->GetSizeBytes();
 	/*
 	for (FNiagaraDataSet& Set : DataSets)
 	{
@@ -1008,6 +1014,10 @@ void FNiagaraEmitterInstance::CalculateFixedBounds(const FTransform& ToWorldSpac
 void FNiagaraEmitterInstance::PostTick()
 {
 	SCOPE_CYCLE_COUNTER(STAT_NiagaraEmitterPostTick);
+
+	//We reset the spawn infos to it's minimum size for script spawning.
+	//It can exceed this size as external DIs etc can inject additional spawn infos.
+	SpawnInfos.SetNum(CachedEmitterCompiledData->SpawnAttributes.Num());
 
 	if (EventInstanceData.IsValid())
 	{

@@ -2,6 +2,7 @@
 
 #include "Blueprint/WidgetBlueprintLibrary.h"
 #include "Materials/MaterialInterface.h"
+#include "Slate/SGameLayerManager.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 #include "UObject/Package.h"
@@ -9,6 +10,7 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Fonts/SlateFontInfo.h"
 #include "Engine/Font.h"
+#include "Engine/GameViewportClient.h"
 #include "Brushes/SlateNoResource.h"
 #include "Rendering/DrawElements.h"
 #include "Styling/SlateTypes.h"
@@ -166,7 +168,7 @@ void UWidgetBlueprintLibrary::DrawBox(FPaintContext& Context, FVector2D Position
 		FSlateDrawElement::MakeBox(
 			Context.OutDrawElements,
 			Context.MaxLayer,
-			Context.AllottedGeometry.ToPaintGeometry(Position, Size),
+			Context.AllottedGeometry.ToPaintGeometry(Size, FSlateLayoutTransform(Position)),
 			&Brush->Brush,
 			ESlateDrawEffect::None,
 			Tint);

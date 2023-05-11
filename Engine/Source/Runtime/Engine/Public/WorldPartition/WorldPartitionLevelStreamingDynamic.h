@@ -29,17 +29,24 @@ class ENGINE_API UWorldPartitionLevelStreamingDynamic : public ULevelStreamingDy
 	void Unload();
 	void Activate();
 	void Deactivate();
-	UWorld* GetOuterWorld() const;
+	UWorld* GetStreamingWorld() const override;
 	void SetShouldBeAlwaysLoaded(bool bInShouldBeAlwaysLoaded) { bShouldBeAlwaysLoaded = bInShouldBeAlwaysLoaded; }
 	const UWorldPartitionRuntimeCell* GetWorldPartitionRuntimeCell() const { return StreamingCell.Get(); }
 
 	virtual bool ShouldBeAlwaysLoaded() const override { return bShouldBeAlwaysLoaded; }
+	virtual bool ShouldBlockOnUnload() const override;
 	virtual bool ShouldRequireFullVisibilityToRender() const override { return true; }
+
+	virtual bool CanMakeVisible() override;
+	virtual bool CanMakeInvisible() override;
+
 #if !WITH_EDITOR
 	virtual void PostLoad();
 #endif
 
 	void Initialize(const UWorldPartitionRuntimeLevelStreamingCell& InCell);
+
+	virtual bool CanReplicateStreamingStatus() const override { return false; }
 
 #if WITH_EDITOR
 	static UWorldPartitionLevelStreamingDynamic* LoadInEditor(UWorld* World, FName LevelStreamingName, const TArray<FWorldPartitionRuntimeCellObjectMapping>& InPackages);
@@ -77,6 +84,7 @@ private:
 
 private:
 	void UpdateShouldSkipMakingVisibilityTransactionRequest();
+	bool CanChangeVisibility(bool bMakeVisible) const;
 
 	UPROPERTY()
 	bool bShouldBeAlwaysLoaded;

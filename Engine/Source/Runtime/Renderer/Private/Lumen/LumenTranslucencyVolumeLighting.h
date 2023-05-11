@@ -1,9 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-/*=============================================================================
-	LumenTranslucencyVolumeLighting.h
-=============================================================================*/
-
 #pragma once
 
 #include "RHIDefinitions.h"
@@ -12,8 +8,9 @@
 #include "LumenRadianceCacheInterpolation.h"
 #include "LumenFrontLayerTranslucency.h"
 
-class FLumenCardTracingInputs;
 class FSceneTextureParameters;
+struct FLumenSceneFrameTemporaries;
+class FLumenCardTracingParameters;
 
 class FLumenTranslucencyGIVolume
 {
@@ -83,12 +80,13 @@ namespace Lumen
 extern void HardwareRayTraceTranslucencyVolume(
 	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View,
-	const FLumenCardTracingInputs& TracingInputs,
+	const FLumenCardTracingParameters& TracingParameters,
 	LumenRadianceCache::FRadianceCacheInterpolationParameters RadianceCacheParameters,
 	FLumenTranslucencyLightingVolumeParameters VolumeParameters,
 	FLumenTranslucencyLightingVolumeTraceSetupParameters TraceSetupParameters,
 	FRDGTextureRef VolumeTraceRadiance,
-	FRDGTextureRef VolumeTraceHitDistance
+	FRDGTextureRef VolumeTraceHitDistance,
+	ERDGPassFlags ComputePassFlags
 );
 
 namespace LumenTranslucencyVolumeRadianceCache

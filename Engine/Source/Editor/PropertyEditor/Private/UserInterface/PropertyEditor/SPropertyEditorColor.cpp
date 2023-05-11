@@ -5,6 +5,7 @@
 #include "Engine/Engine.h"
 #include "Components/LightComponent.h"
 #include "Editor.h"
+#include "PropertyNode.h"
 #include "Widgets/Colors/SColorBlock.h"
 #include "Materials/MaterialExpressionConstant3Vector.h"
 #include "Widgets/Colors/SColorPicker.h"
@@ -164,6 +165,7 @@ void SPropertyEditorColor::CreateColorPickerWindow(const TSharedRef< class FProp
 		OriginalColors.Empty( ReadAddresses.Num() );
 		OriginalColors.AddUninitialized( ReadAddresses.Num() );
 
+		bool bClampValue = false;
 		// Store off the original colors in the case that the user cancels the color picker. We'll revert to the original colors in that case
 		for( int32 AddrIndex = 0; AddrIndex <  ReadAddresses.Num(); ++AddrIndex )
 		{
@@ -174,6 +176,7 @@ void SPropertyEditorColor::CreateColorPickerWindow(const TSharedRef< class FProp
 				if( CastField<FStructProperty>(Property)->Struct->GetFName() == NAME_Color )
 				{
 					OriginalColors[AddrIndex] = ((FColor*)Addr)->ReinterpretAsLinear();
+					bClampValue = true;
 				}
 				else
 				{
@@ -191,10 +194,11 @@ void SPropertyEditorColor::CreateColorPickerWindow(const TSharedRef< class FProp
 		PickerArgs.ParentWidget = AsShared();
 		PickerArgs.bUseAlpha = bUseAlpha;
 		PickerArgs.bOnlyRefreshOnOk = bOnlyRefreshOnOk;
+		PickerArgs.bClampValue = bClampValue;
 		PickerArgs.DisplayGamma = TAttribute<float>::Create( TAttribute<float>::FGetter::CreateUObject(GEngine, &UEngine::GetDisplayGamma) );
 		PickerArgs.OnColorCommitted = FOnLinearColorValueChanged::CreateSP( this, &SPropertyEditorColor::SetColor);
 		PickerArgs.OnColorPickerCancelled = FOnColorPickerCancelled::CreateSP( this, &SPropertyEditorColor::OnColorPickerCancelled );
-		PickerArgs.InitialColorOverride = InitialColor;
+		PickerArgs.InitialColor = InitialColor;
 
 		OpenColorPicker(PickerArgs);
 	}

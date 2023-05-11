@@ -14,6 +14,7 @@
 #include "DisplayClusterLightCardEditorHelper.h"
 #include "StageActor/DisplayClusterWeakStageActorPtr.h"
 
+class UWidgetComponent;
 class ADisplayClusterRootActor;
 class FDisplayClusterLightCardEditor;
 class SDisplayClusterLightCardEditorViewport;
@@ -161,6 +162,9 @@ public:
 	/** Requests that we exit light card drawing input mode (and go back to idle/normal) */
 	void ExitDrawingLightCardMode();
 
+	/** If the viewport client is responsible for the post edit change property call */
+	bool HasCalledPostEditChangeProperty() const { return bHasCalledPostEditChangeProperty; }
+
 private:
 	/** Initiates a transaction. */
 	void BeginTransaction(const FText& Description);
@@ -298,6 +302,9 @@ private:
 	
 	/** Unsubscribe post process and preview hooks from the root actor */
 	void UnsubscribeFromRootActor();
+
+	/** When the time in a sequencer has changed */
+	void OnSequencerTimeChanged(TWeakPtr<class ISequencer> InSequencer);
 	
 private:
 	TWeakPtr<FSceneViewport> SceneViewportPtr;
@@ -325,13 +332,14 @@ private:
 
 	TArray<FActorProxy> ActorProxies;
 	TArray<TWeakObjectPtr<UBillboardComponent>> BillboardComponentProxies;
+	TArray<TWeakObjectPtr<UWidgetComponent>> WidgetComponentProxies;
 	TArray<FDisplayClusterWeakStageActorPtr> SelectedActors;
 
-	/** Billboards are accessed from the render thread and game thread */
-	FCriticalSection BillboardComponentCS;
+	/** Billboards and widgets are accessed from the render thread and game thread for sprite rendering */
+	FCriticalSection SpriteComponentCS;
 
-	/** View matrices set per tick if there are any billboard components */
-	FViewMatrices BillboardViewMatrices;
+	/** View matrices set per tick if there are any sprites being rendered */
+	FViewMatrices SpriteViewMatrices;
 
 	/** The actor in the selected actor list that was selected last */
 	FDisplayClusterWeakStageActorPtr LastSelectedActor;
@@ -401,4 +409,7 @@ private:
 
 	/** A flag that disables drawing with the custom projection renderer and instead renders the viewport client with the editor's default renderer */
 	bool bDisableCustomRenderer = false;
+
+	/** True if the viewport client has triggered the post edit change property call */
+	bool bHasCalledPostEditChangeProperty = false;
 };

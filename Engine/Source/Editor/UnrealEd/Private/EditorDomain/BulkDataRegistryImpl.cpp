@@ -17,6 +17,7 @@
 #include "Logging/LogMacros.h"
 #include "Memory/SharedBuffer.h"
 #include "Misc/AssertionMacros.h"
+#include "Misc/CoreDelegates.h"
 #include "Misc/Optional.h"
 #include "Misc/ScopeLock.h"
 #include "Misc/ScopeRWLock.h"
@@ -68,10 +69,30 @@ FBulkDataRegistryImpl::FBulkDataRegistryImpl()
 	// We piggyback on the BulkDataRegistry hook to set the pointer to tunnel in the pointer to the EditorBuildInputResolver as well
 	SetGlobalBuildInputResolver(&UE::DerivedData::FEditorBuildInputResolver::Get());
 	FCoreUObjectDelegates::OnEndLoadPackage.AddRaw(this, &FBulkDataRegistryImpl::OnEndLoadPackage);
+	FCoreDelegates::OnEnginePreExit.AddRaw(this, &FBulkDataRegistryImpl::OnEnginePreExit);
+}
+
+void FBulkDataRegistryImpl::OnEnginePreExit()
+{
+	Teardown();
 }
 
 FBulkDataRegistryImpl::~FBulkDataRegistryImpl()
 {
+	FCoreDelegates::OnEnginePreExit.RemoveAll(this);
+	Teardown();
+}
+
+void FBulkDataRegistryImpl::Teardown()
+{
+	{
+		FReadScopeLock RegistryScopeLock(RegistryLock);
+		if (!bActive)
+		{
+			return;
+		}
+	}
+
 	FCoreUObjectDelegates::OnEndLoadPackage.RemoveAll(this);
 	SetGlobalBuildInputResolver(nullptr);
 
@@ -192,7 +213,10 @@ FBulkDataRegistryImpl::TryRegister(UPackage* Owner, const UE::Serialization::FEd
 
 	{
 		FWriteScopeLock RegistryScopeLock(RegistryLock);
-		check(bActive); // Registrations should not come in after we destruct
+		if (!bActive)
+		{
+			return UE::BulkDataRegistry::ERegisterResult::Success;
+		}
 		UE::BulkDataRegistry::Private::FRegisteredBulk& RegisteredBulk = Registry.FindOrAdd(BulkData.GetIdentifier());
 		if (RegisteredBulk.bRegistered)
 		{
@@ -239,6 +263,7 @@ FBulkDataRegistryImpl::TryRegister(UPackage* Owner, const UE::Serialization::FEd
 			else
 			{
 				// Otherwise Keep the TargetBulkData, since it matches the location and has already calculated the PayloadId
+				// Set that it is no longer allowed to write PayloadIdToCache since it has been modified after the initial load.
 				RegisteredBulk.bAllowedToWritePayloadIdToCache = false;
 			}
 
@@ -268,7 +293,10 @@ void FBulkDataRegistryImpl::UpdateRegistrationData(UPackage* Owner, const UE::Se
 	FName PackageName = Owner ? Owner->GetFName() : NAME_None;
 	{
 		FWriteScopeLock RegistryScopeLock(RegistryLock);
-		check(bActive); // Registrations should not come in after we destruct
+		if (!bActive)
+		{
+			return;
+		}
 		UE::BulkDataRegistry::Private::FRegisteredBulk& RegisteredBulk = Registry.FindOrAdd(BulkData.GetIdentifier());
 		// Update the Owner if we have it. This is important for Package Renames, which call UpdateRegistrationData when they save
 		// to the newly renamed package, with the renamed Owner package.
@@ -277,6 +305,7 @@ void FBulkDataRegistryImpl::UpdateRegistrationData(UPackage* Owner, const UE::Se
 			RegisteredBulk.PackageName = PackageName;
 		}
 		RegisteredBulk.BulkData = BulkData.CopyTornOff();
+		// Set that it is no longer allowed to write PayloadIdToCache since it has been modified after the initial load.
 		RegisteredBulk.bAllowedToWritePayloadIdToCache = false;
 		RegisteredBulk.bRegistered = true;
 		RegisteredBulk.bInMemory = true;
@@ -289,7 +318,10 @@ void FBulkDataRegistryImpl::Unregister(const UE::Serialization::FEditorBulkData&
 {
 	const FGuid& Key = BulkData.GetIdentifier();
 	FWriteScopeLock RegistryScopeLock(RegistryLock);
-	check(bActive); // Deregistrations should not come in after we destruct
+	if (!bActive)
+	{
+		return;
+	}
 	Registry.Remove(Key);
 }
 
@@ -297,7 +329,10 @@ void FBulkDataRegistryImpl::OnExitMemory(const UE::Serialization::FEditorBulkDat
 {
 	const FGuid& Key = BulkData.GetIdentifier();
 	FWriteScopeLock RegistryScopeLock(RegistryLock);
-	check(bActive); // Deregistrations should not come in after we destruct
+	if (!bActive)
+	{
+		return;
+	}
 	FRegisteredBulk* Existing = Registry.Find(Key);
 	if (Existing)
 	{
@@ -308,6 +343,64 @@ void FBulkDataRegistryImpl::OnExitMemory(const UE::Serialization::FEditorBulkDat
 			Existing->bPayloadAvailable = false;
 		}
 		Existing->bInMemory = false;
+	}
+}
+
+void FBulkDataRegistryImpl::UpdatePlaceholderPayloadId(const UE::Serialization::FEditorBulkData& BulkData)
+{
+	if (!BulkData.GetIdentifier().IsValid())
+	{
+		UE_LOG(LogBulkDataRegistry, Warning, TEXT("UpdatePlaceholderPayloadId called with invalid BulkData."));
+		return;
+	}
+	if (BulkData.HasPlaceholderPayloadId())
+	{
+		UE_LOG(LogBulkDataRegistry, Warning, TEXT("UpdatePlaceholderPayloadId called with a BulkData that still has a PlaceholderPayloadId."));
+		return;
+	}
+	const FGuid& Key = BulkData.GetIdentifier();
+
+	TOptional<UE::Serialization::FEditorBulkData> WritePayloadIdBulkData;
+	FName WritePayloadIdPackageName;
+	{
+		FWriteScopeLock RegistryScopeLock(RegistryLock);
+		if (!bActive)
+		{
+			return;
+		}
+		FRegisteredBulk* Existing = Registry.Find(Key);
+		if (!Existing)
+		{
+			return;
+		}
+		if (!Existing->bRegistered ||
+			!Existing->BulkData.GetIdentifier().IsValid() ||
+			!Existing->BulkData.HasPlaceholderPayloadId() ||
+			!BulkData.LocationMatches(Existing->BulkData))
+		{
+			return;
+		}
+
+		Existing->BulkData = BulkData.CopyTornOff();
+		Existing->bAllowedToWritePayloadIdToCache = Existing->bAllowedToWritePayloadIdToCache && Existing->BulkData.CanSaveForRegistry();
+		if (Existing->bAllowedToWritePayloadIdToCache)
+		{
+			// If there is a Get still pending the PayloadId may already be in the cache. Do not Put it until we find out whether
+			// it exists. The response lambda in ReadPayloadIdsFromCache will issue the WritePayloadIdToCache if it is a miss.
+			if (!PendingPayloadIds.Find(Key))
+			{
+				// Set that it is no longer allowed to write PayloadIdToCache since we are writing it now
+				Existing->bAllowedToWritePayloadIdToCache = false;
+
+				// Save the BulkData for writing to the cache outside of the lock
+				WritePayloadIdBulkData.Emplace(Existing->BulkData);
+				WritePayloadIdPackageName = Existing->PackageName;
+			}
+		}
+	}
+	if (WritePayloadIdBulkData)
+	{
+		FBulkDataRegistryImpl::WritePayloadIdToCache(WritePayloadIdPackageName, *WritePayloadIdBulkData);
 	}
 }
 
@@ -348,7 +441,7 @@ TFuture<UE::BulkDataRegistry::FMetaData> FBulkDataRegistryImpl::GetMeta(const FG
 		FUpdatingPayload& UpdatingPayload = UpdatingPayloads.FindOrAdd(BulkDataId);
 		if (!UpdatingPayload.AsyncTask)
 		{
-			UpdatingPayload.AsyncTask = new FAutoDeleteAsyncTask<FUpdatePayloadWorker>(this, BulkData);
+			UpdatingPayload.AsyncTask = new FAutoDeleteAsyncTask<FUpdatePayloadWorker>(this, BulkData, true /* bKeepTempLoadedPayload */);
 			UpdatingPayload.AsyncTask->StartBackgroundTask();
 		}
 		TPromise<UE::BulkDataRegistry::FMetaData> Promise;
@@ -415,7 +508,7 @@ TFuture<UE::BulkDataRegistry::FData> FBulkDataRegistryImpl::GetData(const FGuid&
 			FUpdatingPayload& UpdatingPayload = UpdatingPayloads.FindOrAdd(BulkDataId);
 			if (!UpdatingPayload.AsyncTask)
 			{
-				UpdatingPayload.AsyncTask = new FAutoDeleteAsyncTask<FUpdatePayloadWorker>(this, Existing->BulkData);
+				UpdatingPayload.AsyncTask = new FAutoDeleteAsyncTask<FUpdatePayloadWorker>(this, Existing->BulkData, false /* bKeepTempLoadedPayload */);
 			}
 			TPromise<UE::BulkDataRegistry::FData> Promise;
 			TFuture<UE::BulkDataRegistry::FData> Future = Promise.GetFuture();
@@ -468,10 +561,13 @@ uint64 FBulkDataRegistryImpl::GetBulkDataResaveSize(FName PackageName)
 void FBulkDataRegistryImpl::TickCook(float DeltaTime, bool bTickComplete)
 {
 	bool bWaitForCooldown = !bTickComplete;
-	check(bActive); // Ticks should not come in after we destruct
 
 	{
 		FWriteScopeLock RegistryScopeLock(RegistryLock);
+		if (!bActive)
+		{
+			return;
+		}
 		PruneTempLoadedPayloads();
 	}
 }
@@ -484,7 +580,7 @@ void FBulkDataRegistryImpl::Tick(float DeltaTime)
 void FBulkDataRegistryImpl::AddPendingPackageBulkData(FName PackageName, UE::Serialization::FEditorBulkData&& BulkData)
 {
 	FScopeLock PendingPackageScopeLock(&PendingPackageLock);
-	check(bActive); // Registrations should not come in after we destruct, and AsyncTasks should check bActive before calling
+	check(bActive); // Callers should early exit if !bActive
 	TUniquePtr<FPendingPackage>& PendingPackage = PendingPackages.FindOrAdd(PackageName);
 	if (!PendingPackage.IsValid())
 	{
@@ -527,7 +623,7 @@ void FBulkDataRegistryImpl::PruneTempLoadedPayloads()
 	}
 }
 
-void FBulkDataRegistryImpl::WritePayloadIdToCache(FName PackageName, const UE::Serialization::FEditorBulkData& BulkData) const
+void FBulkDataRegistryImpl::WritePayloadIdToCache(FName PackageName, const UE::Serialization::FEditorBulkData& BulkData)
 {
 	check(!PackageName.IsNone());
 	TArray<uint8> Bytes;
@@ -555,49 +651,89 @@ void FBulkDataRegistryImpl::ReadPayloadIdsFromCache(FName PackageName, TArray<TR
 		UE::EditorDomain::GetBulkDataPayloadId(PackageName, NewPending->GetBulkDataId(), NewPending->GetRequestOwner(),
 			[this, PackageName, NewPending](FSharedBuffer Buffer)
 		{
-			if (Buffer.IsNull())
-			{
-				return;
-			}
-			FMemoryReaderView Reader(MakeArrayView(Buffer));
-			UE::Serialization::FEditorBulkData CachedBulkData;
-			CachedBulkData.SerializeForRegistry(Reader);
 			const FGuid& BulkDataId = NewPending->GetBulkDataId();
-			if (Reader.IsError() || CachedBulkData.GetIdentifier() != BulkDataId)
+			UE::Serialization::FEditorBulkData CachedBulkData;
+			if (!Buffer.IsNull())
 			{
-				UE_LOG(LogBulkDataRegistry, Warning, TEXT("Corrupt cache data for BulkDataPayloadId %s."), WriteToString<192>(PackageName, TEXT("/"), BulkDataId).ToString());
-				return;
+				FMemoryReaderView Reader(MakeArrayView(Buffer));
+				CachedBulkData.SerializeForRegistry(Reader);
+				if (Reader.IsError() || CachedBulkData.GetIdentifier() != BulkDataId)
+				{
+					UE_LOG(LogBulkDataRegistry, Warning, TEXT("Corrupt cache data for BulkDataPayloadId %s."), WriteToString<192>(PackageName, TEXT("/"), BulkDataId).ToString());
+					CachedBulkData = UE::Serialization::FEditorBulkData();
+				}
 			}
 
-			FWriteScopeLock RegistryScopeLock(RegistryLock);
-			if (!bActive)
+			TOptional<UE::Serialization::FEditorBulkData> WritePayloadIdBulkData;
+			FName WritePayloadIdPackageName;
 			{
-				return;
-			}
-			TRefCountPtr<FPendingPayloadId> ExistingPending;
-			if (!PendingPayloadIds.RemoveAndCopyValue(BulkDataId, ExistingPending))
-			{
-				return;
-			}
-			check(ExistingPending->GetBulkDataId() == BulkDataId);
-			if (ExistingPending != NewPending)
-			{
-				// We removed ExistingPending because we thought it was equal to NewPending, but it's not, so put it back
-				PendingPayloadIds.Add(BulkDataId, MoveTemp(ExistingPending));
-				return;
-			}
+				FWriteScopeLock RegistryScopeLock(RegistryLock);
+				if (!bActive)
+				{
+					return;
+				}
+				TRefCountPtr<FPendingPayloadId> ExistingPending;
+				if (!PendingPayloadIds.RemoveAndCopyValue(BulkDataId, ExistingPending))
+				{
+					return;
+				}
+				check(ExistingPending->GetBulkDataId() == BulkDataId);
+				if (ExistingPending != NewPending)
+				{
+					// We removed ExistingPending because we thought it was equal to NewPending, but it's not, so put it back
+					PendingPayloadIds.Add(BulkDataId, MoveTemp(ExistingPending));
+					return;
+				}
 
-			FRegisteredBulk* ExistingRegisteredBulk = Registry.Find(BulkDataId);
-			if (!ExistingRegisteredBulk)
-			{
-				return;
-			}
+				FRegisteredBulk* ExistingRegisteredBulk = Registry.Find(BulkDataId);
+				if (!ExistingRegisteredBulk)
+				{
+					return;
+				}
 
-			UE::Serialization::FEditorBulkData& ExistingBulkData = ExistingRegisteredBulk->BulkData;
-			check(ExistingBulkData.GetIdentifier() == BulkDataId);
-			if (ExistingBulkData.HasPlaceholderPayloadId() && CachedBulkData.LocationMatches(ExistingBulkData))
+				UE::Serialization::FEditorBulkData& ExistingBulkData = ExistingRegisteredBulk->BulkData;
+				if (CachedBulkData.GetIdentifier().IsValid())
+				{
+					check(ExistingBulkData.GetIdentifier() == BulkDataId);
+					if (ExistingBulkData.HasPlaceholderPayloadId() && CachedBulkData.LocationMatches(ExistingBulkData))
+					{
+						ExistingBulkData = CachedBulkData;
+						// No longer allowed to write the payloadId because we have found it already exists
+						ExistingRegisteredBulk->bAllowedToWritePayloadIdToCache = false;
+					}
+				}
+				else if (ExistingRegisteredBulk->bAllowedToWritePayloadIdToCache)
+				{
+					// We had a missing Get, so calculate the value locally and Put the results
+					if (!ExistingBulkData.HasPlaceholderPayloadId())
+					{
+						// In between the point where we started the cache query and we received this result,
+						// The FEditorBulkData has updated its PayloadId and informed us by calling UpdatePlaceholderPayloadId
+						// Put this locally computed PayloadId into the cache, since the cache is missing it.
+
+						// Set that it is no longer allowed to write PayloadIdToCache since we are writing it now
+						ExistingRegisteredBulk->bAllowedToWritePayloadIdToCache = false;
+
+						// Save the BulkData for writing to the cache outside of the lock
+						WritePayloadIdBulkData.Emplace(ExistingBulkData);
+						WritePayloadIdPackageName = ExistingRegisteredBulk->PackageName;
+					}
+					else
+					{
+						// Create an FUpdatingPayload for the BulkData. Its DoWork function loads the data, sets the
+						// PayloadId on the BulkData in this->Registry, and calls WritePayloadIdToCache.
+						FUpdatingPayload& UpdatingPayload = UpdatingPayloads.FindOrAdd(BulkDataId);
+						if (!UpdatingPayload.AsyncTask)
+						{
+							UpdatingPayload.AsyncTask = new FAutoDeleteAsyncTask<FUpdatePayloadWorker>(this, ExistingBulkData, false/* bKeepTempLoadedPayload */);
+							UpdatingPayload.AsyncTask->StartBackgroundTask();
+						}
+					}
+				}
+			}
+			if (WritePayloadIdBulkData)
 			{
-				ExistingBulkData = CachedBulkData;
+				FBulkDataRegistryImpl::WritePayloadIdToCache(WritePayloadIdPackageName, *WritePayloadIdBulkData);
 			}
 		});
 	}
@@ -688,7 +824,8 @@ void FPendingPackage::OnBulkDataListResults(FSharedBuffer Buffer)
 		}
 	}
 
-	ReadCache();
+	bool bAbort;
+	ReadCache(bAbort);
 
 	if (PendingOperations.fetch_and(~Flag_BulkDataListResults) == Flag_BulkDataListResults)
 	{
@@ -702,7 +839,10 @@ void FPendingPackage::OnBulkDataListResults(FSharedBuffer Buffer)
 			// ThisPointer will be null, and Owner holds the UniquePtr to *this.
 			// It will release that UniquePtr only after Cancel returns, which will be after this function returns.
 		}
-		WriteCache();
+		if (!bAbort)
+		{
+			WriteCache();
+		}
 
 		// Deleting *this will destruct BulkDataListCacheRequest, which by
 		// default calls Cancel, but Cancel will block on this callback we are
@@ -713,10 +853,13 @@ void FPendingPackage::OnBulkDataListResults(FSharedBuffer Buffer)
 	}
 }
 
-void FPendingPackage::ReadCache()
+void FPendingPackage::ReadCache(bool& bOutAbort)
 {
+	bOutAbort = false;
 	if (CachedBulkDatas.Num() == 0)
 	{
+		FReadScopeLock RegistryScopeLock(Owner->RegistryLock);
+		bOutAbort = !Owner->bActive;
 		return;
 	}
 
@@ -731,6 +874,7 @@ void FPendingPackage::ReadCache()
 		FWriteScopeLock RegistryScopeLock(Owner->RegistryLock);
 		if (!Owner->bActive)
 		{
+			bOutAbort = true;
 			return;
 		}
 		for (const UE::Serialization::FEditorBulkData& BulkData : CachedBulkDatas)
@@ -815,9 +959,10 @@ void FPendingPackage::WriteCache()
 }
 
 FUpdatePayloadWorker::FUpdatePayloadWorker(FBulkDataRegistryImpl* InBulkDataRegistry,
-	const UE::Serialization::FEditorBulkData& InSourceBulk)
+	const UE::Serialization::FEditorBulkData& InSourceBulk, bool bInKeepTempLoadedPayload)
 	: BulkData(InSourceBulk)
 	, BulkDataRegistry(InBulkDataRegistry)
+	, bKeepTempLoadedPayload(bInKeepTempLoadedPayload)
 {
 	SharedDataLock = InBulkDataRegistry->SharedDataLock;
 }
@@ -832,6 +977,8 @@ void FUpdatePayloadWorker::DoWork()
 		BulkData.UpdatePayloadId();
 		Buffer = BulkData.GetCompressedPayload().Get();
 
+		TOptional<UE::Serialization::FEditorBulkData> WritePayloadIdBulkData;
+		FName WritePayloadIdPackageName;
 		{
 			FReadScopeLock SharedDataScopeLock(SharedDataLock->ActiveLock);
 			if (!SharedDataLock->bActive)
@@ -873,18 +1020,34 @@ void FUpdatePayloadWorker::DoWork()
 			// Store the new PayloadId in the Registry's entry for the BulkData; new MetaData requests will no longer need to wait for it
 			RegisteredBulk->BulkData = BulkData;
 
-			// Mark that the next GetData call should remove the temporary payload
-			RegisteredBulk->bHasTempPayload = true;
-			BulkDataRegistry->AddTempLoadedPayload(BulkData.GetIdentifier(), BulkData.GetPayloadSize());
-			BulkDataRegistry->PruneTempLoadedPayloads();
+			// The BulkData also has the payload still loaded; keep it or remove it
+			if (bKeepTempLoadedPayload)
+			{
+				// Keep the payload, and mark that the next GetData call should remove it
+				RegisteredBulk->bHasTempPayload = true;
+				BulkDataRegistry->AddTempLoadedPayload(BulkData.GetIdentifier(), BulkData.GetPayloadSize());
+				BulkDataRegistry->PruneTempLoadedPayloads();
+			}
+			else
+			{
+				RegisteredBulk->BulkData.UnloadData();
+			}
 
 			if (RegisteredBulk->bAllowedToWritePayloadIdToCache)
 			{
-				BulkDataRegistry->WritePayloadIdToCache(RegisteredBulk->PackageName, BulkData);
+				// Set that it is no longer allowed to write PayloadIdToCache since we are writing it now
 				RegisteredBulk->bAllowedToWritePayloadIdToCache = false;
+
+				// Save the BulkData for writing to the cache outside of the lock
+				WritePayloadIdBulkData.Emplace(BulkData);
+				WritePayloadIdPackageName = RegisteredBulk->PackageName;
 			}
-			break;
 		}
+		if (WritePayloadIdBulkData)
+		{
+			FBulkDataRegistryImpl::WritePayloadIdToCache(WritePayloadIdPackageName, *WritePayloadIdBulkData);
+		}
+		break;
 	}
 
 	if (!bValid)

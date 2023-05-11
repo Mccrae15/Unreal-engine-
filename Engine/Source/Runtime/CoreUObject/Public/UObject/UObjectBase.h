@@ -8,7 +8,6 @@
 
 #include "Containers/Map.h"
 #include "Containers/UnrealString.h"
-#include "CoreMinimal.h"
 #include "HAL/LowLevelMemTracker.h"
 #include "HAL/PlatformAtomics.h"
 #include "HAL/PlatformMath.h"
@@ -27,6 +26,8 @@ class UPackage;
 class UScriptStruct;
 
 DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("STAT_UObjectsStatGroupTester"), STAT_UObjectsStatGroupTester, STATGROUP_UObjects, COREUOBJECT_API);
+
+namespace UE::GC { class FTokenStreamBuilder; }
 
 /** 
  * Low level implementation of UObject, should not be used directly in game code 
@@ -66,8 +67,16 @@ public:
 	 * @param	InInternalFlags EInternalObjectFlags to assign
 	 * @param	InOuter				outer for this object
 	 * @param	InName				name of the new object
+	 * @param	InInternalIndex		internal index to use (if already allocated), negative value means allocate a new index
+	 * @param	InSerialNumber		serial number to re-use (if already allocated)
 	 */
-	UObjectBase( UClass* InClass, EObjectFlags InFlags, EInternalObjectFlags InInternalFlags, UObject *InOuter, FName InName );
+	UObjectBase(UClass* InClass,
+			EObjectFlags InFlags,
+			EInternalObjectFlags InInternalFlags,
+			UObject *InOuter,
+			FName InName,
+			int32 InInternalIndex = -1,
+			int32 InSerialNumber = 0);
 
 	/**
 	 * Final destructor, removes the object from the object array, and indirectly, from any annotations
@@ -77,7 +86,7 @@ public:
 	/**
 	 * Emit GC tokens for UObjectBase, this might be UObject::StaticClass or Default__Class
 	 **/
-	static void EmitBaseReferences(UClass *RootClass);
+	static void EmitBaseReferences(UE::GC::FTokenStreamBuilder& TokenStream);
 
 protected:
 	/**
@@ -107,8 +116,10 @@ private:
 	 *
 	 * @param Name name to assign to this uobject
 	 * @param InSetInternalFlags Internal object flags to be set on the object once it's been added to the array
+	 * @param InInternalIndex already allocated internal index to use, negative value means allocate a new index
+	 * @param InSerialNumber already allocated serial number to re-use
 	 */
-	void AddObject(FName Name, EInternalObjectFlags InSetInternalFlags);
+	void AddObject(FName Name, EInternalObjectFlags InSetInternalFlags, int32 InInternalIndex = -1, int32 InSerialNumber = 0);
 
 public:
 	/**
@@ -225,6 +236,9 @@ public:
 		while( FPlatformAtomics::InterlockedCompareExchange( (int32*)&ObjectFlags, NewFlags, OldFlags) != OldFlags );
 	}
 
+	static void PrefetchClass(UObject* Object) { FPlatformMisc::Prefetch(Object, offsetof(UObjectBase, ClassPrivate)); }
+	static void PrefetchOuter(UObject* Object) { FPlatformMisc::Prefetch(Object, offsetof(UObjectBase, OuterPrivate)); }
+
 private:
 
 	/** Flags used to track and report various object states. This needs to be 8 byte aligned on 32-bit
@@ -251,11 +265,6 @@ private:
 	/** This is used by the reinstancer to re-class and re-archetype the current instances of a class before recompiling */
 	void SetClass(UClass* NewClass);
 #endif
-
-#if HACK_HEADER_GENERATOR
-	// Required by UHT makefiles for internal data serialization.
-	friend struct FObjectBaseArchiveProxy;
-#endif // HACK_HEADER_GENERATOR
 };
 
 /**
@@ -454,3 +463,6 @@ void UObjectBaseInit();
  */
 void UObjectBaseShutdown();
 
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

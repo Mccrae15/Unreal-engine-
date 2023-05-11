@@ -1,46 +1,37 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AssetManagerEditorModule.h"
-#include "Modules/ModuleManager.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "ContentBrowserDataLegacyBridge.h"
+#include "HAL/PlatformFile.h"
 #include "PrimaryAssetTypeCustomization.h"
+#include "IDesktopPlatform.h"
 #include "PrimaryAssetIdCustomization.h"
+#include "Misc/CommandLine.h"
 #include "SAssetAuditBrowser.h"
-#include "Engine/PrimaryAssetLabel.h"
-#include <Templates/UniquePtr.h>
 
-#include "Serialization/JsonReader.h"
-#include "Serialization/JsonSerializer.h"
 #include "CollectionManagerModule.h"
-#include "GameDelegates.h"
 #include "ICollectionManager.h"
 #include "AssetRegistry/ARFilter.h"
 #include "Misc/FileHelper.h"
+#include "Misc/PackageName.h"
 #include "ProfilingDebugging/ProfilingHelpers.h"
-#include "Stats/StatsMisc.h"
 #include "Engine/AssetManager.h"
-#include "PropertyEditorModule.h"
-#include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
+#include "ReferenceViewer/HistoryManager.h"
 #include "WorkspaceMenuStructure.h"
+#include "ToolMenu.h"
 #include "WorkspaceMenuStructureModule.h"
-#include "Framework/MultiBox/MultiBoxExtender.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Framework/Docking/TabManager.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Framework/Commands/Commands.h"
+#include "ToolMenuEntry.h"
 #include "Widgets/Docking/SDockTab.h"
+#include "ToolMenuSection.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/SToolTip.h"
 #include "PropertyCustomizationHelpers.h"
-#include "Toolkits/AssetEditorToolkit.h"
 
 #include "LevelEditor.h"
 #include "GraphEditorModule.h"
-#include "AssetRegistry/AssetData.h"
-#include "Engine/World.h"
-#include "Misc/App.h"
-#include "GenericPlatform/GenericPlatformFile.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "IPlatformFileSandboxWrapper.h"
@@ -48,23 +39,20 @@
 #include "Serialization/ArrayReader.h"
 #include "EdGraphUtilities.h"
 #include "EdGraphSchema_K2.h"
-#include "SGraphPin.h"
 #include "AssetManagerEditorCommands.h"
+#include "AssetSourceControlContextMenu.h"
 #include "ReferenceViewer/SReferenceViewer.h"
 #include "ReferenceViewer/SReferenceNode.h"
 #include "ReferenceViewer/EdGraphNode_Reference.h"
 #include "SSizeMap.h"
-#include "Editor.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "DesktopPlatformModule.h"
 #include "Misc/FileHelper.h"
 #include "Misc/MessageDialog.h"
-#include "UObject/ConstructorHelpers.h"
 #include "Misc/ScopedSlowTask.h"
 #include "IStatsViewer.h"
 #include "StatsViewerModule.h"
-#include "Subsystems/AssetEditorSubsystem.h"
 #include "ToolMenus.h"
 #include "Toolkits/AssetEditorToolkitMenuContext.h"
 #include "ContentBrowserMenuContexts.h"
@@ -77,7 +65,7 @@ DEFINE_LOG_CATEGORY(LogAssetManagerEditor);
 
 class FAssetManagerGraphPanelNodeFactory : public FGraphPanelNodeFactory
 {
-	virtual TSharedPtr<class SGraphNode> CreateNode(UEdGraphNode* Node) const override
+	virtual TSharedPtr<SGraphNode> CreateNode(UEdGraphNode* Node) const override
 	{
 		if (UEdGraphNode_Reference* DependencyNode = Cast<UEdGraphNode_Reference>(Node))
 		{
@@ -90,7 +78,7 @@ class FAssetManagerGraphPanelNodeFactory : public FGraphPanelNodeFactory
 
 class FAssetManagerGraphPanelPinFactory : public FGraphPanelPinFactory
 {
-	virtual TSharedPtr<class SGraphPin> CreatePin(class UEdGraphPin* InPin) const override
+	virtual TSharedPtr<SGraphPin> CreatePin(UEdGraphPin* InPin) const override
 	{
 		if (InPin->PinType.PinCategory == UEdGraphSchema_K2::PC_Struct && InPin->PinType.PinSubCategoryObject == TBaseStructure<FPrimaryAssetId>::Get())
 		{
@@ -135,9 +123,10 @@ TSharedRef<SWidget> IAssetManagerEditorModule::MakePrimaryAssetTypeSelector(FOnG
 	return PropertyCustomizationHelpers::MakePropertyComboBox(nullptr, GetStrings, GetValue, SetValue);
 }
 
-TSharedRef<SWidget> IAssetManagerEditorModule::MakePrimaryAssetIdSelector(FOnGetPrimaryAssetDisplayText OnGetDisplayText, FOnSetPrimaryAssetId OnSetId, bool bAllowClear, TArray<FPrimaryAssetType> AllowedTypes)
+TSharedRef<SWidget> IAssetManagerEditorModule::MakePrimaryAssetIdSelector(FOnGetPrimaryAssetDisplayText OnGetDisplayText, FOnSetPrimaryAssetId OnSetId, bool bAllowClear, 
+	TArray<FPrimaryAssetType> AllowedTypes, TArray<const UClass*> AllowedClasses, TArray<const UClass*> DisallowedClasses)
 {
-	FOnGetContent OnCreateMenuContent = FOnGetContent::CreateLambda([OnGetDisplayText, OnSetId, bAllowClear, AllowedTypes]()
+	FOnGetContent OnCreateMenuContent = FOnGetContent::CreateLambda([OnGetDisplayText, OnSetId, bAllowClear, AllowedTypes, AllowedClasses, DisallowedClasses]()
 	{
 		FOnShouldFilterAsset AssetFilter = FOnShouldFilterAsset::CreateStatic(&IAssetManagerEditorModule::OnShouldFilterPrimaryAsset, AllowedTypes);
 		FOnSetObject OnSetObject = FOnSetObject::CreateLambda([OnSetId](const FAssetData& AssetData)
@@ -155,13 +144,13 @@ TSharedRef<SWidget> IAssetManagerEditorModule::MakePrimaryAssetIdSelector(FOnGet
 			OnSetId.Execute(AssetId);
 		});
 
-		TArray<const UClass*> AllowedClasses;
 		TArray<UFactory*> NewAssetFactories;
 
 		return PropertyCustomizationHelpers::MakeAssetPickerWithMenu(
 			FAssetData(),
 			bAllowClear,
 			AllowedClasses,
+			DisallowedClasses,
 			NewAssetFactories,
 			AssetFilter,
 			OnSetObject,
@@ -182,7 +171,7 @@ TSharedRef<SWidget> IAssetManagerEditorModule::MakePrimaryAssetIdSelector(FOnGet
 		];
 }
 
-void IAssetManagerEditorModule::GeneratePrimaryAssetTypeComboBoxStrings(TArray< TSharedPtr<FString> >& OutComboBoxStrings, TArray<TSharedPtr<class SToolTip>>& OutToolTips, TArray<bool>& OutRestrictedItems, bool bAllowClear, bool bAllowAll)
+void IAssetManagerEditorModule::GeneratePrimaryAssetTypeComboBoxStrings(TArray< TSharedPtr<FString> >& OutComboBoxStrings, TArray<TSharedPtr<SToolTip>>& OutToolTips, TArray<bool>& OutRestrictedItems, bool bAllowClear, bool bAllowAll)
 {
 	UAssetManager& AssetManager = UAssetManager::Get();
 
@@ -380,7 +369,9 @@ private:
 	TSharedPtr<FAssetManagerGraphPanelNodeFactory> AssetManagerGraphPanelNodeFactory;
 	TSharedPtr<FAssetManagerGraphPanelPinFactory> AssetManagerGraphPanelPinFactory;
 
-	static void CreateAssetContextMenu(FToolMenuSection& InSection);
+	FAssetSourceControlContextMenu AssetSourceControlContextMenu;
+
+	void CreateAssetContextMenu(FToolMenuSection& InSection);
 	void OnExtendContentBrowserCommands(TSharedRef<FUICommandList> CommandList, FOnContentBrowserGetSelection GetSelectionDelegate);
 	void OnExtendLevelEditorCommands(TSharedRef<FUICommandList> CommandList);
 	void RegisterMenus();
@@ -847,6 +838,8 @@ void FAssetManagerEditorModule::CreateAssetContextMenu(FToolMenuSection& InSecti
 		TAttribute<FText>(), // Use command tooltip
 		FSlateIcon(FAppStyle::GetAppStyleSetName(), "MainFrame.CookContent")
 	);
+
+	AssetSourceControlContextMenu.MakeContextMenu(InSection);
 }
 
 void FAssetManagerEditorModule::OnExtendContentBrowserCommands(TSharedRef<FUICommandList> CommandList, FOnContentBrowserGetSelection GetSelectionDelegate)
@@ -932,12 +925,12 @@ void FAssetManagerEditorModule::ExtendContentBrowserAssetSelectionMenu()
 {
 	UToolMenu* Menu = UToolMenus::Get()->ExtendMenu("ContentBrowser.AssetContextMenu");
 	FToolMenuSection& Section = Menu->FindOrAddSection("AssetContextReferences");
-	FToolMenuEntry& Entry = Section.AddDynamicEntry("AssetManagerEditorViewCommands", FNewToolMenuSectionDelegate::CreateLambda([](FToolMenuSection& InSection)
+	FToolMenuEntry& Entry = Section.AddDynamicEntry("AssetManagerEditorViewCommands", FNewToolMenuSectionDelegate::CreateLambda([this](FToolMenuSection& InSection)
 	{
 		UContentBrowserAssetContextMenuContext* Context = InSection.FindContext<UContentBrowserAssetContextMenuContext>();
 		if (Context && Context->bCanBeModified && Context->SelectedAssets.Num() > 0)
 		{
-			FAssetManagerEditorModule::CreateAssetContextMenu(InSection);
+			CreateAssetContextMenu(InSection);
 		}
 	}));
 }
@@ -946,12 +939,12 @@ void FAssetManagerEditorModule::ExtendContentBrowserPathSelectionMenu()
 {
 	UToolMenu* Menu = UToolMenus::Get()->ExtendMenu("ContentBrowser.FolderContextMenu");
 	FToolMenuSection& Section = Menu->FindOrAddSection("PathContextBulkOperations");
-	FToolMenuEntry& Entry = Section.AddDynamicEntry("AssetManagerEditorViewCommands", FNewToolMenuSectionDelegate::CreateLambda([](FToolMenuSection& InSection)
+	FToolMenuEntry& Entry = Section.AddDynamicEntry("AssetManagerEditorViewCommands", FNewToolMenuSectionDelegate::CreateLambda([this](FToolMenuSection& InSection)
 	{
 		UContentBrowserFolderContext* Context = InSection.FindContext<UContentBrowserFolderContext>();
 		if (Context && Context->bCanBeModified && Context->NumAssetPaths > 0)
 		{
-			FAssetManagerEditorModule::CreateAssetContextMenu(InSection);
+			CreateAssetContextMenu(InSection);
 		}
 	}));
 }
@@ -996,7 +989,7 @@ void FAssetManagerEditorModule::ExtendAssetEditorMenu()
 {
 	UToolMenu* Menu = UToolMenus::Get()->ExtendMenu("MainFrame.MainMenu.Asset");
 	FToolMenuSection& Section = Menu->FindOrAddSection("AssetEditorActions");
-	FToolMenuEntry& Entry = Section.AddDynamicEntry("AssetManagerEditorViewCommands", FNewToolMenuSectionDelegate::CreateLambda([](FToolMenuSection& InSection)
+	FToolMenuEntry& Entry = Section.AddDynamicEntry("AssetManagerEditorViewCommands", FNewToolMenuSectionDelegate::CreateLambda([this](FToolMenuSection& InSection)
 	{
 		UAssetEditorToolkitMenuContext* MenuContext = InSection.FindContext<UAssetEditorToolkitMenuContext>();
 		if (MenuContext && MenuContext->Toolkit.IsValid() && MenuContext->Toolkit.Pin()->IsActuallyAnAsset())
@@ -1005,7 +998,7 @@ void FAssetManagerEditorModule::ExtendAssetEditorMenu()
 			{
 				if (IsValid(EditedAsset) && EditedAsset->IsAsset())
 				{
-					FAssetManagerEditorModule::CreateAssetContextMenu(InSection);
+					CreateAssetContextMenu(InSection);
 					break;
 				}
 			}
@@ -1019,7 +1012,7 @@ void FAssetManagerEditorModule::ExtendLevelEditorActorContextMenu()
 	UToolMenu* Menu = UToolMenus::Get()->ExtendMenu("LevelEditor.ActorContextMenu.AssetToolsSubMenu");
 
 	FToolMenuSection& Section = Menu->AddSection("AssetManagerEditorViewCommands", TAttribute<FText>(), FToolMenuInsert(NAME_None, EToolMenuInsertType::First));
-	FAssetManagerEditorModule::CreateAssetContextMenu(Section);
+	CreateAssetContextMenu(Section);
 }
 
 void FAssetManagerEditorModule::OnReloadComplete(EReloadCompleteReason Reason)
@@ -1196,13 +1189,16 @@ bool FAssetManagerEditorModule::GetStringValueForCustomColumn(const FAssetData& 
 		case EPrimaryAssetCookRule::AlwaysCook: 
 			OutValue = TEXT("Always");
 			return true;
-		case EPrimaryAssetCookRule::DevelopmentAlwaysCook:
-			OutValue = TEXT("DevelopmentAlways");
+		case EPrimaryAssetCookRule::DevelopmentAlwaysProductionUnknownCook:
+			OutValue = TEXT("DevelopmentAlwaysProductionUnknown");
 			return true;
-		case EPrimaryAssetCookRule::DevelopmentCook: 
-			OutValue = TEXT("Development");
+		case EPrimaryAssetCookRule::DevelopmentAlwaysProductionNeverCook:
+			OutValue = TEXT("DevelopmentAlwaysProductionNever");
 			return true;
-		case EPrimaryAssetCookRule::NeverCook: 
+		case EPrimaryAssetCookRule::ProductionNeverCook:
+			OutValue = TEXT("ProductionNeverCook");
+			return true;
+		case EPrimaryAssetCookRule::NeverCook:
 			OutValue = TEXT("Never");
 			return true;
 		}
@@ -1285,11 +1281,14 @@ bool FAssetManagerEditorModule::GetDisplayTextForCustomColumn(const FAssetData& 
 		case EPrimaryAssetCookRule::AlwaysCook:
 			OutValue = LOCTEXT("AlwaysCook", "Always");
 			return true;
-		case EPrimaryAssetCookRule::DevelopmentAlwaysCook:
-			OutValue = LOCTEXT("DevelopmentAlwaysCook", "DevelopmentAlways");
+		case EPrimaryAssetCookRule::DevelopmentAlwaysProductionUnknownCook:
+			OutValue = LOCTEXT("DevelopmentAlwaysProductionUnknownCook", "DevelopmentAlwaysProductionUnknown");
 			return true;
-		case EPrimaryAssetCookRule::DevelopmentCook:
-			OutValue = LOCTEXT("DevelopmentCook", "Development");
+		case EPrimaryAssetCookRule::DevelopmentAlwaysProductionNeverCook:
+			OutValue = LOCTEXT("DevelopmentAlwaysProductionNeverCook", "DevelopmentAlwaysProductionNever");
+			return true;
+		case EPrimaryAssetCookRule::ProductionNeverCook:
+			OutValue = LOCTEXT("ProductionNeverCook", "ProductionNever");
 			return true;
 		case EPrimaryAssetCookRule::NeverCook:
 			OutValue = LOCTEXT("NeverCook", "Never");

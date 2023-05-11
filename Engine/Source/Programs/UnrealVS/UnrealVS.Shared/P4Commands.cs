@@ -5,11 +5,14 @@ using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Shell.Interop;
 using Microsoft.VisualStudio.Text.Differencing;
+using Microsoft.VisualStudio.Threading;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel.Design;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
+using System.Reflection.Metadata;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -18,6 +21,8 @@ using Process = System.Diagnostics.Process;
 
 namespace UnrealVS
 {
+	using Task = System.Threading.Tasks.Task;
+
 	internal class P4Commands : IDisposable
 	{
 		private const bool bPullWorkingDirectoryOn = true;
@@ -38,12 +43,13 @@ namespace UnrealVS
 		private const int P4TimelapseButtonID = 0x1458;
 		private const int P4RevisionGraphButtonID = 0x1459;
 		private const int P4FileHistoryButtonID = 0x1460;
+		private const int P4RevertButtonID = 0x1461;
 
 		private OleMenuCommand SubMenuCommand;
 
 		//private System.Diagnostics.Process ChildProcess;
 
-		private List<System.Diagnostics.Process> ChildProcessList = new List<System.Diagnostics.Process>();
+		private List<Process> ChildProcessList = new List<Process>();
 
 		private IVsOutputWindowPane P4OutputPane;
 		private string P4WorkingDirectory;
@@ -62,18 +68,25 @@ namespace UnrealVS
 		private string Client = "";
 		private string Stream = "";
 		private string UserInfoComplete = "";
-
-		private List<CommandEvents> EventsForce = new List<CommandEvents>();
+		private readonly object CheckoutQueueLock = new object();
+		private readonly HashSet<string> CheckoutQueueFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		private JoinableTask CheckoutTask;
 
 		private class P4Command
 		{
-			public MenuCommand ButtonCommand;
-			public CommandID CommandID;
-			public P4Command(int ButtonID, EventHandler ButtonHandler)
-			{
-				CommandID = new CommandID(GuidList.UnrealVSCmdSet, ButtonID);
-				ButtonCommand = new MenuCommand(new EventHandler(ButtonHandler), CommandID);
+			public readonly OleMenuCommand ButtonCommand;
 
+			public P4Command(int ButtonID, EventHandler ButtonHandler, Func<EnvDTE.Document, bool> QueryStatusHandler = null)
+			{
+				var cmd = new OleMenuCommand(new EventHandler(ButtonHandler), new CommandID(GuidList.UnrealVSCmdSet, ButtonID));
+				cmd.BeforeQueryStatus += (s, e) =>
+				{
+					ThreadHelper.ThrowIfNotOnUIThread();
+					DTE DTE = UnrealVSPackage.Instance.DTE;
+					((MenuCommand)s).Enabled = DTE.ActiveDocument != null && (QueryStatusHandler == null || QueryStatusHandler(DTE.ActiveDocument));
+				};
+					
+				ButtonCommand = cmd;
 				UnrealVSPackage.Instance.MenuCommandService.AddCommand(ButtonCommand);
 			}
 
@@ -83,9 +96,9 @@ namespace UnrealVS
 			}
 		}
 
-		private List<P4Command> P4CommandsList = new List<P4Command>();
+		private readonly List<P4Command> P4CommandsList = new List<P4Command>(16);
 
-		private IntercepteSave Interceptor;
+		private InterceptSave Interceptor;
 
 		private bool IsSolutionLoaded()
 		{
@@ -94,6 +107,19 @@ namespace UnrealVS
 			DTE DTE = UnrealVSPackage.Instance.DTE;
 
 			return DTE.Solution.FileName.Length > 0;
+		}
+
+		private string GetCheckoutQueueFileName()
+		{
+			ThreadHelper.ThrowIfNotOnUIThread();
+
+			DTE DTE = UnrealVSPackage.Instance.DTE;
+			if (DTE.Solution.FileName.Length > 0)
+			{
+				return Path.Combine(Path.GetDirectoryName(DTE.Solution.FileName), ".p4checkout.txt");
+			}
+
+			return null;
 		}
 
 		private void OnQuickBuildSubMenuQuery(object sender, EventArgs e)
@@ -132,7 +158,7 @@ namespace UnrealVS
 				else
 				{
 					P4OutputPane.Activate();
-					P4OutputPane.OutputString($"1>------ P4VC not found, {P4VCCmd} or {P4VCCmdBat}{Environment.NewLine}");
+					P4OutputPane.OutputStringThreadSafe($"1>------ P4VC not found, {P4VCCmd} or {P4VCCmdBat}{Environment.NewLine}");
 					P4VCCmd = "";
 				}
 
@@ -140,19 +166,25 @@ namespace UnrealVS
 
 			// add commands
 			P4CommandsList.Add(new P4Command(P4CheckoutButtonID, P4CheckoutButtonHandler));
+			P4CommandsList.Add(new P4Command(P4RevertButtonID, P4RevertButtonHandler));
 			P4CommandsList.Add(new P4Command(P4AnnotateButtonID, P4AnnotateButtonHandler));
-			P4CommandsList.Add(new P4Command(P4TimelapseButtonID, P4TimelapseHandler));
-			P4CommandsList.Add(new P4Command(P4IntegrationAwareTimelapseButtonID, P4IntegrationAwareTimeLapseHandler));
-			P4CommandsList.Add(new P4Command(P4RevisionGraphButtonID, P4RevisionGraphHandler));
-			P4CommandsList.Add(new P4Command(P4DiffinVSButtonID, P4DiffinVSHandler));
+			P4CommandsList.Add(new P4Command(P4DiffinVSButtonID, P4DiffHandler));
 			P4CommandsList.Add(new P4Command(P4GetLast10ChangesID, P4GetLast10ChangesHandler));
-			P4CommandsList.Add(new P4Command(P4FileHistoryButtonID, P4FileHistoryHandler));
-			P4CommandsList.Add(new P4Command(P4ShowFileinP4VID, P4ShowFileInP4VHandler));
 			P4CommandsList.Add(new P4Command(P4FastReconcileCodeFilesID, P4FastReconcileCodeFiles));
 
 			if (P4VCCmd.Length > 1)
 			{
-				P4CommandsList.Add(new P4Command(P4ViewSelectedCLButtonID, P4ViewSelectedCLButtonHandler));
+				P4CommandsList.Add(new P4Command(P4IntegrationAwareTimelapseButtonID, P4IntegrationAwareTimeLapseHandler));
+				P4CommandsList.Add(new P4Command(P4ShowFileinP4VID, P4ShowFileInP4VHandler));
+				P4CommandsList.Add(new P4Command(P4FileHistoryButtonID, P4FileHistoryHandler));
+				P4CommandsList.Add(new P4Command(P4RevisionGraphButtonID, P4RevisionGraphHandler));
+				P4CommandsList.Add(new P4Command(P4TimelapseButtonID, P4TimelapseHandler));
+				P4CommandsList.Add(new P4Command(P4ViewSelectedCLButtonID, P4ViewSelectedCLButtonHandler, (Document) =>
+				{
+					ThreadHelper.ThrowIfNotOnUIThread();
+					TextSelection TextSel = (TextSelection)Document.Selection;
+					return !string.IsNullOrEmpty(TextSel.Text) && int.TryParse(TextSel.Text, out _);
+				}));
 			}
 
 			// add sub menu for commands
@@ -164,11 +196,18 @@ namespace UnrealVS
 			UpdateMenuOptions();
 
 			var runningDocumentTable = new RunningDocumentTable(UnrealVSPackage.Instance);
-			Interceptor = new IntercepteSave(UnrealVSPackage.Instance.DTE, runningDocumentTable, this);
+			Interceptor = new InterceptSave(UnrealVSPackage.Instance.DTE, runningDocumentTable, this);
 
 			runningDocumentTable.Advise(Interceptor);
 
+			string CheckoutQueueFile = GetCheckoutQueueFileName();
+			if (CheckoutQueueFile != null)
+			{
+				P4OutputPane.OutputStringThreadSafe($"UnrealVS started. Using checkout queue: {CheckoutQueueFile}" + Environment.NewLine);
+				PulseCheckoutQueue(CheckoutQueueFile);
+			}
 		}
+
 		// Called when solutions are loaded or unloaded
 		private void SolutionOpened()
 		{
@@ -176,6 +215,13 @@ namespace UnrealVS
 
 			// Update the menu visibility
 			UpdateMenuOptions();
+
+			string CheckoutQueueFile = GetCheckoutQueueFileName();
+			if (CheckoutQueueFile != null)
+			{
+				P4OutputPane.OutputStringThreadSafe($"Solution opened. Using checkout queue: {CheckoutQueueFile}" + Environment.NewLine);
+				PulseCheckoutQueue(CheckoutQueueFile);
+			}
 		}
 
 		private void SolutionClosed()
@@ -188,36 +234,6 @@ namespace UnrealVS
 			// Clear any existing P4 working directory settings
 			P4WorkingDirectory = "";
 			bPullWorkingDirectorFromP4 = true;
-		}
-
-		void RegisterCallbackHandler(string CommandName, _dispCommandEvents_BeforeExecuteEventHandler Callback)
-		{
-			ThreadHelper.ThrowIfNotOnUIThread();
-
-			// Find the command from the passed in name
-			DTE DTE = UnrealVSPackage.Instance.DTE;
-			CommandEvents Event = null;
-			{
-				// Probably should move this out to a function.
-				try
-				{
-					Command Command = DTE.Commands.Item(CommandName, -1);
-					if (Command != null)
-					{
-						Event = DTE.Events.get_CommandEvents(Command.Guid, Command.ID);
-					}
-				}
-				catch
-				{
-
-				}
-			}
-
-			if (Event != null)
-			{
-				Event.BeforeExecute += Callback;
-				EventsForce.Add(Event); // forces a reference
-			}
 		}
 
 		private void UpdateMenuOptions()
@@ -260,6 +276,29 @@ namespace UnrealVS
 			}
 		}
 
+		private void P4RevertButtonHandler(object Sender, EventArgs Args)
+		{
+			ThreadHelper.ThrowIfNotOnUIThread();
+
+			DTE DTE = UnrealVSPackage.Instance.DTE;
+
+			// Check we've got a file open
+			if (DTE.ActiveDocument == null)
+			{
+				Logging.WriteLine("P4Checkout called without an active document");
+
+				P4OutputPane.Activate();
+				P4OutputPane.OutputStringThreadSafe($"1>------ P4Revert called without an active document{Environment.NewLine}");
+
+				return;
+			}
+
+			if (VSConstants.MessageBoxResult.IDOK == (VSConstants.MessageBoxResult) VsShellUtilities.ShowMessageBox(UnrealVSPackage.Instance, string.Empty, $"Are you sure you want to revert {DTE.ActiveDocument.Name}?", OLEMSGICON.OLEMSGICON_QUERY, OLEMSGBUTTON.OLEMSGBUTTON_OKCANCEL, OLEMSGDEFBUTTON.OLEMSGDEFBUTTON_FIRST))
+			{
+				TryP4Command($"revert {DTE.ActiveDocument.FullName}", out _, out _);
+			}
+		}
+
 		private void P4CheckoutButtonHandler(object Sender, EventArgs Args)
 		{
 			ThreadHelper.ThrowIfNotOnUIThread();
@@ -272,7 +311,7 @@ namespace UnrealVS
 				Logging.WriteLine("P4Checkout called without an active document");
 
 				P4OutputPane.Activate();
-				P4OutputPane.OutputString($"1>------ P4Checkout called without an active document{Environment.NewLine}");
+				P4OutputPane.OutputStringThreadSafe($"1>------ P4Checkout called without an active document{Environment.NewLine}");
 
 				return;
 			}
@@ -294,7 +333,7 @@ namespace UnrealVS
 			{
 				Logging.WriteLine("P4Annotate called without an active document");
 
-				P4OutputPane.OutputString($"1>------ P4Annotate called without an active document{Environment.NewLine}");
+				P4OutputPane.OutputStringThreadSafe($"1>------ P4Annotate called without an active document{Environment.NewLine}");
 
 				return;
 			}
@@ -307,7 +346,7 @@ namespace UnrealVS
 
 			if (!bResult || CaptureP4StdErr.Length > 0)
 			{
-				P4OutputPane.OutputString($"1>------ P4Annotate call failed");
+				P4OutputPane.OutputStringThreadSafe($"1>------ P4Annotate call failed");
 				return;
 			}
 
@@ -392,23 +431,10 @@ namespace UnrealVS
 
 			TextSelection TextSel = (TextSelection)DTE.ActiveDocument.Selection;
 
-			int ChangeList = -1;
-
-			try
-			{
-				ChangeList = Int32.Parse(TextSel.Text);
-			}
-			catch
-			{
-				ChangeList = -2;
-			}
-
-
-			if (ChangeList > 0)
+			if(Int32.TryParse(TextSel.Text, out int ChangeList) && ChangeList > 0)
 			{
 				TryP4VCCommand($"Change {ChangeList}");
 			}
-
 		}
 
 		private void P4TimelapseHandler(object sender, EventArgs args)
@@ -420,11 +446,24 @@ namespace UnrealVS
 			if (DTE.ActiveDocument == null)
 			{
 				Logging.WriteLine("P4Timelapse called without an active document");
-				P4OutputPane.OutputString($"1>------ P4Timelapse called without an active document{Environment.NewLine}");
+				P4OutputPane.OutputStringThreadSafe($"1>------ P4Timelapse called without an active document{Environment.NewLine}");
 				return;
 			}
 
-			string Command = $"timelapse \"{DTE.ActiveDocument.FullName}\"";
+			string Command = "timelapse ";
+
+			TextDocument CurrentDocument = (TextDocument) DTE.ActiveDocument.Object("TextDocument");
+			if (CurrentDocument != null)
+			{
+				TextSelection TextSel = (TextSelection) DTE.ActiveDocument.Selection;
+				if (TextSel != null)
+				{
+					Command += $"-l {TextSel.CurrentLine} ";
+				}
+			}
+
+			Command += $"\"{DTE.ActiveDocument.FullName}\"";
+
 			TryP4VCCommand(Command, true);
 		}
 
@@ -437,7 +476,7 @@ namespace UnrealVS
 			if (DTE.ActiveDocument == null)
 			{
 				Logging.WriteLine("P4Timelapse called without an active document");
-				P4OutputPane.OutputString($"1>------ P4RevisionGraph called without an active document{Environment.NewLine}");
+				P4OutputPane.OutputStringThreadSafe($"1>------ P4RevisionGraph called without an active document{Environment.NewLine}");
 				return;
 			}
 
@@ -447,6 +486,11 @@ namespace UnrealVS
 
 		private void P4FileHistoryHandler(object sender, EventArgs args)
 		{
+			if (P4VCCmd.Length == 0)
+			{
+				return;
+			}
+
 			ThreadHelper.ThrowIfNotOnUIThread();
 
 			DTE DTE = UnrealVSPackage.Instance.DTE;
@@ -454,12 +498,25 @@ namespace UnrealVS
 			if (DTE.ActiveDocument == null)
 			{
 				Logging.WriteLine("P4FileHistory called without an active document");
-				P4OutputPane.OutputString($"1>------ P4FileHistory called without an active document{Environment.NewLine}");
+				P4OutputPane.OutputStringThreadSafe($"1>------ P4FileHistory called without an active document{Environment.NewLine}");
 				return;
 			}
 
 			string Command = $"history \"{DTE.ActiveDocument.FullName}\"";
-			TryP4VCCommand(Command, true);
+			P4OutputPane.OutputStringThreadSafe($"1>------ Running P4FileHistory with args: {Command}{Environment.NewLine}");
+
+			Process ChildProcess = new Process()
+			{
+				StartInfo = new ProcessStartInfo()
+				{
+					FileName = P4VCCmd,
+					Arguments = Command,
+					WorkingDirectory = P4WorkingDirectory,
+					UseShellExecute = false,
+					CreateNoWindow = true
+				}
+			};
+			ChildProcess.Start();
 		}
 
 		private void P4IntegrationAwareTimeLapseHandler(object Sender, EventArgs Args)
@@ -472,7 +529,7 @@ namespace UnrealVS
 			{
 				Logging.WriteLine("P4IntegrationAwareTimeLapse called without an active document");
 
-				P4OutputPane.OutputString($"1>------ P4IntegrationAwareTimeLapse called without an active document{Environment.NewLine}");
+				P4OutputPane.OutputStringThreadSafe($"1>------ P4IntegrationAwareTimeLapse called without an active document{Environment.NewLine}");
 
 				return;
 			}
@@ -494,7 +551,7 @@ namespace UnrealVS
 			}
 		}
 
-		private void P4DiffinVSHandler(object Sender, EventArgs Args)
+		private void P4DiffHandler(object Sender, EventArgs Args)
 		{
 			ThreadHelper.ThrowIfNotOnUIThread();
 
@@ -504,8 +561,14 @@ namespace UnrealVS
 			{
 				Logging.WriteLine("P4DiffInVSHandler called without an active document");
 
-				P4OutputPane.OutputString($"1>------ P4DiffInVSHandler called without an active document{Environment.NewLine}");
+				P4OutputPane.OutputStringThreadSafe($"1>------ P4DiffInVSHandler called without an active document{Environment.NewLine}");
 
+				return;
+			}
+
+			if(UnrealVSPackage.Instance.OptionsPage.UseP4VDiff && P4VCCmd.Length > 1)
+			{
+				TryP4VCCommand($"diffhave \"{DTE.ActiveDocument.FullName}\"");
 				return;
 			}
 
@@ -613,10 +676,10 @@ namespace UnrealVS
 			}
 			else
 			{
-				P4OutputPane.OutputString($"PREVIEW{Environment.NewLine}");
+				P4OutputPane.OutputStringThreadSafe($"PREVIEW{Environment.NewLine}");
 			}
 
-			P4OutputPane.OutputString($"Running Async Reconcile on : {ReconcileDepotPaths}{Environment.NewLine}");
+			P4OutputPane.OutputStringThreadSafe($"Running Async Reconcile on : {ReconcileDepotPaths}{Environment.NewLine}");
 			P4OutputPane.Activate();
 
 			_ = TryP4CommandAsync($"reconcile -e -m {Preview} {ReconcileDepotPaths}");
@@ -633,8 +696,21 @@ namespace UnrealVS
 				return;
 			}
 
-			TryP4VCommand($"-s \"{DTE.ActiveDocument.FullName}\"");
+			if(UserInfoComplete.Length == 0)
+			{
+				SetUserInfoStrings();
+			}
+
+			if (Username.Length > 0 && Port.Length > 0 && Client.Length > 0)
+			{
+				TryP4VCommand($"-p {Port} -u {Username} -c {Client} -s \"{DTE.ActiveDocument.FullName}\"");
+			}
+			else
+			{
+				TryP4VCommand($"-s \"{DTE.ActiveDocument.FullName}\"");
+			}
 		}
+
 		public void OpenForEdit(string FileName, bool CheckOptionsFlag = false)
 		{
 			ThreadHelper.ThrowIfNotOnUIThread();
@@ -642,7 +718,7 @@ namespace UnrealVS
 			// if the callee requested it, honor the enabling of autocheckout option - return if its off
 			if (CheckOptionsFlag && !UnrealVSPackage.Instance.OptionsPage.AllowUnrealVSCheckoutOnEdit)
 			{
-				//P4OutputPane.OutputString($"autocheckout disabled: {FileName}");
+				//P4OutputPane.OutputStringThreadSafe($"autocheckout disabled: {FileName}");
 				return;
 			}
 
@@ -650,24 +726,171 @@ namespace UnrealVS
 			if (!File.Exists(FileName) ||
  				(CheckOptionsFlag && !File.GetAttributes(FileName).HasFlag(FileAttributes.ReadOnly)))
 			{
-				P4OutputPane.OutputString($"already writeable: {FileName}");
+				P4OutputPane.OutputStringThreadSafe($"already writeable: {FileName}" + Environment.NewLine);
 				return;
 			}
 
 			if (UnrealVSPackage.Instance.OptionsPage.AllowAsyncP4Checkout)
 			{
-				//P4OutputPane.OutputString($"Marking file as writeable: {FileName}");
+				string queueFile = GetCheckoutQueueFileName();
+				if (queueFile == null)
+				{
+					P4OutputPane.OutputStringThreadSafe("Unable to get path to checkout queue file. No solution loaded?" + Environment.NewLine);
+					return;
+				}
+
+				// Add the file to the queue for checking out before modifying it. This allows us to recover in the case of a P4 outage or VS exit.
+				Logging.WriteLine($"Adding async checkout of {FileName} to {queueFile}");
+				lock (CheckoutQueueLock)
+				{
+					try
+					{
+						File.AppendAllLines(queueFile, new[] { FileName });
+					}
+					catch (Exception ex)
+					{
+						P4OutputPane.OutputStringThreadSafe($"Unable to update {queueFile} ({ex.Message})" + Environment.NewLine);
+						return;
+					}
+				}
+
+				//P4OutputPane.OutputStringThreadSafe($"Marking file as writeable: {FileName}");
 				// Mark the file as writeable
 				FileAttributes NewAttributes = File.GetAttributes(FileName) & ~FileAttributes.ReadOnly;
 				File.SetAttributes(FileName, NewAttributes);
 
-				// then send a fire and forget p4 edit command - does not lock the UI
-				_ = TryP4CommandAsync($"edit \"{FileName}\"");
+				// Start a background thread to update the queue
+				PulseCheckoutQueue(queueFile);
 			}
 			else
 			{
+				string StdOut, StdErr;
+
 				// sync edit command - will lock the UI but be safer (no risk of a locally writeable file that is not checked out)
-				TryP4Command($"edit \"{FileName}\"", out _, out _);
+				bool Success = TryP4Command($"edit \"{FileName}\"", out StdOut, out StdErr);
+
+				if (!Success && StdErr.Contains("file(s) not on client."))
+				{
+					P4OutputPane.OutputStringThreadSafe($"{FileName} has not been added yet, adding now.{Environment.NewLine}");
+					TryP4Command($"add \"{FileName}\"", out _, out _);
+				}
+			}
+		}
+
+		private void PulseCheckoutQueue(string QueueFile)
+		{
+			TaskCompletionSource<bool> StartTask = null;
+			lock (CheckoutQueueLock)
+			{
+				CheckoutQueueFiles.Add(QueueFile);
+
+				if (CheckoutTask == null)
+				{
+					Logging.WriteLine($"Starting checkout task.");
+					StartTask = new TaskCompletionSource<bool>();
+					CheckoutTask = ThreadHelper.JoinableTaskFactory.RunAsync(async () => { await StartTask.Task; await UpdateCheckoutQueueAsync(); });
+				}
+			}
+			StartTask?.SetResult(true);
+		}
+
+		private async Task UpdateCheckoutQueueAsync()
+		{
+			for (; ; )
+			{
+				string QueueFile = null;
+				try
+				{
+					// Read the list of files that need checking out
+					string[] Lines;
+					lock (CheckoutQueueLock)
+					{
+						while (QueueFile == null || !File.Exists(QueueFile))
+						{
+							QueueFile = CheckoutQueueFiles.FirstOrDefault();
+							if (QueueFile == null)
+							{
+								Logging.WriteLine($"Stopping checkout task; setting CheckoutTask to null.");
+								CheckoutTask = null;
+								return;
+							}
+							CheckoutQueueFiles.Remove(QueueFile);
+						}
+						Lines = File.ReadAllLines(QueueFile);
+					}
+
+					// Open each file for edit
+					bool Pause = false;
+					foreach (string Line in Lines)
+					{
+						string FileName = Line.Trim();
+						if (FileName.Length > 0)
+						{
+							bool Success = false;
+
+							(bool EditSuccess, string StdOut, string StdErr) = await TryP4CommandExAsync(P4Exe, $"edit \"{FileName}\"");
+							if (EditSuccess)
+							{
+								Success = true;
+
+								Logging.WriteLine($"Performed async checkout of {FileName}.");
+								lock (CheckoutQueueLock)
+								{
+									string[] NewLines = File.ReadAllLines(QueueFile);
+									File.WriteAllLines(QueueFile, NewLines.Where(x => !x.Equals(Line, StringComparison.Ordinal)));
+								}
+							}
+
+							if (!EditSuccess && StdErr.Contains("file(s) not on client."))
+							{
+								await ThreadHelper.JoinableTaskFactory.RunAsync(async () =>
+								{
+									await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+									P4OutputPane.OutputStringThreadSafe($"{FileName} has not been added yet, adding now.{Environment.NewLine}");
+								});
+								(bool AddSuccess, string _, string _) = await TryP4CommandExAsync(P4Exe, $"add \"{FileName}\"");
+
+								if (AddSuccess)
+								{
+									Success = true;
+
+									Logging.WriteLine($"Performed async add of {FileName}.");
+									lock (CheckoutQueueLock)
+									{
+										string[] NewLines = File.ReadAllLines(QueueFile);
+										File.WriteAllLines(QueueFile, NewLines.Where(x => !x.Equals(Line, StringComparison.Ordinal)));
+									}
+								}
+							}
+
+							if (!Success)
+							{
+								// Re-add to checkout queue, to force another loop
+								Logging.WriteLine($"Unable to check out file {FileName}. Will retry.");
+								CheckoutQueueFiles.Add(QueueFile);
+								Pause = true;
+							}
+						}
+					}
+
+					// Check if we've looped over everything and should pause
+					if (Pause)
+					{
+						await Task.Delay(TimeSpan.FromSeconds(10.0));
+					}
+				}
+				catch (Exception ex)
+				{
+					Logging.WriteLine($"Unable to update checkout queue: {ex}");
+
+					if (QueueFile != null)
+					{
+						lock (CheckoutQueueLock)
+						{
+							CheckoutQueueFiles.Add(QueueFile);
+						}
+					}
+				}
 			}
 		}
 
@@ -703,7 +926,7 @@ namespace UnrealVS
 
 			if (!bSuccess)
 			{
-				P4OutputPane.OutputString($"attempt to pull P4CONFIG info failed{Environment.NewLine}");
+				P4OutputPane.OutputStringThreadSafe($"attempt to pull P4CONFIG info failed{Environment.NewLine}");
 			}
 
 			return WorkingDirectory;
@@ -733,7 +956,7 @@ namespace UnrealVS
 
 			UserInfoComplete = string.Format(" -p {0} -u {1} -c {2} ", Port, Username, Client);
 
-			P4OutputPane.OutputString("GetUserInfoStringFull : " + UserInfoComplete + Environment.NewLine);
+			P4OutputPane.OutputStringThreadSafe("GetUserInfoStringFull : " + UserInfoComplete + Environment.NewLine);
 		}
 
 		private void PullWorkingDirectory(bool bPullfromP4Settings)
@@ -765,11 +988,11 @@ namespace UnrealVS
 						P4WorkingDirectory = NewWorkingDirectory;
 						bPullWorkingDirectorFromP4 = false;
 
-						P4OutputPane.OutputString($"P4WorkingDirectory set to '{P4WorkingDirectory}'{Environment.NewLine}");
+						P4OutputPane.OutputStringThreadSafe($"P4WorkingDirectory set to '{P4WorkingDirectory}'{Environment.NewLine}");
 					}
 					else
 					{
-						P4OutputPane.OutputString($"P4WorkingDirectory set failed {Environment.NewLine}");
+						P4OutputPane.OutputStringThreadSafe($"P4WorkingDirectory set failed {Environment.NewLine}");
 					}
 				}
 			}
@@ -828,7 +1051,7 @@ namespace UnrealVS
 					P4OutputPane.Activate();
 				}
 
-				P4OutputPane.OutputString($"Running \"{CmdPath}\" {CommandLine}{Environment.NewLine}");
+				P4OutputPane.OutputStringThreadSafe($"Running \"{CmdPath}\" {CommandLine}{Environment.NewLine}");
 			});
 
 			StringBuilder StdOutSB = new StringBuilder();
@@ -885,15 +1108,15 @@ namespace UnrealVS
 				await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
 				if (StdOut.Length > 0 && bOutputStdOut)
 				{
-					P4OutputPane.OutputString(StdOut);
+					P4OutputPane.OutputStringThreadSafe(StdOut);
 				}
 				if (StdErr.Length > 0)
 				{
-					P4OutputPane.OutputString(StdErr);
+					P4OutputPane.OutputStringThreadSafe(StdErr);
 				}
 
 				TimeSpan Duration = DateTime.Now - Start;
-				P4OutputPane.OutputString($"complete {Duration.TotalSeconds.ToString()} {Environment.NewLine}");
+				P4OutputPane.OutputStringThreadSafe($"complete {Duration.TotalSeconds.ToString()} {Environment.NewLine}");
 			});
 
 			bool Result = (ChildProcess.ExitCode == 0 && StdErr.Length == 0);
@@ -901,13 +1124,13 @@ namespace UnrealVS
 		}
 	}
 
-	internal class IntercepteSave : IVsRunningDocTableEvents3
+	internal class InterceptSave : IVsRunningDocTableEvents3
 	{
 		private readonly DTE DTE;
 		private readonly RunningDocumentTable RunningDocumentTable;
 		private readonly P4Commands P4Ops;
 
-		public IntercepteSave(DTE InDTE, RunningDocumentTable InRrunningDocumentTable, P4Commands InP4Ops)
+		public InterceptSave(DTE InDTE, RunningDocumentTable InRrunningDocumentTable, P4Commands InP4Ops)
 		{
 			DTE = InDTE;
 			RunningDocumentTable = InRrunningDocumentTable;

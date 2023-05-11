@@ -9,6 +9,7 @@
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Misc/CoreMisc.h"
 #include "Components/ActorComponent.h"
+#include "UObject/UE5ReleaseStreamObjectVersion.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/MetaData.h"
 #include "Serialization/ArchiveReplaceObjectRef.h"
@@ -1721,26 +1722,33 @@ void FKismetCompilerContext::CopyTermDefaultsToDefaultObject(UObject* DefaultObj
 				++PropertiesAssigned;
 
 				const FString& Value = *ValuePtr;
-				if(FObjectProperty* AsObjectProperty = CastField<FObjectProperty>(Property))
+				if (FObjectProperty* AsObjectProperty = CastField<FObjectProperty>(Property))
 				{
 					// Value is the fully qualified name, so just search for it:
 					UObject* Result = StaticFindObjectSafe(UObject::StaticClass(), nullptr, *Value);
-					if(Result)
+					if (Result)
 					{
 						// Object may be of a type that is also being compiled and therefore REINST_, so get real class:
 						UClass* RealClass = Result->GetClass()->GetAuthoritativeClass();
 
 						// If object is compatible, write it into cdo:
-						if( RealClass && RealClass->IsChildOf(AsObjectProperty->PropertyClass) )
+						if (RealClass && RealClass->IsChildOf(AsObjectProperty->PropertyClass))
 						{
-							AsObjectProperty->SetObjectPropertyValue( AsObjectProperty->ContainerPtrToValuePtr<uint8>(DefaultObject), Result );
+							AsObjectProperty->SetObjectPropertyValue(AsObjectProperty->ContainerPtrToValuePtr<uint8>(DefaultObject), Result);
 							continue;
 						}
 					}
 				}
 
-				const bool bParseSuccedded = FBlueprintEditorUtils::PropertyValueFromString(Property, Value, reinterpret_cast<uint8*>(DefaultObject));
-				if(!bParseSuccedded)
+				// If this property contains an instanced reference, set the flag to make sure we uniquely instance those objects when we import the default value.
+				int32 PortFlags = PPF_None;
+				if (Property->HasAnyPropertyFlags(CPF_ContainsInstancedReference | CPF_InstancedReference))
+				{
+					PortFlags |= PPF_InstanceSubobjects;
+				}
+
+				const bool bParseSucceeded = FBlueprintEditorUtils::PropertyValueFromString(Property, Value, reinterpret_cast<uint8*>(DefaultObject), DefaultObject, PortFlags);
+				if(!bParseSucceeded)
 				{
 					const FString ErrorMessage = *FText::Format(
 						LOCTEXT("ParseDefaultValueErrorFmt", "Can't parse default value '{0}' for @@. Property: {1}."),
@@ -2261,6 +2269,11 @@ void FKismetCompilerContext::PrecompileFunction(FKismetFunctionContext& Context,
 		if (FunctionMetaData.bCallInEditor)
 		{
 			Context.Function->SetMetaData(FBlueprintMetadata::MD_CallInEditor, TEXT( "true" ));
+		}
+
+		if (FunctionMetaData.bIsUnsafeDuringActorConstruction)
+		{
+			Context.Function->SetMetaData(FBlueprintMetadata::MD_UnsafeForConstructionScripts, TEXT("true"));
 		}
 
 		// Set appropriate metadata if the function is deprecated
@@ -2895,6 +2908,11 @@ void FKismetCompilerContext::SetCalculatedMetaDataAndFlags(UFunction* Function, 
 	{
 		Function->SetMetaData(FBlueprintMetadata::MD_ThreadSafe, TEXT("true"));
 	}
+
+	if (EntryNode->MetaData.bIsUnsafeDuringActorConstruction)
+	{
+		Function->SetMetaData(FBlueprintMetadata::MD_UnsafeForConstructionScripts, TEXT("true"));
+	}
 	
 	if (UEdGraphPin* WorldContextPin = EntryNode->GetAutoWorldContextPin())
 	{
@@ -2978,7 +2996,7 @@ void FKismetCompilerContext::FinishCompilingClass(UClass* Class)
 	if (ParentClass != NULL)
 	{
 		// Propagate the new parent's inheritable class flags
-		Class->ReferenceTokenStream.Empty();
+		Class->ReferenceTokens.Reset();
 		Class->ClassFlags &= ~CLASS_RecompilerClear;
 		Class->ClassFlags |= (ParentClass->ClassFlags & CLASS_ScriptInherit);//@TODO: ChangeParentClass had this, but I don't think I want it: | UClass::StaticClassFlags;  // will end up with CLASS_Intrinsic
 		Class->ClassCastFlags |= ParentClass->ClassCastFlags;

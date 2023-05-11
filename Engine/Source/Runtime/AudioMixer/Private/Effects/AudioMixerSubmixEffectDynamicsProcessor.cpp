@@ -2,6 +2,7 @@
 
 #include "SubmixEffects/AudioMixerSubmixEffectDynamicsProcessor.h"
 
+#include "AudioBusSubsystem.h"
 #include "AudioDeviceManager.h"
 #include "AudioMixerDevice.h"
 #include "AudioMixerSubmix.h"
@@ -198,7 +199,12 @@ bool FSubmixEffectDynamicsProcessor::UpdateKeySourcePatch()
 				const uint32 ObjectId = KeySource.GetObjectId();
 				if (ObjectId != INDEX_NONE)
 				{
-					KeySource.Patch = MixerDevice->AddPatchForAudioBus(ObjectId, 1.0f /* PatchGain */);
+					UAudioBusSubsystem* AudioBusSubsystem = MixerDevice->GetSubsystem<UAudioBusSubsystem>();
+					if (AudioBusSubsystem)
+					{
+						KeySource.Patch = AudioBusSubsystem->AddPatchOutputForAudioBus(Audio::FAudioBusKey(ObjectId), MixerDevice->GetNumOutputFrames(), KeySource.GetNumChannels());
+					}
+
 					if (KeySource.Patch.IsValid())
 					{
 						DynamicsProcessor.SetKeyNumChannels(KeySource.GetNumChannels());

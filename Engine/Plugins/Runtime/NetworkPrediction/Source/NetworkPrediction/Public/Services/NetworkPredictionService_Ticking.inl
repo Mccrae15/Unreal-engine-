@@ -1,8 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
-#include "NetworkPredictionSimulation.h"
+
+// HEADER_UNIT_SKIP - Not included directly
+
 #include "NetworkPredictionInstanceData.h"
+#include "NetworkPredictionTickState.h"
+#include "NetworkPredictionTrace.h"
+#include "NetworkPredictionUtil.h"
 
 // Common util used by the ticking services. Might make sense to move to FNetworkPredictionDriverBase if needed elsewhere
 template<typename ModelDef>
@@ -16,7 +21,7 @@ struct TTickUtil
 	using FrameDataType = typename TInstanceFrameState<ModelDef>::FFrame;
 
 	template<typename SimulationType = typename ModelDef::Simulation>
-	static typename TEnableIf<!TIsSame<SimulationType, void>::Value>::Type DoTick(TInstanceData<ModelDef>& Instance, FrameDataType& InputFrameData, FrameDataType& OutputFrameData, const FNetSimTimeStep& Step, const int32 CueTimeMS, ESimulationTickContext TickContext)
+	static typename TEnableIf<!std::is_same_v<SimulationType, void>>::Type DoTick(TInstanceData<ModelDef>& Instance, FrameDataType& InputFrameData, FrameDataType& OutputFrameData, const FNetSimTimeStep& Step, const int32 CueTimeMS, ESimulationTickContext TickContext)
 	{
 		Instance.CueDispatcher->PushContext({Step.Frame, CueTimeMS, TickContext});
 
@@ -45,7 +50,7 @@ struct TTickUtil
 	}
 
 	template<typename SimulationType = typename ModelDef::Simulation>
-	static typename TEnableIf<TIsSame<SimulationType, void>::Value>::Type DoTick(TInstanceData<ModelDef>& Instance, FrameDataType& InputFrameData, FrameDataType& OutputFrameData, const FNetSimTimeStep& Step, const int32 EndTimeMS, ESimulationTickContext TickContext)
+	static typename TEnableIf<std::is_same_v<SimulationType, void>>::Type DoTick(TInstanceData<ModelDef>& Instance, FrameDataType& InputFrameData, FrameDataType& OutputFrameData, const FNetSimTimeStep& Step, const int32 EndTimeMS, ESimulationTickContext TickContext)
 	{
 		npCheckf(false, TEXT("DoTick called on %s with no Simulation defined"), ModelDef::GetName());
 	}
@@ -323,3 +328,7 @@ private:
 	TBitArray<> InstanceBitArray; // Indices into DataStore->ServerRecv_IndependentTick that we are managing
 	TModelDataStore<ModelDef>* DataStore;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "NetworkPredictionSimulation.h"
+#endif

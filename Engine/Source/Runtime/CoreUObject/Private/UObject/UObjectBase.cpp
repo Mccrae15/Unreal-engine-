@@ -118,7 +118,13 @@ UObjectBase::UObjectBase( EObjectFlags InFlags )
  * @param	InName				name of the new object
  * @param	InObjectArchetype	archetype to assign
  */
-UObjectBase::UObjectBase(UClass* InClass, EObjectFlags InFlags, EInternalObjectFlags InInternalFlags, UObject *InOuter, FName InName)
+UObjectBase::UObjectBase(UClass* InClass,
+	EObjectFlags InFlags,
+	EInternalObjectFlags InInternalFlags,
+	UObject *InOuter,
+	FName InName,
+	int32 InInternalIndex,
+	int32 InSerialNumber)
 :	ObjectFlags			(InFlags)
 ,	InternalIndex		(INDEX_NONE)
 ,	ClassPrivate		(InClass)
@@ -126,7 +132,7 @@ UObjectBase::UObjectBase(UClass* InClass, EObjectFlags InFlags, EInternalObjectF
 {
 	check(ClassPrivate);
 	// Add to global table.
-	AddObject(InName, InInternalFlags);
+	AddObject(InName, InInternalFlags, InInternalIndex, InSerialNumber);
 	
 #if CSV_PROFILER && CSV_TRACK_UOBJECT_COUNT
 	UObjectStats::IncrementUObjectCount();
@@ -145,6 +151,9 @@ UObjectBase::~UObjectBase()
 		// Validate it.
 		check(IsValidLowLevel());
 		check(GetFName() == NAME_None);
+#if UE_WITH_OBJECT_HANDLE_LATE_RESOLVE
+		UE::CoreUObject::Private::FreeObjectHandle(*this);
+#endif 
 		GUObjectArray.FreeUObjectIndex(this);
 	}
 
@@ -191,7 +200,7 @@ void UObjectBase::DeferredRegister(UClass *UClassStaticClass,const TCHAR* Packag
  *
  * @param Name name to assign to this uobject
  */
-void UObjectBase::AddObject(FName InName, EInternalObjectFlags InSetInternalFlags)
+void UObjectBase::AddObject(FName InName, EInternalObjectFlags InSetInternalFlags, int32 InInternalIndex, int32 InSerialNumber)
 {
 	NamePrivate = InName;
 	EInternalObjectFlags InternalFlagsToSet = InSetInternalFlags;
@@ -209,7 +218,7 @@ void UObjectBase::AddObject(FName InName, EInternalObjectFlags InSetInternalFlag
 		InternalFlagsToSet |= EInternalObjectFlags::Native;
 		ObjectFlags &= ~RF_MarkAsNative;
 	}
-	GUObjectArray.AllocateUObjectIndex(this);
+	GUObjectArray.AllocateUObjectIndex(this, InInternalIndex, InSerialNumber);
 	check(InName != NAME_None && InternalIndex >= 0);
 	if (InternalFlagsToSet != EInternalObjectFlags::None)
 	{
@@ -384,16 +393,9 @@ bool UObjectBase::IsValidLowLevelFast(bool bRecursive /*= true*/) const
 	return true;
 }
 
-void UObjectBase::EmitBaseReferences(UClass *RootClass)
+void UObjectBase::EmitBaseReferences(UE::GC::FTokenStreamBuilder& TokenStream)
 {
-	static const FName ClassPropertyName(TEXT("Class"));
-	static const FName OuterPropertyName(TEXT("Outer"));
-	// Mark UObject class reference as persistent object reference so that it (ClassPrivate) doesn't get nulled when a class
-	// is marked as pending kill. Nulling ClassPrivate may leave the object in a broken state if it doesn't get GC'd in the same
-	// GC call as its class. And even if it gets GC'd in the same call as its class it may break inside of GC (for example when traversing TMap references)
-	RootClass->EmitObjectReference(STRUCT_OFFSET(UObjectBase, ClassPrivate), ClassPropertyName, GCRT_PersistentObject);
-	RootClass->EmitObjectReference(STRUCT_OFFSET(UObjectBase, OuterPrivate), OuterPropertyName, GCRT_PersistentObject);
-	RootClass->EmitExternalPackageReference();
+	TokenStream.EmitExternalPackageReference();
 }
 
 #if USE_PER_MODULE_UOBJECT_BOOTSTRAP
@@ -476,6 +478,7 @@ static FAutoConsoleCommand DumpPendingUObjectModulesCmd(
 /** Enqueue the registration for this object. */
 void UObjectBase::Register(const TCHAR* PackageName,const TCHAR* InName)
 {
+	LLM_SCOPE(ELLMTag::UObject);
 	TMap<UObjectBase*, FPendingRegistrantInfo>& PendingRegistrants = FPendingRegistrantInfo::GetMap();
 
 	FPendingRegistrant* PendingRegistration = new FPendingRegistrant(this);
@@ -552,6 +555,7 @@ static void UObjectProcessRegistrants()
 
 void UObjectForceRegistration(UObjectBase* Object, bool bCheckForModuleRelease)
 {
+	LLM_SCOPE(ELLMTag::UObject);
 	TMap<UObjectBase*, FPendingRegistrantInfo>& PendingRegistrants = FPendingRegistrantInfo::GetMap();
 
 	FPendingRegistrantInfo* Info = PendingRegistrants.Find(Object);
@@ -694,6 +698,7 @@ void UClassRegisterAllCompiledInClasses()
 	TArray<UClass*> AddedClasses;
 #endif
 	SCOPED_BOOT_TIMING("UClassRegisterAllCompiledInClasses");
+	LLM_SCOPE(ELLMTag::UObject);
 
 	FClassDeferredRegistry& Registry = FClassDeferredRegistry::Get();
 
@@ -1053,6 +1058,9 @@ void UObjectBaseInit()
 
 	GUObjectAllocator.AllocatePermanentObjectPool(SizeOfPermanentObjectPool);
 	GUObjectArray.AllocateObjectPool(MaxUObjects, MaxObjectsNotConsideredByGC, bPreAllocateUObjectArray);
+#if UE_WITH_OBJECT_HANDLE_LATE_RESOLVE
+	UE::CoreUObject::Private::InitObjectHandles(MaxUObjects);
+#endif
 
 	void InitNoPendingKill();
 	InitNoPendingKill();

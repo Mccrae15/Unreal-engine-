@@ -4,9 +4,9 @@
 #include "DataRegistrySource.h"
 #include "DataRegistryTypesPrivate.h"
 #include "DataRegistrySubsystem.h"
+#include "Engine/StreamableManager.h"
 #include "TimerManager.h"
 #include "Engine/AssetManager.h"
-#include "Curves/RealCurve.h"
 #include "Engine/CurveTable.h"
 #include "Engine/Engine.h"
 #include "Misc/App.h"
@@ -1123,14 +1123,13 @@ void UDataRegistry::AddReferencedObjects(UObject* InThis, FReferenceCollector& C
 	// Need to emit references for referenced items (unless there's no properties that reference UObjects)
 	if (ItemStruct != nullptr && ItemStruct->RefLink != nullptr && This->Cache->LookupCache.Num() > 0)
 	{
-		FVerySlowReferenceCollectorArchiveScope CollectorScope(Collector.GetVerySlowReferenceCollectorArchive(), This);
 		for (TPair<FDataRegistryLookup, TUniquePtr<FCachedDataRegistryItem>>& Pair : This->Cache->LookupCache)
 		{
 			FCachedDataRegistryItem* Item = Pair.Value.Get();
 
 			if (Item && Item->ItemMemory)
 			{
-				ItemStruct->SerializeBin(CollectorScope.GetArchive(), Item->ItemMemory);
+				Collector.AddPropertyReferences(ItemStruct, Item->ItemMemory, This);
 			}
 		}
 	}

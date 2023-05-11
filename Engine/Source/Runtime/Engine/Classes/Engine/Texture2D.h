@@ -7,13 +7,16 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/ScriptMacros.h"
 #include "Engine/Texture.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "TextureResource.h"
+#endif
 #include "Misc/FieldAccessor.h"
 #include "Serialization/BulkData.h"
 #include "Texture2D.generated.h"
 
 class FTexture2DResourceMem;
 class FTexture2DResource;
+struct FUpdateTextureRegion2D;
 
 UCLASS(hidecategories=Object, MinimalAPI, BlueprintType)
 class UTexture2D : public UTexture
@@ -30,14 +33,14 @@ public:
 	/**
 	 * Retrieves the size of the source image from which the texture was created.
 	 */
+#if WITH_EDITOR
+	ENGINE_API FIntPoint GetImportedSize() const;
+#else // #if WITH_EDITOR
 	FORCEINLINE FIntPoint GetImportedSize() const
 	{
-#if WITH_EDITOR
-		return Source.GetLogicalSize();
-#else // #if WITH_EDITOR
 		return ImportedSize;
-#endif // #if WITH_EDITOR
 	}
+#endif // #if WITH_EDITOR
 
 private:
 	/** True if streaming is temporarily disabled so we can update subregions of this texture's resource 
@@ -155,7 +158,10 @@ public:
 
 
 	/**
-	 * Calculates the maximum number of mips the engine allows to be loaded for this texture. 
+	 * Calculates the maximum number of mips that will be in this texture after cooking
+	 *   (eg. after the "drop mip" lod bias is applied).
+	 * This function is not correct and should not be used. 
+	 *
 	 * The cinematic mips will be considered as loadable, streaming enabled or not.
 	 * Note that in the cooking process, mips smaller than the min residency count
 	 * can be stripped out by the cooker.
@@ -166,7 +172,9 @@ public:
 	ENGINE_API int32 GetNumMipsAllowed(bool bIgnoreMinResidency) const;
 
 public:
-	/** Returns the minimum number of mips that must be resident in memory (cannot be streamed). */
+	/** Returns the minimum number of mips that must be resident in memory (cannot be streamed). 
+	This does not correctly account for NonStreaming mips and other constraints.
+	This function is not correct and should not be used. */
 	FORCEINLINE int32 GetMinTextureResidentMipCount() const
 	{
 		return FMath::Max(GMinTextureResidentMipCount, GetPlatformData() ? (int32)GetPlatformData()->GetNumMipsInTail() : 0);
@@ -312,9 +320,4 @@ public:
 	 */
 	virtual bool IsVirtualTexturedWithSinglePhysicalSpace() const { return false;  }
 
-protected:
-
-#if WITH_EDITOR
-	virtual bool GetStreamableRenderResourceState(FTexturePlatformData* InPlatformData, FStreamableRenderResourceState& OutState) const override;
-#endif
 };

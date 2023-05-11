@@ -2,6 +2,8 @@
 
 #pragma once
 
+// HEADER_UNIT_SKIP - Bad include. Some headers are in Engine
+
 #include "VectorTypes.h"
 #include "FrameTypes.h"
 #include "SceneView.h"
@@ -28,8 +30,14 @@ struct FSpatialPhotoParams
 	/** Pixel dimensions of the photo image */
 	FImageDimensions Dimensions;
 
-	/** Useful to to unproject the DeviceDepth render capture */
-	FViewMatrices ViewMatrices;
+	bool operator==(const FSpatialPhotoParams& Other) const
+	{
+		return Frame.Origin == Other.Frame.Origin &&
+			static_cast<const FVector4d>(Frame.Rotation) == static_cast<const FVector4d>(Other.Frame.Rotation) &&
+			NearPlaneDist == Other.NearPlaneDist &&
+			HorzFOVDegrees == Other.HorzFOVDegrees &&
+			Dimensions == Other.Dimensions;
+	}
 };
 
 /**
@@ -76,6 +84,9 @@ public:
 
 	/** @return the number of photos in the photo set */
 	int32 Num() const { return Photos.Num(); }
+
+	/** @return removes all photos from the photo set */
+	void Empty() { return Photos.Empty(); }
 
 	/** @return the photo at the given index */
 	const TSpatialPhoto<PixelType>& Get(int32 Index) const { return *Photos[Index]; }

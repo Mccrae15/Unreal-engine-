@@ -2,7 +2,6 @@
 
 using System;
 using System.Collections.Generic;
-using Horde.Build.Acls;
 using Horde.Build.Projects;
 using Horde.Build.Streams;
 using Horde.Build.Users;
@@ -15,7 +14,7 @@ namespace Horde.Build.Devices
 	using DeviceId = StringId<IDevice>;
 	using DevicePlatformId = StringId<IDevicePlatform>;
 	using DevicePoolId = StringId<IDevicePool>;
-	using ProjectId = StringId<IProject>;
+	using ProjectId = StringId<ProjectConfig>;
 	using UserId = ObjectId<IUser>;
 	using StreamId = StringId<IStream>;
 
@@ -161,11 +160,6 @@ namespace Horde.Build.Devices
 		/// Friendly name of the pool
 		/// </summary>
 		string Name { get; }
-
-		/// <summary>
-		/// Acl access to the pool
-		/// </summary>
-		public Acl? Acl { get; }
 	}
 
 	/// <summary>
@@ -270,9 +264,7 @@ namespace Horde.Build.Devices
 		/// If the device reported a problem
 		/// </summary>
 		public DateTime? ProblemTimeUtc { get; }
-
 	}
-
 
 	/// <summary>
 	/// A physical device
@@ -348,11 +340,6 @@ namespace Horde.Build.Devices
 		/// Device job utilization history 
 		/// </summary>
 		public List<DeviceUtilizationTelemetry>? Utilization { get; set; }
-
-		/// <summary>
-		/// ACL for modifying this device
-		/// </summary>
-		public Acl? Acl { get; }
 	}
 
 	/// <summary>
@@ -385,7 +372,6 @@ namespace Horde.Build.Devices
 		/// </summary>
 		public string? StepName { get; }
 	}
-
 
 	/// <summary>
 	/// Platform telemetry for a device pool
@@ -421,7 +407,6 @@ namespace Horde.Build.Devices
 		/// Number of reserved devices of this platform 
 		/// </summary>
 		public IReadOnlyDictionary<StreamId, IReadOnlyList<IDevicePoolReservationTelemetry>>? Reserved { get; }
-
 	}
 
 	/// <summary>
@@ -438,7 +423,5 @@ namespace Horde.Build.Devices
 		/// Pool platform telemetry
 		/// </summary>
 		public IReadOnlyDictionary<DevicePoolId, IReadOnlyList<IDevicePlatformTelemetry>> Pools { get; }
-
 	}
-
 }

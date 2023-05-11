@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AudioFormatOpus.h"
+#include "Audio.h"
 #include "Serialization/MemoryWriter.h"
 #include "Modules/ModuleManager.h"
 #include "Interfaces/IAudioFormat.h"
@@ -30,7 +31,7 @@ class FAudioFormatOpus : public IAudioFormat
 	enum
 	{
 		/** Version for OPUS format, this becomes part of the DDC key. */
-		UE_AUDIO_OPUS_VER = 7,
+		UE_AUDIO_OPUS_VER = 8,
 	};
 
 public:

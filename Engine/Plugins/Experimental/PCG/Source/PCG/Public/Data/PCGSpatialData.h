@@ -2,10 +2,9 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "PCGContext.h"
 #include "PCGData.h"
-#include "PCGPoint.h"
+#include "PCGPoint.h" // IWYU pragma: keep
+#include "Elements/PCGProjectionParams.h"
 #include "Metadata/PCGMetadata.h"
 
 #include "PCGSpatialData.generated.h"
@@ -35,9 +34,23 @@ class PCG_API UPCGSpatialData : public UPCGData
 public:
 	UPCGSpatialData(const FObjectInitializer& ObjectInitializer);
 
+	//~Begin UObject Interface
+	virtual void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize) override;
+	//~End UObject Interface
+
 	// ~Begin UPCGData interface
-	virtual EPCGDataType GetDataType() const override { return EPCGDataType::Spatial | Super::GetDataType(); }
+	virtual EPCGDataType GetDataType() const override { return EPCGDataType::Spatial; }
 	// ~End UPCGData interface
+
+	/** Virtual call to allocate a new spacial data object, duplicate this spatial data into
+	*   and parent the new metadata with this class metadata (if asked).
+	*   Should be way cheaper than DuplicateObject, since we avoid duplicating metadata.
+	*   It will not deep copy references.
+	*   Some data are marked mutable and therefore are not threadsafe to copy, so they are not copied.
+	*   They are mainly cached values (and octree for points).
+	*   TODO: If we want to also copy those values (can be an optimization), we need to guard the copy.
+	*/
+	UPCGSpatialData* DuplicateData(const bool bInitializeMetadata = true) const;
 
 	/** Returns the dimension of the data type, which has nothing to do with the dimension of its points */
 	UFUNCTION(BlueprintCallable, Category = SpatialData)
@@ -46,6 +59,9 @@ public:
 	/** Returns the full bounds (including density fall-off) of the data */
 	UFUNCTION(BlueprintCallable, Category = SpatialData)
 	virtual FBox GetBounds() const PURE_VIRTUAL(UPCGSpatialData::GetBounds, return FBox(EForceInit::ForceInit););
+
+	/** Returns whether a given spatial data is bounded as some data types do not require bounds by themselves */
+	virtual bool IsBounded() const { return true; }
 
 	/** Returns the bounds in which the density is always 1 */
 	UFUNCTION(BlueprintCallable, Category = SpatialData)
@@ -71,8 +87,13 @@ public:
 	/** Transform a world-space position to a world-space position in relation to the current data. (ex: projection on surface) */
 	FVector TransformPosition(const FVector& InPosition) const;
 
+	/** Sample rotation, scale and other attributes from this data at the query position. Returns true if Transform location and Bounds overlaps this data. */
 	UFUNCTION(BlueprintCallable, Category = SpatialData)
 	virtual bool SamplePoint(const FTransform& Transform, const FBox& Bounds, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const PURE_VIRTUAL(UPCGSpatialData::SamplePoint, return false;);
+
+	/** Project the query point onto this data, and sample point and metadata information at the projected position. Returns true if successful. */
+	UFUNCTION(BlueprintCallable, Category = SpatialData)
+	virtual bool ProjectPoint(const FTransform& InTransform, const FBox& InBounds, const FPCGProjectionParams& InParams, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const;
 
 	/** Returns true if the data has a non-trivial transform */
 	UFUNCTION(BlueprintCallable, Category = SpatialData)
@@ -82,9 +103,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = SpatialData)
 	virtual UPCGIntersectionData* IntersectWith(const UPCGSpatialData* InOther) const;
 
-	/** Returns a specialized data to project this on another data of equal or higher dimension */
-	UFUNCTION(BlueprintCallable, Category = SpatialData)
-	virtual UPCGProjectionData* ProjectOn(const UPCGSpatialData* InOther) const;
+	/** Returns a specialized data to project this on another data of equal or higher dimension. Returns copy of this data if projection fails. */
+	UFUNCTION(BlueprintCallable, Category = SpatialData, meta=(AutoCreateRefTerm="InParams"))
+	virtual UPCGSpatialData* ProjectOn(const UPCGSpatialData* InOther, const FPCGProjectionParams& InParams = FPCGProjectionParams()) const;
 
 	/** Returns a specialized data to union this with another data */
 	UFUNCTION(BlueprintCallable, Category = SpatialData)
@@ -103,7 +124,16 @@ public:
 	UPCGMetadata* CreateEmptyMetadata();
 
 	UFUNCTION(BlueprintCallable, Category = SpatialData)
-	void InitializeFromData(const UPCGSpatialData* InSource, const UPCGMetadata* InMetadataParentOverride = nullptr, bool bInheritMetadata = true);
+	void InitializeFromData(const UPCGSpatialData* InSource, const UPCGMetadata* InMetadataParentOverride = nullptr, bool bInheritMetadata = true, bool bInheritAttributes = true);
+
+	/** True if this operation does not have an inverse and cannot be queried analytically/implicitly, and therefore must be collapsed to an explicit point representation. */
+	virtual bool RequiresCollapseToSample() const { return false; }
+
+	/** A call that is made recursively up through the graph to find the best candidate shape for point generation. If InDimension is -1, finds lowest dimensional shape. */
+	virtual const UPCGSpatialData* FindShapeFromNetwork(const int InDimension) const { return (InDimension == -1 || GetDimension() == InDimension) ? this : nullptr; }
+
+	/** Find the first concrete (non-composite) shape in the network. Depth first search. */
+	virtual const UPCGSpatialData* FindFirstConcreteShapeFromNetwork() const { return !!(GetDataType() & EPCGDataType::Concrete) ? this : nullptr; }
 
 	UPROPERTY(Transient, BlueprintReadWrite, EditAnywhere, Category = Data)
 	TWeakObjectPtr<AActor> TargetActor = nullptr;
@@ -116,6 +146,9 @@ public:
 	// Not accessible through blueprint to make sure the constness is preserved
 	UPROPERTY(VisibleAnywhere, Category = Metadata)
 	TObjectPtr<UPCGMetadata> Metadata = nullptr;
+
+protected:
+	virtual UPCGSpatialData* CopyInternal() const PURE_VIRTUAL(UPCGSpatialData::CopyInternal, return nullptr;);
 };
 
 UCLASS(Abstract, ClassGroup = (Procedural))
@@ -124,6 +157,10 @@ class PCG_API UPCGSpatialDataWithPointCache : public UPCGSpatialData
 	GENERATED_BODY()
 
 public:
+	//~Begin UObject Interface
+	virtual void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize) override;
+	//~End UObject Interface
+
 	// ~UPCGSpatialData implementation
 	virtual const UPCGPointData* ToPointData(FPCGContext* Context, const FBox& InBounds = FBox(EForceInit::ForceInit)) const override;
 	// ~End UPCGSpatialData implementation
@@ -145,3 +182,8 @@ private:
 
 	mutable FCriticalSection CacheLock;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "PCGContext.h"
+#endif

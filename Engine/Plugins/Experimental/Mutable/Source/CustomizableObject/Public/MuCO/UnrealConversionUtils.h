@@ -3,11 +3,9 @@
 #pragma once
 
 #include "MuCO/CustomizableObjectSystemPrivate.h"
-#include "Containers/Array.h"
-#include "HAL/Platform.h"
-#include "MuR/MeshBufferSet.h"
-#include "MuR/System.h"
-#include "ReferenceSkeleton.h"
+
+namespace mu { class FMeshBufferSet; }
+struct FReferenceSkeleton;
 
 class FSkeletalMeshLODRenderData;
 class USkeletalMesh;
@@ -21,17 +19,6 @@ namespace UnrealConversionUtils
 	 * These are the result of stripping up parts of the reference code to be able to share it on the two
 	 * current pipelines (instance update and USkeletal mesh generation for a mesh viewport)
 	 */
-	
-	/**
-	 * Assigns a new render section for each of the surfaces found on the mutable mesh and sets a default material for
-	 * each of them (same default material)
-	 * @param MeshLODIndex - The index of the LOD found on the OutSkeletalMesh to be targeting.
-	 * @param InMutableMesh - The Mutable mesh to get the surface count from. Determines the amount materials and also
-	 * render sections to be added to the OutSkeletalMesh.
-	 * @param OutSkeletalMesh - The skeletal mesh whose render data is being updated (adding render sections)
-	 */
-	CUSTOMIZABLEOBJECT_API void BuildSkeletalMeshElementDataAtLOD(const int32 MeshLODIndex, mu::MeshPtrConst InMutableMesh,
-										   USkeletalMesh* OutSkeletalMesh);
 	
 	
 	/**
@@ -85,4 +72,37 @@ namespace UnrealConversionUtils
 	CUSTOMIZABLEOBJECT_API bool CopyMutableIndexBuffers(mu::MeshPtrConst InMutableMesh,
 	                                                    FSkeletalMeshLODRenderData& OutLODModel);
 	
+
+	/**
+	 *Performs a copy of the data found on the index buffers on the mutable mesh to the buffers of the skeletal mesh
+	 * @param OutLODModel - The LOD model to be updated.
+	 * @param InProfileName - Name of the profile to generate.
+	 * @param InMutableMeshVertexBuffers - The mutable buffers to be reading data from
+	 * @param InBoneIndexBuffer - The buffer containing the indices for the bones.
+	 * @return True if the operation could be performed successfully,	 false if not.
+	 */
+	CUSTOMIZABLEOBJECT_API void CopyMutableSkinWeightProfilesBuffers(
+		FSkeletalMeshLODRenderData& OutLODModel,
+		const FName InProfileName,
+		const mu::FMeshBufferSet& InMutableMeshVertexBuffers,
+		const int32 InBoneIndexBuffer);
+
+
+	/**
+	 *Performs a copy of the render data of a specific Skeletal Mesh LOD to another Skeletal Mesh
+	 * @param SrcSkeletalMesh - Skeletal Mesh with the data to copy.
+	 * @param DestSkeletalMesh - Skeletal Mesh where the data will be copied.
+	 * @param SrcLODIndex - Index of the LOD to copy.
+	 * @param DestSkeletalMesh - Index of the LOD that will be copyed to.
+	 */
+	CUSTOMIZABLEOBJECT_API void CopySkeletalMeshLODRenderData(
+		const USkeletalMesh* SrcSkeletalMesh,
+		USkeletalMesh* DestSkeletalMesh,
+		int32 SrcLODIndex,
+		int32 DestLODIndex);
+
 }
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "ReferenceSkeleton.h"
+#endif

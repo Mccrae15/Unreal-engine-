@@ -1,25 +1,29 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using SolidWorks.Interop.sldworks;
 using SolidWorks.Interop.swconst;
 using System.Runtime.InteropServices;
 using System.Collections.Concurrent;
 using System.Linq;
+using DatasmithSolidworks.Names;
+using static DatasmithSolidworks.FConfigurationTree;
+using System.ComponentModel;
+using System.Diagnostics;
+using static DatasmithSolidworks.FMeshes;
 
 namespace DatasmithSolidworks
 {
-	[ComVisible(false)]
 	public class FConfigurationData
 	{
 		public string Name;
 		public bool bIsDisplayStateConfiguration = false;
-		public Dictionary<FComponentName, float[]> ComponentTransform = new Dictionary<FComponentName, float[]>();
+		public Dictionary<FComponentName, float[]> ComponentTransform = new Dictionary<FComponentName, float[]>();  // Relative(to parent) transform
 		public Dictionary<FComponentName, bool> ComponentVisibility = new Dictionary<FComponentName, bool>();
 		public Dictionary<FComponentName, FObjectMaterials> ComponentMaterials = new Dictionary<FComponentName, FObjectMaterials>();
 
-		[ComVisible(false)]
 		public struct FComponentGeometryVariant
 		{
 			public FActorName VisibleActor; // Actor enabled for this variant
@@ -37,14 +41,12 @@ namespace DatasmithSolidworks
 		}
 	};
 
-	[ComVisible(false)]
 	public class FMeshes
 	{
-		private Dictionary<string, IConfiguration> Configurations = new Dictionary<string, IConfiguration>();
+		private Dictionary<string, FConfiguration> Configurations = new Dictionary<string, FConfiguration>();
 
 		private HashSet<FMesh> Meshes = new HashSet<FMesh>();
 
-		[ComVisible(false)]
 		public struct FMesh
 		{
 			public FMeshData MeshData;
@@ -57,6 +59,11 @@ namespace DatasmithSolidworks
 				MeshData = InMeshData;
 
 				Hash = 0;
+
+				if (InMeshData == null)
+				{
+					return;
+				}
 
 				foreach (FVec3 Vertex in MeshData.Vertices)
 				{
@@ -131,80 +138,122 @@ namespace DatasmithSolidworks
 			}
 		}
 
-		[ComVisible(false)]
-		public interface IConfiguration
-		{
-			void AddMesh(Component2 Component, FMeshData Mesh);
-			bool GetMeshForComponent(FComponentName ComponentName, out FMesh Result);
-		}
-
-		public IConfiguration GetMeshesConfiguration(string ConfigurationName)
+		public FConfiguration GetMeshesConfiguration(string ConfigurationName)
 		{
 			if (Configurations.TryGetValue(ConfigurationName, out var Configuration))
 			{
 				return Configuration;
 			}			
 
-			Configuration = new FConfigurationImpl(this, ConfigurationName);
+			Configuration = new FConfiguration(this, ConfigurationName);
 			Configurations.Add(ConfigurationName, Configuration);
 			return Configuration;
 		}
 
-		public bool IsSameMesh(FComponentName ComponentName, string ConfigNameA, string ConfigNameB)
+		public bool DoesComponentHaveVisibleButDifferentMeshesInConfigs(FComponentName ComponentName, string ConfigNameA, string ConfigNameB)
 		{
-			return GetMeshesConfiguration(ConfigNameA).GetMeshForComponent(ComponentName, out FMesh MeshA)
-			       && GetMeshesConfiguration(ConfigNameB).GetMeshForComponent(ComponentName, out FMesh MeshB)
-			       && MeshA == MeshB;
-		}
+			bool bHasMeshA = GetMeshesConfiguration(ConfigNameA).GetMeshForComponent(ComponentName, out FMesh MeshA);
+			bool bHasMeshB = GetMeshesConfiguration(ConfigNameB).GetMeshForComponent(ComponentName, out FMesh MeshB);
 
+			return (bHasMeshA && bHasMeshB) && (MeshA != MeshB);
+		}
 
 		public FMeshData GetMeshData(string ConfigName, FComponentName ComponentName)
 		{
 			return GetMeshesConfiguration(ConfigName).GetMeshForComponent(ComponentName, out FMesh Mesh) ? Mesh.MeshData : null;
 		}
 
-		private class FConfigurationImpl : IConfiguration
+		public class FConfiguration
 		{
-			private Dictionary<FComponentName, FMesh> MeshForComponent = new Dictionary<FComponentName, FMesh>();
+			public class FComponentMesh
+			{
+				public Component2 Component;
+				public FActorName ActorName;
+				public FMesh Mesh = new FMesh();
+			}
 
-			public FConfigurationImpl(FMeshes Meshes, string Name)
+			private ConcurrentDictionary<FComponentName, FComponentMesh> MeshForComponent = new ConcurrentDictionary<FComponentName, FComponentMesh>();
+
+			public FConfiguration(FMeshes Meshes, string Name)
 			{
 			}
 
-			public void AddMesh(Component2 Component, FMeshData Mesh)
+			public void AddComponentWhichNeedsMesh(Component2 InComponent, FComponentName InComponentName, FActorName InActorName)
 			{
-				MeshForComponent.Add(new FComponentName(Component), new FMesh(Mesh));
+				MeshForComponent.TryAdd(InComponentName, new FComponentMesh() {Component = InComponent, ActorName = InActorName});
+			}
+
+			public void AddMesh(Component2 Component, FMeshData MeshData)
+			{
+				FComponentMesh ComponentMesh;
+				if (MeshForComponent.TryGetValue(new FComponentName(Component), out ComponentMesh))
+				{
+					ComponentMesh.Mesh = new FMesh(MeshData);
+				}
 			}
 
 			public bool GetMeshForComponent(FComponentName ComponentName, out FMesh Result)
 			{
-				return MeshForComponent.TryGetValue(ComponentName, out Result);
+				if (MeshForComponent.TryGetValue(ComponentName, out FComponentMesh ComponentMesh))
+				{
+					Result = ComponentMesh.Mesh;
+					return true;
+				}
+				Result = new FMesh(null);
+				return false;
 			}
 
+			public IEnumerable<FComponentName> EnumerateComponentNames()
+			{
+				return MeshForComponent.Keys;
+			}
+
+			public IEnumerable<Component2> EnumerateComponents()
+			{
+				return MeshForComponent.Select(KVP => KVP.Value.Component);
+			}
+		}
+
+		public string GetConfigurationNameForComponentMesh(FComponentName ComponentName)
+		{
+			foreach (KeyValuePair<string, FConfiguration> KVP in Configurations)
+			{
+				if (KVP.Value.GetMeshForComponent(ComponentName, out FMesh Mesh))
+				{
+					return KVP.Key;
+				}
+			}
+			return null;
 		}
 	}
 
-	[ComVisible(false)]
 	public class FConfigurationExporter
 	{
-		private readonly FMeshes Meshes;
+		public readonly FMeshes Meshes;
+		public readonly string[] ConfigurationNames;
+		private readonly string MainConfigurationName;
 
-		public FConfigurationExporter(FMeshes Meshes)
+		public FConfigurationTree.FComponentTreeNode CombinedTree;
+
+		public FConfigurationExporter(FMeshes InMeshes, string[] InConfigurationNames, string InMainConfigurationName)
 		{
-			this.Meshes = Meshes;
+			Meshes = InMeshes;
+			ConfigurationNames = InConfigurationNames;
+			MainConfigurationName = InMainConfigurationName;
 		}
 
-		public List<FConfigurationData> ExportConfigurations(FDocument InDoc)
+		public List<FConfigurationData> ExportConfigurations(FDocumentTracker InDoc)
 		{
-			string[] CfgNames = InDoc.SwDoc?.GetConfigurationNames();
-
-			if (CfgNames == null || CfgNames.Length <= 1)
+			Addin.Instance.LogDebug($"FConfigurationExporter.ExportConfigurations [{string.Join(",", ConfigurationNames)}]");
+			// todo: may refactor to union behavior for 'no configuration'(i.e. active) and one-to-many configurations export
+			// Not sure how CfgNames might be technically null though
+			if (ConfigurationNames == null) // || CfgNames.Length <= 1)
 			{
 				return null;
 			}
 
-			FConfigurationTree.FComponentTreeNode CombinedTree = new FConfigurationTree.FComponentTreeNode();
-			CombinedTree.ComponentName = FComponentName.FromCustomString("CombinedTree");
+			CombinedTree = new FConfigurationTree.FComponentTreeNode(null);
+			CombinedTree.ComponentInfo.ComponentName = FComponentName.FromCustomString("CombinedTree");
 
 			// Ensure recursion will not stop on the root node (this may happen if it is not explicitly marked as visible)
 			CombinedTree.bVisibilitySame = true;
@@ -213,13 +262,31 @@ namespace DatasmithSolidworks
 			ConfigurationManager ConfigManager = InDoc.SwDoc.ConfigurationManager;
 			IConfiguration OriginalConfiguration = ConfigManager.ActiveConfiguration;
 
-			List<string> ExportedConfigurationNames = new List<string>();
+			string OriginalConfigurationName = ConfigManager.ActiveConfiguration.Name;
 
-			foreach (string CfgName in CfgNames)
+			Dictionary<string, string> ExportedConfigurationNames = new Dictionary<string, string>();
+
+			// Enumerate configurations starting with Active - to avoid redundant config switching(which takes time) and,
+			// additionally, to export meshes in Active configuration without configuration name suffixes
+			List<string> ConfigurationNamesActiveFirst = ConfigurationNames.ToList();
+			ConfigurationNamesActiveFirst.Remove(OriginalConfigurationName);
+			ConfigurationNamesActiveFirst.Insert(0, OriginalConfigurationName);
+
+			// Keep configurations order
+			Dictionary<string, int> ConfigurationOrder = ConfigurationNames.Select((Name, Index) => new { Name, Index }).ToDictionary(V => V.Name, V => V.Index);
+
+			bool bIsActiveConfiguration = true;
+			foreach (string CfgName in ConfigurationNamesActiveFirst)
 			{
+				Addin.Instance.LogDebug($"Configuration '{CfgName}'");
 				IConfiguration swConfiguration = InDoc.SwDoc.GetConfigurationByName(CfgName) as IConfiguration;
 
-				InDoc.SwDoc.ShowConfiguration2(CfgName);
+				if (!bIsActiveConfiguration)
+				{
+					Addin.Instance.LogDebug($"ShowConfiguration2 '{CfgName}'");
+					InDoc.SwDoc.ShowConfiguration2(CfgName);
+				}
+				Addin.Instance.LogDebug($"ActiveConfiguration '{ConfigManager.ActiveConfiguration.Name}'");
 
 				string ConfigName = CfgName;
 
@@ -233,17 +300,21 @@ namespace DatasmithSolidworks
 				}
 
 				FConfigurationTree.FComponentTreeNode ConfigNode = new FConfigurationTree.FComponentTreeNode();
-				ConfigNode.Children = new List<FConfigurationTree.FComponentTreeNode>();
-				ConfigNode.ComponentName = FComponentName.FromCustomString(ConfigName);
+				ConfigNode.ComponentInfo.ComponentName = FComponentName.FromCustomString(ConfigName);
 
+				ConfigNode.Children = new List<FConfigurationTree.FComponentTreeNode>();
+
+				FMeshes.FConfiguration MeshesConfiguration = Meshes.GetMeshesConfiguration(ConfigurationName: CfgName);
 
 				// Build the tree and get default materials (which aren't affected by any configuration)
 				// Use GetRootComponent3() with Resolve = true to ensure suppressed components will be loaded
 				// todo: docs says that Part document SW returns null. Not the case. But probably better to add a guard
-				CollectComponentsRecursive(InDoc, swConfiguration.GetRootComponent3(true), ConfigNode);
+				Addin.Instance.LogDebug($"Components:");
+				CollectComponentsRecursive(InDoc, swConfiguration.GetRootComponent3(true), ConfigNode, MeshesConfiguration, CfgName);
 
-				ExportedConfigurationNames.Add(ConfigName);
+				ExportedConfigurationNames.Add(CfgName, ConfigName);
 
+				Addin.Instance.LogDebug($"Materials:");
 				Dictionary<FComponentName, FObjectMaterials> MaterialsMap = GetComponentMaterials(InDoc, DisplayStates != null ? DisplayStates[0] : null, swConfiguration);
 				SetComponentTreeMaterials(ConfigNode, MaterialsMap, null, false);
 
@@ -254,19 +325,81 @@ namespace DatasmithSolidworks
 					for (int Index = 1; Index < DisplayStateCount; ++Index)
 					{
 						string DisplayState = DisplayStates[Index];
-						MaterialsMap = GetComponentMaterials(InDoc, DisplayState, swConfiguration);
 						string DisplayStateTreeName = $"{CfgName}_DisplayState_{FDatasmithExporter.SanitizeName(DisplayState)}";
+						Addin.Instance.LogDebug($"Linked DisplayState '{DisplayState}' Materials for variant '{DisplayStateTreeName}'");
+
+						MaterialsMap = GetComponentMaterials(InDoc, DisplayState, swConfiguration);
 						SetComponentTreeMaterials(ConfigNode, MaterialsMap, DisplayStateTreeName, false);
 					}
 				}
 
+				// Export materials
+				InDoc.SetExportStatus($"Component Materials");
+				HashSet<FComponentName> ComponentNamesToExportSet = new HashSet<FComponentName>();
+				foreach (FComponentName ComponentName in MeshesConfiguration.EnumerateComponentNames())
+				{
+					if (!ComponentNamesToExportSet.Contains(ComponentName))
+					{
+						ComponentNamesToExportSet.Add(ComponentName);
+					}
+				}
+
+				ConcurrentDictionary<FComponentName, FObjectMaterials> ModifiedComponentsMaterials = InDoc.LoadDocumentMaterials(ComponentNamesToExportSet);
+
+				if (ModifiedComponentsMaterials != null)
+				{
+					foreach (var MatKVP in ModifiedComponentsMaterials)
+					{
+						InDoc.AddComponentMaterials(MatKVP.Key, MatKVP.Value);
+					}
+				}
+				
+				// Export materials before exporting meshes(currently mesh export code is tied to FDatasmithExporter.ExportedMaterialsMap
+				// todo: separate material export and mesh export(see comment above)?
+				InDoc.Exporter.ExportMaterials(InDoc.ExportedMaterialsMap);
+
+				// Export meshes
+				InDoc.SetExportStatus($"Component Meshes");
+
+				string MeshSuffix = bIsActiveConfiguration ? null : CfgName; // Suffix for main configuration is absent(so in default or single configuration export we don't have unnecessary long names)
+				InDoc.ProcessConfigurationMeshes(MeshesConfiguration, MeshSuffix);
+
 				// Combine separate scene trees into the single one with configuration-specific data
-				FConfigurationTree.Merge(CombinedTree, ConfigNode, CfgName);
+				FConfigurationTree.Merge(CombinedTree, ConfigNode, CfgName, bIsActiveConfiguration);
+
+				bIsActiveConfiguration = false;  // Next enumerated configurations will be switched to(they weren't active on export start)
 			}
 
-			if (OriginalConfiguration != null)
+			if (OriginalConfiguration != null && ConfigurationNames.Length > 1)
 			{
-				InDoc.SwDoc.ShowConfiguration2(OriginalConfiguration.Name);
+				Addin.Instance.LogDebug($"ShowConfiguration2 '{OriginalConfiguration.Name}'");
+				bool bShowConfigurationResult = InDoc.SwDoc.ShowConfiguration2(OriginalConfiguration.Name);
+				Debug.Assert(bShowConfigurationResult);
+			}
+
+			// Reload components for Original configuration(without this extracting materials for Display States later won't work - old component objects simply return 0) 
+			{
+				Component2 RootComponent = OriginalConfiguration.GetRootComponent3(true);
+				Stack<Component2> Components = new Stack<Component2>();
+				Components.Push(RootComponent);
+
+				while (Components.Count != 0)
+				{
+					Component2 Component = Components.Pop();
+
+					FConfigurationTree.FComponentTreeNode NewNode = new FConfigurationTree.FComponentTreeNode(Component);
+					NewNode.ComponentInfo.ComponentName = new FComponentName(Component);
+					InDoc.AddExportedComponent(NewNode);
+
+					object[] Children = (object[])Component.GetChildren();
+					if (Children != null)
+					{
+						foreach (Component2 Child in Children)
+						{
+							Components.Push(Child);
+						}
+					}
+				}
 			}
 
 			List<string> DisplayStateConfigurations = new List<string>();
@@ -276,13 +409,32 @@ namespace DatasmithSolidworks
 				// Export display states as separate configurations
 				string[] DisplayStates = OriginalConfiguration.GetDisplayStates();
 
-				foreach (string DisplayState in DisplayStates)
+				for (int Index = 0; Index < DisplayStates.Length; Index++)
 				{
+					string DisplayState = DisplayStates[Index];
+					if (Index != 0)
+					{
+						OriginalConfiguration.ApplyDisplayState(DisplayState);
+					}
+
 					string DisplayStateConfigName = $"DisplayState_{FDatasmithExporter.SanitizeName(DisplayState)}";
 					DisplayStateConfigurations.Add(DisplayStateConfigName);
-					Dictionary<FComponentName, FObjectMaterials> MaterialsMap = GetComponentMaterials(InDoc, DisplayState, OriginalConfiguration);
+					Addin.Instance.LogDebug(
+						$"DisplayState '{DisplayState}' Materials for variant '{DisplayStateConfigName}'");
+
+					// Specifying display state doesn't seem to work in the api like this:
+					// GetComponentMaterials(InDoc, DisplayState, OriginalConfiguration);
+					//   (which becomes Ext.GetRenderMaterials2((int)swDisplayStateOpts_e.swSpecifyDisplayState, InDisplayStateNames))
+					// - component materials are empty (Comp.GetRenderMaterialsCount2 gives 0 for assembly components)
+					Dictionary<FComponentName, FObjectMaterials> MaterialsMap = GetComponentMaterials(InDoc, null, OriginalConfiguration);
 
 					SetComponentTreeMaterials(CombinedTree, MaterialsMap, DisplayStateConfigName, true);
+				}
+
+				// Restore original active display state, if there were more than one display state
+				if (DisplayStates.Length > 1)
+				{
+					OriginalConfiguration.ApplyDisplayState(DisplayStates[0]);  // Active display state is the first in the list returned by GetDisplayStates
 				}
 			}
 
@@ -291,8 +443,12 @@ namespace DatasmithSolidworks
 
 			List<FConfigurationData> FlatConfigurationData = new List<FConfigurationData>();
 
+
+			// Order exported variants by original configurations order
+			IEnumerable<string> ExportedConfigurationNamesOrdered = ExportedConfigurationNames.OrderBy(V => ConfigurationOrder[V.Key]).Select(V => V.Value);
+
 			// Add roots for configurations
-			foreach (string CfgName in ExportedConfigurationNames)
+			foreach (string CfgName in ExportedConfigurationNamesOrdered)
 			{
 				FConfigurationData CfgData = new FConfigurationData();
 				CfgData.Name = CfgName;
@@ -320,26 +476,24 @@ namespace DatasmithSolidworks
 			return FlatConfigurationData;
 		}
 
-		private static Dictionary<FComponentName, FObjectMaterials> GetComponentMaterials(FDocument InDoc, string InDisplayState, IConfiguration InConfiguration)
+		private static Dictionary<FComponentName, FObjectMaterials> GetComponentMaterials(FDocumentTracker InDoc, string InDisplayState, IConfiguration InConfiguration)
 		{
 			Dictionary<FComponentName, FObjectMaterials> MaterialsMap = new Dictionary<FComponentName, FObjectMaterials>();
 
 			swDisplayStateOpts_e Option = InDisplayState != null ? swDisplayStateOpts_e.swSpecifyDisplayState : swDisplayStateOpts_e.swThisDisplayState;
 			string[] DisplayStates = InDisplayState != null ? new string[] { InDisplayState } : null;
 
-			if (InDoc is FAssemblyDocument)
+			if (InDoc is FAssemblyDocumentTracker AsmDoc)
 			{
-				FAssemblyDocument AsmDoc = InDoc as FAssemblyDocument;
-
-				HashSet<FComponentName> InComponentsSet = new HashSet<FComponentName>();
+				HashSet<FComponentName> ComponentsSet = new HashSet<FComponentName>();
 
 				foreach (FComponentName CompName in AsmDoc.SyncState.ExportedComponentsMap.Keys)
 				{
-					InComponentsSet.Add(CompName);
+					ComponentsSet.Add(CompName);
 				}
 
 				ConcurrentDictionary<FComponentName, FObjectMaterials> ComponentMaterials =
-					FObjectMaterials.LoadAssemblyMaterials(AsmDoc, InComponentsSet, Option, DisplayStates);
+					FObjectMaterials.LoadAssemblyMaterials(AsmDoc, ComponentsSet, Option, DisplayStates);
 
 				if (ComponentMaterials != null)
 				{
@@ -351,8 +505,8 @@ namespace DatasmithSolidworks
 			}
 			else
 			{
-				FPartDocument PartDocument = InDoc as FPartDocument;
-				FObjectMaterials PartMaterials = FObjectMaterials.LoadPartMaterials(InDoc, PartDocument.SwPartDoc, Option, DisplayStates);
+				FPartDocumentTracker PartDocumentTracker = InDoc as FPartDocumentTracker;
+				FObjectMaterials PartMaterials = FObjectMaterials.LoadPartMaterials(InDoc, PartDocumentTracker.SwPartDoc, Option, DisplayStates);
 				Component2 Comp = InConfiguration.GetRootComponent3(true);
 
 				MaterialsMap.Add(FComponentName.FromCustomString(Comp?.Name2 ?? ""), PartMaterials);
@@ -363,6 +517,8 @@ namespace DatasmithSolidworks
 
 		private static void SetComponentTreeMaterials(FConfigurationTree.FComponentTreeNode InComponentTree, Dictionary<FComponentName, FObjectMaterials> InComponentMaterialsMap, string InConfigurationName, bool bIsDisplayState)
 		{
+			Addin.Instance.LogDebug($"SetComponentTreeMaterials: '{InComponentTree.ComponentName}'");
+
 			FConfigurationTree.FComponentConfig TargetConfig = null;
 
 			if (InConfigurationName != null)
@@ -370,7 +526,7 @@ namespace DatasmithSolidworks
 				TargetConfig = InComponentTree.GetConfiguration(InConfigurationName, bIsDisplayState);
 				if (TargetConfig == null)
 				{
-					TargetConfig = InComponentTree.AddConfiguration(InConfigurationName, bIsDisplayState);
+					TargetConfig = InComponentTree.AddConfiguration(InConfigurationName, bIsDisplayState, bIsActiveConfiguration: false);
 				}
 			}
 			else
@@ -384,23 +540,33 @@ namespace DatasmithSolidworks
 				TargetConfig.Materials = Materials;
 			}
 
-			if (InComponentTree.Children != null)
+			Addin.Instance.LogDebug($"  Materials: {TargetConfig.Materials}");
+
+			foreach (FConfigurationTree.FComponentTreeNode Child in InComponentTree.EnumChildren())
 			{
-				foreach (FConfigurationTree.FComponentTreeNode Child in InComponentTree.Children)
-				{
-					SetComponentTreeMaterials(Child, InComponentMaterialsMap, InConfigurationName, bIsDisplayState);
-				}
+				Addin.Instance.LogIndent();
+				SetComponentTreeMaterials(Child, InComponentMaterialsMap, InConfigurationName, bIsDisplayState);
+				Addin.Instance.LogDedent();
 			}
 		}
 
-		private static void CollectComponentsRecursive(FDocument InDoc, Component2 InComponent, FConfigurationTree.FComponentTreeNode InParentNode)
+		private static void CollectComponentsRecursive(FDocumentTracker InDoc, Component2 InComponent,
+			FComponentTreeNode InParentNode, FMeshes.FConfiguration Meshes, string CfgName)
 		{
-			FConfigurationTree.FComponentTreeNode NewNode = new FConfigurationTree.FComponentTreeNode();
+			Addin.Instance.LogDebug($"'{InComponent.Name2}'");
+
+			FConfigurationTree.FComponentTreeNode NewNode = new FConfigurationTree.FComponentTreeNode(InComponent);
 			InParentNode.Children.Add(NewNode);
 
 			// Basic properties
-			NewNode.ComponentName = new FComponentName(InComponent);
-			NewNode.ComponentID = InComponent.GetID();
+			NewNode.ComponentInfo.ComponentName = new FComponentName(InComponent);
+			NewNode.ComponentInfo.ComponentId = InComponent.GetID();
+
+			// ComponentDoc is null if component is suppressed or lightweight
+			ModelDoc2 ModelDoc = (ModelDoc2)InComponent.GetModelDoc2();
+			NewNode.ComponentInfo.PartPath = (ModelDoc is PartDoc) ? ModelDoc.GetPathName() : null;  // Identify whether the component is a Part component
+
+
 			NewNode.CommonConfig.bVisible = InComponent.Visible != (int)swComponentVisibilityState_e.swComponentHidden;
 			NewNode.CommonConfig.bSuppressed = InComponent.IsSuppressed();
 
@@ -437,24 +603,50 @@ namespace DatasmithSolidworks
 				foreach (object ObjChild in Children)
 				{
 					Component2 Child = (Component2)ObjChild;
-					CollectComponentsRecursive(InDoc, Child, NewNode);
+					Addin.Instance.LogIndent();
+					CollectComponentsRecursive(InDoc, Child, NewNode, Meshes, CfgName);
+					Addin.Instance.LogDedent();
 				}
 
-				NewNode.Children.Sort(delegate (FConfigurationTree.FComponentTreeNode InA, FConfigurationTree.FComponentTreeNode InB)
-				{
-					return InA.ComponentID - InB.ComponentID;
-				});
+				// todo: sorting ensures that component order is stable in export(e.g. in variant property bindings order)
+				// but probably makes sense to to it at the datasmith export, explicitly
+				// especially that Children here begs for a dictionary, not list(child looked up by name form Children list)
+				NewNode.Children.Sort((InA, InB) => InA.ComponentId - InB.ComponentId);
 			}
+
+			if (InDoc.NeedExportComponent(NewNode, NewNode.CommonConfig))
+			{
+				if (NewNode.IsPartComponent())
+				{
+					// Collect meshes to export when it's a part component
+					InDoc.AddPartDocument(NewNode);
+					Meshes.AddComponentWhichNeedsMesh(NewNode.Component, NewNode.ComponentName, NewNode.ActorName);
+				}
+			}
+			InDoc.AddExportedComponent(NewNode);
 		}
 
-		public bool IsSameMesh(FComponentName ComponentName, string ConfigNameA, string ConfigNameB)
+		public bool DoesComponentHaveVisibleButDifferentMeshesInConfigs(FComponentName ComponentName, string ConfigNameA, string ConfigNameB)
 		{
-			return Meshes.IsSameMesh(ComponentName, ConfigNameA, ConfigNameB);
+			return Meshes.DoesComponentHaveVisibleButDifferentMeshesInConfigs(ComponentName, ConfigNameA, ConfigNameB);
 		}
 
-		public FActorName GetMeshActorName(FComponentName ComponentName, string ConfigName)
+		// name/label for variant mesh actor 
+		public FActorName GetMeshActorName(string ConfigName, FComponentName ComponentName)
 		{
-			return FActorName.FromString(ComponentName.GetString() + "_" + ConfigName);
+			return FActorName.FromString($"{ComponentName}_{ConfigName}");
+		}
+
+		public FMeshName GetMeshName(string ConfigName, FComponentName ComponentName)
+		{
+			return FMeshName.FromString(ConfigName == MainConfigurationName ? $"{ComponentName}_Mesh" : $"{ComponentName}_{ConfigName}_Mesh");
+		}
+
+		// Get mesh for component which has only single mesh configuration
+		public FMeshName GetMeshName(FComponentName ComponentName)
+		{
+			string ConfigName = Meshes.GetConfigurationNameForComponentMesh(ComponentName);
+			return GetMeshName(ConfigName, ComponentName);
 		}
 	}
 }

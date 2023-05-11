@@ -1,48 +1,45 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "CoreMinimal.h"
-#include "Misc/CoreDelegates.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/UnrealType.h"
+#include "Engine/Level.h"
+#include "RenderingThread.h"
+#include "Math/RotationMatrix.h"
+#include "SceneInterface.h"
+#include "UObject/Linker.h"
 #include "Engine/Blueprint.h"
-#include "Components/ActorComponent.h"
-#include "Components/SceneComponent.h"
-#include "GameFramework/Actor.h"
-#include "Components/ChildActorComponent.h"
 #include "Components/PrimitiveComponent.h"
 #include "AI/NavigationSystemBase.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "WorldPartition/DataLayer/WorldDataLayers.h"
 #include "WorldPartition/WorldPartition.h"
-#include "WorldPartition/WorldPartitionSubsystem.h"
 #include "WorldPartition/DataLayer/DataLayer.h"
 #include "WorldPartition/DataLayer/DataLayerSubsystem.h"
-#include "WorldPartition/DataLayer/DataLayerInstance.h"
 #include "EditorSupportDelegates.h"
-#include "Logging/TokenizedMessage.h"
 #include "Logging/MessageLog.h"
 #include "Misc/UObjectToken.h"
 #include "LevelUtils.h"
 #include "Misc/MapErrors.h"
 #include "ActorEditorUtils.h"
-#include "EngineGlobals.h"
 
 #if WITH_EDITOR
 
 #include "Editor.h"
-#include "Misc/TransactionObjectEvent.h"
 #include "ActorTransactionAnnotation.h"
-#include "Engine/LevelStreaming.h"
-#include "WorldPartition/WorldPartitionActorDesc.h"
+#include "Elements/Framework/EngineElementsLibrary.h"
 #include "WorldPartition/DataLayer/IDataLayerEditorModule.h"
 #include "LevelInstance/LevelInstanceSubsystem.h"
-#include "LevelInstance/LevelInstanceInterface.h"
-#include "Folder.h"
 #include "ActorFolder.h"
 #include "WorldPersistentFolders.h"
-#include "Algo/Transform.h"
 #include "Modules/ModuleManager.h"
 
 #define LOCTEXT_NAMESPACE "ErrorChecking"
+
+namespace ActorEditorSettings
+{
+
+static bool bIncludeSCSModifiedPropertiesInDiff = true;
+static FAutoConsoleVariableRef CVarIncludeSCSModifiedPropertiesInDiff(TEXT("Actor.IncludeSCSModifiedPropertiesInDiff"), bIncludeSCSModifiedPropertiesInDiff, TEXT("True to include SCS modified properties in any transaction diffs, or False to skip them"));
+
+}
 
 void AActor::PreEditChange(FProperty* PropertyThatWillChange)
 {
@@ -87,7 +84,7 @@ bool AActor::CanEditChange(const FProperty* PropertyThatWillChange) const
 		{
 			UWorld* World = GetTypedOuter<UWorld>();
 			UWorldPartition* WorldPartition = World ? World->GetWorldPartition() : nullptr;
-			if (!WorldPartition || (!WorldPartition->IsStreamingEnabled() && !bIsDataLayersProperty))
+			if (!WorldPartition || (!WorldPartition->IsStreamingEnabled() && !bIsDataLayersProperty && !bIsHLODLayerProperty))
 			{
 				return false;
 			}
@@ -107,12 +104,12 @@ bool AActor::CanEditChange(const FProperty* PropertyThatWillChange) const
 	return Super::CanEditChange(PropertyThatWillChange);
 }
 
-static FName Name_RelativeLocation = USceneComponent::GetRelativeLocationPropertyName();
-static FName Name_RelativeRotation = USceneComponent::GetRelativeRotationPropertyName();
-static FName Name_RelativeScale3D = USceneComponent::GetRelativeScale3DPropertyName();
-
 void AActor::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
+	static const FName Name_RelativeLocation = USceneComponent::GetRelativeLocationPropertyName();
+	static const FName Name_RelativeRotation = USceneComponent::GetRelativeRotationPropertyName();
+	static const FName Name_RelativeScale3D = USceneComponent::GetRelativeScale3DPropertyName();
+
 	FProperty* MemberPropertyThatChanged = PropertyChangedEvent.MemberProperty;
 	const FName MemberPropertyName = MemberPropertyThatChanged != NULL ? MemberPropertyThatChanged->GetFName() : NAME_None;
 
@@ -520,18 +517,21 @@ void FActorTransactionAnnotation::ComputeAdditionalObjectChanges(const ITransact
 			{
 				TSet<const FProperty*> PropertiesToSkip;
 
-				// Skip properties modified during construction when calculating the diff
-				CurrentComponent->GetUCSModifiedProperties(PropertiesToSkip);
-
-				// If this is the owning Actor's root scene component, always include relative transform properties as GetUCSModifiedProperties incorrectly considers them modified (due to changing during placement)
-				if (CurrentComponent->IsA<USceneComponent>())
+				if (!ActorEditorSettings::bIncludeSCSModifiedPropertiesInDiff)
 				{
-					const AActor* ComponentOwner = CurrentComponent->GetOwner();
-					if (ComponentOwner && ComponentOwner->GetRootComponent() == CurrentComponent)
+					// Skip properties modified during construction when calculating the diff
+					CurrentComponent->GetUCSModifiedProperties(PropertiesToSkip);
+
+					// If this is the owning Actor's root scene component, always include relative transform properties as GetUCSModifiedProperties incorrectly considers them modified (due to changing during placement)
+					if (CurrentComponent->IsA<USceneComponent>())
 					{
-						PropertiesToSkip.Remove(FindFProperty<FProperty>(USceneComponent::StaticClass(), USceneComponent::GetRelativeLocationPropertyName()));
-						PropertiesToSkip.Remove(FindFProperty<FProperty>(USceneComponent::StaticClass(), USceneComponent::GetRelativeRotationPropertyName()));
-						PropertiesToSkip.Remove(FindFProperty<FProperty>(USceneComponent::StaticClass(), USceneComponent::GetRelativeScale3DPropertyName()));
+						const AActor* ComponentOwner = CurrentComponent->GetOwner();
+						if (ComponentOwner && ComponentOwner->GetRootComponent() == CurrentComponent)
+						{
+							PropertiesToSkip.Remove(FindFProperty<FProperty>(USceneComponent::StaticClass(), USceneComponent::GetRelativeLocationPropertyName()));
+							PropertiesToSkip.Remove(FindFProperty<FProperty>(USceneComponent::StaticClass(), USceneComponent::GetRelativeRotationPropertyName()));
+							PropertiesToSkip.Remove(FindFProperty<FProperty>(USceneComponent::StaticClass(), USceneComponent::GetRelativeScale3DPropertyName()));
+						}
 					}
 				}
 
@@ -696,10 +696,12 @@ bool AActor::InternalPostEditUndo()
 
 		// notify navigation system
 		FNavigationSystem::UpdateActorAndComponentData(*this);
+		UEngineElementsLibrary::RegisterActorElement(this);
 	}
 	else
 	{
 		FNavigationSystem::RemoveActorData(*this);
+		UEngineElementsLibrary::UnregisterActorElement(this);
 	}
 
 	// This is a normal undo, so call super
@@ -950,6 +952,16 @@ bool AActor::SupportsLayers() const
 	}
 
 	return bIsValid;
+}
+
+bool AActor::IsForceExternalActorLevelReferenceForPIE() const
+{
+	if (const AActor* ParentActor = GetParentActor())
+	{
+		return ParentActor->IsForceExternalActorLevelReferenceForPIE();
+	}
+
+	return bForceExternalActorLevelReferenceForPIE;
 }
 
 bool AActor::IsEditable() const
@@ -1705,7 +1717,11 @@ void AActor::FixupDataLayers(bool bRevertChangesOnLockedDataLayer /*= false*/)
 					}
 				};
 
-				CleanupDataLayers(DataLayerAssets);
+				// Only invalidate DataLayerAssets on cook. In Editor we want to be able to re-resolve if the asset gets readded to the WorldDataLayers actor
+				if (IsRunningCookCommandlet())
+				{
+					CleanupDataLayers(DataLayerAssets);
+				}
 				CleanupDataLayers(DataLayers);
 				PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			}

@@ -7,9 +7,14 @@
 #include "UObject/ObjectMacros.h"
 #include "Engine/TextureStreamingTypes.h"
 #include "Components/PrimitiveComponent.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "Materials/MaterialInterface.h"
+#endif
 #include "Containers/SortedMap.h"
 #include "MeshComponent.generated.h"
+
+class UMaterialInterface;
+struct FMaterialRelevance;
 
 /**
  * MeshComponent is an abstract base for any component that is an instance of a renderable collection of triangles.
@@ -126,9 +131,6 @@ public:
 	/** Get the material info for texture streaming. Return whether the data is valid or not. */
 	virtual bool GetMaterialStreamingData(int32 MaterialIndex, FPrimitiveMaterialInfo& MaterialData) const { return false; }
 
-	/** Precache all PSOs which can be used by the mesh component */
-	virtual void PrecachePSOs() {}
-
 	/** Generate streaming data for all materials. */
 	void GetStreamingTextureInfoInner(FStreamingTextureLevelContext& LevelContext, const TArray<FStreamingTextureBuildInfo>* PreBuiltData, float ComponentScaling, TArray<FStreamingRenderAssetPrimitiveInfo>& OutStreamingTextures) const;
 
@@ -189,5 +191,4 @@ protected:
 
 	/** Flag whether or not the cached material parameter indices map is dirty (defaults to true, and is set from SetMaterial/Set(Skeletal)Mesh */
 	uint8 bCachedMaterialParameterIndicesAreDirty : 1;
-
 };

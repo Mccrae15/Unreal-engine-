@@ -6,6 +6,7 @@
 #include "Channels/MovieSceneChannelOverrideContainer.h"
 #include "Channels/IMovieSceneChannelOverrideProvider.h"
 #include "EntitySystem/MovieSceneEntityBuilder.h"
+#include "MovieSceneSection.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(MovieSceneSectionChannelOverrideRegistry)
 
@@ -15,6 +16,7 @@ UMovieSceneSectionChannelOverrideRegistry::UMovieSceneSectionChannelOverrideRegi
 
 void UMovieSceneSectionChannelOverrideRegistry::AddChannel(FName ChannelName, UMovieSceneChannelOverrideContainer* ChannelContainer)
 {
+	Modify();
 	Overrides.Emplace(ChannelName, ChannelContainer);
 }
 
@@ -35,6 +37,7 @@ UMovieSceneChannelOverrideContainer* UMovieSceneSectionChannelOverrideRegistry::
 
 void UMovieSceneSectionChannelOverrideRegistry::RemoveChannel(FName ChannelName)
 {
+	Modify();
 	Overrides.Remove(ChannelName);
 }
 
@@ -102,4 +105,34 @@ void UMovieSceneSectionChannelOverrideRegistry::PopulateEvaluationFieldImpl(cons
 		}
 	}
 }
+
+#if WITH_EDITOR
+
+void UMovieSceneSectionChannelOverrideRegistry::OnPostPaste()
+{
+	ClearFlags(RF_Transient);
+
+	for (TPair<FName, TObjectPtr<UMovieSceneChannelOverrideContainer>> Pair : Overrides)
+	{
+		if (ensure(Pair.Value))
+		{
+			Pair.Value->ClearFlags(RF_Transient);
+		}
+	}
+}
+
+void UMovieSceneSectionChannelOverrideRegistry::PostEditUndo()
+{
+	Super::PostEditUndo();
+
+	if (UMovieSceneSection* Section = GetTypedOuter<UMovieSceneSection>())
+	{
+		if (IMovieSceneChannelOverrideProvider* OverrideProvider = Cast<IMovieSceneChannelOverrideProvider>(Section))
+		{
+			OverrideProvider->OnChannelOverridesChanged();
+		}
+	}
+}
+
+#endif
 

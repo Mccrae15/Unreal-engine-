@@ -11,6 +11,7 @@ namespace UnrealBuildTool.Rules
 		public BlackmagicMedia(ReadOnlyTargetRules Target) : base(Target)
 		{
 			PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+			IWYUSupport = IWYUSupport.None;
 
 			DynamicallyLoadedModuleNames.AddRange(
 				new string[] {
@@ -30,7 +31,7 @@ namespace UnrealBuildTool.Rules
 
 			PrivateDependencyModuleNames.AddRange(
 				new string[] {
-					"Blackmagic",
+					"BlackmagicCore",
 					"Engine",
 					"MediaUtils",
 					"Projects",
@@ -40,15 +41,6 @@ namespace UnrealBuildTool.Rules
 			PrivateIncludePathModuleNames.AddRange(
 				new string[] {
 					"Media",
-				});
-
-			PrivateIncludePaths.AddRange(
-				new string[] {
-					"BlackmagicMedia/Private",
-					"BlackmagicMedia/Private/Blackmagic",
-					"BlackmagicMedia/Private/Assets",
-					"BlackmagicMedia/Private/Player",
-					"BlackmagicMedia/Private/Shared",
 				});
 		}
 	}

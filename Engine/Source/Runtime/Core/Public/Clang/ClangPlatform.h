@@ -6,6 +6,8 @@
 
 #pragma once
 
+// HEADER_UNIT_UNSUPPORTED - Clang not supporting header units
+
 #if !defined(__cpp_if_constexpr)
 	#error "Compiler is expected to support if constexpr"
 #endif
@@ -18,3 +20,5 @@
 
 #define PLATFORM_RETURN_ADDRESS()			__builtin_return_address(0)
 #define PLATFORM_RETURN_ADDRESS_POINTER()	__builtin_frame_address(0)
+
+#define UE_LIFETIMEBOUND [[clang::lifetimebound]]

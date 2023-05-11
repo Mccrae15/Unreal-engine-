@@ -9,7 +9,9 @@
 #include "CoreMinimal.h"
 #include "ProfilingDebugging/ResourceSize.h"
 #include "RenderResource.h"
+#include "RayTracingGeometry.h"
 #include "ShaderParameters.h"
+#include "Components/ExternalMorphSet.h"
 #include "Components/SkinnedMeshComponent.h"
 #include "GlobalShader.h"
 #include "GPUSkinVertexFactory.h"
@@ -17,6 +19,7 @@
 #include "ClothingSystemRuntimeTypes.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "Rendering/SkeletalMeshLODRenderData.h"
+#include "Animation/MeshDeformerGeometry.h"
 
 enum class EGPUSkinCacheEntryMode;
 class FGPUSkinCache;
@@ -134,6 +137,7 @@ public:
 	}
 
 	/** Update Simulated Positions & Normals from APEX Clothing actor */
+	UE_DEPRECATED(5.2, "Use USkinnedMeshComponent::GetUpdateClothSimulationData_AnyThread() instead.")
 	bool UpdateClothSimulationData(USkinnedMeshComponent* InMeshComponent);
 
 	// Whether this LOD is allowed to use the skin cache feature
@@ -141,6 +145,11 @@ public:
 	
 	// Whether animation is done with a mesh deformer.
 	uint8 bHasMeshDeformer : 1;
+
+	// Whether to update dynamic bone & cloth sim data immediately, not to wait until GDME or defer update to RHIThread.
+	// When set to true, it is the equivalent of r.DeferSkeletalDynamicDataUpdateUntilGDME=0 and r.RHICmdDeferSkeletalLockAndFillToRHIThread=0.
+	// When set to false, r.DeferSkeletalDynamicDataUpdateUntilGDME and r.RHICmdDeferSkeletalLockAndFillToRHIThread values are respected.
+	uint8 bForceUpdateDynamicDataImmediately : 1;
 
 #if RHI_RAYTRACING
 	uint8 bAnySegmentUsesWorldPositionOffset : 1;
@@ -288,9 +297,6 @@ private:
 	// parent mesh containing the source data, never 0
 	FSkeletalMeshRenderData* SkelMeshRenderData;
 
-	/** Latest updated frame number, -1 means invalid */
-	uint32 FrameNumber = -1;
-
 	friend class FMorphVertexBufferPool;
 };
 
@@ -306,19 +312,26 @@ public:
 		MorphVertexBuffers[1] = FMorphVertexBuffer(InSkelMeshRenderData, InLOD, InFeatureLevel);
 	}
 
-	void InitResources();
+	void InitResources(const FName& OwnerName);
 	void ReleaseResources();
 	SIZE_T GetResourceSize() const;
 	void EnableDoubleBuffer();
 	bool IsDoubleBuffered() const	{ return bDoubleBuffer; }
-	const FMorphVertexBuffer& GetMorphVertexBufferForReading(bool bPrevious, uint32 FrameNumber) const;
-	FMorphVertexBuffer& GetMorphVertexBufferForWriting(uint32 FrameNumber);
+	void SetCurrentRevisionNumber(uint32 RevisionNumber);
+	const FMorphVertexBuffer& GetMorphVertexBufferForReading(bool bPrevious) const;
+	FMorphVertexBuffer& GetMorphVertexBufferForWriting();
 
 private:
 	/** Vertex buffer that stores the morph target vertex deltas. */
 	FMorphVertexBuffer MorphVertexBuffers[2];
 	/** whether to double buffer. If going through skin cache, then use single buffer; otherwise double buffer. */
 	bool bDoubleBuffer = false;
+
+	// 0 / 1 to index into MorphVertexBuffer
+	uint32 CurrentBuffer = 0;
+	// RevisionNumber Tracker
+	uint32 PreviousRevisionNumber = 0;
+	uint32 CurrentRevisionNumber = 0;
 };
 
 /**
@@ -338,11 +351,14 @@ public:
 	void UpdateDynamicData_RenderThread(FGPUSkinCache* GPUSkinCache, FRHICommandListImmediate& RHICmdList, FDynamicSkelMeshObjectDataGPUSkin* InDynamicData, FSceneInterface* Scene, uint32 FrameNumberToPrepare, uint32 RevisionNumber);
 	virtual void PreGDMECallback(FGPUSkinCache* GPUSkinCache, uint32 FrameNumber) override;
 	virtual const FVertexFactory* GetSkinVertexFactory(const FSceneView* View, int32 LODIndex,int32 ChunkIdx, ESkinVertexFactoryMode VFMode = ESkinVertexFactoryMode::Default) const override;
+	virtual const FSkinBatchVertexFactoryUserData* GetVertexFactoryUserData(const int32 LODIndex, int32 ChunkIdx, ESkinVertexFactoryMode VFMode) const override;
 	virtual void CacheVertices(int32 LODIndex, bool bForce) const override {}
 	virtual bool IsCPUSkinned() const override { return false; }
 	virtual TArray<FTransform>* GetComponentSpaceTransforms() const override;
 	virtual const TArray<FMatrix44f>& GetReferenceToLocalMatrices() const override;
 	virtual bool GetCachedGeometry(FCachedGeometry& OutCachedGeometry) const override;
+	
+	FMeshDeformerGeometry& GetDeformerGeometry(int32 LODIndex);
 
 #if RHI_RAYTRACING
 	/** Geometry for ray tracing. */
@@ -451,7 +467,7 @@ public:
 	virtual void RefreshClothingTransforms(const FMatrix& InNewLocalToWorld, uint32 FrameNumber) override;
 	virtual void UpdateSkinWeightBuffer(USkinnedMeshComponent* InMeshComponent) override;
 
-	static void GetUsedVertexFactories(FSkeletalMeshLODRenderData& LODRenderData, FSkelMeshRenderSection& RenderSection, ERHIFeatureLevel::Type InFeatureLevel, TArray<const FVertexFactoryType*, TInlineAllocator<2>>& VertexFactoryTypes);
+	static void GetUsedVertexFactoryData(FSkeletalMeshRenderData* SkelMeshRenderData, int32 InLOD, USkinnedMeshComponent* SkinnedMeshComponent, FSkelMeshRenderSection& RenderSection, ERHIFeatureLevel::Type InFeatureLevel, bool bHasMorphTargets, FPSOPrecacheVertexFactoryDataList& VertexFactoryDataList);
 
 protected:
 	friend class FSkeletalMeshDeformerHelpers;
@@ -607,6 +623,9 @@ protected:
 		/** Color buffer to user, could be from asset or component override */
 		FColorVertexBuffer* MeshObjectColorBuffer;
 
+		/** Mesh deformer output buffers */
+		FMeshDeformerGeometry DeformerGeometry;
+
 		/**
 		 * Update the contents of the morphtarget vertex buffer by accumulating all 
 		 * delta positions and delta normals from the set of active morph targets
@@ -684,34 +703,18 @@ class FGPUMorphUpdateCS : public FGlobalShader
 public:
 	DECLARE_SHADER_TYPE(FGPUMorphUpdateCS, Global);
 
-	FGPUMorphUpdateCS() {}
-
-	FGPUMorphUpdateCS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
-		: FGlobalShader(Initializer)
-	{
-		MorphVertexBufferParameter.Bind(Initializer.ParameterMap, TEXT("MorphVertexBuffer"));
-
-		MorphTargetWeightsParameter.Bind(Initializer.ParameterMap, TEXT("MorphTargetWeights"));
-		MorphTargetBatchOffsetsParameter.Bind(Initializer.ParameterMap, TEXT("MorphTargetBatchOffsets"));
-		MorphTargetGroupOffsetsParameter.Bind(Initializer.ParameterMap, TEXT("MorphTargetGroupOffsets"));
-		PositionScaleParameter.Bind(Initializer.ParameterMap, TEXT("PositionScale"));
-		PrecisionParameter.Bind(Initializer.ParameterMap, TEXT("Precision"));
-
-		MorphDataBufferParameter.Bind(Initializer.ParameterMap, TEXT("MorphDataBuffer"));
-	}
+	FGPUMorphUpdateCS();
+	FGPUMorphUpdateCS(const ShaderMetaType::CompiledShaderInitializerType& Initializer);
 
 	static const uint32 MorphTargetDispatchBatchSize = 128;
 
-	void SetParameters(FRHICommandList& RHICmdList, const FVector4& LocalScale, const FMorphTargetVertexInfoBuffers& MorphTargetVertexInfoBuffers, FMorphVertexBuffer& MorphVertexBuffer);
+	void SetParameters(FRHICommandList& RHICmdList, const FVector4& LocalScale, const FMorphTargetVertexInfoBuffers& MorphTargetVertexInfoBuffers, FMorphVertexBuffer& MorphVertexBuffer, uint32 NumGroups);
 	void SetMorphOffsetsAndWeights(FRHICommandList& RHICmdList, uint32 BatchOffsets[MorphTargetDispatchBatchSize], uint32 GroupOffsets[MorphTargetDispatchBatchSize], float Weights[MorphTargetDispatchBatchSize]);
 
 	void Dispatch(FRHICommandList& RHICmdList, uint32 Size);
 	void EndAllDispatches(FRHICommandList& RHICmdList);
 
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
-	}
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters);
 
 protected:
 	LAYOUT_FIELD(FShaderResourceParameter, MorphVertexBufferParameter);
@@ -722,6 +725,7 @@ protected:
 	LAYOUT_FIELD(FShaderParameter, MorphTargetGroupOffsetsParameter);
 	LAYOUT_FIELD(FShaderParameter, PositionScaleParameter);
 	LAYOUT_FIELD(FShaderParameter, PrecisionParameter);
+	LAYOUT_FIELD(FShaderParameter, NumGroupsParameter);
 
 	LAYOUT_FIELD(FShaderResourceParameter, MorphDataBufferParameter);
 };
@@ -731,27 +735,19 @@ class FGPUMorphNormalizeCS : public FGlobalShader
 public:
 	DECLARE_SHADER_TYPE(FGPUMorphNormalizeCS, Global);
 
-	FGPUMorphNormalizeCS() {}
+	FGPUMorphNormalizeCS();
+	FGPUMorphNormalizeCS(const ShaderMetaType::CompiledShaderInitializerType& Initializer);
 
-	FGPUMorphNormalizeCS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
-		: FGlobalShader(Initializer)
-	{
-		MorphVertexBufferParameter.Bind(Initializer.ParameterMap, TEXT("MorphVertexBuffer"));
-		PositionScaleParameter.Bind(Initializer.ParameterMap, TEXT("PositionScale"));
-	}
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters);
 
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
-	}
+	void SetParameters(FRHICommandList& RHICmdList, const FVector4& LocalScale, const FMorphTargetVertexInfoBuffers& MorphTargetVertexInfoBuffers, FMorphVertexBuffer& MorphVertexBuffer, uint32 NumVertices);
 
-	void SetParameters(FRHICommandList& RHICmdList, const FVector4& LocalScale, const FMorphTargetVertexInfoBuffers& MorphTargetVertexInfoBuffers, FMorphVertexBuffer& MorphVertexBuffer);
-
-	void Dispatch(FRHICommandList& RHICmdList, uint32 NumVerticies);
+	void Dispatch(FRHICommandList& RHICmdList, uint32 NumVertices);
 	void EndAllDispatches(FRHICommandList& RHICmdList);
 
 protected:
 	LAYOUT_FIELD(FShaderResourceParameter, MorphVertexBufferParameter);
 
 	LAYOUT_FIELD(FShaderParameter, PositionScaleParameter);
+	LAYOUT_FIELD(FShaderParameter, NumVerticesParameter);
 };

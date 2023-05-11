@@ -33,7 +33,7 @@ struct MOVIESCENE_API FMovieSceneByteChannel : public FMovieSceneChannel
 	GENERATED_BODY()
 
 	FMovieSceneByteChannel()
-		: DefaultValue()
+		: DefaultValue(0)
 		, bHasDefaultValue(false)
 		, Enum(nullptr)
 		, KeyHandles()
@@ -96,6 +96,18 @@ struct MOVIESCENE_API FMovieSceneByteChannel : public FMovieSceneChannel
 	 * @return true if the channel was evaluated successfully, false otherwise
 	 */
 	bool Evaluate(FFrameTime InTime, uint8& OutValue) const;
+
+	/**
+	 * Add keys with these times to channel. The number of elements in both arrays much match or nothing is added.
+	 * @param InTimes Times to add
+	 * @param InValues Values to add
+	 */
+	FORCEINLINE void AddKeys(const TArray<FFrameNumber>& InTimes, const TArray<uint8>& InValues)
+	{
+		check(InTimes.Num() == InValues.Num());
+		Times.Append(InTimes);
+		Values.Append(InValues);
+	}
 
 public:
 
@@ -175,6 +187,8 @@ private:
 	UPROPERTY()
 	TObjectPtr<UEnum> Enum;
 
+	/** This needs to be a UPROPERTY so it gets saved into editor transactions but transient so it doesn't get saved into assets. */
+	UPROPERTY(Transient)
 	FMovieSceneKeyHandleMap KeyHandles;
 };
 

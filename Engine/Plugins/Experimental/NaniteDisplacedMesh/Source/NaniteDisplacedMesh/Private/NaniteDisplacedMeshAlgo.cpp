@@ -4,8 +4,11 @@
 
 #if WITH_EDITOR
 
+#include "Async/ParallelFor.h"
+#include "EngineLogs.h"
 #include "NaniteDisplacedMesh.h"
 #include "DisplacementMap.h"
+#include "Engine/Texture2D.h"
 #include "Affine.h"
 #include "LerpVert.h"
 #include "AdaptiveTessellator.h"
@@ -16,6 +19,7 @@ static FVector3f UserGetDisplacement(
 	const FLerpVert& Vert0,
 	const FLerpVert& Vert1,
 	const FLerpVert& Vert2,
+	int32 MaterialIndex,
 	TArrayView< Nanite::FDisplacementMap > DisplacementMaps )
 {
 	int32 DisplacementIndex = FMath::FloorToInt( Vert0.UVs[1].X );
@@ -31,7 +35,13 @@ static FVector3f UserGetDisplacement(
 	Normal  = Vert0.TangentX * Barycentrics.X;
 	Normal += Vert1.TangentX * Barycentrics.Y;
 	Normal += Vert2.TangentX * Barycentrics.Z;
-	Normal.Normalize();
+
+	if( Vert0.TangentX.IsUnit() &&
+		Vert1.TangentX.IsUnit() &&
+		Vert2.TangentX.IsUnit() )
+	{
+		Normal.Normalize();
+	}
 
 	float Displacement = DisplacementMaps[ DisplacementIndex ].Sample( UV );
 
@@ -46,13 +56,9 @@ static FVector2f UserGetErrorBounds(
 	const FVector3f& Displacement0,
 	const FVector3f& Displacement1,
 	const FVector3f& Displacement2,
+	int32 MaterialIndex,
 	TArrayView< Nanite::FDisplacementMap > DisplacementMaps )
 {
-	// Assume index is constant across triangle
-	int32 DisplacementIndex = FMath::FloorToInt( Vert0.UVs[1].X );
-	if( !DisplacementMaps.IsValidIndex( DisplacementIndex ) )
-		return FVector2f( 0.0f, 0.0f );
-
 #if 1
 	float MinBarycentric0 = FMath::Min3( Barycentrics[0].X, Barycentrics[1].X, Barycentrics[2].X );
 	float MaxBarycentric0 = FMath::Max3( Barycentrics[0].X, Barycentrics[1].X, Barycentrics[2].X );
@@ -73,7 +79,13 @@ static FVector2f UserGetErrorBounds(
 	Normal  = TAffine< FVector3f, 2 >( Vert0.TangentX ) * Barycentric0;
 	Normal += TAffine< FVector3f, 2 >( Vert1.TangentX ) * Barycentric1;
 	Normal += TAffine< FVector3f, 2 >( Vert2.TangentX ) * Barycentric2;
-	Normal = Normalize( Normal );
+
+	if( Vert0.TangentX.IsUnit() &&
+		Vert1.TangentX.IsUnit() &&
+		Vert2.TangentX.IsUnit() )
+	{
+		Normal = Normalize( Normal );
+	}
 
 	FVector2f MinUV = {  MAX_flt,  MAX_flt };
 	FVector2f MaxUV = { -MAX_flt, -MAX_flt };
@@ -88,7 +100,12 @@ static FVector2f UserGetErrorBounds(
 		MaxUV = FVector2f::Max( MaxUV, UV );
 	}
 
-	FVector2f DisplacementBounds = DisplacementMaps[ DisplacementIndex ].Sample( MinUV, MaxUV );
+	// Assume index is constant across triangle
+	int32 DisplacementIndex = FMath::FloorToInt( Vert0.UVs[1].X );
+
+	FVector2f DisplacementBounds( 0.0f, 0.0f );
+	if( DisplacementMaps.IsValidIndex( DisplacementIndex ) )
+		DisplacementBounds = DisplacementMaps[ DisplacementIndex ].Sample( MinUV, MaxUV );
 	
 	TAffine< float, 2 > Displacement( DisplacementBounds.X, DisplacementBounds.Y );
 	TAffine< float, 2 > Error = ( Normal * Displacement - LerpedDisplacement ).SizeSquared();
@@ -224,9 +241,18 @@ bool DisplaceNaniteMesh(
 	for( auto& DisplacementMap : Parameters.DisplacementMaps )
 	{
 		if( IsValid( DisplacementMap.Texture ) )
-			DisplacementMaps.Add( Nanite::FDisplacementMap( DisplacementMap.Texture->Source, DisplacementMap.Magnitude, DisplacementMap.Center ) );
+		{
+			DisplacementMaps.Add( Nanite::FDisplacementMap(
+				DisplacementMap.Texture->Source,
+				DisplacementMap.Magnitude,
+				DisplacementMap.Center,
+				DisplacementMap.Texture->AddressX,
+				DisplacementMap.Texture->AddressY ) );
+		}
 		else
+		{
 			DisplacementMaps.AddDefaulted();
+		}
 	}
 
 	TArray< FLerpVert >	LerpVerts;
@@ -238,13 +264,15 @@ bool DisplaceNaniteMesh(
 		[&](const FVector3f& Barycentrics,
 			const FLerpVert& Vert0,
 			const FLerpVert& Vert1,
-			const FLerpVert& Vert2 )
+			const FLerpVert& Vert2,
+			int32 MaterialIndex )
 		{
 			return UserGetDisplacement(
 				Barycentrics,
 				Vert0,
 				Vert1,
 				Vert2,
+				MaterialIndex,
 				DisplacementMaps );
 		},
 		[&](const FVector3f Barycentrics[3],
@@ -253,7 +281,8 @@ bool DisplaceNaniteMesh(
 			const FLerpVert& Vert2,
 			const FVector3f& Displacement0,
 			const FVector3f& Displacement1,
-			const FVector3f& Displacement2 )
+			const FVector3f& Displacement2,
+			int32 MaterialIndex )
 		{
 			return UserGetErrorBounds(
 				Barycentrics,
@@ -263,6 +292,7 @@ bool DisplaceNaniteMesh(
 				Displacement0,
 				Displacement1,
 				Displacement2,
+				MaterialIndex,
 				DisplacementMaps );
 		} );
 

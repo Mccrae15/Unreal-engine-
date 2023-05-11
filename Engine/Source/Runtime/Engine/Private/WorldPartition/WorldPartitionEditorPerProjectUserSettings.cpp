@@ -2,8 +2,9 @@
 
 #include "WorldPartition/WorldPartitionEditorPerProjectUserSettings.h"
 #include "Engine/World.h"
-#include "WorldPartition/WorldPartition.h"
 #include "GameFramework/WorldSettings.h"
+#include "Misc/PackageName.h"
+#include "UObject/Package.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(WorldPartitionEditorPerProjectUserSettings)
 
@@ -95,6 +96,11 @@ const FWorldPartitionPerWorldSettings* UWorldPartitionEditorPerProjectUserSettin
 	}
 
 	return nullptr;
+}
+
+bool UWorldPartitionEditorPerProjectUserSettings::ShouldSaveSettings(const UWorld* InWorld) const
+{
+	return InWorld && !InWorld->IsGameWorld() && FPackageName::DoesPackageExist(InWorld->GetPackage()->GetName());
 }
 
 #endif

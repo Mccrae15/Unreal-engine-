@@ -2,37 +2,14 @@
 
 #include "MuCOE/GenerateMutableSource/GenerateMutableSourceImage.h"
 
-#include "Containers/Array.h"
-#include "Containers/EnumAsByte.h"
-#include "Containers/Map.h"
-#include "Containers/Set.h"
-#include "Containers/StringConv.h"
-#include "Containers/UnrealString.h"
-#include "EdGraph/EdGraphPin.h"
-#include "Engine/DataTable.h"
-#include "Engine/Texture2D.h"
-#include "HAL/PlatformCrt.h"
-#include "Internationalization/Internationalization.h"
-#include "Internationalization/Text.h"
-#include "Logging/TokenizedMessage.h"
-#include "Math/IntPoint.h"
-#include "Math/IntVector.h"
-#include "Math/UnrealMathSSE.h"
-#include "Misc/AssertionMacros.h"
-#include "Misc/CString.h"
-#include "Misc/Guid.h"
-#include "MuCO/CustomizableObjectParameterTypeDefinitions.h"
-#include "MuCO/CustomizableObjectUIData.h"
 #include "MuCOE/CustomizableObjectCompiler.h"
 #include "MuCOE/EdGraphSchema_CustomizableObject.h"
-#include "MuCOE/GenerateMutableSource/GenerateMutableSource.h"
 #include "MuCOE/GenerateMutableSource/GenerateMutableSourceColor.h"
 #include "MuCOE/GenerateMutableSource/GenerateMutableSourceFloat.h"
 #include "MuCOE/GenerateMutableSource/GenerateMutableSourceMesh.h"
 #include "MuCOE/GenerateMutableSource/GenerateMutableSourceProjector.h"
 #include "MuCOE/GenerateMutableSource/GenerateMutableSourceTable.h"
 #include "MuCOE/GraphTraversal.h"
-#include "MuCOE/Nodes/CustomizableObjectNode.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeMesh.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTable.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTexture.h"
@@ -48,17 +25,12 @@
 #include "MuCOE/Nodes/CustomizableObjectNodeTextureSwitch.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTextureToChannels.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTextureTransform.h"
+#include "MuCOE/Nodes/CustomizableObjectNodeTextureSaturate.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeTextureVariation.h"
 #include "MuCOE/UnrealEditorPortabilityHelpers.h"
 #include "MuCOE/UnrealToMutableTextureConversionUtils.h"
-#include "MuR/Image.h"
-#include "MuR/Ptr.h"
-#include "MuR/RefCounted.h"
-#include "MuT/Node.h"
-#include "MuT/NodeImage.h"
 #include "MuT/NodeImageBinarise.h"
 #include "MuT/NodeImageColourMap.h"
-#include "MuT/NodeImageConstant.h"
 #include "MuT/NodeImageFormat.h"
 #include "MuT/NodeImageInterpolate.h"
 #include "MuT/NodeImageInvert.h"
@@ -68,21 +40,13 @@
 #include "MuT/NodeImagePlainColour.h"
 #include "MuT/NodeImageProject.h"
 #include "MuT/NodeImageResize.h"
+#include "MuT/NodeImageSaturate.h"
 #include "MuT/NodeImageSwitch.h"
 #include "MuT/NodeImageSwizzle.h"
 #include "MuT/NodeImageTable.h"
 #include "MuT/NodeImageTransform.h"
 #include "MuT/NodeImageVariation.h"
-#include "MuT/NodeProjector.h"
-#include "MuT/NodeScalar.h"
 #include "MuT/NodeScalarConstant.h"
-#include "MuT/NodeScalarEnumParameter.h"
-#include "Templates/Casts.h"
-#include "Templates/Tuple.h"
-#include "TextureResource.h"
-#include "UObject/NameTypes.h"
-#include "UObject/ObjectPtr.h"
-#include "UObject/UObjectGlobals.h"
 
 #define LOCTEXT_NAMESPACE "CustomizableObjectEditor"
 
@@ -157,7 +121,7 @@ mu::NodeImagePtr ResizeToMaxTextureSize(float MaxTextureSize, const UTexture2D* 
 }
 
 
-mu::NodeImagePtr GenerateMutableSourceImage(const UEdGraphPin* Pin, FMutableGraphGenerationContext& GenerationContext, float MaxTextureSize)
+mu::NodeImagePtr GenerateMutableSourceImage(const UEdGraphPin* Pin, FMutableGraphGenerationContext& GenerationContext, float MaxTextureSize, mu::NodeRangePtr NodeRange)
 {
 	check(Pin)
 	RETURN_ON_CYCLE(*Pin, GenerationContext)
@@ -213,6 +177,12 @@ mu::NodeImagePtr GenerateMutableSourceImage(const UEdGraphPin* Pin, FMutableGrap
 
 		TextureNode->SetName(TCHAR_TO_ANSI(*TypedNodeParam->ParameterName));
 		TextureNode->SetUid(TCHAR_TO_ANSI(*GenerationContext.GetNodeIdUnique(Node).ToString()));
+		
+		if (NodeRange)
+		{
+			TextureNode->SetRangeCount(1);
+			TextureNode->SetRange(0, NodeRange);
+		}
 
 		// TODO: Set a default value for the texture parameter?
 		//ColorNode->SetDefaultValue(TypedNodeParam->DefaultValue.R, TypedNodeParam->DefaultValue.G, TypedNodeParam->DefaultValue.B);
@@ -240,14 +210,19 @@ mu::NodeImagePtr GenerateMutableSourceImage(const UEdGraphPin* Pin, FMutableGrap
 		ResizeNode->SetBase(FormatNode);
 		ResizeNode->SetRelative(false);
 
-		if (TypedNodeParam->DefaultValue)
+		const UTexture2D* ReferenceTexture = TypedNodeParam->DefaultValue;
+		if (ReferenceTexture)
 		{
-			ResizeNode->SetSize(TypedNodeParam->DefaultValue->GetResource()->GetSizeX(), TypedNodeParam->DefaultValue->GetResource()->GetSizeY() );
+			ResizeNode->SetSize(FMath::Max(ReferenceTexture->GetImportedSize().X,1), FMath::Max(ReferenceTexture->GetImportedSize().X, 1));
 		}
 		else
 		{
-			// \TODO: Let the user specify this in the node?
-			ResizeNode->SetSize(1024,1024);
+			if (TypedNodeParam->TextureSizeX <= 0 || TypedNodeParam->TextureSizeY <= 0)
+			{
+				GenerationContext.Compiler->CompilerLog(LOCTEXT("TextureParameterSize0", "Texture size not specified. Add a reference texture or set a valid value to the Texture Size variables."), Node);
+			}
+
+			ResizeNode->SetSize(FMath::Max(TypedNodeParam->TextureSizeX, 1), FMath::Max(TypedNodeParam->TextureSizeY, 1));
 		}
 
 		Result = ResizeNode;
@@ -324,7 +299,7 @@ mu::NodeImagePtr GenerateMutableSourceImage(const UEdGraphPin* Pin, FMutableGrap
 				case COTLE_BURN: Type = mu::EBlendType::BT_BURN; break;
 				case COTLE_SCREEN: Type = mu::EBlendType::BT_SCREEN; break;
 				case COTLE_OVERLAY: Type = mu::EBlendType::BT_OVERLAY; break;
-				case COTLE_ALPHA_OVERLAY: Type = mu::EBlendType::BT_ALPHA_OVERLAY; break;
+				case COTLE_ALPHA_OVERLAY: Type = mu::EBlendType::BT_LIGHTEN; break;
 				case COTLE_NORMAL_COMBINE: Type = mu::EBlendType::BT_NORMAL_COMBINE; break;
 				default:
 					GenerationContext.Compiler->CompilerLog(LOCTEXT("UnsupportedImageEffect", "Texture layer effect not supported. Setting to 'Blend'."), Node);
@@ -597,7 +572,28 @@ mu::NodeImagePtr GenerateMutableSourceImage(const UEdGraphPin* Pin, FMutableGrap
 		}
 
 		ImageNode->SetLayout(TypedNodeProject->Layout);
-		ImageNode->SetImageSize( FUintVector2(TypedNodeProject->TextureSizeX, TypedNodeProject->TextureSizeY) );
+		FUintVector2 TextureSize(TypedNodeProject->TextureSizeX, TypedNodeProject->TextureSizeY);
+
+		// Calculating Texture size using Reference texture parameters
+		if (TypedNodeProject->ReferenceTexture)
+		{
+			int32 LODBias = ComputeLODBias(GenerationContext, TypedNodeProject->ReferenceTexture, TypedNodeProject->ReferenceTexture->MaxTextureSize, nullptr, INDEX_NONE, false);
+
+			if (TextureSize.X > 0 && TextureSize.Y > 0)
+			{
+				TextureSize.X = TextureSize.X >> LODBias;
+				TextureSize.Y = TextureSize.Y >> LODBias;
+			}
+			else
+			{
+				TextureSize.X = TypedNodeProject->ReferenceTexture->GetImportedSize().X >> LODBias;
+				TextureSize.Y = TypedNodeProject->ReferenceTexture->GetImportedSize().Y >> LODBias;
+			}
+		}
+
+		ImageNode->SetImageSize(TextureSize);
+
+		ImageNode->SetAngleFadeChannels(TypedNodeProject->bEnableAngleFadeOutForRGB, TypedNodeProject->bEnableAngleFadeOutForAlpha);
 
 		if (const UEdGraphPin* ConnectedPin = FollowInputPin(*TypedNodeProject->AngleFadeStartPin()))
 		{
@@ -772,6 +768,25 @@ mu::NodeImagePtr GenerateMutableSourceImage(const UEdGraphPin* Pin, FMutableGrap
 			TransformNode->SetRotation( RotationNode ); 
 		}
 	}
+
+	else if (const UCustomizableObjectNodeTextureSaturate* TypedNodeSaturate = Cast<UCustomizableObjectNodeTextureSaturate>(Node))
+	{
+		mu::Ptr<mu::NodeImageSaturate> SaturateNode = new mu::NodeImageSaturate();
+		Result = SaturateNode;
+	
+		if ( UEdGraphPin* BaseImagePin = FollowInputPin(*TypedNodeSaturate->GetBaseImagePin()) )
+		{
+			mu::NodeImagePtr ImageNode = GenerateMutableSourceImage(BaseImagePin, GenerationContext, MaxTextureSize);
+			SaturateNode->SetSource(ImageNode); 
+		}
+
+		if ( UEdGraphPin* FactorPin = FollowInputPin(*TypedNodeSaturate->GetFactorPin()))
+		{
+			mu::NodeScalarPtr FactorNode = GenerateMutableSourceFloat(FactorPin, GenerationContext);
+			SaturateNode->SetFactor(FactorNode); 
+		}
+	}
+	
 	// If the node is a plain colour node, generate an image out of it
 	else if (Pin->PinType.PinCategory == Helper_GetPinCategory(Schema->PC_Color))
 	{
@@ -813,7 +828,14 @@ mu::NodeImagePtr GenerateMutableSourceImage(const UEdGraphPin* Pin, FMutableGrap
 					ColumnName = GenerationContext.CurrentMaterialTableParameterId;
 				}
 
+				// Generating a new data table if not exists
 				Table = GenerateMutableSourceTable(TypedNodeTable->Table->GetName(), Pin, GenerationContext);
+
+				// Generating a new Texture column if not exists
+				if (Table && Table->FindColumn(TCHAR_TO_ANSI(*ColumnName)) == INDEX_NONE)
+				{
+					GenerateTableColumn(TypedNodeTable, Pin, Table, ColumnName, GenerationContext.CurrentLOD, GenerationContext);
+				}
 				
 				ImageTableNode->SetTable(Table);
 				ImageTableNode->SetColumn(TCHAR_TO_ANSI(*ColumnName));
@@ -821,7 +843,7 @@ mu::NodeImagePtr GenerateMutableSourceImage(const UEdGraphPin* Pin, FMutableGrap
 
 				GenerationContext.AddParameterNameUnique(Node, TypedNodeTable->ParameterName);
 				
-				if (Table->FindColumn(TCHAR_TO_ANSI(*ColumnName)) == -1)
+				if (Table->FindColumn(TCHAR_TO_ANSI(*ColumnName)) == INDEX_NONE)
 				{
 					FString Msg = FString::Printf(TEXT("Couldn't find pin column with name %s"), *ColumnName);
 					GenerationContext.Compiler->CompilerLog(FText::FromString(Msg), Node);

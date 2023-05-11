@@ -2,11 +2,11 @@
 
 #include "WindowsMovieStreamer.h"
 
-#include "Rendering/RenderingCommon.h"
-#include "Slate/SlateTextures.h"
+#include "IHeadMountedDisplayModule.h"
 #include "MoviePlayer.h"
 #include "RenderUtils.h"
-#include "Runtime/HeadMountedDisplay/Public/IHeadMountedDisplayModule.h"
+#include "Rendering/RenderingCommon.h"
+#include "Slate/SlateTextures.h"
 
 #include "MediaShaders.h"
 #include "PipelineStateCache.h"
@@ -616,15 +616,22 @@ FIntPoint FVideoPlayer::AddStreamToTopology(IMFTopology* Topology, IMFPresentati
 			check(SUCCEEDED(HResult));
 
 			// Allow HMD, if present, to override audio output device
-			if (IHeadMountedDisplayModule::IsAvailable())
+			// Can only access HMD from the game thread.
+			if (IsInGameThread())
 			{
-				FString AudioOutputDevice = IHeadMountedDisplayModule::Get().GetAudioOutputDevice();
-
-				if(!AudioOutputDevice.IsEmpty())
+				if (IHeadMountedDisplayModule::IsAvailable())
 				{
-					HResult = SinkActivate->SetString(MF_AUDIO_RENDERER_ATTRIBUTE_ENDPOINT_ID, *AudioOutputDevice);
-					check(SUCCEEDED(HResult));
+					HMDAudioOutputDevice = IHeadMountedDisplayModule::Get().GetAudioOutputDevice();
 				}
+				else
+				{
+					HMDAudioOutputDevice.Reset();
+				}
+			}
+			if(!HMDAudioOutputDevice.IsEmpty())
+			{
+				HResult = SinkActivate->SetString(MF_AUDIO_RENDERER_ATTRIBUTE_ENDPOINT_ID, *HMDAudioOutputDevice);
+				check(SUCCEEDED(HResult));
 			}
 		}
 		else if (MajorType == MFMediaType_Video)

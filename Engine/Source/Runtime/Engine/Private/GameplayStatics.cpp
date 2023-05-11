@@ -1,26 +1,26 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Kismet/GameplayStatics.h"
-#include "Serialization/MemoryWriter.h"
-#include "Serialization/CustomVersion.h"
+#include "Engine/Blueprint.h"
+#include "Engine/GameInstance.h"
+#include "Engine/GameViewportClient.h"
 #include "Serialization/ObjectAndNameAsStringProxyArchive.h"
+#include "EngineLogs.h"
 #include "Misc/PackageName.h"
+#include "Kismet/GameplayStaticsTypes.h"
 #include "Misc/EngineVersion.h"
 #include "GameFramework/DamageType.h"
-#include "GameFramework/Pawn.h"
-#include "WorldCollision.h"
+#include "Kismet/KismetSystemLibrary.h"
 #include "SceneView.h"
 #include "Components/PrimitiveComponent.h"
-#include "Serialization/MemoryReader.h"
+#include "Math/InverseRotationMatrix.h"
 #include "UObject/Package.h"
-#include "Audio.h"
-#include "GameFramework/WorldSettings.h"
 #include "Engine/CollisionProfile.h"
 #include "ParticleHelper.h"
+#include "Particles/ParticleSystem.h"
 #include "Particles/ParticleSystemComponent.h"
 #include "Engine/LevelStreaming.h"
 #include "Engine/LocalPlayer.h"
-#include "ActiveSound.h"
 #include "DrawDebugHelpers.h"
 #include "EngineUtils.h"
 #include "AudioDevice.h"
@@ -28,7 +28,6 @@
 #include "DVRStreaming.h"
 #include "PlatformFeatures.h"
 #include "GameFramework/Character.h"
-#include "Sound/SoundBase.h"
 #include "Sound/DialogueWave.h"
 #include "GameFramework/SaveGame.h"
 #include "GameFramework/GameStateBase.h"
@@ -42,21 +41,18 @@
 #include "PhysicsEngine/PhysicsSettings.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "Misc/EngineVersion.h"
-#include "ContentStreaming.h"
-#include "Async/Async.h"
 #include "Engine/SceneCapture2D.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Components/SceneCaptureComponent2D.h"
 #include "Sound/SoundCue.h"
-#include "Sound/SoundWave.h"
 #include "Audio/ActorSoundParameterInterface.h"
 #include "Engine/DamageEvents.h"
-#include "HAL/PlatformMisc.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(GameplayStatics)
 
 #if WITH_ACCESSIBILITY
 #include "Framework/Application/SlateApplication.h"
+#include "UObject/UObjectIterator.h"
 #include "Widgets/Accessibility/SlateAccessibleMessageHandler.h"
 #endif
 
@@ -813,7 +809,7 @@ class AActor* UGameplayStatics::BeginSpawningActorFromBlueprint(const UObject* W
 	return nullptr;
 }
 
-class AActor* UGameplayStatics::BeginDeferredActorSpawnFromClass(const UObject* WorldContextObject, TSubclassOf<AActor> ActorClass, const FTransform& SpawnTransform, ESpawnActorCollisionHandlingMethod CollisionHandlingOverride /*= ESpawnActorCollisionHandlingMethod::Undefined*/, AActor* Owner /*= nullptr*/)
+class AActor* UGameplayStatics::BeginDeferredActorSpawnFromClass(const UObject* WorldContextObject, TSubclassOf<AActor> ActorClass, const FTransform& SpawnTransform, ESpawnActorCollisionHandlingMethod CollisionHandlingOverride /*= ESpawnActorCollisionHandlingMethod::Undefined*/, AActor* Owner /*= nullptr*/, ESpawnActorScaleMethod TransformScaleMethod /*= ESpawnActorScaleMethod::MultiplyWithRoot*/)
 {
 	SCOPE_CYCLE_COUNTER(STAT_SpawnTime);
 	if (UClass* Class = *ActorClass)
@@ -833,7 +829,7 @@ class AActor* UGameplayStatics::BeginDeferredActorSpawnFromClass(const UObject* 
 
 		if (UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull))
 		{
-			return World->SpawnActorDeferred<AActor>(Class, SpawnTransform, Owner, AutoInstigator, CollisionHandlingOverride);
+			return World->SpawnActorDeferred<AActor>(Class, SpawnTransform, Owner, AutoInstigator, CollisionHandlingOverride, TransformScaleMethod);
 		}
 		else
 		{
@@ -848,12 +844,12 @@ class AActor* UGameplayStatics::BeginDeferredActorSpawnFromClass(const UObject* 
 	return nullptr;
 }
 
-AActor* UGameplayStatics::FinishSpawningActor(AActor* Actor, const FTransform& SpawnTransform)
+AActor* UGameplayStatics::FinishSpawningActor(AActor* Actor, const FTransform& SpawnTransform, ESpawnActorScaleMethod TransformScaleMethod)
 {
 	SCOPE_CYCLE_COUNTER(STAT_SpawnTime);
 	if (Actor)
 	{
-		Actor->FinishSpawning(SpawnTransform);
+		Actor->FinishSpawning(SpawnTransform, false, nullptr, TransformScaleMethod);
 	}
 
 	return Actor;

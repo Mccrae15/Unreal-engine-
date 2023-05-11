@@ -2,13 +2,18 @@
 
 #include "GameFramework/LightWeightInstanceStaticMeshManager.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
+#include "Components/PrimitiveComponent.h"
 #include "Net/UnrealNetwork.h"
-#include "TimerManager.h"
+#include "Elements/SMInstance/SMInstanceElementId.h"
+#include "Templates/Greater.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(LightWeightInstanceStaticMeshManager)
 
 #if WITH_EDITOR
 #include "Editor.h"
+#else
+#include "Engine/World.h"
+#include "TimerManager.h"
 #endif // WITH_EDITOR
 
 ALightWeightInstanceStaticMeshManager::ALightWeightInstanceStaticMeshManager(const FObjectInitializer& ObjectInitializer)
@@ -197,7 +202,12 @@ void ALightWeightInstanceStaticMeshManager::SetInstancedStaticMeshParams()
 	InstancedStaticMeshComponent->Mobility = EComponentMobility::Movable;
 	// Allows per-instance selection in the editor
 	InstancedStaticMeshComponent->bHasPerInstanceHitProxies = true;
-}
+
+	while(InstancedStaticMeshComponent->InstancingRandomSeed == 0)
+	{
+		InstancedStaticMeshComponent->InstancingRandomSeed = FMath::Rand();
+	}
+} 
 
 void ALightWeightInstanceStaticMeshManager::SetStaticMeshFromActor(AActor* InActor)
 {

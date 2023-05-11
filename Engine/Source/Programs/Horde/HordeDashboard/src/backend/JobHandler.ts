@@ -1,6 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-import { action, observable } from 'mobx';
+import { action, makeObservable, observable } from 'mobx';
 import moment from 'moment';
 import backend from '../backend';
 import { JobData, JobState, JobStepOutcome, JobStreamQuery, StreamData } from '../backend/Api';
@@ -15,6 +15,7 @@ const jobsRefreshTime = 10000;
 export class JobHandler {
 
     constructor(includeBatches: boolean = false, jobLimit?: number) {
+        makeObservable(this);
         this.includeBatches = includeBatches;
         this.jobLimit = jobLimit;
     }
@@ -78,7 +79,7 @@ export class JobHandler {
         try {
 
             // discover new/updated jobs
-            let filter = "id,streamId,name,change,preflightChange,templateId,templateHash,graphHash,startedByUserInfo,abortedByUserInfo,createTime,state,arguments,updateTime,labels,defaultLabel";
+            let filter = "id,streamId,name,change,preflightChange,templateId,templateHash,graphHash,startedByUserInfo,abortedByUserInfo,createTime,state,arguments,updateTime,labels,defaultLabel,preflightDescription";
 
             if (this.includeBatches) {
                 filter += ",batches";

@@ -35,8 +35,10 @@ public:
 		bInjectedAsInput = true;
 	}
 
+#if WITH_EDITORONLY_DATA
 	UPROPERTY()
 	TObjectPtr<URigVMUnitNode> UnitNode_DEPRECATED;
+#endif
 
 	UPROPERTY()
 	TObjectPtr<URigVMNode> Node;
@@ -223,6 +225,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = RigVMPin)
 	bool IsReferenceCountedContainer() const { return IsDynamicArray(); }
 
+	// Returns true if this pin's value may be executed lazily
+	UFUNCTION(BlueprintCallable, Category = RigVMPin)
+	bool IsLazy() const;
+
 	// Returns the index of the Pin within the node / parent Pin
 	UFUNCTION(BlueprintCallable, Category = RigVMPin)
 	int32 GetPinIndex() const;
@@ -265,6 +271,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = RigVMPin)
 	bool ContainsWildCardSubPin() const;
 
+	// Returns true if this pin is an array that should be displayed as elements only
+	UFUNCTION(BlueprintCallable, Category = RigVMPin)
+	bool IsFixedSizeArray() const;
+	
 	// Returns the default value of the Pin as a string.
 	// Note that this value is computed based on the Pin's
 	// SubPins - so for example for a FVector typed Pin
@@ -388,7 +398,7 @@ public:
 
 	// Returns true is the two provided source and target Pins
 	// can be linked to one another.
-	static bool CanLink(URigVMPin* InSourcePin, URigVMPin* InTargetPin, FString* OutFailureReason, const FRigVMByteCode* InByteCode, ERigVMPinDirection InUserLinkDirection = ERigVMPinDirection::IO, bool bInAllowWildcard = false);
+	static bool CanLink(URigVMPin* InSourcePin, URigVMPin* InTargetPin, FString* OutFailureReason, const FRigVMByteCode* InByteCode, ERigVMPinDirection InUserLinkDirection = ERigVMPinDirection::IO, bool bInAllowWildcard = false, bool bEnableTypeCasting = true);
 
 	// Returns true if this pin has injected nodes
 	bool HasInjectedNodes() const { return InjectionInfos.Num() > 0; }
@@ -427,14 +437,6 @@ public:
 
 	// Returns true if the pin can be bound to a given variable
 	bool CanBeBoundToVariable(const FRigVMExternalVariable& InExternalVariable, const FString& InSegmentPath = FString()) const;
-
-	// helper function to retrieve an object from a path
-	static UObject* FindObjectFromCPPTypeObjectPath(const FString& InObjectPath);
-	template<class T>
-	FORCEINLINE static T* FindObjectFromCPPTypeObjectPath(const FString& InObjectPath)
-	{
-		return Cast<T>(FindObjectFromCPPTypeObjectPath(InObjectPath));
-	}
 
 	// Returns true if the pin should not show up on a node, but in the details panel
 	bool ShowInDetailsPanelOnly() const;
@@ -513,8 +515,10 @@ private:
 	UPROPERTY()
 	TArray<TObjectPtr<URigVMInjectionInfo>> InjectionInfos;
 
+#if WITH_EDITORONLY_DATA
 	UPROPERTY()
 	FString BoundVariablePath_DEPRECATED;
+#endif
 
 	mutable FString LastKnownCPPType;
 	mutable TRigVMTypeIndex LastKnownTypeIndex;

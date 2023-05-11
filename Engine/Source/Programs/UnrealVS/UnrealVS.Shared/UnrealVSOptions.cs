@@ -18,28 +18,33 @@ namespace UnrealVS
 		public bool HideNonGameStartupProjects { get; set; }
 
 		[Category("Unreal.P4")]
-		[DisplayName("Enable auto checkout on save")]
-		[Description("Uses p4 ini / environment settings to automatically checkout files on save, use 'RunUAT P4WriteConfig' to initialize those settings")]
+		[DisplayName("Enable Auto Checkout on Save")]
+		[Description("Uses P4 ini / environment settings to automatically checkout files on save, use 'RunUAT P4WriteConfig' to initialize those settings")]
 		public bool AllowUnrealVSCheckoutOnEdit { get; set; }
 
 		[Category("Unreal.P4")]
-		[DisplayName("Override VS compare options")]
+		[DisplayName("Override VS Compare Options")]
 		[Description("Unreal VS will override built in diff settings to the ideal for code, does not alter P4")]
 		public bool AllowUnrealVSOverrideDiffSettings { get; set; }
 
 		[Category("Unreal.P4")]
-		[DisplayName("Allow perforce operations")]
-		[Description("Uses p4 ini / environment settings to call P4 functionlality, use 'RunUAT P4WriteConfig' to initialize those settings")]
+		[DisplayName("Use P4V Diff")]
+		[Description("Uses P4V to diff files")]
+		public bool UseP4VDiff { get; set; }
+
+		[Category("Unreal.P4")]
+		[DisplayName("Allow Perforce operations")]
+		[Description("Uses P4 ini / environment settings to call P4 functionality, use 'RunUAT P4WriteConfig' to initialize those settings")]
 		public bool AllowUnrealVSP4 { get; set; }
 
 		[Category("Unreal.P4")]
 		[DisplayName("Allow Async Checkout")]
-		[Description("Switches checkout (on edit or manual) to an async method, note if the p4 operation fails the local file will still be writeable")]
+		[Description("Switches checkout (on edit or manual) to an async method, note if the p4 operation fails the local file will still be writable")]
 		public bool AllowAsyncP4Checkout { get; set; }
 
 		[Category("Unreal.P4")]
-		[DisplayName("Force P4 Output window to active")]
-		[Description("When set, normal p4 operations will force the output window to the surface")]
+		[DisplayName("Force P4 Output Window to Active")]
+		[Description("When set, normal P4 operations will force the output window to the surface")]
 		public bool ForceOutputWindow { get; set; }
 
 		[Category("Unreal.P4")]
@@ -51,6 +56,11 @@ namespace UnrealVS
 		[DisplayName("Reconcile Extensions")]
 		[Description("Reconcile will attempt to resolve these extensions (including wildcards)")]
 		public string ReconcileExtensions { get; set; } = "c*;h*;ini;uproject;uplugin";
+
+		[Category("General")]
+		[DisplayName("Prefix UE5 Solution Name with Folder")]
+		[Description("Will include name of folder that UE5.sln is located in to Visual Studio window title.")]
+		public bool IncludeFolderInUE5SolutionName { get; set; } = true;
 
 		protected override void OnApply(PageApplyEventArgs e)
 		{

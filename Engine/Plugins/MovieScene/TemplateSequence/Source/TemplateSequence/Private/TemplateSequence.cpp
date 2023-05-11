@@ -2,23 +2,19 @@
 
 #include "TemplateSequence.h"
 #include "AssetRegistry/AssetData.h"
-#include "Engine/Engine.h"
 #include "Engine/World.h"
-#include "Components/ActorComponent.h"
-#include "GameFramework/Actor.h"
-#include "Modules/ModuleInterface.h"
+#include "Misc/PackageName.h"
 #include "Modules/ModuleManager.h"
 #include "MovieScene.h"
 #include "MovieSceneCommonHelpers.h"
-#include "MovieSceneTrack.h"
+#include "MovieScenePossessable.h"
+#include "Tracks/MovieSceneSkeletalAnimationTrack.h"
+#include "MovieSceneSpawnable.h"
 #include "Tracks/MovieSceneSpawnTrack.h"
 
 #include "TemplateSequenceActor.h"
 #include "TemplateSequencePlayer.h"
 
-#include "Compilation/MovieSceneCompiledDataManager.h"
-#include "Evaluation/MovieSceneEvaluationTemplateInstance.h"
-#include "Evaluation/MovieScenePlayback.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(TemplateSequence)
 
@@ -78,7 +74,25 @@ void UTemplateSequence::BindPossessableObject(const FGuid& ObjectId, UObject& Po
 
 bool UTemplateSequence::CanPossessObject(UObject& Object, UObject* InPlaybackContext) const
 {
-	return Object.IsA<AActor>() || Object.IsA<UActorComponent>();
+	UClass* ExpectedActorClass = BoundActorClass.Get();
+	if (!ExpectedActorClass)
+	{
+		return false;
+	}
+
+	UActorComponent* Component = Cast<UActorComponent>(&Object);
+	if (!Component)
+	{
+		return false;
+	}
+
+	AActor* Owner = Component->GetOwner();
+	if (!Owner || !Owner->IsA(ExpectedActorClass))
+	{
+		return false;
+	}
+
+	return true;
 }
 
 void UTemplateSequence::LocateBoundObjects(const FGuid& ObjectId, UObject* Context, TArray<UObject*, TInlineAllocator<1>>& OutObjects) const
@@ -272,7 +286,8 @@ FText UTemplateSequence::GetDisplayName() const
 
 ETrackSupport UTemplateSequence::IsTrackSupported(TSubclassOf<class UMovieSceneTrack> InTrackClass) const
 {
-	if (InTrackClass == UMovieSceneSpawnTrack::StaticClass())
+	if (InTrackClass == UMovieSceneSkeletalAnimationTrack::StaticClass() ||
+		InTrackClass == UMovieSceneSpawnTrack::StaticClass())
 	{
 		return ETrackSupport::Supported;
 	}

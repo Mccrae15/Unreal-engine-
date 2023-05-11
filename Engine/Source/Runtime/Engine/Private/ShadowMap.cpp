@@ -1,19 +1,21 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ShadowMap.h"
+#include "Engine/Level.h"
 #include "Engine/MapBuildDataRegistry.h"
 #include "Components/LightComponent.h"
 
+#include "Engine/World.h"
 #include "TextureLayout.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Engine/ShadowMapTexture2D.h"
 #include "Components/InstancedStaticMeshComponent.h"
-#include "Engine/InstancedStaticMesh.h"
 #include "LightMap.h"
-#include "UObject/Package.h"
 #include "Misc/FeedbackContext.h"
+#include "Misc/QueuedThreadPool.h"
 #include "Modules/ModuleManager.h"
 #include "GameFramework/WorldSettings.h"
+#include "PrimitiveInstanceUpdateCommand.h"
 
 #if WITH_EDITOR
 

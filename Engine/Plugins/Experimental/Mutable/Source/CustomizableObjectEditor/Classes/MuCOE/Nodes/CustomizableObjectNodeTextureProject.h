@@ -2,15 +2,12 @@
 
 #pragma once
 
-#include "Containers/Array.h"
-#include "EdGraph/EdGraphNode.h"
-#include "HAL/Platform.h"
-#include "Internationalization/Text.h"
-#include "Math/Color.h"
 #include "MuCOE/Nodes/CustomizableObjectNode.h"
-#include "UObject/UObjectGlobals.h"
 
 #include "CustomizableObjectNodeTextureProject.generated.h"
+
+class UTexture2D;
+namespace ENodeTitleType { enum Type : int; }
 
 class FArchive;
 class UCustomizableObjectNodeRemapPins;
@@ -30,16 +27,29 @@ public:
 
 	// Layout to use for the generated images.
 	UPROPERTY(EditAnywhere, Category = CustomizableObject)
-	int32 Layout = 0;
+	uint8 Layout = 0;
+	
+	UPROPERTY(EditAnywhere, Category = CustomizableObject)
+	bool bEnableAngleFadeOutForRGB = true;
 
 	UPROPERTY(EditAnywhere, Category = CustomizableObject)
-	int32 TextureSizeX = 0; 
+	bool bEnableAngleFadeOutForAlpha = true;
 
+	/** Set the width of the Texture. If the reference texture is not null, it overrides the Size X property */
 	UPROPERTY(EditAnywhere, Category = CustomizableObject)
-	int32 TextureSizeY = 0;
+	uint32 TextureSizeX = 0;
 
+	/** Set the height of the Texture. If the reference texture is not null, it overrides the Size Y property */
 	UPROPERTY(EditAnywhere, Category = CustomizableObject)
-	int32 Textures = 0;
+	uint32 TextureSizeY = 0;
+
+	UPROPERTY(EditAnywhere, Category = CustomizableObject, meta=( ClampMin = 1))
+	uint32 Textures = 0;
+
+	/** Reference Texture used to decide the texture properties of the mutable-generated textures
+	* connected to this material (e.g. LODBias, Size X,...). If null, mutable default texture properties will be applied. */
+	UPROPERTY(EditAnywhere, Category = CustomizableObject)
+	TObjectPtr<UTexture2D> ReferenceTexture = nullptr;
 
 	// UObject interface.
 	void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;

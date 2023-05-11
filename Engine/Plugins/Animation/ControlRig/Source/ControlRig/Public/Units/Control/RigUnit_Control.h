@@ -17,11 +17,12 @@ struct CONTROLRIG_API FRigUnit_Control : public FRigUnit
 		: Transform(FEulerTransform::Identity)
 		, Base(FTransform::Identity)
 		, Result(FTransform::Identity)
+		, bIsInitialized(false)
 	{
 	}
 
 	RIGVM_METHOD()
-	virtual void Execute(const FRigUnitContext& Context) override;
+	virtual void Execute() override;
 
 	/** Combine Transform and Base to make the resultant transform */
 	FTransform GetResultantTransform() const;
@@ -65,4 +66,7 @@ struct CONTROLRIG_API FRigUnit_Control : public FRigUnit
 
 	RIGVM_METHOD()
 	virtual FRigVMStructUpgradeInfo GetUpgradeInfo() const override;
+
+	UPROPERTY()
+ 	bool bIsInitialized;
 };

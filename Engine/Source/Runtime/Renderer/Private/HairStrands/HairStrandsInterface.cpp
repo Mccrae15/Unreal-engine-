@@ -9,6 +9,8 @@
 #include "HairStrandsMeshProjection.h"
 #include "HairStrandsData.h"
 
+#include "DataDrivenShaderPlatformInfo.h"
+#include "LightSceneProxy.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "Rendering/SkinWeightVertexBuffer.h"
 #include "CommonRenderResources.h"
@@ -24,13 +26,6 @@ DEFINE_LOG_CATEGORY_STATIC(LogHairRendering, Log, All);
 static TAutoConsoleVariable<int32> CVarHairStrandsRaytracingEnable(
 	TEXT("r.HairStrands.Raytracing"), 1,
 	TEXT("Enable/Disable hair strands raytracing geometry. This is anopt-in option per groom asset/groom instance."),
-	ECVF_RenderThreadSafe | ECVF_Scalability);
-
-static int32 GHairStrandsPluginEnable = 0;
-
-static TAutoConsoleVariable<int32> CVarHairStrandsGlobalEnable(
-	TEXT("r.HairStrands.Enable"), 1,
-	TEXT("Enable/Disable the entire hair strands system. This affects all geometric representations (i.e., strands, cards, and meshes)."),
 	ECVF_RenderThreadSafe | ECVF_Scalability);
 
 static TAutoConsoleVariable<int32> CVarHairStrandsEnable(
@@ -207,7 +202,7 @@ bool IsHairRayTracingEnabled()
 
 bool IsHairStrandsSupported(EHairStrandsShaderType Type, EShaderPlatform Platform)
 {
-	if (GHairStrandsPluginEnable <= 0 || CVarHairStrandsGlobalEnable.GetValueOnAnyThread() <= 0) return false;
+	if (!IsGroomEnabled()) return false;
 
 	// Important:
 	// EHairStrandsShaderType::All: Mobile is excluded as we don't need any interpolation/simulation code for this. It only do rigid transformation. 
@@ -228,7 +223,7 @@ bool IsHairStrandsSupported(EHairStrandsShaderType Type, EShaderPlatform Platfor
 
 bool IsHairStrandsEnabled(EHairStrandsShaderType Type, EShaderPlatform Platform)
 {
-	const bool HairStrandsGlobalEnable = CVarHairStrandsGlobalEnable.GetValueOnAnyThread() > 0 && GHairStrandsPluginEnable > 0;
+	const bool HairStrandsGlobalEnable = IsGroomEnabled();
 	if (!HairStrandsGlobalEnable) return false;
 
 	// Important:
@@ -251,11 +246,6 @@ bool IsHairStrandsEnabled(EHairStrandsShaderType Type, EShaderPlatform Platform)
 	case EHairStrandsShaderType::All :		return HairStrandsGlobalEnable && (HairCardsEnable > 0 || HairMeshesEnable > 0 || HairStrandsEnable > 0) && !bIsMobile;
 	}
 	return false;
-}
-
-void SetHairStrandsEnabled(bool In)
-{
-	GHairStrandsPluginEnable = In ? 1 : 0;
 }
 
 bool IsHairStrandsBindingEnable()
@@ -283,16 +273,17 @@ void ConvertToExternalBufferWithViews(FRDGBuilder& GraphBuilder, FRDGBufferRef& 
 	OutBuffer.Format = Format;
 }
 
-void InternalCreateIndirectBufferRDG(FRDGBuilder& GraphBuilder, FRDGExternalBuffer& Out, const TCHAR* DebugName)
+void InternalCreateIndirectBufferRDG(FRDGBuilder& GraphBuilder, FRDGExternalBuffer& Out, const TCHAR* DebugName, const FName& OwnerName)
 {
 	FRDGBufferDesc Desc = FRDGBufferDesc::CreateBufferDesc(4, 4);
 	Desc.Usage |= BUF_DrawIndirect;
-	FRDGBufferRef Buffer = GraphBuilder.CreateBuffer(Desc, DebugName);
+	FRDGBufferRef Buffer = GraphBuilder.CreateBuffer(Desc, DebugName, ERDGBufferFlags::None);
+	Buffer->SetOwnerName(OwnerName);
 	AddClearUAVPass(GraphBuilder, GraphBuilder.CreateUAV(Buffer, PF_R32_UINT), 0u);
 	ConvertToExternalBufferWithViews(GraphBuilder, Buffer, Out, PF_R32_UINT);
 }
 
-void InternalCreateVertexBufferRDG(FRDGBuilder& GraphBuilder, uint32 ElementSizeInBytes, uint32 ElementCount, EPixelFormat Format, FRDGExternalBuffer& Out, const TCHAR* DebugName, bool bClearFloat=false)
+void InternalCreateVertexBufferRDG(FRDGBuilder& GraphBuilder, uint32 ElementSizeInBytes, uint32 ElementCount, EPixelFormat Format, FRDGExternalBuffer& Out, const TCHAR* DebugName, const FName& OwnerName, bool bClearFloat=false)
 {
 	FRDGBufferRef Buffer = nullptr;
 
@@ -307,6 +298,7 @@ void InternalCreateVertexBufferRDG(FRDGBuilder& GraphBuilder, uint32 ElementSize
 	// #hair_todo: Create this with a create+clear pass instead?
 	const FRDGBufferDesc Desc = FRDGBufferDesc::CreateBufferDesc(ElementSizeInBytes, ElementCount);
 	Buffer = GraphBuilder.CreateBuffer(Desc, DebugName, ERDGBufferFlags::MultiFrame);
+	Buffer->SetOwnerName(OwnerName);
 	if (bClearFloat)
 	{
 		AddClearUAVFloatPass(GraphBuilder, GraphBuilder.CreateUAV(Buffer, Format), 0.f);
@@ -318,8 +310,9 @@ void InternalCreateVertexBufferRDG(FRDGBuilder& GraphBuilder, uint32 ElementSize
 	ConvertToExternalBufferWithViews(GraphBuilder, Buffer, Out, Format);
 }
 
-FHairGroupPublicData::FHairGroupPublicData(uint32 InGroupIndex)
+FHairGroupPublicData::FHairGroupPublicData(uint32 InGroupIndex, const FName& InOwnerName)
 {
+	SetOwnerName(InOwnerName);
 	GroupIndex = InGroupIndex;
 	GroupControlTriangleStripVertexCount = 0;
 	ClusterCount = 0;
@@ -367,14 +360,14 @@ void FHairGroupPublicData::Allocate(FRDGBuilder& GraphBuilder)
 	
 	if (GUsingNullRHI || !bHasStrands) { return; }
 
-	InternalCreateIndirectBufferRDG(GraphBuilder, DrawIndirectBuffer, TEXT("Hair.Cluster_DrawIndirectBuffer"));
-	InternalCreateIndirectBufferRDG(GraphBuilder, DrawIndirectRasterComputeBuffer, TEXT("Hair.Cluster_DrawIndirectRasterComputeBuffer"));
+	InternalCreateIndirectBufferRDG(GraphBuilder, DrawIndirectBuffer, TEXT("Hair.Cluster_DrawIndirectBuffer"), GetOwnerName());
+	InternalCreateIndirectBufferRDG(GraphBuilder, DrawIndirectRasterComputeBuffer, TEXT("Hair.Cluster_DrawIndirectRasterComputeBuffer"), GetOwnerName());
 
-	InternalCreateVertexBufferRDG(GraphBuilder, sizeof(int32), ClusterCount * 6, EPixelFormat::PF_R32_SINT, ClusterAABBBuffer, TEXT("Hair.Cluster_ClusterAABBBuffer"));
-	InternalCreateVertexBufferRDG(GraphBuilder, sizeof(int32), 6, EPixelFormat::PF_R32_SINT, GroupAABBBuffer, TEXT("Hair.Cluster_GroupAABBBuffer"));
+	InternalCreateVertexBufferRDG(GraphBuilder, sizeof(int32), ClusterCount * 6, EPixelFormat::PF_R32_SINT, ClusterAABBBuffer, TEXT("Hair.Cluster_ClusterAABBBuffer"), GetOwnerName());
+	InternalCreateVertexBufferRDG(GraphBuilder, sizeof(int32), 6, EPixelFormat::PF_R32_SINT, GroupAABBBuffer, TEXT("Hair.Cluster_GroupAABBBuffer"), GetOwnerName());
 
-	InternalCreateVertexBufferRDG(GraphBuilder, sizeof(int32), VertexCount, EPixelFormat::PF_R32_UINT, CulledVertexIdBuffer, TEXT("Hair.Cluster_CulledVertexIdBuffer"));
-	InternalCreateVertexBufferRDG(GraphBuilder, sizeof(float), VertexCount, EPixelFormat::PF_R32_FLOAT, CulledVertexRadiusScaleBuffer, TEXT("Hair.Cluster_CulledVertexRadiusScaleBuffer"), true);
+	InternalCreateVertexBufferRDG(GraphBuilder, sizeof(int32), VertexCount, EPixelFormat::PF_R32_UINT, CulledVertexIdBuffer, TEXT("Hair.Cluster_CulledVertexIdBuffer"), GetOwnerName());
+	InternalCreateVertexBufferRDG(GraphBuilder, sizeof(float), VertexCount, EPixelFormat::PF_R32_FLOAT, CulledVertexRadiusScaleBuffer, TEXT("Hair.Cluster_CulledVertexRadiusScaleBuffer"), GetOwnerName(), true);
 
 	GraphBuilder.SetBufferAccessFinal(Register(GraphBuilder, DrawIndirectBuffer, ERDGImportedBufferFlags::None).Buffer, ERHIAccess::IndirectArgs);
 
@@ -435,8 +428,14 @@ bool IsHairStrandsVisibleInShadows(const FViewInfo& View, const FHairStrandsInst
 	bool bIsVisibleInShadow = false;
 	if (const FHairGroupPublicData* HairData = Instance.GetHairData())
 	{
-		const bool bIsStrands = HairData->LODIndex >= 0 && Instance.GetHairGeometry() == EHairGeometryType::Strands;
-		if (!bIsStrands)
+		// Run simulation if the instance is either Strands geometry, have simulation, or has global interpolation enabled.
+		// This ensures that the groom is correctly updated if visible in shadows
+		const bool bNeedUpdate = 
+			HairData->LODIndex >= 0 && 
+			(Instance.GetHairGeometry() == EHairGeometryType::Strands || 
+			 HairData->IsSimulationEnable(HairData->LODIndex) || 
+			 HairData->IsGlobalInterpolationEnable(HairData->LODIndex));
+		if (!bNeedUpdate)
 		{
 			return false;
 		}
@@ -504,7 +503,12 @@ bool IsHairStrandContinuousDecimationReorderingEnabled()
 
 bool IsHairVisibilityComputeRasterEnabled()
 {
-	return CVarHairStrandsVisibilityComputeRaster.GetValueOnAnyThread() > 0;
+	return CVarHairStrandsVisibilityComputeRaster.GetValueOnAnyThread() == 1;
+}
+
+bool IsHairVisibilityComputeRasterForwardEnabled(EShaderPlatform InPlatform)
+{
+	return IsFeatureLevelSupported(InPlatform, ERHIFeatureLevel::SM6) && CVarHairStrandsVisibilityComputeRaster.GetValueOnAnyThread() == 2;
 }
 
 bool IsHairVisibilityComputeRasterContinuousLODEnabled()
@@ -634,10 +638,16 @@ FHairStrandsBookmarkParameters CreateHairStrandsBookmarkParameters(FScene* Scene
 	const int32 ActiveInstanceCount = Scene->HairStrandsSceneData.RegisteredProxies.Num();
 	TBitArray InstancesVisibility(false, ActiveInstanceCount);
 
+	static bool bDebug = false;
+	if (Scene->HairStrandsSceneData.RegisteredProxies.Num() > 0)
+	{
+		bDebug = true;
+	}
+
 	FHairStrandsBookmarkParameters Out;
 	Out.VisibleInstances.Reserve(View.HairStrandsMeshElements.Num());
 
-	// 1. Add all visible strands instances
+	// 1. Strands - Add all visible strands instances
 	for (const FMeshBatchAndRelevance& MeshBatch : View.HairStrandsMeshElements)
 	{
 		check(MeshBatch.PrimitiveSceneProxy && MeshBatch.PrimitiveSceneProxy->ShouldRenderInMainPass());
@@ -653,12 +663,13 @@ FHairStrandsBookmarkParameters CreateHairStrandsBookmarkParameters(FScene* Scene
 	}
 	Out.InstanceCountPerType[HairInstanceCount_StrandsPrimaryView] = Out.VisibleInstances.Num();
 
-	// 2. Add all instances non-visible primary view(s) but visible in shadow view(s)
+	// 2. Strands - Add all instances non-visible primary view(s) but visible in shadow view(s)
 	if (IsHairStrandsNonVisibleShadowCastingEnable())
 	{
 		for (FHairStrandsInstance* Instance : Scene->HairStrandsSceneData.RegisteredProxies)
 		{
-			if (Instance->RegisteredIndex >= 0 && Instance->RegisteredIndex < ActiveInstanceCount && !InstancesVisibility[Instance->RegisteredIndex])
+			const bool bStrands = Instance->GetHairGeometry() == EHairGeometryType::Strands;
+			if (Instance->RegisteredIndex >= 0 && Instance->RegisteredIndex < ActiveInstanceCount && !InstancesVisibility[Instance->RegisteredIndex] && bStrands)
 			{
 				if (IsHairStrandsVisibleInShadows(View, *Instance))
 				{
@@ -669,7 +680,7 @@ FHairStrandsBookmarkParameters CreateHairStrandsBookmarkParameters(FScene* Scene
 	}
 	Out.InstanceCountPerType[HairInstanceCount_StrandsShadowView] = Out.VisibleInstances.Num() - Out.InstanceCountPerType[HairInstanceCount_StrandsPrimaryView];
 
-	// 3. Add all visible cards instances
+	// 3. Cards/Meshes - Add all visible cards instances
 	for (const FMeshBatchAndRelevance& MeshBatch : View.HairCardsMeshElements)
 	{
 		check(MeshBatch.PrimitiveSceneProxy && MeshBatch.PrimitiveSceneProxy->ShouldRenderInMainPass());
@@ -683,7 +694,24 @@ FHairStrandsBookmarkParameters CreateHairStrandsBookmarkParameters(FScene* Scene
 			}
 		}
 	}
-	Out.InstanceCountPerType[HairInstanceCount_CardsOrMeshes] = Out.VisibleInstances.Num() - Out.InstanceCountPerType[HairInstanceCount_StrandsShadowView];
+	Out.InstanceCountPerType[HairInstanceCount_CardsOrMeshesPrimaryView] = Out.VisibleInstances.Num() - Out.InstanceCountPerType[HairInstanceCount_StrandsShadowView];
+
+	// 4. Cards/Meshes - Add all instances non-visible primary view(s) but visible in shadow view(s)
+	if (IsHairStrandsNonVisibleShadowCastingEnable())
+	{
+		for (FHairStrandsInstance* Instance : Scene->HairStrandsSceneData.RegisteredProxies)
+		{
+			const bool bCardsOrMeshes = Instance->GetHairGeometry() == EHairGeometryType::Cards || Instance->GetHairGeometry() == EHairGeometryType::Meshes;
+			if (Instance->RegisteredIndex >= 0 && Instance->RegisteredIndex < ActiveInstanceCount && !InstancesVisibility[Instance->RegisteredIndex] && bCardsOrMeshes)
+			{
+				if (IsHairStrandsVisibleInShadows(View, *Instance))
+				{
+					Out.VisibleInstances.Add(Instance);
+				}
+			}
+		}
+	}
+	Out.InstanceCountPerType[HairInstanceCount_CardsOrMeshesShadowView] = Out.VisibleInstances.Num() - Out.InstanceCountPerType[HairInstanceCount_CardsOrMeshesPrimaryView];
 
 	Out.ShaderPrintData			= ShaderPrint::IsEnabled(View.ShaderPrintData) ? &View.ShaderPrintData : nullptr;
 	Out.ShaderMap				= View.ShaderMap;
@@ -693,6 +721,7 @@ FHairStrandsBookmarkParameters CreateHairStrandsBookmarkParameters(FScene* Scene
 	Out.ViewUniqueID			= View.ViewState ? View.ViewState->UniqueID : ~0;
 	Out.SceneColorTexture		= nullptr;
 	Out.bHzbRequest				= false; // Out.HasInstances() && IsHairStrandsEnabled(EHairStrandsShaderType::Strands, View.GetShaderPlatform());
+	Out.Scene					= Scene;
 
 	// Sanity check
 	check(Out.Instances->Num() >= Out.VisibleInstances.Num());

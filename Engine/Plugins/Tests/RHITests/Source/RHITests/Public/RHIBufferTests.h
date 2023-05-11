@@ -5,8 +5,6 @@
 #include "RHITestsCommon.h"
 #include "Async/ParallelFor.h"
 
-PRAGMA_DISABLE_OPTIMIZATION
-
 class FRHIBufferTests
 {
 	// Copies data in the specified vertex buffer back to the CPU, and passes a pointer to that data to the provided verification lambda.
@@ -82,7 +80,7 @@ class FRHIBufferTests
 		});
 
 		FString ClearValueStr;
-		if (TAreTypesEqual<ValueType, FVector4f>::Value)
+		if constexpr (std::is_same_v<ValueType, FVector4f>)
 		{
 			ClearValueStr = FString::Printf(TEXT("%f %f %f %f"), ClearValue.X, ClearValue.Y, ClearValue.Z, ClearValue.W);
 		}
@@ -354,7 +352,7 @@ public:
 
 	static bool Test_RHICreateBuffer_Parallel(FRHICommandListImmediate& RHICmdList)
 	{
-		if (!GRHISupportsMultithreadedResources)
+		if (!GRHISupportsMultithreadedResources || RHICmdList.Bypass())
 		{
 			return true;
 		}
@@ -442,5 +440,3 @@ public:
 		});
 	}
 };
-
-PRAGMA_ENABLE_OPTIMIZATION

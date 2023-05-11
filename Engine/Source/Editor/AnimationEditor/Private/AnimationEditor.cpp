@@ -536,8 +536,7 @@ TSharedPtr<SDockTab> FAnimationEditor::OpenNewAnimationDocumentTab(UAnimationAss
 		}
 
 		// let the asset family know too
-		TSharedRef<IAssetFamily> AssetFamily = PersonaModule.CreatePersonaAssetFamily(InAnimAsset);
-		AssetFamily->RecordAssetOpened(FAssetData(InAnimAsset));
+		PersonaModule.RecordAssetOpened(FAssetData(InAnimAsset));
 	}
 
 	return OpenedTab;
@@ -671,7 +670,7 @@ void FAnimationEditor::OnExportToFBX(const EExportSourceOption Option)
 	}
 	else if (Option == EExportSourceOption::CurrentAnimation_PreviewMesh)
 	{
-		TArray<TWeakObjectPtr<UObject>> Skeletons;
+		TArray<TSoftObjectPtr<UObject>> Skeletons;
 		Skeletons.Add(PersonaToolkit->GetSkeleton());
 		AnimationEditorUtils::CreateAnimationAssets(Skeletons, UAnimSequence::StaticClass(), FString("_PreviewMesh"), FAnimAssetCreated::CreateSP(this, &FAnimationEditor::ExportToFBX, true), AnimationAsset, true);
 	}

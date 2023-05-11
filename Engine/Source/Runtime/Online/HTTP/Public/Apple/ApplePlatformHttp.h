@@ -6,7 +6,7 @@
 /**
  * Platform specific Http implementations
  */
-class FApplePlatformHttp : public FGenericPlatformHttp
+class HTTP_API FApplePlatformHttp : public FGenericPlatformHttp
 {
 public:
 
@@ -36,6 +36,16 @@ public:
 	 * @return request object
 	 */
 	static IHttpRequest* ConstructRequest();
+
+private:
+	/** Flag to allow fall back to use NSUrlConnection instead of NSUrlSession. Assigned from commandline */
+	static inline bool bUseNSUrlSession = false;
+
+    /** Session used to create Apple based requests */
+    static inline NSURLSession* Session = nil;
+
+	static void InitWithNSUrlSession();
+	static void ShutdownWithNSUrlSession();
 };
 
 

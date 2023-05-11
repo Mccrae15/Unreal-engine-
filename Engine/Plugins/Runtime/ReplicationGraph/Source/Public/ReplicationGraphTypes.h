@@ -2,28 +2,33 @@
 
 #pragma once
 
-#include "UObject/Package.h"
+#include "Containers/StaticArray.h"
+#include "GameFramework/WorldSettings.h"
+#include "Net/DataBunch.h"
+#include "ProfilingDebugging/CsvProfiler.h"
+#include "Templates/Greater.h"
+#include "ReplicationGraphTypes.generated.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "EngineGlobals.h"
+#include "UObject/Package.h"
 #include "Engine/ActorChannel.h"
 #include "Engine/LocalPlayer.h"
-#include "GameFramework/Actor.h"
-#include "Misc/ConfigCacheIni.h"
-#include "Misc/EnumClassFlags.h"
-#include "Net/DataBunch.h"
-#include "UObject/ObjectKey.h"
-#include "UObject/UObjectHash.h"
-#include "ProfilingDebugging/CsvProfiler.h"
 #include "Engine/NetConnection.h"
-#include "HAL/LowLevelMemTracker.h"
-#include "ReplicationGraphTypes.generated.h"
+#include "Misc/ConfigCacheIni.h"
+#endif
 
 class AActor;
 class AController;
+class UActorChannel;
 class UNetConnection;
 class UNetReplicationGraphConnection;
 class UReplicationGraph;
+class UReplicationGraphNode;
 
 struct FActorDestructionInfo;
+struct FReplicationGraphDebugInfo;
+struct FConnectionGatherActorListParameters;
 
 REPLICATIONGRAPH_API DECLARE_LOG_CATEGORY_EXTERN( LogReplicationGraph, Log, All );
 
@@ -235,16 +240,6 @@ struct REPLICATIONGRAPH_API FActorRepListRefView
 	{
 	}
 
-	UE_DEPRECATED(4.27, "This constructor is deprecated since the class does not hold FActorRepList's anymore. ")
-	FActorRepListRefView(FActorRepList& InRepList) 
-	{ 
-		RepList.Reserve(InRepList.Num);
-		for (int32 i = 0; i < InRepList.Num; ++i)
-		{
-			RepList.Add(InRepList.Data[i]);
-		}
-	}
-
 	/** Empties the array but does not deallocate the internal memory. Will be resized if the specified max size is bigger than the current max. */
 	void Reset(int32 ExpectedMaxSize=0)
 	{
@@ -255,12 +250,6 @@ struct REPLICATIONGRAPH_API FActorRepListRefView
 	void Reserve(int32 Size)
 	{
 		RepList.Reserve(Size);
-	}
-
-	UE_DEPRECATED(4.27, "PrepareForWrite is not needed before calling operations on the RepList anymore. Use Reserve or Reset if you want to preallocate the array to a specific size")
-	void PrepareForWrite(bool bResetContent=false)
-	{
-		// empty
 	}
 
 	bool ConditionalAdd(const FActorRepListType& NewElement)
@@ -276,12 +265,6 @@ struct REPLICATIONGRAPH_API FActorRepListRefView
 	void Add(const FActorRepListType& NewElement)
 	{
 		RepList.Add(NewElement);
-	}
-
-	UE_DEPRECATED(4.27, "Remove has been deprecated in favor of RemoveSlow/RemoveFast. RemoveFast is the default recommendation unless you need the list order to be stable or are removing elements inside a RangedFor iteration loop.")
-	bool Remove(const FActorRepListType& ElementToRemove)
-	{
-		return RemoveSlow(ElementToRemove);
 	}
 
 	/** Removes the element quickly but changes the list order */
@@ -337,12 +320,6 @@ struct REPLICATIONGRAPH_API FActorRepListRefView
 	TArray<FActorRepListType>::RangedForIteratorType end()				{ return RepList.end(); }
 	TArray<FActorRepListType>::RangedForConstIteratorType end() const	{ return RepList.end(); }
 
-	UE_DEPRECATED(4.27, "IsValid is deprecated now that you don't need to call PrepareForWrite before doing operations on the list. Use IsEmpty() if you need to skip doing operations on empty lists")
-	bool IsValid() const 
-	{ 
-		return true; 
-	}
-
 	bool IsEmpty() const
 	{
 		return RepList.Num() <= 0;
@@ -359,12 +336,6 @@ struct REPLICATIONGRAPH_API FActorRepListRefView
 		RepList.Empty();
 	}
 	
-	UE_DEPRECATED(4.27, "ResetToNull was renamed to TearDown")
-	void ResetToNull()
-	{ 
-		TearDown();
-	}
-
 	int32 IndexOf(const FActorRepListType& Value) const
 	{
 		return RepList.IndexOfByKey(Value);
@@ -415,12 +386,6 @@ private:
 
 /** A read only, non owning (ref counting) view to an actor replication list: essentially a raw pointer and the category of the list. These are only created *from* FActorRepListRefView */
 
-struct UE_DEPRECATED(4.27, "Replace this struct with the new FActorRepListConstView struct.")  FActorRepListRawView : public TActorRepListViewBase<FActorRepList*>
-{
-	/** Standard ctor: make raw view from ref view */
-	REPLICATIONGRAPH_API FActorRepListRawView(const FActorRepListRefView& Source) { /*deprecated*/ }
-};
-
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	// Intended to be called from immediate mode window while debugging
 	extern "C" DLLEXPORT void PrintRepListDetails(int32 PoolSize, int32 BlockIdx, int32 ListIdx);
@@ -429,9 +394,194 @@ struct UE_DEPRECATED(4.27, "Replace this struct with the new FActorRepListConstV
 	void PrintRepListStatsAr(int32 mode, FOutputDevice& Ar=*GLog);	
 #endif
 
-/** To be called by projects to preallocate replication lists. This isn't strictly necessary: lists will be allocated on demand as well. */
-UE_DEPRECATED(4.27, "The RepList allocator is not used anymore so preallocating is not needed.")
-REPLICATIONGRAPH_API void PreAllocateRepList(int32 ListSize, int32 NumLists);
+
+// --------------------------------------------------------------------------------------------------------------------------------------------
+// --------------------------------------------------------------------------------------------------------------------------------------------
+// Gathering Parameters
+// --------------------------------------------------------------------------------------------------------------------------------------------
+// --------------------------------------------------------------------------------------------------------------------------------------------
+
+// This represents "the list of gathered lists". This is what we push down the Replication Graph and nodes will either Push/Pop List Categories or will add their Replication Lists.
+struct REPLICATIONGRAPH_API FGatheredReplicationActorLists
+{
+	void AddReplicationActorList(const FActorRepListRefView& List, EActorRepListTypeFlags Flags = EActorRepListTypeFlags::Default)
+	{
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+		if (CVar_RepGraph_Verify)
+			List.VerifyContents_Slow();
+#endif
+		if (List.Num() > 0)
+		{
+			ReplicationLists[(uint32)Flags].Emplace(FActorRepListConstView(List));
+			CachedNum++;
+		}
+	}
+
+	FORCEINLINE void Reset()
+	{
+		for (uint32 i = (uint32)EActorRepListTypeFlags::Default; i < (uint32)EActorRepListTypeFlags::Max; ++i)
+		{
+			ReplicationLists[i].Reset();
+		}
+		CachedNum = 0;
+	}
+	FORCEINLINE int32 NumLists() const
+	{
+		return CachedNum;
+	}
+
+	FORCEINLINE const TArray<FActorRepListConstView>& GetLists(EActorRepListTypeFlags ListFlags) const
+	{
+		return ReplicationLists[(uint32)ListFlags];
+	}
+	FORCEINLINE bool ContainsLists(EActorRepListTypeFlags Flags) const
+	{
+		return ReplicationLists[(uint32)Flags].Num() > 0;
+	}
+
+private:
+
+	TStaticArray< TArray<FActorRepListConstView>, (uint32)EActorRepListTypeFlags::Max > ReplicationLists;
+	int32 CachedNum = 0;
+};
+
+// --------------------------------------------------------------------------------------------------------------------------------------------
+// --------------------------------------------------------------------------------------------------------------------------------------------
+// NewReplicatedActorInfo
+// --------------------------------------------------------------------------------------------------------------------------------------------
+// --------------------------------------------------------------------------------------------------------------------------------------------
+
+/** This is the struct we use to push new replication actors into the graph. "New" doesn't mean "newly spawned" it means "new to the graph". FIXME: Please suggest a better name! */
+struct FNewReplicatedActorInfo
+{
+	explicit FNewReplicatedActorInfo(const FActorRepListType& InActor) : Actor(InActor), Class(InActor->GetClass())
+	{
+		StreamingLevelName = GetStreamingLevelNameOfActor(Actor);
+	}
+
+	AActor* GetActor() const { return Actor; }
+
+	REPLICATIONGRAPH_API static FName GetStreamingLevelNameOfActor(const AActor* Actor);
+
+	FActorRepListType Actor;
+	FName StreamingLevelName;
+	UClass* Class;
+};
+
+// --------------------------------------------------------------------------------------------------------------------------------------------
+// --------------------------------------------------------------------------------------------------------------------------------------------
+// Level based actor lists 
+// --------------------------------------------------------------------------------------------------------------------------------------------
+// --------------------------------------------------------------------------------------------------------------------------------------------
+
+/**
+* Holds a list of actors grouped by their streaming level
+*/
+struct REPLICATIONGRAPH_API FStreamingLevelActorListCollection
+{
+	void AddActor(const FNewReplicatedActorInfo& ActorInfo);
+
+	/** 
+	* Removes the actor but keep the actor order list intact 
+	* 
+	* @param ActorInfo  The actor to be removed
+	* @param bWarnIfNotFound When true we log a warning when the actor was not in any list
+	* @param Outer Optional pointer to the owner of the list if you want to output the owner name in any log messages
+	*/
+	bool RemoveActor(const FNewReplicatedActorInfo& ActorInfo, bool bWarnIfNotFound, UObject* Outer=nullptr);
+
+	/**
+	* Removes the actor but using the faster swap operation that change the ordering of the list
+	*
+	* @param ActorInfo  The actor to be removed
+	* @param Outer Optional pointer to the owner of the list if you want to output the owner name in any log messages
+	*/
+	bool RemoveActorFast(const FNewReplicatedActorInfo& ActorInfo, UObject* Outer=nullptr);
+
+	void Reset();
+
+	/** Add to the Params' gather list the list of actors for levels that are visible to that connection */
+	void Gather(const FConnectionGatherActorListParameters& Params) const;
+
+	/** Add to the passed gather list the list of actors that are visible to the connection */
+	void Gather(const UNetReplicationGraphConnection& ConnectionManager, FGatheredReplicationActorLists& OutGatheredList) const;
+
+	/** Add to the passed gather list all list of actors held */
+	void AppendAllLists(FGatheredReplicationActorLists& OutGatheredList) const;
+
+	/** Is this actor held in one of the actor lists */
+	bool Contains(const FNewReplicatedActorInfo& ActorInfo) const;
+
+	void DeepCopyFrom(const FStreamingLevelActorListCollection& Source);
+	void GetAll_Debug(TArray<FActorRepListType>& OutArray) const;
+	void Log(FReplicationGraphDebugInfo& DebugInfo) const;
+	
+	int32 NumLevels() const { return StreamingLevelLists.Num(); }
+	
+	void TearDown();
+
+	struct FStreamingLevelActors
+	{
+		FStreamingLevelActors(FName InName) : StreamingLevelName(InName)  { repCheck(InName != NAME_None); }
+
+		FName StreamingLevelName;
+		FActorRepListRefView ReplicationActorList;
+		bool operator==(const FName& InName) const { return InName == StreamingLevelName; };
+	};
+
+	/** Lists for streaming levels. Actors that "came from" streaming levels go here. These lists are only returned if the connection has their streaming level loaded. */
+	static const int32 NumInlineAllocations = 4;
+	TArray<FStreamingLevelActors, TInlineAllocator<NumInlineAllocations>> StreamingLevelLists;
+
+	void CountBytes(FArchive& Ar) const
+	{
+		StreamingLevelLists.CountBytes(Ar);
+
+		for (const FStreamingLevelActors& List : StreamingLevelLists)
+		{
+			List.ReplicationActorList.CountBytes(Ar);
+		}
+	}
+};
+
+
+/**
+* Holds a list of actors grouped by the permanent level or their streaming level
+*/
+struct REPLICATIONGRAPH_API FLevelBasedActorList
+{
+	void AddNetworkActor(AActor* NetActor);
+	bool RemoveNetworkActor(const FNewReplicatedActorInfo& NetActor);
+	bool RemoveNetworkActor(AActor* NetActor)
+	{
+		FNewReplicatedActorInfo ActorInfo(NetActor);
+		return RemoveNetworkActor(ActorInfo);
+	}
+
+	bool RemoveNetworkActorOrdered(AActor* NetActor);
+
+	void Reset();
+
+	bool Contains(AActor* NetActor) const;
+
+	/** Gather the list of actors visible to this connection and add them to the gather list */
+	void Gather(const FConnectionGatherActorListParameters& Params) const;
+	void Gather(const UNetReplicationGraphConnection& ConnectionManager, FGatheredReplicationActorLists& OutGatheredList) const;
+
+	/** Add a reference to all the lists held here to the gather list */
+	void AppendAllLists(FGatheredReplicationActorLists& OutGatheredList) const;
+
+	/** Returns the list of all actors held by the permenant and streaming level list. Prefer using AppendAllLists to prevent copying TArrays for nothing. */
+	void GetAllActors(TArray<AActor*>& OutAllActors) const;
+
+	void CountBytes(FArchive& Ar) const;
+
+private:
+
+	FActorRepListRefView PermanentLevelActors;
+
+	FStreamingLevelActorListCollection StreamingLevelActors;
+};
 
 // --------------------------------------------------------------------------------------------------------------------------------------------
 // --------------------------------------------------------------------------------------------------------------------------------------------
@@ -600,17 +750,30 @@ struct FGlobalActorReplicationInfo
 		ParentActorList.CountBytes(Ar);
 	}
 
+	/** Gather the list of dependent actors filtered by the connection's level visibility */
+	inline void GatherDependentActorLists(const UNetReplicationGraphConnection& ConnectionManager, FGatheredReplicationActorLists& OutGatheredList)
+	{
+		DependentActorList.Gather(ConnectionManager, OutGatheredList);
+	}
+
 	typedef TArray<FActorRepListType> FDependantListType;
-	const FGlobalActorReplicationInfo::FDependantListType& GetDependentActorList() { return DependentActorList; }
+
+	UE_DEPRECATED(5.2, "The dependent actors are exposed via GatherDependentActorLists now.")
+	const FGlobalActorReplicationInfo::FDependantListType& GetDependentActorList()
+	{
+		
+		static FDependantListType EmptyList;
+		return EmptyList;
+	}
 
 	friend struct FGlobalActorReplicationInfoMap;
 
 private:
-	/** When this actor replicates, we replicate these actors immediately afterwards (they are not gathered/prioritized/etc) */
-	FDependantListType DependentActorList;
+	/** When this actor replicates, we replicate these actors immediately afterwards if the client has their level loaded too and the net updated frequency is not too quick */
+	FLevelBasedActorList DependentActorList;
 
 	/** When this actor is added to the dependent list of a parent, track the parent here */
-	FDependantListType ParentActorList;
+	TArray<AActor*> ParentActorList;
 };
 
 /** Templatd struct for mapping UClasses to some data type. The main things this provides is that if a UClass* was not explicitly added, it will climb the class heirachy and find the best match (and then store this for faster lookup next time) */
@@ -803,35 +966,7 @@ struct FGlobalActorReplicationInfoMap
 	}
 
 	/** Removes actor data from map */
-	int32 Remove(const FActorRepListType& RemovedActor)
-	{
-		// Clean the references to the removed actor from its dependency chain.
-		if (FGlobalActorReplicationInfo* RemovedActorInfo = Find(RemovedActor))
-		{
-			// Remove child dependents
-			for (AActor* ChildActor : RemovedActorInfo->DependentActorList)
-			{
-				if (FGlobalActorReplicationInfo* ChildInfo = Find(ChildActor))
-				{
-					ChildInfo->ParentActorList.RemoveSingleSwap(RemovedActor);
-				}
-			}
-
-			// Remove parent dependents
-			for (AActor* ParentActor : RemovedActorInfo->ParentActorList)
-			{
-				if (FGlobalActorReplicationInfo* ParentInfo = Find(ParentActor))
-				{
-					ParentInfo->DependentActorList.RemoveSingleSwap(RemovedActor);
-				}
-			}
-
-			RemovedActorInfo->DependentActorList.Reset();
-			RemovedActorInfo->ParentActorList.Reset();
-		}
-
-		return ActorMap.Remove(RemovedActor);
-	}
+	REPLICATIONGRAPH_API int32 Remove(const FActorRepListType& RemovedActor);
 
 	/** Returns ClassInfo for a given class. */
 	FORCEINLINE FClassReplicationInfo& GetClassInfo(UClass* Class) { return ClassMap.GetChecked(Class); }
@@ -870,15 +1005,30 @@ struct FGlobalActorReplicationInfoMap
 		AllWarnings = WarnAlreadyDependant | WarnParentNotRegistered
 	};
 
+	/**
+	* AddDependentActor makes a dependent actor (the child) considered for replication whenever the parent actor is replicated to a client.
+	* When the parent is replicated, the child actor will be also replicated even if it is outside it's net cull distance.
+	* The child will NOT be replicated if it has no data to send or the net update frequency is too quick since the last netupdate.
+	* Note that this link is one way only, meaning if a child replicates by itself it will not force it's parents to be replicated at the same time.
+	* When setting a dependent link, it is the caller's responsibility to remove the dependency if one of the actor gets destroyed.
+	* 
+	* @param Parent Actor that will try to also replicate the child.
+	* @param Child The actor that we will try to replicate when the parent actor is replicated.
+	* @param WarnFlag Set a flag to trigger an ensure and detect when two actors get set dependent multiple times.
+	*/
 	REPLICATIONGRAPH_API void AddDependentActor(AActor* Parent, AActor* Child, FGlobalActorReplicationInfoMap::EWarnFlag WarnFlag = FGlobalActorReplicationInfoMap::EWarnFlag::None);
 
+	/** 
+	* RemoveDependentActor will remove the given child actor from the parent's dependent list.
+	* This will stop making the child actor try to be replicated whenever the parent actor is
+	*/
 	void RemoveDependentActor(AActor* Parent, AActor* Child)
 	{
 		if (Parent && Child)
 		{
 			if (FGlobalActorReplicationInfo* ParentInfo = Find(Parent))
 			{
-				ParentInfo->DependentActorList.RemoveSingleSwap(Child);
+				ParentInfo->DependentActorList.RemoveNetworkActor(Child);
 			}
 
 			if (FGlobalActorReplicationInfo* ChildInfo = Find(Child))
@@ -888,33 +1038,54 @@ struct FGlobalActorReplicationInfoMap
 		}
 	}
 
-	void RemoveAllActorDependancies(AActor* MainActor)
+	void RemoveAllActorDependencies(AActor* MainActor, FGlobalActorReplicationInfo* MainActorInfo)
 	{
-		FGlobalActorReplicationInfo* MainActorInfo = Find(MainActor);
-		if (MainActor == nullptr)
+		check(MainActorInfo);
+
+		FGatheredReplicationActorLists ListContainer;
+		MainActorInfo->DependentActorList.AppendAllLists(ListContainer);
+
+		// Remove the actor from his child dependents
+		const TArray<FActorRepListConstView>& DependentActorLists = ListContainer.GetLists(EActorRepListTypeFlags::Default);
+		for (const FActorRepListConstView& DependentActorList : DependentActorLists)
 		{
-			return;
+			for (AActor* DependentActor : DependentActorList)
+			{
+				if (FGlobalActorReplicationInfo* ChildInfo = Find(DependentActor))
+				{
+					ChildInfo->ParentActorList.RemoveSingleSwap(MainActor);
+				}
+			}
 		}
-		
-		// Remove this actor from all its parents
-		for (FActorRepListType ParentActor : MainActorInfo->ParentActorList)
+
+		// Remove the actor from his parents
+		FNewReplicatedActorInfo LevelActorInfo(MainActor);
+
+		for (AActor* ParentActor : MainActorInfo->ParentActorList)
 		{
 			if (FGlobalActorReplicationInfo* ParentInfo = Find(ParentActor))
 			{
-				ParentInfo->DependentActorList.RemoveSingleSwap(MainActor);
+				ParentInfo->DependentActorList.RemoveNetworkActor(LevelActorInfo);
 			}
 		}
-		MainActorInfo->ParentActorList.Reset();
 
-        // Remove all dependant childs from this actor
-		for (FActorRepListType ChildActor : MainActorInfo->DependentActorList)
-		{
-			if (FGlobalActorReplicationInfo* ChildInfo = Find(ChildActor))
-			{
-				ChildInfo->ParentActorList.RemoveSingleSwap(MainActor);
-			}
-		}
 		MainActorInfo->DependentActorList.Reset();
+		MainActorInfo->ParentActorList.Reset();
+	}
+
+	UE_DEPRECATED(5.2, "Fixed a typo. Use RemoveAllActorDependencies instead")
+	void RemoveAllActorDependancies(AActor* MainActor)
+	{
+		RemoveAllActorDependencies(MainActor);
+	}
+
+	void RemoveAllActorDependencies(AActor* MainActor)
+	{
+		FGlobalActorReplicationInfo* MainActorInfo = Find(MainActor);
+		if (MainActor && MainActorInfo)
+		{
+			RemoveAllActorDependencies(MainActor, MainActorInfo);
+		}
 	}
 
 private:
@@ -1230,57 +1401,6 @@ struct FPrioritizedRepList
 	TUniquePtr<TArray<FSkippedActorFullDebugDetails> > SkippedDebugDetails;
 #endif
 };
-
-// --------------------------------------------------------------------------------------------------------------------------------------------
-// --------------------------------------------------------------------------------------------------------------------------------------------
-// Gathering Parameters
-// --------------------------------------------------------------------------------------------------------------------------------------------
-// --------------------------------------------------------------------------------------------------------------------------------------------
-
-// This represents "the list of gathered lists". This is what we push down the Replication Graph and nodes will either Push/Pop List Categories or will add their Replication Lists.
-struct REPLICATIONGRAPH_API FGatheredReplicationActorLists
-{
-	void AddReplicationActorList(const FActorRepListRefView& List, EActorRepListTypeFlags Flags = EActorRepListTypeFlags::Default)
-	{
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-		if (CVar_RepGraph_Verify)
-			List.VerifyContents_Slow();
-#endif
-		if (List.Num() > 0)
-		{
-			ReplicationLists[(uint32)Flags].Emplace(FActorRepListConstView(List));
-			CachedNum++;
-		}
-	}
-
-	FORCEINLINE void Reset()
-	{ 
-		for (uint32 i = (uint32)EActorRepListTypeFlags::Default; i < (uint32)EActorRepListTypeFlags::Max; ++i)
-		{
-			ReplicationLists[i].Reset();
-		}
-		CachedNum=0; 
-	}
-	FORCEINLINE int32 NumLists() const 
-	{ 
-		return CachedNum; 
-	}
-	
-	FORCEINLINE const TArray<FActorRepListConstView>& GetLists(EActorRepListTypeFlags ListFlags) const
-	{ 
-		return ReplicationLists[(uint32)ListFlags];
-	}
-	FORCEINLINE bool ContainsLists(EActorRepListTypeFlags Flags) const
-	{ 
-		return ReplicationLists[(uint32)Flags].Num() > 0;
-	}
-	
-private:
-
-	TStaticArray< TArray<FActorRepListConstView>, (uint32)EActorRepListTypeFlags::Max > ReplicationLists;
-	int32 CachedNum = 0;
-};
-
 // --------------------------------------------------------------------------------------------------------------------------------------------
 // --------------------------------------------------------------------------------------------------------------------------------------------
 // Connection Gather Actor List Parameters
@@ -1297,7 +1417,7 @@ typedef TArray<FNetViewer, FReplicationGraphConnectionsAllocator> FNetViewerArra
 // Parameter structure for what we actually pass down during the Gather phase.
 struct FConnectionGatherActorListParameters
 {
-	FConnectionGatherActorListParameters(FNetViewerArray& InViewers, UNetReplicationGraphConnection& InConnectionManager, TSet<FName>& InClientVisibleLevelNamesRef, uint32 InReplicationFrameNum, FGatheredReplicationActorLists& InOutGatheredReplicationLists)
+	FConnectionGatherActorListParameters(FNetViewerArray& InViewers, UNetReplicationGraphConnection& InConnectionManager, const TSet<FName>& InClientVisibleLevelNamesRef, uint32 InReplicationFrameNum, FGatheredReplicationActorLists& InOutGatheredReplicationLists)
 		: Viewers(InViewers), ConnectionManager(InConnectionManager), ReplicationFrameNum(InReplicationFrameNum), OutGatheredReplicationLists(InOutGatheredReplicationLists), ClientVisibleLevelNamesRef(InClientVisibleLevelNamesRef)
 	{
 	}
@@ -1332,34 +1452,6 @@ struct FConnectionGatherActorListParameters
 private:
 
 	mutable FName LastCheckedVisibleLevelName;
-};
-
-// --------------------------------------------------------------------------------------------------------------------------------------------
-// --------------------------------------------------------------------------------------------------------------------------------------------
-// NewReplicatedActorInfo
-// --------------------------------------------------------------------------------------------------------------------------------------------
-// --------------------------------------------------------------------------------------------------------------------------------------------
-
-/** This is the struct we use to push new replication actors into the graph. "New" doesn't mean "newly spawned" it means "new to the graph". FIXME: Please suggest a better name! */
-struct FNewReplicatedActorInfo
-{
-	explicit FNewReplicatedActorInfo(const FActorRepListType& InActor) : Actor(InActor), Class(InActor->GetClass())
-	{
-		StreamingLevelName = GetStreamingLevelNameOfActor(Actor);
-	}
-
-	AActor* GetActor() const { return Actor; }
-
-	static FORCEINLINE FName GetStreamingLevelNameOfActor(const AActor* Actor)
-	{
-		ULevel* Level = Actor ? Cast<ULevel>(Actor->GetOuter()) : nullptr;
-		return (Level && Level->IsPersistentLevel() == false) ? Level->GetOutermost()->GetFName() : NAME_None;
-	}
-
-
-	FActorRepListType Actor;
-	FName StreamingLevelName;
-	UClass* Class;
 };
 
 // --------------------------------------------------------------------------------------------------------------------------------------------
@@ -1494,15 +1586,7 @@ struct FReplicationGraphCSVTracker
 
 	FRIEND_ENUM_CLASS_FLAGS(EActorFlags)
 
-	FReplicationGraphCSVTracker()
-		: EverythingElse(TEXT("Other"))
-		, EverythingElse_FastPath(TEXT("OtherFastPath"))
-		, ActorDiscovery(TEXT("ActorDiscovery"))
-	{
-		ResetTrackedClasses();
-
-		GConfig->GetBool(TEXT("ReplicationGraphCSVTracker"), TEXT("bReportUntrackedClasses"), bReportUntrackedClasses, GEngineIni);
-	}
+	REPLICATIONGRAPH_API FReplicationGraphCSVTracker();
 
 	void TearDown()
 	{
@@ -1907,7 +1991,7 @@ ENUM_CLASS_FLAGS(FReplicationGraphCSVTracker::EActorFlags);
 struct FActorConnectionPair
 {
 	FActorConnectionPair() { }
-	FActorConnectionPair(AActor* InActor, UNetConnection* InConnection) : Actor(InActor), Connection(InConnection) { }
+	FActorConnectionPair(AActor* InActor, UNetConnection* InConnection);
 
 	TWeakObjectPtr<AActor> Actor;
 	TWeakObjectPtr<UNetConnection> Connection;
@@ -1935,23 +2019,23 @@ public:
 	FActorRepListStatCollector() {}
 
 	/** Collect stats on a single FActorRepList */
-	void VisitRepList(const class UReplicationGraphNode* NodeToVisit, const FActorRepListRefView& RepList);
+	void VisitRepList(const UReplicationGraphNode* NodeToVisit, const FActorRepListRefView& RepList);
 
 	/** Collect stats on a collection of FActorRepLists */
-	void VisitStreamingLevelCollection(const class UReplicationGraphNode* NodeToVisit, const struct FStreamingLevelActorListCollection& StreamingLevelList);
+	void VisitStreamingLevelCollection(const UReplicationGraphNode* NodeToVisit, const struct FStreamingLevelActorListCollection& StreamingLevelList);
 
 	/** Collect stats for FActorRepLists not held by a node */
 	void VisitExplicitStreamingLevelList(FName ListOwnerName, FName StreamLevelName, const FActorRepListRefView& RepList);
 
 	/** Prevents the node from being visited twice in case it's shared multiple times */
-	void FlagNodeVisited(const class UReplicationGraphNode* NodeToVisit);
+	void FlagNodeVisited(const UReplicationGraphNode* NodeToVisit);
 
 	/** Print the statistics previously collected */
 	void PrintCollectedData(FOutputDevice& Ar);
 
 private:
 
-	bool WasNodeVisited(const class UReplicationGraphNode* NodeToVisit);
+	bool WasNodeVisited(const UReplicationGraphNode* NodeToVisit);
 
 private:
 

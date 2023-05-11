@@ -5,13 +5,14 @@
 =============================================================================*/
 
 #include "Engine/TextureRenderTargetCube.h"
-#include "RenderUtils.h"
+#include "HAL/LowLevelMemStats.h"
+#include "RenderingThread.h"
 #include "TextureResource.h"
+#include "UObject/UnrealType.h"
 #include "UnrealEngine.h"
 #include "DeviceProfiles/DeviceProfile.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
 #include "Engine/TextureCube.h"
-#include "ClearQuad.h"
 #if WITH_EDITOR
 #include "Components/SceneCaptureComponentCube.h"
 #include "UObject/UObjectIterator.h"
@@ -248,6 +249,8 @@ UTextureCube* UTextureRenderTargetCube::ConstructTextureCube(
  */
 void FTextureRenderTargetCubeResource::InitDynamicRHI()
 {
+	LLM_SCOPED_TAG_WITH_OBJECT_IN_SET(Owner->GetOutermost(), ELLMTagSet::Assets);
+
 	if(Owner->SizeX > 0)
 	{
 		bool bIsSRGB = true;
@@ -338,6 +341,10 @@ void FTextureRenderTargetCubeResource::ReleaseDynamicRHI()
  */
 void FTextureRenderTargetCubeResource::UpdateDeferredResource(FRHICommandListImmediate& RHICmdList, bool bClearRenderTarget/*=true*/)
 {
+	LLM_SCOPED_TAG_WITH_OBJECT_IN_SET(Owner->GetOutermost(), ELLMTagSet::Assets);
+
+	RemoveFromDeferredUpdateList();
+
 	if (!bClearRenderTarget)
 	{
 		return;

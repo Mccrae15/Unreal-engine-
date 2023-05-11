@@ -2,8 +2,8 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 
+#include "Styling/SlateBrush.h"
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/Layout/SConstraintCanvas.h"
 

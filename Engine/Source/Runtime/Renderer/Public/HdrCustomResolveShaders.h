@@ -14,6 +14,8 @@
 #include "ShaderCore.h"
 #include "ShaderParameterUtils.h"
 #include "ShaderParameters.h"
+#include "DataDrivenShaderPlatformInfo.h"
+#include "StereoRenderUtils.h"
 
 class FPointerTableBase;
 
@@ -26,12 +28,36 @@ public:
 		: FGlobalShader( Initializer )
 	{
 	}
+};
+
+class FHdrCustomResolveArrayVS : public FHdrCustomResolveVS
+{
+	DECLARE_SHADER_TYPE(FHdrCustomResolveArrayVS, Global);
+public:
+	FHdrCustomResolveArrayVS() {}
+	FHdrCustomResolveArrayVS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
+		: FHdrCustomResolveVS(Initializer)
+	{
+	}
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::ES3_1);
+		if (FHdrCustomResolveVS::ShouldCompilePermutation(Parameters))
+		{
+			UE::StereoRenderUtils::FStereoShaderAspects Aspects(Parameters.Platform);
+			return Aspects.IsMobileMultiViewEnabled();
+		}
+		return false;
+	}
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FHdrCustomResolveVS::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("HDR_CUSTOM_RESOLVE_TEXTUREARRAY"), 1);
 	}
 };
+
+// --- regular shaders ---
 
 class FHdrCustomResolve2xPS : public FGlobalShader
 {
@@ -42,11 +68,6 @@ public:
 		: FGlobalShader( Initializer )
 	{
 		Tex.Bind(Initializer.ParameterMap, TEXT("Tex"), SPF_Mandatory);
-	}
-
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::ES3_1);
 	}
 
 	void SetParameters(FRHICommandList& RHICmdList, FRHITexture* Texture2DMS)
@@ -65,70 +86,157 @@ protected:
 	LAYOUT_FIELD(FShaderResourceParameter, Tex);
 };
 
-class FHdrCustomResolve4xPS : public FGlobalShader
+class FHdrCustomResolve4xPS : public FHdrCustomResolve2xPS
 {
 	DECLARE_SHADER_TYPE(FHdrCustomResolve4xPS,Global);
 public:
 	FHdrCustomResolve4xPS() {}
 	FHdrCustomResolve4xPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
-		: FGlobalShader( Initializer )
+		: FHdrCustomResolve2xPS( Initializer )
 	{
-		Tex.Bind(Initializer.ParameterMap, TEXT("Tex"), SPF_Mandatory);
 	}
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::ES3_1);
+		return FHdrCustomResolve2xPS::ShouldCompilePermutation(Parameters);
 	}
 
 	void SetParameters(FRHICommandList& RHICmdList, FRHITexture* Texture2DMS)
 	{
-		FRHIPixelShader* PixelShaderRHI = RHICmdList.GetBoundPixelShader();
-		SetTextureParameter(RHICmdList, PixelShaderRHI, Tex, Texture2DMS);
+		return FHdrCustomResolve2xPS::SetParameters(RHICmdList, Texture2DMS);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
+		// skip parent because it sets 2X macro
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 		OutEnvironment.SetDefine(TEXT("HDR_CUSTOM_RESOLVE_4X"), 1);
 	}
-
-protected:
-	LAYOUT_FIELD(FShaderResourceParameter, Tex);
 };
 
 
-class FHdrCustomResolve8xPS : public FGlobalShader
+class FHdrCustomResolve8xPS : public FHdrCustomResolve2xPS
 {
 	DECLARE_SHADER_TYPE(FHdrCustomResolve8xPS,Global);
 public:
 	FHdrCustomResolve8xPS() {}
 	FHdrCustomResolve8xPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
-		: FGlobalShader( Initializer )
+		: FHdrCustomResolve2xPS( Initializer )
 	{
-		Tex.Bind(Initializer.ParameterMap, TEXT("Tex"), SPF_Mandatory);
 	}
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::ES3_1);
+		return FHdrCustomResolve2xPS::ShouldCompilePermutation(Parameters);
 	}
 
 	void SetParameters(FRHICommandList& RHICmdList, FRHITexture* Texture2DMS)
 	{
-		FRHIPixelShader* PixelShaderRHI = RHICmdList.GetBoundPixelShader();
-		SetTextureParameter(RHICmdList, PixelShaderRHI, Tex, Texture2DMS);
+		return FHdrCustomResolve2xPS::SetParameters(RHICmdList, Texture2DMS);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
+		// skip parent because it sets 2X macro
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 		OutEnvironment.SetDefine(TEXT("HDR_CUSTOM_RESOLVE_8X"), 1);
 	}
-
-protected:
-	LAYOUT_FIELD(FShaderResourceParameter, Tex);
 };
+
+// --- array shaders ---
+
+class FHdrCustomResolveArray2xPS : public FHdrCustomResolve2xPS
+{
+	DECLARE_SHADER_TYPE(FHdrCustomResolveArray2xPS, Global);
+public:
+	FHdrCustomResolveArray2xPS() {}
+	FHdrCustomResolveArray2xPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
+		: FHdrCustomResolve2xPS(Initializer)
+	{
+	}
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		if (FHdrCustomResolve2xPS::ShouldCompilePermutation(Parameters))
+		{
+			UE::StereoRenderUtils::FStereoShaderAspects Aspects(Parameters.Platform);
+			return Aspects.IsMobileMultiViewEnabled();
+		}
+		return false;
+	}
+
+	void SetParameters(FRHICommandList& RHICmdList, FRHITexture* Texture2DMS)
+	{
+		return FHdrCustomResolve2xPS::SetParameters(RHICmdList, Texture2DMS);
+	}
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FHdrCustomResolve2xPS::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("HDR_CUSTOM_RESOLVE_TEXTUREARRAY"), 1);
+	}
+};
+
+class FHdrCustomResolveArray4xPS : public FHdrCustomResolveArray2xPS
+{
+	DECLARE_SHADER_TYPE(FHdrCustomResolveArray4xPS, Global);
+public:
+	FHdrCustomResolveArray4xPS() {}
+	FHdrCustomResolveArray4xPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
+		: FHdrCustomResolveArray2xPS(Initializer)
+	{
+	}
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return FHdrCustomResolveArray2xPS::ShouldCompilePermutation(Parameters);
+	}
+
+	void SetParameters(FRHICommandList& RHICmdList, FRHITexture* Texture2DMS)
+	{
+		return FHdrCustomResolveArray2xPS::SetParameters(RHICmdList, Texture2DMS);
+	}
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		// skip parent because it sets 2X macro
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("HDR_CUSTOM_RESOLVE_4X"), 1);
+		OutEnvironment.SetDefine(TEXT("HDR_CUSTOM_RESOLVE_TEXTUREARRAY"), 1);
+	}
+};
+
+
+class FHdrCustomResolveArray8xPS : public FHdrCustomResolveArray2xPS
+{
+	DECLARE_SHADER_TYPE(FHdrCustomResolveArray8xPS, Global);
+public:
+	FHdrCustomResolveArray8xPS() {}
+	FHdrCustomResolveArray8xPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
+		: FHdrCustomResolveArray2xPS(Initializer)
+	{
+	}
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return FHdrCustomResolveArray2xPS::ShouldCompilePermutation(Parameters);
+	}
+
+	void SetParameters(FRHICommandList& RHICmdList, FRHITexture* Texture2DMS)
+	{
+		return FHdrCustomResolveArray2xPS::SetParameters(RHICmdList, Texture2DMS);
+	}
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		// skip parent because it sets 2X macro
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("HDR_CUSTOM_RESOLVE_8X"), 1);
+		OutEnvironment.SetDefine(TEXT("HDR_CUSTOM_RESOLVE_TEXTUREARRAY"), 1);
+	}
+};
+
+// --- FMask shaders ---
 
 class FHdrCustomResolveFMask2xPS : public FGlobalShader
 {
@@ -141,11 +249,6 @@ public:
 		Tex.Bind(Initializer.ParameterMap, TEXT("Tex"), SPF_Mandatory);
 		FMaskTex.Bind(Initializer.ParameterMap, TEXT("FMaskTex"), SPF_Optional);
 	}
-
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::ES3_1);
-	}	
 
 	void SetParameters(FRHICommandList& RHICmdList, FRHITexture* Texture2DMS, FRHIShaderResourceView* FMaskSRV)
 	{
@@ -178,11 +281,6 @@ public:
 		FMaskTex.Bind(Initializer.ParameterMap, TEXT("FMaskTex"), SPF_Optional);
 	}
 
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::ES3_1);
-	}
-
 	void SetParameters(FRHICommandList& RHICmdList, FRHITexture* Texture2DMS, FRHIShaderResourceView* FMaskSRV)
 	{
 		FRHIPixelShader* PixelShaderRHI = RHICmdList.GetBoundPixelShader();
@@ -213,11 +311,6 @@ public:
 	{
 		Tex.Bind(Initializer.ParameterMap, TEXT("Tex"), SPF_Mandatory);
 		FMaskTex.Bind(Initializer.ParameterMap, TEXT("FMaskTex"), SPF_Optional);
-	}
-
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::ES3_1);
 	}
 
 	void SetParameters(FRHICommandList& RHICmdList, FRHITexture* Texture2DMS, FRHIShaderResourceView* FMaskSRV)

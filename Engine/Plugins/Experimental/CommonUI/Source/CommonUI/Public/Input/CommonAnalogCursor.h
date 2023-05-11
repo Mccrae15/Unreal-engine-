@@ -3,8 +3,8 @@
 #pragma once
 
 #include "Framework/Application/AnalogCursor.h"
-#include "Layout/Geometry.h"
 #include "InputCoreTypes.h"
+#include "Rendering/SlateRenderTransform.h"
 
 class UCommonUIActionRouterBase;
 class UCommonInputSubsystem;
@@ -14,7 +14,7 @@ class UGameViewportClient;
 
 struct FInputEvent;
 enum class ECommonInputType : uint8;
-enum EOrientation;
+enum EOrientation : int;
 
 /**
  * Analog cursor preprocessor that tastefully hijacks things a bit to support controller navigation by moving a hidden cursor around based on focus.
@@ -124,3 +124,7 @@ private:
 	int32 ShoulderButtonStatus = EShoulderButtonFlags::None;
 #endif
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Layout/Geometry.h"
+#endif

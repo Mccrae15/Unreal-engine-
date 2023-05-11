@@ -19,6 +19,7 @@ class UControlRig;
 struct FAssetData;
 class FMenuBuilder;
 class UToolMenu;
+struct FToolMenuContext;
 
 class FRigElementHierarchyDragDropOp : public FGraphNodeDragDropOp
 {
@@ -73,7 +74,7 @@ public:
 
 	void Construct(const FArguments& InArgs, TSharedRef<FControlRigEditor> InControlRigEditor);
 
-	FORCEINLINE FControlRigEditor* GetControlRigEditor() const
+	FControlRigEditor* GetControlRigEditor() const
 	{
 		if(ControlRigEditor.IsValid())
 		{
@@ -212,7 +213,7 @@ private:
 
 	void HandleParent(const FToolMenuContext& Context);
 	void HandleAlign(const FToolMenuContext& Context);
-	FReply ReparentOrMatchTransform(const TArray<FRigElementKey>& DraggedKeys, FRigElementKey TargetKey, bool bReparentItems);
+	FReply ReparentOrMatchTransform(const TArray<FRigElementKey>& DraggedKeys, FRigElementKey TargetKey, bool bReparentItems, int32 LocalIndex = INDEX_NONE);
 
 	FName CreateUniqueName(const FName& InBaseName, ERigElementType InElementType) const;
 
@@ -223,8 +224,8 @@ private:
 	void OnHierarchyModified_AnyThread(ERigHierarchyNotification InNotif, URigHierarchy* InHierarchy, const FRigBaseElement* InElement);
 	void HandleRefreshEditorFromBlueprint(UControlRigBlueprint* InBlueprint);
 	void HandleSetObjectBeingDebugged(UObject* InObject);
-	void OnPreConstruction_AnyThread(UControlRig* InRig, const EControlRigState InState, const FName& InEventName);
-	void OnPostConstruction_AnyThread(UControlRig* InRig, const EControlRigState InState, const FName& InEventName);
+	void OnPreConstruction_AnyThread(UControlRig* InRig, const FName& InEventName);
+	void OnPostConstruction_AnyThread(UControlRig* InRig, const FName& InEventName);
 
 	bool bIsConstructionEventRunning;
 	uint32 LastHierarchyHash;

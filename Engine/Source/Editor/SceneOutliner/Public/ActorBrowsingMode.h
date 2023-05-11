@@ -5,6 +5,7 @@
 #include "ActorModeInteractive.h"
 
 class UActorBrowsingModeSettings;
+class IWorldPartitionEditorModule;
 
 class FActorBrowsingMode : public FActorModeInteractive
 {
@@ -55,8 +56,10 @@ public:
 	virtual void SelectFoldersDescendants(const TArray<FFolderTreeItem*>& FolderItems, bool bSelectImmediateChildrenOnly) override;
 	virtual void PinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems) override;
 	virtual void UnpinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems) override;
-	virtual void PinSelectedItems() override;
-	virtual void UnpinSelectedItems() override;
+	virtual bool CanPinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems) const override;
+	virtual bool CanUnpinItems(const TArray<FSceneOutlinerTreeItemPtr>& InItems) const override;
+	virtual void SynchronizeSelection() override;
+
 	/* End ISceneOutlinerMode Interface */
 public:
 	/* External events this mode must respond to */
@@ -114,14 +117,20 @@ private:
 	bool GetFolderNamesFromPayload(const FSceneOutlinerDragDropPayload& InPayload, TArray<FName>& OutFolders, FFolder::FRootObject& OutCommonRootObject) const;
 	FFolder GetWorldDefaultRootFolder() const;
 
+	void SynchronizeSelectedActorDescs();
+
+	void OnActorEditorContextSubsystemChanged();
+
 	/** Filter factories */
 	static TSharedRef<FSceneOutlinerFilter> CreateShowOnlySelectedActorsFilter();
 	static TSharedRef<FSceneOutlinerFilter> CreateHideTemporaryActorsFilter();
 	static TSharedRef<FSceneOutlinerFilter> CreateIsInCurrentLevelFilter();
+	static TSharedRef<FSceneOutlinerFilter> CreateIsInCurrentDataLayersFilter();
 	static TSharedRef<FSceneOutlinerFilter> CreateHideComponentsFilter();
 	static TSharedRef<FSceneOutlinerFilter> CreateHideLevelInstancesFilter();
 	static TSharedRef<FSceneOutlinerFilter> CreateHideUnloadedActorsFilter();
 	static TSharedRef<FSceneOutlinerFilter> CreateHideEmptyFoldersFilter();
+	TSharedRef<FSceneOutlinerFilter> CreateIsInCurrentContentBundleFilter();
 
 	/** Functions to expose selection framing to the UI */
 	void OnToggleAlwaysFrameSelection();
@@ -145,6 +154,8 @@ private:
 	void SaveConfig();
 	
 private:
+
+	IWorldPartitionEditorModule* WorldPartitionEditorModule;
 	/** Number of actors (including unloaded) which have passed through the filters */
 	uint32 FilteredActorCount = 0;
 	/** Number of unloaded actors which have passed through all the filters */

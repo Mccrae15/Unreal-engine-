@@ -1,31 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "CoreMinimal.h"
+#include "BodySetupEnums.h"
 #include "Misc/ConfigCacheIni.h"
-#include "Misc/MessageDialog.h"
+#include "ClothingSimulationInterface.h"
 #include "Misc/ConfigCacheIni.h"
-#include "Stats/Stats.h"
-#include "UObject/UObjectBaseUtility.h"
-#include "HAL/IConsoleManager.h"
-#include "Async/TaskGraphInterfaces.h"
-#include "EngineDefines.h"
-#include "Engine/EngineBaseTypes.h"
-#include "Engine/EngineTypes.h"
-#include "Components/ActorComponent.h"
-#include "Components/SceneComponent.h"
-#include "CollisionQueryParams.h"
-#include "WorldCollision.h"
-#include "PhysicsEngine/BodyInstance.h"
-#include "Components/PrimitiveComponent.h"
-#include "ClothSimData.h"
-#include "Engine/SkeletalMesh.h"
-#include "Components/SkeletalMeshComponent.h"
-#include "DrawDebugHelpers.h"
-#include "SkeletalRender.h"
-#include "SkeletalRenderPublic.h"
+#include "ClothCollisionSource.h"
+#include "Components/InstancedStaticMeshComponent.h"
+#include "SkeletalMeshSceneProxy.h"
+#include "Engine/World.h"
 #include "Modules/ModuleManager.h"
-#include "Rendering/SkeletalMeshRenderData.h"
-#include "Physics/PhysicsInterfaceCore.h"
+#include "Physics/Experimental/PhysScene_Chaos.h"
+#include "PhysicsProxy/SingleParticlePhysicsProxy.h"
 #include "AnimationRuntime.h"
 #include "ClothCollisionData.h"
 #include "ClothingSimulationInteractor.h"
@@ -33,28 +18,26 @@
 #include "Logging/MessageLog.h"
 #include "CollisionDebugDrawingPublic.h"
 
-#include "SceneManagement.h"
-#include "PhysXPublic.h"
-#include "PhysicsEngine/PhysXSupport.h"
 
-#include "PhysicsEngine/ConstraintInstance.h"
 #include "PhysicsEngine/PhysicsConstraintTemplate.h"
-#include "PhysicsEngine/BodySetup.h"
 #include "PhysicsEngine/PhysicsAsset.h"
+#include "PhysicsEngine/SphylElem.h"
+#include "PhysicsEngine/TaperedCapsuleElem.h"
+#include "Rendering/SkeletalMeshLODRenderData.h"
+#include "RenderingThread.h"
+#include "SceneInterface.h"
 
 #if WITH_EDITOR
 #include "ClothingSystemEditorInterfaceModule.h"
+#include "PhysicsEngine/SphereElem.h"
 #include "SimulationEditorExtender.h"
 #endif
 
 #include "Chaos/Capsule.h"
-#include "Chaos/Sphere.h"
-#include "Chaos/Box.h"
 #include "Chaos/Convex.h"
 #include "Chaos/ImplicitFwd.h"
-#include "Chaos/ImplicitObject.h"
 #include "Chaos/ImplicitObjectScaled.h"
-#include "Chaos/ImplicitObjectTransformed.h"
+#include "Chaos/PhysicsObjectInterface.h"
 
 #define LOCTEXT_NAMESPACE "SkeletalMeshComponentPhysics"
 
@@ -63,7 +46,8 @@ DECLARE_CYCLE_STAT(TEXT("CreateClothing"), STAT_CreateClothing, STATGROUP_Physic
 CSV_DECLARE_CATEGORY_MODULE_EXTERN(ENGINE_API, Animation);
 CSV_DECLARE_CATEGORY_MODULE_EXTERN(CORE_API, Basic);
 
-TAutoConsoleVariable<int32> CVarEnableClothPhysics(TEXT("p.ClothPhysics"), 1, TEXT("If 1, physics cloth will be used for simulation."));
+TAutoConsoleVariable<int32> CVarEnableClothPhysics(TEXT("p.ClothPhysics"), 1, TEXT("If 1, physics cloth will be used for simulation."), ECVF_Scalability);
+
 static TAutoConsoleVariable<int32> CVarEnableClothPhysicsUseTaskThread(TEXT("p.ClothPhysics.UseTaskThread"), 1, TEXT("If 1, run cloth on the task thread. If 0, run on game thread."));
 static TAutoConsoleVariable<int32> CVarClothPhysicsTickWaitForParallelClothTask(TEXT("p.ClothPhysics.WaitForParallelClothTask"), 0, TEXT("If 1, always wait for cloth task completion in the Cloth Tick function. If 0, wait at end-of-frame updates instead if allowed by component settings"));
 
@@ -736,6 +720,23 @@ void USkeletalMeshComponent::InitArticulated(FPhysScene* PhysScene)
 	}
 
 	InstantiatePhysicsAsset(*PhysicsAsset, Scale3D, Bodies, Constraints, PhysScene, this, RootBodyIndex, Aggregate);
+	for (int32 BodyIndex = 0; BodyIndex < NumBodies; ++BodyIndex)
+	{
+		if (FBodyInstance* Body = Bodies[BodyIndex])
+		{
+			if (!Body->ActorHandle)
+			{
+				continue;
+			}
+
+			Chaos::FPhysicsObject* PhysicsObject = Body->ActorHandle->GetPhysicsObject();
+			if (UBodySetup* Setup = Body->GetBodySetup())
+			{
+				Chaos::FPhysicsObjectInterface::SetName(PhysicsObject, Setup->BoneName);
+			}
+			Chaos::FPhysicsObjectInterface::SetId(PhysicsObject, BodyIndex);
+		}
+	}
 
 	// now update root body index because body has BodySetup now
 	SetRootBodyIndex(RootBodyIndex);
@@ -2621,6 +2622,13 @@ bool USkeletalMeshComponent::ComponentOverlapComponentImpl(class UPrimitiveCompo
 		return false;
 	}
 
+	//We do not support skeletal mesh vs Instanced static meshes
+	if (PrimComp->IsA<UInstancedStaticMeshComponent>())
+	{
+		UE_LOG(LogCollision, Warning, TEXT("ComponentOverlapComponent : (%s) Does not support skeletalmesh with Physics Asset"), *PrimComp->GetPathName());
+		return false;
+	}
+
 	if (FBodyInstance* BI = PrimComp->GetBodyInstance())
 	{
 		return BI->OverlapTestForBodies(Pos, Quat, Bodies);
@@ -2678,10 +2686,6 @@ void USkeletalMeshComponent::AddClothingBounds(FBoxSphereBounds& InOutBounds, co
 	}
 }
 
-#if WITH_EDITOR
-ENGINE_API UObject* GLogReinstancerReferenceReplacementObj = nullptr;
-#endif
-
 void USkeletalMeshComponent::RecreateClothingActors()
 {
 	CSV_SCOPED_TIMING_STAT(Animation, ClothInit);
@@ -2693,10 +2697,6 @@ void USkeletalMeshComponent::RecreateClothingActors()
 	{
 		return;
 	}
-
-#if WITH_EDITOR
-	TGuardValue<UObject*> EnableReinstancingLog(GLogReinstancerReferenceReplacementObj, this);
-#endif
 
 	if(CVarEnableClothPhysics.GetValueOnGameThread() && (SkelMesh->GetMeshClothingAssets().Num() > 0))
 	{
@@ -3856,6 +3856,33 @@ void USkeletalMeshComponent::GetUpdateClothSimulationData(TMap<int32, FClothSimu
 	}
 }
 
+void USkeletalMeshComponent::GetUpdateClothSimulationData_AnyThread(TMap<int32, FClothSimulData>& OutClothSimulData, FMatrix& OutLocalToWorld, float& OutClothBlendWeight)
+{
+	OutLocalToWorld = GetComponentToWorld().ToMatrixWithScale();
+
+	const USkeletalMeshComponent* const LeaderPoseSkeletalMeshComponent = Cast<USkeletalMeshComponent>(LeaderPoseComponent.Get());
+	if (LeaderPoseSkeletalMeshComponent && bBindClothToLeaderComponent)
+	{
+		OutClothBlendWeight = ClothBlendWeight;
+		OutClothSimulData = LeaderPoseSkeletalMeshComponent->GetCurrentClothingData_AnyThread();
+	}
+	else if (!bDisableClothSimulation && !bBindClothToLeaderComponent)
+	{
+		OutClothBlendWeight = ClothBlendWeight;
+		OutClothSimulData = GetCurrentClothingData_AnyThread();
+	}
+	else
+	{
+		OutClothSimulData.Reset();
+	}
+
+	// Blend cloth out whenever the simulation data is invalid
+	if (!OutClothSimulData.Num())
+	{
+		OutClothBlendWeight = 0.0f;
+	}
+}
+
 void USkeletalMeshComponent::DebugDrawClothing(FPrimitiveDrawInterface* PDI)
 {
 #if WITH_EDITOR && ENABLE_DRAW_DEBUG
@@ -4006,4 +4033,37 @@ FTransform USkeletalMeshComponent::GetComponentTransformFromBodyInstance(FBodyIn
 		return GetComponentTransform();
 	}
 }
+
+
+Chaos::FPhysicsObject* USkeletalMeshComponent::GetPhysicsObjectById(int32 Id) const
+{
+	if (!Bodies.IsValidIndex(Id) || !Bodies[Id] || !Bodies[Id]->ActorHandle)
+	{
+		return nullptr;
+	}
+	return Bodies[Id]->ActorHandle->GetPhysicsObject();
+}
+
+Chaos::FPhysicsObject* USkeletalMeshComponent::GetPhysicsObjectByName(const FName& Name) const
+{
+	FBodyInstance* Body = GetBodyInstance(Name);
+	if (!Body || !Body->ActorHandle)
+	{
+		return nullptr;
+	}
+
+	return Body->ActorHandle->GetPhysicsObject();
+}
+
+TArray<Chaos::FPhysicsObject*> USkeletalMeshComponent::GetAllPhysicsObjects() const
+{
+	TArray<Chaos::FPhysicsObject*> Objects;
+	Objects.Reserve(Bodies.Num());
+	for (int32 Index = 0; Index < Bodies.Num(); ++Index)
+	{
+		Objects.Add(GetPhysicsObjectById(Index));
+	}
+	return Objects;
+}
+
 #undef LOCTEXT_NAMESPACE

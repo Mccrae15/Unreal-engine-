@@ -1,13 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "IRemoteControlModule.h"
 #include "AssetRegistry/AssetData.h"
+#include "Containers/Ticker.h"
 #include "CoreMinimal.h"
 #include "Engine/EngineTypes.h"
+#include "Factories/IRCDefaultValueFactory.h"
 #include "Factories/IRemoteControlMaskingFactory.h"
-
-class IRemoteControlInterceptionFeatureProcessor;
+#include "IRemoteControlInterceptionFeature.h"
+#include "IRemoteControlModule.h"
 
 /**
  * Implementation of the RemoteControl interface
@@ -25,11 +26,15 @@ public:
 	//~ Begin IRemoteControlModule
 	virtual FOnPresetRegistered& OnPresetRegistered() override;
 	virtual FOnPresetUnregistered& OnPresetUnregistered() override;
+	virtual FOnError& OnError() override;
 	virtual bool RegisterPreset(FName Name, URemoteControlPreset* Preset) override;
 	virtual void UnregisterPreset(FName Name) override;
 	virtual bool RegisterEmbeddedPreset(URemoteControlPreset* Preset, bool bReplaceExisting) override;
 	virtual void UnregisterEmbeddedPreset(FName Name) override;
 	virtual void UnregisterEmbeddedPreset(URemoteControlPreset* Preset) override;
+	virtual bool CanResetToDefaultValue(UObject* InObject, const FRCResetToDefaultArgs& InArgs) const override;
+	virtual bool HasDefaultValueCustomization(const UObject* InObject, const FProperty* InProperty) const override;
+	virtual void ResetToDefaultValue(UObject* InObject, FRCResetToDefaultArgs& InArgs) override;
 	virtual void PerformMasking(const TSharedRef<FRCMaskingOperation>& InMaskingOperation) override;
 	virtual void RegisterMaskingFactoryForType(UScriptStruct* RemoteControlPropertyType, const TSharedPtr<IRemoteControlMaskingFactory>& InMaskingFactory) override;
 	virtual void UnregisterMaskingFactoryForType(UScriptStruct* RemoteControlPropertyType) override;
@@ -64,6 +69,7 @@ public:
 	virtual FGuid BeginManualEditorTransaction(const FText& InDescription, uint32 TypeHash) override;
 	virtual int32 EndManualEditorTransaction(const FGuid& TransactionId) override;
 	virtual const TMap<FName, TSharedPtr<IRemoteControlPropertyFactory>>& GetEntityFactories() const override { return EntityFactories; };
+	virtual bool CanBeAccessedRemotely(UObject* Object) const override;
 	//~ End IRemoteControlModule
 
 private:
@@ -95,11 +101,37 @@ private:
 	 * @return True if the data was successfully deserialized and modified.
 	 */
 	static bool DeserializeDeltaModificationData(const FRCObjectReference& ObjectAccess, IStructDeserializerBackend& Backend, ERCModifyOperation Operation, TArray<uint8>& OutData);
+	
+	/**
+	 * Register a default factory to handle that default value for the supported properties.
+	 */
+	void RegisterDefaultValueFactoryForType(UClass* RemoteControlPropertyType, const FName PropertyName, const TSharedPtr<IRCDefaultValueFactory>& InDefaultValueFactory);
+	
+	/**
+	 * Unregister a previously registered default value factory.
+	 */
+	void UnregisterDefaultValueFactoryForType(UClass* RemoteControlPropertyType, const FName PropertyName);
 
+	/**
+	 * Register(s) default value factories of supported types.
+	 */
+	void RegisterDefaultValueFactories();
+	
 	/**
 	 * Register(s) masking factories of supported types.
 	 */
 	void RegisterMaskingFactories();
+
+	/**
+	 * Whether function can be intercepted by a remote control interceptor.
+	 */
+	bool CanInterceptFunction(const FRCCall& RCCall) const;
+
+	/**
+	 * Used to log once per program execution. Called by the REMOTE_CONTROL_LOG_ONCE macro.
+	 */
+	void LogOnce(ELogVerbosity::Type InVerbosity, const FString& LogDetails, const FString& FileName, int32 LineNumber) const;
+
 
 #if WITH_EDITOR
 	/**
@@ -151,6 +183,9 @@ private:
 	/** Delegate for preset unregistration */
 	FOnPresetUnregistered OnPresetUnregisteredDelegate;
 
+	/** Delegate for errors to allow external custom handling. */
+	FOnError OnErrorDelegate;
+
 	/** RC Processor feature instance */
 	TUniquePtr<IRemoteControlInterceptionFeatureProcessor> RCIProcessor;
 
@@ -186,6 +221,9 @@ private:
 
 	/** Handle to the timer that that ends the ongoing change in regards to PostEditChange and transactions. */
 	FTimerHandle OngoingChangeTimer;
+	
+	/** Handle to the timer that that ends the ongoing change in regards to PostEditChange and transactions. */
+	FTSTicker::FDelegateHandle FallbackOngoingChangeTimer;
 
 	/** Delay before we check if a modification is no longer ongoing. */
 	static constexpr float SecondsBetweenOngoingChangeCheck = 0.2f;
@@ -200,6 +238,9 @@ private:
 
 	/** Holds the set of active masking operations. */
 	TSet<TSharedPtr<FRCMaskingOperation>> ActiveMaskingOperations;
+
+	/** Map of the factories which is responsible for resetting the Remote Control property to its default value. */
+	TMap<FName, TSharedPtr<IRCDefaultValueFactory>> DefaultValueFactories;
 };
 
 PRAGMA_ENABLE_DEPRECATION_WARNINGS

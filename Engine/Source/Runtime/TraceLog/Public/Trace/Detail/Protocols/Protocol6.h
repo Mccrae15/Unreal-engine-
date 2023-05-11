@@ -1,8 +1,8 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
+
 #pragma once
 
-#include "Protocol4.h"
-#include "Protocol5.h"
+// HEADER_UNIT_SKIP - Not included directly
 
 namespace UE {
 namespace Trace {

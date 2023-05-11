@@ -6,7 +6,7 @@ D3D12CommandContext.cpp: RHI  Command Context implementation.
 
 #include "D3D12RHIPrivate.h"
 
-#if PLATFORM_WINDOWS
+#if WITH_AMD_AGS
 #include "Windows/AllowWindowsPlatformTypes.h"
 #include "amd_ags.h"
 #include "Windows/HideWindowsPlatformTypes.h"
@@ -103,12 +103,14 @@ FD3D12CommandContext::FD3D12CommandContext(FD3D12Device* InParent, ED3D12QueueTy
 	, ConstantsAllocator(InParent, InParent->GetGPUMask())
 	, StateCache(*this, InParent->GetGPUMask())
 	, ValidResourceStates(GetValidResourceStates(QueueType))
-	, VSConstantBuffer(InParent, ConstantsAllocator)
-	, MSConstantBuffer(InParent, ConstantsAllocator)
-	, ASConstantBuffer(InParent, ConstantsAllocator)
-	, PSConstantBuffer(InParent, ConstantsAllocator)
-	, GSConstantBuffer(InParent, ConstantsAllocator)
-	, CSConstantBuffer(InParent, ConstantsAllocator)
+	, StageConstantBuffers{
+		FD3D12ConstantBuffer(InParent, ConstantsAllocator),
+		FD3D12ConstantBuffer(InParent, ConstantsAllocator),
+		FD3D12ConstantBuffer(InParent, ConstantsAllocator),
+		FD3D12ConstantBuffer(InParent, ConstantsAllocator),
+		FD3D12ConstantBuffer(InParent, ConstantsAllocator),
+		FD3D12ConstantBuffer(InParent, ConstantsAllocator),
+	}
 {
 	StaticUniformBuffers.AddZeroed(FUniformBufferStaticSlotRegistry::Get().GetSlotCount());
 	ClearState();
@@ -218,7 +220,7 @@ void FD3D12CommandContext::RHIPushEvent(const TCHAR* Name, FColor Color)
 #endif // NV_AFTERMATH		
 	}
 
-#if PLATFORM_WINDOWS
+#if WITH_AMD_AGS
 	AGSContext* const AmdAgsContext = FD3D12DynamicRHI::GetD3DRHI()->GetAmdAgsContext();
 	if (GEmitRgpFrameMarkers && AmdAgsContext)
 	{
@@ -254,7 +256,7 @@ void FD3D12CommandContext::RHIPopEvent()
 		}
 	}
 
-#if PLATFORM_WINDOWS
+#if WITH_AMD_AGS
 	AGSContext* const AmdAgsContext = FD3D12DynamicRHI::GetD3DRHI()->GetAmdAgsContext();
 	if (GEmitRgpFrameMarkers && AmdAgsContext)
 	{
@@ -575,8 +577,6 @@ void FD3D12ContextCommon::FlushCommands(ED3D12FlushFlags FlushFlags)
 	if (SubmissionEvent && !SubmissionEvent->IsComplete())
 	{
 		SCOPED_NAMED_EVENT_TEXT("Submission_Wait", FColor::Turquoise);
-
-		FRenderThreadIdleScope Scope(ERenderThreadIdleTypes::WaitingForAllOtherSleep);
 		SubmissionEvent->Wait();
 	}
 }
@@ -619,25 +619,32 @@ void FD3D12CommandContext::ClearState(EClearStateMode Mode)
 	{
 		FMemory::Memzero(StaticUniformBuffers.GetData(), StaticUniformBuffers.Num() * sizeof(FRHIUniformBuffer*));
 	}
-
-	for (int i = 0; i < UE_ARRAY_COUNT(BoundUniformBufferRefs); i++)
-	{
-		for (int j = 0; j < UE_ARRAY_COUNT(BoundUniformBufferRefs[i]); j++)
-		{
-			BoundUniformBufferRefs[i][j] = NULL;
-		}
-	}
 }
 
 void FD3D12CommandContext::ConditionalClearShaderResource(FD3D12ResourceLocation* Resource)
 {
 	check(Resource);
-	StateCache.ClearShaderResourceViews<SF_Vertex>(Resource);
-	StateCache.ClearShaderResourceViews<SF_Mesh>(Resource);
-	StateCache.ClearShaderResourceViews<SF_Amplification>(Resource);
-	StateCache.ClearShaderResourceViews<SF_Pixel>(Resource);
-	StateCache.ClearShaderResourceViews<SF_Geometry>(Resource);
-	StateCache.ClearShaderResourceViews<SF_Compute>(Resource);
+
+	for (int32 Index = 0; Index < SF_NumStandardFrequencies; Index++)
+	{
+		StateCache.ClearShaderResourceViews(static_cast<EShaderFrequency>(Index), Resource);
+	}
+}
+
+void FD3D12CommandContext::ClearShaderResources(FD3D12UnorderedAccessView* UAV)
+{
+	if (UAV)
+	{
+		ConditionalClearShaderResource(UAV->GetResourceLocation());
+	}
+}
+
+void FD3D12CommandContext::ClearShaderResources(FD3D12BaseShaderResource* Resource)
+{
+	if (Resource)
+	{
+		ConditionalClearShaderResource(&Resource->ResourceLocation);
+	}
 }
 
 void FD3D12CommandContext::ClearAllShaderResources()
@@ -689,14 +696,30 @@ void FD3D12CommandContextBase::RHIEndFrame()
 	FD3D12DynamicRHI::GetD3DRHI()->ProcessInterruptQueueUntil(nullptr);
 }
 
+#if PLATFORM_WINDOWS && CSV_PROFILER && !UE_BUILD_SHIPPING
+	CSV_DEFINE_CATEGORY(GPUMem, true);
+#endif
+DEFINE_STAT(STAT_D3D12UpdateVideoMemoryStats);
+
 void FD3D12CommandContextBase::UpdateMemoryStats()
 {
-#if PLATFORM_WINDOWS && STATS
+#if PLATFORM_WINDOWS && (STATS || CSV_PROFILER) && !UE_BUILD_SHIPPING
+	SCOPE_CYCLE_COUNTER(STAT_D3D12UpdateVideoMemoryStats);
 	// Refresh captured memory info.
 	ParentAdapter->UpdateMemoryInfo();
 
 	const FD3D12MemoryInfo& MemoryInfo = ParentAdapter->GetMemoryInfo();
 
+#if CSV_PROFILER
+	{
+		CSV_CUSTOM_STAT(GPUMem, Total, double(MemoryInfo.LocalMemoryInfo.Budget), ECsvCustomStatOp::Set);
+		CSV_CUSTOM_STAT(GPUMem, Used, double(MemoryInfo.LocalMemoryInfo.CurrentUsage), ECsvCustomStatOp::Set);
+		CSV_CUSTOM_STAT(GPUMem, Available, double(MemoryInfo.AvailableLocalMemory), ECsvCustomStatOp::Set);
+		CSV_CUSTOM_STAT(GPUMem, Demoted, double(MemoryInfo.DemotedLocalMemory), ECsvCustomStatOp::Set);
+	}
+#endif // CSV_PROFILER
+
+#if STATS
 	SET_MEMORY_STAT(STAT_D3D12UsedVideoMemory, MemoryInfo.LocalMemoryInfo.CurrentUsage);
 	SET_MEMORY_STAT(STAT_D3D12UsedSystemMemory, MemoryInfo.NonLocalMemoryInfo.CurrentUsage);
 	SET_MEMORY_STAT(STAT_D3D12AvailableVideoMemory, MemoryInfo.AvailableLocalMemory);
@@ -720,7 +743,8 @@ void FD3D12CommandContextBase::UpdateMemoryStats()
 		Device->GetDefaultBufferAllocator().UpdateMemoryStats();
 		ParentAdapter->GetUploadHeapAllocator(GPUIndex).UpdateMemoryStats();
 	}
-#endif
+#endif // STATS
+#endif // PLATFORM_WINDOWS && (STATS || CSV_PROFILER)
 }
 
 void FD3D12CommandContext::RHIBeginScene()

@@ -1,8 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
-#include "CoreMinimal.h"
 
 #if WITH_EDITOR
 
+#include "MaterialExpressionIO.h"
+#include "Materials/MaterialAttributeDefinitionMap.h"
 #include "Materials/MaterialExpression.h"
 #include "Materials/MaterialExpressionExecBegin.h"
 #include "Materials/MaterialExpressionExecEnd.h"
@@ -51,7 +52,6 @@
 #include "Materials/MaterialExpressionTextureSample.h"
 #include "Materials/MaterialExpressionTextureSampleParameter.h"
 #include "Materials/MaterialExpressionFontSample.h"
-#include "Materials/MaterialExpressionFontSampleParameter.h"
 #include "Materials/MaterialExpressionTextureObject.h"
 #include "Materials/MaterialExpressionTextureObjectParameter.h"
 #include "Materials/MaterialExpressionSceneTexture.h"
@@ -77,6 +77,7 @@
 #include "Materials/MaterialExpressionCeil.h"
 #include "Materials/MaterialExpressionRound.h"
 #include "Materials/MaterialExpressionTruncate.h"
+#include "Materials/MaterialExpressionTruncateLWC.h"
 #include "Materials/MaterialExpressionSaturate.h"
 #include "Materials/MaterialExpressionSign.h"
 #include "Materials/MaterialExpressionSine.h"
@@ -140,14 +141,10 @@
 #include "Materials/MaterialExpressionWhileLoop.h"
 #include "Materials/MaterialFunctionInterface.h"
 #include "MaterialHLSLTree.h"
-#include "HLSLTree/HLSLTree.h"
-#include "HLSLTree/HLSLTreeCommon.h"
+#include "MaterialShared.h"
 #include "Engine/Engine.h"
-#include "Engine/Texture2D.h"
 #include "Engine/Font.h"
 #include "Curves/CurveLinearColorAtlas.h"
-#include "Curves/CurveLinearColor.h"
-#include "RenderUtils.h"
 #include "Misc/MemStackUtility.h"
 #include "MaterialHLSLGenerator.h"
 
@@ -1778,6 +1775,18 @@ bool UMaterialExpressionBlendMaterialAttributes::GenerateHLSLExpression(FMateria
 	return true;
 }
 
+bool UMaterialExpressionTruncateLWC::GenerateHLSLExpression(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, int32 OutputIndex, UE::HLSLTree::FExpression const*& OutExpression) const
+{
+	const UE::HLSLTree::FExpression* ExpressionInput = Input.AcquireHLSLExpression(Generator, Scope);
+	if (!ExpressionInput)
+	{
+		return false;
+	}
+
+	OutExpression = Generator.GetTree().NewTruncateLWC(ExpressionInput);
+	return true;
+}
+
 static const UE::HLSLTree::FExpression* TransformBase(UE::HLSLTree::FTree& Tree,
 	EMaterialCommonBasis SourceCoordBasis,
 	EMaterialCommonBasis DestCoordBasis,
@@ -2309,6 +2318,8 @@ bool UMaterialExpressionHairAttributes::GenerateHLSLExpression(FMaterialHLSLGene
 	case 11: OutExpression = Generator.GetTree().NewExpression<FExpressionInlineCustomHLSL>(EValueType::Float4, TEXT("MaterialExpressionGetHairAuxilaryData(Parameters)")); break;
 	case 12: OutExpression = Generator.GetTree().NewExpression<FExpressionInlineCustomHLSL>(EValueType::Float2, TEXT("MaterialExpressionGetAtlasUVs(Parameters)")); break;
 	case 13: OutExpression = Generator.GetTree().NewExpression<FExpressionInlineCustomHLSL>(EValueType::Float1, TEXT("MaterialExpressionGetHairGroupIndex(Parameters)")); break;
+	case 14: OutExpression = Generator.GetTree().NewExpression<FExpressionInlineCustomHLSL>(EValueType::Float1, TEXT("MaterialExpressionGetHairAO(Parameters)")); break;
+	case 15: OutExpression = Generator.GetTree().NewExpression<FExpressionInlineCustomHLSL>(EValueType::Int1, TEXT("MaterialExpressionGetHairClumpID(Parameters)")); break;
 	default: return Generator.Error(TEXT("Invalid output"));
 	}
 	return OutExpression != nullptr;

@@ -11,13 +11,23 @@
 UENUM()
 namespace ELoadLevelAtStartup
 {
-	enum Type
+	enum Type : int
 	{
 		None,
 		ProjectDefault,
 		LastOpened
 	};
 }
+
+
+UENUM()
+enum class EAutoSaveMethod : uint8
+{
+	/** Autosave to a backup location and offer to restore after an editor crash */
+	BackupAndRestore,
+	/** Autosave in-place, overwriting your existing content after backing up the current file (BETA) */
+	BackupAndOverwrite,
+};
 
 
 /** A filter used by the auto reimport manager to explicitly include/exclude files matching the specified wildcard */
@@ -113,7 +123,7 @@ public:
 	bool bAutoCreateAssets;
 	UPROPERTY(EditAnywhere, config, AdvancedDisplay, Category=AutoReimport, meta=(DisplayName="Auto Delete Assets", ToolTip="When enabled, deleting a source content file will automatically prompt the deletion of any related assets."))
 	bool bAutoDeleteAssets;
-	UPROPERTY(EditAnywhere, config, AdvancedDisplay, Category=AutoReimport, meta=(DisplayName="Detect Changes On Startup", ToolTip="When enabled, changes to monitored directories since UE was closed will be detected on restart.\n(Not recommended when working in collaboration with others using source control)."))
+	UPROPERTY(EditAnywhere, config, AdvancedDisplay, Category=AutoReimport, meta=(DisplayName="Detect Changes On Startup", ToolTip="When enabled, changes to monitored directories since UE was closed will be detected on restart.\n(Not recommended when working in collaboration with others using revision control)."))
 	bool bDetectChangesOnStartup;
 	UPROPERTY(EditAnywhere, config, AdvancedDisplay, Category=AutoReimport, meta=(DisplayName="Prompt Before Action", ToolTip="Whether to prompt the user to import detected changes."))
 	bool bPromptBeforeAutoImporting;
@@ -150,6 +160,10 @@ public:
 	UPROPERTY(EditAnywhere, config, Category=AutoSave, meta=(DisplayName="Save Content"))
 	uint32 bAutoSaveContent:1;
 
+	/** What method should be used when performing an autosave? */
+	UPROPERTY(EditAnywhere, config, Category=AutoSave, meta=(DisplayName="Save Method"), AdvancedDisplay)
+	EAutoSaveMethod AutoSaveMethod = EAutoSaveMethod::BackupAndRestore;
+
 	/** The time interval after which to auto save */
 	UPROPERTY(EditAnywhere, config, Category=AutoSave, meta=(DisplayName="Frequency in Minutes", ClampMin = "1"))
 	int32 AutoSaveTimeMinutes;
@@ -161,6 +175,10 @@ public:
 	/** The number of seconds warning before an autosave*/
 	UPROPERTY(EditAnywhere, config, Category=AutoSave, meta=(DisplayName="Warning in seconds", ClampMin = "0", UIMin = "0", UIMax = "20"))
 	int32 AutoSaveWarningInSeconds;
+
+	/** How many auto save files to keep around*/
+	UPROPERTY(EditAnywhere, config, Category = AutoSave, meta = (DisplayName = "Maximum number of AutoSaves", ClampMin = "1", UIMin = "1", UIMax = "100"))
+	int32 AutoSaveMaxBackups = 10;
 
 public:
 
@@ -189,6 +207,12 @@ public:
 	// @todo thomass: proper settings support for source control module
 	void SccHackInitialize( );
 
+	bool GetAutomaticallyCheckoutOnAssetModification() const;
+
+	void SetAutomaticallyCheckoutOnAssetModificationOverride(bool InValue);
+
+	void ResetAutomaticallyCheckoutOnAssetModificationOverride();
+
 public:
 
 	/**
@@ -210,4 +234,7 @@ private:
 
 	// Holds an event delegate that is executed when a setting has changed.
 	FSettingChangedEvent SettingChangedEvent;
+
+	// Holds the potentially overridden value of bAutomaticallyCheckoutOnAssetModification at runtime only.
+	TOptional<bool> bAutomaticallyCheckoutOnAssetModificationOverride;
 };

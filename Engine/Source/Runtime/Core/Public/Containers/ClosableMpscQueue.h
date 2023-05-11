@@ -2,8 +2,11 @@
 
 #pragma once
 
+// HEADER_UNIT_SKIP - Not included directly
+
 #include "CoreTypes.h"
 #include "Templates/TypeCompatibleBytes.h"
+#include "Templates/UnrealTemplate.h"
 #include <atomic>
 
 /** 
@@ -116,7 +119,7 @@ private:
 			do
 			{
 				Next = Node->Next.load(std::memory_order_relaxed);
-			} while (Next == nullptr);
+			} while (Next == nullptr); // <- This loop has the potential for live locking if enqueue was not completed (e.g was running at lower priority)
 
 			return Next;
 		};

@@ -5,44 +5,19 @@
 =============================================================================*/
 
 #include "Engine/NetDriver.h"
-#include "CoreMinimal.h"
-#include "Misc/CoreMisc.h"
-#include "Misc/CommandLine.h"
-#include "Misc/NetworkGuid.h"
-#include "Stats/Stats.h"
+#include "Engine/GameInstance.h"
+#include "Engine/ServerStatReplicator.h"
 #include "Misc/App.h"
-#include "Misc/MemStack.h"
-#include "HAL/IConsoleManager.h"
-#include "HAL/LowLevelMemStats.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/Object.h"
-#include "UObject/Class.h"
-#include "UObject/CoreNet.h"
-#include "UObject/UnrealType.h"
-#include "UObject/Package.h"
-#include "UObject/PropertyPortFlags.h"
 #include "EngineStats.h"
-#include "EngineGlobals.h"
-#include "Engine/EngineBaseTypes.h"
-#include "Engine/EngineTypes.h"
-#include "Components/ActorComponent.h"
-#include "Engine/Level.h"
-#include "GameFramework/Actor.h"
-#include "GameFramework/Pawn.h"
-#include "CollisionQueryParams.h"
 #include "GameFramework/GameModeBase.h"
-#include "Components/PrimitiveComponent.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Net/Core/PropertyConditions/RepChangedPropertyTracker.h"
 #include "UObject/UObjectIterator.h"
-#include "GameFramework/PlayerController.h"
-#include "GameFramework/WorldSettings.h"
-#include "PacketHandler.h"
+#include "Net/Core/Trace/Private/NetTraceInternal.h"
 #include "PacketHandlers/StatelessConnectHandlerComponent.h"
-#include "Net/Core/Analytics/NetAnalytics.h"
 #include "Engine/LocalPlayer.h"
-#include "Net/DataBunch.h"
-#include "Engine/NetConnection.h"
 #include "DrawDebugHelpers.h"
+#include "Stats/StatsTrace.h"
 #include "UnrealEngine.h"
 #include "EngineUtils.h"
 #include "Net/NetworkProfiler.h"
@@ -59,21 +34,16 @@
 #include "Engine/ChildConnection.h"
 #include "Net/Core/Trace/NetTrace.h"
 #include "Net/Core/PropertyConditions/PropertyConditions.h"
-#include "Misc/ScopeExit.h"
-#include "Misc/NetworkVersion.h"
 #include "Net/DataChannel.h"
 #include "GameFramework/PlayerState.h"
 #include "Net/PerfCountersHelpers.h"
 #include "Stats/StatsMisc.h"
 #include "Engine/ReplicationDriver.h"
-#include "ProfilingDebugging/CsvProfiler.h"
 #include "Engine/LevelScriptActor.h"
 #include "Engine/NetworkSettings.h"
-#include "Engine/NetworkDelegates.h"
 #include "Net/NetSubObjectRegistryGetter.h"
 #include "Net/NetworkGranularMemoryLogging.h"
-#include "SocketSubsystem.h"
-#include "AddressInfoTypes.h"
+#include "UObject/Stack.h"
 #if UE_WITH_IRIS
 #include "Iris/IrisConfig.h"
 #include "Iris/Core/IrisProfiler.h"
@@ -86,7 +56,6 @@
 #endif // UE_WITH_IRIS
 
 #if USE_SERVER_PERF_COUNTERS
-#include "PerfCountersModule.h"
 #endif
 #include "GenericPlatform/GenericPlatformCrashContext.h"
 
@@ -94,6 +63,9 @@
 
 #if WITH_EDITOR
 #include "Editor.h"
+#else
+#include "HAL/LowLevelMemStats.h"
+#include "UObject/Package.h"
 #endif
 
 DECLARE_LLM_MEMORY_STAT(TEXT("NetDriver"), STAT_NetDriverLLM, STATGROUP_LLMFULL);
@@ -530,6 +502,15 @@ UNetDriver::UNetDriver(const FObjectInitializer& ObjectInitializer)
 	UpdateDelayRandomStream.Initialize(FApp::bUseFixedSeed ? GetFName() : NAME_None);
 }
 
+UNetDriver::UNetDriver(FVTableHelper& Helper)
+	: Super(Helper)
+{
+}
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+UNetDriver::~UNetDriver() = default;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
 void UNetDriver::InitPacketSimulationSettings()
 {
 #if DO_ENABLE_NET_TEST
@@ -660,13 +641,23 @@ void UNetDriver::LoadChannelDefinitions()
 
 void UNetDriver::NotifyGameInstanceUpdated()
 {
-#if UE_NET_TRACE_ENABLED
 	const UWorld* LocalWorld = GetWorld();
+
+#if UE_NET_TRACE_ENABLED
 	if (GetNetTraceId() != NetTraceInvalidGameInstanceId && LocalWorld && LocalWorld->WorldType)
 	{
 		FString InstanceName = FString::Printf(TEXT("%s (%s)"), *GetNameSafe(LocalWorld->GetGameInstance()), LexToString(LocalWorld->WorldType.GetValue()));
 		UE_NET_TRACE_UPDATE_INSTANCE(GetNetTraceId(), IsServer(), *InstanceName);
 	}
+#endif
+
+#if WITH_EDITOR
+#if UE_WITH_IRIS
+	if (ReplicationSystem && LocalWorld)
+	{
+		ReplicationSystem->SetPIEInstanceID(World->GetPackage()->GetPIEInstanceID());
+	}
+#endif
 #endif
 }
 
@@ -749,12 +740,16 @@ FNetworkObjectInfo* UNetDriver::FindNetworkObjectInfo(const AActor* InActor)
 #if UE_WITH_IRIS
 	if (ReplicationSystem)
 	{
-		// Return default initialized NetworkObjectInfo so the presence of a pointer can at least indicate whether the actor is replicated or not.
-		const UE::Net::FNetHandle NetHandle = UE::Net::FReplicationSystemUtil::GetNetHandle(InActor);
-		if (NetHandle.IsValid())
+		if (UObjectReplicationBridge* Bridge = ReplicationSystem->GetReplicationBridgeAs<UObjectReplicationBridge>())
 		{
-			*DummyNetworkObjectInfo = FNetworkObjectInfo();
-			return DummyNetworkObjectInfo.Get();
+			const UE::Net::FNetRefHandle ActorRefHandle = Bridge->GetReplicatedRefHandle(InActor);
+			
+			// Return default initialized NetworkObjectInfo so the presence of a pointer can at least indicate whether the actor is replicated or not.
+			if (ActorRefHandle.IsValid())
+			{
+				*DummyNetworkObjectInfo = FNetworkObjectInfo();
+				return DummyNetworkObjectInfo.Get();
+			}
 		}
 
 		return nullptr;
@@ -851,8 +846,6 @@ void UNetDriver::TickFlush(float DeltaSeconds)
 {
 	LLM_SCOPE_BYTAG(NetDriver);
 
-	TGuardValue<bool> GuardInNetTick(bInTick, true);
-
 	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(NetworkOutgoing);
 	SCOPE_CYCLE_COUNTER(STAT_NetTickFlush);
 	bool bEnableTimer = (NetDriverName == NAME_GameNetDriver) && ShouldEnableScopeSecondsTimers();
@@ -923,13 +916,6 @@ void UNetDriver::TickFlush(float DeltaSeconds)
 		{
 			Connection->Tick(DeltaSeconds);
 		}
-
-#if UE_WITH_IRIS
-		if (ReplicationSystem && (ServerConnection != nullptr || ClientConnections.Num() > 0))
-		{
-			ReplicationSystem->PostSendUpdate();
-		}
-#endif // UE_WITH_IRIS
 	}
 
 	if (ConnectionlessHandler.IsValid())
@@ -1298,6 +1284,13 @@ void UNetDriver::ProcessLocalClientPackets()
 
 void UNetDriver::PostTickFlush()
 {
+#if UE_WITH_IRIS
+	if (ReplicationSystem && (ServerConnection != nullptr || ClientConnections.Num() > 0))
+	{
+		ReplicationSystem->PostSendUpdate();
+	}
+#endif // UE_WITH_IRIS
+
 	if (World && !bSkipClearVoicePackets)
 	{
 		UOnlineEngineInterface::Get()->ClearVoicePackets(World);
@@ -1375,7 +1368,7 @@ bool UNetDriver::InitBase(bool bInitAsClient, FNetworkNotify* InNotify, const FU
 
 	if (!bInitAsClient)
 	{
-		ConnectionlessHandler.Reset(nullptr);
+		ConnectionlessHandler.Reset();
 		
 		if (!IsUsingIrisReplication())
 		{
@@ -1522,9 +1515,9 @@ void UNetDriver::RegisterTickEvents(class UWorld* InWorld)
 {
 	if (InWorld)
 	{
-		TickDispatchDelegateHandle  = InWorld->OnTickDispatch ().AddUObject(this, &UNetDriver::TickDispatch);
+		TickDispatchDelegateHandle  = InWorld->OnTickDispatch ().AddUObject(this, &UNetDriver::InternalTickDispatch);
 		PostTickDispatchDelegateHandle	= InWorld->OnPostTickDispatch().AddUObject(this, &UNetDriver::PostTickDispatch);
-		TickFlushDelegateHandle     = InWorld->OnTickFlush    ().AddUObject(this, &UNetDriver::TickFlush);
+		TickFlushDelegateHandle     = InWorld->OnTickFlush    ().AddUObject(this, &UNetDriver::InternalTickFlush);
 		PostTickFlushDelegateHandle		= InWorld->OnPostTickFlush	 ().AddUObject(this, &UNetDriver::PostTickFlush);
 	}
 }
@@ -1538,6 +1531,18 @@ void UNetDriver::UnregisterTickEvents(class UWorld* InWorld)
 		InWorld->OnTickFlush    ().Remove(TickFlushDelegateHandle);
 		InWorld->OnPostTickFlush   ().Remove(PostTickFlushDelegateHandle);
 	}
+}
+
+void UNetDriver::InternalTickDispatch(float DeltaSeconds)
+{
+	TGuardValue<bool> GuardInNetTick(bInTick, true);
+	TickDispatch(DeltaSeconds);
+}
+
+void UNetDriver::InternalTickFlush(float DeltaSeconds)
+{
+	TGuardValue<bool> GuardInNetTick(bInTick, true);
+	TickFlush(DeltaSeconds);
 }
 
 static bool bCVarLogPendingGuidsOnShutdown = false;
@@ -1636,7 +1641,7 @@ void UNetDriver::Shutdown()
 	}
 	ActorChannelPool.Empty();
 
-	ConnectionlessHandler.Reset(nullptr);
+	ConnectionlessHandler.Reset();
 
 	SetReplicationDriver(nullptr);
 #if UE_WITH_IRIS
@@ -1743,8 +1748,6 @@ struct FRPCCSVTracker
 
 void UNetDriver::TickDispatch( float DeltaTime )
 {
-	TGuardValue<bool> GuardInNetTick(bInTick, true);
-
 	SendCycles=0;
 
 	const double CurrentRealtime = FPlatformTime::Seconds();
@@ -1780,13 +1783,16 @@ void UNetDriver::TickDispatch( float DeltaTime )
 			{
 				UNetConnection* CurConn = ClientConnections[ConnIdx];
 
-				if (CurConn->GetConnectionState() == USOCK_Closed)
+				if (IsValid(CurConn))
 				{
-					CurConn->CleanUp();
-				}
-				else if (IsValid(CurConn))
-				{
-					CurConn->PreTickDispatch();
+					if (CurConn->GetConnectionState() == USOCK_Closed)
+					{
+						CurConn->CleanUp();
+					}
+					else
+					{
+						CurConn->PreTickDispatch();
+					}
 				}
 			}
 		}
@@ -3127,8 +3133,7 @@ void HandleNetFlushAllDormancy(UNetDriver* InNetDriver, UWorld* InWorld)
 }
 #endif
 
-
-bool UNetDriver::Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
+bool UNetDriver::Exec_Dev( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 {
 #if !UE_BUILD_SHIPPING
 	int32 PacketLossBurstMilliseconds = 0;
@@ -3324,6 +3329,8 @@ void UNetDriver::NotifyActorDestroyed( AActor* ThisActor, bool IsSeamlessTravel 
 		ServerConnection->NotifyActorDestroyed(ThisActor);
 	}
 
+	NetworkObjects->OnActorDestroyed(ThisActor);
+
 	// Remove this actor from the network object list
 	RemoveNetworkActor( ThisActor );
 }
@@ -3344,6 +3351,20 @@ void UNetDriver::RemoveNetworkActor(AActor* Actor)
 	{
 		ReplicationDriver->RemoveNetworkActor(Actor);
 	}
+}
+
+void UNetDriver::DeleteSubObjectOnClients(AActor* Actor, UObject* SubObject)
+{
+#if UE_REPLICATED_OBJECT_REFCOUNTING
+	NetworkObjects->SetSubObjectForDeletion(Actor, SubObject);
+#endif
+}
+
+void UNetDriver::TearOffSubObjectOnClients(AActor* Actor, UObject* SubObject)
+{
+#if UE_REPLICATED_OBJECT_REFCOUNTING
+	NetworkObjects->SetSubObjectForTearOff(Actor, SubObject);
+#endif
 }
 
 void UNetDriver::NotifyActorRenamed(AActor* ThisActor, FName PreviousName)
@@ -3488,10 +3509,19 @@ void UNetDriver::NotifyActorTearOff(AActor* Actor)
 #if UE_WITH_IRIS
 	if (ReplicationSystem)
 	{
-		// Set the actor to be torn-off during the next update of the replication systeem
-		ReplicationSystem->TearOffNextUpdate(UE::Net::FReplicationSystemUtil::GetNetHandle(Actor));
+		if (UObjectReplicationBridge* Bridge = ReplicationSystem->GetReplicationBridgeAs<UObjectReplicationBridge>())
+		{
+			// Set the actor to be torn-off during the next update of the replication systeem
+			const UE::Net::FNetRefHandle ActorRefHandle = Bridge->GetReplicatedRefHandle(Actor);
+			ReplicationSystem->TearOffNextUpdate(ActorRefHandle);
+		}
 	}
 #endif // UE_WITH_IRIS
+}
+
+void UNetDriver::NotifyActorIsTraveling(AActor* TravelingActor)
+{
+	NetworkObjects->OnActorIsTraveling(TravelingActor);
 }
 
 void UNetDriver::ForceNetUpdate(AActor* Actor)
@@ -3506,7 +3536,11 @@ void UNetDriver::ForceNetUpdate(AActor* Actor)
 #if UE_WITH_IRIS
 	if (ReplicationSystem)
 	{
-		ReplicationSystem->MarkDirty(UE::Net::FReplicationSystemUtil::GetNetHandle(Actor));
+		if (UObjectReplicationBridge* Bridge = ReplicationSystem->GetReplicationBridgeAs<UObjectReplicationBridge>())
+		{
+			const UE::Net::FNetRefHandle ActorRefHandle = Bridge->GetReplicatedRefHandle(Actor);
+			ReplicationSystem->MarkDirty(ActorRefHandle);
+		}
 		return;
 	}
 #endif // UE_WITH_IRIS
@@ -3567,9 +3601,9 @@ void UNetDriver::FlushActorDormancy(AActor* Actor, bool bWasDormInitial)
 	}
 
 #if UE_WITH_IRIS
-	if (ReplicationSystem && ReplicationSystem->IsServer())
+	if (ReplicationSystem)
 	{
-		UE::Net::FReplicationSystemUtil::FlushNetDormancy(Actor, bWasDormInitial);
+		UE::Net::FReplicationSystemUtil::FlushNetDormancy(ReplicationSystem, Actor, bWasDormInitial);
 	}
 	else
 #endif // UE_WITH_IRIS
@@ -3588,7 +3622,7 @@ void UNetDriver::NotifyActorDormancyChange(AActor* Actor, ENetDormancy OldDorman
 #if UE_WITH_IRIS
 	if (ReplicationSystem)
 	{
-		UE::Net::FReplicationSystemUtil::NotifyActorDormancyChange(Actor, OldDormancyState);
+		UE::Net::FReplicationSystemUtil::NotifyActorDormancyChange(ReplicationSystem, Actor, OldDormancyState);
 	}
 	else
 #endif // UE_WITH_IRIS
@@ -3697,24 +3731,24 @@ void UNetDriver::AddReferencedObjects(UObject* InThis, FReferenceCollector& Coll
 	//			E.G., if we detected that FObjectReplicator / FReplicationChangelistMgrs detected
 	//			their associated objects were destroyed, we could destroy the Shadow Buffers
 	//			which should be the last thing referencing the FRepLayout and the Properties.
-	for (auto It = This->RepLayoutMap.CreateIterator(); It; ++It)
+	for (TPair<TWeakObjectPtr<UObject>, TSharedPtr<FRepLayout>>& Pair : This->RepLayoutMap)
 	{
-		It.Value()->AddReferencedObjects(Collector);
+		Pair.Value->AddReferencedObjects(Collector);
 	}
 	
 	for (FObjectReplicator* Replicator : This->AllOwnedReplicators)
 	{
 		if (Replicator->GetWeakObjectPtr().IsValid())
 		{
-			Collector.AddReferencedObject(Replicator->ObjectPtr, This);
+			Collector.AddStableReference(&Replicator->ObjectPtr);
 		}
 
-		Collector.AddReferencedObject(Replicator->ObjectClass, This);
+		Collector.AddStableReference(&Replicator->ObjectClass);
 	}
 
-	for (FConnectionMap::TIterator It(This->MappedClientConnections); It; ++It)
+	for (TPair<TSharedRef<const FInternetAddr>, UNetConnection*>& Pair : This->MappedClientConnections)
 	{
-		Collector.AddReferencedObject(It.Value(), This);
+		Collector.AddStableReference(&Pair.Value);
 	}
 
 	if (This->GuidCache.IsValid())
@@ -5115,18 +5149,19 @@ int32 UNetDriver::ServerReplicateActors(float DeltaSeconds)
 		// net.DormancyValidate can be set to 2 to validate all dormant actors against last known state before going dormant
 		if ( GNetDormancyValidate == 2 )
 		{
-			// TODO: DormantReplicatorMap will actually contain all Actors and Subobjects.
-			// This means that we will call FObjectReplicator::ValidateAgainstState multiple times for
-			// the same object (once for itself and again for each subobject).
-			for ( auto It = Connection->DormantReplicatorMap.CreateIterator(); It; ++It )
+			auto ValidateFunction = [](FObjectKey OwnerActorKey, FObjectKey ObjectKey, const TSharedRef<FObjectReplicator>& ReplicatorRef)
 			{
-				FObjectReplicator& Replicator = It.Value().Get();
+				FObjectReplicator& Replicator = ReplicatorRef.Get();
 
-				if ( Replicator.OwningChannel != nullptr )
+				// We will call FObjectReplicator::ValidateAgainstState multiple times for
+				// the same object (once for itself and again for each subobject).
+				if (Replicator.OwningChannel != nullptr)
 				{
-					Replicator.ValidateAgainstState( Replicator.OwningChannel->GetActor() );
+					Replicator.ValidateAgainstState(Replicator.OwningChannel->GetActor());
 				}
-			}
+			};
+				
+			Connection->ExecuteOnAllDormantReplicators(ValidateFunction);
 		}
 
 		// if this client shouldn't be ticked this frame
@@ -5712,9 +5747,9 @@ void UNetDriver::InitDestroyedStartupActors()
 			if (Level)
 			{
 				const TArray<FReplicatedStaticActorDestructionInfo>& DestroyedReplicatedStaticActors = Level->GetDestroyedReplicatedStaticActors();
-				for(const FReplicatedStaticActorDestructionInfo& Info : DestroyedReplicatedStaticActors)
+				for(const FReplicatedStaticActorDestructionInfo& CurInfo : DestroyedReplicatedStaticActors)
 				{
-					CreateReplicatedStaticActorDestructionInfo(Level, Info);
+					CreateReplicatedStaticActorDestructionInfo(Level, CurInfo);
 				}
 			}
 		}
@@ -5833,7 +5868,6 @@ void UNetDriver::SetWorld(class UWorld* InWorld)
 		WorldPackage = InWorld->GetOutermost();
 		Notify = InWorld;
 		RegisterTickEvents(InWorld);
-
 
 #if UE_WITH_IRIS
 		if (IsUsingIrisReplication())
@@ -5976,6 +6010,8 @@ void UNetDriver::PreSeamlessTravelGarbageCollect()
 void UNetDriver::PostSeamlessTravelGarbageCollect()
 {
 	CleanPackageMaps();
+
+	NetworkObjects->OnPostSeamlessTravel();
 }
 
 void UNetDriver::SetReplicationDriver(UReplicationDriver* NewReplicationDriver)
@@ -6255,8 +6291,8 @@ void UNetDriver::InitNetTraceId()
 	if (NetTraceId == NetTraceInvalidGameInstanceId)
 	{
 		// We just need to make sure that all active NetDriver`s running in the same game instance uses different NetTraceId`s.
-		static uint8 CurrentNetTraceId = 255;
-		NetTraceId = ++CurrentNetTraceId;
+		static uint8 CurrentNetTraceId = 0;
+		NetTraceId = 128 + ((++CurrentNetTraceId) & 127);
 	}
 }
 

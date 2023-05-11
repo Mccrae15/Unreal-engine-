@@ -1,16 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CommonInputSettings.h"
-#include "CommonInputPrivate.h"
-#include "Engine/UserInterfaceSettings.h"
-#include "Engine/StreamableManager.h"
-#include "Engine/AssetManager.h"
-#include "Misc/DataDrivenPlatformInfoRegistry.h"
-#include "CommonInputActionDomain.h"
-#include "CommonInputBaseTypes.h"
-#include "Engine/PlatformSettings.h"
+
+#include "ICommonInputModule.h"
+#include "Engine/DataTable.h"
+#include "Engine/PlatformSettingsManager.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(CommonInputSettings)
+
+#if !WITH_EDITOR
+#include "CommonInputPrivate.h"
+#endif
 
 UCommonInputSettings::UCommonInputSettings(const FObjectInitializer& Initializer)
 	: Super(Initializer)
@@ -134,6 +134,34 @@ FDataTableRowHandle UCommonInputSettings::GetDefaultBackAction() const
 	}
 	return FDataTableRowHandle();
 }
+
+UInputAction* UCommonInputSettings::GetEnhancedInputClickAction() const
+{
+	ensureMsgf(bInputDataLoaded, TEXT("Warning, CommonUI input data not loaded."));
+
+	if (InputDataClass && IsEnhancedInputSupportEnabled())
+	{
+		return InputDataClass.GetDefaultObject()->EnhancedInputClickAction;
+	}
+	return nullptr;
+}
+
+UInputAction* UCommonInputSettings::GetEnhancedInputBackAction() const
+{
+	ensureMsgf(bInputDataLoaded, TEXT("Warning, CommonUI input data not loaded."));
+
+	if (InputDataClass && IsEnhancedInputSupportEnabled())
+	{
+		return InputDataClass.GetDefaultObject()->EnhancedInputBackAction;
+	}
+	return nullptr;
+}
+
+bool UCommonInputSettings::IsEnhancedInputSupportEnabled() 
+{
+	static bool bEnabled = ICommonInputModule::Get().GetSettings().GetEnableEnhancedInputSupport();
+	return bEnabled;
+};
 
 void UCommonInputSettings::PostInitProperties()
 {

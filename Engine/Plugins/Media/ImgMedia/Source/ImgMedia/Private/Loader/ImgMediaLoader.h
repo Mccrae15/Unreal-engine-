@@ -156,10 +156,9 @@ public:
 	 * @param OutSample will be filled in with the sample if found.
 	 * @param bIsLoopingEnabled True if we can loop.
 	 * @param PlayRate How fast we are playing.
-	 * @param Facade does use blocking playback to fetch samples
 	 * @return True if successful.
 	 */
-	IMediaSamples::EFetchBestSampleResult FetchBestVideoSampleForTimeRange(const TRange<FMediaTimeStamp>& TimeRange, TSharedPtr<IMediaTextureSample, ESPMode::ThreadSafe>& OutSample, bool bIsLoopingEnabled, float PlayRate, bool bPlaybackIsBlocking);
+	IMediaSamples::EFetchBestSampleResult FetchBestVideoSampleForTimeRange(const TRange<FMediaTimeStamp>& TimeRange, TSharedPtr<IMediaTextureSample, ESPMode::ThreadSafe>& OutSample, bool bIsLoopingEnabled, float PlayRate);
 
 	/**
 	 * Checks to see if a sample is available at the specificed time.
@@ -261,6 +260,14 @@ public:
 	};
 
 	/**
+	 * Get the minumum mip level to upscale to lower quality mips (-1 if disabled).
+	 */
+	int32 GetMinimumLevelToUpscale() const
+	{
+		return MinimumMipLevelToUpscale;
+	};
+
+	/**
 	 * If mips are stored in separate files we should make sure to read it.
 	 */
 	bool MipsInSeparateFiles() const
@@ -356,6 +363,11 @@ public:
 	void ResetFetchLogic();
 
 	/**
+	 * Tell the loader if playback is blocking.
+	 */
+	void SetIsPlaybackBlocking(bool bIsBlocking);
+
+	/**
 	 * Handler for when the (owning) player's state changes to EMediaState::Paused.
 	 */
 	void HandlePause();
@@ -447,11 +459,12 @@ protected:
 	void Update(int32 PlayHeadFrame, float PlayRate, bool Loop);
 
 	/**
-	 * Adds an empty frame to the cache.
+	 * Adds an empty frame to the cache if no frame is present at the specified number.
 	 * 
 	 * @param FrameNumber Frame number to add.
+	 * @return True if the frame was added
 	 */
-	void AddEmptyFrame(int32 FrameNumber);
+	bool TryAddEmptyFrame(int32 FrameNumber);
 
 	/**
 	 * Adds a frame to the cache.
@@ -468,6 +481,13 @@ protected:
 	 * @param OutTileSelection Will be filled in with what tiles are actually needed.
 	 */
 	void GetDesiredMipTiles(int32 FrameIndex, TMap<int32, FImgMediaTileSelection>& OutMipsAndTiles);
+
+	/**
+	 * Get what mip level supporting readers should upscale.
+	 *
+	 * @return minimum mip level to upscale.
+	 */
+	int32 GetDesiredMinimumMipLevelToUpscale();
 
 	/***
 	 * Modulos the time so that it is between 0 and SequenceDuration.
@@ -507,6 +527,24 @@ protected:
 	 * @return True if it found a number.
 	 */
 	bool GetNumberAtEndOfString(int32& Number, const FString& String) const;
+
+	/**
+	 * Convert FrameIndex to a frame that fits with our skipping logic.
+	 * E.g. if SkipFramesLevel is 2, then this will return frames 4 frames apart.
+	 * E.g. FrameIndex	Return value
+	 *		0			3
+	 *		1			3
+	 *		2			3
+	 *		3			3
+	 *		4			7
+	 *		5			7
+	 */
+	int32 GetSkipFrame(int32 FrameIndex);
+
+	/**
+	 * Updates how we throttle bandwidth depending on current settings.
+	 */
+	void UpdateBandwidthThrottling();
 
 private:
 
@@ -548,6 +586,9 @@ private:
 
 	/** Stores num of mip levels if the sequence is made out of files that contain all mips in one file. */
 	int32 NumMipLevels;
+
+	/** Minumum mip level to upscale. */
+	TAtomic<int32> MinimumMipLevelToUpscale;
 
 	/** The image sequence reader to use. */
 	TSharedPtr<IImgMediaReader, ESPMode::ThreadSafe> Reader;
@@ -603,6 +644,27 @@ private:
 
 	/** Settings for the smart cache. */
 	FImgMediaLoaderSmartCacheSettings SmartCacheSettings;
+	/** True if the player is using blocked playback. */
+	bool bIsPlaybackBlocking;
+
+	/** If we want to throttle bandwidth when there is not enough bandwidth. */
+	bool bIsBandwidthThrottlingEnabled;
+	/** If we can skip frames to throttle bandwidth. */
+	bool bIsSkipFramesEnabled;
+	/** Keeps a count so we can raise/lower the skip level when this gets too high/low. */
+	int32 SkipFramesCounter;
+	/**
+	 * The current level of skipping.
+	 * The frame increment to the next frame is 1 << SkipFramesLevel.
+	 * So level 0 -> next frame is +1, i.e. the next frame, i.e. no skipping.
+	 *    level 1 -> next frame is +2, i.e. we skip 1 frame.
+	 *    level 2 -> next frame is +4, i.e. we skip 3 frames.
+	 */
+	int32 SkipFramesLevel;
+	/** When SkipFramesCounter is greater than this, then increase SkipFramesLevel. */
+	const int32 SkipFramesCounterRaiseLevelThreshold = 10;
+	/** When SkipFramesLevel changes, the value of SkipFramesCounter will reset to this. */
+	const int32 SkipFramesCounterNewLevelValue = 5;
 
 #if WITH_EDITOR
 	/** Bandwidth estimation. */

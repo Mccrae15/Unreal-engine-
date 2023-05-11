@@ -10,7 +10,6 @@ using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using EpicGames.Core;
 using EpicGames.Redis;
-using Horde.Build.Utilities;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using StackExchange.Redis;
@@ -46,7 +45,7 @@ namespace Horde.Build.Server
 		/// The database interface.
 		/// If possible, use ConnectionPool instead. 
 		/// </summary>
-		public IDatabase Database { get; }
+		public IDatabase DatabaseSingleton { get; }
 
 		/// <summary>
 		/// Connection pool
@@ -108,7 +107,7 @@ namespace Horde.Build.Server
 			}
 
 			_multiplexer = ConnectionMultiplexer.Connect(connectionString);
-			Database = _multiplexer.GetDatabase(dbNum);
+			DatabaseSingleton = _multiplexer.GetDatabase(dbNum);
 			ConnectionPool = new RedisConnectionPool(20, connectionString, dbNum);
 		}
 
@@ -221,6 +220,60 @@ namespace Horde.Build.Server
 				}
 			}
 			redisLogger.LogInformation("Exit code {ExitCode}", _redisProcess.ExitCode);
+		}
+
+		/// <summary>
+		/// Publish a message to a channel
+		/// </summary>
+		/// <param name="channel">Channel to post to</param>
+		/// <param name="message">Message to post to the channel</param>
+		/// <param name="flags">Flags for the request</param>
+		public Task PublishAsync(RedisChannel channel, RedisValue message, CommandFlags flags = CommandFlags.None)
+		{
+			return ConnectionPool.GetDatabase().PublishAsync(channel, message, flags);
+		}
+
+		/// <summary>
+		/// Publish a message to a channel
+		/// </summary>
+		/// <typeparam name="T">Type of elements sent over the channel</typeparam>
+		/// <param name="channel">Channel to post to</param>
+		/// <param name="message">Message to post to the channel</param>
+		/// <param name="flags">Flags for the request</param>
+		public Task PublishAsync<T>(RedisChannel<T> channel, T message, CommandFlags flags = CommandFlags.None)
+		{
+			return ConnectionPool.GetDatabase().PublishAsync(channel, message, flags);
+		}
+
+		/// <inheritdoc cref="SubscribeAsync{T}(RedisChannel{T}, Action{RedisChannel{T}, T})"/>
+		public Task<RedisSubscription> SubscribeAsync(RedisChannel channel, Action<RedisValue> callback) => SubscribeAsync(channel, (ch, x) => callback(x));
+
+		/// <inheritdoc cref="SubscribeAsync{T}(RedisChannel{T}, Action{RedisChannel{T}, T})"/>
+		public Task<RedisSubscription> SubscribeAsync<T>(RedisChannel<T> channel, Action<T> callback) => SubscribeAsync(channel, (ch, x) => callback(x));
+
+		/// <summary>
+		/// Subscribe to notifications on a channel
+		/// </summary>
+		/// <param name="channel">Channel to monitor</param>
+		/// <param name="callback">Callback for new events</param>
+		/// <returns>Subscription object</returns>
+		public async Task<RedisSubscription> SubscribeAsync(RedisChannel channel, Action<RedisChannel, RedisValue> callback)
+		{
+			IConnectionMultiplexer connection = ConnectionPool.GetConnection();
+			return await connection.SubscribeAsync(channel, callback);
+		}
+
+		/// <summary>
+		/// Subscribe to notifications on a channel
+		/// </summary>
+		/// <typeparam name="T">Type of elements sent over the channel</typeparam>
+		/// <param name="channel">Channel to monitor</param>
+		/// <param name="callback">Callback for new events</param>
+		/// <returns>Subscription object</returns>
+		public async Task<RedisSubscription> SubscribeAsync<T>(RedisChannel<T> channel, Action<RedisChannel<T>, T> callback)
+		{
+			IConnectionMultiplexer connection = ConnectionPool.GetConnection();
+			return await connection.SubscribeAsync(channel, callback);
 		}
 	}
 }

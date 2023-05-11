@@ -2,6 +2,7 @@
 
 #include "Animation/BlendProfile.h"
 #include "AlphaBlend.h"
+#include "Animation/AnimationAsset.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(BlendProfile)
 
@@ -49,6 +50,41 @@ void UBlendProfile::RemoveEntry(int32 InBoneIdx)
 		{
 			return Current.BoneReference.BoneIndex == InBoneIdx;
 		});
+}
+
+void UBlendProfile::RefreshBoneEntry(int32 InBoneIndex)
+{
+	FBlendProfileBoneEntry* FoundEntry = ProfileEntries.FindByPredicate([InBoneIndex](const FBlendProfileBoneEntry& Entry)
+		{
+			return Entry.BoneReference.BoneIndex == InBoneIndex;
+		});
+
+	if (FoundEntry)
+	{
+		FoundEntry->BoneReference.BoneName = OwningSkeleton->GetReferenceSkeleton().GetBoneName(InBoneIndex);
+		FoundEntry->BoneReference.Initialize(OwningSkeleton);
+	}
+}
+
+void UBlendProfile::RefreshBoneEntriesFromName()
+{
+	for (FBlendProfileBoneEntry& Entry : ProfileEntries)
+	{
+		Entry.BoneReference.Initialize(OwningSkeleton);
+	}
+}
+
+void UBlendProfile::CleanupBoneEntries()
+{
+	ProfileEntries.RemoveAll([](const FBlendProfileBoneEntry& Entry)
+		{
+			return !Entry.BoneReference.HasValidSetup();
+		});
+}
+
+const FBlendProfileBoneEntry& UBlendProfile::GetEntry(const int32 InEntryIdx) const
+{
+	return ProfileEntries[InEntryIdx];
 }
 
 float UBlendProfile::GetBoneBlendScale(int32 InBoneIdx) const

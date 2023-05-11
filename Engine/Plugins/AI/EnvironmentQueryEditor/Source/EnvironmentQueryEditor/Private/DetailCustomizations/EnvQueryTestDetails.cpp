@@ -1,23 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DetailCustomizations/EnvQueryTestDetails.h"
-#include "UObject/Class.h"
-#include "Layout/Margin.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Widgets/SWidget.h"
-#include "Widgets/SBoxPanel.h"
 #include "SlateOptMacros.h"
-#include "Textures/SlateIcon.h"
-#include "Framework/Commands/UIAction.h"
-#include "Widgets/Text/STextBlock.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/Input/SComboButton.h"
 #include "EnvironmentQuery/EnvQueryTest.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
 #include "IDetailGroup.h"
-#include "IDetailPropertyRow.h"
-#include "DetailCategoryBuilder.h"
 #include "STestFunctionWidget.h"
 
 #define LOCTEXT_NAMESPACE "EnvQueryTestDetails"
@@ -317,13 +307,13 @@ void FEnvQueryTestDetails::BuildScoreEquationValues()
 
 void FEnvQueryTestDetails::OnFilterTestChange(int32 Index)
 {
-	uint8 EnumValue = Index;
+	const uint8 EnumValue = IntCastChecked<uint8>(Index);
 	FilterTypeHandle->SetValue(EnumValue);
 }
 
 void FEnvQueryTestDetails::OnScoreEquationChange(int32 Index)
 {
-	uint8 EnumValue = Index;
+	const uint8 EnumValue = IntCastChecked<uint8>(Index);
 	ScoreEquationHandle->SetValue(EnumValue);
 }
 
@@ -361,14 +351,14 @@ void FEnvQueryTestDetails::BuildScoreClampingTypeValues(bool bBuildMinValues, TA
 void FEnvQueryTestDetails::OnClampMinTestChange(int32 Index)
 {
 	check(ClampMinTypeHandle.IsValid());
-	uint8 EnumValue = Index;
+	const uint8 EnumValue = IntCastChecked<uint8>(Index);
 	ClampMinTypeHandle->SetValue(EnumValue);
 }
 
 void FEnvQueryTestDetails::OnClampMaxTestChange(int32 Index)
 {
 	check(ClampMaxTypeHandle.IsValid());
-	uint8 EnumValue = Index;
+	const uint8 EnumValue = IntCastChecked<uint8>(Index);
 	ClampMaxTypeHandle->SetValue(EnumValue);
 }
 

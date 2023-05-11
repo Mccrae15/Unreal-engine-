@@ -2,16 +2,18 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/UObjectGlobals.h"
 #include "UObject/Object.h"
 #include "Templates/SubclassOf.h"
-#include "UObject/CoreNet.h"
 #include "Engine/EngineTypes.h"
 #include "Engine/EngineBaseTypes.h"
 #include "UObject/ScriptMacros.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
 #include "EdGraph/EdGraphPin.h"
+#include "UObject/CoreNet.h"
+#endif
 #include "Interfaces/Interface_AssetUserData.h"
 #include "UObject/StructOnScope.h"
 #include "PropertyPairsMap.h"
@@ -21,12 +23,13 @@
 struct FTypedElementHandle;
 
 class AActor;
+class IRepChangedPropertyTracker;
 class UActorComponent;
 class UAssetUserData;
 class ULevel;
 class UWorld;
 class UPrimitiveComponent;
-
+struct FSimpleMemberReference;
 
 ENGINE_API extern int32 GEnableDeferredPhysicsCreation;
 
@@ -521,10 +524,32 @@ public:
 	void AddReplicatedSubObject(UObject* SubObject, ELifetimeCondition NetCondition = COND_None);
 
 	/**
-	* Unregister a SubObject so it stops being replicated.
-	* @param SubObject The subobject to remove
+	* Unregister a SubObject to stop replicating it's properties to clients.
+	* This does not remove or delete it from connections where it was already replicated.
+	* By default a replicated subobject gets deleted on clients when the original pointer on the authority gets invalidated.
+	* If you want to immediately remove it from client use the DestroyReplicatedSubObjectOnRemotePeers or TearOffReplicatedSubObject functions instead of this one.
+	* @param SubObject The SubObject to remove
 	*/
 	void RemoveReplicatedSubObject(UObject* SubObject);
+
+	/**
+	* Stop replicating a subobject and tell actor channels to delete the replica of this subobject next time the Actor gets replicated
+	* Note it is up to the caller to delete the local object on the authority.
+	* If you are using the legacy subobject replication method (ReplicateSubObjects() aka bReplicateUsingRegisteredSubObjectList=false) make sure the
+	* subobject doesn't get replicated there either.
+	* @param SubObject THe SubObject to delete
+	*/
+	void DestroyReplicatedSubObjectOnRemotePeers(UObject* SubObject);
+
+	/**
+	* Stop replicating a subobject and tell actor channels who spawned a replica of this subobject to release ownership over it.
+	* This means that on the remote connection the network engine will stop holding a reference to the subobject and it's up to other systems
+	* to keep that reference active or the subobject will get garbage collected.
+	* If you are using the legacy subobject replication method (ReplicateSubObjects() aka bReplicateUsingRegisteredSubObjectList=false) make sure the
+	* subobject doesn't get replicated there either.
+	* @param SubObject The SubObject to tear off
+	*/
+	void TearOffReplicatedSubObjectOnRemotePeers(UObject* SubObject);
 
 	/**
 	* Tells if the object is registered to be replicated by this actor component.
@@ -1009,6 +1034,7 @@ public:
 	virtual bool IsSelectedInEditor() const override;
 	virtual void SetPackageExternal(bool bExternal, bool bShouldDirty) {}
 	virtual FBox GetStreamingBounds() const { return FBox(ForceInit); }
+	virtual bool ForceActorNonSpatiallyLoaded() const { return false; }
 #endif // WITH_EDITOR
 	//~ End UObject Interface.
 

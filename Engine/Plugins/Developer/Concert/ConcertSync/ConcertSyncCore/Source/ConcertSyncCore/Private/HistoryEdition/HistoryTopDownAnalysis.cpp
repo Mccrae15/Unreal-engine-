@@ -4,10 +4,12 @@
 
 #include "Algo/Find.h"
 
-#include "HistoryEdition/ActivityGraphIDs.h"
+#include "HistoryEdition/ActivityDependencyEdge.h"
+#include "HistoryEdition/ActivityDependencyGraph.h"
 #include "HistoryEdition/DependencyGraphBuilder.h"
 
 #include "Containers/Queue.h"
+#include "HistoryEdition/ActivityNode.h"
 
 namespace UE::ConcertSyncCore
 {

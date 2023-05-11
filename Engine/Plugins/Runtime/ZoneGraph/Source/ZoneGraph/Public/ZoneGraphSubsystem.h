@@ -130,7 +130,7 @@ protected:
 	virtual void Deinitialize() override;
 	virtual void Tick(float DeltaTime) override;
 	virtual TStatId GetStatId() const override;
-
+	
 	void RemoveRegisteredDataItem(const int32 Index);
 	void UnregisterStaleZoneGraphDataInstances();
 	void RegisterZoneGraphDataInstances();

@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PoseWatchManagerColumnColor.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Layout/WidgetPath.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Layout/SSpacer.h"
 #include "Widgets/Images/SImage.h"
@@ -33,7 +35,7 @@ public:
 			.VAlign(VAlign_Center)
 			[
 				SAssignNew(ColorWidgetBackgroundBorder, SBorder)
-				.Padding(1)
+				.Padding(1.f)
 				.BorderImage(FAppStyle::Get().GetBrush("ColorPicker.RoundedSolidBackground"))
 				.BorderBackgroundColor(this, &SColorBoxWidget::GetColorWidgetBorderColor)
 				.VAlign(VAlign_Center)
@@ -79,7 +81,7 @@ public:
 			PickerArgs.DisplayGamma = TAttribute<float>::Create(TAttribute<float>::FGetter::CreateUObject(GEngine, &UEngine::GetDisplayGamma));
 			PickerArgs.OnColorCommitted = FOnLinearColorValueChanged::CreateSP(this, &SColorBoxWidget::OnSetColorFromColorPicker);
 			PickerArgs.OnColorPickerCancelled = FOnColorPickerCancelled::CreateSP(this, &SColorBoxWidget::OnColorPickerCancelled);
-			PickerArgs.InitialColorOverride = TreeItem->GetColor();
+			PickerArgs.InitialColor = TreeItem->GetColor();
 			PickerArgs.ParentWidget = ColorPickerParentWidget;
 			PickerArgs.OptionalOwningDetailsView = ColorPickerParentWidget;
 			FWidgetPath ParentWidgetPath;

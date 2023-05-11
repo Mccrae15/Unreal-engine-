@@ -6,11 +6,13 @@
 #include "HAL/FileManager.h"
 #include "Logging/LogMacros.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/EngineVersion.h"
 #include "Misc/FileHelper.h"
 #include "Algo/ForEach.h"
 #include "UObject/SavePackage.h"
 
 #include "ActorFolder.h"
+#include "Engine/Engine.h"
 #include "EngineUtils.h"
 #include "SourceControlHelpers.h"
 #include "ISourceControlModule.h"
@@ -28,6 +30,7 @@
 
 #include "Engine/StaticMesh.h"
 #include "Engine/LevelStreamingGCHelper.h"
+#include "Engine/Texture.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstance.h"
 
@@ -130,7 +133,7 @@ public:
 		{
 			if (!Add(Package))
 			{
-				UE_LOG(LogWorldPartitionHLODsBuilder, Error, TEXT("Error adding package %s to source control."), *Package->GetName());
+				UE_LOG(LogWorldPartitionHLODsBuilder, Error, TEXT("Error adding package %s to revision control."), *Package->GetName());
 				return false;
 			}
 		}
@@ -264,7 +267,7 @@ bool UWorldPartitionHLODsBuilder::ValidateParams() const
 
 	if (ShouldRunStep(EHLODBuildStep::HLOD_Finalize) && bAutoSubmit && !ISourceControlModule::Get().GetProvider().IsEnabled())
 	{
-		UE_LOG(LogWorldPartitionHLODsBuilder, Error, TEXT("Submit requires that a valid source control provider is enabled, exiting..."), *BuildManifest);
+		UE_LOG(LogWorldPartitionHLODsBuilder, Error, TEXT("Submit requires that a valid revision control provider is enabled, exiting..."), *BuildManifest);
 		return false;
 	}
 
@@ -488,6 +491,8 @@ bool UWorldPartitionHLODsBuilder::BuildHLODActors()
 		UPackage* ActorPackage = HLODActor->GetPackage();
 		if (ActorPackage->IsDirty())
 		{
+			UE_LOG(LogWorldPartitionHLODsBuilder, Display, TEXT("[%d / %d] HLOD actor %s was modified, saving..."), CurrentActor + 1, HLODActorsToBuild.Num(), *HLODActor->GetActorLabel());
+
 			bool bSaved = SourceControlHelper->Save(ActorPackage);
 			if (!bSaved)
 			{
@@ -608,10 +613,10 @@ bool UWorldPartitionHLODsBuilder::DumpStats()
 		uint64				VertexCount = 0;
 		uint64				UVChannelCount = 0;
 
-		uint32				BaseColorTextureSize = 0;
-		uint32				NormalTextureSize = 0;
-		uint32				MRSTextureSize = 0;
-		uint32				EmissiveTextureSize = 0;
+		float				BaseColorTextureSize = 0.0f;
+		float				NormalTextureSize = 0.0f;
+		float				MRSTextureSize = 0.0f;
+		float				EmissiveTextureSize = 0.0f;
 
 		uint64				MeshResourceSize = 0;
 		uint64				TexturesResourceSize = 0;
@@ -625,7 +630,7 @@ bool UWorldPartitionHLODsBuilder::DumpStats()
 
 		FString ToCSVString() const
 		{
-			return FString::Printf(TEXT("%s, %s, %s, %d, %d, %d, %s, %s, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d"), 
+			return FString::Printf(TEXT("%s, %s, %s, %d, %d, %d, %s, %s, %d, %d, %d, %d, %d, %d, %.0f, %.0f, %.0f, %.0f, %d, %d, %d"), 
 				*Name, 
 				*RuntimeGrid.ToString(),
 				bIsSpatiallyLoaded ? TEXT("true") : TEXT("false"),
@@ -1156,7 +1161,7 @@ bool UWorldPartitionHLODsBuilder::CopyFilesFromWorkingDir(const FString& SourceD
 				bRet = USourceControlHelpers::MarkFilesForAdd(ToAdd);
 				if (!bRet)
 				{
-					UE_LOG(LogWorldPartitionHLODsBuilder, Error, TEXT("Adding files to source control failed: %s"), *USourceControlHelpers::LastErrorMsg().ToString());
+					UE_LOG(LogWorldPartitionHLODsBuilder, Error, TEXT("Adding files to revision control failed: %s"), *USourceControlHelpers::LastErrorMsg().ToString());
 					return false;
 				}
 			}
@@ -1170,7 +1175,7 @@ bool UWorldPartitionHLODsBuilder::CopyFilesFromWorkingDir(const FString& SourceD
 				bRet = USourceControlHelpers::MarkFilesForDelete(FilesToDelete);
 				if (!bRet)
 				{
-					UE_LOG(LogWorldPartitionHLODsBuilder, Error, TEXT("Deleting files from source control failed: %s"), *USourceControlHelpers::LastErrorMsg().ToString());
+					UE_LOG(LogWorldPartitionHLODsBuilder, Error, TEXT("Deleting files from revision control failed: %s"), *USourceControlHelpers::LastErrorMsg().ToString());
 					return false;
 				}
 			}
@@ -1198,7 +1203,7 @@ bool UWorldPartitionHLODsBuilder::CopyFilesFromWorkingDir(const FString& SourceD
 				bRet = USourceControlHelpers::CheckOutFiles(ToEdit);
 				if (!bRet)
 				{
-					UE_LOG(LogWorldPartitionHLODsBuilder, Error, TEXT("Checking out files from source control failed: %s"), *USourceControlHelpers::LastErrorMsg().ToString());
+					UE_LOG(LogWorldPartitionHLODsBuilder, Error, TEXT("Checking out files from revision control failed: %s"), *USourceControlHelpers::LastErrorMsg().ToString());
 					return false;
 				}
 			}

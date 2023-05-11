@@ -16,6 +16,7 @@
 #include "ControlRigBlueprintUtils.h"
 #include "ScopedTransaction.h"
 #include "ControlRig.h"
+#include "RigVMModel/Nodes/RigVMDispatchNode.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ControlRigTemplateNodeSpawner)
 
@@ -98,6 +99,20 @@ bool UControlRigTemplateNodeSpawner::IsTemplateNodeFilteredOut(FBlueprintActionF
 							{
 								if (const FRigVMTemplate* Template = FRigVMRegistry::Get().FindTemplate(TemplateNotation))
 								{
+									if(ModelPin->IsExecuteContext())
+									{
+										FRigVMDispatchContext DispatchContext;
+										if(const URigVMDispatchNode* DispatchNode = Cast<URigVMDispatchNode>(ModelPin->GetNode()))
+										{
+											DispatchContext = DispatchNode->GetDispatchContext();
+										}
+
+										if(Template->NumExecuteArguments(DispatchContext) > 0)
+										{
+											return false;
+										}
+									}
+									
 									for (int32 i=0; i<Template->NumArguments(); ++i)
 									{
 										const FRigVMTemplateArgument* Argument = Template->GetArgument(i);

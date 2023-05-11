@@ -2,10 +2,10 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
+#include "Async/TaskGraphInterfaces.h"
 #include "IMessageContext.h"
-#include "IMessageAttachment.h"
+#include "Misc/Crc.h"
+#include "Misc/DateTime.h"
 #include "UdpMessagingTestTypes.generated.h"
 
 USTRUCT()
@@ -25,6 +25,24 @@ struct FUdpMockMessage
 	{
 		Data.AddUninitialized(DataSize);
 	}
+
+	bool Serialize(FArchive& Ar)
+	{
+		int32 Num = Data.Num();
+		Ar << Num;
+		if (Ar.IsLoading())
+		{
+			Data.AddUninitialized(Num);
+		}
+		Ar.Serialize(Data.GetData(), Num);
+		return true;
+	}
+
+	uint32 ComputeCRC() const
+	{
+		uint32 CRC = 0;
+		return FCrc::MemCrc32(Data.GetData(), Data.Num(), CRC);
+	}
 };
 
 
@@ -33,11 +51,11 @@ class FUdpMockMessageContext
 {
 public:
 
-	FUdpMockMessageContext(FUdpMockMessage* InMessage, const FDateTime& InTimeSent)
+	FUdpMockMessageContext(FUdpMockMessage* InMessage, const FDateTime& InTimeSent, EMessageFlags SentFlags = EMessageFlags::None)
 		: Expiration(FDateTime::MaxValue())
 		, Message(InMessage)
 		, Scope(EMessageScope::Network)
-		, Flags(EMessageFlags::None)
+		, Flags(SentFlags)
 		, SenderThread(ENamedThreads::AnyThread)
 		, TimeSent(InTimeSent)
 		, TypeInfo(FUdpMockMessage::StaticStruct())

@@ -76,40 +76,6 @@ namespace UnrealBuildTool
 				Logger.LogInformation("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~");
 			}
 
-			// Also add implicit descriptors for cleaning UnrealBuildTool
-			if (!BuildConfiguration.bDoNotBuildUHT)
-			{
-				const string UnrealHeaderToolTarget = "UnrealHeaderTool";
-
-				// Get a list of project files to clean UHT for
-				List<FileReference?> ProjectFiles = new List<FileReference?>();
-				foreach (TargetDescriptor TargetDesc in TargetDescriptors)
-				{
-					if (TargetDesc.Name != UnrealHeaderToolTarget && !RemoteMac.HandlesTargetPlatform(TargetDesc.Platform))
-					{
-						if (ProjectFiles.Count == 0)
-						{
-							ProjectFiles.Add(null);
-						}
-						if (TargetDesc.ProjectFile != null && !ProjectFiles.Contains(TargetDesc.ProjectFile))
-						{
-							ProjectFiles.Add(TargetDesc.ProjectFile);
-						}
-					}
-				}
-
-				// Add descriptors for cleaning UHT with all these projects
-				if (ProjectFiles.Count > 0)
-				{
-					UnrealTargetConfiguration Configuration = BuildConfiguration.bForceDebugUnrealHeaderTool ? UnrealTargetConfiguration.Debug : UnrealTargetConfiguration.Development;
-					string Architecture = UEBuildPlatform.GetBuildPlatform(BuildHostPlatform.Current.Platform).GetDefaultArchitecture(null);
-					foreach (FileReference? ProjectFile in ProjectFiles)
-					{
-						TargetDescriptors.Add(new TargetDescriptor(ProjectFile, UnrealHeaderToolTarget, BuildHostPlatform.Current.Platform, Configuration, Architecture, null));
-					}
-				}
-			}
-
 			// Output the list of targets that we're cleaning
 			Logger.LogInformation("Cleaning {TargetNames} binaries...", StringUtils.FormatList(TargetDescriptors.Select(x => x.Name).Distinct()));
 
@@ -127,7 +93,7 @@ namespace UnrealBuildTool
 					RulesAssembly RulesAssembly = RulesCompiler.CreateTargetRulesAssembly(TargetDescriptor.ProjectFile, TargetDescriptor.Name, bSkipRulesCompile, BuildConfiguration.bForceRulesCompile, BuildConfiguration.bUsePrecompiled, TargetDescriptor.ForeignPlugin, Logger);
 
 					// Create the rules object
-					ReadOnlyTargetRules Target = new ReadOnlyTargetRules(RulesAssembly.CreateTargetRules(TargetDescriptor.Name, TargetDescriptor.Platform, TargetDescriptor.Configuration, TargetDescriptor.Architecture, TargetDescriptor.ProjectFile, TargetDescriptor.AdditionalArguments, Logger));
+					ReadOnlyTargetRules Target = new ReadOnlyTargetRules(RulesAssembly.CreateTargetRules(TargetDescriptor.Name, TargetDescriptor.Platform, TargetDescriptor.Configuration, TargetDescriptor.Architectures, TargetDescriptor.ProjectFile, TargetDescriptor.AdditionalArguments, Logger));
 
 					if (!bSkipPreBuildTargets && Target.PreBuildTargets.Count > 0)
 					{
@@ -171,13 +137,13 @@ namespace UnrealBuildTool
 						NameSuffixes.Add("");
 					}
 					NameSuffixes.Add(String.Format("-{0}-{1}", Target.Platform.ToString(), Target.Configuration.ToString()));
-					if (!String.IsNullOrEmpty(Target.Architecture))
+					if (UnrealArchitectureConfig.ForPlatform(Target.Platform).RequiresArchitectureFilenames(Target.Architectures))
 					{
-						NameSuffixes.AddRange(NameSuffixes.ToArray().Select(x => x + Target.Architecture));
+						NameSuffixes.AddRange(NameSuffixes.ToArray().Select(x => x + Target.Architecture.ToString()));
 					}
 
 					// Add all the makefiles and caches to be deleted
-					FilesToDelete.Add(TargetMakefile.GetLocation(Target.ProjectFile, Target.Name, Target.Platform, Target.Architecture, Target.Configuration));
+					FilesToDelete.Add(TargetMakefile.GetLocation(Target.ProjectFile, Target.Name, Target.Platform, Target.Architectures, Target.Configuration));
 					FilesToDelete.UnionWith(SourceFileMetadataCache.GetFilesToClean(Target.ProjectFile));
 
 					// Add all the intermediate folders to be deleted
@@ -185,13 +151,13 @@ namespace UnrealBuildTool
 					{
 						foreach (string NamePrefix in NamePrefixes)
 						{
-							DirectoryReference GeneratedCodeDir = DirectoryReference.Combine(BaseDir, UEBuildTarget.GetPlatformIntermediateFolder(Target.Platform, Target.Architecture, false), NamePrefix, "Inc");
+							DirectoryReference GeneratedCodeDir = DirectoryReference.Combine(BaseDir, UEBuildTarget.GetPlatformIntermediateFolder(Target.Platform, Target.Architectures, false), NamePrefix, "Inc");
 							if (DirectoryReference.Exists(GeneratedCodeDir))
 							{
 								DirectoriesToDelete.Add(GeneratedCodeDir);
 							}
 
-							DirectoryReference IntermediateDir = DirectoryReference.Combine(BaseDir, UEBuildTarget.GetPlatformIntermediateFolder(Target.Platform, Target.Architecture, false), NamePrefix, Target.Configuration.ToString());
+							DirectoryReference IntermediateDir = DirectoryReference.Combine(BaseDir, UEBuildTarget.GetPlatformIntermediateFolder(Target.Platform, Target.Architectures, false), NamePrefix, Target.Configuration.ToString());
 							if (DirectoryReference.Exists(IntermediateDir))
 							{
 								DirectoriesToDelete.Add(IntermediateDir);

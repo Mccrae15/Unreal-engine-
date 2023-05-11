@@ -2,13 +2,15 @@
 
 #pragma once
 
-#include "Interactions/SocialInteractionHandle.h"
-#include "OnlineSessionSettings.h"
+#include "OnlineSubsystemTypes.h"
 #include "Party/PartyTypes.h"
 #include "SocialTypes.h"
-#include "UObject/Object.h"
 
 #include "SocialUser.generated.h"
+
+class FSocialInteractionHandle;
+class USocialToolkit;
+class USocialUser;
 
 class IOnlinePartyJoinInfo;
 class FOnlineUserPresence;
@@ -94,8 +96,8 @@ public:
 	bool SetUserLocalAttribute(ESocialSubsystem SubsystemType, const FString& AttrName, const FString& AttrValue);
 	bool GetUserAttribute(ESocialSubsystem SubsystemType, const FString& AttrName, FString& OutAttrValue) const;
 
-	bool HasAnyInteractionsAvailable() const;
-	TArray<FSocialInteractionHandle> GetAllAvailableInteractions() const;
+	virtual bool HasAnyInteractionsAvailable() const;
+	virtual TArray<FSocialInteractionHandle> GetAllAvailableInteractions() const;
 
 	virtual bool CanSendFriendInvite(ESocialSubsystem SubsystemType) const;
 	virtual bool SendFriendInvite(ESocialSubsystem SubsystemType);
@@ -250,7 +252,7 @@ private:
 	TArray<IOnlinePartyJoinInfoConstRef> ReceivedPartyInvites;
 
 	// Initialization delegates that fire only when a specific user has finishing initializing
-	static TMap<TWeakObjectPtr<USocialUser>, TArray<FOnNewSocialUserInitialized>> InitEventsByUser;
+	TArray<FOnNewSocialUserInitialized> UserInitializedEvents;
 
 	mutable FOnNicknameChanged OnSetNicknameCompletedEvent;
 	mutable FPartyInviteResponseEvent OnPartyInviteAcceptedEvent;
@@ -262,3 +264,8 @@ private:
 	mutable FOnSubsystemIdEstablished OnSubsystemIdEstablishedEvent;
 	mutable FOnUserGameSpecificStatusChanged OnUserGameSpecificStatusChangedEvent;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "Interactions/SocialInteractionHandle.h"
+#include "OnlineSessionSettings.h"
+#endif

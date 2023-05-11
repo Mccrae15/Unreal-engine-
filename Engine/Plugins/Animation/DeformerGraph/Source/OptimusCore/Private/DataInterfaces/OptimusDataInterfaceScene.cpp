@@ -11,6 +11,8 @@
 #include "ShaderCompilerCore.h"
 #include "ShaderParameterMetadataBuilder.h"
 
+#include UE_INLINE_GENERATED_CPP_BY_NAME(OptimusDataInterfaceScene)
+
 FString UOptimusSceneDataInterface::GetDisplayName() const
 {
 	return TEXT("Scene Data");
@@ -58,9 +60,16 @@ void UOptimusSceneDataInterface::GetShaderParameters(TCHAR const* UID, FShaderPa
 	InOutBuilder.AddNestedStruct<FSceneDataInterfaceParameters>(UID);
 }
 
+TCHAR const* UOptimusSceneDataInterface::TemplateFilePath = TEXT("/Plugin/Optimus/Private/DataInterfaceScene.ush");
+
+TCHAR const* UOptimusSceneDataInterface::GetShaderVirtualPath() const
+{
+	return TemplateFilePath;
+}
+
 void UOptimusSceneDataInterface::GetShaderHash(FString& InOutKey) const
 {
-	GetShaderFileHash(TEXT("/Plugin/Optimus/Private/DataInterfaceScene.ush"), EShaderPlatform::SP_PCD3D_SM5).AppendString(InOutKey);
+	GetShaderFileHash(TemplateFilePath, EShaderPlatform::SP_PCD3D_SM5).AppendString(InOutKey);
 }
 
 void UOptimusSceneDataInterface::GetHLSL(FString& OutHLSL, FString const& InDataInterfaceName) const
@@ -71,7 +80,7 @@ void UOptimusSceneDataInterface::GetHLSL(FString& OutHLSL, FString const& InData
 	};
 
 	FString TemplateFile;
-	LoadShaderSourceFile(TEXT("/Plugin/Optimus/Private/DataInterfaceScene.ush"), EShaderPlatform::SP_PCD3D_SM5, &TemplateFile, nullptr);
+	LoadShaderSourceFile(TemplateFilePath, EShaderPlatform::SP_PCD3D_SM5, &TemplateFile, nullptr);
 	OutHLSL += FString::Format(*TemplateFile, TemplateArgs);
 }
 
@@ -91,12 +100,14 @@ FComputeDataProviderRenderProxy* UOptimusSceneDataProvider::GetRenderProxy()
 
 FOptimusSceneDataProviderProxy::FOptimusSceneDataProviderProxy(USceneComponent* SceneComponent)
 {
-	bool bUseSceneTime = SceneComponent != nullptr;
+	bIsValid = SceneComponent != nullptr;
+	
+	bool bUseSceneTime = bIsValid;
 #if WITH_EDITOR
 	// Don't tick time in Editor unless in PIE.
-	if (GIsEditor && bUseSceneTime)
+	if (GIsEditor && bIsValid)
 	{
-		bUseSceneTime &= (bUseSceneTime && SceneComponent->GetWorld() != nullptr && SceneComponent->GetWorld()->WorldType != EWorldType::Editor);
+		bIsValid &= (bUseSceneTime && SceneComponent->GetWorld() != nullptr && SceneComponent->GetWorld()->WorldType != EWorldType::Editor);
 	}
 #endif
 	GameTime = bUseSceneTime ? SceneComponent->GetWorld()->TimeSeconds : 0;
@@ -104,18 +115,24 @@ FOptimusSceneDataProviderProxy::FOptimusSceneDataProviderProxy(USceneComponent* 
 	FrameNumber = bUseSceneTime ? SceneComponent->GetScene()->GetFrameNumber() : 0;
 }
 
-void FOptimusSceneDataProviderProxy::GatherDispatchData(FDispatchSetup const& InDispatchSetup, FCollectedDispatchData& InOutDispatchData)
+bool FOptimusSceneDataProviderProxy::IsValid(FValidationData const& InValidationData) const
 {
-	if (!ensure(InDispatchSetup.ParameterStructSizeForValidation == sizeof(FSceneDataInterfaceParameters)))
+	if (InValidationData.ParameterStructSize != sizeof(FParameters))
 	{
-		return;
+		return false;
 	}
 
-	for (int32 InvocationIndex = 0; InvocationIndex < InDispatchSetup.NumInvocations; ++InvocationIndex)
+	return bIsValid;
+}
+
+void FOptimusSceneDataProviderProxy::GatherDispatchData(FDispatchData const& InDispatchData)
+{
+	const TStridedView<FParameters> ParameterArray = MakeStridedParameterView<FParameters>(InDispatchData);
+	for (int32 InvocationIndex = 0; InvocationIndex < ParameterArray.Num(); ++InvocationIndex)
 	{
-		FSceneDataInterfaceParameters* Parameters = (FSceneDataInterfaceParameters*)(InOutDispatchData.ParameterBuffer + InDispatchSetup.ParameterBufferOffset + InDispatchSetup.ParameterBufferStride * InvocationIndex);
-		Parameters->GameTime = GameTime;
-		Parameters->GameTimeDelta = GameTimeDelta;
-		Parameters->FrameNumber = FrameNumber;
+		FParameters& Parameters = ParameterArray[InvocationIndex];
+		Parameters.GameTime = GameTime;
+		Parameters.GameTimeDelta = GameTimeDelta;
+		Parameters.FrameNumber = FrameNumber;
 	}
 }

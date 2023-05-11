@@ -2,12 +2,12 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Toolkits/IToolkitHost.h"
 #include "EditorUndoClient.h"
-#include "Toolkits/AssetEditorToolkit.h"
 #include "IStateTreeEditor.h"
-#include "StateTreeViewModel.h"
+
+class FSpawnTabArgs;
+class IMessageToken;
+class UStateTreeState;
 
 class IDetailsView;
 class UStateTree;
@@ -32,6 +32,8 @@ public:
 	virtual void UnregisterTabSpawners(const TSharedRef<class FTabManager>& TabManager) override;
 
 	void InitEditor(const EToolkitMode::Type Mode, const TSharedPtr< class IToolkitHost >& InitToolkitHost, UStateTree* StateTree);
+
+	bool IsSaveOnCompileEnabled() const;
 
 	//~ Begin IToolkit Interface
 	virtual FName GetToolkitFName() const override;

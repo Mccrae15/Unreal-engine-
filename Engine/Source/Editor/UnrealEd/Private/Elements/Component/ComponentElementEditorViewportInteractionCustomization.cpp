@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Elements/Component/ComponentElementEditorViewportInteractionCustomization.h"
+#include "Components/PrimitiveComponent.h"
 #include "Elements/Component/ComponentElementData.h"
 #include "Components/SceneComponent.h"
 
@@ -19,7 +20,8 @@ bool FComponentElementEditorViewportInteractionCustomization::GetGizmoPivotLocat
 
 		// If necessary, transform the editor pivot location to be relative to the component's parent
 		const bool bIsRootComponent = SceneComponent->GetOwner()->GetRootComponent() == SceneComponent;
-		OutPivotLocation = bIsRootComponent || !SceneComponent->GetAttachParent() ? BasePivotLocation : SceneComponent->GetAttachParent()->GetComponentToWorld().Inverse().TransformPosition(BasePivotLocation);
+		const bool bIsComponentUsingAbsoluteLocation = SceneComponent->IsUsingAbsoluteLocation();
+		OutPivotLocation = bIsRootComponent || bIsComponentUsingAbsoluteLocation || !SceneComponent->GetAttachParent() ? BasePivotLocation : SceneComponent->GetAttachParent()->GetComponentToWorld().Inverse().TransformPosition(BasePivotLocation);
 		return true;
 	}
 

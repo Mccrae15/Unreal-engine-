@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
+using System.Buffers.Binary;
 using System.Buffers.Text;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
@@ -38,9 +39,9 @@ namespace EpicGames.Perforce
 	}
 
 	/// <summary>
-	/// Wraps a call to a p4.exe child process, and allows reading data from it
+	/// Utility methods for IPerforceOutput
 	/// </summary>
-	public static class PerforceOutputExtensions
+	public static class PerforceOutput
 	{
 		/// <summary>
 		/// String constants for records
@@ -58,6 +59,58 @@ namespace EpicGames.Perforce
 		/// Standard prefix for a returned record: record indicator, string, 4 bytes, 'code', string, [value]
 		/// </summary>
 		static readonly byte[] s_recordPrefix = { (byte)'{', (byte)'s', 4, 0, 0, 0, (byte)'c', (byte)'o', (byte)'d', (byte)'e', (byte)'s' };
+
+		class BufferedPerforceOutput : IPerforceOutput
+		{
+			public ReadOnlyMemory<byte> Data { get; private set; }
+
+			public BufferedPerforceOutput(ReadOnlyMemory<byte> data)
+			{
+				Data = data;
+			}
+
+			public Task<bool> ReadAsync(CancellationToken cancellationToken) => Task.FromResult(Data.Length > 0);
+			public void Discard(int numBytes) => Data = Data.Slice(numBytes);
+			public ValueTask DisposeAsync() => new ValueTask();
+		}
+
+		/// <summary>
+		/// Constructs an <see cref="IPerforceOutput"/> object from a block of data
+		/// </summary>
+		/// <param name="data">Data to construct from</param>
+		/// <returns>Output object</returns>
+		public static IPerforceOutput FromData(ReadOnlyMemory<byte> data) => new BufferedPerforceOutput(data);
+
+		/// <summary>
+		/// Constructs an <see cref="IPerforceOutput"/> object from a response
+		/// </summary>
+		/// <param name="response">Response to construct from</param>
+		/// <returns>Output object</returns>
+		public static IPerforceOutput FromResponse(PerforceResponse response) => FromResponses(new[] { response });
+
+		/// <summary>
+		/// Constructs an <see cref="IPerforceOutput"/> object from a sequence of responses
+		/// </summary>
+		/// <param name="responses">Responses to construct from</param>
+		/// <returns>Output object</returns>
+		public static IPerforceOutput FromResponses(IEnumerable<PerforceResponse> responses)
+		{
+			using ChunkedMemoryWriter writer = new ChunkedMemoryWriter();
+			foreach (PerforceResponse response in responses)
+			{
+				writer.WriteFixedLengthBytes(s_recordPrefix);
+
+				Utf8String code = ReadOnlyUtf8StringConstants.Stat;
+
+				Span<byte> span = writer.GetSpanAndAdvance(code.Length + 4);
+				BinaryPrimitives.WriteInt32LittleEndian(span.Slice(0, 4), code.Length);
+				code.Span.CopyTo(span.Slice(4));
+
+				PerforceReflection.Serialize(response.Data, writer);
+				writer.WriteUInt8((byte)'0');
+			}
+			return FromData(writer.ToByteArray());
+		}
 
 		/// <summary>
 		/// Formats the current contents of the buffer to a string
@@ -178,7 +231,7 @@ namespace EpicGames.Perforce
 				ReadOnlyMemory<byte> data = perforce.Data;
 				if (data.Length > 0 && responses.Count == 0 && data.Span[0] != '{')
 				{
-					throw new PerforceException("Unexpected response from server (expected '{'):{0}", FormatDataAsString(data.Span));
+					throw new PerforceException("Unexpected response from server (expected '{{'):{0}", FormatDataAsString(data.Span));
 				}
 
 				// Parse the responses from the current buffer
@@ -233,7 +286,7 @@ namespace EpicGames.Perforce
 				ReadOnlyMemory<byte> data = perforce.Data;
 				if (data.Length > 0 && responses.Count == 0 && data.Span[0] != '{')
 				{
-					throw new PerforceException("Unexpected response from server (expected '{'):{0}", FormatDataAsString(data.Span));
+					throw new PerforceException("Unexpected response from server (expected '{{'):{0}", FormatDataAsString(data.Span));
 				}
 
 				// Parse the responses from the current buffer
@@ -497,10 +550,10 @@ namespace EpicGames.Perforce
 			ulong requiredTagsBitMask = 0;
 
 			// Create the new record
-			object? newRecord = recordInfo._createInstance();
+			object? newRecord = recordInfo.CreateInstance();
 			if (newRecord == null)
 			{
-				throw new InvalidDataException($"Unable to construct record of type {recordInfo._type}");
+				throw new InvalidDataException($"Unable to construct record of type {recordInfo.Type}");
 			}
 
 			// Get the record info, and parse it into the object
@@ -550,9 +603,9 @@ namespace EpicGames.Perforce
 
 				// Try to find the matching field
 				CachedTagInfo? tagInfo;
-				if (recordInfo._nameToInfo.TryGetValue(tag, out tagInfo))
+				if (recordInfo.NameToInfo.TryGetValue(tag, out tagInfo))
 				{
-					requiredTagsBitMask |= tagInfo._requiredTagBitMask;
+					requiredTagsBitMask |= tagInfo.RequiredTagBitMask;
 				}
 
 				// Check whether it's a subobject or part of the current object.
@@ -570,10 +623,10 @@ namespace EpicGames.Perforce
 					if (tagInfo != null)
 					{
 						// Get the list field
-						System.Collections.IList? list = (System.Collections.IList?)tagInfo._property.GetValue(newRecord);
+						System.Collections.IList? list = (System.Collections.IList?)tagInfo.PropertyInfo.GetValue(newRecord);
 						if (list == null)
 						{
-							throw new PerforceException($"Empty list for {tagInfo._property.Name}");
+							throw new PerforceException($"Empty list for {tagInfo.PropertyInfo.Name}");
 						}
 
 						// Check the suffix matches the index of the next element
@@ -589,16 +642,16 @@ namespace EpicGames.Perforce
 							return false;
 						}
 					}
-					else if (recordInfo._subElementProperty != null)
+					else if (recordInfo.SubElementProperty != null)
 					{
 						// Move back to the start of this tag
 						bufferPos = startBufferPos;
 
 						// Get the list field
-						System.Collections.IList? list = (System.Collections.IList?)recordInfo._subElementProperty.GetValue(newRecord);
+						System.Collections.IList? list = (System.Collections.IList?)recordInfo.SubElementProperty.GetValue(newRecord);
 						if (list == null)
 						{
-							throw new PerforceException($"Invalid field for {recordInfo._subElementProperty.Name}");
+							throw new PerforceException($"Invalid field for {recordInfo.SubElementProperty.Name}");
 						}
 
 						// Check the suffix matches the index of the next element
@@ -609,7 +662,7 @@ namespace EpicGames.Perforce
 
 						// Parse the subobject and add it to the list
 						object? subRecord;
-						if (!TryReadTypedRecord(buffer, ref bufferPos, suffix, recordInfo._subElementRecordInfo!, out subRecord))
+						if (!TryReadTypedRecord(buffer, ref bufferPos, suffix, recordInfo.SubElementRecordInfo!, out subRecord))
 						{
 							record = null;
 							return false;
@@ -635,10 +688,10 @@ namespace EpicGames.Perforce
 			}
 
 			// Make sure we've got all the required tags we need
-			if (requiredTagsBitMask != recordInfo._requiredTagsBitMask)
+			if (requiredTagsBitMask != recordInfo.RequiredTagsBitMask)
 			{
-				string missingTagNames = String.Join(", ", recordInfo._nameToInfo.Where(x => (requiredTagsBitMask | x.Value._requiredTagBitMask) != requiredTagsBitMask).Select(x => x.Key));
-				throw new PerforceException("Missing '{0}' tag when parsing '{1}'", missingTagNames, recordInfo._type.Name);
+				string missingTagNames = String.Join(", ", recordInfo.NameToInfo.Where(x => (requiredTagsBitMask | x.Value.RequiredTagBitMask) != requiredTagsBitMask).Select(x => x.Key));
+				throw new PerforceException("Missing '{0}' tag when parsing '{1}'", missingTagNames, recordInfo.Type.Name);
 			}
 
 			// Construct the response object with the record
@@ -673,10 +726,7 @@ namespace EpicGames.Perforce
 				{
 					return false;
 				}
-				if (tagInfo != null)
-				{
-					tagInfo._setFromString(newRecord, @string);
-				}
+				tagInfo?.ReadFromString(newRecord, @string);
 			}
 			else if (valueType == 'i')
 			{
@@ -685,10 +735,7 @@ namespace EpicGames.Perforce
 				{
 					return false;
 				}
-				if (tagInfo != null)
-				{
-					tagInfo._setFromInteger(newRecord, integer);
-				}
+				tagInfo?.ReadFromInteger(newRecord, integer);
 			}
 			else
 			{

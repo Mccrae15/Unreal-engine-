@@ -509,7 +509,7 @@ public:
 			return true;
 		}
 
-		return !(Skeleton && Skeleton->IsCompatibleSkeletonByAssetData(AssetData));
+		return !(Skeleton && Skeleton->IsCompatibleForEditor(AssetData));
 	}
 
 private:
@@ -771,18 +771,6 @@ void FSkeletalAnimationSection::CustomizePropertiesDetailsView(TSharedRef<IDetai
 		FOnGetPropertyTypeCustomizationInstance::CreateLambda([=]() { return MakeShared<FMovieSceneSkeletalAnimationParamsDetailCustomization>(InParams); }));
 }
 
-void FSkeletalAnimationSection::FindBestBlendSection(FGuid InObjectBinding)
-{
-	if (Sequencer.IsValid())
-	{
-		USkeletalMeshComponent* SkelMeshComp = AcquireSkeletalMeshFromObjectGuid(InObjectBinding, Sequencer.Pin());
-		if (SkelMeshComp)
-		{
-			Section.FindBestBlendPoint(SkelMeshComp);
-		}
-	}
-}
-
 void FSkeletalAnimationSection::BuildSectionContextMenu(FMenuBuilder& MenuBuilder, const FGuid& ObjectBinding)
 {
 	// Can't pick the object that this track binds
@@ -844,18 +832,12 @@ void FSkeletalAnimationSection::BuildSectionContextMenu(FMenuBuilder& MenuBuilde
 				LOCTEXT("MatchWithThisBoneInPreviousClip", "Match With This Bone In Previous Clip"), LOCTEXT("MatchWithThisBoneInPreviousClip_Tooltip", "Match This Bone With Previous Clip At Current Frame"),
 				FNewMenuDelegate::CreateLambda([=](FMenuBuilder& SubMenuBuilder) {
 					int32 Index = -1;
-					if (Track->bAutoMatchClipsRootMotions) //IF AutoMatching we can't set it to Zero
-					{
-						Index = 0;
-					}
-					else
-					{
-						FText NoNameText = LOCTEXT("TurnOffBoneMatching", "Turn Off Matching");
-						FText NoNameTooltipText = LOCTEXT("TurnOffMatchingoltip", "Turn Off Any Bone Matching");
-						SubMenuBuilder.AddMenuEntry(
-							NoNameText, NoNameTooltipText,
-							FSlateIcon(), MatchToBone(true, Index++), NAME_None, EUserInterfaceActionType::RadioButton);
-					}
+					FText NoNameText = LOCTEXT("TurnOffBoneMatching", "Turn Off Matching");
+					FText NoNameTooltipText = LOCTEXT("TurnOffMatchingTooltip", "Turn Off Any Bone Matching");
+					SubMenuBuilder.AddMenuEntry(
+						NoNameText, NoNameTooltipText,
+						FSlateIcon(), MatchToBone(true, Index++), NAME_None, EUserInterfaceActionType::RadioButton);
+					
 
 					for (const FName& BoneName : BoneNames)
 					{
@@ -872,18 +854,13 @@ void FSkeletalAnimationSection::BuildSectionContextMenu(FMenuBuilder& MenuBuilde
 				LOCTEXT("MatchWithThisBoneInNextClip", "Match With This Bone In Next Clip"), LOCTEXT("MatchWithThisBoneInNextClip_Tooltip", "Match This Bone With Next Clip At Current Frame"),
 				FNewMenuDelegate::CreateLambda([=](FMenuBuilder& SubMenuBuilder) {
 					int32 Index = -1;
-					if (Track->bAutoMatchClipsRootMotions) //IF AutoMatching we can't set it to Zero
-					{
-						Index = 0;
-					}
-					else
-					{
-						FText NoNameText = LOCTEXT("TurnOffBoneMatching", "Turn Off Matching");
-						FText NoNameTooltipText = LOCTEXT("TurnOffMatchingoltip", "Turn Off Any Bone Matching");
-						SubMenuBuilder.AddMenuEntry(
-							NoNameText, NoNameTooltipText,
-							FSlateIcon(), MatchToBone(false, Index++), NAME_None, EUserInterfaceActionType::RadioButton);
-					}
+					
+					FText NoNameText = LOCTEXT("TurnOffBoneMatching", "Turn Off Matching");
+					FText NoNameTooltipText = LOCTEXT("TurnOffMatchingTooltip", "Turn Off Any Bone Matching");
+					SubMenuBuilder.AddMenuEntry(
+						NoNameText, NoNameTooltipText,
+						FSlateIcon(), MatchToBone(false, Index++), NAME_None, EUserInterfaceActionType::RadioButton);
+					
 
 					for (const FName& BoneName : BoneNames)
 					{
@@ -981,16 +958,6 @@ void FSkeletalAnimationSection::BuildSectionContextMenu(FMenuBuilder& MenuBuilde
 				);
 
 
-
-			/*
-			MenuBuilder.AddMenuEntry(
-				LOCTEXT("FindBestBlendPointForNextSection", "Find Best Blend Point For Next Section"),
-				LOCTEXT("FindBestBlendPointForNextSectionTooltip", "Find the best blend position on the the next section from the current time"),
-				FSlateIcon(),
-				FUIAction(FExecuteAction::CreateRaw(this, &FSkeletalAnimationSection::FindBestBlendSection, ObjectBinding))
-			);
-			*/
-
 			MenuBuilder.EndSection();
 		}
 		MenuBuilder.BeginSection(NAME_None, LOCTEXT("SkelAnimSectionDisplay", "Display"));
@@ -1081,7 +1048,7 @@ void FSkeletalAnimationTrackEditor::HandleCreatePoseAsset(FGuid InObjectBinding)
 	USkeleton* Skeleton = AcquireSkeletonFromObjectGuid(InObjectBinding, GetSequencer());
 	if (Skeleton)
 	{
-		TArray<TWeakObjectPtr<UObject>> Skeletons;
+		TArray<TSoftObjectPtr<UObject>> Skeletons;
 		Skeletons.Add(Skeleton);
 		AnimationEditorUtils::ExecuteNewAnimAsset<UPoseAssetFactory, UPoseAsset>(Skeletons, FString("_PoseAsset"), FAnimAssetCreated::CreateSP(this, &FSkeletalAnimationTrackEditor::CreatePoseAsset, InObjectBinding), false, false);
 	}
@@ -1094,14 +1061,14 @@ FSkeletalAnimationTrackEditor::FSkeletalAnimationTrackEditor( TSharedRef<ISequen
 	//We use the FGCObject pattern to keep the anim export option alive during the editor session
 
 	AnimSeqExportOption = NewObject<UAnimSeqExportOption>();
-
-	SequencerSavedHandle = InSequencer->OnPostSave().AddRaw(this, &FSkeletalAnimationTrackEditor::OnSequencerSaved);
-	SequencerChangedHandle = InSequencer->OnMovieSceneDataChanged().AddRaw(this, &FSkeletalAnimationTrackEditor::OnSequencerDataChanged);
-	FCoreUObjectDelegates::OnObjectPropertyChanged.AddRaw(this, &FSkeletalAnimationTrackEditor::OnPostPropertyChanged);
 }
 
 void FSkeletalAnimationTrackEditor::OnInitialize()
 {
+	SequencerSavedHandle = GetSequencer()->OnPostSave().AddRaw(this, &FSkeletalAnimationTrackEditor::OnSequencerSaved);
+	SequencerChangedHandle = GetSequencer()->OnMovieSceneDataChanged().AddRaw(this, &FSkeletalAnimationTrackEditor::OnSequencerDataChanged);
+	FCoreUObjectDelegates::OnObjectPropertyChanged.AddRaw(this, &FSkeletalAnimationTrackEditor::OnPostPropertyChanged);
+
 	++FSkeletalAnimationTrackEditor::NumberActive;
 
 	// Activate the default mode in case FEditorModeTools::Tick isn't run before here. 
@@ -1156,6 +1123,11 @@ TSharedRef<ISequencerTrackEditor> FSkeletalAnimationTrackEditor::CreateTrackEdit
 	return MakeShareable( new FSkeletalAnimationTrackEditor( InSequencer ) );
 }
 
+bool FSkeletalAnimationTrackEditor::SupportsSequence(UMovieSceneSequence* InSequence) const
+{
+	ETrackSupport TrackSupported = InSequence ? InSequence->IsTrackSupported(UMovieSceneSkeletalAnimationTrack::StaticClass()) : ETrackSupport::NotSupported;
+	return TrackSupported == ETrackSupport::Supported;
+}
 
 bool FSkeletalAnimationTrackEditor::SupportsType( TSubclassOf<UMovieSceneTrack> Type ) const
 {
@@ -1183,7 +1155,7 @@ bool FSkeletalAnimationTrackEditor::HandleAssetAdded(UObject* Asset, const FGuid
 		{
 			USkeleton* Skeleton = AcquireSkeletonFromObjectGuid(TargetObjectGuid, GetSequencer());
 
-			if (Skeleton && Skeleton->IsCompatible(AnimSequence->GetSkeleton()))
+			if (Skeleton && Skeleton->IsCompatibleForEditor(AnimSequence->GetSkeleton()))
 			{
 				UObject* Object = SequencerPtr->FindSpawnedObjectOrTemplate(TargetObjectGuid);
 				
@@ -1225,8 +1197,8 @@ void FSkeletalAnimationTrackEditor::OnSequencerSaved(ISequencer& )
 			{
 				UMovieScene* MovieScene = SequencerPtr->GetFocusedMovieSceneSequence()->GetMovieScene();
 				FMovieSceneSequenceIDRef Template = SequencerPtr->GetFocusedTemplateID();
-				FMovieSceneSequenceTransform RootToLocalTransform;
-				for (int32 Index = LevelAnimLink->AnimSequenceLinks.Num() -1; Index >=0 ; --Index) 
+				FMovieSceneSequenceTransform RootToLocalTransform = SequencerPtr->GetFocusedMovieSceneSequenceTransform();
+				for (int32 Index = LevelAnimLink->AnimSequenceLinks.Num() -1; Index >=0 ; --Index)
 				{
 					FLevelSequenceAnimSequenceLinkItem& Item = LevelAnimLink->AnimSequenceLinks[Index];
 					UAnimSequence* AnimSequence = Item.ResolveAnimSequence();
@@ -1561,7 +1533,7 @@ void FSkeletalAnimationTrackEditor::HandleCreateAnimationSequence(USkeletalMeshC
 {
 	if (SkelMeshComp)
 	{
-		TArray<TWeakObjectPtr<UObject>> Skels;
+		TArray<TSoftObjectPtr<UObject>> Skels;
 		if (SkelMeshComp->GetSkeletalMeshAsset())
 		{
 			Skels.Add(SkelMeshComp->GetSkeletalMeshAsset());
@@ -1766,6 +1738,7 @@ void FSkeletalAnimationTrackEditor::AddAnimationSubMenu(FMenuBuilder& MenuBuilde
 		AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateRaw( this, &FSkeletalAnimationTrackEditor::OnAnimationAssetSelected, ObjectBindings, Track);
 		AssetPickerConfig.OnAssetEnterPressed = FOnAssetEnterPressed::CreateRaw( this, &FSkeletalAnimationTrackEditor::OnAnimationAssetEnterPressed, ObjectBindings, Track);
 		AssetPickerConfig.bAllowNullSelection = false;
+		AssetPickerConfig.bAddFilterUI = true;
 		AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
 		AssetPickerConfig.Filter.bRecursiveClasses = true;
 		AssetPickerConfig.Filter.ClassPaths.Add(UAnimSequenceBase::StaticClass()->GetClassPathName());
@@ -1793,7 +1766,7 @@ bool FSkeletalAnimationTrackEditor::FilterAnimSequences(const FAssetData& AssetD
 		return true;
 	}
 
-	if (Skeleton && Skeleton->IsCompatibleSkeletonByAssetData(AssetData) == false)
+	if (Skeleton && Skeleton->IsCompatibleForEditor(AssetData) == false)
 	{
 		return true;
 	}
@@ -2006,7 +1979,7 @@ bool FSkeletalAnimationTrackEditor::OnAllowDrop(const FDragDropEvent& DragDropEv
 		for (USkeletalMeshComponent* SkeletalMeshComponent : SkeletalMeshComponents)
 		{
 			USkeleton* Skeleton = GetSkeletonFromComponent(SkeletalMeshComponent);
-			if (bValidAnimSequence && Skeleton && Skeleton->IsCompatible(AnimSequence->GetSkeleton()))
+			if (bValidAnimSequence && Skeleton && Skeleton->IsCompatibleForEditor(AnimSequence->GetSkeleton()))
 			{
 				FFrameRate TickResolution = SequencerPtr->GetFocusedTickResolution();
 				FFrameNumber LengthInFrames = TickResolution.AsFrameNumber(AnimSequence->GetPlayLength());
@@ -2069,7 +2042,7 @@ FReply FSkeletalAnimationTrackEditor::OnDrop(const FDragDropEvent& DragDropEvent
 		{
 			USkeleton* Skeleton = GetSkeletonFromComponent(SkeletalMeshComponent);
 
-			if (bValidAnimSequence && Skeleton && Skeleton->IsCompatible(AnimSequence->GetSkeleton()))
+			if (bValidAnimSequence && Skeleton && Skeleton->IsCompatibleForEditor(AnimSequence->GetSkeleton()))
 			{
 				UObject* BoundObject = SequencerPtr.IsValid() ? SequencerPtr->FindSpawnedObjectOrTemplate(DragDropParams.TargetObjectGuid) : nullptr;
 

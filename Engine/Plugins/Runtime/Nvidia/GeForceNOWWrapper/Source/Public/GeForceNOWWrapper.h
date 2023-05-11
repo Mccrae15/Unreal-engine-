@@ -2,9 +2,13 @@
 
 #pragma once
 
+#include "HAL/Platform.h"
+
 #if NV_GEFORCENOW
 
-#include "CoreMinimal.h"
+#include "Containers/UnrealString.h"
+#include "Misc/Optional.h"
+#include "Templates/SharedPointer.h"
 
 THIRD_PARTY_INCLUDES_START
 #include "GfnRuntimeSdk_CAPI.h"

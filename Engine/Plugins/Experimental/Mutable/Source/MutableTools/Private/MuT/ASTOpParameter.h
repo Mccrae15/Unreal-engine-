@@ -4,7 +4,6 @@
 
 #include "HAL/Platform.h"
 #include "MuR/Image.h"
-#include "MuR/MemoryPrivate.h"
 #include "MuR/Operations.h"
 #include "MuR/ParametersPrivate.h"
 #include "MuR/Ptr.h"
@@ -13,7 +12,7 @@
 
 namespace mu
 {
-struct PROGRAM;
+	struct FProgram;
 
 
 	//---------------------------------------------------------------------------------------------
@@ -27,13 +26,16 @@ struct PROGRAM;
 		OP_TYPE type;
 
 		//!
-		PARAMETER_DESC parameter;
+		FParameterDesc parameter;
 
-		//! Ranges adding dimensions to this parameter
-		TArray<RANGE_DATA> ranges;
+		//** Ranges adding dimensions to this parameter. */
+		TArray<FRangeData> ranges;
 
 		//! Additional images attached to the parameter
 		TArray<ASTChild> additionalImages;
+
+		/** Index of the parameter in the program parameter list. Generated ar link time. */
+		int32 LinkedParameterIndex = -1;
 
 	public:
 
@@ -45,10 +47,10 @@ struct PROGRAM;
 		bool IsEqual(const ASTOp& otherUntyped) const override;
 		Ptr<ASTOp> Clone(MapChildFuncRef mapChild) const override;
 		void Assert() override;
-		void Link(PROGRAM& program, const FLinkerOptions*) override;
+		void Link(FProgram& program, const FLinkerOptions*) override;
 		int EvaluateInt(ASTOpList& facts, bool& unknown) const override;
-		BOOL_EVAL_RESULT EvaluateBool(ASTOpList& /*facts*/, EVALUATE_BOOL_CACHE* = nullptr) const override;
-		FImageDesc GetImageDesc(bool, GetImageDescContext*) override;
+		FBoolEvalResult EvaluateBool(ASTOpList& /*facts*/, FEvaluateBoolCache* = nullptr) const override;
+		FImageDesc GetImageDesc(bool, FGetImageDescContext*) const override;
 
 	};
 

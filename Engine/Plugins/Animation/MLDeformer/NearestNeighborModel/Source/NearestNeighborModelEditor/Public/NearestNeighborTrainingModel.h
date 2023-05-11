@@ -26,6 +26,22 @@ public:
 	UFUNCTION(BlueprintImplementableEvent, Category = "Python")
 	int32 Train() const;
 
+	friend class UE::NearestNeighborModel::FNearestNeighborEditorModel;
+
+protected:
+	UFUNCTION(BlueprintImplementableEvent, Category = "Python")
+	int32 UpdateNearestNeighborData();
+
+	UFUNCTION(BlueprintImplementableEvent, Category = "Python")
+	int32 KmeansClusterPoses(const int32 PartId) const;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Training Data")
+	TArray<float> PartSampleDeltas;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Training Data")
+	TArray<int32> KmeansResults;
+
+private:
 	UFUNCTION(BlueprintPure, Category = "Python")
 	UNearestNeighborModel* GetNearestNeighborModel() const;
 
@@ -35,25 +51,19 @@ public:
 	const TArray<int32> GetPartVertexMap(const int32 PartId) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Python")
-	void SamplePart(int32 PartId, int32 Index);
-
-	UFUNCTION(BlueprintImplementableEvent, Category = "Python")
-	void UpdateNearestNeighborData();
+	int32 SamplePart(int32 PartId, int32 Index);
 
 	UFUNCTION(BlueprintCallable, Category = "Python")
-	void SetSamplerPartData(const int32 PartId);
+	int32 SetSamplerPartData(const int32 PartId);
 
 	UFUNCTION(BlueprintPure, Category = "Python")
 	int32 GetPartNumNeighbors(const int32 PartId) const;
 
-	UFUNCTION(BlueprintImplementableEvent, Category = "Python")
-	void KmeansClusterPoses() const;
+	UFUNCTION(BlueprintCallable, Category = "Python")
+	bool SampleKmeansAnim(const int32 SkeletonId);
 
 	UFUNCTION(BlueprintCallable, Category = "Python")
-	void SampleKmeansAnim(const int32 SkeletonId);
-
-	UFUNCTION(BlueprintCallable, Category = "Python")
-	void SampleKmeansFrame(const int32 Frame);
+	bool SampleKmeansFrame(const int32 Frame);
 
 	UFUNCTION(BlueprintPure, Category = "Python")
 	int32 GetKmeansNumAnims() const;
@@ -64,10 +74,11 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Python")
 	int32 GetKmeansNumClusters() const;
 
+	UFUNCTION(BlueprintPure, Category = "Python")
+	const TArray<float> GetUnskinnedVertexPositions() const;
 
-public:
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Training Data")
-	TArray<float> PartSampleDeltas;
+	UFUNCTION(BlueprintPure, Category = "Python")
+	const TArray<int32> GetMeshIndexBuffer() const;
 
 	UNearestNeighborModel* NearestNeighborModel = nullptr;
 };

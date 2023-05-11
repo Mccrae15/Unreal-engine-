@@ -34,7 +34,7 @@ int32 SNiagaraSimCacheViewTimeline::OnPaint(const FPaintArgs& Args, const FGeome
 	{
 		const FSlateBrush* BoxBrush = FAppStyle::GetBrush("Sequencer.Section.BackgroundTint");
 		const FLinearColor BoxTints[2] = { FLinearColor(0.5f, 0.5f, 0.5f, 1.0f), FLinearColor(0.3f, 0.3f, 0.3f, 1.0f) };
-		const FLinearColor CurrentTint(0.5f, 0.5f, 1.0f, 1.0f);
+		const FLinearColor CurrentTint(0.2f, 0.2f, 1.0f, 1.0f);
 		if (NumFrames > 0)
 		{
 			const float UStep = AllottedGeometry.Size.X / float(NumFrames);
@@ -44,7 +44,7 @@ int32 SNiagaraSimCacheViewTimeline::OnPaint(const FPaintArgs& Args, const FGeome
 				const FVector2D BoxLocation(UStep * float(i), 0.0f);
 				const FVector2D BoxSize(UStep, AllottedGeometry.Size.Y);
 				const FLinearColor& Tint = (i == CurrentFrame) ? CurrentTint : BoxTints[i & 1];
-				FSlateDrawElement::MakeBox(OutDrawElements, LayerId++, AllottedGeometry.ToPaintGeometry(BoxLocation, BoxSize), BoxBrush, ESlateDrawEffect::None, Tint);
+				FSlateDrawElement::MakeBox(OutDrawElements, LayerId++, AllottedGeometry.ToPaintGeometry(BoxSize, FSlateLayoutTransform(BoxLocation)), BoxBrush, ESlateDrawEffect::None, Tint);
 			}
 		}
 		else
@@ -97,9 +97,9 @@ FReply SNiagaraSimCacheViewTimeline::OnTimelineScrubbed(const FGeometry& MyGeome
 	if ( FNiagaraSimCacheViewModel* ViewModel = WeakViewModel.Pin().Get() )
 	{
 		const FVector2D LocalLocation = MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition());
-		const float NormalizedTime = LocalLocation.X / MyGeometry.Size.X;
+		const float NormalizedTime = FMath::Clamp( LocalLocation.X / MyGeometry.Size.X, 0.0f, 1.0f);
 
-		const int32 NewFrameIndex = FMath::RoundToInt(NormalizedTime * float(ViewModel->GetNumFrames() - 1));
+		const int32 NewFrameIndex = FMath::Floor(NormalizedTime * float(ViewModel->GetNumFrames()));
 
 		ViewModel->SetFrameIndex(NewFrameIndex);
 

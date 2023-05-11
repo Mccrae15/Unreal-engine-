@@ -9,10 +9,16 @@
 #include "Stats/Stats.h"
 #include "ProfilingDebugging/ResourceSize.h"
 #include "PackedNormal.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "RenderingThread.h"
+#endif
+#include "RenderDeferredCleanup.h"
 #include "RenderUtils.h"
 #include "Engine/SkeletalMesh.h"
 #include "Components/SkinnedMeshComponent.h"
+#include "MeshUVChannelInfo.h"
+#include "SkeletalMeshTypes.h"
+#include "RenderMath.h"
 
 class FPrimitiveDrawInterface;
 class FVertexFactory;
@@ -20,6 +26,8 @@ class UMorphTarget;
 struct FSkelMeshRenderSection;
 struct FCachedGeometry;
 class FGPUSkinCacheEntry;
+class FMeshDeformerGeometry;
+class FRayTracingGeometry;
 
 /** data for a single skinned skeletal mesh vertex */
 struct FFinalSkinVertex
@@ -44,6 +52,13 @@ enum class EPreviousBoneTransformUpdateMode
 	UpdatePrevious,
 
 	DuplicateCurrentToPrevious,
+};
+
+struct FSkinBatchVertexFactoryUserData
+{
+	FGPUSkinCacheEntry* SkinCacheEntry = nullptr;
+	FMeshDeformerGeometry* DeformerGeometry = nullptr;
+	int32 SectionIndex = -1;
 };
 
 /**
@@ -87,7 +102,14 @@ public:
 	 * @param	ChunkIdx - not used
 	 * @return	vertex factory for rendering the LOD, 0 to suppress rendering
 	 */
-	virtual const FVertexFactory* GetSkinVertexFactory(const FSceneView* View, int32 LODIndex,int32 ChunkIdx, ESkinVertexFactoryMode VFMode = ESkinVertexFactoryMode::Default) const = 0;
+	virtual const FVertexFactory* GetSkinVertexFactory(const FSceneView* View, int32 LODIndex, int32 ChunkIdx, ESkinVertexFactoryMode VFMode = ESkinVertexFactoryMode::Default) const = 0;
+
+	/**
+	 * @param	LODIndex - Index to LODs
+	 * @param	ChunkIdx - Index to render sections.
+	 * @return	VertexFactoryUserData for storing on a FMeshBatch.
+	 */
+	virtual const FSkinBatchVertexFactoryUserData* GetVertexFactoryUserData(const int32 LODIndex, int32 ChunkIdx, ESkinVertexFactoryMode VFMode) const { return nullptr; }
 
 	/**
 	 * Re-skin cached vertices for an LOD and update the vertex buffer. Note that this
@@ -209,6 +231,9 @@ public:
 
 	FColor GetSkinCacheVisualizationDebugColor(const FName& GPUSkinCacheVisualizationMode, uint32 SectionIndex) const;
 
+	/** Helper function to return the asset path name, optionally joined with the LOD index if LODIndex > -1. */
+	FName GetAssetPathName(int32 LODIndex = -1) const;
+
 #if RHI_RAYTRACING
 	/** Retrieve ray tracing geometry from the underlying mesh object */
 	virtual FRayTracingGeometry* GetRayTracingGeometry() { return nullptr; }
@@ -295,6 +320,12 @@ public:
 	 */
 	float GetScreenSize(int32 LODIndex) const;
 
+	/** Get the weight buffer either from the component LOD info or the skeletal mesh LOD render data */
+	static FSkinWeightVertexBuffer* GetSkinWeightVertexBuffer(FSkeletalMeshLODRenderData& LODData, FSkelMeshComponentLODInfo* CompLODInfo);
+
+	/** Get the color buffer either from the component LOD info or the skeletal mesh LOD render data */
+	static FColorVertexBuffer* GetColorVertexBuffer(FSkeletalMeshLODRenderData& LODData, FSkelMeshComponentLODInfo* CompLODInfo);
+
 protected:
 	/** The skeletal mesh resource with which to render. */
 	FSkeletalMeshRenderData* SkeletalMeshRenderData;
@@ -321,4 +352,10 @@ protected:
 
 	/** Component ID to which belong this  mesh object  */
 	uint32 ComponentId;
+
+	FVector WorldScale = FVector::OneVector;
+
+#if RHI_ENABLE_RESOURCE_INFO
+	FName AssetPathName;
+#endif
 };

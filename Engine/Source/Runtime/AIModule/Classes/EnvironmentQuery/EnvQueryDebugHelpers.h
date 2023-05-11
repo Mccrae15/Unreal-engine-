@@ -6,6 +6,7 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "EngineDefines.h"
+#include "Engine/World.h"
 #include "EnvironmentQuery/EnvQueryTypes.h"
 #include "VisualLogger/VisualLogger.h"
 #include "DebugRenderSceneProxy.h"
@@ -62,7 +63,7 @@ namespace EQSDebug
 		int32 NumValidItems;
 		int32 Id;
 		FString Name;
-		float Timestamp;
+		double Timestamp;
 
 		void Reset()
 		{
@@ -170,7 +171,7 @@ public:
 	static void LogQuery(FEnvQueryInstance& Query, const FName& CategoryName, ELogVerbosity::Type Verbosity);
 
 private:
-	static void LogQueryInternal(FEnvQueryInstance& Query, const FName& CategoryName, ELogVerbosity::Type Verbosity, float TimeSeconds, FVisualLogEntry *CurrentEntry);
+	static void LogQueryInternal(FEnvQueryInstance& Query, const FName& CategoryName, ELogVerbosity::Type Verbosity, double TimeSeconds, FVisualLogEntry *CurrentEntry);
 #endif
 };
 

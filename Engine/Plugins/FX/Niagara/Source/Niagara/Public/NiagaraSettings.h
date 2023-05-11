@@ -6,6 +6,7 @@
 #include "NiagaraEmitter.h"
 #include "NiagaraScript.h"
 #include "Engine/DeveloperSettings.h"
+#include "Engine/TextureRenderTarget2D.h"
 #include "InputCoreTypes.h"
 #include "NiagaraPlatformSet.h"
 #include "NiagaraSettings.generated.h"
@@ -14,7 +15,7 @@
 UENUM()
 namespace ENDISkelMesh_GpuMaxInfluences
 {
-	enum Type
+	enum Type : int
 	{
 		/** Allow up to 4 bones to be sampled. */
 		AllowMax4 = 0,
@@ -29,7 +30,7 @@ namespace ENDISkelMesh_GpuMaxInfluences
 UENUM()
 namespace ENDISkelMesh_GpuUniformSamplingFormat
 {
-	enum Type
+	enum Type : int
 	{
 		/** 64 bits per entry. Allow for the full int32 range of triangles (2 billion). */
 		Full = 0,
@@ -44,7 +45,7 @@ namespace ENDISkelMesh_GpuUniformSamplingFormat
 UENUM()
 namespace ENDISkelMesh_AdjacencyTriangleIndexFormat
 {
-	enum Type
+	enum Type : int
 	{
 		/** 32 bits per entry. Allow for the full int32 range of triangles (2 billion). */
 		Full = 0,
@@ -83,7 +84,7 @@ enum class ENiagaraDefaultGpuTranslucentLatency : uint8
 UENUM()
 namespace ENDICollisionQuery_AsyncGpuTraceProvider
 {
-	enum Type
+	enum Type : int
 	{
 		Default = 0 UMETA(DisplayName = "Project Default"),
 		HWRT = 1 UMETA(DisplayName = "HW Ray Tracing"),
@@ -114,6 +115,10 @@ class NIAGARA_API UNiagaraSettings : public UDeveloperSettings
 	/** If true then the "link input" menu will also show variables of different types, as long as there is a conversion script for them. */
 	UPROPERTY(config, EditAnywhere, Category = Niagara)
 	bool bShowConvertibleInputsInStack = false;
+
+	/** The number of frames to capture when capturing a Sim Cache from the Niagara Component Details Panel. **/
+	UPROPERTY(Config, EditAnywhere, Category = SimulationCaching, meta = (UIMin = 1))
+	int32 QuickSimCacheCaptureFrameCount = 5;
 #endif // WITH_EDITORONLY_DATA
 
 	/** If true then active effects rebase the simulation positions to not lose precision. Can be turned off if not needed to skip unnecessary rebasing calculations. */
@@ -202,6 +207,18 @@ class NIAGARA_API UNiagaraSettings : public UDeveloperSettings
 	*/
 	UPROPERTY(config, EditAnywhere, Category = AsyncGpuTraceDI, meta = (DisplayName = "Trace Provider Priorities (Experimental)", ConfigRestartRequired = true))
 	TArray<TEnumAsByte<ENDICollisionQuery_AsyncGpuTraceProvider::Type>> NDICollisionQuery_AsyncGpuTraceProviderOrder;
+
+	/**
+	Base path for auxiliary files written out during the generation of a Niagara Sim Cache (ie: volume files).
+	*/
+	UPROPERTY(config, EditAnywhere, Category = SimCache, meta = (DisplayName = "Sim Cache Auxiliary File Base Path", ConfigRestartRequired = false))
+	FString SimCacheAuxiliaryFileBasePath;
+
+	/**
+	Max memory in megabytes for total CPU memory for cached volumetric data
+	*/
+	UPROPERTY(config, EditAnywhere, Category = SimCache, meta = (DisplayName = "Sim Cache Max CPU Memory For Volumetrics", ConfigRestartRequired = false))
+	int64 SimCacheMaxCPUMemoryVolumetrics;
 
 	UPROPERTY(config, EditAnywhere, Category = Scalability)
 	TArray<FNiagaraPlatformSetRedirect> PlatformSetRedirects;

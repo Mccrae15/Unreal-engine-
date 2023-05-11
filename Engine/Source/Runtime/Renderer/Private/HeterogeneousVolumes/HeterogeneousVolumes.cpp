@@ -12,8 +12,8 @@
 
 static TAutoConsoleVariable<int32> CVarHeterogeneousVolumes(
 	TEXT("r.HeterogeneousVolumes"),
-	0,
-	TEXT("Enables the Heterogeneous volume integrator (Default = 0)"),
+	1,
+	TEXT("Enables the Heterogeneous volume integrator (Default = 1)"),
 	ECVF_RenderThreadSafe
 );
 
@@ -36,8 +36,8 @@ static TAutoConsoleVariable<int32> CVarHeterogeneousVolumesHardwareRayTracing(
 
 static TAutoConsoleVariable<int32> CVarHeterogeneousVolumesIndirectLighting(
 	TEXT("r.HeterogeneousVolumes.IndirectLighting"),
-	1,
-	TEXT("Enables indirect lighting (Default = 1)"),
+	0,
+	TEXT("Enables indirect lighting (Default = 0)"),
 	ECVF_RenderThreadSafe
 );
 
@@ -175,19 +175,18 @@ bool ShouldRenderHeterogeneousVolumes(
 )
 {
 	return IsHeterogeneousVolumesEnabled()
-		&& Scene != nullptr;
+		&& Scene != nullptr
+		&& DoesPlatformSupportHeterogeneousVolumes(Scene->GetShaderPlatform());
 }
 
 bool ShouldRenderHeterogeneousVolumesForView(
-	const FSceneView& View
+	const FViewInfo& View
 )
 {
 	return IsHeterogeneousVolumesEnabled()
+		&& !View.HeterogeneousVolumesMeshBatches.IsEmpty()
 		&& View.Family
-		&& !View.bIsPlanarReflection
-		&& !View.bIsSceneCapture
-		&& !View.bIsReflectionCapture
-		&& View.State;
+		&& !View.bIsReflectionCapture;
 }
 
 bool DoesPlatformSupportHeterogeneousVolumes(EShaderPlatform Platform)
@@ -196,6 +195,37 @@ bool DoesPlatformSupportHeterogeneousVolumes(EShaderPlatform Platform)
 		// TODO:
 		// && FDataDrivenShaderPlatformInfo::GetSupportsHeterogeneousVolumes(Platform)
 		&& !IsForwardShadingEnabled(Platform);
+}
+
+bool DoesMaterialShaderSupportHeterogeneousVolumes(const FMaterialShaderParameters& MaterialShaderParameters)
+{
+	return (MaterialShaderParameters.MaterialDomain == MD_Volume)
+		// Restricting compilation to materials bound to Niagara meshes
+		&& MaterialShaderParameters.bIsUsedWithNiagaraMeshParticles;
+}
+
+bool DoesMaterialShaderSupportHeterogeneousVolumes(const FMaterial& Material)
+{
+	return (Material.GetMaterialDomain() == MD_Volume)
+		// Restricting compilation to materials bound to Niagara meshes
+		&& Material.IsUsedWithNiagaraMeshParticles();
+}
+
+bool ShouldRenderMeshBatchWithHeterogeneousVolumes(
+	const FMeshBatch* Mesh,
+	const FPrimitiveSceneProxy* Proxy,
+	ERHIFeatureLevel::Type FeatureLevel
+)
+{
+	check(Mesh);
+	check(Proxy);
+	check(Mesh->MaterialRenderProxy);
+
+	const FMaterialRenderProxy* MaterialRenderProxy = Mesh->MaterialRenderProxy;
+	const FMaterial& Material = MaterialRenderProxy->GetMaterialWithFallback(FeatureLevel, MaterialRenderProxy);
+	return IsHeterogeneousVolumesEnabled()
+		&& Proxy->IsHeterogeneousVolume()
+		&& DoesMaterialShaderSupportHeterogeneousVolumes(Material);
 }
 
 namespace HeterogeneousVolumes
@@ -310,7 +340,7 @@ namespace HeterogeneousVolumes
 		return VolumeResolution.X * VolumeResolution.Y * VolumeResolution.Z;
 	}
 
-	int GetVoxelCount(FRDGTextureDesc TextureDesc)
+	int GetVoxelCount(const FRDGTextureDesc& TextureDesc)
 	{
 		return TextureDesc.Extent.X * TextureDesc.Extent.Y * TextureDesc.Depth;
 	}
@@ -326,7 +356,7 @@ namespace HeterogeneousVolumes
 
 	FIntVector GetLightingCacheResolution()
 	{
-		float DownsampleFactor = CVarHeterogeneousVolumesLightingCacheDownsampleFactor.GetValueOnRenderThread();
+		float DownsampleFactor = FMath::Max(CVarHeterogeneousVolumesLightingCacheDownsampleFactor.GetValueOnRenderThread(), 1);
 		FIntVector LightingCacheResolution = GetVolumeResolution() / DownsampleFactor;
 
 		return LightingCacheResolution;
@@ -340,32 +370,30 @@ void FDeferredShadingSceneRenderer::RenderHeterogeneousVolumes(
 {
 	RDG_EVENT_SCOPE(GraphBuilder, "HeterogeneousVolumes");
 	RDG_GPU_STAT_SCOPE(GraphBuilder, HeterogeneousVolumesStat);
+	SCOPED_NAMED_EVENT(HeterogeneousVolumes, FColor::Emerald);
 
 	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 	{
 		FViewInfo& View = Views[ViewIndex];
 
-		// Per-view??
-		FRDGTextureDesc Desc = SceneTextures.Color.Target->Desc;
-		Desc.Format = PF_FloatRGBA;
-		Desc.Flags &= ~(TexCreate_FastVRAM);
-		FRDGTextureRef HeterogeneousVolumeRadiance = GraphBuilder.CreateTexture(Desc, TEXT("HeterogeneousVolumes"));
-		AddClearUAVPass(GraphBuilder, GraphBuilder.CreateUAV(HeterogeneousVolumeRadiance), FLinearColor::Transparent);
-
 		if (ShouldRenderHeterogeneousVolumesForView(View))
 		{
-			for (int32 MeshBatchIndex = 0; MeshBatchIndex < View.VolumetricMeshBatches.Num(); ++MeshBatchIndex)
+			FRDGTextureDesc Desc = SceneTextures.Color.Target->Desc;
+			Desc.Format = PF_FloatRGBA;
+			Desc.Flags &= ~(TexCreate_FastVRAM);
+			FRDGTextureRef HeterogeneousVolumeRadiance = GraphBuilder.CreateTexture(Desc, TEXT("HeterogeneousVolumes"));
+			AddClearUAVPass(GraphBuilder, GraphBuilder.CreateUAV(HeterogeneousVolumeRadiance), FLinearColor::Transparent);
+
+			for (int32 MeshBatchIndex = 0; MeshBatchIndex < View.HeterogeneousVolumesMeshBatches.Num(); ++MeshBatchIndex)
 			{
-				const FMeshBatch* Mesh = View.VolumetricMeshBatches[MeshBatchIndex].Mesh;
-				const FMaterialRenderProxy* MaterialRenderProxy = Mesh->MaterialRenderProxy;
-				const FMaterial& Material = MaterialRenderProxy->GetMaterialWithFallback(View.GetFeatureLevel(), MaterialRenderProxy);
-				// Only Niagara mesh particles bound to volume materials
-				if (Material.GetMaterialDomain() != MD_Volume || !Material.IsUsedWithNiagaraMeshParticles())
+				const FMeshBatch* Mesh = View.HeterogeneousVolumesMeshBatches[MeshBatchIndex].Mesh;
+				const FPrimitiveSceneProxy* PrimitiveSceneProxy = View.HeterogeneousVolumesMeshBatches[MeshBatchIndex].Proxy;
+				if (!ShouldRenderMeshBatchWithHeterogeneousVolumes(Mesh, PrimitiveSceneProxy, View.GetFeatureLevel()))
 				{
 					continue;
 				}
 
-				const FPrimitiveSceneProxy* PrimitiveSceneProxy = View.VolumetricMeshBatches[MeshBatchIndex].Proxy;
+				const FMaterialRenderProxy* MaterialRenderProxy = Mesh->MaterialRenderProxy;
 				const FPrimitiveSceneInfo* PrimitiveSceneInfo = PrimitiveSceneProxy->GetPrimitiveSceneInfo();
 				const int32 PrimitiveId = PrimitiveSceneInfo->GetIndex();
 				const FBoxSphereBounds LocalBoxSphereBounds = PrimitiveSceneProxy->GetLocalBounds();
@@ -432,9 +460,9 @@ void FDeferredShadingSceneRenderer::RenderHeterogeneousVolumes(
 					);
 				}
 			}
-		}
 
-		View.HeterogeneousVolumeRadiance = HeterogeneousVolumeRadiance;
+			View.HeterogeneousVolumeRadiance = HeterogeneousVolumeRadiance;
+		}
 	}
 }
 

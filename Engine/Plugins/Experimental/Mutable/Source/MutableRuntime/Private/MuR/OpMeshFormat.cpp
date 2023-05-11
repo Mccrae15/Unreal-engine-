@@ -11,7 +11,6 @@
 #include "Misc/AssertionMacros.h"
 #include "MuR/ConvertData.h"
 #include "MuR/Layout.h"
-#include "MuR/MemoryPrivate.h"
 #include "MuR/MeshBufferSet.h"
 #include "MuR/MeshPrivate.h"
 #include "MuR/MutableMath.h"
@@ -23,11 +22,6 @@
 namespace mu
 {
 
-
-	//-------------------------------------------------------------------------------------------------
-	// Eric Lengyel method's
-	// http://www.terathon.com/code/tangent.html
-	//-------------------------------------------------------------------------------------------------
 	namespace
 	{
 
@@ -201,49 +195,10 @@ namespace mu
 
 					// Special case for derived channel data
 					bool generated = false;
-					if (resultSemantic == MBS_TANGENTSIGN)
-					{
-						// Look for the full tangent space
-						int tanXBuf, tanXChan, tanYBuf, tanYChan, tanZBuf, tanZChan;
-						Source.FindChannel(MBS_TANGENT, resultSemanticIndex, &tanXBuf, &tanXChan);
-						Source.FindChannel(MBS_BINORMAL, resultSemanticIndex, &tanYBuf, &tanYChan);
-						Source.FindChannel(MBS_NORMAL, resultSemanticIndex, &tanZBuf, &tanZChan);
-
-						if (tanXBuf >= 0 && tanYBuf >= 0 && tanZBuf >= 0)
-						{
-							generated = true;
-							UntypedMeshBufferIteratorConst xIt(Source, MBS_TANGENT, resultSemanticIndex);
-							UntypedMeshBufferIteratorConst yIt(Source, MBS_BINORMAL, resultSemanticIndex);
-							UntypedMeshBufferIteratorConst zIt(Source, MBS_NORMAL, resultSemanticIndex);
-							for (int v = 0; v < vCount; ++v)
-							{
-								mat3f mat;
-								mat[0] = xIt.GetAsVec4f().xyz();
-								mat[1] = yIt.GetAsVec4f().xyz();
-								mat[2] = zIt.GetAsVec4f().xyz();
-								float sign = mat.GetDeterminant() < 0 ? -1.0f : 1.0f;
-								ConvertData(0, pResultBuf, resultFormat, &sign, MBF_FLOAT32);
-
-								for (int i = 1; i < resultComponents; ++i)
-								{
-									// Add zeros
-									FMemory::Memzero
-									(
-										pResultBuf + GetMeshFormatData(resultFormat).m_size * i,
-										GetMeshFormatData(resultFormat).m_size
-									);
-								}
-								pResultBuf += resultElemSize;
-								xIt++;
-								yIt++;
-								zIt++;
-							}
-						}
-					}
 
 					// If we have to add colour channels, we will add them as white, to be neutral.
 					// \todo: normal channels also should have special values.
-					else if (resultSemantic == MBS_COLOUR)
+					if (resultSemantic == MBS_COLOUR)
 					{
 						generated = true;
 
@@ -253,7 +208,7 @@ namespace mu
 						{
 							for (int v = 0; v < vCount; ++v)
 							{
-								auto pTypedResultBuf = (float*)pResultBuf;
+								float* pTypedResultBuf = (float*)pResultBuf;
 								for (int i = 0; i < resultComponents; ++i)
 								{
 									pTypedResultBuf[i] = 1.0f;
@@ -267,7 +222,7 @@ namespace mu
 						{
 							for (int v = 0; v < vCount; ++v)
 							{
-								auto pTypedResultBuf = (uint8_t*)pResultBuf;
+								uint8_t* pTypedResultBuf = (uint8_t*)pResultBuf;
 								for (int i = 0; i < resultComponents; ++i)
 								{
 									pTypedResultBuf[i] = 255;
@@ -281,7 +236,7 @@ namespace mu
 						{
 							for (int v = 0; v < vCount; ++v)
 							{
-								auto pTypedResultBuf = (uint16*)pResultBuf;
+								uint16* pTypedResultBuf = (uint16*)pResultBuf;
 								for (int i = 0; i < resultComponents; ++i)
 								{
 									pTypedResultBuf[i] = 65535;
@@ -362,7 +317,7 @@ namespace mu
 
 
 							// Add the tangent sign
-							auto pData = (uint8_t*)pResultBuf;
+							uint8_t* pData = (uint8_t*)pResultBuf;
 
 							// Look for the full tangent space
 							int tanXBuf, tanXChan, tanYBuf, tanYChan, tanZBuf, tanZChan;
@@ -380,9 +335,9 @@ namespace mu
 								xIt += v;
 								yIt += v;
 								zIt += v;
-								mat[0] = xIt.GetAsVec4f().xyz();
-								mat[1] = yIt.GetAsVec4f().xyz();
-								mat[2] = zIt.GetAsVec4f().xyz();
+								mat[0] = vec3f(xIt.GetAsVec3f());
+								mat[1] = vec3f(yIt.GetAsVec3f());
+								mat[2] = vec3f(zIt.GetAsVec3f());
 
 								uint8_t sign = 0;
 								if (resultFormat == MBF_PACKEDDIR8_W_TANGENTSIGN)
@@ -603,59 +558,60 @@ namespace mu
 		// Make sure that the bone indices will fit in this format, or extend it.
 		if (formatVertices)
 		{
-			auto& buffs = pSource->GetVertexBuffers();
+			const FMeshBufferSet& VertexBuffers = pSource->GetVertexBuffers();
 
-			int semanticIndex = 0;
-			while (true)
+			const int32 BufferCount = VertexBuffers.GetBufferCount();
+			for (int32 BufferIndex = 0; BufferIndex < BufferCount; ++BufferIndex)
 			{
-				int buf = 0;
-				int chan = 0;
-				buffs.FindChannel(MBS_BONEINDICES, semanticIndex, &buf, &chan);
-				if (buf < 0)
-					break;
-
-				int resultBuf = 0;
-				int resultChan = 0;
-				auto& formBuffs = pResult->GetVertexBuffers();
-				formBuffs.FindChannel(MBS_BONEINDICES, semanticIndex, &resultBuf, &resultChan);
-				if (resultBuf >= 0)
+				const int32 ChannelCount = VertexBuffers.GetBufferChannelCount(BufferIndex);
+				for (int32 ChannelIndex = 0; ChannelIndex < ChannelCount; ++ChannelIndex)
 				{
-					UntypedMeshBufferIteratorConst it(buffs, MBS_BONEINDICES, semanticIndex);
-					int32_t maxBoneIndex = 0;
-					for (int v = 0; v < buffs.GetElementCount(); ++v)
-					{
-						auto va = it.GetAsVec8i();
-						for (int c = 0; c < it.GetComponents(); ++c)
-						{
-							maxBoneIndex = FMath::Max(maxBoneIndex, va[c]);
-						}
-						++it;
-					}
+					const MESH_BUFFER_CHANNEL& Channel = VertexBuffers.m_buffers[BufferIndex].m_channels[ChannelIndex];
 
-					auto& format = formBuffs.m_buffers[resultBuf].m_channels[resultChan].m_format;
-					if (maxBoneIndex > 0xffff && (format == MBF_UINT8 || format == MBF_UINT16))
+					if (Channel.m_semantic == MBS_BONEINDICES)
 					{
-						format = MBF_UINT32;
-						formBuffs.UpdateOffsets(resultBuf);
-					}
-					else if (maxBoneIndex > 0x7fff && (format == MBF_INT8 || format == MBF_INT16))
-					{
-						format = MBF_UINT32;
-						formBuffs.UpdateOffsets(resultBuf);
-					}
-					else if (maxBoneIndex > 0xff && format == MBF_UINT8)
-					{
-						format = MBF_UINT16;
-						formBuffs.UpdateOffsets(resultBuf);
-					}
-					else if (maxBoneIndex > 0x7f && format == MBF_INT8)
-					{
-						format = MBF_INT16;
-						formBuffs.UpdateOffsets(resultBuf);
+						int resultBuf = 0;
+						int resultChan = 0;
+						FMeshBufferSet& formBuffs = pResult->GetVertexBuffers();
+						formBuffs.FindChannel(MBS_BONEINDICES, Channel.m_semanticIndex, &resultBuf, &resultChan);
+						if (resultBuf >= 0)
+						{
+							UntypedMeshBufferIteratorConst it(VertexBuffers, MBS_BONEINDICES, Channel.m_semanticIndex);
+							int32_t maxBoneIndex = 0;
+							for (int v = 0; v < VertexBuffers.GetElementCount(); ++v)
+							{
+								vec<int32_t, 8> va = it.GetAsVec8i();
+								for (int c = 0; c < it.GetComponents(); ++c)
+								{
+									maxBoneIndex = FMath::Max(maxBoneIndex, va[c]);
+								}
+								++it;
+							}
+
+							MESH_BUFFER_FORMAT& format = formBuffs.m_buffers[resultBuf].m_channels[resultChan].m_format;
+							if (maxBoneIndex > 0xffff && (format == MBF_UINT8 || format == MBF_UINT16))
+							{
+								format = MBF_UINT32;
+								formBuffs.UpdateOffsets(resultBuf);
+							}
+							else if (maxBoneIndex > 0x7fff && (format == MBF_INT8 || format == MBF_INT16))
+							{
+								format = MBF_UINT32;
+								formBuffs.UpdateOffsets(resultBuf);
+							}
+							else if (maxBoneIndex > 0xff && format == MBF_UINT8)
+							{
+								format = MBF_UINT16;
+								formBuffs.UpdateOffsets(resultBuf);
+							}
+							else if (maxBoneIndex > 0x7f && format == MBF_INT8)
+							{
+								format = MBF_INT16;
+								formBuffs.UpdateOffsets(resultBuf);
+							}
+						}
 					}
 				}
-
-				semanticIndex++;
 			}
 		}
 
@@ -702,7 +658,7 @@ namespace mu
 		pResult->SetPhysicsBody(pSource->GetPhysicsBody());
 
 		pResult->m_layouts.Empty();
-		for (const auto& Layout : pSource->m_layouts)
+		for (const Ptr<const Layout>& Layout : pSource->m_layouts)
 		{
 			pResult->m_layouts.Add(Layout->Clone());
 		}
@@ -714,7 +670,9 @@ namespace mu
 
 		pResult->m_AdditionalBuffers = pSource->m_AdditionalBuffers;
 
-		pResult->m_bonePoses = pSource->m_bonePoses;
+		pResult->BonePoses = pSource->BonePoses;
+
+		pResult->SkeletonIDs = pSource->SkeletonIDs;
 
 		return pResult;
 

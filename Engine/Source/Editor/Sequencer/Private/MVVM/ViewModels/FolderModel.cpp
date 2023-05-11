@@ -137,7 +137,7 @@ void FFolderModel::RepopulateChildren()
 	}
 
 	// Create/recycle models for any tracks
-	for (UMovieSceneTrack* Track : Folder->GetChildMasterTracks())
+	for (UMovieSceneTrack* Track : Folder->GetChildTracks())
 	{
 		if (Track)
 		{
@@ -359,7 +359,7 @@ void FFolderModel::SetFolderColor()
 	FColorPickerArgs PickerArgs;
 	PickerArgs.bUseAlpha = false;
 	PickerArgs.DisplayGamma = TAttribute<float>::Create( TAttribute<float>::FGetter::CreateUObject(GEngine, &UEngine::GetDisplayGamma) );
-	PickerArgs.InitialColorOverride = InitialFolderColor.ReinterpretAsLinear();
+	PickerArgs.InitialColor = InitialFolderColor.ReinterpretAsLinear();
 	PickerArgs.OnColorCommitted = FOnLinearColorValueChanged::CreateSP(this, &FFolderModel::OnColorPickerPicked);
 	PickerArgs.OnColorPickerWindowClosed = FOnWindowClosed::CreateSP(this, &FFolderModel::OnColorPickerClosed);
 	PickerArgs.OnColorPickerCancelled  = FOnColorPickerCancelled::CreateSP(this, &FFolderModel::OnColorPickerCancelled );
@@ -646,10 +646,10 @@ void FFolderModel::PerformDrop(const FViewModelPtr& TargetModel, const FDragDrop
 					{
 						OldFolder->SetFlags(RF_Transactional);
 						OldFolder->Modify();
-						OldFolder->RemoveChildMasterTrack(Track);
+						OldFolder->RemoveChildTrack(Track);
 					}
 
-					Folder->AddChildMasterTrack(Track);
+					Folder->AddChildTrack(Track);
 					bSuccess = true;
 				}
 			}

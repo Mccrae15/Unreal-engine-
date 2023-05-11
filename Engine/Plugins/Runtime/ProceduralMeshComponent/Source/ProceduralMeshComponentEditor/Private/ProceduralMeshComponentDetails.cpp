@@ -1,12 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ProceduralMeshComponentDetails.h"
+#include "BodySetupEnums.h"
 #include "ProceduralMeshConversion.h"
-#include "Modules/ModuleManager.h"
+#include "Engine/StaticMeshSourceData.h"
 #include "Misc/PackageName.h"
-#include "Widgets/SNullWidget.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Application/SlateWindowHelper.h"
+#include "MeshDescription.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SButton.h"
 #include "Engine/StaticMesh.h"
@@ -14,10 +13,8 @@
 #include "AssetToolsModule.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
-#include "DetailCategoryBuilder.h"
-#include "IDetailsView.h"
+#include "EditorDirectories.h"
 #include "ProceduralMeshComponent.h"
-#include "StaticMeshAttributes.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "Dialogs/DlgPickAssetPath.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -90,7 +87,16 @@ FReply FProceduralMeshComponentDetails::ClickedOnConvertToStaticMesh()
 	if (ProcMeshComp != nullptr)
 	{
 		FString NewNameSuggestion = FString(TEXT("ProcMesh"));
-		FString PackageName = FString(TEXT("/Game/Meshes/")) + NewNameSuggestion;
+		FString DefaultPath;
+		const FString DefaultDirectory = FEditorDirectories::Get().GetLastDirectory(ELastDirectory::NEW_ASSET);
+		FPackageName::TryConvertFilenameToLongPackageName(DefaultDirectory, DefaultPath);
+
+		if (DefaultPath.IsEmpty())
+		{
+			DefaultPath = TEXT("/Game/Meshes");
+		}
+
+		FString PackageName = DefaultPath / NewNameSuggestion;
 		FString Name;
 		FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
 		AssetToolsModule.Get().CreateUniqueAssetName(PackageName, TEXT(""), PackageName, Name);

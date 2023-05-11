@@ -8,6 +8,7 @@
 #include "Drawing/MeshDebugDrawing.h"
 #include "ToolSceneQueriesUtil.h"
 #include "SceneQueries/SceneSnappingManager.h"
+#include "ModelingComponentsSettings.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(ConstructionPlaneMechanic)
 
@@ -28,7 +29,7 @@ void UConstructionPlaneMechanic::Shutdown()
 void UConstructionPlaneMechanic::Initialize(UWorld* TargetWorld, const FFrame3d& InitialPlane)
 {
 	Plane = InitialPlane;
-
+	
 	// create proxy and gizmo
 	UInteractiveGizmoManager* GizmoManager = GetParentTool()->GetToolManager()->GetPairedGizmoManager();
 
@@ -55,6 +56,33 @@ void UConstructionPlaneMechanic::Initialize(UWorld* TargetWorld, const FFrame3d&
 	ClickToSetPlaneBehavior->Initialize(SetPlaneCtrlClickBehaviorTarget.Get());
 
 	GetParentTool()->AddInputBehavior(ClickToSetPlaneBehavior);
+
+	// click to set gizmo position behavior
+	MiddleClickToSetGizmoBehavior = NewObject<ULocalSingleClickInputBehavior>();
+	MiddleClickToSetGizmoBehavior->IsHitByClickFunc = [this](const FInputDeviceRay& InputRay) {
+		FInputRayHit OutResult;
+		FVector3d HitPointOut;
+		OutResult.bHit = Plane.RayPlaneIntersection(InputRay.WorldRay.Origin, InputRay.WorldRay.Direction, 2, HitPointOut);
+		return OutResult;
+	};
+	MiddleClickToSetGizmoBehavior->OnClickedFunc = [this](const FInputDeviceRay& ClickPos)
+	{
+		FVector3d HitPointOut;
+		if (Plane.RayPlaneIntersection(ClickPos.WorldRay.Origin, ClickPos.WorldRay.Direction, 2, HitPointOut))
+		{
+			FTransform NewTransform = PlaneTransformGizmo->GetGizmoTransform();
+			NewTransform.SetLocation(HitPointOut);
+
+			// Note: The plane of this mechanic is not being updated and OnPlaneChanged is not being broadcasted here, but the
+			// gizmo's position is. Anything listening for the gizmo's OnTransformChanged delegate however will be notified.
+			PlaneTransformGizmo->SetNewGizmoTransform(NewTransform);
+		}
+	};
+	MiddleClickToSetGizmoBehavior->ModifierCheckFunc = FInputDeviceState::IsCtrlKeyDown;
+	MiddleClickToSetGizmoBehavior->SetUseMiddleMouseButton();
+	MiddleClickToSetGizmoBehavior->Initialize();	// This takes no target because this behavior is its own target.
+	
+	GetParentTool()->AddInputBehavior(MiddleClickToSetGizmoBehavior);
 }
 
 
@@ -120,18 +148,53 @@ void UConstructionPlaneMechanic::Tick(float DeltaTime)
  
 void UConstructionPlaneMechanic::Render(IToolsContextRenderAPI* RenderAPI)
 {
-	if (bShowGrid)
+	const UModelingComponentsEditorSettings* Settings = GetMutableDefault<UModelingComponentsEditorSettings>();
+	if (bShowGrid && Settings != nullptr)
 	{
-		FViewCameraState CameraState = RenderAPI->GetCameraState();
-		float PDIScale = CameraState.GetPDIScalingFactor();
-
-		int32 NumGridLines = 10;
+		const FViewCameraState CameraState = RenderAPI->GetCameraState();
+		const float PDIScale = CameraState.GetPDIScalingFactor();
+		
+		const FFrame3d DrawFrame(PlaneTransformProxy->GetTransform().GetLocation(), Plane.Rotation);
+		const int32 NumGridLines = Settings->NumGridLines;
+		const float GridThickness = 0.75f * PDIScale;
+		constexpr FColor GridColor(128, 128, 128, 32);
+		static constexpr bool bDepthTested = false;
 		FPrimitiveDrawInterface* PDI = RenderAPI->GetPrimitiveDrawInterface();
-		FColor GridColor(128, 128, 128, 32);
-		float GridThickness = 0.75f*PDIScale;
+		const FTransform DrawTransform = FTransform::Identity;
 
-		FFrame3d DrawFrame(Plane);
-		MeshDebugDraw::DrawSimpleFixedScreenAreaGrid(CameraState, DrawFrame, NumGridLines, 45.0, GridThickness, GridColor, false, PDI, FTransform::Identity);
+		switch (Settings->GridMode)
+		{
+		case EModelingComponentsPlaneVisualizationMode::SimpleGrid:
+		{
+			const double GridSpacing = Settings->GridSpacing;
+			MeshDebugDraw::DrawSimpleGrid(DrawFrame, NumGridLines, GridSpacing, GridThickness, GridColor, bDepthTested, PDI, DrawTransform);
+			break;
+		}
+			
+		case EModelingComponentsPlaneVisualizationMode::HierarchicalGrid:
+		{
+			const double ZoomFactor = Distance(CameraState.Position, DrawFrame.Origin);
+			const FVector WorldMaxBounds(ZoomFactor, ZoomFactor, 0);
+			const FVector WorldMinBounds(-WorldMaxBounds);
+			constexpr int32 Levels = 2;
+
+			TArray<FColor> Colors;
+			Colors.Add(GridColor);
+				
+			const double Scale = Settings->GridScale;
+			constexpr int32 MaxLevelDensity = 500;
+			constexpr int32 Subdivision = 5;
+				
+			MeshDebugDraw::DrawHierarchicalGrid(Scale, ZoomFactor / Scale, MaxLevelDensity, WorldMaxBounds, WorldMinBounds, Levels, Subdivision, Colors, DrawFrame, GridThickness, bDepthTested, PDI, DrawTransform);
+			break;
+		}
+			
+		case EModelingComponentsPlaneVisualizationMode::FixedScreenAreaGrid:
+		{
+			const double VisualAngleSpan = Settings->GridSize * 90.;
+			MeshDebugDraw::DrawSimpleFixedScreenAreaGrid(CameraState, DrawFrame, NumGridLines, VisualAngleSpan, GridThickness, GridColor, bDepthTested, PDI, DrawTransform);
+			break;
+		}
+		}
 	}
 }
-

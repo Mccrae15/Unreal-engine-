@@ -27,13 +27,17 @@ namespace UnrealBuildTool.Rules
 				"Slate",
 				"SmartObjectsModule",
 				"SourceControl",
-				"UnrealEd"
+				"UnrealEd",
+				"StructUtils",
+				"WorldConditions"
 			}
 			);
 
 			PrivateDependencyModuleNames.AddRange(
 			new string[] {
 				"RenderCore",
+				"ApplicationCore",
+				"StructUtilsEditor",
 			}
 			);
 		}

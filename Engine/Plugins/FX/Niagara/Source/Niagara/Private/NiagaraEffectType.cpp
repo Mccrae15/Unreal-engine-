@@ -1,9 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "NiagaraEffectType.h"
+#include "AssetRegistry/AssetData.h"
 #include "NiagaraCommon.h"
 #include "NiagaraComponent.h"
 #include "NiagaraCustomVersion.h"
 #include "NiagaraSystem.h"
+#include "NiagaraSystemInstanceController.h"
 
 //In an effort to cut the impact of runtime perf tracking, I limit the number of fames we actually sample on.
 int32 GNumFramesBetweenRuntimePerfSamples = 5;

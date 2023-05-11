@@ -1,14 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PaperRenderSceneProxy.h"
-#include "Containers/ResourceArray.h"
+#include "PrimitiveViewRelevance.h"
 #include "SceneManagement.h"
+#include "MaterialDomain.h"
+#include "MaterialShared.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialRenderProxy.h"
 #include "PhysicsEngine/BodySetup.h"
-#include "EngineGlobals.h"
-#include "Components/PrimitiveComponent.h"
 #include "Components/MeshComponent.h"
 #include "Engine/Engine.h"
+#include "SceneInterface.h"
 
 static TAutoConsoleVariable<int32> CVarDrawSpritesAsTwoSided(TEXT("r.Paper2D.DrawTwoSided"), 1, TEXT("Draw sprites as two sided."));
 static TAutoConsoleVariable<int32> CVarDrawSpritesUsingPrebuiltVertexBuffers(TEXT("r.Paper2D.UsePrebuiltVertexBuffers"), 1, TEXT("Draw sprites using prebuilt vertex buffers."));
@@ -387,7 +389,7 @@ void FPaperRenderSceneProxy::GetNewBatchMeshes(const FSceneView* View, int32 Vie
 				// Implementing our own wireframe coloring as the automatic one (controlled by Mesh.bCanApplyViewModeOverrides) only supports per-FPrimitiveSceneProxy WireframeColor
 				if (bIsWireframeView)
 				{
-					const FLinearColor EffectiveWireframeColor = (Batch.Material->GetBlendMode() != BLEND_Opaque) ? GetWireframeColor() : FLinearColor::Green;
+					const FLinearColor EffectiveWireframeColor = IsOpaqueBlendMode(*Batch.Material) ? GetWireframeColor() : FLinearColor::Green;
 
 					auto WireframeMaterialInstance = new FColoredMaterialRenderProxy(
 						GEngine->WireframeMaterial->GetRenderProxy(),
@@ -436,7 +438,7 @@ void FPaperRenderSceneProxy::GetNewBatchMeshesPrebuilt(const FSceneView* View, i
 			if (bIsWireframeView)
 			{
 				const FSpriteRenderSection& Section = BatchedSections[SectionIndex];
-				const FLinearColor EffectiveWireframeColor = (Section.Material->GetBlendMode() != BLEND_Opaque) ? GetWireframeColor() : FLinearColor::Green;
+				const FLinearColor EffectiveWireframeColor = IsOpaqueBlendMode(*Section.Material) ? GetWireframeColor() : FLinearColor::Green;
 
 				auto WireframeMaterialInstance = new FColoredMaterialRenderProxy(
 					GEngine->WireframeMaterial->GetRenderProxy(),

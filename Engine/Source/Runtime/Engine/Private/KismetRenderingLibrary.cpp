@@ -1,27 +1,28 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Kismet/KismetRenderingLibrary.h"
+#include "Camera/CameraTypes.h"
 #include "HAL/FileManager.h"
+#include "Components/SkinnedMeshComponent.h"
+#include "Materials/MaterialInterface.h"
+#include "Engine/World.h"
 #include "Misc/Paths.h"
+#include "Misc/PackageName.h"
 #include "Serialization/BufferArchive.h"
-#include "EngineGlobals.h"
+#include "RHIContext.h"
 #include "RenderingThread.h"
 #include "Engine/Engine.h"
-#include "CanvasTypes.h"
 #include "Engine/Canvas.h"
-#include "Misc/App.h"
 #include "TextureResource.h"
-#include "SceneUtils.h"
 #include "Logging/MessageLog.h"
-#include "Engine/TextureRenderTarget2D.h"
+#include "Engine/GameViewportClient.h"
 #include "Engine/TextureRenderTarget2DArray.h"
 #include "Engine/TextureRenderTargetVolume.h"
 #include "ImageUtils.h"
-#include "OneColorShader.h"
-#include "PipelineStateCache.h"
 #include "ClearQuad.h"
 #include "Engine/Texture2D.h"
-#include "RHI.h"
+#include "UObject/Package.h"
+#include "EngineModule.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(KismetRenderingLibrary)
 
@@ -29,7 +30,6 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
 #include "IAssetTools.h"
-#include "IContentBrowserSingleton.h"
 #include "PackageTools.h"
 #endif
 
@@ -66,7 +66,7 @@ void UKismetRenderingLibrary::ClearRenderTarget2D(UObject* WorldContextObject, U
 	}
 }
 
-UTextureRenderTarget2D* UKismetRenderingLibrary::CreateRenderTarget2D(UObject* WorldContextObject, int32 Width, int32 Height, ETextureRenderTargetFormat Format, FLinearColor ClearColor, bool bAutoGenerateMipMaps)
+UTextureRenderTarget2D* UKismetRenderingLibrary::CreateRenderTarget2D(UObject* WorldContextObject, int32 Width, int32 Height, ETextureRenderTargetFormat Format, FLinearColor ClearColor, bool bAutoGenerateMipMaps, bool bSupportUAVs)
 {
 	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
 
@@ -77,6 +77,7 @@ UTextureRenderTarget2D* UKismetRenderingLibrary::CreateRenderTarget2D(UObject* W
 		NewRenderTarget2D->RenderTargetFormat = Format;
 		NewRenderTarget2D->ClearColor = ClearColor;
 		NewRenderTarget2D->bAutoGenerateMips = bAutoGenerateMipMaps;
+		NewRenderTarget2D->bCanCreateUAV = bSupportUAVs;
 		NewRenderTarget2D->InitAutoFormat(Width, Height);	
 		NewRenderTarget2D->UpdateResourceImmediate(true);
 
@@ -86,7 +87,7 @@ UTextureRenderTarget2D* UKismetRenderingLibrary::CreateRenderTarget2D(UObject* W
 	return nullptr;
 }
 
-UTextureRenderTarget2DArray* UKismetRenderingLibrary::CreateRenderTarget2DArray(UObject* WorldContextObject, int32 Width, int32 Height, int32 Slices, ETextureRenderTargetFormat Format, FLinearColor ClearColor, bool bAutoGenerateMipMaps)
+UTextureRenderTarget2DArray* UKismetRenderingLibrary::CreateRenderTarget2DArray(UObject* WorldContextObject, int32 Width, int32 Height, int32 Slices, ETextureRenderTargetFormat Format, FLinearColor ClearColor, bool bAutoGenerateMipMaps, bool bSupportUAVs)
 {
 	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
 
@@ -95,6 +96,7 @@ UTextureRenderTarget2DArray* UKismetRenderingLibrary::CreateRenderTarget2DArray(
 		UTextureRenderTarget2DArray* NewRenderTarget = NewObject<UTextureRenderTarget2DArray>(WorldContextObject);
 		check(NewRenderTarget);
 		NewRenderTarget->ClearColor = ClearColor;
+		NewRenderTarget->bCanCreateUAV = bSupportUAVs;
 		NewRenderTarget->Init(Width, Height, Slices, GetPixelFormatFromRenderTargetFormat(Format));
 		NewRenderTarget->UpdateResourceImmediate(true);
 		return NewRenderTarget;
@@ -103,7 +105,7 @@ UTextureRenderTarget2DArray* UKismetRenderingLibrary::CreateRenderTarget2DArray(
 	return nullptr;
 }
 
-UTextureRenderTargetVolume* UKismetRenderingLibrary::CreateRenderTargetVolume(UObject* WorldContextObject, int32 Width, int32 Height, int32 Depth, ETextureRenderTargetFormat Format, FLinearColor ClearColor, bool bAutoGenerateMipMaps)
+UTextureRenderTargetVolume* UKismetRenderingLibrary::CreateRenderTargetVolume(UObject* WorldContextObject, int32 Width, int32 Height, int32 Depth, ETextureRenderTargetFormat Format, FLinearColor ClearColor, bool bAutoGenerateMipMaps, bool bSupportUAVs)
 {
 	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
 
@@ -112,6 +114,7 @@ UTextureRenderTargetVolume* UKismetRenderingLibrary::CreateRenderTargetVolume(UO
 		UTextureRenderTargetVolume* NewRenderTarget = NewObject<UTextureRenderTargetVolume>(WorldContextObject);
 		check(NewRenderTarget);
 		NewRenderTarget->ClearColor = ClearColor;
+		NewRenderTarget->bCanCreateUAV = bSupportUAVs;
 		NewRenderTarget->Init(Width, Height, Depth, GetPixelFormatFromRenderTargetFormat(Format));
 		NewRenderTarget->UpdateResourceImmediate(true);
 		return NewRenderTarget;
@@ -212,6 +215,12 @@ void UKismetRenderingLibrary::DrawMaterialToRenderTarget(UObject* WorldContextOb
 
 			//UpdateResourceImmediate must be called here to ensure mips are generated.
 			TextureRenderTarget->UpdateResourceImmediate(false);
+
+			ENQUEUE_RENDER_COMMAND(ResetSceneTextureExtentHistory)(
+				[RenderTargetResource](FRHICommandListImmediate& RHICmdList)
+				{
+					RenderTargetResource->ResetSceneTextureExtentsHistory();
+				});
 		}
 	}
 }
@@ -882,6 +891,18 @@ void UKismetRenderingLibrary::SetCastInsetShadowForAllAttachments(UPrimitiveComp
 ENGINE_API FMatrix UKismetRenderingLibrary::CalculateProjectionMatrix(const FMinimalViewInfo& MinimalViewInfo)
 {
 	return MinimalViewInfo.CalculateProjectionMatrix();
+}
+
+ENGINE_API void UKismetRenderingLibrary::EnablePathTracing(bool bEnablePathTracer)
+{
+	if (GEngine != nullptr && GEngine->GameViewport != nullptr)
+	{
+		FEngineShowFlags* EngineShowFlags = GEngine->GameViewport->GetEngineShowFlags();
+		if (EngineShowFlags != nullptr)
+		{
+			EngineShowFlags->SetPathTracing(bEnablePathTracer);
+		}
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

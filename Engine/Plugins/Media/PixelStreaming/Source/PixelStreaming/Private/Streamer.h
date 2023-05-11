@@ -11,13 +11,16 @@
 #include "IPixelStreamingInputHandler.h"
 #include "PixelStreamingSignallingConnection.h"
 #include "Templates/SharedPointer.h"
+#include "PlayerContext.h"
 
 class IPixelStreamingModule;
 
 namespace UE::PixelStreaming
 {
-	class FStreamer : public IPixelStreamingStreamer, public IPixelStreamingSignallingConnectionObserver, public TSharedFromThis<FStreamer>
+	class FStreamer : public IPixelStreamingStreamer, public TSharedFromThis<FStreamer>
 	{
+		friend class FPixelStreamingSignallingConnectionObserver;
+
 	public:
 		static TSharedPtr<FStreamer> Create(const FString& StreamerId);
 		virtual ~FStreamer();
@@ -34,7 +37,12 @@ namespace UE::PixelStreaming
 		virtual TWeakPtr<SWindow> GetTargetWindow() override;
 		virtual void SetTargetScreenSize(TWeakPtr<FIntPoint> InTargetScreenSize) override;
 		virtual TWeakPtr<FIntPoint> GetTargetScreenSize() override;
+		virtual void SetTargetScreenRect(TWeakPtr<FIntRect> InTargetScreenRect) override;
+		virtual TWeakPtr<FIntRect> GetTargetScreenRect() override;
 
+		virtual TWeakPtr<IPixelStreamingSignallingConnection> GetSignallingConnection() override;
+		virtual void SetSignallingConnection(TSharedPtr<IPixelStreamingSignallingConnection> InSignallingConnection) override;
+		virtual TWeakPtr<IPixelStreamingSignallingConnectionObserver> GetSignallingConnectionObserver() override;
 		virtual void SetSignallingServerURL(const FString& InSignallingServerURL) override;
 		virtual FString GetSignallingServerURL() override;
 		virtual FString GetId() override { return StreamerId; };
@@ -65,6 +73,9 @@ namespace UE::PixelStreaming
 		TSharedPtr<IPixelStreamingAudioInput> CreateAudioInput() override;
 		void RemoveAudioInput(TSharedPtr<IPixelStreamingAudioInput> AudioInput) override;
 
+		virtual void SetConfigOption(const FName& OptionName, const FString& Value) override;
+		virtual bool GetConfigOption(const FName& OptionName, FString& OutValue) override;
+
 		// TODO(Luke) hook this back up so that the Engine can change how the interface is working browser side
 		void AddPlayerConfig(TSharedRef<FJsonObject>& JsonObject);
 
@@ -73,17 +84,6 @@ namespace UE::PixelStreaming
 
 		bool CreateSession(FPixelStreamingPlayerId PlayerId);
 		void AddStreams(FPixelStreamingPlayerId PlayerId);
-
-		// IPixelStreamingSignallingConnectionObserver impl
-		virtual void OnSignallingConfig(const webrtc::PeerConnectionInterface::RTCConfiguration& Config) override;
-		virtual void OnSignallingSessionDescription(FPixelStreamingPlayerId PlayerId, webrtc::SdpType Type, const FString& Sdp) override;
-		virtual void OnSignallingRemoteIceCandidate(FPixelStreamingPlayerId PlayerId, const FString& SdpMid, int SdpMLineIndex, const FString& Sdp) override;
-		virtual void OnSignallingPlayerConnected(FPixelStreamingPlayerId PlayerId, const FPixelStreamingPlayerConfig& PlayerConfig) override;
-		virtual void OnSignallingPlayerDisconnected(FPixelStreamingPlayerId PlayerId) override;
-		virtual void OnSignallingSFUPeerDataChannels(FPixelStreamingPlayerId SFUId, FPixelStreamingPlayerId PlayerId, int32 SendStreamId, int32 RecvStreamId) override;
-		virtual void OnSignallingConnected() override;
-		virtual void OnSignallingDisconnected(int32 StatusCode, const FString& Reason, bool bWasClean) override;
-		virtual void OnSignallingError(const FString& ErrorMsg) override;
 
 		// own methods
 		void OnProtocolUpdated();
@@ -113,17 +113,12 @@ namespace UE::PixelStreaming
 		FString CurrentSignallingServerURL;
 
 		TSharedPtr<IPixelStreamingInputHandler> InputHandler;
-		TUniquePtr<FPixelStreamingSignallingConnection> SignallingServerConnection;
+		TSharedPtr<IPixelStreamingSignallingConnection> SignallingServerConnection;
+		TSharedPtr<IPixelStreamingSignallingConnectionObserver> Observer;
+
 		double LastSignallingServerConnectionAttemptTimestamp = 0;
 
 		webrtc::PeerConnectionInterface::RTCConfiguration PeerConnectionConfig;
-
-		struct FPlayerContext
-		{
-			FPixelStreamingPlayerConfig Config;
-			TSharedPtr<FPixelStreamingPeerConnection> PeerConnection;
-			TSharedPtr<FPixelStreamingDataChannel> DataChannel;
-		};
 
 		TThreadSafeMap<FPixelStreamingPlayerId, FPlayerContext> Players;
 
@@ -149,5 +144,7 @@ namespace UE::PixelStreaming
 		FDelegateHandle AllConnectionsClosedHandle;
 
 		IPixelStreamingModule& Module;
+
+		TMap<FName, FString> ConfigOptions;
 	};
 } // namespace UE::PixelStreaming

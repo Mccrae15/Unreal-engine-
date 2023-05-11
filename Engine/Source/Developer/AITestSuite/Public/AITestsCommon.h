@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "UObject/Package.h"
 #include "UObject/UObjectGlobals.h"
 #include "Misc/AutomationTest.h"
 #include "TestLogger.h"
@@ -71,6 +72,8 @@ public:
 	virtual bool SetUp() { return true; }
 	/** @return true to indicate that the test is done. */
 	virtual bool Update() { return false; } 
+	/** lets the Test instance test the results. Use AITEST_*_LATENT macros */
+	virtual void VerifyLatentResults() {}
 	/** @return false to indicate an issue with test execution. Will signal to automation framework this test instance failed. */
 	virtual bool InstantTest() { return false;}
 	// it's essential that overriding functions call the super-implementation. Otherwise the check in ~FAITestBase will fail.
@@ -79,6 +82,7 @@ public:
 
 DEFINE_EXPORTED_LATENT_AUTOMATION_COMMAND_ONE_PARAMETER(AITESTSUITE_API, FAITestCommand_SetUpTest, FAITestBase*, AITest);
 DEFINE_EXPORTED_LATENT_AUTOMATION_COMMAND_ONE_PARAMETER(AITESTSUITE_API, FAITestCommand_PerformTest, FAITestBase*, AITest);
+DEFINE_EXPORTED_LATENT_AUTOMATION_COMMAND_ONE_PARAMETER(AITESTSUITE_API, FAITestCommand_VerifyTestResults, FAITestBase*, AITest);
 DEFINE_EXPORTED_LATENT_AUTOMATION_COMMAND_ONE_PARAMETER(AITESTSUITE_API, FAITestCommand_TearDownTest, FAITestBase*, AITest);
 
 // @note that TestClass needs to derive from FAITestBase
@@ -93,6 +97,8 @@ DEFINE_EXPORTED_LATENT_AUTOMATION_COMMAND_ONE_PARAMETER(AITESTSUITE_API, FAITest
 		ADD_LATENT_AUTOMATION_COMMAND(FAITestCommand_SetUpTest(TestInstance)); \
 		/* run latent command to update */ \
 		ADD_LATENT_AUTOMATION_COMMAND(FAITestCommand_PerformTest(TestInstance)); \
+		/* let the Test instance verify the results, calls VerifyLatentResults */ \
+		ADD_LATENT_AUTOMATION_COMMAND(FAITestCommand_VerifyTestResults(TestInstance)); \
 		/* run latent command to tear down */ \
 		ADD_LATENT_AUTOMATION_COMMAND(FAITestCommand_TearDownTest(TestInstance)); \
 		return true; \
@@ -210,29 +216,25 @@ namespace FTestHelpers
 	template<typename T1, typename T2>
 	inline bool TestEqual(const FString& Description, T1 Expression, T2 Expected, FAutomationTestBase& This)
 	{
-		This.TestEqual(*Description, Expression, Expected);
-		return Expression == Expected;
+		return This.TestEqual(*Description, Expression, Expected);
 	}
 
 	template<typename T1, typename T2>
 	inline bool TestEqual(const FString& Description, T1* Expression, T2* Expected, FAutomationTestBase& This)
 	{
-		This.TestEqual(*Description, reinterpret_cast<uint64>(Expression), reinterpret_cast<uint64>(Expected));
-		return Expression == Expected;
+		return This.TestEqual(*Description, reinterpret_cast<uint64>(Expression), reinterpret_cast<uint64>(Expected));
 	}
 
 	template<typename T1, typename T2>
 	inline bool TestNotEqual(const FString& Description, T1 Expression, T2 Expected, FAutomationTestBase& This)
 	{
-		This.TestNotEqual(*Description, Expression, Expected);
-		return Expression != Expected;
+		return This.TestNotEqual(*Description, Expression, Expected);
 	}
 
 	template<typename T1, typename T2>
 	inline bool TestNotEqual(const FString& Description, T1* Expression, T2* Expected, FAutomationTestBase& This)
 	{
-		This.TestNotEqual(*Description, reinterpret_cast<uint64>(Expression), reinterpret_cast<uint64>(Expected));
-		return Expression != Expected;
+		return This.TestNotEqual(*Description, reinterpret_cast<uint64>(Expression), reinterpret_cast<uint64>(Expected));
 	}
 }
 

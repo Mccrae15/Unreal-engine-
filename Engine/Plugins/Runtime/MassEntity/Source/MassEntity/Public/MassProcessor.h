@@ -7,7 +7,6 @@
 #include "MassProcessingTypes.h"
 #include "Async/TaskGraphInterfaces.h"
 #include "MassCommandBuffer.h"
-#include "MassProcessorDependencySolver.h"
 #include "MassProcessor.generated.h"
 
 
@@ -57,7 +56,14 @@ public:
 	bool ShouldExecute(const EProcessorExecutionFlags CurrentExecutionFlags) const { return (GetExecutionFlags() & CurrentExecutionFlags) != EProcessorExecutionFlags::None; }
 	void CallExecute(FMassEntityManager& EntityManager, FMassExecutionContext& Context);
 
-	bool AllowDuplicates() const { return bAllowDuplicates; }
+	/** 
+	 * Controls whether there can be multiple instances of a given class in a single FMassRuntimePipeline and during 
+	 * dependency solving. 
+	 */
+	bool ShouldAllowMultipleInstances() const { return bAllowMultipleInstances; }
+
+	UE_DEPRECATED(5.2, "This function is deprecated. Use ShouldAllowDuplicates instead.")
+	bool AllowDuplicates() const { return ShouldAllowMultipleInstances(); }
 
 	virtual void DebugOutputDescription(FOutputDevice& Ar, int32 Indent = 0) const;
 	virtual FString GetProcessorName() const { return GetName(); }
@@ -65,6 +71,13 @@ public:
 	//----------------------------------------------------------------------//
 	// Ordering functions 
 	//----------------------------------------------------------------------//
+	/** Indicates whether this processor can ever be pruned while considered for a phase processing graph. A processor
+	 *  can get pruned if none of its registered queries interact with archetypes instantiated at the moment of graph
+	 *  building. This can also happen for special processors that don't register any queries - if that's the case override 
+	 *  this function to return an appropriate value
+	 *  @param bRuntimeMode indicates whether the pruning is being done for game runtime (true) or editor-time presentation (false) */
+	virtual bool ShouldAllowQueryBasedPruning(const bool bRuntimeMode = true) const { return bRuntimeMode; }
+
 	virtual EMassProcessingPhase GetProcessingPhase() const { return ProcessingPhase; }
 	virtual void SetProcessingPhase(EMassProcessingPhase Phase) { ProcessingPhase = Phase; }
 	bool DoesRequireGameThreadExecution() const { return bRequiresGameThreadExecution; }
@@ -87,11 +100,14 @@ public:
 #endif // WITH_EDITORONLY_DATA
 
 	/** Sets bAutoRegisterWithProcessingPhases. Setting it to true will result in this processor class being always 
-	 * instantiated to be automatically evaluated every frame. @see UMassProcessingPhaseManager
+	 * instantiated to be automatically evaluated every frame. @see FMassProcessingPhaseManager
 	 * Note that calling this function is only valid on CDOs. Calling it on a regular instance will fail an ensure and 
 	 * have no other effect, i.e. CDO's value won't change */
 	void SetShouldAutoRegisterWithGlobalList(const bool bAutoRegister);
 
+	void GetArchetypesMatchingOwnedQueries(const FMassEntityManager& EntityManager, TArray<FMassArchetypeHandle>& OutArchetype);
+	bool DoesAnyArchetypeMatchOwnedQueries(const FMassEntityManager& EntityManager);
+	
 #if CPUPROFILERTRACE_ENABLED
 	FString StatId;
 #endif
@@ -118,6 +134,11 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = Processor, config)
 	bool bAutoRegisterWithProcessingPhases = true;
 
+	/** Meant as a class property, make sure to set it in subclass' constructor. Controls whether there can be multiple
+	 *  instances of a given class in a single FMassRuntimePipeline and during dependency solving. */
+	bool bAllowMultipleInstances = false;
+
+	UE_DEPRECATED(5.2, "This property is deprecated. Use bAllowMultipleInstances instead")
 	/** meant as a class property, make sure to set it in subclass' constructor. Controls whether there can be multiple 
 	 *  instances of a given class in a single FMassRuntimePipeline */
 	bool bAllowDuplicates = false;
@@ -158,6 +179,9 @@ public:
 		FName Name;
 		UMassProcessor* Processor = nullptr;
 		TArray<int32> Dependencies;
+#if WITH_MASSENTITY_DEBUG
+		int32 SequenceIndex = INDEX_NONE;
+#endif // WITH_MASSENTITY_DEBUG
 	};
 
 public:
@@ -172,8 +196,17 @@ public:
 	void SetGroupName(FName NewName);
 	FName GetGroupName() const { return GroupName; }
 
-	virtual void CopyAndSort(const FMassProcessingPhaseConfig& PhaseConfig, const FString& DependencyGraphFileName = FString());
-	void SetProcessors(TArrayView<UMassProcessor*> InProcessorInstances, const FString& DependencyGraphFileName = FString());
+	virtual void SetProcessors(TArrayView<UMassProcessor*> InProcessorInstances, const TSharedPtr<FMassEntityManager>& EntityManager = nullptr);
+
+	/** 
+	 * Builds flat processing graph that's being used for multithreading execution of hosted processors.
+	 */
+	virtual void BuildFlatProcessingGraph(TConstArrayView<FMassProcessorOrderInfo> SortedProcessors);
+
+	/**
+	 *  Adds processors in OrderedProcessors to ChildPipeline
+	 */
+	void Populate(TConstArrayView<FMassProcessorOrderInfo> OrderedProcessors);
 
 	/** adds SubProcessor to an appropriately named group. If RequestedGroupName == None then SubProcessor
 	 *  will be added directly to ChildPipeline. If not then the indicated group will be searched for in ChildPipeline 
@@ -189,11 +222,6 @@ public:
 protected:
 	virtual void ConfigureQueries() override;
 	virtual void Execute(FMassEntityManager& EntityManager, FMassExecutionContext& Context) override;
-
-	/**
-	 *  Adds processors in OrderedProcessors to ChildPipeline and builds flat processing graph that's being used in multithreaded mode.
-	 */
-	void Populate(TConstArrayView<FProcessorDependencySolver::FOrderInfo> OrderedProcessors);
 
 	/** RequestedGroupName can indicate a multi-level group name, like so: A.B.C
 	 *  We need to extract the highest-level group name ('A' in the example), and see if it already exists. 
@@ -211,7 +239,7 @@ protected:
 	UPROPERTY()
 	FName GroupName;
 
-	TArray<FDependencyNode> ProcessingFlatGraph;
+	TArray<FDependencyNode> FlatProcessingGraph;
 
 	struct FProcessorCompletion
 	{

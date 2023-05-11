@@ -17,7 +17,9 @@
 #include "Library/DMXImportGDTF.h"
 #include "Library/DMXLibrary.h"
 #include "Modulators/DMXModulator.h"
+#include "MVR/Types/DMXMVRFixtureNode.h"
 
+#include "Algo/Find.h"
 #include "UObject/UObjectGlobals.h"
 
 DECLARE_LOG_CATEGORY_CLASS(DMXEntityFixturePatchLog, Log, All);
@@ -94,14 +96,16 @@ UDMXEntityFixturePatch* UDMXEntityFixturePatch::CreateFixturePatchInLibrary(FDMX
 			}
 			NewFixturePatch->MVRFixtureUUID = ConstructionParams.MVRFixtureUUID;
 
-#if WITH_EDITORONLY_DATA
+#if WITH_EDITOR
 			// Make a nice Editor Color
-			const FLinearColor EditorColor = [DMXLibrary, &ConstructionParams]()
+			const FLinearColor EditorColor = [DMXLibrary, NewFixturePatch]()
 			{
 				const TArray<UDMXEntityFixturePatch*> FixturePatches = DMXLibrary->GetEntitiesTypeCast<UDMXEntityFixturePatch>();
-				const UDMXEntityFixturePatch* const* FixturePatchOfSameTypePtr = FixturePatches.FindByPredicate([&ConstructionParams](const UDMXEntityFixturePatch* FixturePatch)
+				const UDMXEntityFixturePatch* const* FixturePatchOfSameTypePtr = Algo::FindByPredicate(FixturePatches, [NewFixturePatch](const UDMXEntityFixturePatch* FixturePatch)
 					{
-						return FixturePatch->GetFixtureType() == ConstructionParams.FixtureTypeRef.GetFixtureType();
+						return
+							FixturePatch != NewFixturePatch &&
+							FixturePatch->GetFixtureType() == NewFixturePatch->GetFixtureType();
 					});
 				return FixturePatchOfSameTypePtr ? (*FixturePatchOfSameTypePtr)->EditorColor : FLinearColor::MakeRandomColor();
 			}();
@@ -562,6 +566,35 @@ bool UDMXEntityFixturePatch::SetActiveModeIndex(int32 NewActiveModeIndex)
 	}
 
 	return false;
+}
+
+
+bool UDMXEntityFixturePatch::FindFixtureID(int32& OutFixtureID) const
+{
+	if (!MVRFixtureUUID.IsValid())
+	{
+		return false;
+	}
+
+	const UDMXLibrary* DMXLibrary = GetParentLibrary();
+	if (!DMXLibrary)
+	{
+		return false;
+	}
+
+	UDMXMVRGeneralSceneDescription* GeneralSceneDescription = DMXLibrary->GetLazyGeneralSceneDescription();
+	if (!GeneralSceneDescription)
+	{
+		return false;
+	}
+
+	UDMXMVRFixtureNode* FixtureNode = GeneralSceneDescription->FindFixtureNode(MVRFixtureUUID);
+	if (!FixtureNode)
+	{
+		return false;
+	}
+
+	return LexTryParseString(OutFixtureID, *FixtureNode->FixtureID);
 }
 
 #if WITH_EDITOR
@@ -1088,20 +1121,17 @@ bool UDMXEntityFixturePatch::GetMatrixProperties(FDMXFixtureMatrix& MatrixProper
 {
 	if (!ParentFixtureTypeTemplate)
 	{
-		UE_LOG(DMXEntityFixturePatchLog, Warning, TEXT("'Get Matrix Properties' failed, Fixture Patch %s has no parent fixture type assigned"), *Name);
 		return false;
 	}
 
 	const FDMXFixtureMode* ModePtr = GetActiveMode();
 	if (!ModePtr)
 	{
-		UE_LOG(DMXEntityFixturePatchLog, Warning, TEXT("'Get Matrix Properties' failed, Invalid active Mode in Fixture Patch %s"), *Name);
 		return false;
 	}
 
 	if (!ModePtr->bFixtureMatrixEnabled)
 	{
-		UE_LOG(DMXEntityFixturePatchLog, Warning, TEXT("'Get Matrix Properties' failed, Fixture Patch %s is not a Matrix Fixture"), *Name);
 		return false;
 	}
 

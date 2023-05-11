@@ -27,13 +27,16 @@
 
 #if WITH_EDITOR
 class IDisplayClusterConfiguratorBlueprintEditor;
+class FTransactionObjectEvent;
 #endif
 
+class IDisplayClusterStageActor;
 class USceneComponent;
 class UDisplayClusterConfigurationData;
 class UDisplayClusterCameraComponent;
 class UDisplayClusterOriginComponent;
 class UDisplayClusterPreviewComponent;
+class UDisplayClusterStageGeometryComponent;
 class UDisplayClusterSyncTickComponent;
 class UProceduralMeshComponent;
 
@@ -104,7 +107,9 @@ protected:
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void PostLoad() override;
 	virtual void PostActorCreated() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void BeginDestroy() override;
+	virtual void Destroyed() override;
 #if WITH_EDITOR
 	virtual void RerunConstructionScripts() override;
 #endif
@@ -115,10 +120,19 @@ protected:
 	// Creates all hierarchy objects declared in a config file
 	bool BuildHierarchy();
 
-	/** Updates the world position and rotation of each light card referenced by this root actor's light card list to match the default view origin */
-	void UpdateLightCardPositions();
+	/** Determine which light card actors are owned by this root actor */
+	void SetLightCardOwnership();
 
 public:
+	UFUNCTION(BlueprintCallable, Category = "NDisplay")
+	bool GetFlushPositionAndNormal(const FVector& WorldPosition, FVector& OutPosition, FVector& OutNormal);
+
+	UFUNCTION(BlueprintCallable, Category = "NDisplay")
+	bool MakeStageActorFlushToWall(const TScriptInterface<IDisplayClusterStageActor>& StageActor, double DesiredOffsetFromFlush = 0.0f);
+
+	UFUNCTION(BlueprintGetter)
+	UDisplayClusterStageGeometryComponent* GetStageGeometryComponent() const { return StageGeometryComponent; }
+
 	UFUNCTION(BlueprintGetter)
 	UDisplayClusterCameraComponent* GetDefaultCamera() const;
 
@@ -131,6 +145,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "NDisplay|Render")
 	bool SetReplaceTextureFlagForAllViewports(bool bReplace);
+
+	UFUNCTION(BlueprintCallable, Category = "NDisplay|Render")
+	bool SetFreezeOuterViewports(bool bEnable);
 
 	template <typename TComp>
 	TComp* GetComponentByName(const FString& ComponentName) const
@@ -211,13 +228,13 @@ private:
 	UPROPERTY(EditAnywhere, Transient, Category = "Color Grading", meta = (PropertyPath = "CurrentConfigData.StageSettings.PerViewportColorGrading"))
 	FDisplayClusterEditorPropertyReference PerViewportColorGradingRef;
 
-	UPROPERTY(EditAnywhere, Transient, Category = OCIO, meta = (PropertyPath = "CurrentConfigData.StageSettings.bUseOverallClusterOCIOConfiguration"))
-	FDisplayClusterEditorPropertyReference EnableClusterOCIORef;
+	UPROPERTY(EditAnywhere, Transient, Category = OCIO, meta = (PropertyPath = "CurrentConfigData.StageSettings.ViewportOCIO.AllViewportsOCIOConfiguration.bIsEnabled", DisplayName = "Enable Viewport OCIO"))
+	FDisplayClusterEditorPropertyReference EnableViewportOCIORef;
 
-	UPROPERTY(EditAnywhere, Transient, Category = OCIO, meta = (DisplayName = "All Viewports Color Configuration", PropertyPath = "CurrentConfigData.StageSettings.AllViewportsOCIOConfiguration.OCIOConfiguration.ColorConfiguration", ToolTip = "Apply this OpenColorIO configuration to all viewports.", EditConditionPath = "CurrentConfigData.StageSettings.bUseOverallClusterOCIOConfiguration"))
-	FDisplayClusterEditorPropertyReference ClusterOCIOColorConfigurationRef;
+	UPROPERTY(EditAnywhere, Transient, Category = OCIO, meta = (PropertyPath = "CurrentConfigData.StageSettings.ViewportOCIO.AllViewportsOCIOConfiguration.ColorConfiguration", DisplayName = "All Viewports Color Configuration"))
+	FDisplayClusterEditorPropertyReference AllViewportColorConfigurationRef;
 
-	UPROPERTY(EditAnywhere, Transient, Category = OCIO, meta = (PropertyPath = "CurrentConfigData.StageSettings.PerViewportOCIOProfiles"))
+	UPROPERTY(EditAnywhere, Transient, Category = OCIO, meta = (PropertyPath = "CurrentConfigData.StageSettings.ViewportOCIO.PerViewportOCIOProfiles", DisplayName = "Per-Viewport OCIO Overrides"))
 	FDisplayClusterEditorPropertyReference PerViewportOCIOProfilesRef;
 
 	UPROPERTY(EditAnywhere, Transient, Category = "Light Cards", meta = (PropertyPath = "CurrentConfigData.StageSettings.Lightcard.bEnable"))
@@ -229,6 +246,16 @@ private:
 	UPROPERTY(EditAnywhere, Transient, Category = "Light Cards", meta = (PropertyPath = "CurrentConfigData.StageSettings.Lightcard.ShowOnlyList", EditConditionPath = "CurrentConfigData.StageSettings.Lightcard.bEnable"))
 	FDisplayClusterEditorPropertyReference LightCardContentRef;
 
+	UPROPERTY(EditAnywhere, Transient, Category = "Light Cards", meta = (PropertyPath = "CurrentConfigData.StageSettings.Lightcard.LightcardOCIO.LightcardOCIOMode", DisplayName = "Light Cards OCIO"))
+	FDisplayClusterEditorPropertyReference LightcardOCIOModeRef;
+
+	UPROPERTY(EditAnywhere, Transient, Category = "Light Cards", meta = (PropertyPath = "CurrentConfigData.StageSettings.Lightcard.LightcardOCIO.CustomOCIO.AllViewportsOCIOConfiguration.ColorConfiguration", DisplayName = "All Viewports Color Configuration"))
+	FDisplayClusterEditorPropertyReference LightcardAllViewportColorConfigurationRef;
+
+	UPROPERTY(EditAnywhere, Transient, Category = "Light Cards", meta = (PropertyPath = "CurrentConfigData.StageSettings.Lightcard.LightcardOCIO.CustomOCIO.PerViewportOCIOProfiles", DisplayName = "Per-Viewport OCIO Overrides"))
+	FDisplayClusterEditorPropertyReference LightcardPerViewportOCIOProfilesRef;
+
+	// Media
 	UPROPERTY(EditAnywhere, Transient, Category = "Media", meta = (PropertyPath = "CurrentConfigData.MediaSettings"))
 	FDisplayClusterEditorPropertyReference MediaSettingsRef;
 
@@ -262,6 +289,10 @@ private:
 	UPROPERTY()
 	TObjectPtr<UDisplayClusterSyncTickComponent> SyncTickComponent;
 
+	/** Component that stores the stage's geometry map, which is used to make objects flush with the stage's walls and ceilings */
+	UPROPERTY()
+	TObjectPtr<UDisplayClusterStageGeometryComponent> StageGeometryComponent;
+	
 private:
 	// Current operation mode
 	EDisplayClusterOperationMode OperationMode;
@@ -357,7 +388,7 @@ private:
 	TMap<FString, TObjectPtr<UDisplayClusterPreviewComponent>> PreviewComponents;
 
 	UPROPERTY(Transient)
-	bool bDeferPreviewGeneration;
+	bool bDeferPreviewGeneration = false;
 #endif
 
 #if WITH_EDITOR
@@ -367,7 +398,14 @@ public:
 
 	/** If editor rendering is enabled. */
 	bool IsEditorRenderEnabled() const { return bEnableEditorRender; }
-	
+
+protected:
+	/** Reset preview rendering for cluster node. */
+	void ResetClusterNodePreviewRendering_Editor();
+
+	/** Is preview rendering for cluster node in progress. */
+	bool IsActiveClusterNodePreviewRendering_Editor() const;
+
 private:
 	/** Is editor rendering enabled? This can be false and the preview still enabled. */
 	bool bEnableEditorRender = true;
@@ -385,13 +423,18 @@ public:
 	// return true, if preview enabled for this actor
 	bool IsPreviewEnabled() const;
 
+	/** Gets whether the preview output is displayed onto the stage actor's screen meshes */
+	bool IsPreviewDrawnToScreens() const;
+
 	void Constructor_Editor();
 	void Destructor_Editor();
 
 	void Tick_Editor(float DeltaSeconds);
 	void PostLoad_Editor();
 	void PostActorCreated_Editor();
+	void EndPlay_Editor(const EEndPlayReason::Type EndPlayReason);
 	void BeginDestroy_Editor();
+	void Destroyed_Editor();
 	void RerunConstructionScripts_Editor();
 
 	// Preview components free referenced meshes and materials
@@ -464,22 +507,34 @@ protected:
 	bool ImplUpdatePreviewConfiguration_Editor(const FString& InClusterNodeId);
 
 	void ImplRenderPreview_Editor();
-	bool ImplRenderPassPreviewClusterNode_Editor();
+	bool ImplRenderPassPreviewClusterNode_Editor(const FString& InClusterNodeId);
 
 	bool ImplUpdatePreviewRenderFrame_Editor(const FString& InClusterNodeId);
 
 	void ImplRenderPreviewFrustums_Editor();
 	void ImplRenderPreviewViewportFrustum_Editor(const FMatrix ProjectionMatrix, const FMatrix ViewMatrix, const FVector ViewOrigin);
 
+	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChainEvent) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostEditMove(bool bFinished) override;
+	virtual void PostTransacted(const FTransactionObjectEvent& TransactionEvent) override;
 
 	/** Called when the asset has been reloaded in the editor. */
 	void HandleAssetReload(const EPackageReloadPhase InPackageReloadPhase, FPackageReloadedEvent* InPackageReloadedEvent);
-	
+
+	/** Raised when any object is moved within a level. Used to update the stage's geometry map if any of its components have been moved */
+	void OnEndObjectMovement(UObject& InObject);
+
 private:
+
+	/** Flag to indicate if the user is currently interacting with a subobject of CurrentConfigData. */
+	bool bIsInteractiveEditingSubobject = false;
+
+	/** Flag to indicate if we need to reregister components. */
+	bool bRequiresComponentRefresh = false;
+
 	bool bIsSelectedInEditor = false;
-	
+
 	/** When the preview render should be directed to the post process render target. */
 	bool bOutputFrameToPostProcessRenderTarget;
 
@@ -494,9 +549,11 @@ private:
 	int32 TickPerFrameCounter = 0;
 
 	int32 PreviewClusterNodeIndex = 0;
-	int32 PreviewViewportIndex = 0;
+	
+	int32 PreviewViewportIndex = -1;
 	TUniquePtr<FDisplayClusterRenderFrame> PreviewRenderFrame;
 	FString PreviewRenderFrameClusterNodeId;
+
 	int32 PreviewViewportsRenderedInThisFrameCnt = 0;
 
 	FOnPreviewUpdated OnPreviewGenerated;

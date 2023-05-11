@@ -244,7 +244,7 @@ bool FAnalyticsProviderET::Tick(float DeltaSeconds)
 	// On servers where there may be dozens of provider instances, this will spread out the cost a bit.
 	// If caching is disabled, we still want events to be flushed immediately, so we are only guarding the flush calls from tick,
 	// any other calls to flush are allowed to happen in the same frame.
-	static uint32 LastFrameCounterFlushed = 0;
+	static uint64 LastFrameCounterFlushed = 0;
 
 	const bool bHadFlushesQueued = EventCache.HasFlushesQueued();
 	const bool bShouldFlush = bHadFlushesQueued || (EventCache.CanFlush() && Now >= NextEventFlushTime);
@@ -264,7 +264,7 @@ bool FAnalyticsProviderET::Tick(float DeltaSeconds)
 			// try to keep on the same cadence when flushing, since we could miss our window by several frames.
 			if (!bHadFlushesQueued && Now >= NextEventFlushTime)
 			{
-				const float Multiplier = (int)((Now - NextEventFlushTime) / FlushIntervalSec) + 1.f;
+				const float Multiplier = (FloatCastChecked<float>(Now - NextEventFlushTime, 1./16.) / FlushIntervalSec) + 1.f;
 				NextEventFlushTime += Multiplier * FlushIntervalSec;
 			}
 		}
@@ -387,6 +387,13 @@ void FAnalyticsProviderET::FlushEventsOnce()
 			// Create/send Http request for an event
 			TSharedRef<IHttpRequest, ESPMode::ThreadSafe> HttpRequest = CreateRequest();
 			HttpRequest->SetHeader(TEXT("Content-Type"), TEXT("application/json; charset=utf-8"));
+			// Want to avoid putting the project name into the User-Agent, because for some apps (like the editor), the project name is private info.
+			// Code Pulled from FGenericPlatformHttp::GetDefaultUserAgent, but with project name pulled out
+			HttpRequest->SetHeader(TEXT("User-Agent"), FString::Printf(TEXT("%s/%s %s/%s"),
+				TEXT("PROJECTNAME"),
+				*FPlatformHttp::EscapeUserAgentString(FApp::GetBuildVersion()),
+				*FPlatformHttp::EscapeUserAgentString(FString(FPlatformProperties::IniPlatformName())),
+				*FPlatformHttp::EscapeUserAgentString(FPlatformMisc::GetOSVersion())));
 			HttpRequest->SetURL(Config.APIServerET / URLPath);
 			HttpRequest->SetVerb(TEXT("POST"));
 			HttpRequest->SetContent(MoveTemp(Payload));
@@ -487,6 +494,7 @@ void FAnalyticsProviderET::RecordEvent(FString&& EventName, const TArray<FAnalyt
 		if (!Config.UseLegacyProtocol)
 		{
 			EventCache.AddToCache(MoveTemp(EventName), Attributes);
+
 			// if we aren't caching events, flush immediately. This is really only for debugging as it will significantly affect bandwidth.
 			if (!bShouldCacheEvents)
 			{

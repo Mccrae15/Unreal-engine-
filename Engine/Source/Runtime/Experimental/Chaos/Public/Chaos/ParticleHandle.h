@@ -19,6 +19,7 @@
 #endif
 
 class IPhysicsProxyBase;
+class UGeometryCollectionComponent;
 
 namespace Chaos
 {
@@ -497,6 +498,15 @@ public:
 	TRotation<T, d>& R() { return GeometryParticles->R(ParticleIdx); }
 	void SetR(const TRotation<T, d>& InR, bool bInvalidate = false) { GeometryParticles->R(ParticleIdx) = InR; }
 
+	FRigidTransform3 GetTransformXR() const { return FRigidTransform3(X(), R()); }
+
+	// Initialize the transform
+	void InitTransform(const FVec3& InP, const FRotation3& InQ)
+	{
+		SetX(InP);
+		SetR(InQ);
+	}
+
 	void SetXR(const FParticlePositionRotation& XR);
 	
 	void SetNonFrequentData(const FParticleNonFrequentData& InData)
@@ -830,16 +840,18 @@ template <typename T, int d, bool bPersistent>
 class TPBDRigidParticleHandleImp : public TKinematicGeometryParticleHandleImp<T, d, bPersistent>
 {
 public:
+	using TGeometryParticleHandleImp<T, d, bPersistent>::ParticleCollisions;
+	using TGeometryParticleHandleImp<T, d, bPersistent>::ParticleConstraints;
 	using TGeometryParticleHandleImp<T, d, bPersistent>::ParticleIdx;
 	using TGeometryParticleHandleImp<T, d, bPersistent>::PBDRigidParticles;
-	using TGeometryParticleHandleImp<T, d, bPersistent>::ParticleConstraints;
-	using TGeometryParticleHandleImp<T, d, bPersistent>::ParticleCollisions;
+	using TGeometryParticleHandleImp<T, d, bPersistent>::SetX;
+	using TGeometryParticleHandleImp<T, d, bPersistent>::SetR;
+	using TGeometryParticleHandleImp<T, d, bPersistent>::Type;
 	using TKinematicGeometryParticleHandleImp<T, d, bPersistent>::V;
 	using TKinematicGeometryParticleHandleImp<T, d, bPersistent>::W;
-	using TGeometryParticleHandleImp<T, d, bPersistent>::Type;
+
 	using TTransientHandle = TTransientPBDRigidParticleHandle<T, d>;
 	using TSOAType = TPBDRigidParticles<T, d>;
-	using TGeometryParticleHandleImp<T, d, bPersistent>::SetXR;
 
 protected:
 	friend class TGeometryParticleHandleImp<T, d, bPersistent>;
@@ -866,6 +878,7 @@ protected:
 		SetAcceleration(TVector<T, d>(0));
 		SetAngularAcceleration(TVector<T, d>(0));
 		SetObjectStateLowLevel(Params.bStartSleeping ? EObjectStateType::Sleeping : EObjectStateType::Dynamic);
+		SetPreObjectStateLowLevel(ObjectState());
 		SetIslandIndex(INDEX_NONE);
 		SetSleepType(ESleepType::MaterialSleep);
 		SetInvIConditioning(TVec3<FRealSingle>(1));
@@ -932,6 +945,32 @@ public:
 	TRotation<T, d>& Q() { return PBDRigidParticles->Q(ParticleIdx); }
 	void SetQ(const TRotation<T, d>& InQ) { PBDRigidParticles->Q(ParticleIdx) = InQ; }
 
+	// World-space center of mass position
+	const TVector<T, d> XCom() const { return PBDRigidParticles->XCom(ParticleIdx); }
+	const TVector<T, d> PCom() const { return PBDRigidParticles->PCom(ParticleIdx); }
+
+	// World-space center of mass rotation
+	const TRotation<T, d> RCom() const { return PBDRigidParticles->RCom(ParticleIdx); }
+	const TRotation<T, d> QCom() const { return PBDRigidParticles->QCom(ParticleIdx); }
+
+	// Initialize the transform (sets X,R and  P,Q)
+	void InitTransform(const FVec3& InP, const FRotation3& InQ)
+	{
+		SetX(InP);
+		SetR(InQ);
+		SetP(InP);
+		SetQ(InQ);
+	}
+
+	// Set world-space center of mass transform
+	void SetTransformPQCom(const TVector<T, d>& InPCom, const TRotation<T, d>& InQCom) { PBDRigidParticles->SetTransformPQCom(ParticleIdx, InPCom, InQCom); }
+
+	FRigidTransform3 GetTransformPQ() const { return FRigidTransform3(P(), Q()); }
+
+	FRigidTransform3 GetTransformXRCom() const { return FRigidTransform3(XCom(), RCom()); }
+
+	FRigidTransform3 GetTransformPQCom() const { return FRigidTransform3(PCom(), QCom()); }
+
 	const TVector<T, d>& VSmooth() const { return PBDRigidParticles->VSmooth(ParticleIdx); }
 	TVector<T, d>& VSmooth() { return PBDRigidParticles->VSmooth(ParticleIdx); }
 	void SetVSmooth(const TVector<T, d>& InVSmooth) { PBDRigidParticles->VSmooth(ParticleIdx) = InVSmooth; }
@@ -984,7 +1023,8 @@ public:
 		SetInertiaConditioningDirty();
 	}
 
-	void SetDynamicMisc(const FParticleDynamicMisc& DynamicMisc, FPBDRigidsEvolutionBase& Evolution);
+	UE_DEPRECATED(5.2, "Moved to FPBDRigidsSolver")
+	void SetDynamicMisc(const FParticleDynamicMisc& DynamicMisc, FPBDRigidsEvolutionBase& Evolution) {}
 
 	void ResetSmoothedVelocities()
 	{
@@ -1132,6 +1172,21 @@ public:
 		PBDRigidParticles->TransientFlags(ParticleIdx).ClearInertiaConditioningDirty();
 	}
 
+	inline bool UseIgnoreCollisionManager() const
+	{
+		return PBDRigidParticles->TransientFlags(ParticleIdx).GetUseIgnoreCollisionManager();
+	}
+
+	inline void SetUseIgnoreCollisionManager()
+	{
+		PBDRigidParticles->TransientFlags(ParticleIdx).SetUseIgnoreCollisionManager();
+	}
+
+	inline void ClearUseIgnoreCollisionManager()
+	{
+		PBDRigidParticles->TransientFlags(ParticleIdx).ClearUseIgnoreCollisionManager();
+	}
+
 	ESleepType SleepType() const { return PBDRigidParticles->SleepType(ParticleIdx);}
 
 	void SetSleepType(ESleepType SleepType){ PBDRigidParticles->SetSleepType(ParticleIdx, SleepType); }
@@ -1222,15 +1277,23 @@ public:
 	void SetCollisionImpulses(const T Value) { PBDRigidClusteredParticles->CollisionImpulses(ParticleIdx) = Value; }
 
 	T GetExternalStrain() const { return PBDRigidClusteredParticles->ExternalStrains(ParticleIdx); }
+	UE_DEPRECATED(5.2, "This method should not be used anymore. FRigidClustering::SetExternalStrain should be used instead.")
 	void SetExternalStrain(const T Value) { PBDRigidClusteredParticles->ExternalStrains(ParticleIdx) = Value; }
+	UE_DEPRECATED(5.2, "This method should not be used anymore. FRigidClustering::SetExternalStrain with 0 strain should be used instead.")
 	void ClearExternalStrain() { PBDRigidClusteredParticles->ExternalStrains(ParticleIdx) = static_cast<T>(0); }
 	
+	const T& GetInternalStrains() const { return PBDRigidClusteredParticles->Strains(ParticleIdx); }
 	const T& Strain() const { return PBDRigidClusteredParticles->Strains(ParticleIdx); }
+	UE_DEPRECATED(5.2, "This method should not be used anymore. FRigidClustering::SetInternalStrain should be used instead.")
 	T& Strain() { return PBDRigidClusteredParticles->Strains(ParticleIdx); }
+	UE_DEPRECATED(5.2, "This method should not be used anymore. FRigidClustering::SetInternalStrain should be used instead.")
 	void SetStrain(const T Value) { PBDRigidClusteredParticles->Strains(ParticleIdx) = Value; }
 	const T& Strains() const { return PBDRigidClusteredParticles->Strains(ParticleIdx); }
+	UE_DEPRECATED(5.2, "This method should not be used anymore. FRigidClustering::SetInternalStrain should be used instead.")
 	T& Strains() { return PBDRigidClusteredParticles->Strains(ParticleIdx); }
+	UE_DEPRECATED(5.2, "This method should not be used anymore. FRigidClustering::SetInternalStrain should be used instead.")
 	void SetStrains(const T Value) { PBDRigidClusteredParticles->Strains(ParticleIdx) = Value; }
+	void SetMaximumInternalStrain() { PBDRigidClusteredParticles->Strains(ParticleIdx) = MaxStrain; }
 
 	const TArray<TConnectivityEdge<T>>& ConnectivityEdges() const { return PBDRigidClusteredParticles->ConnectivityEdges(ParticleIdx); }
 	TArray<TConnectivityEdge<T>>& ConnectivityEdges() { return PBDRigidClusteredParticles->ConnectivityEdges(ParticleIdx); }
@@ -1247,6 +1310,12 @@ public:
 	static constexpr EParticleType StaticType() { return EParticleType::Rigid; }
 
 	int32 TransientParticleIndex() const { return ParticleIdx; }
+
+private:
+	void SetInternalStrains(const T Value) { PBDRigidClusteredParticles->Strains(ParticleIdx) = Value; }
+	void SetExternalStrains(const T Value) { PBDRigidClusteredParticles->ExternalStrains(ParticleIdx) = Value; }
+	friend class FRigidClustering;
+	static constexpr Chaos::FReal MaxStrain = TNumericLimits<Chaos::FReal>::Max() - TNumericLimits<Chaos::FReal>::Min();
 };
 
 template <typename T, int d, bool bPersistent = true>
@@ -1380,6 +1449,7 @@ public:
 	bool IsStatic() const { return (MHandle->ObjectState() == EObjectStateType::Static); }
 	bool IsKinematic() const { return (MHandle->ObjectState() == EObjectStateType::Kinematic); }
 	bool IsDynamic() const { return (MHandle->ObjectState() == EObjectStateType::Dynamic) || (MHandle->ObjectState() == EObjectStateType::Sleeping); }
+	bool IsSleeping() const { return (MHandle->ObjectState() == EObjectStateType::Sleeping); }
 
 	const FKinematicGeometryParticleHandle* CastToKinematicParticle() const { return MHandle->CastToKinematicParticle(); }
 	FKinematicGeometryParticleHandle* CastToKinematicParticle() { return MHandle->CastToKinematicParticle(); }
@@ -1570,6 +1640,133 @@ public:
 		return R();
 	}
 
+	// World-space center of mass position
+	const FVec3 XCom() const
+	{
+		if (IsDynamic())
+		{
+			return MHandle->CastToRigidParticle()->XCom();
+		}
+		return X();
+	}
+	const FVec3 PCom() const
+	{
+		if (IsDynamic())
+		{
+			return MHandle->CastToRigidParticle()->PCom();
+		}
+		return X();
+	}
+
+	// World-space center of mass rotation
+	const FRotation3 RCom() const
+	{ 
+		if (IsDynamic())
+		{
+			return MHandle->CastToRigidParticle()->RCom();
+		}
+		return R();
+	}
+	const FRotation3 QCom() const
+	{ 
+		if (IsDynamic())
+		{
+			return MHandle->CastToRigidParticle()->QCom();
+		}
+		return R();
+	}
+
+	void InitTransform(const FVec3& InP, const FRotation3& InQ)
+	{
+		if (MHandle->CastToRigidParticle())
+		{
+			MHandle->CastToRigidParticle()->InitTransform(InP, InQ);
+		}
+		MHandle->InitTransform(InP, InQ);
+	}
+
+	void SetTransformPQCom(const FVec3& InPCom, const FRotation3& InQCom)
+	{ 
+		if (IsDynamic())
+		{
+			MHandle->CastToRigidParticle()->SetTransformPQCom(InPCom, InQCom);
+		}
+		else
+		{
+			SetTransform(InPCom, InQCom);
+		}
+	}
+
+	FRigidTransform3 GetTransformXR() const
+	{
+		return MHandle->GetTransformXR();
+	}
+
+	FRigidTransform3 GetTransformPQ() const
+	{
+		if (IsDynamic())
+		{
+			return MHandle->CastToRigidParticle()->GetTransformPQ();
+		}
+		return MHandle->GetTransformXR();
+	}
+
+	FRigidTransform3 GetTransformXRCom() const
+	{
+		if (IsDynamic())
+		{
+			return MHandle->CastToRigidParticle()->GetTransformXRCom();
+		}
+		return GetTransformXR();
+	}
+
+	FRigidTransform3 GetTransformPQCom() const
+	{
+		if (IsDynamic())
+		{
+			return MHandle->CastToRigidParticle()->GetTransformPQCom();
+		}
+		return GetTransformXR();
+	}
+
+	/**
+	 * Convert a particle-relative position into a com-relative position
+	 */
+	FVec3 GetComRelativePosition(const FVec3& P)
+	{
+		if (IsDynamic())
+		{
+			FPBDRigidParticleHandle* Rigid = MHandle->CastToRigidParticle();
+			return Rigid->RotationOfMass().UnrotateVector(P - Rigid->CenterOfMass());
+		}
+		return P;
+	}
+
+	/**
+	 * Convert a particle-relative rotation into a com-relative rotation
+	 */
+	FRotation3 GetComRelativeRotation(const FRotation3& Q)
+	{
+		if (IsDynamic())
+		{
+			FPBDRigidParticleHandle* Rigid = MHandle->CastToRigidParticle();
+			return Rigid->RotationOfMass().Inverse() * Q;
+		}
+		return Q;
+	}
+
+	/**
+	 * Convert a particle-relative transform into a com-relative transform
+	 */
+	FRigidTransform3 GetComRelativeTransform(const FRigidTransform3& T)
+	{
+		if (IsDynamic())
+		{
+			return FRigidTransform3(GetComRelativePosition(T.GetLocation()), GetComRelativeRotation(T.GetRotation()));
+		}
+		return T;
+	}
+
 	const FVec3& VSmooth() const
 	{
 		if (MHandle->CastToRigidParticle())
@@ -1592,7 +1789,7 @@ public:
 
 	const FVec3& Acceleration() const
 	{ 
-		if (IsDynamic())
+		if (MHandle->CastToRigidParticle())
 		{
 			return MHandle->CastToRigidParticle()->Acceleration();
 		}
@@ -1601,7 +1798,7 @@ public:
 	}
 	const FVec3& AngularAcceleration() const
 	{ 
-		if (IsDynamic())
+		if (MHandle->CastToRigidParticle())
 		{
 			return MHandle->CastToRigidParticle()->AngularAcceleration();
 		}
@@ -1658,12 +1855,9 @@ public:
 
 	const TVec3<FRealSingle> I() const
 	{ 
-		if (auto RigidHandle = MHandle->CastToRigidParticle())
+		if (IsDynamic())
 		{
-			if (IsDynamic())
-			{
-				return RigidHandle->I();
-			}
+			return MHandle->CastToRigidParticle()->I();
 		}
 
 		return TVec3<FRealSingle>(0);
@@ -1671,12 +1865,9 @@ public:
 
 	const TVec3<FRealSingle> InvI() const
 	{ 
-		if (auto RigidHandle = MHandle->CastToRigidParticle())
+		if (IsDynamic())
 		{
-			if (IsDynamic())
-			{
-				return MHandle->CastToRigidParticle()->InvI();
-			}
+			return MHandle->CastToRigidParticle()->InvI();
 		}
 
 		return TVec3<FRealSingle>(0);
@@ -1684,12 +1875,9 @@ public:
 
 	FReal M() const
 	{
-		if (auto RigidHandle = MHandle->CastToRigidParticle())
+		if (IsDynamic())
 		{
-			if (IsDynamic())
-			{
-				return MHandle->CastToRigidParticle()->M();
-			}
+			return MHandle->CastToRigidParticle()->M();
 		}
 
 		return (FReal)0;
@@ -1697,12 +1885,9 @@ public:
 
 	FReal InvM() const
 	{
-		if (auto RigidHandle = MHandle->CastToRigidParticle())
+		if (IsDynamic())
 		{
-			if (IsDynamic())
-			{
-				return MHandle->CastToRigidParticle()->InvM();
-			}
+			return MHandle->CastToRigidParticle()->InvM();
 		}
 
 		return (FReal)0;
@@ -1710,29 +1895,45 @@ public:
 
 	FVec3 CenterOfMass() const
 	{
-		if (auto RigidHandle = MHandle->CastToRigidParticle())
+		if (IsDynamic())
 		{
-			return RigidHandle->CenterOfMass();
+			return MHandle->CastToRigidParticle()->CenterOfMass();
 		}
 
 		return FVec3(0);
 	}
 
+	void SetCenterOfMass(const FVec3& InCom)
+	{
+		if (IsDynamic())
+		{
+			MHandle->CastToRigidParticle()->SetCenterOfMass(InCom);
+		}
+	}
+
 	FRotation3 RotationOfMass() const
 	{
-		if (auto RigidHandle = MHandle->CastToRigidParticle())
+		if (IsDynamic())
 		{
-			return RigidHandle->RotationOfMass();
+			return MHandle->CastToRigidParticle()->RotationOfMass();
 		}
 
 		return FRotation3::FromIdentity();
 	}
 
+	void SetRotationOfMass(const FRotation3& InRom)
+	{
+		if (IsDynamic())
+		{
+			MHandle->CastToRigidParticle()->SetRotationOfMass(InRom);
+		}
+	}
+
 	TVec3<FRealSingle> InvIConditioning() const
 	{ 
-		if (auto RigidHandle = MHandle->CastToRigidParticle())
+		if (IsDynamic())
 		{
-			return RigidHandle->InvIConditioning();
+			return MHandle->CastToRigidParticle()->InvIConditioning();
 		}
 
 		return TVec3<FRealSingle>(1);
@@ -1748,9 +1949,9 @@ public:
 
 	TVec3<FRealSingle> ConditionedInvI() const
 	{ 
-		if (auto RigidHandle = MHandle->CastToRigidParticle())
+		if (IsDynamic())
 		{
-			return RigidHandle->ConditionedInvI();
+			return MHandle->CastToRigidParticle()->ConditionedInvI();
 		}
 
 		return TVec3<FRealSingle>(0);
@@ -1758,9 +1959,9 @@ public:
 
 	TVec3<FRealSingle> ConditionedI() const
 	{ 
-		if (auto RigidHandle = MHandle->CastToRigidParticle())
+		if (IsDynamic())
 		{
-			return RigidHandle->ConditionedI();
+			return MHandle->CastToRigidParticle()->ConditionedI();
 		}
 
 		return TVec3<FRealSingle>(0);
@@ -1797,6 +1998,31 @@ public:
 		if (auto RigidHandle = MHandle->CastToRigidParticle())
 		{
 			RigidHandle->ClearInertiaConditioningDirty();
+		}
+	}
+
+	inline bool UseIgnoreCollisionManager() const
+	{
+		if (auto RigidHandle = MHandle->CastToRigidParticle())
+		{
+			return RigidHandle->UseIgnoreCollisionManager();
+		}
+		return false;
+	}
+
+	inline void SetUseIgnoreCollisionManager()
+	{
+		if (auto RigidHandle = MHandle->CastToRigidParticle())
+		{
+			RigidHandle->SetUseIgnoreCollisionManager();
+		}
+	}
+
+	inline void ClearUseIgnoreCollisionManager()
+	{
+		if (auto RigidHandle = MHandle->CastToRigidParticle())
+		{
+			RigidHandle->ClearUseIgnoreCollisionManager();
 		}
 	}
 

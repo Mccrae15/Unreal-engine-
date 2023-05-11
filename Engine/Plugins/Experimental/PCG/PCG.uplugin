@@ -2,12 +2,11 @@
 	"FileVersion": 3,
 	"Version": 8,
 	"VersionName": "0.1",
-	"EngineVersion": "5.1.0",
-	"FriendlyName": "PCG",
-	"Description": "Procedural generation framework for UE",
+	"FriendlyName": "Procedural Content Generation Framework",
+	"Description": "Visual scripting framework for procedurally populating worlds with content in editor and/or at run-time.",
 	"Category": "Editor",
-	"CreatedBy": "Epic Games Inc",
-	"CreatedByURL": "http://epicgames.com",
+	"CreatedBy": "Epic Games, Inc.",
+	"CreatedByURL": "https://epicgames.com",
 	"DocsURL": "",
 	"MarketplaceURL": "",
 	"SupportURL": "",
@@ -35,6 +34,10 @@
 		},
 		{
 			"Name": "EditorScriptingUtilities",
+			"Enabled": true
+		},
+		{
+			"Name": "StructUtils",
 			"Enabled": true
 		}
 	]

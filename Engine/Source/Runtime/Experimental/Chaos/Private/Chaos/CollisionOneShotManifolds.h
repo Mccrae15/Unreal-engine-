@@ -14,6 +14,7 @@ namespace Chaos
 	{
 		uint32 BoxBoxClipVerticesAgainstPlane(const FVec3* InputVertexBuffer, FVec3* outputVertexBuffer, uint32 ClipPointCount, int32 ClippingAxis, FReal Distance);
 		uint32 ReduceManifoldContactPoints(FVec3* Points, uint32 PointCount);
+		uint32 ClipVerticesAgainstPlane(const FVec3* InputVertexBuffer, FVec3* OutputVertexBuffer, const uint32 ClipPointCount, const uint32 MaxNumberOfOutputPoints, const FVec3 ClippingPlaneNormal, const FReal PlaneDistance);
 
 		void ConstructBoxBoxOneShotManifold(
 			const FImplicitBox3& Box1,
@@ -39,20 +40,20 @@ namespace Chaos
 			const ConvexType& Convex,
 			const FRigidTransform3& ConvexTransform,
 			const FReal CullDistance,
-			TCArray<FContactPoint, 4>& OutContactPoints);
+			FContactPointManifold& OutContactPoints);
 
 		void ConstructCapsuleTriangleOneShotManifold(
 			const FImplicitCapsule3& Capsule,
 			const FTriangle& Triangle,
 			const FReal CullDistance,
-			TCArray<FContactPoint, 4>& OutContactPoints);
+			FContactPointManifold& OutContactPoints);
 
 		template <typename ConvexType>
 		void ConstructPlanarConvexTriangleOneShotManifold(
 			const ConvexType& Convex, 
 			const FTriangle& Triangle, 
 			const FReal CullDistance, 
-			TCArray<FContactPoint, 4>& OutContactPoints);
+			FContactPointManifold& OutContactPoints);
 	}
 }
 

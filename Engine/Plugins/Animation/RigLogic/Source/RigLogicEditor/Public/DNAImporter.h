@@ -46,8 +46,9 @@ public:
 	 */
 	FDNAAssetImportOptions* GetImportOptions() const;
 	void PartialCleanUp();
-	FString GetDNAFileVersion() { return DNAFileVersion; }
-	FString GetDNAFileCreator() { return DNAFileCreator; }
+	FString PromptForDNAImportFile();
+	FString GetDNAFileName() { return DNAFileName; }
+	void SetDNAFileName(FString DNAName) { this->DNAFileName = DNAName; };
 protected:
 	enum IMPORTPHASE
 	{
@@ -66,8 +67,7 @@ protected:
 	// base path of DNA file
 	FString FileBasePath;
 	TWeakObjectPtr<UObject> Parent;
-	FString DNAFileVersion;
-	FString DNAFileCreator;
+	FString DNAFileName;
 
 	FDNAImporter();
 

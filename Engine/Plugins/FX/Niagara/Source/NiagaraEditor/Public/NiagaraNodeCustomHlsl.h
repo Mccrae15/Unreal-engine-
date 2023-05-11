@@ -19,6 +19,9 @@ public:
 	const FString& GetCustomHlsl() const;
 	void SetCustomHlsl(const FString& InCustomHlsl);
 
+	bool IsShaderCodeShown() const;
+	void SetShaderCodeShown(bool bInShown);
+
 	void GetIncludeFilePaths(TArray<FNiagaraCustomHlslInclude>& OutCustomHlslIncludeFilePaths) const;
 
 	UPROPERTY()
@@ -27,6 +30,7 @@ public:
 	virtual TSharedPtr<SGraphNode> CreateVisualWidget() override;
 	virtual void OnRenameNode(const FString& NewName) override;
 	virtual FLinearColor GetNodeTitleColor() const override;
+	virtual FText GetTooltipText() const override;
 
 	FText GetHlslText() const;
 	void OnCustomHlslTextCommitted(const FText& InText, ETextCommit::Type InType);
@@ -58,14 +62,11 @@ protected:
 	virtual bool IsPinNameEditable(const UEdGraphPin* Pin) const override;
 	virtual bool CommitEditablePinName(const FText& InName, UEdGraphPin* InGraphPinObj, bool bSuppressEvents = false) override;
 	virtual bool CancelEditablePinName(const FText& InName, UEdGraphPin* InGraphPinObj) override;
-	
+
+	virtual bool CanModifyPin(const UEdGraphPin* Pin) const override { return UNiagaraNodeWithDynamicPins::CanModifyPin(Pin); }
 	virtual bool CanRenamePin(const UEdGraphPin* Pin) const override { return UNiagaraNodeWithDynamicPins::CanRenamePin(Pin); }
-	virtual bool CanRemovePin(const UEdGraphPin* Pin) const override {
-		return UNiagaraNodeWithDynamicPins::CanRemovePin(Pin);
-	}
-	virtual bool CanMovePin(const UEdGraphPin* Pin, int32 DirectionToMove) const override {
-		return UNiagaraNodeWithDynamicPins::CanMovePin(Pin, DirectionToMove);
-	}
+	virtual bool CanRemovePin(const UEdGraphPin* Pin) const override { return UNiagaraNodeWithDynamicPins::CanRemovePin(Pin); }
+	virtual bool CanMovePin(const UEdGraphPin* Pin, int32 DirectionToMove) const override {	return UNiagaraNodeWithDynamicPins::CanMovePin(Pin, DirectionToMove); }
 
 	/** Called when a new typed pin is added by the user. */
 	virtual void OnNewTypedPinAdded(UEdGraphPin*& NewPin) override;
@@ -93,4 +94,8 @@ private:
 	// For example, /Plugin/FX/Niagara maps to /Engine/Plugins/FX/Niagara/Shaders. Custom mappings can be added via AddShaderSourceDirectoryMapping().
 	UPROPERTY(EditAnywhere, Category = "HLSL")
 	TArray<FString> VirtualIncludeFilePaths;
+	
+	// Is the shader code UI shown?
+	UPROPERTY()
+	bool bIsShaderCodeShown;
 };

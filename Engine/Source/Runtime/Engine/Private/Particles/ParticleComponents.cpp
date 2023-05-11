@@ -4,45 +4,36 @@
 	UnParticleComponent.cpp: Particle component implementation.
 =============================================================================*/
 
-#include "CoreMinimal.h"
-#include "Misc/CommandLine.h"
-#include "Stats/Stats.h"
-#include "HAL/IConsoleManager.h"
+#include "Camera/CameraLensEffectInterface.h"
+#include "Engine/GameInstance.h"
+#include "Distributions/Distribution.h"
 #include "UObject/FrameworkObjectVersion.h"
-#include "Misc/App.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/UObjectBaseUtility.h"
-#include "Async/TaskGraphInterfaces.h"
-#include "EngineDefines.h"
-#include "EngineGlobals.h"
-#include "Engine/EngineTypes.h"
-#include "Components/ActorComponent.h"
-#include "Components/SceneComponent.h"
-#include "CollisionQueryParams.h"
-#include "WorldCollision.h"
+#include "Engine/Level.h"
 #include "Engine/CollisionProfile.h"
+#include "GameFramework/PlayerController.h"
 #include "UObject/ObjectSaveContext.h"
+#include "Materials/MaterialRelevance.h"
 #include "UObject/UObjectIterator.h"
+#include "Misc/LargeWorldRenderPosition.h"
 #include "UObject/Package.h"
-#include "UObject/PropertyPortFlags.h"
+#include "Particles/Color/ParticleModuleColorBase.h"
 #include "Particles/ParticleSystem.h"
 #include "Particles/Emitter.h"
-#include "ParticleHelper.h"
-#include "Distributions/DistributionFloat.h"
 #include "Particles/Orientation/ParticleModuleOrientationAxisLock.h"
 #include "ParticleEmitterInstances.h"
+#include "Particles/ParticleModule.h"
 #include "Particles/ParticleSystemComponent.h"
 #include "Distributions/DistributionFloatConstant.h"
 #include "Distributions/DistributionFloatUniform.h"
 #include "Distributions/DistributionVectorConstant.h"
 #include "Distributions/DistributionVectorUniform.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Particles/ParticlePerfStats.h"
 #include "UnrealEngine.h"
 #include "Distributions/DistributionVectorConstantCurve.h"
+#include "Particles/SubUVAnimation.h"
 #include "StaticMeshResources.h"
 #include "Particles/EmitterCameraLensEffectBase.h"
-#include "FXSystem.h"
-#include "Logging/TokenizedMessage.h"
 #include "Logging/MessageLog.h"
 #include "Misc/UObjectToken.h"
 #include "Misc/MapErrors.h"
@@ -50,7 +41,12 @@
 #include "Interfaces/ITargetPlatform.h"
 #include "DeviceProfiles/DeviceProfile.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
-#include "PipelineStateCache.h"
+#include "PSOPrecache.h"
+#include "PrimitiveSceneProxy.h"
+#include "RenderingThread.h"
+#include "SceneInterface.h"
+#include "Stats/StatsTrace.h"
+
 #if WITH_EDITOR
 #include "Engine/InterpCurveEdSetup.h"
 #include "ObjectEditorUtils.h"
@@ -60,7 +56,6 @@
 #include "Particles/Camera/ParticleModuleCameraOffset.h"
 #include "Particles/Collision/ParticleModuleCollision.h"
 #include "Particles/Color/ParticleModuleColorOverLife.h"
-#include "Scalability.h"
 #include "Particles/ParticleEmitter.h"
 #include "Particles/Event/ParticleModuleEventGenerator.h"
 #include "Particles/Event/ParticleModuleEventReceiverBase.h"
@@ -87,11 +82,8 @@
 #include "Particles/ParticleSystemReplay.h"
 #include "Distributions/DistributionFloatConstantCurve.h"
 #include "Particles/SubUV/ParticleModuleSubUV.h"
-#include "GameFramework/GameState.h"
-#include "HAL/LowLevelMemTracker.h"
 #include "Particles/ParticleSystemManager.h"
 
-#include "Particles/Collision/ParticleModuleCollisionGPU.h"
 
 DECLARE_CYCLE_STAT(TEXT("ParticleComponent InitParticles GT"), STAT_ParticleSystemComponent_InitParticles, STATGROUP_Particles);
 DECLARE_CYCLE_STAT(TEXT("ParticleComponent SendRenderDynamicData GT"), STAT_ParticleSystemComponent_SendRenderDynamicData_Concurrent, STATGROUP_Particles);
@@ -151,6 +143,22 @@ void UFXSystemAsset::PostInitProperties()
 	CSVStat_Waits = *FString::Printf(TEXT("Waits/%s"), *GetFName().ToString());
 	CSVStat_Culled = *FString::Printf(TEXT("Culled/%s"), *GetFName().ToString());
 #endif
+}
+
+void UFXSystemAsset::LaunchPSOPrecaching(TArrayView<VFsPerMaterialData> VFsPerMaterials)
+{
+	FPSOPrecacheParams PreCachePSOParams;
+	PreCachePSOParams.SetMobility(EComponentMobility::Movable);
+
+	for (VFsPerMaterialData& VFsPerMaterial : VFsPerMaterials)
+	{
+		if (VFsPerMaterial.MaterialInterface)
+		{
+			PreCachePSOParams.PrimitiveType = (EPrimitiveType)VFsPerMaterial.PrimitiveType;
+			PreCachePSOParams.bDisableBackFaceCulling = VFsPerMaterial.bDisableBackfaceCulling;
+			PrecachePSOsEvents.Append(VFsPerMaterial.MaterialInterface->PrecachePSOs(VFsPerMaterial.VertexFactoryTypes, PreCachePSOParams,EPSOPrecachePriority::Medium, MaterialPSOPrecacheRequestIDs));
+		}
+	}
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -1474,6 +1482,26 @@ bool UParticleEmitter::IsLODLevelValid(int32 LODLevel)
 	return false;
 }
 
+UParticleLODLevel* UParticleEmitter::GetCurrentLODLevel(FParticleEmitterInstance* Instance)
+{
+	if (!FPlatformProperties::HasEditorOnlyData())
+	{
+		return Instance->CurrentLODLevel;
+	}
+	else
+	{
+		// for the game (where we care about perf) we don't branch
+		if (Instance->GetWorld()->IsGameWorld() )
+		{
+			return Instance->CurrentLODLevel;
+		}
+		else
+		{
+			EditorUpdateCurrentLOD( Instance );
+			return Instance->CurrentLODLevel;
+		}
+	}
+}
 
 void UParticleEmitter::EditorUpdateCurrentLOD(FParticleEmitterInstance* Instance)
 {
@@ -2622,12 +2650,6 @@ void UParticleSystem::PrecachePSOs()
 		return;
 	}
 
-	struct VFsPerMaterialData
-	{
-		UMaterialInterface* MaterialInterface;
-		EPrimitiveType PrimitiveType;
-		TArray<const FVertexFactoryType*, TInlineAllocator<2>> VertexFactoryTypes;
-	};
 	TArray<VFsPerMaterialData, TInlineAllocator<2>> VFsPerMaterials;
 
 	// No per component emitter materials known at this point in time
@@ -2673,17 +2695,7 @@ void UParticleSystem::PrecachePSOs()
 		}
 	}
 
-	FPSOPrecacheParams PreCachePSOParams;
-	PreCachePSOParams.SetMobility(EComponentMobility::Movable);
-
-	for (VFsPerMaterialData& VFsPerMaterial : VFsPerMaterials)
-	{
-		if (VFsPerMaterial.MaterialInterface)
-		{
-			PreCachePSOParams.PrimitiveType = VFsPerMaterial.PrimitiveType;
-			VFsPerMaterial.MaterialInterface->PrecachePSOs(VFsPerMaterial.VertexFactoryTypes, PreCachePSOParams);
-		}
-	}
+	LaunchPSOPrecaching(VFsPerMaterials);
 }
 
 void UParticleSystem::Serialize(FArchive& Ar)
@@ -3466,6 +3478,41 @@ bool UFXSystemComponent::RequiresLWCTileRecache(const FVector3f CurrentTile, con
 		bNeedsRecache = MaxMovement >= TileRecache;
 	}
 	return bNeedsRecache;
+}
+
+void UFXSystemComponent::PrecacheAssetPSOs(UFXSystemAsset* FXSystemAsset)
+{
+	if (!FApp::CanEverRender() || !IsComponentPSOPrecachingEnabled() || FXSystemAsset == nullptr)
+	{
+		return;
+	}
+
+	const FGraphEventArray& GraphEvents = FXSystemAsset->GetPrecachePSOsEvents();
+
+	check(IsInGameThread() || IsInParallelGameThread());
+
+	MaterialPSOPrecacheRequestIDs.Empty();
+	PSOPrecacheCompileEvent = nullptr;
+	bPSOPrecacheRequestBoosted = false;
+
+	// The asset will keep the Precache events alive, but these might be over. Avoid delaying scene proxy creation if everything is finished
+	bool bAllEventsDone = true;
+	for (FGraphEventRef GraphEvent : GraphEvents)
+	{
+		if (!GraphEvent->IsComplete())
+		{
+			bAllEventsDone = false;
+			break;
+		}
+	}
+
+	if (!bAllEventsDone)
+	{
+		MaterialPSOPrecacheRequestIDs.Append(FXSystemAsset->GetMaterialPSOPrecacheRequestIDs());
+		RequestRecreateRenderStateWhenPSOPrecacheFinished(GraphEvents);
+	}
+
+	bPSOPrecacheCalled = true;
 }
 
 FOnSystemPreActivationChange UParticleSystemComponent::OnSystemPreActivationChange;
@@ -4359,6 +4406,10 @@ FParticleDynamicData* UParticleSystemComponent::CreateDynamicData(ERHIFeatureLev
 		ParticleDynamicData->SystemPositionForMacroUVs = GetComponentTransform().TransformPosition(Template->MacroUVPosition);
 		ParticleDynamicData->SystemRadiusForMacroUVs = Template->MacroUVRadius;
 	}
+
+#if WITH_PARTICLE_PERF_STATS
+	ParticleDynamicData->PerfStatContext = GetPerfStatsContext();
+#endif
 
 	if( ReplayState == PRS_Replaying )
 	{

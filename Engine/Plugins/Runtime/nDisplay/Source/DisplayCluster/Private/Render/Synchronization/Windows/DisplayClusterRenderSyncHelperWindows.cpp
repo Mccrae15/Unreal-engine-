@@ -6,7 +6,9 @@
 
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
+#include "RHI.h"
 #include "DynamicRHI.h"
+#include "UnrealClient.h"
 
 #pragma warning(push)
 #pragma warning (disable : 4005)

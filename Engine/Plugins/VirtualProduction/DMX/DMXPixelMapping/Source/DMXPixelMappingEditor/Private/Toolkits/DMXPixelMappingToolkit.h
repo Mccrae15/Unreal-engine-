@@ -2,11 +2,13 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "TickableEditorObject.h"
-#include "Templates/DMXPixelMappingComponentTemplate.h"
-#include "Toolkits/AssetEditorToolkit.h"
 #include "DMXPixelMappingComponentReference.h"
+
+#include "TickableEditorObject.h"
+#include "Toolkits/AssetEditorToolkit.h"
+
+class FDMXPixelMappingComponentTemplate;
+class FSpawnTabArgs;
 
 class FDMXPixelMappingToolbar;
 class SDMXPixelMappingHierarchyView;
@@ -240,15 +242,14 @@ private:
 	/** Command list for handling widget actions in the PixelMapping Toolkit */
 	TSharedPtr<FUICommandList> DesignerCommandList;
 
-	bool bIsPlayingDMX;
+	/** True while playing DMX */
+	bool bIsPlayingDMX = false;
 
-	bool bTogglePlayDMXAll;
+	/** Toggles if DMX should be sent for all components */
+	bool bTogglePlayDMXAll = true;
 
-	bool bRequestStopSendingDMX;
-
-	uint8 RequestStopSendingTicks;
-
-	static const uint8 RequestStopSendingMaxTicks;
+	/** True while stop DMX is requested, but not carried out yet */
+	bool bRequestStopSendingDMX = false;
 
 	/** True while adding components (to avoid needlessly updating blueprint nodes on each component added via our own methods) */
 	bool bAddingComponents = false;

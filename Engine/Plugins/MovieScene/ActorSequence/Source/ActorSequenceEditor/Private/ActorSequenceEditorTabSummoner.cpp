@@ -3,23 +3,23 @@
 #include "ActorSequenceEditorTabSummoner.h"
 
 #include "ActorSequence.h"
-#include "ISequencer.h"
+#include "Engine/BlueprintGeneratedClass.h"
 #include "ISequencerModule.h"
+#include "Engine/SimpleConstructionScript.h"
 #include "LevelEditorSequencerIntegration.h"
+#include "Framework/Views/TableViewMetadata.h"
 #include "SSCSEditor.h"
+#include "MovieScenePossessable.h"
 #include "Styling/SlateIconFinder.h"
 #include "Kismet2/BlueprintEditorUtils.h"
-#include "Styling/AppStyle.h"
-#include "EditorUndoClient.h"
-#include "Widgets/Images/SImage.h"
-#include "Editor.h"
 #include "LevelEditor.h"
-#include "ScopedTransaction.h"
+#include "SubobjectData.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/Application/SlateApplication.h"
 #include "ActorSequenceEditorStyle.h"
 #include "EventHandlers/ISignedObjectEventHandler.h"
+#include "Toolkits/IToolkitHost.h"
 #include "UObject/ObjectSaveContext.h"
 #include "SSubobjectEditor.h"
 
@@ -213,6 +213,16 @@ public:
 			FLevelEditorSequencerIntegration::Get().RemoveSequencer(Sequencer.ToSharedRef());
 			Sequencer->Close();
 			Sequencer = nullptr;
+		}
+
+		if (FLevelEditorModule* LevelEditorModule = FModuleManager::GetModulePtr<FLevelEditorModule>("LevelEditor"))
+		{
+			LevelEditorModule->OnMapChanged().RemoveAll(this);
+		}
+
+		if (Content)
+		{
+			Content->SetContent(SNew(STextBlock).Text(LOCTEXT("NothingSelected", "Select a sequence")));
 		}
 
 		if (WeakBlueprintEditor.IsValid() && WeakBlueprintEditor.Pin()->IsHosted())

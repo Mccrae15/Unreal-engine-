@@ -2,9 +2,10 @@
 
 #include "ComputeFramework/ComputeKernelShaderCompilationManager.h"
 
+#include "ComputeFramework/ComputeKernelShared.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
-#include "ComputeFramework/ComputeKernelShared.h"
 #include "RHIShaderFormatDefinitions.inl"
 #include "ShaderCompiler.h"
 
@@ -13,8 +14,7 @@
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #endif
 
-
-DEFINE_LOG_CATEGORY_STATIC(LogComputeKernelShaderCompiler, All, All);
+DEFINE_LOG_CATEGORY_STATIC(LogComputeKernelShaderCompiler, Log, All);
 
 static int32 GShowComputeKernelShaderWarnings = 0;
 static FAutoConsoleVariableRef CVarShowComputeKernelShaderWarnings(
@@ -29,227 +29,182 @@ FComputeKernelShaderCompilationManager GComputeKernelShaderCompilationManager;
 
 void FComputeKernelShaderCompilationManager::Tick(float DeltaSeconds)
 {
-#if WITH_EDITOR
-	RunCompileJobs();
 	ProcessAsyncResults();
-#endif
-}
-
-FComputeKernelShaderCompilationManager::FComputeKernelShaderCompilationManager()
-{
-	
-}
-
-FComputeKernelShaderCompilationManager::~FComputeKernelShaderCompilationManager()
-{
-	for (FComputeKernelShaderCompileWorkerInfo* Info : WorkerInfos)
-	{
-		delete Info;
-	}
-
-	WorkerInfos.Empty();
-}
-
-void FComputeKernelShaderCompilationManager::RunCompileJobs()
-{
-#if WITH_EDITOR
-	check(IsInGameThread());
-
-	InitWorkerInfo();
-
-	int32 NumActiveThreads = 0;
-
-	for (int32 WorkerIndex = 0; WorkerIndex < WorkerInfos.Num(); WorkerIndex++)
-	{
-		FComputeKernelShaderCompileWorkerInfo& CurrentWorkerInfo = *WorkerInfos[WorkerIndex];
-
-		// If this worker doesn't have any queued jobs, look for more in the input queue
-		if (CurrentWorkerInfo.QueuedJobs.Num() == 0)
-		{
-			check(!CurrentWorkerInfo.bComplete);
-
-			if (JobQueue.Num() > 0)
-			{
-				bool bAddedLowLatencyTask = false;
-				int32 JobIndex = 0;
-
-				// Try to grab up to MaxShaderJobBatchSize jobs
-				// Don't put more than one low latency task into a batch
-				for (; JobIndex < JobQueue.Num(); JobIndex++)
-				{
-					CurrentWorkerInfo.QueuedJobs.Add(JobQueue[JobIndex]);
-				}
-
-				// Update the worker state as having new tasks that need to be issued					
-				// don't reset worker app ID, because the shadercompilerworkers don't shutdown immediately after finishing a single job queue.
-				CurrentWorkerInfo.bIssuedTasksToWorker = true;
-				CurrentWorkerInfo.bLaunchedWorker = true;
-				CurrentWorkerInfo.StartTime = FPlatformTime::Seconds();
-				JobQueue.RemoveAt(0, JobIndex);
-			}
-		}
-
-		if (CurrentWorkerInfo.bIssuedTasksToWorker && CurrentWorkerInfo.bLaunchedWorker)
-		{
-			NumActiveThreads++;
-		}
-
-		if (CurrentWorkerInfo.QueuedJobs.Num() > 0)
-		{
-			for (int32 JobIndex = 0; JobIndex < CurrentWorkerInfo.QueuedJobs.Num(); JobIndex++)
-			{
-				FShaderCompileJob& CurrentJob = static_cast<FShaderCompileJob&>(*CurrentWorkerInfo.QueuedJobs[JobIndex].GetReference());
-
-				check(!CurrentJob.bFinalized);
-				CurrentJob.bFinalized = true;
-
-				static ITargetPlatformManagerModule& TPM = GetTargetPlatformManagerRef();
-
-				const FName Format = LegacyShaderPlatformToShaderFormat(EShaderPlatform(CurrentJob.Input.Target.Platform));
-				const IShaderFormat* Compiler = TPM.FindShaderFormat(Format);
-
-				if (!Compiler)
-				{
-					UE_LOG(LogComputeKernelShaderCompiler, Fatal, TEXT("Can't compile shaders for format %s, couldn't load compiler dll"), *Format.ToString());
-				}
-				CA_ASSUME(Compiler != nullptr);
-
-				UE_LOG(LogComputeKernelShaderCompiler, Log, TEXT("Compile Job processing... %s"), *CurrentJob.Input.DebugGroupName);
-
-				CurrentJob.Input.DumpDebugInfoRootPath = GShaderCompilingManager->GetAbsoluteShaderDebugInfoDirectory() / CurrentJob.Input.ShaderPlatformName.ToString();
-				FPaths::NormalizeDirectoryName(CurrentJob.Input.DumpDebugInfoRootPath);
-				const FShaderCompilingManager::EDumpShaderDebugInfo DumpShaderDebugInfo = GShaderCompilingManager->GetDumpShaderDebugInfo();
-				CurrentJob.Input.DebugExtension.Empty();
-				if (DumpShaderDebugInfo == FShaderCompilingManager::EDumpShaderDebugInfo::Always)
-				{
-					CurrentJob.Input.DumpDebugInfoRootPath = GShaderCompilingManager->CreateShaderDebugInfoPath(CurrentJob.Input);
-				}
-
-				if (IsValidRef(CurrentJob.Input.SharedEnvironment))
-				{
-					// Merge the shared environment into the per-shader environment before calling into the compile function
-					// Normally this happens in the worker
-					CurrentJob.Input.Environment.Merge(*CurrentJob.Input.SharedEnvironment);
-				}
-
-				// Compile the shader directly through the platform dll (directly from the shader dir as the working directory)
-				Compiler->CompileShader(Format, CurrentJob.Input, CurrentJob.Output, FString(FPlatformProcess::ShaderDir()));
-
-				CurrentJob.bSucceeded = CurrentJob.Output.bSucceeded;
-
-				// Recompile the shader to dump debug info if desired
-				if (GShaderCompilingManager->ShouldRecompileToDumpShaderDebugInfo(CurrentJob))
-				{
-					CurrentJob.Input.DumpDebugInfoPath = GShaderCompilingManager->CreateShaderDebugInfoPath(CurrentJob.Input);
-					CurrentJob.Output = FShaderCompilerOutput();
-					Compiler->CompileShader(Format, CurrentJob.Input, CurrentJob.Output, FString(FPlatformProcess::ShaderDir()));
-				}
-
-				if (CurrentJob.Output.bSucceeded)
-				{
-					// Generate a hash of the output and cache it
-					// The shader processing this output will use it to search for existing FShaderResources
-					CurrentJob.Output.GenerateOutputHash();
-					UE_LOG(LogComputeKernelShaderCompiler, Log, TEXT("GPU shader compile succeeded. Id %d"), CurrentJob.Id);
-				}
-				else
-				{
-					UE_LOG(LogComputeKernelShaderCompiler, Log, TEXT("ERROR: GPU shader compile failed! Id %d"), CurrentJob.Id);
-				}
-
-				CurrentWorkerInfo.bComplete = true;
-			}
-		}
-	}
-
-	for (int32 WorkerIndex = 0; WorkerIndex < WorkerInfos.Num(); WorkerIndex++)
-	{
-		FComputeKernelShaderCompileWorkerInfo& CurrentWorkerInfo = *WorkerInfos[WorkerIndex];
-		if (CurrentWorkerInfo.bComplete)
-		{
-			for (int32 JobIndex = 0; JobIndex < CurrentWorkerInfo.QueuedJobs.Num(); JobIndex++)
-			{
-				FComputeKernelShaderMapCompileResults& ShaderMapResults = ComputeKernelShaderMapJobs.FindChecked(CurrentWorkerInfo.QueuedJobs[JobIndex]->Id);
-				ShaderMapResults.FinishedJobs.Add(CurrentWorkerInfo.QueuedJobs[JobIndex]);
-				ShaderMapResults.bAllJobsSucceeded = ShaderMapResults.bAllJobsSucceeded && CurrentWorkerInfo.QueuedJobs[JobIndex]->bSucceeded;
-			}
-		}
-
-		CurrentWorkerInfo.bComplete = false;
-		CurrentWorkerInfo.QueuedJobs.Empty();
-	}
-#endif
-}
-
-void FComputeKernelShaderCompilationManager::InitWorkerInfo()
-{
-	if (WorkerInfos.Num() == 0) // Check to see if it has been initialized or not
-	{
-		// Ew. Should we just use FShaderCompilingManager's workers instead? Is that safe?
-		const int32 NumVirtualCores = FPlatformMisc::NumberOfCoresIncludingHyperthreads();
-		const uint32 NumComputeKernelShaderCompilingThreads = FMath::Min(NumVirtualCores - 1, 4);
-
-		for (uint32 WorkerIndex = 0; WorkerIndex < NumComputeKernelShaderCompilingThreads; WorkerIndex++)
-		{
-			WorkerInfos.Add(new FComputeKernelShaderCompileWorkerInfo());
-		}
-	}	
 }
 
 void FComputeKernelShaderCompilationManager::AddJobs(TArray<FShaderCommonCompileJobPtr> InNewJobs)
 {
-#if WITH_EDITOR
-	for (auto& Job : InNewJobs)
+	check(IsInGameThread());
+	JobQueue.Append(InNewJobs);
+
+	for (FShaderCommonCompileJobPtr& Job : InNewJobs)
 	{
 		FComputeKernelShaderMapCompileResults& ShaderMapInfo = ComputeKernelShaderMapJobs.FindOrAdd(Job->Id);
-		//@todo : Apply shader map isn't used for now with this compile manager. Should be merged to have a generic shader compiler
 		ShaderMapInfo.NumJobsQueued++;
+
+		FShaderCompileJob* CurrentJob = Job->GetSingleShaderJob();
+
+		CurrentJob->Input.DumpDebugInfoRootPath = GShaderCompilingManager->GetAbsoluteShaderDebugInfoDirectory() / CurrentJob->Input.ShaderPlatformName.ToString();
+		FPaths::NormalizeDirectoryName(CurrentJob->Input.DumpDebugInfoRootPath);
+
+		CurrentJob->Input.DebugExtension.Empty();
+		CurrentJob->Input.DumpDebugInfoPath.Empty();
+		if (GShaderCompilingManager->GetDumpShaderDebugInfo() == FShaderCompilingManager::EDumpShaderDebugInfo::Always)
+		{
+			CurrentJob->Input.DumpDebugInfoRootPath = GShaderCompilingManager->CreateShaderDebugInfoPath(CurrentJob->Input);
+		}
 	}
 
-	JobQueue.Append(InNewJobs);
-#endif
+	GShaderCompilingManager->SubmitJobs(InNewJobs, FString(), FString());
 }
-
 
 void FComputeKernelShaderCompilationManager::ProcessAsyncResults()
 {
-#if WITH_EDITOR
-	int32 NumCompilingComputeKernelShaderMaps = 0;
-	TArray<int32> ShaderMapsToRemove;
+	check(IsInGameThread());
 
-	// Get all ComputeKernel shader maps to finalize
-	//
+	// Process the results from the shader compile worker
+	for (int32 JobIndex = JobQueue.Num() - 1; JobIndex >= 0; JobIndex--)
+	{
+		auto CurrentJob = JobQueue[JobIndex]->GetSingleShaderJob();
+
+		if (!CurrentJob->bReleased)
+		{
+			continue;
+		}
+
+		CurrentJob->bSucceeded = CurrentJob->Output.bSucceeded;
+		if (CurrentJob->Output.bSucceeded)
+		{
+			UE_LOG(LogComputeKernelShaderCompiler, Verbose, TEXT("GPU shader compile succeeded. Id %d"), CurrentJob->Id);
+		}
+		else
+		{
+			UE_LOG(LogComputeKernelShaderCompiler, Verbose, TEXT("GPU shader compile failed! Id %d"), CurrentJob->Id);
+		}
+
+		FComputeKernelShaderMapCompileResults& ShaderMapResults = ComputeKernelShaderMapJobs.FindChecked(CurrentJob->Id);
+		ShaderMapResults.FinishedJobs.Add(JobQueue[JobIndex]);
+		ShaderMapResults.bAllJobsSucceeded = ShaderMapResults.bAllJobsSucceeded && CurrentJob->bSucceeded;
+		JobQueue.RemoveAt(JobIndex);
+	}
+
 	for (TMap<int32, FComputeKernelShaderMapCompileResults>::TIterator It(ComputeKernelShaderMapJobs); It; ++It)
 	{
 		const FComputeKernelShaderMapCompileResults& Results = It.Value();
 
 		if (Results.FinishedJobs.Num() == Results.NumJobsQueued)
 		{
-			ShaderMapsToRemove.Add(It.Key());
-			PendingFinalizeComputeKernelShaderMaps.Add(It.Key(), FComputeKernelShaderMapFinalizeResults(Results));
+			PendingFinalizeComputeKernelShaderMaps.Add(It.Key(), FComputeKernelShaderMapCompileResults(Results));
+			ComputeKernelShaderMapJobs.Remove(It.Key());
 		}
 	}
 
-	for (int32 RemoveIndex = 0; RemoveIndex < ShaderMapsToRemove.Num(); RemoveIndex++)
-	{
-		ComputeKernelShaderMapJobs.Remove(ShaderMapsToRemove[RemoveIndex]);
-	}
-
-	NumCompilingComputeKernelShaderMaps = ComputeKernelShaderMapJobs.Num();
-
 	if (PendingFinalizeComputeKernelShaderMaps.Num() > 0)
 	{
-		ProcessCompiledComputeKernelShaderMaps(PendingFinalizeComputeKernelShaderMaps, 0.1f);
+		ProcessCompiledComputeKernelShaderMaps(PendingFinalizeComputeKernelShaderMaps, 10);
 	}
-#endif
 }
 
+static bool ParseShaderCompilerError(FShaderCompilerError const& InError, FComputeKernelCompileMessage& OutMessage)
+{
+	FShaderCompilerError Error = InError;
+	Error.ExtractSourceLocation();
+
+	// We ignore error messages that don't have a line information.
+	FString Line, Column;
+	if (!Error.HasLineMarker())
+	{
+		return false;
+	}
+	if (!Error.ErrorLineString.Split(TEXT(","), &Line, &Column))
+	{
+		return false;
+	}
+	if (!Line.IsNumeric() || !Column.IsNumeric())
+	{
+		return false;
+	}
+
+	if (Error.StrippedErrorMessage.RemoveFromStart(TEXT("error: ")))
+	{
+		OutMessage.Type = FComputeKernelCompileMessage::EMessageType::Error;
+	}
+	else if (Error.StrippedErrorMessage.RemoveFromStart(TEXT("warning: ")))
+	{
+		OutMessage.Type = FComputeKernelCompileMessage::EMessageType::Warning;
+	}
+	else if (Error.StrippedErrorMessage.RemoveFromStart(TEXT("note: ")))
+	{
+		OutMessage.Type = FComputeKernelCompileMessage::EMessageType::Info;
+	}
+
+	OutMessage.Text = Error.StrippedErrorMessage;
+	OutMessage.VirtualFilePath = Error.ErrorVirtualFilePath;
+
+	// Fix up the DataInterface generated file paths before any error reporting.
+	// Magic path structure is set in ComputeGraph compilation.
+	if (OutMessage.VirtualFilePath.RemoveFromStart(TEXT("/Engine/Generated/DataInterface/")))
+	{
+		OutMessage.VirtualFilePath.MidInline(OutMessage.VirtualFilePath.Find(TEXT("/")));
+	}
+	// Store any disk paths before error reporting. Can skip some known cases that won't have disk paths.
+	if (OutMessage.VirtualFilePath.StartsWith(TEXT("/")) && !OutMessage.VirtualFilePath.StartsWith(TEXT("/Engine/Generated/")))
+	{
+		OutMessage.RealFilePath = GetShaderSourceFilePath(OutMessage.VirtualFilePath);
+	}
+
+	LexFromString(OutMessage.Line, *Line);
+	LexFromString(OutMessage.ColumnStart, *Column);
+	OutMessage.ColumnEnd = OutMessage.ColumnStart;
+	
+	for (TCHAR Character : Error.HighlightedLineMarker)
+	{
+		OutMessage.ColumnEnd += (Character == TEXT('~')) ? 1 : 0;
+	}
+
+	return true;
+}
+
+static void LogShaderCompilerErrors(FComputeKernelCompileResults const& Results)
+{
+	for (FComputeKernelCompileMessage const& Message : Results.Messages)
+	{
+		FString Path = Message.RealFilePath.IsEmpty() ? Message.VirtualFilePath : Message.RealFilePath;
+
+		const bool bPreparePathForVisualStudioHotlink = !Message.RealFilePath.IsEmpty() && FPlatformMisc::IsDebuggerPresent();
+		if (bPreparePathForVisualStudioHotlink)
+		{
+			// Convert path to absolute, and prepend with newline so that it is clickable in Visual Studio.
+			Path = TEXT("\n") + IFileManager::Get().ConvertToAbsolutePathForExternalAppForRead(*Message.RealFilePath);
+		}
+
+		FString Line;
+		if (Message.ColumnStart == Message.ColumnEnd)
+		{
+			Line = FString::Printf(TEXT("(%d,%d)"), Message.Line, Message.ColumnStart);
+		}
+		else
+		{
+			Line = FString::Printf(TEXT("(%d,%d-%d)"), Message.Line, Message.ColumnStart, Message.ColumnEnd);
+		}
+
+		FString MessageText = FString::Printf(TEXT("%s%s: %s"), *Path, *Line, *Message.Text);
+
+		if (Message.Type == FComputeKernelCompileMessage::EMessageType::Warning)
+		{
+			UE_LOG(LogComputeKernelShaderCompiler, Warning, TEXT("%s"), *MessageText);
+		}
+		else if (Message.Type == FComputeKernelCompileMessage::EMessageType::Error)
+		{
+			UE_LOG(LogComputeKernelShaderCompiler, Error, TEXT("%s"), *MessageText);
+		}
+	}
+}
 
 void FComputeKernelShaderCompilationManager::ProcessCompiledComputeKernelShaderMaps(
 	TMap<int32, FComputeKernelShaderMapFinalizeResults>& CompiledShaderMaps,
 	float TimeBudget)
 {
-#if WITH_EDITOR
 	// Keeps shader maps alive as they are passed from the shader compiler and applied to the owning kernel
 	TArray<TRefCountPtr<FComputeKernelShaderMap> > LocalShaderMapReferences;
 	TMap<FComputeKernelResource*, FComputeKernelShaderMap*> KernelsToUpdate;
@@ -273,9 +228,9 @@ void FComputeKernelShaderCompilationManager::ProcessCompiledComputeKernelShaderM
 
 		if (ShaderMap && Kernels)
 		{
-			TArray<FString> Errors;
 			FComputeKernelShaderMapFinalizeResults& CompileResults = ProcessIt.Value();
 			TArray<FShaderCommonCompileJobPtr>& ResultArray = CompileResults.FinishedJobs;
+			FComputeKernelCompileResults ProcessedCompileResults;
 
 			// Make a copy of the array as this entry of FComputeKernelShaderMap::ShaderMapsBeingCompiled will be removed below
 			TArray<FComputeKernelResource*> KernelsArray = *Kernels;
@@ -295,21 +250,21 @@ void FComputeKernelShaderCompilationManager::ProcessCompiledComputeKernelShaderM
 				{
 					for (int32 ErrorIndex = 0; ErrorIndex < CurrentJob.Output.Errors.Num(); ErrorIndex++)
 					{
-						Errors.AddUnique(CurrentJob.Output.Errors[ErrorIndex].GetErrorString());
+						FComputeKernelCompileMessage Message;
+						if (ParseShaderCompilerError(CurrentJob.Output.Errors[ErrorIndex], Message))
+						{
+							ProcessedCompileResults.Messages.AddUnique(Message);
+						}
 					}
 
-					if (CurrentJob.Output.Errors.Num())
+					if (ProcessedCompileResults.Messages.Num())
 					{
-						UE_LOG(LogComputeKernelShaderCompiler, Log, TEXT("There were errors for job \"%s\""), *CurrentJob.Input.DebugGroupName)
-						for (const FShaderCompilerError& Error : CurrentJob.Output.Errors)
-						{
-							UE_LOG(LogComputeKernelShaderCompiler, Log, TEXT("Error: %s"), *Error.GetErrorString())
-						}
+						UE_LOG(LogComputeKernelShaderCompiler, Verbose, TEXT("There were errors for job \"%s\""), *CurrentJob.Input.DebugGroupName)
 					}
 				}
 				else
 				{
-					UE_LOG(LogComputeKernelShaderCompiler, Log, TEXT("There were NO errors for job \"%s\""), *CurrentJob.Input.DebugGroupName);
+					UE_LOG(LogComputeKernelShaderCompiler, Verbose, TEXT("There were NO errors for job \"%s\""), *CurrentJob.Input.DebugGroupName);
 				}
 			}
 
@@ -338,34 +293,12 @@ void FComputeKernelShaderCompilationManager::ProcessCompiledComputeKernelShaderM
 					// This avoids applying shadermaps which are out of date and a newer one is in the async compiling pipeline
 					if (Kernel->IsSame(CompletedShaderMap->GetShaderMapId()))
 					{
-						if (Errors.Num() != 0)
-						{
-							FString SourceCode;
-							Kernel->GetHLSLSource(SourceCode);
-							UE_LOG(LogComputeKernelShaderCompiler, Log, TEXT("Compile output as text:"));
-							UE_LOG(LogComputeKernelShaderCompiler, Log, TEXT("==================================================================================="));
-							TArray<FString> OutputByLines;
-							SourceCode.ParseIntoArrayLines(OutputByLines, false);
-							for (int32 i = 0; i < OutputByLines.Num(); i++)
-							{
-								UE_LOG(LogComputeKernelShaderCompiler, Log, TEXT("/*%04d*/\t\t%s"), i + 1, *OutputByLines[i]);
-							}
-							UE_LOG(LogComputeKernelShaderCompiler, Log, TEXT("==================================================================================="));
-						}
-
 						if (!bSuccess)
 						{
 							// Propagate error messages
-							Kernel->SetCompileOutputMessages(Errors);
+							LogShaderCompilerErrors(ProcessedCompileResults);
+							Kernel->SetCompilationResults(ProcessedCompileResults);
 							KernelsToUpdate.Add(Kernel, nullptr);
-
-							for (int32 ErrorIndex = 0; ErrorIndex < Errors.Num(); ErrorIndex++)
-							{
-								FString ErrorMessage = Errors[ErrorIndex];
-								// Work around build machine string matching heuristics that will cause a cook to fail
-								ErrorMessage.ReplaceInline(TEXT("error "), TEXT("err0r "), ESearchCase::CaseSensitive);
-								UE_LOG(LogComputeKernelShaderCompiler, Warning, TEXT("	%s"), *ErrorMessage);
-							}
 						}
 						else
 						{
@@ -377,17 +310,14 @@ void FComputeKernelShaderCompilationManager::ProcessCompiledComputeKernelShaderM
 								KernelsToUpdate.Add(Kernel, CompletedShaderMap);
 							}
 
-							if (GShowComputeKernelShaderWarnings && Errors.Num() > 0)
+							if (GShowComputeKernelShaderWarnings && ProcessedCompileResults.Messages.Num() > 0)
 							{
 								UE_LOG(LogComputeKernelShaderCompiler, Warning, TEXT("Warnings while compiling ComputeKernel %s for platform %s:"),
 									*Kernel->GetFriendlyName(),
 									*LegacyShaderPlatformToShaderFormat(ShaderMap->GetShaderPlatform()).ToString());
-								for (int32 ErrorIndex = 0; ErrorIndex < Errors.Num(); ErrorIndex++)
-								{
-									UE_LOG(LogComputeKernelShaderCompiler, Warning, TEXT("	%s"), *Errors[ErrorIndex]);
-								}
 
-								Kernel->SetCompileOutputMessages(Errors);
+								LogShaderCompilerErrors(ProcessedCompileResults);
+								Kernel->SetCompilationResults(ProcessedCompileResults);
 							}
 						}
 					}
@@ -395,15 +325,15 @@ void FComputeKernelShaderCompilationManager::ProcessCompiledComputeKernelShaderM
 					{
 						if (CompletedShaderMap->IsComplete(Kernel, true))
 						{
-							const FString PlatformName = ShaderPlatformToShaderFormatName(ShaderMap->GetShaderPlatform()).ToString();
+							const FString ShaderFormatName = FDataDrivenShaderPlatformInfo::GetShaderFormat(ShaderMap->GetShaderPlatform()).ToString();
 							if (bSuccess)
 							{
-								const FString SuccessMessage = FString::Printf(TEXT("%s: %s shader compilation success!"), *Kernel->GetFriendlyName(), *PlatformName);
+								const FString SuccessMessage = FString::Printf(TEXT("%s: %s shader compilation success!"), *Kernel->GetFriendlyName(), *ShaderFormatName);
 								Kernel->NotifyCompilationFinished(SuccessMessage);
 							}
 							else
 							{
-								const FString FailMessage = FString::Printf(TEXT("%s: %s shader compilation failed."), *Kernel->GetFriendlyName(), *PlatformName);
+								const FString FailMessage = FString::Printf(TEXT("%s: %s shader compilation failed."), *Kernel->GetFriendlyName(), *ShaderFormatName);
 								Kernel->NotifyCompilationFinished(FailMessage);
 							}
 						}
@@ -439,9 +369,10 @@ void FComputeKernelShaderCompilationManager::ProcessCompiledComputeKernelShaderM
 
 			if (ShaderMap && ShaderMap->CompiledSuccessfully())
 			{
+				const FString ShaderFormatName = FDataDrivenShaderPlatformInfo::GetShaderFormat(ShaderMap->GetShaderPlatform()).ToString();
 				const FString SuccessMessage = FString::Printf(TEXT("%s: %s shader compilation success!"), 
 					*Kernel->GetFriendlyName(), 
-					*ShaderPlatformToShaderFormatName(ShaderMap->GetShaderPlatform()).ToString());
+					*ShaderFormatName);
 				Kernel->NotifyCompilationFinished(SuccessMessage);
 			}
 			else
@@ -451,19 +382,16 @@ void FComputeKernelShaderCompilationManager::ProcessCompiledComputeKernelShaderM
 			}
 		}
 	}
-#endif
 }
-
 
 void FComputeKernelShaderCompilationManager::FinishCompilation(const TCHAR* InKernelName, const TArray<int32>& ShaderMapIdsToFinishCompiling)
 {
-#if WITH_EDITOR
 	check(!FPlatformProperties::RequiresCookedData());
 
-	RunCompileJobs();	// since we don't async compile through another process, this will run all oustanding jobs
+	GShaderCompilingManager->FinishCompilation(NULL, ShaderMapIdsToFinishCompiling);
 	ProcessAsyncResults();	// grab compiled shader maps and assign them to their resources
 
 	check(ComputeKernelShaderMapJobs.Num() == 0);
-#endif
 }
-#endif
+
+#endif // WITH_EDITOR

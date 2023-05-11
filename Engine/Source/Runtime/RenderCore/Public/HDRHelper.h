@@ -4,6 +4,9 @@
 
 #include "CoreMinimal.h"
 
+RENDERCORE_API bool IsHDREnabled();
+RENDERCORE_API bool IsHDRAllowed();
+
 RENDERCORE_API void HDRGetMetaData(EDisplayOutputFormat& OutDisplayOutputFormat, EDisplayColorGamut& OutDisplayColorGamut, bool& OutbHDRSupported,
 								   const FVector2D& WindowTopLeft, const FVector2D& WindowBottomRight, void* OSWindow);
 
@@ -15,6 +18,7 @@ RENDERCORE_API void HDRAddCustomMetaData(void* OSWindow, EDisplayOutputFormat Di
 RENDERCORE_API void HDRRemoveCustomMetaData(void* OSWindow);
 RENDERCORE_API FMatrix44f GamutToXYZMatrix(EDisplayColorGamut ColorGamut);
 RENDERCORE_API FMatrix44f XYZToGamutMatrix(EDisplayColorGamut ColorGamut);
+RENDERCORE_API void ConvertPixelDataToSCRGB(TArray<FLinearColor>& InOutRawPixels, EDisplayOutputFormat Pixelformat);
 
 struct FDisplayInformation
 {

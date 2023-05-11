@@ -7,12 +7,10 @@
 #include "GPUSortManager.h"
 #include "GPUSort.h"
 #include "GlobalShader.h"
-#include "ShaderPermutation.h"
+#include "Math/Float16.h"
 #include "ShaderParameterUtils.h"
-#include "ProfilingDebugging/RealtimeGPUProfiler.h"
 #include "FXSystem.h" // FXConsoleVariables::bAllowGPUSorting
 
-#include "RenderGraphBuilder.h"
 #include "RenderGraphUtils.h"
 
 //*****************************************************************************
@@ -154,7 +152,7 @@ void FCopyUIntBufferCS::SetParameters(
 	FRHIComputeShader* ComputeShaderRHI = RHICmdList.GetBoundComputeShader();
 	check(DestCount > 0 && DestCount <= COPYUINTCS_BUFFER_COUNT);
 
-	RHICmdList.SetShaderResourceViewParameter(ComputeShaderRHI, SourceData.GetBaseIndex(), InSourceData);
+	SetSRVParameter(RHICmdList, ComputeShaderRHI, SourceData, InSourceData);
 
 	FUintVector4 CopyParamsValue(StartingIndex, 0, 0, 0);
 	for (int32 Index = 0; Index < DestCount; ++Index)

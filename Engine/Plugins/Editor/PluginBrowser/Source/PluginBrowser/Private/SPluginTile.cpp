@@ -1,37 +1,30 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SPluginTile.h"
+#include "Brushes/SlateDynamicImageBrush.h"
 #include "HAL/PlatformFileManager.h"
 #include "Misc/MessageDialog.h"
+#include "IDesktopPlatform.h"
 #include "Misc/App.h"
-#include "Modules/ModuleManager.h"
-#include "Widgets/SWindow.h"
 #include "Framework/Application/SlateApplication.h"
+#include "PluginReferenceDescriptor.h"
 #include "Widgets/Images/SImage.h"
-#include "Widgets/Text/STextBlock.h"
-#include "Widgets/Input/SButton.h"
+#include "Rendering/SlateRenderer.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "Styling/AppStyle.h"
-#include "ISourceControlOperation.h"
-#include "SourceControlOperations.h"
-#include "ISourceControlProvider.h"
-#include "ISourceControlModule.h"
-#include "PluginDescriptor.h"
 #include "Interfaces/IPluginManager.h"
 #include "SPluginBrowser.h"
 #include "PluginStyle.h"
 #include "GameProjectGenerationModule.h"
-#include "IDetailsView.h"
+#include "SPluginTileList.h"
 #include "Widgets/Input/SHyperlink.h"
-#include "PluginMetadataObject.h"
 #include "Interfaces/IProjectManager.h"
 #include "PluginBrowserModule.h"
-#include "PropertyEditorModule.h"
 #include "IUATHelperModule.h"
 #include "DesktopPlatformModule.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SSpacer.h"
-#include "Styling/StyleColors.h"
+#include "Widgets/SBoxPanel.h"
 
 #define LOCTEXT_NAMESPACE "PluginListTile"
 
@@ -164,15 +157,6 @@ void SPluginTile::RecreateWidgets()
 			+ SHorizontalBox::Slot()
 				.AutoWidth()
 				.VAlign(VAlign_Center)
-				[
-					SNew(SImage)
-						.ColorAndOpacity(FSlateColor::UseForeground())
-						.Image(FAppStyle::GetBrush("ContentBrowser.AssetTreeFolderDeveloper"))
-				]
-
-			+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.VAlign(VAlign_Center)
 				.Padding(4.0f, 0.0f, 0.0f, 0.0f)
 				[
 					SNew(STextBlock)
@@ -193,6 +177,16 @@ void SPluginTile::RecreateWidgets()
 						.ToolTipText(FText::Format(LOCTEXT("NavigateToCreatedByURL", "Visit the vendor's web site ({0})"), FText::FromString(CreatedByURL)))
 						.OnNavigate_Lambda([=]() { FPlatformProcess::LaunchURL(*CreatedByURL, nullptr, nullptr); })
 						.Style(FAppStyle::Get(), "HoverOnlyHyperlink")
+				]
+
+			+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(4.0f, 0.0f, 0.0f, 0.0f)
+				[
+					SNew(SImage)
+					.ColorAndOpacity(FSlateColor::UseForeground())
+					.Image(FAppStyle::Get().GetBrush("Icons.OpenInBrowser"))
 				];
 		}
 	}
@@ -472,7 +466,7 @@ void SPluginTile::RecreateWidgets()
 												.AutoWidth()
 												.HAlign(HAlign_Right)
 												.VAlign(VAlign_Top)
-												.Padding(0.f, 0.f, PaddingAmount + 14.f, 0.f)
+												.Padding(PaddingAmount + 14.f, 0.f, PaddingAmount + 14.f, 0.f)
 												[
 													CreatedByWidget.ToSharedRef()
 												]

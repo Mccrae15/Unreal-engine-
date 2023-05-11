@@ -4,7 +4,6 @@
 
 #include "HAL/PlatformTime.h"
 #include "Hash/CityHash.h"
-#include "HlslParser.h"
 #include "Logging/LogMacros.h"
 #include "Misc/AutomationTest.h"
 #include "String/Find.h"
@@ -13,7 +12,6 @@
 DEFINE_LOG_CATEGORY_STATIC(LogShaderMinifier, Log, All);
 
 // TODO:
-// - track namespaces
 // - preserve multi-line #define
 
 namespace UE::ShaderMinifier
@@ -154,7 +152,6 @@ static FStringView SkipUntilNextLine(FStringView Source)
 	int32 Index = INDEX_NONE;
 	if (Source.FindChar('\n', Index))
 	{
-		Index += 1; // Skip the new line character itself
 		return FStringView(Source.GetData() + Index, Source.Len() - Index);
 	}
 	else
@@ -166,23 +163,6 @@ static FStringView SkipUntilNextLine(FStringView Source)
 static FStringView SkipUntilStr(FStringView Haystack, FStringView Needle)
 {
 	return SkipUntil(Haystack, [Needle](FStringView  S) { return S.StartsWith(Needle, ESearchCase::CaseSensitive); });
-}
-
-static int32 FindFirstOf(FStringView Haystack, FStringView Needle)
-{
-	int32 Len = Haystack.Len();
-	for (int32 i = 0; i < Len; ++i)
-	{
-		TCHAR C = Haystack[i];
-		for (TCHAR C2 : Needle)
-		{
-			if (C == C2)
-			{
-				return i;
-			}
-		}
-	}
-	return INDEX_NONE;
 }
 
 static FStringView ExtractBlock(FStringView Source, TCHAR DelimBegin, TCHAR DelimEnd)
@@ -228,7 +208,7 @@ static FStringView ExtractBlock(FStringView Source, TCHAR DelimBegin, TCHAR Deli
 }
 
 enum class EBlockType : uint8 {
-	Unknown,
+	Unknown,	// various identifiers and keywords that we did not need to or could not identify
 	Keyword,	// e.g. struct, switch, register
 	Attribute,	// e.g. `[numthreads(8,8,1)]`
 	Type,		// return type of function or struct/cbuffer/variable type
@@ -242,6 +222,7 @@ enum class EBlockType : uint8 {
 	Expression,
 	Directive,  // #define, #pragma, #line, etc.
 	NamespaceDelimiter, // e.g. :: in an identifier like Foo::bar
+	PtrOrRef, // e.g. '*' or '&' as part of the type
 };
 
 struct FCodeBlock
@@ -259,12 +240,38 @@ enum class ECodeChunkType {
 	Enum,
 	Define,
 	Pragma,
+	CommentLine, // Single line comment
+	Namespace,
+	Using,
+};
+
+struct FNamespace
+{
+	FNamespace() = default;
+	FNamespace(TConstArrayView<FStringView> InStack)
+	{
+		if (!InStack.IsEmpty())
+		{
+			for (const FStringView& Part : InStack)
+			{
+				FullName += Part;
+				FullName += TEXT("::");
+			}
+			FullName.LeftChopInline(2);
+		}
+		Stack = InStack;
+	}
+
+	FString FullName; // i.e. Foo::Bar::Baz
+	TArray<FStringView> Stack; // i.e. [Foo, Bar, Baz]
 };
 
 struct FCodeChunk
 {
 	ECodeChunkType Type = ECodeChunkType::Unknown;
 	TArray<FCodeBlock> Blocks;
+
+	int32 Namespace = INDEX_NONE; // Unique namespace ID (INDEX_NONE = global)
 
 	// Indicates whether the code for this chunk can be used as-is.
 	// One example where we have to do custom code emission is when a named struct and a variable are declared in one chunk.
@@ -304,9 +311,58 @@ struct FCodeChunk
 struct FParsedShader
 {
 	FStringView Source;
-
 	TArray<FCodeChunk> Chunks;
+	TArray<FNamespace> Namespaces;
 };
+
+struct FNamespaceTracker
+{
+	TMap<FString, int32> UniqueNamespaceMap;
+	TArray<FNamespace> UniqueNamespaceArray;
+	TArray<FStringView> NamespaceStack;
+	TArray<int32> NamespaceIdStack;
+
+	FNamespaceTracker() = default;
+
+	void Push(FStringView Name)
+	{
+		NamespaceStack.Push(Name);
+		FNamespace NamespaceEntry(NamespaceStack);
+		int32& EntryIndex = UniqueNamespaceMap.FindOrAdd(NamespaceEntry.FullName, INDEX_NONE);
+		if (EntryIndex == INDEX_NONE)
+		{
+			EntryIndex = UniqueNamespaceArray.Num();
+			UniqueNamespaceArray.Add(MoveTemp(NamespaceEntry));
+		}
+		NamespaceIdStack.Push(EntryIndex);
+	}
+
+	bool Pop()
+	{
+		if (NamespaceStack.IsEmpty())
+		{
+			return false;
+		}
+		else
+		{
+			NamespaceStack.Pop();
+			NamespaceIdStack.Pop();
+			return true;
+		}
+	}
+
+	int32 CurrentId() const
+	{
+		return NamespaceIdStack.IsEmpty() ? INDEX_NONE : NamespaceIdStack.Last();
+	}
+};
+
+FStringView ExtractNextIdentifier(FStringView Source)
+{
+	FStringView Remainder = SkipUntilNonIdentifierCharacter(Source);
+	FStringView Identifier = SubStrView(Source, 0, Source.Len() - Remainder.Len());
+	return Identifier;
+}
 
 static FParsedShader ParseShader(FStringView InSource, FDiagnostics& Output)
 {
@@ -331,6 +387,9 @@ static FParsedShader ParseShader(FStringView InSource, FDiagnostics& Output)
 	int32 BodyBlockIndex = INDEX_NONE;
 	int32 ExpressionBlockIndex = INDEX_NONE;
 
+	FNamespaceTracker NamespaceTracker;
+	FStringView		  PendingNamespace;
+
 	auto AddDiagnostic = [InSource, &Source](TArray<FDiagnosticMessage>& Output, FStringView Message)
 	{
 		FDiagnosticMessage Diagnostic;
@@ -351,7 +410,8 @@ static FParsedShader ParseShader(FStringView InSource, FDiagnostics& Output)
 		PendingBlocks.Push(NewBlock);
 	};
 
-	auto FinalizeChunk = [&]() {
+	auto FinalizeChunk = [&]() 
+	{
 		const bool bFoundArgs = ArgsBlockIndex >= 0;
 
 		bool bHasType = false;
@@ -386,11 +446,21 @@ static FParsedShader ParseShader(FStringView InSource, FDiagnostics& Output)
 					bHasType = true;
 				}
 
-				if (ExpressionBlockIndex > 0)
+				// If struct body is not the last block, it must be followed by a variable name
+				// i.e. `struct Foo { ... } Blah;` or `struct { ... } Blah;` or `struct Foo { ... } Blah = { expression };`
+				if (BodyBlockIndex > 0 && BodyBlockIndex + 1 < PendingBlocks.Num())
 				{
-					NameBlockIndex = ExpressionBlockIndex - 1;
+					NameBlockIndex = BodyBlockIndex + 1;
 					PendingBlocks[NameBlockIndex].Type = EBlockType::Name;
 					bHasName = true;
+				}
+
+				// If there is an expression block, we expect a named variable to also exist
+				// i.e. `struct Foo { ... } Blah = { expression };` 
+				if (ExpressionBlockIndex > 0 && NameBlockIndex == INDEX_NONE)
+				{
+					AddDiagnostic(Output.Errors, TEXT("Initialized struct variables must be named"));
+					return;
 				}
 			}
 			else if (ChunkType == ECodeChunkType::CBuffer)
@@ -434,6 +504,8 @@ static FParsedShader ParseShader(FStringView InSource, FDiagnostics& Output)
 				ChunkType = ECodeChunkType::Variable;
 			}
 
+			const int32 Namespace = NamespaceTracker.CurrentId();
+
 			if (ChunkType == ECodeChunkType::Struct && bHasName && bHasType)
 			{
 				// Handle simultaneous struct type and variable declaration
@@ -460,6 +532,9 @@ static FParsedShader ParseShader(FStringView InSource, FDiagnostics& Output)
 					VarChunk.Blocks.Push(PendingBlocks[i]);
 				}
 
+				StructChunk.Namespace = Namespace;
+				VarChunk.Namespace = Namespace;
+
 				Chunks.Push(StructChunk);
 				Chunks.Push(VarChunk);
 			}
@@ -467,6 +542,7 @@ static FParsedShader ParseShader(FStringView InSource, FDiagnostics& Output)
 			{
 				FCodeChunk Chunk;
 				Chunk.Type = ChunkType;
+				Chunk.Namespace = Namespace;
 				Swap(Chunk.Blocks, PendingBlocks);
 				Chunks.Push(Chunk);
 			}
@@ -496,7 +572,24 @@ static FParsedShader ParseShader(FStringView InSource, FDiagnostics& Output)
 			break;
 		}
 
-		if (Source.StartsWith(TEXT("//")) || Source.StartsWith(TEXT("#line")))
+		if (Source.StartsWith(TEXT("//")))
+		{
+			FStringView Remainder = SkipUntilNextLine(Source);
+
+			// Save comment lines that are outside of blocks
+			if (PendingBlocks.IsEmpty())
+			{
+				FStringView Block = SubStrView(Source, 0, Source.Len() - Remainder.Len());
+				AddBlock(EBlockType::Unknown, Block);
+				ChunkType = ECodeChunkType::CommentLine;
+				FinalizeChunk();
+			}
+
+			Source = Remainder;
+
+			continue;
+		}
+		else if (Source.StartsWith(TEXT("#line")))
 		{
 			Source = SkipUntilNextLine(Source);
 			continue;
@@ -540,9 +633,44 @@ static FParsedShader ParseShader(FStringView InSource, FDiagnostics& Output)
 			}
 			continue;
 		}
+		else if (PendingBlocks.IsEmpty() && Source.StartsWith(TEXT("{")))
+		{
+			if (ChunkType == ECodeChunkType::Namespace)
+			{
+				if (PendingNamespace.IsEmpty())
+				{
+					AddDiagnostic(Output.Errors, TEXT("HLSL does not support anonymous namespaces"));
+					break;
+				}
+				else
+				{
+					NamespaceTracker.Push(PendingNamespace);
+					ChunkType = ECodeChunkType::Unknown;
+					PendingNamespace = {};
+					Source = Source.Mid(1);
+				}
+				continue;
+			}
+			else
+			{
+				AddDiagnostic(Output.Errors, TEXT("Expected token '{'"));
+			}
+			continue;
+		}
+		else if (PendingBlocks.IsEmpty() && Source.StartsWith(TEXT("}")))
+		{
+			if (NamespaceTracker.Pop())
+			{
+				Source = Source.Mid(1);
+				continue;
+			}
+			else
+			{
+				AddDiagnostic(Output.Errors, TEXT("Expected token '}'"));
+			}
+		}
 
 		FStringView Remainder = SkipUntilNonIdentifierCharacter(Source);
-
 		FStringView Identifier = SubStrView(Source, 0, Source.Len() - Remainder.Len());
 
 		if (Identifier.Len())
@@ -564,6 +692,25 @@ static FParsedShader ParseShader(FStringView InSource, FDiagnostics& Output)
 					ChunkType = ECodeChunkType::Enum;
 					EnumBlockIndex = PendingBlocks.Num();
 				}
+				else if (Identifier == TEXT("namespace"))
+				{
+					ChunkType = ECodeChunkType::Namespace;
+					Source = Remainder;
+					continue;
+				}
+				else if (Identifier == TEXT("using"))
+				{
+					ChunkType = ECodeChunkType::Using;
+					Source = Remainder;
+					AddBlock(EBlockType::Keyword, Identifier);
+					continue;
+				}
+			}
+			else if (ChunkType == ECodeChunkType::Namespace)
+			{
+				PendingNamespace = Identifier;
+				Source = Remainder;
+				continue;
 			}
 
 			EBlockType BlockType = EBlockType::Unknown;
@@ -612,26 +759,28 @@ static FParsedShader ParseShader(FStringView InSource, FDiagnostics& Output)
 		}
 		else if (C == '=')
 		{
-			int32 Pos = FindFirstOf(Source, TEXT("{;"));
-
-			if (Pos == INDEX_NONE)
-			{
-				AddDiagnostic(Output.Errors, TEXT("Expected block body or semicolon after '='"));
-				break;
-			}
-
 			bFoundAssignment = true;
 
-			char C2 = Source[Pos];
+			Source = SkipSpace(Source.Mid(1));
+
+			char C2 = Source[0];
 
 			if (C2 == '{')
 			{
-				Source = SubStrView(Source, Pos);
+				// extract block on the next loop iteration
 				continue;
 			}
-			else if (C2 == ';')
+			else
 			{
-				Block = SubStrView(Source, 1, Pos - 1);
+				int32 Pos = INDEX_NONE;
+
+				if (!Source.FindChar(TCHAR(';'), Pos))
+				{
+					AddDiagnostic(Output.Errors, TEXT("Expected semicolon after assignment expression"));
+					break;
+				}
+
+				Block = SubStrView(Source, 0, Pos);
 				Block = TrimSpace(Block);
 
 				int32 BlockOffset = int32(Block.GetData() - Source.GetData());
@@ -703,9 +852,18 @@ static FParsedShader ParseShader(FStringView InSource, FDiagnostics& Output)
 			Source = SubStrView(Source, 1);
 			continue;
 		}
+		else if ((C == '*' || C == '&') && !PendingBlocks.IsEmpty()) // Part of a pointer or reference declaration
+		{
+			Block = SubStrView(Source, 0, 1);
+			Source = SubStrView(Source, 1);
+
+			AddBlock(EBlockType::PtrOrRef, Block);
+
+			continue;
+		}
 		else
 		{
-			AddDiagnostic(Output.Errors, TEXT("Unexpected character"));
+			AddDiagnostic(Output.Errors, FString::Printf(TEXT("Unexpected character '%c'"), C));
 			break;
 		}
 
@@ -735,7 +893,8 @@ static FParsedShader ParseShader(FStringView InSource, FDiagnostics& Output)
 		}
 	}
 
-	std::swap(Result.Chunks, Chunks);
+	Swap(Result.Chunks, Chunks);
+	Swap(Result.Namespaces, NamespaceTracker.UniqueNamespaceArray);
 
 	return Result;
 }
@@ -901,12 +1060,13 @@ static void OutputChunk(const FCodeChunk& Chunk, FStringBuilderBase& OutputStrea
 	if (Chunk.Type != ECodeChunkType::Function
 		&& Chunk.Type != ECodeChunkType::CBuffer
 		&& Chunk.Type != ECodeChunkType::Pragma
-		&& Chunk.Type != ECodeChunkType::Define)
+		&& Chunk.Type != ECodeChunkType::Define
+		&& Chunk.Type != ECodeChunkType::CommentLine)
 	{
 		OutputStream << ";";
 	}
 
-	OutputStream << "\n\n";
+	OutputStream << "\n";
 }
 
 struct FCasedStringViewKeyFuncs : public DefaultKeyFuncs<FStringView>
@@ -1019,7 +1179,25 @@ static bool ParseLineDirective(FStringView Input, int32& OutLineNumber, FStringV
 	return true;
 }
 
-static FString MinifyShader(const FParsedShader& Parsed, FStringView SemicolonSeparatedEntryPoints, EMinifyShaderFlags Flags, FDiagnostics& Diagnostics)
+static void OpenNamespace(FStringBuilderBase& OutputStream, const FNamespace& Namespace)
+{
+	for (const FStringView& Name : Namespace.Stack)
+	{
+		OutputStream << TEXT("namespace ") << Name << TEXT(" { ");
+	}
+}
+
+static void CloseNamespace(FStringBuilderBase& OutputStream, const FNamespace& Namespace)
+{
+	for (const FStringView& Name : Namespace.Stack)
+	{
+		OutputStream << TEXT("}");
+	}
+
+	OutputStream << TEXT(" // namespace ") << Namespace.FullName;
+}
+
+static FString MinifyShader(const FParsedShader& Parsed, TConstArrayView<FStringView> RequiredSymbols, EMinifyShaderFlags Flags, FDiagnostics& Diagnostics)
 {
 	FStringBuilderBase OutputStream;
 
@@ -1030,9 +1208,7 @@ static FString MinifyShader(const FParsedShader& Parsed, FStringView SemicolonSe
 
 	TArray<const FCodeChunk*> PendingChunks;
 
-	TArray<FStringView> EntryPoints = SplitByChar(SemicolonSeparatedEntryPoints, ';');
-
-	for (FStringView Entry : EntryPoints)
+	for (FStringView Entry : RequiredSymbols)
 	{
 		RelevantIdentifiers.Add(Entry);
 		ProcessedIdentifiers.Add(Entry);
@@ -1319,13 +1495,60 @@ static FString MinifyShader(const FParsedShader& Parsed, FStringView SemicolonSe
 		BuildLineBreakMap(Parsed.Source, LineBreakMap, LineDirectives);
 	}
 
+	const FNamespace* CurrentNamespace = nullptr;
+
 	for (const FCodeChunk& Chunk : Parsed.Chunks)
 	{
-		if (Chunk.Type != ECodeChunkType::Pragma      // Pragmas and defines that remain after preprocessing
-			&& Chunk.Type != ECodeChunkType::Define   // must be preserved as they may control important compiler behaviors.
-			&& RelevantChunks.Find(&Chunk) == nullptr)
+		auto ShouldSkipChunk = [&RelevantChunks, &Chunk, Flags]()
+		{
+			// Pragmas and defines that remain after preprocessing must be preserved as they may control important compiler behaviors.
+			if (Chunk.Type == ECodeChunkType::Pragma || Chunk.Type == ECodeChunkType::Define)
+			{
+				return false;
+			}
+
+			// The preprocessed shader may have auto-generated comments such as `// #define FOO 123` that may be useful to keep for debugging.
+			if (Chunk.Type == ECodeChunkType::CommentLine && EnumHasAnyFlags(Flags, EMinifyShaderFlags::OutputCommentLines))
+			{
+				return false;
+			}
+
+			// Always include `using` statements if they are present in the global scope
+			if (Chunk.Type == ECodeChunkType::Using)
+			{
+				return false;
+			}
+
+			if (RelevantChunks.Find(&Chunk))
+			{
+				return false;
+			}
+
+			return true;
+		};
+
+		if (ShouldSkipChunk())
 		{
 			continue;
+		}
+
+		const FNamespace* PendingNamespace = Chunk.Namespace != INDEX_NONE ? &Parsed.Namespaces[Chunk.Namespace] : nullptr;
+
+		if (PendingNamespace != CurrentNamespace)
+		{
+			if (CurrentNamespace)
+			{
+				CloseNamespace(OutputStream, *CurrentNamespace);
+				OutputStream << TEXT("\n\n");
+			}
+
+			if (PendingNamespace)
+			{
+				OpenNamespace(OutputStream, *PendingNamespace);
+				OutputStream << TEXT("\n\n");
+			}
+
+			CurrentNamespace = PendingNamespace;
 		}
 
 		if (EnumHasAnyFlags(Flags, EMinifyShaderFlags::OutputReasons))
@@ -1334,7 +1557,7 @@ static FString MinifyShader(const FParsedShader& Parsed, FStringView SemicolonSe
 			if (RequestedBy != nullptr)
 			{
 				const FCodeChunk* RequestedByChunk = *RequestedBy;
-				FStringView  RequestedByName  = RequestedByChunk->FindFirstBlockByType(EBlockType::Name);
+				FStringView  RequestedByName = RequestedByChunk->FindFirstBlockByType(EBlockType::Name);
 				if (!RequestedByName.IsEmpty())
 				{
 					OutputStream << TEXT("// REASON: ") << RequestedByName << TEXT("\n");
@@ -1380,6 +1603,15 @@ static FString MinifyShader(const FParsedShader& Parsed, FStringView SemicolonSe
 		}
 
 		OutputChunk(Chunk, OutputStream);
+
+		OutputStream << "\n";
+	}
+
+	if (CurrentNamespace)
+	{
+		CloseNamespace(OutputStream, *CurrentNamespace);
+		OutputStream << TEXT("\n");
+		CurrentNamespace = nullptr;
 	}
 
 	FString Output = FString(OutputStream.ToView());
@@ -1387,7 +1619,13 @@ static FString MinifyShader(const FParsedShader& Parsed, FStringView SemicolonSe
 	return Output;
 }
 
-FMinifiedShader Minify(const FStringView PreprocessedShader, const FStringView EntryPoint, EMinifyShaderFlags Flags)
+static FString MinifyShader(const FParsedShader& Parsed, FStringView EntryPoint, EMinifyShaderFlags Flags, FDiagnostics& Diagnostics)
+{
+	TArray<FStringView> RequiredSymbols = SplitByChar(EntryPoint, ';');
+	return MinifyShader(Parsed, RequiredSymbols, Flags, Diagnostics);
+}
+
+FMinifiedShader Minify(const FStringView PreprocessedShader, TConstArrayView<FStringView> RequiredSymbols, EMinifyShaderFlags Flags)
 {
 	FMinifiedShader Result;
 
@@ -1395,10 +1633,15 @@ FMinifiedShader Minify(const FStringView PreprocessedShader, const FStringView E
 
 	if (!Parsed.Chunks.IsEmpty())
 	{
-		Result.Code = MinifyShader(Parsed, EntryPoint, Flags, Result.Diagnostics);
+		Result.Code = MinifyShader(Parsed, RequiredSymbols, Flags, Result.Diagnostics);
 	}
 
 	return Result;
+}
+
+FMinifiedShader Minify(const FStringView PreprocessedShader, const FStringView EntryPoint, EMinifyShaderFlags Flags)
+{
+	return Minify(PreprocessedShader, MakeArrayView(&EntryPoint, 1), Flags);
 }
 
 } // namespace UE::ShaderMinifier
@@ -1613,6 +1856,14 @@ bool FShaderMinifierParserTest::RunTest(const FString& Parameters)
 	}
 
 	{
+		auto P = ParseShader(TEXT("static const struct { float4 Param; } Foo;"));
+		if (TestEqual(TEXT("ParseShader: static const anonymous struct with variable: num chunks"), P.Chunks.Num(), 1))
+		{
+			TestEqual(TEXT("ParseShader: static const anonymous struct with variable: chunk type"), P.Chunks[0].Type, ECodeChunkType::Variable);
+		}
+	}
+
+	{
 		auto P = ParseShader(TEXT("static const struct { float4 Param; } Foo = { FooCB_Param; };"));
 		if (TestEqual(TEXT("ParseShader: static const anonymous struct with variable and initializer: num chunks"), P.Chunks.Num(), 1))
 		{
@@ -1668,6 +1919,16 @@ bool FShaderMinifierParserTest::RunTest(const FString& Parameters)
 		}
 	}
 
+	{
+		auto P = ParseShader(TEXT("namespace NS1 { void Fun() {}; } namespace NS2 { void Fun() {}; }"));
+		if (TestEqual(TEXT("ParseShader: namespaces: num chunks"), P.Chunks.Num(), 2)
+			&& TestEqual(TEXT("ParseShader: namespaces: num namespaces"), P.Namespaces.Num(), 2))
+		{
+			TestEqual(TEXT("ParseShader: namespaces: chunk 0 namespace"), P.Chunks[0].Namespace, 0);
+			TestEqual(TEXT("ParseShader: namespaces: chunk 1 namespace"), P.Chunks[1].Namespace, 1);
+		}
+	}
+
 	int32 NumErrors = ExecutionInfo.GetErrorTotal();
 
 	return NumErrors == 0;
@@ -1677,9 +1938,168 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FShaderMinifierTest, "System.Shaders.ShaderMini
 
 bool FShaderMinifierTest::RunTest(const FString& Parameters)
 {
-	// TODO: run minifier on some tricky examples
+	using namespace UE::ShaderMinifier;
+
+	FStringView TestShaderCode = 
+		TEXT(R"(// dxc /T cs_6_6 /E MainCS MinifierTest.hlsl 
+struct FFoo
+{
+	float X;
+	float Y;
+};
+
+#pragma test_pragma
+struct FBar
+{
+	FFoo Foo;
+};
+
+uint GUnreferencedParameter;
+
+struct FUnreferencedStruct
+{
+	uint X;
+};
+
+uint UnreferencedFunction()
+{
+	return GUnreferencedParameter;
+}
+
+#define COMPILER_DEFINITION_TEST 123
+float Sum(in FBar Param)
+{
+	return Param.Foo.X + Param.Foo.Y;
+}
+
+float FunA()
+{
+	// Comment inside function
+	FBar Temp;
+	Temp.Foo.X = 1;
+	Temp.Foo.Y = 2;
+	return Sum(Temp);
+}
+
+float FunB(int Param)
+{
+	return FunA() * (float)Param;
+}
+
+#line 1000 "MinifierTest.hlsl"
+// Test comment 1
+void EmptyFunction(){}
+
+struct
+{
+	int Foo;
+	int Bar;
+} GAnonymousStruct;
+
+struct FStructA
+{
+	int Foo;
+	int Bar;
+} GStructA;
+
+namespace NS1 {
+namespace NS2 {
+static const struct FStructB
+{
+	int Foo;
+} GStructB = {123};
+
+static const struct FStructC
+{
+	int Foo;
+} GStructC = { GStructA.Foo };
+}} // NS1::NS2
+
+namespace NS3 {
+static const struct
+{
+	int Foo;
+} GInitializedAnonymousStructA = { GStructA.Foo };
+} // NS3
+
+static const struct
+{
+	int Foo;
+} GInitializedAnonymousStructB = { 123 };
+
+RWBuffer<float4> OutputBuffer;
+
+// Test comment 2
+[numthreads(1,1,1)]
+// Comment during function declaration
+void MainCS()
+{
+	using namespace NS1::NS2;
+	using namespace NS3;
+	float A = FunB(GAnonymousStruct.Foo);
+	float B = FunB(GStructA.Bar + GStructB.Foo + GStructC.Foo);
+	float C = FunB(GInitializedAnonymousStructA.Foo + GInitializedAnonymousStructB.Foo);
+	OutputBuffer[0] = A + B;
+}
+)");
+
+	auto ChunkPresent = [](const FParsedShader& Parsed, FStringView Name)
+	{
+		for (const FCodeChunk& Chunk : Parsed.Chunks)
+		{
+			for (const FCodeBlock& Block : Chunk.Blocks)
+			{
+				if (Block.Code == Name)
+				{
+					return true;
+				}
+			}
+		}
+		return false;
+	};
+
+	FParsedShader Parsed = ParseShader(TestShaderCode);
+
+	{
+		FDiagnostics Diagnostics;
+		FString Minified = MinifyShader(Parsed, TEXT("EmptyFunction"), EMinifyShaderFlags::None, Diagnostics);
+		FParsedShader MinifiedParsed = ParseShader(Minified);
+		if (TestEqual(TEXT("MinifyShader: EmptyFunction: num chunks"), MinifiedParsed.Chunks.Num(), 3))
+		{
+			TestEqual(TEXT("MinifyShader: EmptyFunction: pragma"), *FString(MinifiedParsed.Chunks[0].GetCode()), TEXT("#pragma test_pragma"));
+			TestEqual(TEXT("MinifyShader: EmptyFunction: define"), *FString(MinifiedParsed.Chunks[1].GetCode()), TEXT("#define COMPILER_DEFINITION_TEST 123"));
+			TestEqual(TEXT("MinifyShader: EmptyFunction: function"), *FString(MinifiedParsed.Chunks[2].GetCode()), TEXT("void EmptyFunction(){}"));
+		}
+	}
+
+	{
+		FDiagnostics Diagnostics;
+		FString Minified = MinifyShader(Parsed, TEXT("MainCS"), EMinifyShaderFlags::OutputReasons, Diagnostics);
+		FParsedShader MinifiedParsed = ParseShader(Minified);
+
+		// Expect true:
+		TestTrue(TEXT("MinifyShader: MainCS: contains MainCS"), ChunkPresent(MinifiedParsed, TEXT("MainCS")));
+		TestTrue(TEXT("MinifyShader: MainCS: contains FFoo"), ChunkPresent(MinifiedParsed, TEXT("FFoo")));
+		TestTrue(TEXT("MinifyShader: MainCS: contains FBar"), ChunkPresent(MinifiedParsed, TEXT("FBar")));
+		TestTrue(TEXT("MinifyShader: MainCS: contains Sum"), ChunkPresent(MinifiedParsed, TEXT("Sum")));
+		TestTrue(TEXT("MinifyShader: MainCS: contains FunA"), ChunkPresent(MinifiedParsed, TEXT("FunA")));
+		TestTrue(TEXT("MinifyShader: MainCS: contains FunB"), ChunkPresent(MinifiedParsed, TEXT("FunB")));
+		TestTrue(TEXT("MinifyShader: MainCS: contains GAnonymousStruct"), ChunkPresent(MinifiedParsed, TEXT("GAnonymousStruct")));
+		TestTrue(TEXT("MinifyShader: MainCS: contains GStructA"), ChunkPresent(MinifiedParsed, TEXT("GStructA")));
+		TestTrue(TEXT("MinifyShader: MainCS: contains GStructB"), ChunkPresent(MinifiedParsed, TEXT("GStructB")));
+		TestTrue(TEXT("MinifyShader: MainCS: contains GStructC"), ChunkPresent(MinifiedParsed, TEXT("GStructC")));
+		TestTrue(TEXT("MinifyShader: MainCS: contains GInitializedAnonymousStructA"), ChunkPresent(MinifiedParsed, TEXT("GInitializedAnonymousStructA")));
+		TestTrue(TEXT("MinifyShader: MainCS: contains GInitializedAnonymousStructB"), ChunkPresent(MinifiedParsed, TEXT("GInitializedAnonymousStructB")));
+		TestTrue(TEXT("MinifyShader: MainCS: contains OutputBuffer"), ChunkPresent(MinifiedParsed, TEXT("OutputBuffer")));
+
+		// Expect false:
+		TestFalse(TEXT("MinifyShader: MainCS: contains UnreferencedFunction"), ChunkPresent(MinifiedParsed, TEXT("UnreferencedFunction")));
+		TestFalse(TEXT("MinifyShader: MainCS: contains FUnreferencedStruct"), ChunkPresent(MinifiedParsed, TEXT("FUnreferencedStruct")));
+		TestFalse(TEXT("MinifyShader: MainCS: contains GUnreferencedParameter"), ChunkPresent(MinifiedParsed, TEXT("GUnreferencedParameter")));
+	}
 
 	int32 NumErrors = ExecutionInfo.GetErrorTotal();
+
 	return NumErrors == 0;
 }
 

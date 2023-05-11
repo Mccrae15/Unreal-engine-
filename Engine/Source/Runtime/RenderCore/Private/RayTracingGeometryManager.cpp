@@ -6,7 +6,8 @@
 #include "RHIResources.h"
 #include "RHICommandList.h"
 
-#include "RenderResource.h"
+#include "RayTracingGeometry.h"
+#include "RenderUtils.h"
 
 #if RHI_RAYTRACING
 
@@ -84,6 +85,61 @@ void FRayTracingGeometryManager::RemoveBuildRequest(BuildRequestIndex InRequestI
 	DEC_DWORD_STAT_BY(STAT_RayTracingPendingBuildPrimitives, GeometryBuildRequests[InRequestIndex].Owner->Initializer.TotalPrimitiveCount);
 
 	GeometryBuildRequests.RemoveAt(InRequestIndex);
+}
+
+FRayTracingGeometryManager::RayTracingGeometryHandle FRayTracingGeometryManager::RegisterRayTracingGeometry(FRayTracingGeometry* InGeometry)
+{	
+	if (GetRayTracingMode() == ERayTracingMode::Dynamic)
+	{
+		check(InGeometry);
+
+		FScopeLock ScopeLock(&RequestCS);
+		RayTracingGeometryHandle Handle = RegisteredGeometries.Add(InGeometry);
+		return Handle;
+	}
+	return INDEX_NONE;
+}
+
+void FRayTracingGeometryManager::ReleaseRayTracingGeometryHandle(RayTracingGeometryHandle Handle)
+{
+	if (GetRayTracingMode() == ERayTracingMode::Dynamic)
+	{
+		check(Handle != INDEX_NONE);
+		FScopeLock ScopeLock(&RequestCS);
+		RegisteredGeometries.RemoveAt(Handle);
+	}	
+}
+
+void FRayTracingGeometryManager::Tick()
+{
+	if (GetRayTracingMode() != ERayTracingMode::Dynamic)
+	{
+		return;
+	}
+
+	TRACE_CPUPROFILER_EVENT_SCOPE(FRayTracingGeometryManager::Tick);
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_FRayTracingGeometryManager_Tick);
+
+	if (IsRayTracingEnabled())
+	{
+		FScopeLock ScopeLock(&RequestCS);
+		for (FRayTracingGeometry* Geometry : RegisteredGeometries)
+		{
+			if (Geometry->RayTracingGeometryRHI == nullptr)
+			{
+				Geometry->InitRHIForDynamicRayTracing();
+			}
+		}
+	}
+	else
+	{
+		FScopeLock ScopeLock(&RequestCS);
+		for (FRayTracingGeometry* Geometry : RegisteredGeometries)
+		{
+			Geometry->RemoveBuildRequest();
+			Geometry->RayTracingGeometryRHI.SafeRelease();			
+		}
+	}
 }
 
 void FRayTracingGeometryManager::BoostPriority(BuildRequestIndex InRequestIndex, float InBoostValue)

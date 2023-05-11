@@ -2,42 +2,36 @@
 
 #include "MotionTrajectoryCharacterMovement.h"
 
-#include "Animation/AnimInstance.h"
 #include "GameFramework/CharacterMovementComponent.h"
-#include "GameFramework/Pawn.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/Controller.h"
-#include "KismetAnimationLibrary.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(MotionTrajectoryCharacterMovement)
 
 FTrajectorySample UCharacterMovementTrajectoryComponent::CalcWorldSpacePresentTrajectorySample(float DeltaTime) const
 {
 	FTrajectorySample ReturnValue;
 	
-	const APawn* Pawn = TryGetOwnerPawn();
-	if (!Pawn)
+	if (const APawn* Pawn = TryGetOwnerPawn())
 	{
-		return ReturnValue;
-	}
-
-	const UCharacterMovementComponent* MovementComponent = Cast<UCharacterMovementComponent>(Pawn->GetMovementComponent());
-	if (MovementComponent)
-	{
-		if (MovementComponent->MovementMode == EMovementMode::MOVE_Walking)
+		if (const UCharacterMovementComponent* MovementComponent = Cast<UCharacterMovementComponent>(Pawn->GetMovementComponent()))
 		{
-			FTransform ComponentWorldTransform = Pawn->GetActorTransform();
+			if (MovementComponent->MovementMode == EMovementMode::MOVE_Walking)
+			{
+				FTransform ComponentWorldTransform = Pawn->GetActorTransform();
 
-			ReturnValue.Transform = ComponentWorldTransform;
-			ReturnValue.LinearVelocity = MovementComponent->Velocity;
+				ReturnValue.Transform = ComponentWorldTransform;
+				ReturnValue.LinearVelocity = MovementComponent->Velocity;
+			}
+		}
+		else
+		{
+			UE_LOG(
+				LogMotionTrajectory,
+				Error,
+				TEXT("UCharacterMovementTrajectoryComponent expects the owner to have a CharacterMovementComponent"));
 		}
 	}
-	else
-	{
-		UE_LOG(
-			LogMotionTrajectory,
-			Error,
-			TEXT("UCharacterMovementTrajectoryComponent expects the owner to have a CharacterMovementComponent"));
-	}
-
 	return ReturnValue;
 }
 
@@ -137,37 +131,31 @@ FTrajectorySampleRange UCharacterMovementTrajectoryComponent::GetTrajectory() co
 	return GetTrajectoryWithSettings(PredictionSettings, bPredictionIncludesHistory);
 }
 
-FTrajectorySampleRange UCharacterMovementTrajectoryComponent::GetTrajectoryWithSettings(const FMotionTrajectorySettings& Settings
-	, bool bIncludeHistory) const
+FTrajectorySampleRange UCharacterMovementTrajectoryComponent::GetTrajectoryWithSettings(const FMotionTrajectorySettings& Settings, bool bIncludeHistory) const
 {
-	const APawn* Pawn = TryGetOwnerPawn();
-	if (!Pawn)
-	{
-		return FTrajectorySampleRange(SampleRate);
-	}
+	FTrajectorySampleRange Prediction;
 
-	const UCharacterMovementComponent* MovementComponent = Cast<UCharacterMovementComponent>(Pawn->GetMovementComponent());
-
-	// Currently the trajectory prediction only supports the walking movement mode of the character movement component
-	if (ensure(MovementComponent) && MovementComponent->MovementMode == EMovementMode::MOVE_Walking)
+	if (const APawn* Pawn = TryGetOwnerPawn())
 	{
-		// Step the prediction iteratively towards the specified domain horizon(s)
-		FTrajectorySampleRange Prediction(SampleRate);
-		PredictTrajectory(
-			SampleRate, 
-			MaxSamples, 
-			Settings, 
-			PresentTrajectorySampleLS, 
-			DesiredControlRotationVelocity,
-			Prediction);
+		const UCharacterMovementComponent* MovementComponent = Cast<UCharacterMovementComponent>(Pawn->GetMovementComponent());
 
-		// Combine past, present, and future into a uniformly sampled complete trajectory
-		return CombineHistoryPresentPrediction(bIncludeHistory, Prediction);
+		// Currently the trajectory prediction only supports the walking movement mode of the character movement component
+		if (ensure(MovementComponent) && MovementComponent->MovementMode == EMovementMode::MOVE_Walking)
+		{
+			// Step the prediction iteratively towards the specified domain horizon(s)
+			PredictTrajectory(
+				SampleRate,
+				MaxSamples,
+				Settings,
+				PresentTrajectorySampleLS,
+				DesiredControlRotationVelocity,
+				Prediction);
+
+			// Combine past, present, and future into a uniformly sampled complete trajectory
+			Prediction = CombineHistoryPresentPrediction(bIncludeHistory, Prediction);
+		}
 	}
-	else
-	{
-		return FTrajectorySampleRange(SampleRate);
-	}
+	return Prediction;
 }
 
 void UCharacterMovementTrajectoryComponent::PredictTrajectory(
@@ -178,62 +166,30 @@ void UCharacterMovementTrajectoryComponent::PredictTrajectory(
 	const FRotator& InDesiredControlRotationVelocity,
 	FTrajectorySampleRange& OutTrajectoryRange) const
 {
-	OutTrajectoryRange.SampleRate = InSampleRate;
+	check(InSampleRate > 0);
 	const float IntegrationDelta = 1.f / static_cast<float>(InSampleRate);
 
-	if (!!Settings.Domain)
+	FTrajectorySample Sample = PresentTrajectory;
+	FTrajectorySample PreviousSample = PresentTrajectory;
+	float AccumulatedTime = 0.f;
+	FRotator ControlRotationTotalDelta = FRotator::ZeroRotator;
+
+	for (int32 Step = 0; Step < InMaxSamples; ++Step)
 	{
-		FTrajectorySample Sample = PresentTrajectory;
-		FTrajectorySample PreviousSample = PresentTrajectory;
-		float AccumulatedDistance = 0.f;
-		float AccumulatedSeconds = 0.f;
-		FRotator ControlRotationTotalDelta = FRotator::ZeroRotator;
+		PreviousSample = Sample;
+		StepPrediction(IntegrationDelta, InDesiredControlRotationVelocity, ControlRotationTotalDelta, Sample);
 
-		constexpr int32 DistanceDomainMask = static_cast<int32>(ETrajectorySampleDomain::Distance);
-		constexpr int32 TimeDomainMask = static_cast<int32>(ETrajectorySampleDomain::Time);
+		AccumulatedTime += IntegrationDelta;
+		Sample.AccumulatedSeconds = AccumulatedTime;
 
-		for (int32 Step = 0; Step < InMaxSamples; ++Step)
+		OutTrajectoryRange.Samples.Add(Sample);
+
+		if (Step * IntegrationDelta >= Settings.Seconds)
 		{
-			PreviousSample = Sample;
-			StepPrediction(
-				IntegrationDelta, 
-				InDesiredControlRotationVelocity, 
-				ControlRotationTotalDelta, 
-				Sample);
-
-			AccumulatedDistance += 
-				FVector::Distance(PreviousSample.Transform.GetLocation(), Sample.Transform.GetLocation());
-			Sample.AccumulatedDistance = AccumulatedDistance;
-			AccumulatedSeconds += IntegrationDelta;
-			Sample.AccumulatedSeconds = AccumulatedSeconds;
-
-			OutTrajectoryRange.Samples.Add(Sample);
-
-			if (FMath::IsNearlyEqual(FMath::Abs(Sample.AccumulatedDistance - PreviousSample.AccumulatedDistance), SMALL_NUMBER) &&
-				Sample.Transform.RotationEquals(PreviousSample.Transform, SMALL_NUMBER))
-			{
-				break;
-			}
-
-			if (((Settings.Domain & DistanceDomainMask) == DistanceDomainMask)
-				&& (Settings.Distance > 0.f)
-				&& (Sample.AccumulatedDistance < Settings.Distance))
-			{
-				continue;
-			}
-
-			if (((Settings.Domain & TimeDomainMask) == TimeDomainMask)
-				&& (Settings.Seconds > 0.f)
-				&& (Step * IntegrationDelta < Settings.Seconds))
-			{
-				continue;
-			}
-
 			break;
 		}
 	}
 }
-
 
 // ----------- BEGIN Derived from FCharacterMovementComponentAsyncInput ----------- //
 // FCharacterMovementComponentAsyncInput::CalcVelocity() for linear motion

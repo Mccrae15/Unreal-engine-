@@ -21,9 +21,10 @@ public class Localization : ModuleRules
 				"Slate",
 				"SlateCore",
 				"InputCore",
-				"Engine",
 				"SourceControl",
 				"Json",
+				"JsonUtilities",
+				"Projects",
 			}
 		);
 

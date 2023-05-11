@@ -2,16 +2,28 @@
 
 #pragma once
 
-#include "ConcertTakeRecorderMessages.h"
-#include "ConcertMessages.h"
-#include "Delegates/IDelegateInstance.h"
-#include "HAL/Platform.h"
-#include "Misc/FrameNumber.h"
-#include "UObject/StrongObjectPtr.h"
-#include "TakePreset.h"
-#include "ConcertSyncClient/Public/IConcertClientTransactionBridge.h"
 
-#include "ConcertTakeRecorderClientSessionCustomization.h"
+#include "UObject/GCObject.h"
+
+class FConcertTakeRecorderClientSessionCustomization;
+class SWidget;
+class ULevelSequence;
+class UTakePreset;
+enum class EConcertClientStatus : uint8;
+enum class EConcertConnectionStatus : uint8;
+enum class ETransactionFilterResult : uint8;
+enum class EPackageFilterResult : uint8;
+struct FConcertClientRecordSetting;
+struct FConcertMultiUserSyncChangeEvent;
+struct FConcertRecordSettingsChangeEvent;
+struct FConcertRecordingCancelledEvent;
+struct FConcertRecordingFinishedEvent;
+struct FConcertRecordingNamedLevelSequenceEvent;
+struct FConcertSessionClientInfo;
+struct FConcertTakeInitializedEvent;
+struct FConcertPackageInfo;
+struct FFrameNumber;
+struct FTakeRecorderParameters;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogConcertTakeRecorder, Log, All);
 
@@ -58,6 +70,9 @@ private:
 	void OnTakeRecorderInitialized(UTakeRecorder* TakeRecorder);
 	void OnRecordingFinished(UTakeRecorder* TakeRecorder);
 	void OnRecordingCancelled(UTakeRecorder* TakeRecorder);
+	void OnTakeRecorderStarted(UTakeRecorder* TakeRecorder);
+	void OnTakeRecorderStopped(UTakeRecorder* TakeRecorder);
+
 	void OnFrameAdjustment(UTakeRecorder* TakeRecorder, const FFrameNumber& InPlaybackStartFrame);
 
 	//~ Concert event handlers
@@ -94,6 +109,8 @@ private:
 	void ConnectToSession(IConcertClientSession&);
 
 	ETransactionFilterResult ShouldObjectBeTransacted(UObject* InObject, UPackage* InPackage);
+	EPackageFilterResult ShouldPackageBeFiltered(const FConcertPackageInfo& InPackage);
+
 private:
 	FTakeRecorderParameters SetupTakeParametersForMultiuser(const FTakeRecorderParameters& Input);
 

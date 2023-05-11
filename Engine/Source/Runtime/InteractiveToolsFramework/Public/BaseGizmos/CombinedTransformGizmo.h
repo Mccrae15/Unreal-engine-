@@ -35,7 +35,7 @@ class FTransformGizmoTransformChange;
  * The static factory method ::ConstructDefault3AxisGizmo() creates and initializes an 
  * Actor suitable for use in a standard 3-axis Transformation Gizmo.
  */
-UCLASS(Transient)
+UCLASS(Transient, NotPlaceable, Hidden, NotBlueprintable, NotBlueprintType)
 class INTERACTIVETOOLSFRAMEWORK_API ACombinedTransformGizmoActor : public AGizmoActor
 {
 	GENERATED_BODY()
@@ -88,6 +88,10 @@ public:
 	/** Z Axis Rotation Component */
 	UPROPERTY()
 	TObjectPtr<UPrimitiveComponent> RotateZ;
+
+	/** Z Axis Rotation Component */
+	UPROPERTY()
+	TObjectPtr<UPrimitiveComponent> RotationSphere;
 
 	//
 	// Scaling Components
@@ -243,6 +247,33 @@ public:
 
 
 /**
+ * FToolContextOptionalToggle is used to store a boolean flag where the value of 
+ * the boolean may either be set directly, or it may be set by querying some external context.
+ * This struct does not directly do anything, it just wraps up the multiple flags/states
+ * needed to provide such functionality
+ */
+struct INTERACTIVETOOLSFRAMEWORK_API FToolContextOptionalToggle
+{
+	bool bEnabledDirectly = false;
+	bool bEnabledInContext = false;
+	bool bInheritFromContext = false;
+
+	FToolContextOptionalToggle() {}
+	FToolContextOptionalToggle(bool bEnabled, bool bSetInheritFromContext)
+	{
+		bEnabledDirectly = bEnabled;
+		bInheritFromContext = bSetInheritFromContext;
+	}
+
+	void UpdateContextValue(bool bNewValue) { bEnabledInContext = bNewValue; }
+	bool InheritFromContext() const { return bInheritFromContext; }
+
+	/** @return true if Toggle is currently set to Enabled/On, under the current configuration */
+	bool IsEnabled() const { return (bInheritFromContext) ? bEnabledInContext : bEnabledDirectly; }
+};
+
+
+/**
  * UCombinedTransformGizmo provides standard Transformation Gizmo interactions,
  * applied to a UTransformProxy target object. By default the Gizmo will be
  * a standard XYZ translate/rotate Gizmo (axis and plane translation).
@@ -294,6 +325,12 @@ public:
 	);
 
 	/**
+	 * Exposes the return value of the current IsNonUniformScaleAllowed function so that, for instance,
+	 * numerical UI can react appropriately.
+	 */
+	virtual bool IsNonUniformScaleAllowed() const { return IsNonUniformScaleAllowedFunc(); }
+
+	/**
 	 * By default, the nonuniform scale components can scale negatively. However, they can be made to clamp
 	 * to zero instead by passing true here. This is useful for using the gizmo to flatten geometry.
 	 *
@@ -305,7 +342,6 @@ public:
 	virtual void Setup() override;
 	virtual void Shutdown() override;
 	virtual void Tick(float DeltaTime) override;
-
 
 	/**
 	 * Set the active target object for the Gizmo
@@ -349,6 +385,22 @@ public:
 	virtual void SetNewGizmoTransform(const FTransform& NewTransform, bool bKeepGizmoUnscaled = true);
 
 	/**
+	 * Called at the start of a sequence of gizmo transform edits, for instance while dragging or
+	 * manipulating the gizmo numerical UI.
+	 */
+	virtual void BeginTransformEditSequence();
+
+	/**
+	 * Called at the end of a sequence of gizmo transform edits.
+	 */
+	virtual void EndTransformEditSequence();
+
+	/**
+	 * Updates the gizmo transform between Begin/EndTransformeditSequence calls.
+	 */
+	void UpdateTransformDuringEditSequence(const FTransform& NewTransform, bool bKeepGizmoUnscaled = true);
+
+	/**
 	 * Explicitly set the child scale. Mainly useful to "reset" the child scale to (1,1,1) when re-using Gizmo across multiple transform actions.
 	 * @warning does not generate change/modify events!!
 	 */
@@ -368,10 +420,16 @@ public:
 	}
 
 	/**
-	 * If true, then when using world frame, Axis and Plane translation snap to the world grid via the ContextQueriesAPI (in PositionSnapFunction)
+	 * bSnapToWorldGrid controls whether any position snapping is applied, if possible, for Axis and Plane translations, via the ContextQueriesAPI
+	 * Despite the name, this flag controls both world-space grid snapping and relative snapping
 	 */
 	UPROPERTY()
 	bool bSnapToWorldGrid = true;
+
+	/**
+	 * Specify whether Relative snapping for Translations should be used in World frame mode. Relative snapping is always used in Local mode.
+	 */
+	FToolContextOptionalToggle RelativeTranslationSnapping = FToolContextOptionalToggle(true, true);
 
 	/**
 	 * Optional grid size which overrides the Context Grid
@@ -395,6 +453,8 @@ public:
 	UPROPERTY()
 	bool bSnapToWorldRotGrid = true;
 
+
+
 	/**
 	 * Whether to use the World/Local coordinate system provided by the context via the ContextyQueriesAPI.
 	 */
@@ -408,6 +468,67 @@ public:
 	UPROPERTY()
 	EToolContextCoordinateSystem CurrentCoordinateSystem = EToolContextCoordinateSystem::Local;
 
+
+
+
+	/**
+	 * Whether to use the Gizmo Mode provided by the context via the ContextyQueriesAPI.
+	 */
+	UPROPERTY()
+	bool bUseContextGizmoMode = true;
+
+	/**
+	 * Current dynamic sub-widget visibility mode to use (eg Translate-Only, Scale-Only, Combined, etc)
+	 * If bUseContextGizmoMode is true, this value will be updated internally every Tick()
+	 * by quering the ContextyQueriesAPI, otherwise the default is Combined and the client can change it as necessary
+	 */
+	UPROPERTY()
+	EToolContextTransformGizmoMode ActiveGizmoMode = EToolContextTransformGizmoMode::Combined;
+
+	/**
+	 * Gets the elements that this gizmo was initialized with. Note that this may not account for individual
+	 * element visibility- for instance the scaling component may not be visible if IsNonUniformScaleAllowed() is false.
+	 */
+	ETransformGizmoSubElements GetGizmoElements();
+
+
+	/**
+	 * The DisplaySpaceTransform is not used by the gizmo itself, but can be used by external adapters that might
+	 * display gizmo values, to give values relative to this transform rather than relative to world origin and axes.
+	 * 
+	 * For example a numerical UI for a two-axis gizmo that is not in a world XY/YZ/XZ plane cannot use the global
+	 * axes for setting the absolute position of the plane if it wants the gizmo to remain in that plane; instead, the
+	 * DisplaySpaceTransform can give a space in which X and Y values keep the gizmo in the plane.
+	 *
+	 * Note that this is an optional feature, as it would require tools to keep this transform up to date if they
+	 * want the UI to use it, so tools could just leave it unset.
+	 */
+	void SetDisplaySpaceTransform(TOptional<FTransform> TransformIn);
+	const TOptional<FTransform>& GetDisplaySpaceTransform() { return DisplaySpaceTransform; }
+
+	/**
+	 * Broadcast at the end of a SetDisplaySpaceTransform call that changes the display space transform.
+	 */
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnDisplaySpaceTransformChanged, UCombinedTransformGizmo*, TOptional<FTransform>);
+	FOnDisplaySpaceTransformChanged OnDisplaySpaceTransformChanged;
+
+	/** 
+	 * Broadcast at the end of a SetActiveTarget call. Using this, an adapter such as a numerical UI widget can 
+	 * bind to the gizmo at construction and still be able to initialize using the transform proxy once that is set.
+	 */
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnSetActiveTarget, UCombinedTransformGizmo*, UTransformProxy*);
+	FOnSetActiveTarget OnSetActiveTarget;
+
+	/** 
+	 * Broadcast at the beginning of a ClearActiveTarget call, when the ActiveTarget (if present) is not yet 
+	 * disconnected. Gives things a chance to unbind from it.
+	 */
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnClearActiveTarget, UCombinedTransformGizmo*, UTransformProxy*);
+	FOnClearActiveTarget OnAboutToClearActiveTarget;
+
+	/** Broadcast at the end of a SetVisibility call if the visibility changes. */
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnVisibilityChanged, UCombinedTransformGizmo*, bool);
+	FOnVisibilityChanged OnVisibilityChanged;
 
 protected:
 	TSharedPtr<FCombinedTransformGizmoActorFactory> GizmoActorBuilder;
@@ -430,17 +551,25 @@ protected:
 	UPROPERTY()
 	TArray<TObjectPtr<UPrimitiveComponent>> ActiveComponents;
 
-	/** 
-	 * List of nonuniform scale components. Subset of of ActiveComponents. These are tracked separately so they can
-	 * be hidden when Gizmo is not configured to use local axes, because UE only supports local nonuniform scaling
-	 * on Components
-	 */
-	UPROPERTY()
-	TArray<TObjectPtr<UPrimitiveComponent>> NonuniformScaleComponents;
-
 	/** list of currently-active child gizmos */
 	UPROPERTY()
 	TArray<TObjectPtr<UInteractiveGizmo>> ActiveGizmos;
+
+	/** 
+	 * FSubGizmoInfo stores the (UPrimitiveComponent,UInteractiveGizmo) pair for a sub-element of the widget.
+	 * The ActiveComponents and ActiveGizmos arrays keep those items alive, so this is redundant information, but useful for filtering/etc
+	 */
+	struct FSubGizmoInfo
+	{
+		// note: either of these may be invalid
+		TWeakObjectPtr<UPrimitiveComponent> Component;
+		TWeakObjectPtr<UInteractiveGizmo> Gizmo;
+	};
+	TArray<FSubGizmoInfo> TranslationSubGizmos;
+	TArray<FSubGizmoInfo> RotationSubGizmos;
+	TArray<FSubGizmoInfo> UniformScaleSubGizmos;
+	TArray<FSubGizmoInfo> NonUniformScaleSubGizmos;
+
 
 	/** GizmoActors will be spawned in this World */
 	UWorld* World;
@@ -511,9 +640,12 @@ protected:
 	TUniqueFunction<bool()> ShouldAlignDestination = []() { return false; };
 	TUniqueFunction<bool(const FRay&, FVector&)> DestinationAlignmentRayCaster = [](const FRay&, FVector&) {return false; };
 
-	TUniqueFunction<bool()> IsNonUniformScaleAllowed = [this]() { return CurrentCoordinateSystem == EToolContextCoordinateSystem::Local; };
+	TUniqueFunction<bool()> IsNonUniformScaleAllowedFunc = [this]() { return CurrentCoordinateSystem == EToolContextCoordinateSystem::Local; };
 
 	bool bDisallowNegativeScaling = false;
+
+	// See comment for SetDisplaySpaceTransform;
+	TOptional<FTransform> DisplaySpaceTransform;
 protected:
 
 
@@ -522,14 +654,16 @@ protected:
 		UPrimitiveComponent* AxisComponent, USceneComponent* RootComponent,
 		IGizmoAxisSource* AxisSource,
 		IGizmoTransformSource* TransformSource, 
-		IGizmoStateTarget* StateTarget);
+		IGizmoStateTarget* StateTarget,
+		int AxisIndex);
 
 	/** @return a new instance of the standard plane-translation Gizmo */
 	virtual UInteractiveGizmo* AddPlaneTranslationGizmo(
 		UPrimitiveComponent* AxisComponent, USceneComponent* RootComponent,
 		IGizmoAxisSource* AxisSource,
 		IGizmoTransformSource* TransformSource,
-		IGizmoStateTarget* StateTarget);
+		IGizmoStateTarget* StateTarget,
+		int XAxisIndex, int YAxisIndex);
 
 	/** @return a new instance of the standard axis-rotation Gizmo */
 	virtual UInteractiveGizmo* AddAxisRotationGizmo(
@@ -559,8 +693,10 @@ protected:
 		IGizmoTransformSource* TransformSource,
 		IGizmoStateTarget* StateTarget);
 
-	// Axis and Plane TransformSources use this function to execute worldgrid snap queries
+	// Axis and Plane TransformSources use these function to execute snapping queries
 	bool PositionSnapFunction(const FVector& WorldPosition, FVector& SnappedPositionOut) const;
+	bool PositionAxisDeltaSnapFunction(double AxisDelta, double& SnappedDeltaOut, int AxisIndex) const;
 	FQuat RotationSnapFunction(const FQuat& DeltaRotation) const;
+	bool RotationAxisAngleSnapFunction(double AxisAngleDelta, double& SnappedAxisAngleDeltaOut, int AxisIndex) const;
 
 };

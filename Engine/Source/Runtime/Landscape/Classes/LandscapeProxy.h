@@ -11,13 +11,16 @@
 #include "Async/AsyncWork.h"
 #include "Engine/Texture.h"
 #include "PerPlatformProperties.h"
-#include "LandscapeComponent.h"
 #include "LandscapeNaniteComponent.h"
 #include "LandscapeWeightmapUsage.h"
 #include "LandscapeHeightfieldCollisionComponent.h"
 #include "VT/RuntimeVirtualTextureEnum.h"
 #include "ActorPartition/PartitionActor.h"
 #include "ILandscapeSplineInterface.h"
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "LandscapeComponent.h"
+#endif
 
 #if WITH_EDITOR
 #include "WorldPartition/WorldPartitionHandle.h"
@@ -42,8 +45,10 @@ class UPhysicalMaterial;
 class USplineComponent;
 class UTexture2D;
 class FLandscapeEditLayerReadback;
+class FMaterialUpdateContext;
 struct FAsyncGrassBuilder;
 struct FLandscapeInfoLayerSettings;
+struct FLandscapePerLODMaterialOverride;
 class FLandscapeProxyComponentDataChangedParams;
 struct FMeshDescription;
 enum class ENavDataGatheringMode : uint8;
@@ -208,7 +213,7 @@ enum class ELandscapeLayerDisplayMode : uint8
 UENUM()
 namespace ELandscapeLODFalloff
 {
-	enum Type
+	enum Type : int
 	{
 		/** Default mode. */
 		Linear			UMETA(DisplayName = "Linear"),
@@ -499,17 +504,32 @@ public:
 	bool bSetCreateRuntimeVirtualTextureVolumes;
 
 	/** 
+	 * Use a single quad to render this landscape to runtime virtual texture pages. 
+	 * This is the fastest path but it only gives correct results if the runtime virtual texture orientation is aligned with the landscape.
+	 * If the two are unaligned we need to render to the virtual texture using LODs with sufficient density.
+	 */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = VirtualTexture)
+	bool bVirtualTextureRenderWithQuad = false;
+
+	/** 
+	 * Use highest quality heightmap interpolation when using a single quad to render this landscape to runtime virtual texture pages.
+	 * This also requires the project setting: r.VT.RVT.HighQualityPerPixelHeight.
+	 */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = VirtualTexture, meta = (DisplayName = "High Quality PerPixel Height", EditCondition = "bVirtualTextureRenderWithQuad"))
+	bool bVirtualTextureRenderWithQuadHQ = true;
+
+	/** 
 	 * Number of mesh levels to use when rendering landscape into runtime virtual texture.
 	 * Lower values reduce vertex count when rendering to the runtime virtual texture but decrease accuracy when using values that require vertex interpolation.
 	 */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = VirtualTexture, meta = (DisplayName = "Virtual Texture Num LODs", UIMin = "0", UIMax = "7"))
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = VirtualTexture, meta = (DisplayName = "Virtual Texture Num LODs", EditCondition = "!bVirtualTextureRenderWithQuad", UIMin = "0", UIMax = "7"))
 	int32 VirtualTextureNumLods = 6;
 
 	/** 
 	 * Bias to the LOD selected for rendering to runtime virtual textures.
 	 * Higher values reduce vertex count when rendering to the runtime virtual texture.
 	 */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = VirtualTexture, meta = (DisplayName = "Virtual Texture LOD Bias", UIMin = "0", UIMax = "7"))
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = VirtualTexture, meta = (DisplayName = "Virtual Texture LOD Bias", EditCondition = "!bVirtualTextureRenderWithQuad", UIMin = "0", UIMax = "7"))
 	int32 VirtualTextureLodBias = 0;
 
 	/** Controls if this component draws in the main pass as well as in the virtual texture. */
@@ -542,7 +562,7 @@ public:
 	UPROPERTY(transient, duplicatetransient)
 	TArray<TObjectPtr<UHierarchicalInstancedStaticMeshComponent>> FoliageComponents;
 
-	UPROPERTY()
+	UPROPERTY(NonTransactional, TextExportTransient, NonPIEDuplicateTransient)
 	TObjectPtr<ULandscapeNaniteComponent> NaniteComponent;
 
 	/** A transient data structure for tracking the grass */
@@ -626,11 +646,6 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=Rendering, meta = (DisplayName = "Desired Max Draw Distance"))
 	float LDMaxDrawDistance;
 
-#if WITH_EDITORONLY_DATA
-	UPROPERTY(transient)
-	uint32 bIsMovingToLevel:1;    // Check for the Move to Current Level case
-#endif // WITH_EDITORONLY_DATA
-
 	/** The Lightmass settings for this object. */
 	UPROPERTY(EditAnywhere, Category=Lightmass)
 	FLightmassPrimitiveSettings LightmassSettings;
@@ -644,8 +659,7 @@ public:
 	UPROPERTY(EditAnywhere, Category=Collision)
 	int32 SimpleCollisionMipLevel;
 
-	/** Thickness of the collision surface, in unreal units */
-	UPROPERTY(EditAnywhere, Category=Collision)
+	UE_DEPRECATED(5.2, "CollisionThickness is not supported by Chaos Physics and therefore deprecated. Please remove any usage of this property")
 	float CollisionThickness;
 
 	/** Collision profile settings for this landscape */
@@ -691,8 +705,15 @@ public:
 	UPROPERTY(Transient, NonTransactional)
 	TMap<TObjectPtr<UTexture2D>, TObjectPtr<ULandscapeWeightmapUsage>> WeightmapUsageMap;
 
+	/** True when this Proxy is registered with the LandscapeInfo */
+	bool bIsRegisteredWithLandscapeInfo = false;
+
 	/** Set to true when on undo, when it's necessary to completely regenerate weightmap usages (since some weightmap allocations are transactional and others not, e.g. splines edit layer) */
 	bool bNeedsWeightmapUsagesUpdate = false;
+
+	/** CurrentVersion is bumped whenever a landscape component has an undo/redo operation applied. This lets us detect when the weightmap fixup needs to be run. */
+	uint32 CurrentVersion = 1;
+	uint32 WeightmapFixupVersion = 0;
 
 	/** Set to true when we know that weightmap usages are being reconstructed and might be temporarily invalid as a result (ValidateProxyLayersWeightmapUsage should be called after setting this back to false) */
 	bool bTemporarilyDisableWeightmapUsagesValidation = false;
@@ -811,8 +832,6 @@ public:
 	virtual void EditorApplyScale(const FVector& DeltaScale, const FVector* PivotLocation, bool bAltDown, bool bShiftDown, bool bCtrlDown) override;
 	virtual void EditorApplyMirror(const FVector& MirrorScale, const FVector& PivotLocation) override;
 	virtual void PostEditMove(bool bFinished) override;
-	virtual bool ShouldImport(FString* ActorPropString, bool IsMovingLevel) override;
-	virtual bool ShouldExport() override;
 	//~ End AActor Interface
 	virtual uint32 GetDefaultGridSize(UWorld* InWorld) const override { return 1; }
 	virtual FGuid GetGridGuid() const override { return LandscapeGuid; }
@@ -830,7 +849,7 @@ public:
 	virtual const ALandscape* GetLandscapeActor() const PURE_VIRTUAL(GetLandscapeActor, return nullptr;)
 
 	const TArray<FLandscapePerLODMaterialOverride>& GetPerLODOverrideMaterials() const { return PerLODOverrideMaterials; }
-	void SetPerLODOverrideMaterials(const TArray<FLandscapePerLODMaterialOverride>& InValue) { PerLODOverrideMaterials = InValue; }
+	LANDSCAPE_API void SetPerLODOverrideMaterials(const TArray<FLandscapePerLODMaterialOverride>& InValue);
 
 	static void SetGrassUpdateInterval(int32 Interval) { GrassUpdateInterval = Interval; }
 
@@ -869,9 +888,23 @@ public:
 	LANDSCAPE_API void UpdateGrass(const TArray<FVector>& Cameras, int32& InOutNumComponentsCreated, bool bForceSync = false);
 	LANDSCAPE_API void UpdateGrass(const TArray<FVector>& Cameras, bool bForceSync = false);
 
-	// TODO [jonathan.bard] : Rename to "AddGrassExlusionBox" + no reason for any of this to be static
+
+	/**
+	 * Registers an axis-aligned bounding box that will act as an exclusion volume for all landscape grass overlapping it
+	 * @param Owning UObject of the box. Acts as an identifier of the exclusion volume. Also, when the UObject becomes stale, the box will be automatically unregistered from landscapes
+	 * @param BoxToRemove AABBox (excluded volume)
+	 */
+	// TODO [jonathan.bard] : Rename to "AddGrassExclusionBox" + no reason for any of this to be static
 	LANDSCAPE_API static void AddExclusionBox(FWeakObjectPtr Owner, const FBox& BoxToRemove);
+	/**
+	 * Unregisters a previously-registered exclusion box. Landscape grass will be able to be spawned again in this area after the operation
+	 * @param Owner Identifier of the box to remove (see AddExclusionBox)
+	 */
 	LANDSCAPE_API static void RemoveExclusionBox(FWeakObjectPtr Owner);
+
+	/**
+	 * Unregisters all existing exclusion boxes.
+	 */
 	LANDSCAPE_API static void RemoveAllExclusionBoxes();
 
 
@@ -935,6 +968,7 @@ public:
 	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
 	virtual void PostLoad() override;
 
+	/** Creates the LandscapeInfo if necessary, then registers this proxy with it */
 	LANDSCAPE_API ULandscapeInfo* CreateLandscapeInfo(bool bMapCheck = false, bool bUpdateAllAddCollisions = true);
 	virtual LANDSCAPE_API ULandscapeInfo* GetLandscapeInfo() const override;
 
@@ -956,9 +990,13 @@ public:
 
 	// ILandscapeSplineInterface
 	LANDSCAPE_API virtual ULandscapeSplinesComponent* GetSplinesComponent() const override { return SplineComponent; }
+	LANDSCAPE_API virtual void UpdateSharedProperties(ULandscapeInfo* InLandscapeInfo) override;
 
 	// Retrieve the screen size at which each LOD should be rendered
 	LANDSCAPE_API TArray<float> GetLODScreenSizeArray() const;
+
+	// Copy properties from parent Landscape actor
+	LANDSCAPE_API void GetSharedProperties(ALandscapeProxy* Landscape);
 
 #if WITH_EDITOR
 	/* Serialize all hashes/guids that record the current state of this proxy */
@@ -1020,9 +1058,6 @@ public:
 	// Changed Physical Material
 	LANDSCAPE_API void ChangedPhysMaterial();
 
-	// Copy properties from parent Landscape actor
-	LANDSCAPE_API void GetSharedProperties(ALandscapeProxy* Landscape);
-
 	// Assign only mismatching data and mark proxy package dirty
 	LANDSCAPE_API void FixupSharedData(ALandscape* Landscape);
 
@@ -1059,6 +1094,7 @@ public:
 	 * @param OutRawMesh - Resulting raw mesh
 	 * @return true if successful
 	 */
+	UE_DEPRECATED(5.2, "Use the version of this function taking a FRawMeshExportParams as a parameter")
 	LANDSCAPE_API bool ExportToRawMesh(int32 InExportLOD, FMeshDescription& OutRawMesh) const;
 
 	/**
@@ -1070,6 +1106,7 @@ public:
 	* @param bIgnoreBounds - If false, InBounds will be ignored during export
 	* @return true if successful
 	*/
+	UE_DEPRECATED(5.2, "Use the version of this function taking a FRawMeshExportParams as a parameter")
 	LANDSCAPE_API bool ExportToRawMesh(int32 InExportLOD, FMeshDescription& OutRawMesh, const FBoxSphereBounds& InBounds, bool bIgnoreBounds = false) const;
 
 	/**
@@ -1082,7 +1119,91 @@ public:
 	* @param bIgnoreBounds - If false, InBounds will be ignored during export
 	* @return true if successful
 	*/
-	LANDSCAPE_API bool ExportToRawMesh(const TArrayView<ULandscapeComponent*>& InComponents, int32 InExportLOD, FMeshDescription& OutRawMesh, const FBoxSphereBounds& InBounds, bool bIgnoreBounds = false) const;
+	UE_DEPRECATED(5.2, "Use the version of this function taking a FRawMeshExportParams as a parameter")
+	LANDSCAPE_API bool ExportToRawMesh(const TArrayView<ULandscapeComponent*>& InComponents, int32 InExportLOD, FMeshDescription& OutRawMesh, const FBoxSphereBounds& InBounds, bool bIgnoreBounds = false, bool bGenerateOnePolygonGroupPerComponent = false) const;
+
+	struct LANDSCAPE_API FRawMeshExportParams
+	{
+		static constexpr int32 MaxUVCount = 6;
+
+		/** Describes what information the export will write in a given UV channel */
+		enum class EUVMappingType : uint8
+		{
+			None, /** Don't export UV */
+			//RelativeToBoundsUV, /** Only valid when ExportBounds is set : normalized UVs spanning the export bounds, i.e. (0,0) at the bottom left corner of ExportBounds -> (1,1) at the top right corner of ExportBounds. */
+			// TODO [jonathan.bard] : RelativeToComponentsBoundsUV, /** Only valid when ComponentsToExport is set : normalized UVs spanning the ComponentToExport's bounds, i.e. (0,0) at the bottom left corner of those components' lower left component -> (1,1) at the top right corner of those components' upper right component */
+			RelativeToProxyBoundsUV, /** Normalized UVs spanning the landscape proxy's bounds, i.e. (0,0) at the bottom left corner of the proxy's lower left landscape component -> (1,1) at the top right corner of the proxy's upper right component */
+			// TODO[jonathan.bard] : RelativeToLandscapeBoundsUV, /** Normalized UVs spanning the entire landscape bounds, i.e. (0,0) at the bottom left corner of the landscape's lower left landscape component -> (1,1) at the top right corner of the landscape's upper right component */
+			HeightmapUV, /** Export the heightmaps' UV mapping */
+			WeightmapUV, /** Export the weightmaps' UV mapping */
+			// TODO[jonathan.bard] : LightmapUV, 
+			TerrainCoordMapping_XY, /** Similar to ETerrainCoordMappingType::TCMT_XY */
+			TerrainCoordMapping_XZ, /** Similar to ETerrainCoordMappingType::TCMT_XZ */
+			TerrainCoordMapping_YZ, /** Similar to ETerrainCoordMappingType::TCMT_YZ */
+
+			Num
+		};
+
+		/** Describes what to export on each UV channel */
+		struct FUVConfiguration
+		{
+			FUVConfiguration();
+			int32 GetNumUVChannelsNeeded() const;
+
+		public:
+			// Index 0 = UVChannel 0, Index 1 = UVChannel 1... 
+			TArray<EUVMappingType> ExportUVMappingTypes; 
+		};
+
+		enum class EExportCoordinatesType : uint8
+		{
+			Absolute,
+			RelativeToProxy,
+			// TODO [jonathan.bard] : RelativeToComponentsBounds,
+			// TODO [jonathan.bard] : RelativeToProxyBounds,
+			// TODO [jonathan.bard] : RelativeToLandscapeBounds,
+		};
+
+	public:
+		FRawMeshExportParams() = default;
+		const FUVConfiguration& GetUVConfiguration(int32 InComponentIndex) const;
+		const FName& GetMaterialSlotName(int32 InComponentIndex) const;
+		int32 GetNumUVChannelsNeeded() const;
+
+	public:
+		/** LOD level to export. If none specified, LOD 0 will be used */
+		int32 ExportLOD = INDEX_NONE;
+
+		/** Describes what each UV channel should contain. */
+		FUVConfiguration UVConfiguration;
+
+		/** Referential for the vertex coordinates. */
+		EExportCoordinatesType ExportCoordinatesType = EExportCoordinatesType::Absolute;
+
+		/** Name of the default polygon group's material slot in the mesh. */
+		FName MaterialSlotName = TEXT("LandscapeMat");
+
+		/** Box/Sphere bounds which limits the geometry exported out into OutRawMesh (optional: if none specified, the entire mesh is exported) */
+		TOptional<FBoxSphereBounds> ExportBounds;
+
+		/** List of components from the proxy to actually export (optional : if none specified, all landscape components will be exported) */
+		TOptional<TArrayView<ULandscapeComponent*>> ComponentsToExport;
+
+		/** Per-component UV configuration, in case ComponentsToExport is specified (optional: if none specified, all UV channels will contain the same information, as specified by UVConfiguration + there must be as many elements as there are in ComponentsToExport*/
+		TOptional<TArrayView<FUVConfiguration>> ComponentsUVConfiguration;
+
+		/** Per-component material slot name (optional : if specified, one polygon group per component will be assigned the corresponding material slot's name, otherwise, MaterialSlotName will be used. */
+		TOptional<TArrayView<FName>> ComponentsMaterialSlotName;		
+	};
+
+	/**
+	* Exports landscape geometry into a raw mesh according to the export params
+	*
+	* @param InExportParams - Details about what should be exported and how
+	* @param OutRawMesh - Resulting raw mesh
+	* @return true if successful
+	*/
+	LANDSCAPE_API bool ExportToRawMesh(const FRawMeshExportParams& InExportParams, FMeshDescription& OutRawMesh) const;
 
 	UE_DEPRECATED(5.1, "CheckGenerateLandscapePlatformData has been deprecated, please use CheckGenerateMobilePlatformData instead.")
 	LANDSCAPE_API void CheckGenerateLandscapePlatformData(bool bIsCooking, const ITargetPlatform* TargetPlatform);
@@ -1090,16 +1211,26 @@ public:
 	/** Generate mobile platform data if it's missing or outdated */
 	LANDSCAPE_API void CheckGenerateMobilePlatformData(bool bIsCooking, const ITargetPlatform* TargetPlatform);
 
+	/** Returns true if the Nanite representation is missing or outdated */
+	LANDSCAPE_API bool IsNaniteMeshUpToDate() const;
+
 	/** Update Nanite representation if it's missing or outdated */
-	LANDSCAPE_API void UpdateNaniteRepresentation(const ITargetPlatform* TargetPlatform = nullptr);
+	LANDSCAPE_API void UpdateNaniteRepresentation(const ITargetPlatform* InTargetPlatform);
 
 	/** 
 	* Invalidate and disable Nanite representation until a subsequent rebuild occurs
 	*
-	* @param bCheckContentId - If true, only invalidate when the content Id of the proxy mismatches with the Nanite representation
+	* @param bInCheckContentId - If true, only invalidate when the content Id of the proxy mismatches with the Nanite representation
 	*/
-	LANDSCAPE_API void InvalidateNaniteRepresentation(bool bCheckContentId = true);
+	LANDSCAPE_API void InvalidateNaniteRepresentation(bool bInCheckContentId);
 	
+	/**
+	* Invalidate Nanite representation or rebuild it in case live update is active :
+	*
+	* @param bInCheckContentId - If true, only invalidate when the content Id of the proxy mismatches with the Nanite representation
+	*/
+	LANDSCAPE_API void InvalidateOrUpdateNaniteRepresentation(bool bInCheckContentId, const ITargetPlatform* InTargetPlatform);
+
 	/** @return Current size of bounding rectangle in quads space */
 	LANDSCAPE_API FIntRect GetBoundingRect() const;
 
@@ -1195,7 +1326,7 @@ protected:
 protected:
 	FLandscapeMaterialChangedDelegate LandscapeMaterialChangedDelegate;
 
-#endif
+#endif // WITH_EDITOR
 private:
 	/** Returns Grass Update interval */
 	FORCEINLINE int32 GetGrassUpdateInterval() const 

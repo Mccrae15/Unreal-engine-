@@ -2,7 +2,7 @@ Availability: NoPublish
 Title: Build Configuration Properties Page
 Crumbs:
 Description: This is a procedurally generated markdown page.
-Version: 5.1
+Version: 5.2
 
 ### Read-Only Properties
 
@@ -10,7 +10,7 @@ $ Platform (UnrealTargetPlatform): Platform that this target is being built for.
 
 $ Configuration (UnrealTargetConfiguration): The configuration being built.
 
-$ Architecture (String): Architecture that the target is being built for (or an empty string for the default).
+$ Architectures (UnrealArchitectures): Architecture that the target is being built for (or an empty string for the default).
 
 $ ProjectFile (FileReference): Path to the project file for the project containing this target.
 
@@ -21,6 +21,8 @@ $ IsTestTarget (Boolean): Whether this is a low level tests target.
 $ ExplicitTestsTarget (Boolean): Whether this is a test target explicitly defined. Explicitley defined test targets always inherit from TestTargetRules and define their own tests. Implicit test targets are created from existing targets when building with -Mode=Test and they include tests from all dependencies.
 
 $ WithLowLevelTests (Boolean): Controls the value of WITH_LOW_LEVEL_TESTS that dictates whether module-specific low level tests are compiled in or not.
+
+$ Architecture (UnrealArch): Gets the Architecture in the normal case where there is a single Architecture in Architectures (this will throw an exception if there is more than one architecture specified)
 
 $ HostPlatform (UnrealTargetPlatform): Gets the host platform being built on
 
@@ -138,6 +140,10 @@ $ bForceEnableObjCExceptions (Boolean): Enable exceptions for all modules.
 
 $ bForceEnableRTTI (Boolean): Enable RTTI for all modules.
 
+$ bEnablePIE (Boolean): Enable Position Independent Executable (PIE). Has an overhead cost
+
+$ bEnableStackProtection (Boolean): Enable Stack Protection. Has an overhead cost
+
 $ bCompileWithStatsWithoutEngine (Boolean): Whether to include stats support even without the engine.
 
 $ bCompileWithPluginSupport (Boolean): Whether to include plugin support.
@@ -147,6 +153,8 @@ $ bCompileWithAccessibilitySupport (Boolean): Whether to allow accessibility cod
 $ bUseDebugLiveCodingConsole (Boolean): Whether to enable support for live coding
 
 $ bWithDirectXMath (Boolean): Whether to enable support for DirectX Math LWC_TODO: No longer supported. Needs removing.
+
+$ bWithFixedTimeStepSupport (Boolean): Whether to enable the support for FixedTimeStep in the engine
 
 $ bUseLoggingInShipping (Boolean): Whether to turn on logging for test/shipping builds.
 
@@ -161,6 +169,8 @@ $ bTCHARIsUTF8 (Boolean): Whether to turn on UTF-8 mode, mapping TCHAR to UTF8CH
 $ bUseEstimatedUtcNow (Boolean): Whether to use the EstimatedUtcNow or PlatformUtcNow.  EstimatedUtcNow is appropriate in cases where PlatformUtcNow can be slow.
 
 $ bCompileFreeType (Boolean): True if we need FreeType support.
+
+$ bUseExecCommandsInShipping (Boolean): Whether to turn allow exec commands for shipping builds.
 
 $ bCompileForSize (Boolean): True if we want to favor optimizing size over speed.
 
@@ -179,6 +189,8 @@ $ NativePointerMemberBehaviorOverride (Nullable&lt;PointerMemberBehavior&gt;): U
 $ bUseXGEController (Boolean): Whether the XGE controller worker and modules should be included in the engine build. These are required for distributed shader compilation using the XGE interception interface.
 
 $ bIWYU (Boolean): Enables "include what you use" by default for modules in this target. Changes the default PCH mode for any module in this project to PCHUsageMode.UseExplicitOrSharedPCHs.
+
+$ bIWYUHeadersOnly (Boolean): Tells "include what you use" to only compile header files.
 
 $ bEnforceIWYU (Boolean): Enforce "include what you use" rules; warns if monolithic headers (Engine.h, UnrealEd.h, etc...) are used, and checks that source files include their matching header first.
 
@@ -221,6 +233,8 @@ $ bRetainFramePointersOverride (Nullable&lt;Boolean&gt;): Forces frame pointers 
 $ bUseFastMonoCalls (Boolean): New Monolithic Graphics drivers have optional "fast calls" replacing various D3d functions
 
 $ NumIncludedBytesPerUnityCPP (Int32): An approximate number of bytes of C++ code to target for inclusion in a single unified C++ file.
+
+$ bDisableModuleNumIncludedBytesPerUnityCPPOverride (Boolean): Disables overrides that are set by the module
 
 $ bStressTestUnity (Boolean): Whether to stress test the C++ unity build robustness by including all C++ files files in a project from a single unified file.
 
@@ -266,11 +280,15 @@ $ bAllowLTCG (Boolean): Whether to allow the use of link time code generation (L
 
 $ bPreferThinLTO (Boolean): When Link Time Code Generation (LTCG) is enabled, whether to prefer using the lighter weight version on supported platforms.
 
+$ ThinLTOCacheDirectory (String): Directory where to put the ThinLTO cache on supported platforms.
+
+$ ThinLTOCachePruningArguments (String): Arguments that will be applied to prune the ThinLTO cache on supported platforms. Arguments will only be applied if ThinLTOCacheDirectory is set.
+
 $ bPGOProfile (Boolean): Whether to enable Profile Guided Optimization (PGO) instrumentation in this build.
 
 $ bPGOOptimize (Boolean): Whether to optimize this build with Profile Guided Optimization (PGO).
 
-$ bSupportEditAndContinue (Boolean): Whether to support edit and continue.  Only works on Microsoft compilers.
+$ bSupportEditAndContinue (Boolean): Whether to support edit and continue.
 
 $ bOmitFramePointers (Boolean): Whether to omit frame pointers or not. Disabling is useful for e.g. memory profiling on the PC.
 
@@ -281,6 +299,8 @@ $ bEnableCppCoroutinesForEvaluation (Boolean): Whether to enable support for C++
 $ bEnableProcessPriorityControl (Boolean): Whether to enable engine's ability to set process priority on runtime. This option requires some environment setup on Linux, that's why it's disabled by default. Project has to opt-in this feature as it has to guarantee correct setup.
 
 $ bUseMallocProfiler (Boolean): If true, then enable memory profiling in the build (defines USE_MALLOC_PROFILER=1 and forces bOmitFramePointers=false).
+
+$ bShaderCompilerWorkerTrace (Boolean): If true, then enable Unreal Insights (utrace) profiling in the build for the Shader Compiler Worker (defines USE_SHADER_COMPILER_WORKER_TRACE=1).
 
 $ bUseSharedPCHs (Boolean): Enables "Shared PCHs", a feature which significantly speeds up compile times by attempting to share certain PCH files between modules that UBT detects is including those PCH's header files.
 
@@ -386,7 +406,9 @@ $ IncludeOrderVersion (EngineIncludeOrderVersion): What version of include order
 
 $ bAllowHotReload (Boolean): Whether this target supports hot reload
 
-$ bUseGameplayDebugger (Boolean): Whether to compile with WITH_GAMEPLAY_DEBUGGER enabled and use GameplayDebugger.
+$ bUseGameplayDebugger (Boolean): Whether to compile with WITH_GAMEPLAY_DEBUGGER enabled with all Engine's default gameplay debugger categories.
+
+$ bUseGameplayDebuggerCore (Boolean): Set to true when bUseGameplayDebugger is false but GameplayDebugger's core parts are required.
 
 $ bBuildEditor (Boolean): Whether we are compiling editor code or not. Prefer the more explicit bCompileAgainstEditor instead.
 
@@ -411,10 +433,6 @@ $ bCompileAgainstEditor (Boolean): Enabled for editor builds (TargetType.Editor)
 $ bCompileSpeedTree (Boolean): Whether we should compile in support for SpeedTree or not.
 
 $ bWithServerCode (Boolean): Compile server-only code.
-
-$ bWithServerCodeTrusted (Boolean): Compile trusted-server-only code.
-
-$ bWithServerCodeUntrusted (Boolean): Compile untrusted-server-only code.
 
 $ bFNameOutlineNumber (Boolean): Compile with FName storing the number part in the name table. Saves memory when most names are not numbered and those that are are referenced multiple times. The game and engine must ensure they reuse numbered names similarly to name strings to avoid leaking memory.
 
@@ -441,6 +459,8 @@ $ DeprecationWarningLevel (WarningLevel): Level to report deprecation warnings a
 $ bRetainFramePointers (Boolean): Forces frame pointers to be retained this is usually required when you want reliable callstacks e.g. mallocframeprofiler
 
 $ bLegacyPublicIncludePaths (Boolean): Add all the public folders as include paths for the compile environment.
+
+$ bLegacyParentIncludePaths (Boolean): Add all the parent folders as include paths for the compile environment.
 
 $ LinkType (TargetLinkType): Specifies how to link modules in this target (monolithic or modular). This is currently protected for backwards compatibility. Call the GetLinkType() accessor until support for the deprecated ShouldCompileMonolithic() override has been removed.
 

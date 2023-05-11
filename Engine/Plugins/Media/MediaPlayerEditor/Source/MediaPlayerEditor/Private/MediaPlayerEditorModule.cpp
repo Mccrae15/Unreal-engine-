@@ -1,8 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "CoreMinimal.h"
+#include "MediaPlayerEditorModule.h"
+
 #include "ComponentVisualizer.h"
-#include "Modules/ModuleInterface.h"
+#include "ContentBrowserMenuContexts.h"
 #include "Modules/ModuleManager.h"
 #include "AssetToolsModule.h"
 #include "UObject/UObjectHash.h"
@@ -18,8 +19,10 @@
 
 #include "BaseMediaSource.h"
 #include "FileMediaSource.h"
+#include "IMediaAssetsModule.h"
 #include "MediaPlayer.h"
 #include "MediaSoundComponent.h"
+#include "MediaSourceRenderer.h"
 #include "MediaTexture.h"
 #include "PlatformMediaSource.h"
 
@@ -38,6 +41,7 @@
 
 #include "Models/MediaPlayerEditorCommands.h"
 #include "Shared/MediaPlayerEditorStyle.h"
+#include "Shared/MediaSourceThumbnailRenderer.h"
 #include "Visualizers/MediaSoundComponentVisualizer.h"
 #include "ToolMenus.h"
 #include "Widgets/SMediaPlayerEditorMedia.h"
@@ -56,7 +60,7 @@ DEFINE_LOG_CATEGORY(LogMediaPlayerEditor);
 class FMediaPlayerEditorModule
 	: public IHasMenuExtensibility
 	, public IHasToolBarExtensibility
-	, public IModuleInterface
+	, public IMediaPlayerEditorModule
 {
 public:
 
@@ -77,6 +81,12 @@ public:
 	}
 
 public:
+
+	//~ IMediaPlayerEditorModule interface
+	virtual TSharedPtr<ISlateStyle> GetStyle()
+	{
+		return Style;
+	}
 
 	//~ IModuleInterface interface
 
@@ -100,6 +110,7 @@ public:
 		RegisterMenuExtensions();
 		RegisterThumbnailRenderers();
 		RegisterVisualizers();
+		ExtendContentMenu();
 	}
 
 	virtual void ShutdownModule() override
@@ -119,13 +130,13 @@ protected:
 	{
 		IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
 
-		RegisterAssetTypeAction(AssetTools, MakeShareable(new FFileMediaSourceActions(Style.ToSharedRef())));
+		RegisterAssetTypeAction(AssetTools, MakeShareable(new FFileMediaSourceActions()));
 		RegisterAssetTypeAction(AssetTools, MakeShareable(new FMediaPlayerActions(Style.ToSharedRef())));
 		RegisterAssetTypeAction(AssetTools, MakeShareable(new FMediaPlaylistActions(Style.ToSharedRef())));
-		RegisterAssetTypeAction(AssetTools, MakeShareable(new FMediaSourceActions));
+		RegisterAssetTypeAction(AssetTools, MakeShareable(new FMediaSourceActions()));
 		RegisterAssetTypeAction(AssetTools, MakeShareable(new FMediaTextureActions));
-		RegisterAssetTypeAction(AssetTools, MakeShareable(new FPlatformMediaSourceActions(Style.ToSharedRef())));
-		RegisterAssetTypeAction(AssetTools, MakeShareable(new FStreamMediaSourceActions(Style.ToSharedRef())));
+		RegisterAssetTypeAction(AssetTools, MakeShareable(new FPlatformMediaSourceActions()));
+		RegisterAssetTypeAction(AssetTools, MakeShareable(new FStreamMediaSourceActions()));
 	}
 
 	/**
@@ -223,7 +234,16 @@ protected:
 	/** Registers asset thumbnail renderers .*/
 	void RegisterThumbnailRenderers()
 	{
+		IMediaAssetsModule* MediaAssetsModule = FModuleManager::LoadModulePtr<IMediaAssetsModule>("MediaAssets");
+		if (MediaAssetsModule != nullptr)
+		{
+			MediaAssetsModule->RegisterCreateMediaSourceRenderer(
+				IMediaAssetsModule::FOnCreateMediaSourceRenderer::CreateRaw(this,
+					&FMediaPlayerEditorModule::CreateMediaSourceRenderer));
+		}
+
 		UThumbnailManager::Get().RegisterCustomRenderer(UMediaTexture::StaticClass(), UTextureThumbnailRenderer::StaticClass());
+		UThumbnailManager::Get().RegisterCustomRenderer(UMediaSource::StaticClass(), UMediaSourceThumbnailRenderer::StaticClass());
 	}
 
 	/** Unregisters all asset thumbnail renderers. */
@@ -231,8 +251,21 @@ protected:
 	{
 		if (UObjectInitialized())
 		{
+			UThumbnailManager::Get().UnregisterCustomRenderer(UMediaSource::StaticClass());
 			UThumbnailManager::Get().UnregisterCustomRenderer(UMediaTexture::StaticClass());
+
+			IMediaAssetsModule* MediaAssetsModule = FModuleManager::GetModulePtr<IMediaAssetsModule>("MediaAssets");
+			if (MediaAssetsModule != nullptr)
+			{
+				MediaAssetsModule->UnregisterCreateMediaSourceRenderer();
+			}
 		}
+	}
+
+	/** Creates an object that implements IMediaSourceRendererInterface. */
+	UObject* CreateMediaSourceRenderer()
+	{
+		return NewObject<UMediaSourceRenderer>(GetTransientPackage());
 	}
 
 protected:
@@ -268,6 +301,35 @@ protected:
 	}
 
 private:
+
+	void ExtendContentMenu()
+	{
+		UToolMenu* Menu = UE::ContentBrowser::ExtendToolMenu_AssetContextMenu(UMediaSource::StaticClass());
+
+		FToolMenuSection& Section = Menu->FindOrAddSection("GetAssetActions");
+		Section.AddDynamicEntry(NAME_None, FNewToolMenuSectionDelegate::CreateLambda([](FToolMenuSection& InSection)
+		{
+			if (const UContentBrowserAssetContextMenuContext* Context = UContentBrowserAssetContextMenuContext::FindContextWithAssets(InSection))
+			{
+				const TAttribute<FText> Label = LOCTEXT("GenerateThumbnail", "Generate Thumbnail");
+				const TAttribute<FText> ToolTip = LOCTEXT("GenerateThumbnail_Tooltip", "Generate a thumbnail for this asset.");
+				const FSlateIcon Icon = FSlateIcon(FAppStyle::GetAppStyleSetName(), "AssetEditor.SaveThumbnail");;
+
+				FToolUIAction UIAction;
+				UIAction.ExecuteAction = FToolMenuExecuteAction::CreateLambda([](const FToolMenuContext& InContext)
+				{
+					const UContentBrowserAssetContextMenuContext* Context = UContentBrowserAssetContextMenuContext::FindContextWithAssets(InContext);
+
+					for (UMediaSource* MediaSource : Context->LoadSelectedObjects<UMediaSource>())
+					{
+						MediaSource->GenerateThumbnail();
+						MediaSource->MarkPackageDirty();
+					}
+				});
+				InSection.AddMenuEntry("Media_GenerateThumbnail", Label, ToolTip, Icon, UIAction);
+			}
+		}));
+	}
 
 	void HandleEditorBeginPIE(bool bIsSimulating)
 	{

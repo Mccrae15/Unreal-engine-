@@ -1,18 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LevelInstance/LevelInstanceSubsystem.h"
-#include "LevelInstance/LevelInstanceActor.h"
+#include "Engine/LevelStreaming.h"
 #include "LevelInstance/LevelInstanceLevelStreaming.h"
+#include "Misc/StringFormatArg.h"
+#include "UObject/UObjectIterator.h"
 #include "WorldPartition/WorldPartitionSubsystem.h"
+#include "WorldPartition/DataLayer/WorldDataLayers.h"
 #include "WorldPartition/WorldPartitionLevelStreamingDynamic.h"
-#include "UObject/UObjectHash.h"
-#include "UObject/UObjectGlobals.h"
-#include "Engine/World.h"
-#include "Engine/Engine.h"
 #include "EngineUtils.h"
 #include "LevelInstancePrivate.h"
 #include "LevelUtils.h"
-#include "Hash/CityHash.h"
 
 #if WITH_EDITOR
 #include "Settings/LevelEditorMiscSettings.h"
@@ -21,38 +19,31 @@
 #include "LevelInstance/LevelInstanceEditorInstanceActor.h"
 #include "LevelInstance/LevelInstanceEditorObject.h"
 #include "LevelInstance/LevelInstanceEditorPivotActor.h"
+#include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionSubsystem.h"
 #include "WorldPartition/DataLayer/DataLayerSubsystem.h"
 #include "WorldPartition/DataLayer/DataLayerInstanceWithAsset.h"
 #include "WorldPartition/WorldPartitionMiniMap.h"
 #include "Misc/ScopedSlowTask.h"
-#include "Misc/ITransaction.h"
 #include "Misc/Paths.h"
 #include "Misc/PackageName.h"
-#include "AssetRegistry/AssetRegistryModule.h"
-#include "AssetRegistry/AssetData.h"
 #include "FileHelpers.h"
 #include "Editor.h"
 #include "Editor/Transactor.h"
 #include "EditorLevelUtils.h"
-#include "HAL/PlatformTime.h"
-#include "Engine/Selection.h"
 #include "Engine/LevelBounds.h"
 #include "Modules/ModuleManager.h"
-#include "Engine/Blueprint.h"
 #include "PackedLevelActor/PackedLevelActor.h"
 #include "PackedLevelActor/PackedLevelActorBuilder.h"
+#include "Selection.h"
 #include "Engine/LevelScriptBlueprint.h"
 #include "EdGraph/EdGraph.h"
-#include "UObject/ObjectSaveContext.h"
-#include "UObject/UObjectGlobals.h"
-#include "UObject/GCObject.h"
-#include "EditorActorFolders.h"
 #include "Misc/MessageDialog.h"
 #include "Subsystems/ActorEditorContextSubsystem.h"
+#else
+#include "LevelInstance/LevelInstanceInterface.h"
 #endif
 
-#include "HAL/IConsoleManager.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(LevelInstanceSubsystem)
 
@@ -512,7 +503,7 @@ ILevelInstanceInterface* ULevelInstanceSubsystem::GetOwningLevelInstance(const U
 		}
 		else if (UWorldPartitionLevelStreamingDynamic* WorldPartitionLevelStreaming = Cast<UWorldPartitionLevelStreamingDynamic>(BaseLevelStreaming))
 		{
-			return GetOwningLevelInstance(WorldPartitionLevelStreaming->GetOuterWorld()->PersistentLevel);
+			return GetOwningLevelInstance(WorldPartitionLevelStreaming->GetStreamingWorld()->PersistentLevel);
 		}
 	}
 
@@ -1006,7 +997,7 @@ ILevelInstanceInterface* ULevelInstanceSubsystem::CreateLevelInstanceFrom(const 
 
 	ULevelStreamingLevelInstanceEditor* LevelStreaming = nullptr;
 	{
-		const bool bIsPartitioned = GetWorld()->IsPartitionedWorld();
+		const bool bIsPartitioned = (CreationParams.Type != ELevelInstanceCreationType::PackedLevelActor) && GetWorld()->IsPartitionedWorld();
 		LevelStreaming = StaticCast<ULevelStreamingLevelInstanceEditor*>(EditorLevelUtils::CreateNewStreamingLevelForWorld(
 		*GetWorld(), ULevelStreamingLevelInstanceEditor::StaticClass(), CreationParams.UseExternalActors(), LevelFilename, &ActorsToMove, CreationParams.TemplateWorld, /*bUseSaveAs*/true, bIsPartitioned, [this, bIsPartitioned, &ActorsToMove](ULevel* InLevel)
 		{
@@ -1470,7 +1461,7 @@ void ULevelInstanceSubsystem::FActorDescContainerInstanceManager::FActorDescCont
 		{
 			continue;
 		}
-		Bounds += ActorDescIt->GetBounds();
+		Bounds += ActorDescIt->GetRuntimeBounds();
 	}
 }
 
@@ -1940,6 +1931,9 @@ bool ULevelInstanceSubsystem::EditLevelInstanceInternal(ILevelInstanceInterface*
 		// Only support one level of recursion to commit current edit
 		check(!bRecursive);
 		FLevelInstanceID PendingEditId = LevelInstance->GetLevelInstanceID();
+
+		// Make sure to keep the top level instance actor loaded when we commit the current one
+		FWorldPartitionReference CurrentEditLevelInstanceActorRef = CurrentEditLevelInstanceActor;
 		
 		check(!IsLevelInstanceEditDirty(LevelInstanceEdit.Get()));
 		CommitLevelInstanceInternal(LevelInstanceEdit);
@@ -2004,6 +1998,21 @@ bool ULevelInstanceSubsystem::EditLevelInstanceInternal(ILevelInstanceInterface*
 	UActorEditorContextSubsystem::Get()->PushContext();
 
 	ResetLoadersForWorldAsset(LevelInstance->GetWorldAsset().GetLongPackageName());
+
+	if (UWorldPartition* WorldPartition = LevelInstanceActor->GetWorld()->GetWorldPartition(); WorldPartition && WorldPartition->IsMainWorldPartition())
+	{
+		AActor* TopLevelInstanceActor = LevelInstanceActor;
+		while (AActor* CurrentTopLevelInstanceActor = Cast<AActor>(GetParentLevelInstance(TopLevelInstanceActor)))
+		{
+			TopLevelInstanceActor = CurrentTopLevelInstanceActor;
+		}
+
+		if (FWorldPartitionActorDesc* TopLevelInstanceActorActorDesc = WorldPartition->GetActorDesc(TopLevelInstanceActor->GetActorGuid()))
+		{
+			check(!CurrentEditLevelInstanceActor.IsValid());
+			CurrentEditLevelInstanceActor = FWorldPartitionReference(TopLevelInstanceActorActorDesc->GetContainer(), TopLevelInstanceActorActorDesc->GetGuid());
+		}
+	}
 
 	return true;
 }
@@ -2182,6 +2191,8 @@ bool ULevelInstanceSubsystem::CommitLevelInstanceInternal(TUniquePtr<FLevelInsta
 	{
 		OnCommitChild(AncestorID, bChangesCommitted);
 	}
+
+	CurrentEditLevelInstanceActor.Reset();
 		
 	if (ILevelInstanceInterface* LevelInstanceToSelect = GetLevelInstance(LevelInstanceToSelectID))
 	{

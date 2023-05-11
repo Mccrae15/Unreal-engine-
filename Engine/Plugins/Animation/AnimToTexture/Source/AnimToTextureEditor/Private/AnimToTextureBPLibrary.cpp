@@ -6,24 +6,20 @@
 #include "AnimToTextureSkeletalMesh.h"
 #include "EvaluateSequenceAnimInstance.h"
 
-#include "Editor.h"
 #include "LevelEditor.h"
 #include "RawMesh.h"
 #include "MeshUtilities.h"
-#include "AssetRegistry/AssetRegistryModule.h"
+#include "Engine/SkeletalMesh.h"
 #include "Components/SkeletalMeshComponent.h"
-#include "Components/SkinnedMeshComponent.h"
-#include "Rendering/SkeletalMeshRenderData.h"
-#include "Rendering/SkeletalMeshModel.h"
-#include "Animation/AnimBlueprint.h"
+#include "Animation/Skeleton.h"
 #include "Animation/AnimSequence.h"
 #include "Math/Vector.h"
 #include "Math/NumericLimits.h"
-#include "Engine/SkeletalMeshSocket.h"
 #include "MeshDescription.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "MaterialEditingLibrary.h"
-#include "EditorSupportDelegates.h"
+
+using namespace AnimToTexture_Private;
 
 UAnimToTextureBPLibrary::UAnimToTextureBPLibrary(const FObjectInitializer& ObjectInitializer)
 : Super(ObjectInitializer)
@@ -31,27 +27,50 @@ UAnimToTextureBPLibrary::UAnimToTextureBPLibrary(const FObjectInitializer& Objec
 
 }
 
-void UAnimToTextureBPLibrary::AnimationToTexture(UAnimToTextureDataAsset* DataAsset, const FTransform RootTransform)
+void UAnimToTextureBPLibrary::AnimationToTexture(UAnimToTextureDataAsset* DataAsset, const FTransform RootTransform, bool& bSuccess)
 {
+	bSuccess = false; 
+
 	if (!DataAsset)
 	{
 		return;
 	}
 
-	// Reset DataAsset Values
-	DataAsset->Reset();
+	// Reset DataAsset Info Values
+	DataAsset->ResetInfo();
 
-	if (!DataAsset->GetSkeletalMesh() || !DataAsset->GetStaticMesh())
+	// Check StaticMesh
+	if (!DataAsset->GetStaticMesh())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Invalid Meshes"));
+		UE_LOG(LogTemp, Warning, TEXT("Invalid StaticMesh"));
 		return;
 	}
 
-	// Check LODs
-	if (!DataAsset->GetSkeletalMesh()->IsValidLODIndex(DataAsset->SkeletalLODIndex) || 
-		DataAsset->StaticLODIndex >= DataAsset->GetStaticMesh()->GetNumLODs())
+	// Check SkeletalMesh
+	if (!DataAsset->GetSkeletalMesh())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Invalid LOD Indices"));
+		UE_LOG(LogTemp, Warning, TEXT("Invalid SkeletalMesh"));
+		return;
+	}
+
+	// Check Skeleton
+	if (!DataAsset->GetSkeletalMesh()->GetSkeleton())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Invalid SkeletalMesh. No valid Skeleton found"));
+		return;
+	}
+
+	// Check StaticMesh LOD
+	if (!DataAsset->GetStaticMesh()->IsSourceModelValid(DataAsset->StaticLODIndex))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Invalid StaticMesh LOD Index"));
+		return;
+	}
+
+	// Check SkeletalMesh LOD
+	if (!DataAsset->GetSkeletalMesh()->IsValidLODIndex(DataAsset->SkeletalLODIndex))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Invalid SkeletalMesh LOD Index"));
 		return;
 	}
 
@@ -59,7 +78,7 @@ void UAnimToTextureBPLibrary::AnimationToTexture(UAnimToTextureDataAsset* DataAs
 	bool bValidSocket = false;
 	if (DataAsset->AttachToSocket.IsValid() && !DataAsset->AttachToSocket.IsNone())
 	{
-		if (AnimToTexture_Private::HasBone(DataAsset->GetSkeletalMesh(), DataAsset->AttachToSocket))
+		if (HasBone(DataAsset->GetSkeletalMesh(), DataAsset->AttachToSocket))
 		{
 			bValidSocket = true;
 		}
@@ -69,53 +88,52 @@ void UAnimToTextureBPLibrary::AnimationToTexture(UAnimToTextureDataAsset* DataAs
 			return;
 		}
 	}
-	
 	if (bValidSocket && DataAsset->Mode == EAnimToTextureMode::Vertex)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("Unable to use Socket in Vertex Mode. Use Bone Mode instead."));
 		return;
 	}
 
+	// Check if UVChannel is being used by the Lightmap UV
+	const FStaticMeshSourceModel& SourceModel = DataAsset->GetStaticMesh()->GetSourceModel(DataAsset->StaticLODIndex);
+	if (SourceModel.BuildSettings.bGenerateLightmapUVs &&
+		SourceModel.BuildSettings.DstLightmapIndex == DataAsset->UVChannel)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Invalid UVChannel: %i. Already used by LightMap"), DataAsset->UVChannel);
+		return;
+	}
+
 	// ---------------------------------------------------------------------------		
 	// Get Meshes Vertices and Mapping.
-	// NOTE: We need to create a Mapping between the StaticMesh|MeshDescription and the SkeletalMesh
+	// NOTE: We need to create a Mapping between the StaticMesh and the SkeletalMesh
 	//       Since they dont have same number of points.
-	//	
-	TArray<FVector3f> Vertices;
-	TArray<FVector3f> SkelVertices;
-	TArray<int32> StaticToSkelMapping;
+	//
 
-	AnimToTexture_Private::GetStaticToSkeletalMapping(
-		*DataAsset->GetStaticMesh(), DataAsset->StaticLODIndex,
-		*DataAsset->GetSkeletalMesh(), DataAsset->SkeletalLODIndex,
-		Vertices, SkelVertices,
-		StaticToSkelMapping);
+	// Get Static Vertices 
+	// NOTE: these are the RenderData Vertices.
+	TArray<FVector3f> Vertices;
+	TArray<FVector3f> Normals;
+	const int32 NumVertices = GetVertices(DataAsset->GetStaticMesh(), DataAsset->StaticLODIndex, Vertices, Normals);
+
+	// Get SkeletalMesh Vertices 
+	TArray<FVector3f> SkelVertices;
+	GetVertices(DataAsset->GetSkeletalMesh(), DataAsset->SkeletalLODIndex, SkelVertices);
 	
-	// Set Static Number of Vertices 
-	// NOTE: these are the MeshDescription Vertices.
-	const int32 NumVertices = Vertices.Num();
+	// Get Mapping
+	TArray<FVertexToMeshMapping> Mapping;
+	FVertexToMeshMapping::Create(
+		DataAsset->GetStaticMesh(), DataAsset->StaticLODIndex,
+		DataAsset->GetSkeletalMesh(), DataAsset->SkeletalLODIndex, Mapping);
 
 	// --------------------------------------------------------------------------
-
-	if (GEditor == nullptr)
-	{
-		return;
-	}
-
+		
 	// Create Temp Actor
+	check(GEditor);
 	UWorld* World = GEditor->GetEditorWorldContext().World();
-
-	if (World == nullptr)
-	{
-		return;
-	}
+	check(World);
 
 	AActor* Actor = World->SpawnActor<AActor>();
-
-	if (Actor == nullptr)
-	{
-		return;
-	}
+	check(Actor);
 
 	// Create Temp SkeletalMesh Component
 	USkeletalMeshComponent* MeshComponent = NewObject<USkeletalMeshComponent>(Actor);
@@ -140,19 +158,22 @@ void UAnimToTextureBPLibrary::AnimationToTexture(UAnimToTextureDataAsset* DataAs
 	
 	if (DataAsset->Mode == EAnimToTextureMode::Bone)
 	{
-		// Get Number of RawBones (no virtual)
-		NumBones = AnimToTexture_Private::GetNumBones(MeshComponent->GetSkeletalMeshAsset());
+		// Gets Ref Bone Position and Rotations.
+		NumBones = GetRefBonePositionsAndRotations(MeshComponent,
+			BoneRefPositions, BoneRefRotations);
 
-		// Get Raw Ref Bone (no virtual)
-		TArray<FTransform> RefBoneTransforms;
-		AnimToTexture_Private::GetRefBoneTransforms(MeshComponent->GetSkeletalMeshAsset(), RefBoneTransforms);
-		AnimToTexture_Private::DecomposeTransformations(RefBoneTransforms, BoneRefPositions, BoneRefRotations);
+		// NOTE: there is a limitation with the number of bones atm.
+		if (NumBones > 256)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("Invalid Number of Bones. There is a maximum of 256 bones"))
+			return;
+		}
 
 		// Get Bone Names (no virtual)
-		AnimToTexture_Private::GetBoneNames(MeshComponent->GetSkeletalMeshAsset(), BoneNames);
+		GetBoneNames(MeshComponent->GetSkeletalMeshAsset(), BoneNames);
 
 		// Make sure array sizes are correct.
-		check(RefBoneTransforms.Num() == NumBones && BoneNames.Num() == NumBones);
+		check(BoneNames.Num() == NumBones);
 
 		// Check if Socket is in BoneNames
 		if (bValidSocket && !BoneNames.Find(DataAsset->AttachToSocket, SocketIndex))
@@ -187,7 +208,7 @@ void UAnimToTextureBPLibrary::AnimationToTexture(UAnimToTextureDataAsset* DataAs
 		}
 		
 		// Make sure SkeletalMesh is compatible with AnimSequence
-		if (!MeshComponent->GetSkeletalMeshAsset()->GetSkeleton()->IsCompatible(AnimSequence->GetSkeleton()))
+		if (!MeshComponent->GetSkeletalMeshAsset()->GetSkeleton()->IsCompatibleForEditor(AnimSequence->GetSkeleton()))
 		{
 			UE_LOG(LogTemp, Warning, TEXT("Invalid AnimSequence: %s for given SkeletalMesh: %s"), *AnimSequence->GetFName().ToString(), *MeshComponent->GetSkeletalMeshAsset()->GetFName().ToString());
 			continue;
@@ -224,7 +245,7 @@ void UAnimToTextureBPLibrary::AnimationToTexture(UAnimToTextureDataAsset* DataAs
 		// ---------------------------------------------------------------------------
 		// 
 		float Time = 0.f;
-		float EndTime = AnimSequence->GetTimeAtFrame(EndFrame);
+		const float EndTime = AnimSequence->GetTimeAtFrame(EndFrame);
 
 		int32 SampleIndex = 0;
 
@@ -237,8 +258,8 @@ void UAnimToTextureBPLibrary::AnimationToTexture(UAnimToTextureDataAsset* DataAs
 			MeshComponent->SetPosition(Time);
 
 			// Update SkelMesh Animation.
-			MeshComponent->TickAnimation(0.0f, false /*bNeedsValidRootMotion*/);
-			// MeshComponent->TickComponent(0.0f, ELevelTick::LEVELTICK_All, nullptr);
+			MeshComponent->TickAnimation(0.f, false /*bNeedsValidRootMotion*/);
+			// MeshComponent->TickComponent(0.f, ELevelTick::LEVELTICK_All, nullptr);
 			MeshComponent->RefreshBoneTransforms(nullptr /*TickFunction*/);
 			
 			// ---------------------------------------------------------------------------
@@ -246,23 +267,17 @@ void UAnimToTextureBPLibrary::AnimationToTexture(UAnimToTextureDataAsset* DataAs
 			//
 			if (DataAsset->Mode == EAnimToTextureMode::Vertex)
 			{
-				TArray<FVector3f> Positions;
-				TArray<FVector3f> Normals;
-				AnimToTexture_Private::GetSkinnedVertices(MeshComponent, DataAsset->SkeletalLODIndex,
-					Positions, Normals);
+				TArray<FVector3f> VertexFrameDeltas;
+				TArray<FVector3f> VertexFrameNormals;
+				
+				GetVertexDeltasAndNormals(MeshComponent, DataAsset->SkeletalLODIndex,
+					Vertices, Normals, Mapping,
+					RootTransform,
+					VertexFrameDeltas, VertexFrameNormals);
+					
+				VertexDeltas.Append(VertexFrameDeltas);
+				VertexNormals.Append(VertexFrameNormals);
 
-				// Loop thru static vertices and find the mapped SkeletalMesh Vertex
-				for (int32 VertexIndex = 0; VertexIndex < NumVertices; ++VertexIndex)
-				{
-					const int32 SkelVertexIndex = StaticToSkelMapping[VertexIndex];
-
-					// Delta & Normal
-					const FVector3f VertexDelta = (FVector3f)RootTransform.TransformPosition((FVector)Positions[SkelVertexIndex]) - SkelVertices[SkelVertexIndex];
-					const FVector3f VertexNormal = (FVector3f)RootTransform.TransformVector((FVector)Normals[SkelVertexIndex]);
-
-					VertexDeltas.Add(VertexDelta);
-					VertexNormals.Add(VertexNormal);
-				}
 			} // End Vertex Mode
 
 			// ---------------------------------------------------------------------------
@@ -270,41 +285,17 @@ void UAnimToTextureBPLibrary::AnimationToTexture(UAnimToTextureDataAsset* DataAs
 			//
 			else if (DataAsset->Mode == EAnimToTextureMode::Bone)
 			{
-				// Get Relative Transforms
-				// Note: Size is of Raw bones in SkeletalMesh. These are the original/raw bones of the asset, without Virtual Bones.
-				TArray<FMatrix44f> RefToLocals;
-				MeshComponent->CacheRefToLocalMatrices(RefToLocals);
-				
-				// check size
-				check(RefToLocals.Num() == NumBones);
+				TArray<FVector3f> BoneFramePositions;
+				TArray<FVector4> BoneFrameRotations;
 
-				// Get Component Space Transforms
-				// Note returns all transforms, including VirtualBones
-				const TArray<FTransform>& CompSpaceTransforms = MeshComponent->GetComponentSpaceTransforms();
-				check(CompSpaceTransforms.Num() >= RefToLocals.Num());
+				GetBonePositionsAndRotations(MeshComponent, BoneRefPositions,
+					BoneFramePositions, BoneFrameRotations);
 
-				for (int32 BoneIndex = 0; BoneIndex < NumBones; ++BoneIndex)
-				{
-					// Decompose Transformation (ComponentSpace)
-					const FTransform& CompSpaceTransform = CompSpaceTransforms[BoneIndex];
-					FVector3f BonePosition;
-					FVector4 BoneRotation;
-					AnimToTexture_Private::DecomposeTransformation(CompSpaceTransform, BonePosition, BoneRotation);
+				BonePositions.Append(BoneFramePositions);
+				BoneRotations.Append(BoneFrameRotations);
 
-					// Position Delta (from RefPose)
-					const FVector3f Delta = BonePosition - BoneRefPositions[BoneIndex];
-
-					// Decompose Transformation (Relative to RefPose)
-					FVector3f BoneRelativePosition;
-					FVector4 BoneRelativeRotation;
-					FMatrix RefToLocalMatrix = FMatrix(RefToLocals[BoneIndex]);
-					const FTransform RelativeTransform(RefToLocalMatrix);
-					AnimToTexture_Private::DecomposeTransformation(RelativeTransform, BoneRelativePosition, BoneRelativeRotation);
-
-					BonePositions.Add(Delta);
-					BoneRotations.Add(BoneRelativeRotation);
-				}
 			} // End Bone Mode
+
 		} // End Frame
 
 		// Store Anim Info Data
@@ -354,12 +345,25 @@ void UAnimToTextureBPLibrary::AnimationToTexture(UAnimToTextureDataAsset* DataAs
 			NormalizedVertexDeltas, NormalizedVertexNormals);
 
 		// Write Textures
-		AnimToTexture_Private::WriteVectorsToTexture<FVector3f, AnimToTexture_Private::FLowPrecision>(NormalizedVertexDeltas, DataAsset->NumFrames, DataAsset->VertexRowsPerFrame, Height, Width, DataAsset->GetVertexPositionTexture());
-		AnimToTexture_Private::WriteVectorsToTexture<FVector3f, AnimToTexture_Private::FLowPrecision>(NormalizedVertexNormals, DataAsset->NumFrames, DataAsset->VertexRowsPerFrame, Height, Width, DataAsset->GetVertexNormalTexture());
+		if (DataAsset->Precision == EAnimToTexturePrecision::SixteenBits)
+		{
+			WriteVectorsToTexture<FVector3f, FHighPrecision>(NormalizedVertexDeltas, DataAsset->NumFrames, DataAsset->VertexRowsPerFrame, Height, Width, DataAsset->GetVertexPositionTexture());
+			WriteVectorsToTexture<FVector3f, FHighPrecision>(NormalizedVertexNormals, DataAsset->NumFrames, DataAsset->VertexRowsPerFrame, Height, Width, DataAsset->GetVertexNormalTexture());
+		}
+		else
+		{
+			WriteVectorsToTexture<FVector3f, FLowPrecision>(NormalizedVertexDeltas, DataAsset->NumFrames, DataAsset->VertexRowsPerFrame, Height, Width, DataAsset->GetVertexPositionTexture());
+			WriteVectorsToTexture<FVector3f, FLowPrecision>(NormalizedVertexNormals, DataAsset->NumFrames, DataAsset->VertexRowsPerFrame, Height, Width, DataAsset->GetVertexNormalTexture());
+		}		
 
-	
 		// Add Vertex UVChannel
 		CreateUVChannel(DataAsset->GetStaticMesh(), DataAsset->StaticLODIndex, DataAsset->UVChannel, Height, Width);
+
+		// Update Bounds
+		SetBoundsExtensions(DataAsset->GetStaticMesh(), DataAsset->VertexMinBBox, DataAsset->VertexSizeBBox);
+
+		// Done with StaticMesh
+		DataAsset->GetStaticMesh()->PostEditChange();
 	}
 
 	// ---------------------------------------------------------------------------
@@ -368,8 +372,6 @@ void UAnimToTextureBPLibrary::AnimationToTexture(UAnimToTextureDataAsset* DataAs
 	{
 		// Find Best Resolution for Bone Data
 		int32 Height, Width;
-
-		// NOTE: If NumBones are > 256, you might need to use a simpler skeleton
 
 		// Note we are adding +1 frame for the ref pose
 		if (!FindBestResolution(DataAsset->NumFrames + 1, NumBones, 
@@ -391,15 +393,15 @@ void UAnimToTextureBPLibrary::AnimationToTexture(UAnimToTextureDataAsset* DataAs
 				NormalizedBonePositions, NormalizedBoneRotations);
 
 			// Write Textures
-			if (DataAsset->BonePrecision == EAnimToTextureBonePrecision::SixteenBits)
+			if (DataAsset->Precision == EAnimToTexturePrecision::SixteenBits)
 			{
-				AnimToTexture_Private::WriteVectorsToTexture<FVector3f, AnimToTexture_Private::FHighPrecision>(NormalizedBonePositions, DataAsset->NumFrames + 1, DataAsset->BoneRowsPerFrame, Height, Width, DataAsset->GetBonePositionTexture());
-				AnimToTexture_Private::WriteVectorsToTexture<FVector4, AnimToTexture_Private::FHighPrecision>(NormalizedBoneRotations, DataAsset->NumFrames + 1, DataAsset->BoneRowsPerFrame, Height, Width, DataAsset->GetBoneRotationTexture());
+				WriteVectorsToTexture<FVector3f, FHighPrecision>(NormalizedBonePositions, DataAsset->NumFrames + 1, DataAsset->BoneRowsPerFrame, Height, Width, DataAsset->GetBonePositionTexture());
+				WriteVectorsToTexture<FVector4, FHighPrecision>(NormalizedBoneRotations, DataAsset->NumFrames + 1, DataAsset->BoneRowsPerFrame, Height, Width, DataAsset->GetBoneRotationTexture());
 			}
 			else
 			{
-				AnimToTexture_Private::WriteVectorsToTexture<FVector3f, AnimToTexture_Private::FLowPrecision>(NormalizedBonePositions, DataAsset->NumFrames + 1, DataAsset->BoneRowsPerFrame, Height, Width, DataAsset->GetBonePositionTexture());
-				AnimToTexture_Private::WriteVectorsToTexture<FVector4, AnimToTexture_Private::FLowPrecision>(NormalizedBoneRotations, DataAsset->NumFrames + 1, DataAsset->BoneRowsPerFrame, Height, Width, DataAsset->GetBoneRotationTexture());
+				WriteVectorsToTexture<FVector3f, FLowPrecision>(NormalizedBonePositions, DataAsset->NumFrames + 1, DataAsset->BoneRowsPerFrame, Height, Width, DataAsset->GetBonePositionTexture());
+				WriteVectorsToTexture<FVector4, FLowPrecision>(NormalizedBoneRotations, DataAsset->NumFrames + 1, DataAsset->BoneRowsPerFrame, Height, Width, DataAsset->GetBoneRotationTexture());
 			}
 		}
 
@@ -416,23 +418,29 @@ void UAnimToTextureBPLibrary::AnimationToTexture(UAnimToTextureDataAsset* DataAs
 
 		// Write Weights Texture
 		{
-			TArray<AnimToTexture_Private::TVertexSkinWeight<4>> SkinWeights;
+			TArray<TVertexSkinWeight<4>> SkinWeights;
 
 			// Store Influence Weights
 			if (!bValidSocket)
 			{
-				// Get SkinWeights mapped to StaticMesh
-				AnimToTexture_Private::GetReducedSkinWeightsData(
-					*DataAsset->GetSkeletalMesh(), DataAsset->SkeletalLODIndex,
-					StaticToSkelMapping, 
-					SkinWeights);
+				// Get SkeletalMesh Weights
+				TArray<VertexSkinWeightMax> SkeletalMeshSkinWeights;
+				GetSkinWeights(DataAsset->GetSkeletalMesh(), DataAsset->SkeletalLODIndex, SkeletalMeshSkinWeights);
+
+				// Interpolate Weights with Mapping
+				TArray<VertexSkinWeightMax> StaticMeshSkinWeights;
+				FVertexToMeshMapping::InterpolateSkinWeights(Mapping, SkeletalMeshSkinWeights, StaticMeshSkinWeights);
+				
+				// Reduce SkeletalMesh Weights to 4 highest influences.
+				ReduceSkinWeights(StaticMeshSkinWeights, SkinWeights);
 			}
+
 			// If Valid Socket, set all influences to same index.
 			else
 			{
 				// Set all indices and weights to same SocketIndex
 				SkinWeights.SetNumUninitialized(NumVertices);
-				for (AnimToTexture_Private::TVertexSkinWeight<4>& SkinWeight : SkinWeights)
+				for (TVertexSkinWeight<4>& SkinWeight : SkinWeights)
 				{
 					SkinWeight.BoneWeights = TStaticArray<uint8, 4>(InPlace, 255);
 					SkinWeight.MeshBoneIndices = TStaticArray<uint16, 4>(InPlace, SocketIndex);
@@ -440,118 +448,273 @@ void UAnimToTextureBPLibrary::AnimationToTexture(UAnimToTextureDataAsset* DataAs
 			}
 
 			// Write Bone Weights Texture
-			AnimToTexture_Private::WriteSkinWeightsToTexture(SkinWeights,
+			WriteSkinWeightsToTexture(SkinWeights,
 				DataAsset->BoneWeightRowsPerFrame, Height, Width, DataAsset->GetBoneWeightTexture());
 		}
 
 		// Add Vertex UVChannel
 		CreateUVChannel(DataAsset->GetStaticMesh(), DataAsset->StaticLODIndex, DataAsset->UVChannel, Height, Width);
+
+		// Update Bounds
+		SetBoundsExtensions(DataAsset->GetStaticMesh(), DataAsset->BoneMinBBox, DataAsset->BoneSizeBBox);
+
+		// Done with StaticMesh
+		DataAsset->GetStaticMesh()->PostEditChange();
 	}
 
 	// ---------------------------------------------------------------------------
-	// Mark DataAsset as Dirty.
+	// Mark Packages dirty
 	//
 	DataAsset->MarkPackageDirty();
+	
+	// All good here !
+	bSuccess = true;
+}
+
+
+// 
+void UAnimToTextureBPLibrary::GetVertexDeltasAndNormals(const USkeletalMeshComponent* SkeletalMeshComponent, const int32 LODIndex, 
+	const TArray<FVector3f>& Vertices, const TArray<FVector3f>& Normals,  const TArray<FVertexToMeshMapping>& Mapping,
+	const FTransform RootTransform,
+	TArray<FVector3f>& OutVertexDeltas, TArray<FVector3f>& OutVertexNormals)
+{
+	OutVertexDeltas.Reset();
+	OutVertexNormals.Reset();
+
+	check(Vertices.Num() == Mapping.Num());
+
+	TArray<FVector3f> SkinnedVertices;
+	GetSkinnedVertices(SkeletalMeshComponent, LODIndex, SkinnedVertices);
+
+	// Loop thru static vertices and find the mapped SkeletalMesh Vertex
+	for (int32 VertexIndex = 0; VertexIndex < Vertices.Num(); VertexIndex++)
+	{
+		// Get Static/SkeletalMesh Mapping
+		const FVertexToMeshMapping& VertexMapping = Mapping[VertexIndex];
+
+		// Transform Vertex
+		// (assuming indices are valid)
+		const FIntVector3& Triangle = VertexMapping.Triangle;
+		const FVector3f& A = SkinnedVertices[Triangle.X];
+		const FVector3f& B = SkinnedVertices[Triangle.Y];
+		const FVector3f& C = SkinnedVertices[Triangle.Z];
+
+		const FVector3f VertexPosition = VertexMapping.TransformPosition(Vertices[VertexIndex], A, B, C);
+		const FVector3f VertexNormal = VertexMapping.TransformVector(Normals[VertexIndex], A, B, C);
+
+		// Transform Position and Delta with RootTransform
+		const FVector3f TransformedVertexDelta = ((FVector3f)RootTransform.TransformPosition((FVector)VertexPosition)) - Vertices[VertexIndex];
+		const FVector3f TransformedVertexNormal = (FVector3f)RootTransform.TransformVector((FVector)VertexNormal);
+		
+		OutVertexDeltas.Add(TransformedVertexDelta);
+		OutVertexNormals.Add(TransformedVertexNormal);
+	}
+}
+
+
+int32 UAnimToTextureBPLibrary::GetRefBonePositionsAndRotations(const USkeletalMeshComponent* SkeletalMeshComponent,
+	TArray<FVector3f>& OutBoneRefPositions, TArray<FVector4>& OutBoneRefRotations)
+{
+	OutBoneRefPositions.Reset();
+	OutBoneRefRotations.Reset();
+
+	// Get Number of RawBones (no virtual)
+	const int32 NumBones = GetNumBones(SkeletalMeshComponent->GetSkeletalMeshAsset());
+	
+	// Get Raw Ref Bone (no virtual)
+	TArray<FTransform> RefBoneTransforms;
+	GetRefBoneTransforms(SkeletalMeshComponent->GetSkeletalMeshAsset(), RefBoneTransforms);
+	DecomposeTransformations(RefBoneTransforms, OutBoneRefPositions, OutBoneRefRotations);
+
+	return NumBones;
+}
+
+
+int32 UAnimToTextureBPLibrary::GetBonePositionsAndRotations(const USkeletalMeshComponent* SkeletalMeshComponent, const TArray<FVector3f>& BoneRefPositions,
+	TArray<FVector3f>& BonePositions, TArray<FVector4>& BoneRotations)
+{
+	BonePositions.Reset();
+	BoneRotations.Reset();
+
+	// Get Relative Transforms
+	// Note: Size is of Raw bones in SkeletalMesh. These are the original/raw bones of the asset, without Virtual Bones.
+	TArray<FMatrix44f> RefToLocals;
+	SkeletalMeshComponent->CacheRefToLocalMatrices(RefToLocals);
+	const int32 NumBones = RefToLocals.Num();
+
+	// check size
+	check(NumBones == BoneRefPositions.Num());
+
+	// Get Component Space Transforms
+	// Note returns all transforms, including VirtualBones
+	const TArray<FTransform>& CompSpaceTransforms = SkeletalMeshComponent->GetComponentSpaceTransforms();
+	check(CompSpaceTransforms.Num() >= RefToLocals.Num());
+
+	for (int32 BoneIndex = 0; BoneIndex < NumBones; BoneIndex++)
+	{
+		// Decompose Transformation (ComponentSpace)
+		const FTransform& CompSpaceTransform = CompSpaceTransforms[BoneIndex];
+		FVector3f BonePosition;
+		FVector4 BoneRotation;
+		DecomposeTransformation(CompSpaceTransform, BonePosition, BoneRotation);
+
+		// Position Delta (from RefPose)
+		const FVector3f Delta = BonePosition - BoneRefPositions[BoneIndex];
+
+		// Decompose Transformation (Relative to RefPose)
+		FVector3f BoneRelativePosition;
+		FVector4 BoneRelativeRotation;
+		const FMatrix RefToLocalMatrix(RefToLocals[BoneIndex]);
+		const FTransform RelativeTransform(RefToLocalMatrix);
+		DecomposeTransformation(RelativeTransform, BoneRelativePosition, BoneRelativeRotation);
+
+		BonePositions.Add(Delta);
+		BoneRotations.Add(BoneRelativeRotation);
+	}
+
+	return NumBones;
 }
 
 
 void UAnimToTextureBPLibrary::UpdateMaterialInstanceFromDataAsset(UAnimToTextureDataAsset* DataAsset, UMaterialInstanceConstant* MaterialInstance, 
-	const FAnimToTextureMaterialParamNames& ParamNames, const EMaterialParameterAssociation MaterialParameterAssociation)
+	const bool bAnimate, const EAnimToTextureNumBoneInfluences NumBoneInfluences, const EMaterialParameterAssociation MaterialParameterAssociation)
 {
 	if (!MaterialInstance || !DataAsset)
 	{
 		return;
 	}
-	
-	// Set Preview Mesh
-	if (DataAsset->GetStaticMesh())
+
+	// Set UVChannel
+	switch (DataAsset->UVChannel)
 	{
-		MaterialInstance->PreviewMesh = DataAsset->GetStaticMesh();
+		case 0:
+			UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MaterialInstance, AnimToTextureParamNames::UseUV0, true, MaterialParameterAssociation);
+			UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MaterialInstance, AnimToTextureParamNames::UseUV1, false, MaterialParameterAssociation);
+			UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MaterialInstance, AnimToTextureParamNames::UseUV2, false, MaterialParameterAssociation);
+			UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MaterialInstance, AnimToTextureParamNames::UseUV3, false, MaterialParameterAssociation);
+			break;
+		case 1:
+			UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MaterialInstance, AnimToTextureParamNames::UseUV0, false, MaterialParameterAssociation);
+			UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MaterialInstance, AnimToTextureParamNames::UseUV1, true, MaterialParameterAssociation);
+			UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MaterialInstance, AnimToTextureParamNames::UseUV2, false, MaterialParameterAssociation);
+			UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MaterialInstance, AnimToTextureParamNames::UseUV3, false, MaterialParameterAssociation);
+			break;
+		case 2:
+			UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MaterialInstance, AnimToTextureParamNames::UseUV0, false, MaterialParameterAssociation);
+			UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MaterialInstance, AnimToTextureParamNames::UseUV1, false, MaterialParameterAssociation);
+			UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MaterialInstance, AnimToTextureParamNames::UseUV2, true, MaterialParameterAssociation);
+			UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MaterialInstance, AnimToTextureParamNames::UseUV3, false, MaterialParameterAssociation);
+			break;
+		case 3:
+			UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MaterialInstance, AnimToTextureParamNames::UseUV0, false, MaterialParameterAssociation);
+			UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MaterialInstance, AnimToTextureParamNames::UseUV1, false, MaterialParameterAssociation);
+			UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MaterialInstance, AnimToTextureParamNames::UseUV2, false, MaterialParameterAssociation);
+			UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MaterialInstance, AnimToTextureParamNames::UseUV3, true, MaterialParameterAssociation);
+			break;
+		default:
+			UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MaterialInstance, AnimToTextureParamNames::UseUV0, false, MaterialParameterAssociation);
+			UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MaterialInstance, AnimToTextureParamNames::UseUV1, true, MaterialParameterAssociation);
+			UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MaterialInstance, AnimToTextureParamNames::UseUV2, false, MaterialParameterAssociation);
+			UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MaterialInstance, AnimToTextureParamNames::UseUV3, false, MaterialParameterAssociation);
+			break;
 	}
 
+	// Update Vertex Params
 	if (DataAsset->Mode == EAnimToTextureMode::Vertex)
 	{
 		FLinearColor VectorParameter;
 		VectorParameter = FLinearColor(DataAsset->VertexMinBBox);
-		UMaterialEditingLibrary::SetMaterialInstanceVectorParameterValue(MaterialInstance, ParamNames.BoundingBoxMin, VectorParameter, MaterialParameterAssociation);
+		UMaterialEditingLibrary::SetMaterialInstanceVectorParameterValue(MaterialInstance, AnimToTextureParamNames::BoundingBoxMin, VectorParameter, MaterialParameterAssociation);
 		
 		VectorParameter = FLinearColor(DataAsset->VertexSizeBBox);
-		UMaterialEditingLibrary::SetMaterialInstanceVectorParameterValue(MaterialInstance, ParamNames.BoundingBoxScale, VectorParameter, MaterialParameterAssociation);
-		UMaterialEditingLibrary::SetMaterialInstanceScalarParameterValue(MaterialInstance, ParamNames.NumFrames, DataAsset->NumFrames, MaterialParameterAssociation);
-		UMaterialEditingLibrary::SetMaterialInstanceScalarParameterValue(MaterialInstance, ParamNames.RowsPerFrame, DataAsset->VertexRowsPerFrame, MaterialParameterAssociation);
+		UMaterialEditingLibrary::SetMaterialInstanceVectorParameterValue(MaterialInstance, AnimToTextureParamNames::BoundingBoxScale, VectorParameter, MaterialParameterAssociation);
+		UMaterialEditingLibrary::SetMaterialInstanceScalarParameterValue(MaterialInstance, AnimToTextureParamNames::NumFrames, DataAsset->NumFrames, MaterialParameterAssociation);
+		UMaterialEditingLibrary::SetMaterialInstanceScalarParameterValue(MaterialInstance, AnimToTextureParamNames::RowsPerFrame, DataAsset->VertexRowsPerFrame, MaterialParameterAssociation);
 
-		UMaterialEditingLibrary::SetMaterialInstanceTextureParameterValue(MaterialInstance, ParamNames.VertexPositionTexture, DataAsset->GetVertexPositionTexture(), MaterialParameterAssociation);
-		UMaterialEditingLibrary::SetMaterialInstanceTextureParameterValue(MaterialInstance, ParamNames.VertexNormalTexture, DataAsset->GetVertexNormalTexture(), MaterialParameterAssociation);
+		UMaterialEditingLibrary::SetMaterialInstanceTextureParameterValue(MaterialInstance, AnimToTextureParamNames::VertexPositionTexture, DataAsset->GetVertexPositionTexture(), MaterialParameterAssociation);
+		UMaterialEditingLibrary::SetMaterialInstanceTextureParameterValue(MaterialInstance, AnimToTextureParamNames::VertexNormalTexture, DataAsset->GetVertexNormalTexture(), MaterialParameterAssociation);
 
 	}
+
+	// Update Bone Params
 	else if (DataAsset->Mode == EAnimToTextureMode::Bone)
 	{
 		FLinearColor VectorParameter;
 		VectorParameter = FLinearColor(DataAsset->BoneMinBBox);
-		UMaterialEditingLibrary::SetMaterialInstanceVectorParameterValue(MaterialInstance, ParamNames.BoundingBoxMin, VectorParameter, MaterialParameterAssociation);
+		UMaterialEditingLibrary::SetMaterialInstanceVectorParameterValue(MaterialInstance, AnimToTextureParamNames::BoundingBoxMin, VectorParameter, MaterialParameterAssociation);
 
 		VectorParameter = FLinearColor(DataAsset->BoneSizeBBox);
-		UMaterialEditingLibrary::SetMaterialInstanceVectorParameterValue(MaterialInstance, ParamNames.BoundingBoxScale, VectorParameter, MaterialParameterAssociation);
-		UMaterialEditingLibrary::SetMaterialInstanceScalarParameterValue(MaterialInstance, ParamNames.NumFrames, DataAsset->NumFrames, MaterialParameterAssociation);
-		UMaterialEditingLibrary::SetMaterialInstanceScalarParameterValue(MaterialInstance, ParamNames.RowsPerFrame, DataAsset->BoneRowsPerFrame, MaterialParameterAssociation);
-		UMaterialEditingLibrary::SetMaterialInstanceScalarParameterValue(MaterialInstance, ParamNames.BoneWeightRowsPerFrame, DataAsset->BoneWeightRowsPerFrame, MaterialParameterAssociation);
+		UMaterialEditingLibrary::SetMaterialInstanceVectorParameterValue(MaterialInstance, AnimToTextureParamNames::BoundingBoxScale, VectorParameter, MaterialParameterAssociation);
+		UMaterialEditingLibrary::SetMaterialInstanceScalarParameterValue(MaterialInstance, AnimToTextureParamNames::NumFrames, DataAsset->NumFrames, MaterialParameterAssociation);
+		UMaterialEditingLibrary::SetMaterialInstanceScalarParameterValue(MaterialInstance, AnimToTextureParamNames::RowsPerFrame, DataAsset->BoneRowsPerFrame, MaterialParameterAssociation);
+		UMaterialEditingLibrary::SetMaterialInstanceScalarParameterValue(MaterialInstance, AnimToTextureParamNames::BoneWeightRowsPerFrame, DataAsset->BoneWeightRowsPerFrame, MaterialParameterAssociation);
 
-		UMaterialEditingLibrary::SetMaterialInstanceTextureParameterValue(MaterialInstance, ParamNames.BonePositionTexture, DataAsset->GetBonePositionTexture(), MaterialParameterAssociation);
-		UMaterialEditingLibrary::SetMaterialInstanceTextureParameterValue(MaterialInstance, ParamNames.BoneRotationTexture, DataAsset->GetBoneRotationTexture(), MaterialParameterAssociation);
-		UMaterialEditingLibrary::SetMaterialInstanceTextureParameterValue(MaterialInstance, ParamNames.BoneWeightsTexture, DataAsset->GetBoneWeightTexture(), MaterialParameterAssociation);
+		UMaterialEditingLibrary::SetMaterialInstanceTextureParameterValue(MaterialInstance, AnimToTextureParamNames::BonePositionTexture, DataAsset->GetBonePositionTexture(), MaterialParameterAssociation);
+		UMaterialEditingLibrary::SetMaterialInstanceTextureParameterValue(MaterialInstance, AnimToTextureParamNames::BoneRotationTexture, DataAsset->GetBoneRotationTexture(), MaterialParameterAssociation);
+		UMaterialEditingLibrary::SetMaterialInstanceTextureParameterValue(MaterialInstance, AnimToTextureParamNames::BoneWeightsTexture, DataAsset->GetBoneWeightTexture(), MaterialParameterAssociation);
+
+		// Num Influences
+		switch (NumBoneInfluences)
+		{
+			case EAnimToTextureNumBoneInfluences::One:
+				UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MaterialInstance, AnimToTextureParamNames::UseTwoInfluences, false, MaterialParameterAssociation);
+				UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MaterialInstance, AnimToTextureParamNames::UseFourInfluences, false, MaterialParameterAssociation);
+				break;
+			case EAnimToTextureNumBoneInfluences::Two:
+				UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MaterialInstance, AnimToTextureParamNames::UseTwoInfluences, true, MaterialParameterAssociation);
+				UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MaterialInstance, AnimToTextureParamNames::UseFourInfluences, false, MaterialParameterAssociation);
+				break;
+			case EAnimToTextureNumBoneInfluences::Four:
+				UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MaterialInstance, AnimToTextureParamNames::UseTwoInfluences, false, MaterialParameterAssociation);
+				UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MaterialInstance, AnimToTextureParamNames::UseFourInfluences, true, MaterialParameterAssociation);
+				break;
+		}
+
 	}
+
+	// Animate
+	UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MaterialInstance, AnimToTextureParamNames::Animate, bAnimate, MaterialParameterAssociation);
 
 	// Update Material
 	UMaterialEditingLibrary::UpdateMaterialInstance(MaterialInstance);
 
 	// Rebuild Material
 	UMaterialEditingLibrary::RebuildMaterialInstanceEditors(MaterialInstance->GetMaterial());
+
+	// Set Preview Mesh
+	if (DataAsset->GetStaticMesh())
+	{
+		MaterialInstance->PreviewMesh = DataAsset->GetStaticMesh();
+	}
+
+	MaterialInstance->MarkPackageDirty();
 }
 
-void UAnimToTextureBPLibrary::UpdateMaterialLayerFunction(
-	UMaterialInstanceConstant* MaterialInstance,
-	UMaterialFunctionInterface* OldMaterialFunction,
-	UMaterialFunctionInterface* NewMaterialFunction)
+
+bool UAnimToTextureBPLibrary::SetLightMapIndex(UStaticMesh* StaticMesh, const int32 LODIndex, const int32 LightmapIndex, bool bGenerateLightmapUVs)
 {
-	if (!IsValid(MaterialInstance))
+	if (!StaticMesh)
 	{
-		return;
+		return false;
 	}
 
-	const FMaterialParameterInfo ParameterInfo(TEXT("BoneAnimation"), EMaterialParameterAssociation::GlobalParameter);
-
-	FMaterialLayersFunctions LayersValue;
-	FGuid TempGuid(0, 0, 0, 0);
-
-	// TODO: Ben.Ingram / Cesar.Castro verify this.
-	bool bMaterialLayerReplaced = false;
-	if (MaterialInstance->GetMaterialLayers(LayersValue))
+	if (LODIndex >= 0 && !StaticMesh->IsSourceModelValid(LODIndex))
 	{
-		for (int32 LayerIdx = 0; LayerIdx < LayersValue.Layers.Num(); ++LayerIdx)
-		{
-			TObjectPtr<UMaterialFunctionInterface>& MaterialFunction = LayersValue.Layers[LayerIdx];
-			if (MaterialFunction.Get() == OldMaterialFunction)
-			{
-				MaterialFunction = NewMaterialFunction;
-				LayersValue.EditorOnly.LayerLinkStates[LayerIdx] = EMaterialLayerLinkState::UnlinkedFromParent;
-				bMaterialLayerReplaced = true;
-				break;
-			}
-
-		}
+		return false;
 	}
 
-	if (bMaterialLayerReplaced)
-	{
-		// TODO: Ben.Ingram / Cesar.Castro verify this.
-		MaterialInstance->SetMaterialLayers(LayersValue);
+	// 
+	FStaticMeshSourceModel& SourceModel = StaticMesh->GetSourceModel(LODIndex);
+	SourceModel.BuildSettings.bGenerateLightmapUVs = bGenerateLightmapUVs;
+	SourceModel.BuildSettings.DstLightmapIndex = LightmapIndex;
+	StaticMesh->SetLightMapCoordinateIndex(LightmapIndex);
 
-		// Update Material
-		UMaterialEditingLibrary::UpdateMaterialInstance(MaterialInstance);
+	// Build mesh from source
+	StaticMesh->Build(false);
+	StaticMesh->PostEditChange();
+	StaticMesh->MarkPackageDirty();
 
-		// Rebuild Material
-		UMaterialEditingLibrary::RebuildMaterialInstanceEditors(MaterialInstance->GetMaterial());
-	}
+	return true;
 }
 
 
@@ -574,8 +737,11 @@ UStaticMesh* UAnimToTextureBPLibrary::ConvertSkeletalMeshToStaticMesh(USkeletalM
 	}
 
 	// Create Temp Actor
+	check(GEditor);
 	UWorld* World = GEditor->GetEditorWorldContext().World();
+	check(World);
 	AActor* Actor = World->SpawnActor<AActor>();
+	check(Actor);
 
 	// Create Temp SkeletalMesh Component
 	USkeletalMeshComponent* MeshComponent = NewObject<USkeletalMeshComponent>(Actor);
@@ -671,30 +837,30 @@ UStaticMesh* UAnimToTextureBPLibrary::ConvertSkeletalMeshToStaticMesh(USkeletalM
 
 void UAnimToTextureBPLibrary::NormalizeVertexData(
 	const TArray<FVector3f>& Deltas, const TArray<FVector3f>& Normals,
-	FVector& MinBBox, FVector& SizeBBox,
-	TArray<FVector3f>& NormalizedDeltas, TArray<FVector3f>& NormalizedNormals)
+	FVector& OutMinBBox, FVector& OutSizeBBox,
+	TArray<FVector3f>& OutNormalizedDeltas, TArray<FVector3f>& OutNormalizedNormals)
 {
 	check(Deltas.Num() == Normals.Num());
 
 	// ---------------------------------------------------------------------------
 	// Compute Bounding Box
 	//
-	MinBBox = { TNumericLimits<float>::Max(), TNumericLimits<float>::Max(), TNumericLimits<float>::Max() };
+	OutMinBBox = { TNumericLimits<float>::Max(), TNumericLimits<float>::Max(), TNumericLimits<float>::Max() };
 	FVector3f MaxBBox = { TNumericLimits<float>::Min(), TNumericLimits<float>::Min(), TNumericLimits<float>::Min() };
 	
 	for (const FVector3f& Delta: Deltas)
 	{
 		// Find Min/Max BoundingBox
-		MinBBox.X = FMath::Min(Delta.X, MinBBox.X);
-		MinBBox.Y = FMath::Min(Delta.Y, MinBBox.Y);
-		MinBBox.Z = FMath::Min(Delta.Z, MinBBox.Z);
+		OutMinBBox.X = FMath::Min(Delta.X, OutMinBBox.X);
+		OutMinBBox.Y = FMath::Min(Delta.Y, OutMinBBox.Y);
+		OutMinBBox.Z = FMath::Min(Delta.Z, OutMinBBox.Z);
 
 		MaxBBox.X = FMath::Max(Delta.X, MaxBBox.X);
 		MaxBBox.Y = FMath::Max(Delta.Y, MaxBBox.Y);
 		MaxBBox.Z = FMath::Max(Delta.Z, MaxBBox.Z);
 	}
 
-	SizeBBox = (FVector)MaxBBox - MinBBox;
+	OutSizeBBox = (FVector)MaxBBox - OutMinBBox;
 
 	// ---------------------------------------------------------------------------
 	// Normalize Vertex Position Deltas
@@ -702,54 +868,54 @@ void UAnimToTextureBPLibrary::NormalizeVertexData(
 	
 	// Compute Normalization Factor per-axis.
 	const FVector NormFactor = {
-		1.0f / static_cast<float>(SizeBBox.X),
-		1.0f / static_cast<float>(SizeBBox.Y),
-		1.0f / static_cast<float>(SizeBBox.Z) };
+		1.f / static_cast<float>(OutSizeBBox.X),
+		1.f / static_cast<float>(OutSizeBBox.Y),
+		1.f / static_cast<float>(OutSizeBBox.Z) };
 
-	NormalizedDeltas.SetNumUninitialized(Deltas.Num());
+	OutNormalizedDeltas.SetNumUninitialized(Deltas.Num());
 	for (int32 Index = 0; Index < Deltas.Num(); ++Index)
 	{
-		NormalizedDeltas[Index] = (FVector3f)(((FVector)Deltas[Index] - MinBBox) * NormFactor);
+		OutNormalizedDeltas[Index] = (FVector3f)(((FVector)Deltas[Index] - OutMinBBox) * NormFactor);
 	}
 
 	// ---------------------------------------------------------------------------
 	// Normalize Vertex Normals
 	// And move them to [0, 1]
 	
-	NormalizedNormals.SetNumUninitialized(Normals.Num());
+	OutNormalizedNormals.SetNumUninitialized(Normals.Num());
 	for (int32 Index = 0; Index < Normals.Num(); ++Index)
 	{
-		NormalizedNormals[Index] = (Normals[Index].GetSafeNormal() + FVector3f::OneVector) * 0.5f;
+		OutNormalizedNormals[Index] = (Normals[Index].GetSafeNormal() + FVector3f::OneVector) * 0.5f;
 	}
 
 }
 
 void UAnimToTextureBPLibrary::NormalizeBoneData(
 	const TArray<FVector3f>& Positions, const TArray<FVector4>& Rotations,
-	FVector& MinBBox, FVector& SizeBBox, 
-	TArray<FVector3f>& NormalizedPositions, TArray<FVector4>& NormalizedRotations)
+	FVector& OutMinBBox, FVector& OutSizeBBox, 
+	TArray<FVector3f>& OutNormalizedPositions, TArray<FVector4>& OutNormalizedRotations)
 {
 	check(Positions.Num() == Rotations.Num());
 
 	// ---------------------------------------------------------------------------
 	// Compute Position Bounding Box
 	//
-	MinBBox = { TNumericLimits<float>::Max(), TNumericLimits<float>::Max(), TNumericLimits<float>::Max() };
+	OutMinBBox = { TNumericLimits<float>::Max(), TNumericLimits<float>::Max(), TNumericLimits<float>::Max() };
 	FVector3f MaxBBox = { TNumericLimits<float>::Min(), TNumericLimits<float>::Min(), TNumericLimits<float>::Min() };
 
 	for (const FVector3f& Position : Positions)
 	{
 		// Find Min/Max BoundingBox
-		MinBBox.X = FMath::Min(Position.X, MinBBox.X);
-		MinBBox.Y = FMath::Min(Position.Y, MinBBox.Y);
-		MinBBox.Z = FMath::Min(Position.Z, MinBBox.Z);
+		OutMinBBox.X = FMath::Min(Position.X, OutMinBBox.X);
+		OutMinBBox.Y = FMath::Min(Position.Y, OutMinBBox.Y);
+		OutMinBBox.Z = FMath::Min(Position.Z, OutMinBBox.Z);
 
 		MaxBBox.X = FMath::Max(Position.X, MaxBBox.X);
 		MaxBBox.Y = FMath::Max(Position.Y, MaxBBox.Y);
 		MaxBBox.Z = FMath::Max(Position.Z, MaxBBox.Z);
 	}
 
-	SizeBBox = (FVector)MaxBBox - MinBBox;
+	OutSizeBBox = (FVector)MaxBBox - OutMinBBox;
 
 	// ---------------------------------------------------------------------------
 	// Normalize Bone Position.
@@ -757,27 +923,27 @@ void UAnimToTextureBPLibrary::NormalizeBoneData(
 
 	// Compute Normalization Factor per-axis.
 	const FVector NormFactor = {
-		1.0f / static_cast<float>(SizeBBox.X),
-		1.0f / static_cast<float>(SizeBBox.Y),
-		1.0f / static_cast<float>(SizeBBox.Z) };
+		1.f / static_cast<float>(OutSizeBBox.X),
+		1.f / static_cast<float>(OutSizeBBox.Y),
+		1.f / static_cast<float>(OutSizeBBox.Z) };
 
-	NormalizedPositions.SetNumUninitialized(Positions.Num());
+	OutNormalizedPositions.SetNumUninitialized(Positions.Num());
 	for (int32 Index = 0; Index < Positions.Num(); ++Index)
 	{
-		NormalizedPositions[Index] = FVector3f(((FVector)Positions[Index] - MinBBox) * NormFactor);
+		OutNormalizedPositions[Index] = FVector3f(((FVector)Positions[Index] - OutMinBBox) * NormFactor);
 	}
 
 	// ---------------------------------------------------------------------------
 	// Normalize Rotations
 	// And move them to [0, 1]
-	NormalizedRotations.SetNumUninitialized(Rotations.Num());
+	OutNormalizedRotations.SetNumUninitialized(Rotations.Num());
 	for (int32 Index = 0; Index < Rotations.Num(); ++Index)
 	{
 		const FVector4 Axis = Rotations[Index];
 		const float Angle = Rotations[Index].W; // Angle are returned in radians and they go from [0-pi*2]
 
-		NormalizedRotations[Index] = (Axis.GetSafeNormal() + FVector::OneVector) * 0.5f;
-		NormalizedRotations[Index].W = Angle / (PI * 2.f);
+		OutNormalizedRotations[Index] = (Axis.GetSafeNormal() + FVector::OneVector) * 0.5f;
+		OutNormalizedRotations[Index].W = Angle / (PI * 2.f);
 	}
 }
 
@@ -786,19 +952,10 @@ bool UAnimToTextureBPLibrary::CreateUVChannel(
 	UStaticMesh* StaticMesh, const int32 LODIndex, const int32 UVChannelIndex,
 	const int32 Height, const int32 Width)
 {
-	if (!StaticMesh)
-	{
-		return false;
-	}
+	check(StaticMesh);
 
-	// Get Render Data
-	const FStaticMeshRenderData* RenderData = StaticMesh->GetRenderData();
-	check(RenderData);
-
-	// Get LOD Data
-	if (!RenderData->LODResources.IsValidIndex(LODIndex))
+	if (!StaticMesh->IsSourceModelValid(LODIndex))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Invalid LODIndex: %i"), LODIndex);
 		return false;
 	}
 
@@ -808,15 +965,7 @@ bool UAnimToTextureBPLibrary::CreateUVChannel(
 	FMeshDescription* MeshDescription = StaticMesh->GetMeshDescription(LODIndex);
 	check(MeshDescription);
 
-	// Check if UVChannel is being used by the Lightmap UV
-	/*if (StaticMesh->GetLightMapCoordinateIndex() == UVChannelIndex)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("Invalid UVChannel: %i. Already used by LightMap"), UVChannelIndex);
-		return false;
-	}*/
-
 	// Add New UVChannel.
-	// UE_LOG(LogTemp, Warning, TEXT("UVChannel: %i. Number of existing UVChannels: %i"), UVChannelIndex, StaticMesh->GetNumUVChannels(LODIndex));
 	if (UVChannelIndex == StaticMesh->GetNumUVChannels(LODIndex))
 	{
 		if (!StaticMesh->InsertUVChannel(LODIndex, UVChannelIndex))
@@ -847,13 +996,11 @@ bool UAnimToTextureBPLibrary::CreateUVChannel(
 	}
 
 	// Set Full Precision UVs
-	SetFullPrecisionUVs(StaticMesh, true);
+	SetFullPrecisionUVs(StaticMesh, LODIndex, true);
 
+	// Set UVs
 	if (StaticMesh->SetUVChannel(LODIndex, UVChannelIndex, TexCoords))
-	{		
-		// Update and Mark to Save.
-		StaticMesh->MarkPackageDirty();
-
+	{
 		return true;
 	}
 	else
@@ -897,24 +1044,54 @@ bool UAnimToTextureBPLibrary::FindBestResolution(
 	return bValidResolution;
 };
 
-void UAnimToTextureBPLibrary::SetFullPrecisionUVs(UStaticMesh* StaticMesh, bool bFullPrecision)
+void UAnimToTextureBPLibrary::SetFullPrecisionUVs(UStaticMesh* StaticMesh, int32 LODIndex, bool bFullPrecision)
 {
-	int32 NumSourceModels = StaticMesh->GetNumSourceModels();
-	for (int32 LodIndex = 0; LodIndex < NumSourceModels; LodIndex++)
+	check(StaticMesh);
+
+	if (StaticMesh->IsSourceModelValid(LODIndex))
 	{
-		FStaticMeshSourceModel& SourceModel = StaticMesh->GetSourceModel(LodIndex);
+		FStaticMeshSourceModel& SourceModel = StaticMesh->GetSourceModel(LODIndex);
 		SourceModel.BuildSettings.bUseFullPrecisionUVs = bFullPrecision;
 	}
 }
 
-void UAnimToTextureBPLibrary::SetStaticMeshBoundsExtensions(
-	UStaticMesh* StaticMesh, 
-	const FVector& PositiveBoundsExtension, 
-	const FVector& NegativeBoundsExtension)
+void UAnimToTextureBPLibrary::SetBoundsExtensions(UStaticMesh* StaticMesh, const FVector& MinBBox, const FVector& SizeBBox)
 {
-	if (IsValid(StaticMesh))
-	{
-		StaticMesh->SetPositiveBoundsExtension(PositiveBoundsExtension);
-		StaticMesh->SetNegativeBoundsExtension(NegativeBoundsExtension);
-	}
+	check(StaticMesh);
+
+	// Calculate MaxBBox
+	const FVector MaxBBox = SizeBBox + MinBBox;
+
+	// Reset current extension bounds
+	const FVector PositiveBoundsExtension = StaticMesh->GetPositiveBoundsExtension();
+	const FVector NegativeBoundsExtension = StaticMesh->GetNegativeBoundsExtension();
+		
+	// Get current BoundingBox including extensions
+	FBox BoundingBox = StaticMesh->GetBoundingBox();
+		
+	// Remove extensions from BoundingBox
+	BoundingBox.Max -= PositiveBoundsExtension;
+	BoundingBox.Min += NegativeBoundsExtension;
+		
+	// Calculate New BoundingBox
+	FVector NewMaxBBox(
+		FMath::Max(BoundingBox.Max.X, MaxBBox.X),
+		FMath::Max(BoundingBox.Max.Y, MaxBBox.Y),
+		FMath::Max(BoundingBox.Max.Z, MaxBBox.Z)
+	);
+		
+	FVector NewMinBBox(
+		FMath::Min(BoundingBox.Min.X, MinBBox.X),
+		FMath::Min(BoundingBox.Min.Y, MinBBox.Y),
+		FMath::Min(BoundingBox.Min.Z, MinBBox.Z)
+	);
+
+	// Calculate New Extensions
+	FVector NewPositiveBoundsExtension = NewMaxBBox - BoundingBox.Max;
+	FVector NewNegativeBoundsExtension = BoundingBox.Min - NewMinBBox;
+				
+	// Update StaticMesh
+	StaticMesh->SetPositiveBoundsExtension(NewPositiveBoundsExtension);
+	StaticMesh->SetNegativeBoundsExtension(NewNegativeBoundsExtension);
+	StaticMesh->CalculateExtendedBounds();
 }

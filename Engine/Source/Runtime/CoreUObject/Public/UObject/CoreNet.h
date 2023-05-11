@@ -7,7 +7,6 @@
 #include "Containers/Map.h"
 #include "Containers/Set.h"
 #include "Containers/UnrealString.h"
-#include "CoreMinimal.h"
 #include "Delegates/Delegate.h"
 #include "HAL/PlatformMath.h"
 #include "Misc/AssertionMacros.h"
@@ -54,6 +53,11 @@ namespace UE::Net
 	struct FReplicationStateDescriptor;
 	typedef FReplicationFragment* (*CreateAndRegisterReplicationFragmentFunc)(UObject* Owner, const FReplicationStateDescriptor* Descriptor, FFragmentRegistrationContext& Context);
 #endif
+
+	namespace Private
+	{
+		class FNetPropertyConditionManager;
+	};
 }
 
 
@@ -536,6 +540,7 @@ public:
 	IRepChangedPropertyTracker() { }
 	virtual ~IRepChangedPropertyTracker() { }
 
+	UE_DEPRECATED(5.3, "Please use FPropertyConditions::SetActiveOverride instead.")
 	virtual void SetCustomIsActiveOverride(UObject* OwningObject, const uint16 RepIndex, const bool bIsActive) = 0;
 
 	UE_DEPRECATED(5.0, "Please use UReplaySubsystem::SetExternalDataForObject instead.")
@@ -546,6 +551,13 @@ public:
 	* This should include the dynamically allocated data, as well as the classes size.
 	*/
 	virtual void CountBytes(FArchive& Ar) const {};
+
+private:
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	void CallSetCustomIsActiveOverride(UObject* OwningObject, const uint16 RepIndex, const bool bIsActive) { SetCustomIsActiveOverride(OwningObject, RepIndex, bIsActive); }
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	
+	friend UE::Net::Private::FNetPropertyConditionManager;
 };
 
 class FCustomPropertyConditionState
@@ -741,3 +753,7 @@ enum { LAN_BEACON_MAX_PACKET_SIZE = 1024 }; // MTU for the connection
 COREUOBJECT_API void			RPC_ResetLastFailedReason();
 COREUOBJECT_API void			RPC_ValidateFailed( const TCHAR* Reason );
 COREUOBJECT_API const TCHAR *	RPC_GetLastFailedReason();
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

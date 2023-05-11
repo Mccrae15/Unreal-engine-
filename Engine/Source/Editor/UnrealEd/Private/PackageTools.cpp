@@ -54,8 +54,11 @@
 #include "UObject/UObjectGlobals.h"
 #include "UObject/UObjectIterator.h"
 
+#include "AssetCompilingManager.h"
+
 #include "ShaderCompiler.h"
 #include "DistanceFieldAtlas.h"
+#include "MeshCardBuild.h"
 #include "MeshCardRepresentation.h"
 #include "AssetToolsModule.h"
 #include "Subsystems/AssetEditorSubsystem.h"
@@ -71,59 +74,27 @@ TSet<UPackage*>* UPackageTools::PackagesBeingUnloaded = nullptr;
 TSet<UObject*> UPackageTools::ObjectsThatHadFlagsCleared;
 FDelegateHandle UPackageTools::ReachabilityCallbackHandle;
 
-namespace
+void UPackageTools::FlushAsyncCompilation(TArrayView<UPackage* const> InPackages)
 {
+	TArray<UObject*> ObjectsToFinish;
 
-/** 
- * Utility function that checks each UObject inside of the given UPackage to see if it is waiting 
- * on async compilation.
- * 
- * @return true if the package contains at least one UObject that has compilation work running, otherwise false.
- */
-static bool IsPackageCompiling(const UPackage* Package)
-{
-	bool bIsCompiling = false;
-	ForEachObjectWithPackage(Package, [&bIsCompiling](const UObject* Object)
+	for (const UPackage* Package : InPackages)
 	{
-		const IInterface_AsyncCompilation* AsyncCompilationIF = Cast<IInterface_AsyncCompilation>(Object);
-		if (AsyncCompilationIF != nullptr && AsyncCompilationIF->IsCompiling())
+		ForEachObjectWithPackage(Package, [&ObjectsToFinish](UObject* Object)
 		{
-			bIsCompiling = true;
-			return false;
-		}
-		else
-		{
+			if (const IInterface_AsyncCompilation* AsyncCompilationIF = Cast<IInterface_AsyncCompilation>(Object))
+			{
+				ObjectsToFinish.Add(Object);
+			}
+
 			return true;
-		}
-	});
-
-	return bIsCompiling;
-}
-
-/**
- * Utility function that checks all of the provided packages to see if any
- * of them contain assets that currently have async compilation work running.
- * If there are assets that are waiting on async compilation work then we 
- * wait on all currently outstanding work to finish before returning.
- */
-static void FlushAsyncCompilation(const TSet<UPackage*>& PackagesToUnload)
-{
-	bool bHasAsyncCompilationWork = false;
-	for (const UPackage* Package : PackagesToUnload)
-	{
-		if (IsPackageCompiling(Package))
-		{
-			bHasAsyncCompilationWork = true;
-			break;
-		}
+		});
 	}
 
-	if (bHasAsyncCompilationWork)
+	if (ObjectsToFinish.Num())
 	{
-		FAssetCompilingManager::Get().FinishAllCompilation();
+		FAssetCompilingManager::Get().FinishCompilationForObjects(ObjectsToFinish);
 	}
-}
-
 }
 
 UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
@@ -417,7 +388,7 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 			(*GFlushStreamingFunc)();
 
 			// Remove potential references to to-be deleted objects from the GB selection set.
-			GEditor->GetSelectedObjects()->DeselectAll();
+			GEditor->GetSelectedObjects()->GetElementSelectionSet()->ClearSelection(FTypedElementSelectionOptions());
 
 			bool bScriptPackageWasUnloaded = false;
 
@@ -436,7 +407,7 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 
 			// We need to make sure that there is no async compilation work running for the packages that we are about to unload
 			// so that it is safe to call ::ResetLoaders
-			FlushAsyncCompilation(PackagesToUnload);
+			FlushAsyncCompilation(PackagesToUnload.Array());
 
 			// Now try to clean up assets in all packages to unload.
 			int32 PackageIndex = 0;
@@ -461,8 +432,7 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 				}
 				ObjectsInPackage.Reset();
 
-				PackageBeingUnloaded->bHasBeenFullyLoaded = false;
-				PackageBeingUnloaded->ClearFlags(RF_WasLoaded);
+				PackageBeingUnloaded->MarkAsUnloaded();
 				if ( PackageBeingUnloaded->HasAnyPackageFlags(PKG_ContainsScript) )
 				{
 					bScriptPackageWasUnloaded = true;
@@ -807,6 +777,8 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 	{
 		bool bResult = false;
 
+		TGuardValue<bool> IsEditorLoadingPackageGuard(GIsEditorLoadingPackage, true);
+
 		FTextBuilder ErrorMessageBuilder;
 
 		using namespace UE::PackageTools::Private;
@@ -1079,9 +1051,9 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 							);
 
 							TSet<UObject*> InstancesToLeaveAlone(OldInstances);
-							FReplaceInstancesOfClassParameters ReplaceInstancesParameters(OldBlueprint->GeneratedClass, CastChecked<UBlueprint>(NewObject)->GeneratedClass);
+							FReplaceInstancesOfClassParameters ReplaceInstancesParameters;
 							ReplaceInstancesParameters.InstancesThatShouldUseOldClass = &InstancesToLeaveAlone;
-							FBlueprintCompileReinstancer::ReplaceInstancesOfClassEx(ReplaceInstancesParameters);
+							FBlueprintCompileReinstancer::ReplaceInstancesOfClass(OldBlueprint->GeneratedClass, CastChecked<UBlueprint>(NewObject)->GeneratedClass, ReplaceInstancesParameters);
 						}
 						else
 						{
@@ -1171,7 +1143,7 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 			// Recompile any BPs that had their references updated
 			if (BlueprintsToRecompileThisBatch.Num() > 0)
 			{
-				FScopedSlowTask CompilingBlueprintsSlowTask(BlueprintsToRecompileThisBatch.Num(), NSLOCTEXT("UnrealEd", "CompilingBlueprints", "Compiling Blueprints"));
+				FScopedSlowTask CompilingBlueprintsSlowTask(static_cast<float>(BlueprintsToRecompileThisBatch.Num()), NSLOCTEXT("UnrealEd", "CompilingBlueprints", "Compiling Blueprints"));
 
 				// Gather up all loaded BP assets.
 				TArray<UObject*> BPs;

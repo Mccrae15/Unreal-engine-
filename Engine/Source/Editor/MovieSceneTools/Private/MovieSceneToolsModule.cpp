@@ -60,6 +60,7 @@
 #include "MVVM/ViewModels/CinematicShotTrackModel.h"
 
 #include "MovieSceneBuiltInEasingFunctionCustomization.h"
+#include "MovieSceneAlphaBlendOptionCustomization.h"
 #include "MovieSceneObjectBindingIDCustomization.h"
 #include "MovieSceneEventCustomization.h"
 #include "SequencerClipboardReconciler.h"
@@ -108,6 +109,10 @@
 #include "AnimSequenceLevelSequenceLink.h"
 #include "EditorAnimUtils.h"
 #include "Animation/AnimSequence.h"
+
+#include "TransformableHandle.h"
+#include "Constraints/ComponentConstraintChannelInterface.h"
+#include "Constraints/TransformConstraintChannelInterface.h"
 
 #define LOCTEXT_NAMESPACE "FMovieSceneToolsModule"
 
@@ -184,6 +189,7 @@ void FMovieSceneToolsModule::StartupModule()
 		FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
 		PropertyModule.RegisterCustomClassLayout("MovieSceneToolsProjectSettings", FOnGetDetailCustomizationInstance::CreateStatic(&FMovieSceneToolsProjectSettingsCustomization::MakeInstance));
 		PropertyModule.RegisterCustomClassLayout("MovieSceneBuiltInEasingFunction", FOnGetDetailCustomizationInstance::CreateLambda(&MakeShared<FMovieSceneBuiltInEasingFunctionCustomization>));
+		PropertyModule.RegisterCustomPropertyTypeLayout("EAlphaBlendOption", FOnGetPropertyTypeCustomizationInstance::CreateLambda(&MakeShared<FAlphaBlendPropertyCustomization>));
 		PropertyModule.RegisterCustomClassLayout("MovieSceneFloatPerlinNoiseChannelContainer", FOnGetDetailCustomizationInstance::CreateStatic(&FMovieSceneFloatPerlinNoiseChannelDetailsCustomization::MakeInstance));
 		PropertyModule.RegisterCustomClassLayout("MovieSceneDoublePerlinNoiseChannelContainer", FOnGetDetailCustomizationInstance::CreateStatic(&FMovieSceneDoublePerlinNoiseChannelDetailsCustomization::MakeInstance));
 		PropertyModule.RegisterCustomPropertyTypeLayout("MovieSceneObjectBindingID", FOnGetPropertyTypeCustomizationInstance::CreateLambda(&MakeShared<FMovieSceneObjectBindingIDCustomization>));
@@ -257,6 +263,10 @@ void FMovieSceneToolsModule::StartupModule()
 		NSLOCTEXT("SkeletalAnimationTrackEditorMode", "SkelAnimTrackEditMode", "Skeletal Anim Track Mode"),
 		FSlateIcon(),
 		false);
+
+	// register UTransformableComponentHandle animatable interface
+	FConstraintChannelInterfaceRegistry& ConstraintChannelInterfaceRegistry = FConstraintChannelInterfaceRegistry::Get();
+	ConstraintChannelInterfaceRegistry.RegisterConstraintChannelInterface<UTransformableComponentHandle>(MakeUnique<FComponentConstraintChannelInterface>());
 }
 
 void FMovieSceneToolsModule::ShutdownModule()
@@ -337,6 +347,7 @@ void FMovieSceneToolsModule::ShutdownModule()
 		FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
 		PropertyModule.UnregisterCustomClassLayout("MovieSceneToolsProjectSettings");
 		PropertyModule.UnregisterCustomClassLayout("MovieSceneBuiltInEasingFunction");
+		PropertyModule.UnregisterCustomPropertyTypeLayout("EAlphaBlendOption");
 		PropertyModule.UnregisterCustomPropertyTypeLayout("MovieSceneObjectBindingID");
 		PropertyModule.UnregisterCustomPropertyTypeLayout("MovieSceneEvent");
 	}

@@ -5,13 +5,14 @@
 =============================================================================*/
 
 #include "TimerManager.h"
-#include "HAL/IConsoleManager.h"
+#include "Containers/StringConv.h"
+#include "Engine/GameInstance.h"
+#include "Logging/LogScopedCategoryAndVerbosityOverride.h"
 #include "Misc/CoreDelegates.h"
-#include "Engine/World.h"
+#include "ProfilingDebugging/CsvProfiler.h"
+#include "Stats/StatsTrace.h"
 #include "UnrealEngine.h"
 #include "Misc/TimeGuard.h"
-#include "ProfilingDebugging/CsvProfiler.h"
-#include "Algo/Transform.h"
 #include "HAL/PlatformStackWalk.h"
 
 DECLARE_CYCLE_STAT(TEXT("SetTimer"), STAT_SetTimer, STATGROUP_Engine);
@@ -107,7 +108,6 @@ struct FTimerSourceList
 	{
 		FString FunctionNameStr;
 		FString ObjectNameStr;
-		bool bDynDelegate = false;
 
 		if (Delegate.FuncDelegate.IsBound())
 		{
@@ -148,7 +148,6 @@ struct FTimerSourceList
 		{
 			const FName FuncFName = Delegate.FuncDynDelegate.GetFunctionName();
 			FunctionNameStr = FuncFName.ToString();
-			bDynDelegate = true;
 
 			UClass* SourceClass = nullptr;
 			if (const UObject* Object = Delegate.FuncDynDelegate.GetUObject())
@@ -265,7 +264,7 @@ FTimerManager::FTimerManager(UGameInstance* GameInstance)
 {
 	if (IsRunningDedicatedServer())
 	{
-		// Off by default, renable if needed
+		// Off by default, reenable if needed
 		//FCoreDelegates::OnHandleSystemError.AddRaw(this, &FTimerManager::OnCrash);
 	}
 
@@ -760,6 +759,15 @@ void FTimerManager::UnPauseTimer(FTimerHandle InHandle)
 	// remove from paused list
 	PausedTimerSet.Remove(InHandle);
 }
+
+FTimerData::FTimerData()
+	: bLoop(false)
+	, bRequiresDelegate(false)
+	, Status(ETimerStatus::Active)
+	, Rate(0)
+	, ExpireTime(0)
+	, LevelCollection(ELevelCollectionType::DynamicSourceLevels)
+{}
 
 // ---------------------------------
 // Public members

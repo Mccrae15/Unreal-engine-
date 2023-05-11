@@ -2,6 +2,7 @@
 
 #include "GeometryProcessing/ApproximateActorsImpl.h"
 
+#include "GameFramework/Actor.h"
 #include "Scene/MeshSceneAdapter.h"
 #include "DynamicMesh/DynamicMesh3.h"
 #include "DynamicMesh/MeshNormals.h"
@@ -34,9 +35,11 @@
 #include "Scene/SceneCapturePhotoSet.h"
 #include "AssetUtils/Texture2DBuilder.h"
 
+#include "MaterialDomain.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "MaterialUtilities.h"
+#include "ShaderCore.h"
 
 #include "Engine/MeshMerging.h"
 
@@ -108,13 +111,22 @@ static TUniquePtr<FSceneCapturePhotoSet> CapturePhotoSet(
 		SceneCapture->SetCaptureTypeEnabled(ERenderCaptureType::Specular, bSpecular);
 	}
 
+	UWorld* World = Actors.IsEmpty() ? nullptr : Actors[0]->GetWorld();
 
-	SceneCapture->SetCaptureSceneActors(Actors[0]->GetWorld(), Actors);
+	SceneCapture->SetCaptureSceneActors(World, Actors);
 
-	SceneCapture->AddStandardExteriorCapturesFromBoundingBox(
-		CaptureDimensions, FieldOfView, NearPlaneDist,
+	const TArray<FSpatialPhotoParams> SpatialParams = ComputeStandardExteriorSpatialPhotoParameters(
+		World,
+		Actors,
+		CaptureDimensions,
+		FieldOfView,
+		NearPlaneDist,
 		true, true, true, true, true);
-	
+
+	SceneCapture->SetSpatialPhotoParams(SpatialParams);
+
+	SceneCapture->Compute();
+
 	return SceneCapture;
 }
 

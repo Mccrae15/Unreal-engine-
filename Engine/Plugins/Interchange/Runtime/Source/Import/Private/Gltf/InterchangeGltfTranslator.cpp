@@ -2,9 +2,14 @@
 
 #include "Gltf/InterchangeGltfTranslator.h"
 
+#include "GLTFAccessor.h"
+#include "GLTFAnimation.h"
 #include "GLTFAsset.h"
+#include "GLTFMesh.h"
 #include "GLTFMeshFactory.h"
+#include "GLTFNode.h"
 #include "GLTFReader.h"
+#include "GLTFTexture.h"
 
 #include "InterchangeAnimationTrackSetNode.h"
 #include "InterchangeCameraNode.h"
@@ -33,6 +38,8 @@
 #include "SkeletalMeshOperations.h"
 
 #include "Gltf/InterchangeGltfPrivate.h"
+
+#include "EngineAnalytics.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(InterchangeGltfTranslator)
 
@@ -128,80 +135,72 @@ namespace UE::Interchange::Gltf::Private
 		}
 	}
 
-	//Temporary Solution specifically for 5.1.1
-	// As we cannot modify public headers (because of binary compatibility ) all necessary changes for gltf object uniqueness have been moved into here.
-	// Appropriate/fully fledged solution will be addressed for 5.2
-	struct GLTFUniqueIdGenerator
+	enum TranslationResult : int32
 	{
-		FString Prefix;
-		
-		// Node To UniqueId maps
-		TMap<const GLTF::FAnimation*, FString> AnimationToUniqueId;
-		TMap<const GLTF::FScene*, FString> SceneToUniqueId;
-		TMap<const GLTF::FMaterial*, FString> MaterialToUniqueId;
-		TMap<const GLTF::FMesh*, FString> MeshToUniqueId;
-		TMap<const GLTF::FNode*, FString> NodeToUniqueId;
-		TMap<const GLTF::FCamera*, FString> CameraToUniqueId;
-		TMap<const GLTF::FLight*, FString> LightToUniqueId;
-		TMap<const GLTF::FSkinInfo*, FString> SkinToUniqueId;
-		TMap<const GLTF::FTexture*, FString> TextureToUniqueId;
-		TMap<const GLTF::FImage*, FString> ImageToUniqueId;
-
-		void Clear()
-		{
-			Prefix = "";
-
-			AnimationToUniqueId.Empty();
-			SceneToUniqueId.Empty();
-			MaterialToUniqueId.Empty();
-			MeshToUniqueId.Empty();
-			NodeToUniqueId.Empty();
-			CameraToUniqueId.Empty();
-			LightToUniqueId.Empty();
-			SkinToUniqueId.Empty();
-			TextureToUniqueId.Empty();
-			ImageToUniqueId.Empty();
-		}
-
-		template <typename T>
-		FString GetUniqueId(T Object, TMap<T, FString>& ObjectToUniqueId, const FString& ObjectPrefix)
-		{
-			if (ObjectToUniqueId.Contains(Object))
-			{
-				return ObjectToUniqueId[Object];
-			}
-			else
-			{
-				FString UniqueIdCandidate = Prefix + ObjectPrefix + FString::FromInt(ObjectToUniqueId.Num());
-				ObjectToUniqueId.Add(Object, UniqueIdCandidate);
-				return UniqueIdCandidate;
-			}
-		}
-
-		FString GetUniqueId(const GLTF::FAnimation* Object) { return GetUniqueId<const GLTF::FAnimation*>(Object, AnimationToUniqueId, "_animation_"); }
-		FString GetUniqueId(const GLTF::FScene* Object) { return GetUniqueId<const GLTF::FScene*>(Object, SceneToUniqueId, "_scene_"); }
-		FString GetUniqueId(const GLTF::FMaterial* Object) { return GetUniqueId<const GLTF::FMaterial*>(Object, MaterialToUniqueId, "_material_"); }
-		FString GetUniqueId(const GLTF::FMesh* Object) { return GetUniqueId<const GLTF::FMesh*>(Object, MeshToUniqueId, "_mesh_"); }
-		FString GetUniqueId(const GLTF::FNode* Object) { return GetUniqueId<const GLTF::FNode*>(Object, NodeToUniqueId, "_node_"); }
-		FString GetUniqueId(const GLTF::FCamera* Object) { return GetUniqueId<const GLTF::FCamera*>(Object, CameraToUniqueId, "_camera_"); }
-		FString GetUniqueId(const GLTF::FLight* Object) { return GetUniqueId<const GLTF::FLight*>(Object, LightToUniqueId, "_light_"); }
-		FString GetUniqueId(const GLTF::FSkinInfo* Object) { return GetUniqueId<const GLTF::FSkinInfo*>(Object, SkinToUniqueId, "_skin_"); }
-		FString GetUniqueId(const GLTF::FTexture* Object) { return GetUniqueId<const GLTF::FTexture*>(Object, TextureToUniqueId, "_texture_"); }
-		FString GetUniqueId(const GLTF::FImage* Object) { return GetUniqueId<const GLTF::FImage*>(Object, ImageToUniqueId, "_image_"); }
+		SUCCESSFULL = 0,
+		INPUT_FILE_NOTFOUND,
+		GLTFREADER_FAILED,
+		NOTSUPPORTED_EXTENSION_FOUND
 	};
+	void SendAnalytics(const TranslationResult& TranslationResult,
+		const FString& NotSupportedExtensions = FString(),
+		const TSet<GLTF::EExtension>& ExtensionsUsed = TSet<GLTF::EExtension>(),
+		const TArray<FString>& RequiredExtensions = TArray<FString>(),
+		GLTF::FMetadata Metadata = GLTF::FMetadata(),
+		const FString& GLTFReaderLogMessage = "")
+	{
+		if (FEngineAnalytics::IsAvailable())
+		{
+			TArray<FString> ExtensionsUsedStringified;
+			for (GLTF::EExtension Extension : ExtensionsUsed)
+			{
+				ExtensionsUsedStringified.Add(FString(GLTF::ToString(Extension)));
+			}
 
-	static TMap<const UInterchangeSourceData*, GLTFUniqueIdGenerator> GltfUniqueIdGenerators;
-	static TMap<const UInterchangeSourceData*, int> GltfUniqueIdGeneratorsRefCounter;
+			TMap<FString, FString> MetadataExtras;
+			for (GLTF::FMetadata::FExtraData ExtraData : Metadata.Extras)
+			{
+				MetadataExtras.Add(ExtraData.Name, ExtraData.Value);
+			}
+
+			TArray<FAnalyticsEventAttribute> GLTFAnalytics;
+			if (NotSupportedExtensions.Len() > 0)			GLTFAnalytics.Add(FAnalyticsEventAttribute(TEXT("NotSupportedExtensions"), NotSupportedExtensions));
+			if (RequiredExtensions.Num() > 0)		GLTFAnalytics.Add(FAnalyticsEventAttribute(TEXT("RequiredExtensions"), RequiredExtensions));
+			if (ExtensionsUsedStringified.Num() > 0)		GLTFAnalytics.Add(FAnalyticsEventAttribute(TEXT("UsedExtensions"), ExtensionsUsedStringified));
+			if (Metadata.GeneratorName.Len() > 0)	GLTFAnalytics.Add(FAnalyticsEventAttribute(TEXT("MetaData.GeneratorName"), Metadata.GeneratorName));
+			if (MetadataExtras.Num() > 0)					GLTFAnalytics.Add(FAnalyticsEventAttribute(TEXT("MetaData.Extras"), MetadataExtras));
+			/*Version is always set at this point.*/		GLTFAnalytics.Add(FAnalyticsEventAttribute(TEXT("MetaData.Version"), Metadata.Version));
+
+			switch (TranslationResult)
+			{
+			case SUCCESSFULL:
+				GLTFAnalytics.Add(FAnalyticsEventAttribute(TEXT("TranslationResult"), "Successfull."));
+				break;
+			case INPUT_FILE_NOTFOUND:
+				GLTFAnalytics.Add(FAnalyticsEventAttribute(TEXT("TranslationResult"), "[Failed] Input File Not Found."));
+				break;
+			case GLTFREADER_FAILED:
+				GLTFAnalytics.Add(FAnalyticsEventAttribute(TEXT("TranslationResult"), "[Failed] Parsing error: " + GLTFReaderLogMessage));
+				break;
+			case NOTSUPPORTED_EXTENSION_FOUND:
+				GLTFAnalytics.Add(FAnalyticsEventAttribute(TEXT("TranslationResult"), "[Failed] Unsupported Extension Found."));
+				break;
+			default:
+				break;
+			}
+
+			//Send Analytics
+			FEngineAnalytics::GetProvider().RecordEvent(TEXT("Interchange.Usage.Import.GLTF"), GLTFAnalytics);
+		}
+	};
 }
 
 void UInterchangeGltfTranslator::HandleGltfNode( UInterchangeBaseNodeContainer& NodeContainer, const GLTF::FNode& GltfNode, const FString& ParentNodeUid, const int32 NodeIndex, 
 	bool &bHasVariants, TArray<int32>& SkinnedMeshNodes, TSet<int>& UnusedMeshIndices ) const
 {
-	
-
 	using namespace UE::Interchange::Gltf::Private;
 
-	const FString NodeUid = ParentNodeUid + TEXT("\\") + GltfUniqueIdGenerators[GetSourceData()].GetUniqueId(&GltfNode);
+	const FString NodeUid = ParentNodeUid + TEXT("\\") + GltfNode.UniqueId;
 
 	const UInterchangeSceneNode* ParentSceneNode = Cast< UInterchangeSceneNode >( NodeContainer.GetNode( ParentNodeUid ) );
 
@@ -240,7 +239,7 @@ void UInterchangeGltfTranslator::HandleGltfNode( UInterchangeBaseNodeContainer& 
 			{
 				HandleGltfMesh(NodeContainer, GltfAsset.Meshes[GltfNode.MeshIndex], GltfNode.MeshIndex, UnusedMeshIndices);
 
-				const FString MeshNodeUid = TEXT("\\Mesh\\") + GltfUniqueIdGenerators[GetSourceData()].GetUniqueId(&GltfAsset.Meshes[ GltfNode.MeshIndex ]);
+				const FString MeshNodeUid = TEXT("\\Mesh\\") + GltfAsset.Meshes[ GltfNode.MeshIndex ].UniqueId;
 				InterchangeSceneNode->SetCustomAssetInstanceUid( MeshNodeUid );
 
 				if (!bHasVariants && GltfAsset.Variants.Num() > 0)
@@ -257,7 +256,7 @@ void UInterchangeGltfTranslator::HandleGltfNode( UInterchangeBaseNodeContainer& 
 
 			if ( GltfAsset.Cameras.IsValidIndex( GltfNode.CameraIndex ) )
 			{
-				const FString CameraNodeUid = TEXT("\\Camera\\") + GltfUniqueIdGenerators[GetSourceData()].GetUniqueId(&GltfAsset.Cameras[ GltfNode.CameraIndex ]);
+				const FString CameraNodeUid = TEXT("\\Camera\\") + GltfAsset.Cameras[ GltfNode.CameraIndex ].UniqueId;
 				InterchangeSceneNode->SetCustomAssetInstanceUid( CameraNodeUid );
 			}
 			break;
@@ -269,7 +268,7 @@ void UInterchangeGltfTranslator::HandleGltfNode( UInterchangeBaseNodeContainer& 
 
 			if ( GltfAsset.Lights.IsValidIndex( GltfNode.LightIndex ) )
 			{
-				const FString LightNodeUid = TEXT("\\Light\\") + GltfUniqueIdGenerators[GetSourceData()].GetUniqueId(&GltfAsset.Lights[ GltfNode.LightIndex ]);
+				const FString LightNodeUid = TEXT("\\Light\\") + GltfAsset.Lights[ GltfNode.LightIndex ].UniqueId;
 				InterchangeSceneNode->SetCustomAssetInstanceUid( LightNodeUid );
 			}
 		}
@@ -338,7 +337,7 @@ void UInterchangeGltfTranslator::HandleGltfMaterialParameter( UInterchangeBaseNo
 		UInterchangeShaderNode* ColorNode = UInterchangeShaderNode::Create( &NodeContainer, ColorNodeName, ShaderNode.GetUniqueID() );
 		ColorNode->SetCustomShaderType( Standard::Nodes::TextureSample::Name.ToString() );
 
-		const FString TextureUid = UInterchangeTextureNode::MakeNodeUid(GltfUniqueIdGenerators[GetSourceData()].GetUniqueId(&GltfAsset.Textures[TextureMap.TextureIndex]));
+		const FString TextureUid = UInterchangeTextureNode::MakeNodeUid(GltfAsset.Textures[TextureMap.TextureIndex].UniqueId);
 
 		ColorNode->AddStringAttribute( UInterchangeShaderPortsAPI::MakeInputValueKey( Standard::Nodes::TextureSample::Inputs::Texture.ToString() ), TextureUid );
 
@@ -909,8 +908,10 @@ bool UInterchangeGltfTranslator::Translate( UInterchangeBaseNodeContainer& NodeC
 	FString FilePath = GetSourceData()->GetFilename();
 	if ( !FPaths::FileExists( FilePath ) )
 	{
+		SendAnalytics(TranslationResult::INPUT_FILE_NOTFOUND);
 		return false;
 	}
+	const FString FileName = FPaths::GetBaseFilename(FilePath);
 
 	GLTF::FFileReader GltfFileReader;
 
@@ -918,47 +919,61 @@ bool UInterchangeGltfTranslator::Translate( UInterchangeBaseNodeContainer& NodeC
 	const bool bLoadMetaData = false;
 	GltfFileReader.ReadFile( FilePath, bLoadImageData, bLoadMetaData, const_cast< UInterchangeGltfTranslator* >( this )->GltfAsset );
 
-	ScaleNodeTranslations(const_cast<UInterchangeGltfTranslator*>(this)->GltfAsset.Nodes, GltfUnitConversionMultiplier);
-
-	const FString FileName = FPaths::GetBaseFilename(FilePath);
-
+	//Required Extension Check:
+	FString NotSupportedExtensions;
 	if (GltfAsset.RequiredExtensions.Num() != 0)
 	{
-		FString NotSupportedExtensions;
-		for ( const FString& RequiredExtension: GltfAsset.RequiredExtensions )
+		for (const FString& RequiredExtension : GltfAsset.RequiredExtensions)
 		{
-			if ( SupportedExtensions.Find( RequiredExtension ) == INDEX_NONE )
+			if (SupportedExtensions.Find(RequiredExtension) == INDEX_NONE)
 			{
-				if ( NotSupportedExtensions.Len() > 0 )
+				if (NotSupportedExtensions.Len() > 0)
 				{
 					NotSupportedExtensions += ", ";
 				}
 				NotSupportedExtensions += RequiredExtension;
 			}
 		}
-		if ( NotSupportedExtensions.Len() > 0 )
+	}
+
+	//Check if ReadFile failed:
+	TArray<GLTF::FLogMessage> GLTFReadFileLogMessages = GltfFileReader.GetLogMessages();
+	for (GLTF::FLogMessage& LogMessage : GLTFReadFileLogMessages)
+	{
+		if (LogMessage.Key == GLTF::EMessageSeverity::Error)
 		{
 			UInterchangeResultError_Generic* ErrorResult = AddMessage< UInterchangeResultError_Generic >();
 			ErrorResult->SourceAssetName = FileName;
-			ErrorResult->Text = FText::Format(
-				LOCTEXT( "UnsupportedRequiredExtensions", "Not All Required Extensions are supported. (Unsupported extensions: {0})"),
-				FText::FromString( NotSupportedExtensions ) );
+			ErrorResult->Text = FText::Format(LOCTEXT("GLTF::FFileReader::ReadFile Failed.", "LogMessage: {0}"), FText::FromString(LogMessage.Value));
 
+			SendAnalytics(TranslationResult::GLTFREADER_FAILED, NotSupportedExtensions, GltfAsset.ExtensionsUsed, GltfAsset.RequiredExtensions, GltfAsset.Metadata, LogMessage.Value);
 			return false;
 		}
 	}
 
-	const_cast< UInterchangeGltfTranslator* >( this )->GltfAsset.GenerateNames(FileName); //uniqueIds are generated on demand
-	GltfUniqueIdGeneratorsRefCounter.FindOrAdd(GetSourceData())++;
-	GltfUniqueIdGenerators.FindOrAdd(GetSourceData());
-	GltfUniqueIdGenerators[GetSourceData()].Prefix = FileName;
+	//In case of non supported extensions fail out:
+	if (NotSupportedExtensions.Len() > 0)
+	{
+		UInterchangeResultError_Generic* ErrorResult = AddMessage< UInterchangeResultError_Generic >();
+		ErrorResult->SourceAssetName = FileName;
+		ErrorResult->Text = FText::Format(
+			LOCTEXT("UnsupportedRequiredExtensions", "Not All Required Extensions are supported. (Unsupported extensions: {0})"),
+			FText::FromString(NotSupportedExtensions));
+
+		SendAnalytics(TranslationResult::NOTSUPPORTED_EXTENSION_FOUND, NotSupportedExtensions, GltfAsset.ExtensionsUsed, GltfAsset.RequiredExtensions, GltfAsset.Metadata);
+		return false;
+	}
+
+	ScaleNodeTranslations(const_cast<UInterchangeGltfTranslator*>(this)->GltfAsset.Nodes, GltfUnitConversionMultiplier);
+
+	const_cast< UInterchangeGltfTranslator* >( this )->GltfAsset.GenerateNames(FileName);
 
 	// Textures
 	{
 		int32 TextureIndex = 0;
 		for ( const GLTF::FTexture& GltfTexture : GltfAsset.Textures )
 		{
-			UInterchangeTexture2DNode* TextureNode = UInterchangeTexture2DNode::Create(&NodeContainer, GltfUniqueIdGenerators[GetSourceData()].GetUniqueId(&GltfTexture));
+			UInterchangeTexture2DNode* TextureNode = UInterchangeTexture2DNode::Create(&NodeContainer, GltfTexture.UniqueId);
 			TextureNode->SetDisplayLabel(GltfTexture.Name);
 
 			TextureNode->SetCustomFilter(ConvertFilter(GltfTexture.Sampler.MinFilter));
@@ -974,7 +989,7 @@ bool UInterchangeGltfTranslator::Translate( UInterchangeBaseNodeContainer& NodeC
 		int32 MaterialIndex = 0;
 		for ( const GLTF::FMaterial& GltfMaterial : GltfAsset.Materials )
 		{
-			UInterchangeShaderGraphNode* ShaderGraphNode = UInterchangeShaderGraphNode::Create(&NodeContainer, GltfUniqueIdGenerators[GetSourceData()].GetUniqueId(&GltfMaterial));
+			UInterchangeShaderGraphNode* ShaderGraphNode = UInterchangeShaderGraphNode::Create(&NodeContainer, GltfMaterial.UniqueId);
 			ShaderGraphNode->SetDisplayLabel(GltfMaterial.Name);
 
 			HandleGltfMaterial( NodeContainer, GltfMaterial, *ShaderGraphNode );
@@ -998,7 +1013,7 @@ bool UInterchangeGltfTranslator::Translate( UInterchangeBaseNodeContainer& NodeC
 		for ( const GLTF::FCamera& GltfCamera : GltfAsset.Cameras )
 		{
 			UInterchangeCameraNode* CameraNode = NewObject< UInterchangeCameraNode >( &NodeContainer );
-			FString CameraNodeUid = TEXT("\\Camera\\") + GltfUniqueIdGenerators[GetSourceData()].GetUniqueId(&GltfCamera);
+			FString CameraNodeUid = TEXT("\\Camera\\") + GltfCamera.UniqueId;
 			CameraNode->InitializeNode( CameraNodeUid, GltfCamera.Name, EInterchangeNodeContainerType::TranslatedAsset );
 
 			float       AspectRatio;
@@ -1031,7 +1046,7 @@ bool UInterchangeGltfTranslator::Translate( UInterchangeBaseNodeContainer& NodeC
 		int32 LightIndex = 0;
 		for ( const GLTF::FLight& GltfLight : GltfAsset.Lights )
 		{
-			FString LightNodeUid = TEXT("\\Light\\") + GltfUniqueIdGenerators[GetSourceData()].GetUniqueId(&GltfLight);
+			FString LightNodeUid = TEXT("\\Light\\") + GltfLight.UniqueId;
 
 			switch (GltfLight.Type)
 			{
@@ -1096,7 +1111,7 @@ bool UInterchangeGltfTranslator::Translate( UInterchangeBaseNodeContainer& NodeC
 
 			FString SceneName = GltfScene.Name;
 
-			FString SceneNodeUid = TEXT("\\Scene\\") + GltfUniqueIdGenerators[GetSourceData()].GetUniqueId(&GltfScene);
+			FString SceneNodeUid = TEXT("\\Scene\\") + GltfScene.UniqueId;
 			SceneNode->InitializeNode( SceneNodeUid, SceneName, EInterchangeNodeContainerType::TranslatedScene );
 			NodeContainer.AddNode( SceneNode );
 
@@ -1175,14 +1190,7 @@ bool UInterchangeGltfTranslator::Translate( UInterchangeBaseNodeContainer& NodeC
 		UE_LOG(LogInterchangeImport, Warning, TEXT("GLTF Mesh Import Warning. Gltf Mesh Usage expectation is not met."));
 	}
 
-	GltfUniqueIdGeneratorsRefCounter[GetSourceData()]--;
-	if (GltfUniqueIdGeneratorsRefCounter[GetSourceData()] <= 0)
-	{
-		GltfUniqueIdGenerators[GetSourceData()].Clear();
-		GltfUniqueIdGenerators.Remove(GetSourceData());
-		GltfUniqueIdGeneratorsRefCounter.Remove(GetSourceData());
-	}
-
+	SendAnalytics(TranslationResult::SUCCESSFULL, NotSupportedExtensions, GltfAsset.ExtensionsUsed, GltfAsset.RequiredExtensions, GltfAsset.Metadata);;
 	return true;
 }
 
@@ -1442,7 +1450,7 @@ void UInterchangeGltfTranslator::HandleGltfAnimation(UInterchangeBaseNodeContain
 
 	UInterchangeAnimationTrackSetNode* TrackSetNode = NewObject< UInterchangeAnimationTrackSetNode >(&NodeContainer);
 
-	const FString AnimTrackSetNodeUid = TEXT("\\Animation\\") + UE::Interchange::Gltf::Private::GltfUniqueIdGenerators[GetSourceData()].GetUniqueId(&GltfAnimation);
+	const FString AnimTrackSetNodeUid = TEXT("\\Animation\\") + GltfAnimation.UniqueId;
 	TrackSetNode->InitializeNode(AnimTrackSetNodeUid, GltfAnimation.Name, EInterchangeNodeContainerType::TranslatedAsset);
 
 	for (const TTuple<const GLTF::FNode*, TArray<int32>>& NodeChannelsEntry : NodeChannelsMap)
@@ -1519,7 +1527,7 @@ void UInterchangeGltfTranslator::SetTextureSRGB(UInterchangeBaseNodeContainer& N
 {
 	if (GltfAsset.Textures.IsValidIndex(TextureMap.TextureIndex))
 	{
-		const FString TextureUid = UInterchangeTextureNode::MakeNodeUid(UE::Interchange::Gltf::Private::GltfUniqueIdGenerators[GetSourceData()].GetUniqueId(&GltfAsset.Textures[TextureMap.TextureIndex]));
+		const FString TextureUid = UInterchangeTextureNode::MakeNodeUid(GltfAsset.Textures[TextureMap.TextureIndex].UniqueId);
 		if (UInterchangeTextureNode* TextureNode = const_cast<UInterchangeTextureNode*>(Cast<UInterchangeTextureNode>(NodeContainer.GetNode(TextureUid))))
 		{
 			TextureNode->SetCustomSRGB(true);
@@ -1530,7 +1538,7 @@ void UInterchangeGltfTranslator::SetTextureFlipGreenChannel(UInterchangeBaseNode
 {
 	if (GltfAsset.Textures.IsValidIndex(TextureMap.TextureIndex))
 	{
-		const FString TextureUid = UInterchangeTextureNode::MakeNodeUid(UE::Interchange::Gltf::Private::GltfUniqueIdGenerators[GetSourceData()].GetUniqueId(&GltfAsset.Textures[TextureMap.TextureIndex]));
+		const FString TextureUid = UInterchangeTextureNode::MakeNodeUid(GltfAsset.Textures[TextureMap.TextureIndex].UniqueId);
 		if (UInterchangeTextureNode* TextureNode = const_cast<UInterchangeTextureNode*>(Cast<UInterchangeTextureNode>(NodeContainer.GetNode(TextureUid))))
 		{
 			TextureNode->SetCustombFlipGreenChannel(true);
@@ -1631,7 +1639,7 @@ void UInterchangeGltfTranslator::HandleGltfVariants(UInterchangeBaseNodeContaine
 								}
 
 								const GLTF::FMaterial& GltfMaterial = Materials[VariantMapping.MaterialIndex];
-								const FString MaterialUid = UInterchangeShaderGraphNode::MakeNodeUid(UE::Interchange::Gltf::Private::GltfUniqueIdGenerators[GetSourceData()].GetUniqueId(&GltfMaterial));
+								const FString MaterialUid = UInterchangeShaderGraphNode::MakeNodeUid(GltfMaterial.UniqueId);
 
 								VariantSetNode->AddCustomDependencyUid(MaterialUid);
 
@@ -1712,7 +1720,7 @@ bool UInterchangeGltfTranslator::GetVariantSetPayloadData(UE::Interchange::FVari
 						}
 
 						const GLTF::FMaterial& GltfMaterial = Materials[VariantMapping.MaterialIndex];
-						const FString MaterialUid = UInterchangeShaderGraphNode::MakeNodeUid(UE::Interchange::Gltf::Private::GltfUniqueIdGenerators[GetSourceData()].GetUniqueId(&GltfMaterial));
+						const FString MaterialNodeUid = UInterchangeShaderGraphNode::MakeNodeUid(GltfMaterial.UniqueId);
 
 						for (int32 VariantIndex : VariantMapping.VariantIndices)
 						{
@@ -1727,7 +1735,7 @@ bool UInterchangeGltfTranslator::GetVariantSetPayloadData(UE::Interchange::FVari
 							Interchange::FVariantPropertyCaptureData PropertyCaptureData;
 
 							PropertyCaptureData.Category = Interchange::EVariantPropertyCaptureCategory::Material;
-							PropertyCaptureData.ObjectUid = MaterialUid;
+							PropertyCaptureData.ObjectUid = MaterialNodeUid;
 
 							Interchange::FVariant& VariantData = *(VariantMap[*VariantNames[VariantIndex]]);
 
@@ -1825,9 +1833,9 @@ void UInterchangeGltfTranslator::HandleGltfSkeletons(UInterchangeBaseNodeContain
 
 			//Skeletal Mesh's naming policy: (Mesh.Name)_(RootJointNode.Name) naming policy:
 			FString SkeletalName = GltfAsset.Meshes[MeshIndex].Name + TEXT("_") + GltfAsset.Nodes[RootJointIndex].Name;
-			FString SkeletalId = UE::Interchange::Gltf::Private::GltfUniqueIdGenerators[GetSourceData()].GetUniqueId(&GltfAsset.Meshes[MeshIndex]) + TEXT("_") + UE::Interchange::Gltf::Private::GltfUniqueIdGenerators[GetSourceData()].GetUniqueId(&GltfAsset.Nodes[RootJointIndex]);
+			FString SkeletalId = GltfAsset.Meshes[MeshIndex].UniqueId + TEXT("_") + GltfAsset.Nodes[RootJointIndex].UniqueId;
 
-			UInterchangeMeshNode* SkeletalMeshNode = HandleGltfMesh(NodeContainer, GltfAsset.Meshes[MeshIndex], MeshIndex, UnusedMeshIndices, SkeletalId);
+			UInterchangeMeshNode* SkeletalMeshNode = HandleGltfMesh(NodeContainer, GltfAsset.Meshes[MeshIndex], MeshIndex, UnusedMeshIndices, SkeletalName, SkeletalId);
 
 			SkeletalMeshNode->SetSkinnedMesh(true);
 
@@ -1878,7 +1886,8 @@ void UInterchangeGltfTranslator::HandleGltfSkeletons(UInterchangeBaseNodeContain
 UInterchangeMeshNode* UInterchangeGltfTranslator::HandleGltfMesh(UInterchangeBaseNodeContainer& NodeContainer, 
 	const GLTF::FMesh& GltfMesh, int MeshIndex, 
 	TSet<int>& UnusedMeshIndices, 
-	const FString& SkeletalName/*If set it creates the mesh even if it was already created (for Skeletals)*/) const
+	const FString& SkeletalName/*If set it creates the mesh even if it was already created (for Skeletals)*/,
+	const FString& SkeletalId) const
 {
 	if (!UnusedMeshIndices.Contains(MeshIndex) && SkeletalName.Len() == 0)
 	{
@@ -1888,7 +1897,7 @@ UInterchangeMeshNode* UInterchangeGltfTranslator::HandleGltfMesh(UInterchangeBas
 	UnusedMeshIndices.Remove(MeshIndex);
 
 	UInterchangeMeshNode* MeshNode = NewObject< UInterchangeMeshNode >(&NodeContainer);
-	FString MeshNodeUid = TEXT("\\Mesh\\") + (SkeletalName.Len() ? SkeletalName : UE::Interchange::Gltf::Private::GltfUniqueIdGenerators[GetSourceData()].GetUniqueId(&GltfMesh));
+	FString MeshNodeUid = TEXT("\\Mesh\\") + (SkeletalId.Len() ? SkeletalId : GltfMesh.UniqueId);
 
 	MeshNode->InitializeNode(MeshNodeUid, MeshName, EInterchangeNodeContainerType::TranslatedAsset);
 	MeshNode->SetPayLoadKey(LexToString(MeshIndex));
@@ -1903,7 +1912,7 @@ UInterchangeMeshNode* UInterchangeGltfTranslator::HandleGltfMesh(UInterchangeBas
 		if (GltfAsset.Materials.IsValidIndex(Primitive.MaterialIndex))
 		{
 			const FString MaterialName = GltfAsset.Materials[Primitive.MaterialIndex].Name;
-			const FString ShaderGraphNodeUid = UInterchangeShaderGraphNode::MakeNodeUid(UE::Interchange::Gltf::Private::GltfUniqueIdGenerators[GetSourceData()].GetUniqueId(&GltfAsset.Materials[Primitive.MaterialIndex]));
+			const FString ShaderGraphNodeUid = UInterchangeShaderGraphNode::MakeNodeUid(GltfAsset.Materials[Primitive.MaterialIndex].UniqueId);
 			MeshNode->SetSlotMaterialDependencyUid(MaterialName, ShaderGraphNodeUid);
 		}
 	}

@@ -2,16 +2,21 @@
 
 #include "VirtualHeightfieldMeshSceneProxy.h"
 
-#include "CommonRenderResources.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "EngineModule.h"
 #include "Engine/Engine.h"
+#include "Engine/Texture2D.h"
+#include "GlobalRenderResources.h"
 #include "GlobalShader.h"
-#include "HAL/IConsoleManager.h"
 #include "HeightfieldMinMaxTexture.h"
+#include "MaterialDomain.h"
 #include "Materials/Material.h"
-#include "RenderGraphBuilder.h"
+#include "Materials/MaterialRenderProxy.h"
+#include "PrimitiveViewRelevance.h"
+#include "RHIStaticStates.h"
 #include "RenderGraphUtils.h"
-#include "RenderUtils.h"
+#include "SceneInterface.h"
+#include "TextureResource.h"
 #include "VirtualHeightfieldMeshComponent.h"
 #include "VirtualHeightfieldMeshVertexFactory.h"
 #include "VT/RuntimeVirtualTexture.h"
@@ -524,8 +529,8 @@ FPrimitiveViewRelevance FVirtualHeightfieldMeshSceneProxy::GetViewRelevance(cons
 	Result.bUsesLightingChannels = GetLightingChannelMask() != GetDefaultLightingChannelMask();
 	Result.bRenderCustomDepth = ShouldRenderCustomDepth();
 	Result.bTranslucentSelfShadow = false;
-	Result.bVelocityRelevance = false;
 	MaterialRelevance.SetPrimitiveViewRelevance(Result);
+	Result.bVelocityRelevance = DrawsVelocity() && Result.bOpaque && Result.bRenderInMainPass;
 	return Result;
 }
 

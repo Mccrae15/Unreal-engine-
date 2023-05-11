@@ -765,6 +765,9 @@ void SGraphNode::UpdateErrorInfo()
 		ErrorColor = FLinearColor(0,0,0);
 		ErrorMsg.Empty();
 	}
+
+	VisualWarningMsg = FString(TEXT("WARNING!"));
+	VisualWarningColor = FAppStyle::GetColor("ErrorReporting.WarningBackgroundColor");
 }
 
 void SGraphNode::SetupErrorReporting()
@@ -783,6 +786,20 @@ void SGraphNode::SetupErrorReporting()
 		ErrorReporting = ErrorTextWidget;
 	}
 	ErrorReporting->SetError(ErrorMsg);
+
+	if (!VisualWarningReporting.IsValid())
+	{
+		TSharedPtr<SErrorText> ErrorTextWidget;
+
+		// generate widget
+		SAssignNew(ErrorTextWidget, SErrorText)
+			.Visibility(this, &SGraphNode::VisualWarningVisibility)
+			.BackgroundColor(this, &SGraphNode::GetVisualWarningColor)
+			.ToolTipText(this, &SGraphNode::GetVisualWarningMsgToolTip);
+
+		VisualWarningReporting = ErrorTextWidget;
+	}
+	VisualWarningReporting->SetError(VisualWarningMsg);
 }
 
 TSharedRef<SWidget> SGraphNode::CreateTitleWidget(TSharedPtr<SNodeTitle> NodeTitle)
@@ -982,6 +999,12 @@ void SGraphNode::UpdateGraphNode()
 			ErrorReporting->AsWidget()
 		];
 
+	InnerVerticalBox->AddSlot()
+		.AutoHeight()
+		.Padding(Settings->GetNonPinNodeBodyPadding())
+		[
+			VisualWarningReporting->AsWidget()
+		];
 
 
 	this->GetOrAddSlot( ENodeZone::Center )
@@ -1475,6 +1498,30 @@ FText SGraphNode::GetErrorMsgToolTip() const
 	return Result;
 }
 
+EVisibility SGraphNode::VisualWarningVisibility() const
+{
+	const bool bShowVisualWarning = GraphNode && GraphNode->ShowVisualWarning();
+	return bShowVisualWarning ? EVisibility::Visible : EVisibility::Collapsed;
+}
+
+/* Helper function to set the error color for the node */
+FSlateColor SGraphNode::GetVisualWarningColor() const
+{
+	return VisualWarningColor;
+}
+
+FText SGraphNode::GetVisualWarningMsgToolTip() const
+{
+	FText Result = FText::GetEmpty();
+	if (GraphNode != nullptr)
+	{
+		Result = GraphNode->GetVisualWarningTooltipText();
+	}
+
+	return Result;
+}
+
+
 bool SGraphNode::IsNameReadOnly() const
 {
 	return (!GraphNode->GetCanRenameNode() || !IsNodeEditable());
@@ -1643,21 +1690,13 @@ void SGraphNode::PopulateMetaTag(FGraphNodeMetaData* TagMeta) const
 {
 	if (GraphNode && TagMeta)
 	{
-		// We want the name of the blueprint as our name - we can find the node from the GUID
-		UObject* Package = GraphNode->GetOutermost();
-		UObject* LastOuter = GraphNode->GetOuter();
-		while (LastOuter && (LastOuter->GetOuter() != Package))
-		{
-			LastOuter = LastOuter->GetOuter();
-		}
-
-		if(LastOuter)
-		{
-			TagMeta->Tag = FName(*FString::Printf(TEXT("GraphNode_%s_%s"), *LastOuter->GetFullName(), *GraphNode->NodeGuid.ToString()));
-			TagMeta->OuterName = LastOuter->GetFullName();
-			TagMeta->GUID = GraphNode->NodeGuid;
-			TagMeta->FriendlyName = FString::Printf(TEXT("%s in %s"), *GraphNode->GetNodeTitle(ENodeTitleType::ListView).ToString(), *TagMeta->OuterName);	
-		}	
+		// We want the name of the blueprint/world as our name - we can find the node from the GUID
+		UObject* OutermostObject = GraphNode->GetOutermostObject();
+		check(OutermostObject);
+		TagMeta->Tag = FName(*FString::Printf(TEXT("GraphNode_%s_%s"), *OutermostObject->GetFullName(), *GraphNode->NodeGuid.ToString()));
+		TagMeta->OuterName = OutermostObject->GetFullName();
+		TagMeta->GUID = GraphNode->NodeGuid;
+		TagMeta->FriendlyName = FString::Printf(TEXT("%s in %s"), *GraphNode->GetNodeTitle(ENodeTitleType::ListView).ToString(), *TagMeta->OuterName);		
 	}
 }
 

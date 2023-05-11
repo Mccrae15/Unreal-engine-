@@ -10,6 +10,7 @@
 #include "Chaos/Particle/ParticleUtilities.h"
 #include "Chaos/PBDCollisionConstraints.h"
 
+#include "Chaos/ChaosDebugDraw.h"
 #include "ChaosStats.h"
 
 extern bool Chaos_Collision_NarrowPhase_AABBBoundsCheck;
@@ -18,6 +19,11 @@ namespace Chaos
 {
 	namespace CVars
 	{
+		extern int32 ChaosSolverDrawCCDInteractions;
+#if CHAOS_DEBUG_DRAW
+		extern DebugDraw::FChaosDebugDrawSettings ChaosSolverDebugDebugDrawSettings;
+#endif
+
 		bool bChaos_Collision_MidPhase_EnableBoundsChecks = true;
 		FAutoConsoleVariableRef CVarChaos_Collision_EnableBoundsChecks(TEXT("p.Chaos.Collision.EnableBoundsChecks"), bChaos_Collision_MidPhase_EnableBoundsChecks, TEXT(""));
 
@@ -347,13 +353,13 @@ namespace Chaos
 			{
 				if (Context.GetAllocator()->ActivateConstraint(Constraint.Get()))
 				{
-					// If we had any mods last tick, undo them
-					Constraint->ResetModifications();
-
 					LastUsedEpoch = CurrentEpoch;
 					return 1;
 				}
 			}
+
+			// If we get here, we did not activate hte constraint and it should be disabled for this tick
+			Constraint->SetDisabled(true);
 		}
 
 		return 0;
@@ -408,17 +414,35 @@ namespace Chaos
 
 			FConstGenericParticleHandle P0 = GetParticle0();
 			FConstGenericParticleHandle P1 = GetParticle1();
-			// For kinematic particles, X = P (at TOI=1), we need to compute P-V*dt to get position at TOI=0. 
-			const FVec3 StartX0 = P0->ObjectState() == EObjectStateType::Kinematic ? P0->P() - P0->V() * Dt : P0->X();
-			const FVec3 StartX1 = P1->ObjectState() == EObjectStateType::Kinematic ? P1->P() - P1->V() * Dt : P1->X();
-			// Note: It is unusual that we are mixing X and Q. 
-			// This is due to how CCD rewinds the position (not rotation) and then sweeps to find the first contact at the most recent orientation Q
+
+
+			// We need the previous transform for the swept collision detector. It assumes that the current
+			// transform has been set on the constraint. 
+			// We assume that the particle's center of mass moved in a stright line and that it's rotation has 
+			// not changed so we calculate the previous transform from the current one and the velocity.
 			// NOTE: These are actor transforms, not CoM transforms
-			const FRigidTransform3 CCDParticleWorldTransform0 = FRigidTransform3(StartX0, P0->Q());
-			const FRigidTransform3 CCDParticleWorldTransform1 = FRigidTransform3(StartX1, P1->Q());
+			// @todo(chaos): Pass both start and end transforms to the collision detector
+			const FRigidTransform3 CCDParticleWorldTransform0 = FRigidTransform3(P0->P() - P0->V() * Dt, P0->Q());
+			const FRigidTransform3 CCDParticleWorldTransform1 = FRigidTransform3(P1->P() - P1->V() * Dt, P1->Q());
 			const FRigidTransform3 CCDShapeWorldTransform0 = Constraint->ImplicitTransform[0] * CCDParticleWorldTransform0;
 			const FRigidTransform3 CCDShapeWorldTransform1 = Constraint->ImplicitTransform[1] * CCDParticleWorldTransform1;
 			const bool bDidSweep = Collisions::UpdateConstraintSwept(*Constraint.Get(), CCDShapeWorldTransform0, CCDShapeWorldTransform1, Dt);
+
+#if CHAOS_DEBUG_DRAW
+			if (CVars::ChaosSolverDrawCCDInteractions)
+			{
+				if (FConstGenericParticleHandle(Constraint->GetParticle0())->CCDEnabled())
+				{
+					DebugDraw::DrawShape(CCDShapeWorldTransform0, Implicit0, Shape0, FColor::Black, &CVars::ChaosSolverDebugDebugDrawSettings);
+					DebugDraw::DrawShape(ShapeWorldTransform0, Implicit0, Shape0, FColor::White, &CVars::ChaosSolverDebugDebugDrawSettings);
+				}
+				if (FConstGenericParticleHandle(Constraint->GetParticle1())->CCDEnabled())
+				{
+					DebugDraw::DrawShape(CCDShapeWorldTransform1, Implicit1, Shape1, FColor::Black, &CVars::ChaosSolverDebugDebugDrawSettings);
+					DebugDraw::DrawShape(ShapeWorldTransform1, Implicit1, Shape1, FColor::White, &CVars::ChaosSolverDebugDebugDrawSettings);
+				}
+			}
+#endif
 
 			// If we did get a hit but it's at TOI = 1, treat this constraint as a regular non-swept constraint (skip the rewind)
 			if ((!bDidSweep) || Constraint->GetCCDTimeOfImpact() == FReal(1))
@@ -642,8 +666,8 @@ namespace Chaos
 		}
 
 		// @todo(chaos): we already have the shape world transforms at the calling site - pass them in
-		const FRigidTransform3 ParticleTransform0 = FParticleUtilitiesPQ::GetActorWorldTransform(FConstGenericParticleHandle(InParticle0));
-		const FRigidTransform3 ParticleTransform1 = FParticleUtilitiesPQ::GetActorWorldTransform(FConstGenericParticleHandle(InParticle1));
+		const FRigidTransform3 ParticleTransform0 = FConstGenericParticleHandle(InParticle0)->GetTransformPQ();
+		const FRigidTransform3 ParticleTransform1 = FConstGenericParticleHandle(InParticle1)->GetTransformPQ();
 		const FRigidTransform3 ShapeWorldTransform0 = ShapeRelativeTransform0 * ParticleTransform0;
 		const FRigidTransform3 ShapeWorldTransform1 = ShapeRelativeTransform1 * ParticleTransform1;
 		Constraint->SetShapeWorldTransforms(ShapeWorldTransform0, ShapeWorldTransform1);
@@ -739,6 +763,10 @@ namespace Chaos
 				Context.GetAllocator()->ActivateConstraint(Constraint);
 				++NumActiveConstraints;
 			}
+			else
+			{
+				Constraint->SetDisabled(true);
+			}
 		}
 		NewConstraints.Reset();
 		return NumActiveConstraints;
@@ -814,9 +842,21 @@ namespace Chaos
 		ShapePairDetectors.Reset();
 		MultiShapePairDetectors.Reset();
 
+		Flags.bIsActive = true;
 		Flags.bIsCCD = false;
-		Flags.bIsInitialized = false;
+		Flags.bIsCCDActive = false;
 		Flags.bIsSleeping = false;
+		Flags.bIsModified = false;
+	}
+
+	void FParticlePairMidPhase::ResetModifications()
+	{
+		if (Flags.bIsModified)
+		{
+			Flags.bIsActive = true;
+			Flags.bIsCCDActive = Flags.bIsCCD;
+			Flags.bIsModified = false;
+		}
 	}
 
 	void FParticlePairMidPhase::Init(
@@ -831,13 +871,22 @@ namespace Chaos
 		Particle1 = InParticle1;
 		Key = InKey;
 
-		Flags.bIsCCD = Context.GetSettings().bAllowCCD && (FConstGenericParticleHandle(Particle0)->CCDEnabled() || FConstGenericParticleHandle(Particle1)->CCDEnabled());
+		Flags.bIsActive = true;
+
+		// If CCD is allowed in the current context and for at least one of
+		// the particles involved, enable it for this midphase.
+		//
+		// bIsCCDActive is reset to bIsCCD each frame, but can be overridden
+		// by modifiers.
+		const bool bIsCCD = Context.GetSettings().bAllowCCD && (
+			FConstGenericParticleHandle(Particle0)->CCDEnabled() ||
+			FConstGenericParticleHandle(Particle1)->CCDEnabled());
+		Flags.bIsCCD = bIsCCD;
+		Flags.bIsCCDActive = bIsCCD;
 
 		BuildDetectors();
 
 		InitThresholds();
-
-		Flags.bIsInitialized = true;
 	}
 
 	void FParticlePairMidPhase::BuildDetectors()
@@ -897,7 +946,11 @@ namespace Chaos
 
 	bool FParticlePairMidPhase::ShouldEnableCCD(const FReal Dt)
 	{
-		if (Flags.bIsCCD)
+		// bIsCCDActive is set to bIsCCD at the beginning of every frame, but may be
+		// overridden in midphase modification or potentially other systems which run
+		// in between mid and narrow phase. bIsCCDActive indicates the final
+		// overridden value so we use that here instead of bIsCCD.
+		if (Flags.bIsCCDActive)
 		{
 			FConstGenericParticleHandle ConstParticle0 = FConstGenericParticleHandle(Particle0);
 			FConstGenericParticleHandle ConstParticle1 = FConstGenericParticleHandle(Particle1);
@@ -948,37 +1001,44 @@ namespace Chaos
 			return;
 		}
 
-		// CullDistance is scaled by the size of the dynamic objects.
-		FReal CullDistance = InCullDistance * CullDistanceScale;
-
-		// Extend cull distance for sweep-enabled CCD collision
-		const bool bUseSweep = Flags.bIsCCD && ShouldEnableCCD(Dt);
-		if (bUseSweep)
+		if (Flags.bIsActive)
 		{
-			const FReal VMax = (FConstGenericParticleHandle(GetParticle0())->V() - FConstGenericParticleHandle(GetParticle1())->V()).GetAbsMax();
-			CullDistance += VMax * Dt;
-		}
+			// CullDistance is scaled by the size of the dynamic objects.
+			FReal CullDistance = InCullDistance * CullDistanceScale;
 
-		// Run collision detection on all potentially colliding shape pairs
-		NumActiveConstraints = 0;
-		if (Flags.bIsCCD)
-		{
-			for (FSingleShapePairCollisionDetector& ShapePair : ShapePairDetectors)
+			// Extend cull distance for sweep-enabled CCD collision
+			const bool bUseSweep = Flags.bIsCCD && ShouldEnableCCD(Dt);
+			if (bUseSweep)
 			{
-				NumActiveConstraints += ShapePair.GenerateCollisionCCD(bUseSweep, CullDistance, Dt, Context);
+				const FReal VMax = (FConstGenericParticleHandle(GetParticle0())->V() - FConstGenericParticleHandle(GetParticle1())->V()).GetAbsMax();
+				CullDistance += VMax * Dt;
+			}
+
+			// Run collision detection on all potentially colliding shape pairs
+			NumActiveConstraints = 0;
+			if (Flags.bIsCCD)
+			{
+				for (FSingleShapePairCollisionDetector& ShapePair : ShapePairDetectors)
+				{
+					NumActiveConstraints += ShapePair.GenerateCollisionCCD(bUseSweep, CullDistance, Dt, Context);
+				}
+			}
+			else
+			{
+				for (FSingleShapePairCollisionDetector& ShapePair : ShapePairDetectors)
+				{
+					NumActiveConstraints += ShapePair.GenerateCollision(CullDistance, Dt, Context);
+				}
+			}
+			for (FMultiShapePairCollisionDetector& MultiShapePair : MultiShapePairDetectors)
+			{
+				NumActiveConstraints += MultiShapePair.GenerateCollisions(CullDistance, Dt, Context);
 			}
 		}
-		else
-		{
-			for (FSingleShapePairCollisionDetector& ShapePair : ShapePairDetectors)
-			{
-				NumActiveConstraints += ShapePair.GenerateCollision(CullDistance, Dt, Context);
-			}
-		}
-		for (FMultiShapePairCollisionDetector& MultiShapePair : MultiShapePairDetectors)
-		{
-			NumActiveConstraints += MultiShapePair.GenerateCollisions(CullDistance, Dt, Context);
-		}
+
+		// Reset any modifications applied by the MidPhaseModifier.
+		// In principle this belongs at the start of the frame but it is hard to avoid the cache miss there.
+		ResetModifications();
 
 		LastUsedEpoch = Context.GetAllocator()->GetCurrentEpoch();
 	}

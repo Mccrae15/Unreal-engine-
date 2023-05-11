@@ -3,19 +3,23 @@
 #include "NiagaraBakerRendererOutputVolumeTexture.h"
 #include "NiagaraBakerOutputVolumeTexture.h"
 
+#include "NiagaraBakerSettings.h"
 #include "NiagaraComponent.h"
 #include "NiagaraSystemInstance.h"
+#include "NiagaraSystemInstanceController.h"
 #include "NiagaraComputeExecutionContext.h"
 #include "NiagaraDataInterfaceGrid3DCollection.h"
 #include "NiagaraDataInterfaceRenderTargetVolume.h"
 #include "NiagaraBatchedElements.h"
 
 #include "Engine/Canvas.h"
+#include "Engine/TextureRenderTarget2D.h"
 #include "Engine/VolumeTexture.h"
 #include "HAL/PlatformFileManager.h"
 #include "Misc/PathViews.h"
 #include "Modules/ModuleManager.h"
 #include "Factories/VolumeTextureFactory.h"
+#include "TextureResource.h"
 #include "UObject/UObjectGlobals.h"
 
 #include "VolumeCache.h"
@@ -387,7 +391,7 @@ void FNiagaraBakerRendererOutputVolumeTexture::RenderGenerated(UNiagaraBakerOutp
 	Canvas.Flush_GameThread();
 }
 
-bool FNiagaraBakerRendererOutputVolumeTexture::BeginBake(UNiagaraBakerOutput* InBakerOutput)
+bool FNiagaraBakerRendererOutputVolumeTexture::BeginBake(FNiagaraBakerFeedbackContext& FeedbackContext, UNiagaraBakerOutput* InBakerOutput)
 {
 	UNiagaraBakerOutputVolumeTexture* OutputVolumeTexture = CastChecked<UNiagaraBakerOutputVolumeTexture>(InBakerOutput);
 
@@ -397,7 +401,7 @@ bool FNiagaraBakerRendererOutputVolumeTexture::BeginBake(UNiagaraBakerOutput* In
 	return OutputVolumeTexture->bGenerateAtlas || OutputVolumeTexture->bGenerateFrames || OutputVolumeTexture->bExportFrames;
 }
 
-void FNiagaraBakerRendererOutputVolumeTexture::BakeFrame(UNiagaraBakerOutput* InBakerOutput, int FrameIndex, const FNiagaraBakerRenderer& BakerRenderer)
+void FNiagaraBakerRendererOutputVolumeTexture::BakeFrame(FNiagaraBakerFeedbackContext& FeedbackContext, UNiagaraBakerOutput* InBakerOutput, int FrameIndex, const FNiagaraBakerRenderer& BakerRenderer)
 {
 	UNiagaraBakerOutputVolumeTexture* OutputVolumeTexture = CastChecked<UNiagaraBakerOutputVolumeTexture>(InBakerOutput);
 
@@ -601,7 +605,7 @@ void FNiagaraBakerRendererOutputVolumeTexture::BakeFrame(UNiagaraBakerOutput* In
 	}
 }
 
-void FNiagaraBakerRendererOutputVolumeTexture::EndBake(UNiagaraBakerOutput* InBakerOutput)
+void FNiagaraBakerRendererOutputVolumeTexture::EndBake(FNiagaraBakerFeedbackContext& FeedbackContext, UNiagaraBakerOutput* InBakerOutput)
 {
 	UNiagaraBakerOutputVolumeTexture* OutputVolumeTexture = CastChecked<UNiagaraBakerOutputVolumeTexture>(InBakerOutput);
 	if (BakeAtlasTextureData.Num() > 0)

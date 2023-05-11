@@ -256,6 +256,11 @@ public:
 	TArrayCollectionArray<int32>& GetClusterGroupIndexArray() { return MParticles.ClusterGroupIndexArray(); }
 
 	/*
+	* Reset all events ( this include breaking, crumbling event and tracking data 
+	*/
+	void ResetAllEvents();
+
+	/*
 	*  Cluster Break Data
 	*     The cluster breaks can be used to seed particle emissions. 
 	*/
@@ -340,13 +345,14 @@ public:
 	FRigidEvolution& GetEvolution() { return MEvolution; }
 	const FRigidEvolution& GetEvolution() const { return MEvolution; }
 
+	void SetInternalStrain(FPBDRigidClusteredParticleHandle* Particle, FReal Strain);
+	void SetExternalStrain(FPBDRigidClusteredParticleHandle* Particle, FReal Strain);
 
  protected:
 
 	void ComputeStrainFromCollision(const FPBDCollisionConstraints& CollisionRule);
 	void ResetCollisionImpulseArray();
 	void DisableCluster(FPBDRigidClusteredParticleHandle* ClusteredParticle);
-	void DisableParticleWithBreakEvent(FPBDRigidClusteredParticleHandle* ClusteredParticle);
 
 	/*
 	* Connectivity
@@ -369,7 +375,7 @@ public:
 
 	void RemoveChildFromParent(FPBDRigidParticleHandle* Child, const FPBDRigidClusteredParticleHandle* ClusteredParent);
 
-	void SendBreakingEvent(FPBDRigidClusteredParticleHandle* ClusteredParticle);
+	void SendBreakingEvent(FPBDRigidClusteredParticleHandle* ClusteredParticle, bool bFromCrumble);
 	void SendCrumblingEvent(FPBDRigidClusteredParticleHandle* ClusteredParticle);
 
 	TSet<FPBDRigidParticleHandle*> ReleaseClusterParticlesImpl(
@@ -380,11 +386,14 @@ public:
 	using FParticleIsland = TArray<FPBDRigidParticleHandle*>;
 	TArray<FParticleIsland> FindIslandsInChildren(const FPBDRigidClusteredParticleHandle* ClusteredParticle);
 	TArray<FPBDRigidParticleHandle*> CreateClustersFromNewIslands(TArray<FParticleIsland>& Islands, FPBDRigidClusteredParticleHandle* ClusteredParent);
+
+	void UpdateTopLevelParticle(FPBDRigidClusteredParticleHandle* Particle);
 private:
 
 	FRigidEvolution& MEvolution;
 	FPBDRigidClusteredParticles& MParticles;
 	TSet<Chaos::FPBDRigidClusteredParticleHandle*> TopLevelClusterParents;
+	TSet<Chaos::FPBDRigidClusteredParticleHandle*> TopLevelClusterParentsStrained;
 
 	// Cluster data
 	FClusterMap MChildren;
@@ -399,7 +408,9 @@ private:
 	TArray<FBreakingData> MAllClusterBreakings;
 
 	TArray<FCrumblingData> MAllClusterCrumblings;
-	
+
+	TSet<FPBDRigidClusteredParticleHandle*> CrumbledSinceLastUpdate;
+
 	FReal MClusterConnectionFactor;
 	FClusterCreationParameters::EConnectionMethod MClusterUnionConnectionType;
 };

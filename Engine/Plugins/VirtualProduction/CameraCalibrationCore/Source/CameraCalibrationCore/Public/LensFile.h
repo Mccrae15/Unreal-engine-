@@ -25,7 +25,11 @@
 
 class UCineCameraComponent;
 class ULensDistortionModelHandlerBase;
+class UTextureRenderTarget2D;
 struct FBaseLensTable;
+
+
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnLensFileModelChanged, const TSubclassOf<ULensModel>&);
 
 
 /** Mode of operation of Lens File */
@@ -212,6 +216,9 @@ public:
 	/** Get data table reference based on given category */
 	const FBaseLensTable* GetDataTable(ELensDataCategory InDataCategory) const;
 	
+	/** Returns the delegate that is triggered when the LensModel changes */
+	FOnLensFileModelChanged& OnLensFileModelChanged() { return OnLensFileModelChangedDelegate; }
+
 protected:
 	/** Updates derived data entries to make sure it matches what is assigned in map points based on data mode */
 	void UpdateDerivedData();
@@ -236,6 +243,16 @@ public:
 	/** Lens information */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lens info")
 	FLensInfo LensInfo;
+
+#if WITH_EDITORONLY_DATA
+	/** Camera feed information */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera Feed")
+	FCameraFeedInfo CameraFeedInfo;
+
+	/** Simulcam information */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Simulcam info")
+	FSimulcamInfo SimulcamInfo;
+#endif // WITH_EDITORONLY_DATA
 
 	/** Type of data used for lens mapping */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lens mapping")
@@ -299,6 +316,9 @@ protected:
 
 	/** UV coordinates of 8 points (4 corners + 4 mid points) */
 	static const TArray<FVector2D> UndistortedUVs;
+
+	/** Delegate that is triggered when the LensModel changes */
+	FOnLensFileModelChanged OnLensFileModelChangedDelegate;
 };
 
 

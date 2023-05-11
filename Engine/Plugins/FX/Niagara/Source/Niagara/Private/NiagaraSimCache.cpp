@@ -2,24 +2,54 @@
 
 #include "NiagaraSimCache.h"
 
-#include "NiagaraClearCounts.h"
 #include "NiagaraConstants.h"
 #include "NiagaraComponent.h"
-#include "NiagaraComputeExecutionContext.h"
 #include "NiagaraDataInterfaceUtilities.h"
 #include "NiagaraDataSetReadback.h"
 #include "NiagaraEmitterInstance.h"
-#include "NiagaraGPUInstanceCountManager.h"
 #include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraSimCacheAttributeReaderHelper.h"
+#include "NiagaraSimCacheCustomStorageInterface.h"
 #include "NiagaraSimCacheHelper.h"
-#include "NiagaraSystem.h"
+#include "NiagaraSystemImpl.h"
 #include "NiagaraSystemInstance.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraSimCache)
 
 UNiagaraSimCache::FOnCacheBeginWrite	UNiagaraSimCache::OnCacheBeginWrite;
 UNiagaraSimCache::FOnCacheEndWrite		UNiagaraSimCache::OnCacheEndWrite;
+
+FNiagaraSimCacheFeedbackContext::~FNiagaraSimCacheFeedbackContext()
+{
+	if (bAutoLogIssues)
+	{
+		for (const FString& Warning : Warnings)
+		{
+			UE_LOG(LogNiagara, Warning, TEXT("SimCache Warning: %s"), *Warning);
+		}
+
+		for (const FString& Error : Errors)
+		{
+			UE_LOG(LogNiagara, Warning, TEXT("SimCache Error: %s"), *Error);
+		}
+	}
+}
+
+int32 FNiagaraSimCacheDataBuffersLayout::IndexOfCacheVariable(const FNiagaraVariableBase& InVariable) const
+{
+	return Variables.IndexOfByPredicate(
+		[InVariable](const FNiagaraSimCacheVariable& CacheVariable)
+		{
+			return CacheVariable.Variable == InVariable;
+		}
+	);
+}
+
+const FNiagaraSimCacheVariable* FNiagaraSimCacheDataBuffersLayout::FindCacheVariable(const FNiagaraVariableBase& InVariable) const
+{
+	const int32 Index = IndexOfCacheVariable(InVariable);
+	return Index != INDEX_NONE ? &Variables[Index] : nullptr;
+}
 
 UNiagaraSimCache::UNiagaraSimCache(const FObjectInitializer& ObjectInitializer)
 {
@@ -32,6 +62,12 @@ bool UNiagaraSimCache::IsReadyForFinishDestroy()
 
 bool UNiagaraSimCache::BeginWrite(FNiagaraSimCacheCreateParameters InCreateParameters, UNiagaraComponent* NiagaraComponent)
 {
+	FNiagaraSimCacheFeedbackContext FeedbackContext;
+	return BeginWrite(InCreateParameters, NiagaraComponent, FeedbackContext);
+}
+
+bool UNiagaraSimCache::BeginWrite(FNiagaraSimCacheCreateParameters InCreateParameters, UNiagaraComponent* NiagaraComponent, FNiagaraSimCacheFeedbackContext& FeedbackContext)
+{
 	check(PendingCommandsInFlight == 0);
 
 	OnCacheBeginWrite.Broadcast(this);
@@ -39,7 +75,13 @@ bool UNiagaraSimCache::BeginWrite(FNiagaraSimCacheCreateParameters InCreateParam
 	FNiagaraSimCacheHelper Helper(NiagaraComponent);
 	if (Helper.HasValidSimulation() == false)
 	{
+		FeedbackContext.Errors.Emplace(FString::Printf(TEXT("No valid simulation data for %s"), *GetPathNameSafe(Helper.NiagaraSystem)));
 		return false;
+	}
+
+	if (CacheGuid.IsValid() == false)
+	{
+		CacheGuid = FGuid::NewGuid();
 	}
 
 	Modify();
@@ -68,6 +110,7 @@ bool UNiagaraSimCache::BeginWrite(FNiagaraSimCacheCreateParameters InCreateParam
 		// Invalid as the user specified nothing to actual capture
 		if (CreateParameters.ExplicitCaptureAttributes.IsEmpty())
 		{
+			FeedbackContext.Errors.Emplace(FString::Printf(TEXT("Missing attributes to capture when in explicit capture mode %s"), *GetPathNameSafe(Helper.NiagaraSystem)));
 			SoftNiagaraSystem.Reset();
 			return false;
 		}
@@ -80,6 +123,8 @@ bool UNiagaraSimCache::BeginWrite(FNiagaraSimCacheCreateParameters InCreateParam
 	// When in rendering only mode ask all renderers which attributes we need to capture
 	if ( CreateParameters.AttributeCaptureMode == ENiagaraSimCacheAttributeCaptureMode::RenderingOnly )
 	{
+		FNameBuilder NameBuilder;
+
 	#if WITH_EDITORONLY_DATA
 		for ( const FNiagaraEmitterHandle& EmitterHandle : Helper.NiagaraSystem->GetEmitterHandles() )
 		{
@@ -88,7 +133,7 @@ bool UNiagaraSimCache::BeginWrite(FNiagaraSimCacheCreateParameters InCreateParam
 				{
 					for (FNiagaraVariableBase BoundAttribute : RenderProperties->GetBoundAttributes())
 					{
-						FNameBuilder NameBuilder;
+						NameBuilder.Reset();
 						NameBuilder.Append(EmitterHandle.GetUniqueInstanceName());
 						NameBuilder.AppendChar(TEXT('.'));
 						BoundAttribute.GetName().AppendString(NameBuilder);
@@ -99,6 +144,10 @@ bool UNiagaraSimCache::BeginWrite(FNiagaraSimCacheCreateParameters InCreateParam
 			);
 		}
 	#endif
+		static const FName NAME_ExecutionState("ExecutionState");
+		static const FName NAME_SystemExecutionState("System.ExecutionState");
+		CreateParameters.ExplicitCaptureAttributes.AddUnique(NAME_SystemExecutionState);
+
 		for (const TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe>& EmitterInstance : Helper.SystemInstance->GetEmitters())
 		{
 			const FNiagaraParameterStore& RendererBindings = EmitterInstance->GetRendererBoundVariables();
@@ -106,15 +155,24 @@ bool UNiagaraSimCache::BeginWrite(FNiagaraSimCacheCreateParameters InCreateParam
 			{
 				CreateParameters.ExplicitCaptureAttributes.AddUnique(Variable.GetName());
 			}
+
+			NameBuilder.Reset();
+			NameBuilder.Append(EmitterInstance->GetEmitterHandle().GetUniqueInstanceName());
+			NameBuilder.AppendChar(TEXT('.'));
+			NAME_ExecutionState.AppendString(NameBuilder);
+			CreateParameters.ExplicitCaptureAttributes.AddUnique(NameBuilder.ToString());
 		}
 
 		FNiagaraDataInterfaceUtilities::ForEachDataInterface(
 			Helper.SystemInstance,
 			[&](const FNiagaraDataInterfaceUtilities::FDataInterfaceUsageContext& UsageContext)
 			{
-				for ( const FNiagaraVariableBase& PreserveAttribute : UsageContext.DataInterface->GetSimCacheRendererAttributes(UsageContext.OwnerObject) )
+				if (INiagaraSimCacheCustomStorageInterface* SimCacheCustomStorageInterface = Cast<INiagaraSimCacheCustomStorageInterface>(UsageContext.DataInterface))
 				{
-					CreateParameters.ExplicitCaptureAttributes.AddUnique(PreserveAttribute.GetName());
+					for (const FNiagaraVariableBase& PreserveAttribute : SimCacheCustomStorageInterface->GetSimCacheRendererAttributes(UsageContext.OwnerObject))
+					{
+						CreateParameters.ExplicitCaptureAttributes.AddUnique(PreserveAttribute.GetName());
+					}
 				}
 				return true;
 			}
@@ -138,10 +196,16 @@ bool UNiagaraSimCache::BeginWrite(FNiagaraSimCacheCreateParameters InCreateParam
 			Helper.SystemInstance,
 			[&](const FNiagaraVariableBase& Variable, UNiagaraDataInterface* DataInterface)
 			{
-				if ( (CreateParameters.ExplicitCaptureAttributes.Num() == 0) || CreateParameters.ExplicitCaptureAttributes.Contains(Variable.GetName()) )
+				// Are we capturing this data interface?
+				if ((CreateParameters.ExplicitCaptureAttributes.Num() != 0) && !CreateParameters.ExplicitCaptureAttributes.Contains(Variable.GetName()))
+				{
+					return true;
+				}
+
+				if (INiagaraSimCacheCustomStorageInterface* SimCacheCustomStorageInterface = Cast<INiagaraSimCacheCustomStorageInterface>(DataInterface))
 				{
 					const void* PerInstanceData = Helper.SystemInstance->FindDataInterfaceInstanceData(DataInterface);
-					if (UObject* DICacheStorage = DataInterface->SimCacheBeginWrite(this, Helper.SystemInstance, PerInstanceData))
+					if (UObject* DICacheStorage = SimCacheCustomStorageInterface->SimCacheBeginWrite(this, Helper.SystemInstance, PerInstanceData, FeedbackContext))
 					{
 						DataInterfaceStorage.FindOrAdd(Variable) = DICacheStorage;
 					}
@@ -150,20 +214,59 @@ bool UNiagaraSimCache::BeginWrite(FNiagaraSimCacheCreateParameters InCreateParam
 			}
 		);
 	}
+
+#if WITH_EDITORONLY_DATA
+	// Check all our bindings are ok
+	for ( const FNiagaraEmitterHandle& EmitterHandle : Helper.NiagaraSystem->GetEmitterHandles() )
+	{
+		EmitterHandle.GetInstance().GetEmitterData()->ForEachEnabledRenderer(
+			[&](UNiagaraRendererProperties* RenderProperties)
+			{
+				for (FNiagaraVariableBase BoundAttribute : RenderProperties->GetBoundAttributes())
+				{
+					if (!BoundAttribute.IsDataInterface())
+					{
+						continue;
+					}
+
+					UNiagaraDataInterface* DataInterfaceCDO = CastChecked<UNiagaraDataInterface>(BoundAttribute.GetType().GetClass()->GetDefaultObject());
+					if (DataInterfaceCDO->PerInstanceDataSize() == 0)
+					{
+						continue;
+					}
+
+					if (!DataInterfaceStorage.Contains(BoundAttribute))
+					{
+						FeedbackContext.Warnings.Emplace(FString::Printf(TEXT("Material Data Interface Binding '%s : %s' did not store any data or does not support sim caching, baked result may be incorrect."), *DataInterfaceCDO->GetClass()->GetName(), *BoundAttribute.GetName().ToString()));
+					}
+				}
+			}
+		);
+	}
+#endif
+
 	return true;
 }
 
 bool UNiagaraSimCache::WriteFrame(UNiagaraComponent* NiagaraComponent)
 {
+	FNiagaraSimCacheFeedbackContext FeedbackContext;
+	return WriteFrame(NiagaraComponent, FeedbackContext);
+}
+
+bool UNiagaraSimCache::WriteFrame(UNiagaraComponent* NiagaraComponent, FNiagaraSimCacheFeedbackContext& FeedbackContext)
+{
 	FNiagaraSimCacheHelper Helper(NiagaraComponent);
 	if (Helper.HasValidSimulationData() == false)
 	{
 		SoftNiagaraSystem.Reset();
+		FeedbackContext.Errors.Emplace(FString::Printf(TEXT("No valid simulation data for %s"), *GetPathNameSafe(Helper.NiagaraSystem)));
 		return false;
 	}
 
 	if ( SoftNiagaraSystem.Get() != Helper.NiagaraSystem )
 	{
+		FeedbackContext.Errors.Emplace(FString::Printf(TEXT("System %s != System %s"), *GetPathNameSafe(SoftNiagaraSystem.Get()), *GetPathNameSafe(Helper.NiagaraSystem)));
 		SoftNiagaraSystem.Reset();
 		return false;
 	}
@@ -171,12 +274,15 @@ bool UNiagaraSimCache::WriteFrame(UNiagaraComponent* NiagaraComponent)
 	// Simulation is complete nothing to cache
 	if ( Helper.SystemInstance->IsComplete() )
 	{
+		FeedbackContext.Errors.Emplace(FString::Printf(TEXT("System already completed its simulation. %s"), *Helper.SystemInstance->GetCrashReporterTag()));
 		return false;
 	}
 
 	// Is the simulation running?  If not nothing to cache yet
 	if ( Helper.SystemInstance->SystemInstanceState != ENiagaraSystemInstanceState::Running )
 	{
+		// This warning will trigger way to often and isn't that useful
+		//	FeedbackContext.Errors.Emplace(FString::Printf(TEXT("System is not running, so there is no data to cache. %s"), *Helper.SystemInstance->GetCrashReporterTag()));
 		return false;
 	}
 
@@ -189,12 +295,14 @@ bool UNiagaraSimCache::WriteFrame(UNiagaraComponent* NiagaraComponent)
 	// If our tick counter hasn't moved then we won't capture a frame as there's nothing new to process
 	else if (CaptureTickCount == Helper.SystemInstance->GetTickCount())
 	{
+		FeedbackContext.Errors.Emplace(FString::Printf(TEXT("System was not ticked since the last capture. %s"), *Helper.SystemInstance->GetCrashReporterTag()));
 		return false;
 	}
 
 	// If the tick counter is lower than the previous value then the system was reset so we won't capture
 	if ( Helper.SystemInstance->GetTickCount() < CaptureTickCount )
 	{
+		FeedbackContext.Errors.Emplace(FString::Printf(TEXT("System was was reset since the last capture, skipping further cache writes. %s"), *Helper.SystemInstance->GetCrashReporterTag()));
 		SoftNiagaraSystem.Reset();
 		return false;
 	}
@@ -205,6 +313,10 @@ bool UNiagaraSimCache::WriteFrame(UNiagaraComponent* NiagaraComponent)
 	FNiagaraSimCacheFrame& CacheFrame = CacheFrames.AddDefaulted_GetRef();
 	CacheFrame.LocalToWorld = Helper.SystemInstance->GatheredInstanceParameters.ComponentTrans;
 	CacheFrame.LWCTile = Helper.SystemInstance->GetLWCTile();
+	CacheFrame.SimulationAge = FMath::RoundToFloat(Helper.SystemInstance->GetAge() * CacheAgeResolution) / CacheAgeResolution;
+#if WITH_EDITORONLY_DATA
+	CacheFrame.SimulationTickCount = Helper.SystemInstance->GetTickCount();
+#endif
 
 	CacheFrame.SystemData.LocalBounds = Helper.SystemInstance->GetLocalBounds();
 
@@ -260,6 +372,7 @@ bool UNiagaraSimCache::WriteFrame(UNiagaraComponent* NiagaraComponent)
 	{
 		const int FrameIndex = CacheFrames.Num() - 1;
 		bool bDataInterfacesSucess = true;
+		FString DataInterfaceName;
 
 		FNiagaraDataInterfaceUtilities::ForEachDataInterface(
 			Helper.SystemInstance,
@@ -267,8 +380,13 @@ bool UNiagaraSimCache::WriteFrame(UNiagaraComponent* NiagaraComponent)
 			{
 				if ( UObject* StorageObject = DataInterfaceStorage.FindRef(Variable) )
 				{
+					INiagaraSimCacheCustomStorageInterface* SimCacheCustomStorageInterface = CastChecked<INiagaraSimCacheCustomStorageInterface>(DataInterface);
 					const void* PerInstanceData = Helper.SystemInstance->FindDataInterfaceInstanceData(DataInterface);
-					bDataInterfacesSucess &= DataInterface->SimCacheWriteFrame(StorageObject, FrameIndex, Helper.SystemInstance, PerInstanceData);
+					if (!SimCacheCustomStorageInterface->SimCacheWriteFrame(StorageObject, FrameIndex, Helper.SystemInstance, PerInstanceData, FeedbackContext))
+					{
+						bDataInterfacesSucess = false;
+						DataInterfaceName += FString::Printf(TEXT("%s "), *DataInterface->GetName());
+					}
 				}
 				return true;
 			}
@@ -277,6 +395,7 @@ bool UNiagaraSimCache::WriteFrame(UNiagaraComponent* NiagaraComponent)
 		// A data interface failed to write information
 		if (bDataInterfacesSucess == false)
 		{
+			FeedbackContext.Errors.Emplace(FString::Printf(TEXT("Data interface(s) %s failed to write information for system %s"), *DataInterfaceName, *Helper.SystemInstance->GetCrashReporterTag()));
 			SoftNiagaraSystem.Reset();
 			return false;
 		}
@@ -292,6 +411,7 @@ bool UNiagaraSimCache::EndWrite()
 		SoftNiagaraSystem.Reset();
 	}
 
+
 	if (DataInterfaceStorage.IsEmpty() == false)
 	{
 		bool bDataInterfacesSucess = true;
@@ -299,13 +419,73 @@ bool UNiagaraSimCache::EndWrite()
 		{
 			UClass* DataInterfaceClass = it.Key().GetType().GetClass();
 			check(DataInterfaceClass != nullptr);
-			UNiagaraDataInterface* DataInterface = CastChecked<UNiagaraDataInterface>(DataInterfaceClass->GetDefaultObject());
-			bDataInterfacesSucess &= DataInterface->SimCacheEndWrite(it.Value());
+			INiagaraSimCacheCustomStorageInterface* SimCacheCustomStorageInterface = CastChecked<INiagaraSimCacheCustomStorageInterface>(DataInterfaceClass->GetDefaultObject());
+			bDataInterfacesSucess &= SimCacheCustomStorageInterface->SimCacheEndWrite(it.Value());
 		}
 
 		if (bDataInterfacesSucess == false)
 		{
 			SoftNiagaraSystem.Reset();
+		}
+	}
+
+	// If we allow interpolation we need to build our mapping table from Current -> Next
+	if (CreateParameters.bAllowInterpolation && CacheFrames.Num() > 0)
+	{
+		const auto& CreateInterpMapping =
+			[this](const FNiagaraSimCacheDataBuffersLayout& BufferLayout, FNiagaraSimCacheDataBuffers& BufferA, const FNiagaraSimCacheDataBuffers& BufferB)
+			{
+				if (BufferLayout.bAllowInterpolation == false)
+				{
+					return;
+				}
+
+				TMap<int32, int32> BufferIndexMap;
+				BufferIndexMap.Reserve(BufferB.InterpMapping.Num());
+				for (int32 i = 0; i < BufferB.InterpMapping.Num(); ++i)
+				{
+					BufferIndexMap.Add(BufferB.InterpMapping[i], i);
+				}
+				
+				for (int32 i = 0; i < BufferA.InterpMapping.Num(); ++i)
+				{
+					int32* Mapping = BufferIndexMap.Find(BufferA.InterpMapping[i]);
+					BufferA.InterpMapping[i] = Mapping ? *Mapping : INDEX_NONE;
+				}
+			};
+
+		const auto& ClearInterpMapping =
+			[this](const FNiagaraSimCacheDataBuffersLayout& BufferLayout, FNiagaraSimCacheDataBuffers& BufferA)
+			{
+				if (BufferLayout.bAllowInterpolation == false)
+				{
+					return;
+				}
+
+				for (int32 i = 0; i < BufferA.InterpMapping.Num(); ++i)
+				{
+					BufferA.InterpMapping[i] = INDEX_NONE;
+				}
+			};
+
+		// Do all frames that can Interp first
+		for (int32 iFrame=0; iFrame < CacheFrames.Num() - 1; ++iFrame)
+		{
+			FNiagaraSimCacheFrame& CacheFrameA = CacheFrames[iFrame];
+			const FNiagaraSimCacheFrame& CacheFrameB = CacheFrames[iFrame + 1];
+
+			CreateInterpMapping(CacheLayout.SystemLayout, CacheFrameA.SystemData.SystemDataBuffers, CacheFrameB.SystemData.SystemDataBuffers);
+			for (int32 iEmitter=0; iEmitter < CacheLayout.EmitterLayouts.Num(); ++iEmitter)
+			{
+				CreateInterpMapping(CacheLayout.EmitterLayouts[iEmitter], CacheFrameA.EmitterData[iEmitter].ParticleDataBuffers, CacheFrameB.EmitterData[iEmitter].ParticleDataBuffers);
+			}
+		}
+
+		// Final frame is special as we won't Interp
+		ClearInterpMapping(CacheLayout.SystemLayout, CacheFrames.Last().SystemData.SystemDataBuffers);
+		for (int32 iEmitter = 0; iEmitter < CacheLayout.EmitterLayouts.Num(); ++iEmitter)
+		{
+			ClearInterpMapping(CacheLayout.EmitterLayouts[iEmitter], CacheFrames.Last().EmitterData[iEmitter].ParticleDataBuffers);
 		}
 	}
 
@@ -392,6 +572,9 @@ bool UNiagaraSimCache::CanRead(UNiagaraSystem* NiagaraSystem)
 
 bool UNiagaraSimCache::Read(float TimeSeconds, FNiagaraSystemInstance* SystemInstance) const
 {
+	// Adjust time to match our allow resolution
+	TimeSeconds = FMath::RoundToFloat(TimeSeconds * CacheAgeResolution) / CacheAgeResolution;
+
 	const float RelativeTime = FMath::Max(TimeSeconds - StartSeconds, 0.0f);
 	if ( RelativeTime > DurationSeconds )
 	{
@@ -399,9 +582,48 @@ bool UNiagaraSimCache::Read(float TimeSeconds, FNiagaraSystemInstance* SystemIns
 		return false;
 	}
 
-	const float FrameTime		= DurationSeconds > 0.0f ? (RelativeTime / DurationSeconds) * float(CacheFrames.Num() - 1) : 0.0f;
-	const float FrameIndex		= FMath::Floor(FrameTime);
-	const float FrameFraction	= FrameTime - float(FrameIndex);
+	//const float FrameTime		= DurationSeconds > 0.0f ? (RelativeTime / DurationSeconds) * float(CacheFrames.Num() - 1) : 0.0f;
+	//const int32 FrameIndex		= FMath::FloorToInt(FrameTime);
+	//const float FrameFraction	= FrameTime - float(FrameIndex);
+
+	// Take a guess at the frame then iterate to find the actual frame
+	// We have to do this because not all sources are recording the cache at a consistent rate
+	// This could also be replaced with a binary search but in most cases our guess will be very close to the actual
+	const int32 NumFramesMinusOne = CacheFrames.Num() - 1;
+
+	int32 FrameIndex = 0;
+	float FrameFraction = 0.0f;
+	if (DurationSeconds > 0.0f)
+	{
+		FrameIndex = FMath::FloorToInt((RelativeTime / DurationSeconds) * float(NumFramesMinusOne));
+	}
+
+	if ( CacheFrames[FrameIndex].SimulationAge > TimeSeconds)
+	{
+		while (FrameIndex > 0 && CacheFrames[FrameIndex].SimulationAge > TimeSeconds )
+		{
+			--FrameIndex;
+		}
+	}
+	else
+	{
+		while (FrameIndex < NumFramesMinusOne && CacheFrames[FrameIndex + 1].SimulationAge <= TimeSeconds)
+		{
+			++FrameIndex;
+		}
+	}
+
+	if (FrameIndex < NumFramesMinusOne)
+	{
+		const float SimulationAgeA = CacheFrames[FrameIndex].SimulationAge;
+		const float SimulationAgeB = CacheFrames[FMath::Min(FrameIndex + 1, NumFramesMinusOne)].SimulationAge;
+		FrameFraction = (TimeSeconds - SimulationAgeA) / (SimulationAgeB - SimulationAgeA);
+		if (!CreateParameters.bAllowInterpolation && !CreateParameters.bAllowVelocityExtrapolation && FrameFraction > 0.5f)
+		{
+			FrameFraction = 0.0f;
+			FrameIndex = FrameIndex + 1;
+		}
+	}
 
 	return ReadFrame(FrameIndex, FrameFraction, SystemInstance);
 }
@@ -424,8 +646,13 @@ bool UNiagaraSimCache::ReadFrame(int32 FrameIndex, float FrameFraction, FNiagara
 		RebaseTransform = RebaseTransform * CacheFrame.LocalToWorld.Inverse();
 	}
 
+
+	const int32 NextFrameIndex = FMath::Min(FrameIndex + 1, CacheFrames.Num() - 1);
+	const float FrameDeltaSeconds = CacheFrames[NextFrameIndex].SimulationAge - CacheFrame.SimulationAge;
+	const float SimDeltaSeconds = Helper.SystemInstance->CachedDeltaSeconds;
+
 	Helper.SystemInstance->LocalBounds = CacheFrame.SystemData.LocalBounds;
-	Helper.ReadDataBuffer(RebaseTransform, CacheLayout.SystemLayout, CacheFrame.SystemData.SystemDataBuffers, Helper.GetSystemSimulationDataSet());
+	Helper.ReadDataBuffer(FrameFraction, FrameDeltaSeconds, SimDeltaSeconds, RebaseTransform, CacheLayout.SystemLayout, CacheFrame.SystemData.SystemDataBuffers, CacheFrame.SystemData.SystemDataBuffers, Helper.GetSystemSimulationDataSet());
 
 	const int32 NumEmitters = CacheLayout.EmitterLayouts.Num();
 	for (int32 i=0; i < NumEmitters; ++i)
@@ -435,13 +662,14 @@ bool UNiagaraSimCache::ReadFrame(int32 FrameIndex, float FrameFraction, FNiagara
 		EmitterInstance.CachedBounds = CacheEmitterFrame.LocalBounds;
 		EmitterInstance.TotalSpawnedParticles = CacheEmitterFrame.TotalSpawnedParticles;
 
+		const FNiagaraSimCacheEmitterFrame& CacheEmitterFrameB = CacheFrames[NextFrameIndex].EmitterData[i];
 		if (CacheLayout.EmitterLayouts[i].SimTarget == ENiagaraSimTarget::GPUComputeSim)
 		{
-			Helper.ReadDataBufferGPU(RebaseTransform, EmitterInstance, CacheLayout.EmitterLayouts[i], CacheEmitterFrame.ParticleDataBuffers, EmitterInstance.GetData(), PendingCommandsInFlight);
+			Helper.ReadDataBufferGPU(FrameFraction, FrameDeltaSeconds, SimDeltaSeconds, RebaseTransform, EmitterInstance, CacheLayout.EmitterLayouts[i], CacheEmitterFrame.ParticleDataBuffers, CacheEmitterFrameB.ParticleDataBuffers, EmitterInstance.GetData(), PendingCommandsInFlight);
 		}
 		else
 		{
-			Helper.ReadDataBuffer(RebaseTransform, CacheLayout.EmitterLayouts[i], CacheEmitterFrame.ParticleDataBuffers, EmitterInstance.GetData());
+			Helper.ReadDataBuffer(FrameFraction, FrameDeltaSeconds, SimDeltaSeconds, RebaseTransform, CacheLayout.EmitterLayouts[i], CacheEmitterFrame.ParticleDataBuffers, CacheEmitterFrameB.ParticleDataBuffers, EmitterInstance.GetData());
 		}
 	}
 
@@ -449,7 +677,6 @@ bool UNiagaraSimCache::ReadFrame(int32 FrameIndex, float FrameFraction, FNiagara
 	//-OPT: We shouldn't need to search all the time here
 	if (DataInterfaceStorage.IsEmpty() == false)
 	{
-		const int NextFrameIndex = FMath::Min(FrameIndex + 1, CacheFrames.Num() - 1);
 		bool bDataInterfacesSucess = true;
 
 		FNiagaraDataInterfaceUtilities::ForEachDataInterface(
@@ -458,8 +685,11 @@ bool UNiagaraSimCache::ReadFrame(int32 FrameIndex, float FrameFraction, FNiagara
 			{
 				if (UObject* StorageObject = DataInterfaceStorage.FindRef(Variable))
 				{
-					void* PerInstanceData = Helper.SystemInstance->FindDataInterfaceInstanceData(DataInterface);
-					bDataInterfacesSucess &= DataInterface->SimCacheReadFrame(StorageObject, FrameIndex, NextFrameIndex, FrameFraction, Helper.SystemInstance, PerInstanceData);
+					if (INiagaraSimCacheCustomStorageInterface* SimCacheCustomStorageInterface = Cast<INiagaraSimCacheCustomStorageInterface>(DataInterface))
+					{
+						void* PerInstanceData = Helper.SystemInstance->FindDataInterfaceInstanceData(DataInterface);
+						bDataInterfacesSucess &= SimCacheCustomStorageInterface->SimCacheReadFrame(StorageObject, FrameIndex, NextFrameIndex, FrameFraction, Helper.SystemInstance, PerInstanceData);
+					}
 				}
 				return true;
 			}
@@ -475,9 +705,9 @@ bool UNiagaraSimCache::ReadFrame(int32 FrameIndex, float FrameFraction, FNiagara
 	//-TODO: This should loop over all DataInterfaces that register not just ones with instance data
 	for (TPair<TWeakObjectPtr<UNiagaraDataInterface>, int32>& DataInterfacePair : SystemInstance->DataInterfaceInstanceDataOffsets)
 	{
-		if (UNiagaraDataInterface* Interface = DataInterfacePair.Key.Get())
+		if (INiagaraSimCacheCustomStorageInterface* SimCacheCustomStorageInterface = Cast<INiagaraSimCacheCustomStorageInterface>(DataInterfacePair.Key.Get()))
 		{
-			Interface->SimCachePostReadFrame(&SystemInstance->DataInterfaceInstanceData[DataInterfacePair.Value], SystemInstance);
+			SimCacheCustomStorageInterface->SimCachePostReadFrame(&SystemInstance->DataInterfaceInstanceData[DataInterfacePair.Value], SystemInstance);
 		}
 	}
 	return true;
@@ -496,6 +726,16 @@ int UNiagaraSimCache::GetEmitterIndex(FName EmitterName) const
 		}
 	}
 	return INDEX_NONE;
+}
+
+UNiagaraSystem* UNiagaraSimCache::GetSystem(bool bLoadSynchronous)
+{
+	UNiagaraSystem* NiagaraSystem = SoftNiagaraSystem.Get();
+	if (NiagaraSystem == nullptr && bLoadSynchronous)
+	{
+		NiagaraSystem = SoftNiagaraSystem.LoadSynchronous();
+	}
+	return NiagaraSystem;
 }
 
 TArray<FName> UNiagaraSimCache::GetEmitterNames() const

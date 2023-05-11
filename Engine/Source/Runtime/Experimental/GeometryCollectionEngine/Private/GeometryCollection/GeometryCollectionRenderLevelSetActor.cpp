@@ -6,10 +6,9 @@
 
 #include "Chaos/ArrayND.h"
 #include "Chaos/Vector.h"
+#include "Materials/Material.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(GeometryCollectionRenderLevelSetActor)
-
-using namespace Chaos;
 
 DEFINE_LOG_CATEGORY_STATIC(LSR_LOG, Log, All);
 
@@ -127,6 +126,8 @@ void AGeometryCollectionRenderLevelSetActor::SyncLevelSetTransform(const FTransf
 
 bool AGeometryCollectionRenderLevelSetActor::SetLevelSetToRender(const Chaos::FLevelSet &LevelSet, const FTransform &LocalToWorld)
 {
+	using namespace Chaos;
+
 	// error case when the target volume texture isn't set
 	if (TargetVolumeTexture == NULL)
 	{

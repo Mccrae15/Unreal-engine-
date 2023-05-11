@@ -9,12 +9,15 @@
 #include "LidarPointCloudActor.h"
 #include "LidarPointCloudComponent.h"
 #include "MeshDescription.h"
+#include "SceneView.h"
 #include "Selection.h"
 #include "StaticMeshAttributes.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/StaticMeshActor.h"
 #include "Misc/ScopedSlowTask.h"
 #include "PhysicsEngine/BodySetup.h"
+#include "StaticMeshResources.h"
+#include "UObject/UObjectIterator.h"
 
 #define LOCTEXT_NAMESPACE "LidarPointCloudEditorHelper"
 

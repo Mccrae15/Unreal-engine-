@@ -38,8 +38,9 @@ public:
 
 	TDenseGrid2(int32 DimX, int32 DimY, ElemType InitialValue)
 	{
-		Resize(DimX, DimY);
-		Assign(InitialValue);
+		DimensionX = (int64)DimX;
+		DimensionY = (int64)DimY;
+		Buffer.Init(InitialValue, Size());
 	}
 
 	int64 Size() const
@@ -129,6 +130,10 @@ public:
 		return Buffer[X + DimensionX * Y];
 	}
 
+	TArray64<ElemType>& GridValues()
+	{
+		return Buffer;
+	}
 	const TArray64<ElemType>& GridValues() const
 	{
 		return Buffer;

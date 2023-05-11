@@ -34,6 +34,8 @@ namespace UE
 namespace MovieScene
 {
 
+FComponentMask GEntityManagerEmptyMask;
+
 // @todo: this is a very rough initial guess at the break even point for when threaded evaluation becomes beneficial, and will vary highly between platforms and hardware.
 // We may wish to make this more flexible in future (such as only threading hot paths such as float channel evaluation) by enabling threading per-task, but more data is required to make such decisions
 int32 GThreadedEvaluationAllocationThreshold = 32;
@@ -271,9 +273,11 @@ FFreeEntityOperation::FCommitData FFreeEntityOperation::Commit() const
 {
 	FFreeEntityOperation::FCommitData CommitData;
 
+	FBuiltInComponentTypes* BuiltInComponents = FBuiltInComponentTypes::Get();
+
 	TArray<FMovieSceneEntityID, TInlineAllocator<16>> EntitiesScratch;
 
-	auto MarkChildrenForFree = [this, &EntitiesScratch, &CommitData](FMovieSceneEntityID Entity)
+	auto MarkChildrenForFree = [this, &EntitiesScratch, &CommitData, BuiltInComponents](FMovieSceneEntityID Entity)
 	{
 		for (auto ChildIt = this->EntityManager->ParentToChild.CreateKeyIterator(Entity); ChildIt; ++ChildIt)
 		{
@@ -291,6 +295,8 @@ FFreeEntityOperation::FCommitData FFreeEntityOperation::Commit() const
 				FEntityManager::FEntityLocation Location = EntityManager->EntityLocations[MarkedEntity.AsIndex()];
 				if (Location.IsValid())
 				{
+					ensureAlwaysMsgf(EntityManager->EntityAllocationMasks[Location.GetAllocationIndex()].Contains(BuiltInComponents->Tags.NeedsUnlink), TEXT("Attempting to free an entity that has not been unlinked - this might result in stale references"));
+
 					FAllocationMask& Mask = CommitData.AllocationsToEntities.FindOrAdd(Location.GetAllocationIndex());
 					if (!Mask.bDestroyAllocation)
 					{
@@ -368,6 +374,7 @@ FEntityManager::FEntityManager()
 	LockdownState = ELockdownState::Unlocked;
 	SystemSerialNumber = 1;
 	StructureMutationSystemSerialNumber = 0;
+	ThreadingModel = EEntityThreadingModel::NoThreading;
 }
 
 FEntityManager::~FEntityManager()
@@ -540,7 +547,7 @@ bool FEntityManager::IsHandleValid(FEntityHandle InEntityHandle) const
 	return Generation && *Generation == InEntityHandle.HandleGeneration;
 }
 
-EEntityThreadingModel FEntityManager::GetThreadingModel() const
+EEntityThreadingModel FEntityManager::ComputeThreadingModel() const
 {
 	const bool bCanThread = FPlatformProcess::SupportsMultithreading();
 
@@ -549,6 +556,16 @@ EEntityThreadingModel FEntityManager::GetThreadingModel() const
 		EntityLocations.Num() >= GThreadedEvaluationEntityThreshold);
 
 	return bShouldThread ? EEntityThreadingModel::TaskGraph : EEntityThreadingModel::NoThreading;
+}
+
+EEntityThreadingModel FEntityManager::GetThreadingModel() const
+{
+	return ThreadingModel;
+}
+
+void FEntityManager::UpdateThreadingModel()
+{
+	ThreadingModel = ComputeThreadingModel();
 }
 
 const FComponentMask& FEntityManager::GetAccumulatedMask() const
@@ -987,7 +1004,7 @@ void FEntityManager::EnterIteration() const
 
 void FEntityManager::ExitIteration() const
 {
-	checkSlow(IterationCount > 0);
+	checkSlow(static_cast<uint16>(IterationCount) > 0);
 	--IterationCount;
 }
 
@@ -1070,7 +1087,11 @@ int32 FEntityManager::GetOrCreateAllocationWithSlack(const FComponentMask& Entit
 			return AllocationIndex;
 		}
 	}
+	return CreateAllocationWithSlack(EntityComponentMask, InOutDesiredSlack);
+}
 
+int32 FEntityManager::CreateAllocationWithSlack(const FComponentMask& EntityComponentMask, int32* InOutDesiredSlack)
+{
 	static const uint16 MaxCapacity = 2048;
 
 	uint16 DefaultCapacity = 4;
@@ -1099,7 +1120,6 @@ void FEntityManager::AddComponent(FMovieSceneEntityID EntityID, FComponentTypeID
 		if (ExistingMask.Contains(ComponentType))
 		{
 			// Entity already has this component type
-			// @todo: Should this be an error?
 			return;
 		}
 
@@ -1204,10 +1224,10 @@ bool FEntityManager::HasComponent(FMovieSceneEntityID EntityID, FComponentTypeID
 	return Location.IsValid() && EntityAllocationMasks[Location.GetAllocationIndex()].Contains(ComponentType);
 }
 
-FComponentMask FEntityManager::GetEntityType(FMovieSceneEntityID EntityID) const
+const FComponentMask& FEntityManager::GetEntityType(FMovieSceneEntityID EntityID) const
 {
 	FEntityLocation Location = EntityLocations[EntityID.AsIndex()];
-	return Location.IsValid() ? EntityAllocationMasks[Location.GetAllocationIndex()] : FComponentMask();
+	return Location.IsValid() ? EntityAllocationMasks[Location.GetAllocationIndex()] : GEntityManagerEmptyMask;
 }
 
 void FEntityManager::ChangeEntityType(FMovieSceneEntityID EntityID, const FComponentMask& InNewMask)
@@ -1619,6 +1639,11 @@ int32 FEntityManager::MutateAll(const FEntityComponentFilter& Filter, const IMov
 			{
 				AllocationMutations.Add(AllocationIndex, MoveTemp(NewMutation));
 			}
+			else
+			{
+				FEntityAllocation* SourceAllocation = EntityAllocations[AllocationIndex];
+				Mutation.InitializeUnmodifiedAllocation(SourceAllocation, NewMutation);
+			}
 		}
 	}
 
@@ -1643,6 +1668,8 @@ int32 FEntityManager::MutateAll(const FEntityComponentFilter& Filter, const IMov
 		EntityAllocationMasks[Pair.Key] = Pair.Value;
 		EntityAllocations[Pair.Key] = NewAllocation;
 
+		FEntityAllocationMutexGuard LockGuard(NewAllocation, EComponentHeaderLockMode::LockFree);
+
 		// Default construct all the new components in the allocation, and then allow the mutation to further initialize this data if needed
 		for (FComponentMaskIterator Component = Pair.Value.Iterate(); Component; ++Component)
 		{
@@ -1664,6 +1691,128 @@ int32 FEntityManager::MutateAll(const FEntityComponentFilter& Filter, const IMov
 		Mutation.InitializeAllocation(NewAllocation, Pair.Value);
 
 		DestroyAllocation(SourceAllocation);
+	}
+
+	CheckInvariants();
+
+	OnStructureChanged();
+
+	return TotalNumMutations;
+}
+
+int32 FEntityManager::MutateConditional(const FEntityComponentFilter& Filter, const IMovieSceneConditionalEntityMutation& Mutation)
+{
+	CheckCanChangeStructure();
+
+	TMap<int32, TTuple<FComponentMask, TBitArray<>>> AllocationMutations;
+
+	for (int32 AllocationIndex = 0; AllocationIndex < EntityAllocationMasks.GetMaxIndex(); ++AllocationIndex)
+	{
+		if (EntityAllocationMasks.IsAllocated(AllocationIndex) && Filter.Match(EntityAllocationMasks[AllocationIndex]))
+		{
+			FEntityAllocation* SourceAllocation = EntityAllocations[AllocationIndex];
+
+			TBitArray<> MarkedEntities;
+			Mutation.MarkAllocation(SourceAllocation, MarkedEntities);
+
+			if (MarkedEntities.Num() == 0)
+			{
+				continue;
+			}
+
+			const int32 NumIrrelevantBits = MarkedEntities.Num() - SourceAllocation->Num();
+			if (NumIrrelevantBits > 1)
+			{
+				MarkedEntities.RemoveAt(SourceAllocation->Num(), NumIrrelevantBits);
+			}
+
+			FComponentMask NewMutation = EntityAllocationMasks[AllocationIndex];
+			Mutation.CreateMutation(this, &NewMutation);
+
+			if (!NewMutation.CompareSetBits(EntityAllocationMasks[AllocationIndex]))
+			{
+				AllocationMutations.Add(AllocationIndex, MakeTuple(MoveTemp(NewMutation), MoveTemp(MarkedEntities)));
+			}
+		}
+	}
+
+	if (AllocationMutations.Num() == 0)
+	{
+		return 0;
+	}
+
+	int32 TotalNumMutations = 0;
+
+	for (TTuple<int32, TTuple<FComponentMask, TBitArray<>>>& Pair : AllocationMutations)
+	{
+		const int32 SourceAllocationIndex = Pair.Key;
+		FEntityAllocation* SourceAllocation = EntityAllocations[SourceAllocationIndex];
+
+		const int32 NumEntities = Pair.Value.Value.CountSetBits();
+		const bool bAllEntitiesMarked = NumEntities == SourceAllocation->Num();
+
+		TotalNumMutations += NumEntities;
+
+		if (bAllEntitiesMarked)
+		{
+			// When adding a component to an entire allocation we just reallocate within the same allocation entry to avoid having to fix up 
+			// Specific entity entry indices
+			FEntityAllocation* NewAllocation = MigrateAllocation(SourceAllocationIndex, Pair.Value.Key);
+
+			// Default construct all the new components in the allocation, and then allow the mutation to further initialize this data if needed
+			for (FComponentMaskIterator Component = Pair.Value.Key.Iterate(); Component; ++Component)
+			{
+				FComponentTypeID ComponentTypeID = FComponentTypeID::FromBitIndex(Component.GetIndex());
+				if (EntityAllocationMasks[SourceAllocationIndex].Contains(ComponentTypeID))
+				{
+					continue;
+				}
+
+				const FComponentHeader& ComponentHeader = NewAllocation->GetComponentHeaderChecked(ComponentTypeID);
+				if (!ComponentHeader.IsTag())
+				{
+					const FComponentTypeInfo& ComponentTypeInfo = ComponentRegistry->GetComponentTypeChecked(ComponentTypeID);
+
+					void* Components = ComponentHeader.GetValuePtr(0);
+					ComponentTypeInfo.ConstructItems(Components, NewAllocation->Num());
+				}
+			}
+
+			EntityAllocationMasks[SourceAllocationIndex] = Pair.Value.Key;
+			EntityAllocations[SourceAllocationIndex] = NewAllocation;
+
+			FEntityRange Range { NewAllocation, 0, NewAllocation->Num() };
+
+			Mutation.InitializeEntities(Range, Pair.Value.Key);
+
+			DestroyAllocation(SourceAllocation);
+		}
+		else
+		{
+			int32 DesiredSlack = NumEntities;
+			const int32 NewAllocationIndex = CreateAllocationWithSlack(Pair.Value.Key, &DesiredSlack);
+
+			const FEntityAllocation* DestAllocation = EntityAllocations[NewAllocationIndex];
+			FEntityRange Range { DestAllocation, DestAllocation->Num(), NumEntities };
+
+			const FMovieSceneEntityID* EntityIDs = SourceAllocation->GetRawEntityIDs();
+
+			// Migrate entities to the new allocation - care is taken to iterate the allocation backwards
+			// since entities can shift around in the allocation as they are migrated
+			for (TBitArray<>::FConstReverseIterator It(Pair.Value.Value); It; ++It)
+			{
+				if (It.GetValue())
+				{
+					FEntityLocation& Location = EntityLocations[EntityIDs[It.GetIndex()].AsIndex()];
+
+					int32 NewEntityIndex = MigrateEntity(NewAllocationIndex, Location.GetAllocationIndex(), Location.GetEntryIndexWithinAllocation());
+					Location.Set(NewAllocationIndex, NewEntityIndex);
+				}
+			}
+
+			check(Range.ComponentStartOffset + Range.Num == Range.Allocation->Num());
+			Mutation.InitializeEntities(Range, Pair.Value.Key);
+		}
 	}
 
 	CheckInvariants();
@@ -1735,28 +1884,6 @@ void FEntityManager::InitializeChildAllocation(const FComponentMask& ParentType,
 	}
 }
 
-void FEntityManager::InitializeMutualComponents(FMovieSceneEntityID EntityID)
-{
-	FEntityLocation Location = EntityLocations[EntityID.AsIndex()];
-	if (Location.IsValid())
-	{
-		return;
-	}
-
-	const FComponentMask& EntityType = EntityAllocationMasks[Location.GetAllocationIndex()];
-	FEntityAllocation* Allocation = EntityAllocations[Location.GetAllocationIndex()];
-
-	FEntityRange Range = { Allocation, Location.GetEntryIndexWithinAllocation(), 1 };
-
-	for (const TInlineValue<FMutualEntityInitializer>& MutualInit : ComponentRegistry->Factories.MutualInitializers)
-	{
-		if (MutualInit->IsRelevant(EntityType))
-		{
-			MutualInit->Run(Range);
-		}
-	}
-}
-
 void FEntityManager::AddMutualComponents()
 {
 	AddMutualComponents(FEntityComponentFilter());
@@ -1815,16 +1942,6 @@ void FEntityManager::AddMutualComponents(const FEntityComponentFilter& InFilter)
 
 				void* Components = ComponentHeader.GetValuePtr(0);
 				ComponentTypeInfo.ConstructItems(Components, NewAllocation->Num());
-			}
-		}
-
-		FEntityRange Range = { NewAllocation, 0, NewAllocation->Num() };
-		for (const TInlineValue<FMutualEntityInitializer>& MutualInit : ComponentRegistry->Factories.MutualInitializers)
-		{
-			// Only run mutual initializers for _new_ component types (ie, ones that were actually added)
-			if (NewComponents.Contains(MutualInit->GetComponentA()) && Pair.Value.Contains(MutualInit->GetComponentB()))
-			{
-				MutualInit->Run(Range);
 			}
 		}
 

@@ -3,23 +3,27 @@
 #include "GroomAsset.h"
 
 #include "Async/Async.h"
+#include "Engine/Texture2D.h"
 #include "EngineUtils.h"
 #include "GroomAssetImportData.h"
 #include "GroomBuilder.h"
 #include "HairCardsBuilder.h"
 #include "GroomImportOptions.h"
 #include "GroomSettings.h"
+#include "Materials/MaterialInterface.h"
 #include "RenderingThread.h"
 #include "Engine/AssetUserData.h"
 #include "HairStrandsVertexFactory.h"
 #include "HAL/LowLevelMemTracker.h"
 #include "Misc/App.h"
 #include "Misc/Paths.h"
+#include "RHIStaticStates.h"
 #include "Serialization/LargeMemoryReader.h"
 #include "Serialization/LargeMemoryWriter.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
 #include "UObject/AnimObjectVersion.h"
+#include "UObject/Package.h"
 #include "UObject/PhysicsObjectVersion.h"
 #include "UObject/ReleaseObjectVersion.h"
 #include "UObject/UE5MainStreamObjectVersion.h"
@@ -34,6 +38,13 @@
 #include "GroomDeformerBuilder.h"
 #include "HairCardsVertexFactory.h"
 #include "PSOPrecache.h"
+#include "UObject/UObjectIterator.h"
+#include "UObject/DevObjectVersion.h"
+
+#if WITH_EDITORONLY_DATA
+#include "DerivedDataCache.h"
+#include "DerivedDataRequestOwner.h"
+#endif
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(GroomAsset)
 
@@ -803,7 +814,7 @@ TArray<FHairVertexFactoryTypesPerMaterialData> UGroomAsset::CollectVertexFactory
 			VFsPerMaterial->MaterialIndex = InMaterialIndex;
 			VFsPerMaterial->HairGeometryType = InHairGeometryType;
 		}
-		VFsPerMaterial->VertexFactoryTypes.AddUnique(InVFType);
+		VFsPerMaterial->VertexFactoryDataList.AddUnique(FPSOPrecacheVertexFactoryData(InVFType));
 	};
 
 	const int32 GroupCount = GetNumHairGroups();
@@ -939,7 +950,7 @@ void UGroomAsset::UpdateResource()
 					HairGroupsInfo,
 					HairGroupsData);
 
-				GroupData.Strands.ClusterCullingResource = new FHairStrandsClusterCullingResource(GroupData.Strands.ClusterCullingBulkData, FHairResourceName(GetFName(), GroupIndex));
+				GroupData.Strands.ClusterCullingResource = new FHairStrandsClusterCullingResource(GroupData.Strands.ClusterCullingBulkData, FHairResourceName(GetFName(), GroupIndex), GetAssetPathName());
 			}
 			else
 			{
@@ -1281,13 +1292,14 @@ void UGroomAsset::PostLoad()
 
 		TArray<FHairVertexFactoryTypesPerMaterialData> VFsPerMaterials = CollectVertexFactoryTypesPerMaterialData(ShaderPlatform);
 
+		TArray<FMaterialPSOPrecacheRequestID> RequestIDs;
 		FPSOPrecacheParams PrecachePSOParams;
 		for (FHairVertexFactoryTypesPerMaterialData& VFsPerMaterial : VFsPerMaterials)
 		{
 			UMaterialInterface* MaterialInterface = HairGroupsMaterials[VFsPerMaterial.MaterialIndex].Material;
 			if (MaterialInterface)
 			{
-				MaterialInterface->PrecachePSOs(VFsPerMaterial.VertexFactoryTypes, PrecachePSOParams);
+				MaterialInterface->PrecachePSOs(VFsPerMaterial.VertexFactoryDataList, PrecachePSOParams, EPSOPrecachePriority::Medium, RequestIDs);
 			}
 		}
 	}
@@ -1872,7 +1884,10 @@ void UGroomAsset::SetHairWidth(float Width)
 // differences, etc.) replace the version GUID below with a new one.
 // In case of merge conflicts with DDC versions, you MUST generate a new GUID
 // and set this new GUID as the version.
-#define GROOM_DERIVED_DATA_VERSION TEXT("13E1F608CE4F4343816324E3AC11C04B")
+// DDC Guid needs to be bumped in:
+// * Main    : Engine\Source\Runtime\Core\Private\UObject\DevObjectVersion.cpp
+// * Release : Engine\Source\Runtime\Core\Private\UObject\UE5ReleaseStreamObjectVersion.cpp
+// * ...
 
 #if WITH_EDITORONLY_DATA
 
@@ -1880,7 +1895,7 @@ namespace GroomDerivedDataCacheUtils
 {
 	const FString& GetGroomDerivedDataVersion()
 	{
-		static FString CachedVersionString(GROOM_DERIVED_DATA_VERSION);
+		static FString CachedVersionString = FDevSystemGuids::GetSystemGuid(FDevSystemGuids::Get().GROOM_DERIVED_DATA_VERSION).ToString();
 		return CachedVersionString;
 	}
 
@@ -2275,29 +2290,31 @@ bool UGroomAsset::CacheStrandsData(uint32 GroupIndex, FString& OutDerivedDataKey
 		return false;
 	}
 
+	using namespace UE::DerivedData;
+
 	const FString DerivedDataKey = UGroomAsset::GetDerivedDataKeyForStrands(GroupIndex);
+	const FCacheKey Key = ConvertLegacyCacheKey(DerivedDataKey);
+	const FSharedString Name = MakeStringView(GetPathName());
+	FSharedBuffer Data;
+	{
+		FRequestOwner Owner(EPriority::Blocking);
+		GetCache().GetValue({ {Name, Key} }, Owner, [&Data](FCacheGetValueResponse&& Response)
+		{
+			Data = Response.Value.GetData().Decompress();
+		});
+		Owner.Wait();
+	}
 
 	bool bSuccess = true;
-	TArray<uint8> DerivedData;
-	if (GetDerivedDataCacheRef().GetSynchronous(*DerivedDataKey, DerivedData, GetPathName()))
+	if (Data)
 	{
 		UE_CLOG(IsHairStrandsDDCLogEnable(), LogHairStrands, Log, TEXT("[Groom/DDC] Strands - Found (Groom:%s Group6:%d)."), *GetName(), GroupIndex);
 
-		FMemoryReader Ar(DerivedData, /*bIsPersistent=*/ true);
-
-		int64 UncompressedSize = 0;
-		Ar << UncompressedSize;
-
-		uint8* DecompressionBuffer = reinterpret_cast<uint8*>(FMemory::Malloc(UncompressedSize));
-		Ar.SerializeCompressed(DecompressionBuffer, UncompressedSize, NAME_Zlib);
-
-		FHairGroupData& HairGroupData = HairGroupsData[GroupIndex];
-
 		// Reset hair group data to ensure previously loaded bulk data are cleared/cleaned priori to load new data.
-		HairGroupData = FHairGroupData();
+		HairGroupsData[GroupIndex] = FHairGroupData();
 
-		FLargeMemoryReader LargeMemReader(DecompressionBuffer, UncompressedSize, ELargeMemoryReaderFlags::Persistent | ELargeMemoryReaderFlags::TakeOwnership);
-		InternalSerialize(LargeMemReader, this, HairGroupData);
+		FMemoryReaderView Ar(Data, /*bIsPersistent*/ true);
+		InternalSerialize(Ar, this, HairGroupsData[GroupIndex]);
 	}
 	else
 	{
@@ -2332,32 +2349,12 @@ bool UGroomAsset::CacheStrandsData(uint32 GroupIndex, FString& OutDerivedDataKey
 		
 		if (bSuccess)
 		{
-			// Using a LargeMemoryWriter for serialization since the data can be bigger than 2 GB
-			FLargeMemoryWriter LargeMemWriter(0, /*bIsPersistent=*/ true);
-			InternalSerialize(LargeMemWriter, this, HairGroupsData[GroupIndex]);
-			int64 UncompressedSize = LargeMemWriter.TotalSize();
-
-			// Then the content of the LargeMemWriter is compressed into a MemoryWriter
-			// Compression ratio can reach about 5:2 depending on the data
-			// Since the DDC doesn't support data bigger than 2 GB
-			// we can compute a size threshold to skip the caching when
-			// the uncompressed size exceeds the threshold
-			static constexpr const int64 SizeThreshold = (int64)MAX_int32 * 2.5;
-			const bool bIsCacheable = UncompressedSize < SizeThreshold;
-			if (bIsCacheable)
-			{
-				FMemoryWriter CompressedArchive(DerivedData, true);
-
-				CompressedArchive << UncompressedSize; // needed for allocating decompression buffer
-				CompressedArchive.SerializeCompressed(LargeMemWriter.GetData(), UncompressedSize, NAME_Zlib);
-
-				GetDerivedDataCacheRef().Put(*DerivedDataKey, DerivedData, GetPathName());
-			}
-			else
-			{
-				UE_LOG(LogHairStrands, Error, TEXT("[Groom/DDC] Strands - The groom asset is too large to be cached into the Derived Data Cache. (Groom:%s, Group:%d, Size %d bytes, DDC Limit: SizeThreshold %d bytes)) ."), *GetName(), GroupIndex, UncompressedSize, SizeThreshold);
-				return false;
-			}
+			TArray<uint8> WriteData;
+			FMemoryWriter Ar(WriteData, /*bIsPersistent*/ true);
+			InternalSerialize(Ar, this, HairGroupsData[GroupIndex]);
+			FRequestOwner AsyncOwner(EPriority::Normal);
+			GetCache().PutValue({ {Name, Key, FValue::Compress(MakeSharedBufferFromArray(MoveTemp(WriteData)))} }, AsyncOwner);
+			AsyncOwner.KeepAlive();
 		}
 	}
 
@@ -2460,12 +2457,24 @@ bool UGroomAsset::CacheCardsGeometry(uint32 GroupIndex, const FString& StrandsKe
 		}
 	}
 
-	TArray<uint8> DerivedData;
-	if (bDataCanBeBuilt && GetDerivedDataCacheRef().GetSynchronous(*DerivedDataKey, DerivedData, GetPathName()))
+	using namespace UE::DerivedData;
+	const FCacheKey Key = ConvertLegacyCacheKey(DerivedDataKey);
+	const FSharedString Name = MakeStringView(GetPathName());
+	FSharedBuffer Data;
+	{
+		FRequestOwner Owner(EPriority::Blocking);
+		GetCache().GetValue({ {Name, Key} }, Owner, [&Data](FCacheGetValueResponse&& Response)
+		{
+			Data = Response.Value.GetData().Decompress();
+		});
+		Owner.Wait();
+	}
+
+	if (Data)
 	{
 		UE_CLOG(IsHairStrandsDDCLogEnable(), LogHairStrands, Log, TEXT("[Groom/DDC] Cards - Found (Groom:%s Group:%d)."), *GetName(), GroupIndex);
 		
-		FMemoryReader Ar(DerivedData, true);
+		FMemoryReaderView Ar(Data, /*bIsPersistent*/ true);
 		InternalSerialize(Ar, this, HairGroupData.Cards.LODs);
 	}
 	else
@@ -2478,10 +2487,12 @@ bool UGroomAsset::CacheCardsGeometry(uint32 GroupIndex, const FString& StrandsKe
 			return false;
 		}
 
-		FMemoryWriter Ar(DerivedData, true);
+		TArray<uint8> WriteData;
+		FMemoryWriter Ar(WriteData, /*bIsPersistent*/ true);
 		InternalSerialize(Ar, this, HairGroupData.Cards.LODs);
-
-		GetDerivedDataCacheRef().Put(*DerivedDataKey, DerivedData, GetPathName());
+		FRequestOwner AsyncOwner(EPriority::Normal);
+		GetCache().PutValue({ {Name, Key, FValue::Compress(MakeSharedBufferFromArray(MoveTemp(WriteData)))} }, AsyncOwner);
+		AsyncOwner.KeepAlive();
 	}
 
 	// Handle the case where the cards data is already cached in the DDC
@@ -2556,12 +2567,25 @@ bool UGroomAsset::CacheMeshesGeometry(uint32 GroupIndex)
 		}
 	}
 
+	using namespace UE::DerivedData;
+	const FCacheKey Key = ConvertLegacyCacheKey(DerivedDataKey);
+	const FSharedString Name = MakeStringView(GetPathName());
+	FSharedBuffer Data;
+	{
+		FRequestOwner Owner(EPriority::Blocking);
+		GetCache().GetValue({ {Name, Key} }, Owner, [&Data](FCacheGetValueResponse&& Response)
+		{
+			Data = Response.Value.GetData().Decompress();
+		});
+		Owner.Wait();
+	}
+
 	TArray<uint8> DerivedData;
 	if (bDataCanBeBuilt && GetDerivedDataCacheRef().GetSynchronous(*DerivedDataKey, DerivedData, GetPathName()))
 	{
 		UE_CLOG(IsHairStrandsDDCLogEnable(), LogHairStrands, Log, TEXT("[Groom/DDC] Meshes - Found (Groom:%s Group:%d)."), *GetName(), GroupIndex);
 
-		FMemoryReader Ar(DerivedData, true);
+		FMemoryReaderView Ar(Data, /*bIsPersistent*/ true);
 		InternalSerialize(Ar, this, HairGroupData.Meshes.LODs);
 	}
 	else
@@ -2574,10 +2598,12 @@ bool UGroomAsset::CacheMeshesGeometry(uint32 GroupIndex)
 			return false;
 		}
 
-		FMemoryWriter Ar(DerivedData, true);
+		TArray<uint8> WriteData;
+		FMemoryWriter Ar(WriteData, /*bIsPersistent*/ true);
 		InternalSerialize(Ar, this, HairGroupData.Meshes.LODs);
-
-		GetDerivedDataCacheRef().Put(*DerivedDataKey, DerivedData, GetPathName());
+		FRequestOwner AsyncOwner(EPriority::Normal);
+		GetCache().PutValue({ {Name, Key, FValue::Compress(MakeSharedBufferFromArray(MoveTemp(WriteData)))} }, AsyncOwner);
+		AsyncOwner.KeepAlive();
 	}
 
 	MeshesDerivedDataKey[GroupIndex] = DerivedDataKey;
@@ -2731,8 +2757,9 @@ bool UGroomAsset::BuildCardsGeometry(uint32 GroupIndex)
 			if (bInitResources)
 			{
 				FHairResourceName ResourceName(GetFName(), GroupIndex, LODIt);
+				const FName OwnerName = GetAssetPathName(LODIt);
 
-				LOD.RestResource = new FHairCardsRestResource(LOD.BulkData, ResourceName);
+				LOD.RestResource = new FHairCardsRestResource(LOD.BulkData, ResourceName, OwnerName);
 				BeginInitResource(LOD.RestResource); // Immediate allocation, as needed for the vertex factory, input stream building
 
 				// 2.1 Load atlas textures
@@ -2745,7 +2772,7 @@ bool UGroomAsset::BuildCardsGeometry(uint32 GroupIndex)
 				LOD.RestResource->bInvertUV = Desc->SourceType == EHairCardsSourceType::Procedural;
 				
 				// 2.2 Load interoplatino resources
-				LOD.InterpolationResource = new FHairCardsInterpolationResource(LOD.InterpolationBulkData, ResourceName);
+				LOD.InterpolationResource = new FHairCardsInterpolationResource(LOD.InterpolationBulkData, ResourceName, OwnerName);
 
 				// Create own interpolation settings for cards.
 				// Force closest guides as this is the most relevant matching metric for cards, due to their coarse geometry
@@ -2789,9 +2816,9 @@ bool UGroomAsset::BuildCardsGeometry(uint32 GroupIndex)
 					GroupData.Guides.BulkData  = LOD.Guides.BulkData;
 				}
 
-				LOD.Guides.RestResource = new FHairStrandsRestResource(LOD.Guides.BulkData, EHairStrandsResourcesType::Cards, ResourceName);
+				LOD.Guides.RestResource = new FHairStrandsRestResource(LOD.Guides.BulkData, EHairStrandsResourcesType::Cards, ResourceName, OwnerName);
 
-				LOD.Guides.InterpolationResource = new FHairStrandsInterpolationResource(LOD.Guides.InterpolationBulkData, ResourceName);
+				LOD.Guides.InterpolationResource = new FHairStrandsInterpolationResource(LOD.Guides.InterpolationBulkData, ResourceName, OwnerName);
 
 				// Update card stats to display
 				Desc->CardsInfo.NumCardVertices = LOD.BulkData.GetNumVertices();
@@ -3003,7 +3030,7 @@ FHairStrandsRestResource* UGroomAsset::AllocateGuidesResources(uint32 GroupIndex
 		{
 			if (GroupData.Guides.RestResource == nullptr)
 			{
-				GroupData.Guides.RestResource = new FHairStrandsRestResource(GroupData.Guides.BulkData, EHairStrandsResourcesType::Guides, FHairResourceName(GetFName(), GroupIndex));
+				GroupData.Guides.RestResource = new FHairStrandsRestResource(GroupData.Guides.BulkData, EHairStrandsResourcesType::Guides, FHairResourceName(GetFName(), GroupIndex), GetAssetPathName());
 			}
 			return GroupData.Guides.RestResource;
 		}
@@ -3019,7 +3046,7 @@ FHairStrandsInterpolationResource* UGroomAsset::AllocateInterpolationResources(u
 		check(GroupData.Guides.IsValid());
 		if (GroupData.Strands.InterpolationResource == nullptr)
 		{
-			GroupData.Strands.InterpolationResource = new FHairStrandsInterpolationResource(GroupData.Strands.InterpolationBulkData, FHairResourceName(GetFName(), GroupIndex));
+			GroupData.Strands.InterpolationResource = new FHairStrandsInterpolationResource(GroupData.Strands.InterpolationBulkData, FHairResourceName(GetFName(), GroupIndex), GetAssetPathName());
 		}
 		return GroupData.Strands.InterpolationResource;
 	}
@@ -3029,7 +3056,7 @@ FHairStrandsInterpolationResource* UGroomAsset::AllocateInterpolationResources(u
 #if RHI_RAYTRACING
 FHairStrandsRaytracingResource* UGroomAsset::AllocateCardsRaytracingResources(uint32 GroupIndex, uint32 LODIndex)
 {
-	if (IsRayTracingEnabled() && GroupIndex < uint32(GetNumHairGroups()) && LODIndex < uint32(HairGroupsLOD[GroupIndex].LODs.Num()))
+	if (IsRayTracingAllowed() && GroupIndex < uint32(GetNumHairGroups()) && LODIndex < uint32(HairGroupsLOD[GroupIndex].LODs.Num()))
 	{
 		FHairGroupData& GroupData = HairGroupsData[GroupIndex];
 		FHairGroupData::FCards::FLOD& LOD = GroupData.Cards.LODs[LODIndex];
@@ -3037,7 +3064,7 @@ FHairStrandsRaytracingResource* UGroomAsset::AllocateCardsRaytracingResources(ui
 
 		if (LOD.RaytracingResource == nullptr)
 		{
-			LOD.RaytracingResource = new FHairStrandsRaytracingResource(LOD.BulkData, FHairResourceName(GetFName(), GroupIndex, LODIndex));
+			LOD.RaytracingResource = new FHairStrandsRaytracingResource(LOD.BulkData, FHairResourceName(GetFName(), GroupIndex, LODIndex), GetAssetPathName(LODIndex));
 		}
 		return LOD.RaytracingResource;
 	}
@@ -3046,7 +3073,7 @@ FHairStrandsRaytracingResource* UGroomAsset::AllocateCardsRaytracingResources(ui
 
 FHairStrandsRaytracingResource* UGroomAsset::AllocateMeshesRaytracingResources(uint32 GroupIndex, uint32 LODIndex)
 {
-	if (IsRayTracingEnabled() && GroupIndex < uint32(GetNumHairGroups()) && LODIndex < uint32(HairGroupsLOD[GroupIndex].LODs.Num()))
+	if (IsRayTracingAllowed() && GroupIndex < uint32(GetNumHairGroups()) && LODIndex < uint32(HairGroupsLOD[GroupIndex].LODs.Num()))
 	{
 		FHairGroupData& GroupData = HairGroupsData[GroupIndex];
 		FHairGroupData::FMeshes::FLOD& LOD = GroupData.Meshes.LODs[LODIndex];
@@ -3054,7 +3081,7 @@ FHairStrandsRaytracingResource* UGroomAsset::AllocateMeshesRaytracingResources(u
 
 		if (LOD.RaytracingResource == nullptr)
 		{
-			LOD.RaytracingResource = new FHairStrandsRaytracingResource(LOD.BulkData, FHairResourceName(GetFName(), GroupIndex, LODIndex));
+			LOD.RaytracingResource = new FHairStrandsRaytracingResource(LOD.BulkData, FHairResourceName(GetFName(), GroupIndex, LODIndex), GetAssetPathName(LODIndex));
 		}
 		return LOD.RaytracingResource;
 	}
@@ -3063,14 +3090,14 @@ FHairStrandsRaytracingResource* UGroomAsset::AllocateMeshesRaytracingResources(u
 
 FHairStrandsRaytracingResource* UGroomAsset::AllocateStrandsRaytracingResources(uint32 GroupIndex)
 {
-	if (IsRayTracingEnabled() && GroupIndex < uint32(GetNumHairGroups()))
+	if (IsRayTracingAllowed() && GroupIndex < uint32(GetNumHairGroups()))
 	{
 		FHairGroupData& GroupData = HairGroupsData[GroupIndex];
 		check(GroupData.Strands.HasValidData());
 
 		if (GroupData.Strands.RaytracingResource == nullptr)
 		{
-			GroupData.Strands.RaytracingResource = new FHairStrandsRaytracingResource(GroupData.Strands.BulkData, FHairResourceName(GetFName(), GroupIndex));
+			GroupData.Strands.RaytracingResource = new FHairStrandsRaytracingResource(GroupData.Strands.BulkData, FHairResourceName(GetFName(), GroupIndex), GetAssetPathName());
 		}
 		return GroupData.Strands.RaytracingResource;
 	}
@@ -3092,6 +3119,8 @@ void UGroomAsset::InitStrandsResources()
 		return;
 	}
 
+	const FName OwnerName = GetAssetPathName();
+
 	for (uint32 GroupIndex = 0, GroupCount = GetNumHairGroups(); GroupIndex < GroupCount; ++GroupIndex)
 	{
 		FHairGroupData& GroupData = HairGroupsData[GroupIndex];
@@ -3099,8 +3128,7 @@ void UGroomAsset::InitStrandsResources()
 		if (GroupData.Strands.HasValidData())
 		{
 			FHairResourceName ResourceName(GetFName(), GroupIndex);
-
-			GroupData.Strands.RestResource = new FHairStrandsRestResource(GroupData.Strands.BulkData, EHairStrandsResourcesType::Strands, ResourceName);
+			GroupData.Strands.RestResource = new FHairStrandsRestResource(GroupData.Strands.BulkData, EHairStrandsResourcesType::Strands, ResourceName, OwnerName);
 
 			if (GroupData.Strands.ClusterCullingBulkData.IsValid())
 			{
@@ -3121,7 +3149,7 @@ void UGroomAsset::InitStrandsResources()
 					}
 				}
 
-				GroupData.Strands.ClusterCullingResource = new FHairStrandsClusterCullingResource(GroupData.Strands.ClusterCullingBulkData, ResourceName);
+				GroupData.Strands.ClusterCullingResource = new FHairStrandsClusterCullingResource(GroupData.Strands.ClusterCullingBulkData, ResourceName, OwnerName);
 			}
 
 			// Interpolation are lazy allocated, as these resources are only used when RBF/simulation is enabled by a groom component
@@ -3206,15 +3234,16 @@ void UGroomAsset::InitCardsResources()
 				LOD.HasValidData())
 			{
 				FHairResourceName ResourceName(GetFName(), GroupIndex, LODIt);
+				const FName OwnerName = GetAssetPathName(LODIt);
 
-				LOD.RestResource = new FHairCardsRestResource(LOD.BulkData, ResourceName);
+				LOD.RestResource = new FHairCardsRestResource(LOD.BulkData, ResourceName, OwnerName);
 				BeginInitResource(LOD.RestResource); // Immediate allocation, as needed for the vertex factory, input stream building
 
-				LOD.InterpolationResource = new FHairCardsInterpolationResource(LOD.InterpolationBulkData, ResourceName);
+				LOD.InterpolationResource = new FHairCardsInterpolationResource(LOD.InterpolationBulkData, ResourceName, OwnerName);
 
-				LOD.Guides.RestResource = new FHairStrandsRestResource(LOD.Guides.BulkData, EHairStrandsResourcesType::Cards, ResourceName);
+				LOD.Guides.RestResource = new FHairStrandsRestResource(LOD.Guides.BulkData, EHairStrandsResourcesType::Cards, ResourceName, OwnerName);
 
-				LOD.Guides.InterpolationResource = new FHairStrandsInterpolationResource(LOD.Guides.InterpolationBulkData, ResourceName);
+				LOD.Guides.InterpolationResource = new FHairStrandsInterpolationResource(LOD.Guides.InterpolationBulkData, ResourceName, OwnerName);
 
 				if (Desc)
 				{
@@ -3265,7 +3294,7 @@ void UGroomAsset::InitMeshesResources()
 
 			if (LOD.HasValidData())
 			{
-				LOD.RestResource = new FHairMeshesRestResource(LOD.BulkData, FHairResourceName(GetFName(), GroupIndex, LODIt));
+				LOD.RestResource = new FHairMeshesRestResource(LOD.BulkData, FHairResourceName(GetFName(), GroupIndex, LODIt), GetAssetPathName(LODIt));
 				BeginInitResource(LOD.RestResource); // Immediate allocation, as needed for the vertex factory, input stream building
 
 
@@ -3693,10 +3722,11 @@ void UGroomAsset::SaveProceduralCards(uint32 DescIndex)
 		Q.Textures = &Desc->Textures;
 	}
 
+	const FName OwnerName = GetAssetPathName(LODIndex);
 	// 3. Create resources and enqueue texture generation (GPU, kicked by the render thread) 
-	Q.Resources = new FHairCardsRestResource(Q.BulkData, FHairResourceName(GetFName(), GroupIndex, LODIndex));
+	Q.Resources = new FHairCardsRestResource(Q.BulkData, FHairResourceName(GetFName(), GroupIndex, LODIndex), OwnerName);
 	BeginInitResource(Q.Resources); // Immediate allocation, as needed for the vertex factory, input stream building
-	Q.ProceduralResources = new FHairCardsProceduralResource(Q.ProceduralData.RenderData, Q.ProceduralData.Atlas.Resolution, Q.ProceduralData.Voxels);
+	Q.ProceduralResources = new FHairCardsProceduralResource(Q.ProceduralData.RenderData, Q.ProceduralData.Atlas.Resolution, Q.ProceduralData.Voxels, OwnerName);
 	BeginInitResource(Q.ProceduralResources); // Immediate allocation, as needed for the vertex factory, input stream building
 
 	FHairCardsBuilder::BuildTextureAtlas(&Q.ProceduralData, Q.Resources, Q.ProceduralResources, Q.Textures);
@@ -3852,6 +3882,22 @@ void UGroomAsset::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
 		CumulativeResourceSize.AddDedicatedSystemMemoryBytes(GroupData.Cards.GetDataSize());
 		CumulativeResourceSize.AddDedicatedSystemMemoryBytes(GroupData.Meshes.GetDataSize());
 	}
+}
+
+FName UGroomAsset::GetAssetPathName(int32 LODIndex)
+{
+#if RHI_ENABLE_RESOURCE_INFO
+	if (LODIndex > -1)
+	{
+		return FName(FString::Printf(TEXT("%s [LOD%d]"), *GetPathName(), LODIndex));
+	}
+	else
+	{
+		return FName(GetPathName());
+	}
+#else
+	return NAME_None;
+#endif
 }
 
 #undef LOCTEXT_NAMESPACE

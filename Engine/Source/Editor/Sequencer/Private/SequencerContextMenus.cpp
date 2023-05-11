@@ -6,7 +6,6 @@
 #include "SequencerCommonHelpers.h"
 #include "SequencerCommands.h"
 #include "SSequencer.h"
-#include "SectionLayout.h"
 #include "IKeyArea.h"
 #include "SSequencerSection.h"
 #include "SequencerSettings.h"
@@ -168,39 +167,12 @@ void FKeyContextMenu::PopulateMenu(FMenuBuilder& MenuBuilder, TSharedPtr<FExtend
 	}
 	MenuBuilder.EndSection(); // SequencerKeyEdit
 
-
-
 	MenuBuilder.BeginSection("SequencerKeys", LOCTEXT("KeysMenu", "Keys"));
 	{
-		MenuBuilder.AddMenuEntry(LOCTEXT("SetKeyTime", "Set Key Time"), LOCTEXT("SetKeyTimeTooltip", "Set the key to a specified time"),
-			FSlateIcon(),
-			FUIAction(
-				FExecuteAction::CreateSP(SequencerPtr, &FSequencer::SetKeyTime),
-				FCanExecuteAction::CreateSP(SequencerPtr, &FSequencer::CanSetKeyTime))
-		);
-
-		MenuBuilder.AddMenuEntry(LOCTEXT("Rekey", "Rekey"), LOCTEXT("RekeyTooltip", "Set the selected key's time to the current time"),
-			FSlateIcon(),
-			FUIAction(
-				FExecuteAction::CreateSP(SequencerPtr, &FSequencer::Rekey),
-				FCanExecuteAction::CreateSP(SequencerPtr, &FSequencer::CanRekey))
-		);
-
-		MenuBuilder.AddMenuEntry(
-			LOCTEXT("SnapToFrame", "Snap to Frame"),
-			LOCTEXT("SnapToFrameToolTip", "Snap selected keys to frame"),
-			FSlateIcon(),
-			FUIAction(
-				FExecuteAction::CreateSP(SequencerPtr, &FSequencer::SnapToFrame),
-				FCanExecuteAction::CreateSP(SequencerPtr, &FSequencer::CanSnapToFrame))
-		);
-
-		MenuBuilder.AddMenuEntry(
-			LOCTEXT("DeleteKey", "Delete"),
-			LOCTEXT("DeleteKeyToolTip", "Deletes the selected keys"),
-			FSlateIcon(),
-			FUIAction(FExecuteAction::CreateSP(SequencerPtr, &FSequencer::DeleteSelectedKeys))
-		);
+		MenuBuilder.AddMenuEntry(FSequencerCommands::Get().SetKeyTime);
+		MenuBuilder.AddMenuEntry(FSequencerCommands::Get().Rekey);
+		MenuBuilder.AddMenuEntry(FSequencerCommands::Get().SnapToFrame);
+		MenuBuilder.AddMenuEntry(FSequencerCommands::Get().DeleteKeys);
 	}
 	MenuBuilder.EndSection(); // SequencerKeys
 }
@@ -638,29 +610,34 @@ void FSectionContextMenu::SelectAllKeys()
 {
 	using namespace UE::Sequencer;
 
-	for (const TWeakObjectPtr<UMovieSceneSection>& WeakSection : Sequencer->GetSelection().GetSelectedSections())
+	TArray<FKeyHandle> HandlesScratch;
+
+	FSequencerSelection& Selection = Sequencer->GetSelection();
+	for (const TWeakPtr<FViewModel>& WeakModel : Selection.GetSelectedTrackAreaItems())
 	{
-		UMovieSceneSection* Section = WeakSection.Get();
-		TSharedPtr<FSectionModel> SectionHandle = Sequencer->GetNodeTree()->GetSectionModel(Section);
-		if (!SectionHandle)
+		TViewModelPtr<FSectionModel> Section = WeakModel.Pin();
+		if (Section)
 		{
-			continue;
-		}
-
-		FSectionLayout Layout(SectionHandle);
-		for (const FSectionLayoutElement& Element : Layout.GetElements())
-		{
-			for (const TWeakPtr<FChannelModel>& WeakChannel : Element.GetChannels())
+			UMovieSceneSection* SectionObject = Section->GetSection();
+			if (SectionObject)
 			{
-				if (TSharedPtr<FChannelModel> Channel = WeakChannel.Pin())
-				{
-					TArray<FKeyHandle> Handles;
-					Channel->GetKeyArea()->GetKeyHandles(Handles);
+				FSequencerSelectedKey SelectedKey(*SectionObject, nullptr, FKeyHandle::Invalid());
 
-					for (FKeyHandle KeyHandle : Handles)
+				// Iterate all channels
+				for (const TViewModelPtr<FChannelModel>& Channel : Section->GetDescendantsOfType<FChannelModel>())
+				{
+					if (Channel->GetLinkedOutlinerItem() && !Channel->GetLinkedOutlinerItem()->IsFilteredOut())
 					{
-						FSequencerSelectedKey SelectKey(*Section, Channel, KeyHandle);
-						Sequencer->GetSelection().AddToSelection(SelectKey);
+						SelectedKey.WeakChannel = Channel;
+
+						HandlesScratch.Reset();
+						Channel->GetKeyArea()->GetKeyHandles(HandlesScratch);
+
+						for (FKeyHandle KeyHandle : HandlesScratch)
+						{
+							SelectedKey.KeyHandle = KeyHandle;
+							Selection.AddToSelection(SelectedKey);
+						}
 					}
 				}
 			}
@@ -807,12 +784,9 @@ void FSectionContextMenu::ReduceKeys()
 			{
 				Section->Modify();
 
-				for (const FMovieSceneChannelEntry& Entry : Section->GetChannelProxy().GetAllEntries())
+				if (FMovieSceneChannel* Channel = KeyArea->GetChannel().Get())
 				{
-					for (FMovieSceneChannel* Channel : Entry.GetChannels())
-					{
-						Channel->Optimize(Params);
-					}
+					Channel->Optimize(Params);
 				}
 			}
 		}
@@ -885,8 +859,10 @@ void FSectionContextMenu::SetInterpTangentMode(ERichCurveInterpMode InterpMode, 
 			{
 				Section->Modify();
 
-				for (FMovieSceneFloatChannel* FloatChannel : Section->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>())
+				FMovieSceneChannelHandle Handle = KeyArea->GetChannel();
+				if (Handle.GetChannelTypeName() == FMovieSceneFloatChannel::StaticStruct()->GetFName())
 				{
+					FMovieSceneFloatChannel* FloatChannel = static_cast<FMovieSceneFloatChannel*>(Handle.Get());
 					TMovieSceneChannelData<FMovieSceneFloatValue> ChannelData = FloatChannel->GetData();
 					TArrayView<FMovieSceneFloatValue> Values = ChannelData.GetValues();
 
@@ -899,9 +875,9 @@ void FSectionContextMenu::SetInterpTangentMode(ERichCurveInterpMode InterpMode, 
 
 					FloatChannel->AutoSetTangents();
 				}
-
-				for (FMovieSceneDoubleChannel* DoubleChannel : Section->GetChannelProxy().GetChannels<FMovieSceneDoubleChannel>())
+				else if (Handle.GetChannelTypeName() == FMovieSceneDoubleChannel::StaticStruct()->GetFName())
 				{
+					FMovieSceneDoubleChannel* DoubleChannel = static_cast<FMovieSceneDoubleChannel*>(Handle.Get());
 					TMovieSceneChannelData<FMovieSceneDoubleValue> ChannelData = DoubleChannel->GetData();
 					TArrayView<FMovieSceneDoubleValue> Values = ChannelData.GetValues();
 
@@ -946,12 +922,9 @@ bool FSectionContextMenu::CanSetInterpTangentMode() const
 	{
 		if (KeyArea.IsValid())
 		{
-			UMovieSceneSection* Section = KeyArea->GetOwningSection();
-			if (Section)
-			{
-				return (Section->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>().Num() != 0 ||
-					    Section->GetChannelProxy().GetChannels<FMovieSceneDoubleChannel>().Num() != 0);
-			}
+			FMovieSceneChannelHandle Handle = KeyArea->GetChannel();
+			return (Handle.GetChannelTypeName() == FMovieSceneFloatChannel::StaticStruct()->GetFName() ||
+					Handle.GetChannelTypeName() == FMovieSceneDoubleChannel::StaticStruct()->GetFName());
 		}
 	}
 

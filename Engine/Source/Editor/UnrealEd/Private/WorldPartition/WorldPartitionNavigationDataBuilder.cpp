@@ -8,6 +8,7 @@
 #include "StaticMeshCompiler.h"
 #include "ActorPartition/ActorPartitionSubsystem.h"
 #include "Logging/LogMacros.h"
+#include "Misc/CommandLine.h"
 #include "UObject/SavePackage.h"
 #include "Commandlets/Commandlet.h"
 #include "AI/NavigationSystemBase.h"
@@ -248,7 +249,7 @@ bool UWorldPartitionNavigationDataBuilder::RunInternal(UWorld* World, const FCel
 		{
 			// Add new packages to source control
 			TRACE_CPUPROFILER_EVENT_SCOPE(AddingToSourceControl);
-			UE_LOG(LogWorldPartitionNavigationDataBuilder, Log, TEXT("Adding packages to source control."));
+			UE_LOG(LogWorldPartitionNavigationDataBuilder, Log, TEXT("Adding packages to revision control."));
 
 			TArray<FString> PackageNamesToAdd;
 			PackageNamesToAdd.Reserve(PackagesToAdd.Num());
@@ -409,6 +410,8 @@ bool UWorldPartitionNavigationDataBuilder::SavePackages(const TArray<UPackage*>&
 			return false;
 		}
 	}
+
+	UPackage::WaitForAsyncFileWrites();
 
 	return true;
 }

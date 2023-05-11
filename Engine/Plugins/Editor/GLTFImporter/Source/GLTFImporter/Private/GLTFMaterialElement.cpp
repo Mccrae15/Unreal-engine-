@@ -4,18 +4,18 @@
 
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "MaterialEditingLibrary.h"
-#include "MaterialEditorUtilities.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionConstant.h"
 #include "Materials/MaterialExpressionConstant3Vector.h"
 #include "Materials/MaterialExpressionMaterialFunctionCall.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
 #include "Materials/MaterialExpressionTextureCoordinate.h"
-#include "Materials/MaterialExpressionTextureObjectParameter.h"
 #include "Materials/MaterialExpressionTextureSampleParameter2D.h"
 #include "Materials/MaterialExpressionVectorParameter.h"
 #include "Materials/MaterialExpressionThinTranslucentMaterialOutput.h"
 #include "Materials/MaterialExpressionClearCoatNormalCustomOutput.h"
+#include "Materials/MaterialFunction.h"
+#include "UObject/ObjectRedirector.h"
 
 namespace GLTFImporterImpl
 {
@@ -231,6 +231,16 @@ bool FGLTFMaterialElement::GetTwoSided() const
 void FGLTFMaterialElement::SetTwoSided(bool bTwoSided)
 {
 	Material->TwoSided = bTwoSided;
+}
+
+bool FGLTFMaterialElement::GetIsThinSurface() const
+{
+	return Material->IsThinSurface();
+}
+
+void FGLTFMaterialElement::SetIsThinSurface(bool bIsThinSurface)
+{
+	Material->bIsThinSurface = bIsThinSurface;
 }
 
 void FGLTFMaterialElement::SetShadingModel(GLTF::EGLTFMaterialShadingModel InShadingModel)

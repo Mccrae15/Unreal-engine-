@@ -6,7 +6,6 @@
 #include "HAL/LowLevelMemTracker.h"
 #include "Misc/AssertionMacros.h"
 #include "MuR/InstancePrivate.h"
-#include "MuR/MemoryPrivate.h"
 #include "MuR/MutableMath.h"
 
 namespace mu
@@ -375,7 +374,7 @@ namespace mu
         check( surf>=0 && surf<m_pD->m_lods[lod].m_components[comp].m_surfaces.Num() );
         check( vec>=0 && vec<m_pD->m_lods[lod].m_components[comp].m_surfaces[surf].m_vectors.Num() );
 
-        vec4<float> r = m_pD->m_lods[lod].m_components[comp].m_surfaces[surf].m_vectors[vec].m_vec;
+        FVector4f r = m_pD->m_lods[lod].m_components[comp].m_surfaces[surf].m_vectors[vec].m_vec;
 
 		if ( pX ) { *pX = r[0]; }
 		if ( pY ) { *pY = r[1]; }
@@ -621,7 +620,7 @@ namespace mu
 
 
 	//---------------------------------------------------------------------------------------------
-    int Instance::Private::AddVector( int lod, int comp, int surf, const vec4<float>& vec, const char* strName )
+    int Instance::Private::AddVector( int lod, int comp, int surf, const FVector4f& vec, const char* strName )
 	{
 		// Automatically create the necessary lods and components
 		while ( lod>=GetLODCount() )

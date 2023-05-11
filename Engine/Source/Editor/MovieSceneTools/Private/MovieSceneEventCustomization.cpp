@@ -67,7 +67,7 @@ namespace UE_MovieSceneEventCustomization
 		};
 
 
-		FBlueprintActionMenuBuilder ContextMenuBuilder(nullptr);
+		FBlueprintActionMenuBuilder ContextMenuBuilder;
 
 		if (BoundObjectPinClass)
 		{
@@ -91,7 +91,7 @@ namespace UE_MovieSceneEventCustomization
 			// but also prevents displaying functions on BP components. Comment out for now.
 			//CallOnMemberFilter.AddRejectionTest(FBlueprintActionFilter::FRejectionTestDelegate::CreateStatic(RejectAnyUnboundActions));
 			
-			CallOnMemberFilter.AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(RejectAnyNonFunctions)->WithFlags(EActionFilterTestFlags::CacheResults));
+			CallOnMemberFilter.AddRejectionTest(FBlueprintActionFilter::FRejectionTestDelegate::CreateStatic(RejectAnyNonFunctions));
 
 			ContextMenuBuilder.AddMenuSection(CallOnMemberFilter, FText::FromName(BoundObjectPinClass->GetFName()), 0);
 		}
@@ -110,7 +110,7 @@ namespace UE_MovieSceneEventCustomization
 			{
 				FBlueprintActionFilter::AddUnique(MenuFilter.TargetClasses, Blueprint->SkeletonGeneratedClass);
 			}
-			MenuFilter.AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(RejectAnyNonFunctions)->WithFlags(EActionFilterTestFlags::CacheResults));
+			MenuFilter.AddRejectionTest(FBlueprintActionFilter::FRejectionTestDelegate::CreateStatic(RejectAnyNonFunctions));
 
 
 			ContextMenuBuilder.AddMenuSection(MenuFilter, LOCTEXT("SequenceDirectorMenu", "This Sequence"), 0);
@@ -143,14 +143,14 @@ namespace UE_MovieSceneEventCustomization
 
 		MenuFilter.Context.Blueprints.Add(Blueprint);
 
-		MenuFilter.AddRejectionTest(MAKE_ACTION_FILTER_REJECTION_TEST(RejectAnyForeignFunctions, Blueprint));
+		MenuFilter.AddRejectionTest(FBlueprintActionFilter::FRejectionTestDelegate::CreateStatic(RejectAnyForeignFunctions, Blueprint));
 
 		if (Blueprint->SkeletonGeneratedClass)
 		{
 			FBlueprintActionFilter::AddUnique(MenuFilter.TargetClasses, Blueprint->SkeletonGeneratedClass);
 		}
 
-		FBlueprintActionMenuBuilder ContextMenuBuilder(nullptr);
+		FBlueprintActionMenuBuilder ContextMenuBuilder;
 
 		ContextMenuBuilder.AddMenuSection(MenuFilter, LOCTEXT("SequenceDirectorMenu", "This Sequence"), 0);
 		ContextMenuBuilder.RebuildActionList();
@@ -342,7 +342,7 @@ void FMovieSceneEventCustomization::CustomizeChildren(TSharedRef<IPropertyHandle
 
 
 	UFunction* CommonFunction = nullptr;
-	UBlueprint* Blueprint = CommonEndpoint->GetBlueprint();
+	UBlueprint* Blueprint = CommonEndpoint->HasValidBlueprint() ? CommonEndpoint->GetBlueprint() : nullptr;
 	if (Blueprint)
 	{
 		if (UK2Node_Event* Event = Cast<UK2Node_Event>(CommonEndpoint))
@@ -506,8 +506,13 @@ void FMovieSceneEventCustomization::OnPayloadVariableChanged(TSharedRef<FStructO
 
 	if (bChangedAnything)
 	{
-		UBlueprint* BP = GetCommonEndpoint()->GetBlueprint();
-		FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+		UK2Node* CommonEndpoint = GetCommonEndpoint();
+
+		UBlueprint* BP = CommonEndpoint && CommonEndpoint->HasValidBlueprint() ? GetCommonEndpoint()->GetBlueprint() : nullptr;
+		if (BP)
+		{
+			FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+		}
 	}
 	else
 	{
@@ -556,13 +561,21 @@ void FMovieSceneEventCustomization::OnSetCallInEditorCheckState(ECheckBoxState N
 		{
 			CustomEvent->Modify();
 			CustomEvent->bCallInEditor = bCallInEditor;
-			Blueprints.Add(CustomEvent->GetBlueprint());
+
+			if (CustomEvent->HasValidBlueprint())
+			{
+				Blueprints.Add(CustomEvent->GetBlueprint());
+			}
 		}
 		else if (UK2Node_FunctionEntry* FunctionEntry = Cast<UK2Node_FunctionEntry>(Endpoint))
 		{
 			FunctionEntry->Modify();
 			FunctionEntry->MetaData.bCallInEditor = bCallInEditor;
-			Blueprints.Add(FunctionEntry->GetBlueprint());
+		
+			if (FunctionEntry->HasValidBlueprint())
+			{
+				Blueprints.Add(FunctionEntry->GetBlueprint());
+			}
 		}
 	}
 
@@ -1211,7 +1224,7 @@ void FMovieSceneEventCustomization::SetEventEndpoint(UK2Node* NewEndpoint, UEdGr
 
 	// If we're assigning a new valid endpoint, it must reside within the same blueprint as everything we're assigning it to.
 	// Anything else must be implemented as a call function node connected to a custom event node
-	UBlueprint* Blueprint = NewEndpoint ? NewEndpoint->GetBlueprint() : nullptr;
+	UBlueprint* Blueprint = NewEndpoint && NewEndpoint->HasValidBlueprint() ? NewEndpoint->GetBlueprint() : nullptr;
 	if (Blueprint)
 	{
 		for (UObject* Outer : EditObjects)
@@ -1243,7 +1256,8 @@ void FMovieSceneEventCustomization::SetEventEndpoint(UK2Node* NewEndpoint, UEdGr
 		}
 	}
 
-	TArray<FName> PayloadNames;
+	// Map of the Payload Variable Names to their Default Values as Strings
+	TMap<FName, FString> PayloadVariables;
 	if (PayloadTemplate && EnumHasAnyFlags(AutoCreatePayload, EAutoCreatePayload::Variables | EAutoCreatePayload::Pins))
 	{
 		UK2Node_EditablePinBase* EditableNode = Cast<UK2Node_EditablePinBase>(NewEndpoint);
@@ -1255,11 +1269,14 @@ void FMovieSceneEventCustomization::SetEventEndpoint(UK2Node* NewEndpoint, UEdGr
 				// Make a payload variable for this pin
 				if (EnumHasAnyFlags(AutoCreatePayload, EAutoCreatePayload::Variables))
 				{
-					PayloadNames.Add(PayloadPin->PinName);
+					PayloadVariables.Add(PayloadPin->PinName, PayloadPin->DefaultValue);
 				}
 
 				if (EditableNode && EnumHasAnyFlags(AutoCreatePayload, EAutoCreatePayload::Pins))
 				{
+					// Pins for ref parameters for functions default to bIsReference but the payload cannot be by reference.
+					PayloadPin->PinType.bIsReference = false;
+					
 					UEdGraphPin* NewPin = EditableNode->CreateUserDefinedPin(PayloadPin->PinName, PayloadPin->PinType, EGPD_Output);
 					if (PayloadTemplate != NewEndpoint && NewPin)
 					{
@@ -1285,11 +1302,14 @@ void FMovieSceneEventCustomization::SetEventEndpoint(UK2Node* NewEndpoint, UEdGr
 		{
 			FMovieSceneEventUtils::SetEndpoint(EntryPoint, EventSection, NewEndpoint, BoundObjectPin);
 
-			for (FName PayloadVar : PayloadNames)
+			for (const TPair<FName, FString>& PayloadVar : PayloadVariables)
 			{
-				if (!EntryPoint->PayloadVariables.Contains(PayloadVar))
+				if (!EntryPoint->PayloadVariables.Contains(PayloadVar.Key))
 				{
-					EntryPoint->PayloadVariables.Add(PayloadVar);
+					FMovieSceneEventPayloadVariable PayloadValue;
+					PayloadValue.Value = PayloadVar.Value;
+
+					EntryPoint->PayloadVariables.Add(PayloadVar.Key, MoveTemp(PayloadValue));
 				}
 			}
 		}

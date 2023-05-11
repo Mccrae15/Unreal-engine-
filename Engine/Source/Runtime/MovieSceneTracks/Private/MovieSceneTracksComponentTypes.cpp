@@ -159,6 +159,15 @@ void ConvertOperationalProperty(const FVector4d& In, FDoubleIntermediateVector& 
 	Out = FDoubleIntermediateVector(In.X, In.Y, In.Z, In.W);
 }
 
+void ConvertOperationalProperty(float In, double& Out)
+{
+	Out = static_cast<double>(In);
+}
+
+void ConvertOperationalProperty(double In, float& Out)
+{
+	Out = static_cast<float>(In);
+}
 
 FIntermediate3DTransform GetComponentTransform(const UObject* Object)
 {
@@ -431,6 +440,22 @@ struct FColorHandler : TPropertyComponentHandler<FColorPropertyTraits, double, d
 	}
 };
 
+struct FFloatParameterHandler : TPropertyComponentHandler<FFloatParameterTraits, double>
+{
+	virtual IInitialValueProcessor* GetInitialValueProcessor() override
+	{
+		return nullptr;
+	}
+};
+
+struct FColorParameterHandler : TPropertyComponentHandler<FColorParameterTraits, double, double, double, double>
+{
+	virtual IInitialValueProcessor* GetInitialValueProcessor() override
+	{
+		return nullptr;
+	}
+};
+
 
 struct FFloatVectorHandler : TPropertyComponentHandler<FFloatVectorPropertyTraits, double, double, double, double>
 {
@@ -538,6 +563,9 @@ FMovieSceneTracksComponentTypes::FMovieSceneTracksComponentTypes()
 	ComponentRegistry->NewPropertyType(EulerTransform, TEXT("FEulerTransform"));
 	ComponentRegistry->NewPropertyType(ComponentTransform, TEXT("Component Transform"));
 
+	ComponentRegistry->NewPropertyType(FloatParameter, TEXT("float parameter"));
+	ComponentRegistry->NewPropertyType(ColorParameter, TEXT("color parameter"));
+
 	Color.MetaDataComponents.Initialize(ComponentRegistry, TEXT("Color Type"));
 	FloatVector.MetaDataComponents.Initialize(ComponentRegistry, TEXT("Num Float Vector Channels"));
 	DoubleVector.MetaDataComponents.Initialize(ComponentRegistry, TEXT("Num Double Vector Channels"));
@@ -554,6 +582,8 @@ FMovieSceneTracksComponentTypes::FMovieSceneTracksComponentTypes()
 	ComponentRegistry->NewComponentType(&FloatPerlinNoiseChannel, TEXT("Float Perlin Noise Channel"));
 	ComponentRegistry->NewComponentType(&DoublePerlinNoiseChannel, TEXT("Double Perlin Noise Channel"));
 
+	ComponentRegistry->NewComponentType(&SkeletalAnimation, TEXT("Skeletal Animation"));
+
 	ComponentRegistry->NewComponentType(&LevelVisibility, TEXT("Level Visibility"));
 	ComponentRegistry->NewComponentType(&DataLayer, TEXT("Data Layer"));
 
@@ -567,6 +597,8 @@ FMovieSceneTracksComponentTypes::FMovieSceneTracksComponentTypes()
 	ComponentRegistry->NewComponentType(&VectorParameterName,    TEXT("Vector Parameter Name"), EComponentTypeFlags::CopyToChildren | EComponentTypeFlags::CopyToOutput);
 	ComponentRegistry->NewComponentType(&ColorParameterName,     TEXT("Color Parameter Name"), EComponentTypeFlags::CopyToChildren | EComponentTypeFlags::CopyToOutput);
 	ComponentRegistry->NewComponentType(&TransformParameterName, TEXT("Transform Parameter Name"), EComponentTypeFlags::CopyToChildren | EComponentTypeFlags::CopyToOutput);
+
+	ComponentRegistry->NewComponentType(&Fade,                   TEXT("Fade"), EComponentTypeFlags::CopyToChildren);
 
 	Tags.BoundMaterialChanged = ComponentRegistry->NewTag(TEXT("Bound Material Changed"));
 	FBuiltInComponentTypes::Get()->RequiresInstantiationMask.Set(Tags.BoundMaterialChanged);
@@ -645,6 +677,23 @@ FMovieSceneTracksComponentTypes::FMovieSceneTracksComponentTypes()
 	.SetBlenderSystem<UMovieScenePiecewiseDoubleBlenderSystem>()
 	.SetCustomAccessors(&Accessors.Color)
 	.Commit(FColorHandler());
+
+	// --------------------------------------------------------------------------------------------
+	// Set up float parameters
+	BuiltInComponents->PropertyRegistry.DefineProperty(FloatParameter, TEXT("Apply Float Parameters"))
+	.AddSoleChannel(BuiltInComponents->DoubleResult[0])
+	.SetBlenderSystem<UMovieScenePiecewiseDoubleBlenderSystem>()
+	.Commit(FFloatParameterHandler());
+
+	// --------------------------------------------------------------------------------------------
+	// Set up color parameters
+	BuiltInComponents->PropertyRegistry.DefineCompositeProperty(ColorParameter, TEXT("Apply Color Parameters"))
+	.AddComposite(BuiltInComponents->DoubleResult[0], &FIntermediateColor::R)
+	.AddComposite(BuiltInComponents->DoubleResult[1], &FIntermediateColor::G)
+	.AddComposite(BuiltInComponents->DoubleResult[2], &FIntermediateColor::B)
+	.AddComposite(BuiltInComponents->DoubleResult[3], &FIntermediateColor::A)
+	.SetBlenderSystem<UMovieScenePiecewiseDoubleBlenderSystem>()
+	.Commit(FColorParameterHandler());
 
 	// We have some custom accessors for well-known types.
 	Accessors.Color.Add(
@@ -751,7 +800,14 @@ FMovieSceneTracksComponentTypes::FMovieSceneTracksComponentTypes()
 	// --------------------------------------------------------------------------------------------
 	// Set up PerlinNoise components
 	ComponentRegistry->Factories.DuplicateChildComponent(FloatPerlinNoiseChannel);
+	ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(FloatPerlinNoiseChannel, BuiltInComponents->EvalSeconds);
+
 	ComponentRegistry->Factories.DuplicateChildComponent(DoublePerlinNoiseChannel);
+	ComponentRegistry->Factories.DefineMutuallyInclusiveComponent(DoublePerlinNoiseChannel, BuiltInComponents->EvalSeconds);
+
+	// --------------------------------------------------------------------------------------------
+	// Set up SkeletalAnimation components
+	ComponentRegistry->Factories.DuplicateChildComponent(SkeletalAnimation);
 }
 
 FMovieSceneTracksComponentTypes::~FMovieSceneTracksComponentTypes()

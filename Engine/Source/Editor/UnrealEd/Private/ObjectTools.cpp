@@ -29,6 +29,7 @@
 #include "Materials/MaterialInterface.h"
 #include "RenderingThread.h"
 #include "Materials/Material.h"
+#include "MaterialShared.h"
 #include "CanvasTypes.h"
 #include "Engine/Brush.h"
 #include "ISourceControlOperation.h"
@@ -158,53 +159,6 @@ void ReloadEditorWorldForReferenceReplacementIfNecessary(TArray< TWeakObjectPtr<
 	}
 }
 
-// Note that the contents of this namespace are a copy of code from PackageTools.cpp submitted as part of a 
-// release hot fix. In UE 5.2 we should merge the two sets of code and place them in a common utility file.
-namespace UE::Private
-{
-
-/**
- * Utility function that checks each UObject inside of the given UPackage to see if it is waiting
- * on async compilation.
- *
- * @return true if the package contains at least one UObject that has compilation work running, otherwise false.
- */
-static bool IsPackageCompiling(const UPackage* Package)
-{
-	bool bIsCompiling = false;
-	ForEachObjectWithPackage(Package, [&bIsCompiling](const UObject* Object)
-		{
-			const IInterface_AsyncCompilation* AsyncCompilationIF = Cast<IInterface_AsyncCompilation>(Object);
-			if (AsyncCompilationIF != nullptr && AsyncCompilationIF->IsCompiling())
-			{
-				bIsCompiling = true;
-				return false;
-			}
-			else
-			{
-				return true;
-			}
-		});
-
-	return bIsCompiling;
-}
-
-/**
- * Utility function that checks the provided package to see if it contains
- * any assets that currently have async compilation work running.
- * If there are assets that are waiting on async compilation work then we
- * wait on all currently outstanding work to finish before returning.
- */
-static void FlushAsyncCompilation(const UPackage* Package)
-{
-	if (UE::Private::IsPackageCompiling(Package))
-	{
-		FAssetCompilingManager::Get().FinishAllCompilation();
-	}
-}
-
-} // namespace UE::Private
-
 namespace ObjectTools
 {
 	/** Returns true if the specified object can be displayed in a content browser */
@@ -263,18 +217,22 @@ namespace ObjectTools
 			LastObjectCount = InObjects.Num();
 			for (UObject* NewReferencer : FReferencerFinder::GetAllReferencers(InObjects, &InObjects, EReferencerFinderFlags::SkipWeakReferences))
 			{
-				// Stop walking the dependency chain when the transactor is the referencer
-				if (Transactor == NewReferencer)
+				// Exclude any pendingkill or garbage object from counting as referencers
+				if (IsValid(NewReferencer))
 				{
-					Roots.Add(Transactor);
-				}
-				else if (IsNonGCObject(NewReferencer))
-				{
-					Roots.Add(NewReferencer);
-				}
-				else
-				{
-					InObjects.Add(NewReferencer);
+					// Stop walking the dependency chain when the transactor is the referencer
+					if (Transactor == NewReferencer)
+					{
+						Roots.Add(Transactor);
+					}
+					else if (IsNonGCObject(NewReferencer))
+					{
+						Roots.Add(NewReferencer);
+					}
+					else
+					{
+						InObjects.Add(NewReferencer);
+					}
 				}
 			}
 		}
@@ -306,7 +264,9 @@ namespace ObjectTools
 			// Get the cluster of objects that are going to be deleted
 			TArray<UObject*> ObjectsToDelete;
 			GetObjectsWithOuter(InObject, ObjectsToDelete);
-			
+
+			bool bIsReferencedInternally = false;
+
 			TSet<UObject*> InternalReferences;
 			// The old behavior of GatherObjectReferencersForDeletion will find anything that prevents 
 			// InObject from being garbage collected, including internal sub objects.
@@ -318,6 +278,7 @@ namespace ObjectTools
 				{
 					InternalReferences.Add(ObjectToDelete);
 					bOutIsReferenced = true;
+					bIsReferencedInternally = true;
 				}
 			}
 			
@@ -334,20 +295,24 @@ namespace ObjectTools
 			// Check and see whether we are referenced by any objects that won't be garbage collected (*including* the undo buffer)
 			for (UObject* Referencer : FReferencerFinder::GetAllReferencers(ObjectsToDelete, nullptr, EReferencerFinderFlags::SkipWeakReferences))
 			{
-				if (Referencer->IsIn(InObject))
+				// Exclude any pendingkill or garbage object from counting as referencers
+				if (IsValid(Referencer))
 				{
-					InternalReferences.Add(Referencer);
-				}
-				else
-				{
-					if (Transactor == Referencer)
+					if (Referencer->IsIn(InObject))
 					{
-						bOutIsReferencedInMemoryByUndo = true;
+						InternalReferences.Add(Referencer);
 					}
 					else
 					{
-						References.ExternalReferences.Emplace(Referencer);
-						bOutIsReferenced = true;
+						if (Transactor == Referencer)
+						{
+							bOutIsReferencedInMemoryByUndo = true;
+						}
+						else
+						{
+							References.ExternalReferences.Emplace(Referencer);
+							bOutIsReferenced = true;
+						}
 					}
 				}
 			}
@@ -391,14 +356,18 @@ namespace ObjectTools
 
 				TSet<UObject*> Roots = FindObjectsRoots(Referencers);
 
+				// Remove the object we plan on deleting if it turns out to be a root because
+				// the RF_Standalone flag is always removed later in the process.
+				Roots.Remove(InObject);
+
 				if (Roots.Contains(Transactor))
 				{
 					bOutIsReferencedInMemoryByUndo = true;
-					bOutIsReferenced = Roots.Num() > 1;
+					bOutIsReferenced = Roots.Num() > 1 || bIsReferencedInternally;
 				}
 				else
 				{
-					bOutIsReferenced = Roots.Num() > 0;
+					bOutIsReferenced = Roots.Num() > 0 || bIsReferencedInternally;
 				}
 			}
 
@@ -1632,14 +1601,12 @@ namespace ObjectTools
 						UClass* OldClass = BlueprintToConsolidate->GeneratedClass;
 						UClass* OldSkeletonClass = BlueprintToConsolidate->SkeletonGeneratedClass;
 
-						FReplaceInstancesOfClassParameters ReplaceInstanceParams = FReplaceInstancesOfClassParameters(OldClass, BlueprintToConsolidateTo->GeneratedClass);
-						ReplaceInstanceParams.OriginalCDO = nullptr;
+						FReplaceInstancesOfClassParameters ReplaceInstanceParams;
 						ReplaceInstanceParams.ObjectsThatShouldUseOldStuff = &ObjectsToNotConsolidateWithin;
-						ReplaceInstanceParams.bClassObjectReplaced = true;
 						ReplaceInstanceParams.bPreserveRootComponent = true;
 						ReplaceInstanceParams.InstancesThatShouldUseOldClass = &ObjectsToNotConsolidateWithin;
 
-						FBlueprintCompileReinstancer::ReplaceInstancesOfClassEx(ReplaceInstanceParams);
+						FBlueprintCompileReinstancer::ReplaceInstancesOfClass(OldClass, BlueprintToConsolidateTo->GeneratedClass, ReplaceInstanceParams);
 						BlueprintToConsolidate->GeneratedClass = OldClass;
 						BlueprintToConsolidate->SkeletonGeneratedClass = OldSkeletonClass;
 					}
@@ -2090,7 +2057,7 @@ namespace ObjectTools
 								if ( !SourceControlModule.IsEnabled() && ShareType != ECollectionShareType::CST_Local )
 								{
 									// Private and Shared collection types require a source control connection
-									Info.Text = NSLOCTEXT("ObjectTools", "FailedToAddCollection_SCC", "Failed to create new collection, requires source control connection");
+									Info.Text = NSLOCTEXT("ObjectTools", "FailedToAddCollection_SCC", "Failed to create new collection, requires revision control connection");
 								}
 								else
 								{
@@ -2326,15 +2293,17 @@ namespace ObjectTools
 
 			bool bIsReferenced = false;
 
-			if ( Package != nullptr && bPerformReferenceCheck )
+			// Skip external actor packages when considering whether to clear the transaction buffer, as you should be able to undo deleting an actor (but not an asset)
+			// If an external actor package is kept alive by the transaction buffer then it will be re-marked as "newly created" further down this function
+			if ( Package != nullptr && bPerformReferenceCheck && !Package->GetName().Contains(FPackagePath::GetExternalActorsFolderName()))
 			{
 				bool bIsReferencedByUndo = false;
 				GatherObjectReferencersForDeletion(Package, bIsReferenced, bIsReferencedByUndo);
 
 				// only ref to this object is the transaction buffer, clear the transaction buffer
-				if (!bIsReferenced && bIsReferencedByUndo && GEditor && GEditor->Trans)
+				if (!bIsReferenced && bIsReferencedByUndo && GEditor)
 				{
-					GEditor->Trans->Reset(NSLOCTEXT("UnrealEd", "DeleteSelectedItem", "Delete Selected Item"));
+					GEditor->ResetTransaction(NSLOCTEXT("UnrealEd", "DeleteSelectedItem", "Delete Selected Item"));
 				}
 			}
 
@@ -2471,7 +2440,7 @@ namespace ObjectTools
 					{
 						FFormatNamedArguments Args;
 						Args.Add(TEXT("Filename"), FText::FromString(PackageFilename));
-						const FText Message = FText::Format(NSLOCTEXT("ObjectTools", "DeleteReadOnlyWarning", "File '{Filename}' is read-only on disk, are you sure you want to delete it?"), Args);
+						const FText Message = FText::Format(NSLOCTEXT("ObjectTools", "DeleteReadOnlyWarning", "This file is read-only on disk:\n\n{Filename}\n\nDelete it anyway?"), Args);
 
 						ReturnType = FMessageDialog::Open(EAppMsgType::YesNoYesAllNoAll, Message);
 						bMakeWritable = ReturnType == EAppReturnType::YesAll;
@@ -2512,6 +2481,24 @@ namespace ObjectTools
 				if (SourceControlProvider.Execute(ISourceControlOperation::Create<FDelete>(), SCCFilesToDelete) == ECommandResult::Failed)
 				{
 					UE_LOG(LogObjectTools, Warning, TEXT("SCC failed to open the selected files for deletion."));
+				}
+			}
+		}
+
+		// Ensure that any packages that had their file deleted despite still existing in memory are marked "newly created" again, since they 
+		// no longer have an associated file on disk. This typically happens for OFPA packages that are kept alive by the transaction buffer.
+		for (const FString& PackageFilename : PackageFilesToDelete)
+		{
+			if (!FPaths::FileExists(PackageFilename))
+			{
+				FString PackageName;
+				if (FPackageName::TryConvertFilenameToLongPackageName(PackageFilename, PackageName))
+				{
+					if (UPackage* Package = FindPackage(nullptr, *PackageName))
+					{
+						Package->MarkAsNewlyCreated();
+						Package->SetDirtyFlag(true);
+					}
 				}
 			}
 		}
@@ -2737,12 +2724,12 @@ namespace ObjectTools
 		}
 
 		FResultMessage Result;
-		Result.bSucceeded = true;
+		Result.bSuccess = true;
 		FEditorDelegates::OnPreDestructiveAssetAction.Broadcast(ObjectsToDelete, EDestructiveAssetActions::AssetDelete, Result);
 
-		if (!Result.WasSuccesful())
+		if (!Result.bSuccess)
 		{
-			UE_LOG(LogObjectTools, Warning, TEXT("%s"), *Result.GetErrorMessage());
+			UE_LOG(LogObjectTools, Warning, TEXT("%s"), *Result.ErrorMessage);
 			return 0;
 		}
 
@@ -2841,12 +2828,12 @@ namespace ObjectTools
 		}
 
 		FResultMessage Result;
-		Result.bSucceeded = true;
+		Result.bSuccess = true;
 		FEditorDelegates::OnPreDestructiveAssetAction.Broadcast(ObjectsToPrivatize, EDestructiveAssetActions::AssetPrivatize, Result);
 
-		if (!Result.WasSuccesful())
+		if (!Result.bSuccess)
 		{
-			UE_LOG(LogObjectTools, Warning, TEXT("%s"), *Result.GetErrorMessage());
+			UE_LOG(LogObjectTools, Warning, TEXT("%s"), *Result.ErrorMessage);
 			return 0;
 		}
 
@@ -2929,7 +2916,7 @@ namespace ObjectTools
 					{
 						FFormatNamedArguments Args;
 						Args.Add(TEXT("Filename"), FText::FromString(PackageFilename));
-						const FText Message = FText::Format(NSLOCTEXT("ObjectTools", "DeleteReadOnlyWarning", "File '{Filename}' is read-only on disk, are you sure you want to delete it?"), Args);
+						const FText Message = FText::Format(NSLOCTEXT("ObjectTools", "DeleteReadOnlyWarning", "This file is read-only on disk:\n\n{Filename}\n\nDelete it anyway?"), Args);
 
 						ReturnType = FMessageDialog::Open(EAppMsgType::YesNoYesAllNoAll, EAppReturnType::No, Message);
 						bMakeWritable = ReturnType == EAppReturnType::YesAll;
@@ -3062,9 +3049,9 @@ namespace ObjectTools
 			GatherObjectReferencersForDeletion(ObjectToDelete, bIsReferenced, bIsReferencedByUndo, &Refs, bRequireReferencedProperties);
 
 			// only ref to this object is the transaction buffer, clear the transaction buffer
-			if (!bIsReferenced && bIsReferencedByUndo && GEditor && GEditor->Trans)
+			if (!bIsReferenced && bIsReferencedByUndo && GEditor)
 			{
-				GEditor->Trans->Reset( NSLOCTEXT( "UnrealEd", "DeleteSelectedItem", "Delete Selected Item" ) );
+				GEditor->ResetTransaction( NSLOCTEXT( "UnrealEd", "DeleteSelectedItem", "Delete Selected Item" ) );
 			}
 
 			if ( bIsReferenced )
@@ -4051,6 +4038,11 @@ namespace ObjectTools
 							NewPackage->SetPackageFlags(PKG_DisallowExport);
 						}
 
+						if (OldPackage->HasAnyPackageFlags(PKG_NewlyCreated))
+						{
+							NewPackage->SetPackageFlags(PKG_NewlyCreated);
+						}
+
 						NewPackage->SetIsExternallyReferenceable(OldPackage->IsExternallyReferenceable());
 
 						// When renaming a World Composition map, make sure to properly initialize WorldTileInfo
@@ -4178,8 +4170,8 @@ namespace ObjectTools
 			// Look for a thumbnail for this asset before we rename it
 			FObjectThumbnail* Thumbnail = ThumbnailTools::GetThumbnailForObject(Object);
 
-			//
-			UE::Private::FlushAsyncCompilation(Object->GetPackage());
+			// Make sure there is no async compilation outstanding in the package we're going to unload
+			UPackageTools::FlushAsyncCompilation( { Object->GetPackage() });
 
 			FString OldObjectFullName = Object->GetFullName();
 			FString OldObjectPathName = Object->GetPathName();

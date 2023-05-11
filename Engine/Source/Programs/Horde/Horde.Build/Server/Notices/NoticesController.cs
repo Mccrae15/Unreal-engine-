@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Horde.Build.Acls;
 using Horde.Build.Users;
 using Horde.Build.Utilities;
+using HordeCommon;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
@@ -21,52 +22,26 @@ namespace Horde.Build.Server.Notices
 	[Route("[controller]")]
 	public class NoticesController : ControllerBase
 	{
-		/// <summary>
-		/// The acl service singleton
-		/// </summary>
-		readonly AclService _aclService;
-
-		/// <summary>
-		/// Reference to the user collection
-		/// </summary>
+		private readonly AclService _aclService;
 		private readonly IUserCollection _userCollection;
-
-		/// <summary>
-		/// Notice service
-		/// </summary>
 		private readonly NoticeService _noticeService;
-
-		/// <summary>
-		/// cached globals
-		/// </summary>
-		readonly LazyCachedValue<Task<Globals>> _cachedGlobals;
-
-		/// <summary>
-		/// cached notices
-		/// </summary>
-		readonly LazyCachedValue<Task<List<INotice>>> _cachedNotices;
-
-		/// <summary>
-		/// Server settings
-		/// </summary>
-		readonly IOptionsMonitor<ServerSettings> _settings;
+		private readonly LazyCachedValue<Task<IGlobals>> _cachedGlobals;
+		private readonly LazyCachedValue<Task<List<INotice>>> _cachedNotices;
+		private readonly IOptionsSnapshot<GlobalConfig> _globalConfig;
+		private readonly IClock _clock;
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
-		/// <param name="settings">The server settings</param>
-		/// <param name="mongoService">The mongo service singleton</param>
-		/// <param name="noticeService">The notice service singleton</param>
-		/// <param name="aclService">The acl service singleton</param>
-		/// <param name="userCollection">The user collection singleton</param>
-		public NoticesController(IOptionsMonitor<ServerSettings> settings, MongoService mongoService, NoticeService noticeService, AclService aclService, IUserCollection userCollection)
+		public NoticesController(GlobalsService globalsService, NoticeService noticeService, AclService aclService, IUserCollection userCollection, IClock clock, IOptionsSnapshot<GlobalConfig> globalConfig)
 		{			
-			_settings = settings;
 			_aclService = aclService;
 			_userCollection = userCollection;
 			_noticeService = noticeService;
-			_cachedGlobals = new LazyCachedValue<Task<Globals>>(() => mongoService.GetGlobalsAsync(), TimeSpan.FromSeconds(30.0));
+			_cachedGlobals = new LazyCachedValue<Task<IGlobals>>(async () => await globalsService.GetAsync(), TimeSpan.FromSeconds(30.0));
 			_cachedNotices = new LazyCachedValue<Task<List<INotice>>>(() => noticeService.GetNoticesAsync(), TimeSpan.FromMinutes(1));
+			_clock = clock;
+			_globalConfig = globalConfig;
 		}
 
 		/// <summary>
@@ -77,7 +52,7 @@ namespace Horde.Build.Server.Notices
 		[HttpPost("/api/v1/notices")]
 		public async Task<ActionResult> AddNoticeAsync(CreateNoticeRequest request)
 		{
-			if (!await _aclService.AuthorizeAsync(AclAction.AdminWrite, User))
+			if (!_globalConfig.Value.Authorize(AclAction.AdminWrite, User))
 			{
 				return Forbid();
 			}
@@ -96,7 +71,7 @@ namespace Horde.Build.Server.Notices
 		[HttpPut("/api/v1/notices")]
 		public async Task<ActionResult> UpdateNoticeAsync(UpdateNoticeRequest request)
 		{
-			if (!await _aclService.AuthorizeAsync(AclAction.AdminWrite, User))
+			if (!_globalConfig.Value.Authorize(AclAction.AdminWrite, User))
 			{
 				return Forbid();
 			}
@@ -111,7 +86,7 @@ namespace Horde.Build.Server.Notices
 		[HttpDelete("/api/v1/notices/{id}")]
 		public async Task<ActionResult> DeleteNoticeAsync(string id)
 		{
-			if (!await _aclService.AuthorizeAsync(AclAction.AdminWrite, User))
+			if (!_globalConfig.Value.Authorize(AclAction.AdminWrite, User))
 			{
 				return Forbid();
 			}
@@ -130,11 +105,9 @@ namespace Horde.Build.Server.Notices
 		{
 			List<GetNoticeResponse> messages = new List<GetNoticeResponse>();
 
-			Globals globals = await _cachedGlobals.GetCached();
-
-			DateTimeOffset now = TimeZoneInfo.ConvertTime(DateTimeOffset.Now, _settings.CurrentValue.TimeZoneInfo);
+			DateTimeOffset now = TimeZoneInfo.ConvertTime(new DateTimeOffset(_clock.UtcNow), _clock.TimeZone);
 						
-			foreach (ScheduledDowntime schedule in globals.ScheduledDowntime)
+			foreach (ScheduledDowntime schedule in _globalConfig.Value.Downtime)
 			{
 				DateTimeOffset start = TimeZoneInfo.ConvertTimeBySystemTimeZoneId(schedule.GetNext(now).StartTime, "UTC");
 				DateTimeOffset finish = TimeZoneInfo.ConvertTimeBySystemTimeZoneId(schedule.GetNext(now).FinishTime, "UTC");

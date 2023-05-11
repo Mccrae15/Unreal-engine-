@@ -2,7 +2,7 @@
 
 #pragma once
 
-#ifdef UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_1
 #include "CoreMinimal.h"
 #include "Stats/Stats.h"
 #include "UObject/UObjectGlobals.h"
@@ -17,6 +17,10 @@
 #include "Misc/CoreStats.h"
 #include "UObject/SoftObjectPath.h"
 #include "GameFramework/Actor.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "AI/Navigation/NavAgentSelector.h"
+#include "AI/Navigation/NavigationBounds.h"
+#endif //UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "NavigationTypes.generated.h"
 
 #define INVALID_NAVNODEREF (0)
@@ -36,8 +40,6 @@ struct FNavigationPath;
 /** uniform identifier type for navigation data elements may it be a polygon or graph node */
 typedef uint64 NavNodeRef;
 
-// LWC_TODO_AI: Most the floats in this file should really be FReal. Probably not until after 5.0
-
 namespace FNavigationSystem
 {
 	/** used as a fallback value for navigation agent radius, when none specified via UNavigationSystemV1::SupportedAgents */
@@ -46,9 +48,9 @@ namespace FNavigationSystem
 	/** used as a fallback value for navigation agent height, when none specified via UNavigationSystemV1::SupportedAgents */
 	extern ENGINE_API const float FallbackAgentHeight;
 
-	static const FBox InvalidBoundingBox(ForceInit);
+	inline constexpr FBox InvalidBoundingBox(ForceInit, UE::Math::TBoxConstInit{});
 
-	static const FVector InvalidLocation = FVector(FLT_MAX);
+	inline constexpr FVector InvalidLocation = FVector(TNumericLimits<FVector::FReal>::Max(), UE::Math::TVectorConstInit{});
 
 	FORCEINLINE bool IsValidLocation(const FVector& TestLocation)
 	{
@@ -70,7 +72,7 @@ namespace FNavigationSystem
 UENUM()
 namespace ENavigationOptionFlag
 {
-	enum Type
+	enum Type : int
 	{
 		Default,
 		Enable UMETA(DisplayName = "Yes"),	// UHT was complaining when tried to use True as value instead of Enable
@@ -116,141 +118,6 @@ struct FNavigationDirtyArea
 	{
 		return !(*this == Other);
 	}
-};
-
-USTRUCT()
-struct ENGINE_API FNavAgentSelector
-{
-	GENERATED_USTRUCT_BODY()
-
-	static const uint32 InitializedBit = 0x80000000;
-
-#if CPP
-	union
-	{
-		struct
-		{
-#endif
-			UPROPERTY(EditAnywhere, Category = Default)
-			uint32 bSupportsAgent0 : 1;
-			UPROPERTY(EditAnywhere, Category = Default)
-			uint32 bSupportsAgent1 : 1;
-			UPROPERTY(EditAnywhere, Category = Default)
-			uint32 bSupportsAgent2 : 1;
-			UPROPERTY(EditAnywhere, Category = Default)
-			uint32 bSupportsAgent3 : 1;
-			UPROPERTY(EditAnywhere, Category = Default)
-			uint32 bSupportsAgent4 : 1;
-			UPROPERTY(EditAnywhere, Category = Default)
-			uint32 bSupportsAgent5 : 1;
-			UPROPERTY(EditAnywhere, Category = Default)
-			uint32 bSupportsAgent6 : 1;
-			UPROPERTY(EditAnywhere, Category = Default)
-			uint32 bSupportsAgent7 : 1;
-			UPROPERTY(EditAnywhere, Category = Default)
-			uint32 bSupportsAgent8 : 1;
-			UPROPERTY(EditAnywhere, Category = Default)
-			uint32 bSupportsAgent9 : 1;
-			UPROPERTY(EditAnywhere, Category = Default)
-			uint32 bSupportsAgent10 : 1;
-			UPROPERTY(EditAnywhere, Category = Default)
-			uint32 bSupportsAgent11 : 1;
-			UPROPERTY(EditAnywhere, Category = Default)
-			uint32 bSupportsAgent12 : 1;
-			UPROPERTY(EditAnywhere, Category = Default)
-			uint32 bSupportsAgent13 : 1;
-			UPROPERTY(EditAnywhere, Category = Default)
-			uint32 bSupportsAgent14 : 1;
-			UPROPERTY(EditAnywhere, Category = Default)
-			uint32 bSupportsAgent15 : 1;
-#if CPP
-		};
-		uint32 PackedBits;
-	};
-#endif
-
-	explicit FNavAgentSelector(const uint32 InBits = 0x7fffffff);
-
-	FORCEINLINE bool Contains(int32 AgentIndex) const
-	{
-		return (AgentIndex >= 0 && AgentIndex < 16) ? !!(PackedBits & (1 << AgentIndex)) : false;
-	}
-
-	FORCEINLINE void Set(int32 AgentIndex)
-	{
-		if (AgentIndex >= 0 && AgentIndex < 16)
-		{
-			PackedBits |= (1 << AgentIndex);
-		}
-	}
-
-	FORCEINLINE bool IsInitialized() const
-	{
-		return (PackedBits & InitializedBit) != 0;
-	}
-
-	FORCEINLINE void MarkInitialized()
-	{
-		PackedBits |= InitializedBit;
-	}
-
-	FORCEINLINE void Empty()
-	{
-		PackedBits = 0;
-	}
-
-	bool IsSame(const FNavAgentSelector& Other) const
-	{
-		return (~InitializedBit & PackedBits) == (~InitializedBit & Other.PackedBits);
-	}
-
-	bool Serialize(FArchive& Ar);
-
-	uint32 GetAgentBits() const 
-	{
-		return (~InitializedBit & PackedBits);
-	}
-};
-
-template<>
-struct TStructOpsTypeTraits< FNavAgentSelector > : public TStructOpsTypeTraitsBase2< FNavAgentSelector >
-{
-	enum
-	{
-		WithSerializer = true,
-	};
-};
-
-struct FNavigationBounds
-{
-	uint32 UniqueID;
-	FBox AreaBox;
-	FNavAgentSelector SupportedAgents;
-	TWeakObjectPtr<ULevel> Level;		// The level this bounds belongs to
-
-	bool operator==(const FNavigationBounds& Other) const 
-	{ 
-		return UniqueID == Other.UniqueID; 
-	}
-
-	friend uint32 GetTypeHash(const FNavigationBounds& NavBounds)
-	{
-		return GetTypeHash(NavBounds.UniqueID);
-	}
-};
-
-struct FNavigationBoundsUpdateRequest 
-{
-	FNavigationBounds NavBounds;
-	
-	enum Type
-	{
-		Added,
-		Removed,
-		Updated,
-	};
-
-	Type UpdateRequest;
 };
 
 UENUM()
@@ -369,7 +236,7 @@ private:
 UENUM()
 namespace ENavPathEvent
 {
-	enum Type
+	enum Type : int
 	{
 		Cleared,
 		NewPath,
@@ -516,12 +383,12 @@ struct ENGINE_API FNavAgentProperties : public FMovementProperties
 	void SetPreferredNavData(TSubclassOf<AActor> NavDataClass);
 
 	static const FNavAgentProperties DefaultProperties;
-};
 
-inline uint32 GetTypeHash(const FNavAgentProperties& A)
-{
-	return ((int16(A.AgentRadius) << 16) | int16(A.AgentHeight)) ^ int32(A.AgentStepHeight);
-}
+	friend inline uint32 GetTypeHash(const FNavAgentProperties& A)
+	{
+		return ((int16(A.AgentRadius) << 16) | int16(A.AgentHeight)) ^ int32(A.AgentStepHeight);
+	}
+};
 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 USTRUCT(BlueprintType)
@@ -639,7 +506,7 @@ struct FNavigationRaycastWork : FRayStartEnd
 UENUM()
 namespace ENavigationQueryResult
 {
-	enum Type
+	enum Type : int
 	{
 		Invalid,
 		Error,
@@ -747,12 +614,6 @@ public:
 	typedef TArray<InElementType, NavMeshMemory::FNavAllocator> Super;
 };
 
-template<typename InElementType>
-struct TContainerTraits<TNavStatArray<InElementType> > : public TContainerTraitsBase<TNavStatArray<InElementType> >
-{
-	enum { MoveWillEmptyContainer = TContainerTraits<typename TNavStatArray<InElementType>::Super>::MoveWillEmptyContainer };
-};
-
 
 //----------------------------------------------------------------------//
 // generic "landscape" support
@@ -765,5 +626,6 @@ struct ENGINE_API FNavHeightfieldSamples
 	FNavHeightfieldSamples();
 	void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize);
 
-	FORCEINLINE bool IsEmpty() const { return Heights.Num() == 0; }
+	void Empty();
+	FORCEINLINE bool IsEmpty() const { return Heights.IsEmpty() && Holes.IsEmpty();  }
 };

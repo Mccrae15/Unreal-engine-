@@ -2,10 +2,9 @@
 
 #include "MassCrowdVisualizationProcessor.h"
 #include "MassCrowdFragments.h"
-#include "Components/CapsuleComponent.h"
-#include "GameFramework/CharacterMovementComponent.h"
+#include "MassExecutionContext.h"
 #include "MassActorSubsystem.h"
-#include "MassCrowdRepresentationSubsystem.h"
+#include "MassRepresentationFragments.h"
 
 namespace UE::MassCrowd
 {

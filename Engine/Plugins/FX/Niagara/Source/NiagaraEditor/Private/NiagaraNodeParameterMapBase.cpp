@@ -12,7 +12,6 @@
 #include "NiagaraConstants.h"
 #include "ToolMenus.h"
 #include "NiagaraScriptVariable.h"
-#include "AssetRegistry/AssetRegistryModule.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(NiagaraNodeParameterMapBase)
 
@@ -159,7 +158,7 @@ void UNiagaraNodeParameterMapBase::SetPinName(UEdGraphPin* InPin, const FName& I
 
 bool UNiagaraNodeParameterMapBase::CanRenamePin(const UEdGraphPin* Pin) const
 {
-	if (IsAddPin(Pin))
+	if(Super::CanRenamePin(Pin) == false)
 	{
 		return false;
 	}

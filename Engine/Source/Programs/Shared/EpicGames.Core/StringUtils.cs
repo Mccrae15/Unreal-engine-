@@ -16,7 +16,7 @@ namespace EpicGames.Core
 		/// <summary>
 		/// Array mapping from ascii index to hexadecimal digits.
 		/// </summary>
-		static readonly sbyte[] s_hexDigits;
+		static readonly sbyte[] s_hexDigits = CreateHexDigitsTable();
 
 		/// <summary>
 		/// Hex digits to utf8 byte
@@ -31,25 +31,26 @@ namespace EpicGames.Core
 		/// <summary>
 		/// Static constructor. Initializes the HexDigits array.
 		/// </summary>
-		static StringUtils()
+		static sbyte[] CreateHexDigitsTable()
 		{
-			s_hexDigits = new sbyte[256];
+			sbyte[] hexDigits = new sbyte[256];
 			for (int idx = 0; idx < 256; idx++)
 			{
-				s_hexDigits[idx] = -1;
+				hexDigits[idx] = -1;
 			}
 			for (int idx = '0'; idx <= '9'; idx++)
 			{
-				s_hexDigits[idx] = (sbyte)(idx - '0');
+				hexDigits[idx] = (sbyte)(idx - '0');
 			}
 			for (int idx = 'a'; idx <= 'f'; idx++)
 			{
-				s_hexDigits[idx] = (sbyte)(10 + idx - 'a');
+				hexDigits[idx] = (sbyte)(10 + idx - 'a');
 			}
 			for (int idx = 'A'; idx <= 'F'; idx++)
 			{
-				s_hexDigits[idx] = (sbyte)(10 + idx - 'A');
+				hexDigits[idx] = (sbyte)(10 + idx - 'A');
 			}
+			return hexDigits;
 		}
 
 		/// <summary>
@@ -63,7 +64,7 @@ namespace EpicGames.Core
 			string result = "";
 			if(text.Length > 0)
 			{
-				result = indent + text.Replace("\n", "\n" + indent);
+				result = indent + text.Replace("\n", "\n" + indent, StringComparison.Ordinal);
 			}
 			return result;
 		}
@@ -92,7 +93,7 @@ namespace EpicGames.Core
 		public static string ExpandProperties(string text, Func<string, string?> getPropertyValue)
 		{
 			string result = text;
-			for (int idx = result.IndexOf("$("); idx != -1; idx = result.IndexOf("$(", idx))
+			for (int idx = result.IndexOf("$(", StringComparison.Ordinal); idx != -1; idx = result.IndexOf("$(", idx, StringComparison.Ordinal))
 			{
 				// Find the end of the variable name
 				int endIdx = result.IndexOf(')', idx + 2);
@@ -292,6 +293,17 @@ namespace EpicGames.Core
 		}
 
 		/// <summary>
+		/// Generates a string suitable for debugging a list of objects using ToString(). Lists one per line with the prefix string on the first line.
+		/// </summary>
+		/// <param name="objects">The list of objects to inset into the output string</param>
+		/// <param name="prefix">Prefix string to print along with the list of objects</param>
+		/// <returns>the resulting debug string</returns>
+		public static string CreateObjectList<T>(this IEnumerable<T> objects, string prefix)
+		{
+			return objects.Aggregate(new StringBuilder(prefix), (sb, obj) => sb.AppendFormat($"\n    {obj}")).ToString();
+		}
+		
+		/// <summary>
 		/// Parses a hexadecimal digit
 		/// </summary>
 		/// <param name="character">Character to parse</param>
@@ -315,12 +327,18 @@ namespace EpicGames.Core
 		/// Parses a hexadecimal string into an array of bytes
 		/// </summary>
 		/// <returns>Array of bytes</returns>
-		public static byte[] ParseHexString(string text)
+		public static byte[] ParseHexString(string text) => ParseHexString(text.AsSpan());
+
+		/// <summary>
+		/// Parses a hexadecimal string into an array of bytes
+		/// </summary>
+		/// <returns>Array of bytes</returns>
+		public static byte[] ParseHexString(ReadOnlySpan<char> text)
 		{
 			byte[]? bytes;
 			if(!TryParseHexString(text, out bytes))
 			{
-				throw new FormatException(String.Format("Invalid hex string: '{0}'", text));
+				throw new FormatException(String.Format("Invalid hex string: '{0}'", text.ToString()));
 			}
 			return bytes;
 		}
@@ -345,7 +363,7 @@ namespace EpicGames.Core
 		/// <param name="text">Text to parse</param>
 		/// <param name="outBytes">Receives the parsed string</param>
 		/// <returns></returns>
-		public static bool TryParseHexString(string text, [NotNullWhen(true)] out byte[]? outBytes)
+		public static bool TryParseHexString(ReadOnlySpan<char> text, [NotNullWhen(true)] out byte[]? outBytes)
 		{
 			if((text.Length & 1) != 0)
 			{
@@ -503,7 +521,7 @@ namespace EpicGames.Core
 		/// <returns>The quoted argument if it contains any spaces, otherwise the original string</returns>
 		public static string QuoteArgument(this string str)
 		{
-			if (str.Contains(' '))
+			if (str.Contains(' ', StringComparison.Ordinal))
 			{
 				return $"\"{str}\"";
 			}
@@ -558,7 +576,7 @@ namespace EpicGames.Core
 			bytesString = bytesString.Trim();
 
 			int power = s_byteSizes.FindIndex( s => (s != s_byteSizes[0]) && bytesString.EndsWith(s, StringComparison.InvariantCultureIgnoreCase ) ); // need to handle 'B' suffix separately
-			if (power == -1 && bytesString.EndsWith(s_byteSizes[0]))
+			if (power == -1 && bytesString.EndsWith(s_byteSizes[0], StringComparison.Ordinal))
 			{
 				power = 0;
 			}
@@ -605,7 +623,7 @@ namespace EpicGames.Core
 		{
 			char escapeChar = '\u001b';
 
-			int index = line.IndexOf(escapeChar);
+			int index = line.IndexOf(escapeChar, StringComparison.Ordinal);
 			if (index != -1)
 			{
 				int lastIndex = 0;

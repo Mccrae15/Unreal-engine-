@@ -2,7 +2,9 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "UObject/ObjectMacros.h"
+
+#include "ViewportSplitScreen.generated.h"
 
 /** 
  * Various data declarations relating to split screen on a GameViewportClient
@@ -18,7 +20,7 @@
 UENUM(BlueprintType)
 namespace ESplitScreenType
 {
-	enum Type
+	enum Type : int
 	{
 		// No split
 		None,

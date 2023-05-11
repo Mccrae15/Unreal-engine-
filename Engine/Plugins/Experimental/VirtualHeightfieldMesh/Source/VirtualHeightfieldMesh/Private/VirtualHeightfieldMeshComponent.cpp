@@ -3,8 +3,8 @@
 #include "VirtualHeightfieldMeshComponent.h"
 
 #include "Components/RuntimeVirtualTextureComponent.h"
-#include "Engine/World.h"
 #include "HeightfieldMinMaxTexture.h"
+#include "SceneInterface.h"
 #include "VirtualHeightfieldMeshEnable.h"
 #include "VirtualHeightfieldMeshSceneProxy.h"
 #include "VT/RuntimeVirtualTexture.h"
@@ -21,9 +21,7 @@ UVirtualHeightfieldMeshComponent::UVirtualHeightfieldMeshComponent(const FObject
 	bAffectDynamicIndirectLighting = false;
 	bAffectDistanceFieldLighting = false;
 	bNeverDistanceCull = true;
-#if WITH_EDITORONLY_DATA
 	bEnableAutoLODGeneration = false;
-#endif // WITH_EDITORONLY_DATA
 	Mobility = EComponentMobility::Static;
 }
 

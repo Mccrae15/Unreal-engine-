@@ -81,14 +81,6 @@ FAutoConsoleVariableRef CVarRadiosityProbePlaneWeightingDepthScale(
 	ECVF_Scalability | ECVF_RenderThreadSafe
 );
 
-float GLumenRadiosityMinTraceDistanceToSampleSurface = 10.0f;
-FAutoConsoleVariableRef CVarLumenRadiosityMinTraceDistanceToSampleSurface(
-	TEXT("r.LumenScene.Radiosity.MinTraceDistanceToSampleSurface"),
-	GLumenRadiosityMinTraceDistanceToSampleSurface,
-	TEXT("Ray hit distance from which we can start sampling surface cache in order to fix radiosity feedback loop where surface cache texel hits itself every frame."),
-	ECVF_Scalability | ECVF_RenderThreadSafe
-);
-
 float GLumenRadiosityMaxRayIntensity = 40.0f;
 FAutoConsoleVariableRef CVarLumenRadiosityMaxRayIntensity(
 	TEXT("r.LumenScene.Radiosity.MaxRayIntensity"),
@@ -199,7 +191,7 @@ namespace LumenRadiosity
 		FLumenSceneData& LumenSceneData,
 		FRDGTextureRef RadiosityAtlas,
 		FRDGTextureRef RadiosityNumFramesAccumulatedAtlas,
-		const FLumenCardTracingInputs& TracingInputs,
+		const FLumenSceneFrameTemporaries& FrameTemporaries,
 		const FLumenCardUpdateContext& CardUpdateContext,
 		ERDGPassFlags ComputePassFlags);
 
@@ -223,7 +215,9 @@ namespace LumenRadiosity
 
 	bool UseTemporalAccumulation()
 	{
-		return GLumenRadiosityTemporalAccumulation != 0 && RHIIsTypedUAVLoadSupported(Lumen::GetIndirectLightingAtlasFormat()) && RHIIsTypedUAVLoadSupported(Lumen::GetNumFramesAccumulatedAtlasFormat());
+		return GLumenRadiosityTemporalAccumulation != 0
+			&& UE::PixelFormat::HasCapabilities(Lumen::GetIndirectLightingAtlasFormat(), EPixelFormatCapabilities::TypedUAVLoad)
+			&& UE::PixelFormat::HasCapabilities(Lumen::GetNumFramesAccumulatedAtlasFormat(), EPixelFormatCapabilities::TypedUAVLoad);
 	}
 }
 
@@ -383,6 +377,7 @@ class FLumenRadiosityDistanceFieldTracingCS : public FGlobalShader
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("USE_GLOBAL_GPU_SCENE_DATA"), 1);
 		OutEnvironment.SetDefine(TEXT("ENABLE_DYNAMIC_SKY_LIGHT"), 1);
 		OutEnvironment.CompilerFlags.Add(CFLAG_Wave32);
 	}
@@ -411,9 +406,9 @@ class FLumenRadiosityHardwareRayTracing : public FLumenHardwareRayTracingShaderB
 		SHADER_PARAMETER(float, HeightfieldSurfaceBias)
 		SHADER_PARAMETER(float, AvoidSelfIntersectionTraceDistance)
 		SHADER_PARAMETER(float, MaxRayIntensity)
-		SHADER_PARAMETER(float, MinTraceDistanceToSampleSurface)
 		SHADER_PARAMETER(int32, MaxTranslucentSkipCount)
 		SHADER_PARAMETER(uint32, MaxTraversalIterations)
+		SHADER_PARAMETER(float, MinTraceDistanceToSampleSurfaceCache)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D, RWTraceRadianceAtlas)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D, RWTraceHitDistanceAtlas)
 	END_SHADER_PARAMETER_STRUCT()
@@ -423,6 +418,11 @@ class FLumenRadiosityHardwareRayTracing : public FLumenHardwareRayTracingShaderB
 		FLumenHardwareRayTracingShaderBase::ModifyCompilationEnvironment(Parameters, ShaderDispatchType, Lumen::ESurfaceCacheSampling::HighResPages, OutEnvironment);
 		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE"), GetGroupSize());
 		OutEnvironment.SetDefine(TEXT("ENABLE_DYNAMIC_SKY_LIGHT"), 1);
+	}
+
+	static ERayTracingPayloadType GetRayTracingPayloadType(const int32 PermutationId)
+	{
+		return ERayTracingPayloadType::LumenMinimal;
 	}
 
 	static int32 GetGroupSize()
@@ -598,7 +598,7 @@ void LumenRadiosity::AddRadiosityPass(
 	FLumenSceneData& LumenSceneData,
 	FRDGTextureRef RadiosityAtlas,
 	FRDGTextureRef RadiosityNumFramesAccumulatedAtlas,
-	const FLumenCardTracingInputs& TracingInputs,
+	const FLumenSceneFrameTemporaries& FrameTemporaries,
 	const FLumenCardUpdateContext& CardUpdateContext,
 	ERDGPassFlags ComputePassFlags)
 {
@@ -674,7 +674,7 @@ void LumenRadiosity::AddRadiosityPass(
 	{
 		FBuildRadiosityTilesCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FBuildRadiosityTilesCS::FParameters>();
 		PassParameters->IndirectArgBuffer = CardUpdateContext.DispatchCardPageIndicesIndirectArgs;
-		PassParameters->LumenCardScene = TracingInputs.LumenCardSceneUniformBuffer;
+		PassParameters->LumenCardScene = FrameTemporaries.LumenCardSceneUniformBuffer;
 		PassParameters->RWCardTileAllocator = GraphBuilder.CreateUAV(CardTileAllocator);
 		PassParameters->RWCardTileData = GraphBuilder.CreateUAV(CardTiles);
 		PassParameters->CardPageIndexAllocator = GraphBuilder.CreateSRV(CardUpdateContext.CardPageIndexAllocator);
@@ -727,12 +727,17 @@ void LumenRadiosity::AddRadiosityPass(
 			FIntVector(1, 1, 1));
 	}
 
+	FLumenCardTracingParameters TracingParameters;
+	GetLumenCardTracingParameters(GraphBuilder, FirstView, *Scene->GetLumenSceneData(FirstView), FrameTemporaries, /*bSurfaceCacheFeedback*/ false, TracingParameters);
+
 	// Trace rays from surface cache texels
 	if (Lumen::UseHardwareRayTracedRadiosity(*FirstView.Family))
 	{
 #if RHI_RAYTRACING
 		const bool bUseMinimalPayload = true;
 		const bool bInlineRayTracing = Lumen::UseHardwareInlineRayTracing(*FirstView.Family);
+		
+		checkf(ComputePassFlags != ERDGPassFlags::AsyncCompute || bInlineRayTracing, TEXT("Async Lumen HWRT is only supported for inline ray tracing"));
 
 		checkf((Views.Num() == 1 || IStereoRendering::IsStereoEyeView(FirstView)), TEXT("Radiosity HW tracing needs to be updated for splitscreen support"));
 		uint32 ViewIndex = 0;
@@ -743,7 +748,7 @@ void LumenRadiosity::AddRadiosityPass(
 			GraphBuilder,
 			GetSceneTextureParameters(GraphBuilder, View),
 			View,
-			TracingInputs,
+			TracingParameters,
 			&PassParameters->SharedParameters
 		);
 		PassParameters->HardwareRayTracingIndirectArgs = RadiosityIndirectArgs;
@@ -761,9 +766,9 @@ void LumenRadiosity::AddRadiosityPass(
 		PassParameters->MaxRayIntensity = FMath::Clamp(GLumenRadiosityMaxRayIntensity, 0.0f, 1000000.0f);
 		PassParameters->MinTraceDistance = FMath::Clamp(GLumenRadiosityHardwareRayTracingSurfaceBias, 0.0f, 1000.0f);
 		PassParameters->MaxTraceDistance = Lumen::GetMaxTraceDistance(View);
-		PassParameters->MinTraceDistanceToSampleSurface = GLumenRadiosityMinTraceDistanceToSampleSurface;
 		PassParameters->MaxTranslucentSkipCount = Lumen::GetMaxTranslucentSkipCount();
 		PassParameters->MaxTraversalIterations = LumenHardwareRayTracing::GetMaxTraversalIterations();
+		PassParameters->MinTraceDistanceToSampleSurfaceCache = LumenHardwareRayTracing::GetMinTraceDistanceToSampleSurfaceCache();
 
 		FLumenRadiosityHardwareRayTracingRGS::FPermutationDomain PermutationVector;
 		PermutationVector.Set<FLumenRadiosityHardwareRayTracingRGS::FIndirectDispatchDim>(IsHardwareRayTracingRadiosityIndirectDispatch());
@@ -779,27 +784,17 @@ void LumenRadiosity::AddRadiosityPass(
 		if (bInlineRayTracing)
 		{
 			TShaderRef<FLumenRadiosityHardwareRayTracingCS> ComputeShader = GlobalShaderMap->GetShader<FLumenRadiosityHardwareRayTracingCS>(PermutationVector);
-			if (IsHardwareRayTracingRadiosityIndirectDispatch())
-			{
-				FComputeShaderUtils::AddPass(
-					GraphBuilder,
-					RDG_EVENT_NAME("HardwareRayTracing (inline) %s %ux%u probes at %u spacing", *Resolution, HemisphereProbeResolution, HemisphereProbeResolution, ProbeSpacing),
-					ComputeShader,
-					PassParameters,
-					PassParameters->HardwareRayTracingIndirectArgs,
-					(uint32)ERadiosityIndirectArgs::HardwareRayTracingThreadPerTrace + ViewIndex * (uint32)ERadiosityIndirectArgs::MAX * sizeof(FRHIDispatchIndirectParameters));
-			}
-			else
-			{
-				const FIntVector GroupCount = FComputeShaderUtils::GetGroupCount(DispatchResolution, FLumenRadiosityHardwareRayTracingCS::GetThreadGroupSize());
-
-				FComputeShaderUtils::AddPass(
-					GraphBuilder,
-					RDG_EVENT_NAME("HardwareRayTracing (inline) %s %ux%u probes at %u spacing", *Resolution, HemisphereProbeResolution, HemisphereProbeResolution, ProbeSpacing),
-					ComputeShader,
-					PassParameters,
-					GroupCount);
-			}
+			
+			// Inline always runs as an indirect compute shader
+			FComputeShaderUtils::AddPass(
+				GraphBuilder,
+				RDG_EVENT_NAME("HardwareRayTracing (inline) <indirect> %ux%u probes at %u spacing", HemisphereProbeResolution, HemisphereProbeResolution, ProbeSpacing),
+				ComputePassFlags,
+				ComputeShader,
+				PassParameters,
+				PassParameters->HardwareRayTracingIndirectArgs,
+				(uint32)ERadiosityIndirectArgs::HardwareRayTracingThreadPerTrace + ViewIndex * (uint32)ERadiosityIndirectArgs::MAX * sizeof(FRHIDispatchIndirectParameters));
+		
 		}
 		else
 		{
@@ -844,8 +839,7 @@ void LumenRadiosity::AddRadiosityPass(
 			PassParameters->RadiosityTexelTraceParameters.ViewIndex = ViewIndex;
 			PassParameters->RWTraceRadianceAtlas = TraceRadianceAtlasUAV;
 			PassParameters->RWTraceHitDistanceAtlas = TraceHitDistanceAtlasUAV;
-
-			GetLumenCardTracingParameters(GraphBuilder, View, TracingInputs, PassParameters->TracingParameters);
+			PassParameters->TracingParameters = TracingParameters;
 			SetupLumenDiffuseTracingParametersForProbe(View, PassParameters->IndirectTracingParameters, 0.0f);
 			PassParameters->IndirectTracingParameters.SurfaceBias = FMath::Clamp(GLumenRadiosityDistanceFieldSurfaceSlopeBias, 0.0f, 1000.0f);
 			PassParameters->IndirectTracingParameters.MinTraceDistance = FMath::Clamp(GLumenRadiosityDistanceFieldSurfaceBias, 0.0f, 1000.0f);
@@ -885,7 +879,7 @@ void LumenRadiosity::AddRadiosityPass(
 			PassParameters->RWFilteredTraceRadianceAtlas = FilteredTraceRadianceAtlasUAV;
 			PassParameters->IndirectArgs = RadiosityIndirectArgs;
 			PassParameters->View = View.ViewUniformBuffer;
-			PassParameters->LumenCardScene = TracingInputs.LumenCardSceneUniformBuffer;
+			PassParameters->LumenCardScene = FrameTemporaries.LumenCardSceneUniformBuffer;
 			PassParameters->RadiosityTexelTraceParameters = RadiosityTexelTraceParameters;
 			PassParameters->RadiosityTexelTraceParameters.ViewIndex = ViewIndex;
 			PassParameters->ProbePlaneWeightingDepthScale = GRadiosityProbePlaneWeightingDepthScale;
@@ -945,7 +939,7 @@ void LumenRadiosity::AddRadiosityPass(
 		PassParameters->RWRadiosityProbeSHBlueAtlas = RadiosityProbeSHBlueAtlasUAV;
 		PassParameters->IndirectArgs = RadiosityIndirectArgs;
 		PassParameters->View = View.ViewUniformBuffer;
-		PassParameters->LumenCardScene = TracingInputs.LumenCardSceneUniformBuffer;
+		PassParameters->LumenCardScene = FrameTemporaries.LumenCardSceneUniformBuffer;
 		PassParameters->RadiosityTexelTraceParameters = RadiosityTexelTraceParameters;
 		PassParameters->RadiosityTexelTraceParameters.ViewIndex = ViewIndex;
 
@@ -971,7 +965,7 @@ void LumenRadiosity::AddRadiosityPass(
 		FLumenRadiosityIntegrateCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FLumenRadiosityIntegrateCS::FParameters>();
 		PassParameters->IndirectArgs = RadiosityIndirectArgs;
 		PassParameters->View = View.ViewUniformBuffer;
-		PassParameters->LumenCardScene = TracingInputs.LumenCardSceneUniformBuffer;
+		PassParameters->LumenCardScene = FrameTemporaries.LumenCardSceneUniformBuffer;
 		PassParameters->RadiosityTexelTraceParameters = RadiosityTexelTraceParameters;
 		PassParameters->RadiosityTexelTraceParameters.ViewIndex = ViewIndex;
 		PassParameters->RWRadiosityAtlas = RadiosityAtlasUAV;
@@ -1008,7 +1002,6 @@ void LumenRadiosity::AddRadiosityPass(
 void FDeferredShadingSceneRenderer::RenderRadiosityForLumenScene(
 	FRDGBuilder& GraphBuilder, 
 	const FLumenSceneFrameTemporaries& FrameTemporaries,
-	const FLumenCardTracingInputs& TracingInputs,
 	FRDGTextureRef RadiosityAtlas,
 	FRDGTextureRef RadiosityNumFramesAccumulatedAtlas,
 	const FLumenCardUpdateContext& CardUpdateContext,
@@ -1021,12 +1014,13 @@ void FDeferredShadingSceneRenderer::RenderRadiosityForLumenScene(
 	extern int32 GLumenSceneRecaptureLumenSceneEveryFrame;
 
 	if (Lumen::IsRadiosityEnabled(ViewFamily) 
-		&& LumenSceneData.bFinalLightingAtlasContentsValid)
+		&& LumenSceneData.bFinalLightingAtlasContentsValid
+		&& CardUpdateContext.MaxUpdateTiles > 0)
 	{
 		RDG_EVENT_SCOPE(GraphBuilder, "Radiosity");
 
 		FLumenCardTileUpdateContext CardTileUpdateContext;
-		Lumen::SpliceCardPagesIntoTiles(GraphBuilder, Views[0].ShaderMap, CardUpdateContext, TracingInputs.LumenCardSceneUniformBuffer, CardTileUpdateContext, ComputePassFlags);
+		Lumen::SpliceCardPagesIntoTiles(GraphBuilder, Views[0].ShaderMap, CardUpdateContext, FrameTemporaries.LumenCardSceneUniformBuffer, CardTileUpdateContext, ComputePassFlags);
 
 		const bool bRenderSkylight = Lumen::ShouldHandleSkyLight(Scene, ViewFamily);
 
@@ -1038,7 +1032,7 @@ void FDeferredShadingSceneRenderer::RenderRadiosityForLumenScene(
 			LumenSceneData,
 			RadiosityAtlas,
 			RadiosityNumFramesAccumulatedAtlas,
-			TracingInputs,
+			FrameTemporaries,
 			CardUpdateContext,
 			ComputePassFlags);
 
@@ -1047,7 +1041,7 @@ void FDeferredShadingSceneRenderer::RenderRadiosityForLumenScene(
 			Scene,
 			Views[0],
 			GraphBuilder,
-			TracingInputs,
+			FrameTemporaries,
 			CardUpdateContext,
 			CardTileUpdateContext,
 			ComputePassFlags);

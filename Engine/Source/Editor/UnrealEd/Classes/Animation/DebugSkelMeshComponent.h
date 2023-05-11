@@ -5,9 +5,11 @@
 
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
+#include "Engine/SkeletalMesh.h"
 #include "EngineDefines.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Delegates/DelegateCombinations.h"
+#include "SkeletalMeshSceneProxy.h"
 #include "DebugSkelMeshComponent.generated.h"
 
 class Error;
@@ -375,6 +377,9 @@ class UNREALED_API UDebugSkelMeshComponent : public USkeletalMeshComponent
 	// @todo anim : you still need to give asset, so that we know which one to disable
 	// we can disable per asset, so that if some other window disabled before me, I don't accidently turn it off
 	virtual void EnablePreview(bool bEnable, class UAnimationAsset * PreviewAsset);
+
+	// Create the preview instance to use (default UAnimPreviewInstance)
+	virtual TObjectPtr<UAnimPreviewInstance> CreatePreviewInstance();
 
 	// reference pose for this component
 	// we don't want to use default refpose because you still want to move joint when this mode is on

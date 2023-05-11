@@ -124,6 +124,16 @@ TArray<int32> UNiagaraNodeStaticSwitch::GetOptionValues() const
 	return OptionValues;
 }
 
+bool UNiagaraNodeStaticSwitch::CanModifyPin(const UEdGraphPin* Pin) const
+{
+	if(IsAddPin(Pin))
+	{
+		return false;
+	}
+
+	return true;
+}
+
 void UNiagaraNodeStaticSwitch::PreChange(const UUserDefinedEnum* Changed, FEnumEditorUtils::EEnumEditorChangeInfo ChangedType)
 {
 	// do nothing
@@ -168,11 +178,8 @@ FName UNiagaraNodeStaticSwitch::GetOptionPinName(const FNiagaraVariable& Variabl
 
 void UNiagaraNodeStaticSwitch::ChangeSwitchParameterName(const FName& NewName)
 {
-	FNiagaraVariable OldValue(GetInputType(), InputParameterName);
-	InputParameterName = NewName;
-	GetNiagaraGraph()->RenameParameter(OldValue, NewName, true);
+	GetNiagaraGraph()->RenameStaticSwitch(this, NewName);
 	VisualsChangedDelegate.Broadcast(this);
-	RemoveUnusedGraphParameter(OldValue);	
 }
 
 void UNiagaraNodeStaticSwitch::OnSwitchParameterTypeChanged(const FNiagaraTypeDefinition& OldType)
@@ -728,12 +735,6 @@ void UNiagaraNodeStaticSwitch::PostLoad()
 	// Make sure that we are added to the static switch list.
 	if (GetInputType().IsValid() && InputParameterName.IsValid())
 	{
-		if (InputParameterName.ToString() == TEXT("Enable Flattened Endcaps"))
-		{
-			int asdf = 0;
-			++asdf;
-		}
-
 		if (UNiagaraGraph* NiagaraGraph = GetNiagaraGraph())
 		{
 			const FNiagaraVariable Variable(GetInputType(), InputParameterName);

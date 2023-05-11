@@ -9,9 +9,7 @@
 #include "MassEntityQuery.h"
 #include "StructUtilsTypes.h"
 #include "MassObserverManager.h"
-#include "MassExecutionContext.h"
 #include "Containers/MpscQueue.h"
-#include "MassExecutionContext.h"
 #include "MassRequirementAccessDetector.h"
 
 
@@ -42,6 +40,8 @@ struct MASSENTITY_API FMassEntityManager : public TSharedFromThis<FMassEntityMan
 {
 	friend FMassEntityQuery;
 	friend FMassDebugger;
+
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnNewArchetypeDelegate, const FMassArchetypeHandle&);
 
 private:
 	// Index 0 is reserved so we can treat that index as an invalid entity handle
@@ -103,6 +103,14 @@ public:
 	 * both fragments and tags. 
 	 */
 	FMassArchetypeHandle CreateArchetype(TConstArrayView<const UScriptStruct*> FragmentsAndTagsList, const FName ArchetypeDebugName = FName());
+
+	/**
+	 * A special, relaxed but slower version of CreateArchetype functions that allows FragmentAngTagsList to contain
+	 * both fragments and tags. This version takes an original archetype and copies it layout, then appends any fragments and tags from the
+	 * provided list if they're not already in the original archetype.
+	 */
+	FMassArchetypeHandle CreateArchetype(FMassArchetypeHandle SourceArchetype, 
+		TConstArrayView<const UScriptStruct*> FragmentsAndTagsList, const FName ArchetypeDebugName = FName());
 
 	/**
 	 * CreateArchetype from a composition descriptor and initial values
@@ -319,7 +327,14 @@ public:
 	FMassExecutionContext CreateExecutionContext(const float DeltaSeconds);
 
 	FScopedProcessing NewProcessingScope() { return FScopedProcessing(ProcessingScopeCount); }
+
+	/** 
+	 * Indicates whether there are processors out there performing operations on this instance of MassEntityManager. 
+	 * Used to ensure that mutating operations (like entity destruction) are not performed while processors are running, 
+	 * which rely on the assumption that the data layout doesn't change during calculations. 
+	 */
 	bool IsProcessing() const { return ProcessingScopeCount > 0; }
+
 	FMassCommandBuffer& Defer() const { return *DeferredCommandBuffer.Get(); }
 	/** 
 	 * @param InCommandBuffer if not set then the default command buffer will be flushed. If set and there's already 
@@ -368,7 +383,7 @@ public:
 	void ForEachSharedFragment(TFunction< void(T& /*SharedFragment*/) > ExecuteFunction)
 	{
 		FStructTypeEqualOperator Predicate(T::StaticStruct());
-		for (const FSharedStruct& Struct : SharedFragments)
+		for (FSharedStruct& Struct : SharedFragments)
 		{
 			if (Predicate(Struct))
 			{
@@ -379,6 +394,7 @@ public:
 
 	FMassObserverManager& GetObserverManager() { return ObserverManager; }
 
+	FOnNewArchetypeDelegate& GetOnNewArchetypeEvent() { return OnNewArchetypeEvent; }
 	/** 
 	 * Fetches the world associated with the Owner. 
 	 * @note that it's ok for a given EntityManager to not have an owner or the owner not being part of a UWorld, depending on the use case
@@ -416,6 +432,9 @@ protected:
 
 	FMassArchetypeHandle InternalCreateSimilarArchetype(const FMassArchetypeData& SourceArchetypeRef, FMassArchetypeCompositionDescriptor&& NewComposition);
 
+	void InternalAppendFragmentsAndTagsToArchetypeCompositionDescriptor(FMassArchetypeCompositionDescriptor& InOutComposition,
+		TConstArrayView<const UScriptStruct*> FragmentsAndTagsList) const;
+
 private:
 	void InternalBuildEntity(FMassEntityHandle Entity, const FMassArchetypeHandle& ArchetypeHandle, const FMassArchetypeSharedFragmentValues& SharedFragmentValues);
 	void InternalReleaseEntity(FMassEntityHandle Entity);
@@ -432,7 +451,6 @@ private:
 	void InternalAddFragmentListToEntity(FMassEntityHandle Entity, const FMassFragmentBitSet& InFragments);
 	void* InternalGetFragmentDataChecked(FMassEntityHandle Entity, const UScriptStruct* FragmentType) const;
 	void* InternalGetFragmentDataPtr(FMassEntityHandle Entity, const UScriptStruct* FragmentType) const;
-
 private:
 	TChunkedArray<FEntityData> Entities;
 	TArray<int32> EntityFreeIndexList;
@@ -471,5 +489,11 @@ private:
 
 	TWeakObjectPtr<UObject> Owner;
 
+	FOnNewArchetypeDelegate OnNewArchetypeEvent;
+
 	bool bInitialized = false;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "MassExecutionContext.h"
+#endif

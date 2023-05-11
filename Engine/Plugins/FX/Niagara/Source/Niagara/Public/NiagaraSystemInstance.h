@@ -127,6 +127,7 @@ public:
 	void SetSolo(bool bInSolo);
 
 	void SetGpuComputeDebug(bool bEnableDebug);
+	void SetWarmupSettings(int32 WarmupTickCount, float WarmupTickDelta);
 
 	UActorComponent* GetPrereqComponent() const;
 
@@ -473,6 +474,9 @@ private:
 	float LODDistance;
 	float MaxLODDistance;
 
+	int32 WarmupTickCount = -1;
+	float WarmupTickDelta = 0;
+	
 	TArray< TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe> > Emitters;
 
 	FOnPostTick OnPostTickDelegate;
@@ -608,6 +612,9 @@ public:
 		float TimeSeconds = 0.0f;
 		float RealTimeSeconds = 0.0f;
 
+		// delta time coming from the engine (not including fixed delta time, etc)
+		float WorldDeltaSeconds = 0.0f;
+
 		int32 EmitterCount = 0;
 		int32 NumAlive = 0;
 		int32 TransformMatchCount = 0;
@@ -620,6 +627,8 @@ public:
 			DeltaSeconds = 0.0f;
 			TimeSeconds = 0.0f;
 			RealTimeSeconds = 0.0f;
+
+			WorldDeltaSeconds = 0.0f;
 
 			EmitterCount = 0;
 			NumAlive = 0;

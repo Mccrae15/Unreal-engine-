@@ -11,9 +11,8 @@ namespace UnrealBuildTool.Rules
 			//
 			// Common setup...
 			//
-
 			bLegalToDistributeObjectCode = true;
-			bEnforceIWYU = false;
+			IWYUSupport = IWYUSupport.None;
 
 			PrivateDependencyModuleNames.AddRange(
 				new string[] {
@@ -40,22 +39,18 @@ namespace UnrealBuildTool.Rules
 			//
 			// Common platform setup...
 			//
+			PrivateDefinitions.Add("ELECTRA_DISABLE_HDR=0");
 
 			if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
 			{
-				string DirectXSDKDir = Target.UEThirdPartySourceDirectory + "Windows/DirectX";
-				PublicSystemIncludePaths.Add(DirectXSDKDir + "/include");
-
-				if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
-				{
-					DirectXSDKDir += "/Lib/x64/";
-				}
+				PublicSystemIncludePaths.Add(DirectX.GetIncludeDir(Target));
 
 				PrivateDefinitions.Add("_CRT_SECURE_NO_WARNINGS=1");
 
 				PrivateDefinitions.Add("ELECTRA_ENABLE_MFDECODER");
 				PrivateDefinitions.Add("ELECTRA_ENABLE_SWDECODE");
 				PrivateDefinitions.Add("ELECTRA_PLATFORM_HAS_H265_DECODER=1");
+				PrivateDefinitions.Add("ELECTRA_PLATFORM_ENABLE_HDR=1");
 
 				AddEngineThirdPartyPrivateStaticDependencies(Target, "WinHttp");
 
@@ -73,7 +68,7 @@ namespace UnrealBuildTool.Rules
 				if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
 				{
 					PublicAdditionalLibraries.AddRange(new string[] {
-						DirectXSDKDir + "dxerr.lib",
+						DirectX.GetLibDir(Target) + "dxerr.lib",
 					});
 				}
 
@@ -105,12 +100,13 @@ namespace UnrealBuildTool.Rules
 				});
 
 				PrivateDefinitions.Add("ELECTRA_PLATFORM_HAS_H265_DECODER=1");
+				PrivateDefinitions.Add("ELECTRA_PLATFORM_ENABLE_HDR=1");
 
 				PublicIncludePaths.Add("$(ModuleDir)/Public/Apple");
 
 				PrivateIncludePaths.Add("ElectraPlayerRuntime/Private/Runtime/Decoder/Apple");
 			}
-			else if (Target.Platform == UnrealTargetPlatform.IOS )
+			else if (Target.Platform == UnrealTargetPlatform.IOS || Target.Platform == UnrealTargetPlatform.TVOS)
 			{
 				PublicFrameworks.AddRange(
 				new string[] {
@@ -123,6 +119,7 @@ namespace UnrealBuildTool.Rules
 				});
 
 				PrivateDefinitions.Add("ELECTRA_PLATFORM_HAS_H265_DECODER=1");
+				PrivateDefinitions.Add("ELECTRA_PLATFORM_ENABLE_HDR=1");
 
 				PublicIncludePaths.Add("$(ModuleDir)/Public/Apple");
 
@@ -141,6 +138,7 @@ namespace UnrealBuildTool.Rules
 				AdditionalPropertiesForReceipt.Add("AndroidPlugin", Path.Combine(PluginPath, "ElectraPlayerRuntime_UPL.xml"));
 
 				PrivateDefinitions.Add("ELECTRA_PLATFORM_HAS_H265_DECODER=1");
+				PrivateDefinitions.Add("ELECTRA_PLATFORM_ENABLE_HDR=1");
 
 				PublicIncludePaths.Add("$(ModuleDir)/Public/Android");
 
@@ -156,6 +154,7 @@ namespace UnrealBuildTool.Rules
 				}
 
 				PrivateDefinitions.Add("ELECTRA_PLATFORM_HAS_H265_DECODER=1");
+				PrivateDefinitions.Add("ELECTRA_PLATFORM_ENABLE_HDR=1");
 
 				PublicIncludePaths.Add("$(ModuleDir)/Public/Linux");
 				PrivateIncludePaths.Add("ElectraPlayerRuntime/Private/Runtime/Decoder/Linux");

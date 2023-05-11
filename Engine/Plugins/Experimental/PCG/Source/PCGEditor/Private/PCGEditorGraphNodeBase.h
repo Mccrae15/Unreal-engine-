@@ -2,15 +2,14 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
 #include "EdGraph/EdGraphNode.h"
-#include "EdGraph/EdGraphPin.h"
 
-#include "PCGCommon.h"
 
 #include "PCGEditorGraphNodeBase.generated.h"
 
+enum class EPCGChangeType : uint8;
+
+class UPCGComponent;
 class UPCGNode;
 class UPCGPin;
 class UToolMenu;
@@ -40,7 +39,7 @@ public:
 	virtual FText GetTooltipText() const override;
 	virtual void GetPinHoverText(const UEdGraphPin& Pin, FString& HoverTextOut) const override;
 	virtual UObject* GetJumpTargetForDoubleClick() const override;
-	virtual void OnUpdateCommentText(const FString& NewComment);
+	virtual void OnUpdateCommentText(const FString& NewComment) override;
 	virtual void OnCommentBubbleToggled(bool bInCommentBubbleVisible) override;
 	// ~End UEdGraphNode interface
 
@@ -50,6 +49,14 @@ public:
 	void PostPaste();
 	void SetInspected(bool InIsInspecting) { bIsInspected = InIsInspecting; }
 	bool GetInspected() const { return bIsInspected; }
+	
+	/** Increase deferred reconstruct counter, calls to ReconstructNode will flag reconstruct to happen when count hits zero */
+	void EnableDeferredReconstruct();
+	/** Decrease deferred reconstruct counter, ReconstructNode will be called if counter hits zero and the node is flagged for reconstruction  */
+	void DisableDeferredReconstruct();
+
+	/** Pulls current errors/warnings state from PCG subsystem. */
+	void UpdateErrorsAndWarnings();
 
 	DECLARE_DELEGATE(FOnPCGEditorGraphNodeChanged);
 	FOnPCGEditorGraphNodeChanged OnNodeChangedDelegate;
@@ -65,9 +72,17 @@ protected:
 	void UpdateCommentBubblePinned();
 	void UpdatePosition();
 
+	void CreatePins(const TArray<UPCGPin*>& InInputPins, const TArray<UPCGPin*>& InOutputPins);
+
+	// Custom logic to hide some pins to the user (by not creating a UI pin, even if the model pin exists).
+	// Useful for deprecation
+	virtual bool ShouldCreatePin(const UPCGPin* InPin) const;
+
 	UPROPERTY()
 	TObjectPtr<UPCGNode> PCGNode = nullptr;
 
+	int32 DeferredReconstructCounter = 0;
+	bool bDeferredReconstruct = false;
 	bool bDisableReconstructFromNode = false;
 	bool bIsInspected = false;
 };

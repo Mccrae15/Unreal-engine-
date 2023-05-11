@@ -6,9 +6,9 @@
 #include "InterchangeDispatcherConfig.h"
 #include "InterchangeDispatcherLog.h"
 
-#include "Async/TaskGraphInterfaces.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
+#include "HAL/PlatformTime.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopeLock.h"
 #include "Sockets.h"
@@ -18,46 +18,6 @@ namespace UE
 {
 	namespace Interchange
 	{
-		namespace Dispatcher
-		{
-			class FTaskProcessCommand
-			{
-			private:
-				FInterchangeWorkerHandler* TaskOwner = nullptr;
-				TSharedPtr<ICommand> Command = nullptr;
-
-			public:
-				FTaskProcessCommand(FInterchangeWorkerHandler* InTaskOwner, TSharedPtr<ICommand> InCommand)
-					: TaskOwner(InTaskOwner)
-					, Command(InCommand)
-				{
-				}
-
-				static FORCEINLINE ENamedThreads::Type GetDesiredThread()
-				{
-					return ENamedThreads::AnyBackgroundThreadNormalTask;
-				}
-				static FORCEINLINE ESubsequentsMode::Type GetSubsequentsMode()
-				{
-					return ESubsequentsMode::TrackSubsequents;
-				}
-
-				FORCEINLINE TStatId GetStatId() const
-				{
-					RETURN_QUICK_DECLARE_CYCLE_STAT(FTaskProcessCommand, STATGROUP_TaskGraphTasks);
-				}
-
-				void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
-				{
-					//Verify if the task was cancel
-					if (TaskOwner == nullptr || !TaskOwner->IsAlive() || !Command.IsValid())
-					{
-						return;
-					}
-					TaskOwner->ProcessCommand(*Command);
-				}
-			};
-		}
 		static FString GetWorkerExecutablePath()
 		{
 			static FString ProcessorPath = [&]()
@@ -213,7 +173,7 @@ namespace UE
 			WorkerState = EWorkerState::Uninitialized;
 			RunInternal();
 			WorkerState = EWorkerState::Terminated;
-			UE_CLOG(ErrorState != EWorkerErrorState::Ok, LogInterchangeDispatcher, Display, TEXT("Handler ended with error: %s"), EWorkerErrorStateAsString(ErrorState));
+			UE_CLOG(ErrorState != EWorkerErrorState::Ok, LogInterchangeDispatcher, Display, TEXT("Handler ended with fault: %s"), EWorkerErrorStateAsString(ErrorState));
 		}
 
 		void FInterchangeWorkerHandler::KillAllCurrentTasks()
@@ -260,6 +220,14 @@ namespace UE
 				return bSucceed;
 			};
 
+			auto SetTerminatedState = [this]()
+			{
+				//Always broadcast before setting the "terminated" state. API "IsAlive" is use by the dispatcher to reset the worker handler when worker handler state is "terminated"
+				//Notify the dispatcher the worker handler is done so it can terminate queue tasks
+				OnWorkerHandlerExitLoop.Broadcast();
+				WorkerState = EWorkerState::Terminated;
+			};
+
 			while (IsAlive())
 			{
 				switch (WorkerState)
@@ -272,7 +240,7 @@ namespace UE
 
 						if (ErrorState != EWorkerErrorState::Ok)
 						{
-							WorkerState = EWorkerState::Terminated;
+							SetTerminatedState();
 							break;
 						}
 
@@ -315,8 +283,7 @@ namespace UE
 							// consume task
 							if (TSharedPtr<ICommand> Command = CommandIO.GetNextCommand(Config::IdleLoopDelay))
 							{
-								//Make the processing asynchronous
-								TGraphTask<UE::Interchange::Dispatcher::FTaskProcessCommand>::CreateTask().ConstructAndDispatchWhenReady(this, Command);
+								ProcessCommand(*Command);
 							}
 
 							//Need to terminate?
@@ -369,7 +336,7 @@ namespace UE
 						//Make sure all running task are completed with error
 						KillAllCurrentTasks();
 
-						WorkerState = EWorkerState::Terminated;
+						SetTerminatedState();
 						break;
 					}
 
@@ -379,8 +346,6 @@ namespace UE
 					}
 				}
 			}
-			//Notify the dispatcher the worker handler is done so it can terminate queue tasks
-			OnWorkerHandlerExitLoop.Broadcast();
 		}
 
 		void FInterchangeWorkerHandler::Stop()

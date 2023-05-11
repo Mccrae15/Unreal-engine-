@@ -3,10 +3,14 @@
 #pragma once
 
 #include "GameplayTagContainer.h"
-#include "InstancedStruct.h"
 #include "MassEntityTypes.h"
 #include "Engine/DataAsset.h"
+#include "Math/Box.h"
+#include "WorldConditionQuery.h"
+#include "WorldConditions/SmartObjectWorldConditionSchema.h"
 #include "SmartObjectDefinition.generated.h"
+
+struct FSmartObjectSlotIndex;
 
 class UGameplayBehaviorConfig;
 enum class ESmartObjectTagFilteringPolicy: uint8;
@@ -31,15 +35,26 @@ struct SMARTOBJECTSMODULE_API FSmartObjectSlotDefinition
 	GENERATED_BODY()
 
 #if WITH_EDITORONLY_DATA
-	UPROPERTY(EditDefaultsOnly, Category = SmartObject)
+	UPROPERTY(EditDefaultsOnly, Category = "SmartObject")
 	FName Name;
 
-	UPROPERTY(EditAnywhere, Category = SmartObject, meta = (DisplayName = "Color"))
+	UPROPERTY(EditAnywhere, Category = "SmartObject", meta = (DisplayName = "Color"))
 	FColor DEBUG_DrawColor = FColor::Yellow;
+
+	UPROPERTY(EditAnywhere, Category = "SmartObject", meta = (Hidden))
+	FGuid ID;
 #endif // WITH_EDITORONLY_DATA
 
+	/** Whether the slot is enable initially. */
+	UPROPERTY(EditDefaultsOnly, Category = "SmartObject")
+	bool bEnabled = true;
+
+	/** Initial runtime tags. */
+	UPROPERTY(EditDefaultsOnly, Category = "SmartObject")
+	FGameplayTagContainer RuntimeTags;
+
 	/** This slot is available only for users matching this query. */
-	UPROPERTY(EditDefaultsOnly, Category = SmartObject)
+	UPROPERTY(EditDefaultsOnly, Category = "SmartObject")
 	FGameplayTagQuery UserTagFilter;
 
 	/**
@@ -47,15 +62,19 @@ struct SMARTOBJECTSMODULE_API FSmartObjectSlotDefinition
 	 * Depending on the tag filtering policy these tags can override the parent object's tags
 	 * or be combined with them while applying filters from requests.
 	 */
-	UPROPERTY(EditDefaultsOnly, Category = SmartObject)
+	UPROPERTY(EditDefaultsOnly, Category = "SmartObject")
 	FGameplayTagContainer ActivityTags;
 
+	/** Preconditions that must pass for the slot to be selected. */
+	UPROPERTY(EditDefaultsOnly, Category = "SmartObject")
+	FWorldConditionQueryDefinition SelectionPreconditions;
+
 	/** Offset relative to the parent object where the slot is located. */
-	UPROPERTY(EditDefaultsOnly, Category = SmartObject)
+	UPROPERTY(EditDefaultsOnly, Category = "SmartObject")
 	FVector Offset = FVector::ZeroVector;
 
 	/** Rotation relative to the parent object. */
-	UPROPERTY(EditDefaultsOnly, Category = SmartObject)
+	UPROPERTY(EditDefaultsOnly, Category = "SmartObject")
 	FRotator Rotation = FRotator::ZeroRotator;
 
 	/** Custom data (struct inheriting from SmartObjectSlotDefinitionData) that can be added to the slot definition and accessed through a FSmartObjectSlotView */
@@ -67,32 +86,10 @@ struct SMARTOBJECTSMODULE_API FSmartObjectSlotDefinition
 	 * This allows multiple frameworks to provide their specific behavior definition to the slot.
 	 * Note that there should be only one definition of each type since the first one will be selected.
 	 */
-	UPROPERTY(EditDefaultsOnly, Category = SmartObject, Instanced)
+	UPROPERTY(EditDefaultsOnly, Category = "SmartObject", Instanced)
 	TArray<TObjectPtr<USmartObjectBehaviorDefinition>> BehaviorDefinitions;
 };
 
-/**
- * Helper struct to wrap basic functionalities to store the index of a slot in a SmartObject definition
- */
-USTRUCT(BlueprintType)
-struct SMARTOBJECTSMODULE_API FSmartObjectSlotIndex
-{
-	GENERATED_BODY()
-
-	explicit FSmartObjectSlotIndex(const int32 InSlotIndex = INDEX_NONE) : Index(InSlotIndex) {}
-
-	bool IsValid() const { return Index != INDEX_NONE; }
-	void Invalidate() { Index = INDEX_NONE; }
-
-	operator int32() const { return Index; }
-
-	bool operator==(const FSmartObjectSlotIndex& Other) const { return Index == Other.Index; }
-	friend FString LexToString(const FSmartObjectSlotIndex& SlotIndex) { return FString::Printf(TEXT("[Slot:%d]"), SlotIndex.Index); }
-
-private:
-	UPROPERTY(Transient)
-	int32 Index = INDEX_NONE;
-};
 
 /**
  * SmartObject definition asset. Contains sharable information that can be used by multiple SmartObject instances at runtime.
@@ -116,8 +113,23 @@ public:
 	 */
 	const USmartObjectBehaviorDefinition* GetBehaviorDefinition(const FSmartObjectSlotIndex& SlotIndex, const TSubclassOf<USmartObjectBehaviorDefinition>& DefinitionClass) const;
 
-	/** Returns a view on all the slot definitions */
+	/** @return Preconditions that must pass for the object to be found/used. */
+	const FWorldConditionQueryDefinition& GetPreconditions() const { return Preconditions; }
+
+	/** @return mutable Preconditions that must pass for the object to be found/used. */
+	FWorldConditionQueryDefinition& GetMutablePreconditions() { return Preconditions; }
+
+	/** @return a view on all the slot definitions */
 	TConstArrayView<FSmartObjectSlotDefinition> GetSlots() const { return Slots; }
+
+	/** @return slot definition stored at a given index */
+	const FSmartObjectSlotDefinition& GetSlot(const int32 Index) const { return Slots[Index]; }
+
+	/** @return mutable slot definition stored at a given index */
+	FSmartObjectSlotDefinition& GetMutableSlot(const int32 Index) { return Slots[Index]; }
+
+	/** @return True if specified slot index is valid. */
+	bool IsValidSlotIndex(const int32 SlotIndex) const { return Slots.IsValidIndex(SlotIndex); } 
 
 #if WITH_EDITOR
 	/** Returns a view on all the slot definitions */
@@ -160,10 +172,12 @@ public:
 	void SetUserTagFilter(const FGameplayTagQuery& InUserTagFilter) { UserTagFilter = InUserTagFilter; }
 
 	/** Returns the tag query to run on the runtime tags of a smart object instance to accept it */
-	const FGameplayTagQuery& GetObjectTagFilter() const { return ObjectTagFilter; }
+	UE_DEPRECATED(5.2, "Use FWorldCondition_SmartObjectActorTagQuery or FSmartObjectWorldConditionObjectTagQuery in Preconditions instead.")
+	const FGameplayTagQuery& GetObjectTagFilter() const { static FGameplayTagQuery Dummy; return Dummy; }
 
 	/** Sets the tag query to run on the runtime tags of a smart object instance to accept it */
-	void SetObjectTagFilter(const FGameplayTagQuery& InObjectTagFilter) { ObjectTagFilter = InObjectTagFilter; }
+	UE_DEPRECATED(5.2, "Use FWorldCondition_SmartObjectActorTagQuery or FSmartObjectWorldConditionObjectTagQuery in Preconditions instead.")
+	void SetObjectTagFilter(const FGameplayTagQuery& InObjectTagFilter) {}
 
 	/** Returns the list of tags describing the activity associated to this definition */
 	const FGameplayTagContainer& GetActivityTags() const { return ActivityTags; }
@@ -184,21 +198,23 @@ public:
 	void SetActivityTagsMergingPolicy(const ESmartObjectTagMergingPolicy InActivityTagsMergingPolicy) { ActivityTagsMergingPolicy = InActivityTagsMergingPolicy; }
 
 	/**
-	 *	Performs validation and logs errors if any. An object using an invalid definition
-	 *	will not be registered in the simulation.
+	 *	Performs validation for the current definition. The method will return on the first error encountered by default
+	 *	but could go through all validations and report all errors (e.g. when saving the asset errors are reported to the user).
+	 *	An object using an invalid definition will not be registered in the simulation.
 	 *	The result of the validation is stored until next validation and can be retrieved using `IsValid`.
+	 *	@param ErrorsToReport Optional list of error messages that could be provided to report them
 	 *	@return true if the definition is valid
 	 */
-	bool Validate() const;
+	bool Validate(TArray<FText>* ErrorsToReport = nullptr) const;
 
 	/** Provides a description of the definition */
 	friend FString LexToString(const USmartObjectDefinition& Definition)
 	{
-		return FString::Printf(TEXT("NumSlots=%d NumDefs=%d HasUserFilter=%s HasObjectFilter=%s"),
+		return FString::Printf(TEXT("NumSlots=%d NumDefs=%d HasUserFilter=%s HasPreConditions=%s"),
 			Definition.Slots.Num(),
 			Definition.DefaultBehaviorDefinitions.Num(),
 			*LexToString(!Definition.UserTagFilter.IsEmpty()),
-			*LexToString(!Definition.ObjectTagFilter.IsEmpty()));
+			*LexToString(Definition.Preconditions.IsValid()));
 	}
 
 	/** Returns result of the last validation if `Validate` was called; unset otherwise. */
@@ -212,7 +228,25 @@ public:
 	/** Path of the static mesh used for previewing the definition in the asset editor. */
 	UPROPERTY()
 	FSoftObjectPath PreviewMeshPath;
-#endif
+#endif // WITH_EDITORONLY_DATA
+
+	const USmartObjectWorldConditionSchema* GetWorldConditionSchema() const { return WorldConditionSchemaClass.GetDefaultObject(); }
+	const TSubclassOf<USmartObjectWorldConditionSchema>& GetWorldConditionSchemaClass() const { return WorldConditionSchemaClass; }
+	
+protected:
+
+#if WITH_EDITOR
+	/** @return Index of the slot that has the specified ID, or INDEX_NONE if not found. */
+	int32 FindSlotByID(const FGuid ID) const;
+
+	void UpdateSlotReferences();
+
+	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent) override;
+	virtual void PreSave(FObjectPreSaveContext SaveContext) override;
+	virtual EDataValidationResult IsDataValid(TArray<FText>& ValidationErrors) override;
+#endif // WITH_EDITOR
+
+	virtual void PostLoad() override;
 
 private:
 	/** Finds first behavior definition of a given class in the provided list of definitions. */
@@ -222,34 +256,47 @@ private:
 	 * Where SmartObject's user needs to stay to be able to activate it. These
 	 * will be used by AI to approach the object. Locations are relative to object's location.
 	 */
-	UPROPERTY(EditDefaultsOnly, Category = SmartObject)
+	UPROPERTY(EditDefaultsOnly, Category = "SmartObject")
 	TArray<FSmartObjectSlotDefinition> Slots;
 
 	/** List of behavior definitions of different types provided to SO's user if the slot does not provide one. */
-	UPROPERTY(EditDefaultsOnly, Category = SmartObject, Instanced)
+	UPROPERTY(EditDefaultsOnly, Category = "SmartObject", Instanced)
 	TArray<TObjectPtr<USmartObjectBehaviorDefinition>> DefaultBehaviorDefinitions;
 
 	/** This object is available if user tags match this query; always available if query is empty. */
-	UPROPERTY(EditDefaultsOnly, Category = SmartObject)
+	UPROPERTY(EditDefaultsOnly, Category = "SmartObject")
 	FGameplayTagQuery UserTagFilter;
 
+#if WITH_EDITORONLY_DATA
 	/** This object is available if instance tags match this query; always available if query is empty. */
-	UPROPERTY(EditDefaultsOnly, Category = SmartObject, meta = (DisplayName = "Object Activation Tag Filter"))
+	UE_DEPRECATED(5.2, "FWorldCondition_SmartObjectActorTagQuery or FSmartObjectWorldConditionObjectTagQuery used in Preconditions instead.")
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "Use FWorldCondition_SmartObjectActorTagQuery or FSmartObjectWorldConditionObjectTagQuery in Preconditions instead."))
 	FGameplayTagQuery ObjectTagFilter;
+#endif // WITH_EDITORONLY_DATA
 
+	/** Preconditions that must pass for the object to be found/used. */
+	UPROPERTY(EditDefaultsOnly, Category = "SmartObject")
+	FWorldConditionQueryDefinition Preconditions;
+
+private:
 	/** Tags identifying this Smart Object's use case. Can be used while looking for objects supporting given activity */
-	UPROPERTY(EditDefaultsOnly, Category = SmartObject)
+	UPROPERTY(EditDefaultsOnly, Category = "SmartObject")
 	FGameplayTagContainer ActivityTags;
 
+	UPROPERTY(EditDefaultsOnly, Category = "SmartObject", AdvancedDisplay)
+	TSubclassOf<USmartObjectWorldConditionSchema> WorldConditionSchemaClass;
+	
 	/** Indicates how Tags from slots and parent object are combined to be evaluated by a TagQuery from a find request. */
-	UPROPERTY(EditAnywhere, Category = SmartObject, AdvancedDisplay)
+	UPROPERTY(EditAnywhere, Category = "SmartObject", AdvancedDisplay)
 	ESmartObjectTagMergingPolicy ActivityTagsMergingPolicy;
 
 	/** Indicates how TagQueries from slots and parent object will be processed against User Tags from a find request. */
-	UPROPERTY(EditAnywhere, Category = SmartObject, AdvancedDisplay)
+	UPROPERTY(EditAnywhere, Category = "SmartObject", AdvancedDisplay)
 	ESmartObjectTagFilteringPolicy UserTagsFilteringPolicy;
-
+	
 	mutable TOptional<bool> bValid;
+
+	friend class FSmartObjectSlotReferenceDetails;
 };
 
 /**
@@ -271,3 +318,7 @@ struct SMARTOBJECTSMODULE_API FSmartObjectSlotDefinitionFragment : public FMassS
 	/** Pointer to the slot definition contained by the SmartObject definition. */
 	const FSmartObjectSlotDefinition* SlotDefinition = nullptr;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "SmartObjectTypes.h"
+#endif

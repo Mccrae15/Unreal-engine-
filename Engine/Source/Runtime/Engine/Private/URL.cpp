@@ -4,14 +4,10 @@
 	URL.cpp: Various file-management functions.
 =============================================================================*/
 
-#include "CoreMinimal.h"
-#include "Misc/CoreMisc.h"
-#include "Misc/Paths.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Modules/ModuleManager.h"
 #include "Misc/PackageName.h"
 #include "GameMapsSettings.h"
-#include "Engine/EngineBaseTypes.h"
 #include "Engine/World.h"
 #include "AssetRegistry/AssetData.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -478,12 +474,17 @@ FURL::FURL( FURL* Base, const TCHAR* TextURL, ETravelType Type )
 					if (!AssetRegistry.IsLoadingAssets())
 					{
 						TArray<FAssetData> MapList;
-						if (AssetRegistry.GetAssetsByClass(UWorld::StaticClass()->GetClassPathName(), /*out*/ MapList))
+
+						FARFilter Filter;
+						Filter.ClassPaths.Add(UWorld::StaticClass()->GetClassPathName());
+						Filter.WithoutPackageFlags = PKG_CookGenerated | PKG_PlayInEditor;
+
+						if (AssetRegistry.GetAssets(Filter, /*out*/ MapList))
 						{
 							FName TargetTestName(*URLStr);
 							for (const FAssetData& MapAsset : MapList)
 							{
-								if (MapAsset.AssetName == TargetTestName && !MapAsset.HasAnyPackageFlags(PKG_CookGenerated))
+								if (MapAsset.AssetName == TargetTestName)
 								{
 									Map = MapAsset.PackageName.ToString();
 									bFoundMap = true;

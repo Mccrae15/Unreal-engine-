@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "ConcertTransactionEvents.h"
 #include "CoreMinimal.h"
 #include "Misc/ITransaction.h"
 #include "UObject/Class.h"
@@ -9,8 +10,28 @@
 #include "IConcertSessionHandler.h"
 #include "IConcertClientTransactionBridge.h"
 #include "UObject/StructOnScope.h"
+#include "ConcertSyncClientUtil.h"
 
 class FConcertSyncClientLiveSession;
+
+struct FConcertConflictDescriptionAggregate : public FConcertConflictDescriptionBase
+{
+	virtual ~FConcertConflictDescriptionAggregate() override = default;
+	virtual FText GetConflictDetails() const override;
+	virtual FText GetConflictTitle() const override;
+
+	void AddObjectRemoved(const FConcertObjectId& ObjectIdRemoved);
+	void AddObjectRenamed(const FConcertObjectId& OldObjectId, const FConcertObjectId& NewObjectId);
+
+	bool HasAnyResults() const
+	{
+		return !ObjectsRemoved.IsEmpty() || !ObjectsRenamed.IsEmpty();
+	}
+
+private:
+	TArray<FConcertObjectId> ObjectsRemoved;
+	TArray<TPair<FConcertObjectId, FConcertObjectId>> ObjectsRenamed;
+};
 
 class FConcertClientTransactionManager
 {
@@ -60,9 +81,23 @@ private:
 	{
 		/** Is this transaction required? */
 		bool bIsRequired = false;
-		
+
 		/** Optional list of packages to process transactions for, or empty to process transactions for all packages */
 		TArray<FName> PackagesToProcess;
+	};
+
+	/** Lookup set key functions. */
+	struct FConcertObjectIdFuncs : public TDefaultMapKeyFuncs<FConcertObjectId, TSet<FGuid>, false>
+	{
+		FORCEINLINE static bool Matches(KeyInitType A, KeyInitType B)
+		{
+			return ConcertSyncClientUtil::ObjectIdsMatch(A, B);
+		}
+
+		FORCEINLINE static uint32 GetKeyHash(KeyInitType InObjectId)
+		{
+			return HashCombine(GetTypeHash(InObjectId.ObjectName), GetTypeHash(InObjectId.ObjectOuterPathName));
+		}
 	};
 
 	/**
@@ -123,6 +158,11 @@ private:
 	bool CanProcessTransactionEvent() const;
 
 	/**
+	 * Can we send transaction events to remote clients.
+	 */
+	bool CanSendTransactionEvents() const;
+
+	/**
 	 * Process a transaction event.
 	 */
 	void ProcessTransactionEvent(const FPendingTransactionToProcessContext& InContext, const FStructOnScope& InEvent);
@@ -140,7 +180,7 @@ private:
 	/**
 	 * Handle a local transaction, ensuring that there is a pending entry to be sent.
 	 */
-	FPendingTransactionToSend& HandleLocalTransactionCommon(const FConcertClientLocalTransactionCommonData& InCommonData);
+	FPendingTransactionToSend& HandleLocalTransactionCommon(const FConcertClientLocalTransactionCommonData& InCommonData, const TArray<FConcertExportedObject>& ObjectUpdates);
 
 	/**
 	 * Handle a local transaction being snapshot, queueing it for send later.
@@ -168,6 +208,32 @@ private:
 	void SendPendingTransactionEvents();
 
 	/**
+	 * Check the inbound transaction event for conflicts in the pending send. If we are receive only
+	 * and a conflict is detected then we have to remove pending send object.
+	 */
+	void CheckEventForSendConflicts(const FConcertTransactionFinalizedEvent& InEvent);
+
+	/**
+	 * Fixup any objects from the old ObjectId a given new ObjectId.  The routine will check that the
+	 * given object ids are valid.
+	 *
+	 * @param OldObjectId to search.
+	 * @param NewObjectId to replace.
+	 * @param Aggregate for conflict information.
+	 */
+	void FixupObjectIdsInPendingSend(const FConcertObjectId& OldObjectId, const FConcertObjectId& NewObjectId, FConcertConflictDescriptionAggregate& ConflictAggregate);
+
+	/**
+	 * Remove the given pending to send object.
+	 */
+	void RemovePendingToSend(const FConcertClientLocalTransactionCommonData& InCommonData);
+
+	/**
+	 * Remove the given pending to send object.
+	 */
+	FPendingTransactionToSend& AddPendingToSend(const FConcertClientLocalTransactionCommonData& InCommonData, const TArray<FConcertExportedObject>& ObjectUpdates);
+
+	/**
 	 * Should process this transaction event?
 	 */
 	bool ShouldProcessTransactionEvent(const FConcertTransactionEventBase& InEvent, const bool InIsRequired) const;
@@ -176,6 +242,11 @@ private:
 	 * Fill in the transaction event based on the given GUID.
 	 */
 	void FillTransactionEvent(const FGuid& InTransactionId, const FGuid& InOperationId, const TArray<FName>& InModifiedPackages, FConcertTransactionEventBase& OutEvent) const;
+
+	/**
+	 * Notify externally that a transaction conflict has occurred.
+	 */
+	void NotifyUserOfSendConflict(const FConcertConflictDescriptionBase& ConflictDescription);
 
 	/**
 	 * Session instance this transaction manager was created for.
@@ -203,4 +274,10 @@ private:
 	 * Map of transaction IDs to the pending transaction that may be sent in the future (when finalized).
 	 */
 	TMap<FGuid, FPendingTransactionToSend> PendingTransactionsToSend;
+
+	/**
+	 * Named lookup for pending transactions to send.  This is so we can cross check the pending for send against
+	 * remote transactions that may conflict.
+	 */
+	TMap<FConcertObjectId, TSet<FGuid>, FDefaultSetAllocator, FConcertObjectIdFuncs> NameLookupForPendingTransactionsToSend;
 };

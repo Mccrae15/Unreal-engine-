@@ -23,7 +23,7 @@ class UObject;
 UCLASS(Abstract, meta = (ShowWorldContextPin), config = Editor)
 class BLUTILITY_API UEditorUtilityWidget : public UUserWidget
 {
-	GENERATED_UCLASS_BODY()
+	GENERATED_BODY()
 
 public:
 	// The default action called when the widget is invoked if bAutoRunDefaultAction=true (it is never called otherwise)
@@ -43,9 +43,19 @@ public:
 		return bAutoRunDefaultAction;
 	}
 
+	/** Returns the default desired tab display name that was specified for this widget */
+	FText GetTabDisplayName() const
+	{
+		return TabDisplayName;
+	}
+
 	virtual bool IsEditorUtility() const override { return true; }
 
 protected:
+	/** The display name for tabs spawned with this widget */
+	UPROPERTY(Category = Config, EditDefaultsOnly, BlueprintReadWrite, AssetRegistrySearchable)
+	FText TabDisplayName;
+
 	UPROPERTY(Category = Config, EditDefaultsOnly, BlueprintReadWrite, AssetRegistrySearchable)
 	FString HelpText;
 
@@ -56,5 +66,4 @@ protected:
 	// Should this blueprint automatically run OnDefaultActionClicked, or should it open up a details panel to edit properties and/or offer multiple buttons
 	UPROPERTY(Category = Settings, EditDefaultsOnly, BlueprintReadOnly)
 	bool bAutoRunDefaultAction;
-
 };

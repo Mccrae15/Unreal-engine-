@@ -3,7 +3,6 @@
 #include "MuT/ASTOpImagePatch.h"
 
 #include "Containers/Map.h"
-#include "MuR/MemoryPrivate.h"
 #include "MuR/ModelPrivate.h"
 #include "MuR/RefCounted.h"
 #include "MuR/Types.h"
@@ -71,7 +70,7 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	void ASTOpImagePatch::Link(PROGRAM& program, const FLinkerOptions*)
+	void ASTOpImagePatch::Link(FProgram& program, const FLinkerOptions*)
 	{
 		// Already linked?
 		if (!linkedAddress)
@@ -94,12 +93,12 @@ namespace mu
 
 
 	//-------------------------------------------------------------------------------------------------
-	FImageDesc ASTOpImagePatch::GetImageDesc(bool returnBestOption, GetImageDescContext* context)
+	FImageDesc ASTOpImagePatch::GetImageDesc(bool returnBestOption, FGetImageDescContext* context) const
 	{
 		FImageDesc res;
 
 		// Local context in case it is necessary
-		GetImageDescContext localContext;
+		FGetImageDescContext localContext;
 		if (!context)
 		{
 			context = &localContext;

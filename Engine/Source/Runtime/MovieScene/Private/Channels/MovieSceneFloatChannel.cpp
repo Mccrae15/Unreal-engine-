@@ -3,6 +3,7 @@
 #include "Channels/MovieSceneFloatChannel.h"
 #include "Channels/MovieSceneChannelProxy.h"
 #include "Channels/MovieSceneCurveChannelImpl.h"
+#include "Channels/MovieSceneInterpolation.h"
 #include "MovieSceneFrameMigration.h"
 #include "MovieSceneFwd.h"
 #include "UObject/FortniteMainBranchObjectVersion.h"
@@ -50,9 +51,24 @@ bool FMovieSceneFloatChannel::Evaluate(FFrameTime InTime,  float& OutValue) cons
 	return FMovieSceneFloatChannelImpl::Evaluate(this, InTime, OutValue);
 }
 
+UE::MovieScene::Interpolation::FCachedInterpolation FMovieSceneFloatChannel::GetInterpolationForTime(FFrameTime InTime) const
+{
+	return FMovieSceneFloatChannelImpl::GetInterpolationForTime(this, InTime);
+}
+
 void FMovieSceneFloatChannel::Set(TArray<FFrameNumber> InTimes, TArray<FMovieSceneFloatValue> InValues)
 {
 	FMovieSceneFloatChannelImpl::Set(this, InTimes, InValues);
+}
+
+void FMovieSceneFloatChannel::SetKeysOnly(TArrayView<FFrameNumber> InTimes, TArrayView<FMovieSceneFloatValue> InValues)
+{
+	check(InTimes.Num() == InValues.Num());
+
+	Times = MoveTemp(InTimes);
+	Values = MoveTemp(InValues);
+
+	KeyHandles.Reset();
 }
 
 void FMovieSceneFloatChannel::AutoSetTangents(float Tension)
@@ -140,6 +156,11 @@ void FMovieSceneFloatChannel::Optimize(const FKeyDataOptimizationParams& Params)
 void FMovieSceneFloatChannel::ClearDefault()
 {
 	bHasDefaultValue = false;
+}
+
+EMovieSceneKeyInterpolation GetInterpolationMode(FMovieSceneFloatChannel* InChannel, const FFrameNumber& InTime, EMovieSceneKeyInterpolation DefaultInterpolationMode)
+{
+	return TMovieSceneCurveChannelImpl<FMovieSceneFloatChannel>::GetInterpolationMode(InChannel, InTime, DefaultInterpolationMode);
 }
 
 FKeyHandle AddKeyToChannel(FMovieSceneFloatChannel* Channel, FFrameNumber InFrameNumber, float InValue, EMovieSceneKeyInterpolation Interpolation)

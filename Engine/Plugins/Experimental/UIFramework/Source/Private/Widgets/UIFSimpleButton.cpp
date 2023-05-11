@@ -1,14 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Widgets/UIFSimpleButton.h"
-#include "UIFPlayerComponent.h"
 
-#include "Blueprint/WidgetTree.h"
-#include "Components/Button.h"
-#include "Components/TextBlock.h"
-#include "Components/UIFSimpleButtonUserWidget.h"
-
+#include "Blueprint/UserWidget.h"
+#include "MVVMSubsystem.h"
+#include "Net/Core/PushModel/PushModel.h"
 #include "Net/UnrealNetwork.h"
+#include "Types/MVVMEventField.h"
+#include "View/MVVMView.h"
+
+#include UE_INLINE_GENERATED_CPP_BY_NAME(UIFSimpleButton)
 
 
 /**
@@ -32,9 +33,14 @@ void UUIFrameworkSimpleButton::GetLifetimeReplicatedProps(TArray<FLifetimeProper
 
 void UUIFrameworkSimpleButton::LocalOnUMGWidgetCreated()
 {
-	UUIFrameworkSimpleButtonUserWidget* UserWidget = CastChecked<UUIFrameworkSimpleButtonUserWidget>(LocalGetUMGWidget());
-	UserWidget->TextBlock->SetText(Text);
-	UserWidget->Button->OnClicked.AddUniqueDynamic(this, &ThisClass::ServerClick);
+	UUserWidget* UserWidget = Cast<UUserWidget>(LocalGetUMGWidget());
+	if (ensure(UserWidget))
+	{
+		if (UMVVMView* View = UMVVMSubsystem::GetViewFromUserWidget(UserWidget))
+		{
+			View->SetViewModel(TEXT("Widget"), this);
+		}
+	}
 }
 
 
@@ -42,25 +48,27 @@ void UUIFrameworkSimpleButton::SetText(FText InText)
 {
 	Text = InText;
 	MARK_PROPERTY_DIRTY_FROM_NAME(ThisClass, Text, this);
+	ForceNetUpdate();
+	UE_MVVM_BROADCAST_FIELD_VALUE_CHANGED(Text);
 }
 
 
 void UUIFrameworkSimpleButton::OnRep_Text()
 {
-	if (LocalGetUMGWidget())
-	{
-		CastChecked<UUIFrameworkSimpleButtonUserWidget>(LocalGetUMGWidget())->TextBlock->SetText(Text);
-	}
+	UE_MVVM_BROADCAST_FIELD_VALUE_CHANGED(Text);
 }
 
 
-void UUIFrameworkSimpleButton::ServerClick_Implementation()
+void UUIFrameworkSimpleButton::OnClick(FMVVMEventField Field)
 {
-	if (GetPlayerComponent())
-	{
-		FUIFrameworkClickEventArgument Argument;
-		Argument.PlayerController = GetPlayerComponent()->GetPlayerController();
-		Argument.Sender = this;
-		OnClick.Broadcast(Argument);
-	}
+	// todo the click event should send the userid
+	ServerClick(Cast<APlayerController>(GetOuter()));
+}
+
+
+void UUIFrameworkSimpleButton::ServerClick_Implementation(APlayerController* PlayerController)
+{
+	ClickEvent.PlayerController = PlayerController;
+	ClickEvent.Sender = this;
+	BroadcastFieldValueChanged(ThisClass::FFieldNotificationClassDescriptor::ClickEvent);
 }

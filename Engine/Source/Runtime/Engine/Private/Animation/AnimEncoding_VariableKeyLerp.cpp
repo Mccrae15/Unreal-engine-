@@ -5,8 +5,6 @@
 =============================================================================*/ 
 
 #include "AnimEncoding_VariableKeyLerp.h"
-#include "Serialization/MemoryReader.h"
-#include "Serialization/MemoryWriter.h"
 #if INTEL_ISPC
 #include "AnimEncoding_VariableKeyLerp.ispc.generated.h"
 
@@ -22,6 +20,7 @@ static_assert(sizeof(ispc::BoneTrackPair) == sizeof(BoneTrackPair), "sizeof(ispc
 #if !INTEL_ISPC || UE_BUILD_SHIPPING
 static constexpr bool bAnim_VariableKeyLerp_ISPC_Enabled = INTEL_ISPC && ANIM_VARIABLE_KEY_LERP_ISPC_ENABLED_DEFAULT;
 #else
+#include "HAL/IConsoleManager.h"
 static bool bAnim_VariableKeyLerp_ISPC_Enabled = ANIM_VARIABLE_KEY_LERP_ISPC_ENABLED_DEFAULT;
 static FAutoConsoleVariableRef CVarAnimVariableKeyLerpISPCEnabled(TEXT("a.VariableKeyLerp.ISPC"), bAnim_VariableKeyLerp_ISPC_Enabled, TEXT("Whether to use ISPC optimizations in variable key anim encoding"));
 #endif

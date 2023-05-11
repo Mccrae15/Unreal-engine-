@@ -1,17 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ParameterCollection.h"
-#include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 #include "RenderingThread.h"
-#include "UniformBuffer.h"
 #include "Engine/World.h"
 #include "MaterialShared.h"
 #include "MaterialCachedData.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialParameterCollectionInstance.h"
 #include "Materials/MaterialParameterCollection.h"
-#include "Materials/MaterialExpressionCollectionParameter.h"
 
 int32 GDeferUpdateRenderStates = 1;
 FAutoConsoleVariableRef CVarDeferUpdateRenderStates(
@@ -50,15 +47,18 @@ void UMaterialParameterCollection::PostLoad()
 	}
 
 	CreateBufferStruct();
+	SetupWorldParameterCollectionInstances();
+	UpdateDefaultResource(true);
+}
 
+void UMaterialParameterCollection::SetupWorldParameterCollectionInstances()
+{
 	// Create an instance for this collection in every world
 	for (TObjectIterator<UWorld> It; It; ++It)
 	{
 		UWorld* CurrentWorld = *It;
 		CurrentWorld->AddParameterCollectionInstance(this, true);
 	}
-
-	UpdateDefaultResource(true);
 }
 
 void UMaterialParameterCollection::BeginDestroy()

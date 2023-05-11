@@ -3,8 +3,8 @@
 #include "LandscapePatchUtil.h"
 
 #include "LandscapeTexturePatchPS.h" // FSimpleTextureCopyPS
-#include "LandscapeTextureBackedRenderTarget.h"
-#include "RenderGraph.h"
+#include "RenderGraphBuilder.h"
+#include "TextureResource.h"
 
 void UE::Landscape::PatchUtil::CopyTextureOnRenderThread(FRHICommandListImmediate& RHICmdList, 
 	const FTextureResource& Source, FTextureResource& Destination)

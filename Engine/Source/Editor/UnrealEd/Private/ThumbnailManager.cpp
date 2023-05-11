@@ -1,9 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ThumbnailRendering/ThumbnailManager.h"
+
+#include "Editor.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "ObjectTools.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Materials/Material.h"
 #include "ISourceControlOperation.h"
@@ -72,6 +75,13 @@ void UThumbnailManager::Initialize(void)
 		InitializeRenderTypeArray(RenderableThumbnailTypes);
 
 		SharedThumbnailPool = MakeShared<FAssetThumbnailPool>(100);
+
+		FCoreUObjectDelegates::OnObjectPropertyChanged.AddUObject(this, &UThumbnailManager::OnObjectPropertyChanged);
+
+		if (GEditor)
+		{
+			GEditor->OnActorMoved().AddUObject(this, &UThumbnailManager::OnActorPostEditMove);
+		}
 
 		bIsInitialized = true;
 	}
@@ -260,6 +270,11 @@ UThumbnailManager& UThumbnailManager::Get()
 	return *ThumbnailManagerSingleton;
 }
 
+UThumbnailManager* UThumbnailManager::TryGet()
+{
+	return ThumbnailManagerSingleton;
+}
+
 void UThumbnailManager::SetupCheckerboardTexture()
 {
 	if (CheckerboardTexture)
@@ -289,7 +304,7 @@ bool UThumbnailManager::CaptureProjectThumbnail(FViewport* Viewport, const FStri
 		int32 ScaledSize  = FMath::Min<uint32>(AutoScreenshotSize, CropSize);
 
 		//calculations for cropping
-		TArray<FColor> CroppedBitmap;
+		TArray64<FColor> CroppedBitmap;
 		CroppedBitmap.AddUninitialized(CropSize*CropSize);
 
 		//Crop the image
@@ -305,21 +320,31 @@ bool UThumbnailManager::CaptureProjectThumbnail(FViewport* Viewport, const FStri
 			FMemory::Memcpy(DstPtr, SrcPtr, CropSize * 4);
 		}
 
+		FImageView CroppedImage(CroppedBitmap.GetData(),CropSize,CropSize);
+		//Viewport ReadPixels seems to have A = 0, make sure it is set to opaque for image save
+		FImageCore::SetAlphaOpaque(CroppedImage);
+
 		//Scale image down if needed
-		TArray<FColor> ScaledBitmap;
+		FImage ScaledImage;
+		FImageView SaveImage;
 		if (ScaledSize < CropSize)
 		{
-			FImageUtils::ImageResize( CropSize, CropSize, CroppedBitmap, ScaledSize, ScaledSize, ScaledBitmap, true );
+			FImageCore::ResizeTo(CroppedImage,ScaledImage,ScaledSize,ScaledSize,ERawImageFormat::BGRA8,EGammaSpace::sRGB);
+			SaveImage = ScaledImage;
 		}
 		else
 		{
 			//just copy the data over. sizes are the same
-			ScaledBitmap = CroppedBitmap;
+			SaveImage = CroppedImage;
 		}
 
 		// Compress the scaled image
-		TArray<uint8> ScaledPng;
-		FImageUtils::ThumbnailCompressImageArray(ScaledSize, ScaledSize, ScaledBitmap, ScaledPng);
+		// OutputFilename is a .png in current use
+		TArray64<uint8> ScaledPng;
+		if ( ! FImageUtils::CompressImage(ScaledPng, *OutputFilename, SaveImage) )
+		{
+			return false;
+		}
 
 		// Save to file
 		const FString ScreenShotPath = FPaths::GetPath(OutputFilename);
@@ -359,7 +384,101 @@ bool UThumbnailManager::CaptureProjectThumbnail(FViewport* Viewport, const FStri
 				return true;
 			}
 		}
+		else
+		{
+			// failed to make output dir?
+		}
 	}
 
 	return false;
 }
+
+void UThumbnailManager::OnObjectPropertyChanged(UObject* ObjectBeingModified, FPropertyChangedEvent& PropertyChangedEvent)
+{
+	if (PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
+	{
+		DirtyThumbnailForObject(ObjectBeingModified);
+	}
+}
+
+void UThumbnailManager::OnActorPostEditMove(AActor* Actor)
+{
+	DirtyThumbnailForObject(Actor);
+}
+
+void UThumbnailManager::DirtyThumbnailForObject(UObject* ObjectBeingModified)
+{
+	if (!ObjectBeingModified)
+	{
+		return;
+	}
+
+	if (ObjectBeingModified->HasAnyFlags(RF_ClassDefaultObject))
+	{
+		if (ObjectBeingModified->GetClass()->ClassGeneratedBy != nullptr)
+		{
+			// This is a blueprint modification. Check to see if this thumbnail is the blueprint of the modified CDO
+			ObjectBeingModified = ObjectBeingModified->GetClass()->ClassGeneratedBy;
+		}
+	}
+	else if (AActor* ActorBeingModified = Cast<AActor>(ObjectBeingModified))
+	{
+		// This is a non CDO actor getting modified. Update the actor's world's thumbnail.
+		ObjectBeingModified = ActorBeingModified->GetWorld();
+	}
+
+	if (ObjectBeingModified)
+	{
+		// An object in memory was modified.  We'll mark its thumbnail as dirty so that it'll be
+		// regenerated on demand later. (Before being displayed in the browser, or package saves, etc.)
+		FObjectThumbnail* Thumbnail = ThumbnailTools::GetThumbnailForObject(ObjectBeingModified);
+
+		// If we don't yet have a thumbnail map, load one from disk if possible
+		if (Thumbnail == nullptr)
+		{
+			UPackage* ObjectPackage = ObjectBeingModified->GetOutermost();
+
+			const bool bMemoryPackage = FPackageName::IsMemoryPackage(ObjectBeingModified->GetPathName());  // Don't try to load from disk if the package is a memory package
+			const bool bUnsavedPackage = ObjectPackage->HasAnyPackageFlags(PKG_NewlyCreated);               // Don't try loading thumbnails for package that have never been saved
+			const bool bPackageDirty = ObjectPackage->IsDirty();                                            // Don't try loading thumbnails for package that we have no intention of saving
+			const bool bIsGarbageCollecting = IsGarbageCollecting();                                        // Don't attempt to do this while garbage collecting since loading or finding objects during GC is illegal
+			const bool bUsesGenericThumbnail = [ObjectBeingModified, this]() -> bool                        // No need to dirty generic thumbnails
+			{
+				if (FThumbnailRenderingInfo* RenderingInfo = GetRenderingInfo(ObjectBeingModified))
+				{
+					return RenderingInfo->Renderer == nullptr;
+				}
+				else
+				{
+					return true;
+				}
+			}();
+
+			const bool bTryLoadThumbnailFromDisk = !bIsGarbageCollecting && !bMemoryPackage && !bUnsavedPackage && !bUsesGenericThumbnail && bPackageDirty;
+			if (bTryLoadThumbnailFromDisk)
+			{
+				FName ObjectFullName = FName(*ObjectBeingModified->GetFullName());
+
+				FThumbnailMap LoadedThumbnails;
+				if (ThumbnailTools::ConditionallyLoadThumbnailsForObjects({ ObjectFullName }, LoadedThumbnails))
+				{
+					Thumbnail = LoadedThumbnails.Find(ObjectFullName);
+
+					if (Thumbnail != nullptr)
+					{
+						Thumbnail = ThumbnailTools::CacheThumbnail(ObjectBeingModified->GetFullName(), Thumbnail, ObjectPackage);
+					}
+				}
+			}
+		}
+
+		if (Thumbnail != nullptr)
+		{
+			// Mark the thumbnail as dirty
+			Thumbnail->MarkAsDirty();
+		}
+
+		OnThumbnailDirtied.Broadcast(FSoftObjectPath(ObjectBeingModified));
+	}
+}
+

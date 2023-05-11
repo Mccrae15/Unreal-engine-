@@ -76,12 +76,30 @@ struct CORE_API FWindowsPlatformMisc
 	static void CustomNamedStat(const ANSICHAR* Text, float Value, const ANSICHAR* Graph, const ANSICHAR* Unit);
 #endif
 
-	FORCEINLINE static void MemoryBarrier() { _mm_sfence(); }
+	FORCEINLINE static void MemoryBarrier() 
+	{
+#if PLATFORM_CPU_X86_FAMILY
+		_mm_sfence();
+#elif PLATFORM_CPU_ARM_FAMILY
+		__dmb(_ARM64_BARRIER_SY);
+#endif
+	}
 
 	static bool IsRemoteSession();
 
 	static void SetUTF8Output();
 	static void LocalPrint(const TCHAR *Message);
+
+	static bool IsLowLevelOutputDebugStringStructured();
+
+	static bool IsLocalPrintThreadSafe()
+	{ 
+		//returning true when the debugger is attached is to allow
+		//printing of log lines immediately to the output window.
+		//return false in not attached because OutputDebuString is slow.
+		return IsDebuggerPresent();
+	}
+	
 	static void RequestExitWithStatus(bool Force, uint8 ReturnCode);
 	static void RequestExit(bool Force);
 	static const TCHAR* GetSystemErrorMessage(TCHAR* OutBuffer, int32 BufferCount, int32 Error);
@@ -147,21 +165,6 @@ struct CORE_API FWindowsPlatformMisc
 	static void PromptForRemoteDebugging(bool bIsEnsure);
 #endif	//#if !UE_BUILD_SHIPPING
 
-	FORCEINLINE static void PrefetchBlock(const void* InPtr, int32 NumBytes = 1)
-	{
-		const char* Ptr           = (const char*)InPtr;
-		const int32 CacheLineSize = GetCacheLineSize();
-		for (int32 LinesToPrefetch = (NumBytes + CacheLineSize - 1) / CacheLineSize; LinesToPrefetch; --LinesToPrefetch)
-		{
-			_mm_prefetch( Ptr, _MM_HINT_T0 );
-			Ptr += CacheLineSize;
-		}
-	}
-
-	FORCEINLINE static void Prefetch(void const* x, int32 offset = 0)
-	{
-		 _mm_prefetch( (char const*)(x) + offset, _MM_HINT_T0 );
-	}
 
 	/** 
 	 * Determines if the cpuid instruction is supported on this processor
@@ -180,7 +183,7 @@ struct CORE_API FWindowsPlatformMisc
 	static FString GetCPUVendor();
 	static FString GetCPUBrand();
 	static FString GetPrimaryGPUBrand();
-	static struct FGPUDriverInfo GetGPUDriverInfo(const FString& DeviceDescription);
+	static struct FGPUDriverInfo GetGPUDriverInfo(const FString& DeviceDescription, bool bVerbose = true);
 	static void GetOSVersions( FString& out_OSVersionLabel, FString& out_OSSubVersionLabel );
 	static FString GetOSVersion();
 	static bool GetDiskTotalAndFreeSpace( const FString& InPath, uint64& TotalNumberOfBytes, uint64& NumberOfFreeBytes );
@@ -232,13 +235,8 @@ struct CORE_API FWindowsPlatformMisc
 	 */
 	static bool GetVSComnTools(int32 Version, FString& OutData);
 
-	/**
-	 * Returns the size of the cache line in bytes.
-	 *
-	 * @return The cache line size.
-	 */
+	UE_DEPRECATED(5.2, "Please use PLATFORM_CACHE_LINE_SIZE instead, runtime query of cache line size not supported")
 	static int32 GetCacheLineSize();
-
 	/**
 	* @return Windows path separator.
 	*/

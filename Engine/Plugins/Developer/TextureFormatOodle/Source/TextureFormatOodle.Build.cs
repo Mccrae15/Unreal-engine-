@@ -66,6 +66,8 @@ public class TextureFormatOodle : ModuleRules
 
 	public TextureFormatOodle(ReadOnlyTargetRules Target) : base(Target)
 	{
+		IWYUSupport = IWYUSupport.None;
+
 		ShortName = "TextureFormatOodle";
 
 		PrivateIncludePathModuleNames.AddRange(new string[]

@@ -2,8 +2,6 @@
 
 #pragma once
 
-#include "Kismet/BlueprintFunctionLibrary.h"
-#include "Animation/AnimSequence.h"
 #include "ContextualAnimTypes.h"
 #include "ContextualAnimUtilities.generated.h"
 
@@ -13,7 +11,9 @@ class UAnimInstance;
 class AActor;
 class FPrimitiveDrawInterface;
 struct FAnimMontageInstance;
+struct FCompactPose;
 struct FContextualAnimSet;
+template<class PoseType> struct FCSPose;
 
 UCLASS()
 class CONTEXTUALANIMATION_API UContextualAnimUtilities : public UBlueprintFunctionLibrary

@@ -6,14 +6,22 @@
 
 #pragma once
 
+#include "Async/TaskGraphInterfaces.h"
 #include "CoreMinimal.h"
-#include "UObject/WeakObjectPtr.h"
+#include "RenderedTextureStats.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "CanvasTypes.h"
 #include "UnrealClient.h"
+#endif
+#include "Serialization/BulkData.h"
+#include "UObject/ObjectKey.h"
+#include "UObject/WeakObjectPtr.h"
 
 class AActor;
 class FSoundSource;
 class UPrimitiveComponent;
+class FCanvas;
+class FViewport;
 class FSoundWaveData;
 class FSoundWaveProxy;
 class ICompressedAudioInfo;
@@ -21,6 +29,7 @@ class UTexture2D;
 struct FRenderAssetStreamingManager;
 struct FWaveInstance;
 class UAnimStreamable;
+enum class EStreamableRenderAssetType : uint8;
 struct FCompressedAnimSequence;
 
 using FSoundWaveProxyPtr = TSharedPtr<FSoundWaveProxy, ESPMode::ThreadSafe>;
@@ -128,14 +137,15 @@ private:
 	const uint8*  CachedData;
 	int32 CachedDataNumBytes;
 
-	TWeakPtr<FSoundWaveData, ESPMode::ThreadSafe> CorrespondingWave;
 	FName CorrespondingWaveName;
+	FObjectKey CorrespondingWaveObjectKey;
 
 	// The index of this chunk in the sound wave's full set of chunks of compressed audio.
 	int32 ChunkIndex;
 
 #if WITH_EDITOR
-	uint32 ChunkGeneration;
+	TWeakPtr<FSoundWaveData, ESPMode::ThreadSafe> CorrespondingWave;
+	uint32 ChunkRevision;
 #endif
 
 	friend struct IAudioStreamingManager;
@@ -413,15 +423,6 @@ protected:
 };
 
 /**
- * Lightweight struct used to list the MIP levels of rendered assets.
- */
-struct FRenderedTextureStats
-{
-	int32 MaxMipLevelShown;
-	FString TextureGroup;
-};
-
-/**
  * Interface to add functions specifically related to texture/mesh streaming
  */
 struct IRenderAssetStreamingManager : public IStreamingManager
@@ -454,6 +455,9 @@ struct IRenderAssetStreamingManager : public IStreamingManager
 
 	/** Removes a texture/mesh from the streaming manager. */
 	virtual void RemoveStreamingRenderAsset(UStreamableRenderAsset* RenderAsset) = 0;
+
+	/** Check whether all runtime-allowed LODs have been loaded. */
+	virtual bool IsFullyStreamedIn(UStreamableRenderAsset* RenderAsset) = 0;
 
 	virtual int64 GetMemoryOverBudget() const = 0;
 
@@ -695,12 +699,12 @@ struct FStreamingManagerCollection : public IStreamingManager
 	/**
 	 * Checks whether texture streaming is enabled. 
 	 */
-	FORCEINLINE bool IsTextureStreamingEnabled() const { return IsRenderAssetStreamingEnabled(EStreamableRenderAssetType::Texture); }
+	ENGINE_API bool IsTextureStreamingEnabled() const;
 
 	/**
 	 * Checks whether texture/mesh streaming is enabled
 	 */
-	ENGINE_API bool IsRenderAssetStreamingEnabled(EStreamableRenderAssetType FilteredAssetType = EStreamableRenderAssetType::None) const;
+	ENGINE_API bool IsRenderAssetStreamingEnabled(EStreamableRenderAssetType FilteredAssetType) const;
 
 	/**
 	 * Gets a reference to the Texture Streaming Manager interface

@@ -251,7 +251,7 @@ void GetFrameDirs(
 */
 template<typename FunctionType, typename T>
 static bool CalculateComponentSampleValue(
-	float&                     Result,
+	double&                    Result,
 	const FunctionType&        Fn,
 	const UBlendSpace&         BlendSpace, 
 	const T*                   AnalysisProperties, 
@@ -266,6 +266,25 @@ static bool CalculateComponentSampleValue(
 		return true;
 	}
 	return false;
+}
+
+//======================================================================================================================
+/**
+* Helper to extract the component from the FVector functions
+*/
+template<typename FunctionType, typename T>
+static bool CalculateComponentSampleValue(
+	float&               Result,
+	const FunctionType&  Fn,
+	const UBlendSpace&   BlendSpace,
+	const T*             AnalysisProperties,
+	const UAnimSequence& Animation,
+	const float          RateScale)
+{
+	double DoubleResult = Result;
+	bool bResult = CalculateComponentSampleValue(DoubleResult, Fn, BlendSpace, AnalysisProperties, Animation, RateScale);
+	Result = FloatCastChecked<float>(DoubleResult, UE::LWC::DefaultFloatPrecision);
+	return bResult;
 }
 
 //======================================================================================================================
@@ -291,9 +310,9 @@ static bool CalculatePosition(
 	}
 
 	int32 FirstKey = FMath::Clamp(
-		(int32) (NumSampledKeys * AnalysisProperties->StartTimeFraction), 0, NumSampledKeys);
+		(int32) (float(NumSampledKeys) * AnalysisProperties->StartTimeFraction), 0, NumSampledKeys);
 	int32 LastKey = FMath::Clamp(
-		(int32) (NumSampledKeys * AnalysisProperties->EndTimeFraction), FirstKey, NumSampledKeys);
+		(int32) (float(NumSampledKeys) * AnalysisProperties->EndTimeFraction), FirstKey, NumSampledKeys);
 
 	FTransform FrameTM;
 	bool bNeedToUpdateFrameTM = true;
@@ -335,9 +354,9 @@ static bool CalculateDeltaPosition(
 	}
 
 	int32 FirstKey = FMath::Clamp(
-		(int32) (NumSampledKeys * AnalysisProperties->StartTimeFraction), 0, NumSampledKeys);
+		(int32) (float(NumSampledKeys) * AnalysisProperties->StartTimeFraction), 0, NumSampledKeys);
 	int32 LastKey = FMath::Clamp(
-		(int32) (NumSampledKeys * AnalysisProperties->EndTimeFraction), FirstKey, NumSampledKeys);
+		(int32) (float(NumSampledKeys) * AnalysisProperties->EndTimeFraction), FirstKey, NumSampledKeys);
 
 	FTransform FrameTM;
 	bool bNeedToUpdateFrameTM = true;
@@ -384,12 +403,12 @@ static bool CalculateVelocity(
 		return false;
 	}
 
-	float DeltaTime = Animation.GetPlayLength() / NumSampledKeys;
+	double DeltaTime = Animation.GetPlayLength() / double(NumSampledKeys);
 
 	int32 FirstKey = FMath::Clamp(
-		(int32) (NumSampledKeys * AnalysisProperties->StartTimeFraction), 0, NumSampledKeys);
+		(int32) (float(NumSampledKeys) * AnalysisProperties->StartTimeFraction), 0, NumSampledKeys);
 	int32 LastKey = FMath::Clamp(
-		(int32) (NumSampledKeys * AnalysisProperties->EndTimeFraction), FirstKey, NumSampledKeys-1);
+		(int32) (float(NumSampledKeys) * AnalysisProperties->EndTimeFraction), FirstKey, NumSampledKeys-1);
 
 	// First and Last key are for averaging. However, the finite differencing always goes from one frame to the next
 	int32 NumKeys = FMath::Max(1 + LastKey - FirstKey, 1);
@@ -444,32 +463,31 @@ void CalculateBoneOrientation(
 	const FVector&             FrameRightDir, 
 	const FVector&             FrameUpDir)
 {
-	FTransform BoneTM = GetBoneTransform(Animation, Key, BoneName);
+	const FTransform BoneTM = GetBoneTransform(Animation, Key, BoneName);
 
-	FTransform TM = BoneOffset * BoneTM;
-	FQuat AimQuat = TM.GetRotation();
-	FVector AimForwardDir = BlendSpaceAnalysis::GetAxisFromTM(TM, AnalysisProperties->BoneFacingAxis);
-	FVector AimRightDir = BlendSpaceAnalysis::GetAxisFromTM(TM, AnalysisProperties->BoneRightAxis);
+	const FTransform TM = BoneOffset * BoneTM;
+	const FVector AimForwardDir = BlendSpaceAnalysis::GetAxisFromTM(TM, AnalysisProperties->BoneFacingAxis);
+	const FVector AimRightDir = BlendSpaceAnalysis::GetAxisFromTM(TM, AnalysisProperties->BoneRightAxis);
 
 	// Note that Yaw is best taken from the AimRightDir - this is to avoid problems when the gun is pointing
 	// up or down - especially if it goes beyond 90 degrees in pitch.
-	float Yaw = FMath::RadiansToDegrees(FMath::Atan2(
+	const double Yaw = FMath::RadiansToDegrees(FMath::Atan2(
 		FVector::DotProduct(AimRightDir, -FrameFacingDir), FVector::DotProduct(AimRightDir, FrameRightDir)));
 
 	// Undo the yaw to get pitch
 	const FQuat YawQuat(FrameUpDir, FMath::DegreesToRadians(Yaw));
-	FVector UnYawedAimForwardDir = YawQuat.UnrotateVector(AimForwardDir);
-	float Up = UnYawedAimForwardDir | FrameUpDir;
-	float Forward = UnYawedAimForwardDir | FrameFacingDir;
-	float Pitch = FMath::RadiansToDegrees(FMath::Atan2(Up, Forward));
+	const FVector UnYawedAimForwardDir = YawQuat.UnrotateVector(AimForwardDir);
+	const double Up = UnYawedAimForwardDir | FrameUpDir;
+	const double Forward = UnYawedAimForwardDir | FrameFacingDir;
+	const double Pitch = FMath::RadiansToDegrees(FMath::Atan2(Up, Forward));
 
 	// Undo the pitch to get roll
-	FVector UnYawedAimRightDir = YawQuat.UnrotateVector(AimRightDir);
+	const FVector UnYawedAimRightDir = YawQuat.UnrotateVector(AimRightDir);
 	const FQuat PitchQuat(FrameRightDir, -FMath::DegreesToRadians(Pitch));
 
-	FVector UnYawedUnPitchedAimRightDir = PitchQuat.UnrotateVector(UnYawedAimRightDir);
+	const FVector UnYawedUnPitchedAimRightDir = PitchQuat.UnrotateVector(UnYawedAimRightDir);
 
-	float Roll = FMath::RadiansToDegrees(FMath::Atan2(
+	const double Roll = FMath::RadiansToDegrees(FMath::Atan2(
 		FVector::DotProduct(UnYawedUnPitchedAimRightDir, -FrameUpDir), 
 		FVector::DotProduct(UnYawedUnPitchedAimRightDir, FrameRightDir)));
 
@@ -501,9 +519,9 @@ static bool CalculateOrientation(
 	}
 
 	int32 FirstKey = FMath::Clamp(
-		(int32) (NumSampledKeys * AnalysisProperties->StartTimeFraction), 0, NumSampledKeys);
+		(int32) (float(NumSampledKeys) * AnalysisProperties->StartTimeFraction), 0, NumSampledKeys);
 	int32 LastKey = FMath::Clamp(
-		(int32) (NumSampledKeys * AnalysisProperties->EndTimeFraction), FirstKey, NumSampledKeys);
+		(int32) (float(NumSampledKeys) * AnalysisProperties->EndTimeFraction), FirstKey, NumSampledKeys);
 
 	FTransform FrameTM;
 	bool bNeedToUpdateFrameTM = true;
@@ -556,9 +574,9 @@ static bool CalculateDeltaOrientation(
 	}
 
 	int32 FirstKey = FMath::Clamp(
-		(int32) (NumSampledKeys * AnalysisProperties->StartTimeFraction), 0, NumSampledKeys);
+		(int32) (float(NumSampledKeys) * AnalysisProperties->StartTimeFraction), 0, NumSampledKeys);
 	int32 LastKey = FMath::Clamp(
-		(int32) (NumSampledKeys * AnalysisProperties->EndTimeFraction), FirstKey, NumSampledKeys);
+		(int32) (float(NumSampledKeys) * AnalysisProperties->EndTimeFraction), FirstKey, NumSampledKeys);
 
 	FTransform FrameTM;
 	bool bNeedToUpdateFrameTM = true;
@@ -611,12 +629,12 @@ static bool CalculateAngularVelocity(
 		return false;
 	}
 
-	float DeltaTime = Animation.GetPlayLength() / NumSampledKeys;
+	double DeltaTime = Animation.GetPlayLength() / double(NumSampledKeys);
 
 	int32 FirstKey = FMath::Clamp(
-		(int32) (NumSampledKeys * AnalysisProperties->StartTimeFraction), 0, NumSampledKeys);
+		(int32) (float(NumSampledKeys) * AnalysisProperties->StartTimeFraction), 0, NumSampledKeys);
 	int32 LastKey = FMath::Clamp(
-		(int32) (NumSampledKeys * AnalysisProperties->EndTimeFraction), FirstKey, NumSampledKeys-1);
+		(int32) (float(NumSampledKeys) * AnalysisProperties->EndTimeFraction), FirstKey, NumSampledKeys-1);
 
 	// First and Last key are for averaging. However, the finite differencing always goes from one frame to the next
 	int32 NumKeys = FMath::Max(1 + LastKey - FirstKey, 1);
@@ -647,7 +665,7 @@ static bool CalculateAngularVelocity(
 
 		FQuat Rotation = RelativeQuat2 * RelativeQuat1.Inverse();
 		FVector Axis;
-		float Angle;
+		double Angle;
 		Rotation.ToAxisAndAngle(Axis, Angle);
 		FVector AngularVelocity = FMath::RadiansToDegrees(Axis * (Angle / DeltaTime));
 #ifdef ANALYSIS_VERBOSE_LOG
@@ -689,12 +707,12 @@ static bool CalculateOrientationRate(
 		return false;
 	}
 
-	float DeltaTime = Animation.GetPlayLength() / NumSampledKeys;
+	double DeltaTime = Animation.GetPlayLength() / double(NumSampledKeys);
 
 	int32 FirstKey = FMath::Clamp(
-		(int32) (NumSampledKeys * AnalysisProperties->StartTimeFraction), 0, NumSampledKeys);
+		(int32) (float(NumSampledKeys) * AnalysisProperties->StartTimeFraction), 0, NumSampledKeys);
 	int32 LastKey = FMath::Clamp(
-		(int32) (NumSampledKeys * AnalysisProperties->EndTimeFraction), FirstKey, NumSampledKeys-1);
+		(int32) (float(NumSampledKeys) * AnalysisProperties->EndTimeFraction), FirstKey, NumSampledKeys-1);
 
 	// First and Last key are for averaging. However, the finite differencing always goes from one frame to the next
 	int32 NumKeys = FMath::Max(1 + LastKey - FirstKey, 1);

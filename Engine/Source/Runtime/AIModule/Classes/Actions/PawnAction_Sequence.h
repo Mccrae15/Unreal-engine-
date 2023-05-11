@@ -8,29 +8,29 @@
 #include "PawnAction_Sequence.generated.h"
 
 UCLASS()
-class AIMODULE_API UPawnAction_Sequence : public UPawnAction
+class AIMODULE_API UDEPRECATED_PawnAction_Sequence : public UDEPRECATED_PawnAction
 {
 	GENERATED_UCLASS_BODY()
 
 	UPROPERTY()
-	TArray<TObjectPtr<UPawnAction>> ActionSequence;
+	TArray<TObjectPtr<UDEPRECATED_PawnAction>> ActionSequence_DEPRECATED;
 
 	UPROPERTY(Category = PawnAction, EditAnywhere, BlueprintReadOnly)
 	TEnumAsByte<EPawnActionFailHandling::Type> ChildFailureHandlingMode;
 
 	UPROPERTY(Transient)
-	TObjectPtr<UPawnAction> RecentActionCopy;
+	TObjectPtr<UDEPRECATED_PawnAction> RecentActionCopy_DEPRECATED;
 
 	uint32 CurrentActionIndex;
 
 	EPawnSubActionTriggeringPolicy::Type SubActionTriggeringPolicy;
 
-	static UPawnAction_Sequence* CreateAction(UWorld& World, TArray<UPawnAction*>& ActionSequence, EPawnSubActionTriggeringPolicy::Type InSubActionTriggeringPolicy = EPawnSubActionTriggeringPolicy::CopyBeforeTriggering);
+	static UDEPRECATED_PawnAction_Sequence* CreateAction(UWorld& World, TArray<UDEPRECATED_PawnAction*>& ActionSequence, EPawnSubActionTriggeringPolicy::Type InSubActionTriggeringPolicy = EPawnSubActionTriggeringPolicy::CopyBeforeTriggering);
 
 protected:
 	virtual bool Start() override;
 	virtual bool Resume() override;
-	virtual void OnChildFinished(UPawnAction& Action, EPawnActionResult::Type WithResult) override;
+	virtual void OnChildFinished(UDEPRECATED_PawnAction& Action, EPawnActionResult::Type WithResult) override;
 
 	bool PushNextActionCopy();
 };

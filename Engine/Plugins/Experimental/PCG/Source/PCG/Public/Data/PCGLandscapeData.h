@@ -2,10 +2,12 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "PCGSurfaceData.h"
 
 #include "PCGLandscapeData.generated.h"
+
+class UPCGSpatialData;
+struct FPCGProjectionParams;
 
 class ALandscapeProxy;
 class ULandscapeInfo;
@@ -27,21 +29,25 @@ public:
 	// ~End UObject interface
 
 	// ~Begin UPCGData interface
-	virtual EPCGDataType GetDataType() const override { return EPCGDataType::Landscape | Super::GetDataType(); }
+	virtual EPCGDataType GetDataType() const override { return EPCGDataType::Landscape; }
 	// ~End UPCGData interface
 
 	// ~Begin UPGCSpatialData interface
 	virtual FBox GetBounds() const override;
 	virtual FBox GetStrictBounds() const override;
 	virtual bool SamplePoint(const FTransform& Transform, const FBox& Bounds, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const override;
+	virtual bool ProjectPoint(const FTransform& InTransform, const FBox& InBounds, const FPCGProjectionParams& InParams, FPCGPoint& OutPoint, UPCGMetadata* OutMetadata) const override;
 	virtual bool HasNonTrivialTransform() const override { return true; }
-	// ~End UPGCConcreteData interface
+protected:
+	virtual UPCGSpatialData* CopyInternal() const override;
+	//~End UPCGSpatialData interface
 
+public:
 	// ~Begin UPCGSpatialDataWithPointCache interface
 	virtual bool SupportsBoundedPointData() const { return true; }
 	virtual const UPCGPointData* CreatePointData(FPCGContext* Context) const override { return CreatePointData(Context, FBox(EForceInit::ForceInit)); }
 	virtual const UPCGPointData* CreatePointData(FPCGContext* Context, const FBox& InBounds) const override;
-	// ~End UPCGConcreteDataWithPointCache interface
+	// ~End UPCGSpatialDataWithPointCache interface
 
 	// TODO: add on property changed to clear cached data. This is used to populate the LandscapeInfos array.
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = SourceData)
@@ -69,3 +75,7 @@ private:
 	TArray<TPair<FBox, ULandscapeInfo*>> LandscapeInfos;
 	UPCGLandscapeCache* LandscapeCache = nullptr;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

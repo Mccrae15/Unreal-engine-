@@ -3,15 +3,17 @@
 #include "Converters/GLTFNodeConverters.h"
 #include "Builders/GLTFContainerBuilder.h"
 #include "Utilities/GLTFCoreUtilities.h"
-#include "Converters/GLTFBlueprintUtility.h"
-#include "Converters/GLTFNameUtility.h"
+#include "Converters/GLTFNameUtilities.h"
 #include "LevelSequenceActor.h"
 #include "Camera/CameraComponent.h"
 #include "Components/LightComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshSocket.h"
 #include "Engine/SkeletalMeshSocket.h"
+#include "GameFramework/Pawn.h"
 
 FGLTFJsonNode* FGLTFActorConverter::Convert(const AActor* Actor)
 {
@@ -30,22 +32,7 @@ FGLTFJsonNode* FGLTFActorConverter::Convert(const AActor* Actor)
 
 	// TODO: process all components since any component can be attached to any other component in runtime
 
-	const FString BlueprintPath = FGLTFBlueprintUtility::GetClassPath(Actor);
-	if (FGLTFBlueprintUtility::IsSkySphere(BlueprintPath))
-	{
-		if (Builder.ExportOptions->bExportSkySpheres)
-		{
-			RootNode->SkySphere = Builder.AddUniqueSkySphere(Actor);
-		}
-	}
-	else if (FGLTFBlueprintUtility::IsHDRIBackdrop(BlueprintPath))
-	{
-		if (Builder.ExportOptions->bExportHDRIBackdrops)
-		{
-			RootNode->Backdrop = Builder.AddUniqueBackdrop(Actor);
-		}
-	}
-	else if (const ALevelSequenceActor* LevelSequenceActor = Cast<ALevelSequenceActor>(Actor))
+	if (const ALevelSequenceActor* LevelSequenceActor = Cast<ALevelSequenceActor>(Actor))
 	{
 		if (Builder.ExportOptions->bExportLevelSequences)
 		{
@@ -115,7 +102,7 @@ FGLTFJsonNode* FGLTFComponentConverter::Convert(const USceneComponent* SceneComp
 	const FTransform3f RelativeTransform = bIsRootNode ? Transform : Transform.GetRelativeTransform(ParentTransform);
 
 	FGLTFJsonNode* Node = Builder.AddNode();
-	Node->Name = FGLTFNameUtility::GetName(SceneComponent);
+	Node->Name = FGLTFNameUtilities::GetName(SceneComponent);
 	Node->Translation = FGLTFCoreUtilities::ConvertPosition(RelativeTransform.GetTranslation(), Builder.ExportOptions->ExportUniformScale);
 	Node->Rotation = FGLTFCoreUtilities::ConvertRotation(RelativeTransform.GetRotation());
 	Node->Scale = FGLTFCoreUtilities::ConvertScale(RelativeTransform.GetScale3D());
@@ -138,12 +125,6 @@ void FGLTFComponentConverter::ConvertComponentSpecialization(const USceneCompone
 		return;
 	}
 
-	const FString BlueprintPath = FGLTFBlueprintUtility::GetClassPath(Owner);
-	if (FGLTFBlueprintUtility::IsSkySphere(BlueprintPath) || FGLTFBlueprintUtility::IsHDRIBackdrop(BlueprintPath))
-	{
-		return;
-	}
-
 	if (Owner->IsA<ALevelSequenceActor>() || Owner->IsA<APawn>())
 	{
 		return;
@@ -152,11 +133,6 @@ void FGLTFComponentConverter::ConvertComponentSpecialization(const USceneCompone
 	if (const UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>(SceneComponent))
 	{
 		Node->Mesh = Builder.AddUniqueMesh(StaticMeshComponent);
-
-		if (Builder.ExportOptions->bExportLightmaps)
-		{
-			Node->LightMap = Builder.AddUniqueLightMap(StaticMeshComponent);
-		}
 	}
 	else if (const USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(SceneComponent))
 	{
@@ -180,7 +156,7 @@ void FGLTFComponentConverter::ConvertComponentSpecialization(const USceneCompone
 		{
 			// TODO: conversion of camera direction should be done in separate converter
 			FGLTFJsonNode* CameraNode = Builder.AddNode();
-			CameraNode->Name = FGLTFNameUtility::GetName(CameraComponent);
+			CameraNode->Name = FGLTFNameUtilities::GetName(CameraComponent);
 			CameraNode->Rotation = FGLTFCoreUtilities::GetLocalCameraRotation();
 			CameraNode->Camera = Builder.AddUniqueCamera(CameraComponent);
 			Node->Children.Add(CameraNode);
@@ -188,11 +164,11 @@ void FGLTFComponentConverter::ConvertComponentSpecialization(const USceneCompone
 	}
 	else if (const ULightComponent* LightComponent = Cast<ULightComponent>(SceneComponent))
 	{
-		if (Builder.ShouldExportLight(LightComponent->Mobility))
+		if (Builder.ExportOptions->bExportLights)
 		{
 			// TODO: conversion of light direction should be done in separate converter
 			FGLTFJsonNode* LightNode = Builder.AddNode();
-			LightNode->Name = FGLTFNameUtility::GetName(LightComponent);
+			LightNode->Name = FGLTFNameUtilities::GetName(LightComponent);
 			LightNode->Rotation = FGLTFCoreUtilities::GetLocalLightRotation();
 			LightNode->Light = Builder.AddUniqueLight(LightComponent);
 			Node->Children.Add(LightNode);

@@ -7,6 +7,8 @@
 #include "UObject/UE5MainStreamObjectVersion.h"
 #include "HAL/PlatformTLS.h"
 #include "Async/ParallelFor.h"
+#include "GenericPlatform/GenericPlatformSurvey.h"
+#include "RigVMCore/RigVMStruct.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 
@@ -85,6 +87,13 @@ URigVM::URigVM()
 	, FirstEntryEventInQueue(NAME_None)
 #endif
 	, ExecutingThreadId(INDEX_NONE)
+	, CurrentExecuteResult(ERigVMExecuteResult::Failed)
+	, CurrentEntryName(NAME_None)
+	, bCurrentlyRunningRootEntry(false)
+#if WITH_EDITOR
+	, StartCycles(0)
+	, OverallCycles(0)
+#endif
 	, DeferredVMToCopy(nullptr)
 {
 }
@@ -108,7 +117,7 @@ void URigVM::Serialize(FArchive& Ar)
 	{
 		return;
 	}
-
+	
 	// call into the super class to serialize any uproperty
 	if(Ar.IsObjectReferenceCollector() || Ar.IsCountingMemory())
 	{
@@ -138,6 +147,10 @@ void URigVM::Save(FArchive& Ar)
 	int32 RigVMUClassBasedStorageDefine = 0; // this used to 
 	Ar << RigVMUClassBasedStorageDefine;
 
+	// store the context public data object path
+	FString ExecuteContextPath = GetContextPublicDataStruct()->GetPathName();
+	Ar << ExecuteContextPath;
+
 	// we rely on Ar.IsIgnoringArchetypeRef for determining if we are currently performing
 	// CPFUO (Copy Properties for unrelated objects). During a reinstance pass we don't
 	// want to overwrite the bytecode and some other properties - since that's handled already
@@ -163,6 +176,22 @@ void URigVM::Load(FArchive& Ar)
 	if (Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) >= FUE5MainStreamObjectVersion::RigVMMemoryStorageObject)
 	{
 		Ar << RigVMUClassBasedStorageDefine;
+	}
+
+	if (Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) >= FUE5MainStreamObjectVersion::RigVMSerializeExecuteContextStruct)
+	{
+		FString ExecuteContextPath;
+		Ar << ExecuteContextPath;
+
+		const FTopLevelAssetPath AssetPath(*ExecuteContextPath);
+		UScriptStruct* ExecuteContextScriptStruct = FindObject<UScriptStruct>(AssetPath);
+		if(ExecuteContextScriptStruct == nullptr)
+		{
+			Reset();
+			return;
+		}
+
+		SetContextPublicDataStruct(ExecuteContextScriptStruct);
 	}
 
 	if(RigVMUClassBasedStorageDefine == 1)
@@ -456,8 +485,6 @@ bool URigVM::ValidateAllOperandsDuringLoad()
 			case ERigVMOpCode::BoolTrue:
 			case ERigVMOpCode::Increment:
 			case ERigVMOpCode::Decrement:
-			case ERigVMOpCode::ArrayReset:
-			case ERigVMOpCode::ArrayReverse:
 			{
 				const FRigVMUnaryOp& Op = ByteCodeStorage.GetOpAt<FRigVMUnaryOp>(ByteCodeInstruction);
 				CheckOperandValidity(Op.Arg);
@@ -488,49 +515,16 @@ bool URigVM::ValidateAllOperandsDuringLoad()
 				break;
 			}
 			case ERigVMOpCode::BeginBlock:
-			case ERigVMOpCode::ArrayGetNum:
-			case ERigVMOpCode::ArraySetNum:
-			case ERigVMOpCode::ArrayAppend:
-			case ERigVMOpCode::ArrayClone:
-			case ERigVMOpCode::ArrayRemove:
-			case ERigVMOpCode::ArrayUnion:
 			{
 				const FRigVMBinaryOp& Op = ByteCodeStorage.GetOpAt<FRigVMBinaryOp>(ByteCodeInstruction);
 				CheckOperandValidity(Op.ArgA);
 				CheckOperandValidity(Op.ArgB);
 				break;
 			}
-			case ERigVMOpCode::ArrayAdd:
-			case ERigVMOpCode::ArrayGetAtIndex:
-			case ERigVMOpCode::ArraySetAtIndex:
-			case ERigVMOpCode::ArrayInsert:
-			case ERigVMOpCode::ArrayDifference:
-			case ERigVMOpCode::ArrayIntersection:
+			case ERigVMOpCode::JumpToBranch:
 			{
-				const FRigVMTernaryOp& Op = ByteCodeStorage.GetOpAt<FRigVMTernaryOp>(ByteCodeInstruction);
-				CheckOperandValidity(Op.ArgA);
-				CheckOperandValidity(Op.ArgB);
-				CheckOperandValidity(Op.ArgC);
-				break;
-			}
-			case ERigVMOpCode::ArrayFind:
-			{
-				const FRigVMQuaternaryOp& Op = ByteCodeStorage.GetOpAt<FRigVMQuaternaryOp>(ByteCodeInstruction);
-				CheckOperandValidity(Op.ArgA);
-				CheckOperandValidity(Op.ArgB);
-				CheckOperandValidity(Op.ArgC);
-				CheckOperandValidity(Op.ArgD);
-				break;
-			}
-			case ERigVMOpCode::ArrayIterator:
-			{
-				const FRigVMSenaryOp& Op = ByteCodeStorage.GetOpAt<FRigVMSenaryOp>(ByteCodeInstruction);
-				CheckOperandValidity(Op.ArgA);
-				CheckOperandValidity(Op.ArgB);
-				CheckOperandValidity(Op.ArgC);
-				CheckOperandValidity(Op.ArgD);
-				CheckOperandValidity(Op.ArgE);
-				CheckOperandValidity(Op.ArgF);
+				const FRigVMJumpToBranchOp& Op = ByteCodeStorage.GetOpAt<FRigVMJumpToBranchOp>(ByteCodeInstruction);
+				CheckOperandValidity(Op.Arg);
 				break;
 			}
 			case ERigVMOpCode::Invalid:
@@ -723,7 +717,7 @@ int32 URigVM::AddRigVMFunction(const FString& InFunctionName)
 
 	GetFunctionNames().Add(FunctionName);
 	GetFactories().Add(Function->Factory);
-	return GetFunctions().Add(Function->FunctionPtr);
+	return GetFunctions().Add(Function);
 }
 
 FString URigVM::GetRigVMFunctionName(int32 InFunctionIndex) const
@@ -900,13 +894,16 @@ const TArray<FName>& URigVM::GetEntryNames() const
 	return EntryNames;
 }
 
-bool URigVM::CanExecuteEntry(const FName& InEntryName) const
+bool URigVM::CanExecuteEntry(const FName& InEntryName, bool bLogErrorForMissingEntry) const
 {
 	const int32 EntryIndex = FindEntry(InEntryName);
 	if(EntryIndex == INDEX_NONE)
 	{
-		static constexpr TCHAR MissingEntry[] = TEXT("Entry('%s') cannot be found.");
-		Context.PublicData.Logf(EMessageSeverity::Error, MissingEntry, *InEntryName.ToString());
+		if(bLogErrorForMissingEntry)
+		{
+			static constexpr TCHAR MissingEntry[] = TEXT("Entry('%s') cannot be found.");
+			Context.GetPublicData<>().Logf(EMessageSeverity::Error, MissingEntry, *InEntryName.ToString());
+		}
 		return false;
 	}
 	
@@ -920,7 +917,7 @@ bool URigVM::CanExecuteEntry(const FName& InEntryName) const
 		EntryNamesBeingExecuted.Add(InEntryName.ToString());
 
 		static constexpr TCHAR RecursiveEntry[] = TEXT("Entry('%s') is being invoked recursively (%s).");
-		Context.PublicData.Logf(EMessageSeverity::Error, RecursiveEntry, *InEntryName.ToString(), *FString::Join(EntryNamesBeingExecuted, TEXT(" -> ")));
+		Context.GetPublicData<>().Logf(EMessageSeverity::Error, RecursiveEntry, *InEntryName.ToString(), *FString::Join(EntryNamesBeingExecuted, TEXT(" -> ")));
 		return false;
 	}
 
@@ -946,10 +943,10 @@ bool URigVM::ResumeExecution()
 	return false;
 }
 
-bool URigVM::ResumeExecution(TArrayView<URigVMMemoryStorage*> Memory, TArrayView<void*> AdditionalArguments, const FName& InEntryName)
+bool URigVM::ResumeExecution(TArrayView<URigVMMemoryStorage*> Memory, const FName& InEntryName)
 {
 	ResumeExecution();
-	return Execute(Memory, AdditionalArguments, InEntryName);
+	return Execute(Memory, InEntryName) != ERigVMExecuteResult::Failed;
 }
 
 #endif
@@ -984,6 +981,20 @@ FRigVMParameter URigVM::GetParameterByName(const FName& InParameterName)
 	return FRigVMParameter();
 }
 
+const UScriptStruct* URigVM::GetContextPublicDataStruct() const
+{
+	return Cast<UScriptStruct>(Context.PublicDataScope.GetStruct());
+}
+
+void URigVM::SetContextPublicDataStruct(UScriptStruct* InScriptStruct)
+{
+	if(GetContextPublicDataStruct() == InScriptStruct)
+	{
+		return;
+	}
+	Context.Initialize(InScriptStruct);
+}
+
 void URigVM::ResolveFunctionsIfRequired()
 {
 	if (GetFunctions().Num() != GetFunctionNames().Num())
@@ -997,7 +1008,7 @@ void URigVM::ResolveFunctionsIfRequired()
 		{
 			if(const FRigVMFunction* Function = FRigVMRegistry::Get().FindFunction(*GetFunctionNames()[FunctionIndex].ToString()))
 			{
-				GetFunctions()[FunctionIndex] = Function->FunctionPtr;
+				GetFunctions()[FunctionIndex] = Function;
 				GetFactories()[FunctionIndex] = Function->Factory;
 			}
 			else
@@ -1027,6 +1038,7 @@ void URigVM::InvalidateCachedMemory()
 	FirstHandleForInstruction.Reset();
 	CachedMemoryHandles.Reset();
 	ExternalPropertyPaths.Reset();
+	LazyBranches.Reset();
 }
 
 void URigVM::CopyDeferredVMIfRequired()
@@ -1087,22 +1099,33 @@ void URigVM::CacheMemoryHandlesIfRequired(TArrayView<URigVMMemoryStorage*> InMem
 	RefreshExternalPropertyPaths();
 
 	FRigVMByteCode& ByteCode = GetByteCode();
+	TArray<const FRigVMFunction*>& Functions = GetFunctions();
+
+	// force to update the map of branch infos once
+	(void)ByteCode.GetBranchInfo({0, 0});
+	LazyBranches.Reset();
+	LazyBranches.SetNumZeroed(ByteCode.BranchInfos.Num());
 
 	auto InstructionOpEval = [&](
 		int32 InstructionIndex,
 		int32 InHandleBaseIndex,
-		TFunctionRef<void(int32 InHandleIndex, const FRigVMOperand& InArg)> InOpFunc
+		TFunctionRef<void(int32 InHandleIndex, const FRigVMBranchInfoKey& InBranchInfoKey, const FRigVMOperand& InArg)> InOpFunc
 		) -> void
 	{
 		const ERigVMOpCode OpCode = Instructions[InstructionIndex].OpCode; 
 
 		if (OpCode >= ERigVMOpCode::Execute_0_Operands && OpCode <= ERigVMOpCode::Execute_64_Operands)
 		{
+			const FRigVMExecuteOp& Op = ByteCode.GetOpAt<FRigVMExecuteOp>(Instructions[InstructionIndex]);
 			FRigVMOperandArray Operands = ByteCode.GetOperandsForExecuteOp(Instructions[InstructionIndex]);
+			const FRigVMFunction* Function = Functions[Op.FunctionIndex];
 
-			for (const FRigVMOperand& Arg : Operands)
+			for (int32 ArgIndex = 0; ArgIndex < Operands.Num(); ArgIndex++)
 			{
-				InOpFunc(InHandleBaseIndex++, Arg);
+				InOpFunc(
+					InHandleBaseIndex++,
+					{InstructionIndex, ArgIndex, Function->GetArgumentNameForOperandIndex(ArgIndex, Operands.Num())},
+					Operands[ArgIndex]);
 			}
 		}
 		else
@@ -1114,18 +1137,16 @@ void URigVM::CacheMemoryHandlesIfRequired(TArrayView<URigVMMemoryStorage*> InMem
 			case ERigVMOpCode::BoolTrue:
 			case ERigVMOpCode::Increment:
 			case ERigVMOpCode::Decrement:
-			case ERigVMOpCode::ArrayReset:
-			case ERigVMOpCode::ArrayReverse:
 				{
 					const FRigVMUnaryOp& Op = ByteCode.GetOpAt<FRigVMUnaryOp>(Instructions[InstructionIndex]);
-					InOpFunc(InHandleBaseIndex, Op.Arg);
+					InOpFunc(InHandleBaseIndex, {}, Op.Arg);
 					break;
 				}
 			case ERigVMOpCode::Copy:
 				{
 					const FRigVMCopyOp& Op = ByteCode.GetOpAt<FRigVMCopyOp>(Instructions[InstructionIndex]);
-					InOpFunc(InHandleBaseIndex + 0, Op.Source);
-					InOpFunc(InHandleBaseIndex + 1, Op.Target);
+					InOpFunc(InHandleBaseIndex + 0, {}, Op.Source);
+					InOpFunc(InHandleBaseIndex + 1, {}, Op.Target);
 					break;
 				}
 			case ERigVMOpCode::Equals:
@@ -1133,11 +1154,11 @@ void URigVM::CacheMemoryHandlesIfRequired(TArrayView<URigVMMemoryStorage*> InMem
 				{
 					const FRigVMComparisonOp& Op = ByteCode.GetOpAt<FRigVMComparisonOp>(Instructions[InstructionIndex]);
 					FRigVMOperand Arg = Op.A;
-					InOpFunc(InHandleBaseIndex + 0, Arg);
+					InOpFunc(InHandleBaseIndex + 0, {}, Arg);
 					Arg = Op.B;
-					InOpFunc(InHandleBaseIndex + 1, Arg);
+					InOpFunc(InHandleBaseIndex + 1, {}, Arg);
 					Arg = Op.Result;
-					InOpFunc(InHandleBaseIndex + 2, Arg);
+					InOpFunc(InHandleBaseIndex + 2, {}, Arg);
 					break;
 				}
 			case ERigVMOpCode::JumpAbsolute:
@@ -1152,14 +1173,14 @@ void URigVM::CacheMemoryHandlesIfRequired(TArrayView<URigVMMemoryStorage*> InMem
 				{
 					const FRigVMJumpIfOp& Op = ByteCode.GetOpAt<FRigVMJumpIfOp>(Instructions[InstructionIndex]);
 					const FRigVMOperand& Arg = Op.Arg;
-					InOpFunc(InHandleBaseIndex, Arg);
+					InOpFunc(InHandleBaseIndex, {}, Arg);
 					break;
 				}
 			case ERigVMOpCode::ChangeType:
 				{
 					const FRigVMChangeTypeOp& Op = ByteCode.GetOpAt<FRigVMChangeTypeOp>(Instructions[InstructionIndex]);
 					const FRigVMOperand& Arg = Op.Arg;
-					InOpFunc(InHandleBaseIndex, Arg);
+					InOpFunc(InHandleBaseIndex, {}, Arg);
 					break;
 				}
 			case ERigVMOpCode::Exit:
@@ -1167,49 +1188,10 @@ void URigVM::CacheMemoryHandlesIfRequired(TArrayView<URigVMMemoryStorage*> InMem
 					break;
 				}
 			case ERigVMOpCode::BeginBlock:
-			case ERigVMOpCode::ArrayGetNum:
-			case ERigVMOpCode::ArraySetNum:
-			case ERigVMOpCode::ArrayAppend:
-			case ERigVMOpCode::ArrayClone:
-			case ERigVMOpCode::ArrayRemove:
-			case ERigVMOpCode::ArrayUnion:
 				{
 					const FRigVMBinaryOp& Op = ByteCode.GetOpAt<FRigVMBinaryOp>(Instructions[InstructionIndex]);
-					InOpFunc(InHandleBaseIndex + 0, Op.ArgA);
-					InOpFunc(InHandleBaseIndex + 1, Op.ArgB);
-					break;
-				}
-			case ERigVMOpCode::ArrayAdd:
-			case ERigVMOpCode::ArrayGetAtIndex:
-			case ERigVMOpCode::ArraySetAtIndex:
-			case ERigVMOpCode::ArrayInsert:
-			case ERigVMOpCode::ArrayDifference:
-			case ERigVMOpCode::ArrayIntersection:
-				{
-					const FRigVMTernaryOp& Op = ByteCode.GetOpAt<FRigVMTernaryOp>(Instructions[InstructionIndex]);
-					InOpFunc(InHandleBaseIndex + 0, Op.ArgA);
-					InOpFunc(InHandleBaseIndex + 1, Op.ArgB);
-					InOpFunc(InHandleBaseIndex + 2, Op.ArgC);
-					break;
-				}
-			case ERigVMOpCode::ArrayFind:
-				{
-					const FRigVMQuaternaryOp& Op = ByteCode.GetOpAt<FRigVMQuaternaryOp>(Instructions[InstructionIndex]);
-					InOpFunc(InHandleBaseIndex + 0, Op.ArgA);
-					InOpFunc(InHandleBaseIndex + 1, Op.ArgB);
-					InOpFunc(InHandleBaseIndex + 2, Op.ArgC);
-					InOpFunc(InHandleBaseIndex + 3, Op.ArgD);
-					break;
-				}
-			case ERigVMOpCode::ArrayIterator:
-				{
-					const FRigVMSenaryOp& Op = ByteCode.GetOpAt<FRigVMSenaryOp>(Instructions[InstructionIndex]);
-					InOpFunc(InHandleBaseIndex + 0, Op.ArgA);
-					InOpFunc(InHandleBaseIndex + 1, Op.ArgB);
-					InOpFunc(InHandleBaseIndex + 2, Op.ArgC);
-					InOpFunc(InHandleBaseIndex + 3, Op.ArgD);
-					InOpFunc(InHandleBaseIndex + 4, Op.ArgE);
-					InOpFunc(InHandleBaseIndex + 5, Op.ArgF);
+					InOpFunc(InHandleBaseIndex + 0, {}, Op.ArgA);
+					InOpFunc(InHandleBaseIndex + 1, {}, Op.ArgB);
 					break;
 				}
 			case ERigVMOpCode::EndBlock:
@@ -1218,6 +1200,13 @@ void URigVM::CacheMemoryHandlesIfRequired(TArrayView<URigVMMemoryStorage*> InMem
 				}
 			case ERigVMOpCode::InvokeEntry:
 				{
+					break;
+				}
+			case ERigVMOpCode::JumpToBranch:
+				{
+					const FRigVMJumpToBranchOp& Op = ByteCode.GetOpAt<FRigVMJumpToBranchOp>(Instructions[InstructionIndex]);
+					const FRigVMOperand& Arg = Op.Arg;
+					InOpFunc(InHandleBaseIndex, {}, Arg);
 					break;
 				}
 			case ERigVMOpCode::Invalid:
@@ -1238,7 +1227,11 @@ void URigVM::CacheMemoryHandlesIfRequired(TArrayView<URigVMMemoryStorage*> InMem
 	FirstHandleForInstruction.Add(0);
 	for (int32 InstructionIndex = 0; InstructionIndex < Instructions.Num(); InstructionIndex++)
 	{
-		InstructionOpEval(InstructionIndex, INDEX_NONE, [&HandleCount](int32, const FRigVMOperand& ){ HandleCount++; });
+		InstructionOpEval(InstructionIndex, INDEX_NONE,
+			[&HandleCount](int32, const FRigVMBranchInfoKey&, const FRigVMOperand& )
+			{
+				HandleCount++;
+			});
 		FirstHandleForInstruction.Add(HandleCount);
 	}
 	
@@ -1257,7 +1250,11 @@ void URigVM::CacheMemoryHandlesIfRequired(TArrayView<URigVMMemoryStorage*> InMem
 	ParallelFor(Instructions.Num(),
 		[&](int32 InstructionIndex)
 		{
-			InstructionOpEval(InstructionIndex, FirstHandleForInstruction[InstructionIndex], [&](int32 InHandleIndex, const FRigVMOperand& InOp){ CacheSingleMemoryHandle(InHandleIndex, InOp); });
+			InstructionOpEval(InstructionIndex, FirstHandleForInstruction[InstructionIndex],
+				[&](int32 InHandleIndex, const FRigVMBranchInfoKey& InBranchInfoKey, const FRigVMOperand& InOp)
+				{
+					CacheSingleMemoryHandle(InHandleIndex, InBranchInfoKey, InOp);
+				});
 		}
 	);
 
@@ -1312,6 +1309,7 @@ bool URigVM::ShouldHaltAtInstruction(const FName& InEventName, const uint16 Inst
 	}
 	
 	FRigVMByteCode& ByteCode = GetByteCode();
+	FRigVMExecuteContext& ContextPublicData = Context.GetPublicData<>();
 
 	TArray<FRigVMBreakpoint> BreakpointsAtInstruction = DebugInfo->FindBreakpointsAtInstruction(InstructionIndex);
 	for (FRigVMBreakpoint Breakpoint : BreakpointsAtInstruction)
@@ -1331,12 +1329,12 @@ bool URigVM::ShouldHaltAtInstruction(const FName& InEventName, const uint16 Inst
 						DebugInfo->SetCurrentActiveBreakpoint(Breakpoint);
 						
 						// We want to keep the callstack up to the node that produced the halt
-						const TArray<UObject*>* FullCallstack = ByteCode.GetCallstackForInstruction(Context.PublicData.InstructionIndex);
+						const TArray<UObject*>* FullCallstack = ByteCode.GetCallstackForInstruction(ContextPublicData.InstructionIndex);
 						if (FullCallstack)
 						{
 							DebugInfo->SetCurrentActiveBreakpointCallstack(TArray<UObject*>(FullCallstack->GetData(), FullCallstack->Find((UObject*)Breakpoint.Subject)+1));
 						}
-						ExecutionHalted().Broadcast(Context.PublicData.InstructionIndex, Breakpoint.Subject, InEventName);
+						ExecutionHalted().Broadcast(ContextPublicData.InstructionIndex, Breakpoint.Subject, InEventName);
 					}
 					return true;
 				}
@@ -1363,7 +1361,7 @@ bool URigVM::ShouldHaltAtInstruction(const FName& InEventName, const uint16 Inst
 					if (!DebugInfo->GetCurrentActiveBreakpoint())
 					{
 						DebugInfo->SetCurrentActiveBreakpoint(Breakpoint);
-						const TArray<UObject*>* FullCallstack = ByteCode.GetCallstackForInstruction(Context.PublicData.InstructionIndex);
+						const TArray<UObject*>* FullCallstack = ByteCode.GetCallstackForInstruction(ContextPublicData.InstructionIndex);
 						
 						// We want to keep the callstack up to the node that produced the halt
 						if (FullCallstack)
@@ -1390,7 +1388,7 @@ bool URigVM::ShouldHaltAtInstruction(const FName& InEventName, const uint16 Inst
 	// If we are stepping, and the last active breakpoint was set, check if this is the new temporary breakpoint
 	if (CurrentBreakpointAction != ERigVMBreakpointAction::None && DebugInfo->GetCurrentActiveBreakpoint())
 	{
-		const TArray<UObject*>* CurrentCallstack = ByteCode.GetCallstackForInstruction(Context.PublicData.InstructionIndex);
+		const TArray<UObject*>* CurrentCallstack = ByteCode.GetCallstackForInstruction(ContextPublicData.InstructionIndex);
 		if (CurrentCallstack && !CurrentCallstack->IsEmpty())
 		{
 			UObject* NewBreakpointNode = nullptr;
@@ -1455,14 +1453,14 @@ bool URigVM::ShouldHaltAtInstruction(const FName& InEventName, const uint16 Inst
 				}
 
 				// Create new temporary breakpoint
-				const FRigVMBreakpoint& NewBreakpoint = DebugInfo->AddBreakpoint(Context.PublicData.InstructionIndex, NewBreakpointNode, 0, true);
-				DebugInfo->SetBreakpointHits(NewBreakpoint, GetInstructionVisitedCount(Context.PublicData.InstructionIndex));
-				DebugInfo->SetBreakpointActivationOnHit(NewBreakpoint, GetInstructionVisitedCount(Context.PublicData.InstructionIndex));
+				const FRigVMBreakpoint& NewBreakpoint = DebugInfo->AddBreakpoint(ContextPublicData.InstructionIndex, NewBreakpointNode, 0, true);
+				DebugInfo->SetBreakpointHits(NewBreakpoint, GetInstructionVisitedCount(ContextPublicData.InstructionIndex));
+				DebugInfo->SetBreakpointActivationOnHit(NewBreakpoint, GetInstructionVisitedCount(ContextPublicData.InstructionIndex));
 				CurrentBreakpointAction = ERigVMBreakpointAction::None;					
 
 				HaltedAtBreakpoint = NewBreakpoint;
 				HaltedAtBreakpointHit = DebugInfo->GetBreakpointHits(HaltedAtBreakpoint);
-				ExecutionHalted().Broadcast(Context.PublicData.InstructionIndex, NewBreakpointNode, InEventName);
+				ExecutionHalted().Broadcast(ContextPublicData.InstructionIndex, NewBreakpointNode, InEventName);
 		
 				return true;
 			}
@@ -1473,12 +1471,13 @@ bool URigVM::ShouldHaltAtInstruction(const FName& InEventName, const uint16 Inst
 }
 #endif
 
-bool URigVM::Initialize(TArrayView<URigVMMemoryStorage*> Memory, TArrayView<void*> AdditionalArguments, bool bInitializeMemory)
+bool URigVM::Initialize(TArrayView<URigVMMemoryStorage*> Memory)
 {
 	if (ExecutingThreadId != INDEX_NONE)
 	{
 		ensureMsgf(ExecutingThreadId == FPlatformTLS::GetCurrentThreadId(), TEXT("RigVM::Initialize from multiple threads (%d and %d)"), ExecutingThreadId, (int32)FPlatformTLS::GetCurrentThreadId());
 	}
+	
 	CopyDeferredVMIfRequired();
 	TGuardValue<int32> GuardThreadId(ExecutingThreadId, FPlatformTLS::GetCurrentThreadId());
 
@@ -1497,188 +1496,55 @@ bool URigVM::Initialize(TArrayView<URigVMMemoryStorage*> Memory, TArrayView<void
 		Memory = LocalMemory;
 	}
 
-	CacheMemoryHandlesIfRequired(Memory);
-
-	if(!bInitializeMemory)
+	// re-initialize work memory from CDO
+	if(URigVMMemoryStorage* WorkMemory = Memory[(int32)ERigVMMemoryType::Work])
 	{
-		return true;
-	}
-	
-	FRigVMByteCode& ByteCode = GetByteCode();
-	TArray<FRigVMFunctionPtr>& Functions = GetFunctions();
-	TArray<const FRigVMDispatchFactory*>& Factories = GetFactories();
-
-#if WITH_EDITOR
-	TArray<FName>& FunctionNames = GetFunctionNames();
-#endif
-
-	Context.Reset();
-	Context.SliceOffsets.AddZeroed(Instructions.Num());
-	Context.OpaqueArguments = AdditionalArguments;
-
-	TGuardValue<URigVM*> VMInContext(Context.VM, this);
-	
-	while (Instructions.IsValidIndex(Context.PublicData.InstructionIndex))
-	{
-		const FRigVMInstruction& Instruction = Instructions[Context.PublicData.InstructionIndex];
-
-		switch (Instruction.OpCode)
+		if(!WorkMemory->HasAnyFlags(RF_ClassDefaultObject))
 		{
-			case ERigVMOpCode::Execute_0_Operands:
-			case ERigVMOpCode::Execute_1_Operands:
-			case ERigVMOpCode::Execute_2_Operands:
-			case ERigVMOpCode::Execute_3_Operands:
-			case ERigVMOpCode::Execute_4_Operands:
-			case ERigVMOpCode::Execute_5_Operands:
-			case ERigVMOpCode::Execute_6_Operands:
-			case ERigVMOpCode::Execute_7_Operands:
-			case ERigVMOpCode::Execute_8_Operands:
-			case ERigVMOpCode::Execute_9_Operands:
-			case ERigVMOpCode::Execute_10_Operands:
-			case ERigVMOpCode::Execute_11_Operands:
-			case ERigVMOpCode::Execute_12_Operands:
-			case ERigVMOpCode::Execute_13_Operands:
-			case ERigVMOpCode::Execute_14_Operands:
-			case ERigVMOpCode::Execute_15_Operands:
-			case ERigVMOpCode::Execute_16_Operands:
-			case ERigVMOpCode::Execute_17_Operands:
-			case ERigVMOpCode::Execute_18_Operands:
-			case ERigVMOpCode::Execute_19_Operands:
-			case ERigVMOpCode::Execute_20_Operands:
-			case ERigVMOpCode::Execute_21_Operands:
-			case ERigVMOpCode::Execute_22_Operands:
-			case ERigVMOpCode::Execute_23_Operands:
-			case ERigVMOpCode::Execute_24_Operands:
-			case ERigVMOpCode::Execute_25_Operands:
-			case ERigVMOpCode::Execute_26_Operands:
-			case ERigVMOpCode::Execute_27_Operands:
-			case ERigVMOpCode::Execute_28_Operands:
-			case ERigVMOpCode::Execute_29_Operands:
-			case ERigVMOpCode::Execute_30_Operands:
-			case ERigVMOpCode::Execute_31_Operands:
-			case ERigVMOpCode::Execute_32_Operands:
-			case ERigVMOpCode::Execute_33_Operands:
-			case ERigVMOpCode::Execute_34_Operands:
-			case ERigVMOpCode::Execute_35_Operands:
-			case ERigVMOpCode::Execute_36_Operands:
-			case ERigVMOpCode::Execute_37_Operands:
-			case ERigVMOpCode::Execute_38_Operands:
-			case ERigVMOpCode::Execute_39_Operands:
-			case ERigVMOpCode::Execute_40_Operands:
-			case ERigVMOpCode::Execute_41_Operands:
-			case ERigVMOpCode::Execute_42_Operands:
-			case ERigVMOpCode::Execute_43_Operands:
-			case ERigVMOpCode::Execute_44_Operands:
-			case ERigVMOpCode::Execute_45_Operands:
-			case ERigVMOpCode::Execute_46_Operands:
-			case ERigVMOpCode::Execute_47_Operands:
-			case ERigVMOpCode::Execute_48_Operands:
-			case ERigVMOpCode::Execute_49_Operands:
-			case ERigVMOpCode::Execute_50_Operands:
-			case ERigVMOpCode::Execute_51_Operands:
-			case ERigVMOpCode::Execute_52_Operands:
-			case ERigVMOpCode::Execute_53_Operands:
-			case ERigVMOpCode::Execute_54_Operands:
-			case ERigVMOpCode::Execute_55_Operands:
-			case ERigVMOpCode::Execute_56_Operands:
-			case ERigVMOpCode::Execute_57_Operands:
-			case ERigVMOpCode::Execute_58_Operands:
-			case ERigVMOpCode::Execute_59_Operands:
-			case ERigVMOpCode::Execute_60_Operands:
-			case ERigVMOpCode::Execute_61_Operands:
-			case ERigVMOpCode::Execute_62_Operands:
-			case ERigVMOpCode::Execute_63_Operands:
-			case ERigVMOpCode::Execute_64_Operands:
+			if(const URigVMMemoryStorageGeneratorClass* MemoryClass = Cast<URigVMMemoryStorageGeneratorClass>(WorkMemory->GetClass()))
 			{
-				const FRigVMExecuteOp& Op = ByteCode.GetOpAt<FRigVMExecuteOp>(Instruction);
-				int32 OperandCount = FirstHandleForInstruction[Context.PublicData.InstructionIndex + 1] - FirstHandleForInstruction[Context.PublicData.InstructionIndex];
-				FRigVMMemoryHandleArray OpHandles(&CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]], OperandCount);
-#if WITH_EDITOR
-				Context.PublicData.FunctionName = FunctionNames[Op.FunctionIndex];
-#endif
-				Context.Factory = Factories[Op.FunctionIndex];
-
-				// find out the largest slice count
-				int32 MaxSliceCount = 1;
-
-				// todo Deal with slice counts
-
-				Context.BeginSlice(MaxSliceCount);
-				for (int32 SliceIndex = 0; SliceIndex < MaxSliceCount; SliceIndex++)
+				if(URigVMMemoryStorage* WorkMemoryCDO = MemoryClass->GetDefaultObject<URigVMMemoryStorage>())
 				{
-					(*Functions[Op.FunctionIndex])(Context, OpHandles);
-					Context.IncrementSlice();
+					for(const FProperty* Property : MemoryClass->LinkedProperties)
+					{
+						Property->CopyCompleteValue_InContainer(WorkMemory, WorkMemoryCDO);
+#if UE_RIGVM_DEBUG_EXECUTION
+						FString DefaultValue;
+						const uint8* PropertyMemory = Property->ContainerPtrToValuePtr<uint8>(WorkMemory);
+						Property->ExportText_Direct(
+							DefaultValue,
+							PropertyMemory,
+							PropertyMemory,
+							nullptr,
+							PPF_None,
+							nullptr);
+
+						UE_LOG(LogRigVM, Warning, TEXT("Property %s defaults to '%s'."), *Property->GetName(), *DefaultValue);
+						UE_LOG(LogRigVM, Warning, TEXT("Property %s defaults to '%s'."), *Property->GetName(), *DefaultValue);
+#endif
+					}
 				}
-				Context.EndSlice();
-
-				break;
-			}
-			case ERigVMOpCode::Zero:
-			case ERigVMOpCode::BoolFalse:
-			case ERigVMOpCode::BoolTrue:
-			{
-				break;
-			}
-			case ERigVMOpCode::Copy:
-			{
-				const FRigVMCopyOp& Op = ByteCode.GetOpAt<FRigVMCopyOp>(Instruction);
-
-				FRigVMMemoryHandle& SourceHandle = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]];
-				FRigVMMemoryHandle& TargetHandle = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 1];
-				URigVMMemoryStorage::CopyProperty(TargetHandle, SourceHandle);
-				break;
-			}
-			case ERigVMOpCode::Increment:
-			case ERigVMOpCode::Decrement:
-			case ERigVMOpCode::Equals:
-			case ERigVMOpCode::NotEquals:
-			case ERigVMOpCode::JumpAbsolute:
-			case ERigVMOpCode::JumpForward:
-			case ERigVMOpCode::JumpBackward:
-			case ERigVMOpCode::JumpAbsoluteIf:
-			case ERigVMOpCode::JumpForwardIf:
-			case ERigVMOpCode::JumpBackwardIf:
-			case ERigVMOpCode::ChangeType:
-			case ERigVMOpCode::BeginBlock:
-			case ERigVMOpCode::EndBlock:
-			case ERigVMOpCode::Exit:
-			case ERigVMOpCode::ArrayGetNum:
-			case ERigVMOpCode::ArraySetNum:
-			case ERigVMOpCode::ArrayAppend:
-			case ERigVMOpCode::ArrayClone:
-			case ERigVMOpCode::ArrayGetAtIndex:
-			case ERigVMOpCode::ArraySetAtIndex:
-			case ERigVMOpCode::ArrayInsert:
-			case ERigVMOpCode::ArrayRemove:
-			case ERigVMOpCode::ArrayAdd:
-			case ERigVMOpCode::ArrayFind:
-			case ERigVMOpCode::ArrayIterator:
-			case ERigVMOpCode::ArrayUnion:
-			case ERigVMOpCode::ArrayDifference:
-			case ERigVMOpCode::ArrayIntersection:
-			case ERigVMOpCode::ArrayReverse:
-			case ERigVMOpCode::InvokeEntry:
-			{
-				break;
-			}
-			case ERigVMOpCode::Invalid:
-			{
-				ensure(false);
-				return false;
 			}
 		}
-		Context.PublicData.InstructionIndex++;
 	}
 	
+	CacheMemoryHandlesIfRequired(Memory);
+
 	return true;
 }
 
-bool URigVM::Execute(TArrayView<URigVMMemoryStorage*> Memory, TArrayView<void*> AdditionalArguments, const FName& InEntryName)
+ERigVMExecuteResult URigVM::Execute(TArrayView<URigVMMemoryStorage*> Memory, const FName& InEntryName)
 {
 	// if this the first entry being executed - get ready for execution
-	const bool bIsRootEntry = EntriesBeingExecuted.IsEmpty(); 
+	const bool bIsRootEntry = EntriesBeingExecuted.IsEmpty();
+
+	TGuardValue<FName> EntryNameGuard(CurrentEntryName, InEntryName);
+	TGuardValue<bool> RootEntryGuard(bCurrentlyRunningRootEntry, bIsRootEntry);
+
 	if(bIsRootEntry)
 	{
+		CurrentExecuteResult = ERigVMExecuteResult::Succeeded;
+		
 		if (ExecutingThreadId != INDEX_NONE)
 		{
 			ensureMsgf(ExecutingThreadId == FPlatformTLS::GetCurrentThreadId(), TEXT("RigVM::Execute from multiple threads (%d and %d)"), ExecutingThreadId, (int32)FPlatformTLS::GetCurrentThreadId());
@@ -1691,7 +1557,7 @@ bool URigVM::Execute(TArrayView<URigVMMemoryStorage*> Memory, TArrayView<void*> 
 
 		if (Instructions.Num() == 0)
 		{
-			return true;
+			return CurrentExecuteResult = ERigVMExecuteResult::Failed;
 		}
 
 		// changes to the layout of memory array should be reflected in GetContainerIndex()
@@ -1703,11 +1569,14 @@ bool URigVM::Execute(TArrayView<URigVMMemoryStorage*> Memory, TArrayView<void*> 
 		}
 	
 		CacheMemoryHandlesIfRequired(Memory);
+		CurrentMemory = Memory;
 	}
-	
+
 	FRigVMByteCode& ByteCode = GetByteCode();
-	TArray<FRigVMFunctionPtr>& Functions = GetFunctions();
+	TArray<const FRigVMFunction*>& Functions = GetFunctions();
 	TArray<const FRigVMDispatchFactory*>& Factories = GetFactories();
+
+	FRigVMExecuteContext& ContextPublicData = Context.GetPublicData<>();
 
 #if WITH_EDITOR
 	TArray<FName>& FunctionNames = GetFunctionNames();
@@ -1716,18 +1585,7 @@ bool URigVM::Execute(TArrayView<URigVMMemoryStorage*> Memory, TArrayView<void*> 
 	{
 		if (FirstEntryEventInQueue == NAME_None || FirstEntryEventInQueue == InEntryName)
 		{
-			InstructionVisitedDuringLastRun.Reset();
-			InstructionVisitOrder.Reset();
-			InstructionVisitedDuringLastRun.SetNumZeroed(Instructions.Num());
-			InstructionCyclesDuringLastRun.Reset();
-			if(Context.PublicData.RuntimeSettings.bEnableProfiling)
-			{
-				InstructionCyclesDuringLastRun.SetNumUninitialized(Instructions.Num());
-				for(int32 DurationIndex=0;DurationIndex<InstructionCyclesDuringLastRun.Num();DurationIndex++)
-				{
-					InstructionCyclesDuringLastRun[DurationIndex] = UINT64_MAX;
-				}
-			}
+			SetupInstructionTracking(Instructions.Num());
 		}
 	}
 #endif
@@ -1736,7 +1594,6 @@ bool URigVM::Execute(TArrayView<URigVMMemoryStorage*> Memory, TArrayView<void*> 
 	{
 		Context.Reset();
 		Context.SliceOffsets.AddZeroed(Instructions.Num());
-		Context.OpaqueArguments = AdditionalArguments;
 	}
 
 	TGuardValue<URigVM*> VMInContext(Context.VM, this);
@@ -1752,7 +1609,7 @@ bool URigVM::Execute(TArrayView<URigVMMemoryStorage*> Memory, TArrayView<void*> 
 		int32 EntryIndex = ByteCode.FindEntryIndex(InEntryName);
 		if (EntryIndex == INDEX_NONE)
 		{
-			return false;
+			return CurrentExecuteResult = ERigVMExecuteResult::Failed;
 		}
 		
 		SetInstructionIndex((uint16)ByteCode.GetEntry(EntryIndex).InstructionIndex);
@@ -1760,7 +1617,7 @@ bool URigVM::Execute(TArrayView<URigVMMemoryStorage*> Memory, TArrayView<void*> 
 
 		if(bIsRootEntry)
 		{
-			Context.PublicData.EventName = InEntryName;
+			ContextPublicData.EventName = InEntryName;
 		}
 	}
 	else
@@ -1778,11 +1635,11 @@ bool URigVM::Execute(TArrayView<URigVMMemoryStorage*> Memory, TArrayView<void*> 
 		{
 			if(ByteCode.Entries.IsValidIndex(EntryIndexToPush))
 			{
-				Context.PublicData.EventName = ByteCode.GetEntry(EntryIndexToPush).Name;
+				ContextPublicData.EventName = ByteCode.GetEntry(EntryIndexToPush).Name;
 			}
 			else
 			{
-				Context.PublicData.EventName = NAME_None;
+				ContextPublicData.EventName = NAME_None;
 			}
 		}
 	}
@@ -1802,56 +1659,99 @@ bool URigVM::Execute(TArrayView<URigVMMemoryStorage*> Memory, TArrayView<void*> 
 	}
 
 #if WITH_EDITOR
-	uint64 StartCycles = 0;
-	uint64 OverallCycles = 0;
-	if(Context.PublicData.RuntimeSettings.bEnableProfiling)
-	{
-		StartCycles = FPlatformTime::Cycles64();
-	}
+	StartProfiling();
 	
 #if UE_RIGVM_DEBUG_EXECUTION
-	FString DebugMemoryString;
-	TArray<FString> PreviousWorkMemory;
-	UEnum* InstanceOpCodeEnum = StaticEnum<ERigVMOpCode>();
+	ContextPublicData.DebugMemoryString;
+	ContextPublicData.InstanceOpCodeEnum = StaticEnum<ERigVMOpCode>();
 	URigVMMemoryStorage* LiteralMemory = GetLiteralMemory(false);
-	DebugMemoryString = FString("\n\nLiteral Memory\n\n");
+	ContextPublicData.DebugMemoryString = FString("\n\nLiteral Memory\n\n");
 	for (int32 PropertyIndex=0; PropertyIndex<LiteralMemory->Num(); ++PropertyIndex)
 	{
-		DebugMemoryString += FString::Printf(TEXT("%s: %s\n"), *LiteralMemory->GetProperties()[PropertyIndex]->GetFullName(), *LiteralMemory->GetDataAsString(PropertyIndex));				
+		ContextPublicData.DebugMemoryString += FString::Printf(TEXT("%s: %s\n"), *LiteralMemory->GetProperties()[PropertyIndex]->GetFullName(), *LiteralMemory->GetDataAsString(PropertyIndex));				
 	}
-	DebugMemoryString += FString(TEXT("\n\nWork Memory\n\n"));
+	ContextPublicData.DebugMemoryString += FString(TEXT("\n\nWork Memory\n\n"));
 	
 #endif
 	
 #endif
 
-	while (Instructions.IsValidIndex(Context.PublicData.InstructionIndex))
+	CurrentExecuteResult = ExecuteInstructions(ContextPublicData.InstructionIndex, Instructions.Num() - 1);
+
+#if WITH_EDITOR
+	if(bIsRootEntry)
+	{
+		CurrentMemory = TArrayView<URigVMMemoryStorage*>();
+		
+		if (HaltedAtBreakpoint.IsValid() && CurrentExecuteResult != ERigVMExecuteResult::Halted)
+		{
+			DebugInfo->SetCurrentActiveBreakpoint(FRigVMBreakpoint());
+			HaltedAtBreakpoint.Reset();
+			ExecutionHalted().Broadcast(INDEX_NONE, nullptr, InEntryName);
+		}
+	}
+#endif
+
+	return CurrentExecuteResult;
+}
+
+ERigVMExecuteResult URigVM::ExecuteInstructions(int32 InFirstInstruction, int32 InLastInstruction)
+{
+	// make we are already executing this VM
+	check(!CurrentMemory.IsEmpty());
+	
+	FRigVMExecuteContext& ContextPublicData = Context.GetPublicData<>();
+	TGuardValue<uint16> InstructionIndexGuard(ContextPublicData.InstructionIndex, (uint16)InFirstInstruction);
+	
+	FRigVMByteCode& ByteCode = GetByteCode();
+	TArray<const FRigVMFunction*>& Functions = GetFunctions();
+	TArray<const FRigVMDispatchFactory*>& Factories = GetFactories();
+
+#if WITH_EDITOR
+	TArray<FName>& FunctionNames = GetFunctionNames();
+#endif
+	
+	while (Instructions.IsValidIndex(ContextPublicData.InstructionIndex))
 	{
 #if WITH_EDITOR
-		if (ShouldHaltAtInstruction(InEntryName, Context.PublicData.InstructionIndex))
+		if (ShouldHaltAtInstruction(CurrentEntryName, ContextPublicData.InstructionIndex))
 		{
 #if UE_RIGVM_DEBUG_EXECUTION
-			Context.PublicData.Log(EMessageSeverity::Info, DebugMemoryString);					
+			ContextPublicData.Log(EMessageSeverity::Info, ContextPublicData.DebugMemoryString);					
 #endif
 			// we'll recursively exit all invoked
 			// entries here.
-			return true;
+			return CurrentExecuteResult = ERigVMExecuteResult::Halted;
 		}
 
-		const int32 CurrentInstructionIndex = Context.PublicData.InstructionIndex;
-		InstructionVisitedDuringLastRun[Context.PublicData.InstructionIndex]++;
-		InstructionVisitOrder.Add(Context.PublicData.InstructionIndex);
+		if(CurrentExecuteResult == ERigVMExecuteResult::Halted)
+		{
+			return CurrentExecuteResult;
+		}
+
+#endif
+		
+		if(ContextPublicData.InstructionIndex > (uint16)InLastInstruction)
+		{
+			return CurrentExecuteResult = ERigVMExecuteResult::Succeeded;
+		}
+
+#if WITH_EDITOR
+
+		const int32 CurrentInstructionIndex = ContextPublicData.InstructionIndex;
+		InstructionVisitedDuringLastRun[ContextPublicData.InstructionIndex]++;
+		InstructionVisitOrder.Add(ContextPublicData.InstructionIndex);
 	
 #endif
 
-		const FRigVMInstruction& Instruction = Instructions[Context.PublicData.InstructionIndex];
+		const FRigVMInstruction& Instruction = Instructions[ContextPublicData.InstructionIndex];
 
 #if WITH_EDITOR
 #if UE_RIGVM_DEBUG_EXECUTION
 		if (Instruction.OpCode >= ERigVMOpCode::Execute_0_Operands && Instruction.OpCode <= ERigVMOpCode::Execute_64_Operands)
 		{
 			const FRigVMExecuteOp& Op = ByteCode.GetOpAt<FRigVMExecuteOp>(Instruction);
-			FRigVMOperandArray Operands = ByteCode.GetOperandsForExecuteOp(Instructions[Context.PublicData.InstructionIndex]);
+			FRigVMOperandArray Operands = ByteCode.GetOperandsForExecuteOp(Instructions[ContextPublicData.InstructionIndex]);
 
 			TArray<FString> Labels;
 			for (const FRigVMOperand& Operand : Operands)
@@ -1859,16 +1759,16 @@ bool URigVM::Execute(TArrayView<URigVMMemoryStorage*> Memory, TArrayView<void*> 
 				Labels.Add(GetOperandLabel(Operand));
 			}
 
-			DebugMemoryString += FString::Printf(TEXT("Instruction %d: %s(%s)\n"), Context.PublicData.InstructionIndex, *FunctionNames[Op.FunctionIndex].ToString(), *FString::Join(Labels, TEXT(", ")));				
+			ContextPublicData.DebugMemoryString += FString::Printf(TEXT("Instruction %d: %s(%s)\n"), ContextPublicData.InstructionIndex, *FunctionNames[Op.FunctionIndex].ToString(), *FString::Join(Labels, TEXT(", ")));				
 		}
 		else if(Instruction.OpCode == ERigVMOpCode::Copy)
 		{
 			const FRigVMCopyOp& Op = ByteCode.GetOpAt<FRigVMCopyOp>(Instruction);
-			DebugMemoryString += FString::Printf(TEXT("Instruction %d: Copy %s -> %s\n"), Context.PublicData.InstructionIndex, *GetOperandLabel(Op.Source), *GetOperandLabel(Op.Target));				
+			ContextPublicData.DebugMemoryString += FString::Printf(TEXT("Instruction %d: Copy %s -> %s\n"), ContextPublicData.InstructionIndex, *GetOperandLabel(Op.Source), *GetOperandLabel(Op.Target));				
 		}
 		else
 		{
-			DebugMemoryString += FString::Printf(TEXT("Instruction %d: %s\n"), Context.PublicData.InstructionIndex, *InstanceOpCodeEnum->GetNameByIndex((uint8)Instruction.OpCode).ToString());				
+			ContextPublicData.DebugMemoryString += FString::Printf(TEXT("Instruction %d: %s\n"), ContextPublicData.InstructionIndex, *ContextPublicData.InstanceOpCodeEnum->GetNameByIndex((uint8)Instruction.OpCode).ToString());				
 		}
 		
 #endif
@@ -1943,13 +1843,17 @@ bool URigVM::Execute(TArrayView<URigVMMemoryStorage*> Memory, TArrayView<void*> 
 			case ERigVMOpCode::Execute_64_Operands:
 			{
 				const FRigVMExecuteOp& Op = ByteCode.GetOpAt<FRigVMExecuteOp>(Instruction);
-				const int32 OperandCount = FirstHandleForInstruction[Context.PublicData.InstructionIndex + 1] - FirstHandleForInstruction[Context.PublicData.InstructionIndex];
-				FRigVMMemoryHandleArray Handles(&CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]], OperandCount);
+				const int32 OperandCount = FirstHandleForInstruction[ContextPublicData.InstructionIndex + 1] - FirstHandleForInstruction[ContextPublicData.InstructionIndex];
+				FRigVMMemoryHandleArray Handles;
+				if(OperandCount > 0)
+				{
+					Handles = FRigVMMemoryHandleArray(&CachedMemoryHandles[FirstHandleForInstruction[ContextPublicData.InstructionIndex]], OperandCount);
+				}
 #if WITH_EDITOR
-				Context.PublicData.FunctionName = FunctionNames[Op.FunctionIndex];
+				ContextPublicData.FunctionName = FunctionNames[Op.FunctionIndex];
 #endif
 				Context.Factory = Factories[Op.FunctionIndex];
-				(*Functions[Op.FunctionIndex])(Context, Handles);
+				(*Functions[Op.FunctionIndex]->FunctionPtr)(Context, Handles);
 
 #if WITH_EDITOR
 
@@ -1963,41 +1867,49 @@ bool URigVM::Execute(TArrayView<URigVMMemoryStorage*> Memory, TArrayView<void*> 
 				}
 #endif
 
-				Context.PublicData.InstructionIndex++;
+				ContextPublicData.InstructionIndex++;
 				break;
 			}
 			case ERigVMOpCode::Zero:
 			{
-				*((int32*)CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]].GetData()) = 0;
+				const FRigVMMemoryHandle& Handle = CachedMemoryHandles[FirstHandleForInstruction[ContextPublicData.InstructionIndex]];
+				if(Handle.GetProperty()->IsA<FIntProperty>())
+				{
+					*((int32*)CachedMemoryHandles[FirstHandleForInstruction[ContextPublicData.InstructionIndex]].GetData()) = 0;
+				}
+				else if(Handle.GetProperty()->IsA<FNameProperty>())
+				{
+					*((FName*)CachedMemoryHandles[FirstHandleForInstruction[ContextPublicData.InstructionIndex]].GetData()) = NAME_None;
+				}
 #if WITH_EDITOR
 				if(DebugMemoryStorageObject->Num() > 0)
 				{
 					const FRigVMUnaryOp& Op = ByteCode.GetOpAt<FRigVMUnaryOp>(Instruction);
-					CopyOperandForDebuggingIfNeeded(Op.Arg, CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]]);
+					CopyOperandForDebuggingIfNeeded(Op.Arg, CachedMemoryHandles[FirstHandleForInstruction[ContextPublicData.InstructionIndex]]);
 				}
 #endif
 
-				Context.PublicData.InstructionIndex++;
+				ContextPublicData.InstructionIndex++;
 				break;
 			}
 			case ERigVMOpCode::BoolFalse:
 			{
-				*((bool*)CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]].GetData()) = false;
-				Context.PublicData.InstructionIndex++;
+				*((bool*)CachedMemoryHandles[FirstHandleForInstruction[ContextPublicData.InstructionIndex]].GetData()) = false;
+				ContextPublicData.InstructionIndex++;
 				break;
 			}
 			case ERigVMOpCode::BoolTrue:
 			{
-				*((bool*)CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]].GetData()) = true;
-				Context.PublicData.InstructionIndex++;
+				*((bool*)CachedMemoryHandles[FirstHandleForInstruction[ContextPublicData.InstructionIndex]].GetData()) = true;
+				ContextPublicData.InstructionIndex++;
 				break;
 			}
 			case ERigVMOpCode::Copy:
 			{
 				const FRigVMCopyOp& Op = ByteCode.GetOpAt<FRigVMCopyOp>(Instruction);
 
-				FRigVMMemoryHandle& SourceHandle = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]];
-				FRigVMMemoryHandle& TargetHandle = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 1];
+				FRigVMMemoryHandle& SourceHandle = CachedMemoryHandles[FirstHandleForInstruction[ContextPublicData.InstructionIndex]];
+				FRigVMMemoryHandle& TargetHandle = CachedMemoryHandles[FirstHandleForInstruction[ContextPublicData.InstructionIndex] + 1];
 				URigVMMemoryStorage::CopyProperty(TargetHandle, SourceHandle);
 					
 #if WITH_EDITOR
@@ -2007,33 +1919,33 @@ bool URigVM::Execute(TArrayView<URigVMMemoryStorage*> Memory, TArrayView<void*> 
 				}
 #endif
 					
-				Context.PublicData.InstructionIndex++;
+				ContextPublicData.InstructionIndex++;
 				break;
 			}
 			case ERigVMOpCode::Increment:
 			{
-				(*((int32*)CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]].GetData()))++;
+				(*((int32*)CachedMemoryHandles[FirstHandleForInstruction[ContextPublicData.InstructionIndex]].GetData()))++;
 #if WITH_EDITOR
 				if(DebugMemoryStorageObject->Num() > 0)
 				{
 					const FRigVMUnaryOp& Op = ByteCode.GetOpAt<FRigVMUnaryOp>(Instruction);
-					CopyOperandForDebuggingIfNeeded(Op.Arg, CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]]);
+					CopyOperandForDebuggingIfNeeded(Op.Arg, CachedMemoryHandles[FirstHandleForInstruction[ContextPublicData.InstructionIndex]]);
 				}
 #endif
-				Context.PublicData.InstructionIndex++;
+				ContextPublicData.InstructionIndex++;
 				break;
 			}
 			case ERigVMOpCode::Decrement:
 			{
-				(*((int32*)CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]].GetData()))--;
+				(*((int32*)CachedMemoryHandles[FirstHandleForInstruction[ContextPublicData.InstructionIndex]].GetData()))--;
 #if WITH_EDITOR
 				if(DebugMemoryStorageObject->Num() > 0)
 				{
 					const FRigVMUnaryOp& Op = ByteCode.GetOpAt<FRigVMUnaryOp>(Instruction);
-					CopyOperandForDebuggingIfNeeded(Op.Arg, CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]]);
+					CopyOperandForDebuggingIfNeeded(Op.Arg, CachedMemoryHandles[FirstHandleForInstruction[ContextPublicData.InstructionIndex]]);
 				}
 #endif
-				Context.PublicData.InstructionIndex++;
+				ContextPublicData.InstructionIndex++;
 				break;
 			}
 			case ERigVMOpCode::Equals:
@@ -2041,71 +1953,71 @@ bool URigVM::Execute(TArrayView<URigVMMemoryStorage*> Memory, TArrayView<void*> 
 			{
 				const FRigVMComparisonOp& Op = ByteCode.GetOpAt<FRigVMComparisonOp>(Instruction);
 
-				FRigVMMemoryHandle& HandleA = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]];
-				FRigVMMemoryHandle& HandleB = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 1];
+				FRigVMMemoryHandle& HandleA = CachedMemoryHandles[FirstHandleForInstruction[ContextPublicData.InstructionIndex]];
+				FRigVMMemoryHandle& HandleB = CachedMemoryHandles[FirstHandleForInstruction[ContextPublicData.InstructionIndex] + 1];
 				const bool Result = HandleA.GetProperty()->Identical(HandleA.GetData(true), HandleB.GetData(true));
 
-				*((bool*)CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]+2].GetData()) = Result;
-				Context.PublicData.InstructionIndex++;
+				*((bool*)CachedMemoryHandles[FirstHandleForInstruction[ContextPublicData.InstructionIndex]+2].GetData()) = Result;
+				ContextPublicData.InstructionIndex++;
 				break;
 			}
 			case ERigVMOpCode::JumpAbsolute:
 			{
 				const FRigVMJumpOp& Op = ByteCode.GetOpAt<FRigVMJumpOp>(Instruction);
-				Context.PublicData.InstructionIndex = Op.InstructionIndex;
+				ContextPublicData.InstructionIndex = Op.InstructionIndex;
 				break;
 			}
 			case ERigVMOpCode::JumpForward:
 			{
 				const FRigVMJumpOp& Op = ByteCode.GetOpAt<FRigVMJumpOp>(Instruction);
-				Context.PublicData.InstructionIndex += Op.InstructionIndex;
+				ContextPublicData.InstructionIndex += Op.InstructionIndex;
 				break;
 			}
 			case ERigVMOpCode::JumpBackward:
 			{
 				const FRigVMJumpOp& Op = ByteCode.GetOpAt<FRigVMJumpOp>(Instruction);
-				Context.PublicData.InstructionIndex -= Op.InstructionIndex;
+				ContextPublicData.InstructionIndex -= Op.InstructionIndex;
 				break;
 			}
 			case ERigVMOpCode::JumpAbsoluteIf:
 			{
 				const FRigVMJumpIfOp& Op = ByteCode.GetOpAt<FRigVMJumpIfOp>(Instruction);
-				const bool Condition = *(bool*)CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]].GetData();
+				const bool Condition = *(bool*)CachedMemoryHandles[FirstHandleForInstruction[ContextPublicData.InstructionIndex]].GetData();
 				if (Condition == Op.Condition)
 				{
-					Context.PublicData.InstructionIndex = Op.InstructionIndex;
+					ContextPublicData.InstructionIndex = Op.InstructionIndex;
 				}
 				else
 				{
-					Context.PublicData.InstructionIndex++;
+					ContextPublicData.InstructionIndex++;
 				}
 				break;
 			}
 			case ERigVMOpCode::JumpForwardIf:
 			{
 				const FRigVMJumpIfOp& Op = ByteCode.GetOpAt<FRigVMJumpIfOp>(Instruction);
-				const bool Condition = *(bool*)CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]].GetData();
+				const bool Condition = *(bool*)CachedMemoryHandles[FirstHandleForInstruction[ContextPublicData.InstructionIndex]].GetData();
 				if (Condition == Op.Condition)
 				{
-					Context.PublicData.InstructionIndex += Op.InstructionIndex;
+					ContextPublicData.InstructionIndex += Op.InstructionIndex;
 				}
 				else
 				{
-					Context.PublicData.InstructionIndex++;
+					ContextPublicData.InstructionIndex++;
 				}
 				break;
 			}
 			case ERigVMOpCode::JumpBackwardIf:
 			{
 				const FRigVMJumpIfOp& Op = ByteCode.GetOpAt<FRigVMJumpIfOp>(Instruction);
-				const bool Condition = *(bool*)CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]].GetData();
+				const bool Condition = *(bool*)CachedMemoryHandles[FirstHandleForInstruction[ContextPublicData.InstructionIndex]].GetData();
 				if (Condition == Op.Condition)
 				{
-					Context.PublicData.InstructionIndex -= Op.InstructionIndex;
+					ContextPublicData.InstructionIndex -= Op.InstructionIndex;
 				}
 				else
 				{
-					Context.PublicData.InstructionIndex++;
+					ContextPublicData.InstructionIndex++;
 				}
 				break;
 			}
@@ -2116,577 +2028,36 @@ bool URigVM::Execute(TArrayView<URigVMMemoryStorage*> Memory, TArrayView<void*> 
 			}
 			case ERigVMOpCode::Exit:
 			{
-				if(bIsRootEntry)
+				if(bCurrentlyRunningRootEntry)
 				{
-#if WITH_EDITOR
-					Context.LastExecutionMicroSeconds = OverallCycles * FPlatformTime::GetSecondsPerCycle() * 1000.0 * 1000.0;
-#endif
-					ExecutionReachedExit().Broadcast(InEntryName);
+					StopProfiling();
+					ExecutionReachedExit().Broadcast(CurrentEntryName);
 #if WITH_EDITOR					
 					if (HaltedAtBreakpoint.IsValid())
 					{
 						HaltedAtBreakpoint.Reset();
 						DebugInfo->SetCurrentActiveBreakpoint(FRigVMBreakpoint());
-						ExecutionHalted().Broadcast(INDEX_NONE, nullptr, InEntryName);
+						ExecutionHalted().Broadcast(INDEX_NONE, nullptr, CurrentEntryName);
 					}
 #if UE_RIGVM_DEBUG_EXECUTION
-					Context.PublicData.Log(EMessageSeverity::Info, DebugMemoryString);					
+					ContextPublicData.Log(EMessageSeverity::Info, ContextPublicData.DebugMemoryString);					
 #endif
 #endif
 				}
-				return true;
+				return ERigVMExecuteResult::Succeeded;
 			}
 			case ERigVMOpCode::BeginBlock:
 			{
-				const int32 Count = (*((int32*)CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]].GetData()));
-				const int32 Index = (*((int32*)CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 1].GetData()));
+				const int32 Count = (*((int32*)CachedMemoryHandles[FirstHandleForInstruction[ContextPublicData.InstructionIndex]].GetData()));
+				const int32 Index = (*((int32*)CachedMemoryHandles[FirstHandleForInstruction[ContextPublicData.InstructionIndex] + 1].GetData()));
 				Context.BeginSlice(Count, Index);
-				Context.PublicData.InstructionIndex++;
+				ContextPublicData.InstructionIndex++;
 				break;
 			}
 			case ERigVMOpCode::EndBlock:
 			{
 				Context.EndSlice();
-				Context.PublicData.InstructionIndex++;
-				break;
-			}
-			case ERigVMOpCode::ArrayReset:
-			{
-				FRigVMMemoryHandle& ArrayHandle = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]]; 					
-				FScriptArrayHelper ArrayHelper(CastFieldChecked<FArrayProperty>(ArrayHandle.GetProperty()), ArrayHandle.GetData());
-				ArrayHelper.Resize(0);
-
-				if(DebugMemoryStorageObject->Num() > 0)
-				{
-					const FRigVMUnaryOp& Op = ByteCode.GetOpAt<FRigVMUnaryOp>(Instruction);
-					CopyOperandForDebuggingIfNeeded(Op.Arg, ArrayHandle);
-				}
-
-				Context.PublicData.InstructionIndex++;
-				break;
-			}
-			case ERigVMOpCode::ArrayGetNum:
-			{
-				FRigVMMemoryHandle& ArrayHandle = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]]; 					
-				FScriptArrayHelper ArrayHelper(CastFieldChecked<FArrayProperty>(ArrayHandle.GetProperty()), ArrayHandle.GetData());
-				int32& Count = (*((int32*)CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 1].GetData()));
-				Count = ArrayHelper.Num();
-
-				if(DebugMemoryStorageObject->Num() > 0)
-				{
-					const FRigVMBinaryOp& Op = ByteCode.GetOpAt<FRigVMBinaryOp>(Instruction);
-					CopyOperandForDebuggingIfNeeded(Op.ArgA, ArrayHandle);
-					CopyOperandForDebuggingIfNeeded(Op.ArgB, CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 1]);
-				}
-
-				Context.PublicData.InstructionIndex++;
-				break;
-			}
-			case ERigVMOpCode::ArraySetNum:
-			{
-				FRigVMMemoryHandle& ArrayHandle = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]]; 					
-				FScriptArrayHelper ArrayHelper(CastFieldChecked<FArrayProperty>(ArrayHandle.GetProperty()), ArrayHandle.GetData());
-				const int32 Count = (*((int32*)CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 1].GetData()));
-				if(Context.IsValidArraySize(Count))
-				{
-					ArrayHelper.Resize(Count);
-				}
-
-				if(DebugMemoryStorageObject->Num() > 0)
-				{
-					const FRigVMBinaryOp& Op = ByteCode.GetOpAt<FRigVMBinaryOp>(Instruction);
-					CopyOperandForDebuggingIfNeeded(Op.ArgA, ArrayHandle);
-					CopyOperandForDebuggingIfNeeded(Op.ArgB, CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 1]);
-				}
-
-				Context.PublicData.InstructionIndex++;
-				break;
-			}
-			case ERigVMOpCode::ArrayAppend:
-			{
-				FRigVMMemoryHandle& ArrayHandle = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]]; 					
-				FRigVMMemoryHandle& OtherArrayHandle = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 1];
-				const FArrayProperty* ArrayProperty = CastFieldChecked<FArrayProperty>(ArrayHandle.GetProperty()); 
-				const FArrayProperty* OtherArrayProperty = CastFieldChecked<FArrayProperty>(OtherArrayHandle.GetProperty()); 
-
-				FScriptArrayHelper ArrayHelper(ArrayProperty, ArrayHandle.GetData());
-				FScriptArrayHelper OtherArrayHelper(OtherArrayProperty, OtherArrayHandle.GetData());
-
-				if(OtherArrayHelper.Num() > 0)
-				{
-					if(Context.IsValidArraySize(ArrayHelper.Num() + OtherArrayHelper.Num()))
-					{
-						const FProperty* TargetProperty = ArrayProperty->Inner;
-						const FProperty* SourceProperty = OtherArrayProperty->Inner;
-
-						int32 TargetIndex = ArrayHelper.AddValues(OtherArrayHelper.Num());
-						for(int32 SourceIndex = 0; SourceIndex < OtherArrayHelper.Num(); SourceIndex++, TargetIndex++)
-						{
-							uint8* TargetMemory = ArrayHelper.GetRawPtr(TargetIndex);
-							const uint8* SourceMemory = OtherArrayHelper.GetRawPtr(SourceIndex);
-							URigVMMemoryStorage::CopyProperty(TargetProperty, TargetMemory, SourceProperty, SourceMemory);
-						}
-					}
-				}
-
-				if(DebugMemoryStorageObject->Num() > 0)
-				{
-					const FRigVMBinaryOp& Op = ByteCode.GetOpAt<FRigVMBinaryOp>(Instruction);
-					CopyOperandForDebuggingIfNeeded(Op.ArgA, ArrayHandle);
-					CopyOperandForDebuggingIfNeeded(Op.ArgB, CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 1]);
-				}
-
-				Context.PublicData.InstructionIndex++;
-				break;
-			}
-			case ERigVMOpCode::ArrayClone:
-			{
-				FRigVMMemoryHandle& ArrayHandle = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]]; 					
-				FRigVMMemoryHandle& ClonedArrayHandle = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 1];
-				const FArrayProperty* ArrayProperty = CastFieldChecked<FArrayProperty>(ArrayHandle.GetProperty()); 
-				const FArrayProperty* ClonedArrayProperty = CastFieldChecked<FArrayProperty>(ClonedArrayHandle.GetProperty()); 
-				FScriptArrayHelper ArrayHelper(ArrayProperty, ArrayHandle.GetData());
-				FScriptArrayHelper ClonedArrayHelper(ClonedArrayProperty, ClonedArrayHandle.GetData());
-
-				CopyArray(ClonedArrayHelper, ClonedArrayHandle, ArrayHelper, ArrayHandle);
-					
-				if(DebugMemoryStorageObject->Num() > 0)
-				{
-					const FRigVMBinaryOp& Op = ByteCode.GetOpAt<FRigVMBinaryOp>(Instruction);
-					CopyOperandForDebuggingIfNeeded(Op.ArgA, ArrayHandle);
-					CopyOperandForDebuggingIfNeeded(Op.ArgB, ClonedArrayHandle);
-				}
-
-				Context.PublicData.InstructionIndex++;
-				break;
-			}
-			case ERigVMOpCode::ArrayGetAtIndex:
-			{
-				FRigVMMemoryHandle& ArrayHandle = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]];
-				const FArrayProperty* ArrayProperty = CastFieldChecked<FArrayProperty>(ArrayHandle.GetProperty());
-				FScriptArrayHelper ArrayHelper(ArrayProperty, ArrayHandle.GetData());
-				int32 Index = (*((int32*)CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 1].GetData()));
-
-				if(Context.IsValidArrayIndex(Index, ArrayHelper))
-				{
-					FRigVMMemoryHandle& ElementHandle = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 2];
-					uint8* TargetMemory = ElementHandle.GetData();
-					const uint8* SourceMemory = ArrayHelper.GetRawPtr(Index);
-					URigVMMemoryStorage::CopyProperty(ElementHandle.GetProperty(), TargetMemory, ArrayProperty->Inner, SourceMemory);
-				}
-
-				if(DebugMemoryStorageObject->Num() > 0)
-				{
-					const FRigVMTernaryOp& Op = ByteCode.GetOpAt<FRigVMTernaryOp>(Instruction);
-					CopyOperandForDebuggingIfNeeded(Op.ArgA, ArrayHandle);
-					CopyOperandForDebuggingIfNeeded(Op.ArgB, CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 1]);
-					CopyOperandForDebuggingIfNeeded(Op.ArgC, CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 2]);
-				}
-
-				Context.PublicData.InstructionIndex++;
-				break;
-			}
-			case ERigVMOpCode::ArraySetAtIndex:
-			{
-				FRigVMMemoryHandle& ArrayHandle = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]];
-				const FArrayProperty* ArrayProperty = CastFieldChecked<FArrayProperty>(ArrayHandle.GetProperty());
-				FScriptArrayHelper ArrayHelper(ArrayProperty, ArrayHandle.GetData());
-				int32 Index = (*((int32*)CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 1].GetData()));
-				if(Context.IsValidArrayIndex(Index, ArrayHelper))
-				{
-					FRigVMMemoryHandle& ElementHandle = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 2];
-					uint8* TargetMemory = ArrayHelper.GetRawPtr(Index);
-					const uint8* SourceMemory = ElementHandle.GetData();
-					URigVMMemoryStorage::CopyProperty(ArrayProperty->Inner, TargetMemory, ElementHandle.GetProperty(), SourceMemory);
-				}
-
-				if(DebugMemoryStorageObject->Num() > 0)
-				{
-					const FRigVMTernaryOp& Op = ByteCode.GetOpAt<FRigVMTernaryOp>(Instruction);
-					CopyOperandForDebuggingIfNeeded(Op.ArgA, ArrayHandle);
-					CopyOperandForDebuggingIfNeeded(Op.ArgB, CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 1]);
-					CopyOperandForDebuggingIfNeeded(Op.ArgC, CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 2]);
-				}
-
-				Context.PublicData.InstructionIndex++;
-				break;
-			}
-			case ERigVMOpCode::ArrayInsert:
-			{
-				FRigVMMemoryHandle& ArrayHandle = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]];
-				const FArrayProperty* ArrayProperty = CastFieldChecked<FArrayProperty>(ArrayHandle.GetProperty());
-				FScriptArrayHelper ArrayHelper(ArrayProperty, ArrayHandle.GetData());
-				if(Context.IsValidArraySize(ArrayHelper.Num() + 1))
-				{
-					int32 Index = (*((int32*)CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 1].GetData()));
-
-					// we support wrapping the index around similar to python
-					if(Index < 0)
-					{
-						Index = ArrayHelper.Num() + Index;
-					}
-					
-					Index = FMath::Clamp<int32>(Index, 0, ArrayHelper.Num());
-					ArrayHelper.InsertValues(Index, 1);
-
-					FRigVMMemoryHandle& ElementHandle = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 2];
-					uint8* TargetMemory = ArrayHelper.GetRawPtr(Index);
-					const uint8* SourceMemory = ElementHandle.GetData();
-					URigVMMemoryStorage::CopyProperty(ArrayProperty->Inner, TargetMemory, ElementHandle.GetProperty(), SourceMemory);
-				}
-
-				if(DebugMemoryStorageObject->Num() > 0)
-				{
-					const FRigVMTernaryOp& Op = ByteCode.GetOpAt<FRigVMTernaryOp>(Instruction);
-					CopyOperandForDebuggingIfNeeded(Op.ArgA, ArrayHandle);
-					CopyOperandForDebuggingIfNeeded(Op.ArgB, CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 1]);
-					CopyOperandForDebuggingIfNeeded(Op.ArgC, CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 2]);
-				}
-
-				Context.PublicData.InstructionIndex++;
-				break;
-			}
-			case ERigVMOpCode::ArrayRemove:
-			{
-				FRigVMMemoryHandle& ArrayHandle = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]];
-				const FArrayProperty* ArrayProperty = CastFieldChecked<FArrayProperty>(ArrayHandle.GetProperty());
-				FScriptArrayHelper ArrayHelper(ArrayProperty, ArrayHandle.GetData());
-				int32 Index = (*((int32*)CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 1].GetData()));
-				if(Context.IsValidArrayIndex(Index, ArrayHelper))
-				{
-					ArrayHelper.RemoveValues(Index, 1);
-				}
-
-				if(DebugMemoryStorageObject->Num() > 0)
-				{
-					const FRigVMBinaryOp& Op = ByteCode.GetOpAt<FRigVMBinaryOp>(Instruction);
-					CopyOperandForDebuggingIfNeeded(Op.ArgA, ArrayHandle);
-					CopyOperandForDebuggingIfNeeded(Op.ArgB, CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 1]);
-				}
-
-				Context.PublicData.InstructionIndex++;
-				break;
-			}
-			case ERigVMOpCode::ArrayAdd:
-			{
-				FRigVMMemoryHandle& ArrayHandle = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]];
-				const FArrayProperty* ArrayProperty = CastFieldChecked<FArrayProperty>(ArrayHandle.GetProperty());
-				FScriptArrayHelper ArrayHelper(ArrayProperty, ArrayHandle.GetData());
-				int32& Index = (*((int32*)CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 2].GetData()));
-				if(Context.IsValidArraySize(ArrayHelper.Num() + 1))
-				{
-					FRigVMMemoryHandle& ElementHandle = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 1];
-					Index = ArrayHelper.AddValue();
-
-					uint8* TargetMemory = ArrayHelper.GetRawPtr(Index);
-					const uint8* SourceMemory = ElementHandle.GetData();
-					URigVMMemoryStorage::CopyProperty(ArrayProperty->Inner, TargetMemory, ElementHandle.GetProperty(), SourceMemory);
-				}
-				else
-				{
-					Index = INDEX_NONE;
-				}
-
-				if(DebugMemoryStorageObject->Num() > 0)
-				{
-					const FRigVMTernaryOp& Op = ByteCode.GetOpAt<FRigVMTernaryOp>(Instruction);
-					CopyOperandForDebuggingIfNeeded(Op.ArgA, ArrayHandle);
-					CopyOperandForDebuggingIfNeeded(Op.ArgB, CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 1]);
-					CopyOperandForDebuggingIfNeeded(Op.ArgC, CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 2]);
-				}
-
-				Context.PublicData.InstructionIndex++;
-				break;
-			}
-			case ERigVMOpCode::ArrayFind:
-			{
-				FRigVMMemoryHandle& ArrayHandle = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]];
-				const FArrayProperty* ArrayProperty = CastFieldChecked<FArrayProperty>(ArrayHandle.GetProperty());
-				FScriptArrayHelper ArrayHelper(ArrayProperty, ArrayHandle.GetData());
-
-				FRigVMMemoryHandle& ElementHandle = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 1];
-				int32& FoundIndex = (*((int32*)CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 2].GetData()));
-				bool& bFound = (*((bool*)CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 3].GetData()));
-
-				FoundIndex = INDEX_NONE;
-				bFound = false;
-
-				const FProperty* PropertyA = ElementHandle.GetProperty();
-				const FProperty* PropertyB = ArrayProperty->Inner;
-
-				if(PropertyA->SameType(PropertyB))
-				{
-					const uint8* MemoryA = ElementHandle.GetData();
-
-					for(int32 Index = 0; Index < ArrayHelper.Num(); Index++)
-					{
-						const uint8* MemoryB = ArrayHelper.GetRawPtr(Index);
-						if(PropertyA->Identical(MemoryA, MemoryB))
-						{
-							FoundIndex = Index;
-							bFound = true;
-							break;
-						}
-					}
-				}
-				else
-				{
-					static const TCHAR IncompatibleTypes[] = TEXT("Array('%s') doesn't support searching for element('%$s').");
-					Context.PublicData.Logf(EMessageSeverity::Error, IncompatibleTypes, *PropertyB->GetCPPType(), *PropertyA->GetCPPType());
-				}
-
-				if(DebugMemoryStorageObject->Num() > 0)
-				{
-					const FRigVMQuaternaryOp& Op = ByteCode.GetOpAt<FRigVMQuaternaryOp>(Instruction);
-					CopyOperandForDebuggingIfNeeded(Op.ArgA, ArrayHandle);
-					CopyOperandForDebuggingIfNeeded(Op.ArgB, CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 1]);
-					CopyOperandForDebuggingIfNeeded(Op.ArgC, CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 2]);
-					CopyOperandForDebuggingIfNeeded(Op.ArgD, CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 3]);
-				}
-
-				Context.PublicData.InstructionIndex++;
-				break;
-			}
-			case ERigVMOpCode::ArrayIterator:
-			{
-				FRigVMMemoryHandle& ArrayHandle = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]];
-				const FArrayProperty* ArrayProperty = CastFieldChecked<FArrayProperty>(ArrayHandle.GetProperty());
-				FScriptArrayHelper ArrayHelper(ArrayProperty, ArrayHandle.GetData());
-
-				FRigVMMemoryHandle& ElementHandle = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 1];
-				const int32& Index = (*((int32*)CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 2].GetData()));
-				int32& Count = (*((int32*)CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 3].GetData()));
-				float& Ratio = (*((float*)CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 4].GetData()));
-				bool& bContinue = (*((bool*)CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 5].GetData()));
-
-				Count = ArrayHelper.Num();
-				bContinue = Index >=0 && Index < Count;
-
-				if((Count <= 0) || !bContinue)
-				{
-					Ratio = 0.f;
-				}
-				else
-				{
-					Ratio = float(Index) / float(Count - 1);
-
-					uint8* TargetMemory = ElementHandle.GetData();
-					const uint8* SourceMemory = ArrayHelper.GetRawPtr(Index);
-					URigVMMemoryStorage::CopyProperty(ElementHandle.GetProperty(), TargetMemory, ArrayProperty->Inner, SourceMemory);
-
-					if(DebugMemoryStorageObject->Num() > 0)
-					{
-						const FRigVMSenaryOp& Op = ByteCode.GetOpAt<FRigVMSenaryOp>(Instruction);
-						CopyOperandForDebuggingIfNeeded(Op.ArgA, ArrayHandle); // array
-						CopyOperandForDebuggingIfNeeded(Op.ArgD, CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 3]); // count
-
-						Context.BeginSlice(Count, Index);
-						CopyOperandForDebuggingIfNeeded(Op.ArgB, CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 1]); // element
-						CopyOperandForDebuggingIfNeeded(Op.ArgC, CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 2]); // index
-						CopyOperandForDebuggingIfNeeded(Op.ArgE, CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 4]); // ratio
-						Context.EndSlice();
-					}
-				}
-
-				Context.PublicData.InstructionIndex++;
-				break;
-			}
-			case ERigVMOpCode::ArrayUnion:
-			case ERigVMOpCode::ArrayDifference:
-			case ERigVMOpCode::ArrayIntersection:
-			{
-				FRigVMMemoryHandle& ArrayHandleA = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]]; 					
-				FRigVMMemoryHandle& ArrayHandleB = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 1];
-				const FArrayProperty* ArrayPropertyA = CastFieldChecked<FArrayProperty>(ArrayHandleA.GetProperty()); 					
-				const FArrayProperty* ArrayPropertyB = CastFieldChecked<FArrayProperty>(ArrayHandleB.GetProperty()); 					
-				FScriptArrayHelper ArrayHelperA(ArrayPropertyA, ArrayHandleA.GetData());
-				FScriptArrayHelper ArrayHelperB(ArrayPropertyB, ArrayHandleB.GetData());
-				const FProperty* ElementPropertyA = ArrayPropertyA->Inner;
-				const FProperty* ElementPropertyB = ArrayPropertyB->Inner;
-
-				TMap<uint32, int32> HashA, HashB;
-				HashA.Reserve(ArrayHelperA.Num());
-				HashB.Reserve(ArrayHelperB.Num());
-
-				for(int32 Index = 0; Index < ArrayHelperA.Num(); Index++)
-				{
-					uint32 HashValue;
-					if (ElementPropertyA->PropertyFlags & CPF_HasGetValueTypeHash)
-					{
-						HashValue = ElementPropertyA->GetValueTypeHash(ArrayHelperA.GetRawPtr(Index));
-					}
-					else
-					{
-						FString Value;
-						ElementPropertyA->ExportTextItem_Direct(Value, ArrayHelperA.GetRawPtr(Index), nullptr, nullptr, PPF_None);
-						HashValue = TextKeyUtil::HashString(Value);
-					}
-					
-					if(!HashA.Contains(HashValue))
-					{
-						HashA.Add(HashValue, Index);
-					}
-				}
-				for(int32 Index = 0; Index < ArrayHelperB.Num(); Index++)
-				{
-					uint32 HashValue;
-					if (ElementPropertyB->PropertyFlags & CPF_HasGetValueTypeHash)
-					{
-						HashValue = ElementPropertyB->GetValueTypeHash(ArrayHelperB.GetRawPtr(Index));
-					}
-					else
-					{
-						FString Value;
-						ElementPropertyB->ExportTextItem_Direct(Value, ArrayHelperB.GetRawPtr(Index), nullptr, nullptr, PPF_None);
-						HashValue = TextKeyUtil::HashString(Value);
-					}
-					if(!HashB.Contains(HashValue))
-					{
-						HashB.Add(HashValue, Index);
-					}
-				}
-
-				if(Instruction.OpCode == ERigVMOpCode::ArrayUnion)
-				{
-					// copy the complete array to a temp storage
-					TArray<uint8, TAlignedHeapAllocator<16>> TempStorage;
-					const int32 NumElementsA = ArrayHelperA.Num();
-					TempStorage.AddZeroed(NumElementsA * ElementPropertyA->GetSize());
-					uint8* TempMemory = TempStorage.GetData();
-					for(int32 Index = 0; Index < NumElementsA; Index++)
-					{
-						ElementPropertyA->InitializeValue(TempMemory);
-						ElementPropertyA->CopyCompleteValue(TempMemory, ArrayHelperA.GetRawPtr(Index));
-						TempMemory += ElementPropertyA->GetSize();
-					}
-
-					ArrayHelperA.Resize(0);
-
-					for(const TPair<uint32, int32>& Pair : HashA)
-					{
-						int32 AddedIndex = ArrayHelperA.AddValue();
-						TempMemory = TempStorage.GetData() + Pair.Value * ElementPropertyA->GetSize();
-						
-						URigVMMemoryStorage::CopyProperty(
-							ElementPropertyA,
-							ArrayHelperA.GetRawPtr(AddedIndex),
-							ElementPropertyA,
-							TempMemory
-						);
-					}
-
-					TempMemory = TempStorage.GetData();
-					for(int32 Index = 0; Index < NumElementsA; Index++)
-					{
-						ElementPropertyA->DestroyValue(TempMemory);
-						TempMemory += ElementPropertyA->GetSize();
-					}
-
-					for(const TPair<uint32, int32>& Pair : HashB)
-					{
-						if(!HashA.Contains(Pair.Key))
-						{
-							int32 AddedIndex = ArrayHelperA.AddValue();
-							
-							URigVMMemoryStorage::CopyProperty(
-								ElementPropertyA,
-								ArrayHelperA.GetRawPtr(AddedIndex),
-								ElementPropertyB,
-								ArrayHelperB.GetRawPtr(Pair.Value)
-							);
-						}
-					}
-					
-					if(DebugMemoryStorageObject->Num() > 0)
-					{
-						const FRigVMBinaryOp& Op = ByteCode.GetOpAt<FRigVMBinaryOp>(Instruction);
-						CopyOperandForDebuggingIfNeeded(Op.ArgA, ArrayHandleA);
-						CopyOperandForDebuggingIfNeeded(Op.ArgB, ArrayHandleB);
-					}
-				}
-				else
-				{
-					FRigVMMemoryHandle& ResultArrayHandle = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex] + 2]; 					
-					FScriptArrayHelper ResultArrayHelper(CastFieldChecked<FArrayProperty>(ResultArrayHandle.GetProperty()), ResultArrayHandle.GetData());
-					const FArrayProperty* ResultArrayProperty = CastFieldChecked<FArrayProperty>(ResultArrayHandle.GetProperty());
-					const FProperty* ResultElementProperty = ResultArrayProperty->Inner;
-
-					ResultArrayHelper.Resize(0);
-					
-					if(Instruction.OpCode == ERigVMOpCode::ArrayDifference)
-					{
-						for(const TPair<uint32, int32>& Pair : HashA)
-						{
-							if(!HashB.Contains(Pair.Key))
-							{
-								int32 AddedIndex = ResultArrayHelper.AddValue();
-								URigVMMemoryStorage::CopyProperty(
-									ResultElementProperty,
-									ResultArrayHelper.GetRawPtr(AddedIndex),
-									ElementPropertyA,
-									ArrayHelperA.GetRawPtr(Pair.Value)
-								);
-							}
-						}
-						for(const TPair<uint32, int32>& Pair : HashB)
-						{
-							if(!HashA.Contains(Pair.Key))
-							{
-								int32 AddedIndex = ResultArrayHelper.AddValue();
-								URigVMMemoryStorage::CopyProperty(
-									ResultElementProperty,
-									ResultArrayHelper.GetRawPtr(AddedIndex),
-									ElementPropertyB,
-									ArrayHelperB.GetRawPtr(Pair.Value)
-								);
-							}
-						}
-					}
-					else // intersection
-					{
-						for(const TPair<uint32, int32>& Pair : HashA)
-						{
-							if(HashB.Contains(Pair.Key))
-							{
-								int32 AddedIndex = ResultArrayHelper.AddValue();
-								URigVMMemoryStorage::CopyProperty(
-									ResultElementProperty,
-									ResultArrayHelper.GetRawPtr(AddedIndex),
-									ElementPropertyA,
-									ArrayHelperA.GetRawPtr(Pair.Value)
-								);
-							}
-						}
-					}
-
-					if(DebugMemoryStorageObject->Num() > 0)
-					{
-						const FRigVMTernaryOp& Op = ByteCode.GetOpAt<FRigVMTernaryOp>(Instruction);
-						CopyOperandForDebuggingIfNeeded(Op.ArgA, ArrayHandleA);
-						CopyOperandForDebuggingIfNeeded(Op.ArgB, ArrayHandleB);
-						CopyOperandForDebuggingIfNeeded(Op.ArgC, ResultArrayHandle);
-					}
-				}
-
-				Context.PublicData.InstructionIndex++;
-				break;
-			}
-			case ERigVMOpCode::ArrayReverse:
-			{
-				FRigVMMemoryHandle& ArrayHandle = CachedMemoryHandles[FirstHandleForInstruction[Context.PublicData.InstructionIndex]]; 					
-				FScriptArrayHelper ArrayHelper(CastFieldChecked<FArrayProperty>(ArrayHandle.GetProperty()), ArrayHandle.GetData());
-				for(int32 A=0, B=ArrayHelper.Num()-1; A<B; A++, B--)
-				{
-					ArrayHelper.SwapValues(A, B);
-				}
-
-				if(DebugMemoryStorageObject->Num() > 0)
-				{
-					const FRigVMUnaryOp& Op = ByteCode.GetOpAt<FRigVMUnaryOp>(Instruction);
-					CopyOperandForDebuggingIfNeeded(Op.Arg, ArrayHandle);
-				}
-
-				Context.PublicData.InstructionIndex++;
+				ContextPublicData.InstructionIndex++;
 				break;
 			}
 			case ERigVMOpCode::InvokeEntry:
@@ -2695,38 +2066,92 @@ bool URigVM::Execute(TArrayView<URigVMMemoryStorage*> Memory, TArrayView<void*> 
 
 				if(!CanExecuteEntry(Op.EntryName))
 				{
-					return false;
+					return CurrentExecuteResult = ERigVMExecuteResult::Failed;
 				}
 				else
 				{
 					// this will restore the public data after invoking the entry
-					TGuardValue<FRigVMExecuteContext> PublicDataGuard(Context.PublicData, Context.PublicData);
-					if(!Execute(Memory, AdditionalArguments, Op.EntryName))
+					TGuardValue<FRigVMExecuteContext> PublicDataGuard(ContextPublicData, ContextPublicData);
+					const ERigVMExecuteResult ExecuteResult = Execute(CurrentMemory, Op.EntryName);
+					if(ExecuteResult != ERigVMExecuteResult::Succeeded)
 					{
-						return false;
+						return CurrentExecuteResult = ExecuteResult;
 					}
 
 #if WITH_EDITOR
 					// if we are halted at a break point we need to exit here
-					if (ShouldHaltAtInstruction(InEntryName, Context.PublicData.InstructionIndex))
+					if (ShouldHaltAtInstruction(CurrentEntryName, ContextPublicData.InstructionIndex))
 					{
-						return true;
+						return CurrentExecuteResult = ERigVMExecuteResult::Halted;
 					}
 #endif
 				}
 					
-				Context.PublicData.InstructionIndex++;
+				ContextPublicData.InstructionIndex++;
+				break;
+			}
+			case ERigVMOpCode::JumpToBranch:
+			{
+				const FRigVMJumpToBranchOp& Op = ByteCode.GetOpAt<FRigVMJumpToBranchOp>(Instruction);
+				// BranchLabel = Op.Arg
+				FName BranchLabel = *(FName*)CachedMemoryHandles[FirstHandleForInstruction[ContextPublicData.InstructionIndex]].GetData();
+
+				// iterate over the branches stored in the bytecode,
+				// starting at the first branch index stored in the operator.
+				// look over all branches matching this instruction index and
+				// find the one with the right label - then jump to the branch.
+				bool bBranchFound = false;
+				const TArray<FRigVMBranchInfo>& Branches = ByteCode.BranchInfos;
+				if(Branches.IsEmpty())
+				{
+					UE_LOG(LogRigVM, Error, TEXT("No branches in ByteCode - but JumpToBranch instruction %d found. Likely a corrupt VM. Exiting."), ContextPublicData.InstructionIndex);
+					return CurrentExecuteResult = ERigVMExecuteResult::Failed;
+				}
+
+				for(int32 PassIndex = 0; PassIndex < 2; PassIndex++)
+				{
+					for(int32 BranchIndex = Op.FirstBranchInfoIndex // start at the first branch known to this jump op
+						; BranchIndex < Branches.Num(); BranchIndex++)
+					{
+						const FRigVMBranchInfo& Branch = Branches[BranchIndex];
+						if(Branch.InstructionIndex != ContextPublicData.InstructionIndex)
+						{
+							break;
+						}
+						if(Branch.Label == BranchLabel)
+						{
+							ContextPublicData.InstructionIndex = Branch.FirstInstruction;
+							bBranchFound = true;
+							break;
+						}
+					}
+
+					// if we don't find the branch - try to jump to the completed branch
+					if (!bBranchFound)
+					{
+						if(PassIndex == 0 && BranchLabel != FRigVMStruct::ControlFlowCompletedName)
+						{
+							UE_LOG(LogRigVM, Warning, TEXT("Branch '%s' was not found for instruction %d."), *BranchLabel.ToString(), ContextPublicData.InstructionIndex);
+							BranchLabel = FRigVMStruct::ControlFlowCompletedName;
+							continue;
+						}
+						
+						UE_LOG(LogRigVM, Error, TEXT("Branch '%s' was not found for instruction %d."), *BranchLabel.ToString(), ContextPublicData.InstructionIndex);
+						return ERigVMExecuteResult::Failed;
+					}
+					break;
+				}
 				break;
 			}
 			case ERigVMOpCode::Invalid:
 			{
 				ensure(false);
-				return false;
+				return CurrentExecuteResult = ERigVMExecuteResult::Failed;
 			}
 		}
 
 #if WITH_EDITOR
-		if(Context.PublicData.RuntimeSettings.bEnableProfiling && !InstructionVisitOrder.IsEmpty())
+		if(ContextPublicData.RuntimeSettings.bEnableProfiling && !InstructionVisitOrder.IsEmpty())
 		{
 			const uint64 EndCycles = FPlatformTime::Cycles64();
 			const uint64 Cycles = EndCycles - StartCycles;
@@ -2750,11 +2175,11 @@ bool URigVM::Execute(TArrayView<URigVMMemoryStorage*> Memory, TArrayView<void*> 
 		for (int32 PropertyIndex=0; PropertyIndex<WorkMemory->Num(); ++PropertyIndex, ++LineIndex)
 		{
 			FString Line = FString::Printf(TEXT("%s: %s"), *WorkMemory->GetProperties()[PropertyIndex]->GetFullName(), *WorkMemory->GetDataAsString(PropertyIndex));
-			if (PreviousWorkMemory.Num() > 0 && PreviousWorkMemory[PropertyIndex].StartsWith(TEXT(" -- ")))
+			if (ContextPublicData.PreviousWorkMemory.Num() > 0 && ContextPublicData.PreviousWorkMemory.IsValidIndex(PropertyIndex) && ContextPublicData.PreviousWorkMemory[PropertyIndex].StartsWith(TEXT(" -- ")))
 			{
-				PreviousWorkMemory[PropertyIndex].RightChopInline(4);
+				ContextPublicData.PreviousWorkMemory[PropertyIndex].RightChopInline(4);
 			}
-			if (PreviousWorkMemory.Num() == 0 || Line == PreviousWorkMemory[PropertyIndex])
+			if (ContextPublicData.PreviousWorkMemory.Num() == 0 || (ContextPublicData.PreviousWorkMemory.IsValidIndex(PropertyIndex) && Line == ContextPublicData.PreviousWorkMemory[PropertyIndex]))
 			{
 				CurrentWorkMemory.Add(Line);
 			}
@@ -2768,11 +2193,11 @@ bool URigVM::Execute(TArrayView<URigVMMemoryStorage*> Memory, TArrayView<void*> 
 			FString Value;
 			ExternalVariable.Property->ExportTextItem_Direct(Value, ExternalVariable.Memory, nullptr, nullptr, PPF_None);
 			FString Line = FString::Printf(TEXT("External %s: %s"), *ExternalVariable.Name.ToString(), *Value);
-			if (PreviousWorkMemory.Num() > 0 && PreviousWorkMemory[LineIndex].StartsWith(TEXT(" -- ")))
+			if (ContextPublicData.PreviousWorkMemory.Num() > 0 && ContextPublicData.PreviousWorkMemory.IsValidIndex(LineIndex) && ContextPublicData.PreviousWorkMemory[LineIndex].StartsWith(TEXT(" -- ")))
 			{
-				PreviousWorkMemory[LineIndex].RightChopInline(4);
+				ContextPublicData.PreviousWorkMemory[LineIndex].RightChopInline(4);
 			}
-			if (PreviousWorkMemory.Num() == 0 || Line == PreviousWorkMemory[LineIndex])
+			if (ContextPublicData.PreviousWorkMemory.Num() == 0 || (ContextPublicData.PreviousWorkMemory.IsValidIndex(LineIndex) && Line == ContextPublicData.PreviousWorkMemory[LineIndex]))
 			{
 				CurrentWorkMemory.Add(Line);
 			}
@@ -2782,30 +2207,25 @@ bool URigVM::Execute(TArrayView<URigVMMemoryStorage*> Memory, TArrayView<void*> 
 			}
 			++LineIndex;
 		}
-		DebugMemoryString += FString::Join(CurrentWorkMemory, TEXT("\n")) + FString(TEXT("\n\n"));
-		PreviousWorkMemory = CurrentWorkMemory;		
+		ContextPublicData.DebugMemoryString += FString::Join(CurrentWorkMemory, TEXT("\n")) + FString(TEXT("\n\n"));
+		ContextPublicData.PreviousWorkMemory = CurrentWorkMemory;
 #endif
 #endif
 	}
 
-#if WITH_EDITOR
-	if(bIsRootEntry)
-	{
-		if (HaltedAtBreakpoint.IsValid())
-		{
-			DebugInfo->SetCurrentActiveBreakpoint(FRigVMBreakpoint());
-			HaltedAtBreakpoint.Reset();
-			ExecutionHalted().Broadcast(INDEX_NONE, nullptr, InEntryName);
-		}
-	}
-#endif
-
-	return true;
+	return CurrentExecuteResult = ERigVMExecuteResult::Succeeded;
 }
 
 bool URigVM::Execute(const FName& InEntryName)
 {
-	return Execute(TArray<URigVMMemoryStorage*>(), TArrayView<void*>(), InEntryName);
+	return Execute(TArray<URigVMMemoryStorage*>(), InEntryName) != ERigVMExecuteResult::Failed;
+}
+
+ERigVMExecuteResult URigVM::ExecuteLazyBranch(const FRigVMBranchInfo& InBranchToRun)
+{
+	// likely have to optimize this
+	TGuardValue<FRigVMExtendedExecuteContext> ContextGuard(Context, Context);
+	return ExecuteInstructions(InBranchToRun.FirstInstruction, InBranchToRun.LastInstruction);
 }
 
 FRigVMExternalVariable URigVM::GetExternalVariableByName(const FName& InExternalVariableName)
@@ -3062,124 +2482,16 @@ TArray<FString> URigVM::DumpByteCodeAsTextArray(const TArray<int32>& InInstructi
 				ResultLine = TEXT("End Block");
 				break;
 			}
-			case ERigVMOpCode::ArrayReset:
-			{
-				const FRigVMUnaryOp& Op = ByteCode.GetOpAt<FRigVMUnaryOp>(Instructions[InstructionIndex]);
-				ResultLine = FString::Printf(TEXT("Reset array %s"), *GetOperandLabel(Op.Arg, OperandFormatFunction));
-				break;
-			}
-			case ERigVMOpCode::ArrayGetNum:
-			{
-				const FRigVMBinaryOp& Op = ByteCode.GetOpAt<FRigVMBinaryOp>(Instructions[InstructionIndex]);
-				ResultLine = FString::Printf(TEXT("Get size of array %s and assign to %s"), *GetOperandLabel(Op.ArgA, OperandFormatFunction), *GetOperandLabel(Op.ArgB, OperandFormatFunction));
-				break;
-			} 
-			case ERigVMOpCode::ArraySetNum:
-			{
-				const FRigVMBinaryOp& Op = ByteCode.GetOpAt<FRigVMBinaryOp>(Instructions[InstructionIndex]);
-				ResultLine = FString::Printf(TEXT("Set size of array %s to %s"), *GetOperandLabel(Op.ArgA, OperandFormatFunction), *GetOperandLabel(Op.ArgB, OperandFormatFunction));
-				break;
-			}
-			case ERigVMOpCode::ArrayGetAtIndex:
-			{
-				const FRigVMTernaryOp& Op = ByteCode.GetOpAt<FRigVMTernaryOp>(Instructions[InstructionIndex]);
-				ResultLine = FString::Printf(TEXT("Get item of array %s at index %s and assign to %s"), *GetOperandLabel(Op.ArgA, OperandFormatFunction), *GetOperandLabel(Op.ArgB, OperandFormatFunction), *GetOperandLabel(Op.ArgC, OperandFormatFunction));
-				break;
-			}
-			case ERigVMOpCode::ArraySetAtIndex:
-			{
-				const FRigVMTernaryOp& Op = ByteCode.GetOpAt<FRigVMTernaryOp>(Instructions[InstructionIndex]);
-				ResultLine = FString::Printf(TEXT("Set item of array %s at index %s to %s"), *GetOperandLabel(Op.ArgA, OperandFormatFunction), *GetOperandLabel(Op.ArgB, OperandFormatFunction), *GetOperandLabel(Op.ArgC, OperandFormatFunction));
-				break;
-			}
-			case ERigVMOpCode::ArrayAdd:
-			{
-				const FRigVMTernaryOp& Op = ByteCode.GetOpAt<FRigVMTernaryOp>(Instructions[InstructionIndex]);
-				ResultLine = FString::Printf(TEXT("Add element %s to array %s and return index %s"),
-					*GetOperandLabel(Op.ArgB, OperandFormatFunction),
-					*GetOperandLabel(Op.ArgA, OperandFormatFunction),
-					*GetOperandLabel(Op.ArgC, OperandFormatFunction));
-				break;
-			}
-			case ERigVMOpCode::ArrayInsert:
-			{
-				const FRigVMTernaryOp& Op = ByteCode.GetOpAt<FRigVMTernaryOp>(Instructions[InstructionIndex]);
-				ResultLine = FString::Printf(TEXT("Insert element %s to array %s at index %s"), *GetOperandLabel(Op.ArgC, OperandFormatFunction), *GetOperandLabel(Op.ArgA, OperandFormatFunction), *GetOperandLabel(Op.ArgB, OperandFormatFunction));
-				break;
-			}
-			case ERigVMOpCode::ArrayRemove:
-			{
-				const FRigVMBinaryOp& Op = ByteCode.GetOpAt<FRigVMBinaryOp>(Instructions[InstructionIndex]);
-				ResultLine = FString::Printf(TEXT("Remove element at index %s from array %s"), *GetOperandLabel(Op.ArgB, OperandFormatFunction), *GetOperandLabel(Op.ArgA, OperandFormatFunction));
-				break;
-			}
-			case ERigVMOpCode::ArrayFind:
-			{
-				const FRigVMQuaternaryOp& Op = ByteCode.GetOpAt<FRigVMQuaternaryOp>(Instructions[InstructionIndex]);
-				ResultLine = FString::Printf(TEXT("Find element %s in array %s and returns index %s and if element was found %s"),
-					*GetOperandLabel(Op.ArgB, OperandFormatFunction),
-					*GetOperandLabel(Op.ArgA, OperandFormatFunction),
-					*GetOperandLabel(Op.ArgC, OperandFormatFunction),
-					*GetOperandLabel(Op.ArgD, OperandFormatFunction));
-				break;
-			}
-			case ERigVMOpCode::ArrayAppend:
-			{
-				const FRigVMBinaryOp& Op = ByteCode.GetOpAt<FRigVMBinaryOp>(Instructions[InstructionIndex]);
-				ResultLine = FString::Printf(TEXT("Append array %s to array %s"), *GetOperandLabel(Op.ArgB, OperandFormatFunction), *GetOperandLabel(Op.ArgA, OperandFormatFunction));
-				break;
-			}
-			case ERigVMOpCode::ArrayClone:
-			{
-				const FRigVMBinaryOp& Op = ByteCode.GetOpAt<FRigVMBinaryOp>(Instructions[InstructionIndex]);
-				ResultLine = FString::Printf(TEXT("Clone array %s to array %s"), *GetOperandLabel(Op.ArgA, OperandFormatFunction), *GetOperandLabel(Op.ArgB, OperandFormatFunction));
-				break;
-			}
-			case ERigVMOpCode::ArrayIterator:
-			{
-				const FRigVMSenaryOp& Op = ByteCode.GetOpAt<FRigVMSenaryOp>(Instructions[InstructionIndex]);
-				ResultLine = FString::Printf(TEXT("Iterate over array %s, with current element in %s, current index in %s, array count in %s and current ratio in %s"),
-					*GetOperandLabel(Op.ArgA, OperandFormatFunction),
-					*GetOperandLabel(Op.ArgB, OperandFormatFunction),
-					*GetOperandLabel(Op.ArgC, OperandFormatFunction),
-					*GetOperandLabel(Op.ArgD, OperandFormatFunction),
-					*GetOperandLabel(Op.ArgE, OperandFormatFunction));
-				break;
-			}
-			case ERigVMOpCode::ArrayUnion:
-			{
-				const FRigVMBinaryOp& Op = ByteCode.GetOpAt<FRigVMBinaryOp>(Instructions[InstructionIndex]);
-				ResultLine = FString::Printf(TEXT("Merge array %s and array %s"), *GetOperandLabel(Op.ArgA, OperandFormatFunction), *GetOperandLabel(Op.ArgB, OperandFormatFunction));
-				break;
-			}
-			case ERigVMOpCode::ArrayDifference:
-			{
-				const FRigVMTernaryOp& Op = ByteCode.GetOpAt<FRigVMTernaryOp>(Instructions[InstructionIndex]);
-				ResultLine = FString::Printf(TEXT("Create array %s from differences of array %s and array %s"),
-					*GetOperandLabel(Op.ArgC, OperandFormatFunction),
-					*GetOperandLabel(Op.ArgA, OperandFormatFunction),
-					*GetOperandLabel(Op.ArgB, OperandFormatFunction));
-				break;
-			}
-			case ERigVMOpCode::ArrayIntersection:
-			{
-				const FRigVMTernaryOp& Op = ByteCode.GetOpAt<FRigVMTernaryOp>(Instructions[InstructionIndex]);
-				ResultLine = FString::Printf(TEXT("Create array %s from intersection of array %s and array %s"),
-					*GetOperandLabel(Op.ArgC, OperandFormatFunction), 
-					*GetOperandLabel(Op.ArgA, OperandFormatFunction),
-					*GetOperandLabel(Op.ArgB, OperandFormatFunction));
-				break;
-			}
-			case ERigVMOpCode::ArrayReverse:
-			{
-				const FRigVMUnaryOp& Op = ByteCode.GetOpAt<FRigVMUnaryOp>(Instructions[InstructionIndex]);
-				ResultLine = FString::Printf(TEXT("Reverse array %s"), *GetOperandLabel(Op.Arg, OperandFormatFunction));
-				break;
-			}
 			case ERigVMOpCode::InvokeEntry:
 			{
 				const FRigVMInvokeEntryOp& Op = ByteCode.GetOpAt<FRigVMInvokeEntryOp>(Instructions[InstructionIndex]);
 				ResultLine = FString::Printf(TEXT("Invoke entry %s"), *Op.EntryName.ToString());
+				break;
+			}
+			case ERigVMOpCode::JumpToBranch:
+			{
+				const FRigVMJumpToBranchOp& Op = ByteCode.GetOpAt<FRigVMJumpToBranchOp>(Instructions[InstructionIndex]);
+				ResultLine = FString::Printf(TEXT("Jump To Branch %s"), *GetOperandLabel(Op.Arg, OperandFormatFunction));
 				break;
 			}
 			default:
@@ -3209,6 +2521,7 @@ TArray<FString> URigVM::DumpByteCodeAsTextArray(const TArray<int32>& InInstructi
 
 FString URigVM::DumpByteCodeAsText(const TArray<int32>& InInstructionOrder, bool bIncludeLineNumbers)
 {
+	RefreshExternalPropertyPaths();
 	return FString::Join(DumpByteCodeAsTextArray(InInstructionOrder, bIncludeLineNumbers), TEXT("\n"));
 }
 
@@ -3272,7 +2585,7 @@ void URigVM::ClearDebugMemory()
 #endif
 }
 
-void URigVM::CacheSingleMemoryHandle(int32 InHandleIndex, const FRigVMOperand& InArg, bool bForExecute)
+void URigVM::CacheSingleMemoryHandle(int32 InHandleIndex, const FRigVMBranchInfoKey& InBranchInfoKey, const FRigVMOperand& InArg, bool bForExecute)
 {
 	URigVMMemoryStorage* Memory = GetMemoryByType(InArg.GetMemoryType(), false);
 
@@ -3310,11 +2623,23 @@ void URigVM::CacheSingleMemoryHandle(int32 InHandleIndex, const FRigVMOperand& I
 	// is in - so a VM under GetTransientPackage() can be created - but not run.
 	uint8* Data = Memory->GetData<uint8>(InArg.GetRegisterIndex());
 	const FProperty* Property = Memory->GetProperties()[InArg.GetRegisterIndex()];
-	CachedMemoryHandles[InHandleIndex] = {Data, Property, PropertyPath};
+	FRigVMMemoryHandle& Handle = CachedMemoryHandles[InHandleIndex];
+	Handle = {Data, Property, PropertyPath};
+
+	// if we are lazy executing update the handle to point to a lazy branch
+	if(InBranchInfoKey.IsValid())
+	{
+		if(const FRigVMBranchInfo* BranchInfo = GetByteCode().GetBranchInfo(InBranchInfoKey))
+		{
+			FRigVMLazyBranch* LazyBranch = &LazyBranches[BranchInfo->Index];
+			LazyBranch->VM = this;
+			LazyBranch->BranchInfo = *BranchInfo;
+			Handle.LazyBranch = LazyBranch;
+		}
+	}
 
 #if UE_BUILD_DEBUG
 	// make sure the handle points to valid memory
-	FRigVMMemoryHandle& Handle = CachedMemoryHandles[InHandleIndex]; 
 	check(Handle.GetData(false) != nullptr);
 	if(PropertyPath)
 	{
@@ -3412,23 +2737,40 @@ void URigVM::RefreshExternalPropertyPaths()
 	}
 }
 
-void URigVM::CopyArray(FScriptArrayHelper& TargetHelper, FRigVMMemoryHandle& TargetHandle,
-	FScriptArrayHelper& SourceHelper, FRigVMMemoryHandle& SourceHandle)
+void URigVM::SetupInstructionTracking(int32 InInstructionCount)
 {
-	const FArrayProperty* TargetArrayProperty = CastFieldChecked<FArrayProperty>(TargetHandle.GetProperty());
-	const FArrayProperty* SourceArrayProperty = CastFieldChecked<FArrayProperty>(SourceHandle.GetProperty());
+#if WITH_EDITOR
+	InstructionVisitedDuringLastRun.Reset();
+	InstructionVisitOrder.Reset();
+	InstructionVisitedDuringLastRun.SetNumZeroed(InInstructionCount);
+	InstructionCyclesDuringLastRun.Reset();
 
-	TargetHelper.Resize(SourceHelper.Num());
-	if(SourceHelper.Num() > 0)
+	if(Context.GetPublicData<>().RuntimeSettings.bEnableProfiling)
 	{
-		const FProperty* TargetProperty = TargetArrayProperty->Inner;
-		const FProperty* SourceProperty = SourceArrayProperty->Inner;
-		for(int32 ElementIndex = 0; ElementIndex < SourceHelper.Num(); ElementIndex++)
+		InstructionCyclesDuringLastRun.SetNumUninitialized(InInstructionCount);
+		for(int32 DurationIndex=0;DurationIndex<InstructionCyclesDuringLastRun.Num();DurationIndex++)
 		{
-			uint8* TargetMemory = TargetHelper.GetRawPtr(ElementIndex);
-			const uint8* SourceMemory = SourceHelper.GetRawPtr(ElementIndex);
-			URigVMMemoryStorage::CopyProperty(TargetProperty, TargetMemory, SourceProperty, SourceMemory);
+			InstructionCyclesDuringLastRun[DurationIndex] = UINT64_MAX;
 		}
 	}
+#endif
 }
 
+void URigVM::StartProfiling()
+{
+#if WITH_EDITOR
+	OverallCycles = StartCycles = 0;
+	if(Context.GetPublicData<>().RuntimeSettings.bEnableProfiling)
+	{
+		StartCycles = FPlatformTime::Cycles64();
+	}
+#endif
+}
+
+void URigVM::StopProfiling()
+{
+#if WITH_EDITOR
+	const uint64 Cycles = OverallCycles > 0 ? OverallCycles : (FPlatformTime::Cycles64() - StartCycles); 
+	Context.LastExecutionMicroSeconds = Cycles * FPlatformTime::GetSecondsPerCycle() * 1000.0 * 1000.0;
+#endif
+}

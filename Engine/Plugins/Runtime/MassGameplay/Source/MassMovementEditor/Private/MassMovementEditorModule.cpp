@@ -1,10 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MassMovementEditorModule.h"
-#include "Modules/ModuleManager.h"
-#include "Developer/AssetTools/Public/AssetToolsModule.h"
-#include "ToolMenus.h"
+#include "AssetToolsModule.h"
 #include "MassMovementStyleRefDetails.h"
+#include "Modules/ModuleManager.h"
+#include "PropertyEditorModule.h"
+#include "ToolMenus.h"
 
 #define LOCTEXT_NAMESPACE "MassMovementEditor"
 

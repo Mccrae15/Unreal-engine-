@@ -151,7 +151,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// The version number to write
 		/// </summary>
-		public const int CurrentVersion = 33;
+		public const int CurrentVersion = 34;
 
 		/// <summary>
 		/// The time at which the makefile was created
@@ -189,6 +189,11 @@ namespace UnrealBuildTool
 		public DirectoryReference ProjectIntermediateDirectory;
 
 		/// <summary>
+		/// The project intermediate directory without architecture info
+		/// </summary>
+		public DirectoryReference ProjectIntermediateDirectoryNoArch;
+
+		/// <summary>
 		/// Type of the target
 		/// </summary>
 		public TargetType TargetType;
@@ -209,16 +214,6 @@ namespace UnrealBuildTool
 		public bool bDeployAfterCompile;
 
 		/// <summary>
-		/// Whether the project has a script plugin. UHT needs to know this to detect which manifest to use for checking out-of-datedness.
-		/// </summary>
-		public bool bHasProjectScriptPlugin;
-
-		/// <summary>
-		/// If true, there exists script plugins that don't have a matching UBT plugin
-		/// </summary>
-		public bool bHasRequiredProjectScriptPlugin;
-
-		/// <summary>
 		/// Collection of all located UBT C# plugins regardless of if they are in an enabled plugin (project file)
 		/// </summary>
 		public FileReference[]? UbtPlugins;
@@ -232,11 +227,6 @@ namespace UnrealBuildTool
 		/// Collection of UHT C# plugins contained in enabled plugins (target assembly file)
 		/// </summary>
 		public FileReference[]? EnabledUhtPlugins;
-
-		/// <summary>
-		/// Collection of UHT C++ plugins that have no C# version
-		/// </summary>
-		public string[]? RequiredUhtCppPlugins;
 
 		/// <summary>
 		/// The array of command-line arguments. The makefile will be invalidated whenever these change.
@@ -353,17 +343,17 @@ namespace UnrealBuildTool
 		/// <param name="ExecutableFile">Path to the executable or primary output binary for this target</param>
 		/// <param name="ReceiptFile">Path to the receipt file</param>
 		/// <param name="ProjectIntermediateDirectory">Path to the project intermediate directory</param>
+		/// <param name="ProjectIntermediateDirectoryNoArch">Path to the project intermediate directory</param>
 		/// <param name="TargetType">The type of target</param>
 		/// <param name="ConfigValueTracker">Set of dependencies on config files</param>
 		/// <param name="bDeployAfterCompile">Whether to deploy the target after compiling</param>
-		/// <param name="bHasProjectScriptPlugin">Whether the target has a project script plugin</param>
 		/// <param name="UbtPlugins">Collection of UBT plugins</param>
 		/// <param name="EnabledUbtPlugins">Collection of UBT plugins</param>
 		/// <param name="EnabledUhtPlugins">Collection of UBT plugins for UHT</param>
-		/// <param name="RequiredUhtCppPlugins">Collection of required C++ UHT plugins that don't have a C# version</param>
-		public TargetMakefile(string ExternalMetadata, FileReference ExecutableFile, FileReference ReceiptFile, DirectoryReference ProjectIntermediateDirectory, 
-			TargetType TargetType, ConfigValueTracker ConfigValueTracker, bool bDeployAfterCompile, bool bHasProjectScriptPlugin,
-			FileReference[]? UbtPlugins, FileReference[]? EnabledUbtPlugins, FileReference[]? EnabledUhtPlugins, string[]? RequiredUhtCppPlugins)
+		public TargetMakefile(string ExternalMetadata, FileReference ExecutableFile, FileReference ReceiptFile, 
+			DirectoryReference ProjectIntermediateDirectory, DirectoryReference ProjectIntermediateDirectoryNoArch,
+			TargetType TargetType, ConfigValueTracker ConfigValueTracker, bool bDeployAfterCompile, 
+			FileReference[]? UbtPlugins, FileReference[]? EnabledUbtPlugins, FileReference[]? EnabledUhtPlugins)
 		{
 			this.CreateTimeUtc = UnrealBuildTool.StartTimeUtc;
 			this.ModifiedTimeUtc = CreateTimeUtc;
@@ -372,14 +362,13 @@ namespace UnrealBuildTool
 			this.ExecutableFile = ExecutableFile;
 			this.ReceiptFile = ReceiptFile;
 			this.ProjectIntermediateDirectory = ProjectIntermediateDirectory;
+			this.ProjectIntermediateDirectoryNoArch = ProjectIntermediateDirectoryNoArch;
 			this.TargetType = TargetType;
 			this.ConfigValueTracker = ConfigValueTracker;
 			this.bDeployAfterCompile = bDeployAfterCompile;
-			this.bHasProjectScriptPlugin = bHasProjectScriptPlugin;
 			this.UbtPlugins = UbtPlugins;
 			this.EnabledUbtPlugins = EnabledUbtPlugins;
 			this.EnabledUhtPlugins = EnabledUhtPlugins;
-			this.RequiredUhtCppPlugins = RequiredUhtCppPlugins;
 			this.Actions = new List<IExternalAction>();
 			this.OutputItems = new List<FileItem>();
 			this.ModuleNameToOutputItems = new Dictionary<string, FileItem[]>(StringComparer.OrdinalIgnoreCase);
@@ -412,15 +401,14 @@ namespace UnrealBuildTool
 			ExecutableFile = Reader.ReadFileReference();
 			ReceiptFile = Reader.ReadFileReference();
 			ProjectIntermediateDirectory = Reader.ReadDirectoryReferenceNotNull();
+			ProjectIntermediateDirectoryNoArch = Reader.ReadDirectoryReferenceNotNull();
 			TargetType = (TargetType)Reader.ReadInt();
 			IsTestTarget = Reader.ReadBool();
 			ConfigValueTracker = new ConfigValueTracker(Reader);
 			bDeployAfterCompile = Reader.ReadBool();
-			bHasProjectScriptPlugin = Reader.ReadBool();
 			UbtPlugins = Reader.ReadArray(() => Reader.ReadFileReference())!;
 			EnabledUbtPlugins = Reader.ReadArray(() => Reader.ReadFileReference())!;
 			EnabledUhtPlugins = Reader.ReadArray(() => Reader.ReadFileReference())!;
-			RequiredUhtCppPlugins = Reader.ReadArray(() => Reader.ReadString())!;
 			AdditionalArguments = Reader.ReadArray(() => Reader.ReadString())!;
 			UHTAdditionalArguments = Reader.ReadArray(() => Reader.ReadString())!;
 			PreBuildScripts = Reader.ReadArray(() => Reader.ReadFileReference())!;
@@ -457,15 +445,14 @@ namespace UnrealBuildTool
 			Writer.WriteFileReference(ExecutableFile);
 			Writer.WriteFileReference(ReceiptFile);
 			Writer.WriteDirectoryReference(ProjectIntermediateDirectory);
+			Writer.WriteDirectoryReference(ProjectIntermediateDirectoryNoArch);
 			Writer.WriteInt((int)TargetType);
 			Writer.WriteBool(IsTestTarget);
 			ConfigValueTracker.Write(Writer);
 			Writer.WriteBool(bDeployAfterCompile);
-			Writer.WriteBool(bHasProjectScriptPlugin);
 			Writer.WriteArray(UbtPlugins, Item => Writer.WriteFileReference(Item));
 			Writer.WriteArray(EnabledUbtPlugins, Item => Writer.WriteFileReference(Item));
 			Writer.WriteArray(EnabledUhtPlugins, Item => Writer.WriteFileReference(Item));
-			Writer.WriteArray(RequiredUhtCppPlugins, Item => Writer.WriteString(Item));
 			Writer.WriteArray(AdditionalArguments, Item => Writer.WriteString(Item));
 			Writer.WriteArray(UHTAdditionalArguments, Item => Writer.WriteString(Item));
 			Writer.WriteArray(PreBuildScripts, Item => Writer.WriteFileReference(Item));
@@ -629,6 +616,8 @@ namespace UnrealBuildTool
 				// Check if the arguments are different
 				if(!Enumerable.SequenceEqual(Makefile.AdditionalArguments!, Arguments))
 				{
+					Logger.LogDebug("Old command line arguments:\n", string.Join(' ', Makefile.AdditionalArguments!));
+					Logger.LogDebug("New command line arguments:\n", string.Join(' ', Arguments));
 					ReasonNotLoaded = "command line arguments changed";
 					return null;
 				}
@@ -916,13 +905,18 @@ namespace UnrealBuildTool
 		/// <param name="ProjectFile">Project file for the build</param>
 		/// <param name="TargetName">Name of the target being built</param>
 		/// <param name="Platform">The platform that the target is being built for</param>
-		/// <param name="Architecture">The architecture the target is being built for (can be blank to signify a default)</param>
+		/// <param name="Architectures">The architectures the target is being built for (can be blank to signify a default)</param>
 		/// <param name="Configuration">The configuration being built</param>
 		/// <returns>Path to the makefile</returns>
-		public static FileReference GetLocation(FileReference? ProjectFile, string TargetName, UnrealTargetPlatform Platform, string Architecture, UnrealTargetConfiguration Configuration)
+		public static FileReference GetLocation(FileReference? ProjectFile, string TargetName, UnrealTargetPlatform Platform, UnrealArchitectures Architectures, UnrealTargetConfiguration Configuration)
 		{
-			DirectoryReference BaseDirectory = DirectoryReference.FromFile(ProjectFile) ?? Unreal.EngineDirectory;
-			return FileReference.Combine(BaseDirectory, UEBuildTarget.GetPlatformIntermediateFolder(Platform, Architecture, false), TargetName, Configuration.ToString(), "Makefile.bin");
+			DirectoryReference BaseDirectory = Unreal.EngineDirectory;
+			// Programs with .uprojects still want the Intermediate under Engine (see UEBuildTarget constructor for similar code) 
+			if (ProjectFile != null && !ProjectFile.ContainsName("Programs", 0))
+			{
+				BaseDirectory = ProjectFile.Directory;
+			}
+			return FileReference.Combine(BaseDirectory, UEBuildTarget.GetPlatformIntermediateFolder(Platform, Architectures, false), TargetName, Configuration.ToString(), "Makefile.bin");
 		}
 	}
 }

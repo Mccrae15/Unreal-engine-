@@ -24,7 +24,8 @@ int32 GNaniteExportDepth = 1;
 static FAutoConsoleVariableRef CVarNaniteExportDepth(
 	TEXT("r.Nanite.ExportDepth"),
 	GNaniteExportDepth,
-	TEXT("")
+	TEXT(""),
+	ECVF_RenderThreadSafe
 );
 
 int32 GNaniteMaxNodes = 2 * 1048576;
@@ -32,7 +33,7 @@ FAutoConsoleVariableRef CVarNaniteMaxNodes(
 	TEXT("r.Nanite.MaxNodes"),
 	GNaniteMaxNodes,
 	TEXT("Maximum number of Nanite nodes traversed during a culling pass."),
-	ECVF_ReadOnly
+	ECVF_RenderThreadSafe
 );
 
 int32 GNaniteMaxCandidateClusters = 16 * 1048576;
@@ -40,7 +41,7 @@ FAutoConsoleVariableRef CVarNaniteMaxCandidateClusters(
 	TEXT("r.Nanite.MaxCandidateClusters"),
 	GNaniteMaxCandidateClusters,
 	TEXT("Maximum number of Nanite clusters before cluster culling."),
-	ECVF_ReadOnly
+	ECVF_RenderThreadSafe
 );
 
 int32 GNaniteMaxVisibleClusters = 4 * 1048576;
@@ -48,7 +49,7 @@ FAutoConsoleVariableRef CVarNaniteMaxVisibleClusters(
 	TEXT("r.Nanite.MaxVisibleClusters"),
 	GNaniteMaxVisibleClusters,
 	TEXT("Maximum number of visible Nanite clusters."),
-	ECVF_ReadOnly
+	ECVF_RenderThreadSafe
 );
 
 #define MAX_CLUSTERS	(16 * 1024 * 1024)
@@ -57,12 +58,12 @@ FAutoConsoleVariableRef CVarNaniteMaxVisibleClusters(
 namespace Nanite
 {
 
-void FPackedView::UpdateLODScales()
+void FPackedView::UpdateLODScales(const float NaniteMaxPixelsPerEdge, const float MinPixelsPerEdgeHW)
 {
 	const float ViewToPixels = 0.5f * ViewToClip.M[1][1] * ViewSizeAndInvSize.Y;
 
-	const float LODScale = ViewToPixels / GNaniteMaxPixelsPerEdge;
-	const float LODScaleHW = ViewToPixels / GNaniteMinPixelsPerEdgeHW;
+	const float LODScale = ViewToPixels / NaniteMaxPixelsPerEdge;
+	const float LODScaleHW = ViewToPixels / MinPixelsPerEdgeHW;
 
 	LODScales = FVector2f(LODScale, LODScaleHW);
 }
@@ -92,26 +93,34 @@ FPackedView CreatePackedView( const FPackedViewParams& Params )
 	const FIntRect& ViewRect = Params.ViewRect;
 	const FVector4f ViewSizeAndInvSize(ViewRect.Width(), ViewRect.Height(), 1.0f / float(ViewRect.Width()), 1.0f / float(ViewRect.Height()));
 
+	const float NaniteMaxPixelsPerEdge = GNaniteMaxPixelsPerEdge * Params.MaxPixelsPerEdgeMultipler;
+	const float NaniteMinPixelsPerEdgeHW = GNaniteMinPixelsPerEdgeHW;
+	const FVector3f ViewTilePosition = AbsoluteViewOrigin.GetTile();
+	const FVector DrawDistanceOrigin = Params.bOverrideDrawDistanceOrigin ? Params.DrawDistanceOrigin : Params.ViewMatrices.GetViewOrigin();
+
 	FPackedView PackedView;
 	PackedView.TranslatedWorldToView		= FMatrix44f(Params.ViewMatrices.GetOverriddenTranslatedViewMatrix());	// LWC_TODO: Precision loss? (and below)
 	PackedView.TranslatedWorldToClip		= FMatrix44f(Params.ViewMatrices.GetTranslatedViewProjectionMatrix());
 	PackedView.TranslatedWorldToSubpixelClip= FPackedView::CalcTranslatedWorldToSubpixelClip(PackedView.TranslatedWorldToClip, Params.ViewRect);
 	PackedView.ViewToClip					= RelativeMatrices.ViewToClip;
 	PackedView.ClipToRelativeWorld			= RelativeMatrices.ClipToRelativeWorld;
-	PackedView.PreViewTranslation			= FVector4f(FVector3f(Params.ViewMatrices.GetPreViewTranslation() + ViewTileOffset)); // LWC_TODO: precision loss
-	PackedView.WorldCameraOrigin			= FVector4f(FVector3f(Params.ViewMatrices.GetViewOrigin() - ViewTileOffset), 0.0f);
-	PackedView.ViewForwardAndNearPlane		= FVector4f((FVector3f)Params.ViewMatrices.GetOverriddenTranslatedViewMatrix().GetColumn(2), Params.ViewMatrices.ComputeNearPlane());
-	PackedView.ViewTilePosition				= AbsoluteViewOrigin.GetTile();
+	PackedView.RelativePreViewTranslation	= FVector3f(Params.ViewMatrices.GetPreViewTranslation() + ViewTileOffset);
+	PackedView.RelativeWorldCameraOrigin	= FVector3f(Params.ViewMatrices.GetViewOrigin() - ViewTileOffset);
+	PackedView.DrawDistanceOriginTranslatedWorld = FVector3f(DrawDistanceOrigin + Params.ViewMatrices.GetPreViewTranslation());
+	PackedView.ViewForward					= (FVector3f)Params.ViewMatrices.GetOverriddenTranslatedViewMatrix().GetColumn(2);
+	PackedView.NearPlane					= Params.ViewMatrices.ComputeNearPlane();
+	PackedView.ViewTilePositionX			= ViewTilePosition.X;
+	PackedView.ViewTilePositionY			= ViewTilePosition.Y;
+	PackedView.ViewTilePositionZ			= ViewTilePosition.Z;
 	PackedView.RangeBasedCullingDistance	= Params.RangeBasedCullingDistance;
 	PackedView.MatrixTilePosition			= RelativeMatrices.TilePosition;
 	PackedView.Padding1						= 0u;
 
-	PackedView.PrevTranslatedWorldToView	= FMatrix44f(Params.PrevViewMatrices.GetOverriddenTranslatedViewMatrix()); // LWC_TODO: Precision loss? (and below)
-	PackedView.PrevTranslatedWorldToClip	= FMatrix44f(Params.PrevViewMatrices.GetTranslatedViewProjectionMatrix());
-	PackedView.PrevViewToClip				= FMatrix44f(Params.PrevViewMatrices.GetProjectionMatrix());
-	PackedView.PrevClipToRelativeWorld		= RelativeMatrices.PrevClipToRelativeWorld;
-	PackedView.PrevPreViewTranslation		= FVector4f(FVector3f(Params.PrevViewMatrices.GetPreViewTranslation() + ViewTileOffset)); // LWC_TODO: precision loss
-
+	PackedView.PrevTranslatedWorldToView		= FMatrix44f(Params.PrevViewMatrices.GetOverriddenTranslatedViewMatrix()); // LWC_TODO: Precision loss? (and below)
+	PackedView.PrevTranslatedWorldToClip		= FMatrix44f(Params.PrevViewMatrices.GetTranslatedViewProjectionMatrix());
+	PackedView.PrevViewToClip					= FMatrix44f(Params.PrevViewMatrices.GetProjectionMatrix());
+	PackedView.PrevClipToRelativeWorld			= RelativeMatrices.PrevClipToRelativeWorld;
+	PackedView.RelativePrevPreViewTranslation	= FVector3f(Params.PrevViewMatrices.GetPreViewTranslation() + ViewTileOffset);
 
 	PackedView.ViewRect = FIntVector4(ViewRect.Min.X, ViewRect.Min.Y, ViewRect.Max.X, ViewRect.Max.Y);
 	PackedView.ViewSizeAndInvSize = ViewSizeAndInvSize;
@@ -138,7 +147,7 @@ FPackedView CreatePackedView( const FPackedViewParams& Params )
 	check(Params.StreamingPriorityCategory <= NANITE_STREAMING_PRIORITY_CATEGORY_MASK);
 	PackedView.StreamingPriorityCategory_AndFlags = (Params.Flags << NANITE_NUM_STREAMING_PRIORITY_CATEGORY_BITS) | Params.StreamingPriorityCategory;
 	PackedView.MinBoundsRadiusSq = Params.MinBoundsRadius * Params.MinBoundsRadius;
-	PackedView.UpdateLODScales();
+	PackedView.UpdateLODScales(NaniteMaxPixelsPerEdge, NaniteMinPixelsPerEdgeHW);
 
 	PackedView.LODScales.X *= Params.LODScaleFactor;
 
@@ -148,6 +157,9 @@ FPackedView CreatePackedView( const FPackedViewParams& Params )
 	PackedView.TargetLayerIdX_AndMipLevelY_AndNumMipLevelsZ.W = Params.PrevTargetLayerIndex;
 
 	PackedView.HZBTestViewRect = FIntVector4(Params.HZBTestViewRect.Min.X, Params.HZBTestViewRect.Min.Y, Params.HZBTestViewRect.Max.X, Params.HZBTestViewRect.Max.Y);
+
+	FPlane TranslatedPlane(Params.GlobalClippingPlane.TranslateBy(Params.ViewMatrices.GetPreViewTranslation()));
+	PackedView.TranslatedGlobalClipPlane = FVector4f(TranslatedPlane.X, TranslatedPlane.Y, TranslatedPlane.Z, -TranslatedPlane.W);
 
 	return PackedView;
 
@@ -161,6 +173,7 @@ FPackedView CreatePackedViewFromViewInfo
 	uint32 StreamingPriorityCategory,
 	float MinBoundsRadius,
 	float LODScaleFactor,
+	float MaxPixelsPerEdgeMultipler,
 	const FIntRect* InHZBTestViewRect
 )
 {
@@ -169,12 +182,14 @@ FPackedView CreatePackedViewFromViewInfo
 	Params.PrevViewMatrices = View.PrevViewInfo.ViewMatrices;
 	Params.ViewRect = View.ViewRect;
 	Params.RasterContextSize = RasterContextSize;
-	Params.Flags = Flags;
+	Params.Flags = Flags | (View.bReverseCulling ? NANITE_VIEW_FLAG_REVERSE_CULLING : 0);
 	Params.StreamingPriorityCategory = StreamingPriorityCategory;
 	Params.MinBoundsRadius = MinBoundsRadius;
 	Params.LODScaleFactor = LODScaleFactor;
 	// Note - it is incorrect to use ViewRect as it is in a different space, but keeping this for backward compatibility reasons with other callers
 	Params.HZBTestViewRect = InHZBTestViewRect ? *InHZBTestViewRect : View.PrevViewInfo.ViewRect;
+	Params.MaxPixelsPerEdgeMultipler = MaxPixelsPerEdgeMultipler;
+	Params.GlobalClippingPlane = View.GlobalClippingPlane;
 	return CreatePackedView(Params);
 }
 
@@ -210,7 +225,7 @@ void FGlobalResources::ReleaseRHI()
 		MainPassBuffers.StatsRasterizeArgsSWHWBuffer.SafeRelease();
 		PostPassBuffers.StatsRasterizeArgsSWHWBuffer.SafeRelease();
 
-		MainAndPostNodesAndClusterBatchesBuffer.SafeRelease();
+		MainAndPostNodesAndClusterBatchesBuffer.Buffer.SafeRelease();
 
 		StatsBuffer.SafeRelease();
 

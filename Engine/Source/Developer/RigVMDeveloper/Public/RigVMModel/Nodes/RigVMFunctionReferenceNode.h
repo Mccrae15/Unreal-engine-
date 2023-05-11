@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "RigVMCore/RigVMGraphFunctionDefinition.h"
 #include "RigVMModel/RigVMGraph.h"
 #include "RigVMModel/Nodes/RigVMLibraryNode.h"
 #include "RigVMFunctionReferenceNode.generated.h"
@@ -28,13 +29,14 @@ public:
 	// URigVMLibraryNode interface
 	virtual FString GetNodeCategory() const override;
 	virtual FString GetNodeKeywords() const override;
-	virtual URigVMFunctionLibrary* GetLibrary() const override;
-	virtual URigVMGraph* GetContainedGraph() const override;
 	virtual TArray<FRigVMExternalVariable> GetExternalVariables() const override;
-	virtual const FRigVMTemplate* GetTemplate() const override;
+	virtual const FRigVMTemplate* GetTemplate() const override { return nullptr; }
+	virtual FRigVMGraphFunctionIdentifier GetFunctionIdentifier() const override;
 	// end URigVMLibraryNode interface
 
-	URigVMLibraryNode* GetReferencedNode() const;
+	bool IsReferencedFunctionHostLoaded() const;
+	bool IsReferencedNodeLoaded() const;
+	URigVMLibraryNode* LoadReferencedNode() const;
 
 	// Variable remapping
 	bool RequiresVariableRemapping() const;
@@ -44,15 +46,23 @@ public:
 	FName GetOuterVariableName(const FName& InInnerVariableName) const;
 	// end Variable remapping
 
+	const FRigVMGraphFunctionHeader& GetReferencedFunctionHeader() const { return ReferencedFunctionHeader; }
+
+	const FRigVMGraphFunctionData* GetReferencedFunctionData() const;
+
+	
 private:
 
 	virtual FText GetToolTipTextForPin(const URigVMPin* InPin) const override;
 	bool RequiresVariableRemappingInternal(TArray<FRigVMExternalVariable>& InnerVariables) const;
 
-	void SetReferencedNode(URigVMLibraryNode* InReferenceNode);
+	//void SetReferencedFunctionData(FRigVMGraphFunctionData* Data);
 
 	UPROPERTY(AssetRegistrySearchable)
-	mutable TSoftObjectPtr<URigVMLibraryNode> ReferencedNodePtr;
+	FRigVMGraphFunctionHeader ReferencedFunctionHeader;
+	
+	UPROPERTY(AssetRegistrySearchable, meta=(DeprecatedProperty=5.2))
+	TSoftObjectPtr<URigVMLibraryNode> ReferencedNodePtr_DEPRECATED;
 
 	UPROPERTY()
 	TMap<FName, FName> VariableMap;
@@ -60,5 +70,7 @@ private:
 	friend class URigVMController;
 	friend class FRigVMParserAST;
 	friend class UControlRigBlueprint;
+	friend struct FRigVMClient;
+	friend struct EngineTestRigVMFramework;
 };
 

@@ -3,13 +3,11 @@
 #include "HLODBuilderMeshSimplify.h"
 
 #include "Algo/ForEach.h"
-#include "Algo/Transform.h"
+#include "Engine/Engine.h"
 #include "Engine/StaticMesh.h"
 #include "Materials/Material.h"
 #include "Components/StaticMeshComponent.h"
 
-#include "WorldPartition/HLOD/HLODActor.h"
-#include "WorldPartition/HLOD/HLODLayer.h"
 
 #include "IMeshMergeUtilities.h"
 #include "MeshMergeModule.h"
@@ -17,6 +15,7 @@
 
 #include "Materials/Material.h"
 #include "Engine/HLODProxy.h"
+#include "SceneManagement.h"
 #include "Serialization/ArchiveCrc32.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(HLODBuilderMeshSimplify)
@@ -78,7 +77,7 @@ TArray<UActorComponent*> UHLODBuilderMeshSimplify::Build(const FHLODBuildContext
 	FMeshProxySettings UseSettings = MeshSimplifySettings->MeshSimplifySettings; // Make a copy as we may tweak some values
 	UMaterialInterface* HLODMaterial = MeshSimplifySettings->HLODMaterial.LoadSynchronous();
 
-	// When using automatic textuse sizing based on draw distance, use the MinVisibleDistance for this HLOD.
+	// When using automatic texture sizing based on draw distance, use the MinVisibleDistance for this HLOD.
 	if (UseSettings.MaterialSettings.TextureSizingType == TextureSizingType_AutomaticFromMeshDrawDistance)
 	{
 		UseSettings.MaterialSettings.MeshMinDrawDistance = InHLODBuildContext.MinVisibleDistance;
@@ -109,8 +108,8 @@ TArray<UActorComponent*> UHLODBuilderMeshSimplify::Build(const FHLODBuildContext
 		return Bounds;
 	};
 
-	float ScreenSizePercent = ComputeBoundsScreenSize(FVector::ZeroVector, GetComponentsBounds().SphereRadius, FVector(0.0f, 0.0f, InHLODBuildContext.MinVisibleDistance), ProjectionMatrix);
-	UseSettings.ScreenSize = ScreenSizePercent * ScreenX;
+	float ScreenSizePercent = ComputeBoundsScreenSize(FVector::ZeroVector, static_cast<float>(GetComponentsBounds().SphereRadius), FVector(0.0f, 0.0f, InHLODBuildContext.MinVisibleDistance), ProjectionMatrix);
+	UseSettings.ScreenSize = FMath::RoundToInt(ScreenSizePercent * ScreenX);
 
 	TArray<UObject*> Assets;
 	FCreateProxyDelegate ProxyDelegate;

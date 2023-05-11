@@ -4,6 +4,7 @@
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
 #include "Misc/Guid.h"
+#include "UObject/Package.h"
 #include "UObject/UObjectHash.h"
 #include "Serialization/ArchiveUObject.h"
 #include "Internationalization/TextNamespaceUtil.h"
@@ -209,7 +210,7 @@ int32 UStabilizeLocalizationKeysCommandlet::Main(const FString& Params)
 		FText SCCErrorStr;
 		if (!SourceControlInfo->IsReady(SCCErrorStr))
 		{
-			UE_LOG(LogStabilizeLocalizationKeys, Error, TEXT("Source Control error: %s"), *SCCErrorStr.ToString());
+			UE_LOG(LogStabilizeLocalizationKeys, Error, TEXT("Revision Control error: %s"), *SCCErrorStr.ToString());
 			return -1;
 		}
 	}

@@ -8,7 +8,10 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "Engine/EngineTypes.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "Engine/SkeletalMesh.h"
+#include "Rendering/MorphTargetVertexInfoBuffers.h"
+#endif
 #include "Components/SceneComponent.h"
 #include "Interfaces/Interface_AsyncCompilation.h"
 #include "Engine/TextureStreamingTypes.h"
@@ -16,11 +19,11 @@
 #include "Containers/SortedMap.h"
 #include "LODSyncInterface.h"
 #include "BoneContainer.h"
-#include "Rendering/MorphTargetVertexInfoBuffers.h"
+#include "ClothingSystemRuntimeTypes.h"
 #include "SkinnedMeshComponent.generated.h"
 
 enum class ESkinCacheUsage : uint8;
-
+enum class EPreviousBoneTransformUpdateMode;
 class FPrimitiveSceneProxy;
 class FColorVertexBuffer;
 class FSkinWeightVertexBuffer;
@@ -31,7 +34,10 @@ class FPositionVertexBuffer;
 class UMeshDeformer;
 class UMeshDeformerInstance;
 class UMeshDeformerInstanceSettings;
+class UMorphTarget;
 class USkinnedAsset;
+struct FExternalMorphSet;
+struct FExternalMorphWeightData;
 
 DECLARE_DELEGATE_OneParam(FOnAnimUpdateRateParamsCreated, FAnimUpdateRateParameters*)
 DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnTickPose, USkinnedMeshComponent* /*SkinnedMeshComponent*/, float /*DeltaTime*/, bool /*bNeedsValidRootMotion*/)
@@ -42,7 +48,7 @@ DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnTickPose, USkinnedMeshComponent* /*Ski
 
 /** The valid BoneVisibilityStates values; A bone is only visible if it is *exactly* 1 */
 UENUM()
-enum EBoneVisibilityStatus
+enum EBoneVisibilityStatus : int
 {
 	/** Bone is hidden because it's parent is hidden. */
 	BVS_HiddenByParent,
@@ -55,7 +61,7 @@ enum EBoneVisibilityStatus
 
 /** PhysicsBody options when bone is hidden */
 UENUM()
-enum EPhysBodyOp
+enum EPhysBodyOp : int
 {
 	/** Don't do anything. */
 	PBO_None,
@@ -101,7 +107,7 @@ namespace EMeshComponentUpdateFlag
 UENUM()
 namespace EBoneSpaces
 {
-	enum Type
+	enum Type : int
 	{
 		/** Set absolute position of bone in world space. */
 		WorldSpace		UMETA(DisplayName = "World Space"),
@@ -114,60 +120,6 @@ namespace EBoneSpaces
 
 /** WeightIndex is an into the MorphTargetWeights array */
 using FMorphTargetWeightMap = TMap<const UMorphTarget* /* MorphTarget */, int32 /* WeightIndex */>;
-
-/** An external morph target set. External morph targets are managed by systems outside of the skinned meshes. */
-struct ENGINE_API FExternalMorphSet
-{
-	/** A name for this set, useful for debugging. */
-	FName Name = FName(TEXT("Unknown"));
-
-	/** The GPU compressed morph buffers. */
-	FMorphTargetVertexInfoBuffers MorphBuffers;
-};
-
-/** The map of external morph sets registered on the skinned mesh component. */
-using FExternalMorphSets = TMap<int32, TSharedPtr<FExternalMorphSet>>;
-
-/** The weight data for a specific external morph set. */
-struct ENGINE_API FExternalMorphSetWeights
-{
-	/** Update the number of active morph targets. */
-	void UpdateNumActiveMorphTargets();
-
-	/** Set all weights to 0. Optionally set the NumActiveMorphTargets to zero as well. */
-	void ZeroWeights(bool bZeroNumActiveMorphTargets=true);
-
-	/** The debug name. */
-	FName Name = FName(TEXT("Unknown ExternalMorphSetWeights"));
-
-	/** The weights, which can also be negative and go beyond 1.0 or -1.0. */
-	TArray<float> Weights;
-
-	/** The number of active morph targets. */
-	int32 NumActiveMorphTargets = 0;
-
-	/** The treshold used to determine if a morph target is active or not. Any weight equal to or above this value is seen as active morph target. */
-	float ActiveWeightThreshold = 0.001f;
-};
-
-/** The morph target weight data for all external morph target sets. */
-struct ENGINE_API FExternalMorphWeightData
-{
-	/** Update the number of active morph targets for all sets. */
-	void UpdateNumActiveMorphTargets();
-
-	/** Reset the morph target sets. */
-	void Reset() { MorphSets.Reset(); NumActiveMorphTargets = 0; }
-
-	/** Check if we have active morph targets or not. */
-	bool HasActiveMorphs() const { return (NumActiveMorphTargets > 0); }
-
-	/** The map with a collection of morph sets. Each set can contains multiple morph targets. */
-	TMap<int32, FExternalMorphSetWeights> MorphSets;
-
-	/** The number of active morph targets. */
-	int32 NumActiveMorphTargets = 0;
-};
 
 /** Vertex skin weight info supplied for a component override. */
 USTRUCT(BlueprintType, meta = (HasNativeMake = "/Script/Engine.KismetRenderingLibrary.MakeSkinWeightInfo", HasNativeBreak = "/Script/Engine.KismetRenderingLibrary.BreakSkinWeightInfo"))
@@ -207,12 +159,14 @@ struct ENGINE_API FSkelMeshComponentLODInfo
 
 	void ReleaseOverrideVertexColorsAndBlock();
 	void BeginReleaseOverrideVertexColors();
+	void EndReleaseOverrideVertexColors();
 private:
 	void CleanUpOverrideVertexColors();
 
 public:
 	void ReleaseOverrideSkinWeightsAndBlock();
 	void BeginReleaseOverrideSkinWeights();
+	void EndReleaseOverrideSkinWeights();
 private:
 	void CleanUpOverrideSkinWeights();
 };
@@ -226,6 +180,9 @@ struct FVertexOffsetUsage
 	UPROPERTY(EditAnywhere, Category = "Mesh", meta = (Bitmask, BitmaskEnum = "/Script/Engine.EVertexOffsetUsageType"))
 	int32 Usage = 0;
 };
+
+/** The map of external morph sets registered on the skinned mesh component. */
+using FExternalMorphSets = TMap<int32, TSharedPtr<FExternalMorphSet>>;
 
 /**
  *
@@ -254,6 +211,9 @@ private:
 	TObjectPtr<class USkinnedAsset> SkinnedAsset;
 
 public:
+	USkinnedMeshComponent(FVTableHelper& Helper);
+	~USkinnedMeshComponent();
+
 	//
 	// LeaderPoseComponent.
 	//
@@ -286,6 +246,9 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Deformer", meta = (editcondition = "bSetMeshDeformer"))
 	TObjectPtr<UMeshDeformer> MeshDeformer;
 
+	/** Set the MeshDeformer and update the internal MeshDeformerInstance. */
+	void SetMeshDeformer(bool bInSetMeshDeformer, UMeshDeformer* InMeshDeformer);
+
 	/** Get the currently active MeshDeformer. This may come from the SkeletalMesh default or the Component override. */
 	UMeshDeformer* GetActiveMeshDeformer() const;
 
@@ -294,12 +257,15 @@ protected:
 	TObjectPtr<UMeshDeformerInstanceSettings> MeshDeformerInstanceSettings;
 
 	/** Object containing state for the bound MeshDeformer. */
-	UPROPERTY(Transient, BlueprintReadOnly, Category = "Deformer")
+	UPROPERTY(Transient, BlueprintReadOnly, BlueprintGetter = GetMeshDeformerInstance, Category = "Deformer")
 	TObjectPtr<UMeshDeformerInstance> MeshDeformerInstance;
 
 public:
-	/** Get the currently active MeshDeformer Instance. */
-	UMeshDeformerInstance const* GetMeshDeformerInstance() const { return MeshDeformerInstance; }
+	UFUNCTION(BlueprintGetter)
+	UMeshDeformerInstance* GetMeshDeformerInstance() const { return MeshDeformerInstance; }
+
+	/** Max LOD at which to update or apply the MeshDeformer. */
+	int32 GetMeshDeformerMaxLOD() const;
 
 	/** const getters for previous transform idea */
 	const TArray<uint8>& GetPreviousBoneVisibilityStates() const
@@ -325,6 +291,16 @@ public:
 	void ForceMotionVector();
 
 private:
+	EPreviousBoneTransformUpdateMode UpdateBoneTransformRevisionNumber();
+
+	enum class EBoneTransformUpdateMethod
+	{
+		AnimationUpdate,
+		ClearMotionVector,
+		ForceMotionVector
+	};
+	TArray<EBoneTransformUpdateMethod> BoneTransformUpdateMethodQueue;
+
 	/** Temporary array of of component-space bone matrices, update each frame and used for rendering the mesh. */
 	TArray<FTransform> ComponentSpaceTransformsArray[2];
 
@@ -424,10 +400,10 @@ public:
 	const TArray<int32>& GetMasterBoneMap() const { return GetLeaderBoneMap(); }
 
 	/** Get the weights in read-only mode for a given external morph target set at a specific LOD. */
-	const FExternalMorphWeightData& GetExternalMorphWeights(int32 LOD) const { return ExternalMorphWeightData[LOD]; }
+	const FExternalMorphWeightData& GetExternalMorphWeights(int32 LOD) const;
 
 	/** Get the weights for a given external morph target set at a specific LOD. */
-	FExternalMorphWeightData& GetExternalMorphWeights(int32 LOD) { return ExternalMorphWeightData[LOD]; }
+	FExternalMorphWeightData& GetExternalMorphWeights(int32 LOD);
 
 	/**
 	 * Register an external set of GPU compressed morph targets.
@@ -447,6 +423,9 @@ public:
 
 	/** Do we have a given set of external morph targets? */
 	bool HasExternalMorphSet(int32 LOD, int32 ID) const;
+
+	/** Check whether a given LOD index is valid for the external morph sets. */
+	bool IsValidExternalMorphSetLODIndex(int32 LOD) const;
 
 	/** Get the external morph sets for a given LOD. */
 	const FExternalMorphSets& GetExternalMorphSets(int32 LOD) const { return ExternalMorphSets[LOD]; }
@@ -625,9 +604,11 @@ public:
 	UPROPERTY()
 	uint8 bForceWireframe:1;
 
+#if WITH_EDITORONLY_DATA
 	/** Draw the skeleton hierarchy for this skel mesh. */
 	UPROPERTY()
 	uint8 bDisplayBones_DEPRECATED:1;
+#endif
 
 	/** Disable Morphtarget for this component. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category = SkeletalMesh)
@@ -731,13 +712,18 @@ protected:
 	/** Whether we have updated bone visibility this tick */
 	uint8 bBoneVisibilityDirty:1;
 
-	/** Whether mesh deformer state is dirty and will need updating at the next tick. */
-	uint8 bUpdateDeformerAtNextTick : 1;
-
 private:
 	/** If true, UpdateTransform will always result in a call to MeshObject->Update. */
 	UPROPERTY(transient)
 	uint8 bForceMeshObjectUpdate:1;
+
+	/**
+	   Whether to update dynamic bone & cloth sim data immediately, not to wait until GDME or defer update to RHIThread.
+	   When set to true, it is the equivalent of r.DeferSkeletalDynamicDataUpdateUntilGDME=0 and r.RHICmdDeferSkeletalLockAndFillToRHIThread=0.
+	   When set to false, r.DeferSkeletalDynamicDataUpdateUntilGDME and r.RHICmdDeferSkeletalLockAndFillToRHIThread values are respected.
+	 */
+	UPROPERTY(transient)
+	uint8 bForceUpdateDynamicDataImmediately : 1;
 
 protected:
 	/** Whether we are externally controlling tick rate */
@@ -813,6 +799,9 @@ public:
 
 	/** Gets the skeletal mesh resource used for rendering the component. */
 	FSkeletalMeshRenderData* GetSkeletalMeshRenderData() const;
+
+	/** Override this function to pass on cloth simulation data (or any deformable using the cloth pipeline) to the skeletal renderer. */
+	virtual void GetUpdateClothSimulationData_AnyThread(TMap<int32, FClothSimulData>& OutClothSimulData, FMatrix& OutLocalToWorld, float& OutClothBlendWeight);
 
 	/** 
 	 * Override the Physics Asset of the mesh. It uses SkeletalMesh.PhysicsAsset, but if you'd like to override use this function
@@ -924,7 +913,7 @@ public:
 	class USkeletalMesh* GetSkeletalMesh_DEPRECATED() const;
 
 	UE_DEPRECATED(5.1, "Use USkeletalMeshComponent::SetSkinnedAssetAndUpdate() instead.")
-	void SetSkeletalMesh_DEPRECATED(USkeletalMesh* NewMesh) { SetSkinnedAssetAndUpdate(Cast<USkinnedAsset>(NewMesh)); }
+	void SetSkeletalMesh_DEPRECATED(USkeletalMesh* NewMesh);
 
 	/**
 	 * Change the SkinnedAsset that is rendered for this Component. Will re-initialize the animation tree etc.
@@ -957,6 +946,14 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Components|SkinnedMesh")
 	void SetMeshDeformer(UMeshDeformer* InMeshDeformer);
+
+	/**
+	 * Unset any MeshDeformer applied to this Component.
+	 *
+	 * @param InMeshDeformer New mesh deformer to set for this component
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Components|SkinnedMesh")
+	void UnsetMeshDeformer();
 
 	/** 
 	 * Get Parent Bone of the input bone
@@ -998,6 +995,9 @@ public:
 	bool IsSkinCacheAllowed(int32 LodIdx) const;
 
 	bool HasMeshDeformer() const { return GetActiveMeshDeformer() != nullptr; }
+
+	bool GetForceUpdateDynamicDataImmediately() const { return bForceUpdateDynamicDataImmediately; }
+	void SetForceUpdateDynamicDataImmediately(bool bForceUpdateImmediately) { bForceUpdateDynamicDataImmediately = bForceUpdateImmediately; }
 
 	/**
 	 *	Compute SkeletalMesh MinLOD that will be used by this component
@@ -1067,7 +1067,7 @@ public:
 	void ResizeExternalMorphTargetSets();
 
 	/** Refresh the external morph target weight buffers. This makes sure the amount of morph sets and number of weights are valid. */
-	void RefreshExternalMorphTargetWeights();
+	void RefreshExternalMorphTargetWeights(bool bZeroOldWeights = true);
 
 	/**
 	 *	Sets the value of the bForceWireframe flag and reattaches the component as necessary.
@@ -1077,7 +1077,7 @@ public:
 	void SetForceWireframe(bool InForceWireframe);
 
 	/** Precache all PSOs which can be used by the component */
-	virtual void PrecachePSOs() override;
+	virtual void CollectPSOPrecacheData(const FPSOPrecacheParams& BasePrecachePSOParams, FComponentPSOPrecacheParamsList& OutParams) override;
 	
 #if WITH_EDITOR
 	/** Return value of SectionIndexPreview  */
@@ -1164,6 +1164,9 @@ public:
 
 	/** Caches the RefToLocal matrices. */
 	void CacheRefToLocalMatrices(TArray<FMatrix44f>& OutRefToLocal) const;
+
+	/** Return the skinning matrices used for rendering. */
+	void GetCurrentRefToLocalMatrices(TArray<FMatrix44f>& OutRefToLocals, int32 InLodIdx) const;
 
 	FORCEINLINE	const USkinnedMeshComponent* GetBaseComponent()const
 	{

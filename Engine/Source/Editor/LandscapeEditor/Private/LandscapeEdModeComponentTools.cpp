@@ -652,7 +652,7 @@ public:
 
 				if (!bHasLandscapeLayersContent)
 				{
-					ULandscapeHeightfieldCollisionComponent* CollisionComp = NewComponent->CollisionComponent.Get();
+					ULandscapeHeightfieldCollisionComponent* CollisionComp = NewComponent->GetCollisionComponent();
 					if (CollisionComp && !bHasXYOffset)
 					{
 						CollisionComp->MarkRenderStateDirty();
@@ -798,6 +798,9 @@ public:
 
 	virtual void SetEditRenderType() override { GLandscapeEditRenderMode = ELandscapeEditRenderMode::None | (GLandscapeEditRenderMode & ELandscapeEditRenderMode::BitMaskForMask); }
 	virtual bool SupportsMask() override { return false; }
+
+	// Sphere traces can result in components being added at a good distance from any neighboring components, because it intersects against a virtual plane
+	virtual bool UseSphereTrace() override { return false; }
 
 	virtual bool CanToolBeActivated() const override
 	{ 
@@ -1735,8 +1738,17 @@ public:
 		ALandscapeGizmoActiveActor* Gizmo = this->EdMode->CurrentGizmoActor.Get();
 		if (Gizmo)
 		{
+			Gizmo->bFollowTerrainHeight = false;
 			GEditor->SelectNone(false, true);
 			GEditor->SelectActor(Gizmo, true, true, true);
+		}
+	}
+
+	virtual void ExitTool() override
+	{
+		if (ALandscapeGizmoActiveActor* Gizmo = this->EdMode->CurrentGizmoActor.Get())
+		{
+			Gizmo->bFollowTerrainHeight = true;
 		}
 	}
 
@@ -2610,21 +2622,10 @@ public:
 			}
 		}
 	}
-
-	virtual int32 GetToolActionResolutionDelta() const override
+	
+	virtual EAxisList::Type GetWidgetAxisToDraw(UE::Widget::EWidgetMode InWidgetMode) const override
 	{
-		if (EdMode != nullptr)
-		{
-			int32 ImportWidth = EdMode->UISettings->ImportLandscape_Width;
-			int32 ImportHeight = EdMode->UISettings->ImportLandscape_Height;
-
-			ImportWidth = (ImportWidth > 0) ? ImportWidth : 1;
-			ImportHeight = (ImportHeight > 0) ? ImportHeight : 1;
-
-			return ImportWidth * ImportHeight;
-		}
-
-		return 0;
+		return EAxisList::XY;
 	}
 };
 

@@ -2,9 +2,9 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Toolkits/AssetEditorToolkit.h"
-#include "Misc/NotifyHook.h"
+
+class FSpawnTabArgs;
 
 class IDetailsView;
 class FToolBarBuilder;
@@ -15,7 +15,7 @@ class FContextualAnimPreviewScene;
 class FContextualAnimViewModel;
 class UContextualAnimPreviewManager;
 
-class FContextualAnimAssetEditorToolkit : public FAssetEditorToolkit, public FNotifyHook
+class FContextualAnimAssetEditorToolkit : public FAssetEditorToolkit
 {
 public:
 
@@ -42,6 +42,8 @@ public:
 
 private:
 	
+	bool CanMakeEdits() const;
+
 	TSharedRef<SDockTab> SpawnTab_Viewport(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_AssetDetails(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_Timeline(const FSpawnTabArgs& Args);
@@ -56,13 +58,9 @@ private:
 
 	void ShowNewAnimSetDialog();
 
-	void OnFinishedChangingProperties(const FPropertyChangedEvent& PropertyChangedEvent);
-
 	TSharedPtr<SContextualAnimViewport> ViewportWidget;
 
 	TSharedPtr<SContextualAnimAssetBrowser> AssetBrowserWidget;
-
-	TSharedPtr<IDetailsView> EditingAssetWidget;
 
 	TSharedPtr<FContextualAnimPreviewScene> PreviewScene;
 
@@ -70,3 +68,8 @@ private:
 };
 
 
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "Misc/NotifyHook.h"
+#endif

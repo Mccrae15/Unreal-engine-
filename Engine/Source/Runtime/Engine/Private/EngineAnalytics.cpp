@@ -2,24 +2,20 @@
 
 #include "EngineAnalytics.h"
 #include "Misc/App.h"
-#include "Misc/Guid.h"
 #include "Stats/Stats.h"
 #include "Misc/ConfigCacheIni.h"
-#include "EngineGlobals.h"
 #include "Engine/Engine.h"
 #include "Misc/EngineBuildSettings.h"
 #include "AnalyticsBuildType.h"
-#include "AnalyticsEventAttribute.h"
 #include "IAnalyticsProviderET.h"
-#include "AnalyticsET.h"
 #include "GeneralProjectSettings.h"
 #include "Misc/EngineVersion.h"
 #include "RHI.h"
 #include "GenericPlatform/GenericPlatformCrashContext.h"
 #include "StudioAnalytics.h"
+#include "UObject/Class.h"
 
 #if WITH_EDITOR
-#include "AnalyticsPropertyStore.h"
 #include "AnalyticsSessionSummaryManager.h"
 #include "AnalyticsSessionSummarySender.h"
 #include "Analytics/EditorAnalyticsSessionSummary.h"
@@ -36,6 +32,13 @@ static TSharedPtr<FAnalyticsSessionSummarySender> AnalyticsSessionSummarySender;
 FSimpleMulticastDelegate FEngineAnalytics::OnInitializeEngineAnalytics;
 FSimpleMulticastDelegate FEngineAnalytics::OnShutdownEngineAnalytics;
 #endif
+
+namespace UE::Analytics::Private
+{
+
+IEngineAnalyticsConfigOverride* EngineAnalyticsConfigOverride = nullptr;
+
+}
 
 static TSharedPtr<IAnalyticsProviderET> CreateEpicAnalyticsProvider()
 {
@@ -60,6 +63,11 @@ static TSharedPtr<IAnalyticsProviderET> CreateEpicAnalyticsProvider()
 	Config.APIServerET = TEXT("https://datarouter.ol.epicgames.com/");
 	Config.AppEnvironment = TEXT("datacollector-binary");
 	Config.AppVersionET = FEngineVersion::Current().ToString();
+
+	if (UE::Analytics::Private::EngineAnalyticsConfigOverride)
+	{
+		UE::Analytics::Private::EngineAnalyticsConfigOverride->ApplyConfiguration(Config);
+	}
 
 	// Connect the engine analytics provider (if there is a configuration delegate installed)
 	return FAnalyticsET::Get().CreateAnalyticsProvider(Config);
@@ -108,7 +116,14 @@ void FEngineAnalytics::Initialize()
 
 		if (Analytics.IsValid())
 		{
-			Analytics->SetUserID(FString::Printf(TEXT("%s|%s|%s"), *FPlatformMisc::GetLoginId(), *FPlatformMisc::GetEpicAccountId(), *FPlatformMisc::GetOperatingSystemId()));
+			if (UE::Analytics::Private::EngineAnalyticsConfigOverride)
+			{
+				UE::Analytics::Private::EngineAnalyticsConfigOverride->OnProviderCreated(*Analytics);
+			}
+			else
+			{
+				Analytics->SetUserID(FString::Printf(TEXT("%s|%s|%s"), *FPlatformMisc::GetLoginId(), *FPlatformMisc::GetEpicAccountId(), *FPlatformMisc::GetOperatingSystemId()));
+			}
 
 			const UGeneralProjectSettings& ProjectSettings = *GetDefault<UGeneralProjectSettings>();
 

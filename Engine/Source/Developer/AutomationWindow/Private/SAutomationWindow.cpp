@@ -30,6 +30,7 @@
 #include "SAutomationTestItem.h"
 
 #if WITH_EDITOR
+	#include "Engine/Level.h"
 	#include "Engine/World.h"
 	#include "FileHelpers.h"
 	#include "AssetRegistry/AssetRegistryModule.h"
@@ -182,9 +183,9 @@ void SAutomationWindow::Construct( const FArguments& InArgs, const IAutomationCo
 	bIsRequestingTests = false;
 
 	//make the widget for platforms
-	PlatformsHBox = SNew (SHorizontalBox);
+	PlatformsHBox = SNew(SHorizontalBox);
 
-	TestTable = SNew(SAutomationTestTreeView< TSharedPtr< IAutomationReport > >)
+	TestTable = SNew(STreeView< TSharedPtr< IAutomationReport > >)
 		.SelectionMode(ESelectionMode::Multi)
 		.TreeItemsSource( &TestReports )
 		// Generates the actual widget for a tree item
@@ -203,69 +204,69 @@ void SAutomationWindow::Construct( const FArguments& InArgs, const IAutomationCo
 #endif
 		.HeaderRow
 		(
-		SAssignNew(TestTableHeaderRow,SHeaderRow)
-		+ SHeaderRow::Column( AutomationTestWindowConstants::Title )
-		.FillWidth(0.80f)
-		[
-			SNew(SHorizontalBox)
-			+SHorizontalBox::Slot()
-			.AutoWidth()
-			.HAlign(HAlign_Center)
+			SNew(SHeaderRow)
+			+ SHeaderRow::Column( AutomationTestWindowConstants::Title )
+			.FillWidth(0.80f)
 			[
-				//global enable/disable check box
-				SAssignNew(HeaderCheckbox, SCheckBox)
-				.OnCheckStateChanged( this, &SAutomationWindow::HeaderCheckboxStateChange)
-				.ToolTipText( LOCTEXT( "Enable Disable Test", "Enable / Disable  Test" ) )
+				SNew(SHorizontalBox)
+				+SHorizontalBox::Slot()
+				.AutoWidth()
+				.HAlign(HAlign_Center)
+				[
+					//global enable/disable check box
+					SNew(SCheckBox)
+					.OnCheckStateChanged( this, &SAutomationWindow::HeaderCheckboxStateChange)
+					.ToolTipText( LOCTEXT( "Enable Disable Test", "Enable / Disable  Test" ) )
+				]
+				+SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				[
+					SNew( STextBlock )
+					.Text( LOCTEXT("TestName_Header", "Test Name") )
+				]
 			]
-			+SHorizontalBox::Slot()
-			.AutoWidth()
-			.VAlign(VAlign_Center)
+	
+			+ SHeaderRow::Column( AutomationTestWindowConstants::SmokeTest )
+			.FixedWidth( 50.0f )
+			.HAlignHeader(HAlign_Center)
+			.VAlignHeader(VAlign_Center)
+			.HAlignCell(HAlign_Center)
+			.VAlignCell(VAlign_Center)
 			[
-				SNew( STextBlock )
-				.Text( LOCTEXT("TestName_Header", "Test Name") )
+				//icon for the smoke test column
+				SNew(SImage)
+				.ColorAndOpacity(FLinearColor(1.0f, 1.0f, 1.0f, 0.4f))
+				.ToolTipText( LOCTEXT( "Smoke Test", "Smoke Test" ) )
+				.Image(FAutomationWindowStyle::Get().GetBrush("Automation.SmokeTest"))
 			]
-		]
+	
+			+ SHeaderRow::Column( AutomationTestWindowConstants::RequiredDeviceCount )
+			.FixedWidth(50.0f)
+			.HAlignHeader(HAlign_Center)
+			.VAlignHeader(VAlign_Center)
+			.HAlignCell(HAlign_Center)
+			.VAlignCell(VAlign_Center)
+			[
+				SNew( SImage )
+				.Image(FAutomationWindowStyle::Get().GetBrush("Automation.ParticipantsWarning") )
+				.ToolTipText( LOCTEXT( "RequiredDeviceCountWarningToolTip", "Number of devices required." ) )
+			]
+	
+			+ SHeaderRow::Column(AutomationTestWindowConstants::Timing)
+			.FixedWidth(100.0f)
+			.DefaultLabel(LOCTEXT("TestDurationRange", "Duration"))
 
-		+ SHeaderRow::Column( AutomationTestWindowConstants::SmokeTest )
-		.FixedWidth( 50.0f )
-		.HAlignHeader(HAlign_Center)
-		.VAlignHeader(VAlign_Center)
-		.HAlignCell(HAlign_Center)
-		.VAlignCell(VAlign_Center)
-		[
-			//icon for the smoke test column
-			SNew(SImage)
-			.ColorAndOpacity(FLinearColor(1.0f, 1.0f, 1.0f, 0.4f))
-			.ToolTipText( LOCTEXT( "Smoke Test", "Smoke Test" ) )
-			.Image(FAutomationWindowStyle::Get().GetBrush("Automation.SmokeTest"))
-		]
+			+ SHeaderRow::Column( AutomationTestWindowConstants::Status )
+			.FixedWidth(50.0f)
+			[
+				//platform header placeholder
+				PlatformsHBox.ToSharedRef()
+			]
 
-		+ SHeaderRow::Column( AutomationTestWindowConstants::RequiredDeviceCount )
-		.FixedWidth(50.0f)
-		.HAlignHeader(HAlign_Center)
-		.VAlignHeader(VAlign_Center)
-		.HAlignCell(HAlign_Center)
-		.VAlignCell(VAlign_Center)
-		[
-			SNew( SImage )
-			.Image(FAutomationWindowStyle::Get().GetBrush("Automation.ParticipantsWarning") )
-			.ToolTipText( LOCTEXT( "RequiredDeviceCountWarningToolTip", "Number of devices required." ) )
-		]
-
-		+ SHeaderRow::Column(AutomationTestWindowConstants::Timing)
-		.FixedWidth(100.0f)
-		.DefaultLabel(LOCTEXT("TestDurationRange", "Duration"))
-
-		+ SHeaderRow::Column( AutomationTestWindowConstants::Status )
-		.FixedWidth(50.0f)
-		[
-			//platform header placeholder
-			PlatformsHBox.ToSharedRef()
-		]
-
-		+ SHeaderRow::Column(AutomationTestWindowConstants::IsToBeSkipped)
-		.FillWidth(0.10f)
-		.DefaultLabel(LOCTEXT("Excluded", "Excluded"))
+			+ SHeaderRow::Column(AutomationTestWindowConstants::IsToBeSkipped)
+			.FillWidth(0.10f)
+			.DefaultLabel(LOCTEXT("Excluded", "Excluded"))
 
 		);
 
@@ -1207,7 +1208,7 @@ void SAutomationWindow::HandleDeviceGroupCheckStateChanged(ECheckBoxState CheckB
 	RebuildPlatformIcons();
 
 	//Need to force the tree to do a full refresh here because the reports have changed but the tree will keep using cached data.
-	TestTable->ReCreateTreeView();
+	TestTable->RebuildList();
 }
 
 TSharedRef< SWidget > SAutomationWindow::GenerateTestsOptionsMenuContent( TWeakPtr<class SAutomationWindow> InAutomationWindow )
@@ -1327,7 +1328,7 @@ TArray<FString> SAutomationWindow::SaveExpandedTestNames(TSet<TSharedPtr<IAutoma
 }
 
 // Expanded the given item if its name is in the array of strings given.
-void SAutomationWindow::ExpandItemsInList(TSharedPtr<SAutomationTestTreeView<TSharedPtr<IAutomationReport>>> InTestTable, TSharedPtr<IAutomationReport> InReport, TArray<FString> ItemsToExpand)
+void SAutomationWindow::ExpandItemsInList(TSharedPtr<STreeView<TSharedPtr<IAutomationReport>>> InTestTable, TSharedPtr<IAutomationReport> InReport, TArray<FString> ItemsToExpand)
 {
 	InTestTable->SetItemExpansion(InReport, ItemsToExpand.Contains(InReport->GetDisplayNameWithDecoration()));
 
@@ -1382,17 +1383,6 @@ void SAutomationWindow::RunSelectedTests()
 
 namespace
 {
-	bool MakeMapPathUrl(FString& InPath)
-	{
-		if ( FPaths::MakePathRelativeTo(InPath, *FPaths::ProjectContentDir()) )
-		{
-			InPath.InsertAt(0, TEXT("/Game/"));
-			InPath.RemoveFromEnd(TEXT(".umap"));
-			return true;
-		}
-		return false;
-	}
-
 	/**
 	 * Kind of a hack - this requires that we know we group all the map tests coming from blueprints under "Functional Tests"
 	 */
@@ -1436,15 +1426,15 @@ namespace
 void SAutomationWindow::FindTestReportsForCurrentEditorLevel(TArray<TSharedPtr<IAutomationReport>>& OutLevelReports)
 {
 	// Find the current map path
-	if ( GWorld && GWorld->GetCurrentLevel() )
+	if ( GWorld && GWorld->GetCurrentLevel() && GWorld->GetCurrentLevel()->GetPackage())
 	{
-		FString MapUrl(FEditorFileUtils::GetFilename(GWorld->GetCurrentLevel()));
-		if ( MakeMapPathUrl(MapUrl) )
+		const FString MapPath = GWorld->GetCurrentLevel()->GetPackage()->GetPathName();
+		if (!MapPath.IsEmpty())
 		{
 			auto FunctionTestsReport = GetFunctionalTestsReport(AutomationController->GetReports());
-			if ( FunctionTestsReport.IsValid() )
+			if (FunctionTestsReport.IsValid())
 			{
-				FindReportByGameRelativeAssetPath(FunctionTestsReport, MapUrl, OutLevelReports);
+				FindReportByGameRelativeAssetPath(FunctionTestsReport, MapPath, OutLevelReports);
 			}
 		}
 	}

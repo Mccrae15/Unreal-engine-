@@ -18,11 +18,13 @@
 #include "PostProcess/SceneRenderTargets.h"
 #include "LightSceneInfo.h"
 #include "GlobalShader.h"
+#include "ScenePrivate.h"
 #include "SceneRenderTargetParameters.h"
 #include "ShadowRendering.h"
 #include "DeferredShadingRenderer.h"
 #include "PostProcess/PostProcessing.h"
 #include "PostProcess/SceneFilterRendering.h"
+#include "DistanceFieldAtlas.h"
 #include "DistanceFieldLightingShared.h"
 #include "DistanceFieldAmbientOcclusion.h"
 #include "PipelineStateCache.h"
@@ -158,6 +160,7 @@ class FCullObjectsForShadowCS : public FGlobalShader
 		SHADER_PARAMETER(FMatrix44f, TranslatedWorldToShadow)
 		SHADER_PARAMETER(uint32, NumShadowHullPlanes)
 		SHADER_PARAMETER(uint32, bDrawNaniteMeshes)
+		SHADER_PARAMETER(uint32, bCullHeighfieldsNotInAtlas)
 		SHADER_PARAMETER(FVector4f, ShadowBoundingSphere)
 		SHADER_PARAMETER_ARRAY(FVector4f,ShadowConvexHull,[12])
 	END_SHADER_PARAMETER_STRUCT()
@@ -542,6 +545,7 @@ void CullDistanceFieldObjectsForLight(
 	const FVector4f& ShadowBoundingSphere,
 	float ShadowBoundingRadius,
 	bool bCullingForDirectShadowing,
+	bool bCullHeighfieldsNotInAtlas,
 	const FDistanceFieldObjectBufferParameters& ObjectBufferParameters,
 	FDistanceFieldCulledObjectBufferParameters& CulledObjectBufferParameters,
 	FLightTileIntersectionParameters& LightTileIntersectionParameters)
@@ -574,6 +578,7 @@ void CullDistanceFieldObjectsForLight(
 		PassParameters->ShadowBoundingSphere = ShadowBoundingSphere;
 		// Disable Nanite meshes for directional lights that use VSM since they draw into the VSM unconditionally (and would get double shadow)
 		PassParameters->bDrawNaniteMeshes = !(LightSceneProxy->UseVirtualShadowMaps() && LightSceneProxy->GetLightType() == LightType_Directional) || !bCullingForDirectShadowing;
+		PassParameters->bCullHeighfieldsNotInAtlas = bCullHeighfieldsNotInAtlas;
 
 		check(NumPlanes <= 12);
 
@@ -905,9 +910,11 @@ FRDGTextureRef FProjectedShadowInfo::RenderRayTracedDistanceFieldProjection(
 
 				const FMatrix WorldToShadowValue = FTranslationMatrix(PreShadowTranslation) * FMatrix(TranslatedWorldToClipInnerMatrix);
 
-
 				SDFShadowViewGPUData.SDFCulledObjectBufferParameters = GraphBuilder.AllocObject<FDistanceFieldCulledObjectBufferParameters>();
 				SDFShadowViewGPUData.SDFLightTileIntersectionParameters = GraphBuilder.AllocObject<FLightTileIntersectionParameters>();
+
+				const bool bCullingForDirectShadowing = true;
+				const bool bCullHeighfieldsNotInAtlas = false;
 
 				CullDistanceFieldObjectsForLight(
 					GraphBuilder,
@@ -920,7 +927,8 @@ FRDGTextureRef FProjectedShadowInfo::RenderRayTracedDistanceFieldProjection(
 					PrePlaneTranslation,
 					ShadowBoundingSphere,
 					ShadowBounds.W,
-					true,
+					bCullingForDirectShadowing,
+					bCullHeighfieldsNotInAtlas,
 					ObjectBufferParameters,
 					*SDFShadowViewGPUData.SDFCulledObjectBufferParameters,
 					*SDFShadowViewGPUData.SDFLightTileIntersectionParameters
@@ -929,7 +937,7 @@ FRDGTextureRef FProjectedShadowInfo::RenderRayTracedDistanceFieldProjection(
 
 			{
 				const FIntPoint BufferSize = GetBufferSizeForDFShadows(View);
-				FRDGTextureDesc Desc(FRDGTextureDesc::Create2D(BufferSize, PF_G16R16F, FClearValueBinding::None, TexCreate_UAV));
+				FRDGTextureDesc Desc(FRDGTextureDesc::Create2D(BufferSize, PF_G16R16F, FClearValueBinding::None, TexCreate_UAV | TexCreate_ShaderResource));
 				Desc.Flags |= GFastVRamConfig.DistanceFieldShadows;
 				SDFShadowViewGPUData.RayTracedShadowsTexture = GraphBuilder.CreateTexture(Desc, TEXT("RayTracedShadows"));
 			}
@@ -941,7 +949,8 @@ FRDGTextureRef FProjectedShadowInfo::RenderRayTracedDistanceFieldProjection(
 	if (bDirectionalLight
 		&& View.Family->EngineShowFlags.RayTracedDistanceFieldShadows
 		&& GHeightFieldTextureAtlas.HasAtlasTexture()
-		&& Scene->DistanceFieldSceneData.NumHeightFieldObjectsInBuffer > 0
+		&& Scene->DistanceFieldSceneData.HeightFieldObjectBuffers
+		&& Scene->DistanceFieldSceneData.HeightfieldPrimitives.Num() > 0
 		&& bHFShadowSupported)
 	{
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_BeginRenderRayTracedHeightFieldShadows);
@@ -962,6 +971,9 @@ FRDGTextureRef FProjectedShadowInfo::RenderRayTracedDistanceFieldProjection(
 			SDFShadowViewGPUData.HeightFieldCulledObjectBufferParameters = GraphBuilder.AllocObject<FDistanceFieldCulledObjectBufferParameters>();
 			SDFShadowViewGPUData.HeightFieldLightTileIntersectionParameters = GraphBuilder.AllocObject<FLightTileIntersectionParameters>();
 
+			const bool bCullingForDirectShadowing = true;
+			const bool bCullHeighfieldsNotInAtlas = true;
+
 			CullDistanceFieldObjectsForLight(
 				GraphBuilder,
 				View,
@@ -973,7 +985,8 @@ FRDGTextureRef FProjectedShadowInfo::RenderRayTracedDistanceFieldProjection(
 				PrePlaneTranslation,
 				ShadowBoundingSphere,
 				ShadowBounds.W,
-				true,
+				bCullingForDirectShadowing,
+				bCullHeighfieldsNotInAtlas,
 				ObjectBufferParameters,
 				*SDFShadowViewGPUData.HeightFieldCulledObjectBufferParameters,
 				*SDFShadowViewGPUData.HeightFieldLightTileIntersectionParameters
@@ -994,7 +1007,7 @@ FRDGTextureRef FProjectedShadowInfo::RenderRayTracedDistanceFieldProjection(
 		if (!SDFShadowViewGPUData.RayTracedShadowsTexture)
 		{
 			const FIntPoint BufferSize = GetBufferSizeForDFShadows(View);
-			FRDGTextureDesc Desc(FRDGTextureDesc::Create2D(BufferSize, PF_G16R16F, FClearValueBinding::None, TexCreate_UAV));
+			FRDGTextureDesc Desc(FRDGTextureDesc::Create2D(BufferSize, PF_G16R16F, FClearValueBinding::None, TexCreate_UAV | TexCreate_ShaderResource));
 			Desc.Flags |= GFastVRamConfig.DistanceFieldShadows;
 			SDFShadowViewGPUData.RayTracedShadowsTexture = GraphBuilder.CreateTexture(Desc, TEXT("RayTracedShadows"));
 		}

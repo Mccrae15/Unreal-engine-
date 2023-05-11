@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
-
 #include "AudioMixerSource.h"
+
+#include "AudioDefines.h"
 #include "AudioMixerSourceBuffer.h"
 #include "ActiveSound.h"
 #include "AudioMixerSourceBuffer.h"
@@ -15,9 +16,28 @@
 #include "Sound/SoundModulationDestination.h"
 #include "Misc/ScopeRWLock.h"
 #include "Templates/Function.h"
+#include "Trace/Trace.h"
 
-// Link to "Audio" profiling category
+
 CSV_DECLARE_CATEGORY_MODULE_EXTERN(AUDIOMIXERCORE_API, Audio);
+
+#if UE_AUDIO_PROFILERTRACE_ENABLED
+UE_TRACE_EVENT_BEGIN(Audio, MixerSourceStart)
+	UE_TRACE_EVENT_FIELD(uint32, DeviceId)
+	UE_TRACE_EVENT_FIELD(uint64, Timestamp)
+	UE_TRACE_EVENT_FIELD(uint32, PlayOrder)
+	UE_TRACE_EVENT_FIELD(int32, SourceId)
+	UE_TRACE_EVENT_FIELD(uint64, ComponentId)
+	UE_TRACE_EVENT_FIELD(UE::Trace::WideString, Name)
+UE_TRACE_EVENT_END()
+
+UE_TRACE_EVENT_BEGIN(Audio, MixerSourceStop)
+	UE_TRACE_EVENT_FIELD(uint32, DeviceId)
+	UE_TRACE_EVENT_FIELD(uint64, Timestamp)
+	UE_TRACE_EVENT_FIELD(uint32, PlayOrder)
+UE_TRACE_EVENT_END()
+#endif // UE_AUDIO_PROFILERTRACE_ENABLED
+
 
 static int32 UseListenerOverrideForSpreadCVar = 0;
 FAutoConsoleVariableRef CVarUseListenerOverrideForSpread(
@@ -70,7 +90,8 @@ namespace Audio
 
 			return SoundClass;
 		}
-	}
+	} // namespace MixerSourcePrivate
+
 	namespace ModulationUtils
 	{
 		void MixInRoutedValue(const FModulationParameter& InParam, float& InOutValueA, float InValueB)
@@ -672,6 +693,7 @@ namespace Audio
 			InitParams.bEnableBusSends = WaveInstance->bEnableBusSends;
 			InitParams.bEnableBaseSubmix = WaveInstance->bEnableBaseSubmix;
 			InitParams.bEnableSubmixSends = WaveInstance->bEnableSubmixSends;
+			InitParams.PlayOrder = WaveInstance->GetPlayOrder();
 			bPreviousBusEnablement = WaveInstance->bEnableBusSends;
 			DynamicBusSendInfos.Reset();
 
@@ -767,7 +789,7 @@ namespace Audio
 			bool bIsDebug = false;
 			FString WaveInstanceName = WaveInstance->GetName(); //-V595
 			FString TestName = GEngine->GetAudioDeviceManager()->GetDebugger().GetAudioMixerDebugSoundName();
-			if (WaveInstanceName.Contains(TestName))
+			if (!TestName.IsEmpty() && WaveInstanceName.Contains(TestName))
 			{
 				bDebugMode = true;
 				InitParams.bIsDebugMode = bDebugMode;
@@ -999,6 +1021,8 @@ namespace Audio
 			AudioLink->OnUpdateWorldState(Params);
 		}
 
+		UpdateModulation();
+
 		UpdatePitch();
 
 		UpdateVolume();
@@ -1224,6 +1248,29 @@ namespace Audio
 		if (MixerSourceVoice && InitializationState == EMixerSourceInitializationState::Initialized)
 		{
 			MixerSourceVoice->Play();
+
+#if UE_AUDIO_PROFILERTRACE_ENABLED
+			const bool bChannelEnabled = UE_TRACE_CHANNELEXPR_IS_ENABLED(AudioMixerChannel);
+			if (bChannelEnabled && WaveInstance)
+			{
+				if (const FActiveSound* ActiveSound = WaveInstance->ActiveSound)
+				{
+					int32 TraceSourceId = INDEX_NONE;
+					if (MixerSourceVoice)
+					{
+						TraceSourceId = MixerSourceVoice->GetSourceId();
+					}
+
+					UE_TRACE_LOG(Audio, MixerSourceStart, AudioMixerChannel)
+						<< MixerSourceStart.DeviceId(MixerDevice->DeviceID)
+						<< MixerSourceStart.Timestamp(FPlatformTime::Cycles64())
+						<< MixerSourceStart.PlayOrder(WaveInstance->GetPlayOrder())
+						<< MixerSourceStart.SourceId(TraceSourceId)
+						<< MixerSourceStart.ComponentId(ActiveSound->GetAudioComponentID())
+						<< MixerSourceStart.Name(*WaveInstance->WaveData->GetPathName());
+				}
+			}
+#endif // UE_AUDIO_PROFILERTRACE_ENABLED
 		}
 
 		bIsStopping = false;
@@ -1308,6 +1355,23 @@ namespace Audio
 		{
 			if (MixerSourceVoice && Playing)
 			{
+#if UE_AUDIO_PROFILERTRACE_ENABLED
+				const bool bChannelEnabled = UE_TRACE_CHANNELEXPR_IS_ENABLED(AudioMixerChannel);
+				if (bChannelEnabled)
+				{
+					int32 TraceSourceId = INDEX_NONE;
+					if (MixerSourceVoice)
+					{
+						TraceSourceId = MixerSourceVoice->GetSourceId();
+					}
+
+					UE_TRACE_LOG(Audio, MixerSourceStop, AudioMixerChannel)
+						<< MixerSourceStop.DeviceId(MixerDevice->DeviceID)
+						<< MixerSourceStop.Timestamp(FPlatformTime::Cycles64())
+						<< MixerSourceStop.PlayOrder(WaveInstance->GetPlayOrder());
+				}
+#endif // UE_AUDIO_PROFILERTRACE_ENABLED
+
 				MixerSourceVoice->Stop();
 			}
 
@@ -1741,6 +1805,21 @@ namespace Audio
 		MixerSourceVoice->SetEnablement(WaveInstance->bEnableBusSends, WaveInstance->bEnableBaseSubmix, WaveInstance->bEnableSubmixSends);
 
 		MixerSourceVoice->SetSourceBufferListener(WaveInstance->SourceBufferListener, WaveInstance->bShouldSourceBufferListenerZeroBuffer);
+	}
+
+	void FMixerSource::UpdateModulation()
+	{
+		check(WaveInstance);
+
+		FActiveSound* ActiveSound = WaveInstance->ActiveSound;
+		check(ActiveSound);
+
+		if (ActiveSound->bModulationRoutingUpdated)
+		{
+			MixerSourceVoice->SetModulationRouting(ActiveSound->ModulationRouting);
+		}
+
+		ActiveSound->bModulationRoutingUpdated = false;
 	}
 
 	void FMixerSource::UpdateSourceBusSends()

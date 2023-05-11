@@ -19,6 +19,7 @@
 #include "LightSceneInfo.h"
 #include "GlobalShader.h"
 #include "SceneRenderTargetParameters.h"
+#include "BasePassRendering.h"
 #include "DeferredShadingRenderer.h"
 #include "ScenePrivate.h"
 #include "ShaderPrintParameters.h"
@@ -175,7 +176,7 @@ static void InternalAddClusteredDeferredShadingPass(
 	{
 		PassParameters->RenderTargets[0] = FRenderTargetBinding(View.HairStrandsViewData.VisibilityData.SampleLightingTexture, ERenderTargetLoadAction::ELoad);
 	}
-	if (Strata::IsStrataOpaqueMaterialRoughRefractionEnabled())
+	if (Strata::IsOpaqueRoughRefractionEnabled())
 	{
 		check(StrataSceneData);
 		PassParameters->RenderTargets[1] = FRenderTargetBinding(StrataSceneData->SeparatedOpaqueRoughRefractionSceneColor, ERenderTargetLoadAction::ELoad);
@@ -188,7 +189,7 @@ static void InternalAddClusteredDeferredShadingPass(
 	
 	const TCHAR* TileTypeName = ToString(TileType);
 	GraphBuilder.AddPass(
-		RDG_EVENT_NAME("Light::ClusteredDeferredShading(%s,Lights:%d,Tile:%s)", bHairStrands ? TEXT("HairStrands") : (bStrata ? TEXT("Strata") : TEXT("GBuffer")), SortedLightsSet.ClusteredSupportedEnd, TileTypeName),
+		RDG_EVENT_NAME("Light::ClusteredDeferredShading(%s,Lights:%d,Tile:%s)", bHairStrands ? TEXT("HairStrands") : (bStrata ? TEXT("Substrate") : TEXT("GBuffer")), SortedLightsSet.ClusteredSupportedEnd, TileTypeName),
 		PassParameters,
 		ERDGPassFlags::Raster,
 		[PassParameters, &View, SceneTextureExtent, bHairStrands, bStrata, TileType, PrimitiveType](FRHICommandListImmediate& InRHICmdList)
@@ -211,7 +212,7 @@ static void InternalAddClusteredDeferredShadingPass(
 			InRHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
 
 			// Additive blend to accumulate lighting contributions.
-			if (Strata::IsStrataOpaqueMaterialRoughRefractionEnabled())
+			if (Strata::IsOpaqueRoughRefractionEnabled())
 			{
 				GraphicsPSOInit.BlendState = TStaticBlendState<
 					CW_RGBA, BO_Add, BF_One, BF_One, BO_Add, BF_One, BF_One,

@@ -4,61 +4,65 @@
 	UCContentCommandlets.cpp: Various commmandlets.
 =============================================================================*/
 
+#include "AssetCompilingManager.h"
+#include "AssetRegistry/AssetData.h"
+#include "CollectionManagerModule.h"
+#include "CommandletSourceControlUtils.h"
+#include "Commandlets/LandscapeGrassTypeCommandlet.h"
+#include "Commandlets/ListMaterialsUsedWithMeshEmittersCommandlet.h"
+#include "Commandlets/ListStaticMeshesImportedFromSpeedTreesCommandlet.h"
+#include "Commandlets/ResavePackagesCommandlet.h"
+#include "Commandlets/StaticMeshMinLodCommandlet.h"
+#include "Commandlets/WrangleContentCommandlet.h"
 #include "CoreMinimal.h"
+#include "Editor.h"
+#include "EditorWorldUtils.h"
+#include "Engine/Brush.h"
+#include "Engine/EngineTypes.h"
+#include "Engine/MapBuildDataRegistry.h"
+#include "Engine/StaticMesh.h"
+#include "EngineGlobals.h"
+#include "FileHelpers.h"
+#include "GameFramework/WorldSettings.h"
 #include "HAL/FileManager.h"
+#include "ICollectionManager.h"
+#include "ISourceControlModule.h"
+#include "ISourceControlOperation.h"
+#include "LandscapeGrassType.h"
+#include "LevelInstance/LevelInstanceInterface.h"
+#include "Materials/Material.h"
 #include "Misc/CommandLine.h"
-#include "Misc/FileHelper.h"
-#include "Misc/Paths.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/EngineVersion.h"
+#include "Misc/FileHelper.h"
+#include "Misc/PackageName.h"
+#include "Misc/Paths.h"
+#include "Misc/RedirectCollector.h"
 #include "Modules/ModuleManager.h"
+#include "PackageHelperFunctions.h"
+#include "PackageTools.h"
+#include "Particles/ParticleEmitter.h"
+#include "Particles/ParticleSystem.h"
+#include "PlatformInfo.h"
+#include "SourceControlHelpers.h"
+#include "SourceControlOperations.h"
+#include "StaticMeshCompiler.h"
+#include "String/ParseTokens.h"
 #include "UObject/Class.h"
+#include "UObject/LinkerLoad.h"
 #include "UObject/MetaData.h"
 #include "UObject/Object.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Package.h"
 #include "UObject/PackageResourceManager.h"
+#include "UObject/PackageTrailer.h"
+#include "UObject/SavePackage.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
-#include "Misc/PackageName.h"
-#include "Misc/EngineVersion.h"
-#include "Misc/RedirectCollector.h"
-#include "Engine/EngineTypes.h"
-#include "Materials/Material.h"
-#include "ISourceControlOperation.h"
-#include "SourceControlOperations.h"
-#include "SourceControlHelpers.h"
-#include "ISourceControlModule.h"
-#include "Engine/MapBuildDataRegistry.h"
-#include "Commandlets/ListMaterialsUsedWithMeshEmittersCommandlet.h"
-#include "Commandlets/ListStaticMeshesImportedFromSpeedTreesCommandlet.h"
-#include "Commandlets/StaticMeshMinLodCommandlet.h"
-#include "Particles/ParticleSystem.h"
-#include "Commandlets/ResavePackagesCommandlet.h"
-#include "Commandlets/WrangleContentCommandlet.h"
-#include "EngineGlobals.h"
-#include "Particles/ParticleEmitter.h"
-#include "GameFramework/WorldSettings.h"
-#include "Engine/StaticMesh.h"
-#include "AssetRegistry/AssetData.h"
-#include "Engine/Brush.h"
-#include "Editor.h"
-#include "EditorWorldUtils.h"
-#include "FileHelpers.h"
-#include "PlatformInfo.h"
-#include "CollectionManagerModule.h"
-#include "ICollectionManager.h"
-#include "CommandletSourceControlUtils.h"
 #include "WorldPartition/ActorDescContainer.h"
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionHelpers.h"
-#include "LevelInstance/LevelInstanceInterface.h"
-#include "AssetCompilingManager.h"
-#include "PackageHelperFunctions.h"
-#include "PackageTools.h"
-#include "StaticMeshCompiler.h"
-#include "String/ParseTokens.h"
-#include "UObject/PackageTrailer.h"
-#include "UObject/SavePackage.h"
+#include "Virtualization/VirtualizationSystem.h"
 
 DEFINE_LOG_CATEGORY(LogContentCommandlet);
 
@@ -96,6 +100,7 @@ DEFINE_LOG_CATEGORY(LogContentCommandlet);
 #include "Engine/LODActor.h"
 #include "PerQualityLevelProperties.h"
 #include "Misc/RedirectCollector.h"
+
 
 /**-----------------------------------------------------------------------------
  *	UResavePackages commandlet.
@@ -564,13 +569,13 @@ void UResavePackagesCommandlet::ParseSourceControlOptions(const TArray<FString>&
 		{
 			if (QueuedPackageFlushLimit >= 0)
 			{
-				UE_LOG(LogContentCommandlet, Display, TEXT("Setting source control batches to be limited to %d package(s) at a time."), QueuedPackageFlushLimit);
+				UE_LOG(LogContentCommandlet, Display, TEXT("Setting revision control batches to be limited to %d package(s) at a time."), QueuedPackageFlushLimit);
 				SourceControlQueue->SetMaxNumQueuedPackages(QueuedPackageFlushLimit);
 			}
 			else
 			{
 				// Negative values mean we will not flush the source control batch based on the number of packages
-				UE_LOG(LogContentCommandlet, Display, TEXT("Setting source control batches to have no package limit!"));
+				UE_LOG(LogContentCommandlet, Display, TEXT("Setting revision control batches to have no package limit!"));
 			}
 		}
 		else  if (FParse::Value(*CurrentSwitch, TEXT("BatchFileSizeLimit="), QueueFileSizeFlushLimit))
@@ -584,14 +589,14 @@ void UResavePackagesCommandlet::ParseSourceControlOptions(const TArray<FString>&
 
 			if (QueueFileSizeFlushLimit >= 0)
 			{
-				UE_LOG(LogContentCommandlet, Display, TEXT("Setting source control batches to be limited to %lld MB."), QueueFileSizeFlushLimit);
+				UE_LOG(LogContentCommandlet, Display, TEXT("Setting revision control batches to be limited to %lld MB."), QueueFileSizeFlushLimit);
 
 				SourceControlQueue->SetMaxTemporaryFileTotalSize(QueueFileSizeFlushLimit);
 			}
 			else
 			{
 				// Negative values mean we will not flush the source control batch based on the disk space taken by temp files
-				UE_LOG(LogContentCommandlet, Display, TEXT("Setting source control batches to have no disk space limit!"));
+				UE_LOG(LogContentCommandlet, Display, TEXT("Setting revision control batches to have no disk space limit!"));
 			}
 		}
 	}
@@ -1034,10 +1039,10 @@ void UResavePackagesCommandlet::DeleteOnePackage(const FString& Filename)
 
 	if (SourceControlState.IsValid() && (SourceControlState->IsCheckedOut() || SourceControlState->IsAdded()))
 	{
-		UE_LOG(LogContentCommandlet, Display, TEXT("Revert '%s' from source control..."), *Filename);
+		UE_LOG(LogContentCommandlet, Display, TEXT("Revert '%s' from revision control..."), *Filename);
 		SourceControlProvider.Execute(ISourceControlOperation::Create<FRevert>(), PackageFilename);
 
-		UE_LOG(LogContentCommandlet, Display, TEXT("Deleting '%s' from source control..."), *Filename);
+		UE_LOG(LogContentCommandlet, Display, TEXT("Deleting '%s' from revision control..."), *Filename);
 		SourceControlProvider.Execute(ISourceControlOperation::Create<FDelete>(), PackageFilename);
 
 		PackagesDeleted++;
@@ -1046,7 +1051,7 @@ void UResavePackagesCommandlet::DeleteOnePackage(const FString& Filename)
 	}
 	else if (SourceControlState.IsValid() && SourceControlState->CanCheckout())
 	{
-		UE_LOG(LogContentCommandlet, Display, TEXT("Deleting '%s' from source control..."), *Filename);
+		UE_LOG(LogContentCommandlet, Display, TEXT("Deleting '%s' from revision control..."), *Filename);
 		SourceControlProvider.Execute(ISourceControlOperation::Create<FDelete>(), PackageFilename);
 
 		PackagesDeleted++;
@@ -1055,11 +1060,11 @@ void UResavePackagesCommandlet::DeleteOnePackage(const FString& Filename)
 	}
 	else if (SourceControlState.IsValid() && SourceControlState->IsCheckedOutOther())
 	{
-		UE_LOG(LogContentCommandlet, Warning, TEXT("Couldn't delete '%s' from source control, someone has it checked out, skipping..."), *Filename);
+		UE_LOG(LogContentCommandlet, Warning, TEXT("Couldn't delete '%s' from revision control, someone has it checked out, skipping..."), *Filename);
 	}
 	else if (SourceControlState.IsValid() && !SourceControlState->IsSourceControlled())
 	{
-		UE_LOG(LogContentCommandlet, Warning, TEXT("'%s' is not in source control, attempting to delete from disk..."), *Filename);
+		UE_LOG(LogContentCommandlet, Warning, TEXT("'%s' is not in revision control, attempting to delete from disk..."), *Filename);
 		if (IFileManager::Get().Delete(*Filename, false, true) == true)
 		{
 			PackagesDeleted++;
@@ -1071,7 +1076,7 @@ void UResavePackagesCommandlet::DeleteOnePackage(const FString& Filename)
 	}
 	else
 	{
-		UE_LOG(LogContentCommandlet, Warning, TEXT("'%s' is in an unknown source control state, attempting to delete from disk..."), *Filename);
+		UE_LOG(LogContentCommandlet, Warning, TEXT("'%s' is in an unknown revision control state, attempting to delete from disk..."), *Filename);
 		if (IFileManager::Get().Delete(*Filename, false, true)== true)
 		{
 			PackagesDeleted++;
@@ -1110,6 +1115,8 @@ int32 UResavePackagesCommandlet::Main( const FString& Params )
 	bSkipCheckedOutFiles = Switches.Contains(TEXT("SkipCheckedOutPackages"));
 	/** if we should auto checkin packages that were checked out**/
 	bAutoCheckIn = bAutoCheckOut && (Switches.Contains(TEXT("AutoCheckIn")) || Switches.Contains(TEXT("AutoSubmit")));
+	/** if we should skip trying to virtualize packages being checked in **/
+	bSkipVirtualization = Switches.Contains(TEXT("SkipVirtualization"));
 	/** determine if we are building lighting for the map packages on the pass. **/
 	bShouldBuildLighting = Switches.Contains(TEXT("buildlighting"));
 	/** determine if we are building reflection captures for the map packages on the pass. **/
@@ -1123,10 +1130,14 @@ int32 UResavePackagesCommandlet::Main( const FString& Params )
 	bOnlyUnversioned = Switches.Contains(TEXT("OnlyUnversioned"));
 	/** whether we should only save packages saved by licensees */
 	bOnlyLicenseed = Switches.Contains(TEXT("OnlyLicenseed"));
-	/** whether we should only save packages containing virtualized bulkdata payloads */
+	/** whether we should only save packages containing virtualized payloads */
 	bOnlyVirtualized = Switches.Contains(TEXT("OnlyVirtualized"));
+	/** whether we should skip saving packages that already contain virtualized payloads */
+	bSkipVirtualized = Switches.Contains(TEXT("SkipVirtualized"));
 	/** whether we should only save packages containing FPayloadTrailers */
 	bOnlyPayloadTrailers = Switches.Contains(TEXT("OnlyPayloadTrailers"));
+	/** whether we should skip saving packages that already have a payload trailer */
+	bSkipPayloadTrailers = Switches.Contains(TEXT("SkipPayloadTrailers"));
 	/** only process packages containing materials */
 	bOnlyMaterials = Switches.Contains(TEXT("onlymaterials"));
 	/** determine if we are building navigation data for the map packages on the pass. **/
@@ -1515,7 +1526,6 @@ void UResavePackagesCommandlet::PerformPreloadOperations( FLinkerLoad* PackageLi
 		}
 	}
 
-	// Check if the package contains virtualized bulkdata payloads
 	if (bOnlyVirtualized)
 	{
 		const UE::FPackageTrailer* Trailer = PackageLinker->GetPackageTrailer();
@@ -1526,15 +1536,26 @@ void UResavePackagesCommandlet::PerformPreloadOperations( FLinkerLoad* PackageLi
 		}
 	}
 
-	// Check if the package contains a FPackageTrailer or not
-	if (bOnlyPayloadTrailers)
+	if (bSkipVirtualized)
 	{
 		const UE::FPackageTrailer* Trailer = PackageLinker->GetPackageTrailer();
-		if (Trailer == nullptr)
+		if (Trailer != nullptr && Trailer->GetNumPayloads(UE::EPayloadStorageType::Virtualized) > 0)
 		{
 			bSavePackage = false;
 			return;
 		}
+	}
+
+	if (bOnlyPayloadTrailers && PackageLinker->GetPackageTrailer() == nullptr)
+	{
+		bSavePackage = false;
+		return;
+	}
+
+	if (bSkipPayloadTrailers && PackageLinker->GetPackageTrailer() != nullptr)
+	{
+		bSavePackage = false;
+		return;
 	}
 
 	// Check if the package contains any instances of the class that needs to be resaved.
@@ -1731,19 +1752,79 @@ void UResavePackagesCommandlet::CheckoutAndSavePackage(UPackage* Package, TArray
 
 void UResavePackagesCommandlet::CheckInFiles(const TArray<FString>& InFilesToSubmit, const FText& InDescription) const
 {
-	if (!bAutoCheckIn)
+	if (!bAutoCheckIn || InFilesToSubmit.IsEmpty())
 	{
 		return;
 	}
 
-	// Check in all changed files
-	if (InFilesToSubmit.Num() > 0)
+	FText FinalDescription = InDescription;
+	if (!bSkipVirtualization)
 	{
-		TSharedRef<FCheckIn, ESPMode::ThreadSafe> CheckInOperation = ISourceControlOperation::Create<FCheckIn>();
-		CheckInOperation->SetDescription(InDescription);
+		if (!TryVirtualization(InFilesToSubmit, FinalDescription))
+		{
+			UE_LOG(LogContentCommandlet, Error, TEXT("Files will not be checked in due to virtualization failure!"));
+			return;
+		}
+	}
+	else
+	{
+		UE_LOG(LogContentCommandlet, Display, TEXT("Skipping virtualization due to the cmdline"));
+	}
 
-		ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
-		SourceControlProvider.Execute(CheckInOperation, SourceControlHelpers::PackageFilenames(InFilesToSubmit));
+	TSharedRef<FCheckIn, ESPMode::ThreadSafe> CheckInOperation = ISourceControlOperation::Create<FCheckIn>();
+	CheckInOperation->SetDescription(FinalDescription);
+
+	ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
+	SourceControlProvider.Execute(CheckInOperation, SourceControlHelpers::PackageFilenames(InFilesToSubmit));
+}
+
+bool UResavePackagesCommandlet::TryVirtualization(const TArray<FString>& FilesToSubmit, FText& InOutDescription)
+{
+	using namespace UE::Virtualization;
+
+	IVirtualizationSystem& System = IVirtualizationSystem::Get();
+	if (!System.IsEnabled())
+	{
+		return true;
+	}
+
+	EVirtualizationOptions VirtualizationOptions = EVirtualizationOptions::None;
+
+	FVirtualizationResult Result = System.TryVirtualizePackages(FilesToSubmit, VirtualizationOptions);
+	if (Result.WasSuccessful())
+	{
+		FTextBuilder NewDescription;
+		NewDescription.AppendLine(InOutDescription);
+
+		for (const FText& Line : Result.DescriptionTags)
+		{
+			NewDescription.AppendLine(Line);
+		}
+
+		InOutDescription = NewDescription.ToText();
+
+		return true;
+	}
+	else if (System.AllowSubmitIfVirtualizationFailed())
+	{
+		for (const FText& Error : Result.Errors)
+		{
+			UE_LOG(LogContentCommandlet, Warning, TEXT("%s"), *Error.ToString());
+		}
+
+		// Even though the virtualization process had problems we should continue submitting
+		return true;
+	}
+	else
+	{
+		for (const FText& Error : Result.Errors)
+		{
+			UE_LOG(LogContentCommandlet, Error, TEXT("%s"), *Error.ToString());
+		}
+
+		UE_LOG(LogContentCommandlet, Error, TEXT("Failed to virtualize the files being submitted!"));
+
+		return false;
 	}
 }
 
@@ -2010,7 +2091,7 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 
 				while (Processor->IsProxyGenerationRunning())
 				{
-					FTSTicker::GetCoreTicker().Tick(FApp::GetDeltaTime());
+					FTSTicker::GetCoreTicker().Tick(static_cast<float>(FApp::GetDeltaTime()));
 					FThreadManager::Get().Tick();
 					FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
 					FPlatformProcess::Sleep(0.1f);
@@ -2291,7 +2372,7 @@ struct FUnreferencedObject
 	/** Full name of object */
 	FString ObjectName;
 	/** Size on disk as recorded in FObjectExport */
-	int32 SerialSize;
+	int64 SerialSize;
 
 	/**
 	 * Constructor for easy creation in a TArray
@@ -3511,30 +3592,6 @@ int32 UStaticMeshMinLodCommandlet::Main(const FString& Params)
 	AssetRegistryModule.Get().GetAssetsByClass(UStaticMesh::StaticClass()->GetClassPathName(), AssetList, true);
 	TArray<UPackage*> PackagesToSave;
 
-	// Platform (group) names
-	const TArray<FString> Filters = { TEXT("NoEditor"), TEXT("Client"), TEXT("Server"), TEXT("AllDesktop") };
-	TMultiMap<FName, FName> GroupToPlatform;
-
-	// sanitize all vanilla platform names
-	// generate a list of all supported platform (from the datadrivenplatform files)
-	const TArray<FName>& SanitizedPlatformNameArray = PlatformInfo::GetAllVanillaPlatformNames().FilterByPredicate([&Filters, &GroupToPlatform](const FName& PlatformName)
-		{
-			for (const FString& Filter : Filters)
-			{
-				const int32 Position = PlatformName.ToString().Find(Filter);
-				if (Position != INDEX_NONE)
-				{
-					return false;
-				}
-			}
-
-			if (const PlatformInfo::FTargetPlatformInfo* PlatformInfo = PlatformInfo::FindPlatformInfo(PlatformName))
-			{
-				GroupToPlatform.AddUnique(PlatformInfo->DataDrivenPlatformInfo->PlatformGroupName, PlatformName);
-			}
-			return true;
-		});
-
 	for (int32 AssetIdx = 0; AssetIdx < AssetList.Num(); ++AssetIdx)
 	{
 		bool SavePackage = false;
@@ -3693,6 +3750,140 @@ int32 UStaticMeshMinLodCommandlet::Main(const FString& Params)
 		}
 		FEditorFileUtils::PromptForCheckoutAndSave(PackagesToSave, false, false, nullptr, true, false);
 	}
+	
+	return 0;
+}
+
+
+/* ==========================================================================================================
+	ULandscapeGrassTypeCommandlet
+========================================================================================================== */
+
+ULandscapeGrassTypeCommandlet::ULandscapeGrassTypeCommandlet(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+}
+
+int32 ULandscapeGrassTypeCommandlet::Main(const FString& Params)
+{
+	TArray<FString> FilesInPath;
+	FEditorFileUtils::FindAllPackageFiles(FilesInPath);
+	if (FilesInPath.Num() == 0)
+	{
+		UE_LOG(LogContentCommandlet, Warning, TEXT("No packages found"));
+		return 1;
+	}
+
+	// parse the mapping from PerPlatform to PerQualityLevel
+	// ex:-mapping=Mobile:Low,Switch:Medium,Desktop:High,PS4:High,XboxOne:High,PS5:Epic,XSX:Epic,console:medium;high;epic,Desktop:high
+	TMultiMap<FName, FName> PerPlatformToQualityLevel;
+	FString MappingStr;
+	if (FParse::Value(*Params, TEXT("-mapping="), MappingStr, false))
+	{
+		TArray<FString> Mappings;
+		MappingStr.ParseIntoArray(Mappings, TEXT(","), true);
+		for (FString& PlatformToQualityLevel : Mappings)
+		{
+			TArray<FString> Entries;
+			PlatformToQualityLevel.ParseIntoArray(Entries, TEXT(":"), false);
+
+			if (Entries.Num() != 2)
+			{
+				UE_LOG(LogContentCommandlet, Error, TEXT("Error bad -mapping argument: %s"), *MappingStr);
+				return 1;
+			}
+
+			TArray<FString> Values;
+			Entries[1].ParseIntoArray(Values, TEXT(";"), false);
+
+			for (const FString& Value : Values)
+			{
+				PerPlatformToQualityLevel.AddUnique(FName(*Entries[0]), FName(*Value));
+			}
+		}
+	}
+
+	if (PerPlatformToQualityLevel.Num() == 0)
+	{
+		UE_LOG(LogContentCommandlet, Warning, TEXT("No Mapping rules found"));
+		return 1;
+	}
+
+	bool bNoSourceControl = FParse::Param(*Params, TEXT("nosourcecontrol"));
+	bool bGenerateCollections = FParse::Param(*Params, TEXT("collections"));
+	ISourceControlProvider* SourceControlProvider = bNoSourceControl ? nullptr : &ISourceControlModule::Get().GetProvider();
+	ICollectionManager& CollectionManager = FCollectionManagerModule::GetModule().Get();
+
+	// Load the asset registry module
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+
+	// Update Registry Module
+	UE_LOG(LogContentCommandlet, Display, TEXT("Searching Asset Registry for static mesh "));
+	AssetRegistryModule.Get().SearchAllAssets(true);
+
+	// Retrieve list of all assets, used to find unreferenced ones.
+	TArray<FAssetData> AssetList;
+	int32 TotalPackagesChecked = 0;
+	AssetRegistryModule.Get().GetAssetsByClass(ULandscapeGrassType::StaticClass()->GetClassPathName(), AssetList, true);
+	TArray<UPackage*> PackagesToSave;
+
+	for (int32 AssetIdx = 0; AssetIdx < AssetList.Num(); ++AssetIdx)
+	{
+		bool SavePackage = false;
+		const FString Filename = AssetList[AssetIdx].GetObjectPathString();
+		UE_LOG(LogContentCommandlet, Display, TEXT("Processing static mesh (%i/%i):  %s "), AssetIdx, AssetList.Num(), *Filename);
+
+		UPackage* Package = LoadPackage(NULL, *Filename, LOAD_Quiet);
+		if (Package == NULL)
+		{
+			UE_LOG(LogContentCommandlet, Error, TEXT("Error loading %s!"), *Filename);
+			continue;
+		}
+
+		TotalPackagesChecked++;
+
+		for (TObjectIterator<ULandscapeGrassType> It; It; ++It)
+		{
+			ULandscapeGrassType* GrassType = *It;
+			if (GrassType->IsIn(Package) && !GrassType->IsTemplate())
+			{
+				for (FGrassVariety& GrassVariety : GrassType->GrassVarieties)
+				{
+					GrassVariety.GrassDensityQuality.ConvertQualtiyLevelData(GrassVariety.GrassDensity.PerPlatform, PerPlatformToQualityLevel, GrassVariety.GrassDensity.Default);
+					GrassVariety.StartCullDistanceQuality.ConvertQualtiyLevelData(GrassVariety.StartCullDistance.PerPlatform, PerPlatformToQualityLevel, GrassVariety.StartCullDistance.Default);
+					GrassVariety.EndCullDistanceQuality.ConvertQualtiyLevelData(GrassVariety.EndCullDistance.PerPlatform, PerPlatformToQualityLevel, GrassVariety.EndCullDistance.Default);
+				}
+			}
+		}
+
+		if (!SavePackage)
+		{
+			PackagesToSave.AddUnique(Package);
+			SavePackage = true;
+		}
+	}
+
+	// save quality level modifications 
+	if (SourceControlProvider)
+	{
+		FEditorFileUtils::CheckoutPackages(PackagesToSave, nullptr, false);
+	}
+	else
+	{
+		for (UPackage* Package : PackagesToSave)
+		{
+			FString PackageFilename = SourceControlHelpers::PackageFilename(Package);
+			if (IPlatformFile::GetPlatformPhysical().FileExists(*PackageFilename))
+			{
+				if (!IPlatformFile::GetPlatformPhysical().SetReadOnly(*PackageFilename, false))
+				{
+					UE_LOG(LogContentCommandlet, Error, TEXT("Error setting %s writable"), *PackageFilename);
+					return 1;
+				}
+			}
+		}
+	}
+	FEditorFileUtils::PromptForCheckoutAndSave(PackagesToSave, false, false, nullptr, true, false);
 	
 	return 0;
 }

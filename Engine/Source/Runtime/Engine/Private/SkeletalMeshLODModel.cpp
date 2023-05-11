@@ -3,27 +3,18 @@
 #include "Rendering/SkeletalMeshLODModel.h"
 
 #if WITH_EDITOR
-#include "RenderUtils.h"
+#include "EngineLogs.h"
 #include "EngineUtils.h"
-#include "SkeletalMeshTypes.h"
 #include "Engine/SkeletalMesh.h"
-#include "UObject/EditorObjectVersion.h"
-#include "Interfaces/ITargetPlatform.h"
+#include "Engine/SkinnedAssetCommon.h"
 #include "Rendering/MultiSizeIndexContainer.h"
 #include "Rendering/SkeletalMeshVertexBuffer.h"
 #include "Rendering/ColorVertexBuffer.h"
-#include "Rendering/SkeletalMeshVertexClothBuffer.h"
 #include "Rendering/SkinWeightVertexBuffer.h"
-#include "UObject/ReleaseObjectVersion.h"
+#include "SkeletalMeshLegacyCustomVersions.h"
 #include "UObject/RenderingObjectVersion.h"
-#include "Rendering/SkeletalMeshLODImporterData.h"
+#include "Serialization/MemoryWriter.h"
 #include "UObject/FortniteMainBranchObjectVersion.h"
-#include "UObject/UE5MainStreamObjectVersion.h"
-#include "GPUSkinVertexFactory.h"
-#include "UObject/AnimObjectVersion.h"
-#include "UObject/UE5ReleaseStreamObjectVersion.h"
-#include "Misc/ScopeLock.h"
-#include "MeshDescription.h"
 #include "SkeletalMeshAttributes.h"
 
 /*-----------------------------------------------------------------------------
@@ -122,24 +113,30 @@ FArchive& operator<<(FArchive& Ar, FSoftSkinVertex& V)
 		}
 	}
 
-	for (uint32 InfluenceIndex = 0; InfluenceIndex < MAX_INFLUENCES_PER_STREAM; InfluenceIndex++)
+	if (!Ar.IsLoading() || Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) >= FUE5MainStreamObjectVersion::IncreasedSkinWeightPrecision)
 	{
-		Ar << V.InfluenceWeights[InfluenceIndex];
-	}
-
-	if (Ar.UEVer() >= VER_UE4_SUPPORT_8_BONE_INFLUENCES_SKELETAL_MESHES)
-	{
-		for (uint32 InfluenceIndex = MAX_INFLUENCES_PER_STREAM; InfluenceIndex < EXTRA_BONE_INFLUENCES; InfluenceIndex++)
+		for (uint32 InfluenceIndex = 0; InfluenceIndex < MAX_TOTAL_INFLUENCES; InfluenceIndex++)
 		{
 			Ar << V.InfluenceWeights[InfluenceIndex];
 		}
 	}
-
-	if (Ar.CustomVer(FAnimObjectVersion::GUID) >= FAnimObjectVersion::UnlimitedBoneInfluences)
+	else
 	{
-		for (uint32 InfluenceIndex = EXTRA_BONE_INFLUENCES; InfluenceIndex < MAX_TOTAL_INFLUENCES; InfluenceIndex++)
+		uint32 MaxInfluences = MAX_INFLUENCES_PER_STREAM;
+		if (Ar.CustomVer(FAnimObjectVersion::GUID) >= FAnimObjectVersion::UnlimitedBoneInfluences)
 		{
-			Ar << V.InfluenceWeights[InfluenceIndex];
+			MaxInfluences = MAX_TOTAL_INFLUENCES;
+		}
+		else if (Ar.UEVer() >= VER_UE4_SUPPORT_8_BONE_INFLUENCES_SKELETAL_MESHES)
+		{
+			MaxInfluences = EXTRA_BONE_INFLUENCES;
+		}
+		
+		uint8 OldInfluence = 0;
+		for (uint32 InfluenceIndex = 0; InfluenceIndex < MaxInfluences; InfluenceIndex++)
+		{
+			Ar << OldInfluence;
+			V.InfluenceWeights[InfluenceIndex] = (static_cast<uint16>(OldInfluence) << 8) | OldInfluence;
 		}
 	}
 
@@ -152,7 +149,7 @@ bool FSoftSkinVertex::GetRigidWeightBone(FBoneIndexType& OutBoneIndex) const
 
 	for (int32 WeightIdx = 0; WeightIdx < MAX_TOTAL_INFLUENCES; WeightIdx++)
 	{
-		if (InfluenceWeights[WeightIdx] == 255)
+		if (InfluenceWeights[WeightIdx] == std::numeric_limits<uint16>::max())
 		{
 			bIsRigid = true;
 			OutBoneIndex = InfluenceBones[WeightIdx];
@@ -163,13 +160,13 @@ bool FSoftSkinVertex::GetRigidWeightBone(FBoneIndexType& OutBoneIndex) const
 	return bIsRigid;
 }
 
-uint8 FSoftSkinVertex::GetMaximumWeight() const
+uint16 FSoftSkinVertex::GetMaximumWeight() const
 {
-	uint8 MaxInfluenceWeight = 0;
+	uint16 MaxInfluenceWeight = 0;
 
 	for (int32 Index = 0; Index < MAX_TOTAL_INFLUENCES; Index++)
 	{
-		const uint8 Weight = InfluenceWeights[Index];
+		const uint16 Weight = InfluenceWeights[Index];
 
 		if (Weight > MaxInfluenceWeight)
 		{
@@ -239,7 +236,7 @@ struct FLegacyRigidSkinVertex
 
 		DestVertex.Color = Color;
 		DestVertex.InfluenceBones[0] = Bone;
-		DestVertex.InfluenceWeights[0] = 255;
+		DestVertex.InfluenceWeights[0] = std::numeric_limits<uint16>::max();
 		for (int32 InfluenceIndex = 1; InfluenceIndex < MAX_TOTAL_INFLUENCES; InfluenceIndex++)
 		{
 			DestVertex.InfluenceBones[InfluenceIndex] = 0;
@@ -1401,8 +1398,11 @@ void FSkeletalMeshLODModel::GetMeshDescription(FMeshDescription& MeshDescription
 		VertexIDs.Add(MeshDescription.CreateVertex());
 	}
 
+	// Ensure we have enough channels to store all the defined UV coordinates.
+	VertexInstanceUVs.SetNumChannels(static_cast<int32>(NumTexCoords));
+	
 	const TArray<FSkeletalMaterial>& Materials = Owner->GetMaterials();
-	const bool bHasVertexColors = (Owner->GetVertexBufferFlags() & ESkeletalMeshVertexFlags::HasVertexColors);
+	const bool bHasVertexColors = EnumHasAllFlags(Owner->GetVertexBufferFlags(), ESkeletalMeshVertexFlags::HasVertexColors);
 
 	// Convert sections to polygon groups, each with their own material.
 	for (int32 SectionIndex = 0; SectionIndex < Sections.Num(); SectionIndex++)
@@ -1466,7 +1466,7 @@ void FSkeletalMeshLODModel::GetMeshDescription(FMeshDescription& MeshDescription
 					(FVector3f)(SourceVertex.TangentZ.GetSafeNormal()),
 					FVector3f::ZeroVector).Determinant() < 0.0f ? -1.0f : +1.0f);
 
-				for (int32 UVIndex = 0; UVIndex < int32(NumTexCoords); UVIndex++)
+				for (int32 UVIndex = 0; UVIndex < static_cast<int32>(NumTexCoords); UVIndex++)
 				{
 					VertexInstanceUVs.Set(VertexInstanceID, UVIndex, SourceVertex.UVs[UVIndex]);
 				}

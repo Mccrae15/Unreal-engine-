@@ -12,7 +12,7 @@ namespace UnrealBuildBase
 	/// <summary>
 	/// Stores the state of a directory. May or may not exist.
 	/// </summary>
-	public class DirectoryItem
+	public class DirectoryItem : IComparable<DirectoryItem>, IEquatable<DirectoryItem>
 	{
 		/// <summary>
 		/// Full path to the directory on disk
@@ -181,6 +181,17 @@ namespace UnrealBuildBase
 		}
 
 		/// <summary>
+		/// Resets the cached info, if the DirectoryInfo is not found don't create a new entry
+		/// </summary>
+		public static void ResetCachedInfo(string Path)
+		{
+			if (LocationToItem.TryGetValue(new DirectoryReference(Path), out DirectoryItem? Result))
+			{
+				Result.ResetCachedInfo();
+			}
+		}
+
+		/// <summary>
 		/// Resets all cached directory info. Significantly reduces performance; do not use unless strictly necessary.
 		/// </summary>
 		public static void ResetAllCachedInfo_SLOW()
@@ -213,6 +224,11 @@ namespace UnrealBuildBase
 					NewDirectories = new Dictionary<string, DirectoryItem>(Directories.Length, DirectoryReference.Comparer);
 					foreach (DirectoryInfo SubDirectoryInfo in Directories)
 					{
+						if (NewDirectories.ContainsKey(SubDirectoryInfo.Name))
+						{
+							throw new Exception($"Trying to add {SubDirectoryInfo.FullName} as '{SubDirectoryInfo.Name}' yet exists as {NewDirectories[SubDirectoryInfo.Name].FullName}");
+						}
+
 						NewDirectories.Add(SubDirectoryInfo.Name, DirectoryItem.GetItemByDirectoryInfo(SubDirectoryInfo));
 					}
 				}
@@ -337,6 +353,73 @@ namespace UnrealBuildBase
 			}
 			File.WriteAllLines(OutFile, AllFiles);
 		}
+
+		#region IComparable, IEquatbale
+		public int CompareTo(DirectoryItem? other)
+		{
+			return FullName.CompareTo(other?.FullName);
+		}
+
+		public bool Equals(DirectoryItem? other)
+		{
+			return FullName.Equals(other?.FullName);
+		}
+
+		public override bool Equals(object? obj)
+		{
+			if (ReferenceEquals(this, obj))
+			{
+				return true;
+			}
+
+			if (ReferenceEquals(obj, null))
+			{
+				return false;
+			}
+
+			return Equals((DirectoryItem?)obj);
+		}
+
+		public override int GetHashCode()
+		{
+			return FullName.GetHashCode();
+		}
+
+		public static bool operator ==(DirectoryItem? left, DirectoryItem? right)
+		{
+			if (ReferenceEquals(left, null))
+			{
+				return ReferenceEquals(right, null);
+			}
+
+			return left.Equals(right);
+		}
+
+		public static bool operator !=(DirectoryItem? left, DirectoryItem? right)
+		{
+			return !(left == right);
+		}
+
+		public static bool operator <(DirectoryItem? left, DirectoryItem? right)
+		{
+			return ReferenceEquals(left, null) ? !ReferenceEquals(right, null) : left.CompareTo(right) < 0;
+		}
+
+		public static bool operator <=(DirectoryItem? left, DirectoryItem? right)
+		{
+			return ReferenceEquals(left, null) || left.CompareTo(right) <= 0;
+		}
+
+		public static bool operator >(DirectoryItem? left, DirectoryItem? right)
+		{
+			return !ReferenceEquals(left, null) && left.CompareTo(right) > 0;
+		}
+
+		public static bool operator >=(DirectoryItem? left, DirectoryItem? right)
+		{
+			return ReferenceEquals(left, null) ? ReferenceEquals(right, null) : left.CompareTo(right) >= 0;
+		}
+		#endregion
 	}
 
 	/// <summary>

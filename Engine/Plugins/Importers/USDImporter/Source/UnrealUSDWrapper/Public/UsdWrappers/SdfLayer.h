@@ -51,10 +51,14 @@ namespace UE
 		FSdfLayerBase& operator=( const FSdfLayerWeak& Other );
 		FSdfLayerBase& operator=( FSdfLayerWeak&& Other );
 
-		bool operator==( const FSdfLayerBase& Other ) const;
-		bool operator!=( const FSdfLayerBase& Other ) const;
+		template<typename OtherPtrType>
+		bool operator==( const FSdfLayerBase<OtherPtrType>& Other ) const;
+		template<typename OtherPtrType>
+		bool operator!=( const FSdfLayerBase<OtherPtrType>& Other ) const;
 
 		explicit operator bool() const;
+
+		friend UNREALUSDWRAPPER_API uint32 GetTypeHash( const FSdfLayerWeak& Layer );
 
 		// Auto conversion from/to PtrType. We use concrete pointer types here
 		// because we should also be able to convert between them
@@ -86,6 +90,7 @@ namespace UE
 
 		void TransferContent( const FSdfLayer& SourceLayer );
 
+		static TSet<FSdfLayerWeak> GetLoadedLayers();
 		static FSdfLayer FindOrOpen( const TCHAR* Identifier );
 		static FSdfLayer CreateNew( const TCHAR* Identifier );
 

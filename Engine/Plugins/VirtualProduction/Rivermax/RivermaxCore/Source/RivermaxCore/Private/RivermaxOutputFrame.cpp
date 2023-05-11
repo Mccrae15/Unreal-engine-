@@ -4,18 +4,19 @@
 
 namespace UE::RivermaxCore::Private
 {
-	FRivermaxOutputFrame::FRivermaxOutputFrame(uint32 InFrameIndex)
+	FRivermaxOutputFrame::FRivermaxOutputFrame(uint32 InFrameIndex, TFunction<void(void*)> InDeallocationFunction)
 		: FrameIndex(InFrameIndex)
 		, VideoBuffer(nullptr)
+		, DeallocationFunc(InDeallocationFunction)
 	{
 		Clear();
 	}
 
 	FRivermaxOutputFrame::~FRivermaxOutputFrame()
 	{
-		if (VideoBuffer)
+		if (DeallocationFunc)
 		{
-			FMemory::Free(VideoBuffer);
+			DeallocationFunc(VideoBuffer);
 		}
 	}
 
@@ -29,12 +30,14 @@ namespace UE::RivermaxCore::Private
 		PacketCounter = 0;
 		LineNumber = 0;
 		SRDOffset = 0;
+		BytesSent = 0;
 	}
 
 	void FRivermaxOutputFrame::Reset()
 	{
 		FrameIdentifier = InvalidIdentifier;
 		bIsVideoBufferReady = false;
+		ReadyTimestamp = 0;
 		Clear();
 	}
 

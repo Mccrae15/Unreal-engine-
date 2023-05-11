@@ -3,8 +3,12 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "GameFramework/Actor.h"
 #include "HAL/ThreadSafeCounter.h"
 #include "Online/CoreOnlineFwd.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "RHIDefinitions.h"
+#endif
 #include "UObject/ObjectMacros.h"
 #include "UObject/UObjectGlobals.h"
 #include "UObject/Object.h"
@@ -13,22 +17,27 @@
 #include "Delegates/IDelegateInstance.h"
 #include "Engine/EngineTypes.h"
 #include "Engine/EngineBaseTypes.h"
+#include "GameTime.h"
 #include "CollisionQueryParams.h"
 #include "WorldCollision.h"
-#include "GameFramework/Pawn.h"
 #include "GameFramework/UpdateLevelVisibilityLevelInfo.h"
 #include "EngineDefines.h"
-#include "Engine/Blueprint.h"
 #include "Engine/PendingNetGame.h"
 #include "Engine/LatentActionManager.h"
-#include "Engine/GameInstance.h"
 #include "Physics/PhysicsInterfaceDeclares.h"
 #include "Particles/WorldPSCPool.h"
 #include "Containers/SortedMap.h"
+#include "AudioDeviceHandle.h"
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
 #include "AudioDeviceManager.h"
+#include "Engine/Blueprint.h"
+#include "Engine/GameInstance.h"
+#include "GameFramework/Pawn.h"
+#endif
 #include "Subsystems/WorldSubsystem.h"
 #include "Subsystems/SubsystemCollection.h"
 #include "CollisionProfile.h"
+#include "RHIFeatureLevel.h"
 
 #include "World.generated.h"
 
@@ -40,9 +49,12 @@ class AGameStateBase;
 class APhysicsVolume;
 class APlayerController;
 class AServerStreamingLevelsVisibility;
+class AWorldDataLayers;
 class AWorldSettings;
 class UWorldPartition;
 class Error;
+class FConstPawnIterator;
+class FRegisterComponentContext;
 class FTimerManager;
 class FWorldInGamePerformanceTrackers;
 class IInterface_PostProcessVolume;
@@ -80,151 +92,13 @@ typedef TArray<TWeakObjectPtr<ACameraActor> >::TConstIterator FConstCameraActorI
 typedef TArray<ULevel*>::TConstIterator FConstLevelIterator;
 typedef TArray<TWeakObjectPtr<APhysicsVolume> >::TConstIterator FConstPhysicsVolumeIterator;
 
-/** Wrapper object that tries to imitate the TWeakObjectPtr interface for the objects previously in the PawnList and iterated by FConstPawnIterator. */
-struct ENGINE_API FPawnIteratorObject
-{
-	APawn* operator->() const { return Pawn; }
-	APawn& operator*() const { return *Pawn; }
-	APawn* Get() const { return Pawn; }
-
-	bool operator==(const UObject* Other) const { return Pawn == Other; }
-	bool operator!=(const UObject* Other) const { return Pawn != Other; }
-
-private:
-	FPawnIteratorObject()
-		: Pawn(nullptr)
-	{
-	}
-
-	FPawnIteratorObject(APawn* InPawn)
-		: Pawn(InPawn)
-	{
-	}
-
-	APawn* Pawn;
-
-	friend class FConstPawnIterator;
-};
-
-template< class T > FORCEINLINE T* Cast(const FPawnIteratorObject& Src) { return Cast<T>(Src.Get()); }
-
-/** 
- * Imitation iterator class that attempts to provide the basic interface that FConstPawnIterator previously did when a typedef of TArray<TWeakObjectPtr<APawn>>::Iterator.
- * In general you should prefer not to use this iterator and instead use TActorIterator<APawn> or TActorRange<APawn> (or the desired more derived type).
- * This iterator will likely be deprecated in a future release.
- */
-class ENGINE_API FConstPawnIterator
-{
-private:
-	FConstPawnIterator(UWorld* World);
-
-public:
-	~FConstPawnIterator();
-
-	FConstPawnIterator(FConstPawnIterator&&);
-	FConstPawnIterator& operator=(FConstPawnIterator&&);
-
-	explicit operator bool() const;
-	FPawnIteratorObject operator*() const;
-	TUniquePtr<FPawnIteratorObject> operator->() const;
-
-	FConstPawnIterator& operator++();
-	FConstPawnIterator& operator++(int);
-	UE_DEPRECATED(4.23, "Decrement operator no longer means anything on a pawn iterator")
-	FConstPawnIterator& operator--() { return *this; }
-	UE_DEPRECATED(4.23, "Decrement operator no longer means anything on a pawn iterator")
-	FConstPawnIterator& operator--(int) { return *this; }
-
-private:
-	TUniquePtr<TActorIterator<APawn>> Iterator;
-
-	friend UWorld;
-};
-
-/** Contains all the timings of a gaming frame, to handle pause and time dilation (for instance bullet time) of the world. */
-struct ENGINE_API FGameTime
-{
-	FORCEINLINE_DEBUGGABLE FGameTime()
-		: RealTimeSeconds(0.0)
-		, WorldTimeSeconds(0.0)
-		, DeltaRealTimeSeconds(0.0f)
-		, DeltaWorldTimeSeconds(0.0f)
-	{ }
-
-	FGameTime(const FGameTime&) = default;
-	FGameTime& operator = (const FGameTime&) = default;
-
-	// Returns the game time since GStartTime.
-	static FGameTime GetTimeSinceAppStart();
-
-	static FORCEINLINE_DEBUGGABLE FGameTime CreateUndilated(double InRealTimeSeconds, float InDeltaRealTimeSeconds)
-	{
-		return FGameTime::CreateDilated(InRealTimeSeconds, InDeltaRealTimeSeconds, InRealTimeSeconds, InDeltaRealTimeSeconds);
-	}
-
-	static FORCEINLINE_DEBUGGABLE FGameTime CreateDilated(double InRealTimeSeconds, float InDeltaRealTimeSeconds, double InWorldTimeSeconds, float InDeltaWorldTimeSeconds)
-	{
-		return FGameTime(InRealTimeSeconds, InDeltaRealTimeSeconds, InWorldTimeSeconds, InDeltaWorldTimeSeconds);
-	}
-
-	/** Returns time in seconds since level began play, but IS NOT paused when the game is paused, and IS NOT dilated/clamped. */
-	FORCEINLINE_DEBUGGABLE double GetRealTimeSeconds() const
-	{
-		return RealTimeSeconds;
-	}
-
-	/** Returns frame delta time in seconds with no adjustment for time dilation and pause. */
-	FORCEINLINE_DEBUGGABLE float GetDeltaRealTimeSeconds() const
-	{
-		return DeltaRealTimeSeconds;
-	}
-
-	/** Returns time in seconds since level began play, but IS paused when the game is paused, and IS dilated/clamped. */
-	FORCEINLINE_DEBUGGABLE double GetWorldTimeSeconds() const
-	{
-		return WorldTimeSeconds;
-	}
-
-	/** Returns frame delta time in seconds adjusted by e.g. time dilation. */
-	FORCEINLINE_DEBUGGABLE float GetDeltaWorldTimeSeconds() const
-	{
-		return DeltaWorldTimeSeconds;
-	}
-
-	/** Returns how much world time is slowed compared to real time. */
-	FORCEINLINE_DEBUGGABLE float GetTimeDilation() const
-	{
-		ensure(DeltaRealTimeSeconds > 0.0f);
-		return DeltaWorldTimeSeconds / DeltaRealTimeSeconds;
-	}
-
-	/** Returns whether the world time is paused. */
-	FORCEINLINE_DEBUGGABLE bool IsPaused() const
-	{
-		return DeltaWorldTimeSeconds == 0.0f;
-	}
-
-private:
-	double RealTimeSeconds;
-	double WorldTimeSeconds;
-
-	float DeltaRealTimeSeconds;
-	float DeltaWorldTimeSeconds;
-
-	FORCEINLINE_DEBUGGABLE FGameTime(double InRealTimeSeconds, float InDeltaRealTimeSeconds, double InWorldTimeSeconds, float InDeltaWorldTimeSeconds)
-		: RealTimeSeconds(InRealTimeSeconds)
-		, WorldTimeSeconds(InWorldTimeSeconds)
-		, DeltaRealTimeSeconds(InDeltaRealTimeSeconds)
-		, DeltaWorldTimeSeconds(InDeltaWorldTimeSeconds)
-	{ }
-
-};
-
-
 ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogSpawn, Warning, All);
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnActorSpawned, AActor*);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnActorDestroyed, AActor*);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnPostRegisterAllActorComponents, AActor*);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnPreUnregisterAllActorComponents, AActor*);
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnActorRemovedFromWorld, AActor*);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnFeatureLevelChanged, ERHIFeatureLevel::Type);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnMovieSceneSequenceTick, float);
 
@@ -593,6 +467,9 @@ struct ENGINE_API FActorSpawnParameters
 	/** Method for resolving collisions at the spawn point. Undefined means no override, use the actor's setting. */
 	ESpawnActorCollisionHandlingMethod SpawnCollisionHandlingOverride;
 
+	/** Determines whether to multiply or override root component with provided spawn transform */
+	ESpawnActorScaleMethod TransformScaleMethod = ESpawnActorScaleMethod::MultiplyWithRoot;
+
 private:
 
 	friend class UPackageMapClient;
@@ -682,6 +559,13 @@ struct ENGINE_API FActorSpawnUtils
 	 * Return the base ename (without any number of globally unique identifier).
 	**/
 	static FName GetBaseName(FName Name);
+};
+
+struct FActorsInitializedParams
+{
+	FActorsInitializedParams(UWorld* InWorld, bool InResetTime) : World(InWorld), ResetTime(InResetTime) {}
+	UWorld* World;
+	bool ResetTime;
 };
 
 /**
@@ -932,7 +816,7 @@ private:
 
 public:
 
-	const TArray<ULevelStreaming*>& GetStreamingLevels() const { return StreamingLevels; }
+	const TArray<TObjectPtr<ULevelStreaming>>& GetStreamingLevels() const { return StreamingLevels; }
 
 	void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
 
@@ -977,6 +861,79 @@ struct FWorldPartitionEvents
 private:
 	static void BroadcastWorldPartitionInitialized(UWorld* InWorld, UWorldPartition* InWorldPartition);
 	static void BroadcastWorldPartitionUninitialized(UWorld* InWorld, UWorldPartition* InWorldPartition);
+};
+
+/** Struct containing a collection of optional parameters for initialization of a World. */
+struct FWorldInitializationValues
+{
+	FWorldInitializationValues()
+		: bInitializeScenes(true)
+		, bAllowAudioPlayback(true)
+		, bRequiresHitProxies(true)
+		, bCreatePhysicsScene(true)
+		, bCreateNavigation(true)
+		, bCreateAISystem(true)
+		, bShouldSimulatePhysics(true)
+		, bEnableTraceCollision(false)
+		, bForceUseMovementComponentInNonGameWorld(false)
+		, bTransactional(true)
+		, bCreateFXSystem(true)
+		, bCreateWorldPartition(false)
+	{
+	}
+
+	/** Should the scenes (physics, rendering) be created. */
+	uint32 bInitializeScenes:1;
+
+	/** Are sounds allowed to be generated from this world. */
+	uint32 bAllowAudioPlayback:1;
+
+	/** Should the render scene create hit proxies. */
+	uint32 bRequiresHitProxies:1;
+
+	/** Should the physics scene be created. bInitializeScenes must be true for this to be considered. */
+	uint32 bCreatePhysicsScene:1;
+
+	/** Should the navigation system be created for this world. */
+	uint32 bCreateNavigation:1;
+
+	/** Should the AI system be created for this world. */
+	uint32 bCreateAISystem:1;
+
+	/** Should physics be simulated in this world. */
+	uint32 bShouldSimulatePhysics:1;
+
+	/** Are collision trace calls valid within this world. */
+	uint32 bEnableTraceCollision:1;
+
+	/** Special flag to enable movement component in non game worlds (see UMovementComponent::OnRegister) */
+	uint32 bForceUseMovementComponentInNonGameWorld:1;
+
+	/** Should actions performed to objects in this world be saved to the transaction buffer. */
+	uint32 bTransactional:1;
+
+	/** Should the FX system be created for this world. */
+	uint32 bCreateFXSystem:1;
+
+	/** Should the world be partitioned */
+	uint32 bCreateWorldPartition:1;
+
+	/** The default game mode for this world (if any) */
+	TSubclassOf<class AGameModeBase> DefaultGameMode;
+
+	FWorldInitializationValues& InitializeScenes(const bool bInitialize) { bInitializeScenes = bInitialize; return *this; }
+	FWorldInitializationValues& AllowAudioPlayback(const bool bAllow) { bAllowAudioPlayback = bAllow; return *this; }
+	FWorldInitializationValues& RequiresHitProxies(const bool bRequires) { bRequiresHitProxies = bRequires; return *this; }
+	FWorldInitializationValues& CreatePhysicsScene(const bool bCreate) { bCreatePhysicsScene = bCreate; return *this; }
+	FWorldInitializationValues& CreateNavigation(const bool bCreate) { bCreateNavigation = bCreate; return *this; }
+	FWorldInitializationValues& CreateAISystem(const bool bCreate) { bCreateAISystem = bCreate; return *this; }
+	FWorldInitializationValues& ShouldSimulatePhysics(const bool bInShouldSimulatePhysics) { bShouldSimulatePhysics = bInShouldSimulatePhysics; return *this; }
+	FWorldInitializationValues& EnableTraceCollision(const bool bInEnableTraceCollision) { bEnableTraceCollision = bInEnableTraceCollision; return *this; }
+	FWorldInitializationValues& ForceUseMovementComponentInNonGameWorld(const bool bInForceUseMovementComponentInNonGameWorld) { bForceUseMovementComponentInNonGameWorld = bInForceUseMovementComponentInNonGameWorld; return *this; }
+	FWorldInitializationValues& SetTransactional(const bool bInTransactional) { bTransactional = bInTransactional; return *this; }
+	FWorldInitializationValues& CreateFXSystem(const bool bCreate) { bCreateFXSystem = bCreate; return *this; }
+	FWorldInitializationValues& CreateWorldPartition(const bool bCreate) { bCreateWorldPartition = bCreate; return *this; }
+	FWorldInitializationValues& SetDefaultGameMode(TSubclassOf<class AGameModeBase> GameMode) { DefaultGameMode = GameMode; return *this; }
 };
 
 /** 
@@ -1325,6 +1282,9 @@ public:
 
 	/** Indicates that toggling between Play-in-Editor and Simulate-in-Editor happened this frame. */
 	uint8 bToggledBetweenPIEandSIEThisFrame : 1;
+
+	/** Indicates that the renderer scene for this editor world was purged while Play-in-Editor. */
+	uint8 bPurgedScene : 1;
 #endif
 
 	/** Keeps track whether actors moved via PostEditMove and therefore constraint syncup should be performed. */
@@ -1488,7 +1448,13 @@ public:
 	/** Change the feature level that this world is current rendering with */
 	void ChangeFeatureLevel(ERHIFeatureLevel::Type InFeatureLevel, bool bShowSlowProgressDialog = true);
 
-	void RecreateScene(ERHIFeatureLevel::Type InFeatureLevel);
+	void RecreateScene(ERHIFeatureLevel::Type InFeatureLevel, bool bBroadcastChange = true);
+
+	/** Recreate the editor world's FScene with a null scene interface to drop extra GPU memory during PIE */
+	void PurgeScene();
+
+	/** Restore the purged editor world FScene back to the proper GPU representation */
+	void RestoreScene();
 
 #endif // WITH_EDITOR
 
@@ -1557,14 +1523,41 @@ private:
 	FBlueprintToDebuggedObjectMap BlueprintObjectsBeingDebugged;
 #endif
 
-	/** a delegate that broadcasts a notification whenever an actor is spawned */
+	/**
+	 * Broadcasts a notification whenever an actor is spawned.
+	 * This event is only for newly created actors.
+	 */
 	mutable FOnActorSpawned OnActorSpawned;
 
-	/** a delegate that broadcasts a notification before a newly spawned actor is initialized */
+	/**
+	 * Broadcasts a notification before a newly spawned actor is initialized.
+	 * This event is only for newly created actors.
+	 */
 	mutable FOnActorSpawned OnActorPreSpawnInitialization;
 
-	/** a delegate that broadcasts a notification whenever an actor is destroyed */
+	/**
+	 * Broadcasts a notification whenever an actor is destroyed.
+	 * This event is not fired for unloaded actors.
+	 */
 	mutable FOnActorDestroyed OnActorDestroyed;
+
+	/**
+	 * Broadcasts after an actor has registered all its components.
+	 * This is called for both spawned and loaded actors.
+	 */
+	mutable FOnPostRegisterAllActorComponents OnPostRegisterAllActorComponents;
+
+	/**
+	 * Broadcasts before an actor unregisters all its components.
+	 * This is called for both spawned and loaded actors.
+	 */
+	mutable FOnPreUnregisterAllActorComponents OnPreUnregisterAllActorComponents;
+
+	/**
+	 * Broadcasts when an actor has been removed from the world.
+	 * This event is the earliest point where an actor can be safely renamed without affecting replication.
+	 */
+	mutable FOnActorRemovedFromWorld OnActorRemovedFromWorld;
 
 	/** Reset Async Trace Buffer **/
 	void ResetAsyncTrace();
@@ -2204,6 +2197,20 @@ public:
 	bool ComponentSweepMulti(TArray<struct FHitResult>& OutHits, class UPrimitiveComponent* PrimComp, const FVector& Start, const FVector& End, const FQuat& Rot,    const FComponentQueryParams& Params) const;
 	bool ComponentSweepMulti(TArray<struct FHitResult>& OutHits, class UPrimitiveComponent* PrimComp, const FVector& Start, const FVector& End, const FRotator& Rot, const FComponentQueryParams& Params) const;
 
+	/**
+	 *  Sweep the geometry of the supplied component using a specific channel, and determine the set of components that it hits.
+	 *  @note The overload taking rotation as an FQuat is slightly faster than the version using FRotator (which will be converted to an FQuat)..
+	 *  @param  OutHits         Array of hits found between ray and the world
+	 *  @param  PrimComp        Component's geometry to test against the world. Transform of this component is ignored
+	 *  @param  Start           Start location of the trace
+	 *  @param  End             End location of the trace
+	 *  @param  Rot             Rotation of PrimComp geometry for test against the world (rotation remains constant over sweep)
+	 *  @param  Params          Additional parameters used for the trace
+	 *  @return TRUE if OutHits contains any blocking hit entries
+	 */
+	bool ComponentSweepMultiByChannel(TArray<struct FHitResult>& OutHits, class UPrimitiveComponent* PrimComp, const FVector& Start, const FVector& End, const FQuat& Rot, ECollisionChannel TraceChannel, const FComponentQueryParams& Params) const;
+	bool ComponentSweepMultiByChannel(TArray<struct FHitResult>& OutHits, class UPrimitiveComponent* PrimComp, const FVector& Start, const FVector& End, const FRotator& Rot, ECollisionChannel TraceChannel, const FComponentQueryParams& Params) const;
+
 	// COMPONENT OVERLAP
 
 	/**
@@ -2244,7 +2251,7 @@ public:
 	 *  @param  TraceChannel    The 'channel' that this ray is in, used to determine which components to hit
 	 *  @param  Params          Additional parameters used for the trace
 	 * 	@param 	ResponseParam	ResponseContainer to be used for this trace
-	 *	@param	InDeleagte		Delegate function to be called - to see example, search FTraceDelegate
+	 *	@param	InDelegate		Delegate function to be called - to see example, search FTraceDelegate
 	 *							Example can be void MyActor::TraceDone(const FTraceHandle& TraceHandle, FTraceDatum & TraceData)
 	 *							Before sending to the function, 
 	 *						
@@ -2253,7 +2260,7 @@ public:
 	 * 
 	 *	@param	UserData		UserData
 	 */ 
-	FTraceHandle	AsyncLineTraceByChannel(EAsyncTraceType InTraceType, const FVector& Start,const FVector& End, ECollisionChannel TraceChannel, const FCollisionQueryParams& Params = FCollisionQueryParams::DefaultQueryParam, const FCollisionResponseParams& ResponseParam = FCollisionResponseParams::DefaultResponseParam, FTraceDelegate * InDelegate=NULL, uint32 UserData = 0 );
+	FTraceHandle	AsyncLineTraceByChannel(EAsyncTraceType InTraceType, const FVector& Start,const FVector& End, ECollisionChannel TraceChannel, const FCollisionQueryParams& Params = FCollisionQueryParams::DefaultQueryParam, const FCollisionResponseParams& ResponseParam = FCollisionResponseParams::DefaultResponseParam, const FTraceDelegate* InDelegate = nullptr, uint32 UserData = 0 );
 
 	/**
 	 * Interface for Async. Pretty much same parameter set except you can optional set delegate to be called when execution is completed and you can set UserData if you'd like
@@ -2265,7 +2272,7 @@ public:
 	 *  @param  End             End location of the ray
 	 *	@param	ObjectQueryParams	List of object types it's looking for
 	 *  @param  Params          Additional parameters used for the trace
-	 *	@param	InDeleagte		Delegate function to be called - to see example, search FTraceDelegate
+	 *	@param	InDelegate		Delegate function to be called - to see example, search FTraceDelegate
 	 *							Example can be void MyActor::TraceDone(const FTraceHandle& TraceHandle, FTraceDatum & TraceData)
 	 *							Before sending to the function, 
 	 *						
@@ -2274,7 +2281,7 @@ public:
 	 * 
 	 *	@param	UserData		UserData
 	 */ 
-	FTraceHandle	AsyncLineTraceByObjectType(EAsyncTraceType InTraceType, const FVector& Start,const FVector& End, const FCollisionObjectQueryParams& ObjectQueryParams, const FCollisionQueryParams& Params = FCollisionQueryParams::DefaultQueryParam, FTraceDelegate * InDelegate=NULL, uint32 UserData = 0 );
+	FTraceHandle	AsyncLineTraceByObjectType(EAsyncTraceType InTraceType, const FVector& Start,const FVector& End, const FCollisionObjectQueryParams& ObjectQueryParams, const FCollisionQueryParams& Params = FCollisionQueryParams::DefaultQueryParam, const FTraceDelegate* InDelegate = nullptr, uint32 UserData = 0 );
 
 	/**
 	 * Interface for Async. Pretty much same parameter set except you can optional set delegate to be called when execution is completed and you can set UserData if you'd like
@@ -2286,7 +2293,7 @@ public:
 	 *  @param  End             End location of the ray
 	 *  @param  ProfileName		The 'profile' used to determine which components to hit
 	 *  @param  Params          Additional parameters used for the trace
-	 *	@param	InDeleagte		Delegate function to be called - to see example, search FTraceDelegate
+	 *	@param	InDelegate		Delegate function to be called - to see example, search FTraceDelegate
 	 *							Example can be void MyActor::TraceDone(const FTraceHandle& TraceHandle, FTraceDatum & TraceData)
 	 *							Before sending to the function,
 	 *
@@ -2295,7 +2302,7 @@ public:
 	 *
 	 *	@param	UserData		UserData
 	 */
-	FTraceHandle	AsyncLineTraceByProfile(EAsyncTraceType InTraceType, const FVector& Start, const FVector& End, FName ProfileName, const FCollisionQueryParams& Params = FCollisionQueryParams::DefaultQueryParam, FTraceDelegate* InDelegate = NULL, uint32 UserData = 0);
+	FTraceHandle	AsyncLineTraceByProfile(EAsyncTraceType InTraceType, const FVector& Start, const FVector& End, FName ProfileName, const FCollisionQueryParams& Params = FCollisionQueryParams::DefaultQueryParam, const FTraceDelegate* InDelegate = nullptr, uint32 UserData = 0);
 
 	/**
 	 * Interface for Async trace
@@ -2310,7 +2317,7 @@ public:
 	 *  @param	CollisionShape		CollisionShape - supports Box, Sphere, Capsule
 	 *  @param  Params          Additional parameters used for the trace
 	 * 	@param 	ResponseParam	ResponseContainer to be used for this trace	 
-	 *	@param	InDeleagte		Delegate function to be called - to see example, search FTraceDelegate
+	 *	@param	InDelegate		Delegate function to be called - to see example, search FTraceDelegate
 	 *							Example can be void MyActor::TraceDone(const FTraceHandle& TraceHandle, FTraceDatum & TraceData)
 	 *							Before sending to the function, 
 	 *						
@@ -2319,7 +2326,7 @@ public:
 	 * 
 	 *	@param	UserData		UserData
 	 */ 
-	FTraceHandle	AsyncSweepByChannel(EAsyncTraceType InTraceType, const FVector& Start, const FVector& End, const FQuat& Rot, ECollisionChannel TraceChannel, const FCollisionShape& CollisionShape, const FCollisionQueryParams& Params = FCollisionQueryParams::DefaultQueryParam, const FCollisionResponseParams& ResponseParam = FCollisionResponseParams::DefaultResponseParam, FTraceDelegate * InDelegate = NULL, uint32 UserData = 0);
+	FTraceHandle	AsyncSweepByChannel(EAsyncTraceType InTraceType, const FVector& Start, const FVector& End, const FQuat& Rot, ECollisionChannel TraceChannel, const FCollisionShape& CollisionShape, const FCollisionQueryParams& Params = FCollisionQueryParams::DefaultQueryParam, const FCollisionResponseParams& ResponseParam = FCollisionResponseParams::DefaultResponseParam, const FTraceDelegate* InDelegate = nullptr, uint32 UserData = 0);
 
 	/**
 	 * Interface for Async trace
@@ -2333,7 +2340,7 @@ public:
 	 *	@param	ObjectQueryParams	List of object types it's looking for
 	 *  @param	CollisionShape		CollisionShape - supports Box, Sphere, Capsule
 	 *  @param  Params          Additional parameters used for the trace
-	 *	@param	InDeleagte		Delegate function to be called - to see example, search FTraceDelegate
+	 *	@param	InDelegate		Delegate function to be called - to see example, search FTraceDelegate
 	 *							Example can be void MyActor::TraceDone(const FTraceHandle& TraceHandle, FTraceDatum & TraceData)
 	 *							Before sending to the function, 
 	 *						
@@ -2342,7 +2349,7 @@ public:
 	 * 
 	 *	@param	UserData		UserData
 	 */ 
-	FTraceHandle	AsyncSweepByObjectType(EAsyncTraceType InTraceType, const FVector& Start, const FVector& End, const FQuat& Rot, const FCollisionObjectQueryParams& ObjectQueryParams, const FCollisionShape& CollisionShape, const FCollisionQueryParams& Params = FCollisionQueryParams::DefaultQueryParam, FTraceDelegate * InDelegate = NULL, uint32 UserData = 0);
+	FTraceHandle	AsyncSweepByObjectType(EAsyncTraceType InTraceType, const FVector& Start, const FVector& End, const FQuat& Rot, const FCollisionObjectQueryParams& ObjectQueryParams, const FCollisionShape& CollisionShape, const FCollisionQueryParams& Params = FCollisionQueryParams::DefaultQueryParam, const FTraceDelegate* InDelegate = nullptr, uint32 UserData = 0);
 
 	/**
 	 * Interface for Async trace
@@ -2356,7 +2363,7 @@ public:
 	 *  @param  ProfileName     The 'profile' used to determine which components to hit
 	 *  @param	CollisionShape	CollisionShape - supports Box, Sphere, Capsule
 	 *  @param  Params          Additional parameters used for the trace
-	 *	@param	InDeleagte		Delegate function to be called - to see example, search FTraceDelegate
+	 *	@param	InDelegate		Delegate function to be called - to see example, search FTraceDelegate
 	 *							Example can be void MyActor::TraceDone(const FTraceHandle& TraceHandle, FTraceDatum & TraceData)
 	 *							Before sending to the function,
 	 *
@@ -2365,7 +2372,7 @@ public:
 	 *
 	 *	@param	UserData		UserData
 	 */
-	FTraceHandle	AsyncSweepByProfile(EAsyncTraceType InTraceType, const FVector& Start, const FVector& End, const FQuat& Rot, FName ProfileName, const FCollisionShape& CollisionShape, const FCollisionQueryParams& Params = FCollisionQueryParams::DefaultQueryParam, FTraceDelegate* InDelegate = NULL, uint32 UserData = 0);
+	FTraceHandle	AsyncSweepByProfile(EAsyncTraceType InTraceType, const FVector& Start, const FVector& End, const FQuat& Rot, FName ProfileName, const FCollisionShape& CollisionShape, const FCollisionQueryParams& Params = FCollisionQueryParams::DefaultQueryParam, const FTraceDelegate* InDelegate = nullptr, uint32 UserData = 0);
 
 	// overlap functions
 
@@ -2376,12 +2383,11 @@ public:
 	 * the data is available only in the next frame after request is made - in other words, if request is made in frame X, you can get the result in frame (X+1)
 	 *
 	 *  @param  Pos             Location of center of shape to test against the world
-	 *	@param	bMultiTrace		true if you'd like to do multi trace, or false otherwise
 	 *  @param  TraceChannel    The 'channel' that this query is in, used to determine which components to hit
 	 *  @param	CollisionShape		CollisionShape - supports Box, Sphere, Capsule
 	 *  @param  Params          Additional parameters used for the trace
 	 * 	@param 	ResponseParam	ResponseContainer to be used for this trace
-	 *	@param	InDeleagte		Delegate function to be called - to see example, search FTraceDelegate
+	 *	@param	InDelegate		Delegate function to be called - to see example, search FTraceDelegate
 	 *							Example can be void MyActor::TraceDone(const FTraceHandle& TraceHandle, FTraceDatum & TraceData)
 	 *							Before sending to the function, 
 	 *						
@@ -2390,7 +2396,7 @@ public:
 	 * 
 	 *	@param UserData			UserData
 	 */ 
-	FTraceHandle	AsyncOverlapByChannel(const FVector& Pos, const FQuat& Rot, ECollisionChannel TraceChannel, const FCollisionShape& CollisionShape, const FCollisionQueryParams& Params = FCollisionQueryParams::DefaultQueryParam, const FCollisionResponseParams& ResponseParam = FCollisionResponseParams::DefaultResponseParam, FOverlapDelegate * InDelegate = NULL, uint32 UserData = 0);
+	FTraceHandle	AsyncOverlapByChannel(const FVector& Pos, const FQuat& Rot, ECollisionChannel TraceChannel, const FCollisionShape& CollisionShape, const FCollisionQueryParams& Params = FCollisionQueryParams::DefaultQueryParam, const FCollisionResponseParams& ResponseParam = FCollisionResponseParams::DefaultResponseParam, const FOverlapDelegate* InDelegate = nullptr, uint32 UserData = 0);
 
 	/**
 	 * Interface for Async trace
@@ -2402,7 +2408,7 @@ public:
 	 *	@param	ObjectQueryParams	List of object types it's looking for
 	 *  @param	CollisionShape		CollisionShape - supports Box, Sphere, Capsule
 	 *  @param  Params          Additional parameters used for the trace
-	 *	@param	InDeleagte		Delegate function to be called - to see example, search FTraceDelegate
+	 *	@param	InDelegate		Delegate function to be called - to see example, search FTraceDelegate
 	 *							Example can be void MyActor::TraceDone(const FTraceHandle& TraceHandle, FTraceDatum & TraceData)
 	 *							Before sending to the function, 
 	 *						
@@ -2411,7 +2417,7 @@ public:
 	 * 
 	 *	@param UserData			UserData
 	 */ 
-	FTraceHandle	AsyncOverlapByObjectType(const FVector& Pos, const FQuat& Rot, const FCollisionObjectQueryParams& ObjectQueryParams, const FCollisionShape& CollisionShape, const FCollisionQueryParams& Params = FCollisionQueryParams::DefaultQueryParam, FOverlapDelegate * InDelegate = NULL, uint32 UserData = 0);
+	FTraceHandle	AsyncOverlapByObjectType(const FVector& Pos, const FQuat& Rot, const FCollisionObjectQueryParams& ObjectQueryParams, const FCollisionShape& CollisionShape, const FCollisionQueryParams& Params = FCollisionQueryParams::DefaultQueryParam, const FOverlapDelegate* InDelegate = nullptr, uint32 UserData = 0);
 
 	/**
 	 * Interface for Async trace
@@ -2423,7 +2429,7 @@ public:
 	 *  @param  ProfileName     The 'profile' used to determine which components to hit
 	 *  @param	CollisionShape		CollisionShape - supports Box, Sphere, Capsule
 	 *  @param  Params          Additional parameters used for the trace
-	 *	@param	InDeleagte		Delegate function to be called - to see example, search FTraceDelegate
+	 *	@param	InDelegate		Delegate function to be called - to see example, search FTraceDelegate
 	 *							Example can be void MyActor::TraceDone(const FTraceHandle& TraceHandle, FTraceDatum & TraceData)
 	 *							Before sending to the function,
 	 *
@@ -2432,7 +2438,7 @@ public:
 	 *
 	 *	@param UserData			UserData
 	 */
-	FTraceHandle	AsyncOverlapByProfile(const FVector& Pos, const FQuat& Rot, FName ProfileName, const FCollisionShape& CollisionShape, const FCollisionQueryParams& Params = FCollisionQueryParams::DefaultQueryParam, FOverlapDelegate* InDelegate = NULL, uint32 UserData = 0);
+	FTraceHandle	AsyncOverlapByProfile(const FVector& Pos, const FQuat& Rot, FName ProfileName, const FCollisionShape& CollisionShape, const FCollisionQueryParams& Params = FCollisionQueryParams::DefaultQueryParam, const FOverlapDelegate* InDelegate = nullptr, uint32 UserData = 0);
 
 	/**
 	 * Query function 
@@ -2461,19 +2467,7 @@ public:
 	bool IsTraceHandleValid(const FTraceHandle& Handle, bool bOverlapTrace);
 
 private:
-	static void GetCollisionProfileChannelAndResponseParams(FName ProfileName, ECollisionChannel& CollisionChannel, FCollisionResponseParams& ResponseParams)
-	{
-		if (UCollisionProfile::GetChannelAndResponseParams(ProfileName, CollisionChannel, ResponseParams))
-		{
-			return;
-		}
-
-		// No profile found
-		UE_LOG(LogPhysics, Warning, TEXT("COLLISION PROFILE [%s] is not found"), *ProfileName.ToString());
-
-		CollisionChannel = ECC_WorldStatic;
-		ResponseParams = FCollisionResponseParams::DefaultResponseParam;
-	}
+	static void GetCollisionProfileChannelAndResponseParams(FName ProfileName, ECollisionChannel& CollisionChannel, FCollisionResponseParams& ResponseParams);
 
 public:
 
@@ -2571,12 +2565,8 @@ public:
 	/** Returns true if the actors have been initialized and are ready to start play */
 	bool AreActorsInitialized() const;
 
-	struct FActorsInitializedParams
-	{
-		FActorsInitializedParams(UWorld* InWorld, bool InResetTime) : World(InWorld), ResetTime(InResetTime) {}
-		UWorld* World;
-		bool ResetTime;
-	};
+	/** For backwards compatibility */
+	using FActorsInitializedParams = ::FActorsInitializedParams;
 
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnWorldInitializedActors, const FActorsInitializedParams&);
 	FOnWorldInitializedActors OnActorsInitialized;
@@ -2817,6 +2807,37 @@ public:
 	/** Remove a listener for OnActorDestroyed events */
 	void RemoveOnActorDestroyededHandler(FDelegateHandle InHandle) const;
 
+	/** Add a listener for OnPostRegisterAllActorComponents events */
+	FDelegateHandle AddOnPostRegisterAllActorComponentsHandler(const FOnPostRegisterAllActorComponents::FDelegate& InHandler) const;
+
+	/** Remove a listener for OnPostRegisterAllActorComponents events */
+	void RemoveOnPostRegisterAllActorComponentsHandler(FDelegateHandle InHandle) const;
+
+	/**
+	 * Broadcast an OnPostRegisterAllActorComponents event.
+	 * This method should only be called from internal actor and level code and never on inactive worlds.
+	 */
+	void NotifyPostRegisterAllActorComponents(AActor* Actor);
+
+	/** Add a listener for OnPreUnregisterAllActorComponents events */
+	FDelegateHandle AddOnPreUnregisterAllActorComponentsHandler(const FOnPreUnregisterAllActorComponents::FDelegate& InHandler) const;
+
+	/** Remove a listener for OnPreUnregisterAllActorComponents events */
+	void RemoveOnPreUnregisterAllActorComponentsHandler(FDelegateHandle InHandle) const;
+
+	/**
+	 * Broadcast an OnPreUnregisterAllActorComponents event.
+	 * This method should only be called from internal actor and level code. Calls on inactive or GCing worlds are
+	 * ignored.
+	 */
+	void NotifyPreUnregisterAllActorComponents(AActor* Actor);
+
+	/** Add a listener for OnActorRemovedFromWorld events */
+	FDelegateHandle AddOnActorRemovedFromWorldHandler(const FOnActorRemovedFromWorld::FDelegate& InHandler) const;
+
+	/** Remove a listener for OnActorRemovedFromWorld events */
+	void RemoveOnActorRemovedFromWorldHandler(FDelegateHandle InHandle) const;
+
 	/**
 	 * Returns whether the passed in actor is part of any of the loaded levels actors array.
 	 * Warning: Will return true for pending kill actors!
@@ -2941,16 +2962,18 @@ public:
 	 * @param LevelTransform	Transformation to apply to each actor in the level
 	 * @param bConsiderTimeLimie optional bool indicating if we should consider timelimit or not, default is true
 	 * @param TransactionId optional parameter that carries the current transaction id associated with calls updating LevelVisibility used when communicating level visibility with server
+	 * @param OwningLevelStreaming optional parameter, the ULevelStreaming object driving this level's presence in the world
 	 */
-	void AddToWorld(ULevel* Level, const FTransform& LevelTransform = FTransform::Identity, bool bConsiderTimeLimit = true, FNetLevelVisibilityTransactionId TransactionId = FNetLevelVisibilityTransactionId());
+	void AddToWorld(ULevel* Level, const FTransform& LevelTransform = FTransform::Identity, bool bConsiderTimeLimit = true, FNetLevelVisibilityTransactionId TransactionId = FNetLevelVisibilityTransactionId(), ULevelStreaming* OwningLevelStreaming = nullptr);
 
 	/** 
 	 * Dissociates the passed in level from the world. The removal is blocking.
 	 *
 	 * @param Level			Level object we should remove
 	 * @param TransactionId optional parameter that carries the current transaction id associated with calls updating LevelVisibility used when communicating level visibility with server
+	 * @param OwningLevelStreaming optional parameter, the ULevelStreaming object driving this level's presence in the world
 	 */
-	void RemoveFromWorld(ULevel* Level, bool bAllowIncrementalRemoval = false, FNetLevelVisibilityTransactionId TransactionId = FNetLevelVisibilityTransactionId());
+	void RemoveFromWorld(ULevel* Level, bool bAllowIncrementalRemoval = false, FNetLevelVisibilityTransactionId TransactionId = FNetLevelVisibilityTransactionId(), ULevelStreaming* OwningLevelStreaming = nullptr);
 
 	/**
 	 * Updates sub-levels (load/unload/show/hide) using streaming levels current state
@@ -3011,83 +3034,13 @@ public:
 	UCanvas* GetCanvasForRenderingToTarget();
 	UCanvas* GetCanvasForDrawMaterialToRenderTarget();
 
-	/** Struct containing a collection of optional parameters for initialization of a World. */
-	struct InitializationValues
-	{
-		InitializationValues()
-			: bInitializeScenes(true)
-			, bAllowAudioPlayback(true)
-			, bRequiresHitProxies(true)
-			, bCreatePhysicsScene(true)
-			, bCreateNavigation(true)
-			, bCreateAISystem(true)
-			, bShouldSimulatePhysics(true)
-			, bEnableTraceCollision(false)
-			, bForceUseMovementComponentInNonGameWorld(false)
-			, bTransactional(true)
-			, bCreateFXSystem(true)
-			, bCreateWorldPartition(false)
-		{
-		}
-
-		/** Should the scenes (physics, rendering) be created. */
-		uint32 bInitializeScenes:1;
-
-		/** Are sounds allowed to be generated from this world. */
-		uint32 bAllowAudioPlayback:1;
-
-		/** Should the render scene create hit proxies. */
-		uint32 bRequiresHitProxies:1;
-
-		/** Should the physics scene be created. bInitializeScenes must be true for this to be considered. */
-		uint32 bCreatePhysicsScene:1;
-
-		/** Should the navigation system be created for this world. */
-		uint32 bCreateNavigation:1;
-
-		/** Should the AI system be created for this world. */
-		uint32 bCreateAISystem:1;
-
-		/** Should physics be simulated in this world. */
-		uint32 bShouldSimulatePhysics:1;
-
-		/** Are collision trace calls valid within this world. */
-		uint32 bEnableTraceCollision:1;
-
-		/** Special flag to enable movement component in non game worlds (see UMovementComponent::OnRegister) */
-		uint32 bForceUseMovementComponentInNonGameWorld:1;
-
-		/** Should actions performed to objects in this world be saved to the transaction buffer. */
-		uint32 bTransactional:1;
-
-		/** Should the FX system be created for this world. */
-		uint32 bCreateFXSystem:1;
-
-		/** Should the world be partitioned */
-		uint32 bCreateWorldPartition:1;
-
-		/** The default game mode for this world (if any) */
-		TSubclassOf<class AGameModeBase> DefaultGameMode;
-
-		InitializationValues& InitializeScenes(const bool bInitialize) { bInitializeScenes = bInitialize; return *this; }
-		InitializationValues& AllowAudioPlayback(const bool bAllow) { bAllowAudioPlayback = bAllow; return *this; }
-		InitializationValues& RequiresHitProxies(const bool bRequires) { bRequiresHitProxies = bRequires; return *this; }
-		InitializationValues& CreatePhysicsScene(const bool bCreate) { bCreatePhysicsScene = bCreate; return *this; }
-		InitializationValues& CreateNavigation(const bool bCreate) { bCreateNavigation = bCreate; return *this; }
-		InitializationValues& CreateAISystem(const bool bCreate) { bCreateAISystem = bCreate; return *this; }
-		InitializationValues& ShouldSimulatePhysics(const bool bInShouldSimulatePhysics) { bShouldSimulatePhysics = bInShouldSimulatePhysics; return *this; }
-		InitializationValues& EnableTraceCollision(const bool bInEnableTraceCollision) { bEnableTraceCollision = bInEnableTraceCollision; return *this; }
-		InitializationValues& ForceUseMovementComponentInNonGameWorld(const bool bInForceUseMovementComponentInNonGameWorld) { bForceUseMovementComponentInNonGameWorld = bInForceUseMovementComponentInNonGameWorld; return *this; }
-		InitializationValues& SetTransactional(const bool bInTransactional) { bTransactional = bInTransactional; return *this; }
-		InitializationValues& CreateFXSystem(const bool bCreate) { bCreateFXSystem = bCreate; return *this; }
-		InitializationValues& CreateWorldPartition(const bool bCreate) { bCreateWorldPartition = bCreate; return *this; }
-		InitializationValues& SetDefaultGameMode(TSubclassOf<class AGameModeBase> GameMode) { DefaultGameMode = GameMode; return *this; }
-	};
+	// Legacy for backwards compatibility
+	using InitializationValues = FWorldInitializationValues;
 
 	/**
 	 * Initializes the world, associates the persistent level and sets the proper zones.
 	 */
-	void InitWorld(const InitializationValues IVS = InitializationValues());
+	void InitWorld(const FWorldInitializationValues IVS = FWorldInitializationValues());
 #if WITH_EDITOR
 	/**
 	 * InitWorld usually has to be balanced with CleanupWorld. If the KeepInitializedDuringLoadTag LinkerInstancingContext tag is present,
@@ -3099,6 +3052,9 @@ public:
 	/** Returns whether InitWorld has ever been called since this World was created.  */
 	bool HasEverBeenInitialized() const { return bHasEverBeenInitialized; }
 #endif
+	UE_DEPRECATED(5.2, "Not for public use. This function is a workaround for UE-170919 and will be removed in 5.3")
+	bool HasEverBeenInitialized_DONOTUSE() const { return bHasEverBeenInitialized; }
+
 	/** Returns whether InitWorld has been called without yet calling CleanupWorld.  */
 	bool IsInitialized() const { return bIsWorldInitialized; }
 
@@ -3555,7 +3511,8 @@ public:
 		FTransform const& Transform,
 		AActor* Owner = nullptr,
 		APawn* Instigator = nullptr,
-		ESpawnActorCollisionHandlingMethod CollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::Undefined
+		ESpawnActorCollisionHandlingMethod CollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::Undefined,
+		ESpawnActorScaleMethod TransformScaleMethod = ESpawnActorScaleMethod::MultiplyWithRoot
 		)
 	{
 		if( Owner )
@@ -3564,6 +3521,7 @@ public:
 		}
 		FActorSpawnParameters SpawnInfo;
 		SpawnInfo.SpawnCollisionHandlingOverride = CollisionHandlingOverride;
+		SpawnInfo.TransformScaleMethod = TransformScaleMethod;
 		SpawnInfo.Owner = Owner;
 		SpawnInfo.Instigator = Instigator;
 		SpawnInfo.bDeferConstruction = true;
@@ -3955,10 +3913,7 @@ public:
 	void SetMapNeedsLightingFullyRebuilt(int32 InNumLightingUnbuiltObjects, int32 InNumUnbuiltReflectionCaptures);
 
 	/** Returns TimerManager instance for this world. */
-	inline FTimerManager& GetTimerManager() const
-	{
-		return (OwningGameInstance ? OwningGameInstance->GetTimerManager() : *TimerManager);
-	}
+	FTimerManager& GetTimerManager() const;
 
 	/**
 	 * Returns LatentActionManager instance, preferring the one allocated by the game instance if a game instance is associated with this.
@@ -3967,10 +3922,7 @@ public:
  	 * to not worry about replacing features from GameInstance. Alternatively we could mandate that they implement a game instance
 	 * for their scene.
 	 */
-	inline FLatentActionManager& GetLatentActionManager()
-	{
-		return (OwningGameInstance ? OwningGameInstance->GetLatentActionManager() : LatentActionManager);
-	}
+	FLatentActionManager& GetLatentActionManager();
 
 	/**
 	 * Get a Subsystem of specified type
@@ -4142,7 +4094,7 @@ class ENGINE_API FWorldDelegates
 public:
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FWorldInitializationEvent, UWorld* /*World*/, const UWorld::InitializationValues /*IVS*/);
 	DECLARE_MULTICAST_DELEGATE_ThreeParams(FWorldCleanupEvent, UWorld* /*World*/, bool /*bSessionEnded*/, bool /*bCleanupResources*/);
-	DECLARE_MULTICAST_DELEGATE_OneParam(FWorldEvent, UWorld* /*World*/);
+	DECLARE_TS_MULTICAST_DELEGATE_OneParam(FWorldEvent, UWorld* /*World*/);
 
 	/**
 	 * Post UWorld duplicate event.
@@ -4351,6 +4303,12 @@ FORCEINLINE_DEBUGGABLE bool UWorld::ComponentSweepMulti(TArray<struct FHitResult
 {
 	// Pass through to FQuat version.
 	return ComponentSweepMulti(OutHits, PrimComp, Start, End, Rot.Quaternion(), Params);
+}
+
+FORCEINLINE_DEBUGGABLE bool UWorld::ComponentSweepMultiByChannel(TArray<struct FHitResult>& OutHits, class UPrimitiveComponent* PrimComp, const FVector& Start, const FVector& End, const FRotator& Rot, ECollisionChannel TraceChannel, const FComponentQueryParams& Params) const
+{
+	// Pass through to FQuat version.
+	return ComponentSweepMultiByChannel(OutHits, PrimComp, Start, End, Rot.Quaternion(), TraceChannel, Params);
 }
 
 FORCEINLINE_DEBUGGABLE ENetMode UWorld::GetNetMode() const

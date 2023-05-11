@@ -5,14 +5,10 @@
 =============================================================================*/
 
 #include "Model.h"
-#include "Materials/MaterialInterface.h"
-#include "RenderUtils.h"
-#include "Misc/App.h"
-#include "Engine/Brush.h"
 #include "Containers/TransArray.h"
 #include "EngineUtils.h"
 #include "Engine/Polys.h"
-#include "DynamicMeshBuilder.h"
+#include "StaticLighting.h"
 
 float UModel::BSPTexelScale = 100.0f;
 
@@ -177,6 +173,8 @@ FArchive& operator<<(FArchive& Ar, FDepecatedModelVertex& V)
 
 	return Ar;
 }
+
+FNodeGroup::~FNodeGroup() = default;
 
 /*---------------------------------------------------------------------------------------
 	UModel object implementation.
@@ -543,11 +541,13 @@ void UModel::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
 IMPLEMENT_INTRINSIC_CLASS(UModel, ENGINE_API, UObject, CORE_API, "/Script/Engine",
 	{
 		Class->CppClassStaticFunctions = UOBJECT_CPPCLASS_STATICFUNCTIONS_FORCLASS(UModel);
-		Class->EmitObjectReference(STRUCT_OFFSET(UModel, Polys), TEXT("Polys"));
-		const uint32 SkipIndexIndex = Class->EmitStructArrayBegin(STRUCT_OFFSET(UModel, Surfs), TEXT("Surfs"), sizeof(FBspSurf));
-		Class->EmitObjectReference(STRUCT_OFFSET(FBspSurf, Material), TEXT("Material"));
-		Class->EmitObjectReference(STRUCT_OFFSET(FBspSurf, Actor), TEXT("Actor"));
-		Class->EmitStructArrayEnd( SkipIndexIndex );
+
+		UE::GC::FTokenStreamBuilder& Builder = UE::GC::FIntrinsicClassTokens::AllocateBuilder(Class);
+		Builder.EmitObjectReference(STRUCT_OFFSET(UModel, Polys), TEXT("Polys"));
+		const uint32 SkipIndexIndex = Builder.EmitStructArrayBegin(STRUCT_OFFSET(UModel, Surfs), TEXT("Surfs"), sizeof(FBspSurf));
+		Builder.EmitObjectReference(STRUCT_OFFSET(FBspSurf, Material), TEXT("Material"));
+		Builder.EmitObjectReference(STRUCT_OFFSET(FBspSurf, Actor), TEXT("Actor"));
+		Builder.EmitStructArrayEnd( SkipIndexIndex );
 	}
 );
 
@@ -556,10 +556,12 @@ IMPLEMENT_INTRINSIC_CLASS(UModel, ENGINE_API, UObject, CORE_API, "/Script/Engine
 IMPLEMENT_INTRINSIC_CLASS(UModel, ENGINE_API, UObject, CORE_API, "/Script/Engine",
 	{
 		Class->CppClassStaticFunctions = UOBJECT_CPPCLASS_STATICFUNCTIONS_FORCLASS(UModel);
-		const uint32 SkipIndexIndex = Class->EmitStructArrayBegin(STRUCT_OFFSET(UModel, Surfs), TEXT("Surfs"), sizeof(FBspSurf));
-		Class->EmitObjectReference(STRUCT_OFFSET(FBspSurf, Material), TEXT("Material"));
-		Class->EmitObjectReference(STRUCT_OFFSET(FBspSurf, Actor), TEXT("Actor"));
-		Class->EmitStructArrayEnd( SkipIndexIndex );
+
+		UE::GC::FTokenStreamBuilder& Builder = UE::GC::FIntrinsicClassTokens::AllocateBuilder(Class);
+		const uint32 SkipIndexIndex = Builder.EmitStructArrayBegin(STRUCT_OFFSET(UModel, Surfs), TEXT("Surfs"), sizeof(FBspSurf));
+		Builder.EmitObjectReference(STRUCT_OFFSET(FBspSurf, Material), TEXT("Material"));
+		Builder.EmitObjectReference(STRUCT_OFFSET(FBspSurf, Actor), TEXT("Actor"));
+		Builder.EmitStructArrayEnd( SkipIndexIndex );
 	}
 );
 

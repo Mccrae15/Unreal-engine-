@@ -21,10 +21,12 @@
 #include "ISettingsModule.h"
 #include "ISettingsEditorModule.h"
 #include "Settings/EditorExperimentalSettings.h"
+#include "Settings/LevelEditorPlaySettings.h"
 #include "Interfaces/IMainFrameModule.h"
 #include "ToolMenus.h"
 #include "FileHelpers.h"
 #include "Settings/ProjectPackagingSettings.h"
+#include "Settings/PlatformsMenuSettings.h"
 #include "Containers/Set.h"
 
 namespace
@@ -51,7 +53,7 @@ FString FTurnkeyEditorSupport::GetUATOptions()
 void FTurnkeyEditorSupport::AddEditorOptions(FToolMenuSection& Section)
 {
 #if WITH_EDITOR
-	Section.AddSeparator(NAME_None);
+	Section.AddSeparator("TurnkeyOptionsSeparator");
 
 	Section.AddMenuEntry(
 		NAME_None,
@@ -98,7 +100,7 @@ void FTurnkeyEditorSupport::LaunchRunningMap(const FString& DeviceId, const FStr
 		}
 		else
 		{
-			PlatformInfo = PlatformInfo::FindPlatformInfo(GetDefault<UProjectPackagingSettings>()->GetTargetFlavorForPlatform(*TargetDeviceId.GetPlatformName()));
+			PlatformInfo = PlatformInfo::FindPlatformInfo(GetDefault<UPlatformsMenuSettings>()->GetTargetFlavorForPlatform(*TargetDeviceId.GetPlatformName()));
 		}
 					
 		FString UBTPlatformName = PlatformInfo->DataDrivenPlatformInfo->UBTPlatformString;

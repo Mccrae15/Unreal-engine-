@@ -15,6 +15,7 @@
 #include "VolumetricLightmapShared.ush"
 #include "ForwardShadowingCommon.ush"
 #include "ParticipatingMediaCommon.ush"
+#include "LightDataUniforms.ush"
 #define FrontLayerTranslucencyReflectionsStruct LumenGIVolumeStruct
 #include "Lumen/LumenTranslucencyVolumeShared.ush"
 #include "Random.ush"
@@ -170,7 +171,8 @@ struct FWriteToSliceVertexOutput
 /** Z index of the minimum slice in the range. */
 int MinZ;
 float4 ViewSpaceBoundingSphere;
-float4x4 ViewToVolumeClip; 
+float4x4 ViewToVolumeClip;
+float2 ClipRatio = float2(1.0f, 1.0f);
 
 /** Vertex shader that writes to a range of slices of a volume texture. */
 void WriteToBoundingSphereVS(
@@ -190,6 +192,9 @@ void WriteToBoundingSphereVS(
 		// Place the quad vertex to tightly bound the circle
 		float3 ViewSpaceVertexPosition = float3(ViewSpaceBoundingSphere.xy + (InUV * 2 - 1) * SliceRadius, SliceDepth);
 		Output.Vertex.Position = mul(float4(ViewSpaceVertexPosition, 1), ViewToVolumeClip);
+
+		// Scale rendered position to account for frustum difference between fog voxelization and rendered scene
+		Output.Vertex.Position.xy *= ClipRatio;
 	}
 	else
 	{
@@ -279,30 +284,7 @@ void InjectShadowedLocalLightPS(
 	// This triggers the HistoryMissSuperSampleCount path causing significant overhead for shading off-screen pixels.
 	if (all(int3(GridCoordinate) < VolumetricFog.GridSizeInt))
 	{
-		FDeferredLightData LightData;
-		LightData.TranslatedWorldPosition = DeferredLightUniforms.TranslatedWorldPosition;
-		LightData.InvRadius = DeferredLightUniforms.InvRadius;
-		LightData.Color = DeferredLightUniforms.Color;
-		LightData.FalloffExponent = DeferredLightUniforms.FalloffExponent;
-		LightData.Direction = DeferredLightUniforms.Direction;
-        LightData.Tangent = DeferredLightUniforms.Tangent;
-		LightData.SpotAngles = DeferredLightUniforms.SpotAngles;
-		LightData.SourceRadius = DeferredLightUniforms.SourceRadius;
-		LightData.SourceLength = DeferredLightUniforms.SourceLength;
-        LightData.SoftSourceRadius = DeferredLightUniforms.SoftSourceRadius;
-		LightData.SpecularScale = DeferredLightUniforms.SpecularScale;
-		LightData.ContactShadowLength = abs(DeferredLightUniforms.ContactShadowLength);
-		LightData.ContactShadowLengthInWS = DeferredLightUniforms.ContactShadowLength < 0.0f;
-		LightData.ContactShadowNonShadowCastingIntensity = DeferredLightUniforms.ContactShadowNonShadowCastingIntensity;
-		LightData.DistanceFadeMAD = DeferredLightUniforms.DistanceFadeMAD;
-		LightData.ShadowMapChannelMask = DeferredLightUniforms.ShadowMapChannelMask;
-		LightData.ShadowedBits = DeferredLightUniforms.ShadowedBits;
-		LightData.RectLightBarnCosAngle = DeferredLightUniforms.RectLightBarnCosAngle;
-		LightData.RectLightBarnLength = DeferredLightUniforms.RectLightBarnLength;
-		LightData.bInverseSquared = DeferredLightUniforms.FalloffExponent == 0;
-		LightData.bRadialLight = true;
-		LightData.bSpotLight = LightData.SpotAngles.x > -2.0f;
-		LightData.bRectLight = LightData.RectLightBarnLength > -2.0f;
+		FDeferredLightData LightData = InitDeferredLightFromUniforms();
 
 		float VolumetricScatteringIntensity = DeferredLightUniforms.VolumetricScatteringIntensity;
 
@@ -313,7 +295,7 @@ void InjectShadowedLocalLightPS(
 
 #if USE_TEMPORAL_REPROJECTION
 
-		float3 HistoryUV = ComputeVolumeUV_DEPRECATED(ComputeCellTranslatedWorldPosition(GridCoordinate, .5f), UnjitteredPrevTranslatedWorldToClip);
+		float3 HistoryUV = ComputeVolumeUV_DEPRECATED(ComputeCellTranslatedWorldPosition(GridCoordinate, .5f), UnjitteredPrevTranslatedWorldToClip) * float3(View.VolumetricFogScreenUVToHistoryVolumeUV.xy, 1.0);
 		float HistoryAlpha = HistoryWeight;
 
 		FLATTEN
@@ -405,11 +387,11 @@ RWTexture3D<float4> RWLightScattering;
 
 float HemisphereConeTraceAgainstGlobalDistanceFieldClipmap(
 	uniform uint ClipmapIndex,
-	float3 WorldShadingPosition, 
+	float3 TranslatedWorldShadingPosition,
 	float3 ConeDirection,
 	float TanConeHalfAngle)
 {
-	float MinStepSize = GlobalVolumeCenterAndExtent[ClipmapIndex].w * 2 / 100.0f;
+	float MinStepSize = GlobalVolumeTranslatedCenterAndExtent[ClipmapIndex].w * 2 / 100.0f;
 	float InvAOGlobalMaxOcclusionDistance = 1.0f / AOGlobalMaxOcclusionDistance;
 
 	float MinVisibility = 1;
@@ -418,8 +400,8 @@ float HemisphereConeTraceAgainstGlobalDistanceFieldClipmap(
 	LOOP
 	for (uint StepIndex = 0; StepIndex < NUM_CONE_STEPS && WorldStepOffset < AOGlobalMaxOcclusionDistance; StepIndex++)
 	{
-		float3 WorldSamplePosition = WorldShadingPosition + ConeDirection * WorldStepOffset;
-		float DistanceToOccluder = SampleGlobalDistanceField(WorldSamplePosition, AOGlobalMaxOcclusionDistance, ClipmapIndex);
+		float3 TranslatedWorldSamplePosition = TranslatedWorldShadingPosition + ConeDirection * WorldStepOffset;
+		float DistanceToOccluder = SampleGlobalDistanceField(TranslatedWorldSamplePosition, AOGlobalMaxOcclusionDistance, ClipmapIndex);
 		float SphereRadius = WorldStepOffset * TanConeHalfAngle;
 		float InvSphereRadius = rcpFast(SphereRadius);
 
@@ -439,12 +421,12 @@ float HemisphereConeTraceAgainstGlobalDistanceFieldClipmap(
 	return MinVisibility;
 }
 
-float HemisphereConeTraceAgainstGlobalDistanceField(float3 WorldShadingPosition, float3 ConeDirection, float TanConeHalfAngle)
+float HemisphereConeTraceAgainstGlobalDistanceField(float3 TranslatedWorldShadingPosition, float3 ConeDirection, float TanConeHalfAngle)
 {
 	int MinClipmapIndex = -1;
 	for (uint ClipmapIndex = 0; ClipmapIndex < NumGlobalSDFClipmaps; ++ClipmapIndex)
 	{
-		float DistanceFromClipmap = ComputeDistanceFromBoxToPointInside(GlobalVolumeCenterAndExtent[ClipmapIndex].xyz, GlobalVolumeCenterAndExtent[ClipmapIndex].www, WorldShadingPosition);
+		float DistanceFromClipmap = ComputeDistanceFromBoxToPointInside(GlobalVolumeTranslatedCenterAndExtent[ClipmapIndex].xyz, GlobalVolumeTranslatedCenterAndExtent[ClipmapIndex].www, TranslatedWorldShadingPosition);
 		if (DistanceFromClipmap > AOGlobalMaxOcclusionDistance)
 		{
 			MinClipmapIndex = ClipmapIndex;
@@ -455,7 +437,7 @@ float HemisphereConeTraceAgainstGlobalDistanceField(float3 WorldShadingPosition,
 	float MinVisibility = 1.0f;
 	if (MinClipmapIndex >= 0)
 	{
-		MinVisibility = HemisphereConeTraceAgainstGlobalDistanceFieldClipmap(MinClipmapIndex, WorldShadingPosition, ConeDirection, TanConeHalfAngle);
+		MinVisibility = HemisphereConeTraceAgainstGlobalDistanceFieldClipmap(MinClipmapIndex, TranslatedWorldShadingPosition, ConeDirection, TanConeHalfAngle);
 	}
 
 	return MinVisibility;
@@ -463,7 +445,7 @@ float HemisphereConeTraceAgainstGlobalDistanceField(float3 WorldShadingPosition,
 
 float SkyLightUseStaticShadowing;
 
-float ComputeSkyVisibility(float3 WorldPosition, float3 BrickTextureUVs)
+float ComputeSkyVisibility(float3 TranslatedWorldPosition, float3 BrickTextureUVs)
 {
 	float Visibility = 1;
 
@@ -471,7 +453,7 @@ float ComputeSkyVisibility(float3 WorldPosition, float3 BrickTextureUVs)
 	// Trace one 45 degree cone straight up for sky occlusion
 	float TanConeHalfAngle = tan((float)PI / 4);
 
-	Visibility = HemisphereConeTraceAgainstGlobalDistanceField(WorldPosition, float3(0, 0, 1), TanConeHalfAngle);
+	Visibility = HemisphereConeTraceAgainstGlobalDistanceField(TranslatedWorldPosition, float3(0, 0, 1), TanConeHalfAngle);
 	
 #endif
 
@@ -545,7 +527,7 @@ void LightScatteringCS(
 	}
 
 #if USE_TEMPORAL_REPROJECTION
-	float3 HistoryUV = ComputeVolumeUV_DEPRECATED(ComputeCellTranslatedWorldPosition(GridCoordinate, .5f), UnjitteredPrevTranslatedWorldToClip);
+	float3 HistoryUV = ComputeVolumeUV_DEPRECATED(ComputeCellTranslatedWorldPosition(GridCoordinate, .5f), UnjitteredPrevTranslatedWorldToClip) * float3(View.VolumetricFogScreenUVToHistoryVolumeUV.xy, 1.0);
 	float HistoryAlpha = HistoryWeight;
 
 	FLATTEN
@@ -568,7 +550,7 @@ void LightScatteringCS(
 
 		float SceneDepth;
 		float3 TranslatedWorldPosition = ComputeCellTranslatedWorldPosition(GridCoordinate, CellOffset, SceneDepth);
-		float3 WorldPosition = TranslatedWorldPosition - LWCHackToFloat(PrimaryView.PreViewTranslation);
+		float3 WorldPosition = TranslatedWorldPosition - LWCHackToFloat(PrimaryView.PreViewTranslation); // LWC_TODO
 		float CameraVectorLength = length(TranslatedWorldPosition - PrimaryView.TranslatedWorldCameraOrigin);
 		float3 CameraVector = (TranslatedWorldPosition - PrimaryView.TranslatedWorldCameraOrigin) / CameraVectorLength;
 
@@ -625,8 +607,7 @@ void LightScatteringCS(
 #if LUMEN_GI
 
 		// Lumen Dynamic GI + shadowed Skylight
-		// TODO LWC
-		FTwoBandSHVectorRGB TranslucencyGISH = GetTranslucencyGIVolumeLighting(LWCPromote(WorldPosition), PrimaryView.WorldToClip, false);
+		FTwoBandSHVectorRGB TranslucencyGISH = GetTranslucencyGIVolumeLighting(LWCPromote(WorldPosition), PrimaryView.WorldToClip, false); // LUMEN_LWC_TODO
 
 		LightScattering += max(DotSH(TranslucencyGISH, RotatedHGZonalHarmonic), 0);
 
@@ -657,7 +638,7 @@ void LightScatteringCS(
 				SkyLighting = View.SkyLightColor.rgb * max(DotSH(SkyIrradianceSH, RotatedHGZonalHarmonic), 0) / PI;
 			}
 
-			float SkyVisibility = ComputeSkyVisibility(WorldPosition, BrickTextureUVs);
+			float SkyVisibility = ComputeSkyVisibility(TranslatedWorldPosition, BrickTextureUVs);
 			LightScattering += (SkyVisibility * SkyLightVolumetricScatteringIntensity) * SkyLighting;
 		}
 #endif
@@ -686,33 +667,11 @@ void LightScatteringCS(
 		{
 			const FLocalLightData LocalLight = GetLocalLightData(CulledLightsGrid.DataStartIndex + LocalLightListIndex, 0);
 
-			float VolumetricScatteringIntensity = f16tof32(asuint(LocalLight.SpotAnglesAndSourceRadiusPacked.w) >> 16);
+			const float VolumetricScatteringIntensity = UnpackVolumetricScatteringIntensity(LocalLight);
 
 			if (VolumetricScatteringIntensity > 0)
 			{
-				FDeferredLightData LightData = (FDeferredLightData)0;
-				LightData.TranslatedWorldPosition = LocalLight.LightPositionAndInvRadius.xyz;
-				LightData.InvRadius = LocalLight.LightPositionAndInvRadius.w;
-				LightData.Color = LocalLight.LightColorAndFalloffExponent.xyz;
-				LightData.FalloffExponent = LocalLight.LightColorAndFalloffExponent.w;
-				LightData.Direction = LocalLight.LightDirectionAndShadowMask.xyz;
-				LightData.SpotAngles = LocalLight.SpotAnglesAndSourceRadiusPacked.xy;
-				LightData.SourceRadius = LocalLight.SpotAnglesAndSourceRadiusPacked.z;
-				LightData.SourceLength = f16tof32(asuint(LocalLight.SpotAnglesAndSourceRadiusPacked.w));
-				LightData.Tangent = LocalLight.LightTangentAndSoftSourceRadius.xyz;
-				LightData.SoftSourceRadius = LocalLight.LightTangentAndSoftSourceRadius.w;
-				LightData.bInverseSquared = LightData.FalloffExponent == 0;
-				LightData.RectLightBarnCosAngle = LocalLight.RectBarnDoorAndVirtualShadowMapIdAndSpecularScale.x;
-				LightData.RectLightBarnLength = LocalLight.RectBarnDoorAndVirtualShadowMapIdAndSpecularScale.y;
-				LightData.RectLightAtlasUVOffset = 0;
-				LightData.RectLightAtlasUVScale  = 0;
-				LightData.RectLightAtlasMaxLevel = MAX_RECT_ATLAS_MIP;
-
-				LightData.bRadialLight = true;
-				LightData.bSpotLight = LightData.SpotAngles.x > -2.0f;
-				LightData.bRectLight = LightData.RectLightBarnLength > -2.0f;
-
-				float3 LightColor = LightData.Color;
+				const FDeferredLightData LightData = ConvertToDeferredLight(LocalLight);
 
 				float3 L = 0;
 				float3 ToLight = 0;
@@ -735,7 +694,7 @@ void LightScatteringCS(
 
 				float CombinedAttenuation = Lighting * LightMask;
 
-				LightScattering += LightColor * (PhaseFunction(PhaseG, dot(L, -CameraVector)) * CombinedAttenuation * VolumetricScatteringIntensity);
+				LightScattering += LightData.Color * (PhaseFunction(PhaseG, dot(L, -CameraVector)) * CombinedAttenuation * VolumetricScatteringIntensity);
 
 				// To debug culling
 				//LightScattering += LocalLight.LightColorAndFalloffExponent.xyz * .0000001f;

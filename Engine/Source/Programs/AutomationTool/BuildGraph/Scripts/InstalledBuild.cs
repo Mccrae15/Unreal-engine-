@@ -142,13 +142,9 @@ namespace AutomationTool
 			BgNode VersionFilesNode = EditorWin64
 				.AddNode(x => UpdateVersionFilesAsync(x));
 
-			BgNode<BgFileSet> WinUhtNode = EditorWin64
-				.AddNode(x => CompileUnrealHeaderToolAsync(x, UnrealTargetPlatform.Win64))
-				.Requires(VersionFilesNode);
-
 			BgNode<BgFileSet> WinEditorNode = EditorWin64
 				.AddNode(x => CompileUnrealEditorWin64Async(x, CrashReporterCompileArgs, EmbedSrcSrvInfo, CompileDatasmithPlugins, WithFullDebugInfo, SignExecutables))
-				.Requires(WinUhtNode);
+				.Requires(VersionFilesNode);
 
 			Aggregates.Add(new BgAggregate("Win64 Editor", WinEditorNode, label: "Editors/Win64"));
 
@@ -161,7 +157,7 @@ namespace AutomationTool
 
 			BgNode<BgFileSet> WinGame = TargetWin64
 				.AddNode(x => CompileUnrealGameWin64(x, GameConfigurations, EmbedSrcSrvInfo, WithFullDebugInfo, SignExecutables))
-				.Requires(WinUhtNode);
+				.Requires(VersionFilesNode);
 
 			Aggregates.Add(new BgAggregate("TargetPlatforms_Win64", WinGame));
 
@@ -180,7 +176,7 @@ namespace AutomationTool
 
 			BgNode<BgFileSet> WinTools = ToolsGroupWin64
 				.AddNode(x => BuildToolsWin64Async(x, CrashReporterCompileArgs))
-				.Requires(WinUhtNode);
+				.Requires(VersionFilesNode);
 
 			BgNode<BgFileSet> CsTools = ToolsGroupWin64
 				.AddNode(x => BuildToolsCSAsync(x, SignExecutables))
@@ -195,7 +191,7 @@ namespace AutomationTool
 			DDCPlatformsWin64 = DDCPlatformsWin64.If(WithWin64, x => x.Add("Windows"));
 
 			BgNode DdcNode = DDCGroupWin64
-				.AddNode(x => BuildDDCWin64Async(x, DDCPlatformsWin64, BgList<BgFileSet>.Create(WinUhtNode.Output, WinEditorNode.Output, WinTools.Output)))
+				.AddNode(x => BuildDDCWin64Async(x, DDCPlatformsWin64, BgList<BgFileSet>.Create(WinEditorNode.Output, WinTools.Output)))
 				.Requires(WinEditorNode, WinTools);
 
 
@@ -205,7 +201,6 @@ namespace AutomationTool
 			BgAgent WinStageAgent = new BgAgent("Installed Build Group Win64", "Win64_Licensee");
 
 			BgList<BgFileSet> WinInstalledFiles = BgList<BgFileSet>.Empty;
-			WinInstalledFiles = WinInstalledFiles.Add(WinUhtNode.Output);
 			WinInstalledFiles = WinInstalledFiles.Add(WinEditorNode.Output);
 			WinInstalledFiles = WinInstalledFiles.Add(WinTools.Output);
 			WinInstalledFiles = WinInstalledFiles.Add(CsTools.Output);
@@ -237,15 +232,6 @@ namespace AutomationTool
 			{
 				await SetVersionAsync(State.Change, State.Stream.Replace('/', '+'));
 			}
-		}
-
-		/// <summary>
-		/// Builds UHT for any platform
-		/// </summary>
-		[BgNodeName("Compile UnrealHeaderTool {Platform}")]
-		static async Task<BgFileSet> CompileUnrealHeaderToolAsync(BgContext State, UnrealTargetPlatform Platform)
-		{
-			return await CompileAsync("UnrealHeaderTool", Platform, UnrealTargetConfiguration.Development, Arguments: "-precompile -allmodules");
 		}
 
 		/// <summary>
@@ -327,6 +313,7 @@ namespace AutomationTool
 			Files += await CompileAsync("UnrealInsights", UnrealTargetPlatform.Win64, UnrealTargetConfiguration.Development);
 			Files += await CompileAsync("UnrealFrontend", UnrealTargetPlatform.Win64, UnrealTargetConfiguration.Development);
 			Files += await CompileAsync("UnrealLightmass", UnrealTargetPlatform.Win64, UnrealTargetConfiguration.Development);
+			Files += await CompileAsync("InterchangeWorker", UnrealTargetPlatform.Win64, UnrealTargetConfiguration.Development);
 			Files += await CompileAsync("UnrealPak", UnrealTargetPlatform.Win64, UnrealTargetConfiguration.Development);
 			Files += await CompileAsync("UnrealMultiUserServer", UnrealTargetPlatform.Win64, UnrealTargetConfiguration.Development);
 			Files += await CompileAsync("UnrealRecoverySvc", UnrealTargetPlatform.Win64, UnrealTargetConfiguration.Development);
@@ -360,14 +347,8 @@ namespace AutomationTool
 				Output += await CsCompileAsync(FileReference.Combine(TempCsToolsDir, "Engine/Source/Editor/SwarmInterface/DotNET/SwarmInterface.csproj"), Platform: "AnyCPU", Configuration: "Development");
 				Output += await CsCompileAsync(FileReference.Combine(TempCsToolsDir, "Engine/Source/Programs/UnrealControls/UnrealControls.csproj"), Platform: "AnyCPU", Configuration: "Development");
 				Output += await CsCompileAsync(FileReference.Combine(TempCsToolsDir, "Engine/Source/Programs/IOS/iPhonePackager/iPhonePackager.csproj"), Platform: "AnyCPU", Configuration: "Development", Arguments: "/verbosity:minimal /target:Rebuild");
-			}
-
-			if (HostPlatform.Current.HostEditorPlatform != UnrealTargetPlatform.Linux)
-			{
 				Output += await CsCompileAsync(FileReference.Combine(TempCsToolsDir, "Engine/Source/Programs/NetworkProfiler/NetworkProfiler/NetworkProfiler.csproj"), Platform: "AnyCPU", Configuration: "Development");
 			}
-
-			Output += await CsCompileAsync(FileReference.Combine(RootDir, "Engine/Source/Programs/IOS/MobileDeviceInterface/MobileDeviceInterface.csproj"), Platform: "AnyCPU", Configuration: "Development", Arguments: "/verbosity:minimal /target:Rebuild");
 
 			FileSet Binaries = Output.Binaries + Output.References;
 

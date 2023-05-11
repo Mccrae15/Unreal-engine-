@@ -10,6 +10,9 @@
 #include "LevelEditorViewport.h"
 #include "Editor.h"
 #include "RectLightTextureManager.h"
+#include "RenderTargetPool.h"
+#include "Engine/SubsurfaceProfile.h"
+#include "IESTextureManager.h"
 #include "GPUSort.h"
 
 IMPLEMENT_MATERIAL_SHADER_TYPE(, FVLMVoxelizationVS, TEXT("/Plugin/GPULightmass/Private/VolumetricLightmapVoxelization.usf"), TEXT("VLMVoxelizationVS"), SF_Vertex);
@@ -742,7 +745,8 @@ void FVolumetricLightmapRenderer::BackgroundTick()
 	OutputBrickDataRDG.CreateFromBrickData(GraphBuilder, VolumetricLightmapData.BrickData, VolumetricLightmapData.BrickDataDimensions);	
 	OutputBrickDataRDG.DebugSetupInvariants();
 	
-	RectLightAtlas::UpdateRectLightAtlasTexture(GraphBuilder, Scene->FeatureLevel);
+	RectLightAtlas::UpdateAtlasTexture(GraphBuilder, Scene->FeatureLevel);
+	IESAtlas::UpdateAtlasTexture(GraphBuilder, Scene->FeatureLevel);
 
 	FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(Scene->FeatureLevel);
 
@@ -806,8 +810,6 @@ void FVolumetricLightmapRenderer::BackgroundTick()
 				PassParameters->SkylightPdf = PreviousPassParameters->SkylightPdf;
 				PassParameters->SkylightInvResolution = PreviousPassParameters->SkylightInvResolution;
 				PassParameters->SkylightMipCount = PreviousPassParameters->SkylightMipCount;
-				PassParameters->IESTexture = PreviousPassParameters->IESTexture;
-				PassParameters->IESTextureSampler = PreviousPassParameters->IESTextureSampler;
 			}
 
 			PassParameters->SSProfilesTexture = GetSubsurfaceProfileTexture();

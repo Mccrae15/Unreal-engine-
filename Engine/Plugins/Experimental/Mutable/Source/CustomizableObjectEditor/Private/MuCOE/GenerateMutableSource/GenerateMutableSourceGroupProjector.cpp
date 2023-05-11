@@ -2,48 +2,19 @@
 
 #include "MuCOE/GenerateMutableSource/GenerateMutableSourceGroupProjector.h"
 
-#include "Containers/Array.h"
-#include "Containers/BitArray.h"
-#include "Containers/ContainersFwd.h"
-#include "Containers/Set.h"
-#include "Containers/SparseArray.h"
-#include "Containers/StringConv.h"
-#include "Containers/UnrealString.h"
-#include "EdGraph/EdGraphPin.h"
-#include "Engine/DataTable.h"
-#include "Engine/Texture.h"
-#include "Engine/Texture2D.h"
-#include "Engine/TextureDefines.h"
-#include "HAL/PlatformCrt.h"
-#include "Internationalization/Text.h"
-#include "Logging/TokenizedMessage.h"
-#include "MaterialTypes.h"
+#include "GenerateMutableSourceImage.h"
 #include "Materials/MaterialInterface.h"
-#include "Math/IntVector.h"
-#include "Math/Transform.h"
-#include "Math/UnrealMathSSE.h"
-#include "Misc/AssertionMacros.h"
-#include "Misc/Guid.h"
-#include "MuCO/CustomizableObject.h"
-#include "MuCO/CustomizableObjectParameterTypeDefinitions.h"
-#include "MuCO/CustomizableObjectUIData.h"
 #include "MuCO/MultilayerProjector.h"
 #include "MuCOE/CustomizableObjectCompiler.h"
-#include "MuCOE/GenerateMutableSource/GenerateMutableSource.h"
+#include "MuCOE/GraphTraversal.h"
 #include "MuCOE/GenerateMutableSource/GenerateMutableSourceProjector.h"
-#include "MuCOE/Nodes/CustomizableObjectNode.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeAnimationPose.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeExtendMaterial.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeGroupProjectorParameter.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeMaterial.h"
-#include "MuCOE/Nodes/CustomizableObjectNodeMaterialBase.h"
 #include "MuCOE/Nodes/CustomizableObjectNodeObjectGroup.h"
-#include "MuR/Image.h"
-#include "MuR/Ptr.h"
-#include "MuR/RefCounted.h"
 #include "MuT/NodeColourConstant.h"
 #include "MuT/NodeColourFromScalars.h"
-#include "MuT/NodeImageConstant.h"
 #include "MuT/NodeImageLayerColour.h"
 #include "MuT/NodeImageMultiLayer.h"
 #include "MuT/NodeImagePlainColour.h"
@@ -51,18 +22,9 @@
 #include "MuT/NodeImageResize.h"
 #include "MuT/NodeImageSwitch.h"
 #include "MuT/NodeImageSwizzle.h"
-#include "MuT/NodeMeshApplyPose.h"
 #include "MuT/NodeMeshSwitch.h"
-#include "MuT/NodeProjector.h"
 #include "MuT/NodeRangeFromScalar.h"
-#include "MuT/NodeScalar.h"
 #include "MuT/NodeScalarConstant.h"
-#include "MuT/NodeScalarEnumParameter.h"
-#include "MuT/NodeScalarParameter.h"
-#include "Templates/Casts.h"
-#include "UObject/NameTypes.h"
-#include "UObject/ObjectPtr.h"
-#include "UObject/SoftObjectPtr.h"
 
 class UPoseAsset;
 
@@ -111,17 +73,9 @@ mu::NodeImagePtr GenerateMutableGroupProjection(const int32 NodeLOD, const int32
 
 		const bool bProjectToImage = [&]
 		{
-			if (TypedNodeMat)
-			{
-				const FString ParameterName = TypedNodeMat->GetParameterName(EMaterialParameterType::Texture, ImageIndex).ToString();
-				return ParameterName == ProjectorTempData.CustomizableObjectNodeGroupProjectorParameter->MaterialChannelNameToConnect;
-			}
-			else
-			{
-				const FGuid ImageId = ParentMaterial->GetParameterId(EMaterialParameterType::Texture, ImageIndex);
-				const FString ImagePinName = TypedNodeExt->GetUsedImagePin(ImageId)->PinName.ToString();
-				return ImagePinName.StartsWith(ProjectorTempData.CustomizableObjectNodeGroupProjectorParameter->MaterialChannelNameToConnect);
-			}
+			const UCustomizableObjectNodeMaterial* NodeMaterial = TypedNodeMat ? TypedNodeMat : ParentMaterial;
+			const FString ParameterName = NodeMaterial->GetParameterName(EMaterialParameterType::Texture, ImageIndex).ToString();
+			return ParameterName == ProjectorTempData.CustomizableObjectNodeGroupProjectorParameter->MaterialChannelNameToConnect;
 		}();
 		
 		if (bProjectToImage)
@@ -143,15 +97,8 @@ mu::NodeImagePtr GenerateMutableGroupProjection(const int32 NodeLOD, const int32
 			{
 				const FString ImageName = [&]
 				{
-					if (TypedNodeMat)
-					{
-						return TypedNodeMat->GetParameterName(EMaterialParameterType::Texture, ImageIndex).ToString();
-					}
-					else
-					{
-						const FGuid ImageId = ParentMaterial->GetParameterId(EMaterialParameterType::Texture, ImageIndex);
-						return TypedNodeExt->GetUsedImagePin(ImageId)->PinName.ToString();
-					}
+					const UCustomizableObjectNodeMaterial* NodeMaterial = TypedNodeMat ? TypedNodeMat : ParentMaterial;
+					return NodeMaterial->GetParameterName(EMaterialParameterType::Texture, ImageIndex).ToString();
 				}();
 				
 				FString msg = FString::Printf(TEXT("Material image [%s] is connected to an image but will be replaced by a Group Projector."), *ImageName);
@@ -229,10 +176,10 @@ mu::NodeImagePtr GenerateMutableGroupProjection(const int32 NodeLOD, const int32
 			mu::NodeImagePtr ImageToProject = ProjectorTempData.NodeImagePtr;
 			{
 				// Apply LODBias to the images to project
-
-				int32 LODBias = ComputeLODBias(GenerationContext, GroupProjectionReferenceTexture, GroupProjectionReferenceTexture ? GroupProjectionReferenceTexture->MaxTextureSize : 0, TypedNodeMat, ImageIndex);
-
-				if (LODBias > 0)
+				const UCustomizableObjectNodeMaterial* NodeMaterial = TypedNodeMat ? TypedNodeMat : ParentMaterial;
+				const int32 MaxTextureSize = GroupProjectionReferenceTexture ? GroupProjectionReferenceTexture->MaxTextureSize : 0;
+				if (const int32 LODBias =  ComputeLODBias(GenerationContext, GroupProjectionReferenceTexture, MaxTextureSize, NodeMaterial, ImageIndex);
+					LODBias > 0)
 				{
 					mu::NodeImageResizePtr ResizeImage = new mu::NodeImageResize();
 					ResizeImage->SetBase(ImageToProject.get());
@@ -241,7 +188,6 @@ mu::NodeImagePtr GenerateMutableGroupProjection(const int32 NodeLOD, const int32
 					ResizeImage->SetSize(factor, factor);
 					ImageToProject = ResizeImage;
 				}
-
 			}
 
 			ImageNode->SetImage(ImageToProject);
@@ -397,7 +343,7 @@ mu::NodeImagePtr GenerateMutableGroupProjection(const int32 NodeLOD, const int32
 
 		mu::NodeImageMultiLayerPtr BaseAlphaMultiLayerNode = new mu::NodeImageMultiLayer;
 		BaseAlphaMultiLayerNode->SetRange(ImageNodes_ProjectorTempData[i].NodeRange);
-		BaseAlphaMultiLayerNode->SetBlendType(mu::EBlendType::BT_ALPHA_OVERLAY);
+		BaseAlphaMultiLayerNode->SetBlendType(mu::EBlendType::BT_LIGHTEN);
 		BaseAlphaMultiLayerNode->SetBase(ResultAlpha);
 		BaseAlphaMultiLayerNode->SetBlended(MultiplySwizzleNode);
 		//BaseAlphaMultiLayerNode->SetMask(MultiplySwizzleNode); // No mask needed
@@ -502,21 +448,7 @@ bool GenerateMutableSourceGroupProjector(const UEdGraphPin* Pin, FMutableGraphGe
 			GroupProjectorTempData.NodeProjectorParameterPtr->SetRangeCount(1);
 			GroupProjectorTempData.NodeProjectorParameterPtr->SetRange(0, NodeRangeFromScalar);
 
-			mu::NodeScalarEnumParameterPtr EnumParameterNode = new mu::NodeScalarEnumParameter;
-			FString NodeEnumParamName = ProjParamNode->ParameterName + FMultilayerProjector::IMAGE_PARAMETER_POSTFIX;
-			EnumParameterNode->SetName(TCHAR_TO_ANSI(*(NodeEnumParamName)));
-			EnumParameterNode->SetUid(TCHAR_TO_ANSI(*(ProjectorParamUid + FString("_SI"))));
-			GenerationContext.AddParameterNameUnique(originalGroup, NodeEnumParamName);
-			EnumParameterNode->SetValueCount(ArrayOptionImage.Num());
-			EnumParameterNode->SetDefaultValueIndex(0);
-			EnumParameterNode->SetRangeCount(1);
-			EnumParameterNode->SetRange(0, NodeRangeFromScalar);
-
-
-			FParameterUIData ParameterUIData(NodeEnumParamName, ProjParamNode->ParamUIMetadata, EMutableParameterType::Int);
-			ParameterUIData.IntegerParameterGroupType = ECustomizableObjectGroupType::COGT_ONE;
-			ParameterUIData.ParamUIMetadata.ExtraInformation.Add(FString("UseThumbnails"));
-
+			
 			mu::NodeScalarEnumParameterPtr PoseEnumParameterNode = new mu::NodeScalarEnumParameter;
 			FString PoseNodeEnumParamName = ProjParamNode->ParameterName + FMultilayerProjector::POSE_PARAMETER_POSTFIX;
 			PoseEnumParameterNode->SetName(TCHAR_TO_ANSI(*(PoseNodeEnumParamName)));
@@ -540,7 +472,7 @@ bool GenerateMutableSourceGroupProjector(const UEdGraphPin* Pin, FMutableGraphGe
 			OpacityParameterNode->SetRangeCount(1);
 			OpacityParameterNode->SetRange(0, NodeRangeFromScalar);
 			FMutableParamUIMetadata OpacityMetadata = ProjParamNode->ParamUIMetadata;
-			OpacityMetadata.ObjectFriendlyName = FString("Transparency");
+			OpacityMetadata.ObjectFriendlyName = FString("Opacity");
 			GroupProjectorTempData.NodeOpacityParameter = OpacityParameterNode;
 
 			GenerationContext.ParameterUIDataMap.Add(OpacityParameterNodeName, FParameterUIData(
@@ -554,19 +486,6 @@ bool GenerateMutableSourceGroupProjector(const UEdGraphPin* Pin, FMutableGraphGe
 				GenerationContext.Compiler->CompilerLog(FText::FromString(msg), ProjParamNode, EMessageSeverity::Error, true);
 				return false;
 			}
-
-			for (int ImageIndex = 0; ImageIndex < ArrayOptionImage.Num(); ++ImageIndex)
-			{
-				EnumParameterNode->SetValue(ImageIndex, (float)ImageIndex, TCHAR_TO_ANSI(*ArrayOptionImage[ImageIndex].OptionName));
-
-				FMutableParamUIMetadata optionMetadata = ParameterUIData.ParamUIMetadata;
-				optionMetadata.UIThumbnail = ArrayOptionImage[ImageIndex].OptionImage;
-				ParameterUIData.ArrayIntegerParameterOption.Add(FIntegerParameterUIData(
-					ArrayOptionImage[ImageIndex].OptionName,
-					optionMetadata));
-			}
-
-			GenerationContext.ParameterUIDataMap.Add(NodeEnumParamName, ParameterUIData);
 
 			PoseEnumParameterNode->SetValue(0, 0.f, "Default pose");
 
@@ -590,34 +509,67 @@ bool GenerateMutableSourceGroupProjector(const UEdGraphPin* Pin, FMutableGraphGe
 					GroupProjectorTempData.PoseBoneDataArray[PoseIndex].ArrayBoneName, GroupProjectorTempData.PoseBoneDataArray[PoseIndex].ArrayTransform);
 			}
 
-			mu::NodeImageSwitchPtr SwitchNode = new mu::NodeImageSwitch;
-			SwitchNode->SetParameter(EnumParameterNode);
-			SwitchNode->SetOptionCount(ArrayOptionImage.Num());
-
-			bool bFoundUnlinkedPin = false;
-
-			for (int SelectorIndex = 0; SelectorIndex < ArrayOptionImage.Num(); ++SelectorIndex)
+			if (UEdGraphPin* ConnectedPin = FollowInputPin(ProjParamNode->GetImagePin()))
 			{
-				if (ArrayOptionImage[SelectorIndex].OptionImage)
-				{
-					mu::NodeImageConstantPtr ImageNode = new mu::NodeImageConstant();
-					GenerationContext.ArrayTextureUnrealToMutableTask.Add(FTextureUnrealToMutableTask(ImageNode, ArrayOptionImage[SelectorIndex].OptionImage, ProjParamNode));
-					SwitchNode->SetOption(SelectorIndex, ImageNode);
-				}
-				else
-				{
-					//SwitchNode->SetOption(SelectorIndex, nullptr);
-					bFoundUnlinkedPin = true;
-				}
+				GroupProjectorTempData.NodeImagePtr = GenerateMutableSourceImage(ConnectedPin, GenerationContext, 0, NodeRangeFromScalar);
 			}
-
-			if (bFoundUnlinkedPin)
+			else
 			{
-				FString msg = FString::Printf(TEXT("The group projection node must have all the option images connected to a texture. Please set a texture for all the options."));
-				GenerationContext.Compiler->CompilerLog(FText::FromString(msg), ProjParamNode);
-			}
+				mu::NodeScalarEnumParameterPtr EnumParameterNode = new mu::NodeScalarEnumParameter;
+				FString NodeEnumParamName = ProjParamNode->ParameterName + FMultilayerProjector::IMAGE_PARAMETER_POSTFIX;
+				EnumParameterNode->SetName(TCHAR_TO_ANSI(*(NodeEnumParamName)));
+				EnumParameterNode->SetUid(TCHAR_TO_ANSI(*(ProjectorParamUid + FString("_SI"))));
+				GenerationContext.AddParameterNameUnique(originalGroup, NodeEnumParamName);
+				EnumParameterNode->SetValueCount(ArrayOptionImage.Num());
+				EnumParameterNode->SetDefaultValueIndex(0);
+				EnumParameterNode->SetRangeCount(1);
+				EnumParameterNode->SetRange(0, NodeRangeFromScalar);
 
-			GroupProjectorTempData.NodeImagePtr = SwitchNode;
+				FParameterUIData ParameterUIData(NodeEnumParamName, ProjParamNode->ParamUIMetadata, EMutableParameterType::Int);
+				ParameterUIData.IntegerParameterGroupType = ECustomizableObjectGroupType::COGT_ONE;
+				ParameterUIData.ParamUIMetadata.ExtraInformation.Add(FString("UseThumbnails"));
+
+				for (int ImageIndex = 0; ImageIndex < ArrayOptionImage.Num(); ++ImageIndex)
+				{
+					EnumParameterNode->SetValue(ImageIndex, (float)ImageIndex, TCHAR_TO_ANSI(*ArrayOptionImage[ImageIndex].OptionName));
+
+					FMutableParamUIMetadata optionMetadata = ParameterUIData.ParamUIMetadata;
+					optionMetadata.UIThumbnail = ArrayOptionImage[ImageIndex].OptionImage;
+					ParameterUIData.ArrayIntegerParameterOption.Add(FIntegerParameterUIData(
+						ArrayOptionImage[ImageIndex].OptionName,
+						optionMetadata));
+				}
+
+				GenerationContext.ParameterUIDataMap.Add(NodeEnumParamName, ParameterUIData);
+
+				mu::NodeImageSwitchPtr SwitchNode = new mu::NodeImageSwitch;
+				SwitchNode->SetParameter(EnumParameterNode);
+				SwitchNode->SetOptionCount(ArrayOptionImage.Num());
+
+				bool bFoundUnlinkedPin = false; 
+
+				for (int SelectorIndex = 0; SelectorIndex < ArrayOptionImage.Num(); ++SelectorIndex)
+				{
+					if (ArrayOptionImage[SelectorIndex].OptionImage)
+					{
+						mu::NodeImageConstantPtr ImageNode = new mu::NodeImageConstant();
+						GenerationContext.ArrayTextureUnrealToMutableTask.Add(FTextureUnrealToMutableTask(ImageNode, ArrayOptionImage[SelectorIndex].OptionImage, ProjParamNode));
+						SwitchNode->SetOption(SelectorIndex, ImageNode);
+					}
+					else
+					{
+						bFoundUnlinkedPin = true;
+					}
+				}
+
+				if (bFoundUnlinkedPin)
+				{
+					FString msg = FString::Printf(TEXT("The group projection node must have a texture for all the options. Please set a texture for all the options."));
+					GenerationContext.Compiler->CompilerLog(FText::FromString(msg), ProjParamNode);
+				}
+
+				GroupProjectorTempData.NodeImagePtr = SwitchNode;
+			}
 
 			GenerationContext.ProjectorGroupMap.Add(originalGroup, GroupProjectorTempData);
 		}

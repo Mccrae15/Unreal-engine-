@@ -1,33 +1,30 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/GameViewportClient.h"
-#include "HAL/FileManager.h"
-#include "Misc/CommandLine.h"
+#include "Engine/GameInstance.h"
+#include "EngineGlobals.h"
+#include "GameFramework/Pawn.h"
+#include "ImageCore.h"
 #include "Misc/FileHelper.h"
+#include "Input/CursorReply.h"
 #include "Misc/Paths.h"
+#include "InputKeyEventArgs.h"
 #include "Misc/CoreDelegates.h"
-#include "Misc/App.h"
 #include "GameMapsSettings.h"
 #include "EngineStats.h"
+#include "Net/Core/Connection/NetEnums.h"
 #include "RenderingThread.h"
-#include "SceneView.h"
 #include "LegacyScreenPercentageDriver.h"
 #include "AI/NavigationSystemBase.h"
-#include "CanvasItem.h"
 #include "Engine/Canvas.h"
-#include "GameFramework/Volume.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "UObject/UObjectIterator.h"
 #include "UObject/Package.h"
-#include "SceneManagement.h"
 #include "Particles/ParticleSystemComponent.h"
 #include "Engine/NetDriver.h"
-#include "Engine/LocalPlayer.h"
-#include "ContentStreaming.h"
 #include "UnrealEngine.h"
 #include "EngineUtils.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Widgets/SViewport.h"
 #include "Engine/Console.h"
 #include "GameFramework/HUD.h"
 #include "FXSystem.h"
@@ -37,15 +34,10 @@
 #include "IHeadMountedDisplay.h"
 #include "IXRTrackingSystem.h"
 #include "EngineModule.h"
-#include "AudioDeviceManager.h"
 #include "AudioDevice.h"
 #include "Audio/AudioDebug.h"
-#include "Sound/SoundWave.h"
 #include "HighResScreenshot.h"
 #include "BufferVisualizationData.h"
-#include "NaniteVisualizationData.h"
-#include "LumenVisualizationData.h"
-#include "VirtualShadowMapVisualizationData.h"
 #include "GameFramework/InputSettings.h"
 #include "Components/LineBatchComponent.h"
 #include "Debug/DebugDrawService.h"
@@ -60,19 +52,19 @@
 #include "ActorEditorUtils.h"
 #include "ComponentRecreateRenderStateContext.h"
 #include "DynamicResolutionState.h"
-#include "ProfilingDebugging/CsvProfiler.h"
-#include "ProfilingDebugging/MiscTrace.h"
 #include "ProfilingDebugging/TraceScreenshot.h"
 #include "IImageWrapper.h"
 #include "IImageWrapperModule.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "ObjectTrace.h"
 #include "DynamicResolutionState.h"
+#include "HDRHelper.h"
+#include "GlobalRenderResources.h"
+#include "ShaderCore.h"
 
 #if WITH_EDITOR
 #include "Settings/LevelEditorPlaySettings.h"
 #endif
-#include "Math/UnrealMathUtility.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(GameViewportClient)
 
@@ -235,6 +227,8 @@ UGameViewportClient::UGameViewportClient(const FObjectInitializer& ObjectInitial
 	, CurrentBufferVisualizationMode(NAME_None)
 	, CurrentNaniteVisualizationMode(NAME_None)
 	, CurrentLumenVisualizationMode(NAME_None)
+	, CurrentStrataVisualizationMode(NAME_None)
+	, CurrentGroomVisualizationMode(NAME_None)
 	, CurrentVirtualShadowMapVisualizationMode(NAME_None)
 	, HighResScreenshotDialog(nullptr)
 	, bUseSoftwareCursorWidgets(true)
@@ -329,6 +323,8 @@ UGameViewportClient::UGameViewportClient(FVTableHelper& Helper)
 	, CurrentBufferVisualizationMode(NAME_None)
 	, CurrentNaniteVisualizationMode(NAME_None)
 	, CurrentLumenVisualizationMode(NAME_None)
+	, CurrentStrataVisualizationMode(NAME_None)
+	, CurrentGroomVisualizationMode(NAME_None)
 	, CurrentVirtualShadowMapVisualizationMode(NAME_None)
 	, HighResScreenshotDialog(nullptr)
 	, bIgnoreInput(false)
@@ -1493,6 +1489,8 @@ void UGameViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCanvas)
 					View->CurrentBufferVisualizationMode = CurrentBufferVisualizationMode;
 					View->CurrentNaniteVisualizationMode = CurrentNaniteVisualizationMode;
 					View->CurrentLumenVisualizationMode = CurrentLumenVisualizationMode;
+					View->CurrentStrataVisualizationMode = CurrentStrataVisualizationMode;
+					View->CurrentGroomVisualizationMode = CurrentGroomVisualizationMode;
 					View->CurrentVirtualShadowMapVisualizationMode = CurrentVirtualShadowMapVisualizationMode;
 
 					View->CameraConstrainedViewRect = View->UnscaledViewRect;
@@ -1894,6 +1892,98 @@ void UGameViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCanvas)
 	EndDrawDelegate.Broadcast();
 }
 
+template<class FColorType, typename TChannelType>
+bool ProcessScreenshotData(TArray<FColorType>& Bitmap, FIntVector Size, TChannelType OpaqueAlphaValue, bool bHdrEnabled, bool bIsUI, const TCHAR* ToExtension)
+{
+	bool bIsScreenshotSaved = false;
+	{
+		FString ScreenShotName = FScreenshotRequest::GetFilename();
+		if (GIsDumpingMovie && ScreenShotName.IsEmpty())
+		{
+			// Request a new screenshot with a formatted name
+			const bool bShowUI = false;
+			const bool bAddFilenameSuffix = true;
+			FScreenshotRequest::RequestScreenshot(FString(), bShowUI, bAddFilenameSuffix, bHdrEnabled);
+			ScreenShotName = FScreenshotRequest::GetFilename();
+		}
+
+		// If a screenshot is requested during PIE (via F9), it does a screenshot of the entire editor window, including UI.
+		// We need to ignore the high resolution screenshot alpha mask in that case, as the mask isn't relevant when taking a
+		// screenshot of the entire window (and it will trigger an assert).  We don't want to solve this by modifying the
+		// global variables associated with the screenshot feature, as the application may be taking its own screenshots.
+		if (GIsHighResScreenshot && !bIsUI)
+		{
+			GetHighResScreenshotConfig().MergeMaskIntoAlpha(Bitmap, FIntRect(0, 0, 0, 0));
+		}
+		else
+		{
+			// Ensure that all pixels' alpha is set to opaque for a regular screenshot regardless of UI settings
+			// (Regular screenshots return with 0 in the alpha channels)
+			for (auto& Color : Bitmap)
+			{
+				Color.A = OpaqueAlphaValue;
+			}
+		}
+
+		FIntRect SourceRect(0, 0, GScreenshotResolutionX, GScreenshotResolutionY);
+		if (GIsHighResScreenshot)
+		{
+			SourceRect = GetHighResScreenshotConfig().CaptureRegion;
+		}
+
+		// Clip the bitmap to just the capture region if valid
+		if (!SourceRect.IsEmpty())
+		{
+			const int32 OldWidth = Size.X;
+			const int32 OldHeight = Size.Y;
+
+			//clamp in bounds:
+			int CaptureMinX = FMath::Clamp(SourceRect.Min.X, 0, OldWidth);
+			int CaptureMinY = FMath::Clamp(SourceRect.Min.Y, 0, OldHeight);
+
+			int CaptureMaxX = FMath::Clamp(SourceRect.Max.X, 0, OldWidth);
+			int CaptureMaxY = FMath::Clamp(SourceRect.Max.Y, 0, OldHeight);
+
+			int32 NewWidth = CaptureMaxX - CaptureMinX;
+			int32 NewHeight = CaptureMaxY - CaptureMinY;
+
+			if (NewWidth > 0 && NewHeight > 0 && ((NewWidth != OldWidth) || (NewHeight != OldHeight)))
+			{
+				FColorType* const Data = Bitmap.GetData();
+
+				for (int32 Row = 0; Row < NewHeight; Row++)
+				{
+					FMemory::Memmove(Data + Row * NewWidth, Data + (Row + CaptureMinY) * OldWidth + CaptureMinX, NewWidth * sizeof(*Data));
+				}
+
+				Bitmap.RemoveAt(NewWidth * NewHeight, OldWidth * OldHeight - NewWidth * NewHeight, false);
+				Size = FIntVector(NewWidth, NewHeight, 0);
+			}
+		}
+
+		if (FPaths::GetExtension(ScreenShotName).IsEmpty())
+		{
+			ScreenShotName += ToExtension;
+		}
+
+		bool bSuppressWritingToFile = false;
+		if (SHOULD_TRACE_SCREENSHOT())
+		{
+			bSuppressWritingToFile = FTraceScreenshot::ShouldSuppressWritingToFile();
+			FTraceScreenshot::TraceScreenshot(Size.X, Size.Y, Bitmap, ScreenShotName);
+		}
+
+		// Save the contents of the array to a png file.
+		if (!bSuppressWritingToFile)
+		{
+			FImageView Image((const FColorType*)Bitmap.GetData(), Size.X, Size.Y);
+			bIsScreenshotSaved = FImageUtils::SaveImageByExtension(*ScreenShotName, Image);
+		}
+	}
+
+	return bIsScreenshotSaved;
+}
+
 bool UGameViewportClient::ProcessScreenShots(FViewport* InViewport)
 {
 	bool bIsScreenshotSaved = false;
@@ -1901,6 +1991,7 @@ bool UGameViewportClient::ProcessScreenShots(FViewport* InViewport)
 	if (GIsDumpingMovie || FScreenshotRequest::IsScreenshotRequested() || GIsHighResScreenshot)
 	{
 		TArray<FColor> Bitmap;
+		TArray<FLinearColor> BitmapHDR;
 
 		bool bShowUI = false;
 		TSharedPtr<SWindow> WindowPtr = GetWindow();
@@ -1912,13 +2003,30 @@ bool UGameViewportClient::ProcessScreenShots(FViewport* InViewport)
 		bool bScreenshotSuccessful = false;
 		bool bIsUI = false;
 		FIntVector Size(InViewport->GetSizeXY().X, InViewport->GetSizeXY().Y, 0);
+
+		EDisplayOutputFormat ViewportOutputFormat = InViewport->GetDisplayOutputFormat();
+		bool bHdrEnabled = InViewport->GetSceneHDREnabled();
+
 		if( bShowUI && FSlateApplication::IsInitialized() )
 		{
 			TSharedRef<SWidget> WindowRef = WindowPtr.ToSharedRef();
-			bScreenshotSuccessful = FSlateApplication::Get().TakeScreenshot( WindowRef, Bitmap, Size);
+			if (bHdrEnabled)
+			{
+				bScreenshotSuccessful = FSlateApplication::Get().TakeHDRScreenshot(WindowRef, BitmapHDR, Size);
+				ConvertPixelDataToSCRGB(BitmapHDR, ViewportOutputFormat);
+			}
+			else
+			{
+				bScreenshotSuccessful = FSlateApplication::Get().TakeScreenshot(WindowRef, Bitmap, Size);
+			}
 			GScreenshotResolutionX = Size.X;
 			GScreenshotResolutionY = Size.Y;
 			bIsUI = true;
+		}
+		else if (bHdrEnabled)
+		{
+			bScreenshotSuccessful = GetViewportScreenShotHDR(InViewport, BitmapHDR);
+			ConvertPixelDataToSCRGB(BitmapHDR, ViewportOutputFormat);
 		}
 		else
 		{
@@ -1927,101 +2035,27 @@ bool UGameViewportClient::ProcessScreenShots(FViewport* InViewport)
 
 		if (bScreenshotSuccessful)
 		{
-			if (ScreenshotCapturedDelegate.IsBound() && CVarScreenshotDelegate.GetValueOnGameThread())
+			if (Bitmap.Num() > 0)
 			{
-				// Ensure that all pixels' alpha is set to 255
-				for (auto& Color : Bitmap)
+				if (ScreenshotCapturedDelegate.IsBound() && CVarScreenshotDelegate.GetValueOnGameThread())
 				{
-					Color.A = 255;
-				}
-
-				// If delegate subscribed, fire it instead of writing out a file to disk
-				ScreenshotCapturedDelegate.Broadcast(Size.X, Size.Y, Bitmap);
-			}
-			else
-			{
-				FString ScreenShotName = FScreenshotRequest::GetFilename();
-				if (GIsDumpingMovie && ScreenShotName.IsEmpty())
-				{
-					// Request a new screenshot with a formatted name
-					bShowUI = false;
-					const bool bAddFilenameSuffix = true;
-					FScreenshotRequest::RequestScreenshot(FString(), bShowUI, bAddFilenameSuffix);
-					ScreenShotName = FScreenshotRequest::GetFilename();
-				}
-
-				// If a screenshot is requested during PIE (via F9), it does a screenshot of the entire editor window, including UI.
-				// We need to ignore the high resolution screenshot alpha mask in that case, as the mask isn't relevant when taking a
-				// screenshot of the entire window (and it will trigger an assert).  We don't want to solve this by modifying the
-				// global variables associated with the screenshot feature, as the application may be taking its own screenshots.
-				if (GIsHighResScreenshot && !bIsUI)
-				{
-					GetHighResScreenshotConfig().MergeMaskIntoAlpha(Bitmap, FIntRect(0,0,0,0));
-				}
-				else
-				{
-					// Ensure that all pixels' alpha is set to 255 for a regular screenshot regardless of UI settings
-					// (Regular screenshots return with 0 in the alpha channels)
+					// Ensure that all pixels' alpha is set to 255
 					for (auto& Color : Bitmap)
 					{
 						Color.A = 255;
 					}
-				}
 
-				FIntRect SourceRect(0, 0, GScreenshotResolutionX, GScreenshotResolutionY);
-				if (GIsHighResScreenshot)
+					// If delegate subscribed, fire it instead of writing out a file to disk
+					ScreenshotCapturedDelegate.Broadcast(Size.X, Size.Y, Bitmap);
+				}
+				else
 				{
-					SourceRect = GetHighResScreenshotConfig().CaptureRegion;
+					bIsScreenshotSaved = ProcessScreenshotData(Bitmap, Size, 255, bHdrEnabled, bIsUI, TEXT(".png"));
 				}
-
-				// Clip the bitmap to just the capture region if valid
-				if (!SourceRect.IsEmpty())
-				{
-					const int32 OldWidth = Size.X;
-					const int32 OldHeight = Size.Y;
-					
-					//clamp in bounds:
-					int CaptureMinX = FMath::Clamp(SourceRect.Min.X,0,OldWidth);
-					int CaptureMinY = FMath::Clamp(SourceRect.Min.Y,0,OldHeight);
-				
-					int CaptureMaxX = FMath::Clamp(SourceRect.Max.X,0,OldWidth);
-					int CaptureMaxY = FMath::Clamp(SourceRect.Max.Y,0,OldHeight);
-				
-					int32 NewWidth  = CaptureMaxX - CaptureMinX;
-					int32 NewHeight = CaptureMaxY - CaptureMinY;
- 
-					if ( NewWidth > 0 && NewHeight > 0 )
-					{
-						FColor* const Data = Bitmap.GetData();
-
-						for (int32 Row = 0; Row < NewHeight; Row++)
-						{
-							FMemory::Memmove(Data + Row * NewWidth, Data + (Row + CaptureMinY) * OldWidth + CaptureMinX, NewWidth * sizeof(*Data));
-						}
-
-						Bitmap.RemoveAt(NewWidth * NewHeight, OldWidth * OldHeight - NewWidth * NewHeight, false);
-						Size = FIntVector(NewWidth, NewHeight, 0);
-					}
-				}
-
-				if ( FPaths::GetExtension(ScreenShotName).IsEmpty() )
-				{
-					ScreenShotName += TEXT(".png");
-				}
-
-				bool bSuppressWritingToFile = false;
-				if (SHOULD_TRACE_SCREENSHOT())
-				{
-					bSuppressWritingToFile = FTraceScreenshot::ShouldSuppressWritingToFile();
-					FTraceScreenshot::TraceScreenshot(Size.X, Size.Y, Bitmap, ScreenShotName);
-				}
-
-				// Save the contents of the array to a png file.
-				if (!bSuppressWritingToFile)
-				{
-					FImageView Image((const FColor*)Bitmap.GetData(), Size.X, Size.Y);
-					bIsScreenshotSaved = FImageUtils::SaveImageByExtension(*ScreenShotName, Image);
-				}
+			}
+			else
+			{
+				bIsScreenshotSaved = ProcessScreenshotData(BitmapHDR, Size, 1.0f, bHdrEnabled, bIsUI, TEXT(".exr"));
 			}
 		}
 
@@ -3710,7 +3744,7 @@ bool UGameViewportClient::HandleScreenshotCommand( const TCHAR* Cmd, FOutputDevi
 			bAddFilenameSuffix = false;
 		}
 
-		FScreenshotRequest::RequestScreenshot(FileName, bShowUI, bAddFilenameSuffix );
+		FScreenshotRequest::RequestScreenshot(FileName, bShowUI, bAddFilenameSuffix, Viewport->GetSceneHDREnabled());
 
 		GScreenshotResolutionX = Viewport->GetSizeXY().X;
 		GScreenshotResolutionY = Viewport->GetSizeXY().Y;
@@ -4012,9 +4046,11 @@ bool UGameViewportClient::RequestBugScreenShot(const TCHAR* Cmd, bool bDisplayHU
 	FString FileName = Cmd;
 
 	// Handle just a plain console command (e.g. "BUGSCREENSHOT").
+	bool bHDREnabled = (Viewport != NULL && Viewport->GetSceneHDREnabled());
+	const TCHAR* ScreenshotExtension = bHDREnabled ? TEXT("exr") : TEXT("png");
 	if (FileName.Len() == 0)
 	{
-		FileName = TEXT("BugScreenShot.png");
+		FileName = bHDREnabled ? TEXT("BugScreenShot.exr") : TEXT("BugScreenShot.png");
 	}
 
 	// Handle a console command and name (e.g. BUGSCREENSHOT FOO)
@@ -4024,7 +4060,7 @@ bool UGameViewportClient::RequestBugScreenShot(const TCHAR* Cmd, bool bDisplayHU
 		const FString BaseFile = FString::Printf(TEXT("%s%s_"), *FPaths::BugItDir(), *FPaths::GetBaseFilename(FileName));
 
 		// find the next filename in the sequence, e.g <gamename>/bugit/<platform>/desc_00000.png
-		FFileHelper::GenerateNextBitmapFilename(BaseFile, TEXT("png"), FileName);
+		FFileHelper::GenerateNextBitmapFilename(BaseFile, ScreenshotExtension, FileName);
 	}
 
 	if (Viewport != NULL)
@@ -4044,7 +4080,7 @@ bool UGameViewportClient::RequestBugScreenShot(const TCHAR* Cmd, bool bDisplayHU
 
 		const bool bShowUI = true;
 		const bool bAddFilenameSuffix = false;
-		FScreenshotRequest::RequestScreenshot(FileName, true, bAddFilenameSuffix);
+		FScreenshotRequest::RequestScreenshot(FileName, true, bAddFilenameSuffix, bHDREnabled);
 	}
 
 	return true;

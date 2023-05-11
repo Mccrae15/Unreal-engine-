@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "Blackboard/BlackboardKey.h"
 #include "CoreMinimal.h"
 #include "Stats/Stats.h"
 #include "UObject/ObjectMacros.h"
@@ -43,14 +44,12 @@ DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Num Templates"),STAT_AI_BehaviorTree
 DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Num Instances"),STAT_AI_BehaviorTree_NumInstances,STATGROUP_AIBehaviorTree, );
 DECLARE_MEMORY_STAT_EXTERN(TEXT("Instance memory"),STAT_AI_BehaviorTree_InstanceMemory,STATGROUP_AIBehaviorTree, AIMODULE_API);
 
-namespace FBlackboard
+#ifndef AI_BLACKBOARD_KEY_SIZE_8
+template <> struct TIsValidVariadicFunctionArg<FBlackboard::FKey>
 {
-	const FName KeySelf = TEXT("SelfActor");
-
-	typedef uint8 FKey;
-
-	const FKey InvalidKey = FKey(-1);
-}
+	enum { Value = true };
+};
+#endif
 
 enum class EBlackboardNotificationResult : uint8
 {
@@ -64,17 +63,17 @@ DECLARE_DELEGATE_RetVal_TwoParams(EBlackboardNotificationResult, FOnBlackboardCh
 
 namespace BTSpecialChild
 {
-	const int32 NotInitialized = -1;	// special value for child indices: needs to be initialized
-	const int32 ReturnToParent = -2;	// special value for child indices: return to parent node
+	inline constexpr int32 NotInitialized = -1;	// special value for child indices: needs to be initialized
+	inline constexpr int32 ReturnToParent = -2;	// special value for child indices: return to parent node
 	
-	const uint8 OwnedByComposite = MAX_uint8;	// special value for aux node's child index: owned by composite node instead of a task
+	inline constexpr uint8 OwnedByComposite = MAX_uint8;	// special value for aux node's child index: owned by composite node instead of a task
 }
 
 UENUM(BlueprintType)
 namespace EBTNodeResult
 {
 	// keep in sync with DescribeNodeResult()
-	enum Type
+	enum Type : int
 	{
 		// finished as success
 		Succeeded,
@@ -128,7 +127,7 @@ namespace EBTFlowAbortMode
 {
 	// keep in sync with DescribeFlowAbortMode()
 
-	enum Type
+	enum Type : int
 	{
 		None				UMETA(DisplayName="Nothing"),
 		LowerPriority		UMETA(DisplayName="Lower Priority"),
@@ -180,7 +179,7 @@ struct FBehaviorTreeParallelTask
 	/** additional mode data used for context switching */
 	EBTTaskStatus::Type Status;
 
-	FBehaviorTreeParallelTask() : TaskNode(NULL) {}
+	FBehaviorTreeParallelTask() : TaskNode(nullptr) {}
 	FBehaviorTreeParallelTask(const UBTTaskNode* InTaskNode, EBTTaskStatus::Type InStatus) : TaskNode(InTaskNode), Status(InStatus) {}
 
 	bool operator==(const FBehaviorTreeParallelTask& Other) const { return TaskNode == Other.TaskNode; }
@@ -225,7 +224,7 @@ struct FBehaviorTreeDebuggerInstance
 		FNodeFlowData() : ExecutionIndex(INDEX_NONE), bPassed(0), bTrigger(0), bDiscardedTrigger(0) {}
 	};
 
-	FBehaviorTreeDebuggerInstance() : TreeAsset(NULL), RootNode(NULL) {}
+	FBehaviorTreeDebuggerInstance() : TreeAsset(nullptr), RootNode(nullptr) {}
 
 	/** behavior tree asset */
 	UBehaviorTree* TreeAsset;
@@ -251,7 +250,7 @@ struct FBehaviorTreeDebuggerInstance
 /** debugger data about current execution step */
 struct FBehaviorTreeExecutionStep
 {
-	FBehaviorTreeExecutionStep() : TimeStamp(0.f), ExecutionStepId(InvalidExecutionId) {}
+	FBehaviorTreeExecutionStep() : TimeStamp(0.), ExecutionStepId(InvalidExecutionId) {}
 
 	/** subtree instance stack */
 	TArray<FBehaviorTreeDebuggerInstance> InstanceStack;
@@ -260,9 +259,9 @@ struct FBehaviorTreeExecutionStep
 	TMap<FName, FString> BlackboardValues;
 
 	/** Game world's time stamp of this step */
-	float TimeStamp;
+	double TimeStamp;
 
-	static constexpr int32 InvalidExecutionId = -1;
+	inline static constexpr int32 InvalidExecutionId = -1;
 
 	/** Id of execution step */
 	int32 ExecutionStepId;
@@ -325,7 +324,16 @@ struct FBehaviorTreeInstance
 	FBTInstanceDeactivation DeactivationNotify;
 
 	AIMODULE_API FBehaviorTreeInstance();
+
+	UE_DEPRECATED(5.2, "Copying FBehaviorTreeInstance constructor has been deprecated in favor of move-constructor")
 	AIMODULE_API FBehaviorTreeInstance(const FBehaviorTreeInstance& Other);
+
+	UE_DEPRECATED(5.2, "Copying FBehaviorTreeInstance assignement operator has been deprecated in favor of move assignement operator")
+	AIMODULE_API FBehaviorTreeInstance& operator=(const FBehaviorTreeInstance& Other) = default;
+
+	AIMODULE_API FBehaviorTreeInstance(FBehaviorTreeInstance&& Other);
+	AIMODULE_API FBehaviorTreeInstance& operator=(FBehaviorTreeInstance&& Other);
+
 	AIMODULE_API FBehaviorTreeInstance(int32 MemorySize);
 	AIMODULE_API ~FBehaviorTreeInstance();
 
@@ -411,17 +419,19 @@ private:
 
 struct FBTNodeIndex
 {
+	static constexpr uint16 InvalidIndex = TNumericLimits<uint16>::Max(); // (This is also the same as INDEX_NONE assigned to IndexType!)
+
 	/** index of instance of stack */
 	uint16 InstanceIndex;
 
 	/** execution index within instance */
 	uint16 ExecutionIndex;
 
-	FBTNodeIndex() : InstanceIndex(MAX_uint16), ExecutionIndex(MAX_uint16) {}
+	FBTNodeIndex() : InstanceIndex(InvalidIndex), ExecutionIndex(InvalidIndex) {}
 	FBTNodeIndex(uint16 InInstanceIndex, uint16 InExecutionIndex) : InstanceIndex(InInstanceIndex), ExecutionIndex(InExecutionIndex) {}
 
 	bool TakesPriorityOver(const FBTNodeIndex& Other) const;
-	bool IsSet() const { return InstanceIndex < MAX_uint16; }
+	bool IsSet() const { return InstanceIndex < InvalidIndex; }
 
 	FORCEINLINE bool operator==(const FBTNodeIndex& Other) const { return Other.ExecutionIndex == ExecutionIndex && Other.InstanceIndex == InstanceIndex; }
 	FORCEINLINE bool operator!=(const FBTNodeIndex& Other) const { return !operator==(Other); }
@@ -603,10 +613,8 @@ struct AIMODULE_API FBlackboardKeySelector
 
 protected:
 	/** ID of selected key */
-	UPROPERTY(transient, EditInstanceOnly, BlueprintReadWrite, Category = Blackboard)
-	uint8 SelectedKeyID;
-	// SelectedKeyId type should be FBlackboard::FKey, but typedefs are not supported by UHT
-	static_assert(sizeof(uint8) == sizeof(FBlackboard::FKey), "FBlackboardKeySelector::SelectedKeyId should be of FBlackboard::FKey-compatible type.");
+	UPROPERTY(transient, EditInstanceOnly, BlueprintReadWrite, Category = Blackboard, meta = (ClampMin = "0", UIMin = "0"))
+	int32 SelectedKeyID;
 
 	// Requires BlueprintReadWrite so that blueprint creators (using MakeBlackboardKeySelector) can specify whether or not None is Allowed.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Blackboard, Meta = (Tooltip = ""))
@@ -621,7 +629,7 @@ public:
 		
 	void AllowNoneAsValue(bool bAllow) { bNoneIsAllowedValue = bAllow; }
 
-	FORCEINLINE FBlackboard::FKey GetSelectedKeyID() const { return SelectedKeyID; }
+	FORCEINLINE FBlackboard::FKey GetSelectedKeyID() const { return FBlackboard::FKey(IntCastChecked<uint16>(SelectedKeyID)); }
 
 	/** helper functions for setting basic filters */
 	void AddObjectFilter(UObject* Owner, FName PropertyName, TSubclassOf<UObject> AllowedClass);
@@ -636,9 +644,9 @@ public:
 	void AddStringFilter(UObject* Owner, FName PropertyName);
 	void AddNameFilter(UObject* Owner, FName PropertyName);
 
-	FORCEINLINE bool IsNone() const { return bNoneIsAllowedValue && SelectedKeyID == FBlackboard::InvalidKey; }
-	FORCEINLINE bool IsSet() const { return SelectedKeyID != FBlackboard::InvalidKey; }
-	FORCEINLINE bool NeedsResolving() const { return SelectedKeyID == FBlackboard::InvalidKey && SelectedKeyName.IsNone() == false; }
+	FORCEINLINE bool IsNone() const { return bNoneIsAllowedValue && GetSelectedKeyID() == FBlackboard::InvalidKey; }
+	FORCEINLINE bool IsSet() const { return GetSelectedKeyID() != FBlackboard::InvalidKey; }
+	FORCEINLINE bool NeedsResolving() const { return GetSelectedKeyID() == FBlackboard::InvalidKey && SelectedKeyName.IsNone() == false; }
 	FORCEINLINE void InvalidateResolvedKey() { SelectedKeyID = FBlackboard::InvalidKey; }
 
 	friend FBlackboardDecoratorDetails;

@@ -250,7 +250,7 @@ class TRange;
 template <typename T>
 struct TCustomLerp
 {
-	enum { Value = false };
+	constexpr static bool Value = false;
 };
 
 /**
@@ -411,7 +411,6 @@ struct FMath : public FPlatformMath
 		return Abs<double>( Value ) <= ErrorTolerance;
 	}
 
-	RESOLVE_FLOAT_PREDICATE_AMBIGUITY(IsNearlyZero);
 	RESOLVE_FLOAT_PREDICATE_AMBIGUITY_2_ARGS(IsNearlyZero);
 
 private:
@@ -530,8 +529,10 @@ public:
 	 * Unlike std::floor, it returns an IntegralType.
 	 */
 	template <
-	    typename IntegralType,
-	    typename TEnableIf<TIsIntegral<IntegralType>::Value>::Type* = nullptr
+		typename IntegralType
+		UE_CONSTRAINTS_BEGIN
+			UE_CONSTRAINT(std::is_integral_v<IntegralType>)
+		UE_CONSTRAINTS_END
 	>
 	UE_NODISCARD static constexpr FORCEINLINE IntegralType Floor(IntegralType I)
 	{
@@ -692,8 +693,13 @@ public:
 	* @param ScalarCos	Pointer to where the Cos result should be stored
 	* @param Value  input angles 
 	*/
-	template<typename T, TEMPLATE_REQUIRES(TIsFloatingPoint<T>::Value)>
-	static constexpr FORCEINLINE void SinCos(typename TDecay<T>::Type* ScalarSin, typename TDecay<T>::Type* ScalarCos, T  Value )
+	template <
+		typename T
+		UE_CONSTRAINTS_BEGIN
+			UE_CONSTRAINT(std::is_floating_point_v<T>)
+		UE_CONSTRAINTS_END
+	>
+	static constexpr FORCEINLINE void SinCos(std::decay_t<T>* ScalarSin, std::decay_t<T>* ScalarCos, T  Value )
 	{
 		// Map Value to y in [-pi,pi], x = 2*pi*quotient + remainder.
 		T quotient = (UE_INV_PI*0.5f)*Value;
@@ -741,7 +747,13 @@ public:
 		*ScalarCos = FMath::Cos(Value);
 	}
 
-	template<typename T, typename U, TEMPLATE_REQUIRES(!TIsSame<T, U>::Value)>
+	template <
+		typename T,
+		typename U
+		UE_CONSTRAINTS_BEGIN
+			UE_CONSTRAINT(!std::is_same_v<T, U>)
+		UE_CONSTRAINTS_END
+	>
 	static FORCEINLINE void SinCos(T* ScalarSin, T* ScalarCos, U Value)
 	{
 		SinCos(ScalarSin, ScalarCos, T(Value));
@@ -828,7 +840,13 @@ public:
 	RESOLVE_FLOAT_AMBIGUITY_3_ARGS(ClampAngle);
 
 	/** Find the smallest angle between two headings (in degrees) */
-	template<typename T, typename T2, TEMPLATE_REQUIRES(TOr<TIsFloatingPoint<T>, TIsFloatingPoint<T2>>::Value)>
+	template <
+		typename T,
+		typename T2
+		UE_CONSTRAINTS_BEGIN
+			UE_CONSTRAINT(std::is_floating_point_v<T> || std::is_floating_point_v<T2>)
+		UE_CONSTRAINTS_END
+	>
 	UE_NODISCARD static constexpr auto FindDeltaAngleDegrees(T A1, T2 A2) -> decltype(A1 * A2)
 	{
 		// Find the difference
@@ -852,7 +870,13 @@ public:
 	}
 
 	/** Find the smallest angle between two headings (in radians) */
-	template<typename T, typename T2, TEMPLATE_REQUIRES(TOr<TIsFloatingPoint<T>, TIsFloatingPoint<T2>>::Value)>
+	template <
+		typename T,
+		typename T2
+		UE_CONSTRAINTS_BEGIN
+			UE_CONSTRAINT(std::is_floating_point_v<T> || std::is_floating_point_v<T2>)
+		UE_CONSTRAINTS_END
+	>
 	UE_NODISCARD static constexpr auto FindDeltaAngleRadians(T A1, T2 A2) -> decltype(A1 * A2)
 	{
 		// Find the difference
@@ -876,7 +900,12 @@ public:
 	}
 
 	/** Given a heading which may be outside the +/- PI range, 'unwind' it back into that range. */
-	template<typename T, TEMPLATE_REQUIRES(TIsFloatingPoint<T>::Value)>
+	template <
+		typename T
+		UE_CONSTRAINTS_BEGIN
+			UE_CONSTRAINT(std::is_floating_point_v<T>)
+		UE_CONSTRAINTS_END
+	>
 	UE_NODISCARD static constexpr T UnwindRadians(T A)
 	{
 		while(A > UE_PI)
@@ -893,7 +922,12 @@ public:
 	}
 
 	/** Utility to ensure angle is between +/- 180 degrees by unwinding. */
-	template<typename T, TEMPLATE_REQUIRES(TIsFloatingPoint<T>::Value)>
+	template <
+		typename T
+		UE_CONSTRAINTS_BEGIN
+			UE_CONSTRAINT(std::is_floating_point_v<T>)
+		UE_CONSTRAINTS_END
+	>
 	UE_NODISCARD static constexpr T UnwindDegrees(T A)
 	{
 		while(A > 180.f)
@@ -996,7 +1030,13 @@ public:
 	// Interpolation Functions
 
 	/** Calculates the percentage along a line from MinValue to MaxValue that Value is. */
-	template<typename T, typename T2, TEMPLATE_REQUIRES(TIsFloatingPoint<T>::Value)>
+	template <
+		typename T,
+		typename T2
+		UE_CONSTRAINTS_BEGIN
+			UE_CONSTRAINT(std::is_floating_point_v<T>)
+		UE_CONSTRAINTS_END
+	>
 	UE_NODISCARD static constexpr FORCEINLINE auto GetRangePct(T MinValue, T MaxValue, T2 Value)
 	{
 		// Avoid Divide by Zero.
@@ -1012,14 +1052,26 @@ public:
 	}
 
 	/** Same as above, but taking a 2d vector as the range. */
-	template<typename T, typename T2, TEMPLATE_REQUIRES(TIsFloatingPoint<T>::Value)>
+	template <
+		typename T,
+		typename T2
+		UE_CONSTRAINTS_BEGIN
+			UE_CONSTRAINT(std::is_floating_point_v<T>)
+		UE_CONSTRAINTS_END
+	>
 	UE_NODISCARD static auto GetRangePct(UE::Math::TVector2<T> const& Range, T2 Value)
 	{
 		return GetRangePct(Range.X, Range.Y, Value);
 	}
 	
 	/** Basically a Vector2d version of Lerp. */
-	template<typename T, typename T2, TEMPLATE_REQUIRES(TIsFloatingPoint<T>::Value)>
+	template <
+		typename T,
+		typename T2
+		UE_CONSTRAINTS_BEGIN
+			UE_CONSTRAINT(std::is_floating_point_v<T>)
+		UE_CONSTRAINTS_END
+	>
 	UE_NODISCARD static auto GetRangeValue(UE::Math::TVector2<T> const& Range, T2 Pct)
 	{
 		return Lerp(Range.X, Range.Y, Pct);
@@ -1061,28 +1113,40 @@ public:
 	}
 
 	/** Performs a linear interpolation between two values, Alpha ranges from 0-1 */
-	template< class T, class U, TEMPLATE_REQUIRES(TAnd<
-													TNot<TCustomLerp<T>>,
-													TOr<TIsFloatingPoint<U>, TIsSame<T, U>>
-													>::Value)>
+	template <
+		typename T,
+		typename U
+		UE_CONSTRAINTS_BEGIN
+			UE_CONSTRAINT(!TCustomLerp<T>::Value && (std::is_floating_point_v<U> || std::is_same_v<T, U>))
+		UE_CONSTRAINTS_END
+	>
 	UE_NODISCARD static constexpr FORCEINLINE_DEBUGGABLE T Lerp( const T& A, const T& B, const U& Alpha )
 	{
 		return (T)(A + Alpha * (B-A));
 	}
 
 	/** Custom lerps defined for those classes not suited to the default implemenation. */
-	template< class T, class U, TEMPLATE_REQUIRES(TCustomLerp<T>::Value) >
+	template <
+		typename T,
+		typename U
+		UE_CONSTRAINTS_BEGIN
+			UE_CONSTRAINT(TCustomLerp<T>::Value)
+		UE_CONSTRAINTS_END
+	>
 	UE_NODISCARD static FORCEINLINE_DEBUGGABLE T Lerp(const T& A, const T& B, const U& Alpha)
 	{
 		return TCustomLerp<T>::Lerp(A, B, Alpha);
 	}
 
 	// Allow passing of differing A/B types.
-	template<typename T1, typename T2, typename T3, TEMPLATE_REQUIRES(TAnd<
-																		TNot<TIsSame<T1, T2>>,
-																		TNot<TCustomLerp<T1>>,
-																		TNot<TCustomLerp<T2>>
-																		>::Value)>
+	template <
+		typename T1,
+		typename T2,
+		typename T3
+		UE_CONSTRAINTS_BEGIN
+			UE_CONSTRAINT(!std::is_same_v<T1, T2> && !TCustomLerp<T1>::Value && !TCustomLerp<T2>::Value)
+		UE_CONSTRAINTS_END
+	>
 	UE_NODISCARD static auto Lerp( const T1& A, const T2& B, const T3& Alpha ) -> decltype(A * B)
 	{
 		using ABType = decltype(A * B);
@@ -1104,7 +1168,14 @@ public:
 	}
 
 	// Allow passing of differing A/B types.
-	template<typename T1, typename T2, typename T3, TEMPLATE_REQUIRES(!TIsSame<T1, T2>::Value)>
+	template <
+		typename T1,
+		typename T2,
+		typename T3
+		UE_CONSTRAINTS_BEGIN
+			UE_CONSTRAINT(!std::is_same_v<T1, T2>)
+		UE_CONSTRAINTS_END
+	>
 	UE_NODISCARD static auto LerpStable( const T1& A, const T2& B, const T3& Alpha ) -> decltype(A * B)
 	{
 		using ABType = decltype(A * B);
@@ -1112,10 +1183,13 @@ public:
 	}
 	
 	/** Performs a 2D linear interpolation between four values values, FracX, FracY ranges from 0-1 */
-	template< class T, class U, TEMPLATE_REQUIRES(TAnd<
-													TNot<TCustomLerp<T>>,
-													TOr<TIsFloatingPoint<U>, TIsSame<T, U>>
-													>::Value)>
+	template <
+		typename T,
+		typename U
+		UE_CONSTRAINTS_BEGIN
+			UE_CONSTRAINT(!TCustomLerp<T>::Value && (std::is_floating_point_v<U> || std::is_same_v<T, U>))
+		UE_CONSTRAINTS_END
+	>
 	UE_NODISCARD static constexpr FORCEINLINE_DEBUGGABLE T BiLerp(const T& P00,const T& P10,const T& P01,const T& P11, const U& FracX, const U& FracY)
 	{
 		return Lerp(
@@ -1126,7 +1200,13 @@ public:
 	}
 
 	/** Custom lerps defined for those classes not suited to the default implemenation. */
-	template< class T, class U, TEMPLATE_REQUIRES(TCustomLerp<T>::Value) >
+	template <
+		typename T,
+		typename U
+		UE_CONSTRAINTS_BEGIN
+			UE_CONSTRAINT(TCustomLerp<T>::Value)
+		UE_CONSTRAINTS_END
+	>
 	UE_NODISCARD static FORCEINLINE_DEBUGGABLE T BiLerp(const T& P00, const T& P10, const T& P01, const T& P11, const U& FracX, const U& FracY)
 	{
 		return TCustomLerp<T>::BiLerp(P00, P10, P01, P11, FracX, FracY);
@@ -1141,10 +1221,13 @@ public:
 	 *
 	 * @return  Interpolated value
 	 */
-	template< class T, class U, TEMPLATE_REQUIRES(TAnd<
-													TNot<TCustomLerp<T>>,
-													TOr<TIsFloatingPoint<U>, TIsSame<T, U>>
-													>::Value)>
+	template <
+		typename T,
+		typename U
+		UE_CONSTRAINTS_BEGIN
+			UE_CONSTRAINT(!TCustomLerp<T>::Value && (std::is_floating_point_v<U> || std::is_same_v<T, U>))
+		UE_CONSTRAINTS_END
+	>
 	UE_NODISCARD static constexpr FORCEINLINE_DEBUGGABLE T CubicInterp( const T& P0, const T& T0, const T& P1, const T& T1, const U& A )
 	{
 		const U A2 = A * A;
@@ -1154,7 +1237,13 @@ public:
 	}
 
 	/** Custom lerps defined for those classes not suited to the default implemenation. */
-	template< class T, class U, TEMPLATE_REQUIRES(TCustomLerp<T>::Value) >
+	template <
+		typename T,
+		typename U
+		UE_CONSTRAINTS_BEGIN
+			UE_CONSTRAINT(TCustomLerp<T>::Value)
+		UE_CONSTRAINTS_END
+	>
 	UE_NODISCARD static FORCEINLINE_DEBUGGABLE T CubicInterp(const T& P0, const T& T0, const T& P1, const T& T1, const U& A)
 	{
 		return TCustomLerp<T>::CubicInterp(P0, T0, P1, T1, A);
@@ -1169,7 +1258,13 @@ public:
 	 *
 	 * @return  Interpolated value
 	 */
-	template< class T, class U, TEMPLATE_REQUIRES(TIsFloatingPoint<U>::Value) >
+	template <
+		typename T,
+		typename U
+		UE_CONSTRAINTS_BEGIN
+			UE_CONSTRAINT(std::is_floating_point_v<U>)
+		UE_CONSTRAINTS_END
+	>
 	UE_NODISCARD static constexpr FORCEINLINE_DEBUGGABLE T CubicInterpDerivative( const T& P0, const T& T0, const T& P1, const T& T1, const U& A )
 	{
 		T a = 6.f*P0 + 3.f*T0 + 3.f*T1 - 6.f*P1;
@@ -1190,7 +1285,13 @@ public:
 	 *
 	 * @return  Interpolated value
 	 */
-	template< class T, class U, TEMPLATE_REQUIRES(TIsFloatingPoint<U>::Value) >
+	template <
+		typename T,
+		typename U
+		UE_CONSTRAINTS_BEGIN
+			UE_CONSTRAINT(std::is_floating_point_v<U>)
+		UE_CONSTRAINTS_END
+	>
 	UE_NODISCARD static constexpr FORCEINLINE_DEBUGGABLE T CubicInterpSecondDerivative( const T& P0, const T& T0, const T& P1, const T& T1, const U& A )
 	{
 		T a = 12.f*P0 + 6.f*T0 + 6.f*T1 - 12.f*P1;
@@ -2427,22 +2528,6 @@ public:
 		}
 		return WeightedMovingAverage(CurrentSample, PreviousSample, Weight);
 	}
-
-	// Temporary support for ambiguities to simplify UE4 -> UE5 upgrades - falls back to float variant.
-	// A call is considered ambiguous if it passes no float types, any long double, or multiple mismatched float/double types.
-	template<typename T> UE_DEPRECATED(5.0, "Arguments cause function resolution ambiguity.")
-	UE_NODISCARD static FORCEINLINE float Log2(T&& Value) { return Log2((float)Value); }
-	template<typename T1, typename T2, typename T3, TEMPLATE_REQUIRES(TIsAmbiguous<T1, T2, T3>)> UE_DEPRECATED(5.0, "Arguments cause function resolution ambiguity.")
-	static FORCEINLINE void PolarToCartesian(const T1 Rad, const T2 Ang, T3& OutX, T3& OutY) { float OX, OY; PolarToCartesian((float)Rad, (float)Ang, OX, OY); OutX = OX; OutY = OY; }
-	template<typename T1, typename T2, typename T3, TEMPLATE_REQUIRES(TIsAmbiguous<T1, T2, T3>)> UE_DEPRECATED(5.0, "Arguments cause function resolution ambiguity.")
-	static FORCEINLINE void CartesianToPolar(const T1 X, const T2 Y, T3& OutRad, T3& OutAng) { float ORad, OAng; CartesianToPolar((float)X, (float)Y, ORad, OAng); OutRad = ORad; OutAng = OAng; }
-
-	template<typename T1, typename T2, typename T3, TEMPLATE_REQUIRES(TIsAmbiguous<T1, T2, T3>)> UE_DEPRECATED(5.0, "Arguments cause function resolution ambiguity.")
-	UE_NODISCARD static FORCEINLINE float SmoothStep(T1&& A, T2&& B, T3&& C) { return SmoothStep((float)A, (float)B, (float)C); }
-	template<typename T1, typename T2, typename T3, TEMPLATE_REQUIRES(TIsAmbiguous<T1, T2, T3>)> UE_DEPRECATED(5.0, "Arguments cause function resolution ambiguity.")
-	UE_NODISCARD static FORCEINLINE float WeightedMovingAverage(T1&& CurrentSample, T2&& PreviousSample, T3&& Weight) { return WeightedMovingAverage((float)CurrentSample, (float)PreviousSample, (float)Weight); }
-	template<typename T1, typename T2, typename T3, typename T4, typename T5, TEMPLATE_REQUIRES(TIsAmbiguous<T1, T2, T3, T4, T5>)> UE_DEPRECATED(5.0, "Arguments cause function resolution ambiguity.")
-	UE_NODISCARD static FORCEINLINE float DynamicWeightedMovingAverage(T1&& CurrentSample, T2&& PreviousSample, T3&& MaxDistance, T4&& MinWeight, T5&& MaxWeight) { return DynamicWeightedMovingAverage((float)CurrentSample, (float)PreviousSample, (float)MaxDistance, (float)MinWeight, (float)MaxWeight); }
 };
 
 // LWC Conversion helpers
@@ -2455,8 +2540,8 @@ namespace LWC
 	template<typename TDest, typename TSrc, typename InAllocatorType>
 	TArray<TDest, InAllocatorType> ConvertArrayType(const TArray<TSrc, InAllocatorType>& From)
 	{
-		//static_assert(!std::is_same<TDest, TSrc>::value, "Redundant call to ConvertArrayType");	// Unavoidable if supporting LWC toggle, but a useful check once LWC is locked to enabled.
-		if constexpr (std::is_same<TDest, TSrc>::value)
+		//static_assert(!std::is_same_v<TDest, TSrc>, "Redundant call to ConvertArrayType");	// Unavoidable if supporting LWC toggle, but a useful check once LWC is locked to enabled.
+		if constexpr (std::is_same_v<TDest, TSrc>)
 		{
 			return From;
 		}
@@ -2476,8 +2561,8 @@ namespace LWC
 	template<typename TDest, typename TSrc, typename InAllocatorType>
 	TArray<TDest, InAllocatorType> ConvertArrayTypeClampMax(const TArray<TSrc, InAllocatorType>& From)
 	{
-		//static_assert(!std::is_same<TDest, TSrc>::value, "Redundant call to ConvertArrayType");	// Unavoidable if supporting LWC toggle, but a useful check once LWC is locked to enabled.
-		if constexpr (std::is_same<TDest, TSrc>::value)
+		//static_assert(!std::is_same_v<TDest, TSrc>, "Redundant call to ConvertArrayType");	// Unavoidable if supporting LWC toggle, but a useful check once LWC is locked to enabled.
+		if constexpr (std::is_same_v<TDest, TSrc>)
 		{
 			return From;
 		}
@@ -2510,6 +2595,8 @@ namespace LWC
 	template<>
 	FORCEINLINE int32 FloatToIntCastChecked(float FloatValue)
 	{
+		// floats over 2^31 - 1 - 64 overflow int32 after conversion.
+		checkf(FloatValue >= float(TNumericLimits<int32>::Lowest()) && FloatValue <= float(TNumericLimits<int32>::Max() - 64), TEXT("Input value %f will exceed int32 limits"), FloatValue);
 		return FMath::TruncToInt32(FloatValue);
 	}
 
@@ -2517,6 +2604,8 @@ namespace LWC
 	template<>
 	FORCEINLINE int64 FloatToIntCastChecked(float FloatValue)
 	{
+		// floats over 2^63 - 1 - 2^39 overflow int64 after conversion.
+		checkf(FloatValue >= float(TNumericLimits<int64>::Lowest()) && FloatValue <= float(TNumericLimits<int64>::Max() - (int64)549755813888), TEXT("Input value %f will exceed int64 limits"), FloatValue);
 		return FMath::TruncToInt64(FloatValue);
 	}
 
@@ -2524,6 +2613,7 @@ namespace LWC
 	template<>
 	FORCEINLINE int32 FloatToIntCastChecked(double FloatValue)
 	{
+		checkf(FloatValue >= double(TNumericLimits<int32>::Lowest()) && FloatValue <= double(TNumericLimits<int32>::Max()), TEXT("Input value %f will exceed int32 limits"), FloatValue);
 		return FMath::TruncToInt32(FloatValue);
 	}
 
@@ -2531,6 +2621,8 @@ namespace LWC
 	template<>
 	FORCEINLINE int64 FloatToIntCastChecked(double FloatValue)
 	{
+		// doubles over 2^63 - 1 - 512 overflow int64 after conversion.
+		checkf(FloatValue >= double(TNumericLimits<int64>::Lowest()) && FloatValue <= double(TNumericLimits<int64>::Max() - 512), TEXT("Input value %f will exceed int64 limits"), FloatValue);
 		return FMath::TruncToInt64(FloatValue);
 	}
 

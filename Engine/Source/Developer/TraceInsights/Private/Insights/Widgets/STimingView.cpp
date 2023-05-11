@@ -79,7 +79,7 @@
 
 #define LOCTEXT_NAMESPACE "STimingView"
 
-#define ACTIVATE_BENCHMARK 0
+#define INSIGHTS_ACTIVATE_BENCHMARK 0
 
 // start auto generated ids from a big number (MSB set to 1) to avoid collisions with ids for gpu/cpu tracks based on 32bit timeline index
 uint64 FBaseTimingTrack::IdGenerator = (1ULL << 63);
@@ -98,7 +98,6 @@ STimingView::STimingView()
 	, FrameSharedState(MakeShared<FFrameSharedState>(this))
 	, ThreadTimingSharedState(MakeShared<FThreadTimingSharedState>(this))
 	, LoadingSharedState(MakeShared<FLoadingSharedState>(this))
-	, bAssetLoadingMode(false)
 	, FileActivitySharedState(MakeShared<FFileActivitySharedState>(this))
 	, TimeRulerTrack(MakeShared<FTimeRulerTrack>())
 	, DefaultTimeMarker(MakeShared<Insights::FTimeMarker>())
@@ -151,8 +150,10 @@ STimingView::~STimingView()
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void STimingView::Construct(const FArguments& InArgs)
+void STimingView::Construct(const FArguments& InArgs, FName InViewName)
 {
+	ViewName = InViewName;
+
 	FSlimHorizontalToolBarBuilder LeftToolbar(nullptr, FMultiBoxCustomization::None);
 	LeftToolbar.SetStyle(&FInsightsStyle::Get(), "SecondaryToolbar");
 
@@ -2284,7 +2285,15 @@ FReply STimingView::OnMouseButtonDoubleClick(const FGeometry& MyGeometry, const 
 			}
 			else
 			{
-				SetEventFilter(HoveredEvent->GetTrack()->GetFilterByEvent(HoveredEvent));
+				if (HoveredEvent->Is<FTimingEvent>() &&
+					IsFilterByEventType(HoveredEvent->As<FTimingEvent>().GetType()))
+				{
+					SetEventFilter(nullptr); // reset filter
+				}
+				else
+				{
+					SetEventFilter(HoveredEvent->GetTrack()->GetFilterByEvent(HoveredEvent));
+				}
 			}
 		}
 		else
@@ -2807,7 +2816,7 @@ FReply STimingView::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKe
 		ChooseNextEventDepthLimit();
 		return FReply::Handled();
 	}
-#if ACTIVATE_BENCHMARK
+#if INSIGHTS_ACTIVATE_BENCHMARK
 	else if (InKeyEvent.GetKey() == EKeys::Z)
 	{
 		FTimingProfilerTests::FCheckValues CheckValues;
@@ -3649,13 +3658,10 @@ void STimingView::UpdateHoveredTimingEvent(float InMousePosX, float InMousePosY)
 
 void STimingView::OnSelectedTimingEventChanged()
 {
-	if (!bAssetLoadingMode)
+	if (SelectedEvent.IsValid())
 	{
-		if (SelectedEvent.IsValid())
-		{
-			SelectedEvent->GetTrack()->UpdateEventStats(const_cast<ITimingEvent&>(*SelectedEvent));
-			SelectedEvent->GetTrack()->OnEventSelected(*SelectedEvent);
-		}
+		SelectedEvent->GetTrack()->UpdateEventStats(const_cast<ITimingEvent&>(*SelectedEvent));
+		SelectedEvent->GetTrack()->OnEventSelected(*SelectedEvent);
 	}
 
 	OnSelectedEventChangedDelegate.Broadcast(SelectedEvent);
@@ -4912,7 +4918,11 @@ void STimingView::ClearRelations()
 
 void STimingView::FindFirstEvent()
 {
-	SelectedEvent.Reset();
+	if (SelectedEvent.IsValid())
+	{
+		SelectedEvent.Reset();
+		OnSelectedEventChangedDelegate.Broadcast(SelectedEvent);
+	}
 	FindNextEvent();
 }
 
@@ -5026,7 +5036,11 @@ void STimingView::FindNextEvent()
 
 void STimingView::FindLastEvent()
 {
-	SelectedEvent.Reset();
+	if (SelectedEvent.IsValid())
+	{
+		SelectedEvent.Reset();
+		OnSelectedEventChangedDelegate.Broadcast(SelectedEvent);
+	}
 	FindPrevEvent();
 }
 
@@ -5120,5 +5134,5 @@ void STimingView::EnumerateFilteredTracks(TSharedPtr<Insights::FFilterConfigurat
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#undef ACTIVATE_BENCHMARK
+#undef INSIGHTS_ACTIVATE_BENCHMARK
 #undef LOCTEXT_NAMESPACE

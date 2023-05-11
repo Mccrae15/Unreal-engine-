@@ -8,6 +8,8 @@
 #include "Interfaces/Interface_AsyncCompilation.h"
 #include "AssetCompilingManager.generated.h"
 
+class FQueuedThreadPool;
+
 USTRUCT(BlueprintType)
 struct FAssetCompileData
 {
@@ -25,6 +27,18 @@ struct FAssetCompileData
 	{
 	}
 };
+
+namespace AssetCompilation
+{
+	struct FProcessAsyncTaskParams
+	{
+		/* Limits the execution time instead of processing everything */
+		bool bLimitExecutionTime = false;
+
+		/* Limits processing for assets required for PIE only. */
+		bool bPlayInEditorAssetsOnly = false;
+	};
+}
 
 struct IAssetCompilingManager
 {
@@ -51,6 +65,11 @@ struct IAssetCompilingManager
 	ENGINE_API virtual int32 GetNumRemainingAssets() const = 0;
 
 	/**
+	 * Blocks until completion of the requested objects.
+	 */
+	ENGINE_API virtual void FinishCompilationForObjects(TArrayView<UObject* const> InObjects) {} /* Optional for backward compatibility */
+
+	/**
 	 * Blocks until completion of all assets.
 	 */
 	ENGINE_API virtual void FinishAllCompilation() = 0;
@@ -68,11 +87,19 @@ protected:
 	 */
 	ENGINE_API virtual void ProcessAsyncTasks(bool bLimitExecutionTime = false) = 0;
 
+	/**
+	 * Called once per frame, fetches completed tasks and applies them to the scene.
+	 */
+	ENGINE_API virtual void ProcessAsyncTasks(const AssetCompilation::FProcessAsyncTaskParams& Params)
+	{
+		/* Forward for backward compatibility */
+		ProcessAsyncTasks(Params.bLimitExecutionTime);
+	}
 
 	ENGINE_API virtual ~IAssetCompilingManager() {}
 };
 
-DECLARE_MULTICAST_DELEGATE_OneParam(FAssetPostCompileEvent, const TArray<FAssetCompileData>&);
+DECLARE_TS_MULTICAST_DELEGATE_OneParam(FAssetPostCompileEvent, const TArray<FAssetCompileData>&);
 
 class FAssetCompilingManager
 {
@@ -105,6 +132,11 @@ public:
 	ENGINE_API void FinishAllCompilation();
 
 	/**
+	 * Finish compilation of the requested objects.
+	 */
+	ENGINE_API void FinishCompilationForObjects(TArrayView<UObject* const> InObjects);
+
+	/**
 	 * Cancel any pending work and blocks until it is safe to shut down.
 	 */
 	ENGINE_API void Shutdown();
@@ -120,11 +152,17 @@ public:
 	ENGINE_API void ProcessAsyncTasks(bool bLimitExecutionTime = false);
 
 	/**
+	 * Called once per frame, fetches completed tasks and applies them to the scene.
+	 */
+	ENGINE_API void ProcessAsyncTasks(const AssetCompilation::FProcessAsyncTaskParams& Params);
+
+	/**
 	 * Event called after an asset finishes compilation.
 	 */
 	FAssetPostCompileEvent& OnAssetPostCompileEvent() { return AssetPostCompileEvent; }
 private:
 	FAssetCompilingManager();
+	~FAssetCompilingManager();
 	friend struct IAssetCompilingManager;
 
 	/** Take some action whenever the number of remaining asset changes. */

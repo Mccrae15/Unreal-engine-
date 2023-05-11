@@ -2,11 +2,6 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/Object.h"
-#include "Online/CoreOnline.h"
-#include "GameFramework/OnlineReplStructs.h"
 #include "OnlineBeaconReservation.h"
 #include "SpectatorBeaconState.generated.h"
 
@@ -16,7 +11,7 @@ ONLINESUBSYSTEMUTILS_API DECLARE_LOG_CATEGORY_EXTERN(LogSpectatorBeacon, Log, Al
 UENUM()
 namespace ESpectatorReservationResult
 {
-	enum Type
+	enum Type : int
 	{
 		/** Empty state. */
 		NoResult,
@@ -387,3 +382,7 @@ protected:
 
 	friend class ASpectatorBeaconHost;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif

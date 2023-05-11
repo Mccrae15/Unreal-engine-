@@ -2,11 +2,11 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Templates/SubclassOf.h"
-#include "PCGSettings.h"
 
 #include "PCGEditorSettings.generated.h"
+
+class UPCGSettings;
 
 struct FEdGraphPinType;
 
@@ -25,9 +25,9 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = Node, meta = (HideAlphaChannel))
 	FLinearColor DefaultNodeColor;
 
-	/** Isolated node color */
+	/** Instanced node body tint color */
 	UPROPERTY(EditAnywhere, config, Category = Node, meta = (HideAlphaChannel))
-	FLinearColor IsolatedNodeColor;
+	FLinearColor InstancedNodeBodyTintColor;
 
 	/** Color used for input & output nodes */
 	UPROPERTY(EditAnywhere, config, Category = Node, meta = (HideAlphaChannel))
@@ -65,8 +65,8 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = Node, meta = (HideAlphaChannel))
 	FLinearColor SubgraphNodeColor;
 
-	/** Color used for param data operations */
-	UPROPERTY(EditAnywhere, config, Category = Node, meta = (HideAlphaChannel))
+	/** Color used for Attribute Set operations */
+	UPROPERTY(EditAnywhere, config, Category = Node, meta = (HideAlphaChannel, DisplayName = "Attribute Set Node Color"))
 	FLinearColor ParamDataNodeColor;
 
 	/** Color used for debug operations */
@@ -80,13 +80,45 @@ public:
 	/** Color used for spatial data pins */
 	UPROPERTY(EditAnywhere, config, Category = Node, meta = (HideAlphaChannel))
 	FLinearColor SpatialDataPinColor;
+	
+	/** Color used for concrete/simple spatial data pins */
+	UPROPERTY(EditAnywhere, config, Category = Node, meta = (HideAlphaChannel))
+	FLinearColor ConcreteDataPinColor;
 
-	/** Color used for render targets / GPU pins */
+	/** Color used for data pins of type Point */
+	UPROPERTY(EditAnywhere, config, Category = Node, meta = (HideAlphaChannel))
+	FLinearColor PointDataPinColor;
+
+	/** Color used for data pins of type Spline */
+	UPROPERTY(EditAnywhere, config, Category = Node, meta = (HideAlphaChannel))
+	FLinearColor PolyLineDataPinColor;
+
+	/** Color used for data pins of type Surface */
+	UPROPERTY(EditAnywhere, config, Category = Node, meta = (HideAlphaChannel))
+	FLinearColor SurfaceDataPinColor;
+
+	/** Color used for data pins of type Landscape */
+	UPROPERTY(EditAnywhere, config, Category = Node, meta = (HideAlphaChannel))
+	FLinearColor LandscapeDataPinColor;
+
+	/** Color used for data pins of type Texture */
+	UPROPERTY(EditAnywhere, config, Category = Node, meta = (HideAlphaChannel))
+	FLinearColor TextureDataPinColor;
+
+	/** Color used for data pins of type Render Target */
 	UPROPERTY(EditAnywhere, config, Category = Node, meta = (HideAlphaChannel))
 	FLinearColor RenderTargetDataPinColor;
 
-	/** Color used for param data pins */
+	/** Color used for data pins of type Volume */
 	UPROPERTY(EditAnywhere, config, Category = Node, meta = (HideAlphaChannel))
+	FLinearColor VolumeDataPinColor;
+
+	/** Color used for data pins of type Primitive */
+	UPROPERTY(EditAnywhere, config, Category = Node, meta = (HideAlphaChannel))
+	FLinearColor PrimitiveDataPinColor;
+
+	/** Color used for data pins of type Attribute Set */
+	UPROPERTY(EditAnywhere, config, Category = Node, meta = (HideAlphaChannel, DisplayName = "Attribute Set Pin Color"))
 	FLinearColor ParamDataPinColor;
 
 	/** Color used for other/unknown data types */
@@ -100,12 +132,9 @@ public:
 	/** Specify if we want to jump to definition in case of double click on native PCG Nodes */
 	UPROPERTY(EditAnywhere, config, Category = Workflow)
 	bool bEnableNavigateToNativeNodes;
-
-	/** Specifies the scale of the volume created on PCG graph drag/drop */
-	UPROPERTY(EditAnywhere, Config, Category = Workflow)
-	FVector VolumeScale = FVector(25, 25, 10);
-
-	/** Whether we want to generate the PCG graph after drag/drop or not */
-	UPROPERTY(EditAnywhere, Config, Category = Workflow)
-	bool bGenerateOnDrop = true;
 };
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#include "PCGSettings.h"
+#endif

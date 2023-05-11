@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Threading.Tasks;
@@ -26,7 +27,6 @@ using MongoDB.Bson.Serialization.Attributes;
 
 namespace Horde.Build.Agents
 {
-	using AgentSoftwareChannelName = StringId<AgentSoftwareChannels>;
 	using LeaseId = ObjectId<ILease>;
 	using LogId = ObjectId<ILogFile>;
 	using PoolId = StringId<IPool>;
@@ -66,7 +66,12 @@ namespace Horde.Build.Agents
 		/// <summary>
 		/// Whether to use an incremental workspace
 		/// </summary>
-		public bool BIncremental { get; set; }
+		public bool Incremental { get; set; }
+		
+		/// <summary>
+		/// Method to use when syncing/materializing data from Perforce
+		/// </summary>
+		public string? Method { get; set; }
 
 		/// <summary>
 		/// Constructor
@@ -76,8 +81,9 @@ namespace Horde.Build.Agents
 		/// <param name="identifier">Identifier to distinguish this workspace from other workspaces</param>
 		/// <param name="stream">The stream to sync</param>
 		/// <param name="view">Custom view for the workspace</param>
-		/// <param name="bIncremental">Whether to use an incremental workspace</param>
-		public AgentWorkspace(string? cluster, string? userName, string identifier, string stream, List<string>? view, bool bIncremental)
+		/// <param name="incremental">Whether to use an incremental workspace</param>
+		/// <param name="method">Method to use when syncing/materializing data from Perforce</param>
+		public AgentWorkspace(string? cluster, string? userName, string identifier, string stream, List<string>? view, bool incremental, string? method)
 		{
 			if (!String.IsNullOrEmpty(cluster))
 			{
@@ -90,7 +96,8 @@ namespace Horde.Build.Agents
 			Identifier = identifier;
 			Stream = stream;
 			View = view;
-			BIncremental = bIncremental;
+			Incremental = incremental;
+			Method = method;
 		}
 
 		/// <summary>
@@ -98,7 +105,7 @@ namespace Horde.Build.Agents
 		/// </summary>
 		/// <param name="workspace">RPC message to construct from</param>
 		public AgentWorkspace(HordeCommon.Rpc.Messages.AgentWorkspace workspace)
-			: this(workspace.ConfiguredCluster, workspace.ConfiguredUserName, workspace.Identifier, workspace.Stream, (workspace.View.Count > 0) ? workspace.View.ToList() : null, workspace.Incremental)
+			: this(workspace.ConfiguredCluster, workspace.ConfiguredUserName, workspace.Identifier, workspace.Stream, (workspace.View.Count > 0) ? workspace.View.ToList() : null, workspace.Incremental, workspace.Method)
 		{
 		}
 
@@ -125,7 +132,7 @@ namespace Horde.Build.Agents
 			{
 				return false;
 			}
-			if (Cluster != other.Cluster || UserName != other.UserName || Identifier != other.Identifier || Stream != other.Stream || BIncremental != other.BIncremental)
+			if (Cluster != other.Cluster || UserName != other.UserName || Identifier != other.Identifier || Stream != other.Stream || Incremental != other.Incremental)
 			{
 				return false;
 			}
@@ -139,7 +146,7 @@ namespace Horde.Build.Agents
 		/// <inheritdoc/>
 		public override int GetHashCode()
 		{
-			return HashCode.Combine(Cluster, UserName, Identifier, Stream, BIncremental); // Ignore 'View' for now
+			return HashCode.Combine(Cluster, UserName, Identifier, Stream, Incremental); // Ignore 'View' for now
 		}
 
 		/// <summary>
@@ -163,19 +170,23 @@ namespace Horde.Build.Agents
 		public HordeCommon.Rpc.Messages.AgentWorkspace ToRpcMessage(IPerforceServer server, PerforceCredentials? credentials)
 		{
 			// Construct the message
-			HordeCommon.Rpc.Messages.AgentWorkspace result = new HordeCommon.Rpc.Messages.AgentWorkspace();
-			result.ConfiguredCluster = Cluster;
-			result.ConfiguredUserName = UserName;
-			result.ServerAndPort = server.ServerAndPort;
-			result.UserName = credentials?.UserName ?? UserName;
-			result.Password = credentials?.Password;
-			result.Identifier = Identifier;
-			result.Stream = Stream;
+			HordeCommon.Rpc.Messages.AgentWorkspace result = new ()
+			{
+				ConfiguredCluster = Cluster, ConfiguredUserName = UserName,
+				ServerAndPort = server.ServerAndPort,
+				UserName = credentials?.UserName ?? UserName,
+				Password = credentials?.Password,
+				Identifier = Identifier,
+				Stream = Stream,
+				Incremental = Incremental,
+				Method = Method ?? String.Empty
+			};
+			
 			if (View != null)
 			{
 				result.View.AddRange(View);
 			}
-			result.Incremental = BIncremental;
+			
 			return result;
 		}
 	}
@@ -405,11 +416,6 @@ namespace Horde.Build.Agents
 		public IReadOnlyDictionary<string, int> Resources { get; }
 
 		/// <summary>
-		/// Channel for the software running on this agent. Uses <see cref="AgentSoftwareService.DefaultChannelName"/> if not specified
-		/// </summary>
-		public AgentSoftwareChannelName? Channel { get; }
-
-		/// <summary>
 		/// Last upgrade that was attempted
 		/// </summary>
 		public string? LastUpgradeVersion { get; }
@@ -473,11 +479,6 @@ namespace Horde.Build.Agents
 		/// Array of active leases.
 		/// </summary>
 		public IReadOnlyList<AgentLease> Leases { get; }
-
-		/// <summary>
-		/// ACL for modifying this agent
-		/// </summary>
-		public Acl? Acl { get; }
 
 		/// <summary>
 		/// Last time that the agent was modified
@@ -660,15 +661,15 @@ namespace Horde.Build.Agents
 		/// Gets all the autosdk workspaces required for an agent
 		/// </summary>
 		/// <param name="agent"></param>
-		/// <param name="globals"></param>
+		/// <param name="globalConfig"></param>
 		/// <param name="workspaces"></param>
 		/// <returns></returns>
-		public static HashSet<AgentWorkspace> GetAutoSdkWorkspaces(this IAgent agent, Globals globals, List<AgentWorkspace> workspaces)
+		public static HashSet<AgentWorkspace> GetAutoSdkWorkspaces(this IAgent agent, GlobalConfig globalConfig, List<AgentWorkspace> workspaces)
 		{
 			HashSet<AgentWorkspace> autoSdkWorkspaces = new HashSet<AgentWorkspace>();
 			foreach (string? clusterName in workspaces.Select(x => x.Cluster).Distinct())
 			{
-				PerforceCluster? cluster = globals.FindPerforceCluster(clusterName);
+				PerforceCluster? cluster = globalConfig.FindPerforceCluster(clusterName);
 				if (cluster != null)
 				{
 					AgentWorkspace? autoSdkWorkspace = GetAutoSdkWorkspace(agent, cluster);
@@ -693,7 +694,7 @@ namespace Horde.Build.Agents
 			{
 				if (autoSdk.Stream != null && autoSdk.Properties.All(x => agent.Properties.Contains(x)))
 				{
-					return new AgentWorkspace(cluster.Name, autoSdk.UserName, autoSdk.Name ?? "AutoSDK", autoSdk.Stream!, null, true);
+					return new AgentWorkspace(cluster.Name, autoSdk.UserName, autoSdk.Name ?? "AutoSDK", autoSdk.Stream!, null, true, null);
 				}
 			}
 			return null;
@@ -752,24 +753,74 @@ namespace Horde.Build.Agents
 			}
 
 			// Construct the message
-			HordeCommon.Rpc.Messages.AgentWorkspace result = new HordeCommon.Rpc.Messages.AgentWorkspace();
-			result.ConfiguredCluster = workspace.Cluster;
-			result.ConfiguredUserName = workspace.UserName;
-			result.Cluster = cluster?.Name;
-			result.BaseServerAndPort = baseServerAndPort;
-			result.ServerAndPort = serverAndPort;
-			result.UserName = credentials?.UserName ?? workspace.UserName;
-			result.Password = credentials?.Password;
-			result.Identifier = workspace.Identifier;
-			result.Stream = workspace.Stream;
+			HordeCommon.Rpc.Messages.AgentWorkspace result = new ()
+			{
+				ConfiguredCluster = workspace.Cluster, ConfiguredUserName = workspace.UserName,
+				Cluster = cluster?.Name,
+				BaseServerAndPort = baseServerAndPort,
+				ServerAndPort = serverAndPort,
+				UserName = credentials?.UserName ?? workspace.UserName,
+				Password = credentials?.Password,
+				Identifier = workspace.Identifier,
+				Stream = workspace.Stream,
+				Incremental = workspace.Incremental,
+				Method = workspace.Method ?? String.Empty
+			};
+
 			if (workspace.View != null)
 			{
 				result.View.AddRange(workspace.View);
 			}
-			result.Incremental = workspace.BIncremental;
+			
 			workspaceMessages.Add(result);
-
 			return true;
+		}
+
+		/// <summary>
+		/// Tries to get an agent workspace definition from the given type name
+		/// </summary>
+		/// <param name="streamConfig">The stream object</param>
+		/// <param name="agentType">The agent type</param>
+		/// <param name="workspace">Receives the agent workspace definition</param>
+		/// <returns>True if the agent type was valid, and an agent workspace could be created</returns>
+		public static bool TryGetAgentWorkspace(this StreamConfig streamConfig, AgentConfig agentType, [NotNullWhen(true)] out (AgentWorkspace, bool)? workspace)
+		{
+			// Get the workspace settings
+			if (agentType.Workspace == null)
+			{
+				// Use the default settings (fast switching workspace, clean 
+				workspace = (new AgentWorkspace(null, null, streamConfig.GetDefaultWorkspaceIdentifier(), streamConfig.Name, null, false, null), true);
+				return true;
+			}
+			else
+			{
+				// Try to get the matching workspace type
+				WorkspaceConfig? workspaceType;
+				if (!streamConfig.WorkspaceTypes.TryGetValue(agentType.Workspace, out workspaceType))
+				{
+					workspace = null;
+					return false;
+				}
+
+				// Get the workspace identifier
+				string identifier;
+				if (workspaceType.Identifier != null)
+				{
+					identifier = workspaceType.Identifier;
+				}
+				else if (workspaceType.Incremental)
+				{
+					identifier = $"{streamConfig.GetEscapedName()}+{agentType.Workspace}";
+				}
+				else
+				{
+					identifier = streamConfig.GetDefaultWorkspaceIdentifier();
+				}
+
+				// Create the new workspace
+				workspace = (new AgentWorkspace(workspaceType.Cluster, workspaceType.UserName, identifier, workspaceType.Stream ?? streamConfig.Name, workspaceType.View, workspaceType.Incremental, workspaceType.Method), workspaceType.UseAutoSdk);
+				return true;
+			}
 		}
 	}
 }

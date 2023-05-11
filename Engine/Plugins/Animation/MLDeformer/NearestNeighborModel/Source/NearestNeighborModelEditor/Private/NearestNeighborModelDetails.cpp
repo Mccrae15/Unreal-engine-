@@ -7,10 +7,19 @@
 #include "DetailLayoutBuilder.h"
 #include "DetailCategoryBuilder.h"
 #include "DetailWidgetRow.h"
-#include "SWarningOrErrorBox.h"
+#include "Engine/SkeletalMesh.h"
+#include "IDetailChildrenBuilder.h"
 #include "IDetailGroup.h"
 #include "IDetailsView.h"
+#include "PropertyCustomizationHelpers.h"
+#include "Rendering/SkeletalMeshModel.h"
+#include "Rendering/SkeletalMeshLODModel.h"
+#include "SWarningOrErrorBox.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SComboBox.h"
+#include "Widgets/Input/STextComboBox.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "NearestNeighborModelDetails"
 
@@ -39,10 +48,12 @@ namespace UE::NearestNeighborModel
 
 	void FNearestNeighborModelDetails::CreateCategories()
 	{
-		FMLDeformerMorphModelDetails::CreateCategories();
+		FMLDeformerGeomCacheModelDetails::CreateCategories();
+
 		FileCacheCategoryBuilder = &DetailLayoutBuilder->EditCategory("File Cache", FText::GetEmpty(), ECategoryPriority::Important);
 		ClothPartCategoryBuilder = &DetailLayoutBuilder->EditCategory("Cloth Parts", FText::GetEmpty(), ECategoryPriority::Important);
 		NearestNeighborCategoryBuilder = &DetailLayoutBuilder->EditCategory("Nearest Neighbors", FText::GetEmpty(), ECategoryPriority::Important);
+		MorphTargetCategoryBuilder = &DetailLayoutBuilder->EditCategory("Morph Targets", FText::GetEmpty(), ECategoryPriority::Important);
 		KMeansCategoryBuilder = &DetailLayoutBuilder->EditCategory("KMeans Pose Generator", FText::GetEmpty(), ECategoryPriority::Important);
 
 		// Add warning in CreateCategories so that the warning appears at the top of the details panel.
@@ -59,10 +70,111 @@ namespace UE::NearestNeighborModel
 			];
 	}
 
+
+	void FNearestNeighborModelDetails::GenerateClothPartElementWidget(TSharedRef<IPropertyHandle> PropertyHandle, int32 ArrayIndex, IDetailChildrenBuilder& ChildrenBuilder)
+	{
+		TSharedPtr<IPropertyHandle> PCACoeffNumPropertyHandle = PropertyHandle->GetChildHandle(TEXT("PCACoeffNum"));
+		TSharedPtr<IPropertyHandle> VertexMapPathHandle = PropertyHandle->GetChildHandle(TEXT("VertexMapPath"));
+
+		typename STextComboBox::FOnTextSelectionChanged SubMeshComboOnSelectionChangedDelegate;
+		SubMeshComboOnSelectionChangedDelegate.BindRaw(this, &FNearestNeighborModelDetails::SubMeshComboSelectionChanged, ArrayIndex);
+		int32 InitMeshIndex = NearestNeighborModel ? NearestNeighborModel->GetPartMeshIndex(ArrayIndex) : 0;
+		InitMeshIndex = InitMeshIndex >= SubMeshNames.Num() ? 0 : InitMeshIndex;
+
+		ChildrenBuilder.AddCustomRow(FText::GetEmpty())
+		[
+			SNew(SVerticalBox)
+			+SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SHorizontalBox)
+
+				+SHorizontalBox::Slot()
+				.Padding(5, 2)
+				.FillWidth(0.3f)
+				[
+					PropertyHandle->CreatePropertyNameWidget()
+				]
+
+				+SHorizontalBox::Slot()
+				.Padding(5, 2)
+				.FillWidth(0.7f)
+				[
+					PropertyHandle->CreatePropertyValueWidget()
+				]
+			]
+
+			+SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SHorizontalBox)
+
+				+SHorizontalBox::Slot()
+				.Padding(5, 2)
+				.FillWidth(0.3f)
+				[
+					PCACoeffNumPropertyHandle->CreatePropertyNameWidget()
+				]
+
+				+SHorizontalBox::Slot()
+				.Padding(5, 2)
+				.FillWidth(0.7f)
+				[
+					PCACoeffNumPropertyHandle->CreatePropertyValueWidget()
+				]
+
+			]
+
+			+SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SHorizontalBox)
+
+				+SHorizontalBox::Slot()
+				.Padding(5, 2)
+				.FillWidth(0.3f)
+				.VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+					.Text(FText::FromString(TEXT("Submesh")))
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+				]
+				+SHorizontalBox::Slot()
+				.Padding(5, 2)
+				.FillWidth(0.7f)
+				[
+					SNew(STextComboBox)
+					.OptionsSource(&SubMeshNames)
+					.OnSelectionChanged(SubMeshComboOnSelectionChangedDelegate)
+					.InitiallySelectedItem(SubMeshNames[InitMeshIndex])
+				]
+			]
+			+SVerticalBox::Slot()
+			.AutoHeight()
+			[
+				SNew(SHorizontalBox)
+
+				+SHorizontalBox::Slot()
+				.Padding(5, 2)
+				.FillWidth(0.3f)		
+				[
+					VertexMapPathHandle->CreatePropertyNameWidget()
+				]
+
+				+SHorizontalBox::Slot()
+				.Padding(5, 2)
+				.FillWidth(0.7f)
+				[
+					VertexMapPathHandle->CreatePropertyValueWidget()
+				]
+			]
+		];
+	}
+
 	void FNearestNeighborModelDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 	{
 		// Create all the detail categories and add the properties of the base class.
-		FMLDeformerMorphModelDetails::CustomizeDetails(DetailBuilder);
+		FMLDeformerGeomCacheModelDetails::CustomizeDetails(DetailBuilder);
 
 		// Training settings.
 		TrainingSettingsCategoryBuilder->AddProperty(UNearestNeighborModel::GetInputDimPropertyName());
@@ -80,83 +192,37 @@ namespace UE::NearestNeighborModel
 		Group->AddPropertyRow(DetailBuilder.GetProperty(UNearestNeighborModel::GetRecomputeDeltasPropertyName()));
 		Group->AddPropertyRow(DetailBuilder.GetProperty(UNearestNeighborModel::GetRecomputePCAPropertyName()));
 
-		// Cloth part settings
-		ClothPartCategoryBuilder->AddProperty(UNearestNeighborModel::GetClothPartEditorDataPropertyName());
-
-		FString VertexCountStr = "VertexCounts:";
-		if (NearestNeighborModel)
+		if (NearestNeighborModel == nullptr)
 		{
-			const int32 NumParts = NearestNeighborModel->GetNumParts();
-			VertexCountStr += "[";
-			for (int32 PartId = 0; PartId < NumParts; PartId++)
-			{
-				VertexCountStr += FString::Printf(TEXT("%d"), NearestNeighborModel->GetPartNumVerts(PartId));
-				if (PartId != NumParts - 1)
-				{
-					VertexCountStr += ",";
-				}
-			}
-			VertexCountStr += "]";
+			return;
 		}
-		FText VertexCountText = FText::FromString(VertexCountStr);
-		ClothPartCategoryBuilder->AddCustomRow(FText::FromString(""))
-			.WholeRowContent()
-			[
-				SNew(STextBlock)
-				.Text(VertexCountText)
-			];
 
+		BuildSubMeshNames();
+		const int32 MaxPartMeshIndex = NearestNeighborModel->GetMaxPartMeshIndex();
+		if (MaxPartMeshIndex >= SubMeshNames.Num())
+		{
+			UE_LOG(LogNearestNeighborModel, Error, TEXT("Nearest neighbor model was previously created with %d submeshes, but the current skeletal mesh has %d submeshes. Please use the original skeletal mesh or click update to overwrite existing data."), MaxPartMeshIndex + 1, SubMeshNames.Num());
 
-		FText ButtonText = (NearestNeighborModel && NearestNeighborModel->IsClothPartDataValid()) ? LOCTEXT("Update", "Update") : LOCTEXT("Update *", "Update *");
-		ClothPartCategoryBuilder->AddCustomRow(FText::FromString(""))
-			.WholeRowContent()
-			[
-				SNew(SButton)
-				.Text(ButtonText)
-				.HAlign(HAlign_Center)
-				.OnClicked_Lambda([this]
-				{
-					if (NearestNeighborModel != nullptr)
-					{
-						NearestNeighborModel->UpdateClothPartData();
-						NearestNeighborModel->InitPreviousWeights();
-						if (NearestNeighborEditorModel != nullptr)
-						{
-							NearestNeighborEditorModel->UpdateNearestNeighborActors();
-						}
-						EditorModel->GetEditor()->GetModelDetailsView()->ForceRefresh();
-					}
-					return FReply::Handled();
-				})
-			];
+			NearestNeighborModel->InvalidateClothPartData();
+			AddActionResultText(ClothPartCategoryBuilder, EUpdateResult::ERROR, TEXT("Loading"));
+		}
+		TSharedRef<IPropertyHandle> ClothPartDataPropertyHandle = DetailBuilder.GetProperty(UNearestNeighborModel::GetClothPartEditorDataPropertyName());
+		if (ClothPartDataPropertyHandle->AsArray().IsValid() && !SubMeshNames.IsEmpty())
+		{
+			TSharedRef<FDetailArrayBuilder> PropertyBuilder = MakeShared<FDetailArrayBuilder>(ClothPartDataPropertyHandle, true, false, true);
+			PropertyBuilder->OnGenerateArrayElementWidget(FOnGenerateArrayElementWidget::CreateSP(this, &FNearestNeighborModelDetails::GenerateClothPartElementWidget));
+			ClothPartCategoryBuilder->AddCustomBuilder(PropertyBuilder);
+		}
 
 		// Nearest Neighbor settings
 		NearestNeighborCategoryBuilder->AddProperty(GET_MEMBER_NAME_STRING_CHECKED(UNearestNeighborModel, DecayFactor));
 		NearestNeighborCategoryBuilder->AddProperty(GET_MEMBER_NAME_STRING_CHECKED(UNearestNeighborModel, NearestNeighborOffsetWeight));
 		NearestNeighborCategoryBuilder->AddProperty(UNearestNeighborModel::GetUsePartOnlyMeshPropertyName());
 		NearestNeighborCategoryBuilder->AddProperty(UNearestNeighborModel::GetNearestNeighborDataPropertyName());
-		ButtonText = NearestNeighborModel->IsNearestNeighborDataValid() ? LOCTEXT("Update", "Update") : LOCTEXT("Update *", "Update *");
 
-		NearestNeighborCategoryBuilder->AddCustomRow(FText::FromString(""))
-			.WholeRowContent()
-			[
-				SNew(SButton)
-				.Text(ButtonText)
-				.HAlign(HAlign_Center)
-				.OnClicked_Lambda([this]
-				{
-					if (NearestNeighborEditorModel != nullptr)
-					{
-						NearestNeighborEditorModel->UpdateNearestNeighborData();
-						NearestNeighborModel->InitPreviousWeights();
-						EditorModel->GetEditor()->GetModelDetailsView()->ForceRefresh();
-					}
-					return FReply::Handled();
-				})
-			];
-
-		KMeansCategoryBuilder->AddProperty(GET_MEMBER_NAME_STRING_CHECKED(UNearestNeighborModel, SourceSkeletons));
+		KMeansCategoryBuilder->AddProperty(GET_MEMBER_NAME_STRING_CHECKED(UNearestNeighborModel, SourceAnims));
 		KMeansCategoryBuilder->AddProperty(GET_MEMBER_NAME_STRING_CHECKED(UNearestNeighborModel, NumClusters));
+		KMeansCategoryBuilder->AddProperty(GET_MEMBER_NAME_STRING_CHECKED(UNearestNeighborModel, KMeansPartId));
 		KMeansCategoryBuilder->AddCustomRow(FText::FromString(""))
 			.WholeRowContent()
 			[
@@ -166,30 +232,91 @@ namespace UE::NearestNeighborModel
 				.OnClicked_Lambda([this]
 				{
 					NearestNeighborEditorModel->KMeansClusterPoses();
+					EditorModel->GetEditor()->GetModelDetailsView()->ForceRefresh();
+					if (NearestNeighborEditorModel->GetKMeansClusterResult() == EUpdateResult::SUCCESS)
+					{
+						UE_LOG(LogNearestNeighborModel, Display, TEXT("Cluster succeeded."));
+					}
 					return FReply::Handled();
 				})
 			];
-
+				
+		MorphTargetCategoryBuilder->AddProperty(UMLDeformerMorphModel::GetMorphDeltaZeroThresholdPropertyName(), UMLDeformerMorphModel::StaticClass());
+		MorphTargetCategoryBuilder->AddProperty(UMLDeformerMorphModel::GetMorphCompressionLevelPropertyName(), UMLDeformerMorphModel::StaticClass());
+		FText ButtonText = NearestNeighborModel->IsMorphTargetDataValid() ? LOCTEXT("Update", "Update") : LOCTEXT("Update *", "Update *");
 		MorphTargetCategoryBuilder->AddProperty(UNearestNeighborModel::GetMorphDataSizePropertyName());
 		MorphTargetCategoryBuilder->AddCustomRow(FText::FromString(""))
 			.WholeRowContent()
 			[
 				SNew(SButton)
-				.Text(FText::FromString("Update"))
+				.Text(ButtonText)
 				.HAlign(HAlign_Center)
 				.OnClicked_Lambda([this]
 				{
-					if (NearestNeighborEditorModel != nullptr)
+					NearestNeighborEditorModel->OnMorphTargetUpdate();
+					EditorModel->GetEditor()->GetModelDetailsView()->ForceRefresh();
+					if (NearestNeighborEditorModel->GetMorphTargetUpdateResult() == EUpdateResult::SUCCESS)
 					{
-						NearestNeighborEditorModel->InitMorphTargets();
-						NearestNeighborEditorModel->RefreshMorphTargets();
-						NearestNeighborModel->UpdateNetworkSize();
-						NearestNeighborModel->UpdateMorphTargetSize();
-						EditorModel->GetEditor()->GetModelDetailsView()->ForceRefresh();
+						UE_LOG(LogNearestNeighborModel, Display, TEXT("Update succeeded."));
 					}
 					return FReply::Handled();
 				})
 			];
+		AddActionResultText(MorphTargetCategoryBuilder, NearestNeighborEditorModel->GetMorphTargetUpdateResult(), TEXT("Update"));
+		AddActionResultText(KMeansCategoryBuilder, NearestNeighborEditorModel->GetKMeansClusterResult(), TEXT("KMeans"));
+	}
+
+	void FNearestNeighborModelDetails::AddActionResultText(IDetailCategoryBuilder* CategoryBuilder, uint8 Result, const FString& ActionName)
+	{
+		CategoryBuilder->AddCustomRow(FText::FromString("UpdateResultError"))
+			.Visibility((Result & EUpdateResult::ERROR) != 0 ? EVisibility::Visible : EVisibility::Collapsed)
+			.WholeRowContent()
+			[
+				SNew(SBox)
+				.Padding(FMargin(0.0f, 4.0f))
+				[
+					SNew(SWarningOrErrorBox)
+					.MessageStyle(EMessageStyle::Error)
+					.Message(FText::FromString(ActionName + TEXT(" failed with errors. Please check Output Log (LogNearestNeighborModel, LogPython) for details.")))
+				]
+			];
+		CategoryBuilder->AddCustomRow(FText::FromString("UpdateResultWarning"))
+			.Visibility((Result & EUpdateResult::WARNING) != 0 ? EVisibility::Visible : EVisibility::Collapsed)
+			.WholeRowContent()
+			[
+				SNew(SBox)
+				.Padding(FMargin(0.0f, 4.0f))
+				[
+					SNew(SWarningOrErrorBox)
+					.MessageStyle(EMessageStyle::Warning)
+					.Message(FText::FromString(ActionName + TEXT(" finished with warnings. Please check Output Log (LogNearestNeighborModel, LogPython) for details.")))
+				]
+			];
+	}
+
+	void FNearestNeighborModelDetails::BuildSubMeshNames()
+	{
+		SubMeshNames.Reset();
+		SubMeshNameMap.Reset();
+		if (NearestNeighborModel && NearestNeighborModel->GetSkeletalMesh() && NearestNeighborModel->GetSkeletalMesh()->GetImportedModel())
+		{
+			const FSkeletalMeshLODModel& LODModel =  NearestNeighborModel->GetSkeletalMesh()->GetImportedModel()->LODModels[0];
+			const TArray<FSkelMeshImportedMeshInfo>& SkelMeshInfos = LODModel.ImportedMeshInfos;
+			for (int32 i = 0; i < SkelMeshInfos.Num(); i++)
+			{
+				TSharedPtr<FString> StrPtr = MakeShared<FString>(SkelMeshInfos[i].Name.ToString());
+				SubMeshNames.Add(StrPtr);
+				SubMeshNameMap.Add(StrPtr, i);
+			}
+		}
+	}
+
+	void FNearestNeighborModelDetails::SubMeshComboSelectionChanged(TSharedPtr<FString> InSelectedItem, ESelectInfo::Type SelectInfo, int32 ArrayIndex)
+	{
+		if (NearestNeighborModel)
+		{
+			NearestNeighborModel->SetPartMeshIndex(ArrayIndex, SubMeshNameMap[InSelectedItem]);
+		}
 	}
 }	// namespace UE::NearestNeighborModel
 

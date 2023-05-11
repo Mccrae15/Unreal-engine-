@@ -3,6 +3,7 @@
 using UnrealBuildTool;
 using System.Collections.Generic;
 
+[SupportedPlatforms("Win64")]
 public class LiveCodingConsoleTarget : TargetRules
 {
 	public LiveCodingConsoleTarget(TargetInfo Target) : base(Target)
@@ -28,8 +29,5 @@ public class LiveCodingConsoleTarget : TargetRules
 
 		// ICU is needed for regex during click to source code
 		bCompileICU = true;
-
-		// UnrealHeaderTool is a console application, not a Windows app (sets entry point to main(), instead of WinMain())
-		bIsBuildingConsoleApplication = false;
 	}
 }

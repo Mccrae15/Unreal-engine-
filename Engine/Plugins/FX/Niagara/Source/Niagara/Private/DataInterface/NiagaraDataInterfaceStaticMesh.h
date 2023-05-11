@@ -94,6 +94,22 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Mesh")
     bool bUsePhysicsBodyVelocity = false;
 
+	/** When true, we allow this DI to sample from streaming LODs. Selectively overriding the CVar fx.Niagara.NDIStaticMesh.UseInlineLODsOnly. */
+	UPROPERTY(EditAnywhere, Category = "LOD")
+	bool bAllowSamplingFromStreamingLODs = false;
+
+	/** 
+	Static Mesh LOD to sample.
+	When the desired LOD is not available, the next available LOD is used.
+	When LOD Index is negative, Desired LOD = Num LODs - LOD Index.
+	*/
+	UPROPERTY(EditAnywhere, Category = "LOD")
+	int32 LODIndex = 0;
+
+	/** Reference to a user parameter if we're reading one. */
+	UPROPERTY(EditAnywhere, Category = "LOD")
+	FNiagaraUserParameterBinding LODIndexUserParameter;
+
 	/** List of filtered sockets to use. */
 	UPROPERTY(EditAnywhere, Category = "Mesh")
 	TArray<FName> FilteredSockets;
@@ -144,7 +160,6 @@ public:
 	virtual void GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL) override;
 	virtual bool GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL) override;
 #endif
-	virtual bool UseLegacyShaderBindings() const override { return false; }
 	virtual void BuildShaderParameters(FNiagaraShaderParametersBuilder& ShaderParametersBuilder) const override;
 	virtual void SetShaderParameters(const FNiagaraDataInterfaceSetShaderParametersContext& Context) const override;
 
@@ -256,6 +271,8 @@ protected:
 	void VMIsValid(FVectorVMExternalFunctionContext& Context);
 
 	void VMGetPreSkinnedLocalBounds(FVectorVMExternalFunctionContext& Context);
+	template<bool bLocalSpace>
+	void VMGetMeshBounds(FVectorVMExternalFunctionContext& Context);
 
 	void VMGetLocalToWorld(FVectorVMExternalFunctionContext& Context);
 	void VMGetLocalToWorldInverseTransposed(FVectorVMExternalFunctionContext& Context);

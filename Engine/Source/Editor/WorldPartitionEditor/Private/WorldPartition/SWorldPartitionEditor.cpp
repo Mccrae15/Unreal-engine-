@@ -40,9 +40,12 @@ SWorldPartitionEditor::~SWorldPartitionEditor()
 	{
 		if (UWorldPartition* WorldPartition = World->GetWorldPartition())
 		{
-			check(WorldPartition->World == World);
-			check(WorldPartition->WorldPartitionEditor == this);
-			WorldPartition->WorldPartitionEditor = nullptr;
+			check(WorldPartition->World == World);			
+			if (WorldPartition->WorldPartitionEditor)
+			{
+				check(WorldPartition->WorldPartitionEditor == this);
+				WorldPartition->WorldPartitionEditor = nullptr;
+			}
 		}
 	}
 }
@@ -55,6 +58,11 @@ void SWorldPartitionEditor::Refresh()
 void SWorldPartitionEditor::Reconstruct()
 {
 	ContentParent->SetContent(ConstructContentWidget());
+}
+
+void SWorldPartitionEditor::FocusBox(const FBox& Box) const
+{
+	GridView->FocusBox(Box);
 }
 
 void SWorldPartitionEditor::OnBrowseWorld(UWorld* InWorld)

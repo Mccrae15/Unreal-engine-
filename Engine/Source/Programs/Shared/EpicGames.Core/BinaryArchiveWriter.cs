@@ -11,7 +11,7 @@ namespace EpicGames.Core
     /// <summary>
     /// Writes data to a binary output stream. Similar to the NET Framework BinaryWriter class, but supports fast serialization of object graphs and container types, and supports nullable objects.
     /// </summary>
-    public class BinaryArchiveWriter : IDisposable
+    public sealed class BinaryArchiveWriter : IDisposable
     {
         /// <summary>
         /// Comparer which tests for reference equality between two objects
@@ -425,15 +425,37 @@ namespace EpicGames.Core
             }
         }
 
-        /// <summary>
-        /// Writes a dictionary of items
-        /// </summary>
-        /// <typeparam name="TK">Type of the dictionary key</typeparam>
-        /// <typeparam name="TV">Type of the dictionary value</typeparam>
-        /// <param name="dictionary">The dictionary to write</param>
-        /// <param name="writeKey">Delegate used to read a single key</param>
-        /// <param name="writeValue">Delegate used to read a single value</param>
-        public void WriteDictionary<TK, TV>(IReadOnlyDictionary<TK, TV> dictionary, Action<TK> writeKey, Action<TV> writeValue) where TK : notnull
+		/// <summary>
+		/// Writes a sortedset of items
+		/// </summary>
+		/// <typeparam name="T">The element type for the sortedset</typeparam>
+		/// <param name="set">The set to write</param>
+		/// <param name="writeElement">Delegate used to read a single element</param>
+		public void WriteSortedSet<T>(SortedSet<T> set, Action<T> writeElement)
+		{
+			if (set == null)
+			{
+				WriteInt(-1);
+			}
+			else
+			{
+				WriteInt(set.Count);
+				foreach (T element in set)
+				{
+					writeElement(element);
+				}
+			}
+		}
+
+		/// <summary>
+		/// Writes a dictionary of items
+		/// </summary>
+		/// <typeparam name="TK">Type of the dictionary key</typeparam>
+		/// <typeparam name="TV">Type of the dictionary value</typeparam>
+		/// <param name="dictionary">The dictionary to write</param>
+		/// <param name="writeKey">Delegate used to read a single key</param>
+		/// <param name="writeValue">Delegate used to read a single value</param>
+		public void WriteDictionary<TK, TV>(IReadOnlyDictionary<TK, TV> dictionary, Action<TK> writeKey, Action<TV> writeValue) where TK : notnull
         {
             if (dictionary == null)
             {

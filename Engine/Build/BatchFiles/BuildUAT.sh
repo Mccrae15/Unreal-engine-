@@ -19,7 +19,7 @@ if [ ! -f ../Build/BatchFiles/BuildUAT.sh ]; then
   exit 1
 fi
 
-MSBuild_Verbosity="${1:quiet}"
+MSBuild_Verbosity="${1:-quiet}"
 
 # Check to see if the files in the AutomationTool, EpicGames.Build, EpicGames.Core, or UnrealBuildTool
 # directory have changed.
@@ -37,7 +37,17 @@ elif [ ! -f ../Binaries/DotNET/AutomationTool/AutomationTool.dll ]; then
 
 elif [ -f ../Intermediate/Build/AutomationToolLastBuildTime ]; then
   UPDATED_DEP_FILES="$(find \
-    Programs/Shared/EpicGames.Core Programs/Shared/EpicGames.Build Programs/Shared/EpicGames.MsBuild Programs/Shared/EpicGames.UHT Programs/UnrealBuildTool \
+    Programs/Shared/EpicGames.Build \
+    Programs/Shared/EpicGames.Core \
+    Programs/Shared/EpicGames.IoHash \
+    Programs/Shared/EpicGames.MsBuild \
+    Programs/Shared/EpicGames.Serialization \
+    Programs/Shared/EpicGames.UHT \
+    Programs/UnrealBuildTool \
+    ../Restricted/**/Source/Programs/UnrealBuildTool \
+    ../Platforms/*/Source/Programs/UnrealBuildTool \
+    ../Restricted/**/Source/Programs/AutomationTool \
+    ../Platforms/*/Source/Programs/AutomationTool \
     -type f \
     \( -iname \*.cs -or -iname \*.csproj \) \
     -newer ../Intermediate/Build/AutomationToolLastBuildTime)"
@@ -74,7 +84,7 @@ if [ $PERFORM_REBUILD -eq 1 ]; then
 
   if [ "$(uname)" = "Linux" ]; then
     # Setup Environment
-    source "$SCRIPT_DIR/Linux/SetupEnvironment.sh" $EnvironmentType "$SCRIPT_DIR/Linux"
+    source "$SCRIPT_DIR/Linux/SetupEnvironment.sh" -dotnet "$SCRIPT_DIR/Linux"
   fi
 
   dotnet build Programs/AutomationTool/AutomationTool.csproj -c Development -v $MSBuild_Verbosity

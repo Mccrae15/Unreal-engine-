@@ -16,6 +16,13 @@ public:
 	float RelativeDepthThreshold = 0.0f;
 };
 
+struct FFrontLayerTranslucencyData
+{
+	bool IsValid() const { return SceneDepth != nullptr; }
+	FRDGTextureRef Normal = nullptr;
+	FRDGTextureRef SceneDepth = nullptr;
+};
+
 BEGIN_SHADER_PARAMETER_STRUCT(FLumenFrontLayerTranslucencyGBufferParameters, )
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, FrontLayerTranslucencyNormal)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, FrontLayerTranslucencySceneDepth)
@@ -28,4 +35,6 @@ BEGIN_SHADER_PARAMETER_STRUCT(FLumenFrontLayerTranslucencyReflectionParameters, 
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneDepth)
 	SHADER_PARAMETER(uint32, Enabled)
 	SHADER_PARAMETER(float, RelativeDepthThreshold)
+	SHADER_PARAMETER(float, SpecularScale)
+	SHADER_PARAMETER(float, Contrast)
 END_SHADER_PARAMETER_STRUCT()

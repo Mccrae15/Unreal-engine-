@@ -12,6 +12,8 @@
 #include "Widgets/SWidget.h"
 #include "Framework/Commands/InputChord.h"
 #include "EditorUndoClient.h"
+#include "MaterialDomain.h"
+#include "Materials/MaterialRenderProxy.h"
 #include "MaterialShared.h"
 #include "Toolkits/IToolkitHost.h"
 #include "WorkflowOrientedApp/WorkflowTabFactory.h"
@@ -33,6 +35,7 @@ class SFindInMaterial;
 class SGraphEditor;
 class SMaterialPalette;
 class UEdGraph;
+class UEdGraphPin;
 class UFactory;
 class UMaterialEditorOptions;
 class UMaterialExpressionComment;
@@ -43,6 +46,8 @@ struct FGraphAppearanceInfo;
 class UMaterialFunctionInstance;
 class FMaterialCachedHLSLTree;
 struct FMaterialCachedExpressionData;
+class SMaterialEditorStrataWidget;
+
 
 /**
  * Class for rendering previews of material expressions in the material editor's linked object viewport.
@@ -115,6 +120,7 @@ public:
 	virtual EMaterialDomain GetMaterialDomain() const override { return MD_Surface; }
 	virtual FString GetMaterialUsageDescription() const override { return FString::Printf(TEXT("FMatExpressionPreview %s"), Expression.IsValid() ? *Expression->GetName() : TEXT("NULL")); }
 	virtual bool IsTwoSided() const override { return false; }
+	virtual bool IsThinSurface() const override { return false; }
 	virtual bool IsDitheredLODTransition() const override { return false; }
 	virtual bool IsLightFunction() const override { return false; }
 	virtual bool IsDeferredDecal() const override { return false; }
@@ -123,7 +129,7 @@ public:
 	virtual bool IsWireframe() const override { return false; }
 	virtual bool IsMasked() const override { return false; }
 	virtual enum EBlendMode GetBlendMode() const override { return BLEND_Translucent; }
-	virtual enum EStrataBlendMode GetStrataBlendMode() const override { return EStrataBlendMode::SBM_TranslucentGreyTransmittance; }
+	virtual bool GetRootNodeOverridesDefaultRefraction()const override { return false; } // refraction unused for material preview
 	virtual FMaterialShadingModelField GetShadingModels() const override { return MSM_Unlit; }
 	virtual bool IsShadingModelFromMaterialExpression() const override { return false; }
 	virtual float GetOpacityMaskClipValue() const override { return 0.5f; }
@@ -160,6 +166,12 @@ public:
 			Expression->Material->GetAllExpressionsForCustomInterpolators(OutExpressions);
 		}
 	}
+
+	/**
+	 * Checks that no pre-compilation errors have been detected and if so it reports them using specified compiler.
+	 * @return whether no errors occurred.
+	 */
+	virtual bool CheckInValidStateForCompilation(class FMaterialCompiler* Compiler) const override;
 
 	float UnrelatedNodesOpacity;
 
@@ -584,6 +596,8 @@ protected:
 	void OnDistributeNodesV();
 
 private:
+	void OnMessageLogLinkActivated(const class TSharedRef<IMessageToken>& Token);
+
 	/** Builds the toolbar widget for the material editor */
 	void ExtendToolbar();
 	void RegisterToolBar();
@@ -849,15 +863,9 @@ private:
 	 */
 	FMatExpressionPreview* GetExpressionPreview(UMaterialExpression* MaterialExpression, bool& bNewlyCreated);
 
-	/** Pointer to the object that the current color picker is working on. Can be NULL and stale. */
-	TWeakObjectPtr<UObject> ColorPickerObject;
-	TWeakFieldPtr<FProperty> ColorPickerProperty;
-
-	/** Called before the color picker commits a change. */
-	void PreColorPickerCommit(FLinearColor LinearColor);
 
 	/** Called whenever the color picker is used and accepted. */
-	void OnColorPickerCommitted(FLinearColor LinearColor);
+	void OnColorPickerCommitted(FLinearColor LinearColor, TWeakObjectPtr<UObject> ColorPickerObject);
 
 	/** Create new graph editor widget */
 	TSharedRef<class SGraphEditor> CreateGraphEditorWidget(TSharedRef<class FTabInfo> InTabInfo, class UEdGraph* InGraph);
@@ -903,6 +911,7 @@ private:
 	TSharedRef<SDockTab> SpawnTab_ParameterDefaults(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_CustomPrimitiveData(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_LayerProperties(const FSpawnTabArgs& Args);
+	TSharedRef<SDockTab> SpawnTab_Strata(const FSpawnTabArgs& Args);
 
 	void OnFinishedChangingProperties(const FPropertyChangedEvent& PropertyChangedEvent);
 	void OnFinishedChangingParametersFromOverview(const FPropertyChangedEvent& PropertyChangedEvent);
@@ -928,6 +937,9 @@ private:
 
 	/** Palette of Material Expressions and functions */
 	TSharedPtr<class SMaterialPalette> Palette;
+
+	/** The strata control tab */
+	TSharedPtr<class SMaterialEditorStrataWidget> StrataWidget;
 
 	/** Stats log, with the log listing that it reflects */
 	TSharedPtr<class SWidget> Stats;

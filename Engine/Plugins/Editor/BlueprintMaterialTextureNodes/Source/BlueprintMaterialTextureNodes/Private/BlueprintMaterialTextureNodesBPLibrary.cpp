@@ -1,31 +1,27 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BlueprintMaterialTextureNodesBPLibrary.h"
-#include "BlueprintMaterialTextureNodes.h"
-#include "CoreMinimal.h"
+#include "Engine/Texture2D.h"
 
 //RHI gives access to MaxShaderPlatform and FeatureLevel (i.e. GMaxRHIShaderPlatform)
-#include "RHI.h"
 
 //includes for asset creation
-#include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
 #include "IAssetTools.h"
-#include "IContentBrowserSingleton.h"
+#include "MaterialInstanceBasePropertyOverrides.h"
 #include "PackageTools.h"
 #include "Editor.h"
 #include "Factories/MaterialInstanceConstantFactoryNew.h"
 #include "Logging/MessageLog.h"
-#include "Factories/TextureFactory.h"
-#include "Factories/Factory.h"
 
 //Material and texture includes
 #include "Engine/TextureRenderTarget2D.h"
-#include "Materials/MaterialInstance.h"
+#include "MaterialInterface.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "MaterialShared.h"
-#include "ImageCore.h"
 #include "ImageCoreUtils.h"
+#include "Misc/PackageName.h"
+#include "TextureResource.h"
 
 #include UE_INLINE_GENERATED_CPP_BY_NAME(BlueprintMaterialTextureNodesBPLibrary)
 
@@ -396,6 +392,24 @@ bool UBlueprintMaterialTextureNodesBPLibrary::SetMICTwoSided_EditorOnly(UMateria
 	FMessageLog("Blueprint").Warning(LOCTEXT("SetMICTwoSided_InvalidMIC", "SetMICTwoSided_EditorOnly: MIC must be non-null."));
 #else
 	FMessageLog("Blueprint").Error(LOCTEXT("SetMICTwoSided_CannotBeModifiedAtRuntime", "SetMICTwoSided: Can't modify MIC at run time."));
+#endif
+	return 0;
+}
+
+bool UBlueprintMaterialTextureNodesBPLibrary::SetMICIsThinSurface_EditorOnly(UMaterialInstanceConstant* Material, bool bIsThinSurface)
+{
+#if WITH_EDITOR
+	if (Material != nullptr)
+	{
+		Material->BasePropertyOverrides.bOverride_bIsThinSurface = true;
+		Material->BasePropertyOverrides.bIsThinSurface = bIsThinSurface;
+		UpdateMIC(Material);
+
+		return 1;
+	}
+	FMessageLog("Blueprint").Warning(LOCTEXT("SetMICIsThinSurface_InvalidMIC", "SetMICIsThinSurface_EditorOnly: MIC must be non-null."));
+#else
+	FMessageLog("Blueprint").Error(LOCTEXT("SetMICIsThinSurface_CannotBeModifiedAtRuntime", "SetMICIsThinSurface: Can't modify MIC at run time."));
 #endif
 	return 0;
 }

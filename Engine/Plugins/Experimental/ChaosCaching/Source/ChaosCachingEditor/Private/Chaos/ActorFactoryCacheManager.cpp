@@ -5,9 +5,8 @@
 #include "Chaos/CacheCollection.h"
 #include "Chaos/CacheManagerActor.h"
 #include "Chaos/ChaosCache.h"
-#include "Components/PrimitiveComponent.h"
 #include "GeometryCollection/GeometryCollectionComponent.h"
-#include "Kismet2/ComponentEditorUtils.h"
+#include "GeometryCollection/GeometryCollectionSimulationTypes.h"
 
 #define LOCTEXT_NAMESPACE "CacheManagerActorFactory"
 

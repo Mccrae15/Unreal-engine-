@@ -20,8 +20,21 @@
 #include "Capture/DisplayClusterMediaCaptureViewport.h"
 #include "Input/DisplayClusterMediaInputNode.h"
 #include "Input/DisplayClusterMediaInputViewport.h"
+#include "Input/SharedMemoryMediaPlayerFactory.h"
 
+#include "IMediaModule.h"
 #include "Misc/CoreDelegates.h"
+
+
+static TAutoConsoleVariable<int32> CVarMediaEnabled(
+	TEXT("nDisplay.media.Enabled"),
+	1,
+	TEXT("nDisplay media subsystem\n")
+	TEXT("0 : Disabled\n")
+	TEXT("1 : Enabled\n")
+	,
+	ECVF_ReadOnly
+);
 
 
 void FDisplayClusterMediaModule::StartupModule()
@@ -30,11 +43,33 @@ void FDisplayClusterMediaModule::StartupModule()
 
 	IDisplayCluster::Get().GetCallbacks().OnDisplayClusterCustomPresentSet().AddRaw(this, &FDisplayClusterMediaModule::OnCustomPresentSet);
 	FCoreDelegates::OnEnginePreExit.AddRaw(this, &FDisplayClusterMediaModule::OnEnginePreExit);
+
+	// Create Player Factories
+	PlayerFactories.Add(MakeUnique<FSharedMemoryMediaPlayerFactory>());
+
+
+	// register share memory player factory
+	if (IMediaModule* MediaModule = FModuleManager::LoadModulePtr<IMediaModule>("Media"))
+	{
+		for (TUniquePtr<IMediaPlayerFactory>& Factory : PlayerFactories)
+		{
+			MediaModule->RegisterPlayerFactory(*Factory);
+		}
+	}
 }
 
 void FDisplayClusterMediaModule::ShutdownModule()
 {
 	UE_LOG(LogDisplayClusterMedia, Log, TEXT("Shutting down module 'DisplayClusterMedia'..."));
+
+	// unregister share memory player factory
+	if (IMediaModule* MediaModule = FModuleManager::LoadModulePtr<IMediaModule>("Media"))
+	{
+		for (TUniquePtr<IMediaPlayerFactory>& Factory : PlayerFactories)
+		{
+			MediaModule->UnregisterPlayerFactory(*Factory);
+		}
+	}
 
 	IDisplayCluster::Get().GetCallbacks().OnDisplayClusterCustomPresentSet().RemoveAll(this);
 	FCoreDelegates::OnEnginePreExit.RemoveAll(this);
@@ -66,6 +101,13 @@ void FDisplayClusterMediaModule::InitializeMedia()
 		return;
 	}
 
+	// Check if media enabled
+	if (CVarMediaEnabled.GetValueOnGameThread() == 0)
+	{
+		UE_LOG(LogDisplayClusterMedia, Log, TEXT("nDisplay media subsytem is disabled by a cvar"));
+		return;
+	}
+
 	// Instantiate latency queue
 	FrameQueue.Init();
 
@@ -80,41 +122,7 @@ void FDisplayClusterMediaModule::InitializeMedia()
 			{
 				const FDisplayClusterConfigurationMedia& MediaSettings = ClusterNode->Media;
 
-				const bool bShared             = MediaSettings.IsMediaSharingUsed();
-				const bool bClusterNodeMatches = MediaSettings.MediaSharingNode.Equals(ClusterNodeId, ESearchCase::IgnoreCase);
-
-				// Shared backbuffer
-				if (bShared && MediaSettings.MediaSource && MediaSettings.MediaOutput)
-				{
-					// Tx node, initialize media capture
-					if (bClusterNodeMatches)
-					{
-						const FString MediaCaptureId = RootActor->GetName() + FString("_") + ClusterNodeId + FString("_backbuffer_capture");
-
-						UE_LOG(LogDisplayClusterMedia, Log, TEXT("Initializing in-cluster (shared) backbuffer media capture for node '%s'..."), *ClusterNodeId);
-
-						CaptureNode = MakeUnique<FDisplayClusterMediaCaptureNode>(
-							MediaCaptureId, ClusterNodeId,
-							MediaSettings.MediaOutput);
-
-						AllCaptures.Add(CaptureNode.Get());
-					}
-					// Rx node, initialize media playback
-					else
-					{
-						const FString MediaInputId = RootActor->GetName() + FString("_") + ClusterNodeId + FString("_backbuffer_input");
-
-						UE_LOG(LogDisplayClusterMedia, Log, TEXT("Initializing in-cluster (shared) backbuffer media input for node '%s'..."), *ClusterNodeId);
-
-						InputNode = MakeUnique<FDisplayClusterMediaInputNode>(
-							MediaInputId, ClusterNodeId, 
-							MediaSettings.MediaSource);
-
-						AllInputs.Add(InputNode.Get());
-					}
-				}
-				// No in-cluster sharing
-				else
+				if (MediaSettings.bEnable)
 				{
 					// Media input
 					if (MediaSettings.MediaSource)
@@ -124,7 +132,7 @@ void FDisplayClusterMediaModule::InitializeMedia()
 						UE_LOG(LogDisplayClusterMedia, Log, TEXT("Initializing backbuffer media input for node '%s'..."), *ClusterNodeId);
 
 						InputNode = MakeUnique<FDisplayClusterMediaInputNode>(
-							MediaInputId, ClusterNodeId, 
+							MediaInputId, ClusterNodeId,
 							MediaSettings.MediaSource);
 
 						AllInputs.Add(InputNode.Get());
@@ -138,7 +146,7 @@ void FDisplayClusterMediaModule::InitializeMedia()
 						UE_LOG(LogDisplayClusterMedia, Log, TEXT("Initializing backbuffer media capture for node '%s'..."), *ClusterNodeId);
 
 						CaptureNode = MakeUnique<FDisplayClusterMediaCaptureNode>(
-							MediaCaptureId, ClusterNodeId, 
+							MediaCaptureId, ClusterNodeId,
 							MediaSettings.MediaOutput);
 
 						AllCaptures.Add(CaptureNode.Get());
@@ -154,45 +162,7 @@ void FDisplayClusterMediaModule::InitializeMedia()
 				{
 					const FDisplayClusterConfigurationMedia& MediaSettings = Viewport->RenderSettings.Media;
 
-					const bool bShared             = MediaSettings.IsMediaSharingUsed();
-					const bool bClusterNodeMatches = MediaSettings.MediaSharingNode.Equals(ClusterNodeId, ESearchCase::IgnoreCase);
-
-					// Shared viewport
-					if (bShared && MediaSettings.MediaSource && MediaSettings.MediaOutput)
-					{
-						// Tx node, initialize media capture
-						if (bClusterNodeMatches)
-						{
-							const FString MediaCaptureId = RootActor->GetName() + FString("_") + ClusterNodeId + FString("_") + ViewportIt.Key + FString("_viewport_capture");
-
-							UE_LOG(LogDisplayClusterMedia, Log, TEXT("Initializing in-cluster (shared) viewport capture for viewport '%s'..."), *ViewportIt.Key);
-
-							TUniquePtr<FDisplayClusterMediaCaptureViewport> NewViewportCapture = MakeUnique<FDisplayClusterMediaCaptureViewport>(
-								MediaCaptureId, ClusterNodeId, 
-								ViewportIt.Key, 
-								MediaSettings.MediaOutput);
-
-							AllCaptures.Add(NewViewportCapture.Get());
-							CaptureViewports.Emplace(MediaCaptureId, MoveTemp(NewViewportCapture));
-						}
-						// Rx node, initialize media playback
-						else
-						{
-							const FString MediaInputId = RootActor->GetName() + FString("_") + ClusterNodeId + FString("_") + ViewportIt.Key + FString("_viewport_input");
-
-							UE_LOG(LogDisplayClusterMedia, Log, TEXT("Initializing in-cluster (shared) viewport media input for viewport '%s'..."), *ViewportIt.Key);
-
-							TUniquePtr<FDisplayClusterMediaInputViewport> NewViewportInput = MakeUnique<FDisplayClusterMediaInputViewport>(
-								MediaInputId, ClusterNodeId,
-								ViewportIt.Key,
-								MediaSettings.MediaSource);
-
-							AllInputs.Add(NewViewportInput.Get());
-							InputViewports.Emplace(MediaInputId, MoveTemp(NewViewportInput));
-						}
-					}
-					// No in-cluster sharing
-					else
+					if (MediaSettings.bEnable)
 					{
 						// Media input
 						if (MediaSettings.MediaSource)
@@ -239,70 +209,42 @@ void FDisplayClusterMediaModule::InitializeMedia()
 				{
 					if (const UDisplayClusterICVFXCameraComponent* const ICVFXCamera = Cast<UDisplayClusterICVFXCameraComponent>(Component))
 					{
-						const FDisplayClusterConfigurationMedia& MediaSettings = ICVFXCamera->CameraSettings.RenderSettings.Media;
+						const FDisplayClusterConfigurationMediaICVFX& MediaSettings = ICVFXCamera->CameraSettings.RenderSettings.Media;
 
-						const FString ICVFXCameraName  = ICVFXCamera->GetName();
-						const FString ICVFXViewportId  = DisplayClusterMediaHelpers::GenerateICVFXViewportName(ClusterNodeId, ICVFXCameraName);
-						const FString MediaCaptureId   = RootActor->GetName() + FString("_") + ICVFXCameraName + FString("_icvfx_capture");
-						const FString MediaInputId     = RootActor->GetName() + FString("_") + ICVFXCameraName + FString("_icvfx_input");
-						const bool bShared             = MediaSettings.IsMediaSharingUsed();
-						const bool bClusterNodeMatches = MediaSettings.MediaSharingNode.Equals(ClusterNodeId, ESearchCase::IgnoreCase);
-
-						// Shared camera
-						if (bShared && MediaSettings.MediaSource && MediaSettings.MediaOutput)
+						if (MediaSettings.bEnable)
 						{
-							// Tx node, initialize media capture
-							if (bClusterNodeMatches)
-							{
-								UE_LOG(LogDisplayClusterMedia, Log, TEXT("Initializing in-cluster (shared) ICVFX capture for camera '%s'..."), *ICVFXCameraName);
+							const FString ICVFXCameraName = ICVFXCamera->GetName();
+							const FString ICVFXViewportId = DisplayClusterMediaHelpers::GenerateICVFXViewportName(ClusterNodeId, ICVFXCameraName);
+							const FString MediaCaptureId  = RootActor->GetName() + FString("_") + ICVFXCameraName + FString("_icvfx_capture");
+							const FString MediaInputId    = RootActor->GetName() + FString("_") + ICVFXCameraName + FString("_icvfx_input");
 
-								TUniquePtr<FDisplayClusterMediaCaptureViewport> NewICVFXCapture = MakeUnique<FDisplayClusterMediaCaptureCamera>(
-									MediaCaptureId, ClusterNodeId,
-									ICVFXCameraName, ICVFXViewportId,
-									MediaSettings.MediaOutput);
-
-								AllCaptures.Add(NewICVFXCapture.Get());
-								CaptureViewports.Emplace(MediaCaptureId, MoveTemp(NewICVFXCapture));
-							}
-							// Rx node, initialize media playback
-							else
+							// Media input only
+							if (UMediaSource* MediaSource = MediaSettings.GetMediaSource(ClusterNodeId))
 							{
-								UE_LOG(LogDisplayClusterMedia, Log, TEXT("Initializing in-cluster (shared) ICVFX media input for camera '%s'..."), *ICVFXCameraName);
+								UE_LOG(LogDisplayClusterMedia, Log, TEXT("Initializing ICVFX media input for camera '%s'..."), *ICVFXCameraName);
 
 								TUniquePtr<FDisplayClusterMediaInputViewport> NewICVFXInput = MakeUnique<FDisplayClusterMediaInputViewport>(
 									MediaInputId, ClusterNodeId,
 									ICVFXViewportId,
-									MediaSettings.MediaSource);
+									MediaSource);
 
 								AllInputs.Add(NewICVFXInput.Get());
 								InputViewports.Emplace(MediaInputId, MoveTemp(NewICVFXInput));
 							}
-						}
-						// Media input only
-						else if (MediaSettings.MediaSource)
-						{
-							UE_LOG(LogDisplayClusterMedia, Log, TEXT("Initializing ICVFX media input for camera '%s'..."), *ICVFXCameraName);
 
-							TUniquePtr<FDisplayClusterMediaInputViewport> NewICVFXInput = MakeUnique<FDisplayClusterMediaInputViewport>(
-								MediaInputId, ClusterNodeId,
-								ICVFXViewportId,
-								MediaSettings.MediaSource);
+							// Media capture only
+							if (UMediaOutput* MediaOutput = MediaSettings.GetMediaOutput(ClusterNodeId))
+							{
+								UE_LOG(LogDisplayClusterMedia, Log, TEXT("Initializing ICVFX capture for camera '%s'..."), *ICVFXCameraName);
 
-							AllInputs.Add(NewICVFXInput.Get());
-							InputViewports.Emplace(MediaInputId, MoveTemp(NewICVFXInput));
-						}
-						// Media capture only
-						else if (MediaSettings.MediaOutput)
-						{
-							UE_LOG(LogDisplayClusterMedia, Log, TEXT("Initializing ICVFX capture for camera '%s'..."), *ICVFXCameraName);
+								TUniquePtr<FDisplayClusterMediaCaptureViewport> NewICVFXCapture = MakeUnique<FDisplayClusterMediaCaptureCamera>(
+									MediaCaptureId, ClusterNodeId,
+									ICVFXCameraName, ICVFXViewportId,
+									MediaOutput);
 
-							TUniquePtr<FDisplayClusterMediaCaptureViewport> NewICVFXCapture = MakeUnique<FDisplayClusterMediaCaptureCamera>(
-								MediaCaptureId, ClusterNodeId,
-								ICVFXCameraName, ICVFXViewportId,
-								MediaSettings.MediaOutput);
-
-							AllCaptures.Add(NewICVFXCapture.Get());
-							CaptureViewports.Emplace(MediaCaptureId, MoveTemp(NewICVFXCapture));
+								AllCaptures.Add(NewICVFXCapture.Get());
+								CaptureViewports.Emplace(MediaCaptureId, MoveTemp(NewICVFXCapture));
+							}
 						}
 					}
 				}

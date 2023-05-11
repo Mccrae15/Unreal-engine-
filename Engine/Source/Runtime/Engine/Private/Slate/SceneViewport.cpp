@@ -2,26 +2,30 @@
 
 
 #include "Slate/SceneViewport.h"
-#include "Rendering/DrawElements.h"
+#include "Engine/GameInstance.h"
+#include "Engine/GameViewportClient.h"
 #include "Widgets/SViewport.h"
+#include "EngineLogs.h"
 #include "Misc/App.h"
-#include "EngineGlobals.h"
+#include "Input/CursorReply.h"
 #include "RenderingThread.h"
+#include "DataDrivenShaderPlatformInfo.h"
 #include "GameFramework/PlayerController.h"
 #include "Engine/Canvas.h"
 #include "Engine/RendererSettings.h"
-#include "Application/SlateApplicationBase.h"
+#include "InputKeyEventArgs.h"
 #include "Layout/WidgetPath.h"
+#include "Misc/CoreDelegates.h"
 #include "UnrealEngine.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Framework/Application/SlateUser.h"
+#include "Rendering/SlateRenderer.h"
 #include "Slate/SlateTextures.h"
 #include "Slate/DebugCanvas.h"
-#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 #include "IHeadMountedDisplay.h"
 #include "IXRTrackingSystem.h"
 #include "StereoRenderTargetManager.h"
 #include "HDRHelper.h"
+#include "StereoRendering.h"
 
 DEFINE_LOG_CATEGORY(LogViewport);
 
@@ -53,7 +57,6 @@ FSceneViewport::FSceneViewport( FViewportClient* InViewportClient, TSharedPtr<SV
 	, bHDRViewport(false)
 	, MousePosBeforeHiddenDueToCapture( -1, -1 )
 	, RTTSize( 0, 0 )
-	, NumBufferedFrames(1)
 	, CurrentBufferedTargetIndex(0)
 	, NextBufferedTargetIndex(0)
 	, NumTouches(0)
@@ -388,7 +391,12 @@ void FSceneViewport::OnDrawViewport( const FGeometry& AllottedGeometry, const FS
 	/** Check to see if the viewport should be resized */
 	if (!bForceViewportSize)
 	{
-		FIntPoint DrawSize = FIntPoint( FMath::RoundToInt( AllottedGeometry.GetDrawSize().X ), FMath::RoundToInt( AllottedGeometry.GetDrawSize().Y ) );
+		// When a viewport element is created, its coordinates are rounded after applying the render transform.
+		// Considering that both absolute position and the size of the viewport can be non-integers,
+		// the correct draw size of the viewport can only be determined by rounding its absolute coordinates.
+		FVector2D TopLeft = AllottedGeometry.GetAbsolutePosition();
+		FVector2D BottomRight = TopLeft + AllottedGeometry.GetDrawSize();
+		FIntPoint DrawSize = FIntPoint(FMath::RoundToInt(BottomRight.X) - FMath::RoundToInt(TopLeft.X), FMath::RoundToInt(BottomRight.Y) - FMath::RoundToInt(TopLeft.Y));
 		bool bIsHDREnabled = IsHDREnabled();
 
 		SWindow* PaintWindow = OutDrawElements.GetPaintWindow();
@@ -1796,10 +1804,6 @@ void FSceneViewport::EnqueueBeginRenderFrame(const bool bShouldPresent)
 
 	CurrentBufferedTargetIndex = NextBufferedTargetIndex;
 	NextBufferedTargetIndex = (CurrentBufferedTargetIndex + 1) % BufferedSlateHandles.Num();
-	if (BufferedRenderTargetsRHI[CurrentBufferedTargetIndex])
-	{
-		RenderTargetTextureRHI = BufferedRenderTargetsRHI[CurrentBufferedTargetIndex];
-	}
 
 	// check if we need to reallocate rendertarget for HMD and update HMD rendering viewport 
 	if (bStereoRenderingAvailable)
@@ -1812,6 +1816,18 @@ void FSceneViewport::EnqueueBeginRenderFrame(const bool bShouldPresent)
 			bForceSeparateRenderTarget = bHMDWantsSeparateRenderTarget;
 			UpdateViewportRHI(false, SizeX, SizeY, WindowMode, PF_Unknown);
 		}
+
+		if (bHMDWantsSeparateRenderTarget)
+		{
+			// We need to acquire a buffered texture from either the new RT or the existing one
+			int32 TextureIndex = StereoRenderTargetManager->AcquireColorTexture();
+			CurrentBufferedTargetIndex = TextureIndex < 0 ? CurrentBufferedTargetIndex : TextureIndex;
+		}
+	}
+
+	if (BufferedRenderTargetsRHI[CurrentBufferedTargetIndex])
+	{
+		RenderTargetTextureRHI = BufferedRenderTargetsRHI[CurrentBufferedTargetIndex];
 	}
 
 	DebugCanvasDrawer->InitDebugCanvas(GetClient(), GetClient()->GetWorld());
@@ -1866,7 +1882,7 @@ void FSceneViewport::BeginRenderFrame(FRHICommandListImmediate& RHICmdList)
 	else if( IsValidRef( ViewportRHI ) ) 
 	{
 		// Get the backbuffer render target to render directly to it
-		RenderTargetTextureRenderThreadRHI = RHICmdList.GetViewportBackBuffer(ViewportRHI);
+		RenderTargetTextureRenderThreadRHI = RHIGetViewportBackBuffer(ViewportRHI);
 		RenderThreadSlateTexture->SetRHIRef(RenderTargetTextureRenderThreadRHI, RenderTargetTextureRenderThreadRHI->GetSizeX(), RenderTargetTextureRenderThreadRHI->GetSizeY());
 	}
 }
@@ -2051,14 +2067,34 @@ void FSceneViewport::InitDynamicRHI()
 	uint32 TexSizeX = SizeX, TexSizeY = SizeY;
 	if (UseSeparateRenderTarget())
 	{
-		NumBufferedFrames = 1;
+		int32 NumBufferedFrames = 1;
+		TArray<FTexture2DRHIRef> BufferedRTRHI;
+		TArray<FTexture2DRHIRef> BufferedSRVRHI;
+
+		static const auto CVarDefaultBackBufferPixelFormat = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.DefaultBackBufferPixelFormat"));
+		EPixelFormat SceneTargetFormat = EDefaultBackBufferPixelFormat::Convert2PixelFormat(EDefaultBackBufferPixelFormat::FromInt(CVarDefaultBackBufferPixelFormat->GetValueOnRenderThread()));
+		SceneTargetFormat = RHIPreferredPixelFormatHint(SceneTargetFormat);
+
+		if (bHDRViewport)
+		{
+			SceneTargetFormat = GRHIHDRDisplayOutputFormat;
+		}
 		
 		// @todo vreditor switch: This code needs to be called when switching between stereo/non when going immersive.  Seems to always work out that way anyway though? (Probably due to resize)
+		bool bHMDAllocatedSeparateRenderTargets = false;
 		IStereoRenderTargetManager* const StereoRenderTargetManager = RetrieveStereoRenderTargetManager(IsStereoRenderingAllowed());
 		if (StereoRenderTargetManager != nullptr)
 		{
 			StereoRenderTargetManager->CalculateRenderTargetSize(*this, TexSizeX, TexSizeY);
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			NumBufferedFrames = StereoRenderTargetManager->GetNumberOfBufferedFrames();
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
+			bHMDAllocatedSeparateRenderTargets = StereoRenderTargetManager->AllocateRenderTargetTextures(TexSizeX, TexSizeY, SceneTargetFormat, 1, TexCreate_None, TexCreate_RenderTargetable, BufferedRTRHI, BufferedSRVRHI);
+			if (bHMDAllocatedSeparateRenderTargets)
+			{
+				check(BufferedRTRHI.Num() == BufferedSRVRHI.Num());
+				NumBufferedFrames = BufferedRTRHI.Num();
+			}
 		}
 		
 		check(BufferedSlateHandles.Num() == BufferedRenderTargetsRHI.Num() && BufferedSlateHandles.Num() == BufferedShaderResourceTexturesRHI.Num());
@@ -2092,22 +2128,20 @@ void FSceneViewport::InitDynamicRHI()
 		}
 		check(BufferedSlateHandles.Num() == BufferedRenderTargetsRHI.Num() && BufferedSlateHandles.Num() == BufferedShaderResourceTexturesRHI.Num());
 
-		static const auto CVarDefaultBackBufferPixelFormat = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.DefaultBackBufferPixelFormat"));
-		EPixelFormat SceneTargetFormat = EDefaultBackBufferPixelFormat::Convert2PixelFormat(EDefaultBackBufferPixelFormat::FromInt(CVarDefaultBackBufferPixelFormat->GetValueOnRenderThread()));
-		SceneTargetFormat = RHIPreferredPixelFormatHint(SceneTargetFormat);
-	
-		if (bHDRViewport)
-		{
-			SceneTargetFormat = GRHIHDRDisplayOutputFormat;
-		}
-
-		FTextureRHIRef BufferedRTRHI;
-		FTextureRHIRef BufferedSRVRHI;
+		FTexture2DRHIRef RTRHI;
+		FTexture2DRHIRef SRVRHI;
 
 		for (int32 i = 0; i < NumBufferedFrames; ++i)
 		{
 			// try to allocate texture via StereoRenderingDevice; if not successful, use the default way
-			if (StereoRenderTargetManager == nullptr || !StereoRenderTargetManager->AllocateRenderTargetTexture(i, TexSizeX, TexSizeY, SceneTargetFormat, 1, TexCreate_None, TexCreate_RenderTargetable, BufferedRTRHI, BufferedSRVRHI))
+			if (bHMDAllocatedSeparateRenderTargets)
+			{
+				RTRHI = BufferedRTRHI[i];
+				SRVRHI = BufferedSRVRHI[i];
+			}
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			else if (StereoRenderTargetManager == nullptr || !StereoRenderTargetManager->AllocateRenderTargetTexture(i, TexSizeX, TexSizeY, SceneTargetFormat, 1, TexCreate_None, TexCreate_RenderTargetable, RTRHI, SRVRHI))
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			{
 				const FRHITextureCreateDesc Desc =
 					FRHITextureCreateDesc::Create2D(TEXT("BufferedRT"))
@@ -2116,14 +2150,14 @@ void FSceneViewport::InitDynamicRHI()
 					.SetFlags(ETextureCreateFlags::RenderTargetable | ETextureCreateFlags::ShaderResource)
 					.SetInitialState(ERHIAccess::SRVMask);
 
-				BufferedRTRHI = BufferedSRVRHI = RHICreateTexture(Desc);
+				RTRHI = SRVRHI = RHICreateTexture(Desc);
 			}
-			BufferedRenderTargetsRHI[i] = BufferedRTRHI;
-			BufferedShaderResourceTexturesRHI[i] = BufferedSRVRHI;
+			BufferedRenderTargetsRHI[i] = RTRHI;
+			BufferedShaderResourceTexturesRHI[i] = SRVRHI;
 
 			if (BufferedSlateHandles[i])
 			{
-				BufferedSlateHandles[i]->SetRHIRef(BufferedShaderResourceTexturesRHI[0], TexSizeX, TexSizeY);
+				BufferedSlateHandles[i]->SetRHIRef(SRVRHI, TexSizeX, TexSizeY);
 			}
 		}
 
@@ -2150,8 +2184,7 @@ void FSceneViewport::InitDynamicRHI()
 			BufferedSlateHandles.Add(nullptr);
 			BufferedRenderTargetsRHI.Add(nullptr);
 			BufferedShaderResourceTexturesRHI.Add(nullptr);
-		}		
-		NumBufferedFrames = 1;
+		}
 
 		RenderTargetTextureRHI = nullptr;		
 		CurrentBufferedTargetIndex = NextBufferedTargetIndex = 0;

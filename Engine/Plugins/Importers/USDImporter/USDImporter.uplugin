@@ -6,7 +6,7 @@
 	"Description": "Adds support for importing the USD file format into Unreal Engine",
 	"Category": "Importers",
 	"CreatedBy": "Epic Games, Inc.",
-	"CreatedByURL": "http://epicgames.com",
+	"CreatedByURL": "https://epicgames.com",
 	"DocsURL": "",
 	"MarketplaceURL": "",
 	"SupportURL": "",
@@ -61,6 +61,11 @@
 		{
 			"Name": "USDClasses",
 			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+        {
+			"Name": "USDClassesEditor",
+			"Type": "Editor",
 			"LoadingPhase": "Default"
 		},
 		{

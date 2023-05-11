@@ -71,19 +71,6 @@ FSceneLightingChannelParameters GetSceneLightingChannelParameters(FRDGBuilder& G
 	return Parameters;
 }
 
-FRDGTextureRef GetEyeAdaptationTexture(FRDGBuilder& GraphBuilder, const FSceneView& View)
-{
-	if (View.HasValidEyeAdaptationTexture())
-	{
-		return GraphBuilder.RegisterExternalTexture(View.GetEyeAdaptationTexture(), ERDGTextureFlags::MultiFrame);
-	}
-	else
-	{
-		const FRDGSystemTextures& SystemTextures = FRDGSystemTextures::Get(GraphBuilder);
-		return SystemTextures.White;
-	}
-}
-
 FRDGBufferRef GetEyeAdaptationBuffer(FRDGBuilder& GraphBuilder, const FSceneView& View)
 {
 	if (View.HasValidEyeAdaptationBuffer())
@@ -92,6 +79,6 @@ FRDGBufferRef GetEyeAdaptationBuffer(FRDGBuilder& GraphBuilder, const FSceneView
 	}
 	else
 	{
-		return GraphBuilder.RegisterExternalBuffer(GWhiteVertexBufferWithRDG->Buffer);
+		return GSystemTextures.GetDefaultStructuredBuffer(GraphBuilder, sizeof(FVector4f), FVector4f::One());
 	}
 }

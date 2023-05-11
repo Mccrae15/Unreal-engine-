@@ -11,11 +11,11 @@
 #include "BaseTools/MeshSurfacePointTool.h"
 #include "BaseBehaviors/BehaviorTargetInterfaces.h"
 #include "DynamicMesh/DynamicMeshAABBTree3.h"
-#include "GroupTopology.h"
 #include "BaseTools/SingleSelectionMeshEditingTool.h"
+#include "MeshBoundaryLoops.h"
 #include "HoleFillTool.generated.h"
 
-class UPolygonSelectionMechanic;
+class UBoundarySelectionMechanic;
 class UDynamicMeshReplacementChangeTarget;
 class UMeshOpPreviewWithBackgroundCompute;
 class UDynamicMeshComponent;
@@ -52,15 +52,15 @@ public:
 
 	/** Number of vertex rings outside of the fill region to allow remeshing */
 	UPROPERTY(EditAnywhere, Category = SmoothHoleFillOptions, 
-		meta = (UIMin = "0", ClampMin = "0", EditCondition = "!bConstrainToHoleInterior"))
+		meta = (UIMin = "0", ClampMin = "0", EditCondition = "!bConstrainToHoleInterior", Delta = 1, LinearDeltaSensitivity = 50))
 	int RemeshingExteriorRegionWidth;
 
 	/** Number of vertex rings outside of the fill region to perform smoothing */
-	UPROPERTY(EditAnywhere, Category = SmoothHoleFillOptions, meta = (UIMin = "0", ClampMin = "0"))
+	UPROPERTY(EditAnywhere, Category = SmoothHoleFillOptions, meta = (UIMin = "0", ClampMin = "0", Delta = 1, LinearDeltaSensitivity = 50))
 	int SmoothingExteriorRegionWidth;
 
 	/** Number of vertex rings away from the fill region boundary to constrain smoothing */
-	UPROPERTY(EditAnywhere, Category = SmoothHoleFillOptions, meta = (UIMin = "0", ClampMin = "0"))
+	UPROPERTY(EditAnywhere, Category = SmoothHoleFillOptions, meta = (UIMin = "0", ClampMin = "0", Delta = 1, LinearDeltaSensitivity = 50))
 	int SmoothingInteriorRegionWidth;
 
 	/** Desired Smoothness. This is not a linear quantity, but larger numbers produce smoother results */
@@ -171,19 +171,19 @@ class MESHMODELINGTOOLSEXP_API UHoleFillStatisticsProperties : public UInteracti
 	GENERATED_BODY()
 public:
 
-	UPROPERTY(VisibleAnywhere, Category = HoleFillStatistics)
+	UPROPERTY(VisibleAnywhere, Category = HoleFillStatistics, meta = (NoResetToDefault))
 	FString InitialHoles;
 
-	UPROPERTY(VisibleAnywhere, Category = HoleFillStatistics)
+	UPROPERTY(VisibleAnywhere, Category = HoleFillStatistics, meta = (NoResetToDefault))
 	FString SelectedHoles;
 
-	UPROPERTY(VisibleAnywhere, Category = HoleFillStatistics)
+	UPROPERTY(VisibleAnywhere, Category = HoleFillStatistics, meta = (NoResetToDefault))
 	FString SuccessfulFills;
 
-	UPROPERTY(VisibleAnywhere, Category = HoleFillStatistics)
+	UPROPERTY(VisibleAnywhere, Category = HoleFillStatistics, meta = (NoResetToDefault))
 	FString FailedFills;
 
-	UPROPERTY(VisibleAnywhere, Category = HoleFillStatistics)
+	UPROPERTY(VisibleAnywhere, Category = HoleFillStatistics, meta = (NoResetToDefault))
 	FString RemainingHoles;
 
 	void Initialize(const UHoleFillTool& HoleFillTool);
@@ -256,7 +256,7 @@ protected:
 	TObjectPtr<UMeshOpPreviewWithBackgroundCompute> Preview = nullptr;
 
 	UPROPERTY()
-	TObjectPtr<UPolygonSelectionMechanic> SelectionMechanic = nullptr;
+	TObjectPtr<UBoundarySelectionMechanic> SelectionMechanic = nullptr;
 
 	// Input mesh. Ownership shared with Op.
 	TSharedPtr<UE::Geometry::FDynamicMesh3, ESPMode::ThreadSafe> OriginalMesh;
@@ -281,30 +281,7 @@ protected:
 	void SelectAll();
 	void ClearSelection();
 
-	// Object used to get boundary loop information. All triangles return the same GroupID, so the only boundaries that 
-	// are returned are the the actual mesh boundaries.
-	// TODO: It seems like overkill to use a FGroupTopology subclass when we don't actually care about groups.
-	class FBasicTopology : public UE::Geometry::FGroupTopology
-	{
-	public:
-		FBasicTopology(const UE::Geometry::FDynamicMesh3* Mesh, bool bAutoBuild) :
-			FGroupTopology(Mesh, false)
-		{
-			if (bAutoBuild)
-			{
-				// Virtual func resolution doesn't work in constructors. Though we're not currently
-				// overriding RebuildTopology, let's do the proper thing in case we get copy-pasted
-				// somewhere where we do.
-				RebuildTopology();
-			}
-		}
-
-		int GetGroupID(int TriangleID) const override
-		{
-			return Mesh->IsTriangle(TriangleID) ? 1 : 0;
-		}
-	};
-	TUniquePtr<FBasicTopology> Topology;
+	TUniquePtr<UE::Geometry::FMeshBoundaryLoops> BoundaryLoops;
 
 	struct FSelectedBoundaryLoop
 	{

@@ -5,94 +5,76 @@ UnrealEngine.cpp: Implements the UEngine class and helpers.
 =============================================================================*/
 
 #include "UnrealEngine.h"
-#include "UObject/GCObject.h"
-#include "Misc/IQueuedWork.h"
-#include "HAL/RunnableThread.h"
-#include "HAL/ThreadHeartBeat.h"
-#include "RHI.h"
-#include "Widgets/SWidget.h"
-#include "UnrealClient.h"
-#include "Engine/DebugDisplayProperty.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Algo/Find.h"
+#include "Engine/Blueprint.h"
+#include "Async/AsyncFileHandle.h"
+#include "Engine/GameInstance.h"
+#include "Engine/LevelStreaming.h"
+#include "EngineStats.h"
 #include "Engine/GameViewportClient.h"
-#include "RenderingThread.h"
-#include "RHIStaticStates.h"
-#include "Engine/TextureStreamingTypes.h"
 #include "Engine/LevelStreamingGCHelper.h"
-#include "Components/PrimitiveComponent.h"
 #include "AI/NavigationSystemBase.h"
 #include "AI/NavigationSystemConfig.h"
+#include "Engine/NetConnection.h"
 #include "Misc/MessageDialog.h"
-#include "HAL/FileManager.h"
-#include "Misc/CommandLine.h"
+#include "Engine/PendingNetGame.h"
 #include "Misc/FileHelper.h"
-#include "Misc/Paths.h"
+#include "EngineGlobals.h"
 #include "Misc/FrameValue.h"
-#include "HAL/Runnable.h"
+#include "FramePro/FramePro.h"
+#include "Misc/BufferedOutputDevice.h"
 #include "Misc/OutputDeviceArchiveWrapper.h"
+#include "HAL/PlatformFile.h"
 #include "Misc/OutputDeviceFile.h"
+#include "Math/ColorList.h"
 #include "Stats/StatsMisc.h"
-#include "Containers/Ticker.h"
-#include "Misc/ConfigCacheIni.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/CoreDelegates.h"
-#include "Misc/ObjectThumbnail.h"
-#include "Misc/App.h"
+#include "Misc/StringFormatArg.h"
 #include "Misc/TimeGuard.h"
-#include "Modules/ModuleManager.h"
+#include "Net/Core/Trace/Private/NetTraceInternal.h"
 #include "UObject/UObjectIterator.h"
-#include "UObject/StrongObjectPtr.h"
-#include "UObject/Package.h"
+#include "ParticleEmitterInstances.h"
 #include "UObject/MetaData.h"
+#include "Particles/ParticleEmitter.h"
 #include "UObject/ObjectMemoryAnalyzer.h"
+#include "Particles/TypeData/ParticleModuleTypeDataBase.h"
 #include "UObject/UObjectGlobalsInternal.h"
+#include "PhysicsEngine/ConvexElem.h"
 #include "Serialization/ArchiveCountMem.h"
+#include "RenderAssetUpdate.h"
 #include "Serialization/ObjectWriter.h"
 #include "Serialization/ObjectReader.h"
 #include "Misc/PackageName.h"
-#include "Misc/EngineVersion.h"
+#include "TextureResource.h"
 #include "UObject/LinkerLoad.h"
 #include "GameMapsSettings.h"
-#include "Materials/MaterialInterface.h"
 #include "Logging/LogScopedCategoryAndVerbosityOverride.h"
 #include "Misc/WildcardString.h"
 #include "Misc/OutputDeviceConsole.h"
 #include "Serialization/ArchiveReplaceOrClearExternalReferences.h"
-#include "GameFramework/PlayerController.h"
-#include "Engine/Font.h"
 #include "Materials/Material.h"
-#include "CanvasItem.h"
-#include "CanvasTypes.h"
-#include "Sound/SoundAttenuation.h"
 #include "GameFramework/GameModeBase.h"
-#include "Features/IModularFeatures.h"
-#include "GameFramework/WorldSettings.h"
-#include "Components/AudioComponent.h"
 #include "Particles/ParticleSystem.h"
 #include "Performance/LatencyMarkerModule.h"
 #include "Performance/MaxTickRateHandlerModule.h"
 #include "Engine/SkeletalMesh.h"
+#include "Engine/SkinnedAssetCommon.h"
 #include "Components/SkeletalMeshComponent.h"
-#include "Engine/Texture.h"
 #include "Engine/Texture2D.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Engine/VolumeTexture.h"
-#include "ParticleHelper.h"
 #include "Particles/ParticleModule.h"
 #include "Particles/ParticleSystemComponent.h"
 #include "Exporters/Exporter.h"
-#include "Materials/MaterialInstance.h"
 #include "Materials/MaterialInstanceDynamic.h"
-#include "Engine/NetDriver.h"
-#include "Widgets/SBoxPanel.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/StaticMesh.h"
 #include "DistanceFieldAtlas.h"
 #include "SystemSettings.h"
-#include "ContentStreaming.h"
-#include "DrawDebugHelpers.h"
 #include "EngineUtils.h"
 #include "Framework/Application/SlateApplication.h"
+#include "UObject/GarbageCollectionHistory.h"
 #include "Widgets/Input/SButton.h"
 #include "Engine/EngineCustomTimeStep.h"
 #include "Engine/LevelStreamingPersistent.h"
@@ -100,9 +82,9 @@ UnrealEngine.cpp: Implements the UEngine class and helpers.
 #include "Engine/TextureLODSettings.h"
 #include "Engine/TimecodeProvider.h"
 #include "Engine/SystemTimeTimecodeProvider.h"
-#include "Misc/NetworkVersion.h"
 #include "Net/OnlineEngineInterface.h"
 #include "Engine/Console.h"
+#include "UObject/Stack.h"
 #include "VisualLogger/VisualLogger.h"
 #include "SkeletalMeshMerge.h"
 #include "ShaderCompiler.h"
@@ -114,20 +96,14 @@ UnrealEngine.cpp: Implements the UEngine class and helpers.
 #include "Elements/Framework/EngineElements.h"
 #include "TickTaskManagerInterface.h"
 #include "Net/NetworkProfiler.h"
-#include "ProfilingDebugging/MallocProfiler.h"
-#include "StereoRendering.h"
 #include "IHeadMountedDisplayModule.h"
 #include "IHeadMountedDisplay.h"
 #include "IXRTrackingSystem.h"
-#include "Stats/StatsData.h"
 #include "Stats/StatsFile.h"
 #include "Audio/AudioDebug.h"
-#include "AudioDeviceManager.h"
 #include "AudioDevice.h"
-#include "AudioThread.h"
 #include "Animation/SkeletalMeshActor.h"
 #include "Animation/AnimSequence.h"
-#include "Animation/AnimCompress.h"
 #include "Engine/Canvas.h"
 #include "GameFramework/HUD.h"
 #include "GameFramework/Character.h"
@@ -136,13 +112,13 @@ UnrealEngine.cpp: Implements the UEngine class and helpers.
 #include "PhysicsEngine/BodySetup.h"
 #include "Engine/LevelStreamingVolume.h"
 #include "Engine/LevelScriptActor.h"
-#include "HAL/LowLevelMemTracker.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "DynamicResolutionState.h"
 #include "Engine/ViewportStatsSubsystem.h"
 #include "GPUSkinCache.h"
 #include "Chaos/TriangleMeshImplicitObject.h"
 #include "HAL/PlatformMemoryHelpers.h"
+#include <exception>
 
 #if UE_WITH_IRIS
 #include "Iris/IrisConfig.h"
@@ -152,22 +128,15 @@ UnrealEngine.cpp: Implements the UEngine class and helpers.
 #include "Particles/TypeData/ParticleModuleTypeDataMesh.h"
 #include "Particles/ParticleLODLevel.h"
 #include "Particles/ParticleModuleRequired.h"
-#include "Particles/ParticlePerfStats.h"
 
 #include "Components/TextRenderComponent.h"
-#include "Sound/AudioSettings.h"
-#include "Streaming/Texture2DUpdate.h"
 #include "Rendering/SkeletalMeshRenderData.h"
-#include "Serialization/LoadTimeTrace.h"
-#include "Async/ParallelFor.h"
 #include "IO/IoDispatcher.h"
 
 #if WITH_EDITOR
 #include "Settings/LevelEditorPlaySettings.h"
 #include "LandscapeSubsystem.h"
 #include "TextureCompiler.h"
-#include "StaticMeshCompiler.h"
-#include "AssetCompilingManager.h"
 #include "GenericPlatform/GenericPlatformCrashContext.h"
 #endif
 // @todo this is here only due to circular dependency to AIModule. To be removed
@@ -176,6 +145,9 @@ UnrealEngine.cpp: Implements the UEngine class and helpers.
 #include "ObjectEditorUtils.h"
 #endif
 
+#if FRAMEPRO_ENABLED
+#include "FramePro/FrameProProfiler.h"
+#endif
 
 #include "HardwareInfo.h"
 #include "EngineModule.h"
@@ -194,10 +166,10 @@ UnrealEngine.cpp: Implements the UEngine class and helpers.
 #include "Components/BrushComponent.h"
 #include "GameFramework/GameUserSettings.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
-#include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Engine/UserInterfaceSettings.h"
 #include "ComponentRecreateRenderStateContext.h"
+#include "Materials/MaterialRenderProxy.h"
 
 #include "IMessageRpcClient.h"
 #include "IMessagingRpcModule.h"
@@ -212,7 +184,6 @@ UnrealEngine.cpp: Implements the UEngine class and helpers.
 #include "GameFramework/OnlineSession.h"
 #include "ProfilingDebugging/ABTesting.h"
 #include "Performance/EnginePerformanceTargets.h"
-#include "FramePro/FrameProProfiler.h"
 
 #include "InstancedReferenceSubobjectHelper.h"
 #include "Misc/EngineBuildSettings.h"
@@ -222,7 +193,6 @@ UnrealEngine.cpp: Implements the UEngine class and helpers.
 #include "SceneManagement.h"
 
 #if !UE_BUILD_SHIPPING
-#include "HAL/ExceptionHandling.h"
 #include "IAutomationWorkerModule.h"
 #endif	// UE_BUILD_SHIPPING
 
@@ -236,13 +206,12 @@ UnrealEngine.cpp: Implements the UEngine class and helpers.
 
 #include "GeneralProjectSettings.h"
 #include "ProfilingDebugging/LoadTimeTracker.h"
-#include "UObject/ObjectKey.h"
 #include "AssetRegistry/AssetRegistryModule.h"
-#include "ProfilingDebugging/CsvProfiler.h"
 #include "ProfilingDebugging/TracingProfiler.h"
 #include "Engine/CoreSettings.h"
 #include "IEyeTrackerModule.h"
 #include "Interfaces/IPluginManager.h"
+#include "Animation/SkeletonRemappingRegistry.h"
 
 #if !UE_BUILD_SHIPPING
 #include "GenericPlatform/GenericPlatformCrashContext.h"
@@ -250,25 +219,19 @@ UnrealEngine.cpp: Implements the UEngine class and helpers.
 #endif
 
 #include "HAL/FileManagerGeneric.h"
-#include "UObject/UObjectThreadContext.h"
 #include "UObject/ReferenceChainSearch.h"
 
 #include "Particles/ParticleSystemManager.h"
-#include "Components/SkinnedMeshComponent.h"
-#include "Net/Core/Trace/NetTrace.h"
 #include "ObjectTrace.h"
 #include "StudioAnalytics.h"
-#include "TraceFilter.h"
 #include "Animation/SkinWeightProfileManager.h"
 
 #include "Particles/ParticlePerfStatsManager.h"
 
-#include "Engine/InstancedStaticMesh.h"
 #include "IDeviceProfileSelectorModule.h"
 #include "HDRHelper.h"
 
 #if WITH_DUMPGPU
-	#include "RenderGraph.h"
 #endif
 
 #if WITH_DUMPGPU
@@ -328,6 +291,8 @@ void FEngineModule::StartupModule()
 #endif
 
 	FSkinWeightProfileManager::OnStartup();
+
+	UE::Anim::FSkeletonRemappingRegistry::Init();
 }
 
 void FEngineModule::ShutdownModule()
@@ -343,6 +308,8 @@ void FEngineModule::ShutdownModule()
 	FParticleSystemWorldManager::OnShutdown();
 
 	FSkinWeightProfileManager::OnShutdown();
+
+	UE::Anim::FSkeletonRemappingRegistry::Destroy();
 }
 
 /* Global variables
@@ -488,7 +455,7 @@ TAutoConsoleVariable<bool> CVarCsvAlwaysShowFrameCount(
 #if !UE_BUILD_SHIPPING
 class FDisplayCVarListExecHelper : public FSelfRegisteringExec
 {
-	virtual bool Exec(class UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
+	virtual bool Exec_Dev(class UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
 	{
 		if (FParse::Command(&Cmd, TEXT("DisplayCVarList")))
 		{
@@ -673,7 +640,11 @@ void CalculateFPSTimings()
 	static auto CVarVsync = IConsoleManager::Get().FindConsoleVariable(TEXT("r.VSync"));
 	if (CVarGTSyncType->GetInt() == 2 && CVarVsync->GetInt() != 0)
 	{
-		FrameTimeMS = RHIGetFrameTime();
+		float RHIFrameTime = RHIGetFrameTime();
+		if (RHIFrameTime != 0)
+		{
+			FrameTimeMS = RHIFrameTime;
+		}
 	}
 	
 	// A 3/4, 1/4 split gets close to a simple 10 frame moving average
@@ -710,7 +681,7 @@ FCachedSystemScalabilityCVars::FCachedSystemScalabilityCVars()
 
 }
 
-bool FCachedSystemScalabilityCVars::operator==(const FCachedSystemScalabilityCVars& Other)
+bool FCachedSystemScalabilityCVars::operator==(const FCachedSystemScalabilityCVars& Other) const
 {
 	return DetailMode == Other.DetailMode &&
 		MaterialQualityLevel == Other.MaterialQualityLevel &&
@@ -799,6 +770,18 @@ void ScalabilityCVarsSinkCallback()
 		return;
 	}
 
+	if (LocalScalabilityCVars.MaterialQualityLevel != GCachedScalabilityCVars.MaterialQualityLevel)
+	{
+		// Need to flush any in-flight uniform expression cache operations, when material quality changes.  The material quality level affects
+		// the result returned by calls to FMaterialRenderProxy::GetMaterialNoFallback, and in-flight operations will have been using a uniform
+		// buffer layout from the old version of the material, leading to an assert.
+		ENQUEUE_RENDER_COMMAND(UpdateDeferredCachedUniformExpressions)(
+			[](FRHICommandListImmediate& RHICmdList)
+			{
+				FMaterialRenderProxy::UpdateDeferredCachedUniformExpressions();
+			});
+	}
+
 	FlushRenderingCommands();
 
 	if (!GCachedScalabilityCVars.bInitialized)
@@ -810,6 +793,8 @@ void ScalabilityCVarsSinkCallback()
 	{
 		bool bRecreateRenderstate = false;
 		bool bCacheResourceShaders = false;
+		// Don't cache _all_ shaders explicitly and let On Demand Shader Compilation (ODSC) handle compiling the shaders visible.
+		const bool bCacheAllRemainingShaders = false;
 
 		if (LocalScalabilityCVars.DetailMode != GCachedScalabilityCVars.DetailMode)
 		{
@@ -818,6 +803,8 @@ void ScalabilityCVarsSinkCallback()
 
 		if (LocalScalabilityCVars.MaterialQualityLevel != GCachedScalabilityCVars.MaterialQualityLevel)
 		{
+			// If the material quality level changes we need to potentially create new FMaterialRenderResources
+			// for the new quality level.
 			bCacheResourceShaders = true;
 		}
 
@@ -834,8 +821,8 @@ void ScalabilityCVarsSinkCallback()
 			if (bCacheResourceShaders)
 			{
 				// For all materials, UMaterial::CacheResourceShadersForRendering
-				UMaterial::AllMaterialsCacheResourceShadersForRendering(true);
-				UMaterialInstance::AllMaterialsCacheResourceShadersForRendering(true);
+				UMaterial::AllMaterialsCacheResourceShadersForRendering(false, bCacheAllRemainingShaders);
+				UMaterialInstance::AllMaterialsCacheResourceShadersForRendering(true, bCacheAllRemainingShaders);
 			}
 		}
 		else
@@ -1892,7 +1879,7 @@ void UEngine::Init(IEngineLoop* InEngineLoop)
 
 	// Start capturing errors and warnings
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-	ErrorsAndWarningsCollector.Initialize();
+	ErrorsAndWarningsCollector = MakePimpl<FErrorsAndWarningsCollector>();
 #endif
 
 #if WITH_EDITOR
@@ -2101,6 +2088,10 @@ void UEngine::Init(IEngineLoop* InEngineLoop)
 		FModuleManager::Get().LoadModuleChecked("MovieScene");
 		FModuleManager::Get().LoadModuleChecked("MovieSceneTracks");
 		FModuleManager::Get().LoadModule("LevelSequence");
+#if WITH_EDITOR
+		// The SparseVolumeTexture module containing the importer is only loaded and used in the editor.
+		FModuleManager::Get().LoadModuleChecked("SparseVolumeTexture");
+#endif
 	}
 
 	// Record large world coordinate state
@@ -2146,6 +2137,7 @@ void UEngine::Init(IEngineLoop* InEngineLoop)
 	EngineStats.Add(FEngineStatFuncs(TEXT("STAT_UnitTime"), TEXT("STATCAT_Engine"), FText::GetEmpty(), FEngineStatRender(), FEngineStatToggle::CreateUObject(this, &UEngine::ToggleStatUnitTime)));
 	EngineStats.Add(FEngineStatFuncs(TEXT("STAT_Raw"), TEXT("STATCAT_Engine"), FText::GetEmpty(), FEngineStatRender(), FEngineStatToggle::CreateUObject(this, &UEngine::ToggleStatRaw)));
 	EngineStats.Add(FEngineStatFuncs(TEXT("STAT_ParticlePerf"), TEXT("STATCAT_Engine"), FText::GetEmpty(), FEngineStatRender::CreateUObject(this, &UEngine::RenderStatParticlePerf), FEngineStatToggle::CreateUObject(this, &UEngine::ToggleStatParticlePerf), bIsRHS));
+	EngineStats.Add(FEngineStatFuncs(TEXT("STAT_TSR"), TEXT("STATCAT_Engine"), FText::FromString(TEXT("Same as stat unit, but with additional TSR settings.")), FEngineStatRender(), FEngineStatToggle::CreateUObject(this, &UEngine::ToggleStatTSR)));
 #endif // !UE_BUILD_SHIPPING
 
 	// Let any listeners know about the new stats
@@ -2381,13 +2373,7 @@ static FAutoConsoleCommand SetTimedMemReport(TEXT("TimedMemReport.Delay"), TEXT(
 
 double UEngine::CorrectNegativeTimeDelta(double DeltaRealTime)
 {
-#if PLATFORM_ANDROID
 	UE_LOG(LogEngine, Warning, TEXT("Detected negative delta time - ignoring"));
-#else
-	// AMD dual-core systems are a known issue that require AMD CPU drivers to be installed. Installer will take care of this for shipping.
-	UE_LOG(LogEngine, Fatal, TEXT("Detected negative delta time - on AMD systems please install http://files.aoaforums.com/I3199-setup.zip.html - DeltaTime:%f"),
-		DeltaRealTime);
-#endif
 	return 0.01;
 }
 
@@ -2504,7 +2490,11 @@ void UEngine::UpdateTimeAndHandleMaxTickRate()
 	bool bTimeWasManipulatedDebug = bTimeWasManipulated;	//Just used for logging of previous frame
 
 															// Figure out whether we want to use real or fixed time step.
+#if WITH_FIXED_TIME_STEP_SUPPORT
 	const bool bUseFixedTimeStep = FApp::IsBenchmarking() || FApp::UseFixedTimeStep();
+#else
+	const bool bUseFixedTimeStep = false;
+#endif
 	static bool bPreviousUseFixedTimeStep = bUseFixedTimeStep;
 
 	// Updates logical last time to match logical current time from last tick
@@ -2658,12 +2648,7 @@ void UEngine::UpdateTimeAndHandleMaxTickRate()
 																		 // Negative delta time means something is wrong with the system. Error out so user can address issue.
 		if( FApp::GetDeltaTime() < 0 )
 		{
-#if PLATFORM_ANDROID
 			UE_LOG(LogEngine, Warning, TEXT("Detected negative delta time - ignoring"));
-#else
-			// AMD dual-core systems are a known issue that require AMD CPU drivers to be installed. Installer will take care of this for shipping.
-			UE_LOG(LogEngine, Warning, TEXT("Detected negative delta time - on AMD systems please install http://files.aoaforums.com/I3199-setup.zip.html"));
-#endif
 			FApp::SetDeltaTime(0.01);
 		}
 
@@ -3042,6 +3027,9 @@ void UEngine::InitializeObjectReferences()
 		LoadSpecialMaterial(TEXT("VertexColorViewModeMaterialName_BlueOnly"), VertexColorViewModeMaterialName_BlueOnly, VertexColorViewModeMaterial_BlueOnly, false);
 	}
 
+	// Nanite materials
+	LoadSpecialMaterial(TEXT("NaniteHiddenSectionMaterialName"), NaniteHiddenSectionMaterialName, NaniteHiddenSectionMaterial, false);
+
 	// Materials that may or may not be needed when debug viewmodes are disabled but haven't been fixed up yet
 	LoadSpecialMaterial(TEXT("RemoveSurfaceMaterialName"), RemoveSurfaceMaterialName.ToString(), RemoveSurfaceMaterial, false);
 
@@ -3051,7 +3039,7 @@ void UEngine::InitializeObjectReferences()
 	LoadSpecialMaterial(TEXT("InvalidLightmapSettingsMaterialName"), InvalidLightmapSettingsMaterialName.ToString(), InvalidLightmapSettingsMaterial, false);
 	LoadSpecialMaterial(TEXT("ArrowMaterialName"), ArrowMaterialName.ToString(), ArrowMaterial, false);
 
-#if !UE_BUILD_SHIPPING
+#if !UE_BUILD_SHIPPING || WITH_EDITORONLY_DATA
 	ArrowMaterialYellow = UMaterialInstanceDynamic::Create(ArrowMaterial, nullptr);
 	ArrowMaterialYellow->SetVectorParameterValue("GizmoColor", FLinearColor::Yellow);
 
@@ -3169,7 +3157,10 @@ void UEngine::InitializeObjectReferences()
 	LoadEngineClass<AWorldSettings>(WorldSettingsClassName, WorldSettingsClass);
 	LoadEngineClass<UNavigationSystemBase>(NavigationSystemClassName, NavigationSystemClass);
 	LoadEngineClass<UNavigationSystemConfig>(NavigationSystemConfigClassName, NavigationSystemConfigClass);
-	LoadEngineClass<UAvoidanceManager>(AvoidanceManagerClassName, AvoidanceManagerClass);
+	if (AvoidanceManagerClassName.IsValid())
+	{
+		LoadEngineClass<UAvoidanceManager>(AvoidanceManagerClassName, AvoidanceManagerClass);
+	}
 	LoadEngineClass<UGameUserSettings>(GameUserSettingsClassName, GameUserSettingsClass);
 	LoadEngineClass<ALevelScriptActor>(LevelScriptActorClassName, LevelScriptActorClass);
 
@@ -3616,8 +3607,7 @@ public:
 		}
 #if WITH_MGPU
 		// We have to do all the work for secondary views that are on a different GPU than
-		// the primary view. NB: This assumes that the primary view is assigned to the
-		// first GPU of the AFR group. See FSceneRenderer::ComputeViewGPUMasks.
+		// the primary view.
 		else if (GNumExplicitGPUsForRendering > 1)
 		{
 			return EStereoscopicPass::eSSP_PRIMARY;
@@ -4626,6 +4616,7 @@ static void BufferOverflowFunction(SIZE_T BufferSize, const ANSICHAR* Buffer)
 	UE_LOG(LogEngine, Log, TEXT("BufferOverflowFunction BufferSize=%d LocalBuffer=%s"),(int32)BufferSize, ANSI_TO_TCHAR(LocalBuffer));
 }
 
+#if UE_ALLOW_EXEC_COMMANDS
 bool UEngine::Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 {
 	// If we don't have a viewport specified to catch the stat commands, use to the game viewport
@@ -4634,6 +4625,10 @@ bool UEngine::Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 		GStatProcessingViewportClient = GameViewport;
 	}
 
+	if (FExec::Exec( InWorld, Cmd, Ar ))
+	{
+		return true;
+	}
 
 	// See if any other subsystems claim the command.
 	if (StaticExec(InWorld, Cmd,Ar) == true)
@@ -4803,7 +4798,7 @@ bool UEngine::Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 	{
 		return HandleProfileGPUCommand( Cmd, Ar );
 	}	
-#endif // #if !UE_BUILD_SHIPPING
+#endif
 
 #if WITH_DUMPGPU
 	else if (FParse::Command(&Cmd, TEXT("DUMPGPU")))
@@ -4812,16 +4807,48 @@ bool UEngine::Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 	}
 #endif
 
-#if	!(UE_BUILD_SHIPPING || UE_BUILD_TEST) && WITH_HOT_RELOAD
-	else if( FParse::Command(&Cmd,TEXT("HotReload")) )
+	else if ( FParse::Command(&Cmd,TEXT("SCALABILITY")) )
 	{
-		return HandleHotReloadCommand( Cmd, Ar );
+		Scalability::ProcessCommand(Cmd, Ar);
+		return true;
 	}
-#endif // !(UE_BUILD_SHIPPING || UE_BUILD_TEST) && WITH_HOT_RELOAD
+	else if(IConsoleManager::Get().ProcessUserConsoleInput(Cmd, Ar, InWorld))
+	{
+		// console variable interaction (get value, set value or get help)
+		return true;
+	}
+	else if (!IStreamingManager::HasShutdown() && IStreamingManager::Get().Exec( InWorld, Cmd,Ar ))
+	{
+		// The streaming manager has handled the exec command.
+	}
+	else if( FParse::Command(&Cmd, TEXT("DUMPTICKS")) )
+	{
+		return HandleDumpTicksCommand( InWorld, Cmd, Ar );
+	}
+	else if (FParse::Command(&Cmd, TEXT("CANCELASYNCLOAD")))
+	{
+		CancelAsyncLoading();
+		return true;
+	}
+#if USE_NETWORK_PROFILER
+	else if( FParse::Command(&Cmd,TEXT("NETPROFILE")) )
+	{
+		GNetworkProfiler.Exec( InWorld, Cmd, Ar );
+	}
+#endif
+	else 
+	{
+		return false;
+	}
 
+	return true;
+}
+#endif // UE_ALLOW_EXEC_COMMANDS
 
+bool UEngine::Exec_Dev( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
+{
 #if !UE_BUILD_SHIPPING
-	else if (FParse::Command(&Cmd, TEXT("DumpConsoleCommands")))
+	if (FParse::Command(&Cmd, TEXT("DumpConsoleCommands")))
 	{
 		return HandleDumpConsoleCommandsCommand( Cmd, Ar, InWorld );
 	}
@@ -4849,7 +4876,6 @@ bool UEngine::Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 	{
 		return HandleFreezeAllCommand( Cmd, Ar, InWorld );
 	}
-
 	else if( FParse::Command(&Cmd,TEXT("ToggleRenderingThread")) )
 	{
 		return HandleToggleRenderingThreadCommand( Cmd, Ar );
@@ -4874,12 +4900,6 @@ bool UEngine::Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 	{
 		return HandleDumpMaterialStatsCommand( Cmd, Ar );	
 	}
-#if WITH_EDITOR
-	else if( FParse::Command(&Cmd,TEXT("DumpShaderCompileStats")) )
-	{
-		HandleDumpShaderCompileStatsCommand(Cmd, Ar);
-	}
-#endif
 	else if (FParse::Command(&Cmd, TEXT("DumpShaderPipelineStats")))
 	{
 		return HandleDumpShaderPipelineStatsCommand(Cmd, Ar);
@@ -5060,41 +5080,26 @@ bool UEngine::Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 	}
 #endif // !UE_BUILD_SHIPPING
 
-	else if ( FParse::Command(&Cmd,TEXT("SCALABILITY")) )
+#if	!(UE_BUILD_SHIPPING || UE_BUILD_TEST) && WITH_HOT_RELOAD
+	else if (FParse::Command(&Cmd, TEXT("HotReload")))
 	{
-		Scalability::ProcessCommand(Cmd, Ar);
-		return true;
+		return HandleHotReloadCommand(Cmd, Ar);
 	}
-	else if(IConsoleManager::Get().ProcessUserConsoleInput(Cmd, Ar, InWorld))
+#endif // !(UE_BUILD_SHIPPING || UE_BUILD_TEST) && WITH_HOT_RELOAD
+
+	return false;
+}
+
+bool UEngine::Exec_Editor(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
+{
+#if WITH_EDITOR && !UE_BUILD_SHIPPING
+	if (FParse::Command(&Cmd, TEXT("DumpShaderCompileStats")))
 	{
-		// console variable interaction (get value, set value or get help)
-		return true;
-	}
-	else if (!IStreamingManager::HasShutdown() && IStreamingManager::Get().Exec( InWorld, Cmd,Ar ))
-	{
-		// The streaming manager has handled the exec command.
-	}
-	else if( FParse::Command(&Cmd, TEXT("DUMPTICKS")) )
-	{
-		return HandleDumpTicksCommand( InWorld, Cmd, Ar );
-	}
-	else if (FParse::Command(&Cmd, TEXT("CANCELASYNCLOAD")))
-	{
-		CancelAsyncLoading();
-		return true;
-	}
-#if USE_NETWORK_PROFILER
-	else if( FParse::Command(&Cmd,TEXT("NETPROFILE")) )
-	{
-		GNetworkProfiler.Exec( InWorld, Cmd, Ar );
+		return HandleDumpShaderCompileStatsCommand(Cmd, Ar);
 	}
 #endif
-	else 
-	{
-		return false;
-	}
 
-	return true;
+	return false;
 }
 
 bool UEngine::HandleFlushLogCommand( const TCHAR* Cmd, FOutputDevice& Ar )
@@ -5335,33 +5340,53 @@ static void DumpHelp(UWorld* InWorld)
 	UE_LOG(LogEngine, Display, TEXT("To browse console variables open this: '%s'"), *FilePath);
 	UE_LOG(LogEngine, Display, TEXT(" "));
 
-	ConsoleCommandLibrary_DumpLibraryHTML(InWorld, *GEngine, FilePath);
+	const bool bSuccess = ConsoleCommandLibrary_DumpLibraryHTML(InWorld, *GEngine, FilePath);
 
 	// Notification in editor
 #if WITH_EDITOR
+	if (bSuccess && FPaths::FileExists(FilePath))
 	{
-		const FText Message = NSLOCTEXT("UnrealEd", "ConsoleHelpExported", "ConsoleHelp.html was saved as");
+		const FText Message = NSLOCTEXT("UnrealEd", "ConsoleHelpExported", "Console help file saved at:");
 		FNotificationInfo Info(Message);
 		Info.bFireAndForget = true;
 		Info.ExpireDuration = 5.0f;
 		Info.bUseSuccessFailIcons = false;
 		Info.bUseLargeFont = false;
 
-		const FString HyperLinkText = FPaths::ConvertRelativePathToFull(FilePath);
-		Info.Hyperlink = FSimpleDelegate::CreateStatic([](FString SourceFilePath) 
+		const FString HyperLinkPath = FPaths::ConvertRelativePathToFull(FilePath);
+		Info.SubText = FText::FromString(HyperLinkPath);
+		Info.Hyperlink = FSimpleDelegate::CreateStatic([](FString SourceFilePath)
 		{
 			// open folder, you can choose the browser yourself
 			FPlatformProcess::ExploreFolder(*(FPaths::GetPath(SourceFilePath)));
-		}, HyperLinkText);
-		Info.HyperlinkText = FText::FromString(HyperLinkText);
+		}, HyperLinkPath);
+		Info.HyperlinkText = NSLOCTEXT("UnrealEd", "ConsoleHelpFolderLink", "Open file location...");
+		Info.WidthOverride = FOptionalSize();
 
 		FSlateNotificationManager::Get().AddNotification(Info);
 
 		// Always try to open the help file on Windows (including in -game, etc...)
 #if PLATFORM_WINDOWS
-		const FString LaunchableURL = FString(TEXT("file://")) + HyperLinkText;
+		const FString LaunchableURL = FString(TEXT("file://")) + HyperLinkPath;
 		FPlatformProcess::LaunchURL(*LaunchableURL, nullptr, nullptr);
 #endif
+	}
+	else
+	{
+		const FText Message = NSLOCTEXT("UnrealEd", "ConsoleHelpExportFailed", "Console help file generation failed.");
+		FNotificationInfo Info(Message);
+
+		const FString DocTemplateFile = FPaths::Combine(FPaths::EngineDir(), "Documentation/Extras/ConsoleHelpTemplate.html");
+		if (!FPaths::FileExists(DocTemplateFile))
+		{
+				Info.SubText = NSLOCTEXT("UnrealEd", "ConsoleHelpExportFailedTip", "The template HTML file could not be found in the Engine/Documentation/Extras folder.\n\nIf you use a version control system or Unreal Game Sync (UGS), check that this folder is not excluded by your sync settings.");
+		}
+		Info.bFireAndForget = true;
+		Info.ExpireDuration = 10.0f;
+		Info.bUseSuccessFailIcons = false;
+		Info.bUseLargeFont = false;
+
+		FSlateNotificationManager::Get().AddNotification(Info);
 	}
 #endif// WITH_EDITOR
 }
@@ -5881,7 +5906,7 @@ bool UEngine::HandleKismetEventCommand(UWorld* InWorld, const TCHAR* Cmd, FOutpu
 
 		// Send the command to everything in the world we're dealing with...
 		int32 NumInstanceCallsSucceeded = 0;
-		for (TObjectIterator<UObject> It; It; ++It)
+		for (TObjectIterator<UObject> It(EObjectFlags::RF_ClassDefaultObject, true, EInternalObjectFlags::Garbage); It; ++It)
 		{
 			UObject* const Obj = *It;
 
@@ -10480,6 +10505,24 @@ bool UEngine::PerformError(const TCHAR* Cmd, FOutputDevice& Ar)
 		// Reuse deleted array
 		FMemory::Memzero(UseAfterFreeArray, UseAfterFreeArraySize);
 	}
+	else if (FParse::Command(&Cmd, TEXT("USEAFTERFREEMEMSTACK")))
+	{
+		static constexpr size_t MemStackUseAfterFreeArraySize = 4096; 
+		uint8* DanglingMemStackPtr = nullptr;
+		{
+			FMemMark Mark(FMemStack::Get());
+			DanglingMemStackPtr = static_cast<uint8*>(FMemStack::Get().Alloc(MemStackUseAfterFreeArraySize, 16));
+		}
+
+		// Do another Memstack allocation to validate the freed chunk from above has been put in quarantine
+		{
+			FMemMark Mark(FMemStack::Get());
+			FMemStack::Get().Alloc(MemStackUseAfterFreeArraySize, 16);
+		}
+
+		// Reuse deleted array
+		FMemory::Memzero(DanglingMemStackPtr, MemStackUseAfterFreeArraySize);
+	}
 #endif
 #endif // !UE_BUILD_SHIPPING
 	return false;
@@ -10917,11 +10960,20 @@ void UEngine::RemoveOnScreenDebugMessage(uint64 Key)
 #endif
 }
 
-UEngine::FErrorsAndWarningsCollector::FErrorsAndWarningsCollector()
+struct UEngine::FErrorsAndWarningsCollector : public FBufferedOutputDevice
 {
-}
+	FErrorsAndWarningsCollector();
+	~FErrorsAndWarningsCollector();
 
-void UEngine::FErrorsAndWarningsCollector::Initialize()
+	bool Tick(float Seconds);
+
+	TArray<FBufferedLine>		ActiveLines;
+	TMap<uint32, uint32>		MessagesToCountMap;
+	FTSTicker::FDelegateHandle	TickerHandle;
+	float						DisplayTime;
+};
+
+UEngine::FErrorsAndWarningsCollector::FErrorsAndWarningsCollector()
 {
 	DisplayTime = 0.0f;
 	GConfig->GetFloat(TEXT("/Script/Engine.Engine"), TEXT("DurationOfErrorsAndWarningsOnHUD"), DisplayTime, GEngineIni);
@@ -10945,12 +10997,18 @@ UEngine::FErrorsAndWarningsCollector::~FErrorsAndWarningsCollector()
 
 bool UEngine::FErrorsAndWarningsCollector::Tick(float Seconds)
 {
-    QUICK_SCOPE_CYCLE_COUNTER(STAT_FErrorsAndWarningsCollector_Tick);
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_FErrorsAndWarningsCollector_Tick);
 
 	// Set this each tick, in case the cvar is changed at runtime
 	SetVerbosity((GSupressWarningsInOnScreenDisplay != 0) ? ELogVerbosity::Error : ELogVerbosity::Warning);
 
-	if (BufferedLines.Num())
+	{
+		TArray<FBufferedLine> NewLines;
+		GetContents(NewLines);
+		ActiveLines.Append(MoveTemp(NewLines));
+	}
+
+	if (ActiveLines.Num())
 	{
 		int DupeCount = 0;
 		int CurrentHash = 0;
@@ -10958,7 +11016,7 @@ bool UEngine::FErrorsAndWarningsCollector::Tick(float Seconds)
 		// Remove any dupes and count them
 		do 
 		{
-			uint32 ThisHash = FCrc::StrCrc32(BufferedLines[DupeCount].Data);
+			uint32 ThisHash = FCrc::StrCrc32(ActiveLines[DupeCount].Data);
 
 			if (CurrentHash && ThisHash != CurrentHash)
 			{
@@ -10968,14 +11026,14 @@ bool UEngine::FErrorsAndWarningsCollector::Tick(float Seconds)
 			CurrentHash = ThisHash;
 			DupeCount++;
 
-		} while (DupeCount < BufferedLines.Num());
+		} while (DupeCount < ActiveLines.Num());
 
 		// Save off properties
-		FString Msg = BufferedLines[0].Data;
-		ELogVerbosity::Type Verbosity = BufferedLines[0].Verbosity;
+		FString Msg = ActiveLines[0].Data;
+		ELogVerbosity::Type Verbosity = ActiveLines[0].Verbosity;
 
 		// Remove any lines we condensed
-		BufferedLines.RemoveAt(0, DupeCount);
+		ActiveLines.RemoveAt(0, DupeCount);
 
 		uint32* pCount = MessagesToCountMap.Find(CurrentHash);
 
@@ -10998,11 +11056,10 @@ bool UEngine::FErrorsAndWarningsCollector::Tick(float Seconds)
 		const float MaxTimeToKeep = 30.f;
 		const int32 MaxNumToKeep = FMath::TruncToInt(MaxTimeToKeep / DisplayTime);
 
-		if (BufferedLines.Num() > MaxNumToKeep)
+		if (ActiveLines.Num() > MaxNumToKeep)
 		{
-			BufferedLines.RemoveAt(0, BufferedLines.Num() - MaxNumToKeep);
+			ActiveLines.RemoveAt(0, ActiveLines.Num() - MaxNumToKeep);
 		}
-
 	}
 
 	return true;
@@ -11592,9 +11649,14 @@ float DrawMapWarnings(UWorld* World, FViewport* Viewport, FCanvas* Canvas, UCanv
 		Canvas->DrawItem(TextItem);
 	}
 
+	bool bIsPathTracing = false;
+	if (Viewport && Viewport->GetClient() && Viewport->GetClient()->GetEngineShowFlags())
+	{
+		bIsPathTracing = Viewport->GetClient()->GetEngineShowFlags()->PathTracing != 0;
+	}
 
 	// Put the messages over fairly far to stay in the safe zone on consoles
-	if (World->NumLightingUnbuiltObjects > 0)
+	if (World->NumLightingUnbuiltObjects > 0 && !bIsPathTracing)
 	{
 		SmallTextItem.SetColor(FLinearColor::White);
 		// Color unbuilt lighting red if encountered within the last second
@@ -11640,7 +11702,7 @@ float DrawMapWarnings(UWorld* World, FViewport* Viewport, FCanvas* Canvas, UCanv
 		}
 	}
 
-	if (World->NumUnbuiltReflectionCaptures > 0)
+	if (World->NumUnbuiltReflectionCaptures > 0 && !bIsPathTracing)
 	{
 		int32 NumLightingScenariosEnabled = 0;
 
@@ -12997,7 +13059,7 @@ static class FCDODump : private FSelfRegisteringExec
 	}
 
 	/** Console commands, see embeded usage statement **/
-	virtual bool Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar ) override
+	virtual bool Exec_Dev( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar ) override
 	{
 		if(FParse::Command(&Cmd,TEXT("CDODump")))
 		{
@@ -13176,6 +13238,15 @@ namespace UE::Private
 				{
 					return Config.NetDriverDefinition.IsNone() ? false : Config.NetDriverDefinition == InNetDriverDefinition;
 				});
+		}
+
+		// Only use Iris if the module is loaded (this happens automatically if the Iris plugin is enabled)
+		if (IrisConfig && IrisConfig->bEnableIris)
+		{
+			if (!ensureMsgf(FModuleManager::Get().IsModuleLoaded("IrisCore"), TEXT("%s is not using Iris because the IrisCore module isn't loaded. Check whether the Iris plugin is enabled."), *InNetDriverName.ToString()))
+			{
+				return false;
+			}
 		}
 
 		return IrisConfig ? IrisConfig->bEnableIris : false;
@@ -16263,6 +16334,7 @@ bool UEngine::CommitMapChange( FWorldContext &Context )
 									bShouldBeLoaded,
 									bShouldBeVisible,
 									StreamingLevel->bShouldBlockOnLoad,
+									StreamingLevel->bShouldBlockOnUnload,
 									StreamingLevel->GetLevelLODIndex());
 							}
 						}
@@ -16574,6 +16646,7 @@ UEngine::FCopyPropertiesForUnrelatedObjectsParams::FCopyPropertiesForUnrelatedOb
 	, bNotifyObjectReplacement(false)
 	, bClearReferences(true)
 	, SourceObjectArchetype(nullptr)
+	, OptionalReplacementMappings(nullptr)
 {}
 UEngine::FCopyPropertiesForUnrelatedObjectsParams::FCopyPropertiesForUnrelatedObjectsParams(const FCopyPropertiesForUnrelatedObjectsParams&) = default;
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
@@ -16706,6 +16779,10 @@ void UEngine::CopyPropertiesForUnrelatedObjects(UObject* OldObject, UObject* New
 		ReferenceReplacementMap.Add(OldObject->GetClass(), NewObject->GetClass());
 	}
 	ReferenceReplacementMap.Add(OldObject->GetClass()->GetDefaultObject(), NewObject->GetClass()->GetDefaultObject());
+	if (Params.OptionalReplacementMappings)
+	{
+		ReferenceReplacementMap.Append(*Params.OptionalReplacementMappings);
+	}
 
 	TArray<UObject*> ComponentsOnNewObject;
 	TMap<UObject*, UObject*> AggressiveReplaceReferences;
@@ -16874,9 +16951,11 @@ void UEngine::CopyPropertiesForUnrelatedObjects(UObject* OldObject, UObject* New
 		DumpObject(*FString::Printf(TEXT("CopyPropertiesForUnrelatedObjects: New (%s)"), *NewObject->GetFullName()), NewObject);
 	}
 
-	// Now notify any tools that aren't already updated via the FArchiveReplaceObjectRef path
-	if (Params.bNotifyObjectReplacement && GEngine != nullptr)
+	// Now notify any tools that aren't already updated via the FArchiveReplaceObjectRef path unless the OldObject is still being async loaded
+	if (Params.bNotifyObjectReplacement && GEngine != nullptr &&
+		!OldObject->HasAnyInternalFlags(EInternalObjectFlags::Async | EInternalObjectFlags::AsyncLoading))
 	{
+		check(IsInGameThread());
 		GEngine->NotifyToolsOfObjectReplacement(ReferenceReplacementMap);
 	}
 }
@@ -17129,6 +17208,7 @@ bool UEngine::ToggleStatDetailed(UWorld* World, FCommonViewportClient* ViewportC
 		DetailedStats.Add(TEXT("UnitGraph"));
 		DetailedStats.Add(TEXT("Raw"));
 		DetailedStats.Add(TEXT("Version"));
+		DetailedStats.Add(TEXT("TSR"));
 	}
 
 	// If any of the detailed stats are inactive, take this as enabling all, unless 'Skip' is specifically specified
@@ -17421,21 +17501,7 @@ int32 UEngine::RenderStatLevels(UWorld* World, FViewport* Viewport, FCanvas* Can
 		FColor	Color = ULevelStreaming::GetLevelStreamingStatusColor(LevelStatus.StreamingStatus);
 		const TCHAR* StatusDisplayName = ULevelStreaming::GetLevelStreamingStatusDisplayName(LevelStatus.StreamingStatus);
 		FString LevelPackageName = LevelStatus.PackageName.ToString();
-		FString DisplayName = LevelPackageName;
-
-		if (World->IsPartitionedWorld())
-		{
-			int32 CutPos = LevelPackageName.Find(*MapShortName);
-			if (CutPos != INDEX_NONE)
-			{
-				CutPos += MapShortName.Len();
-				while (LevelPackageName[CutPos] == TEXT('_'))
-				{
-					CutPos++;
-				}
-				DisplayName = LevelPackageName.Right(LevelPackageName.Len() - CutPos);
-			}
-		}
+		FString DisplayName = UWorld::RemovePIEPrefix(FPackageName::GetShortName(LevelPackageName));
 
 		if (LevelStatus.LODIndex != INDEX_NONE)
 		{
@@ -17598,44 +17664,55 @@ int32 UEngine::RenderStatUnit(UWorld* World, FViewport* Viewport, FCanvas* Canva
 // DRAWCOUNT
 int32 UEngine::RenderStatDrawCount(UWorld* World, FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const FVector* ViewLocation, const FRotator* ViewRotation)
 {
-#if CSV_PROFILER
+#if HAS_GPU_STATS
+
 	int32 TotalCount[MAX_NUM_GPUS] = { 0 };
 	// Display all the categories of draw counts. This may always report 0 in some modes if AreGPUStatsEnabled is not enabled.
 	// Most likely because we are not currently capturing a CSV.
-	for (int32 Index = 0; Index < FDrawCallCategoryName::NumCategory; ++Index)
+	FDrawCallCategoryName::FManager const& Manager = FDrawCallCategoryName::GetManager();
+	for (int32 Index = 0; Index < Manager.NumCategory; ++Index)
 	{
 		for (uint32 GPUIndex : FRHIGPUMask::All())
 		{
-			TotalCount[GPUIndex] += FDrawCallCategoryName::DisplayCounts[Index][GPUIndex];
-		FDrawCallCategoryName* CategoryName = FDrawCallCategoryName::Array[Index];
-			Canvas->DrawShadowedString(X - 100,
-			Y,
+			TotalCount[GPUIndex] += Manager.DisplayCounts[Index][GPUIndex];
+			FDrawCallCategoryName* CategoryName = Manager.Array[Index];
+
+			Canvas->DrawShadowedString(
+				X - 100, Y,
 				*FString::Printf(
 					TEXT("%s%s: %i"),
 					*CategoryName->Name.ToString(),
 					GNumExplicitGPUsForRendering > 1 ? *FString::Printf(TEXT(" (GPU%u)"), GPUIndex) : TEXT(""),
-					FDrawCallCategoryName::DisplayCounts[Index][GPUIndex]),
-			GetSmallFont(),
-			FColor::Green);
-		Y += 12;
+					Manager.DisplayCounts[Index][GPUIndex]
+				),
+				GetSmallFont(),
+				FColor::Green
+			);
+
+			Y += 12;
+		}
 	}
-	}
+
 	for (uint32 GPUIndex : FRHIGPUMask::All())
 	{
-		Canvas->DrawShadowedString(X - 100,
-		Y,
+		Canvas->DrawShadowedString(
+			X - 100, Y,
 			*FString::Printf(
 				TEXT("Total%s: %i"),
 				GNumExplicitGPUsForRendering > 1 ? *FString::Printf(TEXT(" (GPU%u)"), GPUIndex) : TEXT(""),
-				TotalCount[GPUIndex]),
-		GetSmallFont(),
-		FColor::Green);
-	Y += 12;
+				TotalCount[GPUIndex]
+			),
+			GetSmallFont(),
+			FColor::Green
+		);
+
+		Y += 12;
 	}
+
 #else
 	Canvas->DrawShadowedString(X - 200,
 		Y,
-		*FString::Printf(TEXT("DrawCount only supported with CSV_PROFILER")),
+		*FString::Printf(TEXT("DrawCount only supported with HAS_GPU_STATS")),
 		GetSmallFont(),
 		FColor::Red);
 #endif
@@ -17736,6 +17813,36 @@ bool UEngine::ToggleStatRaw(UWorld* World, FCommonViewportClient* ViewportClient
 	}
 	return true;
 }
+
+// TSR statistics
+bool UEngine::ToggleStatTSR(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream)
+{
+	if (ViewportClient == nullptr)
+	{
+		// Ignore if all Viewports are closed.
+		return false;
+	}
+	const bool bShowTSR = ViewportClient->IsStatEnabled(TEXT("TSR"));
+	if (bShowTSR)
+	{
+		// Force Unit to Active
+		SetEngineStat(World, ViewportClient, TEXT("Unit"), true);
+
+		// Force TSR to true as Unit will have Toggled it back to false
+		SetEngineStat(World, ViewportClient, TEXT("TSR"), true);
+	}
+	else
+	{
+		const bool bShowDetailed = ViewportClient->IsStatEnabled(TEXT("Detailed"));
+		if (bShowDetailed)
+		{
+			// Since we're turning this off, we also need to toggle off detailed too
+			ExecEngineStat(World, ViewportClient, TEXT("Detailed -Skip"));
+		}
+	}
+	return true;
+}
+
 #endif
 
 #if !UE_BUILD_SHIPPING

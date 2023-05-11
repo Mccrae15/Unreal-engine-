@@ -2,15 +2,14 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Toolkits/IToolkitHost.h"
 #include "AssetTypeActions_Base.h"
 
 struct FAssetData;
 
+#if UE_MVVM_WITH_VIEWMODEL_EDITOR
 namespace UE::MVVM
 {
-	
+
 class FAssetTypeActions_ViewModelBlueprint : public FAssetTypeActions_Base
 {
 public:
@@ -27,3 +26,4 @@ public:
 };
 
 } //namespace
+#endif

@@ -139,6 +139,7 @@ namespace Chaos
 		bool bCollisionEnabled;
 		bool bProjectionEnabled;		// @chaos(todo): remove - implied by alpha and teleport settings
 		bool bShockPropagationEnabled;	// @chaos(todo): remove - implied by alpha
+		bool bMassConditioningEnabled;
 
 		TVector<EJointMotionType, 3> LinearMotionTypes;
 		FReal LinearLimit;
@@ -173,6 +174,7 @@ namespace Chaos
 		EJointForceMode LinearDriveForceMode;
 		FVec3 LinearDriveStiffness;
 		FVec3 LinearDriveDamping;
+		FVec3 LinearDriveMaxForce;
 
 		FRotation3 AngularDrivePositionTarget;
 		FVec3 AngularDriveVelocityTarget;
@@ -186,6 +188,7 @@ namespace Chaos
 		EJointForceMode AngularDriveForceMode;
 		FVec3 AngularDriveStiffness;
 		FVec3 AngularDriveDamping;
+		FVec3 AngularDriveMaxTorque;
 
 		FReal LinearBreakForce;
 		FReal LinearPlasticityLimit;
@@ -221,6 +224,9 @@ namespace Chaos
 
 		// Whether to use the linear or non-linear joint solver
 		bool bUseLinearSolver;
+
+		// Whether the joints need to be sorted (only required for RBAN - the world solver uses the constraint graph for ordering)
+		bool bSortEnabled;
 
 		// Whether to solve rotation then position limits (true), or vice versa
 		// Solving position last leads to less separation at the joints when limits are being forced

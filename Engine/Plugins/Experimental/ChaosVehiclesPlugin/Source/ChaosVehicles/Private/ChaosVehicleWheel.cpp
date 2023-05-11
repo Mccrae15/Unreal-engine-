@@ -24,12 +24,13 @@ UChaosVehicleWheel::UChaosVehicleWheel(const FObjectInitializer& ObjectInitializ
 	WheelRadius = 32.0f;
 	WheelWidth = 20.0f;
 	//bAutoAdjustCollisionSize = true;
-	//WheelMass = 20.0f;
+	WheelMass = 20.0f;
 	FrictionForceMultiplier = 2.0f;
 	CorneringStiffness = 1000.0f;
 	SideSlipModifier = 1.0f;
 	SlipThreshold = 20.0f;
 	SkidThreshold = 20.0f;
+	MaxWheelspinRotation = 30;
 
 	bAffectedByBrake = true;
 	bAffectedByHandbrake = false;

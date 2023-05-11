@@ -46,6 +46,7 @@ namespace Chaos
 		, AvailableGrip(0.f)
 		, InputForces(FVector::ZeroVector)
 		, bClipping(false)
+		, bABSActivated(false)
 	{
 
 	}
@@ -83,12 +84,15 @@ namespace Chaos
 		AvailableGrip = ForceIntoSurface * SurfaceFriction * FrictionMultiplier;
 
 		float FinalLongitudinalForce = 0.f;
+		float ExcessTorque = 0.0f;
 		float FinalLateralForce = 0.f;
+		float ABSGripThresholdSpeed = 5.0f;
 
 		// currently just letting the brake override the throttle
 		bool Braking = BrakeTorque > FMath::Abs(DriveTorque);
 		bool WheelLocked = false;
 		float SlipOmega = 0.0f;
+		bABSActivated = 0.0f;
 
 		// are we actually touching the ground
 		if (ForceIntoSurface > SMALL_NUMBER)
@@ -100,14 +104,24 @@ namespace Chaos
 				{
 					float Sign = (AppliedLinearBrakeForce > 0.0f) ? 1.0f : -1.0f;
 					AppliedLinearBrakeForce = AvailableGrip * TractionControlAndABSScaling * Sign;
+					if (FMath::Abs(GroundVelocityVector.X) > ABSGripThresholdSpeed)
+					{
+						bABSActivated = true;
+					}
 				}
 			}
 
-			// Traction control limiting drive force to match force from grip available
-			if (TractionControlEnabled && !Braking && FMath::Abs(AppliedLinearDriveForce) > AvailableGrip)
+			if (FMath::Abs(AppliedLinearDriveForce) > AvailableGrip)
 			{
-				float Sign = (AppliedLinearDriveForce > 0.0f) ? 1.0f : -1.0f;
-				AppliedLinearDriveForce = AvailableGrip * TractionControlAndABSScaling * Sign;
+				float SignTorque = AppliedLinearDriveForce < 0.0f ? -1.0f : 1.0f;
+				ExcessTorque = (FMath::Abs(AppliedLinearDriveForce) - AvailableGrip) * Re * SignTorque;
+
+				// Traction control limiting drive force to match force from grip available
+				if (TractionControlEnabled && !Braking)
+				{
+					float Sign = (AppliedLinearDriveForce > 0.0f) ? 1.0f : -1.0f;
+					AppliedLinearDriveForce = AvailableGrip * TractionControlAndABSScaling * Sign;
+				}
 			}
 
 			if (Braking)
@@ -173,11 +187,6 @@ namespace Chaos
 					{
 						WheelLocked = true;
 					}
-					else if (FMath::Abs(FinalLongitudinalForce) > AvailableGrip)
-					{
-						SlipOmega = (FinalLongitudinalForce < 0.0f) ? -Setup().MaxSpinRotation : Setup().MaxSpinRotation;
-
-					}
 
 					bClipping = true;
 					FinalLongitudinalForce *= Clip;
@@ -190,10 +199,15 @@ namespace Chaos
 		}
 		else
 		{
-			SlipOmega = DriveTorque / Inertia * DeltaTime;
-			SlipOmega = FMath::Clamp(SlipOmega, -Setup().MaxSpinRotation, Setup().MaxSpinRotation);
+			// only apply more spin torque if we haven't reached our max spin rotation
+			if (FMath::Abs(Omega) < Setup().MaxSpinRotation)
+			{
+				ExcessTorque = DriveTorque;
+			}
 		}
 
+		SlipOmega = ExcessTorque / Inertia * DeltaTime;
+		SlipOmega = FMath::Clamp(SlipOmega, -Setup().MaxSpinRotation, Setup().MaxSpinRotation);
 
 		if (WheelLocked)
 		{
@@ -201,8 +215,15 @@ namespace Chaos
 		}
 		else
 		{ 
-			float GroundOmega = GroundVelocityVector.X / FMath::Max(Re, KINDA_SMALL_NUMBER);
-			Omega += ((GroundOmega - Omega + SlipOmega));
+			if (bInContact)
+			{
+				float GroundOmega = GroundVelocityVector.X / FMath::Max(Re, KINDA_SMALL_NUMBER);
+				Omega += ((GroundOmega - Omega + SlipOmega));
+			}
+			else
+			{
+				Omega += SlipOmega;
+			}
 		}
 
 		// Wheel angular position integrated

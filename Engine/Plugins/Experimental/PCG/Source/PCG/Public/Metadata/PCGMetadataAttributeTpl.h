@@ -2,11 +2,14 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Metadata/PCGMetadataAttribute.h"
-#include "Metadata/PCGMetadataAttributeTraits.h"
+
+#include "Metadata/PCGMetadataCommon.h"
+#include "PCGModule.h"
 
 #include "Helpers/PCGMetadataHelpers.h"
+#include "Metadata/PCGMetadataAttribute.h"
+#include "Metadata/PCGMetadataAttributeTraits.h"
+#include "Misc/ScopeRWLock.h"
 
 class UPCGMetadata;
 
@@ -19,6 +22,9 @@ public:
 		, DefaultValue(InDefaultValue)
 	{
 		TypeId = PCG::Private::MetadataTypes<T>::Id;
+
+		// Make sure we don't parent with the wrong type id
+		check(!Parent || Parent->GetTypeId() == TypeId)
 
 		if (GetParent())
 		{
@@ -46,27 +52,121 @@ public:
 		}
 	}
 
+	virtual void Flatten() override
+	{
+		// Implementation notes:
+		// We don't need to flatten the EntryToValueKeyMap - this will have been taken care of in the metadata flatten
+
+		// Flatten values, from root to current attribute
+		if(Parent)
+		{
+			FWriteScopeLock ScopeLock(ValueLock);
+
+			TArray<const TArray<T>*> OriginalValues;
+			int32 ValueCount = 0;
+
+			const FPCGMetadataAttribute<T>* Current = static_cast<const FPCGMetadataAttribute<T>*>(this);
+			while (Current)
+			{
+				ValueCount += Current->Values.Num();
+				OriginalValues.Add(&Current->Values);
+				Current = static_cast<const FPCGMetadataAttribute<T>*>(Current->Parent);
+			}
+
+			TArray<T> FlattenedValues;
+			FlattenedValues.Reserve(ValueCount);
+
+			for (int32 ValuesIndex = OriginalValues.Num() - 1; ValuesIndex >= 0; --ValuesIndex)
+			{
+				FlattenedValues.Append(*OriginalValues[ValuesIndex]);
+			}
+
+			Values = MoveTemp(FlattenedValues);
+		}
+		
+		// Reset value offset, and lose parent
+		ValueKeyOffset = 0;
+		Parent = nullptr;
+	}
+
 	const FPCGMetadataAttribute* GetParent() const { return static_cast<const FPCGMetadataAttribute*>(Parent); }
+
+	FPCGMetadataAttribute* TypedCopy(FName NewName, UPCGMetadata* InMetadata, bool bKeepParent, bool bCopyEntries = true, bool bCopyValues = true)
+	{
+		return static_cast<FPCGMetadataAttribute*>(Copy(NewName, InMetadata, bKeepParent, bCopyEntries, bCopyValues));
+	}
 
 	virtual FPCGMetadataAttributeBase* Copy(FName NewName, UPCGMetadata* InMetadata, bool bKeepParent, bool bCopyEntries = true, bool bCopyValues = true) const override
 	{
-		// this copies to a new attribute
+		// If we copy an attribute where we don't want to keep the parent, while copying entries and/or values, we'll lose data.
+		// In that case, we will copy all the data from this attribute and all its ancestors.
+
+		// We can't keep the parent if we don't have the same root.
 		check(!bKeepParent || PCGMetadataHelpers::HasSameRoot(Metadata, InMetadata));
+
+		// Validate that the new name is valid
+		if (!IsValidName(NewName))
+		{
+			UE_LOG(LogPCG, Error, TEXT("Try to create a new attribute with an invalid name: %s"), *NewName.ToString());
+			return nullptr;
+		}
+		
+		// This copies to a new attribute.
 		FPCGMetadataAttribute<T>* AttributeCopy = new FPCGMetadataAttribute<T>(InMetadata, NewName, bKeepParent ? this : nullptr, DefaultValue, bAllowsInterpolation);
+
+		// Gather the chain of parents if we don't keep the parent and we want to copy entries/values.
+		// We always have at least one item, "this".
+		TArray<const FPCGMetadataAttribute<T>*, TInlineAllocator<2>> Parents = { this };
+		if (!bKeepParent && (bCopyEntries || bCopyValues))
+		{
+			const UPCGMetadata* CurrentMetadata = Metadata.Get();
+			const FPCGMetadataAttribute<T>* Current = this;
+
+			const UPCGMetadata* ParentMetadata = PCGMetadataHelpers::GetParentMetadata(CurrentMetadata);
+			while(ParentMetadata && Current->Parent)
+			{
+				CurrentMetadata = ParentMetadata;
+				Current = static_cast<const FPCGMetadataAttribute<T>*>(Current->Parent);
+				Parents.Add(Current);
+
+				ParentMetadata = PCGMetadataHelpers::GetParentMetadata(CurrentMetadata);
+			}
+		}
 
 		if (bCopyEntries)
 		{
-			EntryMapLock.ReadLock();
-			AttributeCopy->EntryToValueKeyMap = EntryToValueKeyMap;
-			EntryMapLock.ReadUnlock();
+			// We go backwards, since we need to preserve order (root -> this)
+			// Latest entry in our Parents array is the root.
+			for (int32 i = Parents.Num() - 1; i >= 0; --i)
+			{
+				const FPCGMetadataAttribute<T>* Current = Parents[i];
+				
+				Current->EntryMapLock.ReadLock();
+				AttributeCopy->EntryToValueKeyMap.Append(Current->EntryToValueKeyMap);
+				Current->EntryMapLock.ReadUnlock();
+			}
 		}
 
 		if (bCopyValues)
 		{
-			ValueLock.ReadLock();
-			AttributeCopy->Values = Values;
-			AttributeCopy->ValueKeyOffset = ValueKeyOffset;
-			ValueLock.ReadUnlock();
+			// We go backwards, since we need to preserve order (root -> this)
+			// Latest entry in our Parents array is the root.
+			for (int32 i = Parents.Num() - 1; i >= 0; --i)
+			{
+				const FPCGMetadataAttribute<T>* Current = Parents[i];
+				
+				Current->ValueLock.ReadLock();
+				AttributeCopy->Values.Append(Current->Values);
+				// The expected value key offset is the one for this attribute (i == 0), and only if we
+				// keep the parent. Otherwise we don't have any parent, so offset should be kept at 0.
+				if (i == 0 && bKeepParent)
+				{
+					AttributeCopy->ValueKeyOffset = Current->ValueKeyOffset;
+				}
+				Current->ValueLock.ReadUnlock();
+			}
+			
+			
 		}
 
 		return AttributeCopy;
@@ -108,8 +208,37 @@ public:
 		check(ItemKey != PCGInvalidEntryKey);
 		bool bAppliedValue = false;
 
-		if (InAttributeA && InAttributeB && bAllowsInterpolation)
+		if (Op == EPCGMetadataOp::TargetValue && InAttributeB)
 		{
+			// Take value of second attribute.
+			if (InAttributeB == this)
+			{
+				SetValueFromValueKey(ItemKey, GetValueKey(InEntryKeyB));
+			}
+			else
+			{
+				SetValue(ItemKey, static_cast<const FPCGMetadataAttribute<T>*>(InAttributeB)->GetValueFromItemKey(InEntryKeyB));
+			}
+
+			bAppliedValue = true;
+		}
+		else if (Op == EPCGMetadataOp::SourceValue && InAttributeA)
+		{
+			// Take value of first attribute.
+			if (InAttributeA == this)
+			{
+				SetValueFromValueKey(ItemKey, GetValueKey(InEntryKeyA));
+			}
+			else
+			{
+				SetValue(ItemKey, static_cast<const FPCGMetadataAttribute<T>*>(InAttributeA)->GetValueFromItemKey(InEntryKeyA));
+			}
+
+			bAppliedValue = true;
+		}
+		else if (InAttributeA && InAttributeB && bAllowsInterpolation)
+		{
+			// Combine attributes using specified operation.
 			if (Op == EPCGMetadataOp::Min)
 			{
 				bAppliedValue = SetMin(ItemKey, InAttributeA, InEntryKeyA, InAttributeB, InEntryKeyB);
@@ -169,7 +298,35 @@ public:
 		}
 	}
 
-	virtual bool IsEqualToDefaultValue(PCGMetadataValueKey ValueKey) const
+	virtual bool AreValuesEqualForEntryKeys(PCGMetadataEntryKey EntryKey1, PCGMetadataEntryKey EntryKey2) const override
+	{
+		return AreValuesEqual(GetValueKey(EntryKey1), GetValueKey(EntryKey2));
+	}
+
+	virtual bool AreValuesEqual(PCGMetadataValueKey ValueKey1, PCGMetadataValueKey ValueKey2) const override
+	{
+		if constexpr (PCG::Private::MetadataTraits<T>::CompressData)
+		{
+			if (ValueKey1 == PCGInvalidEntryKey)
+			{
+				return PCG::Private::MetadataTraits<T>::Equal(DefaultValue, GetValue(ValueKey2));
+			}
+			else if (ValueKey2 == PCGInvalidEntryKey)
+			{
+				return PCG::Private::MetadataTraits<T>::Equal(GetValue(ValueKey1), DefaultValue);
+			}
+			else
+			{
+				return ValueKey1 == ValueKey2;
+			}
+		}
+		else
+		{
+			return ValueKey1 == ValueKey2 || PCG::Private::MetadataTraits<T>::Equal(GetValue(ValueKey1), GetValue(ValueKey2));
+		}
+	}
+
+	virtual bool IsEqualToDefaultValue(PCGMetadataValueKey ValueKey) const override
 	{
 		return PCG::Private::MetadataTraits<T>::Equal(GetValue(ValueKey), DefaultValue);
 	}
@@ -222,8 +379,9 @@ public:
 		}
 		else if (ValueKey >= ValueKeyOffset)
 		{
+			int32 Index = ValueKey - ValueKeyOffset;
 			FReadScopeLock ScopeLock(ValueLock);
-			return Values[ValueKey - ValueKeyOffset];
+			return Index < Values.Num() ? Values[Index] : DefaultValue;
 		}
 		else if (GetParent())
 		{
@@ -236,6 +394,11 @@ public:
 	}
 
 	/** Code related to finding values / compressing data */
+	virtual bool UsesValueKeys() const override
+	{
+		return PCG::Private::MetadataTraits<T>::CompressData;
+	}
+
 	template<typename IT = T, typename TEnableIf<PCG::Private::MetadataTraits<IT>::CompressData>::Type* = nullptr>
 	PCGMetadataValueKey FindValue(const T& InValue) const
 	{
@@ -437,23 +600,13 @@ namespace PCGMetadataAttribute
 {
 	inline FPCGMetadataAttributeBase* AllocateEmptyAttributeFromType(int16 TypeId)
 	{
-#define AllocatePCGMetadataAttributeOnType(Type) case PCG::Private::MetadataTypes<Type>::Id : { return new FPCGMetadataAttribute<Type>(); } break;
 
 		switch (TypeId)
 		{
-			AllocatePCGMetadataAttributeOnType(float);
-			AllocatePCGMetadataAttributeOnType(double);
-			AllocatePCGMetadataAttributeOnType(int32);
-			AllocatePCGMetadataAttributeOnType(int64);
-			AllocatePCGMetadataAttributeOnType(FVector);
-			AllocatePCGMetadataAttributeOnType(FVector2D);
-			AllocatePCGMetadataAttributeOnType(FVector4);
-			AllocatePCGMetadataAttributeOnType(FQuat);
-			AllocatePCGMetadataAttributeOnType(FTransform);
-			AllocatePCGMetadataAttributeOnType(FString);
-			AllocatePCGMetadataAttributeOnType(bool);
-			AllocatePCGMetadataAttributeOnType(FRotator);
-			AllocatePCGMetadataAttributeOnType(FName);
+
+#define PCG_ALLOCATEEMPTY_DECL(T) case PCG::Private::MetadataTypes<T>::Id: return new FPCGMetadataAttribute<T>();
+		PCG_FOREACH_SUPPORTEDTYPES(PCG_ALLOCATEEMPTY_DECL)
+#undef PCG_ALLOCATEEMPTY_DECL
 
 		default:
 			return nullptr;
@@ -462,39 +615,18 @@ namespace PCGMetadataAttribute
 #undef AllocatePCGMetadataAttributeOnType
 	}
 
-	template <typename Func>
-	inline decltype(auto) CallbackWithRightType(uint16 TypeId, Func Callback)
+	template <typename Func, typename... Args>
+	inline decltype(auto) CallbackWithRightType(uint16 TypeId, Func Callback, Args&& ...InArgs)
 	{
-		using ReturnType = decltype(Callback(double{}));
+		using ReturnType = decltype(Callback(double{}, std::forward<Args>(InArgs)...));
 
 		switch (TypeId)
 		{
-		case (uint16)EPCGMetadataTypes::Integer32:
-			return Callback(int32{});
-		case (uint16)EPCGMetadataTypes::Integer64:
-			return Callback(int64{});
-		case (uint16)EPCGMetadataTypes::Float:
-			return Callback(float{});
-		case (uint16)EPCGMetadataTypes::Double:
-			return Callback(double{});
-		case (uint16)EPCGMetadataTypes::Vector2:
-			return Callback(FVector2D{});
-		case (uint16)EPCGMetadataTypes::Vector:
-			return Callback(FVector{});
-		case (uint16)EPCGMetadataTypes::Vector4:
-			return Callback(FVector4{});
-		case (uint16)EPCGMetadataTypes::Quaternion:
-			return Callback(FQuat{});
-		case (uint16)EPCGMetadataTypes::Transform:
-			return Callback(FTransform{});
-		case (uint16)EPCGMetadataTypes::String:
-			return Callback(FString{});
-		case (uint16)EPCGMetadataTypes::Boolean:
-			return Callback(bool{});
-		case (uint16)EPCGMetadataTypes::Rotator:
-			return Callback(FRotator{});
-		case (uint16)EPCGMetadataTypes::Name:
-			return Callback(FName{});
+
+#define PCG_CALLBACKWITHRIGHTTYPE_DECL(T) case (uint16)(PCG::Private::MetadataTypes<T>::Id): return Callback(T{}, std::forward<Args>(InArgs)...);
+		PCG_FOREACH_SUPPORTEDTYPES(PCG_CALLBACKWITHRIGHTTYPE_DECL)
+#undef PCG_CALLBACKWITHRIGHTTYPE_DECL
+
 		default:
 		{
 			// ReturnType{} is invalid if ReturnType is void
@@ -509,70 +641,8 @@ namespace PCGMetadataAttribute
 		}
 		}
 	}
-
-	template <typename OutType>
-	inline OutType GetValueWithBroadcast(const FPCGMetadataAttributeBase* InAttribute, PCGMetadataEntryKey InKey)
-	{
-		auto Func = [InAttribute, InKey](auto DummyInType) -> OutType
-		{
-			using InType = decltype(DummyInType);
-			InType Value = static_cast<const FPCGMetadataAttribute<InType>*>(InAttribute)->GetValueFromItemKey(InKey);
-
-			if constexpr (std::is_same_v<OutType, InType>)
-			{
-				return Value;
-			}
-			else
-			{
-				if constexpr (!PCG::Private::IsBroadcastable(PCG::Private::MetadataTypes<InType>::Id, PCG::Private::MetadataTypes<OutType>::Id))
-				{
-					return OutType{};
-				}
-				else
-				{
-					if constexpr (std::is_same_v<OutType, FVector4>)
-					{
-						if constexpr (std::is_same_v<InType, FVector> || std::is_same_v<InType, FVector2D>)
-						{
-							// TODO: Should it be 0? 1? Something else? Depending on operation?
-							// For now it is too ambiguous, so don't support it
-							return FVector4();
-						}
-						else
-						{
-							return FVector4(Value, Value, Value, Value);
-						}
-					}
-					else
-					{
-						// Seems like the && condition is not evaluated correctly on Linux, so we cut the condition in two `if constexpr`.
-						if constexpr (std::is_same_v<OutType, FVector>)
-						{
-							if constexpr (std::is_same_v<InType, FVector2D>)
-							{
-								return FVector(Value, 0.0);
-							}
-							else
-							{
-								return OutType(Value);
-							}
-						}
-						else
-						{
-							return OutType(Value);
-						}
-					}
-				}
-			}
-		};
-
-		if (PCG::Private::MetadataTypes<OutType>::Id == InAttribute->GetTypeId())
-		{
-			return Func(OutType{});
-		}
-		else
-		{
-			return CallbackWithRightType(InAttribute->GetTypeId(), Func);
-		}
-	}
 }
+
+#if UE_ENABLE_INCLUDE_ORDER_DEPRECATED_IN_5_2
+#include "CoreMinimal.h"
+#endif
