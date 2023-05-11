@@ -714,7 +714,9 @@ void FBatchedElements::PrepareShaders(
 		}
 
 		// Set the simple element vertex shader parameters
-		VertexShader->SetParameters(RHICmdList, ViewMatrices);
+		const FRelativeViewMatrices InstancedViewMatrices = View->GetInstancedSceneView() ? FRelativeViewMatrices::Create(View->GetInstancedSceneView()->ViewMatrices) : ViewMatrices;
+		const FRelativeViewMatrices FinalMatrices[2] = { ViewMatrices, InstancedViewMatrices };
+		VertexShader->SetParameters(RHICmdList, FinalMatrices);
 	}
 }
 

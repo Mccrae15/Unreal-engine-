@@ -30,7 +30,7 @@
 // Note: OVRP_MINOR_VERSION == OCULUS_SDK_VERSION + 32
 
 #define OVRP_MAJOR_VERSION 1
-#define OVRP_MINOR_VERSION 83
+#define OVRP_MINOR_VERSION 85
 #define OVRP_PATCH_VERSION 0
 
 #define OVRP_VERSION OVRP_MAJOR_VERSION, OVRP_MINOR_VERSION, OVRP_PATCH_VERSION
@@ -283,6 +283,8 @@ typedef enum {
 
 
 
+  ovrpNode_TrackedRemoteLeft = 12,
+  ovrpNode_TrackedRemoteRight = 13,
   ovrpNode_Count,
   ovrpNode_EnumSize = 0x7fffffff
 } ovrpNode;
@@ -348,7 +350,11 @@ typedef enum {
   ovrpSystemHeadset_Oculus_Quest, // Oculus Quest
   ovrpSystemHeadset_Oculus_Quest_2, // Oculus Quest 2
   ovrpSystemHeadset_Meta_Quest_Pro, // Meta Quest Pro
+
+
+
   ovrpSystemHeadset_Placeholder_11,
+
   ovrpSystemHeadset_Placeholder_12,
   ovrpSystemHeadset_Placeholder_13,
   ovrpSystemHeadset_Placeholder_14,
@@ -362,7 +368,11 @@ typedef enum {
   ovrpSystemHeadset_Oculus_Link_Quest, // Quest connected through Oculus Link
   ovrpSystemHeadset_Oculus_Link_Quest_2,
   ovrpSystemHeadset_Meta_Link_Quest_Pro,
+
+
+
   ovrpSystemHeadset_PC_Placeholder_4104,
+
   ovrpSystemHeadset_PC_Placeholder_4105,
   ovrpSystemHeadset_PC_Placeholder_4106,
   ovrpSystemHeadset_PC_Placeholder_4107,
@@ -538,15 +548,6 @@ typedef enum {
   ovrpMediaInputVideoBufferType_TextureHandle = 1,
   ovrpMediaInputVideoBufferType_EnumSize = 0x7fffffff
 } ovrpMediaInputVideoBufferType;
-
-/// CPU/GPU Performance Levels
-typedef enum {
-  ovrpProcessorPerformanceLevel_PowerSavings = 0,
-  ovrpProcessorPerformanceLevel_SustainedLow = 1,
-  ovrpProcessorPerformanceLevel_SustainedHigh = 2,
-  ovrpProcessorPerformanceLevel_Boost = 3,
-  ovrpProcessorPerformanceLevel_EnumSize = 0x7fffffff
-} ovrpProcessorPerformanceLevel;
 
 
 
@@ -1466,7 +1467,7 @@ typedef enum ovrpBoneId_ {
   ovrpBoneId_Hand_PinkyTip           = ovrpBoneId_Hand_MaxSkinnable + 4, // tip of the pinky
   ovrpBoneId_Hand_End                = ovrpBoneId_Hand_MaxSkinnable + 5,
 
-  // body bones
+  // body bones (upper body)
   ovrpBoneId_Body_Start                       = 0,
   ovrpBoneId_Body_Root                        = ovrpBoneId_Body_Start + 0,
   ovrpBoneId_Body_Hips                        = ovrpBoneId_Body_Start + 1,
@@ -1540,9 +1541,105 @@ typedef enum ovrpBoneId_ {
   ovrpBoneId_Body_RightHandLittleTip          = ovrpBoneId_Body_Start + 69,
   ovrpBoneId_Body_End                         = ovrpBoneId_Body_Start + 70,
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   // add other skeleton bone definitions here...
 
+
+
+
   ovrpBoneId_Max                     = (ovrpBoneId_Hand_End > ovrpBoneId_Body_End) ? ovrpBoneId_Hand_End : ovrpBoneId_Body_End,
+
   ovrpBoneId_EnumSize = 0x7fff
 } ovrpBoneId;
 // clang-format on
@@ -1583,6 +1680,10 @@ typedef struct ovrpBone_ {
 typedef enum ovrpSkeletonConstants_ {
   ovrpSkeletonConstants_MaxHandBones = ovrpBoneId_Hand_End,
   ovrpSkeletonConstants_MaxBodyBones = ovrpBoneId_Body_End,
+
+
+
+
   ovrpSkeletonConstants_MaxBones = ovrpBoneId_Max,
   ovrpSkeletonConstants_MaxBoneCapsules = 19,
   ovrpSkeletonConstants_EnumSize = 0x7fffffff
@@ -1594,15 +1695,31 @@ typedef enum ovrpSkeletonType_ {
   ovrpSkeletonType_HandLeft = 0,
   ovrpSkeletonType_HandRight = 1,
   ovrpSkeletonType_Body = 2,
+
+
+
   ovrpSkeletonType_Count,
   ovrpSkeletonType_EnumSize = 0x7fffffff
 } ovrpSkeletonType;
+
+
+
+
+
+
+
+
+
 
 typedef struct ovrpSkeleton2_ {
   ovrpSkeletonType SkeletonType;
   unsigned int NumBones;
   unsigned int NumBoneCapsules;
+
+
+
   ovrpBone Bones[ovrpSkeletonConstants_MaxBones];
+
   ovrpBoneCapsule BoneCapsules[ovrpSkeletonConstants_MaxBoneCapsules];
 } ovrpSkeleton2;
 
@@ -1708,6 +1825,22 @@ typedef struct ovrpBodyState_ {
   double Time;
   ovrpBodyJointLocation JointLocations[ovrpBoneId_Body_End];
 } ovrpBodyState;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 typedef enum ovrpFaceExpression_ {
   ovrpFaceExpression_Invalid = -1,
@@ -1994,7 +2127,6 @@ typedef enum ovrpEventType_ {
   ovrpEventType_VirtualKeyboardEnter = 203,
   ovrpEventType_VirtualKeyboardShown = 204,
   ovrpEventType_VirtualKeyboardHidden = 205,
-  ovrpEventType_VirtualKeyboardPlaySound = 206,
 
 
 
@@ -2005,7 +2137,7 @@ typedef enum ovrpEventType_ {
 
 
 
-
+  ovrpEventType_PerfSettings = 304,
 
 
 
@@ -2036,6 +2168,44 @@ typedef struct ovrpEventDisplayRefreshRateChange_ {
   float FromRefreshRate;
   float ToRefreshRate;
 } ovrpEventDisplayRefreshRateChange;
+
+//-----------------------------------------------------------------
+// CPU/GPU Performance Levels and associated events
+typedef enum {
+  ovrpProcessorPerformanceLevel_PowerSavings = 0,
+  ovrpProcessorPerformanceLevel_SustainedLow = 1,
+  ovrpProcessorPerformanceLevel_SustainedHigh = 2,
+  ovrpProcessorPerformanceLevel_Boost = 3,
+  ovrpProcessorPerformanceLevel_EnumSize = 0x7fffffff
+} ovrpProcessorPerformanceLevel;
+
+typedef enum ovrpProcessorDomain {
+  ovrpProcessorDomain_CPU = 0,
+  ovrpProcessorDomain_GPU = 1,
+  ovrpProcessorDomain_EnumSize = 0x7fffffff
+} ovrpProcessorDomain;
+
+typedef enum ovrpProcessorSubDomain {
+  ovrpProcessorSubDomain_Compositing = 0,
+  ovrpProcessorSubDomain_Rendering = 1,
+  ovrpProcessorSubDomain_Thermal = 2,
+  ovrpProcessorSubDomain_EnumSize = 0x7fffffff
+} ovrpProcessorSubDomain;
+
+typedef enum ovrpProcessorNotificationLevel {
+  ovrpProcessorNotificationLevel_Normal = 0,
+  ovrpProcessorNotificationLevel_Warning = 1,
+  ovrpProcessorNotificationLevel_Impaired = 2,
+  ovrpProcessorNotificationLevel_EnumSize = 0x7fffffff
+} ovrpProcessorNotificationLevel;
+
+typedef struct ovrpEventDataPerfSettings_ {
+  ovrpEventType EventType;
+  ovrpProcessorDomain Domain;
+  ovrpProcessorSubDomain SubDomain;
+  ovrpProcessorNotificationLevel FromLevel;
+  ovrpProcessorNotificationLevel ToLevel;
+} ovrpEventDataPerfSettings;
 
 //-----------------------------------------------------------------
 // Keyboard Tracking
@@ -2192,16 +2362,6 @@ typedef struct ovrpVirtualKeyboardInputInfo_ {
 // Should remain synced with XR_MAX_VIRTUAL_KEYBOARD_COMMIT_TEXT_SIZE_META in meta_virtual_keyboard.h
 #define OVRP_MAX_VIRTUAL_KEYBOARD_COMMIT_TEXT_SIZE 3992
 
-
-typedef struct ovrpVirtualKeyboardSound_ {
-  unsigned int soundId;
-  unsigned int channels;
-  unsigned int frequency;
-  unsigned int soundCapacityInput;
-  unsigned int soundCountOutput;
-  float* soundBuffer;
-} ovrpVirtualKeyboardSound;
-
 typedef struct ovrpVirtualKeyboardAnimationState_ {
   int animationIndex;
   float fraction;
@@ -2221,11 +2381,11 @@ typedef struct ovrpVirtualKeyboardTextureIds_ {
 } ovrpVirtualKeyboardTextureIds;
 
 typedef struct ovrpVirtualKeyboardTextureData_ {
-  unsigned int textureCapacityInput;
-  unsigned int textureCountOutput;
+  unsigned int textureByteCapacityInput;
+  unsigned int textureByteCountOutput;
   unsigned int textureWidth;
   unsigned int textureHeight;
-  unsigned char* textureBuffer;
+  unsigned char* textureBytes;
 } ovrpVirtualKeyboardTextureData;
 
 typedef struct ovrpVirtualKeyboardModelVisibility_ {
@@ -2255,22 +2415,6 @@ typedef struct ovrpEventVirtualKeyboardHidden_ {
   ovrpEventType EventType;
 } ovrpEventVirtualKeyboardHidden;
 
-typedef struct ovrpEventVirtualKeyboardPlaySound_ {
-  ovrpEventType EventType;
-  unsigned int SoundId;
-} ovrpEventVirtualKeyboardPlaySound;
-
-/// UI
-
-typedef struct ovrpVirtualKeyboardSwipeTrailState_ {
-  float lifetimeSeconds;
-  ovrpColorf color;
-  float startWidth;
-  unsigned int shapeCapacityInput;
-  unsigned int shapeCountOutput;
-  ovrpVector3f* shape;
-} ovrpVirtualKeyboardSwipeTrailState;
-
 //-----------------------------------------------------------------
 // Insight Passthrough
 //-----------------------------------------------------------------
@@ -2283,6 +2427,8 @@ typedef enum {
 
 
 
+  ovrpInsightPassthroughColorMapType_ColorLut = 6,
+  ovrpInsightPassthroughColorMapType_InterpolatedColorLut = 7,
   ovrpInsightPassthroughColorMapType_EnumSize = 0x7fffffff
 } ovrpInsightPassthroughColorMapType;
 
@@ -2292,6 +2438,8 @@ typedef enum {
   ovrpInsightPassthroughStyleFlags_HasTextureColorMap = 1 << 2,
   ovrpInsightPassthroughStyleFlags_EnumSize = 0x7fffffff
 } ovrpInsightPassthroughStyleFlags;
+
+typedef ovrpUInt64 ovrpPassthroughColorLut;
 
 typedef struct {
   /// The flags determine which fields of the struct have been initialize and
@@ -2322,14 +2470,42 @@ typedef struct {
   ovrpInsightPassthroughColorMapType TextureColorMapType;
   unsigned int TextureColorMapDataSize;
   unsigned char* TextureColorMapData;
+
+  // Added in v1.84:
+
+  /// Color LUTs are specified as part of the color mapping system. Clients must
+  /// set `TextureColorMapType` to `ovrpInsightPassthroughColorMapType_ColorLut`
+  /// or `ovrpInsightPassthroughColorMapType_InterpolatedColorLut` in order
+  /// to apply a color LUT. If that's the case, `TextureColorMapData` will be
+  /// ignored. Instead, `LutSource` and optionally `LutTarget` (for
+  /// `InterpolatedColorLut`) are applied, which must be created using
+  /// `ovrp_CreatePassthroughColorLut` previously.
+  /// There is no specific `ovrpInsightPassthroughStyleFlags` for color LUTs,
+  /// their validity is a consequence of the supplied `TextureColorMapType`.
+  ovrpPassthroughColorLut LutSource;
+  ovrpPassthroughColorLut LutTarget;
+  float LutWeight;
 } ovrpInsightPassthroughStyle;
 
 typedef enum {
   ovrpInsightPassthroughCapabilityFlags_Passthrough = 1 << 0,
   ovrpInsightPassthroughCapabilityFlags_Color = 1 << 1,
   ovrpInsightPassthroughCapabilityFlags_Depth = 1 << 2,
+  ovrpInsightPassthroughCapabilityFlags_ColorLut = 1 << 3,
   ovrpInsightPassthroughCapabilityFlags_EnumSize = 0x7fffffff
 } ovrpInsightPassthroughCapabilityFlags;
+
+typedef enum {
+  ovrpPassthroughColorLutChannels_Invalid = 0,
+  ovrpPassthroughColorLutChannels_Rgb = 1,
+  ovrpPassthroughColorLutChannels_Rgba = 2,
+  ovrpPassthroughColorLutChannels_Max = 0x7fffffff,
+} ovrpPassthroughColorLutChannels;
+
+typedef struct ovrpPassthroughColorLutData_ {
+  ovrpUInt32 BufferSize;
+  const ovrpByte* Buffer;
+} ovrpPassthroughColorLutData;
 
 //-----------------------------------------------------------------
 // Insight Passthrough Keyboard Hands
@@ -2376,6 +2552,9 @@ typedef enum {
   ovrpSpaceComponentType_SemanticLabels = 5,
   ovrpSpaceComponentType_RoomLayout = 6,
   ovrpSpaceComponentType_SpaceContainer = 7,
+
+
+
 
   ovrpSpatialEntityComponentType_Max = 0x7ffffff, // Deprecated
   ovrpSpaceComponentType_Max = 0x7ffffff,
@@ -2675,9 +2854,6 @@ typedef struct ovrpSceneCaptureRequest_ {
 
 
 
-
-
-
 typedef enum {
   ovrpInteractionProfile_None = 0,
   ovrpInteractionProfile_Touch = 1,
@@ -2689,35 +2865,6 @@ typedef enum {
 
   ovrpInteractionProfile_EnumSize = 0x7fffffff
 } ovrpInteractionProfile;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

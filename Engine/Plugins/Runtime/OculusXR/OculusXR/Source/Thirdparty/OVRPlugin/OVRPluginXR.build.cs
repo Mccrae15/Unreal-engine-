@@ -14,7 +14,6 @@ public class OVRPluginXR : ModuleRules
 
 		if (Target.Platform == UnrealTargetPlatform.Android)
 		{
-			RuntimeDependencies.Add(SourceDirectory + "Lib/armeabi-v7a/OpenXR/libOVRPlugin.so");
 			RuntimeDependencies.Add(SourceDirectory + "Lib/arm64-v8a/OpenXR/libOVRPlugin.so");
 		}
 	}

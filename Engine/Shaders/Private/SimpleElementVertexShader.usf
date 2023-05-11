@@ -10,7 +10,7 @@
 #define ENABLE_LWC 0
 #endif
 
-float4x4 Transform;
+float4x4 Transform[2];
 #if ENABLE_LWC
 float3 TransformTilePosition;
 #endif
@@ -21,19 +21,28 @@ void Main(
 	in float2 InTextureCoordinate : ATTRIBUTE2,
 	in float4 InColor : ATTRIBUTE3,
 	in float4 InHitProxyId : ATTRIBUTE4,
+	#if MOBILE_MULTI_VIEW && !INSTANCED_STEREO
+	in uint ViewId : SV_ViewID,
+	#endif
 	out float2 OutTextureCoordinate : TEXCOORD0,
 	out float4 OutColor : TEXCOORD1,
 	out float4 OutHitProxyId : TEXCOORD2,
 	out float4 OutPosition : SV_POSITION
 	)
 {
+#if MOBILE_MULTI_VIEW && !INSTANCED_STEREO
+	float4x4 TransformToUse = Transform[ViewId];
+#else
+	float4x4 TransformToUse = Transform[0];
+#endif
+
 #if ENABLE_LWC
 	FLWCVector4 InPosition = MakeLWCVector4(InTilePosition, InRelativePosition);
-	FLWCInverseMatrix WorldToClip = MakeLWCInverseMatrix(TransformTilePosition, Transform);
+	FLWCInverseMatrix WorldToClip = MakeLWCInverseMatrix(TransformTilePosition, TransformToUse);
 	OutPosition = LWCMultiply(InPosition, WorldToClip);
 	OutPosition.z = max(OutPosition.z, 0);
 #else
-	OutPosition = mul(InRelativePosition, Transform);
+	OutPosition = mul(InRelativePosition, TransformToUse);
 #endif
 
 	OutTextureCoordinate = InTextureCoordinate;

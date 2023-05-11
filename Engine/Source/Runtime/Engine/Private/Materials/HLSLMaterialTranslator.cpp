@@ -4374,7 +4374,7 @@ int32 FHLSLMaterialTranslator::GameTime(bool bPeriodic, float Period)
 {
 	if (!bPeriodic)
 	{
-		return AddInlinedCodeChunkZeroDeriv(MCT_Float, bCompilingPreviousFrame ? TEXT("View.PrevFrameGameTime") : TEXT("View.GameTime"));
+		return AddInlinedCodeChunkZeroDeriv(MCT_Float, bCompilingPreviousFrame ? TEXT("ResolvedView.PrevFrameGameTime") : TEXT("ResolvedView.GameTime"));
 	}
 	else if (Period == 0.0f)
 	{
@@ -4385,12 +4385,12 @@ int32 FHLSLMaterialTranslator::GameTime(bool bPeriodic, float Period)
 
 	if (bCompilingPreviousFrame)
 	{
-		return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("fmod(View.PrevFrameGameTime,%s)"), *GetParameterCode(PeriodChunk));
+		return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("fmod(ResolvedView.PrevFrameGameTime,%s)"), *GetParameterCode(PeriodChunk));
 	}
 
 	// Note: not using FHLSLMaterialTranslator::Fmod(), which will emit MaterialFloat types which will be converted to fp16 on mobile.
 	// We want full 32 bit float precision until the fmod when using a period.
-	return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("fmod(View.GameTime,%s)"), *GetParameterCode(PeriodChunk));
+	return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("fmod(ResolvedView.GameTime,%s)"), *GetParameterCode(PeriodChunk));
 }
 
 int32 FHLSLMaterialTranslator::RealTime(bool bPeriodic, float Period)

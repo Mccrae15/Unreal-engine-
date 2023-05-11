@@ -208,7 +208,7 @@ bool FOculusXRAnchors::SetAnchorComponentStatus(UOculusXRAnchorComponent* Anchor
 	}
 	else
 	{
-		UE_LOG(LogOculusXRAnchors, Warning, TEXT("Failed to start async call to set anchor component status."));
+		UE_LOG(LogOculusXRAnchors, Warning, TEXT("Failed to start async call to set anchor component status. Error code: %d"), OutResult);
 		ResultCallback.ExecuteIfBound(EOculusXRAnchorResult::Failure, nullptr, EOculusXRSpaceComponentType::Undefined, false);
 	}
 
@@ -406,6 +406,12 @@ bool FOculusXRAnchors::ShareAnchors(const TArray<UOculusXRAnchorComponent*>& Anc
 	}
 
 	return bAsyncStartSuccess;
+}
+	
+bool FOculusXRAnchors::GetSpaceContainerUUIDs(uint64 Space, TArray<FOculusXRUUID>& OutUUIDs, EOculusXRAnchorResult::Type& OutResult)
+{
+	OutResult = FOculusXRAnchorManager::GetSpaceContainerUUIDs(Space, OutUUIDs);
+	return UOculusXRAnchorBPFunctionLibrary::IsAnchorResultSuccess(OutResult);
 }
 
 bool FOculusXRAnchors::GetSpaceScenePlane(uint64 Space, FVector& OutPos, FVector& OutSize, EOculusXRAnchorResult::Type& OutResult)

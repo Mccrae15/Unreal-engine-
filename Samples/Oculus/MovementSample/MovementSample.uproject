@@ -1,6 +1,6 @@
 {
 	"FileVersion": 3,
-	"EngineAssociation": "{E6A0BC0A-4615-D525-2A1E-E99C10FFCF9A}",
+	"EngineAssociation": "{03CD83BC-436A-1900-E27E-3C91C496E5BC}",
 	"Category": "",
 	"Description": "",
 	"Plugins": [
@@ -17,6 +17,6 @@
 	"TargetPlatforms": [
 		"Android",
 		"Windows",
-		"WindowsNoEditor",
+		"WindowsNoEditor"
 	]
 }

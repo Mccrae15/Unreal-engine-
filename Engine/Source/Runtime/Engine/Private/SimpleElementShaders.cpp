@@ -27,10 +27,11 @@ void FSimpleElementVS::SetParameters(FRHICommandList& RHICmdList, const FMatrix&
 	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), TransformTilePosition, FVector3f::ZeroVector);
 }
 
-void FSimpleElementVS::SetParameters(FRHICommandList& RHICmdList, const FRelativeViewMatrices& Matrices)
+void FSimpleElementVS::SetParameters(FRHICommandList& RHICmdList, const FRelativeViewMatrices Matrices[2])
 {
-	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), RelativeTransform, Matrices.RelativeWorldToClip);
-	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), TransformTilePosition, Matrices.TilePosition);
+	const FMatrix44f FinalMats[2] = { Matrices[0].RelativeWorldToClip , Matrices[1].RelativeWorldToClip };
+	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), RelativeTransform, FinalMats);
+	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), TransformTilePosition, Matrices[0].TilePosition);
 }
 
 void FSimpleElementVS::ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)

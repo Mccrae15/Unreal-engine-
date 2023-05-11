@@ -452,8 +452,9 @@ void FAndroidTargetPlatform::GetPlatformSpecificProjectAnalytics( TArray<FAnalyt
 		TEXT("SupportsVulkanSM5"), SupportsVulkanSM5(),
 		TEXT("SupportsES31"), SupportsES31()
 	);
-
-	AppendAnalyticsEventConfigArray(AnalyticsParamArray, TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), TEXT("PackageForOculusMobile"), GEngineIni);
+	// BEGIN META SECTION - Meta Quest Android device support
+	AppendAnalyticsEventConfigBool(AnalyticsParamArray, TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), TEXT("bPackageForMetaQuest"), GEngineIni);
+	// END META SECTION - Meta Quest Android device support
 }
 
 #if WITH_ENGINE

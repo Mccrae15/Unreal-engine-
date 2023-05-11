@@ -127,7 +127,7 @@ namespace OculusXRAnchors
 	void GetEventData(ovrpEventDataBuffer& Buffer, T& OutEventData)
 	{
 		unsigned char* BufData = Buffer.EventData;
-		BufData -= sizeof(uint64); //correct offset 
+		BufData -= sizeof(uint64); //correct offset
 
 		memcpy(&OutEventData, BufData, sizeof(T));
 	}
@@ -216,7 +216,7 @@ namespace OculusXRAnchors
 				const FOculusXRUInt64 RequestId(AnchorCreateEvent.requestId);
 				const FOculusXRUInt64 Space(AnchorCreateEvent.space);
 				const FOculusXRUUID BPUUID(AnchorCreateEvent.uuid.data);
-			
+
 				FOculusXRAnchorEventDelegates::OculusSpatialAnchorCreateComplete.Broadcast(RequestId, AnchorCreateEvent.result, Space, BPUUID);
 
 				UE_LOG(LogOculusXRAnchors, Verbose, TEXT("ovrpEventType_SpatialAnchorCreateComplete Request ID: %llu  --  Space: %llu  --  UUID: %s  --  Result: %d"),
@@ -232,14 +232,14 @@ namespace OculusXRAnchors
 			{
 				ovrpEventDataSpaceSetStatusComplete SetStatusEvent;
 				GetEventData(buf, SetStatusEvent);
-				
+
 				//translate to BP types
 				const FOculusXRUInt64 RequestId(SetStatusEvent.requestId);
 				const FOculusXRUInt64 Space(SetStatusEvent.space);
 				EOculusXRSpaceComponentType BPSpaceComponentType = ConvertToUe4ComponentType(SetStatusEvent.componentType);
 				const FOculusXRUUID BPUUID(SetStatusEvent.uuid.data);
 				const bool bEnabled = (SetStatusEvent.enabled == ovrpBool_True);
-				
+
 				FOculusXRAnchorEventDelegates::OculusSpaceSetComponentStatusComplete.Broadcast(
 					RequestId,
 					SetStatusEvent.result,
@@ -249,7 +249,7 @@ namespace OculusXRAnchors
 					bEnabled
 				);
 
-				UE_LOG(LogOculusXRAnchors, Verbose, TEXT("ovrpEventType_SpaceSetComponentStatusComplete Request ID: %llu  --  Type: %d  --  Enabled: %d  --  Space: %llu  --  Result: %d"), 
+				UE_LOG(LogOculusXRAnchors, Verbose, TEXT("ovrpEventType_SpaceSetComponentStatusComplete Request ID: %llu  --  Type: %d  --  Enabled: %d  --  Space: %llu  --  Result: %d"),
 					SetStatusEvent.requestId,
 					SetStatusEvent.componentType,
 					SetStatusEvent.enabled,
@@ -292,7 +292,7 @@ namespace OculusXRAnchors
 				{
 					UE_LOG(LogOculusXRAnchors, Verbose, TEXT("ovrpEventType_SpaceQueryResult Space: %llu  --  Result: %d"), queryResultElement.space, bGetQueryDataResult);
 
-					//translate types 
+					//translate types
 					FOculusXRUInt64 Space(queryResultElement.space);
 					FOculusXRUUID BPUUID(queryResultElement.uuid.data);
 					FOculusXRAnchorEventDelegates::OculusSpaceQueryResult.Broadcast(RequestId, Space, BPUUID);
@@ -308,7 +308,7 @@ namespace OculusXRAnchors
 				//translate to BP types
 				const FOculusXRUInt64 RequestId(QueryCompleteEvent.requestId);
 				const bool bSucceeded = QueryCompleteEvent.result >= 0;
-            
+
                 FOculusXRAnchorEventDelegates::OculusSpaceQueryComplete.Broadcast(RequestId, QueryCompleteEvent.result);
 
 				UE_LOG(LogOculusXRAnchors, Verbose, TEXT("ovrpEventType_SpaceQueryComplete Request ID: %llu  --  Result: %d"), QueryCompleteEvent.requestId, QueryCompleteEvent.result);
@@ -319,7 +319,7 @@ namespace OculusXRAnchors
 			{
 				ovrpEventSpaceStorageSaveResult StorageResult;
 				GetEventData(buf, StorageResult);
-    
+
                 //translate to BP types
                 const FOculusXRUUID uuid(StorageResult.uuid.data);
                 const FOculusXRUInt64 FSpace(StorageResult.space);
@@ -327,7 +327,7 @@ namespace OculusXRAnchors
 				const bool bResult = StorageResult.result >= 0;
 
 				FOculusXRAnchorEventDelegates::OculusSpaceSaveComplete.Broadcast(FRequest, FSpace, bResult, StorageResult.result, uuid);
-                
+
 				UE_LOG(LogOculusXRAnchors, Verbose, TEXT("ovrpEventType_SpaceSaveComplete  Request ID: %llu  --  Space: %llu  --  Result: %d"), StorageResult.requestId, StorageResult.space, StorageResult.result);
 
                 break;
@@ -354,7 +354,7 @@ namespace OculusXRAnchors
 				const FOculusXRUInt64 FRequestId(SpaceEraseEvent.requestId);
 				const FOculusXRUInt64 FResult(SpaceEraseEvent.result);
 				const EOculusXRSpaceStorageLocation BPLocation = (SpaceEraseEvent.location == ovrpSpaceStorageLocation_Local) ? EOculusXRSpaceStorageLocation::Local : EOculusXRSpaceStorageLocation::Invalid;
-				
+
 				UE_LOG(LogOculusXRAnchors, Verbose, TEXT("ovrpEventType_SpaceEraseComplete  Request ID: %llu  --  Result: %d  -- UUID: %s"), SpaceEraseEvent.requestId, SpaceEraseEvent.result, *UOculusXRAnchorBPFunctionLibrary::AnchorUUIDToString(SpaceEraseEvent.uuid.data));
 
 				FOculusXRAnchorEventDelegates::OculusSpaceEraseComplete.Broadcast(FRequestId, FResult.Value, uuid, BPLocation);
@@ -399,7 +399,7 @@ namespace OculusXRAnchors
 			UE_LOG(LogOculusXRAnchors, Warning, TEXT("FOculusAnchorManager::CreateAnchor failed to retrieve HMD."));
 			return EOculusXRAnchorResult::Failure;
 		}
-		
+
 		ovrpTrackingOrigin TrackingOriginType;
 		ovrpPosef Posef;
 		double Time = 0;
@@ -441,10 +441,10 @@ namespace OculusXRAnchors
 			UE_LOG(LogOculusXRAnchors, Warning, TEXT("FOculusAnchorManager::CreateAnchor failed to convert pose."));
 			return EOculusXRAnchorResult::Failure;
 		}
-		
+
 		FOculusXRHMDModule::GetPluginWrapper().GetTrackingOriginType2(&TrackingOriginType);
 		FOculusXRHMDModule::GetPluginWrapper().GetTimeInSeconds(&Time);
-		
+
 		const ovrpSpatialAnchorCreateInfo SpatialAnchorCreateInfo = {
 			TrackingOriginType,
 			Posef,
@@ -496,7 +496,7 @@ namespace OculusXRAnchors
 		const ovrpUInt64 OVRPSpace = Space;
 		ovrpBool OutOvrpEnabled = ovrpBool_False;;
 		ovrpBool OutOvrpChangePending = ovrpBool_False;
-		
+
 		ovrpSpaceComponentType ovrpType = ConvertToOvrpComponentType(SpaceComponentType);
 
 		const ovrpResult Result = FOculusXRHMDModule::GetPluginWrapper().GetSpaceComponentStatus(
@@ -508,10 +508,10 @@ namespace OculusXRAnchors
 
 		OutEnabled = (OutOvrpEnabled == ovrpBool_True);
 		OutChangePending = (OutOvrpChangePending == ovrpBool_True);
-	
+
 		return static_cast<EOculusXRAnchorResult::Type>(Result);
 	}
-	
+
 	EOculusXRAnchorResult::Type FOculusXRAnchorManager::SaveAnchor(uint64 Space,
 		EOculusXRSpaceStorageLocation StorageLocation,
 		EOculusXRSpaceStoragePersistenceMode StoragePersistenceMode, uint64& OutRequestId)
@@ -528,7 +528,7 @@ namespace OculusXRAnchors
 		case EOculusXRSpaceStorageLocation::Cloud:
 			OvrpStorageLocation = ovrpSpaceStorageLocation_Cloud;
 			break;
-		default: 
+		default:
 			break;
 		}
 
@@ -541,13 +541,13 @@ namespace OculusXRAnchors
 		case EOculusXRSpaceStoragePersistenceMode::Indefinite:
 			OvrpStoragePersistenceMode = ovrpSpaceStoragePersistenceMode_Indefinite;
 			break;
-		default: 
+		default:
 			break;
 		}
-		
+
 		ovrpUInt64 OvrpOutRequestId = 0;
 		const ovrpResult Result = FOculusXRHMDModule::GetPluginWrapper().SaveSpace(&Space, OvrpStorageLocation, OvrpStoragePersistenceMode, &OvrpOutRequestId);
-		
+
 		UE_LOG(LogOculusXRAnchors, Verbose, TEXT("Saving space with: SpaceID: %llu  --  Location: %d  --  Persistence: %d  --  OutID: %llu"), Space, OvrpStorageLocation, OvrpStoragePersistenceMode, OvrpOutRequestId);
 
 		memcpy(&OutRequestId,&OvrpOutRequestId,sizeof(uint64));
@@ -611,7 +611,7 @@ namespace OculusXRAnchors
 			break;
 		default: ;
 		}
-		
+
 		ovrpUInt64 OvrpOutRequestId = 0;
 		const ovrpResult Result = FOculusXRHMDModule::GetPluginWrapper().EraseSpace(&AnchorHandle, ovrpStorageLocation, &OvrpOutRequestId);
 		memcpy(&OutRequestId, &OvrpOutRequestId, sizeof(uint64));
@@ -629,7 +629,7 @@ namespace OculusXRAnchors
 		const ovrpResult QuerySpacesResult = FOculusXRHMDModule::GetPluginWrapper().QuerySpaces(&ovrQueryInfo, &OvrpOutRequestId);
 		memcpy(&OutRequestId, &OvrpOutRequestId, sizeof(uint64));
 
-		UE_LOG(LogOculusXRAnchors, Verbose, TEXT("Query Spaces\n ovrpSpaceQueryInfo:\n\tQueryType: %d\n\tMaxQuerySpaces: %d\n\tTimeout: %f\n\tLocation: %d\n\tActionType: %d\n\tFilterType: %d\n\n\tRequest ID: %llu"), 
+		UE_LOG(LogOculusXRAnchors, Verbose, TEXT("Query Spaces\n ovrpSpaceQueryInfo:\n\tQueryType: %d\n\tMaxQuerySpaces: %d\n\tTimeout: %f\n\tLocation: %d\n\tActionType: %d\n\tFilterType: %d\n\n\tRequest ID: %llu"),
 			ovrQueryInfo.queryType, ovrQueryInfo.maxQuerySpaces, (float)ovrQueryInfo.timeout, ovrQueryInfo.location, ovrQueryInfo.actionType, ovrQueryInfo.filterType, OutRequestId);
 
 		if (QueryInfo.FilterType == EOculusXRSpaceQueryFilterType::FilterByIds)
@@ -692,6 +692,44 @@ namespace OculusXRAnchors
 		memcpy(&OutRequestId, &OvrpOutRequestId, sizeof(uint64));
 
 		return static_cast<EOculusXRAnchorResult::Type>(ShareSpacesResult);
+	}
+
+	EOculusXRAnchorResult::Type FOculusXRAnchorManager::GetSpaceContainerUUIDs(uint64 Space, TArray<FOculusXRUUID>& OutUUIDs)
+	{
+		TArray<ovrpUuid> ovrUuidArray;
+
+		// Get the number of elements in the container
+		ovrpSpaceContainer ovrSpaceContainer;
+		ovrSpaceContainer.uuidCapacityInput = 0;
+		ovrSpaceContainer.uuidCountOutput = 0;
+		ovrSpaceContainer.uuids = nullptr;
+		ovrpResult result = FOculusXRHMDModule::GetPluginWrapper().GetSpaceContainer(&Space, &ovrSpaceContainer);
+		if (!OVRP_SUCCESS(result))
+		{
+			UE_LOG(LogOculusXRAnchors, Warning, TEXT("Failed to get space container %d"), result);
+			return static_cast<EOculusXRAnchorResult::Type>(result);
+		}
+
+		// Retrieve the actual array of UUIDs
+		ovrUuidArray.SetNum(ovrSpaceContainer.uuidCountOutput);
+		ovrSpaceContainer.uuidCapacityInput = ovrSpaceContainer.uuidCountOutput;
+		ovrSpaceContainer.uuids = ovrUuidArray.GetData();
+
+		result = FOculusXRHMDModule::GetPluginWrapper().GetSpaceContainer(&Space, &ovrSpaceContainer);
+		if (!OVRP_SUCCESS(result))
+		{
+			UE_LOG(LogOculusXRAnchors, Warning, TEXT("Failed to get space container %d"), result);
+			return static_cast<EOculusXRAnchorResult::Type>(result);
+		}
+
+		// Write out the remaining UUIDs
+		OutUUIDs.Reserve(ovrUuidArray.Num());
+		for (auto& it : ovrUuidArray)
+		{
+			OutUUIDs.Add(FOculusXRUUID(it.data));
+		}
+
+		return EOculusXRAnchorResult::Success;
 	}
 
 	EOculusXRAnchorResult::Type FOculusXRAnchorManager::GetSpaceScenePlane(uint64 Space, FVector& OutPos, FVector& OutSize)
@@ -757,5 +795,33 @@ namespace OculusXRAnchors
 
 		return static_cast<EOculusXRAnchorResult::Type>(Result);
 	}
-}
 
+	EOculusXRAnchorResult::Type FOculusXRAnchorManager::GetSpaceContainer(uint64 Space, TArray<FOculusXRUUID>& OutContainerUuids)
+	{
+		OutContainerUuids.Empty();
+
+		ovrpSpaceContainer container;
+
+		ovrpResult Result = FOculusXRHMDModule::GetPluginWrapper().GetSpaceContainer(&Space, &container);
+
+		if (OVRP_SUCCESS(Result))
+		{
+			TArray<ovrpUuid> uuids;
+			size_t size = container.uuidCountOutput;
+			uuids.InsertZeroed(0, size);
+			container.uuidCapacityInput = size;
+			container.uuids = uuids.GetData();
+			Result = FOculusXRHMDModule::GetPluginWrapper().GetSpaceContainer(&Space, &container);
+			if (OVRP_SUCCESS(Result))
+			{
+				OutContainerUuids.InsertZeroed(0, size);
+				for (size_t i = 0; i < size; i++)
+				{
+					OutContainerUuids[i] = FOculusXRUUID(uuids[i].data);
+				}
+			}
+		}
+
+		return static_cast<EOculusXRAnchorResult::Type>(Result);
+	}
+}

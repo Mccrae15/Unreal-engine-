@@ -325,9 +325,15 @@ public:
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Advanced APK Packaging", Meta = (DisplayName = "Add permissions to support Voice chat (RECORD_AUDIO)"))
 	bool bAndroidVoiceEnabled;
 
+	// BEGIN META SECTION - Meta Quest Android device support
 	// Package for an Oculus Mobile device
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Advanced APK Packaging", Meta = (DisplayName = "Package for Oculus Mobile devices"))
+	UPROPERTY(meta=(DeprecatedProperty, DeprecationMessage = "Use the \"Package for Meta Quest devices\" checkbox instead"))
 	TArray<TEnumAsByte<EOculusMobileDevice::Type>> PackageForOculusMobile;
+
+	// Package for Meta Quest devices
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Advanced APK Packaging", Meta = (DisplayName = "Package for Meta Quest devices"))
+	bool bPackageForMetaQuest;
+	// END META SECTION - Meta Quest Android device support
 
 	// Removes Oculus Signature Files (osig) from APK if Quest/Go APK signed for distribution and enables entitlement checker
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Advanced APK Packaging", Meta = (DisplayName = "Remove Oculus Signature Files from Distribution APK"))
@@ -353,21 +359,25 @@ public:
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Support arm64 [aka arm64-v8a]"))
 	bool bBuildForArm64;
 
+	// BEGIN META SECTION - Meta Quest Android device support
 	// Enable x86-64 support? [CURRENTLY FOR FULL SOURCE GAMES ONLY]
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Support x86_64 [aka x64]"))
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Support x86_64 [aka x64]", EditCondition = "!bPackageForMetaQuest"))
 	bool bBuildForX8664;
 
 	// Include shaders for devices supporting OpenGL ES 3.2 and above (default)
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Support OpenGL ES3.2"))
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Support OpenGL ES3.2", EditCondition = "!bPackageForMetaQuest"))
 	bool bBuildForES31;
+	// END META SECTION - Meta Quest Android device support
 
 	// Support the Vulkan RHI and include Vulkan shaders
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Support Vulkan"))
 	bool bSupportsVulkan;
 
+	// BEGIN META SECTION - Meta Quest Android device support
 	// Enable Vulkan SM5 rendering support
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Support Vulkan Desktop [Experimental]"))
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Support Vulkan Desktop [Experimental]", EditCondition = "!bPackageForMetaQuest"))
 	bool bSupportsVulkanSM5;
+	// END META SECTION - Meta Quest Android device support
 
 	/** Directory for Debug Vulkan Layers to package */
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Debug Vulkan Layer Directory"))
@@ -645,7 +655,9 @@ private:
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostInitProperties() override;
 	void HandlesRGBHWSupport();
-	void HandleOculusMobileSupport();
+	// BEGIN META SECTION - Meta Quest Android device support
+	void HandleMetaQuestSupport();
+	// END META SECTION - Meta Quest Android device support
 	
 	// End of UObject interface
 	void EnsureValidGPUArch();

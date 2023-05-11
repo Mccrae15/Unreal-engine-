@@ -28,7 +28,7 @@ AOculusXRSceneActor::AOculusXRSceneActor(const FObjectInitializer& ObjectInitial
 	RoomLayoutManagerComponent = CreateDefaultSubobject<UOculusXRRoomLayoutManagerComponent>(TEXT("OculusXRRoomLayoutManagerComponent"));
 
 	// Following are the semantic labels we want to support default properties for.  User can always add new ones through the properties panel if needed.
-	const FString defaultSemanticClassification[] = {
+	const FString default2DSemanticClassifications[] = {
 		TEXT("WALL_FACE"),
 		TEXT("CEILING"),
 		TEXT("FLOOR"),
@@ -36,35 +36,37 @@ AOculusXRSceneActor::AOculusXRSceneActor(const FObjectInitializer& ObjectInitial
 		TEXT("DESK"),
 		TEXT("DOOR_FRAME"),
 		TEXT("WINDOW_FRAME"),
+		TEXT("STORAGE"),
+		TEXT("OTHER")
+	};
+
+	const FString default3DSemanticClassifications[] = {
+		TEXT("COUCH"),
+		TEXT("DESK"),
+		TEXT("SCREEN"),
+		TEXT("BED"),
+		TEXT("LAMP"),
+		TEXT("PLANT"),
+		TEXT("STORAGE"),
 		TEXT("OTHER")
 	};
 
 	FOculusXRSpawnedSceneAnchorProperties spawnedAnchorProps;
+	spawnedAnchorProps.ActorComponent = nullptr;
+	spawnedAnchorProps.StaticMesh = nullptr;
 
-	// Populate default UPROPERTY for the "ScenePlaneSpawnedSceneAnchorProperties" member
-	spawnedAnchorProps.StaticMesh = TSoftObjectPtr<UStaticMesh>(FSoftObjectPath("/OculusVR/Meshes/ScenePlane.ScenePlane"));
-	for (int32 i = 0; i < sizeof(defaultSemanticClassification) / sizeof(defaultSemanticClassification[0]); ++i)
+	// Setup initial scene plane and volume properties
+	for (auto& semanticLabel2D : default2DSemanticClassifications)
 	{
-		FOculusXRSpawnedSceneAnchorProperties& props = ScenePlaneSpawnedSceneAnchorProperties.Add(defaultSemanticClassification[i], spawnedAnchorProps);
-		
-		// Orientation constraints
-		if (defaultSemanticClassification[i] == "CEILING" ||
-			defaultSemanticClassification[i] == "FLOOR" ||
-			defaultSemanticClassification[i] == "COUCH" ||
-			defaultSemanticClassification[i] == "DESK" ||
-			defaultSemanticClassification[i] == "DOOR_FRAME" ||
-			defaultSemanticClassification[i] == "WINDOW_FRAME" ||
-			defaultSemanticClassification[i] == "OTHER")
-		{
-			props.ForceParallelToFloor = true;
-		}
+		FOculusXRSpawnedSceneAnchorProperties& props = ScenePlaneSpawnedSceneAnchorProperties.Add(semanticLabel2D, spawnedAnchorProps);
+		props.ForceParallelToFloor = (semanticLabel2D != "WALL_FACE");
 	}
 
-	// Populate default UPROPERTY for the "SceneVolumeSpawnedSceneAnchorProperties" member
-	// For the time being, only "OTHER" semantic label is used for volume scene anchors.
-	spawnedAnchorProps.StaticMesh = TSoftObjectPtr<UStaticMesh>(FSoftObjectPath("/OculusVR/Meshes/SceneVolume.SceneVolume"));
-	FOculusXRSpawnedSceneAnchorProperties& props = SceneVolumeSpawnedSceneAnchorProperties.Add(TEXT("OTHER"), spawnedAnchorProps);
-	props.ForceParallelToFloor = true;
+	for (auto& semanticLabel3D : default3DSemanticClassifications)
+	{
+		FOculusXRSpawnedSceneAnchorProperties& props = SceneVolumeSpawnedSceneAnchorProperties.Add(semanticLabel3D, spawnedAnchorProps);
+		props.ForceParallelToFloor = true;
+	}
 }
 
 void AOculusXRSceneActor::ResetStates()
@@ -109,34 +111,6 @@ void AOculusXRSceneActor::Tick(float DeltaTime)
 	Super::Tick(DeltaTime);
 }
 
-bool AOculusXRSceneActor::QuerySpatialAnchors(const bool bRoomLayoutOnly)
-{
-	bool bResult = false;
-
-	FOculusXRSpaceQueryInfo queryInfo;
-	queryInfo.MaxQuerySpaces = MaxQueries;
-	queryInfo.FilterType = EOculusXRSpaceQueryFilterType::FilterByComponentType;
-
-	EOculusXRAnchorResult::Type AnchorQueryResult;
-
-	if (bRoomLayoutOnly)
-	{		
-		queryInfo.ComponentFilter.Add(EOculusXRSpaceComponentType::RoomLayout);
-		bResult = OculusXRAnchors::FOculusXRAnchors::QueryAnchorsAdvanced(queryInfo, FOculusXRAnchorQueryDelegate::CreateUObject(this, &AOculusXRSceneActor::AnchorQueryComplete_Handler), AnchorQueryResult);
-	}	
-	else
-	{
-		queryInfo.ComponentFilter.Add(EOculusXRSpaceComponentType::ScenePlane);
-		bResult = OculusXRAnchors::FOculusXRAnchors::QueryAnchorsAdvanced(queryInfo, FOculusXRAnchorQueryDelegate::CreateUObject(this, &AOculusXRSceneActor::AnchorQueryComplete_Handler), AnchorQueryResult);
-
-		queryInfo.ComponentFilter.Empty();
-		queryInfo.ComponentFilter.Add(EOculusXRSpaceComponentType::SceneVolume);
-		bResult &= OculusXRAnchors::FOculusXRAnchors::QueryAnchorsAdvanced(queryInfo, FOculusXRAnchorQueryDelegate::CreateUObject(this, &AOculusXRSceneActor::AnchorQueryComplete_Handler), AnchorQueryResult);
-	}
-
-	return bResult;
-}
-
 bool AOculusXRSceneActor::IsValidUuid(const FOculusXRUUID& Uuid)
 {
 	return Uuid.UUIDBytes != nullptr;
@@ -144,11 +118,11 @@ bool AOculusXRSceneActor::IsValidUuid(const FOculusXRUUID& Uuid)
 
 void AOculusXRSceneActor::LaunchCaptureFlow()
 {
-	UE_LOG(LogOculusXRScene, Error, TEXT("Launch capture flow"));
+	UE_LOG(LogOculusXRScene, Verbose, TEXT("Launch capture flow"));
 
 	if (RoomLayoutManagerComponent)
 	{
-		UE_LOG(LogOculusXRScene, Error, TEXT("Launch capture flow -- RoomLayoutManagerComponent"));
+		UE_LOG(LogOculusXRScene, Verbose, TEXT("Launch capture flow -- RoomLayoutManagerComponent"));
 
 		const bool bResult = RoomLayoutManagerComponent->LaunchCaptureFlow();
 		if (!bResult)
@@ -168,19 +142,37 @@ void AOculusXRSceneActor::LaunchCaptureFlowIfNeeded()
 	{
 		if (LauchCaptureFlowWhenMissingScene == EOculusXRLaunchCaptureFlowWhenMissingScene::ALWAYS ||
 			(!bCaptureFlowWasLaunched && LauchCaptureFlowWhenMissingScene == EOculusXRLaunchCaptureFlowWhenMissingScene::ONCE))
-		{
-			if (bVerboseLog)
-			{
-				UE_LOG(LogOculusXRScene, Display, TEXT("Requesting to launch Capture Flow."));
-			}
-			
+		{	
 			LaunchCaptureFlow();
 		}
 	}
 #endif
 }
 
-bool AOculusXRSceneActor::SpawnSceneAnchor(const FOculusXRUInt64& Space, const FVector& BoundedSize, const TArray<FString>& SemanticClassifications, const EOculusXRSpaceComponentType AnchorComponentType)
+USceneComponent* AOculusXRSceneActor::GetOrCreateRoomOriginSceneComponent(const FOculusXRUInt64& RoomSpaceID)
+{
+	USceneComponent** foundSceneComponent = RoomSceneComponents.Find(RoomSpaceID);
+
+	if (foundSceneComponent != nullptr)
+	{
+		return *foundSceneComponent;
+	}
+
+	USceneComponent* roomSceneComponent = NewObject<USceneComponent>(this, USceneComponent::StaticClass());
+	roomSceneComponent->CreationMethod = EComponentCreationMethod::Instance;
+	AddOwnedComponent(roomSceneComponent);
+
+	roomSceneComponent->SetupAttachment(RootComponent);
+	roomSceneComponent->RegisterComponent();
+	roomSceneComponent->InitializeComponent();
+	roomSceneComponent->Activate();
+
+	RoomSceneComponents.Add(RoomSpaceID) = roomSceneComponent;
+
+	return roomSceneComponent;
+}
+
+bool AOculusXRSceneActor::SpawnSceneAnchor(const FOculusXRUInt64& Space, const FOculusXRUInt64& RoomSpaceID, const FVector& BoundedSize, const TArray<FString>& SemanticClassifications, const EOculusXRSpaceComponentType AnchorComponentType)
 {
 	if (Space.Value == 0)
 	{
@@ -199,6 +191,8 @@ bool AOculusXRSceneActor::SpawnSceneAnchor(const FOculusXRUInt64& Space, const F
 		UE_LOG(LogOculusXRScene, Error, TEXT("AOculusXRSceneActor::SpawnSceneAnchor No semantic classification found."));
 		return false;
 	}
+
+	USceneComponent* roomRoot = GetOrCreateRoomOriginSceneComponent(RoomSpaceID);
 
 	TSoftClassPtr<UOculusXRSceneAnchorComponent>* sceneAnchorComponentClassPtrRef = nullptr;
 	TSoftObjectPtr<UStaticMesh>* staticMeshObjPtrRef = nullptr;
@@ -223,9 +217,9 @@ bool AOculusXRSceneActor::SpawnSceneAnchor(const FOculusXRUInt64& Space, const F
 	
 	FActorSpawnParameters actorSpawnParams;
 	actorSpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-	AStaticMeshActor* newActor = GetWorld()->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), FVector(), FRotator(), actorSpawnParams);
+	AStaticMeshActor* newActor = GetWorld()->SpawnActor<AStaticMeshActor>(AStaticMeshActor::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator, actorSpawnParams);
 	newActor->GetRootComponent()->SetMobility(EComponentMobility::Movable);
-	newActor->AttachToActor(this, FAttachmentTransformRules::KeepRelativeTransform);
+	newActor->AttachToComponent(roomRoot, FAttachmentTransformRules::KeepRelativeTransform);
 	
 	if (staticMeshObjPtrRef->IsPending())
 	{
@@ -237,9 +231,6 @@ bool AOculusXRSceneActor::SpawnSceneAnchor(const FOculusXRUInt64& Space, const F
 	sceneAnchorComponent->CreationMethod = EComponentCreationMethod::Instance;
 	newActor->AddOwnedComponent(sceneAnchorComponent);
 
-	EOculusXRAnchorResult::Type Result;
-	OculusXRAnchors::FOculusXRAnchors::SetAnchorComponentStatus(sceneAnchorComponent, EOculusXRSpaceComponentType::Locatable, true, 0.0f, FOculusXRAnchorSetComponentStatusDelegate(), Result);
-
 	sceneAnchorComponent->RegisterComponent();
 	sceneAnchorComponent->InitializeComponent();
 	sceneAnchorComponent->Activate();
@@ -247,6 +238,9 @@ bool AOculusXRSceneActor::SpawnSceneAnchor(const FOculusXRUInt64& Space, const F
 	sceneAnchorComponent->SemanticClassifications = SemanticClassifications;
 	sceneAnchorComponent->ForceParallelToFloor = foundProperties->ForceParallelToFloor;
 	sceneAnchorComponent->AddOffset = foundProperties->AddOffset;
+
+	EOculusXRAnchorResult::Type Result;
+	OculusXRAnchors::FOculusXRAnchors::SetAnchorComponentStatus(sceneAnchorComponent, EOculusXRSpaceComponentType::Locatable, true, 0.0f, FOculusXRAnchorSetComponentStatusDelegate(), Result);
 
 	// Setup scale based on bounded size and the actual size of the mesh
 	UStaticMesh* staticMesh = newActor->GetStaticMeshComponent()->GetStaticMesh();
@@ -269,97 +263,85 @@ bool AOculusXRSceneActor::SpawnSceneAnchor(const FOculusXRUInt64& Space, const F
 
 bool AOculusXRSceneActor::IsScenePopulated()
 {
-	if (!RootComponent)
+	if (!RootComponent) 
+	{
 		return false;
+	}
+
 	return RootComponent->GetNumChildrenComponents() > 0;
 }
 
 bool AOculusXRSceneActor::IsRoomLayoutValid()
 {
-	return bRoomLayoutIsValid;
+	return true;
 }
 
 void AOculusXRSceneActor::PopulateScene()
 {
 	if (!RootComponent)
-		return;
-
-	if (IsScenePopulated())
 	{
-		UE_LOG(LogOculusXRScene, Display, TEXT("PopulateScene Scene is already populated.  Clear it first."));
 		return;
 	}
 
-	const bool bResult = QuerySpatialAnchors(true);
-	if (bResult)
+	const EOculusXRAnchorResult::Type result = QueryAllRooms();
+	if (!UOculusXRAnchorBPFunctionLibrary::IsAnchorResultSuccess(result))
 	{
-		if (bVerboseLog)
-		{
-			UE_LOG(LogOculusXRScene, Display, TEXT("PopulateScene Made a request to query spatial anchors"));
-		}
-	}
-	else
-	{
-		UE_LOG(LogOculusXRScene, Error, TEXT("PopulateScene Failed to query spatial anchors!"));
+		UE_LOG(LogOculusXRScene, Error, TEXT("PopulateScene Failed to query available rooms"));
 	}
 }
 
 void AOculusXRSceneActor::ClearScene()
 {
-	if (!RootComponent)
-		return;
-
-	TArray<USceneComponent*> childrenComponents = RootComponent->GetAttachChildren();
-	for (USceneComponent* SceneComponent : childrenComponents)
+	for (auto& roomIterator : RoomSceneComponents)
 	{
-		Cast<AActor>(SceneComponent->GetOuter())->Destroy();
+		TArray<USceneComponent*> childrenComponents = roomIterator.Value->GetAttachChildren();	
+		for (USceneComponent* sceneComponent : childrenComponents)
+		{
+			Cast<AActor>(sceneComponent->GetOuter())->Destroy();
+		}
+
+		roomIterator.Value->DestroyComponent();
 	}
 
-	bRoomLayoutIsValid = false;
+	RoomSceneComponents.Empty();
 	bFoundCapturedScene = false;
 }
 
 void AOculusXRSceneActor::SetVisibilityToAllSceneAnchors(const bool bIsVisible)
 {
-	if (!RootComponent)
-		return;
-
-	TArray<USceneComponent*> childrenComponents = RootComponent->GetAttachChildren();
-	for (USceneComponent* sceneComponent : childrenComponents)
+	for (auto& roomIterator : RoomSceneComponents)
 	{
-		sceneComponent->SetVisibility(bIsVisible);
+		TArray<USceneComponent*> childrenComponents = roomIterator.Value->GetAttachChildren();
+		for (USceneComponent* sceneComponent : childrenComponents)
+		{
+			sceneComponent->SetVisibility(bIsVisible);
+		}
 	}
 }
 
 void AOculusXRSceneActor::SetVisibilityToSceneAnchorsBySemanticLabel(const FString SemanticLabel, const bool bIsVisible)
 {
-	if (!RootComponent)
-		return;
-
-	TArray<USceneComponent*> childrenComponents = RootComponent->GetAttachChildren();
-	for (USceneComponent* sceneComponent : childrenComponents)
+	for (auto& roomIterator : RoomSceneComponents)
 	{
-		UObject* outerObject = sceneComponent->GetOuter();
-		if (!outerObject)
+		TArray<USceneComponent*> childrenComponents = roomIterator.Value->GetAttachChildren();
+		for (USceneComponent* sceneComponent : childrenComponents)
 		{
-			continue;
-		}
+			AActor* outerActor = Cast<AActor>(sceneComponent->GetOuter());
+			if (!outerActor)
+			{
+				continue;
+			}
 
-		AActor* outerActor = Cast<AActor>(outerObject);
-		if (!outerActor)
-		{
-			continue;
-		}
+			UActorComponent* sceneAnchorComponent = outerActor->GetComponentByClass(UOculusXRSceneAnchorComponent::StaticClass());
+			if (!sceneAnchorComponent)
+			{
+				continue;
+			}
 
-		UActorComponent* sceneAnchorComponent = outerActor->GetComponentByClass(UOculusXRSceneAnchorComponent::StaticClass());
-		if (!sceneAnchorComponent)
-		{
-			continue;
-		}
-		
-		if (Cast<UOculusXRSceneAnchorComponent>(sceneAnchorComponent)->SemanticClassifications.Contains(SemanticLabel))
-		{
-			sceneComponent->SetVisibility(bIsVisible);
+			if (Cast<UOculusXRSceneAnchorComponent>(sceneAnchorComponent)->SemanticClassifications.Contains(SemanticLabel))
+			{
+				sceneComponent->SetVisibility(bIsVisible);
+			}
 		}
 	}
 }
@@ -368,261 +350,181 @@ TArray<AActor*> AOculusXRSceneActor::GetActorsBySemanticLabel(const FString Sema
 {
 	TArray<AActor*> actors;
 
-	if (!RootComponent)
-		return actors;
-
-	TArray<USceneComponent*> childrenComponents = RootComponent->GetAttachChildren();
-	for (USceneComponent* sceneComponent : childrenComponents)
+	for (auto& roomIterator : RoomSceneComponents)
 	{
-		UObject* outerObject = sceneComponent->GetOuter();
-		if (!outerObject)
+		TArray<USceneComponent*> childrenComponents = roomIterator.Value->GetAttachChildren();
+		for (USceneComponent* sceneComponent : childrenComponents)
 		{
-			continue;
-		}
+			AActor* outerActor = Cast<AActor>(sceneComponent->GetOuter());
+			if (!outerActor)
+			{
+				continue;
+			}
 
-		AActor* outerActor = Cast<AActor>(outerObject);
-		if (!outerActor)
-		{
-			continue;
-		}
+			UActorComponent* sceneAnchorComponent = outerActor->GetComponentByClass(UOculusXRSceneAnchorComponent::StaticClass());
+			if (!sceneAnchorComponent)
+			{
+				continue;
+			}
 
-		UActorComponent* sceneAnchorComponent = outerActor->GetComponentByClass(UOculusXRSceneAnchorComponent::StaticClass());
-		if (!sceneAnchorComponent)
-		{
-			continue;
-		}
-
-		if (Cast<UOculusXRSceneAnchorComponent>(sceneAnchorComponent)->SemanticClassifications.Contains(SemanticLabel))
-		{
-			actors.Add(outerActor);
+			if (Cast<UOculusXRSceneAnchorComponent>(sceneAnchorComponent)->SemanticClassifications.Contains(SemanticLabel))
+			{
+				actors.Add(outerActor);
+			}
 		}
 	}
 
 	return actors;
 }
 
-
-// DELEGATE HANDLERS
-void AOculusXRSceneActor::AnchorQueryComplete_Handler(EOculusXRAnchorResult::Type AnchorResult, const TArray<FOculusXRSpaceQueryResult>& QueryResults)
+EOculusXRAnchorResult::Type AOculusXRSceneActor::QueryAllRooms()
 {
-	for (auto& QueryResult : QueryResults)
-	{
-		// Call the existing logic for each result
-		SpatialAnchorQueryResult_Handler(0, QueryResult.Space, QueryResult.UUID);
-	}
+	FOculusXRSpaceQueryInfo queryInfo;
+	queryInfo.MaxQuerySpaces = MaxQueries;
+	queryInfo.FilterType = EOculusXRSpaceQueryFilterType::FilterByComponentType;
+	queryInfo.ComponentFilter.Add(EOculusXRSpaceComponentType::RoomLayout);
 
-	// Call the complete handler at the end to check if we need to do room layout stuff
-	SpatialAnchorQueryComplete_Handler(0, UOculusXRAnchorBPFunctionLibrary::IsAnchorResultSuccess(AnchorResult));
+	EOculusXRAnchorResult::Type anchorQueryResult;
+	OculusXRAnchors::FOculusXRAnchors::QueryAnchorsAdvanced(queryInfo, 
+		FOculusXRAnchorQueryDelegate::CreateUObject(this, &AOculusXRSceneActor::RoomLayoutQueryComplete), anchorQueryResult);
+
+	return anchorQueryResult;
 }
 
-void AOculusXRSceneActor::SpatialAnchorQueryResult_Handler(FOculusXRUInt64 RequestId, FOculusXRUInt64 Space, FOculusXRUUID Uuid)
+void AOculusXRSceneActor::RoomLayoutQueryComplete(EOculusXRAnchorResult::Type AnchorResult, const TArray<FOculusXRSpaceQueryResult>& QueryResults)
 {
-	if (bVerboseLog)
+	UE_LOG(LogOculusXRScene, Verbose, TEXT("RoomLayoutQueryComplete (Result = %d"), AnchorResult);
+
+	for (auto& QueryElement : QueryResults)
 	{
-		UE_LOG(LogOculusXRScene, Display, TEXT("SpatialAnchorQueryResult_Handler (requestId = %llu, space = %llu, uuid = %s"), RequestId.Value, Space.Value, *BytesToHex(Uuid.UUIDBytes, OCULUSXR_UUID_SIZE));
-	}
+		UE_LOG(LogOculusXRScene, Verbose, TEXT("RoomLayoutQueryComplete -- Query Element (space = %llu, uuid = %s"), QueryElement.Space.Value, *BytesToHex(QueryElement.UUID.UUIDBytes, OCULUSXR_UUID_SIZE));
 
-	bool bResult = false;
-	bool bOutPending = false;
-	bool bIsRoomLayout = false;
-
-	EOculusXRAnchorResult::Type Result = OculusXRAnchors::FOculusXRAnchorManager::GetSpaceComponentStatus(Space.Value, EOculusXRSpaceComponentType::RoomLayout, bIsRoomLayout, bOutPending);
-	bool ResultSuccess = UOculusXRAnchorBPFunctionLibrary::IsAnchorResultSuccess(Result);
-
-	if (ResultSuccess && bIsRoomLayout)
-	{
-		if (bVerboseLog)
-		{
-			UE_LOG(LogOculusXRScene, Display, TEXT("SpatialAnchorQueryResult_Handler Found a room layout."));
-		}
-
-		// This is a room layout.  We can now populate it with the room layout manager component
 		FOculusXRRoomLayout roomLayout;
-		const bool bGetRoomLayoutResult = RoomLayoutManagerComponent->GetRoomLayout(Space, roomLayout, MaxQueries);
-		if (bGetRoomLayoutResult)
+		const bool bGetRoomLayoutResult = RoomLayoutManagerComponent->GetRoomLayout(QueryElement.Space.Value, roomLayout, MaxQueries);
+		if (!bGetRoomLayoutResult)
 		{
-			// If we get here, then we know that captured scene was already created by the end-user in Capture Flow
-			bFoundCapturedScene = true;
-
-			// We can now validate the room
-			bRoomLayoutIsValid = true;
-
-			bRoomLayoutIsValid &= IsValidUuid(roomLayout.CeilingUuid);
-			bRoomLayoutIsValid &= IsValidUuid(roomLayout.FloorUuid);
-			bRoomLayoutIsValid &= roomLayout.WallsUuid.Num() > 3;
-
-			for (int32 i = 0; i < roomLayout.WallsUuid.Num(); ++i)
-			{
-				bRoomLayoutIsValid &= IsValidUuid(roomLayout.WallsUuid[i]);
-			}
-
-			if (bRoomLayoutIsValid || !bEnsureRoomIsValid)
-			{
-				if (bVerboseLog)
-				{
-					UE_LOG(LogOculusXRScene, Display, TEXT("SpatialAnchorQueryResult_Handler Room is valid = %d (# walls = %d)."), bRoomLayoutIsValid, roomLayout.WallsUuid.Num());
-				}
-
-				// We found a valid room, we can now query all ScenePlane/SceneVolume anchors
-				ResultSuccess = QuerySpatialAnchors(false);
-				if (ResultSuccess)
-				{
-					if (bVerboseLog)
-					{
-						UE_LOG(LogOculusXRScene, Display, TEXT("SpatialAnchorQueryResult_Handler Made a request to query spatial anchors"));
-					}
-				}
-				else
-				{
-					UE_LOG(LogOculusXRScene, Error, TEXT("SpatialAnchorQueryResult_Handler Failed to query spatial anchors!"));
-				}
-			}
-			else
-			{
-				UE_LOG(LogOculusXRScene, Display, TEXT("SpatialAnchorQueryResult_Handler Room is invalid."));
-				ClearScene();
-				LaunchCaptureFlowIfNeeded();
-			}
+			UE_LOG(LogOculusXRScene, Error, TEXT("RoomLayoutQueryComplete -- Failed to get room layout for space (space = %llu, uuid = %s"), 
+				QueryElement.Space.Value, *BytesToHex(QueryElement.UUID.UUIDBytes, OCULUSXR_UUID_SIZE));
+			continue;
 		}
+		
+		EOculusXRAnchorResult::Type queryResult = QueryRoomUUIDs(QueryElement.Space.Value, roomLayout.RoomObjectUUIDs);
+		if (UOculusXRAnchorBPFunctionLibrary::IsAnchorResultSuccess(queryResult))
+		{
+			RoomLayouts.Add(QueryElement.Space.Value, std::move(roomLayout));
+		}
+
 	}
-	else
+}
+
+EOculusXRAnchorResult::Type AOculusXRSceneActor::QueryRoomUUIDs(const FOculusXRUInt64 RoomSpaceID, const TArray<FOculusXRUUID>& RoomUUIDs)
+{
+	EOculusXRAnchorResult::Type anchorQueryResult;
+	OculusXRAnchors::FOculusXRAnchors::QueryAnchors(
+		RoomUUIDs, 
+		EOculusXRSpaceStorageLocation::Local, 
+		FOculusXRAnchorQueryDelegate::CreateUObject(this, &AOculusXRSceneActor::SceneRoomQueryComplete, RoomSpaceID), 
+		anchorQueryResult);
+	
+	return anchorQueryResult;
+}
+
+void AOculusXRSceneActor::SceneRoomQueryComplete(EOculusXRAnchorResult::Type AnchorResult, const TArray<FOculusXRSpaceQueryResult>& QueryResults, const FOculusXRUInt64 RoomSpaceID)
+{
+	if (!UOculusXRAnchorBPFunctionLibrary::IsAnchorResultSuccess(AnchorResult))
+	{
+		return;
+	}
+
+	bool bOutPending = false;
+
+	for (auto& AnchorQueryElement : QueryResults)
 	{
 		// Is it a ScenePlane anchor?
 		bool bIsScenePlane = false;
-		Result = OculusXRAnchors::FOculusXRAnchorManager::GetSpaceComponentStatus(Space.Value, EOculusXRSpaceComponentType::ScenePlane, bIsScenePlane, bOutPending);
-		ResultSuccess = UOculusXRAnchorBPFunctionLibrary::IsAnchorResultSuccess(Result);
-		if (ResultSuccess && bIsScenePlane)
-		{
-			if (bVerboseLog)
-			{
-				UE_LOG(LogOculusXRScene, Display, TEXT("SpatialAnchorQueryResult_Handler Found a ScenePlane anchor."));
-			}
+		bool bIsSceneVolume = false;
+		EOculusXRAnchorResult::Type isPlaneResult = OculusXRAnchors::FOculusXRAnchorManager::GetSpaceComponentStatus(
+			AnchorQueryElement.Space.Value, EOculusXRSpaceComponentType::ScenePlane, bIsScenePlane, bOutPending);
 
+		EOculusXRAnchorResult::Type isVolumeResult = OculusXRAnchors::FOculusXRAnchorManager::GetSpaceComponentStatus(
+			AnchorQueryElement.Space.Value, EOculusXRSpaceComponentType::SceneVolume, bIsSceneVolume, bOutPending);
+
+		bool bIsPlaneResultSuccess = UOculusXRAnchorBPFunctionLibrary::IsAnchorResultSuccess(isPlaneResult);
+		bool bIsVolumeResultSuccess = UOculusXRAnchorBPFunctionLibrary::IsAnchorResultSuccess(isVolumeResult);
+
+		if (bIsPlaneResultSuccess && bIsScenePlane)
+		{
+			EOculusXRAnchorResult::Type Result;
 			FVector scenePlanePos;
 			FVector scenePlaneSize;
-			ResultSuccess = OculusXRAnchors::FOculusXRAnchors::GetSpaceScenePlane(Space.Value, scenePlanePos, scenePlaneSize, Result);
-			if (ResultSuccess)
-			{
-				if (bVerboseLog)
-				{
-					UE_LOG(LogOculusXRScene, Display, TEXT("SpatialAnchorQueryResult_Handler ScenePlane pos = [%.2f, %.2f, %.2f], size = [%.2f, %.2f, %.2f]."),
-						scenePlanePos.X, scenePlanePos.Y, scenePlanePos.Z,
-						scenePlaneSize.X, scenePlaneSize.Y, scenePlaneSize.Z);
-				}
-			}
-			else
+			bool ResultSuccess = OculusXRAnchors::FOculusXRAnchors::GetSpaceScenePlane(AnchorQueryElement.Space.Value, scenePlanePos, scenePlaneSize, Result);
+			if (!ResultSuccess)
 			{
 				UE_LOG(LogOculusXRScene, Error, TEXT("SpatialAnchorQueryResult_Handler Failed to get bounds for ScenePlane space."));
+				continue;
 			}
+
+			UE_LOG(LogOculusXRScene, Verbose, TEXT("SpatialAnchorQueryResult_Handler ScenePlane pos = [%.2f, %.2f, %.2f], size = [%.2f, %.2f, %.2f]."),
+				scenePlanePos.X, scenePlanePos.Y, scenePlanePos.Z,
+				scenePlaneSize.X, scenePlaneSize.Y, scenePlaneSize.Z);
 
 			TArray<FString> semanticClassifications;
-			ResultSuccess = OculusXRAnchors::FOculusXRAnchors::GetSpaceSemanticClassification(Space.Value, semanticClassifications, Result);
-			if (ResultSuccess)
-			{
-				if (bVerboseLog)
-				{
-					UE_LOG(LogOculusXRScene, Display, TEXT("SpatialAnchorQueryResult_Handler Semantic Classifications:"));
-					for (FString& label : semanticClassifications)
-					{
-						UE_LOG(LogOculusXRScene, Display, TEXT("%s"), *label);
-					}
-				}
-			}
-			else
-			{
-				UE_LOG(LogOculusXRScene, Error, TEXT("SpatialAnchorQueryResult_Handler Failed to get semantic classification space."));
-			}
+			GetSemanticClassifications(AnchorQueryElement.Space.Value, semanticClassifications);
 
-			if (!SpawnSceneAnchor(Space, scenePlaneSize, semanticClassifications, EOculusXRSpaceComponentType::ScenePlane))
+			if (!SpawnSceneAnchor(AnchorQueryElement.Space, RoomSpaceID, scenePlaneSize, semanticClassifications, EOculusXRSpaceComponentType::ScenePlane))
 			{
 				UE_LOG(LogOculusXRScene, Error, TEXT("SpatialAnchorQueryResult_Handler Failed to spawn scene anchor."));
 			}
 		}
-		else
+		
+		if (bIsVolumeResultSuccess && bIsSceneVolume)
 		{
-			// Is it a scenevolume anchor?
-			bool bIsSceneVolume = false;
-			Result = OculusXRAnchors::FOculusXRAnchorManager::GetSpaceComponentStatus(Space.Value, EOculusXRSpaceComponentType::SceneVolume, bIsSceneVolume, bOutPending);
-			ResultSuccess = UOculusXRAnchorBPFunctionLibrary::IsAnchorResultSuccess(Result);
-
-			if (ResultSuccess && bIsSceneVolume)
+			EOculusXRAnchorResult::Type Result;
+			FVector sceneVolumePos;
+			FVector sceneVolumeSize;
+			bool ResultSuccess = OculusXRAnchors::FOculusXRAnchors::GetSpaceSceneVolume(AnchorQueryElement.Space.Value, sceneVolumePos, sceneVolumeSize, Result);
+			if (!ResultSuccess)
 			{
-				if (bVerboseLog)
-				{
-					UE_LOG(LogOculusXRScene, Display, TEXT("SpatialAnchorQueryResult_Handler Found a SceneVolume anchor."));
-				}
+				UE_LOG(LogOculusXRScene, Error, TEXT("SpatialAnchorQueryResult_Handler Failed to get bounds for SceneVolume space."));
+				continue;
+			}
 
-				FVector sceneVolumePos;
-				FVector sceneVolumeSize;
-				ResultSuccess = OculusXRAnchors::FOculusXRAnchors::GetSpaceSceneVolume(Space.Value, sceneVolumePos, sceneVolumeSize, Result);
-				if (ResultSuccess)
-				{
-					if (bVerboseLog)
-					{
-						UE_LOG(LogOculusXRScene, Display, TEXT("SpatialAnchorQueryResult_Handler SceneVolume pos = [%.2f, %.2f, %.2f], size = [%.2f, %.2f, %.2f]."),
-							sceneVolumePos.X, sceneVolumePos.Y, sceneVolumePos.Z,
-							sceneVolumeSize.X, sceneVolumeSize.Y, sceneVolumeSize.Z);
-					}
-				}
-				else
-				{
-					UE_LOG(LogOculusXRScene, Error, TEXT("SpatialAnchorQueryResult_Handler Failed to get bounds for SceneVolume space."));
-				}
+			UE_LOG(LogOculusXRScene, Display, TEXT("SpatialAnchorQueryResult_Handler SceneVolume pos = [%.2f, %.2f, %.2f], size = [%.2f, %.2f, %.2f]."),
+				sceneVolumePos.X, sceneVolumePos.Y, sceneVolumePos.Z,
+				sceneVolumeSize.X, sceneVolumeSize.Y, sceneVolumeSize.Z);
 
-				TArray<FString> semanticClassifications;
-				ResultSuccess = OculusXRAnchors::FOculusXRAnchors::GetSpaceSemanticClassification(Space.Value, semanticClassifications, Result);
-				if (ResultSuccess)
-				{
-					if (bVerboseLog)
-					{
-						UE_LOG(LogOculusXRScene, Display, TEXT("SpatialAnchorQueryResult_Handler Semantic Classifications:"));
-						for (FString& label : semanticClassifications)
-						{
-							UE_LOG(LogOculusXRScene, Display, TEXT("%s"), *label);
-						}
-					}
-				}
-				else
-				{
-					UE_LOG(LogOculusXRScene, Error, TEXT("SpatialAnchorQueryResult_Handler Failed to get semantic classifications space."));
-				}
+			TArray<FString> semanticClassifications;
+			GetSemanticClassifications(AnchorQueryElement.Space.Value, semanticClassifications);
 
-				if (!SpawnSceneAnchor(Space, sceneVolumeSize, semanticClassifications, EOculusXRSpaceComponentType::SceneVolume))
-				{
-					UE_LOG(LogOculusXRScene, Error, TEXT("SpatialAnchorQueryResult_Handler Failed to spawn scene anchor."));
-				}
+			if (!SpawnSceneAnchor(AnchorQueryElement.Space, RoomSpaceID, sceneVolumeSize, semanticClassifications, EOculusXRSpaceComponentType::SceneVolume))
+			{
+				UE_LOG(LogOculusXRScene, Error, TEXT("SpatialAnchorQueryResult_Handler Failed to spawn scene anchor."));
 			}
 		}
 	}
 }
 
-void AOculusXRSceneActor::SpatialAnchorQueryComplete_Handler(FOculusXRUInt64 RequestId, bool bResult)
+void AOculusXRSceneActor::GetSemanticClassifications(uint64 Space, TArray<FString>& OutSemanticLabels) const
 {
-	if (bVerboseLog)
+	EOculusXRAnchorResult::Type SemanticLabelAnchorResult;
+	bool Result = OculusXRAnchors::FOculusXRAnchors::GetSpaceSemanticClassification(Space, OutSemanticLabels, SemanticLabelAnchorResult);
+	if (Result)
 	{
-		UE_LOG(LogOculusXRScene, Display, TEXT("SpatialAnchorQueryComplete_Handler (requestId = %llu)"), RequestId.Value);
-	}
-
-	if (!bFoundCapturedScene) // only try to launch capture flow if a captured scene was not found
-	{
-		if (!bResult)
+		UE_LOG(LogOculusXRScene, Verbose, TEXT("GetSemanticClassifications -- Space (%llu) Classifications:"), Space);
+		for (FString& label : OutSemanticLabels)
 		{
-			if (bVerboseLog)
-			{
-				UE_LOG(LogOculusXRScene, Display, TEXT("SpatialAnchorQueryComplete_Handler No scene found."));
-			}
-			LaunchCaptureFlowIfNeeded();
+			UE_LOG(LogOculusXRScene, Verbose, TEXT("%s"), *label);
 		}
+	}
+	else
+	{
+		UE_LOG(LogOculusXRScene, Error, TEXT("SpatialAnchorQueryResult_Handler Failed to get semantic classification space."));
 	}
 }
 
+// DELEGATE HANDLERS
 void AOculusXRSceneActor::SceneCaptureComplete_Handler(FOculusXRUInt64 RequestId, bool bResult)
 {	
-	if (bVerboseLog)
-	{
-		UE_LOG(LogOculusXRScene, Display, TEXT("SceneCaptureComplete_Handler (requestId = %llu)"), RequestId);
-	}
-
 	if (!bResult)
 	{
 		UE_LOG(LogOculusXRScene, Error, TEXT("Scene Capture Complete failed!"));
@@ -633,19 +535,7 @@ void AOculusXRSceneActor::SceneCaptureComplete_Handler(FOculusXRUInt64 RequestId
 	bCaptureFlowWasLaunched = true;
 
 	ClearScene();
-	
-	const bool bQueryResult = QuerySpatialAnchors(true);
-	if (bResult)
-	{
-		if (bVerboseLog)
-		{
-			UE_LOG(LogOculusXRScene, Display, TEXT("Made a request to query spatial anchors"));
-		}
-	}
-	else
-	{
-		UE_LOG(LogOculusXRScene, Error, TEXT("Failed to query spatial anchors!"));
-	}
+	PopulateScene();
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -21,6 +21,7 @@ struct OCULUSXRANCHORS_API FOculusXRRoomLayout
 	FOculusXRUUID FloorUuid;
 	FOculusXRUUID CeilingUuid;
 	TArray<FOculusXRUUID> WallsUuid;
+	TArray<FOculusXRUUID> RoomObjectUUIDs;
 };
 
 UCLASS(meta = (DisplayName = "OculusXR Room Layout Manager Component", BlueprintSpawnableComponent))
@@ -58,6 +59,9 @@ public:
 protected:
 	UPROPERTY(Transient)
 	TSet<uint64> EntityRequestList;
+
+	UPROPERTY(Transient)
+	TMap<FOculusXRUInt64, FOculusXRRoomLayout> RoomLayouts;
 
 private:
 	UFUNCTION()

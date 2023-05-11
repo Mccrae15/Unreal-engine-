@@ -75,7 +75,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "OculusXR|Scene Actor")
 	bool IsScenePopulated();
 
-	UFUNCTION(BlueprintCallable, Category = "OculusXR|Scene Actor")
+	UFUNCTION(BlueprintCallable, Category = "OculusXR|Scene Actor", Meta = (DeprecatedFunction, DeprecationMessage="Is Room Layout Valid is deprecated and no longer returns any value but true. Please validate your room configuration in the way your application requires."))
 	bool IsRoomLayoutValid();
 
 	UFUNCTION(BlueprintCallable, Category = "OculusXR|Scene Actor")
@@ -94,16 +94,10 @@ public:
 	TArray<AActor*> GetActorsBySemanticLabel(const FString SemanticLabel);
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OculusXR|Scene Actor")
-	bool bEnsureRoomIsValid = true;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OculusXR|Scene Actor")
 	TEnumAsByte<EOculusXRLaunchCaptureFlowWhenMissingScene> LauchCaptureFlowWhenMissingScene = EOculusXRLaunchCaptureFlowWhenMissingScene::ALWAYS;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OculusXR|Scene Actor", meta = (UIMin = 1, ClampMin = 1, UIMax = 1024, ClampMax = 1024))
 	int32 MaxQueries = 64;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OculusXR|Scene Actor")
-	bool bVerboseLog = false;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "OculusXR|Scene Actor")
 	bool bPopulateSceneOnBeginPlay = true;
@@ -121,13 +115,16 @@ public:
 	virtual void EndPlay(EEndPlayReason::Type Reason) override;
 	virtual void Tick(float DeltaTime) override;
 
-
 private:
-	// Event delegate handlers
-	void AnchorQueryComplete_Handler(EOculusXRAnchorResult::Type AnchorResult, const TArray<FOculusXRSpaceQueryResult>& QueryResults);
+	EOculusXRAnchorResult::Type QueryAllRooms();
+	void RoomLayoutQueryComplete(EOculusXRAnchorResult::Type AnchorResult, const TArray<FOculusXRSpaceQueryResult>& QueryResults);
 
-	void SpatialAnchorQueryResult_Handler(FOculusXRUInt64 RequestId, FOculusXRUInt64 Space, FOculusXRUUID Uuid);
-	void SpatialAnchorQueryComplete_Handler(FOculusXRUInt64 RequestId, bool bResult);
+	EOculusXRAnchorResult::Type QueryRoomUUIDs(const FOculusXRUInt64 RoomSpaceID, const TArray<FOculusXRUUID>& RoomUUIDs);
+	void SceneRoomQueryComplete(EOculusXRAnchorResult::Type AnchorResult, const TArray<FOculusXRSpaceQueryResult>& QueryResults, const FOculusXRUInt64 RoomSpaceID);
+
+	void GetSemanticClassifications(uint64 Space, TArray<FString>& OutSemanticLabels) const;
+
+	// Scene capture event handler
 	void SceneCaptureComplete_Handler(FOculusXRUInt64 RequestId, bool bResult);
 
 	// Launches Capture Flow if (based on LauchCaptureFlowWhenMissingScene member value)
@@ -136,14 +133,13 @@ private:
 	// Resets states of the Actor
 	void ResetStates();
 
-	// Handles logic for making a spatial anchors request
-	bool QuerySpatialAnchors(const bool bRoomLayoutOnly);
-
 	// Validates UUID
 	bool IsValidUuid(const FOculusXRUUID& Uuid);
+	
+	USceneComponent* GetOrCreateRoomOriginSceneComponent(const FOculusXRUInt64& RoomSpaceID);
 
 	// Spawns a scene anchor
-	bool SpawnSceneAnchor(const FOculusXRUInt64& Space, const FVector& BoundedSize, const TArray<FString>& SemanticClassifications, const EOculusXRSpaceComponentType AnchorComponentType);
+	bool SpawnSceneAnchor(const FOculusXRUInt64& Space, const FOculusXRUInt64& RoomSpaceID, const FVector& BoundedSize, const TArray<FString>& SemanticClassifications, const EOculusXRSpaceComponentType AnchorComponentType);
 	
 	// Components for room layout and spatial anchors functionalities
 	UOculusXRRoomLayoutManagerComponent* RoomLayoutManagerComponent = nullptr;
@@ -156,4 +152,10 @@ private:
 
 	// Whether we found a captured scene
 	bool bFoundCapturedScene;
+		
+	UPROPERTY(Transient)
+	TMap<FOculusXRUInt64, USceneComponent*> RoomSceneComponents;
+
+	UPROPERTY(Transient)
+	TMap<FOculusXRUInt64, FOculusXRRoomLayout> RoomLayouts;
 };

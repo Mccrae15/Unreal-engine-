@@ -62,10 +62,11 @@ void UAndroidRuntimeSettings::PostReloadConfig(FProperty* PropertyThatWasLoaded)
 
 void UAndroidRuntimeSettings::HandlesRGBHWSupport()
 {
-	const bool SupportssRGB = PackageForOculusMobile.Num() > 0;
+	// BEGIN META SECTION - Meta Quest Android device support
+	const bool SupportssRGB = bPackageForMetaQuest;
+	// END META SECTION - Meta Quest Android device support
 	URendererSettings* const Settings = GetMutableDefault<URendererSettings>();
 	static auto* MobileUseHWsRGBEncodingCVAR = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Mobile.UseHWsRGBEncoding"));
-
 	if (SupportssRGB != Settings->bMobileUseHWsRGBEncoding)
 	{
 		Settings->bMobileUseHWsRGBEncoding = SupportssRGB;
@@ -79,11 +80,42 @@ void UAndroidRuntimeSettings::HandlesRGBHWSupport()
 
 }
 
-void UAndroidRuntimeSettings::HandleOculusMobileSupport()
+// BEGIN META SECTION - Meta Quest Android device support
+void UAndroidRuntimeSettings::HandleMetaQuestSupport()
 {
-	if (PackageForOculusMobile.Num() > 0)
+	// PackageForOculusMobile doesn't get loaded since it's marked as deprecated, so it needs to be read directly from the config
+	TArray<FString> PackageList;
+	GConfig->GetArray(TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), *FString("+").Append(GET_MEMBER_NAME_STRING_CHECKED(UAndroidRuntimeSettings, PackageForOculusMobile)), PackageList, GetDefaultConfigFilename());
+	if (PackageList.Num() > 0)
 	{
-		// Automatically disable x86_64, and Vulkan Desktop if building for Oculus Mobile devices and switch to appropriate alternatives
+		bPackageForMetaQuest = true;
+		if (ExtraApplicationSettings.Find("com.oculus.supportedDevices") == INDEX_NONE)
+		{
+			FString SupportedDevicesValue;
+			for (FString Device : PackageList)
+			{
+				if (Device == StaticEnum<EOculusMobileDevice::Type>()->GetNameStringByValue((int64)EOculusMobileDevice::Quest2))
+				{
+					SupportedDevicesValue.Append("quest2|");
+				}
+				else if (Device == StaticEnum<EOculusMobileDevice::Type>()->GetNameStringByValue((int64)EOculusMobileDevice::QuestPro))
+				{
+					SupportedDevicesValue.Append("cambria|");
+				}
+			}
+			// Check if | was removed from the end as a way to see if any supported devices were added
+			if (SupportedDevicesValue.RemoveFromEnd("|"))
+			{
+				ExtraApplicationSettings.Append("<meta-data android:name=\"com.oculus.supportedDevices\" android:value=\"" + SupportedDevicesValue + "\" />");
+			}
+		}
+		// Use TryUpdateDefaultConfigFile() instead of UpdateSinglePropertyInConfigFile() so that the PackageForOculusMobile will also get cleared
+		TryUpdateDefaultConfigFile();
+	}
+
+	if (bPackageForMetaQuest)
+	{
+		// Automatically disable x86_64, and Vulkan Desktop if building for Meta Quest devices and switch to appropriate alternatives
 		if (bBuildForX8664)
 		{
 			bBuildForX8664 = false;
@@ -108,6 +140,7 @@ void UAndroidRuntimeSettings::HandleOculusMobileSupport()
 		}
 	}
 }
+// END META SECTION - Meta Quest Android device support
 
 static void InvalidateAllAndroidPlatforms()
 {
@@ -126,15 +159,6 @@ bool UAndroidRuntimeSettings::CanEditChange(const FProperty* InProperty) const
 	if (bIsEditable && InProperty)
 	{
 		const FName PropertyName = InProperty->GetFName();
-
-		
-		if (PropertyName == GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bBuildForX8664) ||		// x86_64 is not supported for Oculus Mobile Devices, use arm64 instead
-			PropertyName == GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bSupportsVulkanSM5) ||	// Vulkan Desktop is not supported for Oculus Mobile Devices, use Vulkan instead
-			PropertyName == GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bBuildForES31))		// OpenGL ES3.2 is not supported for Oculus Mobile Devices, use Vulkan instead
-		{
-			bIsEditable = PackageForOculusMobile.Num() == 0;
-		}
-
 		if (PropertyName == GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bAndroidOpenGLSupportsBackbufferSampling))
 		{
 			bIsEditable = bBuildForES31;
@@ -200,30 +224,12 @@ void UAndroidRuntimeSettings::PostEditChangeProperty(struct FPropertyChangedEven
 		}
 	}
 
-	if (PropertyChangedEvent.Property != nullptr && PropertyChangedEvent.Property->GetName().StartsWith(TEXT("PackageForOculusMobile")))
+	// BEGIN META SECTION - Meta Quest Android device support
+	if (PropertyChangedEvent.Property != nullptr && PropertyChangedEvent.Property->GetName().StartsWith(TEXT("bPackageForMetaQuest")))
 	{
-		if (PropertyChangedEvent.ChangeType == EPropertyChangeType::ArrayAdd)
-		{
-			// Get a list of all available devices
-			TArray<EOculusMobileDevice::Type> deviceList;
-#define OCULUS_DEVICE_LOOP(device) deviceList.Add(device);
-			FOREACH_ENUM_EOCULUSMOBILEDEVICE(OCULUS_DEVICE_LOOP);
-#undef OCULUS_DEVICE_LOOP
-			// Add last device that isn't already in the list
-			for (int i = deviceList.Num() - 1; i >= 0; --i)
-			{
-				if (!PackageForOculusMobile.Contains(deviceList[i]))
-				{
-					PackageForOculusMobile.Last() = deviceList[i];
-					break;
-				}
-				// Just add another copy of the first device if nothing was available
-				PackageForOculusMobile.Last() = deviceList[deviceList.Num() - 1];
-			}
-		}
-		EnsureValidGPUArch();
-		HandleOculusMobileSupport();
+		HandleMetaQuestSupport();
 	}
+	// END META SECTION - Meta Quest Android device support
 
 	HandlesRGBHWSupport();
 }
@@ -241,8 +247,10 @@ void UAndroidRuntimeSettings::PostInitProperties()
 	}
 
 	EnsureValidGPUArch();
-	HandleOculusMobileSupport();
 	HandlesRGBHWSupport();
+	// BEGIN META SECTION - Meta Quest Android device support
+	HandleMetaQuestSupport();
+	// END META SECTION - Meta Quest Android device support
 }
 
 void UAndroidRuntimeSettings::EnsureValidGPUArch()
@@ -250,17 +258,19 @@ void UAndroidRuntimeSettings::EnsureValidGPUArch()
 	// Ensure that at least one GPU architecture is supported
 	if (!bSupportsVulkan && !bBuildForES31 && !bSupportsVulkanSM5)
 	{
-		// Default to Vulkan for Oculus Mobile devices
-		if (PackageForOculusMobile.Num() > 0)
+		// BEGIN META SECTION - Meta Quest Android device support
+		// Default to Vulkan for Meta Quest devices
+		if (bPackageForMetaQuest)
 		{
 			bSupportsVulkan = true;
 			UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bSupportsVulkan)), GetDefaultConfigFilename());
 		}
 		else
 		{
-		bBuildForES31 = true;
-		UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bBuildForES31)), GetDefaultConfigFilename());
+			bBuildForES31 = true;
+			UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bBuildForES31)), GetDefaultConfigFilename());
 		}
+		// END META SECTION - Meta Quest Android device support
 
 		// Supported shader formats changed so invalidate cache
 		InvalidateAllAndroidPlatforms();

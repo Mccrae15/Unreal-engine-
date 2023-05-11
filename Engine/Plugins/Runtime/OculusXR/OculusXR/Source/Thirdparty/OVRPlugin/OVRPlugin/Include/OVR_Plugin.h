@@ -769,15 +769,27 @@ OVRP_EXPORT ovrpResult ovrp_GetHandState2(ovrpStep step, int frameIndex, ovrpHan
 
 
 OVRP_EXPORT ovrpResult ovrp_GetSkeleton2(ovrpSkeletonType skeletonType, ovrpSkeleton2* skeleton);
+
+
+
 OVRP_EXPORT ovrpResult ovrp_GetMesh(ovrpMeshType meshType, ovrpMesh* mesh);
 
 OVRP_EXPORT ovrpResult ovrp_GetBodyState(ovrpStep step, int frameIndex, ovrpBodyState* bodyState);
+
+
+
 OVRP_EXPORT ovrpResult ovrp_GetBodyTrackingEnabled(ovrpBool* enabled);
 OVRP_EXPORT ovrpResult ovrp_GetBodyTrackingSupported(ovrpBool* supported);
+
+
+
 
 OVRP_EXPORT ovrpResult ovrp_StartFaceTracking();
 OVRP_EXPORT ovrpResult ovrp_StopFaceTracking();
 OVRP_EXPORT ovrpResult ovrp_StartBodyTracking();
+
+
+
 OVRP_EXPORT ovrpResult ovrp_StopBodyTracking();
 OVRP_EXPORT ovrpResult ovrp_StartEyeTracking();
 OVRP_EXPORT ovrpResult ovrp_StopEyeTracking();
@@ -821,8 +833,6 @@ OVRP_EXPORT ovrpResult
 ovrp_CreateVirtualKeyboardSpace(const ovrpVirtualKeyboardSpaceCreateInfo* createInfo, ovrpUInt64* keyboardSpace);
 OVRP_EXPORT ovrpResult ovrp_SuggestVirtualKeyboardLocation(const ovrpVirtualKeyboardLocationInfo* locationInfo);
 OVRP_EXPORT ovrpResult ovrp_GetVirtualKeyboardScale(float* scale);
-OVRP_EXPORT ovrpResult ovrp_GetVirtualKeyboardSound(ovrpVirtualKeyboardSound* sound);
-OVRP_EXPORT ovrpResult ovrp_GetVirtualKeyboardSwipeTrailState(ovrpVirtualKeyboardSwipeTrailState* swipeTrailState);
 OVRP_EXPORT ovrpResult
 ovrp_GetVirtualKeyboardModelAnimationStates(ovrpVirtualKeyboardModelAnimationStates* animationStates);
 OVRP_EXPORT ovrpResult ovrp_GetVirtualKeyboardDirtyTextures(ovrpVirtualKeyboardTextureIds* textureIds);
@@ -830,16 +840,15 @@ OVRP_EXPORT ovrpResult
 ovrp_GetVirtualKeyboardTextureData(ovrpUInt64 textureId, ovrpVirtualKeyboardTextureData* textureData);
 OVRP_EXPORT ovrpResult ovrp_SetVirtualKeyboardModelVisibility(const ovrpVirtualKeyboardModelVisibility* visibility);
 
-
-
-
-
-
-
-
-
-
-
+OVRP_EXPORT ovrpResult ovrp_QplMarkerStart(int markerId, int instanceKey, ovrpInt64 timestampMs);
+OVRP_EXPORT ovrpResult ovrp_QplMarkerEnd(int markerId, ovrpInt16 actionId, int instanceKey, ovrpInt64 timestampMs);
+OVRP_EXPORT ovrpResult ovrp_QplMarkerPoint(int markerId, const char* name, int instanceKey, ovrpInt64 timestampMs);
+OVRP_EXPORT ovrpResult ovrp_QplMarkerPointCached(int markerId, int nameHandle, int instanceKey, ovrpInt64 timestampMs);
+OVRP_EXPORT ovrpResult
+ovrp_QplMarkerAnnotation(int markerId, const char* annotationKey, const char* annotationValue, int instanceKey);
+OVRP_EXPORT ovrpResult ovrp_QplCreateMarkerHandle(const char* name, int* nameHandle);
+OVRP_EXPORT ovrpResult ovrp_QplDestroyMarkerHandle(int nameHandle);
+OVRP_EXPORT ovrpResult ovrp_OnEditorShutdown();
 
 /// Gets the current recent pose, acceleration, and velocity of the given node for the current time without any
 /// prediction
@@ -987,11 +996,6 @@ OVRP_EXPORT ovrpResult ovrp_GetEyeGazesState(ovrpStep step, int frameIndex, ovrp
 
 
 
-
-
-
-
-
 OVRP_EXPORT ovrpResult
 ovrp_FeatureFidelitySetFeatureEnable(ovrpFeatureType feature, ovrpFeatureEnableState featureEnableState);
 OVRP_EXPORT ovrpResult
@@ -1048,6 +1052,8 @@ OVRP_EXPORT ovrpResult ovrp_GetCurrentInteractionProfile(ovrpHand hand, ovrpInte
 
 
 
+OVRP_EXPORT ovrpResult ovrp_GetLayerRecommendedResolution(int layerId, ovrpSizei* recommendedDimensions);
+OVRP_EXPORT ovrpResult ovrp_GetEyeLayerRecommendedResolution(ovrpSizei* recommendedDimensions);
 
 
 
@@ -1067,6 +1073,7 @@ OVRP_EXPORT ovrpResult ovrp_GetCurrentInteractionProfile(ovrpHand hand, ovrpInte
 
 
 
+OVRP_EXPORT ovrpResult ovrp_IsLayerShapeSupported(ovrpShape shape, ovrpBool* isLayerShapeSupported);
 
 #ifdef __cplusplus
 }

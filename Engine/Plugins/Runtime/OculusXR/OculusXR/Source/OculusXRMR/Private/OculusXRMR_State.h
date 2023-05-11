@@ -106,8 +106,6 @@ public:
 	UPROPERTY()
 	double ScalingFactor;
 
-	ovrpCameraDevice CurrentCapturingCamera;
-
 	/** Flag indicating a change in the tracked camera state for the camera actor to consume */
 	UPROPERTY()
 	bool ChangeCameraStateRequested;

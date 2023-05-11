@@ -139,7 +139,6 @@ FOculusXRUUID UOculusXRAnchorBPFunctionLibrary::StringToAnchorUUID(const FString
 
 	return FOculusXRUUID(newID.data);
 }
-
 bool UOculusXRAnchorBPFunctionLibrary::IsAnchorResultSuccess(EOculusXRAnchorResult::Type result)
 {
 #if OCULUS_HMD_SUPPORTED_PLATFORMS

@@ -415,18 +415,19 @@ void FAndroidTargetSettingsCustomization::BuildIconSection(IDetailLayoutBuilder&
 	}
 }
 
-static EVisibility LaunchImageSettingsVisibility(FText IconName, TSharedPtr<IPropertyHandle> PackageForOculusProperty)
+// BEGIN META SECTION - Meta Quest Android device support
+static EVisibility LaunchImageSettingsVisibility(FText IconName, TSharedPtr<IPropertyHandle> PackageForMetaQuestProperty)
 {
-	uint32 NumElements = 0;
-	const TSharedPtr<IPropertyHandleArray> PackageForOculusPropertyArray = PackageForOculusProperty->AsArray();
-	FPropertyAccess::Result Result = PackageForOculusPropertyArray->GetNumElements(NumElements);
-	if (Result == FPropertyAccess::Success && NumElements > 0 && IconName.ToString() != "Launch Landscape")
+	bool bPackageForMetaQuest;
+	FPropertyAccess::Result Result = PackageForMetaQuestProperty->GetValue(bPackageForMetaQuest);
+	if (Result == FPropertyAccess::Success && bPackageForMetaQuest && IconName.ToString() != "Launch Landscape")
 	{
 		return EVisibility::Hidden;
 	}
 
 	return EVisibility::Visible;
 }
+// END META SECTION - Meta Quest Android device support
 
 void FAndroidTargetSettingsCustomization::BuildLaunchImageSection(IDetailLayoutBuilder& DetailLayout)
 {
@@ -453,7 +454,9 @@ void FAndroidTargetSettingsCustomization::BuildLaunchImageSection(IDetailLayoutB
 			]
 		];
 
-	TSharedPtr<IPropertyHandle> PackageForOculusProperty = DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, PackageForOculusMobile));
+	// BEGIN META SECTION - Meta Quest Android device support
+	TSharedPtr<IPropertyHandle> PackageForMetaQuestProperty = DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bPackageForMetaQuest));
+	// END META SECTION - Meta Quest Android device support
 
 	const FVector2D LaunchImageMaxSize(150.0f, 150.0f);
 
@@ -462,9 +465,11 @@ void FAndroidTargetSettingsCustomization::BuildLaunchImageSection(IDetailLayoutB
 		const FString AutomaticImagePath = EngineAndroidPath / Info.IconPath;
 		const FString TargetImagePath = GameAndroidPath / Info.IconPath;
 
+		// BEGIN META SECTION - Meta Quest Android device support
 		TAttribute<EVisibility> LaunchImageSettingsVisibility(
-			TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateStatic(LaunchImageSettingsVisibility, Info.IconName, PackageForOculusProperty))
+			TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateStatic(LaunchImageSettingsVisibility, Info.IconName, PackageForMetaQuestProperty))
 		);
+		// END META SECTION - Meta Quest Android device support
 
 		LaunchImageCategory.AddCustomRow(Info.IconName)
 			.Visibility(LaunchImageSettingsVisibility)

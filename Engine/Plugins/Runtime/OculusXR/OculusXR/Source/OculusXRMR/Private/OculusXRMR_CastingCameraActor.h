@@ -45,25 +45,10 @@ public:
 	class UVRNotificationsComponent* VRNotificationComponent;
 
 	UPROPERTY()
-	UTexture2D* CameraColorTexture;
-
-	UPROPERTY()
-	UTexture2D* CameraDepthTexture;
-
-	UPROPERTY()
 	UOculusXRMR_PlaneMeshComponent* PlaneMeshComponent;
 
 	UPROPERTY()
-	UMaterial* ChromaKeyMaterial;
-
-	UPROPERTY()
 	UMaterial* OpaqueColoredMaterial;
-
-	UPROPERTY()
-	UMaterialInstanceDynamic* ChromaKeyMaterialInstance;
-
-	UPROPERTY()
-	UMaterialInstanceDynamic* CameraFrameMaterialInstance;
 
 	UPROPERTY()
 	UMaterialInstanceDynamic* BackdropMaterialInstance;
@@ -86,7 +71,6 @@ private:
 	void RequestTrackedCameraCalibration();
 
 	bool RefreshExternalCamera();
-	void UpdateCameraColorTexture(const ovrpSizei &colorFrameSize, const ovrpByte* frameData, int rowPitch);
 
 	void CalibrateTrackedCameraPose();
 	void SetTrackedCameraUserPoseWithCameraTransform();
@@ -103,7 +87,6 @@ private:
 
 	const FColor& GetForegroundLayerBackgroundColor() const { return ForegroundLayerBackgroundColor; }
 
-	void SetupCameraFrameMaterialInstance();
 	void SetBackdropMaterialColor();
 	void SetupBackdropMaterialInstance();
 	void RepositionPlaneMesh();

@@ -1320,6 +1320,7 @@ void FMobileSceneRenderer::RenderForwardSinglePass(FRDGBuilder& GraphBuilder, FM
 	
 	const bool bDoOcclusionQueries = (!bIsFullDepthPrepassEnabled && ViewContext.bIsLastView && DoOcclusionQueries());
 	PassParameters->RenderTargets.NumOcclusionQueries = bDoOcclusionQueries ? ComputeNumOcclusionQueriesToBatch() : 0u;
+	PassParameters->RenderTargets.ResolveRect = FResolveRect(ViewContext.ViewInfo->ViewRect);
 	
 	GraphBuilder.AddPass(
 		RDG_EVENT_NAME("SceneColorRendering"),
@@ -1386,6 +1387,8 @@ void FMobileSceneRenderer::RenderForwardSinglePass(FRDGBuilder& GraphBuilder, FM
 
 void FMobileSceneRenderer::RenderForwardMultiPass(FRDGBuilder& GraphBuilder, FMobileRenderPassParameters* PassParameters, FRenderTargetBindingSlots& BasePassRenderTargets, FRenderViewContext& ViewContext, FSceneTextures& SceneTextures)
 {
+	PassParameters->RenderTargets.ResolveRect = FResolveRect(ViewContext.ViewInfo->ViewRect);
+
 	GraphBuilder.AddPass(
 		RDG_EVENT_NAME("SceneColorRendering"),
 		PassParameters,

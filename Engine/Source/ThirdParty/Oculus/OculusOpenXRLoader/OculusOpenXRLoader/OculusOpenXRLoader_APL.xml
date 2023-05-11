@@ -8,20 +8,27 @@
 		<isArch arch="arm64-v8a">
 			<setBool result="bCpuArchSupported" value="true"/>
 		</isArch>
+		<!-- BEGIN META SECTION - Meta Quest Android device support -->
+		<setBoolFromProperty result="bPackageForMetaQuest" ini="Engine" section="/Script/AndroidRuntimeSettings.AndroidRuntimeSettings" property="bPackageForMetaQuest" default="false"/>
+		<!-- Backcompat for deprecated oculus device target setting -->
 		<setBoolFromPropertyContains result="bPackageForOculusQuest2" ini="Engine" section="/Script/AndroidRuntimeSettings.AndroidRuntimeSettings" property="PackageForOculusMobile" contains="Quest2"/>
 		<setBoolFromPropertyContains result="bPackageForQuestPro" ini="Engine" section="/Script/AndroidRuntimeSettings.AndroidRuntimeSettings" property="PackageForOculusMobile" contains="QuestPro"/>
-		<setBoolOr result="bPackageForOculusMobile" arg1="$B(bPackageForOculusQuest2)" arg2="$B(bPackageForQuestPro)"/>
+		<setBoolOr result="bPackageForMetaQuest" arg1="$B(bPackageForMetaQuest)" arg2="$B(bPackageForOculusQuest2)"/>
+		<setBoolOr result="bPackageForMetaQuest" arg1="$B(bPackageForMetaQuest)" arg2="$B(bPackageForQuestPro)"/>
 
 		<if condition="bCpuArchSupported">
 			<false>
-				<setBool result="bPackageForOculusMobile" value="false"/>
+				<setBool result="bPackageForMetaQuest" value="false"/>
 			</false>
 		</if>
+        <!-- END META SECTION - Meta Quest Android device support -->
 	</init>
 
 	<!-- optional updates applied to AndroidManifest.xml -->
 	<androidManifestUpdates>
-		<if condition="bPackageForOculusMobile">
+        <!-- BEGIN META SECTION - Meta Quest Android device support -->
+		<if condition="bPackageForMetaQuest">
+        <!-- END META SECTION - Meta Quest Android device support -->
 			<true>
 				<addFeature android:name="android.hardware.vr.headtracking" android:version="1" android:required="true" />
 
@@ -64,6 +71,9 @@
 					</if>
 				</loopElements>
 
+                <!-- BEGIN META SECTION - Meta Quest Android device support -->
+				<!-- Backcompat for deprecated oculus device target setting -->
+                <!-- END META SECTION - Meta Quest Android device support -->
 				<!-- Add Application Specific Flags -->
 				<loopElements tag="application">
 					<!-- Add SupportedDevices Tag -->
@@ -78,6 +88,7 @@
 							<setStringAdd result="devicesString" arg1="$S(devicesString)" arg2="cambria|" />
 						</true>
 					</if>
+					
 					<setIntLength result="devicesStringLength" source="$S(devicesString)"/>
 					<setBoolIsGreater result="bDevicesSupported" arg1="$I(devicesStringLength)" arg2="0"/>
 					<if condition="bDevicesSupported">
@@ -105,7 +116,6 @@
 							<addElement tag="application" name="supportedDevices"/>
 						</true>
 					</if>
-
 				</loopElements>
 			</true>
 		</if>
@@ -127,7 +137,9 @@
 
 	<!-- optional additions to GameActivity onCreate metadata reading in GameActivity.java -->
 	<gameActivityReadMetadataAdditions>
-		<if condition="bPackageForOculusMobile">
+        <!-- BEGIN META SECTION - Meta Quest Android device support -->
+		<if condition="bPackageForMetaQuest">
+        <!-- END META SECTION - Meta Quest Android device support -->
 			<true>
 				<insert>
 					boolean hasVR = false;

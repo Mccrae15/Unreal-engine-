@@ -7,75 +7,71 @@ UENUM()
 enum EOculusXRColorMapType
 {
 	/** None*/
-	ColorMapType_None UMETA(DisplayName = "None"),
+	ColorMapType_None = 0 UMETA(DisplayName = "None"),
 
 	/** Grayscale to color */
-	ColorMapType_GrayscaleToColor UMETA(DisplayName = "Grayscale To Color"),
+	ColorMapType_GrayscaleToColor = 1 UMETA(DisplayName = "Grayscale To Color"),
 
 	/** Grayscale */
-	ColorMapType_Grayscale UMETA(DisplayName = "Grayscale"),
+	ColorMapType_Grayscale = 2 UMETA(DisplayName = "Grayscale"),
 
 	/** Color Adjustment */
-	ColorMapType_ColorAdjustment UMETA(DisplayName = "Color Adjustment"),
+	ColorMapType_ColorAdjustment = 3 UMETA(DisplayName = "Color Adjustment"),
 
-	ColorMapType_MAX,
+	/** Color Lut */
+	ColorMapType_ColorLut = 4 UMETA(Experimental, DisplayName = "Color LUT (Experimental)", ToolTip = "Experimental features must be enabled in the Project Settings (Edit > Project Settings > Meta XR) in order to use this feature."),
+
+	/** Color Lut Interpolated */
+	ColorMapType_ColorLut_Interpolated = 5 UMETA(Experimental, DisplayName = "Interpolated Color LUT", ToolTip = "Experimental features must be enabled in the Project Settings (Edit > Project Settings > Meta XR) in order to use this feature."),
+
+	ColorMapType_MAX = 255,
 };
 
 UENUM()
 enum EOculusXRPassthroughLayerOrder
 {
 	/** Layer is rendered on top of scene */
-	PassthroughLayerOrder_Overlay UMETA(DisplayName = "Overlay"),
+	PassthroughLayerOrder_Overlay = 0 UMETA(DisplayName = "Overlay"),
 
 	/** Layer is rendered under scene */
-	PassthroughLayerOrder_Underlay UMETA(DisplayName = "Underlay"),
+	PassthroughLayerOrder_Underlay = 1 UMETA(DisplayName = "Underlay"),
 
-	PassthroughLayerOrder_MAX,
+	PassthroughLayerOrder_MAX = 255,
 };
 
-struct FEdgeStyleParameters {
-	FEdgeStyleParameters()
-	:	bEnableEdgeColor(false)
-	,	bEnableColorMap(false)
-	,	TextureOpacityFactor(1.0f)
-	,	EdgeColor{}
-	,	ColorMapType{}
-	,	ColorMapData{}
-	{
+struct OCULUSXRHMD_API FColorLutDesc
+{
+	FColorLutDesc();
 
-	};
+	FColorLutDesc(const TArray<uint64>& InColorLuts, float InWeight);
+
+	float Weight;
+	TArray<uint64> ColorLuts;
+};
+
+struct OCULUSXRHMD_API FEdgeStyleParameters
+{
+public:
+	FEdgeStyleParameters();
 
 	FEdgeStyleParameters(
-		bool bEnableEdgeColor, 
-		bool bEnableColorMap, 
-		float TextureOpacityFactor, 
-		float Brightness, 
-		float Contrast, 
-		float Posterize, 
+		bool bEnableEdgeColor,
+		bool bEnableColorMap,
+		float TextureOpacityFactor,
+		float Brightness,
+		float Contrast,
+		float Posterize,
 		float Saturation,
-		FLinearColor EdgeColor, 
-		FLinearColor ColorScale, 
-		FLinearColor ColorOffset, 
+		FLinearColor EdgeColor,
+		FLinearColor ColorScale,
+		FLinearColor ColorOffset,
 		EOculusXRColorMapType InColorMapType,
-		const TArray<FLinearColor>& InColorMapGradient)
-	:	bEnableEdgeColor(bEnableEdgeColor)
-	,	bEnableColorMap(bEnableColorMap)
-	,	TextureOpacityFactor(TextureOpacityFactor)
-	,	Brightness(Brightness)
-	,	Contrast(Contrast)
-	,	Posterize(Posterize)
-	,	Saturation(Saturation)
-	,	EdgeColor(EdgeColor)
-	,	ColorScale(ColorScale)
-	,	ColorOffset(ColorOffset)
-	,	ColorMapType(InColorMapType)
-
-	{
-		ColorMapData = GenerateColorMapData(InColorMapType, InColorMapGradient);
-	};
+		const TArray<FLinearColor>& InColorMapGradient,
+		const FColorLutDesc& InLutDesc);
 
 	bool bEnableEdgeColor;
 	bool bEnableColorMap;
+	bool bUseColorLuts;
 	float TextureOpacityFactor;
 	float Brightness;
 	float Contrast;
@@ -86,7 +82,7 @@ struct FEdgeStyleParameters {
 	FLinearColor ColorOffset;
 	EOculusXRColorMapType ColorMapType;
 	TArray<uint8> ColorMapData;
-
+	FColorLutDesc ColorLutDesc;
 private:
 
 	/** Generates the corresponding color map based on given color map type */

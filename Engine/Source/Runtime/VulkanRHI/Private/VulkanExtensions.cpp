@@ -51,6 +51,13 @@ TAutoConsoleVariable<int32> GVulkanAllowHostQueryResetCVar(
 	ECVF_ReadOnly
 );
 
+TAutoConsoleVariable<int32> GVulkanAllowFragmentShadingRateCVar(
+	TEXT("r.Vulkan.AllowFragmentShadingRate"),
+	1,
+	TEXT("0: Do not enable support for FSR extension\n")
+	TEXT("1: Enable Fragment Shading Rate Extension (default)"),
+	ECVF_ReadOnly
+);
 
 #if VULKAN_HAS_DEBUGGING_ENABLED
 extern TAutoConsoleVariable<int32> GGPUValidationCvar;
@@ -426,6 +433,7 @@ public:
 	FVulkanKHRFragmentShadingRateExtension(FVulkanDevice* InDevice)
 		: FVulkanDeviceExtension(InDevice, VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME, VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE)
 	{
+		bEnabledInCode = bEnabledInCode && (GVulkanAllowFragmentShadingRateCVar.GetValueOnAnyThread() != 0);
 	}
 
 	virtual void PrePhysicalDeviceProperties(VkPhysicalDeviceProperties2KHR& PhysicalDeviceProperties2) override final

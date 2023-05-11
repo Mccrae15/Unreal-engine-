@@ -10,6 +10,7 @@
 #include "Features/IModularFeatures.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Haptics/HapticFeedbackEffect_Base.h"
+#include "GenericPlatform/GenericPlatformInputDeviceMapper.h"
 
 #define OVR_DEBUG_LOGGING 0
 #define OVR_HAP_LOGGING 0
@@ -174,8 +175,8 @@ FOculusXRInput::FOculusXRInput( const TSharedRef< FGenericApplicationMessageHand
 
 	FOculusControllerPair& ControllerPair = *new(ControllerPairs) FOculusControllerPair();
 
-	// @todo: Unreal controller index should be assigned to us by the engine to ensure we don't contest with other devices
-	ControllerPair.UnrealControllerIndex = 0; //???? NextUnrealControllerIndex++;
+	// TODO: Map the oculus controllers uniquely instead of using the default
+	ControllerPair.DeviceId = IPlatformInputDeviceMapper::Get().GetDefaultInputDevice();
 
 	IModularFeatures::Get().RegisterModularFeature( GetModularFeatureName(), this );
 
@@ -313,6 +314,9 @@ void FOculusXRInput::SendControllerEvents()
 	{
 		if (MessageHandler.IsValid() && GEngine->XRSystem->GetHMDDevice())
 		{
+			FPlatformUserId PlatUser = IPlatformInputDeviceMapper::Get().GetPrimaryPlatformUser();
+			FInputDeviceId DeviceId = IPlatformInputDeviceMapper::Get().GetDefaultInputDevice();
+
 			OculusXRHMD::FOculusXRHMD* OculusXRHMD = static_cast<OculusXRHMD::FOculusXRHMD*>(GEngine->XRSystem->GetHMDDevice());
 			OculusXRHMD->StartGameFrame_GameThread();
 
@@ -383,21 +387,21 @@ void FOculusXRInput::SendControllerEvents()
 						ButtonState.bIsPressed = bButtonPressed;
 						if (ButtonState.bIsPressed)
 						{
-							OnControllerButtonPressed(ButtonState, 0, false);
+							OnControllerButtonPressed(ButtonState, PlatUser, DeviceId, false);
 
 							// Set the timer for the first repeat
 							ButtonState.NextRepeatTime = CurrentTime + InitialButtonRepeatDelay;
 						}
 						else
 						{
-							OnControllerButtonReleased(ButtonState, 0, false);
+							OnControllerButtonReleased(ButtonState, PlatUser, DeviceId, false);
 						}
 					}
 
 					// Apply key repeat, if its time for that
 					if (ButtonState.bIsPressed && ButtonState.NextRepeatTime <= CurrentTime)
 					{
-						OnControllerButtonPressed(ButtonState, 0, true);
+						OnControllerButtonPressed(ButtonState, PlatUser, DeviceId, true);
 
 						// Set the timer for the next repeat
 						ButtonState.NextRepeatTime = CurrentTime + ButtonRepeatDelay;
@@ -426,6 +430,8 @@ void FOculusXRInput::SendControllerEvents()
 
 				for (FOculusControllerPair& ControllerPair : ControllerPairs)
 				{
+					FPlatformUserId PlatformUser = IPlatformInputDeviceMapper::Get().GetUserForInputDevice(ControllerPair.DeviceId);
+
 					for (int32 HandIndex = 0; HandIndex < UE_ARRAY_COUNT(ControllerPair.TouchControllerStates); ++HandIndex)
 					{
 						FOculusTouchControllerState& State = ControllerPair.TouchControllerStates[HandIndex];
@@ -472,13 +478,13 @@ void FOculusXRInput::SendControllerEvents()
 							if (OvrTriggerAxis != State.TriggerAxis)
 							{
 								State.TriggerAxis = OvrTriggerAxis;
-								MessageHandler->OnControllerAnalog(bIsLeft ? EKeys::OculusTouch_Left_Trigger_Axis.GetFName() : EKeys::OculusTouch_Right_Trigger_Axis.GetFName(), ControllerPair.UnrealControllerIndex, State.TriggerAxis);
+								MessageHandler->OnControllerAnalog(bIsLeft ? EKeys::OculusTouch_Left_Trigger_Axis.GetFName() : EKeys::OculusTouch_Right_Trigger_Axis.GetFName(), PlatformUser, ControllerPair.DeviceId, State.TriggerAxis);
 							}
 
 							if (OvrGripAxis != State.GripAxis)
 							{
 								State.GripAxis = OvrGripAxis;
-								MessageHandler->OnControllerAnalog(bIsLeft ? EKeys::OculusTouch_Left_Grip_Axis.GetFName() : EKeys::OculusTouch_Right_Grip_Axis.GetFName(), ControllerPair.UnrealControllerIndex, State.GripAxis);
+								MessageHandler->OnControllerAnalog(bIsLeft ? EKeys::OculusTouch_Left_Grip_Axis.GetFName() : EKeys::OculusTouch_Right_Grip_Axis.GetFName(), PlatformUser, ControllerPair.DeviceId, State.GripAxis);
 							}
 
 							ovrpVector2f ThumbstickValue = OvrpControllerState.Thumbstick[HandIndex];
@@ -487,13 +493,13 @@ void FOculusXRInput::SendControllerEvents()
 							if (ThumbstickValue.x != State.ThumbstickAxes.X)
 							{
 								State.ThumbstickAxes.X = ThumbstickValue.x;
-								MessageHandler->OnControllerAnalog(bIsLeft ? EKeys::OculusTouch_Left_Thumbstick_X.GetFName() : EKeys::OculusTouch_Right_Thumbstick_X.GetFName(), ControllerPair.UnrealControllerIndex, State.ThumbstickAxes.X);
+								MessageHandler->OnControllerAnalog(bIsLeft ? EKeys::OculusTouch_Left_Thumbstick_X.GetFName() : EKeys::OculusTouch_Right_Thumbstick_X.GetFName(), PlatformUser, ControllerPair.DeviceId, State.ThumbstickAxes.X);
 							}
 
 							if (ThumbstickValue.y != State.ThumbstickAxes.Y)
 							{
 								State.ThumbstickAxes.Y = ThumbstickValue.y;
-								MessageHandler->OnControllerAnalog(bIsLeft ? EKeys::OculusTouch_Left_Thumbstick_Y.GetFName() : EKeys::OculusTouch_Right_Thumbstick_Y.GetFName(), ControllerPair.UnrealControllerIndex, State.ThumbstickAxes.Y);
+								MessageHandler->OnControllerAnalog(bIsLeft ? EKeys::OculusTouch_Left_Thumbstick_Y.GetFName() : EKeys::OculusTouch_Right_Thumbstick_Y.GetFName(), PlatformUser, ControllerPair.DeviceId, State.ThumbstickAxes.Y);
 							}
 
 							if (TouchpadValue.x != State.TouchpadAxes.X)
@@ -509,25 +515,25 @@ void FOculusXRInput::SendControllerEvents()
 							if (OvrThumbRestForce != State.ThumbRestForce)
 							{
 								State.ThumbRestForce = OvrThumbRestForce;
-								MessageHandler->OnControllerAnalog(bIsLeft ? FOculusKey::OculusTouch_Left_ThumbRest_Force.GetFName() : FOculusKey::OculusTouch_Right_ThumbRest_Force.GetFName(), ControllerPair.UnrealControllerIndex, State.ThumbRestForce);
+								MessageHandler->OnControllerAnalog(bIsLeft ? FOculusKey::OculusTouch_Left_ThumbRest_Force.GetFName() : FOculusKey::OculusTouch_Right_ThumbRest_Force.GetFName(), PlatformUser, ControllerPair.DeviceId, State.ThumbRestForce);
 							}
 
 							if (OvrStylusForce != State.StylusForce)
 							{
 								State.StylusForce = OvrStylusForce;
-								MessageHandler->OnControllerAnalog(bIsLeft ? FOculusKey::OculusTouch_Left_Stylus_Force.GetFName() : FOculusKey::OculusTouch_Right_Stylus_Force.GetFName(), ControllerPair.UnrealControllerIndex, State.StylusForce);
+								MessageHandler->OnControllerAnalog(bIsLeft ? FOculusKey::OculusTouch_Left_Stylus_Force.GetFName() : FOculusKey::OculusTouch_Right_Stylus_Force.GetFName(), PlatformUser, ControllerPair.DeviceId, State.StylusForce);
 							}
 
 							if (OvrIndexTriggerCurl != State.IndexTriggerCurl)
 							{
 								State.IndexTriggerCurl = OvrIndexTriggerCurl;
-								MessageHandler->OnControllerAnalog(bIsLeft ? FOculusKey::OculusTouch_Left_IndexTrigger_Curl.GetFName() : FOculusKey::OculusTouch_Right_IndexTrigger_Curl.GetFName(), ControllerPair.UnrealControllerIndex, State.IndexTriggerCurl);
+								MessageHandler->OnControllerAnalog(bIsLeft ? FOculusKey::OculusTouch_Left_IndexTrigger_Curl.GetFName() : FOculusKey::OculusTouch_Right_IndexTrigger_Curl.GetFName(), PlatformUser, ControllerPair.DeviceId, State.IndexTriggerCurl);
 							}
 
 							if (OvrIndexTriggerSlide != State.IndexTriggerSlide)
 							{
 								State.IndexTriggerSlide = OvrIndexTriggerSlide;
-								MessageHandler->OnControllerAnalog(bIsLeft ? FOculusKey::OculusTouch_Left_IndexTrigger_Slide.GetFName() : FOculusKey::OculusTouch_Right_IndexTrigger_Slide.GetFName(), ControllerPair.UnrealControllerIndex, State.IndexTriggerSlide);
+								MessageHandler->OnControllerAnalog(bIsLeft ? FOculusKey::OculusTouch_Left_IndexTrigger_Slide.GetFName() : FOculusKey::OculusTouch_Right_IndexTrigger_Slide.GetFName(), PlatformUser, ControllerPair.DeviceId, State.IndexTriggerSlide);
 							}
 
 							for (int32 ButtonIndex = 0; ButtonIndex < (int32)EOculusTouchControllerButton::TotalButtonCount; ++ButtonIndex)
@@ -626,21 +632,21 @@ void FOculusXRInput::SendControllerEvents()
 									ButtonState.bIsPressed = bButtonPressed;
 									if (ButtonState.bIsPressed)
 									{
-										OnControllerButtonPressed(ButtonState, ControllerPair.UnrealControllerIndex, false);
+										OnControllerButtonPressed(ButtonState, PlatformUser, ControllerPair.DeviceId, false);
 
 										// Set the timer for the first repeat
 										ButtonState.NextRepeatTime = CurrentTime + InitialButtonRepeatDelay;
 									}
 									else
 									{
-										OnControllerButtonReleased(ButtonState, ControllerPair.UnrealControllerIndex, false);
+										OnControllerButtonReleased(ButtonState, PlatformUser, ControllerPair.DeviceId, false);
 									}
 								}
 
 								// Apply key repeat, if its time for that
 								if (ButtonState.bIsPressed && ButtonState.NextRepeatTime <= CurrentTime)
 								{
-									OnControllerButtonPressed(ButtonState, ControllerPair.UnrealControllerIndex, true);
+									OnControllerButtonPressed(ButtonState, PlatformUser, ControllerPair.DeviceId, true);
 
 									// Set the timer for the next repeat
 									ButtonState.NextRepeatTime = CurrentTime + ButtonRepeatDelay;
@@ -703,7 +709,7 @@ void FOculusXRInput::SendControllerEvents()
 
 								if (CurrentAxisVal != CapState.State)
 								{
-									MessageHandler->OnControllerAnalog(CapState.Axis, ControllerPair.UnrealControllerIndex, CurrentAxisVal);
+									MessageHandler->OnControllerAnalog(CapState.Axis, PlatformUser, ControllerPair.DeviceId, CurrentAxisVal);
 
 									CapState.State = CurrentAxisVal;
 								}
@@ -736,6 +742,8 @@ void FOculusXRInput::SendControllerEvents()
 			{
 				for (FOculusControllerPair& ControllerPair : ControllerPairs)
 				{
+					FPlatformUserId PlatformUser = IPlatformInputDeviceMapper::Get().GetUserForInputDevice(ControllerPair.DeviceId);
+
 					for (int32 HandIndex = 0; HandIndex < UE_ARRAY_COUNT(ControllerPair.HandControllerStates); ++HandIndex)
 					{
 						FOculusHandControllerState& State = ControllerPair.HandControllerStates[HandIndex];
@@ -774,7 +782,7 @@ void FOculusXRInput::SendControllerEvents()
 									BoneRotation.Normalize();
 									State.BoneRotations[BoneIndex] = BoneRotation;
 								}
-
+								
 								// Update Pinch State and Pinch Strength
 								bool bTracked = (HandState.Status & ovrpHandStatus_HandTracked) != 0;
 								State.TrackingConfidence = FOculusHandTracking::ToEOculusXRTrackingConfidence(HandState.HandConfidence);
@@ -791,7 +799,7 @@ void FOculusXRInput::SendControllerEvents()
 								State.PointerPose.SetRotation(OculusXRHMD::ToFQuat(PointerPose.Orientation));
 
 								State.bIsDominantHand = (HandState.Status & ovrpHandStatus_DominantHand) != 0;
-
+								
 								// Poll for finger confidence
 								for (uint32 FingerIndex = 0; FingerIndex < (int32)EOculusHandAxes::TotalAxisCount; FingerIndex++)
 								{
@@ -824,11 +832,11 @@ void FOculusXRInput::SendControllerEvents()
 										PinchState.bIsPressed = bPressed;
 										if (PinchState.bIsPressed)
 										{
-											OnControllerButtonPressed(PinchState, ControllerPair.UnrealControllerIndex, false);
+											OnControllerButtonPressed(PinchState, PlatformUser, ControllerPair.DeviceId, false);
 										}
 										else
 										{
-											OnControllerButtonReleased(PinchState, ControllerPair.UnrealControllerIndex, false);
+											OnControllerButtonReleased(PinchState, PlatformUser, ControllerPair.DeviceId, false);
 										}
 									}
 								}
@@ -847,7 +855,7 @@ void FOculusXRInput::SendControllerEvents()
 
 									if (PinchValue != PinchStrength.State)
 									{
-										MessageHandler->OnControllerAnalog(PinchStrength.Axis, ControllerPair.UnrealControllerIndex, PinchValue);
+										MessageHandler->OnControllerAnalog(PinchStrength.Axis, PlatformUser, ControllerPair.DeviceId, PinchValue);
 										PinchStrength.State = PinchValue;
 									}
 								}
@@ -895,9 +903,14 @@ void FOculusXRInput::SetChannelValue( int32 ControllerId, FForceFeedbackChannelT
 {
 	const EControllerHand Hand = ( ChannelType == FForceFeedbackChannelType::LEFT_LARGE || ChannelType == FForceFeedbackChannelType::LEFT_SMALL ) ? EControllerHand::Left : EControllerHand::Right;
 
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+	FPlatformUserId InPlatformUser = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerId);
+	FInputDeviceId InDeviceId = INPUTDEVICEID_NONE;
+	DeviceMapper.RemapControllerIdToPlatformUserAndDevice(ControllerId, InPlatformUser, InDeviceId);
+
 	for( FOculusControllerPair& ControllerPair : ControllerPairs )
 	{
-		if( ControllerPair.UnrealControllerIndex == ControllerId )
+		if( ControllerPair.DeviceId == InDeviceId )
 		{
 			FOculusTouchControllerState& ControllerState = ControllerPair.TouchControllerStates[ (int32)Hand ];
 
@@ -925,9 +938,14 @@ void FOculusXRInput::SetChannelValue( int32 ControllerId, FForceFeedbackChannelT
 
 void FOculusXRInput::SetChannelValues( int32 ControllerId, const FForceFeedbackValues& Values )
 {
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+	FPlatformUserId InPlatformUser = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerId);
+	FInputDeviceId InDeviceId = INPUTDEVICEID_NONE;
+	DeviceMapper.RemapControllerIdToPlatformUserAndDevice(ControllerId, InPlatformUser, InDeviceId);
+
 	for( FOculusControllerPair& ControllerPair : ControllerPairs )
 	{
-		if( ControllerPair.UnrealControllerIndex == ControllerId )
+		if( ControllerPair.DeviceId == InDeviceId )
 		{
 			// @todo: The SMALL channel controls frequency, the LARGE channel controls amplitude.  This is a bit of a weird fit.
 			FOculusTouchControllerState& LeftControllerState = ControllerPair.TouchControllerStates[ (int32)EControllerHand::Left ];
@@ -951,9 +969,14 @@ void FOculusXRInput::SetChannelValues( int32 ControllerId, const FForceFeedbackV
 
 bool FOculusXRInput::SupportsForceFeedback(int32 ControllerId)
 {
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+	FPlatformUserId InPlatformUser = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerId);
+	FInputDeviceId InDeviceId = INPUTDEVICEID_NONE;
+	DeviceMapper.RemapControllerIdToPlatformUserAndDevice(ControllerId, InPlatformUser, InDeviceId);
+
 	for (FOculusControllerPair& ControllerPair : ControllerPairs)
 	{
-		if (ControllerPair.UnrealControllerIndex == ControllerId)
+		if (ControllerPair.DeviceId == InDeviceId)
 		{
 			const FOculusTouchControllerState& ControllerStateLeft = ControllerPair.TouchControllerStates[(int32)EControllerHand::Left];
 			const FOculusTouchControllerState& ControllerStateRight = ControllerPair.TouchControllerStates[(int32)EControllerHand::Right];
@@ -1020,25 +1043,25 @@ void FOculusXRInput::UpdateForceFeedback( const FOculusControllerPair& Controlle
 	}
 }
 
-bool FOculusXRInput::OnControllerButtonPressed(const FOculusButtonState& ButtonState, int32 ControllerId, bool IsRepeat)
+bool FOculusXRInput::OnControllerButtonPressed(const FOculusButtonState& ButtonState, FPlatformUserId UserId, FInputDeviceId DeviceId, bool IsRepeat)
 {
-	bool result = MessageHandler->OnControllerButtonPressed(ButtonState.Key, ControllerId, IsRepeat);
+	bool result = MessageHandler->OnControllerButtonPressed(ButtonState.Key, UserId, DeviceId, IsRepeat);
 
 	if (!ButtonState.EmulatedKey.IsNone())
 	{
-		MessageHandler->OnControllerButtonPressed(ButtonState.EmulatedKey, ControllerId, IsRepeat);
+		MessageHandler->OnControllerButtonPressed(ButtonState.EmulatedKey, UserId, DeviceId, IsRepeat);
 	}
 
 	return result;
 }
 
-bool FOculusXRInput::OnControllerButtonReleased(const FOculusButtonState& ButtonState, int32 ControllerId, bool IsRepeat)
+bool FOculusXRInput::OnControllerButtonReleased(const FOculusButtonState& ButtonState, FPlatformUserId UserId, FInputDeviceId DeviceId, bool IsRepeat)
 {
-	bool result = MessageHandler->OnControllerButtonReleased(ButtonState.Key, ControllerId, IsRepeat);
+	bool result = MessageHandler->OnControllerButtonReleased(ButtonState.Key, UserId, DeviceId, IsRepeat);
 
 	if (!ButtonState.EmulatedKey.IsNone())
 	{
-		MessageHandler->OnControllerButtonReleased(ButtonState.EmulatedKey, ControllerId, IsRepeat);
+		MessageHandler->OnControllerButtonReleased(ButtonState.EmulatedKey, UserId, DeviceId, IsRepeat);
 	}
 
 	return result;
@@ -1065,12 +1088,17 @@ const TMap<FName, ovrpNode> MotionSourceMap{
 
 bool FOculusXRInput::GetControllerOrientationAndPosition(const int32 ControllerIndex, const FName MotionSource, FRotator& OutOrientation, FVector& OutPosition, float WorldToMetersScale) const
 {
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+	FPlatformUserId InPlatformUser = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerIndex);
+	FInputDeviceId InDeviceId = INPUTDEVICEID_NONE;
+	DeviceMapper.RemapControllerIdToPlatformUserAndDevice(ControllerIndex, InPlatformUser, InDeviceId);
+
 	// Don't do renderthread pose update if MRC is active due to controller jitter issues with SceneCaptures
 	if (IsInGameThread() || !UOculusXRMRFunctionLibrary::IsMrcActive())
 	{
 		for (const FOculusControllerPair& ControllerPair : ControllerPairs)
 		{
-			if (ControllerPair.UnrealControllerIndex == ControllerIndex)
+			if (ControllerPair.DeviceId == InDeviceId)
 			{
 				if (MotionSourceMap.Contains(MotionSource))
 				{
@@ -1124,8 +1152,8 @@ bool FOculusXRInput::GetControllerOrientationAndPosition(const int32 ControllerI
 									OculusXRHMD->ConvertPose_Internal(InPoseState.Pose, OutPose, Settings, WorldToMetersScale))
 								{
 									FName FinalMotionSource = MotionSource;
-									if (MotionSource == FName("Left") || MotionSource == FName("EControllerHand::Left") ||
-										MotionSource == FName("Right") || MotionSource == FName("EControllerHand::Right"))
+								if (MotionSource == FName("Left") || MotionSource == FName("EControllerHand::Left") ||
+									MotionSource == FName("Right") || MotionSource == FName("EControllerHand::Right"))
 									{
 										switch (ControllerPoseAlignment)
 										{
@@ -1140,7 +1168,7 @@ bool FOculusXRInput::GetControllerOrientationAndPosition(const int32 ControllerI
 											break;
 										}
 									}
-
+									
 									// TODO: Just pass the pose info to OVRPlugin instead of doing the conversion between poses here
 									if (FinalMotionSource == FName("LeftGrip") || FinalMotionSource == FName("RightGrip"))
 									{
@@ -1226,9 +1254,15 @@ ETrackingStatus FOculusXRInput::GetControllerTrackingStatus(const int32 Controll
 		return TrackingStatus;
 	}
 
+	
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+	FPlatformUserId InPlatformUser = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerIndex);
+	FInputDeviceId InDeviceId = INPUTDEVICEID_NONE;
+	DeviceMapper.RemapControllerIdToPlatformUserAndDevice(ControllerIndex, InPlatformUser, InDeviceId);
+	
 	for( const FOculusControllerPair& ControllerPair : ControllerPairs )
 	{
-		if( ControllerPair.UnrealControllerIndex == ControllerIndex )
+		if( ControllerPair.DeviceId == InDeviceId )
 		{
 			const FOculusTouchControllerState& ControllerState = ControllerPair.TouchControllerStates[ (int32)DeviceHand ];
 			if (ControllerState.bIsConnected)
@@ -1268,9 +1302,14 @@ void FOculusXRInput::SetHapticFeedbackValues(int32 ControllerId, int32 Hand, con
 
 void FOculusXRInput::SetHapticFeedbackValues(int32 ControllerId, int32 Hand, const FHapticFeedbackValues& Values, TSharedPtr<FOculusXRHapticsDesc> HapticsDesc)
 {
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+	FPlatformUserId InPlatformUser = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerId);
+	FInputDeviceId InDeviceId = INPUTDEVICEID_NONE;
+	DeviceMapper.RemapControllerIdToPlatformUserAndDevice(ControllerId, InPlatformUser, InDeviceId);
+
 	for (FOculusControllerPair& ControllerPair : ControllerPairs)
 	{
-		if (ControllerPair.UnrealControllerIndex == ControllerId)
+		if (ControllerPair.DeviceId == InDeviceId)
 		{
 			FOculusTouchControllerState& ControllerState = ControllerPair.TouchControllerStates[Hand];
 			if (ControllerState.bIsConnected)
@@ -1394,7 +1433,7 @@ void FOculusXRInput::SetHapticFeedbackValues(int32 ControllerId, int32 Hand, con
 										SamplesSent,
 										HapticBuffer->SamplesSent + SamplesSent,
 										(EndTimePCM - StartTimePCM) * 1000.0);
-
+									
 									if (BufferToFree)
 									{
 										FMemory::Free(BufferToFree);

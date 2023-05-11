@@ -30,7 +30,7 @@ public:
 	FSimpleElementVS() {}
 
 	void SetParameters(FRHICommandList& RHICmdList, const FMatrix& WorldToClipMatrix);
-	void SetParameters(FRHICommandList& RHICmdList, const FRelativeViewMatrices& Matrices);
+	void SetParameters(FRHICommandList& RHICmdList, const FRelativeViewMatrices Matrices[2]);
 
 	//virtual bool Serialize(FArchive& Ar) override;
 

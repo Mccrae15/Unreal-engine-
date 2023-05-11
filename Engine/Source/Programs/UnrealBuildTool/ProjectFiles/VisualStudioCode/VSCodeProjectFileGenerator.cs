@@ -1,4 +1,4 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -1132,10 +1132,12 @@ namespace UnrealBuildTool
 		{
 			ConfigHierarchy Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, DirectoryReference.FromFile(BuildProduct.UProjectFile), BuildProduct.Platform);
 
-			List<string>? OculusMobileDevices;
-			bool result = Ini.GetArray("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "PackageForOculusMobile", out OculusMobileDevices);
-			// Check if packaging for oculus
-			if (!result || OculusMobileDevices == null || OculusMobileDevices.Count == 0)
+			// BEGIN META SECTION - Meta Quest Android device support
+			bool ArrayResult = Ini.GetArray("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "PackageForOculusMobile", out var OculusMobileDevices); // Backcompat for deprecated oculus device target setting
+			bool BoolResult = Ini.GetBool("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "bPackageForMetaQuest", out var bPackageForMetaQuest);
+			// Check if packaging for Meta Quest
+			if ((!ArrayResult || OculusMobileDevices == null || OculusMobileDevices.Count == 0) && (!BoolResult || !bPackageForMetaQuest))
+			// END META SECTION - Meta Quest Android device support
 			{
 				return;
 			}

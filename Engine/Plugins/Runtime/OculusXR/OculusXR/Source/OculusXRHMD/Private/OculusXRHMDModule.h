@@ -107,5 +107,7 @@ protected:
 	TWeakPtr< IHeadMountedDisplay, ESPMode::ThreadSafe > HeadMountedDisplay;
 	TSharedPtr< IHeadMountedDisplayVulkanExtensions, ESPMode::ThreadSafe > VulkanExtensions;
 
+	friend class ::OculusXRHMD::FOculusXRHMD;
+
 #endif // OCULUS_HMD_SUPPORTED_PLATFORMS
 };

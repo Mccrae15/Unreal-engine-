@@ -37,7 +37,7 @@ void FOculusAudioContextManager::OnListenerShutdown(FAudioDevice* AudioDevice)
 	if (CurrentSpatializerPluginName.Equals(OculusSpatializerPluginName)) // we have a match!
 	{
 		OculusAudioSpatializationAudioMixer* Spatializer =
-			static_cast<OculusAudioSpatializationAudioMixer*>(AudioDevice->SpatializationPluginInterface.Get());
+			static_cast<OculusAudioSpatializationAudioMixer*>(AudioDevice->GetSpatializationPluginInterface().Get());
 		Spatializer->ClearContext();
 	}
 

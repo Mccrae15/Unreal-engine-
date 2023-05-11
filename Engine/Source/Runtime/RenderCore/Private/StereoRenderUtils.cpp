@@ -58,7 +58,6 @@ RENDERCORE_API FStereoShaderAspects::FStereoShaderAspects(EShaderPlatform Platfo
 	const bool bInstancedStereo = CVarInstancedStereo.Get(Platform);
 
 	const bool bMobilePlatform = IsMobilePlatform(Platform);
-	const bool bMobilePostprocessing = CVarMobileHDR.Get(Platform);
 	const bool bMobileMultiView = CVarMobileMultiView.Get(Platform);
 	// If we're in a non-rendering run (cooker, DDC commandlet, anything with -nullrhi), don't check GRHI* setting, as it reflects runtime RHI capabilities.
 	const bool bMultiViewportCapable = (GRHISupportsArrayIndexFromAnyShader || !FApp::CanEverRender()) && RHISupportsMultiViewport(Platform);
@@ -69,13 +68,12 @@ RENDERCORE_API FStereoShaderAspects::FStereoShaderAspects(EShaderPlatform Platfo
 	UE_DEBUG_SSA_LOG(Log, TEXT("Platform=%s (%d)"), *LexToString(Platform), static_cast<int32>(Platform));
 	UE_DEBUG_SSA_LOG_BOOL(bInstancedStereo);
 	UE_DEBUG_SSA_LOG_BOOL(bMobilePlatform);
-	UE_DEBUG_SSA_LOG_BOOL(bMobilePostprocessing);
 	UE_DEBUG_SSA_LOG_BOOL(bMobileMultiView);
 	UE_DEBUG_SSA_LOG_BOOL(bMultiViewportCapable);
 	UE_DEBUG_SSA_LOG_BOOL(bInstancedStereoNative);
 	UE_DEBUG_SSA_LOG(Log, TEXT("---"));
 
-	const bool bMobileMultiViewCoreSupport = bMobilePlatform && bMobileMultiView && !bMobilePostprocessing;
+	const bool bMobileMultiViewCoreSupport = bMobilePlatform && bMobileMultiView;
 	if (bMobileMultiViewCoreSupport)
 	{
 		UE_DEBUG_SSA_LOG(Log, TEXT("RHISupportsMobileMultiView(%s) = %d."), *LexToString(Platform), RHISupportsMobileMultiView(Platform));

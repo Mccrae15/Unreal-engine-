@@ -250,11 +250,14 @@ namespace OculusXRHMD
 			return ovrpInsightPassthroughColorMapType_MonoToMono;
 		case ColorMapType_ColorAdjustment:
 			return ovrpInsightPassthroughColorMapType_BrightnessContrastSaturation;
+		case ColorMapType_ColorLut:
+			return ovrpInsightPassthroughColorMapType_ColorLut;
+		case ColorMapType_ColorLut_Interpolated:
+			return ovrpInsightPassthroughColorMapType_InterpolatedColorLut;
 		default:
 			return ovrpInsightPassthroughColorMapType_None;
 		}
 	}
-
 
 #endif // OCULUS_HMD_SUPPORTED_PLATFORMS
 

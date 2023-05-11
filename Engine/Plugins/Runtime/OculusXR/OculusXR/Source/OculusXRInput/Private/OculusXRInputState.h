@@ -535,8 +535,8 @@ struct FOculusRemoteControllerState
 
 struct FOculusControllerPair
 {
-	/** The Unreal controller index assigned to this pair */
-	int32 UnrealControllerIndex;
+	/** The input device ID for this oculus controller */
+	FInputDeviceId DeviceId;
 
 	/** Current device state for either hand */
 	FOculusTouchControllerState TouchControllerStates[2];
@@ -544,7 +544,7 @@ struct FOculusControllerPair
 	FOculusHandControllerState HandControllerStates[2];
 
 	FOculusControllerPair()
-	  : UnrealControllerIndex(INDEX_NONE),
+	  : DeviceId(INPUTDEVICEID_NONE),
 		TouchControllerStates(),
 		HandControllerStates()
 	{

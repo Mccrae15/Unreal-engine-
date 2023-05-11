@@ -5,12 +5,13 @@
 
 #include "OculusXRMR_Settings.generated.h"
 
+
 UENUM(BlueprintType)
-enum class EOculusXRMR_CameraDeviceEnum : uint8
+enum class EOculusXRMR_CameraDeviceEnum : uint8 // Deprecated
 {
-	CD_None         UMETA(DisplayName = "None"),
-	CD_WebCamera0   UMETA(DisplayName = "Web Camera 0"),
-	CD_WebCamera1   UMETA(DisplayName = "Web Camera 1"),
+	CD_None_DEPRECATED         UMETA(DisplayName = "None"),
+	CD_WebCamera0_DEPRECATED   UMETA(DisplayName = "Web Camera 0"),
+	CD_WebCamera1_DEPRECATED   UMETA(DisplayName = "Web Camera 1"),
 };
 
 UENUM(BlueprintType)
@@ -31,9 +32,9 @@ UENUM(BlueprintType)
 enum class EOculusXRMR_CompositionMethod : uint8
 {
 	/* Generate both foreground and background views for compositing with 3rd-party software like OBS. */
-	ExternalComposition		UMETA(DisplayName = "External Composition"),
-	/* Composite the camera stream directly to the output with the proper depth.*/
-	DirectComposition		UMETA(DisplayName = "Direct Composition")
+	ExternalComposition				UMETA(DisplayName = "External Composition"),
+	/* (Deprecated) Composite the camera stream directly to the output with the proper depth.*/
+	DirectComposition_DEPRECATED	UMETA(DisplayName = "Direct Composition (DEPRECATED)")
 };
 
 UCLASS(ClassGroup = OculusXRMR, Blueprintable)
@@ -75,24 +76,24 @@ public:
 
 	/** When CompositionMethod is Direct Composition, you could adjust this latency to delay the virtual
 	* hand movement by a small amount of time to match the camera latency */
-	UPROPERTY(Category = MetaXR, EditAnywhere, BlueprintReadWrite, meta = (UIMin = "0.0", UIMax = "0.5"))
-	float HandPoseStateLatency;
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "Direct Composition deprecated."))
+	float HandPoseStateLatency_DEPRECATED;
 
 	/** [Green-screen removal] Chroma Key Color. Apply when CompositionMethod is DirectComposition */
-	UPROPERTY(Category = MetaXR, EditAnywhere, BlueprintReadWrite)
-	FColor ChromaKeyColor;
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "Direct Composition deprecated."))
+	FColor ChromaKeyColor_DEPRECATED;
 
 	/** [Green-screen removal] Chroma Key Similarity. Apply when CompositionMethod is DirectComposition */
-	UPROPERTY(Category = MetaXR, EditAnywhere, BlueprintReadWrite, meta = (UIMin = "0.0", UIMax = "1.0"))
-	float ChromaKeySimilarity;
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "Direct Composition deprecated."))
+	float ChromaKeySimilarity_DEPRECATED;
 
 	/** [Green-screen removal] Chroma Key Smooth Range. Apply when CompositionMethod is DirectComposition */
-	UPROPERTY(Category = MetaXR, EditAnywhere, BlueprintReadWrite, meta = (UIMin = "0.0", UIMax = "0.2"))
-	float ChromaKeySmoothRange;
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "Direct Composition deprecated."))
+	float ChromaKeySmoothRange_DEPRECATED;
 
 	/** [Green-screen removal] Chroma Key Spill Range. Apply when CompositionMethod is DirectComposition */
-	UPROPERTY(Category = MetaXR, EditAnywhere, BlueprintReadWrite, meta = (UIMin = "0.0", UIMax = "0.2"))
-	float ChromaKeySpillRange;
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "Direct Composition deprecated."))
+	float ChromaKeySpillRange_DEPRECATED;
 
 	/** Set the amount of post process effects in the MR view for external composition */
 	UPROPERTY(Category = MetaXR, EditAnywhere, BlueprintReadWrite)
@@ -112,11 +113,11 @@ public:
 	void SetCompositionMethod(EOculusXRMR_CompositionMethod val);
 
 	/** When CompositionMethod is DirectComposition, the physical camera device which provide the frame */
-	UFUNCTION(BlueprintCallable, Category = MetaXR)
-	EOculusXRMR_CameraDeviceEnum GetCapturingCamera() { return CapturingCamera; }
+	UFUNCTION(BlueprintCallable, Category = MetaXR, meta = (DeprecatedFunction, DeprecationMessage = "Direct Composition deprecated."))
+	EOculusXRMR_CameraDeviceEnum GetCapturingCamera() { return EOculusXRMR_CameraDeviceEnum::CD_None_DEPRECATED; }
 
 	/** When CompositionMethod is DirectComposition, the physical camera device which provide the frame */
-	UFUNCTION(BlueprintCallable, Category = MetaXR)
+	UFUNCTION(BlueprintCallable, Category = MetaXR, meta = (DeprecatedFunction, DeprecationMessage = "Direct Composition deprecated."))
 	void SetCapturingCamera(EOculusXRMR_CameraDeviceEnum val);
 
 	/** Is MRC on and off */
@@ -156,20 +157,18 @@ private:
 	EOculusXRMR_CompositionMethod CompositionMethod;
 
 	/** When CompositionMethod is DirectComposition, the physical camera device which provide the frame */
-	UPROPERTY()
-	EOculusXRMR_CameraDeviceEnum CapturingCamera;
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "Direct Composition deprecated."))
+	EOculusXRMR_CameraDeviceEnum CapturingCamera_DEPRECATED;
 
 	/** Tracked camera that we want to bind the in-game MR camera to*/
 	int BindToTrackedCameraIndex;
 
 	DECLARE_DELEGATE_TwoParams(OnCompositionMethodChangeDelegate, EOculusXRMR_CompositionMethod, EOculusXRMR_CompositionMethod);
-	DECLARE_DELEGATE_TwoParams(OnCapturingCameraChangeDelegate, EOculusXRMR_CameraDeviceEnum, EOculusXRMR_CameraDeviceEnum);
 	DECLARE_DELEGATE_TwoParams(OnBooleanSettingChangeDelegate, bool, bool);
 	DECLARE_DELEGATE_TwoParams(OnIntegerSettingChangeDelegate, int, int);
 
 	OnIntegerSettingChangeDelegate TrackedCameraIndexChangeDelegate;
 	OnCompositionMethodChangeDelegate CompositionMethodChangeDelegate;
-	OnCapturingCameraChangeDelegate CapturingCameraChangeDelegate;
 	OnBooleanSettingChangeDelegate IsCastingChangeDelegate;
 
 	// Give the OculusXRMR module access to the delegates so that 

@@ -33,6 +33,7 @@ FSettings::FSettings() :
 	, ColorScale(ovrpVector4f{1,1,1,1})
 	, ColorOffset(ovrpVector4f{0,0,0,0})
 	, bApplyColorScaleAndOffsetToAllLayers(false)
+	, CurrentFeatureLevel(GMaxRHIFeatureLevel)
 	, bLateLatching(false)
 	, bSupportExperimentalFeatures(false)
 {
@@ -45,12 +46,12 @@ FSettings::FSettings() :
 	Flags.bsRGBEyeBuffer = true;
 	//oculus mobile is always-on stereo, no need for enableStereo codepaths
 	Flags.bStereoEnabled = true;
-	CurrentShaderPlatform = EShaderPlatform::SP_VULKAN_ES3_1_ANDROID;
 #else
 	Flags.bsRGBEyeBuffer = false;
 	Flags.bStereoEnabled = false;
-	CurrentShaderPlatform = EShaderPlatform::SP_PCD3D_SM5;
 #endif
+	CurrentFeatureLevel = GEngine ? GEngine->GetDefaultWorldFeatureLevel() : GMaxRHIFeatureLevel;
+	CurrentShaderPlatform = GShaderPlatformForFeatureLevel[CurrentFeatureLevel];
 
 	Flags.bSupportsDash = true;
 	Flags.bFocusAware = true;
@@ -82,6 +83,25 @@ void FSettings::SetPixelDensity(float NewPixelDensity)
 		PixelDensity = FMath::Clamp(NewPixelDensity, ClampPixelDensityMin, ClampPixelDensityMax);
 	}
 }
+
+void FSettings::SetPixelDensitySmooth(float NewPixelDensity)
+{
+	// Pixel Density changes need to be smooth both for artifacts with FFR/TTO (FFR/tile-turnoff is one frame late so shouldn't change too fast)
+	// but also so that if the developer uses the CVar and not the runtime (which is already smooth) there is no jump artifacts.
+	constexpr float MaxPerFrameIncrease = 0.010;
+	constexpr float MaxPerFrameDecrease = 0.045;
+
+	float NewClampedPixelDensity = FMath::Clamp(NewPixelDensity, PixelDensity - MaxPerFrameDecrease, PixelDensity + MaxPerFrameIncrease);
+	if (Flags.bPixelDensityAdaptive)
+	{
+		PixelDensity = FMath::Clamp(NewClampedPixelDensity, PixelDensityMin, PixelDensityMax);
+	}
+	else
+	{
+		PixelDensity = FMath::Clamp(NewClampedPixelDensity, ClampPixelDensityMin, ClampPixelDensityMax);
+	}
+}
+
 
 void FSettings::SetPixelDensityMin(float NewPixelDensityMin)
 {

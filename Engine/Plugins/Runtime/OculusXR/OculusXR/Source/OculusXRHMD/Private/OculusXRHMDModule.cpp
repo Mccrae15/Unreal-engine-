@@ -140,14 +140,16 @@ bool FOculusXRHMDModule::PreInit()
 			if (OVRP_FAILURE(PluginWrapper.PreInitialize5(Activity, PreinitApiType, ovrpPreinitializeFlags::ovrpPreinitializeFlag_None)))
 			{
 				UE_LOG(LogHMD, Log, TEXT("Failed initializing OVRPlugin %s"), TEXT(OVRP_VERSION_STR));
-#if PLATFORM_WINDOWS
-				return true;
+#if WITH_EDITOR && PLATFORM_WINDOWS
+				// In the editor, we want to allow the headset to connect after the editor has booted.
+				// To do this, we must have PreInit() return true, to prevent the HMD module from being unloaded.
+				return GIsEditor;
 #else
 				return false;
 #endif
 			}
 
-#if PLATFORM_WINDOWS
+	#if PLATFORM_WINDOWS
 			bPreInitCalled = true;
 			const LUID* DisplayAdapterId;
 			if (OVRP_SUCCESS(PluginWrapper.GetDisplayAdapterId2((const void**)&DisplayAdapterId)) && DisplayAdapterId)
@@ -178,7 +180,7 @@ bool FOculusXRHMDModule::PreInit()
 			{
 				UE_LOG(LogHMD, Log, TEXT("Could not determine HMD audio output device"));
 			}
-#endif
+	#endif
 
 			float ModulePriority;
 			if (!GConfig->GetFloat(TEXT("HMDPluginPriority"), *GetModuleKeyName(), ModulePriority, GEngineIni))
@@ -275,7 +277,7 @@ FString FOculusXRHMDModule::GetAudioOutputDevice()
 TSharedPtr<class IXRTrackingSystem, ESPMode::ThreadSafe> FOculusXRHMDModule::CreateTrackingSystem()
 {
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
-	if (PreInit())
+	if (bPreInit || (GIsEditor && PLATFORM_WINDOWS))
 	{
 		OculusXRHMD::FOculusXRHMDPtr OculusXRHMD = FSceneViewExtensions::NewExtension<OculusXRHMD::FOculusXRHMD>();
 
@@ -293,13 +295,35 @@ TSharedPtr<class IXRTrackingSystem, ESPMode::ThreadSafe> FOculusXRHMDModule::Cre
 TSharedPtr<IHeadMountedDisplayVulkanExtensions, ESPMode::ThreadSafe> FOculusXRHMDModule::GetVulkanExtensions()
 {
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
-	if (PreInit())
+	if (bPreInit)
 	{
 		if (!VulkanExtensions.IsValid())
 		{
 			VulkanExtensions = MakeShareable(new OculusXRHMD::FVulkanExtensions);
 		}
 	}
+#if WITH_EDITOR && PLATFORM_WINDOWS
+	else if (GIsEditor)
+	{
+		// OpenXR has no ability to query for possible vulkan extensions without connecting a HMD.
+		// This is a problem, because we need to create our VkInstance and VkDevice to render in 2D and there's no HMD.
+		// For now, as a workaround, we hardcode the extensions that Oculus's OpenXR implementation needs.
+		// Eventually, one of three things has to happen for a proper fix:
+		//
+		// 1. OculusXRHMD (or, better, OVRPlugin) maintains a separate VkInstance that has the right extensions,
+		//      and uses the vk_external extensions to transfer data between them when needed.
+		// 2. OpenXR changes to allow querying instance and device extensions without an active HMD.
+		//      It may still require a physical device handle to list device extensions.
+		// 3. Oculus's Link implementation for OpenXR changes to allow an XrSystemId to be created before a headset 
+		//      is connected (possibly as an opt-in OpenXR extension for backwards compatibility).
+		//
+		// (2) or (3) are preferable, but if OpenXR is held constant we will have to do (1).
+		if (!VulkanExtensions.IsValid())
+		{
+			VulkanExtensions = MakeShareable(new OculusXRHMD::FEditorVulkanExtensions);
+		}
+	}
+#endif
 	return VulkanExtensions;
 #endif
 	return nullptr;
@@ -320,8 +344,10 @@ FString FOculusXRHMDModule::GetDeviceSystemName()
 			default:
 				return FString("Oculus Quest2");
 
+	#ifdef WITH_OCULUS_BRANCH
 			case ovrpSystemHeadset_Meta_Quest_Pro:
 				return FString("Meta Quest Pro");
+	#endif // WITH_OCULUS_BRANCH
 		}
 	}
 	return FString();

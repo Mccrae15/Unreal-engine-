@@ -283,3 +283,12 @@ Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/**
 # Ignore the private building scripts (which belongs to oculus-build-scripts branch)
 /Collaboration/Private/Scripts/
 
+# Ignore OculusXR Plugin it's a junction
+Engine/Plugins/Runtime/OculusXR
+
+# Ignore Samples and TestApps folders, they are junctions
+Collaboration/Oculus/Samples
+Collaboration/Oculus/TestApps
+
+# Ignore VoiceSDK Template
+Templates/TP_VoiceSDK

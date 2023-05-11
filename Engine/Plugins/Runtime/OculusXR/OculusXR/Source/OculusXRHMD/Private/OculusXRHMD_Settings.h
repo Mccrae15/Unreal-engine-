@@ -127,7 +127,8 @@ public:
 	ovrpVector4f ColorScale, ColorOffset;
 	bool bApplyColorScaleAndOffsetToAllLayers;
 
-        EShaderPlatform CurrentShaderPlatform;
+	FStaticFeatureLevel CurrentFeatureLevel;
+	EShaderPlatform CurrentShaderPlatform;
 
 	bool bLateLatching;
 	bool bSupportExperimentalFeatures;
@@ -139,6 +140,7 @@ public:
 	bool IsStereoEnabled() const { return Flags.bStereoEnabled && Flags.bHMDEnabled; }
 
 	void SetPixelDensity(float NewPixelDensity);
+	void SetPixelDensitySmooth(float NewPixelDensity);
 	void SetPixelDensityMin(float NewPixelDensityMin);
 	void SetPixelDensityMax(float NewPixelDensityMax);
 	

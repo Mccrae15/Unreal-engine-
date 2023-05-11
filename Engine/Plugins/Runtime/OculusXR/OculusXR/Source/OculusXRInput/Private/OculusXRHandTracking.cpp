@@ -19,6 +19,15 @@
 namespace OculusXRInput
 {
 
+static FInputDeviceId GetDeviceID(int32 ControllerId)
+{
+	IPlatformInputDeviceMapper& DeviceMapper = IPlatformInputDeviceMapper::Get();
+	FPlatformUserId InPlatformUser = FGenericPlatformMisc::GetPlatformUserForUserIndex(ControllerId);
+	FInputDeviceId InDeviceId = INPUTDEVICEID_NONE;
+	DeviceMapper.RemapControllerIdToPlatformUserAndDevice(ControllerId, InPlatformUser, InDeviceId);
+	return InDeviceId;
+}
+
 FQuat FOculusHandTracking::GetBoneRotation(const int32 ControllerIndex, const EOculusXRHandType DeviceHand, const EOculusXRBone BoneId)
 {
 	FQuat Rotation = FQuat::Identity;
@@ -31,10 +40,11 @@ FQuat FOculusHandTracking::GetBoneRotation(const int32 ControllerIndex, const EO
 	TSharedPtr<FOculusXRInput> OculusXRInputModule = StaticCastSharedPtr<FOculusXRInput>(IOculusXRInputModule::Get().GetInputDevice());
 	if (OculusXRInputModule.IsValid())
 	{
+		const FInputDeviceId InDeviceId = GetDeviceID(ControllerIndex);
 		TArray<FOculusControllerPair> ControllerPairs = OculusXRInputModule.Get()->ControllerPairs;
 		for (const FOculusControllerPair& HandPair : ControllerPairs)
 		{
-			if (HandPair.UnrealControllerIndex == ControllerIndex)
+			if (HandPair.DeviceId == InDeviceId)
 			{
 				if (DeviceHand != EOculusXRHandType::None)
 				{
@@ -58,10 +68,11 @@ float FOculusHandTracking::GetHandScale(const int32 ControllerIndex, const EOcul
 	TSharedPtr<FOculusXRInput> OculusXRInputModule = StaticCastSharedPtr<FOculusXRInput>(IOculusXRInputModule::Get().GetInputDevice());
 	if (OculusXRInputModule.IsValid())
 	{
+		const FInputDeviceId InDeviceId = GetDeviceID(ControllerIndex);
 		TArray<FOculusControllerPair> ControllerPairs = OculusXRInputModule.Get()->ControllerPairs;
 		for (const FOculusControllerPair& HandPair : ControllerPairs)
 		{
-			if (HandPair.UnrealControllerIndex == ControllerIndex)
+			if (HandPair.DeviceId == InDeviceId)
 			{
 				if (DeviceHand != EOculusXRHandType::None)
 				{
@@ -81,10 +92,11 @@ EOculusXRTrackingConfidence FOculusHandTracking::GetTrackingConfidence(const int
 	TSharedPtr<FOculusXRInput> OculusXRInputModule = StaticCastSharedPtr<FOculusXRInput>(IOculusXRInputModule::Get().GetInputDevice());
 	if (OculusXRInputModule.IsValid())
 	{
+		const FInputDeviceId InDeviceId = GetDeviceID(ControllerIndex);
 		TArray<FOculusControllerPair> ControllerPairs = OculusXRInputModule.Get()->ControllerPairs;
 		for (const FOculusControllerPair& HandPair : ControllerPairs)
 		{
-			if (HandPair.UnrealControllerIndex == ControllerIndex)
+			if (HandPair.DeviceId == InDeviceId)
 			{
 				if (DeviceHand != EOculusXRHandType::None)
 				{
@@ -103,10 +115,11 @@ EOculusXRTrackingConfidence FOculusHandTracking::GetFingerTrackingConfidence(con
 	TSharedPtr<FOculusXRInput> OculusXRInputModule = StaticCastSharedPtr<FOculusXRInput>(IOculusXRInputModule::Get().GetInputDevice());
 	if (OculusXRInputModule.IsValid())
 	{
+		const FInputDeviceId InDeviceId = GetDeviceID(ControllerIndex);
 		TArray<FOculusControllerPair> ControllerPairs = OculusXRInputModule.Get()->ControllerPairs;
 		for (const FOculusControllerPair& HandPair : ControllerPairs)
 		{
-			if (HandPair.UnrealControllerIndex == ControllerIndex)
+			if (HandPair.DeviceId == InDeviceId)
 			{
 				if (DeviceHand != EOculusXRHandType::None)
 				{
@@ -125,10 +138,11 @@ FTransform FOculusHandTracking::GetPointerPose(const int32 ControllerIndex, cons
 	TSharedPtr<FOculusXRInput> OculusXRInputModule = StaticCastSharedPtr<FOculusXRInput>(IOculusXRInputModule::Get().GetInputDevice());
 	if (OculusXRInputModule.IsValid())
 	{
+		const FInputDeviceId InDeviceId = GetDeviceID(ControllerIndex);
 		TArray<FOculusControllerPair> ControllerPairs = OculusXRInputModule.Get()->ControllerPairs;
 		for (const FOculusControllerPair& HandPair : ControllerPairs)
 		{
-			if (HandPair.UnrealControllerIndex == ControllerIndex)
+			if (HandPair.DeviceId == InDeviceId)
 			{
 				if (DeviceHand != EOculusXRHandType::None)
 				{
@@ -150,10 +164,11 @@ bool FOculusHandTracking::IsPointerPoseValid(const int32 ControllerIndex, const 
 	TSharedPtr<FOculusXRInput> OculusXRInputModule = StaticCastSharedPtr<FOculusXRInput>(IOculusXRInputModule::Get().GetInputDevice());
 	if (OculusXRInputModule.IsValid())
 	{
+		const FInputDeviceId InDeviceId = GetDeviceID(ControllerIndex);
 		TArray<FOculusControllerPair> ControllerPairs = OculusXRInputModule.Get()->ControllerPairs;
 		for (const FOculusControllerPair& HandPair : ControllerPairs)
 		{
-			if (HandPair.UnrealControllerIndex == ControllerIndex)
+			if (HandPair.DeviceId == InDeviceId)
 			{
 				if (DeviceHand != EOculusXRHandType::None)
 				{
@@ -184,10 +199,11 @@ bool FOculusHandTracking::IsHandDominant(const int32 ControllerIndex, const EOcu
 	TSharedPtr<FOculusXRInput> OculusXRInputModule = StaticCastSharedPtr<FOculusXRInput>(IOculusXRInputModule::Get().GetInputDevice());
 	if (OculusXRInputModule.IsValid())
 	{
+		const FInputDeviceId InDeviceId = GetDeviceID(ControllerIndex);
 		TArray<FOculusControllerPair> ControllerPairs = OculusXRInputModule.Get()->ControllerPairs;
 		for (const FOculusControllerPair& HandPair : ControllerPairs)
 		{
-			if (HandPair.UnrealControllerIndex == ControllerIndex)
+			if (HandPair.DeviceId == InDeviceId)
 			{
 				if (DeviceHand != EOculusXRHandType::None)
 				{
@@ -206,10 +222,11 @@ bool FOculusHandTracking::IsHandPositionValid(int32 ControllerIndex, EOculusXRHa
 	TSharedPtr<FOculusXRInput> OculusXRInputModule = StaticCastSharedPtr<FOculusXRInput>(IOculusXRInputModule::Get().GetInputDevice());
 	if (OculusXRInputModule.IsValid())
 	{
+		const FInputDeviceId InDeviceId = GetDeviceID(ControllerIndex);
 		TArray<FOculusControllerPair> ControllerPairs = OculusXRInputModule.Get()->ControllerPairs;
 		for (const FOculusControllerPair& HandPair : ControllerPairs)
 		{
-			if (HandPair.UnrealControllerIndex == ControllerIndex)
+			if (HandPair.DeviceId == InDeviceId)
 			{
 				if (DeviceHand != EOculusXRHandType::None)
 				{
@@ -319,7 +336,7 @@ void FOculusHandTracking::InitializeHandMesh(USkeletalMesh* SkeletalMesh, const 
 		FSoftSkinVertex SoftVertex;
 		FMemory::Memset(SoftVertex.InfluenceWeights, 0, MAX_TOTAL_INFLUENCES * sizeof(uint8));
 		FMemory::Memset(SoftVertex.InfluenceBones, 0, MAX_TOTAL_INFLUENCES * sizeof(FBoneIndexType));
-		
+
 		// Update vertex data
 		SoftVertex.Color = FColor::White;
 		ovrpVector3f VertexPosition = OvrMesh->VertexPositions[VertexIndex];
@@ -414,7 +431,6 @@ void FOculusHandTracking::InitializeHandMesh(USkeletalMesh* SkeletalMesh, const 
 	{
 		FMemory::Memset(InWeights[VertexIndex].InfluenceWeights, 0, MAX_TOTAL_INFLUENCES * sizeof(uint8));
 		FMemory::Memset(InWeights[VertexIndex].InfluenceBones, 0, MAX_TOTAL_INFLUENCES * sizeof(FBoneIndexType));
-
 		// Initialize vertex data
 		FModelVertex ModelVertex;
 

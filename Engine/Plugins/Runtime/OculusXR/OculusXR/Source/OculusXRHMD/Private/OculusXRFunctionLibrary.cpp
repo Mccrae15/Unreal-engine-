@@ -407,26 +407,25 @@ EOculusXRDeviceType UOculusXRFunctionLibrary::GetDeviceType()
 	{
 		if (OculusXRHMD->GetSettings())
 		{
-			switch (OculusXRHMD->GetSettings()->SystemHeadset)
-			{
-				case ovrpSystemHeadset_Oculus_Quest:
-					return EOculusXRDeviceType::OculusQuest_Deprecated;
-				case ovrpSystemHeadset_Oculus_Quest_2:
-					return EOculusXRDeviceType::OculusQuest2;
-				case ovrpSystemHeadset_Meta_Quest_Pro:
-					return EOculusXRDeviceType::MetaQuestPro;
-				case ovrpSystemHeadset_Rift_CV1:
-					return EOculusXRDeviceType::Rift;
-				case ovrpSystemHeadset_Rift_S:
-					return EOculusXRDeviceType::Rift_S;
-				case ovrpSystemHeadset_Oculus_Link_Quest:
-					return EOculusXRDeviceType::Quest_Link_Deprecated;
-				case ovrpSystemHeadset_Oculus_Link_Quest_2:
-					return EOculusXRDeviceType::Quest2_Link;
-				case ovrpSystemHeadset_Meta_Link_Quest_Pro:
-					return EOculusXRDeviceType::MetaQuestProLink;
-				default:
-					break;
+			switch (OculusXRHMD->GetSettings()->SystemHeadset) {
+			case ovrpSystemHeadset_Oculus_Quest:
+				return EOculusXRDeviceType::OculusQuest_Deprecated;
+			case ovrpSystemHeadset_Oculus_Quest_2:
+				return EOculusXRDeviceType::OculusQuest2;
+			case ovrpSystemHeadset_Meta_Quest_Pro:
+				return EOculusXRDeviceType::MetaQuestPro;
+			case ovrpSystemHeadset_Rift_CV1:
+				return EOculusXRDeviceType::Rift;
+			case ovrpSystemHeadset_Rift_S:
+				return EOculusXRDeviceType::Rift_S;
+			case ovrpSystemHeadset_Oculus_Link_Quest:
+				return EOculusXRDeviceType::Quest_Link_Deprecated;
+			case ovrpSystemHeadset_Oculus_Link_Quest_2:
+				return EOculusXRDeviceType::Quest2_Link;
+			case ovrpSystemHeadset_Meta_Link_Quest_Pro:
+				return EOculusXRDeviceType::MetaQuestProLink;
+			default:
+				break;
 			}
 		}
 	}
@@ -617,37 +616,41 @@ TArray<FVector> UOculusXRFunctionLibrary::GetGuardianPoints(EOculusXRBoundaryTyp
 	OculusXRHMD::FOculusXRHMD* OculusXRHMD = GetOculusXRHMD();
 	if (OculusXRHMD != nullptr)
 	{
-		ovrpBoundaryType obt = ToOvrpBoundaryType(BoundaryType);
-		int NumPoints = 0;
-
-		if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetBoundaryGeometry3(obt, NULL, &NumPoints)))
+		ovrpBool bBoundaryConfigured = false;
+		if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetBoundaryConfigured2(&bBoundaryConfigured)) && bBoundaryConfigured)
 		{
-			//allocate points
-			const int BufferSize = NumPoints;
-			ovrpVector3f* BoundaryPoints = new ovrpVector3f[BufferSize];
+			ovrpBoundaryType obt = ToOvrpBoundaryType(BoundaryType);
+			int NumPoints = 0;
 
-			if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetBoundaryGeometry3(obt, BoundaryPoints, &NumPoints)))
+			if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetBoundaryGeometry3(obt, NULL, &NumPoints)))
 			{
-				NumPoints = FMath::Min(BufferSize, NumPoints);
-				check(NumPoints <= BufferSize); // For static analyzer
-				BoundaryPointList.Reserve(NumPoints);
+				//allocate points
+				const int BufferSize = NumPoints;
+				ovrpVector3f* BoundaryPoints = new ovrpVector3f[BufferSize];
 
-				for (int i = 0; i < NumPoints; i++)
+				if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetBoundaryGeometry3(obt, BoundaryPoints, &NumPoints)))
 				{
-					FVector point;
-					if (UsePawnSpace)
-					{
-						point = OculusXRHMD->ConvertVector_M2U(BoundaryPoints[i]);
-					}
-					else
-					{
-						point = OculusXRHMD->ScaleAndMovePointWithPlayer(BoundaryPoints[i]);
-					}
-					BoundaryPointList.Add(point);
-				}
-			}
+					NumPoints = FMath::Min(BufferSize, NumPoints);
+					check(NumPoints <= BufferSize); // For static analyzer
+					BoundaryPointList.Reserve(NumPoints);
 
-			delete[] BoundaryPoints;
+					for (int i = 0; i < NumPoints; i++)
+					{
+						FVector point;
+						if (UsePawnSpace)
+						{
+							point = OculusXRHMD->ConvertVector_M2U(BoundaryPoints[i]);
+						}
+						else
+						{
+							point = OculusXRHMD->ScaleAndMovePointWithPlayer(BoundaryPoints[i]);
+						}
+						BoundaryPointList.Add(point);
+					}
+				}
+
+				delete[] BoundaryPoints;
+			}
 		}
 	}
 #endif
@@ -679,28 +682,32 @@ FTransform UOculusXRFunctionLibrary::GetPlayAreaTransform()
 	OculusXRHMD::FOculusXRHMD* OculusXRHMD = GetOculusXRHMD();
 	if (OculusXRHMD != nullptr)
 	{
-		int NumPoints = 4;
-		ovrpVector3f BoundaryPoints[4];
+		ovrpBool bBoundaryConfigured = false;
+		if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetBoundaryConfigured2(&bBoundaryConfigured)) && bBoundaryConfigured)
+		{
+			int NumPoints = 4;
+			ovrpVector3f BoundaryPoints[4];
 
-		if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetBoundaryGeometry3(ovrpBoundary_PlayArea, BoundaryPoints, &NumPoints)))
-		{	
-			FVector ConvertedPoints[4];
-
-			for (int i = 0; i < NumPoints; i++)
+			if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetBoundaryGeometry3(ovrpBoundary_PlayArea, BoundaryPoints, &NumPoints)))
 			{
-				ConvertedPoints[i] = OculusXRHMD->ScaleAndMovePointWithPlayer(BoundaryPoints[i]);
+				FVector ConvertedPoints[4];
+
+				for (int i = 0; i < NumPoints; i++)
+				{
+					ConvertedPoints[i] = OculusXRHMD->ScaleAndMovePointWithPlayer(BoundaryPoints[i]);
+				}
+
+				float metersScale = OculusXRHMD->GetWorldToMetersScale();
+
+				FVector Edge = ConvertedPoints[1] - ConvertedPoints[0];
+				float Angle = FMath::Acos((Edge).GetSafeNormal() | FVector::RightVector);
+				FQuat Rotation(FVector::UpVector, Edge.X < 0 ? Angle : -Angle);
+
+				FVector Position = (ConvertedPoints[0] + ConvertedPoints[1] + ConvertedPoints[2] + ConvertedPoints[3]) / 4;
+				FVector Scale(FVector::Distance(ConvertedPoints[3], ConvertedPoints[0]) / metersScale, FVector::Distance(ConvertedPoints[1], ConvertedPoints[0]) / metersScale, 1.0);
+
+				return FTransform(Rotation, Position, Scale);
 			}
-
-			float metersScale = OculusXRHMD->GetWorldToMetersScale();
-
-			FVector Edge = ConvertedPoints[1] - ConvertedPoints[0];
-			float Angle = FMath::Acos((Edge).GetSafeNormal() | FVector::RightVector);
-			FQuat Rotation(FVector::UpVector, Edge.X < 0 ? Angle : -Angle);
-			
-			FVector Position = (ConvertedPoints[0] + ConvertedPoints[1] + ConvertedPoints[2] + ConvertedPoints[3]) / 4;
-			FVector Scale(FVector::Distance(ConvertedPoints[3], ConvertedPoints[0]) / metersScale, FVector::Distance(ConvertedPoints[1], ConvertedPoints[0]) / metersScale, 1.0);
-
-			return FTransform(Rotation, Position, Scale);
 		}
 	}
 #endif

@@ -747,19 +747,28 @@ FString SOculusToolWidget::GetConfigPath() const
 
 FReply SOculusToolWidget::AndroidManifestQuest(bool text)
 {
-	UAndroidRuntimeSettings* Settings = GetMutableDefault<UAndroidRuntimeSettings>();
-	Settings->PackageForOculusMobile.Add(EOculusMobileDevice::Quest2);
+	UAndroidRuntimeSettings* AndroidSettings = GetMutableDefault<UAndroidRuntimeSettings>();
 #ifdef WITH_OCULUS_BRANCH
-	Settings->PackageForOculusMobile.Add(EOculusMobileDevice::QuestPro);
+	UOculusXRHMDRuntimeSettings* HMDSettings = GetMutableDefault<UOculusXRHMDRuntimeSettings>();
+	AndroidSettings->bPackageForMetaQuest = true;
+	HMDSettings->SupportedDevices.Add(EOculusXRSupportedDevices::Quest2);
+	HMDSettings->SupportedDevices.Add(EOculusXRSupportedDevices::QuestPro);
+	HMDSettings->SaveConfig(CPF_Config, *HMDSettings->GetDefaultConfigFilename()); // UpdateSinglePropertyInConfigFile does not support arrays
+#else
+	AndroidSettings->PackageForOculusMobile.Add(EOculusMobileDevice::Quest2);
 #endif // WITH_OCULUS_BRANCH
-	Settings->SaveConfig(CPF_Config, *Settings->GetDefaultConfigFilename()); // UpdateSinglePropertyInConfigFile does not support arrays
+	AndroidSettings->SaveConfig(CPF_Config, *AndroidSettings->GetDefaultConfigFilename()); // UpdateSinglePropertyInConfigFile does not support arrays
 	return FReply::Handled();
 }
 
 EVisibility SOculusToolWidget::AndroidManifestVisibility(FName tag) const
 {
 	UAndroidRuntimeSettings* Settings = GetMutableDefault<UAndroidRuntimeSettings>();
+#ifdef WITH_OCULUS_BRANCH
+	return Settings->bPackageForMetaQuest ? EVisibility::Collapsed : EVisibility::Visible;
+#else
 	return Settings->PackageForOculusMobile.Num() <= 0 ? EVisibility::Visible : EVisibility::Collapsed;
+#endif
 }
 
 FReply SOculusToolWidget::AndroidPackagingFix(bool text)
@@ -797,8 +806,12 @@ FReply SOculusToolWidget::AndroidQuestArchFix(bool text)
 EVisibility SOculusToolWidget::AndroidQuestArchVisibility(FName tag) const
 {
 	UAndroidRuntimeSettings* Settings = GetMutableDefault<UAndroidRuntimeSettings>();
+#ifdef WITH_OCULUS_BRANCH
+	return Settings->bPackageForMetaQuest && !Settings->bBuildForArm64 ? EVisibility::Visible : EVisibility::Collapsed;
+#else
 	return (Settings->PackageForOculusMobile.Num() > 0) && !Settings->bBuildForArm64 ?
 		EVisibility::Visible : EVisibility::Collapsed;
+#endif
 }
 
 FReply SOculusToolWidget::AntiAliasingEnable(bool text)

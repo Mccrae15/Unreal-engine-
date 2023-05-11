@@ -570,11 +570,11 @@ namespace OculusXRHMD
 		}
 
 #if PLATFORM_WINDOWS
-		//TODO: This is a temp fix of the case that callers wants to use IsHeadTrackingAllowed() to do something in UGameEngine::Start().
-		// Settings->Flags.bStereoEnabled won't be true until Window.IsValid() and UGameEngine::Tick() starts which is very late.
-		// We might need a better mechanism to decouple Window.IsValid() and Settings->Flags.bStereoEnabled.
+		// TODO: This is a temp fix of the case that callers wants to use IsHeadTrackingAllowed() to do something in UGameEngine::Start().
+		//  Settings->Flags.bStereoEnabled won't be true until Window.IsValid() and UGameEngine::Tick() starts which is very late.
+		//  We might need a better mechanism to decouple Window.IsValid() and Settings->Flags.bStereoEnabled.
 		bNeedEnableStereo = !GIsEditor && Flags.bNeedEnableStereo;
-#endif			
+#endif
 		return (FHeadMountedDisplayBase::IsHeadTrackingAllowed() || bNeedEnableStereo);
 	}
 
@@ -1089,7 +1089,6 @@ namespace OculusXRHMD
 		if (FOculusXRHMDModule::GetPluginWrapper().GetMixedRealityInitialized())
 		{
 			FOculusXRHMDModule::GetPluginWrapper().UpdateExternalCamera();
-			FOculusXRHMDModule::GetPluginWrapper().UpdateCameraDevices();
 		}
 #endif
 
@@ -2091,8 +2090,20 @@ namespace OculusXRHMD
 
 	IStereoLayers::FLayerDesc FOculusXRHMD::GetDebugCanvasLayerDesc(FTextureRHIRef Texture)
 	{
-		IStereoLayers::FLayerDesc StereoLayerDesc(FCylinderLayer(100.f, 488.f / 4, 180.f));
-		StereoLayerDesc.Transform = FTransform(FVector(0.f, 0, 0)); //100/0/0 for quads
+		IStereoLayers::FLayerDesc StereoLayerDesc;
+
+		ovrpBool cylinderSupported = ovrpBool_False;
+		ovrpResult result = FOculusXRHMDModule::GetPluginWrapper().IsLayerShapeSupported(ovrpShape_Cylinder, &cylinderSupported);
+		if (OVRP_SUCCESS(result) && cylinderSupported)
+		{
+			StereoLayerDesc = IStereoLayers::FLayerDesc(FCylinderLayer(100.f, 488.f / 4, 180.f));
+			StereoLayerDesc.Transform = FTransform(FVector(0.f, 0, 0)); // 100/0/0 for quads
+		}
+		else
+		{
+			StereoLayerDesc.Transform = FTransform(FVector(100.f, 0, 0));
+		}
+
 		StereoLayerDesc.QuadSize = FVector2D(180.f, 180.f);
 		StereoLayerDesc.PositionType = IStereoLayers::ELayerType::FaceLocked;
 		StereoLayerDesc.LayerSize = Texture->GetTexture2D()->GetSizeXY();
@@ -2118,7 +2129,9 @@ namespace OculusXRHMD
 
 		if (Settings.IsValid() && Settings->IsStereoEnabled())
 		{
-			Settings->CurrentShaderPlatform = InViewFamily.Scene->GetShaderPlatform();
+			// This should already have been set by UpdateStereoRenderingParams().
+			// It must still match the value used there.
+			check(Settings->CurrentShaderPlatform == InViewFamily.Scene->GetShaderPlatform());
 			Settings->Flags.bsRGBEyeBuffer = IsMobilePlatform(Settings->CurrentShaderPlatform) && IsMobileColorsRGB();
 
 			if (NextFrameToRender.IsValid())
@@ -2276,13 +2289,6 @@ namespace OculusXRHMD
 	{
 		// We want to run after the FDefaultXRCamera's view extension
 		return -1;
-	}
-
-
-	bool FOculusXRHMD::IsActiveThisFrame_Internal(const FSceneViewExtensionContext& Context) const
-	{
-		// We need to use GEngine->IsStereoscopic3D in case the current viewport disallows running in stereo.
-		return GEngine && GEngine->IsStereoscopic3D(Context.Viewport);
 	}
 
 #ifdef WITH_OCULUS_LATE_LATCHING
@@ -2566,8 +2572,11 @@ namespace OculusXRHMD
 			}
 			bNeedReAllocateMotionVectorTexture_RenderThread = false;
 
-#if PLATFORM_WINDOWS
-			if (!FOculusXRHMDModule::Get().PreInit())
+#if WITH_EDITOR && PLATFORM_WINDOWS
+			// Attempt Late Initialization in-editor
+			// FOculusXRHMDModule::PreInit always returns true in this case,
+			// so we need to check the flag directly.
+			if (GIsEditor && FOculusXRHMDModule::Get().PreInit() && !FOculusXRHMDModule::Get().bPreInit)
 			{
 				return false;
 			}
@@ -2874,13 +2883,24 @@ namespace OculusXRHMD
 
 		if (Settings->Flags.bPixelDensityAdaptive)
 		{
+			FLayer* EyeLayer = EyeLayer_RenderThread.Get();
 			float NewPixelDensity = 1.0;
+			if (EyeLayer && EyeLayer->GetOvrpId())
+			{
+				ovrpSizei RecommendedResolution = { 0,0 };
+				FOculusXRHMDModule::GetPluginWrapper().GetLayerRecommendedResolution(EyeLayer->GetOvrpId(), &RecommendedResolution);
+				if (RecommendedResolution.h > 0)
+				{
+					NewPixelDensity = RecommendedResolution.h * (float)Settings->PixelDensityMax / Settings->RenderTargetSize.Y;
+				}
+			}
+
 			const float PixelDensityCVarOverride = CVarOculusDynamicResolutionPixelDensity.GetValueOnAnyThread();
 			if (PixelDensityCVarOverride > 0)
 			{
 				NewPixelDensity = PixelDensityCVarOverride;
 			}
-			Settings->SetPixelDensity(NewPixelDensity);
+			Settings->SetPixelDensitySmooth(NewPixelDensity);
 		}
 		else
 		{
@@ -2903,6 +2923,10 @@ namespace OculusXRHMD
 		const bool bIsMobileMultiViewEnabled = (CVarMobileMultiView && CVarMobileMultiView->GetValueOnAnyThread() != 0);
 
 		const bool bIsUsingMobileMultiView = (GSupportsMobileMultiView || GRHISupportsArrayIndexFromAnyShader) && bIsMobileMultiViewEnabled;
+
+		Settings->CurrentFeatureLevel = GEngine ? GEngine->GetDefaultWorldFeatureLevel() : GMaxRHIFeatureLevel;
+		Settings->CurrentShaderPlatform = GShaderPlatformForFeatureLevel[Settings->CurrentFeatureLevel];
+
 		// for now only mobile rendering codepaths use the array rendering system, so PC-native should stay in doublewide
 		if (bIsUsingMobileMultiView && IsMobilePlatform(Settings->CurrentShaderPlatform))
 		{
@@ -3296,7 +3320,7 @@ namespace OculusXRHMD
 
 	FOculusXRHMD* FOculusXRHMD::GetOculusXRHMD()
 	{
-#if OCULUS_HMD_SUPPORTED_PLATFORMS
+	#if OCULUS_HMD_SUPPORTED_PLATFORMS
 		if (GEngine && GEngine->XRSystem.IsValid())
 		{
 			if (GEngine->XRSystem->GetSystemName() == OculusXRHMD::FOculusXRHMD::OculusSystemName)
@@ -3304,7 +3328,7 @@ namespace OculusXRHMD
 				return static_cast<OculusXRHMD::FOculusXRHMD*>(GEngine->XRSystem.Get());
 			}
 		}
-#endif
+	#endif
 		return nullptr;
 	}
 
@@ -3799,6 +3823,8 @@ namespace OculusXRHMD
 
 				if (!Splash->IsShown())
 				{
+					FThreadIdleStats::FScopeIdle Scope;
+
 					if (FOculusXRHMDModule::GetPluginWrapper().GetInitialized() && WaitFrameNumber != Frame->FrameNumber)
 					{
 						SCOPED_NAMED_EVENT(WaitFrame, FColor::Red);

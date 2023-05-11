@@ -79,6 +79,19 @@ ovrp_SetInsightPassthroughKeyboardHandsIntensity(int layerId, ovrpInsightPassthr
 // Gets passthrough capabilities.
 OVRP_EXPORT ovrpResult ovrp_GetPassthroughCapabilityFlags(ovrpInsightPassthroughCapabilityFlags* capabilities);
 
+OVRP_EXPORT ovrpResult ovrp_SetInsightPassthroughStyle2(int layerId, const ovrpInsightPassthroughStyle* style);
+
+OVRP_EXPORT ovrpResult ovrp_CreatePassthroughColorLut(
+    ovrpPassthroughColorLutChannels channels,
+    ovrpUInt32 resolution,
+    ovrpPassthroughColorLutData data,
+    ovrpPassthroughColorLut* colorLut);
+
+OVRP_EXPORT ovrpResult ovrp_DestroyPassthroughColorLut(ovrpPassthroughColorLut colorLut);
+
+OVRP_EXPORT ovrpResult
+ovrp_UpdatePassthroughColorLut(ovrpPassthroughColorLut colorLut, ovrpPassthroughColorLutData data);
+
 
 
 

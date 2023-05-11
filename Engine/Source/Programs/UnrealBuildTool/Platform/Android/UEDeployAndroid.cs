@@ -477,18 +477,14 @@ namespace UnrealBuildTool
 			}
 		}
 
-		public List<string> GetTargetOculusMobileDevices(ConfigHierarchy? Ini = null)
+		// BEGIN META SECTION - Meta Quest Android device support
+		// Backcompat for deprecated oculus device target setting
+		public List<string> GetTargetOculusMobileDevices(ConfigHierarchy Ini)
 		{
 			// always false if the Oculus Mobile plugin wasn't enabled
 			if (!OculusMobilePluginEnabled)
 			{
 				return new List<string>();
-			}
-
-			// make a new one if one wasn't passed in
-			if (Ini == null)
-			{
-				Ini = GetConfigCacheIni(ConfigHierarchyType.Engine);
 			}
 
 			List<string>? OculusMobileDevices;
@@ -501,13 +497,22 @@ namespace UnrealBuildTool
 			return OculusMobileDevices;
 		}
 
-		public bool IsPackagingForOculusMobile(ConfigHierarchy? Ini = null)
+		public bool IsPackagingForMetaQuest(ConfigHierarchy? Ini = null)
 		{
-			List<string> TargetOculusDevices = GetTargetOculusMobileDevices(Ini);
-			bool bTargetOculusDevices = (TargetOculusDevices != null && TargetOculusDevices.Count() > 0);
+			// make a new one if one wasn't passed in
+			if (Ini == null)
+			{
+				Ini = GetConfigCacheIni(ConfigHierarchyType.Engine);
+			}
 
-			return bTargetOculusDevices;
+			List<string> TargetOculusDevices = GetTargetOculusMobileDevices(Ini); // Backcompat for deprecated oculus device target setting
+			bool bTargetOculusDevices = (TargetOculusDevices != null && TargetOculusDevices.Count() > 0); // Backcompat for deprecated oculus device target setting
+
+			bool result = Ini.GetBool("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "bPackageForMetaQuest", out var bPackageForMetaQuest);
+
+			return (result && bPackageForMetaQuest) || bTargetOculusDevices;
 		}
+		// END META SECTION - Meta Quest Android device support
 
 		public bool DisableVerifyOBBOnStartUp(ConfigHierarchy? Ini = null)
 		{
@@ -2313,11 +2318,14 @@ namespace UnrealBuildTool
 			ConfigHierarchy Ini = GetConfigCacheIni(ConfigHierarchyType.Engine);
 			bool bShowLaunchImage = false;
 			Ini.GetBool("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "bShowLaunchImage", out bShowLaunchImage);
-			bool bPackageForOculusMobile = IsPackagingForOculusMobile(Ini); ;
+			// BEGIN META SECTION - Meta Quest Android device support
+			bool bPackageForMetaQuest = IsPackagingForMetaQuest(Ini);
+			// END META SECTION - Meta Quest Android device support
 			bool bPackageForDaydream = IsPackagingForDaydream(Ini);
-			
-			//override the parameters if we are not showing a launch image or are packaging for Oculus Mobile and Daydream
-			if (bPackageForOculusMobile || bPackageForDaydream || !bShowLaunchImage)
+			//override the parameters if we are not showing a launch image or are packaging for Meta Quest and Daydream
+			// BEGIN META SECTION - Meta Quest Android device support
+			if (bPackageForMetaQuest || bPackageForDaydream || !bShowLaunchImage)
+			// END META SECTION - Meta Quest Android device support
 			{
 				bNeedPortrait = bNeedLandscape = false;
 			}
@@ -2334,7 +2342,9 @@ namespace UnrealBuildTool
 				SafeDeleteFile(StylesPath);
 			}
 
-			if(bPackageForOculusMobile && bShowLaunchImage)
+			// BEGIN META SECTION - Meta Quest Android device support
+			if (bPackageForMetaQuest && bShowLaunchImage)
+			// END META SECTION - Meta Quest Android device support
 			{
 				string LandscapeFilename = UnrealBuildPath + "/res/drawable/" + "splashscreen_landscape.png";
 				string OculusSplashTargetPath = UnrealBuildPath + "/assets/vr_splash.png";
@@ -2582,7 +2592,9 @@ namespace UnrealBuildTool
 			Ini.GetString("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "ExtraApplicationSettings", out ExtraApplicationSettings);
 			List<string>? ExtraPermissions;
 			Ini.GetArray("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "ExtraPermissions", out ExtraPermissions);
-			bool bPackageForOculusMobile = IsPackagingForOculusMobile(Ini);
+			// BEGIN META SECTION - Meta Quest Android device support
+			bool bPackageForMetaQuest = IsPackagingForMetaQuest(Ini);
+			// END META SECTION - Meta Quest Android device support
 			bool bEnableIAP = false;
 			Ini.GetBool("OnlineSubsystemGooglePlay.Store", "bSupportsInAppPurchasing", out bEnableIAP);
 			bool bShowLaunchImage = false;
@@ -2637,25 +2649,27 @@ namespace UnrealBuildTool
 			// only apply density to configChanges if using android-24 or higher and minimum sdk is 17
 			bool bAddDensity = (SDKLevelInt >= 24) && (MinSDKVersion >= 17);
 
-			// disable Oculus Mobile if not supported platform (in this case only armv7 for now)
-			if (UnrealArch != "-armv7" && UnrealArch != "-arm64")
+			// BEGIN META SECTION - Meta Quest Android device support
+			// disable Meta Quest if not supported platform (in this case only arm64 for now)
+			if (UnrealArch != "-arm64")
 			{
-				if (bPackageForOculusMobile)
+				if (bPackageForMetaQuest)
 				{
-					Logger.LogInformation("Disabling Package For Oculus Mobile for unsupported architecture {UnrealArch}", UnrealArch);
-					bPackageForOculusMobile = false;
+					Logger.LogInformation("Disabling Package For Meta Quest for unsupported architecture {UnrealArch}", UnrealArch);
+					bPackageForMetaQuest = false;
 				}
 			}
 
-			// disable splash screen for Oculus Mobile (for now)
-			if (bPackageForOculusMobile)
+			// disable splash screen for Meta Quest (for now)
+			if (bPackageForMetaQuest)
 			{
 				if (bShowLaunchImage)
 				{
-					Logger.LogInformation("Disabling Show Launch Image for Oculus Mobile enabled application");
+					Logger.LogInformation("Disabling Show Launch Image for Meta Quest enabled application");
 					bShowLaunchImage = false;
 				}
 			}
+			// END META SECTION - Meta Quest Android device support
 
 			bool bPackageForDaydream = IsPackagingForDaydream(Ini);
 			// disable splash screen for daydream
@@ -3021,7 +3035,9 @@ namespace UnrealBuildTool
 					Text.AppendLine("\t<uses-permission android:name=\"android.permission.GET_ACCOUNTS\"/>");
 				}
 
-				if(!bPackageForOculusMobile)
+				// BEGIN META SECTION - Meta Quest Android device support
+				if (!bPackageForMetaQuest)
+				// END META SECTION - Meta Quest Android device support
 				{
 					Text.AppendLine("\t<uses-permission android:name=\"android.permission.MODIFY_AUDIO_SETTINGS\"/>");
 					Text.AppendLine("\t<uses-permission android:name=\"android.permission.VIBRATE\"/>");
@@ -3876,13 +3892,8 @@ namespace UnrealBuildTool
 
 			if (bForDistribution)
 			{
-				bool bDisableV2Signing = false;
-
-				if (GetTargetOculusMobileDevices().Contains("Go"))
-				{
-					bDisableV2Signing = true;
-					Logger.LogInformation("Disabling v2Signing for Oculus Go");
-				}
+				// BEGIN META SECTION - Meta Quest Android device support
+				// END META SECTION - Meta Quest Android device support
 
 				string KeyAlias, KeyStore, KeyStorePassword, KeyPassword;
 				Ini.GetString("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings", "KeyStore", out KeyStore);
@@ -3918,10 +3929,8 @@ namespace UnrealBuildTool
 				GradleBuildAdditionsContent.AppendLine(string.Format("\t\t\tstorePassword '{0}'", KeyStorePassword));
 				GradleBuildAdditionsContent.AppendLine(string.Format("\t\t\tkeyAlias '{0}'", KeyAlias));
 				GradleBuildAdditionsContent.AppendLine(string.Format("\t\t\tkeyPassword '{0}'", KeyPassword));
-				if (bDisableV2Signing)
-				{
-					GradleBuildAdditionsContent.AppendLine("\t\t\tv2SigningEnabled false");
-				}
+				// BEGIN META SECTION - Meta Quest Android device support
+				// END META SECTION - Meta Quest Android device support
 				GradleBuildAdditionsContent.AppendLine("\t\t}");
 				GradleBuildAdditionsContent.AppendLine("\t}");
 

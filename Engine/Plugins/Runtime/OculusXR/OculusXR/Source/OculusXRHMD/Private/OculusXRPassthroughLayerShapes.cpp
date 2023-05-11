@@ -4,6 +4,63 @@
 const FName FReconstructedLayer::ShapeName = FName("ReconstructedLayer");
 const FName FUserDefinedLayer::ShapeName = FName("UserDefinedLayer");
 
+FColorLutDesc::FColorLutDesc()
+	: Weight(0)
+	, ColorLuts{}
+{
+}
+
+FColorLutDesc::FColorLutDesc(const TArray<uint64>& InColorLuts, float InWeight)
+	: Weight(InWeight)
+	, ColorLuts(InColorLuts)
+{
+}
+
+
+FEdgeStyleParameters::FEdgeStyleParameters()
+	: bEnableEdgeColor(false)
+	, bEnableColorMap(false)
+	, bUseColorLuts(false)
+	, TextureOpacityFactor(1.0f)
+	, EdgeColor{}
+	, ColorMapType{}
+	, ColorMapData{}
+	, ColorLutDesc{} {
+
+	};
+
+FEdgeStyleParameters::FEdgeStyleParameters(
+	bool bEnableEdgeColor,
+	bool bEnableColorMap,
+	float TextureOpacityFactor,
+	float Brightness,
+	float Contrast,
+	float Posterize,
+	float Saturation,
+	FLinearColor EdgeColor,
+	FLinearColor ColorScale,
+	FLinearColor ColorOffset,
+	EOculusXRColorMapType InColorMapType,
+	const TArray<FLinearColor>& InColorMapGradient,
+	const FColorLutDesc& InLutDesc)
+	: bEnableEdgeColor(bEnableEdgeColor)
+	, bEnableColorMap(bEnableColorMap)
+	, TextureOpacityFactor(TextureOpacityFactor)
+	, Brightness(Brightness)
+	, Contrast(Contrast)
+	, Posterize(Posterize)
+	, Saturation(Saturation)
+	, EdgeColor(EdgeColor)
+	, ColorScale(ColorScale)
+	, ColorOffset(ColorOffset)
+	, ColorMapType(InColorMapType)
+	, ColorLutDesc(InLutDesc)
+
+{
+	bUseColorLuts = (InColorMapType == ColorMapType_ColorLut && InLutDesc.ColorLuts.Num() == 1) 
+		|| (InColorMapType == ColorMapType_ColorLut_Interpolated && InLutDesc.ColorLuts.Num() == 2);
+	ColorMapData = GenerateColorMapData(InColorMapType, InColorMapGradient);
+};
 
 TArray<uint8> FEdgeStyleParameters::GenerateColorMapData(EOculusXRColorMapType InColorMapType, const TArray<FLinearColor>& InColorMapGradient)
 {

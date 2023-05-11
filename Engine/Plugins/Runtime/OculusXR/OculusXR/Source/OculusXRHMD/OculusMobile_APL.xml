@@ -26,10 +26,15 @@
 			section="/Script/OculusXRHMD.OculusXRHMDRuntimeSettings" property="bFocusAware"
 			default="true"/>
 
-		<!-- get package for oculus devices from AndroidRuntimeSettings -->
+		<!-- get package for Meta Quest from AndroidRuntimeSettings -->
+		<setBoolFromProperty result="bPackageForMetaQuest" ini="Engine" section="/Script/AndroidRuntimeSettings.AndroidRuntimeSettings" property="bPackageForMetaQuest" default="false"/>
+		<!-- Backcompat for deprecated oculus device target setting -->
+		<setBoolFromPropertyContains result="bPackageForQuest1" ini="Engine" section="/Script/AndroidRuntimeSettings.AndroidRuntimeSettings" property="PackageForOculusMobile" contains="Quest"/>
 		<setBoolFromPropertyContains result="bPackageForQuest2" ini="Engine" section="/Script/AndroidRuntimeSettings.AndroidRuntimeSettings" property="PackageForOculusMobile" contains="Quest2"/>
 		<setBoolFromPropertyContains result="bPackageForQuestPro" ini="Engine" section="/Script/AndroidRuntimeSettings.AndroidRuntimeSettings" property="PackageForOculusMobile" contains="QuestPro"/>
-		<setBoolOr result="bPackageForOculusMobile" arg1="$B(bPackageForQuest2)" arg2="$B(bPackageForQuestPro)"/>
+		<setBoolOr result="bPackageForMetaQuest" arg1="$B(bPackageForMetaQuest)" arg2="$B(bPackageForQuest1)"/>
+		<setBoolOr result="bPackageForMetaQuest" arg1="$B(bPackageForMetaQuest)" arg2="$B(bPackageForQuest2)"/>
+		<setBoolOr result="bPackageForMetaQuest" arg1="$B(bPackageForMetaQuest)" arg2="$B(bPackageForQuestPro)"/>
 
 		<!-- get supported oculus devices from OculusXRHMDRuntimeSettings -->
 		<setBoolFromPropertyContains result="bSupportMetaQuest2" ini="Engine" section="/Script/OculusXRHMD.OculusXRHMDRuntimeSettings" property="SupportedDevices" contains="Quest2"/>
@@ -64,7 +69,7 @@
 		<setBoolFromProperty result="bFaceTrackingEnabled" ini="Engine" section="/Script/OculusXRHMD.OculusXRHMDRuntimeSettings" property="bFaceTrackingEnabled" default="false"/>
 
 		<!-- get packaging for Oculus Mobile from ini and reset it if architecture not supported -->
-		<if condition="bPackageForOculusMobile">
+		<if condition="bPackageForMetaQuest">
 			<true>
 				<if condition="bSupported">
 					<true>
@@ -84,7 +89,7 @@
 						</if>
 					</true>
 					<false>
-						<setBool result="bPackageForOculusMobile" value="false"/>
+						<setBool result="bPackageForMetaQuest" value="false"/>
 						<log text="Oculus mobile not supported for this architecture, disabled."/>
 					</false>
 				</if>
@@ -99,7 +104,7 @@
 
 		<!-- package for Oculus and for distribution -->
 		<setBool result="bOculusDistribution" value="false"/>
-		<if condition="bPackageForOculusMobile">
+		<if condition="bPackageForMetaQuest">
 			<true>
 				<isDistribution>
 					<setBool result="bOculusDistribution" value="true"/>
@@ -148,8 +153,8 @@
 				</loopElements>
 			</true>
 		</if>
-		<setBool result="bOculus6Dof" value="$B(bPackageForOculusMobile)" />
-		<if condition="bPackageForOculusMobile">
+		<setBool result="bOculus6Dof" value="$B(bPackageForMetaQuest)" />
+		<if condition="bPackageForMetaQuest">
 			<true>
 				<if condition="bOculusDistribution">
 					<false>
@@ -182,6 +187,7 @@
 				<if condition="bInsightPassthroughEnabled">
 					<true>
 						<addFeature android:name="com.oculus.feature.PASSTHROUGH" android:required="true"/>
+						<addPermission android:name="com.oculus.permission.PASSTHROUGH" />
 					</true>
 				</if>
 				<!-- Add Eye Tracking flags-->
@@ -238,7 +244,7 @@
 			<if condition="bGameActivity">
 				<true>
 					<!-- Add VR Intent Filter, Permissions, and Features -->
-					<if condition="bPackageForOculusMobile">
+					<if condition="bPackageForMetaQuest">
 						<true>
 							<addFeature android:name="android.hardware.usb.host"/>
 						</true>

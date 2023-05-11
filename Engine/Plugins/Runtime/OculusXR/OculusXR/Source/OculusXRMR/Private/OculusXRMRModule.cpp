@@ -29,19 +29,6 @@
 
 #define LOCTEXT_NAMESPACE "OculusXRMR"
 
-namespace
-{
-	ovrpCameraDevice ConvertCameraDevice(EOculusXRMR_CameraDeviceEnum device)
-	{
-		if (device == EOculusXRMR_CameraDeviceEnum::CD_WebCamera0)
-			return ovrpCameraDevice_WebCamera0;
-		else if (device == EOculusXRMR_CameraDeviceEnum::CD_WebCamera1)
-			return ovrpCameraDevice_WebCamera1;
-		checkNoEntry();
-		return ovrpCameraDevice_None;
-	}
-}
-
 FOculusXRMRModule::FOculusXRMRModule()
 	: bInitialized(false)
 	, MRSettings(nullptr)
@@ -216,7 +203,6 @@ void FOculusXRMRModule::InitMixedRealityCapture()
 	// Always bind the event handlers in case devs call them without MRC on
 	MRSettings->TrackedCameraIndexChangeDelegate.BindRaw(this, &FOculusXRMRModule::OnTrackedCameraIndexChanged);
 	MRSettings->CompositionMethodChangeDelegate.BindRaw(this, &FOculusXRMRModule::OnCompositionMethodChanged);
-	MRSettings->CapturingCameraChangeDelegate.BindRaw(this, &FOculusXRMRModule::OnCapturingCameraChanged);
 	MRSettings->IsCastingChangeDelegate.BindRaw(this, &FOculusXRMRModule::OnIsCastingChanged);
 
 	ResetSettingsAndState();
@@ -247,66 +233,6 @@ void FOculusXRMRModule::SetupExternalCamera()
 
 	// Always request the MRC actor to handle a camera state change on its end
 	MRState->ChangeCameraStateRequested = true;
-
-	if (MRSettings->CompositionMethod == EOculusXRMR_CompositionMethod::ExternalComposition)
-	{
-		// Close the camera device for external composition since we don't need the actual camera feed
-		if (MRState->CurrentCapturingCamera != ovrpCameraDevice_None)
-		{
-			FOculusXRHMDModule::GetPluginWrapper().CloseCameraDevice(MRState->CurrentCapturingCamera);
-		}
-	}
-#if PLATFORM_WINDOWS
-	else if (MRSettings->CompositionMethod == EOculusXRMR_CompositionMethod::DirectComposition)
-	{
-		ovrpBool available = ovrpBool_False;
-		if (MRSettings->CapturingCamera == EOculusXRMR_CameraDeviceEnum::CD_None)
-		{
-			MRState->CurrentCapturingCamera = ovrpCameraDevice_None;
-			UE_LOG(LogMR, Error, TEXT("CapturingCamera is set to CD_None which is invalid. Please pick a valid camera for CapturingCamera. If you are not sure, try to set it to CD_WebCamera0 and use the first connected USB web camera"));
-			return;
-		}
-
-		MRState->CurrentCapturingCamera = ConvertCameraDevice(MRSettings->CapturingCamera);
-		if (OVRP_FAILURE(FOculusXRHMDModule::GetPluginWrapper().IsCameraDeviceAvailable2(MRState->CurrentCapturingCamera, &available)) || !available)
-		{
-			MRState->CurrentCapturingCamera = ovrpCameraDevice_None;
-			UE_LOG(LogMR, Error, TEXT("CapturingCamera not available"));
-			return;
-		}
-
-		ovrpSizei Size;
-		if (MRState->TrackedCamera.Index >= 0)
-		{
-			Size.w = MRState->TrackedCamera.SizeX;
-			Size.h = MRState->TrackedCamera.SizeY;
-			FOculusXRHMDModule::GetPluginWrapper().SetCameraDevicePreferredColorFrameSize(MRState->CurrentCapturingCamera, Size);
-		}
-		else
-		{
-			Size.w = 1280;
-			Size.h = 720;
-			FOculusXRHMDModule::GetPluginWrapper().SetCameraDevicePreferredColorFrameSize(MRState->CurrentCapturingCamera, Size);
-		}
-
-		ovrpBool cameraOpen;
-		if (OVRP_FAILURE(FOculusXRHMDModule::GetPluginWrapper().HasCameraDeviceOpened2(MRState->CurrentCapturingCamera, &cameraOpen)) || (!cameraOpen && OVRP_FAILURE(FOculusXRHMDModule::GetPluginWrapper().OpenCameraDevice(MRState->CurrentCapturingCamera))))
-		{
-			MRState->CurrentCapturingCamera = ovrpCameraDevice_None;
-			UE_LOG(LogMR, Error, TEXT("Cannot open CapturingCamera"));
-			return;
-		}
-	}
-#endif // PLATFORM_WINDOWS
-}
-
-void FOculusXRMRModule::CloseExternalCamera()
-{
-	if (MRState->CurrentCapturingCamera != ovrpCameraDevice_None)
-	{
-		FOculusXRHMDModule::GetPluginWrapper().CloseCameraDevice(MRState->CurrentCapturingCamera);
-		MRState->CurrentCapturingCamera = ovrpCameraDevice_None;
-	}
 }
 
 void FOculusXRMRModule::SetupInGameCapture()
@@ -351,13 +277,11 @@ void FOculusXRMRModule::ResetSettingsAndState()
 	// Reset MR State
 	MRState->TrackedCamera = FOculusXRTrackedCamera();
 	MRState->TrackingReferenceComponent = nullptr;
-	MRState->CurrentCapturingCamera = ovrpCameraDevice_None;
 	MRState->ChangeCameraStateRequested = false;
 	MRState->BindToTrackedCameraIndexRequested = false;
 
 	// Reset MR Settings
 	const bool bAutoOpenInExternalComposition = FParse::Param(FCommandLine::Get(), TEXT("externalcomposition"));
-	const bool bAutoOpenInDirectComposition = FParse::Param(FCommandLine::Get(), TEXT("directcomposition"));
 	MRSettings->BindToTrackedCameraIndexIfAvailable(0);
 	MRSettings->LoadFromIni();
 
@@ -367,10 +291,6 @@ void FOculusXRMRModule::ResetSettingsAndState()
 	if (bAutoOpenInExternalComposition)
 	{
 		MRSettings->CompositionMethod = EOculusXRMR_CompositionMethod::ExternalComposition;
-	}
-	else if (bAutoOpenInDirectComposition)
-	{
-		MRSettings->CompositionMethod = EOculusXRMR_CompositionMethod::DirectComposition;
 	}
 }
 
@@ -533,22 +453,6 @@ void FOculusXRMRModule::OnCompositionMethodChanged(EOculusXRMR_CompositionMethod
 	SetupExternalCamera();
 }
 
-void FOculusXRMRModule::OnCapturingCameraChanged(EOculusXRMR_CameraDeviceEnum OldVal, EOculusXRMR_CameraDeviceEnum NewVal)
-{
-	if (OldVal == NewVal)
-	{
-		return;
-	}
-
-	// Close the old camera device before switching
-	if (OldVal != EOculusXRMR_CameraDeviceEnum::CD_None)
-	{
-		auto CameraDevice = ConvertCameraDevice(OldVal);
-		FOculusXRHMDModule::GetPluginWrapper().CloseCameraDevice(CameraDevice);
-	}
-	SetupExternalCamera();
-}
-
 void FOculusXRMRModule::OnIsCastingChanged(bool OldVal, bool NewVal)
 {
 	if (OldVal == NewVal)
@@ -570,7 +474,6 @@ void FOculusXRMRModule::OnIsCastingChanged(bool OldVal, bool NewVal)
 		FOculusXRHMDModule::GetPluginWrapper().Media_SetMrcActivationMode(ovrpMediaMrcActivationMode_Disabled);
 #endif
 		CloseInGameCapture();
-		CloseExternalCamera();
 	}
 }
 

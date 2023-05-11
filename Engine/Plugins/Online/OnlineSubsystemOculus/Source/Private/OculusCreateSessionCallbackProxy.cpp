@@ -43,7 +43,11 @@ void UOculusCreateSessionCallbackProxy::Activate()
 			Settings.Set(SETTING_OCULUS_POOL, OculusPool, EOnlineDataAdvertisementType::ViaOnlineService);
 		}
 
-		OculusSessionInterface->CreateSession(0, NAME_GameSession, Settings);
+		if (!OculusSessionInterface->CreateSession(0, NAME_GameSession, Settings))
+		{
+			OculusSessionInterface->ClearOnCreateSessionCompleteDelegate_Handle(CreateCompleteDelegateHandle);
+			OnFailure.Broadcast();
+		}
 	}
 	else
 	{

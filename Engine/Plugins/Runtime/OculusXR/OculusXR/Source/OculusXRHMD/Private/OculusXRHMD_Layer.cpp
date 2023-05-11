@@ -113,14 +113,14 @@ void FLayer::SetDesc(const IStereoLayers::FLayerDesc& InDesc)
 
 	Desc = InDesc;
 
-	if (!UserDefinedGeometryMap) 
+	if (!UserDefinedGeometryMap)
 	{
 		UserDefinedGeometryMap = MakeShared<TMap<FString, FPassthroughMesh>, ESPMode::ThreadSafe>();
 	}
 
-	if (!PassthroughPokeActorMap) 
+	if (!PassthroughPokeActorMap)
 	{
-		PassthroughPokeActorMap = MakeShared<TMap<FString,FPassthroughPokeActor>, ESPMode::ThreadSafe>();
+		PassthroughPokeActorMap = MakeShared<TMap<FString, FPassthroughPokeActor>, ESPMode::ThreadSafe>();
 	}
 
 	HandlePokeAHoleComponent();
@@ -281,7 +281,7 @@ void FLayer::BuildPokeAHoleMesh(TArray<FVector>& Vertices, TArray<int32>& Triang
 
 		float CurrentAngle = -ArcAngle / 2;
 		const float AngleStep = ArcAngle / Sides;
-		
+
 
 		for (int Side = 0; Side < Sides + 1; Side++)
 		{
@@ -370,7 +370,7 @@ void FLayer::UpdatePassthroughPokeActors_GameThread()
 	{
 		const FUserDefinedLayer& UserDefinedLayerProps = Desc.GetShape<FUserDefinedLayer>();
 		const TArray<FUserDefinedGeometryDesc>& UserGeometryList = UserDefinedLayerProps.UserGeometryList;
-		TSet<FString> UsedSet;
+		TSet<FString> UsedSet = {};
 
 		if(NeedsPassthroughPokeAHole())
 		{
@@ -378,7 +378,7 @@ void FLayer::UpdatePassthroughPokeActors_GameThread()
 			{
 				const FString MeshName = GeometryDesc.MeshName;
 				UsedSet.Add(MeshName);
-				
+
 				FPassthroughPokeActor* FoundPassthroughPokeActor = PassthroughPokeActorMap->Find(MeshName);
 				if(!FoundPassthroughPokeActor)
 				{
@@ -392,7 +392,7 @@ void FLayer::UpdatePassthroughPokeActors_GameThread()
 							PassthroughPokeActorMap->Add(MeshName, PassthroughPokeActor);
 						}
 					}
-				} 
+				}
 				else if (GeometryDesc.bUpdateTransform)
 				{
 					(*FoundPassthroughPokeActor).PokeAHoleComponentPtr->SetWorldTransform(GeometryDesc.Transform);
@@ -595,7 +595,7 @@ bool FLayer::Initialize_RenderThread(const FSettings* Settings, FCustomPresent* 
 			ViewportRect.Size.h = (int)(Desc.UVRect.Max.Y * SizeY + 0.5f) - ViewportRect.Pos.y;
 		}
 	}
-	
+
 	// Reuse/Create texture set
 	if (CanReuseResources(InLayer))
 	{
@@ -646,7 +646,7 @@ bool FLayer::Initialize_RenderThread(const FSettings* Settings, FCustomPresent* 
 						{
 							DepthTextures.SetNum(TextureCount);
 						}
-						
+
 						FoveationTextures.SetNum(TextureCount);
 						FoveationTextureSize.w = 0;
 						FoveationTextureSize.h = 0;
@@ -672,7 +672,7 @@ bool FLayer::Initialize_RenderThread(const FSettings* Settings, FCustomPresent* 
 							{
 								// Call fails on unsupported platforms and returns null textures for no foveation texture
 								// Since this texture is not required for rendering, don't return on failure
-								if (!OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetLayerTextureFoveation(OvrpLayerId, TextureIndex, ovrpEye_Left, &FoveationTextures[TextureIndex], &FoveationTextureSize)) || 
+								if (!OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetLayerTextureFoveation(OvrpLayerId, TextureIndex, ovrpEye_Left, &FoveationTextures[TextureIndex], &FoveationTextureSize)) ||
 									FoveationTextures[TextureIndex] == (unsigned long long)nullptr)
 								{
 									bValidFoveationTextures = false;
@@ -744,7 +744,7 @@ bool FLayer::Initialize_RenderThread(const FSettings* Settings, FCustomPresent* 
 					NumSamplesTileMem = (CVarMobileMSAA ? CVarMobileMSAA->GetValueOnAnyThread() : 1);
 				}
 
-				ERHIResourceType ResourceType;			
+				ERHIResourceType ResourceType;
 				if (OvrpLayerDesc.Shape == ovrpShape_Cubemap || OvrpLayerDesc.Shape == ovrpShape_OffcenterCubemap)
 				{
 					ResourceType = RRT_TextureCube;
@@ -769,14 +769,14 @@ bool FLayer::Initialize_RenderThread(const FSettings* Settings, FCustomPresent* 
 				}
 
 				FClearValueBinding ColorTextureBinding = FClearValueBinding();
-				FClearValueBinding DepthTextureBinding = GetSceneDepthClearValue();
+				FClearValueBinding DepthTextureBinding = FClearValueBinding::DepthFar;
 
 				SwapChain = CustomPresent->CreateSwapChain_RenderThread(SizeX, SizeY, ColorFormat, ColorTextureBinding, NumMips, NumSamples, NumSamplesTileMem, ResourceType, ColorTextures, ColorTexCreateFlags, *FString::Printf(TEXT("Oculus Color Swapchain %d"), OvrpLayerId));
 
 #if PLATFORM_WINDOWS
 				static const auto CVarPropagateAlpha = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.PostProcessing.PropagateAlpha"));
 				const EAlphaChannelMode::Type PropagateAlpha = EAlphaChannelMode::FromInt(CVarPropagateAlpha->GetValueOnRenderThread());
-				if (PropagateAlpha == EAlphaChannelMode::AllowThroughTonemapper) 
+				if (PropagateAlpha == EAlphaChannelMode::AllowThroughTonemapper)
 				{
 					ETextureCreateFlags InvTexCreateFlags = TexCreate_ShaderResource | TexCreate_RenderTargetable;
 					FRHIResourceCreateInfo Info(TEXT("InvAlphaTexture"));
@@ -837,7 +837,7 @@ bool FLayer::Initialize_RenderThread(const FSettings* Settings, FCustomPresent* 
 				FoveationSwapChain.Reset();
 				RightSwapChain.Reset();
 				RightDepthSwapChain.Reset();
-				if (UserDefinedGeometryMap) 
+				if (UserDefinedGeometryMap)
 				{
 					UserDefinedGeometryMap->Reset();
 				}
@@ -863,7 +863,7 @@ void FLayer::UpdatePassthroughStyle_RenderThread(const FEdgeStyleParameters& Edg
 	ovrpInsightPassthroughStyle Style;
 	Style.EdgeColor = ovrpColorf { 0 , 0 , 0 , 0 };
 	Style.TextureOpacityFactor = EdgeStyleParameters.TextureOpacityFactor;
-	Style.Flags = (ovrpInsightPassthroughStyleFlags)(ovrpInsightPassthroughStyleFlags_HasTextureOpacityFactor 
+	Style.Flags = (ovrpInsightPassthroughStyleFlags)(ovrpInsightPassthroughStyleFlags_HasTextureOpacityFactor
 													 | ovrpInsightPassthroughStyleFlags_HasEdgeColor
 													 | ovrpInsightPassthroughStyleFlags_HasTextureColorMap);
 	Style.TextureColorMapType = ovrpInsightPassthroughColorMapType_None;
@@ -875,14 +875,32 @@ void FLayer::UpdatePassthroughStyle_RenderThread(const FEdgeStyleParameters& Edg
 		Style.EdgeColor = ToOvrpColorf(EdgeStyleParameters.EdgeColor);
 	}
 
-	if(EdgeStyleParameters.bEnableColorMap)
+	if (EdgeStyleParameters.bEnableColorMap)
 	{
 		Style.TextureColorMapType = ToOVRPColorMapType(EdgeStyleParameters.ColorMapType);
 		Style.TextureColorMapData = (uint8*)EdgeStyleParameters.ColorMapData.GetData();
 		Style.TextureColorMapDataSize = EdgeStyleParameters.ColorMapData.Num();
-	} 
+	}
 
-	if (OVRP_FAILURE(FOculusXRHMDModule::GetPluginWrapper().SetInsightPassthroughStyle(OvrpLayerId,Style)))
+	if (EdgeStyleParameters.bUseColorLuts) {
+		Style.LutWeight = EdgeStyleParameters.ColorLutDesc.Weight;
+		Style.TextureColorMapType = ToOVRPColorMapType(EdgeStyleParameters.ColorMapType);
+		
+		if (EdgeStyleParameters.ColorLutDesc.ColorLuts.Num() == 1)
+		{
+			check(Style.TextureColorMapType == ovrpInsightPassthroughColorMapType_ColorLut);
+			Style.LutSource = EdgeStyleParameters.ColorLutDesc.ColorLuts[0];
+		}
+
+		if (EdgeStyleParameters.ColorLutDesc.ColorLuts.Num() == 2)
+		{
+			check(Style.TextureColorMapType == ovrpInsightPassthroughColorMapType_InterpolatedColorLut);
+			Style.LutSource = EdgeStyleParameters.ColorLutDesc.ColorLuts[0];
+			Style.LutTarget = EdgeStyleParameters.ColorLutDesc.ColorLuts[1];
+		}
+	}
+
+	if (OVRP_FAILURE(FOculusXRHMDModule::GetPluginWrapper().SetInsightPassthroughStyle2(OvrpLayerId, &Style)))
 	{
 		UE_LOG(LogTemp, Error, TEXT("Failed setting passthrough style"));
 		return;
@@ -931,7 +949,7 @@ void FLayer::UpdatePassthrough_RenderThread(FCustomPresent* CustomPresent, FRHIC
 		{
 			const FString MeshName = GeometryDesc.MeshName;
 			UsedSet.Add(MeshName);
-			
+
 			FPassthroughMesh* LayerPassthroughMesh = UserDefinedGeometryMap->Find(MeshName);
 			if(!LayerPassthroughMesh)
 			{
@@ -944,7 +962,7 @@ void FLayer::UpdatePassthrough_RenderThread(FCustomPresent* CustomPresent, FRHIC
 					AddPassthroughMesh_RenderThread(GeomPassthroughMesh->GetVertices(), GeomPassthroughMesh->GetTriangles(), Transform, MeshHandle, InstanceHandle);
 					UserDefinedGeometryMap->Add(MeshName, FPassthroughMesh(MeshHandle, InstanceHandle));
 				}
-			} 
+			}
 			else if (GeometryDesc.bUpdateTransform)
 			{
 				const FMatrix Transform = TransformToPassthroughSpace(GeometryDesc.Transform, Frame);
@@ -1062,7 +1080,7 @@ void FLayer::UpdateTexture_RenderThread(const FSettings* Settings, FCustomPresen
 		}
 	}
 
-	if (Id == 0 && SwapChain.IsValid() && InvAlphaTexture) 
+	if (Id == 0 && SwapChain.IsValid() && InvAlphaTexture)
 	{
 		// Left
 		{
@@ -1076,7 +1094,7 @@ void FLayer::UpdateTexture_RenderThread(const FSettings* Settings, FCustomPresen
 			FRHITexture* EyeTexture = RightSwapChain.IsValid() ? RightSwapChain->GetTexture() : SwapChain->GetTexture();
 			InvertTextureAlpha_RenderThread(CustomPresent, RHICmdList, EyeTexture, InvAlphaTexture, Settings->EyeRenderViewport[ovrpEye_Right]);
 		}
-	}  
+	}
 
 }
 
@@ -1084,7 +1102,7 @@ void FLayer::UpdateTexture_RenderThread(const FSettings* Settings, FCustomPresen
 // Note: FTransform is following the order of C = A * B,  Apply C means, apply A then Apply B.
 void GetTrackingSpaceDeltaPose(const FSettings* Settings, const FGameFrame* Frame, FTransform& TrackingSpaceDeltaPose)
 {
-	// TrackingSpaceDeltaPose: describe the tracking space movement in current tracking space 
+	// TrackingSpaceDeltaPose: describe the tracking space movement in current tracking space
 	TrackingSpaceDeltaPose = Frame->TrackingToWorld * Frame->LastTrackingToWorld.Inverse();
 
 	// However There is a intermediete layer from SettingBasePose, which is acting as a bridge between OVRPlugin Device Space and UE4 Device Space
@@ -1246,7 +1264,7 @@ const ovrpLayerSubmit* FLayer::UpdateLayer_RHIThread(const FSettings* Settings, 
 		}
 
 		ovrpXrApi NativeXrApi;
-		if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetNativeXrApiType(&NativeXrApi)) && (NativeXrApi == ovrpXrApi_OpenXR)) 
+		if (OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().GetNativeXrApiType(&NativeXrApi)) && (NativeXrApi == ovrpXrApi_OpenXR))
 		{
 			if (LayerIndex == 0)
 			{
@@ -1258,8 +1276,8 @@ const ovrpLayerSubmit* FLayer::UpdateLayer_RHIThread(const FSettings* Settings, 
 				OvrpLayerSubmit.SrcBlendFactor = ovrpBlendFactorOneMinusSrcAlpha;
 				OvrpLayerSubmit.DstBlendFactor = ovrpBlendFactorSrcAlpha;
 			}
-		} 
-		else 
+		}
+		else
 		{
 #if PLATFORM_WINDOWS
                OvrpLayerSubmit.LayerSubmitFlags |= ovrpLayerSubmitFlag_IgnoreSourceAlpha;
@@ -1344,7 +1362,7 @@ void FLayer::AddPassthroughMesh_RenderThread(const TArray<FVector>& Vertices,con
 	VertexData.SetNumUninitialized(Vertices.Num() * 3);
 
 	size_t i = 0;
-	for (const FVector& vertex : Vertices) 
+	for (const FVector& vertex : Vertices)
 	{
 		VertexData[i++] = vertex.X;
 		VertexData[i++] = vertex.Y;
@@ -1376,7 +1394,7 @@ void FLayer::AddPassthroughMesh_RenderThread(const TArray<FVector>& Vertices,con
 	}
 	OutMeshHandle = MeshHandle;
 	OutInstanceHandle = InstanceHandle;
-	
+
 }
 
 void FLayer::UpdatePassthroughMeshTransform_RenderThread(uint64_t InstanceHandle,FMatrix Transformation)
@@ -1415,7 +1433,7 @@ void FLayer::DestroyLayer()
 {
 	CheckInGameThread();
 
-	if (PassthroughPokeActorMap) 
+	if (PassthroughPokeActorMap)
 	{
 		UWorld* World = GetWorld();
 		if (!World)

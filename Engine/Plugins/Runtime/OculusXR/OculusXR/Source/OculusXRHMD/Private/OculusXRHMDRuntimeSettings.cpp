@@ -229,9 +229,10 @@ void UOculusXRHMDRuntimeSettings::RenameProperties()
 		GConfig->RemoveKey(OculusSettings, TEXT("FFRDynamic"), GetDefaultConfigFilename());
 	}
 
-	const TCHAR* AndroidSettings = TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings");
 	const FString Quest = TEXT("Quest");
 
+#ifndef WITH_OCULUS_BRANCH
+	const TCHAR* AndroidSettings = TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings");
 	TArray<FString> PackageList;
 	const TCHAR* PackageForMobileKey = TEXT("+PackageForOculusMobile");
 	if (GConfig->GetArray(AndroidSettings, PackageForMobileKey, PackageList, GetDefaultConfigFilename()))
@@ -247,9 +248,10 @@ void UOculusXRHMDRuntimeSettings::RenameProperties()
 			GConfig->SetArray(AndroidSettings, PackageForMobileKey, PackageList, GetDefaultConfigFilename());
 		}
 	}
+#endif // WITH_OCULUS_BRANCH
 
 	TArray<FString> DeviceList;
-	const TCHAR* SupportedDevicesKey = TEXT("+SupportedDevices");
+	const TCHAR* SupportedDevicesKey = *FString("+").Append(GET_MEMBER_NAME_STRING_CHECKED(UOculusXRHMDRuntimeSettings, SupportedDevices));
 	if (GConfig->GetArray(OculusSettings, SupportedDevicesKey, DeviceList, GetDefaultConfigFilename()))
 	{
 		const EOculusXRSupportedDevices LastSupportedDevice = EOculusXRSupportedDevices::Quest2;
@@ -257,6 +259,7 @@ void UOculusXRHMDRuntimeSettings::RenameProperties()
 		if (DeviceList.Contains(Quest))
 		{
 			DeviceList.Remove(Quest);
+			SupportedDevices.Remove((EOculusXRSupportedDevices)0);
 			if (!DeviceList.Contains(LastSupportedDeviceString))
 			{
 				DeviceList.Add(LastSupportedDeviceString);
