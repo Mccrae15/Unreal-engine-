@@ -10,6 +10,6 @@ public class GraphicsShowcaseEditorTarget : TargetRules
 		Type = TargetType.Editor;
 		DefaultBuildSettings = BuildSettingsVersion.V2;
 
-		ExtraModuleNames.AddRange( new string[] { "GraphicsShowcase" } );
+		ExtraModuleNames.AddRange(new string[] { "GraphicsShowcase" });
 	}
 }

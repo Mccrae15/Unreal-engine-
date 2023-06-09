@@ -38,5 +38,4 @@ FString USharedAnchorsSampleBPLibrary::GetLocalPlayerOculusNetID()
 	UE_LOG(LogTemp, Display, TEXT("LocalPlayer - UniqueID: %s"), *id);
 
 	return id;
-
 }

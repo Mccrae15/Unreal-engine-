@@ -3,4 +3,4 @@
 #include "HandPoseShowcase.h"
 #include "Modules/ModuleManager.h"
 
-IMPLEMENT_PRIMARY_GAME_MODULE( FDefaultGameModuleImpl, HandPoseShowcase, "HandPoseShowcase" );
+IMPLEMENT_PRIMARY_GAME_MODULE(FDefaultGameModuleImpl, HandPoseShowcase, "HandPoseShowcase");

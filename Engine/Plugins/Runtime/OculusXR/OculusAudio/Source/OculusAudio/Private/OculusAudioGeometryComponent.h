@@ -17,29 +17,29 @@ public:
 	UOculusAudioGeometryComponent();
 	~UOculusAudioGeometryComponent();
 	bool UploadGeometry();
-	bool IncludesChildren() const	{ return IncludeChildren; }
+	bool IncludesChildren() const { return IncludeChildren; }
 
 private:
-	void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction) override;
-	void Serialize(FArchive & Ar) override;
+	void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
+	void Serialize(FArchive& Ar) override;
 	void PostLoad() override;
 	void BeginDestroy() override;
 
 	ovrAudioContext GetContext(UWorld* World = nullptr);
 	void AppendStaticMesh(UStaticMesh* Mesh,
-						  const FTransform& Transform,
-						  TArray<FVector>& MergedVertices,
-						  TArray<uint32>& MergedIndices,
-						  TArray<ovrAudioMeshGroup>& ovrMeshGroups,
-						  ovrAudioMaterial ovrMaterial);
+		const FTransform& Transform,
+		TArray<FVector>& MergedVertices,
+		TArray<uint32>& MergedIndices,
+		TArray<ovrAudioMeshGroup>& ovrMeshGroups,
+		ovrAudioMaterial ovrMaterial);
 
 	void AppendChildMeshes(AActor* CurrentActor,
-						   const FTransform& RootTransform,
-						   ovrAudioContext Context,
-						   TArray<FVector>& MergedVertices,
-						   TArray<uint32>& MergedIndices,
-						   TArray<ovrAudioMeshGroup>& ovrMeshGroups,
-						   ovrAudioMaterial ovrMaterial);
+		const FTransform& RootTransform,
+		ovrAudioContext Context,
+		TArray<FVector>& MergedVertices,
+		TArray<uint32>& MergedIndices,
+		TArray<ovrAudioMeshGroup>& ovrMeshGroups,
+		ovrAudioMaterial ovrMaterial);
 
 	// Mesh hierarchy optimization for both content editing and runtime performance
 	// if IncludeChildren is true, children (attached) meshes will be merged

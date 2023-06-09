@@ -1431,8 +1431,6 @@ void CompileShaderOffline(const FShaderCompilerInput& Input,
 		// extract instruction count
 		if (ShaderOutput.bSucceeded)
 		{
-			ShaderOutput.NumInstructions = OfflineCompiler_ExtractNumberInstructions(StdOut, Options.InstructionStrings);
-
 			FString OutputStatsFile;
 			if (Input.ExtraSettings.bSaveCompilerStatsFiles)
 			{

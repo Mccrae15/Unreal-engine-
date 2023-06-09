@@ -93,19 +93,19 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Passthrough Properties", meta = (EditCondition = "bEnableColorMap", EditConditionHides))
 	FLinearColor ColorOffset = FLinearColor::Black;
 
-	UFUNCTION(BlueprintCallable, Category ="Components|Stereo Layer")
+	UFUNCTION(BlueprintCallable, Category = "Components|Stereo Layer")
 	void SetTextureOpacity(float InOpacity);
 
-	UFUNCTION(BlueprintCallable, Category ="Components|Stereo Layer")
+	UFUNCTION(BlueprintCallable, Category = "Components|Stereo Layer")
 	void EnableEdgeColor(bool bInEnableEdgeColor);
 
-	UFUNCTION(BlueprintCallable, Category ="Components|Stereo Layer")
+	UFUNCTION(BlueprintCallable, Category = "Components|Stereo Layer")
 	void EnableColorMap(bool bInEnableColorMap);
 
 	UFUNCTION(BlueprintCallable, Category = "Components|Stereo Layer")
 	void EnableColorMapCurve(bool bInEnableColorMapCurve);
 
-	UFUNCTION(BlueprintCallable, Category ="Components|Stereo Layer")
+	UFUNCTION(BlueprintCallable, Category = "Components|Stereo Layer")
 	void SetEdgeRenderingColor(FLinearColor InEdgeColor);
 
 	/** Set color map controls for grayscale and grayscale to rgb color mapping*/
@@ -120,10 +120,10 @@ public:
 	void SetColorScaleAndOffset(FLinearColor InColorScale = FLinearColor::White, FLinearColor InColorOffset = FLinearColor::Black);
 
 	/** Set color curve that will be added to the color map in grayscale modes --> will be converted into a gradient*/
-	UFUNCTION(BlueprintCallable, Category ="Components|Stereo Layer")
+	UFUNCTION(BlueprintCallable, Category = "Components|Stereo Layer")
 	void SetColorMapCurve(UCurveLinearColor* InColorMapCurve);
 
-	UFUNCTION(BlueprintCallable, Category ="Components|Stereo Layer")
+	UFUNCTION(BlueprintCallable, Category = "Components|Stereo Layer")
 	void SetColorMapType(EOculusXRColorMapType InColorMapType);
 
 	/** Set color map array directly instead through a color curve*/
@@ -183,7 +183,6 @@ class OCULUSXRPASSTHROUGH_API UOculusXRStereoLayerShapeReconstructed : public UO
 	GENERATED_BODY()
 public:
 	virtual void ApplyShape(IStereoLayers::FLayerDesc& LayerDesc) override;
-
 };
 
 /* User Defined Passthrough Layer*/
@@ -208,32 +207,29 @@ class OCULUSXRPASSTHROUGH_API UOculusXRPassthroughLayerComponent : public UStere
 	GENERATED_UCLASS_BODY()
 
 public:
-
 	void DestroyComponent(bool bPromoteChildren) override;
 
-	void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction) override;
+	void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
 	void UpdatePassthroughObjects();
 
-	UFUNCTION(BlueprintCallable, Category ="Passthrough")
-	void AddSurfaceGeometry(AStaticMeshActor* StaticMeshActor, bool updateTransform );
-
-	UFUNCTION(BlueprintCallable, Category ="Passthrough")
-	void RemoveSurfaceGeometry(AStaticMeshActor* StaticMeshActor );
+	UFUNCTION(BlueprintCallable, Category = "Passthrough")
+	void AddSurfaceGeometry(AStaticMeshActor* StaticMeshActor, bool updateTransform);
 
 	UFUNCTION(BlueprintCallable, Category = "Passthrough")
-	bool IsSurfaceGeometry(AStaticMeshActor* StaticMeshActor ) const;
+	void RemoveSurfaceGeometry(AStaticMeshActor* StaticMeshActor);
+
+	UFUNCTION(BlueprintCallable, Category = "Passthrough")
+	bool IsSurfaceGeometry(AStaticMeshActor* StaticMeshActor) const;
 
 	// Manually mark the stereo layer passthrough effect for updating
-	UFUNCTION(BlueprintCallable, Category="Components|Stereo Layer")
+	UFUNCTION(BlueprintCallable, Category = "Components|Stereo Layer")
 	void MarkPassthroughStyleForUpdate();
 
 protected:
-
 	virtual bool LayerRequiresTexture();
 
 private:
-
 	OculusXRHMD::FOculusPassthroughMeshRef CreatePassthroughMesh(UStaticMesh* StaticMesh);
 
 	UPROPERTY(Transient)
@@ -241,5 +237,4 @@ private:
 
 	/** Passthrough style needs to be marked for update **/
 	bool bPassthroughStyleNeedsUpdate;
-
 };

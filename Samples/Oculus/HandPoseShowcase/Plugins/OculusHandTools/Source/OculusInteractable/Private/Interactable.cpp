@@ -5,15 +5,13 @@
 
 AInteractable::AInteractable()
 {
- 	// Set this actor to call Tick() every frame.  You can turn this off to improve performance if you don't need it.
+	// Set this actor to call Tick() every frame.  You can turn this off to improve performance if you don't need it.
 	PrimaryActorTick.bCanEverTick = true;
-
 }
 
 void AInteractable::BeginPlay()
 {
 	Super::BeginPlay();
-	
 }
 
 void AInteractable::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -21,7 +19,7 @@ void AInteractable::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	while (Selectors.Num() > 0)
 	{
 		AInteractableSelector* Selector = Selectors.Pop(false);
-		Selector->SetSelectedInteractable(nullptr, false);  // Remove with no notification.
+		Selector->SetSelectedInteractable(nullptr, false); // Remove with no notification.
 	}
 
 	Super::EndPlay(EndPlayReason);
@@ -30,7 +28,6 @@ void AInteractable::EndPlay(const EEndPlayReason::Type EndPlayReason)
 void AInteractable::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
-
 }
 
 void AInteractable::BeginSelection_Implementation(AInteractableSelector* Selector)

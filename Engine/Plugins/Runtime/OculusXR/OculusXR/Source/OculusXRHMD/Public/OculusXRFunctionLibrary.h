@@ -18,12 +18,12 @@ UENUM(BlueprintType)
 enum class EOculusXRTrackedDeviceType : uint8
 {
 	None UMETA(DisplayName = "No Devices"),
-	HMD	UMETA(DisplayName = "HMD"),
-	LTouch	UMETA(DisplayName = "Left Hand"),
-	RTouch	UMETA(DisplayName = "Right Hand"),
-	Touch		UMETA(DisplayName = "All Hands"),
-    DeviceObjectZero    UMETA(DisplayName = "DeviceObject Zero"),
-	All	UMETA(DisplayName = "All Devices")
+	HMD UMETA(DisplayName = "HMD"),
+	LTouch UMETA(DisplayName = "Left Hand"),
+	RTouch UMETA(DisplayName = "Right Hand"),
+	Touch UMETA(DisplayName = "All Hands"),
+	DeviceObjectZero UMETA(DisplayName = "DeviceObject Zero"),
+	All UMETA(DisplayName = "All Devices")
 };
 
 USTRUCT(BlueprintType, meta = (DisplayName = "HMD User Profile Data Field"))
@@ -38,8 +38,8 @@ struct FOculusXRHmdUserProfileField
 	FString FieldValue;
 
 	FOculusXRHmdUserProfileField() {}
-	FOculusXRHmdUserProfileField(const FString& Name, const FString& Value) :
-		FieldName(Name), FieldValue(Value) {}
+	FOculusXRHmdUserProfileField(const FString& Name, const FString& Value)
+		: FieldName(Name), FieldValue(Value) {}
 };
 
 USTRUCT(BlueprintType, meta = (DisplayName = "HMD User Profile Data"))
@@ -74,8 +74,8 @@ struct FOculusXRHmdUserProfile
 	UPROPERTY(BlueprintReadWrite, Category = "Input|HeadMountedDisplay")
 	TArray<FOculusXRHmdUserProfileField> ExtraFields;
 
-	FOculusXRHmdUserProfile() :
-		PlayerHeight(0.f), EyeHeight(0.f), IPD(0.f), NeckToEyeDistance(FVector2D::ZeroVector) {}
+	FOculusXRHmdUserProfile()
+		: PlayerHeight(0.f), EyeHeight(0.f), IPD(0.f), NeckToEyeDistance(FVector2D::ZeroVector) {}
 };
 
 UENUM(BlueprintType)
@@ -100,8 +100,8 @@ enum class EOculusXRFoveatedRenderingLevel : uint8
 UENUM(BlueprintType)
 enum class EOculusXRBoundaryType : uint8
 {
-	Boundary_Outer	UMETA(DisplayName = "Outer Boundary"),
-	Boundary_PlayArea	UMETA(DisplayName = "Play Area"),
+	Boundary_Outer UMETA(DisplayName = "Outer Boundary"),
+	Boundary_PlayArea UMETA(DisplayName = "Play Area"),
 };
 
 UENUM(BlueprintType)
@@ -116,13 +116,13 @@ enum class EOculusXRColorSpace : uint8
 	/// Rec. 709 is used on Oculus Go and shares the same primary color coordinates as sRGB
 	Rec_709 = 3,
 	/// Oculus Rift CV1 uses a unique color space, see documentation for more info
-	Rift_CV1 = 4	UMETA(DisplayName = "Rift CV1"),
+	Rift_CV1 = 4 UMETA(DisplayName = "Rift CV1"),
 	/// Oculus Rift S uses a unique color space, see documentation for more info
 	Rift_S = 5,
 	/// Oculus Quest's native color space is slightly different than Rift CV1
-	Quest = 6		UMETA(DisplayName = "Quest 1"),
+	Quest = 6 UMETA(DisplayName = "Quest 1"),
 	/// DCI-P3 color space. See documentation for more details
-	P3 = 7			UMETA(DisplayName = "P3 (Recommended)"),
+	P3 = 7 UMETA(DisplayName = "P3 (Recommended)"),
 	/// Similar to sRGB but with deeper greens using D65 white point
 	Adobe_RGB = 8,
 };
@@ -167,7 +167,7 @@ enum class EOculusXRProcessorPerformanceLevel : uint8
 UENUM(BlueprintType)
 enum class EOculusXRDeviceType : uint8
 {
-	//mobile HMDs 
+	//mobile HMDs
 	OculusMobile_Deprecated0 = 0,
 	OculusQuest_Deprecated,
 	OculusQuest2,
@@ -197,7 +197,7 @@ UENUM(BlueprintType)
 enum class EOculusXRXrApi : uint8
 {
 	OVRPluginOpenXR = 0 UMETA(DisplayName = "Oculus OVRPlugin + OpenXR backend (current recommended)", ToolTip = "Oculus plugin integration using OpenXR backend on both Mobile and PC. All new features will ship on backend for the forseeable future."),
-	
+
 	NativeOpenXR = 1 UMETA(DisplayName = "Epic Native OpenXR with Oculus vendor extensions", ToolTip = "Disable Legacy Oculus in favor of the native OpenXR implementation, with Oculus vendor extensions. Must enable the OpenXR plugin. This will be where Epic focuses XR development going forward. Oculus OpenXR extensions may be moved into a separate plugin (or plugins) in the future to improve modularity. The features supported by OpenXR are listed in the OpenXR specification on khronos.org, and the features supported by a given runtime can be verified with the \"OpenXR Explorer\" application on GitHub."),
 };
 
@@ -257,7 +257,7 @@ class OCULUSXRHMD_API UOculusXRFunctionLibrary : public UBlueprintFunctionLibrar
 	 * @param bUsePositionForPlayerCamera	(in) Should be set to 'true' if the position is going to be used to update position of the camera manually.
 	 * @param PositionScale		(in) The 3D scale that will be applied to position.
 	 */
-	UFUNCTION(BlueprintPure, Category="OculusLibrary")
+	UFUNCTION(BlueprintPure, Category = "OculusLibrary")
 	static void GetPose(FRotator& DeviceRotation, FVector& DevicePosition, FVector& NeckPosition, bool bUseOrienationForPlayerCamera = false, bool bUsePositionForPlayerCamera = false, const FVector PositionScale = FVector::ZeroVector);
 
 	/**
@@ -281,8 +281,7 @@ class OCULUSXRHMD_API UOculusXRFunctionLibrary : public UBlueprintFunctionLibrar
 	/**
 	* Set the CPU and GPU levels as hints to the Oculus device (Deprecated).
 	*/
-	UFUNCTION(BlueprintCallable, Category = "OculusLibrary", meta=(DeprecatedFunction, 
-		DeprecatedMessage="Deprecated. Please use Get/SetSuggestedCpuAndGpuPerformanceLevels instead"))
+	UFUNCTION(BlueprintCallable, Category = "OculusLibrary", meta = (DeprecatedFunction, DeprecatedMessage = "Deprecated. Please use Get/SetSuggestedCpuAndGpuPerformanceLevels instead"))
 	static void SetCPUAndGPULevels(int CPULevel, int GPULevel);
 
 	/**
@@ -340,7 +339,7 @@ class OCULUSXRHMD_API UOculusXRFunctionLibrary : public UBlueprintFunctionLibrar
 	 * @param PosScale3D	(in) the scale to apply to the HMD position.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "OculusLibrary", meta = (DeprecatedFunction, DeprecationMessage = "This feature is no longer supported."))
-	static void SetPositionScale3D(FVector PosScale3D) { }
+	static void SetPositionScale3D(FVector PosScale3D) {}
 
 	/**
 	 * Sets 'base rotation' - the rotation that will be subtracted from
@@ -509,7 +508,6 @@ class OCULUSXRHMD_API UOculusXRFunctionLibrary : public UBlueprintFunctionLibrar
 	UFUNCTION(BlueprintCallable, Category = "OculusLibrary")
 	static void SetClientColorDesc(EOculusXRColorSpace ColorSpace);
 
-
 	/**
 	* Turns on or off local dimming
 	*/
@@ -527,6 +525,8 @@ class OCULUSXRHMD_API UOculusXRFunctionLibrary : public UBlueprintFunctionLibrar
 	*/
 	UFUNCTION(BlueprintCallable, Category = "OculusLibrary")
 	static bool IsColorPassthroughSupported();
+
+
 
 	/**
 	 * Returns IStereoLayers interface to work with overlays.

@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
 	"Version": 1,
-	"VersionName": "1.85.0",
+	"VersionName": "1.86.0",
 	"FriendlyName": "Meta XR",
 	"Description": "Support for Meta Quest headsets and controllers",
 	"Category": "Virtual Reality",
@@ -107,14 +107,6 @@
 				"Win64",
 				"Android"
 			]
-		},
-		{
-			"Name": "OculusXRPassthroughAssets",
-			"Type": "Editor",
-			"LoadingPhase": "PostEngineInit",
-			"PlatformAllowList": [
-				"Win64",
-			]
 		}
 	],
 	"Plugins": [
@@ -128,6 +120,10 @@
 		},
 		{
 			"Name": "AndroidPermission",
+			"Enabled": true
+		},
+		{
+			"Name": "LiveLink",
 			"Enabled": true
 		}
 	]

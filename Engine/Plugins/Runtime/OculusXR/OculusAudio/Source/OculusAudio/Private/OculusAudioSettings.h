@@ -4,14 +4,12 @@
 
 #include "OculusAudioSettings.generated.h"
 
-
 UCLASS(config = Engine, defaultconfig)
 class OCULUSAUDIO_API UOculusAudioSettings : public UObject
 {
 	GENERATED_BODY()
 
 public:
-
 	UOculusAudioSettings();
 
 #if WITH_EDITOR
@@ -33,10 +31,10 @@ public:
 
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Propagation Quality", meta = (ClampMin = "0.0", ClampMax = "2.0", UIMin = "0.0", UIMax = "2.0"))
 	float PropagationQuality;
-	
+
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Room Modeling", meta = (ClampMin = "0.0", ClampMax = "200.0", UIMin = "0.0", UIMax = "200.0"))
 	float Width;
-	
+
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Room Modeling", meta = (ClampMin = "0.0", ClampMax = "200.0", UIMin = "0.0", UIMax = "200.0"))
 	float Height;
 
@@ -48,10 +46,10 @@ public:
 
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Room Modeling", meta = (ClampMin = "0.0", ClampMax = "0.97", UIMin = "0.0", UIMax = "0.97"))
 	float ReflectionCoefLeft;
-	
+
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Room Modeling", meta = (ClampMin = "0.0", ClampMax = "0.97", UIMin = "0.0", UIMax = "0.97"))
 	float ReflectionCoefUp;
-	
+
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Room Modeling", meta = (ClampMin = "0.0", ClampMax = "0.97", UIMin = "0.0", UIMax = "0.97"))
 	float ReflectionCoefDown;
 

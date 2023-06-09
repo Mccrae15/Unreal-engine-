@@ -2,8 +2,8 @@
 
 #include "OculusAudioSettings.h"
 
-UOculusAudioSettings::UOculusAudioSettings() :
-	ReverbWetLevel(0.0f)
+UOculusAudioSettings::UOculusAudioSettings()
+	: ReverbWetLevel(0.0f)
 	, EarlyReflections(true)
 	, LateReverberation(false)
 	, PropagationQuality(1.0f)

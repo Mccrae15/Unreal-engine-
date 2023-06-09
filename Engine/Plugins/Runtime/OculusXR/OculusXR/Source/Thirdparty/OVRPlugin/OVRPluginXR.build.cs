@@ -6,6 +6,8 @@ public class OVRPluginXR : ModuleRules
 {
 	public OVRPluginXR(ReadOnlyTargetRules Target) : base(Target)
 	{
+
+
 		Type = ModuleType.External;
 
 		string SourceDirectory = "$(PluginDir)/Source/ThirdParty/OVRPlugin/OVRPlugin/";

@@ -1,5 +1,8 @@
 #include "OculusXRPassthroughLayerShapes.h"
+
+#include "OculusXRHMDPrivate.h"
 #include "Curves/CurveLinearColor.h"
+#include "OculusXRPluginWrapper.h"
 
 const FName FReconstructedLayer::ShapeName = FName("ReconstructedLayer");
 const FName FUserDefinedLayer::ShapeName = FName("UserDefinedLayer");
@@ -15,7 +18,6 @@ FColorLutDesc::FColorLutDesc(const TArray<uint64>& InColorLuts, float InWeight)
 	, ColorLuts(InColorLuts)
 {
 }
-
 
 FEdgeStyleParameters::FEdgeStyleParameters()
 	: bEnableEdgeColor(false)
@@ -57,24 +59,26 @@ FEdgeStyleParameters::FEdgeStyleParameters(
 	, ColorLutDesc(InLutDesc)
 
 {
-	bUseColorLuts = (InColorMapType == ColorMapType_ColorLut && InLutDesc.ColorLuts.Num() == 1) 
+	bUseColorLuts = (InColorMapType == ColorMapType_ColorLut && InLutDesc.ColorLuts.Num() == 1)
 		|| (InColorMapType == ColorMapType_ColorLut_Interpolated && InLutDesc.ColorLuts.Num() == 2);
 	ColorMapData = GenerateColorMapData(InColorMapType, InColorMapGradient);
 };
 
 TArray<uint8> FEdgeStyleParameters::GenerateColorMapData(EOculusXRColorMapType InColorMapType, const TArray<FLinearColor>& InColorMapGradient)
 {
-	switch (InColorMapType) {
-	case ColorMapType_GrayscaleToColor: {
-		TArray<uint8> NewColorMapData = GenerateMonoBrightnessContrastPosterizeMap();
-		return GenerateMonoToRGBA(InColorMapGradient, NewColorMapData);
-	}
-	case ColorMapType_Grayscale:
-		return GenerateMonoBrightnessContrastPosterizeMap();
-	case ColorMapType_ColorAdjustment:
-		return GenerateBrightnessContrastSaturationColorMap();
-	default:
-		return TArray<uint8>();
+	switch (InColorMapType)
+	{
+		case ColorMapType_GrayscaleToColor:
+		{
+			TArray<uint8> NewColorMapData = GenerateMonoBrightnessContrastPosterizeMap();
+			return GenerateMonoToRGBA(InColorMapGradient, NewColorMapData);
+		}
+		case ColorMapType_Grayscale:
+			return GenerateMonoBrightnessContrastPosterizeMap();
+		case ColorMapType_ColorAdjustment:
+			return GenerateBrightnessContrastSaturationColorMap();
+		default:
+			return TArray<uint8>();
 	}
 }
 
@@ -129,7 +133,7 @@ TArray<uint8> FEdgeStyleParameters::GenerateBrightnessContrastSaturationColorMap
 	NewColorMapData.SetNum(3 * sizeof(float));
 	float newB = Brightness * 100.0f;
 	float newC = Contrast + 1.0f;
-	float newS = Saturation + 1.0f; 
+	float newS = Saturation + 1.0f;
 
 	uint8* Dest = NewColorMapData.GetData();
 	FMemory::Memcpy(Dest, &newB, sizeof(float));

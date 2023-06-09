@@ -11,7 +11,7 @@ UCLASS()
 class ANDROIDPERMISSIONS_API UPermissionsUserWidget : public UUserWidget
 {
 	GENERATED_BODY()
-	
+
 private:
 	// On construction, the permissions get checked to see if they are already enabled.
 	virtual void NativeConstruct() override;
@@ -21,7 +21,7 @@ private:
 
 	// Utility function to request for a specific permission.
 	void RequestPermission(const FString& PermissionStr);
-	
+
 	// Following BP functions are triggered by UMG button widgets.
 	UFUNCTION(BlueprintCallable, Category = "BPPermissionsFuncs")
 	void RequestMicPermission();

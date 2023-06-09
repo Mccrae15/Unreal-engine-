@@ -7,7 +7,6 @@
 #include "IOculusAudioPlugin.h"
 #include "Stats/Stats.h"
 
-
 float dbToLinear(float db)
 {
 	return powf(10.0f, db / 20.0f);
@@ -101,7 +100,7 @@ void OculusAudioSpatializationAudioMixer::OnInitSource(const uint32 SourceId, co
 		return;
 	}
 
-	if (InSettings != nullptr) 
+	if (InSettings != nullptr)
 	{
 		UOculusAudioSourceSettings* Settings = CastChecked<UOculusAudioSourceSettings>(InSettings);
 
@@ -183,6 +182,6 @@ bool OculusAudioSpatializationAudioMixer::Tick(float DeltaTime)
 
 		ContextLock.Unlock();
 	}
-	
+
 	return true;
 }

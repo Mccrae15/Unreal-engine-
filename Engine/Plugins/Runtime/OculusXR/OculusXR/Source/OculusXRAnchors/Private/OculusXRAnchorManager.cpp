@@ -53,28 +53,28 @@ namespace OculusXRAnchors
 
 		switch (UEQueryInfo.Location)
 		{
-		case EOculusXRSpaceStorageLocation::Invalid:
-			Result.location = ovrpSpaceStorageLocation_Invalid;
-			break;
-		case EOculusXRSpaceStorageLocation::Local:
-			Result.location = ovrpSpaceStorageLocation_Local;
-			break;
-		case EOculusXRSpaceStorageLocation::Cloud:
-			Result.location = ovrpSpaceStorageLocation_Cloud;
-			break;
+			case EOculusXRSpaceStorageLocation::Invalid:
+				Result.location = ovrpSpaceStorageLocation_Invalid;
+				break;
+			case EOculusXRSpaceStorageLocation::Local:
+				Result.location = ovrpSpaceStorageLocation_Local;
+				break;
+			case EOculusXRSpaceStorageLocation::Cloud:
+				Result.location = ovrpSpaceStorageLocation_Cloud;
+				break;
 		}
 
 		switch (UEQueryInfo.FilterType)
 		{
-		case EOculusXRSpaceQueryFilterType::None:
-			Result.filterType = ovrpSpaceQueryFilterType_None;
-			break;
-		case EOculusXRSpaceQueryFilterType::FilterByIds:
-			Result.filterType = ovrpSpaceQueryFilterType_Ids;
-			break;
-		case EOculusXRSpaceQueryFilterType::FilterByComponentType:
-			Result.filterType = ovrpSpaceQueryFilterType_Components;
-			break;
+			case EOculusXRSpaceQueryFilterType::None:
+				Result.filterType = ovrpSpaceQueryFilterType_None;
+				break;
+			case EOculusXRSpaceQueryFilterType::FilterByIds:
+				Result.filterType = ovrpSpaceQueryFilterType_Ids;
+				break;
+			case EOculusXRSpaceQueryFilterType::FilterByComponentType:
+				Result.filterType = ovrpSpaceQueryFilterType_Components;
+				break;
 		}
 
 		Result.IdInfo.numIds = FMath::Min(MaxIdsInFilter, UEQueryInfo.IDFilter.Num());
@@ -91,30 +91,30 @@ namespace OculusXRAnchors
 
 			switch (UEQueryInfo.ComponentFilter[i])
 			{
-			case EOculusXRSpaceComponentType::Locatable:
-				componentType = ovrpSpaceComponentType_Locatable;
-				break;
-			case EOculusXRSpaceComponentType::Sharable:
-				componentType = ovrpSpaceComponentType_Sharable;
-				break;
-			case EOculusXRSpaceComponentType::Storable:
-				componentType = ovrpSpaceComponentType_Storable;
-				break;
-			case EOculusXRSpaceComponentType::ScenePlane:
-				componentType = ovrpSpaceComponentType_Bounded2D;
-				break;
-			case EOculusXRSpaceComponentType::SceneVolume:
-				componentType = ovrpSpaceComponentType_Bounded3D;
-				break;
-			case EOculusXRSpaceComponentType::SemanticClassification:
-				componentType = ovrpSpaceComponentType_SemanticLabels;
-				break;
-			case EOculusXRSpaceComponentType::RoomLayout:
-				componentType = ovrpSpaceComponentType_RoomLayout;
-				break;
-			case EOculusXRSpaceComponentType::SpaceContainer:
-				componentType = ovrpSpaceComponentType_SpaceContainer;
-				break;
+				case EOculusXRSpaceComponentType::Locatable:
+					componentType = ovrpSpaceComponentType_Locatable;
+					break;
+				case EOculusXRSpaceComponentType::Sharable:
+					componentType = ovrpSpaceComponentType_Sharable;
+					break;
+				case EOculusXRSpaceComponentType::Storable:
+					componentType = ovrpSpaceComponentType_Storable;
+					break;
+				case EOculusXRSpaceComponentType::ScenePlane:
+					componentType = ovrpSpaceComponentType_Bounded2D;
+					break;
+				case EOculusXRSpaceComponentType::SceneVolume:
+					componentType = ovrpSpaceComponentType_Bounded3D;
+					break;
+				case EOculusXRSpaceComponentType::SemanticClassification:
+					componentType = ovrpSpaceComponentType_SemanticLabels;
+					break;
+				case EOculusXRSpaceComponentType::RoomLayout:
+					componentType = ovrpSpaceComponentType_RoomLayout;
+					break;
+				case EOculusXRSpaceComponentType::SpaceContainer:
+					componentType = ovrpSpaceComponentType_SpaceContainer;
+					break;
 			}
 
 			Result.componentsInfo.components[i] = componentType;
@@ -123,7 +123,7 @@ namespace OculusXRAnchors
 		return Result;
 	}
 
-	template<typename T>
+	template <typename T>
 	void GetEventData(ovrpEventDataBuffer& Buffer, T& OutEventData)
 	{
 		unsigned char* BufData = Buffer.EventData;
@@ -137,31 +137,31 @@ namespace OculusXRAnchors
 		ovrpSpaceComponentType ovrpType = ovrpSpaceComponentType_Max;
 		switch (ComponentType)
 		{
-		case EOculusXRSpaceComponentType::Locatable:
-			ovrpType = ovrpSpaceComponentType_Locatable;
-			break;
-		case EOculusXRSpaceComponentType::Sharable:
-			ovrpType = ovrpSpaceComponentType_Sharable;
-			break;
-		case EOculusXRSpaceComponentType::Storable:
-			ovrpType = ovrpSpaceComponentType_Storable;
-			break;
-		case EOculusXRSpaceComponentType::ScenePlane:
-			ovrpType = ovrpSpaceComponentType_Bounded2D;
-			break;
-		case EOculusXRSpaceComponentType::SceneVolume:
-			ovrpType = ovrpSpaceComponentType_Bounded3D;
-			break;
-		case EOculusXRSpaceComponentType::SemanticClassification:
-			ovrpType = ovrpSpaceComponentType_SemanticLabels;
-			break;
-		case EOculusXRSpaceComponentType::RoomLayout:
-			ovrpType = ovrpSpaceComponentType_RoomLayout;
-			break;
-		case EOculusXRSpaceComponentType::SpaceContainer:
-			ovrpType = ovrpSpaceComponentType_SpaceContainer;
-			break;
-		default:;
+			case EOculusXRSpaceComponentType::Locatable:
+				ovrpType = ovrpSpaceComponentType_Locatable;
+				break;
+			case EOculusXRSpaceComponentType::Sharable:
+				ovrpType = ovrpSpaceComponentType_Sharable;
+				break;
+			case EOculusXRSpaceComponentType::Storable:
+				ovrpType = ovrpSpaceComponentType_Storable;
+				break;
+			case EOculusXRSpaceComponentType::ScenePlane:
+				ovrpType = ovrpSpaceComponentType_Bounded2D;
+				break;
+			case EOculusXRSpaceComponentType::SceneVolume:
+				ovrpType = ovrpSpaceComponentType_Bounded3D;
+				break;
+			case EOculusXRSpaceComponentType::SemanticClassification:
+				ovrpType = ovrpSpaceComponentType_SemanticLabels;
+				break;
+			case EOculusXRSpaceComponentType::RoomLayout:
+				ovrpType = ovrpSpaceComponentType_RoomLayout;
+				break;
+			case EOculusXRSpaceComponentType::SpaceContainer:
+				ovrpType = ovrpSpaceComponentType_SpaceContainer;
+				break;
+			default:;
 		}
 
 		return ovrpType;
@@ -172,31 +172,31 @@ namespace OculusXRAnchors
 		EOculusXRSpaceComponentType ue4ComponentType = EOculusXRSpaceComponentType::Undefined;
 		switch (ComponentType)
 		{
-		case ovrpSpaceComponentType_Locatable:
-			ue4ComponentType = EOculusXRSpaceComponentType::Locatable;
-			break;
-		case ovrpSpaceComponentType_Sharable:
-			ue4ComponentType = EOculusXRSpaceComponentType::Sharable;
-			break;
-		case ovrpSpaceComponentType_Storable:
-			ue4ComponentType = EOculusXRSpaceComponentType::Storable;
-			break;
-		case ovrpSpaceComponentType_Bounded2D:
-			ue4ComponentType = EOculusXRSpaceComponentType::ScenePlane;
-			break;
-		case ovrpSpaceComponentType_Bounded3D:
-			ue4ComponentType = EOculusXRSpaceComponentType::SceneVolume;
-			break;
-		case ovrpSpaceComponentType_SemanticLabels:
-			ue4ComponentType = EOculusXRSpaceComponentType::SemanticClassification;
-			break;
-		case ovrpSpaceComponentType_RoomLayout:
-			ue4ComponentType = EOculusXRSpaceComponentType::RoomLayout;
-			break;
-		case ovrpSpaceComponentType_SpaceContainer:
-			ue4ComponentType = EOculusXRSpaceComponentType::SpaceContainer;
-			break;
-		default:;
+			case ovrpSpaceComponentType_Locatable:
+				ue4ComponentType = EOculusXRSpaceComponentType::Locatable;
+				break;
+			case ovrpSpaceComponentType_Sharable:
+				ue4ComponentType = EOculusXRSpaceComponentType::Sharable;
+				break;
+			case ovrpSpaceComponentType_Storable:
+				ue4ComponentType = EOculusXRSpaceComponentType::Storable;
+				break;
+			case ovrpSpaceComponentType_Bounded2D:
+				ue4ComponentType = EOculusXRSpaceComponentType::ScenePlane;
+				break;
+			case ovrpSpaceComponentType_Bounded3D:
+				ue4ComponentType = EOculusXRSpaceComponentType::SceneVolume;
+				break;
+			case ovrpSpaceComponentType_SemanticLabels:
+				ue4ComponentType = EOculusXRSpaceComponentType::SemanticClassification;
+				break;
+			case ovrpSpaceComponentType_RoomLayout:
+				ue4ComponentType = EOculusXRSpaceComponentType::RoomLayout;
+				break;
+			case ovrpSpaceComponentType_SpaceContainer:
+				ue4ComponentType = EOculusXRSpaceComponentType::SpaceContainer;
+				break;
+			default:;
 		}
 
 		return ue4ComponentType;
@@ -206,8 +206,10 @@ namespace OculusXRAnchors
 	{
 		ovrpEventDataBuffer& buf = *EventDataBuffer;
 
-		switch (buf.EventType) {
-			case ovrpEventType_None: break;
+		switch (buf.EventType)
+		{
+			case ovrpEventType_None:
+				break;
 			case ovrpEventType_SpatialAnchorCreateComplete:
 			{
 				ovrpEventDataSpatialAnchorCreateComplete AnchorCreateEvent;
@@ -223,8 +225,7 @@ namespace OculusXRAnchors
 					RequestId.GetValue(),
 					Space.GetValue(),
 					*BPUUID.ToString(),
-					AnchorCreateEvent.result
-				);
+					AnchorCreateEvent.result);
 
 				break;
 			}
@@ -246,16 +247,14 @@ namespace OculusXRAnchors
 					Space,
 					BPUUID,
 					BPSpaceComponentType,
-					bEnabled
-				);
+					bEnabled);
 
 				UE_LOG(LogOculusXRAnchors, Verbose, TEXT("ovrpEventType_SpaceSetComponentStatusComplete Request ID: %llu  --  Type: %d  --  Enabled: %d  --  Space: %llu  --  Result: %d"),
 					SetStatusEvent.requestId,
 					SetStatusEvent.componentType,
 					SetStatusEvent.enabled,
 					SetStatusEvent.space,
-					SetStatusEvent.result
-				);
+					SetStatusEvent.result);
 
 				break;
 			}
@@ -271,24 +270,16 @@ namespace OculusXRAnchors
 				ovrpUInt32 ovrpOutCapacity = 0;
 
 				//first get capacity
-				const bool bGetCapacityResult = FOculusXRHMDModule::GetPluginWrapper().GetInitialized() && OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().RetrieveSpaceQueryResults(
-					&QueryEvent.requestId,
-					0,
-					&ovrpOutCapacity,
-					nullptr));
+				const bool bGetCapacityResult = FOculusXRHMDModule::GetPluginWrapper().GetInitialized() && OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().RetrieveSpaceQueryResults(&QueryEvent.requestId, 0, &ovrpOutCapacity, nullptr));
 
 				UE_LOG(LogOculusXRAnchors, Log, TEXT("ovrpEventType_SpaceQueryResults Request ID: %llu  --  Capacity: %d  --  Result: %d"), QueryEvent.requestId, ovrpOutCapacity, bGetCapacityResult);
 
 				std::vector<ovrpSpaceQueryResult> ovrpResults(ovrpOutCapacity);
 
 				// Get Query Data
-				const bool bGetQueryDataResult = FOculusXRHMDModule::GetPluginWrapper().GetInitialized() && OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().RetrieveSpaceQueryResults(
-					&QueryEvent.requestId,
-					ovrpResults.size(),
-					&ovrpOutCapacity,
-					ovrpResults.data()));
+				const bool bGetQueryDataResult = FOculusXRHMDModule::GetPluginWrapper().GetInitialized() && OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().RetrieveSpaceQueryResults(&QueryEvent.requestId, ovrpResults.size(), &ovrpOutCapacity, ovrpResults.data()));
 
-				for(auto queryResultElement: ovrpResults)
+				for (auto queryResultElement : ovrpResults)
 				{
 					UE_LOG(LogOculusXRAnchors, Verbose, TEXT("ovrpEventType_SpaceQueryResult Space: %llu  --  Result: %d"), queryResultElement.space, bGetQueryDataResult);
 
@@ -309,7 +300,7 @@ namespace OculusXRAnchors
 				const FOculusXRUInt64 RequestId(QueryCompleteEvent.requestId);
 				const bool bSucceeded = QueryCompleteEvent.result >= 0;
 
-                FOculusXRAnchorEventDelegates::OculusSpaceQueryComplete.Broadcast(RequestId, QueryCompleteEvent.result);
+				FOculusXRAnchorEventDelegates::OculusSpaceQueryComplete.Broadcast(RequestId, QueryCompleteEvent.result);
 
 				UE_LOG(LogOculusXRAnchors, Verbose, TEXT("ovrpEventType_SpaceQueryComplete Request ID: %llu  --  Result: %d"), QueryCompleteEvent.requestId, QueryCompleteEvent.result);
 
@@ -320,9 +311,9 @@ namespace OculusXRAnchors
 				ovrpEventSpaceStorageSaveResult StorageResult;
 				GetEventData(buf, StorageResult);
 
-                //translate to BP types
-                const FOculusXRUUID uuid(StorageResult.uuid.data);
-                const FOculusXRUInt64 FSpace(StorageResult.space);
+				//translate to BP types
+				const FOculusXRUUID uuid(StorageResult.uuid.data);
+				const FOculusXRUInt64 FSpace(StorageResult.space);
 				const FOculusXRUInt64 FRequest(StorageResult.requestId);
 				const bool bResult = StorageResult.result >= 0;
 
@@ -330,7 +321,7 @@ namespace OculusXRAnchors
 
 				UE_LOG(LogOculusXRAnchors, Verbose, TEXT("ovrpEventType_SpaceSaveComplete  Request ID: %llu  --  Space: %llu  --  Result: %d"), StorageResult.requestId, StorageResult.space, StorageResult.result);
 
-                break;
+				break;
 			}
 			case ovrpEventType_SpaceListSaveResult:
 			{
@@ -373,8 +364,7 @@ namespace OculusXRAnchors
 
 				UE_LOG(LogOculusXRAnchors, Verbose, TEXT("ovrpEventType_SpaceShareSpaceResult  Request ID: %llu  --  Result: %d"),
 					SpaceShareSpaceResult.requestId,
-					SpaceShareSpaceResult.result
-				);
+					SpaceShareSpaceResult.result);
 
 				FOculusXRAnchorEventDelegates::OculusSpaceShareComplete.Broadcast(RequestId, SpaceShareSpaceResult.result);
 
@@ -390,7 +380,7 @@ namespace OculusXRAnchors
 		EventPollResult = true;
 	}
 
-	EOculusXRAnchorResult::Type FOculusXRAnchorManager::CreateAnchor(const FTransform& InTransform, uint64 &OutRequestId, const FTransform& CameraTransform)
+	EOculusXRAnchorResult::Type FOculusXRAnchorManager::CreateAnchor(const FTransform& InTransform, uint64& OutRequestId, const FTransform& CameraTransform)
 	{
 		bool bValidHMD;
 		OculusXRHMD::FOculusXRHMD* HMD = GetHMD(bValidHMD);
@@ -494,7 +484,7 @@ namespace OculusXRAnchors
 	EOculusXRAnchorResult::Type FOculusXRAnchorManager::GetSpaceComponentStatus(uint64 Space, EOculusXRSpaceComponentType SpaceComponentType, bool& OutEnabled, bool& OutChangePending)
 	{
 		const ovrpUInt64 OVRPSpace = Space;
-		ovrpBool OutOvrpEnabled = ovrpBool_False;;
+		ovrpBool OutOvrpEnabled = ovrpBool_False;
 		ovrpBool OutOvrpChangePending = ovrpBool_False;
 
 		ovrpSpaceComponentType ovrpType = ConvertToOvrpComponentType(SpaceComponentType);
@@ -503,8 +493,7 @@ namespace OculusXRAnchors
 			&OVRPSpace,
 			ovrpType,
 			&OutOvrpEnabled,
-			&OutOvrpChangePending
-			);
+			&OutOvrpChangePending);
 
 		OutEnabled = (OutOvrpEnabled == ovrpBool_True);
 		OutChangePending = (OutOvrpChangePending == ovrpBool_True);
@@ -517,32 +506,32 @@ namespace OculusXRAnchors
 		EOculusXRSpaceStoragePersistenceMode StoragePersistenceMode, uint64& OutRequestId)
 	{
 		ovrpSpaceStorageLocation OvrpStorageLocation = ovrpSpaceStorageLocation_Local;
-		switch(StorageLocation)
+		switch (StorageLocation)
 		{
-		case EOculusXRSpaceStorageLocation::Invalid:
-			OvrpStorageLocation = ovrpSpaceStorageLocation_Invalid;
-			break;
-		case EOculusXRSpaceStorageLocation::Local:
-			OvrpStorageLocation = ovrpSpaceStorageLocation_Local;
-			break;
-		case EOculusXRSpaceStorageLocation::Cloud:
-			OvrpStorageLocation = ovrpSpaceStorageLocation_Cloud;
-			break;
-		default:
-			break;
+			case EOculusXRSpaceStorageLocation::Invalid:
+				OvrpStorageLocation = ovrpSpaceStorageLocation_Invalid;
+				break;
+			case EOculusXRSpaceStorageLocation::Local:
+				OvrpStorageLocation = ovrpSpaceStorageLocation_Local;
+				break;
+			case EOculusXRSpaceStorageLocation::Cloud:
+				OvrpStorageLocation = ovrpSpaceStorageLocation_Cloud;
+				break;
+			default:
+				break;
 		}
 
 		ovrpSpaceStoragePersistenceMode OvrpStoragePersistenceMode = ovrpSpaceStoragePersistenceMode_Invalid;
-		switch(StoragePersistenceMode)
+		switch (StoragePersistenceMode)
 		{
-		case EOculusXRSpaceStoragePersistenceMode::Invalid:
-			OvrpStoragePersistenceMode = ovrpSpaceStoragePersistenceMode_Invalid;
-			break;
-		case EOculusXRSpaceStoragePersistenceMode::Indefinite:
-			OvrpStoragePersistenceMode = ovrpSpaceStoragePersistenceMode_Indefinite;
-			break;
-		default:
-			break;
+			case EOculusXRSpaceStoragePersistenceMode::Invalid:
+				OvrpStoragePersistenceMode = ovrpSpaceStoragePersistenceMode_Invalid;
+				break;
+			case EOculusXRSpaceStoragePersistenceMode::Indefinite:
+				OvrpStoragePersistenceMode = ovrpSpaceStoragePersistenceMode_Indefinite;
+				break;
+			default:
+				break;
 		}
 
 		ovrpUInt64 OvrpOutRequestId = 0;
@@ -550,7 +539,7 @@ namespace OculusXRAnchors
 
 		UE_LOG(LogOculusXRAnchors, Verbose, TEXT("Saving space with: SpaceID: %llu  --  Location: %d  --  Persistence: %d  --  OutID: %llu"), Space, OvrpStorageLocation, OvrpStoragePersistenceMode, OvrpOutRequestId);
 
-		memcpy(&OutRequestId,&OvrpOutRequestId,sizeof(uint64));
+		memcpy(&OutRequestId, &OvrpOutRequestId, sizeof(uint64));
 
 		if (!OVRP_SUCCESS(Result))
 		{
@@ -565,17 +554,17 @@ namespace OculusXRAnchors
 		ovrpSpaceStorageLocation OvrpStorageLocation = ovrpSpaceStorageLocation_Local;
 		switch (StorageLocation)
 		{
-		case EOculusXRSpaceStorageLocation::Invalid:
-			OvrpStorageLocation = ovrpSpaceStorageLocation_Invalid;
-			break;
-		case EOculusXRSpaceStorageLocation::Local:
-			OvrpStorageLocation = ovrpSpaceStorageLocation_Local;
-			break;
-		case EOculusXRSpaceStorageLocation::Cloud:
-			OvrpStorageLocation = ovrpSpaceStorageLocation_Cloud;
-			break;
-		default:
-			break;
+			case EOculusXRSpaceStorageLocation::Invalid:
+				OvrpStorageLocation = ovrpSpaceStorageLocation_Invalid;
+				break;
+			case EOculusXRSpaceStorageLocation::Local:
+				OvrpStorageLocation = ovrpSpaceStorageLocation_Local;
+				break;
+			case EOculusXRSpaceStorageLocation::Cloud:
+				OvrpStorageLocation = ovrpSpaceStorageLocation_Cloud;
+				break;
+			default:
+				break;
 		}
 
 		ovrpUInt64 OvrpOutRequestId = 0;
@@ -598,18 +587,18 @@ namespace OculusXRAnchors
 	}
 
 	EOculusXRAnchorResult::Type FOculusXRAnchorManager::EraseAnchor(uint64 AnchorHandle,
-		EOculusXRSpaceStorageLocation StorageLocation,uint64 &OutRequestId)
+		EOculusXRSpaceStorageLocation StorageLocation, uint64& OutRequestId)
 	{
 		ovrpSpaceStorageLocation ovrpStorageLocation = ovrpSpaceStorageLocation_Local;
-		switch(StorageLocation)
+		switch (StorageLocation)
 		{
-		case EOculusXRSpaceStorageLocation::Invalid:
-			ovrpStorageLocation = ovrpSpaceStorageLocation_Invalid;
-			break;
-		case EOculusXRSpaceStorageLocation::Local:
-			ovrpStorageLocation = ovrpSpaceStorageLocation_Local;
-			break;
-		default: ;
+			case EOculusXRSpaceStorageLocation::Invalid:
+				ovrpStorageLocation = ovrpSpaceStorageLocation_Invalid;
+				break;
+			case EOculusXRSpaceStorageLocation::Local:
+				ovrpStorageLocation = ovrpSpaceStorageLocation_Local;
+				break;
+			default:;
 		}
 
 		ovrpUInt64 OvrpOutRequestId = 0;
@@ -790,7 +779,7 @@ namespace OculusXRAnchors
 		if (OVRP_SUCCESS(Result))
 		{
 			FString labelsStr(labels.byteCountOutput, labels.labels);
-			labelsStr.ParseIntoArray(OutSemanticClassifications, TEXT(",")); \
+			labelsStr.ParseIntoArray(OutSemanticClassifications, TEXT(","));
 		}
 
 		return static_cast<EOculusXRAnchorResult::Type>(Result);
@@ -824,4 +813,4 @@ namespace OculusXRAnchors
 
 		return static_cast<EOculusXRAnchorResult::Type>(Result);
 	}
-}
+} // namespace OculusXRAnchors

@@ -10,7 +10,6 @@ LICENSE file in the root directory of this source tree.
 #include "CoreMinimal.h"
 #include "Factories/Factory.h"
 #include "AssetTypeActions_Base.h"
-#include "AssetToolsModule.h"
 
 #include "OculusXRPassthroughColorLutAsset.generated.h"
 

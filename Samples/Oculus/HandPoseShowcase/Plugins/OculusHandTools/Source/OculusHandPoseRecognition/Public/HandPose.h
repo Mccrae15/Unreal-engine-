@@ -10,11 +10,23 @@
 UENUM()
 enum RecognizedBone
 {
-	Thumb_0 = 0, Thumb_1, Thumb_2, Thumb_3,
-	Index_1, Index_2, Index_3,
-	Middle_1, Middle_2, Middle_3,
-	Ring_1, Ring_2, Ring_3,
-	Pinky_0, Pinky_1, Pinky_2, Pinky_3,
+	Thumb_0 = 0,
+	Thumb_1,
+	Thumb_2,
+	Thumb_3,
+	Index_1,
+	Index_2,
+	Index_3,
+	Middle_1,
+	Middle_2,
+	Middle_3,
+	Ring_1,
+	Ring_2,
+	Ring_3,
+	Pinky_0,
+	Pinky_1,
+	Pinky_2,
+	Pinky_3,
 	Wrist,
 	NUM
 };
@@ -26,7 +38,6 @@ struct OCULUSHANDPOSERECOGNITION_API FHandPose
 	GENERATED_USTRUCT_BODY()
 
 public:
-
 	/** Name for this pose. */
 	UPROPERTY(Category = "Hand Pose", EditAnywhere, BlueprintReadWrite)
 	FString PoseName;
@@ -114,7 +125,6 @@ public:
 	void Max(const FHandPose& Other);
 
 protected:
-
 	/** Hand side that will be set during parsing. */
 	EOculusXRHandType Hand;
 

@@ -9,6 +9,6 @@ public class CoLocationHSEditorTarget : TargetRules
 	{
 		Type = TargetType.Editor;
 
-		ExtraModuleNames.AddRange( new string[] { "CoLocationHS" } );
+		ExtraModuleNames.AddRange(new string[] { "CoLocationHS" });
 	}
 }

@@ -13,7 +13,6 @@
 
 #include "OculusAudioReverb.generated.h"
 
-
 // Forward Declarations
 class USubmixEffectOculusReverbPluginPreset;
 
@@ -66,7 +65,7 @@ public:
 		return; // PAS
 	}
 
-	virtual void OnReleaseSource(const uint32 SourceId) override 
+	virtual void OnReleaseSource(const uint32 SourceId) override
 	{
 		return; // PAS
 	}
@@ -79,6 +78,7 @@ public:
 	{
 		return; // PAS
 	}
+
 private:
 	ovrAudioContext* Context;
 	TSoundEffectSubmixPtr SubmixEffect;

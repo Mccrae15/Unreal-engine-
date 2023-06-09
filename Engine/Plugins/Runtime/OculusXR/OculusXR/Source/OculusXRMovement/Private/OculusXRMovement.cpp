@@ -33,7 +33,7 @@ bool OculusXRMovement::GetBodyState(FOculusXRBodyState& outOculusXRBodyState, fl
 	if (OVRP_SUCCESS(OVRBodyStateResult))
 	{
 		outOculusXRBodyState.IsActive = (OVRBodyState.IsActive == ovrpBool_True);
-		outOculusXRBodyState.Confidence = OVRBodyState.Confidence;		
+		outOculusXRBodyState.Confidence = OVRBodyState.Confidence;
 		outOculusXRBodyState.SkeletonChangedCount = OVRBodyState.SkeletonChangedCount;
 		outOculusXRBodyState.Time = static_cast<float>(OVRBodyState.Time);
 
@@ -165,7 +165,6 @@ bool OculusXRMovement::StartFaceTracking()
 
 bool OculusXRMovement::StopFaceTracking()
 {
-
 	return OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().StopFaceTracking());
 }
 
@@ -236,3 +235,5 @@ bool OculusXRMovement::StopEyeTracking()
 {
 	return OVRP_SUCCESS(FOculusXRHMDModule::GetPluginWrapper().StopEyeTracking());
 }
+
+#undef LOCTEXT_NAMESPACE

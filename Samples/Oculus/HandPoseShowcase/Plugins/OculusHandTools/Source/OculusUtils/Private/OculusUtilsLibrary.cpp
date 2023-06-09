@@ -22,9 +22,7 @@ void UOculusUtilsLibrary::GetOculusBuildInfo(FString& SourceControlChangelist, F
 	// Extracting date and time values.
 	FString DateString, TimeString;
 	int DateNumber = 0, TimeNumber = 0;
-	if (BuildInfo->PackageDateAndTime.Split(TEXT(" "), &DateString, &TimeString) &&
-		FDefaultValueHelper::ParseInt(DateString, DateNumber) &&
-		FDefaultValueHelper::ParseInt(TimeString, TimeNumber))
+	if (BuildInfo->PackageDateAndTime.Split(TEXT(" "), &DateString, &TimeString) && FDefaultValueHelper::ParseInt(DateString, DateNumber) && FDefaultValueHelper::ParseInt(TimeString, TimeNumber))
 	{
 		UE_LOG(LogOculusUtils, Display, TEXT("Build Info - parsed package date %d and time %d"), DateNumber, TimeNumber);
 
@@ -61,4 +59,3 @@ TArray<UActorComponent*> UOculusUtilsLibrary::SortComponentsByName(const TArray<
 		});
 	return SortedComponents;
 }
-

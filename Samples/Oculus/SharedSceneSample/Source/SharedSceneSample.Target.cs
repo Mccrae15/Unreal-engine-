@@ -15,6 +15,6 @@ public class SharedSceneSampleTarget : TargetRules
 	{
 		Type = TargetType.Game;
 
-		ExtraModuleNames.AddRange( new string[] { "SharedSceneSample" } );
+		ExtraModuleNames.AddRange(new string[] { "SharedSceneSample" });
 	}
 }

@@ -4,8 +4,8 @@
 #include "OculusHandPoseRecognitionModule.h"
 #include <limits>
 
-UHandPoseRecognizer::UHandPoseRecognizer(const FObjectInitializer& ObjectInitializer):
-	Super(ObjectInitializer)
+UHandPoseRecognizer::UHandPoseRecognizer(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
 {
 	PrimaryComponentTick.bCanEverTick = true;
 
@@ -47,10 +47,12 @@ FRotator UHandPoseRecognizer::GetWristRotator(FQuat ComponentQuat)
 	FRotator ComponentRotator = ComponentQuat.Rotator();
 
 	UWorld* World = GetWorld();
-	if (!World) return ComponentRotator;
+	if (!World)
+		return ComponentRotator;
 
 	APlayerController* PlayerController = World->GetFirstPlayerController();
-	if (!PlayerController) return ComponentRotator;
+	if (!PlayerController)
+		return ComponentRotator;
 
 	FRotator ComponentRotationToCamera = PlayerController->PlayerCameraManager->GetTransform().InverseTransformRotation(ComponentQuat).Rotator();
 	ComponentRotator.Yaw = ComponentRotationToCamera.Yaw;
@@ -132,7 +134,7 @@ void UHandPoseRecognizer::TickComponent(float DeltaTime, ELevelTick TickType, FA
 		CurrentHandPoseDuration += TimeSinceLastRecognition;
 		TimeSinceLastRecognition = 0.0;
 		CurrentHandPoseConfidence = DampingFactor * CurrentHandPoseConfidence + (1.0f - DampingFactor) * ClosestHandPoseConfidence;
-		CurrentHandPoseError = DampingFactor * CurrentHandPoseError  + (1.0f-DampingFactor) * ClosestHandPoseError;
+		CurrentHandPoseError = DampingFactor * CurrentHandPoseError + (1.0f - DampingFactor) * ClosestHandPoseError;
 	}
 	else
 	{

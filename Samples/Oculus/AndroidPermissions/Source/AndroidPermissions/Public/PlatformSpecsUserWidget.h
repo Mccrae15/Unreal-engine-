@@ -11,8 +11,8 @@ UCLASS()
 class ANDROIDPERMISSIONS_API UPlatformSpecsUserWidget : public UUserWidget
 {
 	GENERATED_BODY()
-	
-public:	
+
+public:
 	// At every tick, we update the dynamic states.
 	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
 

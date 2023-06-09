@@ -6,61 +6,58 @@
 #include "UObject/ObjectSaveContext.h"
 #include "OculusXRHMD.h"
 
-//TODO fetch from OpenXR when available
-const int MAX_RESOLUTION = 32;
-
 namespace
 {
-ovrpPassthroughColorLutChannels ToOVRPColorLutChannels(EColorLutChannels InColorLutChannels)
-{
-	switch (InColorLutChannels)
+	ovrpPassthroughColorLutChannels ToOVRPColorLutChannels(EColorLutChannels InColorLutChannels)
 	{
-		case ColorLutChannels_RGB:
-			return ovrpPassthroughColorLutChannels_Rgb;
-		case ColorLutChannels_RGBA:
-			return ovrpPassthroughColorLutChannels_Rgba;
-		default:
-			return ovrpPassthroughColorLutChannels_Invalid;
-	}
-}
-
-TArray<uint8> ColorArrayToColorData(const TArray<FColor>& InColorArray, bool IgnoreAlphaChannel)
-{
-	TArray<uint8> Data;
-	size_t ElementSize = IgnoreAlphaChannel ? 3 : 4;
-	Data.SetNum(InColorArray.Num() * ElementSize);
-	uint8* Dest = Data.GetData();
-	for (size_t i = 0; i < InColorArray.Num(); i++)
-	{
-		Data[i * ElementSize + 0] = InColorArray[i].R;
-		Data[i * ElementSize + 1] = InColorArray[i].G;
-		Data[i * ElementSize + 2] = InColorArray[i].B;
-
-		if (!IgnoreAlphaChannel)
+		switch (InColorLutChannels)
 		{
-			Data[i * ElementSize + 3] = InColorArray[i].A;
+			case ColorLutChannels_RGB:
+				return ovrpPassthroughColorLutChannels_Rgb;
+			case ColorLutChannels_RGBA:
+				return ovrpPassthroughColorLutChannels_Rgba;
+			default:
+				return ovrpPassthroughColorLutChannels_Invalid;
 		}
 	}
 
-	return Data;
-}
+	TArray<uint8> ColorArrayToColorData(const TArray<FColor>& InColorArray, bool IgnoreAlphaChannel)
+	{
+		TArray<uint8> Data;
+		const size_t ElementSize = IgnoreAlphaChannel ? 3 : 4;
+		Data.SetNum(InColorArray.Num() * ElementSize);
+		uint8* Dest = Data.GetData();
+		for (size_t i = 0; i < InColorArray.Num(); i++)
+		{
+			Data[i * ElementSize + 0] = InColorArray[i].R;
+			Data[i * ElementSize + 1] = InColorArray[i].G;
+			Data[i * ElementSize + 2] = InColorArray[i].B;
 
-bool IsTextureDataValid(const FLutTextureData& Data)
-{
-	return Data.Data.Num() > 0 && Data.Resolution > 0;
-}
-}
+			if (!IgnoreAlphaChannel)
+			{
+				Data[i * ElementSize + 3] = InColorArray[i].A;
+			}
+		}
+
+		return Data;
+	}
+
+	bool IsTextureDataValid(const FLutTextureData& Data)
+	{
+		return Data.Data.Num() > 0 && Data.Resolution > 0;
+	}
+} // namespace
 
 void UOculusXRPassthroughColorLut::SetLutFromArray(const TArray<FColor>& InColorArray, bool InIgnoreAlphaChannel)
 {
-	int32 Size = InColorArray.Num();
-	int32 Resolution =  FPlatformMath::RoundToInt(FPlatformMath::Pow(Size, 1.0/3));
-	if (Resolution > MAX_RESOLUTION)
+	const int32 Size = InColorArray.Num();
+	const int32 Resolution = FPlatformMath::RoundToInt(FPlatformMath::Pow(Size, 1.0 / 3));
+	if (Resolution > GetMaxResolution())
 	{
-		UE_LOG(LogOculusPassthrough, Warning, TEXT("Setting array ignored: Resoluton is exceeding maximum resoluton of %d."), MAX_RESOLUTION);
+		UE_LOG(LogOculusPassthrough, Warning, TEXT("Setting array ignored: Resoluton is exceeding maximum resoluton of %d."), GetMaxResolution());
 		return;
 	}
-	if (Resolution * Resolution * Resolution != InColorArray.Num())
+	if (Resolution * Resolution * Resolution != Size)
 	{
 		UE_LOG(LogOculusPassthrough, Warning, TEXT("Setting array ignored: Provided array size is not cube."));
 		return;
@@ -79,18 +76,18 @@ void UOculusXRPassthroughColorLut::SetLutFromArray(const TArray<FColor>& InColor
 
 	if (LutHandle == 0)
 	{
-		CreateHandle(Data, Resolution);
+		LutHandle = CreateLutObject(Data, Resolution);
 		return;
 	}
 
 	if (InIgnoreAlphaChannel == IgnoreAlphaChannel && Resolution == ColorArrayResolution)
 	{
-		UpdateHandle(Data);
+		UpdateLutObject(LutHandle, Data);
 		return;
 	}
 
-	DestroyHandle();
-	CreateHandle(Data, Resolution);
+	DestroyLutObject(LutHandle);
+	LutHandle = CreateLutObject(Data, Resolution);
 
 	IgnoreAlphaChannel = InIgnoreAlphaChannel;
 	ColorArrayResolution = Resolution;
@@ -100,7 +97,7 @@ uint64 UOculusXRPassthroughColorLut::GetHandle()
 {
 	if (LutHandle == 0 && ColorLutType == EColorLutType::TextureLUT && IsTextureDataValid(StoredTextureData))
 	{
-		CreateHandle(StoredTextureData.Data, StoredTextureData.Resolution);
+		LutHandle = CreateLutObject(StoredTextureData.Data, StoredTextureData.Resolution);
 	}
 
 	return LutHandle;
@@ -122,7 +119,7 @@ FLutTextureData UOculusXRPassthroughColorLut::TextureToColorData(class UTexture2
 		return FLutTextureData();
 	}
 
-	if (InLutTexture == nullptr )
+	if (InLutTexture == nullptr)
 	{
 		UE_LOG(LogOculusPassthrough, Warning, TEXT("Ignoring provided LUT texture. Provided texture is NULL."));
 		return FLutTextureData();
@@ -134,7 +131,8 @@ FLutTextureData UOculusXRPassthroughColorLut::TextureToColorData(class UTexture2
 		return FLutTextureData();
 	}
 
-	if (InLutTexture->GetPlatformData()->Mips.Num() <= 0) {
+	if (InLutTexture->GetPlatformData()->Mips.Num() <= 0)
+	{
 		if (IsTextureDataValid(StoredTextureData))
 		{
 			// We do not need to save it again. Use previously saved data.
@@ -143,8 +141,8 @@ FLutTextureData UOculusXRPassthroughColorLut::TextureToColorData(class UTexture2
 		return FLutTextureData();
 	}
 
-	uint32 TextureWidth = InLutTexture->GetImportedSize().X;
-	uint32 TextureHeight = InLutTexture->GetImportedSize().Y;
+	const uint32 TextureWidth = InLutTexture->GetImportedSize().X;
+	const uint32 TextureHeight = InLutTexture->GetImportedSize().Y;
 
 	uint32 ColorMapSize;
 	uint32 SlicesPerRow;
@@ -197,28 +195,28 @@ FLutTextureData UOculusXRPassthroughColorLut::TextureToColorData(class UTexture2
 	return FLutTextureData(ColorArrayToColorData(Colors, IgnoreAlphaChannel), ColorMapSize);
 }
 
-
-void UOculusXRPassthroughColorLut::CreateHandle(const TArray<uint8>& InData, uint32 Resolution)
+uint64 UOculusXRPassthroughColorLut::CreateLutObject(const TArray<uint8>& InData, uint32 Resolution) const
 {
 	ovrpPassthroughColorLutData OVRPData;
 	OVRPData.Buffer = InData.GetData();
 	OVRPData.BufferSize = InData.Num();
 	const EColorLutChannels Channels = IgnoreAlphaChannel ? EColorLutChannels::ColorLutChannels_RGB : EColorLutChannels::ColorLutChannels_RGBA;
-
+	ovrpPassthroughColorLut Handle;
 	if (OVRP_FAILURE(FOculusXRHMDModule::GetPluginWrapper().CreatePassthroughColorLut(
 			ToOVRPColorLutChannels(Channels),
 			Resolution,
 			OVRPData,
-			&LutHandle)))
+			&Handle)))
 	{
 		UE_LOG(LogTemp, Error, TEXT("Failed creating passthrough color lut."));
-		return;
+		return 0;
 	}
+	return Handle;
 }
 
-void UOculusXRPassthroughColorLut::UpdateHandle(const TArray<uint8>& InData)
+void UOculusXRPassthroughColorLut::UpdateLutObject(uint64 Handle, const TArray<uint8>& InData) const
 {
-	if (LutHandle == 0)
+	if (Handle == 0)
 	{
 		return;
 	}
@@ -228,7 +226,7 @@ void UOculusXRPassthroughColorLut::UpdateHandle(const TArray<uint8>& InData)
 	OVRPData.BufferSize = InData.Num();
 
 	if (OVRP_FAILURE(FOculusXRHMDModule::GetPluginWrapper().UpdatePassthroughColorLut(
-			LutHandle,
+			Handle,
 			OVRPData)))
 	{
 		UE_LOG(LogTemp, Error, TEXT("Failed updating passthrough color lut data."));
@@ -236,22 +234,42 @@ void UOculusXRPassthroughColorLut::UpdateHandle(const TArray<uint8>& InData)
 	}
 }
 
-void UOculusXRPassthroughColorLut::DestroyHandle()
+void UOculusXRPassthroughColorLut::DestroyLutObject(uint64 Handle) const
 {
-	if (LutHandle == 0)
+	if (Handle == 0)
 	{
 		return;
 	}
-	if (OVRP_FAILURE(FOculusXRHMDModule::GetPluginWrapper().DestroyPassthroughColorLut(LutHandle)))
+	if (OVRP_FAILURE(FOculusXRHMDModule::GetPluginWrapper().DestroyPassthroughColorLut(Handle)))
 	{
 		UE_LOG(LogTemp, Error, TEXT("Failed to destroy passthrough color lut."));
 	}
-
-	LutHandle = 0;
 }
 
 void UOculusXRPassthroughColorLut::BeginDestroy()
 {
 	Super::BeginDestroy();
-	DestroyHandle();
+	DestroyLutObject(LutHandle);
+}
+
+int UOculusXRPassthroughColorLut::GetMaxResolution()
+{
+	if (MaxResolution > -1)
+	{
+		return MaxResolution;
+	}
+
+	ovrpInsightPassthroughCapabilities PassthroughCapabilites;
+	PassthroughCapabilites.Fields =
+		static_cast<ovrpInsightPassthroughCapabilityFields>(
+			ovrpInsightPassthroughCapabilityFields::ovrpInsightPassthroughCapabilityFields_Flags | ovrpInsightPassthroughCapabilityFields::ovrpInsightPassthroughCapabilityFields_MaxColorLutResolution);
+
+	if (OVRP_FAILURE(FOculusXRHMDModule::GetPluginWrapper().GetPassthroughCapabilities(&PassthroughCapabilites)))
+	{
+		UE_LOG(LogTemp, Error, TEXT("Failed to fetch passthrough capabilities."));
+		// Default MAX resoulution is 64.
+		return 64;
+	}
+	MaxResolution = PassthroughCapabilites.MaxColorLutResolution;
+	return MaxResolution;
 }

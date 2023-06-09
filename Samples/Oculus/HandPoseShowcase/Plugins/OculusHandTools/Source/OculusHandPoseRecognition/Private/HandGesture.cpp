@@ -22,7 +22,8 @@ namespace // local
 	{
 		// Pose name
 		FString PoseNameRead;
-		while (FChar::IsWhitespace(**Buffer)) ++(*Buffer);
+		while (FChar::IsWhitespace(**Buffer))
+			++(*Buffer);
 		while (**Buffer && **Buffer != '/' && **Buffer != ',' && !FChar::IsWhitespace(**Buffer))
 		{
 			PoseNameRead += **Buffer;
@@ -39,13 +40,15 @@ namespace // local
 
 		// Pose min duration
 		int PoseMinDurationReadMillis = 0;
-		while (FChar::IsWhitespace(**Buffer)) ++(*Buffer);
+		while (FChar::IsWhitespace(**Buffer))
+			++(*Buffer);
 		if (**Buffer == '/')
 		{
 			++(*Buffer);
 
 			// We have a min duration in milliseconds
-			while (FChar::IsWhitespace(**Buffer)) ++(*Buffer);
+			while (FChar::IsWhitespace(**Buffer))
+				++(*Buffer);
 			while (FChar::IsDigit(**Buffer))
 			{
 				PoseMinDurationReadMillis *= 10;
@@ -55,7 +58,8 @@ namespace // local
 		}
 
 		// Consume end of timed pose
-		while (FChar::IsWhitespace(**Buffer)) ++(*Buffer);
+		while (FChar::IsWhitespace(**Buffer))
+			++(*Buffer);
 		if (**Buffer == ',')
 		{
 			++(*Buffer);
@@ -64,7 +68,6 @@ namespace // local
 		{
 			UE_LOG(LogHandPoseRecognition, Error, TEXT("End of timed pose expected near '%s'"), *Buffer);
 			return false;
-
 		}
 
 		// Return results
@@ -73,7 +76,7 @@ namespace // local
 
 		return true;
 	}
-}
+} // namespace
 
 bool FHandGesture::ProcessEncodedGestureString(UHandPoseRecognizer* HandPoseRecognizer)
 {
@@ -172,9 +175,7 @@ bool FHandGesture::Step(int PoseIndex, float PoseDuration, float DeltaTime, floa
 			// We also cannot be in any other pose longer than the MaxTransitionTime.
 			int NextStep = (CurrentStep + 1) % (TimedPoses.Num() + (bIsLooping ? 0 : 1));
 
-			if (NextStep < TimedPoses.Num() &&
-				DurationInCurrentStep >= TimedPoses[CurrentStep].PoseMinDuration &&
-				TimedPoses[NextStep].PoseIndex == PoseIndex)
+			if (NextStep < TimedPoses.Num() && DurationInCurrentStep >= TimedPoses[CurrentStep].PoseMinDuration && TimedPoses[NextStep].PoseIndex == PoseIndex)
 			{
 				// We meet all the conditions to move forward
 				CurrentStep = NextStep;
@@ -183,7 +184,7 @@ bool FHandGesture::Step(int PoseIndex, float PoseDuration, float DeltaTime, floa
 
 				TimedPoses[CurrentStep].StepFirstTime = TimedPoses[CurrentStep].StepLastTime = CurrentTime;
 
-				if (CurrentStep == (TimedPoses.Num()-1))
+				if (CurrentStep == (TimedPoses.Num() - 1))
 				{
 					GestureEndLocation = Location;
 				}
@@ -230,9 +231,7 @@ bool FHandGesture::Step(int PoseIndex, float PoseDuration, float DeltaTime, floa
 	}
 
 	// Checking for completion.
-	if (GestureState != EGestureState::GestureNotStarted &&
-		CurrentStep == (TimedPoses.Num()-1) &&
-		DurationInCurrentStep >= TimedPoses[CurrentStep].PoseMinDuration)
+	if (GestureState != EGestureState::GestureNotStarted && CurrentStep == (TimedPoses.Num() - 1) && DurationInCurrentStep >= TimedPoses[CurrentStep].PoseMinDuration)
 	{
 		if (bGestureDebugLog && GestureState != EGestureState::GestureCompleted)
 		{
@@ -256,9 +255,7 @@ float FHandGesture::ComputeTransitionTime(
 		SecondPoseIndex = TimedPoses.Num() - 1;
 	}
 
-	if (FirstPoseIndex < 0 || FirstPoseIndex >= NumPoses ||
-		SecondPoseIndex < 0 || SecondPoseIndex >= NumPoses ||
-		FirstPoseIndex >= SecondPoseIndex)
+	if (FirstPoseIndex < 0 || FirstPoseIndex >= NumPoses || SecondPoseIndex < 0 || SecondPoseIndex >= NumPoses || FirstPoseIndex >= SecondPoseIndex)
 	{
 		return 0.0f;
 	}
@@ -296,15 +293,15 @@ void FHandGesture::DumpGestureState(int GestureIndex, const UHandPoseRecognizer*
 	FString StateString;
 	switch (GestureState)
 	{
-	case EGestureState::GestureNotStarted:
-		StateString = TEXT("NotStarted");
-		break;
-	case EGestureState::GestureInProgress:
-		StateString = TEXT("InProgress");
-		break;
-	case EGestureState::GestureCompleted:
-		StateString = TEXT("Completed");
-		break;
+		case EGestureState::GestureNotStarted:
+			StateString = TEXT("NotStarted");
+			break;
+		case EGestureState::GestureInProgress:
+			StateString = TEXT("InProgress");
+			break;
+		case EGestureState::GestureCompleted:
+			StateString = TEXT("Completed");
+			break;
 	}
 
 	UE_LOG(LogHandPoseRecognition, Display, TEXT("Gesture %s[%d] %s"), *GestureName, GestureIndex, *StateString);
@@ -314,7 +311,7 @@ void FHandGesture::DumpGestureState(int GestureIndex, const UHandPoseRecognizer*
 	for (const FHandGestureStep& TimedPose : TimedPoses)
 	{
 		UE_LOG(LogHandPoseRecognition, Display, TEXT(" %c %d %8s[%d] %05.3f - %05.3f"),
-			CurrentStep==Step ? '>' : ' ', Step,
+			CurrentStep == Step ? '>' : ' ', Step,
 			*(HandPoseRecognizer->Poses[TimedPose.PoseIndex].PoseName),
 			TimedPose.PoseIndex,
 			TimedPose.StepFirstTime,

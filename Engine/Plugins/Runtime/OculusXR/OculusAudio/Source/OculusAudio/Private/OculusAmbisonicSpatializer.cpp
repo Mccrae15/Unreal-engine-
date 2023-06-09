@@ -32,7 +32,7 @@ namespace OculusAudioUtils
 		return bIsOculusCurrentSpatiatizationPlugin;
 #endif
 	}
-}
+} // namespace OculusAudioUtils
 
 // the Oculus Audio renderer renders all inputs immediately to an interleaved stereo output.
 class FOculusSoundfieldBuffer : public ISoundfieldAudioPacket
@@ -44,7 +44,8 @@ public:
 
 	FOculusSoundfieldBuffer()
 		: NumChannels(0)
-	{}
+	{
+	}
 
 	virtual void Serialize(FArchive& Ar) override
 	{
@@ -52,19 +53,16 @@ public:
 		Ar << NumChannels;
 	}
 
-
 	virtual TUniquePtr<ISoundfieldAudioPacket> Duplicate() const override
 	{
 		return TUniquePtr<ISoundfieldAudioPacket>(new FOculusSoundfieldBuffer(*this));
 	}
-
 
 	virtual void Reset() override
 	{
 		AudioBuffer.Reset();
 		NumChannels = 0;
 	}
-
 };
 
 class FOculusEncoder : public ISoundfieldEncoderStream
@@ -81,7 +79,6 @@ private:
 	static FCriticalSection SourceIdCounterCritSection;
 
 public:
-
 	FOculusEncoder(ovrAudioContext InContext, int32 InNumChannels, int32 MaxNumSources)
 		: Context(InContext)
 	{
@@ -121,7 +118,6 @@ public:
 		EncodeAndMixIn(InputData, OutputData);
 	}
 
-
 	// Binaurally spatialize each independent speaker position. If the spatialization plugin for the current platform was set to Oculus Audio
 	// when this encoder was created this will no-op.
 	virtual void EncodeAndMixIn(const FSoundfieldEncoderInputData& InputData, ISoundfieldAudioPacket& OutputData) override
@@ -155,7 +151,6 @@ public:
 		{
 			int32& SourceId = SourceIds[ChannelIndex];
 			const Audio::FChannelPositionInfo& ChannelPosition = ChannelPositions[ChannelIndex];
-			
 
 			// Translate the input position to OVR coordinates
 			FVector SourcePosition = OculusAudioSpatializationAudioMixer::ToOVRVector(ChannelPosition);
@@ -167,7 +162,7 @@ public:
 			// Deinterleave the audio into the mono temp buffer.
 			ScratchMonoBuffer.Reset();
 			ScratchMonoBuffer.AddUninitialized(NumFrames);
-			for(int32 FrameIndex = 0; FrameIndex < NumFrames; FrameIndex++)
+			for (int32 FrameIndex = 0; FrameIndex < NumFrames; FrameIndex++)
 			{
 				ScratchMonoBuffer[FrameIndex] = InputData.AudioBuffer[FrameIndex * InputData.NumChannels + ChannelIndex];
 			}
@@ -198,7 +193,8 @@ private:
 public:
 	FOculusAudioDecoder(const bool bInShouldUseSubmixForOutput)
 		: bShouldUseSubmixForOutput(bInShouldUseSubmixForOutput)
-	{}
+	{
+	}
 
 	FOculusAudioDecoder() = delete;
 
@@ -241,6 +237,7 @@ class FOculusAmbisonicsTranscoder : public ISoundfieldTranscodeStream
 private:
 	ovrAudioContext Context;
 	ovrAudioAmbisonicStream AmbiStreamObject;
+
 public:
 	FOculusAmbisonicsTranscoder(ovrAudioContext InContext, int32 InSampleRate, int32 InBufferLength)
 		: Context(InContext)
@@ -257,7 +254,6 @@ public:
 		TranscodeAndMixIn(InputData, InputSettings, OutputData, OutputSettings);
 	}
 
-
 	virtual void TranscodeAndMixIn(const ISoundfieldAudioPacket& InputData, const ISoundfieldEncodingSettingsProxy& InputSettings, ISoundfieldAudioPacket& PacketToSumTo, const ISoundfieldEncodingSettingsProxy& OutputSettings) override
 	{
 		const FAmbisonicsSoundfieldBuffer& InputBuffer = DowncastSoundfieldRef<const FAmbisonicsSoundfieldBuffer>(InputData);
@@ -273,7 +269,7 @@ public:
 		OutputBuffer.NumChannels = 2;
 
 		//Currently, Oculus only decodes first-order ambisonics to stereo.
-		// in the future we can truncate InputBuffer to four channels and 
+		// in the future we can truncate InputBuffer to four channels and
 		// render that.
 		// For now we just output silence for higher order ambisonics from the Oculus spatializaers
 		if (InputBuffer.NumChannels == 4)
@@ -293,7 +289,6 @@ public:
 			check(DecodeResult == 0);
 		}
 	}
-
 };
 
 // Since FOculusSoundfieldBuffer is just an interleaved stereo buffer, we simply mix the buffer here.
@@ -314,7 +309,6 @@ public:
 		{
 			check(InputBuffer.AudioBuffer.Num() == OutputBuffer.AudioBuffer.Num());
 			check(InputBuffer.NumChannels == OutputBuffer.NumChannels);
-
 
 			Audio::MixInBufferFast(InputBuffer.AudioBuffer, OutputBuffer.AudioBuffer, InputData.SendLevel);
 		}

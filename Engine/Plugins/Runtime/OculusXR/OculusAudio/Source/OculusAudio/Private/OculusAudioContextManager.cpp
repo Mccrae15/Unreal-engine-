@@ -135,7 +135,7 @@ ovrAudioContext FOculusAudioContextManager::CreateContextForAudioDevice(FAudioDe
 	ovrAudioContext NewContext = nullptr;
 	ovrResult Result = OVRA_CALL(ovrAudio_CreateContext)(&NewContext, &ContextConfig);
 
-	if(ensure(Result == ovrSuccess))
+	if (ensure(Result == ovrSuccess))
 	{
 		FScopeLock ScopeLock(&ContextCritSection);
 		return ContextMap.Add(InAudioDevice, NewContext);
@@ -153,7 +153,8 @@ void FOculusAudioContextManager::DestroyContextForAudioDevice(const FAudioDevice
 
 	if (Context)
 	{
-		OVRA_CALL(ovrAudio_DestroyContext)(*Context);
+		OVRA_CALL(ovrAudio_DestroyContext)
+		(*Context);
 		ContextMap.Remove(InAudioDevice);
 	}
 }

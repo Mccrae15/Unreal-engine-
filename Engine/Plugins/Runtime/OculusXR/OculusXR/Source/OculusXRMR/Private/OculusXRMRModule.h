@@ -25,7 +25,7 @@ public:
 
 	static inline FOculusXRMRModule& Get()
 	{
-		return FModuleManager::GetModuleChecked< FOculusXRMRModule >("OculusXRMR");
+		return FModuleManager::GetModuleChecked<FOculusXRMRModule>("OculusXRMR");
 	}
 
 	// IOculusXRMRModule
@@ -92,6 +92,5 @@ private:
 	void OnPieEnded(bool bIsSimulating);
 #endif
 };
-
 
 #undef LOCTEXT_NAMESPACE

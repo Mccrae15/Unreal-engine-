@@ -163,14 +163,29 @@ void FOculusBuildAnalytics::OnStageCompleted(const FString& StageName, double Ti
 		FString TaskName;
 		switch (CurrentBuildStage)
 		{
-		case COOK_IN_EDITOR_STAGE:	TaskName = "build_step_editor_cook";	break;
-		case LAUNCH_UAT_STAGE:		TaskName = "build_step_launch_uat";		break;
-		case COMPILE_STAGE:			TaskName = "build_step_compile";		break;
-		case COOK_STAGE:			TaskName = "build_step_cook";			break;
-		case DEPLOY_STAGE:			TaskName = "build_step_deploy";			break;
-		case PACKAGE_STAGE:			TaskName = "build_step_package";		break;
-		case RUN_STAGE:				return;
-		default:					TaskName = "build_step_undefined";		break;
+			case COOK_IN_EDITOR_STAGE:
+				TaskName = "build_step_editor_cook";
+				break;
+			case LAUNCH_UAT_STAGE:
+				TaskName = "build_step_launch_uat";
+				break;
+			case COMPILE_STAGE:
+				TaskName = "build_step_compile";
+				break;
+			case COOK_STAGE:
+				TaskName = "build_step_cook";
+				break;
+			case DEPLOY_STAGE:
+				TaskName = "build_step_deploy";
+				break;
+			case PACKAGE_STAGE:
+				TaskName = "build_step_package";
+				break;
+			case RUN_STAGE:
+				return;
+			default:
+				TaskName = "build_step_undefined";
+				break;
 		}
 
 		if (AndroidPackageTime > 0)

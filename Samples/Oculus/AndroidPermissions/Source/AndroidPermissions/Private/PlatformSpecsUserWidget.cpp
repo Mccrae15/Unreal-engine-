@@ -6,7 +6,7 @@
 #include "CoreMinimal.h"
 
 void UPlatformSpecsUserWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
-{	
+{
 	Super::NativeTick(MyGeometry, InDeltaTime);
 
 	// Update dynamic states

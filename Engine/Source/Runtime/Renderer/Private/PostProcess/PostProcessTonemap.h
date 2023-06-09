@@ -69,6 +69,9 @@ struct FTonemapInputs
 
 	bool bMetalMSAAHDRDecode = false;
 
+	// Mobile tonemap subpass 
+	bool bUseSubpass = false;
+
 	// [Optional] Mobile tonemap subpass number of MSAA samples read from scene color. Subpass pixel shader peforms resolve so will always output a single sample. 
 	uint32 MsaaSamples = 1;
 
@@ -80,4 +83,3 @@ struct FTonemapInputs
 };
 
 FScreenPassTexture AddTonemapPass(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FTonemapInputs& Inputs);
-void AddMobileTonemapperSubpass(FRHICommandListImmediate& RHICmdList, const FViewInfo& View, const FTonemapInputs& Inputs);

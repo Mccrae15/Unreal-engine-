@@ -157,7 +157,6 @@ void UOculusXRHandComponent::UpdateBonePose()
 				RootBoneRotation *= HandRootFixupRotation;
 				RootBoneRotation.Normalize();
 				BoneSpaceTransforms[0].SetRotation(RootBoneRotation);
-
 			}
 			else
 			{

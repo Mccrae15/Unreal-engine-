@@ -5,30 +5,27 @@
 #include "Engine/Engine.h"
 #include "UnrealEngine.h"
 #include "StereoRendering.h"
-#include "IXRTrackingSystem.h" 	
+#include "IXRTrackingSystem.h"
 #include "GameFramework/Actor.h"
 #include "Camera/CameraTypes.h"
 
 // Sets default values
 APortalCaptureActor::APortalCaptureActor()
 {
- 	// Set this actor to call Tick() every frame.  You can turn this off to improve performance if you don't need it.
+	// Set this actor to call Tick() every frame.  You can turn this off to improve performance if you don't need it.
 	PrimaryActorTick.bCanEverTick = true;
-
 }
 
 // Called when the game starts or when spawned
 void APortalCaptureActor::BeginPlay()
 {
 	Super::BeginPlay();
-	
 }
 
 // Called every frame
 void APortalCaptureActor::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
-
 }
 
 bool APortalCaptureActor::IsRenderingStereo() const
@@ -38,14 +35,14 @@ bool APortalCaptureActor::IsRenderingStereo() const
 
 FMatrix APortalCaptureActor::GetLeftEyeProjection() const
 {
-	TSharedPtr< IStereoRendering, ESPMode::ThreadSafe > Stereo = GEngine->XRSystem->GetStereoRenderingDevice();
+	TSharedPtr<IStereoRendering, ESPMode::ThreadSafe> Stereo = GEngine->XRSystem->GetStereoRenderingDevice();
 	FMatrix Result = Stereo->GetStereoProjectionMatrix(EStereoscopicEye::eSSE_LEFT_EYE);
 	return Result;
 }
 
 FMatrix APortalCaptureActor::GetRightEyeProjection() const
 {
-	TSharedPtr< IStereoRendering, ESPMode::ThreadSafe > Stereo = GEngine->XRSystem->GetStereoRenderingDevice();
+	TSharedPtr<IStereoRendering, ESPMode::ThreadSafe> Stereo = GEngine->XRSystem->GetStereoRenderingDevice();
 	FMatrix Result = Stereo->GetStereoProjectionMatrix(EStereoscopicEye::eSSE_RIGHT_EYE);
 	return Result;
 }
@@ -85,7 +82,6 @@ void APortalCaptureActor::ClipPortalScreenBounds(FVector MinLocalPoint, FVector 
 		FVector(MaxLocalPoint.X, MinLocalPoint.Y, MinLocalPoint.Z),
 		FVector(MaxLocalPoint.X, MaxLocalPoint.Y, MinLocalPoint.Z)
 	};
-
 
 	IsInView = true;
 

@@ -11,6 +11,8 @@ LICENSE file in the root directory of this source tree.
 #include "OculusXRAnchorDelegates.h"
 #include "OculusXRAnchorManager.h"
 #include "OculusXRAnchorBPFunctionLibrary.h"
+#include "ProceduralMeshComponent.h"
+#include "OculusXRAnchorsModule.h"
 
 UOculusXRRoomLayoutManagerComponent::UOculusXRRoomLayoutManagerComponent(const FObjectInitializer& ObjectInitializer)
 {
@@ -53,7 +55,7 @@ bool UOculusXRRoomLayoutManagerComponent::LaunchCaptureFlow()
 	}
 
 	UE_LOG(LogOculusXRAnchors, Verbose, TEXT("Launch capture flow -- RequestSceneCapture -- %d"), bSuccess);
-	
+
 	return bSuccess;
 }
 

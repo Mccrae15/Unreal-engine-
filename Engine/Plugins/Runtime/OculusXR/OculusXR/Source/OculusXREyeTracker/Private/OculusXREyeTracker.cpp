@@ -204,7 +204,14 @@ public:
 	virtual TSharedPtr<class IEyeTracker, ESPMode::ThreadSafe> CreateEyeTracker() override
 	{
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
-		return TSharedPtr<class IEyeTracker, ESPMode::ThreadSafe>(new OculusXRHMD::FOculusXREyeTracker);
+		if (FOculusXRHMDModule::Get().IsOVRPluginAvailable())
+		{
+			return TSharedPtr<class IEyeTracker, ESPMode::ThreadSafe>(new OculusXRHMD::FOculusXREyeTracker);
+		}
+		else
+		{
+			return TSharedPtr<class IEyeTracker, ESPMode::ThreadSafe>();
+		}
 #else
 		return TSharedPtr<class IEyeTracker, ESPMode::ThreadSafe>();
 #endif // OCULUS_HMD_SUPPORTED_PLATFORMS

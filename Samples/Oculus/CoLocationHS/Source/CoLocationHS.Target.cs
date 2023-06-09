@@ -9,6 +9,6 @@ public class CoLocationHSTarget : TargetRules
 	{
 		Type = TargetType.Game;
 
-		ExtraModuleNames.AddRange( new string[] { "CoLocationHS" } );
+		ExtraModuleNames.AddRange(new string[] { "CoLocationHS" });
 	}
 }

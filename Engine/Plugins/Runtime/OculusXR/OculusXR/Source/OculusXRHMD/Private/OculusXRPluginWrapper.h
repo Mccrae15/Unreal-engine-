@@ -6,16 +6,15 @@
 #include <memory.h>
 
 #if PLATFORM_SUPPORTS_PRAGMA_PACK
-#pragma pack (push,8)
+#pragma pack(push, 8)
 #endif
 
 #if PLATFORM_WINDOWS
 #include "Windows/AllowWindowsPlatformTypes.h"
 #endif
 
-
 #pragma warning(push)
-#pragma warning(disable:4201)		// nonstandard extension used: nameless struct/union
+#pragma warning(disable : 4201) // nonstandard extension used: nameless struct/union
 //#pragma warning(disable:4668)		// 'symbol' is not defined as a preprocessor macro, replacing with '0' for 'directives'
 #define OVRP_EXPORT typedef
 #include "OVR_Plugin.h"
@@ -30,7 +29,7 @@
 #endif
 
 #if PLATFORM_SUPPORTS_PRAGMA_PACK
-#pragma pack (pop)
+#pragma pack(pop)
 #endif
 
 #if PLATFORM_WINDOWS
@@ -39,7 +38,7 @@
 
 DECLARE_LOG_CATEGORY_EXTERN(LogOculusPluginWrapper, Log, All);
 
-#define OCULUS_DECLARE_ENTRY_POINT(Func)		ovrp_##Func* Func
+#define OCULUS_DECLARE_ENTRY_POINT(Func) ovrp_##Func* Func
 
 struct OculusPluginWrapper
 {
@@ -245,6 +244,7 @@ struct OculusPluginWrapper
 	OCULUS_DECLARE_ENTRY_POINT(GetLayerRecommendedResolution);
 	OCULUS_DECLARE_ENTRY_POINT(IsLayerShapeSupported);
 
+
 #ifndef OVRPLUGIN_JNI_LIB_EXCLUDED
 	OCULUS_DECLARE_ENTRY_POINT(GetSystemVolume2);
 	OCULUS_DECLARE_ENTRY_POINT(GetSystemHeadphonesPresent2);
@@ -309,6 +309,7 @@ struct OculusPluginWrapper
 	OCULUS_DECLARE_ENTRY_POINT(CreatePassthroughColorLut);
 	OCULUS_DECLARE_ENTRY_POINT(DestroyPassthroughColorLut);
 	OCULUS_DECLARE_ENTRY_POINT(UpdatePassthroughColorLut);
+	OCULUS_DECLARE_ENTRY_POINT(GetPassthroughCapabilities);
 
 	//OVR_Plugin_MixedReality.h
 

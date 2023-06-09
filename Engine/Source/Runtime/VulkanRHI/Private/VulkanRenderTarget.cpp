@@ -1298,6 +1298,10 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 		if (CurrDesc.samples > VK_SAMPLE_COUNT_1_BIT && ColorEntry.ResolveTarget)
 		{
 			Desc[NumAttachmentDescriptions + 1] = Desc[NumAttachmentDescriptions];
+			if (IsMobileHDR() && ((RPInfo.SubpassHint & ESubpassHint::MobileTonemapSubpass) != ESubpassHint::None))
+			{
+				Desc[NumAttachmentDescriptions + 1].format = VK_FORMAT_R8G8B8_UNORM;
+			}
 			Desc[NumAttachmentDescriptions + 1].samples = VK_SAMPLE_COUNT_1_BIT;
 			Desc[NumAttachmentDescriptions + 1].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 			Desc[NumAttachmentDescriptions + 1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -1560,6 +1564,10 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(const FGraphicsPipelineStat
 			if (CurrDesc.samples > VK_SAMPLE_COUNT_1_BIT)
 			{
 				Desc[NumAttachmentDescriptions + 1] = Desc[NumAttachmentDescriptions];
+				if (IsMobileHDR() && ((Initializer.SubpassHint & ESubpassHint::MobileTonemapSubpass) != ESubpassHint::None))
+				{
+					Desc[NumAttachmentDescriptions + 1].format = VK_FORMAT_R8G8B8_UNORM;
+				}
 				Desc[NumAttachmentDescriptions + 1].samples = VK_SAMPLE_COUNT_1_BIT;
 				Desc[NumAttachmentDescriptions + 1].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 				Desc[NumAttachmentDescriptions + 1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;

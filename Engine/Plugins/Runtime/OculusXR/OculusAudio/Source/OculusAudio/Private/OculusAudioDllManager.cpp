@@ -4,12 +4,11 @@
 #include "OculusAudioSettings.h"
 #include "Stats/Stats.h"
 
-
 // forward decleration should match OAP_Globals
 extern "C" ovrResult ovrAudio_GetPluginContext(ovrAudioContext* context, unsigned clientType);
 extern "C" ovrResult OSP_FMOD_SetUnitScale(float unitScale);
 
-#define OVRA_CLIENT_TYPE_FMOD          5
+#define OVRA_CLIENT_TYPE_FMOD 5
 #define OVRA_CLIENT_TYPE_WWISE_UNKNOWN 12
 
 FOculusAudioLibraryManager& FOculusAudioLibraryManager::Get()
@@ -25,8 +24,7 @@ FOculusAudioLibraryManager& FOculusAudioLibraryManager::Get()
 }
 
 FOculusAudioLibraryManager::FOculusAudioLibraryManager()
-	: OculusAudioDllHandle(nullptr), NumInstances(0),
-	bInitialized(false), CachedPluginContext(nullptr)
+	: OculusAudioDllHandle(nullptr), NumInstances(0), bInitialized(false), CachedPluginContext(nullptr)
 {
 }
 
@@ -83,7 +81,6 @@ void FOculusAudioLibraryManager::Shutdown()
 	}
 }
 
-
 bool FOculusAudioLibraryManager::LoadDll()
 {
 	if (OculusAudioDllHandle == nullptr)
@@ -92,7 +89,7 @@ bool FOculusAudioLibraryManager::LoadDll()
 		const TCHAR* FMOD_DLL_NAME = TEXT("OculusSpatializerFMOD");
 		const TCHAR* UE_DLL_NAME = (sizeof(void*) == 4) ? TEXT("ovraudio32") : TEXT("ovraudio64");
 
-#if PLATFORM_WINDOWS 
+#if PLATFORM_WINDOWS
 
 #if WITH_EDITOR
 		const FString WwisePath = FPaths::ProjectDir() / FString::Printf(TEXT("Binaries/Win64/"));
@@ -127,7 +124,6 @@ bool FOculusAudioLibraryManager::LoadDll()
 			DLL_NAME = UE_DLL_NAME;
 			UE_LOG(LogAudio, Display, TEXT("Oculus Audio: Middleware plugins not found, assuming native UE AudioMixer"));
 		}
-
 
 		UE_LOG(LogAudio, Display, TEXT("Oculus Audio: Attempting to load Oculus Spatializer DLL: %s (from %s)"), *Path, DLL_NAME);
 

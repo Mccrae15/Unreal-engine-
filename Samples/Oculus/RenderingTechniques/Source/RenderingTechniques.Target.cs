@@ -10,6 +10,6 @@ public class RenderingTechniquesTarget : TargetRules
 		Type = TargetType.Game;
 		DefaultBuildSettings = BuildSettingsVersion.V2;
 
-		ExtraModuleNames.AddRange( new string[] { "RenderingTechniques" } );
+		ExtraModuleNames.AddRange(new string[] { "RenderingTechniques" });
 	}
 }

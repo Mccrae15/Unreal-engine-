@@ -8,32 +8,39 @@
 #include "Misc/EngineVersion.h"
 #include "Misc/Paths.h"
 #if PLATFORM_ANDROID
-	#include "Android/AndroidApplication.h"
-	#include "Android/AndroidPlatformMisc.h"
+#include "Android/AndroidApplication.h"
+#include "Android/AndroidPlatformMisc.h"
 #endif
 #include "Interfaces/IPluginManager.h"
 #include "ShaderCore.h"
 
 #if !PLATFORM_ANDROID
 #if !UE_BUILD_SHIPPING
-namespace {
-void __cdecl OvrpLogCallback2(ovrpLogLevel InLevel, const char* Message, int Length)
+namespace
 {
-	ELogVerbosity::Type OutLevel;
-	switch (InLevel)
+	void __cdecl OvrpLogCallback2(ovrpLogLevel InLevel, const char* Message, int Length)
 	{
-		case ovrpLogLevel_Debug: OutLevel = ELogVerbosity::Log; break;
-		case ovrpLogLevel_Info:  OutLevel = ELogVerbosity::Display; break;
-		case ovrpLogLevel_Error: OutLevel = ELogVerbosity::Error; break;
-		default:
-			OutLevel = ELogVerbosity::NoLogging;
+		ELogVerbosity::Type OutLevel;
+		switch (InLevel)
+		{
+			case ovrpLogLevel_Debug:
+				OutLevel = ELogVerbosity::Log;
+				break;
+			case ovrpLogLevel_Info:
+				OutLevel = ELogVerbosity::Display;
+				break;
+			case ovrpLogLevel_Error:
+				OutLevel = ELogVerbosity::Error;
+				break;
+			default:
+				OutLevel = ELogVerbosity::NoLogging;
+		}
+		const FString MessageStr(Length, Message);
+		GLog->CategorizedLogf(TEXT("LogOVRPlugin"), OutLevel, TEXT("%s"), *MessageStr);
 	}
-	const FString MessageStr(Length, Message);
-	GLog->CategorizedLogf(TEXT("LogOVRPlugin"), OutLevel, TEXT("%s"), *MessageStr);
-}
-}  // namespace anonymous
-#endif  // !UE_BUILD_SHIPPING
-#endif  // !PLATFORM_ANDROID
+} // namespace
+#endif // !UE_BUILD_SHIPPING
+#endif // !PLATFORM_ANDROID
 
 //-------------------------------------------------------------------------------------------------
 // FOculusXRHMDModule
@@ -54,6 +61,8 @@ FOculusXRHMDModule::FOculusXRHMDModule()
 void FOculusXRHMDModule::StartupModule()
 {
 	IHeadMountedDisplayModule::StartupModule();
+	FString PluginShaderDir = FPaths::Combine(IPluginManager::Get().FindPlugin(TEXT("OculusXR"))->GetBaseDir(), TEXT("Shaders"));
+	AddShaderSourceDirectoryMapping(TEXT("/Plugin/OculusXR"), PluginShaderDir);
 }
 
 void FOculusXRHMDModule::ShutdownModule()
@@ -95,14 +104,14 @@ bool FOculusXRHMDModule::PreInit()
 	{
 		bPreInit = false;
 
-	#if PLATFORM_ANDROID
+#if PLATFORM_ANDROID
 		bPreInitCalled = true;
 		if (!AndroidThunkCpp_IsOculusMobileApplication())
 		{
 			UE_LOG(LogHMD, Log, TEXT("App is not packaged for Oculus Mobile"));
 			return false;
 		}
-	#endif
+#endif
 
 		// Init module if app can render
 		if (FApp::CanEverRender())
@@ -124,18 +133,18 @@ bool FOculusXRHMDModule::PreInit()
 
 			// Initialize OVRPlugin
 			ovrpRenderAPIType PreinitApiType = ovrpRenderAPI_None;
-	#if PLATFORM_ANDROID
+#if PLATFORM_ANDROID
 			void* Activity = (void*)FAndroidApplication::GetGameActivityThis();
 			PreinitApiType = ovrpRenderAPI_Vulkan;
-	#else
+#else
 			void* Activity = nullptr;
-	#endif
+#endif
 
-	#if !PLATFORM_ANDROID
-	#if !UE_BUILD_SHIPPING
+#if !PLATFORM_ANDROID
+#if !UE_BUILD_SHIPPING
 			PluginWrapper.SetLogCallback2(OvrpLogCallback2);
-	#endif  // !UE_BUILD_SHIPPING
-	#endif  // !PLATFORM_ANDROID
+#endif // !UE_BUILD_SHIPPING
+#endif // !PLATFORM_ANDROID
 
 			if (OVRP_FAILURE(PluginWrapper.PreInitialize5(Activity, PreinitApiType, ovrpPreinitializeFlags::ovrpPreinitializeFlag_None)))
 			{
@@ -149,7 +158,7 @@ bool FOculusXRHMDModule::PreInit()
 #endif
 			}
 
-	#if PLATFORM_WINDOWS
+#if PLATFORM_WINDOWS
 			bPreInitCalled = true;
 			const LUID* DisplayAdapterId;
 			if (OVRP_SUCCESS(PluginWrapper.GetDisplayAdapterId2((const void**)&DisplayAdapterId)) && DisplayAdapterId)
@@ -180,7 +189,7 @@ bool FOculusXRHMDModule::PreInit()
 			{
 				UE_LOG(LogHMD, Log, TEXT("Could not determine HMD audio output device"));
 			}
-	#endif
+#endif
 
 			float ModulePriority;
 			if (!GConfig->GetFloat(TEXT("HMDPluginPriority"), *GetModuleKeyName(), ModulePriority, GEngineIni))
@@ -255,7 +264,7 @@ FString FOculusXRHMDModule::GetAudioOutputDevice()
 {
 	FString AudioOutputDevice;
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
-	#if PLATFORM_WINDOWS
+#if PLATFORM_WINDOWS
 	if (bPreInit)
 	{
 		if (FApp::CanEverRender())
@@ -267,9 +276,9 @@ FString FOculusXRHMDModule::GetAudioOutputDevice()
 			}
 		}
 	}
-	#else
+#else
 	GConfig->GetString(TEXT("Oculus.Settings"), TEXT("AudioOutputDevice"), AudioOutputDevice, GEngineIni);
-	#endif
+#endif
 #endif
 	return AudioOutputDevice;
 }
@@ -314,7 +323,7 @@ TSharedPtr<IHeadMountedDisplayVulkanExtensions, ESPMode::ThreadSafe> FOculusXRHM
 		//      and uses the vk_external extensions to transfer data between them when needed.
 		// 2. OpenXR changes to allow querying instance and device extensions without an active HMD.
 		//      It may still require a physical device handle to list device extensions.
-		// 3. Oculus's Link implementation for OpenXR changes to allow an XrSystemId to be created before a headset 
+		// 3. Oculus's Link implementation for OpenXR changes to allow an XrSystemId to be created before a headset
 		//      is connected (possibly as an opt-in OpenXR extension for backwards compatibility).
 		//
 		// (2) or (3) are preferable, but if OpenXR is held constant we will have to do (1).
@@ -344,10 +353,10 @@ FString FOculusXRHMDModule::GetDeviceSystemName()
 			default:
 				return FString("Oculus Quest2");
 
-	#ifdef WITH_OCULUS_BRANCH
+#ifdef WITH_OCULUS_BRANCH
 			case ovrpSystemHeadset_Meta_Quest_Pro:
 				return FString("Meta Quest Pro");
-	#endif // WITH_OCULUS_BRANCH
+#endif // WITH_OCULUS_BRANCH
 		}
 	}
 	return FString();
@@ -370,7 +379,7 @@ void* FOculusXRHMDModule::GetOVRPluginHandle()
 {
 	void* OVRPluginHandle = nullptr;
 
-	#if PLATFORM_WINDOWS
+#if PLATFORM_WINDOWS
 	FString XrApi;
 	if (!GConfig->GetString(TEXT("/Script/OculusXRHMD.OculusXRHMDRuntimeSettings"), TEXT("XrApi"), XrApi, GEngineIni) || XrApi.Equals(FString("OVRPluginOpenXR")))
 	{
@@ -379,9 +388,9 @@ void* FOculusXRHMDModule::GetOVRPluginHandle()
 		OVRPluginHandle = FPlatformProcess::GetDllHandle(*(BinariesPath / "OpenXR/OVRPlugin.dll"));
 		FPlatformProcess::PopDllDirectory(*BinariesPath);
 	}
-	#elif PLATFORM_ANDROID
+#elif PLATFORM_ANDROID
 	OVRPluginHandle = FPlatformProcess::GetDllHandle(TEXT("libOVRPlugin.so"));
-	#endif // PLATFORM_ANDROID
+#endif // PLATFORM_ANDROID
 
 	return OVRPluginHandle;
 }
@@ -414,7 +423,7 @@ void FOculusXRHMDModule::SetGraphicsAdapterLuid(uint64 InLuid)
 {
 	GraphicsAdapterLuid = InLuid;
 
-	#if OCULUS_HMD_SUPPORTED_PLATFORMS_D3D11 || OCULUS_HMD_SUPPORTED_PLATFORMS_D3D12
+#if OCULUS_HMD_SUPPORTED_PLATFORMS_D3D11 || OCULUS_HMD_SUPPORTED_PLATFORMS_D3D12
 	TRefCountPtr<IDXGIFactory> DXGIFactory;
 
 	if (SUCCEEDED(CreateDXGIFactory(__uuidof(IDXGIFactory), (void**)DXGIFactory.GetInitReference())))
@@ -437,7 +446,7 @@ void FOculusXRHMDModule::SetGraphicsAdapterLuid(uint64 InLuid)
 			}
 		}
 	}
-	#endif // OCULUS_HMD_SUPPORTED_PLATFORMS_D3D11 || OCULUS_HMD_SUPPORTED_PLATFORMS_D3D12
+#endif // OCULUS_HMD_SUPPORTED_PLATFORMS_D3D11 || OCULUS_HMD_SUPPORTED_PLATFORMS_D3D12
 }
 #endif // OCULUS_HMD_SUPPORTED_PLATFORMS
 

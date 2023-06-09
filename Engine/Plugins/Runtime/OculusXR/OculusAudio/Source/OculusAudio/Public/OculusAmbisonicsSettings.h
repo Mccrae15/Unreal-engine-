@@ -6,7 +6,6 @@
 
 #include "OculusAmbisonicsSettings.generated.h"
 
-
 UENUM()
 enum class EOculusAudioAmbisonicsMode : uint8
 {
@@ -22,7 +21,7 @@ struct OCULUSAUDIO_API FSubmixEffectOculusAmbisonicSpatializerSettings
 {
 	GENERATED_USTRUCT_BODY()
 
-		// Ambisonic spatialization mode
+	// Ambisonic spatialization mode
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Realtime)
 	EOculusAudioAmbisonicsMode AmbisonicMode;
 
@@ -40,19 +39,18 @@ public:
 
 	FOculusAudioSoundfieldSettingsProxy(EOculusAudioAmbisonicsMode InSpatializationMode)
 		: SpatailizationMode(InSpatializationMode)
-	{}
+	{
+	}
 
 	virtual uint32 GetUniqueId() const override
 	{
 		return (uint32)SpatailizationMode;
 	}
 
-
 	virtual TUniquePtr<ISoundfieldEncodingSettingsProxy> Duplicate() const override
 	{
 		return TUniquePtr<ISoundfieldEncodingSettingsProxy>(new FOculusAudioSoundfieldSettingsProxy(SpatailizationMode));
 	}
-
 };
 
 UCLASS()
@@ -69,4 +67,3 @@ public:
 		return TUniquePtr<ISoundfieldEncodingSettingsProxy>(new FOculusAudioSoundfieldSettingsProxy(SpatializationMode));
 	}
 };
-

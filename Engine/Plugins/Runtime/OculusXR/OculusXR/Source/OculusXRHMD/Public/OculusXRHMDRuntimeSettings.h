@@ -25,7 +25,6 @@ class OCULUSXRHMD_API UOculusXRHMDRuntimeSettings : public UObject
 	GENERATED_UCLASS_BODY()
 
 public:
-	
 	/** Whether the Splash screen is enabled. */
 	UPROPERTY(config, EditAnywhere, Category = "Engine SplashScreen")
 	bool bAutoEnabled;
@@ -40,7 +39,7 @@ public:
 
 	/** The target color space */
 	UPROPERTY(config, EditAnywhere, Category = General)
-	EOculusXRColorSpace	ColorSpace;
+	EOculusXRColorSpace ColorSpace;
 
 	/** Whether the controller hand poses align to the Meta XR pose definitions or the OpenXR pose definitions */
 	UPROPERTY(config, EditAnywhere, Category = General, meta = (EditCondition = "XrApi != EOculusXRXrApi::NativeOpenXR"))
@@ -71,14 +70,12 @@ public:
 	float PixelDensityMax;
 
 	/** Default CPU level controlling CPU frequency on the mobile device */
-	UPROPERTY(config, meta = (DeprecatedProperty,
-		DeprecationMessage = "Use Blueprint Function Get/SetSuggestedCpuAndGpuPerformanceLevels instead."))
-		int CPULevel_DEPRECATED;
+	UPROPERTY(config, meta = (DeprecatedProperty, DeprecationMessage = "Use Blueprint Function Get/SetSuggestedCpuAndGpuPerformanceLevels instead."))
+	int CPULevel_DEPRECATED;
 
 	/** Default GPU level controlling GPU frequency on the mobile device */
-	UPROPERTY(config, meta = (DeprecatedProperty,
-		DeprecationMessage = "Use Blueprint Function Get/SetSuggestedCpuAndGpuPerformanceLevels instead."))
-		int GPULevel_DEPRECATED;
+	UPROPERTY(config, meta = (DeprecatedProperty, DeprecationMessage = "Use Blueprint Function Get/SetSuggestedCpuAndGpuPerformanceLevels instead."))
+	int GPULevel_DEPRECATED;
 
 	/** Select supported Meta Quest Devices */
 	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "Supported Meta Quest devices"))
@@ -141,9 +138,13 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "Passthrough Enabled"))
 	bool bInsightPassthroughEnabled;
 
-	/** Whether Scene and Spatial Anchors can be used with the app */
+	/** Whether Spatial Anchors can be used with the app */
 	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "Anchor Support"))
 	bool bAnchorSupportEnabled;
+
+	/** Whether Scene can be used with the app */
+	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "Scene Support"))
+	bool bSceneSupportEnabled;
 
 	/** Whether body tracking functionality can be used with the app */
 	UPROPERTY(config, EditAnywhere, Category = Mobile, meta = (DisplayName = "Body Tracking Enabled", EditCondition = "XrApi == EOculusXRXrApi::OVRPluginOpenXR"))

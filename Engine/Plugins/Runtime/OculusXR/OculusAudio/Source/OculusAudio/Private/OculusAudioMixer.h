@@ -22,7 +22,7 @@ public:
 
 	void ClearContext();
 
-	//~ Begin IAudioSpatialization 
+	//~ Begin IAudioSpatialization
 	virtual void Initialize(const FAudioPluginInitializationParams InitializationParams) override;
 	virtual void Shutdown() override;
 	virtual bool IsSpatializationEffectInitialized() const override;
@@ -30,7 +30,7 @@ public:
 	virtual void SetSpatializationParameters(uint32 VoiceId, const FSpatializationParams& InParams) override;
 	virtual void ProcessAudio(const FAudioPluginSourceInputData& InputData, FAudioPluginSourceOutputData& OutputData) override;
 	//~ End IAudioSpatialization
-	
+
 	bool Tick(float DeltaTime);
 
 	// Helper function to convert from UE coords to OVR coords.
@@ -51,8 +51,8 @@ public:
 
 	static const int MIXER_CLASS_ID = 0x98765432;
 	const int ClassID = MIXER_CLASS_ID;
-private:
 
+private:
 	void ApplyOculusAudioSettings(const UOculusAudioSettings* Settings);
 
 	TArray<FSpatializationParams> Params;

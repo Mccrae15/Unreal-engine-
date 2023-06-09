@@ -49,10 +49,12 @@ FOculusXRMRModule::FOculusXRMRModule()
 	, PieStartedEventBinding()
 	, PieEndedEventBinding()
 #endif
-{}
+{
+}
 
 FOculusXRMRModule::~FOculusXRMRModule()
-{}
+{
+}
 
 void FOculusXRMRModule::StartupModule()
 {
@@ -114,7 +116,7 @@ void FOculusXRMRModule::ShutdownModule()
 		{
 			FOculusXRHMDModule::GetPluginWrapper().Media_Shutdown();
 		}
-#endif 
+#endif
 		FOculusXRHMDModule::GetPluginWrapper().ShutdownMixedReality();
 
 		if (MRSettings->IsRooted())
@@ -166,7 +168,7 @@ void FOculusXRMRModule::OnWorldCreated(UWorld* NewWorld)
 #if WITH_EDITORONLY_DATA
 	const bool bIsGameInst = !IsRunningCommandlet() && NewWorld->IsGameWorld();
 	if (bIsGameInst)
-#endif 
+#endif
 	{
 		CurrentWorld = NewWorld;
 		SetupInGameCapture();
@@ -216,7 +218,7 @@ void FOculusXRMRModule::InitMixedRealityCapture()
 	PieBeginEventBinding = FEditorDelegates::BeginPIE.AddRaw(this, &FOculusXRMRModule::OnPieBegin);
 	PieStartedEventBinding = FEditorDelegates::PostPIEStarted.AddRaw(this, &FOculusXRMRModule::OnPieStarted);
 	PieEndedEventBinding = FEditorDelegates::PrePIEEnded.AddRaw(this, &FOculusXRMRModule::OnPieEnded);
-#else // WITH_EDITOR
+#else  // WITH_EDITOR
 	// Start casting and open camera with the module if it's the game
 	MRSettings->SetIsCasting(true);
 #endif // WITH_EDITOR
@@ -350,7 +352,7 @@ void FOculusXRMRModule::OnWorldTick(UWorld* World, ELevelTick Tick, float Delta)
 
 void FOculusXRMRModule::OnInitialWorldCreated(UWorld* NewWorld)
 {
-	// Remove the initial world load handlers 
+	// Remove the initial world load handlers
 	if (InitialWorldAddedEventBinding.IsValid())
 	{
 		GEngine->OnWorldAdded().Remove(InitialWorldAddedEventBinding);
@@ -383,10 +385,8 @@ void FOculusXRMRModule::OnInitialWorldCreated(UWorld* NewWorld)
 						if (RHIGetInterfaceType() == ERHIInterfaceType::Vulkan)
 						{
 							unsigned int queueIndex = 0;
-							ExecuteOnRenderThread([&queueIndex]()
-							{
-								ExecuteOnRHIThread([&queueIndex]()
-								{
+							ExecuteOnRenderThread([&queueIndex]() {
+								ExecuteOnRHIThread([&queueIndex]() {
 									const uint32 GraphicsQueueIndex = GetIVulkanDynamicRHI()->RHIGetGraphicsQueueIndex();
 									if (GraphicsQueueIndex == queueIndex)
 									{
@@ -531,6 +531,6 @@ void FOculusXRMRModule::OnPieEnded(bool bIsSimulating)
 }
 #endif // WITH_EDITOR
 
-IMPLEMENT_MODULE( FOculusXRMRModule, OculusXRMR )
+IMPLEMENT_MODULE(FOculusXRMRModule, OculusXRMR)
 
 #undef LOCTEXT_NAMESPACE

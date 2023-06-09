@@ -45,7 +45,7 @@ public:
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOculusXRRoomLayoutSceneCompleteNativeDelegate, FOculusXRUInt64 /*requestId*/, bool /*success*/);
 	FOculusXRRoomLayoutSceneCompleteNativeDelegate OculusXRRoomLayoutSceneCaptureCompleteNative;
 
-	UPROPERTY(BlueprintAssignable, Category= "OculusXR|Room Layout Manager")
+	UPROPERTY(BlueprintAssignable, Category = "OculusXR|Room Layout Manager")
 	FOculusXRRoomLayoutSceneCaptureCompleteDelegate OculusXRRoomLayoutSceneCaptureComplete;
 
 	// Requests to launch Capture Flow

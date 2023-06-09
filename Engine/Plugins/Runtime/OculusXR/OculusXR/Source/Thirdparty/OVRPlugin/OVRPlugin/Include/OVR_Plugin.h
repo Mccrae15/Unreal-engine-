@@ -761,6 +761,19 @@ OVRP_EXPORT ovrpResult ovrp_IsRequestingASWData(ovrpBool* needASWData);
 
 OVRP_EXPORT ovrpResult ovrp_GetPredictedDisplayTime(int frameIndex, double* predictedDisplayTime);
 
+
+
+
+
+
+
+
+
+
+
+
+
+
 OVRP_EXPORT ovrpResult ovrp_GetHandTrackingEnabled(ovrpBool* handTrackingEnabled);
 OVRP_EXPORT ovrpResult ovrp_GetHandState(ovrpStep step, ovrpHand hand, ovrpHandState* handState);
 OVRP_EXPORT ovrpResult ovrp_GetHandState2(ovrpStep step, int frameIndex, ovrpHand hand, ovrpHandState* handState);
@@ -787,6 +800,7 @@ OVRP_EXPORT ovrpResult ovrp_GetBodyTrackingSupported(ovrpBool* supported);
 OVRP_EXPORT ovrpResult ovrp_StartFaceTracking();
 OVRP_EXPORT ovrpResult ovrp_StopFaceTracking();
 OVRP_EXPORT ovrpResult ovrp_StartBodyTracking();
+
 
 
 
@@ -856,6 +870,16 @@ OVRP_EXPORT ovrpResult ovrp_GetNodePoseStateImmediate(ovrpNode nodeId, ovrpPoseS
 
 OVRP_EXPORT ovrpResult ovrp_GetNodePoseStateAtTime(double time, ovrpNode nodeId, ovrpPoseStatef* pose);
 
+
+
+
+
+
+
+
+
+
+
 OVRP_EXPORT ovrpResult ovrp_GetRenderModelPaths(unsigned int index, char* path);
 OVRP_EXPORT ovrpResult ovrp_GetRenderModelProperties(const char* path, ovrpRenderModelProperties* properties);
 OVRP_EXPORT ovrpResult ovrp_GetRenderModelProperties2(
@@ -890,6 +914,9 @@ OVRP_EXPORT ovrpResult ovrp_EnumerateSpaceSupportedComponents(
     ovrpUInt32* componentTypesCountOutput,
     ovrpSpaceComponentType* componentTypes);
 OVRP_EXPORT ovrpResult ovrp_QuerySpaces(const ovrpSpaceQueryInfo* queryInfo, ovrpUInt64* requestId);
+
+
+
 OVRP_EXPORT ovrpResult ovrp_RetrieveSpaceQueryResults(
     ovrpUInt64* requestId,
     ovrpUInt32 resultCapacityInput,
@@ -951,6 +978,14 @@ OVRP_EXPORT ovrpResult ovrp_RequestSceneCapture(const ovrpSceneCaptureRequest* r
 
 
 
+
+
+
+
+
+
+
+
 OVRP_EXPORT ovrpResult ovrp_GetFaceTrackingEnabled(ovrpBool* faceTrackingEnabled);
 
 OVRP_EXPORT ovrpResult ovrp_GetFaceTrackingSupported(ovrpBool* faceTrackingSupported);
@@ -970,6 +1005,9 @@ OVRP_EXPORT ovrpResult ovrp_GetEyeTrackingEnabled(ovrpBool* eyeTrackingEnabled);
 OVRP_EXPORT ovrpResult ovrp_GetEyeTrackingSupported(ovrpBool* eyeTrackingSupported);
 
 OVRP_EXPORT ovrpResult ovrp_GetEyeGazesState(ovrpStep step, int frameIndex, ovrpEyeGazesState* eyeGazesState);
+
+
+
 
 
 
@@ -1069,11 +1107,20 @@ OVRP_EXPORT ovrpResult ovrp_GetEyeLayerRecommendedResolution(ovrpSizei* recommen
 
 
 
-
-
-
-
 OVRP_EXPORT ovrpResult ovrp_IsLayerShapeSupported(ovrpShape shape, ovrpBool* isLayerShapeSupported);
+
+//-----------------------------------------------------------------
+// Environment Depth API
+//-----------------------------------------------------------------
+
+OVRP_EXPORT ovrpResult ovrp_InitializeEnvironmentDepth();
+OVRP_EXPORT ovrpResult ovrp_DestroyEnvironmentDepth();
+OVRP_EXPORT ovrpResult ovrp_GetEnvironmentDepthTextureDesc(ovrpEnvironmentDepthTextureDesc* desc);
+OVRP_EXPORT ovrpResult ovrp_GetEnvironmentDepthTextureStageCount(int* stageCount);
+OVRP_EXPORT ovrpResult ovrp_GetEnvironmentDepthTexture(int stage, ovrpEye eyeId, ovrpTextureHandle* texture);
+OVRP_EXPORT ovrpResult ovrp_StartEnvironmentDepth();
+OVRP_EXPORT ovrpResult ovrp_StopEnvironmentDepth();
+OVRP_EXPORT ovrpResult ovrp_GetEnvironmentDepthFrameDesc(ovrpEye eyeId, ovrpEnvironmentDepthFrameDesc* frameDesc);
 
 #ifdef __cplusplus
 }

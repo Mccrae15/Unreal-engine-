@@ -11,13 +11,13 @@ UOculusAudioMaterialComponent::UOculusAudioMaterialComponent()
 void UOculusAudioMaterialComponent::ConstructMaterial(ovrAudioMaterial ovrMaterial)
 {
 	ovrResult Result = ovrSuccess;
-	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Absorption, 63.5f,   Absorption63Hz);
+	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Absorption, 63.5f, Absorption63Hz);
 	check(Result == ovrSuccess);
-	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Absorption, 125.0f,  Absorption125Hz);
+	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Absorption, 125.0f, Absorption125Hz);
 	check(Result == ovrSuccess);
-	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Absorption, 250.0f,  Absorption250Hz);
+	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Absorption, 250.0f, Absorption250Hz);
 	check(Result == ovrSuccess);
-	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Absorption, 500.0f,  Absorption500Hz);
+	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Absorption, 500.0f, Absorption500Hz);
 	check(Result == ovrSuccess);
 	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Absorption, 1000.0f, Absorption1000Hz);
 	check(Result == ovrSuccess);
@@ -28,13 +28,13 @@ void UOculusAudioMaterialComponent::ConstructMaterial(ovrAudioMaterial ovrMateri
 	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Absorption, 8000.0f, Absorption8000Hz);
 	check(Result == ovrSuccess);
 
-	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Transmission, 63.5f,   Transmission63Hz);
+	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Transmission, 63.5f, Transmission63Hz);
 	check(Result == ovrSuccess);
-	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Transmission, 125.0f,  Transmission125Hz);
+	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Transmission, 125.0f, Transmission125Hz);
 	check(Result == ovrSuccess);
-	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Transmission, 250.0f,  Transmission250Hz);
+	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Transmission, 250.0f, Transmission250Hz);
 	check(Result == ovrSuccess);
-	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Transmission, 500.0f,  Transmission500Hz);
+	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Transmission, 500.0f, Transmission500Hz);
 	check(Result == ovrSuccess);
 	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Transmission, 1000.0f, Transmission1000Hz);
 	check(Result == ovrSuccess);
@@ -45,13 +45,13 @@ void UOculusAudioMaterialComponent::ConstructMaterial(ovrAudioMaterial ovrMateri
 	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Transmission, 8000.0f, Transmission8000Hz);
 	check(Result == ovrSuccess);
 
-	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Scattering, 63.5f,   Scattering63Hz);
+	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Scattering, 63.5f, Scattering63Hz);
 	check(Result == ovrSuccess);
-	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Scattering, 125.0f,  Scattering125Hz);
+	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Scattering, 125.0f, Scattering125Hz);
 	check(Result == ovrSuccess);
-	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Scattering, 250.0f,  Scattering250Hz);
+	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Scattering, 250.0f, Scattering250Hz);
 	check(Result == ovrSuccess);
-	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Scattering, 500.0f,  Scattering500Hz);
+	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Scattering, 500.0f, Scattering500Hz);
 	check(Result == ovrSuccess);
 	Result = OVRA_CALL(ovrAudio_AudioMaterialSetFrequency)(ovrMaterial, ovrAudioMaterialProperty_Scattering, 1000.0f, Scattering1000Hz);
 	check(Result == ovrSuccess);
@@ -95,16 +95,16 @@ void UOculusAudioMaterialComponent::ResetAcousticMaterialPreset()
 
 #if WITH_EDITOR
 
-	void UOculusAudioMaterialComponent::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
-	{
-		FName PropertyName = (PropertyChangedEvent.Property != NULL) ? PropertyChangedEvent.Property->GetFName() : NAME_None;
+void UOculusAudioMaterialComponent::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
+{
+	FName PropertyName = (PropertyChangedEvent.Property != NULL) ? PropertyChangedEvent.Property->GetFName() : NAME_None;
 
-		if (PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, MaterialPreset))
+	if (PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, MaterialPreset))
+	{
+		if (IsValidMaterialPreset()) // a valid existing material until we allow custom ones
 		{
-			if (IsValidMaterialPreset()) // a valid existing material until we allow custom ones
+			switch (MaterialPreset)
 			{
-				switch (MaterialPreset)
-				{
 				case EOculusAudioMaterial::ACOUSTICTILE:
 					AssignCoefficients(
 						{ .50f, .50f, .70f, .60f, .70f, .70f, .50f, .50f },
@@ -279,79 +279,56 @@ void UOculusAudioMaterialComponent::ResetAcousticMaterialPreset()
 						{ .004f, .004f, .0079f, .0056f, .0016f, .0014f, .0005f, .0003f },
 						{ .10f, .10f, .10f, .10f, .10f, .10f, .15f, .15f });
 					break;
-				}
-			} 
-			else
-			{
-				ResetAcousticMaterialPreset();
 			}
-		}
-	}
-
-	bool UOculusAudioMaterialComponent::CanEditChange(const FProperty* InProperty) const
-	{
-		const bool ParentVal = Super::CanEditChange(InProperty);
-		FName PropertyName = InProperty->GetFName();
-
-		if (PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Absorption63Hz) ||
-			PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Absorption125Hz) ||
-			PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Absorption250Hz) ||
-			PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Absorption500Hz) ||
-			PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Absorption1000Hz) ||
-			PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Absorption2000Hz) ||
-			PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Absorption4000Hz) ||
-			PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Absorption8000Hz) ||
-			PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Transmission63Hz) ||
-			PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Transmission125Hz) ||
-			PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Transmission250Hz) ||
-			PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Transmission500Hz) ||
-			PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Transmission1000Hz) ||
-			PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Transmission2000Hz) ||
-			PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Transmission4000Hz) ||
-			PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Transmission8000Hz) ||
-			PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Scattering63Hz) ||
-			PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Scattering125Hz) ||
-			PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Scattering250Hz) ||
-			PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Scattering500Hz) ||
-			PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Scattering1000Hz) ||
-			PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Scattering2000Hz) ||
-			PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Scattering4000Hz) ||
-			PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Scattering8000Hz))
-		{
-			return ParentVal  &&  IsValidMaterialPreset();
 		}
 		else
 		{
-			return ParentVal;
+			ResetAcousticMaterialPreset();
 		}
 	}
+}
 
-	void UOculusAudioMaterialComponent::AssignCoefficients(TArray<float> Absorption, TArray<float> Transmission, TArray<float> Scattering)
+bool UOculusAudioMaterialComponent::CanEditChange(const FProperty* InProperty) const
+{
+	const bool ParentVal = Super::CanEditChange(InProperty);
+	FName PropertyName = InProperty->GetFName();
+
+	if (PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Absorption63Hz) || PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Absorption125Hz) || PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Absorption250Hz) || PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Absorption500Hz) || PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Absorption1000Hz) || PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Absorption2000Hz) || PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Absorption4000Hz) || PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Absorption8000Hz) || PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Transmission63Hz) || PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Transmission125Hz) || PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Transmission250Hz) || PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Transmission500Hz) || PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Transmission1000Hz) || PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Transmission2000Hz) || PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Transmission4000Hz) || PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Transmission8000Hz) || PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Scattering63Hz) || PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Scattering125Hz) || PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Scattering250Hz) || PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Scattering500Hz) || PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Scattering1000Hz) || PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Scattering2000Hz) || PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Scattering4000Hz) || PropertyName == GET_MEMBER_NAME_CHECKED(UOculusAudioMaterialComponent, Scattering8000Hz))
 	{
-		Absorption63Hz   = Absorption[0];
-		Absorption125Hz  = Absorption[1];
-		Absorption250Hz  = Absorption[2];
-		Absorption500Hz  = Absorption[3];
-		Absorption1000Hz = Absorption[4];
-		Absorption2000Hz = Absorption[5];
-		Absorption4000Hz = Absorption[6];
-		Absorption8000Hz = Absorption[7];
-		Transmission63Hz   = Transmission[0];
-		Transmission125Hz  = Transmission[1];
-		Transmission250Hz  = Transmission[2];
-		Transmission500Hz  = Transmission[3];
-		Transmission1000Hz = Transmission[4];
-		Transmission2000Hz = Transmission[5];
-		Transmission4000Hz = Transmission[6];
-		Transmission8000Hz = Transmission[7];
-		Scattering63Hz   = Scattering[0];
-		Scattering125Hz  = Scattering[1];
-		Scattering250Hz  = Scattering[2];
-		Scattering500Hz  = Scattering[3];
-		Scattering1000Hz = Scattering[4];
-		Scattering2000Hz = Scattering[5];
-		Scattering4000Hz = Scattering[6];
-		Scattering8000Hz = Scattering[7];
+		return ParentVal && IsValidMaterialPreset();
 	}
+	else
+	{
+		return ParentVal;
+	}
+}
+
+void UOculusAudioMaterialComponent::AssignCoefficients(TArray<float> Absorption, TArray<float> Transmission, TArray<float> Scattering)
+{
+	Absorption63Hz = Absorption[0];
+	Absorption125Hz = Absorption[1];
+	Absorption250Hz = Absorption[2];
+	Absorption500Hz = Absorption[3];
+	Absorption1000Hz = Absorption[4];
+	Absorption2000Hz = Absorption[5];
+	Absorption4000Hz = Absorption[6];
+	Absorption8000Hz = Absorption[7];
+	Transmission63Hz = Transmission[0];
+	Transmission125Hz = Transmission[1];
+	Transmission250Hz = Transmission[2];
+	Transmission500Hz = Transmission[3];
+	Transmission1000Hz = Transmission[4];
+	Transmission2000Hz = Transmission[5];
+	Transmission4000Hz = Transmission[6];
+	Transmission8000Hz = Transmission[7];
+	Scattering63Hz = Scattering[0];
+	Scattering125Hz = Scattering[1];
+	Scattering250Hz = Scattering[2];
+	Scattering500Hz = Scattering[3];
+	Scattering1000Hz = Scattering[4];
+	Scattering2000Hz = Scattering[5];
+	Scattering4000Hz = Scattering[6];
+	Scattering8000Hz = Scattering[7];
+}
 
 #endif // WITH_EDITOR

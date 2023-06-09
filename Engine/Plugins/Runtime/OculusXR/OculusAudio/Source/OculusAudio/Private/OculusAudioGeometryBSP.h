@@ -7,16 +7,14 @@
 
 #include "OculusAudioGeometryBSP.generated.h"
 
-
 class UWorld;
-
 
 UCLASS(ClassGroup = (Audio), HideCategories = (Activation, Collision, Cooking), meta = (BlueprintSpawnableComponent))
 class UOculusAudioGeometryBSP : public UOculusAudioMaterialComponent
 {
 	GENERATED_BODY()
 
-	void Serialize(FArchive & Ar) override;
+	void Serialize(FArchive& Ar) override;
 
 	ovrAudioGeometry ovrGeometryBSP = nullptr;
 

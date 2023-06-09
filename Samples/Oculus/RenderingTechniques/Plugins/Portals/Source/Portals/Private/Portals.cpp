@@ -21,5 +21,5 @@ void FPortalsModule::ShutdownModule()
 }
 
 #undef LOCTEXT_NAMESPACE
-	
+
 IMPLEMENT_MODULE(FPortalsModule, Portals)

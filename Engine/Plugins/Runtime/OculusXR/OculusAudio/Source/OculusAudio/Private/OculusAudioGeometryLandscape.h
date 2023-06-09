@@ -6,16 +6,14 @@
 
 #include "OculusAudioGeometryLandscape.generated.h"
 
-
 class UWorld;
-
 
 UCLASS(ClassGroup = (Audio), HideCategories = (Activation, Collision, Cooking), meta = (BlueprintSpawnableComponent))
 class UOculusAudioGeometryLandscape : public UOculusAudioMaterialComponent
 {
 	GENERATED_BODY()
 
-	void Serialize(FArchive & Ar) override;
+	void Serialize(FArchive& Ar) override;
 
 	ovrAudioGeometry ovrGeometryLandscape = nullptr;
 

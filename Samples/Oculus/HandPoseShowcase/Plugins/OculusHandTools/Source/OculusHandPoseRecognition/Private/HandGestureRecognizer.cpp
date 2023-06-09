@@ -4,8 +4,8 @@
 #include "OculusHandPoseRecognitionModule.h"
 #include "Kismet/GameplayStatics.h"
 
-UHandGestureRecognizer::UHandGestureRecognizer(const FObjectInitializer& ObjectInitializer /* = FObjectInitializer::Get() */):
-	Super(ObjectInitializer)
+UHandGestureRecognizer::UHandGestureRecognizer(const FObjectInitializer& ObjectInitializer /* = FObjectInitializer::Get() */)
+	: Super(ObjectInitializer)
 {
 	PrimaryComponentTick.bCanEverTick = true;
 	RecognitionInterval = 0.0f;
@@ -64,7 +64,8 @@ void UHandGestureRecognizer::TickComponent(float DeltaTime, ELevelTick TickType,
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
-	if (!HandPoseRecognizer) return;
+	if (!HandPoseRecognizer)
+		return;
 
 	// Recognition is throttled
 	TimeSinceLastRecognition += DeltaTime;

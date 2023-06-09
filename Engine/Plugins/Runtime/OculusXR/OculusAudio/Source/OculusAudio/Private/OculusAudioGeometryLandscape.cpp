@@ -14,16 +14,17 @@
 static const FGuid UOculusAudioGeometryLandscapeGUID(0xa7387e03, 0x7a95402c, 0x9292fe5f, 0x170d05a9); // random GUID, guaranteed to be random.
 static const FCustomVersionRegistration UOculusAudioGeometryLandscapeGUIDRegistration(UOculusAudioGeometryLandscapeGUID, OVRA_AUDIO_GEOMETRY_LANDSCAPE_LATEST_VERSION, TEXT("OculusAudioGeometryLandscapeVersion"));
 
-
-void UOculusAudioGeometryLandscape::Serialize(FArchive & Ar)
+void UOculusAudioGeometryLandscape::Serialize(FArchive& Ar)
 {
 	// Tell the archive we are using a custom version.
 	Ar.UsingCustomVersion(UOculusAudioGeometryLandscapeGUID);
 
 	Super::Serialize(Ar);
 
-	struct Delta {
-		static size_t Read(void* userData, void* bytes, size_t byteCount) {
+	struct Delta
+	{
+		static size_t Read(void* userData, void* bytes, size_t byteCount)
+		{
 			FArchive* Archive = static_cast<FArchive*>(userData);
 			check(Archive->IsLoading());
 
@@ -38,13 +39,15 @@ void UOculusAudioGeometryLandscape::Serialize(FArchive & Ar)
 			Archive->Serialize(bytes, byteCount);
 			return Archive->GetError() ? 0 : byteCount;
 		}
-		static size_t Write(void* userData, const void* bytes, size_t byteCount) {
+		static size_t Write(void* userData, const void* bytes, size_t byteCount)
+		{
 			FArchive* Archive = static_cast<FArchive*>(userData);
 			check(Archive->IsSaving());
 			Archive->Serialize(const_cast<void*>(bytes), byteCount);
 			return Archive->GetError() ? 0 : byteCount;
 		}
-		static int64_t Seek(void* userData, int64_t seekOffset) {
+		static int64_t Seek(void* userData, int64_t seekOffset)
+		{
 			FArchive* Archive = static_cast<FArchive*>(userData);
 			int64 Start = Archive->Tell();
 			Archive->Seek(seekOffset);
@@ -78,7 +81,7 @@ void UOculusAudioGeometryLandscape::Serialize(FArchive & Ar)
 		}
 	}
 #endif
-	
+
 	if (Ar.IsLoading())
 	{
 		ovrResult Result = OVRA_CALL(ovrAudio_CreateAudioGeometry)(Context, &ovrGeometryLandscape);
@@ -127,7 +130,7 @@ void UOculusAudioGeometryLandscape::CreateGeometryFromLandscape(ovrAudioContext 
 				for (auto x = 0; x < Length; ++x)
 				{
 					Vertices.Add(OculusAudioSpatializationAudioMixer::ToOVRVector(DataInterface.GetWorldVertex(x, y)));
-					
+
 					// there are only (N-1)^2 quads for N^2 verts
 					if (x == (Length - 1) || y == (Length - 1))
 						continue;
@@ -143,7 +146,7 @@ void UOculusAudioGeometryLandscape::CreateGeometryFromLandscape(ovrAudioContext 
 			}
 		}
 
-		ovrAudioMesh ovrMesh = { };
+		ovrAudioMesh ovrMesh = {};
 
 		ovrAudioMeshVertices ovrVertices = { 0 };
 		ovrVertices.vertices = Vertices.GetData();
@@ -158,7 +161,7 @@ void UOculusAudioGeometryLandscape::CreateGeometryFromLandscape(ovrAudioContext 
 		check(ovrIndices.indexCount != 0);
 		ovrIndices.indexType = ovrAudioScalarType_UInt32;
 		ovrMesh.indices = ovrIndices;
-		
+
 		ovrAudioMaterial ovrMaterial = nullptr;
 		ovrResult Result = OVRA_CALL(ovrAudio_CreateAudioMaterial)(Context, &ovrMaterial);
 		check(Result == ovrSuccess);
@@ -174,13 +177,15 @@ void UOculusAudioGeometryLandscape::CreateGeometryFromLandscape(ovrAudioContext 
 		ovrMesh.groupCount = 1;
 
 		Result = OVRA_CALL(ovrAudio_CreateAudioGeometry)(Context, Geometry);
-		if (Result != ovrSuccess) {
+		if (Result != ovrSuccess)
+		{
 			UE_LOG(LogAudio, Warning, TEXT("Failed to create audio propagation geometry for landscape!"));
 			return;
 		}
 
 		Result = OVRA_CALL(ovrAudio_AudioGeometryUploadMesh)(*Geometry, &ovrMesh);
-		if (Result != ovrSuccess) {
+		if (Result != ovrSuccess)
+		{
 			UE_LOG(LogAudio, Warning, TEXT("Failed adding landscape geometry to the audio propagation sub-system!"));
 			return;
 		}

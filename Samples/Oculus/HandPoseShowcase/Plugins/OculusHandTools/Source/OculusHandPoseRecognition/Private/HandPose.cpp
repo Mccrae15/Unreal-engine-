@@ -72,7 +72,7 @@ namespace // local
 		// Check for weight marker
 		if (**Buffer != '*')
 		{
-			*Weight = 1.0f;  // Defaults to 1
+			*Weight = 1.0f; // Defaults to 1
 			return true;
 		}
 		++(*Buffer);
@@ -92,7 +92,7 @@ namespace // local
 			{
 				Value *= 10.0f;
 				Value += **Buffer - '0';
-				Denominator *= 10.0f;  // Stays 0.0 as long as we have not seen the decimal point
+				Denominator *= 10.0f; // Stays 0.0 as long as we have not seen the decimal point
 			}
 
 			++(*Buffer);
@@ -131,17 +131,14 @@ namespace // local
 
 		// Looks good, let's get the rotations and optional weight
 		*Buffer = BufferPtr;
-		return
-			ReadWeight(Buffer, &Weight) &&
-			ReadRotComp(Buffer, &R.Pitch) &&
-			ReadRotComp(Buffer, &R.Yaw) &&
-			ReadRotComp(Buffer, &R.Roll);
+		return ReadWeight(Buffer, &Weight) && ReadRotComp(Buffer, &R.Pitch) && ReadRotComp(Buffer, &R.Yaw) && ReadRotComp(Buffer, &R.Roll);
 	}
 
 	float ComputeAngleError(float Ref, float Angle)
 	{
 		// A reference angle of 0.0 is ignored.
-		if (Ref == 0.0f) return 0.0f;
+		if (Ref == 0.0f)
+			return 0.0f;
 
 		// We find the minimum angle and square it
 		float DeltaAngleDegrees = FMath::FindDeltaAngleDegrees(Ref, Angle);
@@ -150,13 +147,9 @@ namespace // local
 
 	float RotError(RecognizedBone Bone, const FRotator* RefRot, const float* RefWeight, const FRotator* OtherRot)
 	{
-		return
-			RefWeight[Bone] *
-			(ComputeAngleError(RefRot[Bone].Pitch, OtherRot[Bone].Pitch) +
-			 ComputeAngleError(RefRot[Bone].Yaw,   OtherRot[Bone].Yaw) +
-			 ComputeAngleError(RefRot[Bone].Roll,  OtherRot[Bone].Roll));
+		return RefWeight[Bone] * (ComputeAngleError(RefRot[Bone].Pitch, OtherRot[Bone].Pitch) + ComputeAngleError(RefRot[Bone].Yaw, OtherRot[Bone].Yaw) + ComputeAngleError(RefRot[Bone].Roll, OtherRot[Bone].Roll));
 	}
-}
+} // namespace
 
 void FHandPose::UpdatePose(EOculusXRHandType Side, FRotator Wrist)
 {
@@ -204,7 +197,7 @@ void FHandPose::Encode()
 		.Append(*FmtRot(TEXT(" P1"), Rotations[RecognizedBone::Pinky_1]))
 		.Append(*FmtRot(TEXT(" P2"), Rotations[RecognizedBone::Pinky_2]))
 		.Append(*FmtRot(TEXT(" P3"), Rotations[RecognizedBone::Pinky_3]))
-		.Append(*FmtRot(TEXT("  W"),  Rotations[RecognizedBone::Wrist]));
+		.Append(*FmtRot(TEXT("  W"), Rotations[RecognizedBone::Wrist]));
 }
 
 bool FHandPose::Decode()
@@ -236,24 +229,7 @@ bool FHandPose::Decode()
 
 	// Rotators
 	bool Successful =
-		ReadRot(&Buffer, TEXT("T0"), Rotations[RecognizedBone::Thumb_0],  Weights[RecognizedBone::Thumb_0]) &&
-		ReadRot(&Buffer, TEXT("T1"), Rotations[RecognizedBone::Thumb_1],  Weights[RecognizedBone::Thumb_1]) &&
-		ReadRot(&Buffer, TEXT("T2"), Rotations[RecognizedBone::Thumb_2],  Weights[RecognizedBone::Thumb_2]) &&
-		ReadRot(&Buffer, TEXT("T3"), Rotations[RecognizedBone::Thumb_3],  Weights[RecognizedBone::Thumb_3]) &&
-		ReadRot(&Buffer, TEXT("I1"), Rotations[RecognizedBone::Index_1],  Weights[RecognizedBone::Index_1]) &&
-		ReadRot(&Buffer, TEXT("I2"), Rotations[RecognizedBone::Index_2],  Weights[RecognizedBone::Index_2]) &&
-		ReadRot(&Buffer, TEXT("I3"), Rotations[RecognizedBone::Index_3],  Weights[RecognizedBone::Index_3]) &&
-		ReadRot(&Buffer, TEXT("M1"), Rotations[RecognizedBone::Middle_1], Weights[RecognizedBone::Middle_1]) &&
-		ReadRot(&Buffer, TEXT("M2"), Rotations[RecognizedBone::Middle_2], Weights[RecognizedBone::Middle_2]) &&
-		ReadRot(&Buffer, TEXT("M3"), Rotations[RecognizedBone::Middle_3], Weights[RecognizedBone::Middle_3]) &&
-		ReadRot(&Buffer, TEXT("R1"), Rotations[RecognizedBone::Ring_1],   Weights[RecognizedBone::Ring_1]) &&
-		ReadRot(&Buffer, TEXT("R2"), Rotations[RecognizedBone::Ring_2],   Weights[RecognizedBone::Ring_2]) &&
-		ReadRot(&Buffer, TEXT("R3"), Rotations[RecognizedBone::Ring_3],   Weights[RecognizedBone::Ring_3]) &&
-		ReadRot(&Buffer, TEXT("P0"), Rotations[RecognizedBone::Pinky_0],  Weights[RecognizedBone::Pinky_0]) &&
-		ReadRot(&Buffer, TEXT("P1"), Rotations[RecognizedBone::Pinky_1],  Weights[RecognizedBone::Pinky_1]) &&
-		ReadRot(&Buffer, TEXT("P2"), Rotations[RecognizedBone::Pinky_2],  Weights[RecognizedBone::Pinky_2]) &&
-		ReadRot(&Buffer, TEXT("P3"), Rotations[RecognizedBone::Pinky_3],  Weights[RecognizedBone::Pinky_3]) &&
-		ReadRot(&Buffer, TEXT("W"),  Rotations[RecognizedBone::Wrist],    Weights[RecognizedBone::Wrist]);
+		ReadRot(&Buffer, TEXT("T0"), Rotations[RecognizedBone::Thumb_0], Weights[RecognizedBone::Thumb_0]) && ReadRot(&Buffer, TEXT("T1"), Rotations[RecognizedBone::Thumb_1], Weights[RecognizedBone::Thumb_1]) && ReadRot(&Buffer, TEXT("T2"), Rotations[RecognizedBone::Thumb_2], Weights[RecognizedBone::Thumb_2]) && ReadRot(&Buffer, TEXT("T3"), Rotations[RecognizedBone::Thumb_3], Weights[RecognizedBone::Thumb_3]) && ReadRot(&Buffer, TEXT("I1"), Rotations[RecognizedBone::Index_1], Weights[RecognizedBone::Index_1]) && ReadRot(&Buffer, TEXT("I2"), Rotations[RecognizedBone::Index_2], Weights[RecognizedBone::Index_2]) && ReadRot(&Buffer, TEXT("I3"), Rotations[RecognizedBone::Index_3], Weights[RecognizedBone::Index_3]) && ReadRot(&Buffer, TEXT("M1"), Rotations[RecognizedBone::Middle_1], Weights[RecognizedBone::Middle_1]) && ReadRot(&Buffer, TEXT("M2"), Rotations[RecognizedBone::Middle_2], Weights[RecognizedBone::Middle_2]) && ReadRot(&Buffer, TEXT("M3"), Rotations[RecognizedBone::Middle_3], Weights[RecognizedBone::Middle_3]) && ReadRot(&Buffer, TEXT("R1"), Rotations[RecognizedBone::Ring_1], Weights[RecognizedBone::Ring_1]) && ReadRot(&Buffer, TEXT("R2"), Rotations[RecognizedBone::Ring_2], Weights[RecognizedBone::Ring_2]) && ReadRot(&Buffer, TEXT("R3"), Rotations[RecognizedBone::Ring_3], Weights[RecognizedBone::Ring_3]) && ReadRot(&Buffer, TEXT("P0"), Rotations[RecognizedBone::Pinky_0], Weights[RecognizedBone::Pinky_0]) && ReadRot(&Buffer, TEXT("P1"), Rotations[RecognizedBone::Pinky_1], Weights[RecognizedBone::Pinky_1]) && ReadRot(&Buffer, TEXT("P2"), Rotations[RecognizedBone::Pinky_2], Weights[RecognizedBone::Pinky_2]) && ReadRot(&Buffer, TEXT("P3"), Rotations[RecognizedBone::Pinky_3], Weights[RecognizedBone::Pinky_3]) && ReadRot(&Buffer, TEXT("W"), Rotations[RecognizedBone::Wrist], Weights[RecognizedBone::Wrist]);
 
 	if (!Successful)
 	{
@@ -266,25 +242,7 @@ bool FHandPose::Decode()
 float FHandPose::ComputeConfidence(const FHandPose& Other, float* RawError /* = nullptr */) const
 {
 	float Err =
-		RotError(RecognizedBone::Thumb_0,  Rotations, Weights, Other.Rotations) +
-		RotError(RecognizedBone::Thumb_1,  Rotations, Weights, Other.Rotations) +
-		RotError(RecognizedBone::Thumb_2,  Rotations, Weights, Other.Rotations) +
-		RotError(RecognizedBone::Thumb_3,  Rotations, Weights, Other.Rotations) +
-		RotError(RecognizedBone::Index_1,  Rotations, Weights, Other.Rotations) +
-		RotError(RecognizedBone::Index_2,  Rotations, Weights, Other.Rotations) +
-		RotError(RecognizedBone::Index_3,  Rotations, Weights, Other.Rotations) +
-		RotError(RecognizedBone::Index_1,  Rotations, Weights, Other.Rotations) +
-		RotError(RecognizedBone::Middle_1, Rotations, Weights, Other.Rotations) +
-		RotError(RecognizedBone::Middle_2, Rotations, Weights, Other.Rotations) +
-		RotError(RecognizedBone::Middle_3, Rotations, Weights, Other.Rotations) +
-		RotError(RecognizedBone::Ring_1,   Rotations, Weights, Other.Rotations) +
-		RotError(RecognizedBone::Ring_2,   Rotations, Weights, Other.Rotations) +
-		RotError(RecognizedBone::Ring_3,   Rotations, Weights, Other.Rotations) +
-		RotError(RecognizedBone::Pinky_0,  Rotations, Weights, Other.Rotations) +
-		RotError(RecognizedBone::Pinky_1,  Rotations, Weights, Other.Rotations) +
-		RotError(RecognizedBone::Pinky_2,  Rotations, Weights, Other.Rotations) +
-		RotError(RecognizedBone::Pinky_3,  Rotations, Weights, Other.Rotations) +
-		RotError(RecognizedBone::Wrist,    Rotations, Weights, Other.Rotations);
+		RotError(RecognizedBone::Thumb_0, Rotations, Weights, Other.Rotations) + RotError(RecognizedBone::Thumb_1, Rotations, Weights, Other.Rotations) + RotError(RecognizedBone::Thumb_2, Rotations, Weights, Other.Rotations) + RotError(RecognizedBone::Thumb_3, Rotations, Weights, Other.Rotations) + RotError(RecognizedBone::Index_1, Rotations, Weights, Other.Rotations) + RotError(RecognizedBone::Index_2, Rotations, Weights, Other.Rotations) + RotError(RecognizedBone::Index_3, Rotations, Weights, Other.Rotations) + RotError(RecognizedBone::Index_1, Rotations, Weights, Other.Rotations) + RotError(RecognizedBone::Middle_1, Rotations, Weights, Other.Rotations) + RotError(RecognizedBone::Middle_2, Rotations, Weights, Other.Rotations) + RotError(RecognizedBone::Middle_3, Rotations, Weights, Other.Rotations) + RotError(RecognizedBone::Ring_1, Rotations, Weights, Other.Rotations) + RotError(RecognizedBone::Ring_2, Rotations, Weights, Other.Rotations) + RotError(RecognizedBone::Ring_3, Rotations, Weights, Other.Rotations) + RotError(RecognizedBone::Pinky_0, Rotations, Weights, Other.Rotations) + RotError(RecognizedBone::Pinky_1, Rotations, Weights, Other.Rotations) + RotError(RecognizedBone::Pinky_2, Rotations, Weights, Other.Rotations) + RotError(RecognizedBone::Pinky_3, Rotations, Weights, Other.Rotations) + RotError(RecognizedBone::Wrist, Rotations, Weights, Other.Rotations);
 
 	float MinErr = FMath::Max(ErrorAtMaxConfidence, 100.0f);
 	float Confidence = MinErr / FMath::Max(Err, MinErr);

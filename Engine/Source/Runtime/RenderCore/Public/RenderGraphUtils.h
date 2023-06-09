@@ -330,7 +330,8 @@ RENDERCORE_API FRDGTextureMSAA CreateTextureMSAA(
 	FRDGBuilder& GraphBuilder,
 	FRDGTextureDesc Desc,
 	const TCHAR* Name,
-	ETextureCreateFlags ResolveFlagsToAdd = TexCreate_None);
+	ETextureCreateFlags ResolveFlagsToAdd = TexCreate_None,
+	const bool bForceResolveFormatR8G8B8A8 = false);
 
 /** All utils for compute shaders.
  */

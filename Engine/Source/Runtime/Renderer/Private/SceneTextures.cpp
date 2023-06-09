@@ -483,6 +483,8 @@ void FMinimalSceneTextures::InitializeViewFamily(FRDGBuilder& GraphBuilder, FVie
 		const bool bIsMobilePlatform = Config.ShadingPath == EShadingPath::Mobile;
 		const ETextureCreateFlags sRGBFlag = (bIsMobilePlatform && IsMobileColorsRGB()) ? TexCreate_SRGB : TexCreate_None;
 
+		const bool bForceResolveFormatR8G8B8A8 = (bIsMobilePlatform && IsMobileHDR() && IsMobileTonemapSubpassEnabled());
+
 		const TCHAR* SceneColorName = TEXT("SceneColor");
 
 		// Create the scene color.
@@ -491,7 +493,7 @@ void FMinimalSceneTextures::InitializeViewFamily(FRDGBuilder& GraphBuilder, FVie
 							 FRDGTextureDesc::Create2DArray(Config.Extent, Config.ColorFormat, Config.ColorClearValue, Config.ColorCreateFlags, 2) :
 							 FRDGTextureDesc::Create2D(Config.Extent, Config.ColorFormat, Config.ColorClearValue, Config.ColorCreateFlags));
 		Desc.NumSamples = Config.NumSamples;
-		SceneTextures.Color = CreateTextureMSAA(GraphBuilder, Desc, SceneColorName, GFastVRamConfig.SceneColor | sRGBFlag);
+		SceneTextures.Color = CreateTextureMSAA(GraphBuilder, Desc, SceneColorName, GFastVRamConfig.SceneColor | sRGBFlag, bForceResolveFormatR8G8B8A8);
 	}
 
 	// Custom Depth

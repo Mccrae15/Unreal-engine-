@@ -15,6 +15,6 @@ public class SharedAnchorsSampleEditorTarget : TargetRules
 	{
 		Type = TargetType.Editor;
 
-		ExtraModuleNames.AddRange( new string[] { "SharedAnchorsSample" } );
+		ExtraModuleNames.AddRange(new string[] { "SharedAnchorsSample" });
 	}
 }

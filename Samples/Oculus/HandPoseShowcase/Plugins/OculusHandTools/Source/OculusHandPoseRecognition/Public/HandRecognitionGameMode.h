@@ -16,7 +16,6 @@ class OCULUSHANDPOSERECOGNITION_API AHandRecognitionGameMode : public AGameModeB
 	GENERATED_BODY()
 
 public:
-
 	/**
 	 * Prints a hand pose string in the output log.
 	 * @param Side - Either "left" or "right", case insensitive.
@@ -25,7 +24,6 @@ public:
 	void LogHandPose(FString Side);
 
 private:
-
 	/** Helps keep track of poses logged. */
 	static int LoggedIndex;
 };

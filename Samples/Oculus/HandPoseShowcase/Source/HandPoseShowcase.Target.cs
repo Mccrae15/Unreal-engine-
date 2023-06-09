@@ -5,10 +5,10 @@ using System.Collections.Generic;
 
 public class HandPoseShowcaseTarget : TargetRules
 {
-	public HandPoseShowcaseTarget( TargetInfo Target) : base(Target)
+	public HandPoseShowcaseTarget(TargetInfo Target) : base(Target)
 	{
 		Type = TargetType.Game;
 		DefaultBuildSettings = BuildSettingsVersion.V2;
-		ExtraModuleNames.AddRange( new string[] { "HandPoseShowcase" } );
+		ExtraModuleNames.AddRange(new string[] { "HandPoseShowcase" });
 	}
 }

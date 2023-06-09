@@ -8,12 +8,12 @@
 #include "OculusXRHMD_Settings.h"
 
 UOculusXRHMDRuntimeSettings::UOculusXRHMDRuntimeSettings(const FObjectInitializer& ObjectInitializer)
-: Super(ObjectInitializer)
-, bAutoEnabled(false)
+	: Super(ObjectInitializer)
+	, bAutoEnabled(false)
 {
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
 	// FSettings is the sole source of truth for Oculus default settings
-	OculusXRHMD::FSettings DefaultSettings; 
+	OculusXRHMD::FSettings DefaultSettings;
 	bSupportsDash = DefaultSettings.Flags.bSupportsDash;
 	bCompositesDepth = DefaultSettings.Flags.bCompositeDepth;
 	bHQDistortion = DefaultSettings.Flags.bHQDistortion;
@@ -40,6 +40,7 @@ UOculusXRHMDRuntimeSettings::UOculusXRHMDRuntimeSettings(const FObjectInitialize
 	bFaceTrackingEnabled = DefaultSettings.Flags.bFaceTrackingEnabled;
 	bSupportExperimentalFeatures = DefaultSettings.bSupportExperimentalFeatures;
 	bAnchorSupportEnabled = DefaultSettings.Flags.bAnchorSupportEnabled;
+	bSceneSupportEnabled = DefaultSettings.Flags.bSceneSupportEnabled;
 
 	// Default this to false, FSettings doesn't have a separate composite depth flag for mobile
 	bCompositeDepthMobile = false;
@@ -74,6 +75,7 @@ UOculusXRHMDRuntimeSettings::UOculusXRHMDRuntimeSettings(const FObjectInitialize
 	bEyeTrackingEnabled = false;
 	bFaceTrackingEnabled = false;
 	bAnchorSupportEnabled = false;
+	bSceneSupportEnabled = false;
 #endif
 
 	LoadFromIni();
@@ -90,8 +92,7 @@ bool UOculusXRHMDRuntimeSettings::CanEditChange(const FProperty* InProperty) con
 
 // Disable settings for marketplace release that are only compatible with the Oculus engine fork
 #ifndef WITH_OCULUS_BRANCH
-		if (PropertyName == GET_MEMBER_NAME_CHECKED(UOculusXRHMDRuntimeSettings, FoveatedRenderingMethod) ||
-			PropertyName == GET_MEMBER_NAME_CHECKED(UOculusXRHMDRuntimeSettings, bSupportEyeTrackedFoveatedRendering))
+		if (PropertyName == GET_MEMBER_NAME_CHECKED(UOculusXRHMDRuntimeSettings, FoveatedRenderingMethod) || PropertyName == GET_MEMBER_NAME_CHECKED(UOculusXRHMDRuntimeSettings, bSupportEyeTrackedFoveatedRendering))
 		{
 			bIsEditable = false;
 		}
@@ -108,15 +109,13 @@ void UOculusXRHMDRuntimeSettings::PostEditChangeProperty(struct FPropertyChanged
 	if (PropertyChangedEvent.Property != nullptr)
 	{
 		// Automatically switch to Fixed Foveated Rendering when removing Eye Tracked Foveated rendering support
-		if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UOculusXRHMDRuntimeSettings, bSupportEyeTrackedFoveatedRendering) &&
-			!bSupportEyeTrackedFoveatedRendering)
+		if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UOculusXRHMDRuntimeSettings, bSupportEyeTrackedFoveatedRendering) && !bSupportEyeTrackedFoveatedRendering)
 		{
 			FoveatedRenderingMethod = EOculusXRFoveatedRenderingMethod::FixedFoveatedRendering;
 			UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UOculusXRHMDRuntimeSettings, FoveatedRenderingMethod)), GetDefaultConfigFilename());
 		}
 		// Automatically enable support for eye tracked foveated rendering when selecting the Eye Tracked Foveated Rendering method
-		if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UOculusXRHMDRuntimeSettings, FoveatedRenderingMethod) &&
-			FoveatedRenderingMethod == EOculusXRFoveatedRenderingMethod::EyeTrackedFoveatedRendering)
+		if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UOculusXRHMDRuntimeSettings, FoveatedRenderingMethod) && FoveatedRenderingMethod == EOculusXRFoveatedRenderingMethod::EyeTrackedFoveatedRendering)
 		{
 			bSupportEyeTrackedFoveatedRendering = true;
 			UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UOculusXRHMDRuntimeSettings, bSupportEyeTrackedFoveatedRendering)), GetDefaultConfigFilename());
@@ -192,8 +191,7 @@ void UOculusXRHMDRuntimeSettings::RenameProperties()
 	FString str;
 
 	// FFRLevel was renamed to FoveatedRenderingLevel
-	if (!GConfig->GetString(OculusSettings, GET_MEMBER_NAME_STRING_CHECKED(UOculusXRHMDRuntimeSettings, FoveatedRenderingLevel), str, GetDefaultConfigFilename()) &&
-		GConfig->GetString(OculusSettings, TEXT("FFRLevel"), str, GetDefaultConfigFilename()))
+	if (!GConfig->GetString(OculusSettings, GET_MEMBER_NAME_STRING_CHECKED(UOculusXRHMDRuntimeSettings, FoveatedRenderingLevel), str, GetDefaultConfigFilename()) && GConfig->GetString(OculusSettings, TEXT("FFRLevel"), str, GetDefaultConfigFilename()))
 	{
 		if (str.Equals(TEXT("FFR_Off")))
 		{
@@ -221,8 +219,7 @@ void UOculusXRHMDRuntimeSettings::RenameProperties()
 	}
 
 	// FFRDynamic was renamed to bDynamicFoveatedRendering
-	if (!GConfig->GetString(OculusSettings, GET_MEMBER_NAME_STRING_CHECKED(UOculusXRHMDRuntimeSettings, bDynamicFoveatedRendering), str, GetDefaultConfigFilename()) &&
-		GConfig->GetBool(OculusSettings, TEXT("FFRDynamic"), v, GetDefaultConfigFilename()))
+	if (!GConfig->GetString(OculusSettings, GET_MEMBER_NAME_STRING_CHECKED(UOculusXRHMDRuntimeSettings, bDynamicFoveatedRendering), str, GetDefaultConfigFilename()) && GConfig->GetBool(OculusSettings, TEXT("FFRDynamic"), v, GetDefaultConfigFilename()))
 	{
 		bDynamicFoveatedRendering = v;
 		GConfig->SetBool(OculusSettings, GET_MEMBER_NAME_STRING_CHECKED(UOculusXRHMDRuntimeSettings, bDynamicFoveatedRendering), bDynamicFoveatedRendering, GetDefaultConfigFilename());
@@ -259,7 +256,6 @@ void UOculusXRHMDRuntimeSettings::RenameProperties()
 		if (DeviceList.Contains(Quest))
 		{
 			DeviceList.Remove(Quest);
-			SupportedDevices.Remove((EOculusXRSupportedDevices)0);
 			if (!DeviceList.Contains(LastSupportedDeviceString))
 			{
 				DeviceList.Add(LastSupportedDeviceString);

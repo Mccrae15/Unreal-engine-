@@ -52,7 +52,7 @@ public:
 			{
 				FHandPose NewPose;
 				NewPose.UpdatePose(Recognizer->Side, Recognizer->GetComponentRotation());
-				
+
 				MinPose.Min(NewPose);
 				MaxPose.Max(NewPose);
 			}
@@ -76,15 +76,12 @@ public:
 	{
 		return FString::Format(
 			TEXT("Hand Pose Recorder is %srecording the %s"),
-			{
-				bIsRecording ? TEXT("") : TEXT("not "),
-				*UEnum::GetValueAsString(Recognizer->Side)
-			});
+			{ bIsRecording ? TEXT("") : TEXT("not "),
+				*UEnum::GetValueAsString(Recognizer->Side) });
 	}
 #endif
 
 protected:
-
 	void LogHandPoseRecordedRange()
 	{
 		UE_LOG(LogHandPoseRecognition, Error, TEXT("Hand Pose Range Recorded #%d"), HandPoseRangeIndex++);
@@ -112,8 +109,8 @@ protected:
 			UE_LOG(LogHandPoseRecognition, Warning, TEXT("%8s pitch %6.2f [%+7.2f .. %+7.2f]  yaw %6.2f [%+7.2f .. %+7.2f]  roll %6.2f [%+7.2f .. %+7.2f]"),
 				*UEnum::GetValueAsString(RecognizedBone(Bone)),
 				PitchRange, MinRot.Pitch, MaxRot.Pitch,
-				YawRange,   MinRot.Yaw,   MaxRot.Yaw,
-				RollRange,  MinRot.Roll,  MaxRot.Roll);
+				YawRange, MinRot.Yaw, MaxRot.Yaw,
+				RollRange, MinRot.Roll, MaxRot.Roll);
 		}
 
 		UE_LOG(LogHandPoseRecognition, Warning,
@@ -122,7 +119,6 @@ protected:
 	}
 
 private:
-
 	bool bIsRecording;
 	FHandPose MinPose, MaxPose;
 	int HandPoseRangeIndex;

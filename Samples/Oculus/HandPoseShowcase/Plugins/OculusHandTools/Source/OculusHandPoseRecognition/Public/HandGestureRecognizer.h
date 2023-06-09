@@ -25,11 +25,23 @@ enum class EGestureConsumptionBehavior : uint8
 UENUM(BlueprintType)
 enum class EGestureStrengthBone : uint8
 {
-	Thumb0 = 0, Thumb1, Thumb2, Thumb3,
-	Index1, Index2, Index3,
-	Middle1, Middle2, Middle3,
-	Ring1, Ring2, Ring3,
-	Pinky0, Pinky1, Pinky2, Pinky3,
+	Thumb0 = 0,
+	Thumb1,
+	Thumb2,
+	Thumb3,
+	Index1,
+	Index2,
+	Index3,
+	Middle1,
+	Middle2,
+	Middle3,
+	Ring1,
+	Ring2,
+	Ring3,
+	Pinky0,
+	Pinky1,
+	Pinky2,
+	Pinky3,
 	Wrist
 };
 
@@ -49,12 +61,12 @@ enum class EGestureStrengthBoneAngle : uint8
  * 
  * @warning Must be attached to a UHandPoseRecognizer.
  */
-UCLASS( ClassGroup=(Custom), meta=(BlueprintSpawnableComponent) )
+UCLASS(ClassGroup = (Custom), meta = (BlueprintSpawnableComponent))
 class OCULUSHANDPOSERECOGNITION_API UHandGestureRecognizer : public USceneComponent
 {
 	GENERATED_BODY()
 
-public:	
+public:
 	/** Sets default values for this component's properties. */
 	UHandGestureRecognizer(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
 
@@ -65,7 +77,7 @@ protected:
 	/** Parent hand pose recognizer. */
 	UHandPoseRecognizer* HandPoseRecognizer = nullptr;
 
-public:	
+public:
 	/** Called every frame. */
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
@@ -99,7 +111,8 @@ public:
 	 * @return A boolean that indicates if a gesture is currently recognized.
 	 */
 	UFUNCTION(BlueprintCallable)
-	UPARAM(DisplayName = "Gesture Recognized") bool GetRecognizedHandGesture(
+	UPARAM(DisplayName = "Gesture Recognized")
+	bool GetRecognizedHandGesture(
 		EGestureConsumptionBehavior Behavior,
 		int& Index, FString& Name,
 		FVector& GestureDirection,
@@ -111,7 +124,8 @@ public:
 	 * @return Current state of gesture recognition.
 	 */
 	UFUNCTION(BlueprintCallable)
-	UPARAM(DisplayName = "Gesture State") EGestureState GetGestureRecognitionState(int Index);
+	UPARAM(DisplayName = "Gesture State")
+	EGestureState GetGestureRecognitionState(int Index);
 
 	/**
 	 * Resets the specified hand gesture by index.

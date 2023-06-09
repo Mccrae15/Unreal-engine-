@@ -32,4 +32,4 @@ namespace OculusXRAnchors
 
 		static void OnPollEvent(ovrpEventDataBuffer* EventDataBuffer, bool& EventPollResult);
 	};
-}
+} // namespace OculusXRAnchors

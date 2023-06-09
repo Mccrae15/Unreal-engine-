@@ -11,7 +11,7 @@ class UHandGestureRecognizer;
 
 /** Output exec pins for the WaitForHandPose blueprint node. */
 UENUM(BlueprintType)
-enum class EWaitForHandPoseExitType: uint8
+enum class EWaitForHandPoseExitType : uint8
 {
 	PoseSeen,
 	TimeOut,
@@ -47,7 +47,6 @@ class OCULUSHANDPOSERECOGNITION_API UHandRecognitionFunctionLibrary : public UBl
 	GENERATED_BODY()
 
 public:
-
 	/**
 	 * Waits for a hand pose to be recognized.
 	 * @param HandPoseRecognizer - The hand pose recognizer component to wait on.

@@ -2473,6 +2473,8 @@ protected:
 
 	void PostRenderBasePass(FRHICommandListImmediate& RHICmdList, FViewInfo& View);
 
+	void PostSceneColorRendering(FRHICommandListImmediate& RHICmdList, FViewInfo& View);
+
 	void RenderMobileEditorPrimitives(FRHICommandList& RHICmdList, const FViewInfo& View, const FMeshPassProcessorRenderState& DrawRenderState);
 
 	/** Renders the debug view pass for mobile. */

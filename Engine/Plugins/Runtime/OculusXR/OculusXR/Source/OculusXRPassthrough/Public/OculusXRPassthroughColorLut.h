@@ -11,9 +11,7 @@ LICENSE file in the root directory of this source tree.
 #include "UObject/ObjectMacros.h"
 #include "Engine/Texture2D.h"
 
-
 #include "OculusXRPassthroughColorLut.generated.h"
-
 
 enum EColorLutChannels
 {
@@ -72,13 +70,16 @@ public:
 	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 
 	void BeginDestroy() override;
+
 private:
 	UPROPERTY()
 	FLutTextureData StoredTextureData;
 	uint64 LutHandle = 0;
 	int32 ColorArrayResolution = 0;
+	int MaxResolution = -1;
 	FLutTextureData TextureToColorData(class UTexture2D* InLutTexture) const;
-	void CreateHandle(const TArray<uint8>& InData, uint32 Resolution);
-	void UpdateHandle(const TArray<uint8>& InData);
-	void DestroyHandle();
+	uint64 CreateLutObject(const TArray<uint8>& InData, uint32 Resolution) const;
+	void UpdateLutObject(uint64 Handle, const TArray<uint8>& InData) const;
+	void DestroyLutObject(uint64 Handle) const;
+	int GetMaxResolution();
 };

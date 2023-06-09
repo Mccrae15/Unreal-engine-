@@ -7,15 +7,13 @@
 
 #include "Sound/SoundSubmix.h"
 
-
 namespace
 {
 	TSharedPtr<FSubmixEffectOculusReverbPlugin, ESPMode::ThreadSafe> CastEffectToPluginSharedPtr(FSoundEffectSubmixPtr InSubmixEffect)
 	{
 		return StaticCastSharedPtr<FSubmixEffectOculusReverbPlugin, FSoundEffectSubmix, ESPMode::ThreadSafe>(InSubmixEffect);
 	}
-} // namespace <>
-
+} // namespace
 
 void FSubmixEffectOculusReverbPlugin::OnNewDeviceCreated(Audio::FDeviceId DeviceId)
 {

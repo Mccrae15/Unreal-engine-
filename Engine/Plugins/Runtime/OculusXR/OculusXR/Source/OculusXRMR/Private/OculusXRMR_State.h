@@ -80,7 +80,8 @@ struct FOculusXRTrackedCamera
 		, UserOffset(EForceInit::ForceInitToZero)
 		, RawRotation_DEPRECATED(EForceInit::ForceInitToZero)
 		, RawOffset_DEPRECATED(EForceInit::ForceInitToZero)
-	{}
+	{
+	}
 };
 
 /**
@@ -92,7 +93,6 @@ class UOculusXRMR_State : public UObject
 	GENERATED_BODY()
 
 public:
-
 	UOculusXRMR_State(const FObjectInitializer& ObjectInitializer);
 
 	UPROPERTY()

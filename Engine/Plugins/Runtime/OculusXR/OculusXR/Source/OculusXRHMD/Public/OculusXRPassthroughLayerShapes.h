@@ -2,6 +2,7 @@
 
 #include "StereoLayerShapes.h"
 #include "OculusXRPassthroughMesh.h"
+#include "OculusXRPassthroughLayerShapes.generated.h"
 
 UENUM()
 enum EOculusXRColorMapType
@@ -83,8 +84,8 @@ public:
 	EOculusXRColorMapType ColorMapType;
 	TArray<uint8> ColorMapData;
 	FColorLutDesc ColorLutDesc;
-private:
 
+private:
 	/** Generates the corresponding color map based on given color map type */
 	TArray<uint8> GenerateColorMapData(EOculusXRColorMapType InColorMapType, const TArray<FLinearColor>& InColorMapGradient);
 
@@ -103,12 +104,9 @@ class OCULUSXRHMD_API FReconstructedLayer : public IStereoLayerShape
 	STEREO_LAYER_SHAPE_BOILERPLATE(FReconstructedLayer)
 
 public:
-	FReconstructedLayer() {};
+	FReconstructedLayer(){};
 	FReconstructedLayer(const FEdgeStyleParameters& EdgeStyleParameters, EOculusXRPassthroughLayerOrder PassthroughLayerOrder)
-	:	EdgeStyleParameters(EdgeStyleParameters),
-		PassthroughLayerOrder(PassthroughLayerOrder)
-	{
-	};
+		: EdgeStyleParameters(EdgeStyleParameters), PassthroughLayerOrder(PassthroughLayerOrder){};
 	FEdgeStyleParameters EdgeStyleParameters;
 	EOculusXRPassthroughLayerOrder PassthroughLayerOrder;
 };
@@ -116,16 +114,14 @@ public:
 struct FUserDefinedGeometryDesc
 {
 	FUserDefinedGeometryDesc(const FString& MeshName, OculusXRHMD::FOculusPassthroughMeshRef PassthroughMesh, const FTransform& Transform, bool bUpdateTransform)
-	:	MeshName(MeshName)
-	,	PassthroughMesh(PassthroughMesh)
-	,	Transform(Transform)
-	,	bUpdateTransform(bUpdateTransform)
-	{
-	};
+		: MeshName(MeshName)
+		, PassthroughMesh(PassthroughMesh)
+		, Transform(Transform)
+		, bUpdateTransform(bUpdateTransform){};
 
 	FString MeshName;
 	OculusXRHMD::FOculusPassthroughMeshRef PassthroughMesh;
-	FTransform  Transform;
+	FTransform Transform;
 	bool bUpdateTransform;
 };
 
@@ -134,11 +130,11 @@ class OCULUSXRHMD_API FUserDefinedLayer : public IStereoLayerShape
 	STEREO_LAYER_SHAPE_BOILERPLATE(FUserDefinedLayer)
 
 public:
-	FUserDefinedLayer() {};
+	FUserDefinedLayer(){};
 	FUserDefinedLayer(TArray<FUserDefinedGeometryDesc> InUserGeometryList, const FEdgeStyleParameters& EdgeStyleParameters, EOculusXRPassthroughLayerOrder PassthroughLayerOrder)
-	:	UserGeometryList{}
-	,	EdgeStyleParameters(EdgeStyleParameters)
-	,	PassthroughLayerOrder(PassthroughLayerOrder)
+		: UserGeometryList{}
+		, EdgeStyleParameters(EdgeStyleParameters)
+		, PassthroughLayerOrder(PassthroughLayerOrder)
 	{
 		UserGeometryList = InUserGeometryList;
 	}
@@ -148,5 +144,4 @@ public:
 	EOculusXRPassthroughLayerOrder PassthroughLayerOrder;
 
 private:
-
 };

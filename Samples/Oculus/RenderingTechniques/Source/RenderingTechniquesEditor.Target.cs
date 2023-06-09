@@ -10,6 +10,6 @@ public class RenderingTechniquesEditorTarget : TargetRules
 		Type = TargetType.Editor;
 		DefaultBuildSettings = BuildSettingsVersion.V2;
 
-		ExtraModuleNames.AddRange( new string[] { "RenderingTechniques" } );
+		ExtraModuleNames.AddRange(new string[] { "RenderingTechniques" });
 	}
 }

@@ -18,7 +18,6 @@ enum class EGestureState : uint8
 	GestureCompleted
 };
 
-
 /** A single pose with minimum duration. */
 struct FHandGestureStep
 {
@@ -37,7 +36,6 @@ struct OCULUSHANDPOSERECOGNITION_API FHandGesture
 	GENERATED_USTRUCT_BODY()
 
 public:
-
 	/** Name for this gesture. */
 	UPROPERTY(Category = "Hand Gesture", EditAnywhere, BlueprintReadWrite)
 	FString GestureName;
@@ -77,7 +75,8 @@ public:
 	bool Step(int PoseIndex, float PoseDuration, float DeltaTime, float CurrentTime, const FVector& Location, const FHandPose& Pose);
 
 	/** Each pose has a first and last game time registered. */
-	enum PoseTimeType {
+	enum PoseTimeType
+	{
 		PoseFirstTime,
 		PoseLastTime
 	};
@@ -129,7 +128,6 @@ public:
 	}
 
 protected:
-
 	/** Array of decoded poses that represent the gesture. */
 	TArray<FHandGestureStep> TimedPoses;
 

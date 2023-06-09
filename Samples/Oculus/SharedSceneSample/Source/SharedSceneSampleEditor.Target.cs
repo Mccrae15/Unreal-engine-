@@ -15,6 +15,6 @@ public class SharedSceneSampleEditorTarget : TargetRules
 	{
 		Type = TargetType.Editor;
 
-		ExtraModuleNames.AddRange( new string[] { "SharedSceneSample" } );
+		ExtraModuleNames.AddRange(new string[] { "SharedSceneSample" });
 	}
 }

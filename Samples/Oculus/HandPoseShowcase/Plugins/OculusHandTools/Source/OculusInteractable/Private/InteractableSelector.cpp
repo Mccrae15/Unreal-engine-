@@ -9,7 +9,7 @@ namespace // local
 	ECollisionChannel InteractableTraceChannel = ECollisionChannel::ECC_GameTraceChannel1;
 	FName BeamSource("Source");
 	FName BeamTarget("Target");
-}
+} // namespace
 
 AInteractableSelector::AInteractableSelector()
 {
@@ -68,7 +68,7 @@ void AInteractableSelector::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	ActivateSelector(false);
 	DestroyBeam();
 	DestroyAimingActor();
-	SetSelectedInteractable(nullptr);  // Notify selected interactable that we are going away.
+	SetSelectedInteractable(nullptr); // Notify selected interactable that we are going away.
 
 	Super::EndPlay(EndPlayReason);
 }
@@ -276,7 +276,7 @@ float AInteractableSelector::ComputeSphereRadiusForCast() const
 float AInteractableSelector::ComputeAngularDistance(AActor* Target) const
 {
 	FVector LineStart = GetActorLocation();
-	FVector LineEnd = GetActorLocation() + 100.0f * DampenedForwardVector;  // Any point will do, but projecting forward will reduce errors.
+	FVector LineEnd = GetActorLocation() + 100.0f * DampenedForwardVector; // Any point will do, but projecting forward will reduce errors.
 	FVector TargetLocation = Target->GetActorLocation();
 
 	FVector NearestLocation = FMath::ClosestPointOnInfiniteLine(LineStart, LineEnd, TargetLocation);
@@ -292,7 +292,8 @@ float AInteractableSelector::ComputeAngularDistance(AActor* Target) const
 
 void AInteractableSelector::ActivateAimingActor(bool Activate)
 {
-	if (!AimingActor) return;
+	if (!AimingActor)
+		return;
 
 	if (Activate)
 	{
@@ -359,7 +360,8 @@ void AInteractableSelector::DestroyAimingActor()
 
 void AInteractableSelector::ActivateBeam(bool Activate)
 {
-	if (!Beam) return;
+	if (!Beam)
+		return;
 
 	if (Activate && SelectedInteractable == nullptr)
 	{
@@ -390,9 +392,8 @@ void AInteractableSelector::OrientBeam()
 		// UE_LOG(LogTemp, Error, TEXT("*** BEAM UPDATE %0.2f %0.2f %0.2f"), DampenedForwardVector.X, DampenedForwardVector.Y, DampenedForwardVector.Z);
 		Beam->SetBeamSourceTangent(0, BeamTangent, 0);
 	}
-
 }
-	
+
 void AInteractableSelector::BuildBeam()
 {
 	if (BeamTemplate)

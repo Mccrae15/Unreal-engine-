@@ -10,6 +10,6 @@ public class GraphicsShowcaseTarget : TargetRules
 		Type = TargetType.Game;
 		DefaultBuildSettings = BuildSettingsVersion.V2;
 
-		ExtraModuleNames.AddRange( new string[] { "GraphicsShowcase" } );
+		ExtraModuleNames.AddRange(new string[] { "GraphicsShowcase" });
 	}
 }

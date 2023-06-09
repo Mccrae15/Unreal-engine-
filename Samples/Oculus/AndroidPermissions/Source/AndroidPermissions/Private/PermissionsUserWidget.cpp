@@ -32,8 +32,7 @@ void UPermissionsUserWidget::RequestPermission(const FString& PermissionStr)
 		if (UAndroidPermissionCallbackProxy* Callback = UAndroidPermissionFunctionLibrary::AcquirePermissions(PermsToEnable))
 		{
 			// We bind a lambda to the delegate to update the class' permission states.
-			Callback->OnPermissionsGrantedDelegate.AddLambda([this, PermissionStr](const TArray<FString>& Permissions, const TArray<bool>& GrantResults)
-			{
+			Callback->OnPermissionsGrantedDelegate.AddLambda([this, PermissionStr](const TArray<FString>& Permissions, const TArray<bool>& GrantResults) {
 				bool HasBeenGranted = false;
 				if (GrantResults.Num() > 0)
 				{
@@ -48,7 +47,7 @@ void UPermissionsUserWidget::RequestPermission(const FString& PermissionStr)
 						}
 					}
 				}
-				
+
 				// Update the correct permission state depending on the function parameter that was passed in.
 				if (TEXT("android.permission.RECORD_AUDIO") == PermissionStr)
 				{

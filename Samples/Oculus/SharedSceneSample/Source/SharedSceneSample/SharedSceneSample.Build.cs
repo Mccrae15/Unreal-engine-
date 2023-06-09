@@ -34,9 +34,9 @@ public class SharedSceneSample : ModuleRules
 				"OnlineSubsystemOculus"
 			});
 
-        if (Target.Platform != UnrealTargetPlatform.Android)
-        {
-            PrecompileForTargets = PrecompileTargetsType.None;
-        }
-    }
+		if (Target.Platform != UnrealTargetPlatform.Android)
+		{
+			PrecompileForTargets = PrecompileTargetsType.None;
+		}
+	}
 }

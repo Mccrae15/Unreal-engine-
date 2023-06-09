@@ -15,12 +15,15 @@
 #include "DynamicMeshBuilder.h"
 #include "EngineGlobals.h"
 #include "Engine/Engine.h"
+#include "MaterialShared.h"
+#include "Launch/Resources/Version.h"
+#include "SceneInterface.h"
+#include "TextureResource.h"
 
 /** Scene proxy */
 class FOculusXRMR_PlaneMeshSceneProxy : public FPrimitiveSceneProxy
 {
 public:
-
 	FOculusXRMR_PlaneMeshSceneProxy(UOculusXRMR_PlaneMeshComponent* Component, UTextureRenderTarget2D* RenderTarget)
 		: FPrimitiveSceneProxy(Component)
 		, MaterialRelevance(Component->GetMaterialRelevance(GetScene().GetFeatureLevel()))
@@ -49,17 +52,17 @@ public:
 			Vert.SetTangents((FVector3f)TangentX, (FVector3f)TangentY, (FVector3f)TangentZ);
 
 			Vert.Position = (FVector3f)Tri.Vertex0;
-			Vert.TextureCoordinate[0] = FVector2f(Tri.UV0);	// LWC_TODO: Precision loss
+			Vert.TextureCoordinate[0] = FVector2f(Tri.UV0); // LWC_TODO: Precision loss
 			Vertices[TriIdx * 3 + 0] = Vert;
 			Indices[TriIdx * 3 + 0] = TriIdx * 3 + 0;
 
 			Vert.Position = (FVector3f)Tri.Vertex1;
-			Vert.TextureCoordinate[0] = FVector2f(Tri.UV1);	// LWC_TODO: Precision loss
+			Vert.TextureCoordinate[0] = FVector2f(Tri.UV1); // LWC_TODO: Precision loss
 			Vertices[TriIdx * 3 + 1] = Vert;
 			Indices[TriIdx * 3 + 1] = TriIdx * 3 + 1;
 
 			Vert.Position = (FVector3f)Tri.Vertex2;
-			Vert.TextureCoordinate[0] = FVector2f(Tri.UV2);	// LWC_TODO: Precision loss
+			Vert.TextureCoordinate[0] = FVector2f(Tri.UV2); // LWC_TODO: Precision loss
 			Vertices[TriIdx * 3 + 2] = Vert;
 			Indices[TriIdx * 3 + 2] = TriIdx * 3 + 2;
 		}
@@ -96,8 +99,7 @@ public:
 			{
 				auto WireframeMaterialInstance = new FColoredMaterialRenderProxy(
 					GEngine->WireframeMaterial->GetRenderProxy(),
-					FLinearColor(0, 0.5f, 1.f)
-				);
+					FLinearColor(0, 0.5f, 1.f));
 
 				Collector.RegisterOneFrameMaterialProxy(WireframeMaterialInstance);
 				MaterialProxy = WireframeMaterialInstance;
@@ -159,9 +161,9 @@ public:
 		return !MaterialRelevance.bDisableDepthTest;
 	}
 
-	virtual uint32 GetMemoryFootprint(void) const override { return(sizeof(*this) + GetAllocatedSize()); }
+	virtual uint32 GetMemoryFootprint(void) const override { return (sizeof(*this) + GetAllocatedSize()); }
 
-	uint32 GetAllocatedSize(void) const { return(FPrimitiveSceneProxy::GetAllocatedSize()); }
+	uint32 GetAllocatedSize(void) const { return (FPrimitiveSceneProxy::GetAllocatedSize()); }
 
 private:
 	UMaterialInterface* Material;
@@ -201,7 +203,7 @@ void UOculusXRMR_PlaneMeshComponent::AddCustomMeshTriangles(const TArray<FOculus
 	MarkRenderStateDirty();
 }
 
-void  UOculusXRMR_PlaneMeshComponent::ClearCustomMeshTriangles()
+void UOculusXRMR_PlaneMeshComponent::ClearCustomMeshTriangles()
 {
 	CustomMeshTris.Reset();
 
@@ -242,7 +244,6 @@ void UOculusXRMR_PlaneMeshComponent::Place(const FVector& Center, const FVector&
 	SetCustomMeshTriangles({ Tri0, Tri1 });
 }
 
-
 FPrimitiveSceneProxy* UOculusXRMR_PlaneMeshComponent::CreateSceneProxy()
 {
 	FPrimitiveSceneProxy* Proxy = NULL;
@@ -258,7 +259,6 @@ int32 UOculusXRMR_PlaneMeshComponent::GetNumMaterials() const
 	return 1;
 }
 
-
 FBoxSphereBounds UOculusXRMR_PlaneMeshComponent::CalcBounds(const FTransform& LocalToWorld) const
 {
 	FBoxSphereBounds NewBounds;
@@ -267,4 +267,3 @@ FBoxSphereBounds UOculusXRMR_PlaneMeshComponent::CalcBounds(const FTransform& Lo
 	NewBounds.SphereRadius = FMath::Sqrt(3.0f * FMath::Square(HALF_WORLD_MAX));
 	return NewBounds;
 }
-

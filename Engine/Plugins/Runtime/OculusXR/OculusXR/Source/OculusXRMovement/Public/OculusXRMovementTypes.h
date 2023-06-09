@@ -267,7 +267,7 @@ public:
 
 	UPROPERTY(BlueprintReadOnly, Category = "OculusXR|Movement")
 	TArray<FOculusXREyeGazeState> EyeGazes;
-	
+
 	UPROPERTY(BlueprintReadOnly, Category = "OculusXR|Movement")
 	float Time;
 };

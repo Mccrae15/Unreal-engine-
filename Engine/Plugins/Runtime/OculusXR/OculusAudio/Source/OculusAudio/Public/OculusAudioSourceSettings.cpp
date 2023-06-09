@@ -2,15 +2,14 @@
 
 #include "OculusAudioSourceSettings.h"
 
-UOculusAudioSourceSettings::UOculusAudioSourceSettings() :
-	 EarlyReflectionsEnabled(true)
+UOculusAudioSourceSettings::UOculusAudioSourceSettings()
+	: EarlyReflectionsEnabled(true)
 	, AttenuationEnabled(true)
 	, AttenuationRangeMinimum(0.25f)
 	, AttenuationRangeMaximum(250.0f)
 	, VolumetricRadius(0.0f)
 	, ReverbSendLevel(0.0f)
 {
-
 }
 
 #if WITH_EDITOR

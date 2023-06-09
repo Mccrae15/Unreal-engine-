@@ -301,10 +301,10 @@ static void GetRenderViews(TArray<FViewInfo>& InViews, FRenderViewContextArray& 
 
 FMobileSceneRenderer::FMobileSceneRenderer(const FSceneViewFamily* InViewFamily, FHitProxyConsumer* HitProxyConsumer)
 	: FSceneRenderer(InViewFamily, HitProxyConsumer)
-	, bGammaSpace(!IsMobileHDR())
+	, bGammaSpace(!IsMobileHDR() || IsMobileTonemapSubpassEnabled())
 	, bDeferredShading(IsMobileDeferredShadingEnabled(ShaderPlatform))
 	, bUseVirtualTexturing(UseVirtualTexturing(FeatureLevel))
-	, bTonemapSubpass(IsMobileTonemapSubpassEnabled())
+	, bTonemapSubpass(IsMobileTonemapSubpassEnabled() && (ViewFamily.EngineShowFlags.PostProcessing != 0))
 {
 	bRenderToSceneColor = false;
 	bRequiresMultiPass = false;
@@ -1237,10 +1237,7 @@ void FMobileSceneRenderer::RenderForward(FRDGBuilder& GraphBuilder, FRDGTextureR
 		else if (!bMobileMSAA)
 		{
 			BasePassRenderTargets[0] = FRenderTargetBinding(SceneColor, nullptr, ERenderTargetLoadAction::EClear);
-
-			uint32 ColorTargetIndex = bRequiresSceneDepthAux ? 2 : 1;
-			ensureMsgf(!bRequiresSceneDepthAux, TEXT("Scene depth aux combined with mobile tonemap subpass is not yet handled correctly in the VulkanRHI"));
-			BasePassRenderTargets[ColorTargetIndex] = FRenderTargetBinding(SceneColorResolve, nullptr, ERenderTargetLoadAction::EClear);
+			BasePassRenderTargets[1] = FRenderTargetBinding(SceneColorResolve, nullptr, ERenderTargetLoadAction::EClear);
 		}
 	}
 
@@ -1249,7 +1246,7 @@ void FMobileSceneRenderer::RenderForward(FRDGBuilder& GraphBuilder, FRDGTextureR
 
 	const FRDGSystemTextures& SystemTextures = FRDGSystemTextures::Get(GraphBuilder);
 
-	const bool bUseColorGradingLUT = (bUseMobileTonemapSubpass && (ViewFamily.EngineShowFlags.ColorGrading != 0) && (ViewFamily.EngineShowFlags.PostProcessing != 0));
+	const bool bUseColorGradingLUT = (bUseMobileTonemapSubpass && (ViewFamily.EngineShowFlags.ColorGrading != 0));
 	FRDGTextureRef ColorGradingTexture = nullptr;
 	if (bUseColorGradingLUT)
 	{
@@ -1344,6 +1341,8 @@ void FMobileSceneRenderer::RenderForwardSinglePass(FRDGBuilder& GraphBuilder, FM
 		RenderMobileBasePass(RHICmdList, View);
 		RenderMobileDebugView(RHICmdList, View);
 		RHICmdList.PollOcclusionQueries();
+		PostRenderBasePass(RHICmdList, View);
+
 		// scene depth is read only and can be fetched
 		RHICmdList.NextSubpass();
 		RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_Translucency));
@@ -1368,7 +1367,7 @@ void FMobileSceneRenderer::RenderForwardSinglePass(FRDGBuilder& GraphBuilder, FM
 
 		// Pre-tonemap before MSAA resolve (iOS only)
 		PreTonemapMSAA(RHICmdList, SceneTextures);
-		PostRenderBasePass(RHICmdList, View); // This has to happen before shader resolve, it may render things.
+		PostSceneColorRendering(RHICmdList, View); // This has to happen before shader resolve, it may render things.
 		if (bTonemapSubpass)
 		{
 			RHICmdList.NextSubpass();
@@ -1411,6 +1410,7 @@ void FMobileSceneRenderer::RenderForwardMultiPass(FRDGBuilder& GraphBuilder, FMo
 		RenderMobileDebugView(RHICmdList, View);
 		RHICmdList.PollOcclusionQueries();
 		PostRenderBasePass(RHICmdList, View);
+		PostSceneColorRendering(RHICmdList, View);
 	});
 
 	FViewInfo& View = *ViewContext.ViewInfo;
@@ -1737,6 +1737,7 @@ void FMobileSceneRenderer::RenderDeferredSinglePass(FRDGBuilder& GraphBuilder, c
 			RHICmdList.SetCurrentStat(GET_STATID(STAT_CLMM_Occlusion));
 			RenderOcclusion(RHICmdList);
 		}
+		PostSceneColorRendering(RHICmdList, View);
 	});
 }
 
@@ -1760,6 +1761,7 @@ void FMobileSceneRenderer::RenderDeferredMultiPass(FRDGBuilder& GraphBuilder, cl
 		RenderMobileBasePass(RHICmdList, View);
 		RHICmdList.PollOcclusionQueries();
 		PostRenderBasePass(RHICmdList, View);
+		PostSceneColorRendering(RHICmdList, View);
 	});
 
 	// SceneColor + GBuffer write, SceneDepth is read only
@@ -1840,6 +1842,19 @@ void FMobileSceneRenderer::PostRenderBasePass(FRHICommandListImmediate& RHICmdLi
 		for (int32 ViewExt = 0; ViewExt < ViewFamily.ViewExtensions.Num(); ++ViewExt)
 		{
 			ViewFamily.ViewExtensions[ViewExt]->PostRenderBasePassMobile_RenderThread(RHICmdList, View);
+		}
+	}
+}
+
+void FMobileSceneRenderer::PostSceneColorRendering(FRHICommandListImmediate& RHICmdList, FViewInfo& View)
+{
+	if (ViewFamily.ViewExtensions.Num() > 1)
+	{
+		CSV_SCOPED_TIMING_STAT_EXCLUSIVE(ViewExtensionPostSceneColorRendering);
+		QUICK_SCOPE_CYCLE_COUNTER(STAT_FMobileSceneRenderer_ViewExtensionPostSceneColorRendering);
+		for (int32 ViewExt = 0; ViewExt < ViewFamily.ViewExtensions.Num(); ++ViewExt)
+		{
+			ViewFamily.ViewExtensions[ViewExt]->PostSceneColorRenderingMobile_RenderThread(RHICmdList, View);
 		}
 	}
 }
@@ -2037,12 +2052,13 @@ void FMobileSceneRenderer::MobileTonemapSubpass(FRHICommandListImmediate& RHICmd
 
 	FTonemapInputs TonemapperInputs;
 	TonemapperInputs.MsaaSamples = NumMSAASamples;
-		TonemapperInputs.ColorGradingTexture = ColorGradingTexture;
-		TonemapperInputs.TargetSize = TargetSize;
+	TonemapperInputs.ColorGradingTexture = ColorGradingTexture;
+	TonemapperInputs.TargetSize = TargetSize;
 	TonemapperInputs.EyeAdaptationParameters = &EyeAdaptationParameters;
 	TonemapperInputs.EyeAdaptationTexture = EyeAdaptationTexture;
+	TonemapperInputs.bUseSubpass = true;// IsVulkanPlatform(ShaderPlatform); // No SceneColor texture. Will use GBuffer for non-Vulkan.
 
-		AddMobileTonemapperSubpass(RHICmdList, View, TonemapperInputs);
+	AddTonemapPass(GraphBuilder, View, TonemapperInputs);
 }
 
 bool FMobileSceneRenderer::ShouldRenderHZB()

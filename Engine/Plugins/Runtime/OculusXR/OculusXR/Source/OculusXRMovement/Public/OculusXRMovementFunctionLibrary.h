@@ -8,6 +8,7 @@ LICENSE file in the root directory of this source tree.
 #pragma once
 
 #include "OculusXRMovementTypes.h"
+#include "Kismet/BlueprintFunctionLibrary.h"
 
 #include "OculusXRMovementFunctionLibrary.generated.h"
 

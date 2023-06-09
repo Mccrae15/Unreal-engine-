@@ -46,17 +46,15 @@ bool OculusPluginWrapper::InitializeOculusPluginWrapper(OculusPluginWrapper* wra
 	return false;
 #endif
 
-
 	struct OculusEntryPoint
 	{
 		const char* EntryPointName;
 		void** EntryPointPtr;
 	};
 
-#define OCULUS_BIND_ENTRY_POINT(Func)	{ "ovrp_"#Func, (void**)&wrapper->Func }
+#define OCULUS_BIND_ENTRY_POINT(Func) { "ovrp_" #Func, (void**)&wrapper->Func }
 
-	OculusEntryPoint entryPointArray[] =
-	{
+	OculusEntryPoint entryPointArray[] = {
 		// OVR_Plugin.h
 
 		OCULUS_BIND_ENTRY_POINT(PreInitialize5),
@@ -240,6 +238,7 @@ bool OculusPluginWrapper::InitializeOculusPluginWrapper(OculusPluginWrapper* wra
 		OCULUS_BIND_ENTRY_POINT(GetLayerRecommendedResolution),
 		OCULUS_BIND_ENTRY_POINT(IsLayerShapeSupported),
 
+
 #ifndef OVRPLUGIN_JNI_LIB_EXCLUDED
 		OCULUS_BIND_ENTRY_POINT(GetSystemVolume2),
 		OCULUS_BIND_ENTRY_POINT(GetSystemHeadphonesPresent2),
@@ -304,6 +303,7 @@ bool OculusPluginWrapper::InitializeOculusPluginWrapper(OculusPluginWrapper* wra
 		OCULUS_BIND_ENTRY_POINT(CreatePassthroughColorLut),
 		OCULUS_BIND_ENTRY_POINT(DestroyPassthroughColorLut),
 		OCULUS_BIND_ENTRY_POINT(UpdatePassthroughColorLut),
+		OCULUS_BIND_ENTRY_POINT(GetPassthroughCapabilities),
 
 		// OVR_Plugin_MixedReality.h
 

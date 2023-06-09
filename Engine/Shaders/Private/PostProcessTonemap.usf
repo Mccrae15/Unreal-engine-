@@ -29,13 +29,19 @@
 SCREEN_PASS_TEXTURE_VIEWPORT(Color)
 SCREEN_PASS_TEXTURE_VIEWPORT(Output)
 
-#if USE_MULTI_VIEW_ID_SV
-Texture2DArray ColorTexture;
+#if !USE_SUBPASS
+	#if USE_MULTI_VIEW_ID_SV
+		Texture2DArray ColorTexture;
+	#else
+		Texture2D ColorTexture;
+	#endif
+	SamplerState ColorSampler;
 #else
-Texture2D ColorTexture;
-#endif
-SamplerState ColorSampler;
-
+	// non-HDR with tonemap subpass is much brighter than it should be. Enabling this is the closest I'm able to get it, but is a bit darker than un-tonemapped.
+	#if !MOBILE_HDR
+		#define USE_LINEAR_FLOAT_RT 1
+	#endif
+#endif 
 
 FScreenTransform ColorToBloom;
 float2 BloomUVViewportBilinearMin;
@@ -355,11 +361,32 @@ float2 ComputeCounterStepForTileDebugging(float4 SvPosition, int2 TileSize, out 
 
 float4 SampleSceneColor(float2 SceneUV, float ArrayIndex)
 {
-	SceneUV = clamp(SceneUV, Color_UVViewportBilinearMin, Color_UVViewportBilinearMax);
-	#if USE_MULTI_VIEW_ID_SV
-	return Texture2DArraySample(ColorTexture, ColorSampler, float3(SceneUV.xy,ArrayIndex));
+	#if !USE_SUBPASS
+		SceneUV = clamp(SceneUV, Color_UVViewportBilinearMin, Color_UVViewportBilinearMax);
+		#if USE_MULTI_VIEW_ID_SV
+		return Texture2DArraySample(ColorTexture, ColorSampler, float3(SceneUV.xy,ArrayIndex));
+		#else
+		return Texture2DSample(ColorTexture, ColorSampler, SceneUV);
+		#endif
 	#else
-	return Texture2DSample(ColorTexture, ColorSampler, SceneUV);
+		#if VULKAN_PROFILE
+			#ifndef SUBPASS_MSAA_SAMPLES
+				return float4(1.0, 1.0, 1.0, 1.0);
+			#else
+				#if SUBPASS_MSAA_SAMPLES == 8
+					return float4(VulkanSubpassFetch0(0) + VulkanSubpassFetch0(1) + VulkanSubpassFetch0(2) + VulkanSubpassFetch0(3) +
+						VulkanSubpassFetch0(4) + VulkanSubpassFetch0(5) + VulkanSubpassFetch0(6) + VulkanSubpassFetch0(7)) * 0.125;
+				#elif SUBPASS_MSAA_SAMPLES == 4
+					return float4(VulkanSubpassFetch0(0) + VulkanSubpassFetch0(1) + VulkanSubpassFetch0(2) + VulkanSubpassFetch0(3)) * 0.25;
+				#elif SUBPASS_MSAA_SAMPLES == 2
+					return float4(VulkanSubpassFetch0(0) + VulkanSubpassFetch0(1)) * 0.5;
+				#else
+					return float4(VulkanSubpassFetch0(0));
+				#endif
+			#endif
+		#else
+			return float4(Texture2DSampleLevel(MobileBasePass.SceneTextures.GBufferATexture, MobileBasePass.SceneTextures.GBufferATextureSampler, SceneUV, 0));
+		#endif
 	#endif
 }
 
@@ -613,7 +640,13 @@ float4 TonemapCommonPS(
 		LinearColor *= ExposureScale;
 
 		#if USE_VIGNETTE
-			LinearColor.rgb *= ComputeVignetteMask( ExposureScaleVignette.zw, TonemapperParams.x );
+			#if !USE_SUBPASS
+				LinearColor.rgb *= ComputeVignetteMask( ExposureScaleVignette.zw, TonemapperParams.x );
+			#else
+				//Exposure scale from vertex shader isn't working with tonemap subpass.
+				float2 vignettePos = ((SceneUV - 0.5) * 2.0);
+				LinearColor.rgb *= ComputeVignetteMask(vignettePos, TonemapperParams.x);
+			#endif
 		#endif
 
 		#if USE_FILM_GRAIN

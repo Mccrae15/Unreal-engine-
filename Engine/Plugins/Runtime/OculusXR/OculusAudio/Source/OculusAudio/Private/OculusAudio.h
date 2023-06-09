@@ -24,14 +24,13 @@ public:
 
 	virtual bool SupportsPlatform(const FString& PlatformName) override
 	{
-		return	PlatformName == FString(TEXT("Windows")) || PlatformName == FString(TEXT("Android"));
+		return PlatformName == FString(TEXT("Windows")) || PlatformName == FString(TEXT("Android"));
 	}
 
 	virtual UClass* GetCustomSpatializationSettingsClass() const override { return UOculusAudioSourceSettings::StaticClass(); }
 
 	virtual TAudioSpatializationPtr CreateNewSpatializationPlugin(FAudioDevice* OwningDevice) override;
 	//~ End IAudioSpatializationFactory
-
 };
 
 class FOculusReverbPluginFactory : public IAudioReverbFactory
@@ -46,10 +45,9 @@ public:
 
 	virtual bool SupportsPlatform(const FString& PlatformName) override
 	{
-		return	PlatformName == FString(TEXT("Windows")) || PlatformName == FString(TEXT("Android"));
+		return PlatformName == FString(TEXT("Windows")) || PlatformName == FString(TEXT("Android"));
 	}
 
 	virtual TAudioReverbPtr CreateNewReverbPlugin(FAudioDevice* OwningDevice) override;
 	//~ End IAudioReverbFactory
 };
-

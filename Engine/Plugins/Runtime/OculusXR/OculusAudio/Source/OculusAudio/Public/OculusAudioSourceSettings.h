@@ -26,14 +26,13 @@ public:
 
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "SpatializationSettings")
 	float AttenuationRangeMinimum;
-	
+
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "SpatializationSettings")
 	float AttenuationRangeMaximum;
-	
+
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "SpatializationSettings")
 	float VolumetricRadius;
 
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "SpatializationSettings", meta = (ClampMin = "-60.0", ClampMax = "20.0", UIMin = "-60.0", UIMax = "20.0"))
 	float ReverbSendLevel;
 };
-

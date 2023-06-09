@@ -286,9 +286,9 @@ Engine/Extras/ThirdPartyNotUE/SDKs/HostLinux/**
 # Ignore OculusXR Plugin it's a junction
 Engine/Plugins/Runtime/OculusXR
 
-# Ignore Samples and TestApps folders, they are junctions
+# Ignore Samples and SamplesInternal folders, they are junctions
 Collaboration/Oculus/Samples
-Collaboration/Oculus/TestApps
+Collaboration/Oculus/SamplesInternal
 
 # Ignore VoiceSDK Template
 Templates/TP_VoiceSDK

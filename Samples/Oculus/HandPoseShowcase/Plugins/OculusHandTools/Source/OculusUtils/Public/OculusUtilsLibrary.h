@@ -10,13 +10,12 @@
 /**
  * Build configuration from the project's game configuration.
  */
-UCLASS(Config=Game)
+UCLASS(Config = Game)
 class OCULUSUTILS_API UBuildInfo : public UObject
 {
 	GENERATED_BODY()
 
 public:
-
 	/** Source control changelist */
 	UPROPERTY(Config)
 	FString PackageChangelist;
@@ -35,7 +34,6 @@ class OCULUSUTILS_API UOculusUtilsLibrary : public UBlueprintFunctionLibrary
 	GENERATED_BODY()
 
 public:
-
 	/** Returns the Oculus store version. */
 	UFUNCTION(BlueprintCallable, Category = "Oculus Utils")
 	static void GetOculusBuildInfo(FString& SourceControlChangelist, FString& BuildDateTimeString);

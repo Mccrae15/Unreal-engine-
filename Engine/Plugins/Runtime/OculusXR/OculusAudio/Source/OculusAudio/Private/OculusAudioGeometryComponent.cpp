@@ -10,18 +10,16 @@
 #include "Runtime/Core/Public/Serialization/CustomVersion.h"
 #include "Materials/MaterialInstanceDynamic.h"
 
-
 #define COMPILE_AS_DEBUG_MODE 0
 
 #if COMPILE_AS_DEBUG_MODE
-#  pragma optimize("", off) // worse perf, better debugging
+#pragma optimize("", off) // worse perf, better debugging
 #endif
-
 
 #define OVRA_AUDIO_GEOMETRY_COMPONENT_LATEST_VERSION 1
 
-static const FGuid UOculusAudioGeometryGUID( 0x7aa25488, 0x40d74391, 0xad87d335, 0x347cfae1 ); // random GUID, guaranteed to be random.
-static const FCustomVersionRegistration UOculusAudioGeometryGUIDRegistration( UOculusAudioGeometryGUID, OVRA_AUDIO_GEOMETRY_COMPONENT_LATEST_VERSION, TEXT("OculusAudioGeometryVersion") );
+static const FGuid UOculusAudioGeometryGUID(0x7aa25488, 0x40d74391, 0xad87d335, 0x347cfae1); // random GUID, guaranteed to be random.
+static const FCustomVersionRegistration UOculusAudioGeometryGUIDRegistration(UOculusAudioGeometryGUID, OVRA_AUDIO_GEOMETRY_COMPONENT_LATEST_VERSION, TEXT("OculusAudioGeometryVersion"));
 
 UOculusAudioGeometryComponent::UOculusAudioGeometryComponent()
 	: ovrGeometry(nullptr)
@@ -39,7 +37,7 @@ UOculusAudioGeometryComponent::~UOculusAudioGeometryComponent()
 // ------------------------------------------------------------------------------------------------------------------------------------------------------------
 // Note: a child (attached) static mesh will have it's geometry merged into the parent. Therefore, its ovrGeometry data member will be nullptr below and this is why
 // we need the Uploaded member.
-void UOculusAudioGeometryComponent::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction)
+void UOculusAudioGeometryComponent::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
@@ -67,17 +65,29 @@ void UOculusAudioGeometryComponent::TickComponent(float DeltaTime, enum ELevelTi
 		FVector Up = Transform.GetScaledAxis(EAxis::Z);
 		FVector Backward = -Transform.GetScaledAxis(EAxis::X);
 		FVector Position = Transform.GetLocation();
-		
-		float TransformMatrix[16] =
-		{
-			(float)Right.Y,	(float)Right.Z,	(float)-Right.X,	0.0f,
-			(float)Up.Y,	   (float)Up.Z,	   (float)-Up.X,	   0.0f,
-			(float)Backward.Y, (float)Backward.Z, (float)-Backward.X, 0.0f,
-			(float)Position.Y, (float)Position.Z, (float)-Position.X, 0.0f,
+
+		float TransformMatrix[16] = {
+			(float)Right.Y,
+			(float)Right.Z,
+			(float)-Right.X,
+			0.0f,
+			(float)Up.Y,
+			(float)Up.Z,
+			(float)-Up.X,
+			0.0f,
+			(float)Backward.Y,
+			(float)Backward.Z,
+			(float)-Backward.X,
+			0.0f,
+			(float)Position.Y,
+			(float)Position.Z,
+			(float)-Position.X,
+			0.0f,
 		};
-		
+
 		ovrResult Result = OVRA_CALL(ovrAudio_AudioGeometrySetTransform)(ovrGeometry, TransformMatrix);
-		if (Result != ovrSuccess) {
+		if (Result != ovrSuccess)
+		{
 			UE_LOG(LogAudio, Warning, TEXT("Failed at setting new audio propagation mesh transform!"));
 			return;
 		}
@@ -106,14 +116,16 @@ bool UOculusAudioGeometryComponent::UploadGeometry()
 	check(Mesh != nullptr);
 
 	// LB: silently filter out invisible geometry (might be used for something else)
-	if (!Mesh->HasValidRenderData()) {
+	if (!Mesh->HasValidRenderData())
+	{
 		UE_LOG(LogAudio, Warning, TEXT("Found static mesh actor with acoustic geometry component while invisible."));
 		return false;
 	}
 
 	// our internal geometry object into which we'll merge this static mesh actor and all its attached meshes
 	ovrResult Result = OVRA_CALL(ovrAudio_CreateAudioGeometry)(Context, &ovrGeometry);
-	if (Result != ovrSuccess) {
+	if (Result != ovrSuccess)
+	{
 		UE_LOG(LogAudio, Warning, TEXT("Failed creating acoustic geometry object."));
 		return false;
 	}
@@ -158,7 +170,7 @@ bool UOculusAudioGeometryComponent::UploadGeometry()
 			ovrMaterial);
 	}
 
-	ovrAudioMesh ovrMesh = { };
+	ovrAudioMesh ovrMesh = {};
 	ovrAudioMeshVertices ovrVertices = { 0 };
 
 	ovrVertices.vertices = MergedVertices.GetData();
@@ -180,7 +192,8 @@ bool UOculusAudioGeometryComponent::UploadGeometry()
 	check(ovrMesh.groupCount != 0);
 
 	Result = OVRA_CALL(ovrAudio_AudioGeometryUploadMesh)(ovrGeometry, &ovrMesh);
-	if (Result != ovrSuccess) {
+	if (Result != ovrSuccess)
+	{
 		UE_LOG(LogAudio, Warning, TEXT("Failed adding geometry to the audio propagation sub-system!"));
 	}
 
@@ -189,11 +202,11 @@ bool UOculusAudioGeometryComponent::UploadGeometry()
 
 // ------------------------------------------------------------------------------------------------------------------------------------------------------------
 void UOculusAudioGeometryComponent::AppendStaticMesh(UStaticMesh* Mesh,
-													 const FTransform& Transform,
-													 TArray<FVector>& MergedVertices,
-													 TArray<uint32>& MergedIndices,
-													 TArray<ovrAudioMeshGroup>& ovrMeshGroups,
-													 ovrAudioMaterial ovrMaterial)
+	const FTransform& Transform,
+	TArray<FVector>& MergedVertices,
+	TArray<uint32>& MergedIndices,
+	TArray<ovrAudioMeshGroup>& ovrMeshGroups,
+	ovrAudioMaterial ovrMaterial)
 {
 	const int32 IndexOffset = MergedVertices.Num();
 	const int32 FirstIndex = MergedIndices.Num();
@@ -204,7 +217,8 @@ void UOculusAudioGeometryComponent::AppendStaticMesh(UStaticMesh* Mesh,
 	const int32 VertexCount = VertexBuffer.GetNumVertices();
 
 	// append this mesh's vertices to the merged array after coordinate system conversion
-	for (int32 Index = 0; Index < VertexCount; Index++) {
+	for (int32 Index = 0; Index < VertexCount; Index++)
+	{
 		const FVector Vertex = Transform.TransformPosition((FVector)VertexBuffer.VertexPosition(Index));
 		MergedVertices.Add(OculusAudioSpatializationAudioMixer::ToOVRVector(Vertex));
 	}
@@ -214,10 +228,11 @@ void UOculusAudioGeometryComponent::AppendStaticMesh(UStaticMesh* Mesh,
 	TArray<uint32> MeshIndices;
 	Model.IndexBuffer.GetCopy(MeshIndices);
 	const int32 IndexCount = MeshIndices.Num();
-	for (int32 Index = 0; Index < IndexCount; Index++) {
+	for (int32 Index = 0; Index < IndexCount; Index++)
+	{
 		MeshIndices[Index] += IndexOffset;
 	}
-	
+
 	// append this mesh's indices to the merged array
 	MergedIndices += MeshIndices;
 
@@ -226,17 +241,17 @@ void UOculusAudioGeometryComponent::AppendStaticMesh(UStaticMesh* Mesh,
 	{
 		ovrAudioMeshGroup MeshGroup = { 0 };
 
-		MeshGroup.faceCount		= Model.Sections[Index].NumTriangles;
-		MeshGroup.faceType		= ovrAudioFaceType_Triangles;
-		MeshGroup.indexOffset	= Model.Sections[Index].FirstIndex + FirstIndex;
-		MeshGroup.material		= ovrMaterial; // TODO: material per section
+		MeshGroup.faceCount = Model.Sections[Index].NumTriangles;
+		MeshGroup.faceType = ovrAudioFaceType_Triangles;
+		MeshGroup.indexOffset = Model.Sections[Index].FirstIndex + FirstIndex;
+		MeshGroup.material = ovrMaterial; // TODO: material per section
 
 		ovrMeshGroups.Add(MeshGroup);
 	}
 }
 
 void UOculusAudioGeometryComponent::AppendChildMeshes(AActor* CurrentActor, const FTransform& RootTransform, ovrAudioContext Context,
-	TArray<FVector>& MergedVertices, TArray<uint32>& MergedIndices, TArray<ovrAudioMeshGroup>& ovrMeshGroups, 
+	TArray<FVector>& MergedVertices, TArray<uint32>& MergedIndices, TArray<ovrAudioMeshGroup>& ovrMeshGroups,
 	ovrAudioMaterial ovrMaterial)
 {
 	TArray<AActor*> AttachedActors;
@@ -257,10 +272,11 @@ void UOculusAudioGeometryComponent::AppendChildMeshes(AActor* CurrentActor, cons
 
 		// silently filter out invisible attached geometry (might be used for something else)
 		// or an attached (child) mesh with no geometry component (acoustically inactive)
-		if (!Mesh->HasValidRenderData()) {
+		if (!Mesh->HasValidRenderData())
+		{
 			continue;
 		}
-		
+
 		ovrAudioMaterial ovrChildMaterial = ovrMaterial;
 
 		// if we have a child geometry component with a valid material preset, it overrides the root mesh's material preset (inherited from parent by default).
@@ -348,15 +364,17 @@ ovrAudioContext UOculusAudioGeometryComponent::GetContext(UWorld* World)
 	return CachedContext;
 }
 
-void UOculusAudioGeometryComponent::Serialize(FArchive & Ar)
+void UOculusAudioGeometryComponent::Serialize(FArchive& Ar)
 {
 	// Tell the archive we are using a custom version.
-	Ar.UsingCustomVersion( UOculusAudioGeometryGUID );
+	Ar.UsingCustomVersion(UOculusAudioGeometryGUID);
 
 	Super::Serialize(Ar);
 
-	struct Delta {
-		static size_t Read(void* userData, void* bytes, size_t byteCount) {
+	struct Delta
+	{
+		static size_t Read(void* userData, void* bytes, size_t byteCount)
+		{
 			FArchive* Archive = static_cast<FArchive*>(userData);
 			check(Archive->IsLoading());
 			int64 CurrentPosition = Archive->Tell();
@@ -370,13 +388,15 @@ void UOculusAudioGeometryComponent::Serialize(FArchive & Ar)
 			Archive->Serialize(bytes, byteCount);
 			return Archive->GetError() ? 0 : byteCount;
 		}
-		static size_t Write(void* userData, const void* bytes, size_t byteCount) {
+		static size_t Write(void* userData, const void* bytes, size_t byteCount)
+		{
 			FArchive* Archive = static_cast<FArchive*>(userData);
 			check(Archive->IsSaving());
 			Archive->Serialize(const_cast<void*>(bytes), byteCount);
 			return Archive->GetError() ? 0 : byteCount;
 		}
-		static int64_t Seek(void* userData, int64_t seekOffset) {
+		static int64_t Seek(void* userData, int64_t seekOffset)
+		{
 			FArchive* Archive = static_cast<FArchive*>(userData);
 			int64 Start = Archive->Tell();
 			Archive->Seek(seekOffset);
@@ -405,18 +425,19 @@ void UOculusAudioGeometryComponent::Serialize(FArchive & Ar)
 		// LB 8/1/18: when duplicating static mesh actors in the editor, we get here once with a NULL Mesh ptr, not sure why (could be that the original and the
 		// dupe instances share the (single) actual mesh data and a serialization callback happens before the dupe has updated the mesh ptr?)
 		//check(Mesh != nullptr);
-		if (Mesh == nullptr) 
+		if (Mesh == nullptr)
 			return;
 
 		// if we have anything to save, it means the content changed for this component in the editor so we need to do the full export from scratch
 		// but 1st cleanup any existing (stale) data:
-		if (ovrGeometry != nullptr) {
+		if (ovrGeometry != nullptr)
+		{
 			ovrResult Result = OVRA_CALL(ovrAudio_DestroyAudioGeometry)(ovrGeometry);
 			check(Result == ovrSuccess);
 			ovrGeometry = nullptr;
 		}
 
-		// upload the new geometry and material preset	
+		// upload the new geometry and material preset
 		UploadGeometry();
 
 #if 0 // PAS TEMP
@@ -439,7 +460,8 @@ void UOculusAudioGeometryComponent::Serialize(FArchive & Ar)
 #endif
 
 		// now save cooked data
-		if (ovrGeometry != nullptr) {
+		if (ovrGeometry != nullptr)
+		{
 			ovrResult Result = OVRA_CALL(ovrAudio_AudioGeometryWriteMeshData)(ovrGeometry, &Serializer);
 			check(Result == ovrSuccess);
 
@@ -465,20 +487,21 @@ void UOculusAudioGeometryComponent::Serialize(FArchive & Ar)
 			ovrGeometry = nullptr;
 			Ar.Seek(PreviousPosition);
 		}
-		
+
 		// If the version number is out of date, upload the mesh from the scene.
-		int32 customVersion = Ar.CustomVer( UOculusAudioGeometryGUID );
+		int32 customVersion = Ar.CustomVer(UOculusAudioGeometryGUID);
 		if (ovrGeometry != nullptr && customVersion != OVRA_AUDIO_GEOMETRY_COMPONENT_LATEST_VERSION)
 		{
 			// if we have anything to save, it means the content changed for this component in the editor so we need to do the full export from scratch
 			// but 1st cleanup any existing (stale) data:
-			if (ovrGeometry != nullptr) {
+			if (ovrGeometry != nullptr)
+			{
 				Result = OVRA_CALL(ovrAudio_DestroyAudioGeometry)(ovrGeometry);
 				check(Result == ovrSuccess);
 				ovrGeometry = nullptr;
 			}
 
-			// upload the new geometry and material preset	
+			// upload the new geometry and material preset
 			UploadGeometry();
 		}
 	}
@@ -497,8 +520,7 @@ void UOculusAudioGeometryComponent::PostLoad()
 			UWorld* World = Actor->GetWorld();
 			if (World != nullptr)
 			{
-				if (World->WorldType != EWorldType::Game &&
-					World->WorldType != EWorldType::PIE)
+				if (World->WorldType != EWorldType::Game && World->WorldType != EWorldType::PIE)
 				{
 					ovrResult Result = OVRA_CALL(ovrAudio_DestroyAudioGeometry)(ovrGeometry);
 					check(Result == ovrSuccess);
@@ -523,5 +545,5 @@ void UOculusAudioGeometryComponent::BeginDestroy()
 }
 
 #if COMPILE_AS_DEBUG_MODE
-#  pragma optimize("", on) //PAS - TEMP - DELETE THIS - better debugging
+#pragma optimize("", on) //PAS - TEMP - DELETE THIS - better debugging
 #endif

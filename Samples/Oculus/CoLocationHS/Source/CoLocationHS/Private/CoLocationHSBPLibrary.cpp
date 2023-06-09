@@ -11,38 +11,39 @@ LICENSE file in the root directory of this source tree.
 #include <Interfaces/OnlineIdentityInterface.h>
 #include <OnlineSubsystemUtils.h>
 
-FString UCoLocationHSBPLibrary::GetLocalPlayerOculusNetID() {
-  IOnlineSubsystem* OnlineSub = IOnlineSubsystem::Get("Oculus");
-  if (OnlineSub == nullptr) {
-    UE_LOG(LogTemp, Display, TEXT("No oculus OSS"));
-    return "";
-  }
+FString UCoLocationHSBPLibrary::GetLocalPlayerOculusNetID()
+{
+	IOnlineSubsystem* OnlineSub = IOnlineSubsystem::Get("Oculus");
+	if (OnlineSub == nullptr)
+	{
+		UE_LOG(LogTemp, Display, TEXT("No oculus OSS"));
+		return "";
+	}
 
-  IOnlineIdentityPtr IdentityPtr = OnlineSub->GetIdentityInterface();
-  if (!IdentityPtr.IsValid()) {
-    UE_LOG(LogTemp, Display, TEXT("No oculus identity interface"));
-    return "";
-  }
+	IOnlineIdentityPtr IdentityPtr = OnlineSub->GetIdentityInterface();
+	if (!IdentityPtr.IsValid())
+	{
+		UE_LOG(LogTemp, Display, TEXT("No oculus identity interface"));
+		return "";
+	}
 
-  FUniqueNetIdPtr idPtr = IdentityPtr->GetUniquePlayerId(0);
-  if (!idPtr.IsValid()) {
-    UE_LOG(LogTemp, Display, TEXT("Player not logged in"));
-    return "";
-  }
+	FUniqueNetIdPtr idPtr = IdentityPtr->GetUniquePlayerId(0);
+	if (!idPtr.IsValid())
+	{
+		UE_LOG(LogTemp, Display, TEXT("Player not logged in"));
+		return "";
+	}
 
-  FString id = idPtr->ToString();
-  UE_LOG(LogTemp, Display, TEXT("LocalPlayer - UniqueID: %s"), *id);
+	FString id = idPtr->ToString();
+	UE_LOG(LogTemp, Display, TEXT("LocalPlayer - UniqueID: %s"), *id);
 
-  return id;
+	return id;
 }
 
 bool UCoLocationHSBPLibrary::GetDeviceSupportsLocalMultiplayer()
 {
 	EOculusXRDeviceType type = UOculusXRFunctionLibrary::GetDeviceType();
-	bool supported = (type == EOculusXRDeviceType::MetaQuestPro) ||
-		(type == EOculusXRDeviceType::MetaQuestProLink) ||
-		(type == EOculusXRDeviceType::OculusQuest2) ||
-		(type == EOculusXRDeviceType::Quest2_Link);
+	bool supported = (type == EOculusXRDeviceType::MetaQuestPro) || (type == EOculusXRDeviceType::MetaQuestProLink) || (type == EOculusXRDeviceType::OculusQuest2) || (type == EOculusXRDeviceType::Quest2_Link);
 
 	return supported;
 }

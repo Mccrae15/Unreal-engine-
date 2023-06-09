@@ -78,6 +78,7 @@ ovrp_SetInsightPassthroughKeyboardHandsIntensity(int layerId, ovrpInsightPassthr
 
 // Gets passthrough capabilities.
 OVRP_EXPORT ovrpResult ovrp_GetPassthroughCapabilityFlags(ovrpInsightPassthroughCapabilityFlags* capabilities);
+OVRP_EXPORT ovrpResult ovrp_GetPassthroughCapabilities(ovrpInsightPassthroughCapabilities* capabilities);
 
 OVRP_EXPORT ovrpResult ovrp_SetInsightPassthroughStyle2(int layerId, const ovrpInsightPassthroughStyle* style);
 

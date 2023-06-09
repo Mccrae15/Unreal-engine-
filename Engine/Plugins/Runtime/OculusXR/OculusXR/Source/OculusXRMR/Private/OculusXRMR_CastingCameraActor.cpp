@@ -29,7 +29,7 @@
 #define LOCTEXT_NAMESPACE "OculusXRMR_CastingCameraActor"
 
 // Possibly add 2=Limited in a future update
-static TAutoConsoleVariable<int32> CEnableExternalCompositionPostProcess(TEXT("oculus.mr.ExternalCompositionPostProcess"), 0, TEXT("Enable MR external composition post process: 0=Off, 1=On")); 
+static TAutoConsoleVariable<int32> CEnableExternalCompositionPostProcess(TEXT("oculus.mr.ExternalCompositionPostProcess"), 0, TEXT("Enable MR external composition post process: 0=Off, 1=On"));
 static TAutoConsoleVariable<int32> COverrideMixedRealityParametersVar(TEXT("oculus.mr.OverrideParameters"), 0, TEXT("Use the Mixed Reality console variables"));
 
 namespace
@@ -79,7 +79,7 @@ namespace
 
 		return true;
 	}
-}
+} // namespace
 
 //////////////////////////////////////////////////////////////////////////
 // ACastingCameraActor
@@ -358,10 +358,8 @@ void AOculusXRMR_CastingCameraActor::Tick(float DeltaTime)
 
 			if (IsVulkanPlatform(GMaxRHIShaderPlatform))
 			{
-				ExecuteOnRenderThread([this, EncodeIndex, &BackgroundTexture, &ForegroundTexture]()
-				{
-					ExecuteOnRHIThread([this, EncodeIndex, &BackgroundTexture, &ForegroundTexture]()
-					{
+				ExecuteOnRenderThread([this, EncodeIndex, &BackgroundTexture, &ForegroundTexture]() {
+					ExecuteOnRHIThread([this, EncodeIndex, &BackgroundTexture, &ForegroundTexture]() {
 						// The Vulkan RHI's implementation of GetNativeResource is different and returns the VkImage cast
 						// as a void* instead of a pointer to the VkImage, so we need this workaround
 						BackgroundTexture = (void*)BackgroundRenderTargets[EncodeIndex]->GetResource()->TextureRHI->GetNativeResource();
@@ -371,10 +369,8 @@ void AOculusXRMR_CastingCameraActor::Tick(float DeltaTime)
 			}
 			else
 			{
-				ExecuteOnRenderThread([this, EncodeIndex, &BackgroundTexture, &ForegroundTexture]()
-				{
-					ExecuteOnRHIThread([this, EncodeIndex, &BackgroundTexture, &ForegroundTexture]()
-					{
+				ExecuteOnRenderThread([this, EncodeIndex, &BackgroundTexture, &ForegroundTexture]() {
+					ExecuteOnRHIThread([this, EncodeIndex, &BackgroundTexture, &ForegroundTexture]() {
 						BackgroundTexture = *((void**)BackgroundRenderTargets[EncodeIndex]->GetResource()->TextureRHI->GetNativeResource());
 						ForegroundTexture = *((void**)ForegroundRenderTargets[EncodeIndex]->GetResource()->TextureRHI->GetNativeResource());
 					});
@@ -513,7 +509,6 @@ void AOculusXRMR_CastingCameraActor::SetTrackedCameraInitialPoseWithPlayerTransf
 		ForegroundCaptureActor->GetCaptureComponent2D()->FOVAngle = MRState->TrackedCamera.FieldOfView;
 	}
 }
-
 
 void AOculusXRMR_CastingCameraActor::SetTrackedCameraUserPoseWithCameraTransform()
 {
@@ -720,8 +715,7 @@ void BuildProjectionMatrix(float YMultiplier, float FOV, float FarClipPlane, FMa
 			1.0f,
 			YMultiplier,
 			GNearClippingPlane,
-			FarClipPlane
-		);
+			FarClipPlane);
 	}
 	else
 	{
@@ -731,8 +725,7 @@ void BuildProjectionMatrix(float YMultiplier, float FOV, float FarClipPlane, FMa
 			1.0f,
 			YMultiplier,
 			GNearClippingPlane,
-			FarClipPlane
-		);
+			FarClipPlane);
 	}
 }
 
@@ -788,7 +781,8 @@ void AOculusXRMR_CastingCameraActor::SetupMRCScreen()
 	{
 		SpecScreen = (OculusXRHMD::FSpectatorScreenController*)HMD->GetSpectatorScreenController();
 	}
-	if (SpecScreen) {
+	if (SpecScreen)
+	{
 #endif
 		UpdateRenderTargetSize();
 
@@ -846,7 +840,8 @@ void AOculusXRMR_CastingCameraActor::CloseMRCScreen()
 		SpecScreen = (OculusXRHMD::FSpectatorScreenController*)HMD->GetSpectatorScreenController();
 	}
 	// Restore original spectator screen mode
-	if (SpecScreen) {
+	if (SpecScreen)
+	{
 		SpecScreen->SetMRSpectatorScreenMode(OculusXRHMD::EMRSpectatorScreenMode::Default);
 		SpecScreen->SetMRForeground(nullptr);
 		SpecScreen->SetMRBackground(nullptr);
@@ -861,7 +856,8 @@ void AOculusXRMR_CastingCameraActor::CloseMRCScreen()
 
 void AOculusXRMR_CastingCameraActor::CloseTrackedCamera()
 {
-	if (PlaneMeshComponent) {
+	if (PlaneMeshComponent)
+	{
 		PlaneMeshComponent->SetVisibility(false);
 	}
 }

@@ -45,7 +45,7 @@ void UOculusXRStereoLayerShapeUserDefined::ApplyShape(IStereoLayers::FLayerDesc&
 		ColorMapType,
 		GetColorArray(bUseColorMapCurve, ColorMapCurve),
 		GenerateColorLutDescription(LutWeight, ColorLUTSource, ColorLUTTarget));
-	LayerDesc.SetShape<FUserDefinedLayer>(UserGeometryList,EdgeStyleParameters, LayerOrder);
+	LayerDesc.SetShape<FUserDefinedLayer>(UserGeometryList, EdgeStyleParameters, LayerOrder);
 }
 
 void UOculusXRStereoLayerShapeUserDefined::AddGeometry(const FString& MeshName, OculusXRHMD::FOculusPassthroughMeshRef PassthroughMesh, FTransform Transform, bool bUpdateTransform)
@@ -67,16 +67,15 @@ void UOculusXRStereoLayerShapeUserDefined::RemoveGeometry(const FString& MeshNam
 }
 
 UOculusXRPassthroughLayerComponent::UOculusXRPassthroughLayerComponent(const FObjectInitializer& ObjectInitializer)
-	:	Super(ObjectInitializer)
+	: Super(ObjectInitializer)
 {
 }
 
-
 void UOculusXRPassthroughLayerComponent::DestroyComponent(bool bPromoteChildren)
 {
-    Super::DestroyComponent(bPromoteChildren);
+	Super::DestroyComponent(bPromoteChildren);
 #ifdef WITH_OCULUS_BRANCH
-    IStereoLayers* StereoLayers;
+	IStereoLayers* StereoLayers;
 	if (LayerId && GEngine->StereoRenderingDevice.IsValid() && (StereoLayers = GEngine->StereoRenderingDevice->GetStereoLayers()) != nullptr)
 	{
 		StereoLayers->DestroyLayer(LayerId);
@@ -85,16 +84,16 @@ void UOculusXRPassthroughLayerComponent::DestroyComponent(bool bPromoteChildren)
 #endif
 }
 
-void UOculusXRPassthroughLayerComponent::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction)
+void UOculusXRPassthroughLayerComponent::TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 #ifndef WITH_OCULUS_BRANCH
-	if(Texture == nullptr && !LayerRequiresTexture())
+	if (Texture == nullptr && !LayerRequiresTexture())
 	{
 		// UStereoLayerComponent hides components without textures
 		Texture = GEngine->DefaultTexture;
 	}
 #endif
-	Super::TickComponent( DeltaTime, TickType, ThisTickFunction );
+	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 	UpdatePassthroughObjects();
 }
 
@@ -120,12 +119,12 @@ void UOculusXRPassthroughLayerComponent::UpdatePassthroughObjects()
 				}
 			}
 		}
-		if (bDirty) {
+		if (bDirty)
+		{
 			MarkStereoLayerDirty();
 		}
 	}
 }
-
 
 OculusXRHMD::FOculusPassthroughMeshRef UOculusXRPassthroughLayerComponent::CreatePassthroughMesh(UStaticMesh* Mesh)
 {
@@ -135,7 +134,7 @@ OculusXRHMD::FOculusPassthroughMeshRef UOculusXRPassthroughLayerComponent::Creat
 		return nullptr;
 	}
 
-	if(Mesh->GetNumLODs() == 0)
+	if (Mesh->GetNumLODs() == 0)
 	{
 		UE_LOG(LogOculusPassthrough, Error, TEXT("Passthrough Static Mesh has no LODs"));
 		return nullptr;
@@ -152,14 +151,14 @@ OculusXRHMD::FOculusPassthroughMeshRef UOculusXRPassthroughLayerComponent::Creat
 
 	TArray<int32> Triangles;
 	const int32 NumIndices = LOD.IndexBuffer.GetNumIndices();
-	for (int32 i = 0 ; i < NumIndices ; ++i)
+	for (int32 i = 0; i < NumIndices; ++i)
 	{
 		Triangles.Add(LOD.IndexBuffer.GetIndex(i));
 	}
 
 	TArray<FVector> Vertices;
 	const int32 NumVertices = LOD.VertexBuffers.PositionVertexBuffer.GetNumVertices();
-	for (int32 i = 0 ; i < NumVertices ; ++i)
+	for (int32 i = 0; i < NumVertices; ++i)
 	{
 		Vertices.Add((FVector)LOD.VertexBuffers.PositionVertexBuffer.VertexPosition(i));
 	}
@@ -168,7 +167,7 @@ OculusXRHMD::FOculusPassthroughMeshRef UOculusXRPassthroughLayerComponent::Creat
 	return PassthroughMesh;
 }
 
-void UOculusXRPassthroughLayerComponent::AddSurfaceGeometry(AStaticMeshActor* StaticMeshActor, bool updateTransform )
+void UOculusXRPassthroughLayerComponent::AddSurfaceGeometry(AStaticMeshActor* StaticMeshActor, bool updateTransform)
 {
 	if (StaticMeshActor)
 	{
@@ -191,20 +190,20 @@ void UOculusXRPassthroughLayerComponent::AddSurfaceGeometry(AStaticMeshActor* St
 				}
 			}
 
-			PassthroughActorMap.Add(StaticMeshActor->GetFullName(),StaticMeshActor);
+			PassthroughActorMap.Add(StaticMeshActor->GetFullName(), StaticMeshActor);
 			MarkStereoLayerDirty();
 		}
 	}
 }
 
-void UOculusXRPassthroughLayerComponent::RemoveSurfaceGeometry(AStaticMeshActor* StaticMeshActor )
+void UOculusXRPassthroughLayerComponent::RemoveSurfaceGeometry(AStaticMeshActor* StaticMeshActor)
 {
 	if (StaticMeshActor)
 	{
 		UOculusXRStereoLayerShapeUserDefined* UserShape = Cast<UOculusXRStereoLayerShapeUserDefined>(Shape);
 		if (UserShape)
 		{
-			UStaticMeshComponent *StaticMeshComponent = StaticMeshActor->GetStaticMeshComponent();
+			UStaticMeshComponent* StaticMeshComponent = StaticMeshActor->GetStaticMeshComponent();
 			if (StaticMeshComponent)
 			{
 				UStaticMesh* StaticMesh = StaticMeshComponent->GetStaticMesh();
@@ -242,14 +241,13 @@ void UOculusXRPassthroughLayerComponent::MarkPassthroughStyleForUpdate()
 
 bool UOculusXRPassthroughLayerComponent::LayerRequiresTexture()
 {
-	const bool bIsPassthroughShape = Shape && (Shape->IsA<UOculusXRStereoLayerShapeReconstructed>() ||
-		Shape->IsA<UOculusXRStereoLayerShapeUserDefined>());
+	const bool bIsPassthroughShape = Shape && (Shape->IsA<UOculusXRStereoLayerShapeReconstructed>() || Shape->IsA<UOculusXRStereoLayerShapeUserDefined>());
 	return !bIsPassthroughShape;
 }
 
 void UOculusXRPassthroughLayerBase::SetTextureOpacity(float InOpacity)
 {
-	if(TextureOpacityFactor == InOpacity)
+	if (TextureOpacityFactor == InOpacity)
 	{
 		return;
 	}
@@ -268,7 +266,6 @@ void UOculusXRPassthroughLayerBase::EnableEdgeColor(bool bInEnableEdgeColor)
 	MarkStereoLayerDirty();
 }
 
-
 void UOculusXRPassthroughLayerBase::EnableColorMap(bool bInEnableColorMap)
 {
 	if (bEnableColorMap == bInEnableColorMap)
@@ -281,7 +278,7 @@ void UOculusXRPassthroughLayerBase::EnableColorMap(bool bInEnableColorMap)
 
 void UOculusXRPassthroughLayerBase::SetEdgeRenderingColor(FLinearColor InEdgeColor)
 {
-	if(EdgeColor == InEdgeColor)
+	if (EdgeColor == InEdgeColor)
 	{
 		return;
 	}
@@ -302,7 +299,7 @@ void UOculusXRPassthroughLayerBase::EnableColorMapCurve(bool bInEnableColorMapCu
 
 void UOculusXRPassthroughLayerBase::SetColorMapCurve(UCurveLinearColor* InColorMapCurve)
 {
-	if(ColorMapCurve == InColorMapCurve)
+	if (ColorMapCurve == InColorMapCurve)
 	{
 		return;
 	}
@@ -312,7 +309,7 @@ void UOculusXRPassthroughLayerBase::SetColorMapCurve(UCurveLinearColor* InColorM
 
 void UOculusXRPassthroughLayerBase::SetColorMapType(EOculusXRColorMapType InColorMapType)
 {
-	if(ColorMapType == InColorMapType)
+	if (ColorMapType == InColorMapType)
 	{
 		return;
 	}
@@ -328,7 +325,8 @@ void UOculusXRPassthroughLayerBase::SetColorArray(const TArray<FLinearColor>& In
 		return;
 	}
 
-	if (ColorMapType != ColorMapType_GrayscaleToColor) {
+	if (ColorMapType != ColorMapType_GrayscaleToColor)
+	{
 		UE_LOG(LogOculusPassthrough, Warning, TEXT("SetColorArray is ignored for color map types other than Grayscale to Color."));
 		return;
 	}
@@ -350,7 +348,8 @@ void UOculusXRPassthroughLayerBase::ClearColorMap()
 
 void UOculusXRPassthroughLayerBase::SetColorMapControls(float InContrast, float InBrightness, float InPosterize)
 {
-	if (ColorMapType != ColorMapType_Grayscale && ColorMapType != ColorMapType_GrayscaleToColor) {
+	if (ColorMapType != ColorMapType_Grayscale && ColorMapType != ColorMapType_GrayscaleToColor)
+	{
 		UE_LOG(LogOculusPassthrough, Warning, TEXT("SetColorMapControls is ignored for color map types other than Grayscale and Grayscale to color."));
 		return;
 	}
@@ -363,7 +362,8 @@ void UOculusXRPassthroughLayerBase::SetColorMapControls(float InContrast, float 
 
 void UOculusXRPassthroughLayerBase::SetBrightnessContrastSaturation(float InContrast, float InBrightness, float InSaturation)
 {
-	if (ColorMapType != ColorMapType_ColorAdjustment) {
+	if (ColorMapType != ColorMapType_ColorAdjustment)
+	{
 		UE_LOG(LogOculusPassthrough, Warning, TEXT("SetBrightnessContrastSaturation is ignored for color map types other than Color Adjustment."));
 		return;
 	}
@@ -480,7 +480,8 @@ TArray<FLinearColor> UOculusXRPassthroughLayerBase::GenerateColorArrayFromColorC
 
 TArray<FLinearColor> UOculusXRPassthroughLayerBase::GetOrGenerateNeutralColorArray()
 {
-	if (NeutralColorArray.Num() == 0) {
+	if (NeutralColorArray.Num() == 0)
+	{
 		const uint32 TotalEntries = 256;
 		NeutralColorArray.SetNum(TotalEntries);
 
@@ -512,8 +513,10 @@ TArray<FLinearColor> UOculusXRPassthroughLayerBase::GenerateColorArray(bool bInU
 
 TArray<FLinearColor> UOculusXRPassthroughLayerBase::GetColorArray(bool bInUseColorMapCurve, const UCurveLinearColor* InColorMapCurve)
 {
-	if (ColorArray.Num() == 0) {
-		if (bInUseColorMapCurve) {
+	if (ColorArray.Num() == 0)
+	{
+		if (bInUseColorMapCurve)
+		{
 			return GenerateColorArray(bInUseColorMapCurve, InColorMapCurve);
 		}
 		return GetOrGenerateNeutralColorArray();

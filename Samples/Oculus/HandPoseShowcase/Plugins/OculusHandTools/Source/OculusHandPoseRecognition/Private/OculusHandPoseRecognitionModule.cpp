@@ -18,5 +18,5 @@ void FOculusHandPoseRecognitionModule::ShutdownModule()
 }
 
 #undef LOCTEXT_NAMESPACE
-	
+
 IMPLEMENT_MODULE(FOculusHandPoseRecognitionModule, OculusHandPoseRecognition)

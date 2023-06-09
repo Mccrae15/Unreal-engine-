@@ -190,7 +190,8 @@ RENDERCORE_API FRDGTextureMSAA CreateTextureMSAA(
 	FRDGBuilder& GraphBuilder,
 	FRDGTextureDesc Desc,
 	const TCHAR* Name,
-	ETextureCreateFlags ResolveFlagsToAdd)
+	ETextureCreateFlags ResolveFlagsToAdd,
+	const bool bForceResolveFormatR8G8B8A8)
 {
 	bool bForceSeparateTargetAndShaderResource = Desc.NumSamples > 1 && RHISupportsSeparateMSAAAndResolveTextures(GMaxRHIShaderPlatform);
 	
@@ -214,6 +215,11 @@ RENDERCORE_API FRDGTextureMSAA CreateTextureMSAA(
 			ResolveFlags |= TexCreate_ResolveTargetable;
 		}
         ResolveFlags &= ~(TexCreate_Memoryless);
+
+		if (bForceResolveFormatR8G8B8A8) // MobileHDR w tonemap subpass
+		{
+			Desc.Format = PF_R8G8B8A8;
+		}
         
 		Desc.Flags = ResolveFlags | ResolveFlagsToAdd;
 		Texture.Resolve = GraphBuilder.CreateTexture(Desc, Name);

@@ -13,8 +13,8 @@ UCLASS()
 class OCULUSINTERACTABLE_API AInteractable : public AActor
 {
 	GENERATED_BODY()
-	
-public:	
+
+public:
 	/** Sets default values for this actor's properties. */
 	AInteractable();
 
@@ -25,7 +25,7 @@ protected:
 	/** Called when this actor is being removed from the level. */
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
-public:	
+public:
 	/** Called every frame. */
 	virtual void Tick(float DeltaTime) override;
 

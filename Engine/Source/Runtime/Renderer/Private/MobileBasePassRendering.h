@@ -414,6 +414,7 @@ public:
 		OutEnvironment.SetDefine(TEXT("USE_SHADOWMASKTEXTURE"), bMobileUsesShadowMaskTexture && !bTranslucentMaterial ? 1u : 0u);
 
 		OutEnvironment.SetDefine(TEXT("TONEMAP_SUBPASS_EMULATION"), (!IsVulkanPlatform(Parameters.Platform) && IsMobileTonemapSubpassEnabled()) ? 1u : 0u);
+		OutEnvironment.SetDefine(TEXT("MOBILE_TONEMAP_SUBPASS"), (IsMobileTonemapSubpassEnabled()) ? 1u : 0u);
 	}
 	
 	/** Initialization constructor. */

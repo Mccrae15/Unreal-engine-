@@ -15,7 +15,7 @@
 class FOculusAudioPlugin : public IModuleInterface
 {
 public:
-	//~ Begin IModuleInterface 
+	//~ Begin IModuleInterface
 	virtual void StartupModule() override;
 	virtual void ShutdownModule() override;
 	//~ End IModuleInterface

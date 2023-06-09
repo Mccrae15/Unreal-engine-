@@ -1,3 +1,10 @@
+/*
+Copyright (c) Meta Platforms, Inc. and affiliates.
+All rights reserved.
+This source code is licensed under the license found in the
+LICENSE file in the root directory of this source tree.
+*/
+
 #include "OculusXRPassthroughColorLutAsset.h"
 #include "AssetTypeCategories.h"
 #include "UObject/ObjectMacros.h"
@@ -16,7 +23,8 @@ FColor FAssetTypeActions_OculusXRPassthroughColorLut::GetTypeColor() const
 	return FColor(100, 100, 100);
 }
 
-const TArray<FText>& FAssetTypeActions_OculusXRPassthroughColorLut::GetSubMenus() const {
+const TArray<FText>& FAssetTypeActions_OculusXRPassthroughColorLut::GetSubMenus() const
+{
 	static const TArray<FText> SubMenus{
 		LOCTEXT("AssetOculusXRPassthroughColorLutSubMenu", "OculusXR")
 	};
@@ -44,11 +52,13 @@ UOculusXRPassthroughColorLutFactory::UOculusXRPassthroughColorLutFactory(const F
 }
 
 UObject* UOculusXRPassthroughColorLutFactory::FactoryCreateNew(UClass* Class, UObject* InParent, FName Name, EObjectFlags Flags, UObject* Context,
-	 FFeedbackContext* Warn) {
+	FFeedbackContext* Warn)
+{
 	return NewObject<UOculusXRPassthroughColorLut>(InParent, Name, Flags);
 }
 
-uint32 UOculusXRPassthroughColorLutFactory::GetMenuCategories() const {
+uint32 UOculusXRPassthroughColorLutFactory::GetMenuCategories() const
+{
 	return EAssetTypeCategories::Misc;
 }
 #undef LOCTEXT_NAMESPACE

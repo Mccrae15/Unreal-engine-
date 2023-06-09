@@ -30,7 +30,7 @@
 // Note: OVRP_MINOR_VERSION == OCULUS_SDK_VERSION + 32
 
 #define OVRP_MAJOR_VERSION 1
-#define OVRP_MINOR_VERSION 85
+#define OVRP_MINOR_VERSION 86
 #define OVRP_PATCH_VERSION 0
 
 #define OVRP_VERSION OVRP_MAJOR_VERSION, OVRP_MINOR_VERSION, OVRP_PATCH_VERSION
@@ -142,6 +142,7 @@ typedef enum {
   ovrpFailure_DeprecatedOperation = -1009,
   ovrpFailure_ErrorLimitReached = -1010,
   ovrpFailure_ErrorInitializationFailed = -1011,
+  ovprFailure_RuntimeUnavailable = -1012,
 
   /// Space error cases
   ovrpFailure_SpaceCloudStorageDisabled = -2000,
@@ -149,6 +150,12 @@ typedef enum {
   ovrpFailure_SpaceLocalizationFailed = -2002,
   ovrpFailure_SpaceNetworkTimeout = -2003,
   ovrpFailure_SpaceNetworkRequestFailed = -2004,
+
+
+
+
+
+
 } ovrpResult;
 
 #define OVRP_SUCCESS(result) ((result) >= 0)
@@ -283,8 +290,8 @@ typedef enum {
 
 
 
-  ovrpNode_TrackedRemoteLeft = 12,
-  ovrpNode_TrackedRemoteRight = 13,
+  ovrpNode_ControllerLeft = 12,
+  ovrpNode_ControllerRight = 13,
   ovrpNode_Count,
   ovrpNode_EnumSize = 0x7fffffff
 } ovrpNode;
@@ -1128,6 +1135,9 @@ typedef enum {
   ovrpTextureFormat_R5G6B5 = 11,
   ovrpTextureFormat_R16G16_FP = 12,
   ovrpTextureFormat_A2B10G10R10 = 13,
+  ovrpTextureFormat_R16 = 15,
+  ovrpTextureFormat_R16_FP = 16,
+  ovrpTextureFormat_R32_FP = 17,
 
   // depth texture formats
   ovrpTextureFormat_D16 = 6,
@@ -1287,6 +1297,12 @@ typedef enum {
   ovrpLayerSubmitFlag_QualitySharpen = (1 << 16),
   // Layer submit flag version of secure content
   ovrpLayerSubmitFlag_SecureContent = (1 << 17),
+
+
+
+
+
+
 } ovrpLayerSubmitFlags;
 
 /// Factors used for source and dest alpha to make up the blend function.
@@ -1686,6 +1702,7 @@ typedef enum ovrpSkeletonConstants_ {
 
   ovrpSkeletonConstants_MaxBones = ovrpBoneId_Max,
   ovrpSkeletonConstants_MaxBoneCapsules = 19,
+  ovrpSkeletonConstants_MaxNumMicrogestures = 5,
   ovrpSkeletonConstants_EnumSize = 0x7fffffff
 } ovrpSkeletonConstants;
 
@@ -1825,6 +1842,11 @@ typedef struct ovrpBodyState_ {
   double Time;
   ovrpBodyJointLocation JointLocations[ovrpBoneId_Body_End];
 } ovrpBodyState;
+
+
+
+
+
 
 
 
@@ -2001,6 +2023,25 @@ typedef struct ovrpEyeGazesState_ {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 //-----------------------------------------------------------------
 // Color Space Management
 //-----------------------------------------------------------------
@@ -2122,6 +2163,10 @@ typedef enum ovrpEventType_ {
 
 
 
+
+
+
+
   ovrpEventType_VirtualKeyboardCommitText = 201,
   ovrpEventType_VirtualKeyboardBackspace = 202,
   ovrpEventType_VirtualKeyboardEnter = 203,
@@ -2136,8 +2181,11 @@ typedef enum ovrpEventType_ {
 
 
 
-
   ovrpEventType_PerfSettings = 304,
+
+
+
+
 
 
 
@@ -2338,7 +2386,7 @@ typedef struct ovrpVirtualKeyboardLocationInfo_ {
 
 // When supplying input info, specifies which input device was used.
 // Must match XrVirtualKeyboardInputSourceMETA defined in
-// arvr/projects/xrruntime/mobile/OpenXR/Include/openxr/meta_virtual_keyboard.h
+// arvr/libraries/openxr/include/openxr/meta_virtual_keyboard.h
 typedef enum {
   ovrpVirtualKeyboardInputSource_Invalid = 0,
   ovrpVirtualKeyboardInputSource_ControllerRayLeft = 1,
@@ -2368,7 +2416,6 @@ typedef struct ovrpVirtualKeyboardAnimationState_ {
 } ovrpVirtualKeyboardAnimationState;
 
 typedef struct ovrpVirtualKeyboardModelAnimationStates_ {
-  ovrpUInt64 modelKey;
   unsigned int stateCapacityInput;
   unsigned int stateCountOutput;
   ovrpVirtualKeyboardAnimationState* states;
@@ -2381,15 +2428,14 @@ typedef struct ovrpVirtualKeyboardTextureIds_ {
 } ovrpVirtualKeyboardTextureIds;
 
 typedef struct ovrpVirtualKeyboardTextureData_ {
-  unsigned int textureByteCapacityInput;
-  unsigned int textureByteCountOutput;
   unsigned int textureWidth;
   unsigned int textureHeight;
-  unsigned char* textureBytes;
+  unsigned int bufferCapacityInput;
+  unsigned int bufferCountOutput;
+  unsigned char* buffer;
 } ovrpVirtualKeyboardTextureData;
 
 typedef struct ovrpVirtualKeyboardModelVisibility_ {
-  ovrpUInt64 modelKey;
   ovrpBool visible;
 } ovrpVirtualKeyboardModelVisibility;
 
@@ -2496,6 +2542,27 @@ typedef enum {
 } ovrpInsightPassthroughCapabilityFlags;
 
 typedef enum {
+  ovrpInsightPassthroughCapabilityFields_Flags = 1 << 0,
+  ovrpInsightPassthroughCapabilityFields_MaxColorLutResolution = 1 << 1,
+  ovrpInsightPassthroughCapabilityFields_EnumSize = 0x7fffffff
+} ovrpInsightPassthroughCapabilityFields;
+
+typedef struct {
+  /// This field determines which other fields of the struct the caller expects to be filled (and has allocated memory
+  /// for). This is used to establish backward compatibility: when new fields are added to the struct, callers of
+  /// `ovrp_GetPassthroughCapabilities` may be built based on an older version and thus only provide enough memory for
+  /// part of the struct. The callee must thus check which fields it is expected to fill. Note that we should only ever
+  /// add new fields using this mechanism, not change or remove existing ones.
+  ovrpInsightPassthroughCapabilityFields Fields;
+
+  /// General capability flags ("supports X").
+  ovrpInsightPassthroughCapabilityFlags Flags;
+
+  /// Maximum color LUT resolution supported by the system.
+  ovrpUInt32 MaxColorLutResolution;
+} ovrpInsightPassthroughCapabilities;
+
+typedef enum {
   ovrpPassthroughColorLutChannels_Invalid = 0,
   ovrpPassthroughColorLutChannels_Rgb = 1,
   ovrpPassthroughColorLutChannels_Rgba = 2,
@@ -2598,6 +2665,9 @@ typedef enum {
   ovrpSpaceQueryFilterType_None = 0,
   ovrpSpaceQueryFilterType_Ids = 1,
   ovrpSpaceQueryFilterType_Components = 2,
+
+
+
   ovrpSpaceQueryFilterType_Max = 0x7ffffff,
 } ovrpSpaceQueryFilterType;
 
@@ -2646,6 +2716,37 @@ typedef struct {
   ovrpSpaceFilterComponentsInfo componentsInfo;
 } ovrpSpaceQueryInfo;
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 typedef struct ovrpSpaceQueryResult {
   ovrpSpace space;
   ovrpUuid uuid;
@@ -2679,19 +2780,6 @@ typedef struct ovrpEventSpaceQueryComplete_ {
   ovrpUInt64 requestId;
   ovrpResult result;
 } ovrpEventSpaceQueryComplete;
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 typedef struct ovrpEventSpaceStorageSaveResult_ {
   ovrpEventType EventType;
@@ -2774,6 +2862,16 @@ typedef struct ovrpSceneCaptureRequest_ {
   int requestByteCount;
   char* request;
 } ovrpSceneCaptureRequest;
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -3192,6 +3290,85 @@ typedef enum {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// Environment Depth API
+typedef struct ovrpEnvironmentDepthTextureDesc_ {
+  ovrpSizei TextureSize;
+  int MipLevels;
+  int SampleCount;
+  ovrpLayout Layout;
+  ovrpTextureFormat Format;
+} ovrpEnvironmentDepthTextureDesc;
+
+typedef struct ovrpEnvironmentDepthFrameDesc_ {
+  ovrpBool IsValid;
+  double CreateTime;
+  double PredictedDisplayTime;
+  int SwapchainIndex;
+  ovrpPosef CreatePose;
+  ovrpFovf Fov;
+  float NearZ;
+  float FarZ;
+  float MinDepth;
+  float MaxDepth;
+} ovrpEnvironmentDepthFrameDesc;
 
 #ifdef __clang__
 #pragma clang diagnostic pop

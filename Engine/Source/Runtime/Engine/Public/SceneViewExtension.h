@@ -166,6 +166,11 @@ public:
 	virtual void PostRenderBasePassMobile_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView) {}
 
 	/**
+	 * Called at the end of the SceneColorRendering Pass when using the mobile renderer.
+	 */
+	virtual void PostSceneColorRenderingMobile_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView) {}
+
+	/**
 	 * Called right before Post Processing rendering begins
 	 */
 	virtual void PrePostProcessPass_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessingInputs& Inputs) {};

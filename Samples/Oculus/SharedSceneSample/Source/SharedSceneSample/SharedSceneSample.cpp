@@ -9,4 +9,4 @@ LICENSE file in the root directory of this source tree.
 #include "SharedSceneSample.h"
 #include "Modules/ModuleManager.h"
 
-IMPLEMENT_PRIMARY_GAME_MODULE( FDefaultGameModuleImpl, SharedSceneSample, "SharedSceneSample" );
+IMPLEMENT_PRIMARY_GAME_MODULE(FDefaultGameModuleImpl, SharedSceneSample, "SharedSceneSample");

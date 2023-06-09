@@ -14,12 +14,12 @@
  *
  * @warning Must be attached to a component that moves with hands.
  */
-UCLASS( ClassGroup=(Custom), meta=(BlueprintSpawnableComponent) )
+UCLASS(ClassGroup = (Custom), meta = (BlueprintSpawnableComponent))
 class OCULUSHANDPOSERECOGNITION_API UHandPoseRecognizer : public USceneComponent
 {
 	GENERATED_BODY()
 
-public:	
+public:
 	/** Sets default values for this component's properties. */
 	UHandPoseRecognizer(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
 
@@ -39,7 +39,7 @@ public:
 	UPROPERTY(Category = "Hand Pose Recognition", EditAnywhere, BlueprintReadWrite)
 	float RecognitionInterval;
 
-	/** Minimum confidence level needed to recognize a pose.  Can be overriden for each individual pose. */
+	/** Minimum confidence level needed to recognize a pose.  Can be overridden for each individual pose. */
 	UPROPERTY(Category = "Hand Pose Recognition", EditAnywhere, BlueprintReadWrite)
 	float DefaultConfidenceFloor;
 
@@ -61,8 +61,9 @@ public:
 	 * @return A boolean that indicates if a pose is currently recognized.
 	 */
 	UFUNCTION(BlueprintCallable)
-	UPARAM(DisplayName = "Pose Recognized") bool GetRecognizedHandPose(int& Index, FString& Name, float& Duration, float& Error, float& Confidence);
-	
+	UPARAM(DisplayName = "Pose Recognized")
+	bool GetRecognizedHandPose(int& Index, FString& Name, float& Duration, float& Error, float& Confidence);
+
 	/** Access to the last hand pose information. */
 	const FHandPose& GetCurrentPose() const
 	{
@@ -77,7 +78,6 @@ public:
 	void LogEncodedHandPose();
 
 protected:
-
 	/** Structure storing the current bone rotators. */
 	FHandPose Pose;
 
@@ -89,7 +89,6 @@ protected:
 	FRotator GetWristRotator(FQuat ComponentQuat);
 
 private:
-
 	/** Recognition state. */
 	float TimeSinceLastRecognition;
 	int CurrentHandPose;

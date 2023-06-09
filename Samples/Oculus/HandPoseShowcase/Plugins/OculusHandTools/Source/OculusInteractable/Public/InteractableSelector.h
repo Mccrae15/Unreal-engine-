@@ -20,8 +20,8 @@ class OCULUSINTERACTABLE_API AInteractableSelector : public AActor
 	friend class AInteractable;
 
 	GENERATED_BODY()
-	
-public:	
+
+public:
 	/** Sets default values for this actor's properties. */
 	AInteractableSelector();
 
@@ -30,6 +30,7 @@ public:
 private:
 	UPROPERTY()
 	class UArrowComponent* ArrowComponent;
+
 public:
 #endif
 
@@ -40,7 +41,7 @@ public:
 	/** Distance from selector at which we start raycasting. */
 	UPROPERTY(Category = "Selector", EditAnywhere, BlueprintReadWrite)
 	float RaycastOffset;
-	
+
 	/** Raycast range. */
 	UPROPERTY(Category = "Selector", EditAnywhere, BlueprintReadWrite)
 	float RaycastDistance;
@@ -57,7 +58,7 @@ public:
 	UPROPERTY(Category = "Selector", EditAnywhere, BlueprintReadWrite)
 	bool bAlignAimingActorWithHitNormal;
 
-	/** Aiming actor placed at targetting location. */
+	/** Aiming actor placed at targeting location. */
 	UPROPERTY(Category = "Selector", EditAnywhere, BlueprintReadWrite)
 	AAimingActor* AimingActor;
 

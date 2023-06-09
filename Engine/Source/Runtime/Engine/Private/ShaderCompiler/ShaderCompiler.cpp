@@ -6996,7 +6996,7 @@ void VerifyGlobalShaders(EShaderPlatform Platform, const ITargetPlatform* Target
 		}
 
 		ensureMsgf(
-			PermutationCountToCompile <= 832,	// Nanite culling as of today (2022-01-11) can go up to 832 permutations
+			PermutationCountToCompile <= 840,	// FTonemapCS has 840 possible perms (2023-04-17) // Nanite culling as of today (2022-01-11) can go up to 832 permutations
 			TEXT("Global shader %s has %i permutations: probably more than it needs."),
 			GlobalShaderType->GetName(), PermutationCountToCompile);
 

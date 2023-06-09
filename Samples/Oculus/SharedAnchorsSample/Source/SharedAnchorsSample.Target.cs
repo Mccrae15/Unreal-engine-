@@ -15,6 +15,6 @@ public class SharedAnchorsSampleTarget : TargetRules
 	{
 		Type = TargetType.Game;
 
-		ExtraModuleNames.AddRange( new string[] { "SharedAnchorsSample" } );
+		ExtraModuleNames.AddRange(new string[] { "SharedAnchorsSample" });
 	}
 }

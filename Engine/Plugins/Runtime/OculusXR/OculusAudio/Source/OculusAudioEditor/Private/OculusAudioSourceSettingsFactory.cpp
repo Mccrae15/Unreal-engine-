@@ -10,13 +10,12 @@
 
 FText FAssetTypeActions_OculusAudioSourceSettings::GetName() const
 {
-    return LOCTEXT("AssetTypeActions_OculusAudioSpatializationSettings", "Oculus Audio Source Settings");
+	return LOCTEXT("AssetTypeActions_OculusAudioSpatializationSettings", "Oculus Audio Source Settings");
 }
 
 const TArray<FText>& FAssetTypeActions_OculusAudioSourceSettings::GetSubMenus() const
 {
-	static const TArray<FText> SubMenus
-	{
+	static const TArray<FText> SubMenus{
 		LOCTEXT("AssetSoundOculusSubMenu", "Oculus")
 	};
 
@@ -25,38 +24,38 @@ const TArray<FText>& FAssetTypeActions_OculusAudioSourceSettings::GetSubMenus() 
 
 FColor FAssetTypeActions_OculusAudioSourceSettings::GetTypeColor() const
 {
-    return FColor(100, 100, 100);
+	return FColor(100, 100, 100);
 }
 
 UClass* FAssetTypeActions_OculusAudioSourceSettings::GetSupportedClass() const
 {
-    return UOculusAudioSourceSettings::StaticClass();
+	return UOculusAudioSourceSettings::StaticClass();
 }
 
 uint32 FAssetTypeActions_OculusAudioSourceSettings::GetCategories()
 {
-    return EAssetTypeCategories::Sounds;
+	return EAssetTypeCategories::Sounds;
 }
 
 UOculusAudioSourceSettingsFactory::UOculusAudioSourceSettingsFactory(const FObjectInitializer& ObjectInitializer)
-    : Super(ObjectInitializer)
+	: Super(ObjectInitializer)
 {
-    SupportedClass = UOculusAudioSourceSettings::StaticClass();
+	SupportedClass = UOculusAudioSourceSettings::StaticClass();
 
-    bCreateNew = true;
-    bEditorImport = true;
-    bEditAfterNew = true;
+	bCreateNew = true;
+	bEditorImport = true;
+	bEditAfterNew = true;
 }
 
 UObject* UOculusAudioSourceSettingsFactory::FactoryCreateNew(UClass* Class, UObject* InParent, FName Name, EObjectFlags Flags, UObject* Context,
-    FFeedbackContext* Warn)
+	FFeedbackContext* Warn)
 {
-    return NewObject<UOculusAudioSourceSettings>(InParent, Name, Flags);
+	return NewObject<UOculusAudioSourceSettings>(InParent, Name, Flags);
 }
 
 uint32 UOculusAudioSourceSettingsFactory::GetMenuCategories() const
 {
-    return EAssetTypeCategories::Sounds;
+	return EAssetTypeCategories::Sounds;
 }
 
 #undef LOCTEXT_NAMESPACE

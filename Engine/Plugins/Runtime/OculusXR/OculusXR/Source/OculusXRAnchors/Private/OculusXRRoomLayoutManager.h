@@ -17,10 +17,7 @@ namespace OculusXRAnchors
 	{
 		static bool RequestSceneCapture(uint64& OutRequestID);
 		static bool GetSpaceRoomLayout(const uint64 Space, const uint32 MaxWallsCapacity,
-									   FOculusXRUUID &OutCeilingUuid, FOculusXRUUID &OutFloorUuid, TArray<FOculusXRUUID>& OutWallsUuid);
-		
+			FOculusXRUUID& OutCeilingUuid, FOculusXRUUID& OutFloorUuid, TArray<FOculusXRUUID>& OutWallsUuid);
 		static void OnPollEvent(ovrpEventDataBuffer* EventDataBuffer, bool& EventPollResult);
 	};
-}
-
-
+} // namespace OculusXRAnchors

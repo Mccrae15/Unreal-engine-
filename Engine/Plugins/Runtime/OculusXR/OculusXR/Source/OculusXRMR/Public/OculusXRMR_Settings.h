@@ -5,36 +5,35 @@
 
 #include "OculusXRMR_Settings.generated.h"
 
-
 UENUM(BlueprintType)
 enum class EOculusXRMR_CameraDeviceEnum : uint8 // Deprecated
 {
-	CD_None_DEPRECATED         UMETA(DisplayName = "None"),
-	CD_WebCamera0_DEPRECATED   UMETA(DisplayName = "Web Camera 0"),
-	CD_WebCamera1_DEPRECATED   UMETA(DisplayName = "Web Camera 1"),
+	CD_None_DEPRECATED UMETA(DisplayName = "None"),
+	CD_WebCamera0_DEPRECATED UMETA(DisplayName = "Web Camera 0"),
+	CD_WebCamera1_DEPRECATED UMETA(DisplayName = "Web Camera 1"),
 };
 
 UENUM(BlueprintType)
 enum class EOculusXRMR_ClippingReference : uint8
 {
-	CR_TrackingReference    UMETA(DisplayName = "Tracking Reference"),
-	CR_Head                 UMETA(DisplayName = "Head"),
+	CR_TrackingReference UMETA(DisplayName = "Tracking Reference"),
+	CR_Head UMETA(DisplayName = "Head"),
 };
 
 UENUM(BlueprintType)
 enum class EOculusXRMR_PostProcessEffects : uint8
 {
-	PPE_Off             UMETA(DisplayName = "Off"),
-	PPE_On				UMETA(DisplayName = "On"),
+	PPE_Off UMETA(DisplayName = "Off"),
+	PPE_On UMETA(DisplayName = "On"),
 };
 
 UENUM(BlueprintType)
 enum class EOculusXRMR_CompositionMethod : uint8
 {
 	/* Generate both foreground and background views for compositing with 3rd-party software like OBS. */
-	ExternalComposition				UMETA(DisplayName = "External Composition"),
+	ExternalComposition UMETA(DisplayName = "External Composition"),
 	/* (Deprecated) Composite the camera stream directly to the output with the proper depth.*/
-	DirectComposition_DEPRECATED	UMETA(DisplayName = "Direct Composition (DEPRECATED)")
+	DirectComposition_DEPRECATED UMETA(DisplayName = "Direct Composition (DEPRECATED)")
 };
 
 UCLASS(ClassGroup = OculusXRMR, Blueprintable)
@@ -98,7 +97,6 @@ public:
 	/** Set the amount of post process effects in the MR view for external composition */
 	UPROPERTY(Category = MetaXR, EditAnywhere, BlueprintReadWrite)
 	EOculusXRMR_PostProcessEffects ExternalCompositionPostProcessEffects;
-
 
 	/** ExternalComposition: The casting window includes the background and foreground view
 	  * DirectComposition: The game scene would be composited with the camera frame directly
@@ -171,6 +169,6 @@ private:
 	OnCompositionMethodChangeDelegate CompositionMethodChangeDelegate;
 	OnBooleanSettingChangeDelegate IsCastingChangeDelegate;
 
-	// Give the OculusXRMR module access to the delegates so that 
+	// Give the OculusXRMR module access to the delegates so that
 	friend class FOculusXRMRModule;
 };

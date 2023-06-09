@@ -66,7 +66,6 @@ public:
 	int32 RefreshBoundaryMeshCounter;
 
 private:
-
 	/** Move the casting camera to follow the tracking reference (i.e. player) */
 	void RequestTrackedCameraCalibration();
 

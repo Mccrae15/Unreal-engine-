@@ -16,5 +16,5 @@ void FOculusInteractableModule::ShutdownModule()
 }
 
 #undef LOCTEXT_NAMESPACE
-	
+
 IMPLEMENT_MODULE(FOculusInteractableModule, OculusInteractable)

@@ -13,5 +13,4 @@ UCLASS()
 class HANDPOSESHOWCASE_API AHandPoseShowcaseGameModeBase : public AGameModeBase
 {
 	GENERATED_BODY()
-	
 };

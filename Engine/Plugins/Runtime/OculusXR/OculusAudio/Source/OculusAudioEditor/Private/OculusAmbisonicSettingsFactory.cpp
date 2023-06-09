@@ -20,8 +20,7 @@ FColor FAssetTypeActions_OculusAmbisonicsSettings::GetTypeColor() const
 
 const TArray<FText>& FAssetTypeActions_OculusAmbisonicsSettings::GetSubMenus() const
 {
-	static const TArray<FText> SubMenus
-	{
+	static const TArray<FText> SubMenus{
 		LOCTEXT("AssetSoundOculusSubMenu", "Oculus")
 	};
 
